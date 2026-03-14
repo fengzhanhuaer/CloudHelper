@@ -1,14 +1,20 @@
 package core
 
 import (
-	"crypto/hmac"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -18,8 +24,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+)
 
-	"golang.org/x/crypto/bcrypt"
+const (
+	adminPublicKeyStoreField = "admin_public_key"
+	rootCACertFile           = "root_ca.crt.pem"
+	rootCAKeyFile            = "root_ca.key.pem"
+	adminPublicKeyFile       = "admin_public_key.pem"
+	adminPrivateKeyFile      = "initial_admin_private_key.pem"
+	adminCertFile            = "admin_key.crt.pem"
+
+	// Long-term certificate validity (years).
+	rootCAValidityYears = 100
+	adminCertYears      = 100
 )
 
 type BlacklistData struct {
@@ -35,8 +52,7 @@ type BlacklistStore struct {
 type AuthManager struct {
 	mu sync.RWMutex
 
-	adminKeyHash  string
-	adminPlainKey string
+	adminPublicKey ed25519.PublicKey
 
 	nonces             map[string]time.Time
 	sessions           map[string]time.Time
@@ -46,8 +62,8 @@ type AuthManager struct {
 }
 
 type LoginRequest struct {
-	Nonce string `json:"nonce"`
-	HMAC  string `json:"hmac"`
+	Nonce     string `json:"nonce"`
+	Signature string `json:"signature,omitempty"`
 }
 
 var authManager *AuthManager
@@ -128,68 +144,261 @@ func initAuth() {
 		blacklist:          blacklist,
 	}
 
-	Store.mu.Lock()
-	hashVal, _ := Store.Data["admin_key_hash"].(string)
-	if strings.TrimSpace(hashVal) == "" {
-		plain, genErr := randomHex(32)
-		if genErr != nil {
-			Store.mu.Unlock()
-			log.Fatalf("failed to generate initial admin key: %v", genErr)
-		}
-		hashed, hashErr := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
-		if hashErr != nil {
-			Store.mu.Unlock()
-			log.Fatalf("failed to hash initial admin key: %v", hashErr)
-		}
-		hashVal = string(hashed)
-		Store.Data["admin_key_hash"] = hashVal
-		Store.mu.Unlock()
-
-		if saveErr := Store.Save(); saveErr != nil {
-			log.Fatalf("failed to save admin key hash: %v", saveErr)
-		}
-		if writeErr := os.WriteFile(filepath.Join(dataDir, initialKeyLogFile), []byte(plain+"\n"), 0o600); writeErr != nil {
-			log.Fatalf("failed to write initial key log: %v", writeErr)
-		}
-
-		authManager.mu.Lock()
-		authManager.adminKeyHash = hashVal
-		authManager.adminPlainKey = plain
-		authManager.mu.Unlock()
-		log.Printf("initial admin key generated and written to %s", filepath.Join(dataDir, initialKeyLogFile))
-	} else {
-		Store.mu.Unlock()
-		authManager.mu.Lock()
-		authManager.adminKeyHash = hashVal
-		authManager.mu.Unlock()
+	caCert, caKey, err := loadOrCreateRootCA()
+	if err != nil {
+		log.Fatalf("failed to initialize root ca: %v", err)
 	}
 
-	if envKey := strings.TrimSpace(os.Getenv("CLOUDHELPER_ADMIN_KEY")); envKey != "" {
-		if bcrypt.CompareHashAndPassword([]byte(hashVal), []byte(envKey)) == nil {
-			authManager.mu.Lock()
-			authManager.adminPlainKey = envKey
-			authManager.mu.Unlock()
-		} else {
-			log.Println("warning: CLOUDHELPER_ADMIN_KEY does not match stored admin_key_hash; challenge-response remains unavailable")
-		}
+	adminPub, err := loadOrCreateAdminIdentity(caCert, caKey)
+	if err != nil {
+		log.Fatalf("failed to initialize admin key identity: %v", err)
 	}
 
-	authManager.mu.RLock()
-	hasPlain := strings.TrimSpace(authManager.adminPlainKey) != ""
-	authManager.mu.RUnlock()
-	if !hasPlain {
-		if fileKey := tryLoadInitialKeyFromFile(hashVal); fileKey != "" {
-			authManager.mu.Lock()
-			authManager.adminPlainKey = fileKey
-			authManager.mu.Unlock()
-		}
-	}
+	authManager.mu.Lock()
+	authManager.adminPublicKey = adminPub
+	authManager.mu.Unlock()
 
 	if !IsChallengeResponseReady() {
-		log.Println("warning: challenge-response is not ready because no valid plaintext admin key is loaded")
+		log.Println("warning: challenge-response is not ready because admin public key is missing")
 	}
 
 	go authManager.gcLoop()
+}
+
+func loadOrCreateRootCA() (*x509.Certificate, crypto.Signer, error) {
+	certPath := filepath.Join(dataDir, rootCACertFile)
+	keyPath := filepath.Join(dataDir, rootCAKeyFile)
+
+	certExists := fileExists(certPath)
+	keyExists := fileExists(keyPath)
+	if certExists && keyExists {
+		return loadRootCA(certPath, keyPath)
+	}
+
+	if certExists != keyExists {
+		return nil, nil, errors.New("root ca files are inconsistent: cert/key must both exist or both be absent")
+	}
+
+	return createRootCA(certPath, keyPath)
+}
+
+func loadRootCA(certPath, keyPath string) (*x509.Certificate, crypto.Signer, error) {
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return nil, nil, errors.New("failed to decode root ca certificate pem")
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return nil, nil, errors.New("failed to decode root ca private key pem")
+	}
+
+	var keyAny interface{}
+	keyAny, err = x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		if ecKey, ecErr := x509.ParseECPrivateKey(keyBlock.Bytes); ecErr == nil {
+			keyAny = ecKey
+		} else {
+			return nil, nil, err
+		}
+	}
+
+	signer, ok := keyAny.(crypto.Signer)
+	if !ok {
+		return nil, nil, errors.New("root ca private key is not a signer")
+	}
+	if !cert.IsCA {
+		return nil, nil, errors.New("loaded root certificate is not a ca")
+	}
+
+	return cert, signer, nil
+}
+
+func createRootCA(certPath, keyPath string) (*x509.Certificate, crypto.Signer, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	serial, err := randomSerialNumber()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName:   "CloudHelper Root CA",
+			Organization: []string{"CloudHelper"},
+		},
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.AddDate(rootCAValidityYears, 0, 0),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            1,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		return nil, nil, err
+	}
+
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return nil, nil, err
+	}
+
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	log.Printf("root ca generated: cert=%s key=%s", certPath, keyPath)
+	return cert, key, nil
+}
+
+func loadOrCreateAdminIdentity(caCert *x509.Certificate, caKey crypto.Signer) (ed25519.PublicKey, error) {
+	Store.mu.RLock()
+	raw, _ := Store.Data[adminPublicKeyStoreField].(string)
+	Store.mu.RUnlock()
+
+	if strings.TrimSpace(raw) != "" {
+		pub, err := decodeAdminPublicKey(raw)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeAdminPublicKeyFile(pub); err != nil {
+			return nil, err
+		}
+		return pub, nil
+	}
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+
+	encodedPub := base64.StdEncoding.EncodeToString(pub)
+	Store.mu.Lock()
+	Store.Data[adminPublicKeyStoreField] = encodedPub
+	delete(Store.Data, "admin_key_hash")
+	Store.mu.Unlock()
+
+	if err := Store.Save(); err != nil {
+		return nil, err
+	}
+	if err := writeAdminPublicKeyFile(pub); err != nil {
+		return nil, err
+	}
+	if err := writeAdminPrivateKeyFile(priv); err != nil {
+		return nil, err
+	}
+	if err := writeAdminCertificateFile(pub, caCert, caKey); err != nil {
+		return nil, err
+	}
+
+	log.Printf("admin key pair generated. public=%s private=%s cert=%s", filepath.Join(dataDir, adminPublicKeyFile), filepath.Join(dataDir, adminPrivateKeyFile), filepath.Join(dataDir, adminCertFile))
+	return pub, nil
+}
+
+func decodeAdminPublicKey(v string) (ed25519.PublicKey, error) {
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(v))
+	if err != nil {
+		return nil, err
+	}
+	if len(decoded) != ed25519.PublicKeySize {
+		return nil, errors.New("invalid admin public key size")
+	}
+	pub := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	copy(pub, decoded)
+	return pub, nil
+}
+
+func writeAdminPublicKeyFile(pub ed25519.PublicKey) error {
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return err
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	return os.WriteFile(filepath.Join(dataDir, adminPublicKeyFile), pemBytes, 0o644)
+}
+
+func writeAdminPrivateKeyFile(priv ed25519.PrivateKey) error {
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return err
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+
+	privatePath := filepath.Join(dataDir, adminPrivateKeyFile)
+	return os.WriteFile(privatePath, pemBytes, 0o600)
+}
+
+func writeAdminCertificateFile(pub ed25519.PublicKey, caCert *x509.Certificate, caKey crypto.Signer) error {
+	serial, err := randomSerialNumber()
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName:   "CloudHelper Admin Key",
+			Organization: []string{"CloudHelper"},
+		},
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.AddDate(adminCertYears, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, pub, caKey)
+	if err != nil {
+		return err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	return os.WriteFile(filepath.Join(dataDir, adminCertFile), certPEM, 0o644)
+}
+
+func randomSerialNumber() (*big.Int, error) {
+	limit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, limit)
+	if err != nil {
+		return nil, err
+	}
+	if serial.Sign() == 0 {
+		return big.NewInt(1), nil
+	}
+	return serial, nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func (a *AuthManager) gcLoop() {
@@ -273,7 +482,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !IsChallengeResponseReady() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "challenge-response unavailable: admin secret is not loaded",
+			"error": "challenge-response unavailable: admin public key is not loaded",
 		})
 		return
 	}
@@ -294,9 +503,9 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Nonce = strings.TrimSpace(req.Nonce)
-	req.HMAC = strings.TrimSpace(req.HMAC)
-	if req.Nonce == "" || req.HMAC == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nonce and hmac are required"})
+	req.Signature = strings.TrimSpace(req.Signature)
+	if req.Nonce == "" || req.Signature == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nonce and signature are required"})
 		return
 	}
 
@@ -305,7 +514,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !verifyLoginCredential(req.Nonce, req.HMAC) {
+	if !verifyLoginCredential(req.Nonce, req.Signature) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credential"})
 		return
 	}
@@ -367,16 +576,43 @@ func ValidateAndConsumeNonce(nonce string) error {
 	return nil
 }
 
-func verifyLoginCredential(nonce, incomingHMAC string) bool {
+func verifyLoginCredential(nonce, signature string) bool {
 	authManager.mu.RLock()
-	adminPlain := authManager.adminPlainKey
+	pub := make([]byte, len(authManager.adminPublicKey))
+	copy(pub, authManager.adminPublicKey)
 	authManager.mu.RUnlock()
 
-	if adminPlain != "" {
-		expected := CalcHMACSHA256Hex(nonce, adminPlain)
-		return hmac.Equal([]byte(strings.ToLower(incomingHMAC)), []byte(strings.ToLower(expected)))
+	if len(pub) != ed25519.PublicKeySize {
+		return false
 	}
-	return false
+
+	sigBytes, ok := decodeLoginSignature(signature)
+	if !ok || len(sigBytes) != ed25519.SignatureSize {
+		return false
+	}
+
+	return ed25519.Verify(ed25519.PublicKey(pub), []byte(nonce), sigBytes)
+}
+
+func decodeLoginSignature(v string) ([]byte, bool) {
+	candidate := strings.TrimSpace(v)
+	if candidate == "" {
+		return nil, false
+	}
+
+	if b, err := base64.StdEncoding.DecodeString(candidate); err == nil {
+		return b, true
+	}
+	if b, err := base64.RawStdEncoding.DecodeString(candidate); err == nil {
+		return b, true
+	}
+	if b, err := base64.RawURLEncoding.DecodeString(candidate); err == nil {
+		return b, true
+	}
+	if b, err := hex.DecodeString(candidate); err == nil {
+		return b, true
+	}
+	return nil, false
 }
 
 func IsTokenValid(token string) bool {
@@ -396,12 +632,6 @@ func extractBearerToken(r *http.Request) (string, error) {
 		return "", errors.New("invalid authorization header")
 	}
 	return strings.TrimSpace(parts[1]), nil
-}
-
-func CalcHMACSHA256Hex(message, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(message))
-	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func randomHex(byteLen int) (string, error) {
@@ -481,30 +711,7 @@ func IsChallengeResponseReady() bool {
 	}
 	authManager.mu.RLock()
 	defer authManager.mu.RUnlock()
-	return strings.TrimSpace(authManager.adminPlainKey) != ""
-}
-
-func tryLoadInitialKeyFromFile(adminKeyHash string) string {
-	keyPath := filepath.Join(dataDir, initialKeyLogFile)
-	raw, err := os.ReadFile(keyPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("warning: failed to read %s: %v", keyPath, err)
-		}
-		return ""
-	}
-
-	candidate := strings.TrimSpace(string(raw))
-	if candidate == "" {
-		log.Printf("warning: %s is empty, challenge-response key not loaded", keyPath)
-		return ""
-	}
-	if bcrypt.CompareHashAndPassword([]byte(adminKeyHash), []byte(candidate)) != nil {
-		log.Printf("warning: key in %s does not match admin_key_hash", keyPath)
-		return ""
-	}
-	log.Printf("challenge-response key loaded from %s", keyPath)
-	return candidate
+	return len(authManager.adminPublicKey) == ed25519.PublicKeySize
 }
 
 func NewAuthManagerForTest(blacklistPath string) (*AuthManager, error) {
@@ -536,10 +743,11 @@ func (a *AuthManager) AddSessionForTest(token string, expiresAt time.Time) {
 	a.sessions[token] = expiresAt
 }
 
-func (a *AuthManager) SetAdminPlainKeyForTest(key string) {
+func (a *AuthManager) SetAdminPublicKeyForTest(pub ed25519.PublicKey) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.adminPlainKey = key
+	a.adminPublicKey = make(ed25519.PublicKey, len(pub))
+	copy(a.adminPublicKey, pub)
 }
 
 func (a *AuthManager) HasCIDRForTest(cidr string) bool {

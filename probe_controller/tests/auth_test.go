@@ -2,6 +2,9 @@ package tests
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -94,14 +97,20 @@ func TestNonceHandlerBlacklistsAfterFiveRequests(t *testing.T) {
 func TestLoginHandlerSuccess(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
-	authManager.SetAdminPlainKeyForTest("my-secret")
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate test key pair: %v", err)
+	}
+	authManager.SetAdminPublicKeyForTest(pub)
 
 	nonce := "abc123"
 	authManager.AddNonceForTest(nonce, time.Now().Add(10*time.Second))
 
+	signature := ed25519.Sign(priv, []byte(nonce))
 	reqBody, err := json.Marshal(core.LoginRequest{
-		Nonce: nonce,
-		HMAC:  core.CalcHMACSHA256Hex(nonce, "my-secret"),
+		Nonce:     nonce,
+		Signature: base64.StdEncoding.EncodeToString(signature),
 	})
 	if err != nil {
 		t.Fatalf("marshal request failed: %v", err)
@@ -135,7 +144,7 @@ func TestLoginHandlerRequiresChallengeSecretLoaded(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
 
-	reqBody := bytes.NewReader([]byte(`{"nonce":"n1","hmac":"abc"}`))
+	reqBody := bytes.NewReader([]byte(`{"nonce":"n1","signature":"abc"}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", reqBody)
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "10.20.30.40:5678"

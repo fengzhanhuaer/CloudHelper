@@ -49,7 +49,11 @@ curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scri
 首次启动会自动生成：
 - `cloudhelper.json`
 - `blacklist.json`
-- `initial_key.log`
+- `root_ca.crt.pem`
+- `root_ca.key.pem`
+- `admin_public_key.pem`
+- `admin_key.crt.pem`
+- `initial_admin_private_key.pem`
 
 ## 4. 服务管理命令
 
@@ -70,21 +74,17 @@ sudo journalctl -u probe_controller -f
 - 保留原有 `data/` 数据
 
 ## 6. Challenge-Response 注意事项
-系统仅允许 Challenge-Response 登录。
+系统仅允许 Challenge-Response 登录，且使用“私钥签名 / 公钥验签”模型。
 
-请确保主控能够读取明文密钥（任一方式）：
-- `data/initial_key.log` 存在且内容与 `admin_key_hash` 匹配
-- 在 `/etc/default/probe_controller` 中设置：
+服务端行为：
+- 启动时自动生成 Root CA（`root_ca.key.pem` + `root_ca.crt.pem`）
+- 自动签发管理员密钥对与管理员证书
+- 服务端只使用 `admin_public_key.pem` 验签
 
-```bash
-CLOUDHELPER_ADMIN_KEY=你的明文密钥
-```
-
-修改后执行：
-
-```bash
-sudo systemctl restart probe_controller
-```
+建议操作：
+1. 首次启动后立刻备份 `initial_admin_private_key.pem` 到安全位置（管理员客户端侧）
+2. 确认客户端可用私钥完成签名登录
+3. 删除服务端本地 `initial_admin_private_key.pem`
 
 ## 7. HTTPS 反向代理要求
 主控 `/api/*` 路由已强制 HTTPS。
@@ -106,11 +106,11 @@ location / {
 ## 8. 常见问题
 
 ### 8.1 登录返回 503
-错误：`challenge-response unavailable: admin secret is not loaded`
+错误：`challenge-response unavailable: admin public key is not loaded`
 
 处理：
-- 检查 `data/initial_key.log`
-- 或设置 `CLOUDHELPER_ADMIN_KEY` 后重启服务
+- 检查 `data/admin_public_key.pem` 与 `cloudhelper.json` 中 `admin_public_key`
+- 若缺失，恢复备份或重新初始化生成
 
 ### 8.2 /api/ping 返回 401
 这是预期行为：`/api/ping` 已要求 Bearer Token。
@@ -121,4 +121,5 @@ location / {
 处理：
 - 在 Release 中确认资产名称
 - 通过 `ASSET_NAME=<实际文件名>` 显式指定
+
 

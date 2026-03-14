@@ -18,7 +18,6 @@ const (
 	dataDir            = "./data"
 	mainStoreFile      = "cloudhelper.json"
 	blacklistStoreFile = "blacklist.json"
-	initialKeyLogFile  = "initial_key.log"
 
 	nonceTTL          = 30 * time.Second
 	sessionTTL        = 1 * time.Hour

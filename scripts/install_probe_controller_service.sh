@@ -266,8 +266,8 @@ write_env_file() {
   if [[ ! -f "${ENV_FILE}" ]]; then
     log "creating ${ENV_FILE}"
     cat >"${ENV_FILE}" <<EOF
-# Optional: set the admin secret key used by Challenge-Response login.
-# CLOUDHELPER_ADMIN_KEY=replace-with-your-secret-key
+# Optional runtime overrides for probe_controller service.
+# Admin authentication now uses signature verification with data/admin_public_key.pem.
 EOF
     chmod 0640 "${ENV_FILE}"
   fi
@@ -319,7 +319,7 @@ show_summary() {
   log "asset:   ${INSTALLED_ASSET_NAME}"
   log "next steps:"
   log "  1) systemctl status ${SERVICE_NAME} --no-pager"
-  log "  2) check first-start key: ${DATA_DIR}/initial_key.log"
+  log "  2) check first-start key: ${DATA_DIR}/initial_admin_private_key.pem"
   log "  3) place reverse proxy in front and pass X-Forwarded-Proto=https"
 }
 
