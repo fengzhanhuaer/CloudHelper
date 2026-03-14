@@ -6,3 +6,4 @@
 cloudhelper.json
 *.log
 /release/*
+cloudhelper-probe-controller-linux-amd64

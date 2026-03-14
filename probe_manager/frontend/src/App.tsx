@@ -37,6 +37,8 @@ type TabItem = {
 
 type StatusTone = "info" | "success" | "error";
 
+const STORAGE_CONTROLLER_URL = "cloudhelper.manager.controller_url";
+
 const ALL_TABS: TabItem[] = [
   { key: "overview", label: "概要状态" },
   { key: "probe-status", label: "探针状态" },
@@ -101,8 +103,25 @@ function App() {
   const tabs = useMemo(() => resolveTabs(userRole, certType), [userRole, certType]);
 
   useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(STORAGE_CONTROLLER_URL);
+      if (saved && saved.trim()) {
+        setBaseUrl(saved.trim());
+      }
+    } catch {
+      // Ignore localStorage errors in restricted environments.
+    }
+
     void refreshPrivateKeyStatus();
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_CONTROLLER_URL, baseUrl);
+    } catch {
+      // Ignore localStorage errors in restricted environments.
+    }
+  }, [baseUrl]);
 
   useEffect(() => {
     if (!tabs.some((item) => item.key === activeTab)) {

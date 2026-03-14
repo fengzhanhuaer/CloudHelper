@@ -23,7 +23,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26.1'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -56,11 +56,11 @@ jobs:
           git tag "v$NEW_VERSION"
           git push origin "v$NEW_VERSION"
 
-      - name: Build Probe Panel (Linux amd64)
+      - name: Build Probe Controller (Linux amd64)
         shell: bash
         run: |
-          cd probe_panel
-          GOOS=linux GOARCH=amd64 go build -o cloudhelper-probe-panel-linux-amd64 main.go
+          cd probe_controller
+          GOOS=linux GOARCH=amd64 go build -o cloudhelper-probe-controller-linux-amd64 main.go
 
       - name: Build Probe Manager (Windows amd64)
         shell: bash
@@ -75,5 +75,5 @@ jobs:
           tag_name: "v${{ env.NEW_VERSION }}"
           name: "Release v${{ env.NEW_VERSION }}"
           files: |
-            probe_panel/cloudhelper-probe-panel-linux-amd64
+            probe_controller/cloudhelper-probe-controller-linux-amd64
             probe_manager/build/bin/cloudhelper-probe-manager-windows-amd64.exe
