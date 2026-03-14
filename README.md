@@ -48,6 +48,23 @@ sudo journalctl -u probe_controller -f
 - 公开路由：`GET /dashboard`、`GET /dashboard/status`
 - 受保护路由示例：`GET /api/ping`、`GET /api/admin/status`
 
+## 管理端升级（新增）
+
+管理端在「系统设置」页支持两种自身升级方式：
+
+- `直连升级`：管理端直接请求 GitHub Release，下载并升级自身。
+- `代理升级`：管理端将项目地址发送给主控，主控通过已鉴权接口代查 Release 与代下载文件并转发给管理端，管理端自行决定是否执行升级。
+
+代理相关接口（主控）：
+
+- `POST /api/admin/proxy/github/latest`
+- `GET /api/admin/proxy/download?url=...`
+
+注意：
+
+- 代理接口必须在已登录会话（Bearer Token）下访问。
+- 主控代理下载默认允许任意 HTTPS 下载地址。
+
 ## 本地构建（Windows）
 
 主控：
@@ -68,4 +85,6 @@ wails build -clean -platform windows/amd64 -o probe_manager -nopackage
 
 - 安装与升级：`doc/install_upgrade.md`
 - 认证与安全：`doc/login_requirements.md`
+- 模块拆分：`doc/module_split.md`
+- 前端拆分：`doc/frontend_split.md`
 

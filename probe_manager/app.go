@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 )
 
@@ -38,6 +39,48 @@ func (a *App) startup(ctx context.Context) {
 // Greet returns a greeting for the given name
 func (a *App) Greet(name string) string {
 	return fmt.Sprintf("Hello %s, It's show time!", name)
+}
+
+func (a *App) GetManagerVersion() string {
+	if v := strings.TrimSpace(os.Getenv("CLOUDHELPER_MANAGER_VERSION")); v != "" {
+		return v
+	}
+
+	for _, p := range managerVersionFileCandidates() {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if v := strings.TrimSpace(string(raw)); v != "" {
+			return v
+		}
+	}
+
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if v := strings.TrimSpace(bi.Main.Version); v != "" && v != "(devel)" {
+			return v
+		}
+	}
+
+	return "dev"
+}
+
+func managerVersionFileCandidates() []string {
+	candidates := []string{
+		filepath.Join(".", "version"),
+		filepath.Join("..", "version"),
+		filepath.Join("..", "..", "version"),
+	}
+
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, "version"),
+			filepath.Join(dir, "..", "version"),
+			filepath.Join(dir, "..", "..", "version"),
+		)
+	}
+	return candidates
 }
 
 func (a *App) GetLocalPrivateKeyStatus() PrivateKeyStatus {

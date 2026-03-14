@@ -58,6 +58,9 @@ sequenceDiagram
 | `POST /api/auth/login` | 提交签名登录 | ❌ 否 |
 | `GET /api/ping` | 内部/受保护状态探测 | ✅ 是 |
 | `GET /api/admin/*` | 管理接口 | ✅ 是 |
+| `GET /api/admin/ws/status` | 管理端实时状态 WebSocket | ✅ 是 |
+| `POST /api/admin/proxy/github/latest` | 代理查询任意 GitHub 项目最新 Release | ✅ 是 |
+| `GET /api/admin/proxy/download?url=...` | 代理下载任意 HTTPS 资源并转发 | ✅ 是 |
 | 其他未定义路由 | 默认拒绝 | ✅ 是（不暴露资源） |
 
 ## 5. 安全要求
@@ -70,6 +73,8 @@ sequenceDiagram
   - 服务端长期保留公钥用于验签。
   - 私钥仅用于客户端签名，建议安全托管，不在服务端长期留存。
 - **HTTPS 强制**：`/api/*` 路由需在 HTTPS 上访问；反代需转发 `X-Forwarded-Proto: https`。
+- **代理链路鉴权**：`/api/admin/proxy/*` 必须携带已登录会话 Token（Bearer）。
+- **代理下载范围**：当前代理下载不限制域名，仅要求 `https://` 地址。
 
 ## 6. 测试与验收标准
 

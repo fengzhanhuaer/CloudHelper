@@ -6,10 +6,30 @@ export function GetLocalPrivateKeyStatus() {
   return window['go']['main']['App']['GetLocalPrivateKeyStatus']();
 }
 
+export function GetLatestGitHubRelease(arg1) {
+  return window['go']['main']['App']['GetLatestGitHubRelease'](arg1);
+}
+
+export function GetLatestGitHubReleaseViaProxy(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetLatestGitHubReleaseViaProxy'](arg1, arg2, arg3);
+}
+
+export function GetManagerVersion() {
+  return window['go']['main']['App']['GetManagerVersion']();
+}
+
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
 }
 
 export function SignNonceWithLocalKey(arg1) {
   return window['go']['main']['App']['SignNonceWithLocalKey'](arg1);
+}
+
+export function UpgradeManagerDirect(arg1) {
+  return window['go']['main']['App']['UpgradeManagerDirect'](arg1);
+}
+
+export function UpgradeManagerViaProxy(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpgradeManagerViaProxy'](arg1, arg2, arg3);
 }

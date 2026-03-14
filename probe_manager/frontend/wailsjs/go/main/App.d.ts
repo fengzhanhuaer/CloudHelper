@@ -4,6 +4,16 @@ import {main} from '../models';
 
 export function GetLocalPrivateKeyStatus():Promise<main.PrivateKeyStatus>;
 
+export function GetLatestGitHubRelease(arg1:string):Promise<any>;
+
+export function GetLatestGitHubReleaseViaProxy(arg1:string,arg2:string,arg3:string):Promise<any>;
+
+export function GetManagerVersion():Promise<string>;
+
 export function Greet(arg1:string):Promise<string>;
 
 export function SignNonceWithLocalKey(arg1:string):Promise<string>;
+
+export function UpgradeManagerDirect(arg1:string):Promise<any>;
+
+export function UpgradeManagerViaProxy(arg1:string,arg2:string,arg3:string):Promise<any>;
