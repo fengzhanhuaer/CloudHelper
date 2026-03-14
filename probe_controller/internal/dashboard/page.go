@@ -124,7 +124,6 @@ const pageHTML = `<!DOCTYPE html>
         const serviceStatus = document.getElementById('service-status');
         const pingLatency = document.getElementById('ping-latency');
         const uptimeEl = document.getElementById('uptime');
-        const sessionToken = sessionStorage.getItem('cloudhelper_session_token') || '';
 
         function formatUptime(seconds) {
             const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
@@ -133,30 +132,10 @@ const pageHTML = `<!DOCTYPE html>
             return h + ":" + m + ":" + s;
         }
 
-        function showLoginRequired() {
-            statusIndicator.className = 'status-indicator';
-            serviceStatus.innerText = 'Login Required';
-            serviceStatus.style.color = 'var(--accent)';
-            pingLatency.innerText = '-- ms';
-            uptimeEl.innerText = '--:--:--';
-        }
-
         async function checkStatus() {
-            if (!sessionToken) {
-                showLoginRequired();
-                return;
-            }
             const startPing = performance.now();
             try {
-                const res = await fetch('/api/ping', {
-                    headers: {
-                        'Authorization': 'Bearer ' + sessionToken,
-                    },
-                });
-                if (res.status === 401) {
-                    showLoginRequired();
-                    return;
-                }
+                const res = await fetch('/dashboard/status');
                 if (!res.ok) throw new Error('Not OK');
                 const data = await res.json();
                 const latency = Math.round(performance.now() - startPing);

@@ -146,11 +146,19 @@ func PingHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message": "pong",
-		"service": "CloudHelper Probe Controller",
-		"uptime":  int(time.Since(serverStartTime).Seconds()),
-	})
+	writeJSON(w, http.StatusOK, statusPayload())
+}
+
+func dashboardStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/dashboard/status" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, statusPayload())
 }
 
 func rootHandler(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +183,14 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func statusPayload() map[string]interface{} {
+	return map[string]interface{}{
+		"message": "pong",
+		"service": "CloudHelper Probe Controller",
+		"uptime":  int(time.Since(serverStartTime).Seconds()),
+	}
+}
+
 func Run() {
 	serverStartTime = time.Now()
 
@@ -195,6 +211,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/auth/nonce", corsMiddleware(requireHTTPSMiddleware(NonceHandler)))
 	mux.HandleFunc("/api/auth/login", corsMiddleware(requireHTTPSMiddleware(LoginHandler)))
 	mux.HandleFunc("/api/admin/status", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminStatusHandler))))
+	mux.HandleFunc("/dashboard/status", dashboardStatusHandler)
 	mux.HandleFunc("/dashboard", dashboardHandler)
 	mux.HandleFunc("/", rootHandler)
 	return mux

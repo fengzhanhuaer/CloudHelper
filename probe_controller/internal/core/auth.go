@@ -131,7 +131,7 @@ func initAuth() {
 	Store.mu.Lock()
 	hashVal, _ := Store.Data["admin_key_hash"].(string)
 	if strings.TrimSpace(hashVal) == "" {
-		plain, genErr := randomHex(64)
+		plain, genErr := randomHex(32)
 		if genErr != nil {
 			Store.mu.Unlock()
 			log.Fatalf("failed to generate initial admin key: %v", genErr)
