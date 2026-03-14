@@ -1,59 +1,109 @@
-#app {
-    height: 100vh;
+﻿#App {
+    min-height: 100vh;
     text-align: center;
+    padding: 24px 16px 40px;
+    box-sizing: border-box;
 }
 
 #logo {
     display: block;
-    width: 50%;
-    height: 50%;
-    margin: auto;
-    padding: 10% 0 0;
-    background-position: center;
-    background-repeat: no-repeat;
-    background-size: 100% 100%;
-    background-origin: content-box;
+    width: min(360px, 70vw);
+    margin: 0 auto 20px;
 }
 
-.result {
-    height: 20px;
-    line-height: 20px;
-    margin: 1.5rem auto;
+.panel {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 20px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.input-box .btn {
-    width: 60px;
-    height: 30px;
-    line-height: 30px;
-    border-radius: 3px;
-    border: none;
-    margin: 0 0 0 20px;
-    padding: 0 8px;
+.row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.row label {
+    text-align: right;
+    color: #d6e4ff;
+}
+
+.remember-row {
+    margin-bottom: 12px;
+    text-align: left;
+    color: #d6e4ff;
+}
+
+.remember-row label {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 6px;
+    outline: none;
+    height: 36px;
+    line-height: 36px;
+    padding: 0 10px;
+    background-color: rgba(9, 13, 20, 0.7);
+    color: #ffffff;
+}
+
+.input:focus {
+    border-color: #7ec8ff;
+}
+
+.btn-row {
+    margin-top: 10px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.btn {
+    min-width: 100px;
+    height: 34px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(22, 30, 44, 0.9);
+    color: #ffffff;
     cursor: pointer;
 }
 
-.input-box .btn:hover {
-    background-image: linear-gradient(to top, #cfd9df 0%, #e2ebf0 100%);
-    color: #333333;
+.btn:hover {
+    background: rgba(48, 68, 97, 0.95);
 }
 
-.input-box .input {
-    border: none;
-    border-radius: 3px;
-    outline: none;
-    height: 30px;
-    line-height: 30px;
-    padding: 0 10px;
-    background-color: rgba(240, 240, 240, 1);
-    -webkit-font-smoothing: antialiased;
+.status {
+    margin-top: 12px;
+    text-align: left;
+    font-size: 14px;
+    background: rgba(0, 0, 0, 0.22);
+    border-radius: 6px;
+    padding: 8px 10px;
+    word-break: break-word;
 }
 
-.input-box .input:hover {
-    border: none;
-    background-color: rgba(255, 255, 255, 1);
+.token {
+    font-family: Consolas, Monaco, monospace;
 }
 
-.input-box .input:focus {
-    border: none;
-    background-color: rgba(255, 255, 255, 1);
+@media (max-width: 640px) {
+    .row {
+        grid-template-columns: 1fr;
+    }
+
+    .row label {
+        text-align: left;
+    }
 }
