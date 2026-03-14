@@ -28,7 +28,7 @@ const statusHTML = `<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CloudHelper 探针面板</title>
+    <title>CloudHelper 探针主控</title>
     <style>
         :root {
             --bg-color: #0d1117;
@@ -304,7 +304,7 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "pong",
-		"service": "CloudHelper Probe Panel",
+		"service": "CloudHelper Probe Controller",
 		"uptime":  int(time.Since(serverStartTime).Seconds()),
 	})
 }
@@ -334,7 +334,7 @@ func main() {
 	// 提供网页版探针状态面板
 	mux.HandleFunc("/", statusPageHandler)
 
-	log.Println("CloudHelper Probe Panel is running at http://127.0.0.1:15030")
+	log.Println("CloudHelper Probe Controller is running at http://127.0.0.1:15030")
 	if err := http.ListenAndServe("127.0.0.1:15030", mux); err != nil {
 		log.Fatal(err)
 	}

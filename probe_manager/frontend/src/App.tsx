@@ -18,9 +18,9 @@ function App() {
         try {
             const response = await fetch("http://127.0.0.1:15030/api/ping");
             const data = await response.json();
-            setServerStatus(`Probe Panel: ${data.message} from ${data.service}`);
+            setServerStatus(`Probe Controller: ${data.message} from ${data.service}`);
         } catch (e: any) {
-            setServerStatus(`Probe Panel Error: ${e.message}`);
+            setServerStatus(`Probe Controller Error: ${e.message}`);
         }
     }
 
@@ -34,7 +34,7 @@ function App() {
             </div>
             <div style={{marginTop: "20px"}}>
                 <div style={{color: "white", marginBottom: "10px"}}>{serverStatus}</div>
-                <button className="btn" onClick={pingServer}>Ping Probe Panel</button>
+                <button className="btn" onClick={pingServer}>Ping Probe Controller</button>
             </div>
         </div>
     )
