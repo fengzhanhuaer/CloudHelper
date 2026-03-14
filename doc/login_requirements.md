@@ -39,7 +39,7 @@ sequenceDiagram
     Server-->>Server: 验证 nonce 存在且未过期，并立即删除（防重放）
     Server-->>Server: 使用管理员公钥验签
     Server-->>Server: 生成随机 Session Token（内存保存，带过期时间）
-    Server-->>Client: 返回 { "session_token": "xxx...", "ttl": 3600 }
+    Server-->>Client: 返回 { "session_token": "xxx...", "ttl": 3600, "username": "admin", "user_role": "admin", "cert_type": "admin" }
 
     Client->>Server: GET /api/admin/* Header: Authorization: Bearer <session_token>
     Server-->>Server: 验证 Session Token
@@ -106,9 +106,22 @@ sequenceDiagram
 - 服务端当前支持 `signature` 的编码格式：`Base64`（标准/Raw/URL）或 `hex`。
 - `nonce` 或 `signature` 缺失时，接口返回 `400`。
 
+### 8.6 证书身份字段（新增）
+- 管理员证书 `admin_key.crt.pem` 现在包含用户名、用户角色与证书类型字段。
+- 服务端会在登录成功响应中返回：
+  - `username`：用户名（如 `admin`）
+  - `user_role`：用户角色（如 `admin` / `operator` / `viewer`）
+  - `cert_type`：证书类型（如 `admin` / `ops` / `observer`）
+- 管理客户端可基于 `username + user_role + cert_type` 做页面授权多态（Tab 可见性控制）。
+
 ### 8.4 管理员密钥轮换建议
 1. 生成新的管理员密钥对（建议离线生成）。
 2. 将新公钥更新到服务端（`admin_public_key` 与 `admin_public_key.pem` 保持一致）。
 3. 将新私钥安全分发到管理员客户端。
 4. 验证新私钥登录成功后，废弃旧私钥。
+
+### 8.5 默认证书有效期
+- `root_ca.crt.pem`：默认长期（100 年）。
+- `admin_key.crt.pem`：默认长期（100 年）。
+- 说明：私钥文件本身没有“过期时间”字段。
 

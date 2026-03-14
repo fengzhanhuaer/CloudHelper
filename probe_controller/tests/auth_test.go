@@ -134,6 +134,18 @@ func TestLoginHandlerSuccess(t *testing.T) {
 	if !ok || token == "" {
 		t.Fatalf("expected session_token in response")
 	}
+	username, ok := resp["username"].(string)
+	if !ok || username == "" {
+		t.Fatalf("expected username in response")
+	}
+	role, ok := resp["user_role"].(string)
+	if !ok || role == "" {
+		t.Fatalf("expected user_role in response")
+	}
+	certType, ok := resp["cert_type"].(string)
+	if !ok || certType == "" {
+		t.Fatalf("expected cert_type in response")
+	}
 
 	if !core.IsTokenValid(token) {
 		t.Fatalf("expected issued token to be valid")

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -28,15 +29,30 @@ import (
 
 const (
 	adminPublicKeyStoreField = "admin_public_key"
+	adminUsernameStoreField  = "admin_username"
+	adminRoleStoreField      = "admin_user_role"
+	adminCertTypeStoreField  = "admin_cert_type"
 	rootCACertFile           = "root_ca.crt.pem"
 	rootCAKeyFile            = "root_ca.key.pem"
 	adminPublicKeyFile       = "admin_public_key.pem"
 	adminPrivateKeyFile      = "initial_admin_private_key.pem"
 	adminCertFile            = "admin_key.crt.pem"
+	defaultUsername          = "admin"
+	defaultUserRole          = "admin"
+	defaultCertType          = "admin"
 
 	// Long-term certificate validity (years).
 	rootCAValidityYears = 100
 	adminCertYears      = 100
+)
+
+var (
+	certUsernameExtensionOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 0}
+	certRoleExtensionOID     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 1}
+	certTypeExtensionOID     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 2}
+	usernameOUKeyPrefix      = "user:"
+	roleOUKeyPrefix          = "role:"
+	certTypeOUKeyPrefix      = "type:"
 )
 
 type BlacklistData struct {
@@ -53,6 +69,9 @@ type AuthManager struct {
 	mu sync.RWMutex
 
 	adminPublicKey ed25519.PublicKey
+	username       string
+	userRole       string
+	certType       string
 
 	nonces             map[string]time.Time
 	sessions           map[string]time.Time
@@ -149,13 +168,16 @@ func initAuth() {
 		log.Fatalf("failed to initialize root ca: %v", err)
 	}
 
-	adminPub, err := loadOrCreateAdminIdentity(caCert, caKey)
+	adminPub, username, userRole, certType, err := loadOrCreateAdminIdentity(caCert, caKey)
 	if err != nil {
 		log.Fatalf("failed to initialize admin key identity: %v", err)
 	}
 
 	authManager.mu.Lock()
 	authManager.adminPublicKey = adminPub
+	authManager.username = normalizeUsername(username)
+	authManager.userRole = normalizeRole(userRole)
+	authManager.certType = normalizeCertType(certType)
 	authManager.mu.Unlock()
 
 	if !IsChallengeResponseReady() {
@@ -280,48 +302,202 @@ func createRootCA(certPath, keyPath string) (*x509.Certificate, crypto.Signer, e
 	return cert, key, nil
 }
 
-func loadOrCreateAdminIdentity(caCert *x509.Certificate, caKey crypto.Signer) (ed25519.PublicKey, error) {
+func loadOrCreateAdminIdentity(caCert *x509.Certificate, caKey crypto.Signer) (ed25519.PublicKey, string, string, string, error) {
 	Store.mu.RLock()
 	raw, _ := Store.Data[adminPublicKeyStoreField].(string)
+	storedUsername, _ := Store.Data[adminUsernameStoreField].(string)
+	storedRole, _ := Store.Data[adminRoleStoreField].(string)
+	storedCertType, _ := Store.Data[adminCertTypeStoreField].(string)
 	Store.mu.RUnlock()
 
 	if strings.TrimSpace(raw) != "" {
 		pub, err := decodeAdminPublicKey(raw)
 		if err != nil {
-			return nil, err
+			return nil, "", "", "", err
 		}
 		if err := writeAdminPublicKeyFile(pub); err != nil {
-			return nil, err
+			return nil, "", "", "", err
 		}
-		return pub, nil
+
+		username, role, certType := loadIdentityClaims(storedUsername, storedRole, storedCertType)
+		if err := ensureAdminCertificateFile(pub, caCert, caKey, username, role, certType); err != nil {
+			return nil, "", "", "", err
+		}
+		if err := persistIdentityClaims(username, role, certType); err != nil {
+			return nil, "", "", "", err
+		}
+		return pub, username, role, certType, nil
 	}
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, err
+		return nil, "", "", "", err
 	}
+
+	username := defaultUsername
+	role := defaultUserRole
+	certType := defaultCertType
 
 	encodedPub := base64.StdEncoding.EncodeToString(pub)
 	Store.mu.Lock()
 	Store.Data[adminPublicKeyStoreField] = encodedPub
+	Store.Data[adminUsernameStoreField] = username
+	Store.Data[adminRoleStoreField] = role
+	Store.Data[adminCertTypeStoreField] = certType
 	delete(Store.Data, "admin_key_hash")
 	Store.mu.Unlock()
 
 	if err := Store.Save(); err != nil {
-		return nil, err
+		return nil, "", "", "", err
 	}
 	if err := writeAdminPublicKeyFile(pub); err != nil {
-		return nil, err
+		return nil, "", "", "", err
 	}
 	if err := writeAdminPrivateKeyFile(priv); err != nil {
-		return nil, err
+		return nil, "", "", "", err
 	}
-	if err := writeAdminCertificateFile(pub, caCert, caKey); err != nil {
-		return nil, err
+	if err := writeAdminCertificateFile(pub, caCert, caKey, username, role, certType); err != nil {
+		return nil, "", "", "", err
 	}
 
 	log.Printf("admin key pair generated. public=%s private=%s cert=%s", filepath.Join(dataDir, adminPublicKeyFile), filepath.Join(dataDir, adminPrivateKeyFile), filepath.Join(dataDir, adminCertFile))
-	return pub, nil
+	return pub, username, role, certType, nil
+}
+
+func loadIdentityClaims(storedUsername, storedRole, storedCertType string) (string, string, string) {
+	username := normalizeUsername(storedUsername)
+	role := normalizeRole(storedRole)
+	certType := normalizeCertType(storedCertType)
+	if username != "" && role != "" && certType != "" {
+		return username, role, certType
+	}
+
+	certUsername, certRole, certTypeClaim, err := readIdentityClaimsFromCertificate(filepath.Join(dataDir, adminCertFile))
+	if err == nil {
+		if username == "" {
+			username = normalizeUsername(certUsername)
+		}
+		if role == "" {
+			role = normalizeRole(certRole)
+		}
+		if certType == "" {
+			certType = normalizeCertType(certTypeClaim)
+		}
+	}
+
+	if username == "" {
+		username = defaultUsername
+	}
+	if role == "" {
+		role = defaultUserRole
+	}
+	if certType == "" {
+		certType = defaultCertType
+	}
+	return username, role, certType
+}
+
+func persistIdentityClaims(username, role, certType string) error {
+	username = normalizeUsername(username)
+	role = normalizeRole(role)
+	certType = normalizeCertType(certType)
+	if username == "" {
+		username = defaultUsername
+	}
+	if role == "" {
+		role = defaultUserRole
+	}
+	if certType == "" {
+		certType = defaultCertType
+	}
+
+	Store.mu.Lock()
+	Store.Data[adminUsernameStoreField] = username
+	Store.Data[adminRoleStoreField] = role
+	Store.Data[adminCertTypeStoreField] = certType
+	Store.mu.Unlock()
+	return Store.Save()
+}
+
+func ensureAdminCertificateFile(pub ed25519.PublicKey, caCert *x509.Certificate, caKey crypto.Signer, username, role, certType string) error {
+	certPath := filepath.Join(dataDir, adminCertFile)
+	if fileExists(certPath) {
+		return nil
+	}
+	return writeAdminCertificateFile(pub, caCert, caKey, username, role, certType)
+}
+
+func readIdentityClaimsFromCertificate(certPath string) (string, string, string, error) {
+	raw, err := os.ReadFile(certPath)
+	if err != nil {
+		return "", "", "", err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return "", "", "", errors.New("failed to decode admin certificate pem")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", "", "", err
+	}
+	username, role, certType := extractIdentityClaimsFromCertificate(cert)
+	return username, role, certType, nil
+}
+
+func extractIdentityClaimsFromCertificate(cert *x509.Certificate) (string, string, string) {
+	username := ""
+	role := ""
+	certType := ""
+
+	for _, ext := range cert.Extensions {
+		if ext.Id.Equal(certUsernameExtensionOID) {
+			var v string
+			if _, err := asn1.Unmarshal(ext.Value, &v); err == nil {
+				username = normalizeUsername(v)
+			}
+		}
+		if ext.Id.Equal(certRoleExtensionOID) {
+			var v string
+			if _, err := asn1.Unmarshal(ext.Value, &v); err == nil {
+				role = normalizeRole(v)
+			}
+		}
+		if ext.Id.Equal(certTypeExtensionOID) {
+			var v string
+			if _, err := asn1.Unmarshal(ext.Value, &v); err == nil {
+				certType = normalizeCertType(v)
+			}
+		}
+	}
+
+	for _, ou := range cert.Subject.OrganizationalUnit {
+		itemRaw := strings.TrimSpace(ou)
+		itemLower := strings.ToLower(itemRaw)
+
+		if strings.HasPrefix(itemLower, usernameOUKeyPrefix) && username == "" {
+			username = normalizeUsername(strings.TrimSpace(itemRaw[len(usernameOUKeyPrefix):]))
+		}
+		if strings.HasPrefix(itemLower, roleOUKeyPrefix) && role == "" {
+			role = normalizeRole(strings.TrimSpace(itemRaw[len(roleOUKeyPrefix):]))
+		}
+		if strings.HasPrefix(itemLower, certTypeOUKeyPrefix) && certType == "" {
+			certType = normalizeCertType(strings.TrimSpace(itemRaw[len(certTypeOUKeyPrefix):]))
+		}
+	}
+
+	return username, role, certType
+}
+
+func normalizeUsername(v string) string {
+	return strings.TrimSpace(v)
+}
+
+func normalizeRole(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func normalizeCertType(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
 }
 
 func decodeAdminPublicKey(v string) (ed25519.PublicKey, error) {
@@ -357,23 +533,69 @@ func writeAdminPrivateKeyFile(priv ed25519.PrivateKey) error {
 	return os.WriteFile(privatePath, pemBytes, 0o600)
 }
 
-func writeAdminCertificateFile(pub ed25519.PublicKey, caCert *x509.Certificate, caKey crypto.Signer) error {
+func writeAdminCertificateFile(pub ed25519.PublicKey, caCert *x509.Certificate, caKey crypto.Signer, username, role, certType string) error {
 	serial, err := randomSerialNumber()
 	if err != nil {
 		return err
 	}
+
+	username = normalizeUsername(username)
+	role = normalizeRole(role)
+	certType = normalizeCertType(certType)
+	if username == "" {
+		username = defaultUsername
+	}
+	if role == "" {
+		role = defaultUserRole
+	}
+	if certType == "" {
+		certType = defaultCertType
+	}
+
+	usernameValue, err := asn1.Marshal(username)
+	if err != nil {
+		return err
+	}
+	roleValue, err := asn1.Marshal(role)
+	if err != nil {
+		return err
+	}
+	certTypeValue, err := asn1.Marshal(certType)
+	if err != nil {
+		return err
+	}
+
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			CommonName:   "CloudHelper Admin Key",
 			Organization: []string{"CloudHelper"},
+			OrganizationalUnit: []string{
+				usernameOUKeyPrefix + username,
+				roleOUKeyPrefix + role,
+				certTypeOUKeyPrefix + certType,
+			},
 		},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.AddDate(adminCertYears, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
+		ExtraExtensions: []pkix.Extension{
+			{
+				Id:    certUsernameExtensionOID,
+				Value: usernameValue,
+			},
+			{
+				Id:    certRoleExtensionOID,
+				Value: roleValue,
+			},
+			{
+				Id:    certTypeExtensionOID,
+				Value: certTypeValue,
+			},
+		},
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, pub, caKey)
@@ -531,10 +753,14 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	authManager.sessions[token] = expiresAt
 	authManager.nonceRequestFailed[ip] = 0
 	authManager.mu.Unlock()
+	username, role, certType := currentIdentityClaims()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"session_token": token,
 		"ttl":           int(sessionTTL.Seconds()),
+		"username":      username,
+		"user_role":     role,
+		"cert_type":     certType,
 	})
 }
 
@@ -613,6 +839,28 @@ func decodeLoginSignature(v string) ([]byte, bool) {
 		return b, true
 	}
 	return nil, false
+}
+
+func currentIdentityClaims() (string, string, string) {
+	if authManager == nil {
+		return defaultUsername, defaultUserRole, defaultCertType
+	}
+	authManager.mu.RLock()
+	defer authManager.mu.RUnlock()
+
+	username := normalizeUsername(authManager.username)
+	role := normalizeRole(authManager.userRole)
+	certType := normalizeCertType(authManager.certType)
+	if username == "" {
+		username = defaultUsername
+	}
+	if role == "" {
+		role = defaultUserRole
+	}
+	if certType == "" {
+		certType = defaultCertType
+	}
+	return username, role, certType
 }
 
 func IsTokenValid(token string) bool {
@@ -724,6 +972,9 @@ func NewAuthManagerForTest(blacklistPath string) (*AuthManager, error) {
 		sessions:           make(map[string]time.Time),
 		nonceRequestFailed: make(map[string]int),
 		blacklist:          bl,
+		username:           defaultUsername,
+		userRole:           defaultUserRole,
+		certType:           defaultCertType,
 	}, nil
 }
 
