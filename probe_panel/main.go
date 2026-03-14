@@ -1,33 +1,68 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/gin-gonic/gin"
-	"github.com/glebarez/sqlite"
-	"gorm.io/gorm"
 )
 
-var DB *gorm.DB
+// DataStore represents our JSON storage
+type DataStore struct {
+	mu   sync.RWMutex
+	path string
+	Data map[string]interface{} `json:"data"`
+}
 
-func initDB() {
+var Store *DataStore
+
+func initStore() {
 	// 确保数据目录存在
 	dataDir := "./data"
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		log.Fatalf("failed to create data directory: %v", err)
 	}
 
-	dbPath := filepath.Join(dataDir, "cloudhelper.db")
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
-	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+	dbPath := filepath.Join(dataDir, "cloudhelper.json")
+	Store = &DataStore{
+		path: dbPath,
+		Data: make(map[string]interface{}),
+	}
+	
+	// Load existing data if file exists
+	if _, err := os.Stat(dbPath); err == nil {
+		content, err := os.ReadFile(dbPath)
+		if err != nil {
+			log.Fatalf("failed to read JSON data file: %v", err)
+		}
+		if len(content) > 0 {
+			if err := json.Unmarshal(content, &Store.Data); err != nil {
+				log.Fatalf("failed to parse JSON data file: %v", err)
+			}
+		}
+	} else if os.IsNotExist(err) {
+		// Create an empty file
+		Store.Save()
+	} else {
+		log.Fatalf("failed to check JSON data file: %v", err)
 	}
 
-	DB = db
-	log.Println("Database connection established")
+	log.Println("JSON Datastore initialized at", dbPath)
+}
+
+func (s *DataStore) Save() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	content, err := json.MarshalIndent(s.Data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.path, content, 0644)
 }
 
 func CORSMiddleware() gin.HandlerFunc {
@@ -47,8 +82,8 @@ func CORSMiddleware() gin.HandlerFunc {
 }
 
 func main() {
-	// 初始化数据库
-	initDB()
+	// 初始化基于JSON的存储
+	initStore()
 
 	r := gin.Default()
 
@@ -68,4 +103,3 @@ func main() {
 		log.Fatal(err)
 	}
 }
-
