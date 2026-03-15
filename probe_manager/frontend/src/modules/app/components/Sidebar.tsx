@@ -1,9 +1,6 @@
 import type { TabItem, TabKey } from "../types";
 
 type SidebarProps = {
-  username: string;
-  userRole: string;
-  certType: string;
   tabs: TabItem[];
   activeTab: TabKey;
   onTabChange: (tab: TabKey) => void;
@@ -14,9 +11,6 @@ export function Sidebar(props: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="sidebar-title">CloudHelper Manager</div>
-      <div className="sidebar-identity">user={props.username}</div>
-      <div className="sidebar-identity">role={props.userRole}</div>
-      <div className="sidebar-identity">cert={props.certType}</div>
 
       <div className="tab-list">
         {props.tabs.map((tab) => (

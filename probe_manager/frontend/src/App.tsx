@@ -107,9 +107,6 @@ function App() {
     <div id="App">
       <div className="app-shell">
         <Sidebar
-          username={auth.username}
-          userRole={auth.userRole}
-          certType={auth.certType}
           tabs={tabs}
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -129,6 +126,7 @@ function App() {
             adminStatus={connection.adminStatus}
             onPingServer={() => connection.pingServer(settings.baseUrl)}
             onCheckAdminStatus={() => connection.checkAdminStatus(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
+            controllerBaseUrl={settings.baseUrl}
             onRefreshPrivateKeyStatus={auth.refreshPrivateKeyStatus}
             managerVersion={upgrade.managerVersion}
             controllerVersion={upgrade.controllerVersion}

@@ -19,6 +19,7 @@ type ReleaseAsset = backend.ReleaseAsset
 type ReleaseInfo = backend.ReleaseInfo
 type ManagerUpgradeResult = backend.ManagerUpgradeResult
 type ManagerUpgradeProgress = backend.ManagerUpgradeProgress
+type ProbeNode = backend.ProbeNode
 
 func NewApp() *App {
 	backend.BuildVersion = BuildVersion
@@ -95,4 +96,16 @@ func (a *App) UpgradeManagerViaProxy(controllerBaseURL, sessionToken, project st
 
 func (a *App) GetManagerUpgradeProgress() ManagerUpgradeProgress {
 	return a.inner.GetManagerUpgradeProgress()
+}
+
+func (a *App) GetProbeNodes() ([]ProbeNode, error) {
+	return a.inner.GetProbeNodes()
+}
+
+func (a *App) CreateProbeNode(nodeName string) (ProbeNode, error) {
+	return a.inner.CreateProbeNode(nodeName)
+}
+
+func (a *App) UpdateProbeNode(nodeNo int, targetSystem string, directConnect bool) (ProbeNode, error) {
+	return a.inner.UpdateProbeNode(nodeNo, targetSystem, directConnect)
 }

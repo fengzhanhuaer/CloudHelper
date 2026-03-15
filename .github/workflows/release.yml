@@ -11,14 +11,110 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    runs-on: windows-latest
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump_version.outputs.new_version }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump Version and Tag
+        id: bump_version
+        shell: bash
+        run: |
+          if [ ! -f "version" ]; then
+            echo "0.0.0" > version
+          fi
+
+          VERSION=$(cat version | tr -d '\r')
+          IFS='.' read -r -a parts <<< "$VERSION"
+          patch=$((parts[2] + 1))
+          NEW_VERSION="${parts[0]}.${parts[1]}.$patch"
+          echo "$NEW_VERSION" > version
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version
+          git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+          git push
+
+          git tag "v$NEW_VERSION"
+          git push origin "v$NEW_VERSION"
+
+  build-probe-controller:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+
+      - name: Build Probe Controller (Linux amd64)
+        working-directory: probe_controller
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
+        shell: bash
+        run: go build -ldflags "-X github.com/cloudhelper/probe_controller/internal/core.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-controller-linux-amd64 main.go
+
+      - name: Upload Probe Controller Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudhelper-probe-controller-linux-amd64
+          path: probe_controller/cloudhelper-probe-controller-linux-amd64
+
+  build-probe-node:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+
+      - name: Build Probe Node (Linux amd64)
+        working-directory: probe_node
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
+        shell: bash
+        run: go build -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-node-linux-amd64 main.go
+
+      - name: Upload Probe Node Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudhelper-probe-node-linux-amd64
+          path: probe_node/cloudhelper-probe-node-linux-amd64
+
+  build-probe-manager:
+    needs: prepare-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: v${{ needs.prepare-release.outputs.new_version }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -31,49 +127,54 @@ jobs:
           node-version: '18'
 
       - name: Install Wails CLI
+        shell: bash
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-      - name: Bump Version and Tag
-        id: bump_version
-        shell: bash
-        run: |
-          if [ ! -f "version" ]; then
-            echo "0.0.0" > version
-          fi
-          VERSION=$(cat version | tr -d '\r')
-          IFS='.' read -r -a parts <<< "$VERSION"
-          patch=$((parts[2] + 1))
-          NEW_VERSION="${parts[0]}.${parts[1]}.$patch"
-          echo "$NEW_VERSION" > version
-          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
-          
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add version
-          git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
-          git push
-          
-          git tag "v$NEW_VERSION"
-          git push origin "v$NEW_VERSION"
-
-      - name: Build Probe Controller (Linux amd64)
-        shell: bash
-        run: |
-          cd probe_controller
-          GOOS=linux GOARCH=amd64 go build -ldflags "-X github.com/cloudhelper/probe_controller/internal/core.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-controller-linux-amd64 main.go
-
       - name: Build Probe Manager (Windows amd64)
+        working-directory: probe_manager
+        env:
+          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
         shell: bash
-        run: |
-          cd probe_manager
-          wails build -platform windows/amd64 -ldflags "-X main.BuildVersion=v${NEW_VERSION}"
-          mv build/bin/probe_manager.exe build/bin/cloudhelper-probe-manager-windows-amd64.exe
+        run: wails build -platform windows/amd64 -ldflags "-X main.BuildVersion=v${NEW_VERSION}" && mv build/bin/probe_manager.exe build/bin/cloudhelper-probe-manager-windows-amd64.exe
+
+      - name: Upload Probe Manager Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudhelper-probe-manager-windows-amd64.exe
+          path: probe_manager/build/bin/cloudhelper-probe-manager-windows-amd64.exe
+
+  create-release:
+    needs:
+      - prepare-release
+      - build-probe-controller
+      - build-probe-node
+      - build-probe-manager
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Probe Controller Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-probe-controller-linux-amd64
+          path: release-assets
+
+      - name: Download Probe Node Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-probe-node-linux-amd64
+          path: release-assets
+
+      - name: Download Probe Manager Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-probe-manager-windows-amd64.exe
+          path: release-assets
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v${{ env.NEW_VERSION }}"
-          name: "Release v${{ env.NEW_VERSION }}"
+          tag_name: v${{ needs.prepare-release.outputs.new_version }}
+          name: Release v${{ needs.prepare-release.outputs.new_version }}
           files: |
-            probe_controller/cloudhelper-probe-controller-linux-amd64
-            probe_manager/build/bin/cloudhelper-probe-manager-windows-amd64.exe
+            release-assets/cloudhelper-probe-controller-linux-amd64
+            release-assets/cloudhelper-probe-node-linux-amd64
+            release-assets/cloudhelper-probe-manager-windows-amd64.exe

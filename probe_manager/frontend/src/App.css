@@ -245,6 +245,63 @@
     font-size: 13px;
 }
 
+.subtab-list {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.subtab-btn {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(28, 41, 61, 0.55);
+    color: #e8f1ff;
+    border-radius: 8px;
+    height: 36px;
+    padding: 0 12px;
+    cursor: pointer;
+}
+
+.subtab-btn.active {
+    background: rgba(78, 129, 198, 0.54);
+    border-color: rgba(129, 184, 255, 0.72);
+}
+
+.probe-node-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.probe-node-card {
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(7, 11, 18, 0.35);
+    border-radius: 10px;
+    padding: 12px;
+}
+
+.probe-node-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #ffffff;
+    margin-bottom: 8px;
+}
+
+.probe-node-meta {
+    color: #c9ddff;
+    font-size: 13px;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.probe-direct-toggle {
+    margin-top: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #d6e4ff;
+    font-size: 13px;
+}
+
 @media (max-width: 900px) {
     .app-shell {
         grid-template-columns: 1fr;

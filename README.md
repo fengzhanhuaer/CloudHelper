@@ -5,9 +5,16 @@ CloudHelper 是一个探针主控与管理端项目，当前版本：`0.0.7`。
 ## 项目结构
 
 - `probe_controller`：探针主控服务（Go）
+- `probe_node`：探针节点服务（Go）
 - `probe_manager`：管理端（Wails）
 - `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd）
+- `scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（支持 systemd / 非 systemd）
 - `doc/`：项目文档
+
+探针节点安装脚本支持变量：
+- `RUNTIME_MODE=auto|systemd|manual`（默认 `auto`）
+- `MANUAL_ENABLE_BOOT=true|false`（仅 `manual` 模式，默认 `true`，通过 `rc.local` 配置开机启动）
+- `PROBE_NODE_ID`、`PROBE_NODE_SECRET`（安装时写入 `/etc/default/probe_node`，探针启动后自动落盘到自身 `data/node_identity.json`）
 
 ## Linux 一键安装（主控）
 
@@ -23,6 +30,33 @@ curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scri
 ## 一键升级（主控）
 
 重复执行同一条安装命令即可升级。脚本会自动备份旧二进制并重启服务。
+
+## Linux 一键安装（探针节点）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh | sudo bash
+```
+
+安装完成后会：
+- 从 GitHub Releases 拉取最新 `probe_node` 可执行程序
+- 安装到 `/opt/cloudhelper/probe_node`
+- 自动检测运行环境：有 systemd 则注册服务，无 systemd 则使用 `probe_node-ctl` 管理
+
+可选：
+
+```bash
+# 强制使用 systemd
+curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh \
+| sudo RUNTIME_MODE=systemd bash
+
+# 强制使用非 systemd（manual）
+curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh \
+| sudo RUNTIME_MODE=manual MANUAL_ENABLE_BOOT=true bash
+```
+
+## 一键升级（探针节点）
+
+重复执行同一条探针节点安装命令即可升级。脚本会自动备份旧二进制并重启进程/服务。
 
 ## 运行验证
 
@@ -74,6 +108,15 @@ cd probe_controller
 .\build.bat
 ```
 
+探针节点（Linux amd64）：
+
+```powershell
+cd probe_node
+$env:GOOS="linux"
+$env:GOARCH="amd64"
+go build -o cloudhelper-probe-node-linux-amd64 main.go
+```
+
 管理端：
 
 ```powershell
@@ -87,4 +130,20 @@ wails build -clean -platform windows/amd64 -o probe_manager -nopackage
 - 认证与安全：`doc/login_requirements.md`
 - 模块拆分：`doc/module_split.md`
 - 前端拆分：`doc/frontend_split.md`
+
+## 探针节点数据文件
+
+- 管理端探针列表：`probe_manager/data/probe_nodes.json`（Wails 管理端运行目录下 `data/`）
+- 探针节点身份：`probe_node/data/node_identity.json`（探针节点运行目录下 `data/`）
+
+## 探针上报链路（WSS）
+
+- 探针启动后会主动连接主控 `wss://<controller>/api/probe`
+- 建链前先请求一次性 nonce：`GET /api/probe/nonce`
+- 使用 `secret` 对 nonce 做 `HMAC-SHA256`，通过 Header 鉴权：
+  - `X-Probe-Node-Id`
+  - `X-Probe-Nonce`
+  - `X-Probe-Signature`
+- 不再使用共享密钥；探针密钥由管理端创建节点时自动同步到主控（`/api/admin/probe/secret`）
+- 探针周期上报：IPv4/IPv6、CPU、内存、磁盘、Swap
 

@@ -96,3 +96,21 @@ export async function fetchServerLogs(baseURL: string, token: string, lines: num
   }
   return (await response.json()) as LogContentResponse;
 }
+
+export async function upsertProbeSecret(baseURL: string, token: string, nodeID: number, secret: string): Promise<void> {
+  const response = await fetch(`${baseURL}/api/admin/probe/secret`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      node_id: String(nodeID),
+      secret,
+    }),
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`sync probe secret failed: HTTP ${response.status} ${errBody}`);
+  }
+}

@@ -2,6 +2,7 @@ import { LogViewerTab } from "./LogViewerTab";
 import { NetworkAssistantTab } from "./NetworkAssistantTab";
 import { OverviewTab } from "./OverviewTab";
 import { PlaceholderTab } from "./PlaceholderTab";
+import { ProbeManageTab } from "./ProbeManageTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
 import type { LogSource, NetworkAssistantStatus, ReleaseInfo, TabKey, UpgradeProgress } from "../types";
 
@@ -17,6 +18,7 @@ type TabContentProps = {
   adminStatus: string;
   onPingServer: () => void;
   onCheckAdminStatus: () => void;
+  controllerBaseUrl: string;
   onRefreshPrivateKeyStatus: () => void;
   managerVersion: string;
   controllerVersion: string;
@@ -88,7 +90,7 @@ export function TabContent(props: TabContentProps) {
     case "probe-status":
       return <PlaceholderTab title="探针状态" description="该页面将用于展示探针在线状态与基础健康信息。" />;
     case "probe-manage":
-      return <PlaceholderTab title="探针管理" description="该页面将用于展示探针增删改查、分组与策略下发能力。" />;
+      return <ProbeManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
     case "link-manage":
       return <PlaceholderTab title="链路管理" description="该页面将用于展示链路拓扑、探测任务与阈值配置。" />;
     case "network-assistant":
