@@ -124,7 +124,7 @@ function App() {
             wsStatus={connection.wsStatus}
             serverStatus={connection.serverStatus}
             adminStatus={connection.adminStatus}
-            onPingServer={() => connection.pingServer(settings.baseUrl)}
+            onPingServer={() => connection.pingServer(settings.baseUrl, auth.sessionToken)}
             onCheckAdminStatus={() => connection.checkAdminStatus(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
             controllerBaseUrl={settings.baseUrl}
             onRefreshPrivateKeyStatus={auth.refreshPrivateKeyStatus}

@@ -18,13 +18,14 @@ type probeSecretUpsertRequest struct {
 }
 
 type probeNodeRecord struct {
-	NodeNo        int    `json:"node_no"`
-	NodeName      string `json:"node_name"`
-	NodeSecret    string `json:"node_secret"`
-	TargetSystem  string `json:"target_system"`
-	DirectConnect bool   `json:"direct_connect"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	NodeNo        int                 `json:"node_no"`
+	NodeName      string              `json:"node_name"`
+	NodeSecret    string              `json:"node_secret"`
+	TargetSystem  string              `json:"target_system"`
+	DirectConnect bool                `json:"direct_connect"`
+	CreatedAt     string              `json:"created_at"`
+	UpdatedAt     string              `json:"updated_at"`
+	Runtime       *probeRuntimeStatus `json:"runtime,omitempty"`
 }
 
 type probeNodesSyncRequest struct {
@@ -78,7 +79,7 @@ func AdminGetProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	Store.mu.RLock()
-	nodes := loadProbeNodesLocked()
+	nodes := withProbeRuntimeLocked(loadProbeNodesLocked())
 	Store.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -113,7 +114,7 @@ func AdminSyncProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":    true,
 		"count": len(nodes),
-		"nodes": nodes,
+		"nodes": withProbeRuntime(nodes),
 	})
 }
 
@@ -180,6 +181,26 @@ func loadProbeNodesLocked() []probeNodeRecord {
 	return normalized
 }
 
+func withProbeRuntimeLocked(nodes []probeNodeRecord) []probeNodeRecord {
+	out := make([]probeNodeRecord, 0, len(nodes))
+	for _, node := range nodes {
+		item := node
+		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+		if runtime, ok := getProbeRuntime(nodeID); ok {
+			r := runtime
+			item.Runtime = &r
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func withProbeRuntime(nodes []probeNodeRecord) []probeNodeRecord {
+	Store.mu.RLock()
+	defer Store.mu.RUnlock()
+	return withProbeRuntimeLocked(nodes)
+}
+
 func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string]string) {
 	nodes := make([]probeNodeRecord, 0, len(items))
 	secrets := make(map[string]string)
@@ -197,6 +218,7 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		node := item
 		node.NodeName = strings.TrimSpace(node.NodeName)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
+		node.Runtime = nil
 		node.TargetSystem = strings.ToLower(strings.TrimSpace(node.TargetSystem))
 		if node.TargetSystem != "windows" {
 			node.TargetSystem = "linux"

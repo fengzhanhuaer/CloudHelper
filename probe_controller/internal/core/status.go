@@ -3,6 +3,9 @@ package core
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudhelper/probe_controller/internal/dashboard"
@@ -30,6 +33,60 @@ func dashboardStatusHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusPayload())
 }
 
+func dashboardProbesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/dashboard/probes" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	items := publicDashboardProbeMetrics()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"items": items,
+	})
+}
+
+type dashboardPublicProbeItem struct {
+	NodeName string             `json:"node_name"`
+	Online   bool               `json:"online"`
+	LastSeen string             `json:"last_seen"`
+	System   probeSystemMetrics `json:"system"`
+}
+
+func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
+	// Security note: /dashboard/* is public. Do not expose node_id/ip/version here.
+	runtimes := listProbeRuntimes()
+	nameMap := map[string]string{}
+	if Store != nil {
+		Store.mu.RLock()
+		for _, node := range loadProbeNodesLocked() {
+			nameMap[normalizeProbeNodeID(strconv.Itoa(node.NodeNo))] = strings.TrimSpace(node.NodeName)
+		}
+		Store.mu.RUnlock()
+	}
+
+	out := make([]dashboardPublicProbeItem, 0, len(runtimes))
+	for _, rt := range runtimes {
+		nodeName := strings.TrimSpace(nameMap[normalizeProbeNodeID(rt.NodeID)])
+		out = append(out, dashboardPublicProbeItem{
+			NodeName: nodeName,
+			Online:   rt.Online,
+			LastSeen: strings.TrimSpace(rt.LastSeen),
+			System:   rt.System,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Online == out[j].Online {
+			return i < j
+		}
+		return out[i].Online && !out[j].Online
+	})
+	return out
+}
+
 func rootHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -54,9 +111,7 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 
 func statusPayload() map[string]interface{} {
 	return map[string]interface{}{
-		"message": "pong",
-		"service": "CloudHelper Probe Controller",
-		"uptime":  int(time.Since(serverStartTime).Seconds()),
+		"uptime": int(time.Since(serverStartTime).Seconds()),
 	}
 }
 

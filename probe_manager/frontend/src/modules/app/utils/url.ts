@@ -2,20 +2,20 @@ export function normalizeBaseUrl(input: string): string {
   return input.trim().replace(/\/+$/, "");
 }
 
-export function buildAdminStatusWSURL(inputBaseURL: string, token: string): string {
+export function buildAdminStatusWSURL(inputBaseURL: string): string {
   const base = normalizeBaseUrl(inputBaseURL);
   if (!base) {
     return "";
   }
 
-  let wsBase = base;
+  let wsBase = "";
   if (base.startsWith("https://")) {
     wsBase = `wss://${base.slice("https://".length)}`;
-  } else if (base.startsWith("http://")) {
-    wsBase = `ws://${base.slice("http://".length)}`;
-  } else if (!base.startsWith("ws://") && !base.startsWith("wss://")) {
-    wsBase = `ws://${base}`;
+  } else if (base.startsWith("wss://")) {
+    wsBase = base;
+  } else {
+    return "";
   }
 
-  return `${wsBase}/api/admin/ws/status?token=${encodeURIComponent(token)}`;
+  return `${wsBase}/api/admin/ws`;
 }

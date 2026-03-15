@@ -71,22 +71,11 @@ const pageHTML = `<!DOCTYPE html>
             width: 18px;
             height: 18px;
         }
-        .status-indicator {
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            background-color: var(--error);
-            box-shadow: 0 0 10px var(--error);
-            transition: all 0.5s ease;
-        }
-        .status-indicator.online {
-            background-color: var(--success);
-            box-shadow: 0 0 12px var(--success);
-        }
         .info-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 20px;
+            margin-bottom: 20px;
         }
         .info-card {
             background: rgba(0, 0, 0, 0.25);
@@ -109,6 +98,67 @@ const pageHTML = `<!DOCTYPE html>
             font-family: 'Courier New', Courier, monospace;
             color: #fff;
         }
+        .probe-panel-title {
+            font-size: 14px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+        .probe-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 320px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+        .probe-item {
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 10px 12px;
+        }
+        .probe-item-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            gap: 8px;
+        }
+        .probe-node-id {
+            font-size: 14px;
+            color: #ffffff;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .probe-online {
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+        }
+        .probe-online.yes {
+            color: #7fe0a0;
+            border-color: rgba(46, 160, 67, 0.5);
+        }
+        .probe-online.no {
+            color: #ff9b94;
+            border-color: rgba(248, 81, 73, 0.5);
+        }
+        .probe-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(120px, 1fr));
+            gap: 4px 12px;
+            font-size: 12px;
+            color: var(--text-primary);
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .probe-last-seen {
+            margin-top: 6px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-family: 'Courier New', Courier, monospace;
+        }
     </style>
 </head>
 <body>
@@ -122,30 +172,23 @@ const pageHTML = `<!DOCTYPE html>
                         <path d="M11 5L13 19" stroke="#4ad08f" stroke-width="2" stroke-linecap="round"/>
                     </svg>
                 </div>
-                <div id="connection-status" class="status-indicator"></div>
                 CloudHelper Probe Controller
             </h1>
             <div class="info-grid">
                 <div class="info-card">
-                    <div class="info-label">Service Status</div>
-                    <div class="info-value" id="service-status" style="color: var(--error);">Checking</div>
-                </div>
-                <div class="info-card">
                     <div class="info-label">Uptime</div>
                     <div class="info-value" id="uptime">--:--:--</div>
                 </div>
-                <div class="info-card">
-                    <div class="info-label">Latency</div>
-                    <div class="info-value" id="ping-latency">-- ms</div>
-                </div>
+            </div>
+            <div class="probe-panel-title">Probe Runtime Metrics (Public, Desensitized)</div>
+            <div id="probe-list" class="probe-list">
+                <div class="probe-item">No probe data</div>
             </div>
         </div>
     </div>
     <script>
-        const statusIndicator = document.getElementById('connection-status');
-        const serviceStatus = document.getElementById('service-status');
-        const pingLatency = document.getElementById('ping-latency');
         const uptimeEl = document.getElementById('uptime');
+        const probeListEl = document.getElementById('probe-list');
 
         function formatUptime(seconds) {
             const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
@@ -155,26 +198,63 @@ const pageHTML = `<!DOCTYPE html>
         }
 
         async function checkStatus() {
-            const startPing = performance.now();
             try {
                 const res = await fetch('/dashboard/status');
                 if (!res.ok) throw new Error('Not OK');
                 const data = await res.json();
-                const latency = Math.round(performance.now() - startPing);
-                statusIndicator.className = 'status-indicator online';
-                serviceStatus.innerText = 'Online';
-                serviceStatus.style.color = 'var(--success)';
-                pingLatency.innerText = latency + " ms";
                 uptimeEl.innerText = formatUptime(data.uptime);
             } catch (err) {
-                statusIndicator.className = 'status-indicator';
-                serviceStatus.innerText = 'Offline';
-                serviceStatus.style.color = 'var(--error)';
+                // keep last known uptime
+            }
+        }
+
+        function pct(v) {
+            if (typeof v !== 'number' || Number.isNaN(v)) return '--';
+            return v.toFixed(1) + '%';
+        }
+
+        function renderProbes(items) {
+            if (!Array.isArray(items) || items.length === 0) {
+                probeListEl.innerHTML = '<div class="probe-item">No probe data</div>';
+                return;
+            }
+            probeListEl.innerHTML = items.map((item, index) => {
+                const sys = item.system || {};
+                const onlineClass = item.online ? 'yes' : 'no';
+                const onlineText = item.online ? 'online' : 'offline';
+                const name = (item.node_name && String(item.node_name).trim()) ? String(item.node_name).trim() : ('probe #' + String(index + 1));
+                const lastSeen = item.last_seen ? String(item.last_seen) : '-';
+                return '<div class="probe-item">'
+                    + '<div class="probe-item-head">'
+                    + '<div class="probe-node-id">' + name + '</div>'
+                    + '<div class="probe-online ' + onlineClass + '">' + onlineText + '</div>'
+                    + '</div>'
+                    + '<div class="probe-metrics">'
+                    + '<div>CPU: ' + pct(sys.cpu_percent) + '</div>'
+                    + '<div>RAM: ' + pct(sys.memory_used_percent) + '</div>'
+                    + '<div>SWAP: ' + pct(sys.swap_used_percent) + '</div>'
+                    + '<div>DISK: ' + pct(sys.disk_used_percent) + '</div>'
+                    + '</div>'
+                    + '<div class="probe-last-seen">Last Seen: ' + lastSeen + '</div>'
+                    + '</div>';
+            }).join('');
+        }
+
+        async function checkProbes() {
+            try {
+                const res = await fetch('/dashboard/probes');
+                if (!res.ok) throw new Error('Not OK');
+                const data = await res.json();
+                renderProbes(data.items || []);
+            } catch (err) {
+                // keep old view
             }
         }
 
         checkStatus();
+        checkProbes();
         setInterval(checkStatus, 2000);
+        setInterval(checkProbes, 5000);
     </script>
 </body>
 </html>`

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchAdminStatus, fetchDashboardStatus } from "../services/controller-api";
+import { fetchAdminStatus } from "../services/controller-api";
 import { buildAdminStatusWSURL, normalizeBaseUrl } from "../utils/url";
 import type { StatusWSMessage } from "../types";
 
@@ -29,9 +29,9 @@ export function useConnectionFlow(baseUrl: string, sessionToken: string) {
       return;
     }
 
-    const wsURL = buildAdminStatusWSURL(baseUrl, sessionToken);
+    const wsURL = buildAdminStatusWSURL(baseUrl);
     if (!wsURL) {
-      setWsStatus("WebSocket URL 无效");
+      setWsStatus("WebSocket URL 无效（仅支持 HTTPS/WSS）");
       return;
     }
 
@@ -39,14 +39,26 @@ export function useConnectionFlow(baseUrl: string, sessionToken: string) {
     const ws = new WebSocket(wsURL);
     wsConnRef.current = ws;
 
-    ws.onopen = () => setWsStatus("WebSocket 已连接");
+    ws.onopen = () => {
+      setWsStatus("WebSocket 已连接，认证中...");
+      ws.send(JSON.stringify({ id: "status-auth", action: "auth.session", payload: { token: sessionToken } }));
+    };
     ws.onerror = () => setWsStatus("WebSocket 连接异常");
     ws.onclose = () => setWsStatus("WebSocket 已断开");
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string) as StatusWSMessage;
-        if ((data.type ?? "status") !== "status") {
+        if ((data as { id?: string }).id === "status-auth") {
+          if ((data as { ok?: boolean }).ok) {
+            setWsStatus("WebSocket 已连接并认证");
+          } else {
+            setWsStatus("WebSocket 认证失败");
+            ws.close();
+          }
+          return;
+        }
+        if ((data.type ?? "") !== "status") {
           return;
         }
         const uptime = typeof data.uptime === "number" ? `，运行 ${data.uptime}s` : "";
@@ -65,17 +77,22 @@ export function useConnectionFlow(baseUrl: string, sessionToken: string) {
     };
   }, [baseUrl, sessionToken]);
 
-  async function pingServer(baseUrlInput: string) {
+  async function pingServer(baseUrlInput: string, token: string) {
     const base = normalizeBaseUrl(baseUrlInput);
     if (!base) {
       setServerStatus("Controller URL is required");
       return;
     }
+    if (!token) {
+      setServerStatus("未登录，无法访问管理接口");
+      return;
+    }
 
     try {
-      const data = await fetchDashboardStatus(base);
+      const data = await fetchAdminStatus(base, token);
       const uptime = typeof data.uptime === "number" ? `，运行 ${data.uptime}s` : "";
-      setServerStatus(`主控在线：${data.message} / ${data.service}${uptime}`);
+      const serverTime = data.server_time ? `，时间 ${data.server_time}` : "";
+      setServerStatus(`主控在线：status=${data.status}${uptime}${serverTime}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setServerStatus(`主控状态获取失败：${msg}`);

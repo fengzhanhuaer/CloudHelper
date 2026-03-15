@@ -110,6 +110,7 @@ func runProbeUpgrade(cmd probeControlMessage, nonceURL string, identity nodeIden
 
 func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase, nonceURL string, identity nodeIdentity) (releaseInfo, error) {
 	if mode == "proxy" {
+		// Security boundary: probe can only use /api/probe/* endpoints.
 		u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/github/latest?project=" + url.QueryEscape(repo)
 		body, err := probeAuthedGet(ctx, u, nonceURL, identity)
 		if err != nil {
@@ -176,6 +177,7 @@ func pickProbeNodeAsset(assets []releaseAsset) (releaseAsset, error) {
 func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase, nonceURL string, identity nodeIdentity, output string) error {
 	var reader io.ReadCloser
 	if mode == "proxy" {
+		// Security boundary: probe can only use /api/probe/* endpoints.
 		u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/download?url=" + url.QueryEscape(assetURL)
 		body, err := probeAuthedGet(ctx, u, nonceURL, identity)
 		if err != nil {

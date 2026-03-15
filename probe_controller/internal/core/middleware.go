@@ -5,6 +5,26 @@ import (
 	"strings"
 )
 
+func enforceProbeScopeMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hasProbeHeaders := strings.TrimSpace(r.Header.Get("X-Probe-Node-Id")) != "" ||
+			strings.TrimSpace(r.Header.Get("X-Probe-Nonce")) != "" ||
+			strings.TrimSpace(r.Header.Get("X-Probe-Signature")) != ""
+
+		if hasProbeHeaders {
+			path := strings.TrimSpace(r.URL.Path)
+			if path != "/api/probe" && !strings.HasPrefix(path, "/api/probe/") {
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": "probe identity is restricted to /api/probe/* endpoints",
+				})
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

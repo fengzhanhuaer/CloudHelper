@@ -20,9 +20,10 @@ func Run() {
 	}
 
 	mux := NewMux()
+	handler := enforceProbeScopeMiddleware(mux)
 
 	log.Println("CloudHelper Probe Controller is running at http://" + listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
+	if err := http.ListenAndServe(listenAddr, handler); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -45,6 +46,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/admin/probe/nodes/sync", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminSyncProbeNodesHandler))))
 	mux.HandleFunc("/api/admin/probe/secret", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminUpsertProbeSecretHandler))))
 	mux.HandleFunc("/api/admin/tunnel/nodes", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminTunnelNodesHandler))))
+	mux.HandleFunc("/api/admin/ws", AdminWSHandler)
 	mux.HandleFunc("/api/admin/ws/status", AdminStatusWSHandler)
 	mux.HandleFunc("/api/probe/nonce", ProbeNonceHandler)
 	mux.HandleFunc("/api/probe/proxy/github/latest", ProbeProxyGitHubLatestHandler)
@@ -52,6 +54,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/probe", ProbeWSHandler)
 	mux.HandleFunc("/api/ws/tunnel/cloudserver", NetworkAssistantTunnelWSHandler)
 	mux.HandleFunc("/dashboard/status", dashboardStatusHandler)
+	mux.HandleFunc("/dashboard/probes", dashboardProbesHandler)
 	mux.HandleFunc("/dashboard", dashboardHandler)
 	mux.HandleFunc("/", rootHandler)
 	return mux

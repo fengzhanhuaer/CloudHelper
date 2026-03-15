@@ -45,6 +45,7 @@ func registerProbeSession(nodeID string, conn *websocket.Conn) *probeSession {
 	probeSessions.mu.Lock()
 	probeSessions.data[nodeID] = s
 	probeSessions.mu.Unlock()
+	setProbeRuntimeOnline(nodeID, true)
 	return s
 }
 
@@ -56,6 +57,7 @@ func unregisterProbeSession(nodeID string, session *probeSession) {
 		return
 	}
 	delete(probeSessions.data, nodeID)
+	setProbeRuntimeOnline(nodeID, false)
 }
 
 func getProbeSession(nodeID string) (*probeSession, bool) {

@@ -17,6 +17,17 @@ type ProbeNodeItem = {
   direct_connect: boolean;
   created_at: string;
   updated_at: string;
+  runtime?: {
+    node_id?: string;
+    online?: boolean;
+    last_seen?: string;
+    system?: {
+      cpu_percent?: number;
+      memory_used_percent?: number;
+      swap_used_percent?: number;
+      disk_used_percent?: number;
+    };
+  };
 };
 
 export function ProbeManageTab(props: ProbeManageTabProps) {
@@ -221,6 +232,9 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                   <div className="probe-node-meta">节点 Secret：{node.node_secret}</div>
                   <div className="probe-node-meta">创建时间：{formatTime(node.created_at)}</div>
                   <div className="probe-node-meta">更新时间：{formatTime(node.updated_at)}</div>
+                  <div className="probe-node-meta">在线状态：{node.runtime?.online ? "在线" : "离线"}</div>
+                  <div className="probe-node-meta">CPU：{formatPercent(node.runtime?.system?.cpu_percent)} / RAM：{formatPercent(node.runtime?.system?.memory_used_percent)}</div>
+                  <div className="probe-node-meta">SWAP：{formatPercent(node.runtime?.system?.swap_used_percent)} / 硬盘：{formatPercent(node.runtime?.system?.disk_used_percent)}</div>
 
                   <div className="row" style={{ marginTop: 10, marginBottom: 10 }}>
                     <label>目标系统</label>
@@ -273,6 +287,13 @@ function formatTime(isoTime: string): string {
     return "-";
   }
   return dt.toLocaleString();
+}
+
+function formatPercent(value: number | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${value.toFixed(1)}%`;
 }
 
 function sanitizeControllerAddress(rawAddress: string): string {

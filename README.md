@@ -79,8 +79,9 @@ sudo journalctl -u probe_controller -f
 
 - 认证方式：Challenge-Response（Ed25519 私钥签名 / 公钥验签）
 - 服务端启动自动生成文件：`root_ca.crt.pem`、`root_ca.key.pem`、`admin_public_key.pem`、`admin_key.crt.pem`、`initial_admin_private_key.pem`
-- 公开路由：`GET /dashboard`、`GET /dashboard/status`
+- 公开路由：`GET /dashboard`、`GET /dashboard/status`、`GET /dashboard/probes`
 - 受保护路由示例：`GET /api/ping`、`GET /api/admin/status`
+- 重点：`/dashboard/*` 仅允许公开脱敏指标；默认禁止公开节点号、IP、版本、密钥及其他服务端状态，除非有明确需求评审。
 
 ## 管理端升级（新增）
 
@@ -93,6 +94,12 @@ sudo journalctl -u probe_controller -f
 
 - `POST /api/admin/proxy/github/latest`
 - `GET /api/admin/proxy/download?url=...`
+
+管理端与主控通讯约束：
+
+- 管理端已改为通过 WSS 与主控通信（`/api/admin/ws`、`/api/admin/ws/status`）。
+- 非 HTTPS/WSS 地址会被拒绝（不允许明文 WS/HTTP 作为管理通信通道）。
+- 认证顺序：先建立 WSS 连接，再在连接内发送 `auth.session` 完成鉴权。
 
 注意：
 
@@ -144,6 +151,8 @@ wails build -clean -platform windows/amd64 -o probe_manager -nopackage
   - `X-Probe-Node-Id`
   - `X-Probe-Nonce`
   - `X-Probe-Signature`
+- 安全约束（强制）：探针 WSS 会话仅允许访问 `/api/probe/*` 探针接口；严禁访问 `/api/admin/*` 私有管理接口，除非经过明确评审和需求变更。
+- 主控主动限制：若请求携带 `X-Probe-Node-Id / X-Probe-Nonce / X-Probe-Signature` 任一探针鉴权头，且目标不是 `/api/probe/*`，主控直接拒绝（`403`）。
 - 不再使用共享密钥；探针密钥由管理端创建节点时自动同步到主控（`/api/admin/probe/secret`）
 - 探针周期上报：IPv4/IPv6、CPU、内存、磁盘、Swap
 

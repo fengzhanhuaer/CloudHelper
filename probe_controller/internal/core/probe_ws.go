@@ -23,24 +23,13 @@ const (
 )
 
 type probeReportMessage struct {
-	Type   string   `json:"type"`
-	NodeID string   `json:"node_id"`
-	IPv4   []string `json:"ipv4,omitempty"`
-	IPv6   []string `json:"ipv6,omitempty"`
-	System struct {
-		CPUPercent        float64 `json:"cpu_percent"`
-		MemoryTotalBytes  uint64  `json:"memory_total_bytes"`
-		MemoryUsedBytes   uint64  `json:"memory_used_bytes"`
-		MemoryUsedPercent float64 `json:"memory_used_percent"`
-		SwapTotalBytes    uint64  `json:"swap_total_bytes"`
-		SwapUsedBytes     uint64  `json:"swap_used_bytes"`
-		SwapUsedPercent   float64 `json:"swap_used_percent"`
-		DiskTotalBytes    uint64  `json:"disk_total_bytes"`
-		DiskUsedBytes     uint64  `json:"disk_used_bytes"`
-		DiskUsedPercent   float64 `json:"disk_used_percent"`
-	} `json:"system"`
-	Version   string `json:"version,omitempty"`
-	Timestamp string `json:"timestamp,omitempty"`
+	Type      string             `json:"type"`
+	NodeID    string             `json:"node_id"`
+	IPv4      []string           `json:"ipv4,omitempty"`
+	IPv6      []string           `json:"ipv6,omitempty"`
+	System    probeSystemMetrics `json:"system"`
+	Version   string             `json:"version,omitempty"`
+	Timestamp string             `json:"timestamp,omitempty"`
 }
 
 type probeAckMessage struct {
@@ -178,6 +167,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			msg.System.SwapUsedPercent,
 			strings.TrimSpace(msg.Version),
 		)
+		updateProbeRuntimeReport(reportedNodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version)
 
 		_ = session.writeJSON(probeAckMessage{
 			Type:      "ack",
