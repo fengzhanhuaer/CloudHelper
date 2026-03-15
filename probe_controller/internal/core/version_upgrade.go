@@ -25,6 +25,8 @@ const (
 	defaultReleaseRepo          = "fengzhanhuaer/CloudHelper"
 )
 
+var BuildVersion = "dev"
+
 type adminVersionResponse struct {
 	CurrentVersion   string `json:"current_version"`
 	LatestVersion    string `json:"latest_version,omitempty"`
@@ -232,6 +234,10 @@ func currentControllerVersion() string {
 		if v := strings.TrimSpace(bi.Main.Version); v != "" && v != "(devel)" {
 			return v
 		}
+	}
+
+	if v := strings.TrimSpace(BuildVersion); v != "" && v != "(devel)" && !strings.EqualFold(v, "dev") {
+		return v
 	}
 	return "dev"
 }

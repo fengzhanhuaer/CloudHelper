@@ -60,13 +60,13 @@ jobs:
         shell: bash
         run: |
           cd probe_controller
-          GOOS=linux GOARCH=amd64 go build -o cloudhelper-probe-controller-linux-amd64 main.go
+          GOOS=linux GOARCH=amd64 go build -ldflags "-X github.com/cloudhelper/probe_controller/internal/core.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-controller-linux-amd64 main.go
 
       - name: Build Probe Manager (Windows amd64)
         shell: bash
         run: |
           cd probe_manager
-          wails build -platform windows/amd64
+          wails build -platform windows/amd64 -ldflags "-X main.BuildVersion=v${NEW_VERSION}"
           mv build/bin/probe_manager.exe build/bin/cloudhelper-probe-manager-windows-amd64.exe
 
       - name: Create Release

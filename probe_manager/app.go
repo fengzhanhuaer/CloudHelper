@@ -14,6 +14,8 @@ import (
 	"strings"
 )
 
+var BuildVersion = "dev"
+
 // App struct
 type App struct {
 	ctx context.Context
@@ -60,6 +62,10 @@ func (a *App) GetManagerVersion() string {
 		if v := strings.TrimSpace(bi.Main.Version); v != "" && v != "(devel)" {
 			return v
 		}
+	}
+
+	if v := strings.TrimSpace(BuildVersion); v != "" && v != "(devel)" && !strings.EqualFold(v, "dev") {
+		return v
 	}
 
 	return "dev"
