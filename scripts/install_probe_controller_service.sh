@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 RELEASE_REPO="${RELEASE_REPO:-fengzhanhuaer/CloudHelper}"
@@ -124,10 +124,22 @@ resolve_platform() {
   fi
 
   case "${arch}" in
-    x86_64) TARGET_ARCH="amd64" ;;
-    aarch64|arm64) TARGET_ARCH="arm64" ;;
-    armv7l|armv7) TARGET_ARCH="armv7" ;;
-    *) TARGET_ARCH="${arch}" ;;
+    x86_64)
+      TARGET_ARCH="amd64"
+      TARGET_ARCH_PATTERN='amd64|x86_64'
+      ;;
+    aarch64|arm64)
+      TARGET_ARCH="arm64"
+      TARGET_ARCH_PATTERN='arm64|aarch64'
+      ;;
+    armv7l|armv7)
+      TARGET_ARCH="armv7"
+      TARGET_ARCH_PATTERN='armv7|armv7l'
+      ;;
+    *)
+      TARGET_ARCH="${arch}"
+      TARGET_ARCH_PATTERN="${arch}"
+      ;;
   esac
 
   TARGET_OS="linux"
@@ -136,31 +148,36 @@ resolve_platform() {
 pick_asset_url() {
   local release_json="$1"
   local url=""
+  local controller_pattern='probe[-_]?controller'
+  local known_arch_pattern='amd64|x86_64|arm64|aarch64|armv7|armv7l|386|i386|x86|ppc64le|s390x|riscv64'
 
   if [[ -n "${ASSET_NAME}" ]]; then
     url="$(echo "${release_json}" | jq -r --arg name "${ASSET_NAME}" '.assets[] | select(.name==$name) | .browser_download_url' | head -n1)"
   else
-    url="$(echo "${release_json}" | jq -r --arg os "${TARGET_OS}" --arg arch "${TARGET_ARCH}" '
+    url="$(echo "${release_json}" | jq -r --arg os "${TARGET_OS}" --arg arch "${TARGET_ARCH_PATTERN}" --arg p "${controller_pattern}" '
       .assets[]
-      | select(.name | test("probe_controller"; "i"))
+      | select(.name | test($p; "i"))
       | select(.name | test($os; "i"))
       | select(.name | test($arch; "i"))
       | .browser_download_url
     ' | head -n1)"
 
     if [[ -z "${url}" ]]; then
-      url="$(echo "${release_json}" | jq -r '
+      url="$(echo "${release_json}" | jq -r --arg os "${TARGET_OS}" --arg p "${controller_pattern}" --arg known_arch "${known_arch_pattern}" '
         .assets[]
-        | select(.name | test("probe_controller"; "i"))
-        | select((.name | test("windows|\\.exe"; "i")) | not)
+        | select(.name | test($p; "i"))
+        | select(.name | test($os; "i"))
+        | select((.name | test($known_arch; "i")) | not)
         | .browser_download_url
       ' | head -n1)"
     fi
 
     if [[ -z "${url}" ]]; then
-      url="$(echo "${release_json}" | jq -r '
+      url="$(echo "${release_json}" | jq -r --arg p "${controller_pattern}" --arg known_arch "${known_arch_pattern}" '
         .assets[]
-        | select(.name | test("probe_controller"; "i"))
+        | select(.name | test($p; "i"))
+        | select((.name | test($known_arch; "i")) | not)
+        | select((.name | test("windows|\\.exe"; "i")) | not)
         | .browser_download_url
       ' | head -n1)"
     fi
@@ -191,10 +208,15 @@ extract_binary_from_asset() {
       ;;
   esac
 
-  binary_candidate="$(find "${extract_dir}" -type f \( -name 'probe_controller' -o -name 'probe_controller_*' \) | grep -E -v '\.exe$' | head -n1 || true)"
+  binary_candidate="$(find "${extract_dir}" -type f \( \
+      -name 'probe_controller' -o -name 'probe_controller_*' -o \
+      -name 'probe-controller' -o -name 'probe-controller-*' -o \
+      -name '*probe_controller*' -o -name '*probe-controller*' \
+    \) | grep -E -v '\.exe$' | head -n1 || true)"
 
   if [[ -z "${binary_candidate}" ]]; then
-    if [[ "${asset_name}" == "probe_controller" ]] || [[ "${asset_name}" == probe_controller_* ]]; then
+    local lower_asset_name="${asset_name,,}"
+    if [[ "${lower_asset_name}" == *probe_controller* ]] || [[ "${lower_asset_name}" == *probe-controller* ]]; then
       if [[ "${asset_name}" != *.exe ]]; then
         binary_candidate="${extract_dir}/${asset_name}"
       fi
@@ -232,7 +254,7 @@ download_and_install() {
   asset_url="$(pick_asset_url "${release_json}")"
   [[ -n "${asset_url}" ]] || {
     echo "${release_json}" | jq -r '.assets[].name' >&2 || true
-    die "failed to find a matching probe_controller release asset"
+    die "failed to find a matching probe_controller release asset for ${TARGET_OS}/${TARGET_ARCH}; set ASSET_NAME to override"
   }
 
   asset_name="$(echo "${release_json}" | jq -r --arg url "${asset_url}" '.assets[] | select(.browser_download_url==$url) | .name' | head -n1)"
