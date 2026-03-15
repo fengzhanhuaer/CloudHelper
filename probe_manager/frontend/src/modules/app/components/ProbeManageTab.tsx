@@ -229,15 +229,12 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               {nodes.map((node) => (
                 <div className="probe-node-card" key={node.node_no}>
                   <div className="probe-node-title">{node.node_name}</div>
-                  <div className="probe-node-meta">节点号：{node.node_no}</div>
-                  <div className="probe-node-meta">节点 Secret：{node.node_secret}</div>
-                  <div className="probe-node-meta">创建时间：{formatTime(node.created_at)}</div>
-                  <div className="probe-node-meta">更新时间：{formatTime(node.updated_at)}</div>
+                  <div className="probe-node-meta">节点号：{node.node_no}　创建：{formatTime(node.created_at)}　更新：{formatTime(node.updated_at)}</div>
 
-                  <div className="row" style={{ marginTop: 10, marginBottom: 10 }}>
-                    <label>目标系统</label>
+                  <div className="probe-node-controls-row">
+                    <label className="probe-control-label">目标系统</label>
                     <select
-                      className="input"
+                      className="input probe-system-select"
                       value={node.target_system}
                       onChange={(event) => void updateNode(node.node_no, { target_system: event.target.value as ProbeTargetSystem })}
                       disabled={isLoading}
@@ -245,23 +242,23 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                       <option value="linux">Linux</option>
                       <option value="windows">Windows</option>
                     </select>
-                  </div>
 
-                  <label className="probe-direct-toggle">
+                  <label className="probe-direct-toggle compact">
                     <input
                       type="checkbox"
                       checked={node.direct_connect}
                       onChange={(event) => void updateNode(node.node_no, { direct_connect: event.target.checked })}
                       disabled={isLoading}
                     />
-                    是否直连（关闭后通过主控下载/安装/升级，并携带 Secret）
+                    直连
                   </label>
 
-                  <div className="content-actions">
-                    <button className="btn" onClick={() => void copyInstallCommand(node)} disabled={isLoading}>复制安装命令</button>
+                  <div className="content-actions inline">
+                    <button className="btn" onClick={() => void copyInstallCommand(node)} disabled={isLoading}>安装</button>
                     <button className="btn" onClick={() => void upgradeOne(node)} disabled={isLoading || isUpgradingAll || upgradingNodeNos.includes(node.node_no)}>
-                      {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级该探针"}
+                      {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级"}
                     </button>
+                  </div>
                   </div>
                 </div>
               ))}

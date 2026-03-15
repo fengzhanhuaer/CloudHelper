@@ -302,6 +302,33 @@
     font-size: 13px;
 }
 
+.probe-direct-toggle.compact {
+    margin-top: 0;
+    white-space: nowrap;
+}
+
+.probe-node-controls-row {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.probe-control-label {
+    color: #d6e4ff;
+    font-size: 14px;
+    white-space: nowrap;
+}
+
+.probe-system-select {
+    width: 150px;
+}
+
+.content-actions.inline {
+    margin-top: 0;
+}
+
 @media (max-width: 900px) {
     .app-shell {
         grid-template-columns: 1fr;
