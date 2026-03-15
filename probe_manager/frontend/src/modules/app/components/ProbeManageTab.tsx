@@ -301,8 +301,8 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                   <div className="probe-node-meta">节点号：{item.node_no}</div>
                   <div className="probe-node-meta">在线状态：{item.runtime?.online ? "在线" : "离线"}</div>
                   <div className="probe-node-meta">最后上报：{formatTime(item.runtime?.last_seen || "")}</div>
-                  <div className="probe-node-meta">CPU：{formatPercent(item.runtime?.system?.cpu_percent)} / RAM：{formatPercent(item.runtime?.system?.memory_used_percent)}</div>
-                  <div className="probe-node-meta">SWAP：{formatPercent(item.runtime?.system?.swap_used_percent)} / 硬盘：{formatPercent(item.runtime?.system?.disk_used_percent)}</div>
+                  <div className="probe-node-meta">CPU：{item.runtime?.online ? formatPercent(item.runtime?.system?.cpu_percent) : "-"} / RAM：{item.runtime?.online ? formatPercent(item.runtime?.system?.memory_used_percent) : "-"}</div>
+                  <div className="probe-node-meta">SWAP：{item.runtime?.online ? formatPercent(item.runtime?.system?.swap_used_percent) : "-"} / 硬盘：{item.runtime?.online ? formatPercent(item.runtime?.system?.disk_used_percent) : "-"}</div>
                 </div>
               ))}
             </div>

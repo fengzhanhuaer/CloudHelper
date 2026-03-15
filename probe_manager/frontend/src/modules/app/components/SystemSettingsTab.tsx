@@ -53,9 +53,7 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
       <h2>系统设置</h2>
 
       <div className="identity-card">
-        <div>管理程序版本：{props.managerVersion}</div>
-        <div>主控当前版本：{props.controllerVersion}</div>
-        <div>主控最新版本：{props.controllerLatestVersion || "未知"}</div>
+        <div>管理程序版本：{props.managerVersion}　|　主控当前版本：{props.controllerVersion}　|　主控最新版本：{props.controllerLatestVersion || "未知"}</div>
       </div>
 
       <div className="content-actions">
@@ -73,17 +71,6 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
         <ProgressLine title="主控升级进度" progress={props.controllerUpgradeProgress} />
       )}
 
-      <div className="identity-card" style={{ marginTop: 14 }}>
-        <div>管理端升级项目（GitHub）：</div>
-        <input
-          className="input"
-          value={props.upgradeProject}
-          onChange={(e) => props.onUpgradeProjectChange(e.target.value)}
-          placeholder="owner/repo 或 https://github.com/owner/repo"
-        />
-        <div>提示：代理模式会通过已鉴权的 `/api/admin/proxy/*` 接口进行。</div>
-      </div>
-
       <div className="content-actions">
         <button className="btn" onClick={props.onCheckManagerReleaseDirect} disabled={props.isCheckingDirect || props.isUpgradingManager || props.isUpgradingController}>
           {props.isCheckingDirect ? "直连检查中..." : "直连检查"}
@@ -91,9 +78,6 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
         <button className="btn" onClick={props.onUpgradeManagerDirect} disabled={props.isUpgradingManager || props.isUpgradingController}>
           {props.isUpgradingManager ? "升级中..." : "直连升级"}
         </button>
-      </div>
-
-      <div className="content-actions">
         <button className="btn" onClick={props.onCheckManagerReleaseProxy} disabled={props.isCheckingProxy || props.isUpgradingManager || props.isUpgradingController || !props.sessionToken}>
           {props.isCheckingProxy ? "代理检查中..." : "代理检查"}
         </button>

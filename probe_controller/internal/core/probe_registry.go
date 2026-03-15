@@ -252,6 +252,18 @@ func normalizeProbeNodeID(raw string) string {
 	if v == "" {
 		return ""
 	}
+
+	lower := strings.ToLower(v)
+	if strings.HasPrefix(lower, "node-") || strings.HasPrefix(lower, "node_") {
+		suffix := strings.TrimPrefix(strings.TrimPrefix(lower, "node-"), "node_")
+		suffix = strings.TrimSpace(suffix)
+		if suffix != "" {
+			if n, err := strconv.Atoi(suffix); err == nil && n > 0 {
+				return strconv.Itoa(n)
+			}
+		}
+	}
+
 	if n, err := strconv.Atoi(v); err == nil && n > 0 {
 		return strconv.Itoa(n)
 	}
