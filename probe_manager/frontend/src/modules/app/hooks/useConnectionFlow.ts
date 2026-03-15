@@ -3,6 +3,16 @@ import { fetchAdminStatus, fetchDashboardStatus } from "../services/controller-a
 import { buildAdminStatusWSURL, normalizeBaseUrl } from "../utils/url";
 import type { StatusWSMessage } from "../types";
 
+type AdminStatusResponse = { status: string; uptime: number; server_time: string };
+
+function isUnauthorizedError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes("401") || message.includes("invalid or expired session token");
+}
+
 export function useConnectionFlow(baseUrl: string, sessionToken: string) {
   const [serverStatus, setServerStatus] = useState("");
   const [wsStatus, setWsStatus] = useState("");
@@ -72,7 +82,7 @@ export function useConnectionFlow(baseUrl: string, sessionToken: string) {
     }
   }
 
-  async function checkAdminStatus(baseUrlInput: string, token: string) {
+  async function checkAdminStatus(baseUrlInput: string, token: string, reauthenticate?: () => Promise<string>) {
     const base = normalizeBaseUrl(baseUrlInput);
     if (!base) {
       setAdminStatus("Controller URL is required");
@@ -84,8 +94,23 @@ export function useConnectionFlow(baseUrl: string, sessionToken: string) {
     }
 
     try {
-      const data = await fetchAdminStatus(base, token);
-      setAdminStatus(`管理接口正常：status=${data.status}, uptime=${data.uptime}s`);
+      let activeToken = token;
+      let reloginUsed = false;
+      let data: AdminStatusResponse;
+      try {
+        data = await fetchAdminStatus(base, activeToken);
+      } catch (error) {
+        if (!reauthenticate || !isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        setAdminStatus("会话已过期，正在自动重新登录...");
+        activeToken = await reauthenticate();
+        reloginUsed = true;
+        data = await fetchAdminStatus(base, activeToken);
+      }
+
+      setAdminStatus(`${reloginUsed ? "已自动重新登录，" : ""}管理接口正常：status=${data.status}, uptime=${data.uptime}s`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setAdminStatus(`管理接口异常：${msg}`);

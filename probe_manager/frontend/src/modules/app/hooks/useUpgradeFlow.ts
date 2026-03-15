@@ -8,7 +8,15 @@ import {
 } from "../../../../wailsjs/go/main/App";
 import { fetchControllerVersion, triggerControllerUpgrade } from "../services/controller-api";
 import { normalizeBaseUrl } from "../utils/url";
-import type { ControllerUpgradeResponse, ManagerUpgradeResult, ReleaseInfo } from "../types";
+import type { ControllerUpgradeResponse, ControllerVersionResponse, ManagerUpgradeResult, ReleaseInfo } from "../types";
+
+function isUnauthorizedError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes("401") || message.includes("invalid or expired session token");
+}
 
 export function useUpgradeFlow() {
   const [managerVersion, setManagerVersion] = useState("unknown");
@@ -26,7 +34,7 @@ export function useUpgradeFlow() {
   const [isCheckingProxy, setIsCheckingProxy] = useState(false);
   const [isUpgradingManager, setIsUpgradingManager] = useState(false);
 
-  async function refreshSystemVersions(baseUrlInput: string, token: string) {
+  async function refreshSystemVersions(baseUrlInput: string, token: string, reauthenticate?: () => Promise<string>) {
     const base = normalizeBaseUrl(baseUrlInput);
     if (!base) {
       setVersionStatus("Controller URL is required");
@@ -42,14 +50,29 @@ export function useUpgradeFlow() {
       const localManagerVersion = await GetManagerVersion();
       setManagerVersion(localManagerVersion || "dev");
 
-      const data = await fetchControllerVersion(base, token);
+      let activeToken = token;
+      let reloginUsed = false;
+      let data: ControllerVersionResponse;
+      try {
+        data = await fetchControllerVersion(base, activeToken);
+      } catch (error) {
+        if (!reauthenticate || !isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        setVersionStatus("会话已过期，正在自动重新登录...");
+        activeToken = await reauthenticate();
+        reloginUsed = true;
+        data = await fetchControllerVersion(base, activeToken);
+      }
+
       setControllerVersion(data.current_version || "unknown");
       setControllerLatestVersion(data.latest_version || "");
 
       if (data.upgrade_available) {
-        setVersionStatus(`主控可升级：${data.current_version} -> ${data.latest_version}`);
+        setVersionStatus(`${reloginUsed ? "已自动重新登录，" : ""}主控可升级：${data.current_version} -> ${data.latest_version}`);
       } else {
-        setVersionStatus(data.message ?? "版本信息已更新");
+        setVersionStatus(reloginUsed ? `已自动重新登录，${data.message ?? "版本信息已更新"}` : (data.message ?? "版本信息已更新"));
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -57,7 +80,7 @@ export function useUpgradeFlow() {
     }
   }
 
-  async function upgradeController(baseUrlInput: string, token: string) {
+  async function upgradeController(baseUrlInput: string, token: string, reauthenticate?: () => Promise<string>) {
     const base = normalizeBaseUrl(baseUrlInput);
     if (!base) {
       setUpgradeStatus("Controller URL is required");
@@ -71,7 +94,20 @@ export function useUpgradeFlow() {
     setIsUpgradingController(true);
     setUpgradeStatus("已发送升级命令，正在检查 GitHub Release...");
     try {
-      const data = (await triggerControllerUpgrade(base, token)) as ControllerUpgradeResponse;
+      let activeToken = token;
+      let data: ControllerUpgradeResponse;
+      try {
+        data = (await triggerControllerUpgrade(base, activeToken)) as ControllerUpgradeResponse;
+      } catch (error) {
+        if (!reauthenticate || !isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        setUpgradeStatus("会话已过期，正在自动重新登录并重试升级...");
+        activeToken = await reauthenticate();
+        data = (await triggerControllerUpgrade(base, activeToken)) as ControllerUpgradeResponse;
+      }
+
       setControllerVersion(data.current_version || controllerVersion);
       setControllerLatestVersion(data.latest_version || "");
       setUpgradeStatus(data.message || "升级命令执行完成");
@@ -115,7 +151,7 @@ export function useUpgradeFlow() {
     }
   }
 
-  async function checkManagerReleaseProxy(baseUrlInput: string, token: string, projectInput: string) {
+  async function checkManagerReleaseProxy(baseUrlInput: string, token: string, projectInput: string, reauthenticate?: () => Promise<string>) {
     const project = ensureUpgradeProject(projectInput);
     if (!project) {
       return;
@@ -128,9 +164,24 @@ export function useUpgradeFlow() {
     setIsCheckingProxy(true);
     setManagerUpgradeStatus("代理检查中：正在通过主控请求 GitHub 最新 Release...");
     try {
-      const release = (await GetLatestGitHubReleaseViaProxy(baseUrlInput, token, project)) as ReleaseInfo;
+      let activeToken = token;
+      let reloginUsed = false;
+      let release: ReleaseInfo;
+      try {
+        release = (await GetLatestGitHubReleaseViaProxy(baseUrlInput, activeToken, project)) as ReleaseInfo;
+      } catch (error) {
+        if (!reauthenticate || !isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        setManagerUpgradeStatus("会话已过期，正在自动重新登录并重试代理检查...");
+        activeToken = await reauthenticate();
+        reloginUsed = true;
+        release = (await GetLatestGitHubReleaseViaProxy(baseUrlInput, activeToken, project)) as ReleaseInfo;
+      }
+
       setProxyRelease(release);
-      setManagerUpgradeStatus(`代理检查完成：latest=${release.tag_name}, assets=${release.assets.length}`);
+      setManagerUpgradeStatus(`${reloginUsed ? "已自动重新登录，" : ""}代理检查完成：latest=${release.tag_name}, assets=${release.assets.length}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setManagerUpgradeStatus(`代理检查失败：${msg}`);
@@ -161,7 +212,7 @@ export function useUpgradeFlow() {
     }
   }
 
-  async function upgradeManagerProxy(baseUrlInput: string, token: string, projectInput: string) {
+  async function upgradeManagerProxy(baseUrlInput: string, token: string, projectInput: string, reauthenticate?: () => Promise<string>) {
     const project = ensureUpgradeProject(projectInput);
     if (!project) {
       return;
@@ -174,11 +225,26 @@ export function useUpgradeFlow() {
     setIsUpgradingManager(true);
     setManagerUpgradeStatus("代理升级中：通过主控下载并转发升级包...");
     try {
-      const result = (await UpgradeManagerViaProxy(baseUrlInput, token, project)) as ManagerUpgradeResult;
+      let activeToken = token;
+      let reloginUsed = false;
+      let result: ManagerUpgradeResult;
+      try {
+        result = (await UpgradeManagerViaProxy(baseUrlInput, activeToken, project)) as ManagerUpgradeResult;
+      } catch (error) {
+        if (!reauthenticate || !isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        setManagerUpgradeStatus("会话已过期，正在自动重新登录并重试代理升级...");
+        activeToken = await reauthenticate();
+        reloginUsed = true;
+        result = (await UpgradeManagerViaProxy(baseUrlInput, activeToken, project)) as ManagerUpgradeResult;
+      }
+
       if (result.latest_version) {
         setManagerVersion(result.latest_version);
       }
-      setManagerUpgradeStatus(`代理升级结果：${result.message}`);
+      setManagerUpgradeStatus(`${reloginUsed ? "已自动重新登录，" : ""}代理升级结果：${result.message}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setManagerUpgradeStatus(`代理升级失败：${msg}`);

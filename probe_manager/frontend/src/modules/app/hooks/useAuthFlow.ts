@@ -9,6 +9,7 @@ type LoginResult = {
   ok: boolean;
   userRole?: string;
   certType?: string;
+  sessionToken?: string;
 };
 
 export function useAuthFlow() {
@@ -88,7 +89,7 @@ export function useAuthFlow() {
 
       setLoginTone("success");
       setLoginStatus(`登录成功：username=${user}, role=${role}, certType=${type}, TTL=${loginData.ttl}s`);
-      return { ok: true, userRole: role, certType: type };
+      return { ok: true, userRole: role, certType: type, sessionToken: loginData.session_token };
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setSessionToken("");

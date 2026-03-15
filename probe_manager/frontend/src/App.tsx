@@ -29,9 +29,21 @@ function App() {
 
   useEffect(() => {
     if (auth.sessionToken && activeTab === "system-settings") {
-      void upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken);
+      void upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken, reauthenticateSession);
     }
   }, [activeTab, auth.sessionToken, settings.baseUrl]);
+
+  async function reauthenticateSession(): Promise<string> {
+    const result = await auth.login(settings.baseUrl);
+    if (!result.ok || !result.sessionToken) {
+      throw new Error("自动重新登录失败，请手动点击 Logout 后重新登录");
+    }
+    const allowedTabs = resolveTabs(result.userRole ?? auth.userRole, result.certType ?? auth.certType);
+    if (!allowedTabs.some((item) => item.key === activeTab)) {
+      setActiveTab(allowedTabs[0].key);
+    }
+    return result.sessionToken;
+  }
 
   async function handleLogin() {
     const result = await auth.login(settings.baseUrl);
@@ -93,7 +105,7 @@ function App() {
             serverStatus={connection.serverStatus}
             adminStatus={connection.adminStatus}
             onPingServer={() => connection.pingServer(settings.baseUrl)}
-            onCheckAdminStatus={() => connection.checkAdminStatus(settings.baseUrl, auth.sessionToken)}
+            onCheckAdminStatus={() => connection.checkAdminStatus(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
             onRefreshPrivateKeyStatus={auth.refreshPrivateKeyStatus}
             managerVersion={upgrade.managerVersion}
             controllerVersion={upgrade.controllerVersion}
@@ -102,8 +114,8 @@ function App() {
             upgradeStatus={upgrade.upgradeStatus}
             isUpgradingController={upgrade.isUpgradingController}
             isUpgradingManager={upgrade.isUpgradingManager}
-            onRefreshSystemVersions={() => upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken)}
-            onUpgradeController={() => upgrade.upgradeController(settings.baseUrl, auth.sessionToken)}
+            onRefreshSystemVersions={() => upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
+            onUpgradeController={() => upgrade.upgradeController(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
             upgradeProject={settings.upgradeProject}
             onUpgradeProjectChange={settings.setUpgradeProject}
             isCheckingDirect={upgrade.isCheckingDirect}
@@ -111,8 +123,8 @@ function App() {
             sessionToken={auth.sessionToken}
             onCheckManagerReleaseDirect={() => upgrade.checkManagerReleaseDirect(settings.upgradeProject)}
             onUpgradeManagerDirect={() => upgrade.upgradeManagerDirect(settings.upgradeProject)}
-            onCheckManagerReleaseProxy={() => upgrade.checkManagerReleaseProxy(settings.baseUrl, auth.sessionToken, settings.upgradeProject)}
-            onUpgradeManagerProxy={() => upgrade.upgradeManagerProxy(settings.baseUrl, auth.sessionToken, settings.upgradeProject)}
+            onCheckManagerReleaseProxy={() => upgrade.checkManagerReleaseProxy(settings.baseUrl, auth.sessionToken, settings.upgradeProject, reauthenticateSession)}
+            onUpgradeManagerProxy={() => upgrade.upgradeManagerProxy(settings.baseUrl, auth.sessionToken, settings.upgradeProject, reauthenticateSession)}
             directRelease={upgrade.directRelease}
             proxyRelease={upgrade.proxyRelease}
             managerUpgradeStatus={upgrade.managerUpgradeStatus}
