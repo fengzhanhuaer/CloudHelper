@@ -447,8 +447,14 @@ func (s *networkAssistantService) openTunnel(targetAddr string) (*websocket.Conn
 
 	header := http.Header{}
 	header.Set("X-Forwarded-Proto", "https")
-	wsConn, _, err := websocket.DefaultDialer.Dial(tunnelURL, header)
+	header.Set("Authorization", "Bearer "+token)
+	wsConn, handshakeResp, err := websocket.DefaultDialer.Dial(tunnelURL, header)
 	if err != nil {
+		if handshakeResp != nil {
+			defer handshakeResp.Body.Close()
+			raw, _ := io.ReadAll(io.LimitReader(handshakeResp.Body, 2048))
+			return nil, fmt.Errorf("websocket handshake failed: status=%d body=%s", handshakeResp.StatusCode, strings.TrimSpace(string(raw)))
+		}
 		return nil, err
 	}
 
@@ -470,17 +476,17 @@ func (s *networkAssistantService) openTunnel(targetAddr string) (*websocket.Conn
 	}
 	_ = wsConn.SetReadDeadline(time.Time{})
 
-	var resp tunnelControlMessage
-	if err := json.Unmarshal(payload, &resp); err != nil {
+	var connectResp tunnelControlMessage
+	if err := json.Unmarshal(payload, &connectResp); err != nil {
 		wsConn.Close()
 		return nil, err
 	}
-	if resp.Type != "connected" {
+	if connectResp.Type != "connected" {
 		wsConn.Close()
-		if strings.TrimSpace(resp.Error) == "" {
+		if strings.TrimSpace(connectResp.Error) == "" {
 			return nil, errors.New("tunnel connect failed")
 		}
-		return nil, errors.New(resp.Error)
+		return nil, errors.New(connectResp.Error)
 	}
 
 	return wsConn, nil
