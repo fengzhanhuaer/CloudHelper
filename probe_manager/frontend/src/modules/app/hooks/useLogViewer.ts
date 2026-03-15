@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { GetLocalManagerLogs } from "../../../../wailsjs/go/main/App";
-import { fetchServerLogs } from "../services/controller-api";
+import { fetchAdminStatus, fetchServerLogs } from "../services/controller-api";
 import type { LogContentResponse, LogSource } from "../types";
 import { normalizeBaseUrl } from "../utils/url";
 
@@ -10,6 +10,14 @@ function isUnauthorizedError(error: unknown): boolean {
   }
   const message = error.message.toLowerCase();
   return message.includes("401") || message.includes("invalid or expired session token");
+}
+
+function isNetworkLikeFetchError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes("failed to fetch") || message.includes("networkerror") || message.includes("load failed");
 }
 
 function clampLogLines(lines: number): number {
@@ -94,6 +102,18 @@ export function useLogViewer() {
       setCopyStatus("");
       setStatus(`已加载${data.source === "server" ? "服务器" : "本地"}日志（${data.lines} 行）`);
     } catch (error) {
+      if (source === "server" && isNetworkLikeFetchError(error)) {
+        const base = normalizeBaseUrl(baseUrlInput);
+        if (base && token) {
+          try {
+            await fetchAdminStatus(base, token);
+            setStatus("日志加载失败：服务端可能未升级到支持 /api/admin/logs 的版本（或该路径被网关拦截）");
+            return;
+          } catch {
+            // fallback to original error message below
+          }
+        }
+      }
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`日志加载失败：${msg}`);
     } finally {

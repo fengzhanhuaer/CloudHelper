@@ -1,4 +1,4 @@
-package main
+package backend
 
 import (
 	"fmt"
@@ -15,7 +15,7 @@ const (
 	managerLogMaxBackups = 5
 )
 
-func initManagerLogger() {
+func InitManagerLogger() {
 	log.SetOutput(io.Discard)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 

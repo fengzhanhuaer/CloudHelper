@@ -2,155 +2,97 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/x509"
-	"encoding/base64"
-	"encoding/pem"
-	"errors"
-	"fmt"
-	"log"
-	"os"
-	"path/filepath"
-	"runtime/debug"
-	"strings"
+
+	"github.com/cloudhelper/probe_manager/backend"
 )
 
 var BuildVersion = "dev"
 
-// App struct
 type App struct {
-	ctx              context.Context
-	networkAssistant *networkAssistantService
+	inner *backend.App
 }
 
-type PrivateKeyStatus struct {
-	Found   bool   `json:"found"`
-	Path    string `json:"path"`
-	Message string `json:"message"`
-}
+type PrivateKeyStatus = backend.PrivateKeyStatus
+type LogViewResponse = backend.LogViewResponse
+type NetworkAssistantStatus = backend.NetworkAssistantStatus
+type ReleaseAsset = backend.ReleaseAsset
+type ReleaseInfo = backend.ReleaseInfo
+type ManagerUpgradeResult = backend.ManagerUpgradeResult
+type ManagerUpgradeProgress = backend.ManagerUpgradeProgress
 
-// NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{
-		networkAssistant: newNetworkAssistantService(),
-	}
+	backend.BuildVersion = BuildVersion
+	return &App{inner: backend.NewApp()}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
-	if err := cleanupManagerStaleExecutables(); err != nil {
-		log.Printf("warning: failed to cleanup stale manager executable files: %v", err)
-	}
-	if err := autoBackupManagerData(); err != nil {
-		log.Printf("warning: failed to backup manager data: %v", err)
-	}
-	a.networkAssistant.UpdateSession("", "")
+	a.inner.Startup(ctx)
 }
 
 func (a *App) shutdown(ctx context.Context) {
-	if a.networkAssistant == nil {
-		return
-	}
-	if err := a.networkAssistant.Shutdown(); err != nil {
-		log.Printf("warning: failed to shutdown network assistant: %v", err)
-	}
+	a.inner.Shutdown(ctx)
 }
 
-// Greet returns a greeting for the given name
 func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s, It's show time!", name)
+	return a.inner.Greet(name)
 }
 
 func (a *App) GetManagerVersion() string {
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		if v := strings.TrimSpace(bi.Main.Version); v != "" && v != "(devel)" {
-			return v
-		}
-	}
-
-	if v := strings.TrimSpace(BuildVersion); v != "" && v != "(devel)" && !strings.EqualFold(v, "dev") {
-		return v
-	}
-
-	return "dev"
+	return a.inner.GetManagerVersion()
 }
 
 func (a *App) GetLocalPrivateKeyStatus() PrivateKeyStatus {
-	path, err := resolvePrivateKeyPath()
-	if err != nil {
-		return PrivateKeyStatus{
-			Found:   false,
-			Message: err.Error(),
-		}
-	}
-	return PrivateKeyStatus{
-		Found:   true,
-		Path:    path,
-		Message: "private key loaded",
-	}
+	return a.inner.GetLocalPrivateKeyStatus()
 }
 
 func (a *App) SignNonceWithLocalKey(nonce string) (string, error) {
-	nonce = strings.TrimSpace(nonce)
-	if nonce == "" {
-		return "", errors.New("nonce is required")
-	}
-
-	path, err := resolvePrivateKeyPath()
-	if err != nil {
-		return "", err
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read private key %s: %w", path, err)
-	}
-
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return "", fmt.Errorf("failed to decode pem private key: %s", path)
-	}
-
-	keyAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse private key: %w", err)
-	}
-
-	priv, ok := keyAny.(ed25519.PrivateKey)
-	if !ok {
-		return "", errors.New("private key is not ed25519")
-	}
-
-	signature := ed25519.Sign(priv, []byte(nonce))
-	return base64.StdEncoding.EncodeToString(signature), nil
+	return a.inner.SignNonceWithLocalKey(nonce)
 }
 
-func resolvePrivateKeyPath() (string, error) {
-	candidates := []string{}
+func (a *App) GetGlobalControllerURL() (string, error) {
+	return a.inner.GetGlobalControllerURL()
+}
 
-	if envPath := strings.TrimSpace(os.Getenv("CLOUDHELPER_ADMIN_PRIVATE_KEY_PATH")); envPath != "" {
-		candidates = append(candidates, envPath)
-	}
+func (a *App) SetGlobalControllerURL(rawURL string) (string, error) {
+	return a.inner.SetGlobalControllerURL(rawURL)
+}
 
-	candidates = append(candidates,
-		filepath.Join(".", "data", "initial_admin_private_key.pem"),
-		filepath.Join(".", "initial_admin_private_key.pem"),
-	)
+func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int) (LogViewResponse, error) {
+	return a.inner.GetLocalManagerLogs(lines, sinceMinutes)
+}
 
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		candidates = append(candidates, filepath.Join(home, ".cloudhelper", "initial_admin_private_key.pem"))
-	}
+func (a *App) GetNetworkAssistantStatus() NetworkAssistantStatus {
+	return a.inner.GetNetworkAssistantStatus()
+}
 
-	for _, p := range candidates {
-		if p == "" {
-			continue
-		}
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
+func (a *App) SetNetworkAssistantMode(controllerBaseURL, sessionToken, mode, nodeID string) (NetworkAssistantStatus, error) {
+	return a.inner.SetNetworkAssistantMode(controllerBaseURL, sessionToken, mode, nodeID)
+}
 
-	return "", errors.New("local admin private key not found (set CLOUDHELPER_ADMIN_PRIVATE_KEY_PATH or place initial_admin_private_key.pem in ./data)")
+func (a *App) SyncNetworkAssistant(controllerBaseURL, sessionToken string) (NetworkAssistantStatus, error) {
+	return a.inner.SyncNetworkAssistant(controllerBaseURL, sessionToken)
+}
+
+func (a *App) RestoreNetworkAssistantDirect() (NetworkAssistantStatus, error) {
+	return a.inner.RestoreNetworkAssistantDirect()
+}
+
+func (a *App) GetLatestGitHubRelease(project string) (ReleaseInfo, error) {
+	return a.inner.GetLatestGitHubRelease(project)
+}
+
+func (a *App) GetLatestGitHubReleaseViaProxy(controllerBaseURL, sessionToken, project string) (ReleaseInfo, error) {
+	return a.inner.GetLatestGitHubReleaseViaProxy(controllerBaseURL, sessionToken, project)
+}
+
+func (a *App) UpgradeManagerDirect(project string) (ManagerUpgradeResult, error) {
+	return a.inner.UpgradeManagerDirect(project)
+}
+
+func (a *App) UpgradeManagerViaProxy(controllerBaseURL, sessionToken, project string) (ManagerUpgradeResult, error) {
+	return a.inner.UpgradeManagerViaProxy(controllerBaseURL, sessionToken, project)
+}
+
+func (a *App) GetManagerUpgradeProgress() ManagerUpgradeProgress {
+	return a.inner.GetManagerUpgradeProgress()
 }
