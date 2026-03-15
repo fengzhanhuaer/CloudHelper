@@ -1,4 +1,4 @@
-import type { ReleaseInfo } from "../types";
+import type { ReleaseInfo, UpgradeProgress } from "../types";
 
 type SystemSettingsTabProps = {
   managerVersion: string;
@@ -6,6 +6,7 @@ type SystemSettingsTabProps = {
   controllerLatestVersion: string;
   versionStatus: string;
   upgradeStatus: string;
+  controllerUpgradeProgress: UpgradeProgress;
   isUpgradingController: boolean;
   isUpgradingManager: boolean;
   onRefreshSystemVersions: () => void;
@@ -22,7 +23,20 @@ type SystemSettingsTabProps = {
   directRelease: ReleaseInfo | null;
   proxyRelease: ReleaseInfo | null;
   managerUpgradeStatus: string;
+  managerUpgradeProgress: UpgradeProgress;
 };
+
+function ProgressLine(props: { title: string; progress: UpgradeProgress }) {
+  return (
+    <div className="status">
+      <strong>{props.title}</strong>
+      {`：${props.progress.percent}% ${props.progress.message || ""}`}
+      <div className="progress-bar">
+        <div className="progress-bar-fill" style={{ width: `${props.progress.percent}%` }} />
+      </div>
+    </div>
+  );
+}
 
 function ReleaseInfoStatus(props: { title: string; release: ReleaseInfo | null }) {
   return (
@@ -55,6 +69,9 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
 
       <div className="status">{props.versionStatus}</div>
       <div className="status">{props.upgradeStatus}</div>
+      {(props.isUpgradingController || props.controllerUpgradeProgress.percent > 0) && (
+        <ProgressLine title="主控升级进度" progress={props.controllerUpgradeProgress} />
+      )}
 
       <div className="identity-card" style={{ marginTop: 14 }}>
         <div>管理端升级项目（GitHub）：</div>
@@ -88,6 +105,9 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
       <ReleaseInfoStatus title="直连结果" release={props.directRelease} />
       <ReleaseInfoStatus title="代理结果" release={props.proxyRelease} />
       <div className="status">{props.managerUpgradeStatus}</div>
+      {(props.isUpgradingManager || props.managerUpgradeProgress.percent > 0) && (
+        <ProgressLine title="管理端升级进度" progress={props.managerUpgradeProgress} />
+      )}
     </div>
   );
 }

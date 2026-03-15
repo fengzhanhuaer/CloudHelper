@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,6 +48,19 @@ type ManagerUpgradeResult struct {
 	Updated        bool   `json:"updated"`
 	Message        string `json:"message"`
 }
+
+type ManagerUpgradeProgress struct {
+	Active  bool   `json:"active"`
+	Mode    string `json:"mode"`
+	Phase   string `json:"phase"`
+	Percent int    `json:"percent"`
+	Message string `json:"message"`
+}
+
+var managerUpgradeProgressState = struct {
+	mu   sync.RWMutex
+	data ManagerUpgradeProgress
+}{}
 
 type githubReleaseAsset struct {
 	Name               string `json:"name"`
@@ -144,6 +158,13 @@ func (a *App) UpgradeManagerDirect(project string) (ManagerUpgradeResult, error)
 		CurrentVersion: a.GetManagerVersion(),
 		Mode:           "direct",
 	}
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "prepare", Percent: 2, Message: "准备升级"})
+	defer func() {
+		p := getManagerUpgradeProgress()
+		if p.Active {
+			setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "idle", Percent: p.Percent, Message: p.Message})
+		}
+	}()
 
 	repo, err := normalizeGitHubRepo(project)
 	if err != nil {
@@ -166,6 +187,13 @@ func (a *App) UpgradeManagerViaProxy(controllerBaseURL, sessionToken, project st
 		CurrentVersion: a.GetManagerVersion(),
 		Mode:           "proxy",
 	}
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "prepare", Percent: 2, Message: "准备升级"})
+	defer func() {
+		p := getManagerUpgradeProgress()
+		if p.Active {
+			setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "idle", Percent: p.Percent, Message: p.Message})
+		}
+	}()
 
 	info, err := a.GetLatestGitHubReleaseViaProxy(controllerBaseURL, sessionToken, project)
 	if err != nil {
@@ -175,6 +203,7 @@ func (a *App) UpgradeManagerViaProxy(controllerBaseURL, sessionToken, project st
 }
 
 func (a *App) performManagerUpgrade(result ManagerUpgradeResult, info ReleaseInfo, controllerBaseURL, sessionToken string) (ManagerUpgradeResult, error) {
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "check", Percent: 10, Message: "检查版本"})
 	latest := strings.TrimSpace(info.TagName)
 	if latest == "" {
 		return result, errors.New("latest release tag is empty")
@@ -184,9 +213,11 @@ func (a *App) performManagerUpgrade(result ManagerUpgradeResult, info ReleaseInf
 	if normalizeVersion(result.CurrentVersion) == normalizeVersion(latest) {
 		result.Updated = false
 		result.Message = "already on latest version"
+		setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "done", Percent: 100, Message: "已是最新版本"})
 		return result, nil
 	}
 
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "select_asset", Percent: 15, Message: "选择升级包"})
 	asset, err := pickManagerAsset(info.Assets)
 	if err != nil {
 		return result, err
@@ -207,27 +238,40 @@ func (a *App) performManagerUpgrade(result ManagerUpgradeResult, info ReleaseInf
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "download", Percent: 20, Message: "下载升级包"})
+
 	if result.Mode == "proxy" {
-		if err := downloadAssetViaProxy(ctx, controllerBaseURL, sessionToken, asset.DownloadURL, assetFile); err != nil {
+		if err := downloadAssetViaProxy(ctx, controllerBaseURL, sessionToken, asset.DownloadURL, assetFile, func(downloaded, total int64) {
+			setManagerDownloadProgress(result.Mode, downloaded, total)
+		}); err != nil {
+			setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "failed", Percent: 20, Message: "下载失败"})
 			return result, err
 		}
 	} else {
-		if err := downloadReleaseAsset(ctx, asset.DownloadURL, assetFile); err != nil {
+		if err := downloadReleaseAsset(ctx, asset.DownloadURL, assetFile, func(downloaded, total int64) {
+			setManagerDownloadProgress(result.Mode, downloaded, total)
+		}); err != nil {
+			setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "failed", Percent: 20, Message: "下载失败"})
 			return result, err
 		}
 	}
 
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "extract", Percent: 80, Message: "解压升级包"})
 	binaryPath, err := extractManagerBinary(assetFile, asset.Name, tmpDir)
 	if err != nil {
+		setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "failed", Percent: 80, Message: "解压失败"})
 		return result, err
 	}
 
 	if runtime.GOOS == "windows" {
+		setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "replace", Percent: 92, Message: "写入新版本"})
 		if err := stageWindowsSelfReplace(binaryPath); err != nil {
+			setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "failed", Percent: 92, Message: "写入失败"})
 			return result, err
 		}
 		result.Updated = true
 		result.Message = "upgrade staged, application will restart"
+		setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "done", Percent: 100, Message: "升级完成，程序即将重启"})
 		go func() {
 			time.Sleep(1200 * time.Millisecond)
 			os.Exit(0)
@@ -235,11 +279,14 @@ func (a *App) performManagerUpgrade(result ManagerUpgradeResult, info ReleaseInf
 		return result, nil
 	}
 
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "replace", Percent: 92, Message: "写入新版本"})
 	if err := replaceCurrentExecutable(binaryPath); err != nil {
+		setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "failed", Percent: 92, Message: "写入失败"})
 		return result, err
 	}
 	result.Updated = true
 	result.Message = "upgrade completed, please restart manager"
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "done", Percent: 100, Message: "升级完成"})
 	return result, nil
 }
 
@@ -409,7 +456,7 @@ func pickManagerAsset(assets []ReleaseAsset) (ReleaseAsset, error) {
 	return ReleaseAsset{}, errors.New("no matching manager asset found in release")
 }
 
-func downloadReleaseAsset(ctx context.Context, rawURL, outputPath string) error {
+func downloadReleaseAsset(ctx context.Context, rawURL, outputPath string, onProgress func(downloaded, total int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSpace(rawURL), nil)
 	if err != nil {
 		return err
@@ -437,11 +484,11 @@ func downloadReleaseAsset(ctx context.Context, rawURL, outputPath string) error 
 	}
 	defer f.Close()
 
-	_, err = io.Copy(f, resp.Body)
+	_, err = copyWithProgress(f, resp.Body, resp.ContentLength, onProgress)
 	return err
 }
 
-func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken, assetURL, outputPath string) error {
+func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken, assetURL, outputPath string, onProgress func(downloaded, total int64)) error {
 	base, err := normalizeControllerBaseURL(controllerBaseURL)
 	if err != nil {
 		return err
@@ -476,8 +523,84 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 	}
 	defer f.Close()
 
-	_, err = io.Copy(f, resp.Body)
+	_, err = copyWithProgress(f, resp.Body, resp.ContentLength, onProgress)
 	return err
+}
+
+func copyWithProgress(dst io.Writer, src io.Reader, total int64, onProgress func(downloaded, total int64)) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	lastEmit := time.Now()
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			wn, werr := dst.Write(buf[:n])
+			written += int64(wn)
+			if onProgress != nil {
+				now := time.Now()
+				if now.Sub(lastEmit) > 200*time.Millisecond || err == io.EOF {
+					onProgress(written, total)
+					lastEmit = now
+				}
+			}
+			if werr != nil {
+				return written, werr
+			}
+			if wn != n {
+				return written, io.ErrShortWrite
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				if onProgress != nil {
+					onProgress(written, total)
+				}
+				return written, nil
+			}
+			return written, err
+		}
+	}
+}
+
+func setManagerDownloadProgress(mode string, downloaded, total int64) {
+	percent := 20
+	if total > 0 {
+		span := int(float64(downloaded) / float64(total) * 55.0)
+		if span < 0 {
+			span = 0
+		}
+		if span > 55 {
+			span = 55
+		}
+		percent = 20 + span
+	}
+	msg := "下载升级包中"
+	if total > 0 {
+		msg = fmt.Sprintf("下载升级包中 (%d%%)", int(float64(downloaded)*100.0/float64(total)))
+	}
+	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: mode, Phase: "download", Percent: percent, Message: msg})
+}
+
+func (a *App) GetManagerUpgradeProgress() ManagerUpgradeProgress {
+	return getManagerUpgradeProgress()
+}
+
+func setManagerUpgradeProgress(progress ManagerUpgradeProgress) {
+	if progress.Percent < 0 {
+		progress.Percent = 0
+	}
+	if progress.Percent > 100 {
+		progress.Percent = 100
+	}
+	managerUpgradeProgressState.mu.Lock()
+	managerUpgradeProgressState.data = progress
+	managerUpgradeProgressState.mu.Unlock()
+}
+
+func getManagerUpgradeProgress() ManagerUpgradeProgress {
+	managerUpgradeProgressState.mu.RLock()
+	defer managerUpgradeProgressState.mu.RUnlock()
+	return managerUpgradeProgressState.data
 }
 
 func extractManagerBinary(assetFile, assetName, workDir string) (string, error) {

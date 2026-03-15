@@ -70,7 +70,28 @@ export type ManagerUpgradeResult = {
   message: string;
 };
 
-export type TabKey = "overview" | "probe-status" | "probe-manage" | "link-manage" | "system-settings";
+export type UpgradeProgress = {
+  active: boolean;
+  phase: string;
+  percent: number;
+  message: string;
+};
+
+export type NetworkAssistantMode = "direct" | "global" | "rule";
+
+export type NetworkAssistantStatus = {
+  enabled: boolean;
+  mode: NetworkAssistantMode;
+  node_id: string;
+  available_nodes: string[];
+  socks5_listen: string;
+  tunnel_route: string;
+  tunnel_status: string;
+  system_proxy_status: string;
+  last_error: string;
+};
+
+export type TabKey = "overview" | "probe-status" | "probe-manage" | "link-manage" | "network-assistant" | "system-settings";
 
 export type TabItem = {
   key: TabKey;

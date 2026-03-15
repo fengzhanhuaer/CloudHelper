@@ -8,6 +8,7 @@ import { TabContent } from "./modules/app/components/TabContent";
 import { useAuthFlow } from "./modules/app/hooks/useAuthFlow";
 import { useConnectionFlow } from "./modules/app/hooks/useConnectionFlow";
 import { useLocalSettings } from "./modules/app/hooks/useLocalSettings";
+import { useNetworkAssistant } from "./modules/app/hooks/useNetworkAssistant";
 import { useUpgradeFlow } from "./modules/app/hooks/useUpgradeFlow";
 import type { TabKey } from "./modules/app/types";
 
@@ -18,6 +19,7 @@ function App() {
   const auth = useAuthFlow();
   const connection = useConnectionFlow(settings.baseUrl, auth.sessionToken);
   const upgrade = useUpgradeFlow();
+  const networkAssistant = useNetworkAssistant();
 
   const tabs = useMemo(() => resolveTabs(auth.userRole, auth.certType), [auth.userRole, auth.certType]);
 
@@ -32,6 +34,15 @@ function App() {
       void upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken, reauthenticateSession);
     }
   }, [activeTab, auth.sessionToken, settings.baseUrl]);
+
+  useEffect(() => {
+    if (!auth.sessionToken) {
+      return;
+    }
+    if (activeTab === "network-assistant") {
+      void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
+    }
+  }, [activeTab, auth.sessionToken, networkAssistant.refreshStatus, settings.baseUrl]);
 
   async function reauthenticateSession(): Promise<string> {
     const result = await auth.login(settings.baseUrl);
@@ -112,6 +123,7 @@ function App() {
             controllerLatestVersion={upgrade.controllerLatestVersion}
             versionStatus={upgrade.versionStatus}
             upgradeStatus={upgrade.upgradeStatus}
+            controllerUpgradeProgress={upgrade.controllerUpgradeProgress}
             isUpgradingController={upgrade.isUpgradingController}
             isUpgradingManager={upgrade.isUpgradingManager}
             onRefreshSystemVersions={() => upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
@@ -128,6 +140,16 @@ function App() {
             directRelease={upgrade.directRelease}
             proxyRelease={upgrade.proxyRelease}
             managerUpgradeStatus={upgrade.managerUpgradeStatus}
+            managerUpgradeProgress={upgrade.managerUpgradeProgress}
+            networkAssistantStatus={networkAssistant.status}
+            networkSelectedNode={networkAssistant.selectedNode}
+            onNetworkSelectedNodeChange={networkAssistant.setSelectedNode}
+            isOperatingNetworkAssistant={networkAssistant.isOperating}
+            networkOperateStatus={networkAssistant.operateStatus}
+            onRefreshNetworkAssistantStatus={() => networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken)}
+            onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct", networkAssistant.selectedNode)}
+            onSwitchNetworkGlobal={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "global", networkAssistant.selectedNode)}
+            onRestoreNetworkDirect={() => networkAssistant.restoreDirect()}
           />
         </main>
       </div>

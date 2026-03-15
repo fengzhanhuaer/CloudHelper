@@ -2,6 +2,8 @@ package tests
 
 import (
 	"bytes"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,6 +69,35 @@ func TestAdminUpgradeRouteRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestAdminUpgradeProgressRouteRequiresAuth(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/upgrade/progress", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated /api/admin/upgrade/progress to return 401, got %d", rr.Code)
+	}
+}
+
+func TestAdminUpgradeProgressRouteRequiresHTTPS(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	authManager.AddSessionForTest("tok-upg-progress", time.Now().Add(2*time.Minute))
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/upgrade/progress", nil)
+	req.Header.Set("Authorization", "Bearer tok-upg-progress")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUpgradeRequired {
+		t.Fatalf("expected /api/admin/upgrade/progress without https marker to return 426, got %d", rr.Code)
+	}
+}
+
 func TestAdminProxyLatestRouteRequiresAuth(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
@@ -93,6 +124,35 @@ func TestAdminProxyDownloadRouteRequiresAuth(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected unauthenticated /api/admin/proxy/download to return 401, got %d", rr.Code)
+	}
+}
+
+func TestAdminTunnelNodesRouteRequiresAuth(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/tunnel/nodes", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated /api/admin/tunnel/nodes to return 401, got %d", rr.Code)
+	}
+}
+
+func TestAdminTunnelNodesRouteRequiresHTTPS(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	authManager.AddSessionForTest("tok-nodes", time.Now().Add(2*time.Minute))
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/tunnel/nodes", nil)
+	req.Header.Set("Authorization", "Bearer tok-nodes")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUpgradeRequired {
+		t.Fatalf("expected /api/admin/tunnel/nodes without https marker to return 426, got %d", rr.Code)
 	}
 }
 
@@ -195,6 +255,104 @@ func TestAdminWSStatusRouteConnectSuccess(t *testing.T) {
 	}
 	if _, ok := msg["uptime"]; !ok {
 		t.Fatalf("expected websocket payload to contain uptime")
+	}
+}
+
+func TestNetworkTunnelWSRouteRequiresAuth(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ws/tunnel/cloudserver", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated /api/ws/tunnel/cloudserver to return 401, got %d", rr.Code)
+	}
+}
+
+func TestNetworkTunnelWSRouteRequiresHTTPS(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	authManager.AddSessionForTest("tok-tunnel-https", time.Now().Add(2*time.Minute))
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ws/tunnel/cloudserver?token=tok-tunnel-https", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUpgradeRequired {
+		t.Fatalf("expected /api/ws/tunnel/cloudserver without https marker to return 426, got %d", rr.Code)
+	}
+}
+
+func TestNetworkTunnelWSRouteConnectSuccess(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	authManager.AddSessionForTest("tok-tunnel-ok", time.Now().Add(2*time.Minute))
+
+	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create echo listener: %v", err)
+	}
+	defer echoListener.Close()
+
+	go func() {
+		for {
+			conn, acceptErr := echoListener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	server := httptest.NewServer(core.NewMux())
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/ws/tunnel/cloudserver?token=tok-tunnel-ok"
+	header := http.Header{}
+	header.Set("X-Forwarded-Proto", "https")
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("failed to connect websocket tunnel: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]string{
+		"type":    "connect",
+		"network": "tcp",
+		"address": echoListener.Addr().String(),
+	}); err != nil {
+		t.Fatalf("failed to send tunnel connect request: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var ack map[string]interface{}
+	if err := conn.ReadJSON(&ack); err != nil {
+		t.Fatalf("failed to read tunnel connect ack: %v", err)
+	}
+	if ack["type"] != "connected" {
+		t.Fatalf("expected tunnel connect ack type=connected, got %v", ack["type"])
+	}
+
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("hello-tunnel")); err != nil {
+		t.Fatalf("failed to write tunnel binary payload: %v", err)
+	}
+
+	msgType, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read tunnel echo payload: %v", err)
+	}
+	if msgType != websocket.BinaryMessage {
+		t.Fatalf("expected websocket binary message, got %d", msgType)
+	}
+	if string(payload) != "hello-tunnel" {
+		t.Fatalf("expected tunnel echo payload hello-tunnel, got %q", string(payload))
 	}
 }
 

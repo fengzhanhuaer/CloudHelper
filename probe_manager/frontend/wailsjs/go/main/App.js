@@ -6,6 +6,10 @@ export function GetLocalPrivateKeyStatus() {
   return window['go']['main']['App']['GetLocalPrivateKeyStatus']();
 }
 
+export function GetNetworkAssistantStatus() {
+  return window['go']['main']['App']['GetNetworkAssistantStatus']();
+}
+
 export function GetLatestGitHubRelease(arg1) {
   return window['go']['main']['App']['GetLatestGitHubRelease'](arg1);
 }
@@ -18,12 +22,28 @@ export function GetManagerVersion() {
   return window['go']['main']['App']['GetManagerVersion']();
 }
 
+export function GetManagerUpgradeProgress() {
+  return window['go']['main']['App']['GetManagerUpgradeProgress']();
+}
+
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
 }
 
 export function SignNonceWithLocalKey(arg1) {
   return window['go']['main']['App']['SignNonceWithLocalKey'](arg1);
+}
+
+export function SetNetworkAssistantMode(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetNetworkAssistantMode'](arg1, arg2, arg3, arg4);
+}
+
+export function SyncNetworkAssistant(arg1, arg2) {
+  return window['go']['main']['App']['SyncNetworkAssistant'](arg1, arg2);
+}
+
+export function RestoreNetworkAssistantDirect() {
+  return window['go']['main']['App']['RestoreNetworkAssistantDirect']();
 }
 
 export function UpgradeManagerDirect(arg1) {

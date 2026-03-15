@@ -2,13 +2,14 @@ import { useState } from "react";
 import {
   GetLatestGitHubRelease,
   GetLatestGitHubReleaseViaProxy,
+  GetManagerUpgradeProgress,
   GetManagerVersion,
   UpgradeManagerDirect,
   UpgradeManagerViaProxy,
 } from "../../../../wailsjs/go/main/App";
-import { fetchControllerVersion, triggerControllerUpgrade } from "../services/controller-api";
+import { fetchControllerUpgradeProgress, fetchControllerVersion, triggerControllerUpgrade } from "../services/controller-api";
 import { normalizeBaseUrl } from "../utils/url";
-import type { ControllerUpgradeResponse, ControllerVersionResponse, ManagerUpgradeResult, ReleaseInfo } from "../types";
+import type { ControllerUpgradeResponse, ControllerVersionResponse, ManagerUpgradeResult, ReleaseInfo, UpgradeProgress } from "../types";
 
 function isUnauthorizedError(error: unknown): boolean {
   if (!(error instanceof Error)) {
@@ -26,6 +27,12 @@ export function useUpgradeFlow() {
 
   const [upgradeStatus, setUpgradeStatus] = useState("");
   const [isUpgradingController, setIsUpgradingController] = useState(false);
+  const [controllerUpgradeProgress, setControllerUpgradeProgress] = useState<UpgradeProgress>({
+    active: false,
+    phase: "idle",
+    percent: 0,
+    message: "",
+  });
 
   const [directRelease, setDirectRelease] = useState<ReleaseInfo | null>(null);
   const [proxyRelease, setProxyRelease] = useState<ReleaseInfo | null>(null);
@@ -33,6 +40,57 @@ export function useUpgradeFlow() {
   const [isCheckingDirect, setIsCheckingDirect] = useState(false);
   const [isCheckingProxy, setIsCheckingProxy] = useState(false);
   const [isUpgradingManager, setIsUpgradingManager] = useState(false);
+  const [managerUpgradeProgress, setManagerUpgradeProgress] = useState<UpgradeProgress>({
+    active: false,
+    phase: "idle",
+    percent: 0,
+    message: "",
+  });
+
+  function beginProgress(setter: (value: UpgradeProgress) => void, message: string) {
+    setter({ active: true, phase: "prepare", percent: 1, message });
+  }
+
+  function resetProgress(setter: (value: UpgradeProgress) => void) {
+    setter({ active: false, phase: "idle", percent: 0, message: "" });
+  }
+
+  function normalizeProgress(value: unknown): UpgradeProgress {
+    const input = (value ?? {}) as Partial<UpgradeProgress>;
+    return {
+      active: Boolean(input.active),
+      phase: input.phase || "running",
+      percent: typeof input.percent === "number" ? Math.max(0, Math.min(100, input.percent)) : 0,
+      message: input.message || "",
+    };
+  }
+
+  function startPolling(task: () => Promise<UpgradeProgress>, setter: (value: UpgradeProgress) => void): () => void {
+    let active = true;
+    const tick = async () => {
+      if (!active) {
+        return;
+      }
+      try {
+        const progress = await task();
+        if (active) {
+          setter(normalizeProgress(progress));
+        }
+      } catch {
+        // keep previous state
+      }
+    };
+
+    void tick();
+    const timer = window.setInterval(() => {
+      void tick();
+    }, 500);
+
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }
 
   async function refreshSystemVersions(baseUrlInput: string, token: string, reauthenticate?: () => Promise<string>) {
     const base = normalizeBaseUrl(baseUrlInput);
@@ -93,6 +151,12 @@ export function useUpgradeFlow() {
 
     setIsUpgradingController(true);
     setUpgradeStatus("已发送升级命令，正在检查 GitHub Release...");
+    beginProgress(setControllerUpgradeProgress, "准备升级主控");
+
+    const stopPolling = startPolling(
+      () => fetchControllerUpgradeProgress(base, token),
+      setControllerUpgradeProgress,
+    );
     try {
       let activeToken = token;
       let data: ControllerUpgradeResponse;
@@ -118,6 +182,8 @@ export function useUpgradeFlow() {
       const msg = error instanceof Error ? error.message : "unknown error";
       setUpgradeStatus(`主控升级失败：${msg}`);
     } finally {
+      stopPolling();
+      resetProgress(setControllerUpgradeProgress);
       setIsUpgradingController(false);
     }
   }
@@ -198,6 +264,11 @@ export function useUpgradeFlow() {
 
     setIsUpgradingManager(true);
     setManagerUpgradeStatus("直连升级中：下载并应用管理端更新...");
+    beginProgress(setManagerUpgradeProgress, "准备升级管理端");
+    const stopPolling = startPolling(
+      async () => (await GetManagerUpgradeProgress()) as UpgradeProgress,
+      setManagerUpgradeProgress,
+    );
     try {
       const result = (await UpgradeManagerDirect(project)) as ManagerUpgradeResult;
       if (result.latest_version) {
@@ -208,6 +279,8 @@ export function useUpgradeFlow() {
       const msg = error instanceof Error ? error.message : "unknown error";
       setManagerUpgradeStatus(`直连升级失败：${msg}`);
     } finally {
+      stopPolling();
+      resetProgress(setManagerUpgradeProgress);
       setIsUpgradingManager(false);
     }
   }
@@ -224,6 +297,11 @@ export function useUpgradeFlow() {
 
     setIsUpgradingManager(true);
     setManagerUpgradeStatus("代理升级中：通过主控下载并转发升级包...");
+    beginProgress(setManagerUpgradeProgress, "准备升级管理端");
+    const stopPolling = startPolling(
+      async () => (await GetManagerUpgradeProgress()) as UpgradeProgress,
+      setManagerUpgradeProgress,
+    );
     try {
       let activeToken = token;
       let reloginUsed = false;
@@ -249,6 +327,8 @@ export function useUpgradeFlow() {
       const msg = error instanceof Error ? error.message : "unknown error";
       setManagerUpgradeStatus(`代理升级失败：${msg}`);
     } finally {
+      stopPolling();
+      resetProgress(setManagerUpgradeProgress);
       setIsUpgradingManager(false);
     }
   }
@@ -257,6 +337,8 @@ export function useUpgradeFlow() {
     setVersionStatus("");
     setUpgradeStatus("");
     setManagerUpgradeStatus("");
+    resetProgress(setControllerUpgradeProgress);
+    resetProgress(setManagerUpgradeProgress);
   }
 
   return {
@@ -265,10 +347,12 @@ export function useUpgradeFlow() {
     controllerLatestVersion,
     versionStatus,
     upgradeStatus,
+    controllerUpgradeProgress,
     isUpgradingController,
     directRelease,
     proxyRelease,
     managerUpgradeStatus,
+    managerUpgradeProgress,
     isCheckingDirect,
     isCheckingProxy,
     isUpgradingManager,

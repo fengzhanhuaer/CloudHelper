@@ -4,6 +4,7 @@ import type {
   DashboardStatusResponse,
   LoginResponse,
   NonceResponse,
+  UpgradeProgress,
 } from "../types";
 
 export async function fetchDashboardStatus(baseURL: string): Promise<DashboardStatusResponse> {
@@ -68,4 +69,15 @@ export async function triggerControllerUpgrade(baseURL: string, token: string): 
     throw new Error(`upgrade failed: HTTP ${response.status} ${errBody}`);
   }
   return (await response.json()) as ControllerUpgradeResponse;
+}
+
+export async function fetchControllerUpgradeProgress(baseURL: string, token: string): Promise<UpgradeProgress> {
+  const response = await fetch(`${baseURL}/api/admin/upgrade/progress`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`upgrade progress failed: HTTP ${response.status} ${errBody}`);
+  }
+  return (await response.json()) as UpgradeProgress;
 }

@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,6 +43,18 @@ type adminUpgradeResponse struct {
 	AssetName      string `json:"asset_name,omitempty"`
 	Message        string `json:"message"`
 }
+
+type adminUpgradeProgressResponse struct {
+	Active  bool   `json:"active"`
+	Phase   string `json:"phase"`
+	Percent int    `json:"percent"`
+	Message string `json:"message"`
+}
+
+var controllerUpgradeProgressState = struct {
+	mu   sync.RWMutex
+	data adminUpgradeProgressResponse
+}{}
 
 type githubReleaseAsset struct {
 	Name               string `json:"name"`
@@ -111,8 +124,11 @@ func AdminUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "prepare", Percent: 2, Message: "准备升级"})
+
 	result, err := performControllerUpgrade(ctx)
 	if err != nil {
+		setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "failed", Percent: 0, Message: "升级失败"})
 		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"error":           err.Error(),
 			"current_version": result.CurrentVersion,
@@ -122,6 +138,7 @@ func AdminUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "done", Percent: 100, Message: result.Message})
 
 	if result.Updated && shouldAutoRestartAfterUpgrade() {
 		go func() {
@@ -130,6 +147,14 @@ func AdminUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 			os.Exit(0)
 		}()
 	}
+}
+
+func AdminUpgradeProgressHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, getControllerUpgradeProgress())
 }
 
 func shouldAutoRestartAfterUpgrade() bool {
@@ -159,9 +184,11 @@ func performControllerUpgrade(ctx context.Context) (adminUpgradeResponse, error)
 	if normalizeVersion(current) == normalizeVersion(latest) {
 		result.Updated = false
 		result.Message = "already on latest version"
+		setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "done", Percent: 100, Message: "已是最新版本"})
 		return result, nil
 	}
 
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "select_asset", Percent: 15, Message: "选择升级包"})
 	asset, err := pickControllerAsset(release.Assets)
 	if err != nil {
 		return result, err
@@ -175,15 +202,20 @@ func performControllerUpgrade(ctx context.Context) (adminUpgradeResponse, error)
 	defer os.RemoveAll(tmpDir)
 
 	assetFile := filepath.Join(tmpDir, asset.Name)
-	if err := downloadReleaseAsset(ctx, asset.BrowserDownloadURL, assetFile); err != nil {
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "download", Percent: 20, Message: "下载升级包"})
+	if err := downloadReleaseAsset(ctx, asset.BrowserDownloadURL, assetFile, func(downloaded, total int64) {
+		setControllerDownloadProgress(downloaded, total)
+	}); err != nil {
 		return result, err
 	}
 
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "extract", Percent: 80, Message: "解压升级包"})
 	binaryPath, err := extractControllerBinary(assetFile, asset.Name, tmpDir)
 	if err != nil {
 		return result, err
 	}
 
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "replace", Percent: 92, Message: "替换程序文件"})
 	if err := replaceCurrentExecutable(binaryPath); err != nil {
 		return result, err
 	}
@@ -193,6 +225,7 @@ func performControllerUpgrade(ctx context.Context) (adminUpgradeResponse, error)
 
 	result.Updated = true
 	result.Message = "upgrade completed; service will restart"
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "done", Percent: 100, Message: "升级完成，服务即将重启"})
 	return result, nil
 }
 
@@ -361,7 +394,7 @@ func pickControllerAsset(assets []githubReleaseAsset) (githubReleaseAsset, error
 	return githubReleaseAsset{}, errors.New("no matching probe_controller asset in release")
 }
 
-func downloadReleaseAsset(ctx context.Context, url, outputPath string) error {
+func downloadReleaseAsset(ctx context.Context, url, outputPath string, onProgress func(downloaded, total int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -389,10 +422,82 @@ func downloadReleaseAsset(ctx context.Context, url, outputPath string) error {
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	if _, err := copyWithProgress(f, resp.Body, resp.ContentLength, onProgress); err != nil {
 		return err
 	}
 	return nil
+}
+
+func copyWithProgress(dst io.Writer, src io.Reader, total int64, onProgress func(downloaded, total int64)) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	lastEmit := time.Now()
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			wn, werr := dst.Write(buf[:n])
+			written += int64(wn)
+			if onProgress != nil {
+				now := time.Now()
+				if now.Sub(lastEmit) > 200*time.Millisecond || err == io.EOF {
+					onProgress(written, total)
+					lastEmit = now
+				}
+			}
+			if werr != nil {
+				return written, werr
+			}
+			if wn != n {
+				return written, io.ErrShortWrite
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				if onProgress != nil {
+					onProgress(written, total)
+				}
+				return written, nil
+			}
+			return written, err
+		}
+	}
+}
+
+func setControllerDownloadProgress(downloaded, total int64) {
+	percent := 20
+	if total > 0 {
+		span := int(float64(downloaded) / float64(total) * 55.0)
+		if span < 0 {
+			span = 0
+		}
+		if span > 55 {
+			span = 55
+		}
+		percent = 20 + span
+	}
+	msg := "下载升级包中"
+	if total > 0 {
+		msg = fmt.Sprintf("下载升级包中 (%d%%)", int(float64(downloaded)*100.0/float64(total)))
+	}
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "download", Percent: percent, Message: msg})
+}
+
+func setControllerUpgradeProgress(progress adminUpgradeProgressResponse) {
+	if progress.Percent < 0 {
+		progress.Percent = 0
+	}
+	if progress.Percent > 100 {
+		progress.Percent = 100
+	}
+	controllerUpgradeProgressState.mu.Lock()
+	controllerUpgradeProgressState.data = progress
+	controllerUpgradeProgressState.mu.Unlock()
+}
+
+func getControllerUpgradeProgress() adminUpgradeProgressResponse {
+	controllerUpgradeProgressState.mu.RLock()
+	defer controllerUpgradeProgressState.mu.RUnlock()
+	return controllerUpgradeProgressState.data
 }
 
 func extractControllerBinary(assetFile, assetName, workDir string) (string, error) {

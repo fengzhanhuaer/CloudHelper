@@ -205,6 +205,22 @@
     gap: 10px;
 }
 
+.progress-bar {
+    margin-top: 8px;
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #67b7ff 0%, #99e4ff 100%);
+    transition: width 0.25s ease;
+}
+
 @media (max-width: 900px) {
     .app-shell {
         grid-template-columns: 1fr;

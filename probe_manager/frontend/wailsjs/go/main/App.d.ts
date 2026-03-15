@@ -4,15 +4,25 @@ import {main} from '../models';
 
 export function GetLocalPrivateKeyStatus():Promise<main.PrivateKeyStatus>;
 
+export function GetNetworkAssistantStatus():Promise<any>;
+
 export function GetLatestGitHubRelease(arg1:string):Promise<any>;
 
 export function GetLatestGitHubReleaseViaProxy(arg1:string,arg2:string,arg3:string):Promise<any>;
 
 export function GetManagerVersion():Promise<string>;
 
+export function GetManagerUpgradeProgress():Promise<any>;
+
 export function Greet(arg1:string):Promise<string>;
 
 export function SignNonceWithLocalKey(arg1:string):Promise<string>;
+
+export function SetNetworkAssistantMode(arg1:string,arg2:string,arg3:string,arg4:string):Promise<any>;
+
+export function SyncNetworkAssistant(arg1:string,arg2:string):Promise<any>;
+
+export function RestoreNetworkAssistantDirect():Promise<any>;
 
 export function UpgradeManagerDirect(arg1:string):Promise<any>;
 

@@ -1,7 +1,8 @@
+import { NetworkAssistantTab } from "./NetworkAssistantTab";
 import { OverviewTab } from "./OverviewTab";
 import { PlaceholderTab } from "./PlaceholderTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
-import type { ReleaseInfo, TabKey } from "../types";
+import type { NetworkAssistantStatus, ReleaseInfo, TabKey, UpgradeProgress } from "../types";
 
 type TabContentProps = {
   activeTab: TabKey;
@@ -21,6 +22,7 @@ type TabContentProps = {
   controllerLatestVersion: string;
   versionStatus: string;
   upgradeStatus: string;
+  controllerUpgradeProgress: UpgradeProgress;
   isUpgradingController: boolean;
   isUpgradingManager: boolean;
   onRefreshSystemVersions: () => void;
@@ -37,6 +39,16 @@ type TabContentProps = {
   directRelease: ReleaseInfo | null;
   proxyRelease: ReleaseInfo | null;
   managerUpgradeStatus: string;
+  managerUpgradeProgress: UpgradeProgress;
+  networkAssistantStatus: NetworkAssistantStatus;
+  networkSelectedNode: string;
+  onNetworkSelectedNodeChange: (value: string) => void;
+  isOperatingNetworkAssistant: boolean;
+  networkOperateStatus: string;
+  onRefreshNetworkAssistantStatus: () => void;
+  onSwitchNetworkDirect: () => void;
+  onSwitchNetworkGlobal: () => void;
+  onRestoreNetworkDirect: () => void;
 };
 
 export function TabContent(props: TabContentProps) {
@@ -63,6 +75,20 @@ export function TabContent(props: TabContentProps) {
       return <PlaceholderTab title="探针管理" description="该页面将用于展示探针增删改查、分组与策略下发能力。" />;
     case "link-manage":
       return <PlaceholderTab title="链路管理" description="该页面将用于展示链路拓扑、探测任务与阈值配置。" />;
+    case "network-assistant":
+      return (
+        <NetworkAssistantTab
+          status={props.networkAssistantStatus}
+          selectedNode={props.networkSelectedNode}
+          onSelectedNodeChange={props.onNetworkSelectedNodeChange}
+          isOperating={props.isOperatingNetworkAssistant}
+          operateStatus={props.networkOperateStatus}
+          onRefreshStatus={props.onRefreshNetworkAssistantStatus}
+          onSwitchDirect={props.onSwitchNetworkDirect}
+          onSwitchGlobal={props.onSwitchNetworkGlobal}
+          onRestoreDirect={props.onRestoreNetworkDirect}
+        />
+      );
     case "system-settings":
       return (
         <SystemSettingsTab
@@ -71,6 +97,7 @@ export function TabContent(props: TabContentProps) {
           controllerLatestVersion={props.controllerLatestVersion}
           versionStatus={props.versionStatus}
           upgradeStatus={props.upgradeStatus}
+          controllerUpgradeProgress={props.controllerUpgradeProgress}
           isUpgradingController={props.isUpgradingController}
           isUpgradingManager={props.isUpgradingManager}
           onRefreshSystemVersions={props.onRefreshSystemVersions}
@@ -87,6 +114,7 @@ export function TabContent(props: TabContentProps) {
           directRelease={props.directRelease}
           proxyRelease={props.proxyRelease}
           managerUpgradeStatus={props.managerUpgradeStatus}
+          managerUpgradeProgress={props.managerUpgradeProgress}
         />
       );
     default:

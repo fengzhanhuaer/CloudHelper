@@ -19,7 +19,8 @@ var BuildVersion = "dev"
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx              context.Context
+	networkAssistant *networkAssistantService
 }
 
 type PrivateKeyStatus struct {
@@ -30,7 +31,9 @@ type PrivateKeyStatus struct {
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{
+		networkAssistant: newNetworkAssistantService(),
+	}
 }
 
 // startup is called when the app starts. The context is saved
@@ -42,6 +45,16 @@ func (a *App) startup(ctx context.Context) {
 	}
 	if err := autoBackupManagerData(); err != nil {
 		log.Printf("warning: failed to backup manager data: %v", err)
+	}
+	a.networkAssistant.UpdateSession("", "")
+}
+
+func (a *App) shutdown(ctx context.Context) {
+	if a.networkAssistant == nil {
+		return
+	}
+	if err := a.networkAssistant.Shutdown(); err != nil {
+		log.Printf("warning: failed to shutdown network assistant: %v", err)
 	}
 }
 
