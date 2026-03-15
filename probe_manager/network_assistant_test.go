@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 )
@@ -74,5 +75,43 @@ func TestSocks5ReadConnectRequestDomain(t *testing.T) {
 	}
 	if addr != "example.com:80" {
 		t.Fatalf("unexpected target address: %s", addr)
+	}
+}
+
+func TestDefaultDirectWhitelistMatchesPrivateRanges(t *testing.T) {
+	whitelist, err := parseDirectWhitelistRules(defaultDirectWhitelistRules)
+	if err != nil {
+		t.Fatalf("parseDirectWhitelistRules returned error: %v", err)
+	}
+
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{addr: "10.20.30.40:443", want: true},
+		{addr: "172.20.10.10:8080", want: true},
+		{addr: "192.168.1.10:80", want: true},
+		{addr: "127.0.0.1:3000", want: true},
+		{addr: "localhost:15030", want: true},
+		{addr: "8.8.8.8:53", want: false},
+	}
+
+	for _, tt := range tests {
+		got := whitelist.matchesTarget(tt.addr)
+		if got != tt.want {
+			t.Fatalf("matchesTarget(%q)=%v, want %v", tt.addr, got, tt.want)
+		}
+	}
+}
+
+func TestDirectWhitelistIPv6HostPortFormat(t *testing.T) {
+	whitelist, err := parseDirectWhitelistRules([]string{"127.0.0.1"})
+	if err != nil {
+		t.Fatalf("parseDirectWhitelistRules returned error: %v", err)
+	}
+
+	ipv6 := netip.MustParseAddr("2001:db8::1")
+	if whitelist.matchesTarget(net.JoinHostPort(ipv6.String(), "443")) {
+		t.Fatal("unexpected whitelist match for IPv6 target")
 	}
 }

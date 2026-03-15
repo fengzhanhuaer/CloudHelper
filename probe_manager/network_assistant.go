@@ -11,6 +11,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,11 +26,20 @@ const (
 	networkModeDirect = "direct"
 	networkModeGlobal = "global"
 
-	defaultNodeID      = "cloudserver"
-	defaultSocksListen = "127.0.0.1:10808"
-	tunnelRoutePath    = "/api/ws/tunnel/"
-	maxTunnelFailures  = 3
+	defaultNodeID       = "cloudserver"
+	defaultSocksListen  = "127.0.0.1:10808"
+	directWhitelistFile = "direct_whitelist.txt"
+	tunnelRoutePath     = "/api/ws/tunnel/"
+	maxTunnelFailures   = 3
 )
+
+var defaultDirectWhitelistRules = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"localhost",
+	"127.0.0.1",
+}
 
 type NetworkAssistantStatus struct {
 	Enabled           bool     `json:"enabled"`
@@ -56,6 +68,12 @@ type tunnelNodesResponse struct {
 	} `json:"nodes"`
 }
 
+type socksDirectWhitelist struct {
+	hosts map[string]struct{}
+	ips   map[string]struct{}
+	cidrs []*net.IPNet
+}
+
 type networkAssistantService struct {
 	mu sync.RWMutex
 
@@ -77,9 +95,17 @@ type networkAssistantService struct {
 	systemProxyMessage  string
 	lastError           string
 	tunnelOpenFailures  int
+
+	directWhitelist *socksDirectWhitelist
 }
 
 func newNetworkAssistantService() *networkAssistantService {
+	directWhitelist, _, err := loadOrCreateSocksDirectWhitelist()
+	if err != nil {
+		log.Printf("network assistant: failed to load direct whitelist, using defaults: %v", err)
+		directWhitelist = mustBuildDefaultDirectWhitelist()
+	}
+
 	return &networkAssistantService{
 		mode:                networkModeDirect,
 		nodeID:              defaultNodeID,
@@ -88,6 +114,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunnelStatusMessage: "未启用",
 		systemProxyMessage:  "未设置",
 		tunnelOpenFailures:  0,
+		directWhitelist:     directWhitelist,
 	}
 }
 
@@ -220,6 +247,14 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		return err
 	}
 
+	if whitelist, _, err := loadOrCreateSocksDirectWhitelist(); err != nil {
+		log.Printf("network assistant: failed to refresh direct whitelist: %v", err)
+	} else {
+		s.mu.Lock()
+		s.directWhitelist = whitelist
+		s.mu.Unlock()
+	}
+
 	if err := s.ensureSocksServer(); err != nil {
 		s.setLastError(err)
 		return err
@@ -292,6 +327,35 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 		return
 	}
 
+	if s.shouldDialDirect(targetAddr) {
+		directConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+		if err != nil {
+			log.Printf("network assistant: direct dial failed %s: %v", targetAddr, err)
+			socks5Reply(conn, 0x01)
+			s.setTunnelStatus("白名单直连失败")
+			return
+		}
+		defer directConn.Close()
+
+		if err := socks5Reply(conn, 0x00); err != nil {
+			return
+		}
+		s.setTunnelStatus("白名单直连")
+
+		errCh := make(chan error, 2)
+		go func() {
+			_, copyErr := io.Copy(directConn, br)
+			errCh <- copyErr
+		}()
+		go func() {
+			_, copyErr := io.Copy(conn, directConn)
+			errCh <- copyErr
+		}()
+
+		<-errCh
+		return
+	}
+
 	tunnelConn, err := s.openTunnel(targetAddr)
 	if err != nil {
 		log.Printf("network assistant: failed to open tunnel %s: %v", targetAddr, err)
@@ -352,6 +416,17 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 
 	<-errCh
 	s.setTunnelStatus("隧道已断开")
+}
+
+func (s *networkAssistantService) shouldDialDirect(targetAddr string) bool {
+	s.mu.RLock()
+	whitelist := s.directWhitelist
+	s.mu.RUnlock()
+
+	if whitelist == nil {
+		return false
+	}
+	return whitelist.matchesTarget(targetAddr)
 }
 
 func (s *networkAssistantService) openTunnel(targetAddr string) (*websocket.Conn, error) {
@@ -622,6 +697,197 @@ func containsNodeID(nodes []string, target string) bool {
 	return false
 }
 
+func loadOrCreateSocksDirectWhitelist() (*socksDirectWhitelist, string, error) {
+	dataDir, err := ensureManagerDataDir()
+	if err != nil {
+		return nil, "", err
+	}
+
+	whitelistPath := filepath.Join(dataDir, directWhitelistFile)
+	if err := ensureDirectWhitelistFile(whitelistPath); err != nil {
+		return nil, whitelistPath, err
+	}
+
+	raw, err := os.ReadFile(whitelistPath)
+	if err != nil {
+		return nil, whitelistPath, err
+	}
+
+	rules := make([]string, 0)
+	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rules = append(rules, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, whitelistPath, err
+	}
+
+	whitelist, err := parseDirectWhitelistRules(rules)
+	if err != nil {
+		return nil, whitelistPath, err
+	}
+	return whitelist, whitelistPath, nil
+}
+
+func ensureDirectWhitelistFile(whitelistPath string) error {
+	_, err := os.Stat(whitelistPath)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	content := "# CloudHelper direct whitelist\n" +
+		"# one CIDR/IP/hostname per line\n" +
+		strings.Join(defaultDirectWhitelistRules, "\n") + "\n"
+	return os.WriteFile(whitelistPath, []byte(content), 0o644)
+}
+
+func ensureManagerDataDir() (string, error) {
+	candidates := []string{filepath.Join(".", "data")}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, "data"),
+			filepath.Join(dir, "..", "data"),
+		)
+	}
+
+	seen := map[string]struct{}{}
+	var firstErr error
+	for _, candidate := range candidates {
+		absPath, err := filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[absPath]; ok {
+			continue
+		}
+		seen[absPath] = struct{}{}
+
+		info, err := os.Stat(absPath)
+		if err == nil {
+			if info.IsDir() {
+				return absPath, nil
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(absPath, 0o755); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		return absPath, nil
+	}
+
+	if firstErr != nil {
+		return "", firstErr
+	}
+	return "", errors.New("failed to resolve manager data directory")
+}
+
+func parseDirectWhitelistRules(rules []string) (*socksDirectWhitelist, error) {
+	whitelist := &socksDirectWhitelist{
+		hosts: make(map[string]struct{}),
+		ips:   make(map[string]struct{}),
+		cidrs: make([]*net.IPNet, 0),
+	}
+
+	invalidRules := make([]string, 0)
+	for _, rawRule := range rules {
+		rule := strings.ToLower(strings.TrimSpace(rawRule))
+		if rule == "" {
+			continue
+		}
+
+		if _, cidr, err := net.ParseCIDR(rule); err == nil {
+			whitelist.cidrs = append(whitelist.cidrs, cidr)
+			continue
+		}
+
+		if ip := net.ParseIP(rule); ip != nil {
+			whitelist.ips[canonicalIP(ip)] = struct{}{}
+			continue
+		}
+
+		if strings.Contains(rule, " ") {
+			invalidRules = append(invalidRules, rawRule)
+			continue
+		}
+		whitelist.hosts[rule] = struct{}{}
+	}
+
+	if len(invalidRules) > 0 {
+		log.Printf("network assistant: ignored invalid direct whitelist entries: %s", strings.Join(invalidRules, ", "))
+	}
+
+	if len(whitelist.hosts) == 0 && len(whitelist.ips) == 0 && len(whitelist.cidrs) == 0 {
+		return nil, errors.New("direct whitelist has no valid entries")
+	}
+	return whitelist, nil
+}
+
+func mustBuildDefaultDirectWhitelist() *socksDirectWhitelist {
+	whitelist, err := parseDirectWhitelistRules(defaultDirectWhitelistRules)
+	if err != nil {
+		return &socksDirectWhitelist{
+			hosts: make(map[string]struct{}),
+			ips:   make(map[string]struct{}),
+			cidrs: make([]*net.IPNet, 0),
+		}
+	}
+	return whitelist
+}
+
+func canonicalIP(ip net.IP) string {
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4.String()
+	}
+	return ip.String()
+}
+
+func (w *socksDirectWhitelist) matchesTarget(targetAddr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "" {
+		return false
+	}
+
+	if _, ok := w.hosts[host]; ok {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if _, ok := w.ips[canonicalIP(ip)]; ok {
+		return true
+	}
+	for _, cidr := range w.cidrs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func socks5Handshake(br *bufio.Reader, conn net.Conn) error {
 	head := make([]byte, 2)
 	if _, err := io.ReadFull(br, head); err != nil {
@@ -709,7 +975,7 @@ func socks5ReadConnectRequest(br *bufio.Reader, conn net.Conn) (string, error) {
 		return "", errors.New("invalid port")
 	}
 
-	return fmt.Sprintf("%s:%d", host, port), nil
+	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
 }
 
 func socks5Reply(conn net.Conn, rep byte) error {
