@@ -114,7 +114,7 @@ cd probe_controller
 cd probe_node
 $env:GOOS="linux"
 $env:GOARCH="amd64"
-go build -o cloudhelper-probe-node-linux-amd64 main.go
+go build -o cloudhelper-probe-node-linux-amd64 .
 ```
 
 管理端：

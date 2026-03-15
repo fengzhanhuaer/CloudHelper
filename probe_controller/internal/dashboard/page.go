@@ -56,6 +56,21 @@ const pageHTML = `<!DOCTYPE html>
             padding-bottom: 20px;
             margin-bottom: 24px;
         }
+        .brand-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, rgba(88, 166, 255, 0.28), rgba(46, 160, 67, 0.28));
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 0 14px rgba(88, 166, 255, 0.3);
+        }
+        .brand-icon svg {
+            width: 18px;
+            height: 18px;
+        }
         .status-indicator {
             width: 14px;
             height: 14px;
@@ -100,6 +115,13 @@ const pageHTML = `<!DOCTYPE html>
     <div class="container">
         <div class="glass-panel">
             <h1>
+                <div class="brand-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M8 7L4 12L8 17" stroke="#9cd0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M16 7L20 12L16 17" stroke="#9cd0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M11 5L13 19" stroke="#4ad08f" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </div>
                 <div id="connection-status" class="status-indicator"></div>
                 CloudHelper Probe Controller
             </h1>

@@ -68,7 +68,7 @@ jobs:
           GOARCH: amd64
           NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
         shell: bash
-        run: go build -ldflags "-X github.com/cloudhelper/probe_controller/internal/core.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-controller-linux-amd64 main.go
+        run: go build -ldflags "-X github.com/cloudhelper/probe_controller/internal/core.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-controller-linux-amd64 .
 
       - name: Upload Probe Controller Artifact
         uses: actions/upload-artifact@v4
@@ -98,7 +98,7 @@ jobs:
           GOARCH: amd64
           NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
         shell: bash
-        run: go build -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-node-linux-amd64 main.go
+        run: go build -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-node-linux-amd64 .
 
       - name: Upload Probe Node Artifact
         uses: actions/upload-artifact@v4
