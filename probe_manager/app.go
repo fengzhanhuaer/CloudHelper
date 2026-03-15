@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -37,10 +38,10 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	if err := cleanupManagerStaleExecutables(); err != nil {
-		fmt.Printf("warning: failed to cleanup stale manager executable files: %v\n", err)
+		log.Printf("warning: failed to cleanup stale manager executable files: %v", err)
 	}
 	if err := autoBackupManagerData(); err != nil {
-		fmt.Printf("warning: failed to backup manager data: %v\n", err)
+		log.Printf("warning: failed to backup manager data: %v", err)
 	}
 }
 

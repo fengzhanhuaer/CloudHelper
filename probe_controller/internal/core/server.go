@@ -7,6 +7,7 @@ import (
 )
 
 func Run() {
+	initControllerLogger()
 	serverStartTime = time.Now()
 
 	initStore()
