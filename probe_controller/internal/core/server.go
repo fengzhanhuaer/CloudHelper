@@ -10,7 +10,13 @@ func Run() {
 	serverStartTime = time.Now()
 
 	initStore()
+	if err := cleanupControllerStaleExecutables(); err != nil {
+		log.Printf("warning: failed to cleanup stale controller executable files: %v", err)
+	}
 	initAuth()
+	if err := autoBackupControllerData(); err != nil {
+		log.Printf("warning: failed to backup controller data: %v", err)
+	}
 
 	mux := NewMux()
 

@@ -619,6 +619,40 @@ func replaceCurrentExecutable(newBinary string) error {
 	return nil
 }
 
+func cleanupControllerStaleExecutables() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && strings.TrimSpace(resolved) != "" {
+		exePath = resolved
+	}
+
+	dir := filepath.Dir(exePath)
+	base := filepath.Base(exePath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+
+	var firstErr error
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name != base+".new" && name != base+".bak" && !strings.HasPrefix(name, base+".bak.") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
 func copyFile(src, dst string, mode fs.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
