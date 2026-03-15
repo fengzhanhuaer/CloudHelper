@@ -101,7 +101,7 @@ export type LogContentResponse = {
   fetched_at: string;
 };
 
-export type TabKey = "overview" | "probe-status" | "probe-manage" | "link-manage" | "network-assistant" | "log-viewer" | "system-settings";
+export type TabKey = "overview" | "probe-manage" | "link-manage" | "network-assistant" | "log-viewer" | "system-settings";
 
 export type TabItem = {
   key: TabKey;

@@ -109,3 +109,7 @@ func (a *App) CreateProbeNode(nodeName string) (ProbeNode, error) {
 func (a *App) UpdateProbeNode(nodeNo int, targetSystem string, directConnect bool) (ProbeNode, error) {
 	return a.inner.UpdateProbeNode(nodeNo, targetSystem, directConnect)
 }
+
+func (a *App) ReplaceProbeNodes(nodes []ProbeNode) ([]ProbeNode, error) {
+	return a.inner.ReplaceProbeNodes(nodes)
+}

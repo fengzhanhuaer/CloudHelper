@@ -87,8 +87,6 @@ export function TabContent(props: TabContentProps) {
           onRefreshPrivateKeyStatus={props.onRefreshPrivateKeyStatus}
         />
       );
-    case "probe-status":
-      return <PlaceholderTab title="探针状态" description="该页面将用于展示探针在线状态与基础健康信息。" />;
     case "probe-manage":
       return <ProbeManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
     case "link-manage":

@@ -76,6 +76,14 @@ type probeNonceResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+type probeControlMessage struct {
+	Type              string `json:"type"`
+	Mode              string `json:"mode"`
+	ReleaseRepo       string `json:"release_repo"`
+	ControllerBaseURL string `json:"controller_base_url"`
+	Timestamp         string `json:"timestamp"`
+}
+
 func main() {
 	listenAddr := firstNonEmpty(os.Getenv("PROBE_NODE_LISTEN"), ":16030")
 	identity, err := resolveNodeIdentity()
@@ -311,7 +319,7 @@ func startProbeReporter(wsURL, nonceURL string, identity nodeIdentity) {
 }
 
 func runProbeReporterSession(wsURL, nonceURL string, identity nodeIdentity, sampler *cpuSampler) error {
-	nonce, err := requestProbeNonce(nonceURL)
+	nonce, err := requestProbeNonce(nonceURL, identity.NodeID)
 	if err != nil {
 		return err
 	}
@@ -337,10 +345,12 @@ func runProbeReporterSession(wsURL, nonceURL string, identity nodeIdentity, samp
 	readErrCh := make(chan error, 1)
 	go func() {
 		for {
-			if _, _, readErr := conn.ReadMessage(); readErr != nil {
+			_, raw, readErr := conn.ReadMessage()
+			if readErr != nil {
 				readErrCh <- readErr
 				return
 			}
+			processProbeControlMessage(raw, nonceURL, identity)
 		}
 	}()
 
@@ -389,11 +399,12 @@ func sendProbeReport(conn *websocket.Conn, identity nodeIdentity, sampler *cpuSa
 	return nil
 }
 
-func requestProbeNonce(nonceURL string) (string, error) {
+func requestProbeNonce(nonceURL, nodeID string) (string, error) {
 	req, err := http.NewRequest(http.MethodGet, nonceURL, nil)
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("X-Probe-Node-Id", strings.TrimSpace(nodeID))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -420,6 +431,17 @@ func signProbeNonce(secret, nonce string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(nonce))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func processProbeControlMessage(raw []byte, nonceURL string, identity nodeIdentity) {
+	var msg probeControlMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return
+	}
+	if strings.TrimSpace(strings.ToLower(msg.Type)) != "upgrade" {
+		return
+	}
+	go runProbeUpgrade(msg, nonceURL, identity)
 }
 
 func collectIPs() ([]string, []string) {

@@ -105,6 +105,19 @@ func (a *App) UpdateProbeNode(nodeNo int, targetSystem string, directConnect boo
 	return ProbeNode{}, fmt.Errorf("node %d not found", nodeNo)
 }
 
+func (a *App) ReplaceProbeNodes(nodes []ProbeNode) ([]ProbeNode, error) {
+	_, storePath, err := loadProbeNodes()
+	if err != nil {
+		return nil, err
+	}
+
+	normalized := normalizeProbeNodes(nodes)
+	if err := writeProbeNodes(storePath, normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
 func loadProbeNodes() ([]ProbeNode, string, error) {
 	dataDir, err := ensureManagerDataDir()
 	if err != nil {
@@ -130,19 +143,7 @@ func loadProbeNodes() ([]ProbeNode, string, error) {
 		return nil, storePath, fmt.Errorf("failed to parse probe nodes: %w", err)
 	}
 
-	for i := range nodes {
-		if nodes[i].TargetSystem != "windows" {
-			nodes[i].TargetSystem = "linux"
-		}
-		if nodes[i].CreatedAt == "" {
-			nodes[i].CreatedAt = time.Now().UTC().Format(time.RFC3339)
-		}
-		if nodes[i].UpdatedAt == "" {
-			nodes[i].UpdatedAt = nodes[i].CreatedAt
-		}
-	}
-
-	return nodes, storePath, nil
+	return normalizeProbeNodes(nodes), storePath, nil
 }
 
 func writeProbeNodes(storePath string, nodes []ProbeNode) error {
@@ -169,4 +170,54 @@ func randomSecret(length int) string {
 		out[i] = alphabet[int(b[i])%len(alphabet)]
 	}
 	return string(out)
+}
+
+func normalizeProbeNodes(nodes []ProbeNode) []ProbeNode {
+	if len(nodes) == 0 {
+		return []ProbeNode{}
+	}
+
+	seenNo := map[int]struct{}{}
+	seenName := map[string]struct{}{}
+	now := time.Now().UTC().Format(time.RFC3339)
+	out := make([]ProbeNode, 0, len(nodes))
+
+	for _, item := range nodes {
+		if item.NodeNo <= 0 {
+			continue
+		}
+		name := strings.TrimSpace(item.NodeName)
+		if name == "" {
+			continue
+		}
+		nameKey := strings.ToLower(name)
+		if _, ok := seenNo[item.NodeNo]; ok {
+			continue
+		}
+		if _, ok := seenName[nameKey]; ok {
+			continue
+		}
+		seenNo[item.NodeNo] = struct{}{}
+		seenName[nameKey] = struct{}{}
+
+		node := item
+		node.NodeName = name
+		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
+		if node.NodeSecret == "" {
+			node.NodeSecret = randomSecret(32)
+		}
+		node.TargetSystem = strings.ToLower(strings.TrimSpace(node.TargetSystem))
+		if node.TargetSystem != "windows" {
+			node.TargetSystem = "linux"
+		}
+		if strings.TrimSpace(node.CreatedAt) == "" {
+			node.CreatedAt = now
+		}
+		if strings.TrimSpace(node.UpdatedAt) == "" {
+			node.UpdatedAt = node.CreatedAt
+		}
+		out = append(out, node)
+	}
+
+	return out
 }

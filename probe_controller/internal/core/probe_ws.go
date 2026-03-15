@@ -134,28 +134,9 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodeID := strings.TrimSpace(r.Header.Get("X-Probe-Node-Id"))
-	nonce := strings.TrimSpace(r.Header.Get("X-Probe-Nonce"))
-	signature := strings.TrimSpace(r.Header.Get("X-Probe-Signature"))
-
-	if nodeID == "" || nonce == "" || signature == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing probe auth headers"})
-		return
-	}
-
-	if err := probeNonces.consume(nonce); err != nil {
+	nodeID, err := authenticateProbeRequest(r)
+	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
-		return
-	}
-
-	secret, ok := resolveProbeSecret(nodeID)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "probe secret is not configured for node"})
-		return
-	}
-
-	if !verifyProbeHMAC(secret, nonce, signature) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid probe signature"})
 		return
 	}
 
@@ -164,6 +145,8 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	session := registerProbeSession(nodeID, conn)
+	defer unregisterProbeSession(nodeID, session)
 
 	clientIP, _ := getClientIP(r)
 	for {
@@ -174,7 +157,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 
 		var msg probeReportMessage
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			_ = conn.WriteJSON(probeAckMessage{Type: "error", Message: "invalid json payload", ServerUTC: time.Now().UTC().Format(time.RFC3339)})
+			_ = session.writeJSON(probeAckMessage{Type: "error", Message: "invalid json payload", ServerUTC: time.Now().UTC().Format(time.RFC3339)})
 			continue
 		}
 
@@ -196,7 +179,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(msg.Version),
 		)
 
-		_ = conn.WriteJSON(probeAckMessage{
+		_ = session.writeJSON(probeAckMessage{
 			Type:      "ack",
 			Message:   "report accepted",
 			ServerUTC: time.Now().UTC().Format(time.RFC3339),

@@ -1,0 +1,311 @@
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+type probeSession struct {
+	nodeID string
+	conn   *websocket.Conn
+	mu     sync.Mutex
+}
+
+type probeUpgradeDispatchRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+type probeUpgradeCommand struct {
+	Type              string `json:"type"`
+	Mode              string `json:"mode"`
+	ReleaseRepo       string `json:"release_repo"`
+	ControllerBaseURL string `json:"controller_base_url"`
+	Timestamp         string `json:"timestamp"`
+}
+
+var probeSessions = struct {
+	mu   sync.RWMutex
+	data map[string]*probeSession
+}{data: make(map[string]*probeSession)}
+
+func registerProbeSession(nodeID string, conn *websocket.Conn) *probeSession {
+	s := &probeSession{nodeID: nodeID, conn: conn}
+	probeSessions.mu.Lock()
+	probeSessions.data[nodeID] = s
+	probeSessions.mu.Unlock()
+	return s
+}
+
+func unregisterProbeSession(nodeID string, session *probeSession) {
+	probeSessions.mu.Lock()
+	defer probeSessions.mu.Unlock()
+	current, ok := probeSessions.data[nodeID]
+	if !ok || current != session {
+		return
+	}
+	delete(probeSessions.data, nodeID)
+}
+
+func getProbeSession(nodeID string) (*probeSession, bool) {
+	probeSessions.mu.RLock()
+	defer probeSessions.mu.RUnlock()
+	s, ok := probeSessions.data[nodeID]
+	return s, ok
+}
+
+func (s *probeSession) writeJSON(v interface{}) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conn.WriteJSON(v)
+}
+
+func AdminUpgradeProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req probeUpgradeDispatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	nodeID := normalizeProbeNodeID(req.NodeID)
+	if nodeID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+
+	node, ok := getProbeNodeByID(nodeID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "probe node not found"})
+		return
+	}
+
+	if err := dispatchUpgradeToProbe(node, controllerBaseURLFromRequest(r)); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "node_id": nodeID})
+}
+
+func AdminUpgradeAllProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	Store.mu.RLock()
+	nodes := loadProbeNodesLocked()
+	Store.mu.RUnlock()
+
+	controllerBaseURL := controllerBaseURLFromRequest(r)
+	success := 0
+	failures := make([]string, 0)
+	for _, node := range nodes {
+		if err := dispatchUpgradeToProbe(node, controllerBaseURL); err != nil {
+			failures = append(failures, fmt.Sprintf("%d:%v", node.NodeNo, err))
+			continue
+		}
+		success++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       len(failures) == 0,
+		"success":  success,
+		"total":    len(nodes),
+		"failures": failures,
+	})
+}
+
+func ProbeProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isHTTPSRequest(r) {
+		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
+		return
+	}
+	if _, err := authenticateProbeRequest(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	repo, err := normalizeGitHubRepo(r.URL.Query().Get("repo"), r.URL.Query().Get("project"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	release, err := fetchLatestRelease(ctx, repo)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("failed to fetch github latest release: %v", err)})
+		return
+	}
+
+	assets := make([]proxyAsset, 0, len(release.Assets))
+	for _, a := range release.Assets {
+		assets = append(assets, proxyAsset{Name: a.Name, Size: a.Size, DownloadURL: a.BrowserDownloadURL})
+	}
+	writeJSON(w, http.StatusOK, proxyLatestResponse{
+		Repo:        repo,
+		TagName:     strings.TrimSpace(release.TagName),
+		ReleaseName: strings.TrimSpace(release.Name),
+		HTMLURL:     strings.TrimSpace(release.HTMLURL),
+		PublishedAt: strings.TrimSpace(release.PublishedAt),
+		Assets:      assets,
+	})
+}
+
+func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isHTTPSRequest(r) {
+		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
+		return
+	}
+	if _, err := authenticateProbeRequest(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
+	if rawURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url query parameter is required"})
+		return
+	}
+	targetURL, err := url.Parse(rawURL)
+	if err != nil || targetURL == nil || targetURL.Scheme != "https" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid download url"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	proxyReq.Header.Set("User-Agent", "cloudhelper-probe-proxy-download")
+	proxyReq.Header.Set("Accept", "application/octet-stream")
+	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("proxy download failed: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("upstream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))})
+		return
+	}
+
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	fileName := sanitizeFilename(path.Base(strings.TrimSpace(targetURL.Path)))
+	if fileName != "" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
+	}
+	w.Header().Set("Content-Type", contentType)
+	if cl := strings.TrimSpace(resp.Header.Get("Content-Length")); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) error {
+	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+	session, ok := getProbeSession(nodeID)
+	if !ok {
+		return fmt.Errorf("probe is offline")
+	}
+
+	mode := "proxy"
+	if node.DirectConnect {
+		mode = "direct"
+	}
+	cmd := probeUpgradeCommand{
+		Type:              "upgrade",
+		Mode:              mode,
+		ReleaseRepo:       releaseRepo(),
+		ControllerBaseURL: controllerBaseURL,
+		Timestamp:         time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(nodeID, session)
+		return err
+	}
+	return nil
+}
+
+func getProbeNodeByID(nodeID string) (probeNodeRecord, bool) {
+	Store.mu.RLock()
+	defer Store.mu.RUnlock()
+	for _, node := range loadProbeNodesLocked() {
+		if normalizeProbeNodeID(strconv.Itoa(node.NodeNo)) == nodeID {
+			return node, true
+		}
+	}
+	return probeNodeRecord{}, false
+}
+
+func controllerBaseURLFromRequest(r *http.Request) string {
+	scheme := "http"
+	if isHTTPSRequest(r) {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		host = "127.0.0.1:15030"
+	}
+	return scheme + "://" + host
+}
+
+func authenticateProbeRequest(r *http.Request) (string, error) {
+	nodeID := normalizeProbeNodeID(r.Header.Get("X-Probe-Node-Id"))
+	nonce := strings.TrimSpace(r.Header.Get("X-Probe-Nonce"))
+	signature := strings.TrimSpace(r.Header.Get("X-Probe-Signature"))
+
+	if nodeID == "" || nonce == "" || signature == "" {
+		return "", fmt.Errorf("missing probe auth headers")
+	}
+	if err := probeNonces.consume(nonce); err != nil {
+		return "", err
+	}
+	secret, ok := resolveProbeSecret(nodeID)
+	if !ok {
+		return "", fmt.Errorf("probe secret is not configured for node")
+	}
+	if !verifyProbeHMAC(secret, nonce, signature) {
+		return "", fmt.Errorf("invalid probe signature")
+	}
+	return nodeID, nil
+}

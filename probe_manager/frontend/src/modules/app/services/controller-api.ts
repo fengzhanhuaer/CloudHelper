@@ -114,3 +114,76 @@ export async function upsertProbeSecret(baseURL: string, token: string, nodeID: 
     throw new Error(`sync probe secret failed: HTTP ${response.status} ${errBody}`);
   }
 }
+
+export type ProbeNodeSyncItem = {
+  node_no: number;
+  node_name: string;
+  node_secret: string;
+  target_system: "linux" | "windows";
+  direct_connect: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
+  const response = await fetch(`${baseURL}/api/admin/probe/nodes`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`fetch probe nodes failed: HTTP ${response.status} ${errBody}`);
+  }
+
+  const payload = (await response.json()) as { nodes?: ProbeNodeSyncItem[] };
+  return Array.isArray(payload.nodes) ? payload.nodes : [];
+}
+
+export async function syncProbeNodes(baseURL: string, token: string, nodes: ProbeNodeSyncItem[]): Promise<ProbeNodeSyncItem[]> {
+  const response = await fetch(`${baseURL}/api/admin/probe/nodes/sync`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ nodes }),
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`sync probe nodes failed: HTTP ${response.status} ${errBody}`);
+  }
+
+  const payload = (await response.json()) as { nodes?: ProbeNodeSyncItem[] };
+  return Array.isArray(payload.nodes) ? payload.nodes : [];
+}
+
+export async function upgradeProbeNode(baseURL: string, token: string, nodeID: number): Promise<void> {
+  const response = await fetch(`${baseURL}/api/admin/probe/upgrade`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ node_id: String(nodeID) }),
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`upgrade probe node failed: HTTP ${response.status} ${errBody}`);
+  }
+}
+
+export async function upgradeAllProbeNodes(baseURL: string, token: string): Promise<{ success: number; total: number; failures: string[] }> {
+  const response = await fetch(`${baseURL}/api/admin/probe/upgrade/all`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`upgrade all probe nodes failed: HTTP ${response.status} ${errBody}`);
+  }
+  const payload = (await response.json()) as { success?: number; total?: number; failures?: string[] };
+  return {
+    success: typeof payload.success === "number" ? payload.success : 0,
+    total: typeof payload.total === "number" ? payload.total : 0,
+    failures: Array.isArray(payload.failures) ? payload.failures : [],
+  };
+}
