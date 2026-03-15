@@ -91,7 +91,17 @@ export type NetworkAssistantStatus = {
   last_error: string;
 };
 
-export type TabKey = "overview" | "probe-status" | "probe-manage" | "link-manage" | "network-assistant" | "system-settings";
+export type LogSource = "local" | "server";
+
+export type LogContentResponse = {
+  source: LogSource;
+  file_path: string;
+  lines: number;
+  content: string;
+  fetched_at: string;
+};
+
+export type TabKey = "overview" | "probe-status" | "probe-manage" | "link-manage" | "network-assistant" | "log-viewer" | "system-settings";
 
 export type TabItem = {
   key: TabKey;

@@ -6,6 +6,10 @@ export function GetLocalPrivateKeyStatus() {
   return window['go']['main']['App']['GetLocalPrivateKeyStatus']();
 }
 
+export function GetLocalManagerLogs(arg1, arg2) {
+  return window['go']['main']['App']['GetLocalManagerLogs'](arg1, arg2);
+}
+
 export function GetNetworkAssistantStatus() {
   return window['go']['main']['App']['GetNetworkAssistantStatus']();
 }

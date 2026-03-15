@@ -7,6 +7,7 @@ import { Sidebar } from "./modules/app/components/Sidebar";
 import { TabContent } from "./modules/app/components/TabContent";
 import { useAuthFlow } from "./modules/app/hooks/useAuthFlow";
 import { useConnectionFlow } from "./modules/app/hooks/useConnectionFlow";
+import { useLogViewer } from "./modules/app/hooks/useLogViewer";
 import { useLocalSettings } from "./modules/app/hooks/useLocalSettings";
 import { useNetworkAssistant } from "./modules/app/hooks/useNetworkAssistant";
 import { useUpgradeFlow } from "./modules/app/hooks/useUpgradeFlow";
@@ -20,6 +21,7 @@ function App() {
   const connection = useConnectionFlow(settings.baseUrl, auth.sessionToken);
   const upgrade = useUpgradeFlow();
   const networkAssistant = useNetworkAssistant();
+  const logViewer = useLogViewer();
 
   const tabs = useMemo(() => resolveTabs(auth.userRole, auth.certType), [auth.userRole, auth.certType]);
 
@@ -43,6 +45,15 @@ function App() {
       void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
     }
   }, [activeTab, auth.sessionToken, networkAssistant.refreshStatus, settings.baseUrl]);
+
+  useEffect(() => {
+    if (!auth.sessionToken) {
+      return;
+    }
+    if (activeTab === "log-viewer") {
+      void logViewer.refreshLogs(settings.baseUrl, auth.sessionToken, reauthenticateSession);
+    }
+  }, [activeTab, auth.sessionToken, logViewer.refreshLogs, settings.baseUrl]);
 
   async function reauthenticateSession(): Promise<string> {
     const result = await auth.login(settings.baseUrl);
@@ -70,6 +81,7 @@ function App() {
     setActiveTab("overview");
     connection.clearStatusMessages();
     upgrade.clearUpgradeMessages();
+    logViewer.clearLogs();
   }
 
   if (!auth.sessionToken) {
@@ -150,6 +162,21 @@ function App() {
             onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct", networkAssistant.selectedNode)}
             onSwitchNetworkGlobal={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "global", networkAssistant.selectedNode)}
             onRestoreNetworkDirect={() => networkAssistant.restoreDirect()}
+            logSource={logViewer.source}
+            onLogSourceChange={logViewer.setSource}
+            logLines={logViewer.lines}
+            onLogLinesChange={logViewer.setLines}
+            logSinceMinutes={logViewer.sinceMinutes}
+            onLogSinceMinutesChange={logViewer.setSinceMinutes}
+            logAutoScroll={logViewer.autoScroll}
+            onLogAutoScrollChange={logViewer.setAutoScroll}
+            isLoadingLogs={logViewer.isLoading}
+            logStatus={logViewer.status}
+            logCopyStatus={logViewer.copyStatus}
+            logFilePath={logViewer.logFilePath}
+            logContent={logViewer.content}
+            onRefreshLogs={() => logViewer.refreshLogs(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
+            onCopyLogs={() => logViewer.copyLogs()}
           />
         </main>
       </div>

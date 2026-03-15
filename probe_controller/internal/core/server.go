@@ -33,6 +33,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/auth/nonce", corsMiddleware(requireHTTPSMiddleware(NonceHandler)))
 	mux.HandleFunc("/api/auth/login", corsMiddleware(requireHTTPSMiddleware(LoginHandler)))
 	mux.HandleFunc("/api/admin/status", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminStatusHandler))))
+	mux.HandleFunc("/api/admin/logs", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminLogsHandler))))
 	mux.HandleFunc("/api/admin/version", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminVersionHandler))))
 	mux.HandleFunc("/api/admin/upgrade", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminUpgradeHandler))))
 	mux.HandleFunc("/api/admin/upgrade/progress", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(AdminUpgradeProgressHandler))))

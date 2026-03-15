@@ -2,6 +2,7 @@ import type {
   ControllerUpgradeResponse,
   ControllerVersionResponse,
   DashboardStatusResponse,
+  LogContentResponse,
   LoginResponse,
   NonceResponse,
   UpgradeProgress,
@@ -80,4 +81,18 @@ export async function fetchControllerUpgradeProgress(baseURL: string, token: str
     throw new Error(`upgrade progress failed: HTTP ${response.status} ${errBody}`);
   }
   return (await response.json()) as UpgradeProgress;
+}
+
+export async function fetchServerLogs(baseURL: string, token: string, lines: number, sinceMinutes: number): Promise<LogContentResponse> {
+  const safeLines = Number.isFinite(lines) ? Math.max(1, Math.min(2000, Math.trunc(lines))) : 200;
+  const safeSince = Number.isFinite(sinceMinutes) ? Math.max(0, Math.min(2000, Math.trunc(sinceMinutes))) : 0;
+  const qs = safeSince > 0 ? `?lines=${safeLines}&since_minutes=${safeSince}` : `?lines=${safeLines}`;
+  const response = await fetch(`${baseURL}/api/admin/logs${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`server logs failed: HTTP ${response.status} ${errBody}`);
+  }
+  return (await response.json()) as LogContentResponse;
 }

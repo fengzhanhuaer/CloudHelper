@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function GetLocalPrivateKeyStatus():Promise<main.PrivateKeyStatus>;
 
+export function GetLocalManagerLogs(arg1:number,arg2:number):Promise<any>;
+
 export function GetNetworkAssistantStatus():Promise<any>;
 
 export function GetLatestGitHubRelease(arg1:string):Promise<any>;

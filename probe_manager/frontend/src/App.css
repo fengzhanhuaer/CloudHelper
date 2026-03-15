@@ -221,6 +221,30 @@
     transition: width 0.25s ease;
 }
 
+.log-viewer-output {
+    margin-top: 12px;
+    min-height: 360px;
+    max-height: 560px;
+    overflow: auto;
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    padding: 12px;
+    color: #dff3ff;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.log-auto-scroll-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #d6e4ff;
+    font-size: 13px;
+}
+
 @media (max-width: 900px) {
     .app-shell {
         grid-template-columns: 1fr;

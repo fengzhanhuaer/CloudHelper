@@ -1,8 +1,9 @@
+import { LogViewerTab } from "./LogViewerTab";
 import { NetworkAssistantTab } from "./NetworkAssistantTab";
 import { OverviewTab } from "./OverviewTab";
 import { PlaceholderTab } from "./PlaceholderTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
-import type { NetworkAssistantStatus, ReleaseInfo, TabKey, UpgradeProgress } from "../types";
+import type { LogSource, NetworkAssistantStatus, ReleaseInfo, TabKey, UpgradeProgress } from "../types";
 
 type TabContentProps = {
   activeTab: TabKey;
@@ -49,6 +50,21 @@ type TabContentProps = {
   onSwitchNetworkDirect: () => void;
   onSwitchNetworkGlobal: () => void;
   onRestoreNetworkDirect: () => void;
+  logSource: LogSource;
+  onLogSourceChange: (value: LogSource) => void;
+  logLines: number;
+  onLogLinesChange: (value: number) => void;
+  logSinceMinutes: number;
+  onLogSinceMinutesChange: (value: number) => void;
+  logAutoScroll: boolean;
+  onLogAutoScrollChange: (value: boolean) => void;
+  isLoadingLogs: boolean;
+  logStatus: string;
+  logCopyStatus: string;
+  logFilePath: string;
+  logContent: string;
+  onRefreshLogs: () => void;
+  onCopyLogs: () => void;
 };
 
 export function TabContent(props: TabContentProps) {
@@ -87,6 +103,26 @@ export function TabContent(props: TabContentProps) {
           onSwitchDirect={props.onSwitchNetworkDirect}
           onSwitchGlobal={props.onSwitchNetworkGlobal}
           onRestoreDirect={props.onRestoreNetworkDirect}
+        />
+      );
+    case "log-viewer":
+      return (
+        <LogViewerTab
+          source={props.logSource}
+          onSourceChange={props.onLogSourceChange}
+          lines={props.logLines}
+          onLinesChange={props.onLogLinesChange}
+          sinceMinutes={props.logSinceMinutes}
+          onSinceMinutesChange={props.onLogSinceMinutesChange}
+          autoScroll={props.logAutoScroll}
+          onAutoScrollChange={props.onLogAutoScrollChange}
+          isLoading={props.isLoadingLogs}
+          status={props.logStatus}
+          copyStatus={props.logCopyStatus}
+          logFilePath={props.logFilePath}
+          content={props.logContent}
+          onRefresh={props.onRefreshLogs}
+          onCopy={props.onCopyLogs}
         />
       );
     case "system-settings":
