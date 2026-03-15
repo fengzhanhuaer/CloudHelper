@@ -153,6 +153,6 @@ wails build -clean -platform windows/amd64 -o probe_manager -nopackage
   - `X-Probe-Signature`
 - 安全约束（强制）：探针 WSS 会话仅允许访问 `/api/probe/*` 探针接口；严禁访问 `/api/admin/*` 私有管理接口，除非经过明确评审和需求变更。
 - 主控主动限制：若请求携带 `X-Probe-Node-Id / X-Probe-Nonce / X-Probe-Signature` 任一探针鉴权头，且目标不是 `/api/probe/*`，主控直接拒绝（`403`）。
-- 不再使用共享密钥；探针密钥由管理端创建节点时自动同步到主控（`/api/admin/probe/secret`）
+- 不再使用共享密钥；探针密钥由管理端通过 `wss /api/admin/ws` 自动同步到主控。
 - 探针周期上报：IPv4/IPv6、CPU、内存、磁盘、Swap
 

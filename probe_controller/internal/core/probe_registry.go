@@ -18,14 +18,19 @@ type probeSecretUpsertRequest struct {
 }
 
 type probeNodeRecord struct {
-	NodeNo        int                 `json:"node_no"`
-	NodeName      string              `json:"node_name"`
-	NodeSecret    string              `json:"node_secret"`
-	TargetSystem  string              `json:"target_system"`
-	DirectConnect bool                `json:"direct_connect"`
-	CreatedAt     string              `json:"created_at"`
-	UpdatedAt     string              `json:"updated_at"`
-	Runtime       *probeRuntimeStatus `json:"runtime,omitempty"`
+	NodeNo        int    `json:"node_no"`
+	NodeName      string `json:"node_name"`
+	NodeSecret    string `json:"node_secret"`
+	TargetSystem  string `json:"target_system"`
+	DirectConnect bool   `json:"direct_connect"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+type probeNodeStatusRecord struct {
+	NodeNo   int                `json:"node_no"`
+	NodeName string             `json:"node_name"`
+	Runtime  probeRuntimeStatus `json:"runtime"`
 }
 
 type probeNodesSyncRequest struct {
@@ -79,11 +84,26 @@ func AdminGetProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	Store.mu.RLock()
-	nodes := withProbeRuntimeLocked(loadProbeNodesLocked())
+	nodes := loadProbeNodesLocked()
 	Store.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"nodes": nodes,
+	})
+}
+
+func AdminGetProbeNodeStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	Store.mu.RLock()
+	items := loadProbeNodeStatusLocked()
+	Store.mu.RUnlock()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"items": items,
 	})
 }
 
@@ -114,7 +134,7 @@ func AdminSyncProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":    true,
 		"count": len(nodes),
-		"nodes": withProbeRuntime(nodes),
+		"nodes": nodes,
 	})
 }
 
@@ -181,24 +201,18 @@ func loadProbeNodesLocked() []probeNodeRecord {
 	return normalized
 }
 
-func withProbeRuntimeLocked(nodes []probeNodeRecord) []probeNodeRecord {
-	out := make([]probeNodeRecord, 0, len(nodes))
+func loadProbeNodeStatusLocked() []probeNodeStatusRecord {
+	nodes := loadProbeNodesLocked()
+	out := make([]probeNodeStatusRecord, 0, len(nodes))
 	for _, node := range nodes {
-		item := node
 		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+		runtime := probeRuntimeStatus{NodeID: nodeID, Online: false, System: probeSystemMetrics{}}
 		if runtime, ok := getProbeRuntime(nodeID); ok {
-			r := runtime
-			item.Runtime = &r
+			runtime = runtime
 		}
-		out = append(out, item)
+		out = append(out, probeNodeStatusRecord{NodeNo: node.NodeNo, NodeName: node.NodeName, Runtime: runtime})
 	}
 	return out
-}
-
-func withProbeRuntime(nodes []probeNodeRecord) []probeNodeRecord {
-	Store.mu.RLock()
-	defer Store.mu.RUnlock()
-	return withProbeRuntimeLocked(nodes)
 }
 
 func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string]string) {
@@ -218,7 +232,6 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		node := item
 		node.NodeName = strings.TrimSpace(node.NodeName)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
-		node.Runtime = nil
 		node.TargetSystem = strings.ToLower(strings.TrimSpace(node.TargetSystem))
 		if node.TargetSystem != "windows" {
 			node.TargetSystem = "linux"

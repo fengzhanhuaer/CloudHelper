@@ -79,7 +79,12 @@ export type ProbeNodeSyncItem = {
   direct_connect: boolean;
   created_at: string;
   updated_at: string;
-  runtime?: {
+};
+
+export type ProbeNodeStatusItem = {
+  node_no: number;
+  node_name: string;
+  runtime: {
     node_id?: string;
     online?: boolean;
     last_seen?: string;
@@ -95,6 +100,11 @@ export type ProbeNodeSyncItem = {
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
   const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[] }>(baseURL, token, "admin.probe.nodes.get");
   return Array.isArray(payload.nodes) ? payload.nodes : [];
+}
+
+export async function fetchProbeNodeStatus(baseURL: string, token: string): Promise<ProbeNodeStatusItem[]> {
+  const payload = await callAdminWSRpc<{ items?: ProbeNodeStatusItem[] }>(baseURL, token, "admin.probe.status.get");
+  return Array.isArray(payload.items) ? payload.items : [];
 }
 
 export async function syncProbeNodes(baseURL: string, token: string, nodes: ProbeNodeSyncItem[]): Promise<ProbeNodeSyncItem[]> {

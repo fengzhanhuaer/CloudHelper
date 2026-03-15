@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchProbeNodes, syncProbeNodes, upgradeAllProbeNodes, upgradeProbeNode, type ProbeNodeSyncItem } from "../services/controller-api";
+import { fetchProbeNodeStatus, fetchProbeNodes, syncProbeNodes, upgradeAllProbeNodes, upgradeProbeNode, type ProbeNodeStatusItem, type ProbeNodeSyncItem } from "../services/controller-api";
 
 type ProbeManageTabProps = {
   controllerBaseUrl: string;
@@ -35,6 +35,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [nodeNameInput, setNodeNameInput] = useState("");
   const [controllerAddress, setControllerAddress] = useState(props.controllerBaseUrl || "");
   const [nodes, setNodes] = useState<ProbeNodeItem[]>([]);
+  const [nodeStatusItems, setNodeStatusItems] = useState<ProbeNodeStatusItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isUpgradingAll, setIsUpgradingAll] = useState(false);
   const [upgradingNodeNos, setUpgradingNodeNos] = useState<number[]>([]);
@@ -54,9 +55,9 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     setIsLoading(true);
     try {
       const remoteNodes = await fetchProbeNodesFromController(controllerAddress, props.sessionToken);
-      const syncedLocal = await replaceLocalProbeNodes(remoteNodes);
-      setNodes(sortNodes(syncedLocal));
-      setStatus(syncedLocal.length ? "已从主控同步探针列表" : "主控暂无探针，请先创建");
+      await replaceLocalProbeNodes(remoteNodes);
+      setNodes(sortNodes(remoteNodes));
+      setStatus(remoteNodes.length ? "已从主控同步探针列表" : "主控暂无探针，请先创建");
     } catch (error) {
       try {
         const localNodes = await getProbeNodes();
@@ -66,6 +67,20 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         const msg = fallbackErr instanceof Error ? fallbackErr.message : "unknown error";
         setStatus(`加载探针列表失败：${msg}`);
       }
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function loadNodeStatus() {
+    setIsLoading(true);
+    try {
+      const items = await fetchProbeStatusFromController(controllerAddress, props.sessionToken);
+      setNodeStatusItems(sortStatusItems(items));
+      setStatus(items.length ? "已从主控同步探针状态" : "暂无探针状态数据");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`加载探针状态失败：${msg}`);
     } finally {
       setIsLoading(false);
     }
@@ -84,8 +99,9 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       const created = await createProbeNode(cleanName);
       const refreshed = await getProbeNodes();
       const synced = await syncProbeNodesToController(controllerAddress, props.sessionToken, refreshed);
-      const local = await replaceLocalProbeNodes(synced);
-      setNodes(sortNodes(local));
+      await replaceLocalProbeNodes(synced);
+      setNodes(sortNodes(synced));
+      await loadNodeStatus();
       setNodeNameInput("");
       setSubTab("list");
       setStatus(`节点已创建并全量同步到主控：${created.node_name}（节点号 ${created.node_no}）`);
@@ -112,8 +128,9 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       const updated = await updateProbeNode(nodeNo, nextTargetSystem, nextDirectConnect);
       const refreshed = await getProbeNodes();
       const synced = await syncProbeNodesToController(controllerAddress, props.sessionToken, refreshed);
-      const local = await replaceLocalProbeNodes(synced);
-      setNodes(sortNodes(local));
+      await replaceLocalProbeNodes(synced);
+      setNodes(sortNodes(synced));
+      await loadNodeStatus();
       setStatus(`节点已更新并同步到主控：${updated.node_name}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -185,7 +202,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       <div className="subtab-list">
         <button className={`subtab-btn ${subTab === "create" ? "active" : ""}`} onClick={() => setSubTab("create")}>新建探针</button>
         <button className={`subtab-btn ${subTab === "list" ? "active" : ""}`} onClick={() => setSubTab("list")}>探针列表</button>
-        <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => setSubTab("status")}>探针状态</button>
+        <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => { setSubTab("status"); void loadNodeStatus(); }}>探针状态</button>
       </div>
 
       {subTab === "create" ? (
@@ -270,22 +287,22 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           <div className="identity-card" style={{ marginBottom: 12 }}>
             <div>探针实时状态（来自主控汇总）</div>
             <div className="content-actions">
-              <button className="btn" onClick={() => void loadNodes()} disabled={isLoading}>刷新状态</button>
+              <button className="btn" onClick={() => void loadNodeStatus()} disabled={isLoading}>刷新状态</button>
             </div>
           </div>
 
-          {nodes.length === 0 ? (
+          {nodeStatusItems.length === 0 ? (
             <div className="status">暂无探针，请先在“新建探针”中创建节点。</div>
           ) : (
             <div className="probe-node-list">
-              {nodes.map((node) => (
-                <div className="probe-node-card" key={`status-${node.node_no}`}>
-                  <div className="probe-node-title">{node.node_name}</div>
-                  <div className="probe-node-meta">节点号：{node.node_no}</div>
-                  <div className="probe-node-meta">在线状态：{node.runtime?.online ? "在线" : "离线"}</div>
-                  <div className="probe-node-meta">最后上报：{formatTime(node.runtime?.last_seen || "")}</div>
-                  <div className="probe-node-meta">CPU：{formatPercent(node.runtime?.system?.cpu_percent)} / RAM：{formatPercent(node.runtime?.system?.memory_used_percent)}</div>
-                  <div className="probe-node-meta">SWAP：{formatPercent(node.runtime?.system?.swap_used_percent)} / 硬盘：{formatPercent(node.runtime?.system?.disk_used_percent)}</div>
+              {nodeStatusItems.map((item) => (
+                <div className="probe-node-card" key={`status-${item.node_no}`}>
+                  <div className="probe-node-title">{item.node_name}</div>
+                  <div className="probe-node-meta">节点号：{item.node_no}</div>
+                  <div className="probe-node-meta">在线状态：{item.runtime?.online ? "在线" : "离线"}</div>
+                  <div className="probe-node-meta">最后上报：{formatTime(item.runtime?.last_seen || "")}</div>
+                  <div className="probe-node-meta">CPU：{formatPercent(item.runtime?.system?.cpu_percent)} / RAM：{formatPercent(item.runtime?.system?.memory_used_percent)}</div>
+                  <div className="probe-node-meta">SWAP：{formatPercent(item.runtime?.system?.swap_used_percent)} / 硬盘：{formatPercent(item.runtime?.system?.disk_used_percent)}</div>
                 </div>
               ))}
             </div>
@@ -300,6 +317,10 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
 
 function sortNodes(nodes: ProbeNodeItem[]): ProbeNodeItem[] {
   return [...nodes].sort((a, b) => a.node_no - b.node_no);
+}
+
+function sortStatusItems(items: ProbeNodeStatusItem[]): ProbeNodeStatusItem[] {
+  return [...items].sort((a, b) => a.node_no - b.node_no);
 }
 
 function formatTime(isoTime: string): string {
@@ -446,6 +467,15 @@ async function syncProbeNodesToController(controllerBaseUrl: string, sessionToke
   }
   const synced = await syncProbeNodes(base, token, nodes as ProbeNodeSyncItem[]);
   return synced as ProbeNodeItem[];
+}
+
+async function fetchProbeStatusFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeNodeStatusItem[]> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot fetch status from controller");
+  }
+  return await fetchProbeNodeStatus(base, token);
 }
 
 async function syncFromControllerToLocal(controllerBaseUrl: string, sessionToken: string): Promise<void> {

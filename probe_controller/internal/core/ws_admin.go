@@ -191,9 +191,14 @@ func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, e
 		return adminLogsResponse{Source: "server", FilePath: logPath, Lines: req.Lines, Content: content, Fetched: time.Now().Format(time.RFC3339)}, nil
 	case "admin.probe.nodes.get":
 		Store.mu.RLock()
-		nodes := withProbeRuntimeLocked(loadProbeNodesLocked())
+		nodes := loadProbeNodesLocked()
 		Store.mu.RUnlock()
 		return map[string]interface{}{"nodes": nodes}, nil
+	case "admin.probe.status.get":
+		Store.mu.RLock()
+		items := loadProbeNodeStatusLocked()
+		Store.mu.RUnlock()
+		return map[string]interface{}{"items": items}, nil
 	case "admin.probe.nodes.sync":
 		var req probeNodesSyncRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
@@ -207,7 +212,7 @@ func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, e
 		if err := Store.Save(); err != nil {
 			return nil, err
 		}
-		return map[string]interface{}{"nodes": withProbeRuntime(nodes)}, nil
+		return map[string]interface{}{"nodes": nodes}, nil
 	case "admin.probe.secret.upsert":
 		var req probeSecretUpsertRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
