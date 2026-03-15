@@ -261,7 +261,7 @@ download_and_install() {
   [[ -n "${asset_name}" ]] || die "failed to resolve asset name from selected download url"
 
   tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "${tmp_dir}"' EXIT
+  trap "rm -rf -- \"${tmp_dir}\"" EXIT
 
   asset_file="${tmp_dir}/${asset_name}"
   log "downloading ${asset_name} from ${tag_name}"
