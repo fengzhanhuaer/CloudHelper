@@ -12,6 +12,11 @@ const defaultStatus: NetworkAssistantStatus = {
   tunnel_status: "未启用",
   system_proxy_status: "未设置",
   last_error: "",
+  mux_connected: false,
+  mux_active_streams: 0,
+  mux_reconnects: 0,
+  mux_last_recv: "",
+  mux_last_pong: "",
 };
 
 export function useNetworkAssistant() {

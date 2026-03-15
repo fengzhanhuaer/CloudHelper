@@ -6,7 +6,7 @@ type ProbeManageTabProps = {
   sessionToken: string;
 };
 
-type ProbeSubTab = "create" | "list";
+type ProbeSubTab = "create" | "list" | "status";
 type ProbeTargetSystem = "linux" | "windows";
 
 type ProbeNodeItem = {
@@ -185,6 +185,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       <div className="subtab-list">
         <button className={`subtab-btn ${subTab === "create" ? "active" : ""}`} onClick={() => setSubTab("create")}>新建探针</button>
         <button className={`subtab-btn ${subTab === "list" ? "active" : ""}`} onClick={() => setSubTab("list")}>探针列表</button>
+        <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => setSubTab("status")}>探针状态</button>
       </div>
 
       {subTab === "create" ? (
@@ -203,7 +204,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           </div>
           <div>创建后会自动生成数字节点号与节点 Secret（保存到管理端 data/probe_nodes.json）。</div>
         </div>
-      ) : (
+      ) : subTab === "list" ? (
         <div style={{ marginTop: 12 }}>
           <div className="identity-card" style={{ marginBottom: 12 }}>
             <div>主控地址（用于“非直连”安装命令）</div>
@@ -232,9 +233,6 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                   <div className="probe-node-meta">节点 Secret：{node.node_secret}</div>
                   <div className="probe-node-meta">创建时间：{formatTime(node.created_at)}</div>
                   <div className="probe-node-meta">更新时间：{formatTime(node.updated_at)}</div>
-                  <div className="probe-node-meta">在线状态：{node.runtime?.online ? "在线" : "离线"}</div>
-                  <div className="probe-node-meta">CPU：{formatPercent(node.runtime?.system?.cpu_percent)} / RAM：{formatPercent(node.runtime?.system?.memory_used_percent)}</div>
-                  <div className="probe-node-meta">SWAP：{formatPercent(node.runtime?.system?.swap_used_percent)} / 硬盘：{formatPercent(node.runtime?.system?.disk_used_percent)}</div>
 
                   <div className="row" style={{ marginTop: 10, marginBottom: 10 }}>
                     <label>目标系统</label>
@@ -265,6 +263,32 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                       {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级该探针"}
                     </button>
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ marginTop: 12 }}>
+          <div className="identity-card" style={{ marginBottom: 12 }}>
+            <div>探针实时状态（来自主控汇总）</div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void loadNodes()} disabled={isLoading}>刷新状态</button>
+            </div>
+          </div>
+
+          {nodes.length === 0 ? (
+            <div className="status">暂无探针，请先在“新建探针”中创建节点。</div>
+          ) : (
+            <div className="probe-node-list">
+              {nodes.map((node) => (
+                <div className="probe-node-card" key={`status-${node.node_no}`}>
+                  <div className="probe-node-title">{node.node_name}</div>
+                  <div className="probe-node-meta">节点号：{node.node_no}</div>
+                  <div className="probe-node-meta">在线状态：{node.runtime?.online ? "在线" : "离线"}</div>
+                  <div className="probe-node-meta">最后上报：{formatTime(node.runtime?.last_seen || "")}</div>
+                  <div className="probe-node-meta">CPU：{formatPercent(node.runtime?.system?.cpu_percent)} / RAM：{formatPercent(node.runtime?.system?.memory_used_percent)}</div>
+                  <div className="probe-node-meta">SWAP：{formatPercent(node.runtime?.system?.swap_used_percent)} / 硬盘：{formatPercent(node.runtime?.system?.disk_used_percent)}</div>
                 </div>
               ))}
             </div>

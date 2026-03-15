@@ -89,6 +89,11 @@ export type NetworkAssistantStatus = {
   tunnel_status: string;
   system_proxy_status: string;
   last_error: string;
+  mux_connected?: boolean;
+  mux_active_streams?: number;
+  mux_reconnects?: number;
+  mux_last_recv?: string;
+  mux_last_pong?: string;
 };
 
 export type LogSource = "local" | "server";

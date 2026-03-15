@@ -23,6 +23,11 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         <div>隧道路由：{props.status.tunnel_route || "/api/ws/tunnel/cloudserver"}</div>
         <div>隧道状态：{props.status.tunnel_status || "未启用"}</div>
         <div>系统代理：{props.status.system_proxy_status || "未设置"}</div>
+        <div>复用连接：{props.status.mux_connected ? "已连接" : "未连接"}</div>
+        <div>活跃流数：{props.status.mux_active_streams ?? 0}</div>
+        <div>重连次数：{props.status.mux_reconnects ?? 0}</div>
+        <div>最近收包：{props.status.mux_last_recv || "-"}</div>
+        <div>最近心跳：{props.status.mux_last_pong || "-"}</div>
       </div>
 
       <div className="identity-card" style={{ marginTop: 14 }}>

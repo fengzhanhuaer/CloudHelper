@@ -18,8 +18,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -51,6 +49,11 @@ type NetworkAssistantStatus struct {
 	TunnelStatus      string   `json:"tunnel_status"`
 	SystemProxyStatus string   `json:"system_proxy_status"`
 	LastError         string   `json:"last_error"`
+	MuxConnected      bool     `json:"mux_connected"`
+	MuxActiveStreams  int      `json:"mux_active_streams"`
+	MuxReconnects     int64    `json:"mux_reconnects"`
+	MuxLastRecv       string   `json:"mux_last_recv"`
+	MuxLastPong       string   `json:"mux_last_pong"`
 }
 
 type tunnelControlMessage struct {
@@ -58,6 +61,12 @@ type tunnelControlMessage struct {
 	Network string `json:"network,omitempty"`
 	Address string `json:"address,omitempty"`
 	Error   string `json:"error,omitempty"`
+	Payload []byte `json:"payload,omitempty"`
+}
+
+type socks5Request struct {
+	Cmd     byte
+	Address string
 }
 
 type tunnelNodesResponse struct {
@@ -95,6 +104,8 @@ type networkAssistantService struct {
 	systemProxyMessage  string
 	lastError           string
 	tunnelOpenFailures  int
+	tunnelMuxClient     *tunnelMuxClient
+	muxReconnects       int64
 
 	directWhitelist *socksDirectWhitelist
 }
@@ -173,7 +184,18 @@ func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) e
 
 func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	s.mu.RLock()
+	muxClient := s.tunnelMuxClient
+	muxReconnects := s.muxReconnects
 	defer s.mu.RUnlock()
+
+	muxConnected := false
+	muxActiveStreams := 0
+	muxLastRecv := ""
+	muxLastPong := ""
+	if muxClient != nil {
+		muxConnected, muxActiveStreams, muxLastRecv, muxLastPong = muxClient.snapshot()
+	}
+
 	return NetworkAssistantStatus{
 		Enabled:           s.mode == networkModeGlobal,
 		Mode:              s.mode,
@@ -184,6 +206,11 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 		TunnelStatus:      s.tunnelStatusMessage,
 		SystemProxyStatus: s.systemProxyMessage,
 		LastError:         s.lastError,
+		MuxConnected:      muxConnected,
+		MuxActiveStreams:  muxActiveStreams,
+		MuxReconnects:     muxReconnects,
+		MuxLastRecv:       muxLastRecv,
+		MuxLastPong:       muxLastPong,
 	}
 }
 
@@ -205,12 +232,18 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	normalizedToken := strings.TrimSpace(sessionToken)
 
 	s.mu.Lock()
-	s.controllerBaseURL = normalizedBase
-	s.sessionToken = normalizedToken
+	if normalizedBase != "" {
+		s.controllerBaseURL = normalizedBase
+	}
+	if normalizedToken != "" {
+		s.sessionToken = normalizedToken
+	}
+	effectiveBase := strings.TrimSpace(s.controllerBaseURL)
+	effectiveToken := strings.TrimSpace(s.sessionToken)
 	s.lastError = ""
 	s.mu.Unlock()
 
-	if normalizedBase != "" && normalizedToken != "" {
+	if effectiveBase != "" && effectiveToken != "" {
 		if err := s.refreshAvailableNodes(); err != nil {
 			s.setLastError(err)
 			return err
@@ -241,7 +274,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		return nil
 	}
 
-	if normalizedBase == "" || normalizedToken == "" {
+	if effectiveBase == "" || effectiveToken == "" {
 		err := errors.New("controller url and session token are required for global mode")
 		s.setLastError(err)
 		return err
@@ -322,10 +355,16 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 		return
 	}
 
-	targetAddr, err := socks5ReadConnectRequest(br, conn)
+	req, err := socks5ReadRequest(br, conn)
 	if err != nil {
 		return
 	}
+
+	if req.Cmd == 0x03 {
+		s.handleSocksUDPAssociate(conn)
+		return
+	}
+	targetAddr := req.Address
 
 	if s.shouldDialDirect(targetAddr) {
 		directConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
@@ -356,15 +395,17 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 		return
 	}
 
-	tunnelConn, err := s.openTunnel(targetAddr)
+	tunnelStream, err := s.openTunnelStream("tcp", targetAddr)
 	if err != nil {
-		log.Printf("network assistant: failed to open tunnel %s: %v", targetAddr, err)
+		if !isCredentialMissingErr(err) || s.currentMode() == networkModeGlobal {
+			log.Printf("network assistant: failed to open tunnel %s: %v", targetAddr, err)
+		}
 		socks5Reply(conn, 0x01)
 		s.setTunnelStatus("隧道异常")
 		s.recordTunnelOpenFailure(err)
 		return
 	}
-	defer tunnelConn.Close()
+	defer tunnelStream.close()
 	s.resetTunnelOpenFailures()
 
 	if err := socks5Reply(conn, 0x00); err != nil {
@@ -378,8 +419,7 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 		for {
 			n, readErr := br.Read(buf)
 			if n > 0 {
-				_ = tunnelConn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				if writeErr := tunnelConn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
+				if writeErr := tunnelStream.write(buf[:n]); writeErr != nil {
 					errCh <- writeErr
 					return
 				}
@@ -393,23 +433,15 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 
 	go func() {
 		for {
-			msgType, payload, readErr := tunnelConn.ReadMessage()
-			if readErr != nil {
-				errCh <- readErr
-				return
-			}
-			switch msgType {
-			case websocket.BinaryMessage:
+			select {
+			case payload := <-tunnelStream.readCh:
 				if _, writeErr := conn.Write(payload); writeErr != nil {
 					errCh <- writeErr
 					return
 				}
-			case websocket.TextMessage:
-				var msg tunnelControlMessage
-				if err := json.Unmarshal(payload, &msg); err == nil && msg.Type == "close" {
-					errCh <- io.EOF
-					return
-				}
+			case readErr := <-tunnelStream.errCh:
+				errCh <- readErr
+				return
 			}
 		}
 	}()
@@ -429,67 +461,95 @@ func (s *networkAssistantService) shouldDialDirect(targetAddr string) bool {
 	return whitelist.matchesTarget(targetAddr)
 }
 
-func (s *networkAssistantService) openTunnel(targetAddr string) (*websocket.Conn, error) {
-	s.mu.RLock()
-	baseURL := s.controllerBaseURL
-	token := s.sessionToken
-	nodeID := s.nodeID
-	s.mu.RUnlock()
-
-	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(token) == "" {
-		return nil, errors.New("missing controller url or session token")
-	}
-
-	tunnelURL, err := buildTunnelWSURL(baseURL, nodeID, token)
+func (s *networkAssistantService) handleSocksUDPAssociate(tcpConn net.Conn) {
+	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
-		return nil, err
+		_ = socks5ReplyWithAddr(tcpConn, 0x01, "0.0.0.0:0")
+		return
 	}
+	defer udpConn.Close()
 
-	header := http.Header{}
-	header.Set("X-Forwarded-Proto", "https")
-	header.Set("Authorization", "Bearer "+token)
-	wsConn, handshakeResp, err := websocket.DefaultDialer.Dial(tunnelURL, header)
-	if err != nil {
-		if handshakeResp != nil {
-			defer handshakeResp.Body.Close()
-			raw, _ := io.ReadAll(io.LimitReader(handshakeResp.Body, 2048))
-			return nil, fmt.Errorf("websocket handshake failed: status=%d body=%s", handshakeResp.StatusCode, strings.TrimSpace(string(raw)))
+	_ = socks5ReplyWithAddr(tcpConn, 0x00, udpConn.LocalAddr().String())
+
+	go func() {
+		buf := make([]byte, 1)
+		_, _ = tcpConn.Read(buf)
+		_ = udpConn.Close()
+	}()
+
+	buf := make([]byte, 64*1024)
+	for {
+		n, src, err := udpConn.ReadFrom(buf)
+		if err != nil {
+			return
 		}
-		return nil, err
-	}
-
-	connectMsg := tunnelControlMessage{
-		Type:    "connect",
-		Network: "tcp",
-		Address: targetAddr,
-	}
-	if err := wsConn.WriteJSON(connectMsg); err != nil {
-		wsConn.Close()
-		return nil, err
-	}
-
-	_ = wsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	_, payload, err := wsConn.ReadMessage()
-	if err != nil {
-		wsConn.Close()
-		return nil, err
-	}
-	_ = wsConn.SetReadDeadline(time.Time{})
-
-	var connectResp tunnelControlMessage
-	if err := json.Unmarshal(payload, &connectResp); err != nil {
-		wsConn.Close()
-		return nil, err
-	}
-	if connectResp.Type != "connected" {
-		wsConn.Close()
-		if strings.TrimSpace(connectResp.Error) == "" {
-			return nil, errors.New("tunnel connect failed")
+		targetAddr, payload, err := parseSocks5UDPDatagram(buf[:n])
+		if err != nil {
+			continue
 		}
-		return nil, errors.New(connectResp.Error)
-	}
 
-	return wsConn, nil
+		var respPayload []byte
+		var respAddr string
+		if s.shouldDialDirect(targetAddr) {
+			respPayload, respAddr, err = dialUDPDirectPacket(targetAddr, payload)
+		} else {
+			stream, openErr := s.openTunnelStream("udp", targetAddr)
+			if openErr != nil {
+				err = openErr
+			} else {
+				err = stream.write(payload)
+				if err == nil {
+					select {
+					case respPayload = <-stream.readCh:
+						respAddr = targetAddr
+					case readErr := <-stream.errCh:
+						err = readErr
+					case <-time.After(10 * time.Second):
+						err = errors.New("udp tunnel timeout")
+					}
+				}
+				stream.close()
+			}
+		}
+		if err != nil {
+			log.Printf("network assistant: failed to open udp tunnel %s: %v", targetAddr, err)
+			continue
+		}
+		if strings.TrimSpace(respAddr) == "" {
+			respAddr = targetAddr
+		}
+		packet, err := buildSocks5UDPDatagram(respAddr, respPayload)
+		if err != nil {
+			continue
+		}
+		_, _ = udpConn.WriteTo(packet, src)
+	}
+}
+
+func dialUDPDirectPacket(targetAddr string, payload []byte) ([]byte, string, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", targetAddr)
+	if err != nil {
+		return nil, "", err
+	}
+	conn, err := net.DialUDP("udp", nil, udpAddr)
+	if err != nil {
+		return nil, "", err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+	if _, err := conn.Write(payload); err != nil {
+		return nil, "", err
+	}
+	buf := make([]byte, 65535)
+	n, remote, err := conn.ReadFromUDP(buf)
+	if err != nil {
+		return nil, "", err
+	}
+	respAddr := targetAddr
+	if remote != nil {
+		respAddr = remote.String()
+	}
+	return append([]byte(nil), buf[:n]...), respAddr, nil
 }
 
 func buildTunnelWSURL(baseURL, nodeID, token string) (string, error) {
@@ -564,9 +624,15 @@ func (s *networkAssistantService) restoreSystemProxyIfNeeded() error {
 func (s *networkAssistantService) stopSocksServerOnly() error {
 	s.mu.Lock()
 	ln := s.listener
+	muxClient := s.tunnelMuxClient
+	s.tunnelMuxClient = nil
 	s.listener = nil
 	s.stopping.Store(true)
 	s.mu.Unlock()
+
+	if muxClient != nil {
+		muxClient.close()
+	}
 
 	if ln == nil {
 		return nil
@@ -606,7 +672,7 @@ func (s *networkAssistantService) recordTunnelOpenFailure(err error) {
 		return
 	}
 
-	if rollbackErr := s.ApplyMode("", "", networkModeDirect, ""); rollbackErr != nil {
+	if rollbackErr := s.ApplyMode(s.currentControllerState(), "", networkModeDirect, ""); rollbackErr != nil {
 		log.Printf("network assistant: failed to fallback to direct mode: %v", rollbackErr)
 		s.setLastError(rollbackErr)
 		return
@@ -614,6 +680,25 @@ func (s *networkAssistantService) recordTunnelOpenFailure(err error) {
 	if err != nil {
 		log.Printf("network assistant: fallback to direct mode after repeated tunnel failures: %v", err)
 	}
+}
+
+func (s *networkAssistantService) currentMode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mode
+}
+
+func (s *networkAssistantService) currentControllerState() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.controllerBaseURL
+}
+
+func isCredentialMissingErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "missing controller url or session token")
 }
 
 func (s *networkAssistantService) refreshAvailableNodes() error {
@@ -928,17 +1013,18 @@ func socks5Handshake(br *bufio.Reader, conn net.Conn) error {
 	return err
 }
 
-func socks5ReadConnectRequest(br *bufio.Reader, conn net.Conn) (string, error) {
+func socks5ReadRequest(br *bufio.Reader, conn net.Conn) (socks5Request, error) {
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(br, head); err != nil {
-		return "", err
+		return socks5Request{}, err
 	}
 	if head[0] != 0x05 {
-		return "", errors.New("invalid socks version")
+		return socks5Request{}, errors.New("invalid socks version")
 	}
-	if head[1] != 0x01 {
+	cmd := head[1]
+	if cmd != 0x01 && cmd != 0x03 {
 		_ = socks5Reply(conn, 0x07)
-		return "", errors.New("only CONNECT is supported")
+		return socks5Request{}, errors.New("only CONNECT and UDP ASSOCIATE are supported")
 	}
 
 	atyp := head[3]
@@ -947,45 +1033,169 @@ func socks5ReadConnectRequest(br *bufio.Reader, conn net.Conn) (string, error) {
 	case 0x01:
 		ip := make([]byte, 4)
 		if _, err := io.ReadFull(br, ip); err != nil {
-			return "", err
+			return socks5Request{}, err
 		}
 		host = net.IP(ip).String()
 	case 0x03:
 		sizeByte, err := br.ReadByte()
 		if err != nil {
-			return "", err
+			return socks5Request{}, err
 		}
 		domain := make([]byte, int(sizeByte))
 		if _, err := io.ReadFull(br, domain); err != nil {
-			return "", err
+			return socks5Request{}, err
 		}
 		host = string(domain)
 	case 0x04:
 		ip := make([]byte, 16)
 		if _, err := io.ReadFull(br, ip); err != nil {
-			return "", err
+			return socks5Request{}, err
 		}
 		host = net.IP(ip).String()
 	default:
 		_ = socks5Reply(conn, 0x08)
-		return "", errors.New("unsupported address type")
+		return socks5Request{}, errors.New("unsupported address type")
 	}
 
 	portBytes := make([]byte, 2)
 	if _, err := io.ReadFull(br, portBytes); err != nil {
-		return "", err
+		return socks5Request{}, err
 	}
 	port := binary.BigEndian.Uint16(portBytes)
 	if port == 0 {
-		_ = socks5Reply(conn, 0x01)
-		return "", errors.New("invalid port")
+		if cmd == 0x01 {
+			_ = socks5Reply(conn, 0x01)
+			return socks5Request{}, errors.New("invalid port")
+		}
 	}
 
-	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
+	return socks5Request{Cmd: cmd, Address: net.JoinHostPort(host, strconv.Itoa(int(port)))}, nil
 }
 
 func socks5Reply(conn net.Conn, rep byte) error {
-	resp := []byte{0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0}
-	_, err := conn.Write(resp)
+	return socks5ReplyWithAddr(conn, rep, "0.0.0.0:0")
+}
+
+func socks5ReplyWithAddr(conn net.Conn, rep byte, bindAddr string) error {
+	host, portStr, err := net.SplitHostPort(bindAddr)
+	if err != nil {
+		host = "0.0.0.0"
+		portStr = "0"
+	}
+	port, _ := strconv.Atoi(portStr)
+	if port < 0 || port > 65535 {
+		port = 0
+	}
+
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip4 := ip.To4(); ip4 != nil {
+		resp := []byte{0x05, rep, 0x00, 0x01, ip4[0], ip4[1], ip4[2], ip4[3], 0, 0}
+		binary.BigEndian.PutUint16(resp[8:], uint16(port))
+		_, err := conn.Write(resp)
+		return err
+	}
+	if ip16 := ip.To16(); ip16 != nil {
+		resp := make([]byte, 4+16+2)
+		resp[0] = 0x05
+		resp[1] = rep
+		resp[2] = 0x00
+		resp[3] = 0x04
+		copy(resp[4:20], ip16)
+		binary.BigEndian.PutUint16(resp[20:], uint16(port))
+		_, err := conn.Write(resp)
+		return err
+	}
+
+	hostBytes := []byte(host)
+	if len(hostBytes) > 255 {
+		hostBytes = hostBytes[:255]
+	}
+	resp := make([]byte, 5+len(hostBytes)+2)
+	resp[0] = 0x05
+	resp[1] = rep
+	resp[2] = 0x00
+	resp[3] = 0x03
+	resp[4] = byte(len(hostBytes))
+	copy(resp[5:5+len(hostBytes)], hostBytes)
+	binary.BigEndian.PutUint16(resp[5+len(hostBytes):], uint16(port))
+	_, err = conn.Write(resp)
 	return err
+}
+
+func parseSocks5UDPDatagram(packet []byte) (targetAddr string, payload []byte, err error) {
+	if len(packet) < 10 {
+		return "", nil, errors.New("udp packet too short")
+	}
+	if packet[2] != 0x00 {
+		return "", nil, errors.New("fragmented udp packet is not supported")
+	}
+	offset := 3
+	var host string
+	switch packet[offset] {
+	case 0x01:
+		offset++
+		if len(packet) < offset+4+2 {
+			return "", nil, errors.New("invalid ipv4 udp packet")
+		}
+		host = net.IP(packet[offset : offset+4]).String()
+		offset += 4
+	case 0x03:
+		offset++
+		if len(packet) < offset+1 {
+			return "", nil, errors.New("invalid domain udp packet")
+		}
+		hLen := int(packet[offset])
+		offset++
+		if len(packet) < offset+hLen+2 {
+			return "", nil, errors.New("invalid domain udp packet")
+		}
+		host = string(packet[offset : offset+hLen])
+		offset += hLen
+	case 0x04:
+		offset++
+		if len(packet) < offset+16+2 {
+			return "", nil, errors.New("invalid ipv6 udp packet")
+		}
+		host = net.IP(packet[offset : offset+16]).String()
+		offset += 16
+	default:
+		return "", nil, errors.New("unsupported udp atyp")
+	}
+
+	port := binary.BigEndian.Uint16(packet[offset : offset+2])
+	offset += 2
+	return net.JoinHostPort(host, strconv.Itoa(int(port))), append([]byte(nil), packet[offset:]...), nil
+}
+
+func buildSocks5UDPDatagram(addr string, payload []byte) ([]byte, error) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return nil, errors.New("invalid udp port")
+	}
+
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	buf := make([]byte, 0, 64+len(payload))
+	buf = append(buf, 0x00, 0x00, 0x00)
+	if ip4 := ip.To4(); ip4 != nil {
+		buf = append(buf, 0x01)
+		buf = append(buf, ip4...)
+	} else if ip16 := ip.To16(); ip16 != nil {
+		buf = append(buf, 0x04)
+		buf = append(buf, ip16...)
+	} else {
+		hostBytes := []byte(host)
+		if len(hostBytes) > 255 {
+			return nil, errors.New("udp host too long")
+		}
+		buf = append(buf, 0x03, byte(len(hostBytes)))
+		buf = append(buf, hostBytes...)
+	}
+	buf = append(buf, 0x00, 0x00)
+	binary.BigEndian.PutUint16(buf[len(buf)-2:], uint16(port))
+	buf = append(buf, payload...)
+	return buf, nil
 }
