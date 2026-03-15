@@ -6,6 +6,8 @@ export function GetLocalPrivateKeyStatus():Promise<main.PrivateKeyStatus>;
 
 export function GetLocalManagerLogs(arg1:number,arg2:number):Promise<any>;
 
+export function GetGlobalControllerURL():Promise<string>;
+
 export function GetNetworkAssistantStatus():Promise<any>;
 
 export function GetLatestGitHubRelease(arg1:string):Promise<any>;
@@ -19,6 +21,8 @@ export function GetManagerUpgradeProgress():Promise<any>;
 export function Greet(arg1:string):Promise<string>;
 
 export function SignNonceWithLocalKey(arg1:string):Promise<string>;
+
+export function SetGlobalControllerURL(arg1:string):Promise<string>;
 
 export function SetNetworkAssistantMode(arg1:string,arg2:string,arg3:string,arg4:string):Promise<any>;
 

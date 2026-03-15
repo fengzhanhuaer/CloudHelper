@@ -10,6 +10,10 @@ export function GetLocalManagerLogs(arg1, arg2) {
   return window['go']['main']['App']['GetLocalManagerLogs'](arg1, arg2);
 }
 
+export function GetGlobalControllerURL() {
+  return window['go']['main']['App']['GetGlobalControllerURL']();
+}
+
 export function GetNetworkAssistantStatus() {
   return window['go']['main']['App']['GetNetworkAssistantStatus']();
 }
@@ -36,6 +40,10 @@ export function Greet(arg1) {
 
 export function SignNonceWithLocalKey(arg1) {
   return window['go']['main']['App']['SignNonceWithLocalKey'](arg1);
+}
+
+export function SetGlobalControllerURL(arg1) {
+  return window['go']['main']['App']['SetGlobalControllerURL'](arg1);
 }
 
 export function SetNetworkAssistantMode(arg1, arg2, arg3, arg4) {

@@ -1,6 +1,5 @@
 import type { TabItem } from "./types";
 
-export const STORAGE_CONTROLLER_URL = "cloudhelper.manager.controller_url";
 export const STORAGE_UPGRADE_PROJECT = "cloudhelper.manager.upgrade_project";
 export const DEFAULT_UPGRADE_PROJECT = "fengzhanhuaer/CloudHelper";
 

@@ -8,3 +8,4 @@ cloudhelper.json
 /release/*
 cloudhelper-probe-controller-linux-amd64
 *.exe~
+/data/*
