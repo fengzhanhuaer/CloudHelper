@@ -120,15 +120,26 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26.1'
+          cache: true
+          cache-dependency-path: |
+            probe_manager/go.sum
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: |
+            probe_manager/frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: probe_manager/frontend
+        shell: bash
+        run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Install Wails CLI
         shell: bash
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
 
       - name: Build Probe Manager (Windows amd64)
         working-directory: probe_manager
