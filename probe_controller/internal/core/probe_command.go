@@ -46,6 +46,13 @@ func registerProbeSession(nodeID string, conn *websocket.Conn) *probeSession {
 	probeSessions.data[nodeID] = s
 	probeSessions.mu.Unlock()
 	setProbeRuntimeOnline(nodeID, true)
+	go func() {
+		_ = s.writeJSON(map[string]interface{}{
+			"type":         "report_interval",
+			"interval_sec": currentProbeReportIntervalSec(),
+			"server_utc":   time.Now().UTC().Format(time.RFC3339),
+		})
+	}()
 	return s
 }
 

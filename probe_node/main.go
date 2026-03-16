@@ -17,12 +17,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 var BuildVersion = "dev"
+
+const defaultReportIntervalSec = 60
+
+var reportIntervalSec atomic.Int64
 
 type nodeStatus struct {
 	Service   string `json:"service"`
@@ -81,10 +86,12 @@ type probeControlMessage struct {
 	Mode              string `json:"mode"`
 	ReleaseRepo       string `json:"release_repo"`
 	ControllerBaseURL string `json:"controller_base_url"`
+	IntervalSec       int    `json:"interval_sec"`
 	Timestamp         string `json:"timestamp"`
 }
 
 func main() {
+	reportIntervalSec.Store(defaultReportIntervalSec)
 	listenAddr := firstNonEmpty(os.Getenv("PROBE_NODE_LISTEN"), ":16030")
 	identity, err := resolveNodeIdentity()
 	if err != nil {
@@ -354,14 +361,12 @@ func runProbeReporterSession(wsURL, nonceURL string, identity nodeIdentity, samp
 		}
 	}()
 
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-
 	for {
+		wait := currentReportIntervalDuration()
 		select {
 		case err := <-readErrCh:
 			return err
-		case <-ticker.C:
+		case <-time.After(wait):
 			if err := sendProbeReport(conn, identity, sampler); err != nil {
 				return err
 			}
@@ -438,10 +443,36 @@ func processProbeControlMessage(raw []byte, nonceURL string, identity nodeIdenti
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return
 	}
-	if strings.TrimSpace(strings.ToLower(msg.Type)) != "upgrade" {
+	typeName := strings.TrimSpace(strings.ToLower(msg.Type))
+	if typeName == "report_interval" {
+		if sec := normalizeReportInterval(msg.IntervalSec); sec > 0 {
+			reportIntervalSec.Store(int64(sec))
+			log.Printf("probe reporter interval updated: %ds", sec)
+		}
+		return
+	}
+	if typeName != "upgrade" {
 		return
 	}
 	go runProbeUpgrade(msg, nonceURL, identity)
+}
+
+func currentReportIntervalDuration() time.Duration {
+	sec := normalizeReportInterval(int(reportIntervalSec.Load()))
+	return time.Duration(sec) * time.Second
+}
+
+func normalizeReportInterval(sec int) int {
+	if sec <= 0 {
+		return defaultReportIntervalSec
+	}
+	if sec < 5 {
+		return 5
+	}
+	if sec > 3600 {
+		return 3600
+	}
+	return sec
 }
 
 func collectIPs() ([]string, []string) {

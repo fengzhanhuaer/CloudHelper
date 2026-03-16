@@ -88,6 +88,9 @@ export type ProbeNodeStatusItem = {
     node_id?: string;
     online?: boolean;
     last_seen?: string;
+    version?: string;
+    ipv4?: string[];
+    ipv6?: string[];
     system?: {
       cpu_percent?: number;
       memory_used_percent?: number;
@@ -95,6 +98,14 @@ export type ProbeNodeStatusItem = {
       disk_used_percent?: number;
     };
   };
+};
+
+export type ProbeReportIntervalSettings = {
+  default_sec: number;
+  current_sec: number;
+  override_sec?: number;
+  override_expires_at?: string;
+  active_admin_connections?: number;
 };
 
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
@@ -110,6 +121,14 @@ export async function fetchProbeNodeStatus(baseURL: string, token: string, nodeI
     nodeID === undefined || nodeID === null || String(nodeID).trim() === "" ? undefined : { node_id: String(nodeID) },
   );
   return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function fetchProbeReportIntervalSettings(baseURL: string, token: string): Promise<ProbeReportIntervalSettings> {
+  return await callAdminWSRpc<ProbeReportIntervalSettings>(baseURL, token, "admin.probe.report_interval.get");
+}
+
+export async function setProbeReportInterval(baseURL: string, token: string, intervalSec: number): Promise<ProbeReportIntervalSettings> {
+  return await callAdminWSRpc<ProbeReportIntervalSettings>(baseURL, token, "admin.probe.report_interval.set", { interval_sec: intervalSec });
 }
 
 export async function syncProbeNodes(baseURL: string, token: string, nodes: ProbeNodeSyncItem[]): Promise<ProbeNodeSyncItem[]> {

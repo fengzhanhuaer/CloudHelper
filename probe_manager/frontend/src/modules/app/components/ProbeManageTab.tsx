@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchProbeNodeStatus, fetchProbeNodes, syncProbeNodes, upgradeAllProbeNodes, upgradeProbeNode, type ProbeNodeStatusItem, type ProbeNodeSyncItem } from "../services/controller-api";
+import {
+  fetchProbeNodeStatus,
+  fetchProbeNodes,
+  fetchProbeReportIntervalSettings,
+  setProbeReportInterval,
+  syncProbeNodes,
+  upgradeAllProbeNodes,
+  upgradeProbeNode,
+  type ProbeNodeStatusItem,
+  type ProbeNodeSyncItem,
+  type ProbeReportIntervalSettings,
+} from "../services/controller-api";
 
 type ProbeManageTabProps = {
   controllerBaseUrl: string;
@@ -36,6 +47,8 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [controllerAddress, setControllerAddress] = useState(props.controllerBaseUrl || "");
   const [nodes, setNodes] = useState<ProbeNodeItem[]>([]);
   const [nodeStatusItems, setNodeStatusItems] = useState<ProbeNodeStatusItem[]>([]);
+  const [reportIntervalInput, setReportIntervalInput] = useState("60");
+  const [reportIntervalSettings, setReportIntervalSettings] = useState<ProbeReportIntervalSettings | null>(null);
   const pollIndexRef = useRef(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isUpgradingAll, setIsUpgradingAll] = useState(false);
@@ -76,12 +89,38 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   async function loadNodeStatus() {
     setIsLoading(true);
     try {
-      const items = await fetchProbeStatusFromController(controllerAddress, props.sessionToken);
+      const [items, settings] = await Promise.all([
+        fetchProbeStatusFromController(controllerAddress, props.sessionToken),
+        fetchProbeReportIntervalFromController(controllerAddress, props.sessionToken),
+      ]);
       setNodeStatusItems(sortStatusItems(items));
+      setReportIntervalSettings(settings);
+      setReportIntervalInput(String(settings.current_sec || settings.default_sec || 60));
       setStatus(items.length ? "已从主控同步探针状态" : "暂无探针状态数据");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`加载探针状态失败：${msg}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function applyReportInterval() {
+    const sec = Number.parseInt(reportIntervalInput.trim(), 10);
+    if (!Number.isFinite(sec) || sec <= 0) {
+      setStatus("上送周期必须是正整数（秒）");
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const settings = await setProbeReportIntervalOnController(controllerAddress, props.sessionToken, sec);
+      setReportIntervalSettings(settings);
+      setReportIntervalInput(String(settings.current_sec || sec));
+      setStatus(`已设置探针上送周期为 ${settings.current_sec || sec}s（5分钟后或管理端断开后回退默认值）`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`设置上送周期失败：${msg}`);
     } finally {
       setIsLoading(false);
     }
@@ -317,8 +356,17 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         <div style={{ marginTop: 12 }}>
           <div className="identity-card" style={{ marginBottom: 12 }}>
             <div>探针实时状态（来自主控汇总）</div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>上送周期(秒)</label>
+              <input className="input" value={reportIntervalInput} onChange={(e) => setReportIntervalInput(e.target.value)} disabled={isLoading} />
+            </div>
             <div className="content-actions">
+              <button className="btn" onClick={() => void applyReportInterval()} disabled={isLoading}>设置周期</button>
               <button className="btn" onClick={() => void loadNodeStatus()} disabled={isLoading}>刷新状态</button>
+            </div>
+            <div>
+              默认：{reportIntervalSettings?.default_sec ?? 60}s，当前：{reportIntervalSettings?.current_sec ?? 60}s，
+              过期：{formatTime(reportIntervalSettings?.override_expires_at || "")}
             </div>
           </div>
 
@@ -329,11 +377,22 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               {nodeStatusItems.map((item) => (
                 <div className="probe-node-card" key={`status-${item.node_no}`}>
                   <div className="probe-node-title">{item.node_name}</div>
-                  <div className="probe-node-meta">节点号：{item.node_no > 0 ? item.node_no : (item.runtime?.node_id || "-")}</div>
-                  <div className="probe-node-meta">在线状态：{item.runtime?.online ? "在线" : "离线"}</div>
-                  <div className="probe-node-meta">最后上报：{formatTime(item.runtime?.last_seen || "")}</div>
-                  <div className="probe-node-meta">CPU：{item.runtime?.online ? formatPercent(item.runtime?.system?.cpu_percent) : "-"} / RAM：{item.runtime?.online ? formatPercent(item.runtime?.system?.memory_used_percent) : "-"}</div>
-                  <div className="probe-node-meta">SWAP：{item.runtime?.online ? formatPercent(item.runtime?.system?.swap_used_percent) : "-"} / 硬盘：{item.runtime?.online ? formatPercent(item.runtime?.system?.disk_used_percent) : "-"}</div>
+                  <div className="probe-node-meta compact">节点号：{item.node_no > 0 ? item.node_no : (item.runtime?.node_id || "-")}　|　状态：{item.runtime?.online ? "在线" : "离线"}　|　版本：{item.runtime?.version || "-"}　|　最后上报：{formatTime(item.runtime?.last_seen || "")}</div>
+                  <div className="probe-node-meta compact">CPU：{item.runtime?.online ? formatPercent(item.runtime?.system?.cpu_percent) : "-"}　RAM：{item.runtime?.online ? formatPercent(item.runtime?.system?.memory_used_percent) : "-"}　SWAP：{item.runtime?.online ? formatPercent(item.runtime?.system?.swap_used_percent) : "-"}　硬盘：{item.runtime?.online ? formatPercent(item.runtime?.system?.disk_used_percent) : "-"}</div>
+                  <div className="probe-node-meta compact">
+                    IP：
+                    {collectIPs(item).length === 0 ? "-" : collectIPs(item).map((ip) => (
+                      <button
+                        key={`${item.node_no}-${ip}`}
+                        className="ip-copy-chip"
+                        onClick={() => void copyStatusIP(ip, setStatus)}
+                        title="点击复制IP"
+                        type="button"
+                      >
+                        {ip}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
@@ -363,6 +422,23 @@ function mergeStatusItems(current: ProbeNodeStatusItem[], incoming: ProbeNodeSta
     map.set(item.node_no, item);
   }
   return sortStatusItems(Array.from(map.values()));
+}
+
+function collectIPs(item: ProbeNodeStatusItem): string[] {
+  const v4 = Array.isArray(item.runtime?.ipv4) ? item.runtime?.ipv4 ?? [] : [];
+  const v6 = Array.isArray(item.runtime?.ipv6) ? item.runtime?.ipv6 ?? [] : [];
+  const merged = [...v4, ...v6].map((v) => String(v).trim()).filter((v) => v !== "");
+  return Array.from(new Set(merged));
+}
+
+async function copyStatusIP(ip: string, setStatus: (value: string) => void): Promise<void> {
+  try {
+    await copyText(ip);
+    setStatus(`已复制IP：${ip}`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "unknown error";
+    setStatus(`复制IP失败：${msg}`);
+  }
 }
 
 function formatTime(isoTime: string): string {
@@ -518,6 +594,24 @@ async function fetchProbeStatusFromController(controllerBaseUrl: string, session
     throw new Error("session token is empty, cannot fetch status from controller");
   }
   return await fetchProbeNodeStatus(base, token, nodeID);
+}
+
+async function fetchProbeReportIntervalFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeReportIntervalSettings> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot fetch report interval settings");
+  }
+  return await fetchProbeReportIntervalSettings(base, token);
+}
+
+async function setProbeReportIntervalOnController(controllerBaseUrl: string, sessionToken: string, intervalSec: number): Promise<ProbeReportIntervalSettings> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot set report interval");
+  }
+  return await setProbeReportInterval(base, token, intervalSec);
 }
 
 async function syncFromControllerToLocal(controllerBaseUrl: string, sessionToken: string): Promise<void> {

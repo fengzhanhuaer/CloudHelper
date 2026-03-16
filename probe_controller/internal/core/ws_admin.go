@@ -61,6 +61,12 @@ func AdminWSHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	var authenticated atomic.Bool
+	authTracked := false
+	defer func() {
+		if authTracked {
+			onAdminWSDisconnected()
+		}
+	}()
 
 	var writeMu sync.Mutex
 	send := func(v interface{}) error {
@@ -114,6 +120,10 @@ func AdminWSHandler(w http.ResponseWriter, r *http.Request) {
 			if token == "" || !IsTokenValid(token) {
 				_ = send(adminWSResponse{ID: req.ID, OK: false, Error: "invalid or expired session token"})
 				continue
+			}
+			if !authTracked {
+				onAdminWSAuthenticated()
+				authTracked = true
 			}
 			authenticated.Store(true)
 			_ = send(adminWSResponse{ID: req.ID, OK: true, Data: map[string]bool{"authenticated": true}})
@@ -211,6 +221,20 @@ func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, e
 		items := loadProbeNodeStatusLocked()
 		Store.mu.RUnlock()
 		return map[string]interface{}{"items": items}, nil
+	case "admin.probe.report_interval.get":
+		return getProbeReportIntervalSnapshot(), nil
+	case "admin.probe.report_interval.set":
+		var req struct {
+			IntervalSec int `json:"interval_sec"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		snapshot, err := setTemporaryProbeReportInterval(req.IntervalSec)
+		if err != nil {
+			return nil, err
+		}
+		return snapshot, nil
 	case "admin.probe.nodes.sync":
 		var req probeNodesSyncRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

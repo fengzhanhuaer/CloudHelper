@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -137,7 +136,6 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 	session := registerProbeSession(nodeID, conn)
 	defer unregisterProbeSession(nodeID, session)
 
-	clientIP, _ := getClientIP(r)
 	for {
 		_, payload, err := conn.ReadMessage()
 		if err != nil {
@@ -155,18 +153,6 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			reportedNodeID = nodeID
 		}
 
-		log.Printf(
-			"probe ws report: node_id=%s remote=%s ipv4=%s ipv6=%s cpu=%.2f%% mem=%.2f%% disk=%.2f%% swap=%.2f%% version=%s",
-			reportedNodeID,
-			clientIP,
-			strings.Join(msg.IPv4, ","),
-			strings.Join(msg.IPv6, ","),
-			msg.System.CPUPercent,
-			msg.System.MemoryUsedPercent,
-			msg.System.DiskUsedPercent,
-			msg.System.SwapUsedPercent,
-			strings.TrimSpace(msg.Version),
-		)
 		updateProbeRuntimeReport(reportedNodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version)
 
 		_ = session.writeJSON(probeAckMessage{

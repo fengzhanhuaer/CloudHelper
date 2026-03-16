@@ -15,6 +15,7 @@ func Run() {
 		log.Printf("warning: failed to cleanup stale controller executable files: %v", err)
 	}
 	initAuth()
+	initProbeReportIntervalControl()
 	if err := autoBackupControllerData(); err != nil {
 		log.Printf("warning: failed to backup controller data: %v", err)
 	}

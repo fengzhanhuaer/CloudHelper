@@ -293,6 +293,27 @@
     word-break: break-word;
 }
 
+.probe-node-meta.compact {
+    line-height: 1.35;
+    margin-top: 2px;
+}
+
+.ip-copy-chip {
+    margin-left: 8px;
+    margin-top: 4px;
+    border: 1px solid rgba(126, 200, 255, 0.45);
+    background: rgba(34, 56, 86, 0.55);
+    color: #dff1ff;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.ip-copy-chip:hover {
+    background: rgba(62, 96, 145, 0.65);
+}
+
 .probe-direct-toggle {
     margin-top: 4px;
     display: inline-flex;
