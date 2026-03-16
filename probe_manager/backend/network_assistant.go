@@ -393,20 +393,34 @@ func (s *networkAssistantService) acceptLoop(ln net.Listener) {
 			if s.stopping.Load() {
 				return
 			}
-			s.logf("failed to accept socks5 conn: %v", err)
+			s.logf("failed to accept proxy conn: %v", err)
 			continue
 		}
-		go s.handleSocksConn(conn)
+		go s.handleProxyConn(conn)
 	}
 }
 
-func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
+func (s *networkAssistantService) handleProxyConn(conn net.Conn) {
 	defer conn.Close()
 	remoteAddr := strings.TrimSpace(conn.RemoteAddr().String())
 	s.logf("proxy connection opened from %s", remoteAddr)
 	defer s.logf("proxy connection closed from %s", remoteAddr)
 
 	br := bufio.NewReader(conn)
+	peek, err := br.Peek(1)
+	if err != nil {
+		s.logf("proxy request parse failed from %s: %v", remoteAddr, err)
+		return
+	}
+
+	if peek[0] == 0x04 || peek[0] == 0x05 {
+		s.handleSocksConn(conn, br, remoteAddr)
+		return
+	}
+	s.handleHTTPProxyConn(conn, br, remoteAddr)
+}
+
+func (s *networkAssistantService) handleSocksConn(conn net.Conn, br *bufio.Reader, remoteAddr string) {
 	version, req, err := readProxyRequest(br, conn)
 	if err != nil {
 		s.logf("proxy request parse failed from %s: %v", remoteAddr, err)
@@ -510,6 +524,149 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 		s.logf("tunnel relay closed with error %s: %v", targetAddr, relayErr)
 	}
 	s.setTunnelStatus("隧道已断开")
+}
+
+func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.Reader, remoteAddr string) {
+	req, err := http.ReadRequest(br)
+	if err != nil {
+		s.logf("http proxy request parse failed from %s: %v", remoteAddr, err)
+		_ = writeHTTPProxyStatus(conn, http.StatusBadRequest, "invalid proxy request")
+		return
+	}
+	defer req.Body.Close()
+
+	method := strings.ToUpper(strings.TrimSpace(req.Method))
+	if method != http.MethodConnect {
+		s.logf("http proxy request from %s: method=%s target=%s (unsupported)", remoteAddr, method, strings.TrimSpace(req.Host))
+		_ = writeHTTPProxyStatus(conn, http.StatusMethodNotAllowed, "only CONNECT is supported")
+		return
+	}
+
+	targetAddr, err := normalizeProxyTargetAddress(req.Host, "443")
+	if err != nil {
+		s.logf("http proxy request parse failed from %s: %v", remoteAddr, err)
+		_ = writeHTTPProxyStatus(conn, http.StatusBadRequest, "invalid CONNECT target")
+		return
+	}
+	s.logf("http proxy request from %s: method=CONNECT target=%s", remoteAddr, targetAddr)
+
+	tunnelStream, err := s.openTunnelStream("tcp", targetAddr)
+	if err != nil {
+		s.logf("failed to open tunnel %s: %v", targetAddr, err)
+		s.setTunnelStatus("隧道异常")
+		s.recordTunnelOpenFailure(err)
+		_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
+		return
+	}
+	defer tunnelStream.close()
+	s.resetTunnelOpenFailures()
+
+	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\nProxy-Agent: CloudHelper\r\n\r\n")); err != nil {
+		return
+	}
+	s.logf("proxy tunnel connected %s", targetAddr)
+	s.setTunnelStatus("隧道已连接")
+
+	if buffered := br.Buffered(); buffered > 0 {
+		payload := make([]byte, buffered)
+		n, readErr := io.ReadFull(br, payload)
+		if n > 0 {
+			if writeErr := tunnelStream.write(payload[:n]); writeErr != nil {
+				s.logf("tunnel relay closed with error %s: %v", targetAddr, writeErr)
+				return
+			}
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			s.logf("tunnel relay closed with error %s: %v", targetAddr, readErr)
+			return
+		}
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := br.Read(buf)
+			if n > 0 {
+				if writeErr := tunnelStream.write(buf[:n]); writeErr != nil {
+					errCh <- writeErr
+					return
+				}
+			}
+			if readErr != nil {
+				errCh <- readErr
+				return
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case payload := <-tunnelStream.readCh:
+				if _, writeErr := conn.Write(payload); writeErr != nil {
+					errCh <- writeErr
+					return
+				}
+			case readErr := <-tunnelStream.errCh:
+				errCh <- readErr
+				return
+			}
+		}
+	}()
+
+	relayErr := <-errCh
+	if relayErr != nil && !errors.Is(relayErr, io.EOF) {
+		s.logf("tunnel relay closed with error %s: %v", targetAddr, relayErr)
+	}
+	s.setTunnelStatus("隧道已断开")
+}
+
+func normalizeProxyTargetAddress(rawHost string, defaultPort string) (string, error) {
+	host := strings.TrimSpace(rawHost)
+	if host == "" {
+		return "", errors.New("missing target host")
+	}
+	if strings.Contains(host, "://") {
+		parsed, err := url.Parse(host)
+		if err != nil {
+			return "", err
+		}
+		host = strings.TrimSpace(parsed.Host)
+		if host == "" {
+			return "", errors.New("missing target host")
+		}
+	}
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host, nil
+	}
+	if strings.TrimSpace(defaultPort) == "" {
+		defaultPort = "443"
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	}
+	return net.JoinHostPort(host, defaultPort), nil
+}
+
+func writeHTTPProxyStatus(conn net.Conn, statusCode int, message string) error {
+	statusText := strings.TrimSpace(http.StatusText(statusCode))
+	if statusText == "" {
+		statusText = "Error"
+	}
+	body := strings.TrimSpace(message)
+	if body == "" {
+		body = statusText
+	}
+	resp := fmt.Sprintf(
+		"HTTP/1.1 %d %s\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
+		statusCode,
+		statusText,
+		len(body),
+		body,
+	)
+	_, err := conn.Write([]byte(resp))
+	return err
 }
 
 func (s *networkAssistantService) shouldDialDirect(targetAddr string) bool {
@@ -654,7 +811,7 @@ func (s *networkAssistantService) applySystemProxy() error {
 		s.logf("captured system proxy snapshot: %s", snapshot.Summary())
 	}
 
-	s.logf("applying system proxy to socks=%s", s.socks5ListenAddr)
+	s.logf("applying system proxy to http/https/socks=%s", s.socks5ListenAddr)
 	if err := applySocks5SystemProxy(s.socks5ListenAddr); err != nil {
 		return err
 	}

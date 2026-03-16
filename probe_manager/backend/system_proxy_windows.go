@@ -83,7 +83,7 @@ func applySocks5SystemProxy(socksAddr string) error {
 	if err := key.SetDWordValue("ProxyEnable", 1); err != nil {
 		return err
 	}
-	if err := key.SetStringValue("ProxyServer", "socks="+addr); err != nil {
+	if err := key.SetStringValue("ProxyServer", "http="+addr+";https="+addr+";socks="+addr); err != nil {
 		return err
 	}
 	if err := key.SetStringValue("ProxyOverride", "<local>"); err != nil {
