@@ -4,7 +4,7 @@ import { OverviewTab } from "./OverviewTab";
 import { PlaceholderTab } from "./PlaceholderTab";
 import { ProbeManageTab } from "./ProbeManageTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
-import type { LogSource, NetworkAssistantStatus, ReleaseInfo, TabKey, UpgradeProgress } from "../types";
+import type { LogSource, NetworkAssistantLogFilterSource, NetworkAssistantStatus, ReleaseInfo, TabKey, UpgradeProgress } from "../types";
 
 type TabContentProps = {
   activeTab: TabKey;
@@ -58,6 +58,13 @@ type TabContentProps = {
   networkLogStatus: string;
   networkLogCopyStatus: string;
   networkLogContent: string;
+  networkLogSourceFilter: NetworkAssistantLogFilterSource;
+  onNetworkLogSourceFilterChange: (value: NetworkAssistantLogFilterSource) => void;
+  networkLogCategoryFilter: string;
+  onNetworkLogCategoryFilterChange: (value: string) => void;
+  networkLogCategories: string[];
+  networkLogVisibleCount: number;
+  networkLogTotalCount: number;
   networkLogAutoScroll: boolean;
   onNetworkLogAutoScrollChange: (value: boolean) => void;
   onRefreshNetworkLogs: () => void;
@@ -119,6 +126,13 @@ export function TabContent(props: TabContentProps) {
           logStatus={props.networkLogStatus}
           logCopyStatus={props.networkLogCopyStatus}
           logContent={props.networkLogContent}
+          logSourceFilter={props.networkLogSourceFilter}
+          onLogSourceFilterChange={props.onNetworkLogSourceFilterChange}
+          logCategoryFilter={props.networkLogCategoryFilter}
+          onLogCategoryFilterChange={props.onNetworkLogCategoryFilterChange}
+          logCategories={props.networkLogCategories}
+          logVisibleCount={props.networkLogVisibleCount}
+          logTotalCount={props.networkLogTotalCount}
           logAutoScroll={props.networkLogAutoScroll}
           onLogAutoScrollChange={props.onNetworkLogAutoScrollChange}
           onRefreshLogs={props.onRefreshNetworkLogs}

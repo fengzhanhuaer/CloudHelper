@@ -19,6 +19,7 @@ type tunnelMuxFrame struct {
 	StreamID string `json:"stream_id,omitempty"`
 	Network  string `json:"network,omitempty"`
 	Address  string `json:"address,omitempty"`
+	Category string `json:"category,omitempty"`
 	Payload  []byte `json:"payload,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
@@ -36,6 +37,8 @@ type tunnelMuxClient struct {
 	baseURL string
 	token   string
 	nodeID  string
+
+	onControllerLog func(string, string)
 
 	conn   *websocket.Conn
 	writeM sync.Mutex
@@ -63,7 +66,7 @@ func (c *tunnelMuxClient) snapshot() (connected bool, activeStreams int, lastRec
 	return
 }
 
-func newTunnelMuxClient(baseURL, token, nodeID string) (*tunnelMuxClient, error) {
+func newTunnelMuxClient(baseURL, token, nodeID string, onControllerLog func(string, string)) (*tunnelMuxClient, error) {
 	tunnelURL, err := buildTunnelWSURL(baseURL, nodeID, token)
 	if err != nil {
 		return nil, err
@@ -83,11 +86,12 @@ func newTunnelMuxClient(baseURL, token, nodeID string) (*tunnelMuxClient, error)
 	}
 
 	c := &tunnelMuxClient{
-		baseURL: baseURL,
-		token:   token,
-		nodeID:  nodeID,
-		conn:    wsConn,
-		streams: make(map[string]*tunnelMuxStream),
+		baseURL:         baseURL,
+		token:           token,
+		nodeID:          nodeID,
+		onControllerLog: onControllerLog,
+		conn:            wsConn,
+		streams:         make(map[string]*tunnelMuxStream),
 	}
 	now := time.Now().Unix()
 	c.lastRecv.Store(now)
@@ -140,6 +144,22 @@ func (c *tunnelMuxClient) readLoop() {
 		}
 		if frame.Type == "pong" {
 			c.lastPong.Store(time.Now().Unix())
+			continue
+		}
+		if frame.Type == "controller_log" {
+			if c.onControllerLog != nil {
+				category := strings.TrimSpace(frame.Category)
+				if category == "" {
+					category = "general"
+				}
+				msg := strings.TrimSpace(frame.Error)
+				if msg == "" && len(frame.Payload) > 0 {
+					msg = strings.TrimSpace(string(frame.Payload))
+				}
+				if msg != "" {
+					c.onControllerLog(category, msg)
+				}
+			}
 			continue
 		}
 		if frame.Type == "ping" {
@@ -258,8 +278,8 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 			return nil, err
 		}
 		return st, nil
-	case <-time.After(10 * time.Second):
-		st.closeLocal()
+	case <-time.After(20 * time.Second):
+		st.close()
 		return nil, errors.New("open stream timeout")
 	}
 }
@@ -321,7 +341,9 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 		s.tunnelMuxClient = nil
 	}
 
-	client, err := newTunnelMuxClient(baseURL, token, nodeID)
+	client, err := newTunnelMuxClient(baseURL, token, nodeID, func(category, message string) {
+		s.logController(category, message)
+	})
 	if err != nil {
 		s.logf("create tunnel mux client failed, node=%s base=%s err=%v", nodeID, baseURL, err)
 		return nil, err

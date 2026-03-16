@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { NetworkAssistantStatus } from "../types";
+import type { NetworkAssistantLogFilterSource, NetworkAssistantStatus } from "../types";
 
 type NetworkAssistantTabProps = {
   status: NetworkAssistantStatus;
@@ -17,10 +17,34 @@ type NetworkAssistantTabProps = {
   logStatus: string;
   logCopyStatus: string;
   logContent: string;
+  logSourceFilter: NetworkAssistantLogFilterSource;
+  onLogSourceFilterChange: (value: NetworkAssistantLogFilterSource) => void;
+  logCategoryFilter: string;
+  onLogCategoryFilterChange: (value: string) => void;
+  logCategories: string[];
+  logVisibleCount: number;
+  logTotalCount: number;
   logAutoScroll: boolean;
   onLogAutoScrollChange: (value: boolean) => void;
   onRefreshLogs: () => void;
   onCopyLogs: () => void;
+};
+
+const categoryLabels: Record<string, string> = {
+  general: "通用",
+  init: "初始化",
+  mode: "模式",
+  proxy: "系统代理",
+  socks: "本地代理",
+  mux: "隧道复用",
+  tunnel: "隧道",
+  node: "节点",
+  whitelist: "白名单",
+  error: "错误",
+  open: "打开流",
+  read: "读取",
+  write: "写入",
+  state: "状态",
 };
 
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
@@ -112,6 +136,35 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
                 disabled={props.isLoadingLogs}
               />
             </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label htmlFor="network-log-source">来源</label>
+              <select
+                id="network-log-source"
+                className="input"
+                value={props.logSourceFilter}
+                onChange={(event) => props.onLogSourceFilterChange(event.target.value as NetworkAssistantLogFilterSource)}
+                disabled={props.isLoadingLogs}
+              >
+                <option value="all">全部</option>
+                <option value="manager">管理端</option>
+                <option value="controller">主控端</option>
+              </select>
+            </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label htmlFor="network-log-category">分类</label>
+              <select
+                id="network-log-category"
+                className="input"
+                value={props.logCategoryFilter}
+                onChange={(event) => props.onLogCategoryFilterChange(event.target.value)}
+                disabled={props.isLoadingLogs}
+              >
+                <option value="all">全部</option>
+                {props.logCategories.map((item) => (
+                  <option key={item} value={item}>{categoryLabels[item] || item}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="content-actions">
@@ -133,6 +186,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           </div>
 
           <div className="status">{props.logStatus}</div>
+          <div className="status">日志筛选：{props.logVisibleCount}/{props.logTotalCount}</div>
           <div className="status">{props.logCopyStatus || "复制状态：未执行"}</div>
           <pre ref={outputRef} className="log-viewer-output">{props.logContent || "暂无网络助手日志"}</pre>
         </>

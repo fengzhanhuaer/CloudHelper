@@ -96,10 +96,23 @@ export type NetworkAssistantStatus = {
   mux_last_pong?: string;
 };
 
+export type NetworkAssistantLogSource = "manager" | "controller";
+
+export type NetworkAssistantLogFilterSource = "all" | NetworkAssistantLogSource;
+
+export type NetworkAssistantLogEntry = {
+  time: string;
+  source: NetworkAssistantLogSource;
+  category: string;
+  message: string;
+  line: string;
+};
+
 export type NetworkAssistantLogResponse = {
   lines: number;
   content: string;
   fetched_at: string;
+  entries: NetworkAssistantLogEntry[];
 };
 
 export type LogSource = "local" | "server";

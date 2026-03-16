@@ -27,7 +27,7 @@ const (
 	defaultSocksListen  = "127.0.0.1:10808"
 	directWhitelistFile = "direct_whitelist.txt"
 	tunnelRoutePath     = "/api/ws/tunnel/"
-	maxTunnelFailures   = 3
+	maxTunnelFailures   = 20
 )
 
 var defaultDirectWhitelistRules = []string{
@@ -115,7 +115,7 @@ func newNetworkAssistantService() *networkAssistantService {
 
 	directWhitelist, _, err := loadOrCreateSocksDirectWhitelist()
 	if err != nil {
-		logStore.Appendf("network assistant: failed to load direct whitelist, using defaults: %v", err)
+		logStore.Appendf(logSourceManager, "init", "failed to load direct whitelist, using defaults: %v", err)
 		directWhitelist = mustBuildDefaultDirectWhitelist()
 	}
 
@@ -690,7 +690,42 @@ func (s *networkAssistantService) logf(format string, args ...any) {
 	if s == nil || s.logStore == nil {
 		return
 	}
-	s.logStore.Appendf("network assistant: "+format, args...)
+	message := strings.TrimSpace(fmt.Sprintf(format, args...))
+	if message == "" {
+		return
+	}
+	s.logStore.Append(logSourceManager, inferManagerLogCategory(message), message)
+}
+
+func (s *networkAssistantService) logController(category, message string) {
+	if s == nil || s.logStore == nil {
+		return
+	}
+	s.logStore.Append(logSourceController, category, message)
+}
+
+func inferManagerLogCategory(message string) string {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	switch {
+	case strings.Contains(lower, "mode") || strings.Contains(lower, "模式"):
+		return "mode"
+	case strings.Contains(lower, "system proxy") || strings.Contains(lower, "代理"):
+		return "proxy"
+	case strings.Contains(lower, "socks") || strings.Contains(lower, "proxy request") || strings.Contains(lower, "proxy connection"):
+		return "socks"
+	case strings.Contains(lower, "tunnel mux") || strings.Contains(lower, "mux"):
+		return "mux"
+	case strings.Contains(lower, "open tunnel") || strings.Contains(lower, "stream") || strings.Contains(lower, "relay") || strings.Contains(lower, "tunnel"):
+		return "tunnel"
+	case strings.Contains(lower, "node"):
+		return "node"
+	case strings.Contains(lower, "whitelist"):
+		return "whitelist"
+	case strings.Contains(lower, "failed") || strings.Contains(lower, "error"):
+		return "error"
+	default:
+		return defaultLogCategory
+	}
 }
 
 func (s *networkAssistantService) resetTunnelOpenFailures() {
@@ -709,14 +744,9 @@ func (s *networkAssistantService) recordTunnelOpenFailure(err error) {
 	if failures < maxTunnelFailures || mode != networkModeGlobal {
 		return
 	}
-
-	if rollbackErr := s.ApplyMode(s.currentControllerState(), "", networkModeDirect, ""); rollbackErr != nil {
-		s.logf("failed to fallback to direct mode: %v", rollbackErr)
-		s.setLastError(rollbackErr)
-		return
-	}
+	s.setTunnelStatus("隧道持续异常")
 	if err != nil {
-		s.logf("fallback to direct mode after repeated tunnel failures: %v", err)
+		s.logf("tunnel open failures reached threshold (%d), keep global mode: %v", failures, err)
 	}
 }
 

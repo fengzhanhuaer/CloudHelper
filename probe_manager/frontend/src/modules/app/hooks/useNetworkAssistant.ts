@@ -1,6 +1,13 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { GetNetworkAssistantLogs, GetNetworkAssistantStatus, RestoreNetworkAssistantDirect, SetNetworkAssistantMode, SyncNetworkAssistant } from "../../../../wailsjs/go/main/App";
-import type { NetworkAssistantLogResponse, NetworkAssistantMode, NetworkAssistantStatus } from "../types";
+import type {
+  NetworkAssistantLogEntry,
+  NetworkAssistantLogFilterSource,
+  NetworkAssistantLogResponse,
+  NetworkAssistantLogSource,
+  NetworkAssistantMode,
+  NetworkAssistantStatus,
+} from "../types";
 
 const defaultStatus: NetworkAssistantStatus = {
   enabled: false,
@@ -19,6 +26,55 @@ const defaultStatus: NetworkAssistantStatus = {
   mux_last_pong: "",
 };
 
+function normalizeLogSource(raw: string): NetworkAssistantLogSource {
+  const value = raw.trim().toLowerCase();
+  return value === "controller" ? "controller" : "manager";
+}
+
+function normalizeLogCategory(raw: string): string {
+  const value = raw.trim().toLowerCase();
+  return value || "general";
+}
+
+function buildLogLine(entry: NetworkAssistantLogEntry): string {
+  const ts = entry.time || new Date().toLocaleString();
+  return `${ts} [${entry.source}/${entry.category}] ${entry.message}`;
+}
+
+function normalizeLogEntry(raw: Partial<NetworkAssistantLogEntry>): NetworkAssistantLogEntry {
+  const source = normalizeLogSource(String(raw.source ?? "manager"));
+  const category = normalizeLogCategory(String(raw.category ?? "general"));
+  const message = String(raw.message ?? "").trim();
+  const time = String(raw.time ?? "").trim();
+  const line = String(raw.line ?? "").trim();
+  const normalized: NetworkAssistantLogEntry = {
+    time,
+    source,
+    category,
+    message,
+    line: "",
+  };
+  normalized.line = line || buildLogLine(normalized);
+  return normalized;
+}
+
+function parseLegacyLogEntries(content: string): NetworkAssistantLogEntry[] {
+  const normalized = content.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [];
+  }
+  return normalized.split("\n").map((line) => {
+    const trimmed = line.trim();
+    return normalizeLogEntry({
+      time: "",
+      source: "manager",
+      category: "general",
+      message: trimmed,
+      line: trimmed,
+    });
+  });
+}
+
 export function useNetworkAssistant() {
   const [status, setStatus] = useState<NetworkAssistantStatus>(defaultStatus);
   const [operateStatus, setOperateStatus] = useState("未操作");
@@ -27,17 +83,58 @@ export function useNetworkAssistant() {
   const [logLines, setLogLines] = useState(200);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [logStatus, setLogStatus] = useState("未加载网络助手日志");
-  const [logContent, setLogContent] = useState("");
+  const [logEntries, setLogEntries] = useState<NetworkAssistantLogEntry[]>([]);
+  const [logSourceFilter, setLogSourceFilter] = useState<NetworkAssistantLogFilterSource>("all");
+  const [logCategoryFilter, setLogCategoryFilter] = useState("all");
   const [logCopyStatus, setLogCopyStatus] = useState("");
+
+  const logCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (const entry of logEntries) {
+      if (logSourceFilter !== "all" && entry.source !== logSourceFilter) {
+        continue;
+      }
+      set.add(entry.category || "general");
+    }
+    return Array.from(set).sort((left, right) => left.localeCompare(right));
+  }, [logEntries, logSourceFilter]);
+
+  useEffect(() => {
+    if (logCategoryFilter === "all") {
+      return;
+    }
+    if (!logCategories.includes(logCategoryFilter)) {
+      setLogCategoryFilter("all");
+    }
+  }, [logCategories, logCategoryFilter]);
+
+  const visibleLogEntries = useMemo(() => {
+    return logEntries.filter((entry) => {
+      if (logSourceFilter !== "all" && entry.source !== logSourceFilter) {
+        return false;
+      }
+      if (logCategoryFilter !== "all" && entry.category !== logCategoryFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [logCategoryFilter, logEntries, logSourceFilter]);
+
+  const visibleLogContent = useMemo(() => {
+    return visibleLogEntries.map((entry) => entry.line || buildLogLine(entry)).join("\n");
+  }, [visibleLogEntries]);
 
   const refreshLogs = useCallback(async () => {
     setIsLoadingLogs(true);
     setLogStatus("正在刷新网络助手日志...");
     try {
       const data = (await GetNetworkAssistantLogs(logLines)) as NetworkAssistantLogResponse;
-      setLogContent(data.content || "");
+      const entries = Array.isArray(data.entries) && data.entries.length > 0
+        ? data.entries.map((entry) => normalizeLogEntry(entry))
+        : parseLegacyLogEntries(data.content || "");
+      setLogEntries(entries);
       setLogCopyStatus("");
-      setLogStatus(`已加载网络助手日志（${data.lines} 行）`);
+      setLogStatus(`已加载网络助手日志（${entries.length} 条）`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setLogStatus(`网络助手日志加载失败：${msg}`);
@@ -47,7 +144,7 @@ export function useNetworkAssistant() {
   }, [logLines]);
 
   const copyLogs = useCallback(async () => {
-    const text = logContent.trim();
+    const text = visibleLogContent.trim();
     if (!text) {
       setLogCopyStatus("暂无日志可复制");
       return;
@@ -55,10 +152,10 @@ export function useNetworkAssistant() {
 
     try {
       if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(logContent);
+        await navigator.clipboard.writeText(visibleLogContent);
       } else if (typeof document !== "undefined") {
         const textarea = document.createElement("textarea");
-        textarea.value = logContent;
+        textarea.value = visibleLogContent;
         textarea.style.position = "fixed";
         textarea.style.opacity = "0";
         document.body.appendChild(textarea);
@@ -74,7 +171,7 @@ export function useNetworkAssistant() {
       const msg = error instanceof Error ? error.message : "unknown error";
       setLogCopyStatus(`复制失败：${msg}`);
     }
-  }, [logContent]);
+  }, [visibleLogContent]);
 
   function updateLogLines(value: number) {
     if (!Number.isFinite(value)) {
@@ -95,7 +192,9 @@ export function useNetworkAssistant() {
 
   function clearLogs() {
     setLogStatus("未加载网络助手日志");
-    setLogContent("");
+    setLogEntries([]);
+    setLogSourceFilter("all");
+    setLogCategoryFilter("all");
     setLogCopyStatus("");
   }
 
@@ -166,7 +265,14 @@ export function useNetworkAssistant() {
     setLogLines: updateLogLines,
     isLoadingLogs,
     logStatus,
-    logContent,
+    logContent: visibleLogContent,
+    logSourceFilter,
+    setLogSourceFilter,
+    logCategoryFilter,
+    setLogCategoryFilter,
+    logCategories,
+    logVisibleCount: visibleLogEntries.length,
+    logTotalCount: logEntries.length,
     logCopyStatus,
     refreshLogs,
     copyLogs,

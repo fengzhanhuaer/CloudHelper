@@ -169,6 +169,13 @@ function App() {
             networkLogStatus={networkAssistant.logStatus}
             networkLogCopyStatus={networkAssistant.logCopyStatus}
             networkLogContent={networkAssistant.logContent}
+            networkLogSourceFilter={networkAssistant.logSourceFilter}
+            onNetworkLogSourceFilterChange={networkAssistant.setLogSourceFilter}
+            networkLogCategoryFilter={networkAssistant.logCategoryFilter}
+            onNetworkLogCategoryFilterChange={networkAssistant.setLogCategoryFilter}
+            networkLogCategories={networkAssistant.logCategories}
+            networkLogVisibleCount={networkAssistant.logVisibleCount}
+            networkLogTotalCount={networkAssistant.logTotalCount}
             networkLogAutoScroll={networkLogAutoScroll}
             onNetworkLogAutoScrollChange={setNetworkLogAutoScroll}
             onRefreshNetworkLogs={networkAssistant.refreshLogs}
