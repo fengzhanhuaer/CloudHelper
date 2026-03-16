@@ -37,6 +37,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/admin/ws", AdminWSHandler)
 	mux.HandleFunc("/api/probe/proxy/github/latest", ProbeProxyGitHubLatestHandler)
 	mux.HandleFunc("/api/probe/proxy/download", ProbeProxyDownloadHandler)
+	mux.HandleFunc("/api/probe/proxy/probe-node/install-script", ProbeProxyInstallScriptHandler)
 	mux.HandleFunc("/api/probe", ProbeWSHandler)
 	mux.HandleFunc("/api/ws/tunnel/cloudserver", NetworkAssistantTunnelWSHandler)
 	mux.HandleFunc("/dashboard/status", dashboardStatusHandler)

@@ -502,37 +502,30 @@ function sanitizeControllerAddress(rawAddress: string): string {
 
 function buildInstallCommand(node: ProbeNodeItem, controllerAddress: string): string {
   const base = sanitizeControllerAddress(controllerAddress);
-
-  if (node.direct_connect) {
-    if (node.target_system === "windows") {
-      return [
-        "$repo = \"fengzhanhuaer/CloudHelper\"",
-        "$nodeId = \"" + String(node.node_no) + "\"",
-        "$secret = \"" + node.node_secret + "\"",
-        "$controller = \"" + base + "\"",
-        "$dir = \"C:\\\\cloudhelper\\\\probe_node\"",
-        "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
-        "$url = \"https://github.com/$repo/releases/latest/download/cloudhelper-probe-node-windows-amd64.exe\"",
-        "Invoke-WebRequest -Uri $url -OutFile \"$dir\\\\probe_node.exe\"",
-        "Write-Host \"Downloaded probe_node.exe to $dir (nodeId=$nodeId, secret=$secret, controller=$controller)\"",
-      ].join("; ");
-    }
-
-    return "curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh | sudo PROBE_NODE_ID='" + String(node.node_no) + "' PROBE_NODE_SECRET='" + node.node_secret + "' PROBE_CONTROLLER_URL='" + base + "' bash";
-  }
-
   const params = new URLSearchParams({
     node_id: String(node.node_no),
-    node_name: node.node_name,
     secret: node.node_secret,
-    target: node.target_system,
   });
 
   if (node.target_system === "windows") {
-    return "powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm '" + base + "/api/admin/proxy/probe-node/install-script?" + params.toString() + "' | iex\"";
+    return [
+      "$repo = \"fengzhanhuaer/CloudHelper\"",
+      "$nodeId = \"" + String(node.node_no) + "\"",
+      "$secret = \"" + node.node_secret + "\"",
+      "$controller = \"" + base + "\"",
+      "$dir = \"C:\\\\cloudhelper\\\\probe_node\"",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$url = \"https://github.com/$repo/releases/latest/download/cloudhelper-probe-node-windows-amd64.exe\"",
+      "Invoke-WebRequest -Uri $url -OutFile \"$dir\\\\probe_node.exe\"",
+      "Write-Host \"Downloaded probe_node.exe to $dir (nodeId=$nodeId, secret=$secret, controller=$controller)\"",
+    ].join("; ");
   }
 
-  return "curl -fsSL '" + base + "/api/admin/proxy/probe-node/install-script?" + params.toString() + "' | sudo bash";
+  if (!node.direct_connect) {
+    return "curl -fsSL '" + base + "/api/probe/proxy/probe-node/install-script?" + params.toString() + "' | sudo PROBE_NODE_ID='" + String(node.node_no) + "' PROBE_NODE_SECRET='" + node.node_secret + "' PROBE_CONTROLLER_URL='" + base + "' bash";
+  }
+
+  return "curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh | sudo PROBE_NODE_ID='" + String(node.node_no) + "' PROBE_NODE_SECRET='" + node.node_secret + "' PROBE_CONTROLLER_URL='" + base + "' bash";
 }
 
 async function getProbeNodes(): Promise<ProbeNodeItem[]> {

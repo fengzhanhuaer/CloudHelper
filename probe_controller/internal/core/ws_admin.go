@@ -104,6 +104,7 @@ func AdminWSHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	defer close(stopPush)
+	controllerBaseURL := controllerBaseURLFromRequest(r)
 
 	for {
 		_, raw, err := conn.ReadMessage()
@@ -153,7 +154,7 @@ func AdminWSHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		data, err := handleAdminWSAction(req.Action, req.Payload)
+		data, err := handleAdminWSAction(req.Action, req.Payload, controllerBaseURL)
 		if err != nil {
 			_ = send(adminWSResponse{ID: req.ID, OK: false, Error: err.Error()})
 			continue
@@ -241,7 +242,7 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 	}, nil
 }
 
-func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, error) {
+func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseURL string) (interface{}, error) {
 	switch strings.TrimSpace(action) {
 	case "admin.status":
 		return map[string]interface{}{
@@ -378,7 +379,7 @@ func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, e
 		if !ok {
 			return nil, fmt.Errorf("probe node not found")
 		}
-		if err := dispatchUpgradeToProbe(node, ""); err != nil {
+		if err := dispatchUpgradeToProbe(node, controllerBaseURL); err != nil {
 			return nil, err
 		}
 		return map[string]interface{}{"ok": true, "node_id": nodeID}, nil
@@ -389,7 +390,7 @@ func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, e
 		success := 0
 		failures := make([]string, 0)
 		for _, node := range nodes {
-			if err := dispatchUpgradeToProbe(node, ""); err != nil {
+			if err := dispatchUpgradeToProbe(node, controllerBaseURL); err != nil {
 				failures = append(failures, fmt.Sprintf("%d:%v", node.NodeNo, err))
 				continue
 			}

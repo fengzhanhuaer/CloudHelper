@@ -20,6 +20,8 @@ import (
 	"time"
 )
 
+const probeNodeInstallScriptURL = "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh"
+
 type probeSession struct {
 	nodeID string
 	stream net.Conn
@@ -264,6 +266,60 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	if cl := strings.TrimSpace(resp.Header.Get("Content-Length")); cl != "" {
 		w.Header().Set("Content-Length", cl)
 	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isHTTPSRequest(r) {
+		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
+		return
+	}
+
+	nodeID := normalizeProbeNodeID(r.URL.Query().Get("node_id"))
+	secret := strings.TrimSpace(r.URL.Query().Get("secret"))
+	if nodeID == "" || secret == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id and secret query parameters are required"})
+		return
+	}
+	storedSecret, ok := resolveProbeSecret(nodeID)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "probe secret is not configured for node"})
+		return
+	}
+	if !hmac.Equal([]byte(storedSecret), []byte(secret)) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid probe secret"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, probeNodeInstallScriptURL, nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	proxyReq.Header.Set("User-Agent", "cloudhelper-probe-install-script-proxy")
+	proxyReq.Header.Set("Accept", "text/plain")
+
+	resp, err := http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("proxy install script failed: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("upstream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, resp.Body)
 }
