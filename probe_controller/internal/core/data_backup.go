@@ -46,7 +46,8 @@ func autoBackupControllerData() error {
 	}
 
 	now := time.Now()
-	archivePath := filepath.Join(backupDir, backupArchivePrefix+now.Format(backupArchiveDateTimeFmt)+".zip")
+	versionTag := backupSafeVersionTag(currentControllerVersion())
+	archivePath := filepath.Join(backupDir, backupArchivePrefix+versionTag+"-"+now.Format(backupArchiveDateTimeFmt)+".zip")
 	if err := zipDirectory(dataPath, archivePath); err != nil {
 		_ = os.Remove(archivePath)
 		return err
@@ -160,6 +161,28 @@ func backupTimeBucket(target, now time.Time) string {
 	}
 
 	return ""
+}
+
+func backupSafeVersionTag(version string) string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		return "dev"
+	}
+
+	buf := make([]byte, 0, len(v))
+	for i := 0; i < len(v); i++ {
+		ch := v[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			buf = append(buf, ch)
+			continue
+		}
+		buf = append(buf, '_')
+	}
+	out := strings.Trim(strings.TrimSpace(string(buf)), "._-")
+	if out == "" {
+		return "dev"
+	}
+	return out
 }
 
 func zipDirectory(sourceDir, targetZip string) error {

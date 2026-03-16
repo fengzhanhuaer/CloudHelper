@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -89,7 +90,8 @@ func backupOneManagerDataDir(dataPath string, now time.Time) error {
 		return err
 	}
 
-	archivePath := filepath.Join(backupDir, managerBackupArchivePrefix+now.Format(managerBackupArchiveDateTimeFmt)+".zip")
+	versionTag := managerBackupSafeVersionTag(currentManagerVersion())
+	archivePath := filepath.Join(backupDir, managerBackupArchivePrefix+versionTag+"-"+now.Format(managerBackupArchiveDateTimeFmt)+".zip")
 	if err := zipManagerDirectory(dataPath, archivePath); err != nil {
 		_ = os.Remove(archivePath)
 		return fmt.Errorf("backup %s failed: %w", dataPath, err)
@@ -206,6 +208,41 @@ func managerBackupTimeBucket(target, now time.Time) string {
 	}
 
 	return ""
+}
+
+func currentManagerVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if v := strings.TrimSpace(bi.Main.Version); v != "" && v != "(devel)" {
+			return v
+		}
+	}
+
+	if v := strings.TrimSpace(BuildVersion); v != "" && v != "(devel)" && !strings.EqualFold(v, "dev") {
+		return v
+	}
+	return "dev"
+}
+
+func managerBackupSafeVersionTag(version string) string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		return "dev"
+	}
+
+	buf := make([]byte, 0, len(v))
+	for i := 0; i < len(v); i++ {
+		ch := v[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			buf = append(buf, ch)
+			continue
+		}
+		buf = append(buf, '_')
+	}
+	out := strings.Trim(strings.TrimSpace(string(buf)), "._-")
+	if out == "" {
+		return "dev"
+	}
+	return out
 }
 
 func zipManagerDirectory(sourceDir, targetZip string) error {
