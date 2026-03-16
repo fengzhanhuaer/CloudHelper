@@ -293,6 +293,12 @@
     word-break: break-word;
 }
 
+.probe-node-meta.single-line {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .probe-node-meta.compact {
     line-height: 1.35;
     margin-top: 2px;
@@ -348,6 +354,37 @@
 
 .content-actions.inline {
     margin-top: 0;
+}
+
+.vendor-copy-link {
+    margin-left: 4px;
+    border: none;
+    background: transparent;
+    color: #9fd1ff;
+    cursor: pointer;
+    text-decoration: underline;
+    padding: 0;
+}
+
+.probe-settings-modal-mask {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 8, 14, 0.62);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+}
+
+.probe-settings-modal {
+    width: min(760px, 100%);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 12px;
+    padding: 14px;
+    background: rgba(9, 16, 27, 0.96);
 }
 
 @media (max-width: 900px) {

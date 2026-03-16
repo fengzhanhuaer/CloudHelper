@@ -74,9 +74,15 @@ export async function upsertProbeSecret(baseURL: string, token: string, nodeID: 
 export type ProbeNodeSyncItem = {
   node_no: number;
   node_name: string;
+  remark?: string;
   node_secret: string;
   target_system: "linux" | "windows";
   direct_connect: boolean;
+  payment_cycle?: string;
+  cost?: string;
+  expire_at?: string;
+  vendor_name?: string;
+  vendor_url?: string;
   created_at: string;
   updated_at: string;
 };

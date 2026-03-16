@@ -15,9 +15,15 @@ const probeNodesStoreFile = "probe_nodes.json"
 type ProbeNode struct {
 	NodeNo        int    `json:"node_no"`
 	NodeName      string `json:"node_name"`
+	Remark        string `json:"remark"`
 	NodeSecret    string `json:"node_secret"`
 	TargetSystem  string `json:"target_system"`
 	DirectConnect bool   `json:"direct_connect"`
+	PaymentCycle  string `json:"payment_cycle"`
+	Cost          string `json:"cost"`
+	ExpireAt      string `json:"expire_at"`
+	VendorName    string `json:"vendor_name"`
+	VendorURL     string `json:"vendor_url"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
 }
@@ -32,9 +38,6 @@ func (a *App) GetProbeNodes() ([]ProbeNode, error) {
 
 func (a *App) CreateProbeNode(nodeName string) (ProbeNode, error) {
 	name := strings.TrimSpace(nodeName)
-	if name == "" {
-		return ProbeNode{}, fmt.Errorf("node name is required")
-	}
 
 	nodes, storePath, err := loadProbeNodes()
 	if err != nil {
@@ -58,9 +61,15 @@ func (a *App) CreateProbeNode(nodeName string) (ProbeNode, error) {
 	node := ProbeNode{
 		NodeNo:        nextNo,
 		NodeName:      name,
+		Remark:        "",
 		NodeSecret:    randomSecret(32),
 		TargetSystem:  "linux",
 		DirectConnect: true,
+		PaymentCycle:  "",
+		Cost:          "",
+		ExpireAt:      "",
+		VendorName:    "",
+		VendorURL:     "",
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -73,8 +82,39 @@ func (a *App) CreateProbeNode(nodeName string) (ProbeNode, error) {
 }
 
 func (a *App) UpdateProbeNode(nodeNo int, targetSystem string, directConnect bool) (ProbeNode, error) {
+	return a.UpdateProbeNodeSettings(
+		nodeNo,
+		"",
+		"",
+		targetSystem,
+		directConnect,
+		"",
+		"",
+		"",
+		"",
+		"",
+	)
+}
+
+func (a *App) UpdateProbeNodeSettings(
+	nodeNo int,
+	nodeName string,
+	remark string,
+	targetSystem string,
+	directConnect bool,
+	paymentCycle string,
+	cost string,
+	expireAt string,
+	vendorName string,
+	vendorURL string,
+) (ProbeNode, error) {
 	if nodeNo <= 0 {
 		return ProbeNode{}, fmt.Errorf("invalid node number")
+	}
+
+	name := strings.TrimSpace(nodeName)
+	if name == "" {
+		return ProbeNode{}, fmt.Errorf("node name is required")
 	}
 
 	system := strings.ToLower(strings.TrimSpace(targetSystem))
@@ -87,13 +127,35 @@ func (a *App) UpdateProbeNode(nodeNo int, targetSystem string, directConnect boo
 		return ProbeNode{}, err
 	}
 
+	for _, item := range nodes {
+		if name == "" && item.NodeNo == nodeNo {
+			name = strings.TrimSpace(item.NodeName)
+		}
+		if item.NodeNo == nodeNo {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.NodeName), name) {
+			return ProbeNode{}, fmt.Errorf("node name already exists")
+		}
+	}
+	if name == "" {
+		return ProbeNode{}, fmt.Errorf("node name is required")
+	}
+
 	for idx := range nodes {
 		if nodes[idx].NodeNo != nodeNo {
 			continue
 		}
 
+		nodes[idx].NodeName = name
+		nodes[idx].Remark = strings.TrimSpace(remark)
 		nodes[idx].TargetSystem = system
 		nodes[idx].DirectConnect = directConnect
+		nodes[idx].PaymentCycle = strings.TrimSpace(paymentCycle)
+		nodes[idx].Cost = strings.TrimSpace(cost)
+		nodes[idx].ExpireAt = strings.TrimSpace(expireAt)
+		nodes[idx].VendorName = strings.TrimSpace(vendorName)
+		nodes[idx].VendorURL = strings.TrimSpace(vendorURL)
 		nodes[idx].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
 		if err := writeProbeNodes(storePath, nodes); err != nil {
@@ -202,6 +264,7 @@ func normalizeProbeNodes(nodes []ProbeNode) []ProbeNode {
 
 		node := item
 		node.NodeName = name
+		node.Remark = strings.TrimSpace(node.Remark)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
 		if node.NodeSecret == "" {
 			node.NodeSecret = randomSecret(32)
@@ -210,6 +273,11 @@ func normalizeProbeNodes(nodes []ProbeNode) []ProbeNode {
 		if node.TargetSystem != "windows" {
 			node.TargetSystem = "linux"
 		}
+		node.PaymentCycle = strings.TrimSpace(node.PaymentCycle)
+		node.Cost = strings.TrimSpace(node.Cost)
+		node.ExpireAt = strings.TrimSpace(node.ExpireAt)
+		node.VendorName = strings.TrimSpace(node.VendorName)
+		node.VendorURL = strings.TrimSpace(node.VendorURL)
 		if strings.TrimSpace(node.CreatedAt) == "" {
 			node.CreatedAt = now
 		}

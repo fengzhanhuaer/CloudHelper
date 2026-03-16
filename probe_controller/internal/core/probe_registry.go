@@ -21,9 +21,15 @@ type probeSecretUpsertRequest struct {
 type probeNodeRecord struct {
 	NodeNo        int    `json:"node_no"`
 	NodeName      string `json:"node_name"`
+	Remark        string `json:"remark"`
 	NodeSecret    string `json:"node_secret"`
 	TargetSystem  string `json:"target_system"`
 	DirectConnect bool   `json:"direct_connect"`
+	PaymentCycle  string `json:"payment_cycle"`
+	Cost          string `json:"cost"`
+	ExpireAt      string `json:"expire_at"`
+	VendorName    string `json:"vendor_name"`
+	VendorURL     string `json:"vendor_url"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
 }
@@ -301,11 +307,17 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 
 		node := item
 		node.NodeName = strings.TrimSpace(node.NodeName)
+		node.Remark = strings.TrimSpace(node.Remark)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
 		node.TargetSystem = strings.ToLower(strings.TrimSpace(node.TargetSystem))
 		if node.TargetSystem != "windows" {
 			node.TargetSystem = "linux"
 		}
+		node.PaymentCycle = strings.TrimSpace(node.PaymentCycle)
+		node.Cost = strings.TrimSpace(node.Cost)
+		node.ExpireAt = strings.TrimSpace(node.ExpireAt)
+		node.VendorName = strings.TrimSpace(node.VendorName)
+		node.VendorURL = strings.TrimSpace(node.VendorURL)
 		nodes = append(nodes, node)
 
 		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))

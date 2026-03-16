@@ -23,9 +23,15 @@ type ProbeTargetSystem = "linux" | "windows";
 type ProbeNodeItem = {
   node_no: number;
   node_name: string;
+  remark?: string;
   node_secret: string;
   target_system: ProbeTargetSystem;
   direct_connect: boolean;
+  payment_cycle?: string;
+  cost?: string;
+  expire_at?: string;
+  vendor_name?: string;
+  vendor_url?: string;
   created_at: string;
   updated_at: string;
   runtime?: {
@@ -44,6 +50,19 @@ type ProbeNodeItem = {
   };
 };
 
+type ProbeNodeSettingsDraft = {
+  node_no: number;
+  node_name: string;
+  remark: string;
+  target_system: ProbeTargetSystem;
+  direct_connect: boolean;
+  payment_cycle: string;
+  cost: string;
+  expire_at: string;
+  vendor_name: string;
+  vendor_url: string;
+};
+
 export function ProbeManageTab(props: ProbeManageTabProps) {
   const [subTab, setSubTab] = useState<ProbeSubTab>("create");
   const [nodeNameInput, setNodeNameInput] = useState("");
@@ -57,6 +76,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [isUpgradingAll, setIsUpgradingAll] = useState(false);
   const [upgradingNodeNos, setUpgradingNodeNos] = useState<number[]>([]);
   const [status, setStatus] = useState("正在加载探针列表...");
+  const [settingsDraft, setSettingsDraft] = useState<ProbeNodeSettingsDraft | null>(null);
 
   useEffect(() => {
     if (!controllerAddress.trim() && props.controllerBaseUrl.trim()) {
@@ -198,19 +218,45 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
   }
 
-  async function updateNode(nodeNo: number, patch: Partial<Pick<ProbeNodeItem, "target_system" | "direct_connect">>) {
+  async function updateNode(
+    nodeNo: number,
+    patch: Partial<Pick<ProbeNodeItem, "node_name" | "remark" | "target_system" | "direct_connect" | "payment_cycle" | "cost" | "expire_at" | "vendor_name" | "vendor_url">>,
+  ) {
     const current = nodes.find((item) => item.node_no === nodeNo);
     if (!current) {
       return;
     }
 
+    const nextNodeName = (patch.node_name ?? current.node_name).trim();
+    if (!nextNodeName) {
+      setStatus("节点名称不能为空");
+      return;
+    }
+
+    const nextRemark = (patch.remark ?? current.remark ?? "").trim();
     const nextTargetSystem = patch.target_system ?? current.target_system;
     const nextDirectConnect = patch.direct_connect ?? current.direct_connect;
+    const nextPaymentCycle = (patch.payment_cycle ?? current.payment_cycle ?? "").trim();
+    const nextCost = (patch.cost ?? current.cost ?? "").trim();
+    const nextExpireAt = (patch.expire_at ?? current.expire_at ?? "").trim();
+    const nextVendorName = (patch.vendor_name ?? current.vendor_name ?? "").trim();
+    const nextVendorURL = (patch.vendor_url ?? current.vendor_url ?? "").trim();
 
     setIsLoading(true);
     try {
       await syncFromControllerToLocal(controllerAddress, props.sessionToken);
-      const updated = await updateProbeNode(nodeNo, nextTargetSystem, nextDirectConnect);
+      const updated = await updateProbeNodeSettings({
+        node_no: nodeNo,
+        node_name: nextNodeName,
+        remark: nextRemark,
+        target_system: nextTargetSystem,
+        direct_connect: nextDirectConnect,
+        payment_cycle: nextPaymentCycle,
+        cost: nextCost,
+        expire_at: nextExpireAt,
+        vendor_name: nextVendorName,
+        vendor_url: nextVendorURL,
+      });
       const refreshed = await getProbeNodes();
       const synced = await syncProbeNodesToController(controllerAddress, props.sessionToken, refreshed);
       await replaceLocalProbeNodes(synced);
@@ -223,6 +269,33 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     } finally {
       setIsLoading(false);
     }
+  }
+
+  function openSettings(node: ProbeNodeItem) {
+    setSettingsDraft({
+      node_no: node.node_no,
+      node_name: node.node_name,
+      remark: node.remark || "",
+      target_system: node.target_system,
+      direct_connect: node.direct_connect,
+      payment_cycle: node.payment_cycle || "",
+      cost: node.cost || "",
+      expire_at: node.expire_at || "",
+      vendor_name: node.vendor_name || "",
+      vendor_url: node.vendor_url || "",
+    });
+  }
+
+  function closeSettings() {
+    setSettingsDraft(null);
+  }
+
+  async function saveSettings() {
+    if (!settingsDraft) {
+      return;
+    }
+    await updateNode(settingsDraft.node_no, settingsDraft);
+    setSettingsDraft(null);
   }
 
   async function copyInstallCommand(node: ProbeNodeItem) {
@@ -331,34 +404,22 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               {nodes.map((node) => (
                 <div className="probe-node-card" key={node.node_no}>
                   <div className="probe-node-title">{node.node_name}</div>
-                  <div className="probe-node-meta">节点号：{node.node_no}　当前版本：{node.runtime?.version || "-"}　创建：{formatTime(node.created_at)}　更新：{formatTime(node.updated_at)}</div>
+                  <div className="probe-node-meta single-line">节点号：{node.node_no}　当前版本：{node.runtime?.version || "-"}　厂家：
+                    {node.vendor_name ? (
+                      <button className="vendor-copy-link" type="button" title={node.vendor_url || "点击复制厂家URL"} onClick={() => void copyVendorURL(node, setStatus)}>
+                        {node.vendor_name}
+                      </button>
+                    ) : "-"}
+                  </div>
+                  {node.remark ? <div className="probe-node-meta compact">备注：{node.remark}</div> : null}
+                  <div className="probe-node-meta compact single-line">付款周期：{node.payment_cycle || "-"}　费用：{node.cost || "-"}　到期：{formatTime(node.expire_at || "")}</div>
 
                   <div className="probe-node-controls-row">
-                    <label className="probe-control-label">目标系统</label>
-                    <select
-                      className="input probe-system-select"
-                      value={node.target_system}
-                      onChange={(event) => void updateNode(node.node_no, { target_system: event.target.value as ProbeTargetSystem })}
-                      disabled={isLoading}
-                    >
-                      <option value="linux">Linux</option>
-                      <option value="windows">Windows</option>
-                    </select>
-
-                  <label className="probe-direct-toggle compact">
-                    <input
-                      type="checkbox"
-                      checked={node.direct_connect}
-                      onChange={(event) => void updateNode(node.node_no, { direct_connect: event.target.checked })}
-                      disabled={isLoading}
-                    />
-                    直连
-                  </label>
-
-                  <div className="content-actions inline">
-                    <button className="btn" onClick={() => void copyInstallCommand(node)} disabled={isLoading}>安装</button>
-                    <button className="btn" onClick={() => void upgradeOne(node)} disabled={isLoading || isUpgradingAll || upgradingNodeNos.includes(node.node_no)}>
-                      {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级"}
+                   <div className="content-actions inline">
+                     <button className="btn" onClick={() => openSettings(node)} disabled={isLoading}>设置</button>
+                     <button className="btn" onClick={() => void copyInstallCommand(node)} disabled={isLoading}>安装</button>
+                     <button className="btn" onClick={() => void upgradeOne(node)} disabled={isLoading || isUpgradingAll || upgradingNodeNos.includes(node.node_no)}>
+                       {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级"}
                     </button>
                   </div>
                   </div>
@@ -414,6 +475,66 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           )}
         </div>
       )}
+
+      {settingsDraft ? (
+        <div className="probe-settings-modal-mask" onClick={closeSettings}>
+          <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>探针设置 - 节点 {settingsDraft.node_no}</h3>
+            <div className="row">
+              <label>名称</label>
+              <input className="input" value={settingsDraft.node_name} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, node_name: event.target.value } : prev)} disabled={isLoading} />
+            </div>
+            <div className="row">
+              <label>备注</label>
+              <input className="input" value={settingsDraft.remark} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, remark: event.target.value } : prev)} disabled={isLoading} />
+            </div>
+            <div className="row">
+              <label>操作系统</label>
+              <select className="input" value={settingsDraft.target_system} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, target_system: event.target.value as ProbeTargetSystem } : prev)} disabled={isLoading}>
+                <option value="linux">Linux</option>
+                <option value="windows">Windows</option>
+              </select>
+            </div>
+            <div className="row">
+              <label>安装方式</label>
+              <label className="probe-direct-toggle" style={{ marginTop: 0 }}>
+                <input type="checkbox" checked={settingsDraft.direct_connect} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, direct_connect: event.target.checked } : prev)} disabled={isLoading} />
+                {settingsDraft.direct_connect ? "直连" : "主控代理"}
+              </label>
+            </div>
+            <div className="row">
+              <label>付款周期</label>
+              <input className="input" value={settingsDraft.payment_cycle} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, payment_cycle: event.target.value } : prev)} disabled={isLoading} />
+            </div>
+            <div className="row">
+              <label>费用</label>
+              <input className="input" value={settingsDraft.cost} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, cost: event.target.value } : prev)} disabled={isLoading} />
+            </div>
+            <div className="row">
+              <label>到期时间</label>
+              <input
+                className="input"
+                type="datetime-local"
+                value={toDateTimeLocalInputValue(settingsDraft.expire_at)}
+                onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, expire_at: fromDateTimeLocalInputValue(event.target.value) } : prev)}
+                disabled={isLoading}
+              />
+            </div>
+            <div className="row">
+              <label>厂家</label>
+              <input className="input" value={settingsDraft.vendor_name} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, vendor_name: event.target.value } : prev)} disabled={isLoading} />
+            </div>
+            <div className="row">
+              <label>厂家URL</label>
+              <input className="input" value={settingsDraft.vendor_url} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, vendor_url: event.target.value } : prev)} disabled={isLoading} />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void saveSettings()} disabled={isLoading}>保存</button>
+              <button className="btn" onClick={closeSettings} disabled={isLoading}>取消</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="status">{status}</div>
     </div>
@@ -477,6 +598,21 @@ async function copyStatusIP(ip: string, setStatus: (value: string) => void): Pro
   }
 }
 
+async function copyVendorURL(node: ProbeNodeItem, setStatus: (value: string) => void): Promise<void> {
+  const vendorURL = (node.vendor_url || "").trim();
+  if (!vendorURL) {
+    setStatus(`节点 ${node.node_name} 未设置厂家URL`);
+    return;
+  }
+  try {
+    await copyText(vendorURL);
+    setStatus(`已复制厂家URL：${vendorURL}`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "unknown error";
+    setStatus(`复制厂家URL失败：${msg}`);
+  }
+}
+
 function formatTime(isoTime: string): string {
   const dt = new Date(isoTime);
   if (Number.isNaN(dt.getTime())) {
@@ -490,6 +626,35 @@ function formatPercent(value: number | undefined): string {
     return "-";
   }
   return `${value.toFixed(1)}%`;
+}
+
+function toDateTimeLocalInputValue(value: string): string {
+  const raw = (value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) {
+    return "";
+  }
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  const hh = String(dt.getHours()).padStart(2, "0");
+  const mm = String(dt.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+function fromDateTimeLocalInputValue(value: string): string {
+  const raw = value.trim();
+  if (!raw) {
+    return "";
+  }
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) {
+    return raw;
+  }
+  return dt.toISOString();
 }
 
 function sanitizeControllerAddress(rawAddress: string): string {
@@ -551,21 +716,70 @@ async function createProbeNode(nodeName: string): Promise<ProbeNodeItem> {
   return (await api.CreateProbeNode(nodeName)) as ProbeNodeItem;
 }
 
-async function updateProbeNode(nodeNo: number, targetSystem: ProbeTargetSystem, directConnect: boolean): Promise<ProbeNodeItem> {
+async function updateProbeNodeSettings(payload: {
+  node_no: number;
+  node_name: string;
+  remark: string;
+  target_system: ProbeTargetSystem;
+  direct_connect: boolean;
+  payment_cycle: string;
+  cost: string;
+  expire_at: string;
+  vendor_name: string;
+  vendor_url: string;
+}): Promise<ProbeNodeItem> {
   const api = getWailsAppApi();
-  return (await api.UpdateProbeNode(nodeNo, targetSystem, directConnect)) as ProbeNodeItem;
+  if (!api.UpdateProbeNodeSettings) {
+    return (await api.UpdateProbeNode(payload.node_no, payload.target_system, payload.direct_connect)) as ProbeNodeItem;
+  }
+  return (await api.UpdateProbeNodeSettings(
+    payload.node_no,
+    payload.node_name,
+    payload.remark,
+    payload.target_system,
+    payload.direct_connect,
+    payload.payment_cycle,
+    payload.cost,
+    payload.expire_at,
+    payload.vendor_name,
+    payload.vendor_url,
+  )) as ProbeNodeItem;
 }
 
 function getWailsAppApi(): {
   GetProbeNodes: () => Promise<unknown>;
   CreateProbeNode: (nodeName: string) => Promise<unknown>;
   UpdateProbeNode: (nodeNo: number, targetSystem: string, directConnect: boolean) => Promise<unknown>;
+  UpdateProbeNodeSettings?: (
+    nodeNo: number,
+    nodeName: string,
+    remark: string,
+    targetSystem: string,
+    directConnect: boolean,
+    paymentCycle: string,
+    cost: string,
+    expireAt: string,
+    vendorName: string,
+    vendorURL: string,
+  ) => Promise<unknown>;
   ReplaceProbeNodes?: (nodes: ProbeNodeItem[]) => Promise<unknown>;
 } {
   const api = (window as unknown as { go?: { main?: { App?: unknown } } }).go?.main?.App as {
     GetProbeNodes?: () => Promise<unknown>;
     CreateProbeNode?: (nodeName: string) => Promise<unknown>;
     UpdateProbeNode?: (nodeNo: number, targetSystem: string, directConnect: boolean) => Promise<unknown>;
+    UpdateProbeNodeSettings?: (
+      nodeNo: number,
+      nodeName: string,
+      remark: string,
+      targetSystem: string,
+      directConnect: boolean,
+      paymentCycle: string,
+      cost: string,
+      expireAt: string,
+      vendorName: string,
+      vendorURL: string,
+    ) => Promise<unknown>;
     ReplaceProbeNodes?: (nodes: ProbeNodeItem[]) => Promise<unknown>;
   } | undefined;
 
@@ -576,6 +790,7 @@ function getWailsAppApi(): {
     GetProbeNodes: api.GetProbeNodes,
     CreateProbeNode: api.CreateProbeNode,
     UpdateProbeNode: api.UpdateProbeNode,
+    UpdateProbeNodeSettings: api.UpdateProbeNodeSettings,
     ReplaceProbeNodes: api.ReplaceProbeNodes,
   };
 }
