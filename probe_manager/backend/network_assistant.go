@@ -232,6 +232,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	if normalizedNode == "" {
 		normalizedNode = defaultNodeID
 	}
+	s.logf("apply mode requested: mode=%s node=%s", normalizedMode, normalizedNode)
 
 	normalizedBase := strings.TrimSpace(controllerBaseURL)
 	normalizedToken := strings.TrimSpace(sessionToken)
@@ -249,7 +250,9 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	s.mu.Unlock()
 
 	if effectiveBase != "" && effectiveToken != "" {
+		s.logf("refreshing available nodes from controller: %s", effectiveBase)
 		if err := s.refreshAvailableNodes(); err != nil {
+			s.logf("refresh available nodes failed: %v", err)
 			s.setLastError(err)
 			return err
 		}
@@ -267,6 +270,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 
 	if normalizedMode == networkModeDirect {
 		if err := s.stopProxyAndServer(); err != nil {
+			s.logf("failed to switch to direct mode: %v", err)
 			s.setLastError(err)
 			return err
 		}
@@ -282,6 +286,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 
 	if effectiveBase == "" || effectiveToken == "" {
 		err := errors.New("controller url and session token are required for global mode")
+		s.logf("switch global aborted: %v", err)
 		s.setLastError(err)
 		return err
 	}
@@ -295,11 +300,13 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	}
 
 	if err := s.ensureSocksServer(); err != nil {
+		s.logf("failed to start socks server: %v", err)
 		s.setLastError(err)
 		return err
 	}
 
 	if err := s.applySystemProxy(); err != nil {
+		s.logf("failed to apply system proxy: %v", err)
 		s.setLastError(err)
 		_ = s.stopSocksServerOnly()
 		return err
@@ -358,16 +365,17 @@ func (s *networkAssistantService) acceptLoop(ln net.Listener) {
 
 func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 	defer conn.Close()
+	remoteAddr := strings.TrimSpace(conn.RemoteAddr().String())
+	s.logf("proxy connection opened from %s", remoteAddr)
+	defer s.logf("proxy connection closed from %s", remoteAddr)
 
 	br := bufio.NewReader(conn)
-	if err := socks5Handshake(br, conn); err != nil {
-		return
-	}
-
-	req, err := socks5ReadRequest(br, conn)
+	version, req, err := readProxyRequest(br, conn)
 	if err != nil {
+		s.logf("proxy request parse failed from %s: %v", remoteAddr, err)
 		return
 	}
+	s.logf("proxy request from %s: version=%d cmd=%d target=%s", remoteAddr, version, req.Cmd, req.Address)
 
 	if req.Cmd == 0x03 {
 		s.handleSocksUDPAssociate(conn)
@@ -379,15 +387,16 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 		directConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
 		if err != nil {
 			s.logf("direct dial failed %s: %v", targetAddr, err)
-			socks5Reply(conn, 0x01)
+			replyProxyFailure(conn, version)
 			s.setTunnelStatus("白名单直连失败")
 			return
 		}
 		defer directConn.Close()
 
-		if err := socks5Reply(conn, 0x00); err != nil {
+		if err := replyProxySuccess(conn, version); err != nil {
 			return
 		}
+		s.logf("proxy direct dial connected %s", targetAddr)
 		s.setTunnelStatus("白名单直连")
 
 		errCh := make(chan error, 2)
@@ -400,7 +409,10 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 			errCh <- copyErr
 		}()
 
-		<-errCh
+		transferErr := <-errCh
+		if transferErr != nil && !errors.Is(transferErr, io.EOF) {
+			s.logf("direct relay closed with error %s: %v", targetAddr, transferErr)
+		}
 		return
 	}
 
@@ -409,7 +421,7 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 		if !isCredentialMissingErr(err) || s.currentMode() == networkModeGlobal {
 			s.logf("failed to open tunnel %s: %v", targetAddr, err)
 		}
-		socks5Reply(conn, 0x01)
+		replyProxyFailure(conn, version)
 		s.setTunnelStatus("隧道异常")
 		s.recordTunnelOpenFailure(err)
 		return
@@ -417,9 +429,10 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 	defer tunnelStream.close()
 	s.resetTunnelOpenFailures()
 
-	if err := socks5Reply(conn, 0x00); err != nil {
+	if err := replyProxySuccess(conn, version); err != nil {
 		return
 	}
+	s.logf("proxy tunnel connected %s", targetAddr)
 	s.setTunnelStatus("隧道已连接")
 
 	errCh := make(chan error, 2)
@@ -455,7 +468,10 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 		}
 	}()
 
-	<-errCh
+	relayErr := <-errCh
+	if relayErr != nil && !errors.Is(relayErr, io.EOF) {
+		s.logf("tunnel relay closed with error %s: %v", targetAddr, relayErr)
+	}
 	s.setTunnelStatus("隧道已断开")
 }
 
@@ -598,12 +614,15 @@ func (s *networkAssistantService) applySystemProxy() error {
 		}
 		s.proxySnapshot = snapshot
 		s.hasProxySnapshot = true
+		s.logf("captured system proxy snapshot: %s", snapshot.Summary())
 	}
 
+	s.logf("applying system proxy to socks=%s", s.socks5ListenAddr)
 	if err := applySocks5SystemProxy(s.socks5ListenAddr); err != nil {
 		return err
 	}
 	s.hasAppliedSysProxy = true
+	s.logf("system proxy applied")
 	return nil
 }
 
@@ -623,10 +642,12 @@ func (s *networkAssistantService) restoreSystemProxyIfNeeded() error {
 	if !s.hasProxySnapshot || !s.hasAppliedSysProxy {
 		return nil
 	}
+	s.logf("restoring system proxy: %s", s.proxySnapshot.Summary())
 	if err := restoreSystemProxy(s.proxySnapshot); err != nil {
 		return err
 	}
 	s.hasAppliedSysProxy = false
+	s.logf("system proxy restored")
 	return nil
 }
 
@@ -646,6 +667,7 @@ func (s *networkAssistantService) stopSocksServerOnly() error {
 	if ln == nil {
 		return nil
 	}
+	s.logf("stopping socks5 listener")
 	return ln.Close()
 }
 
@@ -913,7 +935,6 @@ func parseDirectWhitelistRules(rules []string) (*socksDirectWhitelist, error) {
 		cidrs: make([]*net.IPNet, 0),
 	}
 
-	invalidRules := make([]string, 0)
 	for _, rawRule := range rules {
 		rule := strings.ToLower(strings.TrimSpace(rawRule))
 		if rule == "" {
@@ -931,7 +952,6 @@ func parseDirectWhitelistRules(rules []string) (*socksDirectWhitelist, error) {
 		}
 
 		if strings.Contains(rule, " ") {
-			invalidRules = append(invalidRules, rawRule)
 			continue
 		}
 		whitelist.hosts[rule] = struct{}{}
@@ -991,6 +1011,42 @@ func (w *socksDirectWhitelist) matchesTarget(targetAddr string) bool {
 	return false
 }
 
+func readProxyRequest(br *bufio.Reader, conn net.Conn) (byte, socks5Request, error) {
+	peek, err := br.Peek(1)
+	if err != nil {
+		return 0, socks5Request{}, err
+	}
+
+	version := peek[0]
+	switch version {
+	case 0x05:
+		if err := socks5Handshake(br, conn); err != nil {
+			return version, socks5Request{}, err
+		}
+		req, err := socks5ReadRequest(br, conn)
+		return version, req, err
+	case 0x04:
+		req, err := socks4ReadRequest(br, conn)
+		return version, req, err
+	default:
+		return version, socks5Request{}, fmt.Errorf("unsupported socks version: %d", version)
+	}
+}
+
+func replyProxySuccess(conn net.Conn, version byte) error {
+	if version == 0x04 {
+		return socks4Reply(conn, 0x5A)
+	}
+	return socks5Reply(conn, 0x00)
+}
+
+func replyProxyFailure(conn net.Conn, version byte) error {
+	if version == 0x04 {
+		return socks4Reply(conn, 0x5B)
+	}
+	return socks5Reply(conn, 0x01)
+}
+
 func socks5Handshake(br *bufio.Reader, conn net.Conn) error {
 	head := make([]byte, 2)
 	if _, err := io.ReadFull(br, head); err != nil {
@@ -1023,6 +1079,72 @@ func socks5Handshake(br *bufio.Reader, conn net.Conn) error {
 
 	_, err := conn.Write([]byte{0x05, 0x00})
 	return err
+}
+
+func socks4ReadRequest(br *bufio.Reader, conn net.Conn) (socks5Request, error) {
+	head := make([]byte, 8)
+	if _, err := io.ReadFull(br, head); err != nil {
+		return socks5Request{}, err
+	}
+	if head[0] != 0x04 {
+		return socks5Request{}, errors.New("invalid socks4 version")
+	}
+	if head[1] != 0x01 {
+		_ = socks4Reply(conn, 0x5B)
+		return socks5Request{}, errors.New("only CONNECT is supported for socks4")
+	}
+
+	port := binary.BigEndian.Uint16(head[2:4])
+	if port == 0 {
+		_ = socks4Reply(conn, 0x5B)
+		return socks5Request{}, errors.New("invalid socks4 port")
+	}
+
+	if _, err := readNullTerminated(br, 512); err != nil {
+		_ = socks4Reply(conn, 0x5B)
+		return socks5Request{}, err
+	}
+
+	ipBytes := head[4:8]
+	var host string
+	if ipBytes[0] == 0x00 && ipBytes[1] == 0x00 && ipBytes[2] == 0x00 && ipBytes[3] != 0x00 {
+		domain, err := readNullTerminated(br, 1024)
+		if err != nil {
+			_ = socks4Reply(conn, 0x5B)
+			return socks5Request{}, err
+		}
+		host = strings.TrimSpace(domain)
+		if host == "" {
+			_ = socks4Reply(conn, 0x5B)
+			return socks5Request{}, errors.New("invalid socks4a domain")
+		}
+	} else {
+		host = net.IP(ipBytes).String()
+		if strings.TrimSpace(host) == "" {
+			_ = socks4Reply(conn, 0x5B)
+			return socks5Request{}, errors.New("invalid socks4 address")
+		}
+	}
+
+	return socks5Request{Cmd: 0x01, Address: net.JoinHostPort(host, strconv.Itoa(int(port)))}, nil
+}
+
+func readNullTerminated(br *bufio.Reader, maxLen int) (string, error) {
+	if maxLen <= 0 {
+		maxLen = 256
+	}
+	buf := make([]byte, 0, maxLen)
+	for len(buf) < maxLen {
+		b, err := br.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		if b == 0x00 {
+			return string(buf), nil
+		}
+		buf = append(buf, b)
+	}
+	return "", errors.New("null-terminated field exceeds max length")
 }
 
 func socks5ReadRequest(br *bufio.Reader, conn net.Conn) (socks5Request, error) {
@@ -1086,6 +1208,12 @@ func socks5ReadRequest(br *bufio.Reader, conn net.Conn) (socks5Request, error) {
 
 func socks5Reply(conn net.Conn, rep byte) error {
 	return socks5ReplyWithAddr(conn, rep, "0.0.0.0:0")
+}
+
+func socks4Reply(conn net.Conn, rep byte) error {
+	resp := []byte{0x00, rep, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	_, err := conn.Write(resp)
+	return err
 }
 
 func socks5ReplyWithAddr(conn net.Conn, rep byte, bindAddr string) error {

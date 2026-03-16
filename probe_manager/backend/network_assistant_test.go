@@ -81,6 +81,56 @@ func TestSocks5ReadConnectRequestDomain(t *testing.T) {
 	}
 }
 
+func TestSocks4ReadConnectRequestIPv4(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	request := []byte{
+		0x04, 0x01,
+		0x00, 0x50,
+		0x5d, 0xb8, 0xd8, 0x22,
+		'u', 0x00,
+	}
+
+	req, err := socks4ReadRequest(bufio.NewReader(bytes.NewReader(request)), server)
+	if err != nil {
+		t.Fatalf("socks4ReadRequest returned error: %v", err)
+	}
+	if req.Address != "93.184.216.34:80" {
+		t.Fatalf("unexpected target address: %s", req.Address)
+	}
+	if req.Cmd != 0x01 {
+		t.Fatalf("unexpected socks cmd: %d", req.Cmd)
+	}
+}
+
+func TestSocks4ReadConnectRequestDomain(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	request := []byte{
+		0x04, 0x01,
+		0x01, 0xbb,
+		0x00, 0x00, 0x00, 0x01,
+		0x00,
+		'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
+		0x00,
+	}
+
+	req, err := socks4ReadRequest(bufio.NewReader(bytes.NewReader(request)), server)
+	if err != nil {
+		t.Fatalf("socks4ReadRequest returned error: %v", err)
+	}
+	if req.Address != "example.com:443" {
+		t.Fatalf("unexpected target address: %s", req.Address)
+	}
+	if req.Cmd != 0x01 {
+		t.Fatalf("unexpected socks cmd: %d", req.Cmd)
+	}
+}
+
 func TestDefaultDirectWhitelistMatchesPrivateRanges(t *testing.T) {
 	whitelist, err := parseDirectWhitelistRules(defaultDirectWhitelistRules)
 	if err != nil {

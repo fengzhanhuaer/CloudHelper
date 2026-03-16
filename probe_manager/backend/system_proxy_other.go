@@ -6,6 +6,10 @@ import "errors"
 
 type systemProxySnapshot struct{}
 
+func (systemProxySnapshot) Summary() string {
+	return "unsupported platform"
+}
+
 func captureSystemProxySnapshot() (systemProxySnapshot, error) {
 	return systemProxySnapshot{}, errors.New("automatic system proxy update is only supported on windows")
 }

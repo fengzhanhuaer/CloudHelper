@@ -171,8 +171,8 @@ function App() {
             networkLogContent={networkAssistant.logContent}
             networkLogAutoScroll={networkLogAutoScroll}
             onNetworkLogAutoScrollChange={setNetworkLogAutoScroll}
-            onRefreshNetworkLogs={() => networkAssistant.refreshLogs()}
-            onCopyNetworkLogs={() => networkAssistant.copyLogs()}
+            onRefreshNetworkLogs={networkAssistant.refreshLogs}
+            onCopyNetworkLogs={networkAssistant.copyLogs}
             logSource={logViewer.source}
             onLogSourceChange={logViewer.setSource}
             logLines={logViewer.lines}

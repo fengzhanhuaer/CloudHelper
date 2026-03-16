@@ -22,6 +22,9 @@ var (
 type systemProxySnapshot struct {
 	ProxyEnable uint32
 	ProxyServer string
+	AutoDetect  uint32
+	AutoConfig  string
+	ProxyBypass string
 }
 
 func captureSystemProxySnapshot() (systemProxySnapshot, error) {
@@ -39,11 +42,30 @@ func captureSystemProxySnapshot() (systemProxySnapshot, error) {
 	if err != nil {
 		proxyServer = ""
 	}
+	autoDetect, _, err := key.GetIntegerValue("AutoDetect")
+	if err != nil {
+		autoDetect = 0
+	}
+	autoConfig, _, err := key.GetStringValue("AutoConfigURL")
+	if err != nil {
+		autoConfig = ""
+	}
+	proxyBypass, _, err := key.GetStringValue("ProxyOverride")
+	if err != nil {
+		proxyBypass = ""
+	}
 
 	return systemProxySnapshot{
 		ProxyEnable: uint32(proxyEnable),
 		ProxyServer: strings.TrimSpace(proxyServer),
+		AutoDetect:  uint32(autoDetect),
+		AutoConfig:  strings.TrimSpace(autoConfig),
+		ProxyBypass: strings.TrimSpace(proxyBypass),
 	}, nil
+}
+
+func (s systemProxySnapshot) Summary() string {
+	return fmt.Sprintf("enable=%d server=%q autodetect=%d autoconfig=%q bypass=%q", s.ProxyEnable, s.ProxyServer, s.AutoDetect, s.AutoConfig, s.ProxyBypass)
 }
 
 func applySocks5SystemProxy(socksAddr string) error {
@@ -64,6 +86,15 @@ func applySocks5SystemProxy(socksAddr string) error {
 	if err := key.SetStringValue("ProxyServer", "socks="+addr); err != nil {
 		return err
 	}
+	if err := key.SetStringValue("ProxyOverride", "<local>"); err != nil {
+		return err
+	}
+	if err := key.SetDWordValue("AutoDetect", 0); err != nil {
+		return err
+	}
+	if err := key.SetStringValue("AutoConfigURL", ""); err != nil {
+		return err
+	}
 
 	refreshWindowsSystemProxy()
 	return nil
@@ -80,6 +111,15 @@ func restoreSystemProxy(snapshot systemProxySnapshot) error {
 		return err
 	}
 	if err := key.SetStringValue("ProxyServer", snapshot.ProxyServer); err != nil {
+		return err
+	}
+	if err := key.SetStringValue("ProxyOverride", snapshot.ProxyBypass); err != nil {
+		return err
+	}
+	if err := key.SetDWordValue("AutoDetect", snapshot.AutoDetect); err != nil {
+		return err
+	}
+	if err := key.SetStringValue("AutoConfigURL", snapshot.AutoConfig); err != nil {
 		return err
 	}
 

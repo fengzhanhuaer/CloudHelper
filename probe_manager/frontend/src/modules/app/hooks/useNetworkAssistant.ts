@@ -122,14 +122,16 @@ export function useNetworkAssistant() {
       setStatus(data);
       setSelectedNode(data.node_id || nodeID);
       setOperateStatus(`模式已切换：${mode}`);
+      void refreshLogs();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setOperateStatus(`模式切换失败：${msg}`);
+      void refreshLogs();
       throw error;
     } finally {
       setIsOperating(false);
     }
-  }, [selectedNode]);
+  }, [refreshLogs, selectedNode]);
 
   const restoreDirect = useCallback(async () => {
     setIsOperating(true);
@@ -140,14 +142,16 @@ export function useNetworkAssistant() {
         setSelectedNode(data.node_id);
       }
       setOperateStatus("已恢复为直连模式");
+      void refreshLogs();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setOperateStatus(`恢复直连失败：${msg}`);
+      void refreshLogs();
       throw error;
     } finally {
       setIsOperating(false);
     }
-  }, []);
+  }, [refreshLogs]);
 
   return {
     status,

@@ -34,6 +34,17 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     outputRef.current.scrollTop = outputRef.current.scrollHeight;
   }, [props.logAutoScroll, props.logContent, subTab]);
 
+  useEffect(() => {
+    if (subTab !== "logs") {
+      return;
+    }
+    props.onRefreshLogs();
+    const timer = window.setInterval(() => {
+      props.onRefreshLogs();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [props.onRefreshLogs, subTab]);
+
   return (
     <div className="content-block">
       <h2>网络助手</h2>

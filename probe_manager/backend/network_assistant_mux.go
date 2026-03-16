@@ -308,6 +308,7 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 	}
 
 	if baseURL == "" || token == "" {
+		s.logf("tunnel mux connect skipped: missing controller url or session token")
 		return nil, errors.New("missing controller url or session token")
 	}
 
@@ -315,16 +316,19 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 		return s.tunnelMuxClient, nil
 	}
 	if s.tunnelMuxClient != nil {
+		s.logf("closing stale tunnel mux client")
 		s.tunnelMuxClient.close()
 		s.tunnelMuxClient = nil
 	}
 
 	client, err := newTunnelMuxClient(baseURL, token, nodeID)
 	if err != nil {
+		s.logf("create tunnel mux client failed, node=%s base=%s err=%v", nodeID, baseURL, err)
 		return nil, err
 	}
 	s.tunnelMuxClient = client
 	s.muxReconnects++
+	s.logf("tunnel mux connected, node=%s reconnects=%d", nodeID, s.muxReconnects)
 	return client, nil
 }
 
@@ -337,6 +341,7 @@ func (s *networkAssistantService) openTunnelStream(network, targetAddr string) (
 	if err == nil {
 		return stream, nil
 	}
+	s.logf("open tunnel stream failed, retrying: network=%s target=%s err=%v", network, targetAddr, err)
 
 	// try reconnect once
 	client.close()
