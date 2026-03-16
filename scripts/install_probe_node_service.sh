@@ -97,6 +97,12 @@ ensure_dependencies() {
       apk add --no-cache ca-certificates >/dev/null 2>&1 || true
     fi
   fi
+
+  if [[ -f /etc/alpine-release ]]; then
+    # Compatibility for binaries linked with glibc loader in some releases.
+    apk add --no-cache gcompat >/dev/null 2>&1 || true
+    apk add --no-cache libc6-compat >/dev/null 2>&1 || true
+  fi
 }
 
 resolve_platform() {
@@ -395,8 +401,10 @@ write_env_file() {
 #PROBE_NODE_SECRET=
 #PROBE_CONTROLLER_URL=https://controller.example.com
 EOF
-    chmod 0640 "${ENV_FILE}"
   fi
+
+  chown root:"${SERVICE_GROUP}" "${ENV_FILE}" >/dev/null 2>&1 || true
+  chmod 0640 "${ENV_FILE}"
 
   upsert_env_value "PROBE_NODE_ID" "${PROBE_NODE_ID:-}"
   upsert_env_value "PROBE_NODE_SECRET" "${PROBE_NODE_SECRET:-}"
