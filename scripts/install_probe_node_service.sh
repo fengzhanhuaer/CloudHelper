@@ -384,6 +384,8 @@ download_and_install() {
 }
 
 write_env_file() {
+  mkdir -p "$(dirname "${ENV_FILE}")"
+
   if [[ ! -f "${ENV_FILE}" ]]; then
     log "creating ${ENV_FILE}"
     cat >"${ENV_FILE}" <<EOF
