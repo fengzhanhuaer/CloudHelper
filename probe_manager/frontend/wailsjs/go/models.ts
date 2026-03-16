@@ -1,4 +1,4 @@
-export namespace main {
+export namespace backend {
 	
 	export class LogViewResponse {
 	    source: string;
@@ -62,6 +62,22 @@ export namespace main {
 	        this.message = source["message"];
 	    }
 	}
+	export class NetworkAssistantLogResponse {
+	    lines: number;
+	    content: string;
+	    fetched_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new NetworkAssistantLogResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lines = source["lines"];
+	        this.content = source["content"];
+	        this.fetched_at = source["fetched_at"];
+	    }
+	}
 	export class NetworkAssistantStatus {
 	    enabled: boolean;
 	    mode: string;
@@ -72,6 +88,11 @@ export namespace main {
 	    tunnel_status: string;
 	    system_proxy_status: string;
 	    last_error: string;
+	    mux_connected: boolean;
+	    mux_active_streams: number;
+	    mux_reconnects: number;
+	    mux_last_recv: string;
+	    mux_last_pong: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new NetworkAssistantStatus(source);
@@ -88,22 +109,11 @@ export namespace main {
 	        this.tunnel_status = source["tunnel_status"];
 	        this.system_proxy_status = source["system_proxy_status"];
 	        this.last_error = source["last_error"];
-	    }
-	}
-	export class NetworkAssistantLogResponse {
-	    lines: number;
-	    content: string;
-	    fetched_at: string;
-
-	    static createFrom(source: any = {}) {
-	        return new NetworkAssistantLogResponse(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.lines = source["lines"];
-	        this.content = source["content"];
-	        this.fetched_at = source["fetched_at"];
+	        this.mux_connected = source["mux_connected"];
+	        this.mux_active_streams = source["mux_active_streams"];
+	        this.mux_reconnects = source["mux_reconnects"];
+	        this.mux_last_recv = source["mux_last_recv"];
+	        this.mux_last_pong = source["mux_last_pong"];
 	    }
 	}
 	export class PrivateKeyStatus {
@@ -120,6 +130,30 @@ export namespace main {
 	        this.found = source["found"];
 	        this.path = source["path"];
 	        this.message = source["message"];
+	    }
+	}
+	export class ProbeNode {
+	    node_no: number;
+	    node_name: string;
+	    node_secret: string;
+	    target_system: string;
+	    direct_connect: boolean;
+	    created_at: string;
+	    updated_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeNode(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.node_no = source["node_no"];
+	        this.node_name = source["node_name"];
+	        this.node_secret = source["node_secret"];
+	        this.target_system = source["target_system"];
+	        this.direct_connect = source["direct_connect"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
 	    }
 	}
 	export class ReleaseAsset {
@@ -180,3 +214,4 @@ export namespace main {
 	}
 
 }
+

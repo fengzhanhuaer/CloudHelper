@@ -15,6 +15,7 @@ type App struct {
 type PrivateKeyStatus = backend.PrivateKeyStatus
 type LogViewResponse = backend.LogViewResponse
 type NetworkAssistantStatus = backend.NetworkAssistantStatus
+type NetworkAssistantLogResponse = backend.NetworkAssistantLogResponse
 type ReleaseAsset = backend.ReleaseAsset
 type ReleaseInfo = backend.ReleaseInfo
 type ManagerUpgradeResult = backend.ManagerUpgradeResult
@@ -64,6 +65,10 @@ func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int) (LogViewResponse,
 
 func (a *App) GetNetworkAssistantStatus() NetworkAssistantStatus {
 	return a.inner.GetNetworkAssistantStatus()
+}
+
+func (a *App) GetNetworkAssistantLogs(lines int) (NetworkAssistantLogResponse, error) {
+	return a.inner.GetNetworkAssistantLogs(lines)
 }
 
 func (a *App) SetNetworkAssistantMode(controllerBaseURL, sessionToken, mode, nodeID string) (NetworkAssistantStatus, error) {
