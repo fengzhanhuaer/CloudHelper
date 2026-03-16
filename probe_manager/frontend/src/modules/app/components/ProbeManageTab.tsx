@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchProbeNodeStatus, fetchProbeNodes, syncProbeNodes, upgradeAllProbeNodes, upgradeProbeNode, type ProbeNodeStatusItem, type ProbeNodeSyncItem } from "../services/controller-api";
 
 type ProbeManageTabProps = {
@@ -36,6 +36,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [controllerAddress, setControllerAddress] = useState(props.controllerBaseUrl || "");
   const [nodes, setNodes] = useState<ProbeNodeItem[]>([]);
   const [nodeStatusItems, setNodeStatusItems] = useState<ProbeNodeStatusItem[]>([]);
+  const pollIndexRef = useRef(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isUpgradingAll, setIsUpgradingAll] = useState(false);
   const [upgradingNodeNos, setUpgradingNodeNos] = useState<number[]>([]);
@@ -85,6 +86,36 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       setIsLoading(false);
     }
   }
+
+  async function pollNodeStatusByNodeID(nodeNo: number) {
+    try {
+      const items = await fetchProbeStatusFromController(controllerAddress, props.sessionToken, nodeNo);
+      if (!items.length) {
+        return;
+      }
+      setNodeStatusItems((prev) => mergeStatusItems(prev, items));
+    } catch {
+      // ignore intermittent poll failure
+    }
+  }
+
+  useEffect(() => {
+    if (subTab !== "status") {
+      return;
+    }
+    const nodeNos = nodes.map((item) => item.node_no).filter((v) => v > 0);
+    if (!nodeNos.length) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      const idx = pollIndexRef.current % nodeNos.length;
+      pollIndexRef.current += 1;
+      void pollNodeStatusByNodeID(nodeNos[idx]);
+    }, 2000);
+
+    return () => window.clearInterval(timer);
+  }, [subTab, nodes, controllerAddress, props.sessionToken]);
 
   async function createNode() {
     const cleanName = nodeNameInput.trim();
@@ -298,7 +329,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               {nodeStatusItems.map((item) => (
                 <div className="probe-node-card" key={`status-${item.node_no}`}>
                   <div className="probe-node-title">{item.node_name}</div>
-                  <div className="probe-node-meta">节点号：{item.node_no}</div>
+                  <div className="probe-node-meta">节点号：{item.node_no > 0 ? item.node_no : (item.runtime?.node_id || "-")}</div>
                   <div className="probe-node-meta">在线状态：{item.runtime?.online ? "在线" : "离线"}</div>
                   <div className="probe-node-meta">最后上报：{formatTime(item.runtime?.last_seen || "")}</div>
                   <div className="probe-node-meta">CPU：{item.runtime?.online ? formatPercent(item.runtime?.system?.cpu_percent) : "-"} / RAM：{item.runtime?.online ? formatPercent(item.runtime?.system?.memory_used_percent) : "-"}</div>
@@ -321,6 +352,17 @@ function sortNodes(nodes: ProbeNodeItem[]): ProbeNodeItem[] {
 
 function sortStatusItems(items: ProbeNodeStatusItem[]): ProbeNodeStatusItem[] {
   return [...items].sort((a, b) => a.node_no - b.node_no);
+}
+
+function mergeStatusItems(current: ProbeNodeStatusItem[], incoming: ProbeNodeStatusItem[]): ProbeNodeStatusItem[] {
+  const map = new Map<number, ProbeNodeStatusItem>();
+  for (const item of current) {
+    map.set(item.node_no, item);
+  }
+  for (const item of incoming) {
+    map.set(item.node_no, item);
+  }
+  return sortStatusItems(Array.from(map.values()));
 }
 
 function formatTime(isoTime: string): string {
@@ -469,13 +511,13 @@ async function syncProbeNodesToController(controllerBaseUrl: string, sessionToke
   return synced as ProbeNodeItem[];
 }
 
-async function fetchProbeStatusFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeNodeStatusItem[]> {
+async function fetchProbeStatusFromController(controllerBaseUrl: string, sessionToken: string, nodeID?: number): Promise<ProbeNodeStatusItem[]> {
   const base = sanitizeControllerAddress(controllerBaseUrl);
   const token = sessionToken.trim();
   if (!token) {
     throw new Error("session token is empty, cannot fetch status from controller");
   }
-  return await fetchProbeNodeStatus(base, token);
+  return await fetchProbeNodeStatus(base, token, nodeID);
 }
 
 async function syncFromControllerToLocal(controllerBaseUrl: string, sessionToken: string): Promise<void> {

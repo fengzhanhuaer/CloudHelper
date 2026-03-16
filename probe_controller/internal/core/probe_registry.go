@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -203,16 +204,85 @@ func loadProbeNodesLocked() []probeNodeRecord {
 
 func loadProbeNodeStatusLocked() []probeNodeStatusRecord {
 	nodes := loadProbeNodesLocked()
+	runtimes := listProbeRuntimes()
+	runtimeMap := make(map[string]probeRuntimeStatus, len(runtimes))
+	for _, rt := range runtimes {
+		runtimeMap[normalizeProbeNodeID(rt.NodeID)] = rt
+	}
+
 	out := make([]probeNodeStatusRecord, 0, len(nodes))
+	seen := make(map[string]struct{}, len(nodes))
 	for _, node := range nodes {
 		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+		seen[nodeID] = struct{}{}
 		runtime := probeRuntimeStatus{NodeID: nodeID, Online: false, System: probeSystemMetrics{}}
-		if runtime, ok := getProbeRuntime(nodeID); ok {
-			runtime = runtime
+		if rt, ok := runtimeMap[nodeID]; ok {
+			runtime = rt
 		}
 		out = append(out, probeNodeStatusRecord{NodeNo: node.NodeNo, NodeName: node.NodeName, Runtime: runtime})
 	}
+
+	for nodeID, rt := range runtimeMap {
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		nodeNo := 0
+		if n, err := strconv.Atoi(nodeID); err == nil && n > 0 {
+			nodeNo = n
+		}
+		name := "未注册节点"
+		if nodeID != "" {
+			name = name + "(" + nodeID + ")"
+		}
+		out = append(out, probeNodeStatusRecord{NodeNo: nodeNo, NodeName: name, Runtime: rt})
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].NodeNo == out[j].NodeNo {
+			return out[i].NodeName < out[j].NodeName
+		}
+		if out[i].NodeNo == 0 {
+			return false
+		}
+		if out[j].NodeNo == 0 {
+			return true
+		}
+		return out[i].NodeNo < out[j].NodeNo
+	})
 	return out
+}
+
+func loadProbeNodeStatusByIDLocked(nodeID string) (probeNodeStatusRecord, bool) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeNodeStatusRecord{}, false
+	}
+
+	nodes := loadProbeNodesLocked()
+	for _, node := range nodes {
+		if normalizeProbeNodeID(strconv.Itoa(node.NodeNo)) != normalizedID {
+			continue
+		}
+		runtime := probeRuntimeStatus{NodeID: normalizedID, Online: false, System: probeSystemMetrics{}}
+		if rt, ok := getProbeRuntime(normalizedID); ok {
+			runtime = rt
+		}
+		return probeNodeStatusRecord{NodeNo: node.NodeNo, NodeName: node.NodeName, Runtime: runtime}, true
+	}
+
+	if rt, ok := getProbeRuntime(normalizedID); ok {
+		nodeNo := 0
+		if n, err := strconv.Atoi(normalizedID); err == nil && n > 0 {
+			nodeNo = n
+		}
+		name := "未注册节点"
+		if normalizedID != "" {
+			name += "(" + normalizedID + ")"
+		}
+		return probeNodeStatusRecord{NodeNo: nodeNo, NodeName: name, Runtime: rt}, true
+	}
+
+	return probeNodeStatusRecord{}, false
 }
 
 func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string]string) {

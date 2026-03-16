@@ -102,8 +102,13 @@ export async function fetchProbeNodes(baseURL: string, token: string): Promise<P
   return Array.isArray(payload.nodes) ? payload.nodes : [];
 }
 
-export async function fetchProbeNodeStatus(baseURL: string, token: string): Promise<ProbeNodeStatusItem[]> {
-  const payload = await callAdminWSRpc<{ items?: ProbeNodeStatusItem[] }>(baseURL, token, "admin.probe.status.get");
+export async function fetchProbeNodeStatus(baseURL: string, token: string, nodeID?: number | string): Promise<ProbeNodeStatusItem[]> {
+  const payload = await callAdminWSRpc<{ items?: ProbeNodeStatusItem[] }>(
+    baseURL,
+    token,
+    "admin.probe.status.get",
+    nodeID === undefined || nodeID === null || String(nodeID).trim() === "" ? undefined : { node_id: String(nodeID) },
+  );
   return Array.isArray(payload.items) ? payload.items : [];
 }
 

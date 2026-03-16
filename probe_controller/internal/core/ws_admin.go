@@ -195,7 +195,19 @@ func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, e
 		Store.mu.RUnlock()
 		return map[string]interface{}{"nodes": nodes}, nil
 	case "admin.probe.status.get":
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		_ = json.Unmarshal(payload, &req)
 		Store.mu.RLock()
+		if strings.TrimSpace(req.NodeID) != "" {
+			item, ok := loadProbeNodeStatusByIDLocked(req.NodeID)
+			Store.mu.RUnlock()
+			if !ok {
+				return map[string]interface{}{"items": []probeNodeStatusRecord{}}, nil
+			}
+			return map[string]interface{}{"items": []probeNodeStatusRecord{item}}, nil
+		}
 		items := loadProbeNodeStatusLocked()
 		Store.mu.RUnlock()
 		return map[string]interface{}{"items": items}, nil
