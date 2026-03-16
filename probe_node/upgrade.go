@@ -105,7 +105,10 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	}
 
 	log.Printf("probe upgrade complete: %s -> %s, restarting", BuildVersion, release.TagName)
-	os.Exit(0)
+	if err := restartCurrentProcess(); err != nil {
+		log.Printf("probe upgrade fallback: restart current process failed: %v", err)
+		os.Exit(0)
+	}
 }
 
 func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase string, identity nodeIdentity) (releaseInfo, error) {

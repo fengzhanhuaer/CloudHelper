@@ -9,7 +9,7 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/cloudhelper/probe_node}"
 SERVICE_NAME="${SERVICE_NAME:-probe_node}"
 SERVICE_USER="${SERVICE_USER:-cloudhelper}"
 SERVICE_GROUP="${SERVICE_GROUP:-cloudhelper}"
-RUNTIME_MODE="${RUNTIME_MODE:-auto}" # auto | systemd | manual
+RUNTIME_MODE="auto"
 MANUAL_ENABLE_BOOT="${MANUAL_ENABLE_BOOT:-true}" # true | false
 
 BIN_PATH="${INSTALL_DIR}/probe_node"
@@ -21,6 +21,7 @@ LOG_FILE="${LOG_DIR}/${SERVICE_NAME}.log"
 
 ENV_FILE="/etc/default/${SERVICE_NAME}"
 SYSTEMD_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+OPENRC_SERVICE_FILE="/etc/init.d/${SERVICE_NAME}"
 MANUAL_CTL_FILE="/usr/local/bin/${SERVICE_NAME}-ctl"
 RC_LOCAL_FILE=""
 MANUAL_BOOT_STATUS="not-applicable"
@@ -138,26 +139,13 @@ resolve_platform() {
 }
 
 detect_service_impl() {
-  case "${RUNTIME_MODE}" in
-    auto)
-      if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
-        SERVICE_IMPL="systemd"
-      else
-        SERVICE_IMPL="manual"
-      fi
-      ;;
-    systemd)
-      command -v systemctl >/dev/null 2>&1 || die "RUNTIME_MODE=systemd but systemctl is not available"
-      [[ -d /run/systemd/system ]] || die "RUNTIME_MODE=systemd but current environment is not managed by systemd"
-      SERVICE_IMPL="systemd"
-      ;;
-    manual)
-      SERVICE_IMPL="manual"
-      ;;
-    *)
-      die "invalid RUNTIME_MODE=${RUNTIME_MODE}; expected auto|systemd|manual"
-      ;;
-  esac
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    SERVICE_IMPL="systemd"
+  elif command -v rc-service >/dev/null 2>&1 && [[ -d /etc/init.d ]]; then
+    SERVICE_IMPL="openrc"
+  else
+    die "no supported service manager detected (need systemd or openrc)"
+  fi
 
   log "runtime mode selected: ${SERVICE_IMPL}"
 }
@@ -466,6 +454,44 @@ enable_and_start_systemd() {
   systemctl restart "${SERVICE_NAME}"
 }
 
+write_openrc_service_file() {
+  log "writing ${OPENRC_SERVICE_FILE}"
+  cat >"${OPENRC_SERVICE_FILE}" <<EOF
+#!/sbin/openrc-run
+
+name="CloudHelper Probe Node"
+description="CloudHelper probe node daemon"
+command="${BIN_PATH}"
+command_user="${SERVICE_USER}:${SERVICE_GROUP}"
+pidfile="${PID_FILE}"
+command_background=true
+directory="${INSTALL_DIR}"
+output_log="${LOG_FILE}"
+error_log="${LOG_FILE}"
+
+if [ -f "${ENV_FILE}" ]; then
+  set -a
+  . "${ENV_FILE}"
+  set +a
+fi
+
+depend() {
+  need net
+}
+
+start_pre() {
+  checkpath -d -m 0750 -o ${SERVICE_USER}:${SERVICE_GROUP} "${RUN_DIR}"
+  checkpath -d -m 0750 -o ${SERVICE_USER}:${SERVICE_GROUP} "${LOG_DIR}"
+}
+EOF
+  chmod 0755 "${OPENRC_SERVICE_FILE}"
+}
+
+enable_and_start_openrc() {
+  rc-update add "${SERVICE_NAME}" default >/dev/null 2>&1 || true
+  rc-service "${SERVICE_NAME}" restart >/dev/null 2>&1 || rc-service "${SERVICE_NAME}" start
+}
+
 write_manual_ctl_script() {
   log "writing manual control script ${MANUAL_CTL_FILE}"
   cat >"${MANUAL_CTL_FILE}" <<EOF
@@ -708,11 +734,17 @@ show_summary() {
     log "next steps:"
     log "  1) systemctl status ${SERVICE_NAME} --no-pager"
     log "  2) journalctl -u ${SERVICE_NAME} -f"
-  else
+  elif [[ "${SERVICE_IMPL}" == "openrc" ]]; then
+    log "next steps:"
+    log "  1) rc-service ${SERVICE_NAME} status"
+    log "  2) tail -f ${LOG_FILE}"
+  elif [[ "${SERVICE_IMPL}" == "manual" ]]; then
     log "next steps:"
     log "  1) ${MANUAL_CTL_FILE} status"
     log "  2) ${MANUAL_CTL_FILE} log"
     log "  3) boot autostart: ${MANUAL_BOOT_STATUS}"
+  else
+    die "unsupported service implementation: ${SERVICE_IMPL}"
   fi
 }
 
@@ -728,8 +760,13 @@ main() {
   if [[ "${SERVICE_IMPL}" == "systemd" ]]; then
     write_systemd_service_file
     enable_and_start_systemd
-  else
+  elif [[ "${SERVICE_IMPL}" == "openrc" ]]; then
+    write_openrc_service_file
+    enable_and_start_openrc
+  elif [[ "${SERVICE_IMPL}" == "manual" ]]; then
     enable_and_start_manual
+  else
+    die "unsupported service implementation: ${SERVICE_IMPL}"
   fi
 
   show_summary
