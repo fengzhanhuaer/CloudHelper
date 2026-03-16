@@ -51,11 +51,16 @@ func initStore() {
 
 func (s *DataStore) Save() error {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	content, err := json.MarshalIndent(s.Data, "", "  ")
+	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, content, 0o644)
+	if err := os.WriteFile(s.path, content, 0o644); err != nil {
+		return err
+	}
+	if err := autoBackupControllerData(); err != nil {
+		log.Printf("warning: failed to backup controller data after save: %v", err)
+	}
+	return nil
 }

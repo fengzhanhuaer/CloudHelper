@@ -17,6 +17,13 @@ type managerBackupArchive struct {
 	modTime time.Time
 }
 
+const (
+	managerBackupDirName             = "backup"
+	managerBackupArchivePrefix       = "manager-data-"
+	managerBackupArchiveDateTimeFmt  = "20060102-150405.000000000"
+	managerBackupKeepPerTimeCategory = 3
+)
+
 func autoBackupManagerData() error {
 	dataDirs, err := managerDataDirectories()
 	if err != nil {
@@ -27,8 +34,9 @@ func autoBackupManagerData() error {
 	}
 
 	errMessages := make([]string, 0)
+	now := time.Now()
 	for _, dataPath := range dataDirs {
-		if err := backupOneManagerDataDir(dataPath, time.Now()); err != nil {
+		if err := backupOneManagerDataDir(dataPath, now); err != nil {
 			errMessages = append(errMessages, err.Error())
 		}
 	}
@@ -76,18 +84,18 @@ func managerDataDirectories() ([]string, error) {
 }
 
 func backupOneManagerDataDir(dataPath string, now time.Time) error {
-	backupDir := filepath.Join(filepath.Dir(dataPath), "bakup")
+	backupDir := filepath.Join(filepath.Dir(dataPath), managerBackupDirName)
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return err
 	}
 
-	archivePath := filepath.Join(backupDir, "manager-data-"+now.Format("20060102-150405")+".zip")
+	archivePath := filepath.Join(backupDir, managerBackupArchivePrefix+now.Format(managerBackupArchiveDateTimeFmt)+".zip")
 	if err := zipManagerDirectory(dataPath, archivePath); err != nil {
 		_ = os.Remove(archivePath)
 		return fmt.Errorf("backup %s failed: %w", dataPath, err)
 	}
 
-	if err := pruneManagerBackupArchives(backupDir, "manager-data-", now); err != nil {
+	if err := pruneManagerBackupArchives(backupDir, managerBackupArchivePrefix, now); err != nil {
 		return fmt.Errorf("prune %s failed: %w", backupDir, err)
 	}
 	return nil
@@ -118,7 +126,7 @@ func pruneManagerBackupArchives(backupDir, prefix string, now time.Time) error {
 		})
 	}
 
-	if len(archives) <= 1 {
+	if len(archives) == 0 {
 		return nil
 	}
 
@@ -126,40 +134,31 @@ func pruneManagerBackupArchives(backupDir, prefix string, now time.Time) error {
 		return archives[i].modTime.After(archives[j].modTime)
 	})
 
-	keep := map[string]struct{}{archives[0].path: {}}
+	keep := make(map[string]struct{})
+	buckets := map[string][]managerBackupArchive{
+		"today":      {},
+		"yesterday":  {},
+		"last_week":  {},
+		"last_month": {},
+		"last_year":  {},
+	}
 	now = now.Local()
-	yesterday := now.AddDate(0, 0, -1)
-	lastWeekRef := now.AddDate(0, 0, -7)
-	lastWeekYear, lastWeekNo := lastWeekRef.ISOWeek()
-	lastMonthRef := now.AddDate(0, -1, 0)
-	lastMonthYear, lastMonthNo := lastMonthRef.Year(), lastMonthRef.Month()
-	lastYear := now.Year() - 1
-
-	hasYesterday := false
-	hasLastWeek := false
-	hasLastMonth := false
-	hasLastYear := false
-
 	for _, archive := range archives {
-		t := archive.modTime.Local()
-		if !hasYesterday && isSameCalendarDay(t, yesterday) {
-			keep[archive.path] = struct{}{}
-			hasYesterday = true
+		if bucket := managerBackupTimeBucket(archive.modTime, now); bucket != "" {
+			buckets[bucket] = append(buckets[bucket], archive)
 		}
-		if !hasLastWeek {
-			y, w := t.ISOWeek()
-			if y == lastWeekYear && w == lastWeekNo {
-				keep[archive.path] = struct{}{}
-				hasLastWeek = true
-			}
+	}
+
+	for _, key := range []string{"today", "yesterday", "last_week", "last_month", "last_year"} {
+		bucketArchives := buckets[key]
+		if len(bucketArchives) == 0 {
+			continue
 		}
-		if !hasLastMonth && t.Year() == lastMonthYear && t.Month() == lastMonthNo {
-			keep[archive.path] = struct{}{}
-			hasLastMonth = true
+		if len(bucketArchives) > managerBackupKeepPerTimeCategory {
+			bucketArchives = bucketArchives[:managerBackupKeepPerTimeCategory]
 		}
-		if !hasLastYear && t.Year() == lastYear {
+		for _, archive := range bucketArchives {
 			keep[archive.path] = struct{}{}
-			hasLastYear = true
 		}
 	}
 
@@ -175,6 +174,38 @@ func pruneManagerBackupArchives(backupDir, prefix string, now time.Time) error {
 		}
 	}
 	return firstErr
+}
+
+func managerBackupTimeBucket(target, now time.Time) string {
+	t := target.Local()
+	n := now.Local()
+
+	if isSameCalendarDay(t, n) {
+		return "today"
+	}
+
+	yesterday := n.AddDate(0, 0, -1)
+	if isSameCalendarDay(t, yesterday) {
+		return "yesterday"
+	}
+
+	lastWeekRef := n.AddDate(0, 0, -7)
+	lastWeekYear, lastWeekNo := lastWeekRef.ISOWeek()
+	targetWeekYear, targetWeekNo := t.ISOWeek()
+	if targetWeekYear == lastWeekYear && targetWeekNo == lastWeekNo {
+		return "last_week"
+	}
+
+	lastMonthRef := n.AddDate(0, -1, 0)
+	if t.Year() == lastMonthRef.Year() && t.Month() == lastMonthRef.Month() {
+		return "last_month"
+	}
+
+	if t.Year() == n.Year()-1 {
+		return "last_year"
+	}
+
+	return ""
 }
 
 func zipManagerDirectory(sourceDir, targetZip string) error {

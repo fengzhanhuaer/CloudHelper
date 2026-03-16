@@ -214,7 +214,13 @@ func writeProbeNodes(storePath string, nodes []ProbeNode) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	return os.WriteFile(storePath, raw, 0o644)
+	if err := os.WriteFile(storePath, raw, 0o644); err != nil {
+		return err
+	}
+	if err := autoBackupManagerData(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func randomSecret(length int) string {

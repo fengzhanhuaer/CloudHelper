@@ -17,6 +17,13 @@ type backupArchive struct {
 	modTime time.Time
 }
 
+const (
+	backupDirName             = "backup"
+	backupArchivePrefix       = "controller-data-"
+	backupArchiveDateTimeFmt  = "20060102-150405.000000000"
+	backupKeepPerTimeCategory = 3
+)
+
 func autoBackupControllerData() error {
 	dataPath, err := filepath.Abs(dataDir)
 	if err != nil {
@@ -33,18 +40,19 @@ func autoBackupControllerData() error {
 		return fmt.Errorf("controller data path is not directory: %s", dataPath)
 	}
 
-	backupDir := filepath.Join(filepath.Dir(dataPath), "bakup")
+	backupDir := filepath.Join(filepath.Dir(dataPath), backupDirName)
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return err
 	}
 
-	archivePath := filepath.Join(backupDir, "controller-data-"+time.Now().Format("20060102-150405")+".zip")
+	now := time.Now()
+	archivePath := filepath.Join(backupDir, backupArchivePrefix+now.Format(backupArchiveDateTimeFmt)+".zip")
 	if err := zipDirectory(dataPath, archivePath); err != nil {
 		_ = os.Remove(archivePath)
 		return err
 	}
 
-	return pruneBackupArchives(backupDir, "controller-data-", time.Now())
+	return pruneBackupArchives(backupDir, backupArchivePrefix, now)
 }
 
 func pruneBackupArchives(backupDir, prefix string, now time.Time) error {
@@ -72,7 +80,7 @@ func pruneBackupArchives(backupDir, prefix string, now time.Time) error {
 		})
 	}
 
-	if len(archives) <= 1 {
+	if len(archives) == 0 {
 		return nil
 	}
 
@@ -80,40 +88,31 @@ func pruneBackupArchives(backupDir, prefix string, now time.Time) error {
 		return archives[i].modTime.After(archives[j].modTime)
 	})
 
-	keep := map[string]struct{}{archives[0].path: {}}
+	keep := make(map[string]struct{})
+	buckets := map[string][]backupArchive{
+		"today":      {},
+		"yesterday":  {},
+		"last_week":  {},
+		"last_month": {},
+		"last_year":  {},
+	}
 	now = now.Local()
-	yesterday := now.AddDate(0, 0, -1)
-	lastWeekRef := now.AddDate(0, 0, -7)
-	lastWeekYear, lastWeekNo := lastWeekRef.ISOWeek()
-	lastMonthRef := now.AddDate(0, -1, 0)
-	lastMonthYear, lastMonthNo := lastMonthRef.Year(), lastMonthRef.Month()
-	lastYear := now.Year() - 1
-
-	hasYesterday := false
-	hasLastWeek := false
-	hasLastMonth := false
-	hasLastYear := false
-
 	for _, archive := range archives {
-		t := archive.modTime.Local()
-		if !hasYesterday && sameDay(t, yesterday) {
-			keep[archive.path] = struct{}{}
-			hasYesterday = true
+		if bucket := backupTimeBucket(archive.modTime, now); bucket != "" {
+			buckets[bucket] = append(buckets[bucket], archive)
 		}
-		if !hasLastWeek {
-			y, w := t.ISOWeek()
-			if y == lastWeekYear && w == lastWeekNo {
-				keep[archive.path] = struct{}{}
-				hasLastWeek = true
-			}
+	}
+
+	for _, key := range []string{"today", "yesterday", "last_week", "last_month", "last_year"} {
+		bucketArchives := buckets[key]
+		if len(bucketArchives) == 0 {
+			continue
 		}
-		if !hasLastMonth && t.Year() == lastMonthYear && t.Month() == lastMonthNo {
-			keep[archive.path] = struct{}{}
-			hasLastMonth = true
+		if len(bucketArchives) > backupKeepPerTimeCategory {
+			bucketArchives = bucketArchives[:backupKeepPerTimeCategory]
 		}
-		if !hasLastYear && t.Year() == lastYear {
+		for _, archive := range bucketArchives {
 			keep[archive.path] = struct{}{}
-			hasLastYear = true
 		}
 	}
 
@@ -129,6 +128,38 @@ func pruneBackupArchives(backupDir, prefix string, now time.Time) error {
 		}
 	}
 	return firstErr
+}
+
+func backupTimeBucket(target, now time.Time) string {
+	t := target.Local()
+	n := now.Local()
+
+	if sameDay(t, n) {
+		return "today"
+	}
+
+	yesterday := n.AddDate(0, 0, -1)
+	if sameDay(t, yesterday) {
+		return "yesterday"
+	}
+
+	lastWeekRef := n.AddDate(0, 0, -7)
+	lastWeekYear, lastWeekNo := lastWeekRef.ISOWeek()
+	targetWeekYear, targetWeekNo := t.ISOWeek()
+	if targetWeekYear == lastWeekYear && targetWeekNo == lastWeekNo {
+		return "last_week"
+	}
+
+	lastMonthRef := n.AddDate(0, -1, 0)
+	if t.Year() == lastMonthRef.Year() && t.Month() == lastMonthRef.Month() {
+		return "last_month"
+	}
+
+	if t.Year() == n.Year()-1 {
+		return "last_year"
+	}
+
+	return ""
 }
 
 func zipDirectory(sourceDir, targetZip string) error {

@@ -81,5 +81,11 @@ func writeManagerGlobalConfig(configPath string, config managerGlobalConfig) err
 		return err
 	}
 	raw = append(raw, '\n')
-	return os.WriteFile(configPath, raw, 0o644)
+	if err := os.WriteFile(configPath, raw, 0o644); err != nil {
+		return err
+	}
+	if err := autoBackupManagerData(); err != nil {
+		return err
+	}
+	return nil
 }

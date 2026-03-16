@@ -1305,7 +1305,13 @@ func ensureDirectWhitelistFile(whitelistPath string) error {
 	content := "# CloudHelper direct whitelist\n" +
 		"# one CIDR/IP/hostname per line\n" +
 		strings.Join(defaultDirectWhitelistRules, "\n") + "\n"
-	return os.WriteFile(whitelistPath, []byte(content), 0o644)
+	if err := os.WriteFile(whitelistPath, []byte(content), 0o644); err != nil {
+		return err
+	}
+	if err := autoBackupManagerData(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureManagerDataDir() (string, error) {
