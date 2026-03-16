@@ -115,6 +115,32 @@ func (a *App) UpdateProbeNode(nodeNo int, targetSystem string, directConnect boo
 	return a.inner.UpdateProbeNode(nodeNo, targetSystem, directConnect)
 }
 
+func (a *App) UpdateProbeNodeSettings(
+	nodeNo int,
+	nodeName string,
+	remark string,
+	targetSystem string,
+	directConnect bool,
+	paymentCycle string,
+	cost string,
+	expireAt string,
+	vendorName string,
+	vendorURL string,
+) (ProbeNode, error) {
+	return a.inner.UpdateProbeNodeSettings(
+		nodeNo,
+		nodeName,
+		remark,
+		targetSystem,
+		directConnect,
+		paymentCycle,
+		cost,
+		expireAt,
+		vendorName,
+		vendorURL,
+	)
+}
+
 func (a *App) ReplaceProbeNodes(nodes []ProbeNode) ([]ProbeNode, error) {
 	return a.inner.ReplaceProbeNodes(nodes)
 }

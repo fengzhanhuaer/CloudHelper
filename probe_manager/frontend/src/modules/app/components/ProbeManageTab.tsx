@@ -221,16 +221,16 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   async function updateNode(
     nodeNo: number,
     patch: Partial<Pick<ProbeNodeItem, "node_name" | "remark" | "target_system" | "direct_connect" | "payment_cycle" | "cost" | "expire_at" | "vendor_name" | "vendor_url">>,
-  ) {
+  ): Promise<boolean> {
     const current = nodes.find((item) => item.node_no === nodeNo);
     if (!current) {
-      return;
+      return false;
     }
 
     const nextNodeName = (patch.node_name ?? current.node_name).trim();
     if (!nextNodeName) {
       setStatus("节点名称不能为空");
-      return;
+      return false;
     }
 
     const nextRemark = (patch.remark ?? current.remark ?? "").trim();
@@ -263,9 +263,11 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       setNodes(sortNodes(synced));
       await loadNodeStatus();
       setStatus(`节点已更新并同步到主控：${updated.node_name}`);
+      return true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`更新节点失败：${msg}`);
+      return false;
     } finally {
       setIsLoading(false);
     }
@@ -294,8 +296,10 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     if (!settingsDraft) {
       return;
     }
-    await updateNode(settingsDraft.node_no, settingsDraft);
-    setSettingsDraft(null);
+    const ok = await updateNode(settingsDraft.node_no, settingsDraft);
+    if (ok) {
+      setSettingsDraft(null);
+    }
   }
 
   async function copyInstallCommand(node: ProbeNodeItem) {
@@ -404,15 +408,13 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               {nodes.map((node) => (
                 <div className="probe-node-card" key={node.node_no}>
                   <div className="probe-node-title">{node.node_name}</div>
-                  <div className="probe-node-meta single-line">节点号：{node.node_no}　当前版本：{node.runtime?.version || "-"}　厂家：
+                  <div className="probe-node-meta single-line">节点号：{node.node_no}　版本：{node.runtime?.version || "-"}　厂家：
                     {node.vendor_name ? (
                       <button className="vendor-copy-link" type="button" title={node.vendor_url || "点击复制厂家URL"} onClick={() => void copyVendorURL(node, setStatus)}>
                         {node.vendor_name}
                       </button>
-                    ) : "-"}
-                  </div>
+                    ) : "-"}　付款周期：{node.payment_cycle || "-"}　费用：{node.cost || "-"}　到期：{formatTime(node.expire_at || "")}</div>
                   {node.remark ? <div className="probe-node-meta compact">备注：{node.remark}</div> : null}
-                  <div className="probe-node-meta compact single-line">付款周期：{node.payment_cycle || "-"}　费用：{node.cost || "-"}　到期：{formatTime(node.expire_at || "")}</div>
 
                   <div className="probe-node-controls-row">
                    <div className="content-actions inline">
@@ -730,7 +732,33 @@ async function updateProbeNodeSettings(payload: {
 }): Promise<ProbeNodeItem> {
   const api = getWailsAppApi();
   if (!api.UpdateProbeNodeSettings) {
-    return (await api.UpdateProbeNode(payload.node_no, payload.target_system, payload.direct_connect)) as ProbeNodeItem;
+    if (!api.ReplaceProbeNodes) {
+      return (await api.UpdateProbeNode(payload.node_no, payload.target_system, payload.direct_connect)) as ProbeNodeItem;
+    }
+    const currentNodes = (await api.GetProbeNodes()) as ProbeNodeItem[];
+    const nextNodes = currentNodes.map((node) => {
+      if (node.node_no !== payload.node_no) {
+        return node;
+      }
+      return {
+        ...node,
+        node_name: payload.node_name,
+        remark: payload.remark,
+        target_system: payload.target_system,
+        direct_connect: payload.direct_connect,
+        payment_cycle: payload.payment_cycle,
+        cost: payload.cost,
+        expire_at: payload.expire_at,
+        vendor_name: payload.vendor_name,
+        vendor_url: payload.vendor_url,
+      };
+    });
+    const replaced = (await api.ReplaceProbeNodes(nextNodes)) as ProbeNodeItem[];
+    const updated = replaced.find((node) => node.node_no === payload.node_no);
+    if (!updated) {
+      throw new Error("updated node not found after local replace");
+    }
+    return updated;
   }
   return (await api.UpdateProbeNodeSettings(
     payload.node_no,
