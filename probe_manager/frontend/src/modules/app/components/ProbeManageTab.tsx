@@ -32,6 +32,9 @@ type ProbeNodeItem = {
     node_id?: string;
     online?: boolean;
     last_seen?: string;
+    version?: string;
+    ipv4?: string[];
+    ipv6?: string[];
     system?: {
       cpu_percent?: number;
       memory_used_percent?: number;
@@ -69,8 +72,17 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     setIsLoading(true);
     try {
       const remoteNodes = await fetchProbeNodesFromController(controllerAddress, props.sessionToken);
+      let mergedNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
+      try {
+        const items = await fetchProbeStatusFromController(controllerAddress, props.sessionToken);
+        const sortedItems = sortStatusItems(items);
+        setNodeStatusItems(sortedItems);
+        mergedNodes = mergeNodesWithStatus(remoteNodes as ProbeNodeItem[], sortedItems);
+      } catch {
+        // ignore status refresh failure and keep list available
+      }
       await replaceLocalProbeNodes(remoteNodes);
-      setNodes(sortNodes(remoteNodes));
+      setNodes(mergedNodes);
       setStatus(remoteNodes.length ? "已从主控同步探针列表" : "主控暂无探针，请先创建");
     } catch (error) {
       try {
@@ -93,7 +105,9 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         fetchProbeStatusFromController(controllerAddress, props.sessionToken),
         fetchProbeReportIntervalFromController(controllerAddress, props.sessionToken),
       ]);
-      setNodeStatusItems(sortStatusItems(items));
+      const sortedItems = sortStatusItems(items);
+      setNodeStatusItems(sortedItems);
+      setNodes((prev) => mergeNodesWithStatus(prev, sortedItems));
       setReportIntervalSettings(settings);
       setReportIntervalInput(String(settings.current_sec || settings.default_sec || 60));
       setStatus(items.length ? "已从主控同步探针状态" : "暂无探针状态数据");
@@ -133,6 +147,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         return;
       }
       setNodeStatusItems((prev) => mergeStatusItems(prev, items));
+      setNodes((prev) => mergeNodesWithStatus(prev, items));
     } catch {
       // ignore intermittent poll failure
     }
@@ -316,7 +331,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               {nodes.map((node) => (
                 <div className="probe-node-card" key={node.node_no}>
                   <div className="probe-node-title">{node.node_name}</div>
-                  <div className="probe-node-meta">节点号：{node.node_no}　创建：{formatTime(node.created_at)}　更新：{formatTime(node.updated_at)}</div>
+                  <div className="probe-node-meta">节点号：{node.node_no}　当前版本：{node.runtime?.version || "-"}　创建：{formatTime(node.created_at)}　更新：{formatTime(node.updated_at)}</div>
 
                   <div className="probe-node-controls-row">
                     <label className="probe-control-label">目标系统</label>
@@ -422,6 +437,27 @@ function mergeStatusItems(current: ProbeNodeStatusItem[], incoming: ProbeNodeSta
     map.set(item.node_no, item);
   }
   return sortStatusItems(Array.from(map.values()));
+}
+
+function mergeNodesWithStatus(nodes: ProbeNodeItem[], statusItems: ProbeNodeStatusItem[]): ProbeNodeItem[] {
+  const runtimeByNodeNo = new Map<number, ProbeNodeStatusItem["runtime"]>();
+  for (const item of statusItems) {
+    runtimeByNodeNo.set(item.node_no, item.runtime || {});
+  }
+
+  return sortNodes(nodes.map((node) => {
+    const runtime = runtimeByNodeNo.get(node.node_no);
+    if (!runtime) {
+      return node;
+    }
+    return {
+      ...node,
+      runtime: {
+        ...(node.runtime || {}),
+        ...runtime,
+      },
+    };
+  }));
 }
 
 function collectIPs(item: ProbeNodeStatusItem): string[] {
