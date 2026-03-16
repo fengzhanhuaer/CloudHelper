@@ -530,18 +530,7 @@ function buildInstallCommand(node: ProbeNodeItem, controllerAddress: string): st
 }
 
 function buildLinuxInstallCommand(scriptURL: string, envArgs: string): string {
-  return [
-    "TMP_SCRIPT=/tmp/cloudhelper_probe_install.sh",
-    "curl -fsSL '" + scriptURL + "' -o $TMP_SCRIPT",
-    "if ! command -v bash >/dev/null 2>&1; then",
-    "  if command -v apk >/dev/null 2>&1; then apk add --no-cache bash;",
-    "  elif command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y bash;",
-    "  elif command -v dnf >/dev/null 2>&1; then dnf install -y bash;",
-    "  elif command -v yum >/dev/null 2>&1; then yum install -y bash;",
-    "  else echo 'bash not found and no supported package manager' >&2; exit 1; fi;",
-    "fi",
-    "(command -v sudo >/dev/null 2>&1 && sudo env " + envArgs + " bash $TMP_SCRIPT || env " + envArgs + " bash $TMP_SCRIPT)",
-  ].join("; ");
+  return "curl -fsSL '" + scriptURL + "' | env " + envArgs + " bash";
 }
 
 async function getProbeNodes(): Promise<ProbeNodeItem[]> {
