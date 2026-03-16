@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -37,8 +38,13 @@ func autoBackupManagerData() error {
 	errMessages := make([]string, 0)
 	now := time.Now()
 	for _, dataPath := range dataDirs {
-		if err := backupOneManagerDataDir(dataPath, now); err != nil {
+		archivePath, err := backupOneManagerDataDir(dataPath, now)
+		if err != nil {
 			errMessages = append(errMessages, err.Error())
+			continue
+		}
+		if err := tryUploadManagerBackupArchive(archivePath); err != nil {
+			log.Printf("warning: failed to upload manager data backup to controller: %v", err)
 		}
 	}
 
@@ -84,23 +90,23 @@ func managerDataDirectories() ([]string, error) {
 	return resolved, nil
 }
 
-func backupOneManagerDataDir(dataPath string, now time.Time) error {
+func backupOneManagerDataDir(dataPath string, now time.Time) (string, error) {
 	backupDir := filepath.Join(filepath.Dir(dataPath), managerBackupDirName)
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 
 	versionTag := managerBackupSafeVersionTag(currentManagerVersion())
 	archivePath := filepath.Join(backupDir, managerBackupArchivePrefix+versionTag+"-"+now.Format(managerBackupArchiveDateTimeFmt)+".zip")
 	if err := zipManagerDirectory(dataPath, archivePath); err != nil {
 		_ = os.Remove(archivePath)
-		return fmt.Errorf("backup %s failed: %w", dataPath, err)
+		return "", fmt.Errorf("backup %s failed: %w", dataPath, err)
 	}
 
 	if err := pruneManagerBackupArchives(backupDir, managerBackupArchivePrefix, now); err != nil {
-		return fmt.Errorf("prune %s failed: %w", backupDir, err)
+		return "", fmt.Errorf("prune %s failed: %w", backupDir, err)
 	}
-	return nil
+	return archivePath, nil
 }
 
 func pruneManagerBackupArchives(backupDir, prefix string, now time.Time) error {

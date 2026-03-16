@@ -397,6 +397,8 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			success++
 		}
 		return map[string]interface{}{"success": success, "total": len(nodes), "failures": failures}, nil
+	case "admin.manager.backup.upload":
+		return handleAdminWSManagerBackupUpload(payload)
 	case "admin.proxy.github.latest":
 		var req proxyLatestRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

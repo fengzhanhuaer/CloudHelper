@@ -92,6 +92,10 @@ func (a *App) GetLocalPrivateKeyStatus() PrivateKeyStatus {
 }
 
 func (a *App) SignNonceWithLocalKey(nonce string) (string, error) {
+	return signNonceWithLocalKey(nonce)
+}
+
+func signNonceWithLocalKey(nonce string) (string, error) {
 	nonce = strings.TrimSpace(nonce)
 	if nonce == "" {
 		return "", errors.New("nonce is required")
