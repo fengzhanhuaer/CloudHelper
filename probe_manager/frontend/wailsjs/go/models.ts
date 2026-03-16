@@ -90,6 +90,22 @@ export namespace main {
 	        this.last_error = source["last_error"];
 	    }
 	}
+	export class NetworkAssistantLogResponse {
+	    lines: number;
+	    content: string;
+	    fetched_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new NetworkAssistantLogResponse(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lines = source["lines"];
+	        this.content = source["content"];
+	        this.fetched_at = source["fetched_at"];
+	    }
+	}
 	export class PrivateKeyStatus {
 	    found: boolean;
 	    path: string;
@@ -164,4 +180,3 @@ export namespace main {
 	}
 
 }
-

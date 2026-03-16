@@ -18,6 +18,8 @@ export function GetManagerVersion():Promise<string>;
 
 export function GetNetworkAssistantStatus():Promise<main.NetworkAssistantStatus>;
 
+export function GetNetworkAssistantLogs(arg1:number):Promise<main.NetworkAssistantLogResponse>;
+
 export function Greet(arg1:string):Promise<string>;
 
 export function RestoreNetworkAssistantDirect():Promise<main.NetworkAssistantStatus>;

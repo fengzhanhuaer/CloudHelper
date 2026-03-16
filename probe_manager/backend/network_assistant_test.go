@@ -69,12 +69,15 @@ func TestSocks5ReadConnectRequestDomain(t *testing.T) {
 		0x00, 0x50,
 	}
 
-	addr, err := socks5ReadConnectRequest(bufio.NewReader(bytes.NewReader(request)), server)
+	req, err := socks5ReadRequest(bufio.NewReader(bytes.NewReader(request)), server)
 	if err != nil {
-		t.Fatalf("socks5ReadConnectRequest returned error: %v", err)
+		t.Fatalf("socks5ReadRequest returned error: %v", err)
 	}
-	if addr != "example.com:80" {
-		t.Fatalf("unexpected target address: %s", addr)
+	if req.Address != "example.com:80" {
+		t.Fatalf("unexpected target address: %s", req.Address)
+	}
+	if req.Cmd != 0x01 {
+		t.Fatalf("unexpected socks cmd: %d", req.Cmd)
 	}
 }
 

@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
-import { GetNetworkAssistantStatus, RestoreNetworkAssistantDirect, SetNetworkAssistantMode, SyncNetworkAssistant } from "../../../../wailsjs/go/main/App";
-import type { NetworkAssistantMode, NetworkAssistantStatus } from "../types";
+import { GetNetworkAssistantLogs, GetNetworkAssistantStatus, RestoreNetworkAssistantDirect, SetNetworkAssistantMode, SyncNetworkAssistant } from "../../../../wailsjs/go/main/App";
+import type { NetworkAssistantLogResponse, NetworkAssistantMode, NetworkAssistantStatus } from "../types";
 
 const defaultStatus: NetworkAssistantStatus = {
   enabled: false,
@@ -24,6 +24,80 @@ export function useNetworkAssistant() {
   const [operateStatus, setOperateStatus] = useState("未操作");
   const [isOperating, setIsOperating] = useState(false);
   const [selectedNode, setSelectedNode] = useState(defaultStatus.node_id);
+  const [logLines, setLogLines] = useState(200);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [logStatus, setLogStatus] = useState("未加载网络助手日志");
+  const [logContent, setLogContent] = useState("");
+  const [logCopyStatus, setLogCopyStatus] = useState("");
+
+  const refreshLogs = useCallback(async () => {
+    setIsLoadingLogs(true);
+    setLogStatus("正在刷新网络助手日志...");
+    try {
+      const data = (await GetNetworkAssistantLogs(logLines)) as NetworkAssistantLogResponse;
+      setLogContent(data.content || "");
+      setLogCopyStatus("");
+      setLogStatus(`已加载网络助手日志（${data.lines} 行）`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setLogStatus(`网络助手日志加载失败：${msg}`);
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  }, [logLines]);
+
+  const copyLogs = useCallback(async () => {
+    const text = logContent.trim();
+    if (!text) {
+      setLogCopyStatus("暂无日志可复制");
+      return;
+    }
+
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(logContent);
+      } else if (typeof document !== "undefined") {
+        const textarea = document.createElement("textarea");
+        textarea.value = logContent;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      } else {
+        throw new Error("clipboard api unavailable");
+      }
+      setLogCopyStatus("已复制网络助手日志");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setLogCopyStatus(`复制失败：${msg}`);
+    }
+  }, [logContent]);
+
+  function updateLogLines(value: number) {
+    if (!Number.isFinite(value)) {
+      setLogLines(200);
+      return;
+    }
+    const normalized = Math.trunc(value);
+    if (normalized <= 0) {
+      setLogLines(200);
+      return;
+    }
+    if (normalized > 2000) {
+      setLogLines(2000);
+      return;
+    }
+    setLogLines(normalized);
+  }
+
+  function clearLogs() {
+    setLogStatus("未加载网络助手日志");
+    setLogContent("");
+    setLogCopyStatus("");
+  }
 
   const refreshStatus = useCallback(async (controllerBaseURL?: string, token?: string) => {
     try {
@@ -84,5 +158,14 @@ export function useNetworkAssistant() {
     refreshStatus,
     switchMode,
     restoreDirect,
+    logLines,
+    setLogLines: updateLogLines,
+    isLoadingLogs,
+    logStatus,
+    logContent,
+    logCopyStatus,
+    refreshLogs,
+    copyLogs,
+    clearLogs,
   };
 }

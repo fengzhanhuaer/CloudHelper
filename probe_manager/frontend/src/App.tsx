@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import logo from "./assets/images/logo-universal.png";
+import logo from "./assets/images/site-icon.png";
 import "./App.css";
 import { resolveTabs } from "./modules/app/authz";
 import { LoginPanel } from "./modules/app/components/LoginPanel";
@@ -15,6 +15,7 @@ import type { TabKey } from "./modules/app/types";
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
+  const [networkLogAutoScroll, setNetworkLogAutoScroll] = useState(true);
 
   const settings = useLocalSettings();
   const auth = useAuthFlow();
@@ -43,8 +44,9 @@ function App() {
     }
     if (activeTab === "network-assistant") {
       void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
+      void networkAssistant.refreshLogs();
     }
-  }, [activeTab, auth.sessionToken, networkAssistant.refreshStatus, settings.baseUrl]);
+  }, [activeTab, auth.sessionToken, networkAssistant.refreshLogs, networkAssistant.refreshStatus, settings.baseUrl]);
 
   useEffect(() => {
     if (!auth.sessionToken) {
@@ -82,6 +84,7 @@ function App() {
     connection.clearStatusMessages();
     upgrade.clearUpgradeMessages();
     logViewer.clearLogs();
+    networkAssistant.clearLogs();
   }
 
   if (!auth.sessionToken) {
@@ -160,6 +163,16 @@ function App() {
             onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct", networkAssistant.selectedNode)}
             onSwitchNetworkGlobal={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "global", networkAssistant.selectedNode)}
             onRestoreNetworkDirect={() => networkAssistant.restoreDirect()}
+            networkLogLines={networkAssistant.logLines}
+            onNetworkLogLinesChange={networkAssistant.setLogLines}
+            isLoadingNetworkLogs={networkAssistant.isLoadingLogs}
+            networkLogStatus={networkAssistant.logStatus}
+            networkLogCopyStatus={networkAssistant.logCopyStatus}
+            networkLogContent={networkAssistant.logContent}
+            networkLogAutoScroll={networkLogAutoScroll}
+            onNetworkLogAutoScrollChange={setNetworkLogAutoScroll}
+            onRefreshNetworkLogs={() => networkAssistant.refreshLogs()}
+            onCopyNetworkLogs={() => networkAssistant.copyLogs()}
             logSource={logViewer.source}
             onLogSourceChange={logViewer.setSource}
             logLines={logViewer.lines}

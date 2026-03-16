@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { NetworkAssistantStatus } from "../types";
 
 type NetworkAssistantTabProps = {
@@ -11,10 +11,28 @@ type NetworkAssistantTabProps = {
   onSwitchDirect: () => void;
   onSwitchGlobal: () => void;
   onRestoreDirect: () => void;
+  logLines: number;
+  onLogLinesChange: (value: number) => void;
+  isLoadingLogs: boolean;
+  logStatus: string;
+  logCopyStatus: string;
+  logContent: string;
+  logAutoScroll: boolean;
+  onLogAutoScrollChange: (value: boolean) => void;
+  onRefreshLogs: () => void;
+  onCopyLogs: () => void;
 };
 
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
-  const [subTab, setSubTab] = useState<"settings" | "status">("settings");
+  const [subTab, setSubTab] = useState<"settings" | "status" | "logs">("settings");
+  const outputRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => {
+    if (!props.logAutoScroll || !outputRef.current || subTab !== "logs") {
+      return;
+    }
+    outputRef.current.scrollTop = outputRef.current.scrollHeight;
+  }, [props.logAutoScroll, props.logContent, subTab]);
 
   return (
     <div className="content-block">
@@ -23,6 +41,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
       <div className="subtab-list" style={{ marginBottom: 12 }}>
         <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")}>设置</button>
         <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => setSubTab("status")}>状态</button>
+        <button className={`subtab-btn ${subTab === "logs" ? "active" : ""}`} onClick={() => setSubTab("logs")}>日志</button>
       </div>
 
       {subTab === "status" ? (
@@ -44,7 +63,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             <button className="btn" onClick={props.onRefreshStatus} disabled={props.isOperating}>刷新状态</button>
           </div>
         </>
-      ) : (
+      ) : subTab === "settings" ? (
         <>
           <div className="identity-card">
             <div>探针节点：</div>
@@ -65,6 +84,46 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             <button className="btn" onClick={props.onSwitchGlobal} disabled={props.isOperating}>切换全局</button>
             <button className="btn" onClick={props.onRestoreDirect} disabled={props.isOperating}>恢复系统代理</button>
           </div>
+        </>
+      ) : (
+        <>
+          <div className="identity-card">
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label htmlFor="network-log-lines">显示行数</label>
+              <input
+                id="network-log-lines"
+                className="input"
+                type="number"
+                min={1}
+                max={2000}
+                value={props.logLines}
+                onChange={(event) => props.onLogLinesChange(Number(event.target.value) || 200)}
+                disabled={props.isLoadingLogs}
+              />
+            </div>
+          </div>
+
+          <div className="content-actions">
+            <button className="btn" onClick={props.onRefreshLogs} disabled={props.isLoadingLogs}>
+              {props.isLoadingLogs ? "刷新中..." : "刷新日志"}
+            </button>
+            <button className="btn" onClick={props.onCopyLogs} disabled={props.isLoadingLogs || !props.logContent.trim()}>
+              复制日志
+            </button>
+            <label className="log-auto-scroll-toggle">
+              <input
+                type="checkbox"
+                checked={props.logAutoScroll}
+                onChange={(event) => props.onLogAutoScrollChange(event.target.checked)}
+                disabled={props.isLoadingLogs}
+              />
+              自动滚动到底部
+            </label>
+          </div>
+
+          <div className="status">{props.logStatus}</div>
+          <div className="status">{props.logCopyStatus || "复制状态：未执行"}</div>
+          <pre ref={outputRef} className="log-viewer-output">{props.logContent || "暂无网络助手日志"}</pre>
         </>
       )}
 

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -108,16 +107,19 @@ type networkAssistantService struct {
 	muxReconnects       int64
 
 	directWhitelist *socksDirectWhitelist
+	logStore        *networkAssistantLogStore
 }
 
 func newNetworkAssistantService() *networkAssistantService {
+	logStore := newNetworkAssistantLogStore()
+
 	directWhitelist, _, err := loadOrCreateSocksDirectWhitelist()
 	if err != nil {
-		log.Printf("network assistant: failed to load direct whitelist, using defaults: %v", err)
+		logStore.Appendf("network assistant: failed to load direct whitelist, using defaults: %v", err)
 		directWhitelist = mustBuildDefaultDirectWhitelist()
 	}
 
-	return &networkAssistantService{
+	service := &networkAssistantService{
 		mode:                networkModeDirect,
 		nodeID:              defaultNodeID,
 		availableNodes:      []string{defaultNodeID},
@@ -126,7 +128,10 @@ func newNetworkAssistantService() *networkAssistantService {
 		systemProxyMessage:  "未设置",
 		tunnelOpenFailures:  0,
 		directWhitelist:     directWhitelist,
+		logStore:            logStore,
 	}
+	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
+	return service
 }
 
 func (a *App) GetNetworkAssistantStatus() NetworkAssistantStatus {
@@ -271,6 +276,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.systemProxyMessage = "已恢复"
 		s.tunnelOpenFailures = 0
 		s.mu.Unlock()
+		s.logf("switched mode to direct, node=%s", normalizedNode)
 		return nil
 	}
 
@@ -281,7 +287,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	}
 
 	if whitelist, _, err := loadOrCreateSocksDirectWhitelist(); err != nil {
-		log.Printf("network assistant: failed to refresh direct whitelist: %v", err)
+		s.logf("failed to refresh direct whitelist: %v", err)
 	} else {
 		s.mu.Lock()
 		s.directWhitelist = whitelist
@@ -304,7 +310,9 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	s.tunnelStatusMessage = "隧道待命"
 	s.systemProxyMessage = "已设置"
 	s.tunnelOpenFailures = 0
+	socksAddr := s.socks5ListenAddr
 	s.mu.Unlock()
+	s.logf("switched mode to global, node=%s, socks5=%s", normalizedNode, socksAddr)
 
 	return nil
 }
@@ -328,6 +336,7 @@ func (s *networkAssistantService) ensureSocksServer() error {
 	s.listener = ln
 	s.stopping.Store(false)
 	s.mu.Unlock()
+	s.logf("socks5 listener started at %s", listenAddr)
 
 	go s.acceptLoop(ln)
 	return nil
@@ -340,7 +349,7 @@ func (s *networkAssistantService) acceptLoop(ln net.Listener) {
 			if s.stopping.Load() {
 				return
 			}
-			log.Printf("network assistant: failed to accept socks5 conn: %v", err)
+			s.logf("failed to accept socks5 conn: %v", err)
 			continue
 		}
 		go s.handleSocksConn(conn)
@@ -369,7 +378,7 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 	if s.shouldDialDirect(targetAddr) {
 		directConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
 		if err != nil {
-			log.Printf("network assistant: direct dial failed %s: %v", targetAddr, err)
+			s.logf("direct dial failed %s: %v", targetAddr, err)
 			socks5Reply(conn, 0x01)
 			s.setTunnelStatus("白名单直连失败")
 			return
@@ -398,7 +407,7 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn) {
 	tunnelStream, err := s.openTunnelStream("tcp", targetAddr)
 	if err != nil {
 		if !isCredentialMissingErr(err) || s.currentMode() == networkModeGlobal {
-			log.Printf("network assistant: failed to open tunnel %s: %v", targetAddr, err)
+			s.logf("failed to open tunnel %s: %v", targetAddr, err)
 		}
 		socks5Reply(conn, 0x01)
 		s.setTunnelStatus("隧道异常")
@@ -512,7 +521,7 @@ func (s *networkAssistantService) handleSocksUDPAssociate(tcpConn net.Conn) {
 			}
 		}
 		if err != nil {
-			log.Printf("network assistant: failed to open udp tunnel %s: %v", targetAddr, err)
+			s.logf("failed to open udp tunnel %s: %v", targetAddr, err)
 			continue
 		}
 		if strings.TrimSpace(respAddr) == "" {
@@ -655,6 +664,13 @@ func (s *networkAssistantService) setTunnelStatus(status string) {
 	s.tunnelStatusMessage = status
 }
 
+func (s *networkAssistantService) logf(format string, args ...any) {
+	if s == nil || s.logStore == nil {
+		return
+	}
+	s.logStore.Appendf("network assistant: "+format, args...)
+}
+
 func (s *networkAssistantService) resetTunnelOpenFailures() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -673,12 +689,12 @@ func (s *networkAssistantService) recordTunnelOpenFailure(err error) {
 	}
 
 	if rollbackErr := s.ApplyMode(s.currentControllerState(), "", networkModeDirect, ""); rollbackErr != nil {
-		log.Printf("network assistant: failed to fallback to direct mode: %v", rollbackErr)
+		s.logf("failed to fallback to direct mode: %v", rollbackErr)
 		s.setLastError(rollbackErr)
 		return
 	}
 	if err != nil {
-		log.Printf("network assistant: fallback to direct mode after repeated tunnel failures: %v", err)
+		s.logf("fallback to direct mode after repeated tunnel failures: %v", err)
 	}
 }
 
@@ -919,10 +935,6 @@ func parseDirectWhitelistRules(rules []string) (*socksDirectWhitelist, error) {
 			continue
 		}
 		whitelist.hosts[rule] = struct{}{}
-	}
-
-	if len(invalidRules) > 0 {
-		log.Printf("network assistant: ignored invalid direct whitelist entries: %s", strings.Join(invalidRules, ", "))
 	}
 
 	if len(whitelist.hosts) == 0 && len(whitelist.ips) == 0 && len(whitelist.cidrs) == 0 {

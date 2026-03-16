@@ -52,6 +52,16 @@ type TabContentProps = {
   onSwitchNetworkDirect: () => void;
   onSwitchNetworkGlobal: () => void;
   onRestoreNetworkDirect: () => void;
+  networkLogLines: number;
+  onNetworkLogLinesChange: (value: number) => void;
+  isLoadingNetworkLogs: boolean;
+  networkLogStatus: string;
+  networkLogCopyStatus: string;
+  networkLogContent: string;
+  networkLogAutoScroll: boolean;
+  onNetworkLogAutoScrollChange: (value: boolean) => void;
+  onRefreshNetworkLogs: () => void;
+  onCopyNetworkLogs: () => void;
   logSource: LogSource;
   onLogSourceChange: (value: LogSource) => void;
   logLines: number;
@@ -103,6 +113,16 @@ export function TabContent(props: TabContentProps) {
           onSwitchDirect={props.onSwitchNetworkDirect}
           onSwitchGlobal={props.onSwitchNetworkGlobal}
           onRestoreDirect={props.onRestoreNetworkDirect}
+          logLines={props.networkLogLines}
+          onLogLinesChange={props.onNetworkLogLinesChange}
+          isLoadingLogs={props.isLoadingNetworkLogs}
+          logStatus={props.networkLogStatus}
+          logCopyStatus={props.networkLogCopyStatus}
+          logContent={props.networkLogContent}
+          logAutoScroll={props.networkLogAutoScroll}
+          onLogAutoScrollChange={props.onNetworkLogAutoScrollChange}
+          onRefreshLogs={props.onRefreshNetworkLogs}
+          onCopyLogs={props.onCopyNetworkLogs}
         />
       );
     case "log-viewer":

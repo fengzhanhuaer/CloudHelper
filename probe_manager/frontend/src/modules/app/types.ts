@@ -96,6 +96,12 @@ export type NetworkAssistantStatus = {
   mux_last_pong?: string;
 };
 
+export type NetworkAssistantLogResponse = {
+  lines: number;
+  content: string;
+  fetched_at: string;
+};
+
 export type LogSource = "local" | "server";
 
 export type LogContentResponse = {
