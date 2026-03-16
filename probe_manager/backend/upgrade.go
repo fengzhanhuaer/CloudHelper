@@ -3,9 +3,9 @@ package backend
 import (
 	"archive/tar"
 	"archive/zip"
-	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const defaultManagerUpgradeRepo = "fengzhanhuaer/CloudHelper"
@@ -111,35 +113,8 @@ func (a *App) GetLatestGitHubReleaseViaProxy(controllerBaseURL, sessionToken, pr
 		return ReleaseInfo{}, errors.New("session token is required")
 	}
 
-	payload := map[string]string{"project": strings.TrimSpace(project)}
-	body, err := json.Marshal(payload)
+	out, err := fetchProxyLatestReleaseViaAdminWS(base, token, strings.TrimSpace(project))
 	if err != nil {
-		return ReleaseInfo{}, err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/admin/proxy/github/latest", bytes.NewReader(body))
-	if err != nil {
-		return ReleaseInfo{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return ReleaseInfo{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return ReleaseInfo{}, fmt.Errorf("proxy latest release failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-
-	var out proxyLatestResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return ReleaseInfo{}, err
 	}
 
@@ -151,6 +126,70 @@ func (a *App) GetLatestGitHubReleaseViaProxy(controllerBaseURL, sessionToken, pr
 		PublishedAt: strings.TrimSpace(out.PublishedAt),
 		Assets:      out.Assets,
 	}, nil
+}
+
+func fetchProxyLatestReleaseViaAdminWS(baseURL, token, project string) (proxyLatestResponse, error) {
+	wsURL, err := buildAdminWSURL(baseURL)
+	if err != nil {
+		return proxyLatestResponse{}, err
+	}
+
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	headers := http.Header{}
+	headers.Set("X-Forwarded-Proto", "https")
+	conn, resp, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		if resp != nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			return proxyLatestResponse{}, fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return proxyLatestResponse{}, err
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(20 * time.Second)
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return proxyLatestResponse{}, err
+	}
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return proxyLatestResponse{}, err
+	}
+
+	authID := fmt.Sprintf("upg-auth-%d", time.Now().UnixNano())
+	authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": token}}
+	if err := conn.WriteJSON(authReq); err != nil {
+		return proxyLatestResponse{}, err
+	}
+	authResp, err := readAdminWSResponseByID(conn, authID)
+	if err != nil {
+		return proxyLatestResponse{}, err
+	}
+	if !authResp.OK {
+		return proxyLatestResponse{}, fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
+	}
+
+	queryID := fmt.Sprintf("upg-latest-%d", time.Now().UnixNano())
+	queryReq := adminWSRequest{ID: queryID, Action: "admin.proxy.github.latest", Payload: map[string]string{"project": project}}
+	if err := conn.WriteJSON(queryReq); err != nil {
+		return proxyLatestResponse{}, err
+	}
+	queryResp, err := readAdminWSResponseByID(conn, queryID)
+	if err != nil {
+		return proxyLatestResponse{}, err
+	}
+	if !queryResp.OK {
+		return proxyLatestResponse{}, fmt.Errorf("proxy latest release failed: %s", strings.TrimSpace(queryResp.Error))
+	}
+
+	var out proxyLatestResponse
+	if len(queryResp.Data) == 0 {
+		return out, nil
+	}
+	if err := json.Unmarshal(queryResp.Data, &out); err != nil {
+		return proxyLatestResponse{}, err
+	}
+	return out, nil
 }
 
 func (a *App) UpgradeManagerDirect(project string) (ManagerUpgradeResult, error) {
@@ -498,23 +537,63 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 		return errors.New("session token is required")
 	}
 
-	downloadURL := base + "/api/admin/proxy/download?url=" + url.QueryEscape(strings.TrimSpace(assetURL))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	wsURL, err := buildAdminWSURL(base)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/octet-stream")
 
-	resp, err := http.DefaultClient.Do(req)
+	dialer := websocket.Dialer{HandshakeTimeout: 12 * time.Second}
+	headers := http.Header{}
+	headers.Set("X-Forwarded-Proto", "https")
+	conn, resp, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		if resp != nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			return fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return err
+	}
+	defer conn.Close()
+
+	readDeadline := time.Now().Add(10 * time.Minute)
+	if deadline, ok := ctx.Deadline(); ok {
+		readDeadline = deadline
+	}
+	if err := conn.SetReadDeadline(readDeadline); err != nil {
+		return err
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+
+	authID := fmt.Sprintf("upg-dl-auth-%d", time.Now().UnixNano())
+	authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": token}}
+	if err := conn.WriteJSON(authReq); err != nil {
+		return err
+	}
+	authResp, err := readAdminWSResponseByID(conn, authID)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	if !authResp.OK {
+		return fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
+	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("proxy download failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	streamID := fmt.Sprintf("upg-dl-%d", time.Now().UnixNano())
+	streamReq := adminWSRequest{
+		ID:     streamID,
+		Action: "admin.proxy.download.stream",
+		Payload: map[string]interface{}{
+			"url":        strings.TrimSpace(assetURL),
+			"chunk_size": 64 * 1024,
+		},
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	if err := conn.WriteJSON(streamReq); err != nil {
+		return err
 	}
 
 	f, err := os.Create(outputPath)
@@ -523,8 +602,82 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 	}
 	defer f.Close()
 
-	_, err = copyWithProgress(f, resp.Body, resp.ContentLength, onProgress)
-	return err
+	total := int64(0)
+	written := int64(0)
+	for {
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = conn.SetReadDeadline(deadline)
+		}
+
+		var msg adminWSResponse
+		if err := conn.ReadJSON(&msg); err != nil {
+			return err
+		}
+
+		if strings.TrimSpace(msg.Type) != "" {
+			if strings.TrimSpace(msg.Type) != "proxy.download.chunk" {
+				continue
+			}
+			var chunk struct {
+				RequestID   string `json:"request_id"`
+				ChunkBase64 string `json:"chunk_base64"`
+				Downloaded  int64  `json:"downloaded"`
+				Total       int64  `json:"total"`
+			}
+			if err := json.Unmarshal(msg.Data, &chunk); err != nil {
+				return err
+			}
+			if strings.TrimSpace(chunk.RequestID) != streamID {
+				continue
+			}
+			payload, err := base64.StdEncoding.DecodeString(strings.TrimSpace(chunk.ChunkBase64))
+			if err != nil {
+				return err
+			}
+			if len(payload) > 0 {
+				n, writeErr := f.Write(payload)
+				written += int64(n)
+				if writeErr != nil {
+					return writeErr
+				}
+				if n != len(payload) {
+					return io.ErrShortWrite
+				}
+			}
+			if chunk.Total > 0 {
+				total = chunk.Total
+			}
+			if onProgress != nil {
+				onProgress(written, total)
+			}
+			continue
+		}
+
+		if strings.TrimSpace(msg.ID) != streamID {
+			continue
+		}
+		if !msg.OK {
+			return fmt.Errorf("proxy download failed: %s", strings.TrimSpace(msg.Error))
+		}
+
+		var done struct {
+			Downloaded int64 `json:"downloaded"`
+			Total      int64 `json:"total"`
+		}
+		if len(msg.Data) > 0 {
+			_ = json.Unmarshal(msg.Data, &done)
+			if done.Total > 0 {
+				total = done.Total
+			}
+			if done.Downloaded > written {
+				written = done.Downloaded
+			}
+		}
+		if onProgress != nil {
+			onProgress(written, total)
+		}
+		return nil
+	}
 }
 
 func copyWithProgress(dst io.Writer, src io.Reader, total int64, onProgress func(downloaded, total int64)) (int64, error) {

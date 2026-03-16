@@ -2,9 +2,13 @@ package core
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -35,6 +39,11 @@ type adminWSResponse struct {
 type adminWSPush struct {
 	Type string      `json:"type"`
 	Data interface{} `json:"data"`
+}
+
+type adminProxyDownloadStreamRequest struct {
+	URL       string `json:"url"`
+	ChunkSize int    `json:"chunk_size"`
 }
 
 var adminWSUpgrader = websocket.Upgrader{
@@ -134,6 +143,16 @@ func AdminWSHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		if strings.TrimSpace(req.Action) == "admin.proxy.download.stream" {
+			data, err := handleAdminWSProxyDownloadStream(req.ID, req.Payload, send)
+			if err != nil {
+				_ = send(adminWSResponse{ID: req.ID, OK: false, Error: err.Error()})
+				continue
+			}
+			_ = send(adminWSResponse{ID: req.ID, OK: true, Data: data})
+			continue
+		}
+
 		data, err := handleAdminWSAction(req.Action, req.Payload)
 		if err != nil {
 			_ = send(adminWSResponse{ID: req.ID, OK: false, Error: err.Error()})
@@ -141,6 +160,85 @@ func AdminWSHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = send(adminWSResponse{ID: req.ID, OK: true, Data: data})
 	}
+}
+
+func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage, send func(v interface{}) error) (map[string]interface{}, error) {
+	var req adminProxyDownloadStreamRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("invalid payload")
+	}
+
+	rawURL := strings.TrimSpace(req.URL)
+	if rawURL == "" {
+		return nil, fmt.Errorf("url is required")
+	}
+	targetURL, err := url.Parse(rawURL)
+	if err != nil || targetURL == nil || !strings.EqualFold(targetURL.Scheme, "https") {
+		return nil, fmt.Errorf("invalid download url")
+	}
+
+	chunkSize := req.ChunkSize
+	if chunkSize <= 0 {
+		chunkSize = 64 * 1024
+	}
+	if chunkSize > 256*1024 {
+		chunkSize = 256 * 1024
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	proxyReq.Header.Set("User-Agent", "cloudhelper-proxy-download")
+	proxyReq.Header.Set("Accept", "application/octet-stream")
+	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		return nil, fmt.Errorf("proxy download failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("upstream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	total := resp.ContentLength
+	buf := make([]byte, chunkSize)
+	var downloaded int64
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			downloaded += int64(n)
+			chunk := base64.StdEncoding.EncodeToString(buf[:n])
+			pushData := map[string]interface{}{
+				"request_id":   strings.TrimSpace(requestID),
+				"chunk_base64": chunk,
+				"downloaded":   downloaded,
+				"total":        total,
+			}
+			if err := send(adminWSPush{Type: "proxy.download.chunk", Data: pushData}); err != nil {
+				return nil, fmt.Errorf("send download chunk failed: %v", err)
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("proxy download failed: %v", readErr)
+		}
+	}
+
+	return map[string]interface{}{
+		"downloaded": downloaded,
+		"total":      total,
+	}, nil
 }
 
 func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, error) {
@@ -199,6 +297,8 @@ func handleAdminWSAction(action string, payload json.RawMessage) (interface{}, e
 			return nil, err
 		}
 		return adminLogsResponse{Source: "server", FilePath: logPath, Lines: req.Lines, Content: content, Fetched: time.Now().Format(time.RFC3339)}, nil
+	case "admin.tunnel.nodes":
+		return map[string]interface{}{"nodes": currentTunnelNodes()}, nil
 	case "admin.probe.nodes.get":
 		Store.mu.RLock()
 		nodes := loadProbeNodesLocked()

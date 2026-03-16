@@ -36,7 +36,7 @@ var probeUpgradeState = struct {
 	running bool
 }{}
 
-func runProbeUpgrade(cmd probeControlMessage, nonceURL string, identity nodeIdentity) {
+func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	probeUpgradeState.mu.Lock()
 	if probeUpgradeState.running {
 		probeUpgradeState.mu.Unlock()
@@ -64,7 +64,7 @@ func runProbeUpgrade(cmd probeControlMessage, nonceURL string, identity nodeIden
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	release, err := fetchProbeRelease(ctx, mode, repo, controllerBase, nonceURL, identity)
+	release, err := fetchProbeRelease(ctx, mode, repo, controllerBase, identity)
 	if err != nil {
 		log.Printf("probe upgrade failed: fetch release: %v", err)
 		return
@@ -88,7 +88,7 @@ func runProbeUpgrade(cmd probeControlMessage, nonceURL string, identity nodeIden
 	defer os.RemoveAll(tmpDir)
 
 	assetFile := filepath.Join(tmpDir, filepath.Base(asset.Name))
-	if err := downloadProbeAsset(ctx, mode, asset.DownloadURL, controllerBase, nonceURL, identity, assetFile); err != nil {
+	if err := downloadProbeAsset(ctx, mode, asset.DownloadURL, controllerBase, identity, assetFile); err != nil {
 		log.Printf("probe upgrade failed: download asset: %v", err)
 		return
 	}
@@ -108,11 +108,11 @@ func runProbeUpgrade(cmd probeControlMessage, nonceURL string, identity nodeIden
 	os.Exit(0)
 }
 
-func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase, nonceURL string, identity nodeIdentity) (releaseInfo, error) {
+func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase string, identity nodeIdentity) (releaseInfo, error) {
 	if mode == "proxy" {
 		// Security boundary: probe can only use /api/probe/* endpoints.
 		u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/github/latest?project=" + url.QueryEscape(repo)
-		body, err := probeAuthedGet(ctx, u, nonceURL, identity)
+		body, err := probeAuthedGet(ctx, u, identity)
 		if err != nil {
 			return releaseInfo{}, err
 		}
@@ -174,12 +174,12 @@ func pickProbeNodeAsset(assets []releaseAsset) (releaseAsset, error) {
 	return releaseAsset{}, fmt.Errorf("matching probe_node asset not found")
 }
 
-func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase, nonceURL string, identity nodeIdentity, output string) error {
+func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, output string) error {
 	var reader io.ReadCloser
 	if mode == "proxy" {
 		// Security boundary: probe can only use /api/probe/* endpoints.
 		u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/download?url=" + url.QueryEscape(assetURL)
-		body, err := probeAuthedGet(ctx, u, nonceURL, identity)
+		body, err := probeAuthedGet(ctx, u, identity)
 		if err != nil {
 			return err
 		}
@@ -216,18 +216,14 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase, non
 	return err
 }
 
-func probeAuthedGet(ctx context.Context, requestURL, nonceURL string, identity nodeIdentity) ([]byte, error) {
-	nonce, err := requestProbeNonce(nonceURL, identity.NodeID)
-	if err != nil {
-		return nil, err
-	}
+func probeAuthedGet(ctx context.Context, requestURL string, identity nodeIdentity) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Probe-Node-Id", identity.NodeID)
-	req.Header.Set("X-Probe-Nonce", nonce)
-	req.Header.Set("X-Probe-Signature", signProbeNonce(identity.Secret, nonce))
+	for key, value := range buildProbeAuthHeaders(identity) {
+		req.Header.Set(key, value)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err

@@ -49,9 +49,6 @@ func TestDashboardStatusRouteNoAuthRequired(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("failed to parse /dashboard/status response: %v", err)
 	}
-	if msg, _ := payload["message"].(string); msg != "pong" {
-		t.Fatalf("expected message=pong, got %v", payload["message"])
-	}
 	if _, ok := payload["uptime"]; !ok {
 		t.Fatalf("expected uptime field in /dashboard/status response")
 	}

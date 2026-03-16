@@ -2,9 +2,14 @@ package core
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,13 +18,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 type probeSession struct {
 	nodeID string
-	conn   *websocket.Conn
+	stream net.Conn
+	enc    *json.Encoder
 	mu     sync.Mutex
 }
 
@@ -40,8 +44,13 @@ var probeSessions = struct {
 	data map[string]*probeSession
 }{data: make(map[string]*probeSession)}
 
-func registerProbeSession(nodeID string, conn *websocket.Conn) *probeSession {
-	s := &probeSession{nodeID: nodeID, conn: conn}
+var probeAuthReplayStore = struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}{seen: make(map[string]time.Time)}
+
+func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
+	s := &probeSession{nodeID: nodeID, stream: stream, enc: json.NewEncoder(stream)}
 	probeSessions.mu.Lock()
 	probeSessions.data[nodeID] = s
 	probeSessions.mu.Unlock()
@@ -64,6 +73,9 @@ func unregisterProbeSession(nodeID string, session *probeSession) {
 		return
 	}
 	delete(probeSessions.data, nodeID)
+	if current.stream != nil {
+		_ = current.stream.Close()
+	}
 	setProbeRuntimeOnline(nodeID, false)
 }
 
@@ -77,7 +89,13 @@ func getProbeSession(nodeID string) (*probeSession, bool) {
 func (s *probeSession) writeJSON(v interface{}) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.conn.WriteJSON(v)
+	if s.stream == nil {
+		return errors.New("probe stream is closed")
+	}
+	_ = s.stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err := s.enc.Encode(v)
+	_ = s.stream.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func AdminUpgradeProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
@@ -300,21 +318,85 @@ func controllerBaseURLFromRequest(r *http.Request) string {
 
 func authenticateProbeRequest(r *http.Request) (string, error) {
 	nodeID := normalizeProbeNodeID(r.Header.Get("X-Probe-Node-Id"))
-	nonce := strings.TrimSpace(r.Header.Get("X-Probe-Nonce"))
+	timestamp := strings.TrimSpace(r.Header.Get("X-Probe-Timestamp"))
+	randomToken := strings.TrimSpace(r.Header.Get("X-Probe-Rand"))
 	signature := strings.TrimSpace(r.Header.Get("X-Probe-Signature"))
 
-	if nodeID == "" || nonce == "" || signature == "" {
+	if nodeID == "" || timestamp == "" || randomToken == "" || signature == "" {
 		return "", fmt.Errorf("missing probe auth headers")
-	}
-	if err := probeNonces.consume(nonce); err != nil {
-		return "", err
 	}
 	secret, ok := resolveProbeSecret(nodeID)
 	if !ok {
 		return "", fmt.Errorf("probe secret is not configured for node")
 	}
-	if !verifyProbeHMAC(secret, nonce, signature) {
+	if !verifyProbeConnectHMAC(secret, nodeID, timestamp, randomToken, signature) {
 		return "", fmt.Errorf("invalid probe signature")
 	}
+	if !checkAndRememberProbeAuthReplay(nodeID, timestamp, randomToken) {
+		return "", fmt.Errorf("probe auth replay detected")
+	}
 	return nodeID, nil
+}
+
+func resolveProbeSecret(nodeID string) (string, bool) {
+	if Store == nil {
+		return "", false
+	}
+
+	normalized := normalizeProbeNodeID(nodeID)
+	Store.mu.RLock()
+	secrets := loadProbeSecretsLocked()
+	v, ok := secrets[normalized]
+	Store.mu.RUnlock()
+	if !ok || strings.TrimSpace(v) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(v), true
+}
+
+func verifyProbeConnectHMAC(secret, nodeID, timestamp, randomToken, signatureHex string) bool {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(strings.TrimSpace(nodeID)))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.TrimSpace(timestamp)))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.TrimSpace(randomToken)))
+	expected := mac.Sum(nil)
+	provided, err := hex.DecodeString(strings.TrimSpace(signatureHex))
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(expected, provided)
+}
+
+func checkAndRememberProbeAuthReplay(nodeID, timestamp, randomToken string) bool {
+	tsInt, err := strconv.ParseInt(strings.TrimSpace(timestamp), 10, 64)
+	if err != nil {
+		return false
+	}
+	now := time.Now()
+	ts := time.Unix(tsInt, 0)
+	if ts.Before(now.Add(-2*time.Minute)) || ts.After(now.Add(2*time.Minute)) {
+		return false
+	}
+
+	key := strings.TrimSpace(nodeID) + "|" + strings.TrimSpace(randomToken)
+	if key == "|" || strings.HasSuffix(key, "|") {
+		return false
+	}
+
+	probeAuthReplayStore.mu.Lock()
+	defer probeAuthReplayStore.mu.Unlock()
+
+	for k, seenAt := range probeAuthReplayStore.seen {
+		if now.Sub(seenAt) > 10*time.Minute {
+			delete(probeAuthReplayStore.seen, k)
+		}
+	}
+
+	if _, exists := probeAuthReplayStore.seen[key]; exists {
+		return false
+	}
+	probeAuthReplayStore.seen[key] = now
+	return true
 }

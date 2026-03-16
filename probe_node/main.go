@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,10 +18,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/hashicorp/yamux"
 )
 
 var BuildVersion = "dev"
@@ -76,11 +79,6 @@ type cpuSampler struct {
 	prev    cpuSnapshot
 }
 
-type probeNonceResponse struct {
-	Nonce     string `json:"nonce"`
-	ExpiresAt string `json:"expires_at"`
-}
-
 type probeControlMessage struct {
 	Type              string `json:"type"`
 	Mode              string `json:"mode"`
@@ -133,8 +131,8 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	if wsURL, nonceURL := resolveProbeEndpoints(); wsURL != "" && nonceURL != "" {
-		go startProbeReporter(wsURL, nonceURL, identity)
+	if wsURL := resolveProbeEndpoints(); wsURL != "" {
+		go startProbeReporter(wsURL, identity)
 	} else {
 		log.Printf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
@@ -258,7 +256,7 @@ func randomSecret(length int) string {
 	return string(out)
 }
 
-func resolveProbeEndpoints() (wsURL string, nonceURL string) {
+func resolveProbeEndpoints() string {
 	rawWS := strings.TrimSpace(os.Getenv("PROBE_CONTROLLER_WS"))
 	if rawWS != "" {
 		u, err := url.Parse(rawWS)
@@ -266,31 +264,22 @@ func resolveProbeEndpoints() (wsURL string, nonceURL string) {
 			if strings.TrimSpace(u.Path) == "" || strings.TrimSpace(u.Path) == "/" {
 				u.Path = "/api/probe"
 			}
-			wsURL = u.String()
-
-			nonceBase := *u
-			if strings.EqualFold(nonceBase.Scheme, "wss") {
-				nonceBase.Scheme = "https"
-			} else {
-				nonceBase.Scheme = "http"
-			}
-			nonceBase.Path = "/api/probe/nonce"
-			nonceBase.RawQuery = ""
-			nonceBase.Fragment = ""
-			return wsURL, nonceBase.String()
+			u.RawQuery = ""
+			u.Fragment = ""
+			return u.String()
 		}
 		log.Printf("warning: invalid PROBE_CONTROLLER_WS=%q", rawWS)
 	}
 
 	rawController := strings.TrimSpace(os.Getenv("PROBE_CONTROLLER_URL"))
 	if rawController == "" {
-		return "", ""
+		return ""
 	}
 
 	u, err := url.Parse(rawController)
 	if err != nil {
 		log.Printf("warning: invalid PROBE_CONTROLLER_URL=%q: %v", rawController, err)
-		return "", ""
+		return ""
 	}
 
 	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
@@ -300,64 +289,69 @@ func resolveProbeEndpoints() (wsURL string, nonceURL string) {
 		u.Scheme = "ws"
 	} else {
 		log.Printf("warning: unsupported PROBE_CONTROLLER_URL scheme=%q", u.Scheme)
-		return "", ""
+		return ""
 	}
 
 	u.Path = "/api/probe"
 	u.RawQuery = ""
 	u.Fragment = ""
-	wsURL = u.String()
-
-	nonceBase, _ := url.Parse(rawController)
-	nonceBase.Path = "/api/probe/nonce"
-	nonceBase.RawQuery = ""
-	nonceBase.Fragment = ""
-	return wsURL, nonceBase.String()
+	return u.String()
 }
 
-func startProbeReporter(wsURL, nonceURL string, identity nodeIdentity) {
+func startProbeReporter(wsURL string, identity nodeIdentity) {
 	sampler := &cpuSampler{}
 	for {
-		if err := runProbeReporterSession(wsURL, nonceURL, identity, sampler); err != nil {
+		if err := runProbeReporterSession(wsURL, identity, sampler); err != nil {
 			log.Printf("probe reporter disconnected: %v", err)
 		}
 		time.Sleep(5 * time.Second)
 	}
 }
 
-func runProbeReporterSession(wsURL, nonceURL string, identity nodeIdentity, sampler *cpuSampler) error {
-	nonce, err := requestProbeNonce(nonceURL, identity.NodeID)
-	if err != nil {
-		return err
-	}
-	signature := signProbeNonce(identity.Secret, nonce)
-
+func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSampler) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	headers := http.Header{}
-	headers.Set("X-Probe-Node-Id", identity.NodeID)
-	headers.Set("X-Probe-Nonce", nonce)
-	headers.Set("X-Probe-Signature", signature)
-	conn, _, err := dialer.Dial(wsURL, headers)
+	for key, value := range buildProbeAuthHeaders(identity) {
+		headers.Set(key, value)
+	}
+	wsConn, _, err := dialer.Dial(wsURL, headers)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer wsConn.Close()
+
+	cfg := yamux.DefaultConfig()
+	cfg.EnableKeepAlive = true
+	cfg.KeepAliveInterval = 20 * time.Second
+	session, err := yamux.Client(newWebSocketNetConn(wsConn), cfg)
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	stream, err := session.Open()
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	encoder := json.NewEncoder(stream)
+	decoder := json.NewDecoder(stream)
 
 	log.Printf("probe reporter connected: %s", wsURL)
 
-	if err := sendProbeReport(conn, identity, sampler); err != nil {
+	if err := sendProbeReport(stream, encoder, identity, sampler); err != nil {
 		return err
 	}
 
 	readErrCh := make(chan error, 1)
 	go func() {
 		for {
-			_, raw, readErr := conn.ReadMessage()
-			if readErr != nil {
+			var msg probeControlMessage
+			if readErr := decoder.Decode(&msg); readErr != nil {
 				readErrCh <- readErr
 				return
 			}
-			processProbeControlMessage(raw, nonceURL, identity)
+			processProbeControlMessage(msg, identity)
 		}
 	}()
 
@@ -367,14 +361,14 @@ func runProbeReporterSession(wsURL, nonceURL string, identity nodeIdentity, samp
 		case err := <-readErrCh:
 			return err
 		case <-time.After(wait):
-			if err := sendProbeReport(conn, identity, sampler); err != nil {
+			if err := sendProbeReport(stream, encoder, identity, sampler); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func sendProbeReport(conn *websocket.Conn, identity nodeIdentity, sampler *cpuSampler) error {
+func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdentity, sampler *cpuSampler) error {
 	ipv4, ipv6 := collectIPs()
 	system := collectSystemStatus(sampler)
 	payload := probeReportPayload{
@@ -387,10 +381,11 @@ func sendProbeReport(conn *websocket.Conn, identity nodeIdentity, sampler *cpuSa
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if err := conn.WriteJSON(payload); err != nil {
+	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := encoder.Encode(payload); err != nil {
 		return err
 	}
+	_ = stream.SetWriteDeadline(time.Time{})
 	log.Printf(
 		"probe report sent: node_id=%s ipv4=%d ipv6=%d cpu=%.2f%% mem=%.2f%% disk=%.2f%% swap=%.2f%%",
 		identity.NodeID,
@@ -404,45 +399,40 @@ func sendProbeReport(conn *websocket.Conn, identity nodeIdentity, sampler *cpuSa
 	return nil
 }
 
-func requestProbeNonce(nonceURL, nodeID string) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, nonceURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("X-Probe-Node-Id", strings.TrimSpace(nodeID))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return "", fmt.Errorf("nonce request failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-
-	var payload probeNonceResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(payload.Nonce) == "" {
-		return "", fmt.Errorf("nonce response is empty")
-	}
-	return strings.TrimSpace(payload.Nonce), nil
-}
-
-func signProbeNonce(secret, nonce string) string {
+func signProbeConnect(secret, nodeID, timestamp, randomToken string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(nonce))
+	_, _ = mac.Write([]byte(strings.TrimSpace(nodeID)))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.TrimSpace(timestamp)))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.TrimSpace(randomToken)))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func processProbeControlMessage(raw []byte, nonceURL string, identity nodeIdentity) {
-	var msg probeControlMessage
-	if err := json.Unmarshal(raw, &msg); err != nil {
-		return
+func buildProbeAuthHeaders(identity nodeIdentity) map[string]string {
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	randomToken := randomHexToken(16)
+	signature := signProbeConnect(identity.Secret, identity.NodeID, timestamp, randomToken)
+	return map[string]string{
+		"X-Probe-Node-Id":   strings.TrimSpace(identity.NodeID),
+		"X-Probe-Timestamp": timestamp,
+		"X-Probe-Rand":      randomToken,
+		"X-Probe-Signature": signature,
 	}
+}
+
+func randomHexToken(size int) string {
+	if size <= 0 {
+		size = 8
+	}
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity) {
 	typeName := strings.TrimSpace(strings.ToLower(msg.Type))
 	if typeName == "report_interval" {
 		if sec := normalizeReportInterval(msg.IntervalSec); sec > 0 {
@@ -454,7 +444,7 @@ func processProbeControlMessage(raw []byte, nonceURL string, identity nodeIdenti
 	if typeName != "upgrade" {
 		return
 	}
-	go runProbeUpgrade(msg, nonceURL, identity)
+	go runProbeUpgrade(msg, identity)
 }
 
 func currentReportIntervalDuration() time.Duration {
@@ -473,6 +463,92 @@ func normalizeReportInterval(sec int) int {
 		return 3600
 	}
 	return sec
+}
+
+type webSocketNetConn struct {
+	ws *websocket.Conn
+
+	readMu  sync.Mutex
+	writeMu sync.Mutex
+	reader  io.Reader
+}
+
+func newWebSocketNetConn(ws *websocket.Conn) net.Conn {
+	return &webSocketNetConn{ws: ws}
+}
+
+func (c *webSocketNetConn) Read(p []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
+	for {
+		if c.reader == nil {
+			mt, reader, err := c.ws.NextReader()
+			if err != nil {
+				return 0, err
+			}
+			if mt != websocket.BinaryMessage && mt != websocket.TextMessage {
+				continue
+			}
+			c.reader = reader
+		}
+
+		n, err := c.reader.Read(p)
+		if errors.Is(err, io.EOF) {
+			c.reader = nil
+			if n > 0 {
+				return n, nil
+			}
+			continue
+		}
+		return n, err
+	}
+}
+
+func (c *webSocketNetConn) Write(p []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	writer, err := c.ws.NextWriter(websocket.BinaryMessage)
+	if err != nil {
+		return 0, err
+	}
+	n, writeErr := writer.Write(p)
+	closeErr := writer.Close()
+	if writeErr != nil {
+		return n, writeErr
+	}
+	if closeErr != nil {
+		return n, closeErr
+	}
+	return n, nil
+}
+
+func (c *webSocketNetConn) Close() error {
+	return c.ws.Close()
+}
+
+func (c *webSocketNetConn) LocalAddr() net.Addr {
+	return c.ws.UnderlyingConn().LocalAddr()
+}
+
+func (c *webSocketNetConn) RemoteAddr() net.Addr {
+	return c.ws.UnderlyingConn().RemoteAddr()
+}
+
+func (c *webSocketNetConn) SetDeadline(t time.Time) error {
+	if err := c.ws.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.ws.SetWriteDeadline(t)
+}
+
+func (c *webSocketNetConn) SetReadDeadline(t time.Time) error {
+	return c.ws.SetReadDeadline(t)
+}
+
+func (c *webSocketNetConn) SetWriteDeadline(t time.Time) error {
+	return c.ws.SetWriteDeadline(t)
 }
 
 func collectIPs() ([]string, []string) {

@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -74,6 +76,20 @@ type tunnelNodesResponse struct {
 		Name   string `json:"name"`
 		Online bool   `json:"online"`
 	} `json:"nodes"`
+}
+
+type adminWSRequest struct {
+	ID      string      `json:"id"`
+	Action  string      `json:"action"`
+	Payload interface{} `json:"payload,omitempty"`
+}
+
+type adminWSResponse struct {
+	ID    string          `json:"id"`
+	OK    bool            `json:"ok"`
+	Data  json.RawMessage `json:"data"`
+	Error string          `json:"error"`
+	Type  string          `json:"type"`
 }
 
 type socksDirectWhitelist struct {
@@ -779,32 +795,8 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 		return errors.New("controller url and session token are required")
 	}
 
-	nodesURL, err := buildControllerNodesURL(baseURL)
+	payload, err := fetchTunnelNodesViaAdminWS(baseURL, token)
 	if err != nil {
-		return err
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, nodesURL, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Forwarded-Proto", "https")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("fetch tunnel nodes failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var payload tunnelNodesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return err
 	}
 
@@ -832,15 +824,104 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 	return nil
 }
 
-func buildControllerNodesURL(baseURL string) (string, error) {
+func fetchTunnelNodesViaAdminWS(baseURL, token string) (tunnelNodesResponse, error) {
+	wsURL, err := buildAdminWSURL(baseURL)
+	if err != nil {
+		return tunnelNodesResponse{}, err
+	}
+
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	headers := http.Header{}
+	headers.Set("X-Forwarded-Proto", "https")
+	conn, resp, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		if resp != nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			return tunnelNodesResponse{}, fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return tunnelNodesResponse{}, err
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return tunnelNodesResponse{}, err
+	}
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return tunnelNodesResponse{}, err
+	}
+
+	authID := fmt.Sprintf("na-auth-%d", time.Now().UnixNano())
+	authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": strings.TrimSpace(token)}}
+	if err := conn.WriteJSON(authReq); err != nil {
+		return tunnelNodesResponse{}, err
+	}
+	authResp, err := readAdminWSResponseByID(conn, authID)
+	if err != nil {
+		return tunnelNodesResponse{}, err
+	}
+	if !authResp.OK {
+		return tunnelNodesResponse{}, fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
+	}
+
+	queryID := fmt.Sprintf("na-nodes-%d", time.Now().UnixNano())
+	queryReq := adminWSRequest{ID: queryID, Action: "admin.tunnel.nodes"}
+	if err := conn.WriteJSON(queryReq); err != nil {
+		return tunnelNodesResponse{}, err
+	}
+	queryResp, err := readAdminWSResponseByID(conn, queryID)
+	if err != nil {
+		return tunnelNodesResponse{}, err
+	}
+	if !queryResp.OK {
+		return tunnelNodesResponse{}, fmt.Errorf("fetch tunnel nodes failed: %s", strings.TrimSpace(queryResp.Error))
+	}
+
+	var payload tunnelNodesResponse
+	if len(queryResp.Data) == 0 {
+		return payload, nil
+	}
+	if err := json.Unmarshal(queryResp.Data, &payload); err != nil {
+		return tunnelNodesResponse{}, err
+	}
+	return payload, nil
+}
+
+func readAdminWSResponseByID(conn *websocket.Conn, requestID string) (adminWSResponse, error) {
+	for {
+		var resp adminWSResponse
+		if err := conn.ReadJSON(&resp); err != nil {
+			return adminWSResponse{}, err
+		}
+		if strings.TrimSpace(resp.Type) != "" {
+			continue
+		}
+		if strings.TrimSpace(resp.ID) != strings.TrimSpace(requestID) {
+			continue
+		}
+		return resp, nil
+	}
+}
+
+func buildAdminWSURL(baseURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || strings.TrimSpace(parsed.Host) == "" {
 		return "", errors.New("invalid controller url")
 	}
-	parsed.Path = "/api/admin/tunnel/nodes"
+	if strings.EqualFold(parsed.Scheme, "https") {
+		parsed.Scheme = "wss"
+	} else if strings.EqualFold(parsed.Scheme, "http") {
+		parsed.Scheme = "ws"
+	} else if strings.EqualFold(parsed.Scheme, "wss") || strings.EqualFold(parsed.Scheme, "ws") {
+		// keep
+	} else {
+		return "", errors.New("unsupported controller url scheme")
+	}
+	parsed.Path = "/api/admin/ws"
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
-	return strings.TrimRight(parsed.String(), "/"), nil
+	return strings.TrimSpace(parsed.String()), nil
 }
 
 func containsNodeID(nodes []string, target string) bool {

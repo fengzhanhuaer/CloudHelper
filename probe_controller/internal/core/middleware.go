@@ -8,7 +8,8 @@ import (
 func enforceProbeScopeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hasProbeHeaders := strings.TrimSpace(r.Header.Get("X-Probe-Node-Id")) != "" ||
-			strings.TrimSpace(r.Header.Get("X-Probe-Nonce")) != "" ||
+			strings.TrimSpace(r.Header.Get("X-Probe-Timestamp")) != "" ||
+			strings.TrimSpace(r.Header.Get("X-Probe-Rand")) != "" ||
 			strings.TrimSpace(r.Header.Get("X-Probe-Signature")) != ""
 
 		if hasProbeHeaders {

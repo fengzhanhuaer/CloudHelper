@@ -15,8 +15,12 @@ func AdminTunnelNodesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"nodes": []TunnelNode{
-			{ID: "cloudserver", Name: "Cloud Server", Online: true},
-		},
+		"nodes": currentTunnelNodes(),
 	})
+}
+
+func currentTunnelNodes() []TunnelNode {
+	return []TunnelNode{
+		{ID: "cloudserver", Name: "Cloud Server", Online: true},
+	}
 }

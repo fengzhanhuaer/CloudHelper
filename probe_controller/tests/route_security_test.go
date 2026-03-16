@@ -2,15 +2,19 @@ package tests
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/hashicorp/yamux"
 
 	"github.com/cloudhelper/probe_controller/internal/core"
 )
@@ -50,8 +54,8 @@ func TestAdminVersionRouteRequiresAuth(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated /api/admin/version to return 401, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/version to be removed and return 404, got %d", rr.Code)
 	}
 }
 
@@ -64,8 +68,8 @@ func TestAdminUpgradeRouteRequiresAuth(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated /api/admin/upgrade to return 401, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/upgrade to be removed and return 404, got %d", rr.Code)
 	}
 }
 
@@ -78,23 +82,21 @@ func TestAdminUpgradeProgressRouteRequiresAuth(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated /api/admin/upgrade/progress to return 401, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/upgrade/progress to be removed and return 404, got %d", rr.Code)
 	}
 }
 
 func TestAdminUpgradeProgressRouteRequiresHTTPS(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
-	authManager.AddSessionForTest("tok-upg-progress", time.Now().Add(2*time.Minute))
 	mux := core.NewMux()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/upgrade/progress", nil)
-	req.Header.Set("Authorization", "Bearer tok-upg-progress")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUpgradeRequired {
-		t.Fatalf("expected /api/admin/upgrade/progress without https marker to return 426, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/upgrade/progress to be removed and return 404, got %d", rr.Code)
 	}
 }
 
@@ -108,8 +110,8 @@ func TestAdminProxyLatestRouteRequiresAuth(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated /api/admin/proxy/github/latest to return 401, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/proxy/github/latest to be removed and return 404, got %d", rr.Code)
 	}
 }
 
@@ -122,8 +124,8 @@ func TestAdminProxyDownloadRouteRequiresAuth(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated /api/admin/proxy/download to return 401, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/proxy/download to be removed and return 404, got %d", rr.Code)
 	}
 }
 
@@ -136,23 +138,21 @@ func TestAdminTunnelNodesRouteRequiresAuth(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated /api/admin/tunnel/nodes to return 401, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/tunnel/nodes to be removed and return 404, got %d", rr.Code)
 	}
 }
 
 func TestAdminTunnelNodesRouteRequiresHTTPS(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
-	authManager.AddSessionForTest("tok-nodes", time.Now().Add(2*time.Minute))
 	mux := core.NewMux()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/tunnel/nodes", nil)
-	req.Header.Set("Authorization", "Bearer tok-nodes")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUpgradeRequired {
-		t.Fatalf("expected /api/admin/tunnel/nodes without https marker to return 426, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/tunnel/nodes to be removed and return 404, got %d", rr.Code)
 	}
 }
 
@@ -167,20 +167,20 @@ func TestAdminProxyRoutesRequireHTTPS(t *testing.T) {
 	req1.Header.Set("Content-Type", "application/json")
 	rr1 := httptest.NewRecorder()
 	mux.ServeHTTP(rr1, req1)
-	if rr1.Code != http.StatusUpgradeRequired {
-		t.Fatalf("expected /api/admin/proxy/github/latest without https marker to return 426, got %d", rr1.Code)
+	if rr1.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/proxy/github/latest to be removed and return 404, got %d", rr1.Code)
 	}
 
 	req2 := httptest.NewRequest(http.MethodGet, "/api/admin/proxy/download?url=https://example.com/file", nil)
 	req2.Header.Set("Authorization", "Bearer tok-proxy")
 	rr2 := httptest.NewRecorder()
 	mux.ServeHTTP(rr2, req2)
-	if rr2.Code != http.StatusUpgradeRequired {
-		t.Fatalf("expected /api/admin/proxy/download without https marker to return 426, got %d", rr2.Code)
+	if rr2.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/proxy/download to be removed and return 404, got %d", rr2.Code)
 	}
 }
 
-func TestAdminProxyDownloadAllowsAnyHTTPSHost(t *testing.T) {
+func TestAdminProxyDownloadRouteRemoved(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
 	authManager.AddSessionForTest("tok-proxy-any", time.Now().Add(2*time.Minute))
@@ -191,10 +191,8 @@ func TestAdminProxyDownloadAllowsAnyHTTPSHost(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-
-	// URL pass validation then proxy request runs (usually 5xx, not 400).
-	if rr.Code == http.StatusBadRequest {
-		t.Fatalf("expected any https host to pass proxy host check, got 400 body=%s", rr.Body.String())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/proxy/download to be removed and return 404, got %d", rr.Code)
 	}
 }
 
@@ -207,22 +205,21 @@ func TestAdminWSStatusRouteRequiresAuth(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated /api/admin/ws/status to return 401, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/ws/status to be removed and return 404, got %d", rr.Code)
 	}
 }
 
 func TestAdminWSStatusRouteRequiresHTTPS(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
-	authManager.AddSessionForTest("tok-ws", time.Now().Add(2*time.Minute))
 	mux := core.NewMux()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/ws/status?token=tok-ws", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUpgradeRequired {
-		t.Fatalf("expected /api/admin/ws/status without https marker to return 426, got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected /api/admin/ws/status to be removed and return 404, got %d", rr.Code)
 	}
 }
 
@@ -235,7 +232,7 @@ func TestAdminWSStatusRouteConnectSuccess(t *testing.T) {
 	server := httptest.NewServer(core.NewMux())
 	defer server.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/admin/ws/status?token=tok-ws-ok"
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/admin/ws"
 	header := http.Header{}
 	header.Set("X-Forwarded-Proto", "https")
 
@@ -245,16 +242,38 @@ func TestAdminWSStatusRouteConnectSuccess(t *testing.T) {
 	}
 	defer conn.Close()
 
+	if err := conn.WriteJSON(map[string]interface{}{
+		"id":     "auth-1",
+		"action": "auth.session",
+		"payload": map[string]string{
+			"token": "tok-ws-ok",
+		},
+	}); err != nil {
+		t.Fatalf("failed to send admin ws auth request: %v", err)
+	}
+
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var authResp map[string]interface{}
+	if err := conn.ReadJSON(&authResp); err != nil {
+		t.Fatalf("failed to read admin ws auth response: %v", err)
+	}
+	if ok, _ := authResp["ok"].(bool); !ok {
+		t.Fatalf("expected admin ws auth ok=true, got %+v", authResp)
+	}
+
 	var msg map[string]interface{}
 	if err := conn.ReadJSON(&msg); err != nil {
-		t.Fatalf("failed to read websocket status payload: %v", err)
+		t.Fatalf("failed to read admin websocket status payload: %v", err)
 	}
 	if msg["type"] != "status" {
 		t.Fatalf("expected websocket message type=status, got %v", msg["type"])
 	}
-	if _, ok := msg["uptime"]; !ok {
-		t.Fatalf("expected websocket payload to contain uptime")
+	data, ok := msg["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected websocket payload to contain data object, got %+v", msg)
+	}
+	if _, ok := data["uptime"]; !ok {
+		t.Fatalf("expected websocket data payload to contain uptime")
 	}
 }
 
@@ -322,38 +341,137 @@ func TestNetworkTunnelWSRouteConnectSuccess(t *testing.T) {
 		t.Fatalf("failed to connect websocket tunnel: %v", err)
 	}
 	defer conn.Close()
+	session, err := yamux.Client(newTestWebSocketNetConn(conn), nil)
+	if err != nil {
+		t.Fatalf("failed to create yamux client: %v", err)
+	}
+	defer session.Close()
 
-	if err := conn.WriteJSON(map[string]string{
-		"type":    "connect",
+	stream, err := session.Open()
+	if err != nil {
+		t.Fatalf("failed to open yamux stream: %v", err)
+	}
+	defer stream.Close()
+
+	_ = stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := json.NewEncoder(stream).Encode(map[string]string{
+		"type":    "open",
 		"network": "tcp",
 		"address": echoListener.Addr().String(),
 	}); err != nil {
-		t.Fatalf("failed to send tunnel connect request: %v", err)
+		t.Fatalf("failed to send tunnel open request: %v", err)
+	}
+	_ = stream.SetWriteDeadline(time.Time{})
+
+	_ = stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var ack struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.NewDecoder(stream).Decode(&ack); err != nil {
+		t.Fatalf("failed to read tunnel open ack: %v", err)
+	}
+	if !ack.OK {
+		t.Fatalf("expected tunnel open ack ok=true")
+	}
+	_ = stream.SetReadDeadline(time.Time{})
+
+	if _, err := stream.Write([]byte("hello-tunnel")); err != nil {
+		t.Fatalf("failed to write tunnel stream payload: %v", err)
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var ack map[string]interface{}
-	if err := conn.ReadJSON(&ack); err != nil {
-		t.Fatalf("failed to read tunnel connect ack: %v", err)
-	}
-	if ack["type"] != "connected" {
-		t.Fatalf("expected tunnel connect ack type=connected, got %v", ack["type"])
-	}
-
-	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("hello-tunnel")); err != nil {
-		t.Fatalf("failed to write tunnel binary payload: %v", err)
-	}
-
-	msgType, payload, err := conn.ReadMessage()
-	if err != nil {
+	payload := make([]byte, len("hello-tunnel"))
+	if _, err := io.ReadFull(stream, payload); err != nil {
 		t.Fatalf("failed to read tunnel echo payload: %v", err)
-	}
-	if msgType != websocket.BinaryMessage {
-		t.Fatalf("expected websocket binary message, got %d", msgType)
 	}
 	if string(payload) != "hello-tunnel" {
 		t.Fatalf("expected tunnel echo payload hello-tunnel, got %q", string(payload))
 	}
+}
+
+type testWebSocketNetConn struct {
+	ws *websocket.Conn
+
+	readMu  sync.Mutex
+	writeMu sync.Mutex
+	reader  io.Reader
+}
+
+func newTestWebSocketNetConn(ws *websocket.Conn) net.Conn {
+	return &testWebSocketNetConn{ws: ws}
+}
+
+func (c *testWebSocketNetConn) Read(p []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
+	for {
+		if c.reader == nil {
+			mt, reader, err := c.ws.NextReader()
+			if err != nil {
+				return 0, err
+			}
+			if mt != websocket.BinaryMessage && mt != websocket.TextMessage {
+				continue
+			}
+			c.reader = reader
+		}
+
+		n, err := c.reader.Read(p)
+		if errors.Is(err, io.EOF) {
+			c.reader = nil
+			if n > 0 {
+				return n, nil
+			}
+			continue
+		}
+		return n, err
+	}
+}
+
+func (c *testWebSocketNetConn) Write(p []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	writer, err := c.ws.NextWriter(websocket.BinaryMessage)
+	if err != nil {
+		return 0, err
+	}
+	n, writeErr := writer.Write(p)
+	closeErr := writer.Close()
+	if writeErr != nil {
+		return n, writeErr
+	}
+	if closeErr != nil {
+		return n, closeErr
+	}
+	return n, nil
+}
+
+func (c *testWebSocketNetConn) Close() error {
+	return c.ws.Close()
+}
+
+func (c *testWebSocketNetConn) LocalAddr() net.Addr {
+	return c.ws.UnderlyingConn().LocalAddr()
+}
+
+func (c *testWebSocketNetConn) RemoteAddr() net.Addr {
+	return c.ws.UnderlyingConn().RemoteAddr()
+}
+
+func (c *testWebSocketNetConn) SetDeadline(t time.Time) error {
+	if err := c.ws.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.ws.SetWriteDeadline(t)
+}
+
+func (c *testWebSocketNetConn) SetReadDeadline(t time.Time) error {
+	return c.ws.SetReadDeadline(t)
+}
+
+func (c *testWebSocketNetConn) SetWriteDeadline(t time.Time) error {
+	return c.ws.SetWriteDeadline(t)
 }
 
 func TestHTTPSRequiredViaProxyHeader(t *testing.T) {
