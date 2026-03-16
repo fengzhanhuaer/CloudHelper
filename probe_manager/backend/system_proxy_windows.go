@@ -127,6 +127,33 @@ func restoreSystemProxy(snapshot systemProxySnapshot) error {
 	return nil
 }
 
+func applyDirectSystemProxy() error {
+	key, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsRegistryPath, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+
+	if err := key.SetDWordValue("ProxyEnable", 0); err != nil {
+		return err
+	}
+	if err := key.SetStringValue("ProxyServer", ""); err != nil {
+		return err
+	}
+	if err := key.SetStringValue("ProxyOverride", ""); err != nil {
+		return err
+	}
+	if err := key.SetDWordValue("AutoDetect", 0); err != nil {
+		return err
+	}
+	if err := key.SetStringValue("AutoConfigURL", ""); err != nil {
+		return err
+	}
+
+	refreshWindowsSystemProxy()
+	return nil
+}
+
 func refreshWindowsSystemProxy() {
 	if err := wininetDLL.Load(); err != nil {
 		return

@@ -21,3 +21,7 @@ func applySocks5SystemProxy(_ string) error {
 func restoreSystemProxy(_ systemProxySnapshot) error {
 	return errors.New("automatic system proxy update is only supported on windows")
 }
+
+func applyDirectSystemProxy() error {
+	return nil
+}

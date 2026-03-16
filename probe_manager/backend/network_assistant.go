@@ -341,7 +341,28 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 }
 
 func (s *networkAssistantService) Shutdown() error {
-	return s.stopProxyAndServer()
+	errStop := s.stopProxyAndServer()
+	errDirect := applyDirectSystemProxy()
+
+	s.mu.Lock()
+	s.mode = networkModeDirect
+	s.tunnelStatusMessage = "直连模式"
+	s.systemProxyMessage = "已恢复为直连"
+	s.tunnelOpenFailures = 0
+	s.hasAppliedSysProxy = false
+	s.hasProxySnapshot = false
+	s.proxySnapshot = systemProxySnapshot{}
+	s.mu.Unlock()
+
+	if errDirect == nil {
+		s.logf("forced direct system proxy during shutdown")
+	} else {
+		s.logf("failed to force direct system proxy during shutdown: %v", errDirect)
+	}
+	if errStop != nil {
+		s.logf("shutdown cleanup returned error: %v", errStop)
+	}
+	return errors.Join(errStop, errDirect)
 }
 
 func (s *networkAssistantService) ensureSocksServer() error {
