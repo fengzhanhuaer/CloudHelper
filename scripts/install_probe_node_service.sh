@@ -45,6 +45,10 @@ require_root() {
 }
 
 install_packages() {
+  if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache "$@"
+    return
+  fi
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
     apt-get install -y "$@"
@@ -71,9 +75,28 @@ ensure_cmd() {
 }
 
 ensure_dependencies() {
-  ensure_cmd curl curl
-  ensure_cmd jq jq
-  ensure_cmd tar tar
+  local missing=()
+  command -v curl >/dev/null 2>&1 || missing+=("curl")
+  command -v jq >/dev/null 2>&1 || missing+=("jq")
+  command -v tar >/dev/null 2>&1 || missing+=("tar")
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log "installing missing dependencies: ${missing[*]}"
+    install_packages "${missing[@]}"
+  fi
+
+  if [[ ! -f /etc/ssl/certs/ca-certificates.crt ]] && [[ ! -f /etc/ssl/cert.pem ]]; then
+    log "ca certificates not found, installing ca-certificates"
+    install_packages ca-certificates
+  fi
+
+  if command -v update-ca-certificates >/dev/null 2>&1; then
+    update-ca-certificates >/dev/null 2>&1 || true
+  else
+    if [[ -f /etc/alpine-release ]]; then
+      apk add --no-cache ca-certificates >/dev/null 2>&1 || true
+    fi
+  fi
 }
 
 resolve_platform() {
@@ -134,21 +157,65 @@ detect_service_impl() {
 }
 
 ensure_service_account() {
-  if ! getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
+  if ! group_exists "${SERVICE_GROUP}"; then
     log "creating group ${SERVICE_GROUP}"
-    groupadd --system "${SERVICE_GROUP}"
+    if command -v groupadd >/dev/null 2>&1; then
+      groupadd --system "${SERVICE_GROUP}"
+    elif command -v addgroup >/dev/null 2>&1; then
+      addgroup -S "${SERVICE_GROUP}"
+    else
+      die "no supported group add command found (groupadd/addgroup)"
+    fi
   fi
 
-  if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+  if ! user_exists "${SERVICE_USER}"; then
     log "creating user ${SERVICE_USER}"
-    useradd \
-      --system \
-      --gid "${SERVICE_GROUP}" \
-      --home-dir "${INSTALL_DIR}" \
-      --create-home \
-      --shell /usr/sbin/nologin \
-      "${SERVICE_USER}"
+    local nologin_shell
+    nologin_shell="$(resolve_nologin_shell)"
+    if command -v useradd >/dev/null 2>&1; then
+      useradd \
+        --system \
+        --gid "${SERVICE_GROUP}" \
+        --home-dir "${INSTALL_DIR}" \
+        --create-home \
+        --shell "${nologin_shell}" \
+        "${SERVICE_USER}"
+    elif command -v adduser >/dev/null 2>&1; then
+      adduser -S -D -h "${INSTALL_DIR}" -s "${nologin_shell}" -G "${SERVICE_GROUP}" "${SERVICE_USER}"
+    else
+      die "no supported user add command found (useradd/adduser)"
+    fi
   fi
+}
+
+group_exists() {
+  local group_name="$1"
+  if command -v getent >/dev/null 2>&1; then
+    getent group "${group_name}" >/dev/null 2>&1
+    return
+  fi
+  grep -qE "^${group_name}:" /etc/group 2>/dev/null
+}
+
+user_exists() {
+  local user_name="$1"
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd "${user_name}" >/dev/null 2>&1
+    return
+  fi
+  id -u "${user_name}" >/dev/null 2>&1
+}
+
+resolve_nologin_shell() {
+  if [[ -x /usr/sbin/nologin ]]; then
+    echo "/usr/sbin/nologin"
+    return
+  fi
+  if [[ -x /sbin/nologin ]]; then
+    echo "/sbin/nologin"
+    return
+  fi
+  echo "/bin/false"
 }
 
 github_api_get() {
