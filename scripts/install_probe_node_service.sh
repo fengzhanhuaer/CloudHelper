@@ -512,7 +512,7 @@ start() {
     local running_pid
     running_pid="\$(cat "\${PID_FILE}")"
     log "already running (pid=\${running_pid})"
-    exit 0
+    return 0
   fi
 
   mkdir -p "\$(dirname "\${PID_FILE}")" "\$(dirname "\${LOG_FILE}")"
@@ -535,7 +535,7 @@ start() {
     log "started (pid=\${pid}, log=\${LOG_FILE})"
   else
     log "failed to start, check log: \${LOG_FILE}"
-    exit 1
+    return 1
   fi
 }
 
@@ -543,7 +543,7 @@ stop() {
   if ! is_running; then
     rm -f "\${PID_FILE}"
     log "already stopped"
-    exit 0
+    return 0
   fi
 
   local pid
@@ -573,7 +573,7 @@ status() {
     log "running (pid=\${pid})"
   else
     log "stopped"
-    exit 3
+    return 3
   fi
 }
 
