@@ -419,7 +419,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                       <button className="vendor-copy-link" type="button" title={node.vendor_url || "点击复制厂家URL"} onClick={() => void copyVendorURL(node, setStatus)}>
                         {node.vendor_name}
                       </button>
-                    ) : "-"}　付款周期：{node.payment_cycle || "-"}　费用：{node.cost || "-"}　到期：{formatTime(node.expire_at || "")}</div>
+                    ) : "-"}　付款周期：{node.payment_cycle || "-"}　费用：{node.cost || "-"}　到期：{formatExpireWithRemainingDays(node.expire_at || "")}</div>
                   {node.remark ? <div className="probe-node-meta compact">备注：{node.remark}</div> : null}
 
                   <div className="probe-node-controls-row">
@@ -522,9 +522,9 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               <label>到期时间</label>
               <input
                 className="input"
-                type="datetime-local"
-                value={toDateTimeLocalInputValue(settingsDraft.expire_at)}
-                onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, expire_at: fromDateTimeLocalInputValue(event.target.value) } : prev)}
+                type="date"
+                value={toDateInputValue(settingsDraft.expire_at)}
+                onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, expire_at: fromDateInputValue(event.target.value) } : prev)}
                 disabled={isLoading}
               />
             </div>
@@ -679,33 +679,94 @@ function isValidBytes(value: number | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function toDateTimeLocalInputValue(value: string): string {
+function toDateInputValue(value: string): string {
   const raw = (value || "").trim();
   if (!raw) {
     return "";
   }
-  const dt = new Date(raw);
-  if (Number.isNaN(dt.getTime())) {
-    return "";
-  }
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const d = String(dt.getDate()).padStart(2, "0");
-  const hh = String(dt.getHours()).padStart(2, "0");
-  const mm = String(dt.getMinutes()).padStart(2, "0");
-  return `${y}-${m}-${d}T${hh}:${mm}`;
-}
-
-function fromDateTimeLocalInputValue(value: string): string {
-  const raw = value.trim();
-  if (!raw) {
-    return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
   }
   const dt = new Date(raw);
   if (Number.isNaN(dt.getTime())) {
     return raw;
   }
-  return dt.toISOString();
+  return dt.toISOString().slice(0, 10);
+}
+
+function fromDateInputValue(value: string): string {
+  const raw = value.trim();
+  if (!raw) {
+    return "";
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
+  }
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) {
+    return "";
+  }
+  return dt.toISOString().slice(0, 10);
+}
+
+function formatExpireWithRemainingDays(expireAt: string): string {
+  const dateText = formatDateOnly(expireAt);
+  if (dateText === "-") {
+    return "-";
+  }
+  const remain = formatRemainingDays(expireAt);
+  return `${dateText} (${remain})`;
+}
+
+function formatDateOnly(value: string): string {
+  const raw = (value || "").trim();
+  if (!raw) {
+    return "-";
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
+  }
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) {
+    return raw;
+  }
+  return dt.toISOString().slice(0, 10);
+}
+
+function formatRemainingDays(value: string): string {
+  const raw = (value || "").trim();
+  if (!raw) {
+    return "未知";
+  }
+  const today = new Date();
+  const nowUTC = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+
+  let expireUTC = 0;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const parts = raw.split("-");
+    const year = Number.parseInt(parts[0], 10);
+    const month = Number.parseInt(parts[1], 10);
+    const day = Number.parseInt(parts[2], 10);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      return "未知";
+    }
+    expireUTC = Date.UTC(year, month - 1, day);
+  } else {
+    const dt = new Date(raw);
+    if (Number.isNaN(dt.getTime())) {
+      return "未知";
+    }
+    expireUTC = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate());
+  }
+
+  const diffDays = Math.floor((expireUTC - nowUTC) / (24 * 60 * 60 * 1000));
+  if (diffDays > 0) {
+    return `剩余${diffDays}天`;
+  }
+  if (diffDays === 0) {
+    return "今天到期";
+  }
+  return `已过期${Math.abs(diffDays)}天`;
 }
 
 function sanitizeControllerAddress(rawAddress: string): string {
