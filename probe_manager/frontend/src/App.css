@@ -268,9 +268,13 @@
 
 .tg-account-summary {
     margin-top: 10px;
-    display: grid;
-    gap: 6px;
     color: #dceaff;
+}
+
+.tg-account-summary-line {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .probe-node-list {
