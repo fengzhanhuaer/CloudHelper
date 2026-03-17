@@ -2,6 +2,7 @@ package core
 
 import (
 	"archive/zip"
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +20,11 @@ type backupArchive struct {
 	path    string
 	modTime time.Time
 }
+
+var (
+	rcloneConfigPathOnce sync.Once
+	rcloneConfigPath     string
+)
 
 const (
 	backupDirName             = "backup"
@@ -86,7 +93,7 @@ func syncControllerDataToRclone(dataPath, backupDir string, settings backupSetti
 }
 
 func runRcloneSync(localPath, remotePath string) error {
-	cmd := exec.Command("rclone", "sync", localPath, remotePath)
+	cmd := newRcloneCommand("sync", localPath, remotePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(output))
@@ -107,7 +114,7 @@ func testBackupRcloneRemote(remoteBase string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "rclone", "lsd", remote)
+	cmd := newRcloneCommandContext(ctx, "lsd", remote)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -120,6 +127,88 @@ func testBackupRcloneRemote(remoteBase string) error {
 		return fmt.Errorf("%w: %s", err, msg)
 	}
 	return nil
+}
+
+func newRcloneCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("rclone", args...)
+	applyRcloneConfigEnv(cmd)
+	return cmd
+}
+
+func newRcloneCommandContext(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "rclone", args...)
+	applyRcloneConfigEnv(cmd)
+	return cmd
+}
+
+func applyRcloneConfigEnv(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	configPath := resolveRcloneConfigPath()
+	if strings.TrimSpace(configPath) == "" {
+		return
+	}
+	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+configPath)
+}
+
+func resolveRcloneConfigPath() string {
+	rcloneConfigPathOnce.Do(func() {
+		if envPath := strings.TrimSpace(os.Getenv("RCLONE_CONFIG")); envPath != "" {
+			rcloneConfigPath = envPath
+			return
+		}
+
+		probe := exec.Command("rclone", "config", "file")
+		output, err := probe.CombinedOutput()
+		if err != nil {
+			return
+		}
+		parsed := parseRcloneConfigPath(string(output))
+		if parsed == "" {
+			return
+		}
+		rcloneConfigPath = parsed
+	})
+	return strings.TrimSpace(rcloneConfigPath)
+}
+
+func parseRcloneConfigPath(output string) string {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		if idx := strings.LastIndex(line, ":"); idx >= 0 {
+			candidate := strings.Trim(strings.TrimSpace(line[idx+1:]), "\"")
+			if isUsableRcloneConfigFile(candidate) {
+				return candidate
+			}
+		}
+
+		candidate := strings.Trim(line, "\"")
+		if isUsableRcloneConfigFile(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func isUsableRcloneConfigFile(path string) bool {
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		return false
+	}
+	if !strings.HasSuffix(strings.ToLower(clean), ".conf") {
+		return false
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 func pruneBackupArchives(backupDir, prefix string, now time.Time) error {
