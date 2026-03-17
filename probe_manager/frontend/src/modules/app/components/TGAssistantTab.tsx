@@ -266,7 +266,8 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       </div>
 
       <div className="identity-card" style={{ marginBottom: 12 }}>
-        <div>添加账号</div>
+        <div>账号管理（添加 + 登录）</div>
+        <div style={{ marginTop: 4, color: "#dceaff" }}>添加账号</div>
         <div className="row" style={{ marginBottom: 0 }}>
           <label>账号备注</label>
           <input
@@ -311,10 +312,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
           <button className="btn" onClick={() => void handleAddAccount()} disabled={isLoading}>添加账号</button>
           <button className="btn" onClick={() => void handleRefreshAccounts()} disabled={isLoading}>刷新状态</button>
         </div>
-      </div>
-
-      <div className="identity-card" style={{ marginBottom: 12 }}>
-        <div>账号登录与管理</div>
+        <div style={{ marginTop: 8, color: "#dceaff" }}>账号登录与管理</div>
         <div className="row" style={{ marginBottom: 0 }}>
           <label>选择账号</label>
           <select
