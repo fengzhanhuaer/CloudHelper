@@ -223,6 +223,30 @@ func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (re
 		return releaseAsset{}, fmt.Errorf("matching probe_node asset not found, release assets=[%s]", summarizeAssetNames(assets, 20))
 	}
 
+	// Keep selection aligned with GitHub Action artifact naming:
+	// cloudhelper-probe-node-<goos>-<goarch>
+	preferredPrefix := "cloudhelper-probe-node-" + strings.ToLower(strings.TrimSpace(platform.GOOS)) + "-" + strings.ToLower(strings.TrimSpace(platform.GOARCH))
+	prefixMatched := make([]releaseAsset, 0, len(probeAssets))
+	for _, a := range probeAssets {
+		name := strings.ToLower(strings.TrimSpace(a.Name))
+		if strings.HasPrefix(name, preferredPrefix) {
+			prefixMatched = append(prefixMatched, a)
+		}
+	}
+	if len(prefixMatched) > 0 {
+		sort.Slice(prefixMatched, func(i, j int) bool {
+			ni := strings.ToLower(strings.TrimSpace(prefixMatched[i].Name))
+			nj := strings.ToLower(strings.TrimSpace(prefixMatched[j].Name))
+			if len(ni) == len(nj) {
+				return ni < nj
+			}
+			return len(ni) < len(nj)
+		})
+		selected := prefixMatched[0]
+		log.Printf("probe upgrade asset selected by workflow prefix: name=%s prefix=%s", strings.TrimSpace(selected.Name), preferredPrefix)
+		return selected, nil
+	}
+
 	scored := make([]scoredProbeAsset, 0, len(probeAssets))
 	for _, a := range probeAssets {
 		n := strings.ToLower(strings.TrimSpace(a.Name))
@@ -231,27 +255,13 @@ func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (re
 		if assetMatchesOS(n, platform.GOOS) {
 			score += 40
 		} else if platform.GOOS == "linux" && !assetLooksWindows(n) {
+			// Linux and Alpine share the same upgrade package in current release flow.
+			// Keep a weak fallback for Linux-like assets that omit explicit "linux".
 			score += 8
 		}
 
 		if assetMatchesArch(n, platform.GOARCH) {
 			score += 40
-		}
-
-		if platform.GOOS == "linux" {
-			if platform.IsMusl {
-				if assetLooksMusl(n) {
-					score += 30
-				} else if assetMentionsLibcFlavor(n) {
-					score -= 20
-				}
-			} else {
-				if assetLooksMusl(n) {
-					score -= 12
-				} else {
-					score += 6
-				}
-			}
 		}
 
 		if assetLooksWindows(n) {
@@ -282,9 +292,6 @@ func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (re
 		platform.Libc,
 		summarizeScoredAssets(scored, 5),
 	)
-	if platform.GOOS == "linux" && platform.IsMusl && !assetLooksMusl(strings.ToLower(strings.TrimSpace(top.Asset.Name))) {
-		log.Printf("probe upgrade warning: musl runtime detected but selected asset has no musl/alpine hint: %s", strings.TrimSpace(top.Asset.Name))
-	}
 	return top.Asset, nil
 }
 
@@ -688,14 +695,7 @@ func assetMatchesOS(name, goos string) bool {
 	if goos == "" || name == "" {
 		return false
 	}
-	if strings.Contains(name, goos) {
-		return true
-	}
-	// Alpine assets are Linux binaries but often use "alpine" in file names.
-	if goos == "linux" && strings.Contains(name, "alpine") {
-		return true
-	}
-	return false
+	return strings.Contains(name, goos)
 }
 
 func assetMatchesArch(name, goarch string) bool {
@@ -730,16 +730,6 @@ func archTokens(goarch string) []string {
 func assetLooksWindows(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	return strings.Contains(n, "windows") || strings.HasSuffix(n, ".exe")
-}
-
-func assetLooksMusl(name string) bool {
-	n := strings.ToLower(strings.TrimSpace(name))
-	return strings.Contains(n, "alpine") || strings.Contains(n, "musl")
-}
-
-func assetMentionsLibcFlavor(name string) bool {
-	n := strings.ToLower(strings.TrimSpace(name))
-	return strings.Contains(n, "alpine") || strings.Contains(n, "musl") || strings.Contains(n, "glibc")
 }
 
 func safeURLForLog(raw string) string {
