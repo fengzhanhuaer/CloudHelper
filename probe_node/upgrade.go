@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,8 +14,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +38,19 @@ var probeUpgradeState = struct {
 	mu      sync.Mutex
 	running bool
 }{}
+
+type runtimePlatformInfo struct {
+	GOOS     string
+	GOARCH   string
+	IsAlpine bool
+	IsMusl   bool
+	Libc     string
+}
+
+type scoredProbeAsset struct {
+	Asset releaseAsset
+	Score int
+}
 
 func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	probeUpgradeState.mu.Lock()
@@ -60,6 +76,18 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		repo = "fengzhanhuaer/CloudHelper"
 	}
 	controllerBase := strings.TrimSpace(cmd.ControllerBaseURL)
+	platform := detectRuntimePlatformInfo()
+	log.Printf(
+		"probe upgrade started: current=%s mode=%s repo=%s goos=%s goarch=%s libc=%s alpine=%t controller=%s",
+		BuildVersion,
+		mode,
+		repo,
+		platform.GOOS,
+		platform.GOARCH,
+		platform.Libc,
+		platform.IsAlpine,
+		controllerBase,
+	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -69,16 +97,23 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		log.Printf("probe upgrade failed: fetch release: %v", err)
 		return
 	}
+	log.Printf(
+		"probe upgrade release fetched: latest=%s assets=%d names=[%s]",
+		strings.TrimSpace(release.TagName),
+		len(release.Assets),
+		summarizeAssetNames(release.Assets, 12),
+	)
 	if normalizeVersionTag(release.TagName) == normalizeVersionTag(BuildVersion) {
 		log.Printf("probe already latest: %s", release.TagName)
 		return
 	}
 
-	asset, err := pickProbeNodeAsset(release.Assets)
+	asset, err := pickProbeNodeAsset(release.Assets, platform)
 	if err != nil {
 		log.Printf("probe upgrade failed: pick asset: %v", err)
 		return
 	}
+	log.Printf("probe upgrade asset selected: name=%s", strings.TrimSpace(asset.Name))
 
 	tmpDir, err := os.MkdirTemp("", "cloudhelper-probe-node-upgrade-*")
 	if err != nil {
@@ -88,9 +123,13 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	defer os.RemoveAll(tmpDir)
 
 	assetFile := filepath.Join(tmpDir, filepath.Base(asset.Name))
+	log.Printf("probe upgrade download: target=%s mode=%s", assetFile, mode)
 	if err := downloadProbeAsset(ctx, mode, asset.DownloadURL, controllerBase, identity, assetFile); err != nil {
 		log.Printf("probe upgrade failed: download asset: %v", err)
 		return
+	}
+	if st, err := os.Stat(assetFile); err == nil {
+		log.Printf("probe upgrade download complete: file=%s size=%d", assetFile, st.Size())
 	}
 
 	binaryPath, err := extractProbeBinary(assetFile, asset.Name, tmpDir)
@@ -98,16 +137,27 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		log.Printf("probe upgrade failed: extract binary: %v", err)
 		return
 	}
-
-	if err := replaceCurrentExecutable(binaryPath); err != nil {
-		log.Printf("probe upgrade failed: replace executable: %v", err)
+	log.Printf("probe upgrade extract complete: binary=%s", binaryPath)
+	if err := verifyBinaryCompatibility(binaryPath, platform); err != nil {
+		log.Printf("probe upgrade failed: compatibility check: %v", err)
 		return
 	}
 
+	exePath, backupPath, err := replaceCurrentExecutable(binaryPath)
+	if err != nil {
+		log.Printf("probe upgrade failed: replace executable: %v", err)
+		return
+	}
+	log.Printf("probe upgrade replace complete: exe=%s backup=%s", exePath, backupPath)
+
 	log.Printf("probe upgrade complete: %s -> %s, restarting", BuildVersion, release.TagName)
 	if err := restartCurrentProcess(); err != nil {
-		log.Printf("probe upgrade fallback: restart current process failed: %v", err)
-		os.Exit(0)
+		log.Printf("probe upgrade restart failed: %v", err)
+		if rollbackErr := rollbackExecutable(exePath, backupPath); rollbackErr != nil {
+			log.Printf("probe upgrade rollback failed: %v", rollbackErr)
+			return
+		}
+		log.Printf("probe upgrade rollback complete, old binary restored")
 	}
 }
 
@@ -115,6 +165,7 @@ func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase string, i
 	if mode == "proxy" {
 		// Security boundary: probe can only use /api/probe/* endpoints.
 		u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/github/latest?project=" + url.QueryEscape(repo)
+		log.Printf("probe upgrade release fetch via proxy: %s", safeURLForLog(u))
 		body, err := probeAuthedGet(ctx, u, identity)
 		if err != nil {
 			return releaseInfo{}, err
@@ -127,6 +178,7 @@ func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase string, i
 	}
 
 	apiURL := "https://api.github.com/repos/" + repo + "/releases/latest"
+	log.Printf("probe upgrade release fetch direct: %s", safeURLForLog(apiURL))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return releaseInfo{}, err
@@ -159,22 +211,81 @@ func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase string, i
 	return out, nil
 }
 
-func pickProbeNodeAsset(assets []releaseAsset) (releaseAsset, error) {
-	goos := strings.ToLower(runtime.GOOS)
-	arch := strings.ToLower(runtime.GOARCH)
+func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (releaseAsset, error) {
+	probeAssets := make([]releaseAsset, 0, len(assets))
 	for _, a := range assets {
-		n := strings.ToLower(a.Name)
-		if (strings.Contains(n, "probe-node") || strings.Contains(n, "probe_node")) && strings.Contains(n, goos) && strings.Contains(n, arch) {
-			return a, nil
-		}
-	}
-	for _, a := range assets {
-		n := strings.ToLower(a.Name)
+		n := strings.ToLower(strings.TrimSpace(a.Name))
 		if strings.Contains(n, "probe-node") || strings.Contains(n, "probe_node") {
-			return a, nil
+			probeAssets = append(probeAssets, a)
 		}
 	}
-	return releaseAsset{}, fmt.Errorf("matching probe_node asset not found")
+	if len(probeAssets) == 0 {
+		return releaseAsset{}, fmt.Errorf("matching probe_node asset not found, release assets=[%s]", summarizeAssetNames(assets, 20))
+	}
+
+	scored := make([]scoredProbeAsset, 0, len(probeAssets))
+	for _, a := range probeAssets {
+		n := strings.ToLower(strings.TrimSpace(a.Name))
+		score := 0
+
+		if assetMatchesOS(n, platform.GOOS) {
+			score += 40
+		} else if platform.GOOS == "linux" && !assetLooksWindows(n) {
+			score += 8
+		}
+
+		if assetMatchesArch(n, platform.GOARCH) {
+			score += 40
+		}
+
+		if platform.GOOS == "linux" {
+			if platform.IsMusl {
+				if assetLooksMusl(n) {
+					score += 30
+				} else if assetMentionsLibcFlavor(n) {
+					score -= 20
+				}
+			} else {
+				if assetLooksMusl(n) {
+					score -= 12
+				} else {
+					score += 6
+				}
+			}
+		}
+
+		if assetLooksWindows(n) {
+			score -= 100
+		}
+
+		scored = append(scored, scoredProbeAsset{Asset: a, Score: score})
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].Score == scored[j].Score {
+			return strings.ToLower(scored[i].Asset.Name) < strings.ToLower(scored[j].Asset.Name)
+		}
+		return scored[i].Score > scored[j].Score
+	})
+
+	if len(scored) == 0 || scored[0].Score < 0 {
+		return releaseAsset{}, fmt.Errorf("matching probe_node asset not found for goos=%s goarch=%s libc=%s, probe assets=[%s]", platform.GOOS, platform.GOARCH, platform.Libc, summarizeAssetNames(probeAssets, 20))
+	}
+
+	top := scored[0]
+	log.Printf(
+		"probe upgrade asset scoring: selected=%s score=%d goos=%s goarch=%s libc=%s top=[%s]",
+		strings.TrimSpace(top.Asset.Name),
+		top.Score,
+		platform.GOOS,
+		platform.GOARCH,
+		platform.Libc,
+		summarizeScoredAssets(scored, 5),
+	)
+	if platform.GOOS == "linux" && platform.IsMusl && !assetLooksMusl(strings.ToLower(strings.TrimSpace(top.Asset.Name))) {
+		log.Printf("probe upgrade warning: musl runtime detected but selected asset has no musl/alpine hint: %s", strings.TrimSpace(top.Asset.Name))
+	}
+	return top.Asset, nil
 }
 
 func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, output string) error {
@@ -182,6 +293,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 	if mode == "proxy" {
 		// Security boundary: probe can only use /api/probe/* endpoints.
 		u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/download?url=" + url.QueryEscape(assetURL)
+		log.Printf("probe upgrade asset download via proxy: %s", safeURLForLog(u))
 		body, err := probeAuthedGet(ctx, u, identity)
 		if err != nil {
 			return err
@@ -192,6 +304,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		return nil
 	}
 
+	log.Printf("probe upgrade asset download direct: %s", safeURLForLog(assetURL))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
 	if err != nil {
 		return err
@@ -295,10 +408,10 @@ func findProbeBinary(root string) (string, error) {
 	return candidate, nil
 }
 
-func replaceCurrentExecutable(newBinary string) error {
+func replaceCurrentExecutable(newBinary string) (string, string, error) {
 	exePath, err := os.Executable()
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && strings.TrimSpace(resolved) != "" {
 		exePath = resolved
@@ -309,18 +422,41 @@ func replaceCurrentExecutable(newBinary string) error {
 	}
 	tmp := exePath + ".new"
 	if err := copyFileWithMode(newBinary, tmp, mode); err != nil {
-		return err
+		return "", "", err
 	}
 	backup := exePath + ".bak"
 	_ = os.Remove(backup)
 	if err := os.Rename(exePath, backup); err != nil {
 		_ = os.Remove(tmp)
-		return err
+		return "", "", err
 	}
 	if err := os.Rename(tmp, exePath); err != nil {
 		_ = os.Rename(backup, exePath)
 		_ = os.Remove(tmp)
-		return err
+		return "", "", err
+	}
+	return exePath, backup, nil
+}
+
+func rollbackExecutable(exePath, backupPath string) error {
+	exePath = strings.TrimSpace(exePath)
+	backupPath = strings.TrimSpace(backupPath)
+	if exePath == "" || backupPath == "" {
+		return fmt.Errorf("rollback path is empty")
+	}
+
+	if _, err := os.Stat(backupPath); err != nil {
+		return fmt.Errorf("backup binary not found: %w", err)
+	}
+
+	failed := exePath + ".failed-" + time.Now().UTC().Format("20060102T150405")
+	if _, err := os.Stat(exePath); err == nil {
+		if renameErr := os.Rename(exePath, failed); renameErr != nil {
+			return fmt.Errorf("rename current binary to failed file: %w", renameErr)
+		}
+	}
+	if err := os.Rename(backupPath, exePath); err != nil {
+		return fmt.Errorf("restore backup binary failed: %w", err)
 	}
 	return nil
 }
@@ -417,4 +553,200 @@ func extractZipFile(src, dst string) error {
 		out.Close()
 	}
 	return nil
+}
+
+func detectRuntimePlatformInfo() runtimePlatformInfo {
+	goos := strings.ToLower(strings.TrimSpace(runtime.GOOS))
+	goarch := strings.ToLower(strings.TrimSpace(runtime.GOARCH))
+	info := runtimePlatformInfo{
+		GOOS:   goos,
+		GOARCH: goarch,
+		Libc:   "unknown",
+	}
+	if goos != "linux" {
+		return info
+	}
+
+	if _, err := os.Stat("/etc/alpine-release"); err == nil {
+		info.IsAlpine = true
+	}
+
+	if isLinuxMuslRuntime() {
+		info.IsMusl = true
+		info.Libc = "musl"
+		return info
+	}
+	info.Libc = "glibc-or-static"
+	return info
+}
+
+func isLinuxMuslRuntime() bool {
+	if _, err := os.Stat("/etc/alpine-release"); err == nil {
+		return true
+	}
+	if matches, _ := filepath.Glob("/lib/ld-musl-*.so.1"); len(matches) > 0 {
+		return true
+	}
+	lddPath, err := exec.LookPath("ldd")
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command(lddPath, "--version").CombinedOutput()
+	text := strings.ToLower(string(out))
+	if strings.Contains(text, "musl") {
+		return true
+	}
+	if err != nil && strings.Contains(text, "musl") {
+		return true
+	}
+	return false
+}
+
+func verifyBinaryCompatibility(binaryPath string, platform runtimePlatformInfo) error {
+	if platform.GOOS != "linux" {
+		return nil
+	}
+	lddPath, err := exec.LookPath("ldd")
+	if err != nil {
+		log.Printf("probe upgrade compatibility check skipped: ldd not found")
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, lddPath, binaryPath)
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	lower := strings.ToLower(text)
+
+	if text != "" {
+		log.Printf("probe upgrade ldd output: %s", strings.ReplaceAll(text, "\n", " | "))
+	}
+	if err == nil {
+		if strings.Contains(lower, "not found") || strings.Contains(lower, "error loading shared library") {
+			return fmt.Errorf("ldd reports missing library: %s", text)
+		}
+		return nil
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("ldd check timeout")
+	}
+	if strings.Contains(lower, "not a dynamic executable") || strings.Contains(lower, "statically linked") {
+		return nil
+	}
+	if strings.Contains(lower, "not found") || strings.Contains(lower, "error loading shared library") || strings.Contains(lower, "no such file or directory") {
+		return fmt.Errorf("ldd compatibility check failed: %s", text)
+	}
+	log.Printf("probe upgrade compatibility check warning: ldd exited with error=%v", err)
+	return nil
+}
+
+func summarizeAssetNames(assets []releaseAsset, limit int) string {
+	if len(assets) == 0 {
+		return ""
+	}
+	if limit <= 0 {
+		limit = len(assets)
+	}
+	max := len(assets)
+	if max > limit {
+		max = limit
+	}
+	names := make([]string, 0, max+1)
+	for i := 0; i < max; i++ {
+		names = append(names, strings.TrimSpace(assets[i].Name))
+	}
+	if len(assets) > max {
+		names = append(names, fmt.Sprintf("...+%d", len(assets)-max))
+	}
+	return strings.Join(names, ", ")
+}
+
+func summarizeScoredAssets(items []scoredProbeAsset, limit int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if limit <= 0 {
+		limit = len(items)
+	}
+	max := len(items)
+	if max > limit {
+		max = limit
+	}
+	out := make([]string, 0, max+1)
+	for i := 0; i < max; i++ {
+		out = append(out, fmt.Sprintf("%s(%d)", strings.TrimSpace(items[i].Asset.Name), items[i].Score))
+	}
+	if len(items) > max {
+		out = append(out, fmt.Sprintf("...+%d", len(items)-max))
+	}
+	return strings.Join(out, ", ")
+}
+
+func assetMatchesOS(name, goos string) bool {
+	goos = strings.ToLower(strings.TrimSpace(goos))
+	name = strings.ToLower(strings.TrimSpace(name))
+	if goos == "" || name == "" {
+		return false
+	}
+	return strings.Contains(name, goos)
+}
+
+func assetMatchesArch(name, goarch string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, token := range archTokens(goarch) {
+		if strings.Contains(name, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func archTokens(goarch string) []string {
+	switch strings.ToLower(strings.TrimSpace(goarch)) {
+	case "amd64":
+		return []string{"amd64", "x86_64", "x64"}
+	case "arm64":
+		return []string{"arm64", "aarch64"}
+	case "arm":
+		return []string{"armv7", "armv7l", "arm"}
+	case "386":
+		return []string{"386", "i386", "x86"}
+	default:
+		v := strings.ToLower(strings.TrimSpace(goarch))
+		if v == "" {
+			return nil
+		}
+		return []string{v}
+	}
+}
+
+func assetLooksWindows(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(n, "windows") || strings.HasSuffix(n, ".exe")
+}
+
+func assetLooksMusl(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(n, "alpine") || strings.Contains(n, "musl")
+}
+
+func assetMentionsLibcFlavor(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(n, "alpine") || strings.Contains(n, "musl") || strings.Contains(n, "glibc")
+}
+
+func safeURLForLog(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return ""
+	}
+	parsed, err := url.Parse(v)
+	if err != nil {
+		return v
+	}
+	out := parsed.Scheme + "://" + parsed.Host + parsed.Path
+	if strings.TrimSpace(parsed.RawQuery) != "" {
+		out += "?..."
+	}
+	return out
 }

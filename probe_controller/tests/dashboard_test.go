@@ -53,3 +53,27 @@ func TestDashboardStatusRouteNoAuthRequired(t *testing.T) {
 		t.Fatalf("expected uptime field in /dashboard/status response")
 	}
 }
+
+func TestFaviconRoutesNoAuthRequired(t *testing.T) {
+	mux := core.NewMux()
+
+	reqSVG := httptest.NewRequest(http.MethodGet, "/favicon.svg", nil)
+	rrSVG := httptest.NewRecorder()
+	mux.ServeHTTP(rrSVG, reqSVG)
+	if rrSVG.Code != http.StatusOK {
+		t.Fatalf("expected GET /favicon.svg 200, got %d", rrSVG.Code)
+	}
+	if got := rrSVG.Header().Get("Content-Type"); got == "" {
+		t.Fatalf("expected content-type for /favicon.svg")
+	}
+
+	reqICO := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	rrICO := httptest.NewRecorder()
+	mux.ServeHTTP(rrICO, reqICO)
+	if rrICO.Code != http.StatusFound {
+		t.Fatalf("expected GET /favicon.ico 302, got %d", rrICO.Code)
+	}
+	if got := rrICO.Header().Get("Location"); got != "/favicon.svg" {
+		t.Fatalf("expected /favicon.ico redirect to /favicon.svg, got %q", got)
+	}
+}

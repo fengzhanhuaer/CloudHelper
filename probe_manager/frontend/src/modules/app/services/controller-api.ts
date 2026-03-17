@@ -142,6 +142,18 @@ export type ProbeReportIntervalSettings = {
   active_admin_connections?: number;
 };
 
+export type ProbeNodeLogsResponse = {
+  node_id: string;
+  node_name?: string;
+  source?: string;
+  file_path?: string;
+  lines?: number;
+  since_minutes?: number;
+  content?: string;
+  fetched?: string;
+  timestamp?: string;
+};
+
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
   const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[] }>(baseURL, token, "admin.probe.nodes.get");
   return Array.isArray(payload.nodes) ? payload.nodes : [];
@@ -155,6 +167,16 @@ export async function fetchProbeNodeStatus(baseURL: string, token: string, nodeI
     nodeID === undefined || nodeID === null || String(nodeID).trim() === "" ? undefined : { node_id: String(nodeID) },
   );
   return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function fetchProbeNodeLogs(baseURL: string, token: string, nodeID: number | string, lines: number, sinceMinutes: number): Promise<ProbeNodeLogsResponse> {
+  const safeLines = Number.isFinite(lines) ? Math.max(1, Math.min(2000, Math.trunc(lines))) : 200;
+  const safeSince = Number.isFinite(sinceMinutes) ? Math.max(0, Math.min(2000, Math.trunc(sinceMinutes))) : 0;
+  return await callAdminWSRpc<ProbeNodeLogsResponse>(baseURL, token, "admin.probe.logs.get", {
+    node_id: String(nodeID),
+    lines: safeLines,
+    since_minutes: safeSince,
+  });
 }
 
 export async function fetchProbeReportIntervalSettings(baseURL: string, token: string): Promise<ProbeReportIntervalSettings> {

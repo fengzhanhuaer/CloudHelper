@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  fetchProbeNodeLogs,
   fetchProbeNodeStatus,
   fetchProbeNodes,
   fetchProbeReportIntervalSettings,
@@ -7,6 +8,7 @@ import {
   syncProbeNodes,
   upgradeAllProbeNodes,
   upgradeProbeNode,
+  type ProbeNodeLogsResponse,
   type ProbeNodeStatusItem,
   type ProbeNodeSyncItem,
   type ProbeReportIntervalSettings,
@@ -17,7 +19,7 @@ type ProbeManageTabProps = {
   sessionToken: string;
 };
 
-type ProbeSubTab = "create" | "list" | "status";
+type ProbeSubTab = "create" | "list" | "status" | "logs";
 type ProbeTargetSystem = "linux" | "windows";
 
 type ProbeNodeItem = {
@@ -71,6 +73,7 @@ type ProbeNodeSettingsDraft = {
 
 export function ProbeManageTab(props: ProbeManageTabProps) {
   const [subTab, setSubTab] = useState<ProbeSubTab>("create");
+  const logOutputRef = useRef<HTMLPreElement | null>(null);
   const [nodeNameInput, setNodeNameInput] = useState("");
   const [controllerAddress, setControllerAddress] = useState(props.controllerBaseUrl || "");
   const [nodes, setNodes] = useState<ProbeNodeItem[]>([]);
@@ -83,6 +86,14 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [upgradingNodeNos, setUpgradingNodeNos] = useState<number[]>([]);
   const [status, setStatus] = useState("正在加载探针列表...");
   const [settingsDraft, setSettingsDraft] = useState<ProbeNodeSettingsDraft | null>(null);
+  const [logNodeIDInput, setLogNodeIDInput] = useState("");
+  const [logLinesInput, setLogLinesInput] = useState("200");
+  const [logSinceMinutesInput, setLogSinceMinutesInput] = useState("0");
+  const [probeLogSource, setProbeLogSource] = useState("-");
+  const [probeLogFilePath, setProbeLogFilePath] = useState("-");
+  const [probeLogFetchedAt, setProbeLogFetchedAt] = useState("-");
+  const [probeLogContent, setProbeLogContent] = useState("");
+  const [probeLogAutoScroll, setProbeLogAutoScroll] = useState(true);
 
   useEffect(() => {
     if (!controllerAddress.trim() && props.controllerBaseUrl.trim()) {
@@ -93,6 +104,23 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   useEffect(() => {
     void loadNodes();
   }, []);
+
+  useEffect(() => {
+    if (!probeLogAutoScroll || subTab !== "logs" || !logOutputRef.current) {
+      return;
+    }
+    logOutputRef.current.scrollTop = logOutputRef.current.scrollHeight;
+  }, [probeLogAutoScroll, probeLogContent, subTab]);
+
+  useEffect(() => {
+    if (subTab !== "logs" || logNodeIDInput.trim()) {
+      return;
+    }
+    const firstNode = nodes.find((item) => item.node_no > 0);
+    if (firstNode) {
+      setLogNodeIDInput(String(firstNode.node_no));
+    }
+  }, [logNodeIDInput, nodes, subTab]);
 
   async function loadNodes() {
     setIsLoading(true);
@@ -363,6 +391,48 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
   }
 
+  async function loadSelectedNodeLogs() {
+    const nodeID = logNodeIDInput.trim();
+    if (!nodeID) {
+      setStatus("请选择探针节点");
+      return;
+    }
+
+    const lines = normalizeIntInput(logLinesInput, 200, 1, 2000);
+    const sinceMinutes = normalizeIntInput(logSinceMinutesInput, 0, 0, 2000);
+    setLogLinesInput(String(lines));
+    setLogSinceMinutesInput(String(sinceMinutes));
+
+    setIsLoading(true);
+    try {
+      const data = await fetchProbeLogsFromController(controllerAddress, props.sessionToken, nodeID, lines, sinceMinutes);
+      setProbeLogSource((data.source || "-").trim() || "-");
+      setProbeLogFilePath((data.file_path || "-").trim() || "-");
+      setProbeLogFetchedAt(formatTime(data.fetched || data.timestamp || ""));
+      setProbeLogContent(data.content || "");
+      setStatus(`已拉取探针日志：${data.node_name || nodeID}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`拉取探针日志失败：${msg}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function copySelectedNodeLogs() {
+    if (!probeLogContent.trim()) {
+      setStatus("暂无可复制的探针日志");
+      return;
+    }
+    try {
+      await copyText(probeLogContent);
+      setStatus("已复制探针日志");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`复制探针日志失败：${msg}`);
+    }
+  }
+
   return (
     <div className="content-block">
       <h2>探针管理</h2>
@@ -371,6 +441,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         <button className={`subtab-btn ${subTab === "create" ? "active" : ""}`} onClick={() => setSubTab("create")}>新建探针</button>
         <button className={`subtab-btn ${subTab === "list" ? "active" : ""}`} onClick={() => setSubTab("list")}>探针列表</button>
         <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => { setSubTab("status"); void loadNodeStatus(); }}>探针状态</button>
+        <button className={`subtab-btn ${subTab === "logs" ? "active" : ""}`} onClick={() => setSubTab("logs")}>探针日志</button>
       </div>
 
       {subTab === "create" ? (
@@ -436,7 +507,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
             </div>
           )}
         </div>
-      ) : (
+      ) : subTab === "status" ? (
         <div style={{ marginTop: 12 }}>
           <div className="identity-card" style={{ marginBottom: 12 }}>
             <div>探针实时状态（来自主控汇总）</div>
@@ -481,6 +552,48 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               ))}
             </div>
           )}
+        </div>
+      ) : (
+        <div style={{ marginTop: 12 }}>
+          <div className="identity-card" style={{ marginBottom: 12 }}>
+            <div>探针日志（通过主控代理拉取）</div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>探针节点</label>
+              <select className="input" value={logNodeIDInput} onChange={(event) => setLogNodeIDInput(event.target.value)} disabled={isLoading || nodes.length === 0}>
+                {nodes.length === 0 ? (
+                  <option value="">暂无探针</option>
+                ) : (
+                  nodes.map((node) => (
+                    <option key={`log-node-${node.node_no}`} value={String(node.node_no)}>
+                      {node.node_name} (#{node.node_no})
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>显示行数</label>
+              <input className="input" value={logLinesInput} onChange={(event) => setLogLinesInput(event.target.value)} disabled={isLoading} />
+            </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>最近分钟</label>
+              <input className="input" value={logSinceMinutesInput} onChange={(event) => setLogSinceMinutesInput(event.target.value)} disabled={isLoading} />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void loadSelectedNodeLogs()} disabled={isLoading || nodes.length === 0}>
+                {isLoading ? "刷新中..." : "刷新日志"}
+              </button>
+              <button className="btn" onClick={() => void copySelectedNodeLogs()} disabled={isLoading || !probeLogContent.trim()}>复制日志</button>
+              <label className="log-auto-scroll-toggle">
+                <input type="checkbox" checked={probeLogAutoScroll} onChange={(event) => setProbeLogAutoScroll(event.target.checked)} disabled={isLoading} />
+                自动滚动
+              </label>
+            </div>
+            <div>来源：{probeLogSource || "-"}</div>
+            <div>日志文件：{probeLogFilePath || "-"}</div>
+            <div>拉取时间：{probeLogFetchedAt || "-"}</div>
+          </div>
+          <pre ref={logOutputRef} className="log-viewer-output">{probeLogContent || "暂无探针日志内容"}</pre>
         </div>
       )}
 
@@ -634,6 +747,20 @@ function formatPercent(value: number | undefined): string {
     return "-";
   }
   return `${value.toFixed(1)}%`;
+}
+
+function normalizeIntInput(raw: string, fallback: number, min: number, max: number): number {
+  const value = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
 }
 
 function formatPercentWithBytes(percent: number | undefined, usedBytes: number | undefined, totalBytes: number | undefined): string {
@@ -981,6 +1108,21 @@ async function fetchProbeStatusFromController(controllerBaseUrl: string, session
     throw new Error("session token is empty, cannot fetch status from controller");
   }
   return await fetchProbeNodeStatus(base, token, nodeID);
+}
+
+async function fetchProbeLogsFromController(
+  controllerBaseUrl: string,
+  sessionToken: string,
+  nodeID: string,
+  lines: number,
+  sinceMinutes: number,
+): Promise<ProbeNodeLogsResponse> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot fetch probe logs from controller");
+  }
+  return await fetchProbeNodeLogs(base, token, nodeID, lines, sinceMinutes);
 }
 
 async function fetchProbeReportIntervalFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeReportIntervalSettings> {

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +42,28 @@ type probeUpgradeCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeLogsCommand struct {
+	Type         string `json:"type"`
+	RequestID    string `json:"request_id"`
+	Lines        int    `json:"lines"`
+	SinceMinutes int    `json:"since_minutes"`
+	Timestamp    string `json:"timestamp"`
+}
+
+type probeLogsResultMessage struct {
+	Type         string `json:"type"`
+	RequestID    string `json:"request_id"`
+	NodeID       string `json:"node_id"`
+	OK           bool   `json:"ok"`
+	Source       string `json:"source,omitempty"`
+	FilePath     string `json:"file_path,omitempty"`
+	Lines        int    `json:"lines,omitempty"`
+	SinceMinutes int    `json:"since_minutes,omitempty"`
+	Content      string `json:"content,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Timestamp    string `json:"timestamp,omitempty"`
+}
+
 var probeSessions = struct {
 	mu   sync.RWMutex
 	data map[string]*probeSession
@@ -50,6 +73,13 @@ var probeAuthReplayStore = struct {
 	mu   sync.Mutex
 	seen map[string]time.Time
 }{seen: make(map[string]time.Time)}
+
+var probeLogRequestSeq atomic.Uint64
+
+var probeLogWaiters = struct {
+	mu   sync.Mutex
+	data map[string]chan probeLogsResultMessage
+}{data: make(map[string]chan probeLogsResultMessage)}
 
 func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
 	s := &probeSession{nodeID: nodeID, stream: stream, enc: json.NewEncoder(stream)}
@@ -347,6 +377,89 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) erro
 		return err
 	}
 	return nil
+}
+
+func fetchProbeLogsFromNode(nodeID string, lines int, sinceMinutes int) (probeLogsResultMessage, error) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeLogsResultMessage{}, fmt.Errorf("node_id is required")
+	}
+
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return probeLogsResultMessage{}, fmt.Errorf("probe is offline")
+	}
+
+	safeLines := normalizeAdminLogLines(strconv.Itoa(lines))
+	safeSinceMinutes := normalizeAdminSinceMinutes(strconv.Itoa(sinceMinutes))
+	requestID := newProbeLogRequestID(normalizedID)
+	waiter := make(chan probeLogsResultMessage, 1)
+
+	probeLogWaiters.mu.Lock()
+	probeLogWaiters.data[requestID] = waiter
+	probeLogWaiters.mu.Unlock()
+	defer func() {
+		probeLogWaiters.mu.Lock()
+		delete(probeLogWaiters.data, requestID)
+		probeLogWaiters.mu.Unlock()
+	}()
+
+	cmd := probeLogsCommand{
+		Type:         "logs_get",
+		RequestID:    requestID,
+		Lines:        safeLines,
+		SinceMinutes: safeSinceMinutes,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return probeLogsResultMessage{}, err
+	}
+
+	timer := time.NewTimer(25 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case result := <-waiter:
+		if strings.TrimSpace(result.NodeID) == "" {
+			result.NodeID = normalizedID
+		}
+		if !result.OK {
+			errMsg := strings.TrimSpace(result.Error)
+			if errMsg == "" {
+				errMsg = "probe log fetch failed"
+			}
+			return result, errors.New(errMsg)
+		}
+		return result, nil
+	case <-timer.C:
+		return probeLogsResultMessage{}, fmt.Errorf("probe log fetch timeout")
+	}
+}
+
+func consumeProbeLogsResult(result probeLogsResultMessage) {
+	requestID := strings.TrimSpace(result.RequestID)
+	if requestID == "" {
+		return
+	}
+	probeLogWaiters.mu.Lock()
+	waiter, ok := probeLogWaiters.data[requestID]
+	if ok {
+		delete(probeLogWaiters.data, requestID)
+	}
+	probeLogWaiters.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case waiter <- result:
+	default:
+	}
+}
+
+func newProbeLogRequestID(nodeID string) string {
+	seq := probeLogRequestSeq.Add(1)
+	return fmt.Sprintf("probe-log-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
 }
 
 func getProbeNodeByID(nodeID string) (probeNodeRecord, bool) {

@@ -322,6 +322,40 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		items := loadProbeNodeStatusLocked()
 		ProbeStore.mu.RUnlock()
 		return map[string]interface{}{"items": items}, nil
+	case "admin.probe.logs.get":
+		var req struct {
+			NodeID       string `json:"node_id"`
+			Lines        int    `json:"lines"`
+			SinceMinutes int    `json:"since_minutes"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+
+		result, err := fetchProbeLogsFromNode(nodeID, req.Lines, req.SinceMinutes)
+		if err != nil {
+			return nil, err
+		}
+
+		nodeName := ""
+		if node, ok := getProbeNodeByID(nodeID); ok {
+			nodeName = strings.TrimSpace(node.NodeName)
+		}
+		return map[string]interface{}{
+			"node_id":       nodeID,
+			"node_name":     nodeName,
+			"source":        strings.TrimSpace(result.Source),
+			"file_path":     strings.TrimSpace(result.FilePath),
+			"lines":         result.Lines,
+			"since_minutes": result.SinceMinutes,
+			"content":       result.Content,
+			"fetched":       time.Now().UTC().Format(time.RFC3339),
+			"timestamp":     strings.TrimSpace(result.Timestamp),
+		}, nil
 	case "admin.probe.report_interval.get":
 		return getProbeReportIntervalSnapshot(), nil
 	case "admin.probe.report_interval.set":

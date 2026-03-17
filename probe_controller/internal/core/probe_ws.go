@@ -26,6 +26,10 @@ type probeAckMessage struct {
 	ServerUTC string `json:"server_utc"`
 }
 
+type probeInboundEnvelope struct {
+	Type string `json:"type"`
+}
+
 var probeWSUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -79,22 +83,44 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 
 	decoder := json.NewDecoder(stream)
 	for {
-		var msg probeReportMessage
-		if err := decoder.Decode(&msg); err != nil {
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
 			return
 		}
 
-		reportedNodeID := strings.TrimSpace(msg.NodeID)
-		if reportedNodeID == "" {
-			reportedNodeID = nodeID
+		var envelope probeInboundEnvelope
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			continue
 		}
+		switch strings.ToLower(strings.TrimSpace(envelope.Type)) {
+		case "", "report":
+			var msg probeReportMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
 
-		updateProbeRuntimeReport(reportedNodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version)
+			reportedNodeID := strings.TrimSpace(msg.NodeID)
+			if reportedNodeID == "" {
+				reportedNodeID = nodeID
+			}
+			updateProbeRuntimeReport(reportedNodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version)
 
-		_ = probeSession.writeJSON(probeAckMessage{
-			Type:      "ack",
-			Message:   "report accepted",
-			ServerUTC: time.Now().UTC().Format(time.RFC3339),
-		})
+			_ = probeSession.writeJSON(probeAckMessage{
+				Type:      "ack",
+				Message:   "report accepted",
+				ServerUTC: time.Now().UTC().Format(time.RFC3339),
+			})
+		case "logs_result":
+			var msg probeLogsResultMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
+			if strings.TrimSpace(msg.NodeID) == "" {
+				msg.NodeID = nodeID
+			}
+			consumeProbeLogsResult(msg)
+		default:
+			// Ignore unknown probe message types to keep backward compatibility.
+		}
 	}
 }

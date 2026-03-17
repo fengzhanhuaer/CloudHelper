@@ -41,6 +41,8 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/dashboard/status", dashboardStatusHandler)
 	mux.HandleFunc("/dashboard/probes", dashboardProbesHandler)
 	mux.HandleFunc("/dashboard", dashboardHandler)
+	mux.HandleFunc("/favicon.svg", faviconSVGHandler)
+	mux.HandleFunc("/favicon.ico", faviconICOHandler)
 	mux.HandleFunc("/", rootHandler)
 	return mux
 }

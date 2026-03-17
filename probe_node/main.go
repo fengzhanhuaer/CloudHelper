@@ -85,6 +85,9 @@ type probeControlMessage struct {
 	ReleaseRepo       string `json:"release_repo"`
 	ControllerBaseURL string `json:"controller_base_url"`
 	IntervalSec       int    `json:"interval_sec"`
+	RequestID         string `json:"request_id"`
+	Lines             int    `json:"lines"`
+	SinceMinutes      int    `json:"since_minutes"`
 	Timestamp         string `json:"timestamp"`
 }
 
@@ -336,10 +339,11 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 	defer stream.Close()
 	encoder := json.NewEncoder(stream)
 	decoder := json.NewDecoder(stream)
+	writeMu := &sync.Mutex{}
 
 	log.Printf("probe reporter connected: %s", wsURL)
 
-	if err := sendProbeReport(stream, encoder, identity, sampler); err != nil {
+	if err := sendProbeReport(stream, encoder, identity, sampler, writeMu); err != nil {
 		return err
 	}
 
@@ -351,7 +355,7 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 				readErrCh <- readErr
 				return
 			}
-			processProbeControlMessage(msg, identity)
+			processProbeControlMessage(msg, identity, stream, encoder, writeMu)
 		}
 	}()
 
@@ -361,14 +365,14 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 		case err := <-readErrCh:
 			return err
 		case <-time.After(wait):
-			if err := sendProbeReport(stream, encoder, identity, sampler); err != nil {
+			if err := sendProbeReport(stream, encoder, identity, sampler, writeMu); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdentity, sampler *cpuSampler) error {
+func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdentity, sampler *cpuSampler, writeMu *sync.Mutex) error {
 	ipv4, ipv6 := collectIPs()
 	system := collectSystemStatus(sampler)
 	payload := probeReportPayload{
@@ -381,11 +385,9 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if err := encoder.Encode(payload); err != nil {
+	if err := writeProbeStreamJSON(stream, encoder, writeMu, payload); err != nil {
 		return err
 	}
-	_ = stream.SetWriteDeadline(time.Time{})
 	log.Printf(
 		"probe report sent: node_id=%s ipv4=%d ipv6=%d cpu=%.2f%% mem=%.2f%% disk=%.2f%% swap=%.2f%%",
 		identity.NodeID,
@@ -397,6 +399,17 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		system.SwapUsedPercent,
 	)
 	return nil
+}
+
+func writeProbeStreamJSON(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, payload any) error {
+	if writeMu != nil {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+	}
+	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err := encoder.Encode(payload)
+	_ = stream.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func signProbeConnect(secret, nodeID, timestamp, randomToken string) string {
@@ -432,13 +445,17 @@ func randomHexToken(size int) string {
 	return hex.EncodeToString(b)
 }
 
-func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity) {
+func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
 	typeName := strings.TrimSpace(strings.ToLower(msg.Type))
 	if typeName == "report_interval" {
 		if sec := normalizeReportInterval(msg.IntervalSec); sec > 0 {
 			reportIntervalSec.Store(int64(sec))
 			log.Printf("probe reporter interval updated: %ds", sec)
 		}
+		return
+	}
+	if typeName == "logs_get" {
+		go runProbeLogFetch(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName != "upgrade" {
