@@ -1,11 +1,14 @@
 package core
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -42,6 +45,23 @@ type probeNodeStatusRecord struct {
 
 type probeNodesSyncRequest struct {
 	Nodes []probeNodeRecord `json:"nodes"`
+}
+
+type probeNodeCreateRequest struct {
+	NodeName string `json:"node_name"`
+}
+
+type probeNodeUpdateRequest struct {
+	NodeNo        int    `json:"node_no"`
+	NodeName      string `json:"node_name"`
+	Remark        string `json:"remark"`
+	TargetSystem  string `json:"target_system"`
+	DirectConnect bool   `json:"direct_connect"`
+	PaymentCycle  string `json:"payment_cycle"`
+	Cost          string `json:"cost"`
+	ExpireAt      string `json:"expire_at"`
+	VendorName    string `json:"vendor_name"`
+	VendorURL     string `json:"vendor_url"`
 }
 
 func AdminUpsertProbeSecretHandler(w http.ResponseWriter, r *http.Request) {
@@ -328,4 +348,130 @@ func normalizeProbeNodeID(raw string) string {
 		return strconv.Itoa(n)
 	}
 	return v
+}
+
+func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
+	name := strings.TrimSpace(nodeName)
+	if name == "" {
+		return probeNodeRecord{}, fmt.Errorf("node name is required")
+	}
+
+	nodes := loadProbeNodesLocked()
+	for _, item := range nodes {
+		if strings.EqualFold(strings.TrimSpace(item.NodeName), name) {
+			return probeNodeRecord{}, fmt.Errorf("node name already exists")
+		}
+	}
+
+	nextNo := 1
+	for _, item := range nodes {
+		if item.NodeNo >= nextNo {
+			nextNo = item.NodeNo + 1
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	node := probeNodeRecord{
+		NodeNo:        nextNo,
+		NodeName:      name,
+		Remark:        "",
+		NodeSecret:    randomProbeNodeSecret(32),
+		TargetSystem:  "linux",
+		DirectConnect: true,
+		PaymentCycle:  "",
+		Cost:          "",
+		ExpireAt:      "",
+		VendorName:    "",
+		VendorURL:     "",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	nodes = append(nodes, node)
+	normalized, secrets := normalizeProbeNodes(nodes)
+	ProbeStore.data.ProbeNodes = normalized
+	ProbeStore.data.ProbeSecrets = secrets
+
+	for _, item := range normalized {
+		if item.NodeNo == nextNo {
+			return item, nil
+		}
+	}
+	return probeNodeRecord{}, fmt.Errorf("failed to create node")
+}
+
+func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) {
+	if req.NodeNo <= 0 {
+		return probeNodeRecord{}, fmt.Errorf("invalid node number")
+	}
+
+	name := strings.TrimSpace(req.NodeName)
+	if name == "" {
+		return probeNodeRecord{}, fmt.Errorf("node name is required")
+	}
+
+	system := strings.ToLower(strings.TrimSpace(req.TargetSystem))
+	if system != "linux" && system != "windows" {
+		return probeNodeRecord{}, fmt.Errorf("target system must be linux or windows")
+	}
+
+	nodes := loadProbeNodesLocked()
+	found := -1
+	for i := range nodes {
+		if nodes[i].NodeNo == req.NodeNo {
+			found = i
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(nodes[i].NodeName), name) {
+			return probeNodeRecord{}, fmt.Errorf("node name already exists")
+		}
+	}
+	if found < 0 {
+		return probeNodeRecord{}, fmt.Errorf("node %d not found", req.NodeNo)
+	}
+
+	nodes[found].NodeName = name
+	nodes[found].Remark = strings.TrimSpace(req.Remark)
+	nodes[found].TargetSystem = system
+	nodes[found].DirectConnect = req.DirectConnect
+	nodes[found].PaymentCycle = strings.TrimSpace(req.PaymentCycle)
+	nodes[found].Cost = strings.TrimSpace(req.Cost)
+	nodes[found].ExpireAt = strings.TrimSpace(req.ExpireAt)
+	nodes[found].VendorName = strings.TrimSpace(req.VendorName)
+	nodes[found].VendorURL = strings.TrimSpace(req.VendorURL)
+	nodes[found].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if strings.TrimSpace(nodes[found].CreatedAt) == "" {
+		nodes[found].CreatedAt = nodes[found].UpdatedAt
+	}
+	if strings.TrimSpace(nodes[found].NodeSecret) == "" {
+		nodes[found].NodeSecret = randomProbeNodeSecret(32)
+	}
+
+	normalized, secrets := normalizeProbeNodes(nodes)
+	ProbeStore.data.ProbeNodes = normalized
+	ProbeStore.data.ProbeSecrets = secrets
+
+	for _, item := range normalized {
+		if item.NodeNo == req.NodeNo {
+			return item, nil
+		}
+	}
+	return probeNodeRecord{}, fmt.Errorf("node %d not found after update", req.NodeNo)
+}
+
+func randomProbeNodeSecret(length int) string {
+	if length <= 0 {
+		return ""
+	}
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+	buf := make([]byte, length)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("node-secret-%d", time.Now().UnixNano())
+	}
+
+	out := make([]byte, length)
+	for i := range buf {
+		out[i] = alphabet[int(buf[i])%len(alphabet)]
+	}
+	return string(out)
 }

@@ -305,6 +305,36 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		nodes := loadProbeNodesLocked()
 		ProbeStore.mu.RUnlock()
 		return map[string]interface{}{"nodes": nodes}, nil
+	case "admin.probe.node.create":
+		var req probeNodeCreateRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		ProbeStore.mu.Lock()
+		node, err := createProbeNodeLocked(req.NodeName)
+		ProbeStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeStore.Save(); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"node": node}, nil
+	case "admin.probe.node.update":
+		var req probeNodeUpdateRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		ProbeStore.mu.Lock()
+		node, err := updateProbeNodeLocked(req)
+		ProbeStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeStore.Save(); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"node": node}, nil
 	case "admin.probe.status.get":
 		var req struct {
 			NodeID string `json:"node_id"`

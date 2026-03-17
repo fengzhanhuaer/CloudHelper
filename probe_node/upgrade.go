@@ -688,7 +688,14 @@ func assetMatchesOS(name, goos string) bool {
 	if goos == "" || name == "" {
 		return false
 	}
-	return strings.Contains(name, goos)
+	if strings.Contains(name, goos) {
+		return true
+	}
+	// Alpine assets are Linux binaries but often use "alpine" in file names.
+	if goos == "linux" && strings.Contains(name, "alpine") {
+		return true
+	}
+	return false
 }
 
 func assetMatchesArch(name, goarch string) bool {

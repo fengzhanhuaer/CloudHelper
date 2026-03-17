@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  createProbeNodeOnController,
   fetchProbeNodeLogs,
   fetchProbeNodeStatus,
   fetchProbeNodes,
   fetchProbeReportIntervalSettings,
   setProbeReportInterval,
-  syncProbeNodes,
+  updateProbeNodeOnController,
   upgradeAllProbeNodes,
   upgradeProbeNode,
   type ProbeNodeLogsResponse,
   type ProbeNodeStatusItem,
-  type ProbeNodeSyncItem,
   type ProbeReportIntervalSettings,
 } from "../services/controller-api";
 
@@ -74,6 +74,7 @@ type ProbeNodeSettingsDraft = {
 export function ProbeManageTab(props: ProbeManageTabProps) {
   const [subTab, setSubTab] = useState<ProbeSubTab>("create");
   const logOutputRef = useRef<HTMLPreElement | null>(null);
+  const upgradeLogPollingDeadlineRef = useRef(0);
   const [nodeNameInput, setNodeNameInput] = useState("");
   const [controllerAddress, setControllerAddress] = useState(props.controllerBaseUrl || "");
   const [nodes, setNodes] = useState<ProbeNodeItem[]>([]);
@@ -94,6 +95,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [probeLogFetchedAt, setProbeLogFetchedAt] = useState("-");
   const [probeLogContent, setProbeLogContent] = useState("");
   const [probeLogAutoScroll, setProbeLogAutoScroll] = useState(true);
+  const [upgradeLogPollingNodeID, setUpgradeLogPollingNodeID] = useState("");
 
   useEffect(() => {
     if (!controllerAddress.trim() && props.controllerBaseUrl.trim()) {
@@ -122,6 +124,50 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
   }, [logNodeIDInput, nodes, subTab]);
 
+  useEffect(() => {
+    if (subTab !== "logs") {
+      return;
+    }
+    if (nodes.length > 0 || isLoading) {
+      return;
+    }
+    void loadNodes();
+  }, [isLoading, nodes.length, subTab]);
+
+  useEffect(() => {
+    if (subTab !== "logs") {
+      return;
+    }
+    const nodeID = logNodeIDInput.trim();
+    if (!nodeID) {
+      return;
+    }
+    void loadSelectedNodeLogs({ nodeID, silent: true });
+  }, [subTab, logNodeIDInput]);
+
+  useEffect(() => {
+    if (subTab !== "logs") {
+      return;
+    }
+    const nodeID = upgradeLogPollingNodeID.trim();
+    if (!nodeID) {
+      return;
+    }
+    if (logNodeIDInput.trim() !== nodeID) {
+      setUpgradeLogPollingNodeID("");
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      if (Date.now() >= upgradeLogPollingDeadlineRef.current) {
+        setUpgradeLogPollingNodeID("");
+        return;
+      }
+      void loadSelectedNodeLogs({ nodeID, silent: true });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [subTab, upgradeLogPollingNodeID, logNodeIDInput]);
+
   async function loadNodes() {
     setIsLoading(true);
     try {
@@ -135,18 +181,11 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       } catch {
         // ignore status refresh failure and keep list available
       }
-      await replaceLocalProbeNodes(remoteNodes);
       setNodes(mergedNodes);
       setStatus(remoteNodes.length ? "已从主控同步探针列表" : "主控暂无探针，请先创建");
     } catch (error) {
-      try {
-        const localNodes = await getProbeNodes();
-        setNodes(sortNodes(localNodes));
-        setStatus("主控同步失败，已加载本地探针列表");
-      } catch (fallbackErr) {
-        const msg = fallbackErr instanceof Error ? fallbackErr.message : "unknown error";
-        setStatus(`加载探针列表失败：${msg}`);
-      }
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`加载探针列表失败：${msg}`);
     } finally {
       setIsLoading(false);
     }
@@ -234,16 +273,11 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
 
     setIsLoading(true);
     try {
-      await syncFromControllerToLocal(controllerAddress, props.sessionToken);
-      const created = await createProbeNode(cleanName);
-      const refreshed = await getProbeNodes();
-      const synced = await syncProbeNodesToController(controllerAddress, props.sessionToken, refreshed);
-      await replaceLocalProbeNodes(synced);
-      setNodes(sortNodes(synced));
-      await loadNodeStatus();
+      const created = await createProbeNodeFromController(controllerAddress, props.sessionToken, cleanName);
+      await loadNodes();
       setNodeNameInput("");
       setSubTab("list");
-      setStatus(`节点已创建并全量同步到主控：${created.node_name}（节点号 ${created.node_no}）`);
+      setStatus(`节点已创建：${created.node_name}（节点号 ${created.node_no}）`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`创建节点失败：${msg}`);
@@ -278,8 +312,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
 
     setIsLoading(true);
     try {
-      await syncFromControllerToLocal(controllerAddress, props.sessionToken);
-      const updated = await updateProbeNodeSettings({
+      const updated = await updateProbeNodeOnControllerOnly(controllerAddress, props.sessionToken, {
         node_no: nodeNo,
         node_name: nextNodeName,
         remark: nextRemark,
@@ -291,12 +324,9 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         vendor_name: nextVendorName,
         vendor_url: nextVendorURL,
       });
-      const refreshed = await getProbeNodes();
-      const synced = await syncProbeNodesToController(controllerAddress, props.sessionToken, refreshed);
-      await replaceLocalProbeNodes(synced);
-      setNodes(sortNodes(synced));
-      await loadNodeStatus();
-      setStatus(`节点已更新并同步到主控：${updated.node_name}`);
+      setNodes((prev) => sortNodes(prev.map((node) => (node.node_no === nodeNo ? { ...node, ...updated } : node))));
+      setStatus(`节点已更新：${updated.node_name}`);
+      void loadNodeStatus();
       return true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -358,7 +388,13 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     setUpgradingNodeNos((prev) => [...prev, node.node_no]);
     try {
       await upgradeProbeNode(base, token, node.node_no);
-      setStatus(`已下发升级命令：${node.node_name}（${node.direct_connect ? "直连升级" : "主控代理升级"}）`);
+      setSubTab("logs");
+      setLogNodeIDInput(String(node.node_no));
+      setLogSinceMinutesInput("10");
+      upgradeLogPollingDeadlineRef.current = Date.now() + (2 * 60 * 1000);
+      setUpgradeLogPollingNodeID(String(node.node_no));
+      void loadSelectedNodeLogs({ nodeID: String(node.node_no), silent: true });
+      setStatus(`已下发升级命令：${node.node_name}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`下发升级失败：${node.node_name}，${msg}`);
@@ -377,7 +413,13 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
 
     setIsUpgradingAll(true);
     try {
+      setSubTab("logs");
       const result = await upgradeAllProbeNodes(base, token);
+      upgradeLogPollingDeadlineRef.current = Date.now() + (2 * 60 * 1000);
+      if (logNodeIDInput.trim()) {
+        setUpgradeLogPollingNodeID(logNodeIDInput.trim());
+        void loadSelectedNodeLogs({ nodeID: logNodeIDInput.trim(), silent: true });
+      }
       if (result.failures.length > 0) {
         setStatus(`一键升级已下发：成功 ${result.success}/${result.total}，失败 ${result.failures.length}`);
       } else {
@@ -391,10 +433,13 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
   }
 
-  async function loadSelectedNodeLogs() {
-    const nodeID = logNodeIDInput.trim();
+  async function loadSelectedNodeLogs(options?: { nodeID?: string; silent?: boolean }) {
+    const nodeID = (options?.nodeID ?? logNodeIDInput).trim();
+    const silent = options?.silent === true;
     if (!nodeID) {
-      setStatus("请选择探针节点");
+      if (!silent) {
+        setStatus("请选择探针节点");
+      }
       return;
     }
 
@@ -403,19 +448,27 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     setLogLinesInput(String(lines));
     setLogSinceMinutesInput(String(sinceMinutes));
 
-    setIsLoading(true);
+    if (!silent) {
+      setIsLoading(true);
+    }
     try {
       const data = await fetchProbeLogsFromController(controllerAddress, props.sessionToken, nodeID, lines, sinceMinutes);
       setProbeLogSource((data.source || "-").trim() || "-");
       setProbeLogFilePath((data.file_path || "-").trim() || "-");
       setProbeLogFetchedAt(formatTime(data.fetched || data.timestamp || ""));
       setProbeLogContent(data.content || "");
-      setStatus(`已拉取探针日志：${data.node_name || nodeID}`);
+      if (!silent) {
+        setStatus(`已拉取探针日志：${data.node_name || nodeID}`);
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`拉取探针日志失败：${msg}`);
+      if (!silent) {
+        setStatus(`拉取探针日志失败：${msg}`);
+      }
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   }
 
@@ -458,7 +511,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           <div className="content-actions">
             <button className="btn" onClick={() => void createNode()} disabled={isLoading}>新建节点</button>
           </div>
-          <div>创建后会自动生成数字节点号与节点 Secret（保存到管理端 data/probe_nodes.json）。</div>
+          <div>创建后会自动生成数字节点号与节点 Secret（仅保存到主控端探针配置）。</div>
         </div>
       ) : subTab === "list" ? (
         <div style={{ marginTop: 12 }}>
@@ -937,129 +990,6 @@ function buildLinuxInstallCommand(scriptURL: string, envArgs: string): string {
   return "curl -fsSL '" + scriptURL + "' | env " + envArgs + " bash";
 }
 
-async function getProbeNodes(): Promise<ProbeNodeItem[]> {
-  const api = getWailsAppApi();
-  return (await api.GetProbeNodes()) as ProbeNodeItem[];
-}
-
-async function replaceLocalProbeNodes(nodes: ProbeNodeItem[]): Promise<ProbeNodeItem[]> {
-  const api = getWailsAppApi();
-  if (!api.ReplaceProbeNodes) {
-    return nodes;
-  }
-  return (await api.ReplaceProbeNodes(nodes)) as ProbeNodeItem[];
-}
-
-async function createProbeNode(nodeName: string): Promise<ProbeNodeItem> {
-  const api = getWailsAppApi();
-  return (await api.CreateProbeNode(nodeName)) as ProbeNodeItem;
-}
-
-async function updateProbeNodeSettings(payload: {
-  node_no: number;
-  node_name: string;
-  remark: string;
-  target_system: ProbeTargetSystem;
-  direct_connect: boolean;
-  payment_cycle: string;
-  cost: string;
-  expire_at: string;
-  vendor_name: string;
-  vendor_url: string;
-}): Promise<ProbeNodeItem> {
-  const api = getWailsAppApi();
-  if (!api.UpdateProbeNodeSettings) {
-    if (!api.ReplaceProbeNodes) {
-      return (await api.UpdateProbeNode(payload.node_no, payload.target_system, payload.direct_connect)) as ProbeNodeItem;
-    }
-    const currentNodes = (await api.GetProbeNodes()) as ProbeNodeItem[];
-    const nextNodes = currentNodes.map((node) => {
-      if (node.node_no !== payload.node_no) {
-        return node;
-      }
-      return {
-        ...node,
-        node_name: payload.node_name,
-        remark: payload.remark,
-        target_system: payload.target_system,
-        direct_connect: payload.direct_connect,
-        payment_cycle: payload.payment_cycle,
-        cost: payload.cost,
-        expire_at: payload.expire_at,
-        vendor_name: payload.vendor_name,
-        vendor_url: payload.vendor_url,
-      };
-    });
-    const replaced = (await api.ReplaceProbeNodes(nextNodes)) as ProbeNodeItem[];
-    const updated = replaced.find((node) => node.node_no === payload.node_no);
-    if (!updated) {
-      throw new Error("updated node not found after local replace");
-    }
-    return updated;
-  }
-  return (await api.UpdateProbeNodeSettings(
-    payload.node_no,
-    payload.node_name,
-    payload.remark,
-    payload.target_system,
-    payload.direct_connect,
-    payload.payment_cycle,
-    payload.cost,
-    payload.expire_at,
-    payload.vendor_name,
-    payload.vendor_url,
-  )) as ProbeNodeItem;
-}
-
-function getWailsAppApi(): {
-  GetProbeNodes: () => Promise<unknown>;
-  CreateProbeNode: (nodeName: string) => Promise<unknown>;
-  UpdateProbeNode: (nodeNo: number, targetSystem: string, directConnect: boolean) => Promise<unknown>;
-  UpdateProbeNodeSettings?: (
-    nodeNo: number,
-    nodeName: string,
-    remark: string,
-    targetSystem: string,
-    directConnect: boolean,
-    paymentCycle: string,
-    cost: string,
-    expireAt: string,
-    vendorName: string,
-    vendorURL: string,
-  ) => Promise<unknown>;
-  ReplaceProbeNodes?: (nodes: ProbeNodeItem[]) => Promise<unknown>;
-} {
-  const api = (window as unknown as { go?: { main?: { App?: unknown } } }).go?.main?.App as {
-    GetProbeNodes?: () => Promise<unknown>;
-    CreateProbeNode?: (nodeName: string) => Promise<unknown>;
-    UpdateProbeNode?: (nodeNo: number, targetSystem: string, directConnect: boolean) => Promise<unknown>;
-    UpdateProbeNodeSettings?: (
-      nodeNo: number,
-      nodeName: string,
-      remark: string,
-      targetSystem: string,
-      directConnect: boolean,
-      paymentCycle: string,
-      cost: string,
-      expireAt: string,
-      vendorName: string,
-      vendorURL: string,
-    ) => Promise<unknown>;
-    ReplaceProbeNodes?: (nodes: ProbeNodeItem[]) => Promise<unknown>;
-  } | undefined;
-
-  if (!api?.GetProbeNodes || !api?.CreateProbeNode || !api?.UpdateProbeNode) {
-    throw new Error("wails probe node api unavailable");
-  }
-  return {
-    GetProbeNodes: api.GetProbeNodes,
-    CreateProbeNode: api.CreateProbeNode,
-    UpdateProbeNode: api.UpdateProbeNode,
-    UpdateProbeNodeSettings: api.UpdateProbeNodeSettings,
-    ReplaceProbeNodes: api.ReplaceProbeNodes,
-  };
-}
-
 async function copyText(text: string): Promise<void> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -1091,14 +1021,37 @@ async function fetchProbeNodesFromController(controllerBaseUrl: string, sessionT
   return (await fetchProbeNodes(base, token)) as ProbeNodeItem[];
 }
 
-async function syncProbeNodesToController(controllerBaseUrl: string, sessionToken: string, nodes: ProbeNodeItem[]): Promise<ProbeNodeItem[]> {
+async function createProbeNodeFromController(controllerBaseUrl: string, sessionToken: string, nodeName: string): Promise<ProbeNodeItem> {
   const base = sanitizeControllerAddress(controllerBaseUrl);
   const token = sessionToken.trim();
   if (!token) {
-    throw new Error("session token is empty, cannot sync nodes to controller");
+    throw new Error("session token is empty, cannot create probe node on controller");
   }
-  const synced = await syncProbeNodes(base, token, nodes as ProbeNodeSyncItem[]);
-  return synced as ProbeNodeItem[];
+  return (await createProbeNodeOnController(base, token, nodeName)) as ProbeNodeItem;
+}
+
+async function updateProbeNodeOnControllerOnly(
+  controllerBaseUrl: string,
+  sessionToken: string,
+  payload: {
+    node_no: number;
+    node_name: string;
+    remark: string;
+    target_system: ProbeTargetSystem;
+    direct_connect: boolean;
+    payment_cycle: string;
+    cost: string;
+    expire_at: string;
+    vendor_name: string;
+    vendor_url: string;
+  },
+): Promise<ProbeNodeItem> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot update probe node on controller");
+  }
+  return (await updateProbeNodeOnController(base, token, payload)) as ProbeNodeItem;
 }
 
 async function fetchProbeStatusFromController(controllerBaseUrl: string, sessionToken: string, nodeID?: number): Promise<ProbeNodeStatusItem[]> {
@@ -1141,9 +1094,4 @@ async function setProbeReportIntervalOnController(controllerBaseUrl: string, ses
     throw new Error("session token is empty, cannot set report interval");
   }
   return await setProbeReportInterval(base, token, intervalSec);
-}
-
-async function syncFromControllerToLocal(controllerBaseUrl: string, sessionToken: string): Promise<void> {
-  const remoteNodes = await fetchProbeNodesFromController(controllerBaseUrl, sessionToken);
-  await replaceLocalProbeNodes(remoteNodes);
 }

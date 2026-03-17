@@ -159,6 +159,39 @@ export async function fetchProbeNodes(baseURL: string, token: string): Promise<P
   return Array.isArray(payload.nodes) ? payload.nodes : [];
 }
 
+export async function createProbeNodeOnController(baseURL: string, token: string, nodeName: string): Promise<ProbeNodeSyncItem> {
+  const payload = await callAdminWSRpc<{ node?: ProbeNodeSyncItem }>(baseURL, token, "admin.probe.node.create", {
+    node_name: String(nodeName),
+  });
+  if (!payload.node) {
+    throw new Error("controller returned empty node");
+  }
+  return payload.node;
+}
+
+export async function updateProbeNodeOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_no: number;
+    node_name: string;
+    remark: string;
+    target_system: "linux" | "windows";
+    direct_connect: boolean;
+    payment_cycle: string;
+    cost: string;
+    expire_at: string;
+    vendor_name: string;
+    vendor_url: string;
+  },
+): Promise<ProbeNodeSyncItem> {
+  const result = await callAdminWSRpc<{ node?: ProbeNodeSyncItem }>(baseURL, token, "admin.probe.node.update", payload);
+  if (!result.node) {
+    throw new Error("controller returned empty node");
+  }
+  return result.node;
+}
+
 export async function fetchProbeNodeStatus(baseURL: string, token: string, nodeID?: number | string): Promise<ProbeNodeStatusItem[]> {
   const payload = await callAdminWSRpc<{ items?: ProbeNodeStatusItem[] }>(
     baseURL,

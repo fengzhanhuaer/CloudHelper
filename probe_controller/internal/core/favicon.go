@@ -16,7 +16,7 @@ const dashboardFaviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 </svg>`
 
 func faviconSVGHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/favicon.svg" {
+	if !isFaviconSVGPath(r.URL.Path) {
 		http.NotFound(w, r)
 		return
 	}
@@ -35,7 +35,7 @@ func faviconSVGHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func faviconICOHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/favicon.ico" {
+	if !isFaviconICOPath(r.URL.Path) {
 		http.NotFound(w, r)
 		return
 	}
@@ -43,5 +43,31 @@ func faviconICOHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	http.Redirect(w, r, "/favicon.svg", http.StatusFound)
+	target := "/favicon.svg"
+	if hasDashboardPrefix(r.URL.Path) {
+		target = "/dashboard/favicon.svg"
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+func isFaviconSVGPath(path string) bool {
+	switch path {
+	case "/favicon.svg", "/dashboard/favicon.svg":
+		return true
+	default:
+		return false
+	}
+}
+
+func isFaviconICOPath(path string) bool {
+	switch path {
+	case "/favicon.ico", "/dashboard/favicon.ico":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasDashboardPrefix(path string) bool {
+	return len(path) >= len("/dashboard/") && path[:len("/dashboard/")] == "/dashboard/"
 }
