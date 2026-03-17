@@ -125,7 +125,31 @@ export type LogContentResponse = {
   fetched_at: string;
 };
 
-export type TabKey = "overview" | "probe-manage" | "link-manage" | "network-assistant" | "log-viewer" | "system-settings";
+export type TGAssistantAccount = {
+  id: string;
+  label: string;
+  phone: string;
+  api_id: number;
+  authorized: boolean;
+  pending_code: boolean;
+  last_error: string;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string;
+  self_user_id: number;
+  self_username: string;
+  self_display_name: string;
+  self_phone: string;
+};
+
+export type TabKey =
+  | "overview"
+  | "probe-manage"
+  | "link-manage"
+  | "network-assistant"
+  | "tg-assistant"
+  | "log-viewer"
+  | "system-settings";
 
 export type TabItem = {
   key: TabKey;

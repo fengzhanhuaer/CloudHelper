@@ -48,6 +48,7 @@ func initStore() {
 
 	log.Println("JSON datastore initialized at", dbPath)
 	initProbeStore()
+	initTGAssistantStore()
 }
 
 func (s *DataStore) Save() error {

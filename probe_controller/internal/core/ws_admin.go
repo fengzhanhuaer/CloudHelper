@@ -514,6 +514,78 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		}, nil
 	case "admin.manager.backup.upload":
 		return handleAdminWSManagerBackupUpload(payload)
+	case "admin.tg.accounts.list":
+		return map[string]interface{}{
+			"accounts": listTGAssistantAccounts(),
+		}, nil
+	case "admin.tg.accounts.refresh":
+		accounts, err := refreshTGAssistantAccounts()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"accounts": accounts,
+		}, nil
+	case "admin.tg.account.add":
+		var req tgAssistantAddAccountRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		account, err := addTGAssistantAccount(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"account": account,
+		}, nil
+	case "admin.tg.account.remove":
+		var req tgAssistantAccountIDRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		accounts, err := removeTGAssistantAccount(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"accounts": accounts,
+		}, nil
+	case "admin.tg.account.send_code":
+		var req tgAssistantAccountIDRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		account, err := sendTGAssistantLoginCode(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"account": account,
+		}, nil
+	case "admin.tg.account.sign_in":
+		var req tgAssistantSignInRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		account, err := completeTGAssistantLogin(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"account": account,
+		}, nil
+	case "admin.tg.account.logout":
+		var req tgAssistantAccountIDRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		account, err := logoutTGAssistantAccount(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"account": account,
+		}, nil
 	case "admin.proxy.github.latest":
 		var req proxyLatestRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

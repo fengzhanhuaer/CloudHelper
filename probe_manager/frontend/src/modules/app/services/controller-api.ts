@@ -5,6 +5,7 @@ import type {
   LogContentResponse,
   LoginResponse,
   NonceResponse,
+  TGAssistantAccount,
   UpgradeProgress,
 } from "../types";
 import { callAdminWSRpc } from "./admin-ws-rpc";
@@ -236,4 +237,65 @@ export async function upgradeAllProbeNodes(baseURL: string, token: string): Prom
     total: typeof payload.total === "number" ? payload.total : 0,
     failures: Array.isArray(payload.failures) ? payload.failures : [],
   };
+}
+
+export async function fetchTGAssistantAccounts(baseURL: string, token: string): Promise<TGAssistantAccount[]> {
+  const payload = await callAdminWSRpc<{ accounts?: TGAssistantAccount[] }>(baseURL, token, "admin.tg.accounts.list");
+  return Array.isArray(payload.accounts) ? payload.accounts : [];
+}
+
+export async function refreshTGAssistantAccounts(baseURL: string, token: string): Promise<TGAssistantAccount[]> {
+  const payload = await callAdminWSRpc<{ accounts?: TGAssistantAccount[] }>(baseURL, token, "admin.tg.accounts.refresh");
+  return Array.isArray(payload.accounts) ? payload.accounts : [];
+}
+
+export async function addTGAssistantAccount(
+  baseURL: string,
+  token: string,
+  input: { label: string; phone: string; api_id: number; api_hash: string },
+): Promise<TGAssistantAccount> {
+  const payload = await callAdminWSRpc<{ account?: TGAssistantAccount }>(baseURL, token, "admin.tg.account.add", input);
+  if (!payload.account) {
+    throw new Error("controller returned empty account");
+  }
+  return payload.account;
+}
+
+export async function removeTGAssistantAccount(baseURL: string, token: string, accountID: string): Promise<TGAssistantAccount[]> {
+  const payload = await callAdminWSRpc<{ accounts?: TGAssistantAccount[] }>(baseURL, token, "admin.tg.account.remove", {
+    account_id: accountID,
+  });
+  return Array.isArray(payload.accounts) ? payload.accounts : [];
+}
+
+export async function sendTGAssistantLoginCode(baseURL: string, token: string, accountID: string): Promise<TGAssistantAccount> {
+  const payload = await callAdminWSRpc<{ account?: TGAssistantAccount }>(baseURL, token, "admin.tg.account.send_code", {
+    account_id: accountID,
+  });
+  if (!payload.account) {
+    throw new Error("controller returned empty account");
+  }
+  return payload.account;
+}
+
+export async function completeTGAssistantLogin(
+  baseURL: string,
+  token: string,
+  input: { account_id: string; code: string; password: string },
+): Promise<TGAssistantAccount> {
+  const payload = await callAdminWSRpc<{ account?: TGAssistantAccount }>(baseURL, token, "admin.tg.account.sign_in", input);
+  if (!payload.account) {
+    throw new Error("controller returned empty account");
+  }
+  return payload.account;
+}
+
+export async function logoutTGAssistantAccount(baseURL: string, token: string, accountID: string): Promise<TGAssistantAccount> {
+  const payload = await callAdminWSRpc<{ account?: TGAssistantAccount }>(baseURL, token, "admin.tg.account.logout", {
+    account_id: accountID,
+  });
+  if (!payload.account) {
+    throw new Error("controller returned empty account");
+  }
+  return payload.account;
 }

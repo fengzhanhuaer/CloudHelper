@@ -8,6 +8,7 @@ export const ALL_TABS: TabItem[] = [
   { key: "probe-manage", label: "探针管理" },
   { key: "link-manage", label: "链路管理" },
   { key: "network-assistant", label: "网络助手" },
+  { key: "tg-assistant", label: "TG助手" },
   { key: "log-viewer", label: "日志查看" },
   { key: "system-settings", label: "系统设置" },
 ];
@@ -17,6 +18,7 @@ export const OPERATOR_TABS: TabItem[] = [
   { key: "probe-manage", label: "探针管理" },
   { key: "link-manage", label: "链路管理" },
   { key: "network-assistant", label: "网络助手" },
+  { key: "tg-assistant", label: "TG助手" },
   { key: "log-viewer", label: "日志查看" },
 ];
 

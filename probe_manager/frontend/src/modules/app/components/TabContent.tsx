@@ -4,6 +4,7 @@ import { OverviewTab } from "./OverviewTab";
 import { PlaceholderTab } from "./PlaceholderTab";
 import { ProbeManageTab } from "./ProbeManageTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
+import { TGAssistantTab } from "./TGAssistantTab";
 import type { LogSource, NetworkAssistantLogFilterSource, NetworkAssistantStatus, ReleaseInfo, TabKey, UpgradeProgress } from "../types";
 
 type TabContentProps = {
@@ -148,6 +149,8 @@ export function TabContent(props: TabContentProps) {
           onCopyLogs={props.onCopyNetworkLogs}
         />
       );
+    case "tg-assistant":
+      return <TGAssistantTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
     case "log-viewer":
       return (
         <LogViewerTab

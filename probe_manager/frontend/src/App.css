@@ -266,6 +266,13 @@
     border-color: rgba(129, 184, 255, 0.72);
 }
 
+.tg-account-summary {
+    margin-top: 10px;
+    display: grid;
+    gap: 6px;
+    color: #dceaff;
+}
+
 .probe-node-list {
     display: flex;
     flex-direction: column;
