@@ -5,13 +5,18 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
-func restartCurrentProcess() error {
-	exePath, err := os.Executable()
-	if err != nil {
-		return err
+func restartCurrentProcess(executablePath string) error {
+	exePath := strings.TrimSpace(executablePath)
+	if exePath == "" {
+		var err error
+		exePath, err = os.Executable()
+		if err != nil {
+			return err
+		}
 	}
 	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && resolved != "" {
 		exePath = resolved

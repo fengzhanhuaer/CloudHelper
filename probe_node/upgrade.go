@@ -151,7 +151,7 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	log.Printf("probe upgrade replace complete: exe=%s backup=%s", exePath, backupPath)
 
 	log.Printf("probe upgrade complete: %s -> %s, restarting", BuildVersion, release.TagName)
-	if err := restartCurrentProcess(); err != nil {
+	if err := restartCurrentProcess(exePath); err != nil {
 		log.Printf("probe upgrade restart failed: %v", err)
 		if rollbackErr := rollbackExecutable(exePath, backupPath); rollbackErr != nil {
 			log.Printf("probe upgrade rollback failed: %v", rollbackErr)
@@ -423,26 +423,47 @@ func replaceCurrentExecutable(newBinary string) (string, string, error) {
 	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && strings.TrimSpace(resolved) != "" {
 		exePath = resolved
 	}
+	targetPath := normalizeExecutablePathForUpgradeTarget(exePath)
+	if strings.TrimSpace(targetPath) == "" {
+		return "", "", fmt.Errorf("resolved executable path is empty")
+	}
+
 	mode := fs.FileMode(0o755)
-	if st, err := os.Stat(exePath); err == nil {
+	if st, err := os.Stat(targetPath); err == nil {
+		mode = st.Mode().Perm()
+	} else if st, err := os.Stat(exePath); err == nil {
 		mode = st.Mode().Perm()
 	}
-	tmp := exePath + ".new"
+	tmp := targetPath + ".new"
 	if err := copyFileWithMode(newBinary, tmp, mode); err != nil {
 		return "", "", err
 	}
-	backup := exePath + ".bak"
+	backup := targetPath + ".bak"
 	_ = os.Remove(backup)
-	if err := os.Rename(exePath, backup); err != nil {
+	if err := os.Rename(targetPath, backup); err != nil {
 		_ = os.Remove(tmp)
 		return "", "", err
 	}
-	if err := os.Rename(tmp, exePath); err != nil {
-		_ = os.Rename(backup, exePath)
+	if err := os.Rename(tmp, targetPath); err != nil {
+		_ = os.Rename(backup, targetPath)
 		_ = os.Remove(tmp)
 		return "", "", err
 	}
-	return exePath, backup, nil
+	return targetPath, backup, nil
+}
+
+func normalizeExecutablePathForUpgradeTarget(exePath string) string {
+	cleaned := strings.TrimSpace(exePath)
+	if cleaned == "" {
+		return ""
+	}
+
+	lowered := strings.ToLower(cleaned)
+	for strings.HasSuffix(lowered, ".bak") {
+		cleaned = cleaned[:len(cleaned)-len(".bak")]
+		lowered = strings.ToLower(cleaned)
+	}
+	return cleaned
 }
 
 func rollbackExecutable(exePath, backupPath string) error {

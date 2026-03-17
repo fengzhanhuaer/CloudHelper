@@ -91,3 +91,41 @@ func TestPickProbeNodeAssetFallsBackToAlpineWhenLinuxNameMissing(t *testing.T) {
 		t.Fatalf("expected alpine fallback asset, got %q", selected.Name)
 	}
 }
+
+func TestNormalizeExecutablePathForUpgradeTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "plain binary path",
+			in:   "/opt/cloudhelper/probe_node/probe_node",
+			want: "/opt/cloudhelper/probe_node/probe_node",
+		},
+		{
+			name: "single bak suffix",
+			in:   "/opt/cloudhelper/probe_node/probe_node.bak",
+			want: "/opt/cloudhelper/probe_node/probe_node",
+		},
+		{
+			name: "multiple bak suffixes",
+			in:   "/opt/cloudhelper/probe_node/probe_node.bak.bak.bak",
+			want: "/opt/cloudhelper/probe_node/probe_node",
+		},
+		{
+			name: "mixed case bak suffixes",
+			in:   "C:\\cloudhelper\\probe_node\\probe_node.BAK.bAk",
+			want: "C:\\cloudhelper\\probe_node\\probe_node",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeExecutablePathForUpgradeTarget(tc.in)
+			if got != tc.want {
+				t.Fatalf("normalizeExecutablePathForUpgradeTarget(%q)=%q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
