@@ -16,9 +16,7 @@ func Run() {
 	}
 	initAuth()
 	initProbeReportIntervalControl()
-	if err := autoBackupControllerData(); err != nil {
-		log.Printf("warning: failed to backup controller data: %v", err)
-	}
+	triggerAutoBackupControllerDataAsync("startup")
 
 	mux := NewMux()
 	handler := enforceProbeScopeMiddleware(mux)

@@ -60,8 +60,6 @@ func (s *DataStore) Save() error {
 	if err := os.WriteFile(s.path, content, 0o644); err != nil {
 		return err
 	}
-	if err := autoBackupControllerData(); err != nil {
-		log.Printf("warning: failed to backup controller data after save: %v", err)
-	}
+	triggerAutoBackupControllerDataAsync("main_store_save")
 	return nil
 }

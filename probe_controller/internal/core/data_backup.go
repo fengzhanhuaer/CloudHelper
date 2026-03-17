@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,6 +27,48 @@ const (
 	backupArchiveDateTimeFmt  = "20060102-150405.000000000"
 	backupKeepPerTimeCategory = 3
 )
+
+var (
+	backupAsyncMu      sync.Mutex
+	backupAsyncRunning bool
+	backupAsyncPending bool
+)
+
+func triggerAutoBackupControllerDataAsync(source string) {
+	backupAsyncMu.Lock()
+	if backupAsyncRunning {
+		backupAsyncPending = true
+		backupAsyncMu.Unlock()
+		return
+	}
+	backupAsyncRunning = true
+	backupAsyncMu.Unlock()
+
+	go runAutoBackupControllerDataAsync(source)
+}
+
+func runAutoBackupControllerDataAsync(source string) {
+	currentSource := strings.TrimSpace(source)
+	if currentSource == "" {
+		currentSource = "unspecified"
+	}
+
+	for {
+		if err := autoBackupControllerData(); err != nil {
+			log.Printf("warning: async controller backup failed (%s): %v", currentSource, err)
+		}
+
+		backupAsyncMu.Lock()
+		if !backupAsyncPending {
+			backupAsyncRunning = false
+			backupAsyncMu.Unlock()
+			return
+		}
+		backupAsyncPending = false
+		backupAsyncMu.Unlock()
+		currentSource = "coalesced"
+	}
+}
 
 func autoBackupControllerData() error {
 	dataPath, err := filepath.Abs(dataDir)

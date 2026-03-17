@@ -71,9 +71,7 @@ func (s *probeConfigStore) Save() error {
 	if err := os.WriteFile(s.path, content, 0o644); err != nil {
 		return err
 	}
-	if err := autoBackupControllerData(); err != nil {
-		log.Printf("warning: failed to backup controller data after probe save: %v", err)
-	}
+	triggerAutoBackupControllerDataAsync("probe_store_save")
 	return nil
 }
 
