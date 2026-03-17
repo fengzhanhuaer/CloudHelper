@@ -2,10 +2,12 @@ package core
 
 import (
 	"archive/zip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -53,7 +55,71 @@ func autoBackupControllerData() error {
 		return err
 	}
 
-	return pruneBackupArchives(backupDir, backupArchivePrefix, now)
+	if err := pruneBackupArchives(backupDir, backupArchivePrefix, now); err != nil {
+		return err
+	}
+
+	settings := getBackupSettings()
+	if err := syncControllerDataToRclone(dataPath, backupDir, settings); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func syncControllerDataToRclone(dataPath, backupDir string, settings backupSettings) error {
+	if !settings.Enabled {
+		return nil
+	}
+	remoteBase := strings.TrimRight(strings.TrimSpace(settings.RcloneRemote), "/")
+	if remoteBase == "" {
+		return fmt.Errorf("backup is enabled but rclone remote is empty")
+	}
+
+	if err := runRcloneSync(backupDir, remoteBase+"/backup"); err != nil {
+		return fmt.Errorf("rclone sync backup failed: %w", err)
+	}
+	if err := runRcloneSync(dataPath, remoteBase+"/data"); err != nil {
+		return fmt.Errorf("rclone sync data failed: %w", err)
+	}
+	return nil
+}
+
+func runRcloneSync(localPath, remotePath string) error {
+	cmd := exec.Command("rclone", "sync", localPath, remotePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("%w: %s", err, msg)
+	}
+	return nil
+}
+
+func testBackupRcloneRemote(remoteBase string) error {
+	remote := strings.TrimRight(strings.TrimSpace(remoteBase), "/")
+	if remote == "" {
+		return fmt.Errorf("rclone remote is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "rclone", "lsd", remote)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("rclone test timeout")
+		}
+		msg := strings.TrimSpace(string(output))
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("%w: %s", err, msg)
+	}
+	return nil
 }
 
 func pruneBackupArchives(backupDir, prefix string, now time.Time) error {

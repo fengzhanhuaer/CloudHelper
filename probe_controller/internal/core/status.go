@@ -60,12 +60,12 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 	// Security note: /dashboard/* is public. Do not expose node_id/ip/version here.
 	runtimes := listProbeRuntimes()
 	nameMap := map[string]string{}
-	if Store != nil {
-		Store.mu.RLock()
+	if ProbeStore != nil {
+		ProbeStore.mu.RLock()
 		for _, node := range loadProbeNodesLocked() {
 			nameMap[normalizeProbeNodeID(strconv.Itoa(node.NodeNo))] = strings.TrimSpace(node.NodeName)
 		}
-		Store.mu.RUnlock()
+		ProbeStore.mu.RUnlock()
 	}
 
 	out := make([]dashboardPublicProbeItem, 0, len(runtimes))

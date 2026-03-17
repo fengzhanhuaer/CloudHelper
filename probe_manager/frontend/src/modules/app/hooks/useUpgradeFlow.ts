@@ -7,7 +7,14 @@ import {
   UpgradeManagerDirect,
   UpgradeManagerViaProxy,
 } from "../../../../wailsjs/go/main/App";
-import { fetchControllerUpgradeProgress, fetchControllerVersion, triggerControllerUpgrade } from "../services/controller-api";
+import {
+  fetchControllerBackupSettings,
+  testControllerBackupSettings,
+  fetchControllerUpgradeProgress,
+  fetchControllerVersion,
+  setControllerBackupSettings,
+  triggerControllerUpgrade,
+} from "../services/controller-api";
 import { normalizeBaseUrl } from "../utils/url";
 import type { ControllerUpgradeResponse, ControllerVersionResponse, ManagerUpgradeResult, ReleaseInfo, UpgradeProgress } from "../types";
 
@@ -46,6 +53,12 @@ export function useUpgradeFlow() {
     percent: 0,
     message: "",
   });
+  const [backupRcloneRemote, setBackupRcloneRemote] = useState("");
+  const [backupEnabled, setBackupEnabled] = useState(false);
+  const [backupSettingsStatus, setBackupSettingsStatus] = useState("");
+  const [isLoadingBackupSettings, setIsLoadingBackupSettings] = useState(false);
+  const [isSavingBackupSettings, setIsSavingBackupSettings] = useState(false);
+  const [isTestingBackupSettings, setIsTestingBackupSettings] = useState(false);
 
   function beginProgress(setter: (value: UpgradeProgress) => void, message: string) {
     setter({ active: true, phase: "prepare", percent: 1, message });
@@ -185,6 +198,134 @@ export function useUpgradeFlow() {
       stopPolling();
       resetProgress(setControllerUpgradeProgress);
       setIsUpgradingController(false);
+    }
+  }
+
+  async function refreshBackupSettings(baseUrlInput: string, token: string, reauthenticate?: () => Promise<string>) {
+    const base = normalizeBaseUrl(baseUrlInput);
+    if (!base) {
+      setBackupSettingsStatus("Controller URL is required");
+      return;
+    }
+    if (!token) {
+      setBackupSettingsStatus("未登录，无法读取主控备份设置");
+      return;
+    }
+
+    setIsLoadingBackupSettings(true);
+    setBackupSettingsStatus("正在读取主控备份设置...");
+    try {
+      let activeToken = token;
+      let reloginUsed = false;
+      let data: { enabled: boolean; rclone_remote: string };
+      try {
+        data = await fetchControllerBackupSettings(base, activeToken);
+      } catch (error) {
+        if (!reauthenticate || !isUnauthorizedError(error)) {
+          throw error;
+        }
+        setBackupSettingsStatus("会话已过期，正在自动重新登录...");
+        activeToken = await reauthenticate();
+        reloginUsed = true;
+        data = await fetchControllerBackupSettings(base, activeToken);
+      }
+
+      setBackupEnabled(Boolean(data.enabled));
+      setBackupRcloneRemote((data.rclone_remote || "").trim());
+      setBackupSettingsStatus(reloginUsed ? "已自动重新登录，主控备份设置已更新" : "主控备份设置已更新");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setBackupSettingsStatus(`读取主控备份设置失败：${msg}`);
+    } finally {
+      setIsLoadingBackupSettings(false);
+    }
+  }
+
+  async function saveBackupSettings(baseUrlInput: string, token: string, enabled: boolean, rcloneRemoteInput: string, reauthenticate?: () => Promise<string>) {
+    const base = normalizeBaseUrl(baseUrlInput);
+    if (!base) {
+      setBackupSettingsStatus("Controller URL is required");
+      return;
+    }
+    if (!token) {
+      setBackupSettingsStatus("未登录，无法保存主控备份设置");
+      return;
+    }
+
+    const remote = rcloneRemoteInput.trim();
+    if (enabled && !remote) {
+      setBackupSettingsStatus("开启备份时必须填写 rclone 远端路径，例如 remote:/path");
+      return;
+    }
+
+    setIsSavingBackupSettings(true);
+    setBackupSettingsStatus("正在保存主控备份设置...");
+    try {
+      let activeToken = token;
+      let reloginUsed = false;
+      let data: { enabled: boolean; rclone_remote: string };
+      try {
+        data = await setControllerBackupSettings(base, activeToken, enabled, remote);
+      } catch (error) {
+        if (!reauthenticate || !isUnauthorizedError(error)) {
+          throw error;
+        }
+        setBackupSettingsStatus("会话已过期，正在自动重新登录并重试保存...");
+        activeToken = await reauthenticate();
+        reloginUsed = true;
+        data = await setControllerBackupSettings(base, activeToken, enabled, remote);
+      }
+
+      setBackupEnabled(Boolean(data.enabled));
+      setBackupRcloneRemote((data.rclone_remote || remote).trim());
+      setBackupSettingsStatus(`${reloginUsed ? "已自动重新登录，" : ""}主控备份设置已保存`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setBackupSettingsStatus(`保存主控备份设置失败：${msg}`);
+    } finally {
+      setIsSavingBackupSettings(false);
+    }
+  }
+
+  async function testBackupSettings(baseUrlInput: string, token: string, rcloneRemoteInput: string, reauthenticate?: () => Promise<string>) {
+    const base = normalizeBaseUrl(baseUrlInput);
+    if (!base) {
+      setBackupSettingsStatus("Controller URL is required");
+      return;
+    }
+    if (!token) {
+      setBackupSettingsStatus("未登录，无法测试主控备份设置");
+      return;
+    }
+
+    const remote = rcloneRemoteInput.trim();
+    if (!remote) {
+      setBackupSettingsStatus("请先填写 rclone 远端路径后再测试");
+      return;
+    }
+
+    setIsTestingBackupSettings(true);
+    setBackupSettingsStatus("正在测试 rclone 远端连通性...");
+    try {
+      let activeToken = token;
+      let reloginUsed = false;
+      try {
+        await testControllerBackupSettings(base, activeToken, remote);
+      } catch (error) {
+        if (!reauthenticate || !isUnauthorizedError(error)) {
+          throw error;
+        }
+        setBackupSettingsStatus("会话已过期，正在自动重新登录并重试测试...");
+        activeToken = await reauthenticate();
+        reloginUsed = true;
+        await testControllerBackupSettings(base, activeToken, remote);
+      }
+      setBackupSettingsStatus(`${reloginUsed ? "已自动重新登录，" : ""}rclone 远端测试成功`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setBackupSettingsStatus(`rclone 远端测试失败：${msg}`);
+    } finally {
+      setIsTestingBackupSettings(false);
     }
   }
 
@@ -337,6 +478,7 @@ export function useUpgradeFlow() {
     setVersionStatus("");
     setUpgradeStatus("");
     setManagerUpgradeStatus("");
+    setBackupSettingsStatus("");
     resetProgress(setControllerUpgradeProgress);
     resetProgress(setManagerUpgradeProgress);
   }
@@ -353,10 +495,19 @@ export function useUpgradeFlow() {
     proxyRelease,
     managerUpgradeStatus,
     managerUpgradeProgress,
+    backupEnabled,
+    backupRcloneRemote,
+    backupSettingsStatus,
+    isLoadingBackupSettings,
+    isSavingBackupSettings,
+    isTestingBackupSettings,
     isCheckingDirect,
     isCheckingProxy,
     isUpgradingManager,
     refreshSystemVersions,
+    refreshBackupSettings,
+    saveBackupSettings,
+    testBackupSettings,
     upgradeController,
     checkManagerReleaseDirect,
     checkManagerReleaseProxy,

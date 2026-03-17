@@ -55,6 +55,28 @@ export async function fetchControllerUpgradeProgress(baseURL: string, token: str
   return await callAdminWSRpc<UpgradeProgress>(baseURL, token, "admin.upgrade.progress");
 }
 
+export type ControllerBackupSettings = {
+  enabled: boolean;
+  rclone_remote: string;
+};
+
+export async function fetchControllerBackupSettings(baseURL: string, token: string): Promise<ControllerBackupSettings> {
+  return await callAdminWSRpc<ControllerBackupSettings>(baseURL, token, "admin.backup.settings.get");
+}
+
+export async function setControllerBackupSettings(baseURL: string, token: string, enabled: boolean, rcloneRemote: string): Promise<ControllerBackupSettings> {
+  return await callAdminWSRpc<ControllerBackupSettings>(baseURL, token, "admin.backup.settings.set", {
+    enabled,
+    rclone_remote: rcloneRemote,
+  });
+}
+
+export async function testControllerBackupSettings(baseURL: string, token: string, rcloneRemote: string): Promise<{ ok: boolean; rclone_remote: string; message: string }> {
+  return await callAdminWSRpc<{ ok: boolean; rclone_remote: string; message: string }>(baseURL, token, "admin.backup.settings.test", {
+    rclone_remote: rcloneRemote,
+  });
+}
+
 export async function fetchServerLogs(baseURL: string, token: string, lines: number, sinceMinutes: number): Promise<LogContentResponse> {
   const safeLines = Number.isFinite(lines) ? Math.max(1, Math.min(2000, Math.trunc(lines))) : 200;
   const safeSince = Number.isFinite(sinceMinutes) ? Math.max(0, Math.min(2000, Math.trunc(sinceMinutes))) : 0;

@@ -138,9 +138,9 @@ func AdminUpgradeAllProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	Store.mu.RLock()
+	ProbeStore.mu.RLock()
 	nodes := loadProbeNodesLocked()
-	Store.mu.RUnlock()
+	ProbeStore.mu.RUnlock()
 
 	controllerBaseURL := controllerBaseURLFromRequest(r)
 	success := 0
@@ -350,8 +350,8 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) erro
 }
 
 func getProbeNodeByID(nodeID string) (probeNodeRecord, bool) {
-	Store.mu.RLock()
-	defer Store.mu.RUnlock()
+	ProbeStore.mu.RLock()
+	defer ProbeStore.mu.RUnlock()
 	for _, node := range loadProbeNodesLocked() {
 		if normalizeProbeNodeID(strconv.Itoa(node.NodeNo)) == nodeID {
 			return node, true
@@ -395,15 +395,15 @@ func authenticateProbeRequest(r *http.Request) (string, error) {
 }
 
 func resolveProbeSecret(nodeID string) (string, bool) {
-	if Store == nil {
+	if ProbeStore == nil {
 		return "", false
 	}
 
 	normalized := normalizeProbeNodeID(nodeID)
-	Store.mu.RLock()
+	ProbeStore.mu.RLock()
 	secrets := loadProbeSecretsLocked()
 	v, ok := secrets[normalized]
-	Store.mu.RUnlock()
+	ProbeStore.mu.RUnlock()
 	if !ok || strings.TrimSpace(v) == "" {
 		return "", false
 	}

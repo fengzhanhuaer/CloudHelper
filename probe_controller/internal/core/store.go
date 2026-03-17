@@ -47,6 +47,7 @@ func initStore() {
 	}
 
 	log.Println("JSON datastore initialized at", dbPath)
+	initProbeStore()
 }
 
 func (s *DataStore) Save() error {

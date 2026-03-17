@@ -67,13 +67,13 @@ func AdminUpsertProbeSecretHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	Store.mu.Lock()
+	ProbeStore.mu.Lock()
 	secrets := loadProbeSecretsLocked()
 	secrets[nodeID] = secret
-	Store.Data[probeSecretsStoreField] = secrets
-	Store.mu.Unlock()
+	ProbeStore.data.ProbeSecrets = secrets
+	ProbeStore.mu.Unlock()
 
-	if err := Store.Save(); err != nil {
+	if err := ProbeStore.Save(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist probe secret"})
 		return
 	}
@@ -90,9 +90,9 @@ func AdminGetProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	Store.mu.RLock()
+	ProbeStore.mu.RLock()
 	nodes := loadProbeNodesLocked()
-	Store.mu.RUnlock()
+	ProbeStore.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"nodes": nodes,
@@ -105,9 +105,9 @@ func AdminGetProbeNodeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	Store.mu.RLock()
+	ProbeStore.mu.RLock()
 	items := loadProbeNodeStatusLocked()
-	Store.mu.RUnlock()
+	ProbeStore.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"items": items,
@@ -128,12 +128,12 @@ func AdminSyncProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 
 	nodes, secrets := normalizeProbeNodes(req.Nodes)
 
-	Store.mu.Lock()
-	Store.Data[probeNodesStoreField] = nodes
-	Store.Data[probeSecretsStoreField] = secrets
-	Store.mu.Unlock()
+	ProbeStore.mu.Lock()
+	ProbeStore.data.ProbeNodes = nodes
+	ProbeStore.data.ProbeSecrets = secrets
+	ProbeStore.mu.Unlock()
 
-	if err := Store.Save(); err != nil {
+	if err := ProbeStore.Save(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist probe nodes"})
 		return
 	}
@@ -158,31 +158,16 @@ func loadProbeSecretsLocked() map[string]string {
 		return out
 	}
 
-	rawAny, ok := Store.Data[probeSecretsStoreField]
-	if !ok {
+	rawAny := ProbeStore.data.ProbeSecrets
+	if len(rawAny) == 0 {
 		return out
 	}
 
-	switch raw := rawAny.(type) {
-	case map[string]string:
-		for k, v := range raw {
-			key := normalizeProbeNodeID(k)
-			value := strings.TrimSpace(v)
-			if key != "" && value != "" {
-				out[key] = value
-			}
-		}
-	case map[string]interface{}:
-		for k, v := range raw {
-			value, ok := v.(string)
-			if !ok {
-				continue
-			}
-			key := normalizeProbeNodeID(k)
-			trimmed := strings.TrimSpace(value)
-			if key != "" && trimmed != "" {
-				out[key] = trimmed
-			}
+	for k, v := range rawAny {
+		key := normalizeProbeNodeID(k)
+		value := strings.TrimSpace(v)
+		if key != "" && value != "" {
+			out[key] = value
 		}
 	}
 
@@ -191,18 +176,11 @@ func loadProbeSecretsLocked() map[string]string {
 
 func loadProbeNodesLocked() []probeNodeRecord {
 	result := make([]probeNodeRecord, 0)
-	rawAny, ok := Store.Data[probeNodesStoreField]
-	if !ok {
+	rawAny := ProbeStore.data.ProbeNodes
+	if len(rawAny) == 0 {
 		return result
 	}
-
-	rawJSON, err := json.Marshal(rawAny)
-	if err != nil {
-		return result
-	}
-	if err := json.Unmarshal(rawJSON, &result); err != nil {
-		return []probeNodeRecord{}
-	}
+	result = append(result, rawAny...)
 
 	normalized, _ := normalizeProbeNodes(result)
 	return normalized

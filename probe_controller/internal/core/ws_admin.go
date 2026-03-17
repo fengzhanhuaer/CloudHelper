@@ -301,26 +301,26 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 	case "admin.tunnel.nodes":
 		return map[string]interface{}{"nodes": currentTunnelNodes()}, nil
 	case "admin.probe.nodes.get":
-		Store.mu.RLock()
+		ProbeStore.mu.RLock()
 		nodes := loadProbeNodesLocked()
-		Store.mu.RUnlock()
+		ProbeStore.mu.RUnlock()
 		return map[string]interface{}{"nodes": nodes}, nil
 	case "admin.probe.status.get":
 		var req struct {
 			NodeID string `json:"node_id"`
 		}
 		_ = json.Unmarshal(payload, &req)
-		Store.mu.RLock()
+		ProbeStore.mu.RLock()
 		if strings.TrimSpace(req.NodeID) != "" {
 			item, ok := loadProbeNodeStatusByIDLocked(req.NodeID)
-			Store.mu.RUnlock()
+			ProbeStore.mu.RUnlock()
 			if !ok {
 				return map[string]interface{}{"items": []probeNodeStatusRecord{}}, nil
 			}
 			return map[string]interface{}{"items": []probeNodeStatusRecord{item}}, nil
 		}
 		items := loadProbeNodeStatusLocked()
-		Store.mu.RUnlock()
+		ProbeStore.mu.RUnlock()
 		return map[string]interface{}{"items": items}, nil
 	case "admin.probe.report_interval.get":
 		return getProbeReportIntervalSnapshot(), nil
@@ -342,11 +342,11 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			return nil, fmt.Errorf("invalid payload")
 		}
 		nodes, secrets := normalizeProbeNodes(req.Nodes)
-		Store.mu.Lock()
-		Store.Data[probeNodesStoreField] = nodes
-		Store.Data[probeSecretsStoreField] = secrets
-		Store.mu.Unlock()
-		if err := Store.Save(); err != nil {
+		ProbeStore.mu.Lock()
+		ProbeStore.data.ProbeNodes = nodes
+		ProbeStore.data.ProbeSecrets = secrets
+		ProbeStore.mu.Unlock()
+		if err := ProbeStore.Save(); err != nil {
 			return nil, err
 		}
 		return map[string]interface{}{"nodes": nodes}, nil
@@ -360,12 +360,12 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		if nodeID == "" || secret == "" {
 			return nil, fmt.Errorf("node_id and secret are required")
 		}
-		Store.mu.Lock()
+		ProbeStore.mu.Lock()
 		secrets := loadProbeSecretsLocked()
 		secrets[nodeID] = secret
-		Store.Data[probeSecretsStoreField] = secrets
-		Store.mu.Unlock()
-		if err := Store.Save(); err != nil {
+		ProbeStore.data.ProbeSecrets = secrets
+		ProbeStore.mu.Unlock()
+		if err := ProbeStore.Save(); err != nil {
 			return nil, err
 		}
 		return map[string]interface{}{"ok": true, "node_id": nodeID}, nil
@@ -384,9 +384,9 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		}
 		return map[string]interface{}{"ok": true, "node_id": nodeID}, nil
 	case "admin.probe.upgrade.all":
-		Store.mu.RLock()
+		ProbeStore.mu.RLock()
 		nodes := loadProbeNodesLocked()
-		Store.mu.RUnlock()
+		ProbeStore.mu.RUnlock()
 		success := 0
 		failures := make([]string, 0)
 		for _, node := range nodes {
@@ -397,6 +397,57 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			success++
 		}
 		return map[string]interface{}{"success": success, "total": len(nodes), "failures": failures}, nil
+	case "admin.backup.settings.get":
+		settings := getBackupSettings()
+		return map[string]interface{}{
+			"enabled":       settings.Enabled,
+			"rclone_remote": settings.RcloneRemote,
+		}, nil
+	case "admin.backup.settings.set":
+		var req struct {
+			Enabled      *bool  `json:"enabled"`
+			RcloneRemote string `json:"rclone_remote"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		current := getBackupSettings()
+		enabled := current.Enabled
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		remote := req.RcloneRemote
+		if strings.TrimSpace(remote) == "" && strings.TrimSpace(current.RcloneRemote) != "" {
+			remote = current.RcloneRemote
+		}
+		settings, err := setBackupSettings(enabled, remote)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"ok":            true,
+			"enabled":       settings.Enabled,
+			"rclone_remote": settings.RcloneRemote,
+		}, nil
+	case "admin.backup.settings.test":
+		var req struct {
+			RcloneRemote string `json:"rclone_remote"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		remote := strings.TrimSpace(req.RcloneRemote)
+		if remote == "" {
+			remote = getBackupSettings().RcloneRemote
+		}
+		if err := testBackupRcloneRemote(remote); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"ok":            true,
+			"rclone_remote": strings.TrimSpace(remote),
+			"message":       "rclone remote test ok",
+		}, nil
 	case "admin.manager.backup.upload":
 		return handleAdminWSManagerBackupUpload(payload)
 	case "admin.proxy.github.latest":

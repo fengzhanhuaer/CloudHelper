@@ -43,6 +43,15 @@ type TabContentProps = {
   proxyRelease: ReleaseInfo | null;
   managerUpgradeStatus: string;
   managerUpgradeProgress: UpgradeProgress;
+  backupEnabled: boolean;
+  backupRcloneRemote: string;
+  backupSettingsStatus: string;
+  isLoadingBackupSettings: boolean;
+  isSavingBackupSettings: boolean;
+  isTestingBackupSettings: boolean;
+  onRefreshBackupSettings: () => void;
+  onSaveBackupSettings: (enabled: boolean, value: string) => void;
+  onTestBackupSettings: (value: string) => void;
   networkAssistantStatus: NetworkAssistantStatus;
   networkSelectedNode: string;
   onNetworkSelectedNodeChange: (value: string) => void;
@@ -185,6 +194,15 @@ export function TabContent(props: TabContentProps) {
           proxyRelease={props.proxyRelease}
           managerUpgradeStatus={props.managerUpgradeStatus}
           managerUpgradeProgress={props.managerUpgradeProgress}
+          backupEnabled={props.backupEnabled}
+          backupRcloneRemote={props.backupRcloneRemote}
+          backupSettingsStatus={props.backupSettingsStatus}
+          isLoadingBackupSettings={props.isLoadingBackupSettings}
+          isSavingBackupSettings={props.isSavingBackupSettings}
+          isTestingBackupSettings={props.isTestingBackupSettings}
+          onRefreshBackupSettings={props.onRefreshBackupSettings}
+          onSaveBackupSettings={props.onSaveBackupSettings}
+          onTestBackupSettings={props.onTestBackupSettings}
         />
       );
     default:

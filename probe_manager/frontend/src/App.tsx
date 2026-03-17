@@ -35,6 +35,7 @@ function App() {
   useEffect(() => {
     if (auth.sessionToken && activeTab === "system-settings") {
       void upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken, reauthenticateSession);
+      void upgrade.refreshBackupSettings(settings.baseUrl, auth.sessionToken, reauthenticateSession);
     }
   }, [activeTab, auth.sessionToken, settings.baseUrl]);
 
@@ -154,6 +155,15 @@ function App() {
             proxyRelease={upgrade.proxyRelease}
             managerUpgradeStatus={upgrade.managerUpgradeStatus}
             managerUpgradeProgress={upgrade.managerUpgradeProgress}
+            backupEnabled={upgrade.backupEnabled}
+            backupRcloneRemote={upgrade.backupRcloneRemote}
+            backupSettingsStatus={upgrade.backupSettingsStatus}
+            isLoadingBackupSettings={upgrade.isLoadingBackupSettings}
+            isSavingBackupSettings={upgrade.isSavingBackupSettings}
+            isTestingBackupSettings={upgrade.isTestingBackupSettings}
+            onRefreshBackupSettings={() => upgrade.refreshBackupSettings(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
+            onSaveBackupSettings={(enabled, value) => void upgrade.saveBackupSettings(settings.baseUrl, auth.sessionToken, enabled, value, reauthenticateSession)}
+            onTestBackupSettings={(value) => void upgrade.testBackupSettings(settings.baseUrl, auth.sessionToken, value, reauthenticateSession)}
             networkAssistantStatus={networkAssistant.status}
             networkSelectedNode={networkAssistant.selectedNode}
             onNetworkSelectedNodeChange={networkAssistant.setSelectedNode}
