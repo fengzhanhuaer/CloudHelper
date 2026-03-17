@@ -121,8 +121,14 @@ export type ProbeNodeStatusItem = {
     ipv6?: string[];
     system?: {
       cpu_percent?: number;
+      memory_total_bytes?: number;
+      memory_used_bytes?: number;
       memory_used_percent?: number;
+      swap_total_bytes?: number;
+      swap_used_bytes?: number;
       swap_used_percent?: number;
+      disk_total_bytes?: number;
+      disk_used_bytes?: number;
       disk_used_percent?: number;
     };
   };

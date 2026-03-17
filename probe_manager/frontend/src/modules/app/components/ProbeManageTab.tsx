@@ -43,8 +43,14 @@ type ProbeNodeItem = {
     ipv6?: string[];
     system?: {
       cpu_percent?: number;
+      memory_total_bytes?: number;
+      memory_used_bytes?: number;
       memory_used_percent?: number;
+      swap_total_bytes?: number;
+      swap_used_bytes?: number;
       swap_used_percent?: number;
+      disk_total_bytes?: number;
+      disk_used_bytes?: number;
       disk_used_percent?: number;
     };
   };
@@ -456,7 +462,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                 <div className="probe-node-card" key={`status-${item.node_no}`}>
                   <div className="probe-node-title">{item.node_name}</div>
                   <div className="probe-node-meta compact">节点号：{item.node_no > 0 ? item.node_no : (item.runtime?.node_id || "-")}　|　状态：{item.runtime?.online ? "在线" : "离线"}　|　版本：{item.runtime?.version || "-"}　|　最后上报：{formatTime(item.runtime?.last_seen || "")}</div>
-                  <div className="probe-node-meta compact">CPU：{item.runtime?.online ? formatPercent(item.runtime?.system?.cpu_percent) : "-"}　RAM：{item.runtime?.online ? formatPercent(item.runtime?.system?.memory_used_percent) : "-"}　SWAP：{item.runtime?.online ? formatPercent(item.runtime?.system?.swap_used_percent) : "-"}　硬盘：{item.runtime?.online ? formatPercent(item.runtime?.system?.disk_used_percent) : "-"}</div>
+                  <div className="probe-node-meta compact">CPU：{item.runtime?.online ? formatPercent(item.runtime?.system?.cpu_percent) : "-"}　RAM：{item.runtime?.online ? formatPercentWithBytes(item.runtime?.system?.memory_used_percent, item.runtime?.system?.memory_used_bytes, item.runtime?.system?.memory_total_bytes) : "-"}　SWAP：{item.runtime?.online ? formatPercentWithBytes(item.runtime?.system?.swap_used_percent, item.runtime?.system?.swap_used_bytes, item.runtime?.system?.swap_total_bytes) : "-"}　硬盘：{item.runtime?.online ? formatPercentWithBytes(item.runtime?.system?.disk_used_percent, item.runtime?.system?.disk_used_bytes, item.runtime?.system?.disk_total_bytes) : "-"}</div>
                   <div className="probe-node-meta compact">
                     IP：
                     {collectIPs(item).length === 0 ? "-" : collectIPs(item).map((ip) => (
@@ -628,6 +634,49 @@ function formatPercent(value: number | undefined): string {
     return "-";
   }
   return `${value.toFixed(1)}%`;
+}
+
+function formatPercentWithBytes(percent: number | undefined, usedBytes: number | undefined, totalBytes: number | undefined): string {
+  const percentText = formatPercent(percent);
+  const usageText = formatByteUsage(usedBytes, totalBytes);
+  if (percentText === "-" && usageText === "-") {
+    return "-";
+  }
+  if (percentText === "-") {
+    return usageText;
+  }
+  if (usageText === "-") {
+    return percentText;
+  }
+  return `${percentText} (${usageText})`;
+}
+
+function formatByteUsage(usedBytes: number | undefined, totalBytes: number | undefined): string {
+  if (!isValidBytes(usedBytes) || !isValidBytes(totalBytes) || totalBytes <= 0) {
+    return "-";
+  }
+  return `${formatBytes(usedBytes)} / ${formatBytes(totalBytes)}`;
+}
+
+function formatBytes(value: number): string {
+  if (!isValidBytes(value)) {
+    return "-";
+  }
+  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  let v = value;
+  let unitIndex = 0;
+  while (v >= 1024 && unitIndex < units.length - 1) {
+    v /= 1024;
+    unitIndex += 1;
+  }
+  if (unitIndex === 0) {
+    return `${Math.round(v)} ${units[unitIndex]}`;
+  }
+  return `${v.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function isValidBytes(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 function toDateTimeLocalInputValue(value: string): string {
