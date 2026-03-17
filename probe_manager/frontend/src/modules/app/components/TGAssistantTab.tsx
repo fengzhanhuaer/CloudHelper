@@ -22,11 +22,16 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [status, setStatus] = useState("正在加载 TG 账号列表...");
   const [isLoading, setIsLoading] = useState(false);
 
-  const [labelInput, setLabelInput] = useState("");
-  const [phoneInput, setPhoneInput] = useState("");
+  const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+  const [addAccountSelectedID, setAddAccountSelectedID] = useState("");
+  const [addAccountLabelDraft, setAddAccountLabelDraft] = useState("");
+  const [addAccountPhoneDraft, setAddAccountPhoneDraft] = useState("");
   const [sharedApiIDInput, setSharedApiIDInput] = useState("");
   const [sharedApiHashInput, setSharedApiHashInput] = useState("");
   const [sharedAPIConfigured, setSharedAPIConfigured] = useState(false);
+  const [showAPIKeyModal, setShowAPIKeyModal] = useState(false);
+  const [apiKeyDraftID, setAPIKeyDraftID] = useState("");
+  const [apiKeyDraftHash, setAPIKeyDraftHash] = useState("");
 
   const [selectedAccountID, setSelectedAccountID] = useState("");
   const [activeLoggedInAccountID, setActiveLoggedInAccountID] = useState("");
@@ -42,6 +47,18 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     () => loggedInAccounts.find((item) => item.id === activeLoggedInAccountID) ?? null,
     [loggedInAccounts, activeLoggedInAccountID],
   );
+  const loginStep = useMemo(() => {
+    if (!selectedAccount) {
+      return 1;
+    }
+    if (selectedAccount.authorized) {
+      return 3;
+    }
+    if (selectedAccount.pending_code) {
+      return 2;
+    }
+    return 1;
+  }, [selectedAccount]);
 
   useEffect(() => {
     void loadData({ silent: false });
@@ -50,7 +67,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   function applyAccountList(nextAccounts: TGAssistantAccount[]) {
     const ordered = [...nextAccounts];
     setAccounts(ordered);
-    setSelectedAccountID((prev) => (ordered.some((item) => item.id === prev) ? prev : (ordered[0]?.id ?? "")));
+    setSelectedAccountID((prev) => (ordered.some((item) => item.id === prev) ? prev : ""));
     const loggedIn = ordered.filter((item) => item.authorized);
     setActiveLoggedInAccountID((prev) => (loggedIn.some((item) => item.id === prev) ? prev : (loggedIn[0]?.id ?? "")));
   }
@@ -76,7 +93,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       applyAccountList(accountsData);
       if (!silent) {
         if (!apiKey.configured) {
-          setStatus("请先配置共用 API Key，再添加/登录账号");
+          setStatus("请先设置API，再添加/登录账号");
         } else {
           setStatus(accountsData.length > 0 ? `已加载 TG 账号（${accountsData.length} 个）` : "暂无 TG 账号，请先添加");
         }
@@ -137,8 +154,8 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   }
 
   async function handleSaveSharedAPIKey() {
-    const apiID = Number.parseInt(sharedApiIDInput.trim(), 10);
-    const apiHash = sharedApiHashInput.trim();
+    const apiID = Number.parseInt(apiKeyDraftID.trim(), 10);
+    const apiHash = apiKeyDraftHash.trim();
     if (!Number.isFinite(apiID) || apiID <= 0) {
       setStatus("共用 API ID 必须是正整数");
       return;
@@ -149,68 +166,93 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
 
     setIsLoading(true);
-    setStatus("正在保存共用 API Key...");
+    setStatus("正在设置API...");
     try {
       const result = await setTGAssistantAPIKey(props.controllerBaseUrl, props.sessionToken, {
         api_id: apiID,
         api_hash: apiHash,
       });
       applyAPIKey(result);
-      setStatus("共用 API Key 已保存，所有账号将使用该配置");
+      setShowAPIKeyModal(false);
+      setStatus("API已保存，所有账号将使用该配置");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`保存共用 API Key 失败：${msg}`);
+      setStatus(`设置API失败：${msg}`);
     } finally {
       setIsLoading(false);
     }
   }
 
-  async function handleAddAccount() {
-    const phone = phoneInput.trim();
-    if (!phone) {
-      setStatus("请输入手机号（建议包含国家码，例如 +886xxxxxxxxx）");
+  function openAPIKeyModal() {
+    setAPIKeyDraftID(sharedApiIDInput);
+    setAPIKeyDraftHash(sharedApiHashInput);
+    setShowAPIKeyModal(true);
+  }
+
+  function openAddAccountModal() {
+    setAddAccountSelectedID("");
+    setAddAccountLabelDraft("");
+    setAddAccountPhoneDraft("");
+    setShowAddAccountModal(true);
+  }
+
+  function handleSelectAccountForLogin(value: string) {
+    const selectedID = value.trim();
+    setAddAccountSelectedID(selectedID);
+    if (!selectedID) {
       return;
     }
+    const account = accounts.find((item) => item.id === selectedID);
+    if (!account) {
+      return;
+    }
+    setAddAccountLabelDraft(account.label || "");
+    setAddAccountPhoneDraft(account.phone || "");
+  }
+
+  async function handleStartLoginFromInput() {
     if (!sharedAPIConfigured) {
-      setStatus("请先保存共用 API Key");
+      setStatus("请先设置API");
       return;
     }
 
     setIsLoading(true);
-    setStatus("正在添加 TG 账号...");
+    setStatus("正在准备步骤1：输入账号并开始登陆...");
     try {
-      const account = await addTGAssistantAccount(props.controllerBaseUrl, props.sessionToken, {
-        label: labelInput.trim(),
-        phone,
-      });
-      setLabelInput("");
-      setPhoneInput("");
+      let account: TGAssistantAccount | null = null;
+      if (addAccountSelectedID.trim()) {
+        account = accounts.find((item) => item.id === addAccountSelectedID.trim()) ?? null;
+        if (!account) {
+          throw new Error("所选账号不存在，请重新选择");
+        }
+      } else {
+        const phone = addAccountPhoneDraft.trim();
+        if (!phone) {
+          throw new Error("请输入手机号（建议包含国家码，例如 +886xxxxxxxxx）");
+        }
+        const normalizedPhone = normalizePhone(phone);
+        account = accounts.find((item) => normalizePhone(item.phone) === normalizedPhone) ?? null;
+        if (!account) {
+          account = await addTGAssistantAccount(props.controllerBaseUrl, props.sessionToken, {
+            label: addAccountLabelDraft.trim(),
+            phone,
+          });
+        }
+      }
+
+      await sendTGAssistantLoginCode(props.controllerBaseUrl, props.sessionToken, account.id);
+      setAddAccountSelectedID("");
+      setAddAccountLabelDraft("");
+      setAddAccountPhoneDraft("");
+      setShowAddAccountModal(false);
       await loadAccounts({ silent: true });
       setSelectedAccountID(account.id);
-      setStatus(`账号已添加：${account.label}（${account.phone}）`);
+      setCodeInput("");
+      setPasswordInput("");
+      setStatus(`步骤1完成：验证码已发送到 ${account.phone}，请继续步骤2`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`添加账号失败：${msg}`);
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function handleSendCode() {
-    if (!selectedAccount) {
-      setStatus("请先选择一个账号");
-      return;
-    }
-
-    setIsLoading(true);
-    setStatus(`正在发送验证码：${selectedAccount.label}...`);
-    try {
-      await sendTGAssistantLoginCode(props.controllerBaseUrl, props.sessionToken, selectedAccount.id);
-      await loadAccounts({ silent: true });
-      setStatus(`验证码已发送到 ${selectedAccount.phone}，请填写验证码完成登录`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`发送验证码失败：${msg}`);
+      setStatus(`步骤1失败：${msg}`);
     } finally {
       setIsLoading(false);
     }
@@ -228,7 +270,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
 
     setIsLoading(true);
-    setStatus(`正在登录账号：${selectedAccount.label}...`);
+    setStatus(`正在执行步骤2：登陆账号 ${selectedAccount.label}...`);
     try {
       const account = await completeTGAssistantLogin(props.controllerBaseUrl, props.sessionToken, {
         account_id: selectedAccount.id,
@@ -241,10 +283,10 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       if (account.authorized) {
         setActiveLoggedInAccountID(account.id);
       }
-      setStatus(`登录成功：${account.label}`);
+      setStatus(`步骤2完成：登陆成功，当前账号 ${account.label}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`登录失败：${msg}`);
+      setStatus(`步骤2失败：${msg}`);
     } finally {
       setIsLoading(false);
     }
@@ -331,80 +373,27 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
       <div className="identity-card" style={{ marginBottom: 12 }}>
         <div>账号管理（添加 + 登录）</div>
-        <div style={{ marginTop: 4, color: "#dceaff" }}>共用 API Key（所有账号共用）</div>
-        <div className="row" style={{ marginBottom: 0 }}>
-          <label>共用 API ID</label>
-          <input
-            className="input"
-            value={sharedApiIDInput}
-            onChange={(event) => setSharedApiIDInput(event.target.value)}
-            placeholder="来自 my.telegram.org"
-            disabled={isLoading}
-          />
-        </div>
-        <div className="row" style={{ marginBottom: 0 }}>
-          <label>共用 API Hash</label>
-          <input
-            className="input"
-            value={sharedApiHashInput}
-            onChange={(event) => setSharedApiHashInput(event.target.value)}
-            placeholder="来自 my.telegram.org"
-            disabled={isLoading}
-          />
-        </div>
+        <div style={{ marginTop: 4, color: "#dceaff" }}>API（所有账号共用）</div>
         <div>共用配置状态：{sharedAPIConfigured ? "已配置" : "未配置"}</div>
+        <div>共用 API ID：{sharedApiIDInput || "-"}</div>
+        <div>共用 API Hash：{sharedAPIConfigured ? "已配置" : "-"}</div>
         <div className="content-actions">
-          <button className="btn" onClick={() => void handleSaveSharedAPIKey()} disabled={isLoading}>保存共用 API Key</button>
+          <button className="btn" onClick={openAPIKeyModal} disabled={isLoading}>设置API</button>
           <button className="btn" onClick={() => void handleRefreshAccounts()} disabled={isLoading}>刷新状态</button>
         </div>
 
-        <div style={{ marginTop: 8, color: "#dceaff" }}>添加账号</div>
-        <div className="row" style={{ marginBottom: 0 }}>
-          <label>账号备注</label>
-          <input
-            className="input"
-            value={labelInput}
-            onChange={(event) => setLabelInput(event.target.value)}
-            placeholder="例如：运营主号"
-            disabled={isLoading}
-          />
-        </div>
-        <div className="row" style={{ marginBottom: 0 }}>
-          <label>手机号</label>
-          <input
-            className="input"
-            value={phoneInput}
-            onChange={(event) => setPhoneInput(event.target.value)}
-            placeholder="例如：+886912345678"
-            disabled={isLoading}
-          />
-        </div>
+        <div style={{ marginTop: 8, color: "#dceaff" }}>登陆引导</div>
+        <div>步骤1：输入账号并开始登陆</div>
         <div className="content-actions">
-          <button className="btn" onClick={() => void handleAddAccount()} disabled={isLoading}>添加账号</button>
+          <button className="btn" onClick={openAddAccountModal} disabled={isLoading || !sharedAPIConfigured}>步骤1：输入账号并开始登陆</button>
         </div>
-        <div style={{ marginTop: 8, color: "#dceaff" }}>账号登录与管理</div>
-        <div className="row" style={{ marginBottom: 0 }}>
-          <label>选择账号</label>
-          <select
-            className="input"
-            value={selectedAccountID}
-            onChange={(event) => setSelectedAccountID(event.target.value)}
-            disabled={isLoading || accounts.length === 0}
-          >
-            {accounts.length === 0 ? (
-              <option value="">暂无账号</option>
-            ) : (
-              accounts.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label} ({item.phone}) {item.authorized ? "[已登录]" : "[未登录]"}
-                </option>
-              ))
-            )}
-          </select>
-        </div>
+        <div>当前登陆账号：{selectedAccount ? `${selectedAccount.label} (${selectedAccount.phone})` : "未开始，请先执行步骤1"}</div>
+        <div>当前步骤：{loginStep === 1 ? "步骤1：输入账号并开始登陆" : loginStep === 2 ? "步骤2：输入验证码并登陆" : "步骤3：已登陆，可切换账号 Tab"}</div>
+        <div>步骤2：输入验证码并完成登陆</div>
         <div>登录状态：{selectedAccount?.authorized ? "已登录" : "未登录"}</div>
         <div>验证码状态：{selectedAccount?.pending_code ? "已发送，待验证" : "未发送"}</div>
         <div>最后错误：{selectedAccount?.last_error || "-"}</div>
+        <div>填写验证码（如开启2FA再填密码）后点击“完成登录”</div>
         <div className="row" style={{ marginBottom: 0 }}>
           <label>验证码</label>
           <input
@@ -412,7 +401,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
             value={codeInput}
             onChange={(event) => setCodeInput(event.target.value)}
             placeholder="输入短信/APP 验证码"
-            disabled={isLoading || !selectedAccount}
+            disabled={isLoading || !selectedAccount || !selectedAccount.pending_code}
           />
         </div>
         <div className="row" style={{ marginBottom: 0 }}>
@@ -423,16 +412,98 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
             value={passwordInput}
             onChange={(event) => setPasswordInput(event.target.value)}
             placeholder="如账号开启两步验证则必填"
-            disabled={isLoading || !selectedAccount}
+            disabled={isLoading || !selectedAccount || !selectedAccount.pending_code}
           />
         </div>
         <div className="content-actions">
-          <button className="btn" onClick={() => void handleSendCode()} disabled={isLoading || !selectedAccount}>发送验证码</button>
-          <button className="btn" onClick={() => void handleSignIn()} disabled={isLoading || !selectedAccount}>完成登录</button>
+          <button className="btn" onClick={() => void handleSignIn()} disabled={isLoading || !selectedAccount || !selectedAccount.pending_code || selectedAccount.authorized}>步骤2：完成登录</button>
+        </div>
+        <div>步骤3：已登陆后可在顶部“已登录账号 Tab”切换使用账号。</div>
+        <div className="content-actions">
           <button className="btn" onClick={() => void handleLogout()} disabled={isLoading || !selectedAccount}>登出账号</button>
           <button className="btn" onClick={() => void handleRemove()} disabled={isLoading || !selectedAccount}>删除账号</button>
         </div>
       </div>
+
+      {showAddAccountModal ? (
+        <div className="probe-settings-modal-mask" onClick={() => setShowAddAccountModal(false)}>
+          <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>步骤1：输入账号并开始登陆</h3>
+            <div className="row">
+              <label>已有账号</label>
+              <select
+                className="input"
+                value={addAccountSelectedID}
+                onChange={(event) => handleSelectAccountForLogin(event.target.value)}
+                disabled={isLoading}
+              >
+                <option value="">不选择（手动输入）</option>
+                {accounts.map((item) => (
+                  <option key={`tg-login-account-${item.id}`} value={item.id}>
+                    {item.label} ({item.phone}) {item.authorized ? "[已登录]" : "[未登录]"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="row">
+              <label>账号备注</label>
+              <input
+                className="input"
+                value={addAccountLabelDraft}
+                onChange={(event) => setAddAccountLabelDraft(event.target.value)}
+                placeholder="例如：运营主号"
+                disabled={isLoading || !!addAccountSelectedID}
+              />
+            </div>
+            <div className="row">
+              <label>手机号</label>
+              <input
+                className="input"
+                value={addAccountPhoneDraft}
+                onChange={(event) => setAddAccountPhoneDraft(event.target.value)}
+                placeholder="例如：+886912345678"
+                disabled={isLoading || !!addAccountSelectedID}
+              />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void handleStartLoginFromInput()} disabled={isLoading}>开始登陆</button>
+              <button className="btn" onClick={() => setShowAddAccountModal(false)} disabled={isLoading}>取消</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showAPIKeyModal ? (
+        <div className="probe-settings-modal-mask" onClick={() => setShowAPIKeyModal(false)}>
+          <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>设置API</h3>
+            <div className="row">
+              <label>共用 API ID</label>
+              <input
+                className="input"
+                value={apiKeyDraftID}
+                onChange={(event) => setAPIKeyDraftID(event.target.value)}
+                placeholder="来自 my.telegram.org"
+                disabled={isLoading}
+              />
+            </div>
+            <div className="row">
+              <label>共用 API Hash</label>
+              <input
+                className="input"
+                value={apiKeyDraftHash}
+                onChange={(event) => setAPIKeyDraftHash(event.target.value)}
+                placeholder="来自 my.telegram.org"
+                disabled={isLoading}
+              />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void handleSaveSharedAPIKey()} disabled={isLoading}>保存</button>
+              <button className="btn" onClick={() => setShowAPIKeyModal(false)} disabled={isLoading}>取消</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="status">{status}</div>
     </div>
@@ -449,4 +520,12 @@ function formatDateTime(raw: string): string {
     return value;
   }
   return dt.toLocaleString();
+}
+
+function normalizePhone(raw: string): string {
+  const value = raw.trim();
+  if (!value) {
+    return "";
+  }
+  return value.replace(/[^+\d]/g, "");
 }

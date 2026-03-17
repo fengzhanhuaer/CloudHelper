@@ -19,7 +19,7 @@ type ProbeManageTabProps = {
   sessionToken: string;
 };
 
-type ProbeSubTab = "create" | "list" | "status" | "logs";
+type ProbeSubTab = "list" | "status" | "logs";
 type ProbeTargetSystem = "linux" | "windows";
 
 type ProbeNodeItem = {
@@ -72,7 +72,8 @@ type ProbeNodeSettingsDraft = {
 };
 
 export function ProbeManageTab(props: ProbeManageTabProps) {
-  const [subTab, setSubTab] = useState<ProbeSubTab>("create");
+  const [subTab, setSubTab] = useState<ProbeSubTab>("list");
+  const [showCreateModal, setShowCreateModal] = useState(false);
   const logOutputRef = useRef<HTMLPreElement | null>(null);
   const upgradeLogPollingDeadlineRef = useRef(0);
   const [nodeNameInput, setNodeNameInput] = useState("");
@@ -276,6 +277,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       const created = await createProbeNodeFromController(controllerAddress, props.sessionToken, cleanName);
       await loadNodes();
       setNodeNameInput("");
+      setShowCreateModal(false);
       setSubTab("list");
       setStatus(`节点已创建：${created.node_name}（节点号 ${created.node_no}）`);
     } catch (error) {
@@ -491,29 +493,12 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       <h2>探针管理</h2>
 
       <div className="subtab-list">
-        <button className={`subtab-btn ${subTab === "create" ? "active" : ""}`} onClick={() => setSubTab("create")}>新建探针</button>
         <button className={`subtab-btn ${subTab === "list" ? "active" : ""}`} onClick={() => setSubTab("list")}>探针列表</button>
         <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => { setSubTab("status"); void loadNodeStatus(); }}>探针状态</button>
         <button className={`subtab-btn ${subTab === "logs" ? "active" : ""}`} onClick={() => setSubTab("logs")}>探针日志</button>
       </div>
 
-      {subTab === "create" ? (
-        <div className="identity-card" style={{ marginTop: 12 }}>
-          <div>节点名称</div>
-          <input
-            className="input"
-            value={nodeNameInput}
-            placeholder="例如：华东-生产-01"
-            onChange={(event) => setNodeNameInput(event.target.value)}
-            maxLength={64}
-            disabled={isLoading}
-          />
-          <div className="content-actions">
-            <button className="btn" onClick={() => void createNode()} disabled={isLoading}>新建节点</button>
-          </div>
-          <div>创建后会自动生成数字节点号与节点 Secret（仅保存到主控端探针配置）。</div>
-        </div>
-      ) : subTab === "list" ? (
+      {subTab === "list" ? (
         <div style={{ marginTop: 12 }}>
           <div className="identity-card" style={{ marginBottom: 12 }}>
             <div>主控地址（用于“非直连”安装命令）</div>
@@ -526,13 +511,14 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
             />
             <div className="content-actions">
               <button className="btn" onClick={() => void loadNodes()} disabled={isLoading}>刷新列表</button>
+              <button className="btn" onClick={() => setShowCreateModal(true)} disabled={isLoading}>新建探针</button>
               <button className="btn" onClick={() => void upgradeAll()} disabled={isLoading || isUpgradingAll || nodes.length === 0}>一键升级（全部探针）</button>
             </div>
             <div>升级命令通过主控下发；直连节点直连 GitHub，非直连节点走主控代理升级。</div>
           </div>
 
           {nodes.length === 0 ? (
-            <div className="status">暂无探针，请先在“新建探针”中创建节点。</div>
+            <div className="status">暂无探针，请点击“新建探针”创建节点。</div>
           ) : (
             <div className="probe-node-list">
               {nodes.map((node) => (
@@ -579,7 +565,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           </div>
 
           {nodeStatusItems.length === 0 ? (
-            <div className="status">暂无探针，请先在“新建探针”中创建节点。</div>
+            <div className="status">暂无探针，请先在“探针列表”页签点击“新建探针”。</div>
           ) : (
             <div className="probe-node-list">
               {nodeStatusItems.map((item) => (
@@ -649,6 +635,30 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           <pre ref={logOutputRef} className="log-viewer-output">{probeLogContent || "暂无探针日志内容"}</pre>
         </div>
       )}
+
+      {showCreateModal ? (
+        <div className="probe-settings-modal-mask" onClick={() => setShowCreateModal(false)}>
+          <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>新建探针</h3>
+            <div className="row">
+              <label>节点名称</label>
+              <input
+                className="input"
+                value={nodeNameInput}
+                placeholder="例如：华东-生产-01"
+                onChange={(event) => setNodeNameInput(event.target.value)}
+                maxLength={64}
+                disabled={isLoading}
+              />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void createNode()} disabled={isLoading}>新建节点</button>
+              <button className="btn" onClick={() => setShowCreateModal(false)} disabled={isLoading}>取消</button>
+            </div>
+            <div>创建后会自动生成数字节点号与节点 Secret（仅保存到主控端探针配置）。</div>
+          </div>
+        </div>
+      ) : null}
 
       {settingsDraft ? (
         <div className="probe-settings-modal-mask" onClick={closeSettings}>
