@@ -92,6 +92,7 @@ type probeControlMessage struct {
 }
 
 func main() {
+	initProbeLogger()
 	reportIntervalSec.Store(defaultReportIntervalSec)
 	listenAddr := firstNonEmpty(os.Getenv("PROBE_NODE_LISTEN"), ":16030")
 	identity, err := resolveNodeIdentity()
