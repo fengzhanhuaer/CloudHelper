@@ -335,13 +335,13 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   return (
     <div className="content-block">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-        <h2 style={{ marginBottom: 0 }}>TG助手</h2>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, marginBottom: 12 }}>
         <div className="content-actions inline">
           <button className="btn" onClick={openAccountManageModal} disabled={isLoading}>账号管理</button>
           <button className="btn" onClick={openAddAccountModal} disabled={isLoading || !sharedAPIConfigured}>登录账号</button>
           <button className="btn" onClick={openAPIKeyModal} disabled={isLoading}>设置API</button>
         </div>
+        <h2 style={{ marginBottom: 0 }}>TG助手</h2>
       </div>
 
       <div className="identity-card" style={{ marginBottom: 12 }}>
