@@ -142,6 +142,12 @@ export type TGAssistantAccount = {
   self_phone: string;
 };
 
+export type TGAssistantAPIKey = {
+  api_id: number;
+  api_hash: string;
+  configured: boolean;
+};
+
 export type TabKey =
   | "overview"
   | "probe-manage"

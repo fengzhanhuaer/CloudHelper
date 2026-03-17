@@ -36,8 +36,6 @@ type tgAssistantAccountRecord struct {
 	ID              string `json:"id"`
 	Label           string `json:"label"`
 	Phone           string `json:"phone"`
-	APIID           int    `json:"api_id"`
-	APIHash         string `json:"api_hash"`
 	Authorized      bool   `json:"authorized"`
 	LastError       string `json:"last_error"`
 	CreatedAt       string `json:"created_at"`
@@ -83,6 +81,8 @@ type tgAssistantStore struct {
 }
 
 type tgAssistantStoreData struct {
+	APIID    int                        `json:"api_id"`
+	APIHash  string                     `json:"api_hash"`
 	Accounts []tgAssistantAccountRecord `json:"accounts"`
 }
 
@@ -93,10 +93,8 @@ var tgState = tgAssistantState{
 var TGAssistantStore *tgAssistantStore
 
 type tgAssistantAddAccountRequest struct {
-	Label   string `json:"label"`
-	Phone   string `json:"phone"`
-	APIID   int    `json:"api_id"`
-	APIHash string `json:"api_hash"`
+	Label string `json:"label"`
+	Phone string `json:"phone"`
 }
 
 type tgAssistantAccountIDRequest struct {
@@ -107,6 +105,17 @@ type tgAssistantSignInRequest struct {
 	AccountID string `json:"account_id"`
 	Code      string `json:"code"`
 	Password  string `json:"password"`
+}
+
+type tgAssistantAPIKeyRequest struct {
+	APIID   int    `json:"api_id"`
+	APIHash string `json:"api_hash"`
+}
+
+type tgAssistantAPIKey struct {
+	APIID      int    `json:"api_id"`
+	APIHash    string `json:"api_hash"`
+	Configured bool   `json:"configured"`
 }
 
 func initTGAssistantStore() {
@@ -128,7 +137,10 @@ func initTGAssistantStore() {
 			if unmarshalErr := json.Unmarshal(content, &raw); unmarshalErr != nil {
 				log.Fatalf("failed to parse tg assistant store file: %v", unmarshalErr)
 			}
+			raw.APIHash = strings.TrimSpace(raw.APIHash)
 			TGAssistantStore.data.Accounts = normalizeTGAssistantAccountRecords(raw.Accounts)
+			TGAssistantStore.data.APIID = raw.APIID
+			TGAssistantStore.data.APIHash = raw.APIHash
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := TGAssistantStore.Save(); saveErr != nil {
@@ -139,6 +151,50 @@ func initTGAssistantStore() {
 	}
 
 	log.Println("TG assistant datastore initialized at", storePath)
+}
+
+func getTGAssistantAPIKey() tgAssistantAPIKey {
+	if TGAssistantStore == nil {
+		return tgAssistantAPIKey{}
+	}
+
+	TGAssistantStore.mu.RLock()
+	apiID, apiHash := loadTGAssistantAPIKeyLocked()
+	TGAssistantStore.mu.RUnlock()
+	return tgAssistantAPIKey{
+		APIID:      apiID,
+		APIHash:    apiHash,
+		Configured: isTGAssistantAPIKeyConfigured(apiID, apiHash),
+	}
+}
+
+func setTGAssistantAPIKey(req tgAssistantAPIKeyRequest) (tgAssistantAPIKey, error) {
+	if TGAssistantStore == nil {
+		return tgAssistantAPIKey{}, errors.New("tg assistant datastore is not initialized")
+	}
+	apiID := req.APIID
+	apiHash := strings.TrimSpace(req.APIHash)
+	if apiID <= 0 {
+		return tgAssistantAPIKey{}, errors.New("api_id must be a positive integer")
+	}
+	if apiHash == "" {
+		return tgAssistantAPIKey{}, errors.New("api_hash is required")
+	}
+
+	TGAssistantStore.mu.Lock()
+	TGAssistantStore.data.APIID = apiID
+	TGAssistantStore.data.APIHash = apiHash
+	TGAssistantStore.mu.Unlock()
+
+	if err := TGAssistantStore.Save(); err != nil {
+		return tgAssistantAPIKey{}, err
+	}
+
+	return tgAssistantAPIKey{
+		APIID:      apiID,
+		APIHash:    apiHash,
+		Configured: true,
+	}, nil
 }
 
 func (s *tgAssistantStore) Save() error {
@@ -162,9 +218,10 @@ func listTGAssistantAccounts() []tgAssistantAccount {
 
 	TGAssistantStore.mu.RLock()
 	records := loadTGAssistantAccountsLocked()
+	apiID, _ := loadTGAssistantAPIKeyLocked()
 	TGAssistantStore.mu.RUnlock()
 
-	return buildTGAssistantAccountViews(records)
+	return buildTGAssistantAccountViews(records, apiID)
 }
 
 func refreshTGAssistantAccounts() ([]tgAssistantAccount, error) {
@@ -172,11 +229,16 @@ func refreshTGAssistantAccounts() ([]tgAssistantAccount, error) {
 		return nil, errors.New("tg assistant datastore is not initialized")
 	}
 
-	TGAssistantStore.mu.Lock()
+	TGAssistantStore.mu.RLock()
 	records := loadTGAssistantAccountsLocked()
+	apiID, apiHash := loadTGAssistantAPIKeyLocked()
+	TGAssistantStore.mu.RUnlock()
+
 	for i := range records {
-		refreshOneTGAccountRecord(&records[i])
+		refreshOneTGAccountRecord(&records[i], apiID, apiHash)
 	}
+
+	TGAssistantStore.mu.Lock()
 	TGAssistantStore.data.Accounts = records
 	TGAssistantStore.mu.Unlock()
 
@@ -184,7 +246,7 @@ func refreshTGAssistantAccounts() ([]tgAssistantAccount, error) {
 		return nil, err
 	}
 
-	return buildTGAssistantAccountViews(records), nil
+	return buildTGAssistantAccountViews(records, apiID), nil
 }
 
 func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount, error) {
@@ -195,13 +257,6 @@ func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount
 	phone := normalizeTGPhone(req.Phone)
 	if phone == "" {
 		return tgAssistantAccount{}, errors.New("phone is required")
-	}
-	if req.APIID <= 0 {
-		return tgAssistantAccount{}, errors.New("api_id must be a positive integer")
-	}
-	apiHash := strings.TrimSpace(req.APIHash)
-	if apiHash == "" {
-		return tgAssistantAccount{}, errors.New("api_hash is required")
 	}
 
 	label := strings.TrimSpace(req.Label)
@@ -214,8 +269,6 @@ func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount
 		ID:          newTGAssistantAccountID(),
 		Label:       label,
 		Phone:       phone,
-		APIID:       req.APIID,
-		APIHash:     apiHash,
 		Authorized:  false,
 		LastError:   "",
 		CreatedAt:   now,
@@ -225,10 +278,11 @@ func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount
 
 	TGAssistantStore.mu.Lock()
 	records := loadTGAssistantAccountsLocked()
+	apiID, _ := loadTGAssistantAPIKeyLocked()
 	for _, existing := range records {
-		if existing.Phone == record.Phone && existing.APIID == record.APIID {
+		if existing.Phone == record.Phone {
 			TGAssistantStore.mu.Unlock()
-			return tgAssistantAccount{}, fmt.Errorf("account already exists for phone=%s api_id=%d", record.Phone, record.APIID)
+			return tgAssistantAccount{}, fmt.Errorf("account already exists for phone=%s", record.Phone)
 		}
 	}
 	records = append(records, record)
@@ -239,7 +293,7 @@ func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount
 		return tgAssistantAccount{}, err
 	}
 
-	return buildTGAssistantAccountView(record), nil
+	return buildTGAssistantAccountView(record, apiID), nil
 }
 
 func removeTGAssistantAccount(req tgAssistantAccountIDRequest) ([]tgAssistantAccount, error) {
@@ -254,6 +308,7 @@ func removeTGAssistantAccount(req tgAssistantAccountIDRequest) ([]tgAssistantAcc
 
 	TGAssistantStore.mu.Lock()
 	records := loadTGAssistantAccountsLocked()
+	apiID, _ := loadTGAssistantAPIKeyLocked()
 	next := make([]tgAssistantAccountRecord, 0, len(records))
 	found := false
 	for _, item := range records {
@@ -277,7 +332,7 @@ func removeTGAssistantAccount(req tgAssistantAccountIDRequest) ([]tgAssistantAcc
 	clearTGAssistantLoginChallenge(accountID)
 	_ = os.Remove(tgAssistantSessionPath(accountID))
 
-	return buildTGAssistantAccountViews(next), nil
+	return buildTGAssistantAccountViews(next, apiID), nil
 }
 
 func sendTGAssistantLoginCode(req tgAssistantAccountIDRequest) (tgAssistantAccount, error) {
@@ -292,6 +347,7 @@ func sendTGAssistantLoginCode(req tgAssistantAccountIDRequest) (tgAssistantAccou
 
 	TGAssistantStore.mu.Lock()
 	records := loadTGAssistantAccountsLocked()
+	apiID, apiHash := loadTGAssistantAPIKeyLocked()
 	index := indexTGAssistantAccountByID(records, accountID)
 	if index < 0 {
 		TGAssistantStore.mu.Unlock()
@@ -299,6 +355,9 @@ func sendTGAssistantLoginCode(req tgAssistantAccountIDRequest) (tgAssistantAccou
 	}
 	record := records[index]
 	TGAssistantStore.mu.Unlock()
+	if !isTGAssistantAPIKeyConfigured(apiID, apiHash) {
+		return tgAssistantAccount{}, errors.New("shared tg api key is not configured")
+	}
 
 	var (
 		codeHash    string
@@ -308,7 +367,7 @@ func sendTGAssistantLoginCode(req tgAssistantAccountIDRequest) (tgAssistantAccou
 		recordError = ""
 	)
 
-	runErr = runTGAssistantClient(record, func(ctx context.Context, client *telegram.Client) error {
+	runErr = runTGAssistantClient(apiID, apiHash, record, func(ctx context.Context, client *telegram.Client) error {
 		authStatus, err := client.Auth().Status(ctx)
 		if err != nil {
 			return err
@@ -332,6 +391,7 @@ func sendTGAssistantLoginCode(req tgAssistantAccountIDRequest) (tgAssistantAccou
 
 	TGAssistantStore.mu.Lock()
 	records = loadTGAssistantAccountsLocked()
+	apiID, _ = loadTGAssistantAPIKeyLocked()
 	index = indexTGAssistantAccountByID(records, accountID)
 	if index < 0 {
 		TGAssistantStore.mu.Unlock()
@@ -366,7 +426,7 @@ func sendTGAssistantLoginCode(req tgAssistantAccountIDRequest) (tgAssistantAccou
 		return tgAssistantAccount{}, runErr
 	}
 
-	return buildTGAssistantAccountView(record), nil
+	return buildTGAssistantAccountView(record, apiID), nil
 }
 
 func completeTGAssistantLogin(req tgAssistantSignInRequest) (tgAssistantAccount, error) {
@@ -390,6 +450,7 @@ func completeTGAssistantLogin(req tgAssistantSignInRequest) (tgAssistantAccount,
 
 	TGAssistantStore.mu.Lock()
 	records := loadTGAssistantAccountsLocked()
+	apiID, apiHash := loadTGAssistantAPIKeyLocked()
 	index := indexTGAssistantAccountByID(records, accountID)
 	if index < 0 {
 		TGAssistantStore.mu.Unlock()
@@ -397,10 +458,13 @@ func completeTGAssistantLogin(req tgAssistantSignInRequest) (tgAssistantAccount,
 	}
 	record := records[index]
 	TGAssistantStore.mu.Unlock()
+	if !isTGAssistantAPIKeyConfigured(apiID, apiHash) {
+		return tgAssistantAccount{}, errors.New("shared tg api key is not configured")
+	}
 
 	password := req.Password
 	var status *tgauth.Status
-	runErr := runTGAssistantClient(record, func(ctx context.Context, client *telegram.Client) error {
+	runErr := runTGAssistantClient(apiID, apiHash, record, func(ctx context.Context, client *telegram.Client) error {
 		if _, err := client.Auth().SignIn(ctx, record.Phone, code, challengeHash); err != nil {
 			if errors.Is(err, tgauth.ErrPasswordAuthNeeded) {
 				if strings.TrimSpace(password) == "" {
@@ -427,6 +491,7 @@ func completeTGAssistantLogin(req tgAssistantSignInRequest) (tgAssistantAccount,
 
 	TGAssistantStore.mu.Lock()
 	records = loadTGAssistantAccountsLocked()
+	apiID, _ = loadTGAssistantAPIKeyLocked()
 	index = indexTGAssistantAccountByID(records, accountID)
 	if index < 0 {
 		TGAssistantStore.mu.Unlock()
@@ -458,7 +523,7 @@ func completeTGAssistantLogin(req tgAssistantSignInRequest) (tgAssistantAccount,
 		return tgAssistantAccount{}, runErr
 	}
 
-	return buildTGAssistantAccountView(record), nil
+	return buildTGAssistantAccountView(record, apiID), nil
 }
 
 func logoutTGAssistantAccount(req tgAssistantAccountIDRequest) (tgAssistantAccount, error) {
@@ -473,6 +538,7 @@ func logoutTGAssistantAccount(req tgAssistantAccountIDRequest) (tgAssistantAccou
 
 	TGAssistantStore.mu.Lock()
 	records := loadTGAssistantAccountsLocked()
+	apiID, _ := loadTGAssistantAPIKeyLocked()
 	index := indexTGAssistantAccountByID(records, accountID)
 	if index < 0 {
 		TGAssistantStore.mu.Unlock()
@@ -494,14 +560,14 @@ func logoutTGAssistantAccount(req tgAssistantAccountIDRequest) (tgAssistantAccou
 	clearTGAssistantLoginChallenge(accountID)
 	_ = os.Remove(tgAssistantSessionPath(accountID))
 
-	return buildTGAssistantAccountView(record), nil
+	return buildTGAssistantAccountView(record, apiID), nil
 }
 
-func runTGAssistantClient(record tgAssistantAccountRecord, fn func(ctx context.Context, client *telegram.Client) error) error {
-	if record.APIID <= 0 {
+func runTGAssistantClient(apiID int, apiHash string, record tgAssistantAccountRecord, fn func(ctx context.Context, client *telegram.Client) error) error {
+	if apiID <= 0 {
 		return errors.New("api_id must be a positive integer")
 	}
-	if strings.TrimSpace(record.APIHash) == "" {
+	if strings.TrimSpace(apiHash) == "" {
 		return errors.New("api_hash is required")
 	}
 	if strings.TrimSpace(record.Phone) == "" {
@@ -513,7 +579,7 @@ func runTGAssistantClient(record tgAssistantAccountRecord, fn func(ctx context.C
 		return fmt.Errorf("failed to prepare tg session directory: %w", err)
 	}
 
-	client := telegram.NewClient(record.APIID, record.APIHash, telegram.Options{
+	client := telegram.NewClient(apiID, apiHash, telegram.Options{
 		SessionStorage: &session.FileStorage{Path: sessionPath},
 		NoUpdates:      true,
 	})
@@ -525,11 +591,18 @@ func runTGAssistantClient(record tgAssistantAccountRecord, fn func(ctx context.C
 	})
 }
 
-func refreshOneTGAccountRecord(record *tgAssistantAccountRecord) {
+func refreshOneTGAccountRecord(record *tgAssistantAccountRecord, apiID int, apiHash string) {
 	if record == nil {
 		return
 	}
 	record.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	if !isTGAssistantAPIKeyConfigured(apiID, apiHash) {
+		record.Authorized = false
+		record.LastError = "api key is not configured"
+		clearTGAssistantIdentityFields(record)
+		return
+	}
 
 	sessionPath := tgAssistantSessionPath(record.ID)
 	if _, err := os.Stat(sessionPath); errors.Is(err, os.ErrNotExist) {
@@ -539,7 +612,7 @@ func refreshOneTGAccountRecord(record *tgAssistantAccountRecord) {
 		return
 	}
 
-	err := runTGAssistantClient(*record, func(ctx context.Context, client *telegram.Client) error {
+	err := runTGAssistantClient(apiID, apiHash, *record, func(ctx context.Context, client *telegram.Client) error {
 		status, err := client.Auth().Status(ctx)
 		if err != nil {
 			return err
@@ -619,10 +692,10 @@ func clearTGAssistantIdentityFields(record *tgAssistantAccountRecord) {
 	record.SelfPhone = ""
 }
 
-func buildTGAssistantAccountViews(records []tgAssistantAccountRecord) []tgAssistantAccount {
+func buildTGAssistantAccountViews(records []tgAssistantAccountRecord, sharedAPIID int) []tgAssistantAccount {
 	views := make([]tgAssistantAccount, 0, len(records))
 	for _, record := range records {
-		views = append(views, buildTGAssistantAccountView(record))
+		views = append(views, buildTGAssistantAccountView(record, sharedAPIID))
 	}
 
 	sort.SliceStable(views, func(i, j int) bool {
@@ -634,12 +707,12 @@ func buildTGAssistantAccountViews(records []tgAssistantAccountRecord) []tgAssist
 	return views
 }
 
-func buildTGAssistantAccountView(record tgAssistantAccountRecord) tgAssistantAccount {
+func buildTGAssistantAccountView(record tgAssistantAccountRecord, sharedAPIID int) tgAssistantAccount {
 	view := tgAssistantAccount{
 		ID:              record.ID,
 		Label:           record.Label,
 		Phone:           record.Phone,
-		APIID:           record.APIID,
+		APIID:           sharedAPIID,
 		Authorized:      record.Authorized,
 		LastError:       record.LastError,
 		CreatedAt:       record.CreatedAt,
@@ -666,6 +739,17 @@ func loadTGAssistantAccountsLocked() []tgAssistantAccountRecord {
 	return normalizeTGAssistantAccountRecords(result)
 }
 
+func loadTGAssistantAPIKeyLocked() (int, string) {
+	if TGAssistantStore == nil {
+		return 0, ""
+	}
+	return TGAssistantStore.data.APIID, strings.TrimSpace(TGAssistantStore.data.APIHash)
+}
+
+func isTGAssistantAPIKeyConfigured(apiID int, apiHash string) bool {
+	return apiID > 0 && strings.TrimSpace(apiHash) != ""
+}
+
 func normalizeTGAssistantAccountRecords(records []tgAssistantAccountRecord) []tgAssistantAccountRecord {
 	normalized := make([]tgAssistantAccountRecord, 0, len(records))
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -676,7 +760,6 @@ func normalizeTGAssistantAccountRecords(records []tgAssistantAccountRecord) []tg
 		}
 		item.Label = strings.TrimSpace(item.Label)
 		item.Phone = normalizeTGPhone(item.Phone)
-		item.APIHash = strings.TrimSpace(item.APIHash)
 		item.SelfUsername = strings.TrimSpace(item.SelfUsername)
 		item.SelfDisplayName = strings.TrimSpace(item.SelfDisplayName)
 		item.SelfPhone = normalizeTGPhone(item.SelfPhone)
@@ -689,7 +772,7 @@ func normalizeTGAssistantAccountRecords(records []tgAssistantAccountRecord) []tg
 		if item.UpdatedAt == "" {
 			item.UpdatedAt = item.CreatedAt
 		}
-		if item.Phone == "" || item.APIID <= 0 || item.APIHash == "" {
+		if item.Phone == "" {
 			continue
 		}
 		normalized = append(normalized, item)

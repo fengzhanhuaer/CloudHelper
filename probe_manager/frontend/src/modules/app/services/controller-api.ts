@@ -6,6 +6,7 @@ import type {
   LoginResponse,
   NonceResponse,
   TGAssistantAccount,
+  TGAssistantAPIKey,
   UpgradeProgress,
 } from "../types";
 import { callAdminWSRpc } from "./admin-ws-rpc";
@@ -244,6 +245,28 @@ export async function fetchTGAssistantAccounts(baseURL: string, token: string): 
   return Array.isArray(payload.accounts) ? payload.accounts : [];
 }
 
+export async function fetchTGAssistantAPIKey(baseURL: string, token: string): Promise<TGAssistantAPIKey> {
+  const payload = await callAdminWSRpc<TGAssistantAPIKey>(baseURL, token, "admin.tg.api.get");
+  return {
+    api_id: typeof payload.api_id === "number" ? payload.api_id : 0,
+    api_hash: typeof payload.api_hash === "string" ? payload.api_hash : "",
+    configured: payload.configured === true,
+  };
+}
+
+export async function setTGAssistantAPIKey(
+  baseURL: string,
+  token: string,
+  input: { api_id: number; api_hash: string },
+): Promise<TGAssistantAPIKey> {
+  const payload = await callAdminWSRpc<TGAssistantAPIKey>(baseURL, token, "admin.tg.api.set", input);
+  return {
+    api_id: typeof payload.api_id === "number" ? payload.api_id : 0,
+    api_hash: typeof payload.api_hash === "string" ? payload.api_hash : "",
+    configured: payload.configured === true,
+  };
+}
+
 export async function refreshTGAssistantAccounts(baseURL: string, token: string): Promise<TGAssistantAccount[]> {
   const payload = await callAdminWSRpc<{ accounts?: TGAssistantAccount[] }>(baseURL, token, "admin.tg.accounts.refresh");
   return Array.isArray(payload.accounts) ? payload.accounts : [];
@@ -252,7 +275,7 @@ export async function refreshTGAssistantAccounts(baseURL: string, token: string)
 export async function addTGAssistantAccount(
   baseURL: string,
   token: string,
-  input: { label: string; phone: string; api_id: number; api_hash: string },
+  input: { label: string; phone: string },
 ): Promise<TGAssistantAccount> {
   const payload = await callAdminWSRpc<{ account?: TGAssistantAccount }>(baseURL, token, "admin.tg.account.add", input);
   if (!payload.account) {

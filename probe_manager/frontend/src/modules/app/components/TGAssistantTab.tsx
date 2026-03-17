@@ -2,13 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import {
   addTGAssistantAccount,
   completeTGAssistantLogin,
+  fetchTGAssistantAPIKey,
   fetchTGAssistantAccounts,
   logoutTGAssistantAccount,
   refreshTGAssistantAccounts,
   removeTGAssistantAccount,
+  setTGAssistantAPIKey,
   sendTGAssistantLoginCode,
 } from "../services/controller-api";
-import type { TGAssistantAccount } from "../types";
+import type { TGAssistantAPIKey, TGAssistantAccount } from "../types";
 
 type TGAssistantTabProps = {
   controllerBaseUrl: string;
@@ -22,8 +24,9 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   const [labelInput, setLabelInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
-  const [apiIDInput, setAPIIDInput] = useState("");
-  const [apiHashInput, setAPIHashInput] = useState("");
+  const [sharedApiIDInput, setSharedApiIDInput] = useState("");
+  const [sharedApiHashInput, setSharedApiHashInput] = useState("");
+  const [sharedAPIConfigured, setSharedAPIConfigured] = useState(false);
 
   const [selectedAccountID, setSelectedAccountID] = useState("");
   const [activeLoggedInAccountID, setActiveLoggedInAccountID] = useState("");
@@ -41,7 +44,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   );
 
   useEffect(() => {
-    void loadAccounts({ silent: false });
+    void loadData({ silent: false });
   }, [props.controllerBaseUrl, props.sessionToken]);
 
   function applyAccountList(nextAccounts: TGAssistantAccount[]) {
@@ -50,6 +53,44 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     setSelectedAccountID((prev) => (ordered.some((item) => item.id === prev) ? prev : (ordered[0]?.id ?? "")));
     const loggedIn = ordered.filter((item) => item.authorized);
     setActiveLoggedInAccountID((prev) => (loggedIn.some((item) => item.id === prev) ? prev : (loggedIn[0]?.id ?? "")));
+  }
+
+  function applyAPIKey(apiKey: TGAssistantAPIKey) {
+    setSharedApiIDInput(apiKey.api_id > 0 ? String(apiKey.api_id) : "");
+    setSharedApiHashInput(apiKey.api_hash || "");
+    setSharedAPIConfigured(apiKey.configured);
+  }
+
+  async function loadData(options?: { silent?: boolean }) {
+    const silent = options?.silent === true;
+    if (!silent) {
+      setIsLoading(true);
+      setStatus("正在加载 TG 设置与账号...");
+    }
+    try {
+      const [apiKey, accountsData] = await Promise.all([
+        fetchTGAssistantAPIKey(props.controllerBaseUrl, props.sessionToken),
+        fetchTGAssistantAccounts(props.controllerBaseUrl, props.sessionToken),
+      ]);
+      applyAPIKey(apiKey);
+      applyAccountList(accountsData);
+      if (!silent) {
+        if (!apiKey.configured) {
+          setStatus("请先配置共用 API Key，再添加/登录账号");
+        } else {
+          setStatus(accountsData.length > 0 ? `已加载 TG 账号（${accountsData.length} 个）` : "暂无 TG 账号，请先添加");
+        }
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      if (!silent) {
+        setStatus(`加载 TG 数据失败：${msg}`);
+      }
+    } finally {
+      if (!silent) {
+        setIsLoading(false);
+      }
+    }
   }
 
   async function loadAccounts(options?: { silent?: boolean }) {
@@ -80,7 +121,11 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     setIsLoading(true);
     setStatus("正在刷新 TG 登录状态...");
     try {
-      const items = await refreshTGAssistantAccounts(props.controllerBaseUrl, props.sessionToken);
+      const [apiKey, items] = await Promise.all([
+        fetchTGAssistantAPIKey(props.controllerBaseUrl, props.sessionToken),
+        refreshTGAssistantAccounts(props.controllerBaseUrl, props.sessionToken),
+      ]);
+      applyAPIKey(apiKey);
       applyAccountList(items);
       setStatus(`刷新完成：共 ${items.length} 个账号`);
     } catch (error) {
@@ -91,20 +136,43 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
   }
 
+  async function handleSaveSharedAPIKey() {
+    const apiID = Number.parseInt(sharedApiIDInput.trim(), 10);
+    const apiHash = sharedApiHashInput.trim();
+    if (!Number.isFinite(apiID) || apiID <= 0) {
+      setStatus("共用 API ID 必须是正整数");
+      return;
+    }
+    if (!apiHash) {
+      setStatus("共用 API Hash 不能为空");
+      return;
+    }
+
+    setIsLoading(true);
+    setStatus("正在保存共用 API Key...");
+    try {
+      const result = await setTGAssistantAPIKey(props.controllerBaseUrl, props.sessionToken, {
+        api_id: apiID,
+        api_hash: apiHash,
+      });
+      applyAPIKey(result);
+      setStatus("共用 API Key 已保存，所有账号将使用该配置");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`保存共用 API Key 失败：${msg}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function handleAddAccount() {
     const phone = phoneInput.trim();
-    const apiHash = apiHashInput.trim();
-    const apiID = Number.parseInt(apiIDInput.trim(), 10);
     if (!phone) {
       setStatus("请输入手机号（建议包含国家码，例如 +886xxxxxxxxx）");
       return;
     }
-    if (!Number.isFinite(apiID) || apiID <= 0) {
-      setStatus("API ID 必须是正整数");
-      return;
-    }
-    if (!apiHash) {
-      setStatus("请输入 API Hash");
+    if (!sharedAPIConfigured) {
+      setStatus("请先保存共用 API Key");
       return;
     }
 
@@ -114,13 +182,9 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       const account = await addTGAssistantAccount(props.controllerBaseUrl, props.sessionToken, {
         label: labelInput.trim(),
         phone,
-        api_id: apiID,
-        api_hash: apiHash,
       });
       setLabelInput("");
       setPhoneInput("");
-      setAPIIDInput("");
-      setAPIHashInput("");
       await loadAccounts({ silent: true });
       setSelectedAccountID(account.id);
       setStatus(`账号已添加：${account.label}（${account.phone}）`);
@@ -267,7 +331,34 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
       <div className="identity-card" style={{ marginBottom: 12 }}>
         <div>账号管理（添加 + 登录）</div>
-        <div style={{ marginTop: 4, color: "#dceaff" }}>添加账号</div>
+        <div style={{ marginTop: 4, color: "#dceaff" }}>共用 API Key（所有账号共用）</div>
+        <div className="row" style={{ marginBottom: 0 }}>
+          <label>共用 API ID</label>
+          <input
+            className="input"
+            value={sharedApiIDInput}
+            onChange={(event) => setSharedApiIDInput(event.target.value)}
+            placeholder="来自 my.telegram.org"
+            disabled={isLoading}
+          />
+        </div>
+        <div className="row" style={{ marginBottom: 0 }}>
+          <label>共用 API Hash</label>
+          <input
+            className="input"
+            value={sharedApiHashInput}
+            onChange={(event) => setSharedApiHashInput(event.target.value)}
+            placeholder="来自 my.telegram.org"
+            disabled={isLoading}
+          />
+        </div>
+        <div>共用配置状态：{sharedAPIConfigured ? "已配置" : "未配置"}</div>
+        <div className="content-actions">
+          <button className="btn" onClick={() => void handleSaveSharedAPIKey()} disabled={isLoading}>保存共用 API Key</button>
+          <button className="btn" onClick={() => void handleRefreshAccounts()} disabled={isLoading}>刷新状态</button>
+        </div>
+
+        <div style={{ marginTop: 8, color: "#dceaff" }}>添加账号</div>
         <div className="row" style={{ marginBottom: 0 }}>
           <label>账号备注</label>
           <input
@@ -288,29 +379,8 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
             disabled={isLoading}
           />
         </div>
-        <div className="row" style={{ marginBottom: 0 }}>
-          <label>API ID</label>
-          <input
-            className="input"
-            value={apiIDInput}
-            onChange={(event) => setAPIIDInput(event.target.value)}
-            placeholder="来自 my.telegram.org"
-            disabled={isLoading}
-          />
-        </div>
-        <div className="row" style={{ marginBottom: 0 }}>
-          <label>API Hash</label>
-          <input
-            className="input"
-            value={apiHashInput}
-            onChange={(event) => setAPIHashInput(event.target.value)}
-            placeholder="来自 my.telegram.org"
-            disabled={isLoading}
-          />
-        </div>
         <div className="content-actions">
           <button className="btn" onClick={() => void handleAddAccount()} disabled={isLoading}>添加账号</button>
-          <button className="btn" onClick={() => void handleRefreshAccounts()} disabled={isLoading}>刷新状态</button>
         </div>
         <div style={{ marginTop: 8, color: "#dceaff" }}>账号登录与管理</div>
         <div className="row" style={{ marginBottom: 0 }}>

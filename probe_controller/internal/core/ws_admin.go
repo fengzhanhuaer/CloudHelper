@@ -518,6 +518,18 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return map[string]interface{}{
 			"accounts": listTGAssistantAccounts(),
 		}, nil
+	case "admin.tg.api.get":
+		return getTGAssistantAPIKey(), nil
+	case "admin.tg.api.set":
+		var req tgAssistantAPIKeyRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := setTGAssistantAPIKey(req)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
 	case "admin.tg.accounts.refresh":
 		accounts, err := refreshTGAssistantAccounts()
 		if err != nil {
