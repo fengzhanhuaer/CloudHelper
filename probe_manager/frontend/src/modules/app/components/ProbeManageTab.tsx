@@ -520,29 +520,56 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           {nodes.length === 0 ? (
             <div className="status">暂无探针，请点击“新建探针”创建节点。</div>
           ) : (
-            <div className="probe-node-list">
-              {nodes.map((node) => (
-                <div className="probe-node-card" key={node.node_no}>
-                  <div className="probe-node-title">{node.node_name}</div>
-                  <div className="probe-node-meta single-line">节点号：{node.node_no}　版本：{node.runtime?.version || "-"}　厂家：
-                    {node.vendor_name ? (
-                      <button className="vendor-copy-link" type="button" title={node.vendor_url || "点击复制厂家URL"} onClick={() => void copyVendorURL(node, setStatus)}>
-                        {node.vendor_name}
-                      </button>
-                    ) : "-"}　付款周期：{node.payment_cycle || "-"}　费用：{node.cost || "-"}　到期：{formatExpireWithRemainingDays(node.expire_at || "")}</div>
-                  {node.remark ? <div className="probe-node-meta compact">备注：{node.remark}</div> : null}
-
-                  <div className="probe-node-controls-row">
-                   <div className="content-actions inline">
-                     <button className="btn" onClick={() => openSettings(node)} disabled={isLoading}>设置</button>
-                     <button className="btn" onClick={() => void copyInstallCommand(node)} disabled={isLoading}>安装</button>
-                     <button className="btn" onClick={() => void upgradeOne(node)} disabled={isLoading || isUpgradingAll || upgradingNodeNos.includes(node.node_no)}>
-                       {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级"}
-                    </button>
-                  </div>
-                  </div>
-                </div>
-              ))}
+            <div className="probe-table-wrap">
+              <table className="probe-table">
+                <thead>
+                  <tr>
+                    <th>节点号</th>
+                    <th>节点信息</th>
+                    <th>版本</th>
+                    <th>厂家</th>
+                    <th>付款周期</th>
+                    <th>费用</th>
+                    <th>到期</th>
+                    <th>系统</th>
+                    <th>接入方式</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {nodes.map((node) => (
+                    <tr key={node.node_no}>
+                      <td>{node.node_no}</td>
+                      <td>
+                        <div className="probe-table-name">{node.node_name}</div>
+                        {node.remark ? <div className="probe-table-sub">备注：{node.remark}</div> : null}
+                      </td>
+                      <td>{node.runtime?.version || "-"}</td>
+                      <td>
+                        {node.vendor_name ? (
+                          <button className="vendor-copy-link" type="button" title={node.vendor_url || "点击复制厂家URL"} onClick={() => void copyVendorURL(node, setStatus)}>
+                            {node.vendor_name}
+                          </button>
+                        ) : "-"}
+                      </td>
+                      <td>{node.payment_cycle || "-"}</td>
+                      <td>{node.cost || "-"}</td>
+                      <td>{formatExpireWithRemainingDays(node.expire_at || "")}</td>
+                      <td>{node.target_system === "windows" ? "Windows" : "Linux"}</td>
+                      <td>{node.direct_connect ? "直连" : "主控代理"}</td>
+                      <td>
+                        <div className="probe-table-actions">
+                          <button className="btn" onClick={() => openSettings(node)} disabled={isLoading}>设置</button>
+                          <button className="btn" onClick={() => void copyInstallCommand(node)} disabled={isLoading}>安装</button>
+                          <button className="btn" onClick={() => void upgradeOne(node)} disabled={isLoading || isUpgradingAll || upgradingNodeNos.includes(node.node_no)}>
+                            {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

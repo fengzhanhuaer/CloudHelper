@@ -283,6 +283,62 @@
     gap: 12px;
 }
 
+.probe-table-wrap {
+    margin-top: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 10px;
+    background: rgba(7, 11, 18, 0.35);
+    overflow-x: auto;
+}
+
+.probe-table {
+    width: 100%;
+    min-width: 1180px;
+    border-collapse: collapse;
+    color: #e1ecff;
+}
+
+.probe-table th,
+.probe-table td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    vertical-align: top;
+}
+
+.probe-table thead th {
+    font-size: 13px;
+    color: #d6e4ff;
+    background: rgba(20, 34, 56, 0.52);
+    white-space: nowrap;
+}
+
+.probe-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.probe-table-name {
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.probe-table-sub {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #c9ddff;
+    line-height: 1.35;
+}
+
+.probe-table-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: nowrap;
+}
+
+.probe-table .vendor-copy-link {
+    margin-left: 0;
+}
+
 .probe-node-card {
     border: 1px solid rgba(255, 255, 255, 0.15);
     background: rgba(7, 11, 18, 0.35);
