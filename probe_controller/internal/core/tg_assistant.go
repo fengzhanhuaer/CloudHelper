@@ -186,6 +186,7 @@ func initTGAssistantStore() {
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		log.Fatalf("failed to create tg temporary directory: %v", err)
 	}
+	migrateTGAssistantSessionFilesToDataDir()
 
 	storePath := filepath.Join(dataDir, tgAssistantStoreFile)
 	TGAssistantStore = &tgAssistantStore{
@@ -218,7 +219,7 @@ func initTGAssistantStore() {
 		log.Fatalf("failed to check tg assistant store file: %v", err)
 	}
 
-	log.Println("TG assistant datastore initialized at", storePath, "session_dir=", filepath.Join(tempDir, tgAssistantSessionDirName), "history=", tgAssistantHistoryPath())
+	log.Println("TG assistant datastore initialized at", storePath, "session_dir=", filepath.Join(dataDir, tgAssistantSessionDirName), "history=", tgAssistantHistoryPath())
 }
 
 func getTGAssistantAPIKey() tgAssistantAPIKey {
@@ -1462,7 +1463,58 @@ func tgAssistantSessionPath(accountID string) string {
 	if safeID == "" {
 		safeID = "unknown"
 	}
-	return filepath.Join(tgAssistantTempDirPath(), tgAssistantSessionDirName, safeID+".json")
+	return filepath.Join(dataDir, tgAssistantSessionDirName, safeID+".json")
+}
+
+func migrateTGAssistantSessionFilesToDataDir() {
+	oldDir := filepath.Join(tgAssistantTempDirPath(), tgAssistantSessionDirName)
+	entries, err := os.ReadDir(oldDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		log.Printf("list legacy tg session dir failed: %v", err)
+		return
+	}
+
+	newDir := filepath.Join(dataDir, tgAssistantSessionDirName)
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		log.Printf("create tg session dir in data failed: %v", err)
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if name == "" || !strings.HasSuffix(strings.ToLower(name), ".json") {
+			continue
+		}
+
+		src := filepath.Join(oldDir, name)
+		dst := filepath.Join(newDir, name)
+		if _, err := os.Stat(dst); err == nil {
+			continue
+		}
+
+		if err := os.Rename(src, dst); err == nil {
+			log.Printf("migrated tg session file to data dir: %s", name)
+			continue
+		}
+
+		content, readErr := os.ReadFile(src)
+		if readErr != nil {
+			log.Printf("read legacy tg session file failed: %v", readErr)
+			continue
+		}
+		if writeErr := os.WriteFile(dst, content, 0o644); writeErr != nil {
+			log.Printf("write migrated tg session file failed: %v", writeErr)
+			continue
+		}
+		_ = os.Remove(src)
+		log.Printf("copied tg session file to data dir: %s", name)
+	}
 }
 
 func setTGAssistantLoginChallenge(accountID, phoneCodeHash string, ttl time.Duration) {
