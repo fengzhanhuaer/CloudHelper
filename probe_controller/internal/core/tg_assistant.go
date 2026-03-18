@@ -1135,7 +1135,7 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 	}
 
 	tgResponseMessage := ""
-	tgResponseFallback := ""
+	tgResponseFallback := sanitizeTGAssistantHistoryText(task.Message, 240)
 	err := runTGAssistantClientWithContext(ctx, apiID, apiHash, account, func(inner context.Context, client *telegram.Client) error {
 		status, err := client.Auth().Status(inner)
 		if err != nil {
@@ -1157,7 +1157,6 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 		if err != nil {
 			return err
 		}
-		tgResponseFallback = summarizeTGAssistantSendUpdates(updates)
 		tgResponseMessage = waitTGAssistantSendResponseMessage(inner, client, peer, updates, 5*time.Second)
 		if strings.TrimSpace(tgResponseMessage) == "" {
 			tgResponseMessage = tgResponseFallback
@@ -1179,7 +1178,7 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 		return tgAssistantScheduleSendNowResult{}, err
 	}
 	if strings.TrimSpace(tgResponseMessage) == "" {
-		tgResponseMessage = "sent (no detailed tg response)"
+		tgResponseMessage = sanitizeTGAssistantHistoryText(task.Message, 240)
 	}
 
 	result := tgAssistantScheduleSendNowResult{
@@ -1209,9 +1208,10 @@ func waitTGAssistantSendResponseMessage(
 	updates tg.UpdatesClass,
 	maxWait time.Duration,
 ) string {
-	summary := summarizeTGAssistantSendUpdates(updates)
-	if summary != "" {
-		return summary
+	sentID := extractTGAssistantSentMessageID(updates)
+	textFromUpdates := summarizeTGAssistantSendUpdates(updates)
+	if textFromUpdates != "" {
+		return textFromUpdates
 	}
 	if maxWait <= 0 {
 		return ""
@@ -1227,15 +1227,18 @@ func waitTGAssistantSendResponseMessage(
 			OffsetID:   0,
 			OffsetDate: 0,
 			AddOffset:  0,
-			Limit:      3,
-			MaxID:      0,
-			MinID:      0,
+			Limit:      10,
+			MaxID:      maxInt(sentID+1, 0),
+			MinID:      maxInt(sentID-1, 0),
 			Hash:       0,
 		})
 		if err == nil {
 			for _, raw := range extractTGAssistantMessagesFromHistory(resp) {
 				msg, ok := raw.(*tg.Message)
 				if !ok || !msg.Out {
+					continue
+				}
+				if sentID > 0 && msg.ID != sentID {
 					continue
 				}
 				value := summarizeTGAssistantTLMessage(msg)
@@ -1259,58 +1262,29 @@ func waitTGAssistantSendResponseMessage(
 			if !timer.Stop() {
 				<-timer.C
 			}
-			return summary
+			return textFromUpdates
 		case <-timer.C:
 		}
 	}
-	return summary
+	return textFromUpdates
 }
 
 func summarizeTGAssistantSendUpdates(updates tg.UpdatesClass) string {
 	switch value := updates.(type) {
 	case *tg.UpdateShortSentMessage:
-		return fmt.Sprintf("id=%d date=%s", value.ID, formatTGAssistantUnixTime(value.Date))
+		return ""
 	case *tg.UpdateShortMessage:
-		return fmt.Sprintf(
-			"id=%d date=%s text=%s",
-			value.ID,
-			formatTGAssistantUnixTime(value.Date),
-			sanitizeTGAssistantHistoryText(value.Message, 140),
-		)
+		return sanitizeTGAssistantHistoryText(value.Message, 240)
 	case *tg.UpdateShortChatMessage:
-		return fmt.Sprintf(
-			"id=%d date=%s text=%s",
-			value.ID,
-			formatTGAssistantUnixTime(value.Date),
-			sanitizeTGAssistantHistoryText(value.Message, 140),
-		)
+		return sanitizeTGAssistantHistoryText(value.Message, 240)
 	case *tg.UpdateShort:
-		summary := summarizeTGAssistantUpdate(value.Update)
-		if summary != "" {
-			return summary
-		}
-		return fmt.Sprintf("update_short date=%s", formatTGAssistantUnixTime(value.Date))
+		return summarizeTGAssistantUpdate(value.Update)
 	case *tg.Updates:
-		summary := summarizeTGAssistantUpdatesList(value.Updates)
-		if summary != "" {
-			return summary
-		}
-		return describeTGAssistantUpdateTypes(value.Updates)
+		return summarizeTGAssistantUpdatesList(value.Updates)
 	case *tg.UpdatesCombined:
-		summary := summarizeTGAssistantUpdatesList(value.Updates)
-		if summary != "" {
-			return summary
-		}
-		return describeTGAssistantUpdateTypes(value.Updates)
+		return summarizeTGAssistantUpdatesList(value.Updates)
 	default:
-		if updates == nil {
-			return ""
-		}
-		raw, err := json.Marshal(updates)
-		if err != nil {
-			return fmt.Sprintf("type=%T", updates)
-		}
-		return sanitizeTGAssistantHistoryText(string(raw), 180)
+		return ""
 	}
 }
 
@@ -1334,24 +1308,10 @@ func summarizeTGAssistantUpdate(update tg.UpdateClass) string {
 	case *tg.UpdateEditChannelMessage:
 		return summarizeTGAssistantMessageClass(value.Message)
 	case *tg.UpdateMessageID:
-		return fmt.Sprintf("id=%d random_id=%d", value.ID, value.RandomID)
+		return ""
 	default:
 		return ""
 	}
-}
-
-func describeTGAssistantUpdateTypes(list []tg.UpdateClass) string {
-	if len(list) == 0 {
-		return "updates=0"
-	}
-	parts := make([]string, 0, len(list))
-	for idx, item := range list {
-		if idx >= 3 {
-			break
-		}
-		parts = append(parts, fmt.Sprintf("%T", item))
-	}
-	return fmt.Sprintf("updates=%d types=%s", len(list), strings.Join(parts, ","))
 }
 
 func summarizeTGAssistantMessageClass(message tg.MessageClass) string {
@@ -1367,12 +1327,64 @@ func summarizeTGAssistantTLMessage(message *tg.Message) string {
 	if message == nil {
 		return ""
 	}
-	return fmt.Sprintf(
-		"id=%d date=%s text=%s",
-		message.ID,
-		formatTGAssistantUnixTime(message.Date),
-		sanitizeTGAssistantHistoryText(message.Message, 140),
-	)
+	return sanitizeTGAssistantHistoryText(message.Message, 240)
+}
+
+func extractTGAssistantSentMessageID(updates tg.UpdatesClass) int {
+	switch value := updates.(type) {
+	case *tg.UpdateShortSentMessage:
+		return value.ID
+	case *tg.UpdateShortMessage:
+		return value.ID
+	case *tg.UpdateShortChatMessage:
+		return value.ID
+	case *tg.UpdateShort:
+		return extractTGAssistantSentIDFromUpdate(value.Update)
+	case *tg.Updates:
+		return extractTGAssistantSentIDFromUpdates(value.Updates)
+	case *tg.UpdatesCombined:
+		return extractTGAssistantSentIDFromUpdates(value.Updates)
+	default:
+		return 0
+	}
+}
+
+func extractTGAssistantSentIDFromUpdates(list []tg.UpdateClass) int {
+	for _, item := range list {
+		if id := extractTGAssistantSentIDFromUpdate(item); id > 0 {
+			return id
+		}
+	}
+	return 0
+}
+
+func extractTGAssistantSentIDFromUpdate(update tg.UpdateClass) int {
+	switch value := update.(type) {
+	case *tg.UpdateMessageID:
+		return value.ID
+	case *tg.UpdateNewMessage:
+		if msg, ok := value.Message.(*tg.Message); ok {
+			return msg.ID
+		}
+		return 0
+	case *tg.UpdateNewChannelMessage:
+		if msg, ok := value.Message.(*tg.Message); ok {
+			return msg.ID
+		}
+		return 0
+	case *tg.UpdateEditMessage:
+		if msg, ok := value.Message.(*tg.Message); ok {
+			return msg.ID
+		}
+		return 0
+	case *tg.UpdateEditChannelMessage:
+		if msg, ok := value.Message.(*tg.Message); ok {
+			return msg.ID
+		}
+		return 0
+	default:
+		return 0
+	}
 }
 
 func extractTGAssistantMessagesFromHistory(resp tg.MessagesMessagesClass) []tg.MessageClass {
