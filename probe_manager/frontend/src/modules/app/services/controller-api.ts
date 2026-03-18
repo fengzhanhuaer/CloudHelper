@@ -399,19 +399,25 @@ export async function fetchTGAssistantBotAPIKey(baseURL: string, token: string, 
     account_id: typeof payload.account_id === "string" ? payload.account_id : accountID,
     api_key: typeof payload.api_key === "string" ? payload.api_key : "",
     configured: payload.configured === true,
+    mode: payload.mode === "webhook" ? "webhook" : "polling",
+    webhook_path: typeof payload.webhook_path === "string" ? payload.webhook_path : "",
+    webhook_enabled: payload.webhook_enabled === true,
   };
 }
 
 export async function setTGAssistantBotAPIKey(
   baseURL: string,
   token: string,
-  input: { account_id: string; api_key: string },
+  input: { account_id: string; api_key: string; mode?: "polling" | "webhook" },
 ): Promise<TGAssistantBotAPIKey> {
   const payload = await callAdminWSRpc<TGAssistantBotAPIKey>(baseURL, token, "admin.tg.bot.set", input);
   return {
     account_id: typeof payload.account_id === "string" ? payload.account_id : input.account_id,
     api_key: typeof payload.api_key === "string" ? payload.api_key : "",
     configured: payload.configured === true,
+    mode: payload.mode === "webhook" ? "webhook" : "polling",
+    webhook_path: typeof payload.webhook_path === "string" ? payload.webhook_path : "",
+    webhook_enabled: payload.webhook_enabled === true,
   };
 }
 

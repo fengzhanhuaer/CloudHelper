@@ -184,6 +184,9 @@ export type TGAssistantBotAPIKey = {
   account_id: string;
   api_key: string;
   configured: boolean;
+  mode?: "polling" | "webhook";
+  webhook_path?: string;
+  webhook_enabled?: boolean;
 };
 
 export type TGAssistantBotTestSendResult = {

@@ -47,6 +47,9 @@ type tgAssistantAccountRecord struct {
 	Label           string                      `json:"label"`
 	Phone           string                      `json:"phone"`
 	BotAPIKey       string                      `json:"bot_api_key,omitempty"`
+	BotMode         string                      `json:"bot_mode,omitempty"`
+	BotWebhookPath  string                      `json:"bot_webhook_path,omitempty"`
+	BotWebhookToken string                      `json:"bot_webhook_token,omitempty"`
 	BotLastUpdateID int                         `json:"bot_last_update_id,omitempty"`
 	Authorized      bool                        `json:"authorized"`
 	LastError       string                      `json:"last_error"`
@@ -395,6 +398,7 @@ func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount
 		Label:       label,
 		Phone:       phone,
 		BotAPIKey:   "",
+		BotMode:     tgAssistantBotModePolling,
 		Authorized:  false,
 		LastError:   "",
 		CreatedAt:   now,
@@ -1775,8 +1779,14 @@ func normalizeTGAssistantAccountRecords(records []tgAssistantAccountRecord) []tg
 		item.Label = strings.TrimSpace(item.Label)
 		item.Phone = normalizeTGPhone(item.Phone)
 		item.BotAPIKey = strings.TrimSpace(item.BotAPIKey)
+		item.BotMode = normalizeTGAssistantBotMode(item.BotMode)
+		item.BotWebhookPath = sanitizeTGAssistantBotWebhookPath(item.BotWebhookPath)
+		item.BotWebhookToken = strings.TrimSpace(item.BotWebhookToken)
 		if item.BotLastUpdateID < 0 {
 			item.BotLastUpdateID = 0
+		}
+		if item.BotMode == tgAssistantBotModeWebhook && (item.BotWebhookPath == "" || item.BotWebhookToken == "") {
+			item.BotMode = tgAssistantBotModePolling
 		}
 		item.SelfUsername = strings.TrimSpace(item.SelfUsername)
 		item.SelfDisplayName = strings.TrimSpace(item.SelfDisplayName)

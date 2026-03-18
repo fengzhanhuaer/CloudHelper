@@ -79,8 +79,12 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [isScheduleHistoryLoading, setIsScheduleHistoryLoading] = useState(false);
   const [showBotAPIKeyModal, setShowBotAPIKeyModal] = useState(false);
   const [botAPIKeyDraft, setBotAPIKeyDraft] = useState("");
+  const [botModeDraft, setBotModeDraft] = useState<"polling" | "webhook">("polling");
   const [botAPIKeyInput, setBotAPIKeyInput] = useState("");
   const [botConfigured, setBotConfigured] = useState(false);
+  const [botModeInput, setBotModeInput] = useState<"polling" | "webhook">("polling");
+  const [botWebhookPath, setBotWebhookPath] = useState("");
+  const [botWebhookEnabled, setBotWebhookEnabled] = useState(false);
   const [botTestMessageDraft, setBotTestMessageDraft] = useState("ping from bot test");
   const [isBotLoading, setIsBotLoading] = useState(false);
   const scheduleRequestSeqRef = useRef(0);
@@ -131,6 +135,10 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setScheduleDelayMaxDraft("0");
       setBotAPIKeyInput("");
       setBotConfigured(false);
+      setBotModeInput("polling");
+      setBotModeDraft("polling");
+      setBotWebhookPath("");
+      setBotWebhookEnabled(false);
       setBotTestMessageDraft("ping from bot test");
       return;
     }
@@ -156,6 +164,9 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   function applyBotAPIKey(payload: TGAssistantBotAPIKey) {
     setBotAPIKeyInput(payload.api_key || "");
     setBotConfigured(payload.configured === true);
+    setBotModeInput(payload.mode === "webhook" ? "webhook" : "polling");
+    setBotWebhookPath(payload.webhook_path || "");
+    setBotWebhookEnabled(payload.webhook_enabled === true);
   }
 
   function applyScheduleList(accountID: string, schedules: TGAssistantSchedule[]) {
@@ -768,6 +779,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       return;
     }
     setBotAPIKeyDraft(botAPIKeyInput);
+    setBotModeDraft(botModeInput);
     setShowBotAPIKeyModal(true);
   }
 
@@ -785,6 +797,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       return;
     }
     const apiKey = botAPIKeyDraft.trim();
+    const mode = botModeDraft;
     if (!apiKey) {
       setStatus("BOT API key 不能为空");
       return;
@@ -800,10 +813,11 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       const payload = await setTGAssistantBotAPIKey(props.controllerBaseUrl, props.sessionToken, {
         account_id: activeLoggedInAccount.id,
         api_key: apiKey,
+        mode,
       });
       applyBotAPIKey(payload);
       setShowBotAPIKeyModal(false);
-      setStatus("TG BOT API key 已保存");
+      setStatus(`TG BOT 配置已保存（模式：${mode === "webhook" ? "webhook" : "getUpdates"}）`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`保存 TG BOT API key 失败：${msg}`);
@@ -943,9 +957,21 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                       <div className="tg-account-basic-value">{botConfigured ? "已配置" : "未配置"}</div>
                     </div>
                     <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">接收模式</div>
+                      <div className="tg-account-basic-value">{botModeInput === "webhook" ? "webhook" : "getUpdates"}</div>
+                    </div>
+                    <div className="tg-account-basic-row">
                       <div className="tg-account-basic-label">当前 Key</div>
                       <div className="tg-account-basic-value">{botConfigured ? botAPIKeyInput : "-"}</div>
                     </div>
+                    {botModeInput === "webhook" ? (
+                      <div className="tg-account-basic-row">
+                        <div className="tg-account-basic-label">Webhook 回调</div>
+                        <div className="tg-account-basic-value">
+                          {botWebhookPath || "-"} {botWebhookEnabled ? "(已启用)" : "(未启用)"}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="tg-schedule-field">
                       <label className="tg-account-basic-label" htmlFor="tg-bot-test-message">
                         测试消息
@@ -1383,6 +1409,18 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
         <div className="probe-settings-modal-mask" onClick={closeBotAPIKeyModal}>
           <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>设置 TG BOT API key</h3>
+            <div className="row">
+              <label>接收模式</label>
+              <select
+                className="input"
+                value={botModeDraft}
+                onChange={(event) => setBotModeDraft(event.target.value === "webhook" ? "webhook" : "polling")}
+                disabled={isBotLoading}
+              >
+                <option value="polling">getUpdates（长轮询）</option>
+                <option value="webhook">webhook（回调）</option>
+              </select>
+            </div>
             <div className="row" style={{ marginBottom: 0 }}>
               <label>BOT API key</label>
               <input
