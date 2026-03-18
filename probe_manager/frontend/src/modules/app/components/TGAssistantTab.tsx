@@ -136,6 +136,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
     void loadSchedule(accountID, { silent: true });
     void loadTargets(accountID, { silent: true });
+    void loadBotAPIKey(accountID, { silent: true });
   }, [activeLoggedInAccountID, props.controllerBaseUrl, props.sessionToken]);
 
   function applyAccountList(nextAccounts: TGAssistantAccount[]) {
@@ -629,6 +630,32 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
   }
 
+  async function loadBotAPIKey(accountID: string, options?: { silent?: boolean }) {
+    const normalizedAccountID = accountID.trim();
+    if (!normalizedAccountID) {
+      return;
+    }
+    const silent = options?.silent === true;
+    setIsBotLoading(true);
+    if (!silent) {
+      setStatus("正在加载 TG BOT 配置...");
+    }
+    try {
+      const payload = await fetchTGAssistantBotAPIKey(props.controllerBaseUrl, props.sessionToken, normalizedAccountID);
+      applyBotAPIKey(payload);
+      if (!silent) {
+        setStatus(payload.configured ? "已加载 TG BOT 配置" : "当前账号尚未配置 TG BOT API key");
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      if (!silent) {
+        setStatus(`加载 TG BOT 配置失败：${msg}`);
+      }
+    } finally {
+      setIsBotLoading(false);
+    }
+  }
+
   async function handleRemoveScheduleTask(taskID: string) {
     if (!activeLoggedInAccount) {
       setStatus("请先选择一个已登录账号");
@@ -735,6 +762,92 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     setScheduleHistoryItems([]);
   }
 
+  function openBotAPIKeyModal() {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    setBotAPIKeyDraft(botAPIKeyInput);
+    setShowBotAPIKeyModal(true);
+  }
+
+  function closeBotAPIKeyModal() {
+    if (isBotLoading) {
+      return;
+    }
+    setShowBotAPIKeyModal(false);
+    setBotAPIKeyDraft("");
+  }
+
+  async function handleSaveBotAPIKey() {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    const apiKey = botAPIKeyDraft.trim();
+    if (!apiKey) {
+      setStatus("BOT API key 不能为空");
+      return;
+    }
+    if (!apiKey.includes(":")) {
+      setStatus("BOT API key 格式不正确");
+      return;
+    }
+
+    setIsBotLoading(true);
+    setStatus("正在保存 TG BOT API key...");
+    try {
+      const payload = await setTGAssistantBotAPIKey(props.controllerBaseUrl, props.sessionToken, {
+        account_id: activeLoggedInAccount.id,
+        api_key: apiKey,
+      });
+      applyBotAPIKey(payload);
+      setShowBotAPIKeyModal(false);
+      setStatus("TG BOT API key 已保存");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`保存 TG BOT API key 失败：${msg}`);
+    } finally {
+      setIsBotLoading(false);
+    }
+  }
+
+  async function handleTestBotSend() {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    const message = botTestMessageDraft.trim();
+    if (!message) {
+      setStatus("请输入测试消息内容");
+      return;
+    }
+
+    setIsBotLoading(true);
+    setStatus("正在发送 TG BOT 测试消息...");
+    try {
+      const result: TGAssistantBotTestSendResult = await testSendTGAssistantBotMessage(
+        props.controllerBaseUrl,
+        props.sessionToken,
+        {
+          account_id: activeLoggedInAccount.id,
+          message,
+        },
+      );
+      const text = (result.message || "").trim();
+      if (text) {
+        setStatus(`TG BOT 测试发送成功：${text}`);
+      } else {
+        setStatus(`TG BOT 测试发送成功：chat_id=${result.chat_id} message_id=${result.message_id}`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`TG BOT 测试发送失败：${msg}`);
+    } finally {
+      setIsBotLoading(false);
+    }
+  }
+
   return (
     <div className="content-block">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, marginBottom: 12 }}>
@@ -783,6 +896,13 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
               >
                 定时发送
               </button>
+              <button
+                className={`subtab-btn ${activeAccountDetailSubTab === "tg-bot" ? "active" : ""}`}
+                onClick={() => setActiveAccountDetailSubTab("tg-bot")}
+                disabled={isLoading || isBotLoading || !activeLoggedInAccount}
+              >
+                TG BOT
+              </button>
             </div>
 
             {activeLoggedInAccount ? (
@@ -808,6 +928,55 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                     <div className="tg-account-basic-row">
                       <div className="tg-account-basic-label">最近登录</div>
                       <div className="tg-account-basic-value">{formatDateTime(activeLoggedInAccount.last_login_at || "")}</div>
+                    </div>
+                  </div>
+                ) : activeAccountDetailSubTab === "tg-bot" ? (
+                  <div className="tg-schedule-panel">
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">当前账号</div>
+                      <div className="tg-account-basic-value">
+                        {activeLoggedInAccount.label} ({activeLoggedInAccount.phone})
+                      </div>
+                    </div>
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">BOT 状态</div>
+                      <div className="tg-account-basic-value">{botConfigured ? "已配置" : "未配置"}</div>
+                    </div>
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">当前 Key</div>
+                      <div className="tg-account-basic-value">{botConfigured ? botAPIKeyInput : "-"}</div>
+                    </div>
+                    <div className="tg-schedule-field">
+                      <label className="tg-account-basic-label" htmlFor="tg-bot-test-message">
+                        测试消息
+                      </label>
+                      <textarea
+                        id="tg-bot-test-message"
+                        className="input tg-schedule-textarea"
+                        value={botTestMessageDraft}
+                        onChange={(event) => setBotTestMessageDraft(event.target.value)}
+                        placeholder="输入测试消息内容"
+                        disabled={isLoading || isBotLoading}
+                      />
+                    </div>
+                    <div className="content-actions">
+                      <button className="btn" onClick={openBotAPIKeyModal} disabled={isLoading || isBotLoading || !activeLoggedInAccount}>
+                        设置 BOT API key
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() => void loadBotAPIKey(activeLoggedInAccount.id)}
+                        disabled={isLoading || isBotLoading || !activeLoggedInAccount}
+                      >
+                        {isBotLoading ? "刷新中..." : "刷新 BOT 配置"}
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() => void handleTestBotSend()}
+                        disabled={isLoading || isBotLoading || !activeLoggedInAccount || !botConfigured}
+                      >
+                        测试发送
+                      </button>
                     </div>
                   </div>
                 ) : (
@@ -1205,6 +1374,28 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
             <div className="content-actions">
               <button className="btn" onClick={() => void handleSaveSharedAPIKey()} disabled={isLoading}>保存</button>
               <button className="btn" onClick={() => setShowAPIKeyModal(false)} disabled={isLoading}>取消</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showBotAPIKeyModal ? (
+        <div className="probe-settings-modal-mask" onClick={closeBotAPIKeyModal}>
+          <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>设置 TG BOT API key</h3>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>BOT API key</label>
+              <input
+                className="input"
+                value={botAPIKeyDraft}
+                onChange={(event) => setBotAPIKeyDraft(event.target.value)}
+                placeholder="例如：123456:AA..."
+                disabled={isBotLoading}
+              />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void handleSaveBotAPIKey()} disabled={isBotLoading}>保存</button>
+              <button className="btn" onClick={closeBotAPIKeyModal} disabled={isBotLoading}>取消</button>
             </div>
           </div>
         </div>
