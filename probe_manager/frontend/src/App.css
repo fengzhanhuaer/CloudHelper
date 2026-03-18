@@ -361,8 +361,9 @@
 
 .tg-schedule-table-actions {
     display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
 }
 
 .probe-node-list {
