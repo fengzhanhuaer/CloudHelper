@@ -317,6 +317,13 @@
     gap: 6px;
 }
 
+.tg-target-picker {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: center;
+}
+
 .tg-schedule-toggle {
     display: inline-flex;
     align-items: center;
@@ -538,5 +545,9 @@
     .tg-account-basic-row {
         grid-template-columns: 1fr;
         gap: 2px;
+    }
+
+    .tg-target-picker {
+        grid-template-columns: 1fr;
     }
 }

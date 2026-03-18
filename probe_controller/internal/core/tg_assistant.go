@@ -26,6 +26,7 @@ const (
 	tgAssistantTempDir        = "./tg"
 	tgAssistantStoreFile      = "tg.json"
 	tgAssistantSessionDirName = "tg_sessions"
+	tgAssistantTargetsDirName = "targets"
 	tgAssistantHistoryFile    = "history.jsonl"
 	tgAssistantLoginCodeTTL   = 10 * time.Minute
 	tgTaskTypeScheduledSend   = "scheduled_send"
@@ -73,8 +74,11 @@ type tgAssistantScheduleRecord struct {
 	ID        string `json:"id"`
 	TaskType  string `json:"task_type"`
 	Enabled   bool   `json:"enabled"`
+	Target    string `json:"target"`
 	SendAt    string `json:"send_at"`
 	Message   string `json:"message"`
+	DelayMin  int    `json:"delay_min_sec"`
+	DelayMax  int    `json:"delay_max_sec"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
@@ -83,8 +87,11 @@ type tgAssistantSchedule struct {
 	ID        string `json:"id"`
 	TaskType  string `json:"task_type"`
 	Enabled   bool   `json:"enabled"`
+	Target    string `json:"target"`
 	SendAt    string `json:"send_at"`
 	Message   string `json:"message"`
+	DelayMin  int    `json:"delay_min_sec"`
+	DelayMax  int    `json:"delay_max_sec"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
@@ -95,6 +102,13 @@ type tgAssistantHistoryRecord struct {
 	AccountID string `json:"account_id,omitempty"`
 	Success   bool   `json:"success"`
 	Message   string `json:"message,omitempty"`
+}
+
+type tgAssistantTarget struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Username string `json:"username,omitempty"`
+	Type     string `json:"type,omitempty"`
 }
 
 type tgAssistantLoginChallenge struct {
@@ -155,8 +169,11 @@ type tgAssistantScheduleAddRequest struct {
 	AccountID string `json:"account_id"`
 	TaskType  string `json:"task_type"`
 	Enabled   bool   `json:"enabled"`
+	Target    string `json:"target"`
 	SendAt    string `json:"send_at"`
 	Message   string `json:"message"`
+	DelayMin  int    `json:"delay_min_sec"`
+	DelayMax  int    `json:"delay_max_sec"`
 }
 
 type tgAssistantScheduleRemoveRequest struct {
@@ -384,6 +401,7 @@ func removeTGAssistantAccount(req tgAssistantAccountIDRequest) ([]tgAssistantAcc
 
 	clearTGAssistantLoginChallenge(accountID)
 	_ = os.Remove(tgAssistantSessionPath(accountID))
+	_ = os.Remove(tgAssistantTargetsPath(accountID))
 	appendTGAssistantHistory("account.remove", accountID, true, "removed")
 
 	return buildTGAssistantAccountViews(next, apiID), nil
@@ -651,8 +669,11 @@ func addTGAssistantSchedule(req tgAssistantScheduleAddRequest) ([]tgAssistantSch
 
 	accountID := strings.TrimSpace(req.AccountID)
 	taskType := strings.TrimSpace(req.TaskType)
+	target := strings.TrimSpace(req.Target)
 	sendAt := strings.TrimSpace(req.SendAt)
 	message := strings.TrimSpace(req.Message)
+	delayMin := req.DelayMin
+	delayMax := req.DelayMax
 	if accountID == "" {
 		return nil, errors.New("account_id is required")
 	}
@@ -661,6 +682,12 @@ func addTGAssistantSchedule(req tgAssistantScheduleAddRequest) ([]tgAssistantSch
 	}
 	if taskType != tgTaskTypeScheduledSend {
 		return nil, fmt.Errorf("unsupported task_type: %s", taskType)
+	}
+	if target == "" {
+		return nil, errors.New("target is required")
+	}
+	if len(target) > 256 {
+		return nil, errors.New("target is too long")
 	}
 	if req.Enabled {
 		if sendAt == "" {
@@ -676,14 +703,23 @@ func addTGAssistantSchedule(req tgAssistantScheduleAddRequest) ([]tgAssistantSch
 	if len(message) > 4000 {
 		return nil, errors.New("message is too long")
 	}
+	if delayMin < 0 || delayMax < 0 {
+		return nil, errors.New("delay range must be non-negative")
+	}
+	if delayMax < delayMin {
+		return nil, errors.New("delay_max_sec must be greater than or equal to delay_min_sec")
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	task := tgAssistantScheduleRecord{
 		ID:        newTGAssistantScheduleID(),
 		TaskType:  taskType,
 		Enabled:   req.Enabled,
+		Target:    target,
 		SendAt:    sendAt,
 		Message:   message,
+		DelayMin:  delayMin,
+		DelayMax:  delayMax,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -706,7 +742,21 @@ func addTGAssistantSchedule(req tgAssistantScheduleAddRequest) ([]tgAssistantSch
 	if err := TGAssistantStore.Save(); err != nil {
 		return nil, err
 	}
-	appendTGAssistantHistory("schedule.add", accountID, true, fmt.Sprintf("task_id=%s type=%s enabled=%t send_at=%s", task.ID, task.TaskType, task.Enabled, task.SendAt))
+	appendTGAssistantHistory(
+		"schedule.add",
+		accountID,
+		true,
+		fmt.Sprintf(
+			"task_id=%s type=%s target=%s enabled=%t send_at=%s delay=%d-%d",
+			task.ID,
+			task.TaskType,
+			task.Target,
+			task.Enabled,
+			task.SendAt,
+			task.DelayMin,
+			task.DelayMax,
+		),
+	)
 	return buildTGAssistantScheduleViews(account.Schedules), nil
 }
 
@@ -757,6 +807,97 @@ func removeTGAssistantSchedule(req tgAssistantScheduleRemoveRequest) ([]tgAssist
 	}
 	appendTGAssistantHistory("schedule.remove", accountID, true, fmt.Sprintf("task_id=%s", taskID))
 	return buildTGAssistantScheduleViews(account.Schedules), nil
+}
+
+func listTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTarget, error) {
+	if TGAssistantStore == nil {
+		return nil, errors.New("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	if accountID == "" {
+		return nil, errors.New("account_id is required")
+	}
+
+	TGAssistantStore.mu.RLock()
+	records := loadTGAssistantAccountsLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	TGAssistantStore.mu.RUnlock()
+	if index < 0 {
+		return nil, errors.New("account not found")
+	}
+
+	targets, err := loadTGAssistantTargetsFromFile(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return targets, nil
+}
+
+func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTarget, error) {
+	if TGAssistantStore == nil {
+		return nil, errors.New("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	if accountID == "" {
+		return nil, errors.New("account_id is required")
+	}
+
+	TGAssistantStore.mu.RLock()
+	records := loadTGAssistantAccountsLocked()
+	apiID, apiHash := loadTGAssistantAPIKeyLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	if index < 0 {
+		TGAssistantStore.mu.RUnlock()
+		return nil, errors.New("account not found")
+	}
+	record := records[index]
+	TGAssistantStore.mu.RUnlock()
+
+	if !isTGAssistantAPIKeyConfigured(apiID, apiHash) {
+		return nil, errors.New("shared tg api key is not configured")
+	}
+
+	targets := make([]tgAssistantTarget, 0, 64)
+	err := runTGAssistantClient(apiID, apiHash, record, func(ctx context.Context, client *telegram.Client) error {
+		status, err := client.Auth().Status(ctx)
+		if err != nil {
+			return err
+		}
+		if !status.Authorized {
+			return errors.New("account is not authorized")
+		}
+
+		resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+			OffsetDate: 0,
+			OffsetID:   0,
+			OffsetPeer: &tg.InputPeerEmpty{},
+			Limit:      100,
+			Hash:       0,
+		})
+		if err != nil {
+			return err
+		}
+
+		dialogs, chats, users, err := parseTGDialogsResponse(resp)
+		if err != nil {
+			return err
+		}
+		targets = buildTGAssistantTargets(dialogs, chats, users)
+		return nil
+	})
+	if err != nil {
+		appendTGAssistantHistory("targets.refresh", accountID, false, err.Error())
+		return nil, err
+	}
+
+	if err := saveTGAssistantTargetsToFile(accountID, targets); err != nil {
+		appendTGAssistantHistory("targets.refresh", accountID, false, err.Error())
+		return nil, err
+	}
+	appendTGAssistantHistory("targets.refresh", accountID, true, fmt.Sprintf("count=%d", len(targets)))
+	return targets, nil
 }
 
 func runTGAssistantClient(apiID int, apiHash string, record tgAssistantAccountRecord, fn func(ctx context.Context, client *telegram.Client) error) error {
@@ -988,8 +1129,18 @@ func normalizeTGAssistantScheduleTaskRecords(records []tgAssistantScheduleRecord
 	for _, item := range records {
 		item.ID = strings.TrimSpace(item.ID)
 		item.TaskType = strings.TrimSpace(item.TaskType)
+		item.Target = strings.TrimSpace(item.Target)
 		item.SendAt = strings.TrimSpace(item.SendAt)
 		item.Message = strings.TrimSpace(item.Message)
+		if item.DelayMin < 0 {
+			item.DelayMin = 0
+		}
+		if item.DelayMax < 0 {
+			item.DelayMax = 0
+		}
+		if item.DelayMax < item.DelayMin {
+			item.DelayMax = item.DelayMin
+		}
 		item.CreatedAt = strings.TrimSpace(item.CreatedAt)
 		item.UpdatedAt = strings.TrimSpace(item.UpdatedAt)
 		if item.ID == "" {
@@ -1028,8 +1179,11 @@ func buildTGAssistantScheduleViews(records []tgAssistantScheduleRecord) []tgAssi
 			ID:        record.ID,
 			TaskType:  record.TaskType,
 			Enabled:   record.Enabled,
+			Target:    record.Target,
 			SendAt:    record.SendAt,
 			Message:   record.Message,
+			DelayMin:  record.DelayMin,
+			DelayMax:  record.DelayMax,
 			CreatedAt: record.CreatedAt,
 			UpdatedAt: record.UpdatedAt,
 		})
@@ -1043,6 +1197,18 @@ func tgAssistantTempDirPath() string {
 
 func tgAssistantHistoryPath() string {
 	return filepath.Join(tgAssistantTempDirPath(), tgAssistantHistoryFile)
+}
+
+func tgAssistantTargetsDirPath() string {
+	return filepath.Join(tgAssistantTempDirPath(), tgAssistantTargetsDirName)
+}
+
+func tgAssistantTargetsPath(accountID string) string {
+	safeID := strings.TrimSpace(accountID)
+	if safeID == "" {
+		safeID = "unknown"
+	}
+	return filepath.Join(tgAssistantTargetsDirPath(), safeID+".json")
 }
 
 func appendTGAssistantHistory(action, accountID string, success bool, message string) {
@@ -1080,6 +1246,180 @@ func appendTGAssistantHistory(action, accountID string, success bool, message st
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		log.Printf("tg history append failed: %v", err)
 	}
+}
+
+func parseTGDialogsResponse(resp tg.MessagesDialogsClass) ([]tg.DialogClass, []tg.ChatClass, []tg.UserClass, error) {
+	switch value := resp.(type) {
+	case *tg.MessagesDialogs:
+		return value.Dialogs, value.Chats, value.Users, nil
+	case *tg.MessagesDialogsSlice:
+		return value.Dialogs, value.Chats, value.Users, nil
+	case *tg.MessagesDialogsNotModified:
+		return []tg.DialogClass{}, []tg.ChatClass{}, []tg.UserClass{}, nil
+	default:
+		return nil, nil, nil, fmt.Errorf("unexpected dialogs response: %T", resp)
+	}
+}
+
+func buildTGAssistantTargets(dialogs []tg.DialogClass, chats []tg.ChatClass, users []tg.UserClass) []tgAssistantTarget {
+	userMap := map[int64]tgAssistantTarget{}
+	for _, raw := range users {
+		switch item := raw.(type) {
+		case *tg.User:
+			name := strings.TrimSpace(strings.TrimSpace(item.FirstName) + " " + strings.TrimSpace(item.LastName))
+			if name == "" {
+				name = strings.TrimSpace(item.Username)
+			}
+			if name == "" {
+				name = normalizeTGPhone(item.Phone)
+			}
+			if name == "" {
+				name = fmt.Sprintf("User %d", item.ID)
+			}
+			userMap[item.ID] = tgAssistantTarget{
+				ID:       fmt.Sprintf("user:%d", item.ID),
+				Name:     name,
+				Username: strings.TrimSpace(item.Username),
+				Type:     "user",
+			}
+		case *tg.UserEmpty:
+			userMap[item.ID] = tgAssistantTarget{
+				ID:   fmt.Sprintf("user:%d", item.ID),
+				Name: fmt.Sprintf("User %d", item.ID),
+				Type: "user",
+			}
+		}
+	}
+
+	chatMap := map[int64]tgAssistantTarget{}
+	channelMap := map[int64]tgAssistantTarget{}
+	for _, raw := range chats {
+		switch item := raw.(type) {
+		case *tg.Chat:
+			chatMap[item.ID] = tgAssistantTarget{
+				ID:   fmt.Sprintf("chat:%d", item.ID),
+				Name: strings.TrimSpace(item.Title),
+				Type: "chat",
+			}
+		case *tg.ChatForbidden:
+			chatMap[item.ID] = tgAssistantTarget{
+				ID:   fmt.Sprintf("chat:%d", item.ID),
+				Name: strings.TrimSpace(item.Title),
+				Type: "chat",
+			}
+		case *tg.Channel:
+			channelMap[item.ID] = tgAssistantTarget{
+				ID:       fmt.Sprintf("channel:%d", item.ID),
+				Name:     strings.TrimSpace(item.Title),
+				Username: strings.TrimSpace(item.Username),
+				Type:     "channel",
+			}
+		case *tg.ChannelForbidden:
+			channelMap[item.ID] = tgAssistantTarget{
+				ID:   fmt.Sprintf("channel:%d", item.ID),
+				Name: strings.TrimSpace(item.Title),
+				Type: "channel",
+			}
+		}
+	}
+
+	targets := make([]tgAssistantTarget, 0, len(dialogs))
+	seen := map[string]struct{}{}
+	appendTarget := func(item tgAssistantTarget) {
+		item.ID = strings.TrimSpace(item.ID)
+		item.Name = strings.TrimSpace(item.Name)
+		item.Username = strings.TrimSpace(item.Username)
+		item.Type = strings.TrimSpace(item.Type)
+		if item.ID == "" {
+			return
+		}
+		if item.Name == "" {
+			item.Name = item.ID
+		}
+		if _, ok := seen[item.ID]; ok {
+			return
+		}
+		seen[item.ID] = struct{}{}
+		targets = append(targets, item)
+	}
+
+	for _, raw := range dialogs {
+		dialog, ok := raw.(*tg.Dialog)
+		if !ok || dialog == nil {
+			continue
+		}
+		switch peer := dialog.Peer.(type) {
+		case *tg.PeerUser:
+			if item, ok := userMap[peer.UserID]; ok {
+				appendTarget(item)
+			} else {
+				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("user:%d", peer.UserID), Name: fmt.Sprintf("User %d", peer.UserID), Type: "user"})
+			}
+		case *tg.PeerChat:
+			if item, ok := chatMap[peer.ChatID]; ok {
+				appendTarget(item)
+			} else {
+				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("chat:%d", peer.ChatID), Name: fmt.Sprintf("Chat %d", peer.ChatID), Type: "chat"})
+			}
+		case *tg.PeerChannel:
+			if item, ok := channelMap[peer.ChannelID]; ok {
+				appendTarget(item)
+			} else {
+				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("channel:%d", peer.ChannelID), Name: fmt.Sprintf("Channel %d", peer.ChannelID), Type: "channel"})
+			}
+		}
+	}
+
+	return targets
+}
+
+func loadTGAssistantTargetsFromFile(accountID string) ([]tgAssistantTarget, error) {
+	filePath := tgAssistantTargetsPath(accountID)
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []tgAssistantTarget{}, nil
+		}
+		return nil, fmt.Errorf("read targets file failed: %w", err)
+	}
+	if len(strings.TrimSpace(string(content))) == 0 {
+		return []tgAssistantTarget{}, nil
+	}
+	var targets []tgAssistantTarget
+	if err := json.Unmarshal(content, &targets); err != nil {
+		return nil, fmt.Errorf("parse targets file failed: %w", err)
+	}
+
+	normalized := make([]tgAssistantTarget, 0, len(targets))
+	for _, item := range targets {
+		item.ID = strings.TrimSpace(item.ID)
+		item.Name = strings.TrimSpace(item.Name)
+		item.Username = strings.TrimSpace(item.Username)
+		item.Type = strings.TrimSpace(item.Type)
+		if item.ID == "" {
+			continue
+		}
+		if item.Name == "" {
+			item.Name = item.ID
+		}
+		normalized = append(normalized, item)
+	}
+	return normalized, nil
+}
+
+func saveTGAssistantTargetsToFile(accountID string, targets []tgAssistantTarget) error {
+	if err := os.MkdirAll(tgAssistantTargetsDirPath(), 0o755); err != nil {
+		return fmt.Errorf("create targets directory failed: %w", err)
+	}
+
+	content, err := json.MarshalIndent(targets, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal targets failed: %w", err)
+	}
+	if err := os.WriteFile(tgAssistantTargetsPath(accountID), content, 0o644); err != nil {
+		return fmt.Errorf("write targets file failed: %w", err)
+	}
+	return nil
 }
 
 func normalizeTGPhone(raw string) string {

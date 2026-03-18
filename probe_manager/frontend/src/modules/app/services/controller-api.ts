@@ -8,6 +8,7 @@ import type {
   TGAssistantAccount,
   TGAssistantAPIKey,
   TGAssistantSchedule,
+  TGAssistantTarget,
   UpgradeProgress,
 } from "../types";
 import { callAdminWSRpc } from "./admin-ws-rpc";
@@ -334,7 +335,16 @@ export async function fetchTGAssistantSchedules(baseURL: string, token: string, 
 export async function addTGAssistantSchedule(
   baseURL: string,
   token: string,
-  input: { account_id: string; task_type: string; enabled: boolean; send_at: string; message: string },
+  input: {
+    account_id: string;
+    task_type: string;
+    enabled: boolean;
+    target: string;
+    send_at: string;
+    message: string;
+    delay_min_sec: number;
+    delay_max_sec: number;
+  },
 ): Promise<TGAssistantSchedule[]> {
   const payload = await callAdminWSRpc<{ schedules?: TGAssistantSchedule[] }>(baseURL, token, "admin.tg.schedule.add", input);
   return Array.isArray(payload.schedules) ? payload.schedules : [];
@@ -347,4 +357,18 @@ export async function removeTGAssistantSchedule(
 ): Promise<TGAssistantSchedule[]> {
   const payload = await callAdminWSRpc<{ schedules?: TGAssistantSchedule[] }>(baseURL, token, "admin.tg.schedule.remove", input);
   return Array.isArray(payload.schedules) ? payload.schedules : [];
+}
+
+export async function fetchTGAssistantTargets(baseURL: string, token: string, accountID: string): Promise<TGAssistantTarget[]> {
+  const payload = await callAdminWSRpc<{ targets?: TGAssistantTarget[] }>(baseURL, token, "admin.tg.targets.list", {
+    account_id: accountID,
+  });
+  return Array.isArray(payload.targets) ? payload.targets : [];
+}
+
+export async function refreshTGAssistantTargets(baseURL: string, token: string, accountID: string): Promise<TGAssistantTarget[]> {
+  const payload = await callAdminWSRpc<{ targets?: TGAssistantTarget[] }>(baseURL, token, "admin.tg.targets.refresh", {
+    account_id: accountID,
+  });
+  return Array.isArray(payload.targets) ? payload.targets : [];
 }

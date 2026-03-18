@@ -598,6 +598,30 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return map[string]interface{}{
 			"account": account,
 		}, nil
+	case "admin.tg.targets.list":
+		var req tgAssistantAccountIDRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		targets, err := listTGAssistantTargets(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"targets": targets,
+		}, nil
+	case "admin.tg.targets.refresh":
+		var req tgAssistantAccountIDRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		targets, err := refreshTGAssistantTargets(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"targets": targets,
+		}, nil
 	case "admin.tg.schedule.list":
 		var req tgAssistantAccountIDRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

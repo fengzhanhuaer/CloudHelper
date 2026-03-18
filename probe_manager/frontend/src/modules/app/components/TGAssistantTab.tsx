@@ -6,14 +6,16 @@ import {
   fetchTGAssistantAPIKey,
   fetchTGAssistantAccounts,
   fetchTGAssistantSchedules,
+  fetchTGAssistantTargets,
   logoutTGAssistantAccount,
   refreshTGAssistantAccounts,
   removeTGAssistantAccount,
   removeTGAssistantSchedule,
+  refreshTGAssistantTargets,
   setTGAssistantAPIKey,
   sendTGAssistantLoginCode,
 } from "../services/controller-api";
-import type { TGAssistantAPIKey, TGAssistantAccount, TGAssistantSchedule } from "../types";
+import type { TGAssistantAPIKey, TGAssistantAccount, TGAssistantSchedule, TGAssistantTarget } from "../types";
 
 type TGAssistantTabProps = {
   controllerBaseUrl: string;
@@ -45,10 +47,14 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [codeInput, setCodeInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleTargetDraft, setScheduleTargetDraft] = useState("");
   const [scheduleTimeDraft, setScheduleTimeDraft] = useState("每天 09:00");
   const [scheduleMessageDraft, setScheduleMessageDraft] = useState("");
+  const [scheduleDelayMaxDraft, setScheduleDelayMaxDraft] = useState("0");
   const [scheduleList, setScheduleList] = useState<TGAssistantSchedule[]>([]);
+  const [targetList, setTargetList] = useState<TGAssistantTarget[]>([]);
   const [isScheduleLoading, setIsScheduleLoading] = useState(false);
+  const [isTargetRefreshing, setIsTargetRefreshing] = useState(false);
   const scheduleRequestSeqRef = useRef(0);
 
   const loggedInAccounts = useMemo(() => accounts.filter((item) => item.authorized), [accounts]);
@@ -69,12 +75,16 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     const accountID = activeLoggedInAccountID.trim();
     if (!accountID) {
       setScheduleList([]);
+      setTargetList([]);
       setScheduleEnabled(false);
+      setScheduleTargetDraft("");
       setScheduleTimeDraft("每天 09:00");
       setScheduleMessageDraft("");
+      setScheduleDelayMaxDraft("0");
       return;
     }
     void loadSchedule(accountID, { silent: true });
+    void loadTargets(accountID, { silent: true });
   }, [activeLoggedInAccountID, props.controllerBaseUrl, props.sessionToken]);
 
   function applyAccountList(nextAccounts: TGAssistantAccount[]) {
@@ -96,6 +106,26 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     setAccounts((prev) =>
       prev.map((item) => (item.id === accountID ? { ...item, schedules } : item)),
     );
+  }
+
+  function applyTargetList(targets: TGAssistantTarget[]) {
+    setTargetList(targets);
+    setScheduleTargetDraft((prev) => (targets.some((item) => item.id === prev) ? prev : ""));
+  }
+
+  function renderTargetLabel(targetID: string): string {
+    const id = targetID.trim();
+    if (!id) {
+      return "-";
+    }
+    const hit = targetList.find((item) => item.id === id);
+    if (!hit) {
+      return id;
+    }
+    if (hit.username && hit.username.trim()) {
+      return `${hit.name} (@${hit.username})`;
+    }
+    return hit.name;
   }
 
   async function loadData(options?: { silent?: boolean }) {
@@ -182,6 +212,48 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       }
     } finally {
       setIsScheduleLoading(false);
+    }
+  }
+
+  async function loadTargets(accountID: string, options?: { silent?: boolean }) {
+    const normalizedAccountID = accountID.trim();
+    if (!normalizedAccountID) {
+      return;
+    }
+    const silent = options?.silent === true;
+    if (!silent) {
+      setStatus("正在加载发送对象列表...");
+    }
+    try {
+      const targets = await fetchTGAssistantTargets(props.controllerBaseUrl, props.sessionToken, normalizedAccountID);
+      applyTargetList(targets);
+      if (!silent) {
+        setStatus(`已加载发送对象（${targets.length} 个）`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      if (!silent) {
+        setStatus(`加载发送对象失败：${msg}`);
+      }
+    }
+  }
+
+  async function handleRefreshTargets() {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    setIsTargetRefreshing(true);
+    setStatus(`正在从服务器刷新会话对象：${activeLoggedInAccount.label}...`);
+    try {
+      const targets = await refreshTGAssistantTargets(props.controllerBaseUrl, props.sessionToken, activeLoggedInAccount.id);
+      applyTargetList(targets);
+      setStatus(`已刷新发送对象（${targets.length} 个）`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`刷新发送对象失败：${msg}`);
+    } finally {
+      setIsTargetRefreshing(false);
     }
   }
 
@@ -400,14 +472,24 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setStatus("请先选择一个已登录账号");
       return;
     }
+    const target = scheduleTargetDraft.trim();
     const sendAt = scheduleTimeDraft.trim();
     const message = scheduleMessageDraft.trim();
+    const delayMax = Number.parseInt(scheduleDelayMaxDraft.trim() || "0", 10);
+    if (!target) {
+      setStatus("请填写发送目标");
+      return;
+    }
     if (scheduleEnabled && !sendAt) {
       setStatus("请填写定时发送时间");
       return;
     }
     if (scheduleEnabled && !message) {
       setStatus("请填写定时发送内容");
+      return;
+    }
+    if (!Number.isFinite(delayMax) || delayMax < 0) {
+      setStatus("随机延时范围必须是非负整数");
       return;
     }
 
@@ -418,8 +500,11 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
         account_id: activeLoggedInAccount.id,
         task_type: "scheduled_send",
         enabled: scheduleEnabled,
+        target,
         send_at: sendAt,
         message,
+        delay_min_sec: 0,
+        delay_max_sec: delayMax,
       });
       applyScheduleList(activeLoggedInAccount.id, schedules);
       setScheduleMessageDraft("");
@@ -550,6 +635,34 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                       启用定时发送
                     </label>
                     <div className="tg-schedule-field">
+                      <label className="tg-account-basic-label" htmlFor="tg-schedule-target">
+                        发送目标
+                      </label>
+                      <div className="tg-target-picker">
+                        <select
+                          id="tg-schedule-target"
+                          className="input"
+                          value={scheduleTargetDraft}
+                          onChange={(event) => setScheduleTargetDraft(event.target.value)}
+                          disabled={isLoading || isScheduleLoading || isTargetRefreshing}
+                        >
+                          <option value="">请选择发送对象</option>
+                          {targetList.map((item) => (
+                            <option key={`tg-target-${item.id}`} value={item.id}>
+                              {item.username ? `${item.name} (@${item.username})` : item.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          className="btn"
+                          onClick={() => void handleRefreshTargets()}
+                          disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}
+                        >
+                          {isTargetRefreshing ? "刷新中..." : "刷新"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="tg-schedule-field">
                       <label className="tg-account-basic-label" htmlFor="tg-schedule-time">
                         发送时间
                       </label>
@@ -575,8 +688,21 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                         disabled={isLoading || isScheduleLoading}
                       />
                     </div>
+                    <div className="tg-schedule-field">
+                      <label className="tg-account-basic-label" htmlFor="tg-schedule-delay-max">随机延时最大值（秒）</label>
+                      <input
+                        id="tg-schedule-delay-max"
+                        className="input"
+                        type="number"
+                        min={0}
+                        value={scheduleDelayMaxDraft}
+                        onChange={(event) => setScheduleDelayMaxDraft(event.target.value)}
+                        placeholder="例如：30"
+                        disabled={isLoading || isScheduleLoading}
+                      />
+                    </div>
                     <div className="content-actions" style={{ marginTop: 10 }}>
-                      <button className="btn" onClick={() => void handleAddScheduleTask()} disabled={isLoading || isScheduleLoading || !activeLoggedInAccount}>
+                      <button className="btn" onClick={() => void handleAddScheduleTask()} disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}>
                         新增定时发送任务
                       </button>
                     </div>
@@ -595,12 +721,22 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                               <div className="tg-account-basic-value">{task.enabled ? "启用" : "停用"}</div>
                             </div>
                             <div className="tg-account-basic-row">
+                              <div className="tg-account-basic-label">发送目标</div>
+                              <div className="tg-account-basic-value">{renderTargetLabel(task.target)}</div>
+                            </div>
+                            <div className="tg-account-basic-row">
                               <div className="tg-account-basic-label">发送时间</div>
                               <div className="tg-account-basic-value">{task.send_at || "-"}</div>
                             </div>
                             <div className="tg-account-basic-row">
                               <div className="tg-account-basic-label">发送内容</div>
                               <div className="tg-account-basic-value">{task.message || "-"}</div>
+                            </div>
+                            <div className="tg-account-basic-row">
+                              <div className="tg-account-basic-label">随机延时</div>
+                              <div className="tg-account-basic-value">
+                                0 - {Math.max(0, task.delay_max_sec ?? 0)} 秒
+                              </div>
                             </div>
                             <div className="tg-account-basic-row">
                               <div className="tg-account-basic-label">更新时间</div>

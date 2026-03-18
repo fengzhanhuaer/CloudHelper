@@ -153,10 +153,20 @@ export type TGAssistantSchedule = {
   id: string;
   task_type: string;
   enabled: boolean;
+  target: string;
   send_at: string;
   message: string;
+  delay_min_sec: number;
+  delay_max_sec: number;
   created_at: string;
   updated_at: string;
+};
+
+export type TGAssistantTarget = {
+  id: string;
+  name: string;
+  username?: string;
+  type?: string;
 };
 
 export type TabKey =
