@@ -28,7 +28,7 @@ type TGAccountDetailSubTab = "basic-info" | "scheduled-send";
 
 export function TGAssistantTab(props: TGAssistantTabProps) {
   const [accounts, setAccounts] = useState<TGAssistantAccount[]>([]);
-  const [status, setStatus] = useState("姝ｅ湪鍔犺浇 TG 璐﹀彿鍒楄〃...");
+  const [status, setStatus] = useState("正在加载 TG 账号列表...");
   const [isLoading, setIsLoading] = useState(false);
 
   const [showAddAccountModal, setShowAddAccountModal] = useState(false);
@@ -51,7 +51,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleTargetDraft, setScheduleTargetDraft] = useState("");
   const [targetSearchDraft, setTargetSearchDraft] = useState("");
-  const [scheduleTimeDraft, setScheduleTimeDraft] = useState("姣忓ぉ 09:00");
+  const [scheduleTimeDraft, setScheduleTimeDraft] = useState("每天 09:00");
   const [scheduleMessageDraft, setScheduleMessageDraft] = useState("");
   const [scheduleDelayMaxDraft, setScheduleDelayMaxDraft] = useState("0");
   const [scheduleList, setScheduleList] = useState<TGAssistantSchedule[]>([]);
@@ -101,7 +101,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setTargetSearchDraft("");
       setScheduleEnabled(false);
       setScheduleTargetDraft("");
-      setScheduleTimeDraft("姣忓ぉ 09:00");
+      setScheduleTimeDraft("每天 09:00");
       setScheduleMessageDraft("");
       setScheduleDelayMaxDraft("0");
       return;
@@ -155,7 +155,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     const silent = options?.silent === true;
     if (!silent) {
       setIsLoading(true);
-      setStatus("姝ｅ湪鍔犺浇 TG 璁剧疆涓庤处鍙?..");
+      setStatus("正在加载 TG 设置与账号...");
     }
     try {
       const [apiKey, accountsData] = await Promise.all([
@@ -166,7 +166,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       applyAccountList(accountsData);
       if (!silent) {
         if (!apiKey.configured) {
-          setStatus("璇峰厛璁剧疆API锛屽啀娣诲姞/鐧诲綍璐﹀彿");
+          setStatus("请先设置 API，再添加/登录账号");
         } else {
           setStatus(accountsData.length > 0 ? `已加载 TG 账号（${accountsData.length} 个）` : "暂无 TG 账号，请先添加");
         }
@@ -187,7 +187,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     const silent = options?.silent === true;
     if (!silent) {
       setIsLoading(true);
-      setStatus("姝ｅ湪鍔犺浇 TG 璐﹀彿鍒楄〃...");
+      setStatus("正在加载 TG 账号列表...");
     }
     try {
       const items = await fetchTGAssistantAccounts(props.controllerBaseUrl, props.sessionToken);
@@ -217,7 +217,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     const silent = options?.silent === true;
     setIsScheduleLoading(true);
     if (!silent) {
-      setStatus("姝ｅ湪鍔犺浇浠诲姟鍒楄〃...");
+      setStatus("正在加载任务列表...");
     }
     try {
       const schedules = await fetchTGAssistantSchedules(props.controllerBaseUrl, props.sessionToken, normalizedAccountID);
@@ -226,7 +226,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       }
       applyScheduleList(normalizedAccountID, schedules);
       if (!silent) {
-        setStatus(`宸插姞杞借处鍙?${activeLoggedInAccount?.label || normalizedAccountID} 鐨勪换鍔″垪琛紙${schedules.length} 涓級`);
+        setStatus(`已加载账号 ${activeLoggedInAccount?.label || normalizedAccountID} 的任务列表（${schedules.length} 个）`);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -245,25 +245,25 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
     const silent = options?.silent === true;
     if (!silent) {
-      setStatus("姝ｅ湪鍔犺浇鍙戦€佸璞″垪琛?..");
+      setStatus("正在加载发送对象列表...");
     }
     try {
       const targets = await fetchTGAssistantTargets(props.controllerBaseUrl, props.sessionToken, normalizedAccountID);
       applyTargetList(targets);
       if (!silent) {
-        setStatus(`宸插姞杞藉彂閫佸璞★紙${targets.length} 涓級`);
+        setStatus(`已加载发送对象（${targets.length} 个）`);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       if (!silent) {
-        setStatus(`鍔犺浇鍙戦€佸璞″け璐ワ細${msg}`);
+        setStatus(`加载发送对象失败：${msg}`);
       }
     }
   }
 
   async function handleRefreshTargets() {
     if (!activeLoggedInAccount) {
-      setStatus("璇峰厛閫夋嫨涓€涓凡鐧诲綍璐﹀彿");
+      setStatus("请先选择一个已登录账号");
       return;
     }
     setIsTargetRefreshing(true);
@@ -271,10 +271,10 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     try {
       const targets = await refreshTGAssistantTargets(props.controllerBaseUrl, props.sessionToken, activeLoggedInAccount.id);
       applyTargetList(targets);
-      setStatus(`宸插埛鏂板彂閫佸璞★紙${targets.length} 涓級`);
+      setStatus(`已刷新发送对象（${targets.length} 个）`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`鍒锋柊鍙戦€佸璞″け璐ワ細${msg}`);
+      setStatus(`刷新发送对象失败：${msg}`);
     } finally {
       setIsTargetRefreshing(false);
     }
@@ -282,7 +282,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   async function handleRefreshAccounts() {
     setIsLoading(true);
-    setStatus("姝ｅ湪鍒锋柊 TG 鐧诲綍鐘舵€?..");
+    setStatus("正在刷新 TG 登录状态...");
     try {
       const [apiKey, items] = await Promise.all([
         fetchTGAssistantAPIKey(props.controllerBaseUrl, props.sessionToken),
@@ -293,7 +293,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setStatus(`刷新完成：共 ${items.length} 个账号`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`鍒锋柊鐘舵€佸け璐ワ細${msg}`);
+      setStatus(`刷新状态失败：${msg}`);
     } finally {
       setIsLoading(false);
     }
@@ -303,16 +303,16 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     const apiID = Number.parseInt(apiKeyDraftID.trim(), 10);
     const apiHash = apiKeyDraftHash.trim();
     if (!Number.isFinite(apiID) || apiID <= 0) {
-      setStatus("鍏辩敤 API ID 蹇呴』鏄鏁存暟");
+      setStatus("共享 API ID 必须是正整数");
       return;
     }
     if (!apiHash) {
-      setStatus("鍏辩敤 API Hash 涓嶈兘涓虹┖");
+      setStatus("共享 API Hash 不能为空");
       return;
     }
 
     setIsLoading(true);
-    setStatus("姝ｅ湪璁剧疆API...");
+    setStatus("正在设置 API...");
     try {
       const result = await setTGAssistantAPIKey(props.controllerBaseUrl, props.sessionToken, {
         api_id: apiID,
@@ -368,18 +368,18 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   async function handleStartLoginFromInput() {
     if (!sharedAPIConfigured) {
-      setStatus("璇峰厛璁剧疆API");
+      setStatus("请先设置 API");
       return;
     }
 
     setIsLoading(true);
-    setStatus("姝ｅ湪鍑嗗姝ラ1锛氳緭鍏ヨ处鍙峰苟寮€濮嬬櫥闄?..");
+    setStatus("正在准备步骤1：输入账号并开始登录...");
     try {
       let account: TGAssistantAccount | null = null;
       if (addAccountSelectedID.trim()) {
         account = accounts.find((item) => item.id === addAccountSelectedID.trim()) ?? null;
         if (!account) {
-          throw new Error("鎵€閫夎处鍙蜂笉瀛樺湪锛岃閲嶆柊閫夋嫨");
+          throw new Error("所选账号不存在，请重新选择");
         }
       } else {
         const phone = addAccountPhoneDraft.trim();
@@ -412,17 +412,17 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   async function handleSignIn() {
     if (!selectedAccount) {
-      setStatus("璇峰厛鍦ㄥ脊绐楅€夋嫨鎴栬緭鍏ヨ处鍙峰苟鍙戦€侀獙璇佺爜");
+      setStatus("请先在弹窗选择或输入账号并发送验证码");
       return;
     }
     const code = codeInput.trim();
     if (!code) {
-      setStatus("璇疯緭鍏ラ獙璇佺爜");
+      setStatus("请输入验证码");
       return;
     }
 
     setIsLoading(true);
-    setStatus(`姝ｅ湪鐧婚檰璐﹀彿 ${selectedAccount.label}...`);
+    setStatus(`正在登录账号 ${selectedAccount.label}...`);
     try {
       const account = await completeTGAssistantLogin(props.controllerBaseUrl, props.sessionToken, {
         account_id: selectedAccount.id,
@@ -456,7 +456,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     try {
       await logoutTGAssistantAccount(props.controllerBaseUrl, props.sessionToken, selectedAccount.id);
       await loadAccounts({ silent: true });
-      setStatus(`宸茬櫥鍑鸿处鍙凤細${selectedAccount.label}`);
+      setStatus(`已登出账号：${selectedAccount.label}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`登出失败：${msg}`);
@@ -470,7 +470,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setStatus("请先选择一个账号");
       return;
     }
-    if (!window.confirm(`纭鍒犻櫎璐﹀彿 ${selectedAccount.label} (${selectedAccount.phone}) 鍚楋紵`)) {
+    if (!window.confirm(`确认删除账号 ${selectedAccount.label} (${selectedAccount.phone}) 吗？`)) {
       return;
     }
 
@@ -481,7 +481,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       applyAccountList(next);
       setCodeInput("");
       setPasswordInput("");
-      setStatus(`璐﹀彿宸插垹闄わ細${selectedAccount.label}`);
+      setStatus(`账号已删除：${selectedAccount.label}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`删除账号失败：${msg}`);
@@ -492,7 +492,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   async function handleAddScheduleTask() {
     if (!activeLoggedInAccount) {
-      setStatus("璇峰厛閫夋嫨涓€涓凡鐧诲綍璐﹀彿");
+      setStatus("请先选择一个已登录账号");
       return;
     }
     const target = scheduleTargetDraft.trim();
@@ -517,7 +517,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
 
     setIsScheduleLoading(true);
-    setStatus(`姝ｅ湪涓鸿处鍙?${activeLoggedInAccount.label} 鏂板浠诲姟...`);
+    setStatus(`正在为账号 ${activeLoggedInAccount.label} 新增任务...`);
     try {
       const schedules = await addTGAssistantSchedule(props.controllerBaseUrl, props.sessionToken, {
         account_id: activeLoggedInAccount.id,
@@ -531,7 +531,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       });
       applyScheduleList(activeLoggedInAccount.id, schedules);
       setScheduleMessageDraft("");
-      setStatus(`宸叉柊澧炰换鍔★細${activeLoggedInAccount.label}锛堝綋鍓嶅叡 ${schedules.length} 涓級`);
+      setStatus(`已新增任务：${activeLoggedInAccount.label}（当前共 ${schedules.length} 个）`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`新增任务失败：${msg}`);
@@ -542,7 +542,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   async function handleRemoveScheduleTask(taskID: string) {
     if (!activeLoggedInAccount) {
-      setStatus("璇峰厛閫夋嫨涓€涓凡鐧诲綍璐﹀彿");
+      setStatus("请先选择一个已登录账号");
       return;
     }
     if (!window.confirm("确认删除该任务吗？")) {
@@ -567,11 +567,11 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   async function handleToggleScheduleTaskEnabled(taskID: string, enabled: boolean) {
     if (!activeLoggedInAccount) {
-      setStatus("璇峰厛閫夋嫨涓€涓凡鐧诲綍璐﹀彿");
+      setStatus("请先选择一个已登录账号");
       return;
     }
     setIsScheduleLoading(true);
-    setStatus(`姝ｅ湪鏇存柊浠诲姟鐘舵€侊細${taskID}...`);
+    setStatus(`正在更新任务状态：${taskID}...`);
     try {
       const schedules = await setTGAssistantScheduleEnabled(props.controllerBaseUrl, props.sessionToken, {
         account_id: activeLoggedInAccount.id,
@@ -582,7 +582,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setStatus(`任务状态已更新：${enabled ? "启用" : "停用"}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`鏇存柊浠诲姟鐘舵€佸け璐ワ細${msg}`);
+      setStatus(`更新任务状态失败：${msg}`);
     } finally {
       setIsScheduleLoading(false);
     }
@@ -590,20 +590,20 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   async function handleSendNowScheduleTask(taskID: string) {
     if (!activeLoggedInAccount) {
-      setStatus("璇峰厛閫夋嫨涓€涓凡鐧诲綍璐﹀彿");
+      setStatus("请先选择一个已登录账号");
       return;
     }
     setIsScheduleLoading(true);
-    setStatus(`姝ｅ湪绔嬪嵆鍙戦€佷换鍔★細${taskID}...`);
+    setStatus(`正在立即发送任务：${taskID}...`);
     try {
       const result = await sendNowTGAssistantSchedule(props.controllerBaseUrl, props.sessionToken, {
         account_id: activeLoggedInAccount.id,
         task_id: taskID,
       });
-      setStatus(`绔嬪嵆鍙戦€佹垚鍔燂紙寤舵椂 ${result.delay_sec} 绉掞級`);
+      setStatus(`立即发送成功（延时 ${result.delay_sec} 秒）`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`绔嬪嵆鍙戦€佸け璐ワ細${msg}`);
+      setStatus(`立即发送失败：${msg}`);
     } finally {
       setIsScheduleLoading(false);
     }
@@ -612,11 +612,11 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   return (
     <div className="content-block">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, marginBottom: 12 }}>
-        <h2 style={{ marginBottom: 0 }}>TG鍔╂墜</h2>
+        <h2 style={{ marginBottom: 0 }}>TG助手</h2>
         <div className="content-actions inline">
-          <button className="btn" onClick={openAccountManageModal} disabled={isLoading}>璐﹀彿绠＄悊</button>
-          <button className="btn" onClick={openAddAccountModal} disabled={isLoading || !sharedAPIConfigured}>鐧诲綍璐﹀彿</button>
-          <button className="btn" onClick={openAPIKeyModal} disabled={isLoading}>璁剧疆API</button>
+          <button className="btn" onClick={openAccountManageModal} disabled={isLoading}>账号管理</button>
+          <button className="btn" onClick={openAddAccountModal} disabled={isLoading || !sharedAPIConfigured}>登录账号</button>
+          <button className="btn" onClick={openAPIKeyModal} disabled={isLoading}>设置API</button>
         </div>
       </div>
 
@@ -648,7 +648,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                 onClick={() => setActiveAccountDetailSubTab("basic-info")}
                 disabled={isLoading || isScheduleLoading || !activeLoggedInAccount}
               >
-                鍩虹淇℃伅
+                基础信息
               </button>
               <button
                 className={`subtab-btn ${activeAccountDetailSubTab === "scheduled-send" ? "active" : ""}`}
@@ -664,7 +664,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                 {activeAccountDetailSubTab === "basic-info" ? (
                   <div className="tg-account-basic-list">
                     <div className="tg-account-basic-row">
-                      <div className="tg-account-basic-label">褰撳墠璐﹀彿</div>
+                      <div className="tg-account-basic-label">当前账号</div>
                       <div className="tg-account-basic-value">{activeLoggedInAccount.label || "-"}</div>
                     </div>
                     <div className="tg-account-basic-row">
@@ -709,7 +709,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                         className="input"
                         value={targetSearchDraft}
                         onChange={(event) => setTargetSearchDraft(event.target.value)}
-                        placeholder="鎼滅储鍚嶇О / @username / ID"
+                        placeholder="搜索名称 / @username / ID"
                         disabled={isLoading || isScheduleLoading || isTargetRefreshing}
                         style={{ marginBottom: 8 }}
                       />
@@ -733,36 +733,38 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                           onClick={() => void handleRefreshTargets()}
                           disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}
                         >
-                          {isTargetRefreshing ? "鍒锋柊涓?.." : "鍒锋柊"}
+                          {isTargetRefreshing ? "刷新中..." : "刷新"}
                         </button>
                       </div>
                     </div>
                     <div className="tg-schedule-field">
                       <label className="tg-account-basic-label" htmlFor="tg-schedule-time">
-                        鍙戦€佹椂闂?                      </label>
+                        发送时间
+                      </label>
                       <input
                         id="tg-schedule-time"
                         className="input"
                         value={scheduleTimeDraft}
                         onChange={(event) => setScheduleTimeDraft(event.target.value)}
-                        placeholder="渚嬪锛氭瘡澶?09:00 / 姣忓懆涓€ 10:30"
+                        placeholder="例如：每天 09:00 / 每周一 10:30"
                         disabled={isLoading || isScheduleLoading}
                       />
                     </div>
                     <div className="tg-schedule-field">
                       <label className="tg-account-basic-label" htmlFor="tg-schedule-message">
-                        鍙戦€佸唴瀹?                      </label>
+                        发送内容
+                      </label>
                       <textarea
                         id="tg-schedule-message"
                         className="input tg-schedule-textarea"
                         value={scheduleMessageDraft}
                         onChange={(event) => setScheduleMessageDraft(event.target.value)}
-                        placeholder="璇疯緭鍏ヨ鍒掑彂閫佺殑娑堟伅鍐呭"
+                        placeholder="请输入计划发送的消息内容"
                         disabled={isLoading || isScheduleLoading}
                       />
                     </div>
                     <div className="tg-schedule-field">
-                      <label className="tg-account-basic-label" htmlFor="tg-schedule-delay-max">闅忔満寤舵椂鏈€澶у€硷紙绉掞級</label>
+                      <label className="tg-account-basic-label" htmlFor="tg-schedule-delay-max">随机延时最大值（秒）</label>
                       <input
                         id="tg-schedule-delay-max"
                         className="input"
@@ -770,13 +772,14 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                         min={0}
                         value={scheduleDelayMaxDraft}
                         onChange={(event) => setScheduleDelayMaxDraft(event.target.value)}
-                        placeholder="渚嬪锛?0"
+                        placeholder="例如：30"
                         disabled={isLoading || isScheduleLoading}
                       />
                     </div>
                     <div className="content-actions" style={{ marginTop: 10 }}>
                       <button className="btn" onClick={() => void handleAddScheduleTask()} disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}>
-                        鏂板瀹氭椂鍙戦€佷换鍔?                      </button>
+                        新增定时发送任务
+                      </button>
                     </div>
                     <div className="tg-schedule-list">
                       {scheduleList.length === 0 ? (
@@ -858,25 +861,25 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       {showAddAccountModal ? (
         <div className="probe-settings-modal-mask" onClick={() => setShowAddAccountModal(false)}>
           <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>鐧诲綍璐﹀彿</h3>
+            <h3 style={{ marginTop: 0 }}>登录账号</h3>
             <div className="row">
-              <label>宸叉湁璐﹀彿</label>
+              <label>已有账号</label>
               <select
                 className="input"
                 value={addAccountSelectedID}
                 onChange={(event) => handleSelectAccountForLogin(event.target.value)}
                 disabled={isLoading}
               >
-                <option value="">涓嶉€夋嫨锛堟墜鍔ㄨ緭鍏ワ級</option>
+                <option value="">不选择（手动输入）</option>
                 {accounts.map((item) => (
                   <option key={`tg-login-account-${item.id}`} value={item.id}>
-                    {item.label} ({item.phone}) {item.authorized ? "[宸茬櫥褰昡" : "[鏈櫥褰昡"}
+                    {item.label} ({item.phone}) {item.authorized ? "[已登录]" : "[未登录]"}
                   </option>
                 ))}
               </select>
             </div>
             <div className="row">
-              <label>璐﹀彿澶囨敞</label>
+              <label>账号备注</label>
               <input
                 className="input"
                 value={addAccountLabelDraft}
@@ -906,13 +909,13 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
               />
             </div>
             <div className="row" style={{ marginBottom: 0 }}>
-              <label>2FA瀵嗙爜</label>
+              <label>2FA密码</label>
               <input
                 className="input"
                 type="password"
                 value={passwordInput}
                 onChange={(event) => setPasswordInput(event.target.value)}
-                placeholder="濡傝处鍙峰紑鍚袱姝ラ獙璇佸垯蹇呭～"
+                placeholder="如账号开启两步验证则必填"
                 disabled={isLoading || !selectedAccount || !selectedAccount.pending_code}
               />
             </div>
@@ -926,9 +929,9 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
               </div>
             ) : null}
             <div className="content-actions">
-              <button className="btn" onClick={() => void handleStartLoginFromInput()} disabled={isLoading}>鍙戦€侀獙璇佺爜</button>
-              <button className="btn" onClick={() => void handleSignIn()} disabled={isLoading || !selectedAccount || !selectedAccount.pending_code || selectedAccount.authorized}>瀹屾垚鐧诲綍</button>
-              <button className="btn" onClick={() => setShowAddAccountModal(false)} disabled={isLoading}>鍙栨秷</button>
+              <button className="btn" onClick={() => void handleStartLoginFromInput()} disabled={isLoading}>发送验证码</button>
+              <button className="btn" onClick={() => void handleSignIn()} disabled={isLoading || !selectedAccount || !selectedAccount.pending_code || selectedAccount.authorized}>完成登录</button>
+              <button className="btn" onClick={() => setShowAddAccountModal(false)} disabled={isLoading}>取消</button>
             </div>
           </div>
         </div>
@@ -937,19 +940,19 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       {showAccountManageModal ? (
         <div className="probe-settings-modal-mask" onClick={() => setShowAccountManageModal(false)}>
           <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>璐﹀彿绠＄悊</h3>
+            <h3 style={{ marginTop: 0 }}>账号管理</h3>
             <div className="row" style={{ marginBottom: 0 }}>
-              <label>璐﹀彿</label>
+              <label>账号</label>
               <select
                 className="input"
                 value={selectedAccountID}
                 onChange={(event) => setSelectedAccountID(event.target.value)}
                 disabled={isLoading}
               >
-                <option value="">璇烽€夋嫨璐﹀彿</option>
+                <option value="">请选择账号</option>
                 {accounts.map((item) => (
                   <option key={`tg-manage-account-${item.id}`} value={item.id}>
-                    {item.label} ({item.phone}) {item.authorized ? "[宸茬櫥褰昡" : "[鏈櫥褰昡"}
+                    {item.label} ({item.phone}) {item.authorized ? "[已登录]" : "[未登录]"}
                   </option>
                 ))}
               </select>
@@ -965,9 +968,9 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
             ) : null}
             <div className="content-actions">
               <button className="btn" onClick={() => void handleRefreshAccounts()} disabled={isLoading}>刷新状态</button>
-              <button className="btn" onClick={() => void handleLogout()} disabled={isLoading || !selectedAccount}>鐧诲嚭璐﹀彿</button>
-              <button className="btn" onClick={() => void handleRemove()} disabled={isLoading || !selectedAccount}>鍒犻櫎璐﹀彿</button>
-              <button className="btn" onClick={() => setShowAccountManageModal(false)} disabled={isLoading}>鍏抽棴</button>
+              <button className="btn" onClick={() => void handleLogout()} disabled={isLoading || !selectedAccount}>登出账号</button>
+              <button className="btn" onClick={() => void handleRemove()} disabled={isLoading || !selectedAccount}>删除账号</button>
+              <button className="btn" onClick={() => setShowAccountManageModal(false)} disabled={isLoading}>关闭</button>
             </div>
           </div>
         </div>
@@ -976,30 +979,30 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       {showAPIKeyModal ? (
         <div className="probe-settings-modal-mask" onClick={() => setShowAPIKeyModal(false)}>
           <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>璁剧疆API</h3>
+            <h3 style={{ marginTop: 0 }}>设置API</h3>
             <div className="row">
-              <label>鍏辩敤 API ID</label>
+              <label>共享 API ID</label>
               <input
                 className="input"
                 value={apiKeyDraftID}
                 onChange={(event) => setAPIKeyDraftID(event.target.value)}
-                placeholder="鏉ヨ嚜 my.telegram.org"
+                placeholder="来自 my.telegram.org"
                 disabled={isLoading}
               />
             </div>
             <div className="row">
-              <label>鍏辩敤 API Hash</label>
+              <label>共享 API Hash</label>
               <input
                 className="input"
                 value={apiKeyDraftHash}
                 onChange={(event) => setAPIKeyDraftHash(event.target.value)}
-                placeholder="鏉ヨ嚜 my.telegram.org"
+                placeholder="来自 my.telegram.org"
                 disabled={isLoading}
               />
             </div>
             <div className="content-actions">
-              <button className="btn" onClick={() => void handleSaveSharedAPIKey()} disabled={isLoading}>淇濆瓨</button>
-              <button className="btn" onClick={() => setShowAPIKeyModal(false)} disabled={isLoading}>鍙栨秷</button>
+              <button className="btn" onClick={() => void handleSaveSharedAPIKey()} disabled={isLoading}>保存</button>
+              <button className="btn" onClick={() => setShowAPIKeyModal(false)} disabled={isLoading}>取消</button>
             </div>
           </div>
         </div>
