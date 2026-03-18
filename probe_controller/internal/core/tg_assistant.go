@@ -3,11 +3,13 @@ package core
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"path/filepath"
 	"sort"
@@ -179,6 +181,25 @@ type tgAssistantScheduleAddRequest struct {
 type tgAssistantScheduleRemoveRequest struct {
 	AccountID string `json:"account_id"`
 	TaskID    string `json:"task_id"`
+}
+
+type tgAssistantScheduleSetEnabledRequest struct {
+	AccountID string `json:"account_id"`
+	TaskID    string `json:"task_id"`
+	Enabled   bool   `json:"enabled"`
+}
+
+type tgAssistantScheduleSendNowRequest struct {
+	AccountID string `json:"account_id"`
+	TaskID    string `json:"task_id"`
+}
+
+type tgAssistantScheduleSendNowResult struct {
+	AccountID string `json:"account_id"`
+	TaskID    string `json:"task_id"`
+	Target    string `json:"target"`
+	DelaySec  int    `json:"delay_sec"`
+	SentAt    string `json:"sent_at"`
 }
 
 func initTGAssistantStore() {
@@ -810,6 +831,139 @@ func removeTGAssistantSchedule(req tgAssistantScheduleRemoveRequest) ([]tgAssist
 	return buildTGAssistantScheduleViews(account.Schedules), nil
 }
 
+func setTGAssistantScheduleEnabled(req tgAssistantScheduleSetEnabledRequest) ([]tgAssistantSchedule, error) {
+	if TGAssistantStore == nil {
+		return nil, errors.New("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	taskID := strings.TrimSpace(req.TaskID)
+	if accountID == "" {
+		return nil, errors.New("account_id is required")
+	}
+	if taskID == "" {
+		return nil, errors.New("task_id is required")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	TGAssistantStore.mu.Lock()
+	records := loadTGAssistantAccountsLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	if index < 0 {
+		TGAssistantStore.mu.Unlock()
+		return nil, errors.New("account not found")
+	}
+	account := records[index]
+	taskIndex := indexTGAssistantScheduleByID(account.Schedules, taskID)
+	if taskIndex < 0 {
+		TGAssistantStore.mu.Unlock()
+		return nil, errors.New("task not found")
+	}
+	account.Schedules[taskIndex].Enabled = req.Enabled
+	account.Schedules[taskIndex].UpdatedAt = now
+	account.UpdatedAt = now
+	account.Schedules = normalizeTGAssistantScheduleTaskRecords(account.Schedules)
+	records[index] = account
+	TGAssistantStore.data.Accounts = records
+	TGAssistantStore.mu.Unlock()
+
+	if err := TGAssistantStore.Save(); err != nil {
+		return nil, err
+	}
+	appendTGAssistantHistory("schedule.set_enabled", accountID, true, fmt.Sprintf("task_id=%s enabled=%t", taskID, req.Enabled))
+	return buildTGAssistantScheduleViews(account.Schedules), nil
+}
+
+func sendNowTGAssistantSchedule(req tgAssistantScheduleSendNowRequest) (tgAssistantScheduleSendNowResult, error) {
+	if TGAssistantStore == nil {
+		return tgAssistantScheduleSendNowResult{}, errors.New("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	taskID := strings.TrimSpace(req.TaskID)
+	if accountID == "" {
+		return tgAssistantScheduleSendNowResult{}, errors.New("account_id is required")
+	}
+	if taskID == "" {
+		return tgAssistantScheduleSendNowResult{}, errors.New("task_id is required")
+	}
+
+	TGAssistantStore.mu.RLock()
+	records := loadTGAssistantAccountsLocked()
+	apiID, apiHash := loadTGAssistantAPIKeyLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	if index < 0 {
+		TGAssistantStore.mu.RUnlock()
+		return tgAssistantScheduleSendNowResult{}, errors.New("account not found")
+	}
+	account := records[index]
+	taskIndex := indexTGAssistantScheduleByID(account.Schedules, taskID)
+	if taskIndex < 0 {
+		TGAssistantStore.mu.RUnlock()
+		return tgAssistantScheduleSendNowResult{}, errors.New("task not found")
+	}
+	task := account.Schedules[taskIndex]
+	TGAssistantStore.mu.RUnlock()
+
+	if task.TaskType != tgTaskTypeScheduledSend {
+		return tgAssistantScheduleSendNowResult{}, fmt.Errorf("unsupported task_type: %s", task.TaskType)
+	}
+	if strings.TrimSpace(task.Target) == "" {
+		return tgAssistantScheduleSendNowResult{}, errors.New("target is required")
+	}
+	if strings.TrimSpace(task.Message) == "" {
+		return tgAssistantScheduleSendNowResult{}, errors.New("message is required")
+	}
+	if !isTGAssistantAPIKeyConfigured(apiID, apiHash) {
+		return tgAssistantScheduleSendNowResult{}, errors.New("shared tg api key is not configured")
+	}
+
+	delaySec := randomTGAssistantScheduleDelaySeconds(task.DelayMin, task.DelayMax)
+	if delaySec > 0 {
+		time.Sleep(time.Duration(delaySec) * time.Second)
+	}
+
+	err := runTGAssistantClient(apiID, apiHash, account, func(ctx context.Context, client *telegram.Client) error {
+		status, err := client.Auth().Status(ctx)
+		if err != nil {
+			return err
+		}
+		if !status.Authorized {
+			return errors.New("account is not authorized")
+		}
+
+		peer, err := resolveTGAssistantInputPeer(ctx, client, task.Target)
+		if err != nil {
+			return err
+		}
+		_, err = client.API().MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+			Peer:     peer,
+			Message:  task.Message,
+			RandomID: newTGAssistantMessageRandomID(),
+		})
+		return err
+	})
+	if err != nil {
+		appendTGAssistantHistory("schedule.send_now", accountID, false, fmt.Sprintf("task_id=%s err=%s", taskID, err.Error()))
+		return tgAssistantScheduleSendNowResult{}, err
+	}
+
+	result := tgAssistantScheduleSendNowResult{
+		AccountID: accountID,
+		TaskID:    taskID,
+		Target:    task.Target,
+		DelaySec:  delaySec,
+		SentAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	appendTGAssistantHistory(
+		"schedule.send_now",
+		accountID,
+		true,
+		fmt.Sprintf("task_id=%s target=%s delay=%d", taskID, task.Target, delaySec),
+	)
+	return result, nil
+}
+
 func listTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTarget, error) {
 	if TGAssistantStore == nil {
 		return nil, errors.New("tg assistant datastore is not initialized")
@@ -1173,6 +1327,15 @@ func indexTGAssistantAccountByID(records []tgAssistantAccountRecord, accountID s
 	return -1
 }
 
+func indexTGAssistantScheduleByID(records []tgAssistantScheduleRecord, taskID string) int {
+	for i, item := range records {
+		if item.ID == taskID {
+			return i
+		}
+	}
+	return -1
+}
+
 func buildTGAssistantScheduleViews(records []tgAssistantScheduleRecord) []tgAssistantSchedule {
 	result := make([]tgAssistantSchedule, 0, len(records))
 	for _, record := range records {
@@ -1260,6 +1423,103 @@ func parseTGDialogsResponse(resp tg.MessagesDialogsClass) ([]tg.DialogClass, []t
 	default:
 		return nil, nil, nil, fmt.Errorf("unexpected dialogs response: %T", resp)
 	}
+}
+
+func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, target string) (tg.InputPeerClass, error) {
+	targetType, targetID, err := parseTGAssistantTarget(target)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		OffsetDate: 0,
+		OffsetID:   0,
+		OffsetPeer: &tg.InputPeerEmpty{},
+		Limit:      100,
+		Hash:       0,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	_, chats, users, err := parseTGDialogsResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	switch targetType {
+	case "user":
+		for _, raw := range users {
+			switch item := raw.(type) {
+			case *tg.User:
+				if item.ID == targetID {
+					return item.AsInputPeer(), nil
+				}
+			case *tg.UserEmpty:
+				if item.ID == targetID {
+					return nil, fmt.Errorf("target user %d has no access info", targetID)
+				}
+			}
+		}
+		return nil, fmt.Errorf("target user %d not found in current dialogs", targetID)
+	case "chat":
+		for _, raw := range chats {
+			switch item := raw.(type) {
+			case *tg.Chat:
+				if item.ID == targetID {
+					return item.AsInputPeer(), nil
+				}
+			case *tg.ChatForbidden:
+				if item.ID == targetID {
+					return nil, fmt.Errorf("no access to target chat %d", targetID)
+				}
+			}
+		}
+		return nil, fmt.Errorf("target chat %d not found in current dialogs", targetID)
+	case "channel":
+		for _, raw := range chats {
+			switch item := raw.(type) {
+			case *tg.Channel:
+				if item.ID == targetID {
+					return item.AsInputPeer(), nil
+				}
+			case *tg.ChannelForbidden:
+				if item.ID == targetID {
+					return &tg.InputPeerChannel{
+						ChannelID:  item.ID,
+						AccessHash: item.AccessHash,
+					}, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("target channel %d not found in current dialogs", targetID)
+	default:
+		return nil, fmt.Errorf("unsupported target type: %s", targetType)
+	}
+}
+
+func parseTGAssistantTarget(rawTarget string) (string, int64, error) {
+	target := strings.TrimSpace(rawTarget)
+	if target == "" {
+		return "", 0, errors.New("target is required")
+	}
+	parts := strings.SplitN(target, ":", 2)
+	if len(parts) != 2 {
+		return "", 0, fmt.Errorf("invalid target format: %s", target)
+	}
+	targetType := strings.TrimSpace(parts[0])
+	idText := strings.TrimSpace(parts[1])
+	if targetType == "" || idText == "" {
+		return "", 0, fmt.Errorf("invalid target format: %s", target)
+	}
+	if targetType != "user" && targetType != "chat" && targetType != "channel" {
+		return "", 0, fmt.Errorf("unsupported target type: %s", targetType)
+	}
+	targetID, err := strconv.ParseInt(idText, 10, 64)
+	if err != nil || targetID <= 0 {
+		return "", 0, fmt.Errorf("invalid target id: %s", idText)
+	}
+	return targetType, targetID, nil
 }
 
 func buildTGAssistantTargets(dialogs []tg.DialogClass, chats []tg.ChatClass, users []tg.UserClass) []tgAssistantTarget {
@@ -1440,6 +1700,45 @@ func normalizeTGPhone(raw string) string {
 		}
 	}
 	return builder.String()
+}
+
+func randomTGAssistantScheduleDelaySeconds(delayMin int, delayMax int) int {
+	if delayMin < 0 {
+		delayMin = 0
+	}
+	if delayMax < 0 {
+		delayMax = 0
+	}
+	if delayMax < delayMin {
+		delayMax = delayMin
+	}
+	if delayMax == delayMin {
+		return delayMin
+	}
+	span := delayMax - delayMin + 1
+	if span <= 1 {
+		return delayMin
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(span)))
+	if err != nil {
+		return delayMin
+	}
+	return delayMin + int(n.Int64())
+}
+
+func newTGAssistantMessageRandomID() int64 {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err == nil {
+		value := int64(binary.LittleEndian.Uint64(buf[:]) & 0x7fffffffffffffff)
+		if value != 0 {
+			return value
+		}
+	}
+	fallback := time.Now().UnixNano() & 0x7fffffffffffffff
+	if fallback == 0 {
+		return 1
+	}
+	return fallback
 }
 
 func newTGAssistantAccountID() string {

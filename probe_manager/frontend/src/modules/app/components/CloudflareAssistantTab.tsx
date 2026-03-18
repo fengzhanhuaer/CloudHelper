@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import {
   applyCloudflareDDNS,
   fetchCloudflareAPIKey,
   fetchCloudflareDDNSRecords,
   setCloudflareAPIKey,
+  setCloudflareZone,
 } from "../services/controller-api";
 import type { CloudflareDDNSApplyItem, CloudflareDDNSRecord } from "../types";
 
@@ -36,8 +37,11 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
         fetchCloudflareAPIKey(props.controllerBaseUrl, props.sessionToken),
         fetchCloudflareDDNSRecords(props.controllerBaseUrl, props.sessionToken),
       ]);
+      const fallbackZone = (ddnsRecords[0]?.zone_name || "").trim().toLowerCase();
+      const zone = (api.zone_name || "").trim().toLowerCase() || fallbackZone;
       setAPIKeyInput(api.api_key || "");
       setAPIConfigured(api.configured === true);
+      setZoneNameInput(zone);
       setRecords(ddnsRecords);
       setStatus(api.configured ? `Cloudflare 配置已加载，已记录 DDNS ${ddnsRecords.length} 条` : "请先在基础设置中保存 API KEY");
     } catch (error) {
@@ -59,11 +63,34 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
     try {
       const result = await setCloudflareAPIKey(props.controllerBaseUrl, props.sessionToken, apiKey);
       setAPIKeyInput(result.api_key || "");
+      if ((result.zone_name || "").trim()) {
+        setZoneNameInput((result.zone_name || "").trim().toLowerCase());
+      }
       setAPIConfigured(result.configured === true);
       setStatus("Cloudflare API KEY 已保存");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`保存 API KEY 失败：${msg}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleSaveZone() {
+    const zoneName = zoneNameInput.trim().toLowerCase();
+    if (!zoneName) {
+      setStatus("Zone 域名不能为空");
+      return;
+    }
+    setIsLoading(true);
+    setStatus("正在保存 Zone 域名...");
+    try {
+      const saved = await setCloudflareZone(props.controllerBaseUrl, props.sessionToken, zoneName);
+      setZoneNameInput((saved || zoneName).trim().toLowerCase());
+      setStatus(`Zone 域名已保存：${saved || zoneName}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`保存 Zone 域名失败：${msg}`);
     } finally {
       setIsLoading(false);
     }
@@ -79,6 +106,7 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
     setStatus("正在为探针自动申请 DDNS...");
     try {
       const result = await applyCloudflareDDNS(props.controllerBaseUrl, props.sessionToken, zoneName);
+      setZoneNameInput((result.zone_name || zoneName).trim().toLowerCase());
       setApplyItems(result.items);
       setRecords(result.records);
       setStatus(`DDNS 已执行：成功 ${result.applied}，跳过 ${result.skipped}`);
@@ -95,8 +123,12 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
       <h2 style={{ marginBottom: 12 }}>Cloudflare助手</h2>
 
       <div className="subtab-list" style={{ marginBottom: 12 }}>
-        <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")} disabled={isLoading}>基础设置</button>
-        <button className={`subtab-btn ${subTab === "ddns" ? "active" : ""}`} onClick={() => setSubTab("ddns")} disabled={isLoading}>DDNS</button>
+        <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")} disabled={isLoading}>
+          基础设置
+        </button>
+        <button className={`subtab-btn ${subTab === "ddns" ? "active" : ""}`} onClick={() => setSubTab("ddns")} disabled={isLoading}>
+          DDNS
+        </button>
       </div>
 
       {subTab === "settings" ? (
@@ -114,7 +146,9 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
           </div>
           <div className="status-inline">当前状态：{apiConfigured ? "已配置" : "未配置"}</div>
           <div className="content-actions">
-            <button className="btn" onClick={() => void handleSaveAPIKey()} disabled={isLoading}>保存 API KEY</button>
+            <button className="btn" onClick={() => void handleSaveAPIKey()} disabled={isLoading}>
+              保存 API KEY
+            </button>
           </div>
         </div>
       ) : (
@@ -130,8 +164,15 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
             />
           </div>
           <div className="content-actions">
-            <button className="btn" onClick={() => void handleApplyDDNS()} disabled={isLoading || !apiConfigured}>自动为探针申请DDNS</button>
-            <button className="btn" onClick={() => void loadData()} disabled={isLoading}>刷新记录</button>
+            <button className="btn" onClick={() => void handleSaveZone()} disabled={isLoading || !apiConfigured}>
+              保存 Zone
+            </button>
+            <button className="btn" onClick={() => void handleApplyDDNS()} disabled={isLoading || !apiConfigured}>
+              自动为探针申请 DDNS
+            </button>
+            <button className="btn" onClick={() => void loadData()} disabled={isLoading}>
+              刷新记录
+            </button>
           </div>
 
           {applyItems.length > 0 ? (
@@ -175,7 +216,7 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
                 </thead>
                 <tbody>
                   {records.map((item) => (
-                    <tr key={`cf-record-${item.node_id}-${item.record_id}`}>
+                    <tr key={`cf-record-${item.node_id}-${item.record_id || item.record_name}`}>
                       <td>{item.node_name || item.node_id}</td>
                       <td>{item.record_name || "-"}</td>
                       <td>{item.record_type || "-"}</td>

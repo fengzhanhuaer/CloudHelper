@@ -626,6 +626,22 @@ func collectIPs() ([]string, []string) {
 		}
 	}
 
+	publicIPv4, publicIPv6 := collectPublicIPs()
+	for _, value := range publicIPv4 {
+		if _, ok := seen4[value]; ok {
+			continue
+		}
+		seen4[value] = struct{}{}
+		ipv4 = append(ipv4, value)
+	}
+	for _, value := range publicIPv6 {
+		if _, ok := seen6[value]; ok {
+			continue
+		}
+		seen6[value] = struct{}{}
+		ipv6 = append(ipv6, value)
+	}
+
 	return ipv4, ipv6
 }
 

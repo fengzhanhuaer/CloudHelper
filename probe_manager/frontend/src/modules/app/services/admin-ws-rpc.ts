@@ -14,6 +14,10 @@ type WsRpcResponse<T> = {
   type?: string;
 };
 
+type WsRpcOptions = {
+  timeoutMs?: number;
+};
+
 function buildAdminWSRpcURL(baseUrl: string): string {
   const base = normalizeBaseUrl(baseUrl);
   if (!base) {
@@ -29,7 +33,13 @@ function buildAdminWSRpcURL(baseUrl: string): string {
   throw new Error("Only wss is allowed for manager-server communication");
 }
 
-export async function callAdminWSRpc<T>(baseUrl: string, token: string, action: string, payload?: unknown): Promise<T> {
+export async function callAdminWSRpc<T>(
+  baseUrl: string,
+  token: string,
+  action: string,
+  payload?: unknown,
+  options?: WsRpcOptions,
+): Promise<T> {
   const trimmedToken = token.trim();
   if (!trimmedToken) {
     throw new Error("session token is required");
@@ -39,6 +49,7 @@ export async function callAdminWSRpc<T>(baseUrl: string, token: string, action: 
   const authId = `${Date.now()}-auth-${Math.random().toString(16).slice(2)}`;
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
+  const timeoutMs = Number.isFinite(options?.timeoutMs) ? Math.max(1000, Math.trunc(options?.timeoutMs ?? 15000)) : 15000;
   return await new Promise<T>((resolve, reject) => {
     let done = false;
     const ws = new WebSocket(url);
@@ -53,7 +64,7 @@ export async function callAdminWSRpc<T>(baseUrl: string, token: string, action: 
         // ignore
       }
       reject(new Error(`ws rpc timeout: ${action}`));
-    }, 15000);
+    }, timeoutMs);
 
     const finalize = (fn: () => void) => {
       if (done) {

@@ -11,6 +11,7 @@ import type {
   TGAssistantAccount,
   TGAssistantAPIKey,
   TGAssistantSchedule,
+  TGAssistantScheduleSendNowResult,
   TGAssistantTarget,
   UpgradeProgress,
 } from "../types";
@@ -88,6 +89,7 @@ export async function fetchCloudflareAPIKey(baseURL: string, token: string): Pro
   const payload = await callAdminWSRpc<CloudflareAPIKey>(baseURL, token, "admin.cloudflare.api.get");
   return {
     api_key: typeof payload.api_key === "string" ? payload.api_key : "",
+    zone_name: typeof payload.zone_name === "string" ? payload.zone_name : "",
     configured: payload.configured === true,
   };
 }
@@ -98,8 +100,21 @@ export async function setCloudflareAPIKey(baseURL: string, token: string, apiKey
   });
   return {
     api_key: typeof payload.api_key === "string" ? payload.api_key : "",
+    zone_name: typeof payload.zone_name === "string" ? payload.zone_name : "",
     configured: payload.configured === true,
   };
+}
+
+export async function fetchCloudflareZone(baseURL: string, token: string): Promise<string> {
+  const payload = await callAdminWSRpc<{ zone_name?: string }>(baseURL, token, "admin.cloudflare.zone.get");
+  return typeof payload.zone_name === "string" ? payload.zone_name : "";
+}
+
+export async function setCloudflareZone(baseURL: string, token: string, zoneName: string): Promise<string> {
+  const payload = await callAdminWSRpc<{ zone_name?: string }>(baseURL, token, "admin.cloudflare.zone.set", {
+    zone_name: zoneName,
+  });
+  return typeof payload.zone_name === "string" ? payload.zone_name : "";
 }
 
 export async function fetchCloudflareDDNSRecords(baseURL: string, token: string): Promise<CloudflareDDNSRecord[]> {
@@ -108,9 +123,15 @@ export async function fetchCloudflareDDNSRecords(baseURL: string, token: string)
 }
 
 export async function applyCloudflareDDNS(baseURL: string, token: string, zoneName: string): Promise<CloudflareDDNSApplyResult> {
-  const payload = await callAdminWSRpc<CloudflareDDNSApplyResult>(baseURL, token, "admin.cloudflare.ddns.apply", {
-    zone_name: zoneName,
-  });
+  const payload = await callAdminWSRpc<CloudflareDDNSApplyResult>(
+    baseURL,
+    token,
+    "admin.cloudflare.ddns.apply",
+    {
+      zone_name: zoneName,
+    },
+    { timeoutMs: 120000 },
+  );
   return {
     zone_name: typeof payload.zone_name === "string" ? payload.zone_name : zoneName,
     applied: typeof payload.applied === "number" ? payload.applied : 0,
@@ -399,6 +420,32 @@ export async function removeTGAssistantSchedule(
 ): Promise<TGAssistantSchedule[]> {
   const payload = await callAdminWSRpc<{ schedules?: TGAssistantSchedule[] }>(baseURL, token, "admin.tg.schedule.remove", input);
   return Array.isArray(payload.schedules) ? payload.schedules : [];
+}
+
+export async function setTGAssistantScheduleEnabled(
+  baseURL: string,
+  token: string,
+  input: { account_id: string; task_id: string; enabled: boolean },
+): Promise<TGAssistantSchedule[]> {
+  const payload = await callAdminWSRpc<{ schedules?: TGAssistantSchedule[] }>(baseURL, token, "admin.tg.schedule.set_enabled", input);
+  return Array.isArray(payload.schedules) ? payload.schedules : [];
+}
+
+export async function sendNowTGAssistantSchedule(
+  baseURL: string,
+  token: string,
+  input: { account_id: string; task_id: string },
+): Promise<TGAssistantScheduleSendNowResult> {
+  const payload = await callAdminWSRpc<{ result?: TGAssistantScheduleSendNowResult }>(
+    baseURL,
+    token,
+    "admin.tg.schedule.send_now",
+    input,
+  );
+  if (!payload.result) {
+    throw new Error("controller returned empty send-now result");
+  }
+  return payload.result;
 }
 
 export async function fetchTGAssistantTargets(baseURL: string, token: string, accountID: string): Promise<TGAssistantTarget[]> {

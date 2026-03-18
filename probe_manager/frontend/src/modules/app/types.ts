@@ -162,6 +162,14 @@ export type TGAssistantSchedule = {
   updated_at: string;
 };
 
+export type TGAssistantScheduleSendNowResult = {
+  account_id: string;
+  task_id: string;
+  target: string;
+  delay_sec: number;
+  sent_at: string;
+};
+
 export type TGAssistantTarget = {
   id: string;
   name: string;
@@ -171,6 +179,7 @@ export type TGAssistantTarget = {
 
 export type CloudflareAPIKey = {
   api_key: string;
+  zone_name?: string;
   configured: boolean;
 };
 

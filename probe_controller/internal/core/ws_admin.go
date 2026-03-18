@@ -526,6 +526,18 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			return nil, err
 		}
 		return result, nil
+	case "admin.cloudflare.zone.get":
+		return getCloudflareZone(), nil
+	case "admin.cloudflare.zone.set":
+		var req cloudflareZoneRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := setCloudflareZone(req)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
 	case "admin.cloudflare.ddns.records":
 		return map[string]interface{}{
 			"records": listCloudflareRecords(),
@@ -683,6 +695,30 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		}
 		return map[string]interface{}{
 			"schedules": schedules,
+		}, nil
+	case "admin.tg.schedule.set_enabled":
+		var req tgAssistantScheduleSetEnabledRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		schedules, err := setTGAssistantScheduleEnabled(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"schedules": schedules,
+		}, nil
+	case "admin.tg.schedule.send_now":
+		var req tgAssistantScheduleSendNowRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := sendNowTGAssistantSchedule(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"result": result,
 		}, nil
 	case "admin.proxy.github.latest":
 		var req proxyLatestRequest

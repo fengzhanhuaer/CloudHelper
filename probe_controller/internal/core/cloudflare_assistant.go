@@ -30,16 +30,26 @@ type cloudflareStore struct {
 
 type cloudflareStoreData struct {
 	APIToken string                 `json:"api_token"`
+	ZoneName string                 `json:"zone_name"`
 	Records  []cloudflareDDNSRecord `json:"records"`
 }
 
 type cloudflareAPIKeyResponse struct {
 	APIKey     string `json:"api_key"`
+	ZoneName   string `json:"zone_name"`
 	Configured bool   `json:"configured"`
 }
 
 type cloudflareAPIKeyRequest struct {
 	APIKey string `json:"api_key"`
+}
+
+type cloudflareZoneRequest struct {
+	ZoneName string `json:"zone_name"`
+}
+
+type cloudflareZoneResponse struct {
+	ZoneName string `json:"zone_name"`
 }
 
 type cloudflareDDNSApplyRequest struct {
@@ -156,6 +166,7 @@ func initCloudflareStore() {
 				log.Fatalf("failed to parse cloudflare store file: %v", unmarshalErr)
 			}
 			raw.APIToken = strings.TrimSpace(raw.APIToken)
+			raw.ZoneName = normalizeCloudflareZoneName(raw.ZoneName)
 			raw.Records = normalizeCloudflareRecords(raw.Records)
 			CloudflareStore.data = raw
 		}
@@ -189,8 +200,9 @@ func getCloudflareAPIKey() cloudflareAPIKeyResponse {
 	}
 	CloudflareStore.mu.RLock()
 	token := strings.TrimSpace(CloudflareStore.data.APIToken)
+	zoneName := normalizeCloudflareZoneName(CloudflareStore.data.ZoneName)
 	CloudflareStore.mu.RUnlock()
-	return cloudflareAPIKeyResponse{APIKey: token, Configured: token != ""}
+	return cloudflareAPIKeyResponse{APIKey: token, ZoneName: zoneName, Configured: token != ""}
 }
 
 func setCloudflareAPIKey(req cloudflareAPIKeyRequest) (cloudflareAPIKeyResponse, error) {
@@ -207,7 +219,34 @@ func setCloudflareAPIKey(req cloudflareAPIKeyRequest) (cloudflareAPIKeyResponse,
 	if err := CloudflareStore.Save(); err != nil {
 		return cloudflareAPIKeyResponse{}, err
 	}
-	return cloudflareAPIKeyResponse{APIKey: token, Configured: true}, nil
+	return getCloudflareAPIKey(), nil
+}
+
+func getCloudflareZone() cloudflareZoneResponse {
+	if CloudflareStore == nil {
+		return cloudflareZoneResponse{}
+	}
+	CloudflareStore.mu.RLock()
+	zoneName := normalizeCloudflareZoneName(CloudflareStore.data.ZoneName)
+	CloudflareStore.mu.RUnlock()
+	return cloudflareZoneResponse{ZoneName: zoneName}
+}
+
+func setCloudflareZone(req cloudflareZoneRequest) (cloudflareZoneResponse, error) {
+	if CloudflareStore == nil {
+		return cloudflareZoneResponse{}, errors.New("cloudflare datastore is not initialized")
+	}
+	zoneName := normalizeCloudflareZoneName(req.ZoneName)
+	if zoneName == "" {
+		return cloudflareZoneResponse{}, errors.New("zone_name is required")
+	}
+	CloudflareStore.mu.Lock()
+	CloudflareStore.data.ZoneName = zoneName
+	CloudflareStore.mu.Unlock()
+	if err := CloudflareStore.Save(); err != nil {
+		return cloudflareZoneResponse{}, err
+	}
+	return cloudflareZoneResponse{ZoneName: zoneName}, nil
 }
 
 func listCloudflareRecords() []cloudflareDDNSRecord {
@@ -225,16 +264,20 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 	if CloudflareStore == nil {
 		return cloudflareDDNSApplyResponse{}, errors.New("cloudflare datastore is not initialized")
 	}
-	zoneName := strings.TrimSpace(strings.ToLower(req.ZoneName))
-	if zoneName == "" {
-		return cloudflareDDNSApplyResponse{}, errors.New("zone_name is required")
-	}
+	zoneName := normalizeCloudflareZoneName(req.ZoneName)
 
 	CloudflareStore.mu.RLock()
 	token := strings.TrimSpace(CloudflareStore.data.APIToken)
+	savedZoneName := normalizeCloudflareZoneName(CloudflareStore.data.ZoneName)
 	existing := make([]cloudflareDDNSRecord, len(CloudflareStore.data.Records))
 	copy(existing, CloudflareStore.data.Records)
 	CloudflareStore.mu.RUnlock()
+	if zoneName == "" {
+		zoneName = savedZoneName
+	}
+	if zoneName == "" {
+		return cloudflareDDNSApplyResponse{}, errors.New("zone_name is required")
+	}
 	if token == "" {
 		return cloudflareDDNSApplyResponse{}, errors.New("cloudflare api key is not configured")
 	}
@@ -331,6 +374,7 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 
 	next = normalizeCloudflareRecords(next)
 	CloudflareStore.mu.Lock()
+	CloudflareStore.data.ZoneName = zoneName
 	CloudflareStore.data.Records = next
 	CloudflareStore.mu.Unlock()
 	if err := CloudflareStore.Save(); err != nil {
@@ -398,6 +442,7 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 
 	CloudflareStore.mu.RLock()
 	token := strings.TrimSpace(CloudflareStore.data.APIToken)
+	defaultZoneName := normalizeCloudflareZoneName(CloudflareStore.data.ZoneName)
 	records := make([]cloudflareDDNSRecord, len(CloudflareStore.data.Records))
 	copy(records, CloudflareStore.data.Records)
 	CloudflareStore.mu.RUnlock()
@@ -418,8 +463,9 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 		if normalizeProbeNodeID(item.NodeID) != nodeID {
 			continue
 		}
-		if zoneName == "" {
-			zoneName = strings.TrimSpace(strings.ToLower(item.ZoneName))
+		itemZoneName := normalizeCloudflareZoneName(item.ZoneName)
+		if itemZoneName != "" {
+			zoneName = itemZoneName
 		}
 		if nodeNo <= 0 && item.NodeNo > 0 {
 			nodeNo = item.NodeNo
@@ -429,6 +475,9 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 		}
 		key := cloudflareRecordKey(item.NodeID, item.RecordClass, item.RecordType, item.Sequence)
 		recordByKey[key] = item
+	}
+	if zoneName == "" {
+		zoneName = defaultZoneName
 	}
 	if zoneName == "" {
 		return nil
@@ -545,12 +594,13 @@ func buildCloudflareDesiredRecords(node probeNodeStatusRecord, zoneName string) 
 	}
 	basePublic := buildCloudflareRecordBase(nodeNo, "public", customTag)
 	baseLocal := buildCloudflareRecordBase(nodeNo, "local", customTag)
-	if basePublic == "" || baseLocal == "" {
+	baseBusiness := buildCloudflareBusinessRecordBase(nodeNo)
+	if basePublic == "" || baseLocal == "" || baseBusiness == "" {
 		return []cloudflareDesiredRecord{}
 	}
 
 	groups := collectCloudflareIPs(node.Runtime.IPv4, node.Runtime.IPv6)
-	out := make([]cloudflareDesiredRecord, 0, len(groups.PublicIPv4)+len(groups.PublicIPv6)+len(groups.LocalIPv4)+len(groups.LocalIPv6))
+	out := make([]cloudflareDesiredRecord, 0, len(groups.PublicIPv4)+len(groups.PublicIPv6)+len(groups.LocalIPv4)+len(groups.LocalIPv6)+len(groups.PublicIPv4)+len(groups.PublicIPv6))
 	appendRecords := func(recordClass string, recordType string, base string, values []string) {
 		for i, ip := range values {
 			seq := i + 1
@@ -573,6 +623,8 @@ func buildCloudflareDesiredRecords(node probeNodeStatusRecord, zoneName string) 
 	}
 	appendRecords("public", "A", basePublic, groups.PublicIPv4)
 	appendRecords("public", "AAAA", basePublic, groups.PublicIPv6)
+	appendRecords("business", "A", baseBusiness, groups.PublicIPv4)
+	appendRecords("business", "AAAA", baseBusiness, groups.PublicIPv6)
 	appendRecords("local", "A", baseLocal, groups.LocalIPv4)
 	appendRecords("local", "AAAA", baseLocal, groups.LocalIPv6)
 	return out
@@ -664,7 +716,7 @@ func buildCloudflareRecordBase(nodeNo int, recordClass string, customTag string)
 	if nodeNo <= 0 {
 		return ""
 	}
-	encoded := sanitizeCloudflareBase64Tag(base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(nodeNo))))
+	encoded := buildCloudflareNodeBase64Tag(nodeNo)
 	if encoded == "" {
 		return ""
 	}
@@ -672,6 +724,21 @@ func buildCloudflareRecordBase(nodeNo int, recordClass string, customTag string)
 		return "local_go_" + encoded
 	}
 	return "ddns_go_" + encoded
+}
+
+func buildCloudflareBusinessRecordBase(nodeNo int) string {
+	tag := buildCloudflareNodeBase64Tag(nodeNo)
+	if tag == "" {
+		return ""
+	}
+	return "api.codex." + tag
+}
+
+func buildCloudflareNodeBase64Tag(nodeNo int) string {
+	if nodeNo <= 0 {
+		return ""
+	}
+	return sanitizeCloudflareBase64Tag(base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(nodeNo))))
 }
 
 func buildCloudflareRecordName(base string, zoneName string, sequence int) string {
@@ -976,12 +1043,22 @@ func normalizeCloudflareRecordType(raw string) string {
 	return "A"
 }
 
+func normalizeCloudflareZoneName(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	value = strings.TrimSuffix(value, ".")
+	return strings.TrimSpace(value)
+}
+
 func normalizeCloudflareRecordClass(raw string, recordName string) string {
 	value := strings.TrimSpace(strings.ToLower(raw))
-	if value == "public" || value == "local" {
+	if value == "public" || value == "local" || value == "business" {
 		return value
 	}
-	name := strings.TrimSpace(strings.ToLower(recordName))
+	fullName := strings.TrimSpace(strings.ToLower(recordName))
+	if strings.HasPrefix(fullName, "api.codex.") {
+		return "business"
+	}
+	name := fullName
 	if dot := strings.Index(name, "."); dot > 0 {
 		name = name[:dot]
 	}
@@ -1000,7 +1077,7 @@ func normalizeCloudflareRecords(records []cloudflareDDNSRecord) []cloudflareDDNS
 			item.NodeID = normalizeProbeNodeID(strconv.Itoa(item.NodeNo))
 		}
 		item.NodeName = strings.TrimSpace(item.NodeName)
-		item.ZoneName = strings.TrimSpace(strings.ToLower(item.ZoneName))
+		item.ZoneName = normalizeCloudflareZoneName(item.ZoneName)
 		item.ZoneID = strings.TrimSpace(item.ZoneID)
 		item.RecordClass = normalizeCloudflareRecordClass(item.RecordClass, item.RecordName)
 		item.RecordName = strings.TrimSpace(strings.ToLower(item.RecordName))

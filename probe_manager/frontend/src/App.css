@@ -345,6 +345,26 @@
     margin-top: 6px;
 }
 
+.tg-schedule-row-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.tg-schedule-table-message {
+    max-width: 340px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.4;
+}
+
+.tg-schedule-table-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 .probe-node-list {
     display: flex;
     flex-direction: column;
