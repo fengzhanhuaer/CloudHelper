@@ -1159,7 +1159,7 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 		if err != nil {
 			return err
 		}
-		tgResponseMessage = waitTGAssistantSendResponseMessage(inner, client, peer, updates, 5*time.Second)
+		tgResponseMessage = waitTGAssistantSendResponseMessage(inner, client, peer, updates, time.Now().Unix(), 5*time.Second)
 		return nil
 	})
 	if err != nil {
@@ -1202,10 +1202,11 @@ func waitTGAssistantSendResponseMessage(
 	client *telegram.Client,
 	peer tg.InputPeerClass,
 	updates tg.UpdatesClass,
+	sentAtUnix int64,
 	maxWait time.Duration,
 ) string {
 	sentID := extractTGAssistantSentMessageID(updates)
-	if maxWait <= 0 || sentID <= 0 {
+	if maxWait <= 0 {
 		return ""
 	}
 
@@ -1219,13 +1220,13 @@ func waitTGAssistantSendResponseMessage(
 			OffsetID:   0,
 			OffsetDate: 0,
 			AddOffset:  0,
-			Limit:      10,
-			MaxID:      maxInt(sentID+1, 0),
-			MinID:      maxInt(sentID-1, 0),
+			Limit:      20,
+			MaxID:      0,
+			MinID:      0,
 			Hash:       0,
 		})
 		if err == nil {
-			if value := extractTGAssistantIncomingReplyText(resp, sentID); value != "" {
+			if value := extractTGAssistantIncomingReplyText(resp, sentID, sentAtUnix); value != "" {
 				return value
 			}
 		}
@@ -1251,9 +1252,10 @@ func waitTGAssistantSendResponseMessage(
 	return ""
 }
 
-func extractTGAssistantIncomingReplyText(resp tg.MessagesMessagesClass, sentID int) string {
-	if sentID <= 0 {
-		return ""
+func extractTGAssistantIncomingReplyText(resp tg.MessagesMessagesClass, sentID int, sentAtUnix int64) string {
+	minUnix := sentAtUnix - 1
+	if minUnix < 0 {
+		minUnix = 0
 	}
 	bestID := 0
 	bestText := ""
@@ -1262,7 +1264,10 @@ func extractTGAssistantIncomingReplyText(resp tg.MessagesMessagesClass, sentID i
 		if !ok || msg == nil || msg.Out {
 			continue
 		}
-		if msg.ID <= sentID {
+		if sentID > 0 && msg.ID <= sentID {
+			continue
+		}
+		if sentAtUnix > 0 && int64(msg.Date) < minUnix {
 			continue
 		}
 		value := summarizeTGAssistantTLMessage(msg)
