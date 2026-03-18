@@ -13,6 +13,7 @@ func Run() {
 	initStore()
 	initControllerScheduler()
 	initTGAssistantScheduleEngine()
+	initTGAssistantBotEngine()
 	if err := cleanupControllerStaleExecutables(); err != nil {
 		log.Printf("warning: failed to cleanup stale controller executable files: %v", err)
 	}

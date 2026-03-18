@@ -10,6 +10,8 @@ import type {
   NonceResponse,
   TGAssistantAccount,
   TGAssistantAPIKey,
+  TGAssistantBotAPIKey,
+  TGAssistantBotTestSendResult,
   TGAssistantSchedule,
   TGAssistantScheduleSendNowResult,
   TGAssistantTaskHistoryRecord,
@@ -387,6 +389,48 @@ export async function logoutTGAssistantAccount(baseURL: string, token: string, a
     throw new Error("controller returned empty account");
   }
   return payload.account;
+}
+
+export async function fetchTGAssistantBotAPIKey(baseURL: string, token: string, accountID: string): Promise<TGAssistantBotAPIKey> {
+  const payload = await callAdminWSRpc<TGAssistantBotAPIKey>(baseURL, token, "admin.tg.bot.get", {
+    account_id: accountID,
+  });
+  return {
+    account_id: typeof payload.account_id === "string" ? payload.account_id : accountID,
+    api_key: typeof payload.api_key === "string" ? payload.api_key : "",
+    configured: payload.configured === true,
+  };
+}
+
+export async function setTGAssistantBotAPIKey(
+  baseURL: string,
+  token: string,
+  input: { account_id: string; api_key: string },
+): Promise<TGAssistantBotAPIKey> {
+  const payload = await callAdminWSRpc<TGAssistantBotAPIKey>(baseURL, token, "admin.tg.bot.set", input);
+  return {
+    account_id: typeof payload.account_id === "string" ? payload.account_id : input.account_id,
+    api_key: typeof payload.api_key === "string" ? payload.api_key : "",
+    configured: payload.configured === true,
+  };
+}
+
+export async function testSendTGAssistantBotMessage(
+  baseURL: string,
+  token: string,
+  input: { account_id: string; message: string },
+): Promise<TGAssistantBotTestSendResult> {
+  const payload = await callAdminWSRpc<{ result?: TGAssistantBotTestSendResult }>(
+    baseURL,
+    token,
+    "admin.tg.bot.test_send",
+    input,
+    { timeoutMs: 30000 },
+  );
+  if (!payload.result) {
+    throw new Error("controller returned empty bot test-send result");
+  }
+  return payload.result;
 }
 
 export async function fetchTGAssistantSchedules(baseURL: string, token: string, accountID: string): Promise<TGAssistantSchedule[]> {

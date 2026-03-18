@@ -5,6 +5,7 @@ import {
   completeTGAssistantLogin,
   fetchTGAssistantAPIKey,
   fetchTGAssistantAccounts,
+  fetchTGAssistantBotAPIKey,
   fetchTGAssistantSchedules,
   fetchTGAssistantScheduleTaskHistory,
   fetchTGAssistantTargets,
@@ -15,13 +16,17 @@ import {
   refreshTGAssistantTargets,
   sendNowTGAssistantSchedule,
   setTGAssistantAPIKey,
+  setTGAssistantBotAPIKey,
   setTGAssistantScheduleEnabled,
+  testSendTGAssistantBotMessage,
   updateTGAssistantSchedule,
   sendTGAssistantLoginCode,
 } from "../services/controller-api";
 import type {
   TGAssistantAPIKey,
   TGAssistantAccount,
+  TGAssistantBotAPIKey,
+  TGAssistantBotTestSendResult,
   TGAssistantSchedule,
   TGAssistantTarget,
   TGAssistantTaskHistoryRecord,
@@ -32,7 +37,7 @@ type TGAssistantTabProps = {
   sessionToken: string;
 };
 
-type TGAccountDetailSubTab = "basic-info" | "scheduled-send";
+type TGAccountDetailSubTab = "basic-info" | "scheduled-send" | "tg-bot";
 
 export function TGAssistantTab(props: TGAssistantTabProps) {
   const [accounts, setAccounts] = useState<TGAssistantAccount[]>([]);
@@ -72,6 +77,12 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [scheduleHistoryTaskID, setScheduleHistoryTaskID] = useState("");
   const [scheduleHistoryItems, setScheduleHistoryItems] = useState<TGAssistantTaskHistoryRecord[]>([]);
   const [isScheduleHistoryLoading, setIsScheduleHistoryLoading] = useState(false);
+  const [showBotAPIKeyModal, setShowBotAPIKeyModal] = useState(false);
+  const [botAPIKeyDraft, setBotAPIKeyDraft] = useState("");
+  const [botAPIKeyInput, setBotAPIKeyInput] = useState("");
+  const [botConfigured, setBotConfigured] = useState(false);
+  const [botTestMessageDraft, setBotTestMessageDraft] = useState("ping from bot test");
+  const [isBotLoading, setIsBotLoading] = useState(false);
   const scheduleRequestSeqRef = useRef(0);
 
   const loggedInAccounts = useMemo(() => accounts.filter((item) => item.authorized), [accounts]);
@@ -118,6 +129,9 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setScheduleTimeDraft("每天 09:00");
       setScheduleMessageDraft("");
       setScheduleDelayMaxDraft("0");
+      setBotAPIKeyInput("");
+      setBotConfigured(false);
+      setBotTestMessageDraft("ping from bot test");
       return;
     }
     void loadSchedule(accountID, { silent: true });
@@ -136,6 +150,11 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     setSharedApiIDInput(apiKey.api_id > 0 ? String(apiKey.api_id) : "");
     setSharedApiHashInput(apiKey.api_hash || "");
     setSharedAPIConfigured(apiKey.configured);
+  }
+
+  function applyBotAPIKey(payload: TGAssistantBotAPIKey) {
+    setBotAPIKeyInput(payload.api_key || "");
+    setBotConfigured(payload.configured === true);
   }
 
   function applyScheduleList(accountID: string, schedules: TGAssistantSchedule[]) {

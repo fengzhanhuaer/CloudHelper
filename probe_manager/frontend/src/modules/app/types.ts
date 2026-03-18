@@ -180,6 +180,20 @@ export type TGAssistantTaskHistoryRecord = {
   message?: string;
 };
 
+export type TGAssistantBotAPIKey = {
+  account_id: string;
+  api_key: string;
+  configured: boolean;
+};
+
+export type TGAssistantBotTestSendResult = {
+  account_id: string;
+  chat_id: number;
+  message_id: number;
+  message: string;
+  sent_at: string;
+};
+
 export type TGAssistantTarget = {
   id: string;
   name: string;

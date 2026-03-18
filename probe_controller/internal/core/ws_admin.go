@@ -636,6 +636,38 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return map[string]interface{}{
 			"account": account,
 		}, nil
+	case "admin.tg.bot.get":
+		var req tgAssistantAccountIDRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := getTGAssistantBotAPIKey(req)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	case "admin.tg.bot.set":
+		var req tgAssistantBotAPIKeyRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := setTGAssistantBotAPIKey(req)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	case "admin.tg.bot.test_send":
+		var req tgAssistantBotTestSendRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := testSendTGAssistantBotMessage(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"result": result,
+		}, nil
 	case "admin.tg.targets.list":
 		var req tgAssistantAccountIDRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

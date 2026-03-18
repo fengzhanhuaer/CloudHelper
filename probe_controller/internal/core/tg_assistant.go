@@ -46,6 +46,8 @@ type tgAssistantAccountRecord struct {
 	ID              string                      `json:"id"`
 	Label           string                      `json:"label"`
 	Phone           string                      `json:"phone"`
+	BotAPIKey       string                      `json:"bot_api_key,omitempty"`
+	BotLastUpdateID int                         `json:"bot_last_update_id,omitempty"`
 	Authorized      bool                        `json:"authorized"`
 	LastError       string                      `json:"last_error"`
 	CreatedAt       string                      `json:"created_at"`
@@ -392,6 +394,7 @@ func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount
 		ID:          newTGAssistantAccountID(),
 		Label:       label,
 		Phone:       phone,
+		BotAPIKey:   "",
 		Authorized:  false,
 		LastError:   "",
 		CreatedAt:   now,
@@ -1135,7 +1138,6 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 	}
 
 	tgResponseMessage := ""
-	tgResponseFallback := sanitizeTGAssistantHistoryText(task.Message, 240)
 	err := runTGAssistantClientWithContext(ctx, apiID, apiHash, account, func(inner context.Context, client *telegram.Client) error {
 		status, err := client.Auth().Status(inner)
 		if err != nil {
@@ -1158,14 +1160,8 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 			return err
 		}
 		tgResponseMessage = waitTGAssistantSendResponseMessage(inner, client, peer, updates, 5*time.Second)
-		if strings.TrimSpace(tgResponseMessage) == "" {
-			tgResponseMessage = tgResponseFallback
-		}
 		return nil
 	})
-	if strings.TrimSpace(tgResponseMessage) == "" {
-		tgResponseMessage = strings.TrimSpace(tgResponseFallback)
-	}
 	if err != nil {
 		historyMsg := fmt.Sprintf(
 			"task_id=%s err=%s tg_response=%s",
@@ -1178,7 +1174,7 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 		return tgAssistantScheduleSendNowResult{}, err
 	}
 	if strings.TrimSpace(tgResponseMessage) == "" {
-		tgResponseMessage = sanitizeTGAssistantHistoryText(task.Message, 240)
+		tgResponseMessage = "5秒内未收到TG回复"
 	}
 
 	result := tgAssistantScheduleSendNowResult{
@@ -1209,11 +1205,7 @@ func waitTGAssistantSendResponseMessage(
 	maxWait time.Duration,
 ) string {
 	sentID := extractTGAssistantSentMessageID(updates)
-	textFromUpdates := summarizeTGAssistantSendUpdates(updates)
-	if textFromUpdates != "" {
-		return textFromUpdates
-	}
-	if maxWait <= 0 {
+	if maxWait <= 0 || sentID <= 0 {
 		return ""
 	}
 
@@ -1233,18 +1225,8 @@ func waitTGAssistantSendResponseMessage(
 			Hash:       0,
 		})
 		if err == nil {
-			for _, raw := range extractTGAssistantMessagesFromHistory(resp) {
-				msg, ok := raw.(*tg.Message)
-				if !ok || !msg.Out {
-					continue
-				}
-				if sentID > 0 && msg.ID != sentID {
-					continue
-				}
-				value := summarizeTGAssistantTLMessage(msg)
-				if value != "" {
-					return value
-				}
+			if value := extractTGAssistantIncomingReplyText(resp, sentID); value != "" {
+				return value
 			}
 		}
 
@@ -1262,11 +1244,37 @@ func waitTGAssistantSendResponseMessage(
 			if !timer.Stop() {
 				<-timer.C
 			}
-			return textFromUpdates
+			return ""
 		case <-timer.C:
 		}
 	}
-	return textFromUpdates
+	return ""
+}
+
+func extractTGAssistantIncomingReplyText(resp tg.MessagesMessagesClass, sentID int) string {
+	if sentID <= 0 {
+		return ""
+	}
+	bestID := 0
+	bestText := ""
+	for _, raw := range extractTGAssistantMessagesFromHistory(resp) {
+		msg, ok := raw.(*tg.Message)
+		if !ok || msg == nil || msg.Out {
+			continue
+		}
+		if msg.ID <= sentID {
+			continue
+		}
+		value := summarizeTGAssistantTLMessage(msg)
+		if strings.TrimSpace(value) == "" || value == "-" {
+			continue
+		}
+		if msg.ID > bestID {
+			bestID = msg.ID
+			bestText = value
+		}
+	}
+	return bestText
 }
 
 func summarizeTGAssistantSendUpdates(updates tg.UpdatesClass) string {
@@ -1718,6 +1726,10 @@ func normalizeTGAssistantAccountRecords(records []tgAssistantAccountRecord) []tg
 		}
 		item.Label = strings.TrimSpace(item.Label)
 		item.Phone = normalizeTGPhone(item.Phone)
+		item.BotAPIKey = strings.TrimSpace(item.BotAPIKey)
+		if item.BotLastUpdateID < 0 {
+			item.BotLastUpdateID = 0
+		}
 		item.SelfUsername = strings.TrimSpace(item.SelfUsername)
 		item.SelfDisplayName = strings.TrimSpace(item.SelfDisplayName)
 		item.SelfPhone = normalizeTGPhone(item.SelfPhone)
