@@ -1206,6 +1206,7 @@ func waitTGAssistantSendResponseMessage(
 	maxWait time.Duration,
 ) string {
 	sentID := extractTGAssistantSentMessageID(updates)
+	allowLooseMatch := isTGAssistantPrivateInputPeer(peer)
 	if maxWait <= 0 {
 		return ""
 	}
@@ -1226,7 +1227,7 @@ func waitTGAssistantSendResponseMessage(
 			Hash:       0,
 		})
 		if err == nil {
-			if value := extractTGAssistantIncomingReplyText(resp, sentID, sentAtUnix); value != "" {
+			if value := extractTGAssistantIncomingReplyText(resp, sentID, sentAtUnix, allowLooseMatch); value != "" {
 				return value
 			}
 		}
@@ -1252,13 +1253,15 @@ func waitTGAssistantSendResponseMessage(
 	return ""
 }
 
-func extractTGAssistantIncomingReplyText(resp tg.MessagesMessagesClass, sentID int, sentAtUnix int64) string {
+func extractTGAssistantIncomingReplyText(resp tg.MessagesMessagesClass, sentID int, sentAtUnix int64, allowLooseMatch bool) string {
 	minUnix := sentAtUnix - 1
 	if minUnix < 0 {
 		minUnix = 0
 	}
-	bestID := 0
-	bestText := ""
+	bestReplyID := 0
+	bestReplyText := ""
+	bestLooseID := 0
+	bestLooseText := ""
 	for _, raw := range extractTGAssistantMessagesFromHistory(resp) {
 		msg, ok := raw.(*tg.Message)
 		if !ok || msg == nil || msg.Out {
@@ -1274,12 +1277,52 @@ func extractTGAssistantIncomingReplyText(resp tg.MessagesMessagesClass, sentID i
 		if strings.TrimSpace(value) == "" || value == "-" {
 			continue
 		}
-		if msg.ID > bestID {
-			bestID = msg.ID
-			bestText = value
+		if isTGAssistantMessageReplyToID(msg, sentID) {
+			if msg.ID > bestReplyID {
+				bestReplyID = msg.ID
+				bestReplyText = value
+			}
+			continue
+		}
+		if allowLooseMatch && msg.ID > bestLooseID {
+			bestLooseID = msg.ID
+			bestLooseText = value
 		}
 	}
-	return bestText
+	if bestReplyText != "" {
+		return bestReplyText
+	}
+	return bestLooseText
+}
+
+func isTGAssistantPrivateInputPeer(peer tg.InputPeerClass) bool {
+	switch peer.(type) {
+	case *tg.InputPeerUser, *tg.InputPeerSelf:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTGAssistantMessageReplyToID(msg *tg.Message, sentID int) bool {
+	if msg == nil || sentID <= 0 {
+		return false
+	}
+	replyClass, ok := msg.GetReplyTo()
+	if !ok || replyClass == nil {
+		return false
+	}
+	if replyHeader, ok := replyClass.(*tg.MessageReplyHeader); ok {
+		replyID, hasReplyID := replyHeader.GetReplyToMsgID()
+		return hasReplyID && replyID == sentID
+	}
+	if getter, ok := replyClass.(interface {
+		GetReplyToMsgID() (int, bool)
+	}); ok {
+		replyID, hasReplyID := getter.GetReplyToMsgID()
+		return hasReplyID && replyID == sentID
+	}
+	return false
 }
 
 func summarizeTGAssistantSendUpdates(updates tg.UpdatesClass) string {
