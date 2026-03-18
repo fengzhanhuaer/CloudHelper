@@ -26,6 +26,7 @@ type ProbeNodeItem = {
   node_no: number;
   node_name: string;
   remark?: string;
+  ddns?: string;
   node_secret: string;
   target_system: ProbeTargetSystem;
   direct_connect: boolean;
@@ -43,6 +44,7 @@ type ProbeNodeItem = {
     version?: string;
     ipv4?: string[];
     ipv6?: string[];
+    ip_locations?: Record<string, string>;
     system?: {
       cpu_percent?: number;
       memory_total_bytes?: number;
@@ -62,6 +64,7 @@ type ProbeNodeSettingsDraft = {
   node_no: number;
   node_name: string;
   remark: string;
+  ddns: string;
   target_system: ProbeTargetSystem;
   direct_connect: boolean;
   payment_cycle: string;
@@ -290,7 +293,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
 
   async function updateNode(
     nodeNo: number,
-    patch: Partial<Pick<ProbeNodeItem, "node_name" | "remark" | "target_system" | "direct_connect" | "payment_cycle" | "cost" | "expire_at" | "vendor_name" | "vendor_url">>,
+    patch: Partial<Pick<ProbeNodeItem, "node_name" | "remark" | "ddns" | "target_system" | "direct_connect" | "payment_cycle" | "cost" | "expire_at" | "vendor_name" | "vendor_url">>,
   ): Promise<boolean> {
     const current = nodes.find((item) => item.node_no === nodeNo);
     if (!current) {
@@ -304,6 +307,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
 
     const nextRemark = (patch.remark ?? current.remark ?? "").trim();
+    const nextDDNS = (patch.ddns ?? current.ddns ?? "").trim();
     const nextTargetSystem = patch.target_system ?? current.target_system;
     const nextDirectConnect = patch.direct_connect ?? current.direct_connect;
     const nextPaymentCycle = (patch.payment_cycle ?? current.payment_cycle ?? "").trim();
@@ -318,6 +322,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         node_no: nodeNo,
         node_name: nextNodeName,
         remark: nextRemark,
+        ddns: nextDDNS,
         target_system: nextTargetSystem,
         direct_connect: nextDirectConnect,
         payment_cycle: nextPaymentCycle,
@@ -344,6 +349,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       node_no: node.node_no,
       node_name: node.node_name,
       remark: node.remark || "",
+      ddns: node.ddns || "",
       target_system: node.target_system,
       direct_connect: node.direct_connect,
       payment_cycle: node.payment_cycle || "",
@@ -594,28 +600,58 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           {nodeStatusItems.length === 0 ? (
             <div className="status">暂无探针，请先在“探针列表”页签点击“新建探针”。</div>
           ) : (
-            <div className="probe-node-list">
-              {nodeStatusItems.map((item) => (
-                <div className="probe-node-card" key={`status-${item.node_no}`}>
-                  <div className="probe-node-title">{item.node_name}</div>
-                  <div className="probe-node-meta compact">节点号：{item.node_no > 0 ? item.node_no : (item.runtime?.node_id || "-")}　|　状态：{item.runtime?.online ? "在线" : "离线"}　|　版本：{item.runtime?.version || "-"}　|　最后上报：{formatTime(item.runtime?.last_seen || "")}</div>
-                  <div className="probe-node-meta compact">CPU：{item.runtime?.online ? formatPercent(item.runtime?.system?.cpu_percent) : "-"}　RAM：{item.runtime?.online ? formatPercentWithBytes(item.runtime?.system?.memory_used_percent, item.runtime?.system?.memory_used_bytes, item.runtime?.system?.memory_total_bytes) : "-"}　SWAP：{item.runtime?.online ? formatPercentWithBytes(item.runtime?.system?.swap_used_percent, item.runtime?.system?.swap_used_bytes, item.runtime?.system?.swap_total_bytes) : "-"}　硬盘：{item.runtime?.online ? formatPercentWithBytes(item.runtime?.system?.disk_used_percent, item.runtime?.system?.disk_used_bytes, item.runtime?.system?.disk_total_bytes) : "-"}</div>
-                  <div className="probe-node-meta compact">
-                    IP：
-                    {collectIPs(item).length === 0 ? "-" : collectIPs(item).map((ip) => (
-                      <button
-                        key={`${item.node_no}-${ip}`}
-                        className="ip-copy-chip"
-                        onClick={() => void copyStatusIP(ip, setStatus)}
-                        title="点击复制IP"
-                        type="button"
-                      >
-                        {ip}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
+            <div className="probe-table-wrap">
+              <table className="probe-table" style={{ minWidth: 1180 }}>
+                <thead>
+                  <tr>
+                    <th>节点号</th>
+                    <th>节点名称</th>
+                    <th>状态</th>
+                    <th>版本</th>
+                    <th>资源状态</th>
+                    <th>IP（归属地）</th>
+                    <th>最后上报</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {nodeStatusItems.map((item) => {
+                    const ips = collectIPs(item);
+                    const online = item.runtime?.online === true;
+                    const ipLocations = item.runtime?.ip_locations || {};
+                    return (
+                      <tr key={`status-${item.node_no}`}>
+                        <td>{item.node_no > 0 ? item.node_no : (item.runtime?.node_id || "-")}</td>
+                        <td>{item.node_name || "-"}</td>
+                        <td>{online ? "在线" : "离线"}</td>
+                        <td>{item.runtime?.version || "-"}</td>
+                        <td>
+                          {online
+                            ? `CPU ${formatPercent(item.runtime?.system?.cpu_percent)} / RAM ${formatPercentWithBytes(item.runtime?.system?.memory_used_percent, item.runtime?.system?.memory_used_bytes, item.runtime?.system?.memory_total_bytes)} / SWAP ${formatPercentWithBytes(item.runtime?.system?.swap_used_percent, item.runtime?.system?.swap_used_bytes, item.runtime?.system?.swap_total_bytes)} / 磁盘 ${formatPercentWithBytes(item.runtime?.system?.disk_used_percent, item.runtime?.system?.disk_used_bytes, item.runtime?.system?.disk_total_bytes)}`
+                            : "-"}
+                        </td>
+                        <td>
+                          {ips.length === 0 ? "-" : (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {ips.map((ip) => (
+                                <button
+                                  key={`${item.node_no}-${ip}`}
+                                  className="ip-copy-chip"
+                                  onClick={() => void copyStatusIP(ip, setStatus)}
+                                  title="点击复制IP"
+                                  type="button"
+                                >
+                                  {formatIPWithLocation(ip, ipLocations[ip])}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td>{formatTime(item.runtime?.last_seen || "")}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
@@ -698,6 +734,16 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
             <div className="row">
               <label>备注</label>
               <input className="input" value={settingsDraft.remark} onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, remark: event.target.value } : prev)} disabled={isLoading} />
+            </div>
+            <div className="row">
+              <label>DDNS标识</label>
+              <input
+                className="input"
+                value={settingsDraft.ddns}
+                onChange={(event) => setSettingsDraft((prev) => prev ? { ...prev, ddns: event.target.value } : prev)}
+                disabled={isLoading}
+                placeholder="留空则使用节点号Base64"
+              />
             </div>
             <div className="row">
               <label>操作系统</label>
@@ -797,6 +843,14 @@ function collectIPs(item: ProbeNodeStatusItem): string[] {
   const v6 = Array.isArray(item.runtime?.ipv6) ? item.runtime?.ipv6 ?? [] : [];
   const merged = [...v4, ...v6].map((v) => String(v).trim()).filter((v) => v !== "");
   return Array.from(new Set(merged));
+}
+
+function formatIPWithLocation(ip: string, location?: string): string {
+  const label = (location || "").trim();
+  if (!label) {
+    return `${ip} (查询中...)`;
+  }
+  return `${ip} (${label})`;
 }
 
 async function copyStatusIP(ip: string, setStatus: (value: string) => void): Promise<void> {
@@ -1074,6 +1128,7 @@ async function updateProbeNodeOnControllerOnly(
     node_no: number;
     node_name: string;
     remark: string;
+    ddns: string;
     target_system: ProbeTargetSystem;
     direct_connect: boolean;
     payment_cycle: string;
@@ -1132,3 +1187,4 @@ async function setProbeReportIntervalOnController(controllerBaseUrl: string, ses
   }
   return await setProbeReportInterval(base, token, intervalSec);
 }
+

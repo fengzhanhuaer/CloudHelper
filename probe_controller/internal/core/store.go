@@ -49,6 +49,7 @@ func initStore() {
 	log.Println("JSON datastore initialized at", dbPath)
 	initProbeStore()
 	initTGAssistantStore()
+	initCloudflareStore()
 }
 
 func (s *DataStore) Save() error {

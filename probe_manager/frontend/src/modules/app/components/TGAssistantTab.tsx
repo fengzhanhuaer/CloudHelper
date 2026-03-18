@@ -48,6 +48,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [passwordInput, setPasswordInput] = useState("");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleTargetDraft, setScheduleTargetDraft] = useState("");
+  const [targetSearchDraft, setTargetSearchDraft] = useState("");
   const [scheduleTimeDraft, setScheduleTimeDraft] = useState("每天 09:00");
   const [scheduleMessageDraft, setScheduleMessageDraft] = useState("");
   const [scheduleDelayMaxDraft, setScheduleDelayMaxDraft] = useState("0");
@@ -66,6 +67,25 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     () => loggedInAccounts.find((item) => item.id === activeLoggedInAccountID) ?? null,
     [loggedInAccounts, activeLoggedInAccountID],
   );
+  const filteredTargetList = useMemo(() => {
+    const keyword = targetSearchDraft.trim().toLowerCase();
+    if (!keyword) {
+      return targetList;
+    }
+    const filtered = targetList.filter((item) => {
+      const id = (item.id || "").toLowerCase();
+      const name = (item.name || "").toLowerCase();
+      const username = (item.username || "").toLowerCase();
+      return id.includes(keyword) || name.includes(keyword) || username.includes(keyword);
+    });
+    if (scheduleTargetDraft.trim()) {
+      const selected = targetList.find((item) => item.id === scheduleTargetDraft.trim());
+      if (selected && !filtered.some((item) => item.id === selected.id)) {
+        return [selected, ...filtered];
+      }
+    }
+    return filtered;
+  }, [targetList, targetSearchDraft, scheduleTargetDraft]);
 
   useEffect(() => {
     void loadData({ silent: false });
@@ -76,6 +96,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     if (!accountID) {
       setScheduleList([]);
       setTargetList([]);
+      setTargetSearchDraft("");
       setScheduleEnabled(false);
       setScheduleTargetDraft("");
       setScheduleTimeDraft("每天 09:00");
@@ -638,6 +659,14 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                       <label className="tg-account-basic-label" htmlFor="tg-schedule-target">
                         发送目标
                       </label>
+                      <input
+                        className="input"
+                        value={targetSearchDraft}
+                        onChange={(event) => setTargetSearchDraft(event.target.value)}
+                        placeholder="搜索名称 / @username / ID"
+                        disabled={isLoading || isScheduleLoading || isTargetRefreshing}
+                        style={{ marginBottom: 8 }}
+                      />
                       <div className="tg-target-picker">
                         <select
                           id="tg-schedule-target"
@@ -647,7 +676,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                           disabled={isLoading || isScheduleLoading || isTargetRefreshing}
                         >
                           <option value="">请选择发送对象</option>
-                          {targetList.map((item) => (
+                          {filteredTargetList.map((item) => (
                             <option key={`tg-target-${item.id}`} value={item.id}>
                               {item.username ? `${item.name} (@${item.username})` : item.name}
                             </option>

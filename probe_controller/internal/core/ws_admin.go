@@ -514,6 +514,32 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		}, nil
 	case "admin.manager.backup.upload":
 		return handleAdminWSManagerBackupUpload(payload)
+	case "admin.cloudflare.api.get":
+		return getCloudflareAPIKey(), nil
+	case "admin.cloudflare.api.set":
+		var req cloudflareAPIKeyRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := setCloudflareAPIKey(req)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	case "admin.cloudflare.ddns.records":
+		return map[string]interface{}{
+			"records": listCloudflareRecords(),
+		}, nil
+	case "admin.cloudflare.ddns.apply":
+		var req cloudflareDDNSApplyRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := applyCloudflareDDNS(req)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
 	case "admin.tg.accounts.list":
 		return map[string]interface{}{
 			"accounts": listTGAssistantAccounts(),

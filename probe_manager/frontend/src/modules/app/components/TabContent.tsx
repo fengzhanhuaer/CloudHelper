@@ -1,3 +1,4 @@
+import { CloudflareAssistantTab } from "./CloudflareAssistantTab";
 import { LogViewerTab } from "./LogViewerTab";
 import { NetworkAssistantTab } from "./NetworkAssistantTab";
 import { OverviewTab } from "./OverviewTab";
@@ -149,6 +150,8 @@ export function TabContent(props: TabContentProps) {
           onCopyLogs={props.onCopyNetworkLogs}
         />
       );
+    case "cloudflare-assistant":
+      return <CloudflareAssistantTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
     case "tg-assistant":
       return <TGAssistantTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
     case "log-viewer":

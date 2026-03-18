@@ -25,6 +25,7 @@ type probeNodeRecord struct {
 	NodeNo        int    `json:"node_no"`
 	NodeName      string `json:"node_name"`
 	Remark        string `json:"remark"`
+	DDNS          string `json:"ddns"`
 	NodeSecret    string `json:"node_secret"`
 	TargetSystem  string `json:"target_system"`
 	DirectConnect bool   `json:"direct_connect"`
@@ -55,6 +56,7 @@ type probeNodeUpdateRequest struct {
 	NodeNo        int    `json:"node_no"`
 	NodeName      string `json:"node_name"`
 	Remark        string `json:"remark"`
+	DDNS          string `json:"ddns"`
 	TargetSystem  string `json:"target_system"`
 	DirectConnect bool   `json:"direct_connect"`
 	PaymentCycle  string `json:"payment_cycle"`
@@ -306,6 +308,7 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		node := item
 		node.NodeName = strings.TrimSpace(node.NodeName)
 		node.Remark = strings.TrimSpace(node.Remark)
+		node.DDNS = strings.TrimSpace(node.DDNS)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
 		node.TargetSystem = strings.ToLower(strings.TrimSpace(node.TargetSystem))
 		if node.TargetSystem != "windows" {
@@ -375,6 +378,7 @@ func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
 		NodeNo:        nextNo,
 		NodeName:      name,
 		Remark:        "",
+		DDNS:          "",
 		NodeSecret:    randomProbeNodeSecret(32),
 		TargetSystem:  "linux",
 		DirectConnect: true,
@@ -432,6 +436,7 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 
 	nodes[found].NodeName = name
 	nodes[found].Remark = strings.TrimSpace(req.Remark)
+	nodes[found].DDNS = strings.TrimSpace(req.DDNS)
 	nodes[found].TargetSystem = system
 	nodes[found].DirectConnect = req.DirectConnect
 	nodes[found].PaymentCycle = strings.TrimSpace(req.PaymentCycle)

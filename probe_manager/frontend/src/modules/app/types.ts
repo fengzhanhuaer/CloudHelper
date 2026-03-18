@@ -169,11 +169,54 @@ export type TGAssistantTarget = {
   type?: string;
 };
 
+export type CloudflareAPIKey = {
+  api_key: string;
+  configured: boolean;
+};
+
+export type CloudflareDDNSRecord = {
+  node_id: string;
+  node_no: number;
+  node_name: string;
+  zone_name: string;
+  record_class?: string;
+  record_name: string;
+  record_id: string;
+  record_type: string;
+  sequence?: number;
+  content_ip: string;
+  updated_at: string;
+  last_message?: string;
+};
+
+export type CloudflareDDNSApplyItem = {
+  node_id: string;
+  node_no: number;
+  node_name: string;
+  record_class?: string;
+  record_name: string;
+  record_type?: string;
+  sequence?: number;
+  record_id?: string;
+  content_ip?: string;
+  status: string;
+  message: string;
+};
+
+export type CloudflareDDNSApplyResult = {
+  zone_name: string;
+  applied: number;
+  skipped: number;
+  items: CloudflareDDNSApplyItem[];
+  records: CloudflareDDNSRecord[];
+};
+
 export type TabKey =
   | "overview"
   | "probe-manage"
   | "link-manage"
   | "network-assistant"
+  | "cloudflare-assistant"
   | "tg-assistant"
   | "log-viewer"
   | "system-settings";

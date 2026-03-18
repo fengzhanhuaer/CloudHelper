@@ -21,13 +21,14 @@ type probeSystemMetrics struct {
 }
 
 type probeRuntimeStatus struct {
-	NodeID   string             `json:"node_id"`
-	Online   bool               `json:"online"`
-	LastSeen string             `json:"last_seen"`
-	IPv4     []string           `json:"ipv4,omitempty"`
-	IPv6     []string           `json:"ipv6,omitempty"`
-	Version  string             `json:"version,omitempty"`
-	System   probeSystemMetrics `json:"system"`
+	NodeID      string             `json:"node_id"`
+	Online      bool               `json:"online"`
+	LastSeen    string             `json:"last_seen"`
+	IPv4        []string           `json:"ipv4,omitempty"`
+	IPv6        []string           `json:"ipv6,omitempty"`
+	IPLocations map[string]string  `json:"ip_locations,omitempty"`
+	Version     string             `json:"version,omitempty"`
+	System      probeSystemMetrics `json:"system"`
 }
 
 var probeRuntimeStore = struct {
@@ -56,17 +57,73 @@ func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metri
 	if nodeID == "" {
 		return
 	}
+
+	nextIPv4 := compactStrings(ipv4)
+	nextIPv6 := compactStrings(ipv6)
+	var previousIPv4 []string
+	var previousIPv6 []string
+	nextIPLocations := map[string]string{}
+	pendingResolveIPs := make([]string, 0)
+	seenIPs := map[string]struct{}{}
+
 	probeRuntimeStore.mu.Lock()
-	defer probeRuntimeStore.mu.Unlock()
-	probeRuntimeStore.data[nodeID] = probeRuntimeStatus{
-		NodeID:   nodeID,
-		Online:   true,
-		LastSeen: time.Now().UTC().Format(time.RFC3339),
-		IPv4:     compactStrings(ipv4),
-		IPv6:     compactStrings(ipv6),
-		Version:  strings.TrimSpace(version),
-		System:   metrics,
+	if current, ok := probeRuntimeStore.data[nodeID]; ok {
+		previousIPv4 = append(previousIPv4, current.IPv4...)
+		previousIPv6 = append(previousIPv6, current.IPv6...)
+		for _, ip := range append(append([]string{}, nextIPv4...), nextIPv6...) {
+			if _, seen := seenIPs[ip]; seen {
+				continue
+			}
+			seenIPs[ip] = struct{}{}
+			if current.IPLocations != nil {
+				if label := strings.TrimSpace(current.IPLocations[ip]); label != "" {
+					nextIPLocations[ip] = label
+					continue
+				}
+			}
+			if localLabel := detectLocalProbeIPLocation(ip); localLabel != "" {
+				nextIPLocations[ip] = localLabel
+				continue
+			}
+			if cached := getCachedProbeIPLocation(ip); cached != "" {
+				nextIPLocations[ip] = cached
+				continue
+			}
+			pendingResolveIPs = append(pendingResolveIPs, ip)
+		}
+	} else {
+		for _, ip := range append(append([]string{}, nextIPv4...), nextIPv6...) {
+			if _, seen := seenIPs[ip]; seen {
+				continue
+			}
+			seenIPs[ip] = struct{}{}
+			if localLabel := detectLocalProbeIPLocation(ip); localLabel != "" {
+				nextIPLocations[ip] = localLabel
+				continue
+			}
+			if cached := getCachedProbeIPLocation(ip); cached != "" {
+				nextIPLocations[ip] = cached
+				continue
+			}
+			pendingResolveIPs = append(pendingResolveIPs, ip)
+		}
 	}
+	probeRuntimeStore.data[nodeID] = probeRuntimeStatus{
+		NodeID:      nodeID,
+		Online:      true,
+		LastSeen:    time.Now().UTC().Format(time.RFC3339),
+		IPv4:        nextIPv4,
+		IPv6:        nextIPv6,
+		IPLocations: nextIPLocations,
+		Version:     strings.TrimSpace(version),
+		System:      metrics,
+	}
+	probeRuntimeStore.mu.Unlock()
+
+	if len(pendingResolveIPs) > 0 {
+		resolveAndApplyProbeIPLocations(nodeID, pendingResolveIPs)
+	}
+	notifyCloudflareRuntimeChanged(nodeID, previousIPv4, previousIPv6, nextIPv4, nextIPv6)
 }
 
 func getProbeRuntime(nodeID string) (probeRuntimeStatus, bool) {

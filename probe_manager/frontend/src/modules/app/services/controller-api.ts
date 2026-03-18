@@ -1,6 +1,9 @@
 import type {
   ControllerUpgradeResponse,
   ControllerVersionResponse,
+  CloudflareAPIKey,
+  CloudflareDDNSApplyResult,
+  CloudflareDDNSRecord,
   DashboardStatusResponse,
   LogContentResponse,
   LoginResponse,
@@ -81,6 +84,42 @@ export async function testControllerBackupSettings(baseURL: string, token: strin
   });
 }
 
+export async function fetchCloudflareAPIKey(baseURL: string, token: string): Promise<CloudflareAPIKey> {
+  const payload = await callAdminWSRpc<CloudflareAPIKey>(baseURL, token, "admin.cloudflare.api.get");
+  return {
+    api_key: typeof payload.api_key === "string" ? payload.api_key : "",
+    configured: payload.configured === true,
+  };
+}
+
+export async function setCloudflareAPIKey(baseURL: string, token: string, apiKey: string): Promise<CloudflareAPIKey> {
+  const payload = await callAdminWSRpc<CloudflareAPIKey>(baseURL, token, "admin.cloudflare.api.set", {
+    api_key: apiKey,
+  });
+  return {
+    api_key: typeof payload.api_key === "string" ? payload.api_key : "",
+    configured: payload.configured === true,
+  };
+}
+
+export async function fetchCloudflareDDNSRecords(baseURL: string, token: string): Promise<CloudflareDDNSRecord[]> {
+  const payload = await callAdminWSRpc<{ records?: CloudflareDDNSRecord[] }>(baseURL, token, "admin.cloudflare.ddns.records");
+  return Array.isArray(payload.records) ? payload.records : [];
+}
+
+export async function applyCloudflareDDNS(baseURL: string, token: string, zoneName: string): Promise<CloudflareDDNSApplyResult> {
+  const payload = await callAdminWSRpc<CloudflareDDNSApplyResult>(baseURL, token, "admin.cloudflare.ddns.apply", {
+    zone_name: zoneName,
+  });
+  return {
+    zone_name: typeof payload.zone_name === "string" ? payload.zone_name : zoneName,
+    applied: typeof payload.applied === "number" ? payload.applied : 0,
+    skipped: typeof payload.skipped === "number" ? payload.skipped : 0,
+    items: Array.isArray(payload.items) ? payload.items : [],
+    records: Array.isArray(payload.records) ? payload.records : [],
+  };
+}
+
 export async function fetchServerLogs(baseURL: string, token: string, lines: number, sinceMinutes: number): Promise<LogContentResponse> {
   const safeLines = Number.isFinite(lines) ? Math.max(1, Math.min(2000, Math.trunc(lines))) : 200;
   const safeSince = Number.isFinite(sinceMinutes) ? Math.max(0, Math.min(2000, Math.trunc(sinceMinutes))) : 0;
@@ -101,6 +140,7 @@ export type ProbeNodeSyncItem = {
   node_no: number;
   node_name: string;
   remark?: string;
+  ddns?: string;
   node_secret: string;
   target_system: "linux" | "windows";
   direct_connect: boolean;
@@ -123,6 +163,7 @@ export type ProbeNodeStatusItem = {
     version?: string;
     ipv4?: string[];
     ipv6?: string[];
+    ip_locations?: Record<string, string>;
     system?: {
       cpu_percent?: number;
       memory_total_bytes?: number;
@@ -180,6 +221,7 @@ export async function updateProbeNodeOnController(
     node_no: number;
     node_name: string;
     remark: string;
+    ddns: string;
     target_system: "linux" | "windows";
     direct_connect: boolean;
     payment_cycle: string;
