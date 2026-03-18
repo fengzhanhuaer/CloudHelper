@@ -82,9 +82,19 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch:
-          - amd64
-          - arm64
+        include:
+          - goos: linux
+            goarch: amd64
+            output: cloudhelper-probe-node-linux-amd64
+            artifact_name: cloudhelper-probe-node-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: cloudhelper-probe-node-linux-arm64
+            artifact_name: cloudhelper-probe-node-linux-arm64
+          - goos: windows
+            goarch: amd64
+            output: cloudhelper-probe-node-windows-amd64.exe
+            artifact_name: cloudhelper-probe-node-windows-amd64.exe
     steps:
       - name: Checkout Tagged Source
         uses: actions/checkout@v4
@@ -97,21 +107,21 @@ jobs:
         with:
           go-version: '1.26.1'
 
-      - name: Build Probe Node (Linux ${{ matrix.arch }})
+      - name: Build Probe Node (${{ matrix.goos }} ${{ matrix.goarch }})
         working-directory: probe_node
         env:
-          GOOS: linux
-          GOARCH: ${{ matrix.arch }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
           NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
         shell: bash
-        run: go build -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-node-linux-${{ matrix.arch }} .
+        run: go build -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o ${{ matrix.output }} .
 
       - name: Upload Probe Node Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cloudhelper-probe-node-linux-${{ matrix.arch }}
-          path: probe_node/cloudhelper-probe-node-linux-${{ matrix.arch }}
+          name: ${{ matrix.artifact_name }}
+          path: probe_node/${{ matrix.output }}
 
   build-probe-manager:
     needs: prepare-release
@@ -187,6 +197,12 @@ jobs:
           name: cloudhelper-probe-node-linux-arm64
           path: release-assets
 
+      - name: Download Probe Node Artifact (windows amd64)
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-probe-node-windows-amd64.exe
+          path: release-assets
+
       - name: Download Probe Manager Artifact
         uses: actions/download-artifact@v4
         with:
@@ -202,4 +218,5 @@ jobs:
             release-assets/cloudhelper-probe-controller-linux-amd64
             release-assets/cloudhelper-probe-node-linux-amd64
             release-assets/cloudhelper-probe-node-linux-arm64
+            release-assets/cloudhelper-probe-node-windows-amd64.exe
             release-assets/cloudhelper-probe-manager-windows-amd64.exe

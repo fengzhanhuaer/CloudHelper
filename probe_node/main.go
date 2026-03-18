@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -91,13 +92,42 @@ type probeControlMessage struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeLaunchOptions struct {
+	ListenAddr    string
+	NodeID        string
+	NodeSecret    string
+	ControllerURL string
+	ControllerWS  string
+	ServiceName   string
+}
+
 func main() {
 	initProbeLogger()
 	reportIntervalSec.Store(defaultReportIntervalSec)
-	listenAddr := firstNonEmpty(os.Getenv("PROBE_NODE_LISTEN"), ":16030")
-	identity, err := resolveNodeIdentity()
+	options := parseProbeLaunchOptions()
+
+	if err := runProbeNodeEntry(options); err != nil {
+		log.Fatalf("probe node exited unexpectedly: %v", err)
+	}
+}
+
+func parseProbeLaunchOptions() probeLaunchOptions {
+	options := probeLaunchOptions{}
+	flag.StringVar(&options.ListenAddr, "listen", "", "probe listen address (fallback: PROBE_NODE_LISTEN or :16030)")
+	flag.StringVar(&options.NodeID, "node-id", "", "probe node id (fallback: PROBE_NODE_ID)")
+	flag.StringVar(&options.NodeSecret, "node-secret", "", "probe node secret (fallback: PROBE_NODE_SECRET)")
+	flag.StringVar(&options.ControllerURL, "controller-url", "", "controller base url, e.g. https://127.0.0.1:15030 (fallback: PROBE_CONTROLLER_URL)")
+	flag.StringVar(&options.ControllerWS, "controller-ws", "", "controller websocket url, e.g. wss://127.0.0.1:15030/api/probe (fallback: PROBE_CONTROLLER_WS)")
+	flag.StringVar(&options.ServiceName, "service-name", "", "windows service name")
+	flag.Parse()
+	return options
+}
+
+func runProbeNode(options probeLaunchOptions) error {
+	listenAddr := firstNonEmpty(strings.TrimSpace(options.ListenAddr), os.Getenv("PROBE_NODE_LISTEN"), ":16030")
+	identity, err := resolveNodeIdentity(strings.TrimSpace(options.NodeID), strings.TrimSpace(options.NodeSecret))
 	if err != nil {
-		log.Fatalf("failed to load node identity: %v", err)
+		return fmt.Errorf("failed to load node identity: %w", err)
 	}
 
 	mux := http.NewServeMux()
@@ -135,7 +165,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	if wsURL := resolveProbeEndpoints(); wsURL != "" {
+	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
 		go startProbeReporter(wsURL, identity)
 	} else {
 		log.Printf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
@@ -143,8 +173,9 @@ func main() {
 
 	log.Printf("probe node started: node_id=%s listen=%s version=%s", identity.NodeID, listenAddr, BuildVersion)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("probe node exited unexpectedly: %v", err)
+		return err
 	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -170,7 +201,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func resolveNodeIdentity() (nodeIdentity, error) {
+func resolveNodeIdentity(explicitNodeID string, explicitSecret string) (nodeIdentity, error) {
 	dataDir, err := resolveDataDir()
 	if err != nil {
 		return nodeIdentity{}, err
@@ -186,12 +217,14 @@ func resolveNodeIdentity() (nodeIdentity, error) {
 	}
 
 	nodeID := firstNonEmpty(
+		strings.TrimSpace(explicitNodeID),
 		strings.TrimSpace(os.Getenv("PROBE_NODE_ID")),
 		strings.TrimSpace(existing.NodeID),
 		detectHostName(),
 		"probe-node",
 	)
 	secret := firstNonEmpty(
+		strings.TrimSpace(explicitSecret),
 		strings.TrimSpace(os.Getenv("PROBE_NODE_SECRET")),
 		strings.TrimSpace(existing.Secret),
 		randomSecret(32),
@@ -260,8 +293,8 @@ func randomSecret(length int) string {
 	return string(out)
 }
 
-func resolveProbeEndpoints() string {
-	rawWS := strings.TrimSpace(os.Getenv("PROBE_CONTROLLER_WS"))
+func resolveProbeEndpoints(explicitWSURL string, explicitControllerURL string) string {
+	rawWS := firstNonEmpty(strings.TrimSpace(explicitWSURL), strings.TrimSpace(os.Getenv("PROBE_CONTROLLER_WS")))
 	if rawWS != "" {
 		u, err := url.Parse(rawWS)
 		if err == nil && (strings.EqualFold(u.Scheme, "ws") || strings.EqualFold(u.Scheme, "wss")) {
@@ -275,7 +308,7 @@ func resolveProbeEndpoints() string {
 		log.Printf("warning: invalid PROBE_CONTROLLER_WS=%q", rawWS)
 	}
 
-	rawController := strings.TrimSpace(os.Getenv("PROBE_CONTROLLER_URL"))
+	rawController := firstNonEmpty(strings.TrimSpace(explicitControllerURL), strings.TrimSpace(os.Getenv("PROBE_CONTROLLER_URL")))
 	if rawController == "" {
 		return ""
 	}

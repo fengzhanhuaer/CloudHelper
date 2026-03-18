@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
 
 func TestPickProbeNodeAssetPrefersWorkflowPrefixName(t *testing.T) {
 	assets := []releaseAsset{
@@ -127,5 +132,33 @@ func TestNormalizeExecutablePathForUpgradeTarget(t *testing.T) {
 				t.Fatalf("normalizeExecutablePathForUpgradeTarget(%q)=%q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFindProbeBinaryRuntimeAwareExeSelection(t *testing.T) {
+	root := t.TempDir()
+	plain := filepath.Join(root, "cloudhelper-probe-node")
+	exe := filepath.Join(root, "cloudhelper-probe-node.exe")
+
+	if err := os.WriteFile(plain, []byte("plain"), 0o644); err != nil {
+		t.Fatalf("write plain candidate: %v", err)
+	}
+	if err := os.WriteFile(exe, []byte("exe"), 0o644); err != nil {
+		t.Fatalf("write exe candidate: %v", err)
+	}
+
+	selected, err := findProbeBinary(root)
+	if err != nil {
+		t.Fatalf("findProbeBinary returned error: %v", err)
+	}
+
+	if runtime.GOOS == "windows" {
+		if selected != exe {
+			t.Fatalf("expected windows to select exe candidate, got %q", selected)
+		}
+		return
+	}
+	if selected != plain {
+		t.Fatalf("expected non-windows to select plain candidate, got %q", selected)
 	}
 }

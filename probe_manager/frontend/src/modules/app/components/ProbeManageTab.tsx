@@ -1057,16 +1057,14 @@ function buildInstallCommand(node: ProbeNodeItem, controllerAddress: string): st
   });
 
   if (node.target_system === "windows") {
+    const scriptURL = node.direct_connect
+      ? "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1"
+      : base + "/api/probe/proxy/probe-node/install-script?" + params.toString() + "&target=windows";
     return [
-      "$repo = \"fengzhanhuaer/CloudHelper\"",
-      "$nodeId = \"" + String(node.node_no) + "\"",
-      "$secret = \"" + node.node_secret + "\"",
-      "$controller = \"" + base + "\"",
-      "$dir = \"C:\\\\cloudhelper\\\\probe_node\"",
-      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
-      "$url = \"https://github.com/$repo/releases/latest/download/cloudhelper-probe-node-windows-amd64.exe\"",
-      "Invoke-WebRequest -Uri $url -OutFile \"$dir\\\\probe_node.exe\"",
-      "Write-Host \"Downloaded probe_node.exe to $dir (nodeId=$nodeId, secret=$secret, controller=$controller)\"",
+      "$env:PROBE_NODE_ID='" + String(node.node_no) + "'",
+      "$env:PROBE_NODE_SECRET='" + node.node_secret + "'",
+      "$env:PROBE_CONTROLLER_URL='" + base + "'",
+      "iwr -UseBasicParsing '" + scriptURL + "' | iex",
     ].join("; ");
   }
 

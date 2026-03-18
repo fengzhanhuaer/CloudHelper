@@ -21,7 +21,10 @@ import (
 	"time"
 )
 
-const probeNodeInstallScriptURL = "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh"
+const (
+	probeNodeInstallScriptLinuxURL   = "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh"
+	probeNodeInstallScriptWindowsURL = "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1"
+)
 
 type probeSession struct {
 	nodeID string
@@ -326,9 +329,17 @@ func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	target := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
+	scriptURL := probeNodeInstallScriptLinuxURL
+	contentType := "text/x-shellscript; charset=utf-8"
+	if target == "windows" {
+		scriptURL = probeNodeInstallScriptWindowsURL
+		contentType = "text/plain; charset=utf-8"
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, probeNodeInstallScriptURL, nil)
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, scriptURL, nil)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -349,7 +360,7 @@ func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, resp.Body)
 }

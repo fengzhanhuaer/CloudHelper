@@ -9,6 +9,7 @@ CloudHelper 是一个探针主控与管理端项目，当前版本：`0.0.7`。
 - `probe_manager`：管理端（Wails）
 - `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd）
 - `scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（支持 systemd / 非 systemd）
+- `scripts/install_probe_node_service_windows.ps1`：Windows 探针节点安装脚本（WinSW 服务）
 - `doc/`：项目文档
 
 探针节点安装脚本支持变量：
@@ -57,6 +58,22 @@ curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scri
 ## 一键升级（探针节点）
 
 重复执行同一条探针节点安装命令即可升级。脚本会自动备份旧二进制并重启进程/服务。
+
+## Windows 一键安装（探针节点）
+
+使用管理员权限 PowerShell 执行：
+
+```powershell
+iwr -UseBasicParsing "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1" | iex
+```
+
+默认安装目录是 `C:\Tools`，并注册 `probe_node` Windows 服务（自动启动）。
+
+可选环境变量：
+- `PROBE_NODE_ID`
+- `PROBE_NODE_SECRET`
+- `PROBE_CONTROLLER_URL`
+- `INSTALL_DIR`（默认 `C:\Tools`）
 
 ## 运行验证
 
@@ -122,6 +139,15 @@ cd probe_node
 $env:GOOS="linux"
 $env:GOARCH="amd64"
 go build -o cloudhelper-probe-node-linux-amd64 .
+```
+
+探针节点（Windows amd64）：
+
+```powershell
+cd probe_node
+$env:GOOS="windows"
+$env:GOARCH="amd64"
+go build -o cloudhelper-probe-node-windows-amd64.exe .
 ```
 
 管理端：

@@ -390,27 +390,49 @@ func extractProbeBinary(assetFile, assetName, workDir string) (string, error) {
 }
 
 func findProbeBinary(root string) (string, error) {
-	var candidate string
+	allowExe := strings.EqualFold(runtime.GOOS, "windows")
+	candidates := make([]string, 0, 8)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
 		n := strings.ToLower(filepath.Base(path))
-		if strings.HasSuffix(n, ".exe") {
+		if strings.HasSuffix(n, ".exe") && !allowExe {
 			return nil
 		}
 		if strings.Contains(n, "probe_node") || strings.Contains(n, "probe-node") {
-			candidate = path
-			return io.EOF
+			candidates = append(candidates, path)
 		}
 		return nil
 	})
-	if err != nil && err != io.EOF {
+	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(candidate) == "" {
+	if len(candidates) == 0 {
 		return "", fmt.Errorf("probe binary not found")
 	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		li := strings.ToLower(filepath.Base(candidates[i]))
+		lj := strings.ToLower(filepath.Base(candidates[j]))
+		iExe := strings.HasSuffix(li, ".exe")
+		jExe := strings.HasSuffix(lj, ".exe")
+		if allowExe {
+			if iExe != jExe {
+				return iExe
+			}
+		} else {
+			if iExe != jExe {
+				return !iExe
+			}
+		}
+		if len(li) == len(lj) {
+			return li < lj
+		}
+		return len(li) < len(lj)
+	})
+
+	candidate := candidates[0]
 	_ = os.Chmod(candidate, 0o755)
 	return candidate, nil
 }
