@@ -684,6 +684,18 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return map[string]interface{}{
 			"schedules": schedules,
 		}, nil
+	case "admin.tg.schedule.update":
+		var req tgAssistantScheduleUpdateRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		schedules, err := updateTGAssistantSchedule(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"schedules": schedules,
+		}, nil
 	case "admin.tg.schedule.remove":
 		var req tgAssistantScheduleRemoveRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

@@ -413,6 +413,25 @@ export async function addTGAssistantSchedule(
   return Array.isArray(payload.schedules) ? payload.schedules : [];
 }
 
+export async function updateTGAssistantSchedule(
+  baseURL: string,
+  token: string,
+  input: {
+    account_id: string;
+    task_id: string;
+    task_type: string;
+    enabled: boolean;
+    target: string;
+    send_at: string;
+    message: string;
+    delay_min_sec: number;
+    delay_max_sec: number;
+  },
+): Promise<TGAssistantSchedule[]> {
+  const payload = await callAdminWSRpc<{ schedules?: TGAssistantSchedule[] }>(baseURL, token, "admin.tg.schedule.update", input);
+  return Array.isArray(payload.schedules) ? payload.schedules : [];
+}
+
 export async function removeTGAssistantSchedule(
   baseURL: string,
   token: string,
@@ -435,12 +454,17 @@ export async function sendNowTGAssistantSchedule(
   baseURL: string,
   token: string,
   input: { account_id: string; task_id: string },
+  options?: { timeoutMs?: number },
 ): Promise<TGAssistantScheduleSendNowResult> {
+  const timeoutMs = Number.isFinite(options?.timeoutMs)
+    ? Math.max(15000, Math.trunc(options?.timeoutMs ?? 90000))
+    : 90000;
   const payload = await callAdminWSRpc<{ result?: TGAssistantScheduleSendNowResult }>(
     baseURL,
     token,
     "admin.tg.schedule.send_now",
     input,
+    { timeoutMs },
   );
   if (!payload.result) {
     throw new Error("controller returned empty send-now result");

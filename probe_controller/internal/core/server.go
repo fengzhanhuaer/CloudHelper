@@ -11,6 +11,8 @@ func Run() {
 	serverStartTime = time.Now()
 
 	initStore()
+	initControllerScheduler()
+	initTGAssistantScheduleEngine()
 	if err := cleanupControllerStaleExecutables(); err != nil {
 		log.Printf("warning: failed to cleanup stale controller executable files: %v", err)
 	}

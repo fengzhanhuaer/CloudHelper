@@ -168,6 +168,7 @@ export type TGAssistantScheduleSendNowResult = {
   target: string;
   delay_sec: number;
   sent_at: string;
+  tg_message?: string;
 };
 
 export type TGAssistantTarget = {

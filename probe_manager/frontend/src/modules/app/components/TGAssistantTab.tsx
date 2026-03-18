@@ -15,6 +15,7 @@ import {
   sendNowTGAssistantSchedule,
   setTGAssistantAPIKey,
   setTGAssistantScheduleEnabled,
+  updateTGAssistantSchedule,
   sendTGAssistantLoginCode,
 } from "../services/controller-api";
 import type { TGAssistantAPIKey, TGAssistantAccount, TGAssistantSchedule, TGAssistantTarget } from "../types";
@@ -58,6 +59,8 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [targetList, setTargetList] = useState<TGAssistantTarget[]>([]);
   const [isScheduleLoading, setIsScheduleLoading] = useState(false);
   const [isTargetRefreshing, setIsTargetRefreshing] = useState(false);
+  const [showScheduleTaskModal, setShowScheduleTaskModal] = useState(false);
+  const [editingScheduleTaskID, setEditingScheduleTaskID] = useState("");
   const scheduleRequestSeqRef = useRef(0);
 
   const loggedInAccounts = useMemo(() => accounts.filter((item) => item.authorized), [accounts]);
@@ -490,11 +493,52 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
   }
 
-  async function handleAddScheduleTask() {
+  function openAddScheduleTaskModal() {
     if (!activeLoggedInAccount) {
       setStatus("请先选择一个已登录账号");
       return;
     }
+    setEditingScheduleTaskID("");
+    setScheduleEnabled(false);
+    setScheduleTargetDraft("");
+    setTargetSearchDraft("");
+    setScheduleTimeDraft("每天 09:00");
+    setScheduleMessageDraft("");
+    setScheduleDelayMaxDraft("0");
+    setShowScheduleTaskModal(true);
+  }
+
+  function openEditScheduleTaskModal(task: TGAssistantSchedule) {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    setEditingScheduleTaskID(task.id);
+    setScheduleEnabled(task.enabled);
+    setScheduleTargetDraft(task.target || "");
+    setTargetSearchDraft("");
+    setScheduleTimeDraft(task.send_at || "");
+    setScheduleMessageDraft(task.message || "");
+    setScheduleDelayMaxDraft(String(Math.max(0, task.delay_max_sec ?? 0)));
+    setShowScheduleTaskModal(true);
+  }
+
+  function closeScheduleTaskModal() {
+    if (isScheduleLoading) {
+      return;
+    }
+    setShowScheduleTaskModal(false);
+    setEditingScheduleTaskID("");
+    setTargetSearchDraft("");
+  }
+
+  async function handleSaveScheduleTask() {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    const editingTaskID = editingScheduleTaskID.trim();
+    const isEditing = editingTaskID.length > 0;
     const target = scheduleTargetDraft.trim();
     const sendAt = scheduleTimeDraft.trim();
     const message = scheduleMessageDraft.trim();
@@ -517,24 +561,39 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
 
     setIsScheduleLoading(true);
-    setStatus(`正在为账号 ${activeLoggedInAccount.label} 新增任务...`);
+    setStatus(isEditing ? `正在修改任务：${editingTaskID}...` : `正在为账号 ${activeLoggedInAccount.label} 新增任务...`);
     try {
-      const schedules = await addTGAssistantSchedule(props.controllerBaseUrl, props.sessionToken, {
-        account_id: activeLoggedInAccount.id,
-        task_type: "scheduled_send",
-        enabled: scheduleEnabled,
-        target,
-        send_at: sendAt,
-        message,
-        delay_min_sec: 0,
-        delay_max_sec: delayMax,
-      });
+      const schedules = isEditing
+        ? await updateTGAssistantSchedule(props.controllerBaseUrl, props.sessionToken, {
+          account_id: activeLoggedInAccount.id,
+          task_id: editingTaskID,
+          task_type: "scheduled_send",
+          enabled: scheduleEnabled,
+          target,
+          send_at: sendAt,
+          message,
+          delay_min_sec: 0,
+          delay_max_sec: delayMax,
+        })
+        : await addTGAssistantSchedule(props.controllerBaseUrl, props.sessionToken, {
+          account_id: activeLoggedInAccount.id,
+          task_type: "scheduled_send",
+          enabled: scheduleEnabled,
+          target,
+          send_at: sendAt,
+          message,
+          delay_min_sec: 0,
+          delay_max_sec: delayMax,
+        });
       applyScheduleList(activeLoggedInAccount.id, schedules);
+      setShowScheduleTaskModal(false);
+      setEditingScheduleTaskID("");
       setScheduleMessageDraft("");
-      setStatus(`已新增任务：${activeLoggedInAccount.label}（当前共 ${schedules.length} 个）`);
+      setTargetSearchDraft("");
+      setStatus(isEditing ? `任务已更新（当前共 ${schedules.length} 个）` : `已新增任务：${activeLoggedInAccount.label}（当前共 ${schedules.length} 个）`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`新增任务失败：${msg}`);
+      setStatus(`${isEditing ? "修改任务" : "新增任务"}失败：${msg}`);
     } finally {
       setIsScheduleLoading(false);
     }
@@ -593,14 +652,16 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setStatus("请先选择一个已登录账号");
       return;
     }
+    const timeoutMs = 90000;
     setIsScheduleLoading(true);
     setStatus(`正在立即发送任务：${taskID}...`);
     try {
       const result = await sendNowTGAssistantSchedule(props.controllerBaseUrl, props.sessionToken, {
         account_id: activeLoggedInAccount.id,
         task_id: taskID,
-      });
-      setStatus(`立即发送成功（延时 ${result.delay_sec} 秒）`);
+      }, { timeoutMs });
+      const tgMessage = (result.tg_message || "").trim();
+      setStatus(tgMessage ? `立即发送成功：${tgMessage}` : "立即发送成功");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`立即发送失败：${msg}`);
@@ -692,93 +753,16 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                         {activeLoggedInAccount.label} ({activeLoggedInAccount.phone})
                       </div>
                     </div>
-                    <label className="tg-schedule-toggle">
-                      <input
-                        type="checkbox"
-                        checked={scheduleEnabled}
-                        onChange={(event) => setScheduleEnabled(event.target.checked)}
-                        disabled={isLoading || isScheduleLoading}
-                      />
-                      启用定时发送
-                    </label>
-                    <div className="tg-schedule-field">
-                      <label className="tg-account-basic-label" htmlFor="tg-schedule-target">
-                        发送目标
-                      </label>
-                      <input
-                        className="input"
-                        value={targetSearchDraft}
-                        onChange={(event) => setTargetSearchDraft(event.target.value)}
-                        placeholder="搜索名称 / @username / ID"
-                        disabled={isLoading || isScheduleLoading || isTargetRefreshing}
-                        style={{ marginBottom: 8 }}
-                      />
-                      <div className="tg-target-picker">
-                        <select
-                          id="tg-schedule-target"
-                          className="input"
-                          value={scheduleTargetDraft}
-                          onChange={(event) => setScheduleTargetDraft(event.target.value)}
-                          disabled={isLoading || isScheduleLoading || isTargetRefreshing}
-                        >
-                          <option value="">请选择发送对象</option>
-                          {filteredTargetList.map((item) => (
-                            <option key={`tg-target-${item.id}`} value={item.id}>
-                              {item.username ? `${item.name} (@${item.username})` : item.name}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          className="btn"
-                          onClick={() => void handleRefreshTargets()}
-                          disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}
-                        >
-                          {isTargetRefreshing ? "刷新中..." : "刷新"}
-                        </button>
-                      </div>
-                    </div>
-                    <div className="tg-schedule-field">
-                      <label className="tg-account-basic-label" htmlFor="tg-schedule-time">
-                        发送时间
-                      </label>
-                      <input
-                        id="tg-schedule-time"
-                        className="input"
-                        value={scheduleTimeDraft}
-                        onChange={(event) => setScheduleTimeDraft(event.target.value)}
-                        placeholder="例如：每天 09:00 / 每周一 10:30"
-                        disabled={isLoading || isScheduleLoading}
-                      />
-                    </div>
-                    <div className="tg-schedule-field">
-                      <label className="tg-account-basic-label" htmlFor="tg-schedule-message">
-                        发送内容
-                      </label>
-                      <textarea
-                        id="tg-schedule-message"
-                        className="input tg-schedule-textarea"
-                        value={scheduleMessageDraft}
-                        onChange={(event) => setScheduleMessageDraft(event.target.value)}
-                        placeholder="请输入计划发送的消息内容"
-                        disabled={isLoading || isScheduleLoading}
-                      />
-                    </div>
-                    <div className="tg-schedule-field">
-                      <label className="tg-account-basic-label" htmlFor="tg-schedule-delay-max">随机延时最大值（秒）</label>
-                      <input
-                        id="tg-schedule-delay-max"
-                        className="input"
-                        type="number"
-                        min={0}
-                        value={scheduleDelayMaxDraft}
-                        onChange={(event) => setScheduleDelayMaxDraft(event.target.value)}
-                        placeholder="例如：30"
-                        disabled={isLoading || isScheduleLoading}
-                      />
-                    </div>
                     <div className="content-actions" style={{ marginTop: 10 }}>
-                      <button className="btn" onClick={() => void handleAddScheduleTask()} disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}>
+                      <button className="btn" onClick={openAddScheduleTaskModal} disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}>
                         新增定时发送任务
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() => void handleRefreshTargets()}
+                        disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}
+                      >
+                        {isTargetRefreshing ? "刷新对象中..." : "刷新发送对象"}
                       </button>
                     </div>
                     <div className="tg-schedule-list">
@@ -786,7 +770,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                         <div className="tg-account-summary-line">当前账号暂无任务。</div>
                       ) : (
                         <div className="probe-table-wrap">
-                          <table className="probe-table" style={{ minWidth: 1080 }}>
+                          <table className="probe-table" style={{ minWidth: 900 }}>
                             <thead>
                               <tr>
                                 <th>任务类型</th>
@@ -794,8 +778,6 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                                 <th>发送目标</th>
                                 <th>发送时间</th>
                                 <th>发送内容</th>
-                                <th>随机延时</th>
-                                <th>更新时间</th>
                                 <th>操作</th>
                               </tr>
                             </thead>
@@ -820,11 +802,14 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                                     <div className="tg-schedule-table-message">{task.message || "-"}</div>
                                   </td>
                                   <td>
-                                    {Math.max(0, task.delay_min_sec ?? 0)} - {Math.max(0, task.delay_max_sec ?? 0)} 秒
-                                  </td>
-                                  <td>{formatDateTime(task.updated_at || "")}</td>
-                                  <td>
                                     <div className="tg-schedule-table-actions">
+                                      <button
+                                        className="btn"
+                                        onClick={() => openEditScheduleTaskModal(task)}
+                                        disabled={isLoading || isScheduleLoading || task.task_type !== "scheduled_send"}
+                                      >
+                                        编辑
+                                      </button>
                                       <button
                                         className="btn"
                                         onClick={() => void handleSendNowScheduleTask(task.id)}
@@ -857,6 +842,107 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
           </>
         )}
       </div>
+
+      {showScheduleTaskModal ? (
+        <div className="probe-settings-modal-mask" onClick={closeScheduleTaskModal}>
+          <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>{editingScheduleTaskID ? "修改任务" : "新增定时发送任务"}</h3>
+            <label className="tg-schedule-toggle">
+              <input
+                type="checkbox"
+                checked={scheduleEnabled}
+                onChange={(event) => setScheduleEnabled(event.target.checked)}
+                disabled={isLoading || isScheduleLoading}
+              />
+              启用定时发送
+            </label>
+            <div className="tg-schedule-field">
+              <label className="tg-account-basic-label" htmlFor="tg-schedule-modal-target">
+                发送目标
+              </label>
+              <input
+                className="input"
+                value={targetSearchDraft}
+                onChange={(event) => setTargetSearchDraft(event.target.value)}
+                placeholder="搜索名称 / @username / ID"
+                disabled={isLoading || isScheduleLoading || isTargetRefreshing}
+                style={{ marginBottom: 8 }}
+              />
+              <div className="tg-target-picker">
+                <select
+                  id="tg-schedule-modal-target"
+                  className="input"
+                  value={scheduleTargetDraft}
+                  onChange={(event) => setScheduleTargetDraft(event.target.value)}
+                  disabled={isLoading || isScheduleLoading || isTargetRefreshing}
+                >
+                  <option value="">请选择发送对象</option>
+                  {scheduleTargetDraft && !filteredTargetList.some((item) => item.id === scheduleTargetDraft) ? (
+                    <option value={scheduleTargetDraft}>{scheduleTargetDraft}</option>
+                  ) : null}
+                  {filteredTargetList.map((item) => (
+                    <option key={`tg-target-modal-${item.id}`} value={item.id}>
+                      {item.username ? `${item.name} (@${item.username})` : item.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="btn"
+                  onClick={() => void handleRefreshTargets()}
+                  disabled={isLoading || isScheduleLoading || isTargetRefreshing || !activeLoggedInAccount}
+                >
+                  {isTargetRefreshing ? "刷新中..." : "刷新"}
+                </button>
+              </div>
+            </div>
+            <div className="tg-schedule-field">
+              <label className="tg-account-basic-label" htmlFor="tg-schedule-modal-time">
+                发送时间
+              </label>
+              <input
+                id="tg-schedule-modal-time"
+                className="input"
+                value={scheduleTimeDraft}
+                onChange={(event) => setScheduleTimeDraft(event.target.value)}
+                placeholder="例如：每天 09:00 / 每周一 10:30"
+                disabled={isLoading || isScheduleLoading}
+              />
+            </div>
+            <div className="tg-schedule-field">
+              <label className="tg-account-basic-label" htmlFor="tg-schedule-modal-message">
+                发送内容
+              </label>
+              <textarea
+                id="tg-schedule-modal-message"
+                className="input tg-schedule-textarea"
+                value={scheduleMessageDraft}
+                onChange={(event) => setScheduleMessageDraft(event.target.value)}
+                placeholder="请输入计划发送的消息内容"
+                disabled={isLoading || isScheduleLoading}
+              />
+            </div>
+            <div className="tg-schedule-field">
+              <label className="tg-account-basic-label" htmlFor="tg-schedule-modal-delay-max">随机延时最大值（秒）</label>
+              <input
+                id="tg-schedule-modal-delay-max"
+                className="input"
+                type="number"
+                min={0}
+                value={scheduleDelayMaxDraft}
+                onChange={(event) => setScheduleDelayMaxDraft(event.target.value)}
+                placeholder="例如：30"
+                disabled={isLoading || isScheduleLoading}
+              />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void handleSaveScheduleTask()} disabled={isLoading || isScheduleLoading}>
+                {editingScheduleTaskID ? "保存修改" : "新增任务"}
+              </button>
+              <button className="btn" onClick={closeScheduleTaskModal} disabled={isLoading || isScheduleLoading}>取消</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showAddAccountModal ? (
         <div className="probe-settings-modal-mask" onClick={() => setShowAddAccountModal(false)}>
