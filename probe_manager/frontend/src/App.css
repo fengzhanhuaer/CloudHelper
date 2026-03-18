@@ -271,10 +271,71 @@
     color: #dceaff;
 }
 
+.tg-account-detail-subtabs {
+    margin-top: 10px;
+}
+
 .tg-account-summary-line {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.tg-account-basic-list {
+    display: grid;
+    gap: 8px;
+}
+
+.tg-account-basic-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 12px;
+    align-items: start;
+}
+
+.tg-account-basic-label {
+    color: #b8d6ff;
+    font-size: 13px;
+    line-height: 1.45;
+    text-align: left;
+}
+
+.tg-account-basic-value {
+    color: #e6f0ff;
+    line-height: 1.45;
+    word-break: break-word;
+    text-align: left;
+}
+
+.tg-schedule-panel {
+    display: grid;
+    gap: 10px;
+}
+
+.tg-schedule-field {
+    display: grid;
+    gap: 6px;
+}
+
+.tg-schedule-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #dceaff;
+    font-size: 14px;
+}
+
+.tg-schedule-textarea {
+    min-height: 96px;
+    padding: 8px 10px;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.tg-schedule-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 6px;
 }
 
 .probe-node-list {
@@ -472,5 +533,10 @@
 
     .row label {
         text-align: left;
+    }
+
+    .tg-account-basic-row {
+        grid-template-columns: 1fr;
+        gap: 2px;
     }
 }

@@ -10,3 +10,4 @@ cloudhelper-probe-controller-linux-amd64
 *.exe~
 /data/*
 probe_manager/data/*
+.gocache/*

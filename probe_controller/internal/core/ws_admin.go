@@ -598,6 +598,42 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return map[string]interface{}{
 			"account": account,
 		}, nil
+	case "admin.tg.schedule.list":
+		var req tgAssistantAccountIDRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		schedules, err := listTGAssistantSchedules(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"schedules": schedules,
+		}, nil
+	case "admin.tg.schedule.add":
+		var req tgAssistantScheduleAddRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		schedules, err := addTGAssistantSchedule(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"schedules": schedules,
+		}, nil
+	case "admin.tg.schedule.remove":
+		var req tgAssistantScheduleRemoveRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		schedules, err := removeTGAssistantSchedule(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"schedules": schedules,
+		}, nil
 	case "admin.proxy.github.latest":
 		var req proxyLatestRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

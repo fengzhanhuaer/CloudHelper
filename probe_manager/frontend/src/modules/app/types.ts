@@ -140,12 +140,23 @@ export type TGAssistantAccount = {
   self_username: string;
   self_display_name: string;
   self_phone: string;
+  schedules?: TGAssistantSchedule[];
 };
 
 export type TGAssistantAPIKey = {
   api_id: number;
   api_hash: string;
   configured: boolean;
+};
+
+export type TGAssistantSchedule = {
+  id: string;
+  task_type: string;
+  enabled: boolean;
+  send_at: string;
+  message: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type TabKey =

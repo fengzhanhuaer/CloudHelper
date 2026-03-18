@@ -23,9 +23,12 @@ import (
 )
 
 const (
+	tgAssistantTempDir        = "./tg"
 	tgAssistantStoreFile      = "tg.json"
 	tgAssistantSessionDirName = "tg_sessions"
+	tgAssistantHistoryFile    = "history.jsonl"
 	tgAssistantLoginCodeTTL   = 10 * time.Minute
+	tgTaskTypeScheduledSend   = "scheduled_send"
 )
 
 var (
@@ -33,35 +36,65 @@ var (
 )
 
 type tgAssistantAccountRecord struct {
-	ID              string `json:"id"`
-	Label           string `json:"label"`
-	Phone           string `json:"phone"`
-	Authorized      bool   `json:"authorized"`
-	LastError       string `json:"last_error"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
-	LastLoginAt     string `json:"last_login_at"`
-	SelfUserID      int64  `json:"self_user_id"`
-	SelfUsername    string `json:"self_username"`
-	SelfDisplayName string `json:"self_display_name"`
-	SelfPhone       string `json:"self_phone"`
+	ID              string                      `json:"id"`
+	Label           string                      `json:"label"`
+	Phone           string                      `json:"phone"`
+	Authorized      bool                        `json:"authorized"`
+	LastError       string                      `json:"last_error"`
+	CreatedAt       string                      `json:"created_at"`
+	UpdatedAt       string                      `json:"updated_at"`
+	LastLoginAt     string                      `json:"last_login_at"`
+	SelfUserID      int64                       `json:"self_user_id"`
+	SelfUsername    string                      `json:"self_username"`
+	SelfDisplayName string                      `json:"self_display_name"`
+	SelfPhone       string                      `json:"self_phone"`
+	Schedules       []tgAssistantScheduleRecord `json:"schedules,omitempty"`
 }
 
 type tgAssistantAccount struct {
-	ID              string `json:"id"`
-	Label           string `json:"label"`
-	Phone           string `json:"phone"`
-	APIID           int    `json:"api_id"`
-	Authorized      bool   `json:"authorized"`
-	PendingCode     bool   `json:"pending_code"`
-	LastError       string `json:"last_error"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
-	LastLoginAt     string `json:"last_login_at"`
-	SelfUserID      int64  `json:"self_user_id"`
-	SelfUsername    string `json:"self_username"`
-	SelfDisplayName string `json:"self_display_name"`
-	SelfPhone       string `json:"self_phone"`
+	ID              string                `json:"id"`
+	Label           string                `json:"label"`
+	Phone           string                `json:"phone"`
+	APIID           int                   `json:"api_id"`
+	Authorized      bool                  `json:"authorized"`
+	PendingCode     bool                  `json:"pending_code"`
+	LastError       string                `json:"last_error"`
+	CreatedAt       string                `json:"created_at"`
+	UpdatedAt       string                `json:"updated_at"`
+	LastLoginAt     string                `json:"last_login_at"`
+	SelfUserID      int64                 `json:"self_user_id"`
+	SelfUsername    string                `json:"self_username"`
+	SelfDisplayName string                `json:"self_display_name"`
+	SelfPhone       string                `json:"self_phone"`
+	Schedules       []tgAssistantSchedule `json:"schedules"`
+}
+
+type tgAssistantScheduleRecord struct {
+	ID        string `json:"id"`
+	TaskType  string `json:"task_type"`
+	Enabled   bool   `json:"enabled"`
+	SendAt    string `json:"send_at"`
+	Message   string `json:"message"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type tgAssistantSchedule struct {
+	ID        string `json:"id"`
+	TaskType  string `json:"task_type"`
+	Enabled   bool   `json:"enabled"`
+	SendAt    string `json:"send_at"`
+	Message   string `json:"message"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type tgAssistantHistoryRecord struct {
+	Time      string `json:"time"`
+	Action    string `json:"action"`
+	AccountID string `json:"account_id,omitempty"`
+	Success   bool   `json:"success"`
+	Message   string `json:"message,omitempty"`
 }
 
 type tgAssistantLoginChallenge struct {
@@ -118,7 +151,25 @@ type tgAssistantAPIKey struct {
 	Configured bool   `json:"configured"`
 }
 
+type tgAssistantScheduleAddRequest struct {
+	AccountID string `json:"account_id"`
+	TaskType  string `json:"task_type"`
+	Enabled   bool   `json:"enabled"`
+	SendAt    string `json:"send_at"`
+	Message   string `json:"message"`
+}
+
+type tgAssistantScheduleRemoveRequest struct {
+	AccountID string `json:"account_id"`
+	TaskID    string `json:"task_id"`
+}
+
 func initTGAssistantStore() {
+	tempDir := tgAssistantTempDirPath()
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		log.Fatalf("failed to create tg temporary directory: %v", err)
+	}
+
 	storePath := filepath.Join(dataDir, tgAssistantStoreFile)
 	TGAssistantStore = &tgAssistantStore{
 		path: storePath,
@@ -150,7 +201,7 @@ func initTGAssistantStore() {
 		log.Fatalf("failed to check tg assistant store file: %v", err)
 	}
 
-	log.Println("TG assistant datastore initialized at", storePath)
+	log.Println("TG assistant datastore initialized at", storePath, "session_dir=", filepath.Join(tempDir, tgAssistantSessionDirName), "history=", tgAssistantHistoryPath())
 }
 
 func getTGAssistantAPIKey() tgAssistantAPIKey {
@@ -189,6 +240,7 @@ func setTGAssistantAPIKey(req tgAssistantAPIKeyRequest) (tgAssistantAPIKey, erro
 	if err := TGAssistantStore.Save(); err != nil {
 		return tgAssistantAPIKey{}, err
 	}
+	appendTGAssistantHistory("api.set", "", true, fmt.Sprintf("api_id=%d", apiID))
 
 	return tgAssistantAPIKey{
 		APIID:      apiID,
@@ -292,6 +344,7 @@ func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount
 	if err := TGAssistantStore.Save(); err != nil {
 		return tgAssistantAccount{}, err
 	}
+	appendTGAssistantHistory("account.add", record.ID, true, fmt.Sprintf("label=%s phone=%s", record.Label, record.Phone))
 
 	return buildTGAssistantAccountView(record, apiID), nil
 }
@@ -331,6 +384,7 @@ func removeTGAssistantAccount(req tgAssistantAccountIDRequest) ([]tgAssistantAcc
 
 	clearTGAssistantLoginChallenge(accountID)
 	_ = os.Remove(tgAssistantSessionPath(accountID))
+	appendTGAssistantHistory("account.remove", accountID, true, "removed")
 
 	return buildTGAssistantAccountViews(next, apiID), nil
 }
@@ -423,8 +477,10 @@ func sendTGAssistantLoginCode(req tgAssistantAccountIDRequest) (tgAssistantAccou
 		return tgAssistantAccount{}, err
 	}
 	if runErr != nil {
+		appendTGAssistantHistory("account.send_code", accountID, false, runErr.Error())
 		return tgAssistantAccount{}, runErr
 	}
+	appendTGAssistantHistory("account.send_code", accountID, true, record.LastError)
 
 	return buildTGAssistantAccountView(record, apiID), nil
 }
@@ -520,8 +576,10 @@ func completeTGAssistantLogin(req tgAssistantSignInRequest) (tgAssistantAccount,
 		return tgAssistantAccount{}, err
 	}
 	if runErr != nil {
+		appendTGAssistantHistory("account.sign_in", accountID, false, runErr.Error())
 		return tgAssistantAccount{}, runErr
 	}
+	appendTGAssistantHistory("account.sign_in", accountID, true, "authorized")
 
 	return buildTGAssistantAccountView(record, apiID), nil
 }
@@ -559,8 +617,146 @@ func logoutTGAssistantAccount(req tgAssistantAccountIDRequest) (tgAssistantAccou
 
 	clearTGAssistantLoginChallenge(accountID)
 	_ = os.Remove(tgAssistantSessionPath(accountID))
+	appendTGAssistantHistory("account.logout", accountID, true, "logged out")
 
 	return buildTGAssistantAccountView(record, apiID), nil
+}
+
+func listTGAssistantSchedules(req tgAssistantAccountIDRequest) ([]tgAssistantSchedule, error) {
+	if TGAssistantStore == nil {
+		return nil, errors.New("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	if accountID == "" {
+		return nil, errors.New("account_id is required")
+	}
+
+	TGAssistantStore.mu.RLock()
+	records := loadTGAssistantAccountsLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	if index < 0 {
+		TGAssistantStore.mu.RUnlock()
+		return nil, errors.New("account not found")
+	}
+	result := buildTGAssistantScheduleViews(records[index].Schedules)
+	TGAssistantStore.mu.RUnlock()
+	return result, nil
+}
+
+func addTGAssistantSchedule(req tgAssistantScheduleAddRequest) ([]tgAssistantSchedule, error) {
+	if TGAssistantStore == nil {
+		return nil, errors.New("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	taskType := strings.TrimSpace(req.TaskType)
+	sendAt := strings.TrimSpace(req.SendAt)
+	message := strings.TrimSpace(req.Message)
+	if accountID == "" {
+		return nil, errors.New("account_id is required")
+	}
+	if taskType == "" {
+		taskType = tgTaskTypeScheduledSend
+	}
+	if taskType != tgTaskTypeScheduledSend {
+		return nil, fmt.Errorf("unsupported task_type: %s", taskType)
+	}
+	if req.Enabled {
+		if sendAt == "" {
+			return nil, errors.New("send_at is required when schedule is enabled")
+		}
+		if message == "" {
+			return nil, errors.New("message is required when schedule is enabled")
+		}
+	}
+	if len(sendAt) > 120 {
+		return nil, errors.New("send_at is too long")
+	}
+	if len(message) > 4000 {
+		return nil, errors.New("message is too long")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	task := tgAssistantScheduleRecord{
+		ID:        newTGAssistantScheduleID(),
+		TaskType:  taskType,
+		Enabled:   req.Enabled,
+		SendAt:    sendAt,
+		Message:   message,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	TGAssistantStore.mu.Lock()
+	records := loadTGAssistantAccountsLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	if index < 0 {
+		TGAssistantStore.mu.Unlock()
+		return nil, errors.New("account not found")
+	}
+	account := records[index]
+	account.Schedules = append(account.Schedules, task)
+	account.UpdatedAt = now
+	account.Schedules = normalizeTGAssistantScheduleTaskRecords(account.Schedules)
+	records[index] = account
+	TGAssistantStore.data.Accounts = records
+	TGAssistantStore.mu.Unlock()
+
+	if err := TGAssistantStore.Save(); err != nil {
+		return nil, err
+	}
+	appendTGAssistantHistory("schedule.add", accountID, true, fmt.Sprintf("task_id=%s type=%s enabled=%t send_at=%s", task.ID, task.TaskType, task.Enabled, task.SendAt))
+	return buildTGAssistantScheduleViews(account.Schedules), nil
+}
+
+func removeTGAssistantSchedule(req tgAssistantScheduleRemoveRequest) ([]tgAssistantSchedule, error) {
+	if TGAssistantStore == nil {
+		return nil, errors.New("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	taskID := strings.TrimSpace(req.TaskID)
+	if accountID == "" {
+		return nil, errors.New("account_id is required")
+	}
+	if taskID == "" {
+		return nil, errors.New("task_id is required")
+	}
+
+	TGAssistantStore.mu.Lock()
+	records := loadTGAssistantAccountsLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	if index < 0 {
+		TGAssistantStore.mu.Unlock()
+		return nil, errors.New("account not found")
+	}
+	account := records[index]
+	nextSchedules := make([]tgAssistantScheduleRecord, 0, len(account.Schedules))
+	found := false
+	for _, item := range account.Schedules {
+		if item.ID == taskID {
+			found = true
+			continue
+		}
+		nextSchedules = append(nextSchedules, item)
+	}
+	if !found {
+		TGAssistantStore.mu.Unlock()
+		return nil, errors.New("task not found")
+	}
+	account.Schedules = nextSchedules
+	account.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	account.Schedules = normalizeTGAssistantScheduleTaskRecords(account.Schedules)
+	records[index] = account
+	TGAssistantStore.data.Accounts = records
+	TGAssistantStore.mu.Unlock()
+
+	if err := TGAssistantStore.Save(); err != nil {
+		return nil, err
+	}
+	appendTGAssistantHistory("schedule.remove", accountID, true, fmt.Sprintf("task_id=%s", taskID))
+	return buildTGAssistantScheduleViews(account.Schedules), nil
 }
 
 func runTGAssistantClient(apiID int, apiHash string, record tgAssistantAccountRecord, fn func(ctx context.Context, client *telegram.Client) error) error {
@@ -722,6 +918,7 @@ func buildTGAssistantAccountView(record tgAssistantAccountRecord, sharedAPIID in
 		SelfUsername:    record.SelfUsername,
 		SelfDisplayName: record.SelfDisplayName,
 		SelfPhone:       record.SelfPhone,
+		Schedules:       buildTGAssistantScheduleViews(record.Schedules),
 	}
 
 	_, pending := getTGAssistantLoginChallenge(record.ID)
@@ -772,12 +969,43 @@ func normalizeTGAssistantAccountRecords(records []tgAssistantAccountRecord) []tg
 		if item.UpdatedAt == "" {
 			item.UpdatedAt = item.CreatedAt
 		}
+		item.Schedules = normalizeTGAssistantScheduleTaskRecords(item.Schedules)
 		if item.Phone == "" {
 			continue
 		}
 		normalized = append(normalized, item)
 	}
 
+	sort.SliceStable(normalized, func(i, j int) bool {
+		return normalized[i].CreatedAt < normalized[j].CreatedAt
+	})
+	return normalized
+}
+
+func normalizeTGAssistantScheduleTaskRecords(records []tgAssistantScheduleRecord) []tgAssistantScheduleRecord {
+	normalized := make([]tgAssistantScheduleRecord, 0, len(records))
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, item := range records {
+		item.ID = strings.TrimSpace(item.ID)
+		item.TaskType = strings.TrimSpace(item.TaskType)
+		item.SendAt = strings.TrimSpace(item.SendAt)
+		item.Message = strings.TrimSpace(item.Message)
+		item.CreatedAt = strings.TrimSpace(item.CreatedAt)
+		item.UpdatedAt = strings.TrimSpace(item.UpdatedAt)
+		if item.ID == "" {
+			continue
+		}
+		if item.TaskType == "" {
+			item.TaskType = tgTaskTypeScheduledSend
+		}
+		if item.CreatedAt == "" {
+			item.CreatedAt = now
+		}
+		if item.UpdatedAt == "" {
+			item.UpdatedAt = item.CreatedAt
+		}
+		normalized = append(normalized, item)
+	}
 	sort.SliceStable(normalized, func(i, j int) bool {
 		return normalized[i].CreatedAt < normalized[j].CreatedAt
 	})
@@ -791,6 +1019,67 @@ func indexTGAssistantAccountByID(records []tgAssistantAccountRecord, accountID s
 		}
 	}
 	return -1
+}
+
+func buildTGAssistantScheduleViews(records []tgAssistantScheduleRecord) []tgAssistantSchedule {
+	result := make([]tgAssistantSchedule, 0, len(records))
+	for _, record := range records {
+		result = append(result, tgAssistantSchedule{
+			ID:        record.ID,
+			TaskType:  record.TaskType,
+			Enabled:   record.Enabled,
+			SendAt:    record.SendAt,
+			Message:   record.Message,
+			CreatedAt: record.CreatedAt,
+			UpdatedAt: record.UpdatedAt,
+		})
+	}
+	return result
+}
+
+func tgAssistantTempDirPath() string {
+	return filepath.Clean(tgAssistantTempDir)
+}
+
+func tgAssistantHistoryPath() string {
+	return filepath.Join(tgAssistantTempDirPath(), tgAssistantHistoryFile)
+}
+
+func appendTGAssistantHistory(action, accountID string, success bool, message string) {
+	record := tgAssistantHistoryRecord{
+		Time:      time.Now().UTC().Format(time.RFC3339),
+		Action:    strings.TrimSpace(action),
+		AccountID: strings.TrimSpace(accountID),
+		Success:   success,
+		Message:   strings.TrimSpace(message),
+	}
+	if record.Action == "" {
+		return
+	}
+
+	if err := os.MkdirAll(tgAssistantTempDirPath(), 0o755); err != nil {
+		log.Printf("tg history mkdir failed: %v", err)
+		return
+	}
+
+	line, err := json.Marshal(record)
+	if err != nil {
+		log.Printf("tg history marshal failed: %v", err)
+		return
+	}
+
+	f, err := os.OpenFile(tgAssistantHistoryPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("tg history open failed: %v", err)
+		return
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		log.Printf("tg history append failed: %v", err)
+	}
 }
 
 func normalizeTGPhone(raw string) string {
@@ -820,12 +1109,20 @@ func newTGAssistantAccountID() string {
 	return "tg-" + hex.EncodeToString(buf)
 }
 
+func newTGAssistantScheduleID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "task-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	return "task-" + hex.EncodeToString(buf)
+}
+
 func tgAssistantSessionPath(accountID string) string {
 	safeID := strings.TrimSpace(accountID)
 	if safeID == "" {
 		safeID = "unknown"
 	}
-	return filepath.Join(dataDir, tgAssistantSessionDirName, safeID+".json")
+	return filepath.Join(tgAssistantTempDirPath(), tgAssistantSessionDirName, safeID+".json")
 }
 
 func setTGAssistantLoginChallenge(accountID, phoneCodeHash string, ttl time.Duration) {

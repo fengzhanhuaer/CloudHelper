@@ -7,6 +7,7 @@ import type {
   NonceResponse,
   TGAssistantAccount,
   TGAssistantAPIKey,
+  TGAssistantSchedule,
   UpgradeProgress,
 } from "../types";
 import { callAdminWSRpc } from "./admin-ws-rpc";
@@ -321,4 +322,29 @@ export async function logoutTGAssistantAccount(baseURL: string, token: string, a
     throw new Error("controller returned empty account");
   }
   return payload.account;
+}
+
+export async function fetchTGAssistantSchedules(baseURL: string, token: string, accountID: string): Promise<TGAssistantSchedule[]> {
+  const payload = await callAdminWSRpc<{ schedules?: TGAssistantSchedule[] }>(baseURL, token, "admin.tg.schedule.list", {
+    account_id: accountID,
+  });
+  return Array.isArray(payload.schedules) ? payload.schedules : [];
+}
+
+export async function addTGAssistantSchedule(
+  baseURL: string,
+  token: string,
+  input: { account_id: string; task_type: string; enabled: boolean; send_at: string; message: string },
+): Promise<TGAssistantSchedule[]> {
+  const payload = await callAdminWSRpc<{ schedules?: TGAssistantSchedule[] }>(baseURL, token, "admin.tg.schedule.add", input);
+  return Array.isArray(payload.schedules) ? payload.schedules : [];
+}
+
+export async function removeTGAssistantSchedule(
+  baseURL: string,
+  token: string,
+  input: { account_id: string; task_id: string },
+): Promise<TGAssistantSchedule[]> {
+  const payload = await callAdminWSRpc<{ schedules?: TGAssistantSchedule[] }>(baseURL, token, "admin.tg.schedule.remove", input);
+  return Array.isArray(payload.schedules) ? payload.schedules : [];
 }

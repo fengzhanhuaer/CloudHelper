@@ -1,21 +1,26 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  addTGAssistantSchedule,
   addTGAssistantAccount,
   completeTGAssistantLogin,
   fetchTGAssistantAPIKey,
   fetchTGAssistantAccounts,
+  fetchTGAssistantSchedules,
   logoutTGAssistantAccount,
   refreshTGAssistantAccounts,
   removeTGAssistantAccount,
+  removeTGAssistantSchedule,
   setTGAssistantAPIKey,
   sendTGAssistantLoginCode,
 } from "../services/controller-api";
-import type { TGAssistantAPIKey, TGAssistantAccount } from "../types";
+import type { TGAssistantAPIKey, TGAssistantAccount, TGAssistantSchedule } from "../types";
 
 type TGAssistantTabProps = {
   controllerBaseUrl: string;
   sessionToken: string;
 };
+
+type TGAccountDetailSubTab = "basic-info" | "scheduled-send";
 
 export function TGAssistantTab(props: TGAssistantTabProps) {
   const [accounts, setAccounts] = useState<TGAssistantAccount[]>([]);
@@ -36,8 +41,15 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
 
   const [selectedAccountID, setSelectedAccountID] = useState("");
   const [activeLoggedInAccountID, setActiveLoggedInAccountID] = useState("");
+  const [activeAccountDetailSubTab, setActiveAccountDetailSubTab] = useState<TGAccountDetailSubTab>("basic-info");
   const [codeInput, setCodeInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleTimeDraft, setScheduleTimeDraft] = useState("每天 09:00");
+  const [scheduleMessageDraft, setScheduleMessageDraft] = useState("");
+  const [scheduleList, setScheduleList] = useState<TGAssistantSchedule[]>([]);
+  const [isScheduleLoading, setIsScheduleLoading] = useState(false);
+  const scheduleRequestSeqRef = useRef(0);
 
   const loggedInAccounts = useMemo(() => accounts.filter((item) => item.authorized), [accounts]);
   const selectedAccount = useMemo(
@@ -53,6 +65,18 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     void loadData({ silent: false });
   }, [props.controllerBaseUrl, props.sessionToken]);
 
+  useEffect(() => {
+    const accountID = activeLoggedInAccountID.trim();
+    if (!accountID) {
+      setScheduleList([]);
+      setScheduleEnabled(false);
+      setScheduleTimeDraft("每天 09:00");
+      setScheduleMessageDraft("");
+      return;
+    }
+    void loadSchedule(accountID, { silent: true });
+  }, [activeLoggedInAccountID, props.controllerBaseUrl, props.sessionToken]);
+
   function applyAccountList(nextAccounts: TGAssistantAccount[]) {
     const ordered = [...nextAccounts];
     setAccounts(ordered);
@@ -65,6 +89,13 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     setSharedApiIDInput(apiKey.api_id > 0 ? String(apiKey.api_id) : "");
     setSharedApiHashInput(apiKey.api_hash || "");
     setSharedAPIConfigured(apiKey.configured);
+  }
+
+  function applyScheduleList(accountID: string, schedules: TGAssistantSchedule[]) {
+    setScheduleList(schedules);
+    setAccounts((prev) =>
+      prev.map((item) => (item.id === accountID ? { ...item, schedules } : item)),
+    );
   }
 
   async function loadData(options?: { silent?: boolean }) {
@@ -120,6 +151,37 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       if (!silent) {
         setIsLoading(false);
       }
+    }
+  }
+
+  async function loadSchedule(accountID: string, options?: { silent?: boolean }) {
+    const normalizedAccountID = accountID.trim();
+    if (!normalizedAccountID) {
+      return;
+    }
+    const requestSeq = scheduleRequestSeqRef.current + 1;
+    scheduleRequestSeqRef.current = requestSeq;
+    const silent = options?.silent === true;
+    setIsScheduleLoading(true);
+    if (!silent) {
+      setStatus("正在加载任务列表...");
+    }
+    try {
+      const schedules = await fetchTGAssistantSchedules(props.controllerBaseUrl, props.sessionToken, normalizedAccountID);
+      if (requestSeq !== scheduleRequestSeqRef.current) {
+        return;
+      }
+      applyScheduleList(normalizedAccountID, schedules);
+      if (!silent) {
+        setStatus(`已加载账号 ${activeLoggedInAccount?.label || normalizedAccountID} 的任务列表（${schedules.length} 个）`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      if (!silent) {
+        setStatus(`加载任务列表失败：${msg}`);
+      }
+    } finally {
+      setIsScheduleLoading(false);
     }
   }
 
@@ -333,6 +395,68 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
   }
 
+  async function handleAddScheduleTask() {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    const sendAt = scheduleTimeDraft.trim();
+    const message = scheduleMessageDraft.trim();
+    if (scheduleEnabled && !sendAt) {
+      setStatus("请填写定时发送时间");
+      return;
+    }
+    if (scheduleEnabled && !message) {
+      setStatus("请填写定时发送内容");
+      return;
+    }
+
+    setIsScheduleLoading(true);
+    setStatus(`正在为账号 ${activeLoggedInAccount.label} 新增任务...`);
+    try {
+      const schedules = await addTGAssistantSchedule(props.controllerBaseUrl, props.sessionToken, {
+        account_id: activeLoggedInAccount.id,
+        task_type: "scheduled_send",
+        enabled: scheduleEnabled,
+        send_at: sendAt,
+        message,
+      });
+      applyScheduleList(activeLoggedInAccount.id, schedules);
+      setScheduleMessageDraft("");
+      setStatus(`已新增任务：${activeLoggedInAccount.label}（当前共 ${schedules.length} 个）`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`新增任务失败：${msg}`);
+    } finally {
+      setIsScheduleLoading(false);
+    }
+  }
+
+  async function handleRemoveScheduleTask(taskID: string) {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    if (!window.confirm("确认删除该任务吗？")) {
+      return;
+    }
+    setIsScheduleLoading(true);
+    setStatus(`正在删除任务：${taskID}...`);
+    try {
+      const schedules = await removeTGAssistantSchedule(props.controllerBaseUrl, props.sessionToken, {
+        account_id: activeLoggedInAccount.id,
+        task_id: taskID,
+      });
+      applyScheduleList(activeLoggedInAccount.id, schedules);
+      setStatus(`任务已删除，当前共 ${schedules.length} 个`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`删除任务失败：${msg}`);
+    } finally {
+      setIsScheduleLoading(false);
+    }
+  }
+
   return (
     <div className="content-block">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, marginBottom: 12 }}>
@@ -355,7 +479,10 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                 <button
                   key={item.id}
                   className={`subtab-btn ${activeLoggedInAccountID === item.id ? "active" : ""}`}
-                  onClick={() => setActiveLoggedInAccountID(item.id)}
+                  onClick={() => {
+                    setActiveLoggedInAccountID(item.id);
+                    setActiveAccountDetailSubTab("basic-info");
+                  }}
                   disabled={isLoading}
                 >
                   {item.label}
@@ -363,14 +490,137 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
               ))}
             </div>
 
-            <div className="tg-account-summary">
-              <div
-                className="tg-account-summary-line"
-                title={`当前账号：${activeLoggedInAccount?.label || "-"} | 手机号：${activeLoggedInAccount?.phone || "-"} | 显示名：${activeLoggedInAccount?.self_display_name || "-"} | 用户名：${activeLoggedInAccount?.self_username || "-"} | 最近登录：${formatDateTime(activeLoggedInAccount?.last_login_at || "")}`}
+            <div className="subtab-list tg-account-detail-subtabs">
+              <button
+                className={`subtab-btn ${activeAccountDetailSubTab === "basic-info" ? "active" : ""}`}
+                onClick={() => setActiveAccountDetailSubTab("basic-info")}
+                disabled={isLoading || isScheduleLoading || !activeLoggedInAccount}
               >
-                当前账号：{activeLoggedInAccount?.label || "-"} | 手机号：{activeLoggedInAccount?.phone || "-"} | 显示名：{activeLoggedInAccount?.self_display_name || "-"} | 用户名：{activeLoggedInAccount?.self_username || "-"} | 最近登录：{formatDateTime(activeLoggedInAccount?.last_login_at || "")}
-              </div>
+                基础信息
+              </button>
+              <button
+                className={`subtab-btn ${activeAccountDetailSubTab === "scheduled-send" ? "active" : ""}`}
+                onClick={() => setActiveAccountDetailSubTab("scheduled-send")}
+                disabled={isLoading || isScheduleLoading || !activeLoggedInAccount}
+              >
+                定时发送
+              </button>
             </div>
+
+            {activeLoggedInAccount ? (
+              <div className="tg-account-summary">
+                {activeAccountDetailSubTab === "basic-info" ? (
+                  <div className="tg-account-basic-list">
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">当前账号</div>
+                      <div className="tg-account-basic-value">{activeLoggedInAccount.label || "-"}</div>
+                    </div>
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">手机号</div>
+                      <div className="tg-account-basic-value">{activeLoggedInAccount.phone || "-"}</div>
+                    </div>
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">显示名</div>
+                      <div className="tg-account-basic-value">{activeLoggedInAccount.self_display_name || "-"}</div>
+                    </div>
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">用户名</div>
+                      <div className="tg-account-basic-value">{activeLoggedInAccount.self_username || "-"}</div>
+                    </div>
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">最近登录</div>
+                      <div className="tg-account-basic-value">{formatDateTime(activeLoggedInAccount.last_login_at || "")}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="tg-schedule-panel">
+                    <div className="tg-account-basic-row">
+                      <div className="tg-account-basic-label">发送账号</div>
+                      <div className="tg-account-basic-value">
+                        {activeLoggedInAccount.label} ({activeLoggedInAccount.phone})
+                      </div>
+                    </div>
+                    <label className="tg-schedule-toggle">
+                      <input
+                        type="checkbox"
+                        checked={scheduleEnabled}
+                        onChange={(event) => setScheduleEnabled(event.target.checked)}
+                        disabled={isLoading || isScheduleLoading}
+                      />
+                      启用定时发送
+                    </label>
+                    <div className="tg-schedule-field">
+                      <label className="tg-account-basic-label" htmlFor="tg-schedule-time">
+                        发送时间
+                      </label>
+                      <input
+                        id="tg-schedule-time"
+                        className="input"
+                        value={scheduleTimeDraft}
+                        onChange={(event) => setScheduleTimeDraft(event.target.value)}
+                        placeholder="例如：每天 09:00 / 每周一 10:30"
+                        disabled={isLoading || isScheduleLoading}
+                      />
+                    </div>
+                    <div className="tg-schedule-field">
+                      <label className="tg-account-basic-label" htmlFor="tg-schedule-message">
+                        发送内容
+                      </label>
+                      <textarea
+                        id="tg-schedule-message"
+                        className="input tg-schedule-textarea"
+                        value={scheduleMessageDraft}
+                        onChange={(event) => setScheduleMessageDraft(event.target.value)}
+                        placeholder="请输入计划发送的消息内容"
+                        disabled={isLoading || isScheduleLoading}
+                      />
+                    </div>
+                    <div className="content-actions" style={{ marginTop: 10 }}>
+                      <button className="btn" onClick={() => void handleAddScheduleTask()} disabled={isLoading || isScheduleLoading || !activeLoggedInAccount}>
+                        新增定时发送任务
+                      </button>
+                    </div>
+                    <div className="tg-schedule-list">
+                      {scheduleList.length === 0 ? (
+                        <div className="tg-account-summary-line">当前账号暂无任务。</div>
+                      ) : (
+                        scheduleList.map((task) => (
+                          <div className="identity-card" key={`tg-task-${task.id}`}>
+                            <div className="tg-account-basic-row">
+                              <div className="tg-account-basic-label">任务类型</div>
+                              <div className="tg-account-basic-value">{task.task_type === "scheduled_send" ? "定时发送" : task.task_type}</div>
+                            </div>
+                            <div className="tg-account-basic-row">
+                              <div className="tg-account-basic-label">状态</div>
+                              <div className="tg-account-basic-value">{task.enabled ? "启用" : "停用"}</div>
+                            </div>
+                            <div className="tg-account-basic-row">
+                              <div className="tg-account-basic-label">发送时间</div>
+                              <div className="tg-account-basic-value">{task.send_at || "-"}</div>
+                            </div>
+                            <div className="tg-account-basic-row">
+                              <div className="tg-account-basic-label">发送内容</div>
+                              <div className="tg-account-basic-value">{task.message || "-"}</div>
+                            </div>
+                            <div className="tg-account-basic-row">
+                              <div className="tg-account-basic-label">更新时间</div>
+                              <div className="tg-account-basic-value">{formatDateTime(task.updated_at || "")}</div>
+                            </div>
+                            <div className="content-actions" style={{ marginTop: 8 }}>
+                              <button className="btn" onClick={() => void handleRemoveScheduleTask(task.id)} disabled={isLoading || isScheduleLoading}>
+                                删除任务
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="tg-account-summary-line">请先选择一个已登录账号。</div>
+            )}
           </>
         )}
       </div>
