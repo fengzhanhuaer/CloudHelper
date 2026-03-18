@@ -171,6 +171,15 @@ export type TGAssistantScheduleSendNowResult = {
   tg_message?: string;
 };
 
+export type TGAssistantTaskHistoryRecord = {
+  time: string;
+  action: string;
+  account_id?: string;
+  task_id: string;
+  success: boolean;
+  message?: string;
+};
+
 export type TGAssistantTarget = {
   id: string;
   name: string;

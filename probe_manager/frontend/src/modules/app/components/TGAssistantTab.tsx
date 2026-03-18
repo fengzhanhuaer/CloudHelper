@@ -6,6 +6,7 @@ import {
   fetchTGAssistantAPIKey,
   fetchTGAssistantAccounts,
   fetchTGAssistantSchedules,
+  fetchTGAssistantScheduleTaskHistory,
   fetchTGAssistantTargets,
   logoutTGAssistantAccount,
   refreshTGAssistantAccounts,
@@ -18,7 +19,13 @@ import {
   updateTGAssistantSchedule,
   sendTGAssistantLoginCode,
 } from "../services/controller-api";
-import type { TGAssistantAPIKey, TGAssistantAccount, TGAssistantSchedule, TGAssistantTarget } from "../types";
+import type {
+  TGAssistantAPIKey,
+  TGAssistantAccount,
+  TGAssistantSchedule,
+  TGAssistantTarget,
+  TGAssistantTaskHistoryRecord,
+} from "../types";
 
 type TGAssistantTabProps = {
   controllerBaseUrl: string;
@@ -61,6 +68,10 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [isTargetRefreshing, setIsTargetRefreshing] = useState(false);
   const [showScheduleTaskModal, setShowScheduleTaskModal] = useState(false);
   const [editingScheduleTaskID, setEditingScheduleTaskID] = useState("");
+  const [showScheduleHistoryModal, setShowScheduleHistoryModal] = useState(false);
+  const [scheduleHistoryTaskID, setScheduleHistoryTaskID] = useState("");
+  const [scheduleHistoryItems, setScheduleHistoryItems] = useState<TGAssistantTaskHistoryRecord[]>([]);
+  const [isScheduleHistoryLoading, setIsScheduleHistoryLoading] = useState(false);
   const scheduleRequestSeqRef = useRef(0);
 
   const loggedInAccounts = useMemo(() => accounts.filter((item) => item.authorized), [accounts]);
@@ -670,6 +681,41 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     }
   }
 
+  async function openScheduleTaskHistoryModal(taskID: string) {
+    if (!activeLoggedInAccount) {
+      setStatus("请先选择一个已登录账号");
+      return;
+    }
+    setScheduleHistoryTaskID(taskID);
+    setScheduleHistoryItems([]);
+    setShowScheduleHistoryModal(true);
+    setIsScheduleHistoryLoading(true);
+    setStatus(`正在加载任务记录：${taskID}...`);
+    try {
+      const history = await fetchTGAssistantScheduleTaskHistory(props.controllerBaseUrl, props.sessionToken, {
+        account_id: activeLoggedInAccount.id,
+        task_id: taskID,
+        limit: 360,
+      });
+      setScheduleHistoryItems(history);
+      setStatus(`已加载任务记录：${history.length} 条`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`加载任务记录失败：${msg}`);
+    } finally {
+      setIsScheduleHistoryLoading(false);
+    }
+  }
+
+  function closeScheduleTaskHistoryModal() {
+    if (isScheduleHistoryLoading) {
+      return;
+    }
+    setShowScheduleHistoryModal(false);
+    setScheduleHistoryTaskID("");
+    setScheduleHistoryItems([]);
+  }
+
   return (
     <div className="content-block">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, marginBottom: 12 }}>
@@ -819,6 +865,13 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                                       </button>
                                       <button
                                         className="btn"
+                                        onClick={() => void openScheduleTaskHistoryModal(task.id)}
+                                        disabled={isLoading || isScheduleLoading}
+                                      >
+                                        任务记录
+                                      </button>
+                                      <button
+                                        className="btn"
                                         onClick={() => void handleRemoveScheduleTask(task.id)}
                                         disabled={isLoading || isScheduleLoading}
                                       >
@@ -939,6 +992,50 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                 {editingScheduleTaskID ? "保存修改" : "新增任务"}
               </button>
               <button className="btn" onClick={closeScheduleTaskModal} disabled={isLoading || isScheduleLoading}>取消</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showScheduleHistoryModal ? (
+        <div className="probe-settings-modal-mask" onClick={closeScheduleTaskHistoryModal}>
+          <div className="probe-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>任务记录</h3>
+            <div className="tg-account-summary-line" style={{ color: "#dceaff", marginBottom: 10 }}>
+              任务ID：{scheduleHistoryTaskID || "-"}
+            </div>
+            {isScheduleHistoryLoading ? (
+              <div className="tg-account-summary-line">加载中...</div>
+            ) : scheduleHistoryItems.length === 0 ? (
+              <div className="tg-account-summary-line">暂无任务记录。</div>
+            ) : (
+              <div className="probe-table-wrap" style={{ marginTop: 0 }}>
+                <table className="probe-table" style={{ minWidth: 860 }}>
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>动作</th>
+                      <th>结果</th>
+                      <th>内容</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scheduleHistoryItems.map((item, idx) => (
+                      <tr key={`tg-task-history-${idx}`}>
+                        <td>{formatDateTime(item.time || "")}</td>
+                        <td>{item.action || "-"}</td>
+                        <td>{item.success ? "成功" : "失败"}</td>
+                        <td>
+                          <div className="tg-schedule-table-message">{item.message || "-"}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="content-actions">
+              <button className="btn" onClick={closeScheduleTaskHistoryModal} disabled={isScheduleHistoryLoading}>关闭</button>
             </div>
           </div>
         </div>

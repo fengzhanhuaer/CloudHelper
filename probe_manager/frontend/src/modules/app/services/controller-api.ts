@@ -12,6 +12,7 @@ import type {
   TGAssistantAPIKey,
   TGAssistantSchedule,
   TGAssistantScheduleSendNowResult,
+  TGAssistantTaskHistoryRecord,
   TGAssistantTarget,
   UpgradeProgress,
 } from "../types";
@@ -470,6 +471,25 @@ export async function sendNowTGAssistantSchedule(
     throw new Error("controller returned empty send-now result");
   }
   return payload.result;
+}
+
+export async function fetchTGAssistantScheduleTaskHistory(
+  baseURL: string,
+  token: string,
+  input: { account_id: string; task_id: string; limit?: number },
+): Promise<TGAssistantTaskHistoryRecord[]> {
+  const limit = Number.isFinite(input.limit) ? Math.max(1, Math.min(360, Math.trunc(input.limit ?? 360))) : 360;
+  const payload = await callAdminWSRpc<{ history?: TGAssistantTaskHistoryRecord[] }>(
+    baseURL,
+    token,
+    "admin.tg.schedule.history",
+    {
+      account_id: input.account_id,
+      task_id: input.task_id,
+      limit,
+    },
+  );
+  return Array.isArray(payload.history) ? payload.history : [];
 }
 
 export async function fetchTGAssistantTargets(baseURL: string, token: string, accountID: string): Promise<TGAssistantTarget[]> {

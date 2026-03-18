@@ -219,6 +219,12 @@ type tgAssistantScheduleSendNowRequest struct {
 	TaskID    string `json:"task_id"`
 }
 
+type tgAssistantScheduleHistoryRequest struct {
+	AccountID string `json:"account_id"`
+	TaskID    string `json:"task_id"`
+	Limit     int    `json:"limit"`
+}
+
 type tgAssistantScheduleSendNowResult struct {
 	AccountID string `json:"account_id"`
 	TaskID    string `json:"task_id"`
@@ -1023,6 +1029,64 @@ func sendNowTGAssistantSchedule(req tgAssistantScheduleSendNowRequest) (tgAssist
 	return executeTGAssistantScheduleSendTask(context.Background(), accountID, taskID, "schedule.send_now", 0)
 }
 
+func listTGAssistantScheduleTaskHistory(req tgAssistantScheduleHistoryRequest) ([]tgAssistantTaskHistoryRecord, error) {
+	if TGAssistantStore == nil {
+		return nil, errors.New("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	taskID := strings.TrimSpace(req.TaskID)
+	if accountID == "" {
+		return nil, errors.New("account_id is required")
+	}
+	if taskID == "" {
+		return nil, errors.New("task_id is required")
+	}
+
+	TGAssistantStore.mu.RLock()
+	records := loadTGAssistantAccountsLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	if index < 0 {
+		TGAssistantStore.mu.RUnlock()
+		return nil, errors.New("account not found")
+	}
+	taskIndex := indexTGAssistantScheduleByID(records[index].Schedules, taskID)
+	TGAssistantStore.mu.RUnlock()
+	if taskIndex < 0 {
+		return nil, errors.New("task not found")
+	}
+
+	history, err := loadTGAssistantTaskHistory(taskID)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]tgAssistantTaskHistoryRecord, 0, len(history))
+	for _, item := range history {
+		if strings.TrimSpace(item.TaskID) != taskID {
+			continue
+		}
+		if strings.TrimSpace(item.AccountID) != "" && strings.TrimSpace(item.AccountID) != accountID {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = tgAssistantTaskHistoryMax
+	}
+	if limit > tgAssistantTaskHistoryMax {
+		limit = tgAssistantTaskHistoryMax
+	}
+	if len(filtered) > limit {
+		filtered = append([]tgAssistantTaskHistoryRecord(nil), filtered[len(filtered)-limit:]...)
+	}
+	for left, right := 0, len(filtered)-1; left < right; left, right = left+1, right-1 {
+		filtered[left], filtered[right] = filtered[right], filtered[left]
+	}
+	return filtered, nil
+}
+
 func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, action string, delaySec int) (tgAssistantScheduleSendNowResult, error) {
 	if TGAssistantStore == nil {
 		return tgAssistantScheduleSendNowResult{}, errors.New("tg assistant datastore is not initialized")
@@ -1071,6 +1135,7 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 	}
 
 	tgResponseMessage := ""
+	tgResponseFallback := ""
 	err := runTGAssistantClientWithContext(ctx, apiID, apiHash, account, func(inner context.Context, client *telegram.Client) error {
 		status, err := client.Auth().Status(inner)
 		if err != nil {
@@ -1092,9 +1157,16 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 		if err != nil {
 			return err
 		}
+		tgResponseFallback = summarizeTGAssistantSendUpdates(updates)
 		tgResponseMessage = waitTGAssistantSendResponseMessage(inner, client, peer, updates, 5*time.Second)
+		if strings.TrimSpace(tgResponseMessage) == "" {
+			tgResponseMessage = tgResponseFallback
+		}
 		return nil
 	})
+	if strings.TrimSpace(tgResponseMessage) == "" {
+		tgResponseMessage = strings.TrimSpace(tgResponseFallback)
+	}
 	if err != nil {
 		historyMsg := fmt.Sprintf(
 			"task_id=%s err=%s tg_response=%s",
@@ -1105,6 +1177,9 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 		appendTGAssistantHistory(action, normalizedAccountID, false, historyMsg)
 		appendTGAssistantTaskHistory(action, normalizedAccountID, normalizedTaskID, false, historyMsg)
 		return tgAssistantScheduleSendNowResult{}, err
+	}
+	if strings.TrimSpace(tgResponseMessage) == "" {
+		tgResponseMessage = "sent (no detailed tg response)"
 	}
 
 	result := tgAssistantScheduleSendNowResult{
@@ -1210,11 +1285,23 @@ func summarizeTGAssistantSendUpdates(updates tg.UpdatesClass) string {
 			sanitizeTGAssistantHistoryText(value.Message, 140),
 		)
 	case *tg.UpdateShort:
-		return summarizeTGAssistantUpdate(value.Update)
+		summary := summarizeTGAssistantUpdate(value.Update)
+		if summary != "" {
+			return summary
+		}
+		return fmt.Sprintf("update_short date=%s", formatTGAssistantUnixTime(value.Date))
 	case *tg.Updates:
-		return summarizeTGAssistantUpdatesList(value.Updates)
+		summary := summarizeTGAssistantUpdatesList(value.Updates)
+		if summary != "" {
+			return summary
+		}
+		return describeTGAssistantUpdateTypes(value.Updates)
 	case *tg.UpdatesCombined:
-		return summarizeTGAssistantUpdatesList(value.Updates)
+		summary := summarizeTGAssistantUpdatesList(value.Updates)
+		if summary != "" {
+			return summary
+		}
+		return describeTGAssistantUpdateTypes(value.Updates)
 	default:
 		if updates == nil {
 			return ""
@@ -1242,9 +1329,29 @@ func summarizeTGAssistantUpdate(update tg.UpdateClass) string {
 		return summarizeTGAssistantMessageClass(value.Message)
 	case *tg.UpdateNewChannelMessage:
 		return summarizeTGAssistantMessageClass(value.Message)
+	case *tg.UpdateEditMessage:
+		return summarizeTGAssistantMessageClass(value.Message)
+	case *tg.UpdateEditChannelMessage:
+		return summarizeTGAssistantMessageClass(value.Message)
+	case *tg.UpdateMessageID:
+		return fmt.Sprintf("id=%d random_id=%d", value.ID, value.RandomID)
 	default:
 		return ""
 	}
+}
+
+func describeTGAssistantUpdateTypes(list []tg.UpdateClass) string {
+	if len(list) == 0 {
+		return "updates=0"
+	}
+	parts := make([]string, 0, len(list))
+	for idx, item := range list {
+		if idx >= 3 {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%T", item))
+	}
+	return fmt.Sprintf("updates=%d types=%s", len(list), strings.Join(parts, ","))
 }
 
 func summarizeTGAssistantMessageClass(message tg.MessageClass) string {
@@ -1832,6 +1939,34 @@ func appendTGAssistantTaskHistory(action, accountID, taskID string, success bool
 		_ = os.Remove(tmp)
 		log.Printf("tg task history rename failed: %v", err)
 	}
+}
+
+func loadTGAssistantTaskHistory(taskID string) ([]tgAssistantTaskHistoryRecord, error) {
+	normalizedTaskID := strings.TrimSpace(taskID)
+	if normalizedTaskID == "" {
+		return nil, errors.New("task_id is required")
+	}
+
+	tgAssistantTaskHistoryMu.Lock()
+	defer tgAssistantTaskHistoryMu.Unlock()
+
+	path := tgAssistantTaskHistoryPath(normalizedTaskID)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []tgAssistantTaskHistoryRecord{}, nil
+		}
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(content))) == 0 {
+		return []tgAssistantTaskHistoryRecord{}, nil
+	}
+
+	records := make([]tgAssistantTaskHistoryRecord, 0, tgAssistantTaskHistoryMax)
+	if err := json.Unmarshal(content, &records); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func parseTGDialogsResponse(resp tg.MessagesDialogsClass) ([]tg.DialogClass, []tg.ChatClass, []tg.UserClass, error) {
