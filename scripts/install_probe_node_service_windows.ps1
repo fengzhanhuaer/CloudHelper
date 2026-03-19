@@ -58,23 +58,55 @@ function Invoke-DownloadFile {
 }
 
 function Resolve-ArchInfo {
-  $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
+  $arch = ""
+
+  # PowerShell 5.1 on older .NET may not expose RuntimeInformation.ProcessArchitecture.
+  try {
+    $runtimeInfoType = [Type]::GetType("System.Runtime.InteropServices.RuntimeInformation")
+    if ($runtimeInfoType) {
+      $processArchProp = $runtimeInfoType.GetProperty("ProcessArchitecture", [Reflection.BindingFlags]"Public,Static")
+      if ($processArchProp) {
+        $archValue = $processArchProp.GetValue($null, $null)
+        if ($archValue) {
+          $arch = [string]$archValue
+        }
+      }
+    }
+  } catch {}
+
+  if (-not $arch) {
+    if ($env:PROCESSOR_ARCHITEW6432) {
+      $arch = [string]$env:PROCESSOR_ARCHITEW6432
+    } elseif ($env:PROCESSOR_ARCHITECTURE) {
+      $arch = [string]$env:PROCESSOR_ARCHITECTURE
+    }
+  }
+
+  if (-not $arch) {
+    if ([IntPtr]::Size -eq 8) {
+      $arch = "x64"
+    } else {
+      $arch = "x86"
+    }
+  }
+
+  $arch = $arch.ToLowerInvariant()
   switch ($arch) {
-    "x64" {
+    { $_ -in @("x64", "amd64", "x86_64") } {
       return @{
         Name = "amd64"
         MatchTokens = @("amd64", "x86_64", "x64")
         WinSWAsset = "WinSW-x64.exe"
       }
     }
-    "arm64" {
+    { $_ -in @("arm64", "aarch64") } {
       return @{
         Name = "arm64"
         MatchTokens = @("arm64", "aarch64")
         WinSWAsset = "WinSW-arm64.exe"
       }
     }
-    "x86" {
+    { $_ -in @("x86", "386", "i386") } {
       return @{
         Name = "386"
         MatchTokens = @("386", "i386", "x86")
@@ -108,6 +140,19 @@ function Select-ProbeAsset {
       }
     }
     Fail "asset not found: $AssetNameOverride"
+  }
+
+  # Prefer exact release naming first:
+  # cloudhelper-probe-node-windows-<arch>.exe
+  $expectedNames = @(
+    "cloudhelper-probe-node-windows-$($ArchInfo.Name).exe"
+  )
+  foreach ($expectedName in $expectedNames) {
+    foreach ($asset in $Release.assets) {
+      if ([string]$asset.name -eq $expectedName) {
+        return $asset
+      }
+    }
   }
 
   $probeAssets = @()

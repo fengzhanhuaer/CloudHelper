@@ -135,7 +135,6 @@ resolve_platform() {
       ;;
   esac
 
-  TARGET_OS="linux"
 }
 
 detect_service_impl() {
@@ -241,22 +240,30 @@ github_download() {
 pick_asset_url() {
   local release_json="$1"
   local url=""
+  local expected_name=""
   local node_pattern='probe[-_]?node'
   local known_arch_pattern='amd64|x86_64|arm64|aarch64|armv7|armv7l|386|i386|x86|ppc64le|s390x|riscv64'
 
   if [[ -n "${ASSET_NAME}" ]]; then
     url="$(echo "${release_json}" | jq -r --arg name "${ASSET_NAME}" '.assets[] | select(.name==$name) | .browser_download_url' | head -n1)"
   else
-    url="$(echo "${release_json}" | jq -r --arg os "${TARGET_OS}" --arg arch "${TARGET_ARCH_PATTERN}" --arg p "${node_pattern}" '
+    # Prefer exact release naming first:
+    # cloudhelper-probe-node-linux-<arch>
+    expected_name="cloudhelper-probe-node-linux-${TARGET_ARCH}"
+    url="$(echo "${release_json}" | jq -r --arg name "${expected_name}" '.assets[] | select(.name==$name) | .browser_download_url' | head -n1)"
+
+    if [[ -z "${url}" ]]; then
+      url="$(echo "${release_json}" | jq -r --arg os "linux" --arg arch "${TARGET_ARCH_PATTERN}" --arg p "${node_pattern}" '
       .assets[]
       | select(.name | test($p; "i"))
       | select(.name | test($os; "i"))
       | select(.name | test($arch; "i"))
       | .browser_download_url
     ' | head -n1)"
+    fi
 
     if [[ -z "${url}" ]]; then
-      url="$(echo "${release_json}" | jq -r --arg os "${TARGET_OS}" --arg p "${node_pattern}" --arg known_arch "${known_arch_pattern}" '
+      url="$(echo "${release_json}" | jq -r --arg os "linux" --arg p "${node_pattern}" --arg known_arch "${known_arch_pattern}" '
         .assets[]
         | select(.name | test($p; "i"))
         | select(.name | test($os; "i"))
@@ -347,7 +354,7 @@ download_and_install() {
   asset_url="$(pick_asset_url "${release_json}")"
   [[ -n "${asset_url}" ]] || {
     echo "${release_json}" | jq -r '.assets[].name' >&2 || true
-    die "failed to find a matching probe_node release asset for ${TARGET_OS}/${TARGET_ARCH}; set ASSET_NAME to override"
+    die "failed to find a matching probe_node release asset for linux/${TARGET_ARCH}; set ASSET_NAME to override"
   }
 
   asset_name="$(echo "${release_json}" | jq -r --arg url "${asset_url}" '.assets[] | select(.browser_download_url==$url) | .name' | head -n1)"
