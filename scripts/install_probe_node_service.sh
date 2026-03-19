@@ -211,6 +211,27 @@ resolve_nologin_shell() {
   echo "/bin/false"
 }
 
+url_encode() {
+  local value="$1"
+  jq -rn --arg v "${value}" '$v|@uri'
+}
+
+build_probe_proxy_url() {
+  local endpoint="$1"
+  local extra_query="${2:-}"
+  local base="${PROBE_PROXY_BASE_URL:-}"
+  local node_id="${PROBE_NODE_ID:-}"
+  local node_secret="${PROBE_NODE_SECRET:-}"
+
+  [[ -n "${base}" && -n "${node_id}" && -n "${node_secret}" ]] || return 1
+
+  local out="${base%/}/${endpoint}?node_id=$(url_encode "${node_id}")&secret=$(url_encode "${node_secret}")"
+  if [[ -n "${extra_query}" ]]; then
+    out="${out}&${extra_query}"
+  fi
+  echo "${out}"
+}
+
 github_api_get() {
   local url="$1"
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
@@ -226,14 +247,21 @@ github_api_get() {
 github_download() {
   local url="$1"
   local output="$2"
+
+  local request_url="${url}"
+  local proxy_url=""
+  if proxy_url="$(build_probe_proxy_url "download" "url=$(url_encode "${url}")")"; then
+    request_url="${proxy_url}"
+  fi
+
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     curl -fL \
       -H "Authorization: Bearer ${GITHUB_TOKEN}" \
       -H "Accept: application/octet-stream" \
-      "${url}" \
+      "${request_url}" \
       -o "${output}"
   else
-    curl -fL "${url}" -o "${output}"
+    curl -fL "${request_url}" -o "${output}"
   fi
 }
 
@@ -243,14 +271,13 @@ pick_asset_url() {
   local expected_name=""
   local node_pattern='probe[-_]?node'
   local known_arch_pattern='amd64|x86_64|arm64|aarch64|armv7|armv7l|386|i386|x86|ppc64le|s390x|riscv64'
-
   if [[ -n "${ASSET_NAME}" ]]; then
-    url="$(echo "${release_json}" | jq -r --arg name "${ASSET_NAME}" '.assets[] | select(.name==$name) | .browser_download_url' | head -n1)"
+    url="$(echo "${release_json}" | jq -r --arg name "${ASSET_NAME}" '.assets[] | select(.name==$name) | (.browser_download_url // .download_url // .browserDownloadUrl // .downloadUrl)' | head -n1)"
   else
     # Prefer exact release naming first:
     # cloudhelper-probe-node-linux-<arch>
     expected_name="cloudhelper-probe-node-linux-${TARGET_ARCH}"
-    url="$(echo "${release_json}" | jq -r --arg name "${expected_name}" '.assets[] | select(.name==$name) | .browser_download_url' | head -n1)"
+    url="$(echo "${release_json}" | jq -r --arg name "${expected_name}" '.assets[] | select(.name==$name) | (.browser_download_url // .download_url // .browserDownloadUrl // .downloadUrl)' | head -n1)"
 
     if [[ -z "${url}" ]]; then
       url="$(echo "${release_json}" | jq -r --arg os "linux" --arg arch "${TARGET_ARCH_PATTERN}" --arg p "${node_pattern}" '
@@ -258,7 +285,7 @@ pick_asset_url() {
       | select(.name | test($p; "i"))
       | select(.name | test($os; "i"))
       | select(.name | test($arch; "i"))
-      | .browser_download_url
+      | (.browser_download_url // .download_url // .browserDownloadUrl // .downloadUrl)
     ' | head -n1)"
     fi
 
@@ -268,7 +295,7 @@ pick_asset_url() {
         | select(.name | test($p; "i"))
         | select(.name | test($os; "i"))
         | select((.name | test($known_arch; "i")) | not)
-        | .browser_download_url
+        | (.browser_download_url // .download_url // .browserDownloadUrl // .downloadUrl)
       ' | head -n1)"
     fi
 
@@ -278,7 +305,7 @@ pick_asset_url() {
         | select(.name | test($p; "i"))
         | select((.name | test($known_arch; "i")) | not)
         | select((.name | test("windows|\\.exe"; "i")) | not)
-        | .browser_download_url
+        | (.browser_download_url // .download_url // .browserDownloadUrl // .downloadUrl)
       ' | head -n1)"
     fi
   fi
@@ -340,7 +367,13 @@ download_and_install() {
   local binary_src
 
   if [[ "${RELEASE_TAG}" == "latest" ]]; then
-    api_url="https://api.github.com/repos/${RELEASE_REPO}/releases/latest"
+    local proxy_api_url
+    proxy_api_url="$(build_probe_proxy_url "github/latest" "repo=$(url_encode "${RELEASE_REPO}")" || true)"
+    if [[ -n "${proxy_api_url}" ]]; then
+      api_url="${proxy_api_url}"
+    else
+      api_url="https://api.github.com/repos/${RELEASE_REPO}/releases/latest"
+    fi
   else
     api_url="https://api.github.com/repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"
   fi
@@ -357,7 +390,7 @@ download_and_install() {
     die "failed to find a matching probe_node release asset for linux/${TARGET_ARCH}; set ASSET_NAME to override"
   }
 
-  asset_name="$(echo "${release_json}" | jq -r --arg url "${asset_url}" '.assets[] | select(.browser_download_url==$url) | .name' | head -n1)"
+  asset_name="$(echo "${release_json}" | jq -r --arg url "${asset_url}" '.assets[] | select((.browser_download_url // .download_url // .browserDownloadUrl // .downloadUrl)==$url) | .name' | head -n1)"
   [[ -n "${asset_name}" ]] || die "failed to resolve asset name from selected download url"
 
   tmp_dir="$(mktemp -d)"

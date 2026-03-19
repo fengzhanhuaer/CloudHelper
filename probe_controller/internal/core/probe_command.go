@@ -203,7 +203,7 @@ func ProbeProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
 		return
 	}
-	if _, err := authenticateProbeRequest(r); err != nil {
+	if _, err := authenticateProbeRequestOrQuerySecret(r); err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
@@ -245,7 +245,7 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
 		return
 	}
-	if _, err := authenticateProbeRequest(r); err != nil {
+	if _, err := authenticateProbeRequestOrQuerySecret(r); err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
@@ -516,6 +516,25 @@ func authenticateProbeRequest(r *http.Request) (string, error) {
 		return "", fmt.Errorf("probe auth replay detected")
 	}
 	return nodeID, nil
+}
+
+func authenticateProbeRequestOrQuerySecret(r *http.Request) (string, error) {
+	queryNodeID := normalizeProbeNodeID(r.URL.Query().Get("node_id"))
+	querySecret := strings.TrimSpace(r.URL.Query().Get("secret"))
+	if queryNodeID != "" || querySecret != "" {
+		if queryNodeID == "" || querySecret == "" {
+			return "", fmt.Errorf("node_id and secret query parameters are required")
+		}
+		storedSecret, ok := resolveProbeSecret(queryNodeID)
+		if !ok {
+			return "", fmt.Errorf("probe secret is not configured for node")
+		}
+		if !hmac.Equal([]byte(storedSecret), []byte(querySecret)) {
+			return "", fmt.Errorf("invalid probe secret")
+		}
+		return queryNodeID, nil
+	}
+	return authenticateProbeRequest(r)
 }
 
 func resolveProbeSecret(nodeID string) (string, bool) {

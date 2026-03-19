@@ -1050,7 +1050,16 @@ function sanitizeControllerAddress(rawAddress: string): string {
 
 function buildInstallCommand(node: ProbeNodeItem, controllerAddress: string): string {
   const base = sanitizeControllerAddress(controllerAddress);
-  const envArgs = "PROBE_NODE_ID='" + String(node.node_no) + "' PROBE_NODE_SECRET='" + node.node_secret + "' PROBE_CONTROLLER_URL='" + base + "'";
+  const proxyBaseURL = base + "/api/probe/proxy";
+  const envPairs = [
+    "PROBE_NODE_ID='" + String(node.node_no) + "'",
+    "PROBE_NODE_SECRET='" + node.node_secret + "'",
+    "PROBE_CONTROLLER_URL='" + base + "'",
+  ];
+  if (!node.direct_connect) {
+    envPairs.push("PROBE_PROXY_BASE_URL='" + proxyBaseURL + "'");
+  }
+  const envArgs = envPairs.join(" ");
   const params = new URLSearchParams({
     node_id: String(node.node_no),
     secret: node.node_secret,
@@ -1060,23 +1069,33 @@ function buildInstallCommand(node: ProbeNodeItem, controllerAddress: string): st
     const scriptURL = node.direct_connect
       ? "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1"
       : base + "/api/probe/proxy/probe-node/install-script?" + params.toString() + "&target=windows";
+    const scriptPath = "$env:TEMP\\cloudhelper-probe-node-install.ps1";
     return [
       "$env:PROBE_NODE_ID='" + String(node.node_no) + "'",
       "$env:PROBE_NODE_SECRET='" + node.node_secret + "'",
       "$env:PROBE_CONTROLLER_URL='" + base + "'",
-      "iwr -UseBasicParsing '" + scriptURL + "' | iex",
-    ].join("; ");
+      node.direct_connect ? "" : "$env:PROBE_PROXY_BASE_URL='" + proxyBaseURL + "'",
+      "$scriptUrl='" + scriptURL + "'",
+      "$scriptPath='" + scriptPath + "'",
+      "iwr -UseBasicParsing $scriptUrl -OutFile $scriptPath",
+      "& $scriptPath",
+    ].filter((line) => line).join("; ");
   }
 
   if (!node.direct_connect) {
-    return buildLinuxInstallCommand(base + "/api/probe/proxy/probe-node/install-script?" + params.toString(), envArgs);
+    return buildLinuxInstallCommand(base + "/api/probe/proxy/probe-node/install-script?" + params.toString() + "&target=linux", envArgs, "/tmp/cloudhelper-probe-node-install.sh");
   }
 
-  return buildLinuxInstallCommand("https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh", envArgs);
+  return buildLinuxInstallCommand("https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh", envArgs, "/tmp/cloudhelper-probe-node-install.sh");
 }
 
-function buildLinuxInstallCommand(scriptURL: string, envArgs: string): string {
-  return "curl -fsSL '" + scriptURL + "' | env " + envArgs + " bash";
+function buildLinuxInstallCommand(scriptURL: string, envArgs: string, scriptPath: string): string {
+  return [
+    "SCRIPT_URL='" + scriptURL + "'",
+    "SCRIPT_PATH='" + scriptPath + "'",
+    "curl -fsSL \"$SCRIPT_URL\" -o \"$SCRIPT_PATH\"",
+    "env " + envArgs + " bash \"$SCRIPT_PATH\"",
+  ].join("; ");
 }
 
 async function copyText(text: string): Promise<void> {

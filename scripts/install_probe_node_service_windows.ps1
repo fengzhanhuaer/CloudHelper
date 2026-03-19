@@ -43,18 +43,150 @@ function Invoke-GitHubApiJson {
   return Invoke-RestMethod -Method Get -Uri $Url -Headers $headers -TimeoutSec 60
 }
 
+function New-RandomHexToken {
+  param([int]$ByteLength = 16)
+  if ($ByteLength -le 0) {
+    $ByteLength = 8
+  }
+  $bytes = New-Object byte[] $ByteLength
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($bytes)
+  } finally {
+    $rng.Dispose()
+  }
+  return [BitConverter]::ToString($bytes).Replace("-", "").ToLowerInvariant()
+}
+
+function New-ProbeAuthHeaders {
+  param(
+    [string]$NodeID,
+    [string]$NodeSecret
+  )
+
+  $safeNodeID = if ($NodeID) { $NodeID.Trim() } else { "" }
+  $safeSecret = if ($NodeSecret) { $NodeSecret.Trim() } else { "" }
+  if (-not $safeNodeID -or -not $safeSecret) {
+    return $null
+  }
+
+  $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+  $randomToken = New-RandomHexToken -ByteLength 16
+  $payload = "$safeNodeID`n$timestamp`n$randomToken"
+  $keyBytes = [Text.Encoding]::UTF8.GetBytes($safeSecret)
+  $dataBytes = [Text.Encoding]::UTF8.GetBytes($payload)
+
+  $hmac = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
+  try {
+    $sigBytes = $hmac.ComputeHash($dataBytes)
+  } finally {
+    $hmac.Dispose()
+  }
+  $signature = [BitConverter]::ToString($sigBytes).Replace("-", "").ToLowerInvariant()
+
+  return @{
+    "X-Probe-Node-Id" = $safeNodeID
+    "X-Probe-Timestamp" = $timestamp
+    "X-Probe-Rand" = $randomToken
+    "X-Probe-Signature" = $signature
+  }
+}
+
+function Build-ProbeProxyURL {
+  param(
+    [string]$Endpoint,
+    [string]$ExtraQuery
+  )
+
+  $proxyBase = if ($env:PROBE_PROXY_BASE_URL) { $env:PROBE_PROXY_BASE_URL.Trim() } else { "" }
+  $nodeID = if ($env:PROBE_NODE_ID) { $env:PROBE_NODE_ID.Trim() } else { "" }
+  $nodeSecret = if ($env:PROBE_NODE_SECRET) { $env:PROBE_NODE_SECRET.Trim() } else { "" }
+  if (-not $proxyBase -or -not $nodeID -or -not $nodeSecret -or -not $Endpoint) {
+    return ""
+  }
+
+  $url = $proxyBase.TrimEnd("/") + "/" + $Endpoint + "?node_id=" + [Uri]::EscapeDataString($nodeID) + "&secret=" + [Uri]::EscapeDataString($nodeSecret)
+  if ($ExtraQuery) {
+    $url += "&" + $ExtraQuery
+  }
+  return $url
+}
+
+function Get-AssetDownloadURL {
+  param([object]$Asset)
+  if (-not $Asset) {
+    return ""
+  }
+  foreach ($name in @("browser_download_url", "download_url", "browserDownloadUrl", "downloadUrl", "BrowserDownloadURL", "DownloadURL")) {
+    $prop = $Asset.PSObject.Properties[$name]
+    if ($prop -and $prop.Value) {
+      $v = ([string]$prop.Value).Trim()
+      if ($v) {
+        return $v
+      }
+    }
+  }
+  return ""
+}
+
 function Invoke-DownloadFile {
   param(
     [string]$Url,
     [string]$OutFile
   )
+  $proxyURLFromPath = Build-ProbeProxyURL -Endpoint "download" -ExtraQuery ("url=" + [Uri]::EscapeDataString($Url))
+  if ($proxyURLFromPath) {
+    $proxyHeaders = @{
+      "User-Agent" = "cloudhelper-probe-node-install"
+      "Accept" = "application/octet-stream"
+    }
+    Write-Log "downloading via proxy path"
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri $proxyURLFromPath -Headers $proxyHeaders -OutFile $OutFile -TimeoutSec 300
+      return
+    } catch {
+      throw "[cloudhelper-probe-node-install][ERROR] download failed via proxy path: $($_.Exception.Message)"
+    }
+  }
+
   $headers = @{
     "User-Agent" = "cloudhelper-probe-node-install"
   }
   if ($env:GITHUB_TOKEN) {
     $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)"
   }
-  Invoke-WebRequest -UseBasicParsing -Uri $Url -Headers $headers -OutFile $OutFile -TimeoutSec 300
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -Headers $headers -OutFile $OutFile -TimeoutSec 300
+    return
+  } catch {
+    $directError = $_
+  }
+
+  $controllerURL = if ($env:PROBE_CONTROLLER_URL) { $env:PROBE_CONTROLLER_URL.Trim() } else { "" }
+  $nodeID = if ($env:PROBE_NODE_ID) { $env:PROBE_NODE_ID.Trim() } else { "" }
+  $nodeSecret = if ($env:PROBE_NODE_SECRET) { $env:PROBE_NODE_SECRET.Trim() } else { "" }
+  $canProxy = $controllerURL -and $nodeID -and $nodeSecret -and $Url.ToLowerInvariant().StartsWith("https://")
+  if (-not $canProxy) {
+    throw $directError
+  }
+
+  $proxyHeaders = New-ProbeAuthHeaders -NodeID $nodeID -NodeSecret $nodeSecret
+  if (-not $proxyHeaders) {
+    throw $directError
+  }
+  $proxyHeaders["User-Agent"] = "cloudhelper-probe-node-install"
+  $proxyHeaders["Accept"] = "application/octet-stream"
+
+  $proxyURL = $controllerURL.TrimEnd("/") + "/api/probe/proxy/download?url=" + [Uri]::EscapeDataString($Url)
+  Write-Log "direct download failed, retrying via controller proxy"
+
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri $proxyURL -Headers $proxyHeaders -OutFile $OutFile -TimeoutSec 300
+    return
+  } catch {
+    $proxyError = $_
+    throw "[cloudhelper-probe-node-install][ERROR] download failed (direct: $($directError.Exception.Message); proxy: $($proxyError.Exception.Message))"
+  }
 }
 
 function Resolve-ArchInfo {
@@ -254,8 +386,15 @@ if (-not (Test-Path -LiteralPath $logsDir)) {
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("cloudhelper-probe-node-install-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 try {
-  $releaseAPI = if ($releaseTag -eq "latest") {
-    "https://api.github.com/repos/$releaseRepo/releases/latest"
+  $releaseAPI = if ($env:PROBE_RELEASE_API_URL) {
+    $env:PROBE_RELEASE_API_URL.Trim()
+  } elseif ($releaseTag -eq "latest") {
+    $proxyReleaseAPI = Build-ProbeProxyURL -Endpoint "github/latest" -ExtraQuery ("repo=" + [Uri]::EscapeDataString($releaseRepo))
+    if ($proxyReleaseAPI) {
+      $proxyReleaseAPI
+    } else {
+      "https://api.github.com/repos/$releaseRepo/releases/latest"
+    }
   } else {
     "https://api.github.com/repos/$releaseRepo/releases/tags/$releaseTag"
   }
@@ -270,9 +409,9 @@ try {
   $archInfo = Resolve-ArchInfo
   $asset = Select-ProbeAsset -Release $release -ArchInfo $archInfo -AssetNameOverride $assetNameOverride
   $assetName = [string]$asset.name
-  $assetURL = [string]$asset.browser_download_url
+  $assetURL = Get-AssetDownloadURL -Asset $asset
   if (-not $assetURL) {
-    Fail "selected asset has empty browser_download_url"
+    Fail "selected asset has empty download url"
   }
 
   $assetFile = Join-Path $tmpDir $assetName
