@@ -180,6 +180,21 @@ export type TGAssistantTaskHistoryRecord = {
   message?: string;
 };
 
+export type TGAssistantPendingTask = {
+  job_key: string;
+  account_id: string;
+  task_id: string;
+  enabled: boolean;
+  task_exists: boolean;
+  target?: string;
+  send_at?: string;
+  message?: string;
+  delay_sec: number;
+  next_run_at: string;
+  timeout_at?: string;
+  updated_at?: string;
+};
+
 export type TGAssistantBotAPIKey = {
   account_id: string;
   api_key: string;

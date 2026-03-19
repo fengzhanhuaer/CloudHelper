@@ -12,6 +12,7 @@ import type {
   TGAssistantAPIKey,
   TGAssistantBotAPIKey,
   TGAssistantBotTestSendResult,
+  TGAssistantPendingTask,
   TGAssistantSchedule,
   TGAssistantScheduleSendNowResult,
   TGAssistantTaskHistoryRecord,
@@ -540,6 +541,22 @@ export async function fetchTGAssistantScheduleTaskHistory(
     },
   );
   return Array.isArray(payload.history) ? payload.history : [];
+}
+
+export async function fetchTGAssistantPendingTasks(
+  baseURL: string,
+  token: string,
+  accountID: string,
+): Promise<TGAssistantPendingTask[]> {
+  const payload = await callAdminWSRpc<{ pending?: TGAssistantPendingTask[] }>(
+    baseURL,
+    token,
+    "admin.tg.schedule.pending",
+    {
+      account_id: accountID,
+    },
+  );
+  return Array.isArray(payload.pending) ? payload.pending : [];
 }
 
 export async function fetchTGAssistantTargets(baseURL: string, token: string, accountID: string): Promise<TGAssistantTarget[]> {

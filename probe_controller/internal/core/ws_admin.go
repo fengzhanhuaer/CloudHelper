@@ -776,6 +776,18 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return map[string]interface{}{
 			"history": history,
 		}, nil
+	case "admin.tg.schedule.pending":
+		var req tgAssistantAccountIDRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		pending, err := listTGAssistantPendingTasks(req)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"pending": pending,
+		}, nil
 	case "admin.proxy.github.latest":
 		var req proxyLatestRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

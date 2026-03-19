@@ -6,6 +6,7 @@ import {
   fetchTGAssistantAPIKey,
   fetchTGAssistantAccounts,
   fetchTGAssistantBotAPIKey,
+  fetchTGAssistantPendingTasks,
   fetchTGAssistantSchedules,
   fetchTGAssistantScheduleTaskHistory,
   fetchTGAssistantTargets,
@@ -27,6 +28,7 @@ import type {
   TGAssistantAccount,
   TGAssistantBotAPIKey,
   TGAssistantBotTestSendResult,
+  TGAssistantPendingTask,
   TGAssistantSchedule,
   TGAssistantTarget,
   TGAssistantTaskHistoryRecord,
@@ -70,12 +72,14 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
   const [scheduleList, setScheduleList] = useState<TGAssistantSchedule[]>([]);
   const [targetList, setTargetList] = useState<TGAssistantTarget[]>([]);
   const [isScheduleLoading, setIsScheduleLoading] = useState(false);
+  const [isPendingLoading, setIsPendingLoading] = useState(false);
   const [isTargetRefreshing, setIsTargetRefreshing] = useState(false);
   const [showScheduleTaskModal, setShowScheduleTaskModal] = useState(false);
   const [editingScheduleTaskID, setEditingScheduleTaskID] = useState("");
   const [showScheduleHistoryModal, setShowScheduleHistoryModal] = useState(false);
   const [scheduleHistoryTaskID, setScheduleHistoryTaskID] = useState("");
   const [scheduleHistoryItems, setScheduleHistoryItems] = useState<TGAssistantTaskHistoryRecord[]>([]);
+  const [pendingTaskItems, setPendingTaskItems] = useState<TGAssistantPendingTask[]>([]);
   const [isScheduleHistoryLoading, setIsScheduleHistoryLoading] = useState(false);
   const [showBotAPIKeyModal, setShowBotAPIKeyModal] = useState(false);
   const [botAPIKeyDraft, setBotAPIKeyDraft] = useState("");
@@ -126,6 +130,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
     const accountID = activeLoggedInAccountID.trim();
     if (!accountID) {
       setScheduleList([]);
+      setPendingTaskItems([]);
       setTargetList([]);
       setTargetSearchDraft("");
       setScheduleEnabled(false);
@@ -143,6 +148,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       return;
     }
     void loadSchedule(accountID, { silent: true });
+    void loadPendingTasks(accountID, { silent: true });
     void loadTargets(accountID, { silent: true });
     void loadBotAPIKey(accountID, { silent: true });
   }, [activeLoggedInAccountID, props.controllerBaseUrl, props.sessionToken]);
@@ -628,6 +634,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
           delay_max_sec: delayMax,
         });
       applyScheduleList(activeLoggedInAccount.id, schedules);
+      await loadPendingTasks(activeLoggedInAccount.id, { silent: true });
       setShowScheduleTaskModal(false);
       setEditingScheduleTaskID("");
       setScheduleMessageDraft("");
@@ -638,6 +645,32 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
       setStatus(`${isEditing ? "修改任务" : "新增任务"}失败：${msg}`);
     } finally {
       setIsScheduleLoading(false);
+    }
+  }
+
+  async function loadPendingTasks(accountID: string, options?: { silent?: boolean }) {
+    const normalizedAccountID = accountID.trim();
+    if (!normalizedAccountID) {
+      return;
+    }
+    const silent = options?.silent === true;
+    setIsPendingLoading(true);
+    if (!silent) {
+      setStatus("正在加载待执行队列...");
+    }
+    try {
+      const pending = await fetchTGAssistantPendingTasks(props.controllerBaseUrl, props.sessionToken, normalizedAccountID);
+      setPendingTaskItems(pending);
+      if (!silent) {
+        setStatus(`已加载待执行队列（${pending.length} 条）`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      if (!silent) {
+        setStatus(`加载待执行队列失败：${msg}`);
+      }
+    } finally {
+      setIsPendingLoading(false);
     }
   }
 
@@ -683,6 +716,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
         task_id: taskID,
       });
       applyScheduleList(activeLoggedInAccount.id, schedules);
+      await loadPendingTasks(activeLoggedInAccount.id, { silent: true });
       setStatus(`任务已删除，当前共 ${schedules.length} 个`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -706,6 +740,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
         enabled,
       });
       applyScheduleList(activeLoggedInAccount.id, schedules);
+      await loadPendingTasks(activeLoggedInAccount.id, { silent: true });
       setStatus(`任务状态已更新：${enabled ? "启用" : "停用"}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -728,6 +763,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
         account_id: activeLoggedInAccount.id,
         task_id: taskID,
       }, { timeoutMs });
+      await loadPendingTasks(activeLoggedInAccount.id, { silent: true });
       const tgMessage = (result.tg_message || "").trim();
       setStatus(tgMessage ? `立即发送成功：${tgMessage}` : "立即发送成功");
     } catch (error) {
@@ -1024,6 +1060,13 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                       >
                         {isTargetRefreshing ? "刷新对象中..." : "刷新发送对象"}
                       </button>
+                      <button
+                        className="btn"
+                        onClick={() => void loadPendingTasks(activeLoggedInAccount.id)}
+                        disabled={isLoading || isScheduleLoading || isPendingLoading || !activeLoggedInAccount}
+                      >
+                        {isPendingLoading ? "刷新队列中..." : "刷新待执行队列"}
+                      </button>
                     </div>
                     <div className="tg-schedule-list">
                       {scheduleList.length === 0 ? (
@@ -1093,6 +1136,50 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                                       </button>
                                     </div>
                                   </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                    <div className="tg-schedule-list">
+                      <div className="tg-account-basic-label">待执行队列（{pendingTaskItems.length}）</div>
+                      {pendingTaskItems.length === 0 ? (
+                        <div className="tg-account-summary-line">当前没有待执行任务。</div>
+                      ) : (
+                        <div className="probe-table-wrap" style={{ marginTop: 0 }}>
+                          <table className="probe-table" style={{ minWidth: 980 }}>
+                            <thead>
+                              <tr>
+                                <th>任务ID</th>
+                                <th>发送目标</th>
+                                <th>发送时间</th>
+                                <th>发送内容</th>
+                                <th>随机延时(秒)</th>
+                                <th>下一次执行</th>
+                                <th>超时执行</th>
+                                <th>状态</th>
+                                <th>更新时间</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pendingTaskItems.map((item) => (
+                                <tr key={`tg-pending-${item.job_key}`}>
+                                  <td>
+                                    <div>{item.task_id || "-"}</div>
+                                    <div className="probe-table-sub">{item.job_key || "-"}</div>
+                                  </td>
+                                  <td>{renderTargetLabel(item.target || "")}</td>
+                                  <td>{item.send_at || "-"}</td>
+                                  <td>
+                                    <div className="tg-schedule-table-message">{item.message || "-"}</div>
+                                  </td>
+                                  <td>{item.delay_sec}</td>
+                                  <td>{formatDateTime(item.next_run_at)}</td>
+                                  <td>{formatDateTime(item.timeout_at || "")}</td>
+                                  <td>{!item.task_exists ? "任务不存在" : item.enabled ? "待执行" : "任务停用"}</td>
+                                  <td>{formatDateTime(item.updated_at || "")}</td>
                                 </tr>
                               ))}
                             </tbody>

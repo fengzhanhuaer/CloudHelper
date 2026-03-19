@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,21 @@ type tgAssistantPendingTaskRecord struct {
 	TimeoutAt   string `json:"timeout_at"`
 	DelaySec    int    `json:"delay_sec"`
 	UpdatedAt   string `json:"updated_at"`
+}
+
+type tgAssistantPendingTaskView struct {
+	JobKey     string `json:"job_key"`
+	AccountID  string `json:"account_id"`
+	TaskID     string `json:"task_id"`
+	Enabled    bool   `json:"enabled"`
+	TaskExists bool   `json:"task_exists"`
+	Target     string `json:"target,omitempty"`
+	SendAt     string `json:"send_at,omitempty"`
+	Message    string `json:"message,omitempty"`
+	DelaySec   int    `json:"delay_sec"`
+	NextRunAt  string `json:"next_run_at"`
+	TimeoutAt  string `json:"timeout_at,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
 }
 
 var tgAssistantScheduleEngine = struct {
@@ -532,4 +548,133 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func listTGAssistantPendingTasks(req tgAssistantAccountIDRequest) ([]tgAssistantPendingTaskView, error) {
+	if TGAssistantStore == nil {
+		return nil, fmt.Errorf("tg assistant datastore is not initialized")
+	}
+
+	accountID := strings.TrimSpace(req.AccountID)
+	if accountID == "" {
+		return nil, fmt.Errorf("account_id is required")
+	}
+
+	TGAssistantStore.mu.RLock()
+	accounts := loadTGAssistantAccountsLocked()
+	TGAssistantStore.mu.RUnlock()
+	accountIndex := indexTGAssistantAccountByID(accounts, accountID)
+	if accountIndex < 0 {
+		return nil, fmt.Errorf("account not found")
+	}
+
+	taskMap := map[string]tgAssistantScheduleRecord{}
+	for _, task := range accounts[accountIndex].Schedules {
+		taskID := strings.TrimSpace(task.ID)
+		if taskID == "" {
+			continue
+		}
+		taskMap[taskID] = task
+	}
+
+	pendingRecords, err := loadAllTGAssistantPendingTaskRecords()
+	if err != nil {
+		return nil, err
+	}
+	views := make([]tgAssistantPendingTaskView, 0, len(pendingRecords))
+	for _, item := range pendingRecords {
+		if strings.TrimSpace(item.AccountID) != accountID {
+			continue
+		}
+		view := tgAssistantPendingTaskView{
+			JobKey:     strings.TrimSpace(item.JobKey),
+			AccountID:  accountID,
+			TaskID:     strings.TrimSpace(item.TaskID),
+			DelaySec:   item.DelaySec,
+			NextRunAt:  strings.TrimSpace(item.NextRunAt),
+			TimeoutAt:  strings.TrimSpace(item.TimeoutAt),
+			UpdatedAt:  strings.TrimSpace(item.UpdatedAt),
+			TaskExists: false,
+			Enabled:    false,
+		}
+		if task, ok := taskMap[view.TaskID]; ok {
+			view.TaskExists = true
+			view.Enabled = task.Enabled
+			view.Target = strings.TrimSpace(task.Target)
+			view.SendAt = strings.TrimSpace(task.SendAt)
+			view.Message = strings.TrimSpace(task.Message)
+		}
+		views = append(views, view)
+	}
+
+	sort.SliceStable(views, func(i, j int) bool {
+		leftRunAt, leftErr := time.Parse(time.RFC3339, strings.TrimSpace(views[i].NextRunAt))
+		rightRunAt, rightErr := time.Parse(time.RFC3339, strings.TrimSpace(views[j].NextRunAt))
+		switch {
+		case leftErr == nil && rightErr == nil:
+			if !leftRunAt.Equal(rightRunAt) {
+				return leftRunAt.Before(rightRunAt)
+			}
+		case leftErr == nil:
+			return true
+		case rightErr == nil:
+			return false
+		default:
+			if views[i].NextRunAt != views[j].NextRunAt {
+				return views[i].NextRunAt < views[j].NextRunAt
+			}
+		}
+		if views[i].TaskID != views[j].TaskID {
+			return views[i].TaskID < views[j].TaskID
+		}
+		return views[i].JobKey < views[j].JobKey
+	})
+
+	return views, nil
+}
+
+func loadAllTGAssistantPendingTaskRecords() ([]tgAssistantPendingTaskRecord, error) {
+	dir := tgAssistantPendingTaskDirPath()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []tgAssistantPendingTaskRecord{}, nil
+		}
+		return nil, err
+	}
+
+	records := make([]tgAssistantPendingTaskRecord, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if !strings.HasSuffix(strings.ToLower(name), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			continue
+		}
+		record := tgAssistantPendingTaskRecord{}
+		if unmarshalErr := json.Unmarshal(content, &record); unmarshalErr != nil {
+			continue
+		}
+		record.JobKey = strings.TrimSpace(record.JobKey)
+		record.AccountID = strings.TrimSpace(record.AccountID)
+		record.TaskID = strings.TrimSpace(record.TaskID)
+		record.Fingerprint = strings.TrimSpace(record.Fingerprint)
+		record.NextRunAt = strings.TrimSpace(record.NextRunAt)
+		record.TimeoutAt = strings.TrimSpace(record.TimeoutAt)
+		record.UpdatedAt = strings.TrimSpace(record.UpdatedAt)
+		if record.JobKey == "" {
+			record.JobKey = strings.TrimSuffix(name, filepath.Ext(name))
+		}
+		if record.AccountID == "" || record.TaskID == "" || record.NextRunAt == "" {
+			continue
+		}
+		records = append(records, record)
+	}
+	return records, nil
 }
