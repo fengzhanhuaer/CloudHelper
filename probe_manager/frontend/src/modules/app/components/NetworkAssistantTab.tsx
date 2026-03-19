@@ -10,6 +10,8 @@ type NetworkAssistantTabProps = {
   onRefreshStatus: () => void;
   onSwitchDirect: () => void;
   onSwitchGlobal: () => void;
+  onInstallTUN: () => void;
+  onEnableTUN: () => void;
   onRestoreDirect: () => void;
   logLines: number;
   onLogLinesChange: (value: number) => void;
@@ -112,11 +114,16 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
                 <option key={node} value={node}>{node}</option>
               ))}
             </select>
+            <div style={{ marginTop: 8 }}>TUN 支持：{props.status.tun_supported ? "是" : "否"}</div>
+            <div>TUN 状态：{props.status.tun_status || "未安装"}</div>
+            <div>TUN 库：{props.status.tun_library_path || "-"}</div>
           </div>
 
           <div className="content-actions">
             <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>切换直连</button>
             <button className="btn" onClick={props.onSwitchGlobal} disabled={props.isOperating}>切换全局</button>
+            <button className="btn" onClick={props.onInstallTUN} disabled={props.isOperating || !props.status.tun_supported}>安装 TUN</button>
+            <button className="btn" onClick={props.onEnableTUN} disabled={props.isOperating || !props.status.tun_supported}>启用 TUN</button>
             <button className="btn" onClick={props.onRestoreDirect} disabled={props.isOperating}>恢复系统代理</button>
           </div>
         </>

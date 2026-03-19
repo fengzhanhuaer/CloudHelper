@@ -133,6 +133,11 @@ export namespace backend {
 	    mux_reconnects: number;
 	    mux_last_recv: string;
 	    mux_last_pong: string;
+	    tun_supported: boolean;
+	    tun_installed: boolean;
+	    tun_enabled: boolean;
+	    tun_library_path: string;
+	    tun_status: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new NetworkAssistantStatus(source);
@@ -154,6 +159,11 @@ export namespace backend {
 	        this.mux_reconnects = source["mux_reconnects"];
 	        this.mux_last_recv = source["mux_last_recv"];
 	        this.mux_last_pong = source["mux_last_pong"];
+	        this.tun_supported = source["tun_supported"];
+	        this.tun_installed = source["tun_installed"];
+	        this.tun_enabled = source["tun_enabled"];
+	        this.tun_library_path = source["tun_library_path"];
+	        this.tun_status = source["tun_status"];
 	    }
 	}
 	export class PrivateKeyStatus {
@@ -254,4 +264,3 @@ export namespace backend {
 	}
 
 }
-

@@ -77,7 +77,7 @@ export type UpgradeProgress = {
   message: string;
 };
 
-export type NetworkAssistantMode = "direct" | "global" | "rule";
+export type NetworkAssistantMode = "direct" | "global" | "tun" | "rule";
 
 export type NetworkAssistantStatus = {
   enabled: boolean;
@@ -94,6 +94,11 @@ export type NetworkAssistantStatus = {
   mux_reconnects?: number;
   mux_last_recv?: string;
   mux_last_pong?: string;
+  tun_supported?: boolean;
+  tun_installed?: boolean;
+  tun_enabled?: boolean;
+  tun_library_path?: string;
+  tun_status?: string;
 };
 
 export type NetworkAssistantLogSource = "manager" | "controller";

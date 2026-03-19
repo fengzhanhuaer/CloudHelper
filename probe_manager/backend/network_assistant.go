@@ -25,6 +25,7 @@ import (
 const (
 	networkModeDirect = "direct"
 	networkModeGlobal = "global"
+	networkModeTUN    = "tun"
 
 	defaultNodeID       = "cloudserver"
 	defaultSocksListen  = "127.0.0.1:10808"
@@ -56,6 +57,11 @@ type NetworkAssistantStatus struct {
 	MuxReconnects     int64    `json:"mux_reconnects"`
 	MuxLastRecv       string   `json:"mux_last_recv"`
 	MuxLastPong       string   `json:"mux_last_pong"`
+	TUNSupported      bool     `json:"tun_supported"`
+	TUNInstalled      bool     `json:"tun_installed"`
+	TUNEnabled        bool     `json:"tun_enabled"`
+	TUNLibraryPath    string   `json:"tun_library_path"`
+	TUNStatus         string   `json:"tun_status"`
 }
 
 type tunnelControlMessage struct {
@@ -123,6 +129,12 @@ type networkAssistantService struct {
 	tunnelMuxClient     *tunnelMuxClient
 	muxReconnects       int64
 
+	tunSupported   bool
+	tunInstalled   bool
+	tunEnabled     bool
+	tunLibraryPath string
+	tunStatus      string
+
 	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
 }
@@ -144,9 +156,15 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunnelStatusMessage: "未启用",
 		systemProxyMessage:  "未设置",
 		tunnelOpenFailures:  0,
+		tunSupported:        false,
+		tunInstalled:        false,
+		tunEnabled:          false,
+		tunLibraryPath:      "",
+		tunStatus:           "未安装",
 		directWhitelist:     directWhitelist,
 		logStore:            logStore,
 	}
+	service.syncTUNInstallState()
 	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
 	return service
 }
@@ -205,6 +223,7 @@ func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) e
 }
 
 func (s *networkAssistantService) Status() NetworkAssistantStatus {
+	s.syncTUNInstallState()
 	s.mu.RLock()
 	muxClient := s.tunnelMuxClient
 	muxReconnects := s.muxReconnects
@@ -219,7 +238,7 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	}
 
 	return NetworkAssistantStatus{
-		Enabled:           s.mode == networkModeGlobal,
+		Enabled:           s.mode == networkModeGlobal || s.mode == networkModeTUN,
 		Mode:              s.mode,
 		NodeID:            s.nodeID,
 		AvailableNodes:    append([]string(nil), s.availableNodes...),
@@ -233,6 +252,11 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 		MuxReconnects:     muxReconnects,
 		MuxLastRecv:       muxLastRecv,
 		MuxLastPong:       muxLastPong,
+		TUNSupported:      s.tunSupported,
+		TUNInstalled:      s.tunInstalled,
+		TUNEnabled:        s.tunEnabled,
+		TUNLibraryPath:    s.tunLibraryPath,
+		TUNStatus:         s.tunStatus,
 	}
 }
 
@@ -240,6 +264,9 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	normalizedMode := strings.ToLower(strings.TrimSpace(mode))
 	if normalizedMode == "" {
 		normalizedMode = networkModeDirect
+	}
+	if normalizedMode == networkModeTUN {
+		return s.EnableTUN()
 	}
 	if normalizedMode != networkModeDirect && normalizedMode != networkModeGlobal {
 		return fmt.Errorf("unsupported mode: %s", mode)
@@ -296,6 +323,8 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.tunnelStatusMessage = "直连模式"
 		s.systemProxyMessage = "已恢复"
 		s.tunnelOpenFailures = 0
+		s.tunEnabled = false
+		s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 		s.mu.Unlock()
 		s.logf("switched mode to direct, node=%s", normalizedNode)
 		return nil
@@ -334,6 +363,8 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	s.tunnelStatusMessage = "隧道待命"
 	s.systemProxyMessage = "已设置"
 	s.tunnelOpenFailures = 0
+	s.tunEnabled = false
+	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 	socksAddr := s.socks5ListenAddr
 	s.mu.Unlock()
 	s.logf("switched mode to global, node=%s, socks5=%s", normalizedNode, socksAddr)
@@ -350,6 +381,8 @@ func (s *networkAssistantService) Shutdown() error {
 	s.tunnelStatusMessage = "直连模式"
 	s.systemProxyMessage = "已恢复为直连"
 	s.tunnelOpenFailures = 0
+	s.tunEnabled = false
+	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 	s.hasAppliedSysProxy = false
 	s.hasProxySnapshot = false
 	s.proxySnapshot = systemProxySnapshot{}

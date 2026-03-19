@@ -34,6 +34,10 @@ export function GetManagerVersion() {
   return window['go']['main']['App']['GetManagerVersion']();
 }
 
+export function EnableNetworkAssistantTUN() {
+  return window['go']['main']['App']['EnableNetworkAssistantTUN']();
+}
+
 export function GetNetworkAssistantLogs(arg1) {
   return window['go']['main']['App']['GetNetworkAssistantLogs'](arg1);
 }
@@ -48,6 +52,10 @@ export function GetProbeNodes() {
 
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
+}
+
+export function InstallNetworkAssistantTUN() {
+  return window['go']['main']['App']['InstallNetworkAssistantTUN']();
 }
 
 export function ReplaceProbeNodes(arg1) {

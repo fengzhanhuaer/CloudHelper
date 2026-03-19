@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { GetNetworkAssistantLogs, GetNetworkAssistantStatus, RestoreNetworkAssistantDirect, SetNetworkAssistantMode, SyncNetworkAssistant } from "../../../../wailsjs/go/main/App";
+import {
+  EnableNetworkAssistantTUN,
+  GetNetworkAssistantLogs,
+  GetNetworkAssistantStatus,
+  InstallNetworkAssistantTUN,
+  RestoreNetworkAssistantDirect,
+  SetNetworkAssistantMode,
+  SyncNetworkAssistant,
+} from "../../../../wailsjs/go/main/App";
 import type {
   NetworkAssistantLogEntry,
   NetworkAssistantLogFilterSource,
@@ -24,6 +32,11 @@ const defaultStatus: NetworkAssistantStatus = {
   mux_reconnects: 0,
   mux_last_recv: "",
   mux_last_pong: "",
+  tun_supported: false,
+  tun_installed: false,
+  tun_enabled: false,
+  tun_library_path: "",
+  tun_status: "未安装",
 };
 
 function normalizeLogSource(raw: string): NetworkAssistantLogSource {
@@ -252,6 +265,46 @@ export function useNetworkAssistant() {
     }
   }, [refreshLogs]);
 
+  const installTUN = useCallback(async () => {
+    setIsOperating(true);
+    try {
+      const data = (await InstallNetworkAssistantTUN()) as NetworkAssistantStatus;
+      setStatus(data);
+      if (data.node_id) {
+        setSelectedNode(data.node_id);
+      }
+      setOperateStatus("TUN 库安装完成");
+      void refreshLogs();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setOperateStatus(`TUN 库安装失败：${msg}`);
+      void refreshLogs();
+      throw error;
+    } finally {
+      setIsOperating(false);
+    }
+  }, [refreshLogs]);
+
+  const enableTUN = useCallback(async () => {
+    setIsOperating(true);
+    try {
+      const data = (await EnableNetworkAssistantTUN()) as NetworkAssistantStatus;
+      setStatus(data);
+      if (data.node_id) {
+        setSelectedNode(data.node_id);
+      }
+      setOperateStatus("TUN 模式已启用");
+      void refreshLogs();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setOperateStatus(`启用 TUN 失败：${msg}`);
+      void refreshLogs();
+      throw error;
+    } finally {
+      setIsOperating(false);
+    }
+  }, [refreshLogs]);
+
   return {
     status,
     selectedNode,
@@ -261,6 +314,8 @@ export function useNetworkAssistant() {
     refreshStatus,
     switchMode,
     restoreDirect,
+    installTUN,
+    enableTUN,
     logLines,
     setLogLines: updateLogLines,
     isLoadingLogs,

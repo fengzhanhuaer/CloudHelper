@@ -18,6 +18,8 @@ export function GetManagerUpgradeProgress():Promise<backend.ManagerUpgradeProgre
 
 export function GetManagerVersion():Promise<string>;
 
+export function EnableNetworkAssistantTUN():Promise<backend.NetworkAssistantStatus>;
+
 export function GetNetworkAssistantLogs(arg1:number):Promise<backend.NetworkAssistantLogResponse>;
 
 export function GetNetworkAssistantStatus():Promise<backend.NetworkAssistantStatus>;
@@ -25,6 +27,8 @@ export function GetNetworkAssistantStatus():Promise<backend.NetworkAssistantStat
 export function GetProbeNodes():Promise<Array<backend.ProbeNode>>;
 
 export function Greet(arg1:string):Promise<string>;
+
+export function InstallNetworkAssistantTUN():Promise<backend.NetworkAssistantStatus>;
 
 export function ReplaceProbeNodes(arg1:Array<backend.ProbeNode>):Promise<Array<backend.ProbeNode>>;
 
