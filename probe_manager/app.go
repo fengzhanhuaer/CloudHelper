@@ -83,6 +83,14 @@ func (a *App) RestoreNetworkAssistantDirect() (NetworkAssistantStatus, error) {
 	return a.inner.RestoreNetworkAssistantDirect()
 }
 
+func (a *App) InstallNetworkAssistantTUN() (NetworkAssistantStatus, error) {
+	return a.inner.InstallNetworkAssistantTUN()
+}
+
+func (a *App) EnableNetworkAssistantTUN() (NetworkAssistantStatus, error) {
+	return a.inner.EnableNetworkAssistantTUN()
+}
+
 func (a *App) GetLatestGitHubRelease(project string) (ReleaseInfo, error) {
 	return a.inner.GetLatestGitHubRelease(project)
 }

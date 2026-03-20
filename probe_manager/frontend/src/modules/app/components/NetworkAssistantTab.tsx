@@ -50,7 +50,7 @@ const categoryLabels: Record<string, string> = {
 };
 
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
-  const [subTab, setSubTab] = useState<"settings" | "status" | "logs">("settings");
+  const [subTab, setSubTab] = useState<"settings" | "driver" | "status" | "logs">("settings");
   const outputRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
@@ -77,6 +77,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
       <div className="subtab-list" style={{ marginBottom: 12 }}>
         <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")}>设置</button>
+        <button className={`subtab-btn ${subTab === "driver" ? "active" : ""}`} onClick={() => setSubTab("driver")}>驱动设置</button>
         <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => setSubTab("status")}>状态</button>
         <button className={`subtab-btn ${subTab === "logs" ? "active" : ""}`} onClick={() => setSubTab("logs")}>日志</button>
       </div>
@@ -114,17 +115,28 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
                 <option key={node} value={node}>{node}</option>
               ))}
             </select>
-            <div style={{ marginTop: 8 }}>TUN 支持：{props.status.tun_supported ? "是" : "否"}</div>
-            <div>TUN 状态：{props.status.tun_status || "未安装"}</div>
-            <div>TUN 库：{props.status.tun_library_path || "-"}</div>
           </div>
 
           <div className="content-actions">
             <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>切换直连</button>
             <button className="btn" onClick={props.onSwitchGlobal} disabled={props.isOperating}>切换全局</button>
+            <button className="btn" onClick={props.onRestoreDirect} disabled={props.isOperating}>恢复系统代理</button>
+          </div>
+        </>
+      ) : subTab === "driver" ? (
+        <>
+          <div className="identity-card">
+            <div>TUN 支持：{props.status.tun_supported ? "是" : "否"}</div>
+            <div>TUN 状态：{props.status.tun_status || "未安装"}</div>
+            <div>TUN 库：{props.status.tun_library_path || "-"}</div>
+            <div>已安装：{props.status.tun_installed ? "是" : "否"}</div>
+            <div>已启用：{props.status.tun_enabled ? "是" : "否"}</div>
+          </div>
+
+          <div className="content-actions">
             <button className="btn" onClick={props.onInstallTUN} disabled={props.isOperating || !props.status.tun_supported}>安装 TUN</button>
             <button className="btn" onClick={props.onEnableTUN} disabled={props.isOperating || !props.status.tun_supported}>启用 TUN</button>
-            <button className="btn" onClick={props.onRestoreDirect} disabled={props.isOperating}>恢复系统代理</button>
+            <button className="btn" onClick={props.onRefreshStatus} disabled={props.isOperating}>刷新状态</button>
           </div>
         </>
       ) : (
