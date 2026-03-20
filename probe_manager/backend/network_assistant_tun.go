@@ -17,6 +17,7 @@ const (
 	tunTempRelativePath    = "temp/Lib/wintun/amd64/wintun.dll"
 	tunAdapterName         = "Maple"
 	tunAdapterDescription  = "Maple Virtual Network Adapter"
+	tunAdapterTunnelType   = "Maple"
 	tunStatusUnsupported   = "仅支持 Windows amd64"
 	tunStatusNotInstalled  = "未安装"
 	tunStatusInstalled     = "已准备(临时)"
@@ -96,7 +97,7 @@ func (s *networkAssistantService) syncTUNInstallState() {
 		return
 	}
 	s.tunEnabled = false
-	if installedByAdapter && !installedByLibrary {
+	if installedByAdapter {
 		s.tunStatus = tunStatusDetected
 		return
 	}
@@ -133,7 +134,7 @@ func listWindowsNetAdapters() ([]windowsNetAdapter, error) {
 	}
 
 	script := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference='Stop'; $adapters = Get-NetAdapter -IncludeHidden | Select-Object -Property Name,InterfaceDescription; if ($null -eq $adapters) { '[]' } else { $adapters | ConvertTo-Json -Compress }"
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -247,22 +248,31 @@ func (s *networkAssistantService) InstallTUN() error {
 		s.setLastError(err)
 		return err
 	}
+	adapterHandle, err := createConfiguredTUNAdapter(path, tunAdapterName, tunAdapterTunnelType)
+	if err != nil {
+		s.setLastError(err)
+		return err
+	}
 
 	s.mu.Lock()
 	s.lastError = ""
 	s.tunSupported = true
 	s.tunInstalled = true
 	s.tunLibraryPath = path
+	if adapterHandle != 0 {
+		s.tunAdapterHandle = adapterHandle
+	}
 	if s.mode == networkModeTUN {
 		s.tunEnabled = true
 		s.tunStatus = tunStatusEnabled
 	} else {
 		s.tunEnabled = false
-		s.tunStatus = tunStatusInstalled
+		s.tunStatus = tunStatusDetected
 	}
 	s.mu.Unlock()
 
 	s.logf("tun library prepared from embed: source=%s target=%s size=%d", tunEmbeddedLibraryPath, path, len(embeddedWintunAMD64))
+	s.logf("tun adapter installed: name=%s description=%s", tunAdapterName, tunAdapterDescription)
 	return nil
 }
 

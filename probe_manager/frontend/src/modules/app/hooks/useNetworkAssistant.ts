@@ -273,11 +273,11 @@ export function useNetworkAssistant() {
       if (data.node_id) {
         setSelectedNode(data.node_id);
       }
-      setOperateStatus("TUN 库安装完成");
+      setOperateStatus("TUN 安装完成");
       void refreshLogs();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setOperateStatus(`TUN 库安装失败：${msg}`);
+      setOperateStatus(`TUN 安装失败：${msg}`);
       void refreshLogs();
       throw error;
     } finally {

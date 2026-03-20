@@ -129,11 +129,12 @@ type networkAssistantService struct {
 	tunnelMuxClient     *tunnelMuxClient
 	muxReconnects       int64
 
-	tunSupported   bool
-	tunInstalled   bool
-	tunEnabled     bool
-	tunLibraryPath string
-	tunStatus      string
+	tunSupported     bool
+	tunInstalled     bool
+	tunEnabled       bool
+	tunLibraryPath   string
+	tunStatus        string
+	tunAdapterHandle uintptr
 
 	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
@@ -377,16 +378,29 @@ func (s *networkAssistantService) Shutdown() error {
 	errDirect := applyDirectSystemProxy()
 
 	s.mu.Lock()
+	tunAdapterHandle := s.tunAdapterHandle
+	tunLibraryPath := s.tunLibraryPath
 	s.mode = networkModeDirect
 	s.tunnelStatusMessage = "直连模式"
 	s.systemProxyMessage = "已恢复为直连"
 	s.tunnelOpenFailures = 0
 	s.tunEnabled = false
 	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
+	s.tunAdapterHandle = 0
 	s.hasAppliedSysProxy = false
 	s.hasProxySnapshot = false
 	s.proxySnapshot = systemProxySnapshot{}
 	s.mu.Unlock()
+
+	var errCloseAdapter error
+	if tunAdapterHandle != 0 {
+		errCloseAdapter = closeConfiguredTUNAdapter(tunLibraryPath, tunAdapterHandle)
+		if errCloseAdapter == nil {
+			s.logf("released tun adapter handle during shutdown")
+		} else {
+			s.logf("failed to release tun adapter handle during shutdown: %v", errCloseAdapter)
+		}
+	}
 
 	if errDirect == nil {
 		s.logf("forced direct system proxy during shutdown")
@@ -396,7 +410,7 @@ func (s *networkAssistantService) Shutdown() error {
 	if errStop != nil {
 		s.logf("shutdown cleanup returned error: %v", errStop)
 	}
-	return errors.Join(errStop, errDirect)
+	return errors.Join(errStop, errDirect, errCloseAdapter)
 }
 
 func (s *networkAssistantService) ensureSocksServer() error {
