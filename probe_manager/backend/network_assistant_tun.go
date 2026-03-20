@@ -3,23 +3,34 @@ package backend
 import (
 	"bytes"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const (
 	tunEmbeddedLibraryPath = "embedded://wintun/amd64/wintun.dll"
 	tunTempRelativePath    = "temp/Lib/wintun/amd64/wintun.dll"
+	tunAdapterName         = "Maple"
+	tunAdapterDescription  = "Maple Virtual Network Adapter"
 	tunStatusUnsupported   = "仅支持 Windows amd64"
 	tunStatusNotInstalled  = "未安装"
 	tunStatusInstalled     = "已准备(临时)"
+	tunStatusDetected      = "已安装(检测到网卡)"
 	tunStatusEnabled       = "已启用"
 )
 
 //go:embed lib/wintun/amd64/wintun.dll
 var embeddedWintunAMD64 []byte
+
+type windowsNetAdapter struct {
+	Name                 string `json:"Name"`
+	InterfaceDescription string `json:"InterfaceDescription"`
+}
 
 func (a *App) InstallNetworkAssistantTUN() (NetworkAssistantStatus, error) {
 	if a.networkAssistant == nil {
@@ -42,16 +53,23 @@ func (a *App) EnableNetworkAssistantTUN() (NetworkAssistantStatus, error) {
 }
 
 func (s *networkAssistantService) syncTUNInstallState() {
-	installed := false
+	installedByLibrary := false
+	installedByAdapter := false
 	path := ""
 	if validateEmbeddedWintunDLL() == nil {
 		if p, err := resolveTUNLibraryTempPath(); err == nil {
 			path = p
 			if info, statErr := os.Stat(p); statErr == nil && !info.IsDir() && info.Size() > 0 {
-				installed = true
+				installedByLibrary = true
 			}
 		}
 	}
+	if isTUNSupported() {
+		if exists, err := detectConfiguredTUNAdapter(); err == nil {
+			installedByAdapter = exists
+		}
+	}
+	installed := installedByLibrary || installedByAdapter
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,6 +96,10 @@ func (s *networkAssistantService) syncTUNInstallState() {
 		return
 	}
 	s.tunEnabled = false
+	if installedByAdapter && !installedByLibrary {
+		s.tunStatus = tunStatusDetected
+		return
+	}
 	s.tunStatus = tunStatusAfterDisable(true, installed)
 }
 
@@ -105,6 +127,59 @@ func validateEmbeddedWintunDLL() error {
 	return nil
 }
 
+func listWindowsNetAdapters() ([]windowsNetAdapter, error) {
+	if runtime.GOOS != "windows" {
+		return []windowsNetAdapter{}, nil
+	}
+
+	script := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference='Stop'; $adapters = Get-NetAdapter -IncludeHidden | Select-Object -Property Name,InterfaceDescription; if ($null -eq $adapters) { '[]' } else { $adapters | ConvertTo-Json -Compress }"
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	payload := strings.TrimSpace(string(output))
+	if payload == "" || strings.EqualFold(payload, "null") {
+		return []windowsNetAdapter{}, nil
+	}
+
+	adapters := make([]windowsNetAdapter, 0)
+	if err := json.Unmarshal([]byte(payload), &adapters); err == nil {
+		return adapters, nil
+	}
+
+	var single windowsNetAdapter
+	if err := json.Unmarshal([]byte(payload), &single); err == nil {
+		return []windowsNetAdapter{single}, nil
+	}
+
+	return nil, errors.New("failed to parse Get-NetAdapter output")
+}
+
+func detectConfiguredTUNAdapter() (bool, error) {
+	if runtime.GOOS != "windows" {
+		return false, nil
+	}
+
+	adapters, err := listWindowsNetAdapters()
+	if err != nil {
+		return false, err
+	}
+
+	for _, adapter := range adapters {
+		name := strings.TrimSpace(adapter.Name)
+		desc := strings.TrimSpace(adapter.InterfaceDescription)
+		if strings.EqualFold(name, tunAdapterName) {
+			return true, nil
+		}
+		if strings.EqualFold(desc, tunAdapterDescription) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func resolveTUNLibraryTempPath() (string, error) {
 	candidates := make([]string, 0, 2)
 	if exePath, err := os.Executable(); err == nil && exePath != "" {
@@ -130,6 +205,31 @@ func (s *networkAssistantService) InstallTUN() error {
 		s.syncTUNInstallState()
 		return err
 	}
+
+	if exists, err := detectConfiguredTUNAdapter(); err == nil && exists {
+		path := ""
+		if p, pathErr := resolveTUNLibraryTempPath(); pathErr == nil {
+			path = p
+		}
+
+		s.mu.Lock()
+		s.lastError = ""
+		s.tunSupported = true
+		s.tunInstalled = true
+		s.tunLibraryPath = path
+		if s.mode == networkModeTUN {
+			s.tunEnabled = true
+			s.tunStatus = tunStatusEnabled
+		} else {
+			s.tunEnabled = false
+			s.tunStatus = tunStatusDetected
+		}
+		s.mu.Unlock()
+
+		s.logf("tun adapter already exists, skip install: name=%s description=%s", tunAdapterName, tunAdapterDescription)
+		return nil
+	}
+
 	if err := validateEmbeddedWintunDLL(); err != nil {
 		s.setLastError(err)
 		return err
