@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { TestProbeLink } from "../../../../wailsjs/go/main/App";
 import {
+  fetchProbeNodeStatus,
   fetchProbeNodes,
   startProbeLinkTestOnController,
   stopProbeLinkTestOnController,
+  type ProbeNodeStatusItem,
   type ProbeNodeSyncItem,
 } from "../services/controller-api";
 
@@ -32,6 +34,7 @@ const defaultInternalPort = 16031;
 export function LinkManageTab(props: LinkManageTabProps) {
   const [subTab, setSubTab] = useState<"test">("test");
   const [nodes, setNodes] = useState<ProbeNodeSyncItem[]>([]);
+  const [nodeRuntimes, setNodeRuntimes] = useState<Record<number, ProbeNodeStatusItem["runtime"]>>({});
   const [selectedNodeID, setSelectedNodeID] = useState("");
   const [protocol, setProtocol] = useState<ProbeLinkTestProtocol>("tcp");
   const [internalPort, setInternalPort] = useState(defaultInternalPort);
@@ -56,16 +59,41 @@ export function LinkManageTab(props: LinkManageTabProps) {
     () => nodes.find((item) => String(item.node_no) === selectedNodeID),
     [nodes, selectedNodeID],
   );
-  const apiDomain = useMemo(() => resolveNodeAPIDomain(selectedNode), [selectedNode]);
+  const selectedRuntime = useMemo(() => {
+    if (!selectedNode) {
+      return undefined;
+    }
+    return nodeRuntimes[selectedNode.node_no];
+  }, [nodeRuntimes, selectedNode]);
+  const testTarget = useMemo(() => resolveNodeTestTarget(selectedNode, selectedRuntime), [selectedNode, selectedRuntime]);
+
+  useEffect(() => {
+    if (!selectedNode) {
+      return;
+    }
+    const preferredPort = normalizePort(Number(selectedNode.public_port || selectedNode.service_port || 0));
+    if (preferredPort > 0) {
+      setExternalPort(preferredPort);
+    }
+  }, [selectedNodeID]);
 
   async function loadNodes() {
     setIsLoadingNodes(true);
     try {
-      const data = await fetchProbeNodes(props.controllerBaseUrl, props.sessionToken);
+      const [data, statusItems] = await Promise.all([
+        fetchProbeNodes(props.controllerBaseUrl, props.sessionToken),
+        fetchProbeNodeStatus(props.controllerBaseUrl, props.sessionToken),
+      ]);
       const sorted = [...data].sort((left, right) => left.node_no - right.node_no);
+      const runtimeMap: Record<number, ProbeNodeStatusItem["runtime"]> = {};
+      for (const item of statusItems) {
+        runtimeMap[item.node_no] = item.runtime;
+      }
       setNodes(sorted);
+      setNodeRuntimes(runtimeMap);
       if (!sorted.length) {
         setSelectedNodeID("");
+        setNodeRuntimes({});
         setStatus("暂无探针，请先在探针管理中创建节点");
         return;
       }
@@ -94,8 +122,8 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setStatus("请选择探针");
       return;
     }
-    if (!apiDomain) {
-      setStatus("未找到探针 API 域名，请先在探针管理里配置公网地址或 DDNS（建议以 api. 开头）");
+    if (!testTarget.host) {
+      setStatus("未找到可用域名，请先在探针管理里配置公网地址或 DDNS");
       return;
     }
 
@@ -117,9 +145,13 @@ export function LinkManageTab(props: LinkManageTabProps) {
         internal_port: safeInternalPort,
       });
       const startMessage = startResp.message || "探针已启动测试服务";
-      setStatus(`${startMessage}，正在连接 ${apiDomain}:${safeExternalPort} ...`);
+      if (testTarget.isAPI) {
+        setStatus(`${startMessage}，正在连接 ${testTarget.host}:${safeExternalPort} ...`);
+      } else {
+        setStatus(`${startMessage}，未找到 api.* 域名，已回退使用 ${testTarget.host}:${safeExternalPort} ...`);
+      }
 
-      const result = (await TestProbeLink(nodeID, protocol, protocol, apiDomain, safeExternalPort)) as ProbeLinkConnectResult;
+      const result = (await TestProbeLink(nodeID, protocol, protocol, testTarget.host, safeExternalPort)) as ProbeLinkConnectResult;
       const latency = typeof result.duration_ms === "number" ? result.duration_ms : null;
       setLatencyMS(latency);
       setResultSummary(buildResultSummary(result));
@@ -232,7 +264,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
           </div>
 
           <div className="status">{status}</div>
-          <div className="status">API 域名：{apiDomain || "-"}</div>
+          <div className="status">测试目标：{testTarget.host || "-"} {testTarget.host ? `(${testTarget.source})` : ""}</div>
           <div className="status">链路延迟：{latencyMS === null ? "-" : `${latencyMS} ms`}</div>
           <div className="status">{resultSummary || "暂无测试结果详情"}</div>
         </>
@@ -252,20 +284,40 @@ function normalizePort(value: number): number {
   return port;
 }
 
-function resolveNodeAPIDomain(node?: ProbeNodeSyncItem): string {
+function resolveNodeTestTarget(
+  node?: ProbeNodeSyncItem,
+  runtime?: ProbeNodeStatusItem["runtime"],
+): { host: string; isAPI: boolean; source: string } {
   if (!node) {
-    return "";
+    return { host: "", isAPI: false, source: "" };
   }
-  const candidates = [
-    normalizeHost(node.public_host),
-    normalizeHost(node.ddns),
-    normalizeHost(node.service_host),
-  ].filter((item) => item !== "");
-  if (!candidates.length) {
-    return "";
+  const namedCandidates = [
+    { host: normalizeHost(node.public_host), source: "public_host" },
+    { host: normalizeHost(node.ddns), source: "ddns" },
+    { host: normalizeHost(node.service_host), source: "service_host" },
+  ].filter((item) => item.host !== "");
+
+  const apiFirst = namedCandidates.find((item) => item.host.toLowerCase().startsWith("api."));
+  if (apiFirst) {
+    return { host: apiFirst.host, isAPI: true, source: apiFirst.source };
   }
-  const apiFirst = candidates.find((item) => item.toLowerCase().startsWith("api."));
-  return apiFirst || "";
+
+  if (namedCandidates.length > 0) {
+    const first = namedCandidates[0];
+    return { host: first.host, isAPI: false, source: first.source };
+  }
+
+  const runtimeIPv4 = (runtime?.ipv4 || []).map((item) => String(item).trim()).filter((item) => item !== "");
+  if (runtimeIPv4.length > 0) {
+    return { host: runtimeIPv4[0], isAPI: false, source: "runtime_ipv4" };
+  }
+
+  const runtimeIPv6 = (runtime?.ipv6 || []).map((item) => String(item).trim()).filter((item) => item !== "");
+  if (runtimeIPv6.length > 0) {
+    return { host: runtimeIPv6[0], isAPI: false, source: "runtime_ipv6" };
+  }
+
+  return { host: "", isAPI: false, source: "" };
 }
 
 function normalizeHost(raw: unknown): string {
