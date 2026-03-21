@@ -114,8 +114,8 @@ type cloudflareDNSRecord struct {
 }
 
 type cloudflareDNSRecordListResponse struct {
-	Success bool `json:"success"`
-	Result  []cloudflareDNSRecord `json:"result"`
+	Success    bool                  `json:"success"`
+	Result     []cloudflareDNSRecord `json:"result"`
 	ResultInfo struct {
 		Page       int `json:"page"`
 		TotalPages int `json:"total_pages"`
@@ -123,7 +123,7 @@ type cloudflareDNSRecordListResponse struct {
 }
 
 type cloudflareDNSRecordWriteResponse struct {
-	Success bool `json:"success"`
+	Success bool                `json:"success"`
 	Result  cloudflareDNSRecord `json:"result"`
 }
 
@@ -1057,7 +1057,16 @@ func cloudflareGetDNSRecordByID(token, zoneID, recordID string) (struct {
 }
 
 func cloudflareCreateDNSRecord(token, zoneID, recordName, recordType, contentIP string) (string, error) {
-	payload := map[string]interface{}{"type": normalizeCloudflareRecordType(recordType), "name": strings.TrimSpace(strings.ToLower(recordName)), "content": strings.TrimSpace(contentIP), "ttl": 60, "proxied": false}
+	payload := map[string]interface{}{
+		"type":    normalizeCloudflareRecordType(recordType),
+		"name":    strings.TrimSpace(strings.ToLower(recordName)),
+		"content": strings.TrimSpace(contentIP),
+		"ttl":     60,
+	}
+	recordType = normalizeCloudflareRecordType(recordType)
+	if recordType == "A" || recordType == "AAAA" || recordType == "CNAME" {
+		payload["proxied"] = false
+	}
 	body, _ := json.Marshal(payload)
 	u := "https://api.cloudflare.com/client/v4/zones/" + url.PathEscape(zoneID) + "/dns_records"
 	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
@@ -1089,7 +1098,16 @@ func cloudflareCreateDNSRecord(token, zoneID, recordName, recordType, contentIP 
 }
 
 func cloudflareUpdateDNSRecord(token, zoneID, recordID, recordName, recordType, contentIP string) error {
-	payload := map[string]interface{}{"type": normalizeCloudflareRecordType(recordType), "name": strings.TrimSpace(strings.ToLower(recordName)), "content": strings.TrimSpace(contentIP), "ttl": 60, "proxied": false}
+	payload := map[string]interface{}{
+		"type":    normalizeCloudflareRecordType(recordType),
+		"name":    strings.TrimSpace(strings.ToLower(recordName)),
+		"content": strings.TrimSpace(contentIP),
+		"ttl":     60,
+	}
+	recordType = normalizeCloudflareRecordType(recordType)
+	if recordType == "A" || recordType == "AAAA" || recordType == "CNAME" {
+		payload["proxied"] = false
+	}
 	body, _ := json.Marshal(payload)
 	u := "https://api.cloudflare.com/client/v4/zones/" + url.PathEscape(zoneID) + "/dns_records/" + url.PathEscape(recordID)
 	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(body))
@@ -1179,6 +1197,12 @@ func normalizeCloudflareRecordType(raw string) string {
 	value := strings.TrimSpace(strings.ToUpper(raw))
 	if value == "AAAA" {
 		return "AAAA"
+	}
+	if value == "TXT" {
+		return "TXT"
+	}
+	if value == "CNAME" {
+		return "CNAME"
 	}
 	return "A"
 }

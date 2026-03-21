@@ -388,6 +388,86 @@ func TestNetworkTunnelWSRouteConnectSuccess(t *testing.T) {
 	}
 }
 
+func TestProbeCertificateRouteMethodNotAllowed(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/probe/certificate", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected POST /api/probe/certificate to return 405, got %d", rr.Code)
+	}
+}
+
+func TestProbeCertificateRouteRequiresHTTPS(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/certificate", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUpgradeRequired {
+		t.Fatalf("expected /api/probe/certificate without https marker to return 426, got %d", rr.Code)
+	}
+}
+
+func TestProbeCertificateRouteRequiresProbeAuth(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/certificate", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected /api/probe/certificate without probe auth to return 401, got %d", rr.Code)
+	}
+}
+
+func TestProbeLinkConfigRouteMethodNotAllowed(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/probe/link/config", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected POST /api/probe/link/config to return 405, got %d", rr.Code)
+	}
+}
+
+func TestProbeLinkConfigRouteRequiresHTTPS(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/link/config", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUpgradeRequired {
+		t.Fatalf("expected /api/probe/link/config without https marker to return 426, got %d", rr.Code)
+	}
+}
+
+func TestProbeLinkConfigRouteRequiresProbeAuth(t *testing.T) {
+	authManager := newTestAuthManager(t)
+	core.SetAuthManagerForTest(authManager)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/link/config", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected /api/probe/link/config without probe auth to return 401, got %d", rr.Code)
+	}
+}
+
 type testWebSocketNetConn struct {
 	ws *websocket.Conn
 

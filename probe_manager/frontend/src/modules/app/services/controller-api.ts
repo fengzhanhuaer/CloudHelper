@@ -169,6 +169,12 @@ export type ProbeNodeSyncItem = {
   node_secret: string;
   target_system: "linux" | "windows";
   direct_connect: boolean;
+  service_scheme?: "http" | "https";
+  service_host?: string;
+  service_port?: number;
+  public_scheme?: "http" | "https";
+  public_host?: string;
+  public_port?: number;
   payment_cycle?: string;
   cost?: string;
   expire_at?: string;
@@ -257,6 +263,26 @@ export async function updateProbeNodeOnController(
   },
 ): Promise<ProbeNodeSyncItem> {
   const result = await callAdminWSRpc<{ node?: ProbeNodeSyncItem }>(baseURL, token, "admin.probe.node.update", payload);
+  if (!result.node) {
+    throw new Error("controller returned empty node");
+  }
+  return result.node;
+}
+
+export async function updateProbeNodeLinkOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_no: number;
+    service_scheme: "http" | "https";
+    service_host: string;
+    service_port: number;
+    public_scheme: "http" | "https";
+    public_host: string;
+    public_port: number;
+  },
+): Promise<ProbeNodeSyncItem> {
+  const result = await callAdminWSRpc<{ node?: ProbeNodeSyncItem }>(baseURL, token, "admin.probe.link.update", payload);
   if (!result.node) {
     throw new Error("controller returned empty node");
   }

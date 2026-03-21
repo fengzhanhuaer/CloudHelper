@@ -29,6 +29,12 @@ type probeNodeRecord struct {
 	NodeSecret    string `json:"node_secret"`
 	TargetSystem  string `json:"target_system"`
 	DirectConnect bool   `json:"direct_connect"`
+	ServiceScheme string `json:"service_scheme"`
+	ServiceHost   string `json:"service_host"`
+	ServicePort   int    `json:"service_port"`
+	PublicScheme  string `json:"public_scheme"`
+	PublicHost    string `json:"public_host"`
+	PublicPort    int    `json:"public_port"`
 	PaymentCycle  string `json:"payment_cycle"`
 	Cost          string `json:"cost"`
 	ExpireAt      string `json:"expire_at"`
@@ -64,6 +70,16 @@ type probeNodeUpdateRequest struct {
 	ExpireAt      string `json:"expire_at"`
 	VendorName    string `json:"vendor_name"`
 	VendorURL     string `json:"vendor_url"`
+}
+
+type probeNodeLinkUpdateRequest struct {
+	NodeNo        int    `json:"node_no"`
+	ServiceScheme string `json:"service_scheme"`
+	ServiceHost   string `json:"service_host"`
+	ServicePort   int    `json:"service_port"`
+	PublicScheme  string `json:"public_scheme"`
+	PublicHost    string `json:"public_host"`
+	PublicPort    int    `json:"public_port"`
 }
 
 func AdminUpsertProbeSecretHandler(w http.ResponseWriter, r *http.Request) {
@@ -314,6 +330,12 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		if node.TargetSystem != "windows" {
 			node.TargetSystem = "linux"
 		}
+		node.ServiceScheme = normalizeProbeEndpointScheme(node.ServiceScheme)
+		node.ServiceHost = strings.TrimSpace(node.ServiceHost)
+		node.ServicePort = normalizeProbeServicePort(node.ServicePort)
+		node.PublicScheme = normalizeProbeEndpointScheme(node.PublicScheme)
+		node.PublicHost = strings.TrimSpace(node.PublicHost)
+		node.PublicPort = normalizeProbePublicPort(node.PublicPort)
 		node.PaymentCycle = strings.TrimSpace(node.PaymentCycle)
 		node.Cost = strings.TrimSpace(node.Cost)
 		node.ExpireAt = strings.TrimSpace(node.ExpireAt)
@@ -382,6 +404,12 @@ func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
 		NodeSecret:    randomProbeNodeSecret(32),
 		TargetSystem:  "linux",
 		DirectConnect: true,
+		ServiceScheme: "http",
+		ServiceHost:   "",
+		ServicePort:   16030,
+		PublicScheme:  "http",
+		PublicHost:    "",
+		PublicPort:    0,
 		PaymentCycle:  "",
 		Cost:          "",
 		ExpireAt:      "",
@@ -462,6 +490,80 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 		}
 	}
 	return probeNodeRecord{}, fmt.Errorf("node %d not found after update", req.NodeNo)
+}
+
+func updateProbeNodeLinkLocked(req probeNodeLinkUpdateRequest) (probeNodeRecord, error) {
+	if req.NodeNo <= 0 {
+		return probeNodeRecord{}, fmt.Errorf("invalid node number")
+	}
+
+	nodes := loadProbeNodesLocked()
+	found := -1
+	for i := range nodes {
+		if nodes[i].NodeNo == req.NodeNo {
+			found = i
+			break
+		}
+	}
+	if found < 0 {
+		return probeNodeRecord{}, fmt.Errorf("node %d not found", req.NodeNo)
+	}
+
+	nodes[found].ServiceScheme = normalizeProbeEndpointScheme(req.ServiceScheme)
+	nodes[found].ServiceHost = strings.TrimSpace(req.ServiceHost)
+	nodes[found].ServicePort = normalizeProbeServicePort(req.ServicePort)
+	nodes[found].PublicScheme = normalizeProbeEndpointScheme(req.PublicScheme)
+	nodes[found].PublicHost = strings.TrimSpace(req.PublicHost)
+	nodes[found].PublicPort = normalizeProbePublicPort(req.PublicPort)
+	nodes[found].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if strings.TrimSpace(nodes[found].CreatedAt) == "" {
+		nodes[found].CreatedAt = nodes[found].UpdatedAt
+	}
+	if strings.TrimSpace(nodes[found].NodeSecret) == "" {
+		nodes[found].NodeSecret = randomProbeNodeSecret(32)
+	}
+
+	normalized, secrets := normalizeProbeNodes(nodes)
+	ProbeStore.data.ProbeNodes = normalized
+	ProbeStore.data.ProbeSecrets = secrets
+
+	for _, item := range normalized {
+		if item.NodeNo == req.NodeNo {
+			return item, nil
+		}
+	}
+	return probeNodeRecord{}, fmt.Errorf("node %d not found after link update", req.NodeNo)
+}
+
+func normalizeProbeEndpointScheme(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "https":
+		return "https"
+	case "tcp":
+		return "tcp"
+	case "http3", "h3":
+		return "http3"
+	case "websocket", "ws", "wss":
+		return "websocket"
+	case "http":
+		return "http"
+	}
+	return "http"
+}
+
+func normalizeProbeServicePort(port int) int {
+	if port <= 0 || port > 65535 {
+		return 16030
+	}
+	return port
+}
+
+func normalizeProbePublicPort(port int) int {
+	if port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
 }
 
 func randomProbeNodeSecret(length int) string {

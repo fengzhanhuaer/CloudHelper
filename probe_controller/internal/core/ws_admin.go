@@ -335,6 +335,21 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			return nil, err
 		}
 		return map[string]interface{}{"node": node}, nil
+	case "admin.probe.link.update":
+		var req probeNodeLinkUpdateRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		ProbeStore.mu.Lock()
+		node, err := updateProbeNodeLinkLocked(req)
+		ProbeStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeStore.Save(); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"node": node}, nil
 	case "admin.probe.status.get":
 		var req struct {
 			NodeID string `json:"node_id"`

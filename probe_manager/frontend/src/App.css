@@ -543,6 +543,54 @@
     background: rgba(9, 16, 27, 0.96);
 }
 
+.link-node-card {
+    margin-top: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(8, 12, 20, 0.38);
+    border-radius: 12px;
+    padding: 14px;
+}
+
+.link-node-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.link-node-title {
+    color: #ffffff;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+.link-node-meta {
+    margin-top: 4px;
+    color: #c7dcff;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.link-node-grid {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 14px;
+}
+
+.link-endpoint-panel {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 12px;
+}
+
+.link-endpoint-title {
+    margin-bottom: 10px;
+    color: #f2f7ff;
+    font-weight: 700;
+}
+
 @media (max-width: 900px) {
     .app-shell {
         grid-template-columns: 1fr;

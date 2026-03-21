@@ -21,6 +21,7 @@ type ReleaseInfo = backend.ReleaseInfo
 type ManagerUpgradeResult = backend.ManagerUpgradeResult
 type ManagerUpgradeProgress = backend.ManagerUpgradeProgress
 type ProbeNode = backend.ProbeNode
+type ProbeLinkConnectResult = backend.ProbeLinkConnectResult
 
 func NewApp() *App {
 	backend.BuildVersion = BuildVersion
@@ -151,4 +152,8 @@ func (a *App) UpdateProbeNodeSettings(
 
 func (a *App) ReplaceProbeNodes(nodes []ProbeNode) ([]ProbeNode, error) {
 	return a.inner.ReplaceProbeNodes(nodes)
+}
+
+func (a *App) TestProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLinkConnectResult, error) {
+	return a.inner.TestProbeLink(nodeID, endpointType, scheme, host, port)
 }

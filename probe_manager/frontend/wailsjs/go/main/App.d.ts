@@ -42,6 +42,8 @@ export function SignNonceWithLocalKey(arg1:string):Promise<string>;
 
 export function SyncNetworkAssistant(arg1:string,arg2:string):Promise<backend.NetworkAssistantStatus>;
 
+export function TestProbeLink(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<backend.ProbeLinkConnectResult>;
+
 export function UpdateProbeNode(arg1:number,arg2:string,arg3:boolean):Promise<backend.ProbeNode>;
 
 export function UpgradeManagerDirect(arg1:string):Promise<backend.ManagerUpgradeResult>;

@@ -206,6 +206,36 @@ export namespace backend {
 	        this.updated_at = source["updated_at"];
 	    }
 	}
+	export class ProbeLinkConnectResult {
+	    ok: boolean;
+	    node_id: string;
+	    endpoint_type: string;
+	    url: string;
+	    status_code: number;
+	    service: string;
+	    version: string;
+	    message: string;
+	    connected_at: string;
+	    duration_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeLinkConnectResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.node_id = source["node_id"];
+	        this.endpoint_type = source["endpoint_type"];
+	        this.url = source["url"];
+	        this.status_code = source["status_code"];
+	        this.service = source["service"];
+	        this.version = source["version"];
+	        this.message = source["message"];
+	        this.connected_at = source["connected_at"];
+	        this.duration_ms = source["duration_ms"];
+	    }
+	}
 	export class ReleaseAsset {
 	    name: string;
 	    size: number;

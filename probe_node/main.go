@@ -124,11 +124,11 @@ func parseProbeLaunchOptions() probeLaunchOptions {
 }
 
 func runProbeNode(options probeLaunchOptions) error {
-	listenAddr := firstNonEmpty(strings.TrimSpace(options.ListenAddr), os.Getenv("PROBE_NODE_LISTEN"), ":16030")
 	identity, err := resolveNodeIdentity(strings.TrimSpace(options.NodeID), strings.TrimSpace(options.NodeSecret))
 	if err != nil {
 		return fmt.Errorf("failed to load node identity: %w", err)
 	}
+	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -159,23 +159,15 @@ func runProbeNode(options probeLaunchOptions) error {
 		})
 	})
 
-	server := &http.Server{
-		Addr:              listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
 		go startProbeReporter(wsURL, identity)
 	} else {
 		log.Printf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
+	startProbeServiceRuntimeLoop(mux, identity, controllerBaseURL)
 
-	log.Printf("probe node started: node_id=%s listen=%s version=%s", identity.NodeID, listenAddr, BuildVersion)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
-	}
-	return nil
+	log.Printf("probe node started: node_id=%s version=%s service_mode=link-config-driven", identity.NodeID, BuildVersion)
+	select {}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

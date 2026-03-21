@@ -1,8 +1,8 @@
 import { CloudflareAssistantTab } from "./CloudflareAssistantTab";
+import { LinkManageTab } from "./LinkManageTab";
 import { LogViewerTab } from "./LogViewerTab";
 import { NetworkAssistantTab } from "./NetworkAssistantTab";
 import { OverviewTab } from "./OverviewTab";
-import { PlaceholderTab } from "./PlaceholderTab";
 import { ProbeManageTab } from "./ProbeManageTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
 import { TGAssistantTab } from "./TGAssistantTab";
@@ -120,7 +120,7 @@ export function TabContent(props: TabContentProps) {
     case "probe-manage":
       return <ProbeManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
     case "link-manage":
-      return <PlaceholderTab title="链路管理" description="该页面将用于展示链路拓扑、探测任务与阈值配置。" />;
+      return <LinkManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
     case "network-assistant":
       return (
         <NetworkAssistantTab
