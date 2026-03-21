@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { TestProbeLink } from "../../../../wailsjs/go/main/App";
 import {
+  fetchCloudflareDDNSRecords,
   fetchProbeNodeStatus,
   fetchProbeNodes,
   startProbeLinkTestOnController,
@@ -8,6 +9,7 @@ import {
   type ProbeNodeStatusItem,
   type ProbeNodeSyncItem,
 } from "../services/controller-api";
+import type { CloudflareDDNSRecord } from "../types";
 
 type LinkManageTabProps = {
   controllerBaseUrl: string;
@@ -35,6 +37,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const [subTab, setSubTab] = useState<"test">("test");
   const [nodes, setNodes] = useState<ProbeNodeSyncItem[]>([]);
   const [nodeRuntimes, setNodeRuntimes] = useState<Record<number, ProbeNodeStatusItem["runtime"]>>({});
+  const [nodeAPIHosts, setNodeAPIHosts] = useState<Record<number, string>>({});
   const [selectedNodeID, setSelectedNodeID] = useState("");
   const [protocol, setProtocol] = useState<ProbeLinkTestProtocol>("tcp");
   const [internalPort, setInternalPort] = useState(defaultInternalPort);
@@ -65,16 +68,25 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
     return nodeRuntimes[selectedNode.node_no];
   }, [nodeRuntimes, selectedNode]);
-  const testTarget = useMemo(() => resolveNodeTestTarget(selectedNode, selectedRuntime), [selectedNode, selectedRuntime]);
+  const selectedAPIHost = useMemo(() => {
+    if (!selectedNode) {
+      return "";
+    }
+    return nodeAPIHosts[selectedNode.node_no] || "";
+  }, [nodeAPIHosts, selectedNode]);
+  const testTarget = useMemo(
+    () => resolveNodeTestTarget(selectedNode, selectedRuntime, selectedAPIHost),
+    [selectedAPIHost, selectedNode, selectedRuntime],
+  );
 
   useEffect(() => {
     if (!selectedNode) {
       return;
     }
     const preferredPort = normalizePort(Number(selectedNode.public_port || selectedNode.service_port || 0));
-    if (preferredPort > 0) {
-      setExternalPort(preferredPort);
-    }
+    const portToUse = preferredPort > 0 ? preferredPort : defaultInternalPort;
+    setInternalPort(portToUse);
+    setExternalPort(portToUse);
   }, [selectedNodeID]);
 
   async function loadNodes() {
@@ -84,6 +96,13 @@ export function LinkManageTab(props: LinkManageTabProps) {
         fetchProbeNodes(props.controllerBaseUrl, props.sessionToken),
         fetchProbeNodeStatus(props.controllerBaseUrl, props.sessionToken),
       ]);
+      let cloudflareAPIHosts: Record<number, string> = {};
+      try {
+        const ddnsRecords = await fetchCloudflareDDNSRecords(props.controllerBaseUrl, props.sessionToken);
+        cloudflareAPIHosts = buildNodeAPIHostsFromCloudflare(ddnsRecords);
+      } catch {
+        // ignore cloudflare record fetch failure and fallback to probe node fields/runtime ip
+      }
       const sorted = [...data].sort((left, right) => left.node_no - right.node_no);
       const runtimeMap: Record<number, ProbeNodeStatusItem["runtime"]> = {};
       for (const item of statusItems) {
@@ -91,9 +110,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
       }
       setNodes(sorted);
       setNodeRuntimes(runtimeMap);
+      setNodeAPIHosts(cloudflareAPIHosts);
       if (!sorted.length) {
         setSelectedNodeID("");
         setNodeRuntimes({});
+        setNodeAPIHosts({});
         setStatus("暂无探针，请先在探针管理中创建节点");
         return;
       }
@@ -123,7 +144,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       return;
     }
     if (!testTarget.host) {
-      setStatus("未找到可用域名，请先在探针管理里配置公网地址或 DDNS");
+      setStatus("未找到可用测试地址，请先在探针管理里配置公网地址，或确认 Cloudflare 已生成 api 域名");
       return;
     }
 
@@ -145,11 +166,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         internal_port: safeInternalPort,
       });
       const startMessage = startResp.message || "探针已启动测试服务";
-      if (testTarget.isAPI) {
-        setStatus(`${startMessage}，正在连接 ${testTarget.host}:${safeExternalPort} ...`);
-      } else {
-        setStatus(`${startMessage}，未找到 api.* 域名，已回退使用 ${testTarget.host}:${safeExternalPort} ...`);
-      }
+      setStatus(`${startMessage}，正在连接 ${testTarget.host}:${safeExternalPort} ...`);
 
       const result = (await TestProbeLink(nodeID, protocol, protocol, testTarget.host, safeExternalPort)) as ProbeLinkConnectResult;
       const latency = typeof result.duration_ms === "number" ? result.duration_ms : null;
@@ -287,19 +304,30 @@ function normalizePort(value: number): number {
 function resolveNodeTestTarget(
   node?: ProbeNodeSyncItem,
   runtime?: ProbeNodeStatusItem["runtime"],
+  cloudflareAPIHost?: string,
 ): { host: string; isAPI: boolean; source: string } {
   if (!node) {
     return { host: "", isAPI: false, source: "" };
   }
+  const cloudflareHost = normalizeHost(cloudflareAPIHost);
+  if (isLikelyAPIDomainHost(cloudflareHost)) {
+    return { host: cloudflareHost, isAPI: true, source: "cloudflare_business" };
+  }
+
   const namedCandidates = [
     { host: normalizeHost(node.public_host), source: "public_host" },
     { host: normalizeHost(node.ddns), source: "ddns" },
     { host: normalizeHost(node.service_host), source: "service_host" },
-  ].filter((item) => item.host !== "");
+  ].filter((item) => isUsableTargetHost(item.host));
 
-  const apiFirst = namedCandidates.find((item) => item.host.toLowerCase().startsWith("api."));
+  const apiFirst = namedCandidates.find((item) => isLikelyAPIDomainHost(item.host));
   if (apiFirst) {
     return { host: apiFirst.host, isAPI: true, source: apiFirst.source };
+  }
+
+  const domainFirst = namedCandidates.find((item) => isDomainHost(item.host));
+  if (domainFirst) {
+    return { host: domainFirst.host, isAPI: false, source: domainFirst.source };
   }
 
   if (namedCandidates.length > 0) {
@@ -318,6 +346,47 @@ function resolveNodeTestTarget(
   }
 
   return { host: "", isAPI: false, source: "" };
+}
+
+function buildNodeAPIHostsFromCloudflare(records: CloudflareDDNSRecord[]): Record<number, string> {
+  const bestByNodeNo: Record<number, { host: string; score: number }> = {};
+  for (const item of records) {
+    const nodeNo = Number(item.node_no);
+    if (!Number.isFinite(nodeNo) || nodeNo <= 0) {
+      continue;
+    }
+    const host = normalizeHost(item.record_name);
+    if (!isUsableTargetHost(host)) {
+      continue;
+    }
+    const recordClass = String(item.record_class || "").trim().toLowerCase();
+    let score = 0;
+    if (recordClass === "business") {
+      score += 100;
+    }
+    if (isLikelyAPIDomainHost(host)) {
+      score += 50;
+    }
+    const sequence = Number(item.sequence || 0);
+    if (Number.isFinite(sequence) && sequence === 1) {
+      score += 10;
+    }
+
+    const current = bestByNodeNo[nodeNo];
+    if (!current || score > current.score) {
+      bestByNodeNo[nodeNo] = { host, score };
+    }
+  }
+
+  const out: Record<number, string> = {};
+  for (const [key, value] of Object.entries(bestByNodeNo)) {
+    const nodeNo = Number(key);
+    if (!Number.isFinite(nodeNo) || nodeNo <= 0) {
+      continue;
+    }
+    out[nodeNo] = value.host;
+  }
+  return out;
 }
 
 function normalizeHost(raw: unknown): string {
@@ -353,6 +422,56 @@ function normalizeHost(raw: unknown): string {
   }
 
   return value;
+}
+
+function isLikelyAPIDomainHost(host: string): boolean {
+  const value = normalizeHost(host).toLowerCase();
+  if (!value || !isDomainHost(value)) {
+    return false;
+  }
+  if (value.startsWith("api.")) {
+    return true;
+  }
+  return value.includes(".api.");
+}
+
+function isUsableTargetHost(host: string): boolean {
+  const value = normalizeHost(host);
+  if (!value) {
+    return false;
+  }
+  if (isIPv4Host(value) || isIPv6Host(value)) {
+    return true;
+  }
+  if (value.toLowerCase() === "localhost") {
+    return true;
+  }
+  return value.includes(".");
+}
+
+function isDomainHost(host: string): boolean {
+  const value = normalizeHost(host);
+  if (!value) {
+    return false;
+  }
+  if (isIPv4Host(value) || isIPv6Host(value)) {
+    return false;
+  }
+  return value.includes(".");
+}
+
+function isIPv4Host(host: string): boolean {
+  return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host);
+}
+
+function isIPv6Host(host: string): boolean {
+  if (!host.includes(":")) {
+    return false;
+  }
+  if (host.includes(".")) {
+    return false;
+  }
+  return /^[0-9a-fA-F:]+$/.test(host);
 }
 
 function buildResultSummary(result: ProbeLinkConnectResult): string {

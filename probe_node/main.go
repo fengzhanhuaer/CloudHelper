@@ -87,6 +87,9 @@ type probeControlMessage struct {
 	Protocol          string `json:"protocol"`
 	ListenHost        string `json:"listen_host"`
 	InternalPort      int    `json:"internal_port"`
+	SessionID         string `json:"session_id"`
+	Command           string `json:"command"`
+	TimeoutSec        int    `json:"timeout_sec"`
 	ReleaseRepo       string `json:"release_repo"`
 	ControllerBaseURL string `json:"controller_base_url"`
 	IntervalSec       int    `json:"interval_sec"`
@@ -490,6 +493,14 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 	}
 	if typeName == "link_test_control" {
 		go runProbeLinkTestControl(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "shell_exec" {
+		go runProbeShellExec(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "shell_session_control" {
+		go runProbeShellSessionControl(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName != "upgrade" {

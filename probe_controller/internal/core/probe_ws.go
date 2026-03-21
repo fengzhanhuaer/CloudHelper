@@ -128,6 +128,24 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeLinkTestControlResult(msg)
+		case "shell_exec_result":
+			var msg probeShellExecResultMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
+			if strings.TrimSpace(msg.NodeID) == "" {
+				msg.NodeID = nodeID
+			}
+			consumeProbeShellExecResult(msg)
+		case "shell_session_result":
+			var msg probeShellSessionResultMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
+			if strings.TrimSpace(msg.NodeID) == "" {
+				msg.NodeID = nodeID
+			}
+			consumeProbeShellSessionResult(msg)
 		default:
 			// Ignore unknown probe message types to keep backward compatibility.
 		}

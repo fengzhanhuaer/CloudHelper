@@ -241,6 +241,28 @@ export type ProbeLinkTestControlResponse = {
   timestamp?: string;
 };
 
+export type ProbeShellSessionControlResponse = {
+  ok: boolean;
+  node_id: string;
+  action: "start" | "exec" | "stop";
+  session_id?: string;
+  command?: string;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  message?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  timestamp?: string;
+};
+
+export type ProbeShellShortcutItem = {
+  name: string;
+  command: string;
+  updated_at?: string;
+};
+
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
   const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[] }>(baseURL, token, "admin.probe.nodes.get");
   return Array.isArray(payload.nodes) ? payload.nodes : [];
@@ -309,7 +331,13 @@ export async function startProbeLinkTestOnController(
     internal_port: number;
   },
 ): Promise<ProbeLinkTestControlResponse> {
-  return await callAdminWSRpc<ProbeLinkTestControlResponse>(baseURL, token, "admin.probe.link.test.start", payload);
+  return await callAdminWSRpc<ProbeLinkTestControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.link.test.start",
+    payload,
+    { timeoutMs: 130000 },
+  );
 }
 
 export async function stopProbeLinkTestOnController(
@@ -317,9 +345,109 @@ export async function stopProbeLinkTestOnController(
   token: string,
   nodeID: string,
 ): Promise<ProbeLinkTestControlResponse> {
-  return await callAdminWSRpc<ProbeLinkTestControlResponse>(baseURL, token, "admin.probe.link.test.stop", {
-    node_id: String(nodeID),
-  });
+  return await callAdminWSRpc<ProbeLinkTestControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.link.test.stop",
+    {
+      node_id: String(nodeID),
+    },
+    { timeoutMs: 60000 },
+  );
+}
+
+export async function startProbeShellSessionOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_id: string;
+  },
+): Promise<ProbeShellSessionControlResponse> {
+  return await callAdminWSRpc<ProbeShellSessionControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.shell.session.start",
+    payload,
+    { timeoutMs: 30000 },
+  );
+}
+
+export async function execProbeShellSessionOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_id: string;
+    session_id: string;
+    command: string;
+    timeout_sec: number;
+  },
+): Promise<ProbeShellSessionControlResponse> {
+  const safeTimeoutSec = Number.isFinite(payload.timeout_sec) ? Math.max(5, Math.min(300, Math.trunc(payload.timeout_sec))) : 60;
+  return await callAdminWSRpc<ProbeShellSessionControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.shell.session.exec",
+    {
+      node_id: String(payload.node_id),
+      session_id: String(payload.session_id),
+      command: String(payload.command),
+      timeout_sec: safeTimeoutSec,
+    },
+    { timeoutMs: (safeTimeoutSec + 15) * 1000 },
+  );
+}
+
+export async function stopProbeShellSessionOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_id: string;
+    session_id: string;
+  },
+): Promise<ProbeShellSessionControlResponse> {
+  return await callAdminWSRpc<ProbeShellSessionControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.shell.session.stop",
+    payload,
+    { timeoutMs: 45000 },
+  );
+}
+
+export async function fetchProbeShellShortcuts(
+  baseURL: string,
+  token: string,
+): Promise<ProbeShellShortcutItem[]> {
+  const payload = await callAdminWSRpc<{ items?: ProbeShellShortcutItem[] }>(baseURL, token, "admin.probe.shell.shortcuts.get");
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function upsertProbeShellShortcut(
+  baseURL: string,
+  token: string,
+  payload: { name: string; command: string },
+): Promise<ProbeShellShortcutItem[]> {
+  const result = await callAdminWSRpc<{ items?: ProbeShellShortcutItem[] }>(
+    baseURL,
+    token,
+    "admin.probe.shell.shortcuts.upsert",
+    payload,
+  );
+  return Array.isArray(result.items) ? result.items : [];
+}
+
+export async function deleteProbeShellShortcut(
+  baseURL: string,
+  token: string,
+  name: string,
+): Promise<ProbeShellShortcutItem[]> {
+  const result = await callAdminWSRpc<{ items?: ProbeShellShortcutItem[] }>(
+    baseURL,
+    token,
+    "admin.probe.shell.shortcuts.delete",
+    { name },
+  );
+  return Array.isArray(result.items) ? result.items : [];
 }
 
 export async function fetchProbeNodeStatus(baseURL: string, token: string, nodeID?: number | string): Promise<ProbeNodeStatusItem[]> {

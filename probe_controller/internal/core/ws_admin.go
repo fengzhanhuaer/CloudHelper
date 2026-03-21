@@ -408,6 +408,202 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			"message":       strings.TrimSpace(result.Message),
 			"timestamp":     strings.TrimSpace(result.Timestamp),
 		}, nil
+	case "admin.probe.shell.session.start":
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		if _, ok := getProbeNodeByID(nodeID); !ok {
+			return nil, fmt.Errorf("probe node not found")
+		}
+
+		result, err := dispatchProbeShellSessionControl(nodeID, "start", "", "", 0)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"ok":         result.OK,
+			"node_id":    nodeID,
+			"action":     "start",
+			"session_id": strings.TrimSpace(result.SessionID),
+			"message":    strings.TrimSpace(result.Message),
+			"timestamp":  strings.TrimSpace(result.Timestamp),
+		}, nil
+	case "admin.probe.shell.session.exec":
+		var req struct {
+			NodeID     string `json:"node_id"`
+			SessionID  string `json:"session_id"`
+			Command    string `json:"command"`
+			TimeoutSec int    `json:"timeout_sec"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		if _, ok := getProbeNodeByID(nodeID); !ok {
+			return nil, fmt.Errorf("probe node not found")
+		}
+
+		result, err := dispatchProbeShellSessionControl(nodeID, "exec", req.SessionID, req.Command, req.TimeoutSec)
+		if err != nil {
+			return map[string]interface{}{
+				"ok":          false,
+				"node_id":     nodeID,
+				"action":      "exec",
+				"session_id":  strings.TrimSpace(req.SessionID),
+				"command":     strings.TrimSpace(req.Command),
+				"stdout":      result.Stdout,
+				"stderr":      result.Stderr,
+				"error":       err.Error(),
+				"started_at":  strings.TrimSpace(result.StartedAt),
+				"finished_at": strings.TrimSpace(result.FinishedAt),
+				"duration_ms": result.DurationMS,
+				"timestamp":   strings.TrimSpace(result.Timestamp),
+			}, nil
+		}
+		return map[string]interface{}{
+			"ok":          true,
+			"node_id":     nodeID,
+			"action":      "exec",
+			"session_id":  strings.TrimSpace(result.SessionID),
+			"command":     strings.TrimSpace(req.Command),
+			"stdout":      result.Stdout,
+			"stderr":      result.Stderr,
+			"error":       strings.TrimSpace(result.Error),
+			"started_at":  strings.TrimSpace(result.StartedAt),
+			"finished_at": strings.TrimSpace(result.FinishedAt),
+			"duration_ms": result.DurationMS,
+			"timestamp":   strings.TrimSpace(result.Timestamp),
+		}, nil
+	case "admin.probe.shell.session.stop":
+		var req struct {
+			NodeID    string `json:"node_id"`
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		if _, ok := getProbeNodeByID(nodeID); !ok {
+			return nil, fmt.Errorf("probe node not found")
+		}
+		result, err := dispatchProbeShellSessionControl(nodeID, "stop", req.SessionID, "", 0)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"ok":         result.OK,
+			"node_id":    nodeID,
+			"action":     "stop",
+			"session_id": strings.TrimSpace(req.SessionID),
+			"message":    strings.TrimSpace(result.Message),
+			"timestamp":  strings.TrimSpace(result.Timestamp),
+		}, nil
+	case "admin.probe.shell.exec":
+		var req struct {
+			NodeID     string `json:"node_id"`
+			Command    string `json:"command"`
+			TimeoutSec int    `json:"timeout_sec"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		if _, ok := getProbeNodeByID(nodeID); !ok {
+			return nil, fmt.Errorf("probe node not found")
+		}
+
+		result, err := dispatchProbeShellExec(nodeID, req.Command, req.TimeoutSec)
+		if err != nil {
+			return map[string]interface{}{
+				"ok":          false,
+				"node_id":     nodeID,
+				"command":     strings.TrimSpace(req.Command),
+				"exit_code":   result.ExitCode,
+				"stdout":      strings.TrimSpace(result.Stdout),
+				"stderr":      strings.TrimSpace(result.Stderr),
+				"error":       err.Error(),
+				"started_at":  strings.TrimSpace(result.StartedAt),
+				"finished_at": strings.TrimSpace(result.FinishedAt),
+				"duration_ms": result.DurationMS,
+				"timestamp":   strings.TrimSpace(result.Timestamp),
+			}, nil
+		}
+
+		return map[string]interface{}{
+			"ok":          true,
+			"node_id":     nodeID,
+			"command":     strings.TrimSpace(result.Command),
+			"exit_code":   result.ExitCode,
+			"stdout":      strings.TrimSpace(result.Stdout),
+			"stderr":      strings.TrimSpace(result.Stderr),
+			"error":       strings.TrimSpace(result.Error),
+			"started_at":  strings.TrimSpace(result.StartedAt),
+			"finished_at": strings.TrimSpace(result.FinishedAt),
+			"duration_ms": result.DurationMS,
+			"timestamp":   strings.TrimSpace(result.Timestamp),
+		}, nil
+	case "admin.probe.shell.shortcuts.get":
+		ProbeStore.mu.RLock()
+		items := loadProbeShellShortcutsLocked()
+		ProbeStore.mu.RUnlock()
+		return map[string]interface{}{
+			"items": items,
+		}, nil
+	case "admin.probe.shell.shortcuts.upsert":
+		var req struct {
+			Name    string `json:"name"`
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		ProbeStore.mu.Lock()
+		items, err := upsertProbeShellShortcutLocked(req.Name, req.Command)
+		ProbeStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeStore.Save(); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"items": items,
+		}, nil
+	case "admin.probe.shell.shortcuts.delete":
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		ProbeStore.mu.Lock()
+		items, err := removeProbeShellShortcutLocked(req.Name)
+		ProbeStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeStore.Save(); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"items": items,
+		}, nil
 	case "admin.probe.status.get":
 		var req struct {
 			NodeID string `json:"node_id"`
