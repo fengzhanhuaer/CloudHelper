@@ -1,6 +1,8 @@
 package backend
 
 import (
+	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,12 +12,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/quic-go/quic-go/http3"
 )
 
 const (
-	probeLinkInfoPath   = "/api/node/info"
-	probeLinkHealthPath = "/healthz"
-	probeLinkTimeout    = 5 * time.Second
+	probeLinkInfoPath      = "/api/node/info"
+	probeLinkHealthPath    = "/healthz"
+	probeLinkTestPingPath  = "/api/node/link-test/ping"
+	probeLinkTimeout       = 8 * time.Second
+	probeLinkTCPPingPrefix = "CHPING "
+	probeLinkTCPPongPrefix = "CHPONG "
 )
 
 type ProbeLinkConnectResult struct {
@@ -38,11 +45,28 @@ type probeNodeInfoResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type probeLinkTestPingResponse struct {
+	OK        bool   `json:"ok"`
+	NodeID    string `json:"node_id"`
+	Protocol  string `json:"protocol"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
 func (a *App) TestProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLinkConnectResult, error) {
 	return testProbeLink(nodeID, endpointType, scheme, host, port)
 }
 
 func testProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLinkConnectResult, error) {
+	protocol := normalizeProbeLinkTestProtocol(endpointType)
+	if protocol == "" {
+		protocol = normalizeProbeLinkTestProtocol(scheme)
+	}
+	if protocol != "" {
+		return testProbeLinkByProtocol(nodeID, protocol, host, port)
+	}
+
+	// Backward compatibility for old service/public HTTP link checks.
 	normalizedType := strings.ToLower(strings.TrimSpace(endpointType))
 	if normalizedType != "public" {
 		normalizedType = "service"
@@ -71,6 +95,222 @@ func testProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLi
 		lastErr = fmt.Errorf("probe link test failed")
 	}
 	return ProbeLinkConnectResult{}, lastErr
+}
+
+func testProbeLinkByProtocol(nodeID string, protocol string, host string, port int) (ProbeLinkConnectResult, error) {
+	switch protocol {
+	case "tcp":
+		return probeLinkTCPPing(nodeID, host, port)
+	case "https":
+		return probeLinkHTTPPing(nodeID, protocol, host, port)
+	case "http3":
+		return probeLinkHTTP3Ping(nodeID, host, port)
+	default:
+		return ProbeLinkConnectResult{}, fmt.Errorf("unsupported protocol: %s", protocol)
+	}
+}
+
+func probeLinkTCPPing(nodeID string, host string, port int) (ProbeLinkConnectResult, error) {
+	trimmedHost := strings.TrimSpace(host)
+	if trimmedHost == "" {
+		return ProbeLinkConnectResult{}, fmt.Errorf("host is required")
+	}
+	if port <= 0 || port > 65535 {
+		return ProbeLinkConnectResult{}, fmt.Errorf("port must be between 1 and 65535")
+	}
+	target := net.JoinHostPort(trimmedHost, strconv.Itoa(port))
+	startedAt := time.Now()
+
+	conn, err := net.DialTimeout("tcp", target, probeLinkTimeout)
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(probeLinkTimeout))
+
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 36)
+	if _, err := io.WriteString(conn, probeLinkTCPPingPrefix+nonce+"\n"); err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+	expected := probeLinkTCPPongPrefix + nonce
+	received := strings.TrimSpace(line)
+	if received != expected {
+		return ProbeLinkConnectResult{}, fmt.Errorf("unexpected tcp pong payload: %s", received)
+	}
+
+	normalizedExpected := normalizeProbeLinkNodeID(nodeID)
+	return ProbeLinkConnectResult{
+		OK:           true,
+		NodeID:       normalizedExpected,
+		EndpointType: "tcp",
+		URL:          "tcp://" + target,
+		StatusCode:   200,
+		Service:      "probe_link_test",
+		Version:      "",
+		Message:      "tcp ping/pong connected",
+		ConnectedAt:  time.Now().UTC().Format(time.RFC3339),
+		DurationMS:   time.Since(startedAt).Milliseconds(),
+	}, nil
+}
+
+func probeLinkHTTPPing(nodeID string, protocol string, host string, port int) (ProbeLinkConnectResult, error) {
+	targetURL, nonce, err := buildProbeLinkTestURL(host, port)
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+
+	client := &http.Client{
+		Timeout: probeLinkTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+	}
+
+	startedAt := time.Now()
+	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ProbeLinkConnectResult{}, fmt.Errorf("HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var data probeLinkTestPingResponse
+	if len(strings.TrimSpace(string(body))) > 0 {
+		_ = json.Unmarshal(body, &data)
+	}
+	message := strings.TrimSpace(data.Message)
+	if message == "" {
+		message = "probe link ping success"
+	}
+	if strings.TrimSpace(nonce) != "" {
+		message = message + ", nonce=" + nonce
+	}
+
+	normalizedExpected := normalizeProbeLinkNodeID(nodeID)
+	normalizedActual := normalizeProbeLinkNodeID(data.NodeID)
+	if normalizedExpected != "" && normalizedActual != "" && normalizedExpected != normalizedActual {
+		message = fmt.Sprintf("%s, but node_id mismatch: expected=%s actual=%s", message, normalizedExpected, normalizedActual)
+	}
+
+	return ProbeLinkConnectResult{
+		OK:           true,
+		NodeID:       firstNonEmptyString(normalizedActual, normalizedExpected),
+		EndpointType: protocol,
+		URL:          targetURL,
+		StatusCode:   resp.StatusCode,
+		Service:      "probe_link_test",
+		Version:      "",
+		Message:      message,
+		ConnectedAt:  time.Now().UTC().Format(time.RFC3339),
+		DurationMS:   time.Since(startedAt).Milliseconds(),
+	}, nil
+}
+
+func probeLinkHTTP3Ping(nodeID string, host string, port int) (ProbeLinkConnectResult, error) {
+	targetURL, nonce, err := buildProbeLinkTestURL(host, port)
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+
+	transport := &http3.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13,
+			NextProtos: []string{"h3"},
+		},
+	}
+	defer transport.Close()
+
+	client := &http.Client{
+		Timeout:   probeLinkTimeout,
+		Transport: transport,
+	}
+
+	startedAt := time.Now()
+	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return ProbeLinkConnectResult{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ProbeLinkConnectResult{}, fmt.Errorf("HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var data probeLinkTestPingResponse
+	if len(strings.TrimSpace(string(body))) > 0 {
+		_ = json.Unmarshal(body, &data)
+	}
+	message := strings.TrimSpace(data.Message)
+	if message == "" {
+		message = "probe link http3 ping success"
+	}
+	if strings.TrimSpace(nonce) != "" {
+		message = message + ", nonce=" + nonce
+	}
+
+	normalizedExpected := normalizeProbeLinkNodeID(nodeID)
+	normalizedActual := normalizeProbeLinkNodeID(data.NodeID)
+	if normalizedExpected != "" && normalizedActual != "" && normalizedExpected != normalizedActual {
+		message = fmt.Sprintf("%s, but node_id mismatch: expected=%s actual=%s", message, normalizedExpected, normalizedActual)
+	}
+
+	return ProbeLinkConnectResult{
+		OK:           true,
+		NodeID:       firstNonEmptyString(normalizedActual, normalizedExpected),
+		EndpointType: "http3",
+		URL:          targetURL,
+		StatusCode:   resp.StatusCode,
+		Service:      "probe_link_test",
+		Version:      "",
+		Message:      message,
+		ConnectedAt:  time.Now().UTC().Format(time.RFC3339),
+		DurationMS:   time.Since(startedAt).Milliseconds(),
+	}, nil
+}
+
+func buildProbeLinkTestURL(host string, port int) (string, string, error) {
+	trimmedHost := strings.TrimSpace(host)
+	if trimmedHost == "" {
+		return "", "", fmt.Errorf("host is required")
+	}
+	if port <= 0 || port > 65535 {
+		return "", "", fmt.Errorf("port must be between 1 and 65535")
+	}
+
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 36)
+	target := &url.URL{
+		Scheme: "https",
+		Host:   net.JoinHostPort(trimmedHost, strconv.Itoa(port)),
+		Path:   probeLinkTestPingPath,
+	}
+	query := target.Query()
+	query.Set("nonce", nonce)
+	target.RawQuery = query.Encode()
+	return target.String(), nonce, nil
 }
 
 func probeLinkRequest(client *http.Client, nodeID, endpointType, scheme, host string, port int, pathValue string) (ProbeLinkConnectResult, error) {
@@ -148,6 +388,19 @@ func normalizeProbeLinkScheme(raw string) string {
 		return "https"
 	}
 	return "http"
+}
+
+func normalizeProbeLinkTestProtocol(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "tcp":
+		return "tcp"
+	case "https":
+		return "https"
+	case "http3", "h3":
+		return "http3"
+	default:
+		return ""
+	}
 }
 
 func normalizeProbeLinkNodeID(raw string) string {

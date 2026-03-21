@@ -83,6 +83,10 @@ type cpuSampler struct {
 type probeControlMessage struct {
 	Type              string `json:"type"`
 	Mode              string `json:"mode"`
+	Action            string `json:"action"`
+	Protocol          string `json:"protocol"`
+	ListenHost        string `json:"listen_host"`
+	InternalPort      int    `json:"internal_port"`
 	ReleaseRepo       string `json:"release_repo"`
 	ControllerBaseURL string `json:"controller_base_url"`
 	IntervalSec       int    `json:"interval_sec"`
@@ -482,6 +486,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 	}
 	if typeName == "logs_get" {
 		go runProbeLogFetch(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "link_test_control" {
+		go runProbeLinkTestControl(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName != "upgrade" {

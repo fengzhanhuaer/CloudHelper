@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { LinkManageTab } from "./LinkManageTab";
 import type { NetworkAssistantLogFilterSource, NetworkAssistantStatus } from "../types";
 
 type NetworkAssistantTabProps = {
+  controllerBaseUrl: string;
+  sessionToken: string;
   status: NetworkAssistantStatus;
   selectedNode: string;
   onSelectedNodeChange: (value: string) => void;
@@ -50,7 +53,7 @@ const categoryLabels: Record<string, string> = {
 };
 
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
-  const [subTab, setSubTab] = useState<"settings" | "driver" | "status" | "logs">("settings");
+  const [subTab, setSubTab] = useState<"settings" | "link" | "driver" | "status" | "logs">("settings");
   const outputRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
@@ -77,6 +80,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
       <div className="subtab-list" style={{ marginBottom: 12 }}>
         <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")}>模式切换</button>
+        <button className={`subtab-btn ${subTab === "link" ? "active" : ""}`} onClick={() => setSubTab("link")}>链路管理</button>
         <button className={`subtab-btn ${subTab === "driver" ? "active" : ""}`} onClick={() => setSubTab("driver")}>驱动设置</button>
         <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => setSubTab("status")}>状态</button>
         <button className={`subtab-btn ${subTab === "logs" ? "active" : ""}`} onClick={() => setSubTab("logs")}>日志</button>
@@ -123,6 +127,8 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             <button className="btn" onClick={props.onRestoreDirect} disabled={props.isOperating}>恢复系统代理</button>
           </div>
         </>
+      ) : subTab === "link" ? (
+        <LinkManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />
       ) : subTab === "driver" ? (
         <>
           <div className="identity-card">
@@ -211,9 +217,13 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         </>
       )}
 
-      <div className="status">{props.operateStatus}</div>
-      <div className="status">{props.status.last_error}</div>
-      <div className="status">规则模式将在 V2 开放。</div>
+      {subTab !== "link" ? (
+        <>
+          <div className="status">{props.operateStatus}</div>
+          <div className="status">{props.status.last_error}</div>
+          <div className="status">规则模式将在 V2 开放。</div>
+        </>
+      ) : null}
     </div>
   );
 }

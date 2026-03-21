@@ -53,6 +53,17 @@ type probeLogsCommand struct {
 	Timestamp    string `json:"timestamp"`
 }
 
+type probeLinkTestControlCommand struct {
+	Type              string `json:"type"`
+	RequestID         string `json:"request_id"`
+	Action            string `json:"action"`
+	Protocol          string `json:"protocol,omitempty"`
+	ListenHost        string `json:"listen_host,omitempty"`
+	InternalPort      int    `json:"internal_port,omitempty"`
+	ControllerBaseURL string `json:"controller_base_url,omitempty"`
+	Timestamp         string `json:"timestamp"`
+}
+
 type probeLogsResultMessage struct {
 	Type         string `json:"type"`
 	RequestID    string `json:"request_id"`
@@ -63,6 +74,20 @@ type probeLogsResultMessage struct {
 	Lines        int    `json:"lines,omitempty"`
 	SinceMinutes int    `json:"since_minutes,omitempty"`
 	Content      string `json:"content,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Timestamp    string `json:"timestamp,omitempty"`
+}
+
+type probeLinkTestControlResultMessage struct {
+	Type         string `json:"type"`
+	RequestID    string `json:"request_id"`
+	NodeID       string `json:"node_id"`
+	OK           bool   `json:"ok"`
+	Action       string `json:"action,omitempty"`
+	Protocol     string `json:"protocol,omitempty"`
+	ListenHost   string `json:"listen_host,omitempty"`
+	InternalPort int    `json:"internal_port,omitempty"`
+	Message      string `json:"message,omitempty"`
 	Error        string `json:"error,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
 }
@@ -83,6 +108,13 @@ var probeLogWaiters = struct {
 	mu   sync.Mutex
 	data map[string]chan probeLogsResultMessage
 }{data: make(map[string]chan probeLogsResultMessage)}
+
+var probeLinkTestRequestSeq atomic.Uint64
+
+var probeLinkTestWaiters = struct {
+	mu   sync.Mutex
+	data map[string]chan probeLinkTestControlResultMessage
+}{data: make(map[string]chan probeLinkTestControlResultMessage)}
 
 func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
 	s := &probeSession{nodeID: nodeID, stream: stream, enc: json.NewEncoder(stream)}
@@ -468,9 +500,125 @@ func consumeProbeLogsResult(result probeLogsResultMessage) {
 	}
 }
 
+func dispatchProbeLinkTestControl(nodeID string, action string, protocol string, internalPort int, controllerBaseURL string) (probeLinkTestControlResultMessage, error) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeLinkTestControlResultMessage{}, fmt.Errorf("node_id is required")
+	}
+	normalizedAction := strings.ToLower(strings.TrimSpace(action))
+	if normalizedAction != "start" && normalizedAction != "stop" {
+		return probeLinkTestControlResultMessage{}, fmt.Errorf("invalid action")
+	}
+
+	normalizedProtocol := normalizeProbeLinkTestProtocol(protocol)
+	if normalizedAction == "start" {
+		if normalizedProtocol == "" {
+			return probeLinkTestControlResultMessage{}, fmt.Errorf("protocol must be tcp/https/http3")
+		}
+		if internalPort <= 0 || internalPort > 65535 {
+			return probeLinkTestControlResultMessage{}, fmt.Errorf("internal_port must be between 1 and 65535")
+		}
+	}
+
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return probeLinkTestControlResultMessage{}, fmt.Errorf("probe is offline")
+	}
+
+	requestID := newProbeLinkTestRequestID(normalizedID)
+	waiter := make(chan probeLinkTestControlResultMessage, 1)
+
+	probeLinkTestWaiters.mu.Lock()
+	probeLinkTestWaiters.data[requestID] = waiter
+	probeLinkTestWaiters.mu.Unlock()
+	defer func() {
+		probeLinkTestWaiters.mu.Lock()
+		delete(probeLinkTestWaiters.data, requestID)
+		probeLinkTestWaiters.mu.Unlock()
+	}()
+
+	cmd := probeLinkTestControlCommand{
+		Type:              "link_test_control",
+		RequestID:         requestID,
+		Action:            normalizedAction,
+		Protocol:          normalizedProtocol,
+		ListenHost:        "0.0.0.0",
+		InternalPort:      internalPort,
+		ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
+		Timestamp:         time.Now().UTC().Format(time.RFC3339),
+	}
+	if normalizedAction == "stop" {
+		cmd.Protocol = ""
+		cmd.InternalPort = 0
+	}
+
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return probeLinkTestControlResultMessage{}, err
+	}
+
+	timer := time.NewTimer(20 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case result := <-waiter:
+		if strings.TrimSpace(result.NodeID) == "" {
+			result.NodeID = normalizedID
+		}
+		if !result.OK {
+			errMsg := strings.TrimSpace(result.Error)
+			if errMsg == "" {
+				errMsg = "probe link test control failed"
+			}
+			return result, errors.New(errMsg)
+		}
+		return result, nil
+	case <-timer.C:
+		return probeLinkTestControlResultMessage{}, fmt.Errorf("probe link test control timeout")
+	}
+}
+
+func consumeProbeLinkTestControlResult(result probeLinkTestControlResultMessage) {
+	requestID := strings.TrimSpace(result.RequestID)
+	if requestID == "" {
+		return
+	}
+	probeLinkTestWaiters.mu.Lock()
+	waiter, ok := probeLinkTestWaiters.data[requestID]
+	if ok {
+		delete(probeLinkTestWaiters.data, requestID)
+	}
+	probeLinkTestWaiters.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case waiter <- result:
+	default:
+	}
+}
+
 func newProbeLogRequestID(nodeID string) string {
 	seq := probeLogRequestSeq.Add(1)
 	return fmt.Sprintf("probe-log-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
+func newProbeLinkTestRequestID(nodeID string) string {
+	seq := probeLinkTestRequestSeq.Add(1)
+	return fmt.Sprintf("probe-link-test-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
+func normalizeProbeLinkTestProtocol(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "tcp":
+		return "tcp"
+	case "https":
+		return "https"
+	case "http3", "h3":
+		return "http3"
+	default:
+		return ""
+	}
 }
 
 func getProbeNodeByID(nodeID string) (probeNodeRecord, bool) {

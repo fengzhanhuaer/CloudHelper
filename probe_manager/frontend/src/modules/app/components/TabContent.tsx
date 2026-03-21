@@ -1,5 +1,4 @@
 import { CloudflareAssistantTab } from "./CloudflareAssistantTab";
-import { LinkManageTab } from "./LinkManageTab";
 import { LogViewerTab } from "./LogViewerTab";
 import { NetworkAssistantTab } from "./NetworkAssistantTab";
 import { OverviewTab } from "./OverviewTab";
@@ -119,11 +118,11 @@ export function TabContent(props: TabContentProps) {
       );
     case "probe-manage":
       return <ProbeManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
-    case "link-manage":
-      return <LinkManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
     case "network-assistant":
       return (
         <NetworkAssistantTab
+          controllerBaseUrl={props.controllerBaseUrl}
+          sessionToken={props.sessionToken}
           status={props.networkAssistantStatus}
           selectedNode={props.networkSelectedNode}
           onSelectedNodeChange={props.onNetworkSelectedNodeChange}

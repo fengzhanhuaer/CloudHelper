@@ -6,7 +6,6 @@ export const DEFAULT_UPGRADE_PROJECT = "fengzhanhuaer/CloudHelper";
 export const ALL_TABS: TabItem[] = [
   { key: "overview", label: "概要状态" },
   { key: "probe-manage", label: "探针管理" },
-  { key: "link-manage", label: "链路管理" },
   { key: "network-assistant", label: "网络助手" },
   { key: "cloudflare-assistant", label: "Cloudflare助手" },
   { key: "tg-assistant", label: "TG助手" },
@@ -17,7 +16,6 @@ export const ALL_TABS: TabItem[] = [
 export const OPERATOR_TABS: TabItem[] = [
   { key: "overview", label: "概要状态" },
   { key: "probe-manage", label: "探针管理" },
-  { key: "link-manage", label: "链路管理" },
   { key: "network-assistant", label: "网络助手" },
   { key: "cloudflare-assistant", label: "Cloudflare助手" },
   { key: "tg-assistant", label: "TG助手" },

@@ -350,6 +350,64 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			return nil, err
 		}
 		return map[string]interface{}{"node": node}, nil
+	case "admin.probe.link.test.start":
+		var req struct {
+			NodeID       string `json:"node_id"`
+			Protocol     string `json:"protocol"`
+			InternalPort int    `json:"internal_port"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		if _, ok := getProbeNodeByID(nodeID); !ok {
+			return nil, fmt.Errorf("probe node not found")
+		}
+		result, err := dispatchProbeLinkTestControl(nodeID, "start", req.Protocol, req.InternalPort, controllerBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"ok":            result.OK,
+			"node_id":       nodeID,
+			"action":        "start",
+			"protocol":      strings.TrimSpace(result.Protocol),
+			"listen_host":   strings.TrimSpace(result.ListenHost),
+			"internal_port": result.InternalPort,
+			"message":       strings.TrimSpace(result.Message),
+			"timestamp":     strings.TrimSpace(result.Timestamp),
+		}, nil
+	case "admin.probe.link.test.stop":
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		if _, ok := getProbeNodeByID(nodeID); !ok {
+			return nil, fmt.Errorf("probe node not found")
+		}
+		result, err := dispatchProbeLinkTestControl(nodeID, "stop", "", 0, controllerBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"ok":            result.OK,
+			"node_id":       nodeID,
+			"action":        "stop",
+			"protocol":      strings.TrimSpace(result.Protocol),
+			"listen_host":   strings.TrimSpace(result.ListenHost),
+			"internal_port": result.InternalPort,
+			"message":       strings.TrimSpace(result.Message),
+			"timestamp":     strings.TrimSpace(result.Timestamp),
+		}, nil
 	case "admin.probe.status.get":
 		var req struct {
 			NodeID string `json:"node_id"`

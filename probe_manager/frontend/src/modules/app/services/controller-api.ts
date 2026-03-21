@@ -230,6 +230,17 @@ export type ProbeNodeLogsResponse = {
   timestamp?: string;
 };
 
+export type ProbeLinkTestControlResponse = {
+  ok: boolean;
+  node_id: string;
+  action: "start" | "stop";
+  protocol?: "tcp" | "https" | "http3";
+  listen_host?: string;
+  internal_port?: number;
+  message?: string;
+  timestamp?: string;
+};
+
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
   const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[] }>(baseURL, token, "admin.probe.nodes.get");
   return Array.isArray(payload.nodes) ? payload.nodes : [];
@@ -287,6 +298,28 @@ export async function updateProbeNodeLinkOnController(
     throw new Error("controller returned empty node");
   }
   return result.node;
+}
+
+export async function startProbeLinkTestOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_id: string;
+    protocol: "tcp" | "https" | "http3";
+    internal_port: number;
+  },
+): Promise<ProbeLinkTestControlResponse> {
+  return await callAdminWSRpc<ProbeLinkTestControlResponse>(baseURL, token, "admin.probe.link.test.start", payload);
+}
+
+export async function stopProbeLinkTestOnController(
+  baseURL: string,
+  token: string,
+  nodeID: string,
+): Promise<ProbeLinkTestControlResponse> {
+  return await callAdminWSRpc<ProbeLinkTestControlResponse>(baseURL, token, "admin.probe.link.test.stop", {
+    node_id: String(nodeID),
+  });
 }
 
 export async function fetchProbeNodeStatus(baseURL: string, token: string, nodeID?: number | string): Promise<ProbeNodeStatusItem[]> {

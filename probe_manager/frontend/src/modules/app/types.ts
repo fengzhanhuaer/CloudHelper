@@ -270,7 +270,6 @@ export type CloudflareDDNSApplyResult = {
 export type TabKey =
   | "overview"
   | "probe-manage"
-  | "link-manage"
   | "network-assistant"
   | "cloudflare-assistant"
   | "tg-assistant"
