@@ -1,16 +1,14 @@
 package backend
 
 import (
-	"bufio"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestBuildProbeLinkURL(t *testing.T) {
@@ -65,7 +63,7 @@ func TestTestProbeLinkSuccess(t *testing.T) {
 	}
 }
 
-func TestProbeLinkSessionTCPReusesSingleConnection(t *testing.T) {
+func TestProbeLinkSessionHTTPReusesSingleConnection(t *testing.T) {
 	_, _ = stopProbeLinkSession("test reset")
 	defer func() {
 		_, _ = stopProbeLinkSession("test cleanup")
@@ -78,38 +76,26 @@ func TestProbeLinkSessionTCPReusesSingleConnection(t *testing.T) {
 	defer listener.Close()
 
 	var accepted atomic.Int32
-	go func() {
-		for {
-			conn, acceptErr := listener.Accept()
-			if acceptErr != nil {
+	countingListener := &countingAcceptListener{
+		Listener: listener,
+		accepted: &accepted,
+	}
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != probeLinkTestPingPath {
+				http.NotFound(w, r)
 				return
 			}
-			accepted.Add(1)
-			go func(c net.Conn) {
-				defer c.Close()
-				reader := bufio.NewReader(c)
-				for {
-					line, readErr := reader.ReadString('\n')
-					if readErr != nil {
-						if readErr == io.EOF {
-							return
-						}
-						return
-					}
-					text := strings.TrimSpace(line)
-					if !strings.HasPrefix(text, probeLinkTCPPingPrefix) {
-						_, _ = io.WriteString(c, "CHERR invalid ping\n")
-						return
-					}
-					nonce := strings.TrimSpace(strings.TrimPrefix(text, probeLinkTCPPingPrefix))
-					if nonce == "" {
-						_, _ = io.WriteString(c, "CHERR empty nonce\n")
-						continue
-					}
-					_, _ = io.WriteString(c, probeLinkTCPPongPrefix+nonce+"\n")
-				}
-			}(conn)
-		}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"node_id":"1","protocol":"http","message":"pong"}`))
+		}),
+		ReadHeaderTimeout: 3 * time.Second,
+	}
+	go func() {
+		_ = server.Serve(countingListener)
+	}()
+	defer func() {
+		_ = server.Close()
 	}()
 
 	host, portText, err := net.SplitHostPort(listener.Addr().String())
@@ -121,7 +107,7 @@ func TestProbeLinkSessionTCPReusesSingleConnection(t *testing.T) {
 		t.Fatalf("parse port failed: %v", err)
 	}
 
-	first, err := startProbeLinkSession("1", "tcp", host, port)
+	first, err := startProbeLinkSession("1", "http", host, port)
 	if err != nil {
 		t.Fatalf("startProbeLinkSession failed: %v", err)
 	}
@@ -146,6 +132,22 @@ func TestProbeLinkSessionTCPReusesSingleConnection(t *testing.T) {
 	}
 
 	if got := accepted.Load(); got != 1 {
-		t.Fatalf("expected tcp accepted connections=1 (persistent), got %d", got)
+		t.Fatalf("expected http accepted connections=1 (persistent), got %d", got)
 	}
+}
+
+type countingAcceptListener struct {
+	net.Listener
+	accepted *atomic.Int32
+}
+
+func (l *countingAcceptListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if l.accepted != nil {
+		l.accepted.Add(1)
+	}
+	return conn, nil
 }

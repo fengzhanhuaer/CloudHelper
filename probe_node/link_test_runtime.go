@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -80,7 +78,7 @@ func runProbeLinkTestControl(cmd probeControlMessage, identity nodeIdentity, str
 		result.InternalPort = internalPort
 
 		if protocol == "" {
-			result.Error = "protocol must be tcp/https/http3"
+			result.Error = "protocol must be http/https/http3"
 			sendProbeLinkTestControlResult(stream, encoder, writeMu, result)
 			return
 		}
@@ -170,8 +168,8 @@ func stopProbeLinkTestService(reason string) *probeLinkTestRuntime {
 
 func buildProbeLinkTestRuntime(protocol string, listenHost string, internalPort int, identity nodeIdentity, controllerBaseURL string) (*probeLinkTestRuntime, error) {
 	switch protocol {
-	case "tcp":
-		return startProbeLinkTestTCPServer(listenHost, internalPort)
+	case "http":
+		return startProbeLinkTestHTTPServer(listenHost, internalPort, identity)
 	case "https":
 		return startProbeLinkTestHTTPSServer(listenHost, internalPort, identity, controllerBaseURL, "https")
 	case "http3":
@@ -181,68 +179,31 @@ func buildProbeLinkTestRuntime(protocol string, listenHost string, internalPort 
 	}
 }
 
-func startProbeLinkTestTCPServer(listenHost string, internalPort int) (*probeLinkTestRuntime, error) {
+func startProbeLinkTestHTTPServer(listenHost string, internalPort int, identity nodeIdentity) (*probeLinkTestRuntime, error) {
 	listenAddr := net.JoinHostPort(listenHost, strconv.Itoa(internalPort))
-	ln, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		return nil, err
+	handler := buildProbeLinkTestHTTPHandler(strings.TrimSpace(identity.NodeID), "http")
+	server := &http.Server{
+		Addr:              listenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	stopCh := make(chan struct{})
 	go func() {
-		for {
-			conn, acceptErr := ln.Accept()
-			if acceptErr != nil {
-				select {
-				case <-stopCh:
-					return
-				default:
-				}
-				log.Printf("probe tcp link test accept failed: %v", acceptErr)
-				continue
-			}
-			go handleProbeLinkTestTCPConn(conn)
+		if serveErr := server.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
+			log.Printf("probe link test http service exited: listen=%s err=%v", listenAddr, serveErr)
 		}
 	}()
 
-	log.Printf("probe link test tcp service started: listen=%s", listenAddr)
+	log.Printf("probe link test http service started: listen=http://%s", listenAddr)
 	return &probeLinkTestRuntime{
-		protocol:     "tcp",
+		protocol:     "http",
 		listenHost:   listenHost,
 		internalPort: internalPort,
 		stop: func() error {
-			close(stopCh)
-			return ln.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return server.Shutdown(ctx)
 		},
 	}, nil
-}
-
-func handleProbeLinkTestTCPConn(conn net.Conn) {
-	defer conn.Close()
-	reader := bufio.NewReader(conn)
-	for {
-		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			return
-		}
-		text := strings.TrimSpace(line)
-		if !strings.HasPrefix(text, "CHPING ") {
-			_, _ = io.WriteString(conn, "CHERR invalid ping\n")
-			return
-		}
-		nonce := strings.TrimSpace(strings.TrimPrefix(text, "CHPING "))
-		if nonce == "" {
-			_, _ = io.WriteString(conn, "CHERR empty nonce\n")
-			continue
-		}
-		if _, err := io.WriteString(conn, "CHPONG "+nonce+"\n"); err != nil {
-			return
-		}
-	}
 }
 
 func startProbeLinkTestHTTPSServer(listenHost string, internalPort int, identity nodeIdentity, controllerBaseURL string, protocolLabel string) (*probeLinkTestRuntime, error) {
@@ -340,8 +301,8 @@ func normalizeProbeLinkTestAction(raw string) string {
 
 func normalizeProbeLinkTestProtocol(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "tcp":
-		return "tcp"
+	case "http":
+		return "http"
 	case "https":
 		return "https"
 	case "http3", "h3":

@@ -5,11 +5,15 @@ import {
   StopProbeLinkSession,
 } from "../../../../wailsjs/go/main/App";
 import {
+  deleteProbeLinkChain,
   fetchCloudflareDDNSRecords,
+  fetchProbeLinkChains,
   fetchProbeNodeStatus,
   fetchProbeNodes,
   startProbeLinkTestOnController,
   stopProbeLinkTestOnController,
+  upsertProbeLinkChain,
+  type ProbeLinkChainItem,
   type ProbeNodeStatusItem,
   type ProbeNodeSyncItem,
 } from "../services/controller-api";
@@ -20,7 +24,7 @@ type LinkManageTabProps = {
   sessionToken: string;
 };
 
-type ProbeLinkTestProtocol = "tcp" | "https" | "http3";
+type ProbeLinkTestProtocol = "http" | "https" | "http3";
 
 type ProbeLinkConnectResult = {
   ok?: boolean;
@@ -42,6 +46,7 @@ type ProbeTestTarget = {
 };
 
 const defaultInternalPort = 16031;
+const linkChainCacheStorageKey = "cloudhelper_probe_link_chains_cache_v1";
 
 export function LinkManageTab(props: LinkManageTabProps) {
   const [subTab, setSubTab] = useState<"test">("test");
@@ -49,7 +54,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const [nodeRuntimes, setNodeRuntimes] = useState<Record<number, ProbeNodeStatusItem["runtime"]>>({});
   const [nodeAPIHosts, setNodeAPIHosts] = useState<Record<number, string>>({});
   const [selectedNodeID, setSelectedNodeID] = useState("");
-  const [protocol, setProtocol] = useState<ProbeLinkTestProtocol>("tcp");
+  const [protocol, setProtocol] = useState<ProbeLinkTestProtocol>("http");
   const [internalPort, setInternalPort] = useState(defaultInternalPort);
   const [externalPort, setExternalPort] = useState(defaultInternalPort);
   const [isLoadingNodes, setIsLoadingNodes] = useState(false);
@@ -398,7 +403,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                 onChange={(event) => setProtocol(event.target.value as ProbeLinkTestProtocol)}
                 disabled={isOperating || isTesting}
               >
-                <option value="tcp">tcp</option>
+                <option value="http">http</option>
                 <option value="https">https</option>
                 <option value="http3">http3</option>
               </select>

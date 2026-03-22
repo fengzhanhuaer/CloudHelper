@@ -146,6 +146,15 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeShellSessionResult(msg)
+		case "chain_link_control_result":
+			var msg probeChainLinkControlResultMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
+			if strings.TrimSpace(msg.NodeID) == "" {
+				msg.NodeID = nodeID
+			}
+			consumeProbeChainLinkControlResult(msg)
 		default:
 			// Ignore unknown probe message types to keep backward compatibility.
 		}

@@ -64,6 +64,27 @@ type probeLinkTestControlCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeChainLinkControlCommand struct {
+	Type              string `json:"type"`
+	RequestID         string `json:"request_id"`
+	Action            string `json:"action"`
+	ChainID           string `json:"chain_id"`
+	Name              string `json:"name,omitempty"`
+	UserID            string `json:"user_id,omitempty"`
+	UserPublicKey     string `json:"user_public_key,omitempty"`
+	LinkSecret        string `json:"link_secret,omitempty"`
+	Role              string `json:"role,omitempty"`
+	ListenHost        string `json:"listen_host,omitempty"`
+	ListenPort        int    `json:"listen_port,omitempty"`
+	LinkLayer         string `json:"link_layer,omitempty"`
+	NextHost          string `json:"next_host,omitempty"`
+	NextPort          int    `json:"next_port,omitempty"`
+	RequireUserAuth   bool   `json:"require_user_auth,omitempty"`
+	NextAuthMode      string `json:"next_auth_mode,omitempty"`
+	ControllerBaseURL string `json:"controller_base_url,omitempty"`
+	Timestamp         string `json:"timestamp"`
+}
+
 type probeShellExecCommand struct {
 	Type       string `json:"type"`
 	RequestID  string `json:"request_id"`
@@ -108,6 +129,19 @@ type probeLinkTestControlResultMessage struct {
 	Message      string `json:"message,omitempty"`
 	Error        string `json:"error,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
+}
+
+type probeChainLinkControlResultMessage struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	NodeID    string `json:"node_id"`
+	OK        bool   `json:"ok"`
+	Action    string `json:"action,omitempty"`
+	ChainID   string `json:"chain_id,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 type probeShellExecResultMessage struct {
@@ -166,6 +200,13 @@ var probeLinkTestWaiters = struct {
 	mu   sync.Mutex
 	data map[string]chan probeLinkTestControlResultMessage
 }{data: make(map[string]chan probeLinkTestControlResultMessage)}
+
+var probeChainRequestSeq atomic.Uint64
+
+var probeChainWaiters = struct {
+	mu   sync.Mutex
+	data map[string]chan probeChainLinkControlResultMessage
+}{data: make(map[string]chan probeChainLinkControlResultMessage)}
 
 var probeShellExecRequestSeq atomic.Uint64
 
@@ -578,7 +619,7 @@ func dispatchProbeLinkTestControl(nodeID string, action string, protocol string,
 	normalizedProtocol := normalizeProbeLinkTestProtocol(protocol)
 	if normalizedAction == "start" {
 		if normalizedProtocol == "" {
-			return probeLinkTestControlResultMessage{}, fmt.Errorf("protocol must be tcp/https/http3")
+			return probeLinkTestControlResultMessage{}, fmt.Errorf("protocol must be http/https/http3")
 		}
 		if internalPort <= 0 || internalPort > 65535 {
 			return probeLinkTestControlResultMessage{}, fmt.Errorf("internal_port must be between 1 and 65535")
@@ -671,6 +712,87 @@ func consumeProbeLinkTestControlResult(result probeLinkTestControlResultMessage)
 		delete(probeLinkTestWaiters.data, requestID)
 	}
 	probeLinkTestWaiters.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case waiter <- result:
+	default:
+	}
+}
+
+func dispatchProbeChainLinkControl(nodeID string, command probeChainLinkControlCommand) (probeChainLinkControlResultMessage, error) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("node_id is required")
+	}
+	action := strings.ToLower(strings.TrimSpace(command.Action))
+	if action != "apply" && action != "remove" {
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("invalid action")
+	}
+	chainID := strings.TrimSpace(command.ChainID)
+	if chainID == "" {
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("chain_id is required")
+	}
+
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("probe is offline")
+	}
+
+	requestID := newProbeChainRequestID(normalizedID)
+	waiter := make(chan probeChainLinkControlResultMessage, 1)
+	probeChainWaiters.mu.Lock()
+	probeChainWaiters.data[requestID] = waiter
+	probeChainWaiters.mu.Unlock()
+	defer func() {
+		probeChainWaiters.mu.Lock()
+		delete(probeChainWaiters.data, requestID)
+		probeChainWaiters.mu.Unlock()
+	}()
+
+	cmd := command
+	cmd.Type = "chain_link_control"
+	cmd.RequestID = requestID
+	cmd.Action = action
+	cmd.ChainID = chainID
+	cmd.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return probeChainLinkControlResultMessage{}, err
+	}
+
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-waiter:
+		if strings.TrimSpace(result.NodeID) == "" {
+			result.NodeID = normalizedID
+		}
+		if !result.OK {
+			errMsg := strings.TrimSpace(result.Error)
+			if errMsg == "" {
+				errMsg = "probe chain link control failed"
+			}
+			return result, errors.New(errMsg)
+		}
+		return result, nil
+	case <-timer.C:
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("probe chain link control timeout (action=%s)", action)
+	}
+}
+
+func consumeProbeChainLinkControlResult(result probeChainLinkControlResultMessage) {
+	requestID := strings.TrimSpace(result.RequestID)
+	if requestID == "" {
+		return
+	}
+	probeChainWaiters.mu.Lock()
+	waiter, ok := probeChainWaiters.data[requestID]
+	if ok {
+		delete(probeChainWaiters.data, requestID)
+	}
+	probeChainWaiters.mu.Unlock()
 	if !ok {
 		return
 	}
@@ -898,6 +1020,11 @@ func newProbeLinkTestRequestID(nodeID string) string {
 	return fmt.Sprintf("probe-link-test-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
 }
 
+func newProbeChainRequestID(nodeID string) string {
+	seq := probeChainRequestSeq.Add(1)
+	return fmt.Sprintf("probe-chain-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
 func newProbeShellExecRequestID(nodeID string) string {
 	seq := probeShellExecRequestSeq.Add(1)
 	return fmt.Sprintf("probe-shell-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
@@ -910,8 +1037,8 @@ func newProbeShellSessionRequestID(nodeID string) string {
 
 func normalizeProbeLinkTestProtocol(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "tcp":
-		return "tcp"
+	case "http":
+		return "http"
 	case "https":
 		return "https"
 	case "http3", "h3":

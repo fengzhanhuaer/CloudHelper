@@ -604,6 +604,135 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return map[string]interface{}{
 			"items": items,
 		}, nil
+	case "admin.probe.link.chains.get":
+		if ProbeLinkChainStore == nil {
+			return map[string]interface{}{"items": []probeLinkChainRecord{}}, nil
+		}
+		ProbeLinkChainStore.mu.RLock()
+		items := loadProbeLinkChainsLocked()
+		ProbeLinkChainStore.mu.RUnlock()
+		return map[string]interface{}{
+			"items": items,
+		}, nil
+	case "admin.probe.link.chain.upsert":
+		var req struct {
+			ChainID        string   `json:"chain_id"`
+			Name           string   `json:"name"`
+			UserID         string   `json:"user_id"`
+			UserPublicKey  string   `json:"user_public_key"`
+			Secret         string   `json:"secret"`
+			EntryNodeID    string   `json:"entry_node_id"`
+			ExitNodeID     string   `json:"exit_node_id"`
+			CascadeNodeIDs []string `json:"cascade_node_ids"`
+			ListenHost     string   `json:"listen_host"`
+			ListenPort     int      `json:"listen_port"`
+			LinkLayer      string   `json:"link_layer"`
+			HopConfigs     []struct {
+				NodeNo     int    `json:"node_no"`
+				ListenPort int    `json:"listen_port"`
+				LinkLayer  string `json:"link_layer"`
+			} `json:"hop_configs"`
+			EgressHost string `json:"egress_host"`
+			EgressPort int    `json:"egress_port"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		if ProbeLinkChainStore == nil {
+			return nil, fmt.Errorf("probe link chain store is not initialized")
+		}
+
+		var previous probeLinkChainRecord
+		var hadPrevious bool
+		ProbeLinkChainStore.mu.Lock()
+		if strings.TrimSpace(req.ChainID) != "" {
+			if item, ok := findProbeLinkChainByIDLocked(req.ChainID); ok {
+				previous = item
+				hadPrevious = true
+			}
+		}
+		item, items, err := upsertProbeLinkChainLocked(probeLinkChainRecord{
+			ChainID:        strings.TrimSpace(req.ChainID),
+			Name:           strings.TrimSpace(req.Name),
+			UserID:         strings.TrimSpace(req.UserID),
+			UserPublicKey:  strings.TrimSpace(req.UserPublicKey),
+			Secret:         strings.TrimSpace(req.Secret),
+			EntryNodeID:    strings.TrimSpace(req.EntryNodeID),
+			ExitNodeID:     strings.TrimSpace(req.ExitNodeID),
+			CascadeNodeIDs: req.CascadeNodeIDs,
+			ListenHost:     strings.TrimSpace(req.ListenHost),
+			ListenPort:     req.ListenPort,
+			LinkLayer:      strings.TrimSpace(req.LinkLayer),
+			HopConfigs: func() []probeLinkChainHopConfig {
+				out := make([]probeLinkChainHopConfig, 0, len(req.HopConfigs))
+				for _, cfg := range req.HopConfigs {
+					out = append(out, probeLinkChainHopConfig{
+						NodeNo:     cfg.NodeNo,
+						ListenPort: cfg.ListenPort,
+						LinkLayer:  strings.TrimSpace(cfg.LinkLayer),
+					})
+				}
+				return out
+			}(),
+			EgressHost: strings.TrimSpace(req.EgressHost),
+			EgressPort: req.EgressPort,
+		})
+		ProbeLinkChainStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeLinkChainStore.Save(); err != nil {
+			return nil, err
+		}
+
+		applyErrorText := ""
+		if hadPrevious && strings.TrimSpace(previous.ChainID) != "" {
+			if err := removeProbeLinkChainRecord(previous); err != nil {
+				applyErrorText = err.Error()
+			}
+		}
+		if err := applyProbeLinkChainRecord(item, controllerBaseURL); err != nil {
+			if applyErrorText == "" {
+				applyErrorText = err.Error()
+			} else {
+				applyErrorText = applyErrorText + "; " + err.Error()
+			}
+		}
+		return map[string]interface{}{
+			"item":        item,
+			"items":       items,
+			"apply_ok":    strings.TrimSpace(applyErrorText) == "",
+			"apply_error": strings.TrimSpace(applyErrorText),
+		}, nil
+	case "admin.probe.link.chain.delete":
+		var req struct {
+			ChainID string `json:"chain_id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		if ProbeLinkChainStore == nil {
+			return nil, fmt.Errorf("probe link chain store is not initialized")
+		}
+		ProbeLinkChainStore.mu.Lock()
+		removed, items, err := removeProbeLinkChainLocked(req.ChainID)
+		ProbeLinkChainStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeLinkChainStore.Save(); err != nil {
+			return nil, err
+		}
+		applyErrorText := ""
+		if err := removeProbeLinkChainRecord(removed); err != nil {
+			applyErrorText = err.Error()
+		}
+		return map[string]interface{}{
+			"removed":     removed,
+			"items":       items,
+			"apply_ok":    strings.TrimSpace(applyErrorText) == "",
+			"apply_error": strings.TrimSpace(applyErrorText),
+		}, nil
 	case "admin.probe.status.get":
 		var req struct {
 			NodeID string `json:"node_id"`

@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -17,12 +16,10 @@ import (
 )
 
 const (
-	probeLinkInfoPath      = "/api/node/info"
-	probeLinkHealthPath    = "/healthz"
-	probeLinkTestPingPath  = "/api/node/link-test/ping"
-	probeLinkTimeout       = 8 * time.Second
-	probeLinkTCPPingPrefix = "CHPING "
-	probeLinkTCPPongPrefix = "CHPONG "
+	probeLinkInfoPath     = "/api/node/info"
+	probeLinkHealthPath   = "/healthz"
+	probeLinkTestPingPath = "/api/node/link-test/ping"
+	probeLinkTimeout      = 8 * time.Second
 )
 
 type ProbeLinkConnectResult struct {
@@ -59,9 +56,6 @@ func (a *App) TestProbeLink(nodeID, endpointType, scheme, host string, port int)
 
 func testProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLinkConnectResult, error) {
 	protocol := normalizeProbeLinkTestProtocol(endpointType)
-	if protocol == "" {
-		protocol = normalizeProbeLinkTestProtocol(scheme)
-	}
 	if protocol != "" {
 		return testProbeLinkByProtocol(nodeID, protocol, host, port)
 	}
@@ -99,8 +93,8 @@ func testProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLi
 
 func testProbeLinkByProtocol(nodeID string, protocol string, host string, port int) (ProbeLinkConnectResult, error) {
 	switch protocol {
-	case "tcp":
-		return probeLinkTCPPing(nodeID, host, port)
+	case "http":
+		return probeLinkHTTPPing(nodeID, protocol, host, port)
 	case "https":
 		return probeLinkHTTPPing(nodeID, protocol, host, port)
 	case "http3":
@@ -110,66 +104,17 @@ func testProbeLinkByProtocol(nodeID string, protocol string, host string, port i
 	}
 }
 
-func probeLinkTCPPing(nodeID string, host string, port int) (ProbeLinkConnectResult, error) {
-	trimmedHost := strings.TrimSpace(host)
-	if trimmedHost == "" {
-		return ProbeLinkConnectResult{}, fmt.Errorf("host is required")
-	}
-	if port <= 0 || port > 65535 {
-		return ProbeLinkConnectResult{}, fmt.Errorf("port must be between 1 and 65535")
-	}
-	target := net.JoinHostPort(trimmedHost, strconv.Itoa(port))
-	startedAt := time.Now()
-
-	conn, err := net.DialTimeout("tcp", target, probeLinkTimeout)
-	if err != nil {
-		return ProbeLinkConnectResult{}, err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(probeLinkTimeout))
-
-	nonce := strconv.FormatInt(time.Now().UnixNano(), 36)
-	if _, err := io.WriteString(conn, probeLinkTCPPingPrefix+nonce+"\n"); err != nil {
-		return ProbeLinkConnectResult{}, err
-	}
-
-	line, err := bufio.NewReader(conn).ReadString('\n')
-	if err != nil {
-		return ProbeLinkConnectResult{}, err
-	}
-	expected := probeLinkTCPPongPrefix + nonce
-	received := strings.TrimSpace(line)
-	if received != expected {
-		return ProbeLinkConnectResult{}, fmt.Errorf("unexpected tcp pong payload: %s", received)
-	}
-
-	normalizedExpected := normalizeProbeLinkNodeID(nodeID)
-	return ProbeLinkConnectResult{
-		OK:           true,
-		NodeID:       normalizedExpected,
-		EndpointType: "tcp",
-		URL:          "tcp://" + target,
-		StatusCode:   200,
-		Service:      "probe_link_test",
-		Version:      "",
-		Message:      "tcp ping/pong connected",
-		ConnectedAt:  time.Now().UTC().Format(time.RFC3339),
-		DurationMS:   time.Since(startedAt).Milliseconds(),
-	}, nil
-}
-
 func probeLinkHTTPPing(nodeID string, protocol string, host string, port int) (ProbeLinkConnectResult, error) {
-	targetURL, nonce, err := buildProbeLinkTestURL(host, port)
+	targetURL, nonce, err := buildProbeLinkTestURL(host, port, protocol)
 	if err != nil {
 		return ProbeLinkConnectResult{}, err
 	}
 
-	client := &http.Client{
-		Timeout: probeLinkTimeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
-		},
+	transport := &http.Transport{}
+	if protocol == "https" {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
+	client := &http.Client{Timeout: probeLinkTimeout, Transport: transport}
 
 	startedAt := time.Now()
 	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
@@ -223,7 +168,7 @@ func probeLinkHTTPPing(nodeID string, protocol string, host string, port int) (P
 }
 
 func probeLinkHTTP3Ping(nodeID string, host string, port int) (ProbeLinkConnectResult, error) {
-	targetURL, nonce, err := buildProbeLinkTestURL(host, port)
+	targetURL, nonce, err := buildProbeLinkTestURL(host, port, "http3")
 	if err != nil {
 		return ProbeLinkConnectResult{}, err
 	}
@@ -292,7 +237,7 @@ func probeLinkHTTP3Ping(nodeID string, host string, port int) (ProbeLinkConnectR
 	}, nil
 }
 
-func buildProbeLinkTestURL(host string, port int) (string, string, error) {
+func buildProbeLinkTestURL(host string, port int, protocol string) (string, string, error) {
 	trimmedHost := strings.TrimSpace(host)
 	if trimmedHost == "" {
 		return "", "", fmt.Errorf("host is required")
@@ -302,8 +247,12 @@ func buildProbeLinkTestURL(host string, port int) (string, string, error) {
 	}
 
 	nonce := strconv.FormatInt(time.Now().UnixNano(), 36)
+	scheme := "https"
+	if strings.EqualFold(strings.TrimSpace(protocol), "http") {
+		scheme = "http"
+	}
 	target := &url.URL{
-		Scheme: "https",
+		Scheme: scheme,
 		Host:   net.JoinHostPort(trimmedHost, strconv.Itoa(port)),
 		Path:   probeLinkTestPingPath,
 	}
@@ -392,8 +341,8 @@ func normalizeProbeLinkScheme(raw string) string {
 
 func normalizeProbeLinkTestProtocol(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "tcp":
-		return "tcp"
+	case "http":
+		return "http"
 	case "https":
 		return "https"
 	case "http3", "h3":

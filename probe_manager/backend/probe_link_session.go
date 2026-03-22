@@ -1,14 +1,11 @@
 package backend
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,9 +20,6 @@ type probeLinkSession struct {
 	protocol string
 	host     string
 	port     int
-
-	tcpConn net.Conn
-	tcpRd   *bufio.Reader
 
 	httpClient    *http.Client
 	httpTransport *http.Transport
@@ -101,7 +95,7 @@ func stopProbeLinkSession(reason string) (bool, error) {
 func newProbeLinkSession(nodeID, protocol, host string, port int) (*probeLinkSession, error) {
 	normalizedProtocol := normalizeProbeLinkTestProtocol(protocol)
 	if normalizedProtocol == "" {
-		return nil, fmt.Errorf("protocol must be tcp/https/http3")
+		return nil, fmt.Errorf("protocol must be http/https/http3")
 	}
 	trimmedHost := strings.TrimSpace(host)
 	if trimmedHost == "" {
@@ -119,14 +113,17 @@ func newProbeLinkSession(nodeID, protocol, host string, port int) (*probeLinkSes
 	}
 
 	switch normalizedProtocol {
-	case "tcp":
-		target := net.JoinHostPort(trimmedHost, strconv.Itoa(port))
-		conn, err := net.DialTimeout("tcp", target, probeLinkTimeout)
-		if err != nil {
-			return nil, err
+	case "http":
+		transport := &http.Transport{
+			MaxIdleConns:        16,
+			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:     60 * time.Second,
 		}
-		session.tcpConn = conn
-		session.tcpRd = bufio.NewReader(conn)
+		session.httpTransport = transport
+		session.httpClient = &http.Client{
+			Timeout:   probeLinkTimeout,
+			Transport: transport,
+		}
 	case "https":
 		transport := &http.Transport{
 			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
@@ -164,8 +161,8 @@ func (session *probeLinkSession) ping() (ProbeLinkConnectResult, error) {
 	}
 
 	switch session.protocol {
-	case "tcp":
-		return session.pingTCP()
+	case "http":
+		return session.pingHTTP(session.httpClient, "http")
 	case "https":
 		return session.pingHTTP(session.httpClient, "https")
 	case "http3":
@@ -175,50 +172,11 @@ func (session *probeLinkSession) ping() (ProbeLinkConnectResult, error) {
 	}
 }
 
-func (session *probeLinkSession) pingTCP() (ProbeLinkConnectResult, error) {
-	if session.tcpConn == nil || session.tcpRd == nil {
-		return ProbeLinkConnectResult{}, fmt.Errorf("tcp session is not initialized")
-	}
-	target := net.JoinHostPort(session.host, strconv.Itoa(session.port))
-	startedAt := time.Now()
-
-	_ = session.tcpConn.SetDeadline(time.Now().Add(probeLinkTimeout))
-	nonce := strconv.FormatInt(time.Now().UnixNano(), 36)
-	if _, err := io.WriteString(session.tcpConn, probeLinkTCPPingPrefix+nonce+"\n"); err != nil {
-		_ = session.closeLocked("tcp write failed")
-		return ProbeLinkConnectResult{}, err
-	}
-
-	line, err := session.tcpRd.ReadString('\n')
-	if err != nil {
-		_ = session.closeLocked("tcp read failed")
-		return ProbeLinkConnectResult{}, err
-	}
-	expected := probeLinkTCPPongPrefix + nonce
-	received := strings.TrimSpace(line)
-	if received != expected {
-		return ProbeLinkConnectResult{}, fmt.Errorf("unexpected tcp pong payload: %s", received)
-	}
-
-	return ProbeLinkConnectResult{
-		OK:           true,
-		NodeID:       session.nodeID,
-		EndpointType: "tcp",
-		URL:          "tcp://" + target,
-		StatusCode:   200,
-		Service:      "probe_link_test",
-		Version:      "",
-		Message:      "tcp ping/pong connected",
-		ConnectedAt:  time.Now().UTC().Format(time.RFC3339),
-		DurationMS:   time.Since(startedAt).Milliseconds(),
-	}, nil
-}
-
 func (session *probeLinkSession) pingHTTP(client *http.Client, protocol string) (ProbeLinkConnectResult, error) {
 	if client == nil {
 		return ProbeLinkConnectResult{}, fmt.Errorf("%s session is not initialized", protocol)
 	}
-	targetURL, nonce, err := buildProbeLinkTestURL(session.host, session.port)
+	targetURL, nonce, err := buildProbeLinkTestURL(session.host, session.port, protocol)
 	if err != nil {
 		return ProbeLinkConnectResult{}, err
 	}
@@ -292,13 +250,6 @@ func (session *probeLinkSession) closeLocked(reason string) error {
 	session.closed = true
 
 	var firstErr error
-	if session.tcpConn != nil {
-		if err := session.tcpConn.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		session.tcpConn = nil
-		session.tcpRd = nil
-	}
 	if session.httpTransport != nil {
 		session.httpTransport.CloseIdleConnections()
 		session.httpTransport = nil

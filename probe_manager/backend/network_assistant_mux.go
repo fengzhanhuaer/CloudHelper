@@ -1,13 +1,20 @@
 package backend
 
 import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,11 +22,60 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
+	"github.com/quic-go/quic-go/http3"
 )
 
-const tunnelStreamOpenTimeout = 20 * time.Second
+const (
+	tunnelStreamOpenTimeout = 20 * time.Second
+
+	probeChainRelayAPIPath      = "/api/node/chain/relay"
+	probeChainAuthPacketType    = "github_copilot_auth_request"
+	probeChainAuthPacketVersion = "2025-03-22"
+	probeChainTLSServerName     = "api.githubcopilot.com"
+)
 
 var errTunnelStreamOpenTimeout = errors.New("open stream timeout")
+
+type probeChainAuthEnvelope struct {
+	Type       string              `json:"type,omitempty"`
+	APIVersion string              `json:"api_version,omitempty"`
+	RequestID  string              `json:"request_id,omitempty"`
+	Timestamp  string              `json:"timestamp,omitempty"`
+	Auth       *probeChainAuthBody `json:"auth,omitempty"`
+	Mode       string              `json:"mode,omitempty"`
+	ChainID    string              `json:"chain_id,omitempty"`
+	Nonce      string              `json:"nonce,omitempty"`
+	Signature  string              `json:"signature,omitempty"`
+}
+
+type probeChainAuthBody struct {
+	Mode      string `json:"mode,omitempty"`
+	ChainID   string `json:"chain_id,omitempty"`
+	Nonce     string `json:"nonce,omitempty"`
+	Signature string `json:"signature,omitempty"`
+}
+
+type probeChainRelayHop struct {
+	Writer  io.WriteCloser
+	Reader  io.ReadCloser
+	CloseFn func() error
+}
+
+type probeChainRelayNetConn struct {
+	reader    io.ReadCloser
+	writer    io.WriteCloser
+	closeFn   func() error
+	closeOnce sync.Once
+}
+
+type probeChainRelayNetAddr struct {
+	label string
+}
+
+type bufferedReadCloser struct {
+	reader *bufio.Reader
+	closer io.Closer
+}
 
 type tunnelOpenRequest struct {
 	Type    string `json:"type"`
@@ -73,6 +129,7 @@ type tunnelMuxClient struct {
 	baseURL string
 	token   string
 	nodeID  string
+	modeKey string
 
 	onControllerLog func(string, string)
 
@@ -136,6 +193,7 @@ func newTunnelMuxClient(baseURL, token, nodeID string, onControllerLog func(stri
 		baseURL:         baseURL,
 		token:           token,
 		nodeID:          nodeID,
+		modeKey:         "ws",
 		onControllerLog: onControllerLog,
 		wsConn:          wsConn,
 		session:         session,
@@ -148,6 +206,358 @@ func newTunnelMuxClient(baseURL, token, nodeID string, onControllerLog func(stri
 	go c.acceptLoop()
 	go c.keepAliveLoop()
 	return c, nil
+}
+
+func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint probeChainEndpoint, onControllerLog func(string, string)) (*tunnelMuxClient, error) {
+	hop, err := openProbeChainRelayHop(endpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := bufio.NewReader(hop.Reader)
+	if err := sendProbeChainUserAuth(hop.Writer, reader, endpoint.ChainID); err != nil {
+		if hop.CloseFn != nil {
+			_ = hop.CloseFn()
+		}
+		return nil, err
+	}
+
+	relayConn := &probeChainRelayNetConn{
+		reader: &bufferedReadCloser{
+			reader: reader,
+			closer: hop.Reader,
+		},
+		writer:  hop.Writer,
+		closeFn: hop.CloseFn,
+	}
+
+	cfg := yamux.DefaultConfig()
+	cfg.EnableKeepAlive = true
+	cfg.KeepAliveInterval = 20 * time.Second
+	session, err := yamux.Client(relayConn, cfg)
+	if err != nil {
+		_ = relayConn.Close()
+		return nil, err
+	}
+
+	modeKey := fmt.Sprintf(
+		"chain:%s@%s:%d/%s",
+		strings.TrimSpace(endpoint.ChainID),
+		strings.TrimSpace(endpoint.RelayHost),
+		endpoint.RelayPort,
+		strings.TrimSpace(endpoint.LinkLayer),
+	)
+	c := &tunnelMuxClient{
+		baseURL:         baseURL,
+		token:           token,
+		nodeID:          nodeID,
+		modeKey:         modeKey,
+		onControllerLog: onControllerLog,
+		wsConn:          nil,
+		session:         session,
+		streams:         make(map[string]*tunnelMuxStream),
+	}
+	now := time.Now().Unix()
+	c.lastRecv.Store(now)
+	c.lastPong.Store(now)
+
+	go c.acceptLoop()
+	go c.keepAliveLoop()
+	return c, nil
+}
+
+func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, error) {
+	relayURL, relayHostHeader, err := buildProbeChainRelayURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	bodyReader, bodyWriter := io.Pipe()
+	request, err := http.NewRequest(http.MethodPost, relayURL, bodyReader)
+	if err != nil {
+		_ = bodyReader.Close()
+		_ = bodyWriter.Close()
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/octet-stream")
+	request.Header.Set("X-CH-Chain-ID", strings.TrimSpace(endpoint.ChainID))
+	if strings.TrimSpace(relayHostHeader) != "" {
+		request.Host = strings.TrimSpace(relayHostHeader)
+	}
+
+	layer := normalizeChainLinkLayerValue(endpoint.LinkLayer)
+	var closeTransport func() error
+	var client *http.Client
+	switch layer {
+	case "http3":
+		transport := &http3.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS13,
+				NextProtos:         []string{"h3"},
+				ServerName:         probeChainTLSServerName,
+				InsecureSkipVerify: true,
+			},
+		}
+		client = &http.Client{Transport: transport}
+		closeTransport = func() error { return transport.Close() }
+	case "http2":
+		transport := &http.Transport{
+			Proxy:             http.ProxyFromEnvironment,
+			ForceAttemptHTTP2: true,
+			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS12,
+				ServerName:         probeChainTLSServerName,
+				InsecureSkipVerify: true,
+			},
+		}
+		client = &http.Client{Transport: transport}
+		closeTransport = func() error {
+			transport.CloseIdleConnections()
+			return nil
+		}
+	default:
+		transport := &http.Transport{
+			Proxy:             http.ProxyFromEnvironment,
+			ForceAttemptHTTP2: false,
+			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS12,
+				ServerName:         probeChainTLSServerName,
+				InsecureSkipVerify: true,
+			},
+			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		}
+		client = &http.Client{Transport: transport}
+		closeTransport = func() error {
+			transport.CloseIdleConnections()
+			return nil
+		}
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		_ = bodyWriter.Close()
+		_ = closeTransport()
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		_ = response.Body.Close()
+		_ = bodyWriter.Close()
+		_ = closeTransport()
+		return nil, fmt.Errorf("probe relay failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return &probeChainRelayHop{
+		Writer: bodyWriter,
+		Reader: response.Body,
+		CloseFn: func() error {
+			_ = bodyWriter.Close()
+			_ = response.Body.Close()
+			_ = closeTransport()
+			return nil
+		},
+	}, nil
+}
+
+func buildProbeChainRelayURL(endpoint probeChainEndpoint) (string, string, error) {
+	dialHost, hostHeader, err := resolveProbeChainDialIPHost(endpoint.RelayHost)
+	if err != nil {
+		return "", "", err
+	}
+	if endpoint.RelayPort <= 0 || endpoint.RelayPort > 65535 {
+		return "", "", fmt.Errorf("invalid relay port")
+	}
+	u := &url.URL{
+		Scheme: "https",
+		Host:   net.JoinHostPort(dialHost, strconv.Itoa(endpoint.RelayPort)),
+		Path:   probeChainRelayAPIPath,
+	}
+	query := u.Query()
+	query.Set("chain_id", strings.TrimSpace(endpoint.ChainID))
+	u.RawQuery = query.Encode()
+	return u.String(), hostHeader, nil
+}
+
+func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader string, err error) {
+	host := strings.TrimSpace(strings.Trim(rawHost, "[]"))
+	if host == "" {
+		return "", "", fmt.Errorf("empty relay host")
+	}
+	if parsed := net.ParseIP(host); parsed != nil {
+		return parsed.String(), host, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, resolveErr := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if resolveErr != nil {
+		return "", "", fmt.Errorf("resolve relay host failed: %w", resolveErr)
+	}
+	ip := selectProbeChainPreferredDialIP(ips)
+	if ip == nil {
+		return "", "", fmt.Errorf("resolve relay host failed: no ip")
+	}
+	return ip.String(), host, nil
+}
+
+func selectProbeChainPreferredDialIP(ips []net.IP) net.IP {
+	for _, candidate := range ips {
+		if candidate == nil {
+			continue
+		}
+		if v4 := candidate.To4(); v4 != nil {
+			return v4
+		}
+	}
+	for _, candidate := range ips {
+		if candidate == nil {
+			continue
+		}
+		if v6 := candidate.To16(); v6 != nil {
+			return v6
+		}
+	}
+	return nil
+}
+
+func sendProbeChainUserAuth(writer io.Writer, reader *bufio.Reader, chainID string) error {
+	nonce := randomHexToken(16)
+	signature, err := signNonceWithLocalKey(nonce)
+	if err != nil {
+		return err
+	}
+	env := newProbeChainUserAuthEnvelope(chainID, nonce, signature)
+	encoded, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	if _, err := writer.Write(append(encoded, '\n')); err != nil {
+		return err
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(line) != "CHAUTHOK" {
+		return fmt.Errorf("probe chain auth rejected: %s", strings.TrimSpace(line))
+	}
+	return nil
+}
+
+func newProbeChainUserAuthEnvelope(chainID string, nonce string, signature string) probeChainAuthEnvelope {
+	body := &probeChainAuthBody{
+		Mode:      "user_signature",
+		ChainID:   strings.TrimSpace(chainID),
+		Nonce:     strings.TrimSpace(nonce),
+		Signature: strings.TrimSpace(signature),
+	}
+	return probeChainAuthEnvelope{
+		Type:       probeChainAuthPacketType,
+		APIVersion: probeChainAuthPacketVersion,
+		RequestID:  randomHexToken(8),
+		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+		Auth:       body,
+		Mode:       body.Mode,
+		ChainID:    body.ChainID,
+		Nonce:      body.Nonce,
+		Signature:  body.Signature,
+	}
+}
+
+func randomHexToken(size int) string {
+	if size <= 0 {
+		size = 8
+	}
+	buf := make([]byte, size)
+	if _, err := rand.Read(buf); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(buf)
+}
+
+func (b *bufferedReadCloser) Read(payload []byte) (int, error) {
+	if b == nil || b.reader == nil {
+		return 0, io.EOF
+	}
+	return b.reader.Read(payload)
+}
+
+func (b *bufferedReadCloser) Close() error {
+	if b == nil || b.closer == nil {
+		return nil
+	}
+	return b.closer.Close()
+}
+
+func (a probeChainRelayNetAddr) Network() string {
+	return "probe-chain-relay"
+}
+
+func (a probeChainRelayNetAddr) String() string {
+	value := strings.TrimSpace(a.label)
+	if value == "" {
+		return "probe-chain-relay"
+	}
+	return value
+}
+
+func (c *probeChainRelayNetConn) Read(payload []byte) (int, error) {
+	if c == nil || c.reader == nil {
+		return 0, io.EOF
+	}
+	return c.reader.Read(payload)
+}
+
+func (c *probeChainRelayNetConn) Write(payload []byte) (int, error) {
+	if c == nil || c.writer == nil {
+		return 0, io.ErrClosedPipe
+	}
+	return c.writer.Write(payload)
+}
+
+func (c *probeChainRelayNetConn) Close() error {
+	if c == nil {
+		return nil
+	}
+	var closeErr error
+	c.closeOnce.Do(func() {
+		if c.writer != nil {
+			if err := c.writer.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+		if c.reader != nil {
+			if err := c.reader.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+		if c.closeFn != nil {
+			if err := c.closeFn(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+	})
+	return closeErr
+}
+
+func (c *probeChainRelayNetConn) LocalAddr() net.Addr {
+	return probeChainRelayNetAddr{label: "local"}
+}
+
+func (c *probeChainRelayNetConn) RemoteAddr() net.Addr {
+	return probeChainRelayNetAddr{label: "remote"}
+}
+
+func (c *probeChainRelayNetConn) SetDeadline(_ time.Time) error {
+	return nil
+}
+
+func (c *probeChainRelayNetConn) SetReadDeadline(_ time.Time) error {
+	return nil
+}
+
+func (c *probeChainRelayNetConn) SetWriteDeadline(_ time.Time) error {
+	return nil
 }
 
 func (c *tunnelMuxClient) acceptLoop() {
@@ -189,8 +599,11 @@ func (c *tunnelMuxClient) handleIncomingStream(stream net.Conn) {
 	c.onControllerLog(category, message)
 }
 
-func (c *tunnelMuxClient) sameEndpoint(baseURL, token, nodeID string) bool {
-	return strings.TrimSpace(c.baseURL) == strings.TrimSpace(baseURL) && strings.TrimSpace(c.token) == strings.TrimSpace(token) && strings.TrimSpace(c.nodeID) == strings.TrimSpace(nodeID)
+func (c *tunnelMuxClient) sameEndpoint(baseURL, token, nodeID, modeKey string) bool {
+	return strings.TrimSpace(c.baseURL) == strings.TrimSpace(baseURL) &&
+		strings.TrimSpace(c.token) == strings.TrimSpace(token) &&
+		strings.TrimSpace(c.nodeID) == strings.TrimSpace(nodeID) &&
+		strings.TrimSpace(c.modeKey) == strings.TrimSpace(modeKey)
 }
 
 func (c *tunnelMuxClient) isClosed() bool {
@@ -394,13 +807,24 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 	if nodeID == "" {
 		nodeID = defaultNodeID
 	}
+	chainTarget, hasChainTarget := s.chainTargets[nodeID]
+	modeKey := "ws"
+	if hasChainTarget {
+		modeKey = fmt.Sprintf(
+			"chain:%s@%s:%d/%s",
+			strings.TrimSpace(chainTarget.ChainID),
+			strings.TrimSpace(chainTarget.RelayHost),
+			chainTarget.RelayPort,
+			strings.TrimSpace(chainTarget.LinkLayer),
+		)
+	}
 
 	if baseURL == "" || token == "" {
 		s.logf("tunnel mux connect skipped: missing controller url or session token")
 		return nil, errors.New("missing controller url or session token")
 	}
 
-	if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint(baseURL, token, nodeID) {
+	if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint(baseURL, token, nodeID, modeKey) {
 		return s.tunnelMuxClient, nil
 	}
 	if s.tunnelMuxClient != nil {
@@ -409,16 +833,52 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 		s.tunnelMuxClient = nil
 	}
 
-	client, err := newTunnelMuxClient(baseURL, token, nodeID, func(category, message string) {
-		s.logController(category, message)
-	})
+	var (
+		client *tunnelMuxClient
+		err    error
+	)
+	if hasChainTarget {
+		client, err = newTunnelMuxClientViaProbeChain(baseURL, token, nodeID, chainTarget, func(category, message string) {
+			s.logController(category, message)
+		})
+	} else {
+		client, err = newTunnelMuxClient(baseURL, token, nodeID, func(category, message string) {
+			s.logController(category, message)
+		})
+	}
 	if err != nil {
-		s.logf("create tunnel mux client failed, node=%s base=%s err=%v", nodeID, baseURL, err)
+		if hasChainTarget {
+			s.logf(
+				"create tunnel mux client failed, node=%s base=%s chain=%s relay=%s:%d layer=%s err=%v",
+				nodeID,
+				baseURL,
+				strings.TrimSpace(chainTarget.ChainID),
+				strings.TrimSpace(chainTarget.RelayHost),
+				chainTarget.RelayPort,
+				strings.TrimSpace(chainTarget.LinkLayer),
+				err,
+			)
+		} else {
+			s.logf("create tunnel mux client failed, node=%s base=%s err=%v", nodeID, baseURL, err)
+		}
 		return nil, err
 	}
 	s.tunnelMuxClient = client
 	s.muxReconnects++
-	s.logf("tunnel mux connected, node=%s reconnects=%d", nodeID, s.muxReconnects)
+	if hasChainTarget {
+		s.logf(
+			"tunnel mux connected via chain, node=%s chain=%s entry_node=%s relay=%s:%d layer=%s reconnects=%d",
+			nodeID,
+			strings.TrimSpace(chainTarget.ChainID),
+			strings.TrimSpace(chainTarget.EntryNode),
+			strings.TrimSpace(chainTarget.RelayHost),
+			chainTarget.RelayPort,
+			strings.TrimSpace(chainTarget.LinkLayer),
+			s.muxReconnects,
+		)
+	} else {
+		s.logf("tunnel mux connected, node=%s reconnects=%d", nodeID, s.muxReconnects)
+	}
 	return client, nil
 }
 

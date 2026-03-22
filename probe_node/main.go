@@ -85,8 +85,20 @@ type probeControlMessage struct {
 	Mode              string `json:"mode"`
 	Action            string `json:"action"`
 	Protocol          string `json:"protocol"`
+	ChainID           string `json:"chain_id"`
+	Name              string `json:"name"`
+	UserID            string `json:"user_id"`
+	UserPublicKey     string `json:"user_public_key"`
+	LinkSecret        string `json:"link_secret"`
+	Role              string `json:"role"`
 	ListenHost        string `json:"listen_host"`
+	ListenPort        int    `json:"listen_port"`
+	LinkLayer         string `json:"link_layer"`
 	InternalPort      int    `json:"internal_port"`
+	NextHost          string `json:"next_host"`
+	NextPort          int    `json:"next_port"`
+	RequireUserAuth   bool   `json:"require_user_auth"`
+	NextAuthMode      string `json:"next_auth_mode"`
 	SessionID         string `json:"session_id"`
 	Command           string `json:"command"`
 	TimeoutSec        int    `json:"timeout_sec"`
@@ -165,6 +177,7 @@ func runProbeNode(options probeLaunchOptions) error {
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		})
 	})
+	mux.HandleFunc(probeChainRelayAPIPath, handleProbeChainRelayHTTP)
 
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
 		go startProbeReporter(wsURL, identity)
@@ -172,6 +185,7 @@ func runProbeNode(options probeLaunchOptions) error {
 		log.Printf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
 	startProbeServiceRuntimeLoop(mux, identity, controllerBaseURL)
+	restoreProbeChainRuntimesFromCache()
 
 	log.Printf("probe node started: node_id=%s version=%s service_mode=link-config-driven", identity.NodeID, BuildVersion)
 	select {}
@@ -501,6 +515,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 	}
 	if typeName == "shell_session_control" {
 		go runProbeShellSessionControl(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "chain_link_control" {
+		go runProbeChainLinkControl(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName != "upgrade" {

@@ -234,7 +234,7 @@ export type ProbeLinkTestControlResponse = {
   ok: boolean;
   node_id: string;
   action: "start" | "stop";
-  protocol?: "tcp" | "https" | "http3";
+  protocol?: "http" | "https" | "http3";
   listen_host?: string;
   internal_port?: number;
   message?: string;
@@ -263,9 +263,96 @@ export type ProbeShellShortcutItem = {
   updated_at?: string;
 };
 
+export type ProbeLinkChainItem = {
+  chain_id: string;
+  name: string;
+  user_id: string;
+  user_public_key: string;
+  secret: string;
+  entry_node_id: string;
+  exit_node_id: string;
+  cascade_node_ids: string[];
+  listen_host: string;
+  listen_port: number;
+  link_layer?: "http" | "http2" | "http3";
+  hop_configs?: Array<{
+    node_no: number;
+    listen_port: number;
+    link_layer: "http" | "http2" | "http3" | "";
+  }>;
+  egress_host: string;
+  egress_port: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ProbeLinkChainUpsertPayload = {
+  chain_id?: string;
+  name: string;
+  user_id: string;
+  user_public_key: string;
+  secret?: string;
+  entry_node_id?: string;
+  exit_node_id: string;
+  cascade_node_ids: string[];
+  listen_host?: string;
+  listen_port: number;
+  link_layer?: "http" | "http2" | "http3";
+  hop_configs?: Array<{
+    node_no: number;
+    listen_port?: number;
+    link_layer?: "http" | "http2" | "http3";
+  }>;
+  egress_host: string;
+  egress_port: number;
+};
+
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
   const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[] }>(baseURL, token, "admin.probe.nodes.get");
   return Array.isArray(payload.nodes) ? payload.nodes : [];
+}
+
+export async function fetchProbeLinkChains(baseURL: string, token: string): Promise<ProbeLinkChainItem[]> {
+  const payload = await callAdminWSRpc<{ items?: ProbeLinkChainItem[] }>(baseURL, token, "admin.probe.link.chains.get");
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function upsertProbeLinkChain(
+  baseURL: string,
+  token: string,
+  input: ProbeLinkChainUpsertPayload,
+): Promise<{ item?: ProbeLinkChainItem; items: ProbeLinkChainItem[]; apply_ok?: boolean; apply_error?: string }> {
+  const payload = await callAdminWSRpc<{
+    item?: ProbeLinkChainItem;
+    items?: ProbeLinkChainItem[];
+    apply_ok?: boolean;
+    apply_error?: string;
+  }>(baseURL, token, "admin.probe.link.chain.upsert", input, { timeoutMs: 120000 });
+  return {
+    item: payload.item,
+    items: Array.isArray(payload.items) ? payload.items : [],
+    apply_ok: payload.apply_ok,
+    apply_error: typeof payload.apply_error === "string" ? payload.apply_error : "",
+  };
+}
+
+export async function deleteProbeLinkChain(
+  baseURL: string,
+  token: string,
+  chainID: string,
+): Promise<{ items: ProbeLinkChainItem[]; apply_ok?: boolean; apply_error?: string }> {
+  const payload = await callAdminWSRpc<{
+    items?: ProbeLinkChainItem[];
+    apply_ok?: boolean;
+    apply_error?: string;
+  }>(baseURL, token, "admin.probe.link.chain.delete", {
+    chain_id: String(chainID),
+  }, { timeoutMs: 120000 });
+  return {
+    items: Array.isArray(payload.items) ? payload.items : [],
+    apply_ok: payload.apply_ok,
+    apply_error: typeof payload.apply_error === "string" ? payload.apply_error : "",
+  };
 }
 
 export async function createProbeNodeOnController(baseURL: string, token: string, nodeName: string): Promise<ProbeNodeSyncItem> {
@@ -327,7 +414,7 @@ export async function startProbeLinkTestOnController(
   token: string,
   payload: {
     node_id: string;
-    protocol: "tcp" | "https" | "http3";
+    protocol: "http" | "https" | "http3";
     internal_port: number;
   },
 ): Promise<ProbeLinkTestControlResponse> {
