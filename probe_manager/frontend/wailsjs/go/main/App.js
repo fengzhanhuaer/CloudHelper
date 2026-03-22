@@ -50,6 +50,18 @@ export function GetProbeNodes() {
   return window['go']['main']['App']['GetProbeNodes']();
 }
 
+export function StartProbeLinkSession(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['StartProbeLinkSession'](arg1, arg2, arg3, arg4);
+}
+
+export function PingProbeLinkSession() {
+  return window['go']['main']['App']['PingProbeLinkSession']();
+}
+
+export function StopProbeLinkSession() {
+  return window['go']['main']['App']['StopProbeLinkSession']();
+}
+
 export function TestProbeLink(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['TestProbeLink'](arg1, arg2, arg3, arg4, arg5);
 }

@@ -26,6 +26,12 @@ export function GetNetworkAssistantStatus():Promise<backend.NetworkAssistantStat
 
 export function GetProbeNodes():Promise<Array<backend.ProbeNode>>;
 
+export function StartProbeLinkSession(arg1:string,arg2:string,arg3:string,arg4:number):Promise<backend.ProbeLinkConnectResult>;
+
+export function PingProbeLinkSession():Promise<backend.ProbeLinkConnectResult>;
+
+export function StopProbeLinkSession():Promise<boolean>;
+
 export function Greet(arg1:string):Promise<string>;
 
 export function InstallNetworkAssistantTUN():Promise<backend.NetworkAssistantStatus>;

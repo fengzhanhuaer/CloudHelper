@@ -219,24 +219,30 @@ func startProbeLinkTestTCPServer(listenHost string, internalPort int) (*probeLin
 
 func handleProbeLinkTestTCPConn(conn net.Conn) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(12 * time.Second))
-
 	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return
+	for {
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			return
+		}
+		text := strings.TrimSpace(line)
+		if !strings.HasPrefix(text, "CHPING ") {
+			_, _ = io.WriteString(conn, "CHERR invalid ping\n")
+			return
+		}
+		nonce := strings.TrimSpace(strings.TrimPrefix(text, "CHPING "))
+		if nonce == "" {
+			_, _ = io.WriteString(conn, "CHERR empty nonce\n")
+			continue
+		}
+		if _, err := io.WriteString(conn, "CHPONG "+nonce+"\n"); err != nil {
+			return
+		}
 	}
-	text := strings.TrimSpace(line)
-	if !strings.HasPrefix(text, "CHPING ") {
-		_, _ = io.WriteString(conn, "CHERR invalid ping\n")
-		return
-	}
-	nonce := strings.TrimSpace(strings.TrimPrefix(text, "CHPING "))
-	if nonce == "" {
-		_, _ = io.WriteString(conn, "CHERR empty nonce\n")
-		return
-	}
-	_, _ = io.WriteString(conn, "CHPONG "+nonce+"\n")
 }
 
 func startProbeLinkTestHTTPSServer(listenHost string, internalPort int, identity nodeIdentity, controllerBaseURL string, protocolLabel string) (*probeLinkTestRuntime, error) {

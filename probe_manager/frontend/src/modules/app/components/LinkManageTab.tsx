@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { TestProbeLink } from "../../../../wailsjs/go/main/App";
+import {
+  PingProbeLinkSession,
+  StartProbeLinkSession,
+  StopProbeLinkSession,
+} from "../../../../wailsjs/go/main/App";
 import {
   fetchCloudflareDDNSRecords,
   fetchProbeNodeStatus,
@@ -54,6 +58,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
   useEffect(() => {
     if (!props.sessionToken.trim()) {
       stopLocalContinuousTestLoop();
+      void StopProbeLinkSession();
       setNodes([]);
       setSelectedNodeID("");
       setStatus("未登录，无法加载探针列表");
@@ -70,6 +75,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
     return () => {
       continuousTestingRef.current = false;
       continuousTestSeqRef.current += 1;
+      void StopProbeLinkSession();
     };
   }, []);
 
@@ -128,6 +134,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setNodeAPIHosts(cloudflareAPIHosts);
       if (!sorted.length) {
         stopLocalContinuousTestLoop();
+        await closeLocalProbeLinkSessionSilently();
         setSelectedNodeID("");
         setNodeRuntimes({});
         setNodeAPIHosts({});
@@ -155,21 +162,55 @@ export function LinkManageTab(props: LinkManageTabProps) {
     continuousTestSeqRef.current += 1;
   }
 
-  async function runContinuousTestLoop(
-    loopSeq: number,
-    input: { nodeID: string; protocol: ProbeLinkTestProtocol; host: string; port: number },
-  ) {
+  async function closeLocalProbeLinkSessionSilently() {
+    try {
+      await StopProbeLinkSession();
+    } catch {
+      // ignore close failure when switching/stopping
+    }
+  }
+
+  async function handleSelectedNodeChange(nextNodeIDRaw: string) {
+    const nextNodeID = nextNodeIDRaw.trim();
+    const prevNodeID = selectedNodeID.trim();
+    if (nextNodeID === prevNodeID) {
+      return;
+    }
+
+    const wasTesting = continuousTestingRef.current || isTesting;
+    setSelectedNodeID(nextNodeIDRaw);
+    setLatencyMS(null);
+    setResultSummary("");
+
+    if (!wasTesting) {
+      await closeLocalProbeLinkSessionSilently();
+      return;
+    }
+
+    setIsOperating(true);
+    stopLocalContinuousTestLoop();
+    await closeLocalProbeLinkSessionSilently();
+    try {
+      if (prevNodeID) {
+        await stopProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, prevNodeID);
+      }
+      setStatus(nextNodeID
+        ? `已切换到探针 #${nextNodeID}，旧测试连接已自动关闭`
+        : "已切换探针，旧测试连接已自动关闭");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`切换探针时关闭旧测试失败：${msg}`);
+    } finally {
+      setIsOperating(false);
+    }
+  }
+
+  async function runContinuousTestLoop(loopSeq: number) {
     let round = 0;
     while (continuousTestingRef.current && loopSeq === continuousTestSeqRef.current) {
       round += 1;
       try {
-        const result = (await TestProbeLink(
-          input.nodeID,
-          input.protocol,
-          input.protocol,
-          input.host,
-          input.port,
-        )) as ProbeLinkConnectResult;
+        const result = (await PingProbeLinkSession()) as ProbeLinkConnectResult;
         if (!continuousTestingRef.current || loopSeq !== continuousTestSeqRef.current) {
           return;
         }
@@ -220,6 +261,9 @@ export function LinkManageTab(props: LinkManageTabProps) {
     setResultSummary("");
     setStatus("正在下发开测命令...");
     try {
+      stopLocalContinuousTestLoop();
+      await closeLocalProbeLinkSessionSilently();
+
       const startResp = await startProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, {
         node_id: nodeID,
         protocol,
@@ -227,21 +271,33 @@ export function LinkManageTab(props: LinkManageTabProps) {
       });
       const startMessage = startResp.message || "探针已启动测试服务";
       setStatus(`${startMessage}，正在连接 ${testTarget.host}:${safeExternalPort} ...`);
+
+      const first = (await StartProbeLinkSession(
+        nodeID,
+        protocol,
+        testTarget.host,
+        safeExternalPort,
+      )) as ProbeLinkConnectResult;
+      const firstLatency = typeof first.duration_ms === "number" ? first.duration_ms : null;
+      setLatencyMS(firstLatency);
+      setResultSummary(buildResultSummary(first));
+
       continuousTestSeqRef.current += 1;
       const currentSeq = continuousTestSeqRef.current;
       continuousTestingRef.current = true;
       setIsTesting(true);
-      setStatus(`测试已启动，持续检测中：${testTarget.host}:${safeExternalPort}`);
-      void runContinuousTestLoop(currentSeq, {
-        nodeID,
-        protocol,
-        host: testTarget.host,
-        port: safeExternalPort,
-      });
+      setStatus(`测试已启动，连接已建立，持续检测中：${testTarget.host}:${safeExternalPort}`);
+      void runContinuousTestLoop(currentSeq);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`测试失败：${msg}`);
       stopLocalContinuousTestLoop();
+      await closeLocalProbeLinkSessionSilently();
+      try {
+        await stopProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, nodeID);
+      } catch {
+        // ignore stop failure after start failure
+      }
     } finally {
       setIsOperating(false);
     }
@@ -255,9 +311,20 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
     stopLocalContinuousTestLoop();
     setIsOperating(true);
+    let localCloseErr = "";
     try {
+      try {
+        await StopProbeLinkSession();
+      } catch (error) {
+        localCloseErr = error instanceof Error ? error.message : "unknown error";
+      }
       const stopResp = await stopProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, nodeID);
-      setStatus(stopResp.message || "已关闭测试，探针测试服务已停止");
+      const baseMessage = stopResp.message || "已关闭测试，探针测试服务已停止";
+      if (localCloseErr) {
+        setStatus(`${baseMessage}（本地连接关闭异常：${localCloseErr}）`);
+      } else {
+        setStatus(baseMessage);
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`关闭测试失败：${msg}`);
@@ -282,8 +349,8 @@ export function LinkManageTab(props: LinkManageTabProps) {
               <select
                 className="input"
                 value={selectedNodeID}
-                onChange={(event) => setSelectedNodeID(event.target.value)}
-                disabled={isOperating || isLoadingNodes || isTesting}
+                onChange={(event) => { void handleSelectedNodeChange(event.target.value); }}
+                disabled={isOperating || isLoadingNodes}
               >
                 {nodes.map((item) => (
                   <option key={item.node_no} value={String(item.node_no)}>

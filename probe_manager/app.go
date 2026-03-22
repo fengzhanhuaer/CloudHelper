@@ -157,3 +157,15 @@ func (a *App) ReplaceProbeNodes(nodes []ProbeNode) ([]ProbeNode, error) {
 func (a *App) TestProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLinkConnectResult, error) {
 	return a.inner.TestProbeLink(nodeID, endpointType, scheme, host, port)
 }
+
+func (a *App) StartProbeLinkSession(nodeID, protocol, host string, port int) (ProbeLinkConnectResult, error) {
+	return a.inner.StartProbeLinkSession(nodeID, protocol, host, port)
+}
+
+func (a *App) PingProbeLinkSession() (ProbeLinkConnectResult, error) {
+	return a.inner.PingProbeLinkSession()
+}
+
+func (a *App) StopProbeLinkSession() (bool, error) {
+	return a.inner.StopProbeLinkSession()
+}
