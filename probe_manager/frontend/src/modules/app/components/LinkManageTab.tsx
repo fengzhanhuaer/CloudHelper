@@ -35,6 +35,12 @@ type ProbeLinkConnectResult = {
   duration_ms?: number;
 };
 
+type ProbeTestTarget = {
+  host: string;
+  isAPI: boolean;
+  source: string;
+};
+
 const defaultInternalPort = 16031;
 
 export function LinkManageTab(props: LinkManageTabProps) {
@@ -95,10 +101,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
     return nodeAPIHosts[selectedNode.node_no] || "";
   }, [nodeAPIHosts, selectedNode]);
-  const testTarget = useMemo(
-    () => resolveNodeTestTarget(selectedNode, selectedRuntime, selectedAPIHost),
+  const testTargets = useMemo(
+    () => resolveNodeTestTargets(selectedNode, selectedRuntime, selectedAPIHost),
     [selectedAPIHost, selectedNode, selectedRuntime],
   );
+  const testTarget = testTargets.length > 0 ? testTargets[0] : { host: "", isAPI: false, source: "" };
 
   useEffect(() => {
     if (!selectedNode) {
@@ -240,7 +247,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setStatus("请选择探针");
       return;
     }
-    if (!testTarget.host) {
+    if (testTargets.length === 0) {
       setStatus("未找到可用测试地址，请先在探针管理里配置公网地址，或确认 Cloudflare 已生成 api 域名");
       return;
     }
@@ -272,12 +279,37 @@ export function LinkManageTab(props: LinkManageTabProps) {
       const startMessage = startResp.message || "探针已启动测试服务";
       setStatus(`${startMessage}，正在连接 ${testTarget.host}:${safeExternalPort} ...`);
 
-      const first = (await StartProbeLinkSession(
-        nodeID,
-        protocol,
-        testTarget.host,
-        safeExternalPort,
-      )) as ProbeLinkConnectResult;
+      const maxConnectAttemptsPerTarget = 4;
+      let first: ProbeLinkConnectResult | null = null;
+      let connectedTarget: ProbeTestTarget | null = null;
+      const connectErrors: string[] = [];
+      for (let targetIndex = 0; targetIndex < testTargets.length && !first; targetIndex += 1) {
+        const target = testTargets[targetIndex];
+        for (let attempt = 1; attempt <= maxConnectAttemptsPerTarget; attempt += 1) {
+          try {
+            setStatus(`测试服务已启动，正在连接 ${target.host}:${safeExternalPort}（${target.source}，第 ${attempt}/${maxConnectAttemptsPerTarget} 次）...`);
+            first = (await StartProbeLinkSession(
+              nodeID,
+              protocol,
+              target.host,
+              safeExternalPort,
+            )) as ProbeLinkConnectResult;
+            connectedTarget = target;
+            break;
+          } catch (error) {
+            const lastConnectErr = errorToMessage(error);
+            if (attempt < maxConnectAttemptsPerTarget) {
+              setStatus(`等待链路就绪：${target.host}:${safeExternalPort}（${target.source}）失败：${lastConnectErr}`);
+              await sleep(1200);
+              continue;
+            }
+            connectErrors.push(`${target.host}(${target.source}): ${lastConnectErr}`);
+          }
+        }
+      }
+      if (!first) {
+        throw new Error(connectErrors.length > 0 ? `全部目标连接失败：${connectErrors.join(" | ")}` : "failed to establish probe link session");
+      }
       const firstLatency = typeof first.duration_ms === "number" ? first.duration_ms : null;
       setLatencyMS(firstLatency);
       setResultSummary(buildResultSummary(first));
@@ -286,7 +318,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
       const currentSeq = continuousTestSeqRef.current;
       continuousTestingRef.current = true;
       setIsTesting(true);
-      setStatus(`测试已启动，连接已建立，持续检测中：${testTarget.host}:${safeExternalPort}`);
+      if (connectedTarget) {
+        setStatus(`测试已启动，连接已建立，持续检测中：${connectedTarget.host}:${safeExternalPort}（${connectedTarget.source}）`);
+      } else {
+        setStatus(`测试已启动，连接已建立，持续检测中：${safeExternalPort}`);
+      }
       void runContinuousTestLoop(currentSeq);
     } catch (error) {
       const msg = errorToMessage(error);
@@ -416,6 +452,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
 
           <div className="status">{status}</div>
           <div className="status">测试目标：{testTarget.host || "-"} {testTarget.host ? `(${testTarget.source})` : ""}</div>
+          <div className="status">候选目标：{testTargets.length > 0 ? testTargets.map((item) => `${item.host}(${item.source})`).join(" | ") : "-"}</div>
           <div className="status">链路延迟：{latencyMS === null ? "-" : `${latencyMS} ms`}</div>
           <div className="status">{resultSummary || "暂无测试结果详情"}</div>
         </>
@@ -435,51 +472,42 @@ function normalizePort(value: number): number {
   return port;
 }
 
-function resolveNodeTestTarget(
+function resolveNodeTestTargets(
   node?: ProbeNodeSyncItem,
   runtime?: ProbeNodeStatusItem["runtime"],
   cloudflareAPIHost?: string,
-): { host: string; isAPI: boolean; source: string } {
+): ProbeTestTarget[] {
+  void runtime;
   if (!node) {
-    return { host: "", isAPI: false, source: "" };
+    return [];
   }
-  const cloudflareHost = normalizeHost(cloudflareAPIHost);
-  if (isLikelyAPIDomainHost(cloudflareHost)) {
-    return { host: cloudflareHost, isAPI: true, source: "cloudflare_business" };
-  }
+  const candidates: ProbeTestTarget[] = [];
+  const seen = new Set<string>();
+  const pushCandidate = (rawHost: unknown, source: string) => {
+    const host = normalizeHost(rawHost);
+    if (!isUsableTargetHost(host)) {
+      return;
+    }
+    if (!isLikelyAPIDomainHost(host)) {
+      return;
+    }
+    const key = host.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    candidates.push({
+      host,
+      isAPI: isLikelyAPIDomainHost(host),
+      source,
+    });
+  };
 
-  const namedCandidates = [
-    { host: normalizeHost(node.public_host), source: "public_host" },
-    { host: normalizeHost(node.ddns), source: "ddns" },
-    { host: normalizeHost(node.service_host), source: "service_host" },
-  ].filter((item) => isUsableTargetHost(item.host));
-
-  const apiFirst = namedCandidates.find((item) => isLikelyAPIDomainHost(item.host));
-  if (apiFirst) {
-    return { host: apiFirst.host, isAPI: true, source: apiFirst.source };
-  }
-
-  const domainFirst = namedCandidates.find((item) => isDomainHost(item.host));
-  if (domainFirst) {
-    return { host: domainFirst.host, isAPI: false, source: domainFirst.source };
-  }
-
-  if (namedCandidates.length > 0) {
-    const first = namedCandidates[0];
-    return { host: first.host, isAPI: false, source: first.source };
-  }
-
-  const runtimeIPv4 = (runtime?.ipv4 || []).map((item) => String(item).trim()).filter((item) => item !== "");
-  if (runtimeIPv4.length > 0) {
-    return { host: runtimeIPv4[0], isAPI: false, source: "runtime_ipv4" };
-  }
-
-  const runtimeIPv6 = (runtime?.ipv6 || []).map((item) => String(item).trim()).filter((item) => item !== "");
-  if (runtimeIPv6.length > 0) {
-    return { host: runtimeIPv6[0], isAPI: false, source: "runtime_ipv6" };
-  }
-
-  return { host: "", isAPI: false, source: "" };
+  pushCandidate(cloudflareAPIHost, "cloudflare_business");
+  pushCandidate(node.public_host, "public_host");
+  pushCandidate(node.ddns, "ddns");
+  pushCandidate(node.service_host, "service_host");
+  return candidates;
 }
 
 function buildNodeAPIHostsFromCloudflare(records: CloudflareDDNSRecord[]): Record<number, string> {
