@@ -326,14 +326,9 @@ export function LinkManageTab(props: LinkManageTabProps) {
       void runContinuousTestLoop(currentSeq);
     } catch (error) {
       const msg = errorToMessage(error);
-      setStatus(`测试失败：${msg}`);
+      setStatus(`测试失败：${msg}（探针测试服务保持开启，便于排查；如需关闭请点击“关闭测试”）`);
       stopLocalContinuousTestLoop();
       await closeLocalProbeLinkSessionSilently();
-      try {
-        await stopProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, nodeID);
-      } catch {
-        // ignore stop failure after start failure
-      }
     } finally {
       setIsOperating(false);
     }
