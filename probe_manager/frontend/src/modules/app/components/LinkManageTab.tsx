@@ -149,7 +149,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       });
       setStatus(`已加载 ${sorted.length} 个探针`);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
+      const msg = errorToMessage(error);
       setStatus(`加载探针失败：${msg}`);
     } finally {
       setIsLoadingNodes(false);
@@ -198,7 +198,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         ? `已切换到探针 #${nextNodeID}，旧测试连接已自动关闭`
         : "已切换探针，旧测试连接已自动关闭");
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
+      const msg = errorToMessage(error);
       setStatus(`切换探针时关闭旧测试失败：${msg}`);
     } finally {
       setIsOperating(false);
@@ -222,7 +222,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         if (!continuousTestingRef.current || loopSeq !== continuousTestSeqRef.current) {
           return;
         }
-        const msg = error instanceof Error ? error.message : "unknown error";
+        const msg = errorToMessage(error);
         setResultSummary(`error=${msg}`);
         setStatus(`持续测试异常：${msg}（3秒后重试）`);
       }
@@ -289,7 +289,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setStatus(`测试已启动，连接已建立，持续检测中：${testTarget.host}:${safeExternalPort}`);
       void runContinuousTestLoop(currentSeq);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
+      const msg = errorToMessage(error);
       setStatus(`测试失败：${msg}`);
       stopLocalContinuousTestLoop();
       await closeLocalProbeLinkSessionSilently();
@@ -316,7 +316,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       try {
         await StopProbeLinkSession();
       } catch (error) {
-        localCloseErr = error instanceof Error ? error.message : "unknown error";
+        localCloseErr = errorToMessage(error);
       }
       const stopResp = await stopProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, nodeID);
       const baseMessage = stopResp.message || "已关闭测试，探针测试服务已停止";
@@ -326,7 +326,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         setStatus(baseMessage);
       }
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
+      const msg = errorToMessage(error);
       setStatus(`关闭测试失败：${msg}`);
     } finally {
       setIsOperating(false);
@@ -613,6 +613,39 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(() => resolve(), safeMs);
   });
+}
+
+function errorToMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const msg = error.message.trim();
+    if (msg) {
+      return msg;
+    }
+  }
+  if (typeof error === "string") {
+    const msg = error.trim();
+    if (msg) {
+      return msg;
+    }
+  }
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const messageCandidates = [record.message, record.error, record.reason];
+    for (const candidate of messageCandidates) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+    try {
+      const serialized = JSON.stringify(record);
+      if (serialized && serialized !== "{}") {
+        return serialized;
+      }
+    } catch {
+      // ignore serialization failure
+    }
+  }
+  return "unknown error";
 }
 
 function buildResultSummary(result: ProbeLinkConnectResult): string {
