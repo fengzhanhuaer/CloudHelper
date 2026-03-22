@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TestProbeLink } from "../../../../wailsjs/go/main/App";
 import {
   fetchCloudflareDDNSRecords,
@@ -44,12 +44,16 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const [externalPort, setExternalPort] = useState(defaultInternalPort);
   const [isLoadingNodes, setIsLoadingNodes] = useState(false);
   const [isOperating, setIsOperating] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
   const [status, setStatus] = useState("未执行测试");
   const [latencyMS, setLatencyMS] = useState<number | null>(null);
   const [resultSummary, setResultSummary] = useState("");
+  const continuousTestSeqRef = useRef(0);
+  const continuousTestingRef = useRef(false);
 
   useEffect(() => {
     if (!props.sessionToken.trim()) {
+      stopLocalContinuousTestLoop();
       setNodes([]);
       setSelectedNodeID("");
       setStatus("未登录，无法加载探针列表");
@@ -57,6 +61,17 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
     void loadNodes();
   }, [props.controllerBaseUrl, props.sessionToken]);
+
+  useEffect(() => {
+    continuousTestingRef.current = isTesting;
+  }, [isTesting]);
+
+  useEffect(() => {
+    return () => {
+      continuousTestingRef.current = false;
+      continuousTestSeqRef.current += 1;
+    };
+  }, []);
 
   const selectedNode = useMemo(
     () => nodes.find((item) => String(item.node_no) === selectedNodeID),
@@ -112,6 +127,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setNodeRuntimes(runtimeMap);
       setNodeAPIHosts(cloudflareAPIHosts);
       if (!sorted.length) {
+        stopLocalContinuousTestLoop();
         setSelectedNodeID("");
         setNodeRuntimes({});
         setNodeAPIHosts({});
@@ -133,6 +149,46 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
   }
 
+  function stopLocalContinuousTestLoop() {
+    continuousTestingRef.current = false;
+    setIsTesting(false);
+    continuousTestSeqRef.current += 1;
+  }
+
+  async function runContinuousTestLoop(
+    loopSeq: number,
+    input: { nodeID: string; protocol: ProbeLinkTestProtocol; host: string; port: number },
+  ) {
+    let round = 0;
+    while (continuousTestingRef.current && loopSeq === continuousTestSeqRef.current) {
+      round += 1;
+      try {
+        const result = (await TestProbeLink(
+          input.nodeID,
+          input.protocol,
+          input.protocol,
+          input.host,
+          input.port,
+        )) as ProbeLinkConnectResult;
+        if (!continuousTestingRef.current || loopSeq !== continuousTestSeqRef.current) {
+          return;
+        }
+        const latency = typeof result.duration_ms === "number" ? result.duration_ms : null;
+        setLatencyMS(latency);
+        setResultSummary(buildResultSummary(result));
+        setStatus(`持续测试中：第 ${round} 次，延迟 ${latency === null ? "-" : `${latency}ms`}`);
+      } catch (error) {
+        if (!continuousTestingRef.current || loopSeq !== continuousTestSeqRef.current) {
+          return;
+        }
+        const msg = error instanceof Error ? error.message : "unknown error";
+        setResultSummary(`error=${msg}`);
+        setStatus(`持续测试异常：${msg}（3秒后重试）`);
+      }
+      await sleep(3000);
+    }
+  }
+
   async function handleStartTest() {
     if (!props.sessionToken.trim()) {
       setStatus("未登录，无法开始测试");
@@ -145,6 +201,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
     if (!testTarget.host) {
       setStatus("未找到可用测试地址，请先在探针管理里配置公网地址，或确认 Cloudflare 已生成 api 域名");
+      return;
+    }
+    if (isTesting) {
+      setStatus("链路测试已在持续运行中，请先关闭测试");
       return;
     }
 
@@ -167,15 +227,21 @@ export function LinkManageTab(props: LinkManageTabProps) {
       });
       const startMessage = startResp.message || "探针已启动测试服务";
       setStatus(`${startMessage}，正在连接 ${testTarget.host}:${safeExternalPort} ...`);
-
-      const result = (await TestProbeLink(nodeID, protocol, protocol, testTarget.host, safeExternalPort)) as ProbeLinkConnectResult;
-      const latency = typeof result.duration_ms === "number" ? result.duration_ms : null;
-      setLatencyMS(latency);
-      setResultSummary(buildResultSummary(result));
-      setStatus(`测试成功：延迟 ${latency === null ? "-" : `${latency}ms`}`);
+      continuousTestSeqRef.current += 1;
+      const currentSeq = continuousTestSeqRef.current;
+      continuousTestingRef.current = true;
+      setIsTesting(true);
+      setStatus(`测试已启动，持续检测中：${testTarget.host}:${safeExternalPort}`);
+      void runContinuousTestLoop(currentSeq, {
+        nodeID,
+        protocol,
+        host: testTarget.host,
+        port: safeExternalPort,
+      });
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`测试失败：${msg}`);
+      stopLocalContinuousTestLoop();
     } finally {
       setIsOperating(false);
     }
@@ -187,6 +253,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setStatus("请选择探针");
       return;
     }
+    stopLocalContinuousTestLoop();
     setIsOperating(true);
     try {
       const stopResp = await stopProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, nodeID);
@@ -216,7 +283,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                 className="input"
                 value={selectedNodeID}
                 onChange={(event) => setSelectedNodeID(event.target.value)}
-                disabled={isOperating || isLoadingNodes}
+                disabled={isOperating || isLoadingNodes || isTesting}
               >
                 {nodes.map((item) => (
                   <option key={item.node_no} value={String(item.node_no)}>
@@ -231,7 +298,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                 className="input"
                 value={protocol}
                 onChange={(event) => setProtocol(event.target.value as ProbeLinkTestProtocol)}
-                disabled={isOperating}
+                disabled={isOperating || isTesting}
               >
                 <option value="tcp">tcp</option>
                 <option value="https">https</option>
@@ -251,7 +318,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                 max={65535}
                 value={internalPort}
                 onChange={(event) => setInternalPort(Number(event.target.value) || 0)}
-                disabled={isOperating}
+                disabled={isOperating || isTesting}
               />
             </div>
             <div className="row">
@@ -263,20 +330,20 @@ export function LinkManageTab(props: LinkManageTabProps) {
                 max={65535}
                 value={externalPort}
                 onChange={(event) => setExternalPort(Number(event.target.value) || 0)}
-                disabled={isOperating}
+                disabled={isOperating || isTesting}
               />
             </div>
           </div>
 
           <div className="content-actions">
-            <button className="btn" onClick={() => void loadNodes()} disabled={isLoadingNodes || isOperating}>
+            <button className="btn" onClick={() => void loadNodes()} disabled={isLoadingNodes || isOperating || isTesting}>
               {isLoadingNodes ? "刷新中..." : "刷新探针"}
             </button>
-            <button className="btn" onClick={() => void handleStartTest()} disabled={isOperating || !selectedNodeID}>
-              {isOperating ? "处理中..." : "开始测试"}
+            <button className="btn" onClick={() => void handleStartTest()} disabled={isOperating || isTesting || !selectedNodeID}>
+              {isTesting ? "测试中..." : isOperating ? "处理中..." : "开始测试"}
             </button>
             <button className="btn" onClick={() => void handleStopTest()} disabled={isOperating || !selectedNodeID}>
-              关闭测试
+              {isOperating ? "关闭中..." : "关闭测试"}
             </button>
           </div>
 
@@ -472,6 +539,13 @@ function isIPv6Host(host: string): boolean {
     return false;
   }
   return /^[0-9a-fA-F:]+$/.test(host);
+}
+
+function sleep(ms: number): Promise<void> {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, Math.trunc(ms)) : 0;
+  return new Promise((resolve) => {
+    window.setTimeout(() => resolve(), safeMs);
+  });
 }
 
 function buildResultSummary(result: ProbeLinkConnectResult): string {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   createProbeNodeOnController,
   deleteProbeShellShortcut,
@@ -633,6 +633,37 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
   }
 
+  async function handleShellNodeChange(nextNodeIDRaw: string) {
+    const nextNodeID = nextNodeIDRaw.trim();
+    const currentNodeID = shellNodeIDInput.trim();
+    if (nextNodeID === currentNodeID) {
+      return;
+    }
+
+    const hasSession = shellSessionID.trim() !== "";
+    if (hasSession) {
+      await disconnectShellSession({ silent: true });
+      if (nextNodeID) {
+        setStatus(`已切换探针到节点 ${nextNodeID}，旧 Shell 会话已自动关闭`);
+      }
+    }
+
+    setShellNodeIDInput(nextNodeIDRaw);
+    setShellCommandInput("");
+    setShellOutput("");
+  }
+
+  function handleShellCommandKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    if (isShellRunning || !shellSessionID.trim() || !shellCommandInput.trim()) {
+      return;
+    }
+    void runShellCommand();
+  }
+
   async function runShellCommand(commandOverride?: string) {
     const sessionID = shellSessionID.trim();
     const nodeID = (shellSessionNodeID || shellNodeIDInput).trim();
@@ -957,7 +988,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               <select
                 className="input"
                 value={shellNodeIDInput}
-                onChange={(event) => setShellNodeIDInput(event.target.value)}
+                onChange={(event) => { void handleShellNodeChange(event.target.value); }}
                 disabled={isShellRunning || nodes.length === 0}
               >
                 {nodes.length === 0 ? (
@@ -999,25 +1030,29 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               </label>
             </div>
             <div>当前会话：{shellSessionID.trim() ? `${shellSessionID}（节点 #${shellSessionNodeID || shellNodeIDInput}）` : "未连接"}</div>
+          </div>
+
+          <pre ref={shellOutputRef} className="log-viewer-output">{shellOutput || "暂无 Shell 输出"}</pre>
+
+          <div className="identity-card" style={{ marginTop: 12, marginBottom: 12 }}>
             <div className="row" style={{ marginBottom: 0 }}>
               <label>命令输入</label>
-              <textarea
+              <input
                 className="input"
-                rows={4}
                 value={shellCommandInput}
                 onChange={(event) => setShellCommandInput(event.target.value)}
-                placeholder={shellSessionID.trim() ? "例如：pwd 或 cd /tmp && ls -la" : "请先建立会话"}
+                onKeyDown={handleShellCommandKeyDown}
+                placeholder={shellSessionID.trim() ? "输入命令后按 Enter 发送，例如：pwd" : "请先建立会话"}
                 disabled={isShellRunning || !shellSessionID.trim()}
               />
             </div>
             <div className="content-actions">
               <button className="btn" onClick={() => void runShellCommand()} disabled={isShellRunning || !shellSessionID.trim() || !shellCommandInput.trim()}>
-                {isShellRunning ? "执行中..." : "执行命令"}
+                {isShellRunning ? "执行中..." : "发送命令"}
               </button>
+              <div>按 Enter 发送命令</div>
             </div>
           </div>
-
-          <pre ref={shellOutputRef} className="log-viewer-output">{shellOutput || "暂无 Shell 输出"}</pre>
 
           <div className="identity-card" style={{ marginTop: 12 }}>
             <div>快捷指令（全局共享）</div>
