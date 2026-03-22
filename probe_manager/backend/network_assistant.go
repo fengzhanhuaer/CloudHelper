@@ -239,7 +239,7 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	}
 
 	return NetworkAssistantStatus{
-		Enabled:           s.mode == networkModeGlobal || s.mode == networkModeTUN,
+		Enabled:           s.mode == networkModeTUN,
 		Mode:              s.mode,
 		NodeID:            s.nodeID,
 		AvailableNodes:    append([]string(nil), s.availableNodes...),
@@ -269,7 +269,13 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	if normalizedMode == networkModeTUN {
 		return s.EnableTUN()
 	}
-	if normalizedMode != networkModeDirect && normalizedMode != networkModeGlobal {
+	if normalizedMode == networkModeGlobal {
+		err := errors.New("global proxy mode has been removed")
+		s.logf("switch global aborted: %v", err)
+		s.setLastError(err)
+		return err
+	}
+	if normalizedMode != networkModeDirect {
 		return fmt.Errorf("unsupported mode: %s", mode)
 	}
 
@@ -330,45 +336,6 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.logf("switched mode to direct, node=%s", normalizedNode)
 		return nil
 	}
-
-	if effectiveBase == "" || effectiveToken == "" {
-		err := errors.New("controller url and session token are required for global mode")
-		s.logf("switch global aborted: %v", err)
-		s.setLastError(err)
-		return err
-	}
-
-	if whitelist, _, err := loadOrCreateSocksDirectWhitelist(); err != nil {
-		s.logf("failed to refresh direct whitelist: %v", err)
-	} else {
-		s.mu.Lock()
-		s.directWhitelist = whitelist
-		s.mu.Unlock()
-	}
-
-	if err := s.ensureSocksServer(); err != nil {
-		s.logf("failed to start socks server: %v", err)
-		s.setLastError(err)
-		return err
-	}
-
-	if err := s.applySystemProxy(); err != nil {
-		s.logf("failed to apply system proxy: %v", err)
-		s.setLastError(err)
-		_ = s.stopSocksServerOnly()
-		return err
-	}
-
-	s.mu.Lock()
-	s.mode = networkModeGlobal
-	s.tunnelStatusMessage = "隧道待命"
-	s.systemProxyMessage = "已设置"
-	s.tunnelOpenFailures = 0
-	s.tunEnabled = false
-	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
-	socksAddr := s.socks5ListenAddr
-	s.mu.Unlock()
-	s.logf("switched mode to global, node=%s, socks5=%s", normalizedNode, socksAddr)
 
 	return nil
 }

@@ -12,7 +12,6 @@ type NetworkAssistantTabProps = {
   operateStatus: string;
   onRefreshStatus: () => void;
   onSwitchDirect: () => void;
-  onSwitchGlobal: () => void;
   onInstallTUN: () => void;
   onEnableTUN: () => void;
   onRestoreDirect: () => void;
@@ -123,7 +122,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
           <div className="content-actions">
             <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>切换直连</button>
-            <button className="btn" onClick={props.onSwitchGlobal} disabled={props.isOperating}>切换全局</button>
             <button className="btn" onClick={props.onRestoreDirect} disabled={props.isOperating}>恢复系统代理</button>
           </div>
         </>
