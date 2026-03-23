@@ -85,6 +85,12 @@ type LoginRequest struct {
 	Signature string `json:"signature,omitempty"`
 }
 
+type probeLinkUserIdentity struct {
+	Username string `json:"username"`
+	UserRole string `json:"user_role"`
+	CertType string `json:"cert_type"`
+}
+
 var authManager *AuthManager
 
 func InitBlacklistStore(path string) (*BlacklistStore, error) {
@@ -861,6 +867,62 @@ func currentIdentityClaims() (string, string, string) {
 		certType = defaultCertType
 	}
 	return username, role, certType
+}
+
+func listProbeLinkUserIdentities() []probeLinkUserIdentity {
+	username, role, certType := currentIdentityClaims()
+	username = normalizeUsername(username)
+	if username == "" {
+		return []probeLinkUserIdentity{}
+	}
+	return []probeLinkUserIdentity{
+		{
+			Username: username,
+			UserRole: normalizeRole(role),
+			CertType: normalizeCertType(certType),
+		},
+	}
+}
+
+func currentAdminPublicKeyBase64() (string, error) {
+	if authManager == nil {
+		return "", errors.New("auth manager is not initialized")
+	}
+	authManager.mu.RLock()
+	defer authManager.mu.RUnlock()
+	if len(authManager.adminPublicKey) != ed25519.PublicKeySize {
+		return "", errors.New("admin public key is not loaded")
+	}
+	return base64.StdEncoding.EncodeToString(authManager.adminPublicKey), nil
+}
+
+func resolveProbeLinkUserIdentityAndPublicKey(username string) (probeLinkUserIdentity, string, error) {
+	identities := listProbeLinkUserIdentities()
+	if len(identities) == 0 {
+		return probeLinkUserIdentity{}, "", errors.New("no identity user available")
+	}
+
+	target := normalizeUsername(username)
+	selected := probeLinkUserIdentity{}
+	if target == "" {
+		selected = identities[0]
+	} else {
+		for _, item := range identities {
+			if normalizeUsername(item.Username) == target {
+				selected = item
+				break
+			}
+		}
+		if strings.TrimSpace(selected.Username) == "" {
+			return probeLinkUserIdentity{}, "", errors.New("user not found")
+		}
+	}
+
+	pubKey, err := currentAdminPublicKeyBase64()
+	if err != nil {
+		return probeLinkUserIdentity{}, "", err
+	}
+	return selected, pubKey, nil
 }
 
 func IsTokenValid(token string) bool {

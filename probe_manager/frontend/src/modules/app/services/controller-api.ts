@@ -277,7 +277,10 @@ export type ProbeLinkChainItem = {
   link_layer?: "http" | "http2" | "http3";
   hop_configs?: Array<{
     node_no: number;
-    listen_port: number;
+    service_port?: number;
+    external_port?: number;
+    // Keep legacy listen_port for backward compatibility with old payload/store.
+    listen_port?: number;
     link_layer: "http" | "http2" | "http3" | "";
   }>;
   egress_host: string;
@@ -300,11 +303,26 @@ export type ProbeLinkChainUpsertPayload = {
   link_layer?: "http" | "http2" | "http3";
   hop_configs?: Array<{
     node_no: number;
+    service_port?: number;
+    external_port?: number;
     listen_port?: number;
     link_layer?: "http" | "http2" | "http3";
   }>;
   egress_host: string;
   egress_port: number;
+};
+
+export type ProbeLinkUserItem = {
+  username: string;
+  user_role?: string;
+  cert_type?: string;
+};
+
+export type ProbeLinkUserPublicKeyResponse = {
+  username: string;
+  user_role?: string;
+  cert_type?: string;
+  public_key: string;
 };
 
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
@@ -315,6 +333,41 @@ export async function fetchProbeNodes(baseURL: string, token: string): Promise<P
 export async function fetchProbeLinkChains(baseURL: string, token: string): Promise<ProbeLinkChainItem[]> {
   const payload = await callAdminWSRpc<{ items?: ProbeLinkChainItem[] }>(baseURL, token, "admin.probe.link.chains.get");
   return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function fetchProbeLinkUsers(baseURL: string, token: string): Promise<ProbeLinkUserItem[]> {
+  const payload = await callAdminWSRpc<{ users?: ProbeLinkUserItem[] }>(baseURL, token, "admin.probe.link.users.get");
+  if (!Array.isArray(payload.users)) {
+    return [];
+  }
+  return payload.users
+    .map((item) => ({
+      username: typeof item?.username === "string" ? item.username : "",
+      user_role: typeof item?.user_role === "string" ? item.user_role : "",
+      cert_type: typeof item?.cert_type === "string" ? item.cert_type : "",
+    }))
+    .filter((item) => item.username.trim() !== "");
+}
+
+export async function fetchProbeLinkUserPublicKey(
+  baseURL: string,
+  token: string,
+  username: string,
+): Promise<ProbeLinkUserPublicKeyResponse> {
+  const payload = await callAdminWSRpc<ProbeLinkUserPublicKeyResponse>(
+    baseURL,
+    token,
+    "admin.probe.link.user.public_key.get",
+    {
+      username: String(username),
+    },
+  );
+  return {
+    username: typeof payload.username === "string" ? payload.username : String(username),
+    user_role: typeof payload.user_role === "string" ? payload.user_role : "",
+    cert_type: typeof payload.cert_type === "string" ? payload.cert_type : "",
+    public_key: typeof payload.public_key === "string" ? payload.public_key : "",
+  };
 }
 
 export async function upsertProbeLinkChain(

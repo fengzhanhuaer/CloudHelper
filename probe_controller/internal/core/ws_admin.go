@@ -604,6 +604,29 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return map[string]interface{}{
 			"items": items,
 		}, nil
+	case "admin.probe.link.users.get":
+		return map[string]interface{}{
+			"users": listProbeLinkUserIdentities(),
+		}, nil
+	case "admin.probe.link.user.public_key.get":
+		var req struct {
+			Username string `json:"username"`
+		}
+		if len(payload) > 0 {
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, fmt.Errorf("invalid payload")
+			}
+		}
+		user, publicKey, err := resolveProbeLinkUserIdentityAndPublicKey(req.Username)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"username":   strings.TrimSpace(user.Username),
+			"user_role":  strings.TrimSpace(user.UserRole),
+			"cert_type":  strings.TrimSpace(user.CertType),
+			"public_key": strings.TrimSpace(publicKey),
+		}, nil
 	case "admin.probe.link.chains.get":
 		if ProbeLinkChainStore == nil {
 			return map[string]interface{}{"items": []probeLinkChainRecord{}}, nil
@@ -628,7 +651,10 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			ListenPort     int      `json:"listen_port"`
 			LinkLayer      string   `json:"link_layer"`
 			HopConfigs     []struct {
-				NodeNo     int    `json:"node_no"`
+				NodeNo       int `json:"node_no"`
+				ServicePort  int `json:"service_port"`
+				ExternalPort int `json:"external_port"`
+				// Keep legacy listen_port for backward compatibility with old frontend payload.
 				ListenPort int    `json:"listen_port"`
 				LinkLayer  string `json:"link_layer"`
 			} `json:"hop_configs"`
@@ -667,9 +693,11 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 				out := make([]probeLinkChainHopConfig, 0, len(req.HopConfigs))
 				for _, cfg := range req.HopConfigs {
 					out = append(out, probeLinkChainHopConfig{
-						NodeNo:     cfg.NodeNo,
-						ListenPort: cfg.ListenPort,
-						LinkLayer:  strings.TrimSpace(cfg.LinkLayer),
+						NodeNo:       cfg.NodeNo,
+						ServicePort:  cfg.ServicePort,
+						ExternalPort: cfg.ExternalPort,
+						ListenPort:   cfg.ListenPort,
+						LinkLayer:    strings.TrimSpace(cfg.LinkLayer),
 					})
 				}
 				return out

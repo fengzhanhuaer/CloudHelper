@@ -21,8 +21,11 @@ const (
 )
 
 type probeLinkChainHopConfig struct {
-	NodeNo     int    `json:"node_no"`
-	ListenPort int    `json:"listen_port"`
+	NodeNo       int `json:"node_no"`
+	ServicePort  int `json:"service_port,omitempty"`
+	ExternalPort int `json:"external_port,omitempty"`
+	// Keep legacy listen_port for backward compatibility with old saved data.
+	ListenPort int    `json:"listen_port,omitempty"`
 	LinkLayer  string `json:"link_layer"`
 }
 
@@ -408,19 +411,32 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		}
 		seen[nodeID] = struct{}{}
 
-		listenPort := item.ListenPort
-		if listenPort < 0 || listenPort > 65535 {
+		servicePort, servicePortErr := normalizeOptionalProbeLinkChainPort(item.ServicePort)
+		if servicePortErr != nil {
+			return nil, fmt.Errorf("hop service_port must be between 1 and 65535")
+		}
+		externalPort, externalPortErr := normalizeOptionalProbeLinkChainPort(item.ExternalPort)
+		if externalPortErr != nil {
+			return nil, fmt.Errorf("hop external_port must be between 1 and 65535")
+		}
+		legacyListenPort, legacyListenPortErr := normalizeOptionalProbeLinkChainPort(item.ListenPort)
+		if legacyListenPortErr != nil {
 			return nil, fmt.Errorf("hop listen_port must be between 1 and 65535")
 		}
 		linkLayer, ok := parseProbeLinkChainLinkLayer(item.LinkLayer)
 		if !ok {
 			return nil, fmt.Errorf("hop link_layer must be http/http2/http3")
 		}
+		if servicePort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" && legacyListenPort <= 0 {
+			continue
+		}
 		nodeNo, _ := strconv.Atoi(nodeID)
 		out = append(out, probeLinkChainHopConfig{
-			NodeNo:     nodeNo,
-			ListenPort: listenPort,
-			LinkLayer:  linkLayer,
+			NodeNo:       nodeNo,
+			ServicePort:  servicePort,
+			ExternalPort: externalPort,
+			ListenPort:   legacyListenPort,
+			LinkLayer:    linkLayer,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break
@@ -452,26 +468,49 @@ func normalizeProbeLinkChainHopConfigsForStore(values []probeLinkChainHopConfig,
 		if _, ok := seen[nodeID]; ok {
 			continue
 		}
-		listenPort := item.ListenPort
-		if listenPort < 0 || listenPort > 65535 {
+		servicePort, servicePortErr := normalizeOptionalProbeLinkChainPort(item.ServicePort)
+		if servicePortErr != nil {
+			continue
+		}
+		externalPort, externalPortErr := normalizeOptionalProbeLinkChainPort(item.ExternalPort)
+		if externalPortErr != nil {
+			continue
+		}
+		legacyListenPort, legacyListenPortErr := normalizeOptionalProbeLinkChainPort(item.ListenPort)
+		if legacyListenPortErr != nil {
 			continue
 		}
 		linkLayer := ""
 		if normalized, ok := parseProbeLinkChainLinkLayer(item.LinkLayer); ok {
 			linkLayer = normalized
 		}
+		if servicePort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" && legacyListenPort <= 0 {
+			continue
+		}
 		seen[nodeID] = struct{}{}
 		nodeNo, _ := strconv.Atoi(nodeID)
 		out = append(out, probeLinkChainHopConfig{
-			NodeNo:     nodeNo,
-			ListenPort: listenPort,
-			LinkLayer:  linkLayer,
+			NodeNo:       nodeNo,
+			ServicePort:  servicePort,
+			ExternalPort: externalPort,
+			ListenPort:   legacyListenPort,
+			LinkLayer:    linkLayer,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break
 		}
 	}
 	return out
+}
+
+func normalizeOptionalProbeLinkChainPort(raw int) (int, error) {
+	if raw < 0 || raw > 65535 {
+		return 0, fmt.Errorf("port must be between 1 and 65535")
+	}
+	if raw == 0 {
+		return 0, nil
+	}
+	return raw, nil
 }
 
 func buildProbeChainRouteNodes(item probeLinkChainRecord) []string {

@@ -17,7 +17,7 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 
 	var failures []string
 	for i, nodeID := range route {
-		hopPortOverride, nodeLinkLayer := resolveProbeLinkChainHopSettings(item, nodeID)
+		nodeSettings := resolveProbeLinkChainNodeSettings(item, nodeID)
 		role := "relay"
 		if len(route) == 1 {
 			role = "entry_exit"
@@ -38,8 +38,14 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 				continue
 			}
 			nextHost = resolvedHost
-			if hopPortOverride > 0 {
-				nextPort = hopPortOverride
+			nextNodeSettings := resolveProbeLinkChainNodeSettings(item, nextNodeID)
+			if nextNodeSettings.ExternalPort > 0 {
+				nextPort = nextNodeSettings.ExternalPort
+			} else if nextNodeSettings.ServicePort > 0 {
+				nextPort = nextNodeSettings.ServicePort
+			} else if nodeSettings.LegacyNextPort > 0 {
+				// Backward compatibility for old hop config semantics.
+				nextPort = nodeSettings.LegacyNextPort
 			} else {
 				relayPort, relayErr := resolveProbeLinkChainNodeRelayPort(nextNodeID)
 				if relayErr != nil {
@@ -52,16 +58,21 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 		}
 
 		_, err := dispatchProbeChainLinkControl(nodeID, probeChainLinkControlCommand{
-			Action:            "apply",
-			ChainID:           strings.TrimSpace(item.ChainID),
-			Name:              strings.TrimSpace(item.Name),
-			UserID:            strings.TrimSpace(item.UserID),
-			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
-			LinkSecret:        strings.TrimSpace(item.Secret),
-			Role:              role,
-			ListenHost:        normalizeProbeLinkChainListenHost(item.ListenHost),
-			ListenPort:        item.ListenPort,
-			LinkLayer:         nodeLinkLayer,
+			Action:        "apply",
+			ChainID:       strings.TrimSpace(item.ChainID),
+			Name:          strings.TrimSpace(item.Name),
+			UserID:        strings.TrimSpace(item.UserID),
+			UserPublicKey: strings.TrimSpace(item.UserPublicKey),
+			LinkSecret:    strings.TrimSpace(item.Secret),
+			Role:          role,
+			ListenHost:    normalizeProbeLinkChainListenHost(item.ListenHost),
+			ListenPort: func() int {
+				if nodeSettings.ServicePort > 0 {
+					return nodeSettings.ServicePort
+				}
+				return item.ListenPort
+			}(),
+			LinkLayer:         nodeSettings.LinkLayer,
 			NextHost:          strings.TrimSpace(nextHost),
 			NextPort:          nextPort,
 			RequireUserAuth:   i == 0,
@@ -100,7 +111,14 @@ func removeProbeLinkChainRecord(item probeLinkChainRecord) error {
 	return nil
 }
 
-func resolveProbeLinkChainHopSettings(item probeLinkChainRecord, nodeID string) (int, string) {
+type probeLinkChainNodeSettings struct {
+	ServicePort    int
+	ExternalPort   int
+	LegacyNextPort int
+	LinkLayer      string
+}
+
+func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string) probeLinkChainNodeSettings {
 	defaultLayer := normalizeProbeLinkChainLinkLayer(item.LinkLayer)
 	targetNodeID := normalizeProbeNodeID(nodeID)
 	for _, hop := range item.HopConfigs {
@@ -111,14 +129,32 @@ func resolveProbeLinkChainHopSettings(item probeLinkChainRecord, nodeID string) 
 		if hopID == "" || hopID != targetNodeID {
 			continue
 		}
-		port := hop.ListenPort
-		if port < 0 || port > 65535 {
-			port = 0
+		servicePort := hop.ServicePort
+		if servicePort < 0 || servicePort > 65535 {
+			servicePort = 0
+		}
+		externalPort := hop.ExternalPort
+		if externalPort < 0 || externalPort > 65535 {
+			externalPort = 0
+		}
+		legacyNextPort := hop.ListenPort
+		if legacyNextPort < 0 || legacyNextPort > 65535 {
+			legacyNextPort = 0
 		}
 		layer := normalizeProbeLinkChainLinkLayer(hop.LinkLayer)
-		return port, layer
+		return probeLinkChainNodeSettings{
+			ServicePort:    servicePort,
+			ExternalPort:   externalPort,
+			LegacyNextPort: legacyNextPort,
+			LinkLayer:      layer,
+		}
 	}
-	return 0, defaultLayer
+	return probeLinkChainNodeSettings{
+		ServicePort:    0,
+		ExternalPort:   0,
+		LegacyNextPort: 0,
+		LinkLayer:      defaultLayer,
+	}
 }
 
 func resolveProbeLinkChainNodeDialHost(nodeID string) (string, error) {

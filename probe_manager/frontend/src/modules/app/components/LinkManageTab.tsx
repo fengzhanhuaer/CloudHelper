@@ -8,12 +8,15 @@ import {
   deleteProbeLinkChain,
   fetchCloudflareDDNSRecords,
   fetchProbeLinkChains,
+  fetchProbeLinkUserPublicKey,
+  fetchProbeLinkUsers,
   fetchProbeNodeStatus,
   fetchProbeNodes,
   startProbeLinkTestOnController,
   stopProbeLinkTestOnController,
   upsertProbeLinkChain,
   type ProbeLinkChainItem,
+  type ProbeLinkUserItem,
   type ProbeNodeStatusItem,
   type ProbeNodeSyncItem,
 } from "../services/controller-api";
@@ -47,6 +50,13 @@ type ProbeTestTarget = {
   source: string;
 };
 
+type ProbeLinkHopFormItem = {
+  nodeNo: number;
+  servicePort: number;
+  externalPort: number;
+  linkLayer: ProbeLinkLayer;
+};
+
 type ProbeLinkChainFormState = {
   chainID: string;
   name: string;
@@ -58,9 +68,7 @@ type ProbeLinkChainFormState = {
   listenHost: string;
   listenPort: number;
   linkLayer: ProbeLinkLayer;
-  hopConfigsText: string;
-  egressHost: string;
-  egressPort: number;
+  hopConfigs: ProbeLinkHopFormItem[];
 };
 
 const defaultInternalPort = 16031;
@@ -83,6 +91,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const [editingChainID, setEditingChainID] = useState("");
   const [chainStatus, setChainStatus] = useState("未加载链路列表");
   const [chainForm, setChainForm] = useState<ProbeLinkChainFormState>(() => createEmptyProbeLinkChainForm());
+  const [chainUsers, setChainUsers] = useState<ProbeLinkUserItem[]>([]);
+  const [isLoadingChainUsers, setIsLoadingChainUsers] = useState(false);
+  const [loadingPublicKeyUser, setLoadingPublicKeyUser] = useState("");
+  const [chainUserPublicKeys, setChainUserPublicKeys] = useState<Record<string, string>>({});
   const [selectedNodeID, setSelectedNodeID] = useState("");
   const [protocol, setProtocol] = useState<ProbeLinkTestProtocol>("http");
   const [internalPort, setInternalPort] = useState(defaultInternalPort);
@@ -95,6 +107,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const [resultSummary, setResultSummary] = useState("");
   const continuousTestSeqRef = useRef(0);
   const continuousTestingRef = useRef(false);
+  const loadChainUserPublicKeySeqRef = useRef(0);
   const isOperatingChain = isLoadingChains || isSavingChain || deletingChainID !== "";
 
   useEffect(() => {
@@ -105,6 +118,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setSelectedNodeID("");
       setStatus("未登录，无法加载探针列表");
       setChains([]);
+      setChainUsers([]);
+      setChainUserPublicKeys({});
+      setLoadingPublicKeyUser("");
+      loadChainUserPublicKeySeqRef.current += 1;
       setEditingChainID("");
       setChainForm(createEmptyProbeLinkChainForm());
       setChainStatus("未登录，无法加载链路列表");
@@ -115,6 +132,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChains(sortProbeLinkChains(cachedChains));
       setChainStatus(`已加载本地缓存链路（${cachedChains.length} 条），正在同步最新数据...`);
     }
+    void loadChainUsers();
     void loadNodes();
     void loadChains();
   }, [props.controllerBaseUrl, props.sessionToken]);
@@ -152,6 +170,35 @@ export function LinkManageTab(props: LinkManageTabProps) {
     [selectedAPIHost, selectedNode, selectedRuntime],
   );
   const testTarget = testTargets.length > 0 ? testTargets[0] : { host: "", isAPI: false, source: "" };
+  const chainUserOptions = useMemo(() => {
+    const out: ProbeLinkUserItem[] = [];
+    const seen = new Set<string>();
+    for (const item of chainUsers) {
+      const username = normalizeChainUsername(item.username);
+      if (!username || seen.has(username)) {
+        continue;
+      }
+      seen.add(username);
+      out.push({
+        username,
+        user_role: item.user_role || "",
+        cert_type: item.cert_type || "",
+      });
+    }
+    const current = normalizeChainUsername(chainForm.userID);
+    if (current && !seen.has(current)) {
+      out.unshift({
+        username: current,
+        user_role: "legacy",
+        cert_type: "legacy",
+      });
+    }
+    return out;
+  }, [chainForm.userID, chainUsers]);
+  const chainRouteNodeNos = useMemo(
+    () => buildProbeChainRouteNodeNos(chainForm.cascadeNodeIDsText, chainForm.exitNodeID),
+    [chainForm.cascadeNodeIDsText, chainForm.exitNodeID],
+  );
 
   useEffect(() => {
     if (!selectedNode) {
@@ -172,6 +219,174 @@ export function LinkManageTab(props: LinkManageTabProps) {
       exitNodeID: String(nodes[0].node_no),
     }));
   }, [chainForm.exitNodeID, nodes]);
+
+  useEffect(() => {
+    setChainForm((prev) => syncProbeLinkHopConfigsWithRoute(prev));
+  }, [chainForm.cascadeNodeIDsText, chainForm.exitNodeID]);
+
+  function updateHopConfig(nodeNo: number, patch: Partial<ProbeLinkHopFormItem>) {
+    if (!Number.isFinite(nodeNo) || nodeNo <= 0) {
+      return;
+    }
+    const safeNodeNo = Math.trunc(nodeNo);
+    setChainForm((prev) => {
+      const current = normalizeProbeLinkHopFormItems(prev.hopConfigs);
+      const index = current.findIndex((item) => item.nodeNo === safeNodeNo);
+      const existing: ProbeLinkHopFormItem = index >= 0
+        ? current[index]
+        : {
+          nodeNo: safeNodeNo,
+          servicePort: prev.listenPort,
+          externalPort: 0,
+          linkLayer: prev.linkLayer,
+        };
+      const nextItem: ProbeLinkHopFormItem = {
+        nodeNo: safeNodeNo,
+        servicePort: patch.servicePort === undefined ? existing.servicePort : normalizePort(patch.servicePort),
+        externalPort: patch.externalPort === undefined ? existing.externalPort : normalizePort(patch.externalPort),
+        linkLayer: patch.linkLayer === undefined ? existing.linkLayer : normalizeProbeLinkLayer(patch.linkLayer),
+      };
+      const next = [...current];
+      if (index >= 0) {
+        next[index] = nextItem;
+      } else {
+        next.push(nextItem);
+      }
+      next.sort((left, right) => left.nodeNo - right.nodeNo);
+      return {
+        ...prev,
+        hopConfigs: next,
+      };
+    });
+  }
+
+  async function loadChainUsers() {
+    if (!props.sessionToken.trim()) {
+      setChainUsers([]);
+      return;
+    }
+    setIsLoadingChainUsers(true);
+    try {
+      const users = await fetchProbeLinkUsers(props.controllerBaseUrl, props.sessionToken);
+      const normalized = normalizeProbeLinkUsers(users);
+      setChainUsers(normalized);
+
+      const current = normalizeChainUsername(chainForm.userID);
+      const existsCurrent = current && normalized.some((item) => normalizeChainUsername(item.username) === current);
+      const nextUser = existsCurrent ? current : (normalized[0] ? normalizeChainUsername(normalized[0].username) : "");
+      if (!nextUser) {
+        setChainForm((prev) => ({
+          ...prev,
+          userID: "",
+          userPublicKey: "",
+        }));
+        return;
+      }
+
+      setChainForm((prev) => ({
+        ...prev,
+        userID: nextUser,
+        userPublicKey: chainUserPublicKeys[nextUser] || (existsCurrent ? prev.userPublicKey : ""),
+      }));
+      if (!chainUserPublicKeys[nextUser]) {
+        void loadChainUserPublicKey(nextUser, { silentStatus: true });
+      }
+    } catch (error) {
+      const msg = errorToMessage(error);
+      setChainStatus(`拉取用户列表失败：${msg}`);
+    } finally {
+      setIsLoadingChainUsers(false);
+    }
+  }
+
+  async function loadChainUserPublicKey(
+    userIDRaw: string,
+    options?: { silentStatus?: boolean },
+  ) {
+    const userID = normalizeChainUsername(userIDRaw);
+    if (!userID || !props.sessionToken.trim()) {
+      return;
+    }
+    if (chainUserPublicKeys[userID]) {
+      setChainForm((prev) => {
+        if (normalizeChainUsername(prev.userID) !== userID) {
+          return prev;
+        }
+        return {
+          ...prev,
+          userPublicKey: chainUserPublicKeys[userID],
+        };
+      });
+      return;
+    }
+
+    const requestSeq = loadChainUserPublicKeySeqRef.current + 1;
+    loadChainUserPublicKeySeqRef.current = requestSeq;
+    setLoadingPublicKeyUser(userID);
+    if (!options?.silentStatus) {
+      setChainStatus(`正在从服务器拉取用户 ${userID} 的公钥...`);
+    }
+
+    try {
+      const payload = await fetchProbeLinkUserPublicKey(props.controllerBaseUrl, props.sessionToken, userID);
+      if (requestSeq !== loadChainUserPublicKeySeqRef.current) {
+        return;
+      }
+      const resolvedUserID = normalizeChainUsername(payload.username) || userID;
+      const publicKey = String(payload.public_key || "").trim();
+      if (!publicKey) {
+        throw new Error("服务器返回空公钥");
+      }
+      setChainUserPublicKeys((prev) => ({
+        ...prev,
+        [userID]: publicKey,
+        [resolvedUserID]: publicKey,
+      }));
+      setChainForm((prev) => {
+        const current = normalizeChainUsername(prev.userID);
+        if (current !== userID && current !== resolvedUserID) {
+          return prev;
+        }
+        return {
+          ...prev,
+          userID: resolvedUserID,
+          userPublicKey: publicKey,
+        };
+      });
+      if (!options?.silentStatus) {
+        setChainStatus(`已获取用户 ${resolvedUserID} 的公钥`);
+      }
+    } catch (error) {
+      if (requestSeq !== loadChainUserPublicKeySeqRef.current) {
+        return;
+      }
+      const msg = errorToMessage(error);
+      if (!options?.silentStatus) {
+        setChainStatus(`拉取用户公钥失败：${msg}`);
+      }
+    } finally {
+      if (requestSeq === loadChainUserPublicKeySeqRef.current) {
+        setLoadingPublicKeyUser("");
+      }
+    }
+  }
+
+  async function handleChainUserChange(nextUserIDRaw: string) {
+    const nextUserID = normalizeChainUsername(nextUserIDRaw);
+    setChainForm((prev) => ({
+      ...prev,
+      userID: nextUserID,
+      userPublicKey: nextUserID ? (chainUserPublicKeys[nextUserID] || "") : "",
+    }));
+    if (!nextUserID) {
+      return;
+    }
+    if (chainUserPublicKeys[nextUserID]) {
+      setChainStatus(`已选择用户：${nextUserID}`);
+      return;
+    }
+    await loadChainUserPublicKey(nextUserID);
+  }
 
   async function loadNodes() {
     setIsLoadingNodes(true);
@@ -242,26 +457,40 @@ export function LinkManageTab(props: LinkManageTabProps) {
 
   function resetChainForm() {
     setEditingChainID("");
-    setChainForm(createEmptyProbeLinkChainForm(selectedNodeID || (nodes[0] ? String(nodes[0].node_no) : "")));
+    const defaultUserID = chainUsers[0] ? normalizeChainUsername(chainUsers[0].username) : "";
+    setChainForm(createEmptyProbeLinkChainForm(
+      selectedNodeID || (nodes[0] ? String(nodes[0].node_no) : ""),
+      defaultUserID,
+      chainUserPublicKeys[defaultUserID] || "",
+    ));
+    if (defaultUserID && !chainUserPublicKeys[defaultUserID]) {
+      void loadChainUserPublicKey(defaultUserID, { silentStatus: true });
+    }
   }
 
   function beginEditChain(item: ProbeLinkChainItem) {
     setEditingChainID(item.chain_id);
+    const normalizedUserID = normalizeChainUsername(item.user_id || "");
     setChainForm({
       chainID: item.chain_id,
       name: item.name || "",
-      userID: item.user_id || "",
-      userPublicKey: item.user_public_key || "",
+      userID: normalizedUserID,
+      userPublicKey: chainUserPublicKeys[normalizedUserID] || item.user_public_key || "",
       secret: item.secret || "",
       exitNodeID: normalizeNodeIDText(item.exit_node_id || ""),
       cascadeNodeIDsText: (Array.isArray(item.cascade_node_ids) ? item.cascade_node_ids : []).join(","),
       listenHost: item.listen_host || defaultLinkChainListenHost,
       listenPort: normalizePort(item.listen_port || 0) || defaultLinkChainListenPort,
       linkLayer: normalizeProbeLinkLayer(item.link_layer),
-      hopConfigsText: serializeHopConfigs(item.hop_configs),
-      egressHost: item.egress_host || defaultLinkChainEgressHost,
-      egressPort: normalizePort(item.egress_port || 0) || defaultLinkChainEgressPort,
+      hopConfigs: normalizeProbeLinkHopFormItemsFromChain(
+        item.hop_configs,
+        normalizePort(item.listen_port || 0) || defaultLinkChainListenPort,
+        normalizeProbeLinkLayer(item.link_layer),
+      ),
     });
+    if (normalizedUserID && !chainUserPublicKeys[normalizedUserID]) {
+      void loadChainUserPublicKey(normalizedUserID, { silentStatus: true });
+    }
     setChainStatus(`正在编辑链路：${item.name || item.chain_id}`);
   }
 
@@ -271,12 +500,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
       return;
     }
     const name = chainForm.name.trim();
-    const userID = chainForm.userID.trim();
+    const userID = normalizeChainUsername(chainForm.userID);
     const userPublicKey = chainForm.userPublicKey.trim();
     const exitNodeID = normalizeNodeIDText(chainForm.exitNodeID);
     const listenPort = normalizePort(chainForm.listenPort);
-    const egressHost = chainForm.egressHost.trim();
-    const egressPort = normalizePort(chainForm.egressPort);
     if (!name) {
       setChainStatus("链路名称不能为空");
       return;
@@ -285,8 +512,13 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChainStatus("用户 ID 不能为空");
       return;
     }
+    if (loadingPublicKeyUser && normalizeChainUsername(loadingPublicKeyUser) === userID) {
+      setChainStatus(`用户 ${userID} 的公钥拉取中，请稍后再试`);
+      return;
+    }
     if (!userPublicKey) {
-      setChainStatus("用户公钥不能为空");
+      setChainStatus(`用户 ${userID} 的公钥未就绪，正在重新拉取...`);
+      void loadChainUserPublicKey(userID);
       return;
     }
     if (!exitNodeID) {
@@ -297,17 +529,8 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChainStatus("监听端口必须在 1-65535 范围内");
       return;
     }
-    if (!egressHost) {
-      setChainStatus("出口地址不能为空");
-      return;
-    }
-    if (egressPort <= 0) {
-      setChainStatus("出口端口必须在 1-65535 范围内");
-      return;
-    }
-
     const cascades = parseNodeIDListInput(chainForm.cascadeNodeIDsText);
-    const hopConfigsResult = parseHopConfigsInput(chainForm.hopConfigsText);
+    const hopConfigsResult = buildProbeLinkHopConfigsPayload(chainForm);
     if (hopConfigsResult.error) {
       setChainStatus(hopConfigsResult.error);
       return;
@@ -317,7 +540,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
     setChainStatus(editingChainID ? "正在更新链路..." : "正在新增链路...");
     try {
       const response = await upsertProbeLinkChain(props.controllerBaseUrl, props.sessionToken, {
-        chain_id: editingChainID || chainForm.chainID.trim() || undefined,
+        chain_id: editingChainID || undefined,
         name,
         user_id: userID,
         user_public_key: userPublicKey,
@@ -329,8 +552,8 @@ export function LinkManageTab(props: LinkManageTabProps) {
         listen_port: listenPort,
         link_layer: normalizeProbeLinkLayer(chainForm.linkLayer),
         hop_configs: hopConfigsResult.items,
-        egress_host: egressHost,
-        egress_port: egressPort,
+        egress_host: defaultLinkChainEgressHost,
+        egress_port: defaultLinkChainEgressPort,
       });
       const nextItems = sortProbeLinkChains(
         response.items.length > 0
@@ -612,10 +835,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
               <label>链路ID</label>
               <input
                 className="input"
-                value={chainForm.chainID}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, chainID: event.target.value }))}
-                placeholder="新建时留空自动生成"
-                disabled={isOperatingChain || editingChainID.trim() !== ""}
+                value={editingChainID ? chainForm.chainID : ""}
+                placeholder="自动生成（保存后创建）"
+                readOnly
+                disabled
               />
             </div>
             <div className="row">
@@ -630,13 +853,20 @@ export function LinkManageTab(props: LinkManageTabProps) {
             </div>
             <div className="row">
               <label>用户ID</label>
-              <input
+              <select
                 className="input"
                 value={chainForm.userID}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, userID: event.target.value }))}
-                placeholder="链路绑定用户ID"
-                disabled={isOperatingChain}
-              />
+                onChange={(event) => { void handleChainUserChange(event.target.value); }}
+                disabled={isOperatingChain || isLoadingChainUsers}
+              >
+                <option value="">{isLoadingChainUsers ? "用户列表加载中..." : "请选择用户"}</option>
+                {chainUserOptions.map((item) => (
+                  <option key={item.username} value={item.username}>
+                    {item.username}
+                    {item.user_role ? ` (${item.user_role})` : ""}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="row">
               <label>用户公钥</label>
@@ -644,9 +874,9 @@ export function LinkManageTab(props: LinkManageTabProps) {
                 className="input"
                 style={{ minHeight: 90, resize: "vertical" }}
                 value={chainForm.userPublicKey}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, userPublicKey: event.target.value }))}
-                placeholder="粘贴用户公钥内容"
-                disabled={isOperatingChain}
+                placeholder={loadingPublicKeyUser ? `正在拉取 ${loadingPublicKeyUser} 的公钥...` : "自动从服务器拉取"}
+                readOnly
+                disabled
               />
             </div>
             <div className="row">
@@ -696,7 +926,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
               />
             </div>
             <div className="row">
-              <label>监听端口</label>
+              <label>默认服务端口</label>
               <input
                 className="input"
                 type="number"
@@ -708,7 +938,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
               />
             </div>
             <div className="row">
-              <label>链路层协议</label>
+              <label>默认链路协议</label>
               <select
                 className="input"
                 value={chainForm.linkLayer}
@@ -721,43 +951,85 @@ export function LinkManageTab(props: LinkManageTabProps) {
               </select>
             </div>
             <div className="row">
-              <label>每跳配置</label>
-              <textarea
-                className="input"
-                style={{ minHeight: 76, resize: "vertical" }}
-                value={chainForm.hopConfigsText}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, hopConfigsText: event.target.value }))}
-                placeholder="可选，格式：node_no:端口:协议，例如 2:16030:http2,3:16031:http3"
-                disabled={isOperatingChain}
-              />
-            </div>
-            <div className="row">
-              <label>出口地址</label>
-              <input
-                className="input"
-                value={chainForm.egressHost}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, egressHost: event.target.value }))}
-                placeholder={defaultLinkChainEgressHost}
-                disabled={isOperatingChain}
-              />
-            </div>
-            <div className="row">
-              <label>出口端口</label>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={65535}
-                value={chainForm.egressPort}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, egressPort: Number(event.target.value) || 0 }))}
-                disabled={isOperatingChain}
-              />
+              <label>逐探针链路配置</label>
+              <div style={{ width: "100%" }}>
+                {chainRouteNodeNos.length > 0 ? (
+                  <div className="probe-table-wrap" style={{ marginTop: 4 }}>
+                    <table className="probe-table" style={{ minWidth: 720 }}>
+                      <thead>
+                        <tr>
+                          <th>探针</th>
+                          <th>服务端口</th>
+                          <th>外部端口</th>
+                          <th>链路协议</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {chainRouteNodeNos.map((nodeNo) => {
+                          const cfg = findProbeLinkHopFormItem(chainForm.hopConfigs, nodeNo);
+                          const node = nodes.find((item) => item.node_no === nodeNo);
+                          return (
+                            <tr key={`hop-${nodeNo}`}>
+                              <td>#{nodeNo} {node?.node_name || ""}</td>
+                              <td>
+                                <input
+                                  className="input"
+                                  type="number"
+                                  min={1}
+                                  max={65535}
+                                  value={cfg.servicePort > 0 ? cfg.servicePort : ""}
+                                  placeholder={String(chainForm.listenPort || defaultLinkChainListenPort)}
+                                  onChange={(event) => updateHopConfig(nodeNo, { servicePort: Number(event.target.value) || 0 })}
+                                  disabled={isOperatingChain}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  className="input"
+                                  type="number"
+                                  min={1}
+                                  max={65535}
+                                  value={cfg.externalPort > 0 ? cfg.externalPort : ""}
+                                  placeholder="默认使用探针公网端口"
+                                  onChange={(event) => updateHopConfig(nodeNo, { externalPort: Number(event.target.value) || 0 })}
+                                  disabled={isOperatingChain}
+                                />
+                              </td>
+                              <td>
+                                <select
+                                  className="input"
+                                  value={cfg.linkLayer}
+                                  onChange={(event) => updateHopConfig(nodeNo, { linkLayer: event.target.value as ProbeLinkLayer })}
+                                  disabled={isOperatingChain}
+                                >
+                                  <option value="http">http</option>
+                                  <option value="http2">http2</option>
+                                  <option value="http3">http3</option>
+                                </select>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="status">请先设置级联探针/出口探针，再逐个配置探针端口与协议。</div>
+                )}
+              </div>
             </div>
           </div>
 
           <div className="content-actions">
-            <button className="btn" onClick={() => void loadChains()} disabled={isOperatingChain}>
-              {isLoadingChains ? "刷新中..." : "刷新列表"}
+            <button
+              className="btn"
+              onClick={() => {
+                void loadChainUsers();
+                void loadChains();
+              }}
+              disabled={isOperatingChain || isLoadingChainUsers}
+            >
+              {isLoadingChains || isLoadingChainUsers ? "刷新中..." : "刷新列表"}
             </button>
             <button className="btn" onClick={() => void handleSaveChain()} disabled={isOperatingChain}>
               {isSavingChain ? "保存中..." : editingChainID ? "保存修改" : "新增链路"}
@@ -783,7 +1055,6 @@ export function LinkManageTab(props: LinkManageTabProps) {
                   <th>路由</th>
                   <th>监听</th>
                   <th>协议</th>
-                  <th>出口代理</th>
                   <th>更新时间</th>
                   <th style={{ width: 190 }}>操作</th>
                 </tr>
@@ -803,13 +1074,16 @@ export function LinkManageTab(props: LinkManageTabProps) {
                       <div>{buildChainRouteSummary(item)}</div>
                       {item.hop_configs && item.hop_configs.length > 0 ? (
                         <div className="probe-table-sub">
-                          hop: {item.hop_configs.map((cfg) => `#${cfg.node_no}:${cfg.listen_port}/${normalizeProbeLinkLayer(cfg.link_layer)}`).join(" | ")}
+                          hop: {item.hop_configs.map((cfg) => {
+                            const servicePort = normalizePort(Number(cfg.service_port || 0));
+                            const externalPort = normalizePort(Number(cfg.external_port || cfg.listen_port || 0));
+                            return `#${cfg.node_no}(svc:${servicePort || "-"}, ext:${externalPort || "-"}, ${normalizeProbeLinkLayer(cfg.link_layer)})`;
+                          }).join(" | ")}
                         </div>
                       ) : null}
                     </td>
                     <td>{item.listen_host || defaultLinkChainListenHost}:{normalizePort(item.listen_port || 0)}</td>
                     <td>{normalizeProbeLinkLayer(item.link_layer)}</td>
-                    <td>{item.egress_host || "-"}:{normalizePort(item.egress_port || 0)}</td>
                     <td>{item.updated_at || item.created_at || "-"}</td>
                     <td>
                       <div className="probe-table-actions">
@@ -832,7 +1106,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={8}>
+                    <td colSpan={7}>
                       <div className="empty">暂无链路</div>
                     </td>
                   </tr>
@@ -927,21 +1201,23 @@ export function LinkManageTab(props: LinkManageTabProps) {
   );
 }
 
-function createEmptyProbeLinkChainForm(defaultExitNodeID = ""): ProbeLinkChainFormState {
+function createEmptyProbeLinkChainForm(
+  defaultExitNodeID = "",
+  defaultUserID = "",
+  defaultUserPublicKey = "",
+): ProbeLinkChainFormState {
   return {
     chainID: "",
     name: "",
-    userID: "",
-    userPublicKey: "",
+    userID: normalizeChainUsername(defaultUserID),
+    userPublicKey: String(defaultUserPublicKey || "").trim(),
     secret: "",
     exitNodeID: normalizeNodeIDText(defaultExitNodeID),
     cascadeNodeIDsText: "",
     listenHost: defaultLinkChainListenHost,
     listenPort: defaultLinkChainListenPort,
     linkLayer: defaultLinkChainLayer,
-    hopConfigsText: "",
-    egressHost: defaultLinkChainEgressHost,
-    egressPort: defaultLinkChainEgressPort,
+    hopConfigs: [],
   };
 }
 
@@ -996,6 +1272,31 @@ function writeProbeLinkChainCache(items: ProbeLinkChainItem[]): void {
   }
 }
 
+function normalizeChainUsername(raw: unknown): string {
+  return String(raw ?? "").trim();
+}
+
+function normalizeProbeLinkUsers(items: ProbeLinkUserItem[]): ProbeLinkUserItem[] {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [];
+  }
+  const out: ProbeLinkUserItem[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const username = normalizeChainUsername(item.username);
+    if (!username || seen.has(username)) {
+      continue;
+    }
+    seen.add(username);
+    out.push({
+      username,
+      user_role: String(item.user_role || "").trim(),
+      cert_type: String(item.cert_type || "").trim(),
+    });
+  }
+  return out;
+}
+
 function normalizeProbeLinkLayer(raw: unknown): ProbeLinkLayer {
   const value = String(raw || "").trim().toLowerCase();
   if (value === "http2" || value === "h2") {
@@ -1005,20 +1306,6 @@ function normalizeProbeLinkLayer(raw: unknown): ProbeLinkLayer {
     return "http3";
   }
   return "http";
-}
-
-function parseProbeLinkLayerStrict(raw: unknown): { ok: boolean; value: ProbeLinkLayer } {
-  const value = String(raw || "").trim().toLowerCase();
-  if (value === "http") {
-    return { ok: true, value: "http" };
-  }
-  if (value === "http2" || value === "h2") {
-    return { ok: true, value: "http2" };
-  }
-  if (value === "http3" || value === "h3") {
-    return { ok: true, value: "http3" };
-  }
-  return { ok: false, value: defaultLinkChainLayer };
 }
 
 function normalizeNodeIDText(raw: unknown): string {
@@ -1066,86 +1353,180 @@ function parseNodeIDListInput(raw: string): string[] {
   return out;
 }
 
-function parseHopConfigsInput(raw: string): {
-  items: Array<{ node_no: number; listen_port?: number; link_layer?: ProbeLinkLayer }>;
-  error: string;
-} {
-  const text = String(raw || "").trim();
-  if (!text) {
-    return { items: [], error: "" };
-  }
-  const segments = text
-    .split(/[\n,;]+/)
-    .map((item) => item.trim())
-    .filter((item) => item !== "");
-  if (segments.length === 0) {
-    return { items: [], error: "" };
-  }
-  const out: Array<{ node_no: number; listen_port?: number; link_layer?: ProbeLinkLayer }> = [];
-  const seenNodeNo = new Set<number>();
-  for (const segment of segments) {
-    const parts = segment.split(":").map((item) => item.trim()).filter((item) => item !== "");
-    if (parts.length < 2 || parts.length > 3) {
-      return {
-        items: [],
-        error: `每跳配置格式错误：${segment}（正确格式：node_no:端口:协议）`,
-      };
-    }
-    const nodeNo = Number(parts[0]);
+function buildProbeChainRouteNodeNos(cascadeNodeIDsText: string, exitNodeIDRaw: string): number[] {
+  const routeNodeIDs = [
+    ...parseNodeIDListInput(cascadeNodeIDsText),
+    normalizeNodeIDText(exitNodeIDRaw),
+  ];
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const nodeID of routeNodeIDs) {
+    const nodeNo = Number(nodeID);
     if (!Number.isFinite(nodeNo) || nodeNo <= 0) {
-      return {
-        items: [],
-        error: `每跳配置中的 node_no 非法：${segment}`,
-      };
-    }
-    const listenPort = normalizePort(Number(parts[1]));
-    if (listenPort <= 0) {
-      return {
-        items: [],
-        error: `每跳配置中的端口非法：${segment}`,
-      };
-    }
-    let layer = defaultLinkChainLayer;
-    if (parts.length >= 3) {
-      const parsedLayer = parseProbeLinkLayerStrict(parts[2]);
-      if (!parsedLayer.ok) {
-        return {
-          items: [],
-          error: `每跳配置中的协议非法：${segment}（仅支持 http/http2/http3）`,
-        };
-      }
-      layer = parsedLayer.value;
-    }
-    const normalizedNodeNo = Math.trunc(nodeNo);
-    if (seenNodeNo.has(normalizedNodeNo)) {
       continue;
     }
-    seenNodeNo.add(normalizedNodeNo);
+    const normalized = Math.trunc(nodeNo);
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function normalizeProbeLinkHopFormItems(values?: ProbeLinkHopFormItem[]): ProbeLinkHopFormItem[] {
+  if (!Array.isArray(values) || values.length === 0) {
+    return [];
+  }
+  const out: ProbeLinkHopFormItem[] = [];
+  const seen = new Set<number>();
+  for (const item of values) {
+    const nodeNo = Math.trunc(Number(item.nodeNo || 0));
+    if (!Number.isFinite(nodeNo) || nodeNo <= 0 || seen.has(nodeNo)) {
+      continue;
+    }
+    seen.add(nodeNo);
     out.push({
-      node_no: normalizedNodeNo,
-      listen_port: listenPort,
+      nodeNo,
+      servicePort: normalizePort(Number(item.servicePort || 0)),
+      externalPort: normalizePort(Number(item.externalPort || 0)),
+      linkLayer: normalizeProbeLinkLayer(item.linkLayer),
+    });
+  }
+  out.sort((left, right) => left.nodeNo - right.nodeNo);
+  return out;
+}
+
+function normalizeProbeLinkHopFormItemsFromChain(
+  values: Array<{ node_no: number; service_port?: number; external_port?: number; listen_port?: number; link_layer?: "http" | "http2" | "http3" | "" }> | undefined,
+  defaultServicePort: number,
+  defaultLinkLayer: ProbeLinkLayer,
+): ProbeLinkHopFormItem[] {
+  if (!Array.isArray(values) || values.length === 0) {
+    return [];
+  }
+  const safeDefaultServicePort = normalizePort(defaultServicePort) || defaultLinkChainListenPort;
+  const safeDefaultLayer = normalizeProbeLinkLayer(defaultLinkLayer);
+  const out: ProbeLinkHopFormItem[] = [];
+  const seen = new Set<number>();
+  for (const item of values) {
+    const nodeNo = Math.trunc(Number(item.node_no || 0));
+    if (!Number.isFinite(nodeNo) || nodeNo <= 0 || seen.has(nodeNo)) {
+      continue;
+    }
+    seen.add(nodeNo);
+    const servicePort = normalizePort(Number(item.service_port || 0)) || safeDefaultServicePort;
+    const externalPort = normalizePort(Number(item.external_port || item.listen_port || 0));
+    out.push({
+      nodeNo,
+      servicePort,
+      externalPort,
+      linkLayer: normalizeProbeLinkLayer(item.link_layer || safeDefaultLayer),
+    });
+  }
+  out.sort((left, right) => left.nodeNo - right.nodeNo);
+  return out;
+}
+
+function findProbeLinkHopFormItem(values: ProbeLinkHopFormItem[], nodeNo: number): ProbeLinkHopFormItem {
+  const targetNodeNo = Math.trunc(Number(nodeNo || 0));
+  if (!Number.isFinite(targetNodeNo) || targetNodeNo <= 0) {
+    return {
+      nodeNo: 0,
+      servicePort: 0,
+      externalPort: 0,
+      linkLayer: defaultLinkChainLayer,
+    };
+  }
+  for (const item of normalizeProbeLinkHopFormItems(values)) {
+    if (item.nodeNo === targetNodeNo) {
+      return item;
+    }
+  }
+  return {
+    nodeNo: targetNodeNo,
+    servicePort: 0,
+    externalPort: 0,
+    linkLayer: defaultLinkChainLayer,
+  };
+}
+
+function areProbeLinkHopFormItemsEqual(left: ProbeLinkHopFormItem[], right: ProbeLinkHopFormItem[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let i = 0; i < left.length; i += 1) {
+    const l = left[i];
+    const r = right[i];
+    if (l.nodeNo !== r.nodeNo || l.servicePort !== r.servicePort || l.externalPort !== r.externalPort || l.linkLayer !== r.linkLayer) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function syncProbeLinkHopConfigsWithRoute(form: ProbeLinkChainFormState): ProbeLinkChainFormState {
+  const routeNodeNos = buildProbeChainRouteNodeNos(form.cascadeNodeIDsText, form.exitNodeID);
+  const current = normalizeProbeLinkHopFormItems(form.hopConfigs);
+  const map = new Map<number, ProbeLinkHopFormItem>();
+  for (const item of current) {
+    map.set(item.nodeNo, item);
+  }
+  const safeDefaultServicePort = normalizePort(form.listenPort) || defaultLinkChainListenPort;
+  const safeDefaultLayer = normalizeProbeLinkLayer(form.linkLayer);
+  const next = routeNodeNos.map((nodeNo) => {
+    const found = map.get(nodeNo);
+    if (found) {
+      return found;
+    }
+    return {
+      nodeNo,
+      servicePort: safeDefaultServicePort,
+      externalPort: 0,
+      linkLayer: safeDefaultLayer,
+    };
+  });
+  if (areProbeLinkHopFormItemsEqual(current, next)) {
+    return form;
+  }
+  return {
+    ...form,
+    hopConfigs: next,
+  };
+}
+
+function buildProbeLinkHopConfigsPayload(form: ProbeLinkChainFormState): {
+  items: Array<{ node_no: number; service_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }>;
+  error: string;
+} {
+  const routeNodeNos = buildProbeChainRouteNodeNos(form.cascadeNodeIDsText, form.exitNodeID);
+  if (routeNodeNos.length === 0) {
+    return { items: [], error: "" };
+  }
+  const hopMap = new Map<number, ProbeLinkHopFormItem>();
+  for (const item of normalizeProbeLinkHopFormItems(form.hopConfigs)) {
+    hopMap.set(item.nodeNo, item);
+  }
+  const fallbackServicePort = normalizePort(form.listenPort);
+  const fallbackLayer = normalizeProbeLinkLayer(form.linkLayer);
+  const items: Array<{ node_no: number; service_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }> = [];
+  for (const nodeNo of routeNodeNos) {
+    const cfg = hopMap.get(nodeNo);
+    const servicePort = normalizePort(cfg?.servicePort || fallbackServicePort);
+    const externalPort = normalizePort(cfg?.externalPort || 0);
+    const layer = normalizeProbeLinkLayer(cfg?.linkLayer || fallbackLayer);
+    if (servicePort <= 0) {
+      return { items: [], error: `探针 #${nodeNo} 的服务端口必须在 1-65535 范围内` };
+    }
+    items.push({
+      node_no: nodeNo,
+      service_port: servicePort,
+      external_port: externalPort > 0 ? externalPort : undefined,
       link_layer: layer,
     });
   }
-  return { items: out, error: "" };
-}
-
-function serializeHopConfigs(
-  values?: Array<{ node_no: number; listen_port?: number; link_layer?: "http" | "http2" | "http3" | "" }>,
-): string {
-  if (!Array.isArray(values) || values.length === 0) {
-    return "";
-  }
-  const parts: string[] = [];
-  for (const item of values) {
-    const nodeNo = Number(item.node_no || 0);
-    const port = normalizePort(Number(item.listen_port || 0));
-    if (!Number.isFinite(nodeNo) || nodeNo <= 0 || port <= 0) {
-      continue;
-    }
-    parts.push(`${Math.trunc(nodeNo)}:${port}:${normalizeProbeLinkLayer(item.link_layer)}`);
-  }
-  return parts.join(",");
+  return { items, error: "" };
 }
 
 function buildChainRouteSummary(item: ProbeLinkChainItem): string {
