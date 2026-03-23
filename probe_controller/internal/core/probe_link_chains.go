@@ -74,6 +74,75 @@ func findProbeLinkChainByIDLocked(chainID string) (probeLinkChainRecord, bool) {
 	return probeLinkChainRecord{}, false
 }
 
+func parseProbeLinkChainNumericID(raw string) (int64, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil || value <= 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+func maxProbeLinkChainNumericID(items []probeLinkChainRecord) int64 {
+	var maxID int64
+	for _, item := range items {
+		if id, ok := parseProbeLinkChainNumericID(item.ChainID); ok && id > maxID {
+			maxID = id
+		}
+	}
+	return maxID
+}
+
+func normalizeProbeLinkChainNextID(storedNextID int64, items []probeLinkChainRecord) int64 {
+	maxID := maxProbeLinkChainNumericID(items)
+	nextID := storedNextID
+	if nextID <= 0 {
+		nextID = 1
+	}
+	if nextID <= maxID {
+		nextID = maxID + 1
+	}
+	return nextID
+}
+
+func allocateNextProbeLinkChainIDLocked(items []probeLinkChainRecord) string {
+	nextID := int64(1)
+	if ProbeLinkChainStore != nil {
+		ProbeLinkChainStore.data.NextChainID = normalizeProbeLinkChainNextID(
+			ProbeLinkChainStore.data.NextChainID,
+			items,
+		)
+		nextID = ProbeLinkChainStore.data.NextChainID
+	}
+	if nextID <= 0 {
+		nextID = normalizeProbeLinkChainNextID(1, items)
+	}
+
+	used := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		key := strings.TrimSpace(item.ChainID)
+		if key == "" {
+			continue
+		}
+		used[key] = struct{}{}
+	}
+
+	for {
+		candidate := strconv.FormatInt(nextID, 10)
+		nextID++
+		if _, exists := used[candidate]; exists {
+			continue
+		}
+		if ProbeLinkChainStore != nil {
+			ProbeLinkChainStore.data.NextChainID = nextID
+		}
+		return candidate
+	}
+}
+
 func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecord, []probeLinkChainRecord, error) {
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
@@ -156,7 +225,7 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	}
 
 	if found < 0 && chainID == "" {
-		chainID = "chain-" + randomProbeNodeSecret(16)
+		chainID = allocateNextProbeLinkChainIDLocked(items)
 	}
 	if found < 0 && chainID != "" {
 		for i := range items {

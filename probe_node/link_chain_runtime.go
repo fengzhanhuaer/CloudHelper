@@ -356,6 +356,12 @@ func parseProbeChainUserPublicKey(raw string) (ed25519.PublicKey, error) {
 		if len(rawBytes) == ed25519.PublicKeySize {
 			return ed25519.PublicKey(rawBytes), nil
 		}
+		// Support base64-encoded PKIX DER public key (e.g. "MCowBQYDK2VwAyEA...").
+		if pubAny, parseErr := x509.ParsePKIXPublicKey(rawBytes); parseErr == nil {
+			if pub, ok := pubAny.(ed25519.PublicKey); ok {
+				return pub, nil
+			}
+		}
 	}
 	if rawBytes, err := hex.DecodeString(trimmed); err == nil {
 		if len(rawBytes) == ed25519.PublicKeySize {

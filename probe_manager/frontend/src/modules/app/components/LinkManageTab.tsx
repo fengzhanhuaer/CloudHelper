@@ -479,7 +479,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
     if (normalizedUserID && !chainUserPublicKeys[normalizedUserID]) {
       void loadChainUserPublicKey(normalizedUserID, { silentStatus: true });
     }
-    setChainStatus(`正在编辑链路：${item.name || item.chain_id}`);
+    setChainStatus(`正在编辑链路：${item.name || "未命名链路"}`);
   }
 
   async function handleSaveChain() {
@@ -575,11 +575,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
   async function handleDeleteChain(chainID: string) {
     const target = String(chainID).trim();
     if (!target) {
-      setChainStatus("chain_id 不能为空");
+      setChainStatus("链路标识不能为空");
       return;
     }
     const found = chains.find((item) => item.chain_id === target);
-    const displayName = found?.name || target;
+    const displayName = (found?.name || "").trim() || "未命名链路";
     if (!window.confirm(`确认删除链路“${displayName}”？`)) {
       return;
     }
@@ -821,16 +821,6 @@ export function LinkManageTab(props: LinkManageTabProps) {
         <>
           <div className="identity-card">
             <div className="row">
-              <label>链路ID</label>
-              <input
-                className="input"
-                value={editingChainID ? chainForm.chainID : ""}
-                placeholder="自动生成（保存后创建）"
-                readOnly
-                disabled
-              />
-            </div>
-            <div className="row">
               <label>链路名称</label>
               <input
                 className="input"
@@ -856,27 +846,6 @@ export function LinkManageTab(props: LinkManageTabProps) {
                   </option>
                 ))}
               </select>
-            </div>
-            <div className="row">
-              <label>用户公钥</label>
-              <textarea
-                className="input"
-                style={{ minHeight: 90, resize: "vertical" }}
-                value={chainForm.userPublicKey}
-                placeholder={loadingPublicKeyUser ? `正在拉取 ${loadingPublicKeyUser} 的公钥...` : "自动从服务器拉取"}
-                readOnly
-                disabled
-              />
-            </div>
-            <div className="row">
-              <label>链路Secret</label>
-              <input
-                className="input"
-                value={chainForm.secret}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, secret: event.target.value }))}
-                placeholder="留空自动生成"
-                disabled={isOperatingChain}
-              />
             </div>
             <div className="row">
               <label>链路探针顺序</label>
@@ -1036,11 +1005,9 @@ export function LinkManageTab(props: LinkManageTabProps) {
                   <tr key={item.chain_id}>
                     <td>
                       <div className="probe-table-name">{item.name || "-"}</div>
-                      <div className="probe-table-sub">{item.chain_id}</div>
                     </td>
                     <td>
                       <div>{item.user_id || "-"}</div>
-                      <div className="probe-table-sub">pubkey: {item.user_public_key ? `${item.user_public_key.slice(0, 24)}...` : "-"}</div>
                     </td>
                     <td>
                       <div>{buildChainRouteSummary(item)}</div>

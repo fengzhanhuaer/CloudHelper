@@ -16,7 +16,8 @@ type probeLinkChainStore struct {
 }
 
 type probeLinkChainStoreData struct {
-	Chains []probeLinkChainRecord `json:"chains"`
+	Chains      []probeLinkChainRecord `json:"chains"`
+	NextChainID int64                  `json:"next_chain_id,omitempty"`
 }
 
 var ProbeLinkChainStore *probeLinkChainStore
@@ -26,7 +27,8 @@ func initProbeLinkChainStore() {
 	ProbeLinkChainStore = &probeLinkChainStore{
 		path: storePath,
 		data: probeLinkChainStoreData{
-			Chains: []probeLinkChainRecord{},
+			Chains:      []probeLinkChainRecord{},
+			NextChainID: 1,
 		},
 	}
 
@@ -40,7 +42,9 @@ func initProbeLinkChainStore() {
 			if unmarshalErr := json.Unmarshal(content, &raw); unmarshalErr != nil {
 				log.Fatalf("failed to parse probe link chain store: %v", unmarshalErr)
 			}
-			ProbeLinkChainStore.data.Chains = normalizeProbeLinkChains(raw.Chains)
+			normalizedChains := normalizeProbeLinkChains(raw.Chains)
+			ProbeLinkChainStore.data.Chains = normalizedChains
+			ProbeLinkChainStore.data.NextChainID = normalizeProbeLinkChainNextID(raw.NextChainID, normalizedChains)
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := ProbeLinkChainStore.Save(); saveErr != nil {
@@ -66,4 +70,3 @@ func (s *probeLinkChainStore) Save() error {
 	triggerAutoBackupControllerDataAsync("probe_link_chain_store_save")
 	return nil
 }
-

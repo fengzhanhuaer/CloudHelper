@@ -893,7 +893,11 @@ func currentAdminPublicKeyBase64() (string, error) {
 	if len(authManager.adminPublicKey) != ed25519.PublicKeySize {
 		return "", errors.New("admin public key is not loaded")
 	}
-	return base64.StdEncoding.EncodeToString(authManager.adminPublicKey), nil
+	der, err := x509.MarshalPKIXPublicKey(authManager.adminPublicKey)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(der), nil
 }
 
 func resolveProbeLinkUserIdentityAndPublicKey(username string) (probeLinkUserIdentity, string, error) {
