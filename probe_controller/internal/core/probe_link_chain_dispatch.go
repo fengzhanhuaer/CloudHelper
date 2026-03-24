@@ -41,18 +41,9 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 			nextNodeSettings := resolveProbeLinkChainNodeSettings(item, nextNodeID)
 			if nextNodeSettings.ExternalPort > 0 {
 				nextPort = nextNodeSettings.ExternalPort
-			} else if nextNodeSettings.ServicePort > 0 {
-				nextPort = nextNodeSettings.ServicePort
-			} else if nodeSettings.LegacyNextPort > 0 {
-				// Backward compatibility for old hop config semantics.
-				nextPort = nodeSettings.LegacyNextPort
 			} else {
-				relayPort, relayErr := resolveProbeLinkChainNodeRelayPort(nextNodeID)
-				if relayErr != nil {
-					failures = append(failures, fmt.Sprintf("node=%s resolve next relay port failed: %v", nodeID, relayErr))
-					continue
-				}
-				nextPort = relayPort
+				failures = append(failures, fmt.Sprintf("node=%s next hop %s has no external_port in hop_config", nodeID, nextNodeID))
+				continue
 			}
 			nextAuthMode = "secret"
 		}
@@ -67,8 +58,8 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 			Role:          role,
 			ListenHost:    nodeSettings.ListenHost,
 			ListenPort: func() int {
-				if nodeSettings.ServicePort > 0 {
-					return nodeSettings.ServicePort
+				if nodeSettings.ListenPort > 0 {
+					return nodeSettings.ListenPort
 				}
 				return item.ListenPort
 			}(),
@@ -112,11 +103,10 @@ func removeProbeLinkChainRecord(item probeLinkChainRecord) error {
 }
 
 type probeLinkChainNodeSettings struct {
-	ListenHost     string
-	ServicePort    int
-	ExternalPort   int
-	LegacyNextPort int
-	LinkLayer      string
+	ListenHost   string
+	ListenPort   int
+	ExternalPort int
+	LinkLayer    string
 }
 
 func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string) probeLinkChainNodeSettings {
@@ -131,17 +121,13 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 		if hopID == "" || hopID != targetNodeID {
 			continue
 		}
-		servicePort := hop.ServicePort
-		if servicePort < 0 || servicePort > 65535 {
-			servicePort = 0
+		listenPort := hop.ListenPort
+		if listenPort < 0 || listenPort > 65535 {
+			listenPort = 0
 		}
 		externalPort := hop.ExternalPort
 		if externalPort < 0 || externalPort > 65535 {
 			externalPort = 0
-		}
-		legacyNextPort := hop.ListenPort
-		if legacyNextPort < 0 || legacyNextPort > 65535 {
-			legacyNextPort = 0
 		}
 		listenHost := strings.TrimSpace(hop.ListenHost)
 		if listenHost == "" {
@@ -149,19 +135,17 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 		}
 		layer := normalizeProbeLinkChainLinkLayer(hop.LinkLayer)
 		return probeLinkChainNodeSettings{
-			ListenHost:     normalizeProbeLinkChainListenHost(listenHost),
-			ServicePort:    servicePort,
-			ExternalPort:   externalPort,
-			LegacyNextPort: legacyNextPort,
-			LinkLayer:      layer,
+			ListenHost:   normalizeProbeLinkChainListenHost(listenHost),
+			ListenPort:   listenPort,
+			ExternalPort: externalPort,
+			LinkLayer:    layer,
 		}
 	}
 	return probeLinkChainNodeSettings{
-		ListenHost:     defaultHost,
-		ServicePort:    0,
-		ExternalPort:   0,
-		LegacyNextPort: 0,
-		LinkLayer:      defaultLayer,
+		ListenHost:   defaultHost,
+		ListenPort:   0,
+		ExternalPort: 0,
+		LinkLayer:    defaultLayer,
 	}
 }
 
@@ -171,7 +155,6 @@ func resolveProbeLinkChainNodeDialHost(nodeID string) (string, error) {
 		return "", fmt.Errorf("probe node not found: %s", nodeID)
 	}
 	candidates := []string{
-		node.PublicHost,
 		node.DDNS,
 		node.ServiceHost,
 	}
@@ -192,22 +175,16 @@ func resolveProbeLinkChainNodeDialHost(nodeID string) (string, error) {
 			}
 		}
 	}
+	// Fallback: use the Cloudflare business DDNS for this node.
+	relayHosts := buildNodeRelayHostMap()
+	if host, exists := relayHosts[normalizeProbeNodeID(nodeID)]; exists {
+		if h := normalizeProbeLinkChainDialHost(host); h != "" {
+			return h, nil
+		}
+	}
 	return "", fmt.Errorf("no dial host configured for node %s", nodeID)
 }
 
-func resolveProbeLinkChainNodeRelayPort(nodeID string) (int, error) {
-	node, ok := getProbeNodeByID(normalizeProbeNodeID(nodeID))
-	if !ok {
-		return 0, fmt.Errorf("probe node not found: %s", nodeID)
-	}
-	if node.PublicPort > 0 && node.PublicPort <= 65535 {
-		return node.PublicPort, nil
-	}
-	if node.ServicePort > 0 && node.ServicePort <= 65535 {
-		return node.ServicePort, nil
-	}
-	return 0, fmt.Errorf("no relay port configured for node %s", nodeID)
-}
 
 func normalizeProbeLinkChainDialHost(raw string) string {
 	value := strings.TrimSpace(raw)

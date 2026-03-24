@@ -31,10 +31,6 @@ type probeNodeRecord struct {
 	DirectConnect bool   `json:"direct_connect"`
 	ServiceScheme string `json:"service_scheme"`
 	ServiceHost   string `json:"service_host"`
-	ServicePort   int    `json:"service_port"`
-	PublicScheme  string `json:"public_scheme"`
-	PublicHost    string `json:"public_host"`
-	PublicPort    int    `json:"public_port"`
 	PaymentCycle  string `json:"payment_cycle"`
 	Cost          string `json:"cost"`
 	ExpireAt      string `json:"expire_at"`
@@ -76,10 +72,6 @@ type probeNodeLinkUpdateRequest struct {
 	NodeNo        int    `json:"node_no"`
 	ServiceScheme string `json:"service_scheme"`
 	ServiceHost   string `json:"service_host"`
-	ServicePort   int    `json:"service_port"`
-	PublicScheme  string `json:"public_scheme"`
-	PublicHost    string `json:"public_host"`
-	PublicPort    int    `json:"public_port"`
 }
 
 func AdminUpsertProbeSecretHandler(w http.ResponseWriter, r *http.Request) {
@@ -332,10 +324,6 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		}
 		node.ServiceScheme = normalizeProbeEndpointScheme(node.ServiceScheme)
 		node.ServiceHost = strings.TrimSpace(node.ServiceHost)
-		node.ServicePort = normalizeProbeServicePort(node.ServicePort)
-		node.PublicScheme = normalizeProbeEndpointScheme(node.PublicScheme)
-		node.PublicHost = strings.TrimSpace(node.PublicHost)
-		node.PublicPort = normalizeProbePublicPort(node.PublicPort)
 		node.PaymentCycle = strings.TrimSpace(node.PaymentCycle)
 		node.Cost = strings.TrimSpace(node.Cost)
 		node.ExpireAt = strings.TrimSpace(node.ExpireAt)
@@ -406,10 +394,6 @@ func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
 		DirectConnect: true,
 		ServiceScheme: "http",
 		ServiceHost:   "",
-		ServicePort:   16030,
-		PublicScheme:  "http",
-		PublicHost:    "",
-		PublicPort:    0,
 		PaymentCycle:  "",
 		Cost:          "",
 		ExpireAt:      "",
@@ -511,10 +495,6 @@ func updateProbeNodeLinkLocked(req probeNodeLinkUpdateRequest) (probeNodeRecord,
 
 	nodes[found].ServiceScheme = normalizeProbeEndpointScheme(req.ServiceScheme)
 	nodes[found].ServiceHost = strings.TrimSpace(req.ServiceHost)
-	nodes[found].ServicePort = normalizeProbeServicePort(req.ServicePort)
-	nodes[found].PublicScheme = normalizeProbeEndpointScheme(req.PublicScheme)
-	nodes[found].PublicHost = strings.TrimSpace(req.PublicHost)
-	nodes[found].PublicPort = normalizeProbePublicPort(req.PublicPort)
 	nodes[found].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if strings.TrimSpace(nodes[found].CreatedAt) == "" {
 		nodes[found].CreatedAt = nodes[found].UpdatedAt
@@ -552,19 +532,6 @@ func normalizeProbeEndpointScheme(raw string) string {
 	return "http"
 }
 
-func normalizeProbeServicePort(port int) int {
-	if port <= 0 || port > 65535 {
-		return 16030
-	}
-	return port
-}
-
-func normalizeProbePublicPort(port int) int {
-	if port <= 0 || port > 65535 {
-		return 0
-	}
-	return port
-}
 
 func randomProbeNodeSecret(length int) string {
 	if length <= 0 {

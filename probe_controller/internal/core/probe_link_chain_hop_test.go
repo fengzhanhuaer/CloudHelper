@@ -2,18 +2,18 @@ package core
 
 import "testing"
 
-func TestNormalizeProbeLinkChainHopConfigsForUpsertSupportsServiceExternalPorts(t *testing.T) {
+func TestNormalizeProbeLinkChainHopConfigsForUpsertSupportsListenExternalPorts(t *testing.T) {
 	input := []probeLinkChainHopConfig{
 		{
 			NodeNo:       2,
-			ServicePort:  16040,
+			ListenPort:   16040,
 			ExternalPort: 26040,
 			LinkLayer:    "http2",
 		},
 		{
-			NodeNo:      3,
-			ServicePort: 16050,
-			LinkLayer:   "http3",
+			NodeNo:     3,
+			ListenPort: 16050,
+			LinkLayer:  "http3",
 		},
 	}
 
@@ -24,15 +24,16 @@ func TestNormalizeProbeLinkChainHopConfigsForUpsertSupportsServiceExternalPorts(
 	if len(items) != 2 {
 		t.Fatalf("expected 2 hop configs, got %d", len(items))
 	}
-	if items[0].NodeNo != 2 || items[0].ServicePort != 16040 || items[0].ExternalPort != 26040 || items[0].LinkLayer != "http2" {
+	// external_port auto-filled to listen_port when not configured
+	if items[0].NodeNo != 2 || items[0].ListenPort != 16040 || items[0].ExternalPort != 26040 || items[0].LinkLayer != "http2" {
 		t.Fatalf("unexpected first hop config: %+v", items[0])
 	}
-	if items[1].NodeNo != 3 || items[1].ServicePort != 16050 || items[1].ExternalPort != 0 || items[1].LinkLayer != "http3" {
+	if items[1].NodeNo != 3 || items[1].ListenPort != 16050 || items[1].ExternalPort != 16050 || items[1].LinkLayer != "http3" {
 		t.Fatalf("unexpected second hop config: %+v", items[1])
 	}
 }
 
-func TestResolveProbeLinkChainNodeSettingsKeepsLegacyListenPortForCompatibility(t *testing.T) {
+func TestResolveProbeLinkChainNodeSettingsUsesListenPort(t *testing.T) {
 	item := probeLinkChainRecord{
 		LinkLayer: "http",
 		HopConfigs: []probeLinkChainHopConfig{
@@ -45,16 +46,29 @@ func TestResolveProbeLinkChainNodeSettingsKeepsLegacyListenPortForCompatibility(
 	}
 
 	settings := resolveProbeLinkChainNodeSettings(item, "2")
-	if settings.ServicePort != 0 {
-		t.Fatalf("expected legacy listen_port not to overwrite service_port, got %d", settings.ServicePort)
+	if settings.ListenPort != 18080 {
+		t.Fatalf("expected listen_port=18080, got %d", settings.ListenPort)
 	}
 	if settings.ExternalPort != 0 {
 		t.Fatalf("expected external_port=0, got %d", settings.ExternalPort)
 	}
-	if settings.LegacyNextPort != 18080 {
-		t.Fatalf("expected legacy_next_port=18080, got %d", settings.LegacyNextPort)
-	}
 	if settings.LinkLayer != "http3" {
 		t.Fatalf("expected link_layer=http3, got %q", settings.LinkLayer)
+	}
+}
+
+func TestIsProbeLinkChainNodeInRoute(t *testing.T) {
+	chain := probeLinkChainRecord{
+		EntryNodeID:    "1",
+		CascadeNodeIDs: []string{"2", "3"},
+		ExitNodeID:     "4",
+	}
+	for _, id := range []string{"1", "2", "3", "4"} {
+		if !isProbeLinkChainNodeInRoute(chain, id) {
+			t.Fatalf("expected node %s to be in route", id)
+		}
+	}
+	if isProbeLinkChainNodeInRoute(chain, "5") {
+		t.Fatalf("expected node 5 not to be in route")
 	}
 }

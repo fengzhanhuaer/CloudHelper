@@ -124,9 +124,11 @@ type probeLinkChainAdminItem struct {
 	CascadeNodeIDs []string `json:"cascade_node_ids"`
 	LinkLayer      string   `json:"link_layer"`
 	HopConfigs     []struct {
-		NodeNo     int    `json:"node_no"`
-		ListenPort int    `json:"listen_port"`
-		LinkLayer  string `json:"link_layer"`
+		NodeNo       int    `json:"node_no"`
+		ListenPort   int    `json:"listen_port,omitempty"`
+		ExternalPort int    `json:"external_port,omitempty"`
+		LinkLayer    string `json:"link_layer"`
+		RelayHost    string `json:"relay_host,omitempty"`
 	} `json:"hop_configs"`
 }
 
@@ -134,9 +136,6 @@ type probeNodeAdminItem struct {
 	NodeNo      int    `json:"node_no"`
 	DDNS        string `json:"ddns"`
 	ServiceHost string `json:"service_host"`
-	ServicePort int    `json:"service_port"`
-	PublicHost  string `json:"public_host"`
-	PublicPort  int    `json:"public_port"`
 }
 
 type probeChainEndpoint struct {
@@ -251,6 +250,8 @@ type networkAssistantService struct {
 	ruleDNSQuerySeq uint32
 	ruleMuxClients  map[string]*tunnelMuxClient
 	tunUDPRelays    map[string]*localTUNUDPRelay
+
+	lastChainRefreshAt map[string]time.Time
 }
 
 func newNetworkAssistantService() *networkAssistantService {
@@ -1982,16 +1983,10 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 		return errors.New("controller url and session token are required")
 	}
 
-	chainTargets, chainNodes, chainErr := fetchProbeChainTargetsViaAdminWS(baseURL, token)
+	chainTargets, chainNodes, chainErr := fetchProbeChainTargetsViaAdminWS(baseURL, token, s.logf)
 	nodes := make([]string, 0, len(chainNodes)+1)
 	if chainErr == nil && len(chainNodes) > 0 {
 		nodes = append(nodes, chainNodes...)
-		// Warn about chains that appear in the list but have incomplete relay config (missing host/port).
-		for _, nodeID := range chainNodes {
-			if _, ok := chainTargets[nodeID]; !ok {
-				s.logf("chain target has no valid relay config, check server probe node settings: node=%s", nodeID)
-			}
-		}
 	}
 	if !containsNodeID(nodes, defaultNodeID) {
 		nodes = append(nodes, defaultNodeID)
@@ -2287,11 +2282,8 @@ func isLikelyAPIDomainHostValue(host string) bool {
 
 func selectProbeChainRelayHost(node probeNodeAdminItem) string {
 	ddns := normalizeHostValue(node.DDNS)
-	candidates := []string{
-		normalizeHostValue(node.PublicHost),
-	}
+	var candidates []string
 	// If DDNS is a plain domain (not api.*), construct api.<ddns> as the preferred relay host.
-	// resolveProbeChainDialIPHost will resolve this domain to an IP before connecting.
 	if ddns != "" && isDomainHostValue(ddns) && !isLikelyAPIDomainHostValue(ddns) {
 		candidates = append(candidates, "api."+ddns)
 	}
@@ -2314,17 +2306,14 @@ func selectProbeChainRelayHost(node probeNodeAdminItem) string {
 	return best
 }
 
-func selectProbeChainRelayPort(node probeNodeAdminItem) int {
-	if node.PublicPort > 0 && node.PublicPort <= 65535 {
-		return node.PublicPort
-	}
-	if node.ServicePort > 0 && node.ServicePort <= 65535 {
-		return node.ServicePort
-	}
+// selectProbeChainRelayPort returns the node's relay port from node-level config.
+// Since listen_port is now per-chain hop_config, this always returns 0;
+// the caller should use hop.ExternalPort directly.
+func selectProbeChainRelayPort(_ probeNodeAdminItem) int {
 	return 0
 }
 
-func fetchProbeChainTargetsViaAdminWS(baseURL, token string) (map[string]probeChainEndpoint, []string, error) {
+func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, ...any)) (map[string]probeChainEndpoint, []string, error) {
 	wsURL, err := buildAdminWSURL(baseURL)
 	if err != nil {
 		return map[string]probeChainEndpoint{}, nil, err
@@ -2428,16 +2417,45 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string) (map[string]probeCh
 
 		route := buildProbeChainRouteNodesForManager(chain)
 		if len(route) == 0 {
+			warnf("chain has no valid route (entry/exit node not configured): chain_id=%s", chainID)
 			continue
 		}
 		entryNodeID := route[0]
-		node, ok := nodeByID[entryNodeID]
-		if !ok {
+
+		// Resolve relay host: prefer relay_host from hop_config (auto-filled by server
+		// from Cloudflare DDNS), fall back to probe node settings.
+		host := ""
+		port := 0
+		for _, hop := range chain.HopConfigs {
+			if hop.NodeNo > 0 && strconv.Itoa(hop.NodeNo) == entryNodeID {
+				host = strings.TrimSpace(hop.RelayHost)
+				// ExternalPort is the public-facing port (auto-filled by server = listen_port if not set).
+				// ListenPort is the internal listening port, used only if external_port somehow absent.
+				if hop.ExternalPort > 0 {
+					port = hop.ExternalPort
+				} else if hop.ListenPort > 0 {
+					port = hop.ListenPort
+				}
+				break
+			}
+		}
+		if host == "" {
+			if node, ok := nodeByID[entryNodeID]; ok {
+				host = selectProbeChainRelayHost(node)
+			}
+		}
+		if port <= 0 {
+			if node, ok := nodeByID[entryNodeID]; ok {
+				port = selectProbeChainRelayPort(node)
+			}
+		}
+
+		if host == "" {
+			warnf("chain entry node has no relay host (hop relay_host/public_host/ddns all empty): chain_id=%s entry_node=%s", chainID, entryNodeID)
 			continue
 		}
-		host := selectProbeChainRelayHost(node)
-		port := selectProbeChainRelayPort(node)
-		if host == "" || port <= 0 {
+		if port <= 0 {
+			warnf("chain entry node has no relay port (hop external_port/listen_port all 0): chain_id=%s entry_node=%s", chainID, entryNodeID)
 			continue
 		}
 		if targetID == "" {

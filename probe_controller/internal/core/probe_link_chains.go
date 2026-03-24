@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,11 +24,12 @@ const (
 type probeLinkChainHopConfig struct {
 	NodeNo       int    `json:"node_no"`
 	ListenHost   string `json:"listen_host,omitempty"`
-	ServicePort  int    `json:"service_port,omitempty"`
-	ExternalPort int    `json:"external_port,omitempty"`
-	// Keep legacy listen_port for backward compatibility with old saved data.
-	ListenPort int    `json:"listen_port,omitempty"`
-	LinkLayer  string `json:"link_layer"`
+	ListenPort   int    `json:"listen_port,omitempty"`  // internal port the relay service listens on
+	ExternalPort int    `json:"external_port,omitempty"` // public-facing port used for connections
+	LinkLayer    string `json:"link_layer"`
+	// RelayHost is dynamically filled from the Cloudflare DDNS store (business record).
+	// It is NOT persisted; omitempty ensures it does not appear in stored JSON.
+	RelayHost string `json:"relay_host,omitempty"`
 }
 
 type probeLinkChainRecord struct {
@@ -203,7 +205,10 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 		return probeLinkChainRecord{}, nil, hopErr
 	}
 	if listenPort <= 0 && len(hopConfigs) > 0 {
-		listenPort = hopConfigs[0].ServicePort
+		listenPort = hopConfigs[0].ExternalPort
+	}
+	if listenPort <= 0 && len(hopConfigs) > 0 {
+		listenPort = hopConfigs[0].ListenPort
 	}
 	if listenPort <= 0 || listenPort > 65535 {
 		return probeLinkChainRecord{}, nil, fmt.Errorf("listen_port must be between 1 and 65535")
@@ -494,24 +499,24 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		}
 
 		listenHost := normalizeProbeLinkChainListenHost(item.ListenHost)
-		servicePort, servicePortErr := normalizeOptionalProbeLinkChainPort(item.ServicePort)
-		if servicePortErr != nil {
-			return nil, fmt.Errorf("hop service_port must be between 1 and 65535")
+		listenPort, listenPortErr := normalizeOptionalProbeLinkChainPort(item.ListenPort)
+		if listenPortErr != nil {
+			return nil, fmt.Errorf("hop listen_port must be between 1 and 65535")
 		}
 		externalPort, externalPortErr := normalizeOptionalProbeLinkChainPort(item.ExternalPort)
 		if externalPortErr != nil {
 			return nil, fmt.Errorf("hop external_port must be between 1 and 65535")
 		}
-		legacyListenPort, legacyListenPortErr := normalizeOptionalProbeLinkChainPort(item.ListenPort)
-		if legacyListenPortErr != nil {
-			return nil, fmt.Errorf("hop listen_port must be between 1 and 65535")
-		}
 		linkLayer, ok := parseProbeLinkChainLinkLayer(item.LinkLayer)
 		if !ok {
 			return nil, fmt.Errorf("hop link_layer must be http/http2/http3")
 		}
-		if servicePort <= 0 {
-			return nil, fmt.Errorf("hop service_port must be between 1 and 65535")
+		if listenPort <= 0 {
+			return nil, fmt.Errorf("hop listen_port must be between 1 and 65535")
+		}
+		// If external_port is not configured, default to listen_port.
+		if externalPort <= 0 {
+			externalPort = listenPort
 		}
 		if strings.TrimSpace(linkLayer) == "" {
 			linkLayer = defaultProbeLinkChainLinkLayer
@@ -521,9 +526,8 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		out = append(out, probeLinkChainHopConfig{
 			NodeNo:       nodeNo,
 			ListenHost:   listenHost,
-			ServicePort:  servicePort,
+			ListenPort:   listenPort,
 			ExternalPort: externalPort,
-			ListenPort:   legacyListenPort,
 			LinkLayer:    linkLayer,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
@@ -561,33 +565,32 @@ func normalizeProbeLinkChainHopConfigsForStore(values []probeLinkChainHopConfig,
 		if _, ok := seen[nodeID]; ok {
 			continue
 		}
-		servicePort, servicePortErr := normalizeOptionalProbeLinkChainPort(item.ServicePort)
-		if servicePortErr != nil {
+		listenPort, listenPortErr := normalizeOptionalProbeLinkChainPort(item.ListenPort)
+		if listenPortErr != nil {
 			continue
 		}
 		externalPort, externalPortErr := normalizeOptionalProbeLinkChainPort(item.ExternalPort)
 		if externalPortErr != nil {
 			continue
 		}
-		legacyListenPort, legacyListenPortErr := normalizeOptionalProbeLinkChainPort(item.ListenPort)
-		if legacyListenPortErr != nil {
-			continue
-		}
 		linkLayer := ""
 		if normalized, ok := parseProbeLinkChainLinkLayer(item.LinkLayer); ok {
 			linkLayer = normalized
 		}
-		if servicePort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" && legacyListenPort <= 0 {
+		if listenPort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" {
 			continue
+		}
+		// If external_port is not configured, default to listen_port.
+		if externalPort <= 0 {
+			externalPort = listenPort
 		}
 		seen[nodeID] = struct{}{}
 		nodeNo, _ := strconv.Atoi(nodeID)
 		out = append(out, probeLinkChainHopConfig{
 			NodeNo:       nodeNo,
 			ListenHost:   normalizeProbeLinkChainListenHost(item.ListenHost),
-			ServicePort:  servicePort,
+			ListenPort:   listenPort,
 			ExternalPort: externalPort,
-			ListenPort:   legacyListenPort,
 			LinkLayer:    linkLayer,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
@@ -626,4 +629,137 @@ func buildProbeChainRouteNodes(item probeLinkChainRecord) []string {
 		}
 	}
 	return route
+}
+
+// fillChainRelayHosts looks up the Cloudflare business DDNS record for each hop node
+// and fills in RelayHost dynamically. The returned slice is a copy; original records are not modified.
+// ExternalPort is already auto-filled to ListenPort during save; no separate relay_port field is needed.
+func fillChainRelayHosts(items []probeLinkChainRecord) []probeLinkChainRecord {
+	relayHostByNodeID := buildNodeRelayHostMap()
+
+	out := make([]probeLinkChainRecord, len(items))
+	for i, chain := range items {
+		if len(chain.HopConfigs) == 0 {
+			out[i] = chain
+			continue
+		}
+		hops := make([]probeLinkChainHopConfig, len(chain.HopConfigs))
+		for j, hop := range chain.HopConfigs {
+			h := hop
+			nodeID := normalizeProbeNodeID(strconv.Itoa(hop.NodeNo))
+			if nodeID != "" {
+				if host, ok := relayHostByNodeID[nodeID]; ok && strings.TrimSpace(h.RelayHost) == "" {
+					h.RelayHost = host
+				}
+			}
+			hops[j] = h
+		}
+		chainCopy := chain
+		chainCopy.HopConfigs = hops
+		out[i] = chainCopy
+	}
+	return out
+}
+
+// buildNodeRelayHostMap returns a map from nodeID to its business-class API DDNS
+// (e.g. "api.codex.<tag>.example.com") from the Cloudflare store.
+func buildNodeRelayHostMap() map[string]string {
+	result := make(map[string]string)
+	if CloudflareStore == nil {
+		return result
+	}
+	CloudflareStore.mu.RLock()
+	records := make([]cloudflareDDNSRecord, len(CloudflareStore.data.Records))
+	copy(records, CloudflareStore.data.Records)
+	CloudflareStore.mu.RUnlock()
+
+	for _, rec := range records {
+		if !strings.EqualFold(strings.TrimSpace(rec.RecordClass), "business") {
+			continue
+		}
+		recordName := strings.TrimSpace(rec.RecordName)
+		if recordName == "" {
+			continue
+		}
+		nodeID := normalizeProbeNodeID(rec.NodeID)
+		if nodeID == "" {
+			continue
+		}
+		// Use sequence 1 (primary record) as the relay host.
+		if rec.Sequence != 1 {
+			continue
+		}
+		if _, exists := result[nodeID]; !exists {
+			result[nodeID] = recordName
+		}
+	}
+	return result
+}
+
+// ProbeLinkChainsHandler serves GET /api/probe/link/chains.
+// A probe authenticates with its secret and receives all chain configs
+// where it appears as entry, cascade, or exit node. The response includes
+// dynamically filled relay_host (Cloudflare DDNS) for each hop, so the
+// probe can derive its listen configuration entirely from chain hop_configs.
+func ProbeLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isHTTPSRequest(r) {
+		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
+		return
+	}
+
+	nodeID, err := authenticateProbeRequestOrQuerySecret(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if ProbeLinkChainStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "chain store not initialized"})
+		return
+	}
+
+	ProbeLinkChainStore.mu.RLock()
+	all := loadProbeLinkChainsLocked()
+	ProbeLinkChainStore.mu.RUnlock()
+
+	related := filterProbeLinkChainsByNodeID(all, nodeID)
+	enriched := fillChainRelayHosts(related)
+
+	writeJSON(w, http.StatusOK, map[string]any{"chains": enriched})
+}
+
+// filterProbeLinkChainsByNodeID returns chains where nodeID appears in the route
+// (entry, cascade, or exit node).
+func filterProbeLinkChainsByNodeID(chains []probeLinkChainRecord, nodeID string) []probeLinkChainRecord {
+	normalized := normalizeProbeNodeID(nodeID)
+	if normalized == "" {
+		return nil
+	}
+	var result []probeLinkChainRecord
+	for _, chain := range chains {
+		if isProbeLinkChainNodeInRoute(chain, normalized) {
+			result = append(result, chain)
+		}
+	}
+	return result
+}
+
+// isProbeLinkChainNodeInRoute reports whether nodeID is part of this chain's route.
+func isProbeLinkChainNodeInRoute(chain probeLinkChainRecord, nodeID string) bool {
+	if normalizeProbeNodeID(chain.EntryNodeID) == nodeID {
+		return true
+	}
+	if normalizeProbeNodeID(chain.ExitNodeID) == nodeID {
+		return true
+	}
+	for _, id := range chain.CascadeNodeIDs {
+		if normalizeProbeNodeID(id) == nodeID {
+			return true
+		}
+	}
+	return false
 }

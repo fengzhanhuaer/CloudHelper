@@ -512,9 +512,7 @@ func resolveProbeNodeCertificateDomain(nodeID string) (string, error) {
 		return "", fmt.Errorf("probe node not found")
 	}
 
-	if host := normalizeProbeCertificateHost(node.PublicHost); strings.HasPrefix(host, "api.") {
-		return host, nil
-	}
+	// Use Cloudflare business DDNS as the certificate domain.
 
 	zoneName := normalizeCloudflareZoneName(getCloudflareZone().ZoneName)
 	if zoneName == "" {

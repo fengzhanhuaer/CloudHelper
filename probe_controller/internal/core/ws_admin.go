@@ -634,6 +634,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		ProbeLinkChainStore.mu.RLock()
 		items := loadProbeLinkChainsLocked()
 		ProbeLinkChainStore.mu.RUnlock()
+		items = fillChainRelayHosts(items)
 		return map[string]interface{}{
 			"items": items,
 		}, nil
@@ -653,11 +654,9 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			HopConfigs     []struct {
 				NodeNo       int    `json:"node_no"`
 				ListenHost   string `json:"listen_host"`
-				ServicePort  int    `json:"service_port"`
+				ListenPort   int    `json:"listen_port"`
 				ExternalPort int    `json:"external_port"`
-				// Keep legacy listen_port for backward compatibility with old frontend payload.
-				ListenPort int    `json:"listen_port"`
-				LinkLayer  string `json:"link_layer"`
+				LinkLayer    string `json:"link_layer"`
 			} `json:"hop_configs"`
 			EgressHost string `json:"egress_host"`
 			EgressPort int    `json:"egress_port"`
@@ -696,9 +695,8 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 					out = append(out, probeLinkChainHopConfig{
 						NodeNo:       cfg.NodeNo,
 						ListenHost:   strings.TrimSpace(cfg.ListenHost),
-						ServicePort:  cfg.ServicePort,
-						ExternalPort: cfg.ExternalPort,
 						ListenPort:   cfg.ListenPort,
+						ExternalPort: cfg.ExternalPort,
 						LinkLayer:    strings.TrimSpace(cfg.LinkLayer),
 					})
 				}
