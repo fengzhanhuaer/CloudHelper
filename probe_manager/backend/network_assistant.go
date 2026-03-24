@@ -364,7 +364,9 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	s.mu.Unlock()
 
 	if normalizedMode == networkModeDirect {
-		if err := s.stopProxyAndServer(); err != nil {
+		errServer := s.stopSocksServerOnly()
+		errDirectProxy := applyDirectSystemProxy()
+		if err := errors.Join(errServer, errDirectProxy); err != nil {
 			s.logf("failed to switch to direct mode: %v", err)
 			s.setLastError(err)
 			return err
@@ -372,12 +374,15 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.mu.Lock()
 		s.mode = networkModeDirect
 		s.tunnelStatusMessage = "直连模式"
-		s.systemProxyMessage = "已恢复"
+		s.systemProxyMessage = "已清除系统代理（直连）"
 		s.tunnelOpenFailures = 0
+		s.hasAppliedSysProxy = false
+		s.hasProxySnapshot = false
+		s.proxySnapshot = systemProxySnapshot{}
 		s.tunEnabled = false
 		s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 		s.mu.Unlock()
-		s.logf("switched mode to direct, node=%s", normalizedNode)
+		s.logf("switched mode to direct and cleared system proxy, node=%s", normalizedNode)
 		return nil
 	}
 

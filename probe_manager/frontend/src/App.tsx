@@ -173,7 +173,6 @@ function App() {
             onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct", networkAssistant.selectedNode)}
             onInstallNetworkTUN={() => networkAssistant.installTUN()}
             onEnableNetworkTUN={() => networkAssistant.enableTUN()}
-            onRestoreNetworkDirect={() => networkAssistant.restoreDirect()}
             networkLogLines={networkAssistant.logLines}
             onNetworkLogLinesChange={networkAssistant.setLogLines}
             isLoadingNetworkLogs={networkAssistant.isLoadingLogs}

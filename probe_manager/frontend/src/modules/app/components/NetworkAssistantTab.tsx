@@ -14,7 +14,6 @@ type NetworkAssistantTabProps = {
   onSwitchDirect: () => void;
   onInstallTUN: () => void;
   onEnableTUN: () => void;
-  onRestoreDirect: () => void;
   logLines: number;
   onLogLinesChange: (value: number) => void;
   isLoadingLogs: boolean;
@@ -121,8 +120,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           </div>
 
           <div className="content-actions">
-            <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>切换直连</button>
-            <button className="btn" onClick={props.onRestoreDirect} disabled={props.isOperating}>恢复系统代理</button>
+            <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>直连模式</button>
           </div>
         </>
       ) : subTab === "link" ? (

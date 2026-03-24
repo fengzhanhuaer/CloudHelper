@@ -4,7 +4,6 @@ import {
   GetNetworkAssistantLogs,
   GetNetworkAssistantStatus,
   InstallNetworkAssistantTUN,
-  RestoreNetworkAssistantDirect,
   SetNetworkAssistantMode,
   SyncNetworkAssistant,
 } from "../../../../wailsjs/go/main/App";
@@ -233,7 +232,11 @@ export function useNetworkAssistant() {
       const data = (await SetNetworkAssistantMode(controllerBaseURL, token, mode, nodeID)) as NetworkAssistantStatus;
       setStatus(data);
       setSelectedNode(data.node_id || nodeID);
-      setOperateStatus(`模式已切换：${mode}`);
+      if (mode === "direct") {
+        setOperateStatus("已切换为直连模式，并清除系统代理");
+      } else {
+        setOperateStatus(`模式已切换：${mode}`);
+      }
       void refreshLogs();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -244,26 +247,6 @@ export function useNetworkAssistant() {
       setIsOperating(false);
     }
   }, [refreshLogs, selectedNode]);
-
-  const restoreDirect = useCallback(async () => {
-    setIsOperating(true);
-    try {
-      const data = (await RestoreNetworkAssistantDirect()) as NetworkAssistantStatus;
-      setStatus(data);
-      if (data.node_id) {
-        setSelectedNode(data.node_id);
-      }
-      setOperateStatus("已恢复为直连模式");
-      void refreshLogs();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setOperateStatus(`恢复直连失败：${msg}`);
-      void refreshLogs();
-      throw error;
-    } finally {
-      setIsOperating(false);
-    }
-  }, [refreshLogs]);
 
   const installTUN = useCallback(async () => {
     setIsOperating(true);
@@ -313,7 +296,6 @@ export function useNetworkAssistant() {
     operateStatus,
     refreshStatus,
     switchMode,
-    restoreDirect,
     installTUN,
     enableTUN,
     logLines,
