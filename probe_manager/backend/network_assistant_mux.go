@@ -820,6 +820,25 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	}
 
 	chainTarget, hasChainTarget := s.chainTargets[targetNodeID]
+
+	// If this is a chain target but not yet in the cache, try refreshing from server once.
+	if !hasChainTarget && strings.HasPrefix(targetNodeID, chainTargetNodePrefix) {
+		baseURLForRefresh := strings.TrimSpace(s.controllerBaseURL)
+		tokenForRefresh := strings.TrimSpace(s.sessionToken)
+		if baseURLForRefresh != "" && tokenForRefresh != "" {
+			s.mu.Unlock()
+			s.logf("chain target not in cache, refreshing from server: node=%s", targetNodeID)
+			_ = s.refreshAvailableNodes()
+			s.mu.Lock()
+			chainTarget, hasChainTarget = s.chainTargets[targetNodeID]
+		}
+	}
+
+	// Never fall back to controller WebSocket for chain: nodes — it will always get 404.
+	if !hasChainTarget && strings.HasPrefix(targetNodeID, chainTargetNodePrefix) {
+		return nil, fmt.Errorf("chain target config not found on server: node=%s", targetNodeID)
+	}
+
 	modeKey := "ws"
 	if hasChainTarget {
 		modeKey = fmt.Sprintf(

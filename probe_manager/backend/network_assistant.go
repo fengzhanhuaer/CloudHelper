@@ -1986,6 +1986,12 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 	nodes := make([]string, 0, len(chainNodes)+1)
 	if chainErr == nil && len(chainNodes) > 0 {
 		nodes = append(nodes, chainNodes...)
+		// Warn about chains that appear in the list but have incomplete relay config (missing host/port).
+		for _, nodeID := range chainNodes {
+			if _, ok := chainTargets[nodeID]; !ok {
+				s.logf("chain target has no valid relay config, check server probe node settings: node=%s", nodeID)
+			}
+		}
 	}
 	if !containsNodeID(nodes, defaultNodeID) {
 		nodes = append(nodes, defaultNodeID)
@@ -2280,11 +2286,19 @@ func isLikelyAPIDomainHostValue(host string) bool {
 }
 
 func selectProbeChainRelayHost(node probeNodeAdminItem) string {
+	ddns := normalizeHostValue(node.DDNS)
 	candidates := []string{
 		normalizeHostValue(node.PublicHost),
-		normalizeHostValue(node.DDNS),
-		normalizeHostValue(node.ServiceHost),
 	}
+	// If DDNS is a plain domain (not api.*), construct api.<ddns> as the preferred relay host.
+	// resolveProbeChainDialIPHost will resolve this domain to an IP before connecting.
+	if ddns != "" && isDomainHostValue(ddns) && !isLikelyAPIDomainHostValue(ddns) {
+		candidates = append(candidates, "api."+ddns)
+	}
+	candidates = append(candidates,
+		ddns,
+		normalizeHostValue(node.ServiceHost),
+	)
 	best := ""
 	for _, host := range candidates {
 		if host == "" {
