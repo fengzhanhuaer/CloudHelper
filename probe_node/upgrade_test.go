@@ -162,3 +162,61 @@ func TestFindProbeBinaryRuntimeAwareExeSelection(t *testing.T) {
 		t.Fatalf("expected non-windows to select plain candidate, got %q", selected)
 	}
 }
+
+func TestNormalizeUpgradeVerifyDurationSec(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "too small", in: 0, want: minUpgradeVerifyDurationSec},
+		{name: "lower bound", in: minUpgradeVerifyDurationSec, want: minUpgradeVerifyDurationSec},
+		{name: "middle", in: 23, want: 23},
+		{name: "too large", in: maxUpgradeVerifyDurationSec + 10, want: maxUpgradeVerifyDurationSec},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeUpgradeVerifyDurationSec(tc.in); got != tc.want {
+				t.Fatalf("normalizeUpgradeVerifyDurationSec(%d)=%d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTrimUpgradeVerifyOutputForLog(t *testing.T) {
+	cases := []struct {
+		name  string
+		raw   []byte
+		limit int
+		want  string
+	}{
+		{
+			name:  "empty",
+			raw:   []byte("   "),
+			limit: 8,
+			want:  "",
+		},
+		{
+			name:  "within limit",
+			raw:   []byte("hello"),
+			limit: 8,
+			want:  "hello",
+		},
+		{
+			name:  "truncate with suffix",
+			raw:   []byte("123456789"),
+			limit: 8,
+			want:  "12345...",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := trimUpgradeVerifyOutputForLog(tc.raw, tc.limit)
+			if got != tc.want {
+				t.Fatalf("trimUpgradeVerifyOutputForLog(%q, %d)=%q, want %q", string(tc.raw), tc.limit, got, tc.want)
+			}
+		})
+	}
+}

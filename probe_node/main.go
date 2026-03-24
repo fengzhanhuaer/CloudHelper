@@ -93,18 +93,26 @@ type probeControlMessage struct {
 }
 
 type probeLaunchOptions struct {
-	ListenAddr    string
-	NodeID        string
-	NodeSecret    string
-	ControllerURL string
-	ControllerWS  string
-	ServiceName   string
+	ListenAddr               string
+	NodeID                   string
+	NodeSecret               string
+	ControllerURL            string
+	ControllerWS             string
+	ServiceName              string
+	UpgradeVerify            bool
+	UpgradeVerifyDurationSec int
 }
 
 func main() {
 	initProbeLogger()
 	reportIntervalSec.Store(defaultReportIntervalSec)
 	options := parseProbeLaunchOptions()
+	if options.UpgradeVerify {
+		if err := runProbeUpgradeVerifyMode(options); err != nil {
+			log.Fatalf("probe upgrade verification failed: %v", err)
+		}
+		return
+	}
 
 	if err := runProbeNodeEntry(options); err != nil {
 		log.Fatalf("probe node exited unexpectedly: %v", err)
@@ -119,6 +127,8 @@ func parseProbeLaunchOptions() probeLaunchOptions {
 	flag.StringVar(&options.ControllerURL, "controller-url", "", "controller base url, e.g. https://127.0.0.1:15030 (fallback: PROBE_CONTROLLER_URL)")
 	flag.StringVar(&options.ControllerWS, "controller-ws", "", "controller websocket url, e.g. wss://127.0.0.1:15030/api/probe (fallback: PROBE_CONTROLLER_WS)")
 	flag.StringVar(&options.ServiceName, "service-name", "", "windows service name")
+	flag.BoolVar(&options.UpgradeVerify, "upgrade-verify", false, "internal: run upgrade verification mode")
+	flag.IntVar(&options.UpgradeVerifyDurationSec, "upgrade-verify-duration", defaultUpgradeVerifyDurationSec, "internal: upgrade verification duration in seconds")
 	flag.Parse()
 	return options
 }

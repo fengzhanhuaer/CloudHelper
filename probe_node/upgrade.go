@@ -52,6 +52,11 @@ type scoredProbeAsset struct {
 	Score int
 }
 
+const (
+	probeUpgradeVerifyOutputLimit     = 2048
+	probeUpgradeVerifyTimeoutGraceSec = 15
+)
+
 func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	probeUpgradeState.mu.Lock()
 	if probeUpgradeState.running {
@@ -142,6 +147,11 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		log.Printf("probe upgrade failed: compatibility check: %v", err)
 		return
 	}
+	if err := verifyProbeCandidateRuntime(binaryPath); err != nil {
+		log.Printf("probe upgrade failed: candidate runtime verify: %v", err)
+		return
+	}
+	log.Printf("probe upgrade candidate runtime verify complete: binary=%s", binaryPath)
 
 	exePath, backupPath, err := replaceCurrentExecutable(binaryPath)
 	if err != nil {
@@ -509,6 +519,58 @@ func rollbackExecutable(exePath, backupPath string) error {
 		return fmt.Errorf("restore backup binary failed: %w", err)
 	}
 	return nil
+}
+
+func verifyProbeCandidateRuntime(binaryPath string) error {
+	candidate := strings.TrimSpace(binaryPath)
+	if candidate == "" {
+		return fmt.Errorf("candidate binary path is empty")
+	}
+
+	verifySec := normalizeUpgradeVerifyDurationSec(defaultUpgradeVerifyDurationSec)
+	timeout := time.Duration(verifySec+probeUpgradeVerifyTimeoutGraceSec) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	args := []string{
+		"--upgrade-verify",
+		fmt.Sprintf("--upgrade-verify-duration=%d", verifySec),
+	}
+	cmd := exec.CommandContext(ctx, candidate, args...)
+	cmd.Env = os.Environ()
+	output, err := cmd.CombinedOutput()
+	outputText := trimUpgradeVerifyOutputForLog(output, probeUpgradeVerifyOutputLimit)
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("candidate verify timeout after %s", timeout)
+	}
+	if err != nil {
+		if outputText != "" {
+			return fmt.Errorf("candidate verify failed: %w; output=%s", err, outputText)
+		}
+		return fmt.Errorf("candidate verify failed: %w", err)
+	}
+	if outputText != "" {
+		log.Printf("probe upgrade candidate verify output: %s", strings.ReplaceAll(outputText, "\n", " | "))
+	}
+	return nil
+}
+
+func trimUpgradeVerifyOutputForLog(raw []byte, limit int) string {
+	if limit <= 0 {
+		limit = probeUpgradeVerifyOutputLimit
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	if limit <= 3 {
+		return text[:limit]
+	}
+	return text[:limit-3] + "..."
 }
 
 func copyFileWithMode(src, dst string, mode fs.FileMode) error {
