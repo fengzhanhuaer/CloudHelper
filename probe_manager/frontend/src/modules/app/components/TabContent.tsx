@@ -60,6 +60,7 @@ type TabContentProps = {
   networkOperateStatus: string;
   onRefreshNetworkAssistantStatus: () => void;
   onSwitchNetworkDirect: () => void;
+  onSwitchNetworkRule: () => void;
   onInstallNetworkTUN: () => void;
   onEnableNetworkTUN: () => void;
   networkLogLines: number;
@@ -128,6 +129,7 @@ export function TabContent(props: TabContentProps) {
           operateStatus={props.networkOperateStatus}
           onRefreshStatus={props.onRefreshNetworkAssistantStatus}
           onSwitchDirect={props.onSwitchNetworkDirect}
+          onSwitchRule={props.onSwitchNetworkRule}
           onInstallTUN={props.onInstallNetworkTUN}
           onEnableTUN={props.onEnableNetworkTUN}
           logLines={props.networkLogLines}

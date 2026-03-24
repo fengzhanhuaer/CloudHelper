@@ -28,13 +28,24 @@ const (
 	networkModeDirect = "direct"
 	networkModeGlobal = "global"
 	networkModeTUN    = "tun"
+	networkModeRule   = "rule"
 
 	defaultNodeID         = "cloudserver"
 	chainTargetNodePrefix = "chain:"
 	defaultSocksListen    = "127.0.0.1:10808"
 	directWhitelistFile   = "direct_whitelist.txt"
+	ruleRouteFile         = "rule_routes.txt"
+	ruleGroupFile         = "rule_groups.txt"
 	tunnelRoutePath       = "/api/ws/tunnel/"
 	maxTunnelFailures     = 20
+
+	ruleDNSDefaultServerA      = "1.1.1.1:53"
+	ruleDNSDefaultServerB      = "8.8.8.8:53"
+	ruleDNSCacheMinTTLSeconds  = 15
+	ruleDNSCacheMaxTTLSeconds  = 600
+	ruleDNSResolveTimeout      = 8 * time.Second
+	ruleDNSResolveReadTimeout  = 5 * time.Second
+	ruleDNSResolveServerTrials = 2
 )
 
 var defaultDirectWhitelistRules = []string{
@@ -43,6 +54,16 @@ var defaultDirectWhitelistRules = []string{
 	"192.168.0.0/16",
 	"localhost",
 	"127.0.0.1",
+}
+
+var defaultRuleRoutes = []string{
+	"# example.com,default",
+	"# 1.2.3.4,default",
+	"# 10.10.0.0/16,default",
+}
+
+var defaultRuleGroups = []string{
+	"default,cloudserver",
 }
 
 type NetworkAssistantStatus struct {
@@ -147,6 +168,46 @@ type socksDirectWhitelist struct {
 	cidrs []*net.IPNet
 }
 
+type ruleMatcherKind string
+
+const (
+	ruleMatcherDomainSuffix ruleMatcherKind = "domain_suffix"
+	ruleMatcherIP           ruleMatcherKind = "ip"
+	ruleMatcherCIDR         ruleMatcherKind = "cidr"
+)
+
+type tunnelRule struct {
+	RawPattern string
+	Group      string
+	Kind       ruleMatcherKind
+	Suffix     string
+	IP         string
+	CIDR       *net.IPNet
+}
+
+type tunnelRuleSet struct {
+	Rules []tunnelRule
+}
+
+type tunnelRuleRouting struct {
+	RuleSet       tunnelRuleSet
+	GroupNodeMap  map[string]string
+	RuleFilePath  string
+	GroupFilePath string
+}
+
+type tunnelRouteDecision struct {
+	Direct     bool
+	TargetAddr string
+	NodeID     string
+	Group      string
+}
+
+type dnsCacheEntry struct {
+	Addrs   []string
+	Expires time.Time
+}
+
 type networkAssistantService struct {
 	mu sync.RWMutex
 
@@ -181,6 +242,10 @@ type networkAssistantService struct {
 
 	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
+	ruleRouting     tunnelRuleRouting
+	ruleDNSCache    map[string]dnsCacheEntry
+	ruleDNSQuerySeq uint32
+	ruleMuxClients  map[string]*tunnelMuxClient
 }
 
 func newNetworkAssistantService() *networkAssistantService {
@@ -190,6 +255,15 @@ func newNetworkAssistantService() *networkAssistantService {
 	if err != nil {
 		logStore.Appendf(logSourceManager, "init", "failed to load direct whitelist, using defaults: %v", err)
 		directWhitelist = mustBuildDefaultDirectWhitelist()
+	}
+
+	ruleRouting, ruleErr := loadOrCreateTunnelRuleRouting()
+	if ruleErr != nil {
+		logStore.Appendf(logSourceManager, "init", "failed to load rule routing config, using empty rules: %v", ruleErr)
+		ruleRouting = tunnelRuleRouting{
+			RuleSet:      tunnelRuleSet{Rules: []tunnelRule{}},
+			GroupNodeMap: map[string]string{},
+		}
 	}
 
 	service := &networkAssistantService{
@@ -208,6 +282,9 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunStatus:           "未安装",
 		directWhitelist:     directWhitelist,
 		logStore:            logStore,
+		ruleRouting:         ruleRouting,
+		ruleDNSCache:        make(map[string]dnsCacheEntry),
+		ruleMuxClients:      make(map[string]*tunnelMuxClient),
 	}
 	service.syncTUNInstallState()
 	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
@@ -283,7 +360,7 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	}
 
 	return NetworkAssistantStatus{
-		Enabled:           s.mode == networkModeTUN,
+		Enabled:           s.mode == networkModeTUN || s.mode == networkModeRule,
 		Mode:              s.mode,
 		NodeID:            s.nodeID,
 		AvailableNodes:    append([]string(nil), s.availableNodes...),
@@ -319,7 +396,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.setLastError(err)
 		return err
 	}
-	if normalizedMode != networkModeDirect {
+	if normalizedMode != networkModeDirect && normalizedMode != networkModeRule {
 		return fmt.Errorf("unsupported mode: %s", mode)
 	}
 
@@ -385,6 +462,44 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.logf("switched mode to direct and cleared system proxy, node=%s", normalizedNode)
 		return nil
 	}
+
+	routing, err := loadOrCreateTunnelRuleRouting()
+	if err != nil {
+		s.logf("failed to load rule routing config: %v", err)
+		s.setLastError(err)
+		return err
+	}
+	if err := s.ensureSocksServer(); err != nil {
+		s.logf("failed to enable rule mode: start socks server: %v", err)
+		s.setLastError(err)
+		return err
+	}
+	if err := s.applySystemProxy(); err != nil {
+		s.logf("failed to enable rule mode: apply system proxy: %v", err)
+		s.setLastError(err)
+		return err
+	}
+
+	s.mu.Lock()
+	s.mode = networkModeRule
+	s.tunnelStatusMessage = "规则模式（命中规则走隧道）"
+	s.systemProxyMessage = "规则模式已启用"
+	s.tunnelOpenFailures = 0
+	s.lastError = ""
+	s.ruleRouting = routing
+	s.ruleDNSCache = make(map[string]dnsCacheEntry)
+	s.tunEnabled = false
+	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
+	s.mu.Unlock()
+
+	s.logf(
+		"switched mode to rule, node=%s rules=%d groups=%d rule_file=%s group_file=%s",
+		normalizedNode,
+		len(routing.RuleSet.Rules),
+		len(routing.GroupNodeMap),
+		strings.TrimSpace(routing.RuleFilePath),
+		strings.TrimSpace(routing.GroupFilePath),
+	)
 
 	return nil
 }
@@ -498,12 +613,19 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn, br *bufio.Reade
 	}
 	targetAddr := req.Address
 
-	if s.shouldDialDirect(targetAddr) {
-		directConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+	route, err := s.decideRouteForTarget(targetAddr)
+	if err != nil {
+		s.logf("proxy route decision failed target=%s err=%v", targetAddr, err)
+		replyProxyFailure(conn, version)
+		s.setTunnelStatus("规则解析失败")
+		return
+	}
+	if route.Direct {
+		directConn, err := net.DialTimeout("tcp", route.TargetAddr, 10*time.Second)
 		if err != nil {
-			s.logf("direct dial failed %s: %v", targetAddr, err)
+			s.logf("direct dial failed %s: %v", route.TargetAddr, err)
 			replyProxyFailure(conn, version)
-			s.setTunnelStatus("白名单直连失败")
+			s.setTunnelStatus("直连失败")
 			return
 		}
 		defer directConn.Close()
@@ -511,8 +633,12 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn, br *bufio.Reade
 		if err := replyProxySuccess(conn, version); err != nil {
 			return
 		}
-		s.logf("proxy direct dial connected %s", targetAddr)
-		s.setTunnelStatus("白名单直连")
+		s.logf("proxy direct dial connected target=%s routed=%s", targetAddr, route.TargetAddr)
+		if s.currentMode() == networkModeRule {
+			s.setTunnelStatus("规则未命中，直连")
+		} else {
+			s.setTunnelStatus("白名单直连")
+		}
 
 		errCh := make(chan relayResult, 2)
 		go func() {
@@ -524,14 +650,14 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn, br *bufio.Reade
 			errCh <- relayResult{Side: "direct->client", Err: copyErr}
 		}()
 
-		s.logRelayClosed("direct", targetAddr, <-errCh)
+		s.logRelayClosed("direct", route.TargetAddr, <-errCh)
 		return
 	}
 
-	tunnelStream, err := s.openTunnelStream("tcp", targetAddr)
+	tunnelStream, err := s.openTunnelStreamForNode("tcp", route.TargetAddr, route.NodeID)
 	if err != nil {
 		if !isCredentialMissingErr(err) || s.currentMode() == networkModeGlobal {
-			s.logf("failed to open tunnel %s: %v", targetAddr, err)
+			s.logf("failed to open tunnel target=%s routed=%s node=%s group=%s err=%v", targetAddr, route.TargetAddr, route.NodeID, route.Group, err)
 		}
 		replyProxyFailure(conn, version)
 		s.setTunnelStatus("隧道异常")
@@ -544,8 +670,12 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn, br *bufio.Reade
 	if err := replyProxySuccess(conn, version); err != nil {
 		return
 	}
-	s.logf("proxy tunnel connected %s", targetAddr)
-	s.setTunnelStatus("隧道已连接")
+	s.logf("proxy tunnel connected target=%s routed=%s node=%s group=%s", targetAddr, route.TargetAddr, route.NodeID, route.Group)
+	if s.currentMode() == networkModeRule && strings.TrimSpace(route.Group) != "" {
+		s.setTunnelStatus("规则命中组：" + strings.TrimSpace(route.Group))
+	} else {
+		s.setTunnelStatus("隧道已连接")
+	}
 
 	errCh := make(chan relayResult, 2)
 	go func() {
@@ -580,7 +710,7 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn, br *bufio.Reade
 		}
 	}()
 
-	s.logRelayClosed("tunnel", targetAddr, <-errCh)
+	s.logRelayClosed("tunnel", route.TargetAddr, <-errCh)
 	s.setTunnelStatus("隧道已断开")
 }
 
@@ -603,9 +733,44 @@ func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.R
 		}
 		s.logf("http proxy request from %s: method=%s target=%s", remoteAddr, method, targetAddr)
 
-		tunnelStream, openErr := s.openTunnelStream("tcp", targetAddr)
+		route, routeErr := s.decideRouteForTarget(targetAddr)
+		if routeErr != nil {
+			s.logf("http proxy route decision failed target=%s err=%v", targetAddr, routeErr)
+			s.setTunnelStatus("规则解析失败")
+			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to route target")
+			return
+		}
+
+		if route.Direct {
+			directConn, dialErr := net.DialTimeout("tcp", route.TargetAddr, 10*time.Second)
+			if dialErr != nil {
+				s.logf("http proxy direct dial failed target=%s routed=%s err=%v", targetAddr, route.TargetAddr, dialErr)
+				s.setTunnelStatus("直连失败")
+				_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
+				return
+			}
+			defer directConn.Close()
+
+			if _, writeErr := directConn.Write(payload); writeErr != nil {
+				s.logRelayClosed("http-forward-direct", route.TargetAddr, relayResult{Side: "proxy->direct", Err: writeErr})
+				s.setTunnelStatus("直连已断开")
+				_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to send request")
+				return
+			}
+			if s.currentMode() == networkModeRule {
+				s.setTunnelStatus("规则未命中，直连")
+			} else {
+				s.setTunnelStatus("白名单直连")
+			}
+			_, copyErr := io.Copy(conn, directConn)
+			s.logRelayClosed("http-forward-direct", route.TargetAddr, relayResult{Side: "direct->proxy", Err: copyErr})
+			s.setTunnelStatus("直连已断开")
+			return
+		}
+
+		tunnelStream, openErr := s.openTunnelStreamForNode("tcp", route.TargetAddr, route.NodeID)
 		if openErr != nil {
-			s.logf("failed to open tunnel %s: %v", targetAddr, openErr)
+			s.logf("failed to open tunnel target=%s routed=%s node=%s group=%s err=%v", targetAddr, route.TargetAddr, route.NodeID, route.Group, openErr)
 			s.setTunnelStatus("隧道异常")
 			s.recordTunnelOpenFailure(openErr)
 			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
@@ -613,11 +778,15 @@ func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.R
 		}
 		defer tunnelStream.close()
 		s.resetTunnelOpenFailures()
-		s.logf("proxy tunnel connected %s", targetAddr)
-		s.setTunnelStatus("隧道已连接")
+		s.logf("proxy tunnel connected target=%s routed=%s node=%s group=%s", targetAddr, route.TargetAddr, route.NodeID, route.Group)
+		if s.currentMode() == networkModeRule && strings.TrimSpace(route.Group) != "" {
+			s.setTunnelStatus("规则命中组：" + strings.TrimSpace(route.Group))
+		} else {
+			s.setTunnelStatus("隧道已连接")
+		}
 
 		if writeErr := tunnelStream.write(payload); writeErr != nil {
-			s.logRelayClosed("http-forward", targetAddr, relayResult{Side: "proxy->tunnel", Err: writeErr})
+			s.logRelayClosed("http-forward", route.TargetAddr, relayResult{Side: "proxy->tunnel", Err: writeErr})
 			s.setTunnelStatus("隧道已断开")
 			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to send request")
 			return
@@ -630,12 +799,12 @@ func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.R
 					continue
 				}
 				if _, writeErr := conn.Write(data); writeErr != nil {
-					s.logRelayClosed("http-forward", targetAddr, relayResult{Side: "tunnel->proxy", Err: writeErr})
+					s.logRelayClosed("http-forward", route.TargetAddr, relayResult{Side: "tunnel->proxy", Err: writeErr})
 					s.setTunnelStatus("隧道已断开")
 					return
 				}
 			case readErr := <-tunnelStream.errCh:
-				s.logRelayClosed("http-forward", targetAddr, relayResult{Side: "tunnel->proxy", Err: readErr})
+				s.logRelayClosed("http-forward", route.TargetAddr, relayResult{Side: "tunnel->proxy", Err: readErr})
 				s.setTunnelStatus("隧道已断开")
 				return
 			}
@@ -650,9 +819,66 @@ func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.R
 	}
 	s.logf("http proxy request from %s: method=CONNECT target=%s", remoteAddr, targetAddr)
 
-	tunnelStream, err := s.openTunnelStream("tcp", targetAddr)
+	route, routeErr := s.decideRouteForTarget(targetAddr)
+	if routeErr != nil {
+		s.logf("http connect route decision failed target=%s err=%v", targetAddr, routeErr)
+		s.setTunnelStatus("规则解析失败")
+		_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to route target")
+		return
+	}
+
+	if route.Direct {
+		directConn, dialErr := net.DialTimeout("tcp", route.TargetAddr, 10*time.Second)
+		if dialErr != nil {
+			s.logf("http connect direct dial failed target=%s routed=%s err=%v", targetAddr, route.TargetAddr, dialErr)
+			s.setTunnelStatus("直连失败")
+			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
+			return
+		}
+		defer directConn.Close()
+
+		if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\nProxy-Agent: CloudHelper\r\n\r\n")); err != nil {
+			return
+		}
+		if s.currentMode() == networkModeRule {
+			s.setTunnelStatus("规则未命中，直连")
+		} else {
+			s.setTunnelStatus("白名单直连")
+		}
+
+		if buffered := br.Buffered(); buffered > 0 {
+			payload := make([]byte, buffered)
+			n, readErr := io.ReadFull(br, payload)
+			if n > 0 {
+				if _, writeErr := directConn.Write(payload[:n]); writeErr != nil {
+					s.logRelayClosed("direct", route.TargetAddr, relayResult{Side: "proxy->direct", Err: writeErr})
+					return
+				}
+			}
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				s.logRelayClosed("direct", route.TargetAddr, relayResult{Side: "proxy->direct", Err: readErr})
+				return
+			}
+		}
+
+		errCh := make(chan relayResult, 2)
+		go func() {
+			_, copyErr := io.Copy(directConn, br)
+			errCh <- relayResult{Side: "client->direct", Err: copyErr}
+		}()
+		go func() {
+			_, copyErr := io.Copy(conn, directConn)
+			errCh <- relayResult{Side: "direct->client", Err: copyErr}
+		}()
+
+		s.logRelayClosed("direct", route.TargetAddr, <-errCh)
+		s.setTunnelStatus("直连已断开")
+		return
+	}
+
+	tunnelStream, err := s.openTunnelStreamForNode("tcp", route.TargetAddr, route.NodeID)
 	if err != nil {
-		s.logf("failed to open tunnel %s: %v", targetAddr, err)
+		s.logf("failed to open tunnel target=%s routed=%s node=%s group=%s err=%v", targetAddr, route.TargetAddr, route.NodeID, route.Group, err)
 		s.setTunnelStatus("隧道异常")
 		s.recordTunnelOpenFailure(err)
 		_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
@@ -664,20 +890,24 @@ func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.R
 	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\nProxy-Agent: CloudHelper\r\n\r\n")); err != nil {
 		return
 	}
-	s.logf("proxy tunnel connected %s", targetAddr)
-	s.setTunnelStatus("隧道已连接")
+	s.logf("proxy tunnel connected target=%s routed=%s node=%s group=%s", targetAddr, route.TargetAddr, route.NodeID, route.Group)
+	if s.currentMode() == networkModeRule && strings.TrimSpace(route.Group) != "" {
+		s.setTunnelStatus("规则命中组：" + strings.TrimSpace(route.Group))
+	} else {
+		s.setTunnelStatus("隧道已连接")
+	}
 
 	if buffered := br.Buffered(); buffered > 0 {
 		payload := make([]byte, buffered)
 		n, readErr := io.ReadFull(br, payload)
 		if n > 0 {
 			if writeErr := tunnelStream.write(payload[:n]); writeErr != nil {
-				s.logf("tunnel relay closed with error %s: %v", targetAddr, writeErr)
+				s.logf("tunnel relay closed with error %s: %v", route.TargetAddr, writeErr)
 				return
 			}
 		}
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			s.logf("tunnel relay closed with error %s: %v", targetAddr, readErr)
+			s.logf("tunnel relay closed with error %s: %v", route.TargetAddr, readErr)
 			return
 		}
 	}
@@ -715,7 +945,7 @@ func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.R
 		}
 	}()
 
-	s.logRelayClosed("tunnel", targetAddr, <-errCh)
+	s.logRelayClosed("tunnel", route.TargetAddr, <-errCh)
 	s.setTunnelStatus("隧道已断开")
 }
 
@@ -885,6 +1115,479 @@ func (s *networkAssistantService) shouldDialDirect(targetAddr string) bool {
 	return whitelist.matchesTarget(targetAddr)
 }
 
+func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunnelRouteDecision, error) {
+	host, port, err := splitTargetHostPort(targetAddr)
+	if err != nil {
+		return tunnelRouteDecision{}, err
+	}
+	normalizedTarget := net.JoinHostPort(host, port)
+
+	s.mu.RLock()
+	mode := strings.TrimSpace(s.mode)
+	nodeID := strings.TrimSpace(s.nodeID)
+	routing := s.ruleRouting
+	s.mu.RUnlock()
+	if nodeID == "" {
+		nodeID = defaultNodeID
+	}
+
+	if mode == networkModeDirect {
+		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+	}
+
+	if mode != networkModeRule {
+		if s.shouldDialDirect(normalizedTarget) {
+			return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+		}
+		return tunnelRouteDecision{Direct: false, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+	}
+
+	if s.shouldDialDirect(normalizedTarget) {
+		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+	}
+
+	rule, matched := routing.RuleSet.matchHost(host)
+	if !matched {
+		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+	}
+
+	group := normalizeRuleGroupName(rule.Group)
+	targetNodeID := strings.TrimSpace(routing.GroupNodeMap[group])
+	if targetNodeID == "" {
+		targetNodeID = nodeID
+	}
+	if targetNodeID == "" {
+		targetNodeID = defaultNodeID
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		return tunnelRouteDecision{
+			Direct:     false,
+			TargetAddr: net.JoinHostPort(canonicalIP(ip), port),
+			NodeID:     targetNodeID,
+			Group:      group,
+		}, nil
+	}
+
+	resolvedAddr, resolveErr := s.resolveRuleDomainViaTunnel(targetNodeID, host)
+	if resolveErr != nil {
+		return tunnelRouteDecision{}, resolveErr
+	}
+	return tunnelRouteDecision{
+		Direct:     false,
+		TargetAddr: net.JoinHostPort(resolvedAddr, port),
+		NodeID:     targetNodeID,
+		Group:      group,
+	}, nil
+}
+
+func splitTargetHostPort(targetAddr string) (string, string, error) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return "", "", err
+	}
+	normalizedHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if normalizedHost == "" {
+		return "", "", errors.New("missing target host")
+	}
+	normalizedPort := strings.TrimSpace(port)
+	if normalizedPort == "" {
+		return "", "", errors.New("missing target port")
+	}
+	return normalizedHost, normalizedPort, nil
+}
+
+func (set tunnelRuleSet) matchHost(host string) (tunnelRule, bool) {
+	targetHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if targetHost == "" {
+		return tunnelRule{}, false
+	}
+	targetHostLower := strings.ToLower(targetHost)
+	targetIP := net.ParseIP(targetHostLower)
+	targetIPCanonical := ""
+	if targetIP != nil {
+		targetIPCanonical = canonicalIP(targetIP)
+	}
+
+	for _, rule := range set.Rules {
+		switch rule.Kind {
+		case ruleMatcherDomainSuffix:
+			if targetIP != nil {
+				continue
+			}
+			if domainMatchesRuleSuffix(targetHostLower, rule.Suffix) {
+				return rule, true
+			}
+		case ruleMatcherIP:
+			if targetIP == nil {
+				continue
+			}
+			if targetIPCanonical == rule.IP {
+				return rule, true
+			}
+		case ruleMatcherCIDR:
+			if targetIP == nil || rule.CIDR == nil {
+				continue
+			}
+			if rule.CIDR.Contains(targetIP) {
+				return rule, true
+			}
+		}
+	}
+	return tunnelRule{}, false
+}
+
+func domainMatchesRuleSuffix(host string, suffix string) bool {
+	normalizedHost := strings.TrimSpace(strings.ToLower(host))
+	normalizedSuffix := strings.TrimSpace(strings.ToLower(strings.TrimPrefix(suffix, ".")))
+	if normalizedHost == "" || normalizedSuffix == "" {
+		return false
+	}
+	if normalizedHost == normalizedSuffix {
+		return true
+	}
+	return strings.HasSuffix(normalizedHost, "."+normalizedSuffix)
+}
+
+func normalizeRuleGroupName(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func (s *networkAssistantService) resolveRuleDomainViaTunnel(nodeID string, domain string) (string, error) {
+	normalizedDomain := normalizeRuleDomain(domain)
+	if normalizedDomain == "" {
+		return "", errors.New("invalid domain")
+	}
+	cacheKey := normalizeRuleDNSCacheKey(nodeID, normalizedDomain)
+	if cached, ok := s.loadRuleDNSCache(cacheKey); ok && len(cached) > 0 {
+		return choosePreferredResolvedAddress(cached), nil
+	}
+
+	addresses, ttlSeconds, err := s.queryRuleDomainViaTunnel(nodeID, normalizedDomain, 1)
+	if (err != nil || len(addresses) == 0) && strings.Contains(normalizedDomain, ".") {
+		v6Addresses, v6TTL, v6Err := s.queryRuleDomainViaTunnel(nodeID, normalizedDomain, 28)
+		if v6Err == nil && len(v6Addresses) > 0 {
+			addresses = v6Addresses
+			ttlSeconds = v6TTL
+			err = nil
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	if len(addresses) == 0 {
+		return "", errors.New("dns resolve returned empty result")
+	}
+
+	s.storeRuleDNSCache(cacheKey, addresses, ttlSeconds)
+	return choosePreferredResolvedAddress(addresses), nil
+}
+
+func normalizeRuleDomain(domain string) string {
+	value := strings.TrimSpace(strings.Trim(domain, "."))
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, " ") {
+		return ""
+	}
+	return strings.ToLower(value)
+}
+
+func normalizeRuleDNSCacheKey(nodeID string, domain string) string {
+	node := strings.TrimSpace(strings.ToLower(nodeID))
+	if node == "" {
+		node = strings.ToLower(defaultNodeID)
+	}
+	return node + "|" + strings.ToLower(strings.TrimSpace(domain))
+}
+
+func choosePreferredResolvedAddress(addresses []string) string {
+	for _, addr := range addresses {
+		ip := net.ParseIP(strings.TrimSpace(addr))
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			return canonicalIP(ip)
+		}
+	}
+	for _, addr := range addresses {
+		ip := net.ParseIP(strings.TrimSpace(addr))
+		if ip == nil {
+			continue
+		}
+		return canonicalIP(ip)
+	}
+	return ""
+}
+
+func clampRuleDNSTTL(ttlSeconds int) int {
+	if ttlSeconds < ruleDNSCacheMinTTLSeconds {
+		return ruleDNSCacheMinTTLSeconds
+	}
+	if ttlSeconds > ruleDNSCacheMaxTTLSeconds {
+		return ruleDNSCacheMaxTTLSeconds
+	}
+	return ttlSeconds
+}
+
+func (s *networkAssistantService) loadRuleDNSCache(cacheKey string) ([]string, bool) {
+	s.mu.RLock()
+	entry, ok := s.ruleDNSCache[cacheKey]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.Expires) {
+		s.mu.Lock()
+		if latest, exists := s.ruleDNSCache[cacheKey]; exists && time.Now().After(latest.Expires) {
+			delete(s.ruleDNSCache, cacheKey)
+		}
+		s.mu.Unlock()
+		return nil, false
+	}
+	if len(entry.Addrs) == 0 {
+		return nil, false
+	}
+	return append([]string(nil), entry.Addrs...), true
+}
+
+func (s *networkAssistantService) storeRuleDNSCache(cacheKey string, addresses []string, ttlSeconds int) {
+	if len(addresses) == 0 {
+		return
+	}
+	normalized := make([]string, 0, len(addresses))
+	for _, addr := range addresses {
+		ip := net.ParseIP(strings.TrimSpace(addr))
+		if ip == nil {
+			continue
+		}
+		normalized = append(normalized, canonicalIP(ip))
+	}
+	if len(normalized) == 0 {
+		return
+	}
+	ttl := clampRuleDNSTTL(ttlSeconds)
+	s.mu.Lock()
+	if s.ruleDNSCache == nil {
+		s.ruleDNSCache = make(map[string]dnsCacheEntry)
+	}
+	s.ruleDNSCache[cacheKey] = dnsCacheEntry{
+		Addrs:   normalized,
+		Expires: time.Now().Add(time.Duration(ttl) * time.Second),
+	}
+	s.mu.Unlock()
+}
+
+func (s *networkAssistantService) queryRuleDomainViaTunnel(nodeID string, domain string, qType uint16) ([]string, int, error) {
+	normalizedDomain := normalizeRuleDomain(domain)
+	if normalizedDomain == "" {
+		return nil, 0, errors.New("invalid domain")
+	}
+	queryID := uint16(atomic.AddUint32(&s.ruleDNSQuerySeq, 1))
+	packet, err := buildDNSQueryPacket(normalizedDomain, qType, queryID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	servers := []string{ruleDNSDefaultServerA, ruleDNSDefaultServerB}
+	deadline := time.Now().Add(ruleDNSResolveTimeout)
+	trials := 0
+	var lastErr error
+	for _, server := range servers {
+		if trials >= ruleDNSResolveServerTrials {
+			break
+		}
+		trials++
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			lastErr = errors.New("dns resolve timeout")
+			break
+		}
+
+		stream, openErr := s.openTunnelStreamForNode("udp", server, nodeID)
+		if openErr != nil {
+			lastErr = openErr
+			continue
+		}
+
+		writeErr := stream.write(packet)
+		if writeErr != nil {
+			lastErr = writeErr
+			stream.close()
+			continue
+		}
+
+		waitTimeout := ruleDNSResolveReadTimeout
+		if remaining < waitTimeout {
+			waitTimeout = remaining
+		}
+		select {
+		case payload := <-stream.readCh:
+			stream.close()
+			addrs, ttl, parseErr := parseDNSResponseAddrs(payload, queryID, qType)
+			if parseErr != nil {
+				lastErr = parseErr
+				continue
+			}
+			return addrs, ttl, nil
+		case streamErr := <-stream.errCh:
+			lastErr = streamErr
+			stream.close()
+			continue
+		case <-time.After(waitTimeout):
+			lastErr = errors.New("dns tunnel read timeout")
+			stream.close()
+			continue
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("dns resolve failed")
+	}
+	return nil, 0, lastErr
+}
+
+func buildDNSQueryPacket(domain string, qType uint16, queryID uint16) ([]byte, error) {
+	namePayload, err := encodeDNSName(domain)
+	if err != nil {
+		return nil, err
+	}
+	packet := make([]byte, 12+len(namePayload)+4)
+	binary.BigEndian.PutUint16(packet[0:2], queryID)
+	binary.BigEndian.PutUint16(packet[2:4], 0x0100)
+	binary.BigEndian.PutUint16(packet[4:6], 1)
+	copy(packet[12:], namePayload)
+	questionOffset := 12 + len(namePayload)
+	binary.BigEndian.PutUint16(packet[questionOffset:questionOffset+2], qType)
+	binary.BigEndian.PutUint16(packet[questionOffset+2:questionOffset+4], 1)
+	return packet, nil
+}
+
+func encodeDNSName(domain string) ([]byte, error) {
+	normalized := normalizeRuleDomain(domain)
+	if normalized == "" {
+		return nil, errors.New("invalid dns name")
+	}
+	parts := strings.Split(normalized, ".")
+	buf := bytes.NewBuffer(make([]byte, 0, len(normalized)+2))
+	for _, part := range parts {
+		label := strings.TrimSpace(part)
+		if label == "" || len(label) > 63 {
+			return nil, errors.New("invalid dns label")
+		}
+		buf.WriteByte(byte(len(label)))
+		buf.WriteString(label)
+	}
+	buf.WriteByte(0x00)
+	return buf.Bytes(), nil
+}
+
+func parseDNSResponseAddrs(payload []byte, expectedID uint16, qType uint16) ([]string, int, error) {
+	if len(payload) < 12 {
+		return nil, 0, errors.New("dns response too short")
+	}
+	respID := binary.BigEndian.Uint16(payload[0:2])
+	if respID != expectedID {
+		return nil, 0, errors.New("dns response id mismatch")
+	}
+	rcode := payload[3] & 0x0F
+	if rcode != 0 {
+		return nil, 0, fmt.Errorf("dns response rcode=%d", rcode)
+	}
+	questionCount := int(binary.BigEndian.Uint16(payload[4:6]))
+	answerCount := int(binary.BigEndian.Uint16(payload[6:8]))
+
+	offset := 12
+	for i := 0; i < questionCount; i++ {
+		nextOffset, err := skipDNSName(payload, offset)
+		if err != nil {
+			return nil, 0, err
+		}
+		if nextOffset+4 > len(payload) {
+			return nil, 0, errors.New("dns question truncated")
+		}
+		offset = nextOffset + 4
+	}
+
+	addresses := make([]string, 0, answerCount)
+	minTTL := 0
+	for i := 0; i < answerCount; i++ {
+		nextOffset, err := skipDNSName(payload, offset)
+		if err != nil {
+			return nil, 0, err
+		}
+		if nextOffset+10 > len(payload) {
+			return nil, 0, errors.New("dns answer truncated")
+		}
+		recordType := binary.BigEndian.Uint16(payload[nextOffset : nextOffset+2])
+		recordClass := binary.BigEndian.Uint16(payload[nextOffset+2 : nextOffset+4])
+		recordTTL := int(binary.BigEndian.Uint32(payload[nextOffset+4 : nextOffset+8]))
+		recordLength := int(binary.BigEndian.Uint16(payload[nextOffset+8 : nextOffset+10]))
+		recordStart := nextOffset + 10
+		recordEnd := recordStart + recordLength
+		if recordEnd > len(payload) {
+			return nil, 0, errors.New("dns answer payload truncated")
+		}
+
+		if recordClass == 1 && recordType == qType {
+			switch qType {
+			case 1:
+				if recordLength == net.IPv4len {
+					ip := net.IP(payload[recordStart:recordEnd])
+					addresses = append(addresses, canonicalIP(ip))
+					if minTTL == 0 || (recordTTL > 0 && recordTTL < minTTL) {
+						minTTL = recordTTL
+					}
+				}
+			case 28:
+				if recordLength == net.IPv6len {
+					ip := net.IP(payload[recordStart:recordEnd])
+					addresses = append(addresses, canonicalIP(ip))
+					if minTTL == 0 || (recordTTL > 0 && recordTTL < minTTL) {
+						minTTL = recordTTL
+					}
+				}
+			}
+		}
+
+		offset = recordEnd
+	}
+
+	if len(addresses) == 0 {
+		return nil, 0, errors.New("dns response has no address records")
+	}
+	if minTTL <= 0 {
+		minTTL = ruleDNSCacheMinTTLSeconds
+	}
+	return addresses, clampRuleDNSTTL(minTTL), nil
+}
+
+func skipDNSName(payload []byte, offset int) (int, error) {
+	nextOffset := offset
+	for i := 0; i < 128; i++ {
+		if nextOffset >= len(payload) {
+			return 0, errors.New("invalid dns name offset")
+		}
+		length := int(payload[nextOffset])
+		if length == 0 {
+			return nextOffset + 1, nil
+		}
+		if length&0xC0 == 0xC0 {
+			if nextOffset+1 >= len(payload) {
+				return 0, errors.New("invalid dns pointer")
+			}
+			return nextOffset + 2, nil
+		}
+		nextOffset++
+		if nextOffset+length > len(payload) {
+			return 0, errors.New("invalid dns label length")
+		}
+		nextOffset += length
+	}
+	return 0, errors.New("dns name exceeds max depth")
+}
+
 func (s *networkAssistantService) handleSocksUDPAssociate(tcpConn net.Conn) {
 	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -914,10 +1617,15 @@ func (s *networkAssistantService) handleSocksUDPAssociate(tcpConn net.Conn) {
 
 		var respPayload []byte
 		var respAddr string
-		if s.shouldDialDirect(targetAddr) {
-			respPayload, respAddr, err = dialUDPDirectPacket(targetAddr, payload)
+		route, routeErr := s.decideRouteForTarget(targetAddr)
+		if routeErr != nil {
+			s.logf("udp route decision failed target=%s err=%v", targetAddr, routeErr)
+			continue
+		}
+		if route.Direct {
+			respPayload, respAddr, err = dialUDPDirectPacket(route.TargetAddr, payload)
 		} else {
-			stream, openErr := s.openTunnelStream("udp", targetAddr)
+			stream, openErr := s.openTunnelStreamForNode("udp", route.TargetAddr, route.NodeID)
 			if openErr != nil {
 				err = openErr
 			} else {
@@ -925,7 +1633,7 @@ func (s *networkAssistantService) handleSocksUDPAssociate(tcpConn net.Conn) {
 				if err == nil {
 					select {
 					case respPayload = <-stream.readCh:
-						respAddr = targetAddr
+						respAddr = route.TargetAddr
 					case readErr := <-stream.errCh:
 						err = readErr
 					case <-time.After(10 * time.Second):
@@ -936,7 +1644,7 @@ func (s *networkAssistantService) handleSocksUDPAssociate(tcpConn net.Conn) {
 			}
 		}
 		if err != nil {
-			s.logf("failed to open udp tunnel %s: %v", targetAddr, err)
+			s.logf("udp relay failed target=%s err=%v", targetAddr, err)
 			continue
 		}
 		if strings.TrimSpace(respAddr) == "" {
@@ -1054,6 +1762,13 @@ func (s *networkAssistantService) stopSocksServerOnly() error {
 	s.mu.Lock()
 	ln := s.listener
 	muxClient := s.tunnelMuxClient
+	extraMuxClients := make([]*tunnelMuxClient, 0, len(s.ruleMuxClients))
+	for _, client := range s.ruleMuxClients {
+		if client != nil {
+			extraMuxClients = append(extraMuxClients, client)
+		}
+	}
+	s.ruleMuxClients = make(map[string]*tunnelMuxClient)
 	s.tunnelMuxClient = nil
 	s.listener = nil
 	s.stopping.Store(true)
@@ -1061,6 +1776,9 @@ func (s *networkAssistantService) stopSocksServerOnly() error {
 
 	if muxClient != nil {
 		muxClient.close()
+	}
+	for _, client := range extraMuxClients {
+		client.close()
 	}
 
 	if ln == nil {
@@ -1118,6 +1836,8 @@ func inferManagerLogCategory(message string) string {
 		return "tunnel"
 	case strings.Contains(lower, "node"):
 		return "node"
+	case strings.Contains(lower, "rule") || strings.Contains(lower, "规则"):
+		return "rule"
 	case strings.Contains(lower, "whitelist"):
 		return "whitelist"
 	case strings.Contains(lower, "failed") || strings.Contains(lower, "error"):
@@ -1642,6 +2362,188 @@ func containsNodeID(nodes []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func loadOrCreateTunnelRuleRouting() (tunnelRuleRouting, error) {
+	dataDir, err := ensureManagerDataDir()
+	if err != nil {
+		return tunnelRuleRouting{}, err
+	}
+
+	routePath := filepath.Join(dataDir, ruleRouteFile)
+	groupPath := filepath.Join(dataDir, ruleGroupFile)
+	if err := ensureTunnelRuleRouteFile(routePath); err != nil {
+		return tunnelRuleRouting{}, err
+	}
+	if err := ensureTunnelRuleGroupFile(groupPath); err != nil {
+		return tunnelRuleRouting{}, err
+	}
+
+	ruleSet, err := parseTunnelRuleFile(routePath)
+	if err != nil {
+		return tunnelRuleRouting{}, err
+	}
+	groupMap, err := parseTunnelRuleGroupFile(groupPath)
+	if err != nil {
+		return tunnelRuleRouting{}, err
+	}
+
+	return tunnelRuleRouting{
+		RuleSet:       ruleSet,
+		GroupNodeMap:  groupMap,
+		RuleFilePath:  routePath,
+		GroupFilePath: groupPath,
+	}, nil
+}
+
+func ensureTunnelRuleRouteFile(routePath string) error {
+	_, err := os.Stat(routePath)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	content := "# CloudHelper rule routes\n" +
+		"# each line: <domain suffix|ip|cidr>,<proxy_group>\n" +
+		"# examples:\n" +
+		strings.Join(defaultRuleRoutes, "\n") + "\n"
+	if err := os.WriteFile(routePath, []byte(content), 0o644); err != nil {
+		return err
+	}
+	return autoBackupManagerData()
+}
+
+func ensureTunnelRuleGroupFile(groupPath string) error {
+	_, err := os.Stat(groupPath)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	content := "# CloudHelper rule proxy groups\n" +
+		"# each line: <proxy_group>,<node_id_or_chain_id>\n" +
+		"# chain id example: chain:<chain_id>\n" +
+		strings.Join(defaultRuleGroups, "\n") + "\n"
+	if err := os.WriteFile(groupPath, []byte(content), 0o644); err != nil {
+		return err
+	}
+	return autoBackupManagerData()
+}
+
+func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return tunnelRuleSet{}, err
+	}
+
+	rules := make([]tunnelRule, 0)
+	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		rule, parseErr := parseTunnelRuleLine(line)
+		if parseErr != nil {
+			return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes line %d: %w", lineNo, parseErr)
+		}
+		rules = append(rules, rule)
+	}
+	if err := scanner.Err(); err != nil {
+		return tunnelRuleSet{}, err
+	}
+	return tunnelRuleSet{Rules: rules}, nil
+}
+
+func parseTunnelRuleLine(line string) (tunnelRule, error) {
+	parts := strings.SplitN(strings.TrimSpace(line), ",", 2)
+	if len(parts) != 2 {
+		return tunnelRule{}, errors.New("expected <pattern>,<proxy_group>")
+	}
+	pattern := strings.TrimSpace(parts[0])
+	group := normalizeRuleGroupName(parts[1])
+	if pattern == "" {
+		return tunnelRule{}, errors.New("rule pattern is required")
+	}
+	if group == "" {
+		return tunnelRule{}, errors.New("proxy group is required")
+	}
+
+	patternLower := strings.ToLower(pattern)
+	if _, cidr, err := net.ParseCIDR(patternLower); err == nil {
+		return tunnelRule{
+			RawPattern: pattern,
+			Group:      group,
+			Kind:       ruleMatcherCIDR,
+			CIDR:       cidr,
+		}, nil
+	}
+	if ip := net.ParseIP(patternLower); ip != nil {
+		return tunnelRule{
+			RawPattern: pattern,
+			Group:      group,
+			Kind:       ruleMatcherIP,
+			IP:         canonicalIP(ip),
+		}, nil
+	}
+
+	suffix := strings.TrimSpace(strings.TrimPrefix(patternLower, "*."))
+	suffix = strings.TrimPrefix(suffix, ".")
+	if suffix == "" {
+		return tunnelRule{}, errors.New("domain suffix is required")
+	}
+	if strings.Contains(suffix, " ") || strings.Contains(suffix, ",") {
+		return tunnelRule{}, errors.New("invalid domain suffix")
+	}
+	return tunnelRule{
+		RawPattern: pattern,
+		Group:      group,
+		Kind:       ruleMatcherDomainSuffix,
+		Suffix:     suffix,
+	}, nil
+}
+
+func parseTunnelRuleGroupFile(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	groupMap := make(map[string]string)
+	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.SplitN(line, ",", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid rule_groups line %d: expected <proxy_group>,<node_id_or_chain_id>", lineNo)
+		}
+		group := normalizeRuleGroupName(parts[0])
+		nodeID := strings.TrimSpace(parts[1])
+		if group == "" {
+			return nil, fmt.Errorf("invalid rule_groups line %d: proxy group is required", lineNo)
+		}
+		if nodeID == "" {
+			return nil, fmt.Errorf("invalid rule_groups line %d: node id is required", lineNo)
+		}
+		groupMap[group] = nodeID
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return groupMap, nil
 }
 
 func loadOrCreateSocksDirectWhitelist() (*socksDirectWhitelist, string, error) {

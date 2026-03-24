@@ -12,6 +12,7 @@ type NetworkAssistantTabProps = {
   operateStatus: string;
   onRefreshStatus: () => void;
   onSwitchDirect: () => void;
+  onSwitchRule: () => void;
   onInstallTUN: () => void;
   onEnableTUN: () => void;
   logLines: number;
@@ -42,6 +43,7 @@ const categoryLabels: Record<string, string> = {
   mux: "隧道复用",
   tunnel: "隧道",
   node: "节点",
+  rule: "规则",
   whitelist: "白名单",
   error: "错误",
   open: "打开流",
@@ -121,7 +123,10 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
           <div className="content-actions">
             <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>直连模式</button>
+            <button className="btn" onClick={props.onSwitchRule} disabled={props.isOperating}>规则模式</button>
           </div>
+          <div className="status">规则文件：data/rule_routes.txt（每行：网址后缀/IP/CIDR,代理组）</div>
+          <div className="status">代理组文件：data/rule_groups.txt（每行：代理组,链路ID或节点ID）</div>
         </>
       ) : subTab === "link" ? (
         <LinkManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />
@@ -217,7 +222,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         <>
           <div className="status">{props.operateStatus}</div>
           <div className="status">{props.status.last_error}</div>
-          <div className="status">规则模式将在 V2 开放。</div>
         </>
       ) : null}
     </div>

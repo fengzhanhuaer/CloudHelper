@@ -168,3 +168,108 @@ func TestDirectWhitelistIPv6HostPortFormat(t *testing.T) {
 		t.Fatal("unexpected whitelist match for IPv6 target")
 	}
 }
+
+func TestParseTunnelRuleLine(t *testing.T) {
+	tests := []struct {
+		name      string
+		line      string
+		wantKind  ruleMatcherKind
+		wantGroup string
+	}{
+		{name: "domain suffix", line: "example.com,group_a", wantKind: ruleMatcherDomainSuffix, wantGroup: "group_a"},
+		{name: "ip", line: "1.2.3.4,group_b", wantKind: ruleMatcherIP, wantGroup: "group_b"},
+		{name: "cidr", line: "10.0.0.0/8,group_c", wantKind: ruleMatcherCIDR, wantGroup: "group_c"},
+	}
+
+	for _, tt := range tests {
+		got, err := parseTunnelRuleLine(tt.line)
+		if err != nil {
+			t.Fatalf("%s parseTunnelRuleLine returned error: %v", tt.name, err)
+		}
+		if got.Kind != tt.wantKind {
+			t.Fatalf("%s kind=%s, want %s", tt.name, got.Kind, tt.wantKind)
+		}
+		if got.Group != tt.wantGroup {
+			t.Fatalf("%s group=%s, want %s", tt.name, got.Group, tt.wantGroup)
+		}
+	}
+}
+
+func TestTunnelRuleSetMatchHost(t *testing.T) {
+	_, cidr, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("parse cidr: %v", err)
+	}
+	rules := tunnelRuleSet{
+		Rules: []tunnelRule{
+			{Kind: ruleMatcherDomainSuffix, Suffix: "example.com", Group: "domain"},
+			{Kind: ruleMatcherIP, IP: "1.2.3.4", Group: "ip"},
+			{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "cidr"},
+		},
+	}
+
+	if got, ok := rules.matchHost("www.example.com"); !ok || got.Group != "domain" {
+		t.Fatalf("domain match failed: ok=%v group=%s", ok, got.Group)
+	}
+	if got, ok := rules.matchHost("1.2.3.4"); !ok || got.Group != "ip" {
+		t.Fatalf("ip match failed: ok=%v group=%s", ok, got.Group)
+	}
+	if got, ok := rules.matchHost("10.2.3.4"); !ok || got.Group != "cidr" {
+		t.Fatalf("cidr match failed: ok=%v group=%s", ok, got.Group)
+	}
+	if _, ok := rules.matchHost("not-match.test"); ok {
+		t.Fatal("unexpected match for unknown host")
+	}
+}
+
+func TestDecideRouteForTargetRuleModeByIP(t *testing.T) {
+	_, cidr, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("parse cidr: %v", err)
+	}
+	service := &networkAssistantService{
+		mode:   networkModeRule,
+		nodeID: "cloudserver",
+		directWhitelist: &socksDirectWhitelist{
+			hosts: map[string]struct{}{},
+			ips:   map[string]struct{}{},
+			cidrs: []*net.IPNet{},
+		},
+		ruleRouting: tunnelRuleRouting{
+			RuleSet: tunnelRuleSet{
+				Rules: []tunnelRule{
+					{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "group_cidr"},
+				},
+			},
+			GroupNodeMap: map[string]string{
+				"group_cidr": "chain:test-chain",
+			},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+	}
+
+	decision, err := service.decideRouteForTarget("10.1.2.3:443")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget returned error: %v", err)
+	}
+	if decision.Direct {
+		t.Fatal("expected tunnel route for matched cidr")
+	}
+	if decision.NodeID != "chain:test-chain" {
+		t.Fatalf("node id=%s, want chain:test-chain", decision.NodeID)
+	}
+	if decision.TargetAddr != "10.1.2.3:443" {
+		t.Fatalf("target addr=%s, want 10.1.2.3:443", decision.TargetAddr)
+	}
+	if decision.Group != "group_cidr" {
+		t.Fatalf("group=%s, want group_cidr", decision.Group)
+	}
+
+	directDecision, err := service.decideRouteForTarget("8.8.8.8:53")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget returned error: %v", err)
+	}
+	if !directDecision.Direct {
+		t.Fatal("expected direct route for unmatched target")
+	}
+}

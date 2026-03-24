@@ -798,16 +798,28 @@ func (s *tunnelMuxStream) closeLocal(err error) {
 }
 
 func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, error) {
+	return s.ensureTunnelMuxClientForNode("")
+}
+
+func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput string) (*tunnelMuxClient, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	baseURL := strings.TrimSpace(s.controllerBaseURL)
 	token := strings.TrimSpace(s.sessionToken)
-	nodeID := strings.TrimSpace(s.nodeID)
-	if nodeID == "" {
-		nodeID = defaultNodeID
+	selectedNodeID := strings.TrimSpace(s.nodeID)
+	if selectedNodeID == "" {
+		selectedNodeID = defaultNodeID
 	}
-	chainTarget, hasChainTarget := s.chainTargets[nodeID]
+	targetNodeID := strings.TrimSpace(nodeIDInput)
+	if targetNodeID == "" {
+		targetNodeID = selectedNodeID
+	}
+	if targetNodeID == "" {
+		targetNodeID = defaultNodeID
+	}
+
+	chainTarget, hasChainTarget := s.chainTargets[targetNodeID]
 	modeKey := "ws"
 	if hasChainTarget {
 		modeKey = fmt.Sprintf(
@@ -824,15 +836,59 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 		return nil, errors.New("missing controller url or session token")
 	}
 
-	if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint(baseURL, token, nodeID, modeKey) {
-		return s.tunnelMuxClient, nil
-	}
-	if s.tunnelMuxClient != nil {
-		s.logf("closing stale tunnel mux client")
-		s.tunnelMuxClient.close()
-		s.tunnelMuxClient = nil
+	isPrimary := strings.EqualFold(targetNodeID, selectedNodeID)
+	if isPrimary {
+		if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint(baseURL, token, targetNodeID, modeKey) {
+			return s.tunnelMuxClient, nil
+		}
+		if s.tunnelMuxClient != nil {
+			s.logf("closing stale tunnel mux client")
+			s.tunnelMuxClient.close()
+			s.tunnelMuxClient = nil
+		}
+	} else {
+		if s.ruleMuxClients == nil {
+			s.ruleMuxClients = make(map[string]*tunnelMuxClient)
+		}
+		if existing := s.ruleMuxClients[targetNodeID]; existing != nil {
+			if !existing.isClosed() && existing.sameEndpoint(baseURL, token, targetNodeID, modeKey) {
+				return existing, nil
+			}
+			existing.close()
+			delete(s.ruleMuxClients, targetNodeID)
+		}
 	}
 
+	client, err := s.newTunnelMuxClientLocked(baseURL, token, targetNodeID, chainTarget, hasChainTarget)
+	if err != nil {
+		return nil, err
+	}
+
+	if isPrimary {
+		s.tunnelMuxClient = client
+	} else {
+		s.ruleMuxClients[targetNodeID] = client
+	}
+	s.muxReconnects++
+
+	if hasChainTarget {
+		s.logf(
+			"tunnel mux connected via chain, node=%s chain=%s entry_node=%s relay=%s:%d layer=%s reconnects=%d",
+			targetNodeID,
+			strings.TrimSpace(chainTarget.ChainID),
+			strings.TrimSpace(chainTarget.EntryNode),
+			strings.TrimSpace(chainTarget.RelayHost),
+			chainTarget.RelayPort,
+			strings.TrimSpace(chainTarget.LinkLayer),
+			s.muxReconnects,
+		)
+	} else {
+		s.logf("tunnel mux connected, node=%s reconnects=%d", targetNodeID, s.muxReconnects)
+	}
+	return client, nil
+}
+
+func (s *networkAssistantService) newTunnelMuxClientLocked(baseURL, token, nodeID string, chainTarget probeChainEndpoint, hasChainTarget bool) (*tunnelMuxClient, error) {
 	var (
 		client *tunnelMuxClient
 		err    error
@@ -863,27 +919,15 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 		}
 		return nil, err
 	}
-	s.tunnelMuxClient = client
-	s.muxReconnects++
-	if hasChainTarget {
-		s.logf(
-			"tunnel mux connected via chain, node=%s chain=%s entry_node=%s relay=%s:%d layer=%s reconnects=%d",
-			nodeID,
-			strings.TrimSpace(chainTarget.ChainID),
-			strings.TrimSpace(chainTarget.EntryNode),
-			strings.TrimSpace(chainTarget.RelayHost),
-			chainTarget.RelayPort,
-			strings.TrimSpace(chainTarget.LinkLayer),
-			s.muxReconnects,
-		)
-	} else {
-		s.logf("tunnel mux connected, node=%s reconnects=%d", nodeID, s.muxReconnects)
-	}
 	return client, nil
 }
 
 func (s *networkAssistantService) openTunnelStream(network, targetAddr string) (*tunnelMuxStream, error) {
-	client, err := s.ensureTunnelMuxClient()
+	return s.openTunnelStreamForNode(network, targetAddr, "")
+}
+
+func (s *networkAssistantService) openTunnelStreamForNode(network, targetAddr, nodeID string) (*tunnelMuxStream, error) {
+	client, err := s.ensureTunnelMuxClientForNode(nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -897,7 +941,7 @@ func (s *networkAssistantService) openTunnelStream(network, targetAddr string) (
 	s.logf("open tunnel stream failed, retrying: network=%s target=%s err=%v", network, targetAddr, err)
 
 	client.close()
-	client, err = s.ensureTunnelMuxClient()
+	client, err = s.ensureTunnelMuxClientForNode(nodeID)
 	if err != nil {
 		return nil, err
 	}

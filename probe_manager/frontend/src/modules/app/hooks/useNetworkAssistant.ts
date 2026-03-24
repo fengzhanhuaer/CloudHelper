@@ -234,6 +234,8 @@ export function useNetworkAssistant() {
       setSelectedNode(data.node_id || nodeID);
       if (mode === "direct") {
         setOperateStatus("已切换为直连模式，并清除系统代理");
+      } else if (mode === "rule") {
+        setOperateStatus("已切换为规则模式（命中规则走链路）");
       } else {
         setOperateStatus(`模式已切换：${mode}`);
       }

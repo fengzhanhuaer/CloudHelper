@@ -171,6 +171,7 @@ function App() {
             networkOperateStatus={networkAssistant.operateStatus}
             onRefreshNetworkAssistantStatus={() => networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken)}
             onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct", networkAssistant.selectedNode)}
+            onSwitchNetworkRule={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "rule", networkAssistant.selectedNode)}
             onInstallNetworkTUN={() => networkAssistant.installTUN()}
             onEnableNetworkTUN={() => networkAssistant.enableTUN()}
             networkLogLines={networkAssistant.logLines}
