@@ -2,7 +2,6 @@ import { CloudflareAssistantTab } from "./CloudflareAssistantTab";
 import { LogViewerTab } from "./LogViewerTab";
 import { NetworkAssistantTab } from "./NetworkAssistantTab";
 import { OverviewTab } from "./OverviewTab";
-import { PlaceholderTab } from "./PlaceholderTab";
 import { ProbeManageTab } from "./ProbeManageTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
 import { TGAssistantTab } from "./TGAssistantTab";
@@ -61,7 +60,8 @@ type TabContentProps = {
   networkOperateStatus: string;
   onRefreshNetworkAssistantStatus: () => void;
   onSwitchNetworkDirect: () => void;
-  onSwitchNetworkGlobal: () => void;
+  onInstallNetworkTUN: () => void;
+  onEnableNetworkTUN: () => void;
   onRestoreNetworkDirect: () => void;
   networkLogLines: number;
   onNetworkLogLinesChange: (value: number) => void;
@@ -117,11 +117,11 @@ export function TabContent(props: TabContentProps) {
       );
     case "probe-manage":
       return <ProbeManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />;
-    case "link-manage":
-      return <PlaceholderTab title="链路管理" description="该页面将用于展示链路拓扑、探测任务与阈值配置。" />;
     case "network-assistant":
       return (
         <NetworkAssistantTab
+          controllerBaseUrl={props.controllerBaseUrl}
+          sessionToken={props.sessionToken}
           status={props.networkAssistantStatus}
           selectedNode={props.networkSelectedNode}
           onSelectedNodeChange={props.onNetworkSelectedNodeChange}
@@ -129,7 +129,8 @@ export function TabContent(props: TabContentProps) {
           operateStatus={props.networkOperateStatus}
           onRefreshStatus={props.onRefreshNetworkAssistantStatus}
           onSwitchDirect={props.onSwitchNetworkDirect}
-          onSwitchGlobal={props.onSwitchNetworkGlobal}
+          onInstallTUN={props.onInstallNetworkTUN}
+          onEnableTUN={props.onEnableNetworkTUN}
           onRestoreDirect={props.onRestoreNetworkDirect}
           logLines={props.networkLogLines}
           onLogLinesChange={props.onNetworkLogLinesChange}

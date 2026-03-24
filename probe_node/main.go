@@ -83,6 +83,25 @@ type cpuSampler struct {
 type probeControlMessage struct {
 	Type              string `json:"type"`
 	Mode              string `json:"mode"`
+	Action            string `json:"action"`
+	Protocol          string `json:"protocol"`
+	ChainID           string `json:"chain_id"`
+	Name              string `json:"name"`
+	UserID            string `json:"user_id"`
+	UserPublicKey     string `json:"user_public_key"`
+	LinkSecret        string `json:"link_secret"`
+	Role              string `json:"role"`
+	ListenHost        string `json:"listen_host"`
+	ListenPort        int    `json:"listen_port"`
+	LinkLayer         string `json:"link_layer"`
+	InternalPort      int    `json:"internal_port"`
+	NextHost          string `json:"next_host"`
+	NextPort          int    `json:"next_port"`
+	RequireUserAuth   bool   `json:"require_user_auth"`
+	NextAuthMode      string `json:"next_auth_mode"`
+	SessionID         string `json:"session_id"`
+	Command           string `json:"command"`
+	TimeoutSec        int    `json:"timeout_sec"`
 	ReleaseRepo       string `json:"release_repo"`
 	ControllerBaseURL string `json:"controller_base_url"`
 	IntervalSec       int    `json:"interval_sec"`
@@ -134,11 +153,11 @@ func parseProbeLaunchOptions() probeLaunchOptions {
 }
 
 func runProbeNode(options probeLaunchOptions) error {
-	listenAddr := firstNonEmpty(strings.TrimSpace(options.ListenAddr), os.Getenv("PROBE_NODE_LISTEN"), ":16030")
 	identity, err := resolveNodeIdentity(strings.TrimSpace(options.NodeID), strings.TrimSpace(options.NodeSecret))
 	if err != nil {
 		return fmt.Errorf("failed to load node identity: %w", err)
 	}
+	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -168,24 +187,18 @@ func runProbeNode(options probeLaunchOptions) error {
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		})
 	})
-
-	server := &http.Server{
-		Addr:              listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	mux.HandleFunc(probeChainRelayAPIPath, handleProbeChainRelayHTTP)
 
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
 		go startProbeReporter(wsURL, identity)
 	} else {
 		log.Printf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
+	startProbeServiceRuntimeLoop(mux, identity, controllerBaseURL)
+	restoreProbeChainRuntimesFromCache()
 
-	log.Printf("probe node started: node_id=%s listen=%s version=%s", identity.NodeID, listenAddr, BuildVersion)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
-	}
-	return nil
+	log.Printf("probe node started: node_id=%s version=%s service_mode=link-config-driven", identity.NodeID, BuildVersion)
+	select {}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -500,6 +513,22 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 	}
 	if typeName == "logs_get" {
 		go runProbeLogFetch(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "link_test_control" {
+		go runProbeLinkTestControl(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "shell_exec" {
+		go runProbeShellExec(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "shell_session_control" {
+		go runProbeShellSessionControl(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "chain_link_control" {
+		go runProbeChainLinkControl(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName != "upgrade" {

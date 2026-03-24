@@ -460,6 +460,13 @@ func replaceCurrentExecutable(newBinary string) (string, string, error) {
 		return "", "", fmt.Errorf("resolved executable path is empty")
 	}
 
+	cleanedCount, cleanErr := cleanupLegacyUpgradeBackups(targetPath)
+	if cleanErr != nil {
+		log.Printf("probe upgrade cleanup warning: target=%s err=%v", targetPath, cleanErr)
+	} else if cleanedCount > 0 {
+		log.Printf("probe upgrade cleanup: removed %d legacy backup files for %s", cleanedCount, targetPath)
+	}
+
 	mode := fs.FileMode(0o755)
 	if st, err := os.Stat(targetPath); err == nil {
 		mode = st.Mode().Perm()
@@ -490,12 +497,99 @@ func normalizeExecutablePathForUpgradeTarget(exePath string) string {
 		return ""
 	}
 
-	lowered := strings.ToLower(cleaned)
-	for strings.HasSuffix(lowered, ".bak") {
-		cleaned = cleaned[:len(cleaned)-len(".bak")]
-		lowered = strings.ToLower(cleaned)
+	for {
+		lowered := strings.ToLower(cleaned)
+		switch {
+		case strings.HasSuffix(lowered, ".bak"):
+			cleaned = strings.TrimSpace(cleaned[:len(cleaned)-len(".bak")])
+		case hasTimestampedBackupSuffix(lowered):
+			idx := strings.LastIndex(lowered, ".bak.")
+			if idx <= 0 {
+				return strings.TrimSpace(cleaned)
+			}
+			cleaned = strings.TrimSpace(cleaned[:idx])
+		default:
+			return cleaned
+		}
+		if cleaned == "" {
+			return ""
+		}
 	}
-	return cleaned
+}
+
+func hasTimestampedBackupSuffix(loweredPath string) bool {
+	idx := strings.LastIndex(loweredPath, ".bak.")
+	if idx <= 0 {
+		return false
+	}
+	suffix := loweredPath[idx+len(".bak."):]
+	if len(suffix) != 14 {
+		return false
+	}
+	for _, ch := range suffix {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanupLegacyUpgradeBackups(targetPath string) (int, error) {
+	cleanTarget := strings.TrimSpace(targetPath)
+	if cleanTarget == "" {
+		return 0, nil
+	}
+
+	base := filepath.Base(cleanTarget)
+	dir := filepath.Dir(cleanTarget)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if name == "" {
+			continue
+		}
+		if !looksLikeLegacyUpgradeBackup(base, name) {
+			continue
+		}
+		fullPath := filepath.Join(dir, name)
+		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func looksLikeLegacyUpgradeBackup(binaryBaseName string, fileName string) bool {
+	base := strings.TrimSpace(binaryBaseName)
+	name := strings.TrimSpace(fileName)
+	if base == "" || name == "" {
+		return false
+	}
+
+	lowerBase := strings.ToLower(base)
+	lowerName := strings.ToLower(name)
+
+	if lowerName == lowerBase || lowerName == lowerBase+".bak" {
+		return false
+	}
+	if strings.HasPrefix(lowerName, lowerBase+".bak.") {
+		return true
+	}
+
+	normalized := strings.ToLower(normalizeExecutablePathForUpgradeTarget(name))
+	if normalized == lowerBase && lowerName != lowerBase+".bak" {
+		return true
+	}
+	return false
 }
 
 func rollbackExecutable(exePath, backupPath string) error {

@@ -1,15 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   createProbeNodeOnController,
+  deleteProbeShellShortcut,
+  execProbeShellSessionOnController,
   fetchProbeNodeLogs,
   fetchProbeNodeStatus,
   fetchProbeNodes,
   fetchProbeReportIntervalSettings,
+  fetchProbeShellShortcuts,
   setProbeReportInterval,
+  startProbeShellSessionOnController,
+  stopProbeShellSessionOnController,
+  upsertProbeShellShortcut,
   updateProbeNodeOnController,
   upgradeAllProbeNodes,
   upgradeProbeNode,
   type ProbeNodeLogsResponse,
+  type ProbeShellShortcutItem,
+  type ProbeShellSessionControlResponse,
   type ProbeNodeStatusItem,
   type ProbeReportIntervalSettings,
 } from "../services/controller-api";
@@ -19,7 +27,7 @@ type ProbeManageTabProps = {
   sessionToken: string;
 };
 
-type ProbeSubTab = "list" | "status" | "logs";
+type ProbeSubTab = "list" | "status" | "logs" | "shell";
 type ProbeTargetSystem = "linux" | "windows";
 
 type ProbeNodeItem = {
@@ -78,6 +86,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [subTab, setSubTab] = useState<ProbeSubTab>("list");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const logOutputRef = useRef<HTMLPreElement | null>(null);
+  const shellOutputRef = useRef<HTMLPreElement | null>(null);
   const upgradeLogPollingDeadlineRef = useRef(0);
   const [nodeNameInput, setNodeNameInput] = useState("");
   const [controllerAddress, setControllerAddress] = useState(props.controllerBaseUrl || "");
@@ -100,6 +109,17 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [probeLogContent, setProbeLogContent] = useState("");
   const [probeLogAutoScroll, setProbeLogAutoScroll] = useState(true);
   const [upgradeLogPollingNodeID, setUpgradeLogPollingNodeID] = useState("");
+  const [shellNodeIDInput, setShellNodeIDInput] = useState("");
+  const [shellSessionID, setShellSessionID] = useState("");
+  const [shellSessionNodeID, setShellSessionNodeID] = useState("");
+  const [shellCommandInput, setShellCommandInput] = useState("");
+  const [shellTimeoutSecInput, setShellTimeoutSecInput] = useState("60");
+  const [shellOutput, setShellOutput] = useState("");
+  const [shellAutoScroll, setShellAutoScroll] = useState(true);
+  const [isShellRunning, setIsShellRunning] = useState(false);
+  const [shellShortcuts, setShellShortcuts] = useState<ProbeShellShortcutItem[]>([]);
+  const [shortcutNameInput, setShortcutNameInput] = useState("");
+  const [shortcutCommandInput, setShortcutCommandInput] = useState("");
 
   useEffect(() => {
     if (!controllerAddress.trim() && props.controllerBaseUrl.trim()) {
@@ -171,6 +191,40 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }, 3000);
     return () => window.clearInterval(timer);
   }, [subTab, upgradeLogPollingNodeID, logNodeIDInput]);
+
+  useEffect(() => {
+    if (!shellAutoScroll || subTab !== "shell" || !shellOutputRef.current) {
+      return;
+    }
+    shellOutputRef.current.scrollTop = shellOutputRef.current.scrollHeight;
+  }, [shellAutoScroll, shellOutput, subTab]);
+
+  useEffect(() => {
+    if (subTab !== "shell" || shellNodeIDInput.trim()) {
+      return;
+    }
+    const firstNode = nodes.find((item) => item.node_no > 0);
+    if (firstNode) {
+      setShellNodeIDInput(String(firstNode.node_no));
+    }
+  }, [nodes, shellNodeIDInput, subTab]);
+
+  useEffect(() => {
+    if (subTab !== "shell") {
+      return;
+    }
+    if (nodes.length > 0 || isLoading) {
+      return;
+    }
+    void loadNodes();
+  }, [isLoading, nodes.length, subTab]);
+
+  useEffect(() => {
+    if (subTab !== "shell") {
+      return;
+    }
+    void loadShellShortcuts({ silent: true });
+  }, [subTab]);
 
   async function loadNodes() {
     setIsLoading(true);
@@ -494,6 +548,233 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
   }
 
+  function appendShellOutput(text: string) {
+    if (!text) {
+      return;
+    }
+    setShellOutput((prev) => prev + text);
+  }
+
+  async function loadShellShortcuts(options?: { silent?: boolean }) {
+    const silent = options?.silent === true;
+    try {
+      const items = await fetchProbeShellShortcutsFromController(controllerAddress, props.sessionToken);
+      setShellShortcuts(items);
+      if (!silent) {
+        setStatus(`已同步快捷指令：${items.length} 条`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      if (!silent) {
+        setStatus(`同步快捷指令失败：${msg}`);
+      }
+    }
+  }
+
+  async function connectShellSession() {
+    const nodeID = shellNodeIDInput.trim();
+    if (!nodeID) {
+      setStatus("请选择探针节点");
+      return;
+    }
+    if (shellSessionID.trim()) {
+      setStatus(`当前已连接会话 ${shellSessionID.trim()}，请先关闭`);
+      return;
+    }
+
+    setIsShellRunning(true);
+    try {
+      const result = await startProbeShellSessionFromController(controllerAddress, props.sessionToken, nodeID);
+      const sessionID = (result.session_id || "").trim();
+      if (!result.ok || !sessionID) {
+        throw new Error(result.error || "controller returned empty shell session");
+      }
+      setShellSessionID(sessionID);
+      setShellSessionNodeID(nodeID);
+      appendShellOutput(`\n[已连接] 节点 #${nodeID}，会话 ${sessionID}\n`);
+      setStatus(`已建立 Shell 会话：节点 ${nodeID}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`建立 Shell 会话失败：${msg}`);
+    } finally {
+      setIsShellRunning(false);
+    }
+  }
+
+  async function disconnectShellSession(options?: { silent?: boolean }) {
+    const silent = options?.silent === true;
+    const sessionID = shellSessionID.trim();
+    const nodeID = (shellSessionNodeID || shellNodeIDInput).trim();
+    if (!sessionID || !nodeID) {
+      setShellSessionID("");
+      setShellSessionNodeID("");
+      if (!silent) {
+        setStatus("当前没有活动 Shell 会话");
+      }
+      return;
+    }
+
+    setIsShellRunning(true);
+    try {
+      await stopProbeShellSessionFromController(controllerAddress, props.sessionToken, nodeID, sessionID);
+      if (!silent) {
+        appendShellOutput(`\n[已断开] 节点 #${nodeID}，会话 ${sessionID}\n`);
+        setStatus("Shell 会话已关闭");
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      if (!silent) {
+        setStatus(`关闭 Shell 会话失败：${msg}`);
+      }
+    } finally {
+      setShellSessionID("");
+      setShellSessionNodeID("");
+      setIsShellRunning(false);
+    }
+  }
+
+  async function handleShellNodeChange(nextNodeIDRaw: string) {
+    const nextNodeID = nextNodeIDRaw.trim();
+    const currentNodeID = shellNodeIDInput.trim();
+    if (nextNodeID === currentNodeID) {
+      return;
+    }
+
+    const hasSession = shellSessionID.trim() !== "";
+    if (hasSession) {
+      await disconnectShellSession({ silent: true });
+      if (nextNodeID) {
+        setStatus(`已切换探针到节点 ${nextNodeID}，旧 Shell 会话已自动关闭`);
+      }
+    }
+
+    setShellNodeIDInput(nextNodeIDRaw);
+    setShellCommandInput("");
+    setShellOutput("");
+  }
+
+  function handleShellCommandKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    if (isShellRunning || !shellSessionID.trim() || !shellCommandInput.trim()) {
+      return;
+    }
+    void runShellCommand();
+  }
+
+  async function runShellCommand(commandOverride?: string) {
+    const sessionID = shellSessionID.trim();
+    const nodeID = (shellSessionNodeID || shellNodeIDInput).trim();
+    if (!sessionID || !nodeID) {
+      setStatus("请先连接 Shell 会话");
+      return;
+    }
+
+    const commandText = commandOverride ?? shellCommandInput;
+    if (!commandText.trim()) {
+      setStatus("请输入命令");
+      return;
+    }
+    const timeoutSec = normalizeIntInput(shellTimeoutSecInput, 60, 5, 300);
+    setShellTimeoutSecInput(String(timeoutSec));
+    if (commandOverride === undefined) {
+      setShellCommandInput("");
+    }
+
+    appendShellOutput(`\n#${nodeID}> ${commandText}\n`);
+    setIsShellRunning(true);
+    try {
+      const result = await execProbeShellSessionFromController(
+        controllerAddress,
+        props.sessionToken,
+        nodeID,
+        sessionID,
+        commandText,
+        timeoutSec,
+      );
+      const stdout = result.stdout || "";
+      const stderr = result.stderr || "";
+      const errText = result.error || "";
+      let merged = "";
+      if (stdout) {
+        merged += stdout;
+      }
+      if (stderr) {
+        if (merged && !merged.endsWith("\n")) {
+          merged += "\n";
+        }
+        merged += stderr;
+      }
+      if (!merged) {
+        merged = "(无输出)\n";
+      }
+      if (!merged.endsWith("\n")) {
+        merged += "\n";
+      }
+      if (errText) {
+        merged += `[error] ${errText}\n`;
+      }
+      appendShellOutput(merged);
+      if (result.ok) {
+        setStatus(`命令执行完成（节点 ${nodeID}）`);
+      } else {
+        setStatus(`命令执行失败：${errText || "unknown error"}`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      appendShellOutput(`[rpc error] ${msg}\n`);
+      setStatus(`命令执行失败：${msg}`);
+    } finally {
+      setIsShellRunning(false);
+    }
+  }
+
+  async function saveShellShortcut() {
+    const name = shortcutNameInput.trim();
+    const command = shortcutCommandInput;
+    if (!name) {
+      setStatus("快捷指令名称不能为空");
+      return;
+    }
+    if (!command.trim()) {
+      setStatus("快捷指令命令不能为空");
+      return;
+    }
+    setIsShellRunning(true);
+    try {
+      const items = await upsertProbeShellShortcutFromController(controllerAddress, props.sessionToken, name, command);
+      setShellShortcuts(items);
+      setShortcutNameInput("");
+      setShortcutCommandInput("");
+      setStatus(`已保存快捷指令：${name}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`保存快捷指令失败：${msg}`);
+    } finally {
+      setIsShellRunning(false);
+    }
+  }
+
+  async function removeShellShortcut(name: string) {
+    const cleanName = name.trim();
+    if (!cleanName) {
+      return;
+    }
+    setIsShellRunning(true);
+    try {
+      const items = await deleteProbeShellShortcutFromController(controllerAddress, props.sessionToken, cleanName);
+      setShellShortcuts(items);
+      setStatus(`已删除快捷指令：${cleanName}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`删除快捷指令失败：${msg}`);
+    } finally {
+      setIsShellRunning(false);
+    }
+  }
+
   return (
     <div className="content-block">
       <h2>探针管理</h2>
@@ -502,6 +783,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         <button className={`subtab-btn ${subTab === "list" ? "active" : ""}`} onClick={() => setSubTab("list")}>探针列表</button>
         <button className={`subtab-btn ${subTab === "status" ? "active" : ""}`} onClick={() => { setSubTab("status"); void loadNodeStatus(); }}>探针状态</button>
         <button className={`subtab-btn ${subTab === "logs" ? "active" : ""}`} onClick={() => setSubTab("logs")}>探针日志</button>
+        <button className={`subtab-btn ${subTab === "shell" ? "active" : ""}`} onClick={() => { setSubTab("shell"); void loadShellShortcuts({ silent: true }); }}>Shell 终端</button>
       </div>
 
       {subTab === "list" ? (
@@ -655,7 +937,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
             </div>
           )}
         </div>
-      ) : (
+      ) : subTab === "logs" ? (
         <div style={{ marginTop: 12 }}>
           <div className="identity-card" style={{ marginBottom: 12 }}>
             <div>探针日志（通过主控代理拉取）</div>
@@ -696,6 +978,152 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
             <div>拉取时间：{probeLogFetchedAt || "-"}</div>
           </div>
           <pre ref={logOutputRef} className="log-viewer-output">{probeLogContent || "暂无探针日志内容"}</pre>
+        </div>
+      ) : (
+        <div style={{ marginTop: 12 }}>
+          <div className="identity-card" style={{ marginBottom: 12 }}>
+            <div>探针 Shell（长会话，支持上下文）</div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>探针节点</label>
+              <select
+                className="input"
+                value={shellNodeIDInput}
+                onChange={(event) => { void handleShellNodeChange(event.target.value); }}
+                disabled={isShellRunning || nodes.length === 0}
+              >
+                {nodes.length === 0 ? (
+                  <option value="">暂无探针</option>
+                ) : (
+                  nodes.map((node) => (
+                    <option key={`shell-node-${node.node_no}`} value={String(node.node_no)}>
+                      {node.node_name} (#{node.node_no})
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>命令超时(秒)</label>
+              <input
+                className="input"
+                value={shellTimeoutSecInput}
+                onChange={(event) => setShellTimeoutSecInput(event.target.value)}
+                disabled={isShellRunning}
+              />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void connectShellSession()} disabled={isShellRunning || nodes.length === 0 || !!shellSessionID.trim()}>
+                {isShellRunning && !shellSessionID.trim() ? "连接中..." : "建立会话"}
+              </button>
+              <button className="btn" onClick={() => void disconnectShellSession()} disabled={isShellRunning || !shellSessionID.trim()}>
+                关闭会话
+              </button>
+              <button className="btn" onClick={() => setShellOutput("")} disabled={isShellRunning || !shellOutput.trim()}>
+                清空输出
+              </button>
+              <button className="btn" onClick={() => void loadShellShortcuts()} disabled={isShellRunning}>
+                刷新快捷指令
+              </button>
+              <label className="log-auto-scroll-toggle">
+                <input type="checkbox" checked={shellAutoScroll} onChange={(event) => setShellAutoScroll(event.target.checked)} disabled={isShellRunning} />
+                自动滚动
+              </label>
+            </div>
+            <div>当前会话：{shellSessionID.trim() ? `${shellSessionID}（节点 #${shellSessionNodeID || shellNodeIDInput}）` : "未连接"}</div>
+          </div>
+
+          <pre ref={shellOutputRef} className="log-viewer-output">{shellOutput || "暂无 Shell 输出"}</pre>
+
+          <div className="identity-card" style={{ marginTop: 12, marginBottom: 12 }}>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>命令输入</label>
+              <input
+                className="input"
+                value={shellCommandInput}
+                onChange={(event) => setShellCommandInput(event.target.value)}
+                onKeyDown={handleShellCommandKeyDown}
+                placeholder={shellSessionID.trim() ? "输入命令后按 Enter 发送，例如：pwd" : "请先建立会话"}
+                disabled={isShellRunning || !shellSessionID.trim()}
+              />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void runShellCommand()} disabled={isShellRunning || !shellSessionID.trim() || !shellCommandInput.trim()}>
+                {isShellRunning ? "执行中..." : "发送命令"}
+              </button>
+              <div>按 Enter 发送命令</div>
+            </div>
+          </div>
+
+          <div className="identity-card" style={{ marginTop: 12 }}>
+            <div>快捷指令（全局共享）</div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>名称</label>
+              <input
+                className="input"
+                value={shortcutNameInput}
+                onChange={(event) => setShortcutNameInput(event.target.value)}
+                placeholder="例如：查看系统信息"
+                disabled={isShellRunning}
+              />
+            </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>命令</label>
+              <textarea
+                className="input"
+                rows={3}
+                value={shortcutCommandInput}
+                onChange={(event) => setShortcutCommandInput(event.target.value)}
+                placeholder="例如：uname -a && uptime"
+                disabled={isShellRunning}
+              />
+            </div>
+            <div className="content-actions">
+              <button className="btn" onClick={() => void saveShellShortcut()} disabled={isShellRunning || !shortcutNameInput.trim() || !shortcutCommandInput.trim()}>
+                保存快捷指令
+              </button>
+            </div>
+            {shellShortcuts.length === 0 ? (
+              <div className="status">暂无快捷指令</div>
+            ) : (
+              <div className="probe-table-wrap">
+                <table className="probe-table" style={{ minWidth: 860 }}>
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>命令</th>
+                      <th>更新时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shellShortcuts.map((item) => (
+                      <tr key={`shortcut-${item.name}`}>
+                        <td>{item.name}</td>
+                        <td style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{item.command}</td>
+                        <td>{formatTime(item.updated_at || "")}</td>
+                        <td>
+                          <div className="probe-table-actions">
+                            <button className="btn" onClick={() => setShellCommandInput(item.command)} disabled={isShellRunning || !shellSessionID.trim()}>
+                              填充
+                            </button>
+                            <button className="btn" onClick={() => void runShellCommand(item.command)} disabled={isShellRunning || !shellSessionID.trim()}>
+                              执行
+                            </button>
+                            <button className="btn" onClick={() => { setShortcutNameInput(item.name); setShortcutCommandInput(item.command); }} disabled={isShellRunning}>
+                              编辑
+                            </button>
+                            <button className="btn" onClick={() => void removeShellShortcut(item.name)} disabled={isShellRunning}>
+                              删除
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1209,5 +1637,92 @@ async function setProbeReportIntervalOnController(controllerBaseUrl: string, ses
     throw new Error("session token is empty, cannot set report interval");
   }
   return await setProbeReportInterval(base, token, intervalSec);
+}
+
+async function startProbeShellSessionFromController(
+  controllerBaseUrl: string,
+  sessionToken: string,
+  nodeID: string,
+): Promise<ProbeShellSessionControlResponse> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot start probe shell session");
+  }
+  return await startProbeShellSessionOnController(base, token, { node_id: String(nodeID) });
+}
+
+async function execProbeShellSessionFromController(
+  controllerBaseUrl: string,
+  sessionToken: string,
+  nodeID: string,
+  sessionID: string,
+  command: string,
+  timeoutSec: number,
+): Promise<ProbeShellSessionControlResponse> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot execute probe shell command");
+  }
+  return await execProbeShellSessionOnController(base, token, {
+    node_id: String(nodeID),
+    session_id: String(sessionID),
+    command,
+    timeout_sec: timeoutSec,
+  });
+}
+
+async function stopProbeShellSessionFromController(
+  controllerBaseUrl: string,
+  sessionToken: string,
+  nodeID: string,
+  sessionID: string,
+): Promise<ProbeShellSessionControlResponse> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot stop probe shell session");
+  }
+  return await stopProbeShellSessionOnController(base, token, {
+    node_id: String(nodeID),
+    session_id: String(sessionID),
+  });
+}
+
+async function fetchProbeShellShortcutsFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeShellShortcutItem[]> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot fetch probe shell shortcuts");
+  }
+  return await fetchProbeShellShortcuts(base, token);
+}
+
+async function upsertProbeShellShortcutFromController(
+  controllerBaseUrl: string,
+  sessionToken: string,
+  name: string,
+  command: string,
+): Promise<ProbeShellShortcutItem[]> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot save probe shell shortcut");
+  }
+  return await upsertProbeShellShortcut(base, token, { name, command });
+}
+
+async function deleteProbeShellShortcutFromController(
+  controllerBaseUrl: string,
+  sessionToken: string,
+  name: string,
+): Promise<ProbeShellShortcutItem[]> {
+  const base = sanitizeControllerAddress(controllerBaseUrl);
+  const token = sessionToken.trim();
+  if (!token) {
+    throw new Error("session token is empty, cannot delete probe shell shortcut");
+  }
+  return await deleteProbeShellShortcut(base, token, name);
 }
 

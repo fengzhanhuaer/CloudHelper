@@ -123,6 +123,16 @@ func TestNormalizeExecutablePathForUpgradeTarget(t *testing.T) {
 			in:   "C:\\cloudhelper\\probe_node\\probe_node.BAK.bAk",
 			want: "C:\\cloudhelper\\probe_node\\probe_node",
 		},
+		{
+			name: "timestamp backup suffix",
+			in:   "/opt/cloudhelper/probe_node/probe_node.bak.20260317084600",
+			want: "/opt/cloudhelper/probe_node/probe_node",
+		},
+		{
+			name: "timestamp and bak suffix chain",
+			in:   "/opt/cloudhelper/probe_node/probe_node.bak.20260317084600.bak.bak",
+			want: "/opt/cloudhelper/probe_node/probe_node",
+		},
 	}
 
 	for _, tc := range tests {
@@ -130,6 +140,31 @@ func TestNormalizeExecutablePathForUpgradeTarget(t *testing.T) {
 			got := normalizeExecutablePathForUpgradeTarget(tc.in)
 			if got != tc.want {
 				t.Fatalf("normalizeExecutablePathForUpgradeTarget(%q)=%q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeLegacyUpgradeBackup(t *testing.T) {
+	tests := []struct {
+		name     string
+		base     string
+		fileName string
+		want     bool
+	}{
+		{name: "keep current binary", base: "probe_node", fileName: "probe_node", want: false},
+		{name: "keep single bak", base: "probe_node", fileName: "probe_node.bak", want: false},
+		{name: "remove repeated bak", base: "probe_node", fileName: "probe_node.bak.bak", want: true},
+		{name: "remove timestamp backup", base: "probe_node", fileName: "probe_node.bak.20260317084600", want: true},
+		{name: "remove timestamp bak chain", base: "probe_node", fileName: "probe_node.bak.20260317084600.bak", want: true},
+		{name: "ignore unrelated file", base: "probe_node", fileName: "probe_node.failed-20260317", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := looksLikeLegacyUpgradeBackup(tc.base, tc.fileName)
+			if got != tc.want {
+				t.Fatalf("looksLikeLegacyUpgradeBackup(base=%q, file=%q)=%v, want %v", tc.base, tc.fileName, got, tc.want)
 			}
 		})
 	}

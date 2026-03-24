@@ -34,6 +34,10 @@ export function GetManagerVersion() {
   return window['go']['main']['App']['GetManagerVersion']();
 }
 
+export function EnableNetworkAssistantTUN() {
+  return window['go']['main']['App']['EnableNetworkAssistantTUN']();
+}
+
 export function GetNetworkAssistantLogs(arg1) {
   return window['go']['main']['App']['GetNetworkAssistantLogs'](arg1);
 }
@@ -46,8 +50,28 @@ export function GetProbeNodes() {
   return window['go']['main']['App']['GetProbeNodes']();
 }
 
+export function StartProbeLinkSession(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['StartProbeLinkSession'](arg1, arg2, arg3, arg4);
+}
+
+export function PingProbeLinkSession() {
+  return window['go']['main']['App']['PingProbeLinkSession']();
+}
+
+export function StopProbeLinkSession() {
+  return window['go']['main']['App']['StopProbeLinkSession']();
+}
+
+export function TestProbeLink(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['TestProbeLink'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
+}
+
+export function InstallNetworkAssistantTUN() {
+  return window['go']['main']['App']['InstallNetworkAssistantTUN']();
 }
 
 export function ReplaceProbeNodes(arg1) {

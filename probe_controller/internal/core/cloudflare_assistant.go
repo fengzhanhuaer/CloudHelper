@@ -20,7 +20,12 @@ import (
 	"time"
 )
 
-const cloudflareStoreFile = "cloudflare.json"
+const (
+	cloudflareStoreFile                 = "cloudflare.json"
+	cloudflareManagedBusinessNamePrefix = "api.codex."
+)
+
+var cloudflareManagedLabelPrefixes = [...]string{"ddns_go_", "local_go_"}
 
 type cloudflareStore struct {
 	mu   sync.RWMutex
@@ -101,24 +106,25 @@ type cloudflareZoneListResponse struct {
 	} `json:"result"`
 }
 
+type cloudflareDNSRecord struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
 type cloudflareDNSRecordListResponse struct {
-	Success bool `json:"success"`
-	Result  []struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Name    string `json:"name"`
-		Content string `json:"content"`
-	} `json:"result"`
+	Success    bool                  `json:"success"`
+	Result     []cloudflareDNSRecord `json:"result"`
+	ResultInfo struct {
+		Page       int `json:"page"`
+		TotalPages int `json:"total_pages"`
+	} `json:"result_info"`
 }
 
 type cloudflareDNSRecordWriteResponse struct {
-	Success bool `json:"success"`
-	Result  struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Name    string `json:"name"`
-		Content string `json:"content"`
-	} `json:"result"`
+	Success bool                `json:"success"`
+	Result  cloudflareDNSRecord `json:"result"`
 }
 
 type cloudflareDesiredRecord struct {
@@ -285,9 +291,6 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 	ProbeStore.mu.RLock()
 	statusItems := loadProbeNodeStatusLocked()
 	ProbeStore.mu.RUnlock()
-	if len(statusItems) == 0 {
-		return cloudflareDDNSApplyResponse{ZoneName: zoneName, Items: []cloudflareDDNSApplyItem{}, Records: normalizeCloudflareRecords(existing)}, nil
-	}
 
 	zoneID, err := cloudflareResolveZoneID(token, zoneName)
 	if err != nil {
@@ -302,6 +305,7 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 
 	items := make([]cloudflareDDNSApplyItem, 0, len(statusItems)*4)
 	next := make([]cloudflareDDNSRecord, 0, len(statusItems)*4)
+	desiredRecordKeys := map[string]struct{}{}
 	applied, skipped := 0, 0
 
 	for _, node := range statusItems {
@@ -323,6 +327,10 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 		}
 
 		for _, d := range desired {
+			desiredKey := cloudflareRecordNameTypeKey(d.RecordName, d.RecordType)
+			if desiredKey != "" {
+				desiredRecordKeys[desiredKey] = struct{}{}
+			}
 			key := cloudflareRecordKey(d.NodeID, d.RecordClass, d.RecordType, d.Sequence)
 			prev := recordByKey[key]
 			targetZoneID := strings.TrimSpace(prev.ZoneID)
@@ -369,6 +377,62 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 				UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 				LastMessage: msg,
 			})
+		}
+	}
+
+	zoneRecords, listErr := cloudflareListDNSRecords(token, zoneID)
+	if listErr != nil {
+		items = append(items, cloudflareDDNSApplyItem{
+			NodeID:      "cleanup",
+			NodeNo:      0,
+			NodeName:    "cleanup",
+			RecordClass: "-",
+			RecordName:  "-",
+			RecordType:  "-",
+			Sequence:    0,
+			Status:      "failed",
+			Message:     "list prefixed records failed: " + listErr.Error(),
+		})
+		skipped++
+	} else {
+		for _, zoneRecord := range zoneRecords {
+			recordName := normalizeCloudflareRecordName(zoneRecord.Name)
+			if !isCloudflareManagedDDNSRecordName(recordName) {
+				continue
+			}
+			recordType := strings.TrimSpace(strings.ToUpper(zoneRecord.Type))
+			if recordType == "" {
+				continue
+			}
+			desiredKey := cloudflareRecordNameTypeKey(recordName, recordType)
+			if desiredKey == "" {
+				continue
+			}
+			if _, ok := desiredRecordKeys[desiredKey]; ok {
+				continue
+			}
+			row := cloudflareDDNSApplyItem{
+				NodeID:      "cleanup:" + strings.TrimSpace(zoneRecord.ID),
+				NodeNo:      0,
+				NodeName:    "cleanup",
+				RecordClass: normalizeCloudflareRecordClass("", recordName),
+				RecordName:  recordName,
+				RecordType:  recordType,
+				Sequence:    inferRecordSequence(recordName),
+				RecordID:    strings.TrimSpace(zoneRecord.ID),
+				ContentIP:   strings.TrimSpace(zoneRecord.Content),
+			}
+			if deleteErr := cloudflareDeleteDNSRecord(token, zoneID, zoneRecord.ID); deleteErr != nil {
+				row.Status = "failed"
+				row.Message = "delete stale prefixed record failed: " + deleteErr.Error()
+				items = append(items, row)
+				skipped++
+				continue
+			}
+			row.Status = "deleted"
+			row.Message = "deleted stale prefixed record not in desired ddns list"
+			items = append(items, row)
+			applied++
 		}
 	}
 
@@ -815,6 +879,47 @@ func cloudflareResolveZoneID(token, zoneName string) (string, error) {
 	return strings.TrimSpace(parsed.Result[0].ID), nil
 }
 
+func cloudflareListDNSRecords(token, zoneID string) ([]cloudflareDNSRecord, error) {
+	const perPage = 100
+	records := make([]cloudflareDNSRecord, 0, perPage)
+	for page := 1; page <= 200; page++ {
+		u := "https://api.cloudflare.com/client/v4/zones/" + url.PathEscape(zoneID) + "/dns_records?per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page)
+		req, err := http.NewRequest(http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		withCloudflareAuth(req, token)
+		resp, err := cloudflareHTTPClient().Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("cloudflare list dns records failed: %w", err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("cloudflare list dns records status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var parsed cloudflareDNSRecordListResponse
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, err
+		}
+		if !parsed.Success {
+			return nil, errors.New("cloudflare list dns records failed")
+		}
+		records = append(records, parsed.Result...)
+		totalPages := parsed.ResultInfo.TotalPages
+		if totalPages > 0 && page >= totalPages {
+			return records, nil
+		}
+		if totalPages <= 0 && len(parsed.Result) < perPage {
+			return records, nil
+		}
+	}
+	return nil, errors.New("cloudflare list dns records exceeded page limit")
+}
+
 func cloudflareEnsureDNSRecord(token, zoneID, recordName, recordType, contentIP, preferredRecordID string) (string, string, string, error) {
 	recordType = normalizeCloudflareRecordType(recordType)
 	recordName = strings.TrimSpace(strings.ToLower(recordName))
@@ -952,7 +1057,16 @@ func cloudflareGetDNSRecordByID(token, zoneID, recordID string) (struct {
 }
 
 func cloudflareCreateDNSRecord(token, zoneID, recordName, recordType, contentIP string) (string, error) {
-	payload := map[string]interface{}{"type": normalizeCloudflareRecordType(recordType), "name": strings.TrimSpace(strings.ToLower(recordName)), "content": strings.TrimSpace(contentIP), "ttl": 60, "proxied": false}
+	payload := map[string]interface{}{
+		"type":    normalizeCloudflareRecordType(recordType),
+		"name":    strings.TrimSpace(strings.ToLower(recordName)),
+		"content": strings.TrimSpace(contentIP),
+		"ttl":     60,
+	}
+	recordType = normalizeCloudflareRecordType(recordType)
+	if recordType == "A" || recordType == "AAAA" || recordType == "CNAME" {
+		payload["proxied"] = false
+	}
 	body, _ := json.Marshal(payload)
 	u := "https://api.cloudflare.com/client/v4/zones/" + url.PathEscape(zoneID) + "/dns_records"
 	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
@@ -984,7 +1098,16 @@ func cloudflareCreateDNSRecord(token, zoneID, recordName, recordType, contentIP 
 }
 
 func cloudflareUpdateDNSRecord(token, zoneID, recordID, recordName, recordType, contentIP string) error {
-	payload := map[string]interface{}{"type": normalizeCloudflareRecordType(recordType), "name": strings.TrimSpace(strings.ToLower(recordName)), "content": strings.TrimSpace(contentIP), "ttl": 60, "proxied": false}
+	payload := map[string]interface{}{
+		"type":    normalizeCloudflareRecordType(recordType),
+		"name":    strings.TrimSpace(strings.ToLower(recordName)),
+		"content": strings.TrimSpace(contentIP),
+		"ttl":     60,
+	}
+	recordType = normalizeCloudflareRecordType(recordType)
+	if recordType == "A" || recordType == "AAAA" || recordType == "CNAME" {
+		payload["proxied"] = false
+	}
 	body, _ := json.Marshal(payload)
 	u := "https://api.cloudflare.com/client/v4/zones/" + url.PathEscape(zoneID) + "/dns_records/" + url.PathEscape(recordID)
 	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(body))
@@ -1015,6 +1138,41 @@ func cloudflareUpdateDNSRecord(token, zoneID, recordID, recordName, recordType, 
 	return nil
 }
 
+func cloudflareDeleteDNSRecord(token, zoneID, recordID string) error {
+	recordID = strings.TrimSpace(recordID)
+	if recordID == "" {
+		return errors.New("record_id is required")
+	}
+	u := "https://api.cloudflare.com/client/v4/zones/" + url.PathEscape(zoneID) + "/dns_records/" + url.PathEscape(recordID)
+	req, err := http.NewRequest(http.MethodDelete, u, nil)
+	if err != nil {
+		return err
+	}
+	withCloudflareAuth(req, token)
+	resp, err := cloudflareHTTPClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("cloudflare delete dns record failed: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("cloudflare delete dns record status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var parsed struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return err
+	}
+	if !parsed.Success {
+		return errors.New("cloudflare delete dns record failed")
+	}
+	return nil
+}
+
 func withCloudflareAuth(req *http.Request, token string) {
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
 	req.Header.Set("Accept", "application/json")
@@ -1040,7 +1198,48 @@ func normalizeCloudflareRecordType(raw string) string {
 	if value == "AAAA" {
 		return "AAAA"
 	}
+	if value == "TXT" {
+		return "TXT"
+	}
+	if value == "CNAME" {
+		return "CNAME"
+	}
 	return "A"
+}
+
+func normalizeCloudflareRecordName(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	value = strings.TrimSuffix(value, ".")
+	return strings.TrimSpace(value)
+}
+
+func cloudflareRecordNameTypeKey(recordName string, recordType string) string {
+	recordName = normalizeCloudflareRecordName(recordName)
+	recordType = strings.TrimSpace(strings.ToUpper(recordType))
+	if recordName == "" || recordType == "" {
+		return ""
+	}
+	return recordName + "|" + recordType
+}
+
+func isCloudflareManagedDDNSRecordName(recordName string) bool {
+	recordName = normalizeCloudflareRecordName(recordName)
+	if recordName == "" {
+		return false
+	}
+	if strings.HasPrefix(recordName, cloudflareManagedBusinessNamePrefix) {
+		return true
+	}
+	label := recordName
+	if dot := strings.Index(label, "."); dot > 0 {
+		label = label[:dot]
+	}
+	for _, prefix := range cloudflareManagedLabelPrefixes {
+		if strings.HasPrefix(label, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeCloudflareZoneName(raw string) string {

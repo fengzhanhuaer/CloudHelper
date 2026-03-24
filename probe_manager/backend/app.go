@@ -49,6 +49,7 @@ func (a *App) Startup(ctx context.Context) {
 }
 
 func (a *App) Shutdown(ctx context.Context) {
+	_, _ = stopProbeLinkSession("manager shutdown")
 	if a.networkAssistant == nil {
 		return
 	}

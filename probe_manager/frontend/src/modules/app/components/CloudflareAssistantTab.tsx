@@ -6,7 +6,7 @@ import {
   setCloudflareAPIKey,
   setCloudflareZone,
 } from "../services/controller-api";
-import type { CloudflareDDNSApplyItem, CloudflareDDNSRecord } from "../types";
+import type { CloudflareDDNSRecord } from "../types";
 
 type CloudflareAssistantTabProps = {
   controllerBaseUrl: string;
@@ -21,7 +21,6 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
   const [apiConfigured, setAPIConfigured] = useState(false);
   const [zoneNameInput, setZoneNameInput] = useState("");
   const [records, setRecords] = useState<CloudflareDDNSRecord[]>([]);
-  const [applyItems, setApplyItems] = useState<CloudflareDDNSApplyItem[]>([]);
   const [status, setStatus] = useState("正在加载 Cloudflare 配置...");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -107,9 +106,8 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
     try {
       const result = await applyCloudflareDDNS(props.controllerBaseUrl, props.sessionToken, zoneName);
       setZoneNameInput((result.zone_name || zoneName).trim().toLowerCase());
-      setApplyItems(result.items);
       setRecords(result.records);
-      setStatus(`DDNS 已执行：成功 ${result.applied}，跳过 ${result.skipped}`);
+      setStatus(`DDNS 已执行，当前有效记录 ${result.records.length} 条`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`自动申请 DDNS 失败：${msg}`);
@@ -174,33 +172,6 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
               刷新记录
             </button>
           </div>
-
-          {applyItems.length > 0 ? (
-            <div className="probe-table-wrap">
-              <table className="probe-table" style={{ minWidth: 880 }}>
-                <thead>
-                  <tr>
-                    <th>探针</th>
-                    <th>域名</th>
-                    <th>IP</th>
-                    <th>状态</th>
-                    <th>结果</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {applyItems.map((item) => (
-                    <tr key={`cf-apply-${item.node_id}-${item.record_name}`}>
-                      <td>{item.node_name || item.node_id}</td>
-                      <td>{item.record_name || "-"}</td>
-                      <td>{item.content_ip || "-"}</td>
-                      <td>{item.status}</td>
-                      <td>{item.message || "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
 
           {records.length > 0 ? (
             <div className="probe-table-wrap">

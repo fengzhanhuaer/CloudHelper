@@ -53,6 +53,56 @@ type probeLogsCommand struct {
 	Timestamp    string `json:"timestamp"`
 }
 
+type probeLinkTestControlCommand struct {
+	Type              string `json:"type"`
+	RequestID         string `json:"request_id"`
+	Action            string `json:"action"`
+	Protocol          string `json:"protocol,omitempty"`
+	ListenHost        string `json:"listen_host,omitempty"`
+	InternalPort      int    `json:"internal_port,omitempty"`
+	ControllerBaseURL string `json:"controller_base_url,omitempty"`
+	Timestamp         string `json:"timestamp"`
+}
+
+type probeChainLinkControlCommand struct {
+	Type              string `json:"type"`
+	RequestID         string `json:"request_id"`
+	Action            string `json:"action"`
+	ChainID           string `json:"chain_id"`
+	Name              string `json:"name,omitempty"`
+	UserID            string `json:"user_id,omitempty"`
+	UserPublicKey     string `json:"user_public_key,omitempty"`
+	LinkSecret        string `json:"link_secret,omitempty"`
+	Role              string `json:"role,omitempty"`
+	ListenHost        string `json:"listen_host,omitempty"`
+	ListenPort        int    `json:"listen_port,omitempty"`
+	LinkLayer         string `json:"link_layer,omitempty"`
+	NextHost          string `json:"next_host,omitempty"`
+	NextPort          int    `json:"next_port,omitempty"`
+	RequireUserAuth   bool   `json:"require_user_auth,omitempty"`
+	NextAuthMode      string `json:"next_auth_mode,omitempty"`
+	ControllerBaseURL string `json:"controller_base_url,omitempty"`
+	Timestamp         string `json:"timestamp"`
+}
+
+type probeShellExecCommand struct {
+	Type       string `json:"type"`
+	RequestID  string `json:"request_id"`
+	Command    string `json:"command"`
+	TimeoutSec int    `json:"timeout_sec,omitempty"`
+	Timestamp  string `json:"timestamp"`
+}
+
+type probeShellSessionControlCommand struct {
+	Type       string `json:"type"`
+	RequestID  string `json:"request_id"`
+	Action     string `json:"action"`
+	SessionID  string `json:"session_id,omitempty"`
+	Command    string `json:"command,omitempty"`
+	TimeoutSec int    `json:"timeout_sec,omitempty"`
+	Timestamp  string `json:"timestamp"`
+}
+
 type probeLogsResultMessage struct {
 	Type         string `json:"type"`
 	RequestID    string `json:"request_id"`
@@ -65,6 +115,66 @@ type probeLogsResultMessage struct {
 	Content      string `json:"content,omitempty"`
 	Error        string `json:"error,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
+}
+
+type probeLinkTestControlResultMessage struct {
+	Type         string `json:"type"`
+	RequestID    string `json:"request_id"`
+	NodeID       string `json:"node_id"`
+	OK           bool   `json:"ok"`
+	Action       string `json:"action,omitempty"`
+	Protocol     string `json:"protocol,omitempty"`
+	ListenHost   string `json:"listen_host,omitempty"`
+	InternalPort int    `json:"internal_port,omitempty"`
+	Message      string `json:"message,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Timestamp    string `json:"timestamp,omitempty"`
+}
+
+type probeChainLinkControlResultMessage struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	NodeID    string `json:"node_id"`
+	OK        bool   `json:"ok"`
+	Action    string `json:"action,omitempty"`
+	ChainID   string `json:"chain_id,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+type probeShellExecResultMessage struct {
+	Type       string `json:"type"`
+	RequestID  string `json:"request_id"`
+	NodeID     string `json:"node_id"`
+	OK         bool   `json:"ok"`
+	Command    string `json:"command,omitempty"`
+	ExitCode   int    `json:"exit_code,omitempty"`
+	Stdout     string `json:"stdout,omitempty"`
+	Stderr     string `json:"stderr,omitempty"`
+	Error      string `json:"error,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
+}
+
+type probeShellSessionResultMessage struct {
+	Type       string `json:"type"`
+	RequestID  string `json:"request_id"`
+	NodeID     string `json:"node_id"`
+	SessionID  string `json:"session_id,omitempty"`
+	Action     string `json:"action,omitempty"`
+	OK         bool   `json:"ok"`
+	Stdout     string `json:"stdout,omitempty"`
+	Stderr     string `json:"stderr,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Message    string `json:"message,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
 }
 
 var probeSessions = struct {
@@ -83,6 +193,34 @@ var probeLogWaiters = struct {
 	mu   sync.Mutex
 	data map[string]chan probeLogsResultMessage
 }{data: make(map[string]chan probeLogsResultMessage)}
+
+var probeLinkTestRequestSeq atomic.Uint64
+
+var probeLinkTestWaiters = struct {
+	mu   sync.Mutex
+	data map[string]chan probeLinkTestControlResultMessage
+}{data: make(map[string]chan probeLinkTestControlResultMessage)}
+
+var probeChainRequestSeq atomic.Uint64
+
+var probeChainWaiters = struct {
+	mu   sync.Mutex
+	data map[string]chan probeChainLinkControlResultMessage
+}{data: make(map[string]chan probeChainLinkControlResultMessage)}
+
+var probeShellExecRequestSeq atomic.Uint64
+
+var probeShellExecWaiters = struct {
+	mu   sync.Mutex
+	data map[string]chan probeShellExecResultMessage
+}{data: make(map[string]chan probeShellExecResultMessage)}
+
+var probeShellSessionRequestSeq atomic.Uint64
+
+var probeShellSessionWaiters = struct {
+	mu   sync.Mutex
+	data map[string]chan probeShellSessionResultMessage
+}{data: make(map[string]chan probeShellSessionResultMessage)}
 
 func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
 	s := &probeSession{nodeID: nodeID, stream: stream, enc: json.NewEncoder(stream)}
@@ -468,9 +606,469 @@ func consumeProbeLogsResult(result probeLogsResultMessage) {
 	}
 }
 
+func dispatchProbeLinkTestControl(nodeID string, action string, protocol string, internalPort int, controllerBaseURL string) (probeLinkTestControlResultMessage, error) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeLinkTestControlResultMessage{}, fmt.Errorf("node_id is required")
+	}
+	normalizedAction := strings.ToLower(strings.TrimSpace(action))
+	if normalizedAction != "start" && normalizedAction != "stop" {
+		return probeLinkTestControlResultMessage{}, fmt.Errorf("invalid action")
+	}
+
+	normalizedProtocol := normalizeProbeLinkTestProtocol(protocol)
+	if normalizedAction == "start" {
+		if normalizedProtocol == "" {
+			return probeLinkTestControlResultMessage{}, fmt.Errorf("protocol must be http/https/http3")
+		}
+		if internalPort <= 0 || internalPort > 65535 {
+			return probeLinkTestControlResultMessage{}, fmt.Errorf("internal_port must be between 1 and 65535")
+		}
+	}
+
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return probeLinkTestControlResultMessage{}, fmt.Errorf("probe is offline")
+	}
+
+	requestID := newProbeLinkTestRequestID(normalizedID)
+	waiter := make(chan probeLinkTestControlResultMessage, 1)
+
+	probeLinkTestWaiters.mu.Lock()
+	probeLinkTestWaiters.data[requestID] = waiter
+	probeLinkTestWaiters.mu.Unlock()
+	defer func() {
+		probeLinkTestWaiters.mu.Lock()
+		delete(probeLinkTestWaiters.data, requestID)
+		probeLinkTestWaiters.mu.Unlock()
+	}()
+
+	cmd := probeLinkTestControlCommand{
+		Type:              "link_test_control",
+		RequestID:         requestID,
+		Action:            normalizedAction,
+		Protocol:          normalizedProtocol,
+		ListenHost:        "0.0.0.0",
+		InternalPort:      internalPort,
+		ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
+		Timestamp:         time.Now().UTC().Format(time.RFC3339),
+	}
+	if normalizedAction == "stop" {
+		cmd.Protocol = ""
+		cmd.InternalPort = 0
+	}
+
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return probeLinkTestControlResultMessage{}, err
+	}
+
+	waitTimeout := 20 * time.Second
+	if normalizedAction == "stop" {
+		waitTimeout = 8 * time.Second
+	} else if normalizedAction == "start" && (normalizedProtocol == "https" || normalizedProtocol == "http3") {
+		waitTimeout = 2 * time.Minute
+	}
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-waiter:
+		if strings.TrimSpace(result.NodeID) == "" {
+			result.NodeID = normalizedID
+		}
+		if !result.OK {
+			errMsg := strings.TrimSpace(result.Error)
+			if errMsg == "" {
+				errMsg = "probe link test control failed"
+			}
+			return result, errors.New(errMsg)
+		}
+		return result, nil
+	case <-timer.C:
+		if normalizedAction == "stop" {
+			return probeLinkTestControlResultMessage{
+				Type:      "link_test_control_result",
+				RequestID: requestID,
+				NodeID:    normalizedID,
+				OK:        true,
+				Action:    "stop",
+				Message:   "stop command dispatched, but probe ack timed out",
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			}, nil
+		}
+		return probeLinkTestControlResultMessage{}, fmt.Errorf("probe link test control timeout (action=%s protocol=%s)", normalizedAction, normalizedProtocol)
+	}
+}
+
+func consumeProbeLinkTestControlResult(result probeLinkTestControlResultMessage) {
+	requestID := strings.TrimSpace(result.RequestID)
+	if requestID == "" {
+		return
+	}
+	probeLinkTestWaiters.mu.Lock()
+	waiter, ok := probeLinkTestWaiters.data[requestID]
+	if ok {
+		delete(probeLinkTestWaiters.data, requestID)
+	}
+	probeLinkTestWaiters.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case waiter <- result:
+	default:
+	}
+}
+
+func dispatchProbeChainLinkControl(nodeID string, command probeChainLinkControlCommand) (probeChainLinkControlResultMessage, error) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("node_id is required")
+	}
+	action := strings.ToLower(strings.TrimSpace(command.Action))
+	if action != "apply" && action != "remove" {
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("invalid action")
+	}
+	chainID := strings.TrimSpace(command.ChainID)
+	if chainID == "" {
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("chain_id is required")
+	}
+
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("probe is offline")
+	}
+
+	requestID := newProbeChainRequestID(normalizedID)
+	waiter := make(chan probeChainLinkControlResultMessage, 1)
+	probeChainWaiters.mu.Lock()
+	probeChainWaiters.data[requestID] = waiter
+	probeChainWaiters.mu.Unlock()
+	defer func() {
+		probeChainWaiters.mu.Lock()
+		delete(probeChainWaiters.data, requestID)
+		probeChainWaiters.mu.Unlock()
+	}()
+
+	cmd := command
+	cmd.Type = "chain_link_control"
+	cmd.RequestID = requestID
+	cmd.Action = action
+	cmd.ChainID = chainID
+	cmd.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return probeChainLinkControlResultMessage{}, err
+	}
+
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-waiter:
+		if strings.TrimSpace(result.NodeID) == "" {
+			result.NodeID = normalizedID
+		}
+		if !result.OK {
+			errMsg := strings.TrimSpace(result.Error)
+			if errMsg == "" {
+				errMsg = "probe chain link control failed"
+			}
+			return result, errors.New(errMsg)
+		}
+		return result, nil
+	case <-timer.C:
+		return probeChainLinkControlResultMessage{}, fmt.Errorf("probe chain link control timeout (action=%s)", action)
+	}
+}
+
+func consumeProbeChainLinkControlResult(result probeChainLinkControlResultMessage) {
+	requestID := strings.TrimSpace(result.RequestID)
+	if requestID == "" {
+		return
+	}
+	probeChainWaiters.mu.Lock()
+	waiter, ok := probeChainWaiters.data[requestID]
+	if ok {
+		delete(probeChainWaiters.data, requestID)
+	}
+	probeChainWaiters.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case waiter <- result:
+	default:
+	}
+}
+
+func dispatchProbeShellExec(nodeID string, command string, timeoutSec int) (probeShellExecResultMessage, error) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeShellExecResultMessage{}, fmt.Errorf("node_id is required")
+	}
+	commandText := strings.TrimSpace(command)
+	if commandText == "" {
+		return probeShellExecResultMessage{}, fmt.Errorf("command is required")
+	}
+
+	safeTimeoutSec := normalizeProbeShellExecTimeoutSec(timeoutSec)
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return probeShellExecResultMessage{}, fmt.Errorf("probe is offline")
+	}
+
+	requestID := newProbeShellExecRequestID(normalizedID)
+	waiter := make(chan probeShellExecResultMessage, 1)
+
+	probeShellExecWaiters.mu.Lock()
+	probeShellExecWaiters.data[requestID] = waiter
+	probeShellExecWaiters.mu.Unlock()
+	defer func() {
+		probeShellExecWaiters.mu.Lock()
+		delete(probeShellExecWaiters.data, requestID)
+		probeShellExecWaiters.mu.Unlock()
+	}()
+
+	cmd := probeShellExecCommand{
+		Type:       "shell_exec",
+		RequestID:  requestID,
+		Command:    commandText,
+		TimeoutSec: safeTimeoutSec,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return probeShellExecResultMessage{}, err
+	}
+
+	timer := time.NewTimer(time.Duration(safeTimeoutSec+8) * time.Second)
+	defer timer.Stop()
+
+	select {
+	case result := <-waiter:
+		if strings.TrimSpace(result.NodeID) == "" {
+			result.NodeID = normalizedID
+		}
+		if !result.OK {
+			errMsg := strings.TrimSpace(result.Error)
+			if errMsg == "" {
+				errMsg = "probe shell command failed"
+			}
+			return result, errors.New(errMsg)
+		}
+		return result, nil
+	case <-timer.C:
+		return probeShellExecResultMessage{}, fmt.Errorf("probe shell exec timeout")
+	}
+}
+
+func consumeProbeShellExecResult(result probeShellExecResultMessage) {
+	requestID := strings.TrimSpace(result.RequestID)
+	if requestID == "" {
+		return
+	}
+	probeShellExecWaiters.mu.Lock()
+	waiter, ok := probeShellExecWaiters.data[requestID]
+	if ok {
+		delete(probeShellExecWaiters.data, requestID)
+	}
+	probeShellExecWaiters.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case waiter <- result:
+	default:
+	}
+}
+
+func dispatchProbeShellSessionControl(nodeID string, action string, sessionID string, command string, timeoutSec int) (probeShellSessionResultMessage, error) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeShellSessionResultMessage{}, fmt.Errorf("node_id is required")
+	}
+	normalizedAction := normalizeProbeShellSessionAction(action)
+	if normalizedAction == "" {
+		return probeShellSessionResultMessage{}, fmt.Errorf("invalid action")
+	}
+
+	normalizedSessionID := strings.TrimSpace(sessionID)
+	commandText := command
+	if normalizedAction == "exec" {
+		if strings.TrimSpace(commandText) == "" {
+			return probeShellSessionResultMessage{}, fmt.Errorf("command is required")
+		}
+		if normalizedSessionID == "" {
+			return probeShellSessionResultMessage{}, fmt.Errorf("session_id is required")
+		}
+	}
+	if normalizedAction == "stop" && normalizedSessionID == "" {
+		return probeShellSessionResultMessage{}, fmt.Errorf("session_id is required")
+	}
+
+	safeTimeoutSec := normalizeProbeShellExecTimeoutSec(timeoutSec)
+	if normalizedAction != "exec" {
+		safeTimeoutSec = 0
+	}
+
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return probeShellSessionResultMessage{}, fmt.Errorf("probe is offline")
+	}
+
+	requestID := newProbeShellSessionRequestID(normalizedID)
+	waiter := make(chan probeShellSessionResultMessage, 1)
+
+	probeShellSessionWaiters.mu.Lock()
+	probeShellSessionWaiters.data[requestID] = waiter
+	probeShellSessionWaiters.mu.Unlock()
+	defer func() {
+		probeShellSessionWaiters.mu.Lock()
+		delete(probeShellSessionWaiters.data, requestID)
+		probeShellSessionWaiters.mu.Unlock()
+	}()
+
+	cmd := probeShellSessionControlCommand{
+		Type:       "shell_session_control",
+		RequestID:  requestID,
+		Action:     normalizedAction,
+		SessionID:  normalizedSessionID,
+		Command:    commandText,
+		TimeoutSec: safeTimeoutSec,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+	}
+	if normalizedAction != "exec" {
+		cmd.Command = ""
+	}
+
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return probeShellSessionResultMessage{}, err
+	}
+
+	waitTimeout := 20 * time.Second
+	if normalizedAction == "start" {
+		waitTimeout = 25 * time.Second
+	}
+	if normalizedAction == "exec" {
+		waitTimeout = time.Duration(safeTimeoutSec+8) * time.Second
+	}
+	if normalizedAction == "stop" {
+		waitTimeout = 10 * time.Second
+	}
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-waiter:
+		if strings.TrimSpace(result.NodeID) == "" {
+			result.NodeID = normalizedID
+		}
+		if !result.OK {
+			errMsg := strings.TrimSpace(result.Error)
+			if errMsg == "" {
+				errMsg = "probe shell session control failed"
+			}
+			return result, errors.New(errMsg)
+		}
+		return result, nil
+	case <-timer.C:
+		if normalizedAction == "stop" {
+			return probeShellSessionResultMessage{
+				Type:      "shell_session_result",
+				RequestID: requestID,
+				NodeID:    normalizedID,
+				SessionID: normalizedSessionID,
+				Action:    "stop",
+				OK:        true,
+				Message:   "stop command dispatched, but probe ack timed out",
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			}, nil
+		}
+		return probeShellSessionResultMessage{}, fmt.Errorf("probe shell session timeout (action=%s)", normalizedAction)
+	}
+}
+
+func consumeProbeShellSessionResult(result probeShellSessionResultMessage) {
+	requestID := strings.TrimSpace(result.RequestID)
+	if requestID == "" {
+		return
+	}
+	probeShellSessionWaiters.mu.Lock()
+	waiter, ok := probeShellSessionWaiters.data[requestID]
+	if ok {
+		delete(probeShellSessionWaiters.data, requestID)
+	}
+	probeShellSessionWaiters.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case waiter <- result:
+	default:
+	}
+}
+
 func newProbeLogRequestID(nodeID string) string {
 	seq := probeLogRequestSeq.Add(1)
 	return fmt.Sprintf("probe-log-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
+func newProbeLinkTestRequestID(nodeID string) string {
+	seq := probeLinkTestRequestSeq.Add(1)
+	return fmt.Sprintf("probe-link-test-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
+func newProbeChainRequestID(nodeID string) string {
+	seq := probeChainRequestSeq.Add(1)
+	return fmt.Sprintf("probe-chain-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
+func newProbeShellExecRequestID(nodeID string) string {
+	seq := probeShellExecRequestSeq.Add(1)
+	return fmt.Sprintf("probe-shell-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
+func newProbeShellSessionRequestID(nodeID string) string {
+	seq := probeShellSessionRequestSeq.Add(1)
+	return fmt.Sprintf("probe-shell-session-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
+func normalizeProbeLinkTestProtocol(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "http":
+		return "http"
+	case "https":
+		return "https"
+	case "http3", "h3":
+		return "http3"
+	default:
+		return ""
+	}
+}
+
+func normalizeProbeShellExecTimeoutSec(raw int) int {
+	if raw <= 0 {
+		return 30
+	}
+	if raw > 300 {
+		return 300
+	}
+	return raw
+}
+
+func normalizeProbeShellSessionAction(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "start":
+		return "start"
+	case "exec":
+		return "exec"
+	case "stop":
+		return "stop"
+	default:
+		return ""
+	}
 }
 
 func getProbeNodeByID(nodeID string) (probeNodeRecord, bool) {

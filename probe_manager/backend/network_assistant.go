@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,12 +27,14 @@ import (
 const (
 	networkModeDirect = "direct"
 	networkModeGlobal = "global"
+	networkModeTUN    = "tun"
 
-	defaultNodeID       = "cloudserver"
-	defaultSocksListen  = "127.0.0.1:10808"
-	directWhitelistFile = "direct_whitelist.txt"
-	tunnelRoutePath     = "/api/ws/tunnel/"
-	maxTunnelFailures   = 20
+	defaultNodeID         = "cloudserver"
+	chainTargetNodePrefix = "chain:"
+	defaultSocksListen    = "127.0.0.1:10808"
+	directWhitelistFile   = "direct_whitelist.txt"
+	tunnelRoutePath       = "/api/ws/tunnel/"
+	maxTunnelFailures     = 20
 )
 
 var defaultDirectWhitelistRules = []string{
@@ -56,6 +60,11 @@ type NetworkAssistantStatus struct {
 	MuxReconnects     int64    `json:"mux_reconnects"`
 	MuxLastRecv       string   `json:"mux_last_recv"`
 	MuxLastPong       string   `json:"mux_last_pong"`
+	TUNSupported      bool     `json:"tun_supported"`
+	TUNInstalled      bool     `json:"tun_installed"`
+	TUNEnabled        bool     `json:"tun_enabled"`
+	TUNLibraryPath    string   `json:"tun_library_path"`
+	TUNStatus         string   `json:"tun_status"`
 }
 
 type tunnelControlMessage struct {
@@ -77,6 +86,45 @@ type tunnelNodesResponse struct {
 		Name   string `json:"name"`
 		Online bool   `json:"online"`
 	} `json:"nodes"`
+}
+
+type probeLinkChainsResponse struct {
+	Items []probeLinkChainAdminItem `json:"items"`
+}
+
+type probeNodesResponse struct {
+	Nodes []probeNodeAdminItem `json:"nodes"`
+}
+
+type probeLinkChainAdminItem struct {
+	ChainID        string   `json:"chain_id"`
+	EntryNodeID    string   `json:"entry_node_id"`
+	ExitNodeID     string   `json:"exit_node_id"`
+	CascadeNodeIDs []string `json:"cascade_node_ids"`
+	LinkLayer      string   `json:"link_layer"`
+	HopConfigs     []struct {
+		NodeNo     int    `json:"node_no"`
+		ListenPort int    `json:"listen_port"`
+		LinkLayer  string `json:"link_layer"`
+	} `json:"hop_configs"`
+}
+
+type probeNodeAdminItem struct {
+	NodeNo      int    `json:"node_no"`
+	DDNS        string `json:"ddns"`
+	ServiceHost string `json:"service_host"`
+	ServicePort int    `json:"service_port"`
+	PublicHost  string `json:"public_host"`
+	PublicPort  int    `json:"public_port"`
+}
+
+type probeChainEndpoint struct {
+	TargetID  string
+	ChainID   string
+	EntryNode string
+	RelayHost string
+	RelayPort int
+	LinkLayer string
 }
 
 type adminWSRequest struct {
@@ -121,7 +169,15 @@ type networkAssistantService struct {
 	lastError           string
 	tunnelOpenFailures  int
 	tunnelMuxClient     *tunnelMuxClient
+	chainTargets        map[string]probeChainEndpoint
 	muxReconnects       int64
+
+	tunSupported     bool
+	tunInstalled     bool
+	tunEnabled       bool
+	tunLibraryPath   string
+	tunStatus        string
+	tunAdapterHandle uintptr
 
 	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
@@ -144,9 +200,16 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunnelStatusMessage: "未启用",
 		systemProxyMessage:  "未设置",
 		tunnelOpenFailures:  0,
+		chainTargets:        make(map[string]probeChainEndpoint),
+		tunSupported:        false,
+		tunInstalled:        false,
+		tunEnabled:          false,
+		tunLibraryPath:      "",
+		tunStatus:           "未安装",
 		directWhitelist:     directWhitelist,
 		logStore:            logStore,
 	}
+	service.syncTUNInstallState()
 	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
 	return service
 }
@@ -205,6 +268,7 @@ func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) e
 }
 
 func (s *networkAssistantService) Status() NetworkAssistantStatus {
+	s.syncTUNInstallState()
 	s.mu.RLock()
 	muxClient := s.tunnelMuxClient
 	muxReconnects := s.muxReconnects
@@ -219,12 +283,12 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	}
 
 	return NetworkAssistantStatus{
-		Enabled:           s.mode == networkModeGlobal,
+		Enabled:           s.mode == networkModeTUN,
 		Mode:              s.mode,
 		NodeID:            s.nodeID,
 		AvailableNodes:    append([]string(nil), s.availableNodes...),
 		Socks5Listen:      s.socks5ListenAddr,
-		TunnelRoute:       tunnelRoutePath + s.nodeID,
+		TunnelRoute:       buildNetworkAssistantTunnelRoute(s.nodeID),
 		TunnelStatus:      s.tunnelStatusMessage,
 		SystemProxyStatus: s.systemProxyMessage,
 		LastError:         s.lastError,
@@ -233,6 +297,11 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 		MuxReconnects:     muxReconnects,
 		MuxLastRecv:       muxLastRecv,
 		MuxLastPong:       muxLastPong,
+		TUNSupported:      s.tunSupported,
+		TUNInstalled:      s.tunInstalled,
+		TUNEnabled:        s.tunEnabled,
+		TUNLibraryPath:    s.tunLibraryPath,
+		TUNStatus:         s.tunStatus,
 	}
 }
 
@@ -241,7 +310,16 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	if normalizedMode == "" {
 		normalizedMode = networkModeDirect
 	}
-	if normalizedMode != networkModeDirect && normalizedMode != networkModeGlobal {
+	if normalizedMode == networkModeTUN {
+		return s.EnableTUN()
+	}
+	if normalizedMode == networkModeGlobal {
+		err := errors.New("global proxy mode has been removed")
+		s.logf("switch global aborted: %v", err)
+		s.setLastError(err)
+		return err
+	}
+	if normalizedMode != networkModeDirect {
 		return fmt.Errorf("unsupported mode: %s", mode)
 	}
 
@@ -296,47 +374,12 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.tunnelStatusMessage = "直连模式"
 		s.systemProxyMessage = "已恢复"
 		s.tunnelOpenFailures = 0
+		s.tunEnabled = false
+		s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 		s.mu.Unlock()
 		s.logf("switched mode to direct, node=%s", normalizedNode)
 		return nil
 	}
-
-	if effectiveBase == "" || effectiveToken == "" {
-		err := errors.New("controller url and session token are required for global mode")
-		s.logf("switch global aborted: %v", err)
-		s.setLastError(err)
-		return err
-	}
-
-	if whitelist, _, err := loadOrCreateSocksDirectWhitelist(); err != nil {
-		s.logf("failed to refresh direct whitelist: %v", err)
-	} else {
-		s.mu.Lock()
-		s.directWhitelist = whitelist
-		s.mu.Unlock()
-	}
-
-	if err := s.ensureSocksServer(); err != nil {
-		s.logf("failed to start socks server: %v", err)
-		s.setLastError(err)
-		return err
-	}
-
-	if err := s.applySystemProxy(); err != nil {
-		s.logf("failed to apply system proxy: %v", err)
-		s.setLastError(err)
-		_ = s.stopSocksServerOnly()
-		return err
-	}
-
-	s.mu.Lock()
-	s.mode = networkModeGlobal
-	s.tunnelStatusMessage = "隧道待命"
-	s.systemProxyMessage = "已设置"
-	s.tunnelOpenFailures = 0
-	socksAddr := s.socks5ListenAddr
-	s.mu.Unlock()
-	s.logf("switched mode to global, node=%s, socks5=%s", normalizedNode, socksAddr)
 
 	return nil
 }
@@ -346,14 +389,29 @@ func (s *networkAssistantService) Shutdown() error {
 	errDirect := applyDirectSystemProxy()
 
 	s.mu.Lock()
+	tunAdapterHandle := s.tunAdapterHandle
+	tunLibraryPath := s.tunLibraryPath
 	s.mode = networkModeDirect
 	s.tunnelStatusMessage = "直连模式"
 	s.systemProxyMessage = "已恢复为直连"
 	s.tunnelOpenFailures = 0
+	s.tunEnabled = false
+	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
+	s.tunAdapterHandle = 0
 	s.hasAppliedSysProxy = false
 	s.hasProxySnapshot = false
 	s.proxySnapshot = systemProxySnapshot{}
 	s.mu.Unlock()
+
+	var errCloseAdapter error
+	if tunAdapterHandle != 0 {
+		errCloseAdapter = closeConfiguredTUNAdapter(tunLibraryPath, tunAdapterHandle)
+		if errCloseAdapter == nil {
+			s.logf("released tun adapter handle during shutdown")
+		} else {
+			s.logf("failed to release tun adapter handle during shutdown: %v", errCloseAdapter)
+		}
+	}
 
 	if errDirect == nil {
 		s.logf("forced direct system proxy during shutdown")
@@ -363,7 +421,7 @@ func (s *networkAssistantService) Shutdown() error {
 	if errStop != nil {
 		s.logf("shutdown cleanup returned error: %v", errStop)
 	}
-	return errors.Join(errStop, errDirect)
+	return errors.Join(errStop, errDirect, errCloseAdapter)
 }
 
 func (s *networkAssistantService) ensureSocksServer() error {
@@ -1115,28 +1173,40 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 		return errors.New("controller url and session token are required")
 	}
 
-	payload, err := fetchTunnelNodesViaAdminWS(baseURL, token)
-	if err != nil {
-		return err
+	chainTargets, chainNodes, chainErr := fetchProbeChainTargetsViaAdminWS(baseURL, token)
+	nodes := make([]string, 0, len(chainNodes)+1)
+	if chainErr == nil && len(chainNodes) > 0 {
+		nodes = append(nodes, chainNodes...)
 	}
-
-	nodes := make([]string, 0, len(payload.Nodes))
-	for _, item := range payload.Nodes {
-		if !item.Online {
-			continue
-		}
-		id := strings.TrimSpace(item.ID)
-		if id == "" {
-			continue
-		}
-		nodes = append(nodes, id)
+	if !containsNodeID(nodes, defaultNodeID) {
+		nodes = append(nodes, defaultNodeID)
 	}
 	if len(nodes) == 0 {
-		nodes = []string{defaultNodeID}
+		payload, err := fetchTunnelNodesViaAdminWS(baseURL, token)
+		if err != nil {
+			if chainErr != nil {
+				return chainErr
+			}
+			return err
+		}
+		for _, item := range payload.Nodes {
+			if !item.Online {
+				continue
+			}
+			id := strings.TrimSpace(item.ID)
+			if id == "" {
+				continue
+			}
+			nodes = append(nodes, id)
+		}
+		if len(nodes) == 0 {
+			nodes = []string{defaultNodeID}
+		}
 	}
 
 	s.mu.Lock()
 	s.availableNodes = nodes
+	s.chainTargets = chainTargets
 	if !containsNodeID(nodes, s.nodeID) {
 		s.nodeID = nodes[0]
 	}
@@ -1242,6 +1312,318 @@ func buildAdminWSURL(baseURL string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return strings.TrimSpace(parsed.String()), nil
+}
+
+func buildNetworkAssistantTunnelRoute(nodeID string) string {
+	if chainID, ok := parseChainTargetNodeID(nodeID); ok {
+		return "chain://" + chainID
+	}
+	return tunnelRoutePath + strings.TrimSpace(nodeID)
+}
+
+func buildChainTargetNodeID(chainID string) string {
+	value := strings.TrimSpace(chainID)
+	if value == "" {
+		return ""
+	}
+	return chainTargetNodePrefix + value
+}
+
+func parseChainTargetNodeID(nodeID string) (string, bool) {
+	value := strings.TrimSpace(nodeID)
+	if !strings.HasPrefix(strings.ToLower(value), chainTargetNodePrefix) {
+		return "", false
+	}
+	chainID := strings.TrimSpace(value[len(chainTargetNodePrefix):])
+	if chainID == "" {
+		return "", false
+	}
+	return chainID, true
+}
+
+func normalizeProbeNodeIDValue(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil || number <= 0 {
+		return ""
+	}
+	return strconv.Itoa(number)
+}
+
+func buildProbeChainRouteNodesForManager(item probeLinkChainAdminItem) []string {
+	route := make([]string, 0, 2+len(item.CascadeNodeIDs))
+	entry := normalizeProbeNodeIDValue(item.EntryNodeID)
+	exitNode := normalizeProbeNodeIDValue(item.ExitNodeID)
+	if entry != "" {
+		route = append(route, entry)
+	}
+	seen := map[string]struct{}{}
+	if entry != "" {
+		seen[entry] = struct{}{}
+	}
+	for _, cascadeRaw := range item.CascadeNodeIDs {
+		cascade := normalizeProbeNodeIDValue(cascadeRaw)
+		if cascade == "" || cascade == entry || cascade == exitNode {
+			continue
+		}
+		if _, ok := seen[cascade]; ok {
+			continue
+		}
+		seen[cascade] = struct{}{}
+		route = append(route, cascade)
+	}
+	if exitNode != "" {
+		if len(route) == 0 || route[len(route)-1] != exitNode {
+			route = append(route, exitNode)
+		}
+	}
+	return route
+}
+
+func normalizeChainLinkLayerValue(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "http":
+		return "http"
+	case "http2", "h2":
+		return "http2"
+	case "http3", "h3":
+		return "http3"
+	default:
+		return "http"
+	}
+}
+
+func resolveProbeChainEntryLinkLayer(item probeLinkChainAdminItem, entryNodeID string) string {
+	layer := normalizeChainLinkLayerValue(item.LinkLayer)
+	targetNodeID := normalizeProbeNodeIDValue(entryNodeID)
+	if targetNodeID == "" {
+		return layer
+	}
+	for _, hop := range item.HopConfigs {
+		if hop.NodeNo <= 0 {
+			continue
+		}
+		if strconv.Itoa(hop.NodeNo) != targetNodeID {
+			continue
+		}
+		return normalizeChainLinkLayerValue(hop.LinkLayer)
+	}
+	return layer
+}
+
+func normalizeHostValue(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "://") {
+		if parsed, err := url.Parse(value); err == nil {
+			value = strings.TrimSpace(parsed.Host)
+		}
+	}
+	value = strings.TrimSpace(strings.Split(value, "/")[0])
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		return strings.TrimSpace(value[1 : len(value)-1])
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return strings.TrimSpace(strings.Trim(host, "[]"))
+	}
+	return strings.TrimSpace(strings.Trim(value, "[]"))
+}
+
+func isIPv4HostValue(host string) bool {
+	return regexp.MustCompile(`^(?:\d{1,3}\.){3}\d{1,3}$`).MatchString(host)
+}
+
+func isIPv6HostValue(host string) bool {
+	if !strings.Contains(host, ":") {
+		return false
+	}
+	if strings.Contains(host, ".") {
+		return false
+	}
+	return regexp.MustCompile(`^[0-9a-fA-F:]+$`).MatchString(host)
+}
+
+func isDomainHostValue(host string) bool {
+	value := normalizeHostValue(host)
+	if value == "" {
+		return false
+	}
+	if isIPv4HostValue(value) || isIPv6HostValue(value) {
+		return false
+	}
+	return strings.Contains(value, ".")
+}
+
+func isLikelyAPIDomainHostValue(host string) bool {
+	value := strings.ToLower(normalizeHostValue(host))
+	if !isDomainHostValue(value) {
+		return false
+	}
+	return strings.HasPrefix(value, "api.") || strings.Contains(value, ".api.")
+}
+
+func selectProbeChainRelayHost(node probeNodeAdminItem) string {
+	candidates := []string{
+		normalizeHostValue(node.PublicHost),
+		normalizeHostValue(node.DDNS),
+		normalizeHostValue(node.ServiceHost),
+	}
+	best := ""
+	for _, host := range candidates {
+		if host == "" {
+			continue
+		}
+		if isLikelyAPIDomainHostValue(host) {
+			return host
+		}
+		if best == "" {
+			best = host
+		}
+	}
+	return best
+}
+
+func selectProbeChainRelayPort(node probeNodeAdminItem) int {
+	if node.PublicPort > 0 && node.PublicPort <= 65535 {
+		return node.PublicPort
+	}
+	if node.ServicePort > 0 && node.ServicePort <= 65535 {
+		return node.ServicePort
+	}
+	return 0
+}
+
+func fetchProbeChainTargetsViaAdminWS(baseURL, token string) (map[string]probeChainEndpoint, []string, error) {
+	wsURL, err := buildAdminWSURL(baseURL)
+	if err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	headers := http.Header{}
+	headers.Set("X-Forwarded-Proto", "https")
+	conn, resp, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		if resp != nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			return map[string]probeChainEndpoint{}, nil, fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(12 * time.Second)
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+
+	authID := fmt.Sprintf("na-chain-auth-%d", time.Now().UnixNano())
+	authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": strings.TrimSpace(token)}}
+	if err := conn.WriteJSON(authReq); err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+	authResp, err := readAdminWSResponseByID(conn, authID)
+	if err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+	if !authResp.OK {
+		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
+	}
+
+	chainsID := fmt.Sprintf("na-chain-items-%d", time.Now().UnixNano())
+	if err := conn.WriteJSON(adminWSRequest{ID: chainsID, Action: "admin.probe.link.chains.get"}); err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+	chainsResp, err := readAdminWSResponseByID(conn, chainsID)
+	if err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+	if !chainsResp.OK {
+		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("fetch chain list failed: %s", strings.TrimSpace(chainsResp.Error))
+	}
+
+	nodesID := fmt.Sprintf("na-chain-nodes-%d", time.Now().UnixNano())
+	if err := conn.WriteJSON(adminWSRequest{ID: nodesID, Action: "admin.probe.nodes.get"}); err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+	nodesResp, err := readAdminWSResponseByID(conn, nodesID)
+	if err != nil {
+		return map[string]probeChainEndpoint{}, nil, err
+	}
+	if !nodesResp.OK {
+		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("fetch probe nodes failed: %s", strings.TrimSpace(nodesResp.Error))
+	}
+
+	chainsPayload := probeLinkChainsResponse{}
+	if len(chainsResp.Data) > 0 {
+		if err := json.Unmarshal(chainsResp.Data, &chainsPayload); err != nil {
+			return map[string]probeChainEndpoint{}, nil, err
+		}
+	}
+	nodesPayload := probeNodesResponse{}
+	if len(nodesResp.Data) > 0 {
+		if err := json.Unmarshal(nodesResp.Data, &nodesPayload); err != nil {
+			return map[string]probeChainEndpoint{}, nil, err
+		}
+	}
+
+	nodeByID := make(map[string]probeNodeAdminItem, len(nodesPayload.Nodes))
+	for _, item := range nodesPayload.Nodes {
+		if item.NodeNo <= 0 {
+			continue
+		}
+		nodeByID[strconv.Itoa(item.NodeNo)] = item
+	}
+
+	targets := make(map[string]probeChainEndpoint)
+	ids := make([]string, 0, len(chainsPayload.Items))
+	for _, chain := range chainsPayload.Items {
+		chainID := strings.TrimSpace(chain.ChainID)
+		if chainID == "" {
+			continue
+		}
+		route := buildProbeChainRouteNodesForManager(chain)
+		if len(route) == 0 {
+			continue
+		}
+		entryNodeID := route[0]
+		node, ok := nodeByID[entryNodeID]
+		if !ok {
+			continue
+		}
+		host := selectProbeChainRelayHost(node)
+		port := selectProbeChainRelayPort(node)
+		if host == "" || port <= 0 {
+			continue
+		}
+		targetID := buildChainTargetNodeID(chainID)
+		if targetID == "" {
+			continue
+		}
+		targets[targetID] = probeChainEndpoint{
+			TargetID:  targetID,
+			ChainID:   chainID,
+			EntryNode: entryNodeID,
+			RelayHost: host,
+			RelayPort: port,
+			LinkLayer: resolveProbeChainEntryLinkLayer(chain, entryNodeID),
+		}
+		ids = append(ids, targetID)
+	}
+	sort.Strings(ids)
+	return targets, ids, nil
 }
 
 func containsNodeID(nodes []string, target string) bool {

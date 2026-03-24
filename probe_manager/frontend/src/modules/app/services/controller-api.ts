@@ -169,6 +169,12 @@ export type ProbeNodeSyncItem = {
   node_secret: string;
   target_system: "linux" | "windows";
   direct_connect: boolean;
+  service_scheme?: "http" | "https";
+  service_host?: string;
+  service_port?: number;
+  public_scheme?: "http" | "https";
+  public_host?: string;
+  public_port?: number;
   payment_cycle?: string;
   cost?: string;
   expire_at?: string;
@@ -224,9 +230,184 @@ export type ProbeNodeLogsResponse = {
   timestamp?: string;
 };
 
+export type ProbeLinkTestControlResponse = {
+  ok: boolean;
+  node_id: string;
+  action: "start" | "stop";
+  protocol?: "http" | "https" | "http3";
+  listen_host?: string;
+  internal_port?: number;
+  message?: string;
+  timestamp?: string;
+};
+
+export type ProbeShellSessionControlResponse = {
+  ok: boolean;
+  node_id: string;
+  action: "start" | "exec" | "stop";
+  session_id?: string;
+  command?: string;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  message?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  timestamp?: string;
+};
+
+export type ProbeShellShortcutItem = {
+  name: string;
+  command: string;
+  updated_at?: string;
+};
+
+export type ProbeLinkChainItem = {
+  chain_id: string;
+  name: string;
+  user_id: string;
+  user_public_key: string;
+  secret: string;
+  entry_node_id: string;
+  exit_node_id: string;
+  cascade_node_ids: string[];
+  listen_host: string;
+  listen_port: number;
+  link_layer?: "http" | "http2" | "http3";
+  hop_configs?: Array<{
+    node_no: number;
+    listen_host?: string;
+    service_port?: number;
+    external_port?: number;
+    // Keep legacy listen_port for backward compatibility with old payload/store.
+    listen_port?: number;
+    link_layer: "http" | "http2" | "http3" | "";
+  }>;
+  egress_host: string;
+  egress_port: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ProbeLinkChainUpsertPayload = {
+  chain_id?: string;
+  name: string;
+  user_id: string;
+  user_public_key: string;
+  secret?: string;
+  entry_node_id?: string;
+  exit_node_id: string;
+  cascade_node_ids: string[];
+  listen_host?: string;
+  listen_port: number;
+  link_layer?: "http" | "http2" | "http3";
+  hop_configs?: Array<{
+    node_no: number;
+    listen_host?: string;
+    service_port?: number;
+    external_port?: number;
+    listen_port?: number;
+    link_layer?: "http" | "http2" | "http3";
+  }>;
+  egress_host: string;
+  egress_port: number;
+};
+
+export type ProbeLinkUserItem = {
+  username: string;
+  user_role?: string;
+  cert_type?: string;
+};
+
+export type ProbeLinkUserPublicKeyResponse = {
+  username: string;
+  user_role?: string;
+  cert_type?: string;
+  public_key: string;
+};
+
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
   const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[] }>(baseURL, token, "admin.probe.nodes.get");
   return Array.isArray(payload.nodes) ? payload.nodes : [];
+}
+
+export async function fetchProbeLinkChains(baseURL: string, token: string): Promise<ProbeLinkChainItem[]> {
+  const payload = await callAdminWSRpc<{ items?: ProbeLinkChainItem[] }>(baseURL, token, "admin.probe.link.chains.get");
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function fetchProbeLinkUsers(baseURL: string, token: string): Promise<ProbeLinkUserItem[]> {
+  const payload = await callAdminWSRpc<{ users?: ProbeLinkUserItem[] }>(baseURL, token, "admin.probe.link.users.get");
+  if (!Array.isArray(payload.users)) {
+    return [];
+  }
+  return payload.users
+    .map((item) => ({
+      username: typeof item?.username === "string" ? item.username : "",
+      user_role: typeof item?.user_role === "string" ? item.user_role : "",
+      cert_type: typeof item?.cert_type === "string" ? item.cert_type : "",
+    }))
+    .filter((item) => item.username.trim() !== "");
+}
+
+export async function fetchProbeLinkUserPublicKey(
+  baseURL: string,
+  token: string,
+  username: string,
+): Promise<ProbeLinkUserPublicKeyResponse> {
+  const payload = await callAdminWSRpc<ProbeLinkUserPublicKeyResponse>(
+    baseURL,
+    token,
+    "admin.probe.link.user.public_key.get",
+    {
+      username: String(username),
+    },
+  );
+  return {
+    username: typeof payload.username === "string" ? payload.username : String(username),
+    user_role: typeof payload.user_role === "string" ? payload.user_role : "",
+    cert_type: typeof payload.cert_type === "string" ? payload.cert_type : "",
+    public_key: typeof payload.public_key === "string" ? payload.public_key : "",
+  };
+}
+
+export async function upsertProbeLinkChain(
+  baseURL: string,
+  token: string,
+  input: ProbeLinkChainUpsertPayload,
+): Promise<{ item?: ProbeLinkChainItem; items: ProbeLinkChainItem[]; apply_ok?: boolean; apply_error?: string }> {
+  const payload = await callAdminWSRpc<{
+    item?: ProbeLinkChainItem;
+    items?: ProbeLinkChainItem[];
+    apply_ok?: boolean;
+    apply_error?: string;
+  }>(baseURL, token, "admin.probe.link.chain.upsert", input, { timeoutMs: 120000 });
+  return {
+    item: payload.item,
+    items: Array.isArray(payload.items) ? payload.items : [],
+    apply_ok: payload.apply_ok,
+    apply_error: typeof payload.apply_error === "string" ? payload.apply_error : "",
+  };
+}
+
+export async function deleteProbeLinkChain(
+  baseURL: string,
+  token: string,
+  chainID: string,
+): Promise<{ items: ProbeLinkChainItem[]; apply_ok?: boolean; apply_error?: string }> {
+  const payload = await callAdminWSRpc<{
+    items?: ProbeLinkChainItem[];
+    apply_ok?: boolean;
+    apply_error?: string;
+  }>(baseURL, token, "admin.probe.link.chain.delete", {
+    chain_id: String(chainID),
+  }, { timeoutMs: 120000 });
+  return {
+    items: Array.isArray(payload.items) ? payload.items : [],
+    apply_ok: payload.apply_ok,
+    apply_error: typeof payload.apply_error === "string" ? payload.apply_error : "",
+  };
 }
 
 export async function createProbeNodeOnController(baseURL: string, token: string, nodeName: string): Promise<ProbeNodeSyncItem> {
@@ -261,6 +442,154 @@ export async function updateProbeNodeOnController(
     throw new Error("controller returned empty node");
   }
   return result.node;
+}
+
+export async function updateProbeNodeLinkOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_no: number;
+    service_scheme: "http" | "https";
+    service_host: string;
+    service_port: number;
+    public_scheme: "http" | "https";
+    public_host: string;
+    public_port: number;
+  },
+): Promise<ProbeNodeSyncItem> {
+  const result = await callAdminWSRpc<{ node?: ProbeNodeSyncItem }>(baseURL, token, "admin.probe.link.update", payload);
+  if (!result.node) {
+    throw new Error("controller returned empty node");
+  }
+  return result.node;
+}
+
+export async function startProbeLinkTestOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_id: string;
+    protocol: "http" | "https" | "http3";
+    internal_port: number;
+  },
+): Promise<ProbeLinkTestControlResponse> {
+  return await callAdminWSRpc<ProbeLinkTestControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.link.test.start",
+    payload,
+    { timeoutMs: 130000 },
+  );
+}
+
+export async function stopProbeLinkTestOnController(
+  baseURL: string,
+  token: string,
+  nodeID: string,
+): Promise<ProbeLinkTestControlResponse> {
+  return await callAdminWSRpc<ProbeLinkTestControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.link.test.stop",
+    {
+      node_id: String(nodeID),
+    },
+    { timeoutMs: 60000 },
+  );
+}
+
+export async function startProbeShellSessionOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_id: string;
+  },
+): Promise<ProbeShellSessionControlResponse> {
+  return await callAdminWSRpc<ProbeShellSessionControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.shell.session.start",
+    payload,
+    { timeoutMs: 30000 },
+  );
+}
+
+export async function execProbeShellSessionOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_id: string;
+    session_id: string;
+    command: string;
+    timeout_sec: number;
+  },
+): Promise<ProbeShellSessionControlResponse> {
+  const safeTimeoutSec = Number.isFinite(payload.timeout_sec) ? Math.max(5, Math.min(300, Math.trunc(payload.timeout_sec))) : 60;
+  return await callAdminWSRpc<ProbeShellSessionControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.shell.session.exec",
+    {
+      node_id: String(payload.node_id),
+      session_id: String(payload.session_id),
+      command: String(payload.command),
+      timeout_sec: safeTimeoutSec,
+    },
+    { timeoutMs: (safeTimeoutSec + 15) * 1000 },
+  );
+}
+
+export async function stopProbeShellSessionOnController(
+  baseURL: string,
+  token: string,
+  payload: {
+    node_id: string;
+    session_id: string;
+  },
+): Promise<ProbeShellSessionControlResponse> {
+  return await callAdminWSRpc<ProbeShellSessionControlResponse>(
+    baseURL,
+    token,
+    "admin.probe.shell.session.stop",
+    payload,
+    { timeoutMs: 45000 },
+  );
+}
+
+export async function fetchProbeShellShortcuts(
+  baseURL: string,
+  token: string,
+): Promise<ProbeShellShortcutItem[]> {
+  const payload = await callAdminWSRpc<{ items?: ProbeShellShortcutItem[] }>(baseURL, token, "admin.probe.shell.shortcuts.get");
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function upsertProbeShellShortcut(
+  baseURL: string,
+  token: string,
+  payload: { name: string; command: string },
+): Promise<ProbeShellShortcutItem[]> {
+  const result = await callAdminWSRpc<{ items?: ProbeShellShortcutItem[] }>(
+    baseURL,
+    token,
+    "admin.probe.shell.shortcuts.upsert",
+    payload,
+  );
+  return Array.isArray(result.items) ? result.items : [];
+}
+
+export async function deleteProbeShellShortcut(
+  baseURL: string,
+  token: string,
+  name: string,
+): Promise<ProbeShellShortcutItem[]> {
+  const result = await callAdminWSRpc<{ items?: ProbeShellShortcutItem[] }>(
+    baseURL,
+    token,
+    "admin.probe.shell.shortcuts.delete",
+    { name },
+  );
+  return Array.isArray(result.items) ? result.items : [];
 }
 
 export async function fetchProbeNodeStatus(baseURL: string, token: string, nodeID?: number | string): Promise<ProbeNodeStatusItem[]> {

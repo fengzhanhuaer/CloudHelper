@@ -21,6 +21,7 @@ type ReleaseInfo = backend.ReleaseInfo
 type ManagerUpgradeResult = backend.ManagerUpgradeResult
 type ManagerUpgradeProgress = backend.ManagerUpgradeProgress
 type ProbeNode = backend.ProbeNode
+type ProbeLinkConnectResult = backend.ProbeLinkConnectResult
 
 func NewApp() *App {
 	backend.BuildVersion = BuildVersion
@@ -83,6 +84,14 @@ func (a *App) RestoreNetworkAssistantDirect() (NetworkAssistantStatus, error) {
 	return a.inner.RestoreNetworkAssistantDirect()
 }
 
+func (a *App) InstallNetworkAssistantTUN() (NetworkAssistantStatus, error) {
+	return a.inner.InstallNetworkAssistantTUN()
+}
+
+func (a *App) EnableNetworkAssistantTUN() (NetworkAssistantStatus, error) {
+	return a.inner.EnableNetworkAssistantTUN()
+}
+
 func (a *App) GetLatestGitHubRelease(project string) (ReleaseInfo, error) {
 	return a.inner.GetLatestGitHubRelease(project)
 }
@@ -143,4 +152,20 @@ func (a *App) UpdateProbeNodeSettings(
 
 func (a *App) ReplaceProbeNodes(nodes []ProbeNode) ([]ProbeNode, error) {
 	return a.inner.ReplaceProbeNodes(nodes)
+}
+
+func (a *App) TestProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLinkConnectResult, error) {
+	return a.inner.TestProbeLink(nodeID, endpointType, scheme, host, port)
+}
+
+func (a *App) StartProbeLinkSession(nodeID, protocol, host string, port int) (ProbeLinkConnectResult, error) {
+	return a.inner.StartProbeLinkSession(nodeID, protocol, host, port)
+}
+
+func (a *App) PingProbeLinkSession() (ProbeLinkConnectResult, error) {
+	return a.inner.PingProbeLinkSession()
+}
+
+func (a *App) StopProbeLinkSession() (bool, error) {
+	return a.inner.StopProbeLinkSession()
 }

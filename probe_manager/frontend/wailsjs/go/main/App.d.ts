@@ -18,13 +18,23 @@ export function GetManagerUpgradeProgress():Promise<backend.ManagerUpgradeProgre
 
 export function GetManagerVersion():Promise<string>;
 
+export function EnableNetworkAssistantTUN():Promise<backend.NetworkAssistantStatus>;
+
 export function GetNetworkAssistantLogs(arg1:number):Promise<backend.NetworkAssistantLogResponse>;
 
 export function GetNetworkAssistantStatus():Promise<backend.NetworkAssistantStatus>;
 
 export function GetProbeNodes():Promise<Array<backend.ProbeNode>>;
 
+export function StartProbeLinkSession(arg1:string,arg2:string,arg3:string,arg4:number):Promise<backend.ProbeLinkConnectResult>;
+
+export function PingProbeLinkSession():Promise<backend.ProbeLinkConnectResult>;
+
+export function StopProbeLinkSession():Promise<boolean>;
+
 export function Greet(arg1:string):Promise<string>;
+
+export function InstallNetworkAssistantTUN():Promise<backend.NetworkAssistantStatus>;
 
 export function ReplaceProbeNodes(arg1:Array<backend.ProbeNode>):Promise<Array<backend.ProbeNode>>;
 
@@ -37,6 +47,8 @@ export function SetNetworkAssistantMode(arg1:string,arg2:string,arg3:string,arg4
 export function SignNonceWithLocalKey(arg1:string):Promise<string>;
 
 export function SyncNetworkAssistant(arg1:string,arg2:string):Promise<backend.NetworkAssistantStatus>;
+
+export function TestProbeLink(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<backend.ProbeLinkConnectResult>;
 
 export function UpdateProbeNode(arg1:number,arg2:string,arg3:boolean):Promise<backend.ProbeNode>;
 
