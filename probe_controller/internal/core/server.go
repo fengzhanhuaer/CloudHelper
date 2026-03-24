@@ -8,6 +8,12 @@ import (
 
 func Run() {
 	initControllerLogger()
+	if handled, err := runControllerUpgradeVerifyModeFromArgs(); handled {
+		if err != nil {
+			log.Fatalf("controller upgrade verification failed: %v", err)
+		}
+		return
+	}
 	serverStartTime = time.Now()
 
 	initStore()

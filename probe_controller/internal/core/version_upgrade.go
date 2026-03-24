@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -22,8 +23,10 @@ import (
 )
 
 const (
-	controllerVersionStoreField = "controller_version"
-	defaultReleaseRepo          = "fengzhanhuaer/CloudHelper"
+	controllerVersionStoreField            = "controller_version"
+	defaultReleaseRepo                     = "fengzhanhuaer/CloudHelper"
+	controllerUpgradeVerifyOutputLimit     = 2048
+	controllerUpgradeVerifyTimeoutGraceSec = 15
 )
 
 var BuildVersion = "dev"
@@ -212,6 +215,10 @@ func performControllerUpgrade(ctx context.Context) (adminUpgradeResponse, error)
 	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "extract", Percent: 80, Message: "解压升级包"})
 	binaryPath, err := extractControllerBinary(assetFile, asset.Name, tmpDir)
 	if err != nil {
+		return result, err
+	}
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "verify", Percent: 88, Message: "验证新版本稳定性"})
+	if err := verifyControllerCandidateRuntime(ctx, binaryPath); err != nil {
 		return result, err
 	}
 
@@ -722,6 +729,58 @@ func replaceCurrentExecutable(newBinary string) error {
 		return fmt.Errorf("replace binary failed: %w", err)
 	}
 	return nil
+}
+
+func verifyControllerCandidateRuntime(parent context.Context, binaryPath string) error {
+	candidate := strings.TrimSpace(binaryPath)
+	if candidate == "" {
+		return fmt.Errorf("candidate binary path is empty")
+	}
+
+	verifySec := normalizeControllerUpgradeVerifyDurationSec(defaultControllerUpgradeVerifyDurationSec)
+	timeout := time.Duration(verifySec+controllerUpgradeVerifyTimeoutGraceSec) * time.Second
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
+	args := []string{
+		"--upgrade-verify",
+		fmt.Sprintf("--upgrade-verify-duration=%d", verifySec),
+	}
+	cmd := exec.CommandContext(ctx, candidate, args...)
+	cmd.Env = os.Environ()
+	output, err := cmd.CombinedOutput()
+	outputText := trimControllerUpgradeVerifyOutputForLog(output, controllerUpgradeVerifyOutputLimit)
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("controller candidate verify timeout after %s", timeout)
+	}
+	if err != nil {
+		if outputText != "" {
+			return fmt.Errorf("controller candidate verify failed: %w; output=%s", err, outputText)
+		}
+		return fmt.Errorf("controller candidate verify failed: %w", err)
+	}
+	if outputText != "" {
+		log.Printf("controller upgrade candidate verify output: %s", strings.ReplaceAll(outputText, "\n", " | "))
+	}
+	return nil
+}
+
+func trimControllerUpgradeVerifyOutputForLog(raw []byte, limit int) string {
+	if limit <= 0 {
+		limit = controllerUpgradeVerifyOutputLimit
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	if limit <= 3 {
+		return text[:limit]
+	}
+	return text[:limit-3] + "..."
 }
 
 func cleanupControllerStaleExecutables() error {
