@@ -277,6 +277,7 @@ export type ProbeLinkChainItem = {
   link_layer?: "http" | "http2" | "http3";
   hop_configs?: Array<{
     node_no: number;
+    listen_host?: string;
     service_port?: number;
     external_port?: number;
     // Keep legacy listen_port for backward compatibility with old payload/store.
@@ -303,6 +304,7 @@ export type ProbeLinkChainUpsertPayload = {
   link_layer?: "http" | "http2" | "http3";
   hop_configs?: Array<{
     node_no: number;
+    listen_host?: string;
     service_port?: number;
     external_port?: number;
     listen_port?: number;

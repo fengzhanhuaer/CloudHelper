@@ -65,7 +65,7 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 			UserPublicKey: strings.TrimSpace(item.UserPublicKey),
 			LinkSecret:    strings.TrimSpace(item.Secret),
 			Role:          role,
-			ListenHost:    normalizeProbeLinkChainListenHost(item.ListenHost),
+			ListenHost:    nodeSettings.ListenHost,
 			ListenPort: func() int {
 				if nodeSettings.ServicePort > 0 {
 					return nodeSettings.ServicePort
@@ -112,6 +112,7 @@ func removeProbeLinkChainRecord(item probeLinkChainRecord) error {
 }
 
 type probeLinkChainNodeSettings struct {
+	ListenHost     string
 	ServicePort    int
 	ExternalPort   int
 	LegacyNextPort int
@@ -119,6 +120,7 @@ type probeLinkChainNodeSettings struct {
 }
 
 func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string) probeLinkChainNodeSettings {
+	defaultHost := normalizeProbeLinkChainListenHost(item.ListenHost)
 	defaultLayer := normalizeProbeLinkChainLinkLayer(item.LinkLayer)
 	targetNodeID := normalizeProbeNodeID(nodeID)
 	for _, hop := range item.HopConfigs {
@@ -141,8 +143,13 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 		if legacyNextPort < 0 || legacyNextPort > 65535 {
 			legacyNextPort = 0
 		}
+		listenHost := strings.TrimSpace(hop.ListenHost)
+		if listenHost == "" {
+			listenHost = defaultHost
+		}
 		layer := normalizeProbeLinkChainLinkLayer(hop.LinkLayer)
 		return probeLinkChainNodeSettings{
+			ListenHost:     normalizeProbeLinkChainListenHost(listenHost),
 			ServicePort:    servicePort,
 			ExternalPort:   externalPort,
 			LegacyNextPort: legacyNextPort,
@@ -150,6 +157,7 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 		}
 	}
 	return probeLinkChainNodeSettings{
+		ListenHost:     defaultHost,
 		ServicePort:    0,
 		ExternalPort:   0,
 		LegacyNextPort: 0,

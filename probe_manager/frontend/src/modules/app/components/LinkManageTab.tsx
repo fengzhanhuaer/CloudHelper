@@ -52,6 +52,7 @@ type ProbeTestTarget = {
 
 type ProbeLinkHopFormItem = {
   nodeNo: number;
+  listenHost: string;
   servicePort: number;
   externalPort: number;
   linkLayer: ProbeLinkLayer;
@@ -63,10 +64,6 @@ type ProbeLinkChainFormState = {
   userID: string;
   userPublicKey: string;
   secret: string;
-  cascadeNodeIDsText: string;
-  listenHost: string;
-  listenPort: number;
-  linkLayer: ProbeLinkLayer;
   hopConfigs: ProbeLinkHopFormItem[];
 };
 
@@ -194,9 +191,13 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
     return out;
   }, [chainForm.userID, chainUsers]);
+  const chainHopConfigs = useMemo(
+    () => normalizeProbeLinkHopFormItems(chainForm.hopConfigs),
+    [chainForm.hopConfigs],
+  );
   const chainRouteNodeNos = useMemo(
-    () => buildProbeChainRouteNodeNos(chainForm.cascadeNodeIDsText),
-    [chainForm.cascadeNodeIDsText],
+    () => chainHopConfigs.map((item) => item.nodeNo),
+    [chainHopConfigs],
   );
 
   useEffect(() => {
@@ -208,10 +209,6 @@ export function LinkManageTab(props: LinkManageTabProps) {
     setInternalPort(portToUse);
     setExternalPort(portToUse);
   }, [selectedNodeID]);
-
-  useEffect(() => {
-    setChainForm((prev) => syncProbeLinkHopConfigsWithRoute(prev));
-  }, [chainForm.cascadeNodeIDsText]);
 
   function updateHopConfig(nodeNo: number, patch: Partial<ProbeLinkHopFormItem>) {
     if (!Number.isFinite(nodeNo) || nodeNo <= 0) {
@@ -225,12 +222,14 @@ export function LinkManageTab(props: LinkManageTabProps) {
         ? current[index]
         : {
           nodeNo: safeNodeNo,
-          servicePort: prev.listenPort,
+          listenHost: defaultLinkChainListenHost,
+          servicePort: defaultLinkChainListenPort,
           externalPort: 0,
-          linkLayer: prev.linkLayer,
+          linkLayer: defaultLinkChainLayer,
         };
       const nextItem: ProbeLinkHopFormItem = {
         nodeNo: safeNodeNo,
+        listenHost: patch.listenHost === undefined ? existing.listenHost : normalizeProbeLinkHopListenHost(patch.listenHost),
         servicePort: patch.servicePort === undefined ? existing.servicePort : normalizePort(patch.servicePort),
         externalPort: patch.externalPort === undefined ? existing.externalPort : normalizePort(patch.externalPort),
         linkLayer: patch.linkLayer === undefined ? existing.linkLayer : normalizeProbeLinkLayer(patch.linkLayer),
@@ -241,7 +240,117 @@ export function LinkManageTab(props: LinkManageTabProps) {
       } else {
         next.push(nextItem);
       }
-      next.sort((left, right) => left.nodeNo - right.nodeNo);
+      return {
+        ...prev,
+        hopConfigs: next,
+      };
+    });
+  }
+
+  function addHopConfig() {
+    setChainForm((prev) => {
+      const current = normalizeProbeLinkHopFormItems(prev.hopConfigs);
+      const used = new Set<number>();
+      for (const item of current) {
+        used.add(item.nodeNo);
+      }
+
+      let nextNodeNo = 0;
+      for (const node of nodes) {
+        const candidate = Math.trunc(Number(node.node_no || 0));
+        if (!Number.isFinite(candidate) || candidate <= 0) {
+          continue;
+        }
+        if (!used.has(candidate)) {
+          nextNodeNo = candidate;
+          break;
+        }
+      }
+      if (nextNodeNo <= 0) {
+        for (const item of current) {
+          if (item.nodeNo > nextNodeNo) {
+            nextNodeNo = item.nodeNo;
+          }
+        }
+        nextNodeNo += 1;
+      }
+      if (!Number.isFinite(nextNodeNo) || nextNodeNo <= 0) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        hopConfigs: [
+          ...current,
+          {
+            nodeNo: nextNodeNo,
+            listenHost: defaultLinkChainListenHost,
+            servicePort: defaultLinkChainListenPort,
+            externalPort: 0,
+            linkLayer: defaultLinkChainLayer,
+          },
+        ],
+      };
+    });
+  }
+
+  function updateHopConfigNodeNo(nodeNo: number, nextNodeNoRaw: string) {
+    const nextNodeNo = Math.trunc(Number(nextNodeNoRaw));
+    if (!Number.isFinite(nextNodeNo) || nextNodeNo <= 0) {
+      setChainStatus("探针编号必须为正整数");
+      return;
+    }
+    if (nextNodeNo !== nodeNo && chainRouteNodeNos.includes(nextNodeNo)) {
+      setChainStatus(`探针 #${nextNodeNo} 已在链路中，请勿重复添加`);
+      return;
+    }
+    setChainForm((prev) => {
+      const current = normalizeProbeLinkHopFormItems(prev.hopConfigs);
+      const index = current.findIndex((item) => item.nodeNo === nodeNo);
+      if (index < 0) {
+        return prev;
+      }
+      const next = [...current];
+      next[index] = {
+        ...next[index],
+        nodeNo: nextNodeNo,
+      };
+      return {
+        ...prev,
+        hopConfigs: next,
+      };
+    });
+  }
+
+  function removeHopConfig(nodeNo: number) {
+    setChainForm((prev) => {
+      const current = normalizeProbeLinkHopFormItems(prev.hopConfigs);
+      const next = current.filter((item) => item.nodeNo !== nodeNo);
+      if (next.length === current.length) {
+        return prev;
+      }
+      return {
+        ...prev,
+        hopConfigs: next,
+      };
+    });
+  }
+
+  function moveHopConfig(nodeNo: number, direction: -1 | 1) {
+    setChainForm((prev) => {
+      const current = normalizeProbeLinkHopFormItems(prev.hopConfigs);
+      const index = current.findIndex((item) => item.nodeNo === nodeNo);
+      if (index < 0) {
+        return prev;
+      }
+      const target = index + direction;
+      if (target < 0 || target >= current.length) {
+        return prev;
+      }
+      const next = [...current];
+      const tmp = next[index];
+      next[index] = next[target];
+      next[target] = tmp;
       return {
         ...prev,
         hopConfigs: next,
@@ -466,14 +575,12 @@ export function LinkManageTab(props: LinkManageTabProps) {
       userID: normalizedUserID,
       userPublicKey: chainUserPublicKeys[normalizedUserID] || item.user_public_key || "",
       secret: item.secret || "",
-      cascadeNodeIDsText: routeNodeIDs.join(","),
-      listenHost: item.listen_host || defaultLinkChainListenHost,
-      listenPort: normalizePort(item.listen_port || 0) || defaultLinkChainListenPort,
-      linkLayer: normalizeProbeLinkLayer(item.link_layer),
       hopConfigs: normalizeProbeLinkHopFormItemsFromChain(
         item.hop_configs,
+        item.listen_host || defaultLinkChainListenHost,
         normalizePort(item.listen_port || 0) || defaultLinkChainListenPort,
         normalizeProbeLinkLayer(item.link_layer),
+        routeNodeIDs,
       ),
     });
     if (normalizedUserID && !chainUserPublicKeys[normalizedUserID]) {
@@ -490,7 +597,6 @@ export function LinkManageTab(props: LinkManageTabProps) {
     const name = chainForm.name.trim();
     const userID = normalizeChainUsername(chainForm.userID);
     const userPublicKey = chainForm.userPublicKey.trim();
-    const listenPort = normalizePort(chainForm.listenPort);
     if (!name) {
       setChainStatus("链路名称不能为空");
       return;
@@ -508,11 +614,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       void loadChainUserPublicKey(userID);
       return;
     }
-    if (listenPort <= 0) {
-      setChainStatus("监听端口必须在 1-65535 范围内");
-      return;
-    }
-    const routeNodeIDs = parseNodeIDListInput(chainForm.cascadeNodeIDsText);
+    const routeNodeIDs = chainRouteNodeNos.map((nodeNo) => String(nodeNo));
     if (routeNodeIDs.length === 0) {
       setChainStatus("请至少添加一个探针，最后一个探针将自动作为出口");
       return;
@@ -524,6 +626,14 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChainStatus(hopConfigsResult.error);
       return;
     }
+    if (hopConfigsResult.items.length === 0) {
+      setChainStatus("请至少添加一个探针，最后一个探针将自动作为出口");
+      return;
+    }
+    const firstHop = hopConfigsResult.items[0];
+    const fallbackListenHost = normalizeProbeLinkHopListenHost(firstHop.listen_host) || defaultLinkChainListenHost;
+    const fallbackListenPort = normalizePort(Number(firstHop.service_port || 0)) || defaultLinkChainListenPort;
+    const fallbackLayer = normalizeProbeLinkLayer(firstHop.link_layer || defaultLinkChainLayer);
 
     setIsSavingChain(true);
     setChainStatus(editingChainID ? "正在更新链路..." : "正在新增链路...");
@@ -537,9 +647,9 @@ export function LinkManageTab(props: LinkManageTabProps) {
         entry_node_id: "",
         exit_node_id: exitNodeID,
         cascade_node_ids: cascades,
-        listen_host: chainForm.listenHost.trim() || defaultLinkChainListenHost,
-        listen_port: listenPort,
-        link_layer: normalizeProbeLinkLayer(chainForm.linkLayer),
+        listen_host: fallbackListenHost,
+        listen_port: fallbackListenPort,
+        link_layer: fallbackLayer,
         hop_configs: hopConfigsResult.items,
         egress_host: defaultLinkChainEgressHost,
         egress_port: defaultLinkChainEgressPort,
@@ -848,71 +958,77 @@ export function LinkManageTab(props: LinkManageTabProps) {
               </select>
             </div>
             <div className="row">
-              <label>链路探针顺序</label>
-              <input
-                className="input"
-                value={chainForm.cascadeNodeIDsText}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, cascadeNodeIDsText: event.target.value }))}
-                placeholder="例如：2,3,4（最后一个自动作为出口）"
-                disabled={isOperatingChain}
-              />
-            </div>
-            <div className="row">
-              <label>监听地址</label>
-              <input
-                className="input"
-                value={chainForm.listenHost}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, listenHost: event.target.value }))}
-                placeholder={defaultLinkChainListenHost}
-                disabled={isOperatingChain}
-              />
-            </div>
-            <div className="row">
-              <label>默认服务端口</label>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={65535}
-                value={chainForm.listenPort}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, listenPort: Number(event.target.value) || 0 }))}
-                disabled={isOperatingChain}
-              />
-            </div>
-            <div className="row">
-              <label>默认链路协议</label>
-              <select
-                className="input"
-                value={chainForm.linkLayer}
-                onChange={(event) => setChainForm((prev) => ({ ...prev, linkLayer: normalizeProbeLinkLayer(event.target.value) }))}
-                disabled={isOperatingChain}
-              >
-                <option value="http">http</option>
-                <option value="http2">http2</option>
-                <option value="http3">http3</option>
-              </select>
-            </div>
-            <div className="row">
               <label>逐探针链路配置</label>
               <div style={{ width: "100%" }}>
-                {chainRouteNodeNos.length > 0 ? (
+                <div className="content-actions" style={{ marginTop: 0, marginBottom: 8 }}>
+                  <button className="btn" onClick={addHopConfig} disabled={isOperatingChain}>
+                    添加探针
+                  </button>
+                </div>
+                {chainHopConfigs.length > 0 ? (
                   <div className="probe-table-wrap" style={{ marginTop: 4 }}>
-                    <table className="probe-table" style={{ minWidth: 720 }}>
+                    <table className="probe-table" style={{ minWidth: 860 }}>
                       <thead>
                         <tr>
+                          <th>顺序</th>
                           <th>探针</th>
+                          <th>监听地址</th>
                           <th>服务端口</th>
                           <th>外部端口</th>
                           <th>链路协议</th>
+                          <th style={{ width: 220 }}>操作</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {chainRouteNodeNos.map((nodeNo) => {
-                          const cfg = findProbeLinkHopFormItem(chainForm.hopConfigs, nodeNo);
+                        {chainHopConfigs.map((cfg, index) => {
+                          const nodeNo = cfg.nodeNo;
                           const node = nodes.find((item) => item.node_no === nodeNo);
+                          const usedNodeNos = new Set(
+                            chainHopConfigs
+                              .filter((item) => item.nodeNo !== nodeNo)
+                              .map((item) => item.nodeNo),
+                          );
                           return (
-                            <tr key={`hop-${nodeNo}`}>
-                              <td>#{nodeNo} {node?.node_name || ""}</td>
+                            <tr key={`hop-${nodeNo}-${index}`}>
+                              <td>{index + 1}{index === chainHopConfigs.length - 1 ? " (出口)" : ""}</td>
+                              <td>
+                                <select
+                                  className="input"
+                                  value={String(nodeNo)}
+                                  onChange={(event) => updateHopConfigNodeNo(nodeNo, event.target.value)}
+                                  disabled={isOperatingChain}
+                                >
+                                  {node ? null : (
+                                    <option value={String(nodeNo)}>
+                                      #{nodeNo} (未在探针列表)
+                                    </option>
+                                  )}
+                                  {nodes.map((item) => {
+                                    const candidate = Math.trunc(Number(item.node_no || 0));
+                                    if (!Number.isFinite(candidate) || candidate <= 0) {
+                                      return null;
+                                    }
+                                    return (
+                                      <option
+                                        key={`hop-node-option-${nodeNo}-${candidate}`}
+                                        value={String(candidate)}
+                                        disabled={usedNodeNos.has(candidate)}
+                                      >
+                                        #{candidate} {item.node_name || ""}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </td>
+                              <td>
+                                <input
+                                  className="input"
+                                  value={cfg.listenHost}
+                                  placeholder={defaultLinkChainListenHost}
+                                  onChange={(event) => updateHopConfig(nodeNo, { listenHost: event.target.value })}
+                                  disabled={isOperatingChain}
+                                />
+                              </td>
                               <td>
                                 <input
                                   className="input"
@@ -920,7 +1036,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                                   min={1}
                                   max={65535}
                                   value={cfg.servicePort > 0 ? cfg.servicePort : ""}
-                                  placeholder={String(chainForm.listenPort || defaultLinkChainListenPort)}
+                                  placeholder={String(defaultLinkChainListenPort)}
                                   onChange={(event) => updateHopConfig(nodeNo, { servicePort: Number(event.target.value) || 0 })}
                                   disabled={isOperatingChain}
                                 />
@@ -949,6 +1065,31 @@ export function LinkManageTab(props: LinkManageTabProps) {
                                   <option value="http3">http3</option>
                                 </select>
                               </td>
+                              <td>
+                                <div className="probe-table-actions">
+                                  <button
+                                    className="btn"
+                                    onClick={() => moveHopConfig(nodeNo, -1)}
+                                    disabled={isOperatingChain || index <= 0}
+                                  >
+                                    上移
+                                  </button>
+                                  <button
+                                    className="btn"
+                                    onClick={() => moveHopConfig(nodeNo, 1)}
+                                    disabled={isOperatingChain || index >= chainHopConfigs.length - 1}
+                                  >
+                                    下移
+                                  </button>
+                                  <button
+                                    className="btn"
+                                    onClick={() => removeHopConfig(nodeNo)}
+                                    disabled={isOperatingChain}
+                                  >
+                                    删除
+                                  </button>
+                                </div>
+                              </td>
                             </tr>
                           );
                         })}
@@ -956,7 +1097,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                     </table>
                   </div>
                 ) : (
-                  <div className="status">请先设置链路探针顺序，再逐个配置探针端口与协议。</div>
+                  <div className="status">请点击“添加探针”，最后一个探针将自动作为出口。</div>
                 )}
               </div>
             </div>
@@ -984,7 +1125,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
           <div className="status">{chainStatus}</div>
           <div className="status">
             当前表单路由：管理端
-            {buildProbeChainRouteSummaryTextFromNodeIDTexts(parseNodeIDListInput(chainForm.cascadeNodeIDsText))}
+            {buildProbeChainRouteSummaryTextFromNodeIDTexts(chainRouteNodeNos.map((nodeNo) => String(nodeNo)))}
           </div>
 
           <div className="probe-table-wrap" style={{ marginTop: 8 }}>
@@ -1016,12 +1157,13 @@ export function LinkManageTab(props: LinkManageTabProps) {
                           hop: {item.hop_configs.map((cfg) => {
                             const servicePort = normalizePort(Number(cfg.service_port || 0));
                             const externalPort = normalizePort(Number(cfg.external_port || cfg.listen_port || 0));
-                            return `#${cfg.node_no}(svc:${servicePort || "-"}, ext:${externalPort || "-"}, ${normalizeProbeLinkLayer(cfg.link_layer)})`;
+                            const listenHost = normalizeProbeLinkHopListenHost(cfg.listen_host || item.listen_host || defaultLinkChainListenHost);
+                            return `#${cfg.node_no}(host:${listenHost || "-"}, svc:${servicePort || "-"}, ext:${externalPort || "-"}, ${normalizeProbeLinkLayer(cfg.link_layer)})`;
                           }).join(" | ")}
                         </div>
                       ) : null}
                     </td>
-                    <td>{item.listen_host || defaultLinkChainListenHost}:{normalizePort(item.listen_port || 0)}</td>
+                    <td>{item.hop_configs && item.hop_configs.length > 0 ? "按探针配置" : `${item.listen_host || defaultLinkChainListenHost}:${normalizePort(item.listen_port || 0)}`}</td>
                     <td>{normalizeProbeLinkLayer(item.link_layer)}</td>
                     <td>{item.updated_at || item.created_at || "-"}</td>
                     <td>
@@ -1150,10 +1292,6 @@ function createEmptyProbeLinkChainForm(
     userID: normalizeChainUsername(defaultUserID),
     userPublicKey: String(defaultUserPublicKey || "").trim(),
     secret: "",
-    cascadeNodeIDsText: "",
-    listenHost: defaultLinkChainListenHost,
-    listenPort: defaultLinkChainListenPort,
-    linkLayer: defaultLinkChainLayer,
     hopConfigs: [],
   };
 }
@@ -1270,45 +1408,6 @@ function normalizeNodeIDText(raw: unknown): string {
   return value;
 }
 
-function parseNodeIDListInput(raw: string): string[] {
-  const values = String(raw || "")
-    .split(/[\s,;|]+/)
-    .map((item) => normalizeNodeIDText(item))
-    .filter((item) => item !== "");
-  if (values.length === 0) {
-    return [];
-  }
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const item of values) {
-    if (seen.has(item)) {
-      continue;
-    }
-    seen.add(item);
-    out.push(item);
-  }
-  return out;
-}
-
-function buildProbeChainRouteNodeNos(cascadeNodeIDsText: string): number[] {
-  const routeNodeIDs = parseNodeIDListInput(cascadeNodeIDsText);
-  const out: number[] = [];
-  const seen = new Set<number>();
-  for (const nodeID of routeNodeIDs) {
-    const nodeNo = Number(nodeID);
-    if (!Number.isFinite(nodeNo) || nodeNo <= 0) {
-      continue;
-    }
-    const normalized = Math.trunc(nodeNo);
-    if (seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    out.push(normalized);
-  }
-  return out;
-}
-
 function normalizeProbeLinkHopFormItems(values?: ProbeLinkHopFormItem[]): ProbeLinkHopFormItem[] {
   if (!Array.isArray(values) || values.length === 0) {
     return [];
@@ -1323,138 +1422,101 @@ function normalizeProbeLinkHopFormItems(values?: ProbeLinkHopFormItem[]): ProbeL
     seen.add(nodeNo);
     out.push({
       nodeNo,
+      listenHost: normalizeProbeLinkHopListenHost(item.listenHost) || defaultLinkChainListenHost,
       servicePort: normalizePort(Number(item.servicePort || 0)),
       externalPort: normalizePort(Number(item.externalPort || 0)),
       linkLayer: normalizeProbeLinkLayer(item.linkLayer),
     });
   }
-  out.sort((left, right) => left.nodeNo - right.nodeNo);
   return out;
 }
 
 function normalizeProbeLinkHopFormItemsFromChain(
-  values: Array<{ node_no: number; service_port?: number; external_port?: number; listen_port?: number; link_layer?: "http" | "http2" | "http3" | "" }> | undefined,
+  values: Array<{ node_no: number; listen_host?: string; service_port?: number; external_port?: number; listen_port?: number; link_layer?: "http" | "http2" | "http3" | "" }> | undefined,
+  defaultListenHost: string,
   defaultServicePort: number,
   defaultLinkLayer: ProbeLinkLayer,
+  routeNodeIDs?: string[],
 ): ProbeLinkHopFormItem[] {
-  if (!Array.isArray(values) || values.length === 0) {
-    return [];
-  }
+  const safeDefaultListenHost = normalizeProbeLinkHopListenHost(defaultListenHost) || defaultLinkChainListenHost;
   const safeDefaultServicePort = normalizePort(defaultServicePort) || defaultLinkChainListenPort;
   const safeDefaultLayer = normalizeProbeLinkLayer(defaultLinkLayer);
-  const out: ProbeLinkHopFormItem[] = [];
-  const seen = new Set<number>();
-  for (const item of values) {
+
+  const fromStoreMap = new Map<number, ProbeLinkHopFormItem>();
+  for (const item of Array.isArray(values) ? values : []) {
     const nodeNo = Math.trunc(Number(item.node_no || 0));
-    if (!Number.isFinite(nodeNo) || nodeNo <= 0 || seen.has(nodeNo)) {
+    if (!Number.isFinite(nodeNo) || nodeNo <= 0 || fromStoreMap.has(nodeNo)) {
       continue;
     }
-    seen.add(nodeNo);
-    const servicePort = normalizePort(Number(item.service_port || 0)) || safeDefaultServicePort;
-    const externalPort = normalizePort(Number(item.external_port || item.listen_port || 0));
-    out.push({
+    fromStoreMap.set(nodeNo, {
       nodeNo,
-      servicePort,
-      externalPort,
+      listenHost: normalizeProbeLinkHopListenHost(item.listen_host) || safeDefaultListenHost,
+      servicePort: normalizePort(Number(item.service_port || 0)) || safeDefaultServicePort,
+      externalPort: normalizePort(Number(item.external_port || item.listen_port || 0)),
       linkLayer: normalizeProbeLinkLayer(item.link_layer || safeDefaultLayer),
     });
   }
-  out.sort((left, right) => left.nodeNo - right.nodeNo);
+
+  const routeNodeNos: number[] = [];
+  const routeSeen = new Set<number>();
+  for (const raw of Array.isArray(routeNodeIDs) ? routeNodeIDs : []) {
+    const nodeNo = Math.trunc(Number(normalizeNodeIDText(raw)));
+    if (!Number.isFinite(nodeNo) || nodeNo <= 0 || routeSeen.has(nodeNo)) {
+      continue;
+    }
+    routeSeen.add(nodeNo);
+    routeNodeNos.push(nodeNo);
+  }
+
+  const out: ProbeLinkHopFormItem[] = [];
+  const outSeen = new Set<number>();
+  for (const nodeNo of routeNodeNos) {
+    const found = fromStoreMap.get(nodeNo);
+    if (found) {
+      out.push(found);
+    } else {
+      out.push({
+        nodeNo,
+        listenHost: safeDefaultListenHost,
+        servicePort: safeDefaultServicePort,
+        externalPort: 0,
+        linkLayer: safeDefaultLayer,
+      });
+    }
+    outSeen.add(nodeNo);
+  }
+  for (const [nodeNo, found] of fromStoreMap.entries()) {
+    if (outSeen.has(nodeNo)) {
+      continue;
+    }
+    out.push(found);
+  }
   return out;
 }
 
-function findProbeLinkHopFormItem(values: ProbeLinkHopFormItem[], nodeNo: number): ProbeLinkHopFormItem {
-  const targetNodeNo = Math.trunc(Number(nodeNo || 0));
-  if (!Number.isFinite(targetNodeNo) || targetNodeNo <= 0) {
-    return {
-      nodeNo: 0,
-      servicePort: 0,
-      externalPort: 0,
-      linkLayer: defaultLinkChainLayer,
-    };
-  }
-  for (const item of normalizeProbeLinkHopFormItems(values)) {
-    if (item.nodeNo === targetNodeNo) {
-      return item;
-    }
-  }
-  return {
-    nodeNo: targetNodeNo,
-    servicePort: 0,
-    externalPort: 0,
-    linkLayer: defaultLinkChainLayer,
-  };
-}
-
-function areProbeLinkHopFormItemsEqual(left: ProbeLinkHopFormItem[], right: ProbeLinkHopFormItem[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-  for (let i = 0; i < left.length; i += 1) {
-    const l = left[i];
-    const r = right[i];
-    if (l.nodeNo !== r.nodeNo || l.servicePort !== r.servicePort || l.externalPort !== r.externalPort || l.linkLayer !== r.linkLayer) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function syncProbeLinkHopConfigsWithRoute(form: ProbeLinkChainFormState): ProbeLinkChainFormState {
-  const routeNodeNos = buildProbeChainRouteNodeNos(form.cascadeNodeIDsText);
-  const current = normalizeProbeLinkHopFormItems(form.hopConfigs);
-  const map = new Map<number, ProbeLinkHopFormItem>();
-  for (const item of current) {
-    map.set(item.nodeNo, item);
-  }
-  const safeDefaultServicePort = normalizePort(form.listenPort) || defaultLinkChainListenPort;
-  const safeDefaultLayer = normalizeProbeLinkLayer(form.linkLayer);
-  const next = routeNodeNos.map((nodeNo) => {
-    const found = map.get(nodeNo);
-    if (found) {
-      return found;
-    }
-    return {
-      nodeNo,
-      servicePort: safeDefaultServicePort,
-      externalPort: 0,
-      linkLayer: safeDefaultLayer,
-    };
-  });
-  if (areProbeLinkHopFormItemsEqual(current, next)) {
-    return form;
-  }
-  return {
-    ...form,
-    hopConfigs: next,
-  };
-}
-
 function buildProbeLinkHopConfigsPayload(form: ProbeLinkChainFormState): {
-  items: Array<{ node_no: number; service_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }>;
+  items: Array<{ node_no: number; listen_host?: string; service_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }>;
   error: string;
 } {
-  const routeNodeNos = buildProbeChainRouteNodeNos(form.cascadeNodeIDsText);
-  if (routeNodeNos.length === 0) {
+  const normalizedHopConfigs = normalizeProbeLinkHopFormItems(form.hopConfigs);
+  if (normalizedHopConfigs.length === 0) {
     return { items: [], error: "" };
   }
-  const hopMap = new Map<number, ProbeLinkHopFormItem>();
-  for (const item of normalizeProbeLinkHopFormItems(form.hopConfigs)) {
-    hopMap.set(item.nodeNo, item);
-  }
-  const fallbackServicePort = normalizePort(form.listenPort);
-  const fallbackLayer = normalizeProbeLinkLayer(form.linkLayer);
-  const items: Array<{ node_no: number; service_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }> = [];
-  for (const nodeNo of routeNodeNos) {
-    const cfg = hopMap.get(nodeNo);
-    const servicePort = normalizePort(cfg?.servicePort || fallbackServicePort);
-    const externalPort = normalizePort(cfg?.externalPort || 0);
-    const layer = normalizeProbeLinkLayer(cfg?.linkLayer || fallbackLayer);
+  const items: Array<{ node_no: number; listen_host?: string; service_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }> = [];
+  for (const cfg of normalizedHopConfigs) {
+    const listenHost = normalizeProbeLinkHopListenHost(cfg.listenHost);
+    if (!listenHost) {
+      return { items: [], error: `探针 #${cfg.nodeNo} 的监听地址不能为空` };
+    }
+    const servicePort = normalizePort(cfg.servicePort);
+    const externalPort = normalizePort(cfg.externalPort);
+    const layer = normalizeProbeLinkLayer(cfg.linkLayer);
     if (servicePort <= 0) {
-      return { items: [], error: `探针 #${nodeNo} 的服务端口必须在 1-65535 范围内` };
+      return { items: [], error: `探针 #${cfg.nodeNo} 的服务端口必须在 1-65535 范围内` };
     }
     items.push({
-      node_no: nodeNo,
+      node_no: cfg.nodeNo,
+      listen_host: listenHost,
       service_port: servicePort,
       external_port: externalPort > 0 ? externalPort : undefined,
       link_layer: layer,
@@ -1517,6 +1579,10 @@ function buildChainRouteSummary(item: ProbeLinkChainItem): string {
     route.push("(未配置出口)");
   }
   return route.join(" -> ");
+}
+
+function normalizeProbeLinkHopListenHost(raw: unknown): string {
+  return String(raw ?? "").trim();
 }
 
 function normalizePort(value: number): number {

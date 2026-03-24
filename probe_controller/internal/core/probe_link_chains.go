@@ -21,9 +21,10 @@ const (
 )
 
 type probeLinkChainHopConfig struct {
-	NodeNo       int `json:"node_no"`
-	ServicePort  int `json:"service_port,omitempty"`
-	ExternalPort int `json:"external_port,omitempty"`
+	NodeNo       int    `json:"node_no"`
+	ListenHost   string `json:"listen_host,omitempty"`
+	ServicePort  int    `json:"service_port,omitempty"`
+	ExternalPort int    `json:"external_port,omitempty"`
 	// Keep legacy listen_port for backward compatibility with old saved data.
 	ListenPort int    `json:"listen_port,omitempty"`
 	LinkLayer  string `json:"link_layer"`
@@ -169,15 +170,12 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	}
 
 	listenPort := input.ListenPort
-	if listenPort <= 0 || listenPort > 65535 {
+	if listenPort < 0 || listenPort > 65535 {
 		return probeLinkChainRecord{}, nil, fmt.Errorf("listen_port must be between 1 and 65535")
 	}
 	linkLayer, ok := parseProbeLinkChainLinkLayer(input.LinkLayer)
 	if !ok {
 		return probeLinkChainRecord{}, nil, fmt.Errorf("link_layer must be http/http2/http3")
-	}
-	if strings.TrimSpace(linkLayer) == "" {
-		linkLayer = defaultProbeLinkChainLinkLayer
 	}
 	egressHost := strings.TrimSpace(input.EgressHost)
 	if egressHost == "" {
@@ -203,6 +201,22 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	hopConfigs, hopErr := normalizeProbeLinkChainHopConfigsForUpsert(input.HopConfigs, routeNodes)
 	if hopErr != nil {
 		return probeLinkChainRecord{}, nil, hopErr
+	}
+	if listenPort <= 0 && len(hopConfigs) > 0 {
+		listenPort = hopConfigs[0].ServicePort
+	}
+	if listenPort <= 0 || listenPort > 65535 {
+		return probeLinkChainRecord{}, nil, fmt.Errorf("listen_port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(linkLayer) == "" && len(hopConfigs) > 0 {
+		linkLayer = normalizeProbeLinkChainLinkLayer(hopConfigs[0].LinkLayer)
+	}
+	if strings.TrimSpace(linkLayer) == "" {
+		linkLayer = defaultProbeLinkChainLinkLayer
+	}
+	listenHost := normalizeProbeLinkChainListenHost(input.ListenHost)
+	if strings.TrimSpace(input.ListenHost) == "" && len(hopConfigs) > 0 {
+		listenHost = normalizeProbeLinkChainListenHost(hopConfigs[0].ListenHost)
 	}
 
 	secret := strings.TrimSpace(input.Secret)
@@ -245,7 +259,7 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 		EntryNodeID:    entryNodeID,
 		ExitNodeID:     exitNodeID,
 		CascadeNodeIDs: cascades,
-		ListenHost:     normalizeProbeLinkChainListenHost(input.ListenHost),
+		ListenHost:     listenHost,
 		ListenPort:     listenPort,
 		LinkLayer:      linkLayer,
 		HopConfigs:     hopConfigs,
@@ -478,8 +492,8 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		if _, ok := seen[nodeID]; ok {
 			continue
 		}
-		seen[nodeID] = struct{}{}
 
+		listenHost := normalizeProbeLinkChainListenHost(item.ListenHost)
 		servicePort, servicePortErr := normalizeOptionalProbeLinkChainPort(item.ServicePort)
 		if servicePortErr != nil {
 			return nil, fmt.Errorf("hop service_port must be between 1 and 65535")
@@ -496,12 +510,17 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		if !ok {
 			return nil, fmt.Errorf("hop link_layer must be http/http2/http3")
 		}
-		if servicePort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" && legacyListenPort <= 0 {
-			continue
+		if servicePort <= 0 {
+			return nil, fmt.Errorf("hop service_port must be between 1 and 65535")
 		}
+		if strings.TrimSpace(linkLayer) == "" {
+			linkLayer = defaultProbeLinkChainLinkLayer
+		}
+		seen[nodeID] = struct{}{}
 		nodeNo, _ := strconv.Atoi(nodeID)
 		out = append(out, probeLinkChainHopConfig{
 			NodeNo:       nodeNo,
+			ListenHost:   listenHost,
 			ServicePort:  servicePort,
 			ExternalPort: externalPort,
 			ListenPort:   legacyListenPort,
@@ -509,6 +528,11 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break
+		}
+	}
+	for nodeID := range filter {
+		if _, ok := seen[nodeID]; !ok {
+			return nil, fmt.Errorf("hop config is required for node %s", nodeID)
 		}
 	}
 	return out, nil
@@ -560,6 +584,7 @@ func normalizeProbeLinkChainHopConfigsForStore(values []probeLinkChainHopConfig,
 		nodeNo, _ := strconv.Atoi(nodeID)
 		out = append(out, probeLinkChainHopConfig{
 			NodeNo:       nodeNo,
+			ListenHost:   normalizeProbeLinkChainListenHost(item.ListenHost),
 			ServicePort:  servicePort,
 			ExternalPort: externalPort,
 			ListenPort:   legacyListenPort,

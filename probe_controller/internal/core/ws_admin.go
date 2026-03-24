@@ -651,9 +651,10 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			ListenPort     int      `json:"listen_port"`
 			LinkLayer      string   `json:"link_layer"`
 			HopConfigs     []struct {
-				NodeNo       int `json:"node_no"`
-				ServicePort  int `json:"service_port"`
-				ExternalPort int `json:"external_port"`
+				NodeNo       int    `json:"node_no"`
+				ListenHost   string `json:"listen_host"`
+				ServicePort  int    `json:"service_port"`
+				ExternalPort int    `json:"external_port"`
 				// Keep legacy listen_port for backward compatibility with old frontend payload.
 				ListenPort int    `json:"listen_port"`
 				LinkLayer  string `json:"link_layer"`
@@ -694,6 +695,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 				for _, cfg := range req.HopConfigs {
 					out = append(out, probeLinkChainHopConfig{
 						NodeNo:       cfg.NodeNo,
+						ListenHost:   strings.TrimSpace(cfg.ListenHost),
 						ServicePort:  cfg.ServicePort,
 						ExternalPort: cfg.ExternalPort,
 						ListenPort:   cfg.ListenPort,
