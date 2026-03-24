@@ -37,6 +37,18 @@ type probeUpgradeDispatchRequest struct {
 	NodeID string `json:"node_id"`
 }
 
+type probeUpgradeDispatchResult struct {
+	OK            bool   `json:"ok"`
+	NodeID        string `json:"node_id"`
+	NodeNo        int    `json:"node_no"`
+	NodeName      string `json:"node_name"`
+	DirectConnect bool   `json:"direct_connect"`
+	Mode          string `json:"mode"`
+	Repo          string `json:"repo"`
+	Message       string `json:"message"`
+	Timestamp     string `json:"timestamp"`
+}
+
 type probeUpgradeCommand struct {
 	Type              string `json:"type"`
 	Mode              string `json:"mode"`
@@ -295,12 +307,13 @@ func AdminUpgradeProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := dispatchUpgradeToProbe(node, controllerBaseURLFromRequest(r)); err != nil {
+	result, err := dispatchUpgradeToProbe(node, controllerBaseURLFromRequest(r))
+	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "node_id": nodeID})
+	writeJSON(w, http.StatusOK, result)
 }
 
 func AdminUpgradeAllProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
@@ -315,20 +328,27 @@ func AdminUpgradeAllProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 
 	controllerBaseURL := controllerBaseURLFromRequest(r)
 	success := 0
+	results := make([]probeUpgradeDispatchResult, 0, len(nodes))
 	failures := make([]string, 0)
 	for _, node := range nodes {
-		if err := dispatchUpgradeToProbe(node, controllerBaseURL); err != nil {
+		result, err := dispatchUpgradeToProbe(node, controllerBaseURL)
+		if err != nil {
 			failures = append(failures, fmt.Sprintf("%d:%v", node.NodeNo, err))
 			continue
 		}
+		results = append(results, result)
 		success++
 	}
+
+	message := fmt.Sprintf("upgrade dispatch completed: success=%d total=%d failures=%d", success, len(nodes), len(failures))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":       len(failures) == 0,
 		"success":  success,
 		"total":    len(nodes),
 		"failures": failures,
+		"items":    results,
+		"message":  message,
 	})
 }
 
@@ -503,29 +523,46 @@ func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
-func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) error {
+func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (probeUpgradeDispatchResult, error) {
 	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 	session, ok := getProbeSession(nodeID)
 	if !ok {
-		return fmt.Errorf("probe is offline")
+		return probeUpgradeDispatchResult{}, fmt.Errorf("probe is offline")
 	}
 
 	mode := "proxy"
 	if node.DirectConnect {
 		mode = "direct"
 	}
+	repo := releaseRepo()
+	timestamp := time.Now().UTC().Format(time.RFC3339)
 	cmd := probeUpgradeCommand{
 		Type:              "upgrade",
 		Mode:              mode,
-		ReleaseRepo:       releaseRepo(),
+		ReleaseRepo:       repo,
 		ControllerBaseURL: controllerBaseURL,
-		Timestamp:         time.Now().UTC().Format(time.RFC3339),
+		Timestamp:         timestamp,
 	}
 	if err := session.writeJSON(cmd); err != nil {
 		unregisterProbeSession(nodeID, session)
-		return err
+		return probeUpgradeDispatchResult{}, err
 	}
-	return nil
+
+	modeLabel := "主控代理"
+	if mode == "direct" {
+		modeLabel = "直连"
+	}
+	return probeUpgradeDispatchResult{
+		OK:            true,
+		NodeID:        nodeID,
+		NodeNo:        node.NodeNo,
+		NodeName:      strings.TrimSpace(node.NodeName),
+		DirectConnect: node.DirectConnect,
+		Mode:          mode,
+		Repo:          repo,
+		Message:       fmt.Sprintf("upgrade command dispatched (%s)", modeLabel),
+		Timestamp:     timestamp,
+	}, nil
 }
 
 func fetchProbeLogsFromNode(nodeID string, lines int, sinceMinutes int) (probeLogsResultMessage, error) {

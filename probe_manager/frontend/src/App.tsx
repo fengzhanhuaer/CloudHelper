@@ -146,6 +146,7 @@ function App() {
             versionStatus={upgrade.versionStatus}
             upgradeStatus={upgrade.upgradeStatus}
             controllerUpgradeProgress={upgrade.controllerUpgradeProgress}
+            controllerUpgradeMessages={upgrade.controllerUpgradeMessages}
             isUpgradingController={upgrade.isUpgradingController}
             isUpgradingManager={upgrade.isUpgradingManager}
             onRefreshSystemVersions={() => upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
@@ -163,6 +164,7 @@ function App() {
             proxyRelease={upgrade.proxyRelease}
             managerUpgradeStatus={upgrade.managerUpgradeStatus}
             managerUpgradeProgress={upgrade.managerUpgradeProgress}
+            managerUpgradeMessages={upgrade.managerUpgradeMessages}
             backupEnabled={upgrade.backupEnabled}
             backupRcloneRemote={upgrade.backupRcloneRemote}
             backupSettingsStatus={upgrade.backupSettingsStatus}

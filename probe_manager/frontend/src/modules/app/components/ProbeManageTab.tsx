@@ -20,6 +20,7 @@ import {
   type ProbeShellSessionControlResponse,
   type ProbeNodeStatusItem,
   type ProbeReportIntervalSettings,
+  type ProbeUpgradeDispatchResult,
 } from "../services/controller-api";
 
 type ProbeManageTabProps = {
@@ -120,6 +121,8 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [shellShortcuts, setShellShortcuts] = useState<ProbeShellShortcutItem[]>([]);
   const [shortcutNameInput, setShortcutNameInput] = useState("");
   const [shortcutCommandInput, setShortcutCommandInput] = useState("");
+  const [upgradeMessages, setUpgradeMessages] = useState<string[]>([]);
+  const [upgradeMessageCopyStatus, setUpgradeMessageCopyStatus] = useState("");
 
   useEffect(() => {
     if (!controllerAddress.trim() && props.controllerBaseUrl.trim()) {
@@ -448,17 +451,22 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
 
     setUpgradingNodeNos((prev) => [...prev, node.node_no]);
+    appendUpgradeMessage(`开始下发探针升级：${node.node_name} (#${node.node_no})`);
     try {
-      await upgradeProbeNode(base, token, node.node_no);
+      const result = await upgradeProbeNode(base, token, node.node_no);
+      appendProbeUpgradeDispatchResultMessage(result, node);
       setSubTab("logs");
       setLogNodeIDInput(String(node.node_no));
       setLogSinceMinutesInput("10");
       upgradeLogPollingDeadlineRef.current = Date.now() + (2 * 60 * 1000);
       setUpgradeLogPollingNodeID(String(node.node_no));
       void loadSelectedNodeLogs({ nodeID: String(node.node_no), silent: true });
-      setStatus(`已下发升级命令：${node.node_name}`);
+      const modeLabel = result.mode === "direct" ? "直连" : "主控代理";
+      const detail = (result.message || "").trim();
+      setStatus(`已下发升级命令：${node.node_name}（${modeLabel}）${detail ? `，${detail}` : ""}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
+      appendUpgradeMessage(`下发探针升级失败：${node.node_name} (#${node.node_no})，${msg}`);
       setStatus(`下发升级失败：${node.node_name}，${msg}`);
     } finally {
       setUpgradingNodeNos((prev) => prev.filter((v) => v !== node.node_no));
@@ -474,25 +482,83 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     }
 
     setIsUpgradingAll(true);
+    appendUpgradeMessage(`开始一键下发探针升级：共 ${nodes.length} 个节点`);
     try {
       setSubTab("logs");
       const result = await upgradeAllProbeNodes(base, token);
+      appendUpgradeMessage(result.message || `一键升级下发完成：成功 ${result.success}/${result.total}，失败 ${result.failures.length}`);
+      for (const item of result.items) {
+        appendProbeUpgradeDispatchResultMessage(item, null);
+      }
+      for (const failure of result.failures) {
+        appendUpgradeMessage(`一键升级下发失败：${failure}`);
+      }
       upgradeLogPollingDeadlineRef.current = Date.now() + (2 * 60 * 1000);
       if (logNodeIDInput.trim()) {
         setUpgradeLogPollingNodeID(logNodeIDInput.trim());
         void loadSelectedNodeLogs({ nodeID: logNodeIDInput.trim(), silent: true });
+      } else if (result.items.length > 0 && result.items[0].node_no > 0) {
+        setLogNodeIDInput(String(result.items[0].node_no));
+        setUpgradeLogPollingNodeID(String(result.items[0].node_no));
+        void loadSelectedNodeLogs({ nodeID: String(result.items[0].node_no), silent: true });
       }
       if (result.failures.length > 0) {
-        setStatus(`一键升级已下发：成功 ${result.success}/${result.total}，失败 ${result.failures.length}`);
+        setStatus(`一键升级已下发：成功 ${result.success}/${result.total}，失败 ${result.failures.length}（详见升级消息）`);
       } else {
         setStatus(`一键升级已下发：成功 ${result.success}/${result.total}`);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
+      appendUpgradeMessage(`一键升级下发失败：${msg}`);
       setStatus(`一键升级下发失败：${msg}`);
     } finally {
       setIsUpgradingAll(false);
     }
+  }
+
+  function appendUpgradeMessage(text: string, timeInput?: string) {
+    const content = text.trim();
+    if (!content) {
+      return;
+    }
+    const line = `[${formatUpgradeMessageTime(timeInput)}] ${content}`;
+    setUpgradeMessages((prev) => {
+      const next = [...prev, line];
+      if (next.length <= 300) {
+        return next;
+      }
+      return next.slice(next.length - 300);
+    });
+    setUpgradeMessageCopyStatus("");
+  }
+
+  function appendProbeUpgradeDispatchResultMessage(result: ProbeUpgradeDispatchResult, fallbackNode: ProbeNodeItem | null) {
+    const nodeNo = result.node_no > 0 ? result.node_no : (fallbackNode?.node_no || 0);
+    const nodeName = (result.node_name || fallbackNode?.node_name || "").trim();
+    const nodeLabel = nodeName ? `${nodeName}${nodeNo > 0 ? ` (#${nodeNo})` : ""}` : (nodeNo > 0 ? `节点 #${nodeNo}` : "未知节点");
+    const modeLabel = result.mode === "direct" ? "直连" : "主控代理";
+    const detail = (result.message || "").trim();
+    appendUpgradeMessage(`升级命令回执：${nodeLabel}，模式=${modeLabel}${detail ? `，${detail}` : ""}`, result.timestamp || "");
+  }
+
+  async function copyUpgradeMessages() {
+    const content = upgradeMessages.join("\n").trim();
+    if (!content) {
+      setUpgradeMessageCopyStatus("暂无升级消息可复制");
+      return;
+    }
+    try {
+      await copyText(content);
+      setUpgradeMessageCopyStatus("已复制升级消息");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setUpgradeMessageCopyStatus(`复制升级消息失败：${msg}`);
+    }
+  }
+
+  function clearUpgradeMessagesView() {
+    setUpgradeMessages([]);
+    setUpgradeMessageCopyStatus("");
   }
 
   async function loadSelectedNodeLogs(options?: { nodeID?: string; silent?: boolean }) {
@@ -1222,8 +1288,28 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       ) : null}
 
       <div className="status">{status}</div>
+
+      <div className="identity-card" style={{ marginTop: 12 }}>
+        <div><strong>升级消息</strong>（探针升级下发回执与失败明细）</div>
+        <div className="content-actions inline">
+          <button className="btn" onClick={() => void copyUpgradeMessages()} disabled={!upgradeMessages.length}>复制升级消息</button>
+          <button className="btn" onClick={clearUpgradeMessagesView} disabled={!upgradeMessages.length}>清空升级消息</button>
+        </div>
+        <pre className="log-viewer-output" style={{ minHeight: 140, maxHeight: 260 }}>
+          {upgradeMessages.length ? upgradeMessages.join("\n") : "暂无升级消息"}
+        </pre>
+        <div className="status">{upgradeMessageCopyStatus || "复制状态：未执行"}</div>
+      </div>
     </div>
   );
+}
+
+function formatUpgradeMessageTime(raw: string | undefined): string {
+  const parsed = formatTime(raw || "");
+  if (parsed !== "-") {
+    return parsed;
+  }
+  return new Date().toLocaleString();
 }
 
 function sortNodes(nodes: ProbeNodeItem[]): ProbeNodeItem[] {

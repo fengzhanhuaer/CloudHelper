@@ -871,24 +871,29 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		if !ok {
 			return nil, fmt.Errorf("probe node not found")
 		}
-		if err := dispatchUpgradeToProbe(node, controllerBaseURL); err != nil {
+		result, err := dispatchUpgradeToProbe(node, controllerBaseURL)
+		if err != nil {
 			return nil, err
 		}
-		return map[string]interface{}{"ok": true, "node_id": nodeID}, nil
+		return result, nil
 	case "admin.probe.upgrade.all":
 		ProbeStore.mu.RLock()
 		nodes := loadProbeNodesLocked()
 		ProbeStore.mu.RUnlock()
 		success := 0
+		items := make([]probeUpgradeDispatchResult, 0, len(nodes))
 		failures := make([]string, 0)
 		for _, node := range nodes {
-			if err := dispatchUpgradeToProbe(node, controllerBaseURL); err != nil {
+			result, err := dispatchUpgradeToProbe(node, controllerBaseURL)
+			if err != nil {
 				failures = append(failures, fmt.Sprintf("%d:%v", node.NodeNo, err))
 				continue
 			}
+			items = append(items, result)
 			success++
 		}
-		return map[string]interface{}{"success": success, "total": len(nodes), "failures": failures}, nil
+		message := fmt.Sprintf("upgrade dispatch completed: success=%d total=%d failures=%d", success, len(nodes), len(failures))
+		return map[string]interface{}{"success": success, "total": len(nodes), "failures": failures, "items": items, "message": message}, nil
 	case "admin.backup.settings.get":
 		settings := getBackupSettings()
 		return map[string]interface{}{

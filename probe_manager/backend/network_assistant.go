@@ -2398,11 +2398,20 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string) (map[string]probeCh
 
 	targets := make(map[string]probeChainEndpoint)
 	ids := make([]string, 0, len(chainsPayload.Items))
+	seenIDs := make(map[string]struct{}, len(chainsPayload.Items))
 	for _, chain := range chainsPayload.Items {
 		chainID := strings.TrimSpace(chain.ChainID)
 		if chainID == "" {
 			continue
 		}
+		targetID := buildChainTargetNodeID(chainID)
+		if targetID != "" {
+			if _, exists := seenIDs[targetID]; !exists {
+				seenIDs[targetID] = struct{}{}
+				ids = append(ids, targetID)
+			}
+		}
+
 		route := buildProbeChainRouteNodesForManager(chain)
 		if len(route) == 0 {
 			continue
@@ -2417,7 +2426,6 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string) (map[string]probeCh
 		if host == "" || port <= 0 {
 			continue
 		}
-		targetID := buildChainTargetNodeID(chainID)
 		if targetID == "" {
 			continue
 		}
@@ -2429,7 +2437,6 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string) (map[string]probeCh
 			RelayPort: port,
 			LinkLayer: resolveProbeChainEntryLinkLayer(chain, entryNodeID),
 		}
-		ids = append(ids, targetID)
 	}
 	sort.Strings(ids)
 	return targets, ids, nil

@@ -8,6 +8,7 @@ type SystemSettingsTabProps = {
   versionStatus: string;
   upgradeStatus: string;
   controllerUpgradeProgress: UpgradeProgress;
+  controllerUpgradeMessages: string[];
   isUpgradingController: boolean;
   isUpgradingManager: boolean;
   onRefreshSystemVersions: () => void;
@@ -25,6 +26,7 @@ type SystemSettingsTabProps = {
   proxyRelease: ReleaseInfo | null;
   managerUpgradeStatus: string;
   managerUpgradeProgress: UpgradeProgress;
+  managerUpgradeMessages: string[];
   backupEnabled: boolean;
   backupRcloneRemote: string;
   backupSettingsStatus: string;
@@ -53,6 +55,17 @@ function ReleaseInfoStatus(props: { title: string; release: ReleaseInfo | null }
     <div className="status">
       <strong>{props.title}</strong>
       {!props.release ? "：未查询" : `：${props.release.repo} @ ${props.release.tag_name}，assets=${props.release.assets.length}`}
+    </div>
+  );
+}
+
+function UpgradeTimeline(props: { title: string; lines: string[] }) {
+  return (
+    <div className="status">
+      <strong>{props.title}</strong>
+      <pre className="log-viewer-output" style={{ minHeight: 120, maxHeight: 240, marginTop: 8 }}>
+        {props.lines.length > 0 ? props.lines.join("\n") : "暂无升级消息"}
+      </pre>
     </div>
   );
 }
@@ -99,6 +112,7 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
           {(props.isUpgradingController || props.controllerUpgradeProgress.percent > 0) && (
             <ProgressLine title="主控升级进度" progress={props.controllerUpgradeProgress} />
           )}
+          <UpgradeTimeline title="主控升级消息" lines={props.controllerUpgradeMessages} />
 
           <div className="content-actions">
             <button className="btn" onClick={props.onCheckManagerReleaseDirect} disabled={props.isCheckingDirect || props.isUpgradingManager || props.isUpgradingController}>
@@ -121,6 +135,7 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
           {(props.isUpgradingManager || props.managerUpgradeProgress.percent > 0) && (
             <ProgressLine title="管理端升级进度" progress={props.managerUpgradeProgress} />
           )}
+          <UpgradeTimeline title="管理端升级消息" lines={props.managerUpgradeMessages} />
         </>
       )}
 

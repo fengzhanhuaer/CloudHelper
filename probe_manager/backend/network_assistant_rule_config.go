@@ -75,6 +75,8 @@ func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) 
 }
 
 func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, error) {
+	s.refreshAvailableNodesForRuleConfig()
+
 	routing, err := loadOrCreateTunnelRuleRouting()
 	if err != nil {
 		return NetworkAssistantRuleConfig{}, err
@@ -94,6 +96,8 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 }
 
 func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {
+	s.refreshAvailableNodesForRuleConfig()
+
 	routing, err := loadOrCreateTunnelRuleRouting()
 	if err != nil {
 		return NetworkAssistantRuleConfig{}, err
@@ -494,4 +498,21 @@ func resolveRulePolicyPaths(dataDir string) (string, string) {
 	policyPath := filepath.Join(dataDir, rulePolicyFile)
 	legacyPath := filepath.Join(dataDir, legacyRuleGroupFile)
 	return policyPath, legacyPath
+}
+
+func (s *networkAssistantService) refreshAvailableNodesForRuleConfig() {
+	if s == nil {
+		return
+	}
+
+	s.mu.RLock()
+	baseURL := strings.TrimSpace(s.controllerBaseURL)
+	token := strings.TrimSpace(s.sessionToken)
+	s.mu.RUnlock()
+	if baseURL == "" || token == "" {
+		return
+	}
+	if err := s.refreshAvailableNodes(); err != nil {
+		s.logf("refresh available nodes for rule config failed: %v", err)
+	}
 }

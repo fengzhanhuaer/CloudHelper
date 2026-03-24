@@ -36,6 +36,7 @@ type TabContentProps = {
   versionStatus: string;
   upgradeStatus: string;
   controllerUpgradeProgress: UpgradeProgress;
+  controllerUpgradeMessages: string[];
   isUpgradingController: boolean;
   isUpgradingManager: boolean;
   onRefreshSystemVersions: () => void;
@@ -53,6 +54,7 @@ type TabContentProps = {
   proxyRelease: ReleaseInfo | null;
   managerUpgradeStatus: string;
   managerUpgradeProgress: UpgradeProgress;
+  managerUpgradeMessages: string[];
   backupEnabled: boolean;
   backupRcloneRemote: string;
   backupSettingsStatus: string;
@@ -203,6 +205,7 @@ export function TabContent(props: TabContentProps) {
           versionStatus={props.versionStatus}
           upgradeStatus={props.upgradeStatus}
           controllerUpgradeProgress={props.controllerUpgradeProgress}
+          controllerUpgradeMessages={props.controllerUpgradeMessages}
           isUpgradingController={props.isUpgradingController}
           isUpgradingManager={props.isUpgradingManager}
           onRefreshSystemVersions={props.onRefreshSystemVersions}
@@ -220,6 +223,7 @@ export function TabContent(props: TabContentProps) {
           proxyRelease={props.proxyRelease}
           managerUpgradeStatus={props.managerUpgradeStatus}
           managerUpgradeProgress={props.managerUpgradeProgress}
+          managerUpgradeMessages={props.managerUpgradeMessages}
           backupEnabled={props.backupEnabled}
           backupRcloneRemote={props.backupRcloneRemote}
           backupSettingsStatus={props.backupSettingsStatus}

@@ -26,6 +26,60 @@ function isUnauthorizedError(error: unknown): boolean {
   return message.includes("401") || message.includes("invalid or expired session token");
 }
 
+function isControllerUpgradeTransientError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  if (!message.includes("admin.upgrade")) {
+    return false;
+  }
+  return (
+    message.includes("timeout")
+    || message.includes("failed")
+    || message.includes("close")
+    || message.includes("disconnect")
+    || message.includes("network")
+  );
+}
+
+function formatUpgradeLogLine(text: string, timeInput?: string): string {
+  const content = text.trim();
+  if (!content) {
+    return "";
+  }
+  const raw = (timeInput || "").trim();
+  const dt = raw ? new Date(raw) : new Date();
+  const label = Number.isNaN(dt.getTime()) ? new Date().toLocaleString() : dt.toLocaleString();
+  return `[${label}] ${content}`;
+}
+
+function appendUpgradeLog(setter: (fn: (prev: string[]) => string[]) => void, text: string, timeInput?: string) {
+  const line = formatUpgradeLogLine(text, timeInput);
+  if (!line) {
+    return;
+  }
+  setter((prev) => {
+    const next = [...prev, line];
+    if (next.length <= 300) {
+      return next;
+    }
+    return next.slice(next.length - 300);
+  });
+}
+
+function formatProgressLog(prefix: string, progress: UpgradeProgress): string {
+  const phase = (progress.phase || "running").trim();
+  const msg = (progress.message || "").trim();
+  return `${prefix} ${phase} ${progress.percent}%${msg ? ` - ${msg}` : ""}`;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 export function useUpgradeFlow() {
   const [managerVersion, setManagerVersion] = useState("unknown");
   const [controllerVersion, setControllerVersion] = useState("unknown");
@@ -40,6 +94,7 @@ export function useUpgradeFlow() {
     percent: 0,
     message: "",
   });
+  const [controllerUpgradeMessages, setControllerUpgradeMessages] = useState<string[]>([]);
 
   const [directRelease, setDirectRelease] = useState<ReleaseInfo | null>(null);
   const [proxyRelease, setProxyRelease] = useState<ReleaseInfo | null>(null);
@@ -53,6 +108,7 @@ export function useUpgradeFlow() {
     percent: 0,
     message: "",
   });
+  const [managerUpgradeMessages, setManagerUpgradeMessages] = useState<string[]>([]);
   const [backupRcloneRemote, setBackupRcloneRemote] = useState("");
   const [backupEnabled, setBackupEnabled] = useState(false);
   const [backupSettingsStatus, setBackupSettingsStatus] = useState("");
@@ -78,16 +134,23 @@ export function useUpgradeFlow() {
     };
   }
 
-  function startPolling(task: () => Promise<UpgradeProgress>, setter: (value: UpgradeProgress) => void): () => void {
+  function startPolling(
+    task: () => Promise<UpgradeProgress>,
+    setter: (value: UpgradeProgress) => void,
+    onProgress?: (progress: UpgradeProgress) => void,
+  ): () => void {
     let active = true;
     const tick = async () => {
       if (!active) {
         return;
       }
       try {
-        const progress = await task();
+        const progress = normalizeProgress(await task());
         if (active) {
-          setter(normalizeProgress(progress));
+          setter(progress);
+          if (onProgress) {
+            onProgress(progress);
+          }
         }
       } catch {
         // keep previous state
@@ -103,6 +166,64 @@ export function useUpgradeFlow() {
       active = false;
       window.clearInterval(timer);
     };
+  }
+
+  async function confirmControllerUpgradeAfterTransientError(
+    base: string,
+    token: string,
+    oldVersion: string,
+    oldLatestVersion: string,
+    reauthenticate?: () => Promise<string>,
+    onStep?: (text: string) => void,
+  ): Promise<{ confirmed: boolean; data?: ControllerVersionResponse }> {
+    let activeToken = token;
+    let lastVersion: ControllerVersionResponse | undefined;
+    const prevVersion = oldVersion.trim();
+    const prevLatest = oldLatestVersion.trim();
+
+    for (let attempt = 1; attempt <= 20; attempt++) {
+      try {
+        const data = await fetchControllerVersion(base, activeToken);
+        lastVersion = data;
+
+        const current = (data.current_version || "").trim();
+        const latest = (data.latest_version || "").trim();
+        if (onStep) {
+          onStep(`确认升级状态：第 ${attempt}/20 次，current=${current || "-"} latest=${latest || "-"}`);
+        }
+
+        if (current && prevVersion && current !== prevVersion) {
+          return { confirmed: true, data };
+        }
+        if (current && prevLatest && current === prevLatest) {
+          return { confirmed: true, data };
+        }
+        if (current && latest && current === latest) {
+          return { confirmed: true, data };
+        }
+      } catch (error) {
+        if (onStep) {
+          const msg = error instanceof Error ? error.message : "unknown error";
+          onStep(`确认升级状态：第 ${attempt}/20 次失败，${msg}`);
+        }
+        if (reauthenticate && isUnauthorizedError(error)) {
+          try {
+            activeToken = await reauthenticate();
+            if (onStep) {
+              onStep("确认升级状态：会话过期，自动重新登录后继续确认");
+            }
+          } catch {
+            // keep retrying with old token
+          }
+        }
+      }
+
+      if (attempt < 20) {
+        await sleepMs(3000);
+      }
+    }
+
+    return { confirmed: false, data: lastVersion };
   }
 
   async function refreshSystemVersions(baseUrlInput: string, token: string, reauthenticate?: () => Promise<string>) {
@@ -165,15 +286,29 @@ export function useUpgradeFlow() {
     setIsUpgradingController(true);
     setUpgradeStatus("已发送升级命令，正在检查 GitHub Release...");
     beginProgress(setControllerUpgradeProgress, "准备升级主控");
+    appendUpgradeLog(setControllerUpgradeMessages, `开始主控升级：current=${controllerVersion || "-"} latest=${controllerLatestVersion || "-"}`);
+    const versionBeforeUpgrade = (controllerVersion || "").trim();
+    const latestBeforeUpgrade = (controllerLatestVersion || "").trim();
+    let lastControllerProgressLogKey = "";
 
     const stopPolling = startPolling(
       () => fetchControllerUpgradeProgress(base, token),
       setControllerUpgradeProgress,
+      (progress) => {
+        const bucket = progress.phase === "download" ? Math.floor(progress.percent / 5) * 5 : progress.percent;
+        const key = `${progress.phase}|${bucket}|${progress.message || ""}`;
+        if (key === lastControllerProgressLogKey) {
+          return;
+        }
+        lastControllerProgressLogKey = key;
+        appendUpgradeLog(setControllerUpgradeMessages, formatProgressLog("主控升级进度", progress));
+      },
     );
     try {
       let activeToken = token;
       let data: ControllerUpgradeResponse;
       try {
+        appendUpgradeLog(setControllerUpgradeMessages, "主控升级：发送 admin.upgrade 命令");
         data = (await triggerControllerUpgrade(base, activeToken)) as ControllerUpgradeResponse;
       } catch (error) {
         if (!reauthenticate || !isUnauthorizedError(error)) {
@@ -181,6 +316,7 @@ export function useUpgradeFlow() {
         }
 
         setUpgradeStatus("会话已过期，正在自动重新登录并重试升级...");
+        appendUpgradeLog(setControllerUpgradeMessages, "主控升级：会话已过期，自动重新登录并重试");
         activeToken = await reauthenticate();
         data = (await triggerControllerUpgrade(base, activeToken)) as ControllerUpgradeResponse;
       }
@@ -188,12 +324,54 @@ export function useUpgradeFlow() {
       setControllerVersion(data.current_version || controllerVersion);
       setControllerLatestVersion(data.latest_version || "");
       setUpgradeStatus(data.message || "升级命令执行完成");
+      appendUpgradeLog(
+        setControllerUpgradeMessages,
+        `主控升级命令返回：updated=${data.updated ? "true" : "false"} current=${data.current_version || "-"} latest=${data.latest_version || "-"}`,
+      );
       if (data.updated) {
         setVersionStatus("主控二进制已替换，服务正在重启，请稍后刷新版本");
+        appendUpgradeLog(setControllerUpgradeMessages, "主控升级成功：二进制已替换，等待服务重启");
       }
     } catch (error) {
+      if (isControllerUpgradeTransientError(error)) {
+        setUpgradeStatus("升级命令返回超时/断开，正在确认主控是否已完成升级...");
+        appendUpgradeLog(setControllerUpgradeMessages, "主控升级命令超时/断开，开始自动确认升级结果");
+        const confirmed = await confirmControllerUpgradeAfterTransientError(
+          base,
+          token,
+          versionBeforeUpgrade,
+          latestBeforeUpgrade,
+          reauthenticate,
+          (text) => appendUpgradeLog(setControllerUpgradeMessages, text),
+        );
+
+        if (confirmed.data) {
+          setControllerVersion(confirmed.data.current_version || controllerVersion);
+          setControllerLatestVersion(confirmed.data.latest_version || "");
+        }
+
+        if (confirmed.confirmed) {
+          const current = (confirmed.data?.current_version || "").trim();
+          if (current && versionBeforeUpgrade && current !== versionBeforeUpgrade) {
+            setUpgradeStatus(`主控升级成功：${versionBeforeUpgrade} -> ${current}（RPC 超时已自动纠正）`);
+            appendUpgradeLog(setControllerUpgradeMessages, `主控升级确认成功：${versionBeforeUpgrade} -> ${current}（RPC 超时自动纠正）`);
+          } else {
+            setUpgradeStatus("主控升级成功（RPC 超时已自动纠正）");
+            appendUpgradeLog(setControllerUpgradeMessages, "主控升级确认成功（RPC 超时自动纠正）");
+          }
+          setVersionStatus("主控升级已完成，如需确认可点击刷新版本");
+          return;
+        }
+
+        const msg = error instanceof Error ? error.message : "unknown error";
+        setUpgradeStatus(`主控升级状态待确认：${msg}（版本未在预期时间内变化）`);
+        appendUpgradeLog(setControllerUpgradeMessages, `主控升级状态待确认：${msg}`);
+        return;
+      }
+
       const msg = error instanceof Error ? error.message : "unknown error";
       setUpgradeStatus(`主控升级失败：${msg}`);
+      appendUpgradeLog(setControllerUpgradeMessages, `主控升级失败：${msg}`);
     } finally {
       stopPolling();
       resetProgress(setControllerUpgradeProgress);
@@ -346,13 +524,16 @@ export function useUpgradeFlow() {
 
     setIsCheckingDirect(true);
     setManagerUpgradeStatus("直连检查中：正在请求 GitHub 最新 Release...");
+    appendUpgradeLog(setManagerUpgradeMessages, `管理端直连检查开始：project=${project}`);
     try {
       const release = (await GetLatestGitHubRelease(project)) as ReleaseInfo;
       setDirectRelease(release);
       setManagerUpgradeStatus(`直连检查完成：latest=${release.tag_name}, assets=${release.assets.length}`);
+      appendUpgradeLog(setManagerUpgradeMessages, `管理端直连检查完成：latest=${release.tag_name} assets=${release.assets.length}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setManagerUpgradeStatus(`直连检查失败：${msg}`);
+      appendUpgradeLog(setManagerUpgradeMessages, `管理端直连检查失败：${msg}`);
     } finally {
       setIsCheckingDirect(false);
     }
@@ -370,6 +551,7 @@ export function useUpgradeFlow() {
 
     setIsCheckingProxy(true);
     setManagerUpgradeStatus("代理检查中：正在通过主控请求 GitHub 最新 Release...");
+    appendUpgradeLog(setManagerUpgradeMessages, `管理端代理检查开始：project=${project}`);
     try {
       let activeToken = token;
       let reloginUsed = false;
@@ -382,6 +564,7 @@ export function useUpgradeFlow() {
         }
 
         setManagerUpgradeStatus("会话已过期，正在自动重新登录并重试代理检查...");
+        appendUpgradeLog(setManagerUpgradeMessages, "管理端代理检查：会话过期，自动重新登录并重试");
         activeToken = await reauthenticate();
         reloginUsed = true;
         release = (await GetLatestGitHubReleaseViaProxy(baseUrlInput, activeToken, project)) as ReleaseInfo;
@@ -389,9 +572,11 @@ export function useUpgradeFlow() {
 
       setProxyRelease(release);
       setManagerUpgradeStatus(`${reloginUsed ? "已自动重新登录，" : ""}代理检查完成：latest=${release.tag_name}, assets=${release.assets.length}`);
+      appendUpgradeLog(setManagerUpgradeMessages, `管理端代理检查完成：latest=${release.tag_name} assets=${release.assets.length}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setManagerUpgradeStatus(`代理检查失败：${msg}`);
+      appendUpgradeLog(setManagerUpgradeMessages, `管理端代理检查失败：${msg}`);
     } finally {
       setIsCheckingProxy(false);
     }
@@ -406,9 +591,20 @@ export function useUpgradeFlow() {
     setIsUpgradingManager(true);
     setManagerUpgradeStatus("直连升级中：下载并应用管理端更新...");
     beginProgress(setManagerUpgradeProgress, "准备升级管理端");
+    appendUpgradeLog(setManagerUpgradeMessages, `管理端直连升级开始：project=${project}`);
+    let lastManagerProgressLogKey = "";
     const stopPolling = startPolling(
       async () => (await GetManagerUpgradeProgress()) as UpgradeProgress,
       setManagerUpgradeProgress,
+      (progress) => {
+        const bucket = progress.phase === "download" ? Math.floor(progress.percent / 5) * 5 : progress.percent;
+        const key = `${progress.phase}|${bucket}|${progress.message || ""}`;
+        if (key === lastManagerProgressLogKey) {
+          return;
+        }
+        lastManagerProgressLogKey = key;
+        appendUpgradeLog(setManagerUpgradeMessages, formatProgressLog("管理端升级进度", progress));
+      },
     );
     try {
       const result = (await UpgradeManagerDirect(project)) as ManagerUpgradeResult;
@@ -416,9 +612,14 @@ export function useUpgradeFlow() {
         setManagerVersion(result.latest_version);
       }
       setManagerUpgradeStatus(`直连升级结果：${result.message}`);
+      appendUpgradeLog(
+        setManagerUpgradeMessages,
+        `管理端直连升级结果：updated=${result.updated ? "true" : "false"} current=${result.current_version || "-"} latest=${result.latest_version || "-"} msg=${result.message || "-"}`,
+      );
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setManagerUpgradeStatus(`直连升级失败：${msg}`);
+      appendUpgradeLog(setManagerUpgradeMessages, `管理端直连升级失败：${msg}`);
     } finally {
       stopPolling();
       resetProgress(setManagerUpgradeProgress);
@@ -439,9 +640,20 @@ export function useUpgradeFlow() {
     setIsUpgradingManager(true);
     setManagerUpgradeStatus("代理升级中：通过主控下载并转发升级包...");
     beginProgress(setManagerUpgradeProgress, "准备升级管理端");
+    appendUpgradeLog(setManagerUpgradeMessages, `管理端代理升级开始：project=${project}`);
+    let lastManagerProgressLogKey = "";
     const stopPolling = startPolling(
       async () => (await GetManagerUpgradeProgress()) as UpgradeProgress,
       setManagerUpgradeProgress,
+      (progress) => {
+        const bucket = progress.phase === "download" ? Math.floor(progress.percent / 5) * 5 : progress.percent;
+        const key = `${progress.phase}|${bucket}|${progress.message || ""}`;
+        if (key === lastManagerProgressLogKey) {
+          return;
+        }
+        lastManagerProgressLogKey = key;
+        appendUpgradeLog(setManagerUpgradeMessages, formatProgressLog("管理端升级进度", progress));
+      },
     );
     try {
       let activeToken = token;
@@ -455,6 +667,7 @@ export function useUpgradeFlow() {
         }
 
         setManagerUpgradeStatus("会话已过期，正在自动重新登录并重试代理升级...");
+        appendUpgradeLog(setManagerUpgradeMessages, "管理端代理升级：会话过期，自动重新登录并重试");
         activeToken = await reauthenticate();
         reloginUsed = true;
         result = (await UpgradeManagerViaProxy(baseUrlInput, activeToken, project)) as ManagerUpgradeResult;
@@ -464,9 +677,14 @@ export function useUpgradeFlow() {
         setManagerVersion(result.latest_version);
       }
       setManagerUpgradeStatus(`${reloginUsed ? "已自动重新登录，" : ""}代理升级结果：${result.message}`);
+      appendUpgradeLog(
+        setManagerUpgradeMessages,
+        `管理端代理升级结果：updated=${result.updated ? "true" : "false"} current=${result.current_version || "-"} latest=${result.latest_version || "-"} msg=${result.message || "-"}`,
+      );
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setManagerUpgradeStatus(`代理升级失败：${msg}`);
+      appendUpgradeLog(setManagerUpgradeMessages, `管理端代理升级失败：${msg}`);
     } finally {
       stopPolling();
       resetProgress(setManagerUpgradeProgress);
@@ -479,6 +697,8 @@ export function useUpgradeFlow() {
     setUpgradeStatus("");
     setManagerUpgradeStatus("");
     setBackupSettingsStatus("");
+    setControllerUpgradeMessages([]);
+    setManagerUpgradeMessages([]);
     resetProgress(setControllerUpgradeProgress);
     resetProgress(setManagerUpgradeProgress);
   }
@@ -490,11 +710,13 @@ export function useUpgradeFlow() {
     versionStatus,
     upgradeStatus,
     controllerUpgradeProgress,
+    controllerUpgradeMessages,
     isUpgradingController,
     directRelease,
     proxyRelease,
     managerUpgradeStatus,
     managerUpgradeProgress,
+    managerUpgradeMessages,
     backupEnabled,
     backupRcloneRemote,
     backupSettingsStatus,

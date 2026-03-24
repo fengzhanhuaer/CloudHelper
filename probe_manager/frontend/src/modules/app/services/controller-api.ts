@@ -60,7 +60,13 @@ export async function fetchControllerVersion(baseURL: string, token: string): Pr
 }
 
 export async function triggerControllerUpgrade(baseURL: string, token: string): Promise<ControllerUpgradeResponse> {
-  return await callAdminWSRpc<ControllerUpgradeResponse>(baseURL, token, "admin.upgrade");
+  return await callAdminWSRpc<ControllerUpgradeResponse>(
+    baseURL,
+    token,
+    "admin.upgrade",
+    undefined,
+    { timeoutMs: 180000 },
+  );
 }
 
 export async function fetchControllerUpgradeProgress(baseURL: string, token: string): Promise<UpgradeProgress> {
@@ -228,6 +234,26 @@ export type ProbeNodeLogsResponse = {
   content?: string;
   fetched?: string;
   timestamp?: string;
+};
+
+export type ProbeUpgradeDispatchResult = {
+  ok: boolean;
+  node_id: string;
+  node_no: number;
+  node_name?: string;
+  direct_connect?: boolean;
+  mode?: "direct" | "proxy" | string;
+  repo?: string;
+  message?: string;
+  timestamp?: string;
+};
+
+export type ProbeUpgradeAllResponse = {
+  success: number;
+  total: number;
+  failures: string[];
+  items: ProbeUpgradeDispatchResult[];
+  message: string;
 };
 
 export type ProbeLinkTestControlResponse = {
@@ -625,16 +651,45 @@ export async function syncProbeNodes(baseURL: string, token: string, nodes: Prob
   return Array.isArray(payload.nodes) ? payload.nodes : [];
 }
 
-export async function upgradeProbeNode(baseURL: string, token: string, nodeID: number): Promise<void> {
-  await callAdminWSRpc(baseURL, token, "admin.probe.upgrade", { node_id: String(nodeID) });
+export async function upgradeProbeNode(baseURL: string, token: string, nodeID: number): Promise<ProbeUpgradeDispatchResult> {
+  const payload = await callAdminWSRpc<ProbeUpgradeDispatchResult>(baseURL, token, "admin.probe.upgrade", { node_id: String(nodeID) });
+  return {
+    ok: payload.ok !== false,
+    node_id: String(payload.node_id || nodeID),
+    node_no: typeof payload.node_no === "number" ? payload.node_no : nodeID,
+    node_name: typeof payload.node_name === "string" ? payload.node_name : "",
+    direct_connect: payload.direct_connect === true,
+    mode: typeof payload.mode === "string" ? payload.mode : "",
+    repo: typeof payload.repo === "string" ? payload.repo : "",
+    message: typeof payload.message === "string" ? payload.message : "",
+    timestamp: typeof payload.timestamp === "string" ? payload.timestamp : "",
+  };
 }
 
-export async function upgradeAllProbeNodes(baseURL: string, token: string): Promise<{ success: number; total: number; failures: string[] }> {
-  const payload = await callAdminWSRpc<{ success?: number; total?: number; failures?: string[] }>(baseURL, token, "admin.probe.upgrade.all");
+export async function upgradeAllProbeNodes(baseURL: string, token: string): Promise<ProbeUpgradeAllResponse> {
+  const payload = await callAdminWSRpc<{
+    success?: number;
+    total?: number;
+    failures?: string[];
+    items?: ProbeUpgradeDispatchResult[];
+    message?: string;
+  }>(baseURL, token, "admin.probe.upgrade.all");
   return {
     success: typeof payload.success === "number" ? payload.success : 0,
     total: typeof payload.total === "number" ? payload.total : 0,
     failures: Array.isArray(payload.failures) ? payload.failures : [],
+    items: Array.isArray(payload.items) ? payload.items.map((item) => ({
+      ok: item.ok !== false,
+      node_id: String(item.node_id || ""),
+      node_no: typeof item.node_no === "number" ? item.node_no : 0,
+      node_name: typeof item.node_name === "string" ? item.node_name : "",
+      direct_connect: item.direct_connect === true,
+      mode: typeof item.mode === "string" ? item.mode : "",
+      repo: typeof item.repo === "string" ? item.repo : "",
+      message: typeof item.message === "string" ? item.message : "",
+      timestamp: typeof item.timestamp === "string" ? item.timestamp : "",
+    })) : [],
+    message: typeof payload.message === "string" ? payload.message : "",
   };
 }
 
