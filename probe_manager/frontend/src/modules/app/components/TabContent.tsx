@@ -5,7 +5,16 @@ import { OverviewTab } from "./OverviewTab";
 import { ProbeManageTab } from "./ProbeManageTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
 import { TGAssistantTab } from "./TGAssistantTab";
-import type { LogSource, NetworkAssistantLogFilterSource, NetworkAssistantStatus, ReleaseInfo, TabKey, UpgradeProgress } from "../types";
+import type {
+  LogSource,
+  NetworkAssistantLogFilterSource,
+  NetworkAssistantRuleAction,
+  NetworkAssistantRuleConfig,
+  NetworkAssistantStatus,
+  ReleaseInfo,
+  TabKey,
+  UpgradeProgress,
+} from "../types";
 
 type TabContentProps = {
   activeTab: TabKey;
@@ -61,6 +70,11 @@ type TabContentProps = {
   onRefreshNetworkAssistantStatus: () => void;
   onSwitchNetworkDirect: () => void;
   onSwitchNetworkRule: () => void;
+  networkRuleConfig: NetworkAssistantRuleConfig | null;
+  isLoadingNetworkRuleConfig: boolean;
+  networkRuleConfigStatus: string;
+  onRefreshNetworkRuleConfig: () => void;
+  onSetNetworkRulePolicy: (group: string, action: NetworkAssistantRuleAction, tunnelNodeID?: string) => void;
   onInstallNetworkTUN: () => void;
   onEnableNetworkTUN: () => void;
   networkLogLines: number;
@@ -130,6 +144,11 @@ export function TabContent(props: TabContentProps) {
           onRefreshStatus={props.onRefreshNetworkAssistantStatus}
           onSwitchDirect={props.onSwitchNetworkDirect}
           onSwitchRule={props.onSwitchNetworkRule}
+          ruleConfig={props.networkRuleConfig}
+          isLoadingRuleConfig={props.isLoadingNetworkRuleConfig}
+          ruleConfigStatus={props.networkRuleConfigStatus}
+          onRefreshRuleConfig={props.onRefreshNetworkRuleConfig}
+          onSetRulePolicy={props.onSetNetworkRulePolicy}
           onInstallTUN={props.onInstallNetworkTUN}
           onEnableTUN={props.onEnableNetworkTUN}
           logLines={props.networkLogLines}

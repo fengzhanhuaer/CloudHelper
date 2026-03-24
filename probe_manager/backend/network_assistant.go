@@ -239,6 +239,10 @@ type networkAssistantService struct {
 	tunLibraryPath   string
 	tunStatus        string
 	tunAdapterHandle uintptr
+	tunDataPlane     localTUNDataPlane
+	tunPacketStack   localTUNPacketStack
+	tunUDPHandler    localTUNUDPHandlerCloser
+	tunIPIDSeq       uint32
 
 	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
@@ -246,6 +250,7 @@ type networkAssistantService struct {
 	ruleDNSCache    map[string]dnsCacheEntry
 	ruleDNSQuerySeq uint32
 	ruleMuxClients  map[string]*tunnelMuxClient
+	tunUDPRelays    map[string]*localTUNUDPRelay
 }
 
 func newNetworkAssistantService() *networkAssistantService {
@@ -285,6 +290,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		ruleRouting:         ruleRouting,
 		ruleDNSCache:        make(map[string]dnsCacheEntry),
 		ruleMuxClients:      make(map[string]*tunnelMuxClient),
+		tunUDPRelays:        make(map[string]*localTUNUDPRelay),
 	}
 	service.syncTUNInstallState()
 	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
@@ -441,9 +447,10 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	s.mu.Unlock()
 
 	if normalizedMode == networkModeDirect {
+		errStopTUN := s.stopLocalTUNDataPlane()
 		errServer := s.stopSocksServerOnly()
 		errDirectProxy := applyDirectSystemProxy()
-		if err := errors.Join(errServer, errDirectProxy); err != nil {
+		if err := errors.Join(errStopTUN, errServer, errDirectProxy); err != nil {
 			s.logf("failed to switch to direct mode: %v", err)
 			s.setLastError(err)
 			return err
@@ -466,6 +473,11 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	routing, err := loadOrCreateTunnelRuleRouting()
 	if err != nil {
 		s.logf("failed to load rule routing config: %v", err)
+		s.setLastError(err)
+		return err
+	}
+	if err := s.stopLocalTUNDataPlane(); err != nil {
+		s.logf("failed to stop tun data plane before rule mode: %v", err)
 		s.setLastError(err)
 		return err
 	}
@@ -505,6 +517,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 }
 
 func (s *networkAssistantService) Shutdown() error {
+	errStopTUN := s.stopLocalTUNDataPlane()
 	errStop := s.stopProxyAndServer()
 	errDirect := applyDirectSystemProxy()
 
@@ -541,7 +554,10 @@ func (s *networkAssistantService) Shutdown() error {
 	if errStop != nil {
 		s.logf("shutdown cleanup returned error: %v", errStop)
 	}
-	return errors.Join(errStop, errDirect, errCloseAdapter)
+	if errStopTUN != nil {
+		s.logf("shutdown tun dataplane cleanup returned error: %v", errStopTUN)
+	}
+	return errors.Join(errStopTUN, errStop, errDirect, errCloseAdapter)
 }
 
 func (s *networkAssistantService) ensureSocksServer() error {
@@ -615,9 +631,14 @@ func (s *networkAssistantService) handleSocksConn(conn net.Conn, br *bufio.Reade
 
 	route, err := s.decideRouteForTarget(targetAddr)
 	if err != nil {
-		s.logf("proxy route decision failed target=%s err=%v", targetAddr, err)
+		if isRuleRouteRejectErr(err) {
+			s.logf("proxy target rejected by rule target=%s err=%v", targetAddr, err)
+			s.setTunnelStatus("规则拒绝")
+		} else {
+			s.logf("proxy route decision failed target=%s err=%v", targetAddr, err)
+			s.setTunnelStatus("规则解析失败")
+		}
 		replyProxyFailure(conn, version)
-		s.setTunnelStatus("规则解析失败")
 		return
 	}
 	if route.Direct {
@@ -735,9 +756,15 @@ func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.R
 
 		route, routeErr := s.decideRouteForTarget(targetAddr)
 		if routeErr != nil {
-			s.logf("http proxy route decision failed target=%s err=%v", targetAddr, routeErr)
-			s.setTunnelStatus("规则解析失败")
-			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to route target")
+			if isRuleRouteRejectErr(routeErr) {
+				s.logf("http proxy target rejected by rule target=%s err=%v", targetAddr, routeErr)
+				s.setTunnelStatus("规则拒绝")
+				_ = writeHTTPProxyStatus(conn, http.StatusForbidden, "blocked by rule policy")
+			} else {
+				s.logf("http proxy route decision failed target=%s err=%v", targetAddr, routeErr)
+				s.setTunnelStatus("规则解析失败")
+				_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to route target")
+			}
 			return
 		}
 
@@ -821,9 +848,15 @@ func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.R
 
 	route, routeErr := s.decideRouteForTarget(targetAddr)
 	if routeErr != nil {
-		s.logf("http connect route decision failed target=%s err=%v", targetAddr, routeErr)
-		s.setTunnelStatus("规则解析失败")
-		_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to route target")
+		if isRuleRouteRejectErr(routeErr) {
+			s.logf("http connect target rejected by rule target=%s err=%v", targetAddr, routeErr)
+			s.setTunnelStatus("规则拒绝")
+			_ = writeHTTPProxyStatus(conn, http.StatusForbidden, "blocked by rule policy")
+		} else {
+			s.logf("http connect route decision failed target=%s err=%v", targetAddr, routeErr)
+			s.setTunnelStatus("规则解析失败")
+			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to route target")
+		}
 		return
 	}
 
@@ -1125,11 +1158,13 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 	s.mu.RLock()
 	mode := strings.TrimSpace(s.mode)
 	nodeID := strings.TrimSpace(s.nodeID)
+	availableNodes := append([]string(nil), s.availableNodes...)
 	routing := s.ruleRouting
 	s.mu.RUnlock()
 	if nodeID == "" {
 		nodeID = defaultNodeID
 	}
+	tunnelOptions := buildRuleTunnelOptions(availableNodes, nodeID)
 
 	if mode == networkModeDirect {
 		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
@@ -1147,38 +1182,82 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 	}
 
 	rule, matched := routing.RuleSet.matchHost(host)
-	if !matched {
-		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+	if matched {
+		group := normalizeRuleGroupName(rule.Group)
+		policy, policyErr := readRulePolicyForGroup(routing, group, nodeID, tunnelOptions)
+		if policyErr != nil {
+			return tunnelRouteDecision{}, policyErr
+		}
+		switch policy.Action {
+		case rulePolicyActionDirect:
+			return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID, Group: group}, nil
+		case rulePolicyActionReject:
+			return tunnelRouteDecision{}, &ruleRouteRejectError{Group: group}
+		default:
+			targetNodeID := strings.TrimSpace(policy.TunnelNodeID)
+			if targetNodeID == "" {
+				targetNodeID = nodeID
+			}
+			if targetNodeID == "" {
+				targetNodeID = defaultNodeID
+			}
+
+			if ip := net.ParseIP(host); ip != nil {
+				return tunnelRouteDecision{
+					Direct:     false,
+					TargetAddr: net.JoinHostPort(canonicalIP(ip), port),
+					NodeID:     targetNodeID,
+					Group:      group,
+				}, nil
+			}
+
+			resolvedAddr, resolveErr := s.resolveRuleDomainViaTunnel(targetNodeID, host)
+			if resolveErr != nil {
+				return tunnelRouteDecision{}, resolveErr
+			}
+			return tunnelRouteDecision{
+				Direct:     false,
+				TargetAddr: net.JoinHostPort(resolvedAddr, port),
+				NodeID:     targetNodeID,
+				Group:      group,
+			}, nil
+		}
 	}
 
-	group := normalizeRuleGroupName(rule.Group)
-	targetNodeID := strings.TrimSpace(routing.GroupNodeMap[group])
-	if targetNodeID == "" {
-		targetNodeID = nodeID
+	fallbackPolicy, fallbackErr := readRulePolicyForGroup(routing, ruleFallbackGroupKey, nodeID, tunnelOptions)
+	if fallbackErr != nil {
+		return tunnelRouteDecision{}, fallbackErr
 	}
-	if targetNodeID == "" {
-		targetNodeID = defaultNodeID
-	}
-
-	if ip := net.ParseIP(host); ip != nil {
+	switch fallbackPolicy.Action {
+	case rulePolicyActionReject:
+		return tunnelRouteDecision{}, &ruleRouteRejectError{Group: ruleFallbackGroupKey}
+	case rulePolicyActionTunnel:
+		targetNodeID := strings.TrimSpace(fallbackPolicy.TunnelNodeID)
+		if targetNodeID == "" {
+			targetNodeID = nodeID
+		}
+		if targetNodeID == "" {
+			targetNodeID = defaultNodeID
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			return tunnelRouteDecision{
+				Direct:     false,
+				TargetAddr: net.JoinHostPort(canonicalIP(ip), port),
+				NodeID:     targetNodeID,
+			}, nil
+		}
+		resolvedAddr, resolveErr := s.resolveRuleDomainViaTunnel(targetNodeID, host)
+		if resolveErr != nil {
+			return tunnelRouteDecision{}, resolveErr
+		}
 		return tunnelRouteDecision{
 			Direct:     false,
-			TargetAddr: net.JoinHostPort(canonicalIP(ip), port),
+			TargetAddr: net.JoinHostPort(resolvedAddr, port),
 			NodeID:     targetNodeID,
-			Group:      group,
 		}, nil
+	default:
+		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 	}
-
-	resolvedAddr, resolveErr := s.resolveRuleDomainViaTunnel(targetNodeID, host)
-	if resolveErr != nil {
-		return tunnelRouteDecision{}, resolveErr
-	}
-	return tunnelRouteDecision{
-		Direct:     false,
-		TargetAddr: net.JoinHostPort(resolvedAddr, port),
-		NodeID:     targetNodeID,
-		Group:      group,
-	}, nil
 }
 
 func splitTargetHostPort(targetAddr string) (string, string, error) {
@@ -1619,7 +1698,12 @@ func (s *networkAssistantService) handleSocksUDPAssociate(tcpConn net.Conn) {
 		var respAddr string
 		route, routeErr := s.decideRouteForTarget(targetAddr)
 		if routeErr != nil {
-			s.logf("udp route decision failed target=%s err=%v", targetAddr, routeErr)
+			if isRuleRouteRejectErr(routeErr) {
+				s.logf("udp target rejected by rule target=%s err=%v", targetAddr, routeErr)
+				s.setTunnelStatus("规则拒绝")
+			} else {
+				s.logf("udp route decision failed target=%s err=%v", targetAddr, routeErr)
+			}
 			continue
 		}
 		if route.Direct {
@@ -2371,11 +2455,11 @@ func loadOrCreateTunnelRuleRouting() (tunnelRuleRouting, error) {
 	}
 
 	routePath := filepath.Join(dataDir, ruleRouteFile)
-	groupPath := filepath.Join(dataDir, ruleGroupFile)
+	policyPath, legacyGroupPath := resolveRulePolicyPaths(dataDir)
 	if err := ensureTunnelRuleRouteFile(routePath); err != nil {
 		return tunnelRuleRouting{}, err
 	}
-	if err := ensureTunnelRuleGroupFile(groupPath); err != nil {
+	if err := ensureTunnelRulePolicyFile(policyPath); err != nil {
 		return tunnelRuleRouting{}, err
 	}
 
@@ -2383,16 +2467,30 @@ func loadOrCreateTunnelRuleRouting() (tunnelRuleRouting, error) {
 	if err != nil {
 		return tunnelRuleRouting{}, err
 	}
-	groupMap, err := parseTunnelRuleGroupFile(groupPath)
+
+	policyMap, err := parseTunnelRulePolicyFile(policyPath)
 	if err != nil {
+		return tunnelRuleRouting{}, fmt.Errorf("parse rule policies failed: %w", err)
+	}
+
+	legacyMap, legacyErr := loadLegacyRuleGroupPolicyMap(legacyGroupPath)
+	if legacyErr == nil {
+		for group, value := range legacyMap {
+			if strings.TrimSpace(policyMap[group]) == "" {
+				policyMap[group] = value
+			}
+		}
+	}
+	policyMap = buildCanonicalRulePolicyMap(ruleSet, policyMap, defaultNodeID)
+	if err := saveTunnelRulePolicyFile(policyPath, ruleSet, policyMap); err != nil {
 		return tunnelRuleRouting{}, err
 	}
 
 	return tunnelRuleRouting{
 		RuleSet:       ruleSet,
-		GroupNodeMap:  groupMap,
+		GroupNodeMap:  policyMap,
 		RuleFilePath:  routePath,
-		GroupFilePath: groupPath,
+		GroupFilePath: policyPath,
 	}, nil
 }
 

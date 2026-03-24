@@ -22,6 +22,8 @@ export function EnableNetworkAssistantTUN():Promise<backend.NetworkAssistantStat
 
 export function GetNetworkAssistantLogs(arg1:number):Promise<backend.NetworkAssistantLogResponse>;
 
+export function GetNetworkAssistantRuleConfig():Promise<backend.NetworkAssistantRuleConfig>;
+
 export function GetNetworkAssistantStatus():Promise<backend.NetworkAssistantStatus>;
 
 export function GetProbeNodes():Promise<Array<backend.ProbeNode>>;
@@ -43,6 +45,8 @@ export function RestoreNetworkAssistantDirect():Promise<backend.NetworkAssistant
 export function SetGlobalControllerURL(arg1:string):Promise<string>;
 
 export function SetNetworkAssistantMode(arg1:string,arg2:string,arg3:string,arg4:string):Promise<backend.NetworkAssistantStatus>;
+
+export function SetNetworkAssistantRulePolicy(arg1:string,arg2:string,arg3:string):Promise<backend.NetworkAssistantRuleConfig>;
 
 export function SignNonceWithLocalKey(arg1:string):Promise<string>;
 

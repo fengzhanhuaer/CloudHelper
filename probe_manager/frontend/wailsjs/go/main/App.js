@@ -42,6 +42,10 @@ export function GetNetworkAssistantLogs(arg1) {
   return window['go']['main']['App']['GetNetworkAssistantLogs'](arg1);
 }
 
+export function GetNetworkAssistantRuleConfig() {
+  return window['go']['main']['App']['GetNetworkAssistantRuleConfig']();
+}
+
 export function GetNetworkAssistantStatus() {
   return window['go']['main']['App']['GetNetworkAssistantStatus']();
 }
@@ -88,6 +92,10 @@ export function SetGlobalControllerURL(arg1) {
 
 export function SetNetworkAssistantMode(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetNetworkAssistantMode'](arg1, arg2, arg3, arg4);
+}
+
+export function SetNetworkAssistantRulePolicy(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetNetworkAssistantRulePolicy'](arg1, arg2, arg3);
 }
 
 export function SignNonceWithLocalKey(arg1) {

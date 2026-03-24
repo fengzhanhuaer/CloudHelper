@@ -118,6 +118,58 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class NetworkAssistantRuleGroupConfig {
+	    group: string;
+	    action: string;
+	    tunnel_node_id?: string;
+	    tunnel_options: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new NetworkAssistantRuleGroupConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.group = source["group"];
+	        this.action = source["action"];
+	        this.tunnel_node_id = source["tunnel_node_id"];
+	        this.tunnel_options = source["tunnel_options"];
+	    }
+	}
+	export class NetworkAssistantRuleConfig {
+	    rule_file_path: string;
+	    groups: NetworkAssistantRuleGroupConfig[];
+	    fallback: NetworkAssistantRuleGroupConfig;
+	
+	    static createFrom(source: any = {}) {
+	        return new NetworkAssistantRuleConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.rule_file_path = source["rule_file_path"];
+	        this.groups = this.convertValues(source["groups"], NetworkAssistantRuleGroupConfig);
+	        this.fallback = this.convertValues(source["fallback"], NetworkAssistantRuleGroupConfig);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class NetworkAssistantStatus {
 	    enabled: boolean;
 	    mode: string;

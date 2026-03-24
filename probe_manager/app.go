@@ -16,6 +16,8 @@ type PrivateKeyStatus = backend.PrivateKeyStatus
 type LogViewResponse = backend.LogViewResponse
 type NetworkAssistantStatus = backend.NetworkAssistantStatus
 type NetworkAssistantLogResponse = backend.NetworkAssistantLogResponse
+type NetworkAssistantRuleGroupConfig = backend.NetworkAssistantRuleGroupConfig
+type NetworkAssistantRuleConfig = backend.NetworkAssistantRuleConfig
 type ReleaseAsset = backend.ReleaseAsset
 type ReleaseInfo = backend.ReleaseInfo
 type ManagerUpgradeResult = backend.ManagerUpgradeResult
@@ -90,6 +92,14 @@ func (a *App) InstallNetworkAssistantTUN() (NetworkAssistantStatus, error) {
 
 func (a *App) EnableNetworkAssistantTUN() (NetworkAssistantStatus, error) {
 	return a.inner.EnableNetworkAssistantTUN()
+}
+
+func (a *App) GetNetworkAssistantRuleConfig() (NetworkAssistantRuleConfig, error) {
+	return a.inner.GetNetworkAssistantRuleConfig()
+}
+
+func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {
+	return a.inner.SetNetworkAssistantRulePolicy(group, action, tunnelNodeID)
 }
 
 func (a *App) GetLatestGitHubRelease(project string) (ReleaseInfo, error) {

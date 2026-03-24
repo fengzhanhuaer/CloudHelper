@@ -3,6 +3,7 @@ package backend
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"net"
 	"net/netip"
 	"testing"
@@ -228,8 +229,9 @@ func TestDecideRouteForTargetRuleModeByIP(t *testing.T) {
 		t.Fatalf("parse cidr: %v", err)
 	}
 	service := &networkAssistantService{
-		mode:   networkModeRule,
-		nodeID: "cloudserver",
+		mode:           networkModeRule,
+		nodeID:         "cloudserver",
+		availableNodes: []string{"cloudserver", "chain:test-chain"},
 		directWhitelist: &socksDirectWhitelist{
 			hosts: map[string]struct{}{},
 			ips:   map[string]struct{}{},
@@ -271,5 +273,100 @@ func TestDecideRouteForTargetRuleModeByIP(t *testing.T) {
 	}
 	if !directDecision.Direct {
 		t.Fatal("expected direct route for unmatched target")
+	}
+}
+
+func TestDecideRouteForTargetRuleModeRejectMatchedGroup(t *testing.T) {
+	_, cidr, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("parse cidr: %v", err)
+	}
+	service := &networkAssistantService{
+		mode:   networkModeRule,
+		nodeID: "cloudserver",
+		directWhitelist: &socksDirectWhitelist{
+			hosts: map[string]struct{}{},
+			ips:   map[string]struct{}{},
+			cidrs: []*net.IPNet{},
+		},
+		ruleRouting: tunnelRuleRouting{
+			RuleSet: tunnelRuleSet{
+				Rules: []tunnelRule{
+					{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "group_reject"},
+				},
+			},
+			GroupNodeMap: map[string]string{
+				"group_reject": rulePolicyActionReject,
+			},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+	}
+
+	_, routeErr := service.decideRouteForTarget("10.1.2.3:443")
+	if !isRuleRouteRejectErr(routeErr) {
+		t.Fatalf("expected reject route error, got: %v", routeErr)
+	}
+}
+
+func TestDecideRouteForTargetRuleModeRejectFallback(t *testing.T) {
+	service := &networkAssistantService{
+		mode:   networkModeRule,
+		nodeID: "cloudserver",
+		directWhitelist: &socksDirectWhitelist{
+			hosts: map[string]struct{}{},
+			ips:   map[string]struct{}{},
+			cidrs: []*net.IPNet{},
+		},
+		ruleRouting: tunnelRuleRouting{
+			RuleSet: tunnelRuleSet{
+				Rules: []tunnelRule{},
+			},
+			GroupNodeMap: map[string]string{
+				ruleFallbackGroupKey: rulePolicyActionReject,
+			},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+	}
+
+	_, routeErr := service.decideRouteForTarget("8.8.8.8:53")
+	if !isRuleRouteRejectErr(routeErr) {
+		t.Fatalf("expected reject route error, got: %v", routeErr)
+	}
+}
+
+func TestBuildAndParseLocalTUNUDPPacket(t *testing.T) {
+	srcIP := net.ParseIP("10.10.0.2").To4()
+	dstIP := net.ParseIP("8.8.8.8").To4()
+	payload := []byte("hello-udp-over-tun")
+	packet, err := buildLocalTUNUDPPacket(srcIP, dstIP, 53000, 53, payload, 123)
+	if err != nil {
+		t.Fatalf("buildLocalTUNUDPPacket returned error: %v", err)
+	}
+
+	frame, err := parseLocalTUNUDPPacket(packet)
+	if err != nil {
+		t.Fatalf("parseLocalTUNUDPPacket returned error: %v", err)
+	}
+	if frame.SrcIP.String() != "10.10.0.2" || frame.DstIP.String() != "8.8.8.8" {
+		t.Fatalf("unexpected ips: src=%s dst=%s", frame.SrcIP.String(), frame.DstIP.String())
+	}
+	if frame.SrcPort != 53000 || frame.DstPort != 53 {
+		t.Fatalf("unexpected ports: src=%d dst=%d", frame.SrcPort, frame.DstPort)
+	}
+	if !bytes.Equal(frame.Payload, payload) {
+		t.Fatalf("unexpected payload: %q", string(frame.Payload))
+	}
+}
+
+func TestParseLocalTUNUDPPacketRejectsNonUDP(t *testing.T) {
+	packet := make([]byte, 20)
+	packet[0] = 0x45
+	binary.BigEndian.PutUint16(packet[2:4], 20)
+	packet[9] = 6 // TCP
+	copy(packet[12:16], net.ParseIP("10.0.0.1").To4())
+	copy(packet[16:20], net.ParseIP("1.1.1.1").To4())
+
+	if _, err := parseLocalTUNUDPPacket(packet); err == nil {
+		t.Fatal("expected parse error for non-udp packet")
 	}
 }

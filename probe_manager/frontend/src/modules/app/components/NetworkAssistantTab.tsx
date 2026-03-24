@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { LinkManageTab } from "./LinkManageTab";
-import type { NetworkAssistantLogFilterSource, NetworkAssistantStatus } from "../types";
+import type {
+  NetworkAssistantLogFilterSource,
+  NetworkAssistantRuleAction,
+  NetworkAssistantRuleConfig,
+  NetworkAssistantRuleGroupConfig,
+  NetworkAssistantStatus,
+} from "../types";
 
 type NetworkAssistantTabProps = {
   controllerBaseUrl: string;
@@ -13,6 +19,11 @@ type NetworkAssistantTabProps = {
   onRefreshStatus: () => void;
   onSwitchDirect: () => void;
   onSwitchRule: () => void;
+  ruleConfig: NetworkAssistantRuleConfig | null;
+  isLoadingRuleConfig: boolean;
+  ruleConfigStatus: string;
+  onRefreshRuleConfig: () => void;
+  onSetRulePolicy: (group: string, action: NetworkAssistantRuleAction, tunnelNodeID?: string) => void;
   onInstallTUN: () => void;
   onEnableTUN: () => void;
   logLines: number;
@@ -74,6 +85,63 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     return () => window.clearInterval(timer);
   }, [props.onRefreshLogs, subTab]);
 
+  useEffect(() => {
+    if (subTab !== "settings" || props.status.mode !== "rule") {
+      return;
+    }
+    if (props.ruleConfig || props.isLoadingRuleConfig) {
+      return;
+    }
+    props.onRefreshRuleConfig();
+  }, [props.isLoadingRuleConfig, props.onRefreshRuleConfig, props.ruleConfig, props.status.mode, subTab]);
+
+  function isRuleOptionSelected(group: NetworkAssistantRuleGroupConfig, action: NetworkAssistantRuleAction, tunnelNodeID?: string): boolean {
+    if (group.action !== action) {
+      return false;
+    }
+    if (action !== "tunnel") {
+      return true;
+    }
+    const selectedTunnel = (group.tunnel_node_id || "").trim().toLowerCase();
+    const optionTunnel = (tunnelNodeID || "").trim().toLowerCase();
+    return selectedTunnel === optionTunnel;
+  }
+
+  function renderRuleGroupRow(group: NetworkAssistantRuleGroupConfig, title: string) {
+    const tunnelOptions = Array.isArray(group.tunnel_options) ? group.tunnel_options : [];
+    const optionItems: Array<{ key: string; label: string; action: NetworkAssistantRuleAction; tunnelNodeID?: string }> = [
+      { key: `${group.group}:direct`, label: "直连", action: "direct" },
+      { key: `${group.group}:reject`, label: "拒绝", action: "reject" },
+      ...tunnelOptions.map((nodeID) => ({
+        key: `${group.group}:tunnel:${nodeID}`,
+        label: `隧道 ${nodeID}`,
+        action: "tunnel" as const,
+        tunnelNodeID: nodeID,
+      })),
+    ];
+
+    return (
+      <div key={group.group} className="rule-policy-group-row">
+        <div className="rule-policy-group-title">{title}</div>
+        <div className="rule-policy-options-flat">
+          {optionItems.map((item) => {
+            const selected = isRuleOptionSelected(group, item.action, item.tunnelNodeID);
+            return (
+              <button
+                key={item.key}
+                className={`rule-policy-option-flat ${selected ? "active" : ""}`}
+                disabled={props.isOperating || props.isLoadingRuleConfig}
+                onClick={() => props.onSetRulePolicy(group.group, item.action, item.tunnelNodeID)}
+              >
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="content-block">
       <h2>网络助手</h2>
@@ -124,9 +192,19 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           <div className="content-actions">
             <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>直连模式</button>
             <button className="btn" onClick={props.onSwitchRule} disabled={props.isOperating}>规则模式</button>
+            <button className="btn" onClick={props.onRefreshRuleConfig} disabled={props.isOperating || props.isLoadingRuleConfig}>
+              {props.isLoadingRuleConfig ? "加载规则中..." : "刷新规则组"}
+            </button>
           </div>
-          <div className="status">规则文件：data/rule_routes.txt（每行：网址后缀/IP/CIDR,代理组）</div>
-          <div className="status">代理组文件：data/rule_groups.txt（每行：代理组,链路ID或节点ID）</div>
+          <div className="status">规则文件：{props.ruleConfig?.rule_file_path || "data/rule_routes.txt"}（每行：网址后缀/IP/CIDR,代理组）</div>
+          <div className="status">策略文件：data/rule_policies.txt（每行：代理组或@fallback,动作[,链路ID]）</div>
+          <div className="status">{props.ruleConfigStatus}</div>
+          {props.ruleConfig ? (
+            <div className="rule-policy-group-list">
+              {renderRuleGroupRow(props.ruleConfig.fallback, "兜底组（未命中规则）")}
+              {props.ruleConfig.groups.map((group) => renderRuleGroupRow(group, `组：${group.group}`))}
+            </div>
+          ) : null}
         </>
       ) : subTab === "link" ? (
         <LinkManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} />

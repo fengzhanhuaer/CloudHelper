@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   EnableNetworkAssistantTUN,
   GetNetworkAssistantLogs,
+  GetNetworkAssistantRuleConfig,
   GetNetworkAssistantStatus,
   InstallNetworkAssistantTUN,
   SetNetworkAssistantMode,
+  SetNetworkAssistantRulePolicy,
   SyncNetworkAssistant,
 } from "../../../../wailsjs/go/main/App";
 import type {
@@ -12,6 +14,8 @@ import type {
   NetworkAssistantLogFilterSource,
   NetworkAssistantLogResponse,
   NetworkAssistantLogSource,
+  NetworkAssistantRuleAction,
+  NetworkAssistantRuleConfig,
   NetworkAssistantMode,
   NetworkAssistantStatus,
 } from "../types";
@@ -99,6 +103,9 @@ export function useNetworkAssistant() {
   const [logSourceFilter, setLogSourceFilter] = useState<NetworkAssistantLogFilterSource>("all");
   const [logCategoryFilter, setLogCategoryFilter] = useState("all");
   const [logCopyStatus, setLogCopyStatus] = useState("");
+  const [ruleConfig, setRuleConfig] = useState<NetworkAssistantRuleConfig | null>(null);
+  const [isLoadingRuleConfig, setIsLoadingRuleConfig] = useState(false);
+  const [ruleConfigStatus, setRuleConfigStatus] = useState("规则策略未加载");
 
   const logCategories = useMemo(() => {
     const set = new Set<string>();
@@ -210,6 +217,22 @@ export function useNetworkAssistant() {
     setLogCopyStatus("");
   }
 
+  const refreshRuleConfig = useCallback(async () => {
+    setIsLoadingRuleConfig(true);
+    setRuleConfigStatus("正在加载规则策略...");
+    try {
+      const data = (await GetNetworkAssistantRuleConfig()) as NetworkAssistantRuleConfig;
+      setRuleConfig(data);
+      const groupCount = (data.groups?.length || 0) + 1;
+      setRuleConfigStatus(`规则策略已加载（${groupCount} 个组）`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setRuleConfigStatus(`规则策略加载失败：${msg}`);
+    } finally {
+      setIsLoadingRuleConfig(false);
+    }
+  }, []);
+
   const refreshStatus = useCallback(async (controllerBaseURL?: string, token?: string) => {
     try {
       const data = (controllerBaseURL && token
@@ -219,11 +242,33 @@ export function useNetworkAssistant() {
       if (data.node_id) {
         setSelectedNode(data.node_id);
       }
+      if (data.mode === "rule") {
+        void refreshRuleConfig();
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setOperateStatus(`状态刷新失败：${msg}`);
     }
-  }, []);
+  }, [refreshRuleConfig]);
+
+  const setRulePolicy = useCallback(async (group: string, action: NetworkAssistantRuleAction, tunnelNodeID = "") => {
+    setIsOperating(true);
+    setRuleConfigStatus("正在更新规则策略...");
+    try {
+      const data = (await SetNetworkAssistantRulePolicy(group, action, tunnelNodeID.trim())) as NetworkAssistantRuleConfig;
+      setRuleConfig(data);
+      setRuleConfigStatus("规则策略已更新");
+      setOperateStatus("规则策略已应用");
+      void refreshLogs();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setRuleConfigStatus(`规则策略更新失败：${msg}`);
+      setOperateStatus(`规则策略更新失败：${msg}`);
+      throw error;
+    } finally {
+      setIsOperating(false);
+    }
+  }, [refreshLogs]);
 
   const switchMode = useCallback(async (controllerBaseURL: string, token: string, mode: NetworkAssistantMode, nodeIdInput?: string) => {
     setIsOperating(true);
@@ -236,6 +281,7 @@ export function useNetworkAssistant() {
         setOperateStatus("已切换为直连模式，并清除系统代理");
       } else if (mode === "rule") {
         setOperateStatus("已切换为规则模式（命中规则走链路）");
+        void refreshRuleConfig();
       } else {
         setOperateStatus(`模式已切换：${mode}`);
       }
@@ -248,7 +294,7 @@ export function useNetworkAssistant() {
     } finally {
       setIsOperating(false);
     }
-  }, [refreshLogs, selectedNode]);
+  }, [refreshLogs, refreshRuleConfig, selectedNode]);
 
   const installTUN = useCallback(async () => {
     setIsOperating(true);
@@ -313,6 +359,11 @@ export function useNetworkAssistant() {
     logVisibleCount: visibleLogEntries.length,
     logTotalCount: logEntries.length,
     logCopyStatus,
+    ruleConfig,
+    isLoadingRuleConfig,
+    ruleConfigStatus,
+    refreshRuleConfig,
+    setRulePolicy,
     refreshLogs,
     copyLogs,
     clearLogs,

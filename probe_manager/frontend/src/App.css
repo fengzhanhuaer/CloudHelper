@@ -266,6 +266,54 @@
     border-color: rgba(129, 184, 255, 0.72);
 }
 
+.rule-policy-group-list {
+    margin-top: 12px;
+    display: grid;
+    gap: 10px;
+}
+
+.rule-policy-group-row {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(8, 12, 20, 0.32);
+    border-radius: 10px;
+    padding: 10px;
+    display: grid;
+    gap: 8px;
+}
+
+.rule-policy-group-title {
+    color: #dceaff;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.rule-policy-options-flat {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.rule-policy-option-flat {
+    height: 32px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(22, 30, 44, 0.85);
+    color: #ffffff;
+    cursor: pointer;
+    padding: 0 12px;
+    font-size: 13px;
+}
+
+.rule-policy-option-flat.active {
+    border-color: rgba(129, 184, 255, 0.78);
+    background: rgba(65, 108, 166, 0.72);
+}
+
+.rule-policy-option-flat:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .tg-account-summary {
     margin-top: 10px;
     color: #dceaff;

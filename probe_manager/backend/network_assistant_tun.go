@@ -286,7 +286,19 @@ func (s *networkAssistantService) EnableTUN() error {
 	if err := s.InstallTUN(); err != nil {
 		return err
 	}
+	if err := s.stopLocalTUNDataPlane(); err != nil {
+		s.setLastError(err)
+		return err
+	}
 	if err := s.stopProxyAndServer(); err != nil {
+		s.setLastError(err)
+		return err
+	}
+	if err := applyDirectSystemProxy(); err != nil {
+		s.setLastError(err)
+		return err
+	}
+	if err := s.startLocalTUNDataPlane(); err != nil {
 		s.setLastError(err)
 		return err
 	}
@@ -297,10 +309,13 @@ func (s *networkAssistantService) EnableTUN() error {
 	s.tunInstalled = true
 	s.tunEnabled = true
 	s.tunStatus = tunStatusEnabled
-	s.tunnelStatusMessage = "TUN 模式已启用"
-	s.systemProxyMessage = "TUN 模式"
+	s.tunnelStatusMessage = "TUN 模式已启用（本地代理已关闭）"
+	s.systemProxyMessage = "TUN 模式（系统代理已清除）"
 	s.tunnelOpenFailures = 0
 	s.lastError = ""
+	s.hasAppliedSysProxy = false
+	s.hasProxySnapshot = false
+	s.proxySnapshot = systemProxySnapshot{}
 	libraryPath := s.tunLibraryPath
 	s.mu.Unlock()
 

@@ -101,6 +101,21 @@ export type NetworkAssistantStatus = {
   tun_status?: string;
 };
 
+export type NetworkAssistantRuleAction = "direct" | "reject" | "tunnel";
+
+export type NetworkAssistantRuleGroupConfig = {
+  group: string;
+  action: NetworkAssistantRuleAction;
+  tunnel_node_id?: string;
+  tunnel_options: string[];
+};
+
+export type NetworkAssistantRuleConfig = {
+  rule_file_path: string;
+  groups: NetworkAssistantRuleGroupConfig[];
+  fallback: NetworkAssistantRuleGroupConfig;
+};
+
 export type NetworkAssistantLogSource = "manager" | "controller";
 
 export type NetworkAssistantLogFilterSource = "all" | NetworkAssistantLogSource;

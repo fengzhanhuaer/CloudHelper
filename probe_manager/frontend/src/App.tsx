@@ -46,8 +46,16 @@ function App() {
     if (activeTab === "network-assistant") {
       void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
       void networkAssistant.refreshLogs();
+      void networkAssistant.refreshRuleConfig();
     }
-  }, [activeTab, auth.sessionToken, networkAssistant.refreshLogs, networkAssistant.refreshStatus, settings.baseUrl]);
+  }, [
+    activeTab,
+    auth.sessionToken,
+    networkAssistant.refreshLogs,
+    networkAssistant.refreshRuleConfig,
+    networkAssistant.refreshStatus,
+    settings.baseUrl,
+  ]);
 
   useEffect(() => {
     if (!auth.sessionToken) {
@@ -172,6 +180,11 @@ function App() {
             onRefreshNetworkAssistantStatus={() => networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken)}
             onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct", networkAssistant.selectedNode)}
             onSwitchNetworkRule={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "rule", networkAssistant.selectedNode)}
+            networkRuleConfig={networkAssistant.ruleConfig}
+            isLoadingNetworkRuleConfig={networkAssistant.isLoadingRuleConfig}
+            networkRuleConfigStatus={networkAssistant.ruleConfigStatus}
+            onRefreshNetworkRuleConfig={networkAssistant.refreshRuleConfig}
+            onSetNetworkRulePolicy={(group, action, tunnelNodeID) => void networkAssistant.setRulePolicy(group, action, tunnelNodeID)}
             onInstallNetworkTUN={() => networkAssistant.installTUN()}
             onEnableNetworkTUN={() => networkAssistant.enableTUN()}
             networkLogLines={networkAssistant.logLines}
