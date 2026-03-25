@@ -16,39 +16,56 @@ const (
 	maxProbeLinkChainPublicKeyLen   = 8192
 	maxProbeLinkChainSecretLen      = 256
 	maxProbeLinkChainHopCount       = 64
+	maxProbeLinkChainPortForwardCnt = 256
 	defaultProbeLinkChainListenHost = "0.0.0.0"
 	defaultProbeLinkChainLinkLayer  = "http"
+	defaultProbeLinkChainDialMode   = "forward"
+	defaultProbeLinkChainPFNetwork  = "tcp"
+	defaultProbeLinkChainPFHost     = "0.0.0.0"
 	defaultProbeLinkChainSecretLen  = 48
 )
 
 type probeLinkChainHopConfig struct {
 	NodeNo       int    `json:"node_no"`
 	ListenHost   string `json:"listen_host,omitempty"`
-	ListenPort   int    `json:"listen_port,omitempty"`  // internal port the relay service listens on
+	ListenPort   int    `json:"listen_port,omitempty"`   // internal port the relay service listens on
 	ExternalPort int    `json:"external_port,omitempty"` // public-facing port used for connections
 	LinkLayer    string `json:"link_layer"`
+	DialMode     string `json:"dial_mode,omitempty"`
 	// RelayHost is dynamically filled from the Cloudflare DDNS store (business record).
 	// It is NOT persisted; omitempty ensures it does not appear in stored JSON.
 	RelayHost string `json:"relay_host,omitempty"`
 }
 
+type probeLinkChainPortForwardConfig struct {
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	ListenHost string `json:"listen_host,omitempty"`
+	ListenPort int    `json:"listen_port"`
+	TargetHost string `json:"target_host"`
+	TargetPort int    `json:"target_port"`
+	Network    string `json:"network,omitempty"`
+	Enabled    bool   `json:"enabled"`
+}
+
 type probeLinkChainRecord struct {
-	ChainID        string                    `json:"chain_id"`
-	Name           string                    `json:"name"`
-	UserID         string                    `json:"user_id"`
-	UserPublicKey  string                    `json:"user_public_key"`
-	Secret         string                    `json:"secret"`
-	EntryNodeID    string                    `json:"entry_node_id"`
-	ExitNodeID     string                    `json:"exit_node_id"`
-	CascadeNodeIDs []string                  `json:"cascade_node_ids"`
-	ListenHost     string                    `json:"listen_host"`
-	ListenPort     int                       `json:"listen_port"`
-	LinkLayer      string                    `json:"link_layer"`
-	HopConfigs     []probeLinkChainHopConfig `json:"hop_configs"`
-	EgressHost     string                    `json:"egress_host"`
-	EgressPort     int                       `json:"egress_port"`
-	CreatedAt      string                    `json:"created_at"`
-	UpdatedAt      string                    `json:"updated_at"`
+	ChainID        string                            `json:"chain_id"`
+	Name           string                            `json:"name"`
+	UserID         string                            `json:"user_id"`
+	UserPublicKey  string                            `json:"user_public_key"`
+	Secret         string                            `json:"secret"`
+	EntryNodeID    string                            `json:"entry_node_id"`
+	ExitNodeID     string                            `json:"exit_node_id"`
+	CascadeNodeIDs []string                          `json:"cascade_node_ids"`
+	ListenHost     string                            `json:"listen_host"`
+	ListenPort     int                               `json:"listen_port"`
+	LinkLayer      string                            `json:"link_layer"`
+	HopConfigs     []probeLinkChainHopConfig         `json:"hop_configs"`
+	PortForwards   []probeLinkChainPortForwardConfig `json:"port_forwards,omitempty"`
+	EgressHost     string                            `json:"egress_host"`
+	EgressPort     int                               `json:"egress_port"`
+	CreatedAt      string                            `json:"created_at"`
+	UpdatedAt      string                            `json:"updated_at"`
 }
 
 func loadProbeLinkChainsLocked() []probeLinkChainRecord {
@@ -204,6 +221,10 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	if hopErr != nil {
 		return probeLinkChainRecord{}, nil, hopErr
 	}
+	portForwards, forwardErr := normalizeProbeLinkChainPortForwardsForUpsert(input.PortForwards)
+	if forwardErr != nil {
+		return probeLinkChainRecord{}, nil, forwardErr
+	}
 	if listenPort <= 0 && len(hopConfigs) > 0 {
 		listenPort = hopConfigs[0].ExternalPort
 	}
@@ -268,6 +289,7 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 		ListenPort:     listenPort,
 		LinkLayer:      linkLayer,
 		HopConfigs:     hopConfigs,
+		PortForwards:   portForwards,
 		EgressHost:     egressHost,
 		EgressPort:     egressPort,
 		UpdatedAt:      now,
@@ -373,6 +395,7 @@ func normalizeProbeLinkChains(items []probeLinkChainRecord) []probeLinkChainReco
 			ListenPort:     listenPort,
 			LinkLayer:      linkLayer,
 			HopConfigs:     normalizeProbeLinkChainHopConfigsForStore(item.HopConfigs, routeNodes),
+			PortForwards:   normalizeProbeLinkChainPortForwardsForStore(item.PortForwards),
 			EgressHost:     egressHost,
 			EgressPort:     egressPort,
 			CreatedAt:      strings.TrimSpace(item.CreatedAt),
@@ -474,6 +497,58 @@ func parseProbeLinkChainLinkLayer(raw string) (string, bool) {
 	}
 }
 
+func normalizeProbeLinkChainDialMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "reverse", "rev":
+		return "reverse"
+	default:
+		return defaultProbeLinkChainDialMode
+	}
+}
+
+func parseProbeLinkChainDialMode(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", true
+	}
+	switch strings.ToLower(trimmed) {
+	case "forward", "fwd":
+		return "forward", true
+	case "reverse", "rev":
+		return "reverse", true
+	default:
+		return "", false
+	}
+}
+
+func normalizeProbeLinkChainPFNetwork(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "udp":
+		return "udp"
+	case "both", "tcp+udp", "udp+tcp":
+		return "both"
+	default:
+		return defaultProbeLinkChainPFNetwork
+	}
+}
+
+func parseProbeLinkChainPFNetwork(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", true
+	}
+	switch strings.ToLower(trimmed) {
+	case "tcp":
+		return "tcp", true
+	case "udp":
+		return "udp", true
+	case "both", "tcp+udp", "udp+tcp":
+		return "both", true
+	default:
+		return "", false
+	}
+}
+
 func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig, routeNodeIDs []string) ([]probeLinkChainHopConfig, error) {
 	filter := make(map[string]struct{}, len(routeNodeIDs))
 	for _, nodeID := range normalizeProbeNodeIDList(routeNodeIDs) {
@@ -511,6 +586,10 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		if !ok {
 			return nil, fmt.Errorf("hop link_layer must be http/http2/http3")
 		}
+		dialMode, dialModeOK := parseProbeLinkChainDialMode(item.DialMode)
+		if !dialModeOK {
+			return nil, fmt.Errorf("hop dial_mode must be forward/reverse")
+		}
 		if listenPort <= 0 {
 			return nil, fmt.Errorf("hop listen_port must be between 1 and 65535")
 		}
@@ -521,6 +600,9 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		if strings.TrimSpace(linkLayer) == "" {
 			linkLayer = defaultProbeLinkChainLinkLayer
 		}
+		if strings.TrimSpace(dialMode) == "" {
+			dialMode = defaultProbeLinkChainDialMode
+		}
 		seen[nodeID] = struct{}{}
 		nodeNo, _ := strconv.Atoi(nodeID)
 		out = append(out, probeLinkChainHopConfig{
@@ -529,6 +611,7 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 			ListenPort:   listenPort,
 			ExternalPort: externalPort,
 			LinkLayer:    linkLayer,
+			DialMode:     dialMode,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break
@@ -577,12 +660,19 @@ func normalizeProbeLinkChainHopConfigsForStore(values []probeLinkChainHopConfig,
 		if normalized, ok := parseProbeLinkChainLinkLayer(item.LinkLayer); ok {
 			linkLayer = normalized
 		}
-		if listenPort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" {
+		dialMode := ""
+		if normalized, ok := parseProbeLinkChainDialMode(item.DialMode); ok {
+			dialMode = normalized
+		}
+		if listenPort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" && strings.TrimSpace(dialMode) == "" {
 			continue
 		}
 		// If external_port is not configured, default to listen_port.
 		if externalPort <= 0 {
 			externalPort = listenPort
+		}
+		if strings.TrimSpace(dialMode) == "" {
+			dialMode = defaultProbeLinkChainDialMode
 		}
 		seen[nodeID] = struct{}{}
 		nodeNo, _ := strconv.Atoi(nodeID)
@@ -592,6 +682,7 @@ func normalizeProbeLinkChainHopConfigsForStore(values []probeLinkChainHopConfig,
 			ListenPort:   listenPort,
 			ExternalPort: externalPort,
 			LinkLayer:    linkLayer,
+			DialMode:     dialMode,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break
@@ -608,6 +699,114 @@ func normalizeOptionalProbeLinkChainPort(raw int) (int, error) {
 		return 0, nil
 	}
 	return raw, nil
+}
+
+func normalizeProbeLinkChainPortForwardID(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		value = "pf-" + strings.ToLower(strings.TrimSpace(randomProbeNodeSecret(8)))
+	}
+	if len(value) > 96 {
+		value = value[:96]
+	}
+	return value
+}
+
+func normalizeProbeLinkChainPortForwardsForUpsert(values []probeLinkChainPortForwardConfig) ([]probeLinkChainPortForwardConfig, error) {
+	if len(values) == 0 {
+		return []probeLinkChainPortForwardConfig{}, nil
+	}
+	out := make([]probeLinkChainPortForwardConfig, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, item := range values {
+		listenPort, listenErr := normalizeOptionalProbeLinkChainPort(item.ListenPort)
+		if listenErr != nil || listenPort <= 0 {
+			return nil, fmt.Errorf("port_forwards listen_port must be between 1 and 65535")
+		}
+		targetPort, targetErr := normalizeOptionalProbeLinkChainPort(item.TargetPort)
+		if targetErr != nil || targetPort <= 0 {
+			return nil, fmt.Errorf("port_forwards target_port must be between 1 and 65535")
+		}
+		if strings.TrimSpace(item.TargetHost) == "" {
+			return nil, fmt.Errorf("port_forwards target_host is required")
+		}
+		network, ok := parseProbeLinkChainPFNetwork(item.Network)
+		if !ok {
+			return nil, fmt.Errorf("port_forwards network must be tcp/udp/both")
+		}
+		if strings.TrimSpace(network) == "" {
+			network = defaultProbeLinkChainPFNetwork
+		}
+		id := normalizeProbeLinkChainPortForwardID(item.ID)
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		listenHost := strings.TrimSpace(item.ListenHost)
+		if listenHost == "" {
+			listenHost = defaultProbeLinkChainPFHost
+		}
+		out = append(out, probeLinkChainPortForwardConfig{
+			ID:         id,
+			Name:       strings.TrimSpace(item.Name),
+			ListenHost: normalizeProbeLinkChainListenHost(listenHost),
+			ListenPort: listenPort,
+			TargetHost: strings.TrimSpace(item.TargetHost),
+			TargetPort: targetPort,
+			Network:    network,
+			Enabled:    item.Enabled,
+		})
+		if len(out) >= maxProbeLinkChainPortForwardCnt {
+			break
+		}
+	}
+	return out, nil
+}
+
+func normalizeProbeLinkChainPortForwardsForStore(values []probeLinkChainPortForwardConfig) []probeLinkChainPortForwardConfig {
+	if len(values) == 0 {
+		return []probeLinkChainPortForwardConfig{}
+	}
+	out := make([]probeLinkChainPortForwardConfig, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, item := range values {
+		listenPort, listenErr := normalizeOptionalProbeLinkChainPort(item.ListenPort)
+		targetPort, targetErr := normalizeOptionalProbeLinkChainPort(item.TargetPort)
+		if listenErr != nil || targetErr != nil || listenPort <= 0 || targetPort <= 0 {
+			continue
+		}
+		targetHost := strings.TrimSpace(item.TargetHost)
+		if targetHost == "" {
+			continue
+		}
+		network := defaultProbeLinkChainPFNetwork
+		if normalized, ok := parseProbeLinkChainPFNetwork(item.Network); ok && strings.TrimSpace(normalized) != "" {
+			network = normalized
+		}
+		id := normalizeProbeLinkChainPortForwardID(item.ID)
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		listenHost := strings.TrimSpace(item.ListenHost)
+		if listenHost == "" {
+			listenHost = defaultProbeLinkChainPFHost
+		}
+		out = append(out, probeLinkChainPortForwardConfig{
+			ID:         id,
+			Name:       strings.TrimSpace(item.Name),
+			ListenHost: normalizeProbeLinkChainListenHost(listenHost),
+			ListenPort: listenPort,
+			TargetHost: targetHost,
+			TargetPort: targetPort,
+			Network:    network,
+			Enabled:    item.Enabled,
+		})
+		if len(out) >= maxProbeLinkChainPortForwardCnt {
+			break
+		}
+	}
+	return out
 }
 
 func buildProbeChainRouteNodes(item probeLinkChainRecord) []string {

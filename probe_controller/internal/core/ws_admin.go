@@ -652,15 +652,26 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			ListenPort     int      `json:"listen_port"`
 			LinkLayer      string   `json:"link_layer"`
 			HopConfigs     []struct {
-				NodeNo       int    `json:"node_no"`
-				ListenHost   string `json:"listen_host"`
+				NodeNo     int    `json:"node_no"`
+				ListenHost string `json:"listen_host"`
 				// listen_port is the canonical field (renamed from legacy service_port).
-				ListenPort   int    `json:"listen_port"`
+				ListenPort int `json:"listen_port"`
 				// service_port is the legacy field name from older frontend versions; used as fallback.
 				ServicePort  int    `json:"service_port"`
 				ExternalPort int    `json:"external_port"`
 				LinkLayer    string `json:"link_layer"`
+				DialMode     string `json:"dial_mode"`
 			} `json:"hop_configs"`
+			PortForwards []struct {
+				ID         string `json:"id"`
+				Name       string `json:"name"`
+				ListenHost string `json:"listen_host"`
+				ListenPort int    `json:"listen_port"`
+				TargetHost string `json:"target_host"`
+				TargetPort int    `json:"target_port"`
+				Network    string `json:"network"`
+				Enabled    bool   `json:"enabled"`
+			} `json:"port_forwards"`
 			EgressHost string `json:"egress_host"`
 			EgressPort int    `json:"egress_port"`
 		}
@@ -705,6 +716,23 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 						ListenPort:   listenPort,
 						ExternalPort: cfg.ExternalPort,
 						LinkLayer:    strings.TrimSpace(cfg.LinkLayer),
+						DialMode:     strings.TrimSpace(cfg.DialMode),
+					})
+				}
+				return out
+			}(),
+			PortForwards: func() []probeLinkChainPortForwardConfig {
+				out := make([]probeLinkChainPortForwardConfig, 0, len(req.PortForwards))
+				for _, item := range req.PortForwards {
+					out = append(out, probeLinkChainPortForwardConfig{
+						ID:         strings.TrimSpace(item.ID),
+						Name:       strings.TrimSpace(item.Name),
+						ListenHost: strings.TrimSpace(item.ListenHost),
+						ListenPort: item.ListenPort,
+						TargetHost: strings.TrimSpace(item.TargetHost),
+						TargetPort: item.TargetPort,
+						Network:    strings.TrimSpace(item.Network),
+						Enabled:    item.Enabled,
 					})
 				}
 				return out

@@ -290,9 +290,9 @@ export type ProbeShellShortcutItem = {
 };
 
 export type ProbeLinkChainItem = {
-  chain_id: string;
-  name: string;
-  user_id: string;
+	chain_id: string;
+	name: string;
+	user_id: string;
   user_public_key: string;
   secret: string;
   entry_node_id: string;
@@ -301,17 +301,28 @@ export type ProbeLinkChainItem = {
   listen_host: string;
   listen_port: number;
   link_layer?: "http" | "http2" | "http3";
-  hop_configs?: Array<{
-    node_no: number;
-    listen_host?: string;
-    listen_port?: number;
-    external_port?: number;
-    link_layer: "http" | "http2" | "http3" | "";
-  }>;
-  egress_host: string;
-  egress_port: number;
-  created_at?: string;
-  updated_at?: string;
+	hop_configs?: Array<{
+		node_no: number;
+		listen_host?: string;
+		listen_port?: number;
+		external_port?: number;
+		link_layer: "http" | "http2" | "http3" | "";
+		dial_mode?: "forward" | "reverse" | "";
+	}>;
+	port_forwards?: Array<{
+		id?: string;
+		name?: string;
+		listen_host?: string;
+		listen_port: number;
+		target_host: string;
+		target_port: number;
+		network?: "tcp" | "udp" | "both" | "";
+		enabled: boolean;
+	}>;
+	egress_host: string;
+	egress_port: number;
+	created_at?: string;
+	updated_at?: string;
 };
 
 export type ProbeLinkChainUpsertPayload = {
@@ -326,15 +337,26 @@ export type ProbeLinkChainUpsertPayload = {
   listen_host?: string;
   listen_port: number;
   link_layer?: "http" | "http2" | "http3";
-  hop_configs?: Array<{
-    node_no: number;
-    listen_host?: string;
-    listen_port?: number;
-    external_port?: number;
-    link_layer?: "http" | "http2" | "http3";
-  }>;
-  egress_host: string;
-  egress_port: number;
+	hop_configs?: Array<{
+		node_no: number;
+		listen_host?: string;
+		listen_port?: number;
+		external_port?: number;
+		link_layer?: "http" | "http2" | "http3";
+		dial_mode?: "forward" | "reverse";
+	}>;
+	port_forwards?: Array<{
+		id?: string;
+		name?: string;
+		listen_host?: string;
+		listen_port: number;
+		target_host: string;
+		target_port: number;
+		network?: "tcp" | "udp" | "both";
+		enabled: boolean;
+	}>;
+	egress_host: string;
+	egress_port: number;
 };
 
 export type ProbeLinkUserItem = {

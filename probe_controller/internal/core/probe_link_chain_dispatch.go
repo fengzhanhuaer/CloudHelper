@@ -30,6 +30,8 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 		nextHost := strings.TrimSpace(item.EgressHost)
 		nextPort := item.EgressPort
 		nextAuthMode := "proxy"
+		nextLinkLayer := ""
+		nextDialMode := "none"
 		if i < len(route)-1 {
 			nextNodeID := route[i+1]
 			resolvedHost, err := resolveProbeLinkChainNodeDialHost(nextNodeID)
@@ -45,7 +47,32 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 				failures = append(failures, fmt.Sprintf("node=%s next hop %s has no external_port in hop_config", nodeID, nextNodeID))
 				continue
 			}
+			nextLinkLayer = nextNodeSettings.LinkLayer
+			nextDialMode = nodeSettings.DialMode
 			nextAuthMode = "secret"
+		}
+
+		prevHost := ""
+		prevPort := 0
+		prevLinkLayer := ""
+		prevDialMode := "none"
+		if i > 0 {
+			prevNodeID := route[i-1]
+			resolvedPrevHost, err := resolveProbeLinkChainNodeDialHost(prevNodeID)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("node=%s resolve prev host failed: %v", nodeID, err))
+				continue
+			}
+			prevHost = resolvedPrevHost
+			prevNodeSettings := resolveProbeLinkChainNodeSettings(item, prevNodeID)
+			if prevNodeSettings.ExternalPort > 0 {
+				prevPort = prevNodeSettings.ExternalPort
+			} else {
+				failures = append(failures, fmt.Sprintf("node=%s prev hop %s has no external_port in hop_config", nodeID, prevNodeID))
+				continue
+			}
+			prevLinkLayer = prevNodeSettings.LinkLayer
+			prevDialMode = prevNodeSettings.DialMode
 		}
 
 		_, err := dispatchProbeChainLinkControl(nodeID, probeChainLinkControlCommand{
@@ -64,8 +91,15 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 				return item.ListenPort
 			}(),
 			LinkLayer:         nodeSettings.LinkLayer,
+			NextLinkLayer:     strings.TrimSpace(nextLinkLayer),
+			NextDialMode:      strings.TrimSpace(nextDialMode),
 			NextHost:          strings.TrimSpace(nextHost),
 			NextPort:          nextPort,
+			PrevHost:          strings.TrimSpace(prevHost),
+			PrevPort:          prevPort,
+			PrevLinkLayer:     strings.TrimSpace(prevLinkLayer),
+			PrevDialMode:      strings.TrimSpace(prevDialMode),
+			PortForwards:      buildProbeChainPortForwardCommands(item.PortForwards),
 			RequireUserAuth:   i == 0,
 			NextAuthMode:      nextAuthMode,
 			ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
@@ -102,11 +136,32 @@ func removeProbeLinkChainRecord(item probeLinkChainRecord) error {
 	return nil
 }
 
+func buildProbeChainPortForwardCommands(values []probeLinkChainPortForwardConfig) []probeChainPortForwardCommand {
+	if len(values) == 0 {
+		return []probeChainPortForwardCommand{}
+	}
+	out := make([]probeChainPortForwardCommand, 0, len(values))
+	for _, item := range values {
+		out = append(out, probeChainPortForwardCommand{
+			ID:         strings.TrimSpace(item.ID),
+			Name:       strings.TrimSpace(item.Name),
+			ListenHost: strings.TrimSpace(item.ListenHost),
+			ListenPort: item.ListenPort,
+			TargetHost: strings.TrimSpace(item.TargetHost),
+			TargetPort: item.TargetPort,
+			Network:    strings.TrimSpace(item.Network),
+			Enabled:    item.Enabled,
+		})
+	}
+	return out
+}
+
 type probeLinkChainNodeSettings struct {
 	ListenHost   string
 	ListenPort   int
 	ExternalPort int
 	LinkLayer    string
+	DialMode     string
 }
 
 func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string) probeLinkChainNodeSettings {
@@ -134,11 +189,13 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 			listenHost = defaultHost
 		}
 		layer := normalizeProbeLinkChainLinkLayer(hop.LinkLayer)
+		dialMode := normalizeProbeLinkChainDialMode(hop.DialMode)
 		return probeLinkChainNodeSettings{
 			ListenHost:   normalizeProbeLinkChainListenHost(listenHost),
 			ListenPort:   listenPort,
 			ExternalPort: externalPort,
 			LinkLayer:    layer,
+			DialMode:     dialMode,
 		}
 	}
 	return probeLinkChainNodeSettings{
@@ -146,10 +203,18 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 		ListenPort:   0,
 		ExternalPort: 0,
 		LinkLayer:    defaultLayer,
+		DialMode:     defaultProbeLinkChainDialMode,
 	}
 }
 
 func resolveProbeLinkChainNodeDialHost(nodeID string) (string, error) {
+	relayHosts := buildNodeRelayHostMap()
+	if host, exists := relayHosts[normalizeProbeNodeID(nodeID)]; exists {
+		if h := normalizeProbeLinkChainDialHost(host); h != "" {
+			return h, nil
+		}
+	}
+
 	node, ok := getProbeNodeByID(normalizeProbeNodeID(nodeID))
 	if !ok {
 		return "", fmt.Errorf("probe node not found: %s", nodeID)
@@ -175,16 +240,8 @@ func resolveProbeLinkChainNodeDialHost(nodeID string) (string, error) {
 			}
 		}
 	}
-	// Fallback: use the Cloudflare business DDNS for this node.
-	relayHosts := buildNodeRelayHostMap()
-	if host, exists := relayHosts[normalizeProbeNodeID(nodeID)]; exists {
-		if h := normalizeProbeLinkChainDialHost(host); h != "" {
-			return h, nil
-		}
-	}
 	return "", fmt.Errorf("no dial host configured for node %s", nodeID)
 }
-
 
 func normalizeProbeLinkChainDialHost(raw string) string {
 	value := strings.TrimSpace(raw)

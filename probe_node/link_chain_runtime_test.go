@@ -2,18 +2,22 @@ package main
 
 import (
 	"bufio"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestReadProbeChainAuthEnvelopeCopilotStyle(t *testing.T) {
-	payload := `{"type":"github_copilot_auth_request","api_version":"2025-03-22","request_id":"req-1","timestamp":"2026-03-22T12:00:00Z","auth":{"mode":"secret_hmac","chain_id":"chain-a","nonce":"nonce-1","mac":"abc123"}}`
-	reader := bufio.NewReader(strings.NewReader(payload + "\n"))
+func TestReadProbeChainAuthEnvelopeFromHeadersCodexStyle(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer nonce-1")
+	headers.Set(probeChainCodexVersionHeader, probeChainAuthPacketVersion)
+	headers.Set(probeChainCodexAuthModeHeader, "secret_hmac")
+	headers.Set(probeChainCodexMACHeader, "abc123")
 
-	env, err := readProbeChainAuthEnvelope(reader)
+	env, err := readProbeChainAuthEnvelopeFromHeaders(headers, "chain-a")
 	if err != nil {
-		t.Fatalf("readProbeChainAuthEnvelope failed: %v", err)
+		t.Fatalf("readProbeChainAuthEnvelopeFromHeaders failed: %v", err)
 	}
 	if env.Type != probeChainAuthPacketType {
 		t.Fatalf("unexpected type: %s", env.Type)
@@ -21,7 +25,7 @@ func TestReadProbeChainAuthEnvelopeCopilotStyle(t *testing.T) {
 	if env.APIVersion != probeChainAuthPacketVersion {
 		t.Fatalf("unexpected api version: %s", env.APIVersion)
 	}
-	if env.RequestID != "req-1" {
+	if env.RequestID != "" {
 		t.Fatalf("unexpected request id: %s", env.RequestID)
 	}
 	if env.Mode != "secret_hmac" || env.ChainID != "chain-a" || env.Nonce != "nonce-1" || env.MAC != "abc123" {
@@ -87,36 +91,38 @@ func TestReadProbeChainNonceChallenge(t *testing.T) {
 	}
 }
 
-func TestVerifyProbeChainInboundAuthNonceMismatch(t *testing.T) {
+func TestVerifyProbeChainInboundAuthRejectsUnsupportedMode(t *testing.T) {
 	cfg := probeChainRuntimeConfig{
 		chainID: "chain-a",
 		secret:  "secret-1",
 	}
 	env := probeChainAuthEnvelope{
 		ChainID: "chain-a",
+		Mode:    "user_signature",
 		Nonce:   "nonce-a",
 		MAC:     buildProbeChainHMAC("secret-1", "chain-a", "nonce-a"),
 	}
-	err := verifyProbeChainInboundAuth(cfg, env, "nonce-b")
+	err := verifyProbeChainInboundAuth(cfg, env)
 	if err == nil {
-		t.Fatalf("expected nonce mismatch error")
+		t.Fatalf("expected unsupported auth mode error")
 	}
-	if !strings.Contains(err.Error(), "nonce mismatch") {
+	if !strings.Contains(err.Error(), "unsupported auth mode") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestVerifyProbeChainInboundAuthNonceMatch(t *testing.T) {
+func TestVerifyProbeChainInboundAuthAcceptsSecretHMAC(t *testing.T) {
 	cfg := probeChainRuntimeConfig{
 		chainID: "chain-a",
 		secret:  "secret-1",
 	}
 	env := probeChainAuthEnvelope{
 		ChainID: "chain-a",
+		Mode:    "secret_hmac",
 		Nonce:   "nonce-a",
 		MAC:     buildProbeChainHMAC("secret-1", "chain-a", "nonce-a"),
 	}
-	if err := verifyProbeChainInboundAuth(cfg, env, "nonce-a"); err != nil {
+	if err := verifyProbeChainInboundAuth(cfg, env); err != nil {
 		t.Fatalf("verifyProbeChainInboundAuth failed: %v", err)
 	}
 }

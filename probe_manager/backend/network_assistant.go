@@ -119,6 +119,7 @@ type probeNodesResponse struct {
 
 type probeLinkChainAdminItem struct {
 	ChainID        string   `json:"chain_id"`
+	Secret         string   `json:"secret"`
 	EntryNodeID    string   `json:"entry_node_id"`
 	ExitNodeID     string   `json:"exit_node_id"`
 	CascadeNodeIDs []string `json:"cascade_node_ids"`
@@ -128,6 +129,7 @@ type probeLinkChainAdminItem struct {
 		ListenPort   int    `json:"listen_port,omitempty"`
 		ExternalPort int    `json:"external_port,omitempty"`
 		LinkLayer    string `json:"link_layer"`
+		DialMode     string `json:"dial_mode,omitempty"`
 		RelayHost    string `json:"relay_host,omitempty"`
 	} `json:"hop_configs"`
 }
@@ -139,12 +141,13 @@ type probeNodeAdminItem struct {
 }
 
 type probeChainEndpoint struct {
-	TargetID  string
-	ChainID   string
-	EntryNode string
-	EntryHost string // public-facing host of the entry hop (DDNS or ip)
-	EntryPort int    // public-facing port of the entry hop (external_port, fallback to listen_port)
-	LinkLayer string
+	TargetID    string
+	ChainID     string
+	EntryNode   string
+	EntryHost   string // public-facing host of the entry hop (DDNS or ip)
+	EntryPort   int    // public-facing port of the entry hop (external_port, fallback to listen_port)
+	LinkLayer   string
+	ChainSecret string
 }
 
 type adminWSRequest struct {
@@ -2454,12 +2457,13 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 			continue
 		}
 		targets[targetID] = probeChainEndpoint{
-			TargetID:  targetID,
-			ChainID:   chainID,
-			EntryNode: entryNodeID,
-			EntryHost: entryHost,
-			EntryPort: entryPort,
-			LinkLayer: resolveProbeChainEntryLinkLayer(chain, entryNodeID),
+			TargetID:    targetID,
+			ChainID:     chainID,
+			EntryNode:   entryNodeID,
+			EntryHost:   entryHost,
+			EntryPort:   entryPort,
+			LinkLayer:   resolveProbeChainEntryLinkLayer(chain, entryNodeID),
+			ChainSecret: strings.TrimSpace(chain.Secret),
 		}
 	}
 	sort.Strings(ids)

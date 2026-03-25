@@ -1,9 +1,10 @@
 package backend
 
 import (
-	"bufio"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
@@ -28,32 +29,20 @@ import (
 const (
 	tunnelStreamOpenTimeout = 20 * time.Second
 
-	probeChainRelayAPIPath      = "/api/node/chain/relay"
-	probeChainAuthPacketType    = "github_copilot_auth_request"
-	probeChainAuthPacketVersion = "2025-03-22"
-	probeChainAuthNoncePrefix   = "CHNONCE "
+	probeChainRelayAPIPath         = "/api/node/chain/relay"
+	probeChainAuthPacketVersion    = "2025-03-22"
+	probeChainLegacyChainIDHeader  = "X-CH-Chain-ID"
+	probeChainCodexChainIDHeader   = "X-Codex-Chain-Id"
+	probeChainCodexAuthModeHeader  = "X-Codex-Auth-Mode"
+	probeChainCodexMACHeader       = "X-Codex-Mac"
+	probeChainCodexVersionHeader   = "X-Codex-Api-Version"
+	probeChainCodexRelayModeHeader = "X-Codex-Relay-Mode"
+	probeChainCodexRelayRoleHeader = "X-Codex-Relay-Role"
+	probeChainRelayModeBridge      = "bridge"
+	probeChainBridgeRoleToNext     = "to_next"
 )
 
 var errTunnelStreamOpenTimeout = errors.New("open stream timeout")
-
-type probeChainAuthEnvelope struct {
-	Type       string              `json:"type,omitempty"`
-	APIVersion string              `json:"api_version,omitempty"`
-	RequestID  string              `json:"request_id,omitempty"`
-	Timestamp  string              `json:"timestamp,omitempty"`
-	Auth       *probeChainAuthBody `json:"auth,omitempty"`
-	Mode       string              `json:"mode,omitempty"`
-	ChainID    string              `json:"chain_id,omitempty"`
-	Nonce      string              `json:"nonce,omitempty"`
-	Signature  string              `json:"signature,omitempty"`
-}
-
-type probeChainAuthBody struct {
-	Mode      string `json:"mode,omitempty"`
-	ChainID   string `json:"chain_id,omitempty"`
-	Nonce     string `json:"nonce,omitempty"`
-	Signature string `json:"signature,omitempty"`
-}
 
 type probeChainRelayHop struct {
 	Writer  io.WriteCloser
@@ -70,11 +59,6 @@ type probeChainRelayNetConn struct {
 
 type probeChainRelayNetAddr struct {
 	label string
-}
-
-type bufferedReadCloser struct {
-	reader *bufio.Reader
-	closer io.Closer
 }
 
 type tunnelOpenRequest struct {
@@ -214,19 +198,8 @@ func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint pro
 		return nil, err
 	}
 
-	reader := bufio.NewReader(hop.Reader)
-	if err := sendProbeChainUserAuth(hop.Writer, reader, endpoint.ChainID); err != nil {
-		if hop.CloseFn != nil {
-			_ = hop.CloseFn()
-		}
-		return nil, err
-	}
-
 	relayConn := &probeChainRelayNetConn{
-		reader: &bufferedReadCloser{
-			reader: reader,
-			closer: hop.Reader,
-		},
+		reader:  hop.Reader,
 		writer:  hop.Writer,
 		closeFn: hop.CloseFn,
 	}
@@ -280,13 +253,22 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/octet-stream")
-	request.Header.Set("X-CH-Chain-ID", strings.TrimSpace(endpoint.ChainID))
+	request.Header.Set(probeChainLegacyChainIDHeader, strings.TrimSpace(endpoint.ChainID))
+	request.Header.Set(probeChainCodexChainIDHeader, strings.TrimSpace(endpoint.ChainID))
+	request.Header.Set(probeChainCodexVersionHeader, probeChainAuthPacketVersion)
+	request.Header.Set(probeChainCodexRelayModeHeader, probeChainRelayModeBridge)
+	request.Header.Set(probeChainCodexRelayRoleHeader, probeChainBridgeRoleToNext)
+	if err := applyProbeChainHMACAuthHeaders(request.Header, endpoint.ChainID, endpoint.ChainSecret); err != nil {
+		_ = bodyReader.Close()
+		_ = bodyWriter.Close()
+		return nil, err
+	}
 	if strings.TrimSpace(entryHostHeader) != "" {
 		request.Host = strings.TrimSpace(entryHostHeader)
 	}
 
 	layer := normalizeChainLinkLayerValue(endpoint.LinkLayer)
-	tlsServerName := resolveProbeChainTLSServerName(layer, entryDialHost, entryHostHeader)
+	tlsServerName := resolveProbeChainClientTLSServerName(layer, entryDialHost, entryHostHeader)
 	var closeTransport func() error
 	var client *http.Client
 	switch layer {
@@ -379,6 +361,24 @@ func buildProbeChainEntryURL(endpoint probeChainEndpoint) (string, string, strin
 	return u.String(), dialHost, hostHeader, nil
 }
 
+func resolveProbeChainClientTLSServerName(layer string, dialHost string, hostHeader string) string {
+	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
+	cleanHostHeader := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
+
+	if normalizeChainLinkLayerValue(layer) == "http" {
+		return cleanDialHost
+	}
+	if cleanHostHeader != "" {
+		if parsed := net.ParseIP(cleanHostHeader); parsed == nil {
+			return cleanHostHeader
+		}
+	}
+	if cleanDialHost != "" {
+		return cleanDialHost
+	}
+	return cleanHostHeader
+}
+
 func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader string, err error) {
 	host := strings.TrimSpace(strings.Trim(rawHost, "[]"))
 	if host == "" {
@@ -401,24 +401,6 @@ func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader st
 	return ip.String(), host, nil
 }
 
-func resolveProbeChainTLSServerName(layer string, dialHost string, hostHeader string) string {
-	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
-	cleanHostHeader := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
-
-	if normalizeChainLinkLayerValue(layer) == "http" {
-		return cleanDialHost
-	}
-	if cleanHostHeader != "" {
-		if parsed := net.ParseIP(cleanHostHeader); parsed == nil {
-			return cleanHostHeader
-		}
-	}
-	if cleanDialHost != "" {
-		return cleanDialHost
-	}
-	return cleanHostHeader
-}
-
 func selectProbeChainPreferredDialIP(ips []net.IP) net.IP {
 	for _, candidate := range ips {
 		if candidate == nil {
@@ -439,70 +421,28 @@ func selectProbeChainPreferredDialIP(ips []net.IP) net.IP {
 	return nil
 }
 
-func sendProbeChainUserAuth(writer io.Writer, reader *bufio.Reader, chainID string) error {
-	nonce, err := readProbeChainNonceChallenge(reader)
-	if err != nil {
-		return err
+func applyProbeChainHMACAuthHeaders(headers http.Header, chainID string, secret string) error {
+	cleanChainID := strings.TrimSpace(chainID)
+	cleanSecret := strings.TrimSpace(secret)
+	if cleanChainID == "" {
+		return errors.New("chain_id is required")
 	}
-	signature, err := signNonceWithLocalKey(nonce)
-	if err != nil {
-		return err
+	if cleanSecret == "" {
+		return errors.New("chain secret is required")
 	}
-	env := newProbeChainUserAuthEnvelope(chainID, nonce, signature)
-	encoded, err := json.Marshal(env)
-	if err != nil {
-		return err
-	}
-	if _, err := writer.Write(append(encoded, '\n')); err != nil {
-		return err
-	}
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(line) != "CHAUTHOK" {
-		return fmt.Errorf("probe chain auth rejected: %s", strings.TrimSpace(line))
-	}
+	nonce := randomHexToken(16)
+	headers.Set("Authorization", "Bearer "+nonce)
+	headers.Set(probeChainCodexAuthModeHeader, "secret_hmac")
+	headers.Set(probeChainCodexMACHeader, buildProbeChainHMAC(cleanSecret, cleanChainID, nonce))
 	return nil
 }
 
-func readProbeChainNonceChallenge(reader *bufio.Reader) (string, error) {
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "CHAUTHERR") {
-		return "", fmt.Errorf("probe chain auth rejected: %s", trimmed)
-	}
-	if !strings.HasPrefix(trimmed, probeChainAuthNoncePrefix) {
-		return "", fmt.Errorf("invalid nonce challenge")
-	}
-	nonce := strings.TrimSpace(strings.TrimPrefix(trimmed, probeChainAuthNoncePrefix))
-	if nonce == "" {
-		return "", fmt.Errorf("invalid nonce challenge")
-	}
-	return nonce, nil
-}
-
-func newProbeChainUserAuthEnvelope(chainID string, nonce string, signature string) probeChainAuthEnvelope {
-	body := &probeChainAuthBody{
-		Mode:      "user_signature",
-		ChainID:   strings.TrimSpace(chainID),
-		Nonce:     strings.TrimSpace(nonce),
-		Signature: strings.TrimSpace(signature),
-	}
-	return probeChainAuthEnvelope{
-		Type:       probeChainAuthPacketType,
-		APIVersion: probeChainAuthPacketVersion,
-		RequestID:  randomHexToken(8),
-		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
-		Auth:       body,
-		Mode:       body.Mode,
-		ChainID:    body.ChainID,
-		Nonce:      body.Nonce,
-		Signature:  body.Signature,
-	}
+func buildProbeChainHMAC(secret string, chainID string, nonce string) string {
+	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(secret)))
+	_, _ = mac.Write([]byte(strings.TrimSpace(chainID)))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.TrimSpace(nonce)))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func randomHexToken(size int) string {
@@ -514,20 +454,6 @@ func randomHexToken(size int) string {
 		return strconv.FormatInt(time.Now().UnixNano(), 16)
 	}
 	return hex.EncodeToString(buf)
-}
-
-func (b *bufferedReadCloser) Read(payload []byte) (int, error) {
-	if b == nil || b.reader == nil {
-		return 0, io.EOF
-	}
-	return b.reader.Read(payload)
-}
-
-func (b *bufferedReadCloser) Close() error {
-	if b == nil || b.closer == nil {
-		return nil
-	}
-	return b.closer.Close()
 }
 
 func (a probeChainRelayNetAddr) Network() string {
