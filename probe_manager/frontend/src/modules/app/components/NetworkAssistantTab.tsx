@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { PingProbeChain } from "../../../../wailsjs/go/main/App";
 import { LinkManageTab } from "./LinkManageTab";
 import type {
   NetworkAssistantLogFilterSource,
@@ -72,6 +73,28 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
   const [subTab, setSubTab] = useState<"settings" | "link" | "driver" | "status" | "logs">("settings");
   const outputRef = useRef<HTMLPreElement | null>(null);
 
+  type TunnelPingState = { ok: boolean | null; durationMS: number | null; message: string };
+  const [tunnelPingStates, setTunnelPingStates] = useState<Record<string, TunnelPingState>>({});
+  const [tunnelPingingID, setTunnelPingingID] = useState("");
+
+  async function handlePingTunnel(chainID: string) {
+    if (tunnelPingingID || !chainID.trim()) return;
+    setTunnelPingingID(chainID);
+    setTunnelPingStates((prev) => ({ ...prev, [chainID]: { ok: null, durationMS: null, message: "测试中..." } }));
+    try {
+      const result = await PingProbeChain(chainID);
+      setTunnelPingStates((prev) => ({
+        ...prev,
+        [chainID]: { ok: result.ok, durationMS: result.duration_ms ?? null, message: result.message ?? (result.ok ? "成功" : "失败") },
+      }));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setTunnelPingStates((prev) => ({ ...prev, [chainID]: { ok: false, durationMS: null, message: msg } }));
+    } finally {
+      setTunnelPingingID("");
+    }
+  }
+
   useEffect(() => {
     if (!props.logAutoScroll || !outputRef.current || subTab !== "logs") {
       return;
@@ -125,6 +148,10 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
       })),
     ];
 
+    // The currently selected chain ID when action is tunnel
+    const activeTunnelID = group.action === "tunnel" ? (group.tunnel_node_id || "").trim() : "";
+    const pingState = activeTunnelID ? tunnelPingStates[activeTunnelID] : undefined;
+
     return (
       <div key={group.group} className="rule-policy-group-row">
         <div className="rule-policy-group-title">{title}</div>
@@ -143,6 +170,43 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             );
           })}
         </div>
+        {activeTunnelID && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+            <button
+              className="btn"
+              id={`tunnel-ping-btn-${group.group}`}
+              onClick={() => void handlePingTunnel(activeTunnelID)}
+              disabled={!!tunnelPingingID}
+              style={{
+                fontSize: 11,
+                padding: "2px 10px",
+                minWidth: 52,
+                background: tunnelPingingID === activeTunnelID ? "#555" : undefined,
+              }}
+            >
+              {tunnelPingingID === activeTunnelID ? "测试中" : "测试链路"}
+            </button>
+            {pingState && (
+              <span
+                style={{
+                  fontSize: 12,
+                  color:
+                    pingState.ok === null
+                      ? "#aaa"
+                      : pingState.ok
+                        ? "#4ade80"
+                        : "#f87171",
+                }}
+              >
+                {pingState.ok === null
+                  ? `⏳ ${pingState.message}`
+                  : pingState.ok
+                    ? `✅ 已通 (${pingState.durationMS}ms)`
+                    : `❌ ${pingState.message}`}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     );
   }

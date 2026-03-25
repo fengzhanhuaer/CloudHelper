@@ -371,3 +371,87 @@ func firstNonEmptyString(values ...string) string {
 	}
 	return ""
 }
+
+// ProbeChainPingResult is the result of a chain connectivity test.
+type ProbeChainPingResult struct {
+	OK         bool   `json:"ok"`
+	ChainID    string `json:"chain_id"`
+	EntryHost  string `json:"entry_host"`
+	EntryPort  int    `json:"entry_port"`
+	LinkLayer  string `json:"link_layer"`
+	DurationMS int64  `json:"duration_ms"`
+	Message    string `json:"message"`
+}
+
+// PingProbeChain tests end-to-end chain connectivity from the manager.
+// It resolves the chain entry endpoint and attempts a real relay hop connection,
+// measuring the handshake latency. This is completely different from the probe
+// link test (which tests individual relay service readiness on the probe node).
+func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
+	trimmedID := strings.TrimSpace(chainID)
+	if trimmedID == "" {
+		return ProbeChainPingResult{}, fmt.Errorf("chain_id is required")
+	}
+
+	a.networkAssistant.mu.RLock()
+	baseURL := a.networkAssistant.controllerBaseURL
+	token := a.networkAssistant.sessionToken
+	a.networkAssistant.mu.RUnlock()
+
+	if baseURL == "" || token == "" {
+		return ProbeChainPingResult{}, fmt.Errorf("not connected to controller")
+	}
+
+	warnBuf := make([]string, 0)
+	targets, _, err := fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
+		warnBuf = append(warnBuf, fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		return ProbeChainPingResult{}, fmt.Errorf("fetch chain targets failed: %w", err)
+	}
+
+	// Find the target matching our chain_id.
+	var endpoint probeChainEndpoint
+	found := false
+	for _, t := range targets {
+		if strings.TrimSpace(t.ChainID) == trimmedID {
+			endpoint = t
+			found = true
+			break
+		}
+	}
+	if !found {
+		if len(warnBuf) > 0 {
+			return ProbeChainPingResult{}, fmt.Errorf("chain entry not resolved: %s", strings.Join(warnBuf, "; "))
+		}
+		return ProbeChainPingResult{}, fmt.Errorf("chain not found: %s", trimmedID)
+	}
+
+	startedAt := time.Now()
+	hop, err := openProbeChainRelayHop(endpoint)
+	elapsed := time.Since(startedAt)
+	if err != nil {
+		return ProbeChainPingResult{
+			OK:        false,
+			ChainID:   trimmedID,
+			EntryHost: endpoint.EntryHost,
+			EntryPort: endpoint.EntryPort,
+			LinkLayer: endpoint.LinkLayer,
+			Message:   fmt.Sprintf("连接失败: %v", err),
+		}, nil
+	}
+	// Close immediately — we only care about whether the connection can be established.
+	if hop.CloseFn != nil {
+		_ = hop.CloseFn()
+	}
+
+	return ProbeChainPingResult{
+		OK:         true,
+		ChainID:    trimmedID,
+		EntryHost:  endpoint.EntryHost,
+		EntryPort:  endpoint.EntryPort,
+		LinkLayer:  endpoint.LinkLayer,
+		DurationMS: elapsed.Milliseconds(),
+		Message:    fmt.Sprintf("连接成功 (%dms)", elapsed.Milliseconds()),
+	}, nil
+}

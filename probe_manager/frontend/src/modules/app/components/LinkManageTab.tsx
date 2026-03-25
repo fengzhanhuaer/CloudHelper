@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PingProbeLinkSession,
+  PingProbeChain,
   StartProbeLinkSession,
   StopProbeLinkSession,
 } from "../../../../wailsjs/go/main/App";
@@ -106,6 +107,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const loadChainUserPublicKeySeqRef = useRef(0);
   const isOperatingChain = isLoadingChains || isSavingChain || deletingChainID !== "";
 
+  type ChainPingState = { ok: boolean | null; durationMS: number | null; message: string };
+  const [chainPingStates, setChainPingStates] = useState<Record<string, ChainPingState>>({});
+  const [chainPingingID, setChainPingingID] = useState("");
+
   useEffect(() => {
     if (!props.sessionToken.trim()) {
       stopLocalContinuousTestLoop();
@@ -132,6 +137,25 @@ export function LinkManageTab(props: LinkManageTabProps) {
     void loadNodes();
     void loadChains();
   }, [props.controllerBaseUrl, props.sessionToken]);
+
+  const handlePingChain = async (chainID: string) => {
+    if (chainPingingID) return;
+    setChainPingingID(chainID);
+    setChainPingStates((prev) => ({ ...prev, [chainID]: { ok: null, durationMS: null, message: "测试中..." } }));
+    try {
+      const result = await PingProbeChain(chainID);
+      setChainPingStates((prev) => ({
+        ...prev,
+        [chainID]: { ok: result.ok, durationMS: result.duration_ms ?? null, message: result.message ?? (result.ok ? "成功" : "失败") },
+      }));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setChainPingStates((prev) => ({ ...prev, [chainID]: { ok: false, durationMS: null, message: msg } }));
+    } finally {
+      setChainPingingID("");
+    }
+  };
+
 
   useEffect(() => {
     continuousTestingRef.current = isTesting;
@@ -1138,7 +1162,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                   <th>监听</th>
                   <th>协议</th>
                   <th>更新时间</th>
-                  <th style={{ width: 190 }}>操作</th>
+                  <th style={{ width: 250 }}>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -1182,7 +1206,40 @@ export function LinkManageTab(props: LinkManageTabProps) {
                         >
                           {deletingChainID === item.chain_id ? "删除中..." : "删除"}
                         </button>
+                        <button
+                          className="btn"
+                          id={`chain-ping-btn-${item.chain_id}`}
+                          onClick={() => void handlePingChain(item.chain_id)}
+                          disabled={!!chainPingingID}
+                          style={{
+                            minWidth: 54,
+                            background: chainPingingID === item.chain_id ? "#555" : undefined,
+                          }}
+                        >
+                          {chainPingingID === item.chain_id ? "测试中" : "测试"}
+                        </button>
                       </div>
+                      {chainPingStates[item.chain_id] && (
+                        <div
+                          className="status"
+                          style={{
+                            marginTop: 4,
+                            color:
+                              chainPingStates[item.chain_id].ok === null
+                                ? "#aaa"
+                                : chainPingStates[item.chain_id].ok
+                                  ? "#4ade80"
+                                  : "#f87171",
+                            fontSize: 12,
+                          }}
+                        >
+                          {chainPingStates[item.chain_id].ok === null
+                            ? "⏳ " + chainPingStates[item.chain_id].message
+                            : chainPingStates[item.chain_id].ok
+                              ? `✅ ${chainPingStates[item.chain_id].durationMS}ms`
+                              : `❌ ${chainPingStates[item.chain_id].message}`}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 )) : (

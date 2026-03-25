@@ -243,8 +243,8 @@ func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint pro
 	modeKey := fmt.Sprintf(
 		"chain:%s@%s:%d/%s",
 		strings.TrimSpace(endpoint.ChainID),
-		strings.TrimSpace(endpoint.RelayHost),
-		endpoint.RelayPort,
+		strings.TrimSpace(endpoint.EntryHost),
+		endpoint.EntryPort,
 		strings.TrimSpace(endpoint.LinkLayer),
 	)
 	c := &tunnelMuxClient{
@@ -267,13 +267,13 @@ func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint pro
 }
 
 func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, error) {
-	relayURL, relayHostHeader, err := buildProbeChainRelayURL(endpoint)
+	entryURL, entryHostHeader, err := buildProbeChainEntryURL(endpoint)
 	if err != nil {
 		return nil, err
 	}
 
 	bodyReader, bodyWriter := io.Pipe()
-	request, err := http.NewRequest(http.MethodPost, relayURL, bodyReader)
+	request, err := http.NewRequest(http.MethodPost, entryURL, bodyReader)
 	if err != nil {
 		_ = bodyReader.Close()
 		_ = bodyWriter.Close()
@@ -281,8 +281,8 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}
 	request.Header.Set("Content-Type", "application/octet-stream")
 	request.Header.Set("X-CH-Chain-ID", strings.TrimSpace(endpoint.ChainID))
-	if strings.TrimSpace(relayHostHeader) != "" {
-		request.Host = strings.TrimSpace(relayHostHeader)
+	if strings.TrimSpace(entryHostHeader) != "" {
+		request.Host = strings.TrimSpace(entryHostHeader)
 	}
 
 	layer := normalizeChainLinkLayerValue(endpoint.LinkLayer)
@@ -359,17 +359,17 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}, nil
 }
 
-func buildProbeChainRelayURL(endpoint probeChainEndpoint) (string, string, error) {
-	dialHost, hostHeader, err := resolveProbeChainDialIPHost(endpoint.RelayHost)
+func buildProbeChainEntryURL(endpoint probeChainEndpoint) (string, string, error) {
+	dialHost, hostHeader, err := resolveProbeChainDialIPHost(endpoint.EntryHost)
 	if err != nil {
 		return "", "", err
 	}
-	if endpoint.RelayPort <= 0 || endpoint.RelayPort > 65535 {
-		return "", "", fmt.Errorf("invalid relay port")
+	if endpoint.EntryPort <= 0 || endpoint.EntryPort > 65535 {
+		return "", "", fmt.Errorf("invalid entry port")
 	}
 	u := &url.URL{
 		Scheme: "https",
-		Host:   net.JoinHostPort(dialHost, strconv.Itoa(endpoint.RelayPort)),
+		Host:   net.JoinHostPort(dialHost, strconv.Itoa(endpoint.EntryPort)),
 		Path:   probeChainRelayAPIPath,
 	}
 	query := u.Query()
@@ -844,8 +844,8 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		modeKey = fmt.Sprintf(
 			"chain:%s@%s:%d/%s",
 			strings.TrimSpace(chainTarget.ChainID),
-			strings.TrimSpace(chainTarget.RelayHost),
-			chainTarget.RelayPort,
+			strings.TrimSpace(chainTarget.EntryHost),
+			chainTarget.EntryPort,
 			strings.TrimSpace(chainTarget.LinkLayer),
 		)
 	}
@@ -892,12 +892,12 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 
 	if hasChainTarget {
 		s.logf(
-			"tunnel mux connected via chain, node=%s chain=%s entry_node=%s relay=%s:%d layer=%s reconnects=%d",
+			"tunnel mux connected via chain, node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d",
 			targetNodeID,
 			strings.TrimSpace(chainTarget.ChainID),
 			strings.TrimSpace(chainTarget.EntryNode),
-			strings.TrimSpace(chainTarget.RelayHost),
-			chainTarget.RelayPort,
+			strings.TrimSpace(chainTarget.EntryHost),
+			chainTarget.EntryPort,
 			strings.TrimSpace(chainTarget.LinkLayer),
 			s.muxReconnects,
 		)
@@ -924,12 +924,12 @@ func (s *networkAssistantService) newTunnelMuxClientLocked(baseURL, token, nodeI
 	if err != nil {
 		if hasChainTarget {
 			s.logf(
-				"create tunnel mux client failed, node=%s base=%s chain=%s relay=%s:%d layer=%s err=%v",
+				"create tunnel mux client failed, node=%s base=%s chain=%s entry=%s:%d layer=%s err=%v",
 				nodeID,
 				baseURL,
 				strings.TrimSpace(chainTarget.ChainID),
-				strings.TrimSpace(chainTarget.RelayHost),
-				chainTarget.RelayPort,
+				strings.TrimSpace(chainTarget.EntryHost),
+				chainTarget.EntryPort,
 				strings.TrimSpace(chainTarget.LinkLayer),
 				err,
 			)

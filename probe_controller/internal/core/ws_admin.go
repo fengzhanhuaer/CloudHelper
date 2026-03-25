@@ -654,7 +654,10 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			HopConfigs     []struct {
 				NodeNo       int    `json:"node_no"`
 				ListenHost   string `json:"listen_host"`
+				// listen_port is the canonical field (renamed from legacy service_port).
 				ListenPort   int    `json:"listen_port"`
+				// service_port is the legacy field name from older frontend versions; used as fallback.
+				ServicePort  int    `json:"service_port"`
 				ExternalPort int    `json:"external_port"`
 				LinkLayer    string `json:"link_layer"`
 			} `json:"hop_configs"`
@@ -692,10 +695,14 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			HopConfigs: func() []probeLinkChainHopConfig {
 				out := make([]probeLinkChainHopConfig, 0, len(req.HopConfigs))
 				for _, cfg := range req.HopConfigs {
+					listenPort := cfg.ListenPort
+					if listenPort <= 0 {
+						listenPort = cfg.ServicePort // fallback for legacy frontend
+					}
 					out = append(out, probeLinkChainHopConfig{
 						NodeNo:       cfg.NodeNo,
 						ListenHost:   strings.TrimSpace(cfg.ListenHost),
-						ListenPort:   cfg.ListenPort,
+						ListenPort:   listenPort,
 						ExternalPort: cfg.ExternalPort,
 						LinkLayer:    strings.TrimSpace(cfg.LinkLayer),
 					})

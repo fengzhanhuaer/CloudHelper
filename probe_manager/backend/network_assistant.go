@@ -142,8 +142,8 @@ type probeChainEndpoint struct {
 	TargetID  string
 	ChainID   string
 	EntryNode string
-	RelayHost string
-	RelayPort int
+	EntryHost string // public-facing host of the entry hop (DDNS or ip)
+	EntryPort int    // public-facing port of the entry hop (external_port, fallback to listen_port)
 	LinkLayer string
 }
 
@@ -2280,7 +2280,7 @@ func isLikelyAPIDomainHostValue(host string) bool {
 	return strings.HasPrefix(value, "api.") || strings.Contains(value, ".api.")
 }
 
-func selectProbeChainRelayHost(node probeNodeAdminItem) string {
+func selectProbeChainEntryHost(node probeNodeAdminItem) string {
 	ddns := normalizeHostValue(node.DDNS)
 	var candidates []string
 	// If DDNS is a plain domain (not api.*), construct api.<ddns> as the preferred relay host.
@@ -2306,12 +2306,7 @@ func selectProbeChainRelayHost(node probeNodeAdminItem) string {
 	return best
 }
 
-// selectProbeChainRelayPort returns the node's relay port from node-level config.
-// Since listen_port is now per-chain hop_config, this always returns 0;
-// the caller should use hop.ExternalPort directly.
-func selectProbeChainRelayPort(_ probeNodeAdminItem) int {
-	return 0
-}
+// relay_port at node level is deprecated; port is always resolved from hop_config.external_port.
 
 func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, ...any)) (map[string]probeChainEndpoint, []string, error) {
 	wsURL, err := buildAdminWSURL(baseURL)
@@ -2422,40 +2417,36 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 		}
 		entryNodeID := route[0]
 
-		// Resolve relay host: prefer relay_host from hop_config (auto-filled by server
-		// from Cloudflare DDNS), fall back to probe node settings.
-		host := ""
-		port := 0
+		// Resolve entry host: prefer relay_host from hop_config (auto-filled by server
+		// from Cloudflare DDNS), fall back to probe node DDNS/service_host.
+		entryHost := ""
+		entryPort := 0
 		for _, hop := range chain.HopConfigs {
 			if hop.NodeNo > 0 && strconv.Itoa(hop.NodeNo) == entryNodeID {
-				host = strings.TrimSpace(hop.RelayHost)
-				// ExternalPort is the public-facing port (auto-filled by server = listen_port if not set).
-				// ListenPort is the internal listening port, used only if external_port somehow absent.
+				entryHost = strings.TrimSpace(hop.RelayHost)
+				// ExternalPort is the canonical public-facing port (auto-filled by server to listen_port when 0).
+				// Fall back to listen_port for legacy records saved before external_port was introduced.
 				if hop.ExternalPort > 0 {
-					port = hop.ExternalPort
+					entryPort = hop.ExternalPort
 				} else if hop.ListenPort > 0 {
-					port = hop.ListenPort
+					entryPort = hop.ListenPort
 				}
 				break
 			}
 		}
-		if host == "" {
+		if entryHost == "" {
 			if node, ok := nodeByID[entryNodeID]; ok {
-				host = selectProbeChainRelayHost(node)
+				entryHost = selectProbeChainEntryHost(node)
 			}
 		}
-		if port <= 0 {
-			if node, ok := nodeByID[entryNodeID]; ok {
-				port = selectProbeChainRelayPort(node)
-			}
-		}
+		// relay_port at node level is deprecated; entryPort must come from hop_config.
 
-		if host == "" {
-			warnf("chain entry node has no relay host (hop relay_host/public_host/ddns all empty): chain_id=%s entry_node=%s", chainID, entryNodeID)
+		if entryHost == "" {
+			warnf("chain entry node has no host (hop relay_host/ddns all empty): chain_id=%s entry_node=%s", chainID, entryNodeID)
 			continue
 		}
-		if port <= 0 {
-			warnf("chain entry node has no relay port (hop external_port/listen_port all 0): chain_id=%s entry_node=%s", chainID, entryNodeID)
+		if entryPort <= 0 {
+			warnf("chain entry node has no port (hop external_port/listen_port all 0): chain_id=%s entry_node=%s", chainID, entryNodeID)
 			continue
 		}
 		if targetID == "" {
@@ -2465,8 +2456,8 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 			TargetID:  targetID,
 			ChainID:   chainID,
 			EntryNode: entryNodeID,
-			RelayHost: host,
-			RelayPort: port,
+			EntryHost: entryHost,
+			EntryPort: entryPort,
 			LinkLayer: resolveProbeChainEntryLinkLayer(chain, entryNodeID),
 		}
 	}

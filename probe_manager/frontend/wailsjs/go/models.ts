@@ -288,6 +288,30 @@ export namespace backend {
 	        this.duration_ms = source["duration_ms"];
 	    }
 	}
+	export class ProbeChainPingResult {
+	    ok: boolean;
+	    chain_id: string;
+	    entry_host: string;
+	    entry_port: number;
+	    link_layer: string;
+	    duration_ms: number;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeChainPingResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.chain_id = source["chain_id"];
+	        this.entry_host = source["entry_host"];
+	        this.entry_port = source["entry_port"];
+	        this.link_layer = source["link_layer"];
+	        this.duration_ms = source["duration_ms"];
+	        this.message = source["message"];
+	    }
+	}
 	export class ReleaseAsset {
 	    name: string;
 	    size: number;
