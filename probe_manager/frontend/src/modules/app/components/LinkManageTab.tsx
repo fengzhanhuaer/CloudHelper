@@ -214,6 +214,21 @@ export function LinkManageTab(props: LinkManageTabProps) {
     () => nodes.find((item) => String(item.node_no) === selectedNodeID),
     [nodes, selectedNodeID],
   );
+  const nodeNameByID = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const item of nodes) {
+      const nodeID = normalizeNodeIDText(String(item.node_no || ""));
+      if (!nodeID) {
+        continue;
+      }
+      const nodeName = String(item.node_name || "").trim();
+      if (!nodeName) {
+        continue;
+      }
+      out[nodeID] = nodeName;
+    }
+    return out;
+  }, [nodes]);
   const selectedRuntime = useMemo(() => {
     if (!selectedNode) {
       return undefined;
@@ -1334,7 +1349,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                       <div>{item.user_id || "-"}</div>
                     </td>
                     <td>
-                      <div>{buildChainRouteSummary(item)}</div>
+                      <div>{buildChainRouteSummary(item, nodeNameByID)}</div>
                       {item.hop_configs && item.hop_configs.length > 0 ? (
                         <div className="probe-table-sub">
                           hop: {item.hop_configs.map((cfg) => {
@@ -1441,7 +1456,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
             </div>
             <div className="row">
               <label>链路路由</label>
-              <div className="status-inline">{selectedChainForPortForward ? buildChainRouteSummary(selectedChainForPortForward) : "请选择链路"}</div>
+              <div className="status-inline">{selectedChainForPortForward ? buildChainRouteSummary(selectedChainForPortForward, nodeNameByID) : "请选择链路"}</div>
             </div>
             <div className="row">
               <label>端口转发规则</label>
@@ -2094,23 +2109,35 @@ function buildProbeChainRouteSummaryTextFromNodeIDTexts(nodeIDs: string[]): stri
   return parts.join("");
 }
 
-function buildChainRouteSummary(item: ProbeLinkChainItem): string {
-  const route = ["管理端"];
-  const cascades = Array.isArray(item.cascade_node_ids) ? item.cascade_node_ids : [];
-  for (const nodeID of cascades) {
-    const normalized = normalizeNodeIDText(nodeID);
-    if (!normalized) {
-      continue;
-    }
-    route.push(`#${normalized}`);
-  }
-  const exitNodeID = normalizeNodeIDText(item.exit_node_id || "");
-  if (exitNodeID) {
-    route.push(`#${exitNodeID}(出口)`);
-  } else {
-    route.push("(未配置出口)");
-  }
-  return route.join(" -> ");
+function buildChainRouteSummary(item: ProbeLinkChainItem, nodeNameByID: Record<string, string>): string {
+	const route = ["管理端"];
+	const cascades = Array.isArray(item.cascade_node_ids) ? item.cascade_node_ids : [];
+	for (const nodeID of cascades) {
+		const normalized = normalizeNodeIDText(nodeID);
+		if (!normalized) {
+			continue;
+		}
+		route.push(resolveProbeRouteNodeLabel(normalized, nodeNameByID));
+	}
+	const exitNodeID = normalizeNodeIDText(item.exit_node_id || "");
+	if (exitNodeID) {
+		route.push(`${resolveProbeRouteNodeLabel(exitNodeID, nodeNameByID)}(出口)`);
+	} else {
+		route.push("(未配置出口)");
+	}
+	return route.join(" -> ");
+}
+
+function resolveProbeRouteNodeLabel(nodeID: string, nodeNameByID: Record<string, string>): string {
+	const normalized = normalizeNodeIDText(nodeID);
+	if (!normalized) {
+		return "";
+	}
+	const nodeName = String(nodeNameByID[normalized] || "").trim();
+	if (nodeName) {
+		return nodeName;
+	}
+	return `#${normalized}`;
 }
 
 function normalizeProbeLinkHopListenHost(raw: unknown): string {
