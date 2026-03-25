@@ -24,6 +24,7 @@ type ManagerUpgradeResult = backend.ManagerUpgradeResult
 type ManagerUpgradeProgress = backend.ManagerUpgradeProgress
 type ProbeNode = backend.ProbeNode
 type ProbeLinkConnectResult = backend.ProbeLinkConnectResult
+type ProbeChainPingResult = backend.ProbeChainPingResult
 
 func NewApp() *App {
 	backend.BuildVersion = BuildVersion
@@ -178,4 +179,8 @@ func (a *App) PingProbeLinkSession() (ProbeLinkConnectResult, error) {
 
 func (a *App) StopProbeLinkSession() (bool, error) {
 	return a.inner.StopProbeLinkSession()
+}
+
+func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
+	return a.inner.PingProbeChain(chainID)
 }
