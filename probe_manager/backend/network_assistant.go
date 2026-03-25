@@ -238,6 +238,7 @@ type networkAssistantService struct {
 	tunLibraryPath   string
 	tunStatus        string
 	tunAdapterHandle uintptr
+	tunLastSyncAt    time.Time
 	tunDataPlane     localTUNDataPlane
 	tunPacketStack   localTUNPacketStack
 	tunUDPHandler    localTUNUDPHandlerCloser
