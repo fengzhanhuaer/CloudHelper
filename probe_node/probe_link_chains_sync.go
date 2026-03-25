@@ -24,18 +24,18 @@ type probeLinkChainsResponse struct {
 // probeLinkChainServerItem is a single chain record returned by the controller.
 // Fields map 1-to-1 with probeLinkChainRecord / probeChainRuntimeCacheItem.
 type probeLinkChainServerItem struct {
-	ChainID        string                         `json:"chain_id"`
-	Name           string                         `json:"name"`
-	UserID         string                         `json:"user_id"`
-	UserPublicKey  string                         `json:"user_public_key"`
-	Secret         string                         `json:"secret"`
-	EntryNodeID    string                         `json:"entry_node_id"`
-	ExitNodeID     string                         `json:"exit_node_id"`
-	CascadeNodeIDs []string                       `json:"cascade_node_ids"`
-	LinkLayer      string                         `json:"link_layer"`
-	HopConfigs     []probeLinkChainHopServerItem  `json:"hop_configs"`
-	EgressHost     string                         `json:"egress_host"`
-	EgressPort     int                            `json:"egress_port"`
+	ChainID        string                        `json:"chain_id"`
+	Name           string                        `json:"name"`
+	UserID         string                        `json:"user_id"`
+	UserPublicKey  string                        `json:"user_public_key"`
+	Secret         string                        `json:"secret"`
+	EntryNodeID    string                        `json:"entry_node_id"`
+	ExitNodeID     string                        `json:"exit_node_id"`
+	CascadeNodeIDs []string                      `json:"cascade_node_ids"`
+	LinkLayer      string                        `json:"link_layer"`
+	HopConfigs     []probeLinkChainHopServerItem `json:"hop_configs"`
+	EgressHost     string                        `json:"egress_host"`
+	EgressPort     int                           `json:"egress_port"`
 }
 
 // probeLinkChainHopServerItem maps one entry in hop_configs.
@@ -89,7 +89,7 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 		return
 	}
 
-	applyProbeLinkChainServerItems(identity, items)
+	applyProbeLinkChainServerItems(identity, controllerBaseURL, items)
 }
 
 // fetchProbeLinkChains calls GET /api/probe/link/chains and returns the list.
@@ -107,7 +107,7 @@ func fetchProbeLinkChains(ctx context.Context, controllerBaseURL string, identit
 }
 
 // applyProbeLinkChainServerItems diffs server items against running runtimes.
-func applyProbeLinkChainServerItems(identity nodeIdentity, items []probeLinkChainServerItem) {
+func applyProbeLinkChainServerItems(identity nodeIdentity, controllerBaseURL string, items []probeLinkChainServerItem) {
 	// Build a set of chain IDs from the server response.
 	serverChainIDs := make(map[string]struct{}, len(items))
 	for _, item := range items {
@@ -133,14 +133,14 @@ func applyProbeLinkChainServerItems(identity nodeIdentity, items []probeLinkChai
 
 	// Apply / update chains from the server.
 	for _, item := range items {
-		applyProbeLinkChainServerItem(identity, item)
+		applyProbeLinkChainServerItem(identity, controllerBaseURL, item)
 	}
 }
 
 // applyProbeLinkChainServerItem converts one server chain record into a
 // probeControlMessage and delegates to the existing start logic.
 // It figures out this node's role and hop config from the chain topology.
-func applyProbeLinkChainServerItem(identity nodeIdentity, item probeLinkChainServerItem) {
+func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL string, item probeLinkChainServerItem) {
 	chainID := strings.TrimSpace(item.ChainID)
 	if chainID == "" {
 		return
@@ -195,6 +195,8 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, item probeLinkChainSer
 		log.Printf("warning: probe chain sync build config failed: chain=%s err=%v", chainID, err)
 		return
 	}
+	cfg.identity = identity
+	cfg.controllerURL = resolveProbeControllerBaseURL(strings.TrimSpace(controllerBaseURL), "")
 
 	// Skip restart if config has not changed (compare fields that affect behaviour).
 	if isSameProbeChainRuntimeConfig(chainID, cfg) {

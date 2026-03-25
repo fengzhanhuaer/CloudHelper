@@ -59,12 +59,17 @@ type probeChainRuntimeConfig struct {
 	nextPort        int
 	requireUserAuth bool
 	nextAuthMode    string
+	identity        nodeIdentity
+	controllerURL   string
 }
 
 type probeChainRuntime struct {
-	cfg      probeChainRuntimeConfig
-	listener net.Listener
-	stopCh   chan struct{}
+	cfg           probeChainRuntimeConfig
+	relayListener net.Listener
+	relayAddr     string
+	httpsServer   *http.Server
+	http3Server   *http3.Server
+	stopCh        chan struct{}
 }
 
 type probeChainAuthEnvelope struct {
@@ -191,6 +196,8 @@ func runProbeChainLinkControl(cmd probeControlMessage, identity nodeIdentity, st
 			sendProbeChainLinkControlResult(stream, encoder, writeMu, result)
 			return
 		}
+		cfg.identity = identity
+		cfg.controllerURL = resolveProbeControllerBaseURL(strings.TrimSpace(cmd.ControllerBaseURL), "")
 		rt, err := startProbeChainRuntime(cfg)
 		if err != nil {
 			result.Error = err.Error()
@@ -375,15 +382,18 @@ func parseProbeChainUserPublicKey(raw string) (ed25519.PublicKey, error) {
 func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, error) {
 	_ = stopProbeChainRuntime(cfg.chainID, "restart before apply")
 
-	listenAddr := net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort))
-	ln, err := net.Listen("tcp", listenAddr)
-	if err != nil {
+	rt := &probeChainRuntime{
+		cfg:    cfg,
+		stopCh: make(chan struct{}),
+	}
+
+	if err := startProbeChainInternalRelayListener(rt); err != nil {
 		return nil, err
 	}
-	rt := &probeChainRuntime{
-		cfg:      cfg,
-		listener: ln,
-		stopCh:   make(chan struct{}),
+	if err := startProbeChainPublicRelayServer(rt); err != nil {
+		close(rt.stopCh)
+		rt.closeRuntimeResources()
+		return nil, err
 	}
 
 	probeChainRuntimeState.mu.Lock()
@@ -393,28 +403,205 @@ func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, er
 		log.Printf("warning: persist probe chain runtime cache failed: %v", err)
 	}
 
-	go func(runtime *probeChainRuntime) {
-		for {
-			conn, acceptErr := runtime.listener.Accept()
-			if acceptErr != nil {
-				select {
-				case <-runtime.stopCh:
-					return
-				default:
-				}
-				log.Printf("probe chain runtime accept failed: chain=%s err=%v", runtime.cfg.chainID, acceptErr)
-				continue
-			}
-			go handleProbeChainConn(runtime, conn)
-		}
-	}(rt)
-
 	nextTarget := "proxy"
 	if cfg.nextAuthMode != "proxy" {
 		nextTarget = net.JoinHostPort(cfg.nextHost, strconv.Itoa(cfg.nextPort))
 	}
-	log.Printf("probe chain runtime started: chain=%s role=%s listen=%s link_layer=%s next_mode=%s next=%s", cfg.chainID, cfg.role, listenAddr, cfg.linkLayer, cfg.nextAuthMode, nextTarget)
+	log.Printf(
+		"probe chain runtime started: chain=%s role=%s listen=%s layer=%s relay_internal=%s next_mode=%s next=%s",
+		cfg.chainID,
+		cfg.role,
+		net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort)),
+		normalizeProbeChainLinkLayer(cfg.linkLayer),
+		strings.TrimSpace(rt.relayAddr),
+		cfg.nextAuthMode,
+		nextTarget,
+	)
 	return rt, nil
+}
+
+func startProbeChainInternalRelayListener(runtime *probeChainRuntime) error {
+	if runtime == nil {
+		return errors.New("runtime is nil")
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	runtime.relayListener = ln
+	runtime.relayAddr = strings.TrimSpace(ln.Addr().String())
+
+	go func(rt *probeChainRuntime) {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				select {
+				case <-rt.stopCh:
+					return
+				default:
+				}
+				log.Printf("probe chain runtime internal accept failed: chain=%s err=%v", rt.cfg.chainID, acceptErr)
+				continue
+			}
+			go handleProbeChainConn(rt, conn)
+		}
+	}(runtime)
+
+	return nil
+}
+
+func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
+	if runtime == nil {
+		return errors.New("runtime is nil")
+	}
+
+	cfg := runtime.cfg
+	listenAddr := net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort))
+	layer := normalizeProbeChainLinkLayer(cfg.linkLayer)
+	handler := buildProbeChainRuntimeRelayHandler(runtime)
+
+	cert, err := prepareProbeServerCertificate(cfg.identity, strings.TrimSpace(cfg.controllerURL))
+	if err != nil {
+		return fmt.Errorf("prepare chain relay certificate failed: %w", err)
+	}
+
+	switch layer {
+	case "http3":
+		h3Server := &http3.Server{
+			Addr:    listenAddr,
+			Handler: handler,
+			TLSConfig: &tls.Config{
+				MinVersion: tls.VersionTLS13,
+				NextProtos: []string{"h3"},
+			},
+		}
+		runtime.http3Server = h3Server
+		go func(rt *probeChainRuntime, srv *http3.Server, certFile string, keyFile string) {
+			if serveErr := srv.ListenAndServeTLS(certFile, keyFile); serveErr != nil {
+				select {
+				case <-rt.stopCh:
+					return
+				default:
+				}
+				log.Printf("probe chain runtime public relay exited: chain=%s layer=http3 listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
+			}
+		}(runtime, h3Server, cert.CertPath, cert.KeyPath)
+	default:
+		httpsServer := &http.Server{
+			Addr:              listenAddr,
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		if layer == "http" {
+			httpsServer.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+		}
+		runtime.httpsServer = httpsServer
+		go func(rt *probeChainRuntime, srv *http.Server, certFile string, keyFile string, protocol string) {
+			serveErr := srv.ListenAndServeTLS(certFile, keyFile)
+			if serveErr != nil && serveErr != http.ErrServerClosed {
+				select {
+				case <-rt.stopCh:
+					return
+				default:
+				}
+				log.Printf("probe chain runtime public relay exited: chain=%s layer=%s listen=%s err=%v", rt.cfg.chainID, protocol, listenAddr, serveErr)
+			}
+		}(runtime, httpsServer, cert.CertPath, cert.KeyPath, layer)
+	}
+
+	return nil
+}
+
+func buildProbeChainRuntimeRelayHandler(runtime *probeChainRuntime) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc(probeChainRelayAPIPath, func(w http.ResponseWriter, r *http.Request) {
+		handleProbeChainRelayToRuntime(runtime, w, r)
+	})
+	return mux
+}
+
+func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {
+	if runtime == nil {
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	chainID := strings.TrimSpace(r.URL.Query().Get("chain_id"))
+	if chainID == "" {
+		chainID = strings.TrimSpace(r.Header.Get("X-CH-Chain-ID"))
+	}
+	if chainID == "" {
+		http.Error(w, "chain_id is required", http.StatusBadRequest)
+		return
+	}
+	if chainID != strings.TrimSpace(runtime.cfg.chainID) {
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+
+	dialAddr := strings.TrimSpace(runtime.relayAddr)
+	if dialAddr == "" {
+		http.Error(w, "chain runtime relay is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	targetConn, err := net.DialTimeout("tcp", dialAddr, 10*time.Second)
+	if err != nil {
+		http.Error(w, "dial chain runtime failed", http.StatusBadGateway)
+		return
+	}
+	defer targetConn.Close()
+
+	if controller := http.NewResponseController(w); controller != nil {
+		_ = controller.EnableFullDuplex()
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	streamWriter := &probeChainHTTPResponseStreamWriter{
+		writer:  w,
+		flusher: flusher,
+	}
+	sourceIP := resolveProbeChainSourceIPFromRequest(r)
+	done := make(chan error, 2)
+	go func() {
+		if strings.TrimSpace(sourceIP) != "" {
+			_, _ = io.WriteString(targetConn, probeChainSourceIPHintPrefix+sourceIP+"\n")
+		}
+		_, copyErr := io.Copy(targetConn, r.Body)
+		closeProbeChainConnWrite(targetConn)
+		done <- copyErr
+	}()
+	go func() {
+		_, copyErr := io.Copy(streamWriter, targetConn)
+		done <- copyErr
+	}()
+	<-done
+}
+
+func (rt *probeChainRuntime) closeRuntimeResources() {
+	if rt == nil {
+		return
+	}
+	if rt.httpsServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		_ = rt.httpsServer.Shutdown(ctx)
+		cancel()
+	}
+	if rt.http3Server != nil {
+		_ = rt.http3Server.Close()
+	}
+	if rt.relayListener != nil {
+		_ = rt.relayListener.Close()
+	}
 }
 
 func stopProbeChainRuntime(chainID string, reason string) bool {
@@ -432,7 +619,7 @@ func stopProbeChainRuntime(chainID string, reason string) bool {
 		return false
 	}
 	close(rt.stopCh)
-	_ = rt.listener.Close()
+	rt.closeRuntimeResources()
 	if err := persistProbeChainRuntimesToCache(); err != nil {
 		log.Printf("warning: persist probe chain runtime cache failed: %v", err)
 	}
@@ -725,8 +912,11 @@ func handleProbeChainRelayHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "chain runtime not found", http.StatusNotFound)
 		return
 	}
-	dialHost := resolveProbeChainLoopbackHost(runtime.cfg.listenHost)
-	dialAddr := net.JoinHostPort(dialHost, strconv.Itoa(runtime.cfg.listenPort))
+	dialAddr := strings.TrimSpace(runtime.relayAddr)
+	if dialAddr == "" {
+		dialHost := resolveProbeChainLoopbackHost(runtime.cfg.listenHost)
+		dialAddr = net.JoinHostPort(dialHost, strconv.Itoa(runtime.cfg.listenPort))
+	}
 	targetConn, err := net.DialTimeout("tcp", dialAddr, 10*time.Second)
 	if err != nil {
 		http.Error(w, "dial chain runtime failed", http.StatusBadGateway)
@@ -1747,7 +1937,7 @@ func buildProbeChainHMAC(secret string, chainID string, nonce string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func restoreProbeChainRuntimesFromCache() {
+func restoreProbeChainRuntimesFromCache(identity nodeIdentity, controllerBaseURL string) {
 	items, err := loadProbeChainRuntimeCacheItems()
 	if err != nil {
 		log.Printf("warning: load probe chain runtime cache failed: %v", err)
@@ -1776,6 +1966,8 @@ func restoreProbeChainRuntimesFromCache() {
 			log.Printf("warning: skip invalid cached chain runtime: chain=%s err=%v", strings.TrimSpace(item.ChainID), err)
 			continue
 		}
+		cfg.identity = identity
+		cfg.controllerURL = resolveProbeControllerBaseURL(strings.TrimSpace(controllerBaseURL), "")
 		if _, err := startProbeChainRuntime(cfg); err != nil {
 			log.Printf("warning: restore cached chain runtime failed: chain=%s err=%v", cfg.chainID, err)
 			continue

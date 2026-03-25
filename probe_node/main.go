@@ -194,7 +194,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	} else {
 		log.Printf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
-	restoreProbeChainRuntimesFromCache()
+	restoreProbeChainRuntimesFromCache(identity, controllerBaseURL)
 	startProbeLinkChainsSyncLoop(identity, controllerBaseURL)
 
 	log.Printf("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
