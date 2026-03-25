@@ -76,6 +76,63 @@ func TestProbeChainAuthFailureDelayRange(t *testing.T) {
 	}
 }
 
+func TestReadProbeChainNonceChallenge(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader(probeChainAuthNoncePrefix + "nonce-1\n"))
+	nonce, err := readProbeChainNonceChallenge(reader)
+	if err != nil {
+		t.Fatalf("readProbeChainNonceChallenge failed: %v", err)
+	}
+	if nonce != "nonce-1" {
+		t.Fatalf("unexpected nonce: %s", nonce)
+	}
+}
+
+func TestVerifyProbeChainInboundAuthNonceMismatch(t *testing.T) {
+	cfg := probeChainRuntimeConfig{
+		chainID: "chain-a",
+		secret:  "secret-1",
+	}
+	env := probeChainAuthEnvelope{
+		ChainID: "chain-a",
+		Nonce:   "nonce-a",
+		MAC:     buildProbeChainHMAC("secret-1", "chain-a", "nonce-a"),
+	}
+	err := verifyProbeChainInboundAuth(cfg, env, "nonce-b")
+	if err == nil {
+		t.Fatalf("expected nonce mismatch error")
+	}
+	if !strings.Contains(err.Error(), "nonce mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestVerifyProbeChainInboundAuthNonceMatch(t *testing.T) {
+	cfg := probeChainRuntimeConfig{
+		chainID: "chain-a",
+		secret:  "secret-1",
+	}
+	env := probeChainAuthEnvelope{
+		ChainID: "chain-a",
+		Nonce:   "nonce-a",
+		MAC:     buildProbeChainHMAC("secret-1", "chain-a", "nonce-a"),
+	}
+	if err := verifyProbeChainInboundAuth(cfg, env, "nonce-a"); err != nil {
+		t.Fatalf("verifyProbeChainInboundAuth failed: %v", err)
+	}
+}
+
+func TestResolveProbeChainTLSServerName(t *testing.T) {
+	if got := resolveProbeChainTLSServerName("http", "203.0.113.10", "api.example.com"); got != "203.0.113.10" {
+		t.Fatalf("http sni should use dial ip, got: %s", got)
+	}
+	if got := resolveProbeChainTLSServerName("http2", "203.0.113.10", "api.example.com"); got != "api.example.com" {
+		t.Fatalf("http2 sni should use api domain, got: %s", got)
+	}
+	if got := resolveProbeChainTLSServerName("http3", "203.0.113.10", "203.0.113.10"); got != "203.0.113.10" {
+		t.Fatalf("http3 sni should fallback to dial ip when host is ip, got: %s", got)
+	}
+}
+
 func resetProbeChainAuthIPStateForTest() {
 	probeChainAuthIPStateMap.mu.Lock()
 	probeChainAuthIPStateMap.items = make(map[string]probeChainAuthIPState)

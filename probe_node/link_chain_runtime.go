@@ -155,7 +155,7 @@ const (
 	probeChainRuntimeCacheFileName = "probe_link_chains_cache.json"
 	probeChainRelayAPIPath         = "/api/node/chain/relay"
 	probeChainSourceIPHintPrefix   = "CHSRCIP "
-	probeChainTLSServerName        = "api.githubcopilot.com"
+	probeChainAuthNoncePrefix      = "CHNONCE "
 
 	probeChainAuthPacketType        = "github_copilot_auth_request"
 	probeChainAuthPacketVersion     = "2025-03-22"
@@ -656,6 +656,10 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn) {
 	}
 
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
+	nonce, err := sendProbeChainNonceChallenge(conn)
+	if err != nil {
+		return
+	}
 	env, err := readProbeChainAuthEnvelope(reader)
 	if err != nil {
 		failures, blacklisted, until := recordProbeChainAuthFailure(sourceIP)
@@ -664,7 +668,7 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn) {
 		logProbeChainAuthFailure(runtime.cfg.chainID, sourceIP, failures, blacklisted, until, err)
 		return
 	}
-	if err := verifyProbeChainInboundAuth(runtime.cfg, env); err != nil {
+	if err := verifyProbeChainInboundAuth(runtime.cfg, env, nonce); err != nil {
 		failures, blacklisted, until := recordProbeChainAuthFailure(sourceIP)
 		delayProbeChainAuthFailure()
 		_, _ = io.WriteString(conn, "CHAUTHERR auth failed\n")
@@ -737,6 +741,7 @@ func openProbeChainHTTPRelayHop(cfg probeChainRuntimeConfig, layer string) (*pro
 	if err != nil {
 		return nil, err
 	}
+	tlsServerName := resolveProbeChainTLSServerName(layer, relayDialHost, relayHostHeader)
 	relayURL, err := buildProbeChainRelayURL(relayDialHost, cfg.nextPort, cfg.chainID)
 	if err != nil {
 		return nil, err
@@ -764,7 +769,7 @@ func openProbeChainHTTPRelayHop(cfg probeChainRuntimeConfig, layer string) (*pro
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS13,
 				NextProtos:         []string{"h3"},
-				ServerName:         probeChainTLSServerName,
+				ServerName:         tlsServerName,
 				InsecureSkipVerify: true,
 			},
 		}
@@ -776,7 +781,7 @@ func openProbeChainHTTPRelayHop(cfg probeChainRuntimeConfig, layer string) (*pro
 			ForceAttemptHTTP2: true,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
-				ServerName:         probeChainTLSServerName,
+				ServerName:         tlsServerName,
 				InsecureSkipVerify: true,
 			},
 		}
@@ -791,7 +796,7 @@ func openProbeChainHTTPRelayHop(cfg probeChainRuntimeConfig, layer string) (*pro
 			ForceAttemptHTTP2: false,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
-				ServerName:         probeChainTLSServerName,
+				ServerName:         tlsServerName,
 				InsecureSkipVerify: true,
 			},
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
@@ -871,6 +876,24 @@ func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader st
 		return "", "", fmt.Errorf("resolve relay host failed: no ip")
 	}
 	return ip.String(), cleanHost, nil
+}
+
+func resolveProbeChainTLSServerName(layer string, dialHost string, hostHeader string) string {
+	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
+	cleanHostHeader := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
+
+	if normalizeProbeChainLinkLayer(layer) == "http" {
+		return cleanDialHost
+	}
+	if cleanHostHeader != "" {
+		if parsed := net.ParseIP(cleanHostHeader); parsed == nil {
+			return cleanHostHeader
+		}
+	}
+	if cleanDialHost != "" {
+		return cleanDialHost
+	}
+	return cleanHostHeader
 }
 
 func selectProbeChainPreferredDialIP(ips []net.IP) net.IP {
@@ -1845,12 +1868,50 @@ func readProbeChainAuthEnvelope(reader *bufio.Reader) (probeChainAuthEnvelope, e
 	return env, nil
 }
 
-func verifyProbeChainInboundAuth(cfg probeChainRuntimeConfig, env probeChainAuthEnvelope) error {
+func sendProbeChainNonceChallenge(writer io.Writer) (string, error) {
+	nonce := randomHexToken(16)
+	nonce = strings.TrimSpace(nonce)
+	if nonce == "" {
+		nonce = randomHexToken(8)
+	}
+	if nonce == "" {
+		return "", fmt.Errorf("generate nonce failed")
+	}
+	if _, err := io.WriteString(writer, probeChainAuthNoncePrefix+nonce+"\n"); err != nil {
+		return "", err
+	}
+	return nonce, nil
+}
+
+func readProbeChainNonceChallenge(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "CHAUTHERR") {
+		return "", fmt.Errorf("next probe auth rejected: %s", trimmed)
+	}
+	if !strings.HasPrefix(trimmed, probeChainAuthNoncePrefix) {
+		return "", fmt.Errorf("invalid nonce challenge")
+	}
+	nonce := strings.TrimSpace(strings.TrimPrefix(trimmed, probeChainAuthNoncePrefix))
+	if nonce == "" {
+		return "", fmt.Errorf("invalid nonce challenge")
+	}
+	return nonce, nil
+}
+
+func verifyProbeChainInboundAuth(cfg probeChainRuntimeConfig, env probeChainAuthEnvelope, expectedNonce string) error {
 	if env.ChainID != "" && env.ChainID != cfg.chainID {
 		return fmt.Errorf("chain id mismatch")
 	}
 	if env.Nonce == "" {
 		return fmt.Errorf("nonce is required")
+	}
+	challengeNonce := strings.TrimSpace(expectedNonce)
+	if challengeNonce != "" && env.Nonce != challengeNonce {
+		return fmt.Errorf("nonce mismatch")
 	}
 	if cfg.requireUserAuth {
 		if cfg.userPublicKey == nil {
@@ -1883,7 +1944,10 @@ func verifyProbeChainInboundAuth(cfg probeChainRuntimeConfig, env probeChainAuth
 }
 
 func sendProbeChainSecretAuth(nextWriter io.Writer, nextReader *bufio.Reader, chainID string, secret string) error {
-	nonce := randomHexToken(16)
+	nonce, err := readProbeChainNonceChallenge(nextReader)
+	if err != nil {
+		return err
+	}
 	env := newProbeChainAuthEnvelope("secret_hmac", chainID, nonce, "", buildProbeChainHMAC(secret, chainID, nonce))
 	encoded, err := json.Marshal(env)
 	if err != nil {

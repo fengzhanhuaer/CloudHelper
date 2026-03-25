@@ -31,7 +31,7 @@ const (
 	probeChainRelayAPIPath      = "/api/node/chain/relay"
 	probeChainAuthPacketType    = "github_copilot_auth_request"
 	probeChainAuthPacketVersion = "2025-03-22"
-	probeChainTLSServerName     = "api.githubcopilot.com"
+	probeChainAuthNoncePrefix   = "CHNONCE "
 )
 
 var errTunnelStreamOpenTimeout = errors.New("open stream timeout")
@@ -267,7 +267,7 @@ func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint pro
 }
 
 func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, error) {
-	entryURL, entryHostHeader, err := buildProbeChainEntryURL(endpoint)
+	entryURL, entryDialHost, entryHostHeader, err := buildProbeChainEntryURL(endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -286,6 +286,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}
 
 	layer := normalizeChainLinkLayerValue(endpoint.LinkLayer)
+	tlsServerName := resolveProbeChainTLSServerName(layer, entryDialHost, entryHostHeader)
 	var closeTransport func() error
 	var client *http.Client
 	switch layer {
@@ -294,7 +295,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS13,
 				NextProtos:         []string{"h3"},
-				ServerName:         probeChainTLSServerName,
+				ServerName:         tlsServerName,
 				InsecureSkipVerify: true,
 			},
 		}
@@ -306,7 +307,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 			ForceAttemptHTTP2: true,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
-				ServerName:         probeChainTLSServerName,
+				ServerName:         tlsServerName,
 				InsecureSkipVerify: true,
 			},
 		}
@@ -321,7 +322,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 			ForceAttemptHTTP2: false,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
-				ServerName:         probeChainTLSServerName,
+				ServerName:         tlsServerName,
 				InsecureSkipVerify: true,
 			},
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
@@ -359,13 +360,13 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}, nil
 }
 
-func buildProbeChainEntryURL(endpoint probeChainEndpoint) (string, string, error) {
+func buildProbeChainEntryURL(endpoint probeChainEndpoint) (string, string, string, error) {
 	dialHost, hostHeader, err := resolveProbeChainDialIPHost(endpoint.EntryHost)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if endpoint.EntryPort <= 0 || endpoint.EntryPort > 65535 {
-		return "", "", fmt.Errorf("invalid entry port")
+		return "", "", "", fmt.Errorf("invalid entry port")
 	}
 	u := &url.URL{
 		Scheme: "https",
@@ -375,7 +376,7 @@ func buildProbeChainEntryURL(endpoint probeChainEndpoint) (string, string, error
 	query := u.Query()
 	query.Set("chain_id", strings.TrimSpace(endpoint.ChainID))
 	u.RawQuery = query.Encode()
-	return u.String(), hostHeader, nil
+	return u.String(), dialHost, hostHeader, nil
 }
 
 func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader string, err error) {
@@ -400,6 +401,24 @@ func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader st
 	return ip.String(), host, nil
 }
 
+func resolveProbeChainTLSServerName(layer string, dialHost string, hostHeader string) string {
+	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
+	cleanHostHeader := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
+
+	if normalizeChainLinkLayerValue(layer) == "http" {
+		return cleanDialHost
+	}
+	if cleanHostHeader != "" {
+		if parsed := net.ParseIP(cleanHostHeader); parsed == nil {
+			return cleanHostHeader
+		}
+	}
+	if cleanDialHost != "" {
+		return cleanDialHost
+	}
+	return cleanHostHeader
+}
+
 func selectProbeChainPreferredDialIP(ips []net.IP) net.IP {
 	for _, candidate := range ips {
 		if candidate == nil {
@@ -421,7 +440,10 @@ func selectProbeChainPreferredDialIP(ips []net.IP) net.IP {
 }
 
 func sendProbeChainUserAuth(writer io.Writer, reader *bufio.Reader, chainID string) error {
-	nonce := randomHexToken(16)
+	nonce, err := readProbeChainNonceChallenge(reader)
+	if err != nil {
+		return err
+	}
 	signature, err := signNonceWithLocalKey(nonce)
 	if err != nil {
 		return err
@@ -442,6 +464,25 @@ func sendProbeChainUserAuth(writer io.Writer, reader *bufio.Reader, chainID stri
 		return fmt.Errorf("probe chain auth rejected: %s", strings.TrimSpace(line))
 	}
 	return nil
+}
+
+func readProbeChainNonceChallenge(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "CHAUTHERR") {
+		return "", fmt.Errorf("probe chain auth rejected: %s", trimmed)
+	}
+	if !strings.HasPrefix(trimmed, probeChainAuthNoncePrefix) {
+		return "", fmt.Errorf("invalid nonce challenge")
+	}
+	nonce := strings.TrimSpace(strings.TrimPrefix(trimmed, probeChainAuthNoncePrefix))
+	if nonce == "" {
+		return "", fmt.Errorf("invalid nonce challenge")
+	}
+	return nonce, nil
 }
 
 func newProbeChainUserAuthEnvelope(chainID string, nonce string, signature string) probeChainAuthEnvelope {
