@@ -1155,10 +1155,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
                       {item.hop_configs && item.hop_configs.length > 0 ? (
                         <div className="probe-table-sub">
                           hop: {item.hop_configs.map((cfg) => {
-                            const servicePort = normalizePort(Number(cfg.service_port || 0));
-                            const externalPort = normalizePort(Number(cfg.external_port || cfg.listen_port || 0));
+                            const listenPort = normalizePort(Number(cfg.listen_port || 0));
+                            const externalPort = normalizePort(Number(cfg.external_port || 0));
                             const listenHost = normalizeProbeLinkHopListenHost(cfg.listen_host || item.listen_host || defaultLinkChainListenHost);
-                            return `#${cfg.node_no}(host:${listenHost || "-"}, svc:${servicePort || "-"}, ext:${externalPort || "-"}, ${normalizeProbeLinkLayer(cfg.link_layer)})`;
+                            return `#${cfg.node_no}(host:${listenHost || "-"}, listen:${listenPort || "-"}, ext:${externalPort || listenPort || "-"}, ${normalizeProbeLinkLayer(cfg.link_layer)})`;
                           }).join(" | ")}
                         </div>
                       ) : null}
