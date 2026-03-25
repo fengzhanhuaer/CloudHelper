@@ -632,7 +632,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
     const firstHop = hopConfigsResult.items[0];
     const fallbackListenHost = normalizeProbeLinkHopListenHost(firstHop.listen_host) || defaultLinkChainListenHost;
-    const fallbackListenPort = normalizePort(Number(firstHop.service_port || 0)) || defaultLinkChainListenPort;
+    const fallbackListenPort = normalizePort(Number(firstHop.listen_port || 0)) || defaultLinkChainListenPort;
     const fallbackLayer = normalizeProbeLinkLayer(firstHop.link_layer || defaultLinkChainLayer);
 
     setIsSavingChain(true);
@@ -973,7 +973,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                           <th>顺序</th>
                           <th>探针</th>
                           <th>监听地址</th>
-                          <th>服务端口</th>
+                          <th>监听端口</th>
                           <th>外部端口</th>
                           <th>链路协议</th>
                           <th style={{ width: 220 }}>操作</th>
@@ -1495,14 +1495,14 @@ function normalizeProbeLinkHopFormItemsFromChain(
 }
 
 function buildProbeLinkHopConfigsPayload(form: ProbeLinkChainFormState): {
-  items: Array<{ node_no: number; listen_host?: string; service_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }>;
+  items: Array<{ node_no: number; listen_host?: string; listen_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }>;
   error: string;
 } {
   const normalizedHopConfigs = normalizeProbeLinkHopFormItems(form.hopConfigs);
   if (normalizedHopConfigs.length === 0) {
     return { items: [], error: "" };
   }
-  const items: Array<{ node_no: number; listen_host?: string; service_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }> = [];
+  const items: Array<{ node_no: number; listen_host?: string; listen_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }> = [];
   for (const cfg of normalizedHopConfigs) {
     const listenHost = normalizeProbeLinkHopListenHost(cfg.listenHost);
     if (!listenHost) {
@@ -1512,12 +1512,12 @@ function buildProbeLinkHopConfigsPayload(form: ProbeLinkChainFormState): {
     const externalPort = normalizePort(cfg.externalPort);
     const layer = normalizeProbeLinkLayer(cfg.linkLayer);
     if (servicePort <= 0) {
-      return { items: [], error: `探针 #${cfg.nodeNo} 的服务端口必须在 1-65535 范围内` };
+      return { items: [], error: `探针 #${cfg.nodeNo} 的监听端口必须在 1-65535 范围内` };
     }
     items.push({
       node_no: cfg.nodeNo,
       listen_host: listenHost,
-      service_port: servicePort,
+      listen_port: servicePort,
       external_port: externalPort > 0 ? externalPort : undefined,
       link_layer: layer,
     });
