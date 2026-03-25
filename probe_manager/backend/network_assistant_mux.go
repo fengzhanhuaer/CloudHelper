@@ -363,30 +363,20 @@ func buildProbeChainEntryURL(endpoint probeChainEndpoint) (string, string, strin
 }
 
 func resolveProbeChainClientTLSServerName(layer string, dialHost string, hostHeader string) string {
-	cleanLayer := normalizeChainLinkLayerValue(layer)
+	_ = layer
 	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
 	cleanHostHeader := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
-	if cleanLayer == "http" {
-		if parsed := net.ParseIP(cleanDialHost); parsed != nil {
-			return parsed.String()
-		}
-		if parsed := net.ParseIP(cleanHostHeader); parsed != nil {
-			return parsed.String()
-		}
-		if cleanDialHost != "" {
-			return cleanDialHost
-		}
-		if cleanHostHeader != "" {
-			return cleanHostHeader
-		}
-		return probeChainTLSServerName
+	if parsed := net.ParseIP(cleanDialHost); parsed != nil {
+		return parsed.String()
 	}
-
-	if cleanHostHeader != "" {
-		return cleanHostHeader
+	if parsed := net.ParseIP(cleanHostHeader); parsed != nil {
+		return parsed.String()
 	}
 	if cleanDialHost != "" {
 		return cleanDialHost
+	}
+	if cleanHostHeader != "" {
+		return cleanHostHeader
 	}
 	return probeChainTLSServerName
 }

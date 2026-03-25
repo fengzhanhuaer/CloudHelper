@@ -662,6 +662,16 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 				LinkLayer    string `json:"link_layer"`
 				DialMode     string `json:"dial_mode"`
 			} `json:"hop_configs"`
+			PortForwards []struct {
+				ID         string `json:"id"`
+				Name       string `json:"name"`
+				ListenHost string `json:"listen_host"`
+				ListenPort int    `json:"listen_port"`
+				TargetHost string `json:"target_host"`
+				TargetPort int    `json:"target_port"`
+				Network    string `json:"network"`
+				Enabled    bool   `json:"enabled"`
+			} `json:"port_forwards"`
 			EgressHost string `json:"egress_host"`
 			EgressPort int    `json:"egress_port"`
 		}
@@ -707,6 +717,22 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 						ExternalPort: cfg.ExternalPort,
 						LinkLayer:    strings.TrimSpace(cfg.LinkLayer),
 						DialMode:     strings.TrimSpace(cfg.DialMode),
+					})
+				}
+				return out
+			}(),
+			PortForwards: func() []probeLinkChainPortForwardConfig {
+				out := make([]probeLinkChainPortForwardConfig, 0, len(req.PortForwards))
+				for _, item := range req.PortForwards {
+					out = append(out, probeLinkChainPortForwardConfig{
+						ID:         strings.TrimSpace(item.ID),
+						Name:       strings.TrimSpace(item.Name),
+						ListenHost: strings.TrimSpace(item.ListenHost),
+						ListenPort: item.ListenPort,
+						TargetHost: strings.TrimSpace(item.TargetHost),
+						TargetPort: item.TargetPort,
+						Network:    strings.TrimSpace(item.Network),
+						Enabled:    item.Enabled,
 					})
 				}
 				return out

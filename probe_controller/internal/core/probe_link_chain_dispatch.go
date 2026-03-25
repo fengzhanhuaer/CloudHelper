@@ -99,6 +99,7 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 			PrevPort:          prevPort,
 			PrevLinkLayer:     strings.TrimSpace(prevLinkLayer),
 			PrevDialMode:      strings.TrimSpace(prevDialMode),
+			PortForwards:      buildProbeChainPortForwardCommands(item.PortForwards),
 			RequireUserAuth:   i == 0,
 			NextAuthMode:      nextAuthMode,
 			ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
@@ -133,6 +134,26 @@ func removeProbeLinkChainRecord(item probeLinkChainRecord) error {
 		return errors.New(strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+func buildProbeChainPortForwardCommands(values []probeLinkChainPortForwardConfig) []probeChainPortForwardCommand {
+	if len(values) == 0 {
+		return []probeChainPortForwardCommand{}
+	}
+	out := make([]probeChainPortForwardCommand, 0, len(values))
+	for _, item := range values {
+		out = append(out, probeChainPortForwardCommand{
+			ID:         strings.TrimSpace(item.ID),
+			Name:       strings.TrimSpace(item.Name),
+			ListenHost: strings.TrimSpace(item.ListenHost),
+			ListenPort: item.ListenPort,
+			TargetHost: strings.TrimSpace(item.TargetHost),
+			TargetPort: item.TargetPort,
+			Network:    strings.TrimSpace(item.Network),
+			Enabled:    item.Enabled,
+		})
+	}
+	return out
 }
 
 type probeLinkChainNodeSettings struct {
@@ -187,6 +208,13 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 }
 
 func resolveProbeLinkChainNodeDialHost(nodeID string) (string, error) {
+	relayHosts := buildNodeRelayHostMap()
+	if host, exists := relayHosts[normalizeProbeNodeID(nodeID)]; exists {
+		if h := normalizeProbeLinkChainDialHost(host); h != "" {
+			return h, nil
+		}
+	}
+
 	node, ok := getProbeNodeByID(normalizeProbeNodeID(nodeID))
 	if !ok {
 		return "", fmt.Errorf("probe node not found: %s", nodeID)
@@ -210,13 +238,6 @@ func resolveProbeLinkChainNodeDialHost(nodeID string) (string, error) {
 			if host := normalizeProbeLinkChainDialHost(ip); host != "" {
 				return host, nil
 			}
-		}
-	}
-	// Fallback: use the Cloudflare business DDNS for this node.
-	relayHosts := buildNodeRelayHostMap()
-	if host, exists := relayHosts[normalizeProbeNodeID(nodeID)]; exists {
-		if h := normalizeProbeLinkChainDialHost(host); h != "" {
-			return h, nil
 		}
 	}
 	return "", fmt.Errorf("no dial host configured for node %s", nodeID)

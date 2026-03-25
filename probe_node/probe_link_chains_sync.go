@@ -24,18 +24,19 @@ type probeLinkChainsResponse struct {
 // probeLinkChainServerItem is a single chain record returned by the controller.
 // Fields map 1-to-1 with probeLinkChainRecord / probeChainRuntimeCacheItem.
 type probeLinkChainServerItem struct {
-	ChainID        string                        `json:"chain_id"`
-	Name           string                        `json:"name"`
-	UserID         string                        `json:"user_id"`
-	UserPublicKey  string                        `json:"user_public_key"`
-	Secret         string                        `json:"secret"`
-	EntryNodeID    string                        `json:"entry_node_id"`
-	ExitNodeID     string                        `json:"exit_node_id"`
-	CascadeNodeIDs []string                      `json:"cascade_node_ids"`
-	LinkLayer      string                        `json:"link_layer"`
-	HopConfigs     []probeLinkChainHopServerItem `json:"hop_configs"`
-	EgressHost     string                        `json:"egress_host"`
-	EgressPort     int                           `json:"egress_port"`
+	ChainID        string                            `json:"chain_id"`
+	Name           string                            `json:"name"`
+	UserID         string                            `json:"user_id"`
+	UserPublicKey  string                            `json:"user_public_key"`
+	Secret         string                            `json:"secret"`
+	EntryNodeID    string                            `json:"entry_node_id"`
+	ExitNodeID     string                            `json:"exit_node_id"`
+	CascadeNodeIDs []string                          `json:"cascade_node_ids"`
+	LinkLayer      string                            `json:"link_layer"`
+	HopConfigs     []probeLinkChainHopServerItem     `json:"hop_configs"`
+	PortForwards   []probeChainPortForwardServerItem `json:"port_forwards"`
+	EgressHost     string                            `json:"egress_host"`
+	EgressPort     int                               `json:"egress_port"`
 }
 
 // probeLinkChainHopServerItem maps one entry in hop_configs.
@@ -48,6 +49,17 @@ type probeLinkChainHopServerItem struct {
 	LinkLayer    string `json:"link_layer"`
 	DialMode     string `json:"dial_mode"`
 	RelayHost    string `json:"relay_host"`
+}
+
+type probeChainPortForwardServerItem struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ListenHost string `json:"listen_host"`
+	ListenPort int    `json:"listen_port"`
+	TargetHost string `json:"target_host"`
+	TargetPort int    `json:"target_port"`
+	Network    string `json:"network"`
+	Enabled    bool   `json:"enabled"`
 }
 
 // startProbeLinkChainsSyncLoop pulls chain configs from the controller and
@@ -198,6 +210,7 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 		PrevPort:        prevPort,
 		PrevLinkLayer:   strings.TrimSpace(prevLinkLayer),
 		PrevDialMode:    strings.TrimSpace(prevDialMode),
+		PortForwards:    buildProbeChainPortForwardMessages(item.PortForwards),
 		RequireUserAuth: strings.TrimSpace(item.UserPublicKey) != "",
 		NextAuthMode:    nextAuthMode,
 	}
@@ -346,6 +359,26 @@ func buildChainRoute(item probeLinkChainServerItem) []string {
 	return route
 }
 
+func buildProbeChainPortForwardMessages(values []probeChainPortForwardServerItem) []probeChainPortForwardMessage {
+	if len(values) == 0 {
+		return []probeChainPortForwardMessage{}
+	}
+	out := make([]probeChainPortForwardMessage, 0, len(values))
+	for _, item := range values {
+		out = append(out, probeChainPortForwardMessage{
+			ID:         strings.TrimSpace(item.ID),
+			Name:       strings.TrimSpace(item.Name),
+			ListenHost: strings.TrimSpace(item.ListenHost),
+			ListenPort: item.ListenPort,
+			TargetHost: strings.TrimSpace(item.TargetHost),
+			TargetPort: item.TargetPort,
+			Network:    strings.TrimSpace(item.Network),
+			Enabled:    item.Enabled,
+		})
+	}
+	return out
+}
+
 // isSameProbeChainRuntimeConfig returns true if the currently running runtime
 // for chainID has the same effective config as cfg (no restart needed).
 func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) bool {
@@ -369,6 +402,40 @@ func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) 
 		c.prevLinkLayer == cfg.prevLinkLayer &&
 		c.prevDialMode == cfg.prevDialMode &&
 		c.nextAuthMode == cfg.nextAuthMode &&
+		isSameProbeChainPortForwards(c.portForwards, cfg.portForwards) &&
 		c.secret == cfg.secret &&
 		c.rawPublicKey == cfg.rawPublicKey
+}
+
+func isSameProbeChainPortForwards(left []probeChainRuntimePortForward, right []probeChainRuntimePortForward) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if strings.TrimSpace(left[i].ID) != strings.TrimSpace(right[i].ID) {
+			return false
+		}
+		if strings.TrimSpace(left[i].Name) != strings.TrimSpace(right[i].Name) {
+			return false
+		}
+		if strings.TrimSpace(left[i].ListenHost) != strings.TrimSpace(right[i].ListenHost) {
+			return false
+		}
+		if left[i].ListenPort != right[i].ListenPort {
+			return false
+		}
+		if strings.TrimSpace(left[i].TargetHost) != strings.TrimSpace(right[i].TargetHost) {
+			return false
+		}
+		if left[i].TargetPort != right[i].TargetPort {
+			return false
+		}
+		if strings.TrimSpace(left[i].Network) != strings.TrimSpace(right[i].Network) {
+			return false
+		}
+		if left[i].Enabled != right[i].Enabled {
+			return false
+		}
+	}
+	return true
 }

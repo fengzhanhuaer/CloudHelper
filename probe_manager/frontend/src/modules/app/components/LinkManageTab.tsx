@@ -26,12 +26,14 @@ import type { CloudflareDDNSRecord } from "../types";
 type LinkManageTabProps = {
   controllerBaseUrl: string;
   sessionToken: string;
+  initialSubTab?: LinkManageSubTab;
 };
 
-type LinkManageSubTab = "list" | "test";
+type LinkManageSubTab = "list" | "forward" | "test";
 type ProbeLinkTestProtocol = "http" | "https" | "http3";
 type ProbeLinkLayer = "http" | "http2" | "http3";
 type ProbeLinkDialMode = "forward" | "reverse";
+type ProbeLinkPFNetwork = "tcp" | "udp" | "both";
 
 type ProbeLinkConnectResult = {
   ok?: boolean;
@@ -61,6 +63,17 @@ type ProbeLinkHopFormItem = {
   dialMode: ProbeLinkDialMode;
 };
 
+type ProbeLinkPortForwardFormItem = {
+  id: string;
+  name: string;
+  listenHost: string;
+  listenPort: number;
+  targetHost: string;
+  targetPort: number;
+  network: ProbeLinkPFNetwork;
+  enabled: boolean;
+};
+
 type ProbeLinkChainFormState = {
   chainID: string;
   name: string;
@@ -68,6 +81,7 @@ type ProbeLinkChainFormState = {
   userPublicKey: string;
   secret: string;
   hopConfigs: ProbeLinkHopFormItem[];
+  portForwards: ProbeLinkPortForwardFormItem[];
 };
 
 const defaultInternalPort = 16031;
@@ -77,10 +91,12 @@ const defaultLinkChainLayer: ProbeLinkLayer = "http";
 const defaultLinkChainDialMode: ProbeLinkDialMode = "forward";
 const defaultLinkChainEgressHost = "127.0.0.1";
 const defaultLinkChainEgressPort = 1080;
+const defaultPortForwardListenHost = "0.0.0.0";
+const defaultPortForwardNetwork: ProbeLinkPFNetwork = "tcp";
 const linkChainCacheStorageKey = "cloudhelper_probe_link_chains_cache_v1";
 
 export function LinkManageTab(props: LinkManageTabProps) {
-  const [subTab, setSubTab] = useState<LinkManageSubTab>("list");
+  const [subTab, setSubTab] = useState<LinkManageSubTab>(props.initialSubTab || "list");
   const [nodes, setNodes] = useState<ProbeNodeSyncItem[]>([]);
   const [nodeRuntimes, setNodeRuntimes] = useState<Record<number, ProbeNodeStatusItem["runtime"]>>({});
   const [nodeAPIHosts, setNodeAPIHosts] = useState<Record<number, string>>({});
@@ -113,6 +129,13 @@ export function LinkManageTab(props: LinkManageTabProps) {
   type ChainPingState = { ok: boolean | null; durationMS: number | null; message: string };
   const [chainPingStates, setChainPingStates] = useState<Record<string, ChainPingState>>({});
   const [chainPingingID, setChainPingingID] = useState("");
+
+  useEffect(() => {
+    if (!props.initialSubTab) {
+      return;
+    }
+    setSubTab(props.initialSubTab);
+  }, [props.initialSubTab]);
 
   useEffect(() => {
     if (!props.sessionToken.trim()) {
@@ -172,6 +195,20 @@ export function LinkManageTab(props: LinkManageTabProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (subTab !== "forward") {
+      return;
+    }
+    const currentID = String(editingChainID || chainForm.chainID || "").trim();
+    if (currentID) {
+      return;
+    }
+    if (chains.length === 0) {
+      return;
+    }
+    beginEditChain(chains[0]);
+  }, [chainForm.chainID, chains, editingChainID, subTab]);
+
   const selectedNode = useMemo(
     () => nodes.find((item) => String(item.node_no) === selectedNodeID),
     [nodes, selectedNodeID],
@@ -226,6 +263,17 @@ export function LinkManageTab(props: LinkManageTabProps) {
     () => chainHopConfigs.map((item) => item.nodeNo),
     [chainHopConfigs],
   );
+  const portForwardItems = useMemo(
+    () => normalizeProbeLinkPortForwardFormItems(chainForm.portForwards),
+    [chainForm.portForwards],
+  );
+  const selectedChainForPortForward = useMemo(() => {
+    const chainID = String(editingChainID || chainForm.chainID || "").trim();
+    if (!chainID) {
+      return undefined;
+    }
+    return chains.find((item) => item.chain_id === chainID);
+  }, [chainForm.chainID, chains, editingChainID]);
 
   useEffect(() => {
     if (!selectedNode) {
@@ -386,6 +434,89 @@ export function LinkManageTab(props: LinkManageTabProps) {
         hopConfigs: next,
       };
     });
+  }
+
+  function updatePortForward(id: string, patch: Partial<ProbeLinkPortForwardFormItem>) {
+    const targetID = String(id || "").trim();
+    if (!targetID) {
+      return;
+    }
+    setChainForm((prev) => {
+      const current = normalizeProbeLinkPortForwardFormItems(prev.portForwards);
+      const index = current.findIndex((item) => item.id === targetID);
+      if (index < 0) {
+        return prev;
+      }
+      const existing = current[index];
+      const next = [...current];
+      next[index] = {
+        id: existing.id,
+        name: patch.name === undefined ? existing.name : String(patch.name || ""),
+        listenHost: patch.listenHost === undefined ? existing.listenHost : normalizePortForwardHost(patch.listenHost),
+        listenPort: patch.listenPort === undefined ? existing.listenPort : normalizePort(Number(patch.listenPort || 0)),
+        targetHost: patch.targetHost === undefined ? existing.targetHost : normalizePortForwardTargetHost(patch.targetHost),
+        targetPort: patch.targetPort === undefined ? existing.targetPort : normalizePort(Number(patch.targetPort || 0)),
+        network: patch.network === undefined ? existing.network : normalizeProbeLinkPFNetwork(patch.network),
+        enabled: patch.enabled === undefined ? existing.enabled : patch.enabled === true,
+      };
+      return {
+        ...prev,
+        portForwards: next,
+      };
+    });
+  }
+
+  function addPortForward() {
+    setChainForm((prev) => {
+      const current = normalizeProbeLinkPortForwardFormItems(prev.portForwards);
+      return {
+        ...prev,
+        portForwards: [
+          ...current,
+          {
+            id: buildPortForwardFormID(),
+            name: "",
+            listenHost: defaultPortForwardListenHost,
+            listenPort: 0,
+            targetHost: "",
+            targetPort: 0,
+            network: defaultPortForwardNetwork,
+            enabled: true,
+          },
+        ],
+      };
+    });
+  }
+
+  function removePortForward(id: string) {
+    const targetID = String(id || "").trim();
+    if (!targetID) {
+      return;
+    }
+    setChainForm((prev) => {
+      const current = normalizeProbeLinkPortForwardFormItems(prev.portForwards);
+      const next = current.filter((item) => item.id !== targetID);
+      if (next.length === current.length) {
+        return prev;
+      }
+      return {
+        ...prev,
+        portForwards: next,
+      };
+    });
+  }
+
+  function handleSelectChainForPortForward(chainIDRaw: string) {
+    const chainID = String(chainIDRaw || "").trim();
+    if (!chainID) {
+      return;
+    }
+    const found = chains.find((item) => item.chain_id === chainID);
+    if (!found) {
+      setChainStatus(`链路不存在：${chainID}`);
+      return;
+    }
+    beginEditChain(found);
   }
 
   async function loadChainUsers() {
@@ -612,6 +743,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         normalizeProbeLinkLayer(item.link_layer),
         routeNodeIDs,
       ),
+      portForwards: normalizeProbeLinkPortForwardFormItemsFromChain(item.port_forwards),
     });
     if (normalizedUserID && !chainUserPublicKeys[normalizedUserID]) {
       void loadChainUserPublicKey(normalizedUserID, { silentStatus: true });
@@ -660,6 +792,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChainStatus("请至少添加一个探针，最后一个探针将自动作为出口");
       return;
     }
+    const portForwardsResult = buildProbeLinkPortForwardsPayload(chainForm);
+    if (portForwardsResult.error) {
+      setChainStatus(portForwardsResult.error);
+      return;
+    }
     const firstHop = hopConfigsResult.items[0];
     const fallbackListenHost = normalizeProbeLinkHopListenHost(firstHop.listen_host) || defaultLinkChainListenHost;
     const fallbackListenPort = normalizePort(Number(firstHop.listen_port || 0)) || defaultLinkChainListenPort;
@@ -681,6 +818,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         listen_port: fallbackListenPort,
         link_layer: fallbackLayer,
         hop_configs: hopConfigsResult.items,
+        port_forwards: portForwardsResult.items,
         egress_host: defaultLinkChainEgressHost,
         egress_port: defaultLinkChainEgressPort,
       });
@@ -954,6 +1092,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
 
       <div className="subtab-list" style={{ marginBottom: 12 }}>
         <button className={`subtab-btn ${subTab === "list" ? "active" : ""}`} onClick={() => setSubTab("list")}>链路列表</button>
+        <button className={`subtab-btn ${subTab === "forward" ? "active" : ""}`} onClick={() => setSubTab("forward")}>端口转发</button>
         <button className={`subtab-btn ${subTab === "test" ? "active" : ""}`} onClick={() => setSubTab("test")}>测试</button>
       </div>
 
@@ -1205,6 +1344,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
                           }).join(" | ")}
                         </div>
                       ) : null}
+                      {item.port_forwards && item.port_forwards.length > 0 ? (
+                        <div className="probe-table-sub">
+                          端口转发: {item.port_forwards.filter((rule) => rule.enabled).length}/{item.port_forwards.length} 启用
+                        </div>
+                      ) : null}
                     </td>
                     <td>{item.hop_configs && item.hop_configs.length > 0 ? "按探针配置" : `${item.listen_host || defaultLinkChainListenHost}:${normalizePort(item.listen_port || 0)}`}</td>
                     <td>{normalizeProbeLinkLayer(item.link_layer)}</td>
@@ -1271,6 +1415,165 @@ export function LinkManageTab(props: LinkManageTabProps) {
               </tbody>
             </table>
           </div>
+        </>
+      ) : null}
+
+      {subTab === "forward" ? (
+        <>
+          <div className="identity-card">
+            <div className="row">
+              <label>链路</label>
+              <select
+                className="input"
+                value={String(editingChainID || chainForm.chainID || "")}
+                onChange={(event) => handleSelectChainForPortForward(event.target.value)}
+                disabled={isOperatingChain || isLoadingChains}
+              >
+                <option value="">请选择链路</option>
+                {chains.map((item) => (
+                  <option key={`forward-chain-${item.chain_id}`} value={item.chain_id}>
+                    {item.name || `链路 ${item.chain_id}`} ({item.chain_id})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="row">
+              <label>链路路由</label>
+              <div className="status-inline">{selectedChainForPortForward ? buildChainRouteSummary(selectedChainForPortForward) : "请选择链路"}</div>
+            </div>
+            <div className="row">
+              <label>端口转发规则</label>
+              <div style={{ width: "100%" }}>
+                <div className="content-actions" style={{ marginTop: 0, marginBottom: 8 }}>
+                  <button className="btn" onClick={addPortForward} disabled={isOperatingChain || !selectedChainForPortForward}>添加规则</button>
+                </div>
+                {portForwardItems.length > 0 ? (
+                  <div className="probe-table-wrap" style={{ marginTop: 4 }}>
+                    <table className="probe-table" style={{ minWidth: 980 }}>
+                      <thead>
+                        <tr>
+                          <th>规则</th>
+                          <th>本地监听</th>
+                          <th>远端目标</th>
+                          <th>协议</th>
+                          <th>启用</th>
+                          <th style={{ width: 180 }}>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {portForwardItems.map((item) => (
+                          <tr key={`port-forward-${item.id}`}>
+                            <td>
+                              <input
+                                className="input"
+                                value={item.name}
+                                placeholder={item.id}
+                                onChange={(event) => updatePortForward(item.id, { name: event.target.value })}
+                                disabled={isOperatingChain}
+                              />
+                            </td>
+                            <td>
+                              <div style={{ display: "grid", gap: 6, gridTemplateColumns: "1fr 120px" }}>
+                                <input
+                                  className="input"
+                                  value={item.listenHost}
+                                  placeholder={defaultPortForwardListenHost}
+                                  onChange={(event) => updatePortForward(item.id, { listenHost: event.target.value })}
+                                  disabled={isOperatingChain}
+                                />
+                                <input
+                                  className="input"
+                                  type="number"
+                                  min={1}
+                                  max={65535}
+                                  value={item.listenPort > 0 ? item.listenPort : ""}
+                                  onChange={(event) => updatePortForward(item.id, { listenPort: Number(event.target.value) || 0 })}
+                                  disabled={isOperatingChain}
+                                />
+                              </div>
+                            </td>
+                            <td>
+                              <div style={{ display: "grid", gap: 6, gridTemplateColumns: "1fr 120px" }}>
+                                <input
+                                  className="input"
+                                  value={item.targetHost}
+                                  placeholder="127.0.0.1"
+                                  onChange={(event) => updatePortForward(item.id, { targetHost: event.target.value })}
+                                  disabled={isOperatingChain}
+                                />
+                                <input
+                                  className="input"
+                                  type="number"
+                                  min={1}
+                                  max={65535}
+                                  value={item.targetPort > 0 ? item.targetPort : ""}
+                                  onChange={(event) => updatePortForward(item.id, { targetPort: Number(event.target.value) || 0 })}
+                                  disabled={isOperatingChain}
+                                />
+                              </div>
+                            </td>
+                            <td>
+                              <select
+                                className="input"
+                                value={item.network}
+                                onChange={(event) => updatePortForward(item.id, { network: normalizeProbeLinkPFNetwork(event.target.value) })}
+                                disabled={isOperatingChain}
+                              >
+                                <option value="tcp">tcp</option>
+                                <option value="udp">udp</option>
+                                <option value="both">both</option>
+                              </select>
+                            </td>
+                            <td>
+                              <label className="probe-direct-toggle compact">
+                                <input
+                                  type="checkbox"
+                                  checked={item.enabled}
+                                  onChange={(event) => updatePortForward(item.id, { enabled: event.target.checked })}
+                                  disabled={isOperatingChain}
+                                />
+                                启用
+                              </label>
+                            </td>
+                            <td>
+                              <div className="probe-table-actions">
+                                <button className="btn" onClick={() => removePortForward(item.id)} disabled={isOperatingChain}>删除</button>
+                              </div>
+                              <div className="probe-table-sub">ID: {item.id}</div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="status">暂无端口转发规则。入口探针负责监听，出口探针转发到目标地址。</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="content-actions">
+            <button
+              className="btn"
+              onClick={() => {
+                void loadChains();
+              }}
+              disabled={isOperatingChain}
+            >
+              {isLoadingChains ? "刷新中..." : "刷新链路"}
+            </button>
+            <button
+              className="btn"
+              onClick={() => void handleSaveChain()}
+              disabled={isOperatingChain || !selectedChainForPortForward}
+            >
+              {isSavingChain ? "保存中..." : "保存端口转发"}
+            </button>
+          </div>
+
+          <div className="status">{chainStatus}</div>
+          <div className="status">当前规则条数：{portForwardItems.length}</div>
         </>
       ) : null}
 
@@ -1369,6 +1672,7 @@ function createEmptyProbeLinkChainForm(
     userPublicKey: String(defaultUserPublicKey || "").trim(),
     secret: "",
     hopConfigs: [],
+    portForwards: [],
   };
 }
 
@@ -1465,6 +1769,87 @@ function normalizeProbeLinkDialMode(raw: unknown): ProbeLinkDialMode {
     return "reverse";
   }
   return "forward";
+}
+
+function normalizeProbeLinkPFNetwork(raw: unknown): ProbeLinkPFNetwork {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "udp") {
+    return "udp";
+  }
+  if (value === "both" || value === "tcp+udp" || value === "udp+tcp") {
+    return "both";
+  }
+  return "tcp";
+}
+
+function normalizePortForwardHost(raw: unknown): string {
+  const value = String(raw ?? "").trim();
+  return value || defaultPortForwardListenHost;
+}
+
+function normalizePortForwardTargetHost(raw: unknown): string {
+  return String(raw ?? "").trim();
+}
+
+function buildPortForwardFormID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `pf-${crypto.randomUUID().slice(0, 8)}`;
+  }
+  return `pf-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function normalizeProbeLinkPortForwardFormItems(values?: ProbeLinkPortForwardFormItem[]): ProbeLinkPortForwardFormItem[] {
+  if (!Array.isArray(values) || values.length === 0) {
+    return [];
+  }
+  const out: ProbeLinkPortForwardFormItem[] = [];
+  const seen = new Set<string>();
+  for (const item of values) {
+    const id = String(item.id || "").trim() || buildPortForwardFormID();
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    out.push({
+      id,
+      name: String(item.name || ""),
+      listenHost: normalizePortForwardHost(item.listenHost),
+      listenPort: normalizePort(Number(item.listenPort || 0)),
+      targetHost: normalizePortForwardTargetHost(item.targetHost),
+      targetPort: normalizePort(Number(item.targetPort || 0)),
+      network: normalizeProbeLinkPFNetwork(item.network),
+      enabled: item.enabled !== false,
+    });
+  }
+  return out;
+}
+
+function normalizeProbeLinkPortForwardFormItemsFromChain(
+  values: ProbeLinkChainItem["port_forwards"] | undefined,
+): ProbeLinkPortForwardFormItem[] {
+  if (!Array.isArray(values) || values.length === 0) {
+    return [];
+  }
+  const out: ProbeLinkPortForwardFormItem[] = [];
+  const seen = new Set<string>();
+  for (const item of values) {
+    const id = String(item.id || "").trim() || buildPortForwardFormID();
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    out.push({
+      id,
+      name: String(item.name || ""),
+      listenHost: normalizePortForwardHost(item.listen_host),
+      listenPort: normalizePort(Number(item.listen_port || 0)),
+      targetHost: normalizePortForwardTargetHost(item.target_host),
+      targetPort: normalizePort(Number(item.target_port || 0)),
+      network: normalizeProbeLinkPFNetwork(item.network),
+      enabled: item.enabled !== false,
+    });
+  }
+  return out;
 }
 
 function normalizeNodeIDText(raw: unknown): string {
@@ -1609,6 +1994,62 @@ function buildProbeLinkHopConfigsPayload(form: ProbeLinkChainFormState): {
       external_port: externalPort > 0 ? externalPort : undefined,
       link_layer: layer,
       dial_mode: dialMode,
+    });
+  }
+  return { items, error: "" };
+}
+
+function buildProbeLinkPortForwardsPayload(form: ProbeLinkChainFormState): {
+  items: Array<{
+    id?: string;
+    name?: string;
+    listen_host?: string;
+    listen_port: number;
+    target_host: string;
+    target_port: number;
+    network?: ProbeLinkPFNetwork;
+    enabled: boolean;
+  }>;
+  error: string;
+} {
+  const normalized = normalizeProbeLinkPortForwardFormItems(form.portForwards);
+  if (normalized.length === 0) {
+    return { items: [], error: "" };
+  }
+  const items: Array<{
+    id?: string;
+    name?: string;
+    listen_host?: string;
+    listen_port: number;
+    target_host: string;
+    target_port: number;
+    network?: ProbeLinkPFNetwork;
+    enabled: boolean;
+  }> = [];
+  for (const cfg of normalized) {
+    const listenHost = normalizePortForwardHost(cfg.listenHost);
+    const listenPort = normalizePort(cfg.listenPort);
+    const targetHost = normalizePortForwardTargetHost(cfg.targetHost);
+    const targetPort = normalizePort(cfg.targetPort);
+    const network = normalizeProbeLinkPFNetwork(cfg.network);
+    if (listenPort <= 0) {
+      return { items: [], error: `端口转发 ${cfg.name || cfg.id} 的监听端口必须在 1-65535 范围内` };
+    }
+    if (!targetHost) {
+      return { items: [], error: `端口转发 ${cfg.name || cfg.id} 的目标地址不能为空` };
+    }
+    if (targetPort <= 0) {
+      return { items: [], error: `端口转发 ${cfg.name || cfg.id} 的目标端口必须在 1-65535 范围内` };
+    }
+    items.push({
+      id: cfg.id,
+      name: cfg.name,
+      listen_host: listenHost,
+      listen_port: listenPort,
+      target_host: targetHost,
+      target_port: targetPort,
+      network,
+      enabled: cfg.enabled,
     });
   }
   return { items, error: "" };
