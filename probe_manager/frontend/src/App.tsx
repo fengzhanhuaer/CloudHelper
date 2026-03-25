@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import logo from "./assets/images/site-icon.png";
 import "./App.css";
 import { resolveTabs } from "./modules/app/authz";
@@ -175,13 +175,11 @@ function App() {
             onSaveBackupSettings={(enabled, value) => void upgrade.saveBackupSettings(settings.baseUrl, auth.sessionToken, enabled, value, reauthenticateSession)}
             onTestBackupSettings={(value) => void upgrade.testBackupSettings(settings.baseUrl, auth.sessionToken, value, reauthenticateSession)}
             networkAssistantStatus={networkAssistant.status}
-            networkSelectedNode={networkAssistant.selectedNode}
-            onNetworkSelectedNodeChange={networkAssistant.setSelectedNode}
             isOperatingNetworkAssistant={networkAssistant.isOperating}
             networkOperateStatus={networkAssistant.operateStatus}
             onRefreshNetworkAssistantStatus={() => networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken)}
-            onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct", networkAssistant.selectedNode)}
-            onSwitchNetworkRule={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "rule", networkAssistant.selectedNode)}
+            onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct")}
+            onSwitchNetworkRule={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "rule")}
             networkRuleConfig={networkAssistant.ruleConfig}
             isLoadingNetworkRuleConfig={networkAssistant.isLoadingRuleConfig}
             networkRuleConfigStatus={networkAssistant.ruleConfigStatus}

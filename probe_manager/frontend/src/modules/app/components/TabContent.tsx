@@ -65,8 +65,6 @@ type TabContentProps = {
   onSaveBackupSettings: (enabled: boolean, value: string) => void;
   onTestBackupSettings: (value: string) => void;
   networkAssistantStatus: NetworkAssistantStatus;
-  networkSelectedNode: string;
-  onNetworkSelectedNodeChange: (value: string) => void;
   isOperatingNetworkAssistant: boolean;
   networkOperateStatus: string;
   onRefreshNetworkAssistantStatus: () => void;
@@ -139,8 +137,6 @@ export function TabContent(props: TabContentProps) {
           controllerBaseUrl={props.controllerBaseUrl}
           sessionToken={props.sessionToken}
           status={props.networkAssistantStatus}
-          selectedNode={props.networkSelectedNode}
-          onSelectedNodeChange={props.onNetworkSelectedNodeChange}
           isOperating={props.isOperatingNetworkAssistant}
           operateStatus={props.networkOperateStatus}
           onRefreshStatus={props.onRefreshNetworkAssistantStatus}

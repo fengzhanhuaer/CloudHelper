@@ -8,12 +8,17 @@ import type {
   NetworkAssistantStatus,
 } from "../types";
 
+const modeLabels: Record<string, string> = {
+  direct: "直连模式",
+  rule: "规则模式",
+  global: "全局模式",
+  tun: "TUN 模式",
+};
+
 type NetworkAssistantTabProps = {
   controllerBaseUrl: string;
   sessionToken: string;
   status: NetworkAssistantStatus;
-  selectedNode: string;
-  onSelectedNodeChange: (value: string) => void;
   isOperating: boolean;
   operateStatus: string;
   onRefreshStatus: () => void;
@@ -176,17 +181,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
       ) : subTab === "settings" ? (
         <>
           <div className="identity-card">
-            <div>探针节点：</div>
-            <select
-              className="input"
-              value={props.selectedNode}
-              onChange={(event) => props.onSelectedNodeChange(event.target.value)}
-              disabled={props.isOperating}
-            >
-              {(props.status.available_nodes?.length ? props.status.available_nodes : ["cloudserver"]).map((node) => (
-                <option key={node} value={node}>{node}</option>
-              ))}
-            </select>
+            <div>当前模式：{modeLabels[props.status.mode] || props.status.mode || "直连模式"}</div>
           </div>
 
           <div className="content-actions">
