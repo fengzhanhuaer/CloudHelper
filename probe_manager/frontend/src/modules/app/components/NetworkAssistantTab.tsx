@@ -137,12 +137,13 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
   function renderRuleGroupRow(group: NetworkAssistantRuleGroupConfig, title: string) {
     const tunnelOptions = Array.isArray(group.tunnel_options) ? group.tunnel_options : [];
+    const tunnelOptionLabels = group.tunnel_option_labels || {};
     const optionItems: Array<{ key: string; label: string; action: NetworkAssistantRuleAction; tunnelNodeID?: string }> = [
       { key: `${group.group}:direct`, label: "直连", action: "direct" },
       { key: `${group.group}:reject`, label: "拒绝", action: "reject" },
       ...tunnelOptions.map((nodeID) => ({
         key: `${group.group}:tunnel:${nodeID}`,
-        label: `隧道 ${nodeID}`,
+        label: `隧道 ${tunnelOptionLabels[nodeID] || nodeID}`,
         action: "tunnel" as const,
         tunnelNodeID: nodeID,
       })),
@@ -150,6 +151,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
     // The currently selected chain ID when action is tunnel
     const activeTunnelID = group.action === "tunnel" ? (group.tunnel_node_id || "").trim() : "";
+    const activeTunnelLabel = activeTunnelID ? (tunnelOptionLabels[activeTunnelID] || activeTunnelID) : "";
     const pingState = activeTunnelID ? tunnelPingStates[activeTunnelID] : undefined;
 
     return (
@@ -172,6 +174,9 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         </div>
         {activeTunnelID && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: "#aaa" }}>
+              当前链路：{activeTunnelLabel}
+            </span>
             <button
               className="btn"
               id={`tunnel-ping-btn-${group.group}`}

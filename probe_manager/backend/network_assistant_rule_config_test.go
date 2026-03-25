@@ -16,7 +16,7 @@ func TestBuildRuleConfigFromRoutingIncludesSelectedTunnelOption(t *testing.T) {
 		RuleFilePath: "data/rule_routes.txt",
 	}
 
-	config := buildRuleConfigFromRouting(routing, []string{"cloudserver"}, "cloudserver")
+	config := buildRuleConfigFromRouting(routing, []string{"cloudserver"}, "cloudserver", nil)
 	if len(config.Groups) != 1 {
 		t.Fatalf("group count=%d, want 1", len(config.Groups))
 	}
@@ -33,6 +33,45 @@ func TestBuildRuleConfigFromRoutingIncludesSelectedTunnelOption(t *testing.T) {
 	}
 	if !containsNodeID(group.TunnelOptions, "chain:legacy-path") {
 		t.Fatalf("tunnel options missing selected tunnel: %#v", group.TunnelOptions)
+	}
+}
+
+func TestBuildRuleConfigFromRoutingUsesChainNameLabels(t *testing.T) {
+	routing := tunnelRuleRouting{
+		RuleSet: tunnelRuleSet{
+			Rules: []tunnelRule{
+				{Kind: ruleMatcherDomainSuffix, Suffix: "example.com", Group: "group_a"},
+			},
+		},
+		GroupNodeMap: map[string]string{
+			"group_a":            "tunnel:chain:1",
+			ruleFallbackGroupKey: rulePolicyActionDirect,
+		},
+		RuleFilePath: "data/rule_routes.txt",
+	}
+
+	config := buildRuleConfigFromRouting(
+		routing,
+		[]string{"cloudserver", "chain:1"},
+		"cloudserver",
+		map[string]probeChainEndpoint{
+			"chain:1": {
+				ChainID:   "1",
+				ChainName: "香港入口",
+			},
+		},
+	)
+
+	if len(config.Groups) != 1 {
+		t.Fatalf("group count=%d, want 1", len(config.Groups))
+	}
+
+	group := config.Groups[0]
+	if got := group.TunnelOptionLabels["chain:1"]; got != "香港入口" {
+		t.Fatalf("chain label=%q, want 香港入口", got)
+	}
+	if got := group.TunnelOptionLabels["cloudserver"]; got != "主控" {
+		t.Fatalf("cloudserver label=%q, want 主控", got)
 	}
 }
 

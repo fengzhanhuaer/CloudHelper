@@ -388,18 +388,25 @@ type ProbeChainPingResult struct {
 // measuring the handshake latency. This is completely different from the probe
 // link test (which tests individual relay service readiness on the probe node).
 func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
-	trimmedID := strings.TrimSpace(chainID)
-	if trimmedID == "" {
+	targetID := normalizeProbeChainPingTargetID(chainID)
+	if targetID == "" {
 		return ProbeChainPingResult{}, fmt.Errorf("chain_id is required")
 	}
 
 	a.networkAssistant.mu.RLock()
 	baseURL := a.networkAssistant.controllerBaseURL
 	token := a.networkAssistant.sessionToken
+	availableNodes := append([]string(nil), a.networkAssistant.availableNodes...)
 	a.networkAssistant.mu.RUnlock()
 
 	if baseURL == "" || token == "" {
 		return ProbeChainPingResult{}, fmt.Errorf("not connected to controller")
+	}
+
+	candidateChainIDs, explicitChainTarget := buildProbeChainPingCandidateChainIDs(targetID)
+	resolvedChainID := targetID
+	if len(candidateChainIDs) > 0 {
+		resolvedChainID = candidateChainIDs[0]
 	}
 
 	warnBuf := make([]string, 0)
@@ -413,18 +420,42 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	// Find the target matching our chain_id.
 	var endpoint probeChainEndpoint
 	found := false
-	for _, t := range targets {
-		if strings.TrimSpace(t.ChainID) == trimmedID {
-			endpoint = t
-			found = true
-			break
+	for _, candidateID := range candidateChainIDs {
+		if key := buildChainTargetNodeID(candidateID); key != "" {
+			if item, ok := targets[key]; ok {
+				endpoint = item
+				resolvedChainID = strings.TrimSpace(item.ChainID)
+				found = true
+				break
+			}
 		}
 	}
 	if !found {
+		candidateSet := make(map[string]struct{}, len(candidateChainIDs))
+		for _, candidateID := range candidateChainIDs {
+			clean := strings.ToLower(strings.TrimSpace(candidateID))
+			if clean == "" {
+				continue
+			}
+			candidateSet[clean] = struct{}{}
+		}
+		for _, t := range targets {
+			if _, ok := candidateSet[strings.ToLower(strings.TrimSpace(t.ChainID))]; ok {
+				endpoint = t
+				resolvedChainID = strings.TrimSpace(t.ChainID)
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		if !explicitChainTarget && containsNodeID(availableNodes, targetID) {
+			return pingNetworkAssistantTunnelNode(baseURL, token, targetID)
+		}
 		if len(warnBuf) > 0 {
 			return ProbeChainPingResult{}, fmt.Errorf("chain entry not resolved: %s", strings.Join(warnBuf, "; "))
 		}
-		return ProbeChainPingResult{}, fmt.Errorf("chain not found: %s", trimmedID)
+		return ProbeChainPingResult{}, fmt.Errorf("chain not found: %s", targetID)
 	}
 
 	startedAt := time.Now()
@@ -433,7 +464,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	if err != nil {
 		return ProbeChainPingResult{
 			OK:        false,
-			ChainID:   trimmedID,
+			ChainID:   resolvedChainID,
 			EntryHost: endpoint.EntryHost,
 			EntryPort: endpoint.EntryPort,
 			LinkLayer: endpoint.LinkLayer,
@@ -447,10 +478,96 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 
 	return ProbeChainPingResult{
 		OK:         true,
-		ChainID:    trimmedID,
+		ChainID:    resolvedChainID,
 		EntryHost:  endpoint.EntryHost,
 		EntryPort:  endpoint.EntryPort,
 		LinkLayer:  endpoint.LinkLayer,
+		DurationMS: elapsed.Milliseconds(),
+		Message:    fmt.Sprintf("连接成功 (%dms)", elapsed.Milliseconds()),
+	}, nil
+}
+
+func normalizeProbeChainPingTargetID(raw string) string {
+	value := strings.TrimSpace(raw)
+	value = strings.TrimLeft(value, "\ufeff\u200b\u2060")
+	value = strings.Trim(value, "\"'`")
+	value = strings.TrimSpace(value)
+	replacer := strings.NewReplacer("：", ":", "／", "/")
+	value = replacer.Replace(value)
+	return strings.TrimSpace(value)
+}
+
+func buildProbeChainPingCandidateChainIDs(targetID string) ([]string, bool) {
+	cleanTarget := normalizeProbeChainPingTargetID(targetID)
+	ids := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	add := func(raw string) {
+		value := normalizeProbeChainPingTargetID(raw)
+		if value == "" {
+			return
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		ids = append(ids, value)
+	}
+
+	explicitChainTarget := false
+	if chainID, ok := parseChainTargetNodeID(cleanTarget); ok {
+		explicitChainTarget = true
+		add(chainID)
+		add(cleanTarget)
+	}
+
+	lower := strings.ToLower(cleanTarget)
+	if strings.HasPrefix(lower, "chain://") {
+		explicitChainTarget = true
+		add(strings.TrimSpace(cleanTarget[len("chain://"):]))
+		add(cleanTarget)
+	}
+
+	if !explicitChainTarget {
+		if idx := strings.Index(lower, chainTargetNodePrefix); idx >= 0 {
+			tail := strings.TrimSpace(cleanTarget[idx+len(chainTargetNodePrefix):])
+			if tail != "" {
+				explicitChainTarget = true
+				add(tail)
+				add(cleanTarget)
+			}
+		}
+	}
+
+	if len(ids) == 0 {
+		add(cleanTarget)
+	}
+	return ids, explicitChainTarget
+}
+
+func pingNetworkAssistantTunnelNode(baseURL, token, nodeID string) (ProbeChainPingResult, error) {
+	trimmedNodeID := strings.TrimSpace(nodeID)
+	if trimmedNodeID == "" {
+		return ProbeChainPingResult{}, fmt.Errorf("node_id is required")
+	}
+
+	startedAt := time.Now()
+	client, err := newTunnelMuxClient(baseURL, token, trimmedNodeID, nil)
+	elapsed := time.Since(startedAt)
+	if err != nil {
+		return ProbeChainPingResult{
+			OK:        false,
+			ChainID:   trimmedNodeID,
+			LinkLayer: "ws",
+			Message:   fmt.Sprintf("连接失败: %v", err),
+		}, nil
+	}
+	client.close()
+
+	return ProbeChainPingResult{
+		OK:         true,
+		ChainID:    trimmedNodeID,
+		LinkLayer:  "ws",
 		DurationMS: elapsed.Milliseconds(),
 		Message:    fmt.Sprintf("连接成功 (%dms)", elapsed.Milliseconds()),
 	}, nil

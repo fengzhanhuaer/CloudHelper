@@ -108,6 +108,7 @@ export type NetworkAssistantRuleGroupConfig = {
   action: NetworkAssistantRuleAction;
   tunnel_node_id?: string;
   tunnel_options: string[];
+  tunnel_option_labels?: Record<string, string>;
 };
 
 export type NetworkAssistantRuleConfig = {

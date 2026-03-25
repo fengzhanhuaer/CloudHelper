@@ -21,6 +21,36 @@ func TestBuildProbeLinkURL(t *testing.T) {
 	}
 }
 
+func TestBuildProbeChainPingCandidateChainIDs(t *testing.T) {
+	ids, explicit := buildProbeChainPingCandidateChainIDs("chain:1")
+	if !explicit {
+		t.Fatalf("expected explicit chain target")
+	}
+	if !containsNodeID(ids, "1") || !containsNodeID(ids, "chain:1") {
+		t.Fatalf("unexpected candidate ids: %#v", ids)
+	}
+}
+
+func TestBuildProbeChainPingCandidateChainIDsWithQuotedInput(t *testing.T) {
+	ids, explicit := buildProbeChainPingCandidateChainIDs("\"\ufeffchain\uff1a1\"")
+	if !explicit {
+		t.Fatalf("expected explicit chain target")
+	}
+	if !containsNodeID(ids, "1") || !containsNodeID(ids, "chain:1") {
+		t.Fatalf("unexpected candidate ids: %#v", ids)
+	}
+}
+
+func TestBuildProbeChainPingCandidateChainIDsForNode(t *testing.T) {
+	ids, explicit := buildProbeChainPingCandidateChainIDs("cloudserver")
+	if explicit {
+		t.Fatalf("expected non-chain target")
+	}
+	if len(ids) != 1 || ids[0] != "cloudserver" {
+		t.Fatalf("unexpected candidate ids: %#v", ids)
+	}
+}
+
 func TestTestProbeLinkSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != probeLinkInfoPath {

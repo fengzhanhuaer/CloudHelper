@@ -48,10 +48,11 @@ func isRuleRouteRejectErr(err error) bool {
 }
 
 type NetworkAssistantRuleGroupConfig struct {
-	Group         string   `json:"group"`
-	Action        string   `json:"action"`
-	TunnelNodeID  string   `json:"tunnel_node_id,omitempty"`
-	TunnelOptions []string `json:"tunnel_options"`
+	Group              string            `json:"group"`
+	Action             string            `json:"action"`
+	TunnelNodeID       string            `json:"tunnel_node_id,omitempty"`
+	TunnelOptions      []string          `json:"tunnel_options"`
+	TunnelOptionLabels map[string]string `json:"tunnel_option_labels,omitempty"`
 }
 
 type NetworkAssistantRuleConfig struct {
@@ -85,6 +86,7 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 	s.mu.Lock()
 	s.ruleRouting = routing
 	availableNodes := append([]string(nil), s.availableNodes...)
+	chainTargets := copyProbeChainTargets(s.chainTargets)
 	currentNode := strings.TrimSpace(s.nodeID)
 	s.mu.Unlock()
 
@@ -92,7 +94,7 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 	if currentNode == "" {
 		currentNode = defaultNodeID
 	}
-	return buildRuleConfigFromRouting(routing, tunnelOptions, currentNode), nil
+	return buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets), nil
 }
 
 func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {
@@ -105,6 +107,7 @@ func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID stri
 
 	s.mu.RLock()
 	availableNodes := append([]string(nil), s.availableNodes...)
+	chainTargets := copyProbeChainTargets(s.chainTargets)
 	currentNode := strings.TrimSpace(s.nodeID)
 	s.mu.RUnlock()
 	if currentNode == "" {
@@ -149,35 +152,88 @@ func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID stri
 	s.ruleDNSCache = make(map[string]dnsCacheEntry)
 	s.mu.Unlock()
 
-	return buildRuleConfigFromRouting(routing, tunnelOptions, currentNode), nil
+	return buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets), nil
 }
 
-func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []string, defaultNode string) NetworkAssistantRuleConfig {
+func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []string, defaultNode string, chainTargets map[string]probeChainEndpoint) NetworkAssistantRuleConfig {
 	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
 	items := make([]NetworkAssistantRuleGroupConfig, 0, len(groups))
 	for _, group := range groups {
 		policy, _ := readRulePolicyForGroup(routing, group, defaultNode, tunnelOptions)
 		groupOptions := mergeRuleTunnelOptions(tunnelOptions, policy.TunnelNodeID)
+		groupOptionLabels := buildRuleTunnelOptionLabels(groupOptions, chainTargets)
 		items = append(items, NetworkAssistantRuleGroupConfig{
-			Group:         group,
-			Action:        policy.Action,
-			TunnelNodeID:  policy.TunnelNodeID,
-			TunnelOptions: groupOptions,
+			Group:              group,
+			Action:             policy.Action,
+			TunnelNodeID:       policy.TunnelNodeID,
+			TunnelOptions:      groupOptions,
+			TunnelOptionLabels: groupOptionLabels,
 		})
 	}
 
 	fallbackPolicy, _ := readRulePolicyForGroup(routing, ruleFallbackGroupKey, defaultNode, tunnelOptions)
 	fallbackOptions := mergeRuleTunnelOptions(tunnelOptions, fallbackPolicy.TunnelNodeID)
+	fallbackOptionLabels := buildRuleTunnelOptionLabels(fallbackOptions, chainTargets)
 	return NetworkAssistantRuleConfig{
 		RuleFilePath: strings.TrimSpace(routing.RuleFilePath),
 		Groups:       items,
 		Fallback: NetworkAssistantRuleGroupConfig{
-			Group:         ruleFallbackGroupKey,
-			Action:        fallbackPolicy.Action,
-			TunnelNodeID:  fallbackPolicy.TunnelNodeID,
-			TunnelOptions: fallbackOptions,
+			Group:              ruleFallbackGroupKey,
+			Action:             fallbackPolicy.Action,
+			TunnelNodeID:       fallbackPolicy.TunnelNodeID,
+			TunnelOptions:      fallbackOptions,
+			TunnelOptionLabels: fallbackOptionLabels,
 		},
 	}
+}
+
+func copyProbeChainTargets(source map[string]probeChainEndpoint) map[string]probeChainEndpoint {
+	if len(source) == 0 {
+		return map[string]probeChainEndpoint{}
+	}
+	targets := make(map[string]probeChainEndpoint, len(source))
+	for key, endpoint := range source {
+		targets[key] = endpoint
+	}
+	return targets
+}
+
+func buildRuleTunnelOptionLabels(tunnelOptions []string, chainTargets map[string]probeChainEndpoint) map[string]string {
+	labels := make(map[string]string, len(tunnelOptions))
+	for _, rawNodeID := range tunnelOptions {
+		nodeID := strings.TrimSpace(rawNodeID)
+		if nodeID == "" {
+			continue
+		}
+		labels[nodeID] = resolveRuleTunnelOptionLabel(nodeID, chainTargets)
+	}
+	return labels
+}
+
+func resolveRuleTunnelOptionLabel(nodeID string, chainTargets map[string]probeChainEndpoint) string {
+	cleanNodeID := strings.TrimSpace(nodeID)
+	if cleanNodeID == "" {
+		return ""
+	}
+	if strings.EqualFold(cleanNodeID, defaultNodeID) {
+		return "主控"
+	}
+	if chainID, ok := parseChainTargetNodeID(cleanNodeID); ok {
+		target, found := chainTargets[cleanNodeID]
+		if !found {
+			target, found = chainTargets[buildChainTargetNodeID(chainID)]
+		}
+		if found {
+			chainName := strings.TrimSpace(target.ChainName)
+			if chainName != "" {
+				return chainName
+			}
+		}
+		if chainID != "" {
+			return "链路 " + chainID
+		}
+	}
+	return cleanNodeID
 }
 
 func buildRuleTunnelOptions(availableNodes []string, currentNode string) []string {

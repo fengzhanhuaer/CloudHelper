@@ -118,6 +118,7 @@ type probeNodesResponse struct {
 }
 
 type probeLinkChainAdminItem struct {
+	Name           string   `json:"name"`
 	ChainID        string   `json:"chain_id"`
 	Secret         string   `json:"secret"`
 	EntryNodeID    string   `json:"entry_node_id"`
@@ -142,6 +143,7 @@ type probeNodeAdminItem struct {
 
 type probeChainEndpoint struct {
 	TargetID    string
+	ChainName   string
 	ChainID     string
 	EntryNode   string
 	EntryHost   string // public-facing host of the entry hop (DDNS or ip)
@@ -2458,6 +2460,7 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 		}
 		targets[targetID] = probeChainEndpoint{
 			TargetID:    targetID,
+			ChainName:   strings.TrimSpace(chain.Name),
 			ChainID:     chainID,
 			EntryNode:   entryNodeID,
 			EntryHost:   entryHost,
