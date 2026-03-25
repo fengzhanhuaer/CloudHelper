@@ -18,15 +18,17 @@ const (
 	maxProbeLinkChainHopCount       = 64
 	defaultProbeLinkChainListenHost = "0.0.0.0"
 	defaultProbeLinkChainLinkLayer  = "http"
+	defaultProbeLinkChainDialMode   = "forward"
 	defaultProbeLinkChainSecretLen  = 48
 )
 
 type probeLinkChainHopConfig struct {
 	NodeNo       int    `json:"node_no"`
 	ListenHost   string `json:"listen_host,omitempty"`
-	ListenPort   int    `json:"listen_port,omitempty"`  // internal port the relay service listens on
+	ListenPort   int    `json:"listen_port,omitempty"`   // internal port the relay service listens on
 	ExternalPort int    `json:"external_port,omitempty"` // public-facing port used for connections
 	LinkLayer    string `json:"link_layer"`
+	DialMode     string `json:"dial_mode,omitempty"`
 	// RelayHost is dynamically filled from the Cloudflare DDNS store (business record).
 	// It is NOT persisted; omitempty ensures it does not appear in stored JSON.
 	RelayHost string `json:"relay_host,omitempty"`
@@ -474,6 +476,30 @@ func parseProbeLinkChainLinkLayer(raw string) (string, bool) {
 	}
 }
 
+func normalizeProbeLinkChainDialMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "reverse", "rev":
+		return "reverse"
+	default:
+		return defaultProbeLinkChainDialMode
+	}
+}
+
+func parseProbeLinkChainDialMode(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", true
+	}
+	switch strings.ToLower(trimmed) {
+	case "forward", "fwd":
+		return "forward", true
+	case "reverse", "rev":
+		return "reverse", true
+	default:
+		return "", false
+	}
+}
+
 func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig, routeNodeIDs []string) ([]probeLinkChainHopConfig, error) {
 	filter := make(map[string]struct{}, len(routeNodeIDs))
 	for _, nodeID := range normalizeProbeNodeIDList(routeNodeIDs) {
@@ -511,6 +537,10 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		if !ok {
 			return nil, fmt.Errorf("hop link_layer must be http/http2/http3")
 		}
+		dialMode, dialModeOK := parseProbeLinkChainDialMode(item.DialMode)
+		if !dialModeOK {
+			return nil, fmt.Errorf("hop dial_mode must be forward/reverse")
+		}
 		if listenPort <= 0 {
 			return nil, fmt.Errorf("hop listen_port must be between 1 and 65535")
 		}
@@ -521,6 +551,9 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		if strings.TrimSpace(linkLayer) == "" {
 			linkLayer = defaultProbeLinkChainLinkLayer
 		}
+		if strings.TrimSpace(dialMode) == "" {
+			dialMode = defaultProbeLinkChainDialMode
+		}
 		seen[nodeID] = struct{}{}
 		nodeNo, _ := strconv.Atoi(nodeID)
 		out = append(out, probeLinkChainHopConfig{
@@ -529,6 +562,7 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 			ListenPort:   listenPort,
 			ExternalPort: externalPort,
 			LinkLayer:    linkLayer,
+			DialMode:     dialMode,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break
@@ -577,12 +611,19 @@ func normalizeProbeLinkChainHopConfigsForStore(values []probeLinkChainHopConfig,
 		if normalized, ok := parseProbeLinkChainLinkLayer(item.LinkLayer); ok {
 			linkLayer = normalized
 		}
-		if listenPort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" {
+		dialMode := ""
+		if normalized, ok := parseProbeLinkChainDialMode(item.DialMode); ok {
+			dialMode = normalized
+		}
+		if listenPort <= 0 && externalPort <= 0 && strings.TrimSpace(linkLayer) == "" && strings.TrimSpace(dialMode) == "" {
 			continue
 		}
 		// If external_port is not configured, default to listen_port.
 		if externalPort <= 0 {
 			externalPort = listenPort
+		}
+		if strings.TrimSpace(dialMode) == "" {
+			dialMode = defaultProbeLinkChainDialMode
 		}
 		seen[nodeID] = struct{}{}
 		nodeNo, _ := strconv.Atoi(nodeID)
@@ -592,6 +633,7 @@ func normalizeProbeLinkChainHopConfigsForStore(values []probeLinkChainHopConfig,
 			ListenPort:   listenPort,
 			ExternalPort: externalPort,
 			LinkLayer:    linkLayer,
+			DialMode:     dialMode,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break

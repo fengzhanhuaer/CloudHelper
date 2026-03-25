@@ -89,8 +89,14 @@ type probeChainLinkControlCommand struct {
 	ListenHost        string `json:"listen_host,omitempty"`
 	ListenPort        int    `json:"listen_port,omitempty"`
 	LinkLayer         string `json:"link_layer,omitempty"`
+	NextLinkLayer     string `json:"next_link_layer,omitempty"`
+	NextDialMode      string `json:"next_dial_mode,omitempty"`
 	NextHost          string `json:"next_host,omitempty"`
 	NextPort          int    `json:"next_port,omitempty"`
+	PrevHost          string `json:"prev_host,omitempty"`
+	PrevPort          int    `json:"prev_port,omitempty"`
+	PrevLinkLayer     string `json:"prev_link_layer,omitempty"`
+	PrevDialMode      string `json:"prev_dial_mode,omitempty"`
 	RequireUserAuth   bool   `json:"require_user_auth,omitempty"`
 	NextAuthMode      string `json:"next_auth_mode,omitempty"`
 	ControllerBaseURL string `json:"controller_base_url,omitempty"`

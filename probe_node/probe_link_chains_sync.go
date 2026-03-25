@@ -46,6 +46,7 @@ type probeLinkChainHopServerItem struct {
 	ListenPort   int    `json:"listen_port"`
 	ExternalPort int    `json:"external_port"`
 	LinkLayer    string `json:"link_layer"`
+	DialMode     string `json:"dial_mode"`
 	RelayHost    string `json:"relay_host"`
 }
 
@@ -161,11 +162,16 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 	}
 
 	// Determine the next hop (relay_host:external_port) based on role.
-	nextHost, nextPort, nextAuthMode := resolveProbeChainNextHopFromItem(item, nodeID, role)
+	nextHost, nextPort, nextLinkLayer, nextDialMode, nextAuthMode := resolveProbeChainNextHopFromItem(item, nodeID, role)
+	prevHost, prevPort, prevLinkLayer, prevDialMode := resolveProbeChainPrevHopFromItem(item, nodeID, role)
 
 	// Require next_host+port unless this is the exit node (next_auth_mode=proxy).
 	if nextAuthMode != "proxy" && (strings.TrimSpace(nextHost) == "" || nextPort <= 0) {
 		log.Printf("warning: probe chain sync skip chain=%s role=%s: next hop not resolved", chainID, role)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(prevDialMode), "reverse") && (strings.TrimSpace(prevHost) == "" || prevPort <= 0) {
+		log.Printf("warning: probe chain sync skip chain=%s role=%s: prev reverse hop not resolved", chainID, role)
 		return
 	}
 
@@ -184,8 +190,14 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 		ListenHost:      listenHost,
 		ListenPort:      hop.ListenPort,
 		LinkLayer:       firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"),
+		NextLinkLayer:   strings.TrimSpace(nextLinkLayer),
+		NextDialMode:    strings.TrimSpace(nextDialMode),
 		NextHost:        nextHost,
 		NextPort:        nextPort,
+		PrevHost:        prevHost,
+		PrevPort:        prevPort,
+		PrevLinkLayer:   strings.TrimSpace(prevLinkLayer),
+		PrevDialMode:    strings.TrimSpace(prevDialMode),
 		RequireUserAuth: strings.TrimSpace(item.UserPublicKey) != "",
 		NextAuthMode:    nextAuthMode,
 	}
@@ -252,10 +264,10 @@ func findHopConfigForNode(item probeLinkChainServerItem, nodeID string) probeLin
 // based on the current node's position in the chain.
 //   - Entry/Relay:  next hop = following node in route (use relay_host + external_port)
 //   - Exit:         next_auth_mode = "proxy" (connects to actual destination)
-func resolveProbeChainNextHopFromItem(item probeLinkChainServerItem, nodeID, role string) (host string, port int, authMode string) {
+func resolveProbeChainNextHopFromItem(item probeLinkChainServerItem, nodeID, role string) (host string, port int, nextLayer string, nextDialMode string, authMode string) {
 	if role == "exit" || role == "entry_exit" {
 		// Exit node proxies to the end target, no next relay needed.
-		return "", 0, "proxy"
+		return "", 0, "", probeChainDialModeNone, "proxy"
 	}
 
 	route := buildChainRoute(item)
@@ -267,7 +279,16 @@ func resolveProbeChainNextHopFromItem(item probeLinkChainServerItem, nodeID, rol
 			break
 		}
 		nextNodeID := route[i+1]
+		currentNo := i + 1
 		nextNo := i + 2 // 1-indexed
+		dialMode := probeChainDialModeForward
+		for _, hop := range item.HopConfigs {
+			if hop.NodeNo != currentNo {
+				continue
+			}
+			dialMode = normalizeProbeChainDialMode(strings.TrimSpace(hop.DialMode))
+			break
+		}
 		for _, hop := range item.HopConfigs {
 			if hop.NodeNo != nextNo {
 				continue
@@ -280,10 +301,38 @@ func resolveProbeChainNextHopFromItem(item probeLinkChainServerItem, nodeID, rol
 				externalPort = hop.ListenPort
 			}
 			_ = nextNodeID
-			return relayHost, externalPort, "secret"
+			return relayHost, externalPort, firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"), dialMode, "secret"
 		}
 	}
-	return "", 0, "none"
+	return "", 0, "", probeChainDialModeNone, "none"
+}
+
+func resolveProbeChainPrevHopFromItem(item probeLinkChainServerItem, nodeID, role string) (host string, port int, prevLayer string, prevDialMode string) {
+	if role == "entry" {
+		return "", 0, "", probeChainDialModeNone
+	}
+	route := buildChainRoute(item)
+	for i, id := range route {
+		if id != nodeID {
+			continue
+		}
+		if i <= 0 {
+			return "", 0, "", probeChainDialModeNone
+		}
+		prevNo := i
+		for _, hop := range item.HopConfigs {
+			if hop.NodeNo != prevNo {
+				continue
+			}
+			externalPort := hop.ExternalPort
+			if externalPort <= 0 {
+				externalPort = hop.ListenPort
+			}
+			return strings.TrimSpace(hop.RelayHost), externalPort, firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"), normalizeProbeChainDialMode(strings.TrimSpace(hop.DialMode))
+		}
+		break
+	}
+	return "", 0, "", probeChainDialModeNone
 }
 
 // buildChainRoute returns the ordered node ID list: [entry, cascade..., exit].
@@ -311,8 +360,14 @@ func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) 
 		c.listenHost == cfg.listenHost &&
 		c.listenPort == cfg.listenPort &&
 		c.linkLayer == cfg.linkLayer &&
+		c.nextLinkLayer == cfg.nextLinkLayer &&
+		c.nextDialMode == cfg.nextDialMode &&
 		c.nextHost == cfg.nextHost &&
 		c.nextPort == cfg.nextPort &&
+		c.prevHost == cfg.prevHost &&
+		c.prevPort == cfg.prevPort &&
+		c.prevLinkLayer == cfg.prevLinkLayer &&
+		c.prevDialMode == cfg.prevDialMode &&
 		c.nextAuthMode == cfg.nextAuthMode &&
 		c.secret == cfg.secret &&
 		c.rawPublicKey == cfg.rawPublicKey

@@ -307,6 +307,7 @@ export type ProbeLinkChainItem = {
     listen_port?: number;
     external_port?: number;
     link_layer: "http" | "http2" | "http3" | "";
+    dial_mode?: "forward" | "reverse" | "";
   }>;
   egress_host: string;
   egress_port: number;
@@ -332,6 +333,7 @@ export type ProbeLinkChainUpsertPayload = {
     listen_port?: number;
     external_port?: number;
     link_layer?: "http" | "http2" | "http3";
+    dial_mode?: "forward" | "reverse";
   }>;
   egress_host: string;
   egress_port: number;

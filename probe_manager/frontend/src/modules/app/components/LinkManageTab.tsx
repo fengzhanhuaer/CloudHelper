@@ -31,6 +31,7 @@ type LinkManageTabProps = {
 type LinkManageSubTab = "list" | "test";
 type ProbeLinkTestProtocol = "http" | "https" | "http3";
 type ProbeLinkLayer = "http" | "http2" | "http3";
+type ProbeLinkDialMode = "forward" | "reverse";
 
 type ProbeLinkConnectResult = {
   ok?: boolean;
@@ -57,6 +58,7 @@ type ProbeLinkHopFormItem = {
   servicePort: number;
   externalPort: number;
   linkLayer: ProbeLinkLayer;
+  dialMode: ProbeLinkDialMode;
 };
 
 type ProbeLinkChainFormState = {
@@ -72,6 +74,7 @@ const defaultInternalPort = 16031;
 const defaultLinkChainListenHost = "0.0.0.0";
 const defaultLinkChainListenPort = 16030;
 const defaultLinkChainLayer: ProbeLinkLayer = "http";
+const defaultLinkChainDialMode: ProbeLinkDialMode = "forward";
 const defaultLinkChainEgressHost = "127.0.0.1";
 const defaultLinkChainEgressPort = 1080;
 const linkChainCacheStorageKey = "cloudhelper_probe_link_chains_cache_v1";
@@ -250,6 +253,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
           servicePort: defaultLinkChainListenPort,
           externalPort: 0,
           linkLayer: defaultLinkChainLayer,
+          dialMode: defaultLinkChainDialMode,
         };
       const nextItem: ProbeLinkHopFormItem = {
         nodeNo: safeNodeNo,
@@ -257,6 +261,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         servicePort: patch.servicePort === undefined ? existing.servicePort : normalizePort(patch.servicePort),
         externalPort: patch.externalPort === undefined ? existing.externalPort : normalizePort(patch.externalPort),
         linkLayer: patch.linkLayer === undefined ? existing.linkLayer : normalizeProbeLinkLayer(patch.linkLayer),
+        dialMode: patch.dialMode === undefined ? existing.dialMode : normalizeProbeLinkDialMode(patch.dialMode),
       };
       const next = [...current];
       if (index >= 0) {
@@ -312,6 +317,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
             servicePort: defaultLinkChainListenPort,
             externalPort: 0,
             linkLayer: defaultLinkChainLayer,
+            dialMode: defaultLinkChainDialMode,
           },
         ],
       };
@@ -1000,6 +1006,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                           <th>监听端口</th>
                           <th>外部端口</th>
                           <th>链路协议</th>
+                          <th>建立方向</th>
                           <th style={{ width: 220 }}>操作</th>
                         </tr>
                       </thead>
@@ -1087,6 +1094,17 @@ export function LinkManageTab(props: LinkManageTabProps) {
                                   <option value="http">http</option>
                                   <option value="http2">http2</option>
                                   <option value="http3">http3</option>
+                                </select>
+                              </td>
+                              <td>
+                                <select
+                                  className="input"
+                                  value={cfg.dialMode}
+                                  onChange={(event) => updateHopConfig(nodeNo, { dialMode: normalizeProbeLinkDialMode(event.target.value) })}
+                                  disabled={isOperatingChain}
+                                >
+                                  <option value="forward">正向(本跳拨下一跳)</option>
+                                  <option value="reverse">反向(下一跳拨本跳)</option>
                                 </select>
                               </td>
                               <td>
@@ -1182,7 +1200,8 @@ export function LinkManageTab(props: LinkManageTabProps) {
                             const listenPort = normalizePort(Number(cfg.listen_port || 0));
                             const externalPort = normalizePort(Number(cfg.external_port || 0));
                             const listenHost = normalizeProbeLinkHopListenHost(cfg.listen_host || item.listen_host || defaultLinkChainListenHost);
-                            return `#${cfg.node_no}(host:${listenHost || "-"}, listen:${listenPort || "-"}, ext:${externalPort || listenPort || "-"}, ${normalizeProbeLinkLayer(cfg.link_layer)})`;
+                            const dialMode = normalizeProbeLinkDialMode(cfg.dial_mode || "forward");
+                            return `#${cfg.node_no}(host:${listenHost || "-"}, listen:${listenPort || "-"}, ext:${externalPort || listenPort || "-"}, ${normalizeProbeLinkLayer(cfg.link_layer)}, ${dialMode})`;
                           }).join(" | ")}
                         </div>
                       ) : null}
@@ -1440,6 +1459,14 @@ function normalizeProbeLinkLayer(raw: unknown): ProbeLinkLayer {
   return "http";
 }
 
+function normalizeProbeLinkDialMode(raw: unknown): ProbeLinkDialMode {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "reverse" || value === "rev") {
+    return "reverse";
+  }
+  return "forward";
+}
+
 function normalizeNodeIDText(raw: unknown): string {
   const value = String(raw ?? "").trim();
   if (!value) {
@@ -1483,13 +1510,14 @@ function normalizeProbeLinkHopFormItems(values?: ProbeLinkHopFormItem[]): ProbeL
       servicePort: normalizePort(Number(item.servicePort || 0)),
       externalPort: normalizePort(Number(item.externalPort || 0)),
       linkLayer: normalizeProbeLinkLayer(item.linkLayer),
+      dialMode: normalizeProbeLinkDialMode(item.dialMode),
     });
   }
   return out;
 }
 
 function normalizeProbeLinkHopFormItemsFromChain(
-  values: Array<{ node_no: number; listen_host?: string; service_port?: number; external_port?: number; listen_port?: number; link_layer?: "http" | "http2" | "http3" | "" }> | undefined,
+  values: Array<{ node_no: number; listen_host?: string; service_port?: number; external_port?: number; listen_port?: number; link_layer?: "http" | "http2" | "http3" | ""; dial_mode?: "forward" | "reverse" | "" }> | undefined,
   defaultListenHost: string,
   defaultServicePort: number,
   defaultLinkLayer: ProbeLinkLayer,
@@ -1511,6 +1539,7 @@ function normalizeProbeLinkHopFormItemsFromChain(
       servicePort: normalizePort(Number(item.service_port || 0)) || safeDefaultServicePort,
       externalPort: normalizePort(Number(item.external_port || item.listen_port || 0)),
       linkLayer: normalizeProbeLinkLayer(item.link_layer || safeDefaultLayer),
+      dialMode: normalizeProbeLinkDialMode(item.dial_mode || defaultLinkChainDialMode),
     });
   }
 
@@ -1538,6 +1567,7 @@ function normalizeProbeLinkHopFormItemsFromChain(
         servicePort: safeDefaultServicePort,
         externalPort: 0,
         linkLayer: safeDefaultLayer,
+        dialMode: defaultLinkChainDialMode,
       });
     }
     outSeen.add(nodeNo);
@@ -1552,14 +1582,14 @@ function normalizeProbeLinkHopFormItemsFromChain(
 }
 
 function buildProbeLinkHopConfigsPayload(form: ProbeLinkChainFormState): {
-  items: Array<{ node_no: number; listen_host?: string; listen_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }>;
+  items: Array<{ node_no: number; listen_host?: string; listen_port?: number; external_port?: number; link_layer?: ProbeLinkLayer; dial_mode?: ProbeLinkDialMode }>;
   error: string;
 } {
   const normalizedHopConfigs = normalizeProbeLinkHopFormItems(form.hopConfigs);
   if (normalizedHopConfigs.length === 0) {
     return { items: [], error: "" };
   }
-  const items: Array<{ node_no: number; listen_host?: string; listen_port?: number; external_port?: number; link_layer?: ProbeLinkLayer }> = [];
+  const items: Array<{ node_no: number; listen_host?: string; listen_port?: number; external_port?: number; link_layer?: ProbeLinkLayer; dial_mode?: ProbeLinkDialMode }> = [];
   for (const cfg of normalizedHopConfigs) {
     const listenHost = normalizeProbeLinkHopListenHost(cfg.listenHost);
     if (!listenHost) {
@@ -1568,6 +1598,7 @@ function buildProbeLinkHopConfigsPayload(form: ProbeLinkChainFormState): {
     const servicePort = normalizePort(cfg.servicePort);
     const externalPort = normalizePort(cfg.externalPort);
     const layer = normalizeProbeLinkLayer(cfg.linkLayer);
+    const dialMode = normalizeProbeLinkDialMode(cfg.dialMode);
     if (servicePort <= 0) {
       return { items: [], error: `探针 #${cfg.nodeNo} 的监听端口必须在 1-65535 范围内` };
     }
@@ -1577,6 +1608,7 @@ function buildProbeLinkHopConfigsPayload(form: ProbeLinkChainFormState): {
       listen_port: servicePort,
       external_port: externalPort > 0 ? externalPort : undefined,
       link_layer: layer,
+      dial_mode: dialMode,
     });
   }
   return { items, error: "" };

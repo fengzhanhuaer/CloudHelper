@@ -1,19 +1,21 @@
 package main
 
 import (
-	"bufio"
-	"strings"
+	"net/http"
 	"testing"
 	"time"
 )
 
-func TestReadProbeChainAuthEnvelopeCopilotStyle(t *testing.T) {
-	payload := `{"type":"github_copilot_auth_request","api_version":"2025-03-22","request_id":"req-1","timestamp":"2026-03-22T12:00:00Z","auth":{"mode":"secret_hmac","chain_id":"chain-a","nonce":"nonce-1","mac":"abc123"}}`
-	reader := bufio.NewReader(strings.NewReader(payload + "\n"))
+func TestReadProbeChainAuthEnvelopeFromHeadersCodexStyle(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer nonce-1")
+	headers.Set(probeChainCodexVersionHeader, probeChainAuthPacketVersion)
+	headers.Set(probeChainCodexAuthModeHeader, "secret_hmac")
+	headers.Set(probeChainCodexMACHeader, "abc123")
 
-	env, err := readProbeChainAuthEnvelope(reader)
+	env, err := readProbeChainAuthEnvelopeFromHeaders(headers, "chain-a")
 	if err != nil {
-		t.Fatalf("readProbeChainAuthEnvelope failed: %v", err)
+		t.Fatalf("readProbeChainAuthEnvelopeFromHeaders failed: %v", err)
 	}
 	if env.Type != probeChainAuthPacketType {
 		t.Fatalf("unexpected type: %s", env.Type)
@@ -21,7 +23,7 @@ func TestReadProbeChainAuthEnvelopeCopilotStyle(t *testing.T) {
 	if env.APIVersion != probeChainAuthPacketVersion {
 		t.Fatalf("unexpected api version: %s", env.APIVersion)
 	}
-	if env.RequestID != "req-1" {
+	if env.RequestID != "" {
 		t.Fatalf("unexpected request id: %s", env.RequestID)
 	}
 	if env.Mode != "secret_hmac" || env.ChainID != "chain-a" || env.Nonce != "nonce-1" || env.MAC != "abc123" {

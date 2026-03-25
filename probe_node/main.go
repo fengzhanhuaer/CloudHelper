@@ -94,9 +94,15 @@ type probeControlMessage struct {
 	ListenHost        string `json:"listen_host"`
 	ListenPort        int    `json:"listen_port"`
 	LinkLayer         string `json:"link_layer"`
+	NextLinkLayer     string `json:"next_link_layer"`
+	NextDialMode      string `json:"next_dial_mode"`
 	InternalPort      int    `json:"internal_port"`
 	NextHost          string `json:"next_host"`
 	NextPort          int    `json:"next_port"`
+	PrevHost          string `json:"prev_host"`
+	PrevPort          int    `json:"prev_port"`
+	PrevLinkLayer     string `json:"prev_link_layer"`
+	PrevDialMode      string `json:"prev_dial_mode"`
 	RequireUserAuth   bool   `json:"require_user_auth"`
 	NextAuthMode      string `json:"next_auth_mode"`
 	SessionID         string `json:"session_id"`
