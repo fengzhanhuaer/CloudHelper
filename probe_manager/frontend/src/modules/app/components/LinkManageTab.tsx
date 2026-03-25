@@ -96,6 +96,7 @@ const defaultPortForwardNetwork: ProbeLinkPFNetwork = "tcp";
 const linkChainCacheStorageKey = "cloudhelper_probe_link_chains_cache_v1";
 
 export function LinkManageTab(props: LinkManageTabProps) {
+  const isForwardOnlyTab = props.initialSubTab === "forward";
   const [subTab, setSubTab] = useState<LinkManageSubTab>(props.initialSubTab || "list");
   const [nodes, setNodes] = useState<ProbeNodeSyncItem[]>([]);
   const [nodeRuntimes, setNodeRuntimes] = useState<Record<number, ProbeNodeStatusItem["runtime"]>>({});
@@ -118,7 +119,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const [isLoadingNodes, setIsLoadingNodes] = useState(false);
   const [isOperating, setIsOperating] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
-  const [status, setStatus] = useState("未执行测试");
+  const [status, setStatus] = useState("未开始探针延迟检测");
   const [latencyMS, setLatencyMS] = useState<number | null>(null);
   const [resultSummary, setResultSummary] = useState("");
   const continuousTestSeqRef = useRef(0);
@@ -924,11 +925,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
         await stopProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, prevNodeID);
       }
       setStatus(nextNodeID
-        ? `已切换到探针 #${nextNodeID}，旧测试连接已自动关闭`
-        : "已切换探针，旧测试连接已自动关闭");
+        ? `已切换到探针 #${nextNodeID}，旧检测连接已自动关闭`
+        : "已切换探针，旧检测连接已自动关闭");
     } catch (error) {
       const msg = errorToMessage(error);
-      setStatus(`切换探针时关闭旧测试失败：${msg}`);
+      setStatus(`切换探针时关闭旧检测连接失败：${msg}`);
     } finally {
       setIsOperating(false);
     }
@@ -946,14 +947,14 @@ export function LinkManageTab(props: LinkManageTabProps) {
         const latency = typeof result.duration_ms === "number" ? result.duration_ms : null;
         setLatencyMS(latency);
         setResultSummary(buildResultSummary(result));
-        setStatus(`持续测试中：第 ${round} 次，延迟 ${latency === null ? "-" : `${latency}ms`}`);
+        setStatus(`持续延迟检测中：第 ${round} 次，延迟 ${latency === null ? "-" : `${latency}ms`}`);
       } catch (error) {
         if (!continuousTestingRef.current || loopSeq !== continuousTestSeqRef.current) {
           return;
         }
         const msg = errorToMessage(error);
         setResultSummary(`error=${msg}`);
-        setStatus(`持续测试异常：${msg}（3秒后重试）`);
+        setStatus(`持续延迟检测异常：${msg}（3秒后重试）`);
       }
       await sleep(3000);
     }
@@ -961,7 +962,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
 
   async function handleStartTest() {
     if (!props.sessionToken.trim()) {
-      setStatus("未登录，无法开始测试");
+      setStatus("未登录，无法开始延迟检测");
       return;
     }
     const nodeID = selectedNodeID.trim();
@@ -970,11 +971,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
       return;
     }
     if (testTargets.length === 0) {
-      setStatus("未找到可用测试地址，请先在探针管理里配置公网地址，或确认 Cloudflare 已生成 api 域名");
+      setStatus("未找到可用探针地址，请先在探针管理里配置公网地址，或确认 Cloudflare 已生成 api 域名");
       return;
     }
     if (isTesting) {
-      setStatus("链路测试已在持续运行中，请先关闭测试");
+      setStatus("探针延迟检测已在持续运行中，请先停止检测");
       return;
     }
 
@@ -988,7 +989,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
     setIsOperating(true);
     setLatencyMS(null);
     setResultSummary("");
-    setStatus("正在下发开测命令...");
+    setStatus("正在下发延迟检测命令...");
     try {
       stopLocalContinuousTestLoop();
       await closeLocalProbeLinkSessionSilently();
@@ -998,7 +999,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         protocol,
         internal_port: safeInternalPort,
       });
-      const startMessage = startResp.message || "探针已启动测试服务";
+      const startMessage = startResp.message || "探针已启动延迟检测服务";
       setStatus(`${startMessage}，正在连接 ${testTarget.host}:${safeExternalPort} ...`);
 
       const maxConnectAttemptsPerTarget = 4;
@@ -1009,7 +1010,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         const target = testTargets[targetIndex];
         for (let attempt = 1; attempt <= maxConnectAttemptsPerTarget; attempt += 1) {
           try {
-            setStatus(`测试服务已启动，正在连接 ${target.host}:${safeExternalPort}（${target.source}，第 ${attempt}/${maxConnectAttemptsPerTarget} 次）...`);
+            setStatus(`延迟检测服务已启动，正在连接 ${target.host}:${safeExternalPort}（${target.source}，第 ${attempt}/${maxConnectAttemptsPerTarget} 次）...`);
             first = (await StartProbeLinkSession(
               nodeID,
               protocol,
@@ -1021,7 +1022,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
           } catch (error) {
             const lastConnectErr = errorToMessage(error);
             if (attempt < maxConnectAttemptsPerTarget) {
-              setStatus(`等待链路就绪：${target.host}:${safeExternalPort}（${target.source}）失败：${lastConnectErr}`);
+              setStatus(`等待检测链路就绪：${target.host}:${safeExternalPort}（${target.source}）失败：${lastConnectErr}`);
               await sleep(1200);
               continue;
             }
@@ -1041,14 +1042,14 @@ export function LinkManageTab(props: LinkManageTabProps) {
       continuousTestingRef.current = true;
       setIsTesting(true);
       if (connectedTarget) {
-        setStatus(`测试已启动，连接已建立，持续检测中：${connectedTarget.host}:${safeExternalPort}（${connectedTarget.source}）`);
+        setStatus(`延迟检测已启动，连接已建立，持续检测中：${connectedTarget.host}:${safeExternalPort}（${connectedTarget.source}）`);
       } else {
-        setStatus(`测试已启动，连接已建立，持续检测中：${safeExternalPort}`);
+        setStatus(`延迟检测已启动，连接已建立，持续检测中：${safeExternalPort}`);
       }
       void runContinuousTestLoop(currentSeq);
     } catch (error) {
       const msg = errorToMessage(error);
-      setStatus(`测试失败：${msg}（探针测试服务保持开启，便于排查；如需关闭请点击“关闭测试”）`);
+      setStatus(`延迟检测失败：${msg}（探针检测服务保持开启，便于排查；如需关闭请点击“停止检测”）`);
       stopLocalContinuousTestLoop();
       await closeLocalProbeLinkSessionSilently();
     } finally {
@@ -1072,7 +1073,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         localCloseErr = errorToMessage(error);
       }
       const stopResp = await stopProbeLinkTestOnController(props.controllerBaseUrl, props.sessionToken, nodeID);
-      const baseMessage = stopResp.message || "已关闭测试，探针测试服务已停止";
+      const baseMessage = stopResp.message || "已停止延迟检测，探针检测服务已停止";
       if (localCloseErr) {
         setStatus(`${baseMessage}（本地连接关闭异常：${localCloseErr}）`);
       } else {
@@ -1080,7 +1081,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       }
     } catch (error) {
       const msg = errorToMessage(error);
-      setStatus(`关闭测试失败：${msg}`);
+      setStatus(`停止延迟检测失败：${msg}`);
     } finally {
       setIsOperating(false);
     }
@@ -1088,15 +1089,16 @@ export function LinkManageTab(props: LinkManageTabProps) {
 
   return (
     <div className="content-block">
-      <h2>链路管理</h2>
+      <h2>{isForwardOnlyTab ? "端口转发" : "链路管理"}</h2>
 
-      <div className="subtab-list" style={{ marginBottom: 12 }}>
-        <button className={`subtab-btn ${subTab === "list" ? "active" : ""}`} onClick={() => setSubTab("list")}>链路列表</button>
-        <button className={`subtab-btn ${subTab === "forward" ? "active" : ""}`} onClick={() => setSubTab("forward")}>端口转发</button>
-        <button className={`subtab-btn ${subTab === "test" ? "active" : ""}`} onClick={() => setSubTab("test")}>测试</button>
-      </div>
+      {!isForwardOnlyTab ? (
+        <div className="subtab-list" style={{ marginBottom: 12 }}>
+          <button className={`subtab-btn ${subTab === "list" ? "active" : ""}`} onClick={() => setSubTab("list")}>链路列表</button>
+          <button className={`subtab-btn ${subTab === "test" ? "active" : ""}`} onClick={() => setSubTab("test")}>探针延迟</button>
+        </div>
+      ) : null}
 
-      {subTab === "list" ? (
+      {!isForwardOnlyTab && subTab === "list" ? (
         <>
           <div className="identity-card">
             <div className="row">
@@ -1418,7 +1420,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         </>
       ) : null}
 
-      {subTab === "forward" ? (
+      {isForwardOnlyTab || subTab === "forward" ? (
         <>
           <div className="identity-card">
             <div className="row">
@@ -1577,7 +1579,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         </>
       ) : null}
 
-      {subTab === "test" ? (
+      {!isForwardOnlyTab && subTab === "test" ? (
         <>
           <div className="identity-card">
             <div className="row">
@@ -1643,18 +1645,18 @@ export function LinkManageTab(props: LinkManageTabProps) {
               {isLoadingNodes ? "刷新中..." : "刷新探针"}
             </button>
             <button className="btn" onClick={() => void handleStartTest()} disabled={isOperating || isTesting || !selectedNodeID}>
-              {isTesting ? "测试中..." : isOperating ? "处理中..." : "开始测试"}
+              {isTesting ? "检测中..." : isOperating ? "处理中..." : "开始检测"}
             </button>
             <button className="btn" onClick={() => void handleStopTest()} disabled={isOperating || !selectedNodeID}>
-              {isOperating ? "关闭中..." : "关闭测试"}
+              {isOperating ? "停止中..." : "停止检测"}
             </button>
           </div>
 
           <div className="status">{status}</div>
-          <div className="status">测试目标：{testTarget.host || "-"} {testTarget.host ? `(${testTarget.source})` : ""}</div>
+          <div className="status">检测目标：{testTarget.host || "-"} {testTarget.host ? `(${testTarget.source})` : ""}</div>
           <div className="status">候选目标：{testTargets.length > 0 ? testTargets.map((item) => `${item.host}(${item.source})`).join(" | ") : "-"}</div>
-          <div className="status">链路延迟：{latencyMS === null ? "-" : `${latencyMS} ms`}</div>
-          <div className="status">{resultSummary || "暂无测试结果详情"}</div>
+          <div className="status">探针延迟：{latencyMS === null ? "-" : `${latencyMS} ms`}</div>
+          <div className="status">{resultSummary || "暂无延迟检测详情"}</div>
         </>
       ) : null}
     </div>
