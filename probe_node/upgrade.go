@@ -55,6 +55,9 @@ type scoredProbeAsset struct {
 const (
 	probeUpgradeVerifyOutputLimit     = 2048
 	probeUpgradeVerifyTimeoutGraceSec = 15
+	probeUpgradeWorkspaceDirName      = ".cloudhelper-upgrade"
+	probeUpgradeWorkspacePrefix       = "cloudhelper-probe-node-upgrade-"
+	probeUpgradeWorkspaceStaleTTL     = 24 * time.Hour
 )
 
 func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
@@ -120,12 +123,12 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	}
 	log.Printf("probe upgrade asset selected: name=%s", strings.TrimSpace(asset.Name))
 
-	tmpDir, err := os.MkdirTemp("", "cloudhelper-probe-node-upgrade-*")
+	tmpDir, err := createProbeUpgradeWorkspace()
 	if err != nil {
 		log.Printf("probe upgrade failed: temp dir: %v", err)
 		return
 	}
-	defer os.RemoveAll(tmpDir)
+	defer cleanupProbeUpgradeWorkspace(tmpDir)
 
 	assetFile := filepath.Join(tmpDir, filepath.Base(asset.Name))
 	log.Printf("probe upgrade download: target=%s mode=%s", assetFile, mode)
@@ -929,6 +932,61 @@ func archTokens(goarch string) []string {
 func assetLooksWindows(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	return strings.Contains(n, "windows") || strings.HasSuffix(n, ".exe")
+}
+
+func createProbeUpgradeWorkspace() (string, error) {
+	baseDir := os.TempDir()
+	if preferred, err := probeUpgradeWorkspaceBaseDir(); err == nil && strings.TrimSpace(preferred) != "" {
+		baseDir = preferred
+	}
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return "", err
+	}
+	cleanupProbeStaleUpgradeWorkspaces(baseDir)
+	return os.MkdirTemp(baseDir, probeUpgradeWorkspacePrefix+"*")
+}
+
+func probeUpgradeWorkspaceBaseDir() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && strings.TrimSpace(resolved) != "" {
+		exePath = resolved
+	}
+	return filepath.Join(filepath.Dir(exePath), probeUpgradeWorkspaceDirName), nil
+}
+
+func cleanupProbeStaleUpgradeWorkspaces(baseDir string) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name())
+		if !strings.HasPrefix(name, probeUpgradeWorkspacePrefix) {
+			continue
+		}
+		fullPath := filepath.Join(baseDir, name)
+		info, infoErr := entry.Info()
+		if infoErr == nil {
+			if now.Sub(info.ModTime()) < probeUpgradeWorkspaceStaleTTL {
+				continue
+			}
+		}
+		_ = os.RemoveAll(fullPath)
+	}
+}
+
+func cleanupProbeUpgradeWorkspace(workDir string) {
+	cleanPath := strings.TrimSpace(workDir)
+	if cleanPath == "" {
+		return
+	}
+	if err := os.RemoveAll(cleanPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("probe upgrade cleanup warning: workspace=%s err=%v", cleanPath, err)
+	}
 }
 
 func safeURLForLog(raw string) string {

@@ -27,6 +27,9 @@ const (
 	defaultReleaseRepo                     = "fengzhanhuaer/CloudHelper"
 	controllerUpgradeVerifyOutputLimit     = 2048
 	controllerUpgradeVerifyTimeoutGraceSec = 15
+	controllerUpgradeWorkspaceDirName      = ".cloudhelper-upgrade"
+	controllerUpgradeWorkspacePrefix       = "cloudhelper-upgrade-"
+	controllerUpgradeWorkspaceStaleTTL     = 24 * time.Hour
 )
 
 var BuildVersion = "dev"
@@ -198,11 +201,11 @@ func performControllerUpgrade(ctx context.Context) (adminUpgradeResponse, error)
 	}
 	result.AssetName = asset.Name
 
-	tmpDir, err := os.MkdirTemp("", "cloudhelper-upgrade-*")
+	tmpDir, err := createControllerUpgradeWorkspace()
 	if err != nil {
 		return result, err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer cleanupControllerUpgradeWorkspace(tmpDir)
 
 	assetFile := filepath.Join(tmpDir, asset.Name)
 	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "download", Percent: 20, Message: "下载升级包"})
@@ -815,6 +818,61 @@ func cleanupControllerStaleExecutables() error {
 		}
 	}
 	return firstErr
+}
+
+func createControllerUpgradeWorkspace() (string, error) {
+	baseDir := os.TempDir()
+	if preferred, err := controllerUpgradeWorkspaceBaseDir(); err == nil && strings.TrimSpace(preferred) != "" {
+		baseDir = preferred
+	}
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return "", err
+	}
+	cleanupControllerStaleUpgradeWorkspaces(baseDir)
+	return os.MkdirTemp(baseDir, controllerUpgradeWorkspacePrefix+"*")
+}
+
+func controllerUpgradeWorkspaceBaseDir() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && strings.TrimSpace(resolved) != "" {
+		exePath = resolved
+	}
+	return filepath.Join(filepath.Dir(exePath), controllerUpgradeWorkspaceDirName), nil
+}
+
+func cleanupControllerStaleUpgradeWorkspaces(baseDir string) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name())
+		if !strings.HasPrefix(name, controllerUpgradeWorkspacePrefix) {
+			continue
+		}
+		fullPath := filepath.Join(baseDir, name)
+		info, infoErr := entry.Info()
+		if infoErr == nil {
+			if now.Sub(info.ModTime()) < controllerUpgradeWorkspaceStaleTTL {
+				continue
+			}
+		}
+		_ = os.RemoveAll(fullPath)
+	}
+}
+
+func cleanupControllerUpgradeWorkspace(workDir string) {
+	cleanPath := strings.TrimSpace(workDir)
+	if cleanPath == "" {
+		return
+	}
+	if err := os.RemoveAll(cleanPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("controller upgrade cleanup warning: workspace=%s err=%v", cleanPath, err)
+	}
 }
 
 func copyFile(src, dst string, mode fs.FileMode) error {
