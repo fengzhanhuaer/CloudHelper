@@ -74,6 +74,10 @@ export function TestProbeLink(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['TestProbeLink'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function UploadNetworkAssistantRuleRoutes(arg1, arg2) {
+  return window['go']['main']['App']['UploadNetworkAssistantRuleRoutes'](arg1, arg2);
+}
+
 export function PingProbeChain(arg1) {
   return window['go']['main']['App']['PingProbeChain'](arg1);
 }

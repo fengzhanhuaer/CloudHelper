@@ -31,7 +31,7 @@ type NetworkAssistantTabProps = {
   isSyncingRuleRoutes: boolean;
   ruleRoutesSyncStatus: string;
   onRefreshRuleConfig: () => void;
-  onUploadRuleRoutes: (file: File) => void;
+  onUploadRuleRoutes: () => void;
   onDownloadRuleRoutes: () => void;
   onSetRulePolicy: (group: string, action: NetworkAssistantRuleAction, tunnelNodeID?: string) => void;
   onInstallTUN: () => void;
@@ -77,7 +77,6 @@ const categoryLabels: Record<string, string> = {
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
   const [subTab, setSubTab] = useState<"settings" | "link" | "forward" | "driver" | "status" | "logs">("settings");
   const outputRef = useRef<HTMLPreElement | null>(null);
-  const uploadRuleRoutesInputRef = useRef<HTMLInputElement | null>(null);
 
   type TunnelPingState = { ok: boolean | null; durationMS: number | null; message: string };
   const [tunnelPingStates, setTunnelPingStates] = useState<Record<string, TunnelPingState>>({});
@@ -268,7 +267,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             </button>
             <button
               className="btn"
-              onClick={() => uploadRuleRoutesInputRef.current?.click()}
+              onClick={props.onUploadRuleRoutes}
               disabled={props.isOperating || props.isSyncingRuleRoutes}
             >
               {props.isSyncingRuleRoutes ? "处理中..." : "上传 rule_routes.txt"}
@@ -276,25 +275,8 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             <button className="btn" onClick={props.onDownloadRuleRoutes} disabled={props.isOperating || props.isSyncingRuleRoutes}>
               {props.isSyncingRuleRoutes ? "处理中..." : "下载 rule_routes.txt"}
             </button>
-            <input
-              ref={uploadRuleRoutesInputRef}
-              type="file"
-              accept=".txt,text/plain"
-              style={{ display: "none" }}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.currentTarget.value = "";
-                if (!file) {
-                  return;
-                }
-                props.onUploadRuleRoutes(file);
-              }}
-            />
           </div>
-          <div className="status">规则文件：{props.ruleConfig?.rule_file_path || "data/rule_routes.txt"}（每行：网址后缀/IP/CIDR,代理组）</div>
           <div className="status">上传/下载目标：主控备份区（当前登录用户）</div>
-          <div className="status">策略文件：data/rule_policies.txt（每行：代理组或@fallback,动作[,链路ID]）</div>
-          <div className="status">{props.ruleConfigStatus}</div>
           <div className="status">{props.ruleRoutesSyncStatus}</div>
           {props.ruleConfig ? (
             <div className="rule-policy-group-list">

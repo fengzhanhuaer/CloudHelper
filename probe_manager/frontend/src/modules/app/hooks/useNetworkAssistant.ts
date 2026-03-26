@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   downloadNetworkRuleRoutes,
-  uploadNetworkRuleRoutes,
 } from "../services/controller-api";
 import {
 	EnableNetworkAssistantTUN,
@@ -13,6 +12,7 @@ import {
 	SetNetworkAssistantMode,
 	SetNetworkAssistantRulePolicy,
 	SyncNetworkAssistant,
+	UploadNetworkAssistantRuleRoutes,
 } from "../../../../wailsjs/go/main/App";
 import type {
   NetworkAssistantLogEntry,
@@ -230,8 +230,7 @@ export function useNetworkAssistant() {
     try {
       const data = (await GetNetworkAssistantRuleConfig()) as NetworkAssistantRuleConfig;
       setRuleConfig(data);
-      const groupCount = (data.groups?.length || 0) + 1;
-      setRuleConfigStatus(`规则策略已加载（${groupCount} 个组）`);
+      setRuleConfigStatus("规则策略已加载");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setRuleConfigStatus(`规则策略加载失败：${msg}`);
@@ -363,17 +362,11 @@ export function useNetworkAssistant() {
     }
   }, [refreshLogs]);
 
-  const uploadRuleRoutes = useCallback(async (controllerBaseURL: string, token: string, file: File) => {
-    const filename = String(file?.name || "").trim().toLowerCase();
-    if (!file || filename !== "rule_routes.txt") {
-      setRuleRoutesSyncStatus("上传失败：请选择 rule_routes.txt");
-      throw new Error("请选择 rule_routes.txt");
-    }
+  const uploadRuleRoutes = useCallback(async (controllerBaseURL: string, token: string) => {
     setIsSyncingRuleRoutes(true);
     setRuleRoutesSyncStatus("正在上传 rule_routes.txt 到主控备份...");
     try {
-      const content = await file.text();
-      const message = await uploadNetworkRuleRoutes(controllerBaseURL, token, content);
+      const message = await UploadNetworkAssistantRuleRoutes(controllerBaseURL, token);
       setRuleRoutesSyncStatus(`上传成功：${message}`);
       setRuleConfigStatus("规则策略已更新，请刷新规则组确认");
       await refreshRuleConfig();

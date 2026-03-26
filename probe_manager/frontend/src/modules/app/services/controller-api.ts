@@ -182,27 +182,13 @@ type NetworkRuleRoutesDownloadResponse = {
   file_content_base64?: string;
 };
 
-type NetworkRuleRoutesUploadResponse = {
-  message?: string;
-};
-
 function decodeUTF8Base64(contentBase64: string): string {
   const binary = atob(contentBase64);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   return new TextDecoder().decode(bytes);
 }
 
-function encodeUTF8Base64(content: string): string {
-  const bytes = new TextEncoder().encode(content);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
 const networkRuleRoutesDownloadAction = "admin.manager.rule_routes.download";
-const networkRuleRoutesUploadAction = "admin.manager.rule_routes.upload";
 
 export async function downloadNetworkRuleRoutes(baseURL: string, token: string): Promise<{ fileName: string; content: string }> {
   const payload = await callAdminWSRpc<NetworkRuleRoutesDownloadResponse>(
@@ -217,22 +203,6 @@ export async function downloadNetworkRuleRoutes(baseURL: string, token: string):
   const plainContent = String(payload.content || payload.text || payload.file_content || "");
   const content = contentBase64 ? decodeUTF8Base64(contentBase64) : plainContent;
   return { fileName, content };
-}
-
-export async function uploadNetworkRuleRoutes(baseURL: string, token: string, content: string): Promise<string> {
-  const normalized = content.replace(/\r\n/g, "\n");
-  const payload = await callAdminWSRpc<NetworkRuleRoutesUploadResponse>(
-    baseURL,
-    token,
-    networkRuleRoutesUploadAction,
-    {
-      file_name: "rule_routes.txt",
-      content: normalized,
-      content_base64: encodeUTF8Base64(normalized),
-    },
-    { timeoutMs: 30000 },
-  );
-  return String(payload.message || "上传完成").trim() || "上传完成";
 }
 
 export async function upsertProbeSecret(baseURL: string, token: string, nodeID: number, secret: string): Promise<void> {

@@ -76,7 +76,7 @@ type TabContentProps = {
   isSyncingNetworkRuleRoutes: boolean;
   networkRuleRoutesSyncStatus: string;
   onRefreshNetworkRuleConfig: () => void;
-  onUploadNetworkRuleRoutes: (file: File) => void;
+  onUploadNetworkRuleRoutes: () => void;
   onDownloadNetworkRuleRoutes: () => void;
   onSetNetworkRulePolicy: (group: string, action: NetworkAssistantRuleAction, tunnelNodeID?: string) => void;
   onInstallNetworkTUN: () => void;
