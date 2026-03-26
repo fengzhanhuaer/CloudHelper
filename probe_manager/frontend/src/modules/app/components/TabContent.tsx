@@ -77,6 +77,7 @@ type TabContentProps = {
   onSetNetworkRulePolicy: (group: string, action: NetworkAssistantRuleAction, tunnelNodeID?: string) => void;
   onInstallNetworkTUN: () => void;
   onEnableNetworkTUN: () => void;
+  onCloseNetworkTUN: () => void;
   networkLogLines: number;
   onNetworkLogLinesChange: (value: number) => void;
   isLoadingNetworkLogs: boolean;
@@ -149,6 +150,7 @@ export function TabContent(props: TabContentProps) {
           onSetRulePolicy={props.onSetNetworkRulePolicy}
           onInstallTUN={props.onInstallNetworkTUN}
           onEnableTUN={props.onEnableNetworkTUN}
+          onCloseTUN={props.onCloseNetworkTUN}
           logLines={props.networkLogLines}
           onLogLinesChange={props.onNetworkLogLinesChange}
           isLoadingLogs={props.isLoadingNetworkLogs}

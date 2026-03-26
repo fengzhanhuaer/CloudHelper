@@ -32,6 +32,7 @@ type NetworkAssistantTabProps = {
   onSetRulePolicy: (group: string, action: NetworkAssistantRuleAction, tunnelNodeID?: string) => void;
   onInstallTUN: () => void;
   onEnableTUN: () => void;
+  onCloseTUN: () => void;
   logLines: number;
   onLogLinesChange: (value: number) => void;
   isLoadingLogs: boolean;
@@ -290,7 +291,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             <button className="btn" onClick={props.onEnableTUN} disabled={props.isOperating || !props.status.tun_supported}>启用 TUN</button>
             <button
               className="btn"
-              onClick={props.onSwitchDirect}
+              onClick={props.onCloseTUN}
               disabled={props.isOperating || (!props.status.tun_enabled && props.status.mode !== "tun")}
             >
               关闭 TUN

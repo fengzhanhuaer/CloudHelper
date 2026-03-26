@@ -187,6 +187,7 @@ function App() {
             onSetNetworkRulePolicy={(group, action, tunnelNodeID) => void networkAssistant.setRulePolicy(group, action, tunnelNodeID)}
             onInstallNetworkTUN={() => networkAssistant.installTUN()}
             onEnableNetworkTUN={() => networkAssistant.enableTUN()}
+            onCloseNetworkTUN={() => networkAssistant.closeTUN()}
             networkLogLines={networkAssistant.logLines}
             onNetworkLogLinesChange={networkAssistant.setLogLines}
             isLoadingNetworkLogs={networkAssistant.isLoadingLogs}

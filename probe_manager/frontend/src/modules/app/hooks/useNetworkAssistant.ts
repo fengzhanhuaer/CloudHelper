@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  EnableNetworkAssistantTUN,
-  GetNetworkAssistantLogs,
-  GetNetworkAssistantRuleConfig,
-  GetNetworkAssistantStatus,
-  InstallNetworkAssistantTUN,
-  SetNetworkAssistantMode,
-  SetNetworkAssistantRulePolicy,
-  SyncNetworkAssistant,
+	EnableNetworkAssistantTUN,
+	GetNetworkAssistantLogs,
+	GetNetworkAssistantRuleConfig,
+	GetNetworkAssistantStatus,
+	InstallNetworkAssistantTUN,
+	RestoreNetworkAssistantDirect,
+	SetNetworkAssistantMode,
+	SetNetworkAssistantRulePolicy,
+	SyncNetworkAssistant,
 } from "../../../../wailsjs/go/main/App";
 import type {
   NetworkAssistantLogEntry,
@@ -336,6 +337,26 @@ export function useNetworkAssistant() {
     }
   }, [refreshLogs]);
 
+  const closeTUN = useCallback(async () => {
+    setIsOperating(true);
+    try {
+      const data = (await RestoreNetworkAssistantDirect()) as NetworkAssistantStatus;
+      setStatus(data);
+      if (data.node_id) {
+        setSelectedNode(data.node_id);
+      }
+      setOperateStatus("已关闭 TUN，并切回直连模式");
+      void refreshLogs();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setOperateStatus(`关闭 TUN 失败：${msg}`);
+      void refreshLogs();
+      throw error;
+    } finally {
+      setIsOperating(false);
+    }
+  }, [refreshLogs]);
+
   return {
     status,
     selectedNode,
@@ -346,6 +367,7 @@ export function useNetworkAssistant() {
     switchMode,
     installTUN,
     enableTUN,
+    closeTUN,
     logLines,
     setLogLines: updateLogLines,
     isLoadingLogs,

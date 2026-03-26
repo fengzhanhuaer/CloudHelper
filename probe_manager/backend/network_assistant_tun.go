@@ -363,7 +363,11 @@ func (s *networkAssistantService) EnableTUN() error {
 	s.ruleRouting = routing
 	s.ruleDNSCache = make(map[string]dnsCacheEntry)
 	libraryPath := s.tunLibraryPath
+	pref := tunPreferenceState{EverEnabled: s.tunEverEnabled, ManualClosed: s.tunManualClosed}
 	s.mu.Unlock()
+	if err := saveTUNPreferenceState(pref); err != nil {
+		s.logf("failed to persist tun preference state: %v", err)
+	}
 
 	s.logf("switched mode to tun, library=%s", libraryPath)
 	return nil
@@ -416,7 +420,11 @@ func (s *networkAssistantService) applyRuleModeViaTUN(routing tunnelRuleRouting,
 	s.ruleRouting = routing
 	s.ruleDNSCache = make(map[string]dnsCacheEntry)
 	libraryPath := s.tunLibraryPath
+	pref := tunPreferenceState{EverEnabled: s.tunEverEnabled, ManualClosed: s.tunManualClosed}
 	s.mu.Unlock()
+	if err := saveTUNPreferenceState(pref); err != nil {
+		s.logf("failed to persist tun preference state: %v", err)
+	}
 
 	s.logf(
 		"switched mode to rule (tun capture), node=%s library=%s rules=%d groups=%d",

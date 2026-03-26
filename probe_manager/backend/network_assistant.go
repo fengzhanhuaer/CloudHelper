@@ -36,6 +36,7 @@ const (
 	directWhitelistFile   = "direct_whitelist.txt"
 	ruleRouteFile         = "rule_routes.txt"
 	ruleGroupFile         = "rule_groups.txt"
+	tunPreferenceFile     = "network_tun_preference.json"
 	tunnelRoutePath       = "/api/ws/tunnel/"
 	maxTunnelFailures     = 20
 
@@ -210,6 +211,11 @@ type dnsCacheEntry struct {
 	Expires time.Time
 }
 
+type tunPreferenceState struct {
+	EverEnabled  bool `json:"ever_enabled"`
+	ManualClosed bool `json:"manual_closed"`
+}
+
 type dnsRouteHintEntry struct {
 	Direct  bool
 	NodeID  string
@@ -324,6 +330,12 @@ func newNetworkAssistantService() *networkAssistantService {
 		controlPlaneHosts:   make(map[string]struct{}),
 		controlPlaneIPs:     make(map[string]struct{}),
 	}
+	if pref, err := loadTUNPreferenceState(); err == nil {
+		service.tunEverEnabled = pref.EverEnabled
+		service.tunManualClosed = pref.ManualClosed
+	} else {
+		logStore.Appendf(logSourceManager, "init", "failed to load tun preference state: %v", err)
+	}
 	service.syncTUNInstallState()
 	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
 	return service
@@ -360,10 +372,26 @@ func (a *App) RestoreNetworkAssistantDirect() (NetworkAssistantStatus, error) {
 	if a.networkAssistant == nil {
 		return NetworkAssistantStatus{}, errors.New("network assistant service is not initialized")
 	}
+	a.networkAssistant.MarkTUNManualClosed()
 	if err := a.networkAssistant.ApplyMode("", "", networkModeDirect, ""); err != nil {
 		return a.networkAssistant.Status(), err
 	}
 	return a.networkAssistant.Status(), nil
+}
+
+func (s *networkAssistantService) MarkTUNManualClosed() {
+	s.mu.Lock()
+	shouldPersist := s.tunEverEnabled && !s.tunManualClosed
+	if shouldPersist {
+		s.tunManualClosed = true
+	}
+	pref := tunPreferenceState{EverEnabled: s.tunEverEnabled, ManualClosed: s.tunManualClosed}
+	s.mu.Unlock()
+	if shouldPersist {
+		if err := saveTUNPreferenceState(pref); err != nil {
+			s.logf("failed to persist tun preference state: %v", err)
+		}
+	}
 }
 
 func (s *networkAssistantService) UpdateSession(controllerBaseURL, sessionToken string) {
@@ -499,10 +527,10 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.proxySnapshot = systemProxySnapshot{}
 		s.tunEnabled = false
 		s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
-		if wasUsingTUNCapture {
-			s.tunManualClosed = true
-		}
 		s.mu.Unlock()
+		if wasUsingTUNCapture {
+			s.logf("switched from tun capture to direct mode")
+		}
 		s.logf("switched mode to direct and restored system dns/proxy, node=%s", normalizedNode)
 		return nil
 	}
@@ -571,6 +599,46 @@ func (s *networkAssistantService) shouldUseTUNCaptureForRuleMode() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.tunEverEnabled && !s.tunManualClosed
+}
+
+func loadTUNPreferenceState() (tunPreferenceState, error) {
+	dataDir, err := ensureManagerDataDir()
+	if err != nil {
+		return tunPreferenceState{}, err
+	}
+	path := filepath.Join(dataDir, tunPreferenceFile)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return tunPreferenceState{}, nil
+		}
+		return tunPreferenceState{}, err
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return tunPreferenceState{}, nil
+	}
+	var out tunPreferenceState
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return tunPreferenceState{}, err
+	}
+	return out, nil
+}
+
+func saveTUNPreferenceState(state tunPreferenceState) error {
+	dataDir, err := ensureManagerDataDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dataDir, tunPreferenceFile)
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *networkAssistantService) Shutdown() error {
