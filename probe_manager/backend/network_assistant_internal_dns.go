@@ -3,6 +3,7 @@ package backend
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -136,6 +137,7 @@ func (s *networkAssistantService) resolveDomainForInternalDNS(domain string, qTy
 	}
 	route, err := s.decideRouteForTarget(net.JoinHostPort(normalizedDomain, "53"))
 	if err != nil {
+		s.logDNSResolveFailed(normalizedDomain, qType, tunnelRouteDecision{}, err)
 		return nil, 0, tunnelRouteDecision{}, err
 	}
 	cacheKey := buildInternalDNSCacheKey(route, normalizedDomain, qType)
@@ -151,14 +153,55 @@ func (s *networkAssistantService) resolveDomainForInternalDNS(domain string, qTy
 		addrs, ttl, err = s.queryRuleDomainViaTunnel(route.NodeID, normalizedDomain, qType)
 	}
 	if err != nil {
+		s.logDNSResolveFailed(normalizedDomain, qType, route, err)
 		return nil, 0, tunnelRouteDecision{}, err
 	}
 	if len(addrs) == 0 {
-		return nil, 0, tunnelRouteDecision{}, errors.New("dns resolve returned empty result")
+		err = errors.New("dns resolve returned empty result")
+		s.logDNSResolveFailed(normalizedDomain, qType, route, err)
+		return nil, 0, tunnelRouteDecision{}, err
 	}
 	ttl = clampRuleDNSTTL(ttl)
 	s.storeRuleDNSCache(cacheKey, addrs, ttl)
 	return filterDNSResponseAddrs(addrs, qType), ttl, route, nil
+}
+
+func (s *networkAssistantService) logDNSResolveFailed(domain string, qType uint16, route tunnelRouteDecision, err error) {
+	if s == nil || err == nil {
+		return
+	}
+	cleanDomain := strings.ToLower(strings.TrimSpace(domain))
+	if cleanDomain == "" {
+		return
+	}
+	routeLabel := "tunnel"
+	if route.Direct {
+		routeLabel = "direct"
+	}
+	nodeID := strings.TrimSpace(route.NodeID)
+	if nodeID == "" {
+		nodeID = "-"
+	}
+	group := strings.TrimSpace(route.Group)
+	if group == "" {
+		group = "-"
+	}
+	qTypeLabel := "A"
+	if qType == 28 {
+		qTypeLabel = "AAAA"
+	}
+	rateKey := fmt.Sprintf("dns-resolve-failed|%s|%d|%s|%s", cleanDomain, qType, routeLabel, nodeID)
+	s.logfRateLimited(
+		rateKey,
+		30*time.Second,
+		"[DNS_RESOLVE_FAILED] domain=%s qtype=%s route=%s node=%s group=%s err=%v",
+		cleanDomain,
+		qTypeLabel,
+		routeLabel,
+		nodeID,
+		group,
+		err,
+	)
 }
 
 func buildInternalDNSCacheKey(route tunnelRouteDecision, domain string, qType uint16) string {
