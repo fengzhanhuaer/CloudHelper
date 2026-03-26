@@ -299,7 +299,14 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	ep, createErr := req.CreateEndpoint(&wq)
 	if createErr != nil {
 		req.Complete(true)
-		n.service.logf("local tun tcp create endpoint failed: target=%s err=%s", targetAddr, createErr.String())
+		n.service.logfRateLimited(
+			"tun:tcp:create_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
+			3*time.Second,
+			"local tun tcp create endpoint failed: target=%s reason=%s err=%s",
+			targetAddr,
+			classifyTUNEndpointCreateFailure(createErr.String()),
+			createErr.String(),
+		)
 		return
 	}
 	req.Complete(false)
@@ -308,11 +315,18 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	outbound, route, openErr := n.openOutboundTCP(targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
+		reason := classifyTUNRouteOpenFailure(route, openErr)
 		n.service.logfRateLimited(
 			"tun:tcp:open_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
 			3*time.Second,
-			"local tun tcp route open failed: target=%s err=%v",
+			"local tun tcp route open failed: target=%s routed=%s direct=%v node=%s group=%s reason=%s timeout=%s err=%v",
 			targetAddr,
+			route.TargetAddr,
+			route.Direct,
+			route.NodeID,
+			route.Group,
+			reason,
+			localTUNTCPDialTimeout,
 			openErr,
 		)
 		return
@@ -345,7 +359,14 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	var wq waiter.Queue
 	ep, createErr := req.CreateEndpoint(&wq)
 	if createErr != nil {
-		n.service.logf("local tun udp create endpoint failed: target=%s err=%s", targetAddr, createErr.String())
+		n.service.logfRateLimited(
+			"tun:udp:create_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
+			3*time.Second,
+			"local tun udp create endpoint failed: target=%s reason=%s err=%s",
+			targetAddr,
+			classifyTUNEndpointCreateFailure(createErr.String()),
+			createErr.String(),
+		)
 		return
 	}
 	inbound := gonet.NewUDPConn(&wq, ep)
@@ -353,11 +374,17 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	outbound, route, openErr := n.openOutboundUDP(targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
+		reason := classifyTUNRouteOpenFailure(route, openErr)
 		n.service.logfRateLimited(
 			"tun:udp:open_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
 			3*time.Second,
-			"local tun udp route open failed: target=%s err=%v",
+			"local tun udp route open failed: target=%s routed=%s direct=%v node=%s group=%s reason=%s err=%v",
 			targetAddr,
+			route.TargetAddr,
+			route.Direct,
+			route.NodeID,
+			route.Group,
+			reason,
 			openErr,
 		)
 		return
@@ -517,6 +544,54 @@ func closeConnRead(conn net.Conn) {
 		return
 	}
 	_ = conn.Close()
+}
+
+func classifyTUNEndpointCreateFailure(rawErr string) string {
+	errText := strings.ToLower(strings.TrimSpace(rawErr))
+	switch {
+	case strings.Contains(errText, "port is in use"):
+		return "local_port_in_use"
+	case strings.Contains(errText, "no buffer") || strings.Contains(errText, "queue was full"):
+		return "socket_buffer_exhausted"
+	default:
+		return "endpoint_create_failed"
+	}
+}
+
+func classifyTUNRouteOpenFailure(route tunnelRouteDecision, err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	if isRuleRouteRejectErr(err) {
+		return "rule_reject"
+	}
+	errText := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(errText, "i/o timeout") || strings.Contains(errText, "context deadline exceeded"):
+		if route.Direct {
+			return "direct_dial_timeout"
+		}
+		return "tunnel_open_timeout"
+	case strings.Contains(errText, "only one usage of each socket address") || strings.Contains(errText, "address already in use"):
+		return "local_ephemeral_port_exhausted"
+	case strings.Contains(errText, "queue was full") || strings.Contains(errText, "no space left") || strings.Contains(errText, "sufficient buffer space"):
+		return "socket_buffer_exhausted"
+	case strings.Contains(errText, "network is unreachable") || strings.Contains(errText, "no route to host"):
+		return "route_unreachable"
+	case strings.Contains(errText, "connection refused"):
+		return "target_refused"
+	case strings.Contains(errText, "chain target config not found"):
+		return "chain_target_missing"
+	case strings.Contains(errText, "auth rejected") || strings.Contains(errText, "auth failed"):
+		return "chain_auth_failed"
+	case strings.Contains(errText, "missing controller") || strings.Contains(errText, "session token"):
+		return "control_plane_not_ready"
+	default:
+		if route.Direct {
+			return "direct_route_open_failed"
+		}
+		return "tunnel_route_open_failed"
+	}
 }
 
 func closeConnWrite(conn net.Conn) {
