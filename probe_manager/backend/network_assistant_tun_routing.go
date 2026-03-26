@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"errors"
 	"net"
 	"net/url"
 	"sort"
@@ -13,6 +14,7 @@ const tunRouteRefreshInterval = 30 * time.Second
 type tunSystemRouteState struct {
 	AdapterIndex         int
 	AdapterDNSServers    []string
+	DirectDNSServers     []string
 	BypassInterfaceIndex int
 	BypassNextHop        string
 	BypassRoutePrefixes  []string
@@ -26,12 +28,19 @@ type tunControlPlaneTargets struct {
 }
 
 func (s *networkAssistantService) applyTUNSystemRouting(controllerBaseURL string) error {
-	targets := resolveTUNControlPlaneTargets(controllerBaseURL)
+	chainHosts := s.collectProbeChainDirectHosts()
+	targets := resolveTUNControlPlaneTargets(controllerBaseURL, chainHosts)
 	controllerHost := strings.TrimSpace(targets.ControllerHost)
 
 	s.setControlPlaneDirectTargets(targets.Hosts, targets.IPs)
 	if err := s.applyPlatformTUNSystemRouting(targets); err != nil {
 		s.clearControlPlaneDirectTargets()
+		return err
+	}
+	if err := s.startInternalDNSServer(); err != nil {
+		_ = s.clearPlatformTUNSystemRouting()
+		s.clearControlPlaneDirectTargets()
+		s.clearDNSRouteHints()
 		return err
 	}
 	s.mu.Lock()
@@ -42,13 +51,15 @@ func (s *networkAssistantService) applyTUNSystemRouting(controllerBaseURL string
 }
 
 func (s *networkAssistantService) clearTUNSystemRouting() error {
+	errDNS := s.stopInternalDNSServer()
 	err := s.clearPlatformTUNSystemRouting()
 	s.clearControlPlaneDirectTargets()
+	s.clearDNSRouteHints()
 	s.mu.Lock()
 	s.tunRouteSyncedAt = time.Time{}
 	s.tunRouteHost = ""
 	s.mu.Unlock()
-	return err
+	return errors.Join(errDNS, err)
 }
 
 func (s *networkAssistantService) ensureControlPlaneDialReady(controllerBaseURL string) error {
@@ -117,33 +128,73 @@ func (s *networkAssistantService) isControlPlaneDirectTarget(targetHost string) 
 	return hostMatched || ipMatched
 }
 
-func resolveTUNControlPlaneTargets(controllerBaseURL string) tunControlPlaneTargets {
+func (s *networkAssistantService) collectProbeChainDirectHosts() []string {
+	s.mu.RLock()
+	targets := copyProbeChainTargets(s.chainTargets)
+	s.mu.RUnlock()
+	hosts := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, endpoint := range targets {
+		host := normalizeControlPlaneHost(endpoint.EntryHost)
+		if host == "" {
+			continue
+		}
+		if _, exists := seen[host]; exists {
+			continue
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+func resolveTUNControlPlaneTargets(controllerBaseURL string, additionalHosts []string) tunControlPlaneTargets {
 	targets := tunControlPlaneTargets{
 		Hosts:     make(map[string]struct{}),
 		IPs:       make(map[string]struct{}),
 		IPv4Addrs: make([]string, 0),
 	}
 	host := resolveControllerHostForProtection(controllerBaseURL)
-	if host == "" {
-		return targets
+	if host != "" {
+		targets.ControllerHost = host
+		addProtectedHostToTUNTargets(&targets, host)
 	}
-	targets.ControllerHost = host
-	targets.Hosts[host] = struct{}{}
+	for _, extraHost := range additionalHosts {
+		addProtectedHostToTUNTargets(&targets, extraHost)
+	}
+	sort.Strings(targets.IPv4Addrs)
+	return targets
+}
 
-	if parsedIP := net.ParseIP(host); parsedIP != nil {
+func addProtectedHostToTUNTargets(targets *tunControlPlaneTargets, host string) {
+	if targets == nil {
+		return
+	}
+	cleanHost := normalizeControlPlaneHost(host)
+	if cleanHost == "" {
+		return
+	}
+	targets.Hosts[cleanHost] = struct{}{}
+
+	if parsedIP := net.ParseIP(cleanHost); parsedIP != nil {
 		canonical := canonicalIP(parsedIP)
+		if canonical == "" {
+			return
+		}
 		targets.IPs[canonical] = struct{}{}
 		if parsedIP.To4() != nil {
-			targets.IPv4Addrs = append(targets.IPv4Addrs, canonical)
+			if !containsString(targets.IPv4Addrs, canonical) {
+				targets.IPv4Addrs = append(targets.IPv4Addrs, canonical)
+			}
 		}
-		return targets
+		return
 	}
 
-	ipList, err := net.LookupIP(host)
+	ipList, err := net.LookupIP(cleanHost)
 	if err != nil {
-		return targets
+		return
 	}
-	seenIPv4 := make(map[string]struct{})
 	for _, ipValue := range ipList {
 		if ipValue == nil {
 			continue
@@ -154,15 +205,20 @@ func resolveTUNControlPlaneTargets(controllerBaseURL string) tunControlPlaneTarg
 		}
 		targets.IPs[canonical] = struct{}{}
 		if ipValue.To4() != nil {
-			if _, exists := seenIPv4[canonical]; exists {
-				continue
+			if !containsString(targets.IPv4Addrs, canonical) {
+				targets.IPv4Addrs = append(targets.IPv4Addrs, canonical)
 			}
-			seenIPv4[canonical] = struct{}{}
-			targets.IPv4Addrs = append(targets.IPv4Addrs, canonical)
 		}
 	}
-	sort.Strings(targets.IPv4Addrs)
-	return targets
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveControllerHostForProtection(rawBaseURL string) string {

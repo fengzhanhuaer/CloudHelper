@@ -156,13 +156,14 @@ export function LinkManageTab(props: LinkManageTabProps) {
       return;
     }
     const cachedChains = readProbeLinkChainCache();
+    setChains(sortProbeLinkChains(cachedChains));
     if (cachedChains.length > 0) {
-      setChains(sortProbeLinkChains(cachedChains));
-      setChainStatus(`已加载本地缓存链路（${cachedChains.length} 条），正在同步最新数据...`);
+      setChainStatus(`已加载本地缓存链路（${cachedChains.length} 条）`);
+    } else {
+      setChainStatus("未找到本地链路缓存，请点击“从主控获取链路”");
     }
     void loadChainUsers();
     void loadNodes();
-    void loadChains();
   }, [props.controllerBaseUrl, props.sessionToken]);
 
   const handlePingChain = async (chainID: string) => {
@@ -709,7 +710,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
   }
 
-  async function loadChains() {
+  async function loadChainsFromController() {
     if (!props.sessionToken.trim()) {
       setChains([]);
       setChainStatus("未登录，无法加载链路列表");
@@ -721,10 +722,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
       const sorted = sortProbeLinkChains(items);
       setChains(sorted);
       writeProbeLinkChainCache(sorted);
-      setChainStatus(`已加载链路列表（${sorted.length} 条）`);
+      setChainStatus(`已从主控获取链路（${sorted.length} 条）`);
     } catch (error) {
       const msg = errorToMessage(error);
-      setChainStatus(`加载链路列表失败：${msg}`);
+      setChainStatus(`从主控获取链路失败：${msg}`);
     } finally {
       setIsLoadingChains(false);
     }
@@ -842,7 +843,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         response.items.length > 0
           ? response.items
           : response.item
-            ? [response.item]
+            ? upsertProbeLinkChainLocal(chains, response.item)
             : chains,
       );
       setChains(nextItems);
@@ -855,9 +856,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       } else {
         setChainStatus(editingChainID ? "链路更新成功" : "链路新增成功");
       }
-      if (response.items.length === 0) {
-        void loadChains();
-      }
+      await loadChainsFromController();
     } catch (error) {
       const msg = errorToMessage(error);
       setChainStatus(`保存链路失败：${msg}`);
@@ -882,7 +881,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
     setChainStatus(`正在删除链路：${displayName}`);
     try {
       const response = await deleteProbeLinkChain(props.controllerBaseUrl, props.sessionToken, target);
-      const nextItems = sortProbeLinkChains(response.items);
+      const nextItems = sortProbeLinkChains(
+        response.items.length > 0
+          ? response.items
+          : chains.filter((item) => String(item.chain_id || "").trim() !== target),
+      );
       setChains(nextItems);
       writeProbeLinkChainCache(nextItems);
       if (editingChainID === target) {
@@ -893,6 +896,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       } else {
         setChainStatus(`链路已删除：${displayName}`);
       }
+      await loadChainsFromController();
     } catch (error) {
       const msg = errorToMessage(error);
       setChainStatus(`删除链路失败：${msg}`);
@@ -1305,12 +1309,20 @@ export function LinkManageTab(props: LinkManageTabProps) {
             <button
               className="btn"
               onClick={() => {
-                void loadChainUsers();
-                void loadChains();
+                void loadChainsFromController();
               }}
               disabled={isOperatingChain || isLoadingChainUsers}
             >
-              {isLoadingChains || isLoadingChainUsers ? "刷新中..." : "刷新列表"}
+              {isLoadingChains ? "获取中..." : "从主控获取链路"}
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                void loadChainUsers();
+              }}
+              disabled={isOperatingChain || isLoadingChainUsers}
+            >
+              {isLoadingChainUsers ? "刷新中..." : "刷新用户列表"}
             </button>
             <button className="btn" onClick={() => void handleSaveChain()} disabled={isOperatingChain}>
               {isSavingChain ? "保存中..." : editingChainID ? "保存修改" : "新增链路"}
@@ -1574,11 +1586,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
             <button
               className="btn"
               onClick={() => {
-                void loadChains();
+                void loadChainsFromController();
               }}
               disabled={isOperatingChain}
             >
-              {isLoadingChains ? "刷新中..." : "刷新链路"}
+              {isLoadingChains ? "获取中..." : "从主控获取链路"}
             </button>
             <button
               className="btn"
@@ -1707,6 +1719,21 @@ function sortProbeLinkChains(items: ProbeLinkChainItem[]): ProbeLinkChainItem[] 
     return rightKey.localeCompare(leftKey);
   });
   return out;
+}
+
+function upsertProbeLinkChainLocal(items: ProbeLinkChainItem[], incoming: ProbeLinkChainItem): ProbeLinkChainItem[] {
+  const chainID = String(incoming?.chain_id || "").trim();
+  if (!chainID) {
+    return Array.isArray(items) ? [...items] : [];
+  }
+  const current = Array.isArray(items) ? [...items] : [];
+  const index = current.findIndex((item) => String(item.chain_id || "").trim() === chainID);
+  if (index >= 0) {
+    current[index] = incoming;
+    return current;
+  }
+  current.push(incoming);
+  return current;
 }
 
 function readProbeLinkChainCache(): ProbeLinkChainItem[] {

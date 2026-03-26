@@ -39,8 +39,6 @@ const (
 	tunnelRoutePath       = "/api/ws/tunnel/"
 	maxTunnelFailures     = 20
 
-	ruleDNSDefaultServerA      = "1.1.1.1:53"
-	ruleDNSDefaultServerB      = "8.8.8.8:53"
 	ruleDNSCacheMinTTLSeconds  = 15
 	ruleDNSCacheMaxTTLSeconds  = 600
 	ruleDNSResolveTimeout      = 8 * time.Second
@@ -212,6 +210,19 @@ type dnsCacheEntry struct {
 	Expires time.Time
 }
 
+type dnsRouteHintEntry struct {
+	Direct  bool
+	NodeID  string
+	Group   string
+	Expires time.Time
+}
+
+type tunnelDNSResolveResponse struct {
+	Addrs []string `json:"addrs"`
+	TTL   int      `json:"ttl"`
+	Error string   `json:"error,omitempty"`
+}
+
 type networkAssistantService struct {
 	mu sync.RWMutex
 
@@ -261,6 +272,8 @@ type networkAssistantService struct {
 	ruleDNSQuerySeq uint32
 	ruleMuxClients  map[string]*tunnelMuxClient
 	tunUDPRelays    map[string]*localTUNUDPRelay
+	dnsRouteHints   map[string]dnsRouteHintEntry
+	internalDNS     *localInternalDNSServer
 
 	lastChainRefreshAt map[string]time.Time
 	controlPlaneHosts  map[string]struct{}
@@ -305,6 +318,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		ruleDNSCache:        make(map[string]dnsCacheEntry),
 		ruleMuxClients:      make(map[string]*tunnelMuxClient),
 		tunUDPRelays:        make(map[string]*localTUNUDPRelay),
+		dnsRouteHints:       make(map[string]dnsRouteHintEntry),
 		controlPlaneHosts:   make(map[string]struct{}),
 		controlPlaneIPs:     make(map[string]struct{}),
 	}
@@ -1227,6 +1241,24 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 	}
 
+	if parsedIP := net.ParseIP(host); parsedIP != nil {
+		if hint, ok := s.loadDNSRouteHint(canonicalIP(parsedIP)); ok {
+			hintNodeID := strings.TrimSpace(hint.NodeID)
+			if hintNodeID == "" {
+				hintNodeID = nodeID
+			}
+			if hintNodeID == "" {
+				hintNodeID = defaultNodeID
+			}
+			return tunnelRouteDecision{
+				Direct:     hint.Direct,
+				TargetAddr: net.JoinHostPort(canonicalIP(parsedIP), port),
+				NodeID:     hintNodeID,
+				Group:      strings.TrimSpace(hint.Group),
+			}, nil
+		}
+	}
+
 	rule, matched := routing.RuleSet.matchHost(host)
 	if matched {
 		group := normalizeRuleGroupName(rule.Group)
@@ -1247,23 +1279,13 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 			if targetNodeID == "" {
 				targetNodeID = defaultNodeID
 			}
-
+			routedTarget := normalizedTarget
 			if ip := net.ParseIP(host); ip != nil {
-				return tunnelRouteDecision{
-					Direct:     false,
-					TargetAddr: net.JoinHostPort(canonicalIP(ip), port),
-					NodeID:     targetNodeID,
-					Group:      group,
-				}, nil
-			}
-
-			resolvedAddr, resolveErr := s.resolveRuleDomainViaTunnel(targetNodeID, host)
-			if resolveErr != nil {
-				return tunnelRouteDecision{}, resolveErr
+				routedTarget = net.JoinHostPort(canonicalIP(ip), port)
 			}
 			return tunnelRouteDecision{
 				Direct:     false,
-				TargetAddr: net.JoinHostPort(resolvedAddr, port),
+				TargetAddr: routedTarget,
 				NodeID:     targetNodeID,
 				Group:      group,
 			}, nil
@@ -1285,20 +1307,13 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 		if targetNodeID == "" {
 			targetNodeID = defaultNodeID
 		}
+		routedTarget := normalizedTarget
 		if ip := net.ParseIP(host); ip != nil {
-			return tunnelRouteDecision{
-				Direct:     false,
-				TargetAddr: net.JoinHostPort(canonicalIP(ip), port),
-				NodeID:     targetNodeID,
-			}, nil
-		}
-		resolvedAddr, resolveErr := s.resolveRuleDomainViaTunnel(targetNodeID, host)
-		if resolveErr != nil {
-			return tunnelRouteDecision{}, resolveErr
+			routedTarget = net.JoinHostPort(canonicalIP(ip), port)
 		}
 		return tunnelRouteDecision{
 			Direct:     false,
-			TargetAddr: net.JoinHostPort(resolvedAddr, port),
+			TargetAddr: routedTarget,
 			NodeID:     targetNodeID,
 		}, nil
 	default:
@@ -1510,67 +1525,91 @@ func (s *networkAssistantService) queryRuleDomainViaTunnel(nodeID string, domain
 	if normalizedDomain == "" {
 		return nil, 0, errors.New("invalid domain")
 	}
-	queryID := uint16(atomic.AddUint32(&s.ruleDNSQuerySeq, 1))
-	packet, err := buildDNSQueryPacket(normalizedDomain, qType, queryID)
+	normalizedNodeID := strings.TrimSpace(nodeID)
+	if normalizedNodeID == "" {
+		normalizedNodeID = defaultNodeID
+	}
+
+	stream, err := s.openTunnelStreamForNode("dns", buildTunnelDNSResolveAddress(normalizedDomain, qType), normalizedNodeID)
 	if err != nil {
 		return nil, 0, err
 	}
+	defer stream.close()
 
-	servers := []string{ruleDNSDefaultServerA, ruleDNSDefaultServerB}
 	deadline := time.Now().Add(ruleDNSResolveTimeout)
-	trials := 0
-	var lastErr error
-	for _, server := range servers {
-		if trials >= ruleDNSResolveServerTrials {
-			break
-		}
-		trials++
+	responsePayload := make([]byte, 0, 1024)
+	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			lastErr = errors.New("dns resolve timeout")
-			break
+			return nil, 0, errors.New("dns resolve timeout")
 		}
-
-		stream, openErr := s.openTunnelStreamForNode("udp", server, nodeID)
-		if openErr != nil {
-			lastErr = openErr
-			continue
-		}
-
-		writeErr := stream.write(packet)
-		if writeErr != nil {
-			lastErr = writeErr
-			stream.close()
-			continue
-		}
-
 		waitTimeout := ruleDNSResolveReadTimeout
 		if remaining < waitTimeout {
 			waitTimeout = remaining
 		}
 		select {
 		case payload := <-stream.readCh:
-			stream.close()
-			addrs, ttl, parseErr := parseDNSResponseAddrs(payload, queryID, qType)
-			if parseErr != nil {
-				lastErr = parseErr
+			if len(payload) == 0 {
 				continue
 			}
-			return addrs, ttl, nil
+			responsePayload = append(responsePayload, payload...)
+			if len(responsePayload) > 64*1024 {
+				return nil, 0, errors.New("dns resolve payload too large")
+			}
 		case streamErr := <-stream.errCh:
-			lastErr = streamErr
-			stream.close()
-			continue
+			if len(responsePayload) == 0 {
+				if streamErr == nil || errors.Is(streamErr, io.EOF) {
+					return nil, 0, errors.New("dns resolve returned empty response")
+				}
+				return nil, 0, streamErr
+			}
+			if streamErr != nil && !errors.Is(streamErr, io.EOF) {
+				return nil, 0, streamErr
+			}
+			addrs, ttl, decodeErr := decodeTunnelDNSResolveResponse(responsePayload, qType)
+			if decodeErr != nil {
+				return nil, 0, decodeErr
+			}
+			return addrs, ttl, nil
 		case <-time.After(waitTimeout):
-			lastErr = errors.New("dns tunnel read timeout")
-			stream.close()
-			continue
+			return nil, 0, errors.New("dns tunnel read timeout")
 		}
 	}
-	if lastErr == nil {
-		lastErr = errors.New("dns resolve failed")
+}
+
+func buildTunnelDNSResolveAddress(domain string, qType uint16) string {
+	return strconv.Itoa(int(qType)) + "|" + normalizeRuleDomain(domain)
+}
+
+func decodeTunnelDNSResolveResponse(payload []byte, qType uint16) ([]string, int, error) {
+	if len(payload) == 0 {
+		return nil, 0, errors.New("empty dns resolve response")
 	}
-	return nil, 0, lastErr
+	var response tunnelDNSResolveResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return nil, 0, err
+	}
+	if strings.TrimSpace(response.Error) != "" {
+		return nil, 0, errors.New(strings.TrimSpace(response.Error))
+	}
+	addresses := make([]string, 0, len(response.Addrs))
+	for _, rawAddr := range response.Addrs {
+		ip := net.ParseIP(strings.TrimSpace(rawAddr))
+		if ip == nil {
+			continue
+		}
+		if qType == 1 && ip.To4() == nil {
+			continue
+		}
+		if qType == 28 && ip.To4() != nil {
+			continue
+		}
+		addresses = append(addresses, canonicalIP(ip))
+	}
+	if len(addresses) == 0 {
+		return nil, 0, errors.New("dns resolve returned empty result")
+	}
+	return addresses, clampRuleDNSTTL(response.TTL), nil
 }
 
 func buildDNSQueryPacket(domain string, qType uint16, queryID uint16) ([]byte, error) {

@@ -494,6 +494,88 @@ func TestDecideRouteForTargetRuleModeRejectFallback(t *testing.T) {
 	}
 }
 
+func TestDecideRouteForTargetRuleModeTunnelDomainKeepsDomainTarget(t *testing.T) {
+	service := &networkAssistantService{
+		mode:           networkModeRule,
+		nodeID:         "cloudserver",
+		availableNodes: []string{"cloudserver", "chain:edge-a"},
+		directWhitelist: &socksDirectWhitelist{
+			hosts: map[string]struct{}{},
+			ips:   map[string]struct{}{},
+			cidrs: []*net.IPNet{},
+		},
+		ruleRouting: tunnelRuleRouting{
+			RuleSet: tunnelRuleSet{
+				Rules: []tunnelRule{
+					{Kind: ruleMatcherDomainSuffix, Suffix: "example.com", Group: "group_example"},
+				},
+			},
+			GroupNodeMap: map[string]string{
+				"group_example":      rulePolicyActionTunnel + ":chain:edge-a",
+				ruleFallbackGroupKey: rulePolicyActionDirect,
+			},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+	}
+
+	decision, err := service.decideRouteForTarget("api.example.com:443")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget returned error: %v", err)
+	}
+	if decision.Direct {
+		t.Fatal("expected tunnel route for matched domain")
+	}
+	if decision.NodeID != "chain:edge-a" {
+		t.Fatalf("node id=%s, want chain:edge-a", decision.NodeID)
+	}
+	if decision.TargetAddr != "api.example.com:443" {
+		t.Fatalf("target addr=%s, want api.example.com:443", decision.TargetAddr)
+	}
+	if decision.Group != "group_example" {
+		t.Fatalf("group=%s, want group_example", decision.Group)
+	}
+}
+
+func TestDecideRouteForTargetUsesDNSRouteHintForIP(t *testing.T) {
+	service := &networkAssistantService{
+		mode:           networkModeRule,
+		nodeID:         "cloudserver",
+		availableNodes: []string{"cloudserver", "chain:edge-a"},
+		directWhitelist: &socksDirectWhitelist{
+			hosts: map[string]struct{}{},
+			ips:   map[string]struct{}{},
+			cidrs: []*net.IPNet{},
+		},
+		ruleRouting: tunnelRuleRouting{
+			RuleSet:      tunnelRuleSet{Rules: []tunnelRule{}},
+			GroupNodeMap: map[string]string{ruleFallbackGroupKey: rulePolicyActionDirect},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+		dnsRouteHints: map[string]dnsRouteHintEntry{
+			"203.0.113.7": {
+				Direct:  false,
+				NodeID:  "chain:edge-a",
+				Group:   "group_example",
+				Expires: time.Now().Add(30 * time.Second),
+			},
+		},
+	}
+
+	decision, err := service.decideRouteForTarget("203.0.113.7:443")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget returned error: %v", err)
+	}
+	if decision.Direct {
+		t.Fatal("expected tunnel route by dns hint")
+	}
+	if decision.NodeID != "chain:edge-a" {
+		t.Fatalf("node id=%s, want chain:edge-a", decision.NodeID)
+	}
+	if decision.Group != "group_example" {
+		t.Fatalf("group=%s, want group_example", decision.Group)
+	}
+}
+
 func TestBuildAndParseLocalTUNUDPPacket(t *testing.T) {
 	srcIP := net.ParseIP("10.10.0.2").To4()
 	dstIP := net.ParseIP("8.8.8.8").To4()

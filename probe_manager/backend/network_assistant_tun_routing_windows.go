@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,8 +19,6 @@ const (
 	tunRouteIPv4PrefixLength = 15
 	tunRouteSplitPrefixA     = "0.0.0.0/1"
 	tunRouteSplitPrefixB     = "128.0.0.0/1"
-	tunRouteDNSPrimary       = "1.1.1.1"
-	tunRouteDNSSecondary     = "8.8.8.8"
 )
 
 type windowsRouteInfo struct {
@@ -56,20 +56,44 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 	if targets.ControllerHost != "" && len(targets.IPv4Addrs) == 0 {
 		return fmt.Errorf("resolve controller ipv4 failed: %s", targets.ControllerHost)
 	}
-	if len(targets.IPv4Addrs) > 0 {
-		egress, routeErr := detectWindowsPrimaryIPv4Route()
-		if routeErr != nil {
-			return routeErr
+	egress, routeErr := detectWindowsPrimaryIPv4Route()
+	if routeErr != nil {
+		return routeErr
+	}
+	state.BypassInterfaceIndex = egress.InterfaceIndex
+	state.BypassNextHop = strings.TrimSpace(egress.NextHop)
+
+	directDNSServers, dnsErr := detectWindowsInterfaceIPv4DNSServers(egress.InterfaceIndex)
+	if dnsErr == nil {
+		state.DirectDNSServers = append([]string(nil), directDNSServers...)
+	}
+
+	prefixSet := make(map[string]struct{})
+	state.BypassRoutePrefixes = make([]string, 0, len(targets.IPv4Addrs)+len(state.DirectDNSServers))
+	addBypassRoute := func(ipValue string) error {
+		ipText := strings.TrimSpace(ipValue)
+		if net.ParseIP(ipText) == nil {
+			return nil
 		}
-		state.BypassInterfaceIndex = egress.InterfaceIndex
-		state.BypassNextHop = strings.TrimSpace(egress.NextHop)
-		state.BypassRoutePrefixes = make([]string, 0, len(targets.IPv4Addrs))
-		for _, ipValue := range targets.IPv4Addrs {
-			prefix := strings.TrimSpace(ipValue) + "/32"
-			if err := ensureWindowsIPv4BypassRoute(prefix, egress.InterfaceIndex, egress.NextHop); err != nil {
-				return err
-			}
-			state.BypassRoutePrefixes = append(state.BypassRoutePrefixes, prefix)
+		prefix := ipText + "/32"
+		if _, exists := prefixSet[prefix]; exists {
+			return nil
+		}
+		if err := ensureWindowsIPv4BypassRoute(prefix, egress.InterfaceIndex, egress.NextHop); err != nil {
+			return err
+		}
+		prefixSet[prefix] = struct{}{}
+		state.BypassRoutePrefixes = append(state.BypassRoutePrefixes, prefix)
+		return nil
+	}
+	for _, ipValue := range targets.IPv4Addrs {
+		if err := addBypassRoute(ipValue); err != nil {
+			return err
+		}
+	}
+	for _, dnsServer := range state.DirectDNSServers {
+		if err := addBypassRoute(dnsServer); err != nil {
+			return err
 		}
 	}
 
@@ -133,6 +157,58 @@ func detectWindowsPrimaryIPv4Route() (windowsRouteInfo, error) {
 	return route, nil
 }
 
+func detectWindowsInterfaceIPv4DNSServers(interfaceIndex int) ([]string, error) {
+	if interfaceIndex <= 0 {
+		return nil, errors.New("invalid interface index")
+	}
+	script := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+		"$ErrorActionPreference='Stop'; " +
+		"$entry = Get-DnsClientServerAddress -InterfaceIndex " + strconv.Itoa(interfaceIndex) + " -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1; " +
+		"if ($null -eq $entry -or $null -eq $entry.ServerAddresses) { '[]' } else { $entry.ServerAddresses | ConvertTo-Json -Compress }"
+
+	output, err := runHiddenPowerShell(script)
+	if err != nil {
+		return nil, err
+	}
+	rawValue := strings.TrimSpace(string(output))
+	if rawValue == "" || rawValue == "null" {
+		return nil, nil
+	}
+
+	list := make([]string, 0)
+	if strings.HasPrefix(rawValue, "[") {
+		if unmarshalErr := json.Unmarshal([]byte(rawValue), &list); unmarshalErr != nil {
+			return nil, unmarshalErr
+		}
+	} else {
+		var single string
+		if unmarshalErr := json.Unmarshal([]byte(rawValue), &single); unmarshalErr != nil {
+			return nil, unmarshalErr
+		}
+		if strings.TrimSpace(single) != "" {
+			list = append(list, single)
+		}
+	}
+
+	clean := make([]string, 0, len(list))
+	seen := make(map[string]struct{}, len(list))
+	for _, item := range list {
+		ipValue := strings.TrimSpace(item)
+		parsed := net.ParseIP(ipValue)
+		if parsed == nil || parsed.To4() == nil {
+			continue
+		}
+		canonical := parsed.To4().String()
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		clean = append(clean, canonical)
+	}
+	sort.Strings(clean)
+	return clean, nil
+}
+
 func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 	script := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
 		"$ErrorActionPreference='Stop'; " +
@@ -151,7 +227,7 @@ func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 		"  if ($oldIPs) { $oldIPs | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue | Out-Null }; " +
 		"  New-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $ifIndex -IPAddress " + quotePowerShellSingle(tunRouteIPv4Address) + " -PrefixLength " + strconv.Itoa(tunRouteIPv4PrefixLength) + " -Type Unicast -SkipAsSource $false -ErrorAction Stop | Out-Null; " +
 		"}; " +
-		"Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses @(" + quotePowerShellSingle(tunRouteDNSPrimary) + "," + quotePowerShellSingle(tunRouteDNSSecondary) + ") -ErrorAction SilentlyContinue | Out-Null; " +
+		"Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses @(" + quotePowerShellSingle(internalDNSListenIPv4) + ") -ErrorAction SilentlyContinue | Out-Null; " +
 		"Get-NetRoute -AddressFamily IPv4 -InterfaceIndex $ifIndex -DestinationPrefix " + quotePowerShellSingle(tunRouteSplitPrefixA) + " -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; " +
 		"Get-NetRoute -AddressFamily IPv4 -InterfaceIndex $ifIndex -DestinationPrefix " + quotePowerShellSingle(tunRouteSplitPrefixB) + " -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; " +
 		"New-NetRoute -AddressFamily IPv4 -InterfaceIndex $ifIndex -DestinationPrefix " + quotePowerShellSingle(tunRouteSplitPrefixA) + " -NextHop '0.0.0.0' -RouteMetric 6 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null; " +

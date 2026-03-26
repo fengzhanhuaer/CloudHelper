@@ -136,6 +136,12 @@ type probeChainTunnelOpenResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+type probeChainTunnelDNSResolveResponse struct {
+	Addrs []string `json:"addrs,omitempty"`
+	TTL   int      `json:"ttl,omitempty"`
+	Error string   `json:"error,omitempty"`
+}
+
 type probeChainStreamProxyConn struct {
 	net.Conn
 	reader *bufio.Reader
@@ -1989,6 +1995,8 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		proxyErr = handleProbeChainTunnelTCPStream(stream, target)
 	case "udp":
 		proxyErr = handleProbeChainTunnelUDPStream(stream, target)
+	case "dns":
+		proxyErr = handleProbeChainTunnelDNSResolveStream(stream, target)
 	default:
 		proxyErr = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: "unsupported network"})
 	}
@@ -2103,6 +2111,94 @@ func handleProbeChainTunnelUDPStream(stream net.Conn, target string) error {
 		return nil
 	}
 	return copyErr
+}
+
+func handleProbeChainTunnelDNSResolveStream(stream net.Conn, target string) error {
+	domain, qType, err := parseProbeChainTunnelDNSResolveTarget(target)
+	if err != nil {
+		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
+		return err
+	}
+	if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
+		return err
+	}
+
+	response := probeChainTunnelDNSResolveResponse{TTL: 60}
+	addrs, resolveErr := resolveProbeChainDomainViaSystemDNS(domain, qType)
+	if resolveErr != nil {
+		response.Error = resolveErr.Error()
+	} else {
+		response.Addrs = addrs
+	}
+
+	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	encodeErr := json.NewEncoder(stream).Encode(response)
+	_ = stream.SetWriteDeadline(time.Time{})
+	if encodeErr != nil {
+		return encodeErr
+	}
+	return nil
+}
+
+func parseProbeChainTunnelDNSResolveTarget(target string) (string, uint16, error) {
+	parts := strings.SplitN(strings.TrimSpace(target), "|", 2)
+	if len(parts) != 2 {
+		return "", 0, errors.New("invalid dns resolve target")
+	}
+	qTypeValue, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return "", 0, errors.New("invalid dns query type")
+	}
+	qType := uint16(qTypeValue)
+	if qType != 1 && qType != 28 {
+		return "", 0, errors.New("unsupported dns query type")
+	}
+	domain := strings.TrimSpace(strings.Trim(parts[1], "."))
+	if domain == "" || strings.Contains(domain, " ") {
+		return "", 0, errors.New("invalid dns domain")
+	}
+	return strings.ToLower(domain), qType, nil
+}
+
+func resolveProbeChainDomainViaSystemDNS(domain string, qType uint16) ([]string, error) {
+	network := "ip"
+	if qType == 1 {
+		network = "ip4"
+	} else if qType == 28 {
+		network = "ip6"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, network, strings.TrimSpace(domain))
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(ips))
+	addrs := make([]string, 0, len(ips))
+	for _, item := range ips {
+		if item == nil {
+			continue
+		}
+		if qType == 1 && item.To4() == nil {
+			continue
+		}
+		if qType == 28 && item.To4() != nil {
+			continue
+		}
+		canonical := item.String()
+		if v4 := item.To4(); v4 != nil {
+			canonical = v4.String()
+		}
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		addrs = append(addrs, canonical)
+	}
+	if len(addrs) == 0 {
+		return nil, errors.New("dns resolve returned empty result")
+	}
+	return addrs, nil
 }
 
 func handleProbeChainSocksProxy(runtime *probeChainRuntime, conn net.Conn, reader *bufio.Reader) error {
