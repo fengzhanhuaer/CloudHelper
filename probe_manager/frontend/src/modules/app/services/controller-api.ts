@@ -69,6 +69,16 @@ export async function triggerControllerUpgrade(baseURL: string, token: string): 
 	);
 }
 
+export async function forceRefreshProbeDNSCache(baseURL: string, token: string): Promise<string> {
+  const appMain = (window as any)?.go?.main?.App;
+  const invoke = appMain?.ForceRefreshProbeDNSCache;
+  if (typeof invoke !== "function") {
+    throw new Error("ForceRefreshProbeDNSCache not available");
+  }
+  const result = await invoke(baseURL, token);
+  return typeof result === "string" ? result : String(result ?? "");
+}
+
 export async function fetchControllerUpgradeProgress(baseURL: string, token: string): Promise<UpgradeProgress> {
   return await callAdminWSRpc<UpgradeProgress>(baseURL, token, "admin.upgrade.progress");
 }

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ForceRefreshProbeDNSCache,
   PingProbeLinkSession,
   PingProbeChain,
   StartProbeLinkSession,
@@ -14,6 +13,7 @@ import {
   fetchProbeLinkUsers,
   fetchProbeNodeStatus,
   fetchProbeNodes,
+  forceRefreshProbeDNSCache,
   startProbeLinkTestOnController,
   stopProbeLinkTestOnController,
   upsertProbeLinkChain,
@@ -745,7 +745,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
     setIsRefreshingDNSCache(true);
     setChainStatus("正在强制刷新 DNS 缓存...");
     try {
-      const message = await ForceRefreshProbeDNSCache(props.controllerBaseUrl, props.sessionToken);
+      const message = await forceRefreshProbeDNSCache(props.controllerBaseUrl, props.sessionToken);
       const text = String(message || "").trim();
       setChainStatus(text || "DNS 缓存已刷新（有效期 24 小时）");
     } catch (error) {
