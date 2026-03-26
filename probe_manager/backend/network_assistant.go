@@ -281,6 +281,7 @@ type networkAssistantService struct {
 	tunUDPRelays    map[string]*localTUNUDPRelay
 	dnsRouteHints   map[string]dnsRouteHintEntry
 	internalDNS     *localInternalDNSServer
+	logRateState    map[string]time.Time
 
 	lastChainRefreshAt map[string]time.Time
 	controlPlaneHosts  map[string]struct{}
@@ -327,6 +328,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunUDPRelays:        make(map[string]*localTUNUDPRelay),
 		tunDynamicBypass:    make(map[string]int),
 		dnsRouteHints:       make(map[string]dnsRouteHintEntry),
+		logRateState:        make(map[string]time.Time),
 		controlPlaneHosts:   make(map[string]struct{}),
 		controlPlaneIPs:     make(map[string]struct{}),
 	}
@@ -2051,6 +2053,33 @@ func (s *networkAssistantService) logf(format string, args ...any) {
 		return
 	}
 	s.logStore.Append(logSourceManager, inferManagerLogCategory(message), message)
+}
+
+func (s *networkAssistantService) logfRateLimited(rateKey string, interval time.Duration, format string, args ...any) {
+	if s == nil || s.logStore == nil {
+		return
+	}
+	key := strings.TrimSpace(rateKey)
+	if key == "" || interval <= 0 {
+		s.logf(format, args...)
+		return
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	if s.logRateState == nil {
+		s.logRateState = make(map[string]time.Time)
+	}
+	if lastAt, ok := s.logRateState[key]; ok {
+		if now.Sub(lastAt) < interval {
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.logRateState[key] = now
+	s.mu.Unlock()
+
+	s.logf(format, args...)
 }
 
 func (s *networkAssistantService) logController(category, message string) {

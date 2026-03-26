@@ -308,11 +308,19 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	outbound, route, openErr := n.openOutboundTCP(targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
-		n.service.logf("local tun tcp route open failed: target=%s err=%v", targetAddr, openErr)
+		n.service.logfRateLimited(
+			"tun:tcp:open_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
+			3*time.Second,
+			"local tun tcp route open failed: target=%s err=%v",
+			targetAddr,
+			openErr,
+		)
 		return
 	}
 
-	n.service.logf(
+	n.service.logfRateLimited(
+		"tun:tcp:connected:"+strings.ToLower(strings.TrimSpace(targetAddr)),
+		2*time.Second,
 		"local tun tcp relay connected: target=%s routed=%s direct=%v node=%s group=%s",
 		targetAddr,
 		route.TargetAddr,
@@ -345,7 +353,13 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	outbound, route, openErr := n.openOutboundUDP(targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
-		n.service.logf("local tun udp route open failed: target=%s err=%v", targetAddr, openErr)
+		n.service.logfRateLimited(
+			"tun:udp:open_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
+			3*time.Second,
+			"local tun udp route open failed: target=%s err=%v",
+			targetAddr,
+			openErr,
+		)
 		return
 	}
 
@@ -356,7 +370,9 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 		timeout:  localTUNUDPAssociationTimeout,
 	}
 	bridge.start()
-	n.service.logf(
+	n.service.logfRateLimited(
+		"tun:udp:associated:"+strings.ToLower(strings.TrimSpace(targetAddr)),
+		2*time.Second,
 		"local tun udp association created: target=%s routed=%s direct=%v node=%s group=%s",
 		targetAddr,
 		route.TargetAddr,

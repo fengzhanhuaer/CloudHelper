@@ -71,11 +71,12 @@ func (s *networkAssistantService) ensureControlPlaneDialReady(controllerBaseURL 
 
 	s.mu.RLock()
 	mode := s.mode
+	tunEnabled := s.tunEnabled
 	lastHost := strings.TrimSpace(s.tunRouteHost)
 	lastSyncAt := s.tunRouteSyncedAt
 	s.mu.RUnlock()
 
-	if mode != networkModeTUN {
+	if !(mode == networkModeTUN || (mode == networkModeRule && tunEnabled)) {
 		return nil
 	}
 	if host != "" && strings.EqualFold(host, lastHost) && !lastSyncAt.IsZero() && time.Since(lastSyncAt) < tunRouteRefreshInterval {
