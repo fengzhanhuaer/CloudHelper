@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ForceRefreshProbeDNSCache,
   PingProbeLinkSession,
   PingProbeChain,
   StartProbeLinkSession,
@@ -107,6 +108,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const [deletingChainID, setDeletingChainID] = useState("");
   const [editingChainID, setEditingChainID] = useState("");
   const [chainStatus, setChainStatus] = useState("未加载链路列表");
+  const [isRefreshingDNSCache, setIsRefreshingDNSCache] = useState(false);
   const [chainForm, setChainForm] = useState<ProbeLinkChainFormState>(() => createEmptyProbeLinkChainForm());
   const [chainUsers, setChainUsers] = useState<ProbeLinkUserItem[]>([]);
   const [isLoadingChainUsers, setIsLoadingChainUsers] = useState(false);
@@ -125,7 +127,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
   const continuousTestSeqRef = useRef(0);
   const continuousTestingRef = useRef(false);
   const loadChainUserPublicKeySeqRef = useRef(0);
-  const isOperatingChain = isLoadingChains || isSavingChain || deletingChainID !== "";
+  const isOperatingChain = isLoadingChains || isSavingChain || deletingChainID !== "" || isRefreshingDNSCache;
 
   type ChainPingState = { ok: boolean | null; durationMS: number | null; message: string };
   const [chainPingStates, setChainPingStates] = useState<Record<string, ChainPingState>>({});
@@ -731,6 +733,29 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
   }
 
+  async function handleForceRefreshProbeDNSCache() {
+    if (!props.sessionToken.trim()) {
+      setChainStatus("未登录，无法强制刷新 DNS 缓存");
+      return;
+    }
+    if (isRefreshingDNSCache) {
+      return;
+    }
+
+    setIsRefreshingDNSCache(true);
+    setChainStatus("正在强制刷新 DNS 缓存...");
+    try {
+      const message = await ForceRefreshProbeDNSCache(props.controllerBaseUrl, props.sessionToken);
+      const text = String(message || "").trim();
+      setChainStatus(text || "DNS 缓存已刷新（有效期 24 小时）");
+    } catch (error) {
+      const msg = errorToMessage(error);
+      setChainStatus(`强制刷新 DNS 缓存失败：${msg}`);
+    } finally {
+      setIsRefreshingDNSCache(false);
+    }
+  }
+
   function resetChainForm() {
     setEditingChainID("");
     const defaultUserID = chainUsers[0] ? normalizeChainUsername(chainUsers[0].username) : "";
@@ -1318,6 +1343,15 @@ export function LinkManageTab(props: LinkManageTabProps) {
             <button
               className="btn"
               onClick={() => {
+                void handleForceRefreshProbeDNSCache();
+              }}
+              disabled={isOperatingChain || isLoadingChainUsers}
+            >
+              {isRefreshingDNSCache ? "刷新中..." : "强制刷新 DNS 缓存"}
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
                 void loadChainUsers();
               }}
               disabled={isOperatingChain || isLoadingChainUsers}
@@ -1591,6 +1625,15 @@ export function LinkManageTab(props: LinkManageTabProps) {
               disabled={isOperatingChain}
             >
               {isLoadingChains ? "获取中..." : "从主控获取链路"}
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                void handleForceRefreshProbeDNSCache();
+              }}
+              disabled={isOperatingChain}
+            >
+              {isRefreshingDNSCache ? "刷新中..." : "强制刷新 DNS 缓存"}
             </button>
             <button
               className="btn"

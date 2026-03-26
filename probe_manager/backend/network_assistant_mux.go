@@ -380,12 +380,25 @@ func resolveProbeChainClientTLSServerName(layer string, dialHost string, hostHea
 }
 
 func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader string, err error) {
+	return resolveProbeChainDialIPHostWithCache(rawHost, false)
+}
+
+func resolveProbeChainDialIPHostFresh(rawHost string) (dialHost string, hostHeader string, err error) {
+	return resolveProbeChainDialIPHostWithCache(rawHost, true)
+}
+
+func resolveProbeChainDialIPHostWithCache(rawHost string, forceRefresh bool) (dialHost string, hostHeader string, err error) {
 	host := strings.TrimSpace(strings.Trim(rawHost, "[]"))
 	if host == "" {
 		return "", "", fmt.Errorf("empty relay host")
 	}
 	if parsed := net.ParseIP(host); parsed != nil {
 		return parsed.String(), host, nil
+	}
+	if !forceRefresh {
+		if cachedIP, ok := getProbeDNSCachedIP(host); ok {
+			return cachedIP, host, nil
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -398,7 +411,9 @@ func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader st
 	if ip == nil {
 		return "", "", fmt.Errorf("resolve relay host failed: no ip")
 	}
-	return ip.String(), host, nil
+	resolvedIP := ip.String()
+	_ = setProbeDNSCachedIP(host, resolvedIP)
+	return resolvedIP, host, nil
 }
 
 func selectProbeChainPreferredDialIP(ips []net.IP) net.IP {

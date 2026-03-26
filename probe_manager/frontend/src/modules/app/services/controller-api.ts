@@ -60,13 +60,13 @@ export async function fetchControllerVersion(baseURL: string, token: string): Pr
 }
 
 export async function triggerControllerUpgrade(baseURL: string, token: string): Promise<ControllerUpgradeResponse> {
-  return await callAdminWSRpc<ControllerUpgradeResponse>(
-    baseURL,
-    token,
-    "admin.upgrade",
-    undefined,
-    { timeoutMs: 180000 },
-  );
+	return await callAdminWSRpc<ControllerUpgradeResponse>(
+		baseURL,
+		token,
+		"admin.upgrade",
+		undefined,
+		{ timeoutMs: 30000 },
+	);
 }
 
 export async function fetchControllerUpgradeProgress(baseURL: string, token: string): Promise<UpgradeProgress> {

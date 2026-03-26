@@ -333,6 +333,9 @@ func newNetworkAssistantService() *networkAssistantService {
 		controlPlaneHosts:   make(map[string]struct{}),
 		controlPlaneIPs:     make(map[string]struct{}),
 	}
+	if _, err := getDNSUpstreamConfig(); err != nil {
+		logStore.Appendf(logSourceManager, "init", "failed to load dns upstream config, fallback to defaults: %v", err)
+	}
 	if pref, err := loadTUNPreferenceState(); err == nil {
 		service.tunEverEnabled = pref.EverEnabled
 		service.tunManualClosed = pref.ManualClosed
@@ -382,6 +385,13 @@ func (a *App) RestoreNetworkAssistantDirect() (NetworkAssistantStatus, error) {
 	return a.networkAssistant.Status(), nil
 }
 
+func (a *App) ForceRefreshProbeDNSCache(controllerBaseURL, sessionToken string) (string, error) {
+	if a.networkAssistant == nil {
+		return "", errors.New("network assistant service is not initialized")
+	}
+	return a.networkAssistant.ForceRefreshProbeDNSCache(controllerBaseURL, sessionToken)
+}
+
 func (s *networkAssistantService) MarkTUNManualClosed() {
 	s.mu.Lock()
 	shouldPersist := s.tunEverEnabled && !s.tunManualClosed
@@ -395,6 +405,77 @@ func (s *networkAssistantService) MarkTUNManualClosed() {
 			s.logf("failed to persist tun preference state: %v", err)
 		}
 	}
+}
+
+func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, sessionToken string) (string, error) {
+	baseURLInput := strings.TrimSpace(controllerBaseURL)
+	tokenInput := strings.TrimSpace(sessionToken)
+	if baseURLInput != "" || tokenInput != "" {
+		s.UpdateSession(baseURLInput, tokenInput)
+	}
+
+	if err := clearProbeDNSCacheFile(); err != nil {
+		return "", err
+	}
+
+	s.mu.RLock()
+	effectiveBase := strings.TrimSpace(s.controllerBaseURL)
+	effectiveToken := strings.TrimSpace(s.sessionToken)
+	s.mu.RUnlock()
+
+	if effectiveBase != "" && effectiveToken != "" {
+		if err := s.refreshAvailableNodes(); err != nil {
+			s.logf("force refresh dns cache: refresh available nodes failed: %v", err)
+		}
+	}
+
+	hostSet := make(map[string]struct{})
+	addHost := func(rawHost string) {
+		host := normalizeProbeDNSCacheHost(rawHost)
+		if host == "" {
+			return
+		}
+		hostSet[host] = struct{}{}
+	}
+	if controllerHost := resolveControllerHostForProtection(effectiveBase); controllerHost != "" {
+		addHost(controllerHost)
+	}
+
+	targets := s.getChainTargetsSnapshot()
+	for _, endpoint := range targets {
+		addHost(endpoint.EntryHost)
+	}
+
+	hosts := make([]string, 0, len(hostSet))
+	for host := range hostSet {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+
+	resolved := 0
+	failed := 0
+	for _, host := range hosts {
+		if _, _, err := resolveProbeChainDialIPHostFresh(host); err != nil {
+			failed++
+			s.logf("force refresh dns cache failed: host=%s err=%v", host, err)
+			continue
+		}
+		resolved++
+	}
+
+	message := fmt.Sprintf("dns cache refreshed: hosts=%d resolved=%d failed=%d ttl=%s", len(hosts), resolved, failed, probeDNSCacheTTL)
+	s.logf("%s", message)
+	if failed > 0 {
+		return message, fmt.Errorf("dns cache refresh partially failed: resolved=%d failed=%d", resolved, failed)
+	}
+	return message, nil
+}
+
+func (s *networkAssistantService) getChainTargetsSnapshot() map[string]probeChainEndpoint {
+	s.mu.RLock()
+	targets := copyProbeChainTargets(s.chainTargets)
+	s.mu.RUnlock()
+	return targets
 }
 
 func (s *networkAssistantService) UpdateSession(controllerBaseURL, sessionToken string) {

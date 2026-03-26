@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"net"
@@ -173,42 +172,6 @@ func buildInternalDNSCacheKey(route tunnelRouteDecision, domain string, qType ui
 	return strings.ToLower(nodeKey) + "|" + strconv.Itoa(int(qType)) + "|" + strings.ToLower(strings.TrimSpace(domain))
 }
 
-func (s *networkAssistantService) currentDirectDNSServers() []string {
-	s.mu.RLock()
-	servers := append([]string(nil), s.tunRouteState.DirectDNSServers...)
-	s.mu.RUnlock()
-
-	clean := make([]string, 0, len(servers))
-	seen := make(map[string]struct{}, len(servers))
-	for _, rawValue := range servers {
-		value := normalizeDNSServerAddress(rawValue)
-		if value == "" {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		clean = append(clean, value)
-	}
-	return clean
-}
-
-func normalizeDNSServerAddress(raw string) string {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return ""
-	}
-	if _, _, err := net.SplitHostPort(value); err == nil {
-		return value
-	}
-	host := strings.TrimSpace(strings.Trim(value, "[]"))
-	if net.ParseIP(host) == nil {
-		return ""
-	}
-	return net.JoinHostPort(host, "53")
-}
-
 func (s *networkAssistantService) queryRuleDomainViaSystemDNS(domain string, qType uint16) ([]string, int, error) {
 	normalizedDomain := normalizeRuleDomain(domain)
 	if normalizedDomain == "" {
@@ -219,89 +182,127 @@ func (s *networkAssistantService) queryRuleDomainViaSystemDNS(domain string, qTy
 	if err != nil {
 		return nil, 0, err
 	}
-
-	servers := s.currentDirectDNSServers()
-	if len(servers) == 0 {
-		if strings.EqualFold(s.currentMode(), networkModeTUN) {
-			return nil, 0, errors.New("physical dns servers are not configured")
-		}
-		return queryRuleDomainViaDefaultResolver(normalizedDomain, qType)
+	dnsConfig, configErr := getDNSUpstreamConfig()
+	if configErr != nil {
+		s.logfRateLimited("dns-upstream-config-load", 30*time.Second, "load dns upstream config failed, fallback to defaults: %v", configErr)
 	}
 
 	deadline := time.Now().Add(ruleDNSResolveTimeout)
-	trials := 0
 	var lastErr error
-	for _, serverAddr := range servers {
-		if trials >= ruleDNSResolveServerTrials {
-			break
-		}
-		trials++
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			lastErr = errors.New("dns resolve timeout")
-			break
-		}
-		payload, queryErr := queryRawDNSPacket(serverAddr, packet, remaining)
-		if queryErr != nil {
-			lastErr = queryErr
-			continue
-		}
+
+	tryParseResponse := func(payload []byte) ([]string, int, error) {
 		addrs, ttlSeconds, parseErr := parseDNSResponseAddrs(payload, queryID, qType)
 		if parseErr != nil {
-			lastErr = parseErr
-			continue
+			return nil, 0, parseErr
 		}
 		if len(addrs) == 0 {
-			lastErr = errors.New("dns resolve returned empty result")
-			continue
+			return nil, 0, errors.New("dns resolve returned empty result")
 		}
 		return addrs, ttlSeconds, nil
 	}
+
+	queryByDoH := func() ([]string, int, bool) {
+		trials := 0
+		for _, server := range dnsConfig.DoHServers {
+			if trials >= ruleDNSResolveServerTrials {
+				break
+			}
+			trials++
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				lastErr = errors.New("dns resolve timeout")
+				return nil, 0, false
+			}
+			payload, queryErr := s.queryRawDNSPacketViaDoH(server, packet, remaining, dnsConfig.DNSServers)
+			if queryErr != nil {
+				lastErr = queryErr
+				continue
+			}
+			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
+			if parseErr != nil {
+				lastErr = parseErr
+				continue
+			}
+			return addrs, ttlSeconds, true
+		}
+		return nil, 0, false
+	}
+
+	queryByDoT := func() ([]string, int, bool) {
+		trials := 0
+		for _, server := range dnsConfig.DoTServers {
+			if trials >= ruleDNSResolveServerTrials {
+				break
+			}
+			trials++
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				lastErr = errors.New("dns resolve timeout")
+				return nil, 0, false
+			}
+			payload, queryErr := s.queryRawDNSPacketViaDoT(server, packet, remaining, dnsConfig.DNSServers)
+			if queryErr != nil {
+				lastErr = queryErr
+				continue
+			}
+			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
+			if parseErr != nil {
+				lastErr = parseErr
+				continue
+			}
+			return addrs, ttlSeconds, true
+		}
+		return nil, 0, false
+	}
+
+	queryByPlainDNS := func() ([]string, int, bool) {
+		trials := 0
+		for _, server := range dnsConfig.DNSServers {
+			if trials >= ruleDNSResolveServerTrials {
+				break
+			}
+			trials++
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				lastErr = errors.New("dns resolve timeout")
+				return nil, 0, false
+			}
+			payload, queryErr := queryRawDNSPacket(server.Address, packet, remaining)
+			if queryErr != nil {
+				lastErr = queryErr
+				continue
+			}
+			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
+			if parseErr != nil {
+				lastErr = parseErr
+				continue
+			}
+			return addrs, ttlSeconds, true
+		}
+		return nil, 0, false
+	}
+
+	for _, tier := range buildDNSUpstreamQueryOrder(dnsConfig.Prefer) {
+		switch tier {
+		case "doh":
+			if addrs, ttlSeconds, ok := queryByDoH(); ok {
+				return addrs, ttlSeconds, nil
+			}
+		case "dot":
+			if addrs, ttlSeconds, ok := queryByDoT(); ok {
+				return addrs, ttlSeconds, nil
+			}
+		default:
+			if addrs, ttlSeconds, ok := queryByPlainDNS(); ok {
+				return addrs, ttlSeconds, nil
+			}
+		}
+	}
+
 	if lastErr != nil {
 		return nil, 0, lastErr
 	}
-	return queryRuleDomainViaDefaultResolver(normalizedDomain, qType)
-}
-
-func queryRuleDomainViaDefaultResolver(domain string, qType uint16) ([]string, int, error) {
-	network := "ip"
-	if qType == 1 {
-		network = "ip4"
-	} else if qType == 28 {
-		network = "ip6"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), ruleDNSResolveTimeout)
-	defer cancel()
-	ips, err := net.DefaultResolver.LookupIP(ctx, network, strings.TrimSpace(domain))
-	if err != nil {
-		return nil, 0, err
-	}
-	addrs := make([]string, 0, len(ips))
-	seen := make(map[string]struct{}, len(ips))
-	for _, ipValue := range ips {
-		if ipValue == nil {
-			continue
-		}
-		if qType == 1 && ipValue.To4() == nil {
-			continue
-		}
-		if qType == 28 && ipValue.To4() != nil {
-			continue
-		}
-		canonical := canonicalIP(ipValue)
-		if canonical == "" {
-			continue
-		}
-		if _, exists := seen[canonical]; exists {
-			continue
-		}
-		seen[canonical] = struct{}{}
-		addrs = append(addrs, canonical)
-	}
-	if len(addrs) == 0 {
-		return nil, 0, errors.New("dns resolve returned empty result")
-	}
-	return addrs, internalDNSDefaultTTLSeconds, nil
+	return nil, 0, errors.New("dns resolvers are not configured")
 }
 
 func queryRawDNSPacket(serverAddr string, packet []byte, timeout time.Duration) ([]byte, error) {

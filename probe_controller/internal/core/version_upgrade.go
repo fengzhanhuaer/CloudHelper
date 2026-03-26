@@ -62,6 +62,11 @@ var controllerUpgradeProgressState = struct {
 	data adminUpgradeProgressResponse
 }{}
 
+var controllerUpgradeTaskState = struct {
+	mu      sync.Mutex
+	running bool
+}{}
+
 type githubReleaseAsset struct {
 	Name               string `json:"name"`
 	Size               int64  `json:"size"`
@@ -127,14 +132,8 @@ func AdminUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-	defer cancel()
-
-	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "prepare", Percent: 2, Message: "准备升级"})
-
-	result, err := performControllerUpgrade(ctx)
+	result, err := triggerControllerUpgradeTask()
 	if err != nil {
-		setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "failed", Percent: 0, Message: "升级失败"})
 		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"error":           err.Error(),
 			"current_version": result.CurrentVersion,
@@ -142,17 +141,55 @@ func AdminUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
 	writeJSON(w, http.StatusOK, result)
-	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "done", Percent: 100, Message: result.Message})
+}
 
-	if result.Updated && shouldAutoRestartAfterUpgrade() {
-		go func() {
-			time.Sleep(1200 * time.Millisecond)
-			log.Printf("upgrade complete, restarting process to activate %s", result.LatestVersion)
-			os.Exit(0)
-		}()
+func triggerControllerUpgradeTask() (adminUpgradeResponse, error) {
+	controllerUpgradeTaskState.mu.Lock()
+	if controllerUpgradeTaskState.running {
+		controllerUpgradeTaskState.mu.Unlock()
+		current := currentControllerVersion()
+		return adminUpgradeResponse{CurrentVersion: current, LatestVersion: "", Updated: false, Message: "upgrade already running"}, nil
 	}
+	controllerUpgradeTaskState.running = true
+	controllerUpgradeTaskState.mu.Unlock()
+
+	current := currentControllerVersion()
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "prepare", Percent: 2, Message: "准备升级"})
+
+	go func() {
+		defer func() {
+			controllerUpgradeTaskState.mu.Lock()
+			controllerUpgradeTaskState.running = false
+			controllerUpgradeTaskState.mu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		result, err := performControllerUpgrade(ctx)
+		if err != nil {
+			setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "failed", Percent: 0, Message: "升级失败"})
+			log.Printf("controller upgrade failed: %v", err)
+			return
+		}
+
+		setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "done", Percent: 100, Message: result.Message})
+		if result.Updated && shouldAutoRestartAfterUpgrade() {
+			go func() {
+				time.Sleep(1200 * time.Millisecond)
+				log.Printf("upgrade complete, restarting process to activate %s", result.LatestVersion)
+				os.Exit(0)
+			}()
+		}
+	}()
+
+	return adminUpgradeResponse{
+		CurrentVersion: current,
+		LatestVersion:  "",
+		Updated:        false,
+		Message:        "upgrade task started",
+	}, nil
 }
 
 func AdminUpgradeProgressHandler(w http.ResponseWriter, r *http.Request) {

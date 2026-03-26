@@ -15,3 +15,10 @@ func (s *networkAssistantService) clearPlatformTUNSystemRouting() error {
 	s.mu.Unlock()
 	return nil
 }
+
+func (s *networkAssistantService) acquireTUNDirectBypassRoute(_ string) (func(), error) {
+	return func() {}, nil
+}
+
+func (s *networkAssistantService) releaseTUNDirectBypassRoute(_ string) {
+}

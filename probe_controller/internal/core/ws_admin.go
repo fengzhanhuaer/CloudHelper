@@ -265,22 +265,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		resp.UpgradeAvailable = normalizeVersion(current) != normalizeVersion(resp.LatestVersion)
 		return resp, nil
 	case "admin.upgrade":
-		setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "prepare", Percent: 2, Message: "准备升级"})
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		result, err := performControllerUpgrade(ctx)
-		if err != nil {
-			setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "failed", Percent: 0, Message: "升级失败"})
-			return nil, err
-		}
-		setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: false, Phase: "done", Percent: 100, Message: result.Message})
-		if result.Updated && shouldAutoRestartAfterUpgrade() {
-			go func() {
-				time.Sleep(1200 * time.Millisecond)
-				os.Exit(0)
-			}()
-		}
-		return result, nil
+		return triggerControllerUpgradeTask()
 	case "admin.upgrade.progress":
 		return getControllerUpgradeProgress(), nil
 	case "admin.logs":

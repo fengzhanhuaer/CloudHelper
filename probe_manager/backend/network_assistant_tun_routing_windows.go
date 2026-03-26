@@ -63,10 +63,7 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 	state.BypassInterfaceIndex = egress.InterfaceIndex
 	state.BypassNextHop = strings.TrimSpace(egress.NextHop)
 
-	directDNSServers, dnsErr := detectWindowsInterfaceIPv4DNSServers(egress.InterfaceIndex)
-	if dnsErr == nil {
-		state.DirectDNSServers = append([]string(nil), directDNSServers...)
-	}
+	state.DirectDNSServers = s.collectConfiguredDNSBypassIPv4Addrs()
 
 	prefixSet := make(map[string]struct{})
 	state.BypassRoutePrefixes = make([]string, 0, len(targets.IPv4Addrs)+len(state.DirectDNSServers))

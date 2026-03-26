@@ -34,6 +34,10 @@ export function GetManagerVersion() {
   return window['go']['main']['App']['GetManagerVersion']();
 }
 
+export function ForceRefreshProbeDNSCache(arg1, arg2) {
+  return window['go']['main']['App']['ForceRefreshProbeDNSCache'](arg1, arg2);
+}
+
 export function EnableNetworkAssistantTUN() {
   return window['go']['main']['App']['EnableNetworkAssistantTUN']();
 }
