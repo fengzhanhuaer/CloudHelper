@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  downloadNetworkRuleRoutes,
+  uploadNetworkRuleRoutes,
+} from "../services/controller-api";
+import {
 	EnableNetworkAssistantTUN,
 	GetNetworkAssistantLogs,
 	GetNetworkAssistantRuleConfig,
@@ -107,6 +111,8 @@ export function useNetworkAssistant() {
   const [ruleConfig, setRuleConfig] = useState<NetworkAssistantRuleConfig | null>(null);
   const [isLoadingRuleConfig, setIsLoadingRuleConfig] = useState(false);
   const [ruleConfigStatus, setRuleConfigStatus] = useState("规则策略未加载");
+  const [isSyncingRuleRoutes, setIsSyncingRuleRoutes] = useState(false);
+  const [ruleRoutesSyncStatus, setRuleRoutesSyncStatus] = useState("规则文件主控备份：未执行");
 
   const logCategories = useMemo(() => {
     const set = new Set<string>();
@@ -357,6 +363,54 @@ export function useNetworkAssistant() {
     }
   }, [refreshLogs]);
 
+  const uploadRuleRoutes = useCallback(async (controllerBaseURL: string, token: string, file: File) => {
+    const filename = String(file?.name || "").trim().toLowerCase();
+    if (!file || filename !== "rule_routes.txt") {
+      setRuleRoutesSyncStatus("上传失败：请选择 rule_routes.txt");
+      throw new Error("请选择 rule_routes.txt");
+    }
+    setIsSyncingRuleRoutes(true);
+    setRuleRoutesSyncStatus("正在上传 rule_routes.txt 到主控备份...");
+    try {
+      const content = await file.text();
+      const message = await uploadNetworkRuleRoutes(controllerBaseURL, token, content);
+      setRuleRoutesSyncStatus(`上传成功：${message}`);
+      setRuleConfigStatus("规则策略已更新，请刷新规则组确认");
+      await refreshRuleConfig();
+      await refreshLogs();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setRuleRoutesSyncStatus(`上传失败：${msg}`);
+      throw error;
+    } finally {
+      setIsSyncingRuleRoutes(false);
+    }
+  }, [refreshLogs, refreshRuleConfig]);
+
+  const downloadRuleRoutes = useCallback(async (controllerBaseURL: string, token: string) => {
+    setIsSyncingRuleRoutes(true);
+    setRuleRoutesSyncStatus("正在从主控备份下载 rule_routes.txt...");
+    try {
+      const { fileName, content } = await downloadNetworkRuleRoutes(controllerBaseURL, token);
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName || "rule_routes.txt";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setRuleRoutesSyncStatus(`下载成功：${fileName || "rule_routes.txt"}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setRuleRoutesSyncStatus(`下载失败：${msg}`);
+      throw error;
+    } finally {
+      setIsSyncingRuleRoutes(false);
+    }
+  }, []);
+
   return {
     status,
     selectedNode,
@@ -384,8 +438,12 @@ export function useNetworkAssistant() {
     ruleConfig,
     isLoadingRuleConfig,
     ruleConfigStatus,
+    isSyncingRuleRoutes,
+    ruleRoutesSyncStatus,
     refreshRuleConfig,
     setRulePolicy,
+    uploadRuleRoutes,
+    downloadRuleRoutes,
     refreshLogs,
     copyLogs,
     clearLogs,

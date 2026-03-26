@@ -73,7 +73,11 @@ type TabContentProps = {
   networkRuleConfig: NetworkAssistantRuleConfig | null;
   isLoadingNetworkRuleConfig: boolean;
   networkRuleConfigStatus: string;
+  isSyncingNetworkRuleRoutes: boolean;
+  networkRuleRoutesSyncStatus: string;
   onRefreshNetworkRuleConfig: () => void;
+  onUploadNetworkRuleRoutes: (file: File) => void;
+  onDownloadNetworkRuleRoutes: () => void;
   onSetNetworkRulePolicy: (group: string, action: NetworkAssistantRuleAction, tunnelNodeID?: string) => void;
   onInstallNetworkTUN: () => void;
   onEnableNetworkTUN: () => void;
@@ -146,7 +150,11 @@ export function TabContent(props: TabContentProps) {
           ruleConfig={props.networkRuleConfig}
           isLoadingRuleConfig={props.isLoadingNetworkRuleConfig}
           ruleConfigStatus={props.networkRuleConfigStatus}
+          isSyncingRuleRoutes={props.isSyncingNetworkRuleRoutes}
+          ruleRoutesSyncStatus={props.networkRuleRoutesSyncStatus}
           onRefreshRuleConfig={props.onRefreshNetworkRuleConfig}
+          onUploadRuleRoutes={props.onUploadNetworkRuleRoutes}
+          onDownloadRuleRoutes={props.onDownloadNetworkRuleRoutes}
           onSetRulePolicy={props.onSetNetworkRulePolicy}
           onInstallTUN={props.onInstallNetworkTUN}
           onEnableTUN={props.onEnableNetworkTUN}

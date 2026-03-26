@@ -965,6 +965,10 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		}, nil
 	case "admin.manager.backup.upload":
 		return handleAdminWSManagerBackupUpload(payload)
+	case "admin.manager.rule_routes.upload":
+		return handleAdminWSManagerRuleRoutesUpload(payload)
+	case "admin.manager.rule_routes.download":
+		return handleAdminWSManagerRuleRoutesDownload(payload)
 	case "admin.cloudflare.api.get":
 		return getCloudflareAPIKey(), nil
 	case "admin.cloudflare.api.set":

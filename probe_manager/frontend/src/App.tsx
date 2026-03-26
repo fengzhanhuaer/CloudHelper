@@ -183,7 +183,11 @@ function App() {
             networkRuleConfig={networkAssistant.ruleConfig}
             isLoadingNetworkRuleConfig={networkAssistant.isLoadingRuleConfig}
             networkRuleConfigStatus={networkAssistant.ruleConfigStatus}
+            isSyncingNetworkRuleRoutes={networkAssistant.isSyncingRuleRoutes}
+            networkRuleRoutesSyncStatus={networkAssistant.ruleRoutesSyncStatus}
             onRefreshNetworkRuleConfig={networkAssistant.refreshRuleConfig}
+            onUploadNetworkRuleRoutes={(file) => void networkAssistant.uploadRuleRoutes(settings.baseUrl, auth.sessionToken, file)}
+            onDownloadNetworkRuleRoutes={() => void networkAssistant.downloadRuleRoutes(settings.baseUrl, auth.sessionToken)}
             onSetNetworkRulePolicy={(group, action, tunnelNodeID) => void networkAssistant.setRulePolicy(group, action, tunnelNodeID)}
             onInstallNetworkTUN={() => networkAssistant.installTUN()}
             onEnableNetworkTUN={() => networkAssistant.enableTUN()}
