@@ -288,8 +288,16 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           <div className="content-actions">
             <button className="btn" onClick={props.onInstallTUN} disabled={props.isOperating || !props.status.tun_supported}>安装 TUN</button>
             <button className="btn" onClick={props.onEnableTUN} disabled={props.isOperating || !props.status.tun_supported}>启用 TUN</button>
+            <button
+              className="btn"
+              onClick={props.onSwitchDirect}
+              disabled={props.isOperating || (!props.status.tun_enabled && props.status.mode !== "tun")}
+            >
+              关闭 TUN
+            </button>
             <button className="btn" onClick={props.onRefreshStatus} disabled={props.isOperating}>刷新状态</button>
           </div>
+          <div className="status">关闭 TUN 将切回直连模式，并恢复系统 DNS 与系统代理设置。</div>
         </>
       ) : (
         <>

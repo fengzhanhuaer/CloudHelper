@@ -251,6 +251,8 @@ type networkAssistantService struct {
 	tunRouteState    tunSystemRouteState
 	tunRouteSyncedAt time.Time
 	tunRouteHost     string
+	tunEverEnabled   bool
+	tunManualClosed  bool
 
 	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
@@ -438,6 +440,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	}
 	effectiveBase := strings.TrimSpace(s.controllerBaseURL)
 	effectiveToken := strings.TrimSpace(s.sessionToken)
+	wasUsingTUNCapture := s.tunEnabled
 	s.lastError = ""
 	s.mu.Unlock()
 
@@ -473,15 +476,18 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.mu.Lock()
 		s.mode = networkModeDirect
 		s.tunnelStatusMessage = "直连模式"
-		s.systemProxyMessage = "已清除系统代理（直连）"
+		s.systemProxyMessage = "已清除系统代理并恢复系统 DNS（直连）"
 		s.tunnelOpenFailures = 0
 		s.hasAppliedSysProxy = false
 		s.hasProxySnapshot = false
 		s.proxySnapshot = systemProxySnapshot{}
 		s.tunEnabled = false
 		s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
+		if wasUsingTUNCapture {
+			s.tunManualClosed = true
+		}
 		s.mu.Unlock()
-		s.logf("switched mode to direct and cleared system proxy, node=%s", normalizedNode)
+		s.logf("switched mode to direct and restored system dns/proxy, node=%s", normalizedNode)
 		return nil
 	}
 
@@ -491,6 +497,15 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.setLastError(err)
 		return err
 	}
+	if s.shouldUseTUNCaptureForRuleMode() {
+		if err := s.applyRuleModeViaTUN(routing, normalizedNode, effectiveBase); err != nil {
+			s.logf("failed to enable rule mode via tun: %v", err)
+			s.setLastError(err)
+			return err
+		}
+		return nil
+	}
+
 	if err := s.stopLocalTUNDataPlane(); err != nil {
 		s.logf("failed to stop tun data plane before rule mode: %v", err)
 		s.setLastError(err)
@@ -536,6 +551,12 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	return nil
 }
 
+func (s *networkAssistantService) shouldUseTUNCaptureForRuleMode() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tunEverEnabled && !s.tunManualClosed
+}
+
 func (s *networkAssistantService) Shutdown() error {
 	errStopTUN := s.stopLocalTUNDataPlane()
 	errTunRouting := s.clearTUNSystemRouting()
@@ -547,7 +568,7 @@ func (s *networkAssistantService) Shutdown() error {
 	tunLibraryPath := s.tunLibraryPath
 	s.mode = networkModeDirect
 	s.tunnelStatusMessage = "直连模式"
-	s.systemProxyMessage = "已恢复为直连"
+	s.systemProxyMessage = "已恢复为直连（系统 DNS 已恢复）"
 	s.tunnelOpenFailures = 0
 	s.tunEnabled = false
 	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)

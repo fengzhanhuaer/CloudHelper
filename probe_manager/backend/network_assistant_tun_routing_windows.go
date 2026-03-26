@@ -27,9 +27,10 @@ type windowsRouteInfo struct {
 }
 
 type windowsAdapterInfo struct {
-	InterfaceIndex       int    `json:"InterfaceIndex"`
-	Name                 string `json:"Name"`
-	InterfaceDescription string `json:"InterfaceDescription"`
+	InterfaceIndex       int      `json:"InterfaceIndex"`
+	Name                 string   `json:"Name"`
+	InterfaceDescription string   `json:"InterfaceDescription"`
+	PreviousDNSServers   []string `json:"PreviousDNSServers"`
 }
 
 func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunControlPlaneTargets) error {
@@ -48,7 +49,8 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 	}
 
 	state := tunSystemRouteState{
-		AdapterIndex: adapter.InterfaceIndex,
+		AdapterIndex:      adapter.InterfaceIndex,
+		AdapterDNSServers: append([]string(nil), adapter.PreviousDNSServers...),
 	}
 
 	if targets.ControllerHost != "" && len(targets.IPv4Addrs) == 0 {
@@ -96,7 +98,7 @@ func (s *networkAssistantService) clearPlatformTUNSystemRouting() error {
 			}
 		}
 	}
-	if err := clearWindowsTUNAdapterIPv4Routing(state.AdapterIndex); err != nil {
+	if err := clearWindowsTUNAdapterIPv4Routing(state.AdapterIndex, state.AdapterDNSServers); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
 
@@ -139,6 +141,9 @@ func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 		"Select-Object -First 1; " +
 		"if ($null -eq $adapter) { throw 'tun adapter not found: " + escapePowerShellLiteral(tunAdapterName) + "' }; " +
 		"$ifIndex = [int]$adapter.ifIndex; " +
+		"$prevDns = @(); " +
+		"$dnsEntry = Get-DnsClientServerAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1; " +
+		"if ($dnsEntry -and $dnsEntry.ServerAddresses) { $prevDns = @($dnsEntry.ServerAddresses) }; " +
 		"$existing = Get-NetIPAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | " +
 		"Where-Object { $_.IPAddress -eq " + quotePowerShellSingle(tunRouteIPv4Address) + " -and $_.PrefixLength -eq " + strconv.Itoa(tunRouteIPv4PrefixLength) + " }; " +
 		"if ($null -eq $existing) { " +
@@ -151,7 +156,7 @@ func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 		"Get-NetRoute -AddressFamily IPv4 -InterfaceIndex $ifIndex -DestinationPrefix " + quotePowerShellSingle(tunRouteSplitPrefixB) + " -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; " +
 		"New-NetRoute -AddressFamily IPv4 -InterfaceIndex $ifIndex -DestinationPrefix " + quotePowerShellSingle(tunRouteSplitPrefixA) + " -NextHop '0.0.0.0' -RouteMetric 6 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null; " +
 		"New-NetRoute -AddressFamily IPv4 -InterfaceIndex $ifIndex -DestinationPrefix " + quotePowerShellSingle(tunRouteSplitPrefixB) + " -NextHop '0.0.0.0' -RouteMetric 6 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null; " +
-		"[pscustomobject]@{ InterfaceIndex=[int]$ifIndex; Name=[string]$adapter.Name; InterfaceDescription=[string]$adapter.InterfaceDescription } | ConvertTo-Json -Compress"
+		"[pscustomobject]@{ InterfaceIndex=[int]$ifIndex; Name=[string]$adapter.Name; InterfaceDescription=[string]$adapter.InterfaceDescription; PreviousDNSServers=[string[]]$prevDns } | ConvertTo-Json -Compress"
 
 	output, err := runHiddenPowerShell(script)
 	if err != nil {
@@ -206,11 +211,30 @@ func removeWindowsIPv4BypassRoute(prefix string, interfaceIndex int, nextHop str
 	return nil
 }
 
-func clearWindowsTUNAdapterIPv4Routing(interfaceIndex int) error {
+func clearWindowsTUNAdapterIPv4Routing(interfaceIndex int, restoreDNSServers []string) error {
 	indexText := strconv.Itoa(interfaceIndex)
 	if interfaceIndex <= 0 {
 		indexText = "0"
 	}
+	cleanDNSServers := make([]string, 0, len(restoreDNSServers))
+	seenDNS := make(map[string]struct{}, len(restoreDNSServers))
+	for _, rawValue := range restoreDNSServers {
+		value := strings.TrimSpace(rawValue)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, exists := seenDNS[key]; exists {
+			continue
+		}
+		seenDNS[key] = struct{}{}
+		cleanDNSServers = append(cleanDNSServers, value)
+	}
+	dnsRestoreCommand := "Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue | Out-Null"
+	if len(cleanDNSServers) > 0 {
+		dnsRestoreCommand = "Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses " + powerShellStringArrayLiteral(cleanDNSServers) + " -ErrorAction SilentlyContinue | Out-Null"
+	}
+
 	script := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
 		"$ErrorActionPreference='Stop'; " +
 		"$ifIndex = " + indexText + "; " +
@@ -221,12 +245,30 @@ func clearWindowsTUNAdapterIPv4Routing(interfaceIndex int) error {
 		"if ($ifIndex -le 0) { return }; " +
 		"Get-NetRoute -AddressFamily IPv4 -InterfaceIndex $ifIndex -DestinationPrefix " + quotePowerShellSingle(tunRouteSplitPrefixA) + " -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; " +
 		"Get-NetRoute -AddressFamily IPv4 -InterfaceIndex $ifIndex -DestinationPrefix " + quotePowerShellSingle(tunRouteSplitPrefixB) + " -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; " +
-		"Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue | Out-Null"
+		dnsRestoreCommand
 	_, err := runHiddenPowerShell(script)
 	if err != nil {
 		return fmt.Errorf("clear tun adapter routing failed: %w", err)
 	}
 	return nil
+}
+
+func powerShellStringArrayLiteral(values []string) string {
+	if len(values) == 0 {
+		return "@()"
+	}
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		clean := strings.TrimSpace(value)
+		if clean == "" {
+			continue
+		}
+		quoted = append(quoted, quotePowerShellSingle(clean))
+	}
+	if len(quoted) == 0 {
+		return "@()"
+	}
+	return "@(" + strings.Join(quoted, ",") + ")"
 }
 
 func runHiddenPowerShell(script string) ([]byte, error) {

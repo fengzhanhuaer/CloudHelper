@@ -350,6 +350,8 @@ func (s *networkAssistantService) EnableTUN() error {
 	s.tunSupported = true
 	s.tunInstalled = true
 	s.tunEnabled = true
+	s.tunEverEnabled = true
+	s.tunManualClosed = false
 	s.tunStatus = tunStatusEnabled
 	s.tunnelStatusMessage = "TUN 模式已启用（按规则分流）"
 	s.systemProxyMessage = "TUN 模式（系统代理已清除，SOCKS/HTTP 代理已停用）"
@@ -364,5 +366,64 @@ func (s *networkAssistantService) EnableTUN() error {
 	s.mu.Unlock()
 
 	s.logf("switched mode to tun, library=%s", libraryPath)
+	return nil
+}
+
+func (s *networkAssistantService) applyRuleModeViaTUN(routing tunnelRuleRouting, nodeID string, controllerBaseURL string) error {
+	if !isTUNSupported() {
+		return errors.New(tunStatusUnsupported)
+	}
+	if err := s.InstallTUN(); err != nil {
+		return err
+	}
+	if err := s.stopLocalTUNDataPlane(); err != nil {
+		return err
+	}
+	if err := s.clearTUNSystemRouting(); err != nil {
+		return err
+	}
+	if err := s.stopProxyAndServer(); err != nil {
+		return err
+	}
+	if err := applyDirectSystemProxy(); err != nil {
+		return err
+	}
+	if err := s.startLocalTUNDataPlane(); err != nil {
+		return err
+	}
+	if err := s.applyTUNSystemRouting(controllerBaseURL); err != nil {
+		_ = s.stopLocalTUNDataPlane()
+		_ = s.clearTUNSystemRouting()
+		return err
+	}
+
+	s.mu.Lock()
+	s.mode = networkModeRule
+	s.nodeID = strings.TrimSpace(nodeID)
+	s.tunSupported = true
+	s.tunInstalled = true
+	s.tunEnabled = true
+	s.tunEverEnabled = true
+	s.tunManualClosed = false
+	s.tunStatus = tunStatusEnabled
+	s.tunnelStatusMessage = "规则模式（TUN 分流）"
+	s.systemProxyMessage = "规则模式（TUN 分流，系统代理已清除）"
+	s.tunnelOpenFailures = 0
+	s.lastError = ""
+	s.hasAppliedSysProxy = false
+	s.hasProxySnapshot = false
+	s.proxySnapshot = systemProxySnapshot{}
+	s.ruleRouting = routing
+	s.ruleDNSCache = make(map[string]dnsCacheEntry)
+	libraryPath := s.tunLibraryPath
+	s.mu.Unlock()
+
+	s.logf(
+		"switched mode to rule (tun capture), node=%s library=%s rules=%d groups=%d",
+		strings.TrimSpace(nodeID),
+		libraryPath,
+		len(routing.RuleSet.Rules),
+		len(routing.GroupNodeMap),
+	)
 	return nil
 }

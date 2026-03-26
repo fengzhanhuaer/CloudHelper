@@ -12,6 +12,7 @@ const tunRouteRefreshInterval = 30 * time.Second
 
 type tunSystemRouteState struct {
 	AdapterIndex         int
+	AdapterDNSServers    []string
 	BypassInterfaceIndex int
 	BypassNextHop        string
 	BypassRoutePrefixes  []string

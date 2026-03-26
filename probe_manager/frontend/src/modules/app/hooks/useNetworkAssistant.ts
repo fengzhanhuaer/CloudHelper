@@ -278,9 +278,9 @@ export function useNetworkAssistant() {
       setStatus(data);
       setSelectedNode(data.node_id || nodeID);
       if (mode === "direct") {
-        setOperateStatus("已切换为直连模式，并清除系统代理");
+        setOperateStatus("已切换为直连模式，并恢复系统 DNS/系统代理");
       } else if (mode === "rule") {
-        setOperateStatus("已切换为规则模式（命中规则走链路）");
+        setOperateStatus(data.tun_enabled ? "已切换为规则模式（TUN 分流）" : "已切换为规则模式（代理分流）");
         void refreshRuleConfig();
       } else {
         setOperateStatus(`模式已切换：${mode}`);

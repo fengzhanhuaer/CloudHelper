@@ -32,6 +32,27 @@ func TestResolveControllerHostForProtection(t *testing.T) {
 	}
 }
 
+func TestShouldUseTUNCaptureForRuleMode(t *testing.T) {
+	service := &networkAssistantService{
+		tunEverEnabled:  true,
+		tunManualClosed: false,
+	}
+	if !service.shouldUseTUNCaptureForRuleMode() {
+		t.Fatal("expected tun capture to be preferred for rule mode")
+	}
+
+	service.tunManualClosed = true
+	if service.shouldUseTUNCaptureForRuleMode() {
+		t.Fatal("expected tun capture to be disabled after manual close")
+	}
+
+	service.tunEverEnabled = false
+	service.tunManualClosed = false
+	if service.shouldUseTUNCaptureForRuleMode() {
+		t.Fatal("expected tun capture to be disabled when never enabled")
+	}
+}
+
 func TestSocks5HandshakeNoAuth(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
