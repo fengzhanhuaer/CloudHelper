@@ -260,6 +260,7 @@ type networkAssistantService struct {
 	tunUDPHandler    localTUNUDPHandlerCloser
 	tunIPIDSeq       uint32
 	tunRouteState    tunSystemRouteState
+	tunDynamicBypass map[string]int
 	tunRouteSyncedAt time.Time
 	tunRouteHost     string
 	tunEverEnabled   bool
@@ -318,6 +319,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		ruleDNSCache:        make(map[string]dnsCacheEntry),
 		ruleMuxClients:      make(map[string]*tunnelMuxClient),
 		tunUDPRelays:        make(map[string]*localTUNUDPRelay),
+		tunDynamicBypass:    make(map[string]int),
 		dnsRouteHints:       make(map[string]dnsRouteHintEntry),
 		controlPlaneHosts:   make(map[string]struct{}),
 		controlPlaneIPs:     make(map[string]struct{}),

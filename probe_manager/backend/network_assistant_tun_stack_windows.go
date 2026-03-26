@@ -95,6 +95,28 @@ type tunnelStreamNetConn struct {
 	pending   []byte
 }
 
+type directBypassManagedConn struct {
+	net.Conn
+	release   func()
+	closeOnce sync.Once
+}
+
+func (c *directBypassManagedConn) Close() error {
+	if c == nil {
+		return nil
+	}
+	var err error
+	c.closeOnce.Do(func() {
+		if c.release != nil {
+			c.release()
+		}
+		if c.Conn != nil {
+			err = c.Conn.Close()
+		}
+	})
+	return err
+}
+
 func (s *networkAssistantService) startLocalTUNPacketStack() error {
 	s.mu.Lock()
 	if s.tunPacketStack != nil {
@@ -351,8 +373,16 @@ func (n *localTUNNetstack) openOutboundTCP(targetAddr string) (net.Conn, tunnelR
 	}
 
 	if route.Direct {
+		release, bypassErr := n.service.acquireTUNDirectBypassRoute(route.TargetAddr)
+		if bypassErr != nil {
+			return nil, route, bypassErr
+		}
 		conn, dialErr := net.DialTimeout("tcp", route.TargetAddr, localTUNTCPDialTimeout)
-		return conn, route, dialErr
+		if dialErr != nil {
+			release()
+			return nil, route, dialErr
+		}
+		return &directBypassManagedConn{Conn: conn, release: release}, route, nil
 	}
 
 	stream, openErr := n.service.openTunnelStreamForNode("tcp", route.TargetAddr, route.NodeID)
@@ -369,15 +399,21 @@ func (n *localTUNNetstack) openOutboundUDP(targetAddr string) (io.ReadWriteClose
 	}
 
 	if route.Direct {
+		release, bypassErr := n.service.acquireTUNDirectBypassRoute(route.TargetAddr)
+		if bypassErr != nil {
+			return nil, route, bypassErr
+		}
 		udpAddr, resolveErr := net.ResolveUDPAddr("udp", route.TargetAddr)
 		if resolveErr != nil {
+			release()
 			return nil, route, resolveErr
 		}
 		conn, dialErr := net.DialUDP("udp", nil, udpAddr)
 		if dialErr != nil {
+			release()
 			return nil, route, dialErr
 		}
-		return conn, route, nil
+		return &directBypassManagedConn{Conn: conn, release: release}, route, nil
 	}
 
 	stream, openErr := n.service.openTunnelStreamForNode("udp", route.TargetAddr, route.NodeID)
