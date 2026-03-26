@@ -42,14 +42,14 @@ func TestShouldUseTUNCaptureForRuleMode(t *testing.T) {
 	}
 
 	service.tunManualClosed = true
-	if service.shouldUseTUNCaptureForRuleMode() {
-		t.Fatal("expected tun capture to be disabled after manual close")
+	if !service.shouldUseTUNCaptureForRuleMode() {
+		t.Fatal("expected tun capture to stay enabled after manual close")
 	}
 
 	service.tunEverEnabled = false
 	service.tunManualClosed = false
-	if service.shouldUseTUNCaptureForRuleMode() {
-		t.Fatal("expected tun capture to be disabled when never enabled")
+	if !service.shouldUseTUNCaptureForRuleMode() {
+		t.Fatal("expected tun capture to stay enabled when never enabled")
 	}
 }
 

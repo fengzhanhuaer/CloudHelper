@@ -269,6 +269,7 @@ type networkAssistantService struct {
 	tunDynamicBypass map[string]int
 	tunRouteSyncedAt time.Time
 	tunRouteHost     string
+	tunRouteSyncing  bool
 	tunEverEnabled   bool
 	tunManualClosed  bool
 
@@ -543,64 +544,16 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.setLastError(err)
 		return err
 	}
-	if s.shouldUseTUNCaptureForRuleMode() {
-		if err := s.applyRuleModeViaTUN(routing, normalizedNode, effectiveBase); err != nil {
-			s.logf("failed to enable rule mode via tun: %v", err)
-			s.setLastError(err)
-			return err
-		}
-		return nil
-	}
-
-	if err := s.stopLocalTUNDataPlane(); err != nil {
-		s.logf("failed to stop tun data plane before rule mode: %v", err)
+	if err := s.applyRuleModeViaTUN(routing, normalizedNode, effectiveBase); err != nil {
+		s.logf("failed to enable rule mode via tun: %v", err)
 		s.setLastError(err)
 		return err
 	}
-	if err := s.clearTUNSystemRouting(); err != nil {
-		s.logf("failed to clear tun system routing before rule mode: %v", err)
-		s.setLastError(err)
-		return err
-	}
-	if err := s.ensureSocksServer(); err != nil {
-		s.logf("failed to enable rule mode: start socks server: %v", err)
-		s.setLastError(err)
-		return err
-	}
-	if err := s.applySystemProxy(); err != nil {
-		s.logf("failed to enable rule mode: apply system proxy: %v", err)
-		s.setLastError(err)
-		return err
-	}
-
-	s.mu.Lock()
-	s.mode = networkModeRule
-	s.tunnelStatusMessage = "规则模式（命中规则走隧道）"
-	s.systemProxyMessage = "规则模式已启用"
-	s.tunnelOpenFailures = 0
-	s.lastError = ""
-	s.ruleRouting = routing
-	s.ruleDNSCache = make(map[string]dnsCacheEntry)
-	s.tunEnabled = false
-	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
-	s.mu.Unlock()
-
-	s.logf(
-		"switched mode to rule, node=%s rules=%d groups=%d rule_file=%s group_file=%s",
-		normalizedNode,
-		len(routing.RuleSet.Rules),
-		len(routing.GroupNodeMap),
-		strings.TrimSpace(routing.RuleFilePath),
-		strings.TrimSpace(routing.GroupFilePath),
-	)
-
 	return nil
 }
 
 func (s *networkAssistantService) shouldUseTUNCaptureForRuleMode() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.tunEverEnabled && !s.tunManualClosed
+	return true
 }
 
 func loadTUNPreferenceState() (tunPreferenceState, error) {
