@@ -249,6 +249,8 @@ type networkAssistantService struct {
 	tunUDPHandler    localTUNUDPHandlerCloser
 	tunIPIDSeq       uint32
 	tunRouteState    tunSystemRouteState
+	tunRouteSyncedAt time.Time
+	tunRouteHost     string
 
 	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
@@ -2004,6 +2006,9 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 	if baseURL == "" || token == "" {
 		return errors.New("controller url and session token are required")
 	}
+	if err := s.ensureControlPlaneDialReady(baseURL); err != nil {
+		return err
+	}
 
 	chainTargets, chainNodes, chainErr := fetchProbeChainTargetsViaAdminWS(baseURL, token, s.logf)
 	nodes := make([]string, 0, len(chainNodes)+1)
@@ -2829,10 +2834,11 @@ func parseDirectWhitelistRules(rules []string) (*socksDirectWhitelist, error) {
 			continue
 		}
 
-		if strings.Contains(rule, " ") {
+		hostRule := normalizeDirectWhitelistHostRule(rule)
+		if hostRule == "" {
 			continue
 		}
-		whitelist.hosts[rule] = struct{}{}
+		whitelist.hosts[hostRule] = struct{}{}
 	}
 
 	if len(whitelist.hosts) == 0 && len(whitelist.ips) == 0 && len(whitelist.cidrs) == 0 {
@@ -2860,6 +2866,41 @@ func canonicalIP(ip net.IP) string {
 	return ip.String()
 }
 
+func normalizeDirectWhitelistHostRule(rawRule string) string {
+	rule := strings.ToLower(strings.TrimSpace(rawRule))
+	if rule == "" {
+		return ""
+	}
+	if strings.Contains(rule, " ") || strings.Contains(rule, ",") {
+		return ""
+	}
+	rule = strings.TrimPrefix(rule, "*.")
+	rule = strings.TrimPrefix(rule, ".")
+	rule = strings.Trim(rule, ".")
+	if rule == "" {
+		return ""
+	}
+	return rule
+}
+
+func directWhitelistHostSuffixMatch(host string, rules map[string]struct{}) bool {
+	if host == "" || len(rules) == 0 {
+		return false
+	}
+	if _, ok := rules[host]; ok {
+		return true
+	}
+	for suffix := range rules {
+		if suffix == "" {
+			continue
+		}
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (w *socksDirectWhitelist) matchesTarget(targetAddr string) bool {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
 	if err != nil {
@@ -2870,7 +2911,7 @@ func (w *socksDirectWhitelist) matchesTarget(targetAddr string) bool {
 		return false
 	}
 
-	if _, ok := w.hosts[host]; ok {
+	if directWhitelistHostSuffixMatch(host, w.hosts) {
 		return true
 	}
 

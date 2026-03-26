@@ -402,6 +402,9 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	if baseURL == "" || token == "" {
 		return ProbeChainPingResult{}, fmt.Errorf("not connected to controller")
 	}
+	if err := a.networkAssistant.ensureControlPlaneDialReady(baseURL); err != nil {
+		return ProbeChainPingResult{}, fmt.Errorf("prepare controller route failed: %w", err)
+	}
 
 	candidateChainIDs, explicitChainTarget := buildProbeChainPingCandidateChainIDs(targetID)
 	resolvedChainID := targetID
@@ -450,7 +453,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	}
 	if !found {
 		if !explicitChainTarget && containsNodeID(availableNodes, targetID) {
-			return pingNetworkAssistantTunnelNode(baseURL, token, targetID)
+			return pingNetworkAssistantTunnelNode(a.networkAssistant, baseURL, token, targetID)
 		}
 		if len(warnBuf) > 0 {
 			return ProbeChainPingResult{}, fmt.Errorf("chain entry not resolved: %s", strings.Join(warnBuf, "; "))
@@ -545,10 +548,15 @@ func buildProbeChainPingCandidateChainIDs(targetID string) ([]string, bool) {
 	return ids, explicitChainTarget
 }
 
-func pingNetworkAssistantTunnelNode(baseURL, token, nodeID string) (ProbeChainPingResult, error) {
+func pingNetworkAssistantTunnelNode(service *networkAssistantService, baseURL, token, nodeID string) (ProbeChainPingResult, error) {
 	trimmedNodeID := strings.TrimSpace(nodeID)
 	if trimmedNodeID == "" {
 		return ProbeChainPingResult{}, fmt.Errorf("node_id is required")
+	}
+	if service != nil {
+		if err := service.ensureControlPlaneDialReady(baseURL); err != nil {
+			return ProbeChainPingResult{}, fmt.Errorf("prepare controller route failed: %w", err)
+		}
 	}
 
 	startedAt := time.Now()

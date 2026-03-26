@@ -20,6 +20,18 @@ func TestBuildTunnelWSURL(t *testing.T) {
 	}
 }
 
+func TestResolveControllerHostForProtection(t *testing.T) {
+	host := resolveControllerHostForProtection("https://controller.example.com:443/path")
+	if host != "controller.example.com" {
+		t.Fatalf("unexpected host: %s", host)
+	}
+
+	ipHost := resolveControllerHostForProtection("https://203.0.113.10:8443")
+	if ipHost != "203.0.113.10" {
+		t.Fatalf("unexpected ip host: %s", ipHost)
+	}
+}
+
 func TestSocks5HandshakeNoAuth(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
@@ -167,6 +179,32 @@ func TestDirectWhitelistIPv6HostPortFormat(t *testing.T) {
 	ipv6 := netip.MustParseAddr("2001:db8::1")
 	if whitelist.matchesTarget(net.JoinHostPort(ipv6.String(), "443")) {
 		t.Fatal("unexpected whitelist match for IPv6 target")
+	}
+}
+
+func TestDirectWhitelistHostSuffixMatch(t *testing.T) {
+	whitelist, err := parseDirectWhitelistRules([]string{"example.com"})
+	if err != nil {
+		t.Fatalf("parseDirectWhitelistRules returned error: %v", err)
+	}
+
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{addr: "example.com:443", want: true},
+		{addr: "api.example.com:443", want: true},
+		{addr: "deep.api.example.com:443", want: true},
+		{addr: "API.EXAMPLE.COM:443", want: true},
+		{addr: "badexample.com:443", want: false},
+		{addr: "example.com.cn:443", want: false},
+	}
+
+	for _, tt := range tests {
+		got := whitelist.matchesTarget(tt.addr)
+		if got != tt.want {
+			t.Fatalf("matchesTarget(%q)=%v, want %v", tt.addr, got, tt.want)
+		}
 	}
 }
 

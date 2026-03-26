@@ -33,6 +33,15 @@ type windowsAdapterInfo struct {
 }
 
 func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunControlPlaneTargets) error {
+	s.mu.RLock()
+	prevState := s.tunRouteState
+	s.mu.RUnlock()
+	if prevState.BypassInterfaceIndex > 0 && strings.TrimSpace(prevState.BypassNextHop) != "" {
+		for _, prefix := range prevState.BypassRoutePrefixes {
+			_ = removeWindowsIPv4BypassRoute(prefix, prevState.BypassInterfaceIndex, prevState.BypassNextHop)
+		}
+	}
+
 	adapter, err := ensureWindowsTUNAdapterIPv4Routing()
 	if err != nil {
 		return err

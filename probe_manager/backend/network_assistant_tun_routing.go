@@ -5,7 +5,10 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 )
+
+const tunRouteRefreshInterval = 30 * time.Second
 
 type tunSystemRouteState struct {
 	AdapterIndex         int
@@ -23,18 +26,50 @@ type tunControlPlaneTargets struct {
 
 func (s *networkAssistantService) applyTUNSystemRouting(controllerBaseURL string) error {
 	targets := resolveTUNControlPlaneTargets(controllerBaseURL)
+	controllerHost := strings.TrimSpace(targets.ControllerHost)
+
 	s.setControlPlaneDirectTargets(targets.Hosts, targets.IPs)
 	if err := s.applyPlatformTUNSystemRouting(targets); err != nil {
 		s.clearControlPlaneDirectTargets()
 		return err
 	}
+	s.mu.Lock()
+	s.tunRouteSyncedAt = time.Now()
+	s.tunRouteHost = controllerHost
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *networkAssistantService) clearTUNSystemRouting() error {
 	err := s.clearPlatformTUNSystemRouting()
 	s.clearControlPlaneDirectTargets()
+	s.mu.Lock()
+	s.tunRouteSyncedAt = time.Time{}
+	s.tunRouteHost = ""
+	s.mu.Unlock()
 	return err
+}
+
+func (s *networkAssistantService) ensureControlPlaneDialReady(controllerBaseURL string) error {
+	baseURL := strings.TrimSpace(controllerBaseURL)
+	if baseURL == "" {
+		return nil
+	}
+	host := resolveControllerHostForProtection(baseURL)
+
+	s.mu.RLock()
+	mode := s.mode
+	lastHost := strings.TrimSpace(s.tunRouteHost)
+	lastSyncAt := s.tunRouteSyncedAt
+	s.mu.RUnlock()
+
+	if mode != networkModeTUN {
+		return nil
+	}
+	if host != "" && strings.EqualFold(host, lastHost) && !lastSyncAt.IsZero() && time.Since(lastSyncAt) < tunRouteRefreshInterval {
+		return nil
+	}
+	return s.applyTUNSystemRouting(baseURL)
 }
 
 func (s *networkAssistantService) setControlPlaneDirectTargets(hosts map[string]struct{}, ips map[string]struct{}) {

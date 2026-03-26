@@ -769,6 +769,13 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 }
 
 func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput string) (*tunnelMuxClient, error) {
+	s.mu.RLock()
+	preflightBaseURL := strings.TrimSpace(s.controllerBaseURL)
+	s.mu.RUnlock()
+	if err := s.ensureControlPlaneDialReady(preflightBaseURL); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
