@@ -301,7 +301,28 @@ func (s *networkAssistantService) EnableTUN() error {
 	if err := s.InstallTUN(); err != nil {
 		return err
 	}
+	routing, err := loadOrCreateTunnelRuleRouting()
+	if err != nil {
+		s.setLastError(err)
+		return err
+	}
+
+	s.mu.RLock()
+	effectiveBase := strings.TrimSpace(s.controllerBaseURL)
+	effectiveToken := strings.TrimSpace(s.sessionToken)
+	s.mu.RUnlock()
+	if effectiveBase != "" && effectiveToken != "" {
+		if err := s.refreshAvailableNodes(); err != nil {
+			s.logf("refresh available nodes before tun enable failed: %v", err)
+			s.setLastError(err)
+			return err
+		}
+	}
 	if err := s.stopLocalTUNDataPlane(); err != nil {
+		s.setLastError(err)
+		return err
+	}
+	if err := s.clearTUNSystemRouting(); err != nil {
 		s.setLastError(err)
 		return err
 	}
@@ -317,6 +338,12 @@ func (s *networkAssistantService) EnableTUN() error {
 		s.setLastError(err)
 		return err
 	}
+	if err := s.applyTUNSystemRouting(effectiveBase); err != nil {
+		_ = s.stopLocalTUNDataPlane()
+		_ = s.clearTUNSystemRouting()
+		s.setLastError(err)
+		return err
+	}
 
 	s.mu.Lock()
 	s.mode = networkModeTUN
@@ -324,13 +351,15 @@ func (s *networkAssistantService) EnableTUN() error {
 	s.tunInstalled = true
 	s.tunEnabled = true
 	s.tunStatus = tunStatusEnabled
-	s.tunnelStatusMessage = "TUN 模式已启用（本地代理已关闭）"
-	s.systemProxyMessage = "TUN 模式（系统代理已清除）"
+	s.tunnelStatusMessage = "TUN 模式已启用（按规则分流）"
+	s.systemProxyMessage = "TUN 模式（系统代理已清除，SOCKS/HTTP 代理已停用）"
 	s.tunnelOpenFailures = 0
 	s.lastError = ""
 	s.hasAppliedSysProxy = false
 	s.hasProxySnapshot = false
 	s.proxySnapshot = systemProxySnapshot{}
+	s.ruleRouting = routing
+	s.ruleDNSCache = make(map[string]dnsCacheEntry)
 	libraryPath := s.tunLibraryPath
 	s.mu.Unlock()
 

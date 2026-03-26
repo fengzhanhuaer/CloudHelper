@@ -248,6 +248,7 @@ type networkAssistantService struct {
 	tunPacketStack   localTUNPacketStack
 	tunUDPHandler    localTUNUDPHandlerCloser
 	tunIPIDSeq       uint32
+	tunRouteState    tunSystemRouteState
 
 	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
@@ -258,6 +259,8 @@ type networkAssistantService struct {
 	tunUDPRelays    map[string]*localTUNUDPRelay
 
 	lastChainRefreshAt map[string]time.Time
+	controlPlaneHosts  map[string]struct{}
+	controlPlaneIPs    map[string]struct{}
 }
 
 func newNetworkAssistantService() *networkAssistantService {
@@ -298,6 +301,8 @@ func newNetworkAssistantService() *networkAssistantService {
 		ruleDNSCache:        make(map[string]dnsCacheEntry),
 		ruleMuxClients:      make(map[string]*tunnelMuxClient),
 		tunUDPRelays:        make(map[string]*localTUNUDPRelay),
+		controlPlaneHosts:   make(map[string]struct{}),
+		controlPlaneIPs:     make(map[string]struct{}),
 	}
 	service.syncTUNInstallState()
 	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
@@ -455,9 +460,10 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 
 	if normalizedMode == networkModeDirect {
 		errStopTUN := s.stopLocalTUNDataPlane()
+		errTunRouting := s.clearTUNSystemRouting()
 		errServer := s.stopSocksServerOnly()
 		errDirectProxy := applyDirectSystemProxy()
-		if err := errors.Join(errStopTUN, errServer, errDirectProxy); err != nil {
+		if err := errors.Join(errStopTUN, errTunRouting, errServer, errDirectProxy); err != nil {
 			s.logf("failed to switch to direct mode: %v", err)
 			s.setLastError(err)
 			return err
@@ -485,6 +491,11 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	}
 	if err := s.stopLocalTUNDataPlane(); err != nil {
 		s.logf("failed to stop tun data plane before rule mode: %v", err)
+		s.setLastError(err)
+		return err
+	}
+	if err := s.clearTUNSystemRouting(); err != nil {
+		s.logf("failed to clear tun system routing before rule mode: %v", err)
 		s.setLastError(err)
 		return err
 	}
@@ -525,6 +536,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 
 func (s *networkAssistantService) Shutdown() error {
 	errStopTUN := s.stopLocalTUNDataPlane()
+	errTunRouting := s.clearTUNSystemRouting()
 	errStop := s.stopProxyAndServer()
 	errDirect := applyDirectSystemProxy()
 
@@ -564,7 +576,7 @@ func (s *networkAssistantService) Shutdown() error {
 	if errStopTUN != nil {
 		s.logf("shutdown tun dataplane cleanup returned error: %v", errStopTUN)
 	}
-	return errors.Join(errStopTUN, errStop, errDirect, errCloseAdapter)
+	return errors.Join(errStopTUN, errTunRouting, errStop, errDirect, errCloseAdapter)
 }
 
 func (s *networkAssistantService) ensureSocksServer() error {
@@ -1176,8 +1188,12 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 	if mode == networkModeDirect {
 		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 	}
+	if s.isControlPlaneDirectTarget(host) {
+		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+	}
 
-	if mode != networkModeRule {
+	useRuleRouting := mode == networkModeRule || mode == networkModeTUN
+	if !useRuleRouting {
 		if s.shouldDialDirect(normalizedTarget) {
 			return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 		}

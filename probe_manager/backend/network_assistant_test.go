@@ -276,6 +276,107 @@ func TestDecideRouteForTargetRuleModeByIP(t *testing.T) {
 	}
 }
 
+func TestDecideRouteForTargetTUNModeUsesRuleRouting(t *testing.T) {
+	_, cidr, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("parse cidr: %v", err)
+	}
+	service := &networkAssistantService{
+		mode:           networkModeTUN,
+		nodeID:         "cloudserver",
+		availableNodes: []string{"cloudserver", "chain:test-chain"},
+		directWhitelist: &socksDirectWhitelist{
+			hosts: map[string]struct{}{},
+			ips:   map[string]struct{}{},
+			cidrs: []*net.IPNet{},
+		},
+		ruleRouting: tunnelRuleRouting{
+			RuleSet: tunnelRuleSet{
+				Rules: []tunnelRule{
+					{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "group_cidr"},
+				},
+			},
+			GroupNodeMap: map[string]string{
+				"group_cidr":         "chain:test-chain",
+				ruleFallbackGroupKey: rulePolicyActionDirect,
+			},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+	}
+
+	matchedDecision, err := service.decideRouteForTarget("10.1.2.3:443")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget returned error: %v", err)
+	}
+	if matchedDecision.Direct {
+		t.Fatal("expected tunnel route for matched cidr in tun mode")
+	}
+	if matchedDecision.NodeID != "chain:test-chain" {
+		t.Fatalf("node id=%s, want chain:test-chain", matchedDecision.NodeID)
+	}
+	if matchedDecision.Group != "group_cidr" {
+		t.Fatalf("group=%s, want group_cidr", matchedDecision.Group)
+	}
+
+	unmatchedDecision, err := service.decideRouteForTarget("8.8.8.8:53")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget returned error: %v", err)
+	}
+	if !unmatchedDecision.Direct {
+		t.Fatal("expected direct route for unmatched target in tun mode")
+	}
+}
+
+func TestDecideRouteForTargetControlPlaneAlwaysDirect(t *testing.T) {
+	_, cidr, err := net.ParseCIDR("0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("parse cidr: %v", err)
+	}
+	service := &networkAssistantService{
+		mode:           networkModeTUN,
+		nodeID:         "chain:test-chain",
+		availableNodes: []string{"cloudserver", "chain:test-chain"},
+		directWhitelist: &socksDirectWhitelist{
+			hosts: map[string]struct{}{},
+			ips:   map[string]struct{}{},
+			cidrs: []*net.IPNet{},
+		},
+		ruleRouting: tunnelRuleRouting{
+			RuleSet: tunnelRuleSet{
+				Rules: []tunnelRule{
+					{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "group_all"},
+				},
+			},
+			GroupNodeMap: map[string]string{
+				"group_all": rulePolicyActionTunnel + ":chain:test-chain",
+			},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+		controlPlaneHosts: map[string]struct{}{
+			"controller.example.com": {},
+		},
+		controlPlaneIPs: map[string]struct{}{
+			"203.0.113.10": {},
+		},
+	}
+
+	hostDecision, err := service.decideRouteForTarget("controller.example.com:443")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget by host returned error: %v", err)
+	}
+	if !hostDecision.Direct {
+		t.Fatal("expected controller host to be forced direct")
+	}
+
+	ipDecision, err := service.decideRouteForTarget("203.0.113.10:443")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget by ip returned error: %v", err)
+	}
+	if !ipDecision.Direct {
+		t.Fatal("expected controller ip to be forced direct")
+	}
+}
+
 func TestDecideRouteForTargetRuleModeRejectMatchedGroup(t *testing.T) {
 	_, cidr, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
