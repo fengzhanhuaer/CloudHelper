@@ -325,7 +325,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		directWhitelist:     directWhitelist,
 		logStore:            logStore,
 		ruleRouting:         ruleRouting,
-		ruleDNSCache:        make(map[string]dnsCacheEntry),
+		ruleDNSCache:        loadRuleDNSFromDisk(), // 从 dns_cache.json 恢复（24h TTL）
 		ruleMuxClients:      make(map[string]*tunnelMuxClient),
 		tunUDPRelays:        make(map[string]*localTUNUDPRelay),
 		tunDynamicBypass:    make(map[string]int),
@@ -428,7 +428,7 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 		s.UpdateSession(baseURLInput, tokenInput)
 	}
 
-	if err := clearProbeDNSCacheFile(); err != nil {
+	if err := clearDNSCacheFile(); err != nil {
 		return "", err
 	}
 
@@ -445,7 +445,7 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 
 	hostSet := make(map[string]struct{})
 	addHost := func(rawHost string) {
-		host := normalizeProbeDNSCacheHost(rawHost)
+		host := normalizeDNSCacheHost(rawHost)
 		if host == "" {
 			return
 		}
@@ -477,7 +477,7 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 		resolved++
 	}
 
-	message := fmt.Sprintf("dns cache refreshed: hosts=%d resolved=%d failed=%d ttl=%s", len(hosts), resolved, failed, probeDNSCacheTTL)
+	message := fmt.Sprintf("dns cache refreshed: hosts=%d resolved=%d failed=%d ttl=%s", len(hosts), resolved, failed, dnsCacheTTL)
 	s.logf("%s", message)
 	if failed > 0 {
 		return message, fmt.Errorf("dns cache refresh partially failed: resolved=%d failed=%d", resolved, failed)
@@ -1620,7 +1620,7 @@ func (s *networkAssistantService) loadRuleDNSCache(cacheKey string) ([]string, b
 	return append([]string(nil), entry.Addrs...), true
 }
 
-func (s *networkAssistantService) storeRuleDNSCache(cacheKey string, addresses []string, ttlSeconds int) {
+func (s *networkAssistantService) storeRuleDNSCache(cacheKey string, addresses []string, _ int) {
 	if len(addresses) == 0 {
 		return
 	}
@@ -1635,16 +1635,16 @@ func (s *networkAssistantService) storeRuleDNSCache(cacheKey string, addresses [
 	if len(normalized) == 0 {
 		return
 	}
-	ttl := clampRuleDNSTTL(ttlSeconds)
+	// 统一使用 24h TTL（内存 + 磁盘一致）
+	expires := dnsCacheExpiresAt()
 	s.mu.Lock()
 	if s.ruleDNSCache == nil {
 		s.ruleDNSCache = make(map[string]dnsCacheEntry)
 	}
-	s.ruleDNSCache[cacheKey] = dnsCacheEntry{
-		Addrs:   normalized,
-		Expires: time.Now().Add(time.Duration(ttl) * time.Second),
-	}
+	s.ruleDNSCache[cacheKey] = dnsCacheEntry{Addrs: normalized, Expires: expires}
 	s.mu.Unlock()
+	// 异步落盘，不阻塞 DNS 响应路径
+	go persistRuleDNSEntry(cacheKey, normalized)
 }
 
 func (s *networkAssistantService) queryRuleDomainViaTunnel(nodeID string, domain string, qType uint16) ([]string, int, error) {
@@ -2375,41 +2375,16 @@ func buildAdminWSURL(baseURL string) (string, error) {
 	return strings.TrimSpace(parsed.String()), nil
 }
 
-// buildAdminWSDialer 构造一个 WebSocket Dialer，其 NetDial 优先使用 probe DNS 缓存中的 IP
-// 直接建立 TCP 连接，而不走系统 DNS 解析。这样在 TUN/规则模式已接管系统流量时，
-// admin WebSocket 仍然能直连 controller，避免"no such host"错误。
-//
-// 首次连接（cache miss）时，使用系统 DNS 并在成功后自动把解析到的 IP 写入 probe DNS 缓存，
-// 后续调用（包括 TUN 接管后）直接用缓存 IP，实现"自愈"。
+// buildAdminWSDialer 构造一个 WebSocket Dialer，其 NetDialContext 使用
+// newCachedDNSDialContext（与全局 HTTP transport 共享同一 DNS 缓存逻辑）：
+// 缓存命中时直接用 IP 建连，绕过系统 DNS；未命中时走系统 DNS 并自动写缓存，
+// 后续（含 TUN 接管 DNS 后）实现"自愈"。
 func buildAdminWSDialer(baseURL string) websocket.Dialer {
-	host := resolveControllerHostForProtection(baseURL)
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
+		NetDialContext:   newCachedDNSDialContext(nil),
 	}
-	if host == "" {
-		return dialer
-	}
-	if cachedIP, ok := getProbeDNSCachedIP(host); ok && cachedIP != "" {
-		// cache hit：用缓存 IP 直连，绕过系统 DNS
-		dialer.NetDial = func(network, addr string) (net.Conn, error) {
-			_, portPart, splitErr := net.SplitHostPort(addr)
-			if splitErr != nil || portPart == "" {
-				return net.DialTimeout(network, addr, 10*time.Second)
-			}
-			return net.DialTimeout(network, net.JoinHostPort(cachedIP, portPart), 10*time.Second)
-		}
-	} else {
-		// cache miss：走系统 DNS，连接成功后把 IP 写入缓存供 TUN 模式下复用
-		dialer.NetDial = func(network, addr string) (net.Conn, error) {
-			conn, dialErr := net.DialTimeout(network, addr, 10*time.Second)
-			if dialErr == nil && conn != nil {
-				if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok && tcpAddr.IP != nil {
-					_ = setProbeDNSCachedIP(host, tcpAddr.IP.String())
-				}
-			}
-			return conn, dialErr
-		}
-	}
+	_ = baseURL // context preserved for caller readability
 	return dialer
 }
 
