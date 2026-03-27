@@ -2292,13 +2292,26 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 	}
 
 	chainTargets, chainNodes, probeNodes, chainErr := fetchProbeChainTargetsViaAdminWS(baseURL, token, s.logf)
+	if chainErr != nil {
+		s.logf("warning: fetch probe chain targets failed: %v, using cached endpoints", chainErr)
+		s.mu.RLock()
+		if len(s.chainTargets) > 0 {
+			chainTargets = s.chainTargets
+			for targetID := range s.chainTargets {
+				chainNodes = append(chainNodes, targetID)
+			}
+		}
+		if len(s.serverProbeNodes) > 0 {
+			probeNodes = s.serverProbeNodes
+		}
+		s.mu.RUnlock()
+	}
+
 	nodes := make([]string, 0, len(chainNodes)+1)
-	if chainErr == nil && len(chainNodes) > 0 {
+	if len(chainNodes) > 0 {
 		nodes = append(nodes, chainNodes...)
 	}
-	if !containsNodeID(nodes, defaultNodeID) {
-		nodes = append(nodes, defaultNodeID)
-	}
+
 	if len(nodes) == 0 {
 		payload, err := fetchTunnelNodesViaAdminWS(baseURL, token)
 		if err != nil {
@@ -2317,16 +2330,19 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 			}
 			nodes = append(nodes, id)
 		}
-		if len(nodes) == 0 {
-			nodes = []string{defaultNodeID}
-		}
+	}
+
+	if !containsNodeID(nodes, defaultNodeID) {
+		nodes = append(nodes, defaultNodeID)
 	}
 
 	s.mu.Lock()
 	s.availableNodes = nodes
 	s.chainTargets = chainTargets
-	if len(probeNodes) > 0 {
+	if len(probeNodes) > 0 || chainErr != nil {
 		s.serverProbeNodes = probeNodes
+	} else if chainErr == nil {
+		s.serverProbeNodes = nil
 	}
 	if !containsNodeID(nodes, s.nodeID) {
 		s.nodeID = nodes[0]

@@ -286,9 +286,9 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           ) : null}
         </>
       ) : subTab === "link" ? (
-        <LinkManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} initialSubTab="list" />
+        <LinkManageTab key="link-tab" controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} initialSubTab="list" />
       ) : subTab === "forward" ? (
-        <LinkManageTab controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} initialSubTab="forward" />
+        <LinkManageTab key="forward-tab" controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} initialSubTab="forward" />
       ) : subTab === "driver" ? (
         <>
           <div className="identity-card">
