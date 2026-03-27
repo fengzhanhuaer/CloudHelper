@@ -203,22 +203,47 @@ func addProtectedHostToTUNTargets(targets *tunControlPlaneTargets, host string) 
 		return
 	}
 
-	ipList, err := net.LookupIP(cleanHost)
-	if err != nil {
-		return
-	}
-	for _, ipValue := range ipList {
+	addIP := func(ipValue net.IP) {
 		if ipValue == nil {
-			continue
+			return
 		}
 		canonical := canonicalIP(ipValue)
 		if canonical == "" {
-			continue
+			return
 		}
 		targets.IPs[canonical] = struct{}{}
 		if ipValue.To4() != nil {
 			if !containsString(targets.IPv4Addrs, canonical) {
 				targets.IPv4Addrs = append(targets.IPv4Addrs, canonical)
+			}
+		}
+	}
+
+	// 优先查直连 DNS 缓存（与 buildAdminWSDialer 共用同一缓存）。
+	// TUN 激活后系统 DNS 被接管，net.LookupIP 会 i/o timeout，
+	// 而缓存中已有主控/链路节点的 IP，直接使用即可避免超时。
+	if cachedIP, ok := getProbeDNSCachedIP(cleanHost); ok {
+		if parsed := net.ParseIP(cachedIP); parsed != nil {
+			addIP(parsed)
+			return
+		}
+	}
+
+	// 缓存未命中时走系统 DNS（TUN 未激活时仍可正常解析）。
+	ipList, err := net.LookupIP(cleanHost)
+	if err != nil {
+		// TUN 已激活时系统 DNS 不可用，跳过解析；不阻塞后续流程。
+		return
+	}
+	for _, ipValue := range ipList {
+		addIP(ipValue)
+	}
+	// 回填缓存，供后续 TUN 激活期间直接命中。
+	if len(ipList) > 0 {
+		for _, ipValue := range ipList {
+			if ipValue.To4() != nil {
+				_ = setProbeDNSCachedIP(cleanHost, ipValue.String())
+				break
 			}
 		}
 	}

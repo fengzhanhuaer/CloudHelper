@@ -412,20 +412,17 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 		resolvedChainID = candidateChainIDs[0]
 	}
 
-	warnBuf := make([]string, 0)
-	targets, _, _, err := fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
-		warnBuf = append(warnBuf, fmt.Sprintf(format, args...))
-	})
-	if err != nil {
-		return ProbeChainPingResult{}, fmt.Errorf("fetch chain targets failed: %w", err)
-	}
+	// 优先使用内存缓存（启动时从 probe_nodes_cache.json 加载，运行时由 refreshAvailableNodes 刷新）。
+	// 避免每次测试都发起 WebSocket 请求到主控。
+	a.networkAssistant.mu.RLock()
+	cachedTargets := copyProbeChainTargets(a.networkAssistant.chainTargets)
+	a.networkAssistant.mu.RUnlock()
 
-	// Find the target matching our chain_id.
 	var endpoint probeChainEndpoint
 	found := false
 	for _, candidateID := range candidateChainIDs {
 		if key := buildChainTargetNodeID(candidateID); key != "" {
-			if item, ok := targets[key]; ok {
+			if item, ok := cachedTargets[key]; ok {
 				endpoint = item
 				resolvedChainID = strings.TrimSpace(item.ChainID)
 				found = true
@@ -442,7 +439,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 			}
 			candidateSet[clean] = struct{}{}
 		}
-		for _, t := range targets {
+		for _, t := range cachedTargets {
 			if _, ok := candidateSet[strings.ToLower(strings.TrimSpace(t.ChainID))]; ok {
 				endpoint = t
 				resolvedChainID = strings.TrimSpace(t.ChainID)
@@ -451,6 +448,48 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 			}
 		}
 	}
+
+	// 缓存未命中时回退到联主控实时拉取（如 chain 刚创建尚未刷新缓存）。
+	warnBuf := make([]string, 0)
+	if !found {
+		var remoteFetchErr error
+		var remoteTargets map[string]probeChainEndpoint
+		remoteTargets, _, _, remoteFetchErr = fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
+			warnBuf = append(warnBuf, fmt.Sprintf(format, args...))
+		})
+		if remoteFetchErr != nil {
+			return ProbeChainPingResult{}, fmt.Errorf("fetch chain targets failed: %w", remoteFetchErr)
+		}
+		for _, candidateID := range candidateChainIDs {
+			if key := buildChainTargetNodeID(candidateID); key != "" {
+				if item, ok := remoteTargets[key]; ok {
+					endpoint = item
+					resolvedChainID = strings.TrimSpace(item.ChainID)
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			candidateSet := make(map[string]struct{}, len(candidateChainIDs))
+			for _, candidateID := range candidateChainIDs {
+				clean := strings.ToLower(strings.TrimSpace(candidateID))
+				if clean == "" {
+					continue
+				}
+				candidateSet[clean] = struct{}{}
+			}
+			for _, t := range remoteTargets {
+				if _, ok := candidateSet[strings.ToLower(strings.TrimSpace(t.ChainID))]; ok {
+					endpoint = t
+					resolvedChainID = strings.TrimSpace(t.ChainID)
+					found = true
+					break
+				}
+			}
+		}
+	}
+
 	if !found {
 		if !explicitChainTarget && containsNodeID(availableNodes, targetID) {
 			return pingNetworkAssistantTunnelNode(a.networkAssistant, baseURL, token, targetID)
