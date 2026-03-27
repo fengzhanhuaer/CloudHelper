@@ -12,8 +12,8 @@ import {
 	SetNetworkAssistantMode,
 	SetNetworkAssistantRulePolicy,
 	SyncNetworkAssistant,
-	UploadNetworkAssistantRuleRoutes,
 } from "../../../../wailsjs/go/main/App";
+import * as AppBindings from "../../../../wailsjs/go/main/App";
 import type {
   NetworkAssistantLogEntry,
   NetworkAssistantLogFilterSource,
@@ -363,10 +363,15 @@ export function useNetworkAssistant() {
   }, [refreshLogs]);
 
   const uploadRuleRoutes = useCallback(async (controllerBaseURL: string, token: string) => {
+    const uploadFn = (AppBindings as { UploadNetworkAssistantRuleRoutes?: (baseURL: string, sessionToken: string) => Promise<string> }).UploadNetworkAssistantRuleRoutes;
+    if (!uploadFn) {
+      setRuleRoutesSyncStatus("上传失败：当前版本未包含自动上传能力");
+      throw new Error("UploadNetworkAssistantRuleRoutes is not available");
+    }
     setIsSyncingRuleRoutes(true);
     setRuleRoutesSyncStatus("正在上传 rule_routes.txt 到主控备份...");
     try {
-      const message = await UploadNetworkAssistantRuleRoutes(controllerBaseURL, token);
+      const message = await uploadFn(controllerBaseURL, token);
       setRuleRoutesSyncStatus(`上传成功：${message}`);
       setRuleConfigStatus("规则策略已更新，请刷新规则组确认");
       await refreshRuleConfig();
