@@ -188,3 +188,15 @@ func (a *App) StopProbeLinkSession() (bool, error) {
 func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	return a.inner.PingProbeChain(chainID)
 }
+
+func (a *App) GetDeletedProbeNodeNos() ([]int, error) {
+	return a.inner.GetDeletedProbeNodeNos()
+}
+
+func (a *App) MarkProbeNodeDeleted(nodeNo int) error {
+	return a.inner.MarkProbeNodeDeleted(nodeNo)
+}
+
+func (a *App) RestoreDeletedProbeNode(nodeNo int) error {
+	return a.inner.RestoreDeletedProbeNode(nodeNo)
+}

@@ -1,5 +1,10 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
+  GetDeletedProbeNodeNos,
+  MarkProbeNodeDeleted,
+  RestoreDeletedProbeNode,
+} from "../../../../wailsjs/go/main/App";
+import {
   createProbeNodeOnController,
   deleteProbeShellShortcut,
   execProbeShellSessionOnController,
@@ -101,6 +106,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [upgradingNodeNos, setUpgradingNodeNos] = useState<number[]>([]);
   const [status, setStatus] = useState("正在加载探针列表...");
   const [settingsDraft, setSettingsDraft] = useState<ProbeNodeSettingsDraft | null>(null);
+  const [deletedNodeNos, setDeletedNodeNos] = useState<Set<number>>(new Set());
   const [logNodeIDInput, setLogNodeIDInput] = useState("");
   const [logLinesInput, setLogLinesInput] = useState("200");
   const [logSinceMinutesInput, setLogSinceMinutesInput] = useState("0");
@@ -232,7 +238,11 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   async function loadNodes() {
     setIsLoading(true);
     try {
-      const remoteNodes = await fetchProbeNodesFromController(controllerAddress, props.sessionToken);
+      const [remoteNodes, deletedNos] = await Promise.all([
+        fetchProbeNodesFromController(controllerAddress, props.sessionToken),
+        GetDeletedProbeNodeNos().catch(() => [] as number[]),
+      ]);
+      setDeletedNodeNos(new Set(deletedNos ?? []));
       let mergedNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
       try {
         const items = await fetchProbeStatusFromController(controllerAddress, props.sessionToken);
@@ -428,6 +438,34 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     const ok = await updateNode(settingsDraft.node_no, settingsDraft);
     if (ok) {
       setSettingsDraft(null);
+    }
+  }
+
+  async function deleteNode(nodeNo: number) {
+    try {
+      await MarkProbeNodeDeleted(nodeNo);
+      setDeletedNodeNos((prev: Set<number>) => new Set([...prev, nodeNo]));
+      const node = nodes.find((n: ProbeNodeItem) => n.node_no === nodeNo);
+      setStatus(`探针已移入删除列表：${node?.node_name ?? `#${nodeNo}`}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`删除探针失败：${msg}`);
+    }
+  }
+
+  async function restoreNode(nodeNo: number) {
+    try {
+      await RestoreDeletedProbeNode(nodeNo);
+      setDeletedNodeNos((prev: Set<number>) => {
+        const next = new Set(prev);
+        next.delete(nodeNo);
+        return next;
+      });
+      const node = nodes.find((n: ProbeNodeItem) => n.node_no === nodeNo);
+      setStatus(`探针已恢复显示：${node?.node_name ?? `#${nodeNo}`}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setStatus(`恢复探针失败：${msg}`);
     }
   }
 
@@ -855,7 +893,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       {subTab === "list" ? (
         <div style={{ marginTop: 12 }}>
           <div className="identity-card" style={{ marginBottom: 12 }}>
-            <div>主控地址（用于“非直连”安装命令）</div>
+            <div>主控地址（用于"非直连"安装命令）</div>
             <input
               className="input"
               value={controllerAddress}
@@ -871,61 +909,111 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
             <div>升级命令通过主控下发；直连节点直连 GitHub，非直连节点走主控代理升级。</div>
           </div>
 
-          {nodes.length === 0 ? (
-            <div className="status">暂无探针，请点击“新建探针”创建节点。</div>
-          ) : (
-            <div className="probe-table-wrap">
-              <table className="probe-table">
-                <thead>
-                  <tr>
-                    <th>节点号</th>
-                    <th>节点信息</th>
-                    <th>版本</th>
-                    <th>厂家</th>
-                    <th>付款周期</th>
-                    <th>费用</th>
-                    <th>到期</th>
-                    <th>系统</th>
-                    <th>接入方式</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {nodes.map((node) => (
-                    <tr key={node.node_no}>
-                      <td>{node.node_no}</td>
-                      <td>
-                        <div className="probe-table-name">{node.node_name}</div>
-                        {node.remark ? <div className="probe-table-sub">备注：{node.remark}</div> : null}
-                      </td>
-                      <td>{node.runtime?.version || "-"}</td>
-                      <td>
-                        {node.vendor_name ? (
-                          <button className="vendor-copy-link" type="button" title={node.vendor_url || "点击复制厂家URL"} onClick={() => void copyVendorURL(node, setStatus)}>
-                            {node.vendor_name}
-                          </button>
-                        ) : "-"}
-                      </td>
-                      <td>{node.payment_cycle || "-"}</td>
-                      <td>{node.cost || "-"}</td>
-                      <td>{formatExpireWithRemainingDays(node.expire_at || "")}</td>
-                      <td>{node.target_system === "windows" ? "Windows" : "Linux"}</td>
-                      <td>{node.direct_connect ? "直连" : "主控代理"}</td>
-                      <td>
-                        <div className="probe-table-actions">
-                          <button className="btn" onClick={() => openSettings(node)} disabled={isLoading}>设置</button>
-                          <button className="btn" onClick={() => void copyInstallCommand(node)} disabled={isLoading}>安装</button>
-                          <button className="btn" onClick={() => void upgradeOne(node)} disabled={isLoading || isUpgradingAll || upgradingNodeNos.includes(node.node_no)}>
-                            {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级"}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          {(() => {
+            const activeNodes = nodes.filter((n: ProbeNodeItem) => !deletedNodeNos.has(n.node_no));
+            const deletedNodes = nodes.filter((n: ProbeNodeItem) => deletedNodeNos.has(n.node_no));
+            return (
+              <>
+                {activeNodes.length === 0 ? (
+                  <div className="status">暂无探针，请点击"新建探针"创建节点。</div>
+                ) : (
+                  <div className="probe-table-wrap">
+                    <table className="probe-table">
+                      <thead>
+                        <tr>
+                          <th>节点号</th>
+                          <th>节点信息</th>
+                          <th>版本</th>
+                          <th>厂家</th>
+                          <th>付款周期</th>
+                          <th>费用</th>
+                          <th>到期</th>
+                          <th>系统</th>
+                          <th>接入方式</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeNodes.map((node: ProbeNodeItem) => (
+                          <tr key={node.node_no}>
+                            <td>{node.node_no}</td>
+                            <td>
+                              <div className="probe-table-name">{node.node_name}</div>
+                              {node.remark ? <div className="probe-table-sub">备注：{node.remark}</div> : null}
+                            </td>
+                            <td>{node.runtime?.version || "-"}</td>
+                            <td>
+                              {node.vendor_name ? (
+                                <button className="vendor-copy-link" type="button" title={node.vendor_url || "点击复制厂家URL"} onClick={() => void copyVendorURL(node, setStatus)}>
+                                  {node.vendor_name}
+                                </button>
+                              ) : "-"}
+                            </td>
+                            <td>{node.payment_cycle || "-"}</td>
+                            <td>{node.cost || "-"}</td>
+                            <td>{formatExpireWithRemainingDays(node.expire_at || "")}</td>
+                            <td>{node.target_system === "windows" ? "Windows" : "Linux"}</td>
+                            <td>{node.direct_connect ? "直连" : "主控代理"}</td>
+                            <td>
+                              <div className="probe-table-actions">
+                                <button className="btn" onClick={() => openSettings(node)} disabled={isLoading}>设置</button>
+                                <button className="btn" onClick={() => void copyInstallCommand(node)} disabled={isLoading}>安装</button>
+                                <button className="btn" onClick={() => void upgradeOne(node)} disabled={isLoading || isUpgradingAll || upgradingNodeNos.includes(node.node_no)}>
+                                  {upgradingNodeNos.includes(node.node_no) ? "下发中..." : "升级"}
+                                </button>
+                                <button className="btn btn-danger" onClick={() => void deleteNode(node.node_no)} disabled={isLoading}>删除</button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {deletedNodes.length > 0 && (
+                  <div style={{ marginTop: 24 }}>
+                    <div className="probe-deleted-section-title">
+                      已删除探针（{deletedNodes.length} 个）— 仅本地隐藏，探针仍存于主控
+                    </div>
+                    <div className="probe-table-wrap">
+                      <table className="probe-table probe-table-deleted">
+                        <thead>
+                          <tr>
+                            <th>节点号</th>
+                            <th>节点信息</th>
+                            <th>版本</th>
+                            <th>系统</th>
+                            <th>接入方式</th>
+                            <th>操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {deletedNodes.map((node: ProbeNodeItem) => (
+                            <tr key={`deleted-${node.node_no}`}>
+                              <td>{node.node_no}</td>
+                              <td>
+                                <div className="probe-table-name">{node.node_name}</div>
+                                {node.remark ? <div className="probe-table-sub">备注：{node.remark}</div> : null}
+                              </td>
+                              <td>{node.runtime?.version || "-"}</td>
+                              <td>{node.target_system === "windows" ? "Windows" : "Linux"}</td>
+                              <td>{node.direct_connect ? "直连" : "主控代理"}</td>
+                              <td>
+                                <div className="probe-table-actions">
+                                  <button className="btn" onClick={() => void restoreNode(node.node_no)} disabled={isLoading}>恢复</button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       ) : subTab === "status" ? (
         <div style={{ marginTop: 12 }}>

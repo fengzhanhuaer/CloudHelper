@@ -413,7 +413,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	}
 
 	warnBuf := make([]string, 0)
-	targets, _, err := fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
+	targets, _, _, err := fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
 		warnBuf = append(warnBuf, fmt.Sprintf(format, args...))
 	})
 	if err != nil {

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -149,7 +148,7 @@ func listWindowsNetAdapters() ([]windowsNetAdapter, error) {
 	script := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference='Stop'; $adapters = Get-NetAdapter -IncludeHidden | Select-Object -Property Name,InterfaceDescription; if ($null -eq $adapters) { '[]' } else { $adapters | ConvertTo-Json -Compress }"
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
 	// Suppress the console window on Windows so no PowerShell window flashes.
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	hideWindowSysProcAttr(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err

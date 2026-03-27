@@ -252,6 +252,7 @@ type networkAssistantService struct {
 	tunnelOpenFailures  int
 	tunnelMuxClient     *tunnelMuxClient
 	chainTargets        map[string]probeChainEndpoint
+	serverProbeNodes    []probeNodeAdminItem // 从服务器同步的探针节点列表（静态配置，非实时状态）
 	muxReconnects       int64
 
 	tunSupported     bool
@@ -341,6 +342,19 @@ func newNetworkAssistantService() *networkAssistantService {
 		service.tunManualClosed = pref.ManualClosed
 	} else {
 		logStore.Appendf(logSourceManager, "init", "failed to load tun preference state: %v", err)
+	}
+	// 从本地缓存恢复节点列表，重启后无需联网即可切换模式
+	if cachedNodes, cachedTargets, cachedProbeNodes, err := loadNodesCacheFromFile(); err == nil && len(cachedNodes) > 0 {
+		service.availableNodes = cachedNodes
+		if cachedTargets != nil {
+			service.chainTargets = cachedTargets
+		}
+		if len(cachedProbeNodes) > 0 {
+			service.serverProbeNodes = cachedProbeNodes
+		}
+		logStore.Appendf(logSourceManager, "init", "loaded %d nodes, %d probe nodes from cache file", len(cachedNodes), len(cachedProbeNodes))
+	} else if err != nil {
+		logStore.Appendf(logSourceManager, "init", "failed to load nodes cache: %v", err)
 	}
 	service.syncTUNInstallState()
 	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
@@ -573,11 +587,18 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	s.mu.Unlock()
 
 	if effectiveBase != "" && effectiveToken != "" {
-		s.logf("refreshing available nodes from controller: %s", effectiveBase)
-		if err := s.refreshAvailableNodes(); err != nil {
-			s.logf("refresh available nodes failed: %v", err)
-			s.setLastError(err)
-			return err
+		s.mu.RLock()
+		hasCachedNodes := len(s.availableNodes) > 0
+		s.mu.RUnlock()
+		if hasCachedNodes {
+			s.logf("apply mode: using cached available nodes (skip server fetch)")
+		} else {
+			s.logf("apply mode: no cached nodes, fetching from controller: %s", effectiveBase)
+			if err := s.refreshAvailableNodes(); err != nil {
+				s.logf("refresh available nodes failed: %v", err)
+				s.setLastError(err)
+				return err
+			}
 		}
 	}
 
@@ -2203,7 +2224,7 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 		return err
 	}
 
-	chainTargets, chainNodes, chainErr := fetchProbeChainTargetsViaAdminWS(baseURL, token, s.logf)
+	chainTargets, chainNodes, probeNodes, chainErr := fetchProbeChainTargetsViaAdminWS(baseURL, token, s.logf)
 	nodes := make([]string, 0, len(chainNodes)+1)
 	if chainErr == nil && len(chainNodes) > 0 {
 		nodes = append(nodes, chainNodes...)
@@ -2237,10 +2258,20 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 	s.mu.Lock()
 	s.availableNodes = nodes
 	s.chainTargets = chainTargets
+	if len(probeNodes) > 0 {
+		s.serverProbeNodes = probeNodes
+	}
 	if !containsNodeID(nodes, s.nodeID) {
 		s.nodeID = nodes[0]
 	}
 	s.mu.Unlock()
+
+	// 异步落盘，不阻塞主流程
+	go func() {
+		if err := saveNodesCacheToFile(nodes, chainTargets, probeNodes); err != nil {
+			s.logf("warning: failed to save nodes cache to file: %v", err)
+		}
+	}()
 	return nil
 }
 
@@ -2250,7 +2281,7 @@ func fetchTunnelNodesViaAdminWS(baseURL, token string) (tunnelNodesResponse, err
 		return tunnelNodesResponse{}, err
 	}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	dialer := buildAdminWSDialer(baseURL)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)
@@ -2342,6 +2373,44 @@ func buildAdminWSURL(baseURL string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return strings.TrimSpace(parsed.String()), nil
+}
+
+// buildAdminWSDialer 构造一个 WebSocket Dialer，其 NetDial 优先使用 probe DNS 缓存中的 IP
+// 直接建立 TCP 连接，而不走系统 DNS 解析。这样在 TUN/规则模式已接管系统流量时，
+// admin WebSocket 仍然能直连 controller，避免"no such host"错误。
+//
+// 首次连接（cache miss）时，使用系统 DNS 并在成功后自动把解析到的 IP 写入 probe DNS 缓存，
+// 后续调用（包括 TUN 接管后）直接用缓存 IP，实现"自愈"。
+func buildAdminWSDialer(baseURL string) websocket.Dialer {
+	host := resolveControllerHostForProtection(baseURL)
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+	}
+	if host == "" {
+		return dialer
+	}
+	if cachedIP, ok := getProbeDNSCachedIP(host); ok && cachedIP != "" {
+		// cache hit：用缓存 IP 直连，绕过系统 DNS
+		dialer.NetDial = func(network, addr string) (net.Conn, error) {
+			_, portPart, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil || portPart == "" {
+				return net.DialTimeout(network, addr, 10*time.Second)
+			}
+			return net.DialTimeout(network, net.JoinHostPort(cachedIP, portPart), 10*time.Second)
+		}
+	} else {
+		// cache miss：走系统 DNS，连接成功后把 IP 写入缓存供 TUN 模式下复用
+		dialer.NetDial = func(network, addr string) (net.Conn, error) {
+			conn, dialErr := net.DialTimeout(network, addr, 10*time.Second)
+			if dialErr == nil && conn != nil {
+				if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok && tcpAddr.IP != nil {
+					_ = setProbeDNSCachedIP(host, tcpAddr.IP.String())
+				}
+			}
+			return conn, dialErr
+		}
+	}
+	return dialer
 }
 
 func buildNetworkAssistantTunnelRoute(nodeID string) string {
@@ -2528,13 +2597,13 @@ func selectProbeChainEntryHost(node probeNodeAdminItem) string {
 
 // relay_port at node level is deprecated; port is always resolved from hop_config.external_port.
 
-func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, ...any)) (map[string]probeChainEndpoint, []string, error) {
+func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, ...any)) (map[string]probeChainEndpoint, []string, []probeNodeAdminItem, error) {
 	wsURL, err := buildAdminWSURL(baseURL)
 	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	dialer := buildAdminWSDialer(baseURL)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)
@@ -2542,67 +2611,67 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 		if resp != nil {
 			defer resp.Body.Close()
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-			return map[string]probeChainEndpoint{}, nil, fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+			return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 		}
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	defer conn.Close()
 
 	deadline := time.Now().Add(12 * time.Second)
 	if err := conn.SetReadDeadline(deadline); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	if err := conn.SetWriteDeadline(deadline); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 
 	authID := fmt.Sprintf("na-chain-auth-%d", time.Now().UnixNano())
 	authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": strings.TrimSpace(token)}}
 	if err := conn.WriteJSON(authReq); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	authResp, err := readAdminWSResponseByID(conn, authID)
 	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	if !authResp.OK {
-		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
+		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
 	}
 
 	chainsID := fmt.Sprintf("na-chain-items-%d", time.Now().UnixNano())
 	if err := conn.WriteJSON(adminWSRequest{ID: chainsID, Action: "admin.probe.link.chains.get"}); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	chainsResp, err := readAdminWSResponseByID(conn, chainsID)
 	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	if !chainsResp.OK {
-		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("fetch chain list failed: %s", strings.TrimSpace(chainsResp.Error))
+		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("fetch chain list failed: %s", strings.TrimSpace(chainsResp.Error))
 	}
 
 	nodesID := fmt.Sprintf("na-chain-nodes-%d", time.Now().UnixNano())
 	if err := conn.WriteJSON(adminWSRequest{ID: nodesID, Action: "admin.probe.nodes.get"}); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	nodesResp, err := readAdminWSResponseByID(conn, nodesID)
 	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	if !nodesResp.OK {
-		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("fetch probe nodes failed: %s", strings.TrimSpace(nodesResp.Error))
+		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("fetch probe nodes failed: %s", strings.TrimSpace(nodesResp.Error))
 	}
 
 	chainsPayload := probeLinkChainsResponse{}
 	if len(chainsResp.Data) > 0 {
 		if err := json.Unmarshal(chainsResp.Data, &chainsPayload); err != nil {
-			return map[string]probeChainEndpoint{}, nil, err
+			return map[string]probeChainEndpoint{}, nil, nil, err
 		}
 	}
 	nodesPayload := probeNodesResponse{}
 	if len(nodesResp.Data) > 0 {
 		if err := json.Unmarshal(nodesResp.Data, &nodesPayload); err != nil {
-			return map[string]probeChainEndpoint{}, nil, err
+			return map[string]probeChainEndpoint{}, nil, nil, err
 		}
 	}
 
@@ -2684,7 +2753,7 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 		}
 	}
 	sort.Strings(ids)
-	return targets, ids, nil
+	return targets, ids, nodesPayload.Nodes, nil
 }
 
 func containsNodeID(nodes []string, target string) bool {

@@ -9,8 +9,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -54,7 +52,7 @@ func uploadRuleRoutesViaAdminWS(baseURL, sessionToken string, content []byte) er
 		return err
 	}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 12 * time.Second}
+	dialer := buildAdminWSDialer(baseURL)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)

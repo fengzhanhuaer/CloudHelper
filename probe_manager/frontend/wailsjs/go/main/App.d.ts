@@ -65,3 +65,9 @@ export function UpdateProbeNode(arg1:number,arg2:string,arg3:boolean):Promise<ba
 export function UpgradeManagerDirect(arg1:string):Promise<backend.ManagerUpgradeResult>;
 
 export function UpgradeManagerViaProxy(arg1:string,arg2:string,arg3:string):Promise<backend.ManagerUpgradeResult>;
+
+export function GetDeletedProbeNodeNos():Promise<Array<number>>;
+
+export function MarkProbeNodeDeleted(arg1:number):Promise<void>;
+
+export function RestoreDeletedProbeNode(arg1:number):Promise<void>;
