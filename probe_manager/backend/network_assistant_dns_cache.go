@@ -408,7 +408,7 @@ func loadRuleDNSFromDisk() map[string]dnsCacheEntry {
 //  1. 已是 IP → 直接建连；
 //  2. 命中直连 DNS 缓存（24h TTL）→ 直接用 IP 建连；
 //  3. 未命中 → 系统 DNS 解析 → 成功后写入缓存。
-func newCachedDNSDialContext(base *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+func (s *networkAssistantService) newCachedDNSDialContext(base *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	if base == nil {
 		base = &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	}
@@ -433,11 +433,16 @@ func newCachedDNSDialContext(base *net.Dialer) func(ctx context.Context, network
 			}
 		}
 
-		// 缓存未命中：系统 DNS
-		addrs, rerr := net.DefaultResolver.LookupHost(ctx, host)
-		if rerr != nil {
+		// 缓存未命中：优先通过我们内置的高可用上游 DNS 解析（规避受污系统 DNS）
+		addrs, _, rerr := s.queryRuleDomainViaSystemDNS(host, 1) // 查 A 记录
+		if rerr != nil || len(addrs) == 0 {
+			// 回退到系统原本的 DNS
+			addrs, rerr = net.DefaultResolver.LookupHost(ctx, host)
+		}
+		if rerr != nil || len(addrs) == 0 {
 			return nil, rerr
 		}
+
 		var lastErr error
 		for _, resolvedIP := range addrs {
 			conn, cerr := base.DialContext(ctx, network, net.JoinHostPort(resolvedIP, port))

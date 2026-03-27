@@ -17,6 +17,8 @@ import (
 
 var BuildVersion = "dev"
 
+var globalNetworkAssistantService *networkAssistantService
+
 // App struct
 type App struct {
 	ctx              context.Context

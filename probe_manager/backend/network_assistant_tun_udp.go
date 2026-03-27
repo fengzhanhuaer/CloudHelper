@@ -1,12 +1,14 @@
 package backend
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type localTUNUDPPacket struct {
@@ -95,15 +97,16 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 	}
 
 	if route.Direct {
-		udpAddr, resolveErr := net.ResolveUDPAddr("udp", route.TargetAddr)
-		if resolveErr != nil {
-			return nil, resolveErr
-		}
-		conn, dialErr := net.DialUDP("udp", nil, udpAddr)
+		dialer := s.newCachedDNSDialContext(&net.Dialer{Timeout: 30 * time.Second})
+		conn, dialErr := dialer(context.Background(), "udp", route.TargetAddr)
 		if dialErr != nil {
 			return nil, dialErr
 		}
-		relay.directConn = conn
+		udpConn, ok := conn.(*net.UDPConn)
+		if !ok {
+			return nil, errors.New("failed to cast to net.UDPConn")
+		}
+		relay.directConn = udpConn
 	} else {
 		stream, openErr := s.openTunnelStreamForNode("udp", route.TargetAddr, route.NodeID)
 		if openErr != nil {

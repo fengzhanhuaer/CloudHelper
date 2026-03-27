@@ -325,10 +325,7 @@ func (s *networkAssistantService) EnableTUN() error {
 		s.setLastError(err)
 		return err
 	}
-	if err := s.stopProxyAndServer(); err != nil {
-		s.setLastError(err)
-		return err
-	}
+	s.closeAllMuxClients()
 	if err := applyDirectSystemProxy(); err != nil {
 		s.setLastError(err)
 		return err
@@ -356,9 +353,6 @@ func (s *networkAssistantService) EnableTUN() error {
 	s.systemProxyMessage = "TUN 模式（系统代理已清除，SOCKS/HTTP 代理已停用）"
 	s.tunnelOpenFailures = 0
 	s.lastError = ""
-	s.hasAppliedSysProxy = false
-	s.hasProxySnapshot = false
-	s.proxySnapshot = systemProxySnapshot{}
 	s.ruleRouting = routing
 	s.ruleDNSCache = make(map[string]dnsCacheEntry)
 	libraryPath := s.tunLibraryPath
@@ -385,9 +379,7 @@ func (s *networkAssistantService) applyRuleModeViaTUN(routing tunnelRuleRouting,
 	if err := s.clearTUNSystemRouting(); err != nil {
 		return err
 	}
-	if err := s.stopProxyAndServer(); err != nil {
-		return err
-	}
+	s.closeAllMuxClients()
 	if err := applyDirectSystemProxy(); err != nil {
 		return err
 	}
@@ -413,9 +405,6 @@ func (s *networkAssistantService) applyRuleModeViaTUN(routing tunnelRuleRouting,
 	s.systemProxyMessage = "规则模式（TUN 分流，系统代理已清除）"
 	s.tunnelOpenFailures = 0
 	s.lastError = ""
-	s.hasAppliedSysProxy = false
-	s.hasProxySnapshot = false
-	s.proxySnapshot = systemProxySnapshot{}
 	s.ruleRouting = routing
 	s.ruleDNSCache = make(map[string]dnsCacheEntry)
 	libraryPath := s.tunLibraryPath

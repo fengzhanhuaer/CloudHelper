@@ -420,7 +420,8 @@ func (n *localTUNNetstack) openOutboundTCP(targetAddr string) (net.Conn, tunnelR
 		if bypassErr != nil {
 			return nil, route, bypassErr
 		}
-		conn, dialErr := net.DialTimeout("tcp", route.TargetAddr, localTUNTCPDialTimeout)
+		dialer := n.service.newCachedDNSDialContext(&net.Dialer{Timeout: localTUNTCPDialTimeout})
+		conn, dialErr := dialer(context.Background(), "tcp", route.TargetAddr)
 		if dialErr != nil {
 			release()
 			return nil, route, dialErr
@@ -446,12 +447,8 @@ func (n *localTUNNetstack) openOutboundUDP(targetAddr string) (io.ReadWriteClose
 		if bypassErr != nil {
 			return nil, route, bypassErr
 		}
-		udpAddr, resolveErr := net.ResolveUDPAddr("udp", route.TargetAddr)
-		if resolveErr != nil {
-			release()
-			return nil, route, resolveErr
-		}
-		conn, dialErr := net.DialUDP("udp", nil, udpAddr)
+		dialer := n.service.newCachedDNSDialContext(&net.Dialer{Timeout: localTUNUDPAssociationTimeout})
+		conn, dialErr := dialer(context.Background(), "udp", route.TargetAddr)
 		if dialErr != nil {
 			release()
 			return nil, route, dialErr
