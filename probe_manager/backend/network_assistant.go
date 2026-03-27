@@ -505,8 +505,73 @@ func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) e
 		s.setLastError(err)
 		return err
 	}
+	// 刷新完节点列表后，预热当前节点的 mux 连接
+	go s.warmupTunnelMux("")
 	return nil
 }
+
+// warmupTunnelMux 在后台立即建立（或复用）指定节点的 mux 连接。
+// nodeID 为空时使用当前已选节点。失败仅记日志，不影响主流程。
+func (s *networkAssistantService) warmupTunnelMux(nodeID string) {
+	s.mu.RLock()
+	mode := s.mode
+	base := strings.TrimSpace(s.controllerBaseURL)
+	token := strings.TrimSpace(s.sessionToken)
+	selectedNode := strings.TrimSpace(s.nodeID)
+	s.mu.RUnlock()
+
+	if mode == networkModeDirect || base == "" || token == "" {
+		return
+	}
+	target := strings.TrimSpace(nodeID)
+	if target == "" {
+		target = selectedNode
+	}
+	if target == "" {
+		target = defaultNodeID
+	}
+	if _, err := s.ensureTunnelMuxClientForNode(target); err != nil {
+		s.logf("warmup tunnel mux failed (will retry on first use): node=%s err=%v", target, err)
+	} else {
+		s.logf("warmup tunnel mux ok: node=%s", target)
+	}
+}
+
+// tryPingExistingMux 如果已有对 nodeID 的 mux 连接，直接用 yamux Ping 测延迟并返回。
+// 返回 (rtt, true) 表示成功；返回 (0, false) 表示没有可用连接（调用方应回退新建）。
+func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Duration, bool) {
+	s.mu.RLock()
+	selectedNode := strings.TrimSpace(s.nodeID)
+	primary := s.tunnelMuxClient
+	ruleMuxClients := s.ruleMuxClients
+	s.mu.RUnlock()
+
+	target := strings.TrimSpace(nodeID)
+	if target == "" {
+		target = selectedNode
+	}
+	if target == "" {
+		target = defaultNodeID
+	}
+
+	var candidate *tunnelMuxClient
+	if strings.EqualFold(target, selectedNode) && primary != nil && !primary.isClosed() {
+		candidate = primary
+	} else if ruleMuxClients != nil {
+		if c, ok := ruleMuxClients[target]; ok && c != nil && !c.isClosed() {
+			candidate = c
+		}
+	}
+	if candidate == nil {
+		return 0, false
+	}
+	rtt, err := candidate.ping()
+	if err != nil {
+		return 0, false
+	}
+	return rtt, true
+}
+
 
 func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	s.syncTUNInstallState()
@@ -651,6 +716,8 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.setLastError(err)
 		return err
 	}
+	// 模式切换成功后立即预热 mux 连接
+	go s.warmupTunnelMux(normalizedNode)
 	return nil
 }
 
