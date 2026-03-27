@@ -825,7 +825,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		if baseURLForRefresh != "" && tokenForRefresh != "" {
 			s.mu.Unlock()
 			s.logf("chain target not in cache, refreshing from server: node=%s", targetNodeID)
-			_ = s.refreshAvailableNodes()
+			_ = s.refreshAvailableNodes(false)
 			_ = s.ensureControlPlaneDialReady(baseURLForRefresh)
 			s.mu.Lock()
 			chainTarget, hasChainTarget = s.chainTargets[targetNodeID]

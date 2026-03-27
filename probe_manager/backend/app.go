@@ -160,3 +160,11 @@ func resolvePrivateKeyPath() (string, error) {
 
 	return "", errors.New("local admin private key not found (set CLOUDHELPER_ADMIN_PRIVATE_KEY_PATH or place initial_admin_private_key.pem in ./data)")
 }
+
+func (a *App) ForceRefreshNetworkAssistantNodes(baseURL, token string) error {
+	if a.networkAssistant == nil {
+		errors.New("network assistant not initialized")
+	}
+	a.networkAssistant.UpdateSession(baseURL, token)
+	return a.networkAssistant.refreshAvailableNodes(true)
+}

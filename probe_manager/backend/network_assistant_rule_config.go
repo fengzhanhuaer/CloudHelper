@@ -568,7 +568,7 @@ func (s *networkAssistantService) refreshAvailableNodesForRuleConfig() {
 	if baseURL == "" || token == "" {
 		return
 	}
-	if err := s.refreshAvailableNodes(); err != nil {
+	if err := s.refreshAvailableNodes(false); err != nil {
 		s.logf("refresh available nodes for rule config failed: %v", err)
 	}
 }

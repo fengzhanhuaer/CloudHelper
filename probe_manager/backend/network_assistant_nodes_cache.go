@@ -31,39 +31,79 @@ type nodesCacheProbeNode struct {
 
 // nodesCacheEndpoint 是 probeChainEndpoint 的可序列化镜像（字段全部可导出）。
 type nodesCacheEndpoint struct {
-	TargetID    string `json:"target_id"`
-	ChainName   string `json:"chain_name"`
-	ChainID     string `json:"chain_id"`
-	EntryNode   string `json:"entry_node"`
-	EntryHost   string `json:"entry_host"`
-	EntryPort   int    `json:"entry_port"`
-	LinkLayer   string `json:"link_layer"`
-	ChainSecret string `json:"chain_secret"`
+	TargetID     string                         `json:"target_id"`
+	ChainName    string                         `json:"chain_name"`
+	ChainID      string                         `json:"chain_id"`
+	EntryNode    string                         `json:"entry_node"`
+	EntryHost    string                         `json:"entry_host"`
+	EntryPort    int                            `json:"entry_port"`
+	LinkLayer    string                         `json:"link_layer"`
+	ChainSecret  string                         `json:"chain_secret"`
+	PortForwards []nodesCachePortForward        `json:"port_forwards,omitempty"`
+}
+
+type nodesCachePortForward struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ListenHost string `json:"listen_host"`
+	ListenPort int    `json:"listen_port"`
+	TargetHost string `json:"target_host"`
+	TargetPort int    `json:"target_port"`
+	Network    string `json:"network"`
+	Enabled    bool   `json:"enabled"`
 }
 
 func toNodesCacheEndpoint(e probeChainEndpoint) nodesCacheEndpoint {
+	pfs := make([]nodesCachePortForward, len(e.PortForwards))
+	for i, pf := range e.PortForwards {
+		pfs[i] = nodesCachePortForward{
+			ID:         pf.ID,
+			Name:       pf.Name,
+			ListenHost: pf.ListenHost,
+			ListenPort: pf.ListenPort,
+			TargetHost: pf.TargetHost,
+			TargetPort: pf.TargetPort,
+			Network:    pf.Network,
+			Enabled:    pf.Enabled,
+		}
+	}
 	return nodesCacheEndpoint{
-		TargetID:    e.TargetID,
-		ChainName:   e.ChainName,
-		ChainID:     e.ChainID,
-		EntryNode:   e.EntryNode,
-		EntryHost:   e.EntryHost,
-		EntryPort:   e.EntryPort,
-		LinkLayer:   e.LinkLayer,
-		ChainSecret: e.ChainSecret,
+		TargetID:     e.TargetID,
+		ChainName:    e.ChainName,
+		ChainID:      e.ChainID,
+		EntryNode:    e.EntryNode,
+		EntryHost:    e.EntryHost,
+		EntryPort:    e.EntryPort,
+		LinkLayer:    e.LinkLayer,
+		ChainSecret:  e.ChainSecret,
+		PortForwards: pfs,
 	}
 }
 
 func fromNodesCacheEndpoint(e nodesCacheEndpoint) probeChainEndpoint {
+	pfs := make([]probeChainPortForward, len(e.PortForwards))
+	for i, pf := range e.PortForwards {
+		pfs[i] = probeChainPortForward{
+			ID:         pf.ID,
+			Name:       pf.Name,
+			ListenHost: pf.ListenHost,
+			ListenPort: pf.ListenPort,
+			TargetHost: pf.TargetHost,
+			TargetPort: pf.TargetPort,
+			Network:    pf.Network,
+			Enabled:    pf.Enabled,
+		}
+	}
 	return probeChainEndpoint{
-		TargetID:    e.TargetID,
-		ChainName:   e.ChainName,
-		ChainID:     e.ChainID,
-		EntryNode:   e.EntryNode,
-		EntryHost:   e.EntryHost,
-		EntryPort:   e.EntryPort,
-		LinkLayer:   e.LinkLayer,
-		ChainSecret: e.ChainSecret,
+		TargetID:     e.TargetID,
+		ChainName:    e.ChainName,
+		ChainID:      e.ChainID,
+		EntryNode:    e.EntryNode,
+		EntryHost:    e.EntryHost,
+		EntryPort:    e.EntryPort,
+		LinkLayer:    e.LinkLayer,
+		ChainSecret:  e.ChainSecret,
+		PortForwards: pfs,
 	}
 }
 

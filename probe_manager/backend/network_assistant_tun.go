@@ -311,7 +311,7 @@ func (s *networkAssistantService) EnableTUN() error {
 	effectiveToken := strings.TrimSpace(s.sessionToken)
 	s.mu.RUnlock()
 	if effectiveBase != "" && effectiveToken != "" {
-		if err := s.refreshAvailableNodes(); err != nil {
+		if err := s.refreshAvailableNodes(false); err != nil {
 			s.logf("refresh available nodes before tun enable failed: %v", err)
 			s.setLastError(err)
 			return err

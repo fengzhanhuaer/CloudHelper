@@ -125,6 +125,17 @@ type probeLinkChainAdminItem struct {
 		DialMode     string `json:"dial_mode,omitempty"`
 		RelayHost    string `json:"relay_host,omitempty"`
 	} `json:"hop_configs"`
+
+	PortForwards []struct {
+		ID         string `json:"id,omitempty"`
+		Name       string `json:"name,omitempty"`
+		ListenHost string `json:"listen_host,omitempty"`
+		ListenPort int    `json:"listen_port"`
+		TargetHost string `json:"target_host"`
+		TargetPort int    `json:"target_port"`
+		Network    string `json:"network,omitempty"`
+		Enabled    bool   `json:"enabled"`
+	} `json:"port_forwards"`
 }
 
 type probeNodeAdminItem struct {
@@ -142,6 +153,18 @@ type probeChainEndpoint struct {
 	EntryPort   int    // public-facing port of the entry hop (external_port, fallback to listen_port)
 	LinkLayer   string
 	ChainSecret string
+	PortForwards []probeChainPortForward
+}
+
+type probeChainPortForward struct {
+	ID         string
+	Name       string
+	ListenHost string
+	ListenPort int
+	TargetHost string
+	TargetPort int
+	Network    string
+	Enabled    bool
 }
 
 type adminWSRequest struct {
@@ -423,7 +446,7 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 	s.mu.RUnlock()
 
 	if effectiveBase != "" && effectiveToken != "" {
-		if err := s.refreshAvailableNodes(); err != nil {
+		if err := s.refreshAvailableNodes(false); err != nil {
 			s.logf("force refresh dns cache: refresh available nodes failed: %v", err)
 		}
 	}
@@ -486,7 +509,7 @@ func (s *networkAssistantService) UpdateSession(controllerBaseURL, sessionToken 
 
 func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) error {
 	s.UpdateSession(controllerBaseURL, sessionToken)
-	if err := s.refreshAvailableNodes(); err != nil {
+	if err := s.refreshAvailableNodes(false); err != nil {
 		s.setLastError(err)
 		return err
 	}
@@ -642,7 +665,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 			s.logf("apply mode: using cached available nodes (skip server fetch)")
 		} else {
 			s.logf("apply mode: no cached nodes, fetching from controller: %s", effectiveBase)
-			if err := s.refreshAvailableNodes(); err != nil {
+			if err := s.refreshAvailableNodes(false); err != nil {
 				s.logf("refresh available nodes failed: %v", err)
 				s.setLastError(err)
 				return err
@@ -1656,11 +1679,27 @@ func isCredentialMissingErr(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "missing controller url or session token")
 }
 
-func (s *networkAssistantService) refreshAvailableNodes() error {
+func (s *networkAssistantService) refreshAvailableNodes(forceFetch bool) error {
 	s.mu.RLock()
 	baseURL := strings.TrimSpace(s.controllerBaseURL)
 	token := strings.TrimSpace(s.sessionToken)
 	s.mu.RUnlock()
+
+	if !forceFetch {
+		nodes, targets, probeNodes, loadErr := loadNodesCacheFromFile()
+		if loadErr == nil && len(nodes) > 0 {
+			s.mu.Lock()
+			s.availableNodes = nodes
+			s.chainTargets = targets
+			s.serverProbeNodes = probeNodes
+			if !containsNodeID(nodes, s.nodeID) {
+				s.nodeID = nodes[0]
+			}
+			s.mu.Unlock()
+			s.logf("loaded %d nodes and %d chain targets from local cache", len(nodes), len(targets))
+			return nil
+		}
+	}
 
 	if baseURL == "" || token == "" {
 		return errors.New("controller url and session token are required")
@@ -2181,6 +2220,23 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 		if targetID == "" {
 			continue
 		}
+		var pfs []probeChainPortForward
+		if len(chain.PortForwards) > 0 {
+			pfs = make([]probeChainPortForward, len(chain.PortForwards))
+			for i, pf := range chain.PortForwards {
+				pfs[i] = probeChainPortForward{
+					ID:         pf.ID,
+					Name:       pf.Name,
+					ListenHost: pf.ListenHost,
+					ListenPort: pf.ListenPort,
+					TargetHost: pf.TargetHost,
+					TargetPort: pf.TargetPort,
+					Network:    pf.Network,
+					Enabled:    pf.Enabled,
+				}
+			}
+		}
+
 		targets[targetID] = probeChainEndpoint{
 			TargetID:    targetID,
 			ChainName:   strings.TrimSpace(chain.Name),
@@ -2190,6 +2246,7 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 			EntryPort:   entryPort,
 			LinkLayer:   resolveProbeChainEntryLinkLayer(chain, entryNodeID),
 			ChainSecret: strings.TrimSpace(chain.Secret),
+			PortForwards: pfs,
 		}
 	}
 	sort.Strings(ids)
