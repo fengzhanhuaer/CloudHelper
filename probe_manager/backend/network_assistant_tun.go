@@ -368,11 +368,16 @@ func (s *networkAssistantService) EnableTUN() error {
 }
 
 func (s *networkAssistantService) fallbackToDirectModeOnTUNRoutingFailure(context string, cause error) error {
+	s.logf("%s, tun enable failed and fallback to direct is starting: cause=%v", context, cause)
+
 	errStopTUN := s.stopLocalTUNDataPlane()
 	errTunRouting := s.clearTUNSystemRouting()
 	errStopMux := s.stopTunnelMuxClients()
 	errDirectProxy := applyDirectSystemProxy()
 	cleanupErr := errors.Join(errStopTUN, errTunRouting, errStopMux, errDirectProxy)
+	if cleanupErr != nil {
+		s.logf("tun fallback direct cleanup summary: stop_tun=%v, clear_tun_routing=%v, stop_mux=%v, apply_direct_proxy=%v", errStopTUN, errTunRouting, errStopMux, errDirectProxy)
+	}
 
 	pref := tunPreferenceState{}
 	s.mu.Lock()
@@ -384,6 +389,7 @@ func (s *networkAssistantService) fallbackToDirectModeOnTUNRoutingFailure(contex
 	s.tunEnabled = false
 	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 	s.mu.Unlock()
+	s.logf("tun fallback finished: runtime mode switched to direct")
 
 	if err := saveTUNPreferenceState(pref); err != nil {
 		s.logf("failed to persist tun preference state during fallback: %v", err)
