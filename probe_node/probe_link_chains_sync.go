@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -11,14 +13,21 @@ import (
 // probeLinkChainsSyncAPIPath is the controller endpoint that returns all chains
 // where this probe node appears (entry / cascade / exit).
 const (
-	probeLinkChainsSyncAPIPath      = "/api/probe/link/chains"
-	probeLinkChainsSyncPollInterval = 60 * time.Minute
-	probeLinkChainsSyncFetchTimeout = 15 * time.Second
+	probeLinkChainsSyncAPIPath          = "/api/probe/link/chains"
+	probeLinkChainsSyncPollInterval     = 60 * time.Minute
+	probeLinkChainsSyncFetchTimeout     = 15 * time.Second
+	probeChainTopologyCacheFileName     = "probe_link_chains_topology_cache.json"
 )
 
 // probeLinkChainsResponse mirrors the JSON returned by ProbeLinkChainsHandler.
 type probeLinkChainsResponse struct {
 	Chains []probeLinkChainServerItem `json:"chains"`
+}
+
+// probeChainTopologyCacheFile stores full chain topology fetched from controller.
+type probeChainTopologyCacheFile struct {
+	UpdatedAt string                      `json:"updated_at"`
+	Items     []probeLinkChainServerItem  `json:"items"`
 }
 
 // probeLinkChainServerItem is a single chain record returned by the controller.
@@ -100,6 +109,10 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	if err != nil {
 		log.Printf("warning: probe chain sync fetch failed: %v (runtimes unchanged)", err)
 		return
+	}
+
+	if err := persistProbeChainTopologyCache(items); err != nil {
+		log.Printf("warning: persist probe chain topology cache failed: %v", err)
 	}
 
 	applyProbeLinkChainServerItems(identity, controllerBaseURL, items)
@@ -438,4 +451,71 @@ func isSameProbeChainPortForwards(left []probeChainRuntimePortForward, right []p
 		}
 	}
 	return true
+}
+
+func persistProbeChainTopologyCache(items []probeLinkChainServerItem) error {
+	cachePath, err := resolveProbeChainTopologyCachePath()
+	if err != nil {
+		return err
+	}
+	payload := probeChainTopologyCacheFile{
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Items:     sanitizeProbeChainServerItemsForCache(items),
+	}
+	encoded, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(cachePath, append(encoded, '\n'), 0o644)
+}
+
+func resolveProbeChainTopologyCachePath() (string, error) {
+	dataPath, err := resolveDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataPath, probeChainTopologyCacheFileName), nil
+}
+
+func sanitizeProbeChainServerItemsForCache(items []probeLinkChainServerItem) []probeLinkChainServerItem {
+	if len(items) == 0 {
+		return []probeLinkChainServerItem{}
+	}
+	out := make([]probeLinkChainServerItem, 0, len(items))
+	for _, item := range items {
+		next := item
+		next.ChainID = strings.TrimSpace(item.ChainID)
+		next.Name = strings.TrimSpace(item.Name)
+		next.UserID = strings.TrimSpace(item.UserID)
+		next.UserPublicKey = strings.TrimSpace(item.UserPublicKey)
+		next.Secret = strings.TrimSpace(item.Secret)
+		next.EntryNodeID = strings.TrimSpace(item.EntryNodeID)
+		next.ExitNodeID = strings.TrimSpace(item.ExitNodeID)
+		next.LinkLayer = strings.TrimSpace(item.LinkLayer)
+		next.EgressHost = strings.TrimSpace(item.EgressHost)
+		next.CascadeNodeIDs = append([]string{}, item.CascadeNodeIDs...)
+		for i := range next.CascadeNodeIDs {
+			next.CascadeNodeIDs[i] = strings.TrimSpace(next.CascadeNodeIDs[i])
+		}
+		next.HopConfigs = append([]probeLinkChainHopServerItem{}, item.HopConfigs...)
+		for i := range next.HopConfigs {
+			next.HopConfigs[i].ListenHost = strings.TrimSpace(next.HopConfigs[i].ListenHost)
+			next.HopConfigs[i].LinkLayer = strings.TrimSpace(next.HopConfigs[i].LinkLayer)
+			next.HopConfigs[i].DialMode = strings.TrimSpace(next.HopConfigs[i].DialMode)
+			next.HopConfigs[i].RelayHost = strings.TrimSpace(next.HopConfigs[i].RelayHost)
+		}
+		next.PortForwards = append([]probeChainPortForwardServerItem{}, item.PortForwards...)
+		for i := range next.PortForwards {
+			next.PortForwards[i].ID = strings.TrimSpace(next.PortForwards[i].ID)
+			next.PortForwards[i].Name = strings.TrimSpace(next.PortForwards[i].Name)
+			next.PortForwards[i].ListenHost = strings.TrimSpace(next.PortForwards[i].ListenHost)
+			next.PortForwards[i].TargetHost = strings.TrimSpace(next.PortForwards[i].TargetHost)
+			next.PortForwards[i].Network = strings.TrimSpace(next.PortForwards[i].Network)
+		}
+		out = append(out, next)
+	}
+	return out
 }
