@@ -791,6 +791,36 @@ func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, err
 	return s.ensureTunnelMuxClientForNode("")
 }
 
+func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Duration, bool) {
+	targetNodeID := strings.TrimSpace(nodeID)
+
+	s.mu.RLock()
+	selectedNodeID := strings.TrimSpace(s.nodeID)
+	if selectedNodeID == "" {
+		selectedNodeID = defaultNodeID
+	}
+	if targetNodeID == "" {
+		targetNodeID = selectedNodeID
+	}
+
+	var client *tunnelMuxClient
+	if strings.EqualFold(targetNodeID, selectedNodeID) {
+		client = s.tunnelMuxClient
+	} else if s.ruleMuxClients != nil {
+		client = s.ruleMuxClients[targetNodeID]
+	}
+	s.mu.RUnlock()
+
+	if client == nil || client.isClosed() {
+		return 0, false
+	}
+	rtt, err := client.ping()
+	if err != nil {
+		return 0, false
+	}
+	return rtt, true
+}
+
 func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput string) (*tunnelMuxClient, error) {
 	s.mu.RLock()
 	preflightBaseURL := strings.TrimSpace(s.controllerBaseURL)

@@ -454,7 +454,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	if !found {
 		var remoteFetchErr error
 		var remoteTargets map[string]probeChainEndpoint
-		remoteTargets, _, _, remoteFetchErr = fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
+		remoteTargets, _, remoteFetchErr = fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
 			warnBuf = append(warnBuf, fmt.Sprintf(format, args...))
 		})
 		if remoteFetchErr != nil {

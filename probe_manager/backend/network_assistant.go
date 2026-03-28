@@ -134,15 +134,27 @@ type probeNodeAdminItem struct {
 	ServiceHost string `json:"service_host"`
 }
 
+type probeChainPortForward struct {
+	ID         string
+	Name       string
+	ListenHost string
+	ListenPort int
+	TargetHost string
+	TargetPort int
+	Network    string
+	Enabled    bool
+}
+
 type probeChainEndpoint struct {
-	TargetID    string
-	ChainName   string
-	ChainID     string
-	EntryNode   string
-	EntryHost   string // public-facing host of the entry hop (DDNS or ip)
-	EntryPort   int    // public-facing port of the entry hop (external_port, fallback to listen_port)
-	LinkLayer   string
-	ChainSecret string
+	TargetID      string
+	ChainName     string
+	ChainID       string
+	EntryNode     string
+	EntryHost     string // public-facing host of the entry hop (DDNS or ip)
+	EntryPort     int    // public-facing port of the entry hop (external_port, fallback to listen_port)
+	LinkLayer     string
+	ChainSecret   string
+	PortForwards  []probeChainPortForward
 }
 
 type adminWSRequest struct {
@@ -400,7 +412,7 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 		s.UpdateSession(baseURLInput, tokenInput)
 	}
 
-	if err := clearProbeDNSCacheFile(); err != nil {
+	if err := clearDNSCacheFile(); err != nil {
 		return "", err
 	}
 
@@ -417,7 +429,7 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 
 	hostSet := make(map[string]struct{})
 	addHost := func(rawHost string) {
-		host := normalizeProbeDNSCacheHost(rawHost)
+		host := normalizeDNSCacheHost(rawHost)
 		if host == "" {
 			return
 		}
@@ -449,7 +461,7 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 		resolved++
 	}
 
-	message := fmt.Sprintf("dns cache refreshed: hosts=%d resolved=%d failed=%d ttl=%s", len(hosts), resolved, failed, probeDNSCacheTTL)
+	message := fmt.Sprintf("dns cache refreshed: hosts=%d resolved=%d failed=%d ttl=%s", len(hosts), resolved, failed, dnsCacheTTL)
 	s.logf("%s", message)
 	if failed > 0 {
 		return message, fmt.Errorf("dns cache refresh partially failed: resolved=%d failed=%d", resolved, failed)
@@ -1468,7 +1480,7 @@ func isCredentialMissingErr(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "missing controller url or session token")
 }
 
-func (s *networkAssistantService) refreshAvailableNodes() error {
+func (s *networkAssistantService) refreshAvailableNodes(_ ...bool) error {
 	s.mu.RLock()
 	baseURL := strings.TrimSpace(s.controllerBaseURL)
 	token := strings.TrimSpace(s.sessionToken)
@@ -1620,6 +1632,10 @@ func buildAdminWSURL(baseURL string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return strings.TrimSpace(parsed.String()), nil
+}
+
+func buildAdminWSDialer(_ string) websocket.Dialer {
+	return websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 }
 
 func buildNetworkAssistantTunnelRoute(nodeID string) string {
