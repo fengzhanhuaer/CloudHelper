@@ -10,20 +10,20 @@ import (
 )
 
 const (
-	nodesCacheFileName = "probe_nodes_cache.json"
+	chainCacheFileName = "probe_chain.json"
 )
 
-// nodesCachePayload 是节点缓存的落盘格式。
-type nodesCachePayload struct {
+// chainCachePayload 是链路缓存的落盘格式。
+type chainCachePayload struct {
 	UpdatedAt    string                        `json:"updated_at"`
 	Nodes        []string                      `json:"nodes"`
-	ChainTargets map[string]nodesCacheEndpoint `json:"chain_targets,omitempty"`
+	ChainTargets map[string]chainCacheEndpoint `json:"chain_targets,omitempty"`
 	// ProbeNodes 是从服务器同步的原始探针节点配置（node_no + ddns + service_host），不含实时状态
-	ProbeNodes []nodesCacheProbeNode `json:"probe_nodes,omitempty"`
+	ProbeNodes []chainCacheProbeNode `json:"probe_nodes,omitempty"`
 }
 
-// nodesCacheProbeNode 是 probeNodeAdminItem 的可序列化镜像（仅静态配置字段）。
-type nodesCacheProbeNode struct {
+// chainCacheProbeNode 是 probeNodeAdminItem 的可序列化镜像（仅静态配置字段）。
+type chainCacheProbeNode struct {
 	NodeNo                 int    `json:"node_no"`
 	DDNS                   string `json:"ddns"`
 	ServiceHost            string `json:"service_host"`
@@ -31,20 +31,20 @@ type nodesCacheProbeNode struct {
 	BusinessDDNSFullDomain string `json:"business_ddns_full_domain,omitempty"`
 }
 
-// nodesCacheEndpoint 是 probeChainEndpoint 的可序列化镜像（字段全部可导出）。
-type nodesCacheEndpoint struct {
-	TargetID     string                         `json:"target_id"`
-	ChainName    string                         `json:"chain_name"`
-	ChainID      string                         `json:"chain_id"`
-	EntryNode    string                         `json:"entry_node"`
-	EntryHost    string                         `json:"entry_host"`
-	EntryPort    int                            `json:"entry_port"`
-	LinkLayer    string                         `json:"link_layer"`
-	ChainSecret  string                         `json:"chain_secret"`
-	PortForwards []nodesCachePortForward        `json:"port_forwards,omitempty"`
+// chainCacheEndpoint 是 probeChainEndpoint 的可序列化镜像（字段全部可导出）。
+type chainCacheEndpoint struct {
+	TargetID     string                  `json:"target_id"`
+	ChainName    string                  `json:"chain_name"`
+	ChainID      string                  `json:"chain_id"`
+	EntryNode    string                  `json:"entry_node"`
+	EntryHost    string                  `json:"entry_host"`
+	EntryPort    int                     `json:"entry_port"`
+	LinkLayer    string                  `json:"link_layer"`
+	ChainSecret  string                  `json:"chain_secret"`
+	PortForwards []chainCachePortForward `json:"port_forwards,omitempty"`
 }
 
-type nodesCachePortForward struct {
+type chainCachePortForward struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	ListenHost string `json:"listen_host"`
@@ -55,10 +55,10 @@ type nodesCachePortForward struct {
 	Enabled    bool   `json:"enabled"`
 }
 
-func toNodesCacheEndpoint(e probeChainEndpoint) nodesCacheEndpoint {
-	pfs := make([]nodesCachePortForward, len(e.PortForwards))
+func toChainCacheEndpoint(e probeChainEndpoint) chainCacheEndpoint {
+	pfs := make([]chainCachePortForward, len(e.PortForwards))
 	for i, pf := range e.PortForwards {
-		pfs[i] = nodesCachePortForward{
+		pfs[i] = chainCachePortForward{
 			ID:         pf.ID,
 			Name:       pf.Name,
 			ListenHost: pf.ListenHost,
@@ -69,7 +69,7 @@ func toNodesCacheEndpoint(e probeChainEndpoint) nodesCacheEndpoint {
 			Enabled:    pf.Enabled,
 		}
 	}
-	return nodesCacheEndpoint{
+	return chainCacheEndpoint{
 		TargetID:     e.TargetID,
 		ChainName:    e.ChainName,
 		ChainID:      e.ChainID,
@@ -82,7 +82,7 @@ func toNodesCacheEndpoint(e probeChainEndpoint) nodesCacheEndpoint {
 	}
 }
 
-func fromNodesCacheEndpoint(e nodesCacheEndpoint) probeChainEndpoint {
+func fromChainCacheEndpoint(e chainCacheEndpoint) probeChainEndpoint {
 	pfs := make([]probeChainPortForward, len(e.PortForwards))
 	for i, pf := range e.PortForwards {
 		pfs[i] = probeChainPortForward{
@@ -109,32 +109,32 @@ func fromNodesCacheEndpoint(e nodesCacheEndpoint) probeChainEndpoint {
 	}
 }
 
-func nodesCacheFilePath() (string, error) {
+func chainCacheFilePath() (string, error) {
 	dataDir, err := ensureManagerDataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataDir, nodesCacheFileName), nil
+	return filepath.Join(dataDir, chainCacheFileName), nil
 }
 
-// saveNodesCacheToFile 将 refreshAvailableNodes 拉取到的节点列表、链路目标和探针节点列表持久化到本地。
-func saveNodesCacheToFile(nodes []string, chainTargets map[string]probeChainEndpoint, probeNodes []probeNodeAdminItem) error {
-	path, err := nodesCacheFilePath()
+// saveChainCacheToFile 将 refreshAvailableNodes 拉取到的节点列表、链路目标和探针节点列表持久化到本地。
+func saveChainCacheToFile(nodes []string, chainTargets map[string]probeChainEndpoint, probeNodes []probeNodeAdminItem) error {
+	path, err := chainCacheFilePath()
 	if err != nil {
 		return err
 	}
 
-	cacheEndpoints := make(map[string]nodesCacheEndpoint, len(chainTargets))
+	cacheEndpoints := make(map[string]chainCacheEndpoint, len(chainTargets))
 	for k, v := range chainTargets {
-		cacheEndpoints[k] = toNodesCacheEndpoint(v)
+		cacheEndpoints[k] = toChainCacheEndpoint(v)
 	}
 
-	cacheProbeNodes := make([]nodesCacheProbeNode, 0, len(probeNodes))
+	cacheProbeNodes := make([]chainCacheProbeNode, 0, len(probeNodes))
 	for _, n := range probeNodes {
 		if n.NodeNo <= 0 {
 			continue
 		}
-		cacheProbeNodes = append(cacheProbeNodes, nodesCacheProbeNode{
+		cacheProbeNodes = append(cacheProbeNodes, chainCacheProbeNode{
 			NodeNo:                 n.NodeNo,
 			DDNS:                   n.DDNS,
 			ServiceHost:            n.ServiceHost,
@@ -143,7 +143,7 @@ func saveNodesCacheToFile(nodes []string, chainTargets map[string]probeChainEndp
 		})
 	}
 
-	payload := nodesCachePayload{
+	payload := chainCachePayload{
 		UpdatedAt:    time.Now().UTC().Format(time.RFC3339),
 		Nodes:        nodes,
 		ChainTargets: cacheEndpoints,
@@ -157,9 +157,9 @@ func saveNodesCacheToFile(nodes []string, chainTargets map[string]probeChainEndp
 	return os.WriteFile(path, raw, 0o644)
 }
 
-// loadNodesCacheFromFile 从本地读取节点缓存。若文件不存在或数据为空则返回 nil, nil, nil, nil。
-func loadNodesCacheFromFile() (nodes []string, chainTargets map[string]probeChainEndpoint, probeNodes []probeNodeAdminItem, err error) {
-	path, pathErr := nodesCacheFilePath()
+// loadChainCacheFromFile 从本地读取链路缓存。若文件不存在或数据为空则返回 nil, nil, nil, nil。
+func loadChainCacheFromFile() (nodes []string, chainTargets map[string]probeChainEndpoint, probeNodes []probeNodeAdminItem, err error) {
+	path, pathErr := chainCacheFilePath()
 	if pathErr != nil {
 		return nil, nil, nil, pathErr
 	}
@@ -176,7 +176,7 @@ func loadNodesCacheFromFile() (nodes []string, chainTargets map[string]probeChai
 		return nil, nil, nil, nil
 	}
 
-	var payload nodesCachePayload
+	var payload chainCachePayload
 	if unmarshalErr := json.Unmarshal(raw, &payload); unmarshalErr != nil {
 		return nil, nil, nil, unmarshalErr
 	}
@@ -187,7 +187,7 @@ func loadNodesCacheFromFile() (nodes []string, chainTargets map[string]probeChai
 
 	targets := make(map[string]probeChainEndpoint, len(payload.ChainTargets))
 	for k, v := range payload.ChainTargets {
-		targets[k] = fromNodesCacheEndpoint(v)
+		targets[k] = fromChainCacheEndpoint(v)
 	}
 
 	adminNodes := make([]probeNodeAdminItem, 0, len(payload.ProbeNodes))

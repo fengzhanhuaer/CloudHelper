@@ -163,8 +163,11 @@ func resolvePrivateKeyPath() (string, error) {
 
 func (a *App) ForceRefreshNetworkAssistantNodes(baseURL, token string) error {
 	if a.networkAssistant == nil {
-		errors.New("network assistant not initialized")
+		return errors.New("network assistant not initialized")
 	}
 	a.networkAssistant.UpdateSession(baseURL, token)
-	return a.networkAssistant.refreshAvailableNodes(true)
+	if err := a.networkAssistant.refreshAvailableNodes(true); err != nil {
+		return fmt.Errorf("force refresh network assistant nodes failed: %w", err)
+	}
+	return nil
 }

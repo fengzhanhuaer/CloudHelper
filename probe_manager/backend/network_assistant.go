@@ -1498,7 +1498,7 @@ func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
 	}
 
 	if !forceRemote {
-		cachedNodes, cachedTargets, _, cacheErr := loadNodesCacheFromFile()
+		cachedNodes, cachedTargets, _, cacheErr := loadChainCacheFromFile()
 		if cacheErr == nil && len(cachedNodes) > 0 {
 			nodes := append([]string(nil), cachedNodes...)
 			if !containsNodeID(nodes, defaultNodeID) {
@@ -1514,7 +1514,7 @@ func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
 			return nil
 		}
 		if cacheErr != nil {
-			s.logf("load local nodes cache failed: %v", cacheErr)
+			s.logf("load local chain cache failed: %v", cacheErr)
 		}
 		return errors.New("local chain cache is empty, please click from-controller fetch")
 	}
@@ -1572,8 +1572,8 @@ func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
 		s.nodeID = nodes[0]
 	}
 	s.mu.Unlock()
-	if saveErr := saveNodesCacheToFile(nodes, s.getChainTargetsSnapshot(), probeNodes); saveErr != nil {
-		s.logf("save local nodes cache failed: %v", saveErr)
+	if saveErr := saveChainCacheToFile(nodes, s.getChainTargetsSnapshot(), probeNodes); saveErr != nil {
+		s.logf("save local chain cache failed: %v", saveErr)
 	}
 	return nil
 }

@@ -727,7 +727,12 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChainStatus(`已从主控获取链路（${sorted.length} 条）`);
       const invoke = (window as any)?.go?.main?.App?.ForceRefreshNetworkAssistantNodes;
       if (typeof invoke === "function") {
-        await invoke(props.controllerBaseUrl, props.sessionToken).catch(() => {});
+        try {
+          await invoke(props.controllerBaseUrl, props.sessionToken);
+        } catch (error) {
+          const msg = errorToMessage(error);
+          setChainStatus(`主控链路已刷新，但本地链路缓存落盘失败：${msg}`);
+        }
       }
       void loadChainUsers();
       void loadNodes();

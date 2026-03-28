@@ -412,7 +412,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 		resolvedChainID = candidateChainIDs[0]
 	}
 
-	// 优先使用内存缓存（启动时从 probe_nodes_cache.json 加载，运行时由 refreshAvailableNodes 刷新）。
+	// 优先使用内存缓存（启动时从 probe_chain.json 加载，运行时由 refreshAvailableNodes 刷新）。
 	// 避免每次测试都发起 WebSocket 请求到主控。
 	a.networkAssistant.mu.RLock()
 	cachedTargets := copyProbeChainTargets(a.networkAssistant.chainTargets)
