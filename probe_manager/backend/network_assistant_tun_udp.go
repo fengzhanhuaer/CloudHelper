@@ -99,7 +99,7 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
-		conn, dialErr := net.DialUDP("udp", nil, udpAddr)
+		conn, dialErr := dialUDPWithRetry("udp", nil, udpAddr)
 		if dialErr != nil {
 			return nil, dialErr
 		}

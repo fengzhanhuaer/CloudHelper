@@ -11,8 +11,6 @@ import type {
 
 const modeLabels: Record<string, string> = {
   direct: "直连模式",
-  rule: "规则模式",
-  global: "全局模式",
   tun: "TUN 模式",
 };
 
@@ -24,7 +22,7 @@ type NetworkAssistantTabProps = {
   operateStatus: string;
   onRefreshStatus: () => void;
   onSwitchDirect: () => void;
-  onSwitchRule: () => void;
+  onSwitchTUN: () => void;
   ruleConfig: NetworkAssistantRuleConfig | null;
   isLoadingRuleConfig: boolean;
   ruleConfigStatus: string;
@@ -119,7 +117,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
   }, [props.onRefreshLogs, subTab]);
 
   useEffect(() => {
-    if (subTab !== "settings" || props.status.mode !== "rule") {
+    if (subTab !== "settings" || props.status.mode !== "tun") {
       return;
     }
     if (props.ruleConfig || props.isLoadingRuleConfig) {
@@ -238,7 +236,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         <>
           <div className="identity-card">
             <div>当前模式：{props.status.mode || "direct"}</div>
-            <div>SOCKS5 监听：{props.status.socks5_listen || "127.0.0.1:10808"}</div>
             <div>隧道路由：{props.status.tunnel_route || "/api/ws/tunnel/cloudserver"}</div>
             <div>隧道状态：{props.status.tunnel_status || "未启用"}</div>
             <div>系统代理：{props.status.system_proxy_status || "未设置"}</div>
@@ -261,7 +258,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
           <div className="content-actions">
             <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>直连模式</button>
-            <button className="btn" onClick={props.onSwitchRule} disabled={props.isOperating}>规则模式</button>
+            <button className="btn" onClick={props.onSwitchTUN} disabled={props.isOperating}>TUN 模式</button>
             <button className="btn" onClick={props.onRefreshRuleConfig} disabled={props.isOperating || props.isLoadingRuleConfig}>
               {props.isLoadingRuleConfig ? "加载规则中..." : "刷新规则组"}
             </button>

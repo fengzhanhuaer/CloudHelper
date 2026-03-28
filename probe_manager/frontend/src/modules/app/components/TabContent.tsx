@@ -69,7 +69,7 @@ type TabContentProps = {
   networkOperateStatus: string;
   onRefreshNetworkAssistantStatus: () => void;
   onSwitchNetworkDirect: () => void;
-  onSwitchNetworkRule: () => void;
+  onSwitchNetworkTUN: () => void;
   networkRuleConfig: NetworkAssistantRuleConfig | null;
   isLoadingNetworkRuleConfig: boolean;
   networkRuleConfigStatus: string;
@@ -146,7 +146,7 @@ export function TabContent(props: TabContentProps) {
           operateStatus={props.networkOperateStatus}
           onRefreshStatus={props.onRefreshNetworkAssistantStatus}
           onSwitchDirect={props.onSwitchNetworkDirect}
-          onSwitchRule={props.onSwitchNetworkRule}
+          onSwitchTUN={props.onSwitchNetworkTUN}
           ruleConfig={props.networkRuleConfig}
           isLoadingRuleConfig={props.isLoadingNetworkRuleConfig}
           ruleConfigStatus={props.networkRuleConfigStatus}

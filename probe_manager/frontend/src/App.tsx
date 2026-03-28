@@ -179,7 +179,7 @@ function App() {
             networkOperateStatus={networkAssistant.operateStatus}
             onRefreshNetworkAssistantStatus={() => networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken)}
             onSwitchNetworkDirect={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "direct")}
-            onSwitchNetworkRule={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "rule")}
+            onSwitchNetworkTUN={() => networkAssistant.switchMode(settings.baseUrl, auth.sessionToken, "tun")}
             networkRuleConfig={networkAssistant.ruleConfig}
             isLoadingNetworkRuleConfig={networkAssistant.isLoadingRuleConfig}
             networkRuleConfigStatus={networkAssistant.ruleConfigStatus}

@@ -77,7 +77,7 @@ export type UpgradeProgress = {
   message: string;
 };
 
-export type NetworkAssistantMode = "direct" | "tun" | "rule";
+export type NetworkAssistantMode = "direct" | "tun";
 
 export type NetworkAssistantStatus = {
   enabled: boolean;

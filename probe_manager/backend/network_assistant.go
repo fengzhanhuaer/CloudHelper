@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -26,13 +25,10 @@ import (
 
 const (
 	networkModeDirect = "direct"
-	networkModeGlobal = "global"
 	networkModeTUN    = "tun"
-	networkModeRule   = "rule"
 
 	defaultNodeID         = "cloudserver"
 	chainTargetNodePrefix = "chain:"
-	defaultSocksListen    = "127.0.0.1:10808"
 	directWhitelistFile   = "direct_whitelist.txt"
 	ruleRouteFile         = "rule_routes.txt"
 	ruleGroupFile         = "rule_groups.txt"
@@ -45,6 +41,9 @@ const (
 	ruleDNSResolveTimeout      = 8 * time.Second
 	ruleDNSResolveReadTimeout  = 5 * time.Second
 	ruleDNSResolveServerTrials = 2
+	udpDialRetryMaxAttempts    = 4
+	udpDialRetryInitialBackoff = 40 * time.Millisecond
+	udpDialRetryMaxBackoff     = 300 * time.Millisecond
 )
 
 var defaultDirectWhitelistRules = []string{
@@ -93,11 +92,6 @@ type tunnelControlMessage struct {
 	Address string `json:"address,omitempty"`
 	Error   string `json:"error,omitempty"`
 	Payload []byte `json:"payload,omitempty"`
-}
-
-type socks5Request struct {
-	Cmd     byte
-	Address string
 }
 
 type tunnelNodesResponse struct {
@@ -232,20 +226,13 @@ type tunnelDNSResolveResponse struct {
 type networkAssistantService struct {
 	mu sync.RWMutex
 
-	mode             string
-	nodeID           string
-	availableNodes   []string
-	socks5ListenAddr string
+	mode           string
+	nodeID         string
+	availableNodes []string
 
 	controllerBaseURL string
 	sessionToken      string
 
-	listener net.Listener
-	stopping atomic.Bool
-
-	proxySnapshot       systemProxySnapshot
-	hasProxySnapshot    bool
-	hasAppliedSysProxy  bool
 	tunnelStatusMessage string
 	systemProxyMessage  string
 	lastError           string
@@ -311,7 +298,6 @@ func newNetworkAssistantService() *networkAssistantService {
 		mode:                networkModeDirect,
 		nodeID:              defaultNodeID,
 		availableNodes:      []string{defaultNodeID},
-		socks5ListenAddr:    defaultSocksListen,
 		tunnelStatusMessage: "未启用",
 		systemProxyMessage:  "未设置",
 		tunnelOpenFailures:  0,
@@ -343,7 +329,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		logStore.Appendf(logSourceManager, "init", "failed to load tun preference state: %v", err)
 	}
 	service.syncTUNInstallState()
-	service.logf("service initialized, mode=%s, socks5=%s", service.mode, service.socks5ListenAddr)
+	service.logf("service initialized, mode=%s", service.mode)
 	return service
 }
 
@@ -510,11 +496,11 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	}
 
 	return NetworkAssistantStatus{
-		Enabled:           s.mode == networkModeTUN || s.mode == networkModeRule,
+		Enabled:           s.mode == networkModeTUN,
 		Mode:              s.mode,
 		NodeID:            s.nodeID,
 		AvailableNodes:    append([]string(nil), s.availableNodes...),
-		Socks5Listen:      s.socks5ListenAddr,
+		Socks5Listen:      "",
 		TunnelRoute:       buildNetworkAssistantTunnelRoute(s.nodeID),
 		TunnelStatus:      s.tunnelStatusMessage,
 		SystemProxyStatus: s.systemProxyMessage,
@@ -540,13 +526,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	if normalizedMode == networkModeTUN {
 		return s.EnableTUN()
 	}
-	if normalizedMode == networkModeGlobal {
-		err := errors.New("global proxy mode has been removed")
-		s.logf("switch global aborted: %v", err)
-		s.setLastError(err)
-		return err
-	}
-	if normalizedMode != networkModeDirect && normalizedMode != networkModeRule {
+	if normalizedMode != networkModeDirect && normalizedMode != networkModeTUN {
 		return fmt.Errorf("unsupported mode: %s", mode)
 	}
 
@@ -594,9 +574,8 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	if normalizedMode == networkModeDirect {
 		errStopTUN := s.stopLocalTUNDataPlane()
 		errTunRouting := s.clearTUNSystemRouting()
-		errServer := s.stopSocksServerOnly()
 		errDirectProxy := applyDirectSystemProxy()
-		if err := errors.Join(errStopTUN, errTunRouting, errServer, errDirectProxy); err != nil {
+		if err := errors.Join(errStopTUN, errTunRouting, errDirectProxy); err != nil {
 			s.logf("failed to switch to direct mode: %v", err)
 			s.setLastError(err)
 			return err
@@ -606,9 +585,6 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.tunnelStatusMessage = "直连模式"
 		s.systemProxyMessage = "已清除系统代理并恢复系统 DNS（直连）"
 		s.tunnelOpenFailures = 0
-		s.hasAppliedSysProxy = false
-		s.hasProxySnapshot = false
-		s.proxySnapshot = systemProxySnapshot{}
 		s.tunEnabled = false
 		s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 		s.mu.Unlock()
@@ -619,22 +595,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		return nil
 	}
 
-	routing, err := loadOrCreateTunnelRuleRouting()
-	if err != nil {
-		s.logf("failed to load rule routing config: %v", err)
-		s.setLastError(err)
-		return err
-	}
-	if err := s.applyRuleModeViaTUN(routing, normalizedNode, effectiveBase); err != nil {
-		s.logf("failed to enable rule mode via tun: %v", err)
-		s.setLastError(err)
-		return err
-	}
-	return nil
-}
-
-func (s *networkAssistantService) shouldUseTUNCaptureForRuleMode() bool {
-	return true
+	return fmt.Errorf("unsupported mode: %s", mode)
 }
 
 func loadTUNPreferenceState() (tunPreferenceState, error) {
@@ -680,7 +641,7 @@ func saveTUNPreferenceState(state tunPreferenceState) error {
 func (s *networkAssistantService) Shutdown() error {
 	errStopTUN := s.stopLocalTUNDataPlane()
 	errTunRouting := s.clearTUNSystemRouting()
-	errStop := s.stopProxyAndServer()
+	errStopMux := s.stopTunnelMuxClients()
 	errDirect := applyDirectSystemProxy()
 
 	s.mu.Lock()
@@ -693,9 +654,6 @@ func (s *networkAssistantService) Shutdown() error {
 	s.tunEnabled = false
 	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 	s.tunAdapterHandle = 0
-	s.hasAppliedSysProxy = false
-	s.hasProxySnapshot = false
-	s.proxySnapshot = systemProxySnapshot{}
 	s.mu.Unlock()
 
 	var errCloseAdapter error
@@ -713,590 +671,34 @@ func (s *networkAssistantService) Shutdown() error {
 	} else {
 		s.logf("failed to force direct system proxy during shutdown: %v", errDirect)
 	}
-	if errStop != nil {
-		s.logf("shutdown cleanup returned error: %v", errStop)
+	if errStopMux != nil {
+		s.logf("shutdown mux cleanup returned error: %v", errStopMux)
 	}
 	if errStopTUN != nil {
 		s.logf("shutdown tun dataplane cleanup returned error: %v", errStopTUN)
 	}
-	return errors.Join(errStopTUN, errTunRouting, errStop, errDirect, errCloseAdapter)
+	return errors.Join(errStopTUN, errTunRouting, errStopMux, errDirect, errCloseAdapter)
 }
-
-func (s *networkAssistantService) ensureSocksServer() error {
+func (s *networkAssistantService) stopTunnelMuxClients() error {
 	s.mu.Lock()
-	if s.listener != nil {
-		s.mu.Unlock()
-		return nil
+	muxClient := s.tunnelMuxClient
+	extraMuxClients := make([]*tunnelMuxClient, 0, len(s.ruleMuxClients))
+	for _, client := range s.ruleMuxClients {
+		if client != nil {
+			extraMuxClients = append(extraMuxClients, client)
+		}
 	}
-	listenAddr := s.socks5ListenAddr
-	ln, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	s.listener = ln
-	s.stopping.Store(false)
+	s.ruleMuxClients = make(map[string]*tunnelMuxClient)
+	s.tunnelMuxClient = nil
 	s.mu.Unlock()
-	s.logf("socks5 listener started at %s", listenAddr)
 
-	go s.acceptLoop(ln)
+	if muxClient != nil {
+		muxClient.close()
+	}
+	for _, client := range extraMuxClients {
+		client.close()
+	}
 	return nil
-}
-
-func (s *networkAssistantService) acceptLoop(ln net.Listener) {
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if s.stopping.Load() {
-				return
-			}
-			s.logf("failed to accept proxy conn: %v", err)
-			continue
-		}
-		go s.handleProxyConn(conn)
-	}
-}
-
-func (s *networkAssistantService) handleProxyConn(conn net.Conn) {
-	defer conn.Close()
-	remoteAddr := strings.TrimSpace(conn.RemoteAddr().String())
-	s.logf("proxy connection opened from %s", remoteAddr)
-	defer s.logf("proxy connection closed from %s", remoteAddr)
-
-	br := bufio.NewReader(conn)
-	peek, err := br.Peek(1)
-	if err != nil {
-		s.logf("proxy request parse failed from %s: %v", remoteAddr, err)
-		return
-	}
-
-	if peek[0] == 0x04 || peek[0] == 0x05 {
-		s.handleSocksConn(conn, br, remoteAddr)
-		return
-	}
-	s.handleHTTPProxyConn(conn, br, remoteAddr)
-}
-
-func (s *networkAssistantService) handleSocksConn(conn net.Conn, br *bufio.Reader, remoteAddr string) {
-	version, req, err := readProxyRequest(br, conn)
-	if err != nil {
-		s.logf("proxy request parse failed from %s: %v", remoteAddr, err)
-		return
-	}
-	s.logf("proxy request from %s: version=%d cmd=%d target=%s", remoteAddr, version, req.Cmd, req.Address)
-
-	if req.Cmd == 0x03 {
-		s.handleSocksUDPAssociate(conn)
-		return
-	}
-	targetAddr := req.Address
-
-	route, err := s.decideRouteForTarget(targetAddr)
-	if err != nil {
-		if isRuleRouteRejectErr(err) {
-			s.logf("proxy target rejected by rule target=%s err=%v", targetAddr, err)
-			s.setTunnelStatus("规则拒绝")
-		} else {
-			s.logf("proxy route decision failed target=%s err=%v", targetAddr, err)
-			s.setTunnelStatus("规则解析失败")
-		}
-		replyProxyFailure(conn, version)
-		return
-	}
-	if route.Direct {
-		directConn, err := net.DialTimeout("tcp", route.TargetAddr, 10*time.Second)
-		if err != nil {
-			s.logf("direct dial failed %s: %v", route.TargetAddr, err)
-			replyProxyFailure(conn, version)
-			s.setTunnelStatus("直连失败")
-			return
-		}
-		defer directConn.Close()
-
-		if err := replyProxySuccess(conn, version); err != nil {
-			return
-		}
-		s.logf("proxy direct dial connected target=%s routed=%s", targetAddr, route.TargetAddr)
-		if s.currentMode() == networkModeRule {
-			s.setTunnelStatus("规则未命中，直连")
-		} else {
-			s.setTunnelStatus("白名单直连")
-		}
-
-		errCh := make(chan relayResult, 2)
-		go func() {
-			_, copyErr := io.Copy(directConn, br)
-			errCh <- relayResult{Side: "client->direct", Err: copyErr}
-		}()
-		go func() {
-			_, copyErr := io.Copy(conn, directConn)
-			errCh <- relayResult{Side: "direct->client", Err: copyErr}
-		}()
-
-		s.logRelayClosed("direct", route.TargetAddr, <-errCh)
-		return
-	}
-
-	tunnelStream, err := s.openTunnelStreamForNode("tcp", route.TargetAddr, route.NodeID)
-	if err != nil {
-		if !isCredentialMissingErr(err) || s.currentMode() == networkModeGlobal {
-			s.logf("failed to open tunnel target=%s routed=%s node=%s group=%s err=%v", targetAddr, route.TargetAddr, route.NodeID, route.Group, err)
-		}
-		replyProxyFailure(conn, version)
-		s.setTunnelStatus("隧道异常")
-		s.recordTunnelOpenFailure(err)
-		return
-	}
-	defer tunnelStream.close()
-	s.resetTunnelOpenFailures()
-
-	if err := replyProxySuccess(conn, version); err != nil {
-		return
-	}
-	s.logf("proxy tunnel connected target=%s routed=%s node=%s group=%s", targetAddr, route.TargetAddr, route.NodeID, route.Group)
-	if s.currentMode() == networkModeRule && strings.TrimSpace(route.Group) != "" {
-		s.setTunnelStatus("规则命中组：" + strings.TrimSpace(route.Group))
-	} else {
-		s.setTunnelStatus("隧道已连接")
-	}
-
-	errCh := make(chan relayResult, 2)
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, readErr := br.Read(buf)
-			if n > 0 {
-				if writeErr := tunnelStream.write(buf[:n]); writeErr != nil {
-					errCh <- relayResult{Side: "client->tunnel", Err: writeErr}
-					return
-				}
-			}
-			if readErr != nil {
-				errCh <- relayResult{Side: "client->tunnel", Err: readErr}
-				return
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			select {
-			case payload := <-tunnelStream.readCh:
-				if _, writeErr := conn.Write(payload); writeErr != nil {
-					errCh <- relayResult{Side: "tunnel->client", Err: writeErr}
-					return
-				}
-			case readErr := <-tunnelStream.errCh:
-				errCh <- relayResult{Side: "tunnel->client", Err: readErr}
-				return
-			}
-		}
-	}()
-
-	s.logRelayClosed("tunnel", route.TargetAddr, <-errCh)
-	s.setTunnelStatus("隧道已断开")
-}
-
-func (s *networkAssistantService) handleHTTPProxyConn(conn net.Conn, br *bufio.Reader, remoteAddr string) {
-	req, err := http.ReadRequest(br)
-	if err != nil {
-		s.logf("http proxy request parse failed from %s: %v", remoteAddr, err)
-		_ = writeHTTPProxyStatus(conn, http.StatusBadRequest, "invalid proxy request")
-		return
-	}
-	defer req.Body.Close()
-
-	method := strings.ToUpper(strings.TrimSpace(req.Method))
-	if method != http.MethodConnect {
-		targetAddr, payload, buildErr := buildHTTPProxyForwardRequest(req)
-		if buildErr != nil {
-			s.logf("http proxy request parse failed from %s: %v", remoteAddr, buildErr)
-			_ = writeHTTPProxyStatus(conn, http.StatusBadRequest, "invalid proxy request")
-			return
-		}
-		s.logf("http proxy request from %s: method=%s target=%s", remoteAddr, method, targetAddr)
-
-		route, routeErr := s.decideRouteForTarget(targetAddr)
-		if routeErr != nil {
-			if isRuleRouteRejectErr(routeErr) {
-				s.logf("http proxy target rejected by rule target=%s err=%v", targetAddr, routeErr)
-				s.setTunnelStatus("规则拒绝")
-				_ = writeHTTPProxyStatus(conn, http.StatusForbidden, "blocked by rule policy")
-			} else {
-				s.logf("http proxy route decision failed target=%s err=%v", targetAddr, routeErr)
-				s.setTunnelStatus("规则解析失败")
-				_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to route target")
-			}
-			return
-		}
-
-		if route.Direct {
-			directConn, dialErr := net.DialTimeout("tcp", route.TargetAddr, 10*time.Second)
-			if dialErr != nil {
-				s.logf("http proxy direct dial failed target=%s routed=%s err=%v", targetAddr, route.TargetAddr, dialErr)
-				s.setTunnelStatus("直连失败")
-				_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
-				return
-			}
-			defer directConn.Close()
-
-			if _, writeErr := directConn.Write(payload); writeErr != nil {
-				s.logRelayClosed("http-forward-direct", route.TargetAddr, relayResult{Side: "proxy->direct", Err: writeErr})
-				s.setTunnelStatus("直连已断开")
-				_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to send request")
-				return
-			}
-			if s.currentMode() == networkModeRule {
-				s.setTunnelStatus("规则未命中，直连")
-			} else {
-				s.setTunnelStatus("白名单直连")
-			}
-			_, copyErr := io.Copy(conn, directConn)
-			s.logRelayClosed("http-forward-direct", route.TargetAddr, relayResult{Side: "direct->proxy", Err: copyErr})
-			s.setTunnelStatus("直连已断开")
-			return
-		}
-
-		tunnelStream, openErr := s.openTunnelStreamForNode("tcp", route.TargetAddr, route.NodeID)
-		if openErr != nil {
-			s.logf("failed to open tunnel target=%s routed=%s node=%s group=%s err=%v", targetAddr, route.TargetAddr, route.NodeID, route.Group, openErr)
-			s.setTunnelStatus("隧道异常")
-			s.recordTunnelOpenFailure(openErr)
-			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
-			return
-		}
-		defer tunnelStream.close()
-		s.resetTunnelOpenFailures()
-		s.logf("proxy tunnel connected target=%s routed=%s node=%s group=%s", targetAddr, route.TargetAddr, route.NodeID, route.Group)
-		if s.currentMode() == networkModeRule && strings.TrimSpace(route.Group) != "" {
-			s.setTunnelStatus("规则命中组：" + strings.TrimSpace(route.Group))
-		} else {
-			s.setTunnelStatus("隧道已连接")
-		}
-
-		if writeErr := tunnelStream.write(payload); writeErr != nil {
-			s.logRelayClosed("http-forward", route.TargetAddr, relayResult{Side: "proxy->tunnel", Err: writeErr})
-			s.setTunnelStatus("隧道已断开")
-			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to send request")
-			return
-		}
-
-		for {
-			select {
-			case data := <-tunnelStream.readCh:
-				if len(data) == 0 {
-					continue
-				}
-				if _, writeErr := conn.Write(data); writeErr != nil {
-					s.logRelayClosed("http-forward", route.TargetAddr, relayResult{Side: "tunnel->proxy", Err: writeErr})
-					s.setTunnelStatus("隧道已断开")
-					return
-				}
-			case readErr := <-tunnelStream.errCh:
-				s.logRelayClosed("http-forward", route.TargetAddr, relayResult{Side: "tunnel->proxy", Err: readErr})
-				s.setTunnelStatus("隧道已断开")
-				return
-			}
-		}
-	}
-
-	targetAddr, err := normalizeProxyTargetAddress(req.Host, "443")
-	if err != nil {
-		s.logf("http proxy request parse failed from %s: %v", remoteAddr, err)
-		_ = writeHTTPProxyStatus(conn, http.StatusBadRequest, "invalid CONNECT target")
-		return
-	}
-	s.logf("http proxy request from %s: method=CONNECT target=%s", remoteAddr, targetAddr)
-
-	route, routeErr := s.decideRouteForTarget(targetAddr)
-	if routeErr != nil {
-		if isRuleRouteRejectErr(routeErr) {
-			s.logf("http connect target rejected by rule target=%s err=%v", targetAddr, routeErr)
-			s.setTunnelStatus("规则拒绝")
-			_ = writeHTTPProxyStatus(conn, http.StatusForbidden, "blocked by rule policy")
-		} else {
-			s.logf("http connect route decision failed target=%s err=%v", targetAddr, routeErr)
-			s.setTunnelStatus("规则解析失败")
-			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to route target")
-		}
-		return
-	}
-
-	if route.Direct {
-		directConn, dialErr := net.DialTimeout("tcp", route.TargetAddr, 10*time.Second)
-		if dialErr != nil {
-			s.logf("http connect direct dial failed target=%s routed=%s err=%v", targetAddr, route.TargetAddr, dialErr)
-			s.setTunnelStatus("直连失败")
-			_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
-			return
-		}
-		defer directConn.Close()
-
-		if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\nProxy-Agent: CloudHelper\r\n\r\n")); err != nil {
-			return
-		}
-		if s.currentMode() == networkModeRule {
-			s.setTunnelStatus("规则未命中，直连")
-		} else {
-			s.setTunnelStatus("白名单直连")
-		}
-
-		if buffered := br.Buffered(); buffered > 0 {
-			payload := make([]byte, buffered)
-			n, readErr := io.ReadFull(br, payload)
-			if n > 0 {
-				if _, writeErr := directConn.Write(payload[:n]); writeErr != nil {
-					s.logRelayClosed("direct", route.TargetAddr, relayResult{Side: "proxy->direct", Err: writeErr})
-					return
-				}
-			}
-			if readErr != nil && !errors.Is(readErr, io.EOF) {
-				s.logRelayClosed("direct", route.TargetAddr, relayResult{Side: "proxy->direct", Err: readErr})
-				return
-			}
-		}
-
-		errCh := make(chan relayResult, 2)
-		go func() {
-			_, copyErr := io.Copy(directConn, br)
-			errCh <- relayResult{Side: "client->direct", Err: copyErr}
-		}()
-		go func() {
-			_, copyErr := io.Copy(conn, directConn)
-			errCh <- relayResult{Side: "direct->client", Err: copyErr}
-		}()
-
-		s.logRelayClosed("direct", route.TargetAddr, <-errCh)
-		s.setTunnelStatus("直连已断开")
-		return
-	}
-
-	tunnelStream, err := s.openTunnelStreamForNode("tcp", route.TargetAddr, route.NodeID)
-	if err != nil {
-		s.logf("failed to open tunnel target=%s routed=%s node=%s group=%s err=%v", targetAddr, route.TargetAddr, route.NodeID, route.Group, err)
-		s.setTunnelStatus("隧道异常")
-		s.recordTunnelOpenFailure(err)
-		_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "failed to connect target")
-		return
-	}
-	defer tunnelStream.close()
-	s.resetTunnelOpenFailures()
-
-	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\nProxy-Agent: CloudHelper\r\n\r\n")); err != nil {
-		return
-	}
-	s.logf("proxy tunnel connected target=%s routed=%s node=%s group=%s", targetAddr, route.TargetAddr, route.NodeID, route.Group)
-	if s.currentMode() == networkModeRule && strings.TrimSpace(route.Group) != "" {
-		s.setTunnelStatus("规则命中组：" + strings.TrimSpace(route.Group))
-	} else {
-		s.setTunnelStatus("隧道已连接")
-	}
-
-	if buffered := br.Buffered(); buffered > 0 {
-		payload := make([]byte, buffered)
-		n, readErr := io.ReadFull(br, payload)
-		if n > 0 {
-			if writeErr := tunnelStream.write(payload[:n]); writeErr != nil {
-				s.logf("tunnel relay closed with error %s: %v", route.TargetAddr, writeErr)
-				return
-			}
-		}
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			s.logf("tunnel relay closed with error %s: %v", route.TargetAddr, readErr)
-			return
-		}
-	}
-
-	errCh := make(chan relayResult, 2)
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, readErr := br.Read(buf)
-			if n > 0 {
-				if writeErr := tunnelStream.write(buf[:n]); writeErr != nil {
-					errCh <- relayResult{Side: "client->tunnel", Err: writeErr}
-					return
-				}
-			}
-			if readErr != nil {
-				errCh <- relayResult{Side: "client->tunnel", Err: readErr}
-				return
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			select {
-			case payload := <-tunnelStream.readCh:
-				if _, writeErr := conn.Write(payload); writeErr != nil {
-					errCh <- relayResult{Side: "tunnel->client", Err: writeErr}
-					return
-				}
-			case readErr := <-tunnelStream.errCh:
-				errCh <- relayResult{Side: "tunnel->client", Err: readErr}
-				return
-			}
-		}
-	}()
-
-	s.logRelayClosed("tunnel", route.TargetAddr, <-errCh)
-	s.setTunnelStatus("隧道已断开")
-}
-
-type relayResult struct {
-	Side string
-	Err  error
-}
-
-func (s *networkAssistantService) logRelayClosed(relayType string, targetAddr string, result relayResult) {
-	side := strings.TrimSpace(result.Side)
-	if side == "" {
-		side = "unknown"
-	}
-	errText := relayErrorText(result.Err)
-	s.logf("%s relay closed: target=%s side=%s err=%s", strings.TrimSpace(relayType), targetAddr, side, errText)
-}
-
-func relayErrorText(err error) string {
-	if err == nil {
-		return "nil"
-	}
-	if errors.Is(err, io.EOF) {
-		return "eof"
-	}
-	if errors.Is(err, net.ErrClosed) {
-		return "net_closed"
-	}
-	return strings.TrimSpace(err.Error())
-}
-
-func buildHTTPProxyForwardRequest(req *http.Request) (string, []byte, error) {
-	targetHost := ""
-	if req.URL != nil {
-		targetHost = strings.TrimSpace(req.URL.Host)
-	}
-	if targetHost == "" {
-		targetHost = strings.TrimSpace(req.Host)
-	}
-	if targetHost == "" {
-		return "", nil, errors.New("missing target host")
-	}
-
-	defaultPort := "80"
-	if req.URL != nil && strings.EqualFold(strings.TrimSpace(req.URL.Scheme), "https") {
-		defaultPort = "443"
-	}
-	targetAddr, err := normalizeProxyTargetAddress(targetHost, defaultPort)
-	if err != nil {
-		return "", nil, err
-	}
-
-	outReq := req.Clone(req.Context())
-	if outReq.URL == nil {
-		outReq.URL = &url.URL{Path: "/"}
-	}
-	outReq.URL.Scheme = ""
-	outReq.URL.Host = ""
-	if strings.TrimSpace(outReq.URL.Path) == "" {
-		outReq.URL.Path = "/"
-	}
-	outReq.RequestURI = ""
-	outReq.Header = req.Header.Clone()
-	removeHopByHopHeaders(outReq.Header)
-	outReq.Header.Set("Connection", "close")
-	outReq.Close = true
-	outReq.Host = strings.TrimSpace(req.Host)
-	if outReq.Host == "" {
-		outReq.Host = hostWithoutPort(targetAddr)
-	}
-
-	buf := bytes.NewBuffer(nil)
-	if err := outReq.Write(buf); err != nil {
-		return "", nil, err
-	}
-	return targetAddr, buf.Bytes(), nil
-}
-
-func removeHopByHopHeaders(header http.Header) {
-	if header == nil {
-		return
-	}
-	connectionVals := header.Values("Connection")
-	for _, value := range connectionVals {
-		parts := strings.Split(value, ",")
-		for _, part := range parts {
-			key := strings.TrimSpace(part)
-			if key != "" {
-				header.Del(key)
-			}
-		}
-	}
-
-	header.Del("Connection")
-	header.Del("Proxy-Connection")
-	header.Del("Keep-Alive")
-	header.Del("Proxy-Authenticate")
-	header.Del("Proxy-Authorization")
-	header.Del("Te")
-	header.Del("Trailer")
-	header.Del("Transfer-Encoding")
-	header.Del("Upgrade")
-}
-
-func hostWithoutPort(targetAddr string) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
-	if err != nil {
-		return strings.TrimSpace(targetAddr)
-	}
-	return strings.Trim(host, "[]")
-}
-
-func normalizeProxyTargetAddress(rawHost string, defaultPort string) (string, error) {
-	host := strings.TrimSpace(rawHost)
-	if host == "" {
-		return "", errors.New("missing target host")
-	}
-	if strings.Contains(host, "://") {
-		parsed, err := url.Parse(host)
-		if err != nil {
-			return "", err
-		}
-		host = strings.TrimSpace(parsed.Host)
-		if host == "" {
-			return "", errors.New("missing target host")
-		}
-	}
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		return host, nil
-	}
-	if strings.TrimSpace(defaultPort) == "" {
-		defaultPort = "443"
-	}
-	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-	}
-	return net.JoinHostPort(host, defaultPort), nil
-}
-
-func writeHTTPProxyStatus(conn net.Conn, statusCode int, message string) error {
-	statusText := strings.TrimSpace(http.StatusText(statusCode))
-	if statusText == "" {
-		statusText = "Error"
-	}
-	body := strings.TrimSpace(message)
-	if body == "" {
-		body = statusText
-	}
-	resp := fmt.Sprintf(
-		"HTTP/1.1 %d %s\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
-		statusCode,
-		statusText,
-		len(body),
-		body,
-	)
-	_, err := conn.Write([]byte(resp))
-	return err
 }
 
 func (s *networkAssistantService) shouldDialDirect(targetAddr string) bool {
@@ -1335,7 +737,7 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 	}
 
-	useRuleRouting := mode == networkModeRule || mode == networkModeTUN
+	useRuleRouting := mode == networkModeTUN
 	if !useRuleRouting {
 		if s.shouldDialDirect(normalizedTarget) {
 			return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
@@ -1858,105 +1260,59 @@ func skipDNSName(payload []byte, offset int) (int, error) {
 	return 0, errors.New("dns name exceeds max depth")
 }
 
-func (s *networkAssistantService) handleSocksUDPAssociate(tcpConn net.Conn) {
-	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		_ = socks5ReplyWithAddr(tcpConn, 0x01, "0.0.0.0:0")
-		return
+func dialUDPWithRetry(network string, laddr, raddr *net.UDPAddr) (*net.UDPConn, error) {
+	attempts := udpDialRetryMaxAttempts
+	if attempts < 1 {
+		attempts = 1
 	}
-	defer udpConn.Close()
-
-	_ = socks5ReplyWithAddr(tcpConn, 0x00, udpConn.LocalAddr().String())
-
-	go func() {
-		buf := make([]byte, 1)
-		_, _ = tcpConn.Read(buf)
-		_ = udpConn.Close()
-	}()
-
-	buf := make([]byte, 64*1024)
-	for {
-		n, src, err := udpConn.ReadFrom(buf)
-		if err != nil {
-			return
-		}
-		targetAddr, payload, err := parseSocks5UDPDatagram(buf[:n])
-		if err != nil {
-			continue
-		}
-
-		var respPayload []byte
-		var respAddr string
-		route, routeErr := s.decideRouteForTarget(targetAddr)
-		if routeErr != nil {
-			if isRuleRouteRejectErr(routeErr) {
-				s.logf("udp target rejected by rule target=%s err=%v", targetAddr, routeErr)
-				s.setTunnelStatus("规则拒绝")
-			} else {
-				s.logf("udp route decision failed target=%s err=%v", targetAddr, routeErr)
-			}
-			continue
-		}
-		if route.Direct {
-			respPayload, respAddr, err = dialUDPDirectPacket(route.TargetAddr, payload)
-		} else {
-			stream, openErr := s.openTunnelStreamForNode("udp", route.TargetAddr, route.NodeID)
-			if openErr != nil {
-				err = openErr
-			} else {
-				err = stream.write(payload)
-				if err == nil {
-					select {
-					case respPayload = <-stream.readCh:
-						respAddr = route.TargetAddr
-					case readErr := <-stream.errCh:
-						err = readErr
-					case <-time.After(10 * time.Second):
-						err = errors.New("udp tunnel timeout")
-					}
-				}
-				stream.close()
-			}
-		}
-		if err != nil {
-			s.logf("udp relay failed target=%s err=%v", targetAddr, err)
-			continue
-		}
-		if strings.TrimSpace(respAddr) == "" {
-			respAddr = targetAddr
-		}
-		packet, err := buildSocks5UDPDatagram(respAddr, respPayload)
-		if err != nil {
-			continue
-		}
-		_, _ = udpConn.WriteTo(packet, src)
+	backoff := udpDialRetryInitialBackoff
+	if backoff <= 0 {
+		backoff = 20 * time.Millisecond
 	}
+	maxBackoff := udpDialRetryMaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = 300 * time.Millisecond
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		conn, err := net.DialUDP(network, laddr, raddr)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if !isRetryableUDPSocketErr(err) || attempt == attempts {
+			return nil, err
+		}
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+	return nil, lastErr
 }
 
-func dialUDPDirectPacket(targetAddr string, payload []byte) ([]byte, string, error) {
-	udpAddr, err := net.ResolveUDPAddr("udp", targetAddr)
-	if err != nil {
-		return nil, "", err
+func isRetryableUDPSocketErr(err error) bool {
+	if err == nil {
+		return false
 	}
-	conn, err := net.DialUDP("udp", nil, udpAddr)
-	if err != nil {
-		return nil, "", err
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		err = opErr.Err
 	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
-	if _, err := conn.Write(payload); err != nil {
-		return nil, "", err
+
+	var sysErr *os.SyscallError
+	if errors.As(err, &sysErr) {
+		err = sysErr.Err
 	}
-	buf := make([]byte, 65535)
-	n, remote, err := conn.ReadFromUDP(buf)
-	if err != nil {
-		return nil, "", err
-	}
-	respAddr := targetAddr
-	if remote != nil {
-		respAddr = remote.String()
-	}
-	return append([]byte(nil), buf[:n]...), respAddr, nil
+
+	errText := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(errText, "queue was full") ||
+		strings.Contains(errText, "no buffer") ||
+		strings.Contains(errText, "sufficient buffer space") ||
+		strings.Contains(errText, "no space left") ||
+		strings.Contains(errText, "wsaenobufs")
 }
 
 func buildTunnelWSURL(baseURL, nodeID, token string) (string, error) {
@@ -1983,84 +1339,6 @@ func buildTunnelWSURL(baseURL, nodeID, token string) (string, error) {
 	parsed.RawQuery = q.Encode()
 	parsed.Fragment = ""
 	return parsed.String(), nil
-}
-
-func (s *networkAssistantService) applySystemProxy() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if !s.hasProxySnapshot {
-		snapshot, err := captureSystemProxySnapshot()
-		if err != nil {
-			return err
-		}
-		s.proxySnapshot = snapshot
-		s.hasProxySnapshot = true
-		s.logf("captured system proxy snapshot: %s", snapshot.Summary())
-	}
-
-	s.logf("applying system proxy to http/https/socks=%s", s.socks5ListenAddr)
-	if err := applySocks5SystemProxy(s.socks5ListenAddr); err != nil {
-		return err
-	}
-	s.hasAppliedSysProxy = true
-	s.logf("system proxy applied")
-	return nil
-}
-
-func (s *networkAssistantService) stopProxyAndServer() error {
-	errProxy := s.restoreSystemProxyIfNeeded()
-	errServer := s.stopSocksServerOnly()
-	if errProxy != nil {
-		return errProxy
-	}
-	return errServer
-}
-
-func (s *networkAssistantService) restoreSystemProxyIfNeeded() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if !s.hasProxySnapshot || !s.hasAppliedSysProxy {
-		return nil
-	}
-	s.logf("restoring system proxy: %s", s.proxySnapshot.Summary())
-	if err := restoreSystemProxy(s.proxySnapshot); err != nil {
-		return err
-	}
-	s.hasAppliedSysProxy = false
-	s.logf("system proxy restored")
-	return nil
-}
-
-func (s *networkAssistantService) stopSocksServerOnly() error {
-	s.mu.Lock()
-	ln := s.listener
-	muxClient := s.tunnelMuxClient
-	extraMuxClients := make([]*tunnelMuxClient, 0, len(s.ruleMuxClients))
-	for _, client := range s.ruleMuxClients {
-		if client != nil {
-			extraMuxClients = append(extraMuxClients, client)
-		}
-	}
-	s.ruleMuxClients = make(map[string]*tunnelMuxClient)
-	s.tunnelMuxClient = nil
-	s.listener = nil
-	s.stopping.Store(true)
-	s.mu.Unlock()
-
-	if muxClient != nil {
-		muxClient.close()
-	}
-	for _, client := range extraMuxClients {
-		client.close()
-	}
-
-	if ln == nil {
-		return nil
-	}
-	s.logf("stopping socks5 listener")
-	return ln.Close()
 }
 
 func (s *networkAssistantService) setLastError(err error) {
@@ -2162,7 +1440,7 @@ func (s *networkAssistantService) recordTunnelOpenFailure(err error) {
 	mode := s.mode
 	s.mu.Unlock()
 
-	if failures < maxTunnelFailures || mode != networkModeGlobal {
+	if failures < maxTunnelFailures || mode != networkModeTUN {
 		return
 	}
 	s.setTunnelStatus("隧道持续异常")
@@ -3121,333 +2399,4 @@ func (w *socksDirectWhitelist) matchesTarget(targetAddr string) bool {
 		}
 	}
 	return false
-}
-
-func readProxyRequest(br *bufio.Reader, conn net.Conn) (byte, socks5Request, error) {
-	peek, err := br.Peek(1)
-	if err != nil {
-		return 0, socks5Request{}, err
-	}
-
-	version := peek[0]
-	switch version {
-	case 0x05:
-		if err := socks5Handshake(br, conn); err != nil {
-			return version, socks5Request{}, err
-		}
-		req, err := socks5ReadRequest(br, conn)
-		return version, req, err
-	case 0x04:
-		req, err := socks4ReadRequest(br, conn)
-		return version, req, err
-	default:
-		return version, socks5Request{}, fmt.Errorf("unsupported socks version: %d", version)
-	}
-}
-
-func replyProxySuccess(conn net.Conn, version byte) error {
-	if version == 0x04 {
-		return socks4Reply(conn, 0x5A)
-	}
-	return socks5Reply(conn, 0x00)
-}
-
-func replyProxyFailure(conn net.Conn, version byte) error {
-	if version == 0x04 {
-		return socks4Reply(conn, 0x5B)
-	}
-	return socks5Reply(conn, 0x01)
-}
-
-func socks5Handshake(br *bufio.Reader, conn net.Conn) error {
-	head := make([]byte, 2)
-	if _, err := io.ReadFull(br, head); err != nil {
-		return err
-	}
-	if head[0] != 0x05 {
-		return errors.New("invalid socks version")
-	}
-	nMethods := int(head[1])
-	if nMethods <= 0 {
-		return errors.New("invalid socks auth methods")
-	}
-
-	methods := make([]byte, nMethods)
-	if _, err := io.ReadFull(br, methods); err != nil {
-		return err
-	}
-
-	accepted := false
-	for _, method := range methods {
-		if method == 0x00 {
-			accepted = true
-			break
-		}
-	}
-	if !accepted {
-		_, _ = conn.Write([]byte{0x05, 0xFF})
-		return errors.New("no supported auth method")
-	}
-
-	_, err := conn.Write([]byte{0x05, 0x00})
-	return err
-}
-
-func socks4ReadRequest(br *bufio.Reader, conn net.Conn) (socks5Request, error) {
-	head := make([]byte, 8)
-	if _, err := io.ReadFull(br, head); err != nil {
-		return socks5Request{}, err
-	}
-	if head[0] != 0x04 {
-		return socks5Request{}, errors.New("invalid socks4 version")
-	}
-	if head[1] != 0x01 {
-		_ = socks4Reply(conn, 0x5B)
-		return socks5Request{}, errors.New("only CONNECT is supported for socks4")
-	}
-
-	port := binary.BigEndian.Uint16(head[2:4])
-	if port == 0 {
-		_ = socks4Reply(conn, 0x5B)
-		return socks5Request{}, errors.New("invalid socks4 port")
-	}
-
-	if _, err := readNullTerminated(br, 512); err != nil {
-		_ = socks4Reply(conn, 0x5B)
-		return socks5Request{}, err
-	}
-
-	ipBytes := head[4:8]
-	var host string
-	if ipBytes[0] == 0x00 && ipBytes[1] == 0x00 && ipBytes[2] == 0x00 && ipBytes[3] != 0x00 {
-		domain, err := readNullTerminated(br, 1024)
-		if err != nil {
-			_ = socks4Reply(conn, 0x5B)
-			return socks5Request{}, err
-		}
-		host = strings.TrimSpace(domain)
-		if host == "" {
-			_ = socks4Reply(conn, 0x5B)
-			return socks5Request{}, errors.New("invalid socks4a domain")
-		}
-	} else {
-		host = net.IP(ipBytes).String()
-		if strings.TrimSpace(host) == "" {
-			_ = socks4Reply(conn, 0x5B)
-			return socks5Request{}, errors.New("invalid socks4 address")
-		}
-	}
-
-	return socks5Request{Cmd: 0x01, Address: net.JoinHostPort(host, strconv.Itoa(int(port)))}, nil
-}
-
-func readNullTerminated(br *bufio.Reader, maxLen int) (string, error) {
-	if maxLen <= 0 {
-		maxLen = 256
-	}
-	buf := make([]byte, 0, maxLen)
-	for len(buf) < maxLen {
-		b, err := br.ReadByte()
-		if err != nil {
-			return "", err
-		}
-		if b == 0x00 {
-			return string(buf), nil
-		}
-		buf = append(buf, b)
-	}
-	return "", errors.New("null-terminated field exceeds max length")
-}
-
-func socks5ReadRequest(br *bufio.Reader, conn net.Conn) (socks5Request, error) {
-	head := make([]byte, 4)
-	if _, err := io.ReadFull(br, head); err != nil {
-		return socks5Request{}, err
-	}
-	if head[0] != 0x05 {
-		return socks5Request{}, errors.New("invalid socks version")
-	}
-	cmd := head[1]
-	if cmd != 0x01 && cmd != 0x03 {
-		_ = socks5Reply(conn, 0x07)
-		return socks5Request{}, errors.New("only CONNECT and UDP ASSOCIATE are supported")
-	}
-
-	atyp := head[3]
-	host := ""
-	switch atyp {
-	case 0x01:
-		ip := make([]byte, 4)
-		if _, err := io.ReadFull(br, ip); err != nil {
-			return socks5Request{}, err
-		}
-		host = net.IP(ip).String()
-	case 0x03:
-		sizeByte, err := br.ReadByte()
-		if err != nil {
-			return socks5Request{}, err
-		}
-		domain := make([]byte, int(sizeByte))
-		if _, err := io.ReadFull(br, domain); err != nil {
-			return socks5Request{}, err
-		}
-		host = string(domain)
-	case 0x04:
-		ip := make([]byte, 16)
-		if _, err := io.ReadFull(br, ip); err != nil {
-			return socks5Request{}, err
-		}
-		host = net.IP(ip).String()
-	default:
-		_ = socks5Reply(conn, 0x08)
-		return socks5Request{}, errors.New("unsupported address type")
-	}
-
-	portBytes := make([]byte, 2)
-	if _, err := io.ReadFull(br, portBytes); err != nil {
-		return socks5Request{}, err
-	}
-	port := binary.BigEndian.Uint16(portBytes)
-	if port == 0 {
-		if cmd == 0x01 {
-			_ = socks5Reply(conn, 0x01)
-			return socks5Request{}, errors.New("invalid port")
-		}
-	}
-
-	return socks5Request{Cmd: cmd, Address: net.JoinHostPort(host, strconv.Itoa(int(port)))}, nil
-}
-
-func socks5Reply(conn net.Conn, rep byte) error {
-	return socks5ReplyWithAddr(conn, rep, "0.0.0.0:0")
-}
-
-func socks4Reply(conn net.Conn, rep byte) error {
-	resp := []byte{0x00, rep, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	_, err := conn.Write(resp)
-	return err
-}
-
-func socks5ReplyWithAddr(conn net.Conn, rep byte, bindAddr string) error {
-	host, portStr, err := net.SplitHostPort(bindAddr)
-	if err != nil {
-		host = "0.0.0.0"
-		portStr = "0"
-	}
-	port, _ := strconv.Atoi(portStr)
-	if port < 0 || port > 65535 {
-		port = 0
-	}
-
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	if ip4 := ip.To4(); ip4 != nil {
-		resp := []byte{0x05, rep, 0x00, 0x01, ip4[0], ip4[1], ip4[2], ip4[3], 0, 0}
-		binary.BigEndian.PutUint16(resp[8:], uint16(port))
-		_, err := conn.Write(resp)
-		return err
-	}
-	if ip16 := ip.To16(); ip16 != nil {
-		resp := make([]byte, 4+16+2)
-		resp[0] = 0x05
-		resp[1] = rep
-		resp[2] = 0x00
-		resp[3] = 0x04
-		copy(resp[4:20], ip16)
-		binary.BigEndian.PutUint16(resp[20:], uint16(port))
-		_, err := conn.Write(resp)
-		return err
-	}
-
-	hostBytes := []byte(host)
-	if len(hostBytes) > 255 {
-		hostBytes = hostBytes[:255]
-	}
-	resp := make([]byte, 5+len(hostBytes)+2)
-	resp[0] = 0x05
-	resp[1] = rep
-	resp[2] = 0x00
-	resp[3] = 0x03
-	resp[4] = byte(len(hostBytes))
-	copy(resp[5:5+len(hostBytes)], hostBytes)
-	binary.BigEndian.PutUint16(resp[5+len(hostBytes):], uint16(port))
-	_, err = conn.Write(resp)
-	return err
-}
-
-func parseSocks5UDPDatagram(packet []byte) (targetAddr string, payload []byte, err error) {
-	if len(packet) < 10 {
-		return "", nil, errors.New("udp packet too short")
-	}
-	if packet[2] != 0x00 {
-		return "", nil, errors.New("fragmented udp packet is not supported")
-	}
-	offset := 3
-	var host string
-	switch packet[offset] {
-	case 0x01:
-		offset++
-		if len(packet) < offset+4+2 {
-			return "", nil, errors.New("invalid ipv4 udp packet")
-		}
-		host = net.IP(packet[offset : offset+4]).String()
-		offset += 4
-	case 0x03:
-		offset++
-		if len(packet) < offset+1 {
-			return "", nil, errors.New("invalid domain udp packet")
-		}
-		hLen := int(packet[offset])
-		offset++
-		if len(packet) < offset+hLen+2 {
-			return "", nil, errors.New("invalid domain udp packet")
-		}
-		host = string(packet[offset : offset+hLen])
-		offset += hLen
-	case 0x04:
-		offset++
-		if len(packet) < offset+16+2 {
-			return "", nil, errors.New("invalid ipv6 udp packet")
-		}
-		host = net.IP(packet[offset : offset+16]).String()
-		offset += 16
-	default:
-		return "", nil, errors.New("unsupported udp atyp")
-	}
-
-	port := binary.BigEndian.Uint16(packet[offset : offset+2])
-	offset += 2
-	return net.JoinHostPort(host, strconv.Itoa(int(port))), append([]byte(nil), packet[offset:]...), nil
-}
-
-func buildSocks5UDPDatagram(addr string, payload []byte) ([]byte, error) {
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 || port > 65535 {
-		return nil, errors.New("invalid udp port")
-	}
-
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	buf := make([]byte, 0, 64+len(payload))
-	buf = append(buf, 0x00, 0x00, 0x00)
-	if ip4 := ip.To4(); ip4 != nil {
-		buf = append(buf, 0x01)
-		buf = append(buf, ip4...)
-	} else if ip16 := ip.To16(); ip16 != nil {
-		buf = append(buf, 0x04)
-		buf = append(buf, ip16...)
-	} else {
-		hostBytes := []byte(host)
-		if len(hostBytes) > 255 {
-			return nil, errors.New("udp host too long")
-		}
-		buf = append(buf, 0x03, byte(len(hostBytes)))
-		buf = append(buf, hostBytes...)
-	}
-	buf = append(buf, 0x00, 0x00)
-	binary.BigEndian.PutUint16(buf[len(buf)-2:], uint16(port))
-	buf = append(buf, payload...)
-	return buf, nil
 }

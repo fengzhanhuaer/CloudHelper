@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"net"
@@ -29,139 +28,6 @@ func TestResolveControllerHostForProtection(t *testing.T) {
 	ipHost := resolveControllerHostForProtection("https://203.0.113.10:8443")
 	if ipHost != "203.0.113.10" {
 		t.Fatalf("unexpected ip host: %s", ipHost)
-	}
-}
-
-func TestShouldUseTUNCaptureForRuleMode(t *testing.T) {
-	service := &networkAssistantService{
-		tunEverEnabled:  true,
-		tunManualClosed: false,
-	}
-	if !service.shouldUseTUNCaptureForRuleMode() {
-		t.Fatal("expected tun capture to be preferred for rule mode")
-	}
-
-	service.tunManualClosed = true
-	if !service.shouldUseTUNCaptureForRuleMode() {
-		t.Fatal("expected tun capture to stay enabled after manual close")
-	}
-
-	service.tunEverEnabled = false
-	service.tunManualClosed = false
-	if !service.shouldUseTUNCaptureForRuleMode() {
-		t.Fatal("expected tun capture to stay enabled when never enabled")
-	}
-}
-
-func TestSocks5HandshakeNoAuth(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
-
-	respCh := make(chan []byte, 1)
-	errCh := make(chan error, 1)
-
-	go func() {
-		if _, err := client.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-			errCh <- err
-			return
-		}
-		buf := make([]byte, 2)
-		if _, err := client.Read(buf); err != nil {
-			errCh <- err
-			return
-		}
-		respCh <- buf
-	}()
-
-	if err := socks5Handshake(bufio.NewReader(server), server); err != nil {
-		t.Fatalf("socks5Handshake returned error: %v", err)
-	}
-
-	select {
-	case err := <-errCh:
-		t.Fatalf("client side error: %v", err)
-	case resp := <-respCh:
-		expect := []byte{0x05, 0x00}
-		if !bytes.Equal(resp, expect) {
-			t.Fatalf("unexpected handshake response: %v", resp)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for handshake response")
-	}
-}
-
-func TestSocks5ReadConnectRequestDomain(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
-
-	request := []byte{
-		0x05, 0x01, 0x00, 0x03,
-		0x0b,
-		'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
-		0x00, 0x50,
-	}
-
-	req, err := socks5ReadRequest(bufio.NewReader(bytes.NewReader(request)), server)
-	if err != nil {
-		t.Fatalf("socks5ReadRequest returned error: %v", err)
-	}
-	if req.Address != "example.com:80" {
-		t.Fatalf("unexpected target address: %s", req.Address)
-	}
-	if req.Cmd != 0x01 {
-		t.Fatalf("unexpected socks cmd: %d", req.Cmd)
-	}
-}
-
-func TestSocks4ReadConnectRequestIPv4(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
-
-	request := []byte{
-		0x04, 0x01,
-		0x00, 0x50,
-		0x5d, 0xb8, 0xd8, 0x22,
-		'u', 0x00,
-	}
-
-	req, err := socks4ReadRequest(bufio.NewReader(bytes.NewReader(request)), server)
-	if err != nil {
-		t.Fatalf("socks4ReadRequest returned error: %v", err)
-	}
-	if req.Address != "93.184.216.34:80" {
-		t.Fatalf("unexpected target address: %s", req.Address)
-	}
-	if req.Cmd != 0x01 {
-		t.Fatalf("unexpected socks cmd: %d", req.Cmd)
-	}
-}
-
-func TestSocks4ReadConnectRequestDomain(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
-
-	request := []byte{
-		0x04, 0x01,
-		0x01, 0xbb,
-		0x00, 0x00, 0x00, 0x01,
-		0x00,
-		'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
-		0x00,
-	}
-
-	req, err := socks4ReadRequest(bufio.NewReader(bytes.NewReader(request)), server)
-	if err != nil {
-		t.Fatalf("socks4ReadRequest returned error: %v", err)
-	}
-	if req.Address != "example.com:443" {
-		t.Fatalf("unexpected target address: %s", req.Address)
-	}
-	if req.Cmd != 0x01 {
-		t.Fatalf("unexpected socks cmd: %d", req.Cmd)
 	}
 }
 
@@ -288,7 +154,7 @@ func TestDecideRouteForTargetRuleModeByIP(t *testing.T) {
 		t.Fatalf("parse cidr: %v", err)
 	}
 	service := &networkAssistantService{
-		mode:           networkModeRule,
+		mode:           networkModeTUN,
 		nodeID:         "cloudserver",
 		availableNodes: []string{"cloudserver", "chain:test-chain"},
 		directWhitelist: &socksDirectWhitelist{
@@ -442,7 +308,7 @@ func TestDecideRouteForTargetRuleModeRejectMatchedGroup(t *testing.T) {
 		t.Fatalf("parse cidr: %v", err)
 	}
 	service := &networkAssistantService{
-		mode:   networkModeRule,
+		mode:   networkModeTUN,
 		nodeID: "cloudserver",
 		directWhitelist: &socksDirectWhitelist{
 			hosts: map[string]struct{}{},
@@ -470,7 +336,7 @@ func TestDecideRouteForTargetRuleModeRejectMatchedGroup(t *testing.T) {
 
 func TestDecideRouteForTargetRuleModeRejectFallback(t *testing.T) {
 	service := &networkAssistantService{
-		mode:   networkModeRule,
+		mode:   networkModeTUN,
 		nodeID: "cloudserver",
 		directWhitelist: &socksDirectWhitelist{
 			hosts: map[string]struct{}{},
@@ -496,7 +362,7 @@ func TestDecideRouteForTargetRuleModeRejectFallback(t *testing.T) {
 
 func TestDecideRouteForTargetRuleModeTunnelDomainKeepsDomainTarget(t *testing.T) {
 	service := &networkAssistantService{
-		mode:           networkModeRule,
+		mode:           networkModeTUN,
 		nodeID:         "cloudserver",
 		availableNodes: []string{"cloudserver", "chain:edge-a"},
 		directWhitelist: &socksDirectWhitelist{
@@ -538,7 +404,7 @@ func TestDecideRouteForTargetRuleModeTunnelDomainKeepsDomainTarget(t *testing.T)
 
 func TestDecideRouteForTargetUsesDNSRouteHintForIP(t *testing.T) {
 	service := &networkAssistantService{
-		mode:           networkModeRule,
+		mode:           networkModeTUN,
 		nodeID:         "cloudserver",
 		availableNodes: []string{"cloudserver", "chain:edge-a"},
 		directWhitelist: &socksDirectWhitelist{

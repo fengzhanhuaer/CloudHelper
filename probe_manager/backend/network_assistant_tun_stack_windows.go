@@ -451,7 +451,7 @@ func (n *localTUNNetstack) openOutboundUDP(targetAddr string) (io.ReadWriteClose
 			release()
 			return nil, route, resolveErr
 		}
-		conn, dialErr := net.DialUDP("udp", nil, udpAddr)
+		conn, dialErr := dialUDPWithRetry("udp", nil, udpAddr)
 		if dialErr != nil {
 			release()
 			return nil, route, dialErr
@@ -574,7 +574,7 @@ func classifyTUNRouteOpenFailure(route tunnelRouteDecision, err error) string {
 		return "tunnel_open_timeout"
 	case strings.Contains(errText, "only one usage of each socket address") || strings.Contains(errText, "address already in use"):
 		return "local_ephemeral_port_exhausted"
-	case strings.Contains(errText, "queue was full") || strings.Contains(errText, "no space left") || strings.Contains(errText, "sufficient buffer space"):
+	case strings.Contains(errText, "queue was full") || strings.Contains(errText, "no space left") || strings.Contains(errText, "sufficient buffer space") || strings.Contains(errText, "wsaenobufs"):
 		return "socket_buffer_exhausted"
 	case strings.Contains(errText, "network is unreachable") || strings.Contains(errText, "no route to host"):
 		return "route_unreachable"

@@ -68,38 +68,6 @@ func (s systemProxySnapshot) Summary() string {
 	return fmt.Sprintf("enable=%d server=%q autodetect=%d autoconfig=%q bypass=%q", s.ProxyEnable, s.ProxyServer, s.AutoDetect, s.AutoConfig, s.ProxyBypass)
 }
 
-func applySocks5SystemProxy(socksAddr string) error {
-	addr := strings.TrimSpace(socksAddr)
-	if addr == "" {
-		return fmt.Errorf("empty socks5 listen address")
-	}
-
-	key, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsRegistryPath, registry.SET_VALUE)
-	if err != nil {
-		return err
-	}
-	defer key.Close()
-
-	if err := key.SetDWordValue("ProxyEnable", 1); err != nil {
-		return err
-	}
-	if err := key.SetStringValue("ProxyServer", "http="+addr+";https="+addr+";socks="+addr); err != nil {
-		return err
-	}
-	if err := key.SetStringValue("ProxyOverride", "<local>"); err != nil {
-		return err
-	}
-	if err := key.SetDWordValue("AutoDetect", 0); err != nil {
-		return err
-	}
-	if err := key.SetStringValue("AutoConfigURL", ""); err != nil {
-		return err
-	}
-
-	refreshWindowsSystemProxy()
-	return nil
-}
-
 func restoreSystemProxy(snapshot systemProxySnapshot) error {
 	key, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsRegistryPath, registry.SET_VALUE)
 	if err != nil {

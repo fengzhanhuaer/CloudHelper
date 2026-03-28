@@ -248,7 +248,7 @@ export function useNetworkAssistant() {
       if (data.node_id) {
         setSelectedNode(data.node_id);
       }
-      if (data.mode === "rule") {
+      if (data.mode === "tun") {
         void refreshRuleConfig();
       }
     } catch (error) {
@@ -285,8 +285,8 @@ export function useNetworkAssistant() {
       setSelectedNode(data.node_id || nodeID);
       if (mode === "direct") {
         setOperateStatus("已切换为直连模式，并恢复系统 DNS/系统代理");
-      } else if (mode === "rule") {
-        setOperateStatus(data.tun_enabled ? "已切换为规则模式（TUN 分流）" : "已切换为规则模式（代理分流）");
+      } else if (mode === "tun") {
+        setOperateStatus("已切换为 TUN 模式（按规则分流）");
         void refreshRuleConfig();
       } else {
         setOperateStatus(`模式已切换：${mode}`);
