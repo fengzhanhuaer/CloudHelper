@@ -103,6 +103,14 @@ func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) 
 	return a.inner.SetNetworkAssistantRulePolicy(group, action, tunnelNodeID)
 }
 
+func (a *App) ForceRefreshProbeDNSCache(controllerBaseURL, sessionToken string) (string, error) {
+	return a.inner.ForceRefreshProbeDNSCache(controllerBaseURL, sessionToken)
+}
+
+func (a *App) ForceRefreshNetworkAssistantNodes(controllerBaseURL, sessionToken string) error {
+	return a.inner.ForceRefreshNetworkAssistantNodes(controllerBaseURL, sessionToken)
+}
+
 func (a *App) UploadNetworkAssistantRuleRoutes(controllerBaseURL, sessionToken string) (string, error) {
 	return a.inner.UploadNetworkAssistantRuleRoutes(controllerBaseURL, sessionToken)
 }
