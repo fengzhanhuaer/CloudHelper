@@ -110,6 +110,16 @@ type probeNodesResponse struct {
 	Nodes []probeNodeAdminItem `json:"nodes"`
 }
 
+type cloudflareDDNSRecordsResponse struct {
+	Records []cloudflareDDNSRecordItem `json:"records"`
+}
+
+type cloudflareDDNSRecordItem struct {
+	NodeNo      int    `json:"node_no"`
+	RecordClass string `json:"record_class"`
+	RecordName  string `json:"record_name"`
+}
+
 type probeLinkChainAdminItem struct {
 	Name           string   `json:"name"`
 	ChainID        string   `json:"chain_id"`
@@ -126,6 +136,16 @@ type probeLinkChainAdminItem struct {
 		DialMode     string `json:"dial_mode,omitempty"`
 		RelayHost    string `json:"relay_host,omitempty"`
 	} `json:"hop_configs"`
+	PortForwards []struct {
+		ID         string `json:"id,omitempty"`
+		Name       string `json:"name,omitempty"`
+		ListenHost string `json:"listen_host"`
+		ListenPort int    `json:"listen_port"`
+		TargetHost string `json:"target_host"`
+		TargetPort int    `json:"target_port"`
+		Network    string `json:"network,omitempty"`
+		Enabled    bool   `json:"enabled"`
+	} `json:"port_forwards"`
 }
 
 type probeNodeAdminItem struct {
@@ -1886,6 +1906,116 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 	return targets, ids, err
 }
 
+func normalizeBusinessDomainFromRelayHost(relayHost string) string {
+	host := strings.ToLower(normalizeHostValue(relayHost))
+	if !isDomainHostValue(host) {
+		return ""
+	}
+	if strings.HasPrefix(host, "api.") {
+		host = strings.TrimSpace(host[len("api."):])
+	}
+	if !isDomainHostValue(host) {
+		return ""
+	}
+	return host
+}
+
+func buildBusinessDomainByNodeIDFromCloudflareRecords(records []cloudflareDDNSRecordItem) map[string]string {
+	out := make(map[string]string)
+	for _, rec := range records {
+		if rec.NodeNo <= 0 {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(rec.RecordClass), "business") {
+			continue
+		}
+		nodeID := strconv.Itoa(rec.NodeNo)
+		if strings.TrimSpace(out[nodeID]) != "" {
+			continue
+		}
+		recordName := strings.TrimSpace(strings.ToLower(rec.RecordName))
+		if strings.HasPrefix(recordName, "api.") {
+			recordName = strings.TrimSpace(recordName[len("api."):])
+		}
+		domain := normalizeHostValue(recordName)
+		if !isDomainHostValue(domain) {
+			continue
+		}
+		out[nodeID] = domain
+	}
+	return out
+}
+
+func backfillProbeNodeDomainsFromChains(nodes []probeNodeAdminItem, businessDomainByNodeID map[string]string, chains []probeLinkChainAdminItem) []probeNodeAdminItem {
+	if len(nodes) == 0 {
+		return nodes
+	}
+	relayDomainByNodeID := make(map[string]string)
+	for _, chain := range chains {
+		for _, hop := range chain.HopConfigs {
+			if hop.NodeNo <= 0 {
+				continue
+			}
+			nodeID := strconv.Itoa(hop.NodeNo)
+			if strings.TrimSpace(nodeID) == "" {
+				continue
+			}
+			domain := normalizeBusinessDomainFromRelayHost(hop.RelayHost)
+			if domain == "" {
+				continue
+			}
+			if strings.TrimSpace(relayDomainByNodeID[nodeID]) == "" {
+				relayDomainByNodeID[nodeID] = domain
+			}
+		}
+	}
+
+	out := append([]probeNodeAdminItem(nil), nodes...)
+	for i := range out {
+		if out[i].NodeNo <= 0 {
+			continue
+		}
+		nodeID := strconv.Itoa(out[i].NodeNo)
+		domain := strings.TrimSpace(businessDomainByNodeID[nodeID])
+		if domain == "" {
+			domain = strings.TrimSpace(relayDomainByNodeID[nodeID])
+		}
+		if domain == "" {
+			continue
+		}
+		if strings.TrimSpace(out[i].BusinessDDNSFullDomain) == "" {
+			out[i].BusinessDDNSFullDomain = domain
+		}
+		if strings.TrimSpace(out[i].BusinessDDNS) == "" {
+			out[i].BusinessDDNS = domain
+		}
+		if strings.TrimSpace(out[i].DDNS) == "" {
+			out[i].DDNS = domain
+		}
+	}
+	return out
+}
+
+func buildProbeChainPortForwardsForManager(chain probeLinkChainAdminItem) []probeChainPortForward {
+	if len(chain.PortForwards) == 0 {
+		return nil
+	}
+	out := make([]probeChainPortForward, 0, len(chain.PortForwards))
+	for _, item := range chain.PortForwards {
+		out = append(out, probeChainPortForward{
+			ID:         strings.TrimSpace(item.ID),
+			Name:       strings.TrimSpace(item.Name),
+			ListenHost: strings.TrimSpace(item.ListenHost),
+			ListenPort: item.ListenPort,
+			TargetHost: strings.TrimSpace(item.TargetHost),
+			TargetPort: item.TargetPort,
+			Network:    strings.TrimSpace(item.Network),
+			Enabled:    item.Enabled,
+		})
+	}
+	return out
+}
+
 func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func(string, ...any)) (map[string]probeChainEndpoint, []string, []probeNodeAdminItem, error) {
 	wsURL, err := buildAdminWSURL(baseURL)
 	if err != nil {
@@ -1951,6 +2081,18 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("fetch probe nodes failed: %s", strings.TrimSpace(nodesResp.Error))
 	}
 
+	cfRecordsID := fmt.Sprintf("na-chain-cf-records-%d", time.Now().UnixNano())
+	if err := conn.WriteJSON(adminWSRequest{ID: cfRecordsID, Action: "admin.cloudflare.ddns.records"}); err != nil {
+		return map[string]probeChainEndpoint{}, nil, nil, err
+	}
+	cfRecordsResp, err := readAdminWSResponseByID(conn, cfRecordsID)
+	if err != nil {
+		return map[string]probeChainEndpoint{}, nil, nil, err
+	}
+	if !cfRecordsResp.OK {
+		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("fetch cloudflare ddns records failed: %s", strings.TrimSpace(cfRecordsResp.Error))
+	}
+
 	chainsPayload := probeLinkChainsResponse{}
 	if len(chainsResp.Data) > 0 {
 		if err := json.Unmarshal(chainsResp.Data, &chainsPayload); err != nil {
@@ -1963,6 +2105,15 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 			return map[string]probeChainEndpoint{}, nil, nil, err
 		}
 	}
+	cfRecordsPayload := cloudflareDDNSRecordsResponse{}
+	if len(cfRecordsResp.Data) > 0 {
+		if err := json.Unmarshal(cfRecordsResp.Data, &cfRecordsPayload); err != nil {
+			return map[string]probeChainEndpoint{}, nil, nil, err
+		}
+	}
+	businessDomainByNodeID := buildBusinessDomainByNodeIDFromCloudflareRecords(cfRecordsPayload.Records)
+
+	nodesPayload.Nodes = backfillProbeNodeDomainsFromChains(nodesPayload.Nodes, businessDomainByNodeID, chainsPayload.Items)
 
 	nodeByID := make(map[string]probeNodeAdminItem, len(nodesPayload.Nodes))
 	for _, item := range nodesPayload.Nodes {
@@ -2031,14 +2182,15 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 			continue
 		}
 		targets[targetID] = probeChainEndpoint{
-			TargetID:    targetID,
-			ChainName:   strings.TrimSpace(chain.Name),
-			ChainID:     chainID,
-			EntryNode:   entryNodeID,
-			EntryHost:   entryHost,
-			EntryPort:   entryPort,
-			LinkLayer:   resolveProbeChainEntryLinkLayer(chain, entryNodeID),
-			ChainSecret: strings.TrimSpace(chain.Secret),
+			TargetID:     targetID,
+			ChainName:    strings.TrimSpace(chain.Name),
+			ChainID:      chainID,
+			EntryNode:    entryNodeID,
+			EntryHost:    entryHost,
+			EntryPort:    entryPort,
+			LinkLayer:    resolveProbeChainEntryLinkLayer(chain, entryNodeID),
+			ChainSecret:  strings.TrimSpace(chain.Secret),
+			PortForwards: buildProbeChainPortForwardsForManager(chain),
 		}
 	}
 	sort.Strings(ids)

@@ -478,3 +478,104 @@ func TestParseLocalTUNUDPPacketRejectsNonUDP(t *testing.T) {
 		t.Fatal("expected parse error for non-udp packet")
 	}
 }
+
+func TestBuildProbeChainPortForwardsForManager(t *testing.T) {
+	chain := probeLinkChainAdminItem{
+		PortForwards: []struct {
+			ID         string `json:"id,omitempty"`
+			Name       string `json:"name,omitempty"`
+			ListenHost string `json:"listen_host"`
+			ListenPort int    `json:"listen_port"`
+			TargetHost string `json:"target_host"`
+			TargetPort int    `json:"target_port"`
+			Network    string `json:"network,omitempty"`
+			Enabled    bool   `json:"enabled"`
+		}{
+			{
+				ID:         " pf-1 ",
+				Name:       " edge ",
+				ListenHost: " 0.0.0.0 ",
+				ListenPort: 18080,
+				TargetHost: " 10.0.0.8 ",
+				TargetPort: 8080,
+				Network:    " tcp ",
+				Enabled:    true,
+			},
+		},
+	}
+
+	out := buildProbeChainPortForwardsForManager(chain)
+	if len(out) != 1 {
+		t.Fatalf("port forwards len=%d, want 1", len(out))
+	}
+	if out[0].ID != "pf-1" {
+		t.Fatalf("id=%q, want pf-1", out[0].ID)
+	}
+	if out[0].Name != "edge" {
+		t.Fatalf("name=%q, want edge", out[0].Name)
+	}
+	if out[0].ListenHost != "0.0.0.0" {
+		t.Fatalf("listen_host=%q, want 0.0.0.0", out[0].ListenHost)
+	}
+	if out[0].TargetHost != "10.0.0.8" {
+		t.Fatalf("target_host=%q, want 10.0.0.8", out[0].TargetHost)
+	}
+	if out[0].Network != "tcp" {
+		t.Fatalf("network=%q, want tcp", out[0].Network)
+	}
+	if !out[0].Enabled {
+		t.Fatal("enabled=false, want true")
+	}
+}
+
+func TestBackfillProbeNodeDomainsFromChains(t *testing.T) {
+	nodes := []probeNodeAdminItem{
+		{NodeNo: 1, DDNS: "", ServiceHost: "", BusinessDDNS: "", BusinessDDNSFullDomain: ""},
+		{NodeNo: 2, DDNS: "node2.ddns.example.com", ServiceHost: "", BusinessDDNS: "", BusinessDDNSFullDomain: ""},
+	}
+	businessDomainByNodeID := map[string]string{
+		"1": "cf-biz.example.com",
+		"2": "cf-biz2.example.com",
+	}
+	chains := []probeLinkChainAdminItem{
+		{
+			ChainID: "chain-a",
+			HopConfigs: []struct {
+				NodeNo       int    `json:"node_no"`
+				ListenPort   int    `json:"listen_port,omitempty"`
+				ExternalPort int    `json:"external_port,omitempty"`
+				LinkLayer    string `json:"link_layer"`
+				DialMode     string `json:"dial_mode,omitempty"`
+				RelayHost    string `json:"relay_host,omitempty"`
+			}{
+				{NodeNo: 1, RelayHost: "api.biz.example.com"},
+				{NodeNo: 2, RelayHost: "api.biz2.example.com"},
+			},
+		},
+	}
+
+	out := backfillProbeNodeDomainsFromChains(nodes, businessDomainByNodeID, chains)
+	if len(out) != 2 {
+		t.Fatalf("nodes len=%d, want 2", len(out))
+	}
+
+	if out[0].BusinessDDNS != "cf-biz.example.com" {
+		t.Fatalf("node1 business_ddns=%q, want cf-biz.example.com", out[0].BusinessDDNS)
+	}
+	if out[0].BusinessDDNSFullDomain != "cf-biz.example.com" {
+		t.Fatalf("node1 business_ddns_full_domain=%q, want cf-biz.example.com", out[0].BusinessDDNSFullDomain)
+	}
+	if out[0].DDNS != "cf-biz.example.com" {
+		t.Fatalf("node1 ddns=%q, want cf-biz.example.com", out[0].DDNS)
+	}
+
+	if out[1].BusinessDDNS != "cf-biz2.example.com" {
+		t.Fatalf("node2 business_ddns=%q, want cf-biz2.example.com", out[1].BusinessDDNS)
+	}
+	if out[1].BusinessDDNSFullDomain != "cf-biz2.example.com" {
+		t.Fatalf("node2 business_ddns_full_domain=%q, want cf-biz2.example.com", out[1].BusinessDDNSFullDomain)
+	}
+	if out[1].DDNS != "node2.ddns.example.com" {
+		t.Fatalf("node2 ddns=%q, want keep original node2.ddns.example.com", out[1].DDNS)
+	}
+}
