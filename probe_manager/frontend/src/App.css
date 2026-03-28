@@ -476,6 +476,39 @@
     margin-left: 0;
 }
 
+.btn-danger {
+    border-color: rgba(255, 100, 100, 0.45);
+    color: #ffb3b3;
+}
+
+.btn-danger:hover:enabled {
+    background: rgba(110, 30, 30, 0.7);
+    border-color: rgba(255, 120, 120, 0.7);
+}
+
+.probe-deleted-section-title {
+    margin-top: 8px;
+    margin-bottom: 4px;
+    font-size: 13px;
+    color: #8faec4;
+    font-weight: 600;
+    padding: 6px 2px;
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.probe-table-deleted {
+    opacity: 0.72;
+}
+
+.probe-table-deleted thead th {
+    background: rgba(20, 26, 36, 0.55);
+    color: #8faec4;
+}
+
+.probe-table-deleted .probe-table-name {
+    color: #aac0d8;
+}
+
 .probe-node-card {
     border: 1px solid rgba(255, 255, 255, 0.15);
     background: rgba(7, 11, 18, 0.35);

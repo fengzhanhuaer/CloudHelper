@@ -129,3 +129,15 @@ export function UpgradeManagerDirect(arg1) {
 export function UpgradeManagerViaProxy(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpgradeManagerViaProxy'](arg1, arg2, arg3);
 }
+
+export function GetDeletedProbeNodeNos() {
+  return window['go']['main']['App']['GetDeletedProbeNodeNos']();
+}
+
+export function MarkProbeNodeDeleted(arg1) {
+  return window['go']['main']['App']['MarkProbeNodeDeleted'](arg1);
+}
+
+export function RestoreDeletedProbeNode(arg1) {
+  return window['go']['main']['App']['RestoreDeletedProbeNode'](arg1);
+}

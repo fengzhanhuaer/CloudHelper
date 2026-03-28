@@ -412,20 +412,17 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 		resolvedChainID = candidateChainIDs[0]
 	}
 
-	warnBuf := make([]string, 0)
-	targets, _, err := fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
-		warnBuf = append(warnBuf, fmt.Sprintf(format, args...))
-	})
-	if err != nil {
-		return ProbeChainPingResult{}, fmt.Errorf("fetch chain targets failed: %w", err)
-	}
+	// 优先使用内存缓存（启动时从 probe_nodes_cache.json 加载，运行时由 refreshAvailableNodes 刷新）。
+	// 避免每次测试都发起 WebSocket 请求到主控。
+	a.networkAssistant.mu.RLock()
+	cachedTargets := copyProbeChainTargets(a.networkAssistant.chainTargets)
+	a.networkAssistant.mu.RUnlock()
 
-	// Find the target matching our chain_id.
 	var endpoint probeChainEndpoint
 	found := false
 	for _, candidateID := range candidateChainIDs {
 		if key := buildChainTargetNodeID(candidateID); key != "" {
-			if item, ok := targets[key]; ok {
+			if item, ok := cachedTargets[key]; ok {
 				endpoint = item
 				resolvedChainID = strings.TrimSpace(item.ChainID)
 				found = true
@@ -442,7 +439,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 			}
 			candidateSet[clean] = struct{}{}
 		}
-		for _, t := range targets {
+		for _, t := range cachedTargets {
 			if _, ok := candidateSet[strings.ToLower(strings.TrimSpace(t.ChainID))]; ok {
 				endpoint = t
 				resolvedChainID = strings.TrimSpace(t.ChainID)
@@ -451,6 +448,48 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 			}
 		}
 	}
+
+	// 缓存未命中时回退到联主控实时拉取（如 chain 刚创建尚未刷新缓存）。
+	warnBuf := make([]string, 0)
+	if !found {
+		var remoteFetchErr error
+		var remoteTargets map[string]probeChainEndpoint
+		remoteTargets, _, _, remoteFetchErr = fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
+			warnBuf = append(warnBuf, fmt.Sprintf(format, args...))
+		})
+		if remoteFetchErr != nil {
+			return ProbeChainPingResult{}, fmt.Errorf("fetch chain targets failed: %w", remoteFetchErr)
+		}
+		for _, candidateID := range candidateChainIDs {
+			if key := buildChainTargetNodeID(candidateID); key != "" {
+				if item, ok := remoteTargets[key]; ok {
+					endpoint = item
+					resolvedChainID = strings.TrimSpace(item.ChainID)
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			candidateSet := make(map[string]struct{}, len(candidateChainIDs))
+			for _, candidateID := range candidateChainIDs {
+				clean := strings.ToLower(strings.TrimSpace(candidateID))
+				if clean == "" {
+					continue
+				}
+				candidateSet[clean] = struct{}{}
+			}
+			for _, t := range remoteTargets {
+				if _, ok := candidateSet[strings.ToLower(strings.TrimSpace(t.ChainID))]; ok {
+					endpoint = t
+					resolvedChainID = strings.TrimSpace(t.ChainID)
+					found = true
+					break
+				}
+			}
+		}
+	}
+
 	if !found {
 		if !explicitChainTarget && containsNodeID(availableNodes, targetID) {
 			return pingNetworkAssistantTunnelNode(a.networkAssistant, baseURL, token, targetID)
@@ -462,6 +501,21 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	}
 
 	startedAt := time.Now()
+
+	// 优先复用已有 mux 连接（yamux Ping，不走 relay hop）
+	if rtt, ok := a.networkAssistant.tryPingExistingMux(endpoint.TargetID); ok {
+		return ProbeChainPingResult{
+			OK:         true,
+			ChainID:    resolvedChainID,
+			EntryHost:  endpoint.EntryHost,
+			EntryPort:  endpoint.EntryPort,
+			LinkLayer:  endpoint.LinkLayer,
+			DurationMS: rtt.Milliseconds(),
+			Message:    fmt.Sprintf("连接成功（已有连接）(%dms)", rtt.Milliseconds()),
+		}, nil
+	}
+
+	// 无已有连接：新建 relay hop 测延迟
 	hop, err := openProbeChainRelayHop(endpoint)
 	elapsed := time.Since(startedAt)
 	if err != nil {
@@ -474,7 +528,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 			Message:   fmt.Sprintf("连接失败: %v", err),
 		}, nil
 	}
-	// Close immediately — we only care about whether the connection can be established.
+	// 关闭测试连接——只关心是否可达
 	if hop.CloseFn != nil {
 		_ = hop.CloseFn()
 	}
@@ -553,6 +607,21 @@ func pingNetworkAssistantTunnelNode(service *networkAssistantService, baseURL, t
 	if trimmedNodeID == "" {
 		return ProbeChainPingResult{}, fmt.Errorf("node_id is required")
 	}
+
+	// 优先复用已有 mux 连接（yamux Ping）
+	if service != nil {
+		if rtt, ok := service.tryPingExistingMux(trimmedNodeID); ok {
+			return ProbeChainPingResult{
+				OK:         true,
+				ChainID:    trimmedNodeID,
+				LinkLayer:  "ws",
+				DurationMS: rtt.Milliseconds(),
+				Message:    fmt.Sprintf("连接成功（已有连接）(%dms)", rtt.Milliseconds()),
+			}, nil
+		}
+	}
+
+	// 无已有连接：回退到新建 mux 测延迟
 	if service != nil {
 		if err := service.ensureControlPlaneDialReady(baseURL); err != nil {
 			return ProbeChainPingResult{}, fmt.Errorf("prepare controller route failed: %w", err)

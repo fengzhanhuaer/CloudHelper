@@ -138,12 +138,22 @@ resolve_platform() {
 }
 
 detect_service_impl() {
-  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+  if [[ "${RUNTIME_MODE}" == "manual" ]]; then
+    SERVICE_IMPL="manual"
+  elif [[ "${RUNTIME_MODE}" == "systemd" ]]; then
     SERVICE_IMPL="systemd"
-  elif command -v rc-service >/dev/null 2>&1 && [[ -d /etc/init.d ]]; then
+  elif [[ "${RUNTIME_MODE}" == "openrc" ]]; then
     SERVICE_IMPL="openrc"
+  elif [[ "${RUNTIME_MODE}" == "auto" ]]; then
+    if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+      SERVICE_IMPL="systemd"
+    elif command -v rc-service >/dev/null 2>&1 && [[ -d /etc/init.d ]]; then
+      SERVICE_IMPL="openrc"
+    else
+      SERVICE_IMPL="manual"
+    fi
   else
-    die "no supported service manager detected (need systemd or openrc)"
+    die "invalid RUNTIME_MODE: ${RUNTIME_MODE}"
   fi
 
   log "runtime mode selected: ${SERVICE_IMPL}"

@@ -324,13 +324,23 @@ export function useUpgradeFlow() {
       setControllerVersion(data.current_version || controllerVersion);
       setControllerLatestVersion(data.latest_version || "");
       setUpgradeStatus(data.message || "升级命令执行完成");
-      appendUpgradeLog(
-        setControllerUpgradeMessages,
-        `主控升级命令返回：updated=${data.updated ? "true" : "false"} current=${data.current_version || "-"} latest=${data.latest_version || "-"}`,
-      );
       if (data.updated) {
+        appendUpgradeLog(
+          setControllerUpgradeMessages,
+          `主控升级完成：current=${data.current_version || "-"} latest=${data.latest_version || "-"}`,
+        );
         setVersionStatus("主控二进制已替换，服务正在重启，请稍后刷新版本");
         appendUpgradeLog(setControllerUpgradeMessages, "主控升级成功：二进制已替换，等待服务重启");
+      } else {
+        // 后端立即返回"已发起"信号时 updated=false、latest_version 为空属正常情况
+        // 真正的升级结果通过进度轮询（fetchControllerUpgradeProgress）获取
+        const isStarted = !data.latest_version && (data.message || "").toLowerCase().includes("started");
+        appendUpgradeLog(
+          setControllerUpgradeMessages,
+          isStarted
+            ? `主控升级任务已发起：current=${data.current_version || "-"}，正在后台执行，请等待进度更新`
+            : `主控升级命令返回：updated=false current=${data.current_version || "-"} latest=${data.latest_version || "-"} msg=${data.message || "-"}`,
+        );
       }
     } catch (error) {
       if (isControllerUpgradeTransientError(error)) {

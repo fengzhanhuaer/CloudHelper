@@ -164,8 +164,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
     } else {
       setChainStatus("未找到本地链路缓存，请点击“从主控获取链路”");
     }
-    void loadChainUsers();
-    void loadNodes();
+    // 移除自动网络请求，仅使用本地缓存
   }, [props.controllerBaseUrl, props.sessionToken]);
 
   const handlePingChain = async (chainID: string) => {
@@ -719,12 +718,19 @@ export function LinkManageTab(props: LinkManageTabProps) {
       return;
     }
     setIsLoadingChains(true);
+    setChainStatus("正在从主控获取链路...");
     try {
       const items = await fetchProbeLinkChains(props.controllerBaseUrl, props.sessionToken);
       const sorted = sortProbeLinkChains(items);
       setChains(sorted);
       writeProbeLinkChainCache(sorted);
       setChainStatus(`已从主控获取链路（${sorted.length} 条）`);
+      const invoke = (window as any)?.go?.main?.App?.ForceRefreshNetworkAssistantNodes;
+      if (typeof invoke === "function") {
+        await invoke(props.controllerBaseUrl, props.sessionToken).catch(() => {});
+      }
+      void loadChainUsers();
+      void loadNodes();
     } catch (error) {
       const msg = errorToMessage(error);
       setChainStatus(`从主控获取链路失败：${msg}`);

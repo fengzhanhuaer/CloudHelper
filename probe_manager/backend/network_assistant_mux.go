@@ -638,6 +638,14 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 	}
 }
 
+// ping 通过 yamux 内置 Ping 测量到对端的往返延迟，不开新 stream，不影响业务流量。
+func (c *tunnelMuxClient) ping() (time.Duration, error) {
+	if c.isClosed() {
+		return 0, errors.New("tunnel mux connection closed")
+	}
+	return c.session.Ping()
+}
+
 func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream, error) {
 	if c.isClosed() {
 		return nil, errors.New("tunnel mux connection closed")
@@ -817,7 +825,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		if baseURLForRefresh != "" && tokenForRefresh != "" {
 			s.mu.Unlock()
 			s.logf("chain target not in cache, refreshing from server: node=%s", targetNodeID)
-			_ = s.refreshAvailableNodes()
+			_ = s.refreshAvailableNodes(false)
 			_ = s.ensureControlPlaneDialReady(baseURLForRefresh)
 			s.mu.Lock()
 			chainTarget, hasChainTarget = s.chainTargets[targetNodeID]
