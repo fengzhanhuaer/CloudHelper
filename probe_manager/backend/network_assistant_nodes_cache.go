@@ -24,9 +24,11 @@ type nodesCachePayload struct {
 
 // nodesCacheProbeNode 是 probeNodeAdminItem 的可序列化镜像（仅静态配置字段）。
 type nodesCacheProbeNode struct {
-	NodeNo      int    `json:"node_no"`
-	DDNS        string `json:"ddns"`
-	ServiceHost string `json:"service_host"`
+	NodeNo                 int    `json:"node_no"`
+	DDNS                   string `json:"ddns"`
+	ServiceHost            string `json:"service_host"`
+	BusinessDDNS           string `json:"business_ddns,omitempty"`
+	BusinessDDNSFullDomain string `json:"business_ddns_full_domain,omitempty"`
 }
 
 // nodesCacheEndpoint 是 probeChainEndpoint 的可序列化镜像（字段全部可导出）。
@@ -133,9 +135,11 @@ func saveNodesCacheToFile(nodes []string, chainTargets map[string]probeChainEndp
 			continue
 		}
 		cacheProbeNodes = append(cacheProbeNodes, nodesCacheProbeNode{
-			NodeNo:      n.NodeNo,
-			DDNS:        n.DDNS,
-			ServiceHost: n.ServiceHost,
+			NodeNo:                 n.NodeNo,
+			DDNS:                   n.DDNS,
+			ServiceHost:            n.ServiceHost,
+			BusinessDDNS:           n.BusinessDDNS,
+			BusinessDDNSFullDomain: n.BusinessDDNSFullDomain,
 		})
 	}
 
@@ -192,9 +196,11 @@ func loadNodesCacheFromFile() (nodes []string, chainTargets map[string]probeChai
 			continue
 		}
 		adminNodes = append(adminNodes, probeNodeAdminItem{
-			NodeNo:      n.NodeNo,
-			DDNS:        n.DDNS,
-			ServiceHost: n.ServiceHost,
+			NodeNo:                 n.NodeNo,
+			DDNS:                   n.DDNS,
+			ServiceHost:            n.ServiceHost,
+			BusinessDDNS:           n.BusinessDDNS,
+			BusinessDDNSFullDomain: n.BusinessDDNSFullDomain,
 		})
 	}
 

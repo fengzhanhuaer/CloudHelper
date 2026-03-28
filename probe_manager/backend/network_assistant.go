@@ -129,9 +129,11 @@ type probeLinkChainAdminItem struct {
 }
 
 type probeNodeAdminItem struct {
-	NodeNo      int    `json:"node_no"`
-	DDNS        string `json:"ddns"`
-	ServiceHost string `json:"service_host"`
+	NodeNo                 int    `json:"node_no"`
+	DDNS                   string `json:"ddns"`
+	ServiceHost            string `json:"service_host"`
+	BusinessDDNS           string `json:"business_ddns"`
+	BusinessDDNSFullDomain string `json:"business_ddns_full_domain"`
 }
 
 type probeChainPortForward struct {
@@ -1480,7 +1482,12 @@ func isCredentialMissingErr(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "missing controller url or session token")
 }
 
-func (s *networkAssistantService) refreshAvailableNodes(_ ...bool) error {
+func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
+	forceRemote := false
+	if len(options) > 0 {
+		forceRemote = options[0]
+	}
+
 	s.mu.RLock()
 	baseURL := strings.TrimSpace(s.controllerBaseURL)
 	token := strings.TrimSpace(s.sessionToken)
@@ -1489,22 +1496,43 @@ func (s *networkAssistantService) refreshAvailableNodes(_ ...bool) error {
 	if baseURL == "" || token == "" {
 		return errors.New("controller url and session token are required")
 	}
+
+	if !forceRemote {
+		cachedNodes, cachedTargets, _, cacheErr := loadNodesCacheFromFile()
+		if cacheErr == nil && len(cachedNodes) > 0 {
+			nodes := append([]string(nil), cachedNodes...)
+			if !containsNodeID(nodes, defaultNodeID) {
+				nodes = append(nodes, defaultNodeID)
+			}
+			s.mu.Lock()
+			s.availableNodes = nodes
+			s.chainTargets = copyProbeChainTargets(cachedTargets)
+			if !containsNodeID(nodes, s.nodeID) {
+				s.nodeID = nodes[0]
+			}
+			s.mu.Unlock()
+			return nil
+		}
+		if cacheErr != nil {
+			s.logf("load local nodes cache failed: %v", cacheErr)
+		}
+		return errors.New("local chain cache is empty, please click from-controller fetch")
+	}
+
 	if err := s.ensureControlPlaneDialReady(baseURL); err != nil {
 		return err
 	}
 
-	chainTargets, chainNodes, chainErr := fetchProbeChainTargetsViaAdminWS(baseURL, token, s.logf)
+	chainTargets, chainNodes, probeNodes, chainErr := fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token, s.logf)
 	nodes := make([]string, 0, len(chainNodes)+1)
 	if chainErr == nil && len(chainNodes) > 0 {
 		nodes = append(nodes, chainNodes...)
 	}
-	if !containsNodeID(nodes, defaultNodeID) {
-		nodes = append(nodes, defaultNodeID)
-	}
-	if len(nodes) == 0 {
+	// Fall back to regular tunnel node list when chain list is unavailable or empty.
+	if chainErr != nil || len(nodes) == 0 {
 		payload, err := fetchTunnelNodesViaAdminWS(baseURL, token)
 		if err != nil {
-			if chainErr != nil {
+			if chainErr != nil && len(nodes) == 0 {
 				return chainErr
 			}
 			return err
@@ -1519,18 +1547,34 @@ func (s *networkAssistantService) refreshAvailableNodes(_ ...bool) error {
 			}
 			nodes = append(nodes, id)
 		}
-		if len(nodes) == 0 {
-			nodes = []string{defaultNodeID}
-		}
+	}
+	if !containsNodeID(nodes, defaultNodeID) {
+		nodes = append(nodes, defaultNodeID)
+	}
+	if len(nodes) == 0 {
+		nodes = []string{defaultNodeID}
 	}
 
 	s.mu.Lock()
+	if chainErr == nil {
+		s.chainTargets = chainTargets
+	} else {
+		// Keep prior chain cache on transient controller failures to avoid UI option loss.
+		s.logf("refresh chain targets failed, keep cached chain targets: %v", chainErr)
+		for nodeID := range s.chainTargets {
+			if !containsNodeID(nodes, nodeID) {
+				nodes = append(nodes, nodeID)
+			}
+		}
+	}
 	s.availableNodes = nodes
-	s.chainTargets = chainTargets
 	if !containsNodeID(nodes, s.nodeID) {
 		s.nodeID = nodes[0]
 	}
 	s.mu.Unlock()
+	if saveErr := saveNodesCacheToFile(nodes, s.getChainTargetsSnapshot(), probeNodes); saveErr != nil {
+		s.logf("save local nodes cache failed: %v", saveErr)
+	}
 	return nil
 }
 
@@ -1796,12 +1840,22 @@ func isLikelyAPIDomainHostValue(host string) bool {
 
 func selectProbeChainEntryHost(node probeNodeAdminItem) string {
 	ddns := normalizeHostValue(node.DDNS)
+	businessFull := normalizeHostValue(node.BusinessDDNSFullDomain)
+	business := normalizeHostValue(node.BusinessDDNS)
 	var candidates []string
+	if businessFull != "" && isDomainHostValue(businessFull) && !isLikelyAPIDomainHostValue(businessFull) {
+		candidates = append(candidates, "api."+businessFull)
+	}
+	if business != "" && isDomainHostValue(business) && !isLikelyAPIDomainHostValue(business) {
+		candidates = append(candidates, "api."+business)
+	}
 	// If DDNS is a plain domain (not api.*), construct api.<ddns> as the preferred relay host.
 	if ddns != "" && isDomainHostValue(ddns) && !isLikelyAPIDomainHostValue(ddns) {
 		candidates = append(candidates, "api."+ddns)
 	}
 	candidates = append(candidates,
+		businessFull,
+		business,
 		ddns,
 		normalizeHostValue(node.ServiceHost),
 	)
@@ -1823,9 +1877,14 @@ func selectProbeChainEntryHost(node probeNodeAdminItem) string {
 // relay_port at node level is deprecated; port is always resolved from hop_config.external_port.
 
 func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, ...any)) (map[string]probeChainEndpoint, []string, error) {
+	targets, ids, _, err := fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token, warnf)
+	return targets, ids, err
+}
+
+func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func(string, ...any)) (map[string]probeChainEndpoint, []string, []probeNodeAdminItem, error) {
 	wsURL, err := buildAdminWSURL(baseURL)
 	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
@@ -1836,67 +1895,67 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 		if resp != nil {
 			defer resp.Body.Close()
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-			return map[string]probeChainEndpoint{}, nil, fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+			return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 		}
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	defer conn.Close()
 
 	deadline := time.Now().Add(12 * time.Second)
 	if err := conn.SetReadDeadline(deadline); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	if err := conn.SetWriteDeadline(deadline); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 
 	authID := fmt.Sprintf("na-chain-auth-%d", time.Now().UnixNano())
 	authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": strings.TrimSpace(token)}}
 	if err := conn.WriteJSON(authReq); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	authResp, err := readAdminWSResponseByID(conn, authID)
 	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	if !authResp.OK {
-		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
+		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
 	}
 
 	chainsID := fmt.Sprintf("na-chain-items-%d", time.Now().UnixNano())
 	if err := conn.WriteJSON(adminWSRequest{ID: chainsID, Action: "admin.probe.link.chains.get"}); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	chainsResp, err := readAdminWSResponseByID(conn, chainsID)
 	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	if !chainsResp.OK {
-		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("fetch chain list failed: %s", strings.TrimSpace(chainsResp.Error))
+		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("fetch chain list failed: %s", strings.TrimSpace(chainsResp.Error))
 	}
 
 	nodesID := fmt.Sprintf("na-chain-nodes-%d", time.Now().UnixNano())
 	if err := conn.WriteJSON(adminWSRequest{ID: nodesID, Action: "admin.probe.nodes.get"}); err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	nodesResp, err := readAdminWSResponseByID(conn, nodesID)
 	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, err
+		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 	if !nodesResp.OK {
-		return map[string]probeChainEndpoint{}, nil, fmt.Errorf("fetch probe nodes failed: %s", strings.TrimSpace(nodesResp.Error))
+		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("fetch probe nodes failed: %s", strings.TrimSpace(nodesResp.Error))
 	}
 
 	chainsPayload := probeLinkChainsResponse{}
 	if len(chainsResp.Data) > 0 {
 		if err := json.Unmarshal(chainsResp.Data, &chainsPayload); err != nil {
-			return map[string]probeChainEndpoint{}, nil, err
+			return map[string]probeChainEndpoint{}, nil, nil, err
 		}
 	}
 	nodesPayload := probeNodesResponse{}
 	if len(nodesResp.Data) > 0 {
 		if err := json.Unmarshal(nodesResp.Data, &nodesPayload); err != nil {
-			return map[string]probeChainEndpoint{}, nil, err
+			return map[string]probeChainEndpoint{}, nil, nil, err
 		}
 	}
 
@@ -1978,7 +2037,7 @@ func fetchProbeChainTargetsViaAdminWS(baseURL, token string, warnf func(string, 
 		}
 	}
 	sort.Strings(ids)
-	return targets, ids, nil
+	return targets, ids, nodesPayload.Nodes, nil
 }
 
 func containsNodeID(nodes []string, target string) bool {
