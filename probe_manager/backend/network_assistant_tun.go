@@ -339,10 +339,7 @@ func (s *networkAssistantService) EnableTUN() error {
 		return err
 	}
 	if err := s.applyTUNSystemRouting(effectiveBase); err != nil {
-		_ = s.stopLocalTUNDataPlane()
-		_ = s.clearTUNSystemRouting()
-		s.setLastError(err)
-		return err
+		return s.fallbackToDirectModeOnTUNRoutingFailure("enable tun: apply direct routes failed", err)
 	}
 
 	s.mu.Lock()
@@ -367,5 +364,45 @@ func (s *networkAssistantService) EnableTUN() error {
 	}
 
 	s.logf("switched mode to tun, library=%s", libraryPath)
+	return nil
+}
+
+func (s *networkAssistantService) fallbackToDirectModeOnTUNRoutingFailure(context string, cause error) error {
+	errStopTUN := s.stopLocalTUNDataPlane()
+	errTunRouting := s.clearTUNSystemRouting()
+	errStopMux := s.stopTunnelMuxClients()
+	errDirectProxy := applyDirectSystemProxy()
+	cleanupErr := errors.Join(errStopTUN, errTunRouting, errStopMux, errDirectProxy)
+
+	pref := tunPreferenceState{}
+	s.mu.Lock()
+	pref = tunPreferenceState{EverEnabled: s.tunEverEnabled, ManualClosed: s.tunManualClosed}
+	s.mode = networkModeDirect
+	s.tunnelStatusMessage = "直连模式"
+	s.systemProxyMessage = "已清除系统代理并恢复系统 DNS（直连）"
+	s.tunnelOpenFailures = 0
+	s.tunEnabled = false
+	s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
+	s.mu.Unlock()
+
+	if err := saveTUNPreferenceState(pref); err != nil {
+		s.logf("failed to persist tun preference state during fallback: %v", err)
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+
+	finalErr := cause
+	if cleanupErr != nil {
+		if finalErr != nil {
+			finalErr = errors.Join(finalErr, cleanupErr)
+		} else {
+			finalErr = cleanupErr
+		}
+	}
+	if finalErr != nil {
+		s.setLastError(finalErr)
+		s.logf("%s, switched to direct mode: %v", context, finalErr)
+		return finalErr
+	}
+	s.logf("%s, switched to direct mode", context)
 	return nil
 }

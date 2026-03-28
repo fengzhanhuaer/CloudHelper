@@ -92,7 +92,12 @@ func (s *networkAssistantService) ensureControlPlaneDialReady(controllerBaseURL 
 	err := s.applyTUNSystemRouting(baseURL)
 	s.mu.Lock()
 	s.tunRouteSyncing = false
+	mode = s.mode
+	tunEnabled = s.tunEnabled
 	s.mu.Unlock()
+	if err != nil && mode == networkModeTUN && tunEnabled {
+		return s.fallbackToDirectModeOnTUNRoutingFailure("refresh tun direct routes failed", err)
+	}
 	return err
 }
 
