@@ -1007,6 +1007,30 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			return nil, err
 		}
 		return result, nil
+	case "admin.cloudflare.zerotrust.whitelist.get":
+		return getCloudflareZeroTrustWhitelist(), nil
+	case "admin.cloudflare.zerotrust.whitelist.set":
+		var req cloudflareZeroTrustWhitelistRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		result, err := setCloudflareZeroTrustWhitelist(req)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	case "admin.cloudflare.zerotrust.whitelist.run":
+		var req cloudflareZeroTrustRunRequest
+		if len(payload) > 0 {
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, fmt.Errorf("invalid payload")
+			}
+		}
+		result, err := runCloudflareZeroTrustWhitelistSync(req.Force)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
 	case "admin.tg.accounts.list":
 		return map[string]interface{}{
 			"accounts": listTGAssistantAccounts(),

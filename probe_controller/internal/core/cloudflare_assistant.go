@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,8 +22,11 @@ import (
 )
 
 const (
-	cloudflareStoreFile                 = "cloudflare.json"
-	cloudflareManagedBusinessNamePrefix = "api.codex."
+	cloudflareStoreFile                         = "cloudflare.json"
+	cloudflareManagedBusinessNamePrefix         = "api.codex."
+	cloudflareZeroTrustDefaultSyncIntervalSec   = 300
+	cloudflareZeroTrustMinSyncIntervalSec       = 30
+	cloudflareZeroTrustSchedulerTickIntervalSec = 15
 )
 
 var cloudflareManagedLabelPrefixes = [...]string{"ddns_go_", "local_go_"}
@@ -34,9 +38,64 @@ type cloudflareStore struct {
 }
 
 type cloudflareStoreData struct {
-	APIToken string                 `json:"api_token"`
-	ZoneName string                 `json:"zone_name"`
-	Records  []cloudflareDDNSRecord `json:"records"`
+	APIToken          string                               `json:"api_token"`
+	ZoneName          string                               `json:"zone_name"`
+	Records           []cloudflareDDNSRecord               `json:"records"`
+	ZeroTrust         cloudflareZeroTrustWhitelistConfig   `json:"zerotrust_whitelist"`
+	ZeroTrustLastSync cloudflareZeroTrustWhitelistSyncInfo `json:"zerotrust_last_sync"`
+}
+
+type cloudflareZeroTrustWhitelistConfig struct {
+	Enabled         bool   `json:"enabled"`
+	PolicyName      string `json:"policy_name"`
+	WhitelistRaw    string `json:"whitelist_raw"`
+	SyncIntervalSec int    `json:"sync_interval_sec"`
+}
+
+type cloudflareZeroTrustWhitelistSyncInfo struct {
+	Running         bool     `json:"running"`
+	LastRunAt       string   `json:"last_run_at"`
+	LastSuccessAt   string   `json:"last_success_at"`
+	LastStatus      string   `json:"last_status"`
+	LastMessage     string   `json:"last_message"`
+	LastPolicyID    string   `json:"last_policy_id"`
+	LastPolicyName  string   `json:"last_policy_name"`
+	LastAppliedIPs  []string `json:"last_applied_ips"`
+	LastSourceLines int      `json:"last_source_lines"`
+}
+
+type cloudflareZeroTrustWhitelistRequest struct {
+	Enabled         bool   `json:"enabled"`
+	PolicyName      string `json:"policy_name"`
+	WhitelistRaw    string `json:"whitelist_raw"`
+	SyncIntervalSec int    `json:"sync_interval_sec"`
+}
+
+type cloudflareZeroTrustWhitelistResponse struct {
+	Enabled         bool     `json:"enabled"`
+	PolicyName      string   `json:"policy_name"`
+	WhitelistRaw    string   `json:"whitelist_raw"`
+	SyncIntervalSec int      `json:"sync_interval_sec"`
+	Running         bool     `json:"running"`
+	LastRunAt       string   `json:"last_run_at"`
+	LastSuccessAt   string   `json:"last_success_at"`
+	LastStatus      string   `json:"last_status"`
+	LastMessage     string   `json:"last_message"`
+	LastPolicyID    string   `json:"last_policy_id"`
+	LastPolicyName  string   `json:"last_policy_name"`
+	LastAppliedIPs  []string `json:"last_applied_ips"`
+	LastSourceLines int      `json:"last_source_lines"`
+}
+
+type cloudflareZeroTrustRunRequest struct {
+	Force bool `json:"force"`
+}
+
+type cloudflareZeroTrustPolicyItem struct {
+	ID      string                 `json:"id"`
+	Name    string                 `json:"name"`
+	Include []map[string]interface{} `json:"include"`
+	Raw     map[string]interface{} `json:"raw"`
 }
 
 type cloudflareAPIKeyResponse struct {
@@ -102,7 +161,10 @@ type cloudflareDDNSApplyResponse struct {
 type cloudflareZoneListResponse struct {
 	Success bool `json:"success"`
 	Result  []struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		Account struct {
+			ID string `json:"id"`
+		} `json:"account"`
 	} `json:"result"`
 }
 
@@ -159,7 +221,14 @@ var cloudflareAutoDDNSSyncState = struct {
 
 func initCloudflareStore() {
 	storePath := filepath.Join(dataDir, cloudflareStoreFile)
-	CloudflareStore = &cloudflareStore{path: storePath, data: cloudflareStoreData{Records: []cloudflareDDNSRecord{}}}
+	CloudflareStore = &cloudflareStore{
+		path: storePath,
+		data: cloudflareStoreData{
+			Records:           []cloudflareDDNSRecord{},
+			ZeroTrust:         defaultCloudflareZeroTrustWhitelistConfig(),
+			ZeroTrustLastSync: cloudflareZeroTrustWhitelistSyncInfo{LastAppliedIPs: []string{}},
+		},
+	}
 
 	if _, err := os.Stat(storePath); err == nil {
 		content, readErr := os.ReadFile(storePath)
@@ -174,6 +243,8 @@ func initCloudflareStore() {
 			raw.APIToken = strings.TrimSpace(raw.APIToken)
 			raw.ZoneName = normalizeCloudflareZoneName(raw.ZoneName)
 			raw.Records = normalizeCloudflareRecords(raw.Records)
+			raw.ZeroTrust = normalizeCloudflareZeroTrustWhitelistConfig(raw.ZeroTrust)
+			raw.ZeroTrustLastSync = normalizeCloudflareZeroTrustWhitelistSyncInfo(raw.ZeroTrustLastSync)
 			CloudflareStore.data = raw
 		}
 	} else if os.IsNotExist(err) {
@@ -1171,6 +1242,715 @@ func cloudflareDeleteDNSRecord(token, zoneID, recordID string) error {
 		return errors.New("cloudflare delete dns record failed")
 	}
 	return nil
+}
+
+var cloudflareZeroTrustSyncState = struct {
+	mu       sync.Mutex
+	started  bool
+	running  bool
+	nextRun  time.Time
+	lastTick time.Time
+}{}
+
+func defaultCloudflareZeroTrustWhitelistConfig() cloudflareZeroTrustWhitelistConfig {
+	return cloudflareZeroTrustWhitelistConfig{
+		Enabled:         false,
+		PolicyName:      "",
+		WhitelistRaw:    "",
+		SyncIntervalSec: cloudflareZeroTrustDefaultSyncIntervalSec,
+	}
+}
+
+func normalizeCloudflareZeroTrustWhitelistConfig(raw cloudflareZeroTrustWhitelistConfig) cloudflareZeroTrustWhitelistConfig {
+	cfg := cloudflareZeroTrustWhitelistConfig{
+		Enabled:         raw.Enabled,
+		PolicyName:      strings.TrimSpace(raw.PolicyName),
+		WhitelistRaw:    normalizeCloudflareZeroTrustWhitelistRaw(raw.WhitelistRaw),
+		SyncIntervalSec: raw.SyncIntervalSec,
+	}
+	if cfg.SyncIntervalSec < cloudflareZeroTrustMinSyncIntervalSec {
+		cfg.SyncIntervalSec = cloudflareZeroTrustDefaultSyncIntervalSec
+	}
+	return cfg
+}
+
+func normalizeCloudflareZeroTrustWhitelistSyncInfo(raw cloudflareZeroTrustWhitelistSyncInfo) cloudflareZeroTrustWhitelistSyncInfo {
+	out := cloudflareZeroTrustWhitelistSyncInfo{
+		Running:         raw.Running,
+		LastRunAt:       strings.TrimSpace(raw.LastRunAt),
+		LastSuccessAt:   strings.TrimSpace(raw.LastSuccessAt),
+		LastStatus:      strings.TrimSpace(raw.LastStatus),
+		LastMessage:     strings.TrimSpace(raw.LastMessage),
+		LastPolicyID:    strings.TrimSpace(raw.LastPolicyID),
+		LastPolicyName:  strings.TrimSpace(raw.LastPolicyName),
+		LastAppliedIPs:  append([]string{}, raw.LastAppliedIPs...),
+		LastSourceLines: raw.LastSourceLines,
+	}
+	for i := range out.LastAppliedIPs {
+		out.LastAppliedIPs[i] = strings.TrimSpace(out.LastAppliedIPs[i])
+	}
+	out.LastAppliedIPs = uniqueSortedStrings(out.LastAppliedIPs)
+	if out.LastSourceLines < 0 {
+		out.LastSourceLines = 0
+	}
+	return out
+}
+
+func normalizeCloudflareZeroTrustWhitelistRaw(raw string) string {
+	v := strings.ReplaceAll(raw, "\r\n", "\n")
+	v = strings.ReplaceAll(v, "\r", "\n")
+	return strings.TrimSpace(v)
+}
+
+func cloudflareZeroTrustResponseFromStore(cfg cloudflareZeroTrustWhitelistConfig, syncInfo cloudflareZeroTrustWhitelistSyncInfo) cloudflareZeroTrustWhitelistResponse {
+	normalizedCfg := normalizeCloudflareZeroTrustWhitelistConfig(cfg)
+	normalizedSync := normalizeCloudflareZeroTrustWhitelistSyncInfo(syncInfo)
+	return cloudflareZeroTrustWhitelistResponse{
+		Enabled:         normalizedCfg.Enabled,
+		PolicyName:      normalizedCfg.PolicyName,
+		WhitelistRaw:    normalizedCfg.WhitelistRaw,
+		SyncIntervalSec: normalizedCfg.SyncIntervalSec,
+		Running:         normalizedSync.Running,
+		LastRunAt:       normalizedSync.LastRunAt,
+		LastSuccessAt:   normalizedSync.LastSuccessAt,
+		LastStatus:      normalizedSync.LastStatus,
+		LastMessage:     normalizedSync.LastMessage,
+		LastPolicyID:    normalizedSync.LastPolicyID,
+		LastPolicyName:  normalizedSync.LastPolicyName,
+		LastAppliedIPs:  append([]string{}, normalizedSync.LastAppliedIPs...),
+		LastSourceLines: normalizedSync.LastSourceLines,
+	}
+}
+
+func getCloudflareZeroTrustWhitelist() cloudflareZeroTrustWhitelistResponse {
+	if CloudflareStore == nil {
+		return cloudflareZeroTrustWhitelistResponse{}
+	}
+	CloudflareStore.mu.RLock()
+	cfg := CloudflareStore.data.ZeroTrust
+	syncInfo := CloudflareStore.data.ZeroTrustLastSync
+	CloudflareStore.mu.RUnlock()
+	return cloudflareZeroTrustResponseFromStore(cfg, syncInfo)
+}
+
+func setCloudflareZeroTrustWhitelist(req cloudflareZeroTrustWhitelistRequest) (cloudflareZeroTrustWhitelistResponse, error) {
+	if CloudflareStore == nil {
+		return cloudflareZeroTrustWhitelistResponse{}, errors.New("cloudflare datastore is not initialized")
+	}
+	cfg := normalizeCloudflareZeroTrustWhitelistConfig(cloudflareZeroTrustWhitelistConfig{
+		Enabled:         req.Enabled,
+		PolicyName:      req.PolicyName,
+		WhitelistRaw:    req.WhitelistRaw,
+		SyncIntervalSec: req.SyncIntervalSec,
+	})
+	if cfg.Enabled {
+		if strings.TrimSpace(cfg.PolicyName) == "" {
+			return cloudflareZeroTrustWhitelistResponse{}, errors.New("policy_name is required when enabled")
+		}
+		if strings.TrimSpace(cfg.WhitelistRaw) == "" {
+			return cloudflareZeroTrustWhitelistResponse{}, errors.New("whitelist_raw is required when enabled")
+		}
+	}
+
+	CloudflareStore.mu.Lock()
+	CloudflareStore.data.ZeroTrust = cfg
+	syncInfo := normalizeCloudflareZeroTrustWhitelistSyncInfo(CloudflareStore.data.ZeroTrustLastSync)
+	if !cfg.Enabled {
+		syncInfo.Running = false
+		syncInfo.LastStatus = "disabled"
+		syncInfo.LastMessage = "zerotrust whitelist sync disabled"
+	}
+	CloudflareStore.data.ZeroTrustLastSync = syncInfo
+	CloudflareStore.mu.Unlock()
+	if err := CloudflareStore.Save(); err != nil {
+		return cloudflareZeroTrustWhitelistResponse{}, err
+	}
+	triggerCloudflareZeroTrustSyncNow()
+	return getCloudflareZeroTrustWhitelist(), nil
+}
+
+func runCloudflareZeroTrustWhitelistSync(force bool) (cloudflareZeroTrustWhitelistResponse, error) {
+	if CloudflareStore == nil {
+		return cloudflareZeroTrustWhitelistResponse{}, errors.New("cloudflare datastore is not initialized")
+	}
+	CloudflareStore.mu.RLock()
+	token := strings.TrimSpace(CloudflareStore.data.APIToken)
+	zoneName := normalizeCloudflareZoneName(CloudflareStore.data.ZoneName)
+	cfg := normalizeCloudflareZeroTrustWhitelistConfig(CloudflareStore.data.ZeroTrust)
+	CloudflareStore.mu.RUnlock()
+
+	if token == "" {
+		return cloudflareZeroTrustWhitelistResponse{}, errors.New("cloudflare api key is not configured")
+	}
+	if zoneName == "" {
+		return cloudflareZeroTrustWhitelistResponse{}, errors.New("zone_name is required")
+	}
+	if !cfg.Enabled && !force {
+		CloudflareStore.mu.Lock()
+		syncInfo := normalizeCloudflareZeroTrustWhitelistSyncInfo(CloudflareStore.data.ZeroTrustLastSync)
+		syncInfo.LastRunAt = time.Now().UTC().Format(time.RFC3339)
+		syncInfo.LastStatus = "skipped"
+		syncInfo.LastMessage = "zerotrust whitelist sync is disabled"
+		syncInfo.Running = false
+		CloudflareStore.data.ZeroTrustLastSync = syncInfo
+		CloudflareStore.mu.Unlock()
+		_ = CloudflareStore.Save()
+		return getCloudflareZeroTrustWhitelist(), nil
+	}
+
+	policyName := strings.TrimSpace(cfg.PolicyName)
+	if policyName == "" {
+		return cloudflareZeroTrustWhitelistResponse{}, errors.New("policy_name is required")
+	}
+
+	ips, sourceLines, warnings, parseErr := parseCloudflareZeroTrustWhitelistIPs(cfg.WhitelistRaw)
+	if parseErr != nil {
+		updateCloudflareZeroTrustSyncInfo("failed", parseErr.Error(), "", policyName, nil, sourceLines, false)
+		return getCloudflareZeroTrustWhitelist(), parseErr
+	}
+	if len(ips) == 0 {
+		err := errors.New("whitelist has no valid ip after parsing")
+		updateCloudflareZeroTrustSyncInfo("failed", err.Error(), "", policyName, nil, sourceLines, false)
+		return getCloudflareZeroTrustWhitelist(), err
+	}
+
+	updateCloudflareZeroTrustSyncInfo("running", "running", "", policyName, nil, sourceLines, true)
+
+	accountID, err := cloudflareResolveAccountIDByZone(token, zoneName)
+	if err != nil {
+		updateCloudflareZeroTrustSyncInfo("failed", err.Error(), "", policyName, nil, sourceLines, false)
+		return getCloudflareZeroTrustWhitelist(), err
+	}
+
+	policies, err := cloudflareListZeroTrustPolicies(token, accountID)
+	if err != nil {
+		updateCloudflareZeroTrustSyncInfo("failed", err.Error(), "", policyName, nil, sourceLines, false)
+		return getCloudflareZeroTrustWhitelist(), err
+	}
+
+	target, exists := findCloudflareZeroTrustPolicyByName(policies, policyName)
+	ipIncludes := buildCloudflareZeroTrustIPIncludeEntries(ips)
+	if !exists {
+		created, createErr := cloudflareCreateZeroTrustBypassPolicy(token, accountID, policyName, ipIncludes)
+		if createErr != nil {
+			updateCloudflareZeroTrustSyncInfo("failed", createErr.Error(), "", policyName, nil, sourceLines, false)
+			return getCloudflareZeroTrustWhitelist(), createErr
+		}
+		msg := "created zerotrust bypass policy and synchronized ip include"
+		if len(warnings) > 0 {
+			msg += "; warnings=" + strings.Join(warnings, "; ")
+		}
+		updateCloudflareZeroTrustSyncInfo("success", msg, created.ID, created.Name, ips, sourceLines, false)
+		return getCloudflareZeroTrustWhitelist(), nil
+	}
+
+	mergedInclude := mergeCloudflareZeroTrustPolicyInclude(target.Include, ipIncludes)
+	if strings.EqualFold(resolveCloudflareZeroTrustDecision(target.Raw), "bypass") && cloudflareZeroTrustIncludeEqual(target.Include, mergedInclude) {
+		msg := "zerotrust policy already up-to-date"
+		if len(warnings) > 0 {
+			msg += "; warnings=" + strings.Join(warnings, "; ")
+		}
+		updateCloudflareZeroTrustSyncInfo("success", msg, target.ID, target.Name, ips, sourceLines, false)
+		return getCloudflareZeroTrustWhitelist(), nil
+	}
+
+	updated, updateErr := cloudflareUpdateZeroTrustBypassPolicy(token, accountID, target.ID, target.Name, mergedInclude)
+	if updateErr != nil {
+		updateCloudflareZeroTrustSyncInfo("failed", updateErr.Error(), target.ID, target.Name, nil, sourceLines, false)
+		return getCloudflareZeroTrustWhitelist(), updateErr
+	}
+	msg := "updated zerotrust bypass policy ip include"
+	if len(warnings) > 0 {
+		msg += "; warnings=" + strings.Join(warnings, "; ")
+	}
+	updateCloudflareZeroTrustSyncInfo("success", msg, updated.ID, updated.Name, ips, sourceLines, false)
+	return getCloudflareZeroTrustWhitelist(), nil
+}
+
+func initCloudflareZeroTrustSyncEngine() {
+	cloudflareZeroTrustSyncState.mu.Lock()
+	if cloudflareZeroTrustSyncState.started {
+		cloudflareZeroTrustSyncState.mu.Unlock()
+		return
+	}
+	cloudflareZeroTrustSyncState.started = true
+	cloudflareZeroTrustSyncState.nextRun = time.Now().Add(time.Duration(cloudflareZeroTrustDefaultSyncIntervalSec) * time.Second)
+	cloudflareZeroTrustSyncState.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(time.Duration(cloudflareZeroTrustSchedulerTickIntervalSec) * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			tryRunCloudflareZeroTrustSyncBySchedule()
+		}
+	}()
+}
+
+func triggerCloudflareZeroTrustSyncNow() {
+	cloudflareZeroTrustSyncState.mu.Lock()
+	cloudflareZeroTrustSyncState.nextRun = time.Now()
+	cloudflareZeroTrustSyncState.mu.Unlock()
+}
+
+func tryRunCloudflareZeroTrustSyncBySchedule() {
+	now := time.Now()
+	cloudflareZeroTrustSyncState.mu.Lock()
+	if cloudflareZeroTrustSyncState.running {
+		cloudflareZeroTrustSyncState.mu.Unlock()
+		return
+	}
+	if !cloudflareZeroTrustSyncState.nextRun.IsZero() && now.Before(cloudflareZeroTrustSyncState.nextRun) {
+		cloudflareZeroTrustSyncState.mu.Unlock()
+		return
+	}
+	cloudflareZeroTrustSyncState.running = true
+	cloudflareZeroTrustSyncState.lastTick = now
+	cloudflareZeroTrustSyncState.mu.Unlock()
+
+	defer func() {
+		interval := cloudflareZeroTrustDefaultSyncIntervalSec
+		if CloudflareStore != nil {
+			CloudflareStore.mu.RLock()
+			cfg := normalizeCloudflareZeroTrustWhitelistConfig(CloudflareStore.data.ZeroTrust)
+			CloudflareStore.mu.RUnlock()
+			interval = cfg.SyncIntervalSec
+		}
+		cloudflareZeroTrustSyncState.mu.Lock()
+		cloudflareZeroTrustSyncState.running = false
+		cloudflareZeroTrustSyncState.nextRun = time.Now().Add(time.Duration(interval) * time.Second)
+		cloudflareZeroTrustSyncState.mu.Unlock()
+	}()
+
+	if _, err := runCloudflareZeroTrustWhitelistSync(false); err != nil {
+		log.Printf("cloudflare zerotrust scheduled sync failed: %v", err)
+	}
+}
+
+func updateCloudflareZeroTrustSyncInfo(status, message, policyID, policyName string, appliedIPs []string, sourceLines int, running bool) {
+	if CloudflareStore == nil {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	CloudflareStore.mu.Lock()
+	syncInfo := normalizeCloudflareZeroTrustWhitelistSyncInfo(CloudflareStore.data.ZeroTrustLastSync)
+	syncInfo.Running = running
+	syncInfo.LastRunAt = now
+	syncInfo.LastStatus = strings.TrimSpace(status)
+	syncInfo.LastMessage = strings.TrimSpace(message)
+	syncInfo.LastPolicyID = strings.TrimSpace(policyID)
+	syncInfo.LastPolicyName = strings.TrimSpace(policyName)
+	syncInfo.LastSourceLines = sourceLines
+	if appliedIPs != nil {
+		syncInfo.LastAppliedIPs = uniqueSortedStrings(appliedIPs)
+	}
+	if strings.EqualFold(strings.TrimSpace(status), "success") {
+		syncInfo.LastSuccessAt = now
+	}
+	CloudflareStore.data.ZeroTrustLastSync = syncInfo
+	CloudflareStore.mu.Unlock()
+	_ = CloudflareStore.Save()
+}
+
+func parseCloudflareZeroTrustWhitelistIPs(raw string) ([]string, int, []string, error) {
+	normalized := normalizeCloudflareZeroTrustWhitelistRaw(raw)
+	if normalized == "" {
+		return []string{}, 0, nil, nil
+	}
+	lines := strings.Split(normalized, "\n")
+	result := make([]string, 0, len(lines)*2)
+	seen := map[string]struct{}{}
+	warnings := make([]string, 0)
+	sourceLines := 0
+	for idx, line := range lines {
+		v := strings.TrimSpace(line)
+		if v == "" {
+			continue
+		}
+		sourceLines++
+		if sharp := strings.Index(v, "#"); sharp >= 0 {
+			v = strings.TrimSpace(v[:sharp])
+		}
+		if v == "" {
+			continue
+		}
+		normalizedCIDR, ok := normalizeCloudflareZeroTrustIPOrCIDR(v)
+		if ok {
+			if _, exists := seen[normalizedCIDR]; !exists {
+				seen[normalizedCIDR] = struct{}{}
+				result = append(result, normalizedCIDR)
+			}
+			continue
+		}
+		if !isPotentialDomainToken(v) {
+			warnings = append(warnings, fmt.Sprintf("line %d ignored: invalid token %q", idx+1, v))
+			continue
+		}
+		resolved, err := resolveCloudflareZeroTrustDomain(v)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("line %d domain resolve failed: %s", idx+1, err.Error()))
+			continue
+		}
+		for _, cidr := range resolved {
+			if _, exists := seen[cidr]; exists {
+				continue
+			}
+			seen[cidr] = struct{}{}
+			result = append(result, cidr)
+		}
+	}
+	sort.Strings(result)
+	return result, sourceLines, warnings, nil
+}
+
+func normalizeCloudflareZeroTrustIPOrCIDR(raw string) (string, bool) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "", false
+	}
+	if ip := net.ParseIP(v); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String() + "/32", true
+		}
+		if ip16 := ip.To16(); ip16 != nil {
+			masked := ip16.Mask(net.CIDRMask(56, 128))
+			return masked.String() + "/56", true
+		}
+	}
+	if strings.Contains(v, "/") {
+		ip, ipNet, err := net.ParseCIDR(v)
+		if err != nil || ipNet == nil {
+			return "", false
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String() + "/32", true
+		}
+		if ip16 := ip.To16(); ip16 != nil {
+			masked := ip16.Mask(net.CIDRMask(56, 128))
+			return masked.String() + "/56", true
+		}
+	}
+	return "", false
+}
+
+func resolveCloudflareZeroTrustDomain(domain string) ([]string, error) {
+	host := strings.TrimSpace(strings.ToLower(domain))
+	host = strings.TrimSuffix(host, ".")
+	if host == "" {
+		return nil, errors.New("empty domain")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(ips))
+	seen := map[string]struct{}{}
+	for _, item := range ips {
+		ip := item.IP
+		if ip == nil {
+			continue
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			v := ip4.String() + "/32"
+			if _, ok := seen[v]; !ok {
+				seen[v] = struct{}{}
+				out = append(out, v)
+			}
+			continue
+		}
+		if ip16 := ip.To16(); ip16 != nil {
+			v := ip16.Mask(net.CIDRMask(56, 128)).String() + "/56"
+			if _, ok := seen[v]; !ok {
+				seen[v] = struct{}{}
+				out = append(out, v)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func isPotentialDomainToken(v string) bool {
+	value := strings.TrimSpace(strings.ToLower(v))
+	if value == "" || strings.Contains(value, " ") || strings.Contains(value, "/") {
+		return false
+	}
+	if strings.Contains(value, ":") {
+		return false
+	}
+	if net.ParseIP(value) != nil {
+		return false
+	}
+	if !strings.Contains(value, ".") {
+		return false
+	}
+	for _, r := range value {
+		isLetter := r >= 'a' && r <= 'z'
+		isNumber := r >= '0' && r <= '9'
+		if isLetter || isNumber || r == '.' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func cloudflareResolveAccountIDByZone(token, zoneName string) (string, error) {
+	u := "https://api.cloudflare.com/client/v4/zones?name=" + url.QueryEscape(strings.TrimSpace(zoneName))
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	withCloudflareAuth(req, token)
+	resp, err := cloudflareHTTPClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("cloudflare zones request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("cloudflare zones status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var parsed cloudflareZoneListResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", err
+	}
+	if !parsed.Success || len(parsed.Result) == 0 {
+		return "", fmt.Errorf("cloudflare zone not found: %s", zoneName)
+	}
+	accountID := strings.TrimSpace(parsed.Result[0].Account.ID)
+	if accountID == "" {
+		return "", errors.New("cloudflare account id not found from zone")
+	}
+	return accountID, nil
+}
+
+func cloudflareListZeroTrustPolicies(token, accountID string) ([]cloudflareZeroTrustPolicyItem, error) {
+	u := "https://api.cloudflare.com/client/v4/accounts/" + url.PathEscape(strings.TrimSpace(accountID)) + "/access/policies"
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	withCloudflareAuth(req, token)
+	resp, err := cloudflareHTTPClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cloudflare list zerotrust policies failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("cloudflare list zerotrust policies status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var parsed struct {
+		Success bool                             `json:"success"`
+		Result  []map[string]interface{}         `json:"result"`
+		Errors  []map[string]interface{}         `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	if !parsed.Success {
+		return nil, errors.New("cloudflare list zerotrust policies failed")
+	}
+	out := make([]cloudflareZeroTrustPolicyItem, 0, len(parsed.Result))
+	for _, raw := range parsed.Result {
+		id, _ := raw["id"].(string)
+		name, _ := raw["name"].(string)
+		include := parseCloudflarePolicyInclude(raw["include"])
+		out = append(out, cloudflareZeroTrustPolicyItem{
+			ID:      strings.TrimSpace(id),
+			Name:    strings.TrimSpace(name),
+			Include: include,
+			Raw:     raw,
+		})
+	}
+	return out, nil
+}
+
+func cloudflareCreateZeroTrustBypassPolicy(token, accountID, policyName string, include []map[string]interface{}) (cloudflareZeroTrustPolicyItem, error) {
+	payload := map[string]interface{}{
+		"name":     strings.TrimSpace(policyName),
+		"decision": "bypass",
+		"include":  include,
+	}
+	rawBody, _ := json.Marshal(payload)
+	u := "https://api.cloudflare.com/client/v4/accounts/" + url.PathEscape(strings.TrimSpace(accountID)) + "/access/policies"
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(rawBody))
+	if err != nil {
+		return cloudflareZeroTrustPolicyItem{}, err
+	}
+	withCloudflareAuth(req, token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := cloudflareHTTPClient().Do(req)
+	if err != nil {
+		return cloudflareZeroTrustPolicyItem{}, fmt.Errorf("cloudflare create zerotrust policy failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return cloudflareZeroTrustPolicyItem{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return cloudflareZeroTrustPolicyItem{}, fmt.Errorf("cloudflare create zerotrust policy status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return parseCloudflareZeroTrustPolicyFromWriteBody(body)
+}
+
+func cloudflareUpdateZeroTrustBypassPolicy(token, accountID, policyID, policyName string, include []map[string]interface{}) (cloudflareZeroTrustPolicyItem, error) {
+	payload := map[string]interface{}{
+		"name":     strings.TrimSpace(policyName),
+		"decision": "bypass",
+		"include":  include,
+	}
+	rawBody, _ := json.Marshal(payload)
+	u := "https://api.cloudflare.com/client/v4/accounts/" + url.PathEscape(strings.TrimSpace(accountID)) + "/access/policies/" + url.PathEscape(strings.TrimSpace(policyID))
+	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(rawBody))
+	if err != nil {
+		return cloudflareZeroTrustPolicyItem{}, err
+	}
+	withCloudflareAuth(req, token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := cloudflareHTTPClient().Do(req)
+	if err != nil {
+		return cloudflareZeroTrustPolicyItem{}, fmt.Errorf("cloudflare update zerotrust policy failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return cloudflareZeroTrustPolicyItem{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return cloudflareZeroTrustPolicyItem{}, fmt.Errorf("cloudflare update zerotrust policy status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return parseCloudflareZeroTrustPolicyFromWriteBody(body)
+}
+
+func parseCloudflareZeroTrustPolicyFromWriteBody(body []byte) (cloudflareZeroTrustPolicyItem, error) {
+	var parsed struct {
+		Success bool                   `json:"success"`
+		Result  map[string]interface{} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return cloudflareZeroTrustPolicyItem{}, err
+	}
+	if !parsed.Success {
+		return cloudflareZeroTrustPolicyItem{}, errors.New("cloudflare zerotrust policy write failed")
+	}
+	id, _ := parsed.Result["id"].(string)
+	name, _ := parsed.Result["name"].(string)
+	include := parseCloudflarePolicyInclude(parsed.Result["include"])
+	return cloudflareZeroTrustPolicyItem{ID: strings.TrimSpace(id), Name: strings.TrimSpace(name), Include: include, Raw: parsed.Result}, nil
+}
+
+func parseCloudflarePolicyInclude(raw interface{}) []map[string]interface{} {
+	values, ok := raw.([]interface{})
+	if !ok {
+		if typed, ok2 := raw.([]map[string]interface{}); ok2 {
+			return typed
+		}
+		return []map[string]interface{}{}
+	}
+	out := make([]map[string]interface{}, 0, len(values))
+	for _, item := range values {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func findCloudflareZeroTrustPolicyByName(items []cloudflareZeroTrustPolicyItem, policyName string) (cloudflareZeroTrustPolicyItem, bool) {
+	target := strings.TrimSpace(strings.ToLower(policyName))
+	for _, item := range items {
+		if strings.TrimSpace(strings.ToLower(item.Name)) == target {
+			return item, true
+		}
+	}
+	return cloudflareZeroTrustPolicyItem{}, false
+}
+
+func buildCloudflareZeroTrustIPIncludeEntries(ips []string) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(ips))
+	for _, ip := range uniqueSortedStrings(ips) {
+		out = append(out, map[string]interface{}{
+			"ip": map[string]interface{}{
+				"ip": ip,
+			},
+		})
+	}
+	return out
+}
+
+func mergeCloudflareZeroTrustPolicyInclude(existing []map[string]interface{}, ipInclude []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(existing)+len(ipInclude))
+	for _, item := range existing {
+		if isCloudflareZeroTrustIPIncludeEntry(item) {
+			continue
+		}
+		out = append(out, item)
+	}
+	out = append(out, ipInclude...)
+	return out
+}
+
+func isCloudflareZeroTrustIPIncludeEntry(item map[string]interface{}) bool {
+	if item == nil {
+		return false
+	}
+	v, ok := item["ip"]
+	if !ok {
+		return false
+	}
+	if ipMap, ok := v.(map[string]interface{}); ok {
+		if value, ok := ipMap["ip"].(string); ok {
+			return strings.TrimSpace(value) != ""
+		}
+	}
+	if ipText, ok := v.(string); ok {
+		return strings.TrimSpace(ipText) != ""
+	}
+	return false
+}
+
+func cloudflareZeroTrustIncludeEqual(left []map[string]interface{}, right []map[string]interface{}) bool {
+	leftRaw, _ := json.Marshal(left)
+	rightRaw, _ := json.Marshal(right)
+	return bytes.Equal(leftRaw, rightRaw)
+}
+
+func resolveCloudflareZeroTrustDecision(raw map[string]interface{}) string {
+	if raw == nil {
+		return ""
+	}
+	value, _ := raw["decision"].(string)
+	return strings.TrimSpace(strings.ToLower(value))
 }
 
 func withCloudflareAuth(req *http.Request, token string) {

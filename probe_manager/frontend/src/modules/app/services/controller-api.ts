@@ -4,6 +4,7 @@ import type {
   CloudflareAPIKey,
   CloudflareDDNSApplyResult,
   CloudflareDDNSRecord,
+  CloudflareZeroTrustWhitelistState,
   DashboardStatusResponse,
   LogContentResponse,
   LoginResponse,
@@ -158,6 +159,73 @@ export async function applyCloudflareDDNS(baseURL: string, token: string, zoneNa
     skipped: typeof payload.skipped === "number" ? payload.skipped : 0,
     items: Array.isArray(payload.items) ? payload.items : [],
     records: Array.isArray(payload.records) ? payload.records : [],
+  };
+}
+
+export async function fetchCloudflareZeroTrustWhitelist(baseURL: string, token: string): Promise<CloudflareZeroTrustWhitelistState> {
+  const payload = await callAdminWSRpc<Partial<CloudflareZeroTrustWhitelistState>>(baseURL, token, "admin.cloudflare.zerotrust.whitelist.get");
+  return normalizeCloudflareZeroTrustWhitelistState(payload);
+}
+
+export async function setCloudflareZeroTrustWhitelist(
+  baseURL: string,
+  token: string,
+  payload: {
+    enabled: boolean;
+    policy_name: string;
+    whitelist_raw: string;
+    sync_interval_sec: number;
+  },
+): Promise<CloudflareZeroTrustWhitelistState> {
+  const result = await callAdminWSRpc<Partial<CloudflareZeroTrustWhitelistState>>(
+    baseURL,
+    token,
+    "admin.cloudflare.zerotrust.whitelist.set",
+    payload,
+  );
+  return normalizeCloudflareZeroTrustWhitelistState(result);
+}
+
+export async function runCloudflareZeroTrustWhitelistSync(
+  baseURL: string,
+  token: string,
+  force = true,
+): Promise<CloudflareZeroTrustWhitelistState> {
+  const payload = await callAdminWSRpc<Partial<CloudflareZeroTrustWhitelistState>>(
+    baseURL,
+    token,
+    "admin.cloudflare.zerotrust.whitelist.run",
+    { force },
+    { timeoutMs: 120000 },
+  );
+  return normalizeCloudflareZeroTrustWhitelistState(payload);
+}
+
+function normalizeCloudflareZeroTrustWhitelistState(
+  payload: Partial<CloudflareZeroTrustWhitelistState> = {},
+): CloudflareZeroTrustWhitelistState {
+  return {
+    enabled: payload?.enabled === true,
+    policy_name: typeof payload?.policy_name === "string" ? payload.policy_name : "",
+    whitelist_raw: typeof payload?.whitelist_raw === "string" ? payload.whitelist_raw : "",
+    sync_interval_sec:
+      typeof payload?.sync_interval_sec === "number" && Number.isFinite(payload.sync_interval_sec)
+        ? Math.max(30, Math.trunc(payload.sync_interval_sec))
+        : 300,
+    running: payload?.running === true,
+    last_run_at: typeof payload?.last_run_at === "string" ? payload.last_run_at : "",
+    last_success_at: typeof payload?.last_success_at === "string" ? payload.last_success_at : "",
+    last_status: typeof payload?.last_status === "string" ? payload.last_status : "",
+    last_message: typeof payload?.last_message === "string" ? payload.last_message : "",
+    last_policy_id: typeof payload?.last_policy_id === "string" ? payload.last_policy_id : "",
+    last_policy_name: typeof payload?.last_policy_name === "string" ? payload.last_policy_name : "",
+    last_applied_ips: Array.isArray(payload?.last_applied_ips)
+      ? payload.last_applied_ips.filter((item): item is string => typeof item === "string")
+      : [],
+    last_source_lines:
+      typeof payload?.last_source_lines === "number" && Number.isFinite(payload.last_source_lines)
+        ? Math.max(0, Math.trunc(payload.last_source_lines))
+        : 0,
   };
 }
 

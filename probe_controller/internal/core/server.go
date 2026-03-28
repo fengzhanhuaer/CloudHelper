@@ -21,6 +21,7 @@ func Run() {
 	initControllerScheduler()
 	initTGAssistantScheduleEngine()
 	initTGAssistantBotEngine()
+	initCloudflareZeroTrustSyncEngine()
 	if err := cleanupControllerStaleExecutables(); err != nil {
 		log.Printf("warning: failed to cleanup stale controller executable files: %v", err)
 	}

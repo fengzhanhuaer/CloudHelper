@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestIsCloudflareManagedDDNSRecordName(t *testing.T) {
 	tests := []struct {
@@ -33,6 +36,45 @@ func TestCloudflareRecordNameTypeKey(t *testing.T) {
 	}
 	if cloudflareRecordNameTypeKey("a.example.com", "") != "" {
 		t.Fatalf("expected empty key for empty record type")
+	}
+}
+
+func TestNormalizeCloudflareZeroTrustIPOrCIDR(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		ok       bool
+	}{
+		{name: "ipv4 plain", input: "1.1.1.1", expected: "1.1.1.1/32", ok: true},
+		{name: "ipv4 cidr normalize to /32", input: "1.1.1.10/24", expected: "1.1.1.10/32", ok: true},
+		{name: "ipv6 plain", input: "2001:db8::1", expected: "2001:db8::/56", ok: true},
+		{name: "ipv6 cidr normalize to /56", input: "2001:db8::abcd/64", expected: "2001:db8::/56", ok: true},
+		{name: "invalid", input: "not-an-ip", expected: "", ok: false},
+	}
+	for _, tt := range tests {
+		got, ok := normalizeCloudflareZeroTrustIPOrCIDR(tt.input)
+		if ok != tt.ok || got != tt.expected {
+			t.Fatalf("%s: expected (%q, %v), got (%q, %v)", tt.name, tt.expected, tt.ok, got, ok)
+		}
+	}
+}
+
+func TestParseCloudflareZeroTrustWhitelistIPs_NoDNS(t *testing.T) {
+	raw := "\n1.1.1.1\n1.1.1.1/24\n# full comment\n2001:db8::1\ninvalid_token\n"
+	ips, sourceLines, warnings, err := parseCloudflareZeroTrustWhitelistIPs(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expectedIPs := []string{"1.1.1.1/32", "2001:db8::/56"}
+	if !reflect.DeepEqual(ips, expectedIPs) {
+		t.Fatalf("unexpected ips: got=%v expected=%v", ips, expectedIPs)
+	}
+	if sourceLines != 5 {
+		t.Fatalf("unexpected sourceLines: got=%d expected=5", sourceLines)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("unexpected warnings: got=%v", warnings)
 	}
 }
 

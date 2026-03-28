@@ -283,6 +283,25 @@ export type CloudflareDDNSApplyResult = {
   records: CloudflareDDNSRecord[];
 };
 
+export type CloudflareZeroTrustWhitelistConfig = {
+  enabled: boolean;
+  policy_name: string;
+  whitelist_raw: string;
+  sync_interval_sec: number;
+};
+
+export type CloudflareZeroTrustWhitelistState = CloudflareZeroTrustWhitelistConfig & {
+  running: boolean;
+  last_run_at: string;
+  last_success_at: string;
+  last_status: string;
+  last_message: string;
+  last_policy_id: string;
+  last_policy_name: string;
+  last_applied_ips: string[];
+  last_source_lines: number;
+};
+
 export type TabKey =
   | "overview"
   | "probe-manage"
