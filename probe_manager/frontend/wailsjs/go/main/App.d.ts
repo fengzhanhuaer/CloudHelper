@@ -20,6 +20,8 @@ export function GetManagerVersion():Promise<string>;
 
 export function ForceRefreshProbeDNSCache(arg1:string,arg2:string):Promise<string>;
 
+export function ForceRefreshNetworkAssistantNodes(arg1:string,arg2:string):Promise<void>;
+
 export function EnableNetworkAssistantTUN():Promise<backend.NetworkAssistantStatus>;
 
 export function GetNetworkAssistantLogs(arg1:number):Promise<backend.NetworkAssistantLogResponse>;

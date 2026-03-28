@@ -38,6 +38,10 @@ export function ForceRefreshProbeDNSCache(arg1, arg2) {
   return window['go']['main']['App']['ForceRefreshProbeDNSCache'](arg1, arg2);
 }
 
+export function ForceRefreshNetworkAssistantNodes(arg1, arg2) {
+  return window['go']['main']['App']['ForceRefreshNetworkAssistantNodes'](arg1, arg2);
+}
+
 export function EnableNetworkAssistantTUN() {
   return window['go']['main']['App']['EnableNetworkAssistantTUN']();
 }

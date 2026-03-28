@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ForceRefreshNetworkAssistantNodes,
   PingProbeLinkSession,
   PingProbeChain,
   StartProbeLinkSession,
@@ -725,14 +726,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChains(sorted);
       writeProbeLinkChainCache(sorted);
       setChainStatus(`已从主控获取链路（${sorted.length} 条）`);
-      const invoke = (window as any)?.go?.main?.App?.ForceRefreshNetworkAssistantNodes;
-      if (typeof invoke === "function") {
-        try {
-          await invoke(props.controllerBaseUrl, props.sessionToken);
-        } catch (error) {
-          const msg = errorToMessage(error);
-          setChainStatus(`主控链路已刷新，但本地链路缓存落盘失败：${msg}`);
-        }
+      try {
+        await ForceRefreshNetworkAssistantNodes(props.controllerBaseUrl, props.sessionToken);
+      } catch (error) {
+        const msg = errorToMessage(error);
+        setChainStatus(`主控链路已刷新，但本地链路缓存落盘失败：${msg}`);
       }
       void loadChainUsers();
       void loadNodes();

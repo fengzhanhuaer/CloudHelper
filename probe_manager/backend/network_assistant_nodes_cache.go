@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -181,10 +182,6 @@ func loadChainCacheFromFile() (nodes []string, chainTargets map[string]probeChai
 		return nil, nil, nil, unmarshalErr
 	}
 
-	if len(payload.Nodes) == 0 {
-		return nil, nil, nil, nil
-	}
-
 	targets := make(map[string]probeChainEndpoint, len(payload.ChainTargets))
 	for k, v := range payload.ChainTargets {
 		targets[k] = fromChainCacheEndpoint(v)
@@ -204,5 +201,41 @@ func loadChainCacheFromFile() (nodes []string, chainTargets map[string]probeChai
 		})
 	}
 
-	return payload.Nodes, targets, adminNodes, nil
+	nodeSet := make(map[string]struct{}, len(payload.Nodes)+len(targets)+len(adminNodes))
+	outNodes := make([]string, 0, len(payload.Nodes)+len(targets)+len(adminNodes))
+	addNode := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, exists := nodeSet[id]; exists {
+			return
+		}
+		nodeSet[id] = struct{}{}
+		outNodes = append(outNodes, id)
+	}
+
+	for _, id := range payload.Nodes {
+		addNode(id)
+	}
+	// 兼容旧缓存：若 nodes 为空，尝试从 chain_targets 回填可选节点。
+	if len(outNodes) == 0 {
+		for nodeID := range targets {
+			addNode(nodeID)
+		}
+	}
+	// 再次兜底：从 probe_nodes 回填节点编号。
+	if len(outNodes) == 0 {
+		for _, item := range adminNodes {
+			if item.NodeNo <= 0 {
+				continue
+			}
+			addNode(strconv.Itoa(item.NodeNo))
+		}
+	}
+
+	if len(outNodes) == 0 && len(targets) == 0 && len(adminNodes) == 0 {
+		return nil, nil, nil, nil
+	}
+	return outNodes, targets, adminNodes, nil
 }

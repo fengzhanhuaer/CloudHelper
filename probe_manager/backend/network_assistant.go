@@ -1499,8 +1499,13 @@ func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
 
 	if !forceRemote {
 		cachedNodes, cachedTargets, _, cacheErr := loadChainCacheFromFile()
-		if cacheErr == nil && len(cachedNodes) > 0 {
+		if cacheErr == nil && (len(cachedNodes) > 0 || len(cachedTargets) > 0) {
 			nodes := append([]string(nil), cachedNodes...)
+			if len(nodes) == 0 {
+				for nodeID := range cachedTargets {
+					nodes = append(nodes, nodeID)
+				}
+			}
 			if !containsNodeID(nodes, defaultNodeID) {
 				nodes = append(nodes, defaultNodeID)
 			}
