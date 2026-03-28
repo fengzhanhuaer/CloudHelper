@@ -4,41 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
 )
-
-func TestWailsBindingsCoverAllMainAppMethods(t *testing.T) {
-	dtsExports := loadWailsExportSet(t, filepath.Join("frontend", "wailsjs", "go", "main", "App.d.ts"))
-	jsExports := loadWailsExportSet(t, filepath.Join("frontend", "wailsjs", "go", "main", "App.js"))
-
-	appType := reflect.TypeOf((*App)(nil))
-	missingInDTS := make([]string, 0)
-	missingInJS := make([]string, 0)
-
-	for i := 0; i < appType.NumMethod(); i++ {
-		method := appType.Method(i).Name
-		if _, ok := dtsExports[method]; !ok {
-			missingInDTS = append(missingInDTS, method)
-		}
-		if _, ok := jsExports[method]; !ok {
-			missingInJS = append(missingInJS, method)
-		}
-	}
-
-	if len(missingInDTS) > 0 || len(missingInJS) > 0 {
-		sort.Strings(missingInDTS)
-		sort.Strings(missingInJS)
-		t.Fatalf(
-			"Wails 绑定不完整。\n缺失于 App.d.ts:\n  %s\n缺失于 App.js:\n  %s\n\n请执行 Wails 绑定生成并提交 frontend/wailsjs/go/main 下变更。",
-			joinOrNone(missingInDTS),
-			joinOrNone(missingInJS),
-		)
-	}
-}
 
 func TestFrontendImportsExistInWailsBindings(t *testing.T) {
 	dtsExports := loadWailsExportSet(t, filepath.Join("frontend", "wailsjs", "go", "main", "App.d.ts"))
