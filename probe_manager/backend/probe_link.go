@@ -396,7 +396,6 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	a.networkAssistant.mu.RLock()
 	baseURL := a.networkAssistant.controllerBaseURL
 	token := a.networkAssistant.sessionToken
-	availableNodes := append([]string(nil), a.networkAssistant.availableNodes...)
 	a.networkAssistant.mu.RUnlock()
 
 	if baseURL == "" || token == "" {
@@ -410,6 +409,11 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	resolvedChainID := targetID
 	if len(candidateChainIDs) > 0 {
 		resolvedChainID = candidateChainIDs[0]
+	}
+
+	// 非 chain 目标（如 cloudserver）直接走隧道节点探测，避免无意义联主控拉 chain targets。
+	if !explicitChainTarget {
+		return pingNetworkAssistantTunnelNode(a.networkAssistant, baseURL, token, targetID)
 	}
 
 	// 优先使用内存缓存（启动时从 probe_chain.json 加载，运行时由 refreshAvailableNodes 刷新）。
@@ -449,57 +453,9 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 		}
 	}
 
-	// 缓存未命中时回退到联主控实时拉取（如 chain 刚创建尚未刷新缓存）。
-	warnBuf := make([]string, 0)
 	if !found {
-		var remoteFetchErr error
-		var remoteTargets map[string]probeChainEndpoint
-		remoteTargets, _, remoteFetchErr = fetchProbeChainTargetsViaAdminWS(baseURL, token, func(format string, args ...any) {
-			warnBuf = append(warnBuf, fmt.Sprintf(format, args...))
-		})
-		if remoteFetchErr != nil {
-			return ProbeChainPingResult{}, fmt.Errorf("fetch chain targets failed: %w", remoteFetchErr)
-		}
-		for _, candidateID := range candidateChainIDs {
-			if key := buildChainTargetNodeID(candidateID); key != "" {
-				if item, ok := remoteTargets[key]; ok {
-					endpoint = item
-					resolvedChainID = strings.TrimSpace(item.ChainID)
-					found = true
-					break
-				}
-			}
-		}
-		if !found {
-			candidateSet := make(map[string]struct{}, len(candidateChainIDs))
-			for _, candidateID := range candidateChainIDs {
-				clean := strings.ToLower(strings.TrimSpace(candidateID))
-				if clean == "" {
-					continue
-				}
-				candidateSet[clean] = struct{}{}
-			}
-			for _, t := range remoteTargets {
-				if _, ok := candidateSet[strings.ToLower(strings.TrimSpace(t.ChainID))]; ok {
-					endpoint = t
-					resolvedChainID = strings.TrimSpace(t.ChainID)
-					found = true
-					break
-				}
-			}
-		}
+		return ProbeChainPingResult{}, fmt.Errorf("chain not found in local cache: %s", targetID)
 	}
-
-	if !found {
-		if !explicitChainTarget && containsNodeID(availableNodes, targetID) {
-			return pingNetworkAssistantTunnelNode(a.networkAssistant, baseURL, token, targetID)
-		}
-		if len(warnBuf) > 0 {
-			return ProbeChainPingResult{}, fmt.Errorf("chain entry not resolved: %s", strings.Join(warnBuf, "; "))
-		}
-		return ProbeChainPingResult{}, fmt.Errorf("chain not found: %s", targetID)
-	}
-
 	startedAt := time.Now()
 
 	// 优先复用已有 mux 连接（yamux Ping，不走 relay hop）
