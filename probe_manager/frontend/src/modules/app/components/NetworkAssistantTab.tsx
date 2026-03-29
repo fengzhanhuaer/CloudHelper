@@ -85,8 +85,8 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     setTunnelPingingID(chainID);
     setTunnelPingStates((prev) => ({ ...prev, [chainID]: { ok: null, durationMS: null, message: "测试中..." } }));
     try {
-      // 模式切换页的测试统一走直连探针连通性，避免 chain relay（套娃）路径。
-      const result = await PingProbeChain("cloudserver");
+      // 按当前选中的链路目标进行测试。
+      const result = await PingProbeChain(chainID);
       setTunnelPingStates((prev) => ({
         ...prev,
         [chainID]: { ok: result.ok, durationMS: result.duration_ms ?? null, message: result.message ?? (result.ok ? "成功" : "失败") },
@@ -193,7 +193,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
                 background: tunnelPingingID === activeTunnelID ? "#555" : undefined,
               }}
             >
-              {tunnelPingingID === activeTunnelID ? "测试中" : "测试直连"}
+              {tunnelPingingID === activeTunnelID ? "测试中" : "测试链路"}
             </button>
             {pingState && (
               <span

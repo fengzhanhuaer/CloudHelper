@@ -393,27 +393,15 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 		return ProbeChainPingResult{}, fmt.Errorf("chain_id is required")
 	}
 
-	a.networkAssistant.mu.RLock()
-	baseURL := a.networkAssistant.controllerBaseURL
-	token := a.networkAssistant.sessionToken
-	a.networkAssistant.mu.RUnlock()
-
-	if baseURL == "" || token == "" {
-		return ProbeChainPingResult{}, fmt.Errorf("not connected to controller")
-	}
-	if err := a.networkAssistant.ensureControlPlaneDialReady(baseURL); err != nil {
-		return ProbeChainPingResult{}, fmt.Errorf("prepare controller route failed: %w", err)
-	}
-
 	candidateChainIDs, explicitChainTarget := buildProbeChainPingCandidateChainIDs(targetID)
 	resolvedChainID := targetID
 	if len(candidateChainIDs) > 0 {
 		resolvedChainID = candidateChainIDs[0]
 	}
 
-	// 非 chain 目标（如 cloudserver）直接走隧道节点探测，避免无意义联主控拉 chain targets。
+	// 非 chain 目标（如 cloudserver）仅使用本地已有连接，不新建到主控的连接。
 	if !explicitChainTarget {
-		return pingNetworkAssistantTunnelNode(a.networkAssistant, baseURL, token, targetID)
+		return pingNetworkAssistantTunnelNode(a.networkAssistant, targetID)
 	}
 
 	// 优先使用内存缓存（启动时从 probe_chain.json 加载，运行时由 refreshAvailableNodes 刷新）。
@@ -558,7 +546,7 @@ func buildProbeChainPingCandidateChainIDs(targetID string) ([]string, bool) {
 	return ids, explicitChainTarget
 }
 
-func pingNetworkAssistantTunnelNode(service *networkAssistantService, baseURL, token, nodeID string) (ProbeChainPingResult, error) {
+func pingNetworkAssistantTunnelNode(service *networkAssistantService, nodeID string) (ProbeChainPingResult, error) {
 	trimmedNodeID := strings.TrimSpace(nodeID)
 	if trimmedNodeID == "" {
 		return ProbeChainPingResult{}, fmt.Errorf("node_id is required")
@@ -577,31 +565,11 @@ func pingNetworkAssistantTunnelNode(service *networkAssistantService, baseURL, t
 		}
 	}
 
-	// 无已有连接：回退到新建 mux 测延迟
-	if service != nil {
-		if err := service.ensureControlPlaneDialReady(baseURL); err != nil {
-			return ProbeChainPingResult{}, fmt.Errorf("prepare controller route failed: %w", err)
-		}
-	}
-
-	startedAt := time.Now()
-	client, err := newTunnelMuxClient(baseURL, token, trimmedNodeID, nil)
-	elapsed := time.Since(startedAt)
-	if err != nil {
-		return ProbeChainPingResult{
-			OK:        false,
-			ChainID:   trimmedNodeID,
-			LinkLayer: "ws",
-			Message:   fmt.Sprintf("连接失败: %v", err),
-		}, nil
-	}
-	client.close()
-
+	// 仅使用本地已建链路，不再新建到主控的连接。
 	return ProbeChainPingResult{
-		OK:         true,
-		ChainID:    trimmedNodeID,
-		LinkLayer:  "ws",
-		DurationMS: elapsed.Milliseconds(),
-		Message:    fmt.Sprintf("连接成功 (%dms)", elapsed.Milliseconds()),
+		OK:        false,
+		ChainID:   trimmedNodeID,
+		LinkLayer: "ws",
+		Message:   "连接失败: 本地无可复用链路",
 	}, nil
 }
