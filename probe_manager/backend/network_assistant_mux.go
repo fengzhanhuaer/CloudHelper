@@ -285,7 +285,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		closeTransport = func() error { return transport.Close() }
 	case "http2":
 		transport := &http.Transport{
-			Proxy:             http.ProxyFromEnvironment,
+			Proxy:             nil,
 			ForceAttemptHTTP2: true,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
@@ -300,7 +300,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		}
 	default:
 		transport := &http.Transport{
-			Proxy:             http.ProxyFromEnvironment,
+			Proxy:             nil,
 			ForceAttemptHTTP2: false,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
@@ -318,9 +318,14 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 
 	response, err := client.Do(request)
 	if err != nil {
+		sanitizedURL := ""
+		if parsed, parseErr := url.Parse(entryURL); parseErr == nil {
+			parsed.RawQuery = ""
+			sanitizedURL = parsed.String()
+		}
 		_ = bodyWriter.Close()
 		_ = closeTransport()
-		return nil, err
+		return nil, fmt.Errorf("probe relay connect failed: url=%s dial_host=%s host_header=%s layer=%s server_name=%s err=%w", sanitizedURL, entryDialHost, entryHostHeader, layer, tlsServerName, err)
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
