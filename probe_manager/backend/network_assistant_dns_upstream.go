@@ -686,7 +686,7 @@ func (s *networkAssistantService) queryRawDNSPacketViaDoH(server dnsDoHServer, p
 	}
 
 	transport := &http.Transport{
-		Proxy:             http.ProxyFromEnvironment,
+		Proxy:             nil,
 		ForceAttemptHTTP2: true,
 		DialContext: func(ctx context.Context, network string, _ string) (net.Conn, error) {
 			dialer := &net.Dialer{Timeout: timeout}
