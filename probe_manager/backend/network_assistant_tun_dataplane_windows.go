@@ -121,7 +121,7 @@ func (r *localTUNDataPlaneRunner) readLoop() {
 		packetPtr, _, recvErr := r.receivePacketProc.Call(r.sessionHandle, uintptr(unsafe.Pointer(&packetSize)))
 		if packetPtr != 0 {
 			packetCopy := make([]byte, int(packetSize))
-			copy(packetCopy, unsafe.Slice((*byte)(unsafe.Pointer(packetPtr)), int(packetSize)))
+			copy(packetCopy, uintptrToByteSlice(packetPtr, int(packetSize)))
 			r.rxPackets.Add(1)
 			r.rxBytes.Add(uint64(packetSize))
 			_, _, _ = r.releaseReceivePacketProc.Call(r.sessionHandle, packetPtr)
@@ -200,7 +200,7 @@ func (r *localTUNDataPlaneRunner) WritePacket(packet []byte) error {
 		return errors.New("WintunAllocateSendPacket returned empty packet pointer")
 	}
 
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(packetPtr)), len(packet)), packet)
+	copy(uintptrToByteSlice(packetPtr, len(packet)), packet)
 	_, _, sendErr := r.sendPacketProc.Call(r.sessionHandle, packetPtr)
 	if sendErr != nil && !isZeroErrno(sendErr) {
 		return fmt.Errorf("WintunSendPacket failed: %w", sendErr)
@@ -222,4 +222,13 @@ func isNoMoreItemsErr(err error) bool {
 		return false
 	}
 	return errno == syscall.Errno(windows.ERROR_NO_MORE_ITEMS)
+}
+
+func uintptrToByteSlice(ptr uintptr, n int) []byte {
+	var s []byte
+	sh := (*[3]uintptr)(unsafe.Pointer(&s))
+	sh[0] = ptr
+	sh[1] = uintptr(n)
+	sh[2] = uintptr(n)
+	return s
 }

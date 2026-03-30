@@ -75,9 +75,9 @@ func portToPIDTCP(port uint16) uint32 {
 	}
 	// 解析 rows
 	rowSize := unsafe.Sizeof(mibTCPRow2{})
-	base := uintptr(unsafe.Pointer(&table.Table[0]))
+	basePtr := unsafe.Pointer(&table.Table[0])
 	for i := uint32(0); i < count; i++ {
-		row := (*mibTCPRow2)(unsafe.Pointer(base + uintptr(i)*rowSize))
+		row := (*mibTCPRow2)(unsafe.Add(basePtr, uintptr(i)*rowSize))
 		// localPort 在网络字节序中是大端存储在低16位
 		lp := uint16(row.LocalPort>>8) | uint16(row.LocalPort<<8)
 		if lp == port {
@@ -117,9 +117,9 @@ func portToPIDUDP(port uint16) uint32 {
 		return 0
 	}
 	rowSize := unsafe.Sizeof(mibUDPRowOwnerPID{})
-	base := uintptr(unsafe.Pointer(&table.Table[0]))
+	basePtr := unsafe.Pointer(&table.Table[0])
 	for i := uint32(0); i < count; i++ {
-		row := (*mibUDPRowOwnerPID)(unsafe.Pointer(base + uintptr(i)*rowSize))
+		row := (*mibUDPRowOwnerPID)(unsafe.Add(basePtr, uintptr(i)*rowSize))
 		lp := uint16(row.LocalPort>>8) | uint16(row.LocalPort<<8)
 		if lp == port {
 			return row.PID
