@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PingProbeChain } from "../../../../wailsjs/go/main/App";
 import { LinkManageTab } from "./LinkManageTab";
 import type {
+  NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogFilterSource,
   NetworkAssistantRuleAction,
   NetworkAssistantRuleConfig,
@@ -35,6 +36,11 @@ type NetworkAssistantTabProps = {
   onInstallTUN: () => void;
   onEnableTUN: () => void;
   onCloseTUN: () => void;
+  dnsUpstreamConfig: NetworkAssistantDNSUpstreamConfig;
+  isLoadingDNSConfig: boolean;
+  dnsConfigStatus: string;
+  onRefreshDNSConfig: () => void;
+  onSaveDNSConfig: (cfg: NetworkAssistantDNSUpstreamConfig) => void;
   logLines: number;
   onLogLinesChange: (value: number) => void;
   isLoadingLogs: boolean;
@@ -73,7 +79,10 @@ const categoryLabels: Record<string, string> = {
 };
 
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
-  const [subTab, setSubTab] = useState<"settings" | "link" | "forward" | "driver" | "status" | "logs">("settings");
+  const [subTab, setSubTab] = useState<"settings" | "dns" | "link" | "forward" | "driver" | "status" | "logs">("settings");
+  const [dnsEditCIDR, setDnsEditCIDR] = useState("");
+  const [dnsEditWhitelist, setDnsEditWhitelist] = useState("");
+  const [dnsEditDirty, setDnsEditDirty] = useState(false);
   const outputRef = useRef<HTMLPreElement | null>(null);
 
   type TunnelPingState = { ok: boolean | null; durationMS: number | null; message: string };
@@ -126,6 +135,26 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     }
     props.onRefreshRuleConfig();
   }, [props.isLoadingRuleConfig, props.onRefreshRuleConfig, props.ruleConfig, props.status.mode, subTab]);
+
+  useEffect(() => {
+    if (subTab !== "dns") {
+      return;
+    }
+    if (!dnsEditDirty) {
+      setDnsEditCIDR(props.dnsUpstreamConfig.fake_ip_cidr ?? "");
+      setDnsEditWhitelist((props.dnsUpstreamConfig.fake_ip_whitelist ?? []).join("\n"));
+    }
+  }, [subTab, props.dnsUpstreamConfig, dnsEditDirty]);
+
+  useEffect(() => {
+    if (subTab !== "dns") {
+      return;
+    }
+    if (!props.isLoadingDNSConfig) {
+      props.onRefreshDNSConfig();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subTab]);
 
   function isRuleOptionSelected(group: NetworkAssistantRuleGroupConfig, action: NetworkAssistantRuleAction, tunnelNodeID?: string): boolean {
     if (group.action !== action) {
@@ -226,6 +255,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
       <div className="subtab-list" style={{ marginBottom: 12 }}>
         <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")}>模式切换</button>
+        <button className={`subtab-btn ${subTab === "dns" ? "active" : ""}`} onClick={() => setSubTab("dns")}>DNS 配置</button>
         <button className={`subtab-btn ${subTab === "link" ? "active" : ""}`} onClick={() => setSubTab("link")}>链路管理</button>
         <button className={`subtab-btn ${subTab === "forward" ? "active" : ""}`} onClick={() => setSubTab("forward")}>端口转发</button>
         <button className={`subtab-btn ${subTab === "driver" ? "active" : ""}`} onClick={() => setSubTab("driver")}>驱动设置</button>
@@ -282,6 +312,77 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
               {props.ruleConfig.groups.map((group) => renderRuleGroupRow(group, `组：${group.group}`))}
             </div>
           ) : null}
+        </>
+      ) : subTab === "dns" ? (
+        <>
+          <div className="identity-card">
+            <div>Fake IP 模式：当 DNS 解析命中规则时，返回虚假 IP，实际流量由 TUN 层按域名路由</div>
+          </div>
+          <div className="content-actions">
+            <button
+              className="btn"
+              onClick={() => {
+                setDnsEditCIDR(props.dnsUpstreamConfig.fake_ip_cidr ?? "");
+                setDnsEditWhitelist((props.dnsUpstreamConfig.fake_ip_whitelist ?? []).join("\n"));
+                setDnsEditDirty(false);
+              }}
+              disabled={props.isLoadingDNSConfig}
+            >
+              重置编辑
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                const whitelist = dnsEditWhitelist
+                  .split("\n")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
+                props.onSaveDNSConfig({
+                  ...props.dnsUpstreamConfig,
+                  fake_ip_cidr: dnsEditCIDR.trim(),
+                  fake_ip_whitelist: whitelist,
+                });
+                setDnsEditDirty(false);
+              }}
+              disabled={props.isLoadingDNSConfig || !dnsEditDirty}
+            >
+              {props.isLoadingDNSConfig ? "保存中..." : "保存配置"}
+            </button>
+            <button
+              className="btn"
+              onClick={props.onRefreshDNSConfig}
+              disabled={props.isLoadingDNSConfig}
+            >
+              {props.isLoadingDNSConfig ? "加载中..." : "刷新配置"}
+            </button>
+          </div>
+          <div className="status">{props.dnsConfigStatus}</div>
+          <div className="rule-policy-group-list">
+            <div className="rule-policy-group">
+              <div className="rule-policy-group-title">Fake IP CIDR 段</div>
+              <div className="rule-policy-group-desc">分配给 Fake IP 的地址段，例如：198.18.0.0/15</div>
+              <input
+                className="text-input"
+                type="text"
+                value={dnsEditCIDR}
+                placeholder="198.18.0.0/15"
+                onChange={(e) => { setDnsEditCIDR(e.target.value); setDnsEditDirty(true); }}
+                disabled={props.isLoadingDNSConfig}
+              />
+            </div>
+            <div className="rule-policy-group">
+              <div className="rule-policy-group-title">Fake IP 白名单域名</div>
+              <div className="rule-policy-group-desc">每行一个域名，命中白名单的域名不会分配 Fake IP，直接返回真实解析结果。支持前缀通配符，例如：*.local</div>
+              <textarea
+                className="text-input dns-whitelist-textarea"
+                rows={8}
+                value={dnsEditWhitelist}
+                placeholder={"*.local\nlocalhost\ntime.apple.com"}
+                onChange={(e) => { setDnsEditWhitelist(e.target.value); setDnsEditDirty(true); }}
+                disabled={props.isLoadingDNSConfig}
+              />
+            </div>
+          </div>
         </>
       ) : subTab === "link" ? (
         <LinkManageTab key="link-tab" controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} initialSubTab="list" />

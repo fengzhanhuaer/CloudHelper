@@ -36,17 +36,21 @@ var (
 )
 
 type dnsUpstreamConfigFilePayload struct {
-	Prefer     string   `json:"prefer"`
-	DNSServers []string `json:"dns_servers"`
-	DoTServers []string `json:"dot_servers"`
-	DoHServers []string `json:"doh_servers"`
+	Prefer          string   `json:"prefer"`
+	DNSServers      []string `json:"dns_servers"`
+	DoTServers      []string `json:"dot_servers"`
+	DoHServers      []string `json:"doh_servers"`
+	FakeIPCIDR      string   `json:"fake_ip_cidr,omitempty"`
+	FakeIPWhitelist []string `json:"fake_ip_whitelist,omitempty"`
 }
 
 type dnsUpstreamConfig struct {
-	Prefer     string
-	DNSServers []dnsPlainServer
-	DoTServers []dnsDoTServer
-	DoHServers []dnsDoHServer
+	Prefer          string
+	DNSServers      []dnsPlainServer
+	DoTServers      []dnsDoTServer
+	DoHServers      []dnsDoHServer
+	FakeIPCIDR      string
+	FakeIPWhitelist []string
 }
 
 type dnsPlainServer struct {
@@ -93,10 +97,12 @@ func defaultDNSUpstreamConfig() dnsUpstreamConfig {
 
 func cloneDNSUpstreamConfig(source dnsUpstreamConfig) dnsUpstreamConfig {
 	return dnsUpstreamConfig{
-		Prefer:     source.Prefer,
-		DNSServers: append([]dnsPlainServer(nil), source.DNSServers...),
-		DoTServers: append([]dnsDoTServer(nil), source.DoTServers...),
-		DoHServers: append([]dnsDoHServer(nil), source.DoHServers...),
+		Prefer:          source.Prefer,
+		DNSServers:      append([]dnsPlainServer(nil), source.DNSServers...),
+		DoTServers:      append([]dnsDoTServer(nil), source.DoTServers...),
+		DoHServers:      append([]dnsDoHServer(nil), source.DoHServers...),
+		FakeIPCIDR:      source.FakeIPCIDR,
+		FakeIPWhitelist: append([]string(nil), source.FakeIPWhitelist...),
 	}
 }
 
@@ -197,6 +203,41 @@ func loadDNSUpstreamConfigFromDiskLocked(path string) (dnsUpstreamConfig, error)
 	return config, nil
 }
 
+// ensureDNSUpstreamConfigPath 获取 DNS 上游配置文件路径（线程安全）
+func ensureDNSUpstreamConfigPath() (string, error) {
+	dnsUpstreamConfigState.mu.Lock()
+	defer dnsUpstreamConfigState.mu.Unlock()
+	return ensureDNSUpstreamConfigPathLocked()
+}
+
+// readDNSUpstreamConfigPayload 从磁盘读取并解析 DNS 上游配置原始 payload
+func readDNSUpstreamConfigPayload(path string) (dnsUpstreamConfigFilePayload, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return defaultDNSUpstreamConfigFilePayload(), nil
+		}
+		return dnsUpstreamConfigFilePayload{}, err
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return defaultDNSUpstreamConfigFilePayload(), nil
+	}
+	var payload dnsUpstreamConfigFilePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return dnsUpstreamConfigFilePayload{}, fmt.Errorf("parse dns upstream config failed: %w", err)
+	}
+	return payload, nil
+}
+
+// invalidateDNSUpstreamConfigCache 使内存缓存失效，强制下次读取时重新加载文件
+func invalidateDNSUpstreamConfigCache() {
+	dnsUpstreamConfigState.mu.Lock()
+	dnsUpstreamConfigState.loaded = false
+	dnsUpstreamConfigState.lastCheck = time.Time{}
+	dnsUpstreamConfigState.mu.Unlock()
+}
+
 func updateDNSUpstreamConfigFileModTimeLocked(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -224,7 +265,9 @@ func writeDNSUpstreamConfigFile(path string, payload dnsUpstreamConfigFilePayloa
 
 func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstreamConfig {
 	config := dnsUpstreamConfig{
-		Prefer: normalizeDNSUpstreamPrefer(payload.Prefer),
+		Prefer:          normalizeDNSUpstreamPrefer(payload.Prefer),
+		FakeIPCIDR:      strings.TrimSpace(payload.FakeIPCIDR),
+		FakeIPWhitelist: normalizeFakeIPWhitelist(payload.FakeIPWhitelist),
 	}
 
 	for _, rawServer := range payload.DNSServers {

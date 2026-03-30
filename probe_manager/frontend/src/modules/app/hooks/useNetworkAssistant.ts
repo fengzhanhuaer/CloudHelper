@@ -4,17 +4,20 @@ import {
 } from "../services/controller-api";
 import {
 	EnableNetworkAssistantTUN,
+	GetNetworkAssistantDNSUpstreamConfig,
 	GetNetworkAssistantLogs,
 	GetNetworkAssistantRuleConfig,
 	GetNetworkAssistantStatus,
 	InstallNetworkAssistantTUN,
 	RestoreNetworkAssistantDirect,
+	SetNetworkAssistantDNSUpstreamConfig,
 	SetNetworkAssistantMode,
 	SetNetworkAssistantRulePolicy,
 	SyncNetworkAssistant,
 } from "../../../../wailsjs/go/main/App";
 import * as AppBindings from "../../../../wailsjs/go/main/App";
 import type {
+  NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogEntry,
   NetworkAssistantLogFilterSource,
   NetworkAssistantLogResponse,
@@ -95,6 +98,15 @@ function parseLegacyLogEntries(content: string): NetworkAssistantLogEntry[] {
     });
   });
 }
+
+const defaultDNSUpstreamConfig: NetworkAssistantDNSUpstreamConfig = {
+  prefer: "doh",
+  dns_servers: [],
+  dot_servers: [],
+  doh_servers: [],
+  fake_ip_cidr: "",
+  fake_ip_whitelist: [],
+};
 
 export function useNetworkAssistant() {
   const [status, setStatus] = useState<NetworkAssistantStatus>(defaultStatus);
@@ -409,6 +421,45 @@ export function useNetworkAssistant() {
     }
   }, []);
 
+  const [dnsUpstreamConfig, setDnsUpstreamConfig] =
+    useState<NetworkAssistantDNSUpstreamConfig>(defaultDNSUpstreamConfig);
+  const [isLoadingDNSConfig, setIsLoadingDNSConfig] = useState(false);
+  const [dnsConfigStatus, setDnsConfigStatus] = useState("");
+
+  const refreshDNSUpstreamConfig = useCallback(async () => {
+    setIsLoadingDNSConfig(true);
+    setDnsConfigStatus("");
+    try {
+      const cfg = await GetNetworkAssistantDNSUpstreamConfig();
+      setDnsUpstreamConfig(cfg);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      setDnsConfigStatus(`加载失败：${msg}`);
+    } finally {
+      setIsLoadingDNSConfig(false);
+    }
+  }, []);
+
+  const saveDNSUpstreamConfig = useCallback(
+    async (cfg: NetworkAssistantDNSUpstreamConfig) => {
+      setDnsConfigStatus("");
+      try {
+        await SetNetworkAssistantDNSUpstreamConfig(cfg);
+        setDnsUpstreamConfig(cfg);
+        setDnsConfigStatus("保存成功");
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "unknown error";
+        setDnsConfigStatus(`保存失败：${msg}`);
+        throw error;
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    refreshDNSUpstreamConfig();
+  }, [refreshDNSUpstreamConfig]);
+
   return {
     status,
     selectedNode,
@@ -445,5 +496,10 @@ export function useNetworkAssistant() {
     refreshLogs,
     copyLogs,
     clearLogs,
+    dnsUpstreamConfig,
+    isLoadingDNSConfig,
+    dnsConfigStatus,
+    refreshDNSUpstreamConfig,
+    saveDNSUpstreamConfig,
   };
 }

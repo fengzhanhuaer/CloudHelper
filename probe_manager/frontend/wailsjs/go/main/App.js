@@ -50,8 +50,16 @@ export function GetNetworkAssistantLogs(arg1) {
   return window['go']['main']['App']['GetNetworkAssistantLogs'](arg1);
 }
 
+export function GetNetworkAssistantDNSUpstreamConfig() {
+  return window['go']['main']['App']['GetNetworkAssistantDNSUpstreamConfig']();
+}
+
 export function GetNetworkAssistantRuleConfig() {
   return window['go']['main']['App']['GetNetworkAssistantRuleConfig']();
+}
+
+export function SetNetworkAssistantDNSUpstreamConfig(arg1) {
+  return window['go']['main']['App']['SetNetworkAssistantDNSUpstreamConfig'](arg1);
 }
 
 export function GetNetworkAssistantStatus() {

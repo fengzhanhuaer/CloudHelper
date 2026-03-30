@@ -7,6 +7,7 @@ import { SystemSettingsTab } from "./SystemSettingsTab";
 import { TGAssistantTab } from "./TGAssistantTab";
 import type {
   LogSource,
+  NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogFilterSource,
   NetworkAssistantRuleAction,
   NetworkAssistantRuleConfig,
@@ -82,6 +83,11 @@ type TabContentProps = {
   onInstallNetworkTUN: () => void;
   onEnableNetworkTUN: () => void;
   onCloseNetworkTUN: () => void;
+  networkDNSUpstreamConfig: NetworkAssistantDNSUpstreamConfig;
+  isLoadingNetworkDNSConfig: boolean;
+  networkDNSConfigStatus: string;
+  onRefreshNetworkDNSConfig: () => void;
+  onSaveNetworkDNSConfig: (cfg: NetworkAssistantDNSUpstreamConfig) => void;
   networkLogLines: number;
   onNetworkLogLinesChange: (value: number) => void;
   isLoadingNetworkLogs: boolean;
@@ -159,6 +165,11 @@ export function TabContent(props: TabContentProps) {
           onInstallTUN={props.onInstallNetworkTUN}
           onEnableTUN={props.onEnableNetworkTUN}
           onCloseTUN={props.onCloseNetworkTUN}
+          dnsUpstreamConfig={props.networkDNSUpstreamConfig}
+          isLoadingDNSConfig={props.isLoadingNetworkDNSConfig}
+          dnsConfigStatus={props.networkDNSConfigStatus}
+          onRefreshDNSConfig={props.onRefreshNetworkDNSConfig}
+          onSaveDNSConfig={props.onSaveNetworkDNSConfig}
           logLines={props.networkLogLines}
           onLogLinesChange={props.onNetworkLogLinesChange}
           isLoadingLogs={props.isLoadingNetworkLogs}

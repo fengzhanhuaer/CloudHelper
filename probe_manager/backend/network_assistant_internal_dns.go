@@ -113,6 +113,24 @@ func (d *localInternalDNSServer) handlePacket(packet []byte, peerAddr net.Addr) 
 		return
 	}
 
+	// Only handle A/AAAA queries for fake IP
+	isFakeIPQuery := qType == 1 || qType == 28
+	normalizedDomain := normalizeRuleDomain(domain)
+
+	// Check if fake IP mode is enabled and domain is not whitelisted
+	if isFakeIPQuery && normalizedDomain != "" && d.service.shouldUseFakeIP(normalizedDomain) {
+		fakeAddr, fakeErr := d.service.assignFakeIP(normalizedDomain)
+		if fakeErr == nil && fakeAddr != "" {
+			const fakeIPTTL = 10
+			var response []byte
+			response, err = buildDNSSuccessResponse(queryID, domain, 1 /* A */, []string{fakeAddr}, fakeIPTTL)
+			if err == nil && len(response) > 0 {
+				_, _ = d.conn.WriteTo(response, peerAddr)
+			}
+			return
+		}
+	}
+
 	addrs, ttlSeconds, route, resolveErr := d.service.resolveDomainForInternalDNS(domain, qType)
 	if resolveErr == nil && len(addrs) > 0 {
 		d.service.storeDNSRouteHint(addrs, route, ttlSeconds)
@@ -570,6 +588,25 @@ func (s *networkAssistantService) storeDNSRouteHint(addrs []string, route tunnel
 		}
 		s.dnsRouteHints[canonicalIP(ipValue)] = hint
 	}
+	s.mu.Unlock()
+}
+
+func (s *networkAssistantService) storeFakeIPRouteHint(fakeAddr string, domain string, route tunnelRouteDecision) {
+	const fakeIPTTL = 3600
+	expiresAt := time.Now().Add(time.Duration(fakeIPTTL) * time.Second)
+	hint := dnsRouteHintEntry{
+		Direct:  route.Direct,
+		NodeID:  strings.TrimSpace(route.NodeID),
+		Group:   strings.TrimSpace(route.Group),
+		Expires: expiresAt,
+		Domain:  strings.ToLower(strings.TrimSpace(domain)),
+		FakeIP:  true,
+	}
+	s.mu.Lock()
+	if s.dnsRouteHints == nil {
+		s.dnsRouteHints = make(map[string]dnsRouteHintEntry)
+	}
+	s.dnsRouteHints[strings.TrimSpace(fakeAddr)] = hint
 	s.mu.Unlock()
 }
 

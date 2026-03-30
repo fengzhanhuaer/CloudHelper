@@ -26,7 +26,11 @@ export function EnableNetworkAssistantTUN():Promise<backend.NetworkAssistantStat
 
 export function GetNetworkAssistantLogs(arg1:number):Promise<backend.NetworkAssistantLogResponse>;
 
+export function GetNetworkAssistantDNSUpstreamConfig():Promise<backend.NetworkAssistantDNSUpstreamConfig>;
+
 export function GetNetworkAssistantRuleConfig():Promise<backend.NetworkAssistantRuleConfig>;
+
+export function SetNetworkAssistantDNSUpstreamConfig(arg1:backend.NetworkAssistantDNSUpstreamConfig):Promise<void>;
 
 export function GetNetworkAssistantStatus():Promise<backend.NetworkAssistantStatus>;
 

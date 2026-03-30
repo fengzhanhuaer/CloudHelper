@@ -249,6 +249,8 @@ type dnsRouteHintEntry struct {
 	NodeID  string
 	Group   string
 	Expires time.Time
+	Domain  string // non-empty when this is a fake IP entry
+	FakeIP  bool
 }
 
 type tunnelDNSResolveResponse struct {
@@ -302,6 +304,7 @@ type networkAssistantService struct {
 	ruleMuxClients  map[string]*tunnelMuxClient
 	tunUDPRelays    map[string]*localTUNUDPRelay
 	dnsRouteHints   map[string]dnsRouteHintEntry
+	fakeIPPool      *fakeIPPool
 	internalDNS     *localInternalDNSServer
 	logRateState    map[string]time.Time
 
@@ -372,6 +375,20 @@ func (a *App) GetNetworkAssistantStatus() NetworkAssistantStatus {
 		return NetworkAssistantStatus{}
 	}
 	return a.networkAssistant.Status()
+}
+
+func (a *App) GetNetworkAssistantDNSUpstreamConfig() (NetworkAssistantDNSUpstreamConfig, error) {
+	if a.networkAssistant == nil {
+		return NetworkAssistantDNSUpstreamConfig{}, errors.New("network assistant service is not initialized")
+	}
+	return a.networkAssistant.GetDNSUpstreamConfig()
+}
+
+func (a *App) SetNetworkAssistantDNSUpstreamConfig(cfg NetworkAssistantDNSUpstreamConfig) error {
+	if a.networkAssistant == nil {
+		return errors.New("network assistant service is not initialized")
+	}
+	return a.networkAssistant.SetDNSUpstreamConfig(cfg)
 }
 
 func (a *App) SetNetworkAssistantMode(controllerBaseURL, sessionToken, mode, nodeID string) (NetworkAssistantStatus, error) {
