@@ -9,6 +9,8 @@ import type {
   NetworkAssistantRuleConfig,
   NetworkAssistantRuleGroupConfig,
   NetworkAssistantStatus,
+  NetworkProcessInfo,
+  NetworkProcessEvent,
 } from "../types";
 
 const modeLabels: Record<string, string> = {
@@ -48,6 +50,17 @@ type NetworkAssistantTabProps = {
   dnsCacheStatus: string;
   onDNSCacheQueryChange: (value: string) => void;
   onQueryDNSCache: (query: string) => void;
+  processList: NetworkProcessInfo[];
+  isLoadingProcessList: boolean;
+  processListStatus: string;
+  selectedProcess: string;
+  isMonitoring: boolean;
+  processEvents: NetworkProcessEvent[];
+  onRefreshProcessList: () => void;
+  onSelectProcess: (name: string) => void;
+  onStartMonitor: () => void;
+  onStopMonitor: () => void;
+  onClearEvents: () => void;
   logLines: number;
   onLogLinesChange: (value: number) => void;
   isLoadingLogs: boolean;
@@ -86,7 +99,7 @@ const categoryLabels: Record<string, string> = {
 };
 
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
-  const [subTab, setSubTab] = useState<"settings" | "dns" | "cache" | "link" | "forward" | "driver" | "status" | "logs">("settings");
+  const [subTab, setSubTab] = useState<"settings" | "dns" | "cache" | "monitor" | "link" | "forward" | "driver" | "status" | "logs">("settings");
   const [dnsEditCIDR, setDnsEditCIDR] = useState("");
   const [dnsEditWhitelist, setDnsEditWhitelist] = useState("");
   const [dnsEditDirty, setDnsEditDirty] = useState(false);
@@ -264,6 +277,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")}>模式切换</button>
         <button className={`subtab-btn ${subTab === "dns" ? "active" : ""}`} onClick={() => setSubTab("dns")}>DNS 配置</button>
         <button className={`subtab-btn ${subTab === "cache" ? "active" : ""}`} onClick={() => setSubTab("cache")}>DNS 缓存</button>
+        <button className={`subtab-btn ${subTab === "monitor" ? "active" : ""}`} onClick={() => setSubTab("monitor")}>网络监视</button>
         <button className={`subtab-btn ${subTab === "link" ? "active" : ""}`} onClick={() => setSubTab("link")}>链路管理</button>
         <button className={`subtab-btn ${subTab === "forward" ? "active" : ""}`} onClick={() => setSubTab("forward")}>端口转发</button>
         <button className={`subtab-btn ${subTab === "driver" ? "active" : ""}`} onClick={() => setSubTab("driver")}>驱动设置</button>
@@ -538,6 +552,91 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
                     <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 12 }}>{entry.expires_at || "-"}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+
+      {subTab === "monitor" && (
+        <>
+          <div className="content-actions" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <select
+              className="input"
+              style={{ flex: 1, minWidth: 120 }}
+              value={props.selectedProcess}
+              onChange={(e) => props.onSelectProcess(e.target.value)}
+              disabled={props.isMonitoring}
+            >
+              <option value="">-- 选择进程 --</option>
+              {props.processList.map((p) => (
+                <option key={p.pid} value={p.name}>{p.name}</option>
+              ))}
+            </select>
+            <button
+              className="btn"
+              onClick={props.onRefreshProcessList}
+              disabled={props.isLoadingProcessList || props.isMonitoring}
+            >
+              {props.isLoadingProcessList ? "加载中..." : "刷新进程"}
+            </button>
+            {!props.isMonitoring ? (
+              <button
+                className="btn"
+                onClick={props.onStartMonitor}
+                disabled={!props.selectedProcess || props.isMonitoring}
+              >
+                开始监视
+              </button>
+            ) : (
+              <button className="btn" onClick={props.onStopMonitor}>
+                停止监视
+              </button>
+            )}
+            <button
+              className="btn"
+              onClick={props.onClearEvents}
+              disabled={props.isMonitoring}
+            >
+              清空记录
+            </button>
+          </div>
+          {props.processListStatus && <div className="status">{props.processListStatus}</div>}
+          {props.isMonitoring && (
+            <div className="status" style={{ color: "#4ade80" }}>监视中：{props.selectedProcess}</div>
+          )}
+          {props.processEvents.length === 0 ? (
+            <div className="status">暂无网络事件</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
+              <thead>
+                <tr style={{ background: "#f0f0f0" }}>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>时间</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>类型</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名/IP</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>端口</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>路由</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>解析 IP</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...props.processEvents].reverse().map((ev, i) => {
+                  const t = new Date(ev.timestamp);
+                  const timeStr = `${t.getHours().toString().padStart(2,"0")}:${t.getMinutes().toString().padStart(2,"0")}:${t.getSeconds().toString().padStart(2,"0")}.${t.getMilliseconds().toString().padStart(3,"0")}`;
+                  const target = ev.kind === "dns" ? (ev.domain || "-") : (ev.target_ip || "-");
+                  const route = ev.direct ? "直连" : (ev.node_id ? `代理(${ev.node_id})` : "-");
+                  const resolvedIPs = ev.resolved_ips ? ev.resolved_ips.join(", ") : "-";
+                  return (
+                    <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
+                      <td style={{ padding: "4px 8px", fontFamily: "monospace", whiteSpace: "nowrap" }}>{timeStr}</td>
+                      <td style={{ padding: "4px 8px", fontWeight: "bold", color: ev.kind === "dns" ? "#60a5fa" : ev.kind === "tcp" ? "#4ade80" : "#facc15" }}>{ev.kind.toUpperCase()}</td>
+                      <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{target}</td>
+                      <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{ev.target_port ? ev.target_port : "-"}</td>
+                      <td style={{ padding: "4px 8px" }}>{route}</td>
+                      <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 11 }}>{ev.kind === "dns" ? resolvedIPs : "-"}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

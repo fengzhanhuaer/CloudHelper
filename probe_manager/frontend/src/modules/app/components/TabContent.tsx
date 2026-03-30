@@ -13,6 +13,8 @@ import type {
   NetworkAssistantRuleAction,
   NetworkAssistantRuleConfig,
   NetworkAssistantStatus,
+  NetworkProcessEvent,
+  NetworkProcessInfo,
   ReleaseInfo,
   TabKey,
   UpgradeProgress,
@@ -95,6 +97,17 @@ type TabContentProps = {
   networkDNSCacheStatus: string;
   onNetworkDNSCacheQueryChange: (value: string) => void;
   onQueryNetworkDNSCache: (query: string) => void;
+  networkProcessList: NetworkProcessInfo[];
+  isNetworkProcessListLoading: boolean;
+  networkProcessListStatus: string;
+  networkMonitorProcess: string;
+  isNetworkMonitoring: boolean;
+  networkProcessEvents: NetworkProcessEvent[];
+  onRefreshNetworkProcessList: () => void;
+  onSelectNetworkMonitorProcess: (name: string) => void;
+  onStartNetworkMonitor: () => void;
+  onStopNetworkMonitor: () => void;
+  onClearNetworkMonitorEvents: () => void;
   networkLogLines: number;
   onNetworkLogLinesChange: (value: number) => void;
   isLoadingNetworkLogs: boolean;
@@ -183,6 +196,17 @@ export function TabContent(props: TabContentProps) {
           dnsCacheStatus={props.networkDNSCacheStatus}
           onDNSCacheQueryChange={props.onNetworkDNSCacheQueryChange}
           onQueryDNSCache={props.onQueryNetworkDNSCache}
+          processList={props.networkProcessList}
+          isLoadingProcessList={props.isNetworkProcessListLoading}
+          processListStatus={props.networkProcessListStatus}
+          selectedProcess={props.networkMonitorProcess}
+          isMonitoring={props.isNetworkMonitoring}
+          processEvents={props.networkProcessEvents}
+          onRefreshProcessList={props.onRefreshNetworkProcessList}
+          onSelectProcess={props.onSelectNetworkMonitorProcess}
+          onStartMonitor={props.onStartNetworkMonitor}
+          onStopMonitor={props.onStopNetworkMonitor}
+          onClearEvents={props.onClearNetworkMonitorEvents}
           logLines={props.networkLogLines}
           onLogLinesChange={props.onNetworkLogLinesChange}
           isLoadingLogs={props.isLoadingNetworkLogs}

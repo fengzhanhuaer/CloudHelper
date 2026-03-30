@@ -38,6 +38,22 @@ export function ForceRefreshProbeDNSCache(arg1, arg2) {
   return window['go']['main']['App']['ForceRefreshProbeDNSCache'](arg1, arg2);
 }
 
+export function ListNetworkAssistantProcesses() {
+  return window['go']['main']['App']['ListNetworkAssistantProcesses']();
+}
+
+export function StartNetworkAssistantProcessMonitor(arg1) {
+  return window['go']['main']['App']['StartNetworkAssistantProcessMonitor'](arg1);
+}
+
+export function StopNetworkAssistantProcessMonitor() {
+  return window['go']['main']['App']['StopNetworkAssistantProcessMonitor']();
+}
+
+export function QueryNetworkAssistantProcessEvents(arg1) {
+  return window['go']['main']['App']['QueryNetworkAssistantProcessEvents'](arg1);
+}
+
 export function QueryNetworkAssistantDNSCache(arg1) {
   return window['go']['main']['App']['QueryNetworkAssistantDNSCache'](arg1);
 }

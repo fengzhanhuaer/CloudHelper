@@ -136,6 +136,26 @@ export type NetworkAssistantDNSCacheEntry = {
   expires_at: string;
 };
 
+export type NetworkProcessInfo = {
+  pid: number;
+  name: string;
+  exe_path: string;
+};
+
+export type NetworkProcessEventKind = "dns" | "tcp" | "udp";
+
+export type NetworkProcessEvent = {
+  kind: NetworkProcessEventKind;
+  timestamp: number;
+  domain?: string;
+  target_ip?: string;
+  target_port?: number;
+  direct: boolean;
+  node_id?: string;
+  group?: string;
+  resolved_ips?: string[];
+};
+
 export type NetworkAssistantLogSource = "manager" | "controller";
 
 export type NetworkAssistantLogFilterSource = "all" | NetworkAssistantLogSource;

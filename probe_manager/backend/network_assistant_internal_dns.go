@@ -136,6 +136,18 @@ func (d *localInternalDNSServer) handlePacket(packet []byte, peerAddr net.Addr) 
 		d.service.storeDNSRouteHint(addrs, route, ttlSeconds)
 	}
 
+	// 进程监视：记录 DNS 事件
+	if isFakeIPQuery && d.service.processMonitor != nil {
+		var srcPort uint16
+		if udpAddr, ok := peerAddr.(*net.UDPAddr); ok {
+			srcPort = uint16(udpAddr.Port)
+		}
+		d.service.processMonitor.RecordDNSEvent(
+			srcPort, domain, addrs,
+			route.Direct, route.NodeID, route.Group,
+		)
+	}
+
 	var response []byte
 	if resolveErr != nil || len(addrs) == 0 {
 		response, err = buildDNSErrorResponse(queryID, domain, qType, 2)

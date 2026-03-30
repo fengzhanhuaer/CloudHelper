@@ -15,6 +15,10 @@ import {
 	SetNetworkAssistantRulePolicy,
 	SyncNetworkAssistant,
 	QueryNetworkAssistantDNSCache,
+	ListNetworkAssistantProcesses,
+	StartNetworkAssistantProcessMonitor,
+	StopNetworkAssistantProcessMonitor,
+	QueryNetworkAssistantProcessEvents,
 } from "../../../../wailsjs/go/main/App";
 import * as AppBindings from "../../../../wailsjs/go/main/App";
 import type {
@@ -28,6 +32,8 @@ import type {
   NetworkAssistantRuleConfig,
   NetworkAssistantMode,
   NetworkAssistantStatus,
+  NetworkProcessInfo,
+  NetworkProcessEvent,
 } from "../types";
 
 const defaultStatus: NetworkAssistantStatus = {
@@ -484,6 +490,96 @@ export function useNetworkAssistant() {
     }
   }, []);
 
+  // 进程监视
+  const [processList, setProcessList] = useState<NetworkProcessInfo[]>([]);
+  const [isLoadingProcesses, setIsLoadingProcesses] = useState(false);
+  const [processListStatus, setProcessListStatus] = useState("");
+  const [monitorProcessName, setMonitorProcessName] = useState("");
+  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [processEvents, setProcessEvents] = useState<NetworkProcessEvent[]>([]);
+  const [processEventsStatus, setProcessEventsStatus] = useState("");
+  const processEventsLastMs = useCallback(() => {
+    if (processEvents.length === 0) return 0;
+    return processEvents[processEvents.length - 1].timestamp;
+  }, [processEvents]);
+
+  const refreshProcessList = useCallback(async () => {
+    setIsLoadingProcesses(true);
+    setProcessListStatus("");
+    try {
+      const list = await ListNetworkAssistantProcesses();
+      setProcessList(Array.isArray(list) ? list : []);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setProcessListStatus(`获取进程列表失败：${msg}`);
+    } finally {
+      setIsLoadingProcesses(false);
+    }
+  }, []);
+
+  const startProcessMonitor = useCallback(async (name: string) => {
+    try {
+      await StartNetworkAssistantProcessMonitor(name);
+      setMonitorProcessName(name);
+      setIsMonitoring(true);
+      setProcessEvents([]);
+      setProcessEventsStatus("");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setProcessEventsStatus(`启动监视失败：${msg}`);
+    }
+  }, []);
+
+  const clearProcessEvents = useCallback(() => {
+    setProcessEvents([]);
+    setProcessEventsStatus("");
+  }, []);
+
+  const stopProcessMonitor = useCallback(async () => {
+    try {
+      await StopNetworkAssistantProcessMonitor();
+      setIsMonitoring(false);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setProcessEventsStatus(`停止监视失败：${msg}`);
+    }
+  }, []);
+
+  const pollProcessEvents = useCallback(async () => {
+    if (!isMonitoring) return;
+    try {
+      const sinceMs = processEventsLastMs();
+      const raw = await QueryNetworkAssistantProcessEvents(sinceMs > 0 ? sinceMs + 1 : 0);
+      if (Array.isArray(raw) && raw.length > 0) {
+        const events: NetworkProcessEvent[] = raw.map(e => ({
+          kind: e.kind as NetworkProcessEvent["kind"],
+          timestamp: e.timestamp,
+          domain: e.domain,
+          target_ip: e.target_ip,
+          target_port: e.target_port,
+          direct: e.direct,
+          node_id: e.node_id,
+          group: e.group,
+          resolved_ips: e.resolved_ips,
+        }));
+        setProcessEvents(prev => {
+          const combined = [...prev, ...events];
+          // 保留最新 500 条
+          return combined.length > 500 ? combined.slice(combined.length - 500) : combined;
+        });
+      }
+    } catch {
+      // 静默失败，下次重试
+    }
+  }, [isMonitoring, processEventsLastMs]);
+
+  // 监视轮询：每 2 秒刷新一次事件
+  useEffect(() => {
+    if (!isMonitoring) return;
+    const timer = setInterval(pollProcessEvents, 2000);
+    return () => clearInterval(timer);
+  }, [isMonitoring, pollProcessEvents]);
+
   return {
     status,
     selectedNode,
@@ -531,5 +627,17 @@ export function useNetworkAssistant() {
     isDNSCacheLoading,
     dnsCacheStatus,
     queryDNSCache,
+    processList,
+    isLoadingProcesses,
+    processListStatus,
+    refreshProcessList,
+    monitorProcessName,
+    setMonitorProcessName,
+    isMonitoring,
+    startProcessMonitor,
+    stopProcessMonitor,
+    clearProcessEvents,
+    processEvents,
+    processEventsStatus,
   };
 }

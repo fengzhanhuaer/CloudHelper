@@ -342,6 +342,13 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		route.NodeID,
 		route.Group,
 	)
+	// 进程监视：记录 TCP 连接事件
+	if n.service.processMonitor != nil {
+		srcPort := uint16(id.RemotePort)
+		dstIP := id.LocalAddress.String()
+		dstPort := uint16(id.LocalPort)
+		n.service.processMonitor.RecordTCPEvent(srcPort, dstIP, dstPort, route.Direct, route.NodeID, route.Group)
+	}
 	n.relayTCP(inbound, outbound)
 }
 
@@ -407,6 +414,13 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 		route.NodeID,
 		route.Group,
 	)
+	// 进程监视：记录 UDP 连接事件
+	if n.service.processMonitor != nil {
+		srcPort := uint16(id.RemotePort)
+		dstIP := id.LocalAddress.String()
+		dstPort := uint16(id.LocalPort)
+		n.service.processMonitor.RecordUDPEvent(srcPort, dstIP, dstPort, route.Direct, route.NodeID, route.Group)
+	}
 }
 
 func (n *localTUNNetstack) openOutboundTCP(targetAddr string) (net.Conn, tunnelRouteDecision, error) {

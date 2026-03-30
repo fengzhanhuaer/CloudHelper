@@ -322,6 +322,8 @@ type networkAssistantService struct {
 	lastChainRefreshAt map[string]time.Time
 	controlPlaneHosts  map[string]struct{}
 	controlPlaneIPs    map[string]struct{}
+
+	processMonitor *processMonitor
 }
 
 func newNetworkAssistantService() *networkAssistantService {
@@ -366,6 +368,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		logRateState:        make(map[string]time.Time),
 		controlPlaneHosts:   make(map[string]struct{}),
 		controlPlaneIPs:     make(map[string]struct{}),
+		processMonitor:      newProcessMonitor(),
 	}
 	if _, err := getDNSUpstreamConfig(); err != nil {
 		logStore.Appendf(logSourceManager, "init", "failed to load dns upstream config, fallback to defaults: %v", err)
@@ -431,6 +434,36 @@ func (a *App) RestoreNetworkAssistantDirect() (NetworkAssistantStatus, error) {
 		return a.networkAssistant.Status(), err
 	}
 	return a.networkAssistant.Status(), nil
+}
+
+func (a *App) ListNetworkAssistantProcesses() ([]NetworkProcessInfo, error) {
+	if a.networkAssistant == nil {
+		return nil, errors.New("network assistant service is not initialized")
+	}
+	return listRunningProcesses(), nil
+}
+
+func (a *App) StartNetworkAssistantProcessMonitor(processName string) error {
+	if a.networkAssistant == nil {
+		return errors.New("network assistant service is not initialized")
+	}
+	a.networkAssistant.processMonitor.Start(processName)
+	return nil
+}
+
+func (a *App) StopNetworkAssistantProcessMonitor() error {
+	if a.networkAssistant == nil {
+		return errors.New("network assistant service is not initialized")
+	}
+	a.networkAssistant.processMonitor.Stop()
+	return nil
+}
+
+func (a *App) QueryNetworkAssistantProcessEvents(sinceMs int64) ([]NetworkProcessEvent, error) {
+	if a.networkAssistant == nil {
+		return nil, errors.New("network assistant service is not initialized")
+	}
+	return a.networkAssistant.processMonitor.QueryEvents(sinceMs), nil
 }
 
 func (a *App) QueryNetworkAssistantDNSCache(query string) ([]NetworkAssistantDNSCacheEntry, error) {

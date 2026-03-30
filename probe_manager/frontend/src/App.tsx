@@ -203,6 +203,17 @@ function App() {
             networkDNSCacheStatus={networkAssistant.dnsCacheStatus}
             onNetworkDNSCacheQueryChange={networkAssistant.setDnsCacheQuery}
             onQueryNetworkDNSCache={networkAssistant.queryDNSCache}
+            networkProcessList={networkAssistant.processList}
+            isNetworkProcessListLoading={networkAssistant.isLoadingProcesses}
+            networkProcessListStatus={networkAssistant.processListStatus}
+            networkMonitorProcess={networkAssistant.monitorProcessName}
+            isNetworkMonitoring={networkAssistant.isMonitoring}
+            networkProcessEvents={networkAssistant.processEvents}
+            onRefreshNetworkProcessList={networkAssistant.refreshProcessList}
+            onSelectNetworkMonitorProcess={networkAssistant.setMonitorProcessName}
+            onStartNetworkMonitor={() => networkAssistant.startProcessMonitor(networkAssistant.monitorProcessName)}
+            onStopNetworkMonitor={networkAssistant.stopProcessMonitor}
+            onClearNetworkMonitorEvents={networkAssistant.clearProcessEvents}
             networkLogLines={networkAssistant.logLines}
             onNetworkLogLinesChange={networkAssistant.setLogLines}
             isLoadingNetworkLogs={networkAssistant.isLoadingLogs}

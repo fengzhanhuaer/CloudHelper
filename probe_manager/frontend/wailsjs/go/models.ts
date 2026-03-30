@@ -390,7 +390,53 @@ export namespace backend {
 		        return new classs(a);
 		    }
 		    return a;
-		}
-	}
-
-}
+		    }
+		   }
+		  
+		   export class NetworkProcessInfo {
+		       pid: number;
+		       name: string;
+		       exe_path: string;
+		   
+		       static createFrom(source: any = {}) {
+		           return new NetworkProcessInfo(source);
+		       }
+		   
+		       constructor(source: any = {}) {
+		           if ('string' === typeof source) source = JSON.parse(source);
+		           this.pid = source["pid"];
+		           this.name = source["name"];
+		           this.exe_path = source["exe_path"];
+		       }
+		   }
+		  
+		   export class NetworkProcessEvent {
+		       kind: string;
+		       timestamp: number;
+		       domain: string;
+		       target_ip: string;
+		       target_port: number;
+		       direct: boolean;
+		       node_id: string;
+		       group: string;
+		       resolved_ips: string[];
+		   
+		       static createFrom(source: any = {}) {
+		           return new NetworkProcessEvent(source);
+		       }
+		   
+		       constructor(source: any = {}) {
+		           if ('string' === typeof source) source = JSON.parse(source);
+		           this.kind = source["kind"];
+		           this.timestamp = source["timestamp"];
+		           this.domain = source["domain"];
+		           this.target_ip = source["target_ip"];
+		           this.target_port = source["target_port"];
+		           this.direct = source["direct"];
+		           this.node_id = source["node_id"];
+		           this.group = source["group"];
+		           this.resolved_ips = source["resolved_ips"];
+		       }
+		   }
+		  
+		  }
