@@ -126,6 +126,16 @@ export type NetworkAssistantDNSUpstreamConfig = {
   fake_ip_whitelist: string[];
 };
 
+export type NetworkAssistantDNSCacheEntry = {
+  domain: string;
+  ip: string;
+  fake_ip: boolean;
+  direct: boolean;
+  node_id: string;
+  group: string;
+  expires_at: string;
+};
+
 export type NetworkAssistantLogSource = "manager" | "controller";
 
 export type NetworkAssistantLogFilterSource = "all" | NetworkAssistantLogSource;

@@ -225,6 +225,23 @@ func (p *fakeIPPool) nextIPLocked() string {
 	return ""
 }
 
+// ListAll 返回当前所有未过期的 fake IP 条目，map key 为 fake IP 字符串。
+func (p *fakeIPPool) ListAll() map[string]fakeIPEntry {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	result := make(map[string]fakeIPEntry, len(p.ipToEntry))
+	for ip, entry := range p.ipToEntry {
+		if !now.After(entry.Expires) {
+			result[ip] = entry
+		}
+	}
+	return result
+}
+
 // pruneExpiredLocked 清理过期条目
 // 调用者必须持有 p.mu
 func (p *fakeIPPool) pruneExpiredLocked() {

@@ -14,9 +14,11 @@ import {
 	SetNetworkAssistantMode,
 	SetNetworkAssistantRulePolicy,
 	SyncNetworkAssistant,
+	QueryNetworkAssistantDNSCache,
 } from "../../../../wailsjs/go/main/App";
 import * as AppBindings from "../../../../wailsjs/go/main/App";
 import type {
+  NetworkAssistantDNSCacheEntry,
   NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogEntry,
   NetworkAssistantLogFilterSource,
@@ -460,6 +462,28 @@ export function useNetworkAssistant() {
     refreshDNSUpstreamConfig();
   }, [refreshDNSUpstreamConfig]);
 
+  // DNS Cache 查询
+  const [dnsCacheEntries, setDnsCacheEntries] = useState<NetworkAssistantDNSCacheEntry[]>([]);
+  const [dnsCacheQuery, setDnsCacheQuery] = useState("");
+  const [isDNSCacheLoading, setIsDNSCacheLoading] = useState(false);
+  const [dnsCacheStatus, setDnsCacheStatus] = useState("");
+
+  const queryDNSCache = useCallback(async (query: string) => {
+    setIsDNSCacheLoading(true);
+    setDnsCacheStatus("");
+    try {
+      const entries = await QueryNetworkAssistantDNSCache(query);
+      setDnsCacheEntries(Array.isArray(entries) ? entries : []);
+      setDnsCacheStatus("");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setDnsCacheStatus(`查询失败：${msg}`);
+      setDnsCacheEntries([]);
+    } finally {
+      setIsDNSCacheLoading(false);
+    }
+  }, []);
+
   return {
     status,
     selectedNode,
@@ -501,5 +525,11 @@ export function useNetworkAssistant() {
     dnsConfigStatus,
     refreshDNSUpstreamConfig,
     saveDNSUpstreamConfig,
+    dnsCacheEntries,
+    dnsCacheQuery,
+    setDnsCacheQuery,
+    isDNSCacheLoading,
+    dnsCacheStatus,
+    queryDNSCache,
   };
 }

@@ -197,6 +197,12 @@ function App() {
             networkDNSConfigStatus={networkAssistant.dnsConfigStatus}
             onRefreshNetworkDNSConfig={networkAssistant.refreshDNSUpstreamConfig}
             onSaveNetworkDNSConfig={networkAssistant.saveDNSUpstreamConfig}
+            networkDNSCacheEntries={networkAssistant.dnsCacheEntries}
+            networkDNSCacheQuery={networkAssistant.dnsCacheQuery}
+            isNetworkDNSCacheLoading={networkAssistant.isDNSCacheLoading}
+            networkDNSCacheStatus={networkAssistant.dnsCacheStatus}
+            onNetworkDNSCacheQueryChange={networkAssistant.setDnsCacheQuery}
+            onQueryNetworkDNSCache={networkAssistant.queryDNSCache}
             networkLogLines={networkAssistant.logLines}
             onNetworkLogLinesChange={networkAssistant.setLogLines}
             isLoadingNetworkLogs={networkAssistant.isLoadingLogs}

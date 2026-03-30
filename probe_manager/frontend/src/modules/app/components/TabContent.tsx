@@ -7,6 +7,7 @@ import { SystemSettingsTab } from "./SystemSettingsTab";
 import { TGAssistantTab } from "./TGAssistantTab";
 import type {
   LogSource,
+  NetworkAssistantDNSCacheEntry,
   NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogFilterSource,
   NetworkAssistantRuleAction,
@@ -88,6 +89,12 @@ type TabContentProps = {
   networkDNSConfigStatus: string;
   onRefreshNetworkDNSConfig: () => void;
   onSaveNetworkDNSConfig: (cfg: NetworkAssistantDNSUpstreamConfig) => void;
+  networkDNSCacheEntries: NetworkAssistantDNSCacheEntry[];
+  networkDNSCacheQuery: string;
+  isNetworkDNSCacheLoading: boolean;
+  networkDNSCacheStatus: string;
+  onNetworkDNSCacheQueryChange: (value: string) => void;
+  onQueryNetworkDNSCache: (query: string) => void;
   networkLogLines: number;
   onNetworkLogLinesChange: (value: number) => void;
   isLoadingNetworkLogs: boolean;
@@ -170,6 +177,12 @@ export function TabContent(props: TabContentProps) {
           dnsConfigStatus={props.networkDNSConfigStatus}
           onRefreshDNSConfig={props.onRefreshNetworkDNSConfig}
           onSaveDNSConfig={props.onSaveNetworkDNSConfig}
+          dnsCacheEntries={props.networkDNSCacheEntries}
+          dnsCacheQuery={props.networkDNSCacheQuery}
+          isDNSCacheLoading={props.isNetworkDNSCacheLoading}
+          dnsCacheStatus={props.networkDNSCacheStatus}
+          onDNSCacheQueryChange={props.onNetworkDNSCacheQueryChange}
+          onQueryDNSCache={props.onQueryNetworkDNSCache}
           logLines={props.networkLogLines}
           onLogLinesChange={props.onNetworkLogLinesChange}
           isLoadingLogs={props.isLoadingNetworkLogs}

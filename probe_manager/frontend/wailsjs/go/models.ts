@@ -170,6 +170,30 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class NetworkAssistantDNSCacheEntry {
+	    domain: string;
+	    ip: string;
+	    fake_ip: boolean;
+	    direct: boolean;
+	    node_id: string;
+	    group: string;
+	    expires_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new NetworkAssistantDNSCacheEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.domain = source["domain"];
+	        this.ip = source["ip"];
+	        this.fake_ip = source["fake_ip"];
+	        this.direct = source["direct"];
+	        this.node_id = source["node_id"];
+	        this.group = source["group"];
+	        this.expires_at = source["expires_at"];
+	    }
+	}
 	export class NetworkAssistantStatus {
 	    enabled: boolean;
 	    mode: string;

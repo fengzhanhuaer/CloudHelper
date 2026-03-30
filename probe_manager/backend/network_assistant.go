@@ -253,6 +253,17 @@ type dnsRouteHintEntry struct {
 	FakeIP  bool
 }
 
+// NetworkAssistantDNSCacheEntry 是单条 DNS/路由缓存记录，供前端展示。
+type NetworkAssistantDNSCacheEntry struct {
+	Domain    string `json:"domain"`
+	IP        string `json:"ip"`
+	FakeIP    bool   `json:"fake_ip"`
+	Direct    bool   `json:"direct"`
+	NodeID    string `json:"node_id"`
+	Group     string `json:"group"`
+	ExpiresAt string `json:"expires_at"` // RFC3339
+}
+
 type tunnelDNSResolveResponse struct {
 	Addrs []string `json:"addrs"`
 	TTL   int      `json:"ttl"`
@@ -420,6 +431,89 @@ func (a *App) RestoreNetworkAssistantDirect() (NetworkAssistantStatus, error) {
 		return a.networkAssistant.Status(), err
 	}
 	return a.networkAssistant.Status(), nil
+}
+
+func (a *App) QueryNetworkAssistantDNSCache(query string) ([]NetworkAssistantDNSCacheEntry, error) {
+	if a.networkAssistant == nil {
+		return nil, errors.New("network assistant service is not initialized")
+	}
+	return a.networkAssistant.QueryDNSCache(query), nil
+}
+
+// QueryDNSCache 返回匹配 query 的 DNS 路由缓存条目。
+// query 为空时返回全部；query 为 IP 时按 IP 查；query 为域名时按域名查。
+func (s *networkAssistantService) QueryDNSCache(query string) []NetworkAssistantDNSCacheEntry {
+	q := strings.ToLower(strings.TrimSpace(query))
+
+	s.mu.RLock()
+	hints := s.dnsRouteHints
+	pool := s.fakeIPPool
+	s.mu.RUnlock()
+
+	now := time.Now()
+	seen := make(map[string]struct{})
+	var result []NetworkAssistantDNSCacheEntry
+
+	add := func(e NetworkAssistantDNSCacheEntry) {
+		key := e.IP + "|" + e.Domain
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		result = append(result, e)
+	}
+
+	// 1. 遍历 dnsRouteHints（包含 fake IP 和普通 DNS hint）
+	for ip, hint := range hints {
+		if now.After(hint.Expires) {
+			continue
+		}
+		if q != "" {
+			if !strings.Contains(strings.ToLower(ip), q) && !strings.Contains(strings.ToLower(hint.Domain), q) {
+				continue
+			}
+		}
+		add(NetworkAssistantDNSCacheEntry{
+			Domain:    hint.Domain,
+			IP:        ip,
+			FakeIP:    hint.FakeIP,
+			Direct:    hint.Direct,
+			NodeID:    hint.NodeID,
+			Group:     hint.Group,
+			ExpiresAt: hint.Expires.Format(time.RFC3339),
+		})
+	}
+
+	// 2. 遍历 fakeIPPool（补充 pool 中有但 hint map 没有的条目）
+	if pool != nil {
+		for ip, entry := range pool.ListAll() {
+			ipStr := strings.TrimSpace(ip)
+			domain := strings.TrimSpace(entry.Domain)
+			if q != "" {
+				if !strings.Contains(strings.ToLower(ipStr), q) && !strings.Contains(strings.ToLower(domain), q) {
+					continue
+				}
+			}
+			add(NetworkAssistantDNSCacheEntry{
+				Domain:    domain,
+				IP:        ipStr,
+				FakeIP:    true,
+				Direct:    entry.Route.Direct,
+				NodeID:    entry.Route.NodeID,
+				Group:     entry.Route.Group,
+				ExpiresAt: entry.Expires.Format(time.RFC3339),
+			})
+		}
+	}
+
+	// 按 IP 字段排序，方便展示
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Domain != result[j].Domain {
+			return result[i].Domain < result[j].Domain
+		}
+		return result[i].IP < result[j].IP
+	})
+	return result
 }
 
 func (a *App) ForceRefreshProbeDNSCache(controllerBaseURL, sessionToken string) (string, error) {

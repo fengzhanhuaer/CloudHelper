@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PingProbeChain } from "../../../../wailsjs/go/main/App";
 import { LinkManageTab } from "./LinkManageTab";
 import type {
+  NetworkAssistantDNSCacheEntry,
   NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogFilterSource,
   NetworkAssistantRuleAction,
@@ -41,6 +42,12 @@ type NetworkAssistantTabProps = {
   dnsConfigStatus: string;
   onRefreshDNSConfig: () => void;
   onSaveDNSConfig: (cfg: NetworkAssistantDNSUpstreamConfig) => void;
+  dnsCacheEntries: NetworkAssistantDNSCacheEntry[];
+  dnsCacheQuery: string;
+  isDNSCacheLoading: boolean;
+  dnsCacheStatus: string;
+  onDNSCacheQueryChange: (value: string) => void;
+  onQueryDNSCache: (query: string) => void;
   logLines: number;
   onLogLinesChange: (value: number) => void;
   isLoadingLogs: boolean;
@@ -79,7 +86,7 @@ const categoryLabels: Record<string, string> = {
 };
 
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
-  const [subTab, setSubTab] = useState<"settings" | "dns" | "link" | "forward" | "driver" | "status" | "logs">("settings");
+  const [subTab, setSubTab] = useState<"settings" | "dns" | "cache" | "link" | "forward" | "driver" | "status" | "logs">("settings");
   const [dnsEditCIDR, setDnsEditCIDR] = useState("");
   const [dnsEditWhitelist, setDnsEditWhitelist] = useState("");
   const [dnsEditDirty, setDnsEditDirty] = useState(false);
@@ -256,6 +263,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
       <div className="subtab-list" style={{ marginBottom: 12 }}>
         <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")}>模式切换</button>
         <button className={`subtab-btn ${subTab === "dns" ? "active" : ""}`} onClick={() => setSubTab("dns")}>DNS 配置</button>
+        <button className={`subtab-btn ${subTab === "cache" ? "active" : ""}`} onClick={() => setSubTab("cache")}>DNS 缓存</button>
         <button className={`subtab-btn ${subTab === "link" ? "active" : ""}`} onClick={() => setSubTab("link")}>链路管理</button>
         <button className={`subtab-btn ${subTab === "forward" ? "active" : ""}`} onClick={() => setSubTab("forward")}>端口转发</button>
         <button className={`subtab-btn ${subTab === "driver" ? "active" : ""}`} onClick={() => setSubTab("driver")}>驱动设置</button>
@@ -481,6 +489,58 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           <div className="status">日志筛选：{props.logVisibleCount}/{props.logTotalCount}</div>
           <div className="status">{props.logCopyStatus || "复制状态：未执行"}</div>
           <pre ref={outputRef} className="log-viewer-output">{props.logContent || "暂无网络助手日志"}</pre>
+        </>
+      )}
+
+      {subTab === "cache" && (
+        <>
+          <div className="content-actions" style={{ gap: 8, alignItems: "center" }}>
+            <input
+              type="text"
+              className="input"
+              style={{ flex: 1, minWidth: 0 }}
+              placeholder="输入 IP 或域名查询（留空查询全部）"
+              value={props.dnsCacheQuery}
+              onChange={(e) => props.onDNSCacheQueryChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") props.onQueryDNSCache(props.dnsCacheQuery); }}
+            />
+            <button
+              className="btn"
+              onClick={() => props.onQueryDNSCache(props.dnsCacheQuery)}
+              disabled={props.isDNSCacheLoading}
+            >
+              {props.isDNSCacheLoading ? "查询中..." : "查询"}
+            </button>
+          </div>
+          {props.dnsCacheStatus && <div className="status">{props.dnsCacheStatus}</div>}
+          {props.dnsCacheEntries.length === 0 && !props.isDNSCacheLoading ? (
+            <div className="status">暂无缓存记录</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
+              <thead>
+                <tr style={{ background: "#f0f0f0" }}>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>Fake IP</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>路由</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>代理组</th>
+                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>过期时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {props.dnsCacheEntries.map((entry, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
+                    <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.domain || "-"}</td>
+                    <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.ip || "-"}</td>
+                    <td style={{ padding: "4px 8px" }}>{entry.fake_ip ? "是" : "否"}</td>
+                    <td style={{ padding: "4px 8px" }}>{entry.direct ? "直连" : (entry.node_id ? `代理(${entry.node_id})` : "-")}</td>
+                    <td style={{ padding: "4px 8px" }}>{entry.group || "-"}</td>
+                    <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 12 }}>{entry.expires_at || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </>
       )}
 
