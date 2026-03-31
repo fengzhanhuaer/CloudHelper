@@ -83,6 +83,7 @@ type cpuSampler struct {
 type probeChainPortForwardMessage struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	EntrySide  string `json:"entry_side"`
 	ListenHost string `json:"listen_host"`
 	ListenPort int    `json:"listen_port"`
 	TargetHost string `json:"target_host"`

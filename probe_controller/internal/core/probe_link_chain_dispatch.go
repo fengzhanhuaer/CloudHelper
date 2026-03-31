@@ -145,6 +145,7 @@ func buildProbeChainPortForwardCommands(values []probeLinkChainPortForwardConfig
 		out = append(out, probeChainPortForwardCommand{
 			ID:         strings.TrimSpace(item.ID),
 			Name:       strings.TrimSpace(item.Name),
+			EntrySide:  strings.TrimSpace(item.EntrySide),
 			ListenHost: strings.TrimSpace(item.ListenHost),
 			ListenPort: item.ListenPort,
 			TargetHost: strings.TrimSpace(item.TargetHost),

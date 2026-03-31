@@ -75,6 +75,7 @@ type probeChainRuntime struct {
 	httpsServer       *http.Server
 	http3Server       *http3.Server
 	downstreamSession *yamux.Session
+	upstreamSession   *yamux.Session
 	bridgeMu          sync.Mutex
 	forwardMu         sync.Mutex
 	tcpForwards       []net.Listener
@@ -85,6 +86,7 @@ type probeChainRuntime struct {
 type probeChainRuntimePortForward struct {
 	ID         string
 	Name       string
+	EntrySide  string
 	ListenHost string
 	ListenPort int
 	TargetHost string
@@ -226,6 +228,9 @@ const (
 	probeChainPortForwardNetworkTCP  = "tcp"
 	probeChainPortForwardNetworkUDP  = "udp"
 	probeChainPortForwardNetworkBoth = "both"
+
+	probeChainPortForwardEntryChainEntry = "chain_entry"
+	probeChainPortForwardEntryChainExit  = "chain_exit"
 
 	probeChainPortForwardSessionIdleTTL       = 90 * time.Second
 	probeChainPortForwardSessionGCInterval    = 15 * time.Second
@@ -393,6 +398,30 @@ func parseProbeChainPortForwardNetwork(raw string) (string, bool) {
 	}
 }
 
+func normalizeProbeChainPortForwardEntrySide(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case probeChainPortForwardEntryChainExit, "exit", "egress":
+		return probeChainPortForwardEntryChainExit
+	default:
+		return probeChainPortForwardEntryChainEntry
+	}
+}
+
+func parseProbeChainPortForwardEntrySide(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", true
+	}
+	switch strings.ToLower(trimmed) {
+	case probeChainPortForwardEntryChainEntry, "entry", "ingress":
+		return probeChainPortForwardEntryChainEntry, true
+	case probeChainPortForwardEntryChainExit, "exit", "egress":
+		return probeChainPortForwardEntryChainExit, true
+	default:
+		return "", false
+	}
+}
+
 func normalizeProbeChainPortForwardID(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -430,6 +459,13 @@ func normalizeProbeChainPortForwards(values []probeChainPortForwardMessage) ([]p
 		if strings.TrimSpace(network) == "" {
 			network = probeChainPortForwardNetworkTCP
 		}
+		entrySide, ok := parseProbeChainPortForwardEntrySide(item.EntrySide)
+		if !ok {
+			return nil, fmt.Errorf("port_forwards entry_side must be chain_entry/chain_exit")
+		}
+		if strings.TrimSpace(entrySide) == "" {
+			entrySide = probeChainPortForwardEntryChainEntry
+		}
 		id := normalizeProbeChainPortForwardID(item.ID)
 		if _, exists := seen[id]; exists {
 			continue
@@ -442,6 +478,7 @@ func normalizeProbeChainPortForwards(values []probeChainPortForwardMessage) ([]p
 		out = append(out, probeChainRuntimePortForward{
 			ID:         id,
 			Name:       strings.TrimSpace(item.Name),
+			EntrySide:  entrySide,
 			ListenHost: listenHost,
 			ListenPort: listenPort,
 			TargetHost: targetHost,
@@ -462,6 +499,7 @@ func buildProbeChainPortForwardMessagesFromRuntime(values []probeChainRuntimePor
 		out = append(out, probeChainPortForwardMessage{
 			ID:         strings.TrimSpace(item.ID),
 			Name:       strings.TrimSpace(item.Name),
+			EntrySide:  strings.TrimSpace(item.EntrySide),
 			ListenHost: strings.TrimSpace(item.ListenHost),
 			ListenPort: item.ListenPort,
 			TargetHost: strings.TrimSpace(item.TargetHost),
@@ -650,6 +688,7 @@ type probeChainBridgeDialTarget struct {
 	LinkLayer        string
 	RoleHeader       string
 	AssignDownstream bool
+	AssignUpstream   bool
 	AcceptStreams    bool
 	Tag              string
 }
@@ -684,6 +723,7 @@ func startProbeChainBridgeWorkers(runtime *probeChainRuntime) {
 			LinkLayer:        normalizeProbeChainLinkLayer(cfg.prevLinkLayer),
 			RoleHeader:       probeChainBridgeRoleToPrev,
 			AssignDownstream: false,
+			AssignUpstream:   true,
 			AcceptStreams:    true,
 			Tag:              "upstream-reverse",
 		}
@@ -693,12 +733,22 @@ func startProbeChainBridgeWorkers(runtime *probeChainRuntime) {
 	}
 }
 
-func shouldStartProbeChainPortForwards(role string) bool {
-	switch normalizeProbeChainRole(role) {
-	case "entry", "entry_exit":
-		return true
+func shouldRunProbeChainPortForwardOnRole(role string, entrySide string) bool {
+	switch normalizeProbeChainPortForwardEntrySide(entrySide) {
+	case probeChainPortForwardEntryChainExit:
+		switch normalizeProbeChainRole(role) {
+		case "exit", "entry_exit":
+			return true
+		default:
+			return false
+		}
 	default:
-		return false
+		switch normalizeProbeChainRole(role) {
+		case "entry", "entry_exit":
+			return true
+		default:
+			return false
+		}
 	}
 }
 
@@ -724,12 +774,12 @@ func startProbeChainPortForwardWorkers(runtime *probeChainRuntime) {
 	if runtime == nil {
 		return
 	}
-	if !shouldStartProbeChainPortForwards(runtime.cfg.role) {
-		return
-	}
 	for _, item := range runtime.cfg.portForwards {
 		cfg := item
 		if !cfg.Enabled {
+			continue
+		}
+		if !shouldRunProbeChainPortForwardOnRole(runtime.cfg.role, cfg.EntrySide) {
 			continue
 		}
 		listenHost := strings.TrimSpace(cfg.ListenHost)
@@ -773,7 +823,19 @@ func buildProbeChainPortForwardTarget(cfg probeChainRuntimePortForward) (string,
 	return net.JoinHostPort(host, strconv.Itoa(cfg.TargetPort)), nil
 }
 
-func openProbeChainPortForwardStream(runtime *probeChainRuntime, network string, targetAddr string) (net.Conn, error) {
+func openProbeChainPortForwardLocalTarget(network string, targetAddr string) (net.Conn, error) {
+	requestedNetwork := strings.ToLower(strings.TrimSpace(network))
+	if requestedNetwork == "" {
+		requestedNetwork = probeChainPortForwardNetworkTCP
+	}
+	if requestedNetwork != probeChainPortForwardNetworkTCP {
+		return nil, errors.New("single-hop udp port forward is not supported")
+	}
+	dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
+	return dialer.Dial("tcp", strings.TrimSpace(targetAddr))
+}
+
+func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide string, network string, targetAddr string) (net.Conn, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
@@ -781,14 +843,26 @@ func openProbeChainPortForwardStream(runtime *probeChainRuntime, network string,
 	if requestedNetwork == "" {
 		requestedNetwork = probeChainPortForwardNetworkTCP
 	}
-	if runtime.cfg.nextAuthMode == "proxy" {
-		if requestedNetwork != probeChainPortForwardNetworkTCP {
-			return nil, errors.New("single-hop udp port forward is not supported")
-		}
-		dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-		return dialer.Dial("tcp", strings.TrimSpace(targetAddr))
+	normalizedEntrySide := normalizeProbeChainPortForwardEntrySide(entrySide)
+	role := normalizeProbeChainRole(runtime.cfg.role)
+	if role == "entry_exit" {
+		return openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
 	}
-	stream, err := openProbeChainDownstreamStream(runtime, probeChainDownstreamOpenTimeout)
+
+	var (
+		stream        net.Conn
+		err           error
+		failurePrompt string
+	)
+	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
+		stream, err = openProbeChainUpstreamStream(runtime, probeChainDownstreamOpenTimeout)
+		failurePrompt = "open upstream target failed"
+	} else if runtime.cfg.nextAuthMode == "proxy" {
+		return openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
+	} else {
+		stream, err = openProbeChainDownstreamStream(runtime, probeChainDownstreamOpenTimeout)
+		failurePrompt = "open downstream target failed"
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -815,7 +889,7 @@ func openProbeChainPortForwardStream(runtime *probeChainRuntime, network string,
 		_ = stream.Close()
 		message := strings.TrimSpace(response.Error)
 		if message == "" {
-			message = "open downstream target failed"
+			message = failurePrompt
 		}
 		return nil, errors.New(message)
 	}
@@ -847,7 +921,7 @@ func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 		}
 		go func(localConn net.Conn) {
 			defer localConn.Close()
-			downstream, openErr := openProbeChainPortForwardStream(runtime, probeChainPortForwardNetworkTCP, targetAddr)
+			downstream, openErr := openProbeChainPortForwardStream(runtime, cfg.EntrySide, probeChainPortForwardNetworkTCP, targetAddr)
 			if openErr != nil {
 				log.Printf("probe chain tcp forward open failed: chain=%s id=%s target=%s err=%v", runtime.cfg.chainID, cfg.ID, targetAddr, openErr)
 				return
@@ -951,7 +1025,7 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 	}()
 
 	openSession := func(key string, addr net.Addr) (*udpForwardSession, error) {
-		stream, openErr := openProbeChainPortForwardStream(runtime, probeChainPortForwardNetworkUDP, targetAddr)
+		stream, openErr := openProbeChainPortForwardStream(runtime, cfg.EntrySide, probeChainPortForwardNetworkUDP, targetAddr)
 		if openErr != nil {
 			return nil, openErr
 		}
@@ -1069,13 +1143,23 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 		if target.AssignDownstream {
 			runtime.setDownstreamSession(session)
 		}
-		if target.AcceptStreams {
-			go acceptProbeChainBridgeStreams(runtime, session, target.Tag)
+		if target.AssignUpstream {
+			runtime.setUpstreamSession(session)
+		}
+		if target.AcceptStreams || target.AssignDownstream || target.AssignUpstream {
+			routeDirection := "forward"
+			if target.AssignDownstream {
+				routeDirection = "reverse"
+			}
+			go acceptProbeChainBridgeStreams(runtime, session, target.Tag, routeDirection)
 		}
 
 		waitProbeChainBridgeSession(runtime.stopCh, session)
 		if target.AssignDownstream {
 			runtime.clearDownstreamSession(session)
+		}
+		if target.AssignUpstream {
+			runtime.clearUpstreamSession(session)
 		}
 		_ = session.Close()
 		_ = conn.Close()
@@ -1126,7 +1210,7 @@ func waitProbeChainBridgeSession(stopCh <-chan struct{}, session *yamux.Session)
 	}
 }
 
-func acceptProbeChainBridgeStreams(runtime *probeChainRuntime, session *yamux.Session, tag string) {
+func acceptProbeChainBridgeStreams(runtime *probeChainRuntime, session *yamux.Session, tag string, routeDirection string) {
 	if runtime == nil || session == nil {
 		return
 	}
@@ -1139,7 +1223,11 @@ func acceptProbeChainBridgeStreams(runtime *probeChainRuntime, session *yamux.Se
 			log.Printf("probe chain bridge accept failed: chain=%s tag=%s err=%v", runtime.cfg.chainID, strings.TrimSpace(tag), acceptErr)
 			return
 		}
-		go handleProbeChainConn(runtime, stream)
+		if strings.EqualFold(strings.TrimSpace(routeDirection), "reverse") {
+			go handleProbeChainReverseConn(runtime, stream)
+		} else {
+			go handleProbeChainConn(runtime, stream)
+		}
 	}
 }
 
@@ -1372,10 +1460,14 @@ func handleProbeChainBridgeRelayHTTP(runtime *probeChainRuntime, bridgeRole stri
 	role := normalizeProbeChainBridgeRole(bridgeRole)
 	if role == probeChainBridgeRoleToPrev {
 		runtime.setDownstreamSession(session)
+		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge", "reverse")
 		waitProbeChainBridgeSession(runtime.stopCh, session)
 		runtime.clearDownstreamSession(session)
 	} else {
-		acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge")
+		runtime.setUpstreamSession(session)
+		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge", "forward")
+		waitProbeChainBridgeSession(runtime.stopCh, session)
+		runtime.clearUpstreamSession(session)
 	}
 	_ = session.Close()
 	<-done
@@ -1387,7 +1479,9 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	}
 	rt.bridgeMu.Lock()
 	downstreamSession := rt.downstreamSession
+	upstreamSession := rt.upstreamSession
 	rt.downstreamSession = nil
+	rt.upstreamSession = nil
 	rt.bridgeMu.Unlock()
 	rt.forwardMu.Lock()
 	tcpForwards := rt.tcpForwards
@@ -1397,6 +1491,9 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	rt.forwardMu.Unlock()
 	if downstreamSession != nil {
 		_ = downstreamSession.Close()
+	}
+	if upstreamSession != nil && upstreamSession != downstreamSession {
+		_ = upstreamSession.Close()
 	}
 	for _, ln := range tcpForwards {
 		if ln != nil {
@@ -1448,6 +1545,40 @@ func (rt *probeChainRuntime) getDownstreamSession() *yamux.Session {
 	}
 	rt.bridgeMu.Lock()
 	session := rt.downstreamSession
+	rt.bridgeMu.Unlock()
+	return session
+}
+
+func (rt *probeChainRuntime) setUpstreamSession(session *yamux.Session) {
+	if rt == nil || session == nil {
+		return
+	}
+	rt.bridgeMu.Lock()
+	old := rt.upstreamSession
+	rt.upstreamSession = session
+	rt.bridgeMu.Unlock()
+	if old != nil && old != session {
+		_ = old.Close()
+	}
+}
+
+func (rt *probeChainRuntime) clearUpstreamSession(target *yamux.Session) {
+	if rt == nil || target == nil {
+		return
+	}
+	rt.bridgeMu.Lock()
+	if rt.upstreamSession == target {
+		rt.upstreamSession = nil
+	}
+	rt.bridgeMu.Unlock()
+}
+
+func (rt *probeChainRuntime) getUpstreamSession() *yamux.Session {
+	if rt == nil {
+		return nil
+	}
+	rt.bridgeMu.Lock()
+	session := rt.upstreamSession
 	rt.bridgeMu.Unlock()
 	return session
 }
@@ -1517,6 +1648,49 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn) {
 	<-relayErrCh
 }
 
+func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn) {
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	if _, hintErr := readProbeChainSourceIPHint(reader); hintErr != nil {
+		log.Printf("probe chain reverse source hint parse failed: chain=%s err=%v", runtime.cfg.chainID, hintErr)
+		return
+	}
+
+	_ = conn.SetDeadline(time.Time{})
+	role := normalizeProbeChainRole(runtime.cfg.role)
+	if role == "entry" || role == "entry_exit" {
+		if err := handleProbeChainProxyConn(runtime, conn, reader); err != nil {
+			log.Printf("probe chain reverse proxy failed: chain=%s role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), err)
+		}
+		return
+	}
+
+	prevHop, err := openProbeChainPrevHop(runtime)
+	if err != nil {
+		log.Printf("probe chain open upstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
+		return
+	}
+	defer func() {
+		if prevHop != nil && prevHop.CloseFn != nil {
+			_ = prevHop.CloseFn()
+		}
+	}()
+	prevReader := bufio.NewReader(prevHop.Reader)
+
+	relayErrCh := make(chan error, 2)
+	go func() {
+		_, copyErr := io.Copy(prevHop.Writer, reader)
+		closeProbeChainWriter(prevHop.Writer)
+		relayErrCh <- copyErr
+	}()
+	go func() {
+		_, copyErr := io.Copy(conn, prevReader)
+		relayErrCh <- copyErr
+	}()
+	<-relayErrCh
+}
+
 func openProbeChainNextHop(runtime *probeChainRuntime) (*probeChainNextHop, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
@@ -1525,6 +1699,23 @@ func openProbeChainNextHop(runtime *probeChainRuntime) (*probeChainNextHop, erro
 		return nil, errors.New("next hop is proxy mode")
 	}
 	stream, err := openProbeChainDownstreamStream(runtime, probeChainDownstreamOpenTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return &probeChainNextHop{
+		Writer: stream,
+		Reader: stream,
+		CloseFn: func() error {
+			return stream.Close()
+		},
+	}, nil
+}
+
+func openProbeChainPrevHop(runtime *probeChainRuntime) (*probeChainNextHop, error) {
+	if runtime == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	stream, err := openProbeChainUpstreamStream(runtime, probeChainDownstreamOpenTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -1566,6 +1757,37 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, timeout time.Dur
 		}
 	}
 	return nil, fmt.Errorf("downstream bridge is unavailable")
+}
+
+func openProbeChainUpstreamStream(runtime *probeChainRuntime, timeout time.Duration) (net.Conn, error) {
+	if runtime == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		session := runtime.getUpstreamSession()
+		if session != nil && !session.IsClosed() {
+			stream, openErr := session.Open()
+			if openErr == nil {
+				return stream, nil
+			}
+			if session.IsClosed() {
+				runtime.clearUpstreamSession(session)
+			}
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-runtime.stopCh:
+			return nil, errors.New("runtime stopped")
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	return nil, fmt.Errorf("upstream bridge is unavailable")
 }
 
 func resolveProbeChainOutboundLinkLayer(cfg probeChainRuntimeConfig) string {

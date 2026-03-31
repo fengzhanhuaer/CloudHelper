@@ -21,6 +21,7 @@ const (
 	defaultProbeLinkChainLinkLayer  = "http"
 	defaultProbeLinkChainDialMode   = "forward"
 	defaultProbeLinkChainPFNetwork  = "tcp"
+	defaultProbeLinkChainPFEntrySide = "chain_entry"
 	defaultProbeLinkChainPFHost     = "0.0.0.0"
 	defaultProbeLinkChainSecretLen  = 48
 )
@@ -40,6 +41,7 @@ type probeLinkChainHopConfig struct {
 type probeLinkChainPortForwardConfig struct {
 	ID         string `json:"id,omitempty"`
 	Name       string `json:"name,omitempty"`
+	EntrySide  string `json:"entry_side,omitempty"`
 	ListenHost string `json:"listen_host,omitempty"`
 	ListenPort int    `json:"listen_port"`
 	TargetHost string `json:"target_host"`
@@ -549,6 +551,30 @@ func parseProbeLinkChainPFNetwork(raw string) (string, bool) {
 	}
 }
 
+func normalizeProbeLinkChainPFEntrySide(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "chain_exit", "exit", "egress":
+		return "chain_exit"
+	default:
+		return defaultProbeLinkChainPFEntrySide
+	}
+}
+
+func parseProbeLinkChainPFEntrySide(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", true
+	}
+	switch strings.ToLower(trimmed) {
+	case "chain_entry", "entry", "ingress":
+		return "chain_entry", true
+	case "chain_exit", "exit", "egress":
+		return "chain_exit", true
+	default:
+		return "", false
+	}
+}
+
 func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig, routeNodeIDs []string) ([]probeLinkChainHopConfig, error) {
 	filter := make(map[string]struct{}, len(routeNodeIDs))
 	for _, nodeID := range normalizeProbeNodeIDList(routeNodeIDs) {
@@ -737,6 +763,13 @@ func normalizeProbeLinkChainPortForwardsForUpsert(values []probeLinkChainPortFor
 		if strings.TrimSpace(network) == "" {
 			network = defaultProbeLinkChainPFNetwork
 		}
+		entrySide, entrySideOK := parseProbeLinkChainPFEntrySide(item.EntrySide)
+		if !entrySideOK {
+			return nil, fmt.Errorf("port_forwards entry_side must be chain_entry/chain_exit")
+		}
+		if strings.TrimSpace(entrySide) == "" {
+			entrySide = defaultProbeLinkChainPFEntrySide
+		}
 		id := normalizeProbeLinkChainPortForwardID(item.ID)
 		if _, exists := seen[id]; exists {
 			continue
@@ -749,6 +782,7 @@ func normalizeProbeLinkChainPortForwardsForUpsert(values []probeLinkChainPortFor
 		out = append(out, probeLinkChainPortForwardConfig{
 			ID:         id,
 			Name:       strings.TrimSpace(item.Name),
+			EntrySide:  entrySide,
 			ListenHost: normalizeProbeLinkChainListenHost(listenHost),
 			ListenPort: listenPort,
 			TargetHost: strings.TrimSpace(item.TargetHost),
@@ -783,6 +817,10 @@ func normalizeProbeLinkChainPortForwardsForStore(values []probeLinkChainPortForw
 		if normalized, ok := parseProbeLinkChainPFNetwork(item.Network); ok && strings.TrimSpace(normalized) != "" {
 			network = normalized
 		}
+		entrySide := defaultProbeLinkChainPFEntrySide
+		if normalized, ok := parseProbeLinkChainPFEntrySide(item.EntrySide); ok && strings.TrimSpace(normalized) != "" {
+			entrySide = normalized
+		}
 		id := normalizeProbeLinkChainPortForwardID(item.ID)
 		if _, exists := seen[id]; exists {
 			continue
@@ -795,6 +833,7 @@ func normalizeProbeLinkChainPortForwardsForStore(values []probeLinkChainPortForw
 		out = append(out, probeLinkChainPortForwardConfig{
 			ID:         id,
 			Name:       strings.TrimSpace(item.Name),
+			EntrySide:  entrySide,
 			ListenHost: normalizeProbeLinkChainListenHost(listenHost),
 			ListenPort: listenPort,
 			TargetHost: targetHost,

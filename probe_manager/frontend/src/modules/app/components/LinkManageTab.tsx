@@ -65,9 +65,12 @@ type ProbeLinkHopFormItem = {
   dialMode: ProbeLinkDialMode;
 };
 
+type ProbeLinkPFEntrySide = "chain_entry" | "chain_exit";
+
 type ProbeLinkPortForwardFormItem = {
   id: string;
   name: string;
+  entrySide: ProbeLinkPFEntrySide;
   listenHost: string;
   listenPort: number;
   targetHost: string;
@@ -471,6 +474,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       next[index] = {
         id: existing.id,
         name: patch.name === undefined ? existing.name : String(patch.name || ""),
+        entrySide: patch.entrySide === undefined ? existing.entrySide : normalizeProbeLinkPFEntrySide(patch.entrySide),
         listenHost: patch.listenHost === undefined ? existing.listenHost : normalizePortForwardHost(patch.listenHost),
         listenPort: patch.listenPort === undefined ? existing.listenPort : normalizePort(Number(patch.listenPort || 0)),
         targetHost: patch.targetHost === undefined ? existing.targetHost : normalizePortForwardTargetHost(patch.targetHost),
@@ -495,6 +499,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
           {
             id: buildPortForwardFormID(),
             name: "",
+            entrySide: "chain_entry",
             listenHost: defaultPortForwardListenHost,
             listenPort: 0,
             targetHost: "",
@@ -1417,9 +1422,18 @@ export function LinkManageTab(props: LinkManageTabProps) {
                         </div>
                       ) : null}
                       {item.port_forwards && item.port_forwards.length > 0 ? (
-                        <div className="probe-table-sub">
-                          端口转发: {item.port_forwards.filter((rule) => rule.enabled).length}/{item.port_forwards.length} 启用
-                        </div>
+                        <>
+                          <div className="probe-table-sub">
+                            端口转发: {item.port_forwards.filter((rule) => rule.enabled).length}/{item.port_forwards.length} 启用
+                          </div>
+                          <div className="probe-table-sub">
+                            {item.port_forwards
+                              .slice(0, 2)
+                              .map((rule) => `${rule.name || rule.id || "未命名规则"}（${buildProbeLinkPFDirectionSummary(normalizeProbeLinkPFEntrySide(rule.entry_side), normalizeProbeChainRouteNodeIDTextsFromChain(item), nodeNameByID)}）`)
+                              .join(" | ")}
+                            {item.port_forwards.length > 2 ? ` 等 ${item.port_forwards.length} 条` : ""}
+                          </div>
+                        </>
                       ) : null}
                     </td>
                     <td>{item.hop_configs && item.hop_configs.length > 0 ? "按探针配置" : `${item.listen_host || defaultLinkChainListenHost}:${normalizePort(item.listen_port || 0)}`}</td>
@@ -1514,6 +1528,14 @@ export function LinkManageTab(props: LinkManageTabProps) {
               <div className="status-inline">{selectedChainForPortForward ? buildChainRouteSummary(selectedChainForPortForward, nodeNameByID) : "请选择链路"}</div>
             </div>
             <div className="row">
+              <label>规则摘要</label>
+              <div className="status-inline">
+                {portForwardItems.length > 0
+                  ? `共 ${portForwardItems.length} 条，链路入口端监听 ${portForwardItems.filter((item) => item.entrySide === "chain_entry").length} 条，链路出口端监听 ${portForwardItems.filter((item) => item.entrySide === "chain_exit").length} 条`
+                  : "暂无规则"}
+              </div>
+            </div>
+            <div className="row">
               <label>端口转发规则</label>
               <div style={{ width: "100%" }}>
                 <div className="content-actions" style={{ marginTop: 0, marginBottom: 8 }}>
@@ -1521,10 +1543,11 @@ export function LinkManageTab(props: LinkManageTabProps) {
                 </div>
                 {portForwardItems.length > 0 ? (
                   <div className="probe-table-wrap" style={{ marginTop: 4 }}>
-                    <table className="probe-table" style={{ minWidth: 980 }}>
+                    <table className="probe-table" style={{ minWidth: 1240 }}>
                       <thead>
                         <tr>
                           <th>规则</th>
+                          <th>业务入口</th>
                           <th>本地监听</th>
                           <th>远端目标</th>
                           <th>协议</th>
@@ -1543,6 +1566,22 @@ export function LinkManageTab(props: LinkManageTabProps) {
                                 onChange={(event) => updatePortForward(item.id, { name: event.target.value })}
                                 disabled={isOperatingChain}
                               />
+                            </td>
+                            <td>
+                              <div style={{ display: "grid", gap: 6 }}>
+                                <select
+                                  className="input"
+                                  value={item.entrySide}
+                                  onChange={(event) => updatePortForward(item.id, { entrySide: normalizeProbeLinkPFEntrySide(event.target.value) })}
+                                  disabled={isOperatingChain}
+                                >
+                                  <option value="chain_entry">链路入口端</option>
+                                  <option value="chain_exit">链路出口端</option>
+                                </select>
+                                <div className="probe-table-sub">
+                                  {buildProbeLinkPFDirectionSummary(item.entrySide, chainRouteNodeNos.map((nodeNo) => String(nodeNo)), nodeNameByID)}
+                                </div>
+                              </div>
                             </td>
                             <td>
                               <div style={{ display: "grid", gap: 6, gridTemplateColumns: "1fr 120px" }}>
@@ -1619,7 +1658,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                     </table>
                   </div>
                 ) : (
-                  <div className="status">暂无端口转发规则。入口探针负责监听，出口探针转发到目标地址。</div>
+                  <div className="status">暂无端口转发规则。每条规则都可以独立指定由链路入口端或链路出口端负责监听。</div>
                 )}
               </div>
             </div>
@@ -1878,6 +1917,34 @@ function normalizeProbeLinkPFNetwork(raw: unknown): ProbeLinkPFNetwork {
   return "tcp";
 }
 
+function normalizeProbeLinkPFEntrySide(raw: unknown): ProbeLinkPFEntrySide {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "chain_exit" || value === "exit" || value === "egress") {
+    return "chain_exit";
+  }
+  return "chain_entry";
+}
+
+function buildProbeLinkPFEntrySideLabel(side: ProbeLinkPFEntrySide): string {
+  return side === "chain_exit" ? "链路出口端监听" : "链路入口端监听";
+}
+
+function buildProbeLinkPFDirectionSummary(
+  side: ProbeLinkPFEntrySide,
+  routeNodeIDs: string[],
+  nodeNameByID: Record<string, string>,
+): string {
+  const normalized = routeNodeIDs
+    .map((item) => normalizeNodeIDText(item))
+    .filter((item) => item !== "");
+  if (normalized.length === 0) {
+    return `${buildProbeLinkPFEntrySideLabel(side)}：未配置链路`;
+  }
+  const businessEntryNodeID = side === "chain_exit" ? normalized[normalized.length - 1] : normalized[0];
+  const businessExitNodeID = side === "chain_exit" ? normalized[0] : normalized[normalized.length - 1];
+  return `${buildProbeLinkPFEntrySideLabel(side)}：${resolveProbeRouteNodeLabel(businessEntryNodeID, nodeNameByID)} -> ${resolveProbeRouteNodeLabel(businessExitNodeID, nodeNameByID)}`;
+}
+
 function normalizePortForwardHost(raw: unknown): string {
   const value = String(raw ?? "").trim();
   return value || defaultPortForwardListenHost;
@@ -1909,6 +1976,7 @@ function normalizeProbeLinkPortForwardFormItems(values?: ProbeLinkPortForwardFor
     out.push({
       id,
       name: String(item.name || ""),
+      entrySide: normalizeProbeLinkPFEntrySide(item.entrySide),
       listenHost: normalizePortForwardHost(item.listenHost),
       listenPort: normalizePort(Number(item.listenPort || 0)),
       targetHost: normalizePortForwardTargetHost(item.targetHost),
@@ -1937,6 +2005,7 @@ function normalizeProbeLinkPortForwardFormItemsFromChain(
     out.push({
       id,
       name: String(item.name || ""),
+      entrySide: normalizeProbeLinkPFEntrySide(item.entry_side),
       listenHost: normalizePortForwardHost(item.listen_host),
       listenPort: normalizePort(Number(item.listen_port || 0)),
       targetHost: normalizePortForwardTargetHost(item.target_host),
@@ -2099,6 +2168,7 @@ function buildProbeLinkPortForwardsPayload(form: ProbeLinkChainFormState): {
   items: Array<{
     id?: string;
     name?: string;
+    entry_side?: ProbeLinkPFEntrySide;
     listen_host?: string;
     listen_port: number;
     target_host: string;
@@ -2115,6 +2185,7 @@ function buildProbeLinkPortForwardsPayload(form: ProbeLinkChainFormState): {
   const items: Array<{
     id?: string;
     name?: string;
+    entry_side?: ProbeLinkPFEntrySide;
     listen_host?: string;
     listen_port: number;
     target_host: string;
@@ -2123,6 +2194,7 @@ function buildProbeLinkPortForwardsPayload(form: ProbeLinkChainFormState): {
     enabled: boolean;
   }> = [];
   for (const cfg of normalized) {
+    const entrySide = normalizeProbeLinkPFEntrySide(cfg.entrySide);
     const listenHost = normalizePortForwardHost(cfg.listenHost);
     const listenPort = normalizePort(cfg.listenPort);
     const targetHost = normalizePortForwardTargetHost(cfg.targetHost);
@@ -2140,6 +2212,7 @@ function buildProbeLinkPortForwardsPayload(form: ProbeLinkChainFormState): {
     items.push({
       id: cfg.id,
       name: cfg.name,
+      entry_side: entrySide,
       listen_host: listenHost,
       listen_port: listenPort,
       target_host: targetHost,

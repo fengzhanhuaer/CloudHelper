@@ -79,6 +79,7 @@ type probeLinkTestControlCommand struct {
 type probeChainPortForwardCommand struct {
 	ID         string `json:"id,omitempty"`
 	Name       string `json:"name,omitempty"`
+	EntrySide  string `json:"entry_side,omitempty"`
 	ListenHost string `json:"listen_host,omitempty"`
 	ListenPort int    `json:"listen_port,omitempty"`
 	TargetHost string `json:"target_host,omitempty"`

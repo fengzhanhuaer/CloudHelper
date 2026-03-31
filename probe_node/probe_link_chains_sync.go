@@ -63,6 +63,7 @@ type probeLinkChainHopServerItem struct {
 type probeChainPortForwardServerItem struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	EntrySide  string `json:"entry_side"`
 	ListenHost string `json:"listen_host"`
 	ListenPort int    `json:"listen_port"`
 	TargetHost string `json:"target_host"`
@@ -381,6 +382,7 @@ func buildProbeChainPortForwardMessages(values []probeChainPortForwardServerItem
 		out = append(out, probeChainPortForwardMessage{
 			ID:         strings.TrimSpace(item.ID),
 			Name:       strings.TrimSpace(item.Name),
+			EntrySide:  strings.TrimSpace(item.EntrySide),
 			ListenHost: strings.TrimSpace(item.ListenHost),
 			ListenPort: item.ListenPort,
 			TargetHost: strings.TrimSpace(item.TargetHost),
@@ -429,6 +431,9 @@ func isSameProbeChainPortForwards(left []probeChainRuntimePortForward, right []p
 			return false
 		}
 		if strings.TrimSpace(left[i].Name) != strings.TrimSpace(right[i].Name) {
+			return false
+		}
+		if strings.TrimSpace(left[i].EntrySide) != strings.TrimSpace(right[i].EntrySide) {
 			return false
 		}
 		if strings.TrimSpace(left[i].ListenHost) != strings.TrimSpace(right[i].ListenHost) {

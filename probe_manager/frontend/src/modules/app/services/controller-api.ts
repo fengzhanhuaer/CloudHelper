@@ -425,6 +425,7 @@ export type ProbeLinkChainItem = {
 	port_forwards?: Array<{
 		id?: string;
 		name?: string;
+		entry_side?: "chain_entry" | "chain_exit" | "";
 		listen_host?: string;
 		listen_port: number;
 		target_host: string;
@@ -461,6 +462,7 @@ export type ProbeLinkChainUpsertPayload = {
 	port_forwards?: Array<{
 		id?: string;
 		name?: string;
+		entry_side?: "chain_entry" | "chain_exit";
 		listen_host?: string;
 		listen_port: number;
 		target_host: string;

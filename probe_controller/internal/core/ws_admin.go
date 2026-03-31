@@ -650,6 +650,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			PortForwards []struct {
 				ID         string `json:"id"`
 				Name       string `json:"name"`
+				EntrySide  string `json:"entry_side"`
 				ListenHost string `json:"listen_host"`
 				ListenPort int    `json:"listen_port"`
 				TargetHost string `json:"target_host"`
@@ -712,6 +713,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 					out = append(out, probeLinkChainPortForwardConfig{
 						ID:         strings.TrimSpace(item.ID),
 						Name:       strings.TrimSpace(item.Name),
+						EntrySide:  strings.TrimSpace(item.EntrySide),
 						ListenHost: strings.TrimSpace(item.ListenHost),
 						ListenPort: item.ListenPort,
 						TargetHost: strings.TrimSpace(item.TargetHost),
