@@ -84,10 +84,12 @@ var dnsUpstreamConfigState = struct {
 
 func defaultDNSUpstreamConfigFilePayload() dnsUpstreamConfigFilePayload {
 	return dnsUpstreamConfigFilePayload{
-		Prefer:     "doh",
-		DNSServers: append([]string(nil), defaultDNSUpstreamPlainServers...),
-		DoTServers: append([]string(nil), defaultDNSUpstreamDoTServers...),
-		DoHServers: append([]string(nil), defaultDNSUpstreamDoHServers...),
+		Prefer:          "doh",
+		DNSServers:      append([]string(nil), defaultDNSUpstreamPlainServers...),
+		DoTServers:      append([]string(nil), defaultDNSUpstreamDoTServers...),
+		DoHServers:      append([]string(nil), defaultDNSUpstreamDoHServers...),
+		FakeIPCIDR:      "198.18.0.0/15",
+		FakeIPWhitelist: []string{},
 	}
 }
 

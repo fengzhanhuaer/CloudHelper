@@ -42,10 +42,10 @@ type fakeIPPool struct {
 }
 
 // newFakeIPPool 根据 CIDR 字符串创建 fake IP 池
-// 如果 cidr 为空则返回 nil（代表禁用 fake IP）
+// 如果 cidr 为空或为 0.0.0.0/0 则返回 nil（代表禁用 fake IP）
 func newFakeIPPool(cidr string, whitelist []string) (*fakeIPPool, error) {
 	cidr = strings.TrimSpace(cidr)
-	if cidr == "" {
+	if cidr == "" || cidr == "0.0.0.0/0" {
 		return nil, nil
 	}
 	_, network, err := net.ParseCIDR(cidr)
