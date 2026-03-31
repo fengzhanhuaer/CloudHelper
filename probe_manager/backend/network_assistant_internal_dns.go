@@ -133,7 +133,7 @@ func (d *localInternalDNSServer) handlePacket(packet []byte, peerAddr net.Addr) 
 
 	addrs, ttlSeconds, route, resolveErr := d.service.resolveDomainForInternalDNS(domain, qType)
 	if resolveErr == nil && len(addrs) > 0 {
-		d.service.storeDNSRouteHint(addrs, route, ttlSeconds)
+		d.service.storeDNSRouteHint(addrs, domain, route, ttlSeconds)
 	}
 
 	// 进程监视：记录 DNS 事件
@@ -580,13 +580,14 @@ func filterDNSResponseAddrs(addrs []string, qType uint16) []string {
 	return out
 }
 
-func (s *networkAssistantService) storeDNSRouteHint(addrs []string, route tunnelRouteDecision, ttlSeconds int) {
+func (s *networkAssistantService) storeDNSRouteHint(addrs []string, domain string, route tunnelRouteDecision, ttlSeconds int) {
 	expiresAt := time.Now().Add(time.Duration(clampRuleDNSTTL(ttlSeconds)) * time.Second)
 	hint := dnsRouteHintEntry{
 		Direct:  route.Direct,
 		NodeID:  strings.TrimSpace(route.NodeID),
 		Group:   strings.TrimSpace(route.Group),
 		Expires: expiresAt,
+		Domain:  strings.ToLower(strings.TrimSpace(domain)),
 	}
 
 	s.mu.Lock()

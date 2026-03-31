@@ -540,6 +540,29 @@ func (s *networkAssistantService) QueryDNSCache(query string) []NetworkAssistant
 		}
 	}
 
+	// 3. 遍历 directDNSCache（补充直连 DNS 缓存条目）
+	directDNSCache.mu.Lock()
+	for host, entry := range directDNSCache.entries {
+		if now.After(entry.ExpiresAt) {
+			continue
+		}
+		if q != "" {
+			if !strings.Contains(strings.ToLower(host), q) && !strings.Contains(strings.ToLower(entry.IP), q) {
+				continue
+			}
+		}
+		add(NetworkAssistantDNSCacheEntry{
+			Domain:    host,
+			IP:        entry.IP,
+			FakeIP:    false,
+			Direct:    true,
+			NodeID:    "",
+			Group:     "",
+			ExpiresAt: entry.ExpiresAt.Format(time.RFC3339),
+		})
+	}
+	directDNSCache.mu.Unlock()
+
 	// 按 IP 字段排序，方便展示
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Domain != result[j].Domain {
