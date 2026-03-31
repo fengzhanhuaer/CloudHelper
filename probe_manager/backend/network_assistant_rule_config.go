@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -396,7 +395,6 @@ func extractRuleGroupsFromRuleSet(ruleSet tunnelRuleSet) []string {
 		seen[group] = struct{}{}
 		groups = append(groups, group)
 	}
-	sort.Strings(groups)
 	return groups
 }
 

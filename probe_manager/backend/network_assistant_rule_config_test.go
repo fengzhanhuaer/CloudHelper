@@ -105,3 +105,34 @@ func TestBuildCanonicalRulePolicyMapAutoAddsGroupsAndFallback(t *testing.T) {
 		t.Fatalf("unexpected stale group in canonical result: ghost")
 	}
 }
+
+func TestBuildRuleConfigFromRoutingKeepsRuleGroupDefinitionOrder(t *testing.T) {
+	routing := tunnelRuleRouting{
+		RuleSet: tunnelRuleSet{
+			Rules: []tunnelRule{
+				{Kind: ruleMatcherDomainSuffix, Suffix: "a.example", Group: "group_z"},
+				{Kind: ruleMatcherDomainSuffix, Suffix: "b.example", Group: "group_a"},
+				{Kind: ruleMatcherDomainSuffix, Suffix: "c.example", Group: "group_m"},
+				{Kind: ruleMatcherDomainSuffix, Suffix: "dup.example", Group: "group_a"},
+			},
+		},
+		GroupNodeMap: map[string]string{
+			ruleFallbackGroupKey: rulePolicyActionDirect,
+		},
+	}
+
+	config := buildRuleConfigFromRouting(routing, []string{defaultNodeID}, defaultNodeID, nil)
+	if len(config.Groups) != 3 {
+		t.Fatalf("group count=%d, want 3", len(config.Groups))
+	}
+
+	if got := config.Groups[0].Group; got != "group_z" {
+		t.Fatalf("group[0]=%s, want group_z", got)
+	}
+	if got := config.Groups[1].Group; got != "group_a" {
+		t.Fatalf("group[1]=%s, want group_a", got)
+	}
+	if got := config.Groups[2].Group; got != "group_m" {
+		t.Fatalf("group[2]=%s, want group_m", got)
+	}
+}

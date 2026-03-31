@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { PingProbeChain } from "../../../../wailsjs/go/main/App";
 import { LinkManageTab } from "./LinkManageTab";
+import { NetworkAssistantDNSCachePanel } from "./NetworkAssistantDNSCachePanel";
+import { NetworkAssistantLogsPanel } from "./NetworkAssistantLogsPanel";
+import { NetworkAssistantMonitorPanel } from "./NetworkAssistantMonitorPanel";
 import type {
   NetworkAssistantDNSCacheEntry,
   NetworkAssistantDNSUpstreamConfig,
@@ -80,30 +83,11 @@ type NetworkAssistantTabProps = {
   onCopyLogs: () => void;
 };
 
-const categoryLabels: Record<string, string> = {
-  general: "通用",
-  init: "初始化",
-  mode: "模式",
-  proxy: "系统代理",
-  socks: "本地代理",
-  mux: "隧道复用",
-  tunnel: "隧道",
-  node: "节点",
-  rule: "规则",
-  whitelist: "白名单",
-  error: "错误",
-  open: "打开流",
-  read: "读取",
-  write: "写入",
-  state: "状态",
-};
-
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
   const [subTab, setSubTab] = useState<"settings" | "dns" | "cache" | "monitor" | "link" | "forward" | "driver" | "status" | "logs">("settings");
   const [dnsEditCIDR, setDnsEditCIDR] = useState("");
   const [dnsEditWhitelist, setDnsEditWhitelist] = useState("");
   const [dnsEditDirty, setDnsEditDirty] = useState(false);
-  const outputRef = useRef<HTMLPreElement | null>(null);
 
   type TunnelPingState = { ok: boolean | null; durationMS: number | null; message: string };
   const [tunnelPingStates, setTunnelPingStates] = useState<Record<string, TunnelPingState>>({});
@@ -127,24 +111,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
       setTunnelPingingID("");
     }
   }
-
-  useEffect(() => {
-    if (!props.logAutoScroll || !outputRef.current || subTab !== "logs") {
-      return;
-    }
-    outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [props.logAutoScroll, props.logContent, subTab]);
-
-  useEffect(() => {
-    if (subTab !== "logs") {
-      return;
-    }
-    props.onRefreshLogs();
-    const timer = window.setInterval(() => {
-      props.onRefreshLogs();
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [props.onRefreshLogs, subTab]);
 
   useEffect(() => {
     if (subTab !== "settings" || props.status.mode !== "tun") {
@@ -330,8 +296,8 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           <div className="status">{props.ruleRoutesSyncStatus}</div>
           {props.ruleConfig ? (
             <div className="rule-policy-group-list">
-              {renderRuleGroupRow(props.ruleConfig.fallback, "兜底组（未命中规则）")}
               {props.ruleConfig.groups.map((group) => renderRuleGroupRow(group, `组：${group.group}`))}
+              {renderRuleGroupRow(props.ruleConfig.fallback, "兜底组（未命中规则）")}
             </div>
           ) : null}
         </>
@@ -434,214 +400,51 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           </div>
           <div className="status">关闭 TUN 将切回直连模式，并恢复系统 DNS 与系统代理设置。</div>
         </>
-      ) : (
-        <>
-          <div className="identity-card">
-            <div className="row" style={{ marginBottom: 0 }}>
-              <label htmlFor="network-log-lines">显示行数</label>
-              <input
-                id="network-log-lines"
-                className="input"
-                type="number"
-                min={1}
-                max={2000}
-                value={props.logLines}
-                onChange={(event) => props.onLogLinesChange(Number(event.target.value) || 200)}
-                disabled={props.isLoadingLogs}
-              />
-            </div>
-            <div className="row" style={{ marginBottom: 0 }}>
-              <label htmlFor="network-log-source">来源</label>
-              <select
-                id="network-log-source"
-                className="input"
-                value={props.logSourceFilter}
-                onChange={(event) => props.onLogSourceFilterChange(event.target.value as NetworkAssistantLogFilterSource)}
-                disabled={props.isLoadingLogs}
-              >
-                <option value="all">全部</option>
-                <option value="manager">管理端</option>
-                <option value="controller">主控端</option>
-              </select>
-            </div>
-            <div className="row" style={{ marginBottom: 0 }}>
-              <label htmlFor="network-log-category">分类</label>
-              <select
-                id="network-log-category"
-                className="input"
-                value={props.logCategoryFilter}
-                onChange={(event) => props.onLogCategoryFilterChange(event.target.value)}
-                disabled={props.isLoadingLogs}
-              >
-                <option value="all">全部</option>
-                {props.logCategories.map((item) => (
-                  <option key={item} value={item}>{categoryLabels[item] || item}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="content-actions">
-            <button className="btn" onClick={props.onRefreshLogs} disabled={props.isLoadingLogs}>
-              {props.isLoadingLogs ? "刷新中..." : "刷新日志"}
-            </button>
-            <button className="btn" onClick={props.onCopyLogs} disabled={props.isLoadingLogs || !props.logContent.trim()}>
-              复制日志
-            </button>
-            <label className="log-auto-scroll-toggle">
-              <input
-                type="checkbox"
-                checked={props.logAutoScroll}
-                onChange={(event) => props.onLogAutoScrollChange(event.target.checked)}
-                disabled={props.isLoadingLogs}
-              />
-              自动滚动到底部
-            </label>
-          </div>
-
-          <div className="status">{props.logStatus}</div>
-          <div className="status">日志筛选：{props.logVisibleCount}/{props.logTotalCount}</div>
-          <div className="status">{props.logCopyStatus || "复制状态：未执行"}</div>
-          <pre ref={outputRef} className="log-viewer-output">{props.logContent || "暂无网络助手日志"}</pre>
-        </>
-      )}
-
-      {subTab === "cache" && (
-        <>
-          <div className="content-actions" style={{ gap: 8, alignItems: "center" }}>
-            <input
-              type="text"
-              className="input"
-              style={{ flex: 1, minWidth: 0 }}
-              placeholder="输入 IP 或域名查询（留空查询全部）"
-              value={props.dnsCacheQuery}
-              onChange={(e) => props.onDNSCacheQueryChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") props.onQueryDNSCache(props.dnsCacheQuery); }}
-            />
-            <button
-              className="btn"
-              onClick={() => props.onQueryDNSCache(props.dnsCacheQuery)}
-              disabled={props.isDNSCacheLoading}
-            >
-              {props.isDNSCacheLoading ? "查询中..." : "查询"}
-            </button>
-          </div>
-          {props.dnsCacheStatus && <div className="status">{props.dnsCacheStatus}</div>}
-          {props.dnsCacheEntries.length === 0 && !props.isDNSCacheLoading ? (
-            <div className="status">暂无缓存记录</div>
-          ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
-              <thead>
-                <tr style={{ background: "#f0f0f0" }}>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>Fake IP</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>路由</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>代理组</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>过期时间</th>
-                </tr>
-              </thead>
-              <tbody>
-                {props.dnsCacheEntries.map((entry, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                    <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.domain || "-"}</td>
-                    <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.ip || "-"}</td>
-                    <td style={{ padding: "4px 8px" }}>{entry.fake_ip ? "是" : "否"}</td>
-                    <td style={{ padding: "4px 8px" }}>{entry.direct ? "直连" : (entry.node_id ? `代理(${entry.node_id})` : "-")}</td>
-                    <td style={{ padding: "4px 8px" }}>{entry.group || "-"}</td>
-                    <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 12 }}>{entry.expires_at || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </>
-      )}
-
-      {subTab === "monitor" && (
-        <>
-          <div className="content-actions" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <select
-              className="input"
-              style={{ flex: 1, minWidth: 120 }}
-              value={props.selectedProcess}
-              onChange={(e) => props.onSelectProcess(e.target.value)}
-              disabled={props.isMonitoring}
-            >
-              <option value="">-- 选择进程 --</option>
-              {props.processList.map((p) => (
-                <option key={p.pid} value={p.name}>{p.name}</option>
-              ))}
-            </select>
-            <button
-              className="btn"
-              onClick={props.onRefreshProcessList}
-              disabled={props.isLoadingProcessList || props.isMonitoring}
-            >
-              {props.isLoadingProcessList ? "加载中..." : "刷新进程"}
-            </button>
-            {!props.isMonitoring ? (
-              <button
-                className="btn"
-                onClick={props.onStartMonitor}
-                disabled={!props.selectedProcess || props.isMonitoring}
-              >
-                开始监视
-              </button>
-            ) : (
-              <button className="btn" onClick={props.onStopMonitor}>
-                停止监视
-              </button>
-            )}
-            <button
-              className="btn"
-              onClick={props.onClearEvents}
-              disabled={props.isMonitoring}
-            >
-              清空记录
-            </button>
-          </div>
-          {props.processListStatus && <div className="status">{props.processListStatus}</div>}
-          {props.isMonitoring && (
-            <div className="status" style={{ color: "#4ade80" }}>监视中：{props.selectedProcess}</div>
-          )}
-          {props.processEvents.length === 0 ? (
-            <div className="status">暂无网络事件</div>
-          ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
-              <thead>
-                <tr style={{ background: "#f0f0f0" }}>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>时间</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>类型</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名/IP</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>端口</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>路由</th>
-                  <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>解析 IP</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...props.processEvents].reverse().map((ev, i) => {
-                  const t = new Date(ev.timestamp);
-                  const timeStr = `${t.getHours().toString().padStart(2,"0")}:${t.getMinutes().toString().padStart(2,"0")}:${t.getSeconds().toString().padStart(2,"0")}.${t.getMilliseconds().toString().padStart(3,"0")}`;
-                  const target = ev.kind === "dns" ? (ev.domain || "-") : (ev.target_ip || "-");
-                  const route = ev.direct ? "直连" : (ev.node_id ? `代理(${ev.node_id})` : "-");
-                  const resolvedIPs = ev.resolved_ips ? ev.resolved_ips.join(", ") : "-";
-                  return (
-                    <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                      <td style={{ padding: "4px 8px", fontFamily: "monospace", whiteSpace: "nowrap" }}>{timeStr}</td>
-                      <td style={{ padding: "4px 8px", fontWeight: "bold", color: ev.kind === "dns" ? "#60a5fa" : ev.kind === "tcp" ? "#4ade80" : "#facc15" }}>{ev.kind.toUpperCase()}</td>
-                      <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{target}</td>
-                      <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{ev.target_port ? ev.target_port : "-"}</td>
-                      <td style={{ padding: "4px 8px" }}>{route}</td>
-                      <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 11 }}>{ev.kind === "dns" ? resolvedIPs : "-"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </>
-      )}
+      ) : subTab === "cache" ? (
+        <NetworkAssistantDNSCachePanel
+          dnsCacheEntries={props.dnsCacheEntries}
+          dnsCacheQuery={props.dnsCacheQuery}
+          isDNSCacheLoading={props.isDNSCacheLoading}
+          dnsCacheStatus={props.dnsCacheStatus}
+          onDNSCacheQueryChange={props.onDNSCacheQueryChange}
+          onQueryDNSCache={props.onQueryDNSCache}
+        />
+      ) : subTab === "monitor" ? (
+        <NetworkAssistantMonitorPanel
+          processList={props.processList}
+          isLoadingProcessList={props.isLoadingProcessList}
+          processListStatus={props.processListStatus}
+          selectedProcess={props.selectedProcess}
+          isMonitoring={props.isMonitoring}
+          processEvents={props.processEvents}
+          onRefreshProcessList={props.onRefreshProcessList}
+          onSelectProcess={props.onSelectProcess}
+          onStartMonitor={props.onStartMonitor}
+          onStopMonitor={props.onStopMonitor}
+          onClearEvents={props.onClearEvents}
+        />
+      ) : subTab === "logs" ? (
+        <NetworkAssistantLogsPanel
+          logLines={props.logLines}
+          onLogLinesChange={props.onLogLinesChange}
+          isLoadingLogs={props.isLoadingLogs}
+          logStatus={props.logStatus}
+          logCopyStatus={props.logCopyStatus}
+          logContent={props.logContent}
+          logSourceFilter={props.logSourceFilter}
+          onLogSourceFilterChange={props.onLogSourceFilterChange}
+          logCategoryFilter={props.logCategoryFilter}
+          onLogCategoryFilterChange={props.onLogCategoryFilterChange}
+          logCategories={props.logCategories}
+          logVisibleCount={props.logVisibleCount}
+          logTotalCount={props.logTotalCount}
+          logAutoScroll={props.logAutoScroll}
+          onLogAutoScrollChange={props.onLogAutoScrollChange}
+          onRefreshLogs={props.onRefreshLogs}
+          onCopyLogs={props.onCopyLogs}
+          active={subTab === "logs"}
+        />
+      ) : null}
 
       {subTab !== "link" && subTab !== "forward" ? (
         <>
