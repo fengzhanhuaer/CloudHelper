@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"os"
 	"testing"
 	"time"
 )
@@ -31,7 +32,7 @@ func TestResolveControllerHostForProtection(t *testing.T) {
 	}
 }
 
-func TestDefaultDirectWhitelistMatchesPrivateRanges(t *testing.T) {
+func TestDefaultDirectWhitelistIsEmpty(t *testing.T) {
 	whitelist, err := parseDirectWhitelistRules(defaultDirectWhitelistRules)
 	if err != nil {
 		t.Fatalf("parseDirectWhitelistRules returned error: %v", err)
@@ -41,11 +42,11 @@ func TestDefaultDirectWhitelistMatchesPrivateRanges(t *testing.T) {
 		addr string
 		want bool
 	}{
-		{addr: "10.20.30.40:443", want: true},
-		{addr: "172.20.10.10:8080", want: true},
-		{addr: "192.168.1.10:80", want: true},
-		{addr: "127.0.0.1:3000", want: true},
-		{addr: "localhost:15030", want: true},
+		{addr: "10.20.30.40:443", want: false},
+		{addr: "172.20.10.10:8080", want: false},
+		{addr: "192.168.1.10:80", want: false},
+		{addr: "127.0.0.1:3000", want: false},
+		{addr: "localhost:15030", want: false},
 		{addr: "8.8.8.8:53", want: false},
 	}
 
@@ -118,6 +119,58 @@ func TestParseTunnelRuleLine(t *testing.T) {
 		if got.Group != tt.wantGroup {
 			t.Fatalf("%s group=%s, want %s", tt.name, got.Group, tt.wantGroup)
 		}
+	}
+}
+
+func TestParseTunnelRuleFileBlockFormat(t *testing.T) {
+	tempDir := t.TempDir()
+	path := tempDir + "/rule_routes.txt"
+	content := "# comment\n" +
+		"lan\n" +
+		"{\n" +
+		"10.0.0.0/8\n" +
+		"192.168.1.10\n" +
+		"example.com\n" +
+		"}\n" +
+		"direct_local\n" +
+		"{\n" +
+		"localhost\n" +
+		"}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write rule file: %v", err)
+	}
+
+	ruleSet, err := parseTunnelRuleFile(path)
+	if err != nil {
+		t.Fatalf("parseTunnelRuleFile returned error: %v", err)
+	}
+	if len(ruleSet.Rules) != 4 {
+		t.Fatalf("rule count=%d, want 4", len(ruleSet.Rules))
+	}
+	if ruleSet.Rules[0].Group != "lan" || ruleSet.Rules[0].Kind != ruleMatcherCIDR {
+		t.Fatalf("rule 0 = %#v", ruleSet.Rules[0])
+	}
+	if ruleSet.Rules[1].Group != "lan" || ruleSet.Rules[1].Kind != ruleMatcherIP {
+		t.Fatalf("rule 1 = %#v", ruleSet.Rules[1])
+	}
+	if ruleSet.Rules[2].Group != "lan" || ruleSet.Rules[2].Kind != ruleMatcherDomainSuffix {
+		t.Fatalf("rule 2 = %#v", ruleSet.Rules[2])
+	}
+	if ruleSet.Rules[3].Group != "direct_local" || ruleSet.Rules[3].Kind != ruleMatcherDomainSuffix {
+		t.Fatalf("rule 3 = %#v", ruleSet.Rules[3])
+	}
+}
+
+func TestParseTunnelRuleFileRejectsLegacyLineFormat(t *testing.T) {
+	tempDir := t.TempDir()
+	path := tempDir + "/rule_routes.txt"
+	if err := os.WriteFile(path, []byte("example.com,default\n"), 0o644); err != nil {
+		t.Fatalf("write rule file: %v", err)
+	}
+
+	_, err := parseTunnelRuleFile(path)
+	if err == nil {
+		t.Fatal("expected parse error for legacy rule format")
 	}
 }
 

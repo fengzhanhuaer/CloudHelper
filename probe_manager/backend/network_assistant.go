@@ -49,9 +49,12 @@ const (
 var defaultDirectWhitelistRules = []string{}
 
 var defaultRuleRoutes = []string{
-	"# example.com,default",
-	"# 1.2.3.4,default",
-	"# 10.10.0.0/16,default",
+	"default",
+	"{",
+	"# example.com",
+	"# 1.2.3.4",
+	"# 10.10.0.0/16",
+	"}",
 }
 
 var defaultRuleGroups = []string{
@@ -2408,7 +2411,12 @@ func ensureTunnelRuleRouteFile(routePath string) error {
 	}
 
 	content := "# CloudHelper rule routes\n" +
-		"# each line: <domain suffix|ip|cidr>,<proxy_group>\n" +
+		"# format:\n" +
+		"# <proxy_group>\n" +
+		"# {\n" +
+		"#   <domain suffix|ip|cidr>\n" +
+		"# }\n" +
+		"# braces must be on their own lines\n" +
 		"# examples:\n" +
 		strings.Join(defaultRuleRoutes, "\n") + "\n"
 	if err := os.WriteFile(routePath, []byte(content), 0o644); err != nil {
@@ -2445,6 +2453,8 @@ func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
 	rules := make([]tunnelRule, 0)
 	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
 	lineNo := 0
+	currentGroup := ""
+	inGroupBlock := false
 	for scanner.Scan() {
 		lineNo++
 		line := strings.TrimSpace(scanner.Text())
@@ -2452,7 +2462,29 @@ func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
 			continue
 		}
 
-		rule, parseErr := parseTunnelRuleLine(line)
+		if !inGroupBlock {
+			if strings.Contains(line, ",") {
+				return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes line %d: legacy '<pattern>,<group>' format is no longer supported", lineNo)
+			}
+			group := normalizeRuleGroupName(line)
+			if group == "" {
+				return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes line %d: proxy group is required", lineNo)
+			}
+			currentGroup = group
+			inGroupBlock = true
+			continue
+		}
+
+		if line == "{" {
+			continue
+		}
+		if line == "}" {
+			currentGroup = ""
+			inGroupBlock = false
+			continue
+		}
+
+		rule, parseErr := parseTunnelRuleLine(line + "," + currentGroup)
 		if parseErr != nil {
 			return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes line %d: %w", lineNo, parseErr)
 		}
@@ -2460,6 +2492,9 @@ func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return tunnelRuleSet{}, err
+	}
+	if inGroupBlock {
+		return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes: group %q missing closing brace '}'", currentGroup)
 	}
 	return tunnelRuleSet{Rules: rules}, nil
 }
