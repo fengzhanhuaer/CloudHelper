@@ -579,9 +579,7 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 		s.UpdateSession(baseURLInput, tokenInput)
 	}
 
-	if err := clearDNSCacheFile(); err != nil {
-		return "", err
-	}
+	s.clearDNSCache()
 
 	s.mu.RLock()
 	effectiveBase := strings.TrimSpace(s.controllerBaseURL)
