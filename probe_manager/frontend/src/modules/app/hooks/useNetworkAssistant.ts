@@ -354,7 +354,11 @@ export function useNetworkAssistant() {
       void refreshLogs();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setOperateStatus(`启用 TUN 失败：${msg}`);
+      if (msg.includes("relaunch as admin")) {
+        setOperateStatus("正在请求管理员权限，请在 UAC 弹窗中确认后重新启动应用");
+      } else {
+        setOperateStatus(`启用 TUN 失败：${msg}`);
+      }
       void refreshLogs();
       throw error;
     } finally {

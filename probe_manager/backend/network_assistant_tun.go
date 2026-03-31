@@ -298,6 +298,17 @@ func (s *networkAssistantService) EnableTUN() error {
 		s.syncTUNInstallState()
 		return err
 	}
+	if !isWindowsAdmin() {
+		s.logf("tun enable requires admin privileges, requesting elevation")
+		if err := relaunchAsAdmin(); err != nil {
+			if errors.Is(err, ErrRelaunchAsAdmin) {
+				// UAC 提权已触发，新进程将以管理员身份启动，当前进程即将退出
+				return ErrRelaunchAsAdmin
+			}
+			s.setLastError(err)
+			return err
+		}
+	}
 	if err := s.InstallTUN(); err != nil {
 		return err
 	}
