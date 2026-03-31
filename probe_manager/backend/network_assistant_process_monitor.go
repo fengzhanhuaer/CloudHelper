@@ -25,36 +25,35 @@ const (
 
 // NetworkProcessEvent 进程网络事件。
 type NetworkProcessEvent struct {
-	Kind      NetworkProcessEventKind `json:"kind"`
-	Timestamp int64                   `json:"timestamp"` // Unix ms
-	Domain    string                  `json:"domain,omitempty"`
-	TargetIP  string                  `json:"target_ip,omitempty"`
-	TargetPort uint16                 `json:"target_port,omitempty"`
-	Direct    bool                    `json:"direct"`
-	NodeID    string                  `json:"node_id,omitempty"`
-	Group     string                  `json:"group,omitempty"`
-	ResolvedIPs []string              `json:"resolved_ips,omitempty"`
+	Kind        NetworkProcessEventKind `json:"kind"`
+	Timestamp   int64                   `json:"timestamp"` // Unix ms
+	ProcessName string                  `json:"process_name,omitempty"`
+	Domain      string                  `json:"domain,omitempty"`
+	TargetIP    string                  `json:"target_ip,omitempty"`
+	TargetPort  uint16                  `json:"target_port,omitempty"`
+	Direct      bool                    `json:"direct"`
+	NodeID      string                  `json:"node_id,omitempty"`
+	Group       string                  `json:"group,omitempty"`
+	ResolvedIPs []string                `json:"resolved_ips,omitempty"`
 }
 
 const maxProcessMonitorEvents = 500
 
-// processMonitor 跟踪指定进程名的网络事件。
+// processMonitor 跟踪所有进程的网络事件。
 type processMonitor struct {
-	mu          sync.Mutex
-	active      bool
-	processName string // 小写，精确匹配
-	events      []NetworkProcessEvent
+	mu     sync.Mutex
+	active bool
+	events []NetworkProcessEvent
 }
 
 func newProcessMonitor() *processMonitor {
 	return &processMonitor{}
 }
 
-func (m *processMonitor) Start(processName string) {
+func (m *processMonitor) Start() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.active = true
-	m.processName = strings.ToLower(strings.TrimSpace(processName))
 	m.events = nil
 }
 
@@ -70,12 +69,6 @@ func (m *processMonitor) IsActive() bool {
 	return m.active
 }
 
-func (m *processMonitor) ProcessName() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.processName
-}
-
 func (m *processMonitor) appendEvent(ev NetworkProcessEvent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -89,18 +82,16 @@ func (m *processMonitor) appendEvent(ev NetworkProcessEvent) {
 	}
 }
 
-// RecordDNSEvent 记录一次 DNS 查询事件（如果进程名匹配）。
+// RecordDNSEvent 记录一次 DNS 查询事件（记录所有进程）。
 func (m *processMonitor) RecordDNSEvent(srcPort uint16, domain string, resolvedIPs []string, direct bool, nodeID, group string) {
 	if !m.IsActive() {
 		return
 	}
 	procName := pidNameByPort(srcPort, false)
-	if procName == "" || !strings.EqualFold(procName, m.ProcessName()) {
-		return
-	}
 	m.appendEvent(NetworkProcessEvent{
 		Kind:        NetworkProcessEventDNS,
 		Timestamp:   time.Now().UnixMilli(),
+		ProcessName: procName,
 		Domain:      domain,
 		ResolvedIPs: resolvedIPs,
 		Direct:      direct,
@@ -109,43 +100,39 @@ func (m *processMonitor) RecordDNSEvent(srcPort uint16, domain string, resolvedI
 	})
 }
 
-// RecordTCPEvent 记录一次 TCP 连接事件（如果进程名匹配）。
+// RecordTCPEvent 记录一次 TCP 连接事件（记录所有进程）。
 func (m *processMonitor) RecordTCPEvent(srcPort uint16, targetIP string, targetPort uint16, direct bool, nodeID, group string) {
 	if !m.IsActive() {
 		return
 	}
 	procName := pidNameByPort(srcPort, false)
-	if procName == "" || !strings.EqualFold(procName, m.ProcessName()) {
-		return
-	}
 	m.appendEvent(NetworkProcessEvent{
-		Kind:       NetworkProcessEventTCP,
-		Timestamp:  time.Now().UnixMilli(),
-		TargetIP:   targetIP,
-		TargetPort: targetPort,
-		Direct:     direct,
-		NodeID:     nodeID,
-		Group:      group,
+		Kind:        NetworkProcessEventTCP,
+		Timestamp:   time.Now().UnixMilli(),
+		ProcessName: procName,
+		TargetIP:    targetIP,
+		TargetPort:  targetPort,
+		Direct:      direct,
+		NodeID:      nodeID,
+		Group:       group,
 	})
 }
 
-// RecordUDPEvent 记录一次 UDP 连接事件（如果进程名匹配）。
+// RecordUDPEvent 记录一次 UDP 连接事件（记录所有进程）。
 func (m *processMonitor) RecordUDPEvent(srcPort uint16, targetIP string, targetPort uint16, direct bool, nodeID, group string) {
 	if !m.IsActive() {
 		return
 	}
 	procName := pidNameByPort(srcPort, false)
-	if procName == "" || !strings.EqualFold(procName, m.ProcessName()) {
-		return
-	}
 	m.appendEvent(NetworkProcessEvent{
-		Kind:       NetworkProcessEventUDP,
-		Timestamp:  time.Now().UnixMilli(),
-		TargetIP:   targetIP,
-		TargetPort: targetPort,
-		Direct:     direct,
-		NodeID:     nodeID,
-		Group:      group,
+		Kind:        NetworkProcessEventUDP,
+		Timestamp:   time.Now().UnixMilli(),
+		ProcessName: procName,
+		TargetIP:    targetIP,
+		TargetPort:  targetPort,
+		Direct:      direct,
+		NodeID:      nodeID,
+		Group:       group,
 	})
 }
 

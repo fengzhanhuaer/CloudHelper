@@ -521,10 +521,10 @@ export function useNetworkAssistant() {
     }
   }, []);
 
-  const startProcessMonitor = useCallback(async (name: string) => {
+  const startProcessMonitor = useCallback(async () => {
     try {
-      await StartNetworkAssistantProcessMonitor(name);
-      setMonitorProcessName(name);
+      await StartNetworkAssistantProcessMonitor();
+      setMonitorProcessName("");
       setIsMonitoring(true);
       setProcessEvents([]);
       setProcessEventsStatus("");

@@ -209,9 +209,10 @@ function App() {
             networkMonitorProcess={networkAssistant.monitorProcessName}
             isNetworkMonitoring={networkAssistant.isMonitoring}
             networkProcessEvents={networkAssistant.processEvents}
+            networkProcessEventsStatus={networkAssistant.processEventsStatus}
             onRefreshNetworkProcessList={networkAssistant.refreshProcessList}
             onSelectNetworkMonitorProcess={networkAssistant.setMonitorProcessName}
-            onStartNetworkMonitor={() => networkAssistant.startProcessMonitor(networkAssistant.monitorProcessName)}
+            onStartNetworkMonitor={networkAssistant.startProcessMonitor}
             onStopNetworkMonitor={networkAssistant.stopProcessMonitor}
             onClearNetworkMonitorEvents={networkAssistant.clearProcessEvents}
             networkLogLines={networkAssistant.logLines}

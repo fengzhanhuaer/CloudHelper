@@ -444,11 +444,11 @@ func (a *App) ListNetworkAssistantProcesses() ([]NetworkProcessInfo, error) {
 	return listRunningProcesses(), nil
 }
 
-func (a *App) StartNetworkAssistantProcessMonitor(processName string) error {
+func (a *App) StartNetworkAssistantProcessMonitor() error {
 	if a.networkAssistant == nil {
 		return errors.New("network assistant service is not initialized")
 	}
-	a.networkAssistant.processMonitor.Start(processName)
+	a.networkAssistant.processMonitor.Start()
 	return nil
 }
 

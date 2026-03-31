@@ -115,8 +115,8 @@ func (a *App) ListNetworkAssistantProcesses() ([]NetworkProcessInfo, error) {
 	return a.inner.ListNetworkAssistantProcesses()
 }
 
-func (a *App) StartNetworkAssistantProcessMonitor(processName string) error {
-	return a.inner.StartNetworkAssistantProcessMonitor(processName)
+func (a *App) StartNetworkAssistantProcessMonitor() error {
+	return a.inner.StartNetworkAssistantProcessMonitor()
 }
 
 func (a *App) StopNetworkAssistantProcessMonitor() error {

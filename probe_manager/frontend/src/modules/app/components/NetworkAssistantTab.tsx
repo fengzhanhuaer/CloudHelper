@@ -59,6 +59,7 @@ type NetworkAssistantTabProps = {
   selectedProcess: string;
   isMonitoring: boolean;
   processEvents: NetworkProcessEvent[];
+  processEventsStatus: string;
   onRefreshProcessList: () => void;
   onSelectProcess: (name: string) => void;
   onStartMonitor: () => void;
@@ -411,14 +412,9 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         />
       ) : subTab === "monitor" ? (
         <NetworkAssistantMonitorPanel
-          processList={props.processList}
-          isLoadingProcessList={props.isLoadingProcessList}
-          processListStatus={props.processListStatus}
-          selectedProcess={props.selectedProcess}
           isMonitoring={props.isMonitoring}
           processEvents={props.processEvents}
-          onRefreshProcessList={props.onRefreshProcessList}
-          onSelectProcess={props.onSelectProcess}
+          processEventsStatus={props.processEventsStatus}
           onStartMonitor={props.onStartMonitor}
           onStopMonitor={props.onStopMonitor}
           onClearEvents={props.onClearEvents}

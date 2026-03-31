@@ -1,50 +1,35 @@
 import type {
   NetworkProcessEvent,
-  NetworkProcessInfo,
 } from "../types";
 
 type NetworkAssistantMonitorPanelProps = {
-  processList: NetworkProcessInfo[];
-  isLoadingProcessList: boolean;
-  processListStatus: string;
-  selectedProcess: string;
   isMonitoring: boolean;
   processEvents: NetworkProcessEvent[];
-  onRefreshProcessList: () => void;
-  onSelectProcess: (name: string) => void;
+  processEventsStatus: string;
   onStartMonitor: () => void;
   onStopMonitor: () => void;
   onClearEvents: () => void;
 };
 
+function formatTimestamp(ms: number): string {
+  const d = new Date(ms);
+  return d.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function routeLabel(event: NetworkProcessEvent): string {
+  if (event.direct) return "直连";
+  if (event.node_id) return `代理(${event.node_id})`;
+  return "-";
+}
+
 export function NetworkAssistantMonitorPanel(props: NetworkAssistantMonitorPanelProps) {
   return (
     <>
       <div className="content-actions" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <select
-          className="input"
-          style={{ flex: 1, minWidth: 120 }}
-          value={props.selectedProcess}
-          onChange={(e) => props.onSelectProcess(e.target.value)}
-          disabled={props.isMonitoring}
-        >
-          <option value="">-- 选择进程 --</option>
-          {props.processList.map((p) => (
-            <option key={p.pid} value={p.name}>{p.name}</option>
-          ))}
-        </select>
-        <button
-          className="btn"
-          onClick={props.onRefreshProcessList}
-          disabled={props.isLoadingProcessList || props.isMonitoring}
-        >
-          {props.isLoadingProcessList ? "加载中..." : "刷新进程"}
-        </button>
         {!props.isMonitoring ? (
           <button
             className="btn"
             onClick={props.onStartMonitor}
-            disabled={!props.selectedProcess || props.isMonitoring}
           >
             开始监视
           </button>
@@ -58,42 +43,39 @@ export function NetworkAssistantMonitorPanel(props: NetworkAssistantMonitorPanel
           onClick={props.onClearEvents}
           disabled={props.isMonitoring}
         >
-          清空记录
+          清空
         </button>
+        {props.isMonitoring && (
+          <span style={{ fontSize: 12, color: "#888" }}>监视中，每 2 秒刷新…</span>
+        )}
       </div>
-      {props.processListStatus && <div className="status">{props.processListStatus}</div>}
-      {props.isMonitoring && (
-        <div className="status" style={{ color: "#4ade80" }}>监视中：{props.selectedProcess}</div>
-      )}
+      {props.processEventsStatus && <div className="status">{props.processEventsStatus}</div>}
       {props.processEvents.length === 0 ? (
-        <div className="status">暂无网络事件</div>
+        <div className="status">暂无事件</div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
           <thead>
             <tr style={{ background: "#f0f0f0" }}>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>时间</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>进程</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>类型</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名/IP</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>端口</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>路由</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>解析 IP</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名 / 目标</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>路由 / 代理组</th>
             </tr>
           </thead>
           <tbody>
-            {[...props.processEvents].reverse().map((ev, i) => {
-              const t = new Date(ev.timestamp);
-              const timeStr = `${t.getHours().toString().padStart(2, "0")}:${t.getMinutes().toString().padStart(2, "0")}:${t.getSeconds().toString().padStart(2, "0")}.${t.getMilliseconds().toString().padStart(3, "0")}`;
-              const target = ev.kind === "dns" ? (ev.domain || "-") : (ev.target_ip || "-");
-              const route = ev.direct ? "直连" : (ev.node_id ? `代理(${ev.node_id})` : "-");
-              const resolvedIPs = ev.resolved_ips ? ev.resolved_ips.join(", ") : "-";
+            {props.processEvents.slice().reverse().map((ev, i) => {
+              const target = ev.kind === "dns"
+                ? (ev.domain || "-")
+                : `${ev.target_ip || "-"}:${ev.target_port ?? "-"}`;
+              const routeGroup = [routeLabel(ev), ev.group].filter(Boolean).join(" / ");
               return (
                 <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                  <td style={{ padding: "4px 8px", fontFamily: "monospace", whiteSpace: "nowrap" }}>{timeStr}</td>
-                  <td style={{ padding: "4px 8px", fontWeight: "bold", color: ev.kind === "dns" ? "#60a5fa" : ev.kind === "tcp" ? "#4ade80" : "#facc15" }}>{ev.kind.toUpperCase()}</td>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{formatTimestamp(ev.timestamp)}</td>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{ev.process_name || "-"}</td>
+                  <td style={{ padding: "4px 8px" }}>{ev.kind.toUpperCase()}</td>
                   <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{target}</td>
-                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{ev.target_port ? ev.target_port : "-"}</td>
-                  <td style={{ padding: "4px 8px" }}>{route}</td>
-                  <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 11 }}>{ev.kind === "dns" ? resolvedIPs : "-"}</td>
+                  <td style={{ padding: "4px 8px" }}>{routeGroup || "-"}</td>
                 </tr>
               );
             })}

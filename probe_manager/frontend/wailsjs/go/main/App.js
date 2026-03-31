@@ -42,8 +42,8 @@ export function ListNetworkAssistantProcesses() {
   return window['go']['main']['App']['ListNetworkAssistantProcesses']();
 }
 
-export function StartNetworkAssistantProcessMonitor(arg1) {
-  return window['go']['main']['App']['StartNetworkAssistantProcessMonitor'](arg1);
+export function StartNetworkAssistantProcessMonitor() {
+  return window['go']['main']['App']['StartNetworkAssistantProcessMonitor']();
 }
 
 export function StopNetworkAssistantProcessMonitor() {

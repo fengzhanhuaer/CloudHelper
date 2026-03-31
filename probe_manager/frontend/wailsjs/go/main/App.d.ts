@@ -22,7 +22,7 @@ export function ForceRefreshProbeDNSCache(arg1:string,arg2:string):Promise<strin
 
 export function ListNetworkAssistantProcesses():Promise<Array<backend.NetworkProcessInfo>>;
 
-export function StartNetworkAssistantProcessMonitor(arg1:string):Promise<void>;
+export function StartNetworkAssistantProcessMonitor():Promise<void>;
 
 export function StopNetworkAssistantProcessMonitor():Promise<void>;
 

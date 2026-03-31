@@ -103,6 +103,7 @@ type TabContentProps = {
   networkMonitorProcess: string;
   isNetworkMonitoring: boolean;
   networkProcessEvents: NetworkProcessEvent[];
+  networkProcessEventsStatus: string;
   onRefreshNetworkProcessList: () => void;
   onSelectNetworkMonitorProcess: (name: string) => void;
   onStartNetworkMonitor: () => void;
@@ -202,6 +203,7 @@ export function TabContent(props: TabContentProps) {
           selectedProcess={props.networkMonitorProcess}
           isMonitoring={props.isNetworkMonitoring}
           processEvents={props.networkProcessEvents}
+          processEventsStatus={props.networkProcessEventsStatus}
           onRefreshProcessList={props.onRefreshNetworkProcessList}
           onSelectProcess={props.onSelectNetworkMonitorProcess}
           onStartMonitor={props.onStartNetworkMonitor}

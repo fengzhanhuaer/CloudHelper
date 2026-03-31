@@ -147,6 +147,7 @@ export type NetworkProcessEventKind = "dns" | "tcp" | "udp";
 export type NetworkProcessEvent = {
   kind: NetworkProcessEventKind;
   timestamp: number;
+  process_name?: string;
   domain?: string;
   target_ip?: string;
   target_port?: number;
