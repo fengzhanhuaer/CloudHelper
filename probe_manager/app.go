@@ -25,6 +25,10 @@ type ManagerUpgradeProgress = backend.ManagerUpgradeProgress
 type ProbeNode = backend.ProbeNode
 type ProbeLinkConnectResult = backend.ProbeLinkConnectResult
 type ProbeChainPingResult = backend.ProbeChainPingResult
+type NetworkAssistantDNSUpstreamConfig = backend.NetworkAssistantDNSUpstreamConfig
+type NetworkAssistantDNSCacheEntry = backend.NetworkAssistantDNSCacheEntry
+type NetworkProcessInfo = backend.NetworkProcessInfo
+type NetworkProcessEvent = backend.NetworkProcessEvent
 
 func NewApp() *App {
 	backend.BuildVersion = BuildVersion
@@ -97,6 +101,34 @@ func (a *App) EnableNetworkAssistantTUN() (NetworkAssistantStatus, error) {
 
 func (a *App) GetNetworkAssistantRuleConfig() (NetworkAssistantRuleConfig, error) {
 	return a.inner.GetNetworkAssistantRuleConfig()
+}
+
+func (a *App) GetNetworkAssistantDNSUpstreamConfig() (NetworkAssistantDNSUpstreamConfig, error) {
+	return a.inner.GetNetworkAssistantDNSUpstreamConfig()
+}
+
+func (a *App) SetNetworkAssistantDNSUpstreamConfig(cfg NetworkAssistantDNSUpstreamConfig) error {
+	return a.inner.SetNetworkAssistantDNSUpstreamConfig(cfg)
+}
+
+func (a *App) ListNetworkAssistantProcesses() ([]NetworkProcessInfo, error) {
+	return a.inner.ListNetworkAssistantProcesses()
+}
+
+func (a *App) StartNetworkAssistantProcessMonitor(processName string) error {
+	return a.inner.StartNetworkAssistantProcessMonitor(processName)
+}
+
+func (a *App) StopNetworkAssistantProcessMonitor() error {
+	return a.inner.StopNetworkAssistantProcessMonitor()
+}
+
+func (a *App) QueryNetworkAssistantProcessEvents(sinceMs int64) ([]NetworkProcessEvent, error) {
+	return a.inner.QueryNetworkAssistantProcessEvents(sinceMs)
+}
+
+func (a *App) QueryNetworkAssistantDNSCache(query string) ([]NetworkAssistantDNSCacheEntry, error) {
+	return a.inner.QueryNetworkAssistantDNSCache(query)
 }
 
 func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {
