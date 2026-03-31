@@ -46,13 +46,7 @@ const (
 	udpDialRetryMaxBackoff     = 300 * time.Millisecond
 )
 
-var defaultDirectWhitelistRules = []string{
-	"10.0.0.0/8",
-	"172.16.0.0/12",
-	"192.168.0.0/16",
-	"localhost",
-	"127.0.0.1",
-}
+var defaultDirectWhitelistRules = []string{}
 
 var defaultRuleRoutes = []string{
 	"# example.com,default",
@@ -331,8 +325,12 @@ func newNetworkAssistantService() *networkAssistantService {
 
 	directWhitelist, _, err := loadOrCreateSocksDirectWhitelist()
 	if err != nil {
-		logStore.Appendf(logSourceManager, "init", "failed to load direct whitelist, using defaults: %v", err)
-		directWhitelist = mustBuildDefaultDirectWhitelist()
+		logStore.Appendf(logSourceManager, "init", "failed to load direct whitelist, fallback to empty: %v", err)
+		directWhitelist = &socksDirectWhitelist{
+			hosts: make(map[string]struct{}),
+			ips:   make(map[string]struct{}),
+			cidrs: make([]*net.IPNet, 0),
+		}
 	}
 
 	ruleRouting, ruleErr := loadOrCreateTunnelRuleRouting()
@@ -2688,22 +2686,7 @@ func parseDirectWhitelistRules(rules []string) (*socksDirectWhitelist, error) {
 		whitelist.hosts[hostRule] = struct{}{}
 	}
 
-	if len(whitelist.hosts) == 0 && len(whitelist.ips) == 0 && len(whitelist.cidrs) == 0 {
-		return nil, errors.New("direct whitelist has no valid entries")
-	}
 	return whitelist, nil
-}
-
-func mustBuildDefaultDirectWhitelist() *socksDirectWhitelist {
-	whitelist, err := parseDirectWhitelistRules(defaultDirectWhitelistRules)
-	if err != nil {
-		return &socksDirectWhitelist{
-			hosts: make(map[string]struct{}),
-			ips:   make(map[string]struct{}),
-			cidrs: make([]*net.IPNet, 0),
-		}
-	}
-	return whitelist
 }
 
 func canonicalIP(ip net.IP) string {
