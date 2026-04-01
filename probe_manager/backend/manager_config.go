@@ -18,7 +18,7 @@ type managerGlobalConfig struct {
 	ControllerURL string `json:"controller_url"`
 	// ControllerIP 为可选的主控 IP，配置后连接主控时直接使用该 IP，跳过 DNS 解析。
 	// 格式为纯 IPv4 或 IPv6 地址，不含端口，留空则正常走 DNS。
-	ControllerIP string `json:"controller_ip,omitempty"`
+	ControllerIP string `json:"controller_ip"`
 }
 
 func (a *App) GetGlobalControllerURL() (string, error) {
@@ -96,19 +96,30 @@ func loadManagerGlobalConfig() (managerGlobalConfig, string, error) {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return managerGlobalConfig{}, configPath, nil
+			defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, ControllerIP: ""}
+			if writeErr := writeManagerGlobalConfig(configPath, defaultConfig); writeErr != nil {
+				return managerGlobalConfig{}, configPath, writeErr
+			}
+			return defaultConfig, configPath, nil
 		}
 		return managerGlobalConfig{}, configPath, err
 	}
 
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
-		return managerGlobalConfig{}, configPath, nil
+		defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, ControllerIP: ""}
+		if writeErr := writeManagerGlobalConfig(configPath, defaultConfig); writeErr != nil {
+			return managerGlobalConfig{}, configPath, writeErr
+		}
+		return defaultConfig, configPath, nil
 	}
 
 	var config managerGlobalConfig
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return managerGlobalConfig{}, configPath, fmt.Errorf("failed to parse global config: %w", err)
+	}
+	if strings.TrimSpace(config.ControllerURL) == "" {
+		config.ControllerURL = defaultControllerURL
 	}
 	return config, configPath, nil
 }
