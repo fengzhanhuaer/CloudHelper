@@ -80,7 +80,8 @@ func (a *App) SetGlobalControllerIP(ip string) (string, error) {
 func (a *App) CloudflareSpeedTest(req CloudflareSpeedTestRequest) CloudflareSpeedTestResponse {
 	return a.inner.CloudflareSpeedTest(req)
 }
-(lines int, sinceMinutes int) (LogViewResponse, error) {
+
+func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int) (LogViewResponse, error) {
 	return a.inner.GetLocalManagerLogs(lines, sinceMinutes)
 }
 
