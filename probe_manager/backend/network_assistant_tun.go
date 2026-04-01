@@ -3,14 +3,11 @@ package backend
 import (
 	"bytes"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -146,31 +143,18 @@ func listWindowsNetAdapters() ([]windowsNetAdapter, error) {
 		return []windowsNetAdapter{}, nil
 	}
 
-	script := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference='Stop'; $adapters = Get-NetAdapter -IncludeHidden | Select-Object -Property Name,InterfaceDescription; if ($null -eq $adapters) { '[]' } else { $adapters | ConvertTo-Json -Compress }"
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
-	// Suppress the console window on Windows so no PowerShell window flashes.
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.Output()
+	items, err := windowsListAdaptersIPv4()
 	if err != nil {
 		return nil, err
 	}
-
-	payload := strings.TrimSpace(string(output))
-	if payload == "" || strings.EqualFold(payload, "null") {
-		return []windowsNetAdapter{}, nil
+	adapters := make([]windowsNetAdapter, 0, len(items))
+	for _, item := range items {
+		adapters = append(adapters, windowsNetAdapter{
+			Name:                 strings.TrimSpace(item.Name),
+			InterfaceDescription: strings.TrimSpace(item.InterfaceDescription),
+		})
 	}
-
-	adapters := make([]windowsNetAdapter, 0)
-	if err := json.Unmarshal([]byte(payload), &adapters); err == nil {
-		return adapters, nil
-	}
-
-	var single windowsNetAdapter
-	if err := json.Unmarshal([]byte(payload), &single); err == nil {
-		return []windowsNetAdapter{single}, nil
-	}
-
-	return nil, errors.New("failed to parse Get-NetAdapter output")
+	return adapters, nil
 }
 
 func detectConfiguredTUNAdapter() (bool, error) {
@@ -302,7 +286,11 @@ func (s *networkAssistantService) EnableTUN() error {
 		s.logf("tun enable requires admin privileges, requesting elevation")
 		if err := relaunchAsAdmin(); err != nil {
 			if errors.Is(err, ErrRelaunchAsAdmin) {
-				// UAC 提权已触发，新进程将以管理员身份启动，当前进程即将退出
+				// UAC 提权已触发，新进程将以管理员身份启动，当前进程应尽快退出
+				go func() {
+					time.Sleep(300 * time.Millisecond)
+					os.Exit(0)
+				}()
 				return ErrRelaunchAsAdmin
 			}
 			s.setLastError(err)
