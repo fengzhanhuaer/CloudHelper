@@ -10,7 +10,7 @@ import {
   setCloudflareZone,
 } from "../services/controller-api";
 import type { CloudflareDDNSRecord, CloudflareZeroTrustWhitelistState } from "../types";
-import { CloudflareSpeedTest } from "../../../wailsjs/go/main/App";
+import { CloudflareSpeedTest } from "../../../../wailsjs/go/main/App";
 
 type CloudflareAssistantTabProps = {
   controllerBaseUrl: string;
@@ -49,7 +49,7 @@ function IPSpeedTestPanel() {
         timeout_ms: timeout,
         top_n: 20,
       });
-      const items: IPTestResult[] = (resp.results ?? []).map((r) => ({
+      const items: IPTestResult[] = (resp.results ?? []).map((r: { ip: string; latency_ms: number }) => ({
         ip: r.ip,
         latency_ms: r.latency_ms,
       }));
