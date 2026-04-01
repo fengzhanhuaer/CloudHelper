@@ -42,6 +42,22 @@ func (a *App) GetGlobalControllerIP() (string, error) {
 	return strings.TrimSpace(config.ControllerIP), nil
 }
 
+// SetGlobalControllerIP 设置主控 IP 并持久化配置。传入空字符串则清除配置。
+func (a *App) SetGlobalControllerIP(ip string) (string, error) {
+	value := strings.TrimSpace(ip)
+
+	config, configPath, err := loadManagerGlobalConfig()
+	if err != nil {
+		return "", err
+	}
+	config.ControllerIP = value
+
+	if err := writeManagerGlobalConfig(configPath, config); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
 // loadManagerControllerIP 直接读取配置文件中的主控 IP，供内部模块使用。
 // 返回空字符串表示未配置，调用方应走正常 DNS 流程。
 func loadManagerControllerIP() string {

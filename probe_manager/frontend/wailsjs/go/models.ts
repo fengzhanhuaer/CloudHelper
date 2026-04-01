@@ -1,5 +1,71 @@
 export namespace backend {
 	
+	export class CloudflareIPTestResult {
+	    ip: string;
+	    latency_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CloudflareIPTestResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ip = source["ip"];
+	        this.latency_ms = source["latency_ms"];
+	    }
+	}
+	export class CloudflareSpeedTestRequest {
+	    sample_count: number;
+	    timeout_ms: number;
+	    top_n: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CloudflareSpeedTestRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sample_count = source["sample_count"];
+	        this.timeout_ms = source["timeout_ms"];
+	        this.top_n = source["top_n"];
+	    }
+	}
+	export class CloudflareSpeedTestResponse {
+	    results: CloudflareIPTestResult[];
+	    total_tested: number;
+	    valid_count: number;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CloudflareSpeedTestResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.results = this.convertValues(source["results"], CloudflareIPTestResult);
+	        this.total_tested = source["total_tested"];
+	        this.valid_count = source["valid_count"];
+	        this.message = source["message"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class LogViewResponse {
 	    source: string;
 	    file_path: string;
