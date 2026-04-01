@@ -18,7 +18,8 @@ import (
 const (
 	windowsErrorInsufficientBuffer = 122
 	windowsRouteProtoNetMgmt       = 3
-	windowsRouteTypeIndirect       = 4
+	windowsRouteTypeDirect         = 3 // MIB_IPROUTE_TYPE_DIRECT  — next hop IS the destination (on-link)
+	windowsRouteTypeIndirect       = 4 // MIB_IPROUTE_TYPE_INDIRECT — next hop is a gateway
 )
 
 type mibIPForwardRow struct {
@@ -292,12 +293,19 @@ func windowsEnsureIPv4Route(prefix string, interfaceIndex int, nextHop string, m
 	if err := windowsDeleteIPv4Routes(dest, mask, uint32(interfaceIndex), &hop); err != nil {
 		return err
 	}
+	// Windows CreateIpForwardEntry rule:
+	//   ForwardNextHop == 0.0.0.0 (on-link) → ForwardType must be DIRECT (3)
+	//   ForwardNextHop is a real gateway    → ForwardType must be INDIRECT (4)
+	routeType := uint32(windowsRouteTypeIndirect)
+	if hop == 0 {
+		routeType = windowsRouteTypeDirect
+	}
 	row := mibIPForwardRow{
 		ForwardDest:    dest,
 		ForwardMask:    mask,
 		ForwardNextHop: hop,
 		ForwardIfIndex: uint32(interfaceIndex),
-		ForwardType:    windowsRouteTypeIndirect,
+		ForwardType:    routeType,
 		ForwardProto:   windowsRouteProtoNetMgmt,
 		ForwardMetric1: metric,
 	}
