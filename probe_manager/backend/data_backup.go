@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -38,13 +37,10 @@ func autoBackupManagerData() error {
 	errMessages := make([]string, 0)
 	now := time.Now()
 	for _, dataPath := range dataDirs {
-		archivePath, err := backupOneManagerDataDir(dataPath, now)
+		_, err := backupOneManagerDataDir(dataPath, now)
 		if err != nil {
 			errMessages = append(errMessages, err.Error())
 			continue
-		}
-		if err := tryUploadManagerBackupArchive(archivePath); err != nil {
-			log.Printf("warning: failed to upload manager data backup to controller: %v", err)
 		}
 	}
 
