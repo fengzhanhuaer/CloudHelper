@@ -1776,7 +1776,8 @@ func fetchTunnelNodesViaAdminWS(baseURL, token string) (tunnelNodesResponse, err
 		return tunnelNodesResponse{}, err
 	}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	controllerIP := loadManagerControllerIP()
+	dialer := buildControllerWSDialer(baseURL, controllerIP)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)

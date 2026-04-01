@@ -153,7 +153,9 @@ func newTunnelMuxClient(baseURL, token, nodeID string, onControllerLog func(stri
 	header := http.Header{}
 	header.Set("X-Forwarded-Proto", "https")
 	header.Set("Authorization", "Bearer "+token)
-	wsConn, handshakeResp, err := websocket.DefaultDialer.Dial(tunnelURL, header)
+	controllerIP := loadManagerControllerIP()
+	muxDialer := buildControllerWSDialer(baseURL, controllerIP)
+	wsConn, handshakeResp, err := muxDialer.Dial(tunnelURL, header)
 	if err != nil {
 		if handshakeResp != nil {
 			defer handshakeResp.Body.Close()

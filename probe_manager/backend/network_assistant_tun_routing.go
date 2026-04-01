@@ -175,7 +175,12 @@ func resolveTUNControlPlaneTargets(controllerBaseURL string, additionalHosts []s
 	host := resolveControllerHostForProtection(controllerBaseURL)
 	if host != "" {
 		targets.ControllerHost = host
-		addProtectedHostToTUNTargets(&targets, host)
+		// 如果配置了主控 IP，直接注入该 IP，跳过 DNS 解析，避免 TUN 模式下解析超时。
+		if overrideIP := loadManagerControllerIP(); overrideIP != "" {
+			addProtectedHostToTUNTargets(&targets, overrideIP)
+		} else {
+			addProtectedHostToTUNTargets(&targets, host)
+		}
 	}
 	for _, extraHost := range additionalHosts {
 		addProtectedHostToTUNTargets(&targets, extraHost)
