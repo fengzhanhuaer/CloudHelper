@@ -1,11 +1,13 @@
 package backend
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -163,6 +165,145 @@ func TestProbeLinkSessionHTTPReusesSingleConnection(t *testing.T) {
 
 	if got := accepted.Load(); got != 1 {
 		t.Fatalf("expected http accepted connections=1 (persistent), got %d", got)
+	}
+}
+
+func TestPingNetworkAssistantTunnelNodeRequiresNodeID(t *testing.T) {
+	_, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "")
+	if err == nil {
+		t.Fatalf("expected error when node_id is empty")
+	}
+}
+
+func TestPingNetworkAssistantTunnelNodeExistingMux(t *testing.T) {
+	oldPing := probeLinkTryPingExistingMux
+	oldEnsure := probeLinkEnsureMuxForNode
+	defer func() {
+		probeLinkTryPingExistingMux = oldPing
+		probeLinkEnsureMuxForNode = oldEnsure
+	}()
+
+	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
+		if service == nil {
+			t.Fatalf("service should not be nil")
+		}
+		if nodeID != "cloudserver" {
+			t.Fatalf("unexpected node id: %s", nodeID)
+		}
+		return 12 * time.Millisecond, true
+	}
+	probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
+		t.Fatalf("ensure should not be called when mux already exists")
+		return nil
+	}
+
+	result, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "cloudserver")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected ok result")
+	}
+	if result.DurationMS != 12 {
+		t.Fatalf("expected duration 12ms, got %d", result.DurationMS)
+	}
+	if !strings.Contains(result.Message, "已有连接") {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
+func TestPingNetworkAssistantTunnelNodeEnsureMuxThenSuccess(t *testing.T) {
+	oldPing := probeLinkTryPingExistingMux
+	oldEnsure := probeLinkEnsureMuxForNode
+	defer func() {
+		probeLinkTryPingExistingMux = oldPing
+		probeLinkEnsureMuxForNode = oldEnsure
+	}()
+
+	var pingCount int
+	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
+		pingCount++
+		if pingCount == 1 {
+			return 0, false
+		}
+		return 23 * time.Millisecond, true
+	}
+	probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
+		if service == nil {
+			t.Fatalf("service should not be nil")
+		}
+		if nodeID != "cloudserver" {
+			t.Fatalf("unexpected node id: %s", nodeID)
+		}
+		return nil
+	}
+
+	result, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "cloudserver")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected ok result")
+	}
+	if result.DurationMS != 23 {
+		t.Fatalf("expected duration 23ms, got %d", result.DurationMS)
+	}
+	if !strings.Contains(result.Message, "按需建链") {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
+func TestPingNetworkAssistantTunnelNodeEnsureMuxFailed(t *testing.T) {
+	oldPing := probeLinkTryPingExistingMux
+	oldEnsure := probeLinkEnsureMuxForNode
+	defer func() {
+		probeLinkTryPingExistingMux = oldPing
+		probeLinkEnsureMuxForNode = oldEnsure
+	}()
+
+	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
+		return 0, false
+	}
+	probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
+		return fmt.Errorf("dial failed")
+	}
+
+	result, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "cloudserver")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failed result")
+	}
+	if !strings.Contains(result.Message, "按需建链失败") {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
+func TestPingNetworkAssistantTunnelNodeEnsureMuxStillUnavailable(t *testing.T) {
+	oldPing := probeLinkTryPingExistingMux
+	oldEnsure := probeLinkEnsureMuxForNode
+	defer func() {
+		probeLinkTryPingExistingMux = oldPing
+		probeLinkEnsureMuxForNode = oldEnsure
+	}()
+
+	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
+		return 0, false
+	}
+	probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
+		return nil
+	}
+
+	result, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "cloudserver")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failed result")
+	}
+	if !strings.Contains(result.Message, "按需建链后链路仍不可用") {
+		t.Fatalf("unexpected message: %s", result.Message)
 	}
 }
 

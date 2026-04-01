@@ -527,12 +527,18 @@ export function useNetworkAssistant() {
       setMonitorProcessName("");
       setIsMonitoring(true);
       setProcessEvents([]);
-      setProcessEventsStatus("");
+      if (status.mode !== "tun") {
+        setProcessEventsStatus("监视已启动：当前为直连模式，通常不会产生监视事件；请切换到 TUN 模式后再观察。")
+      } else if (!status.tun_enabled) {
+        setProcessEventsStatus("监视已启动：当前 TUN 尚未启用，暂无事件；请先启用 TUN 并产生网络流量。")
+      } else {
+        setProcessEventsStatus("监视已启动：请产生网络流量，事件会每 2 秒刷新。")
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       setProcessEventsStatus(`启动监视失败：${msg}`);
     }
-  }, []);
+  }, [status.mode, status.tun_enabled]);
 
   const clearProcessEvents = useCallback(() => {
     setProcessEvents([]);
@@ -555,25 +561,31 @@ export function useNetworkAssistant() {
       const sinceMs = processEventsLastMs();
       const raw = await QueryNetworkAssistantProcessEvents(sinceMs > 0 ? sinceMs + 1 : 0);
       if (Array.isArray(raw) && raw.length > 0) {
-        const events: NetworkProcessEvent[] = raw.map(e => ({
-          kind: e.kind as NetworkProcessEvent["kind"],
-          timestamp: e.timestamp,
-          domain: e.domain,
-          target_ip: e.target_ip,
-          target_port: e.target_port,
-          direct: e.direct,
-          node_id: e.node_id,
-          group: e.group,
-          resolved_ips: e.resolved_ips,
-        }));
+        const events: NetworkProcessEvent[] = raw.map((e) => {
+          const source = e as unknown as { process_name?: string };
+          return {
+            kind: e.kind as NetworkProcessEvent["kind"],
+            timestamp: e.timestamp,
+            process_name: source.process_name,
+            domain: e.domain,
+            target_ip: e.target_ip,
+            target_port: e.target_port,
+            direct: e.direct,
+            node_id: e.node_id,
+            group: e.group,
+            resolved_ips: e.resolved_ips,
+          };
+        });
         setProcessEvents(prev => {
           const combined = [...prev, ...events];
           // 保留最新 500 条
           return combined.length > 500 ? combined.slice(combined.length - 500) : combined;
         });
+        setProcessEventsStatus("");
       }
-    } catch {
-      // 静默失败，下次重试
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setProcessEventsStatus(`监视轮询失败：${msg}`);
     }
   }, [isMonitoring, processEventsLastMs]);
 

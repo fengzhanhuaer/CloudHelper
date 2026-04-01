@@ -22,6 +22,21 @@ const (
 	probeLinkTimeout      = 8 * time.Second
 )
 
+var probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
+	if service == nil {
+		return 0, false
+	}
+	return service.tryPingExistingMux(nodeID)
+}
+
+var probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
+	if service == nil {
+		return fmt.Errorf("network assistant service is nil")
+	}
+	_, err := service.ensureTunnelMuxClientForNode(nodeID)
+	return err
+}
+
 type ProbeLinkConnectResult struct {
 	OK           bool   `json:"ok"`
 	NodeID       string `json:"node_id"`
@@ -552,24 +567,49 @@ func pingNetworkAssistantTunnelNode(service *networkAssistantService, nodeID str
 		return ProbeChainPingResult{}, fmt.Errorf("node_id is required")
 	}
 
-	// 优先复用已有 mux 连接（yamux Ping）
-	if service != nil {
-		if rtt, ok := service.tryPingExistingMux(trimmedNodeID); ok {
-			return ProbeChainPingResult{
-				OK:         true,
-				ChainID:    trimmedNodeID,
-				LinkLayer:  "ws",
-				DurationMS: rtt.Milliseconds(),
-				Message:    fmt.Sprintf("连接成功（已有连接）(%dms)", rtt.Milliseconds()),
-			}, nil
-		}
+	if service == nil {
+		return ProbeChainPingResult{
+			OK:        false,
+			ChainID:   trimmedNodeID,
+			LinkLayer: "ws",
+			Message:   "连接失败: 本地无可复用链路",
+		}, nil
 	}
 
-	// 仅使用本地已建链路，不再新建到主控的连接。
+	// 1) 优先复用已有 mux 连接（yamux Ping）
+	if rtt, ok := probeLinkTryPingExistingMux(service, trimmedNodeID); ok {
+		return ProbeChainPingResult{
+			OK:         true,
+			ChainID:    trimmedNodeID,
+			LinkLayer:  "ws",
+			DurationMS: rtt.Milliseconds(),
+			Message:    fmt.Sprintf("连接成功（已有连接）(%dms)", rtt.Milliseconds()),
+		}, nil
+	}
+
+	// 2) 无可复用链路时按需建链，再次尝试 ping。
+	if err := probeLinkEnsureMuxForNode(service, trimmedNodeID); err != nil {
+		return ProbeChainPingResult{
+			OK:        false,
+			ChainID:   trimmedNodeID,
+			LinkLayer: "ws",
+			Message:   fmt.Sprintf("连接失败: 本地无可复用链路，按需建链失败: %v", err),
+		}, nil
+	}
+	if rtt, ok := probeLinkTryPingExistingMux(service, trimmedNodeID); ok {
+		return ProbeChainPingResult{
+			OK:         true,
+			ChainID:    trimmedNodeID,
+			LinkLayer:  "ws",
+			DurationMS: rtt.Milliseconds(),
+			Message:    fmt.Sprintf("连接成功（按需建链）(%dms)", rtt.Milliseconds()),
+		}, nil
+	}
+
 	return ProbeChainPingResult{
 		OK:        false,
 		ChainID:   trimmedNodeID,
 		LinkLayer: "ws",
-		Message:   "连接失败: 本地无可复用链路",
+		Message:   "连接失败: 本地无可复用链路，按需建链后链路仍不可用",
 	}, nil
 }
