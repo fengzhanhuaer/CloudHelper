@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -247,10 +248,56 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 	}
 }
 
+func normalizeProbeChainNodeID(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "node-") || strings.HasPrefix(lower, "node_") {
+		suffix := strings.TrimPrefix(strings.TrimPrefix(lower, "node-"), "node_")
+		suffix = strings.TrimSpace(suffix)
+		if suffix != "" {
+			if n, err := strconv.Atoi(suffix); err == nil && n > 0 {
+				return strconv.Itoa(n)
+			}
+			return suffix
+		}
+	}
+	if n, err := strconv.Atoi(value); err == nil && n > 0 {
+		return strconv.Itoa(n)
+	}
+	return value
+}
+
+func findHopConfigForNodeID(item probeLinkChainServerItem, nodeID string) (probeLinkChainHopServerItem, bool) {
+	targetNodeID := normalizeProbeChainNodeID(nodeID)
+	if targetNodeID == "" {
+		return probeLinkChainHopServerItem{}, false
+	}
+	for _, hop := range item.HopConfigs {
+		if hop.NodeNo <= 0 {
+			continue
+		}
+		hopNodeID := normalizeProbeChainNodeID(strconv.Itoa(hop.NodeNo))
+		if hopNodeID == "" || hopNodeID != targetNodeID {
+			continue
+		}
+		return hop, true
+	}
+	return probeLinkChainHopServerItem{}, false
+}
+
 // resolveProbeNodeChainRole returns the role of nodeID in the chain.
 func resolveProbeNodeChainRole(item probeLinkChainServerItem, nodeID string) string {
-	isEntry := strings.TrimSpace(item.EntryNodeID) == nodeID
-	isExit := strings.TrimSpace(item.ExitNodeID) == nodeID
+	targetNodeID := normalizeProbeChainNodeID(nodeID)
+	if targetNodeID == "" {
+		return ""
+	}
+	entryNodeID := normalizeProbeChainNodeID(item.EntryNodeID)
+	exitNodeID := normalizeProbeChainNodeID(item.ExitNodeID)
+	isEntry := entryNodeID != "" && targetNodeID == entryNodeID
+	isExit := exitNodeID != "" && targetNodeID == exitNodeID
 	if isEntry && isExit {
 		return "entry_exit"
 	}
@@ -261,28 +308,34 @@ func resolveProbeNodeChainRole(item probeLinkChainServerItem, nodeID string) str
 		return "exit"
 	}
 	for _, id := range item.CascadeNodeIDs {
-		if strings.TrimSpace(id) == nodeID {
+		if normalizeProbeChainNodeID(id) == targetNodeID {
 			return "relay"
 		}
 	}
 	return ""
 }
 
-// findHopConfigForNode returns the hop_config for nodeID by matching node_no
-// against the chain's node_no ordering. Node numbering follows the route order:
-// EntryNodeID=1, CascadeNodeIDs... , ExitNodeID=last.
+// findHopConfigForNode returns the hop_config for nodeID. It first matches hop.node_no
+// as node identity (current format), then falls back to legacy positional numbering.
 func findHopConfigForNode(item probeLinkChainServerItem, nodeID string) probeLinkChainHopServerItem {
-	// Build a node_no → node_id mapping from the route.
+	if hop, ok := findHopConfigForNodeID(item, nodeID); ok {
+		return hop
+	}
+
+	// Legacy fallback: node_no was stored as route position (1..N).
+	targetNodeID := normalizeProbeChainNodeID(nodeID)
 	route := buildChainRoute(item)
 	for no, id := range route {
-		if id == nodeID {
-			nodeNo := no + 1 // 1-indexed
-			for _, hop := range item.HopConfigs {
-				if hop.NodeNo == nodeNo {
-					return hop
-				}
+		if normalizeProbeChainNodeID(id) != targetNodeID {
+			continue
+		}
+		legacyNodeNo := no + 1 // 1-indexed
+		for _, hop := range item.HopConfigs {
+			if hop.NodeNo == legacyNodeNo {
+				return hop
 			}
 		}
+		break
 	}
 	return probeLinkChainHopServerItem{}
 }
@@ -298,38 +351,26 @@ func resolveProbeChainNextHopFromItem(item probeLinkChainServerItem, nodeID, rol
 	}
 
 	route := buildChainRoute(item)
+	targetNodeID := normalizeProbeChainNodeID(nodeID)
 	for i, id := range route {
-		if id != nodeID {
+		if normalizeProbeChainNodeID(id) != targetNodeID {
 			continue
 		}
 		if i+1 >= len(route) {
 			break
 		}
 		nextNodeID := route[i+1]
-		currentNo := i + 1
-		nextNo := i + 2 // 1-indexed
 		dialMode := probeChainDialModeForward
-		for _, hop := range item.HopConfigs {
-			if hop.NodeNo != currentNo {
-				continue
-			}
-			dialMode = normalizeProbeChainDialMode(strings.TrimSpace(hop.DialMode))
-			break
+		if currentHop, ok := findHopConfigForNodeID(item, id); ok {
+			dialMode = normalizeProbeChainDialMode(strings.TrimSpace(currentHop.DialMode))
 		}
-		for _, hop := range item.HopConfigs {
-			if hop.NodeNo != nextNo {
-				continue
-			}
-			// Prefer relay_host (DDNS filled by server); fall back to empty (will fail).
-			relayHost := strings.TrimSpace(hop.RelayHost)
-			// external_port is auto-filled to listen_port by the server.
-			externalPort := hop.ExternalPort
-			if externalPort <= 0 {
-				externalPort = hop.ListenPort
-			}
-			_ = nextNodeID
-			return relayHost, externalPort, firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"), dialMode, "secret"
+		nextHop := findHopConfigForNode(item, nextNodeID)
+		relayHost := strings.TrimSpace(nextHop.RelayHost)
+		externalPort := nextHop.ExternalPort
+		if externalPort <= 0 {
+			externalPort = nextHop.ListenPort
 		}
+		return relayHost, externalPort, firstNonEmpty(strings.TrimSpace(nextHop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"), dialMode, "secret"
 	}
 	return "", 0, "", probeChainDialModeNone, "none"
 }
@@ -339,25 +380,21 @@ func resolveProbeChainPrevHopFromItem(item probeLinkChainServerItem, nodeID, rol
 		return "", 0, "", probeChainDialModeNone
 	}
 	route := buildChainRoute(item)
+	targetNodeID := normalizeProbeChainNodeID(nodeID)
 	for i, id := range route {
-		if id != nodeID {
+		if normalizeProbeChainNodeID(id) != targetNodeID {
 			continue
 		}
 		if i <= 0 {
 			return "", 0, "", probeChainDialModeNone
 		}
-		prevNo := i
-		for _, hop := range item.HopConfigs {
-			if hop.NodeNo != prevNo {
-				continue
-			}
-			externalPort := hop.ExternalPort
-			if externalPort <= 0 {
-				externalPort = hop.ListenPort
-			}
-			return strings.TrimSpace(hop.RelayHost), externalPort, firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"), normalizeProbeChainDialMode(strings.TrimSpace(hop.DialMode))
+		prevNodeID := route[i-1]
+		prevHop := findHopConfigForNode(item, prevNodeID)
+		externalPort := prevHop.ExternalPort
+		if externalPort <= 0 {
+			externalPort = prevHop.ListenPort
 		}
-		break
+		return strings.TrimSpace(prevHop.RelayHost), externalPort, firstNonEmpty(strings.TrimSpace(prevHop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"), normalizeProbeChainDialMode(strings.TrimSpace(prevHop.DialMode))
 	}
 	return "", 0, "", probeChainDialModeNone
 }
@@ -365,11 +402,23 @@ func resolveProbeChainPrevHopFromItem(item probeLinkChainServerItem, nodeID, rol
 // buildChainRoute returns the ordered node ID list: [entry, cascade..., exit].
 func buildChainRoute(item probeLinkChainServerItem) []string {
 	route := make([]string, 0, 2+len(item.CascadeNodeIDs))
-	route = append(route, strings.TrimSpace(item.EntryNodeID))
-	for _, id := range item.CascadeNodeIDs {
-		route = append(route, strings.TrimSpace(id))
+	seen := make(map[string]struct{}, 2+len(item.CascadeNodeIDs))
+	push := func(raw string) {
+		nodeID := normalizeProbeChainNodeID(raw)
+		if nodeID == "" {
+			return
+		}
+		if _, exists := seen[nodeID]; exists {
+			return
+		}
+		seen[nodeID] = struct{}{}
+		route = append(route, nodeID)
 	}
-	route = append(route, strings.TrimSpace(item.ExitNodeID))
+	push(item.EntryNodeID)
+	for _, id := range item.CascadeNodeIDs {
+		push(id)
+	}
+	push(item.ExitNodeID)
 	return route
 }
 
