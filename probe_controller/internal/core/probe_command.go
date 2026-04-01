@@ -447,6 +447,9 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyReq.Header.Set("User-Agent", "cloudhelper-probe-proxy-download")
 	proxyReq.Header.Set("Accept", "application/octet-stream")
+	if rangeHeader := strings.TrimSpace(r.Header.Get("Range")); rangeHeader != "" {
+		proxyReq.Header.Set("Range", rangeHeader)
+	}
 	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -476,7 +479,16 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	if cl := strings.TrimSpace(resp.Header.Get("Content-Length")); cl != "" {
 		w.Header().Set("Content-Length", cl)
 	}
-	w.WriteHeader(http.StatusOK)
+	if cr := strings.TrimSpace(resp.Header.Get("Content-Range")); cr != "" {
+		w.Header().Set("Content-Range", cr)
+	}
+	if ar := strings.TrimSpace(resp.Header.Get("Accept-Ranges")); ar != "" {
+		w.Header().Set("Accept-Ranges", ar)
+	}
+	if etag := strings.TrimSpace(resp.Header.Get("ETag")); etag != "" {
+		w.Header().Set("ETag", etag)
+	}
+	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
 

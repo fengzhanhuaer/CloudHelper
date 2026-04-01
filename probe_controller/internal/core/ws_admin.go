@@ -44,6 +44,7 @@ type adminWSPush struct {
 type adminProxyDownloadStreamRequest struct {
 	URL       string `json:"url"`
 	ChunkSize int    `json:"chunk_size"`
+	Offset    int64  `json:"offset"`
 }
 
 var adminWSUpgrader = websocket.Upgrader{
@@ -185,6 +186,9 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 	if chunkSize > 256*1024 {
 		chunkSize = 256 * 1024
 	}
+	if req.Offset < 0 {
+		return nil, fmt.Errorf("offset must be >= 0")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -195,6 +199,9 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 	}
 	proxyReq.Header.Set("User-Agent", "cloudhelper-proxy-download")
 	proxyReq.Header.Set("Accept", "application/octet-stream")
+	if req.Offset > 0 {
+		proxyReq.Header.Set("Range", fmt.Sprintf("bytes=%d-", req.Offset))
+	}
 	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -205,14 +212,24 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		return map[string]interface{}{
+			"downloaded": req.Offset,
+			"total":      req.Offset,
+			"status":     resp.StatusCode,
+		}, nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("upstream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	total := resp.ContentLength
+	if total >= 0 && resp.StatusCode == http.StatusPartialContent && req.Offset > 0 {
+		total += req.Offset
+	}
+	downloaded := req.Offset
 	buf := make([]byte, chunkSize)
-	var downloaded int64
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
@@ -223,6 +240,7 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 				"chunk_base64": chunk,
 				"downloaded":   downloaded,
 				"total":        total,
+				"status":       resp.StatusCode,
 			}
 			if err := send(adminWSPush{Type: "proxy.download.chunk", Data: pushData}); err != nil {
 				return nil, fmt.Errorf("send download chunk failed: %v", err)
@@ -239,6 +257,7 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 	return map[string]interface{}{
 		"downloaded": downloaded,
 		"total":      total,
+		"status":     resp.StatusCode,
 	}, nil
 }
 

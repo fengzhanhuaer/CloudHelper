@@ -442,37 +442,94 @@ func pickControllerAsset(assets []githubReleaseAsset) (githubReleaseAsset, error
 }
 
 func downloadReleaseAsset(ctx context.Context, url, outputPath string, onProgress func(downloaded, total int64)) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/octet-stream")
-	req.Header.Set("User-Agent", "cloudhelper-probe-controller")
-	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	partPath := outputPath + ".part"
+	resumeOffset := int64(0)
+	if st, err := os.Stat(partPath); err == nil && st.Mode().IsRegular() {
+		resumeOffset = st.Size()
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/octet-stream")
+		req.Header.Set("User-Agent", "cloudhelper-probe-controller")
+		if resumeOffset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
+		}
+		if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("asset download failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
 
-	f, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			resp.Body.Close()
+			if err := os.Rename(partPath, outputPath); err == nil {
+				return nil
+			}
+			resumeOffset = 0
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return fmt.Errorf("asset download failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
 
-	if _, err := copyWithProgress(f, resp.Body, resp.ContentLength, onProgress); err != nil {
-		return err
+		truncate := resumeOffset == 0 || resp.StatusCode == http.StatusOK
+		flags := os.O_CREATE | os.O_WRONLY
+		if truncate {
+			flags |= os.O_TRUNC
+		} else {
+			flags |= os.O_APPEND
+		}
+		f, err := os.OpenFile(partPath, flags, 0o644)
+		if err != nil {
+			resp.Body.Close()
+			return err
+		}
+
+		total := resp.ContentLength
+		if total >= 0 && resp.StatusCode == http.StatusPartialContent && resumeOffset > 0 {
+			total += resumeOffset
+		}
+		baseWritten := resumeOffset
+		if truncate {
+			baseWritten = 0
+			if resumeOffset > 0 && resp.StatusCode == http.StatusOK {
+				resumeOffset = 0
+			}
+		}
+		wrappedProgress := onProgress
+		if onProgress != nil {
+			wrappedProgress = func(downloaded, total int64) {
+				onProgress(baseWritten+downloaded, total)
+			}
+		}
+		written, copyErr := copyWithProgress(f, resp.Body, total, wrappedProgress)
+		closeErr := f.Close()
+		resp.Body.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		finalSize := baseWritten + written
+		if total >= 0 && finalSize < total {
+			resumeOffset = finalSize
+			continue
+		}
+		if err := os.Rename(partPath, outputPath); err != nil {
+			return err
+		}
+		return nil
 	}
-	return nil
 }
 
 func copyWithProgress(dst io.Writer, src io.Reader, total int64, onProgress func(downloaded, total int64)) (int64, error) {

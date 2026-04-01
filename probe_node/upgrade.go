@@ -309,47 +309,141 @@ func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (re
 }
 
 func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, output string) error {
-	var reader io.ReadCloser
-	if mode == "proxy" {
-		// Security boundary: probe can only use /api/probe/* endpoints.
-		u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/download?url=" + url.QueryEscape(assetURL)
-		log.Printf("probe upgrade asset download via proxy: %s", safeURLForLog(u))
-		body, err := probeAuthedGet(ctx, u, identity)
+	partPath := output + ".part"
+	resumeOffset := int64(0)
+	if st, err := os.Stat(partPath); err == nil && st.Mode().IsRegular() {
+		resumeOffset = st.Size()
+	}
+
+	openPartFile := func(truncate bool) (*os.File, int64, error) {
+		flags := os.O_CREATE | os.O_WRONLY
+		if truncate {
+			flags |= os.O_TRUNC
+		} else {
+			flags |= os.O_APPEND
+		}
+		f, err := os.OpenFile(partPath, flags, 0o644)
+		if err != nil {
+			return nil, 0, err
+		}
+		st, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, 0, err
+		}
+		return f, st.Size(), nil
+	}
+
+	downloadOnce := func(offset int64) (int64, error) {
+		var (
+			reader io.ReadCloser
+			statusCode int
+			total int64 = -1
+		)
+		if mode == "proxy" {
+			// Security boundary: probe can only use /api/probe/* endpoints.
+			u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/download?url=" + url.QueryEscape(assetURL)
+			log.Printf("probe upgrade asset download via proxy: %s offset=%d", safeURLForLog(u), offset)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			if err != nil {
+				return 0, err
+			}
+			for key, value := range buildProbeAuthHeaders(identity) {
+				req.Header.Set(key, value)
+			}
+			req.Header.Set("Accept", "application/octet-stream")
+			if offset > 0 {
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return 0, err
+			}
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+				resp.Body.Close()
+				return 0, fmt.Errorf("download failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+			reader = resp.Body
+			statusCode = resp.StatusCode
+			total = resp.ContentLength
+			if total >= 0 && statusCode == http.StatusPartialContent && offset > 0 {
+				total += offset
+			}
+		} else {
+			log.Printf("probe upgrade asset download direct: %s offset=%d", safeURLForLog(assetURL), offset)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
+			if err != nil {
+				return 0, err
+			}
+			req.Header.Set("Accept", "application/octet-stream")
+			req.Header.Set("User-Agent", "cloudhelper-probe-node")
+			if offset > 0 {
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return 0, err
+			}
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+				resp.Body.Close()
+				return 0, fmt.Errorf("download failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+			reader = resp.Body
+			statusCode = resp.StatusCode
+			total = resp.ContentLength
+			if total >= 0 && statusCode == http.StatusPartialContent && offset > 0 {
+				total += offset
+			}
+		}
+		defer reader.Close()
+
+		if statusCode == http.StatusRequestedRangeNotSatisfiable {
+			if err := os.Rename(partPath, output); err == nil {
+				return 0, nil
+			}
+		}
+
+		truncate := offset == 0 || statusCode == http.StatusOK
+		if offset > 0 && statusCode == http.StatusOK {
+			log.Printf("probe upgrade resume unsupported, restarting full download: url=%s", safeURLForLog(assetURL))
+		}
+		f, currentSize, err := openPartFile(truncate)
+		if err != nil {
+			return 0, err
+		}
+		written, copyErr := io.Copy(f, reader)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return 0, copyErr
+		}
+		if closeErr != nil {
+			return 0, closeErr
+		}
+		finalSize := currentSize + written
+		if truncate {
+			finalSize = written
+		}
+		if total >= 0 && finalSize < total {
+			return finalSize, nil
+		}
+		if err := os.Rename(partPath, output); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+
+	for {
+		nextOffset, err := downloadOnce(resumeOffset)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(output, body, 0o644); err != nil {
-			return err
+		if nextOffset == 0 {
+			return nil
 		}
-		return nil
+		resumeOffset = nextOffset
 	}
-
-	log.Printf("probe upgrade asset download direct: %s", safeURLForLog(assetURL))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/octet-stream")
-	req.Header.Set("User-Agent", "cloudhelper-probe-node")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		resp.Body.Close()
-		return fmt.Errorf("download failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	reader = resp.Body
-	defer reader.Close()
-
-	f, err := os.Create(output)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.Copy(f, reader)
-	return err
 }
 
 func probeAuthedGet(ctx context.Context, requestURL string, identity nodeIdentity) ([]byte, error) {

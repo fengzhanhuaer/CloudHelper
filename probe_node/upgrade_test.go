@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -253,5 +255,39 @@ func TestTrimUpgradeVerifyOutputForLog(t *testing.T) {
 				t.Fatalf("trimUpgradeVerifyOutputForLog(%q, %d)=%q, want %q", string(tc.raw), tc.limit, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDownloadProbeAssetResumeDirect(t *testing.T) {
+	partial := []byte("hello ")
+	remaining := []byte("world")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Range"); got != "bytes=6-" {
+			t.Fatalf("unexpected range header: %q", got)
+		}
+		w.Header().Set("Content-Length", "5")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(remaining)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	output := filepath.Join(dir, "probe-node.bin")
+	if err := os.WriteFile(output+".part", partial, 0o644); err != nil {
+		t.Fatalf("write part file: %v", err)
+	}
+
+	if err := downloadProbeAsset(t.Context(), "direct", server.URL, "", nodeIdentity{}, output); err != nil {
+		t.Fatalf("downloadProbeAsset returned error: %v", err)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Fatalf("unexpected output content: %q", string(got))
+	}
+	if _, err := os.Stat(output + ".part"); !os.IsNotExist(err) {
+		t.Fatalf("expected part file removed, got err=%v", err)
 	}
 }

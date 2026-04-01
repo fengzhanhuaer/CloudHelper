@@ -496,35 +496,94 @@ func pickManagerAsset(assets []ReleaseAsset) (ReleaseAsset, error) {
 }
 
 func downloadReleaseAsset(ctx context.Context, rawURL, outputPath string, onProgress func(downloaded, total int64)) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSpace(rawURL), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/octet-stream")
-	req.Header.Set("User-Agent", "cloudhelper-probe-manager")
-	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	partPath := outputPath + ".part"
+	resumeOffset := int64(0)
+	if st, err := os.Stat(partPath); err == nil && st.Mode().IsRegular() {
+		resumeOffset = st.Size()
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSpace(rawURL), nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/octet-stream")
+		req.Header.Set("User-Agent", "cloudhelper-probe-manager")
+		if resumeOffset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
+		}
+		if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("asset download failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
 
-	f, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			resp.Body.Close()
+			if err := os.Rename(partPath, outputPath); err == nil {
+				return nil
+			}
+			resumeOffset = 0
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return fmt.Errorf("asset download failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
 
-	_, err = copyWithProgress(f, resp.Body, resp.ContentLength, onProgress)
-	return err
+		truncate := resumeOffset == 0 || resp.StatusCode == http.StatusOK
+		flags := os.O_CREATE | os.O_WRONLY
+		if truncate {
+			flags |= os.O_TRUNC
+		} else {
+			flags |= os.O_APPEND
+		}
+		f, err := os.OpenFile(partPath, flags, 0o644)
+		if err != nil {
+			resp.Body.Close()
+			return err
+		}
+
+		total := resp.ContentLength
+		if total >= 0 && resp.StatusCode == http.StatusPartialContent && resumeOffset > 0 {
+			total += resumeOffset
+		}
+		baseWritten := resumeOffset
+		if truncate {
+			baseWritten = 0
+			if resumeOffset > 0 && resp.StatusCode == http.StatusOK {
+				resumeOffset = 0
+			}
+		}
+		wrappedProgress := onProgress
+		if onProgress != nil {
+			wrappedProgress = func(downloaded, total int64) {
+				onProgress(baseWritten+downloaded, total)
+			}
+		}
+		written, copyErr := copyWithProgress(f, resp.Body, total, wrappedProgress)
+		closeErr := f.Close()
+		resp.Body.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		finalSize := baseWritten + written
+		if total >= 0 && finalSize < total {
+			resumeOffset = finalSize
+			continue
+		}
+		if err := os.Rename(partPath, outputPath); err != nil {
+			return err
+		}
+		return nil
+	}
 }
 
 func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken, assetURL, outputPath string, onProgress func(downloaded, total int64)) error {
@@ -536,147 +595,224 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 	if token == "" {
 		return errors.New("session token is required")
 	}
-
-	wsURL, err := buildAdminWSURL(base)
-	if err != nil {
-		return err
+	partPath := outputPath + ".part"
+	resumeOffset := int64(0)
+	if st, err := os.Stat(partPath); err == nil && st.Mode().IsRegular() {
+		resumeOffset = st.Size()
 	}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 12 * time.Second}
-	headers := http.Header{}
-	headers.Set("X-Forwarded-Proto", "https")
-	conn, resp, err := dialer.Dial(wsURL, headers)
-	if err != nil {
-		if resp != nil {
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-			return fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-		}
-		return err
-	}
-	defer conn.Close()
-
-	readDeadline := time.Now().Add(10 * time.Minute)
-	if deadline, ok := ctx.Deadline(); ok {
-		readDeadline = deadline
-	}
-	if err := conn.SetReadDeadline(readDeadline); err != nil {
-		return err
-	}
-	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return err
-	}
-
-	authID := fmt.Sprintf("upg-dl-auth-%d", time.Now().UnixNano())
-	authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": token}}
-	if err := conn.WriteJSON(authReq); err != nil {
-		return err
-	}
-	authResp, err := readAdminWSResponseByID(conn, authID)
-	if err != nil {
-		return err
-	}
-	if !authResp.OK {
-		return fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
-	}
-
-	streamID := fmt.Sprintf("upg-dl-%d", time.Now().UnixNano())
-	streamReq := adminWSRequest{
-		ID:     streamID,
-		Action: "admin.proxy.download.stream",
-		Payload: map[string]interface{}{
-			"url":        strings.TrimSpace(assetURL),
-			"chunk_size": 64 * 1024,
-		},
-	}
-	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return err
-	}
-	if err := conn.WriteJSON(streamReq); err != nil {
-		return err
-	}
-
-	f, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	total := int64(0)
-	written := int64(0)
 	for {
-		if deadline, ok := ctx.Deadline(); ok {
-			_ = conn.SetReadDeadline(deadline)
-		}
-
-		var msg adminWSResponse
-		if err := conn.ReadJSON(&msg); err != nil {
+		wsURL, err := buildAdminWSURL(base)
+		if err != nil {
 			return err
 		}
 
-		if strings.TrimSpace(msg.Type) != "" {
-			if strings.TrimSpace(msg.Type) != "proxy.download.chunk" {
-				continue
+		dialer := *websocket.DefaultDialer
+		dialer.HandshakeTimeout = 12 * time.Second
+		headers := http.Header{}
+		headers.Set("X-Forwarded-Proto", "https")
+		conn, resp, err := dialer.Dial(wsURL, headers)
+		if err != nil {
+			if resp != nil {
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+				return fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 			}
-			var chunk struct {
-				RequestID   string `json:"request_id"`
-				ChunkBase64 string `json:"chunk_base64"`
-				Downloaded  int64  `json:"downloaded"`
-				Total       int64  `json:"total"`
+			return err
+		}
+
+		readDeadline := time.Now().Add(10 * time.Minute)
+		if deadline, ok := ctx.Deadline(); ok {
+			readDeadline = deadline
+		}
+		if err := conn.SetReadDeadline(readDeadline); err != nil {
+			conn.Close()
+			return err
+		}
+		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			conn.Close()
+			return err
+		}
+
+		authID := fmt.Sprintf("upg-dl-auth-%d", time.Now().UnixNano())
+		authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": token}}
+		if err := conn.WriteJSON(authReq); err != nil {
+			conn.Close()
+			return err
+		}
+		authResp, err := readAdminWSResponseByID(conn, authID)
+		if err != nil {
+			conn.Close()
+			return err
+		}
+		if !authResp.OK {
+			conn.Close()
+			return fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
+		}
+
+		streamID := fmt.Sprintf("upg-dl-%d", time.Now().UnixNano())
+		streamReq := adminWSRequest{
+			ID:     streamID,
+			Action: "admin.proxy.download.stream",
+			Payload: map[string]interface{}{
+				"url":        strings.TrimSpace(assetURL),
+				"chunk_size": 64 * 1024,
+				"offset":     resumeOffset,
+			},
+		}
+		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			conn.Close()
+			return err
+		}
+		if err := conn.WriteJSON(streamReq); err != nil {
+			conn.Close()
+			return err
+		}
+
+		total := int64(0)
+		written := resumeOffset
+		statusCode := 0
+		truncate := resumeOffset == 0
+		var f *os.File
+		for {
+			if deadline, ok := ctx.Deadline(); ok {
+				_ = conn.SetReadDeadline(deadline)
 			}
-			if err := json.Unmarshal(msg.Data, &chunk); err != nil {
+
+			var msg adminWSResponse
+			if err := conn.ReadJSON(&msg); err != nil {
+				if f != nil {
+					_ = f.Close()
+				}
+				conn.Close()
 				return err
 			}
-			if strings.TrimSpace(chunk.RequestID) != streamID {
+
+			if strings.TrimSpace(msg.Type) != "" {
+				if strings.TrimSpace(msg.Type) != "proxy.download.chunk" {
+					continue
+				}
+				var chunk struct {
+					RequestID   string `json:"request_id"`
+					ChunkBase64 string `json:"chunk_base64"`
+					Downloaded  int64  `json:"downloaded"`
+					Total       int64  `json:"total"`
+					Status      int    `json:"status"`
+				}
+				if err := json.Unmarshal(msg.Data, &chunk); err != nil {
+					if f != nil {
+						_ = f.Close()
+					}
+					conn.Close()
+					return err
+				}
+				if strings.TrimSpace(chunk.RequestID) != streamID {
+					continue
+				}
+				if statusCode == 0 {
+					statusCode = chunk.Status
+					truncate = resumeOffset == 0 || statusCode == http.StatusOK
+					flags := os.O_CREATE | os.O_WRONLY
+					if truncate {
+						flags |= os.O_TRUNC
+						written = 0
+					} else {
+						flags |= os.O_APPEND
+					}
+					f, err = os.OpenFile(partPath, flags, 0o644)
+					if err != nil {
+						conn.Close()
+						return err
+					}
+				}
+				payload, err := base64.StdEncoding.DecodeString(strings.TrimSpace(chunk.ChunkBase64))
+				if err != nil {
+					if f != nil {
+						_ = f.Close()
+					}
+					conn.Close()
+					return err
+				}
+				if len(payload) > 0 {
+					n, writeErr := f.Write(payload)
+					written += int64(n)
+					if writeErr != nil {
+						_ = f.Close()
+						conn.Close()
+						return writeErr
+					}
+					if n != len(payload) {
+						_ = f.Close()
+						conn.Close()
+						return io.ErrShortWrite
+					}
+				}
+				if chunk.Total > 0 {
+					total = chunk.Total
+				}
+				if onProgress != nil {
+					onProgress(written, total)
+				}
 				continue
 			}
-			payload, err := base64.StdEncoding.DecodeString(strings.TrimSpace(chunk.ChunkBase64))
-			if err != nil {
+
+			if strings.TrimSpace(msg.ID) != streamID {
+				continue
+			}
+			if !msg.OK {
+				if f != nil {
+					_ = f.Close()
+				}
+				conn.Close()
+				return fmt.Errorf("proxy download failed: %s", strings.TrimSpace(msg.Error))
+			}
+
+			var done struct {
+				Downloaded int64 `json:"downloaded"`
+				Total      int64 `json:"total"`
+				Status     int   `json:"status"`
+			}
+			if len(msg.Data) > 0 {
+				_ = json.Unmarshal(msg.Data, &done)
+				if done.Total > 0 {
+					total = done.Total
+				}
+				if done.Downloaded > written {
+					written = done.Downloaded
+				}
+				if done.Status != 0 {
+					statusCode = done.Status
+				}
+			}
+			if f != nil {
+				if err := f.Close(); err != nil {
+					conn.Close()
+					return err
+				}
+			}
+			conn.Close()
+			if statusCode == http.StatusRequestedRangeNotSatisfiable {
+				if err := os.Rename(partPath, outputPath); err == nil {
+					if onProgress != nil {
+						onProgress(written, total)
+					}
+					return nil
+				}
+				resumeOffset = 0
+				break
+			}
+			if total > 0 && written < total {
+				resumeOffset = written
+				break
+			}
+			if err := os.Rename(partPath, outputPath); err != nil {
 				return err
-			}
-			if len(payload) > 0 {
-				n, writeErr := f.Write(payload)
-				written += int64(n)
-				if writeErr != nil {
-					return writeErr
-				}
-				if n != len(payload) {
-					return io.ErrShortWrite
-				}
-			}
-			if chunk.Total > 0 {
-				total = chunk.Total
 			}
 			if onProgress != nil {
 				onProgress(written, total)
 			}
-			continue
+			return nil
 		}
-
-		if strings.TrimSpace(msg.ID) != streamID {
-			continue
-		}
-		if !msg.OK {
-			return fmt.Errorf("proxy download failed: %s", strings.TrimSpace(msg.Error))
-		}
-
-		var done struct {
-			Downloaded int64 `json:"downloaded"`
-			Total      int64 `json:"total"`
-		}
-		if len(msg.Data) > 0 {
-			_ = json.Unmarshal(msg.Data, &done)
-			if done.Total > 0 {
-				total = done.Total
-			}
-			if done.Downloaded > written {
-				written = done.Downloaded
-			}
-		}
-		if onProgress != nil {
-			onProgress(written, total)
-		}
-		return nil
 	}
 }
 
