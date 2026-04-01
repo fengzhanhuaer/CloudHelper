@@ -44,12 +44,13 @@ type mibIPForwardTable struct {
 }
 
 var (
-	modIphlpapiNet                 = windows.NewLazySystemDLL("iphlpapi.dll")
-	procGetIpForwardTableNet       = modIphlpapiNet.NewProc("GetIpForwardTable")
-	procCreateIpForwardEntryNet    = modIphlpapiNet.NewProc("CreateIpForwardEntry")
-	procDeleteIpForwardEntryNet    = modIphlpapiNet.NewProc("DeleteIpForwardEntry")
-	procGetBestRouteNet            = modIphlpapiNet.NewProc("GetBestRoute")
-	procAddIPAddressNet            = modIphlpapiNet.NewProc("AddIPAddress")
+	modIphlpapiNet                          = windows.NewLazySystemDLL("iphlpapi.dll")
+	procGetIpForwardTableNet                = modIphlpapiNet.NewProc("GetIpForwardTable")
+	procCreateIpForwardEntryNet             = modIphlpapiNet.NewProc("CreateIpForwardEntry")
+	procDeleteIpForwardEntryNet             = modIphlpapiNet.NewProc("DeleteIpForwardEntry")
+	procGetBestRouteNet                     = modIphlpapiNet.NewProc("GetBestRoute")
+	procCreateUnicastIpAddressEntryNet      = modIphlpapiNet.NewProc("CreateUnicastIpAddressEntry")
+	procInitializeUnicastIpAddressEntryNet  = modIphlpapiNet.NewProc("InitializeUnicastIpAddressEntry")
 )
 
 func windowsListAdaptersIPv4() ([]windowsAdapterInfo, error) {
@@ -162,6 +163,41 @@ func windowsSetInterfaceIPv4DNSServers(interfaceIndex int, servers []string) err
 	return nil
 }
 
+// mibUnicastIPAddressRow mirrors MIB_UNICASTIPADDRESS_ROW from netioapi.h.
+//
+// Memory layout on x64 (Windows SDK):
+//   Offset  0: SOCKADDR_INET Address         — 28 bytes (size of SOCKADDR_IN6)
+//   Offset 28: [4]byte pad                   —  4 bytes to align NET_LUID to 8
+//   Offset 32: NET_LUID  InterfaceLuid       —  8 bytes
+//   Offset 40: NET_IFINDEX InterfaceIndex    —  4 bytes (ULONG)
+//   Offset 44: NL_PREFIX_ORIGIN PrefixOrigin —  4 bytes
+//   Offset 48: NL_SUFFIX_ORIGIN SuffixOrigin —  4 bytes
+//   Offset 52: ULONG ValidLifetime           —  4 bytes
+//   Offset 56: ULONG PreferredLifetime       —  4 bytes
+//   Offset 60: UINT8 OnLinkPrefixLength      —  1 byte
+//   Offset 61: BOOLEAN SkipAsSource          —  1 byte
+//   Offset 62: [2]byte pad                   —  2 bytes to align DadState to 4
+//   Offset 64: NL_DAD_STATE DadState         —  4 bytes
+//   Offset 68: SCOPE_ID ScopeId              —  4 bytes
+//   Offset 72: LARGE_INTEGER CreationTimeStamp— 8 bytes
+//   Total: 80 bytes
+type mibUnicastIPAddressRow struct {
+	Address            [28]byte // SOCKADDR_INET (SOCKADDR_IN6 is the largest member = 28 bytes)
+	_pad0              [4]byte  // align InterfaceLuid to 8
+	InterfaceLuid      uint64
+	InterfaceIndex     uint32
+	PrefixOrigin       uint32
+	SuffixOrigin       uint32
+	ValidLifetime      uint32
+	PreferredLifetime  uint32
+	OnLinkPrefixLength uint8
+	SkipAsSource       uint8
+	_pad1              [2]byte // align DadState to 4
+	DadState           uint32
+	ScopeId            uint32
+	CreationTimeStamp  int64
+}
+
 func windowsEnsureInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid interface index")
@@ -170,6 +206,7 @@ func windowsEnsureInterfaceIPv4Address(interfaceIndex int, ipText string, prefix
 	if ip4 == nil {
 		return errors.New("invalid ipv4 address")
 	}
+	// Check whether the address is already present to avoid a redundant syscall.
 	adapter, err := windowsFindAdapterByIfIndex(interfaceIndex)
 	if err == nil {
 		for _, existing := range adapter.IPv4Addrs {
@@ -178,28 +215,36 @@ func windowsEnsureInterfaceIPv4Address(interfaceIndex int, ipText string, prefix
 			}
 		}
 	}
-	maskValue, err := ipv4MaskUint32(prefixLength)
-	if err != nil {
-		return err
-	}
-	addrValue, ok := ipv4ToUint32(ip4)
-	if !ok {
-		return errors.New("convert ipv4 address failed")
-	}
-	var nteContext uint32
-	var nteInstance uint32
-	ret, _, callErr := procAddIPAddressNet.Call(
-		uintptr(addrValue),
-		uintptr(maskValue),
-		uintptr(uint32(interfaceIndex)),
-		uintptr(unsafe.Pointer(&nteContext)),
-		uintptr(unsafe.Pointer(&nteInstance)),
-	)
+
+	// Use CreateUnicastIpAddressEntry (Vista+) which accepts an interface index
+	// directly.  The legacy AddIPAddress API expects an NTE context handle, NOT
+	// the interface index, so passing the index there yields ERROR_INVALID_PARAMETER
+	// (code=87).
+	var row mibUnicastIPAddressRow
+	// InitializeUnicastIpAddressEntry fills in the mandatory default fields.
+	procInitializeUnicastIpAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+
+	// Encode the IPv4 address as a SOCKADDR_IN inside the SOCKADDR_INET union.
+	// SOCKADDR_IN layout: sin_family (2) | sin_port (2) | sin_addr (4) | padding (8)
+	row.Address[0] = byte(windows.AF_INET)
+	row.Address[1] = byte(windows.AF_INET >> 8)
+	// sin_port = 0 (bytes 2-3 already zero from initializer)
+	copy(row.Address[4:8], ip4) // sin_addr
+
+	row.InterfaceIndex = uint32(interfaceIndex)
+	row.OnLinkPrefixLength = uint8(prefixLength)
+	// Use well-known infinite lifetimes (0xFFFFFFFF) so the address persists
+	// until the adapter is reset; InitializeUnicastIpAddressEntry already sets
+	// these, but be explicit for clarity.
+	row.ValidLifetime = 0xFFFFFFFF
+	row.PreferredLifetime = 0xFFFFFFFF
+
+	ret, _, callErr := procCreateUnicastIpAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
 	if ret != 0 {
 		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
-			return fmt.Errorf("AddIPAddress failed: %w", callErr)
+			return fmt.Errorf("CreateUnicastIpAddressEntry failed: %w", callErr)
 		}
-		return fmt.Errorf("AddIPAddress failed: code=%d", ret)
+		return fmt.Errorf("CreateUnicastIpAddressEntry failed: code=%d", ret)
 	}
 	return nil
 }
