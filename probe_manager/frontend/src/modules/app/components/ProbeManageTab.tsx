@@ -27,6 +27,7 @@ import {
   type ProbeReportIntervalSettings,
   type ProbeUpgradeDispatchResult,
 } from "../services/controller-api";
+import type { LogLevel } from "../types";
 
 type ProbeManageTabProps = {
   controllerBaseUrl: string;
@@ -110,6 +111,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [logNodeIDInput, setLogNodeIDInput] = useState("");
   const [logLinesInput, setLogLinesInput] = useState("200");
   const [logSinceMinutesInput, setLogSinceMinutesInput] = useState("0");
+  const [logMinLevel, setLogMinLevel] = useState<LogLevel>("normal");
   const [probeLogSource, setProbeLogSource] = useState("-");
   const [probeLogFilePath, setProbeLogFilePath] = useState("-");
   const [probeLogFetchedAt, setProbeLogFetchedAt] = useState("-");
@@ -618,11 +620,14 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       setIsLoading(true);
     }
     try {
-      const data = await fetchProbeLogsFromController(controllerAddress, props.sessionToken, nodeID, lines, sinceMinutes);
+      const data = await fetchProbeLogsFromController(controllerAddress, props.sessionToken, nodeID, lines, sinceMinutes, logMinLevel);
       setProbeLogSource((data.source || "-").trim() || "-");
       setProbeLogFilePath((data.file_path || "-").trim() || "-");
       setProbeLogFetchedAt(formatTime(data.fetched || data.timestamp || ""));
-      setProbeLogContent(data.content || "");
+      const entries = Array.isArray(data.entries) ? data.entries : [];
+      setProbeLogContent(entries.length > 0
+        ? entries.map((entry) => entry.line || entry.message || "").filter((line) => String(line).trim()).join("\n")
+        : (data.content || ""));
       if (!silent) {
         setStatus(`已拉取探针日志：${data.node_name || nodeID}`);
       }
@@ -1116,6 +1121,15 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
             <div className="row" style={{ marginBottom: 0 }}>
               <label>最近分钟</label>
               <input className="input" value={logSinceMinutesInput} onChange={(event) => setLogSinceMinutesInput(event.target.value)} disabled={isLoading} />
+            </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>日志级别</label>
+              <select className="input" value={logMinLevel} onChange={(event) => setLogMinLevel(event.target.value as LogLevel)} disabled={isLoading}>
+                <option value="realtime">实时及以上</option>
+                <option value="normal">普通及以上</option>
+                <option value="warning">告警及以上</option>
+                <option value="error">错误</option>
+              </select>
             </div>
             <div className="content-actions">
               <button className="btn" onClick={() => void loadSelectedNodeLogs()} disabled={isLoading || nodes.length === 0}>
@@ -1786,13 +1800,14 @@ async function fetchProbeLogsFromController(
   nodeID: string,
   lines: number,
   sinceMinutes: number,
+  minLevel: LogLevel,
 ): Promise<ProbeNodeLogsResponse> {
   const base = sanitizeControllerAddress(controllerBaseUrl);
   const token = sessionToken.trim();
   if (!token) {
     throw new Error("session token is empty, cannot fetch probe logs from controller");
   }
-  return await fetchProbeNodeLogs(base, token, nodeID, lines, sinceMinutes);
+  return await fetchProbeNodeLogs(base, token, nodeID, lines, sinceMinutes, minLevel);
 }
 
 async function fetchProbeReportIntervalFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeReportIntervalSettings> {

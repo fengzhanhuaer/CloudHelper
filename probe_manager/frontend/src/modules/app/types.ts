@@ -178,12 +178,22 @@ export type NetworkAssistantLogResponse = {
 
 export type LogSource = "local" | "server";
 
+export type LogLevel = "realtime" | "normal" | "warning" | "error";
+
+export type LogEntry = {
+  time: string;
+  level: LogLevel;
+  message: string;
+  line: string;
+};
+
 export type LogContentResponse = {
   source: LogSource;
   file_path: string;
   lines: number;
   content: string;
   fetched_at: string;
+  entries?: LogEntry[];
 };
 
 export type TGAssistantAccount = {

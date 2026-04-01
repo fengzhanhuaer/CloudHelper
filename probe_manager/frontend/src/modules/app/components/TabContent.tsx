@@ -132,6 +132,8 @@ type TabContentProps = {
   onLogLinesChange: (value: number) => void;
   logSinceMinutes: number;
   onLogSinceMinutesChange: (value: number) => void;
+  logMinLevel: "realtime" | "normal" | "warning" | "error";
+  onLogMinLevelChange: (value: "realtime" | "normal" | "warning" | "error") => void;
   logAutoScroll: boolean;
   onLogAutoScrollChange: (value: boolean) => void;
   isLoadingLogs: boolean;
@@ -241,6 +243,8 @@ export function TabContent(props: TabContentProps) {
           onLinesChange={props.onLogLinesChange}
           sinceMinutes={props.logSinceMinutes}
           onSinceMinutesChange={props.onLogSinceMinutesChange}
+          minLevel={props.logMinLevel}
+          onMinLevelChange={props.onLogMinLevelChange}
           autoScroll={props.logAutoScroll}
           onAutoScrollChange={props.onLogAutoScrollChange}
           isLoading={props.isLoadingLogs}

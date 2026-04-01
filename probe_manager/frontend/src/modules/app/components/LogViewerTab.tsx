@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { LogSource } from "../types";
+import type { LogLevel, LogSource } from "../types";
 
 type LogViewerTabProps = {
   source: LogSource;
@@ -8,6 +8,8 @@ type LogViewerTabProps = {
   onLinesChange: (value: number) => void;
   sinceMinutes: number;
   onSinceMinutesChange: (value: number) => void;
+  minLevel: LogLevel;
+  onMinLevelChange: (value: LogLevel) => void;
   autoScroll: boolean;
   onAutoScrollChange: (value: boolean) => void;
   isLoading: boolean;
@@ -74,6 +76,22 @@ export function LogViewerTab(props: LogViewerTabProps) {
             onChange={(event) => props.onSinceMinutesChange(Number(event.target.value) || 0)}
             disabled={props.isLoading}
           />
+        </div>
+
+        <div className="row" style={{ marginBottom: 0 }}>
+          <label htmlFor="log-level">日志级别</label>
+          <select
+            id="log-level"
+            className="input"
+            value={props.minLevel}
+            onChange={(event) => props.onMinLevelChange(event.target.value as LogLevel)}
+            disabled={props.isLoading}
+          >
+            <option value="realtime">实时及以上</option>
+            <option value="normal">普通及以上</option>
+            <option value="warning">告警及以上</option>
+            <option value="error">错误</option>
+          </select>
         </div>
       </div>
 

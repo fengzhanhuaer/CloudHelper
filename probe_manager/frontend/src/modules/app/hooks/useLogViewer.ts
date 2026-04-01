@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { GetLocalManagerLogs } from "../../../../wailsjs/go/main/App";
 import { fetchAdminStatus, fetchServerLogs } from "../services/controller-api";
-import type { LogContentResponse, LogSource } from "../types";
+import type { LogContentResponse, LogEntry, LogLevel, LogSource } from "../types";
 import { normalizeBaseUrl } from "../utils/url";
 
 function isUnauthorizedError(error: unknown): boolean {
@@ -48,10 +48,42 @@ function clampSinceMinutes(minutes: number): number {
   return normalized;
 }
 
+function normalizeLogLevel(raw: unknown): LogLevel {
+  switch (String(raw || "").trim().toLowerCase()) {
+    case "realtime":
+      return "realtime";
+    case "warning":
+    case "warn":
+      return "warning";
+    case "error":
+    case "err":
+      return "error";
+    default:
+      return "normal";
+  }
+}
+
+function normalizeLogEntry(raw: Partial<LogEntry>): LogEntry {
+  return {
+    time: typeof raw.time === "string" ? raw.time : "",
+    level: normalizeLogLevel(raw.level),
+    message: typeof raw.message === "string" ? raw.message : "",
+    line: typeof raw.line === "string" ? raw.line : "",
+  };
+}
+
+function buildLogContent(entries: LogEntry[], fallbackContent: string): string {
+  if (entries.length > 0) {
+    return entries.map((entry) => entry.line || entry.message).filter((line) => line.trim()).join("\n");
+  }
+  return fallbackContent;
+}
+
 export function useLogViewer() {
   const [source, setSource] = useState<LogSource>("local");
   const [lines, setLines] = useState(200);
   const [sinceMinutes, setSinceMinutes] = useState(0);
+  const [minLevel, setMinLevel] = useState<LogLevel>("normal");
   const [autoScroll, setAutoScroll] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState("未加载日志");
@@ -66,7 +98,7 @@ export function useLogViewer() {
     try {
       let data: LogContentResponse;
       if (source === "local") {
-        data = (await GetLocalManagerLogs(lineLimit, sinceMinutes)) as LogContentResponse;
+        data = (await GetLocalManagerLogs(lineLimit, sinceMinutes, minLevel)) as LogContentResponse;
       } else {
         const base = normalizeBaseUrl(baseUrlInput);
         if (!base) {
@@ -81,7 +113,7 @@ export function useLogViewer() {
         let activeToken = token;
         let reloginUsed = false;
         try {
-          data = await fetchServerLogs(base, activeToken, lineLimit, sinceMinutes);
+          data = await fetchServerLogs(base, activeToken, lineLimit, sinceMinutes, minLevel);
         } catch (error) {
           if (!reauthenticate || !isUnauthorizedError(error)) {
             throw error;
@@ -89,7 +121,7 @@ export function useLogViewer() {
           setStatus("会话已过期，正在自动重新登录...");
           activeToken = await reauthenticate();
           reloginUsed = true;
-          data = await fetchServerLogs(base, activeToken, lineLimit, sinceMinutes);
+          data = await fetchServerLogs(base, activeToken, lineLimit, sinceMinutes, minLevel);
         }
 
         if (reloginUsed) {
@@ -97,10 +129,12 @@ export function useLogViewer() {
         }
       }
 
+      const entries = Array.isArray(data.entries) ? data.entries.map((entry) => normalizeLogEntry(entry)) : [];
+      const resolvedContent = buildLogContent(entries, data.content || "");
       setLogFilePath(data.file_path || "");
-      setContent(data.content || "");
+      setContent(resolvedContent);
       setCopyStatus("");
-      setStatus(`已加载${data.source === "server" ? "服务器" : "本地"}日志（${data.lines} 行）`);
+      setStatus(`已加载${data.source === "server" ? "服务器" : "本地"}日志（${entries.length || data.lines} 行，级别≥${minLevel}）`);
     } catch (error) {
       if (source === "server" && isNetworkLikeFetchError(error)) {
         const base = normalizeBaseUrl(baseUrlInput);
@@ -119,7 +153,7 @@ export function useLogViewer() {
     } finally {
       setIsLoading(false);
     }
-  }, [lines, sinceMinutes, source]);
+  }, [lines, minLevel, sinceMinutes, source]);
 
   function clearLogs() {
     setStatus("未加载日志");
@@ -178,6 +212,8 @@ export function useLogViewer() {
     setLines: updateLines,
     sinceMinutes,
     setSinceMinutes: updateSinceMinutes,
+    minLevel,
+    setMinLevel,
     autoScroll,
     setAutoScroll,
     isLoading,

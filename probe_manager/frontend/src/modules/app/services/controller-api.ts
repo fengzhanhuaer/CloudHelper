@@ -7,6 +7,8 @@ import type {
   CloudflareZeroTrustWhitelistState,
   DashboardStatusResponse,
   LogContentResponse,
+  LogEntry,
+  LogLevel,
   LoginResponse,
   NonceResponse,
   TGAssistantAccount,
@@ -229,13 +231,67 @@ function normalizeCloudflareZeroTrustWhitelistState(
   };
 }
 
-export async function fetchServerLogs(baseURL: string, token: string, lines: number, sinceMinutes: number): Promise<LogContentResponse> {
+function normalizeLogLevel(raw: unknown): LogLevel {
+  switch (String(raw || "").trim().toLowerCase()) {
+    case "realtime":
+      return "realtime";
+    case "warning":
+    case "warn":
+      return "warning";
+    case "error":
+    case "err":
+      return "error";
+    default:
+      return "normal";
+  }
+}
+
+function normalizeLogEntry(raw: Partial<LogEntry>): LogEntry {
+  return {
+    time: typeof raw.time === "string" ? raw.time : "",
+    level: normalizeLogLevel(raw.level),
+    message: typeof raw.message === "string" ? raw.message : "",
+    line: typeof raw.line === "string" ? raw.line : "",
+  };
+}
+
+function parseLegacyLogEntries(content: string): LogEntry[] {
+  const normalized = String(content || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [];
+  }
+  return normalized.split("\n").map((line) => normalizeLogEntry({
+    time: "",
+    level: "normal",
+    message: line,
+    line,
+  }));
+}
+
+function normalizeLogContentResponse(payload: Partial<LogContentResponse>): LogContentResponse {
+  const content = typeof payload.content === "string" ? payload.content : "";
+  const entries = Array.isArray(payload.entries) && payload.entries.length > 0
+    ? payload.entries.map((entry) => normalizeLogEntry(entry))
+    : parseLegacyLogEntries(content);
+  return {
+    source: payload.source === "server" ? "server" : "local",
+    file_path: typeof payload.file_path === "string" ? payload.file_path : "",
+    lines: typeof payload.lines === "number" && Number.isFinite(payload.lines) ? Math.max(0, Math.trunc(payload.lines)) : entries.length,
+    content,
+    fetched_at: typeof payload.fetched_at === "string" ? payload.fetched_at : "",
+    entries,
+  };
+}
+
+export async function fetchServerLogs(baseURL: string, token: string, lines: number, sinceMinutes: number, minLevel: LogLevel): Promise<LogContentResponse> {
   const safeLines = Number.isFinite(lines) ? Math.max(1, Math.min(2000, Math.trunc(lines))) : 200;
   const safeSince = Number.isFinite(sinceMinutes) ? Math.max(0, Math.min(2000, Math.trunc(sinceMinutes))) : 0;
-  return await callAdminWSRpc<LogContentResponse>(baseURL, token, "admin.logs", {
+  const payload = await callAdminWSRpc<Partial<LogContentResponse>>(baseURL, token, "admin.logs", {
     lines: safeLines,
     since_minutes: safeSince,
+    min_level: normalizeLogLevel(minLevel),
   });
+  return normalizeLogContentResponse(payload);
 }
 
 type NetworkRuleRoutesDownloadResponse = {
@@ -344,7 +400,9 @@ export type ProbeNodeLogsResponse = {
   file_path?: string;
   lines?: number;
   since_minutes?: number;
+  min_level?: LogLevel;
   content?: string;
+  entries?: LogEntry[];
   fetched?: string;
   timestamp?: string;
 };
@@ -762,14 +820,30 @@ export async function fetchProbeNodeStatus(baseURL: string, token: string, nodeI
   return Array.isArray(payload.items) ? payload.items : [];
 }
 
-export async function fetchProbeNodeLogs(baseURL: string, token: string, nodeID: number | string, lines: number, sinceMinutes: number): Promise<ProbeNodeLogsResponse> {
+export async function fetchProbeNodeLogs(baseURL: string, token: string, nodeID: number | string, lines: number, sinceMinutes: number, minLevel: LogLevel): Promise<ProbeNodeLogsResponse> {
   const safeLines = Number.isFinite(lines) ? Math.max(1, Math.min(2000, Math.trunc(lines))) : 200;
   const safeSince = Number.isFinite(sinceMinutes) ? Math.max(0, Math.min(2000, Math.trunc(sinceMinutes))) : 0;
-  return await callAdminWSRpc<ProbeNodeLogsResponse>(baseURL, token, "admin.probe.logs.get", {
+  const payload = await callAdminWSRpc<ProbeNodeLogsResponse>(baseURL, token, "admin.probe.logs.get", {
     node_id: String(nodeID),
     lines: safeLines,
     since_minutes: safeSince,
+    min_level: normalizeLogLevel(minLevel),
   });
+  return {
+    node_id: typeof payload.node_id === "string" ? payload.node_id : String(nodeID),
+    node_name: typeof payload.node_name === "string" ? payload.node_name : "",
+    source: typeof payload.source === "string" ? payload.source : "",
+    file_path: typeof payload.file_path === "string" ? payload.file_path : "",
+    lines: typeof payload.lines === "number" && Number.isFinite(payload.lines) ? Math.max(0, Math.trunc(payload.lines)) : safeLines,
+    since_minutes: typeof payload.since_minutes === "number" && Number.isFinite(payload.since_minutes) ? Math.max(0, Math.trunc(payload.since_minutes)) : safeSince,
+    min_level: normalizeLogLevel(payload.min_level ?? minLevel),
+    content: typeof payload.content === "string" ? payload.content : "",
+    entries: Array.isArray(payload.entries) && payload.entries.length > 0
+      ? payload.entries.map((entry) => normalizeLogEntry(entry))
+      : parseLegacyLogEntries(typeof payload.content === "string" ? payload.content : ""),
+    fetched: typeof payload.fetched === "string" ? payload.fetched : "",
+    timestamp: typeof payload.timestamp === "string" ? payload.timestamp : "",
+  };
 }
 
 export async function fetchProbeReportIntervalSettings(baseURL: string, token: string): Promise<ProbeReportIntervalSettings> {

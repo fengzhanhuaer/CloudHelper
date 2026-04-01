@@ -238,6 +238,8 @@ function App() {
             onLogLinesChange={logViewer.setLines}
             logSinceMinutes={logViewer.sinceMinutes}
             onLogSinceMinutesChange={logViewer.setSinceMinutes}
+            logMinLevel={logViewer.minLevel}
+            onLogMinLevelChange={logViewer.setMinLevel}
             logAutoScroll={logViewer.autoScroll}
             onLogAutoScrollChange={logViewer.setAutoScroll}
             isLoadingLogs={logViewer.isLoading}
