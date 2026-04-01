@@ -14,7 +14,7 @@ export function GetLatestGitHubRelease(arg1:string):Promise<backend.ReleaseInfo>
 
 export function GetLatestGitHubReleaseViaProxy(arg1:string,arg2:string,arg3:string):Promise<backend.ReleaseInfo>;
 
-export function GetLocalManagerLogs(arg1:number,arg2:number):Promise<backend.LogViewResponse>;
+export function GetLocalManagerLogs(arg1:number,arg2:number,arg3:string):Promise<backend.LogViewResponse>;
 
 export function GetLocalPrivateKeyStatus():Promise<backend.PrivateKeyStatus>;
 

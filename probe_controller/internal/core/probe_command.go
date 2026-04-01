@@ -57,11 +57,19 @@ type probeUpgradeCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeLogEntry struct {
+	Time    string `json:"time"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Line    string `json:"line"`
+}
+
 type probeLogsCommand struct {
 	Type         string `json:"type"`
 	RequestID    string `json:"request_id"`
 	Lines        int    `json:"lines"`
 	SinceMinutes int    `json:"since_minutes"`
+	MinLevel     string `json:"min_level,omitempty"`
 	Timestamp    string `json:"timestamp"`
 }
 
@@ -135,17 +143,19 @@ type probeShellSessionControlCommand struct {
 }
 
 type probeLogsResultMessage struct {
-	Type         string `json:"type"`
-	RequestID    string `json:"request_id"`
-	NodeID       string `json:"node_id"`
-	OK           bool   `json:"ok"`
-	Source       string `json:"source,omitempty"`
-	FilePath     string `json:"file_path,omitempty"`
-	Lines        int    `json:"lines,omitempty"`
-	SinceMinutes int    `json:"since_minutes,omitempty"`
-	Content      string `json:"content,omitempty"`
-	Error        string `json:"error,omitempty"`
-	Timestamp    string `json:"timestamp,omitempty"`
+	Type         string          `json:"type"`
+	RequestID    string          `json:"request_id"`
+	NodeID       string          `json:"node_id"`
+	OK           bool            `json:"ok"`
+	Source       string          `json:"source,omitempty"`
+	FilePath     string          `json:"file_path,omitempty"`
+	Lines        int             `json:"lines,omitempty"`
+	SinceMinutes int             `json:"since_minutes,omitempty"`
+	MinLevel     string          `json:"min_level,omitempty"`
+	Content      string          `json:"content,omitempty"`
+	Entries      []probeLogEntry `json:"entries,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	Timestamp    string          `json:"timestamp,omitempty"`
 }
 
 type probeLinkTestControlResultMessage struct {
@@ -596,7 +606,7 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (pro
 	}, nil
 }
 
-func fetchProbeLogsFromNode(nodeID string, lines int, sinceMinutes int) (probeLogsResultMessage, error) {
+func fetchProbeLogsFromNode(nodeID string, lines int, sinceMinutes int, minLevel string) (probeLogsResultMessage, error) {
 	normalizedID := normalizeProbeNodeID(nodeID)
 	if normalizedID == "" {
 		return probeLogsResultMessage{}, fmt.Errorf("node_id is required")
@@ -609,6 +619,7 @@ func fetchProbeLogsFromNode(nodeID string, lines int, sinceMinutes int) (probeLo
 
 	safeLines := normalizeAdminLogLines(strconv.Itoa(lines))
 	safeSinceMinutes := normalizeAdminSinceMinutes(strconv.Itoa(sinceMinutes))
+	normalizedMinLevel := strings.TrimSpace(minLevel)
 	requestID := newProbeLogRequestID(normalizedID)
 	waiter := make(chan probeLogsResultMessage, 1)
 
@@ -626,6 +637,7 @@ func fetchProbeLogsFromNode(nodeID string, lines int, sinceMinutes int) (probeLo
 		RequestID:    requestID,
 		Lines:        safeLines,
 		SinceMinutes: safeSinceMinutes,
+		MinLevel:     normalizedMinLevel,
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := session.writeJSON(cmd); err != nil {
@@ -640,6 +652,9 @@ func fetchProbeLogsFromNode(nodeID string, lines int, sinceMinutes int) (probeLo
 	case result := <-waiter:
 		if strings.TrimSpace(result.NodeID) == "" {
 			result.NodeID = normalizedID
+		}
+		if strings.TrimSpace(result.MinLevel) == "" {
+			result.MinLevel = normalizedMinLevel
 		}
 		if !result.OK {
 			errMsg := strings.TrimSpace(result.Error)

@@ -127,6 +127,7 @@ type probeControlMessage struct {
 	RequestID         string                         `json:"request_id"`
 	Lines             int                            `json:"lines"`
 	SinceMinutes      int                            `json:"since_minutes"`
+	MinLevel          string                         `json:"min_level"`
 	Timestamp         string                         `json:"timestamp"`
 }
 
@@ -147,12 +148,14 @@ func main() {
 	options := parseProbeLaunchOptions()
 	if options.UpgradeVerify {
 		if err := runProbeUpgradeVerifyMode(options); err != nil {
+			logProbeErrorf("probe upgrade verification failed: %v", err)
 			log.Fatalf("probe upgrade verification failed: %v", err)
 		}
 		return
 	}
 
 	if err := runProbeNodeEntry(options); err != nil {
+		logProbeErrorf("probe node exited unexpectedly: %v", err)
 		log.Fatalf("probe node exited unexpectedly: %v", err)
 	}
 }
@@ -211,12 +214,12 @@ func runProbeNode(options probeLaunchOptions) error {
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
 		go startProbeReporter(wsURL, identity)
 	} else {
-		log.Printf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
+		logProbeWarnf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
 	restoreProbeChainRuntimesFromCache(identity, controllerBaseURL)
 	startProbeLinkChainsSyncLoop(identity, controllerBaseURL)
 
-	log.Printf("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
+	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
 	select {}
 }
 

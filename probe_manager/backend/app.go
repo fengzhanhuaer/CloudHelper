@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -42,10 +41,10 @@ func NewApp() *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	if err := cleanupManagerStaleExecutables(); err != nil {
-		log.Printf("warning: failed to cleanup stale manager executable files: %v", err)
+		logManagerWarnf("failed to cleanup stale manager executable files: %v", err)
 	}
 	if err := autoBackupManagerData(); err != nil {
-		log.Printf("warning: failed to backup manager data: %v", err)
+		logManagerWarnf("failed to backup manager data: %v", err)
 	}
 	a.networkAssistant.UpdateSession("", "")
 }
@@ -56,7 +55,7 @@ func (a *App) Shutdown(ctx context.Context) {
 		return
 	}
 	if err := a.networkAssistant.Shutdown(); err != nil {
-		log.Printf("warning: failed to shutdown network assistant: %v", err)
+		logManagerWarnf("failed to shutdown network assistant: %v", err)
 	}
 }
 

@@ -26,6 +26,22 @@ func initControllerLogger() {
 	log.SetOutput(writer)
 }
 
+func logControllerRealtimef(format string, args ...any) {
+	log.Printf("[realtime] "+format, args...)
+}
+
+func logControllerInfof(format string, args ...any) {
+	log.Printf("[normal] "+format, args...)
+}
+
+func logControllerWarnf(format string, args ...any) {
+	log.Printf("[warning] "+format, args...)
+}
+
+func logControllerErrorf(format string, args ...any) {
+	log.Printf("[error] "+format, args...)
+}
+
 func newControllerLogWriter() (io.Writer, error) {
 	var lastErr error
 	for _, dir := range candidateLogDirs() {

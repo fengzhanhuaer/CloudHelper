@@ -10,6 +10,7 @@ func Run() {
 	initControllerLogger()
 	if handled, err := runControllerUpgradeVerifyModeFromArgs(); handled {
 		if err != nil {
+			logControllerErrorf("controller upgrade verification failed: %v", err)
 			log.Fatalf("controller upgrade verification failed: %v", err)
 		}
 		return
@@ -23,7 +24,7 @@ func Run() {
 	initTGAssistantBotEngine()
 	initCloudflareZeroTrustSyncEngine()
 	if err := cleanupControllerStaleExecutables(); err != nil {
-		log.Printf("warning: failed to cleanup stale controller executable files: %v", err)
+		logControllerWarnf("failed to cleanup stale controller executable files: %v", err)
 	}
 	initAuth()
 	initProbeReportIntervalControl()
@@ -32,8 +33,9 @@ func Run() {
 	mux := NewMux()
 	handler := enforceProbeScopeMiddleware(mux)
 
-	log.Println("CloudHelper Probe Controller is running at http://" + listenAddr)
+	logControllerInfof("CloudHelper Probe Controller is running at http://%s", listenAddr)
 	if err := http.ListenAndServe(listenAddr, handler); err != nil {
+		logControllerErrorf("controller http server stopped: %v", err)
 		log.Fatal(err)
 	}
 }

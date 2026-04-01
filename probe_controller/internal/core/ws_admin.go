@@ -289,19 +289,22 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		return getControllerUpgradeProgress(), nil
 	case "admin.logs":
 		var req struct {
-			Lines        int `json:"lines"`
-			SinceMinutes int `json:"since_minutes"`
+			Lines        int    `json:"lines"`
+			SinceMinutes int    `json:"since_minutes"`
+			MinLevel     string `json:"min_level"`
 		}
 		_ = json.Unmarshal(payload, &req)
+		lineLimit := normalizeAdminLogLines(strconv.Itoa(req.Lines))
+		sinceMinutes := normalizeAdminSinceMinutes(strconv.Itoa(req.SinceMinutes))
 		logPath, err := resolveControllerLogPath()
 		if err != nil {
 			return nil, err
 		}
-		content, err := readControllerLogTailLines(logPath, normalizeAdminLogLines(strconv.Itoa(req.Lines)), normalizeAdminSinceMinutes(strconv.Itoa(req.SinceMinutes)))
+		content, entries, err := readControllerLogTailLines(logPath, lineLimit, sinceMinutes, req.MinLevel)
 		if err != nil {
 			return nil, err
 		}
-		return adminLogsResponse{Source: "server", FilePath: logPath, Lines: req.Lines, Content: content, Fetched: time.Now().Format(time.RFC3339)}, nil
+		return adminLogsResponse{Source: "server", FilePath: logPath, Lines: lineLimit, Content: content, Fetched: time.Now().Format(time.RFC3339), Entries: entries}, nil
 	case "admin.tunnel.nodes":
 		return map[string]interface{}{"nodes": currentTunnelNodes()}, nil
 	case "admin.probe.nodes.get":
@@ -824,6 +827,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			NodeID       string `json:"node_id"`
 			Lines        int    `json:"lines"`
 			SinceMinutes int    `json:"since_minutes"`
+			MinLevel     string `json:"min_level"`
 		}
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return nil, fmt.Errorf("invalid payload")
@@ -833,7 +837,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			return nil, fmt.Errorf("node_id is required")
 		}
 
-		result, err := fetchProbeLogsFromNode(nodeID, req.Lines, req.SinceMinutes)
+		result, err := fetchProbeLogsFromNode(nodeID, req.Lines, req.SinceMinutes, req.MinLevel)
 		if err != nil {
 			return nil, err
 		}
@@ -849,7 +853,9 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			"file_path":     strings.TrimSpace(result.FilePath),
 			"lines":         result.Lines,
 			"since_minutes": result.SinceMinutes,
+			"min_level":     strings.TrimSpace(result.MinLevel),
 			"content":       result.Content,
+			"entries":       result.Entries,
 			"fetched":       time.Now().UTC().Format(time.RFC3339),
 			"timestamp":     strings.TrimSpace(result.Timestamp),
 		}, nil

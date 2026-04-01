@@ -26,6 +26,23 @@ func InitManagerLogger() {
 	log.SetOutput(writer)
 }
 
+
+func logManagerRealtimef(format string, args ...any) {
+	log.Printf("[realtime] "+format, args...)
+}
+
+func logManagerInfof(format string, args ...any) {
+	log.Printf("[normal] "+format, args...)
+}
+
+func logManagerWarnf(format string, args ...any) {
+	log.Printf("[warning] "+format, args...)
+}
+
+func logManagerErrorf(format string, args ...any) {
+	log.Printf("[error] "+format, args...)
+}
+
 func newManagerLogWriter() (io.Writer, error) {
 	var lastErr error
 	for _, dir := range managerCandidateLogDirs() {

@@ -15,22 +15,39 @@ const (
 	logLineTimeLayout   = "2006/01/02 15:04:05.000000"
 )
 
-type LogViewResponse struct {
-	Source   string `json:"source"`
-	FilePath string `json:"file_path"`
-	Lines    int    `json:"lines"`
-	Content  string `json:"content"`
-	Fetched  string `json:"fetched_at"`
+type LogLevel string
+
+const (
+	LogLevelRealtime LogLevel = "realtime"
+	LogLevelNormal   LogLevel = "normal"
+	LogLevelWarning  LogLevel = "warning"
+	LogLevelError    LogLevel = "error"
+)
+
+type LogEntry struct {
+	Time    string   `json:"time"`
+	Level   LogLevel `json:"level"`
+	Message string   `json:"message"`
+	Line    string   `json:"line"`
 }
 
-func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int) (LogViewResponse, error) {
+type LogViewResponse struct {
+	Source   string     `json:"source"`
+	FilePath string     `json:"file_path"`
+	Lines    int        `json:"lines"`
+	Content  string     `json:"content"`
+	Fetched  string     `json:"fetched_at"`
+	Entries  []LogEntry `json:"entries,omitempty"`
+}
+
+func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int, minLevel string) (LogViewResponse, error) {
 	lineLimit := normalizeLogViewLines(lines)
 	logPath, err := resolveManagerLogPath()
 	if err != nil {
 		return LogViewResponse{}, err
 	}
 
-	content, err := readLogTailLines(logPath, lineLimit, sinceMinutes)
+	content, entries, err := readLogTailLines(logPath, lineLimit, sinceMinutes, minLevel)
 	if err != nil {
 		return LogViewResponse{}, err
 	}
@@ -41,6 +58,7 @@ func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int) (LogViewResponse,
 		Lines:    lineLimit,
 		Content:  content,
 		Fetched:  time.Now().Format(time.RFC3339),
+		Entries:  entries,
 	}, nil
 }
 
@@ -78,13 +96,13 @@ func resolveManagerLogPath() (string, error) {
 	return filepath.Join(dirs[0], managerLogFile), nil
 }
 
-func readLogTailLines(filePath string, lineLimit int, sinceMinutes int) (string, error) {
+func readLogTailLines(filePath string, lineLimit int, sinceMinutes int, minLevel string) (string, []LogEntry, error) {
 	raw, err := os.ReadFile(filePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", nil
+			return "", nil, nil
 		}
-		return "", fmt.Errorf("read log file failed: %w", err)
+		return "", nil, fmt.Errorf("read log file failed: %w", err)
 	}
 
 	normalized := strings.ReplaceAll(string(raw), "\r\n", "\n")
@@ -93,26 +111,33 @@ func readLogTailLines(filePath string, lineLimit int, sinceMinutes int) (string,
 		lines = lines[:len(lines)-1]
 	}
 
-	if sinceMinutes > 0 {
-		cutoff := time.Now().Add(-time.Duration(sinceMinutes) * time.Minute)
-		filtered := make([]string, 0, len(lines))
-		for _, line := range lines {
-			if line == "" {
-				continue
-			}
-			lineTime, ok := parseLogLineTime(line)
-			if ok && lineTime.Before(cutoff) {
-				continue
-			}
-			filtered = append(filtered, line)
+	cutoffEnabled := sinceMinutes > 0
+	cutoff := time.Now().Add(-time.Duration(sinceMinutes) * time.Minute)
+	threshold := normalizeLogLevel(minLevel)
+	filteredEntries := make([]LogEntry, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			continue
 		}
-		lines = filtered
+		lineTime, _ := parseLogLineTime(line)
+		if cutoffEnabled && !lineTime.IsZero() && lineTime.Before(cutoff) {
+			continue
+		}
+		entry := buildLogEntry(line)
+		if !logLevelGTE(entry.Level, threshold) {
+			continue
+		}
+		filteredEntries = append(filteredEntries, entry)
 	}
 
-	if lineLimit > 0 && len(lines) > lineLimit {
-		lines = lines[len(lines)-lineLimit:]
+	if lineLimit > 0 && len(filteredEntries) > lineLimit {
+		filteredEntries = filteredEntries[len(filteredEntries)-lineLimit:]
 	}
-	return strings.Join(lines, "\n"), nil
+	linesOut := make([]string, 0, len(filteredEntries))
+	for _, entry := range filteredEntries {
+		linesOut = append(linesOut, entry.Line)
+	}
+	return strings.Join(linesOut, "\n"), filteredEntries, nil
 }
 
 func parseLogLineTime(line string) (time.Time, bool) {
@@ -125,4 +150,66 @@ func parseLogLineTime(line string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return parsed, true
+}
+
+func buildLogEntry(line string) LogEntry {
+	trimmed := strings.TrimSpace(line)
+	entry := LogEntry{
+		Level:   inferLogLevel(trimmed),
+		Message: trimmed,
+		Line:    trimmed,
+	}
+	if ts, ok := parseLogLineTime(trimmed); ok {
+		entry.Time = ts.Format(time.RFC3339)
+		if len(trimmed) > len(logLineTimeLayout) {
+			entry.Message = strings.TrimSpace(trimmed[len(logLineTimeLayout):])
+		}
+	}
+	return entry
+}
+
+func normalizeLogLevel(raw string) LogLevel {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "realtime", "实时":
+		return LogLevelRealtime
+	case "warning", "warn", "告警":
+		return LogLevelWarning
+	case "error", "err", "错误":
+		return LogLevelError
+	default:
+		return LogLevelNormal
+	}
+}
+
+func inferLogLevel(line string) LogLevel {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	switch {
+	case strings.Contains(lower, "[error]") || strings.Contains(lower, " error ") || strings.Contains(lower, "failed") || strings.Contains(lower, "panic") || strings.Contains(lower, "fatal") || strings.Contains(lower, "错误"):
+		return LogLevelError
+	case strings.Contains(lower, "[warn]") || strings.Contains(lower, " warning") || strings.Contains(lower, "告警") || strings.Contains(lower, "警告"):
+		return LogLevelWarning
+	case strings.Contains(lower, "实时") || strings.Contains(lower, "trace") || strings.Contains(lower, "debug"):
+		return LogLevelRealtime
+	default:
+		return LogLevelNormal
+	}
+}
+
+func logLevelRank(level LogLevel) int {
+	switch normalizeLogLevel(string(level)) {
+	case LogLevelRealtime:
+		return 0
+	case LogLevelNormal:
+		return 1
+	case LogLevelWarning:
+		return 2
+	case LogLevelError:
+		return 3
+	default:
+		return 1
+	}
+}
+
+func logLevelGTE(level LogLevel, minLevel LogLevel) bool {
+	return logLevelRank(level) >= logLevelRank(minLevel)
 }

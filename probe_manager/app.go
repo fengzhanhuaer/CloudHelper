@@ -81,8 +81,8 @@ func (a *App) CloudflareSpeedTest(req CloudflareSpeedTestRequest) CloudflareSpee
 	return a.inner.CloudflareSpeedTest(req)
 }
 
-func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int) (LogViewResponse, error) {
-	return a.inner.GetLocalManagerLogs(lines, sinceMinutes)
+func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int, minLevel string) (LogViewResponse, error) {
+	return a.inner.GetLocalManagerLogs(lines, sinceMinutes, minLevel)
 }
 
 func (a *App) GetNetworkAssistantStatus() NetworkAssistantStatus {
