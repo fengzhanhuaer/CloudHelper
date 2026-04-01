@@ -16,6 +16,9 @@ const (
 
 type managerGlobalConfig struct {
 	ControllerURL string `json:"controller_url"`
+	// ControllerIP 为可选的主控 IP，配置后连接主控时直接使用该 IP，跳过 DNS 解析。
+	// 格式为纯 IPv4 或 IPv6 地址，不含端口，留空则正常走 DNS。
+	ControllerIP string `json:"controller_ip,omitempty"`
 }
 
 func (a *App) GetGlobalControllerURL() (string, error) {
@@ -28,6 +31,25 @@ func (a *App) GetGlobalControllerURL() (string, error) {
 		return defaultControllerURL, nil
 	}
 	return value, nil
+}
+
+// GetGlobalControllerIP 返回当前配置的主控 IP（可能为空）。
+func (a *App) GetGlobalControllerIP() (string, error) {
+	config, _, err := loadManagerGlobalConfig()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(config.ControllerIP), nil
+}
+
+// loadManagerControllerIP 直接读取配置文件中的主控 IP，供内部模块使用。
+// 返回空字符串表示未配置，调用方应走正常 DNS 流程。
+func loadManagerControllerIP() string {
+	config, _, err := loadManagerGlobalConfig()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(config.ControllerIP)
 }
 
 func (a *App) SetGlobalControllerURL(rawURL string) (string, error) {
