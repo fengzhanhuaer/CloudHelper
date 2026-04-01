@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   applyCloudflareDDNS,
   fetchCloudflareAPIKey,
@@ -10,13 +10,204 @@ import {
   setCloudflareZone,
 } from "../services/controller-api";
 import type { CloudflareDDNSRecord, CloudflareZeroTrustWhitelistState } from "../types";
+import { CloudflareSpeedTest } from "../../../wailsjs/go/main/App";
 
 type CloudflareAssistantTabProps = {
   controllerBaseUrl: string;
   sessionToken: string;
 };
 
-type CloudflareSubTab = "settings" | "ddns" | "zerotrust";
+type CloudflareSubTab = "settings" | "ddns" | "zerotrust" | "ip-speedtest";
+
+// IP 优选结果类型
+type IPTestResult = {
+  ip: string;
+  latency_ms: number;
+};
+
+// IP 优选面板组件（调用 Go 后端做真实 TCP 拨号测速）
+function IPSpeedTestPanel() {
+  const [scanMode, setScanMode] = useState<"fast" | "normal" | "deep">("normal");
+  const [timeoutMs, setTimeoutMs] = useState("2000");
+  const [isTesting, setIsTesting] = useState(false);
+  const [results, setResults] = useState<IPTestResult[]>([]);
+  const [status, setStatus] = useState("");
+  const [copiedIP, setCopiedIP] = useState("");
+
+  async function handleTest() {
+    const modeMap: Record<"fast" | "normal" | "deep", number> = { fast: 50, normal: 120, deep: 300 };
+    const count = modeMap[scanMode];
+    const timeout = Math.max(500, Math.min(15000, Number.parseInt(timeoutMs, 10) || 2000));
+
+    setIsTesting(true);
+    setResults([]);
+    setStatus(`正在测速（${scanMode === "fast" ? "快速" : scanMode === "normal" ? "标准" : "深度"}模式，共 ${count} 个 Cloudflare IP），请稍候...`);
+
+    try {
+      const resp = await CloudflareSpeedTest({
+        sample_count: count,
+        timeout_ms: timeout,
+        top_n: 20,
+      });
+      const items: IPTestResult[] = (resp.results ?? []).map((r) => ({
+        ip: r.ip,
+        latency_ms: r.latency_ms,
+      }));
+      setResults(items);
+      setStatus(resp.message || `测速完成，有效 IP ${resp.valid_count} 个`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus(`测速失败：${msg}`);
+    } finally {
+      setIsTesting(false);
+    }
+  }
+
+  async function handleCopy(ip: string) {
+    try {
+      await navigator.clipboard.writeText(ip);
+      setCopiedIP(ip);
+      setTimeout(() => setCopiedIP(""), 1800);
+    } catch {
+      setCopiedIP("");
+    }
+  }
+
+  // 延迟色阶
+  function latencyColor(ms: number): string {
+    if (ms <= 80)  return "#52e892";
+    if (ms <= 180) return "#a8e852";
+    if (ms <= 350) return "#f0c04a";
+    return "#f07a4a";
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      {/* 说明 */}
+      <div className="status-inline" style={{ fontSize: 13, color: "#8badd4" }}>
+        通过 Go 后端直接向 Cloudflare IP 的 443 端口发起 TCP 连接，测量真实握手延迟，结果比浏览器 fetch 更准确。
+      </div>
+
+      {/* 配置区 */}
+      <div className="identity-card">
+        <div className="row">
+          <label>扫描规模</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            {(["fast", "normal", "deep"] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setScanMode(mode)}
+                disabled={isTesting}
+                style={{
+                  flex: 1,
+                  height: 34,
+                  borderRadius: 6,
+                  border: `1px solid ${scanMode === mode ? "rgba(129,184,255,0.72)" : "rgba(255,255,255,0.2)"}`,
+                  background: scanMode === mode ? "rgba(65,108,166,0.72)" : "rgba(22,30,44,0.9)",
+                  color: "#fff",
+                  cursor: isTesting ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                  opacity: isTesting ? 0.6 : 1,
+                }}
+              >
+                {mode === "fast" ? "⚡ 快速" : mode === "normal" ? "🔍 标准" : "🔬 深度"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="status-inline" style={{ fontSize: 12, color: "#6a8fc8", marginTop: -4 }}>
+          {scanMode === "fast" ? "测试约 50 个 IP，速度快（约 2s）" : scanMode === "normal" ? "测试约 120 个 IP，覆盖面广（约 3s）" : "测试约 300 个 IP，结果更全面（约 5s）"}
+        </div>
+        <div className="row">
+          <label>超时时间 (ms)</label>
+          <input
+            className="input"
+            type="number"
+            min={500}
+            max={15000}
+            step={500}
+            value={timeoutMs}
+            onChange={(e) => setTimeoutMs(e.target.value)}
+            disabled={isTesting}
+          />
+        </div>
+
+        <div className="content-actions">
+          <button className="btn" onClick={() => void handleTest()} disabled={isTesting}>
+            {isTesting ? "⏳ 测速中..." : "🚀 开始测速"}
+          </button>
+        </div>
+
+        {/* 进度条（不定进度，仅测试时展示） */}
+        {isTesting && (
+          <div className="progress-bar" style={{ marginTop: 4 }}>
+            <div
+              className="progress-bar-fill"
+              style={{
+                width: "100%",
+                animation: "cf-indeterminate 1.4s ease-in-out infinite",
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* 结果区 */}
+      {results.length > 0 && (
+        <div className="identity-card" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "10px 14px 6px", color: "#a8c8ff", fontSize: 13, fontWeight: 600 }}>
+            🏆 延迟最低前 {results.length} 个 IP（TCP 443 实测）— 点击一键复制
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 0 }}>
+            {results.map((r, idx) => (
+              <button
+                key={r.ip}
+                onClick={() => void handleCopy(r.ip)}
+                title={`点击复制 ${r.ip}`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "9px 14px",
+                  border: "none",
+                  borderBottom: "1px solid rgba(255,255,255,0.07)",
+                  borderRight: "1px solid rgba(255,255,255,0.07)",
+                  background: copiedIP === r.ip ? "rgba(80,200,130,0.18)" : "transparent",
+                  color: copiedIP === r.ip ? "#52e892" : "#e4f0ff",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  transition: "background 0.18s",
+                  fontSize: 13,
+                }}
+              >
+                <span style={{ minWidth: 22, color: "#6a8fc8", fontSize: 12, fontWeight: 700 }}>
+                  #{idx + 1}
+                </span>
+                <span style={{ flex: 1, fontFamily: "monospace", letterSpacing: "0.02em" }}>
+                  {r.ip}
+                </span>
+                <span style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: latencyColor(r.latency_ms),
+                  minWidth: 56,
+                  textAlign: "right",
+                }}>
+                  {r.latency_ms} ms
+                </span>
+                {copiedIP === r.ip && (
+                  <span style={{ fontSize: 11, color: "#52e892", marginLeft: 2 }}>✓ 已复制</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {status && <div className="status">{status}</div>}
+    </div>
+  );
+}
 
 const defaultZeroTrustState: CloudflareZeroTrustWhitelistState = {
   enabled: false,
@@ -207,6 +398,9 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
         <button className={`subtab-btn ${subTab === "zerotrust" ? "active" : ""}`} onClick={() => setSubTab("zerotrust")} disabled={isLoading}>
           ZeroTrust 白名单
         </button>
+        <button className={`subtab-btn ${subTab === "ip-speedtest" ? "active" : ""}`} onClick={() => setSubTab("ip-speedtest")}>
+          🚀 IP 优选
+        </button>
       </div>
 
       {subTab === "settings" ? (
@@ -282,6 +476,8 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
             <div className="status">暂无 DDNS 记录。</div>
           )}
         </div>
+      ) : subTab === "ip-speedtest" ? (
+        <IPSpeedTestPanel />
       ) : (
         <div className="identity-card">
           <label className="probe-direct-toggle" style={{ marginBottom: 8 }}>
@@ -353,7 +549,7 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
         </div>
       )}
 
-      <div className="status">{status}</div>
+      {subTab !== "ip-speedtest" && <div className="status">{status}</div>}
     </div>
   );
 }

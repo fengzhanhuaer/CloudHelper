@@ -16,6 +16,7 @@ const (
 
 type managerGlobalConfig struct {
 	ControllerURL string `json:"controller_url"`
+	ControllerIP  string `json:"controller_ip,omitempty"` // 可选：指定主控 IP，跳过 DNS 解析
 }
 
 func (a *App) GetGlobalControllerURL() (string, error) {
@@ -26,6 +27,29 @@ func (a *App) GetGlobalControllerURL() (string, error) {
 	value := strings.TrimSpace(config.ControllerURL)
 	if value == "" {
 		return defaultControllerURL, nil
+	}
+	return value, nil
+}
+
+func (a *App) GetGlobalControllerIP() (string, error) {
+	config, _, err := loadManagerGlobalConfig()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(config.ControllerIP), nil
+}
+
+func (a *App) SetGlobalControllerIP(ip string) (string, error) {
+	value := strings.TrimSpace(ip)
+
+	config, configPath, err := loadManagerGlobalConfig()
+	if err != nil {
+		return "", err
+	}
+	config.ControllerIP = value
+
+	if err := writeManagerGlobalConfig(configPath, config); err != nil {
+		return "", err
 	}
 	return value, nil
 }
