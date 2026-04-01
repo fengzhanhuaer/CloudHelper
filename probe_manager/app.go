@@ -29,6 +29,9 @@ type NetworkAssistantDNSUpstreamConfig = backend.NetworkAssistantDNSUpstreamConf
 type NetworkAssistantDNSCacheEntry = backend.NetworkAssistantDNSCacheEntry
 type NetworkProcessInfo = backend.NetworkProcessInfo
 type NetworkProcessEvent = backend.NetworkProcessEvent
+type CloudflareSpeedTestRequest = backend.CloudflareSpeedTestRequest
+type CloudflareSpeedTestResponse = backend.CloudflareSpeedTestResponse
+type CloudflareIPTestResult = backend.CloudflareIPTestResult
 
 func NewApp() *App {
 	backend.BuildVersion = BuildVersion
@@ -74,8 +77,10 @@ func (a *App) GetGlobalControllerIP() (string, error) {
 func (a *App) SetGlobalControllerIP(ip string) (string, error) {
 	return a.inner.SetGlobalControllerIP(ip)
 }
-
-func (a *App) GetLocalManagerLogs(lines int, sinceMinutes int) (LogViewResponse, error) {
+func (a *App) CloudflareSpeedTest(req CloudflareSpeedTestRequest) CloudflareSpeedTestResponse {
+	return a.inner.CloudflareSpeedTest(req)
+}
+(lines int, sinceMinutes int) (LogViewResponse, error) {
 	return a.inner.GetLocalManagerLogs(lines, sinceMinutes)
 }
 
