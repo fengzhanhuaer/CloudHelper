@@ -309,12 +309,38 @@ func windowsEnsureIPv4Route(prefix string, interfaceIndex int, nextHop string, m
 		ForwardProto:   windowsRouteProtoNetMgmt,
 		ForwardMetric1: metric,
 	}
+	destText := uint32ToIPv4(dest)
+	maskText := uint32ToIPv4(mask)
+	hopText := uint32ToIPv4(hop)
 	ret, _, callErr := procCreateIpForwardEntryNet.Call(uintptr(unsafe.Pointer(&row)))
 	if ret != 0 {
 		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
-			return fmt.Errorf("CreateIpForwardEntry failed: %w", callErr)
+			return fmt.Errorf(
+				"CreateIpForwardEntry failed: prefix=%s if=%d next_hop=%s dest=%s mask=%s route_type=%d metric=%d ret=%d err=%w",
+				cleanPrefix,
+				interfaceIndex,
+				cleanHop,
+				destText,
+				maskText,
+				hopText,
+				routeType,
+				metric,
+				ret,
+				callErr,
+			)
 		}
-		return fmt.Errorf("CreateIpForwardEntry failed: code=%d", ret)
+		return fmt.Errorf(
+			"CreateIpForwardEntry failed: prefix=%s if=%d next_hop=%s dest=%s mask=%s route_type=%d metric=%d code=%d",
+			cleanPrefix,
+			interfaceIndex,
+			cleanHop,
+			destText,
+			maskText,
+			hopText,
+			routeType,
+			metric,
+			ret,
+		)
 	}
 	return nil
 }
