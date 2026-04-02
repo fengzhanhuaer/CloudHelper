@@ -6,6 +6,7 @@ import {
   ReplaceProbeNodes,
   RestoreDeletedProbeNode,
 } from "../../../../wailsjs/go/main/App";
+import { backend } from "../../../../wailsjs/go/models";
 import {
   createProbeNodeOnController,
   deleteProbeShellShortcut,
@@ -271,23 +272,12 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       ]);
       setDeletedNodeNos(new Set(deletedNos ?? []));
       const controllerNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
-      await ReplaceProbeNodes(controllerNodes.map((item) => ({
+      await ReplaceProbeNodes(controllerNodes.map((item) => new backend.ProbeNode({
         node_no: item.node_no,
         node_name: item.node_name,
-        remark: item.remark || "",
-        ddns: item.ddns || "",
-        cloudflare_ddns_records: Array.isArray(item.cloudflare_ddns_records) ? item.cloudflare_ddns_records.map((rec) => ({
-          record_class: rec?.record_class || "",
-          record_name: rec?.record_name || "",
-        })) : [],
         node_secret: item.node_secret || "",
         target_system: item.target_system,
         direct_connect: item.direct_connect,
-        payment_cycle: item.payment_cycle || "",
-        cost: item.cost || "",
-        expire_at: item.expire_at || "",
-        vendor_name: item.vendor_name || "",
-        vendor_url: item.vendor_url || "",
         created_at: item.created_at || "",
         updated_at: item.updated_at || "",
       })));
