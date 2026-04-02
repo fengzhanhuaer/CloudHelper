@@ -25,6 +25,7 @@ type ManagerUpgradeProgress = backend.ManagerUpgradeProgress
 type ProbeNode = backend.ProbeNode
 type ProbeLinkConnectResult = backend.ProbeLinkConnectResult
 type ProbeChainPingResult = backend.ProbeChainPingResult
+type ProbeLinkChainCacheItem = backend.ProbeLinkChainCacheItem
 type NetworkAssistantDNSUpstreamConfig = backend.NetworkAssistantDNSUpstreamConfig
 type NetworkAssistantDNSCacheEntry = backend.NetworkAssistantDNSCacheEntry
 type NetworkProcessInfo = backend.NetworkProcessInfo
@@ -183,6 +184,10 @@ func (a *App) GetManagerUpgradeProgress() ManagerUpgradeProgress {
 
 func (a *App) GetProbeNodes() ([]ProbeNode, error) {
 	return a.inner.GetProbeNodes()
+}
+
+func (a *App) GetProbeLinkChainsCache() ([]ProbeLinkChainCacheItem, error) {
+	return a.inner.GetProbeLinkChainsCache()
 }
 
 func (a *App) CreateProbeNode(nodeName string) (ProbeNode, error) {

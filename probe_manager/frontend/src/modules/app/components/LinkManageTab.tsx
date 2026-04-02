@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ForceRefreshNetworkAssistantNodes,
+  GetProbeLinkChainsCache,
   PingProbeLinkSession,
   PingProbeChain,
   StartProbeLinkSession,
@@ -9,7 +10,6 @@ import {
 import {
   deleteProbeLinkChain,
   fetchCloudflareDDNSRecords,
-  fetchProbeLinkChains,
   fetchProbeLinkUserPublicKey,
   fetchProbeLinkUsers,
   fetchProbeNodeStatus,
@@ -98,8 +98,6 @@ const defaultLinkChainEgressHost = "127.0.0.1";
 const defaultLinkChainEgressPort = 1080;
 const defaultPortForwardListenHost = "0.0.0.0";
 const defaultPortForwardNetwork: ProbeLinkPFNetwork = "tcp";
-const linkChainCacheStorageKey = "cloudhelper_probe_link_chains_cache_v1";
-
 export function LinkManageTab(props: LinkManageTabProps) {
   const isForwardOnlyTab = props.initialSubTab === "forward";
   const [subTab, setSubTab] = useState<LinkManageSubTab>(props.initialSubTab || "list");
@@ -161,14 +159,9 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChainStatus("未登录，无法加载链路列表");
       return;
     }
-    const cachedChains = readProbeLinkChainCache();
-    setChains(sortProbeLinkChains(cachedChains));
-    if (cachedChains.length > 0) {
-      setChainStatus(`已加载本地缓存链路（${cachedChains.length} 条）`);
-    } else {
-      setChainStatus("未找到本地链路缓存，请点击“从主控获取链路”");
-    }
-    // 移除自动网络请求，仅使用本地缓存
+    void loadChainsFromBackendCache({
+      emptyStatus: "未找到本地链路缓存，请点击“从主控获取链路”",
+    });
   }, [props.controllerBaseUrl, props.sessionToken]);
 
   const handlePingChain = async (chainID: string) => {
@@ -717,6 +710,26 @@ export function LinkManageTab(props: LinkManageTabProps) {
     }
   }
 
+  async function loadChainsFromBackendCache(options?: { emptyStatus?: string; silentStatus?: boolean }): Promise<number> {
+    try {
+      const items = await GetProbeLinkChainsCache();
+      const sorted = sortProbeLinkChains((Array.isArray(items) ? items : []) as ProbeLinkChainItem[]);
+      setChains(sorted);
+      if (!options?.silentStatus) {
+        if (sorted.length > 0) {
+          setChainStatus(`已加载本地链路缓存（${sorted.length} 条）`);
+        } else {
+          setChainStatus(options?.emptyStatus || "本地链路缓存为空，请点击“从主控获取链路”");
+        }
+      }
+      return sorted.length;
+    } catch (error) {
+      const msg = errorToMessage(error);
+      setChainStatus(`读取本地链路缓存失败：${msg}`);
+      return 0;
+    }
+  }
+
   async function loadChainsFromController() {
     if (!props.sessionToken.trim()) {
       setChains([]);
@@ -724,24 +737,16 @@ export function LinkManageTab(props: LinkManageTabProps) {
       return;
     }
     setIsLoadingChains(true);
-    setChainStatus("正在从主控获取链路...");
+    setChainStatus("正在从主控刷新链路...");
     try {
-      const items = await fetchProbeLinkChains(props.controllerBaseUrl, props.sessionToken);
-      const sorted = sortProbeLinkChains(items);
-      setChains(sorted);
-      writeProbeLinkChainCache(sorted);
-      setChainStatus(`已从主控获取链路（${sorted.length} 条）`);
-      try {
-        await ForceRefreshNetworkAssistantNodes(props.controllerBaseUrl, props.sessionToken);
-      } catch (error) {
-        const msg = errorToMessage(error);
-        setChainStatus(`主控链路已刷新，但本地链路缓存落盘失败：${msg}`);
-      }
+      await ForceRefreshNetworkAssistantNodes(props.controllerBaseUrl, props.sessionToken);
+      const total = await loadChainsFromBackendCache({ silentStatus: true });
+      setChainStatus(`已从主控刷新并加载链路（${total} 条）`);
       void loadChainUsers();
       void loadNodes();
     } catch (error) {
       const msg = errorToMessage(error);
-      setChainStatus(`从主控获取链路失败：${msg}`);
+      setChainStatus(`从主控刷新链路失败：${msg}`);
     } finally {
       setIsLoadingChains(false);
     }
@@ -878,24 +883,15 @@ export function LinkManageTab(props: LinkManageTabProps) {
         egress_host: defaultLinkChainEgressHost,
         egress_port: defaultLinkChainEgressPort,
       });
-      const nextItems = sortProbeLinkChains(
-        response.items.length > 0
-          ? response.items
-          : response.item
-            ? upsertProbeLinkChainLocal(chains, response.item)
-            : chains,
-      );
-      setChains(nextItems);
-      writeProbeLinkChainCache(nextItems);
       if (response.item) {
         beginEditChain(response.item);
       }
-      if (response.apply_ok === false && response.apply_error) {
-        setChainStatus(`保存成功，但下发探针异常：${response.apply_error}`);
-      } else {
-        setChainStatus(editingChainID ? "链路更新成功" : "链路新增成功");
-      }
-      await loadChainsFromController();
+      const saveStatus = response.apply_ok === false && response.apply_error
+        ? `保存成功，但下发探针异常：${response.apply_error}`
+        : (editingChainID ? "链路更新成功" : "链路新增成功");
+      await ForceRefreshNetworkAssistantNodes(props.controllerBaseUrl, props.sessionToken);
+      const total = await loadChainsFromBackendCache({ silentStatus: true });
+      setChainStatus(`${saveStatus}，缓存已更新（${total} 条）`);
     } catch (error) {
       const msg = errorToMessage(error);
       setChainStatus(`保存链路失败：${msg}`);
@@ -920,22 +916,15 @@ export function LinkManageTab(props: LinkManageTabProps) {
     setChainStatus(`正在删除链路：${displayName}`);
     try {
       const response = await deleteProbeLinkChain(props.controllerBaseUrl, props.sessionToken, target);
-      const nextItems = sortProbeLinkChains(
-        response.items.length > 0
-          ? response.items
-          : chains.filter((item) => String(item.chain_id || "").trim() !== target),
-      );
-      setChains(nextItems);
-      writeProbeLinkChainCache(nextItems);
       if (editingChainID === target) {
         resetChainForm();
       }
-      if (response.apply_ok === false && response.apply_error) {
-        setChainStatus(`删除成功，但探针清理异常：${response.apply_error}`);
-      } else {
-        setChainStatus(`链路已删除：${displayName}`);
-      }
-      await loadChainsFromController();
+      const deleteStatus = response.apply_ok === false && response.apply_error
+        ? `删除成功，但探针清理异常：${response.apply_error}`
+        : `链路已删除：${displayName}`;
+      await ForceRefreshNetworkAssistantNodes(props.controllerBaseUrl, props.sessionToken);
+      const total = await loadChainsFromBackendCache({ silentStatus: true });
+      setChainStatus(`${deleteStatus}，缓存已更新（${total} 条）`);
     } catch (error) {
       const msg = errorToMessage(error);
       setChainStatus(`删除链路失败：${msg}`);
@@ -1810,56 +1799,6 @@ function sortProbeLinkChains(items: ProbeLinkChainItem[]): ProbeLinkChainItem[] 
     return rightKey.localeCompare(leftKey);
   });
   return out;
-}
-
-function upsertProbeLinkChainLocal(items: ProbeLinkChainItem[], incoming: ProbeLinkChainItem): ProbeLinkChainItem[] {
-  const chainID = String(incoming?.chain_id || "").trim();
-  if (!chainID) {
-    return Array.isArray(items) ? [...items] : [];
-  }
-  const current = Array.isArray(items) ? [...items] : [];
-  const index = current.findIndex((item) => String(item.chain_id || "").trim() === chainID);
-  if (index >= 0) {
-    current[index] = incoming;
-    return current;
-  }
-  current.push(incoming);
-  return current;
-}
-
-function readProbeLinkChainCache(): ProbeLinkChainItem[] {
-  try {
-    const raw = window.localStorage.getItem(linkChainCacheStorageKey);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    const items: ProbeLinkChainItem[] = [];
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") {
-        continue;
-      }
-      const record = item as ProbeLinkChainItem;
-      if (!String(record.chain_id || "").trim()) {
-        continue;
-      }
-      items.push(record);
-    }
-    return items;
-  } catch {
-    return [];
-  }
-}
-
-function writeProbeLinkChainCache(items: ProbeLinkChainItem[]): void {
-  try {
-    window.localStorage.setItem(linkChainCacheStorageKey, JSON.stringify(sortProbeLinkChains(items)));
-  } catch {
-    // ignore local cache write failure
-  }
 }
 
 function normalizeChainUsername(raw: unknown): string {

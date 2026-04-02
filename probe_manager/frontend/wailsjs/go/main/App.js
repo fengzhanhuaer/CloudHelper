@@ -98,6 +98,10 @@ export function GetProbeNodes() {
   return window['go']['main']['App']['GetProbeNodes']();
 }
 
+export function GetProbeLinkChainsCache() {
+  return window['go']['main']['App']['GetProbeLinkChainsCache']();
+}
+
 export function StartProbeLinkSession(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['StartProbeLinkSession'](arg1, arg2, arg3, arg4);
 }

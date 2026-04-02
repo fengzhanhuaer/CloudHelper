@@ -121,13 +121,22 @@ type cloudflareDDNSRecordItem struct {
 type probeLinkChainAdminItem struct {
 	Name           string   `json:"name"`
 	ChainID        string   `json:"chain_id"`
+	UserID         string   `json:"user_id"`
+	UserPublicKey  string   `json:"user_public_key"`
 	Secret         string   `json:"secret"`
 	EntryNodeID    string   `json:"entry_node_id"`
 	ExitNodeID     string   `json:"exit_node_id"`
 	CascadeNodeIDs []string `json:"cascade_node_ids"`
+	ListenHost     string   `json:"listen_host"`
+	ListenPort     int      `json:"listen_port"`
 	LinkLayer      string   `json:"link_layer"`
+	EgressHost     string   `json:"egress_host"`
+	EgressPort     int      `json:"egress_port"`
+	CreatedAt      string   `json:"created_at"`
+	UpdatedAt      string   `json:"updated_at"`
 	HopConfigs     []struct {
 		NodeNo       int    `json:"node_no"`
+		ListenHost   string `json:"listen_host,omitempty"`
 		ListenPort   int    `json:"listen_port,omitempty"`
 		ExternalPort int    `json:"external_port,omitempty"`
 		LinkLayer    string `json:"link_layer"`
@@ -137,6 +146,7 @@ type probeLinkChainAdminItem struct {
 	PortForwards []struct {
 		ID         string `json:"id,omitempty"`
 		Name       string `json:"name,omitempty"`
+		EntrySide  string `json:"entry_side,omitempty"`
 		ListenHost string `json:"listen_host"`
 		ListenPort int    `json:"listen_port"`
 		TargetHost string `json:"target_host"`
@@ -153,9 +163,20 @@ type probeNodeAdminItem struct {
 	BusinessDDNS string `json:"business_ddns"`
 }
 
+type probeChainHopConfig struct {
+	NodeNo       int
+	ListenHost   string
+	ListenPort   int
+	ExternalPort int
+	LinkLayer    string
+	DialMode     string
+	RelayHost    string
+}
+
 type probeChainPortForward struct {
 	ID         string
 	Name       string
+	EntrySide  string
 	ListenHost string
 	ListenPort int
 	TargetHost string
@@ -165,15 +186,68 @@ type probeChainPortForward struct {
 }
 
 type probeChainEndpoint struct {
-	TargetID      string
-	ChainName     string
-	ChainID       string
-	EntryNode     string
-	EntryHost     string // public-facing host of the entry hop (DDNS or ip)
-	EntryPort     int    // public-facing port of the entry hop (external_port, fallback to listen_port)
-	LinkLayer     string
-	ChainSecret   string
-	PortForwards  []probeChainPortForward
+	TargetID        string
+	ChainName       string
+	ChainID         string
+	UserID          string
+	UserPublicKey   string
+	EntryNode       string
+	ExitNode        string
+	CascadeNodeIDs  []string
+	ListenHost      string
+	ListenPort      int
+	EgressHost      string
+	EgressPort      int
+	CreatedAt       string
+	UpdatedAt       string
+	EntryHost       string // public-facing host of the entry hop (DDNS or ip)
+	EntryPort       int    // public-facing port of the entry hop (external_port, fallback to listen_port)
+	LinkLayer       string
+	ChainSecret     string
+	HopConfigs      []probeChainHopConfig
+	PortForwards    []probeChainPortForward
+}
+
+type ProbeLinkChainCacheHopConfig struct {
+	NodeNo       int    `json:"node_no"`
+	ListenHost   string `json:"listen_host,omitempty"`
+	ListenPort   int    `json:"listen_port,omitempty"`
+	ExternalPort int    `json:"external_port,omitempty"`
+	LinkLayer    string `json:"link_layer"`
+	DialMode     string `json:"dial_mode,omitempty"`
+	RelayHost    string `json:"relay_host,omitempty"`
+}
+
+type ProbeLinkChainCachePortForward struct {
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	EntrySide  string `json:"entry_side,omitempty"`
+	ListenHost string `json:"listen_host"`
+	ListenPort int    `json:"listen_port"`
+	TargetHost string `json:"target_host"`
+	TargetPort int    `json:"target_port"`
+	Network    string `json:"network,omitempty"`
+	Enabled    bool   `json:"enabled"`
+}
+
+type ProbeLinkChainCacheItem struct {
+	ChainID        string                            `json:"chain_id"`
+	Name           string                            `json:"name"`
+	UserID         string                            `json:"user_id"`
+	UserPublicKey  string                            `json:"user_public_key"`
+	Secret         string                            `json:"secret"`
+	EntryNodeID    string                            `json:"entry_node_id"`
+	ExitNodeID     string                            `json:"exit_node_id"`
+	CascadeNodeIDs []string                          `json:"cascade_node_ids"`
+	ListenHost     string                            `json:"listen_host"`
+	ListenPort     int                               `json:"listen_port"`
+	LinkLayer      string                            `json:"link_layer,omitempty"`
+	HopConfigs     []ProbeLinkChainCacheHopConfig    `json:"hop_configs,omitempty"`
+	PortForwards   []ProbeLinkChainCachePortForward  `json:"port_forwards,omitempty"`
+	EgressHost     string                            `json:"egress_host"`
+	EgressPort     int                               `json:"egress_port"`
+	CreatedAt      string                            `json:"created_at,omitempty"`
+	UpdatedAt      string                            `json:"updated_at,omitempty"`
 }
 
 type adminWSRequest struct {
@@ -601,6 +675,32 @@ func (s *networkAssistantService) getChainTargetsSnapshot() map[string]probeChai
 	return targets
 }
 
+func (s *networkAssistantService) getOrLoadChainTargetsSnapshot() (map[string]probeChainEndpoint, error) {
+	targets := s.getChainTargetsSnapshot()
+	if len(targets) > 0 {
+		return targets, nil
+	}
+
+	cachedNodes, cachedTargets, err := loadChainCacheFromFile()
+	if err != nil {
+		return nil, err
+	}
+	if len(cachedTargets) == 0 {
+		return map[string]probeChainEndpoint{}, nil
+	}
+
+	s.mu.Lock()
+	if len(s.chainTargets) == 0 {
+		s.chainTargets = copyProbeChainTargets(cachedTargets)
+	}
+	if len(s.availableNodes) == 0 && len(cachedNodes) > 0 {
+		s.availableNodes = append([]string(nil), cachedNodes...)
+	}
+	targets = copyProbeChainTargets(s.chainTargets)
+	s.mu.Unlock()
+	return targets, nil
+}
+
 func (s *networkAssistantService) UpdateSession(controllerBaseURL, sessionToken string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -615,6 +715,80 @@ func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) e
 		return err
 	}
 	return nil
+}
+
+func (s *networkAssistantService) GetProbeLinkChainsCache() ([]ProbeLinkChainCacheItem, error) {
+	targets, err := s.getOrLoadChainTargetsSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]ProbeLinkChainCacheItem, 0, len(targets))
+	for _, endpoint := range targets {
+		items = append(items, buildProbeLinkChainCacheItem(endpoint))
+	}
+	sort.Slice(items, func(i, j int) bool {
+		leftKey := strings.TrimSpace(items[i].UpdatedAt)
+		if leftKey == "" {
+			leftKey = strings.TrimSpace(items[i].CreatedAt)
+		}
+		rightKey := strings.TrimSpace(items[j].UpdatedAt)
+		if rightKey == "" {
+			rightKey = strings.TrimSpace(items[j].CreatedAt)
+		}
+		if leftKey == rightKey {
+			return strings.TrimSpace(items[i].ChainID) < strings.TrimSpace(items[j].ChainID)
+		}
+		return leftKey > rightKey
+	})
+	return items, nil
+}
+
+func buildProbeLinkChainCacheItem(endpoint probeChainEndpoint) ProbeLinkChainCacheItem {
+	hops := make([]ProbeLinkChainCacheHopConfig, 0, len(endpoint.HopConfigs))
+	for _, hop := range endpoint.HopConfigs {
+		hops = append(hops, ProbeLinkChainCacheHopConfig{
+			NodeNo:       hop.NodeNo,
+			ListenHost:   strings.TrimSpace(hop.ListenHost),
+			ListenPort:   hop.ListenPort,
+			ExternalPort: hop.ExternalPort,
+			LinkLayer:    strings.TrimSpace(hop.LinkLayer),
+			DialMode:     strings.TrimSpace(hop.DialMode),
+			RelayHost:    strings.TrimSpace(hop.RelayHost),
+		})
+	}
+	portForwards := make([]ProbeLinkChainCachePortForward, 0, len(endpoint.PortForwards))
+	for _, pf := range endpoint.PortForwards {
+		portForwards = append(portForwards, ProbeLinkChainCachePortForward{
+			ID:         strings.TrimSpace(pf.ID),
+			Name:       strings.TrimSpace(pf.Name),
+			EntrySide:  strings.TrimSpace(pf.EntrySide),
+			ListenHost: strings.TrimSpace(pf.ListenHost),
+			ListenPort: pf.ListenPort,
+			TargetHost: strings.TrimSpace(pf.TargetHost),
+			TargetPort: pf.TargetPort,
+			Network:    strings.TrimSpace(pf.Network),
+			Enabled:    pf.Enabled,
+		})
+	}
+	return ProbeLinkChainCacheItem{
+		ChainID:        strings.TrimSpace(endpoint.ChainID),
+		Name:           strings.TrimSpace(endpoint.ChainName),
+		UserID:         strings.TrimSpace(endpoint.UserID),
+		UserPublicKey:  strings.TrimSpace(endpoint.UserPublicKey),
+		Secret:         strings.TrimSpace(endpoint.ChainSecret),
+		EntryNodeID:    strings.TrimSpace(endpoint.EntryNode),
+		ExitNodeID:     strings.TrimSpace(endpoint.ExitNode),
+		CascadeNodeIDs: append([]string(nil), endpoint.CascadeNodeIDs...),
+		ListenHost:     strings.TrimSpace(endpoint.ListenHost),
+		ListenPort:     endpoint.ListenPort,
+		LinkLayer:      strings.TrimSpace(endpoint.LinkLayer),
+		HopConfigs:     hops,
+		PortForwards:   portForwards,
+		EgressHost:     strings.TrimSpace(endpoint.EgressHost),
+		EgressPort:     endpoint.EgressPort,
+		CreatedAt:      strings.TrimSpace(endpoint.CreatedAt),
+		UpdatedAt:      strings.TrimSpace(endpoint.UpdatedAt),
+	}
 }
 
 func (s *networkAssistantService) Status() NetworkAssistantStatus {
@@ -2085,6 +2259,25 @@ func backfillProbeNodeDomainsFromChains(nodes []probeNodeAdminItem, businessDoma
 	return out
 }
 
+func buildProbeChainHopConfigsForManager(chain probeLinkChainAdminItem) []probeChainHopConfig {
+	if len(chain.HopConfigs) == 0 {
+		return nil
+	}
+	out := make([]probeChainHopConfig, 0, len(chain.HopConfigs))
+	for _, item := range chain.HopConfigs {
+		out = append(out, probeChainHopConfig{
+			NodeNo:       item.NodeNo,
+			ListenHost:   strings.TrimSpace(item.ListenHost),
+			ListenPort:   item.ListenPort,
+			ExternalPort: item.ExternalPort,
+			LinkLayer:    normalizeChainLinkLayerValue(item.LinkLayer),
+			DialMode:     strings.TrimSpace(item.DialMode),
+			RelayHost:    strings.TrimSpace(item.RelayHost),
+		})
+	}
+	return out
+}
+
 func buildProbeChainPortForwardsForManager(chain probeLinkChainAdminItem) []probeChainPortForward {
 	if len(chain.PortForwards) == 0 {
 		return nil
@@ -2094,6 +2287,7 @@ func buildProbeChainPortForwardsForManager(chain probeLinkChainAdminItem) []prob
 		out = append(out, probeChainPortForward{
 			ID:         strings.TrimSpace(item.ID),
 			Name:       strings.TrimSpace(item.Name),
+			EntrySide:  strings.TrimSpace(item.EntrySide),
 			ListenHost: strings.TrimSpace(item.ListenHost),
 			ListenPort: item.ListenPort,
 			TargetHost: strings.TrimSpace(item.TargetHost),
@@ -2252,15 +2446,26 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 			continue
 		}
 		targets[targetID] = probeChainEndpoint{
-			TargetID:     targetID,
-			ChainName:    strings.TrimSpace(chain.Name),
-			ChainID:      chainID,
-			EntryNode:    entryNodeID,
-			EntryHost:    entryHost,
-			EntryPort:    entryPort,
-			LinkLayer:    resolveProbeChainEntryLinkLayer(chain, entryNodeID),
-			ChainSecret:  strings.TrimSpace(chain.Secret),
-			PortForwards: buildProbeChainPortForwardsForManager(chain),
+			TargetID:       targetID,
+			ChainName:      strings.TrimSpace(chain.Name),
+			ChainID:        chainID,
+			UserID:         strings.TrimSpace(chain.UserID),
+			UserPublicKey:  strings.TrimSpace(chain.UserPublicKey),
+			EntryNode:      entryNodeID,
+			ExitNode:       normalizeProbeNodeIDValue(chain.ExitNodeID),
+			CascadeNodeIDs: append([]string(nil), chain.CascadeNodeIDs...),
+			ListenHost:     strings.TrimSpace(chain.ListenHost),
+			ListenPort:     chain.ListenPort,
+			EgressHost:     strings.TrimSpace(chain.EgressHost),
+			EgressPort:     chain.EgressPort,
+			CreatedAt:      strings.TrimSpace(chain.CreatedAt),
+			UpdatedAt:      strings.TrimSpace(chain.UpdatedAt),
+			EntryHost:      entryHost,
+			EntryPort:      entryPort,
+			LinkLayer:      resolveProbeChainEntryLinkLayer(chain, entryNodeID),
+			ChainSecret:    strings.TrimSpace(chain.Secret),
+			HopConfigs:     buildProbeChainHopConfigsForManager(chain),
+			PortForwards:   buildProbeChainPortForwardsForManager(chain),
 		}
 	}
 	sort.Strings(ids)

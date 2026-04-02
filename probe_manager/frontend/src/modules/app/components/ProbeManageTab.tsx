@@ -39,11 +39,17 @@ type ProbeManageTabProps = {
 type ProbeSubTab = "list" | "status" | "logs" | "shell";
 type ProbeTargetSystem = "linux" | "windows";
 
+type ProbeNodeCloudflareDDNSRecordItem = {
+  record_class?: string;
+  record_name?: string;
+};
+
 type ProbeNodeItem = {
   node_no: number;
   node_name: string;
   remark?: string;
   ddns?: string;
+  cloudflare_ddns_records?: ProbeNodeCloudflareDDNSRecordItem[];
   node_secret: string;
   target_system: ProbeTargetSystem;
   direct_connect: boolean;
@@ -269,6 +275,11 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         node_no: item.node_no,
         node_name: item.node_name,
         remark: item.remark || "",
+        ddns: item.ddns || "",
+        cloudflare_ddns_records: Array.isArray(item.cloudflare_ddns_records) ? item.cloudflare_ddns_records.map((rec) => ({
+          record_class: rec?.record_class || "",
+          record_name: rec?.record_name || "",
+        })) : [],
         node_secret: item.node_secret || "",
         target_system: item.target_system,
         direct_connect: item.direct_connect,

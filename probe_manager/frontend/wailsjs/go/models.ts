@@ -348,6 +348,118 @@ export namespace backend {
 	        this.updated_at = source["updated_at"];
 	    }
 	}
+	export class ProbeLinkChainCacheHopConfig {
+	    node_no: number;
+	    listen_host?: string;
+	    listen_port?: number;
+	    external_port?: number;
+	    link_layer: string;
+	    dial_mode?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeLinkChainCacheHopConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.node_no = source["node_no"];
+	        this.listen_host = source["listen_host"];
+	        this.listen_port = source["listen_port"];
+	        this.external_port = source["external_port"];
+	        this.link_layer = source["link_layer"];
+	        this.dial_mode = source["dial_mode"];
+	    }
+	}
+	export class ProbeLinkChainCachePortForward {
+	    id?: string;
+	    name?: string;
+	    entry_side?: string;
+	    listen_host?: string;
+	    listen_port: number;
+	    target_host: string;
+	    target_port: number;
+	    network?: string;
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeLinkChainCachePortForward(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.entry_side = source["entry_side"];
+	        this.listen_host = source["listen_host"];
+	        this.listen_port = source["listen_port"];
+	        this.target_host = source["target_host"];
+	        this.target_port = source["target_port"];
+	        this.network = source["network"];
+	        this.enabled = source["enabled"];
+	    }
+	}
+	export class ProbeLinkChainCacheItem {
+	    chain_id: string;
+	    name: string;
+	    user_id: string;
+	    user_public_key: string;
+	    secret: string;
+	    entry_node_id: string;
+	    exit_node_id: string;
+	    cascade_node_ids: string[];
+	    listen_host: string;
+	    listen_port: number;
+	    link_layer?: string;
+	    hop_configs: ProbeLinkChainCacheHopConfig[];
+	    port_forwards: ProbeLinkChainCachePortForward[];
+	    egress_host: string;
+	    egress_port: number;
+	    created_at?: string;
+	    updated_at?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeLinkChainCacheItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.chain_id = source["chain_id"];
+	        this.name = source["name"];
+	        this.user_id = source["user_id"];
+	        this.user_public_key = source["user_public_key"];
+	        this.secret = source["secret"];
+	        this.entry_node_id = source["entry_node_id"];
+	        this.exit_node_id = source["exit_node_id"];
+	        this.cascade_node_ids = source["cascade_node_ids"];
+	        this.listen_host = source["listen_host"];
+	        this.listen_port = source["listen_port"];
+	        this.link_layer = source["link_layer"];
+	        this.hop_configs = this.convertValues(source["hop_configs"], ProbeLinkChainCacheHopConfig);
+	        this.port_forwards = this.convertValues(source["port_forwards"], ProbeLinkChainCachePortForward);
+	        this.egress_host = source["egress_host"];
+	        this.egress_port = source["egress_port"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ProbeLinkConnectResult {
 	    ok: boolean;
 	    node_id: string;

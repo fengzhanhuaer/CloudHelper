@@ -537,6 +537,7 @@ func TestBuildProbeChainPortForwardsForManager(t *testing.T) {
 		PortForwards: []struct {
 			ID         string `json:"id,omitempty"`
 			Name       string `json:"name,omitempty"`
+			EntrySide  string `json:"entry_side,omitempty"`
 			ListenHost string `json:"listen_host"`
 			ListenPort int    `json:"listen_port"`
 			TargetHost string `json:"target_host"`
@@ -547,6 +548,7 @@ func TestBuildProbeChainPortForwardsForManager(t *testing.T) {
 			{
 				ID:         " pf-1 ",
 				Name:       " edge ",
+				EntrySide:  " chain_exit ",
 				ListenHost: " 0.0.0.0 ",
 				ListenPort: 18080,
 				TargetHost: " 10.0.0.8 ",
@@ -595,6 +597,7 @@ func TestBackfillProbeNodeDomainsFromChains(t *testing.T) {
 			ChainID: "chain-a",
 			HopConfigs: []struct {
 				NodeNo       int    `json:"node_no"`
+				ListenHost   string `json:"listen_host,omitempty"`
 				ListenPort   int    `json:"listen_port,omitempty"`
 				ExternalPort int    `json:"external_port,omitempty"`
 				LinkLayer    string `json:"link_layer"`

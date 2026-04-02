@@ -19,20 +19,27 @@ var (
 	probeNodesCache       []ProbeNode
 )
 
+type ProbeNodeCloudflareDDNSRecord struct {
+	RecordClass string `json:"record_class"`
+	RecordName  string `json:"record_name"`
+}
+
 type ProbeNode struct {
-	NodeNo        int    `json:"node_no"`
-	NodeName      string `json:"node_name"`
-	Remark        string `json:"remark"`
-	NodeSecret    string `json:"node_secret"`
-	TargetSystem  string `json:"target_system"`
-	DirectConnect bool   `json:"direct_connect"`
-	PaymentCycle  string `json:"payment_cycle"`
-	Cost          string `json:"cost"`
-	ExpireAt      string `json:"expire_at"`
-	VendorName    string `json:"vendor_name"`
-	VendorURL     string `json:"vendor_url"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	NodeNo                int                              `json:"node_no"`
+	NodeName              string                           `json:"node_name"`
+	Remark                string                           `json:"remark"`
+	DDNS                  string                           `json:"ddns"`
+	CloudflareDDNSRecords []ProbeNodeCloudflareDDNSRecord `json:"cloudflare_ddns_records,omitempty"`
+	NodeSecret            string                           `json:"node_secret"`
+	TargetSystem          string                           `json:"target_system"`
+	DirectConnect         bool                             `json:"direct_connect"`
+	PaymentCycle          string                           `json:"payment_cycle"`
+	Cost                  string                           `json:"cost"`
+	ExpireAt              string                           `json:"expire_at"`
+	VendorName            string                           `json:"vendor_name"`
+	VendorURL             string                           `json:"vendor_url"`
+	CreatedAt             string                           `json:"created_at"`
+	UpdatedAt             string                           `json:"updated_at"`
 }
 
 func (a *App) GetProbeNodes() ([]ProbeNode, error) {
@@ -69,6 +76,7 @@ func (a *App) CreateProbeNode(nodeName string) (ProbeNode, error) {
 		NodeNo:        nextNo,
 		NodeName:      name,
 		Remark:        "",
+		DDNS:          "",
 		NodeSecret:    randomSecret(32),
 		TargetSystem:  "linux",
 		DirectConnect: true,
@@ -303,6 +311,8 @@ func normalizeProbeNodes(nodes []ProbeNode) []ProbeNode {
 		node := item
 		node.NodeName = name
 		node.Remark = strings.TrimSpace(node.Remark)
+		node.DDNS = strings.TrimSpace(node.DDNS)
+		node.CloudflareDDNSRecords = normalizeProbeNodeCloudflareDDNSRecords(node.CloudflareDDNSRecords)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
 		if node.NodeSecret == "" {
 			node.NodeSecret = randomSecret(32)
@@ -341,6 +351,45 @@ func cloneProbeNodes(in []ProbeNode) []ProbeNode {
 		return []ProbeNode{}
 	}
 	out := make([]ProbeNode, len(in))
+	for i := range in {
+		out[i] = in[i]
+		out[i].CloudflareDDNSRecords = cloneProbeNodeCloudflareDDNSRecords(in[i].CloudflareDDNSRecords)
+	}
+	return out
+}
+
+func cloneProbeNodeCloudflareDDNSRecords(in []ProbeNodeCloudflareDDNSRecord) []ProbeNodeCloudflareDDNSRecord {
+	if len(in) == 0 {
+		return []ProbeNodeCloudflareDDNSRecord{}
+	}
+	out := make([]ProbeNodeCloudflareDDNSRecord, len(in))
 	copy(out, in)
+	return out
+}
+
+func normalizeProbeNodeCloudflareDDNSRecords(in []ProbeNodeCloudflareDDNSRecord) []ProbeNodeCloudflareDDNSRecord {
+	if len(in) == 0 {
+		return []ProbeNodeCloudflareDDNSRecord{}
+	}
+	out := make([]ProbeNodeCloudflareDDNSRecord, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, item := range in {
+		next := ProbeNodeCloudflareDDNSRecord{
+			RecordClass: strings.TrimSpace(strings.ToLower(item.RecordClass)),
+			RecordName:  strings.TrimSpace(strings.ToLower(item.RecordName)),
+		}
+		if next.RecordClass == "" {
+			next.RecordClass = "public"
+		}
+		if next.RecordName == "" {
+			continue
+		}
+		key := next.RecordClass + "|" + next.RecordName
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, next)
+	}
 	return out
 }

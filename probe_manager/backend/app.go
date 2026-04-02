@@ -170,3 +170,10 @@ func (a *App) ForceRefreshNetworkAssistantNodes(baseURL, token string) error {
 	}
 	return nil
 }
+
+func (a *App) GetProbeLinkChainsCache() ([]ProbeLinkChainCacheItem, error) {
+	if a.networkAssistant == nil {
+		return nil, errors.New("network assistant not initialized")
+	}
+	return a.networkAssistant.GetProbeLinkChainsCache()
+}

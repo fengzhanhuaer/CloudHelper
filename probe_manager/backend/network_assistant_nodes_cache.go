@@ -23,20 +23,42 @@ type chainCachePayload struct {
 
 // chainCacheEndpoint 是 probeChainEndpoint 的可序列化镜像（字段全部可导出）。
 type chainCacheEndpoint struct {
-	TargetID     string                  `json:"target_id"`
-	ChainName    string                  `json:"chain_name"`
-	ChainID      string                  `json:"chain_id"`
-	EntryNode    string                  `json:"entry_node"`
-	EntryHost    string                  `json:"entry_host"`
-	EntryPort    int                     `json:"entry_port"`
-	LinkLayer    string                  `json:"link_layer"`
-	ChainSecret  string                  `json:"chain_secret"`
-	PortForwards []chainCachePortForward `json:"port_forwards,omitempty"`
+	TargetID       string                `json:"target_id"`
+	ChainName      string                `json:"chain_name"`
+	ChainID        string                `json:"chain_id"`
+	UserID         string                `json:"user_id"`
+	UserPublicKey  string                `json:"user_public_key"`
+	EntryNode      string                `json:"entry_node"`
+	ExitNode       string                `json:"exit_node"`
+	CascadeNodeIDs []string              `json:"cascade_node_ids,omitempty"`
+	ListenHost     string                `json:"listen_host"`
+	ListenPort     int                   `json:"listen_port"`
+	EgressHost     string                `json:"egress_host"`
+	EgressPort     int                   `json:"egress_port"`
+	CreatedAt      string                `json:"created_at"`
+	UpdatedAt      string                `json:"updated_at"`
+	EntryHost      string                `json:"entry_host"`
+	EntryPort      int                   `json:"entry_port"`
+	LinkLayer      string                `json:"link_layer"`
+	ChainSecret    string                `json:"chain_secret"`
+	HopConfigs     []chainCacheHopConfig `json:"hop_configs,omitempty"`
+	PortForwards   []chainCachePortForward `json:"port_forwards,omitempty"`
+}
+
+type chainCacheHopConfig struct {
+	NodeNo       int    `json:"node_no"`
+	ListenHost   string `json:"listen_host,omitempty"`
+	ListenPort   int    `json:"listen_port,omitempty"`
+	ExternalPort int    `json:"external_port,omitempty"`
+	LinkLayer    string `json:"link_layer"`
+	DialMode     string `json:"dial_mode,omitempty"`
+	RelayHost    string `json:"relay_host,omitempty"`
 }
 
 type chainCachePortForward struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	EntrySide  string `json:"entry_side,omitempty"`
 	ListenHost string `json:"listen_host"`
 	ListenPort int    `json:"listen_port"`
 	TargetHost string `json:"target_host"`
@@ -46,11 +68,24 @@ type chainCachePortForward struct {
 }
 
 func toChainCacheEndpoint(e probeChainEndpoint) chainCacheEndpoint {
+	hops := make([]chainCacheHopConfig, len(e.HopConfigs))
+	for i, hop := range e.HopConfigs {
+		hops[i] = chainCacheHopConfig{
+			NodeNo:       hop.NodeNo,
+			ListenHost:   hop.ListenHost,
+			ListenPort:   hop.ListenPort,
+			ExternalPort: hop.ExternalPort,
+			LinkLayer:    hop.LinkLayer,
+			DialMode:     hop.DialMode,
+			RelayHost:    hop.RelayHost,
+		}
+	}
 	pfs := make([]chainCachePortForward, len(e.PortForwards))
 	for i, pf := range e.PortForwards {
 		pfs[i] = chainCachePortForward{
 			ID:         pf.ID,
 			Name:       pf.Name,
+			EntrySide:  pf.EntrySide,
 			ListenHost: pf.ListenHost,
 			ListenPort: pf.ListenPort,
 			TargetHost: pf.TargetHost,
@@ -60,24 +95,48 @@ func toChainCacheEndpoint(e probeChainEndpoint) chainCacheEndpoint {
 		}
 	}
 	return chainCacheEndpoint{
-		TargetID:     e.TargetID,
-		ChainName:    e.ChainName,
-		ChainID:      e.ChainID,
-		EntryNode:    e.EntryNode,
-		EntryHost:    e.EntryHost,
-		EntryPort:    e.EntryPort,
-		LinkLayer:    e.LinkLayer,
-		ChainSecret:  e.ChainSecret,
-		PortForwards: pfs,
+		TargetID:       e.TargetID,
+		ChainName:      e.ChainName,
+		ChainID:        e.ChainID,
+		UserID:         e.UserID,
+		UserPublicKey:  e.UserPublicKey,
+		EntryNode:      e.EntryNode,
+		ExitNode:       e.ExitNode,
+		CascadeNodeIDs: append([]string(nil), e.CascadeNodeIDs...),
+		ListenHost:     e.ListenHost,
+		ListenPort:     e.ListenPort,
+		EgressHost:     e.EgressHost,
+		EgressPort:     e.EgressPort,
+		CreatedAt:      e.CreatedAt,
+		UpdatedAt:      e.UpdatedAt,
+		EntryHost:      e.EntryHost,
+		EntryPort:      e.EntryPort,
+		LinkLayer:      e.LinkLayer,
+		ChainSecret:    e.ChainSecret,
+		HopConfigs:     hops,
+		PortForwards:   pfs,
 	}
 }
 
 func fromChainCacheEndpoint(e chainCacheEndpoint) probeChainEndpoint {
+	hops := make([]probeChainHopConfig, len(e.HopConfigs))
+	for i, hop := range e.HopConfigs {
+		hops[i] = probeChainHopConfig{
+			NodeNo:       hop.NodeNo,
+			ListenHost:   hop.ListenHost,
+			ListenPort:   hop.ListenPort,
+			ExternalPort: hop.ExternalPort,
+			LinkLayer:    hop.LinkLayer,
+			DialMode:     hop.DialMode,
+			RelayHost:    hop.RelayHost,
+		}
+	}
 	pfs := make([]probeChainPortForward, len(e.PortForwards))
 	for i, pf := range e.PortForwards {
 		pfs[i] = probeChainPortForward{
 			ID:         pf.ID,
 			Name:       pf.Name,
+			EntrySide:  pf.EntrySide,
 			ListenHost: pf.ListenHost,
 			ListenPort: pf.ListenPort,
 			TargetHost: pf.TargetHost,
@@ -87,15 +146,26 @@ func fromChainCacheEndpoint(e chainCacheEndpoint) probeChainEndpoint {
 		}
 	}
 	return probeChainEndpoint{
-		TargetID:     e.TargetID,
-		ChainName:    e.ChainName,
-		ChainID:      e.ChainID,
-		EntryNode:    e.EntryNode,
-		EntryHost:    e.EntryHost,
-		EntryPort:    e.EntryPort,
-		LinkLayer:    e.LinkLayer,
-		ChainSecret:  e.ChainSecret,
-		PortForwards: pfs,
+		TargetID:       e.TargetID,
+		ChainName:      e.ChainName,
+		ChainID:        e.ChainID,
+		UserID:         e.UserID,
+		UserPublicKey:  e.UserPublicKey,
+		EntryNode:      e.EntryNode,
+		ExitNode:       e.ExitNode,
+		CascadeNodeIDs: append([]string(nil), e.CascadeNodeIDs...),
+		ListenHost:     e.ListenHost,
+		ListenPort:     e.ListenPort,
+		EgressHost:     e.EgressHost,
+		EgressPort:     e.EgressPort,
+		CreatedAt:      e.CreatedAt,
+		UpdatedAt:      e.UpdatedAt,
+		EntryHost:      e.EntryHost,
+		EntryPort:      e.EntryPort,
+		LinkLayer:      e.LinkLayer,
+		ChainSecret:    e.ChainSecret,
+		HopConfigs:     hops,
+		PortForwards:   pfs,
 	}
 }
 
