@@ -878,11 +878,12 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return nil, fmt.Errorf("invalid payload")
 		}
-		nodes, secrets := normalizeProbeNodes(req.Nodes)
 		ProbeStore.mu.Lock()
-		ProbeStore.data.ProbeNodes = nodes
-		ProbeStore.data.ProbeSecrets = secrets
+		nodes, err := syncProbeNodesLocked(req.Nodes)
 		ProbeStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 		if err := ProbeStore.Save(); err != nil {
 			return nil, err
 		}

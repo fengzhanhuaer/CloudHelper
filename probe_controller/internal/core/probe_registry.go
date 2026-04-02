@@ -157,12 +157,13 @@ func AdminSyncProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodes, secrets := normalizeProbeNodes(req.Nodes)
-
 	ProbeStore.mu.Lock()
-	ProbeStore.data.ProbeNodes = nodes
-	ProbeStore.data.ProbeSecrets = secrets
+	nodes, err := syncProbeNodesLocked(req.Nodes)
 	ProbeStore.mu.Unlock()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 
 	if err := ProbeStore.Save(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist probe nodes"})
@@ -378,12 +379,8 @@ func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
 		}
 	}
 
-	nextNo := 1
-	for _, item := range nodes {
-		if item.NodeNo >= nextNo {
-			nextNo = item.NodeNo + 1
-		}
-	}
+	deletedSet := loadDeletedProbeNodeNosLocked()
+	nextNo := nextProbeNodeNo(nodes, deletedSet)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	node := probeNodeRecord{
@@ -409,6 +406,8 @@ func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
 	normalized, secrets := normalizeProbeNodes(nodes)
 	ProbeStore.data.ProbeNodes = normalized
 	ProbeStore.data.ProbeSecrets = secrets
+	delete(deletedSet, nextNo)
+	saveDeletedProbeNodeNosLocked(deletedSet)
 
 	for _, item := range normalized {
 		if item.NodeNo == nextNo {
@@ -515,6 +514,105 @@ func updateProbeNodeLinkLocked(req probeNodeLinkUpdateRequest) (probeNodeRecord,
 		}
 	}
 	return probeNodeRecord{}, fmt.Errorf("node %d not found after link update", req.NodeNo)
+}
+
+func syncProbeNodesLocked(items []probeNodeRecord) ([]probeNodeRecord, error) {
+	incomingNodes, _ := normalizeProbeNodes(items)
+	existingNodes := loadProbeNodesLocked()
+	existingByNo := make(map[int]probeNodeRecord, len(existingNodes))
+	for _, node := range existingNodes {
+		if node.NodeNo > 0 {
+			existingByNo[node.NodeNo] = node
+		}
+	}
+
+	for _, node := range incomingNodes {
+		if node.NodeNo <= 0 {
+			continue
+		}
+		if _, ok := existingByNo[node.NodeNo]; !ok {
+			return nil, fmt.Errorf("node_no %d is not assigned by controller; use create action", node.NodeNo)
+		}
+	}
+
+	nodes := make([]probeNodeRecord, 0, len(incomingNodes))
+	for _, node := range incomingNodes {
+		existing := existingByNo[node.NodeNo]
+		if strings.TrimSpace(node.CreatedAt) == "" {
+			node.CreatedAt = strings.TrimSpace(existing.CreatedAt)
+		}
+		if strings.TrimSpace(node.NodeSecret) == "" {
+			node.NodeSecret = strings.TrimSpace(existing.NodeSecret)
+		}
+		if strings.TrimSpace(node.UpdatedAt) == "" {
+			node.UpdatedAt = strings.TrimSpace(existing.UpdatedAt)
+		}
+		nodes = append(nodes, node)
+	}
+	if len(nodes) == 0 {
+		nodes = []probeNodeRecord{}
+	}
+	finalNodes, secrets := normalizeProbeNodes(nodes)
+
+	deletedSet := loadDeletedProbeNodeNosLocked()
+	incomingSet := make(map[int]struct{}, len(finalNodes))
+	for _, node := range finalNodes {
+		if node.NodeNo > 0 {
+			incomingSet[node.NodeNo] = struct{}{}
+		}
+	}
+	for _, oldNode := range existingNodes {
+		if oldNode.NodeNo <= 0 {
+			continue
+		}
+		if _, ok := incomingSet[oldNode.NodeNo]; !ok {
+			deletedSet[oldNode.NodeNo] = struct{}{}
+		}
+	}
+	for no := range incomingSet {
+		delete(deletedSet, no)
+	}
+
+	ProbeStore.data.ProbeNodes = finalNodes
+	ProbeStore.data.ProbeSecrets = secrets
+	saveDeletedProbeNodeNosLocked(deletedSet)
+	return finalNodes, nil
+}
+
+func loadDeletedProbeNodeNosLocked() map[int]struct{} {
+	set := make(map[int]struct{})
+	for _, no := range ProbeStore.data.DeletedProbeNodeNos {
+		if no > 0 {
+			set[no] = struct{}{}
+		}
+	}
+	return set
+}
+
+func saveDeletedProbeNodeNosLocked(set map[int]struct{}) {
+	nos := make([]int, 0, len(set))
+	for no := range set {
+		if no > 0 {
+			nos = append(nos, no)
+		}
+	}
+	sort.Ints(nos)
+	ProbeStore.data.DeletedProbeNodeNos = nos
+}
+
+func nextProbeNodeNo(nodes []probeNodeRecord, deletedSet map[int]struct{}) int {
+	nextNo := 1
+	for _, item := range nodes {
+		if item.NodeNo >= nextNo {
+			nextNo = item.NodeNo + 1
+		}
+	}
+	for no := range deletedSet {
+		if no >= nextNo {
+			nextNo = no + 1
+		}
+	}
+	return nextNo
 }
 
 func normalizeProbeEndpointScheme(raw string) string {

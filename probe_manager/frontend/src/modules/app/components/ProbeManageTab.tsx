@@ -37,6 +37,8 @@ type ProbeManageTabProps = {
 type ProbeSubTab = "list" | "status" | "logs" | "shell";
 type ProbeTargetSystem = "linux" | "windows";
 
+const probeNodesCacheStorageKey = "cloudhelper_probe_nodes_cache_v1";
+
 type ProbeNodeItem = {
   node_no: number;
   node_name: string;
@@ -139,7 +141,13 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   }, [controllerAddress, props.controllerBaseUrl]);
 
   useEffect(() => {
-    void loadNodes();
+    const cachedNodes = readProbeNodesCache();
+    if (cachedNodes.length > 0) {
+      setNodes(cachedNodes);
+      setStatus(`已加载本地缓存探针（${cachedNodes.length} 个）`);
+    } else {
+      setStatus("本地无探针缓存，请手动刷新主控列表");
+    }
   }, []);
 
   useEffect(() => {
@@ -163,11 +171,11 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     if (subTab !== "logs") {
       return;
     }
-    if (nodes.length > 0 || isLoading) {
+    if (nodes.length > 0) {
       return;
     }
-    void loadNodes();
-  }, [isLoading, nodes.length, subTab]);
+    setStatus("当前无本地探针缓存，请先在列表页点击“刷新列表”从主控拉取");
+  }, [nodes.length, subTab]);
 
   useEffect(() => {
     if (subTab !== "logs") {
@@ -224,11 +232,11 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     if (subTab !== "shell") {
       return;
     }
-    if (nodes.length > 0 || isLoading) {
+    if (nodes.length > 0) {
       return;
     }
-    void loadNodes();
-  }, [isLoading, nodes.length, subTab]);
+    setStatus("当前无本地探针缓存，请先在列表页点击“刷新列表”从主控拉取");
+  }, [nodes.length, subTab]);
 
   useEffect(() => {
     if (subTab !== "shell") {
@@ -237,30 +245,46 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     void loadShellShortcuts({ silent: true });
   }, [subTab]);
 
-  async function loadNodes() {
-    setIsLoading(true);
+  async function loadNodes(options?: { silent?: boolean; includeStatus?: boolean }) {
+    const silent = options?.silent === true;
+    const includeStatus = options?.includeStatus === true;
+    if (!silent) {
+      setIsLoading(true);
+    }
     try {
       const [remoteNodes, deletedNos] = await Promise.all([
         fetchProbeNodesFromController(controllerAddress, props.sessionToken),
         GetDeletedProbeNodeNos().catch(() => [] as number[]),
       ]);
       setDeletedNodeNos(new Set(deletedNos ?? []));
-      let mergedNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
-      try {
-        const items = await fetchProbeStatusFromController(controllerAddress, props.sessionToken);
-        const sortedItems = sortStatusItems(items);
-        setNodeStatusItems(sortedItems);
-        mergedNodes = mergeNodesWithStatus(remoteNodes as ProbeNodeItem[], sortedItems);
-      } catch {
-        // ignore status refresh failure and keep list available
+      const baseNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
+      writeProbeNodesCache(baseNodes);
+
+      let mergedNodes = baseNodes;
+      if (includeStatus) {
+        try {
+          const items = await fetchProbeStatusFromController(controllerAddress, props.sessionToken);
+          const sortedItems = sortStatusItems(items);
+          setNodeStatusItems(sortedItems);
+          mergedNodes = mergeNodesWithStatus(baseNodes, sortedItems);
+        } catch {
+          // ignore status refresh failure and keep list available
+        }
       }
+
       setNodes(mergedNodes);
-      setStatus(remoteNodes.length ? "已从主控同步探针列表" : "主控暂无探针，请先创建");
+      if (!silent) {
+        setStatus(remoteNodes.length ? "已从主控同步探针列表" : "主控暂无探针，请先创建");
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      setStatus(`加载探针列表失败：${msg}`);
+      if (!silent) {
+        setStatus(`加载探针列表失败：${msg}`);
+      }
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   }
 
@@ -347,7 +371,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     setIsLoading(true);
     try {
       const created = await createProbeNodeFromController(controllerAddress, props.sessionToken, cleanName);
-      await loadNodes();
+      await loadNodes({ includeStatus: false });
       setNodeNameInput("");
       setShowCreateModal(false);
       setSubTab("list");
@@ -400,9 +424,8 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         vendor_name: nextVendorName,
         vendor_url: nextVendorURL,
       });
-      setNodes((prev) => sortNodes(prev.map((node) => (node.node_no === nodeNo ? { ...node, ...updated } : node))));
+      await loadNodes({ includeStatus: false });
       setStatus(`节点已更新：${updated.node_name}`);
-      void loadNodeStatus();
       return true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -437,7 +460,18 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     if (!settingsDraft) {
       return;
     }
-    const ok = await updateNode(settingsDraft.node_no, settingsDraft);
+    const ok = await updateNode(settingsDraft.node_no, {
+      node_name: settingsDraft.node_name,
+      remark: settingsDraft.remark,
+      ddns: settingsDraft.ddns,
+      target_system: settingsDraft.target_system,
+      direct_connect: settingsDraft.direct_connect,
+      payment_cycle: settingsDraft.payment_cycle,
+      cost: settingsDraft.cost,
+      expire_at: settingsDraft.expire_at,
+      vendor_name: settingsDraft.vendor_name,
+      vendor_url: settingsDraft.vendor_url,
+    });
     if (ok) {
       setSettingsDraft(null);
     }
@@ -907,7 +941,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               disabled={isLoading}
             />
             <div className="content-actions">
-              <button className="btn" onClick={() => void loadNodes()} disabled={isLoading}>刷新列表</button>
+              <button className="btn" onClick={() => void loadNodes({ includeStatus: false })} disabled={isLoading}>刷新列表</button>
               <button className="btn" onClick={() => setShowCreateModal(true)} disabled={isLoading}>新建探针</button>
               <button className="btn" onClick={() => void upgradeAll()} disabled={isLoading || isUpgradingAll || nodes.length === 0}>一键升级（全部探针）</button>
             </div>
@@ -1416,6 +1450,72 @@ function formatUpgradeMessageTime(raw: string | undefined): string {
 
 function sortNodes(nodes: ProbeNodeItem[]): ProbeNodeItem[] {
   return [...nodes].sort((a, b) => a.node_no - b.node_no);
+}
+
+function readProbeNodesCache(): ProbeNodeItem[] {
+  try {
+    const raw = window.localStorage.getItem(probeNodesCacheStorageKey);
+    if (!raw) {
+      return [];
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return sortNodes(parsed.map((item) => normalizeProbeNodeFromCache(item)).filter((item): item is ProbeNodeItem => item !== null));
+  } catch {
+    return [];
+  }
+}
+
+function writeProbeNodesCache(items: ProbeNodeItem[]): void {
+  try {
+    const out = sortNodes(items).map((item) => ({
+      node_no: item.node_no,
+      node_name: item.node_name,
+      remark: item.remark || "",
+      ddns: item.ddns || "",
+      node_secret: item.node_secret || "",
+      target_system: item.target_system,
+      direct_connect: item.direct_connect,
+      payment_cycle: item.payment_cycle || "",
+      cost: item.cost || "",
+      expire_at: item.expire_at || "",
+      vendor_name: item.vendor_name || "",
+      vendor_url: item.vendor_url || "",
+      created_at: item.created_at || "",
+      updated_at: item.updated_at || "",
+    }));
+    window.localStorage.setItem(probeNodesCacheStorageKey, JSON.stringify(out));
+  } catch {
+    // ignore local cache write failure
+  }
+}
+
+function normalizeProbeNodeFromCache(raw: unknown): ProbeNodeItem | null {
+  const item = (raw && typeof raw === "object") ? raw as Partial<ProbeNodeItem> : null;
+  const nodeNo = typeof item?.node_no === "number" ? Math.trunc(item.node_no) : 0;
+  const nodeName = typeof item?.node_name === "string" ? item.node_name.trim() : "";
+  if (nodeNo <= 0 || !nodeName) {
+    return null;
+  }
+  const targetSystem = item?.target_system === "windows" ? "windows" : "linux";
+  return {
+    node_no: nodeNo,
+    node_name: nodeName,
+    remark: typeof item?.remark === "string" ? item.remark : "",
+    ddns: typeof item?.ddns === "string" ? item.ddns : "",
+    node_secret: typeof item?.node_secret === "string" ? item.node_secret : "",
+    target_system: targetSystem,
+    direct_connect: item?.direct_connect !== false,
+    payment_cycle: typeof item?.payment_cycle === "string" ? item.payment_cycle : "",
+    cost: typeof item?.cost === "string" ? item.cost : "",
+    expire_at: typeof item?.expire_at === "string" ? item.expire_at : "",
+    vendor_name: typeof item?.vendor_name === "string" ? item.vendor_name : "",
+    vendor_url: typeof item?.vendor_url === "string" ? item.vendor_url : "",
+    created_at: typeof item?.created_at === "string" ? item.created_at : "",
+    updated_at: typeof item?.updated_at === "string" ? item.updated_at : "",
+  };
 }
 
 function sortStatusItems(items: ProbeNodeStatusItem[]): ProbeNodeStatusItem[] {

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -19,6 +20,7 @@ type probeConfigData struct {
 	ProbeNodes          []probeNodeRecord          `json:"probe_nodes"`
 	ProbeSecrets        map[string]string          `json:"probe_secrets"`
 	ProbeShellShortcuts []probeShellShortcutRecord `json:"probe_shell_shortcuts"`
+	DeletedProbeNodeNos []int                      `json:"deleted_probe_node_nos,omitempty"`
 }
 
 var ProbeStore *probeConfigStore
@@ -31,6 +33,7 @@ func initProbeStore() {
 			ProbeNodes:          []probeNodeRecord{},
 			ProbeSecrets:        map[string]string{},
 			ProbeShellShortcuts: []probeShellShortcutRecord{},
+			DeletedProbeNodeNos: []int{},
 		},
 	}
 
@@ -44,16 +47,18 @@ func initProbeStore() {
 			if unmarshalErr := json.Unmarshal(content, &raw); unmarshalErr != nil {
 				log.Fatalf("failed to parse probe config file: %v", unmarshalErr)
 			}
-			nodes, secrets, shortcuts := normalizeProbeConfig(raw.ProbeNodes, raw.ProbeSecrets, raw.ProbeShellShortcuts)
+			nodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(raw.ProbeNodes, raw.ProbeSecrets, raw.ProbeShellShortcuts, raw.DeletedProbeNodeNos)
 			ProbeStore.data.ProbeNodes = nodes
 			ProbeStore.data.ProbeSecrets = secrets
 			ProbeStore.data.ProbeShellShortcuts = shortcuts
+			ProbeStore.data.DeletedProbeNodeNos = deletedNos
 		}
 	} else if os.IsNotExist(err) {
-		nodes, secrets, shortcuts := normalizeProbeConfig(loadLegacyProbeNodesFromMainStore(), loadLegacyProbeSecretsFromMainStore(), nil)
+		nodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(loadLegacyProbeNodesFromMainStore(), loadLegacyProbeSecretsFromMainStore(), nil, nil)
 		ProbeStore.data.ProbeNodes = nodes
 		ProbeStore.data.ProbeSecrets = secrets
 		ProbeStore.data.ProbeShellShortcuts = shortcuts
+		ProbeStore.data.DeletedProbeNodeNos = deletedNos
 		if saveErr := ProbeStore.Save(); saveErr != nil {
 			log.Fatalf("failed to initialize probe config file: %v", saveErr)
 		}
@@ -79,7 +84,7 @@ func (s *probeConfigStore) Save() error {
 	return nil
 }
 
-func normalizeProbeConfig(nodes []probeNodeRecord, secrets map[string]string, shortcuts []probeShellShortcutRecord) ([]probeNodeRecord, map[string]string, []probeShellShortcutRecord) {
+func normalizeProbeConfig(nodes []probeNodeRecord, secrets map[string]string, shortcuts []probeShellShortcutRecord, deletedNos []int) ([]probeNodeRecord, map[string]string, []probeShellShortcutRecord, []int) {
 	normalizedNodes, secretsFromNodes := normalizeProbeNodes(nodes)
 	normalizedSecrets := make(map[string]string)
 	for nodeID, secret := range secretsFromNodes {
@@ -93,7 +98,28 @@ func normalizeProbeConfig(nodes []probeNodeRecord, secrets map[string]string, sh
 		}
 	}
 	normalizedShortcuts := normalizeProbeShellShortcuts(shortcuts)
-	return normalizedNodes, normalizedSecrets, normalizedShortcuts
+	normalizedDeletedNos := normalizeDeletedProbeNodeNos(deletedNos)
+	return normalizedNodes, normalizedSecrets, normalizedShortcuts, normalizedDeletedNos
+}
+
+func normalizeDeletedProbeNodeNos(items []int) []int {
+	if len(items) == 0 {
+		return []int{}
+	}
+	seen := make(map[int]struct{}, len(items))
+	out := make([]int, 0, len(items))
+	for _, no := range items {
+		if no <= 0 {
+			continue
+		}
+		if _, ok := seen[no]; ok {
+			continue
+		}
+		seen[no] = struct{}{}
+		out = append(out, no)
+	}
+	sort.Ints(out)
+	return out
 }
 
 func loadLegacyProbeNodesFromMainStore() []probeNodeRecord {
