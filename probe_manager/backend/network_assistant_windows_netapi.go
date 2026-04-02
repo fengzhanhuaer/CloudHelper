@@ -52,6 +52,12 @@ var (
 	procGetBestRouteNet                     = modIphlpapiNet.NewProc("GetBestRoute")
 	procCreateUnicastIpAddressEntryNet      = modIphlpapiNet.NewProc("CreateUnicastIpAddressEntry")
 	procInitializeUnicastIpAddressEntryNet  = modIphlpapiNet.NewProc("InitializeUnicastIpAddressEntry")
+	procInitializeIpForwardEntryNet         = modIphlpapiNet.NewProc("InitializeIpForwardEntry")
+	procCreateIpForwardEntry2Net            = modIphlpapiNet.NewProc("CreateIpForwardEntry2")
+	procDeleteIpForwardEntry2Net            = modIphlpapiNet.NewProc("DeleteIpForwardEntry2")
+	procGetIpForwardTable2Net               = modIphlpapiNet.NewProc("GetIpForwardTable2")
+	procFreeMibTableNet                     = modIphlpapiNet.NewProc("FreeMibTable")
+	procConvertInterfaceIndexToLuidNet      = modIphlpapiNet.NewProc("ConvertInterfaceIndexToLuid")
 )
 
 func windowsListAdaptersIPv4() ([]windowsAdapterInfo, error) {
@@ -199,6 +205,36 @@ type mibUnicastIPAddressRow struct {
 	CreationTimeStamp  int64
 }
 
+type windowsIPAddressPrefix struct {
+	Prefix       [28]byte
+	PrefixLength uint8
+	_pad         [3]byte
+}
+
+type mibIPForwardRow2 struct {
+	InterfaceLUID        uint64
+	InterfaceIndex       uint32
+	DestinationPrefix    windowsIPAddressPrefix
+	NextHop              [28]byte
+	SitePrefixLength     uint8
+	_pad0                [3]byte
+	ValidLifetime        uint32
+	PreferredLifetime    uint32
+	Metric               uint32
+	Protocol             uint32
+	Loopback             uint8
+	AutoconfigureAddress uint8
+	Publish              uint8
+	Immortal             uint8
+	Age                  uint32
+	Origin               uint32
+}
+
+type mibIPForwardTable2 struct {
+	NumEntries uint32
+	Table      [1]mibIPForwardRow2
+}
+
 func windowsEnsureInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid interface index")
@@ -282,67 +318,74 @@ func windowsEnsureIPv4Route(prefix string, interfaceIndex int, nextHop string, m
 	if cleanHop == "" {
 		return errors.New("empty route next hop")
 	}
-	dest, mask, err := parseIPv4CIDRToDestMask(cleanPrefix)
-	if err != nil {
-		return err
+	_, network, err := net.ParseCIDR(cleanPrefix)
+	if err != nil || network == nil {
+		return fmt.Errorf("invalid ipv4 cidr prefix: %s", cleanPrefix)
 	}
-	hop, ok := ipv4ToUint32(net.ParseIP(cleanHop).To4())
-	if !ok {
+	destIP := network.IP.To4()
+	if destIP == nil {
+		return fmt.Errorf("invalid ipv4 cidr prefix: %s", cleanPrefix)
+	}
+	hopIP := net.ParseIP(cleanHop).To4()
+	if hopIP == nil {
 		return errors.New("invalid route next hop")
 	}
-	if err := windowsDeleteIPv4Routes(dest, mask, uint32(interfaceIndex), &hop); err != nil {
+	if err := windowsDeleteIPv4Routes2(cleanPrefix, uint32(interfaceIndex), hopIP); err != nil {
 		return err
 	}
-	// Windows CreateIpForwardEntry rule:
-	//   ForwardNextHop == 0.0.0.0 (on-link) → ForwardType must be DIRECT (3)
-	//   ForwardNextHop is a real gateway    → ForwardType must be INDIRECT (4)
-	routeType := uint32(windowsRouteTypeIndirect)
-	if hop == 0 {
-		routeType = windowsRouteTypeDirect
+	if err := windowsDeleteIPv4RoutesLegacy(cleanPrefix, uint32(interfaceIndex), hopIP); err != nil {
+		return err
 	}
-	row := mibIPForwardRow{
-		ForwardDest:    dest,
-		ForwardMask:    mask,
-		ForwardNextHop: hop,
-		ForwardIfIndex: uint32(interfaceIndex),
-		ForwardType:    routeType,
-		ForwardProto:   windowsRouteProtoNetMgmt,
-		ForwardMetric1: metric,
+
+	var row mibIPForwardRow2
+	procInitializeIpForwardEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	row.InterfaceIndex = uint32(interfaceIndex)
+	if luid, err := windowsConvertInterfaceIndexToLuid(row.InterfaceIndex); err == nil {
+		row.InterfaceLUID = luid
 	}
-	destText := uint32ToIPv4(dest)
-	maskText := uint32ToIPv4(mask)
-	hopText := uint32ToIPv4(hop)
-	ret, _, callErr := procCreateIpForwardEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	setWindowsRawSockaddrInetIPv4(&row.DestinationPrefix.Prefix, destIP)
+	ones, _ := network.Mask.Size()
+	row.DestinationPrefix.PrefixLength = uint8(ones)
+	setWindowsRawSockaddrInetIPv4(&row.NextHop, hopIP)
+	row.Metric = metric
+
+	destText := destIP.String()
+	ret, _, callErr := procCreateIpForwardEntry2Net.Call(uintptr(unsafe.Pointer(&row)))
 	if ret != 0 {
 		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
-			return fmt.Errorf(
-				"CreateIpForwardEntry failed: prefix=%s if=%d next_hop=%s dest=%s mask=%s row_next_hop=%s route_type=%d metric=%d ret=%d err=%w",
-				cleanPrefix,
-				interfaceIndex,
-				cleanHop,
-				destText,
-				maskText,
-				hopText,
-				routeType,
-				metric,
-				ret,
-				callErr,
-			)
+			return fmt.Errorf("CreateIpForwardEntry2 failed: prefix=%s if=%d next_hop=%s dest=%s metric=%d ret=%d err=%w", cleanPrefix, interfaceIndex, cleanHop, destText, metric, ret, callErr)
 		}
-		return fmt.Errorf(
-			"CreateIpForwardEntry failed: prefix=%s if=%d next_hop=%s dest=%s mask=%s row_next_hop=%s route_type=%d metric=%d code=%d",
-			cleanPrefix,
-			interfaceIndex,
-			cleanHop,
-			destText,
-			maskText,
-			hopText,
-			routeType,
-			metric,
-			ret,
-		)
+		return fmt.Errorf("CreateIpForwardEntry2 failed: prefix=%s if=%d next_hop=%s dest=%s metric=%d code=%d", cleanPrefix, interfaceIndex, cleanHop, destText, metric, ret)
 	}
 	return nil
+}
+
+func windowsConvertInterfaceIndexToLuid(interfaceIndex uint32) (uint64, error) {
+	var luid uint64
+	ret, _, callErr := procConvertInterfaceIndexToLuidNet.Call(uintptr(interfaceIndex), uintptr(unsafe.Pointer(&luid)))
+	if ret != 0 {
+		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+			return 0, callErr
+		}
+		return 0, syscall.Errno(ret)
+	}
+	return luid, nil
+}
+
+func setWindowsRawSockaddrInetIPv4(target *[28]byte, ip4 net.IP) {
+	for i := range target {
+		target[i] = 0
+	}
+	target[0] = byte(windows.AF_INET)
+	target[1] = byte(windows.AF_INET >> 8)
+	copy(target[4:8], ip4.To4())
+}
+
+func windowsRawSockaddrInetIPv4(addr [28]byte) net.IP {
+	if uint16(addr[0])|uint16(addr[1])<<8 != windows.AF_INET {
+		return nil
+	}
+	return net.IPv4(addr[4], addr[5], addr[6], addr[7]).To4()
 }
 
 func windowsDeleteIPv4Route(prefix string, interfaceIndex int, nextHop string, strictNextHop bool) error {
@@ -365,16 +408,86 @@ func windowsDeleteIPv4Route(prefix string, interfaceIndex int, nextHop string, s
 }
 
 func windowsDeleteIPv4Routes(dest, mask uint32, ifIndex uint32, nextHop *uint32) error {
+	prefix := net.IPv4(byte(dest>>24), byte(dest>>16), byte(dest>>8), byte(dest)).String()
+	maskIP := net.IPv4(byte(mask>>24), byte(mask>>16), byte(mask>>8), byte(mask))
+	ones, _ := net.IPMask(maskIP.To4()).Size()
+	cidr := fmt.Sprintf("%s/%d", prefix, ones)
+	var hopIP net.IP
+	if nextHop != nil {
+		hopIP = net.IPv4(byte(*nextHop>>24), byte(*nextHop>>16), byte(*nextHop>>8), byte(*nextHop)).To4()
+	}
+	if err := windowsDeleteIPv4Routes2(cidr, ifIndex, hopIP); err != nil {
+		return err
+	}
+	return windowsDeleteIPv4RoutesLegacy(cidr, ifIndex, hopIP)
+}
+
+func windowsDeleteIPv4Routes2(prefix string, ifIndex uint32, hopIP net.IP) error {
+	rows, err := windowsListIPForwardRows2()
+	if err != nil {
+		return err
+	}
+	_, network, parseErr := net.ParseCIDR(strings.TrimSpace(prefix))
+	if parseErr != nil || network == nil {
+		return parseErr
+	}
+	ones, _ := network.Mask.Size()
+	dest := network.IP.To4()
+	if dest == nil {
+		return nil
+	}
+
+	var allErr error
+	for _, row := range rows {
+		if row.InterfaceIndex != ifIndex {
+			continue
+		}
+		rowDest := windowsRawSockaddrInetIPv4(row.DestinationPrefix.Prefix)
+		if rowDest == nil || !rowDest.Equal(dest) {
+			continue
+		}
+		if int(row.DestinationPrefix.PrefixLength) != ones {
+			continue
+		}
+		if hopIP != nil {
+			rowHop := windowsRawSockaddrInetIPv4(row.NextHop)
+			if rowHop == nil || !rowHop.Equal(hopIP.To4()) {
+				continue
+			}
+		}
+		ret, _, callErr := procDeleteIpForwardEntry2Net.Call(uintptr(unsafe.Pointer(&row)))
+		if ret != 0 {
+			if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+				allErr = errors.Join(allErr, fmt.Errorf("DeleteIpForwardEntry2 failed: %w", callErr))
+			} else {
+				allErr = errors.Join(allErr, fmt.Errorf("DeleteIpForwardEntry2 failed: code=%d", ret))
+			}
+		}
+	}
+	return allErr
+}
+
+func windowsDeleteIPv4RoutesLegacy(prefix string, ifIndex uint32, hopIP net.IP) error {
+	dest, mask, err := parseIPv4CIDRToDestMask(prefix)
+	if err != nil {
+		return err
+	}
 	rows, err := windowsListIPForwardRows()
 	if err != nil {
 		return err
+	}
+	var hopUint *uint32
+	if hopIP != nil {
+		if value, ok := ipv4ToUint32(hopIP.To4()); ok {
+			hopUint = &value
+		}
 	}
 	var allErr error
 	for _, row := range rows {
 		if row.ForwardIfIndex != ifIndex || row.ForwardDest != dest || row.ForwardMask != mask {
 			continue
 		}
-		if nextHop != nil && row.ForwardNextHop != *nextHop {
+		if hopUint != nil && row.ForwardNextHop != *hopUint {
 			continue
 		}
 		ret, _, callErr := procDeleteIpForwardEntryNet.Call(uintptr(unsafe.Pointer(&row)))
@@ -387,6 +500,34 @@ func windowsDeleteIPv4Routes(dest, mask uint32, ifIndex uint32, nextHop *uint32)
 		}
 	}
 	return allErr
+}
+
+func windowsListIPForwardRows2() ([]mibIPForwardRow2, error) {
+	var tablePtr uintptr
+	ret, _, callErr := procGetIpForwardTable2Net.Call(uintptr(windows.AF_INET), uintptr(unsafe.Pointer(&tablePtr)))
+	if ret != 0 {
+		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+			return nil, fmt.Errorf("GetIpForwardTable2 failed: %w", callErr)
+		}
+		return nil, fmt.Errorf("GetIpForwardTable2 failed: code=%d", ret)
+	}
+	if tablePtr == 0 {
+		return []mibIPForwardRow2{}, nil
+	}
+	defer procFreeMibTableNet.Call(tablePtr)
+	tbl := (*mibIPForwardTable2)(unsafe.Pointer(tablePtr))
+	count := int(tbl.NumEntries)
+	if count <= 0 {
+		return []mibIPForwardRow2{}, nil
+	}
+	rows := make([]mibIPForwardRow2, 0, count)
+	rowSize := unsafe.Sizeof(mibIPForwardRow2{})
+	base := unsafe.Pointer(&tbl.Table[0])
+	for idx := 0; idx < count; idx++ {
+		row := *(*mibIPForwardRow2)(unsafe.Add(base, uintptr(idx)*rowSize))
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 func windowsListIPForwardRows() ([]mibIPForwardRow, error) {
