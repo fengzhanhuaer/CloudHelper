@@ -7,10 +7,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 const probeNodesStoreFile = "probe_nodes.json"
+
+var (
+	probeNodesCacheMu     sync.RWMutex
+	probeNodesCacheLoaded bool
+	probeNodesCache       []ProbeNode
+)
 
 type ProbeNode struct {
 	NodeNo        int    `json:"node_no"`
@@ -181,22 +188,39 @@ func (a *App) ReplaceProbeNodes(nodes []ProbeNode) ([]ProbeNode, error) {
 }
 
 func loadProbeNodes() ([]ProbeNode, string, error) {
-	dataDir, err := ensureManagerDataDir()
+	storePath, err := probeNodesStorePath()
 	if err != nil {
 		return nil, "", err
 	}
-	storePath := filepath.Join(dataDir, probeNodesStoreFile)
 
-	raw, err := os.ReadFile(storePath)
-	if err != nil {
-		if os.IsNotExist(err) {
+	probeNodesCacheMu.RLock()
+	if probeNodesCacheLoaded {
+		out := cloneProbeNodes(probeNodesCache)
+		probeNodesCacheMu.RUnlock()
+		return out, storePath, nil
+	}
+	probeNodesCacheMu.RUnlock()
+
+	probeNodesCacheMu.Lock()
+	defer probeNodesCacheMu.Unlock()
+	if probeNodesCacheLoaded {
+		return cloneProbeNodes(probeNodesCache), storePath, nil
+	}
+
+	raw, readErr := os.ReadFile(storePath)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			probeNodesCache = []ProbeNode{}
+			probeNodesCacheLoaded = true
 			return []ProbeNode{}, storePath, nil
 		}
-		return nil, storePath, err
+		return nil, storePath, readErr
 	}
 
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
+		probeNodesCache = []ProbeNode{}
+		probeNodesCacheLoaded = true
 		return []ProbeNode{}, storePath, nil
 	}
 
@@ -205,11 +229,14 @@ func loadProbeNodes() ([]ProbeNode, string, error) {
 		return nil, storePath, fmt.Errorf("failed to parse probe nodes: %w", err)
 	}
 
-	return normalizeProbeNodes(nodes), storePath, nil
+	probeNodesCache = normalizeProbeNodes(nodes)
+	probeNodesCacheLoaded = true
+	return cloneProbeNodes(probeNodesCache), storePath, nil
 }
 
 func writeProbeNodes(storePath string, nodes []ProbeNode) error {
-	raw, err := json.MarshalIndent(nodes, "", "  ")
+	normalized := normalizeProbeNodes(nodes)
+	raw, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -220,6 +247,11 @@ func writeProbeNodes(storePath string, nodes []ProbeNode) error {
 	if err := autoBackupManagerData(); err != nil {
 		return err
 	}
+
+	probeNodesCacheMu.Lock()
+	probeNodesCache = cloneProbeNodes(normalized)
+	probeNodesCacheLoaded = true
+	probeNodesCacheMu.Unlock()
 	return nil
 }
 
@@ -293,5 +325,22 @@ func normalizeProbeNodes(nodes []ProbeNode) []ProbeNode {
 		out = append(out, node)
 	}
 
+	return out
+}
+
+func probeNodesStorePath() (string, error) {
+	dataDir, err := ensureManagerDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, probeNodesStoreFile), nil
+}
+
+func cloneProbeNodes(in []ProbeNode) []ProbeNode {
+	if len(in) == 0 {
+		return []ProbeNode{}
+	}
+	out := make([]ProbeNode, len(in))
+	copy(out, in)
 	return out
 }

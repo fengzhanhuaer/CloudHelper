@@ -1,7 +1,9 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   GetDeletedProbeNodeNos,
+  GetProbeNodes,
   MarkProbeNodeDeleted,
+  ReplaceProbeNodes,
   RestoreDeletedProbeNode,
 } from "../../../../wailsjs/go/main/App";
 import {
@@ -36,8 +38,6 @@ type ProbeManageTabProps = {
 
 type ProbeSubTab = "list" | "status" | "logs" | "shell";
 type ProbeTargetSystem = "linux" | "windows";
-
-const probeNodesCacheStorageKey = "cloudhelper_probe_nodes_cache_v1";
 
 type ProbeNodeItem = {
   node_no: number;
@@ -141,13 +141,20 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   }, [controllerAddress, props.controllerBaseUrl]);
 
   useEffect(() => {
-    const cachedNodes = readProbeNodesCache();
-    if (cachedNodes.length > 0) {
-      setNodes(cachedNodes);
-      setStatus(`已加载本地缓存探针（${cachedNodes.length} 个）`);
-    } else {
-      setStatus("本地无探针缓存，请手动刷新主控列表");
-    }
+    void (async () => {
+      try {
+        const persisted = await GetProbeNodes();
+        const baseNodes = sortNodes((persisted as unknown as ProbeNodeItem[]) || []);
+        setNodes(baseNodes);
+        if (baseNodes.length > 0) {
+          setStatus(`已加载本地探针数据（${baseNodes.length} 个）`);
+        } else {
+          setStatus("本地无探针数据，请手动刷新主控列表");
+        }
+      } catch {
+        setStatus("读取本地探针数据失败，请手动刷新主控列表");
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -174,7 +181,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     if (nodes.length > 0) {
       return;
     }
-    setStatus("当前无本地探针缓存，请先在列表页点击“刷新列表”从主控拉取");
+    setStatus("当前无本地探针数据，请先在列表页点击“刷新列表”从主控拉取");
   }, [nodes.length, subTab]);
 
   useEffect(() => {
@@ -235,7 +242,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     if (nodes.length > 0) {
       return;
     }
-    setStatus("当前无本地探针缓存，请先在列表页点击“刷新列表”从主控拉取");
+    setStatus("当前无本地探针数据，请先在列表页点击“刷新列表”从主控拉取");
   }, [nodes.length, subTab]);
 
   useEffect(() => {
@@ -257,8 +264,24 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         GetDeletedProbeNodeNos().catch(() => [] as number[]),
       ]);
       setDeletedNodeNos(new Set(deletedNos ?? []));
-      const baseNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
-      writeProbeNodesCache(baseNodes);
+      const controllerNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
+      await ReplaceProbeNodes(controllerNodes.map((item) => ({
+        node_no: item.node_no,
+        node_name: item.node_name,
+        remark: item.remark || "",
+        node_secret: item.node_secret || "",
+        target_system: item.target_system,
+        direct_connect: item.direct_connect,
+        payment_cycle: item.payment_cycle || "",
+        cost: item.cost || "",
+        expire_at: item.expire_at || "",
+        vendor_name: item.vendor_name || "",
+        vendor_url: item.vendor_url || "",
+        created_at: item.created_at || "",
+        updated_at: item.updated_at || "",
+      })));
+      const persisted = await GetProbeNodes();
+      const baseNodes = sortNodes((persisted as unknown as ProbeNodeItem[]) || []);
 
       let mergedNodes = baseNodes;
       if (includeStatus) {
@@ -1450,72 +1473,6 @@ function formatUpgradeMessageTime(raw: string | undefined): string {
 
 function sortNodes(nodes: ProbeNodeItem[]): ProbeNodeItem[] {
   return [...nodes].sort((a, b) => a.node_no - b.node_no);
-}
-
-function readProbeNodesCache(): ProbeNodeItem[] {
-  try {
-    const raw = window.localStorage.getItem(probeNodesCacheStorageKey);
-    if (!raw) {
-      return [];
-    }
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return sortNodes(parsed.map((item) => normalizeProbeNodeFromCache(item)).filter((item): item is ProbeNodeItem => item !== null));
-  } catch {
-    return [];
-  }
-}
-
-function writeProbeNodesCache(items: ProbeNodeItem[]): void {
-  try {
-    const out = sortNodes(items).map((item) => ({
-      node_no: item.node_no,
-      node_name: item.node_name,
-      remark: item.remark || "",
-      ddns: item.ddns || "",
-      node_secret: item.node_secret || "",
-      target_system: item.target_system,
-      direct_connect: item.direct_connect,
-      payment_cycle: item.payment_cycle || "",
-      cost: item.cost || "",
-      expire_at: item.expire_at || "",
-      vendor_name: item.vendor_name || "",
-      vendor_url: item.vendor_url || "",
-      created_at: item.created_at || "",
-      updated_at: item.updated_at || "",
-    }));
-    window.localStorage.setItem(probeNodesCacheStorageKey, JSON.stringify(out));
-  } catch {
-    // ignore local cache write failure
-  }
-}
-
-function normalizeProbeNodeFromCache(raw: unknown): ProbeNodeItem | null {
-  const item = (raw && typeof raw === "object") ? raw as Partial<ProbeNodeItem> : null;
-  const nodeNo = typeof item?.node_no === "number" ? Math.trunc(item.node_no) : 0;
-  const nodeName = typeof item?.node_name === "string" ? item.node_name.trim() : "";
-  if (nodeNo <= 0 || !nodeName) {
-    return null;
-  }
-  const targetSystem = item?.target_system === "windows" ? "windows" : "linux";
-  return {
-    node_no: nodeNo,
-    node_name: nodeName,
-    remark: typeof item?.remark === "string" ? item.remark : "",
-    ddns: typeof item?.ddns === "string" ? item.ddns : "",
-    node_secret: typeof item?.node_secret === "string" ? item.node_secret : "",
-    target_system: targetSystem,
-    direct_connect: item?.direct_connect !== false,
-    payment_cycle: typeof item?.payment_cycle === "string" ? item.payment_cycle : "",
-    cost: typeof item?.cost === "string" ? item.cost : "",
-    expire_at: typeof item?.expire_at === "string" ? item.expire_at : "",
-    vendor_name: typeof item?.vendor_name === "string" ? item.vendor_name : "",
-    vendor_url: typeof item?.vendor_url === "string" ? item.vendor_url : "",
-    created_at: typeof item?.created_at === "string" ? item.created_at : "",
-    updated_at: typeof item?.updated_at === "string" ? item.updated_at : "",
-  };
 }
 
 function sortStatusItems(items: ProbeNodeStatusItem[]): ProbeNodeStatusItem[] {
