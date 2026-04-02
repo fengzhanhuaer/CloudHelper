@@ -903,13 +903,12 @@ func fillChainRelayHosts(items []probeLinkChainRecord) []probeLinkChainRecord {
 // (e.g. "api.codex.<tag>.example.com") from the Cloudflare store.
 func buildNodeRelayHostMap() map[string]string {
 	result := make(map[string]string)
-	if CloudflareStore == nil {
+	if ProbeStore == nil {
 		return result
 	}
-	CloudflareStore.mu.RLock()
-	records := make([]cloudflareDDNSRecord, len(CloudflareStore.data.Records))
-	copy(records, CloudflareStore.data.Records)
-	CloudflareStore.mu.RUnlock()
+	ProbeStore.mu.RLock()
+	records := loadCloudflareRecordsFromProbeNodesLocked()
+	ProbeStore.mu.RUnlock()
 
 	for _, rec := range records {
 		if !strings.EqualFold(strings.TrimSpace(rec.RecordClass), "business") {

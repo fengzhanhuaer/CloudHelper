@@ -147,11 +147,10 @@ type probeLinkChainAdminItem struct {
 }
 
 type probeNodeAdminItem struct {
-	NodeNo                 int    `json:"node_no"`
-	DDNS                   string `json:"ddns"`
-	ServiceHost            string `json:"service_host"`
-	BusinessDDNS           string `json:"business_ddns"`
-	BusinessDDNSFullDomain string `json:"business_ddns_full_domain"`
+	NodeNo       int    `json:"node_no"`
+	DDNS         string `json:"ddns"`
+	ServiceHost  string `json:"service_host"`
+	BusinessDDNS string `json:"business_ddns"`
 }
 
 type probeChainPortForward struct {
@@ -1582,7 +1581,7 @@ func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
 	}
 
 	if !forceRemote {
-		cachedNodes, cachedTargets, _, cacheErr := loadChainCacheFromFile()
+		cachedNodes, cachedTargets, cacheErr := loadChainCacheFromFile()
 		if cacheErr == nil && (len(cachedNodes) > 0 || len(cachedTargets) > 0) {
 			nodes := append([]string(nil), cachedNodes...)
 			if len(nodes) == 0 {
@@ -1612,7 +1611,7 @@ func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
 		return err
 	}
 
-	chainTargets, chainNodes, probeNodes, chainErr := fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token, s.logf)
+	chainTargets, chainNodes, _, chainErr := fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token, s.logf)
 	nodes := make([]string, 0, len(chainNodes)+1)
 	if chainErr == nil && len(chainNodes) > 0 {
 		nodes = append(nodes, chainNodes...)
@@ -1661,7 +1660,7 @@ func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
 		s.nodeID = nodes[0]
 	}
 	s.mu.Unlock()
-	if saveErr := saveChainCacheToFile(nodes, s.getChainTargetsSnapshot(), probeNodes); saveErr != nil {
+	if saveErr := saveChainCacheToFile(nodes, s.getChainTargetsSnapshot()); saveErr != nil {
 		s.logf("save local chain cache failed: %v", saveErr)
 	}
 	return nil
@@ -1963,12 +1962,8 @@ func isLikelyAPIDomainHostValue(host string) bool {
 
 func selectProbeChainEntryHost(node probeNodeAdminItem) string {
 	ddns := normalizeHostValue(node.DDNS)
-	businessFull := normalizeHostValue(node.BusinessDDNSFullDomain)
 	business := normalizeHostValue(node.BusinessDDNS)
 	var candidates []string
-	if businessFull != "" && isDomainHostValue(businessFull) && !isLikelyAPIDomainHostValue(businessFull) {
-		candidates = append(candidates, "api."+businessFull)
-	}
 	if business != "" && isDomainHostValue(business) && !isLikelyAPIDomainHostValue(business) {
 		candidates = append(candidates, "api."+business)
 	}
@@ -1977,7 +1972,6 @@ func selectProbeChainEntryHost(node probeNodeAdminItem) string {
 		candidates = append(candidates, "api."+ddns)
 	}
 	candidates = append(candidates,
-		businessFull,
 		business,
 		ddns,
 		normalizeHostValue(node.ServiceHost),
@@ -2081,9 +2075,6 @@ func backfillProbeNodeDomainsFromChains(nodes []probeNodeAdminItem, businessDoma
 		if domain == "" {
 			continue
 		}
-		if strings.TrimSpace(out[i].BusinessDDNSFullDomain) == "" {
-			out[i].BusinessDDNSFullDomain = domain
-		}
 		if strings.TrimSpace(out[i].BusinessDDNS) == "" {
 			out[i].BusinessDDNS = domain
 		}
@@ -2180,18 +2171,6 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("fetch probe nodes failed: %s", strings.TrimSpace(nodesResp.Error))
 	}
 
-	cfRecordsID := fmt.Sprintf("na-chain-cf-records-%d", time.Now().UnixNano())
-	if err := conn.WriteJSON(adminWSRequest{ID: cfRecordsID, Action: "admin.cloudflare.ddns.records"}); err != nil {
-		return map[string]probeChainEndpoint{}, nil, nil, err
-	}
-	cfRecordsResp, err := readAdminWSResponseByID(conn, cfRecordsID)
-	if err != nil {
-		return map[string]probeChainEndpoint{}, nil, nil, err
-	}
-	if !cfRecordsResp.OK {
-		return map[string]probeChainEndpoint{}, nil, nil, fmt.Errorf("fetch cloudflare ddns records failed: %s", strings.TrimSpace(cfRecordsResp.Error))
-	}
-
 	chainsPayload := probeLinkChainsResponse{}
 	if len(chainsResp.Data) > 0 {
 		if err := json.Unmarshal(chainsResp.Data, &chainsPayload); err != nil {
@@ -2204,15 +2183,7 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 			return map[string]probeChainEndpoint{}, nil, nil, err
 		}
 	}
-	cfRecordsPayload := cloudflareDDNSRecordsResponse{}
-	if len(cfRecordsResp.Data) > 0 {
-		if err := json.Unmarshal(cfRecordsResp.Data, &cfRecordsPayload); err != nil {
-			return map[string]probeChainEndpoint{}, nil, nil, err
-		}
-	}
-	businessDomainByNodeID := buildBusinessDomainByNodeIDFromCloudflareRecords(cfRecordsPayload.Records)
-
-	nodesPayload.Nodes = backfillProbeNodeDomainsFromChains(nodesPayload.Nodes, businessDomainByNodeID, chainsPayload.Items)
+	nodesPayload.Nodes = backfillProbeNodeDomainsFromChains(nodesPayload.Nodes, map[string]string{}, chainsPayload.Items)
 
 	nodeByID := make(map[string]probeNodeAdminItem, len(nodesPayload.Nodes))
 	for _, item := range nodesPayload.Nodes {

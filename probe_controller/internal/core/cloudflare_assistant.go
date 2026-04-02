@@ -40,9 +40,12 @@ type cloudflareStore struct {
 type cloudflareStoreData struct {
 	APIToken          string                               `json:"api_token"`
 	ZoneName          string                               `json:"zone_name"`
-	Records           []cloudflareDDNSRecord               `json:"records"`
 	ZeroTrust         cloudflareZeroTrustWhitelistConfig   `json:"zerotrust_whitelist"`
 	ZeroTrustLastSync cloudflareZeroTrustWhitelistSyncInfo `json:"zerotrust_last_sync"`
+}
+
+type cloudflareStoreDataLegacy struct {
+	Records []cloudflareDDNSResolvedRecord `json:"records"`
 }
 
 type cloudflareZeroTrustWhitelistConfig struct {
@@ -121,6 +124,19 @@ type cloudflareDDNSApplyRequest struct {
 }
 
 type cloudflareDDNSRecord struct {
+	ZoneName    string `json:"zone_name"`
+	ZoneID      string `json:"zone_id"`
+	RecordClass string `json:"record_class"`
+	RecordName  string `json:"record_name"`
+	RecordID    string `json:"record_id"`
+	RecordType  string `json:"record_type"`
+	Sequence    int    `json:"sequence"`
+	ContentIP   string `json:"content_ip"`
+	UpdatedAt   string `json:"updated_at"`
+	LastMessage string `json:"last_message,omitempty"`
+}
+
+type cloudflareDDNSResolvedRecord struct {
 	NodeID      string `json:"node_id"`
 	NodeNo      int    `json:"node_no"`
 	NodeName    string `json:"node_name"`
@@ -151,11 +167,11 @@ type cloudflareDDNSApplyItem struct {
 }
 
 type cloudflareDDNSApplyResponse struct {
-	ZoneName string                    `json:"zone_name"`
-	Applied  int                       `json:"applied"`
-	Skipped  int                       `json:"skipped"`
-	Items    []cloudflareDDNSApplyItem `json:"items"`
-	Records  []cloudflareDDNSRecord    `json:"records"`
+	ZoneName string                            `json:"zone_name"`
+	Applied  int                               `json:"applied"`
+	Skipped  int                               `json:"skipped"`
+	Items    []cloudflareDDNSApplyItem         `json:"items"`
+	Records  []cloudflareDDNSResolvedRecord    `json:"records"`
 }
 
 type cloudflareZoneListResponse struct {
@@ -224,7 +240,6 @@ func initCloudflareStore() {
 	CloudflareStore = &cloudflareStore{
 		path: storePath,
 		data: cloudflareStoreData{
-			Records:           []cloudflareDDNSRecord{},
 			ZeroTrust:         defaultCloudflareZeroTrustWhitelistConfig(),
 			ZeroTrustLastSync: cloudflareZeroTrustWhitelistSyncInfo{LastAppliedIPs: []string{}},
 		},
@@ -242,10 +257,15 @@ func initCloudflareStore() {
 			}
 			raw.APIToken = strings.TrimSpace(raw.APIToken)
 			raw.ZoneName = normalizeCloudflareZoneName(raw.ZoneName)
-			raw.Records = normalizeCloudflareRecords(raw.Records)
 			raw.ZeroTrust = normalizeCloudflareZeroTrustWhitelistConfig(raw.ZeroTrust)
 			raw.ZeroTrustLastSync = normalizeCloudflareZeroTrustWhitelistSyncInfo(raw.ZeroTrustLastSync)
 			CloudflareStore.data = raw
+			var legacy cloudflareStoreDataLegacy
+			if legacyErr := json.Unmarshal(content, &legacy); legacyErr == nil && len(legacy.Records) > 0 {
+				if err := saveCloudflareRecordsToProbeNodes(legacy.Records); err != nil {
+					log.Printf("warning: failed to migrate cloudflare records into probe nodes: %v", err)
+				}
+			}
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := CloudflareStore.Save(); saveErr != nil {
@@ -326,15 +346,92 @@ func setCloudflareZone(req cloudflareZoneRequest) (cloudflareZoneResponse, error
 	return cloudflareZoneResponse{ZoneName: zoneName}, nil
 }
 
-func listCloudflareRecords() []cloudflareDDNSRecord {
-	if CloudflareStore == nil {
-		return []cloudflareDDNSRecord{}
+func listCloudflareRecords() []cloudflareDDNSResolvedRecord {
+	if ProbeStore == nil {
+		return []cloudflareDDNSResolvedRecord{}
 	}
-	CloudflareStore.mu.RLock()
-	out := make([]cloudflareDDNSRecord, len(CloudflareStore.data.Records))
-	copy(out, CloudflareStore.data.Records)
-	CloudflareStore.mu.RUnlock()
-	return normalizeCloudflareRecords(out)
+	ProbeStore.mu.RLock()
+	out := loadCloudflareRecordsFromProbeNodesLocked()
+	ProbeStore.mu.RUnlock()
+	return out
+}
+
+func loadCloudflareRecordsFromProbeNodesLocked() []cloudflareDDNSResolvedRecord {
+	if ProbeStore == nil {
+		return []cloudflareDDNSResolvedRecord{}
+	}
+	nodes := loadProbeNodesLocked()
+	merged := make([]cloudflareDDNSResolvedRecord, 0, len(nodes)*4)
+	for _, node := range nodes {
+		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+		nodeName := strings.TrimSpace(node.NodeName)
+		for _, rec := range node.CloudflareDDNSRecords {
+			item := cloudflareDDNSResolvedRecord{
+				NodeID:      nodeID,
+				NodeNo:      node.NodeNo,
+				NodeName:    nodeName,
+				ZoneName:    rec.ZoneName,
+				ZoneID:      rec.ZoneID,
+				RecordClass: rec.RecordClass,
+				RecordName:  rec.RecordName,
+				RecordID:    rec.RecordID,
+				RecordType:  rec.RecordType,
+				Sequence:    rec.Sequence,
+				ContentIP:   rec.ContentIP,
+				UpdatedAt:   rec.UpdatedAt,
+				LastMessage: rec.LastMessage,
+			}
+			merged = append(merged, item)
+		}
+	}
+	return normalizeCloudflareResolvedRecords(merged)
+}
+
+func saveCloudflareRecordsToProbeNodes(records []cloudflareDDNSResolvedRecord) error {
+	if ProbeStore == nil {
+		return errors.New("probe datastore is not initialized")
+	}
+	normalizedRecords := normalizeCloudflareResolvedRecords(records)
+	byNodeID := make(map[string][]cloudflareDDNSRecord)
+	for _, rec := range normalizedRecords {
+		nodeID := normalizeProbeNodeID(rec.NodeID)
+		if nodeID == "" {
+			nodeID = normalizeProbeNodeID(strconv.Itoa(rec.NodeNo))
+		}
+		if nodeID == "" {
+			continue
+		}
+		byNodeID[nodeID] = append(byNodeID[nodeID], cloudflareDDNSRecord{
+			ZoneName:    rec.ZoneName,
+			ZoneID:      rec.ZoneID,
+			RecordClass: rec.RecordClass,
+			RecordName:  rec.RecordName,
+			RecordID:    rec.RecordID,
+			RecordType:  rec.RecordType,
+			Sequence:    rec.Sequence,
+			ContentIP:   rec.ContentIP,
+			UpdatedAt:   rec.UpdatedAt,
+			LastMessage: rec.LastMessage,
+		})
+	}
+
+	ProbeStore.mu.Lock()
+	nodes := loadProbeNodesLocked()
+	for i := range nodes {
+		nodeID := normalizeProbeNodeID(strconv.Itoa(nodes[i].NodeNo))
+		recs := byNodeID[nodeID]
+		if len(recs) == 0 {
+			nodes[i].CloudflareDDNSRecords = []cloudflareDDNSRecord{}
+			continue
+		}
+		nodes[i].CloudflareDDNSRecords = normalizeCloudflareRecords(recs)
+	}
+	normalizedNodes, secrets := normalizeProbeNodes(nodes)
+	ProbeStore.data.ProbeNodes = normalizedNodes
+	ProbeStore.data.ProbeSecrets = secrets
+	ProbeStore.mu.Unlock()
+
+	return ProbeStore.Save()
 }
 
 func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyResponse, error) {
@@ -346,9 +443,11 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 	CloudflareStore.mu.RLock()
 	token := strings.TrimSpace(CloudflareStore.data.APIToken)
 	savedZoneName := normalizeCloudflareZoneName(CloudflareStore.data.ZoneName)
-	existing := make([]cloudflareDDNSRecord, len(CloudflareStore.data.Records))
-	copy(existing, CloudflareStore.data.Records)
 	CloudflareStore.mu.RUnlock()
+
+	ProbeStore.mu.RLock()
+	existing := loadCloudflareRecordsFromProbeNodesLocked()
+	ProbeStore.mu.RUnlock()
 	if zoneName == "" {
 		zoneName = savedZoneName
 	}
@@ -368,14 +467,14 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 		return cloudflareDDNSApplyResponse{}, err
 	}
 
-	recordByKey := map[string]cloudflareDDNSRecord{}
+	recordByKey := map[string]cloudflareDDNSResolvedRecord{}
 	for _, item := range existing {
 		key := cloudflareRecordKey(item.NodeID, item.RecordClass, item.RecordType, item.Sequence)
 		recordByKey[key] = item
 	}
 
 	items := make([]cloudflareDDNSApplyItem, 0, len(statusItems)*4)
-	next := make([]cloudflareDDNSRecord, 0, len(statusItems)*4)
+	next := make([]cloudflareDDNSResolvedRecord, 0, len(statusItems)*4)
 	desiredRecordKeys := map[string]struct{}{}
 	applied, skipped := 0, 0
 
@@ -433,7 +532,7 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 			row.Message = msg
 			items = append(items, row)
 			applied++
-			next = append(next, cloudflareDDNSRecord{
+			next = append(next, cloudflareDDNSResolvedRecord{
 				NodeID:      d.NodeID,
 				NodeNo:      d.NodeNo,
 				NodeName:    d.NodeName,
@@ -507,10 +606,12 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 		}
 	}
 
-	next = normalizeCloudflareRecords(next)
+	next = normalizeCloudflareResolvedRecords(next)
+	if err := saveCloudflareRecordsToProbeNodes(next); err != nil {
+		return cloudflareDDNSApplyResponse{}, err
+	}
 	CloudflareStore.mu.Lock()
 	CloudflareStore.data.ZoneName = zoneName
-	CloudflareStore.data.Records = next
 	CloudflareStore.mu.Unlock()
 	if err := CloudflareStore.Save(); err != nil {
 		return cloudflareDDNSApplyResponse{}, err
@@ -578,9 +679,11 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 	CloudflareStore.mu.RLock()
 	token := strings.TrimSpace(CloudflareStore.data.APIToken)
 	defaultZoneName := normalizeCloudflareZoneName(CloudflareStore.data.ZoneName)
-	records := make([]cloudflareDDNSRecord, len(CloudflareStore.data.Records))
-	copy(records, CloudflareStore.data.Records)
 	CloudflareStore.mu.RUnlock()
+
+	ProbeStore.mu.RLock()
+	records := loadCloudflareRecordsFromProbeNodesLocked()
+	ProbeStore.mu.RUnlock()
 	if token == "" {
 		return nil
 	}
@@ -593,7 +696,7 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 	nodeNo := parsePositiveInt(nodeID)
 	nodeName := nodeID
 	zoneName := ""
-	recordByKey := map[string]cloudflareDDNSRecord{}
+	recordByKey := map[string]cloudflareDDNSResolvedRecord{}
 	for _, item := range records {
 		if normalizeProbeNodeID(item.NodeID) != nodeID {
 			continue
@@ -624,7 +727,7 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 	}
 
 	resolvedZoneID := ""
-	upserts := make([]cloudflareDDNSRecord, 0, len(desired))
+	upserts := make([]cloudflareDDNSResolvedRecord, 0, len(desired))
 	var firstErr error
 	for _, d := range desired {
 		key := cloudflareRecordKey(d.NodeID, d.RecordClass, d.RecordType, d.Sequence)
@@ -651,7 +754,7 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 			continue
 		}
 		log.Printf("cloudflare auto ddns %s: node=%s class=%s type=%s seq=%d ip=%s", action, d.NodeID, d.RecordClass, d.RecordType, d.Sequence, d.ContentIP)
-		upserts = append(upserts, cloudflareDDNSRecord{
+		upserts = append(upserts, cloudflareDDNSResolvedRecord{
 			NodeID:      d.NodeID,
 			NodeNo:      d.NodeNo,
 			NodeName:    d.NodeName,
@@ -671,9 +774,8 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 		return firstErr
 	}
 
-	CloudflareStore.mu.Lock()
-	merged := make([]cloudflareDDNSRecord, 0, len(CloudflareStore.data.Records)+len(upserts))
-	merged = append(merged, CloudflareStore.data.Records...)
+	merged := make([]cloudflareDDNSResolvedRecord, 0, len(records)+len(upserts))
+	merged = append(merged, records...)
 	for _, next := range upserts {
 		nextKey := cloudflareRecordKey(next.NodeID, next.RecordClass, next.RecordType, next.Sequence)
 		replaced := false
@@ -689,10 +791,7 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 			merged = append(merged, next)
 		}
 	}
-	CloudflareStore.data.Records = normalizeCloudflareRecords(merged)
-	CloudflareStore.mu.Unlock()
-
-	if err := CloudflareStore.Save(); err != nil {
+	if err := saveCloudflareRecordsToProbeNodes(normalizeCloudflareResolvedRecords(merged)); err != nil {
 		return err
 	}
 	return firstErr
@@ -2049,6 +2148,50 @@ func normalizeCloudflareRecordClass(raw string, recordName string) string {
 
 func normalizeCloudflareRecords(records []cloudflareDDNSRecord) []cloudflareDDNSRecord {
 	normalized := make([]cloudflareDDNSRecord, 0, len(records))
+	seen := map[string]struct{}{}
+	for _, item := range records {
+		item.ZoneName = normalizeCloudflareZoneName(item.ZoneName)
+		item.ZoneID = strings.TrimSpace(item.ZoneID)
+		item.RecordClass = normalizeCloudflareRecordClass(item.RecordClass, item.RecordName)
+		item.RecordName = strings.TrimSpace(strings.ToLower(item.RecordName))
+		item.RecordID = strings.TrimSpace(item.RecordID)
+		item.RecordType = normalizeCloudflareRecordType(item.RecordType)
+		if item.Sequence <= 0 {
+			item.Sequence = inferRecordSequence(item.RecordName)
+		}
+		if item.Sequence <= 0 {
+			item.Sequence = 1
+		}
+		item.ContentIP = strings.TrimSpace(item.ContentIP)
+		item.UpdatedAt = strings.TrimSpace(item.UpdatedAt)
+		item.LastMessage = strings.TrimSpace(item.LastMessage)
+		if item.RecordName == "" {
+			continue
+		}
+		key := item.RecordClass + "|" + item.RecordType + "|" + strconv.Itoa(item.Sequence)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, item)
+	}
+	sort.SliceStable(normalized, func(i, j int) bool {
+		if normalized[i].RecordClass != normalized[j].RecordClass {
+			return normalized[i].RecordClass < normalized[j].RecordClass
+		}
+		if normalized[i].RecordType != normalized[j].RecordType {
+			return normalized[i].RecordType < normalized[j].RecordType
+		}
+		if normalized[i].Sequence != normalized[j].Sequence {
+			return normalized[i].Sequence < normalized[j].Sequence
+		}
+		return normalized[i].RecordName < normalized[j].RecordName
+	})
+	return normalized
+}
+
+func normalizeCloudflareResolvedRecords(records []cloudflareDDNSResolvedRecord) []cloudflareDDNSResolvedRecord {
+	normalized := make([]cloudflareDDNSResolvedRecord, 0, len(records))
 	seen := map[string]struct{}{}
 	for _, item := range records {
 		item.NodeID = normalizeProbeNodeID(item.NodeID)

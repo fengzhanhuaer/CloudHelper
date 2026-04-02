@@ -583,8 +583,8 @@ func TestBuildProbeChainPortForwardsForManager(t *testing.T) {
 
 func TestBackfillProbeNodeDomainsFromChains(t *testing.T) {
 	nodes := []probeNodeAdminItem{
-		{NodeNo: 1, DDNS: "", ServiceHost: "", BusinessDDNS: "", BusinessDDNSFullDomain: ""},
-		{NodeNo: 2, DDNS: "node2.ddns.example.com", ServiceHost: "", BusinessDDNS: "", BusinessDDNSFullDomain: ""},
+		{NodeNo: 1, DDNS: "", ServiceHost: "", BusinessDDNS: ""},
+		{NodeNo: 2, DDNS: "node2.ddns.example.com", ServiceHost: "", BusinessDDNS: ""},
 	}
 	businessDomainByNodeID := map[string]string{
 		"1": "cf-biz.example.com",
@@ -615,18 +615,12 @@ func TestBackfillProbeNodeDomainsFromChains(t *testing.T) {
 	if out[0].BusinessDDNS != "cf-biz.example.com" {
 		t.Fatalf("node1 business_ddns=%q, want cf-biz.example.com", out[0].BusinessDDNS)
 	}
-	if out[0].BusinessDDNSFullDomain != "cf-biz.example.com" {
-		t.Fatalf("node1 business_ddns_full_domain=%q, want cf-biz.example.com", out[0].BusinessDDNSFullDomain)
-	}
 	if out[0].DDNS != "cf-biz.example.com" {
 		t.Fatalf("node1 ddns=%q, want cf-biz.example.com", out[0].DDNS)
 	}
 
 	if out[1].BusinessDDNS != "cf-biz2.example.com" {
 		t.Fatalf("node2 business_ddns=%q, want cf-biz2.example.com", out[1].BusinessDDNS)
-	}
-	if out[1].BusinessDDNSFullDomain != "cf-biz2.example.com" {
-		t.Fatalf("node2 business_ddns_full_domain=%q, want cf-biz2.example.com", out[1].BusinessDDNSFullDomain)
 	}
 	if out[1].DDNS != "node2.ddns.example.com" {
 		t.Fatalf("node2 ddns=%q, want keep original node2.ddns.example.com", out[1].DDNS)

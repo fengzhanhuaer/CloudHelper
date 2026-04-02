@@ -19,17 +19,6 @@ type chainCachePayload struct {
 	UpdatedAt    string                        `json:"updated_at"`
 	Nodes        []string                      `json:"nodes"`
 	ChainTargets map[string]chainCacheEndpoint `json:"chain_targets,omitempty"`
-	// ProbeNodes 是从服务器同步的原始探针节点配置（node_no + ddns + service_host），不含实时状态
-	ProbeNodes []chainCacheProbeNode `json:"probe_nodes,omitempty"`
-}
-
-// chainCacheProbeNode 是 probeNodeAdminItem 的可序列化镜像（仅静态配置字段）。
-type chainCacheProbeNode struct {
-	NodeNo                 int    `json:"node_no"`
-	DDNS                   string `json:"ddns"`
-	ServiceHost            string `json:"service_host"`
-	BusinessDDNS           string `json:"business_ddns,omitempty"`
-	BusinessDDNSFullDomain string `json:"business_ddns_full_domain,omitempty"`
 }
 
 // chainCacheEndpoint 是 probeChainEndpoint 的可序列化镜像（字段全部可导出）。
@@ -118,8 +107,8 @@ func chainCacheFilePath() (string, error) {
 	return filepath.Join(dataDir, chainCacheFileName), nil
 }
 
-// saveChainCacheToFile 将 refreshAvailableNodes 拉取到的节点列表、链路目标和探针节点列表持久化到本地。
-func saveChainCacheToFile(nodes []string, chainTargets map[string]probeChainEndpoint, probeNodes []probeNodeAdminItem) error {
+// saveChainCacheToFile 将 refreshAvailableNodes 拉取到的节点列表和链路目标持久化到本地。
+func saveChainCacheToFile(nodes []string, chainTargets map[string]probeChainEndpoint) error {
 	path, err := chainCacheFilePath()
 	if err != nil {
 		return err
@@ -130,25 +119,10 @@ func saveChainCacheToFile(nodes []string, chainTargets map[string]probeChainEndp
 		cacheEndpoints[k] = toChainCacheEndpoint(v)
 	}
 
-	cacheProbeNodes := make([]chainCacheProbeNode, 0, len(probeNodes))
-	for _, n := range probeNodes {
-		if n.NodeNo <= 0 {
-			continue
-		}
-		cacheProbeNodes = append(cacheProbeNodes, chainCacheProbeNode{
-			NodeNo:                 n.NodeNo,
-			DDNS:                   n.DDNS,
-			ServiceHost:            n.ServiceHost,
-			BusinessDDNS:           n.BusinessDDNS,
-			BusinessDDNSFullDomain: n.BusinessDDNSFullDomain,
-		})
-	}
-
 	payload := chainCachePayload{
 		UpdatedAt:    time.Now().UTC().Format(time.RFC3339),
 		Nodes:        nodes,
 		ChainTargets: cacheEndpoints,
-		ProbeNodes:   cacheProbeNodes,
 	}
 	raw, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -158,28 +132,28 @@ func saveChainCacheToFile(nodes []string, chainTargets map[string]probeChainEndp
 	return os.WriteFile(path, raw, 0o644)
 }
 
-// loadChainCacheFromFile 从本地读取链路缓存。若文件不存在或数据为空则返回 nil, nil, nil, nil。
-func loadChainCacheFromFile() (nodes []string, chainTargets map[string]probeChainEndpoint, probeNodes []probeNodeAdminItem, err error) {
+// loadChainCacheFromFile 从本地读取链路缓存。若文件不存在或数据为空则返回 nil, nil, nil。
+func loadChainCacheFromFile() (nodes []string, chainTargets map[string]probeChainEndpoint, err error) {
 	path, pathErr := chainCacheFilePath()
 	if pathErr != nil {
-		return nil, nil, nil, pathErr
+		return nil, nil, pathErr
 	}
 
 	raw, readErr := os.ReadFile(path)
 	if readErr != nil {
 		if errors.Is(readErr, os.ErrNotExist) {
-			return nil, nil, nil, nil
+			return nil, nil, nil
 		}
-		return nil, nil, nil, readErr
+		return nil, nil, readErr
 	}
 
 	if strings.TrimSpace(string(raw)) == "" {
-		return nil, nil, nil, nil
+		return nil, nil, nil
 	}
 
 	var payload chainCachePayload
 	if unmarshalErr := json.Unmarshal(raw, &payload); unmarshalErr != nil {
-		return nil, nil, nil, unmarshalErr
+		return nil, nil, unmarshalErr
 	}
 
 	targets := make(map[string]probeChainEndpoint, len(payload.ChainTargets))
@@ -187,22 +161,8 @@ func loadChainCacheFromFile() (nodes []string, chainTargets map[string]probeChai
 		targets[k] = fromChainCacheEndpoint(v)
 	}
 
-	adminNodes := make([]probeNodeAdminItem, 0, len(payload.ProbeNodes))
-	for _, n := range payload.ProbeNodes {
-		if n.NodeNo <= 0 {
-			continue
-		}
-		adminNodes = append(adminNodes, probeNodeAdminItem{
-			NodeNo:                 n.NodeNo,
-			DDNS:                   n.DDNS,
-			ServiceHost:            n.ServiceHost,
-			BusinessDDNS:           n.BusinessDDNS,
-			BusinessDDNSFullDomain: n.BusinessDDNSFullDomain,
-		})
-	}
-
-	nodeSet := make(map[string]struct{}, len(payload.Nodes)+len(targets)+len(adminNodes))
-	outNodes := make([]string, 0, len(payload.Nodes)+len(targets)+len(adminNodes))
+	nodeSet := make(map[string]struct{}, len(payload.Nodes)+len(targets))
+	outNodes := make([]string, 0, len(payload.Nodes)+len(targets))
 	addNode := func(id string) {
 		id = strings.TrimSpace(id)
 		if id == "" {
@@ -224,18 +184,20 @@ func loadChainCacheFromFile() (nodes []string, chainTargets map[string]probeChai
 			addNode(nodeID)
 		}
 	}
-	// 再次兜底：从 probe_nodes 回填节点编号。
+	// 最后兜底：统一从 probe_nodes.json 回填节点编号。
 	if len(outNodes) == 0 {
-		for _, item := range adminNodes {
-			if item.NodeNo <= 0 {
-				continue
+		if probeNodes, _, loadErr := loadProbeNodes(); loadErr == nil {
+			for _, item := range probeNodes {
+				if item.NodeNo <= 0 {
+					continue
+				}
+				addNode(strconv.Itoa(item.NodeNo))
 			}
-			addNode(strconv.Itoa(item.NodeNo))
 		}
 	}
 
-	if len(outNodes) == 0 && len(targets) == 0 && len(adminNodes) == 0 {
-		return nil, nil, nil, nil
+	if len(outNodes) == 0 && len(targets) == 0 {
+		return nil, nil, nil
 	}
-	return outNodes, targets, adminNodes, nil
+	return outNodes, targets, nil
 }

@@ -22,22 +22,23 @@ type probeSecretUpsertRequest struct {
 }
 
 type probeNodeRecord struct {
-	NodeNo        int    `json:"node_no"`
-	NodeName      string `json:"node_name"`
-	Remark        string `json:"remark"`
-	DDNS          string `json:"ddns"`
-	NodeSecret    string `json:"node_secret"`
-	TargetSystem  string `json:"target_system"`
-	DirectConnect bool   `json:"direct_connect"`
-	ServiceScheme string `json:"service_scheme"`
-	ServiceHost   string `json:"service_host"`
-	PaymentCycle  string `json:"payment_cycle"`
-	Cost          string `json:"cost"`
-	ExpireAt      string `json:"expire_at"`
-	VendorName    string `json:"vendor_name"`
-	VendorURL     string `json:"vendor_url"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	NodeNo                int                    `json:"node_no"`
+	NodeName              string                 `json:"node_name"`
+	Remark                string                 `json:"remark"`
+	DDNS                  string                 `json:"ddns"`
+	CloudflareDDNSRecords []cloudflareDDNSRecord `json:"cloudflare_ddns_records,omitempty"`
+	NodeSecret            string                 `json:"node_secret"`
+	TargetSystem          string                 `json:"target_system"`
+	DirectConnect         bool                   `json:"direct_connect"`
+	ServiceScheme         string                 `json:"service_scheme"`
+	ServiceHost           string                 `json:"service_host"`
+	PaymentCycle          string                 `json:"payment_cycle"`
+	Cost                  string                 `json:"cost"`
+	ExpireAt              string                 `json:"expire_at"`
+	VendorName            string                 `json:"vendor_name"`
+	VendorURL             string                 `json:"vendor_url"`
+	CreatedAt             string                 `json:"created_at"`
+	UpdatedAt             string                 `json:"updated_at"`
 }
 
 type probeNodeStatusRecord struct {
@@ -317,6 +318,7 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		node.NodeName = strings.TrimSpace(node.NodeName)
 		node.Remark = strings.TrimSpace(node.Remark)
 		node.DDNS = strings.TrimSpace(node.DDNS)
+		node.CloudflareDDNSRecords = normalizeCloudflareRecords(node.CloudflareDDNSRecords)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
 		node.TargetSystem = strings.ToLower(strings.TrimSpace(node.TargetSystem))
 		if node.TargetSystem != "windows" {
