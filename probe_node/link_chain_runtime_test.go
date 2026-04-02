@@ -127,6 +127,26 @@ func TestVerifyProbeChainInboundAuthAcceptsSecretHMAC(t *testing.T) {
 	}
 }
 
+func TestVerifyProbeChainInboundAuthRejectsInvalidMACWithNeutralMessage(t *testing.T) {
+	cfg := probeChainRuntimeConfig{
+		chainID: "chain-a",
+		secret:  "secret-1",
+	}
+	env := probeChainAuthEnvelope{
+		ChainID: "chain-a",
+		Mode:    "secret_hmac",
+		Nonce:   "nonce-a",
+		MAC:     "bad-mac",
+	}
+	err := verifyProbeChainInboundAuth(cfg, env)
+	if err == nil {
+		t.Fatalf("expected invalid mac error")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveProbeChainTLSServerName(t *testing.T) {
 	if got := resolveProbeChainTLSServerName("http", "203.0.113.10", "api.example.com"); got != "203.0.113.10" {
 		t.Fatalf("http sni should use dial ip, got: %s", got)

@@ -1323,7 +1323,7 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 		return
 	}
 	if err := verifyProbeChainRelayRequestAuth(runtime, r, chainID); err != nil {
-		http.Error(w, "codex auth failed", http.StatusUnauthorized)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	bridgeRole := normalizeProbeChainBridgeRole(r.Header.Get(probeChainCodexRelayRoleHeader))
@@ -2118,7 +2118,7 @@ func handleProbeChainRelayHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := verifyProbeChainRelayRequestAuth(runtime, r, chainID); err != nil {
-		http.Error(w, "codex auth failed", http.StatusUnauthorized)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	bridgeRole := normalizeProbeChainBridgeRole(r.Header.Get(probeChainCodexRelayRoleHeader))
@@ -3152,7 +3152,7 @@ func verifyProbeChainInboundAuth(cfg probeChainRuntimeConfig, env probeChainAuth
 	}
 	expected := buildProbeChainHMAC(cfg.secret, cfg.chainID, env.Nonce)
 	if !hmac.Equal([]byte(strings.ToLower(env.MAC)), []byte(strings.ToLower(expected))) {
-		return fmt.Errorf("secret auth failed")
+		return fmt.Errorf("authentication failed")
 	}
 	return nil
 }

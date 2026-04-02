@@ -237,6 +237,36 @@ type dnsCacheEntry struct {
 	Expires time.Time
 }
 
+type unifiedDNSRecordKind string
+
+type unifiedDNSRecordSource string
+
+const (
+	unifiedDNSRecordKindDirectHost unifiedDNSRecordKind = "direct_host"
+	unifiedDNSRecordKindRuleDNS    unifiedDNSRecordKind = "rule_dns"
+	unifiedDNSRecordKindRouteHint  unifiedDNSRecordKind = "route_hint"
+	unifiedDNSRecordKindFakeIP     unifiedDNSRecordKind = "fake_ip"
+)
+
+const (
+	unifiedDNSRecordSourceSystem    unifiedDNSRecordSource = "system"
+	unifiedDNSRecordSourceTunnel    unifiedDNSRecordSource = "tunnel"
+	unifiedDNSRecordSourceFake      unifiedDNSRecordSource = "fake"
+	unifiedDNSRecordSourceSynthetic unifiedDNSRecordSource = "synthetic"
+)
+
+type unifiedDNSCacheRecord struct {
+	Kind    unifiedDNSRecordKind
+	Source  unifiedDNSRecordSource
+	HostKey string
+	IPKey   string
+	Addrs   []string
+	Route   tunnelRouteDecision
+	Domain  string
+	FakeIP  bool
+	Expires time.Time
+}
+
 type tunPreferenceState struct {
 	EverEnabled  bool `json:"ever_enabled"`
 	ManualClosed bool `json:"manual_closed"`
@@ -478,100 +508,7 @@ func (a *App) QueryNetworkAssistantDNSCache(query string) ([]NetworkAssistantDNS
 // QueryDNSCache 返回匹配 query 的 DNS 路由缓存条目。
 // query 为空时返回全部；query 为 IP 时按 IP 查；query 为域名时按域名查。
 func (s *networkAssistantService) QueryDNSCache(query string) []NetworkAssistantDNSCacheEntry {
-	q := strings.ToLower(strings.TrimSpace(query))
-
-	s.mu.RLock()
-	hints := s.dnsRouteHints
-	pool := s.fakeIPPool
-	s.mu.RUnlock()
-
-	now := time.Now()
-	seen := make(map[string]struct{})
-	var result []NetworkAssistantDNSCacheEntry
-
-	add := func(e NetworkAssistantDNSCacheEntry) {
-		key := e.IP + "|" + e.Domain
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		result = append(result, e)
-	}
-
-	// 1. 遍历 dnsRouteHints（包含 fake IP 和普通 DNS hint）
-	for ip, hint := range hints {
-		if now.After(hint.Expires) {
-			continue
-		}
-		if q != "" {
-			if !strings.Contains(strings.ToLower(ip), q) && !strings.Contains(strings.ToLower(hint.Domain), q) {
-				continue
-			}
-		}
-		add(NetworkAssistantDNSCacheEntry{
-			Domain:    hint.Domain,
-			IP:        ip,
-			FakeIP:    hint.FakeIP,
-			Direct:    hint.Direct,
-			NodeID:    hint.NodeID,
-			Group:     hint.Group,
-			ExpiresAt: hint.Expires.Format(time.RFC3339),
-		})
-	}
-
-	// 2. 遍历 fakeIPPool（补充 pool 中有但 hint map 没有的条目）
-	if pool != nil {
-		for ip, entry := range pool.ListAll() {
-			ipStr := strings.TrimSpace(ip)
-			domain := strings.TrimSpace(entry.Domain)
-			if q != "" {
-				if !strings.Contains(strings.ToLower(ipStr), q) && !strings.Contains(strings.ToLower(domain), q) {
-					continue
-				}
-			}
-			add(NetworkAssistantDNSCacheEntry{
-				Domain:    domain,
-				IP:        ipStr,
-				FakeIP:    true,
-				Direct:    entry.Route.Direct,
-				NodeID:    entry.Route.NodeID,
-				Group:     entry.Route.Group,
-				ExpiresAt: entry.Expires.Format(time.RFC3339),
-			})
-		}
-	}
-
-	// 3. 遍历 directDNSCache（补充直连 DNS 缓存条目）
-	directDNSCache.mu.Lock()
-	for host, entry := range directDNSCache.entries {
-		if now.After(entry.ExpiresAt) {
-			continue
-		}
-		if q != "" {
-			if !strings.Contains(strings.ToLower(host), q) && !strings.Contains(strings.ToLower(entry.IP), q) {
-				continue
-			}
-		}
-		add(NetworkAssistantDNSCacheEntry{
-			Domain:    host,
-			IP:        entry.IP,
-			FakeIP:    false,
-			Direct:    true,
-			NodeID:    "",
-			Group:     "",
-			ExpiresAt: entry.ExpiresAt.Format(time.RFC3339),
-		})
-	}
-	directDNSCache.mu.Unlock()
-
-	// 按 IP 字段排序，方便展示
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Domain != result[j].Domain {
-			return result[i].Domain < result[j].Domain
-		}
-		return result[i].IP < result[j].IP
-	})
-	return result
+	return queryUnifiedDNSCacheEntries(query)
 }
 
 func (a *App) ForceRefreshProbeDNSCache(controllerBaseURL, sessionToken string) (string, error) {
@@ -1182,51 +1119,11 @@ func clampRuleDNSTTL(ttlSeconds int) int {
 }
 
 func (s *networkAssistantService) loadRuleDNSCache(cacheKey string) ([]string, bool) {
-	s.mu.RLock()
-	entry, ok := s.ruleDNSCache[cacheKey]
-	s.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	if time.Now().After(entry.Expires) {
-		s.mu.Lock()
-		if latest, exists := s.ruleDNSCache[cacheKey]; exists && time.Now().After(latest.Expires) {
-			delete(s.ruleDNSCache, cacheKey)
-		}
-		s.mu.Unlock()
-		return nil, false
-	}
-	if len(entry.Addrs) == 0 {
-		return nil, false
-	}
-	return append([]string(nil), entry.Addrs...), true
+	return getUnifiedRuleDNSCache(cacheKey)
 }
 
 func (s *networkAssistantService) storeRuleDNSCache(cacheKey string, addresses []string, ttlSeconds int) {
-	if len(addresses) == 0 {
-		return
-	}
-	normalized := make([]string, 0, len(addresses))
-	for _, addr := range addresses {
-		ip := net.ParseIP(strings.TrimSpace(addr))
-		if ip == nil {
-			continue
-		}
-		normalized = append(normalized, canonicalIP(ip))
-	}
-	if len(normalized) == 0 {
-		return
-	}
-	ttl := clampRuleDNSTTL(ttlSeconds)
-	s.mu.Lock()
-	if s.ruleDNSCache == nil {
-		s.ruleDNSCache = make(map[string]dnsCacheEntry)
-	}
-	s.ruleDNSCache[cacheKey] = dnsCacheEntry{
-		Addrs:   normalized,
-		Expires: time.Now().Add(time.Duration(ttl) * time.Second),
-	}
-	s.mu.Unlock()
+	setUnifiedRuleDNSCache(cacheKey, addresses, clampRuleDNSTTL(ttlSeconds), unifiedDNSRecordSourceTunnel)
 }
 
 func (s *networkAssistantService) queryRuleDomainViaTunnel(nodeID string, domain string, qType uint16) ([]string, int, error) {

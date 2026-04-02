@@ -581,7 +581,8 @@ func filterDNSResponseAddrs(addrs []string, qType uint16) []string {
 }
 
 func (s *networkAssistantService) storeDNSRouteHint(addrs []string, domain string, route tunnelRouteDecision, ttlSeconds int) {
-	expiresAt := time.Now().Add(time.Duration(clampRuleDNSTTL(ttlSeconds)) * time.Second)
+	ttlSeconds = clampRuleDNSTTL(ttlSeconds)
+	expiresAt := time.Now().Add(time.Duration(ttlSeconds) * time.Second)
 	hint := dnsRouteHintEntry{
 		Direct:  route.Direct,
 		NodeID:  strings.TrimSpace(route.NodeID),
@@ -599,7 +600,9 @@ func (s *networkAssistantService) storeDNSRouteHint(addrs []string, domain strin
 		if ipValue == nil {
 			continue
 		}
-		s.dnsRouteHints[canonicalIP(ipValue)] = hint
+		canonical := canonicalIP(ipValue)
+		s.dnsRouteHints[canonical] = hint
+		setUnifiedRouteHintByIP(canonical, hint.Domain, route, ttlSeconds, unifiedDNSRecordSourceSynthetic, false)
 	}
 	s.mu.Unlock()
 }
@@ -615,11 +618,16 @@ func (s *networkAssistantService) storeFakeIPRouteHint(fakeAddr string, domain s
 		Domain:  strings.ToLower(strings.TrimSpace(domain)),
 		FakeIP:  true,
 	}
+	canonical := canonicalIP(net.ParseIP(strings.TrimSpace(fakeAddr)))
+	if canonical == "" {
+		return
+	}
 	s.mu.Lock()
 	if s.dnsRouteHints == nil {
 		s.dnsRouteHints = make(map[string]dnsRouteHintEntry)
 	}
-	s.dnsRouteHints[strings.TrimSpace(fakeAddr)] = hint
+	s.dnsRouteHints[canonical] = hint
+	setUnifiedFakeIPMapping(canonical, hint.Domain, route, fakeIPTTL)
 	s.mu.Unlock()
 }
 
@@ -627,6 +635,9 @@ func (s *networkAssistantService) loadDNSRouteHint(ipAddr string) (dnsRouteHintE
 	canonical := canonicalIP(net.ParseIP(strings.TrimSpace(ipAddr)))
 	if canonical == "" {
 		return dnsRouteHintEntry{}, false
+	}
+	if hint, ok := getUnifiedRouteHintByIP(canonical); ok {
+		return hint, true
 	}
 
 	s.mu.RLock()
@@ -650,4 +661,5 @@ func (s *networkAssistantService) clearDNSRouteHints() {
 	s.mu.Lock()
 	s.dnsRouteHints = make(map[string]dnsRouteHintEntry)
 	s.mu.Unlock()
+	clearUnifiedRouteAndFakeHints()
 }

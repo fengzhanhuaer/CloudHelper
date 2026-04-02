@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,13 @@ var directDNSCache = struct {
 	entries map[string]dnsCacheDirectEntry
 }{
 	entries: make(map[string]dnsCacheDirectEntry),
+}
+
+var unifiedDNSCache = struct {
+	mu      sync.Mutex
+	records map[string]unifiedDNSCacheRecord
+}{
+	records: make(map[string]unifiedDNSCacheRecord),
 }
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -58,6 +66,9 @@ func getProbeDNSCachedIP(host string) (string, bool) {
 	if normalizedHost == "" {
 		return "", false
 	}
+	if ip, ok := getUnifiedDirectDNSCachedIP(normalizedHost); ok {
+		return ip, true
+	}
 	directDNSCache.mu.Lock()
 	defer directDNSCache.mu.Unlock()
 	entry, ok := directDNSCache.entries[normalizedHost]
@@ -82,6 +93,7 @@ func setProbeDNSCachedIP(host string, ipValue string) error {
 	defer directDNSCache.mu.Unlock()
 	if existing, ok := directDNSCache.entries[normalizedHost]; ok {
 		if existing.IP == normalizedIP && time.Until(existing.ExpiresAt) > dnsCacheTTL/2 {
+			_ = setUnifiedDirectDNSCachedIP(normalizedHost, normalizedIP, int(dnsCacheTTL/time.Second), unifiedDNSRecordSourceSystem)
 			return nil
 		}
 	}
@@ -103,6 +115,7 @@ func setProbeDNSCachedIP(host string, ipValue string) error {
 		IP:        normalizedIP,
 		ExpiresAt: dnsCacheExpiresAt(),
 	}
+	_ = setUnifiedDirectDNSCachedIP(normalizedHost, normalizedIP, int(dnsCacheTTL/time.Second), unifiedDNSRecordSourceSystem)
 	return nil
 }
 
@@ -111,6 +124,10 @@ func (s *networkAssistantService) clearDNSCache() {
 	directDNSCache.mu.Lock()
 	directDNSCache.entries = make(map[string]dnsCacheDirectEntry)
 	directDNSCache.mu.Unlock()
+
+	unifiedDNSCache.mu.Lock()
+	unifiedDNSCache.records = make(map[string]unifiedDNSCacheRecord)
+	unifiedDNSCache.mu.Unlock()
 
 	s.mu.Lock()
 	s.ruleDNSCache = make(map[string]dnsCacheEntry)
@@ -154,6 +171,7 @@ func (s *networkAssistantService) newCachedDNSDialContext(base *net.Dialer) func
 			// 回退到系统原本的 DNS
 			addrs, rerr = net.DefaultResolver.LookupHost(ctx, host)
 		}
+		
 		if rerr != nil || len(addrs) == 0 {
 			return nil, rerr
 		}
@@ -171,5 +189,349 @@ func (s *networkAssistantService) newCachedDNSDialContext(base *net.Dialer) func
 			return nil, lastErr
 		}
 		return nil, errors.New("dns cached dial: no address succeeded for " + host)
+	}
+}
+
+func unifiedDirectHostKey(host string) string {
+	return "direct|" + normalizeDNSCacheHost(host)
+}
+
+func unifiedRuleDNSKey(cacheKey string) string {
+	return "rule|" + strings.ToLower(strings.TrimSpace(cacheKey))
+}
+
+func unifiedCachePruneExpiredLocked(now time.Time) {
+	for key, record := range unifiedDNSCache.records {
+		if !record.Expires.IsZero() && now.After(record.Expires) {
+			delete(unifiedDNSCache.records, key)
+		}
+	}
+}
+
+func unifiedCacheEvictOneLocked() {
+	oldestKey := ""
+	var oldest time.Time
+	for key, record := range unifiedDNSCache.records {
+		if oldestKey == "" || record.Expires.Before(oldest) {
+			oldestKey = key
+			oldest = record.Expires
+		}
+	}
+	if oldestKey != "" {
+		delete(unifiedDNSCache.records, oldestKey)
+	}
+}
+
+func setUnifiedDirectDNSCachedIP(host string, ip string, ttlSeconds int, source unifiedDNSRecordSource) error {
+	if ttlSeconds <= 0 {
+		ttlSeconds = int(dnsCacheTTL / time.Second)
+	}
+	normalizedHost := normalizeDNSCacheHost(host)
+	normalizedIP := normalizeDNSCacheIP(ip)
+	if normalizedHost == "" || normalizedIP == "" {
+		return nil
+	}
+	now := time.Now()
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	unifiedCachePruneExpiredLocked(now)
+	if len(unifiedDNSCache.records) >= dnsCacheMaxEntries {
+		unifiedCacheEvictOneLocked()
+	}
+	unifiedDNSCache.records[unifiedDirectHostKey(normalizedHost)] = unifiedDNSCacheRecord{
+		Kind:    unifiedDNSRecordKindDirectHost,
+		Source:  source,
+		HostKey: normalizedHost,
+		IPKey:   normalizedIP,
+		Addrs:   []string{normalizedIP},
+		Route:   tunnelRouteDecision{Direct: true},
+		Domain:  normalizedHost,
+		FakeIP:  false,
+		Expires: now.Add(time.Duration(ttlSeconds) * time.Second),
+	}
+	return nil
+}
+
+func getUnifiedDirectDNSCachedIP(host string) (string, bool) {
+	normalizedHost := normalizeDNSCacheHost(host)
+	if normalizedHost == "" {
+		return "", false
+	}
+	key := unifiedDirectHostKey(normalizedHost)
+	now := time.Now()
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	record, ok := unifiedDNSCache.records[key]
+	if !ok {
+		return "", false
+	}
+	if !record.Expires.IsZero() && now.After(record.Expires) {
+		delete(unifiedDNSCache.records, key)
+		return "", false
+	}
+	if record.IPKey != "" {
+		return record.IPKey, true
+	}
+	if len(record.Addrs) > 0 {
+		return normalizeDNSCacheIP(record.Addrs[0]), true
+	}
+	return "", false
+}
+
+func getUnifiedRuleDNSCache(cacheKey string) ([]string, bool) {
+	key := unifiedRuleDNSKey(cacheKey)
+	now := time.Now()
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	record, ok := unifiedDNSCache.records[key]
+	if !ok {
+		return nil, false
+	}
+	if !record.Expires.IsZero() && now.After(record.Expires) {
+		delete(unifiedDNSCache.records, key)
+		return nil, false
+	}
+	if len(record.Addrs) == 0 {
+		return nil, false
+	}
+	return append([]string(nil), record.Addrs...), true
+}
+
+func setUnifiedRuleDNSCache(cacheKey string, addresses []string, ttlSeconds int, source unifiedDNSRecordSource) {
+	if len(addresses) == 0 {
+		return
+	}
+	normalized := make([]string, 0, len(addresses))
+	for _, addr := range addresses {
+		if canonical := normalizeDNSCacheIP(addr); canonical != "" {
+			normalized = append(normalized, canonical)
+		}
+	}
+	if len(normalized) == 0 {
+		return
+	}
+	if ttlSeconds <= 0 {
+		ttlSeconds = ruleDNSCacheMinTTLSeconds
+	}
+	now := time.Now()
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	unifiedCachePruneExpiredLocked(now)
+	if len(unifiedDNSCache.records) >= dnsCacheMaxEntries {
+		unifiedCacheEvictOneLocked()
+	}
+	cacheKey = strings.ToLower(strings.TrimSpace(cacheKey))
+	domain := cacheKey
+	if idx := strings.LastIndex(cacheKey, "|"); idx >= 0 && idx+1 < len(cacheKey) {
+		domain = cacheKey[idx+1:]
+	}
+	unifiedDNSCache.records[unifiedRuleDNSKey(cacheKey)] = unifiedDNSCacheRecord{
+		Kind:    unifiedDNSRecordKindRuleDNS,
+		Source:  source,
+		HostKey: cacheKey,
+		Addrs:   append([]string(nil), normalized...),
+		Route:   tunnelRouteDecision{Direct: source != unifiedDNSRecordSourceTunnel},
+		Domain:  domain,
+		FakeIP:  false,
+		Expires: now.Add(time.Duration(ttlSeconds) * time.Second),
+	}
+}
+
+func queryUnifiedDNSCacheEntries(query string) []NetworkAssistantDNSCacheEntry {
+	q := strings.ToLower(strings.TrimSpace(query))
+	now := time.Now()
+	unifiedDNSCache.mu.Lock()
+	unifiedCachePruneExpiredLocked(now)
+	records := make([]unifiedDNSCacheRecord, 0, len(unifiedDNSCache.records))
+	for _, item := range unifiedDNSCache.records {
+		records = append(records, item)
+	}
+	unifiedDNSCache.mu.Unlock()
+
+	results := make([]NetworkAssistantDNSCacheEntry, 0, len(records))
+	add := func(domain string, ip string, record unifiedDNSCacheRecord) {
+		if q != "" {
+			if !strings.Contains(strings.ToLower(domain), q) && !strings.Contains(strings.ToLower(ip), q) {
+				return
+			}
+		}
+		results = append(results, NetworkAssistantDNSCacheEntry{
+			Domain:    domain,
+			IP:        ip,
+			FakeIP:    record.FakeIP,
+			Direct:    record.Route.Direct,
+			NodeID:    strings.TrimSpace(record.Route.NodeID),
+			Group:     strings.TrimSpace(record.Route.Group),
+			ExpiresAt: record.Expires.Format(time.RFC3339),
+		})
+	}
+
+	for _, record := range records {
+		switch record.Kind {
+		case unifiedDNSRecordKindRuleDNS:
+			for _, addr := range record.Addrs {
+				add(record.Domain, addr, record)
+			}
+		default:
+			ip := record.IPKey
+			if ip == "" && len(record.Addrs) > 0 {
+				ip = record.Addrs[0]
+			}
+			domain := record.Domain
+			if domain == "" {
+				domain = record.HostKey
+			}
+			if ip != "" {
+				add(domain, ip, record)
+			}
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Domain != results[j].Domain {
+			return results[i].Domain < results[j].Domain
+		}
+		if results[i].IP != results[j].IP {
+			return results[i].IP < results[j].IP
+		}
+		return results[i].ExpiresAt < results[j].ExpiresAt
+	})
+	return results
+}
+
+func unifiedRouteHintKey(ip string) string {
+	return "route|" + normalizeDNSCacheIP(ip)
+}
+
+func unifiedFakeIPKey(ip string) string {
+	return "fake|" + normalizeDNSCacheIP(ip)
+}
+
+func setUnifiedRouteHintByIP(ip string, domain string, route tunnelRouteDecision, ttlSeconds int, source unifiedDNSRecordSource, fake bool) {
+	normalizedIP := normalizeDNSCacheIP(ip)
+	if normalizedIP == "" {
+		return
+	}
+	if ttlSeconds <= 0 {
+		ttlSeconds = ruleDNSCacheMinTTLSeconds
+	}
+	now := time.Now()
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	unifiedCachePruneExpiredLocked(now)
+	if len(unifiedDNSCache.records) >= dnsCacheMaxEntries {
+		unifiedCacheEvictOneLocked()
+	}
+	unifiedDNSCache.records[unifiedRouteHintKey(normalizedIP)] = unifiedDNSCacheRecord{
+		Kind:    unifiedDNSRecordKindRouteHint,
+		Source:  source,
+		IPKey:   normalizedIP,
+		Route:   route,
+		Domain:  strings.ToLower(strings.TrimSpace(domain)),
+		FakeIP:  fake,
+		Expires: now.Add(time.Duration(ttlSeconds) * time.Second),
+	}
+}
+
+func getUnifiedRouteHintByIP(ip string) (dnsRouteHintEntry, bool) {
+	normalizedIP := normalizeDNSCacheIP(ip)
+	if normalizedIP == "" {
+		return dnsRouteHintEntry{}, false
+	}
+	key := unifiedRouteHintKey(normalizedIP)
+	now := time.Now()
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	record, ok := unifiedDNSCache.records[key]
+	if !ok {
+		return dnsRouteHintEntry{}, false
+	}
+	if !record.Expires.IsZero() && now.After(record.Expires) {
+		delete(unifiedDNSCache.records, key)
+		return dnsRouteHintEntry{}, false
+	}
+	if record.Kind != unifiedDNSRecordKindRouteHint && record.Kind != unifiedDNSRecordKindFakeIP {
+		return dnsRouteHintEntry{}, false
+	}
+	return dnsRouteHintEntry{
+		Direct:  record.Route.Direct,
+		NodeID:  strings.TrimSpace(record.Route.NodeID),
+		Group:   strings.TrimSpace(record.Route.Group),
+		Expires: record.Expires,
+		Domain:  strings.ToLower(strings.TrimSpace(record.Domain)),
+		FakeIP:  record.FakeIP,
+	}, true
+}
+
+func setUnifiedFakeIPMapping(fakeIP string, domain string, route tunnelRouteDecision, ttlSeconds int) {
+	normalizedIP := normalizeDNSCacheIP(fakeIP)
+	if normalizedIP == "" {
+		return
+	}
+	if ttlSeconds <= 0 {
+		ttlSeconds = fakeIPDefaultTTLSeconds
+	}
+	now := time.Now()
+	cleanDomain := strings.ToLower(strings.TrimSpace(domain))
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	unifiedCachePruneExpiredLocked(now)
+	if len(unifiedDNSCache.records) >= dnsCacheMaxEntries {
+		unifiedCacheEvictOneLocked()
+	}
+	unifiedDNSCache.records[unifiedFakeIPKey(normalizedIP)] = unifiedDNSCacheRecord{
+		Kind:    unifiedDNSRecordKindFakeIP,
+		Source:  unifiedDNSRecordSourceFake,
+		IPKey:   normalizedIP,
+		Route:   route,
+		Domain:  cleanDomain,
+		FakeIP:  true,
+		Expires: now.Add(time.Duration(ttlSeconds) * time.Second),
+	}
+	unifiedDNSCache.records[unifiedRouteHintKey(normalizedIP)] = unifiedDNSCacheRecord{
+		Kind:    unifiedDNSRecordKindRouteHint,
+		Source:  unifiedDNSRecordSourceFake,
+		IPKey:   normalizedIP,
+		Route:   route,
+		Domain:  cleanDomain,
+		FakeIP:  true,
+		Expires: now.Add(time.Duration(ttlSeconds) * time.Second),
+	}
+}
+
+func getUnifiedFakeIPMapping(fakeIP string) (fakeIPEntry, bool) {
+	normalizedIP := normalizeDNSCacheIP(fakeIP)
+	if normalizedIP == "" {
+		return fakeIPEntry{}, false
+	}
+	key := unifiedFakeIPKey(normalizedIP)
+	now := time.Now()
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	record, ok := unifiedDNSCache.records[key]
+	if !ok {
+		return fakeIPEntry{}, false
+	}
+	if !record.Expires.IsZero() && now.After(record.Expires) {
+		delete(unifiedDNSCache.records, key)
+		return fakeIPEntry{}, false
+	}
+	if record.Kind != unifiedDNSRecordKindFakeIP {
+		return fakeIPEntry{}, false
+	}
+	return fakeIPEntry{
+		Domain:  strings.ToLower(strings.TrimSpace(record.Domain)),
+		Route:   record.Route,
+		Expires: record.Expires,
+	}, true
+}
+
+func clearUnifiedRouteAndFakeHints() {
+	unifiedDNSCache.mu.Lock()
+	defer unifiedDNSCache.mu.Unlock()
+	for key, record := range unifiedDNSCache.records {
+		if record.Kind == unifiedDNSRecordKindRouteHint || record.Kind == unifiedDNSRecordKindFakeIP {
+			delete(unifiedDNSCache.records, key)
+		}
 	}
 }

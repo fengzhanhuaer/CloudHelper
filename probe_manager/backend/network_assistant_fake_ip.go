@@ -301,14 +301,19 @@ func (s *networkAssistantService) assignFakeIP(normalizedDomain string) (string,
 		return "", fmt.Errorf("fake IP pool exhausted")
 	}
 
-	// 存储 fake IP 路由映射，供 TUN 数据平面使用
+	// 统一缓存池：写入 fake 映射与路由提示
+	setUnifiedFakeIPMapping(fakeIP, normalizedDomain, route, ttl)
+	// 兼容路径：保留旧路由提示映射，供未迁移逻辑读取
 	s.storeFakeIPRouteHint(fakeIP, normalizedDomain, route)
-	_ = ttl
 	return fakeIP, nil
 }
 
 // lookupFakeIPDomain 根据 fake IP 反查域名（若存在）
 func (s *networkAssistantService) lookupFakeIPDomain(ip string) (string, tunnelRouteDecision, bool) {
+	if entry, ok := getUnifiedFakeIPMapping(ip); ok {
+		return entry.Domain, entry.Route, true
+	}
+
 	s.mu.RLock()
 	pool := s.fakeIPPool
 	s.mu.RUnlock()
@@ -319,6 +324,7 @@ func (s *networkAssistantService) lookupFakeIPDomain(ip string) (string, tunnelR
 	if !ok {
 		return "", tunnelRouteDecision{}, false
 	}
+	setUnifiedFakeIPMapping(ip, entry.Domain, entry.Route, int(time.Until(entry.Expires).Seconds()))
 	return entry.Domain, entry.Route, true
 }
 

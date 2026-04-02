@@ -34,10 +34,9 @@ const defaultReportIntervalSec = 60
 var reportIntervalSec atomic.Int64
 
 type nodeStatus struct {
-	Service   string `json:"service"`
-	NodeID    string `json:"node_id"`
-	HasSecret bool   `json:"has_secret"`
-	Version   string `json:"version"`
+	Status    string `json:"status"`
+	NodeID    string `json:"node_id,omitempty"`
+	Version   string `json:"version,omitempty"`
 	Timestamp string `json:"timestamp"`
 }
 
@@ -181,35 +180,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	}
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		writeJSON(w, http.StatusOK, nodeStatus{
-			Service:   "probe_node",
-			NodeID:    identity.NodeID,
-			HasSecret: strings.TrimSpace(identity.Secret) != "",
-			Version:   BuildVersion,
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
-	})
-
-	mux.HandleFunc("/api/node/info", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		writeJSON(w, http.StatusOK, nodeStatus{
-			Service:   "probe_node",
-			NodeID:    identity.NodeID,
-			HasSecret: strings.TrimSpace(identity.Secret) != "",
-			Version:   BuildVersion,
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
-	})
-	mux.HandleFunc(probeChainRelayAPIPath, handleProbeChainRelayHTTP)
+	mux := buildProbeNodeHTTPMux(identity)
 
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
 		go startProbeReporter(wsURL, identity)
@@ -218,9 +189,120 @@ func runProbeNode(options probeLaunchOptions) error {
 	}
 	restoreProbeChainRuntimesFromCache(identity, controllerBaseURL)
 	startProbeLinkChainsSyncLoop(identity, controllerBaseURL)
+	startProbeServiceRuntimeLoop(mux, identity, controllerBaseURL)
 
 	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
 	select {}
+}
+
+func buildProbeNodeHTTPMux(identity nodeIdentity) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeProbeOpenAIStyleMethodNotAllowed(w, r.Method)
+			return
+		}
+		sleepProbeOpenAIStyleJitter()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message":   "OpenAI-compatible API endpoint",
+			"api_base":  "/v1",
+			"version":   BuildVersion,
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+	mux.HandleFunc("/v1", func(w http.ResponseWriter, r *http.Request) {
+		sleepProbeOpenAIStyleJitter()
+		writeProbeOpenAIStyleUnauthorized(w)
+	})
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		sleepProbeOpenAIStyleJitter()
+		writeProbeOpenAIStyleUnauthorized(w)
+	})
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
+		sleepProbeOpenAIStyleJitter()
+		writeProbeOpenAIStyleUnauthorized(w)
+	})
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, nodeStatus{
+			Status:    "ok",
+			NodeID:    identity.NodeID,
+			Version:   BuildVersion,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+	mux.HandleFunc("/api/node/info", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, nodeStatus{
+			Status:    "ok",
+			NodeID:    identity.NodeID,
+			Version:   BuildVersion,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+	mux.HandleFunc(probeChainRelayAPIPath, handleProbeChainRelayHTTP)
+	return mux
+}
+
+func buildProbeOpenAIStyleModelsListPayload() map[string]any {
+	return map[string]any{
+		"object": "list",
+		"data": []any{
+			map[string]any{
+				"id":       "gpt-4o-mini",
+				"object":   "model",
+				"created":  1686935002,
+				"owned_by": "openai",
+			},
+		},
+	}
+}
+
+func writeProbeOpenAIStyleUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	writeJSON(w, http.StatusUnauthorized, map[string]any{
+		"error": map[string]any{
+			"message": "Incorrect API key provided.",
+			"type":    "invalid_request_error",
+			"param":   nil,
+			"code":    "invalid_api_key",
+		},
+	})
+}
+
+func writeProbeOpenAIStyleMethodNotAllowed(w http.ResponseWriter, method string) {
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+		"error": map[string]any{
+			"message": fmt.Sprintf("Method %s is not allowed for this endpoint.", strings.TrimSpace(method)),
+			"type":    "invalid_request_error",
+			"param":   nil,
+			"code":    "method_not_allowed",
+		},
+	})
+}
+
+func probeOpenAIStyleJitterDuration() time.Duration {
+	const minMs = int64(300)
+	const spanMs = int64(701)
+	offset := time.Now().UnixNano() % spanMs
+	if offset < 0 {
+		offset = -offset
+	}
+	return time.Duration(minMs+offset) * time.Millisecond
+}
+
+func sleepProbeOpenAIStyleJitter() {
+	time.Sleep(probeOpenAIStyleJitterDuration())
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
