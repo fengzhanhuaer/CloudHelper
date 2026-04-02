@@ -40,25 +40,27 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 		}
 	}
 
+	if targets.ControllerHost != "" && len(targets.IPv4Addrs) == 0 {
+		return fmt.Errorf("resolve controller ipv4 failed: %s", targets.ControllerHost)
+	}
+	// 先探测当前系统主路由，再下发 TUN 分流路由。
+	// 否则在部分 Windows 环境里，/1 路由刚写入后 GetBestRoute 可能返回无可达路由（1232）。
+	egress, routeErr := detectWindowsPrimaryIPv4Route()
+	if routeErr != nil {
+		return routeErr
+	}
+
 	adapter, err := ensureWindowsTUNAdapterIPv4Routing()
 	if err != nil {
 		return err
 	}
 
 	state := tunSystemRouteState{
-		AdapterIndex:      adapter.InterfaceIndex,
-		AdapterDNSServers: append([]string(nil), adapter.PreviousDNSServers...),
+		AdapterIndex:         adapter.InterfaceIndex,
+		AdapterDNSServers:    append([]string(nil), adapter.PreviousDNSServers...),
+		BypassInterfaceIndex: egress.InterfaceIndex,
+		BypassNextHop:        strings.TrimSpace(egress.NextHop),
 	}
-
-	if targets.ControllerHost != "" && len(targets.IPv4Addrs) == 0 {
-		return fmt.Errorf("resolve controller ipv4 failed: %s", targets.ControllerHost)
-	}
-	egress, routeErr := detectWindowsPrimaryIPv4Route()
-	if routeErr != nil {
-		return routeErr
-	}
-	state.BypassInterfaceIndex = egress.InterfaceIndex
-	state.BypassNextHop = strings.TrimSpace(egress.NextHop)
 
 	state.DirectDNSServers = s.collectConfiguredDNSBypassIPv4Addrs()
 
