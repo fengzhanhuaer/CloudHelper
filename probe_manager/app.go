@@ -78,6 +78,15 @@ func (a *App) GetGlobalControllerIP() (string, error) {
 func (a *App) SetGlobalControllerIP(ip string) (string, error) {
 	return a.inner.SetGlobalControllerIP(ip)
 }
+
+func (a *App) GetAIDebugListenEnabled() (bool, error) {
+	return a.inner.GetAIDebugListenEnabled()
+}
+
+func (a *App) SetAIDebugListenEnabled(enabled bool) (bool, error) {
+	return a.inner.SetAIDebugListenEnabled(enabled)
+}
+
 func (a *App) CloudflareSpeedTest(req CloudflareSpeedTestRequest) CloudflareSpeedTestResponse {
 	return a.inner.CloudflareSpeedTest(req)
 }

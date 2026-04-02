@@ -22,6 +22,7 @@ var globalNetworkAssistantService *networkAssistantService
 type App struct {
 	ctx              context.Context
 	networkAssistant *networkAssistantService
+	aiDebugService   *aiDebugService
 }
 
 type PrivateKeyStatus struct {
@@ -34,6 +35,7 @@ type PrivateKeyStatus struct {
 func NewApp() *App {
 	return &App{
 		networkAssistant: newNetworkAssistantService(),
+		aiDebugService:   newAIDebugService(),
 	}
 }
 
@@ -47,10 +49,16 @@ func (a *App) Startup(ctx context.Context) {
 		logManagerWarnf("failed to backup manager data: %v", err)
 	}
 	a.networkAssistant.UpdateSession("", "")
+	if err := a.applyAIDebugListenFromConfig(); err != nil {
+		logManagerWarnf("failed to apply AI debug listen config: %v", err)
+	}
 }
 
 func (a *App) Shutdown(ctx context.Context) {
 	_, _ = stopProbeLinkSession("manager shutdown")
+	if err := a.stopAIDebugServer(); err != nil {
+		logManagerWarnf("failed to shutdown AI debug server: %v", err)
+	}
 	if a.networkAssistant == nil {
 		return
 	}
@@ -176,4 +184,25 @@ func (a *App) GetProbeLinkChainsCache() ([]ProbeLinkChainCacheItem, error) {
 		return nil, errors.New("network assistant not initialized")
 	}
 	return a.networkAssistant.GetProbeLinkChainsCache()
+}
+
+func (a *App) applyAIDebugListenFromConfig() error {
+	if a.aiDebugService == nil {
+		return nil
+	}
+	return a.aiDebugService.ApplyFromConfig()
+}
+
+func (a *App) startAIDebugServer() error {
+	if a.aiDebugService == nil {
+		return nil
+	}
+	return a.aiDebugService.Start()
+}
+
+func (a *App) stopAIDebugServer() error {
+	if a.aiDebugService == nil {
+		return nil
+	}
+	return a.aiDebugService.Stop()
 }

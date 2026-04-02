@@ -6,6 +6,8 @@ export function CloudflareSpeedTest(arg1:backend.CloudflareSpeedTestRequest):Pro
 
 export function CreateProbeNode(arg1:string):Promise<backend.ProbeNode>;
 
+export function GetAIDebugListenEnabled():Promise<boolean>;
+
 export function GetGlobalControllerIP():Promise<string>;
 
 export function GetGlobalControllerURL():Promise<string>;
@@ -65,6 +67,8 @@ export function InstallNetworkAssistantTUN():Promise<backend.NetworkAssistantSta
 export function ReplaceProbeNodes(arg1:Array<backend.ProbeNode>):Promise<Array<backend.ProbeNode>>;
 
 export function RestoreNetworkAssistantDirect():Promise<backend.NetworkAssistantStatus>;
+
+export function SetAIDebugListenEnabled(arg1:boolean):Promise<boolean>;
 
 export function SetGlobalControllerIP(arg1:string):Promise<string>;
 

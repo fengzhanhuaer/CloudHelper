@@ -174,6 +174,12 @@ function App() {
             onRefreshBackupSettings={() => upgrade.refreshBackupSettings(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
             onSaveBackupSettings={(enabled, value) => void upgrade.saveBackupSettings(settings.baseUrl, auth.sessionToken, enabled, value, reauthenticateSession)}
             onTestBackupSettings={(value) => void upgrade.testBackupSettings(settings.baseUrl, auth.sessionToken, value, reauthenticateSession)}
+            aiDebugListenEnabled={settings.aiDebugListenEnabled}
+            aiDebugListenStatus={settings.aiDebugListenStatus}
+            isLoadingAIDebugListenEnabled={settings.isLoadingAIDebugListenEnabled}
+            isSavingAIDebugListenEnabled={settings.isSavingAIDebugListenEnabled}
+            onRefreshAIDebugListenEnabled={() => void settings.refreshAIDebugListenEnabled()}
+            onSetAIDebugListenEnabled={(enabled) => void settings.setAIDebugListenEnabled(enabled)}
             networkAssistantStatus={networkAssistant.status}
             isOperatingNetworkAssistant={networkAssistant.isOperating}
             networkOperateStatus={networkAssistant.operateStatus}

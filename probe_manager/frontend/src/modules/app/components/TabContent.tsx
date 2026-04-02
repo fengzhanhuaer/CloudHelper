@@ -68,6 +68,12 @@ type TabContentProps = {
   onRefreshBackupSettings: () => void;
   onSaveBackupSettings: (enabled: boolean, value: string) => void;
   onTestBackupSettings: (value: string) => void;
+  aiDebugListenEnabled: boolean;
+  aiDebugListenStatus: string;
+  isLoadingAIDebugListenEnabled: boolean;
+  isSavingAIDebugListenEnabled: boolean;
+  onRefreshAIDebugListenEnabled: () => void;
+  onSetAIDebugListenEnabled: (enabled: boolean) => void;
   networkAssistantStatus: NetworkAssistantStatus;
   isOperatingNetworkAssistant: boolean;
   networkOperateStatus: string;
@@ -293,6 +299,12 @@ export function TabContent(props: TabContentProps) {
           onRefreshBackupSettings={props.onRefreshBackupSettings}
           onSaveBackupSettings={props.onSaveBackupSettings}
           onTestBackupSettings={props.onTestBackupSettings}
+          aiDebugListenEnabled={props.aiDebugListenEnabled}
+          aiDebugListenStatus={props.aiDebugListenStatus}
+          isLoadingAIDebugListenEnabled={props.isLoadingAIDebugListenEnabled}
+          isSavingAIDebugListenEnabled={props.isSavingAIDebugListenEnabled}
+          onRefreshAIDebugListenEnabled={props.onRefreshAIDebugListenEnabled}
+          onSetAIDebugListenEnabled={props.onSetAIDebugListenEnabled}
         />
       );
     default:

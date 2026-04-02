@@ -10,6 +10,10 @@ export function CreateProbeNode(arg1) {
   return window['go']['main']['App']['CreateProbeNode'](arg1);
 }
 
+export function GetAIDebugListenEnabled() {
+  return window['go']['main']['App']['GetAIDebugListenEnabled']();
+}
+
 export function GetGlobalControllerIP() {
   return window['go']['main']['App']['GetGlobalControllerIP']();
 }
@@ -140,6 +144,10 @@ export function ReplaceProbeNodes(arg1) {
 
 export function RestoreNetworkAssistantDirect() {
   return window['go']['main']['App']['RestoreNetworkAssistantDirect']();
+}
+
+export function SetAIDebugListenEnabled(arg1) {
+  return window['go']['main']['App']['SetAIDebugListenEnabled'](arg1);
 }
 
 export function SetGlobalControllerIP(arg1) {

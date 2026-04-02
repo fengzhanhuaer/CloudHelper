@@ -1124,7 +1124,7 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 
 		conn, err := openProbeChainBridgeRelayNetConn(runtime.cfg, target)
 		if err != nil {
-			log.Printf("probe chain bridge dial failed: chain=%s role=%s tag=%s target=%s:%d err=%v", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, err)
+			log.Printf("probe chain bridge dial failed: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t err=%v", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams, err)
 			sleepProbeChainBridgeBackoff(runtime.stopCh, backoff)
 			backoff = nextProbeChainBridgeBackoff(backoff)
 			continue
@@ -1133,12 +1133,12 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 		session, err := yamux.Client(conn, newProbeChainYamuxConfig())
 		if err != nil {
 			_ = conn.Close()
-			log.Printf("probe chain bridge session setup failed: chain=%s role=%s tag=%s target=%s:%d err=%v", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, err)
+			log.Printf("probe chain bridge session setup failed: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t err=%v", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams, err)
 			sleepProbeChainBridgeBackoff(runtime.stopCh, backoff)
 			backoff = nextProbeChainBridgeBackoff(backoff)
 			continue
 		}
-		log.Printf("probe chain bridge connected: chain=%s role=%s tag=%s target=%s:%d", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port)
+		log.Printf("probe chain bridge connected: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
 		backoff = probeChainBridgeRetryMin
 
 		if target.AssignDownstream {
@@ -1156,7 +1156,7 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 		}
 
 		waitProbeChainBridgeSession(runtime.stopCh, session)
-		log.Printf("probe chain bridge disconnected: chain=%s role=%s tag=%s target=%s:%d", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port)
+		log.Printf("probe chain bridge disconnected: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
 		if target.AssignDownstream {
 			runtime.clearDownstreamSession(session)
 		}
@@ -1461,7 +1461,13 @@ func handleProbeChainBridgeRelayHTTP(runtime *probeChainRuntime, bridgeRole stri
 	}
 
 	role := normalizeProbeChainBridgeRole(bridgeRole)
-	log.Printf("probe chain inbound bridge connected: chain=%s role=%s bridge_role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, role, r.RemoteAddr)
+	assignTarget := "upstream"
+	routeDirection := "forward"
+	if role == probeChainBridgeRoleToPrev {
+		assignTarget = "downstream"
+		routeDirection = "reverse"
+	}
+	log.Printf("probe chain inbound bridge connected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr)
 	if role == probeChainBridgeRoleToPrev {
 		runtime.setDownstreamSession(session)
 		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge", "reverse")
@@ -1473,7 +1479,7 @@ func handleProbeChainBridgeRelayHTTP(runtime *probeChainRuntime, bridgeRole stri
 		waitProbeChainBridgeSession(runtime.stopCh, session)
 		runtime.clearUpstreamSession(session)
 	}
-	log.Printf("probe chain inbound bridge disconnected: chain=%s role=%s bridge_role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, role, r.RemoteAddr)
+	log.Printf("probe chain inbound bridge disconnected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr)
 	_ = session.Close()
 	<-done
 }
@@ -1562,6 +1568,15 @@ func (rt *probeChainRuntime) setUpstreamSession(session *yamux.Session) {
 	old := rt.upstreamSession
 	rt.upstreamSession = session
 	rt.bridgeMu.Unlock()
+	chainID := strings.TrimSpace(rt.cfg.chainID)
+	role := strings.TrimSpace(rt.cfg.role)
+	if old == nil {
+		log.Printf("probe chain upstream session assigned: chain=%s role=%s new=%p old=nil", chainID, role, session)
+	} else if old == session {
+		log.Printf("probe chain upstream session assigned: chain=%s role=%s new=%p old=%p reused=true", chainID, role, session, old)
+	} else {
+		log.Printf("probe chain upstream session assigned: chain=%s role=%s new=%p old=%p replaced=true", chainID, role, session, old)
+	}
 	if old != nil && old != session {
 		_ = old.Close()
 	}
@@ -1571,11 +1586,14 @@ func (rt *probeChainRuntime) clearUpstreamSession(target *yamux.Session) {
 	if rt == nil || target == nil {
 		return
 	}
+	cleared := false
 	rt.bridgeMu.Lock()
 	if rt.upstreamSession == target {
 		rt.upstreamSession = nil
+		cleared = true
 	}
 	rt.bridgeMu.Unlock()
+	log.Printf("probe chain upstream session cleared: chain=%s role=%s target=%p cleared=%t", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), target, cleared)
 }
 
 func (rt *probeChainRuntime) getUpstreamSession() *yamux.Session {
@@ -1677,9 +1695,25 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn) {
 		return
 	}
 
+	currentUpstream := runtime.getUpstreamSession()
+	upstreamState := "nil"
+	upstreamClosed := false
+	if currentUpstream != nil {
+		upstreamState = fmt.Sprintf("%p", currentUpstream)
+		upstreamClosed = currentUpstream.IsClosed()
+	}
+	log.Printf("probe chain reverse conn opening prev hop: chain=%s role=%s remote=%s upstream_session=%s upstream_closed=%t", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), upstreamState, upstreamClosed)
+
 	prevHop, err := openProbeChainPrevHop(runtime)
 	if err != nil {
-		log.Printf("probe chain open upstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
+		latestUpstream := runtime.getUpstreamSession()
+		latestState := "nil"
+		latestClosed := false
+		if latestUpstream != nil {
+			latestState = fmt.Sprintf("%p", latestUpstream)
+			latestClosed = latestUpstream.IsClosed()
+		}
+		log.Printf("probe chain open upstream stream failed: chain=%s role=%s remote=%s upstream_session=%s upstream_closed=%t err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), latestState, latestClosed, err)
 		return
 	}
 	log.Printf("probe chain upstream stream connected: chain=%s role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
@@ -1784,16 +1818,27 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, timeout time.Durat
 		timeout = 15 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
+	attempt := 0
 	for {
+		attempt++
 		session := runtime.getUpstreamSession()
-		if session != nil && !session.IsClosed() {
-			stream, openErr := session.Open()
-			if openErr == nil {
-				return stream, nil
+		if session != nil {
+			closed := session.IsClosed()
+			log.Printf("probe chain upstream stream attempt: chain=%s role=%s attempt=%d session=%p closed=%t", runtime.cfg.chainID, runtime.cfg.role, attempt, session, closed)
+			if !closed {
+				stream, openErr := session.Open()
+				if openErr == nil {
+					log.Printf("probe chain upstream stream opened: chain=%s role=%s attempt=%d session=%p", runtime.cfg.chainID, runtime.cfg.role, attempt, session)
+					return stream, nil
+				}
+				log.Printf("probe chain upstream stream open failed: chain=%s role=%s attempt=%d session=%p err=%v", runtime.cfg.chainID, runtime.cfg.role, attempt, session, openErr)
+				if session.IsClosed() {
+					log.Printf("probe chain upstream session became closed while opening stream: chain=%s role=%s attempt=%d session=%p", runtime.cfg.chainID, runtime.cfg.role, attempt, session)
+					runtime.clearUpstreamSession(session)
+				}
 			}
-			if session.IsClosed() {
-				runtime.clearUpstreamSession(session)
-			}
+		} else {
+			log.Printf("probe chain upstream stream attempt: chain=%s role=%s attempt=%d session=nil", runtime.cfg.chainID, runtime.cfg.role, attempt)
 		}
 		if time.Now().After(deadline) {
 			break
@@ -1804,6 +1849,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, timeout time.Durat
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
+	log.Printf("probe chain upstream stream unavailable: chain=%s role=%s attempts=%d timeout=%s", runtime.cfg.chainID, runtime.cfg.role, attempt, timeout)
 	return nil, fmt.Errorf("upstream bridge is unavailable")
 }
 

@@ -15,10 +15,11 @@ const (
 )
 
 type managerGlobalConfig struct {
-	ControllerURL string `json:"controller_url"`
+	ControllerURL        string `json:"controller_url"`
 	// ControllerIP 为可选的主控 IP，配置后连接主控时直接使用该 IP，跳过 DNS 解析。
 	// 格式为纯 IPv4 或 IPv6 地址，不含端口，留空则正常走 DNS。
-	ControllerIP string `json:"controller_ip"`
+	ControllerIP         string `json:"controller_ip"`
+	AIDebugListenEnabled bool   `json:"ai_debug_listen_enabled"`
 }
 
 func (a *App) GetGlobalControllerURL() (string, error) {
@@ -86,6 +87,37 @@ func (a *App) SetGlobalControllerURL(rawURL string) (string, error) {
 	return value, nil
 }
 
+func (a *App) GetAIDebugListenEnabled() (bool, error) {
+	config, _, err := loadManagerGlobalConfig()
+	if err != nil {
+		return false, err
+	}
+	return config.AIDebugListenEnabled, nil
+}
+
+func (a *App) SetAIDebugListenEnabled(enabled bool) (bool, error) {
+	config, configPath, err := loadManagerGlobalConfig()
+	if err != nil {
+		return false, err
+	}
+	config.AIDebugListenEnabled = enabled
+	if err := writeManagerGlobalConfig(configPath, config); err != nil {
+		return false, err
+	}
+	if enabled {
+		if err := a.startAIDebugServer(); err != nil {
+			return false, err
+		}
+		logManagerInfof("AI debug listen enabled in global config")
+	} else {
+		if err := a.stopAIDebugServer(); err != nil {
+			return false, err
+		}
+		logManagerInfof("AI debug listen disabled in global config")
+	}
+	return enabled, nil
+}
+
 func loadManagerGlobalConfig() (managerGlobalConfig, string, error) {
 	dataDir, err := ensureManagerDataDir()
 	if err != nil {
@@ -96,7 +128,7 @@ func loadManagerGlobalConfig() (managerGlobalConfig, string, error) {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, ControllerIP: ""}
+			defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, ControllerIP: "", AIDebugListenEnabled: false}
 			if writeErr := writeManagerGlobalConfig(configPath, defaultConfig); writeErr != nil {
 				return managerGlobalConfig{}, configPath, writeErr
 			}
@@ -107,7 +139,7 @@ func loadManagerGlobalConfig() (managerGlobalConfig, string, error) {
 
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
-		defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, ControllerIP: ""}
+		defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, ControllerIP: "", AIDebugListenEnabled: false}
 		if writeErr := writeManagerGlobalConfig(configPath, defaultConfig); writeErr != nil {
 			return managerGlobalConfig{}, configPath, writeErr
 		}

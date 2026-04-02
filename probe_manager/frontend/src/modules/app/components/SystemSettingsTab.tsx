@@ -36,6 +36,12 @@ type SystemSettingsTabProps = {
   onRefreshBackupSettings: () => void;
   onSaveBackupSettings: (enabled: boolean, value: string) => void;
   onTestBackupSettings: (value: string) => void;
+  aiDebugListenEnabled: boolean;
+  aiDebugListenStatus: string;
+  isLoadingAIDebugListenEnabled: boolean;
+  isSavingAIDebugListenEnabled: boolean;
+  onRefreshAIDebugListenEnabled: () => void;
+  onSetAIDebugListenEnabled: (enabled: boolean) => void;
 };
 
 function ProgressLine(props: { title: string; progress: UpgradeProgress }) {
@@ -141,6 +147,32 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
 
       {subTab === "controller" && (
         <>
+          <div className="identity-card" style={{ marginBottom: 12 }}>
+            <div><strong>AI 调试入口</strong></div>
+            <div className="status" style={{ marginTop: 8 }}>
+              监听地址：0.0.0.0:16031，默认关闭，用于后续向 AI 提供实时调试信息。
+            </div>
+            <label className="probe-direct-toggle" style={{ marginTop: 12 }}>
+              <input
+                type="checkbox"
+                checked={props.aiDebugListenEnabled}
+                onChange={(event) => props.onSetAIDebugListenEnabled(event.target.checked)}
+                disabled={props.isLoadingAIDebugListenEnabled || props.isSavingAIDebugListenEnabled}
+              />
+              <span>启用 AI 调试 HTTP 入口</span>
+            </label>
+            <div className="content-actions inline">
+              <button
+                className="btn"
+                onClick={props.onRefreshAIDebugListenEnabled}
+                disabled={props.isLoadingAIDebugListenEnabled || props.isSavingAIDebugListenEnabled}
+              >
+                {props.isLoadingAIDebugListenEnabled ? "读取中..." : "读取状态"}
+              </button>
+            </div>
+          </div>
+          <div className="status">{props.aiDebugListenStatus}</div>
+
           <div className="identity-card">
             <div><strong>主控备份设置</strong></div>
             <label className="probe-direct-toggle" style={{ marginTop: 0 }}>
