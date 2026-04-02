@@ -259,10 +259,22 @@ func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 		return windowsAdapterInfo{}, err
 	}
 	if err := windowsEnsureIPv4Route(tunRouteSplitPrefixA, adapter.InterfaceIndex, "0.0.0.0", 6); err != nil {
-		return windowsAdapterInfo{}, err
+		if isWindowsRouteInvalidParameterError(err) {
+			if retryErr := windowsEnsureIPv4Route(tunRouteSplitPrefixA, adapter.InterfaceIndex, tunRouteIPv4Address, 6); retryErr != nil {
+				return windowsAdapterInfo{}, retryErr
+			}
+		} else {
+			return windowsAdapterInfo{}, err
+		}
 	}
 	if err := windowsEnsureIPv4Route(tunRouteSplitPrefixB, adapter.InterfaceIndex, "0.0.0.0", 6); err != nil {
-		return windowsAdapterInfo{}, err
+		if isWindowsRouteInvalidParameterError(err) {
+			if retryErr := windowsEnsureIPv4Route(tunRouteSplitPrefixB, adapter.InterfaceIndex, tunRouteIPv4Address, 6); retryErr != nil {
+				return windowsAdapterInfo{}, retryErr
+			}
+		} else {
+			return windowsAdapterInfo{}, err
+		}
 	}
 	return adapter, nil
 }
@@ -319,4 +331,12 @@ func clearWindowsTUNAdapterIPv4Routing(interfaceIndex int, restoreDNSServers []s
 		return fmt.Errorf("clear tun adapter routing failed: %w", err)
 	}
 	return nil
+}
+
+func isWindowsRouteInvalidParameterError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "code=87") || strings.Contains(msg, "ret=87") || strings.Contains(msg, "error_invalid_parameter") || strings.Contains(msg, "invalid parameter")
 }
