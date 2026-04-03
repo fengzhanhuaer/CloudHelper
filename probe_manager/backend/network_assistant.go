@@ -324,35 +324,6 @@ type dnsCacheEntry struct {
 	Expires time.Time
 }
 
-type unifiedDNSRecordKind string
-
-type unifiedDNSRecordSource string
-
-const (
-	unifiedDNSRecordKindDirectHost unifiedDNSRecordKind = "direct_host"
-	unifiedDNSRecordKindRuleDNS    unifiedDNSRecordKind = "rule_dns"
-	unifiedDNSRecordKindRouteHint  unifiedDNSRecordKind = "route_hint"
-	unifiedDNSRecordKindFakeIP     unifiedDNSRecordKind = "fake_ip"
-)
-
-const (
-	unifiedDNSRecordSourceSystem    unifiedDNSRecordSource = "system"
-	unifiedDNSRecordSourceTunnel    unifiedDNSRecordSource = "tunnel"
-	unifiedDNSRecordSourceFake      unifiedDNSRecordSource = "fake"
-	unifiedDNSRecordSourceSynthetic unifiedDNSRecordSource = "synthetic"
-)
-
-type unifiedDNSCacheRecord struct {
-	Kind    unifiedDNSRecordKind
-	Source  unifiedDNSRecordSource
-	HostKey string
-	IPKey   string
-	Addrs   []string
-	Route   tunnelRouteDecision
-	Domain  string
-	FakeIP  bool
-	Expires time.Time
-}
 
 type tunPreferenceState struct {
 	EverEnabled  bool `json:"ever_enabled"`
@@ -602,7 +573,7 @@ func (a *App) QueryNetworkAssistantDNSCache(query string) ([]NetworkAssistantDNS
 // QueryDNSCache 返回匹配 query 的 DNS 路由缓存条目。
 // query 为空时返回全部；query 为 IP 时按 IP 查；query 为域名时按域名查。
 func (s *networkAssistantService) QueryDNSCache(query string) []NetworkAssistantDNSCacheEntry {
-	return queryUnifiedDNSCacheEntries(query)
+	return querySplitDNSCacheEntries(s, query)
 }
 
 func (a *App) ForceRefreshProbeDNSCache(controllerBaseURL, sessionToken string) (string, error) {
@@ -1414,11 +1385,43 @@ func clampRuleDNSTTL(ttlSeconds int) int {
 }
 
 func (s *networkAssistantService) loadRuleDNSCache(cacheKey string) ([]string, bool) {
-	return getUnifiedRuleDNSCache(cacheKey)
+	normalizedKey := strings.ToLower(strings.TrimSpace(cacheKey))
+	if normalizedKey == "" {
+		return nil, false
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ruleDNSCache == nil {
+		s.ruleDNSCache = make(map[string]dnsCacheEntry)
+	}
+	entry, ok := s.ruleDNSCache[normalizedKey]
+	if !ok {
+		return nil, false
+	}
+	if now.After(entry.Expires) {
+		delete(s.ruleDNSCache, normalizedKey)
+		return nil, false
+	}
+	if len(entry.Addrs) == 0 {
+		return nil, false
+	}
+	return append([]string(nil), entry.Addrs...), true
 }
 
 func (s *networkAssistantService) storeRuleDNSCache(cacheKey string, addresses []string, ttlSeconds int) {
-	setUnifiedRuleDNSCache(cacheKey, addresses, clampRuleDNSTTL(ttlSeconds), unifiedDNSRecordSourceTunnel)
+	normalizedKey := strings.ToLower(strings.TrimSpace(cacheKey))
+	normalizedAddrs := normalizeDNSCacheIPs(addresses)
+	if normalizedKey == "" || len(normalizedAddrs) == 0 {
+		return
+	}
+	expires := time.Now().Add(time.Duration(clampRuleDNSTTL(ttlSeconds)) * time.Second)
+	s.mu.Lock()
+	if s.ruleDNSCache == nil {
+		s.ruleDNSCache = make(map[string]dnsCacheEntry)
+	}
+	s.ruleDNSCache[normalizedKey] = dnsCacheEntry{Addrs: normalizedAddrs, Expires: expires}
+	s.mu.Unlock()
 }
 
 func (s *networkAssistantService) queryRuleDomainViaTunnel(nodeID string, domain string, qType uint16) ([]string, int, error) {

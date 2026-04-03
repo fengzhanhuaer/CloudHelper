@@ -115,7 +115,6 @@ const defaultDNSUpstreamConfig: NetworkAssistantDNSUpstreamConfig = {
   dot_servers: [],
   doh_servers: [],
   fake_ip_cidr: "",
-  fake_ip_whitelist: [],
 };
 
 export function useNetworkAssistant() {

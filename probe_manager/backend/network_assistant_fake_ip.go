@@ -37,13 +37,11 @@ type fakeIPPool struct {
 	// fake IP -> entry
 	ipToEntry map[string]fakeIPEntry
 
-	// 白名单域名后缀列表（不分配 fake IP 的域名）
-	whitelistSuffixes []string
 }
 
 // newFakeIPPool 根据 CIDR 字符串创建 fake IP 池
 // 如果 cidr 为空或为 0.0.0.0/0 则返回 nil（代表禁用 fake IP）
-func newFakeIPPool(cidr string, whitelist []string) (*fakeIPPool, error) {
+func newFakeIPPool(cidr string) (*fakeIPPool, error) {
 	cidr = strings.TrimSpace(cidr)
 	if cidr == "" || cidr == "0.0.0.0/0" {
 		return nil, nil
@@ -69,46 +67,13 @@ func newFakeIPPool(cidr string, whitelist []string) (*fakeIPPool, error) {
 		return nil, fmt.Errorf("fake_ip_cidr has no usable addresses")
 	}
 
-	suffixes := normalizeFakeIPWhitelist(whitelist)
-
 	return &fakeIPPool{
-		network:           network,
-		cursor:            0,
-		size:              size,
-		domainToIP:        make(map[string]string),
-		ipToEntry:         make(map[string]fakeIPEntry),
-		whitelistSuffixes: suffixes,
+		network:    network,
+		cursor:     0,
+		size:       size,
+		domainToIP: make(map[string]string),
+		ipToEntry:  make(map[string]fakeIPEntry),
 	}, nil
-}
-
-// normalizeFakeIPWhitelist 规范化白名单域名列表（小写 + 去空行 + 去注释）
-func normalizeFakeIPWhitelist(raw []string) []string {
-	out := make([]string, 0, len(raw))
-	for _, item := range raw {
-		item = strings.TrimSpace(item)
-		if item == "" || strings.HasPrefix(item, "#") {
-			continue
-		}
-		out = append(out, strings.ToLower(item))
-	}
-	return out
-}
-
-// IsWhitelisted 检查域名是否在白名单中（不分配 fake IP）
-func (p *fakeIPPool) IsWhitelisted(domain string) bool {
-	if p == nil {
-		return false
-	}
-	normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
-	if normalized == "" {
-		return false
-	}
-	for _, suffix := range p.whitelistSuffixes {
-		if normalized == suffix || strings.HasSuffix(normalized, "."+suffix) {
-			return true
-		}
-	}
-	return false
 }
 
 // AllocateOrGet 为域名分配（或复用已有）fake IP，并记录路由决策
@@ -267,8 +232,8 @@ type NetworkAssistantDNSUpstreamConfig struct {
 	FakeIPWhitelist []string `json:"fake_ip_whitelist"`
 }
 
-// shouldUseFakeIP 判断该域名是否应分配 fake IP
-// 条件：fake IP 池已配置 && 域名未在白名单中
+// shouldUseFakeIP 判断该域名是否应分配 fake IP。
+// 配置来源改为规则组：命中 direct 组（直连）则不分配 fake IP。
 func (s *networkAssistantService) shouldUseFakeIP(normalizedDomain string) bool {
 	s.mu.RLock()
 	pool := s.fakeIPPool
@@ -276,7 +241,11 @@ func (s *networkAssistantService) shouldUseFakeIP(normalizedDomain string) bool 
 	if pool == nil {
 		return false
 	}
-	return !pool.IsWhitelisted(normalizedDomain)
+	decision, err := s.decideRouteForTarget(net.JoinHostPort(normalizedDomain, "80"))
+	if err != nil {
+		return false
+	}
+	return !decision.Direct
 }
 
 // assignFakeIP 为域名分配 fake IP，并预先根据路由策略决定路由
@@ -301,19 +270,14 @@ func (s *networkAssistantService) assignFakeIP(normalizedDomain string) (string,
 		return "", fmt.Errorf("fake IP pool exhausted")
 	}
 
-	// 统一缓存池：写入 fake 映射与路由提示
-	setUnifiedFakeIPMapping(fakeIP, normalizedDomain, route, ttl)
-	// 兼容路径：保留旧路由提示映射，供未迁移逻辑读取
+	// 分表路径：仅维护 fakeIP 池 + 路由提示映射
 	s.storeFakeIPRouteHint(fakeIP, normalizedDomain, route)
+	_ = ttl
 	return fakeIP, nil
 }
 
 // lookupFakeIPDomain 根据 fake IP 反查域名（若存在）
 func (s *networkAssistantService) lookupFakeIPDomain(ip string) (string, tunnelRouteDecision, bool) {
-	if entry, ok := getUnifiedFakeIPMapping(ip); ok {
-		return entry.Domain, entry.Route, true
-	}
-
 	s.mu.RLock()
 	pool := s.fakeIPPool
 	s.mu.RUnlock()
@@ -324,7 +288,6 @@ func (s *networkAssistantService) lookupFakeIPDomain(ip string) (string, tunnelR
 	if !ok {
 		return "", tunnelRouteDecision{}, false
 	}
-	setUnifiedFakeIPMapping(ip, entry.Domain, entry.Route, int(time.Until(entry.Expires).Seconds()))
 	return entry.Domain, entry.Route, true
 }
 
@@ -334,7 +297,7 @@ func (s *networkAssistantService) reloadFakeIPPool() {
 	if err != nil {
 		return
 	}
-	pool, poolErr := newFakeIPPool(dnsConfig.FakeIPCIDR, dnsConfig.FakeIPWhitelist)
+	pool, poolErr := newFakeIPPool(dnsConfig.FakeIPCIDR)
 	if poolErr != nil {
 		s.logf("fake IP pool init failed: %v", poolErr)
 		pool = nil
