@@ -43,9 +43,8 @@ export function NetworkAssistantDNSCachePanel(props: NetworkAssistantDNSCachePan
             <tr style={{ background: "#f0f0f0" }}>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>类型</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>路由 / 代理组</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>过期时间</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>FAKE IP</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>组</th>
             </tr>
           </thead>
           <tbody>
@@ -53,13 +52,8 @@ export function NetworkAssistantDNSCachePanel(props: NetworkAssistantDNSCachePan
               <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
                 <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.domain || "-"}</td>
                 <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.ip || "-"}</td>
-                <td style={{ padding: "4px 8px" }}>{entry.fake_ip ? "Fake IP" : (entry.direct && !entry.node_id && !entry.group ? "直连缓存" : "DNS")}</td>
-                <td style={{ padding: "4px 8px" }}>
-                  {entry.direct
-                    ? (entry.group ? `直连 · ${entry.group}` : "直连")
-                    : (entry.group ? `${entry.group}${entry.node_id ? ` · ${entry.node_id}` : ""}` : (entry.node_id || "-"))}
-                </td>
-                <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 12 }}>{entry.expires_at || "-"}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.fake_ip || "-"}</td>
+                <td style={{ padding: "4px 8px" }}>{entry.direct ? "直连" : (entry.group || "-")}</td>
               </tr>
             ))}
           </tbody>
