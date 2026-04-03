@@ -611,12 +611,15 @@ func ipv4ToUint32(ip net.IP) (uint32, bool) {
 	if ip4 == nil {
 		return 0, false
 	}
-	return binary.BigEndian.Uint32(ip4), true
+	// Windows MIB_IPFORWARDROW IPv4 fields are DWORD values interpreted in host order.
+	// On little-endian Windows, using LittleEndian here keeps compatibility with
+	// GetBestRoute / GetIpForwardTable / DeleteIpForwardEntry legacy structures.
+	return binary.LittleEndian.Uint32(ip4), true
 }
 
 func uint32ToIPv4(value uint32) string {
 	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], value)
+	binary.LittleEndian.PutUint32(b[:], value)
 	return net.IPv4(b[0], b[1], b[2], b[3]).String()
 }
 
