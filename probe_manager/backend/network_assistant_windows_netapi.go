@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -17,6 +18,7 @@ import (
 
 const (
 	windowsErrorInsufficientBuffer = 122
+	windowsErrorAlreadyExists      = 183
 	windowsRouteProtoNetMgmt       = 3
 	windowsRouteTypeDirect         = 3 // MIB_IPROUTE_TYPE_DIRECT  — next hop IS the destination (on-link)
 	windowsRouteTypeIndirect       = 4 // MIB_IPROUTE_TYPE_INDIRECT — next hop is a gateway
@@ -277,13 +279,28 @@ func windowsEnsureInterfaceIPv4Address(interfaceIndex int, ipText string, prefix
 	row.PreferredLifetime = 0xFFFFFFFF
 
 	ret, _, callErr := procCreateUnicastIpAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
-	if ret != 0 {
+	if ret != 0 && ret != windowsErrorAlreadyExists {
 		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
 			return fmt.Errorf("CreateUnicastIpAddressEntry failed: %w", callErr)
 		}
 		return fmt.Errorf("CreateUnicastIpAddressEntry failed: code=%d", ret)
 	}
-	return nil
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		adapter, listErr := windowsFindAdapterByIfIndex(interfaceIndex)
+		if listErr == nil {
+			for _, existing := range adapter.IPv4Addrs {
+				if strings.EqualFold(strings.TrimSpace(existing), ip4.String()) {
+					return nil
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("ipv4 address not effective in time: if=%d ip=%s", interfaceIndex, ip4.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func windowsDetectPrimaryIPv4Route() (windowsRouteInfo, error) {
