@@ -438,8 +438,6 @@ type networkAssistantService struct {
 	logRateState    map[string]time.Time
 
 	lastChainRefreshAt map[string]time.Time
-	controlPlaneHosts  map[string]struct{}
-	controlPlaneIPs    map[string]struct{}
 
 	processMonitor *processMonitor
 }
@@ -488,8 +486,6 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunDynamicBypass:    make(map[string]int),
 		dnsRouteHints:       make(map[string]dnsRouteHintEntry),
 		logRateState:        make(map[string]time.Time),
-		controlPlaneHosts:   make(map[string]struct{}),
-		controlPlaneIPs:     make(map[string]struct{}),
 		processMonitor:      newProcessMonitor(),
 	}
 	if _, err := getDNSUpstreamConfig(); err != nil {
@@ -1174,10 +1170,6 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 	if mode == networkModeDirect {
 		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 	}
-	if s.isControlPlaneDirectTarget(host) {
-		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
-	}
-
 	useRuleRouting := mode == networkModeTUN
 	if !useRuleRouting {
 		if s.shouldDialDirect(normalizedTarget) {
