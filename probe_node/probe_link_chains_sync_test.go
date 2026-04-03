@@ -49,6 +49,23 @@ func TestBuildChainRouteAndResolveProbeNodeChainRole(t *testing.T) {
 	}
 }
 
+func TestResolveProbeNodeChainRoleFallbackWhenEntryMissing(t *testing.T) {
+	item := probeLinkChainServerItem{
+		EntryNodeID:    "",
+		CascadeNodeIDs: []string{"9"},
+		ExitNodeID:     "10",
+	}
+	if got, want := buildChainRoute(item), []string{"9", "10"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildChainRoute()=%v, want %v", got, want)
+	}
+	if role := resolveProbeNodeChainRole(item, "9"); role != "entry" {
+		t.Fatalf("role for node 9=%q, want entry", role)
+	}
+	if role := resolveProbeNodeChainRole(item, "10"); role != "exit" {
+		t.Fatalf("role for node 10=%q, want exit", role)
+	}
+}
+
 func TestFindHopConfigForNodeIdentityAndLegacyFallback(t *testing.T) {
 	identityItem := probeLinkChainServerItem{
 		EntryNodeID:    "10",

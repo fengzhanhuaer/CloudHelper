@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestNormalizeProbeLinkChainHopConfigsForUpsertSupportsListenExternalPorts(t *testing.T) {
 	input := []probeLinkChainHopConfig{
@@ -70,5 +73,53 @@ func TestIsProbeLinkChainNodeInRoute(t *testing.T) {
 	}
 	if isProbeLinkChainNodeInRoute(chain, "5") {
 		t.Fatalf("expected node 5 not to be in route")
+	}
+}
+
+func TestNormalizeProbeLinkChainEntryAndCascades(t *testing.T) {
+	tests := []struct {
+		name        string
+		entry       string
+		exitNode    string
+		cascades    []string
+		wantEntry   string
+		wantCascade []string
+	}{
+		{
+			name:        "entry provided keeps order and removes duplicates",
+			entry:       "9",
+			exitNode:    "10",
+			cascades:    []string{"9", "11", "10", "11", "12"},
+			wantEntry:   "9",
+			wantCascade: []string{"11", "12"},
+		},
+		{
+			name:        "entry missing infer from first cascade",
+			entry:       "",
+			exitNode:    "10",
+			cascades:    []string{"9", "11", "10"},
+			wantEntry:   "9",
+			wantCascade: []string{"11"},
+		},
+		{
+			name:        "entry and cascades missing fallback to exit",
+			entry:       "",
+			exitNode:    "10",
+			cascades:    []string{},
+			wantEntry:   "10",
+			wantCascade: []string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotEntry, gotCascade := normalizeProbeLinkChainEntryAndCascades(tc.entry, tc.exitNode, tc.cascades)
+			if gotEntry != tc.wantEntry {
+				t.Fatalf("entry=%q, want %q", gotEntry, tc.wantEntry)
+			}
+			if !reflect.DeepEqual(gotCascade, tc.wantCascade) {
+				t.Fatalf("cascades=%v, want %v", gotCascade, tc.wantCascade)
+			}
+		})
 	}
 }

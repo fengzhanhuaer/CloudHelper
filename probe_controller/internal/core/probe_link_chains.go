@@ -213,7 +213,7 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 		return probeLinkChainRecord{}, nil, fmt.Errorf("exit_node_id is required")
 	}
 	cascades := normalizeProbeNodeIDList(input.CascadeNodeIDs)
-	cascades = removeNodeIDs(cascades, entryNodeID, exitNodeID)
+	entryNodeID, cascades = normalizeProbeLinkChainEntryAndCascades(entryNodeID, exitNodeID, cascades)
 	routeNodes := buildProbeChainRouteNodes(probeLinkChainRecord{
 		EntryNodeID:    entryNodeID,
 		ExitNodeID:     exitNodeID,
@@ -378,7 +378,7 @@ func normalizeProbeLinkChains(items []probeLinkChainRecord) []probeLinkChainReco
 			continue
 		}
 		cascades := normalizeProbeNodeIDList(item.CascadeNodeIDs)
-		cascades = removeNodeIDs(cascades, entryNodeID, exitNodeID)
+		entryNodeID, cascades = normalizeProbeLinkChainEntryAndCascades(entryNodeID, exitNodeID, cascades)
 		routeNodes := buildProbeChainRouteNodes(probeLinkChainRecord{
 			EntryNodeID:    entryNodeID,
 			ExitNodeID:     exitNodeID,
@@ -459,6 +459,25 @@ func removeNodeIDs(values []string, excludes ...string) []string {
 		out = append(out, key)
 	}
 	return out
+}
+
+func normalizeProbeLinkChainEntryAndCascades(entryNodeID string, exitNodeID string, cascades []string) (string, []string) {
+	entry := normalizeProbeNodeID(entryNodeID)
+	exitNode := normalizeProbeNodeID(exitNodeID)
+	normalizedCascades := normalizeProbeNodeIDList(cascades)
+	normalizedCascades = removeNodeIDs(normalizedCascades, entry, exitNode)
+	if entry != "" {
+		return entry, normalizedCascades
+	}
+	if len(normalizedCascades) > 0 {
+		entry = normalizedCascades[0]
+		normalizedCascades = removeNodeIDs(normalizedCascades[1:], entry, exitNode)
+		return entry, normalizedCascades
+	}
+	if exitNode != "" {
+		return exitNode, normalizedCascades
+	}
+	return "", normalizedCascades
 }
 
 func normalizeProbeLinkChainListenHost(raw string) string {

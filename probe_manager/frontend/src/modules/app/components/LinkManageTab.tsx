@@ -843,7 +843,8 @@ export function LinkManageTab(props: LinkManageTabProps) {
       return;
     }
     const exitNodeID = routeNodeIDs[routeNodeIDs.length - 1];
-    const cascades = routeNodeIDs.slice(0, -1);
+    const entryNodeID = routeNodeIDs[0] || "";
+    const cascades = routeNodeIDs.slice(1, -1);
     const hopConfigsResult = buildProbeLinkHopConfigsPayload(chainForm);
     if (hopConfigsResult.error) {
       setChainStatus(hopConfigsResult.error);
@@ -872,7 +873,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
         user_id: userID,
         user_public_key: userPublicKey,
         secret: chainForm.secret.trim() || undefined,
-        entry_node_id: "",
+        entry_node_id: entryNodeID,
         exit_node_id: exitNodeID,
         cascade_node_ids: cascades,
         listen_host: fallbackListenHost,

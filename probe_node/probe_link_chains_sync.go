@@ -345,6 +345,28 @@ func resolveProbeNodeChainRole(item probeLinkChainServerItem, nodeID string) str
 	if isExit {
 		return "exit"
 	}
+
+	// Topology fallback: when entry/exit fields are partially missing,
+	// infer head/tail roles from computed route [entry, cascade..., exit].
+	// This keeps single-cascade chains (e.g. entry missing, cascade has one node)
+	// correctly treated as entry instead of relay.
+	route := buildChainRoute(item)
+	if len(route) > 0 {
+		inferredEntry := normalizeProbeChainNodeID(route[0])
+		inferredExit := normalizeProbeChainNodeID(route[len(route)-1])
+		inferredIsEntry := inferredEntry != "" && targetNodeID == inferredEntry
+		inferredIsExit := inferredExit != "" && targetNodeID == inferredExit
+		if inferredIsEntry && inferredIsExit {
+			return "entry_exit"
+		}
+		if inferredIsEntry {
+			return "entry"
+		}
+		if inferredIsExit {
+			return "exit"
+		}
+	}
+
 	for _, id := range item.CascadeNodeIDs {
 		if normalizeProbeChainNodeID(id) == targetNodeID {
 			return "relay"
