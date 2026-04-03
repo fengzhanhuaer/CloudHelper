@@ -591,6 +591,7 @@ export namespace backend {
 		   export class NetworkProcessEvent {
 		       kind: string;
 		       timestamp: number;
+		       process_name: string;
 		       domain: string;
 		       target_ip: string;
 		       target_port: number;
@@ -598,6 +599,7 @@ export namespace backend {
 		       node_id: string;
 		       group: string;
 		       resolved_ips: string[];
+		       count: number;
 		   
 		       static createFrom(source: any = {}) {
 		           return new NetworkProcessEvent(source);
@@ -607,6 +609,7 @@ export namespace backend {
 		           if ('string' === typeof source) source = JSON.parse(source);
 		           this.kind = source["kind"];
 		           this.timestamp = source["timestamp"];
+		           this.process_name = source["process_name"];
 		           this.domain = source["domain"];
 		           this.target_ip = source["target_ip"];
 		           this.target_port = source["target_port"];
@@ -614,6 +617,7 @@ export namespace backend {
 		           this.node_id = source["node_id"];
 		           this.group = source["group"];
 		           this.resolved_ips = source["resolved_ips"];
+		           this.count = source["count"];
 		       }
 		   }
 		  

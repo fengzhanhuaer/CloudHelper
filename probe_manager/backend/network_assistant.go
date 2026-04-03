@@ -564,6 +564,14 @@ func (a *App) StopNetworkAssistantProcessMonitor() error {
 	return nil
 }
 
+func (a *App) ClearNetworkAssistantProcessEvents() error {
+	if a.networkAssistant == nil {
+		return errors.New("network assistant service is not initialized")
+	}
+	a.networkAssistant.processMonitor.ClearEvents()
+	return nil
+}
+
 func (a *App) QueryNetworkAssistantProcessEvents(sinceMs int64) ([]NetworkProcessEvent, error) {
 	if a.networkAssistant == nil {
 		return nil, errors.New("network assistant service is not initialized")

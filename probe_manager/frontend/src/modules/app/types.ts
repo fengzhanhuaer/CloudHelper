@@ -155,6 +155,7 @@ export type NetworkProcessEvent = {
   node_id?: string;
   group?: string;
   resolved_ips?: string[];
+  count?: number;
 };
 
 export type NetworkAssistantLogSource = "manager" | "controller";
