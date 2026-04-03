@@ -117,6 +117,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [status, setStatus] = useState("正在加载探针列表...");
   const [settingsDraft, setSettingsDraft] = useState<ProbeNodeSettingsDraft | null>(null);
   const [deletedNodeNos, setDeletedNodeNos] = useState<Set<number>>(new Set());
+  const statusRows = buildProbeStatusRowsFromCache(nodes, nodeStatusItems);
   const [logNodeIDInput, setLogNodeIDInput] = useState("");
   const [logLinesInput, setLogLinesInput] = useState("200");
   const [logSinceMinutesInput, setLogSinceMinutesInput] = useState("0");
@@ -324,7 +325,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       setNodes((prev) => mergeNodesWithStatus(prev, sortedItems));
       setReportIntervalSettings(settings);
       setReportIntervalInput(String(settings.current_sec || settings.default_sec || 60));
-      setStatus(items.length ? "已从主控同步探针状态" : "暂无探针状态数据");
+      setStatus(items.length ? "已从主控同步探针状态" : "已加载探针骨架，暂未收到实时状态数据");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`加载探针状态失败：${msg}`);
@@ -1096,7 +1097,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
             </div>
           </div>
 
-          {nodeStatusItems.length === 0 ? (
+          {statusRows.length === 0 ? (
             <div className="status">暂无探针，请先在“探针列表”页签点击“新建探针”。</div>
           ) : (
             <div className="probe-table-wrap">
@@ -1113,7 +1114,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {nodeStatusItems.map((item) => {
+                  {statusRows.map((item) => {
                     const ips = collectIPs(item);
                     const online = item.runtime?.online === true;
                     const ipLocations = item.runtime?.ip_locations || {};
@@ -1489,6 +1490,15 @@ function mergeStatusItems(current: ProbeNodeStatusItem[], incoming: ProbeNodeSta
     map.set(item.node_no, item);
   }
   return sortStatusItems(Array.from(map.values()));
+}
+
+function buildProbeStatusRowsFromCache(nodes: ProbeNodeItem[], realtimeItems: ProbeNodeStatusItem[]): ProbeNodeStatusItem[] {
+  const skeleton = sortStatusItems(nodes.map((node) => ({
+    node_no: node.node_no,
+    node_name: node.node_name,
+    runtime: node.runtime || {},
+  })));
+  return mergeStatusItems(skeleton, realtimeItems);
 }
 
 function mergeNodesWithStatus(nodes: ProbeNodeItem[], statusItems: ProbeNodeStatusItem[]): ProbeNodeItem[] {
