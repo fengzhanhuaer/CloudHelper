@@ -130,9 +130,12 @@ export type NetworkAssistantDNSCacheEntry = {
   domain: string;
   ip: string;
   fake_ip: boolean;
+  fake_ip_value?: string;
   direct: boolean;
   node_id: string;
   group: string;
+  kind?: string;
+  source?: string;
   expires_at: string;
 };
 

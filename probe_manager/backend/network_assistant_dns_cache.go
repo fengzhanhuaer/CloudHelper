@@ -355,14 +355,21 @@ func queryUnifiedDNSCacheEntries(query string) []NetworkAssistantDNSCacheEntry {
 				return
 			}
 		}
+		fakeIPValue := ""
+		if record.FakeIP {
+			fakeIPValue = ip
+		}
 		results = append(results, NetworkAssistantDNSCacheEntry{
-			Domain:    domain,
-			IP:        ip,
-			FakeIP:    record.FakeIP,
-			Direct:    record.Route.Direct,
-			NodeID:    strings.TrimSpace(record.Route.NodeID),
-			Group:     strings.TrimSpace(record.Route.Group),
-			ExpiresAt: record.Expires.Format(time.RFC3339),
+			Domain:      domain,
+			IP:          ip,
+			FakeIP:      record.FakeIP,
+			FakeIPValue: fakeIPValue,
+			Direct:      record.Route.Direct,
+			NodeID:      strings.TrimSpace(record.Route.NodeID),
+			Group:       strings.TrimSpace(record.Route.Group),
+			Kind:        string(record.Kind),
+			Source:      string(record.Source),
+			ExpiresAt:   record.Expires.Format(time.RFC3339),
 		})
 	}
 
@@ -530,7 +537,8 @@ func clearUnifiedRouteAndFakeHints() {
 	unifiedDNSCache.mu.Lock()
 	defer unifiedDNSCache.mu.Unlock()
 	for key, record := range unifiedDNSCache.records {
-		if record.Kind == unifiedDNSRecordKindRouteHint || record.Kind == unifiedDNSRecordKindFakeIP {
+		// 仅清理路由提示；fake IP 映射属于公共 DNS 缓存，不应在路由重建时被整体清空。
+		if record.Kind == unifiedDNSRecordKindRouteHint {
 			delete(unifiedDNSCache.records, key)
 		}
 	}
