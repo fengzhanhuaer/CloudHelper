@@ -173,6 +173,9 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     const activeTunnelID = group.action === "tunnel" ? (group.tunnel_node_id || "").trim() : "";
     const activeTunnelLabel = activeTunnelID ? (tunnelOptionLabels[activeTunnelID] || activeTunnelID) : "";
     const pingState = activeTunnelID ? tunnelPingStates[activeTunnelID] : undefined;
+    const keepalive = (props.status.group_keepalive || []).find(
+      (item) => (item.group || "").trim().toLowerCase() === (group.group || "").trim().toLowerCase(),
+    );
 
     return (
       <div key={group.group} className="rule-policy-group-row">
@@ -192,25 +195,51 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             );
           })}
         </div>
-        {activeTunnelID && (
+        {(activeTunnelID || keepalive) && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12, color: "#aaa" }}>
-              当前链路：{activeTunnelLabel}
-            </span>
-            <button
-              className="btn"
-              id={`tunnel-ping-btn-${group.group}`}
-              onClick={() => void handlePingTunnel(activeTunnelID)}
-              disabled={!!tunnelPingingID}
-              style={{
-                fontSize: 11,
-                padding: "2px 10px",
-                minWidth: 52,
-                background: tunnelPingingID === activeTunnelID ? "#555" : undefined,
-              }}
-            >
-              {tunnelPingingID === activeTunnelID ? "测试中" : "测试链路"}
-            </button>
+            {activeTunnelID && (
+              <>
+                <span style={{ fontSize: 12, color: "#aaa" }}>
+                  当前链路：{activeTunnelLabel}
+                </span>
+                <button
+                  className="btn"
+                  id={`tunnel-ping-btn-${group.group}`}
+                  onClick={() => void handlePingTunnel(activeTunnelID)}
+                  disabled={!!tunnelPingingID}
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 10px",
+                    minWidth: 52,
+                    background: tunnelPingingID === activeTunnelID ? "#555" : undefined,
+                  }}
+                >
+                  {tunnelPingingID === activeTunnelID ? "测试中" : "测试链路"}
+                </button>
+              </>
+            )}
+            {keepalive && (
+              <span
+                style={{
+                  fontSize: 12,
+                  color:
+                    keepalive.action === "tunnel"
+                      ? keepalive.connected
+                        ? "#4ade80"
+                        : "#f87171"
+                      : "#aaa",
+                }}
+                title={
+                  keepalive.action === "tunnel"
+                    ? `最近心跳：${keepalive.last_pong || "-"}，最近收包：${keepalive.last_recv || "-"}`
+                    : undefined
+                }
+              >
+                {keepalive.action === "tunnel"
+                  ? `保活：${keepalive.status || "-"}${keepalive.tunnel_label ? ` (${keepalive.tunnel_label})` : ""}`
+                  : `保活：${keepalive.status || "-"}`}
+              </span>
+            )}
             {pingState && (
               <span
                 style={{

@@ -63,25 +63,39 @@ var defaultRuleGroups = []string{
 }
 
 type NetworkAssistantStatus struct {
-	Enabled           bool     `json:"enabled"`
-	Mode              string   `json:"mode"`
-	NodeID            string   `json:"node_id"`
-	AvailableNodes    []string `json:"available_nodes"`
-	Socks5Listen      string   `json:"socks5_listen"`
-	TunnelRoute       string   `json:"tunnel_route"`
-	TunnelStatus      string   `json:"tunnel_status"`
-	SystemProxyStatus string   `json:"system_proxy_status"`
-	LastError         string   `json:"last_error"`
-	MuxConnected      bool     `json:"mux_connected"`
-	MuxActiveStreams  int      `json:"mux_active_streams"`
-	MuxReconnects     int64    `json:"mux_reconnects"`
-	MuxLastRecv       string   `json:"mux_last_recv"`
-	MuxLastPong       string   `json:"mux_last_pong"`
-	TUNSupported      bool     `json:"tun_supported"`
-	TUNInstalled      bool     `json:"tun_installed"`
-	TUNEnabled        bool     `json:"tun_enabled"`
-	TUNLibraryPath    string   `json:"tun_library_path"`
-	TUNStatus         string   `json:"tun_status"`
+	Enabled            bool                                 `json:"enabled"`
+	Mode               string                               `json:"mode"`
+	NodeID             string                               `json:"node_id"`
+	AvailableNodes     []string                             `json:"available_nodes"`
+	Socks5Listen       string                               `json:"socks5_listen"`
+	TunnelRoute        string                               `json:"tunnel_route"`
+	TunnelStatus       string                               `json:"tunnel_status"`
+	SystemProxyStatus  string                               `json:"system_proxy_status"`
+	LastError          string                               `json:"last_error"`
+	MuxConnected       bool                                 `json:"mux_connected"`
+	MuxActiveStreams   int                                  `json:"mux_active_streams"`
+	MuxReconnects      int64                                `json:"mux_reconnects"`
+	MuxLastRecv        string                               `json:"mux_last_recv"`
+	MuxLastPong        string                               `json:"mux_last_pong"`
+	GroupKeepalive     []NetworkAssistantGroupKeepaliveItem `json:"group_keepalive"`
+	TUNSupported       bool                                 `json:"tun_supported"`
+	TUNInstalled       bool                                 `json:"tun_installed"`
+	TUNEnabled         bool                                 `json:"tun_enabled"`
+	TUNLibraryPath     string                               `json:"tun_library_path"`
+	TUNStatus          string                               `json:"tun_status"`
+}
+
+// NetworkAssistantGroupKeepaliveItem 描述单个规则组当前生效链路的保活状态。
+type NetworkAssistantGroupKeepaliveItem struct {
+	Group         string `json:"group"`
+	Action        string `json:"action"`
+	TunnelNodeID  string `json:"tunnel_node_id,omitempty"`
+	TunnelLabel   string `json:"tunnel_label,omitempty"`
+	Connected     bool   `json:"connected"`
+	ActiveStreams int    `json:"active_streams"`
+	LastRecv      string `json:"last_recv"`
+	LastPong      string `json:"last_pong"`
+	Status        string `json:"status"`
 }
 
 type tunnelControlMessage struct {
@@ -805,39 +819,144 @@ func buildProbeLinkChainCacheItem(endpoint probeChainEndpoint) ProbeLinkChainCac
 func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	s.syncTUNInstallState()
 	s.mu.RLock()
+	mode := s.mode
+	nodeID := s.nodeID
+	availableNodes := append([]string(nil), s.availableNodes...)
+	tunnelStatusMessage := s.tunnelStatusMessage
+	systemProxyMessage := s.systemProxyMessage
+	lastError := s.lastError
+	tunSupported := s.tunSupported
+	tunInstalled := s.tunInstalled
+	tunEnabled := s.tunEnabled
+	tunLibraryPath := s.tunLibraryPath
+	tunStatus := s.tunStatus
 	muxClient := s.tunnelMuxClient
 	muxReconnects := s.muxReconnects
-	defer s.mu.RUnlock()
+	ruleRouting := s.ruleRouting
+	chainTargets := copyProbeChainTargets(s.chainTargets)
+	ruleMuxClients := make(map[string]*tunnelMuxClient, len(s.ruleMuxClients))
+	for key, client := range s.ruleMuxClients {
+		ruleMuxClients[key] = client
+	}
+	s.mu.RUnlock()
+
+	selectedNodeID := strings.TrimSpace(nodeID)
+	if selectedNodeID == "" {
+		selectedNodeID = defaultNodeID
+	}
 
 	muxConnected := false
 	muxActiveStreams := 0
 	muxLastRecv := ""
 	muxLastPong := ""
+	muxSnapshots := make(map[string]NetworkAssistantGroupKeepaliveItem, len(ruleMuxClients)+1)
 	if muxClient != nil {
 		muxConnected, muxActiveStreams, muxLastRecv, muxLastPong = muxClient.snapshot()
+		muxSnapshots[strings.ToLower(selectedNodeID)] = NetworkAssistantGroupKeepaliveItem{
+			Connected:     muxConnected,
+			ActiveStreams: muxActiveStreams,
+			LastRecv:      muxLastRecv,
+			LastPong:      muxLastPong,
+		}
 	}
+	for rawNodeID, client := range ruleMuxClients {
+		if client == nil {
+			continue
+		}
+		connected, activeStreams, lastRecv, lastPong := client.snapshot()
+		nodeKey := strings.ToLower(strings.TrimSpace(rawNodeID))
+		if nodeKey == "" {
+			continue
+		}
+		muxSnapshots[nodeKey] = NetworkAssistantGroupKeepaliveItem{
+			Connected:     connected,
+			ActiveStreams: activeStreams,
+			LastRecv:      lastRecv,
+			LastPong:      lastPong,
+		}
+	}
+	groupKeepalive := buildGroupKeepaliveItems(ruleRouting, availableNodes, selectedNodeID, chainTargets, muxSnapshots)
 
 	return NetworkAssistantStatus{
-		Enabled:           s.mode == networkModeTUN,
-		Mode:              s.mode,
-		NodeID:            s.nodeID,
-		AvailableNodes:    append([]string(nil), s.availableNodes...),
+		Enabled:           mode == networkModeTUN,
+		Mode:              mode,
+		NodeID:            nodeID,
+		AvailableNodes:    availableNodes,
 		Socks5Listen:      "",
-		TunnelRoute:       buildNetworkAssistantTunnelRoute(s.nodeID),
-		TunnelStatus:      s.tunnelStatusMessage,
-		SystemProxyStatus: s.systemProxyMessage,
-		LastError:         s.lastError,
+		TunnelRoute:       buildNetworkAssistantTunnelRoute(nodeID),
+		TunnelStatus:      tunnelStatusMessage,
+		SystemProxyStatus: systemProxyMessage,
+		LastError:         lastError,
 		MuxConnected:      muxConnected,
 		MuxActiveStreams:  muxActiveStreams,
 		MuxReconnects:     muxReconnects,
 		MuxLastRecv:       muxLastRecv,
 		MuxLastPong:       muxLastPong,
-		TUNSupported:      s.tunSupported,
-		TUNInstalled:      s.tunInstalled,
-		TUNEnabled:        s.tunEnabled,
-		TUNLibraryPath:    s.tunLibraryPath,
-		TUNStatus:         s.tunStatus,
+		GroupKeepalive:    groupKeepalive,
+		TUNSupported:      tunSupported,
+		TUNInstalled:      tunInstalled,
+		TUNEnabled:        tunEnabled,
+		TUNLibraryPath:    tunLibraryPath,
+		TUNStatus:         tunStatus,
 	}
+}
+
+func buildGroupKeepaliveItems(
+	routing tunnelRuleRouting,
+	availableNodes []string,
+	selectedNodeID string,
+	chainTargets map[string]probeChainEndpoint,
+	muxSnapshots map[string]NetworkAssistantGroupKeepaliveItem,
+) []NetworkAssistantGroupKeepaliveItem {
+	tunnelOptions := buildRuleTunnelOptions(availableNodes, selectedNodeID)
+	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
+	groups = append(groups, ruleFallbackGroupKey)
+	items := make([]NetworkAssistantGroupKeepaliveItem, 0, len(groups))
+
+	for _, group := range groups {
+		policy, err := readRulePolicyForGroup(routing, group, selectedNodeID, tunnelOptions)
+		if err != nil {
+			continue
+		}
+
+		item := NetworkAssistantGroupKeepaliveItem{
+			Group:  strings.TrimSpace(group),
+			Action: strings.TrimSpace(policy.Action),
+		}
+		switch policy.Action {
+		case rulePolicyActionDirect:
+			item.Status = "直连（无需隧道保活）"
+		case rulePolicyActionReject:
+			item.Status = "拒绝（无链路）"
+		case rulePolicyActionTunnel:
+			nodeID := strings.TrimSpace(policy.TunnelNodeID)
+			if nodeID == "" {
+				nodeID = strings.TrimSpace(selectedNodeID)
+			}
+			if nodeID == "" {
+				nodeID = defaultNodeID
+			}
+			item.TunnelNodeID = nodeID
+			item.TunnelLabel = resolveRuleTunnelOptionLabel(nodeID, chainTargets)
+			if snap, ok := muxSnapshots[strings.ToLower(nodeID)]; ok {
+				item.Connected = snap.Connected
+				item.ActiveStreams = snap.ActiveStreams
+				item.LastRecv = snap.LastRecv
+				item.LastPong = snap.LastPong
+				if snap.Connected {
+					item.Status = "在线"
+				} else {
+					item.Status = "离线"
+				}
+			} else {
+				item.Status = "未建立"
+			}
+		default:
+			item.Status = "未知"
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mode, nodeID string) error {

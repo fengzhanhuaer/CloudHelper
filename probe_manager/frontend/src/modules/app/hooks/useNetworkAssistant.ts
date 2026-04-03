@@ -52,6 +52,7 @@ const defaultStatus: NetworkAssistantStatus = {
   mux_reconnects: 0,
   mux_last_recv: "",
   mux_last_pong: "",
+  group_keepalive: [],
   tun_supported: false,
   tun_installed: false,
   tun_enabled: false,

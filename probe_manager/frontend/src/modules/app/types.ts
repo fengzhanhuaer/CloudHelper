@@ -79,6 +79,18 @@ export type UpgradeProgress = {
 
 export type NetworkAssistantMode = "direct" | "tun";
 
+export type NetworkAssistantGroupKeepaliveItem = {
+  group: string;
+  action: NetworkAssistantRuleAction;
+  tunnel_node_id?: string;
+  tunnel_label?: string;
+  connected: boolean;
+  active_streams: number;
+  last_recv: string;
+  last_pong: string;
+  status: string;
+};
+
 export type NetworkAssistantStatus = {
   enabled: boolean;
   mode: NetworkAssistantMode;
@@ -94,6 +106,7 @@ export type NetworkAssistantStatus = {
   mux_reconnects?: number;
   mux_last_recv?: string;
   mux_last_pong?: string;
+  group_keepalive?: NetworkAssistantGroupKeepaliveItem[];
   tun_supported?: boolean;
   tun_installed?: boolean;
   tun_enabled?: boolean;
