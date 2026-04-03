@@ -246,11 +246,13 @@ func windowsEnsureInterfaceIPv4Address(interfaceIndex int, ipText string, prefix
 		return errors.New("invalid ipv4 address")
 	}
 	// Check whether the address is already present to avoid a redundant syscall.
+	// Even if the address already exists, still wait until it is bindable to avoid
+	// racing with Windows interface/address convergence.
 	adapter, err := windowsFindAdapterByIfIndex(interfaceIndex)
 	if err == nil {
 		for _, existing := range adapter.IPv4Addrs {
 			if strings.EqualFold(strings.TrimSpace(existing), ip4.String()) {
-				return nil
+				return waitForWindowsInterfaceIPv4Bindable(interfaceIndex, ip4, 5*time.Second)
 			}
 		}
 	}
@@ -286,18 +288,42 @@ func windowsEnsureInterfaceIPv4Address(interfaceIndex int, ipText string, prefix
 		return fmt.Errorf("CreateUnicastIpAddressEntry failed: code=%d", ret)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	return waitForWindowsInterfaceIPv4Bindable(interfaceIndex, ip4, 5*time.Second)
+}
+
+func waitForWindowsInterfaceIPv4Bindable(interfaceIndex int, ip4 net.IP, timeout time.Duration) error {
+	cleanIP := strings.TrimSpace(ip4.String())
+	if cleanIP == "" {
+		return errors.New("invalid ipv4 address")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	listenAddr := net.JoinHostPort(cleanIP, "0")
 	for {
+		ipPresent := false
 		adapter, listErr := windowsFindAdapterByIfIndex(interfaceIndex)
 		if listErr == nil {
 			for _, existing := range adapter.IPv4Addrs {
-				if strings.EqualFold(strings.TrimSpace(existing), ip4.String()) {
-					return nil
+				if strings.EqualFold(strings.TrimSpace(existing), cleanIP) {
+					ipPresent = true
+					break
 				}
 			}
 		}
+		if ipPresent {
+			conn, bindErr := net.ListenPacket("udp4", listenAddr)
+			if bindErr == nil {
+				_ = conn.Close()
+				return nil
+			}
+			if !isListenAddrNotAvailableError(bindErr) {
+				return bindErr
+			}
+		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("ipv4 address not effective in time: if=%d ip=%s", interfaceIndex, ip4.String())
+			return fmt.Errorf("ipv4 address not bindable in time: if=%d ip=%s", interfaceIndex, cleanIP)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
