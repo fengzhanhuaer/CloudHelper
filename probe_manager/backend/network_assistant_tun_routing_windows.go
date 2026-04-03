@@ -165,9 +165,9 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(targetAddr string)
 	if s.tunDynamicBypass == nil {
 		s.tunDynamicBypass = make(map[string]int)
 	}
-	refs := s.tunDynamicBypass[prefix]
-	s.tunDynamicBypass[prefix] = refs + 1
-	needCreate := refs == 0
+	_, exists := s.tunDynamicBypass[prefix]
+	s.tunDynamicBypass[prefix] = 1
+	needCreate := !exists
 	ifIndex := state.BypassInterfaceIndex
 	nextHop := state.BypassNextHop
 	s.mu.Unlock()
@@ -175,11 +175,7 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(targetAddr string)
 	if needCreate {
 		if err := ensureWindowsIPv4BypassRoute(prefix, ifIndex, nextHop); err != nil {
 			s.mu.Lock()
-			if current := s.tunDynamicBypass[prefix]; current <= 1 {
-				delete(s.tunDynamicBypass, prefix)
-			} else {
-				s.tunDynamicBypass[prefix] = current - 1
-			}
+			delete(s.tunDynamicBypass, prefix)
 			s.mu.Unlock()
 			return nil, err
 		}
@@ -196,33 +192,9 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(targetAddr string)
 }
 
 func (s *networkAssistantService) releaseTUNDirectBypassRoute(prefix string) {
-	cleanPrefix := strings.TrimSpace(prefix)
-	if cleanPrefix == "" {
-		return
-	}
-
-	s.mu.Lock()
-	state := s.tunRouteState
-	refs := 0
-	if s.tunDynamicBypass != nil {
-		refs = s.tunDynamicBypass[cleanPrefix]
-	}
-	if refs <= 1 {
-		if s.tunDynamicBypass != nil {
-			delete(s.tunDynamicBypass, cleanPrefix)
-		}
-		refs = 0
-	} else {
-		s.tunDynamicBypass[cleanPrefix] = refs - 1
-		refs = refs - 1
-	}
-	ifIndex := state.BypassInterfaceIndex
-	nextHop := state.BypassNextHop
-	s.mu.Unlock()
-
-	if refs == 0 && ifIndex > 0 && strings.TrimSpace(nextHop) != "" {
-		_ = removeWindowsIPv4BypassRoute(cleanPrefix, ifIndex, nextHop)
-	}
+	// 直连连接关闭时不回收动态 bypass 路由。
+	// 路由仅在 clearPlatformTUNSystemRouting（切换模式/关闭 TUN/软件退出）时统一清理。
+	_ = strings.TrimSpace(prefix)
 }
 
 func detectWindowsPrimaryIPv4Route() (windowsRouteInfo, error) {
