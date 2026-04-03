@@ -744,39 +744,118 @@ func startProbeChainPortForwardWorkers(runtime *probeChainRuntime) {
 	if runtime == nil {
 		return
 	}
+	total := len(runtime.cfg.portForwards)
+	enabled := 0
+	roleMatched := 0
+	startedWorkers := 0
 	for _, item := range runtime.cfg.portForwards {
 		cfg := item
 		if !cfg.Enabled {
+			log.Printf("probe chain port forward skipped: chain=%s id=%s reason=disabled", runtime.cfg.chainID, cfg.ID)
 			continue
 		}
+		enabled++
 		if !shouldRunProbeChainPortForwardOnRole(runtime.cfg.role, cfg.EntrySide) {
+			log.Printf("probe chain port forward skipped: chain=%s id=%s reason=role_mismatch role=%s entry_side=%s", runtime.cfg.chainID, cfg.ID, normalizeProbeChainRole(runtime.cfg.role), normalizeProbeChainPortForwardEntrySide(cfg.EntrySide))
 			continue
 		}
+		roleMatched++
 		listenHost := strings.TrimSpace(cfg.ListenHost)
 		if listenHost == "" {
 			listenHost = "0.0.0.0"
 		}
 		if cfg.ListenPort <= 0 {
+			log.Printf("probe chain port forward skipped: chain=%s id=%s reason=invalid_listen_port listen_port=%d", runtime.cfg.chainID, cfg.ID, cfg.ListenPort)
 			continue
 		}
 		listenAddr := net.JoinHostPort(listenHost, strconv.Itoa(cfg.ListenPort))
 		network := normalizeProbeChainPortForwardNetwork(cfg.Network)
 		if network == probeChainPortForwardNetworkTCP || network == probeChainPortForwardNetworkBoth {
-			ln, err := listenTCPWithRetry(listenAddr, probeChainPortForwardListenRetryTimeout)
-			if err != nil {
-				log.Printf("probe chain port forward tcp listen failed: chain=%s id=%s listen=%s err=%v", runtime.cfg.chainID, cfg.ID, listenAddr, err)
-			} else {
-				runtime.registerTCPForward(ln)
-				go runProbeChainTCPPortForward(runtime, cfg, ln)
-			}
+			startedWorkers++
+			go runProbeChainTCPPortForwardWorker(runtime, cfg, listenAddr)
 		}
 		if network == probeChainPortForwardNetworkUDP || network == probeChainPortForwardNetworkBoth {
-			pc, err := listenUDPWithRetry(listenAddr, probeChainPortForwardListenRetryTimeout)
-			if err != nil {
-				log.Printf("probe chain port forward udp listen failed: chain=%s id=%s listen=%s err=%v", runtime.cfg.chainID, cfg.ID, listenAddr, err)
-			} else {
-				runtime.registerUDPForward(pc)
-				go runProbeChainUDPPortForward(runtime, cfg, pc)
+			startedWorkers++
+			go runProbeChainUDPPortForwardWorker(runtime, cfg, listenAddr)
+		}
+		if network != probeChainPortForwardNetworkTCP && network != probeChainPortForwardNetworkUDP && network != probeChainPortForwardNetworkBoth {
+			log.Printf("probe chain port forward skipped: chain=%s id=%s reason=invalid_network network=%s", runtime.cfg.chainID, cfg.ID, strings.TrimSpace(cfg.Network))
+		}
+	}
+	log.Printf("probe chain port forward workers initialized: chain=%s total=%d enabled=%d role_matched=%d worker_count=%d", runtime.cfg.chainID, total, enabled, roleMatched, startedWorkers)
+}
+
+func runProbeChainTCPPortForwardWorker(runtime *probeChainRuntime, cfg probeChainRuntimePortForward, listenAddr string) {
+	if runtime == nil {
+		return
+	}
+	for {
+		select {
+		case <-runtime.stopCh:
+			return
+		default:
+		}
+		log.Printf("probe chain port forward tcp listen start: chain=%s id=%s listen=%s", runtime.cfg.chainID, cfg.ID, listenAddr)
+		ln, err := listenTCPWithRetry(listenAddr, probeChainPortForwardListenRetryTimeout)
+		if err != nil {
+			log.Printf("probe chain port forward tcp listen failed, will retry: chain=%s id=%s listen=%s err=%v", runtime.cfg.chainID, cfg.ID, listenAddr, err)
+			select {
+			case <-runtime.stopCh:
+				return
+			case <-time.After(probeChainPortForwardListenRetryInterval):
+			}
+			continue
+		}
+		runtime.registerTCPForward(ln)
+		log.Printf("probe chain port forward tcp listen ready: chain=%s id=%s listen=%s", runtime.cfg.chainID, cfg.ID, listenAddr)
+		runProbeChainTCPPortForward(runtime, cfg, ln)
+		select {
+		case <-runtime.stopCh:
+			return
+		default:
+			log.Printf("probe chain port forward tcp worker exited, rebind scheduled: chain=%s id=%s listen=%s", runtime.cfg.chainID, cfg.ID, listenAddr)
+			select {
+			case <-runtime.stopCh:
+				return
+			case <-time.After(probeChainPortForwardListenRetryInterval):
+			}
+		}
+	}
+}
+
+func runProbeChainUDPPortForwardWorker(runtime *probeChainRuntime, cfg probeChainRuntimePortForward, listenAddr string) {
+	if runtime == nil {
+		return
+	}
+	for {
+		select {
+		case <-runtime.stopCh:
+			return
+		default:
+		}
+		log.Printf("probe chain port forward udp listen start: chain=%s id=%s listen=%s", runtime.cfg.chainID, cfg.ID, listenAddr)
+		pc, err := listenUDPWithRetry(listenAddr, probeChainPortForwardListenRetryTimeout)
+		if err != nil {
+			log.Printf("probe chain port forward udp listen failed, will retry: chain=%s id=%s listen=%s err=%v", runtime.cfg.chainID, cfg.ID, listenAddr, err)
+			select {
+			case <-runtime.stopCh:
+				return
+			case <-time.After(probeChainPortForwardListenRetryInterval):
+			}
+			continue
+		}
+		runtime.registerUDPForward(pc)
+		log.Printf("probe chain port forward udp listen ready: chain=%s id=%s listen=%s", runtime.cfg.chainID, cfg.ID, listenAddr)
+		runProbeChainUDPPortForward(runtime, cfg, pc)
+		select {
+		case <-runtime.stopCh:
+			return
+		default:
+			log.Printf("probe chain port forward udp worker exited, rebind scheduled: chain=%s id=%s listen=%s", runtime.cfg.chainID, cfg.ID, listenAddr)
+			select {
+			case <-runtime.stopCh:
+				return
+			case <-time.After(probeChainPortForwardListenRetryInterval):
 			}
 		}
 	}
