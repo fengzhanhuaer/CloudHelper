@@ -12,16 +12,17 @@ import (
 )
 
 const (
-	tunEmbeddedLibraryPath = "embedded://wintun/amd64/wintun.dll"
-	tunTempRelativePath    = "temp/Lib/wintun/amd64/wintun.dll"
-	tunAdapterName         = "Maple"
-	tunAdapterDescription  = "Maple Virtual Network Adapter"
-	tunAdapterTunnelType   = "Maple"
-	tunStatusUnsupported   = "仅支持 Windows amd64"
-	tunStatusNotInstalled  = "未安装"
-	tunStatusInstalled     = "已准备(临时)"
-	tunStatusDetected      = "已安装(检测到网卡)"
-	tunStatusEnabled       = "已启用"
+	tunEmbeddedLibraryPath  = "embedded://wintun/amd64/wintun.dll"
+	tunTempRelativePath     = "temp/Lib/wintun/amd64/wintun.dll"
+	tunAdapterName          = "Maple"
+	tunAdapterDescription   = "Maple Virtual Network Adapter"
+	tunAdapterTunnelType    = "Maple"
+	tunAdapterRequestedGUID = "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"
+	tunStatusUnsupported    = "仅支持 Windows amd64"
+	tunStatusNotInstalled   = "未安装"
+	tunStatusInstalled      = "已准备(临时)"
+	tunStatusDetected       = "已安装(检测到网卡)"
+	tunStatusEnabled        = "已启用"
 )
 
 //go:embed lib/wintun/amd64/wintun.dll
@@ -170,7 +171,7 @@ func detectConfiguredTUNAdapter() (bool, error) {
 	for _, adapter := range adapters {
 		name := strings.TrimSpace(adapter.Name)
 		desc := strings.TrimSpace(adapter.InterfaceDescription)
-		if strings.EqualFold(name, tunAdapterName) {
+		if strings.EqualFold(name, tunAdapterName) || strings.HasPrefix(strings.ToLower(name), strings.ToLower(tunAdapterName)+" ") {
 			return true, nil
 		}
 		if strings.EqualFold(desc, tunAdapterDescription) {
@@ -247,7 +248,7 @@ func (s *networkAssistantService) InstallTUN() error {
 		s.setLastError(err)
 		return err
 	}
-	adapterHandle, err := createConfiguredTUNAdapter(path, tunAdapterName, tunAdapterTunnelType)
+	adapterHandle, err := createConfiguredTUNAdapter(path, tunAdapterName, tunAdapterTunnelType, tunAdapterRequestedGUID)
 	if err != nil {
 		s.setLastError(err)
 		return err
