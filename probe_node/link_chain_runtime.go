@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -236,6 +237,8 @@ const (
 	probeChainPortForwardSessionGCInterval    = 15 * time.Second
 	probeChainPortForwardDialTimeout          = 12 * time.Second
 	probeChainPortForwardResponseReadDeadline = 10 * time.Second
+	probeChainPortForwardListenRetryTimeout   = 5 * time.Second
+	probeChainPortForwardListenRetryInterval  = 100 * time.Millisecond
 
 	probeChainAuthPacketType        = "github_copilot_auth_request"
 	probeChainAuthPacketVersion     = "2025-03-22"
@@ -792,7 +795,7 @@ func startProbeChainPortForwardWorkers(runtime *probeChainRuntime) {
 		listenAddr := net.JoinHostPort(listenHost, strconv.Itoa(cfg.ListenPort))
 		network := normalizeProbeChainPortForwardNetwork(cfg.Network)
 		if network == probeChainPortForwardNetworkTCP || network == probeChainPortForwardNetworkBoth {
-			ln, err := net.Listen("tcp", listenAddr)
+			ln, err := listenTCPWithRetry(listenAddr, probeChainPortForwardListenRetryTimeout)
 			if err != nil {
 				log.Printf("probe chain port forward tcp listen failed: chain=%s id=%s listen=%s err=%v", runtime.cfg.chainID, cfg.ID, listenAddr, err)
 			} else {
@@ -801,7 +804,7 @@ func startProbeChainPortForwardWorkers(runtime *probeChainRuntime) {
 			}
 		}
 		if network == probeChainPortForwardNetworkUDP || network == probeChainPortForwardNetworkBoth {
-			pc, err := net.ListenPacket("udp", listenAddr)
+			pc, err := listenUDPWithRetry(listenAddr, probeChainPortForwardListenRetryTimeout)
 			if err != nil {
 				log.Printf("probe chain port forward udp listen failed: chain=%s id=%s listen=%s err=%v", runtime.cfg.chainID, cfg.ID, listenAddr, err)
 			} else {
@@ -809,6 +812,60 @@ func startProbeChainPortForwardWorkers(runtime *probeChainRuntime) {
 				go runProbeChainUDPPortForward(runtime, cfg, pc)
 			}
 		}
+	}
+}
+
+func listenTCPWithRetry(listenAddr string, timeout time.Duration) (net.Listener, error) {
+	if timeout <= 0 {
+		timeout = probeChainPortForwardListenRetryTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		ln, err := net.Listen("tcp", listenAddr)
+		if err == nil {
+			return ln, nil
+		}
+		if !isRetryablePortForwardListenErr(err) || time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(probeChainPortForwardListenRetryInterval)
+	}
+}
+
+func listenUDPWithRetry(listenAddr string, timeout time.Duration) (net.PacketConn, error) {
+	if timeout <= 0 {
+		timeout = probeChainPortForwardListenRetryTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		pc, err := net.ListenPacket("udp", listenAddr)
+		if err == nil {
+			return pc, nil
+		}
+		if !isRetryablePortForwardListenErr(err) || time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(probeChainPortForwardListenRetryInterval)
+	}
+}
+
+func isRetryablePortForwardListenErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) {
+		return false
+	}
+	var errno syscall.Errno
+	if !errors.As(opErr.Err, &errno) {
+		return false
+	}
+	switch errno {
+	case syscall.EADDRINUSE, syscall.EADDRNOTAVAIL:
+		return true
+	default:
+		return false
 	}
 }
 
