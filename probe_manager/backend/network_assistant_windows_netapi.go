@@ -342,8 +342,13 @@ func windowsDetectPrimaryIPv4Route() (windowsRouteInfo, error) {
 		}
 		return windowsRouteInfo{}, fmt.Errorf("GetBestRoute failed: code=%d", ret)
 	}
-	nextHop := uint32ToIPv4(row.ForwardNextHop)
-	if row.ForwardIfIndex == 0 || strings.TrimSpace(nextHop) == "" || nextHop == "0.0.0.0" {
+	nextHop := strings.TrimSpace(uint32ToIPv4(row.ForwardNextHop))
+	if row.ForwardIfIndex == 0 || nextHop == "" {
+		return windowsRouteInfo{}, errors.New("usable ipv4 default route not found")
+	}
+	// Some Windows environments legitimately return on-link default route with
+	// next hop 0.0.0.0. Treat it as usable as long as interface index is valid.
+	if net.ParseIP(nextHop).To4() == nil {
 		return windowsRouteInfo{}, errors.New("usable ipv4 default route not found")
 	}
 	return windowsRouteInfo{InterfaceIndex: int(row.ForwardIfIndex), NextHop: nextHop}, nil
