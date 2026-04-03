@@ -77,7 +77,7 @@ function UpgradeTimeline(props: { title: string; lines: string[] }) {
 }
 
 export function SystemSettingsTab(props: SystemSettingsTabProps) {
-  const [subTab, setSubTab] = useState<"upgrade" | "controller">("upgrade");
+  const [subTab, setSubTab] = useState<"upgrade" | "controller" | "ai-debug">("upgrade");
   const [backupEnabledInput, setBackupEnabledInput] = useState(Boolean(props.backupEnabled));
   const [backupRemoteInput, setBackupRemoteInput] = useState(props.backupRcloneRemote || "");
 
@@ -96,6 +96,7 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
       <div className="subtab-list" style={{ marginBottom: 12 }}>
         <button className={`subtab-btn ${subTab === "upgrade" ? "active" : ""}`} onClick={() => setSubTab("upgrade")}>升级设置</button>
         <button className={`subtab-btn ${subTab === "controller" ? "active" : ""}`} onClick={() => setSubTab("controller")}>主控设置</button>
+        <button className={`subtab-btn ${subTab === "ai-debug" ? "active" : ""}`} onClick={() => setSubTab("ai-debug")}>AI调试</button>
       </div>
 
       {subTab === "upgrade" && (
@@ -147,32 +148,6 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
 
       {subTab === "controller" && (
         <>
-          <div className="identity-card" style={{ marginBottom: 12 }}>
-            <div><strong>AI 调试入口</strong></div>
-            <div className="status" style={{ marginTop: 8 }}>
-              监听地址：0.0.0.0:16031，默认关闭，用于后续向 AI 提供实时调试信息。
-            </div>
-            <label className="probe-direct-toggle" style={{ marginTop: 12 }}>
-              <input
-                type="checkbox"
-                checked={props.aiDebugListenEnabled}
-                onChange={(event) => props.onSetAIDebugListenEnabled(event.target.checked)}
-                disabled={props.isLoadingAIDebugListenEnabled || props.isSavingAIDebugListenEnabled}
-              />
-              <span>启用 AI 调试 HTTP 入口</span>
-            </label>
-            <div className="content-actions inline">
-              <button
-                className="btn"
-                onClick={props.onRefreshAIDebugListenEnabled}
-                disabled={props.isLoadingAIDebugListenEnabled || props.isSavingAIDebugListenEnabled}
-              >
-                {props.isLoadingAIDebugListenEnabled ? "读取中..." : "读取状态"}
-              </button>
-            </div>
-          </div>
-          <div className="status">{props.aiDebugListenStatus}</div>
-
           <div className="identity-card">
             <div><strong>主控备份设置</strong></div>
             <label className="probe-direct-toggle" style={{ marginTop: 0 }}>
@@ -215,6 +190,36 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
             </div>
           </div>
           <div className="status">{props.backupSettingsStatus}</div>
+        </>
+      )}
+
+      {subTab === "ai-debug" && (
+        <>
+          <div className="identity-card" style={{ marginBottom: 12 }}>
+            <div><strong>AI 调试入口</strong></div>
+            <div className="status" style={{ marginTop: 8 }}>
+              监听地址：0.0.0.0:16031，默认关闭，用于后续向 AI 提供实时调试信息。
+            </div>
+            <label className="probe-direct-toggle" style={{ marginTop: 12 }}>
+              <input
+                type="checkbox"
+                checked={props.aiDebugListenEnabled}
+                onChange={(event) => props.onSetAIDebugListenEnabled(event.target.checked)}
+                disabled={props.isLoadingAIDebugListenEnabled || props.isSavingAIDebugListenEnabled}
+              />
+              <span>启用 AI 调试 HTTP 入口</span>
+            </label>
+            <div className="content-actions inline">
+              <button
+                className="btn"
+                onClick={props.onRefreshAIDebugListenEnabled}
+                disabled={props.isLoadingAIDebugListenEnabled || props.isSavingAIDebugListenEnabled}
+              >
+                {props.isLoadingAIDebugListenEnabled ? "读取中..." : "读取状态"}
+              </button>
+            </div>
+          </div>
+          <div className="status">{props.aiDebugListenStatus}</div>
         </>
       )}
     </div>

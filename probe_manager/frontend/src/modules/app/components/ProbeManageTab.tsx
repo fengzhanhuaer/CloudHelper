@@ -260,9 +260,10 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     void loadShellShortcuts({ silent: true });
   }, [subTab]);
 
-  async function loadNodes(options?: { silent?: boolean; includeStatus?: boolean }) {
+  async function loadNodes(options?: { silent?: boolean; includeStatus?: boolean; persistToCacheFile?: boolean }) {
     const silent = options?.silent === true;
     const includeStatus = options?.includeStatus === true;
+    const persistToCacheFile = options?.persistToCacheFile === true;
     if (!silent) {
       setIsLoading(true);
     }
@@ -273,17 +274,13 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       ]);
       setDeletedNodeNos(new Set(deletedNos ?? []));
       const controllerNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
-      await ReplaceProbeNodes(controllerNodes.map((item) => new backend.ProbeNode({
-        node_no: item.node_no,
-        node_name: item.node_name,
-        node_secret: item.node_secret || "",
-        target_system: item.target_system,
-        direct_connect: item.direct_connect,
-        created_at: item.created_at || "",
-        updated_at: item.updated_at || "",
-      })));
-      const persisted = await GetProbeNodes();
-      const baseNodes = sortNodes((persisted as unknown as ProbeNodeItem[]) || []);
+
+      let baseNodes = controllerNodes;
+      if (persistToCacheFile) {
+        await ReplaceProbeNodes(controllerNodes as unknown as backend.ProbeNode[]);
+        const persisted = await GetProbeNodes();
+        baseNodes = sortNodes((persisted as unknown as ProbeNodeItem[]) || []);
+      }
 
       let mergedNodes = baseNodes;
       if (includeStatus) {
@@ -322,7 +319,6 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       ]);
       const sortedItems = sortStatusItems(items);
       setNodeStatusItems(sortedItems);
-      setNodes((prev) => mergeNodesWithStatus(prev, sortedItems));
       setReportIntervalSettings(settings);
       setReportIntervalInput(String(settings.current_sec || settings.default_sec || 60));
       setStatus(items.length ? "已从主控同步探针状态" : "已加载探针骨架，暂未收到实时状态数据");
@@ -362,7 +358,6 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         return;
       }
       setNodeStatusItems((prev) => mergeStatusItems(prev, items));
-      setNodes((prev) => mergeNodesWithStatus(prev, items));
     } catch {
       // ignore intermittent poll failure
     }
@@ -396,7 +391,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     setIsLoading(true);
     try {
       const created = await createProbeNodeFromController(controllerAddress, props.sessionToken, cleanName);
-      await loadNodes({ includeStatus: false });
+      await loadNodes({ includeStatus: false, persistToCacheFile: false });
       setNodeNameInput("");
       setShowCreateModal(false);
       setSubTab("list");
@@ -449,7 +444,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
         vendor_name: nextVendorName,
         vendor_url: nextVendorURL,
       });
-      await loadNodes({ includeStatus: false });
+      await loadNodes({ includeStatus: false, persistToCacheFile: false });
       setStatus(`节点已更新：${updated.node_name}`);
       return true;
     } catch (error) {
@@ -966,7 +961,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
               disabled={isLoading}
             />
             <div className="content-actions">
-              <button className="btn" onClick={() => void loadNodes({ includeStatus: false })} disabled={isLoading}>刷新列表</button>
+              <button className="btn" onClick={() => void loadNodes({ includeStatus: false, persistToCacheFile: true })} disabled={isLoading}>刷新列表</button>
               <button className="btn" onClick={() => setShowCreateModal(true)} disabled={isLoading}>新建探针</button>
               <button className="btn" onClick={() => void upgradeAll()} disabled={isLoading || isUpgradingAll || nodes.length === 0}>一键升级（全部探针）</button>
             </div>
