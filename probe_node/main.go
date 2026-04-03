@@ -187,7 +187,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	} else {
 		logProbeWarnf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
-	restoreProbeChainRuntimesFromCache(identity, controllerBaseURL)
+	restoreProbeChainRuntimesFromTopologyCache(identity, controllerBaseURL)
 	startProbeLinkChainsSyncLoop(identity, controllerBaseURL)
 	startProbeServiceRuntimeLoop(mux, identity, controllerBaseURL)
 

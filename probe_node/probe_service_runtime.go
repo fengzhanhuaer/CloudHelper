@@ -3,12 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +16,6 @@ const (
 	probeLinkConfigPollInterval = 20 * time.Second
 	probeLinkConfigFetchTimeout = 15 * time.Second
 	probeLinkConfigAPIPath      = "/api/probe/link/config"
-	probeLinkConfigStoreFile    = "probe_link_config.json"
 )
 
 type probeLinkConfig struct {
@@ -43,10 +39,6 @@ var probeHTTPSServiceState = struct {
 
 func startProbeServiceRuntimeLoop(handler http.Handler, identity nodeIdentity, controllerBaseURL string) {
 	go func() {
-		if persistedConfig, ok := loadPersistedProbeLinkConfig(); ok {
-			applyProbeLinkConfig(handler, identity, controllerBaseURL, persistedConfig, "persisted")
-		}
-
 		syncProbeServiceFromLinkConfig(handler, identity, controllerBaseURL)
 		ticker := time.NewTicker(probeLinkConfigPollInterval)
 		defer ticker.Stop()
@@ -59,11 +51,7 @@ func startProbeServiceRuntimeLoop(handler http.Handler, identity nodeIdentity, c
 
 func syncProbeServiceFromLinkConfig(handler http.Handler, identity nodeIdentity, controllerBaseURL string) {
 	if strings.TrimSpace(controllerBaseURL) == "" {
-		if persistedConfig, ok := loadPersistedProbeLinkConfig(); ok {
-			applyProbeLinkConfig(handler, identity, controllerBaseURL, persistedConfig, "persisted(no-controller)")
-			return
-		}
-		stopProbeHTTPSService("controller base url is empty and persisted config not found")
+		stopProbeHTTPSService("controller base url is empty")
 		return
 	}
 
@@ -71,17 +59,8 @@ func syncProbeServiceFromLinkConfig(handler http.Handler, identity nodeIdentity,
 	config, err := fetchProbeLinkConfig(ctx, controllerBaseURL, identity)
 	cancel()
 	if err != nil {
-		if persistedConfig, ok := loadPersistedProbeLinkConfig(); ok {
-			log.Printf("warning: failed to fetch probe link config: %v, fallback to persisted config", err)
-			applyProbeLinkConfig(handler, identity, controllerBaseURL, persistedConfig, "persisted(fallback)")
-			return
-		}
 		log.Printf("warning: failed to fetch probe link config: %v", err)
 		return
-	}
-
-	if saveErr := persistProbeLinkConfig(config); saveErr != nil {
-		log.Printf("warning: failed to persist probe link config: %v", saveErr)
 	}
 	applyProbeLinkConfig(handler, identity, controllerBaseURL, config, "controller")
 }
@@ -281,67 +260,3 @@ func normalizeProbeLinkConfig(config probeLinkConfig) probeLinkConfig {
 	return config
 }
 
-func probeLinkConfigStorePath() (string, error) {
-	dataDir, err := resolveDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dataDir, probeLinkConfigStoreFile), nil
-}
-
-func persistProbeLinkConfig(config probeLinkConfig) error {
-	path, err := probeLinkConfigStorePath()
-	if err != nil {
-		return err
-	}
-	return writeProbeLinkConfigFile(path, config)
-}
-
-func loadPersistedProbeLinkConfig() (probeLinkConfig, bool) {
-	path, err := probeLinkConfigStorePath()
-	if err != nil {
-		return probeLinkConfig{}, false
-	}
-	config, err := readProbeLinkConfigFile(path)
-	if err != nil {
-		return probeLinkConfig{}, false
-	}
-	return config, true
-}
-
-func writeProbeLinkConfigFile(path string, config probeLinkConfig) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("probe link config path is empty")
-	}
-	normalized := normalizeProbeLinkConfig(config)
-	normalized.SavedAt = time.Now().UTC().Format(time.RFC3339)
-
-	raw, err := json.MarshalIndent(normalized, "", "  ")
-	if err != nil {
-		return err
-	}
-	raw = append(raw, '\n')
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, raw, 0o600)
-}
-
-func readProbeLinkConfigFile(path string) (probeLinkConfig, error) {
-	if strings.TrimSpace(path) == "" {
-		return probeLinkConfig{}, errors.New("probe link config path is empty")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return probeLinkConfig{}, err
-	}
-	if strings.TrimSpace(string(raw)) == "" {
-		return probeLinkConfig{}, errors.New("probe link config file is empty")
-	}
-	var config probeLinkConfig
-	if err := json.Unmarshal(raw, &config); err != nil {
-		return probeLinkConfig{}, err
-	}
-	return normalizeProbeLinkConfig(config), nil
-}

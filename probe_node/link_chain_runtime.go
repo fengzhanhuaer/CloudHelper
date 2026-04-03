@@ -20,8 +20,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -167,40 +165,12 @@ type probeChainRelayNetAddr struct {
 	label string
 }
 
-type probeChainRuntimeCacheFile struct {
-	Items []probeChainRuntimeCacheItem `json:"items"`
-}
-
-type probeChainRuntimeCacheItem struct {
-	ChainID         string                         `json:"chain_id"`
-	Name            string                         `json:"name"`
-	UserID          string                         `json:"user_id"`
-	UserPublicKey   string                         `json:"user_public_key"`
-	LinkSecret      string                         `json:"link_secret"`
-	Role            string                         `json:"role"`
-	ListenHost      string                         `json:"listen_host"`
-	ListenPort      int                            `json:"listen_port"`
-	LinkLayer       string                         `json:"link_layer"`
-	NextLinkLayer   string                         `json:"next_link_layer,omitempty"`
-	NextDialMode    string                         `json:"next_dial_mode,omitempty"`
-	NextHost        string                         `json:"next_host"`
-	NextPort        int                            `json:"next_port"`
-	PrevHost        string                         `json:"prev_host,omitempty"`
-	PrevPort        int                            `json:"prev_port,omitempty"`
-	PrevLinkLayer   string                         `json:"prev_link_layer,omitempty"`
-	PrevDialMode    string                         `json:"prev_dial_mode,omitempty"`
-	PortForwards    []probeChainPortForwardMessage `json:"port_forwards,omitempty"`
-	RequireUserAuth bool                           `json:"require_user_auth"`
-	NextAuthMode    string                         `json:"next_auth_mode"`
-}
-
 var probeChainRuntimeState = struct {
 	mu       sync.Mutex
 	runtimes map[string]*probeChainRuntime
 }{runtimes: make(map[string]*probeChainRuntime)}
 
 const (
-	probeChainRuntimeCacheFileName = "probe_link_chains_cache.json"
 	probeChainRelayAPIPath         = "/api/node/chain/relay"
 	probeChainSourceIPHintPrefix   = "CHSRCIP "
 	probeChainAuthNoncePrefix      = "CHNONCE "
@@ -663,9 +633,6 @@ func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, er
 	probeChainRuntimeState.mu.Unlock()
 	startProbeChainBridgeWorkers(rt)
 	startProbeChainPortForwardWorkers(rt)
-	if err := persistProbeChainRuntimesToCache(); err != nil {
-		log.Printf("warning: persist probe chain runtime cache failed: %v", err)
-	}
 
 	nextTarget := "proxy"
 	if cfg.nextAuthMode != "proxy" {
@@ -1679,9 +1646,6 @@ func stopProbeChainRuntime(chainID string, reason string) bool {
 	}
 	close(rt.stopCh)
 	rt.closeRuntimeResources()
-	if err := persistProbeChainRuntimesToCache(); err != nil {
-		log.Printf("warning: persist probe chain runtime cache failed: %v", err)
-	}
 	log.Printf("probe chain runtime stopped: chain=%s reason=%s", target, strings.TrimSpace(reason))
 	return true
 }
@@ -3315,135 +3279,6 @@ func buildProbeChainHMAC(secret string, chainID string, nonce string) string {
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(strings.TrimSpace(nonce)))
 	return hex.EncodeToString(mac.Sum(nil))
-}
-
-func restoreProbeChainRuntimesFromCache(identity nodeIdentity, controllerBaseURL string) {
-	items, err := loadProbeChainRuntimeCacheItems()
-	if err != nil {
-		log.Printf("warning: load probe chain runtime cache failed: %v", err)
-		return
-	}
-	if len(items) == 0 {
-		return
-	}
-	for _, item := range items {
-		cfg, err := buildProbeChainRuntimeConfigFromControl(probeControlMessage{
-			ChainID:         item.ChainID,
-			Name:            item.Name,
-			UserID:          item.UserID,
-			UserPublicKey:   item.UserPublicKey,
-			LinkSecret:      item.LinkSecret,
-			Role:            item.Role,
-			ListenHost:      item.ListenHost,
-			ListenPort:      item.ListenPort,
-			LinkLayer:       item.LinkLayer,
-			NextLinkLayer:   item.NextLinkLayer,
-			NextDialMode:    item.NextDialMode,
-			NextHost:        item.NextHost,
-			NextPort:        item.NextPort,
-			PrevHost:        item.PrevHost,
-			PrevPort:        item.PrevPort,
-			PrevLinkLayer:   item.PrevLinkLayer,
-			PrevDialMode:    item.PrevDialMode,
-			PortForwards:    item.PortForwards,
-			RequireUserAuth: item.RequireUserAuth,
-			NextAuthMode:    item.NextAuthMode,
-		})
-		if err != nil {
-			log.Printf("warning: skip invalid cached chain runtime: chain=%s err=%v", strings.TrimSpace(item.ChainID), err)
-			continue
-		}
-		cfg.identity = identity
-		cfg.controllerURL = resolveProbeControllerBaseURL(strings.TrimSpace(controllerBaseURL), "")
-		if _, err := startProbeChainRuntime(cfg); err != nil {
-			log.Printf("warning: restore cached chain runtime failed: chain=%s err=%v", cfg.chainID, err)
-			continue
-		}
-		log.Printf("restored cached chain runtime: chain=%s role=%s listen=%s:%d", cfg.chainID, cfg.role, cfg.listenHost, cfg.listenPort)
-	}
-}
-
-func loadProbeChainRuntimeCacheItems() ([]probeChainRuntimeCacheItem, error) {
-	cachePath, err := resolveProbeChainRuntimeCachePath()
-	if err != nil {
-		return nil, err
-	}
-	raw, err := os.ReadFile(cachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []probeChainRuntimeCacheItem{}, nil
-		}
-		return nil, err
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return []probeChainRuntimeCacheItem{}, nil
-	}
-	var payload probeChainRuntimeCacheFile
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return nil, err
-	}
-	return payload.Items, nil
-}
-
-func persistProbeChainRuntimesToCache() error {
-	cachePath, err := resolveProbeChainRuntimeCachePath()
-	if err != nil {
-		return err
-	}
-
-	probeChainRuntimeState.mu.Lock()
-	items := make([]probeChainRuntimeCacheItem, 0, len(probeChainRuntimeState.runtimes))
-	for _, rt := range probeChainRuntimeState.runtimes {
-		if rt == nil {
-			continue
-		}
-		cfg := rt.cfg
-		items = append(items, probeChainRuntimeCacheItem{
-			ChainID:         cfg.chainID,
-			Name:            cfg.name,
-			UserID:          cfg.userID,
-			UserPublicKey:   cfg.rawPublicKey,
-			LinkSecret:      cfg.secret,
-			Role:            cfg.role,
-			ListenHost:      cfg.listenHost,
-			ListenPort:      cfg.listenPort,
-			LinkLayer:       cfg.linkLayer,
-			NextLinkLayer:   cfg.nextLinkLayer,
-			NextDialMode:    cfg.nextDialMode,
-			NextHost:        cfg.nextHost,
-			NextPort:        cfg.nextPort,
-			PrevHost:        cfg.prevHost,
-			PrevPort:        cfg.prevPort,
-			PrevLinkLayer:   cfg.prevLinkLayer,
-			PrevDialMode:    cfg.prevDialMode,
-			PortForwards:    buildProbeChainPortForwardMessagesFromRuntime(cfg.portForwards),
-			RequireUserAuth: cfg.requireUserAuth,
-			NextAuthMode:    cfg.nextAuthMode,
-		})
-	}
-	probeChainRuntimeState.mu.Unlock()
-
-	payload := probeChainRuntimeCacheFile{Items: items}
-	encoded, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(cachePath, append(encoded, '\n'), 0o644); err != nil {
-		return err
-	}
-	return nil
-}
-
-func resolveProbeChainRuntimeCachePath() (string, error) {
-	dataPath, err := resolveDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dataPath, probeChainRuntimeCacheFileName), nil
 }
 
 func readProbeChainSourceIPHint(reader *bufio.Reader) (string, error) {

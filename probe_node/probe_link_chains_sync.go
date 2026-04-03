@@ -17,7 +17,7 @@ const (
 	probeLinkChainsSyncAPIPath          = "/api/probe/link/chains"
 	probeLinkChainsSyncPollInterval     = 60 * time.Minute
 	probeLinkChainsSyncFetchTimeout     = 15 * time.Second
-	probeChainTopologyCacheFileName     = "probe_link_chains_topology_cache.json"
+	probeChainTopologyCacheFileName     = "probe_link_chain_config.json"
 )
 
 // probeLinkChainsResponse mirrors the JSON returned by ProbeLinkChainsHandler.
@@ -79,7 +79,7 @@ type probeChainPortForwardServerItem struct {
 func startProbeLinkChainsSyncLoop(identity nodeIdentity, controllerBaseURL string) {
 	go func() {
 		// If controller is not configured, there is nothing to pull.
-		// Cache restore (restoreProbeChainRuntimesFromCache) already handles
+		// Cache restore (restoreProbeChainRuntimesFromTopologyCache) already handles
 		// the offline case, so we simply skip polling.
 		base := strings.TrimSpace(controllerBaseURL)
 		if base == "" {
@@ -118,6 +118,44 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	}
 
 	applyProbeLinkChainServerItems(identity, controllerBaseURL, items)
+}
+
+func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controllerBaseURL string) {
+	items, err := loadProbeChainTopologyCacheItems()
+	if err != nil {
+		log.Printf("warning: load probe chain topology cache failed: %v", err)
+		return
+	}
+	if len(items) == 0 {
+		return
+	}
+	for _, item := range items {
+		applyProbeLinkChainServerItem(identity, controllerBaseURL, item)
+	}
+	log.Printf("restored probe chain runtimes from topology cache: count=%d", len(items))
+}
+
+func loadProbeChainTopologyCacheItems() ([]probeLinkChainServerItem, error) {
+	cachePath, err := resolveProbeChainTopologyCachePath()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(cachePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []probeLinkChainServerItem{}, nil
+		}
+		return nil, err
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return []probeLinkChainServerItem{}, nil
+	}
+	var payload probeChainTopologyCacheFile
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return nil, err
+	}
+	return sanitizeProbeChainServerItemsForCache(payload.Items), nil
 }
 
 // fetchProbeLinkChains calls GET /api/probe/link/chains and returns the list.

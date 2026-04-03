@@ -1,9 +1,6 @@
 package main
 
-import (
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 func TestNormalizeProbeListenAddr(t *testing.T) {
 	if got := normalizeProbeListenAddr(""); got != "" {
@@ -46,34 +43,3 @@ func TestShouldEnableProbeHTTPServiceForScheme(t *testing.T) {
 	}
 }
 
-func TestProbeLinkConfigFileRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "probe_link_config.json")
-	input := probeLinkConfig{
-		NodeID:      "1",
-		ServiceType: "ws",
-		ServiceHost: " 10.0.0.8 ",
-		ServicePort: 16030,
-		ListenAddr:  "",
-	}
-
-	if err := writeProbeLinkConfigFile(path, input); err != nil {
-		t.Fatalf("writeProbeLinkConfigFile failed: %v", err)
-	}
-
-	output, err := readProbeLinkConfigFile(path)
-	if err != nil {
-		t.Fatalf("readProbeLinkConfigFile failed: %v", err)
-	}
-	if output.ServiceType != "websocket" {
-		t.Fatalf("unexpected service_type: %q", output.ServiceType)
-	}
-	if output.ServiceScheme != "websocket" {
-		t.Fatalf("unexpected service_scheme: %q", output.ServiceScheme)
-	}
-	if output.ListenAddr != "10.0.0.8:16030" {
-		t.Fatalf("unexpected listen_addr: %q", output.ListenAddr)
-	}
-	if output.SavedAt == "" {
-		t.Fatalf("expected saved_at to be set")
-	}
-}
