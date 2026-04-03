@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -37,6 +38,20 @@ func (s *networkAssistantService) startInternalDNSServer() error {
 
 	listenAddr := net.JoinHostPort(internalDNSListenIPv4, strconv.Itoa(internalDNSListenPort))
 	conn, err := net.ListenPacket("udp4", listenAddr)
+	if err != nil && isListenAddrNotAvailableError(err) {
+		deadline := time.Now().Add(3 * time.Second)
+		for attempt := 1; time.Now().Before(deadline); attempt++ {
+			time.Sleep(200 * time.Millisecond)
+			conn, err = net.ListenPacket("udp4", listenAddr)
+			if err == nil {
+				s.logf("local internal dns listen recovered after retry: listen=%s attempt=%d", listenAddr, attempt)
+				break
+			}
+			if !isListenAddrNotAvailableError(err) {
+				break
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -86,6 +101,29 @@ func (d *localInternalDNSServer) Close() error {
 		}
 	})
 	return closeErr
+}
+
+func isListenAddrNotAvailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		if errno == syscall.EADDRNOTAVAIL || errno == syscall.Errno(10049) {
+			return true
+		}
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "requested address is not valid in its context") {
+		return true
+	}
+	if strings.Contains(msg, "cannot assign requested address") {
+		return true
+	}
+	if strings.Contains(msg, "eaddrnotavail") {
+		return true
+	}
+	return false
 }
 
 func (d *localInternalDNSServer) serve() {
