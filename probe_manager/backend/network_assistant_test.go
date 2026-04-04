@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"net"
-	"net/netip"
 	"os"
 	"testing"
 	"time"
@@ -29,70 +28,6 @@ func TestResolveControllerHostForProtection(t *testing.T) {
 	ipHost := resolveControllerHostForProtection("https://203.0.113.10:8443")
 	if ipHost != "203.0.113.10" {
 		t.Fatalf("unexpected ip host: %s", ipHost)
-	}
-}
-
-func TestDefaultDirectWhitelistIsEmpty(t *testing.T) {
-	whitelist, err := parseDirectWhitelistRules(defaultDirectWhitelistRules)
-	if err != nil {
-		t.Fatalf("parseDirectWhitelistRules returned error: %v", err)
-	}
-
-	tests := []struct {
-		addr string
-		want bool
-	}{
-		{addr: "10.20.30.40:443", want: false},
-		{addr: "172.20.10.10:8080", want: false},
-		{addr: "192.168.1.10:80", want: false},
-		{addr: "127.0.0.1:3000", want: false},
-		{addr: "localhost:15030", want: false},
-		{addr: "8.8.8.8:53", want: false},
-	}
-
-	for _, tt := range tests {
-		got := whitelist.matchesTarget(tt.addr)
-		if got != tt.want {
-			t.Fatalf("matchesTarget(%q)=%v, want %v", tt.addr, got, tt.want)
-		}
-	}
-}
-
-func TestDirectWhitelistIPv6HostPortFormat(t *testing.T) {
-	whitelist, err := parseDirectWhitelistRules([]string{"127.0.0.1"})
-	if err != nil {
-		t.Fatalf("parseDirectWhitelistRules returned error: %v", err)
-	}
-
-	ipv6 := netip.MustParseAddr("2001:db8::1")
-	if whitelist.matchesTarget(net.JoinHostPort(ipv6.String(), "443")) {
-		t.Fatal("unexpected whitelist match for IPv6 target")
-	}
-}
-
-func TestDirectWhitelistHostSuffixMatch(t *testing.T) {
-	whitelist, err := parseDirectWhitelistRules([]string{"example.com"})
-	if err != nil {
-		t.Fatalf("parseDirectWhitelistRules returned error: %v", err)
-	}
-
-	tests := []struct {
-		addr string
-		want bool
-	}{
-		{addr: "example.com:443", want: true},
-		{addr: "api.example.com:443", want: true},
-		{addr: "deep.api.example.com:443", want: true},
-		{addr: "API.EXAMPLE.COM:443", want: true},
-		{addr: "badexample.com:443", want: false},
-		{addr: "example.com.cn:443", want: false},
-	}
-
-	for _, tt := range tests {
-		got := whitelist.matchesTarget(tt.addr)
-		if got != tt.want {
-			t.Fatalf("matchesTarget(%q)=%v, want %v", tt.addr, got, tt.want)
-		}
 	}
 }
 
@@ -210,11 +145,6 @@ func TestDecideRouteForTargetRuleModeByIP(t *testing.T) {
 		mode:           networkModeTUN,
 		nodeID:         "cloudserver",
 		availableNodes: []string{"cloudserver", "chain:test-chain"},
-		directWhitelist: &socksDirectWhitelist{
-			hosts: map[string]struct{}{},
-			ips:   map[string]struct{}{},
-			cidrs: []*net.IPNet{},
-		},
 		ruleRouting: tunnelRuleRouting{
 			RuleSet: tunnelRuleSet{
 				Rules: []tunnelRule{
@@ -263,11 +193,6 @@ func TestDecideRouteForTargetTUNModeUsesRuleRouting(t *testing.T) {
 		mode:           networkModeTUN,
 		nodeID:         "cloudserver",
 		availableNodes: []string{"cloudserver", "chain:test-chain"},
-		directWhitelist: &socksDirectWhitelist{
-			hosts: map[string]struct{}{},
-			ips:   map[string]struct{}{},
-			cidrs: []*net.IPNet{},
-		},
 		ruleRouting: tunnelRuleRouting{
 			RuleSet: tunnelRuleSet{
 				Rules: []tunnelRule{
@@ -314,11 +239,6 @@ func TestDecideRouteForTargetDirectGroupAlwaysDirect(t *testing.T) {
 		mode:           networkModeTUN,
 		nodeID:         "chain:test-chain",
 		availableNodes: []string{"cloudserver", "chain:test-chain"},
-		directWhitelist: &socksDirectWhitelist{
-			hosts: map[string]struct{}{},
-			ips:   map[string]struct{}{},
-			cidrs: []*net.IPNet{},
-		},
 		ruleRouting: tunnelRuleRouting{
 			RuleSet: tunnelRuleSet{
 				Rules: []tunnelRule{
@@ -353,11 +273,6 @@ func TestDecideRouteForTargetRuleModeRejectMatchedGroup(t *testing.T) {
 	service := &networkAssistantService{
 		mode:   networkModeTUN,
 		nodeID: "cloudserver",
-		directWhitelist: &socksDirectWhitelist{
-			hosts: map[string]struct{}{},
-			ips:   map[string]struct{}{},
-			cidrs: []*net.IPNet{},
-		},
 		ruleRouting: tunnelRuleRouting{
 			RuleSet: tunnelRuleSet{
 				Rules: []tunnelRule{
@@ -381,11 +296,6 @@ func TestDecideRouteForTargetRuleModeRejectFallback(t *testing.T) {
 	service := &networkAssistantService{
 		mode:   networkModeTUN,
 		nodeID: "cloudserver",
-		directWhitelist: &socksDirectWhitelist{
-			hosts: map[string]struct{}{},
-			ips:   map[string]struct{}{},
-			cidrs: []*net.IPNet{},
-		},
 		ruleRouting: tunnelRuleRouting{
 			RuleSet: tunnelRuleSet{
 				Rules: []tunnelRule{},
@@ -408,11 +318,6 @@ func TestDecideRouteForTargetRuleModeTunnelDomainKeepsDomainTarget(t *testing.T)
 		mode:           networkModeTUN,
 		nodeID:         "cloudserver",
 		availableNodes: []string{"cloudserver", "chain:edge-a"},
-		directWhitelist: &socksDirectWhitelist{
-			hosts: map[string]struct{}{},
-			ips:   map[string]struct{}{},
-			cidrs: []*net.IPNet{},
-		},
 		ruleRouting: tunnelRuleRouting{
 			RuleSet: tunnelRuleSet{
 				Rules: []tunnelRule{
@@ -450,11 +355,6 @@ func TestDecideRouteForTargetUsesDNSRouteHintForIP(t *testing.T) {
 		mode:           networkModeTUN,
 		nodeID:         "cloudserver",
 		availableNodes: []string{"cloudserver", "chain:edge-a"},
-		directWhitelist: &socksDirectWhitelist{
-			hosts: map[string]struct{}{},
-			ips:   map[string]struct{}{},
-			cidrs: []*net.IPNet{},
-		},
 		ruleRouting: tunnelRuleRouting{
 			RuleSet:      tunnelRuleSet{Rules: []tunnelRule{}},
 			GroupNodeMap: map[string]string{ruleFallbackGroupKey: rulePolicyActionDirect},

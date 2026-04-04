@@ -30,7 +30,6 @@ const (
 
 	defaultNodeID         = "cloudserver"
 	chainTargetNodePrefix = "chain:"
-	directWhitelistFile   = "direct_whitelist.txt"
 	ruleRouteFile         = "rule_routes.txt"
 	ruleGroupFile         = "rule_groups.txt"
 	tunPreferenceFile     = "network_tun_preference.json"
@@ -47,8 +46,6 @@ const (
 	udpDialRetryMaxBackoff     = 300 * time.Millisecond
 )
 
-var defaultDirectWhitelistRules = []string{}
-
 var defaultRuleRoutes = []string{
 	"default",
 	"{",
@@ -60,6 +57,15 @@ var defaultRuleRoutes = []string{
 
 var defaultRuleGroups = []string{
 	"default,cloudserver",
+}
+
+var defaultDirectLANCIDRRules = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"127.0.0.0/8",
+	"169.254.0.0/16",
+	"100.64.0.0/10",
 }
 
 type NetworkAssistantStatus struct {
@@ -278,12 +284,6 @@ type adminWSResponse struct {
 	Type  string          `json:"type"`
 }
 
-type socksDirectWhitelist struct {
-	hosts map[string]struct{}
-	ips   map[string]struct{}
-	cidrs []*net.IPNet
-}
-
 type ruleMatcherKind string
 
 const (
@@ -396,7 +396,6 @@ type networkAssistantService struct {
 	tunEverEnabled   bool
 	tunManualClosed  bool
 
-	directWhitelist *socksDirectWhitelist
 	logStore        *networkAssistantLogStore
 	ruleRouting     tunnelRuleRouting
 	ruleDNSCache    map[string]dnsCacheEntry
@@ -415,16 +414,6 @@ type networkAssistantService struct {
 
 func newNetworkAssistantService() *networkAssistantService {
 	logStore := newNetworkAssistantLogStore()
-
-	directWhitelist, _, err := loadOrCreateSocksDirectWhitelist()
-	if err != nil {
-		logStore.Appendf(logSourceManager, "init", "failed to load direct whitelist, fallback to empty: %v", err)
-		directWhitelist = &socksDirectWhitelist{
-			hosts: make(map[string]struct{}),
-			ips:   make(map[string]struct{}),
-			cidrs: make([]*net.IPNet, 0),
-		}
-	}
 
 	ruleRouting, ruleErr := loadOrCreateTunnelRuleRouting()
 	if ruleErr != nil {
@@ -448,7 +437,6 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunEnabled:          false,
 		tunLibraryPath:      "",
 		tunStatus:           "未安装",
-		directWhitelist:     directWhitelist,
 		logStore:            logStore,
 		ruleRouting:         ruleRouting,
 		ruleDNSCache:        make(map[string]dnsCacheEntry),
@@ -1109,17 +1097,6 @@ func (s *networkAssistantService) stopTunnelMuxClients() error {
 	return nil
 }
 
-func (s *networkAssistantService) shouldDialDirect(targetAddr string) bool {
-	s.mu.RLock()
-	whitelist := s.directWhitelist
-	s.mu.RUnlock()
-
-	if whitelist == nil {
-		return false
-	}
-	return whitelist.matchesTarget(targetAddr)
-}
-
 func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunnelRouteDecision, error) {
 	host, port, err := splitTargetHostPort(targetAddr)
 	if err != nil {
@@ -1141,18 +1118,6 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 	if mode == networkModeDirect {
 		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 	}
-	useRuleRouting := mode == networkModeTUN
-	if !useRuleRouting {
-		if s.shouldDialDirect(normalizedTarget) {
-			return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
-		}
-		return tunnelRouteDecision{Direct: false, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
-	}
-
-	if s.shouldDialDirect(normalizedTarget) {
-		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
-	}
-
 	if parsedIP := net.ParseIP(host); parsedIP != nil {
 		if hint, ok := s.loadDNSRouteHint(canonicalIP(parsedIP)); ok {
 			hintNodeID := strings.TrimSpace(hint.NodeID)
@@ -2710,6 +2675,9 @@ func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
 	lineNo := 0
 	currentGroup := ""
 	inGroupBlock := false
+	currentGroupRuleCount := 0
+	directGroupDeclared := false
+	directGroupEmpty := false
 	for scanner.Scan() {
 		lineNo++
 		line := strings.TrimSpace(scanner.Text())
@@ -2725,7 +2693,11 @@ func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
 			if group == "" {
 				return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes line %d: proxy group is required", lineNo)
 			}
+			if isDirectRuleGroupKey(group) {
+				directGroupDeclared = true
+			}
 			currentGroup = group
+			currentGroupRuleCount = 0
 			inGroupBlock = true
 			continue
 		}
@@ -2734,7 +2706,11 @@ func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
 			continue
 		}
 		if line == "}" {
+			if isDirectRuleGroupKey(currentGroup) && currentGroupRuleCount == 0 {
+				directGroupEmpty = true
+			}
 			currentGroup = ""
+			currentGroupRuleCount = 0
 			inGroupBlock = false
 			continue
 		}
@@ -2744,12 +2720,16 @@ func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
 			return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes line %d: %w", lineNo, parseErr)
 		}
 		rules = append(rules, rule)
+		currentGroupRuleCount++
 	}
 	if err := scanner.Err(); err != nil {
 		return tunnelRuleSet{}, err
 	}
 	if inGroupBlock {
 		return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes: group %q missing closing brace '}'", currentGroup)
+	}
+	if directGroupDeclared && directGroupEmpty {
+		rules = append(rules, buildDefaultDirectLANRules()...)
 	}
 	return tunnelRuleSet{Rules: rules}, nil
 }
@@ -2838,61 +2818,21 @@ func parseTunnelRuleGroupFile(path string) (map[string]string, error) {
 	return groupMap, nil
 }
 
-func loadOrCreateSocksDirectWhitelist() (*socksDirectWhitelist, string, error) {
-	dataDir, err := ensureManagerDataDir()
-	if err != nil {
-		return nil, "", err
-	}
-
-	whitelistPath := filepath.Join(dataDir, directWhitelistFile)
-	if err := ensureDirectWhitelistFile(whitelistPath); err != nil {
-		return nil, whitelistPath, err
-	}
-
-	raw, err := os.ReadFile(whitelistPath)
-	if err != nil {
-		return nil, whitelistPath, err
-	}
-
-	rules := make([]string, 0)
-	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+func buildDefaultDirectLANRules() []tunnelRule {
+	rules := make([]tunnelRule, 0, len(defaultDirectLANCIDRRules))
+	for _, rawCIDR := range defaultDirectLANCIDRRules {
+		_, cidr, err := net.ParseCIDR(strings.TrimSpace(rawCIDR))
+		if err != nil || cidr == nil {
 			continue
 		}
-		rules = append(rules, line)
+		rules = append(rules, tunnelRule{
+			RawPattern: strings.TrimSpace(rawCIDR),
+			Group:      "direct",
+			Kind:       ruleMatcherCIDR,
+			CIDR:       cidr,
+		})
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, whitelistPath, err
-	}
-
-	whitelist, err := parseDirectWhitelistRules(rules)
-	if err != nil {
-		return nil, whitelistPath, err
-	}
-	return whitelist, whitelistPath, nil
-}
-
-func ensureDirectWhitelistFile(whitelistPath string) error {
-	_, err := os.Stat(whitelistPath)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	content := "# CloudHelper direct whitelist\n" +
-		"# one CIDR/IP/hostname per line\n" +
-		strings.Join(defaultDirectWhitelistRules, "\n") + "\n"
-	if err := os.WriteFile(whitelistPath, []byte(content), 0o644); err != nil {
-		return err
-	}
-	if err := autoBackupManagerData(); err != nil {
-		return err
-	}
-	return nil
+	return rules
 }
 
 func ensureManagerDataDir() (string, error) {
@@ -2946,39 +2886,6 @@ func ensureManagerDataDir() (string, error) {
 	return "", errors.New("failed to resolve manager data directory")
 }
 
-func parseDirectWhitelistRules(rules []string) (*socksDirectWhitelist, error) {
-	whitelist := &socksDirectWhitelist{
-		hosts: make(map[string]struct{}),
-		ips:   make(map[string]struct{}),
-		cidrs: make([]*net.IPNet, 0),
-	}
-
-	for _, rawRule := range rules {
-		rule := strings.ToLower(strings.TrimSpace(rawRule))
-		if rule == "" {
-			continue
-		}
-
-		if _, cidr, err := net.ParseCIDR(rule); err == nil {
-			whitelist.cidrs = append(whitelist.cidrs, cidr)
-			continue
-		}
-
-		if ip := net.ParseIP(rule); ip != nil {
-			whitelist.ips[canonicalIP(ip)] = struct{}{}
-			continue
-		}
-
-		hostRule := normalizeDirectWhitelistHostRule(rule)
-		if hostRule == "" {
-			continue
-		}
-		whitelist.hosts[hostRule] = struct{}{}
-	}
-
-	return whitelist, nil
-}
-
 func canonicalIP(ip net.IP) string {
 	if ipv4 := ip.To4(); ipv4 != nil {
 		return ipv4.String()
@@ -2986,66 +2893,3 @@ func canonicalIP(ip net.IP) string {
 	return ip.String()
 }
 
-func normalizeDirectWhitelistHostRule(rawRule string) string {
-	rule := strings.ToLower(strings.TrimSpace(rawRule))
-	if rule == "" {
-		return ""
-	}
-	if strings.Contains(rule, " ") || strings.Contains(rule, ",") {
-		return ""
-	}
-	rule = strings.TrimPrefix(rule, "*.")
-	rule = strings.TrimPrefix(rule, ".")
-	rule = strings.Trim(rule, ".")
-	if rule == "" {
-		return ""
-	}
-	return rule
-}
-
-func directWhitelistHostSuffixMatch(host string, rules map[string]struct{}) bool {
-	if host == "" || len(rules) == 0 {
-		return false
-	}
-	if _, ok := rules[host]; ok {
-		return true
-	}
-	for suffix := range rules {
-		if suffix == "" {
-			continue
-		}
-		if host == suffix || strings.HasSuffix(host, "."+suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-func (w *socksDirectWhitelist) matchesTarget(targetAddr string) bool {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
-	if err != nil {
-		return false
-	}
-	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
-	if host == "" {
-		return false
-	}
-
-	if directWhitelistHostSuffixMatch(host, w.hosts) {
-		return true
-	}
-
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	if _, ok := w.ips[canonicalIP(ip)]; ok {
-		return true
-	}
-	for _, cidr := range w.cidrs {
-		if cidr.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
