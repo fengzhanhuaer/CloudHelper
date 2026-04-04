@@ -159,6 +159,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       setChainStatus("未登录，无法加载链路列表");
       return;
     }
+    void loadNodes();
     void loadChainsFromBackendCache({
       emptyStatus: "未找到本地链路缓存，请点击“从主控获取链路”",
     });

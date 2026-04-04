@@ -861,6 +861,15 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	s.mu.RUnlock()
 
 	if mode != networkModeTUN || !tunEnabled {
+		s.logfRateLimited(
+			"mux:auto-maintain:skip:not-tun",
+			30*time.Second,
+			"mux auto maintain skipped: mode=%s tun_enabled=%v selected_node=%s available_nodes=%d",
+			mode,
+			tunEnabled,
+			selectedNodeID,
+			len(availableNodes),
+		)
 		return nil
 	}
 	if selectedNodeID == "" {
@@ -919,6 +928,11 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 
 	targetNodeIDs := s.collectAutoMaintainTunnelNodeIDs()
 	if len(targetNodeIDs) == 0 {
+		s.logfRateLimited(
+			"mux:auto-maintain:empty-targets",
+			30*time.Second,
+			"mux auto maintain found no tunnel targets; stopping mux clients",
+		)
 		_ = s.stopTunnelMuxClients()
 		s.mu.Lock()
 		clear(s.muxMaintainFails)
@@ -926,6 +940,13 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 		s.mu.Unlock()
 		return
 	}
+
+	s.logfRateLimited(
+		"mux:auto-maintain:targets",
+		15*time.Second,
+		"mux auto maintain target nodes: %s",
+		strings.Join(targetNodeIDs, ","),
+	)
 
 	now := time.Now()
 	desired := make(map[string]struct{}, len(targetNodeIDs))
@@ -1128,6 +1149,16 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	}
 
 	isPrimary := strings.EqualFold(targetNodeID, selectedNodeID)
+	s.logfRateLimited(
+		"mux:ensure:start:"+strings.ToLower(targetNodeID),
+		10*time.Second,
+		"ensure tunnel mux client: target=%s selected=%s primary=%v mode_key=%s has_chain=%v",
+		targetNodeID,
+		selectedNodeID,
+		isPrimary,
+		modeKey,
+		hasChainTarget,
+	)
 	if isPrimary {
 		if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint(baseURL, token, targetNodeID, modeKey) {
 			return s.tunnelMuxClient, nil
@@ -1218,8 +1249,25 @@ func (s *networkAssistantService) openTunnelStream(network, targetAddr string) (
 }
 
 func (s *networkAssistantService) openTunnelStreamForNode(network, targetAddr, nodeID string) (*tunnelMuxStream, error) {
+	s.logfRateLimited(
+		fmt.Sprintf("mux:stream-open:start:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
+		5*time.Second,
+		"open tunnel stream begin: network=%s target=%s node=%s",
+		network,
+		targetAddr,
+		nodeID,
+	)
 	client, err := s.ensureTunnelMuxClientForNode(nodeID)
 	if err != nil {
+		s.logfRateLimited(
+			fmt.Sprintf("mux:stream-open:ensure-failed:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
+			5*time.Second,
+			"open tunnel stream ensure client failed: network=%s target=%s node=%s err=%v",
+			network,
+			targetAddr,
+			nodeID,
+			err,
+		)
 		return nil, err
 	}
 	stream, err := client.openStream(network, targetAddr)
@@ -1227,9 +1275,18 @@ func (s *networkAssistantService) openTunnelStreamForNode(network, targetAddr, n
 		return stream, nil
 	}
 	if isTunnelOpenRemoteError(err) {
+		s.logfRateLimited(
+			fmt.Sprintf("mux:stream-open:remote-failed:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
+			5*time.Second,
+			"open tunnel stream remote rejected: network=%s target=%s node=%s err=%v",
+			network,
+			targetAddr,
+			nodeID,
+			err,
+		)
 		return nil, err
 	}
-	s.logf("open tunnel stream failed, retrying: network=%s target=%s err=%v", network, targetAddr, err)
+	s.logf("open tunnel stream failed, retrying: network=%s target=%s node=%s err=%v", network, targetAddr, nodeID, err)
 
 	client.close()
 	client, err = s.ensureTunnelMuxClientForNode(nodeID)

@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	defaultPublicIPRefreshInterval = 2 * time.Minute
+	defaultPublicIPRefreshInterval = 10 * time.Minute
 	publicIPRequestTimeout         = 3 * time.Second
 )
 
