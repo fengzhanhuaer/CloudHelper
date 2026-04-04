@@ -1121,7 +1121,7 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 	tunnelOptions := buildRuleTunnelOptions(availableNodes, nodeID)
 
 	if mode == networkModeDirect {
-		return tunnelRouteDecision{Direct: true, BypassTUN: false, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+		return tunnelRouteDecision{Direct: true, BypassTUN: false, TargetAddr: normalizedTarget, NodeID: ""}, nil
 	}
 	if parsedIP := net.ParseIP(host); parsedIP != nil {
 		if hint, ok := s.loadDNSRouteHint(canonicalIP(parsedIP)); ok {
@@ -1132,11 +1132,15 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 			if hintNodeID == "" {
 				hintNodeID = defaultNodeID
 			}
+			resolvedNodeID := hintNodeID
+			if hint.Direct {
+				resolvedNodeID = ""
+			}
 			return tunnelRouteDecision{
 				Direct:     hint.Direct,
 				BypassTUN:  hint.BypassTUN,
 				TargetAddr: net.JoinHostPort(canonicalIP(parsedIP), port),
-				NodeID:     hintNodeID,
+				NodeID:     resolvedNodeID,
 				Group:      strings.TrimSpace(hint.Group),
 			}, nil
 		}
@@ -1151,12 +1155,12 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 		}
 		switch policy.Action {
 		case rulePolicyActionDirect:
-			return tunnelRouteDecision{Direct: true, BypassTUN: isDirectRuleGroupKey(group), TargetAddr: normalizedTarget, NodeID: nodeID, Group: group}, nil
+			return tunnelRouteDecision{Direct: true, BypassTUN: isDirectRuleGroupKey(group), TargetAddr: normalizedTarget, NodeID: "", Group: group}, nil
 		case rulePolicyActionReject:
 			return tunnelRouteDecision{}, &ruleRouteRejectError{Group: group}
 		default:
 			if isDirectRuleGroupKey(group) {
-				return tunnelRouteDecision{Direct: true, BypassTUN: true, TargetAddr: normalizedTarget, NodeID: nodeID, Group: group}, nil
+				return tunnelRouteDecision{Direct: true, BypassTUN: true, TargetAddr: normalizedTarget, NodeID: "", Group: group}, nil
 			}
 			targetNodeID := strings.TrimSpace(policy.TunnelNodeID)
 			if targetNodeID == "" {
@@ -1201,9 +1205,10 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 			Direct:     false,
 			TargetAddr: routedTarget,
 			NodeID:     targetNodeID,
+			Group:      ruleFallbackGroupKey,
 		}, nil
 	default:
-		return tunnelRouteDecision{Direct: true, BypassTUN: false, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+		return tunnelRouteDecision{Direct: true, BypassTUN: false, TargetAddr: normalizedTarget, NodeID: "", Group: ruleFallbackGroupKey}, nil
 	}
 }
 
