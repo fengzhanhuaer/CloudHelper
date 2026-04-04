@@ -215,7 +215,7 @@ func (s *networkAssistantService) resolveDomainForInternalDNS(domain string, qTy
 
 	var addrs []string
 	var ttl int
-	if route.Direct {
+	if route.BypassTUN {
 		addrs, ttl, err = s.queryRuleDomainViaSystemDNS(normalizedDomain, qType)
 	} else {
 		addrs, ttl, err = s.queryRuleDomainViaTunnel(route.NodeID, normalizedDomain, qType)
@@ -274,7 +274,7 @@ func (s *networkAssistantService) logDNSResolveFailed(domain string, qType uint1
 
 func buildInternalDNSCacheKey(route tunnelRouteDecision, domain string, qType uint16) string {
 	nodeKey := "direct"
-	if !route.Direct {
+	if !route.BypassTUN {
 		nodeKey = strings.TrimSpace(route.NodeID)
 		if nodeKey == "" {
 			nodeKey = defaultNodeID
@@ -622,11 +622,12 @@ func (s *networkAssistantService) storeDNSRouteHint(addrs []string, domain strin
 	ttlSeconds = clampRuleDNSTTL(ttlSeconds)
 	expiresAt := time.Now().Add(time.Duration(ttlSeconds) * time.Second)
 	hint := dnsRouteHintEntry{
-		Direct:  route.Direct,
-		NodeID:  strings.TrimSpace(route.NodeID),
-		Group:   strings.TrimSpace(route.Group),
-		Expires: expiresAt,
-		Domain:  strings.ToLower(strings.TrimSpace(domain)),
+		Direct:    route.Direct,
+		BypassTUN: route.BypassTUN,
+		NodeID:    strings.TrimSpace(route.NodeID),
+		Group:     strings.TrimSpace(route.Group),
+		Expires:   expiresAt,
+		Domain:    strings.ToLower(strings.TrimSpace(domain)),
 	}
 
 	s.mu.Lock()
@@ -648,12 +649,13 @@ func (s *networkAssistantService) storeFakeIPRouteHint(fakeAddr string, domain s
 	const fakeIPTTL = 3600
 	expiresAt := time.Now().Add(time.Duration(fakeIPTTL) * time.Second)
 	hint := dnsRouteHintEntry{
-		Direct:  route.Direct,
-		NodeID:  strings.TrimSpace(route.NodeID),
-		Group:   strings.TrimSpace(route.Group),
-		Expires: expiresAt,
-		Domain:  strings.ToLower(strings.TrimSpace(domain)),
-		FakeIP:  true,
+		Direct:    route.Direct,
+		BypassTUN: route.BypassTUN,
+		NodeID:    strings.TrimSpace(route.NodeID),
+		Group:     strings.TrimSpace(route.Group),
+		Expires:   expiresAt,
+		Domain:    strings.ToLower(strings.TrimSpace(domain)),
+		FakeIP:    true,
 	}
 	canonical := canonicalIP(net.ParseIP(strings.TrimSpace(fakeAddr)))
 	if canonical == "" {

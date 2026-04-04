@@ -228,9 +228,12 @@ func TestDecideRouteForTargetTUNModeUsesRuleRouting(t *testing.T) {
 	if !unmatchedDecision.Direct {
 		t.Fatal("expected direct route for unmatched target in tun mode")
 	}
+	if unmatchedDecision.BypassTUN {
+		t.Fatal("expected fallback direct to stay in tun path")
+	}
 }
 
-func TestDecideRouteForTargetDirectGroupAlwaysDirect(t *testing.T) {
+func TestDecideRouteForTargetDirectGroupAlwaysBypassTUN(t *testing.T) {
 	_, cidr, err := net.ParseCIDR("0.0.0.0/0")
 	if err != nil {
 		t.Fatalf("parse cidr: %v", err)
@@ -260,8 +263,49 @@ func TestDecideRouteForTargetDirectGroupAlwaysDirect(t *testing.T) {
 	if !decision.Direct {
 		t.Fatal("expected direct group to always route direct")
 	}
+	if !decision.BypassTUN {
+		t.Fatal("expected direct group to bypass tun")
+	}
 	if decision.Group != "direct" {
 		t.Fatalf("group=%s, want direct", decision.Group)
+	}
+}
+
+func TestDecideRouteForTargetNormalGroupDirectStaysInTUNPath(t *testing.T) {
+	_, cidr, err := net.ParseCIDR("0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("parse cidr: %v", err)
+	}
+	service := &networkAssistantService{
+		mode:           networkModeTUN,
+		nodeID:         "chain:test-chain",
+		availableNodes: []string{"cloudserver", "chain:test-chain"},
+		ruleRouting: tunnelRuleRouting{
+			RuleSet: tunnelRuleSet{
+				Rules: []tunnelRule{
+					{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "group_normal"},
+				},
+			},
+			GroupNodeMap: map[string]string{
+				"group_normal":      rulePolicyActionDirect,
+				ruleFallbackGroupKey: rulePolicyActionDirect,
+			},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+	}
+
+	decision, err := service.decideRouteForTarget("203.0.113.10:443")
+	if err != nil {
+		t.Fatalf("decideRouteForTarget returned error: %v", err)
+	}
+	if !decision.Direct {
+		t.Fatal("expected normal group direct policy to stay direct")
+	}
+	if decision.BypassTUN {
+		t.Fatal("expected normal group direct policy to stay in tun path")
+	}
+	if decision.Group != "group_normal" {
+		t.Fatalf("group=%s, want group_normal", decision.Group)
 	}
 }
 
@@ -362,10 +406,11 @@ func TestDecideRouteForTargetUsesDNSRouteHintForIP(t *testing.T) {
 		ruleDNSCache: make(map[string]dnsCacheEntry),
 		dnsRouteHints: map[string]dnsRouteHintEntry{
 			"203.0.113.7": {
-				Direct:  false,
-				NodeID:  "chain:edge-a",
-				Group:   "group_example",
-				Expires: time.Now().Add(30 * time.Second),
+				Direct:    false,
+				BypassTUN: false,
+				NodeID:    "chain:edge-a",
+				Group:     "group_example",
+				Expires:   time.Now().Add(30 * time.Second),
 			},
 		},
 	}

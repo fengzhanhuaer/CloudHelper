@@ -321,6 +321,8 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             </button>
           </div>
           <div className="status">上传/下载目标：主控备份区（当前登录用户）</div>
+          <div className="status">语义说明：仅规则组 direct 走系统级 bypass（可用平台）；普通组即使策略选“直连”也会先进入 TUN 后直连出站。</div>
+          <div className="status">平台差异：Windows 支持系统 bypass；其他平台会退化为 TUN 内直连。</div>
           <div className="status">{props.ruleRoutesSyncStatus}</div>
           {props.ruleConfig ? (
             <div className="rule-policy-group-list">

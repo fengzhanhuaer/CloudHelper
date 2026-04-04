@@ -136,6 +136,7 @@ export type NetworkAssistantDNSUpstreamConfig = {
   dot_servers: string[];
   doh_servers: string[];
   fake_ip_cidr: string;
+  fake_ip_whitelist: string[];
 };
 
 export type NetworkAssistantDNSCacheEntry = {

@@ -430,9 +430,13 @@ func (n *localTUNNetstack) openOutboundTCP(targetAddr string) (net.Conn, tunnelR
 	}
 
 	if route.Direct {
-		release, bypassErr := n.service.acquireTUNDirectBypassRoute(route.TargetAddr)
-		if bypassErr != nil {
-			return nil, route, bypassErr
+		release := func() {}
+		if route.BypassTUN {
+			var bypassErr error
+			release, bypassErr = n.service.acquireTUNDirectBypassRoute(route.TargetAddr)
+			if bypassErr != nil {
+				return nil, route, bypassErr
+			}
 		}
 		conn, dialErr := net.DialTimeout("tcp", route.TargetAddr, localTUNTCPDialTimeout)
 		if dialErr != nil {
@@ -456,9 +460,13 @@ func (n *localTUNNetstack) openOutboundUDP(targetAddr string) (io.ReadWriteClose
 	}
 
 	if route.Direct {
-		release, bypassErr := n.service.acquireTUNDirectBypassRoute(route.TargetAddr)
-		if bypassErr != nil {
-			return nil, route, bypassErr
+		release := func() {}
+		if route.BypassTUN {
+			var bypassErr error
+			release, bypassErr = n.service.acquireTUNDirectBypassRoute(route.TargetAddr)
+			if bypassErr != nil {
+				return nil, route, bypassErr
+			}
 		}
 		udpAddr, resolveErr := net.ResolveUDPAddr("udp", route.TargetAddr)
 		if resolveErr != nil {

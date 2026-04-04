@@ -233,7 +233,7 @@ type NetworkAssistantDNSUpstreamConfig struct {
 }
 
 // shouldUseFakeIP 判断该域名是否应分配 fake IP。
-// 配置来源改为规则组：命中 direct 组（直连）则不分配 fake IP。
+// 配置来源改为规则组：仅命中 direct 组（绕过 TUN）时不分配 fake IP。
 func (s *networkAssistantService) shouldUseFakeIP(normalizedDomain string) bool {
 	s.mu.RLock()
 	pool := s.fakeIPPool
@@ -245,7 +245,7 @@ func (s *networkAssistantService) shouldUseFakeIP(normalizedDomain string) bool 
 	if err != nil {
 		return false
 	}
-	return !decision.Direct
+	return !decision.BypassTUN
 }
 
 // assignFakeIP 为域名分配 fake IP，并预先根据路由策略决定路由
@@ -261,8 +261,8 @@ func (s *networkAssistantService) assignFakeIP(normalizedDomain string) (string,
 	// 根据域名决定路由
 	route, routeErr := s.decideRouteForTarget(net.JoinHostPort(normalizedDomain, "80"))
 	if routeErr != nil {
-		// 路由决策失败时使用默认（direct）
-		route = tunnelRouteDecision{Direct: true}
+		// 路由决策失败时使用默认（direct，经 TUN 直连）
+		route = tunnelRouteDecision{Direct: true, BypassTUN: false}
 	}
 
 	fakeIP, ttl := pool.AllocateOrGet(normalizedDomain, route)

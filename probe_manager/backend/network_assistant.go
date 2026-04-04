@@ -314,6 +314,7 @@ type tunnelRuleRouting struct {
 
 type tunnelRouteDecision struct {
 	Direct     bool
+	BypassTUN  bool
 	TargetAddr string
 	NodeID     string
 	Group      string
@@ -331,12 +332,13 @@ type tunPreferenceState struct {
 }
 
 type dnsRouteHintEntry struct {
-	Direct  bool
-	NodeID  string
-	Group   string
-	Expires time.Time
-	Domain  string // non-empty when this is a fake IP entry
-	FakeIP  bool
+	Direct    bool
+	BypassTUN bool
+	NodeID    string
+	Group     string
+	Expires   time.Time
+	Domain    string // non-empty when this is a fake IP entry
+	FakeIP    bool
 }
 
 // NetworkAssistantDNSCacheEntry 是单条 DNS/路由缓存记录，供前端展示。
@@ -1116,7 +1118,7 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 	tunnelOptions := buildRuleTunnelOptions(availableNodes, nodeID)
 
 	if mode == networkModeDirect {
-		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+		return tunnelRouteDecision{Direct: true, BypassTUN: false, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 	}
 	if parsedIP := net.ParseIP(host); parsedIP != nil {
 		if hint, ok := s.loadDNSRouteHint(canonicalIP(parsedIP)); ok {
@@ -1129,6 +1131,7 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 			}
 			return tunnelRouteDecision{
 				Direct:     hint.Direct,
+				BypassTUN:  hint.BypassTUN,
 				TargetAddr: net.JoinHostPort(canonicalIP(parsedIP), port),
 				NodeID:     hintNodeID,
 				Group:      strings.TrimSpace(hint.Group),
@@ -1145,10 +1148,13 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 		}
 		switch policy.Action {
 		case rulePolicyActionDirect:
-			return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID, Group: group}, nil
+			return tunnelRouteDecision{Direct: true, BypassTUN: isDirectRuleGroupKey(group), TargetAddr: normalizedTarget, NodeID: nodeID, Group: group}, nil
 		case rulePolicyActionReject:
 			return tunnelRouteDecision{}, &ruleRouteRejectError{Group: group}
 		default:
+			if isDirectRuleGroupKey(group) {
+				return tunnelRouteDecision{Direct: true, BypassTUN: true, TargetAddr: normalizedTarget, NodeID: nodeID, Group: group}, nil
+			}
 			targetNodeID := strings.TrimSpace(policy.TunnelNodeID)
 			if targetNodeID == "" {
 				targetNodeID = nodeID
@@ -1194,7 +1200,7 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 			NodeID:     targetNodeID,
 		}, nil
 	default:
-		return tunnelRouteDecision{Direct: true, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
+		return tunnelRouteDecision{Direct: true, BypassTUN: false, TargetAddr: normalizedTarget, NodeID: nodeID}, nil
 	}
 }
 
