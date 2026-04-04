@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -39,9 +40,15 @@ func (s *networkAssistantService) clearTUNDynamicBypassRoutes() error {
 func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
 	startedAt := time.Now()
 	s.logf("tun routing apply start")
-	// 仅使用按连接动态 bypass（acquireTUNDirectBypassRoute），
-	// 不再对主控/探针域名做软件内置独立直连保护。
-	targets := tunControlPlaneTargets{IPv4Addrs: make([]string, 0)}
+
+	targets, collectErr := s.collectTUNControlPlaneTargets()
+	if collectErr != nil {
+		s.logf("collect control-plane bypass targets partially failed: %v", collectErr)
+	}
+	if len(targets.IPv4Addrs) > 0 {
+		s.logf("tun routing control-plane bypass targets prepared: controller=%s ipv4=%s", targets.ControllerHost, strings.Join(targets.IPv4Addrs, ","))
+	}
+
 	if err := s.applyPlatformTUNSystemRouting(targets); err != nil {
 		s.logf("tun routing apply failed in platform routing stage: err=%v elapsed=%s", err, time.Since(startedAt))
 		return err
@@ -54,7 +61,7 @@ func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
 	}
 	s.mu.Lock()
 	s.tunRouteSyncedAt = time.Now()
-	s.tunRouteHost = ""
+	s.tunRouteHost = targets.ControllerHost
 	s.mu.Unlock()
 	s.logf("tun routing apply success: elapsed=%s", time.Since(startedAt))
 	return nil
@@ -106,6 +113,74 @@ func (s *networkAssistantService) ensureControlPlaneDialReady(_ string) error {
 		return s.fallbackToDirectModeOnTUNRoutingFailure("refresh tun direct routes failed", err)
 	}
 	return err
+}
+
+func (s *networkAssistantService) collectTUNControlPlaneTargets() (tunControlPlaneTargets, error) {
+	targets := tunControlPlaneTargets{
+		Hosts:     make(map[string]struct{}),
+		IPs:       make(map[string]struct{}),
+		IPv4Addrs: make([]string, 0),
+	}
+
+	addIP := func(raw string) {
+		ip := normalizeControlPlaneIP(raw)
+		if ip == "" {
+			return
+		}
+		parsed := net.ParseIP(ip)
+		if parsed == nil || parsed.To4() == nil {
+			return
+		}
+		targets.IPs[ip] = struct{}{}
+	}
+	addHost := func(raw string) {
+		host := normalizeControlPlaneHost(raw)
+		if host == "" {
+			return
+		}
+		if normalizeControlPlaneIP(host) != "" {
+			addIP(host)
+			return
+		}
+		targets.Hosts[host] = struct{}{}
+	}
+
+	s.mu.RLock()
+	baseURL := strings.TrimSpace(s.controllerBaseURL)
+	s.mu.RUnlock()
+	controllerHost := resolveControllerHostForProtection(baseURL)
+	targets.ControllerHost = controllerHost
+	addHost(controllerHost)
+
+	chainTargets, chainErr := s.getOrLoadChainTargetsSnapshot()
+	if chainErr == nil {
+		for _, endpoint := range chainTargets {
+			addHost(endpoint.EntryHost)
+		}
+	}
+
+	var allErr error
+	if chainErr != nil {
+		allErr = errors.Join(allErr, chainErr)
+	}
+
+	for host := range targets.Hosts {
+		if cachedIP, ok := getProbeDNSCachedIP(host); ok {
+			addIP(cachedIP)
+		}
+		dialHost, _, err := resolveProbeChainDialIPHostFresh(host)
+		if err != nil {
+			allErr = errors.Join(allErr, err)
+			continue
+		}
+		addIP(dialHost)
+	}
+
+	for ip := range targets.IPs {
+		targets.IPv4Addrs = append(targets.IPv4Addrs, ip)
+	}
+	sort.Strings(targets.IPv4Addrs)
+	return targets, allErr
 }
 
 func resolveControllerHostForProtection(rawBaseURL string) string {
