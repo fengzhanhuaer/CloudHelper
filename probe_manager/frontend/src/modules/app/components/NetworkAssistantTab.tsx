@@ -104,6 +104,10 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         ...prev,
         [chainID]: { ok: result.ok, durationMS: result.duration_ms ?? null, message: result.message ?? (result.ok ? "成功" : "失败") },
       }));
+      // 测试成功后立即刷新状态，避免“测试已建链”与“保活未建立”短时不同步。
+      if (result.ok) {
+        props.onRefreshStatus();
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setTunnelPingStates((prev) => ({ ...prev, [chainID]: { ok: false, durationMS: null, message: msg } }));
