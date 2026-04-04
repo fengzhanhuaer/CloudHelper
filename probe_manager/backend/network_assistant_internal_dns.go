@@ -640,7 +640,6 @@ func (s *networkAssistantService) storeDNSRouteHint(addrs []string, domain strin
 		}
 		canonical := canonicalIP(ipValue)
 		s.dnsRouteHints[canonical] = hint
-		setUnifiedRouteHintByIP(canonical, hint.Domain, route, ttlSeconds, unifiedDNSRecordSourceSynthetic, false)
 	}
 	s.mu.Unlock()
 }
@@ -665,7 +664,6 @@ func (s *networkAssistantService) storeFakeIPRouteHint(fakeAddr string, domain s
 		s.dnsRouteHints = make(map[string]dnsRouteHintEntry)
 	}
 	s.dnsRouteHints[canonical] = hint
-	setUnifiedFakeIPMapping(canonical, hint.Domain, route, fakeIPTTL)
 	s.mu.Unlock()
 }
 
@@ -673,9 +671,6 @@ func (s *networkAssistantService) loadDNSRouteHint(ipAddr string) (dnsRouteHintE
 	canonical := canonicalIP(net.ParseIP(strings.TrimSpace(ipAddr)))
 	if canonical == "" {
 		return dnsRouteHintEntry{}, false
-	}
-	if hint, ok := getUnifiedRouteHintByIP(canonical); ok {
-		return hint, true
 	}
 
 	s.mu.RLock()
@@ -699,5 +694,4 @@ func (s *networkAssistantService) clearDNSRouteHints() {
 	s.mu.Lock()
 	s.dnsRouteHints = make(map[string]dnsRouteHintEntry)
 	s.mu.Unlock()
-	clearUnifiedRouteAndFakeHints()
 }

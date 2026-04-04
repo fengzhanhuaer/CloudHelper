@@ -10,9 +10,11 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-func createConfiguredTUNAdapter(libraryPath, adapterName, tunnelType string) (uintptr, error) {
+func createConfiguredTUNAdapter(libraryPath, adapterName, tunnelType, requestedGUID string) (uintptr, error) {
 	path := strings.TrimSpace(libraryPath)
 	if path == "" {
 		return 0, errors.New("empty wintun.dll path")
@@ -51,10 +53,19 @@ func createConfiguredTUNAdapter(libraryPath, adapterName, tunnelType string) (ui
 		return 0, fmt.Errorf("invalid tun tunnel type: %w", err)
 	}
 
+	guidArg := uintptr(0)
+	if guidText := strings.TrimSpace(requestedGUID); guidText != "" {
+		reqGUID, parseErr := windows.GUIDFromString(guidText)
+		if parseErr != nil {
+			return 0, fmt.Errorf("invalid requested adapter guid: %w", parseErr)
+		}
+		guidArg = uintptr(unsafe.Pointer(&reqGUID))
+	}
+
 	handle, _, callErr := createProc.Call(
 		uintptr(unsafe.Pointer(namePtr)),
 		uintptr(unsafe.Pointer(kindPtr)),
-		0,
+		guidArg,
 	)
 	if handle != 0 {
 		return handle, nil

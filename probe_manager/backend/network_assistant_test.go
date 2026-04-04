@@ -305,7 +305,7 @@ func TestDecideRouteForTargetTUNModeUsesRuleRouting(t *testing.T) {
 	}
 }
 
-func TestDecideRouteForTargetControlPlaneAlwaysDirect(t *testing.T) {
+func TestDecideRouteForTargetDirectGroupAlwaysDirect(t *testing.T) {
 	_, cidr, err := net.ParseCIDR("0.0.0.0/0")
 	if err != nil {
 		t.Fatalf("parse cidr: %v", err)
@@ -322,36 +322,26 @@ func TestDecideRouteForTargetControlPlaneAlwaysDirect(t *testing.T) {
 		ruleRouting: tunnelRuleRouting{
 			RuleSet: tunnelRuleSet{
 				Rules: []tunnelRule{
-					{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "group_all"},
+					{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "direct"},
 				},
 			},
 			GroupNodeMap: map[string]string{
-				"group_all": rulePolicyActionTunnel + ":chain:test-chain",
+				"direct":            rulePolicyActionTunnel + ":chain:test-chain",
+				ruleFallbackGroupKey: rulePolicyActionTunnel + ":chain:test-chain",
 			},
 		},
 		ruleDNSCache: make(map[string]dnsCacheEntry),
-		controlPlaneHosts: map[string]struct{}{
-			"controller.example.com": {},
-		},
-		controlPlaneIPs: map[string]struct{}{
-			"203.0.113.10": {},
-		},
 	}
 
-	hostDecision, err := service.decideRouteForTarget("controller.example.com:443")
+	decision, err := service.decideRouteForTarget("203.0.113.10:443")
 	if err != nil {
-		t.Fatalf("decideRouteForTarget by host returned error: %v", err)
+		t.Fatalf("decideRouteForTarget returned error: %v", err)
 	}
-	if !hostDecision.Direct {
-		t.Fatal("expected controller host to be forced direct")
+	if !decision.Direct {
+		t.Fatal("expected direct group to always route direct")
 	}
-
-	ipDecision, err := service.decideRouteForTarget("203.0.113.10:443")
-	if err != nil {
-		t.Fatalf("decideRouteForTarget by ip returned error: %v", err)
-	}
-	if !ipDecision.Direct {
-		t.Fatal("expected controller ip to be forced direct")
+	if decision.Group != "direct" {
+		t.Fatalf("group=%s, want direct", decision.Group)
 	}
 }
 

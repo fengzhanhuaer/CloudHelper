@@ -62,6 +62,10 @@ export function StopNetworkAssistantProcessMonitor() {
   return window['go']['main']['App']['StopNetworkAssistantProcessMonitor']();
 }
 
+export function ClearNetworkAssistantProcessEvents() {
+  return window['go']['main']['App']['ClearNetworkAssistantProcessEvents']();
+}
+
 export function QueryNetworkAssistantProcessEvents(arg1) {
   return window['go']['main']['App']['QueryNetworkAssistantProcessEvents'](arg1);
 }

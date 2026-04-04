@@ -19,6 +19,7 @@ import {
 	StartNetworkAssistantProcessMonitor,
 	StopNetworkAssistantProcessMonitor,
 	QueryNetworkAssistantProcessEvents,
+	ClearNetworkAssistantProcessEvents,
 } from "../../../../wailsjs/go/main/App";
 import * as AppBindings from "../../../../wailsjs/go/main/App";
 import type {
@@ -51,6 +52,7 @@ const defaultStatus: NetworkAssistantStatus = {
   mux_reconnects: 0,
   mux_last_recv: "",
   mux_last_pong: "",
+  group_keepalive: [],
   tun_supported: false,
   tun_installed: false,
   tun_enabled: false,
@@ -113,7 +115,6 @@ const defaultDNSUpstreamConfig: NetworkAssistantDNSUpstreamConfig = {
   dot_servers: [],
   doh_servers: [],
   fake_ip_cidr: "",
-  fake_ip_whitelist: [],
 };
 
 export function useNetworkAssistant() {
@@ -502,10 +503,6 @@ export function useNetworkAssistant() {
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [processEvents, setProcessEvents] = useState<NetworkProcessEvent[]>([]);
   const [processEventsStatus, setProcessEventsStatus] = useState("");
-  const processEventsLastMs = useCallback(() => {
-    if (processEvents.length === 0) return 0;
-    return processEvents[processEvents.length - 1].timestamp;
-  }, [processEvents]);
 
   const refreshProcessList = useCallback(async () => {
     setIsLoadingProcesses(true);
@@ -540,9 +537,15 @@ export function useNetworkAssistant() {
     }
   }, [status.mode, status.tun_enabled]);
 
-  const clearProcessEvents = useCallback(() => {
-    setProcessEvents([]);
-    setProcessEventsStatus("");
+  const clearProcessEvents = useCallback(async () => {
+    try {
+      await ClearNetworkAssistantProcessEvents();
+      setProcessEvents([]);
+      setProcessEventsStatus("监视记录已清空");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setProcessEventsStatus(`清空监视记录失败：${msg}`);
+    }
   }, []);
 
   const stopProcessMonitor = useCallback(async () => {
@@ -558,11 +561,10 @@ export function useNetworkAssistant() {
   const pollProcessEvents = useCallback(async () => {
     if (!isMonitoring) return;
     try {
-      const sinceMs = processEventsLastMs();
-      const raw = await QueryNetworkAssistantProcessEvents(sinceMs > 0 ? sinceMs + 1 : 0);
-      if (Array.isArray(raw) && raw.length > 0) {
+      const raw = await QueryNetworkAssistantProcessEvents(0);
+      if (Array.isArray(raw)) {
         const events: NetworkProcessEvent[] = raw.map((e) => {
-          const source = e as unknown as { process_name?: string };
+          const source = e as unknown as { process_name?: string; count?: number };
           return {
             kind: e.kind as NetworkProcessEvent["kind"],
             timestamp: e.timestamp,
@@ -574,20 +576,17 @@ export function useNetworkAssistant() {
             node_id: e.node_id,
             group: e.group,
             resolved_ips: e.resolved_ips,
+            count: source.count,
           };
         });
-        setProcessEvents(prev => {
-          const combined = [...prev, ...events];
-          // 保留最新 500 条
-          return combined.length > 500 ? combined.slice(combined.length - 500) : combined;
-        });
+        setProcessEvents(events);
         setProcessEventsStatus("");
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       setProcessEventsStatus(`监视轮询失败：${msg}`);
     }
-  }, [isMonitoring, processEventsLastMs]);
+  }, [isMonitoring]);
 
   // 监视轮询：每 2 秒刷新一次事件
   useEffect(() => {

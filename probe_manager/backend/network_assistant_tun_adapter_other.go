@@ -4,7 +4,7 @@ package backend
 
 import "errors"
 
-func createConfiguredTUNAdapter(_, _, _ string) (uintptr, error) {
+func createConfiguredTUNAdapter(_, _, _, _ string) (uintptr, error) {
 	return 0, errors.New("automatic tun adapter creation is only supported on windows")
 }
 

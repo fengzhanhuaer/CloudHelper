@@ -41,7 +41,7 @@ func (s *networkAssistantService) startLocalTUNDataPlane() error {
 		return errors.New("tun library path is empty")
 	}
 	if adapterHandle == 0 {
-		handle, err := createConfiguredTUNAdapter(libraryPath, tunAdapterName, tunAdapterTunnelType)
+		handle, err := createConfiguredTUNAdapter(libraryPath, tunAdapterName, tunAdapterTunnelType, tunAdapterRequestedGUID)
 		if err != nil {
 			return err
 		}

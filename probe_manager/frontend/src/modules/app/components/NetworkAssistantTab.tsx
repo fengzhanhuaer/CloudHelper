@@ -87,7 +87,6 @@ type NetworkAssistantTabProps = {
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
   const [subTab, setSubTab] = useState<"settings" | "dns" | "cache" | "monitor" | "link" | "forward" | "driver" | "status" | "logs">("settings");
   const [dnsEditCIDR, setDnsEditCIDR] = useState("");
-  const [dnsEditWhitelist, setDnsEditWhitelist] = useState("");
   const [dnsEditDirty, setDnsEditDirty] = useState(false);
 
   type TunnelPingState = { ok: boolean | null; durationMS: number | null; message: string };
@@ -129,7 +128,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     }
     if (!dnsEditDirty) {
       setDnsEditCIDR(props.dnsUpstreamConfig.fake_ip_cidr ?? "");
-      setDnsEditWhitelist((props.dnsUpstreamConfig.fake_ip_whitelist ?? []).join("\n"));
     }
   }, [subTab, props.dnsUpstreamConfig, dnsEditDirty]);
 
@@ -173,6 +171,9 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     const activeTunnelID = group.action === "tunnel" ? (group.tunnel_node_id || "").trim() : "";
     const activeTunnelLabel = activeTunnelID ? (tunnelOptionLabels[activeTunnelID] || activeTunnelID) : "";
     const pingState = activeTunnelID ? tunnelPingStates[activeTunnelID] : undefined;
+    const keepalive = (props.status.group_keepalive || []).find(
+      (item) => (item.group || "").trim().toLowerCase() === (group.group || "").trim().toLowerCase(),
+    );
 
     return (
       <div key={group.group} className="rule-policy-group-row">
@@ -192,25 +193,51 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             );
           })}
         </div>
-        {activeTunnelID && (
+        {(activeTunnelID || keepalive) && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12, color: "#aaa" }}>
-              当前链路：{activeTunnelLabel}
-            </span>
-            <button
-              className="btn"
-              id={`tunnel-ping-btn-${group.group}`}
-              onClick={() => void handlePingTunnel(activeTunnelID)}
-              disabled={!!tunnelPingingID}
-              style={{
-                fontSize: 11,
-                padding: "2px 10px",
-                minWidth: 52,
-                background: tunnelPingingID === activeTunnelID ? "#555" : undefined,
-              }}
-            >
-              {tunnelPingingID === activeTunnelID ? "测试中" : "测试链路"}
-            </button>
+            {activeTunnelID && (
+              <>
+                <span style={{ fontSize: 12, color: "#aaa" }}>
+                  当前链路：{activeTunnelLabel}
+                </span>
+                <button
+                  className="btn"
+                  id={`tunnel-ping-btn-${group.group}`}
+                  onClick={() => void handlePingTunnel(activeTunnelID)}
+                  disabled={!!tunnelPingingID}
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 10px",
+                    minWidth: 52,
+                    background: tunnelPingingID === activeTunnelID ? "#555" : undefined,
+                  }}
+                >
+                  {tunnelPingingID === activeTunnelID ? "测试中" : "测试链路"}
+                </button>
+              </>
+            )}
+            {keepalive && (
+              <span
+                style={{
+                  fontSize: 12,
+                  color:
+                    keepalive.action === "tunnel"
+                      ? keepalive.connected
+                        ? "#4ade80"
+                        : "#f87171"
+                      : "#aaa",
+                }}
+                title={
+                  keepalive.action === "tunnel"
+                    ? `最近心跳：${keepalive.last_pong || "-"}，最近收包：${keepalive.last_recv || "-"}`
+                    : undefined
+                }
+              >
+                {keepalive.action === "tunnel"
+                  ? `保活：${keepalive.status || "-"}${keepalive.tunnel_label ? ` (${keepalive.tunnel_label})` : ""}`
+                  : `保活：${keepalive.status || "-"}`}
+              </span>
+            )}
             {pingState && (
               <span
                 style={{
@@ -312,7 +339,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
               className="btn"
               onClick={() => {
                 setDnsEditCIDR(props.dnsUpstreamConfig.fake_ip_cidr ?? "");
-                setDnsEditWhitelist((props.dnsUpstreamConfig.fake_ip_whitelist ?? []).join("\n"));
                 setDnsEditDirty(false);
               }}
               disabled={props.isLoadingDNSConfig}
@@ -322,14 +348,9 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             <button
               className="btn"
               onClick={() => {
-                const whitelist = dnsEditWhitelist
-                  .split("\n")
-                  .map((s) => s.trim())
-                  .filter(Boolean);
                 props.onSaveDNSConfig({
                   ...props.dnsUpstreamConfig,
                   fake_ip_cidr: dnsEditCIDR.trim(),
-                  fake_ip_whitelist: whitelist,
                 });
                 setDnsEditDirty(false);
               }}
@@ -360,16 +381,8 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
               />
             </div>
             <div className="rule-policy-group">
-              <div className="rule-policy-group-title">Fake IP 白名单域名</div>
-              <div className="rule-policy-group-desc">每行一个域名，命中白名单的域名不会分配 Fake IP，直接返回真实解析结果。支持前缀通配符，例如：*.local</div>
-              <textarea
-                className="text-input dns-whitelist-textarea"
-                rows={8}
-                value={dnsEditWhitelist}
-                placeholder={"*.local\nlocalhost\ntime.apple.com"}
-                onChange={(e) => { setDnsEditWhitelist(e.target.value); setDnsEditDirty(true); }}
-                disabled={props.isLoadingDNSConfig}
-              />
+              <div className="rule-policy-group-title">Fake IP 排除来源</div>
+              <div className="rule-policy-group-desc">已改为使用规则组 direct 作为排除来源。命中 direct 组的域名不会分配 Fake IP，请在规则组中配置 direct 策略。</div>
             </div>
           </div>
         </>

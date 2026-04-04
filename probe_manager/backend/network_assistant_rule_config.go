@@ -24,6 +24,10 @@ var defaultRulePolicies = []string{
 	"@fallback,direct",
 }
 
+func isDirectRuleGroupKey(group string) bool {
+	return strings.EqualFold(strings.TrimSpace(group), "direct")
+}
+
 type ruleGroupPolicy struct {
 	Action       string
 	TunnelNodeID string
@@ -158,6 +162,9 @@ func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []strin
 	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
 	items := make([]NetworkAssistantRuleGroupConfig, 0, len(groups))
 	for _, group := range groups {
+		if isDirectRuleGroupKey(group) {
+			continue
+		}
 		policy, _ := readRulePolicyForGroup(routing, group, defaultNode, tunnelOptions)
 		groupOptions := mergeRuleTunnelOptions(tunnelOptions, policy.TunnelNodeID)
 		groupOptionLabels := buildRuleTunnelOptionLabels(groupOptions, chainTargets)
@@ -266,7 +273,8 @@ func mergeRuleTunnelOptions(base []string, selected string) []string {
 }
 
 func defaultPolicyActionForGroupKey(group string) string {
-	if strings.EqualFold(strings.TrimSpace(group), ruleFallbackGroupKey) {
+	cleanGroup := strings.TrimSpace(group)
+	if strings.EqualFold(cleanGroup, ruleFallbackGroupKey) || isDirectRuleGroupKey(cleanGroup) {
 		return rulePolicyActionDirect
 	}
 	return rulePolicyActionTunnel
@@ -373,6 +381,10 @@ func readRulePolicyForGroup(routing tunnelRuleRouting, group string, defaultNode
 		return ruleGroupPolicy{}, errors.New("empty rule group")
 	}
 
+	if isDirectRuleGroupKey(key) {
+		return ruleGroupPolicy{Action: rulePolicyActionDirect}, nil
+	}
+
 	defaultAction := defaultPolicyActionForGroupKey(key)
 	rawValue := ""
 	if routing.GroupNodeMap != nil {
@@ -403,6 +415,10 @@ func buildCanonicalRulePolicyMap(ruleSet tunnelRuleSet, input map[string]string,
 	groups := extractRuleGroupsFromRuleSet(ruleSet)
 	result := make(map[string]string, len(groups)+1)
 	for _, group := range groups {
+		if isDirectRuleGroupKey(group) {
+			result[group] = encodeRuleGroupPolicy(ruleGroupPolicy{Action: rulePolicyActionDirect})
+			continue
+		}
 		raw := ""
 		if input != nil {
 			raw = strings.TrimSpace(input[group])

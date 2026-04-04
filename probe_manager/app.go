@@ -147,6 +147,10 @@ func (a *App) StopNetworkAssistantProcessMonitor() error {
 	return a.inner.StopNetworkAssistantProcessMonitor()
 }
 
+func (a *App) ClearNetworkAssistantProcessEvents() error {
+	return a.inner.ClearNetworkAssistantProcessEvents()
+}
+
 func (a *App) QueryNetworkAssistantProcessEvents(sinceMs int64) ([]NetworkProcessEvent, error) {
 	return a.inner.QueryNetworkAssistantProcessEvents(sinceMs)
 }

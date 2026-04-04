@@ -79,6 +79,18 @@ export type UpgradeProgress = {
 
 export type NetworkAssistantMode = "direct" | "tun";
 
+export type NetworkAssistantGroupKeepaliveItem = {
+  group: string;
+  action: NetworkAssistantRuleAction;
+  tunnel_node_id?: string;
+  tunnel_label?: string;
+  connected: boolean;
+  active_streams: number;
+  last_recv: string;
+  last_pong: string;
+  status: string;
+};
+
 export type NetworkAssistantStatus = {
   enabled: boolean;
   mode: NetworkAssistantMode;
@@ -94,6 +106,7 @@ export type NetworkAssistantStatus = {
   mux_reconnects?: number;
   mux_last_recv?: string;
   mux_last_pong?: string;
+  group_keepalive?: NetworkAssistantGroupKeepaliveItem[];
   tun_supported?: boolean;
   tun_installed?: boolean;
   tun_enabled?: boolean;
@@ -123,16 +136,18 @@ export type NetworkAssistantDNSUpstreamConfig = {
   dot_servers: string[];
   doh_servers: string[];
   fake_ip_cidr: string;
-  fake_ip_whitelist: string[];
 };
 
 export type NetworkAssistantDNSCacheEntry = {
   domain: string;
   ip: string;
   fake_ip: boolean;
+  fake_ip_value?: string;
   direct: boolean;
   node_id: string;
   group: string;
+  kind?: string;
+  source?: string;
   expires_at: string;
 };
 
@@ -155,6 +170,7 @@ export type NetworkProcessEvent = {
   node_id?: string;
   group?: string;
   resolved_ips?: string[];
+  count?: number;
 };
 
 export type NetworkAssistantLogSource = "manager" | "controller";

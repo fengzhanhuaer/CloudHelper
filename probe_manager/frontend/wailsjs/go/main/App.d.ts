@@ -32,6 +32,8 @@ export function StartNetworkAssistantProcessMonitor():Promise<void>;
 
 export function StopNetworkAssistantProcessMonitor():Promise<void>;
 
+export function ClearNetworkAssistantProcessEvents():Promise<void>;
+
 export function QueryNetworkAssistantProcessEvents(arg1:number):Promise<Array<backend.NetworkProcessEvent>>;
 
 export function QueryNetworkAssistantDNSCache(arg1:string):Promise<Array<backend.NetworkAssistantDNSCacheEntry>>;

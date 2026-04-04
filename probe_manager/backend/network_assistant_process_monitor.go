@@ -2,6 +2,7 @@ package backend
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,12 +19,12 @@ type NetworkProcessInfo struct {
 type NetworkProcessEventKind string
 
 const (
-	NetworkProcessEventDNS  NetworkProcessEventKind = "dns"
-	NetworkProcessEventTCP  NetworkProcessEventKind = "tcp"
-	NetworkProcessEventUDP  NetworkProcessEventKind = "udp"
+	NetworkProcessEventDNS NetworkProcessEventKind = "dns"
+	NetworkProcessEventTCP NetworkProcessEventKind = "tcp"
+	NetworkProcessEventUDP NetworkProcessEventKind = "udp"
 )
 
-// NetworkProcessEvent 进程网络事件。
+// NetworkProcessEvent 进程网络事件（已做进程内去重聚合）。
 type NetworkProcessEvent struct {
 	Kind        NetworkProcessEventKind `json:"kind"`
 	Timestamp   int64                   `json:"timestamp"` // Unix ms
@@ -35,6 +36,7 @@ type NetworkProcessEvent struct {
 	NodeID      string                  `json:"node_id,omitempty"`
 	Group       string                  `json:"group,omitempty"`
 	ResolvedIPs []string                `json:"resolved_ips,omitempty"`
+	Count       int                     `json:"count"`
 }
 
 const maxProcessMonitorEvents = 500
@@ -44,10 +46,11 @@ type processMonitor struct {
 	mu     sync.Mutex
 	active bool
 	events []NetworkProcessEvent
+	index  map[string]int
 }
 
 func newProcessMonitor() *processMonitor {
-	return &processMonitor{}
+	return &processMonitor{index: make(map[string]int)}
 }
 
 func (m *processMonitor) Start() {
@@ -55,6 +58,7 @@ func (m *processMonitor) Start() {
 	defer m.mu.Unlock()
 	m.active = true
 	m.events = nil
+	m.index = make(map[string]int)
 }
 
 func (m *processMonitor) Stop() {
@@ -69,16 +73,95 @@ func (m *processMonitor) IsActive() bool {
 	return m.active
 }
 
+func normalizeProcessName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "unknown"
+	}
+	return trimmed
+}
+
+func eventKey(ev NetworkProcessEvent) string {
+	processName := strings.ToLower(normalizeProcessName(ev.ProcessName))
+	kind := strings.ToLower(strings.TrimSpace(string(ev.Kind)))
+	domain := strings.ToLower(strings.TrimSpace(ev.Domain))
+	targetIP := strings.TrimSpace(ev.TargetIP)
+	nodeID := strings.ToLower(strings.TrimSpace(ev.NodeID))
+	group := strings.ToLower(strings.TrimSpace(ev.Group))
+
+	ips := make([]string, 0, len(ev.ResolvedIPs))
+	for _, ip := range ev.ResolvedIPs {
+		normalized := strings.TrimSpace(ip)
+		if normalized == "" {
+			continue
+		}
+		ips = append(ips, normalized)
+	}
+	sort.Strings(ips)
+	ipsKey := strings.Join(ips, ",")
+
+	routeFlag := "proxy"
+	if ev.Direct {
+		routeFlag = "direct"
+	}
+
+	return strings.Join([]string{
+		processName,
+		kind,
+		domain,
+		targetIP,
+		strconv.FormatUint(uint64(ev.TargetPort), 10),
+		routeFlag,
+		nodeID,
+		group,
+		ipsKey,
+	}, "|")
+}
+
+func (m *processMonitor) rebuildIndexLocked() {
+	m.index = make(map[string]int, len(m.events))
+	for i, ev := range m.events {
+		m.index[eventKey(ev)] = i
+	}
+}
+
 func (m *processMonitor) appendEvent(ev NetworkProcessEvent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.active {
 		return
 	}
+
+	ev.ProcessName = normalizeProcessName(ev.ProcessName)
+	if ev.Count <= 0 {
+		ev.Count = 1
+	}
+	key := eventKey(ev)
+	if idx, ok := m.index[key]; ok && idx >= 0 && idx < len(m.events) {
+		current := m.events[idx]
+		current.Count += ev.Count
+		current.Timestamp = ev.Timestamp
+		if current.Domain == "" {
+			current.Domain = ev.Domain
+		}
+		if current.TargetIP == "" {
+			current.TargetIP = ev.TargetIP
+		}
+		if current.TargetPort == 0 {
+			current.TargetPort = ev.TargetPort
+		}
+		if len(current.ResolvedIPs) == 0 && len(ev.ResolvedIPs) > 0 {
+			current.ResolvedIPs = append([]string(nil), ev.ResolvedIPs...)
+		}
+		m.events[idx] = current
+		return
+	}
+
 	m.events = append(m.events, ev)
+	m.index[key] = len(m.events) - 1
 	if len(m.events) > maxProcessMonitorEvents {
-		// 保留最新的事件
 		m.events = m.events[len(m.events)-maxProcessMonitorEvents:]
+		m.rebuildIndexLocked()
 	}
 }
 
@@ -97,6 +180,7 @@ func (m *processMonitor) RecordDNSEvent(srcPort uint16, domain string, resolvedI
 		Direct:      direct,
 		NodeID:      nodeID,
 		Group:       group,
+		Count:       1,
 	})
 }
 
@@ -115,6 +199,7 @@ func (m *processMonitor) RecordTCPEvent(srcPort uint16, targetIP string, targetP
 		Direct:      direct,
 		NodeID:      nodeID,
 		Group:       group,
+		Count:       1,
 	})
 }
 
@@ -133,6 +218,7 @@ func (m *processMonitor) RecordUDPEvent(srcPort uint16, targetIP string, targetP
 		Direct:      direct,
 		NodeID:      nodeID,
 		Group:       group,
+		Count:       1,
 	})
 }
 
@@ -167,6 +253,7 @@ func (m *processMonitor) ClearEvents() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.events = nil
+	m.index = make(map[string]int)
 }
 
 // listRunningProcesses 返回去重后的进程名列表（已排序）。

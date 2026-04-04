@@ -44,7 +44,10 @@ export function NetworkAssistantDNSCachePanel(props: NetworkAssistantDNSCachePan
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>FAKE IP</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>类型</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>来源</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>组</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>过期时间</th>
             </tr>
           </thead>
           <tbody>
@@ -52,8 +55,11 @@ export function NetworkAssistantDNSCachePanel(props: NetworkAssistantDNSCachePan
               <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
                 <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.domain || "-"}</td>
                 <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.ip || "-"}</td>
-                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.fake_ip || "-"}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.fake_ip_value || "-"}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.kind || "-"}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.source || "-"}</td>
                 <td style={{ padding: "4px 8px" }}>{entry.direct ? "直连" : (entry.group || "-")}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace", whiteSpace: "nowrap" }}>{entry.expires_at || "-"}</td>
               </tr>
             ))}
           </tbody>
