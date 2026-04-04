@@ -297,16 +297,8 @@ func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 		log.Printf("[network-assistant] tun ipv4 bind timeout detected: if=%d ip=%s/%d err=%v", adapter.InterfaceIndex, tunRouteIPv4Address, tunRouteIPv4PrefixLength, bindErr)
 		for attempt, delay := range retryDelays {
 			attemptNo := attempt + 1
-			log.Printf("[network-assistant] tun ipv4 bind retry begin: attempt=%d/%d if=%d delay_ms=%d", attemptNo, len(retryDelays), adapter.InterfaceIndex, delay/time.Millisecond)
+			log.Printf("[network-assistant] tun ipv4 bind retry begin (no adapter reset): attempt=%d/%d if=%d delay_ms=%d", attemptNo, len(retryDelays), adapter.InterfaceIndex, delay/time.Millisecond)
 			time.Sleep(delay)
-			if resetErr := windowsResetAdapterState(adapter.InterfaceIndex); resetErr != nil {
-				log.Printf("[network-assistant] tun ipv4 bind retry reset failed: attempt=%d/%d if=%d err=%v", attemptNo, len(retryDelays), adapter.InterfaceIndex, resetErr)
-				bindErr = fmt.Errorf("tun ipv4 bind retry reset failed: %w (previous=%v)", resetErr, bindErr)
-				continue
-			}
-			if refreshed, findErr := windowsFindAdapterByNameOrDescription(tunAdapterName, tunAdapterDescription); findErr == nil && refreshed.InterfaceIndex > 0 {
-				adapter = refreshed
-			}
 			if retryErr := windowsEnsureInterfaceIPv4Address(adapter.InterfaceIndex, tunRouteIPv4Address, tunRouteIPv4PrefixLength); retryErr == nil {
 				log.Printf("[network-assistant] tun ipv4 bind retry success: attempt=%d/%d if=%d ip=%s/%d", attemptNo, len(retryDelays), adapter.InterfaceIndex, tunRouteIPv4Address, tunRouteIPv4PrefixLength)
 				bindErr = nil
