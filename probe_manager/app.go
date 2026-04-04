@@ -71,14 +71,6 @@ func (a *App) SetGlobalControllerURL(rawURL string) (string, error) {
 	return a.inner.SetGlobalControllerURL(rawURL)
 }
 
-func (a *App) GetGlobalControllerIP() (string, error) {
-	return a.inner.GetGlobalControllerIP()
-}
-
-func (a *App) SetGlobalControllerIP(ip string) (string, error) {
-	return a.inner.SetGlobalControllerIP(ip)
-}
-
 func (a *App) GetAIDebugListenEnabled() (bool, error) {
 	return a.inner.GetAIDebugListenEnabled()
 }

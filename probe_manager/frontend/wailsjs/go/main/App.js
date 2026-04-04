@@ -14,10 +14,6 @@ export function GetAIDebugListenEnabled() {
   return window['go']['main']['App']['GetAIDebugListenEnabled']();
 }
 
-export function GetGlobalControllerIP() {
-  return window['go']['main']['App']['GetGlobalControllerIP']();
-}
-
 export function GetGlobalControllerURL() {
   return window['go']['main']['App']['GetGlobalControllerURL']();
 }
@@ -152,10 +148,6 @@ export function RestoreNetworkAssistantDirect() {
 
 export function SetAIDebugListenEnabled(arg1) {
   return window['go']['main']['App']['SetAIDebugListenEnabled'](arg1);
-}
-
-export function SetGlobalControllerIP(arg1) {
-  return window['go']['main']['App']['SetGlobalControllerIP'](arg1);
 }
 
 export function SetGlobalControllerURL(arg1) {

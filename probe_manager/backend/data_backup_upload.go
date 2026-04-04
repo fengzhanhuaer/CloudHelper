@@ -153,8 +153,7 @@ func uploadManagerBackupArchiveViaAdminWS(baseURL, sessionToken, archivePath str
 		return err
 	}
 
-	controllerIP := loadManagerControllerIP()
-	dialer := buildControllerWSDialer(baseURL, controllerIP)
+	dialer := buildControllerWSDialer(baseURL)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)

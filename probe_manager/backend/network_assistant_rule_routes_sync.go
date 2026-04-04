@@ -52,8 +52,7 @@ func uploadRuleRoutesViaAdminWS(baseURL, sessionToken string, content []byte) er
 		return err
 	}
 
-	controllerIP := loadManagerControllerIP()
-	dialer := buildControllerWSDialer(baseURL, controllerIP)
+	dialer := buildControllerWSDialer(baseURL)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)

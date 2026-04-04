@@ -8,8 +8,6 @@ export function CreateProbeNode(arg1:string):Promise<backend.ProbeNode>;
 
 export function GetAIDebugListenEnabled():Promise<boolean>;
 
-export function GetGlobalControllerIP():Promise<string>;
-
 export function GetGlobalControllerURL():Promise<string>;
 
 export function GetLatestGitHubRelease(arg1:string):Promise<backend.ReleaseInfo>;
@@ -71,8 +69,6 @@ export function ReplaceProbeNodes(arg1:Array<backend.ProbeNode>):Promise<Array<b
 export function RestoreNetworkAssistantDirect():Promise<backend.NetworkAssistantStatus>;
 
 export function SetAIDebugListenEnabled(arg1:boolean):Promise<boolean>;
-
-export function SetGlobalControllerIP(arg1:string):Promise<string>;
 
 export function SetGlobalControllerURL(arg1:string):Promise<string>;
 

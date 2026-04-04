@@ -3,7 +3,6 @@ package backend
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -1942,8 +1941,7 @@ func fetchTunnelNodesViaAdminWS(baseURL, token string) (tunnelNodesResponse, err
 		return tunnelNodesResponse{}, err
 	}
 
-	controllerIP := loadManagerControllerIP()
-	dialer := buildControllerWSDialer(baseURL, controllerIP)
+	dialer := buildControllerWSDialer(baseURL)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)
@@ -2038,40 +2036,8 @@ func buildAdminWSURL(baseURL string) (string, error) {
 }
 
 // buildControllerWSDialer 构造用于连接主控的 WebSocket Dialer。
-// 如果 overrideIP 非空且是合法 IP，则注入自定义 NetDialContext，
-// 直接连接到该 IP，跳过 DNS 解析，TLS SNI 仍使用原始 hostname。
-func buildControllerWSDialer(baseURL string, overrideIP string) websocket.Dialer {
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	cleanIP := strings.TrimSpace(overrideIP)
-	if cleanIP == "" {
-		return dialer
-	}
-	if net.ParseIP(cleanIP) == nil {
-		return dialer
-	}
-
-	parsed, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || strings.TrimSpace(parsed.Host) == "" {
-		return dialer
-	}
-
-	_, port, splitErr := net.SplitHostPort(parsed.Host)
-	if splitErr != nil {
-		scheme := strings.ToLower(parsed.Scheme)
-		switch scheme {
-		case "https", "wss":
-			port = "443"
-		default:
-			port = "80"
-		}
-	}
-
-	dialAddr := net.JoinHostPort(cleanIP, port)
-	netDialer := &net.Dialer{Timeout: 10 * time.Second}
-	dialer.NetDialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-		return netDialer.DialContext(ctx, network, dialAddr)
-	}
-	return dialer
+func buildControllerWSDialer(_ string) websocket.Dialer {
+	return websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 }
 
 func buildNetworkAssistantTunnelRoute(nodeID string) string {
@@ -2401,8 +2367,7 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 		return map[string]probeChainEndpoint{}, nil, nil, err
 	}
 
-	controllerIP := loadManagerControllerIP()
-	dialer := buildControllerWSDialer(baseURL, controllerIP)
+	dialer := buildControllerWSDialer(baseURL)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)
