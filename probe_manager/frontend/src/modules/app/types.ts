@@ -149,6 +149,9 @@ export type NetworkAssistantDNSCacheEntry = {
   group: string;
   kind?: string;
   source?: string;
+  dns_count?: number;
+  ip_connect_count?: number;
+  total_count?: number;
   expires_at: string;
 };
 

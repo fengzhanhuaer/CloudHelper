@@ -346,16 +346,19 @@ type dnsRouteHintEntry struct {
 
 // NetworkAssistantDNSCacheEntry 是单条 DNS/路由缓存记录，供前端展示。
 type NetworkAssistantDNSCacheEntry struct {
-	Domain      string `json:"domain"`
-	IP          string `json:"ip"`
-	FakeIP      bool   `json:"fake_ip"`
-	FakeIPValue string `json:"fake_ip_value"`
-	Direct      bool   `json:"direct"`
-	NodeID      string `json:"node_id"`
-	Group       string `json:"group"`
-	Kind        string `json:"kind"`
-	Source      string `json:"source"`
-	ExpiresAt   string `json:"expires_at"` // RFC3339
+	Domain         string `json:"domain"`
+	IP             string `json:"ip"`
+	FakeIP         bool   `json:"fake_ip"`
+	FakeIPValue    string `json:"fake_ip_value"`
+	Direct         bool   `json:"direct"`
+	NodeID         string `json:"node_id"`
+	Group          string `json:"group"`
+	Kind           string `json:"kind"`
+	Source         string `json:"source"`
+	DNSCount       int    `json:"dns_count"`
+	IPConnectCount int    `json:"ip_connect_count"`
+	TotalCount     int    `json:"total_count"`
+	ExpiresAt      string `json:"expires_at"` // RFC3339
 }
 
 type tunnelDNSResolveResponse struct {

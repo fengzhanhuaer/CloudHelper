@@ -44,6 +44,9 @@ export function NetworkAssistantDNSCachePanel(props: NetworkAssistantDNSCachePan
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>FAKE IP</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>DNS次数</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP连接次数</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>总次数</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>类型</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>来源</th>
               <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>组</th>
@@ -55,7 +58,10 @@ export function NetworkAssistantDNSCachePanel(props: NetworkAssistantDNSCachePan
               <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
                 <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.domain || "-"}</td>
                 <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.ip || "-"}</td>
-                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.fake_ip_value || "-"}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.fake_ip_value || (entry.fake_ip ? entry.ip : "-")}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.dns_count ?? 0}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.ip_connect_count ?? 0}</td>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.total_count ?? 0}</td>
                 <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.kind || "-"}</td>
                 <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{entry.source || "-"}</td>
                 <td style={{ padding: "4px 8px" }}>{entry.direct ? "直连" : (entry.group || "-")}</td>

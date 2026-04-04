@@ -20,6 +20,7 @@ const (
 	dnsCacheKindRuleDNS    = "rule_dns"
 	dnsCacheKindRouteHint  = "route_hint"
 	dnsCacheKindFakeIP     = "fake_ip"
+	dnsCacheKindTraffic    = "traffic"
 )
 
 const (
@@ -27,6 +28,7 @@ const (
 	dnsCacheSourceTunnel    = "tunnel"
 	dnsCacheSourceFake      = "fake"
 	dnsCacheSourceSynthetic = "synthetic"
+	dnsCacheSourceMonitor   = "monitor"
 )
 
 // ── 内存状态 ──────────────────────────────────────────────────────────────────
@@ -232,6 +234,78 @@ type dnsCachePresentationRecord struct {
 	Expires time.Time
 }
 
+type dnsCacheTrafficCounters struct {
+	DNSCount       int
+	IPConnectCount int
+}
+
+type dnsCacheIPRouteCandidate struct {
+	Route     tunnelRouteDecision
+	Count     int
+	Timestamp int64
+}
+
+func collectDNSCacheTrafficStats(events []NetworkProcessEvent) (map[string]dnsCacheTrafficCounters, map[string]dnsCacheTrafficCounters, map[string]dnsCacheIPRouteCandidate) {
+	domainStats := make(map[string]dnsCacheTrafficCounters)
+	ipStats := make(map[string]dnsCacheTrafficCounters)
+	ipRoute := make(map[string]dnsCacheIPRouteCandidate)
+
+	for _, ev := range events {
+		count := ev.Count
+		if count <= 0 {
+			count = 1
+		}
+
+		domain := strings.ToLower(strings.TrimSpace(ev.Domain))
+		targetIP := normalizeDNSCacheIP(ev.TargetIP)
+		resolvedIPs := normalizeDNSCacheIPs(ev.ResolvedIPs)
+
+		switch ev.Kind {
+		case NetworkProcessEventDNS:
+			if domain != "" {
+				stats := domainStats[domain]
+				stats.DNSCount += count
+				domainStats[domain] = stats
+			}
+			for _, ip := range resolvedIPs {
+				stats := ipStats[ip]
+				stats.DNSCount += count
+				ipStats[ip] = stats
+				if route, ok := ipRoute[ip]; !ok || count > route.Count || (count == route.Count && ev.Timestamp >= route.Timestamp) {
+					ipRoute[ip] = dnsCacheIPRouteCandidate{
+						Route: tunnelRouteDecision{
+							Direct: ev.Direct,
+							NodeID: strings.TrimSpace(ev.NodeID),
+							Group:  strings.TrimSpace(ev.Group),
+						},
+						Count:     count,
+						Timestamp: ev.Timestamp,
+					}
+				}
+			}
+		case NetworkProcessEventTCP, NetworkProcessEventUDP:
+			if targetIP != "" {
+				stats := ipStats[targetIP]
+				stats.IPConnectCount += count
+				ipStats[targetIP] = stats
+				if route, ok := ipRoute[targetIP]; !ok || count > route.Count || (count == route.Count && ev.Timestamp >= route.Timestamp) {
+					ipRoute[targetIP] = dnsCacheIPRouteCandidate{
+						Route: tunnelRouteDecision{
+							Direct: ev.Direct,
+							NodeID: strings.TrimSpace(ev.NodeID),
+							Group:  strings.TrimSpace(ev.Group),
+						},
+						Count:     count,
+						Timestamp: ev.Timestamp,
+					}
+				}
+			}
+		}
+	}
+
+	return domainStats, ipStats, ipRoute
+}
+
 func querySplitDNSCacheEntries(s *networkAssistantService, query string) []NetworkAssistantDNSCacheEntry {
 	q := strings.ToLower(strings.TrimSpace(query))
 	now := time.Now()
@@ -306,6 +380,7 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 	}
 
 	pool := s.fakeIPPool
+	monitor := s.processMonitor
 	s.mu.Unlock()
 
 	fakeRecords := make([]dnsCachePresentationRecord, 0)
@@ -328,6 +403,13 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 		}
 	}
 
+	domainTrafficStats := make(map[string]dnsCacheTrafficCounters)
+	ipTrafficStats := make(map[string]dnsCacheTrafficCounters)
+	ipRouteCandidates := make(map[string]dnsCacheIPRouteCandidate)
+	if monitor != nil {
+		domainTrafficStats, ipTrafficStats, ipRouteCandidates = collectDNSCacheTrafficStats(monitor.GetEvents())
+	}
+
 	rankKind := func(kind string) int {
 		switch kind {
 		case dnsCacheKindFakeIP:
@@ -338,6 +420,8 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 			return 2
 		case dnsCacheKindDirectHost:
 			return 1
+		case dnsCacheKindTraffic:
+			return 0
 		default:
 			return 0
 		}
@@ -352,6 +436,8 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 			return 2
 		case dnsCacheSourceSystem:
 			return 1
+		case dnsCacheSourceMonitor:
+			return 0
 		default:
 			return 0
 		}
@@ -367,10 +453,16 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 	}
 
 	merged := make(map[string]dnsCachePresentationRecord)
+	buildMergedKey := func(domain, ip string) string {
+		if domain != "" {
+			return domain + "|" + ip
+		}
+		return "|" + ip
+	}
 	appendMerged := func(record dnsCachePresentationRecord) {
 		domain := strings.ToLower(strings.TrimSpace(record.Domain))
 		ip := normalizeDNSCacheIP(record.IP)
-		if domain == "" || ip == "" {
+		if ip == "" {
 			return
 		}
 		if q != "" && !strings.Contains(domain, q) && !strings.Contains(strings.ToLower(ip), q) {
@@ -378,7 +470,7 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 		}
 		record.Domain = domain
 		record.IP = ip
-		key := domain + "|" + ip
+		key := buildMergedKey(domain, ip)
 		if existing, ok := merged[key]; ok {
 			if mergeWins(existing, record) {
 				merged[key] = record
@@ -401,27 +493,73 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 		appendMerged(record)
 	}
 
+	ipsWithCacheRecord := make(map[string]struct{}, len(merged))
+	for _, record := range merged {
+		if record.IP == "" {
+			continue
+		}
+		ipsWithCacheRecord[record.IP] = struct{}{}
+	}
+	for ip, counters := range ipTrafficStats {
+		if counters.DNSCount <= 0 && counters.IPConnectCount <= 0 {
+			continue
+		}
+		if _, ok := ipsWithCacheRecord[ip]; ok {
+			continue
+		}
+		route := tunnelRouteDecision{}
+		if candidate, ok := ipRouteCandidates[ip]; ok {
+			route = candidate.Route
+		}
+		appendMerged(dnsCachePresentationRecord{
+			Kind:    dnsCacheKindTraffic,
+			Source:  dnsCacheSourceMonitor,
+			Domain:  "",
+			IP:      ip,
+			Route:   route,
+			FakeIP:  false,
+			Expires: time.Time{},
+		})
+	}
+
 	results := make([]NetworkAssistantDNSCacheEntry, 0, len(merged))
 	for _, record := range merged {
 		fakeIPValue := ""
 		if record.FakeIP {
 			fakeIPValue = record.IP
 		}
+		domainStats := domainTrafficStats[record.Domain]
+		ipStats := ipTrafficStats[record.IP]
+		dnsCount := domainStats.DNSCount
+		if dnsCount <= 0 {
+			dnsCount = ipStats.DNSCount
+		}
+		ipConnectCount := ipStats.IPConnectCount
+		expiresAt := ""
+		if !record.Expires.IsZero() {
+			expiresAt = record.Expires.Format(time.RFC3339)
+		}
 		results = append(results, NetworkAssistantDNSCacheEntry{
-			Domain:      record.Domain,
-			IP:          record.IP,
-			FakeIP:      record.FakeIP,
-			FakeIPValue: fakeIPValue,
-			Direct:      record.Route.Direct,
-			NodeID:      strings.TrimSpace(record.Route.NodeID),
-			Group:       strings.TrimSpace(record.Route.Group),
-			Kind:        record.Kind,
-			Source:      record.Source,
-			ExpiresAt:   record.Expires.Format(time.RFC3339),
+			Domain:         record.Domain,
+			IP:             record.IP,
+			FakeIP:         record.FakeIP,
+			FakeIPValue:    fakeIPValue,
+			Direct:         record.Route.Direct,
+			NodeID:         strings.TrimSpace(record.Route.NodeID),
+			Group:          strings.TrimSpace(record.Route.Group),
+			Kind:           record.Kind,
+			Source:         record.Source,
+			DNSCount:       dnsCount,
+			IPConnectCount: ipConnectCount,
+			TotalCount:     dnsCount + ipConnectCount,
+			ExpiresAt:      expiresAt,
 		})
 	}
 
 	sort.Slice(results, func(i, j int) bool {
+		if results[i].TotalCount != results[j].TotalCount {
+			return results[i].TotalCount > results[j].TotalCount
+		}
 		if results[i].Domain != results[j].Domain {
 			return results[i].Domain < results[j].Domain
 		}

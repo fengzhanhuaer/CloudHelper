@@ -564,6 +564,156 @@ func TestDecideRouteForTargetUsesDNSRouteHintForIP(t *testing.T) {
 	}
 }
 
+func TestCollectDNSCacheTrafficStats(t *testing.T) {
+	events := []NetworkProcessEvent{
+		{
+			Kind:        NetworkProcessEventDNS,
+			Domain:      "Example.COM",
+			ResolvedIPs: []string{"198.51.100.7", "198.51.100.7", "2001:db8::7"},
+			Direct:      false,
+			NodeID:      "chain:edge-a",
+			Group:       "group_example",
+			Count:       2,
+			Timestamp:   100,
+		},
+		{
+			Kind:      NetworkProcessEventTCP,
+			TargetIP:  "198.51.100.7",
+			Direct:    false,
+			NodeID:    "chain:edge-a",
+			Group:     "group_example",
+			Count:     3,
+			Timestamp: 101,
+		},
+		{
+			Kind:      NetworkProcessEventUDP,
+			TargetIP:  "203.0.113.9",
+			Direct:    true,
+			Count:     4,
+			Timestamp: 102,
+		},
+	}
+
+	domainStats, ipStats, ipRoute := collectDNSCacheTrafficStats(events)
+
+	if got := domainStats["example.com"].DNSCount; got != 2 {
+		t.Fatalf("domain dns count=%d, want 2", got)
+	}
+	if got := ipStats["198.51.100.7"].DNSCount; got != 2 {
+		t.Fatalf("ip dns count=%d, want 2", got)
+	}
+	if got := ipStats["198.51.100.7"].IPConnectCount; got != 3 {
+		t.Fatalf("ip connect count=%d, want 3", got)
+	}
+	if got := ipStats["2001:db8::7"].DNSCount; got != 2 {
+		t.Fatalf("ipv6 dns count=%d, want 2", got)
+	}
+	if got := ipStats["203.0.113.9"].IPConnectCount; got != 4 {
+		t.Fatalf("ip-only connect count=%d, want 4", got)
+	}
+
+	route, ok := ipRoute["198.51.100.7"]
+	if !ok {
+		t.Fatal("route candidate for 198.51.100.7 not found")
+	}
+	if route.Route.Direct {
+		t.Fatal("route candidate should be non-direct")
+	}
+	if route.Route.NodeID != "chain:edge-a" || route.Route.Group != "group_example" {
+		t.Fatalf("unexpected route candidate: %#v", route.Route)
+	}
+}
+
+func TestQuerySplitDNSCacheEntriesIncludesIPOnlyTrafficAndCounters(t *testing.T) {
+	directDNSCache.mu.Lock()
+	directDNSCache.entries = make(map[string]dnsCacheDirectEntry)
+	directDNSCache.mu.Unlock()
+	t.Cleanup(func() {
+		directDNSCache.mu.Lock()
+		directDNSCache.entries = make(map[string]dnsCacheDirectEntry)
+		directDNSCache.mu.Unlock()
+	})
+
+	monitor := newProcessMonitor()
+	monitor.Start()
+	monitor.appendEvent(NetworkProcessEvent{
+		Kind:        NetworkProcessEventDNS,
+		Domain:      "example.com",
+		ResolvedIPs: []string{"198.51.100.7"},
+		Direct:      false,
+		NodeID:      "chain:edge-a",
+		Group:       "group_example",
+		Count:       2,
+		Timestamp:   100,
+	})
+	monitor.appendEvent(NetworkProcessEvent{
+		Kind:      NetworkProcessEventTCP,
+		TargetIP:  "198.51.100.7",
+		Direct:    false,
+		NodeID:    "chain:edge-a",
+		Group:     "group_example",
+		Count:     3,
+		Timestamp: 101,
+	})
+	monitor.appendEvent(NetworkProcessEvent{
+		Kind:      NetworkProcessEventUDP,
+		TargetIP:  "203.0.113.9",
+		Direct:    true,
+		Count:     4,
+		Timestamp: 102,
+	})
+
+	svc := &networkAssistantService{
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+		dnsRouteHints: map[string]dnsRouteHintEntry{
+			"198.51.100.7": {
+				Domain:    "example.com",
+				Direct:    false,
+				BypassTUN: false,
+				NodeID:    "chain:edge-a",
+				Group:     "group_example",
+				Expires:   time.Now().Add(2 * time.Minute),
+			},
+		},
+		processMonitor: monitor,
+	}
+
+	entries := querySplitDNSCacheEntries(svc, "")
+	if len(entries) < 2 {
+		t.Fatalf("entries len=%d, want >=2", len(entries))
+	}
+
+	byIP := make(map[string]NetworkAssistantDNSCacheEntry, len(entries))
+	for _, entry := range entries {
+		byIP[entry.IP] = entry
+	}
+
+	entry, ok := byIP["198.51.100.7"]
+	if !ok {
+		t.Fatal("missing merged record for 198.51.100.7")
+	}
+	if entry.Domain != "example.com" {
+		t.Fatalf("domain=%q, want example.com", entry.Domain)
+	}
+	if entry.DNSCount != 2 || entry.IPConnectCount != 3 || entry.TotalCount != 5 {
+		t.Fatalf("unexpected counters: dns=%d ip=%d total=%d", entry.DNSCount, entry.IPConnectCount, entry.TotalCount)
+	}
+
+	ipOnly, ok := byIP["203.0.113.9"]
+	if !ok {
+		t.Fatal("missing ip-only traffic record")
+	}
+	if ipOnly.Domain != "" {
+		t.Fatalf("ip-only domain=%q, want empty", ipOnly.Domain)
+	}
+	if ipOnly.DNSCount != 0 || ipOnly.IPConnectCount != 4 || ipOnly.TotalCount != 4 {
+		t.Fatalf("unexpected ip-only counters: dns=%d ip=%d total=%d", ipOnly.DNSCount, ipOnly.IPConnectCount, ipOnly.TotalCount)
+	}
+	if !ipOnly.Direct {
+		t.Fatal("ip-only record should inherit direct route")
+	}
+}
+
 func TestBuildAndParseLocalTUNUDPPacket(t *testing.T) {
 	srcIP := net.ParseIP("10.10.0.2").To4()
 	dstIP := net.ParseIP("8.8.8.8").To4()
