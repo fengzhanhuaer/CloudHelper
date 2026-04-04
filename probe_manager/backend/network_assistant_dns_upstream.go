@@ -269,7 +269,7 @@ func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstrea
 	config := dnsUpstreamConfig{
 		Prefer:          normalizeDNSUpstreamPrefer(payload.Prefer),
 		FakeIPCIDR:      strings.TrimSpace(payload.FakeIPCIDR),
-		FakeIPWhitelist: normalizeFakeIPWhitelist(payload.FakeIPWhitelist),
+		FakeIPWhitelist: normalizeDNSUpstreamFakeIPWhitelist(payload.FakeIPWhitelist),
 	}
 
 	for _, rawServer := range payload.DNSServers {
@@ -318,6 +318,18 @@ func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstrea
 	}
 
 	return config
+}
+
+func normalizeDNSUpstreamFakeIPWhitelist(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		item = strings.TrimSpace(item)
+		if item == "" || strings.HasPrefix(item, "#") {
+			continue
+		}
+		out = append(out, strings.ToLower(item))
+	}
+	return out
 }
 
 func normalizeDNSUpstreamPrefer(raw string) string {
