@@ -16,16 +16,24 @@ type NetworkAssistantMonitorPanelProps = {
   onClearEvents: () => void;
 };
 
-type ProcessGroup = {
+type ProcessRow = {
+  key: string;
   processName: string;
+  processInfo?: NetworkProcessInfo;
   totalCount: number;
   latestTimestamp: number;
   records: NetworkProcessEvent[];
 };
 
 function formatTimestamp(ms: number): string {
+  if (!ms) return "-";
   const d = new Date(ms);
-  return d.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return d.toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function routeLabel(event: NetworkProcessEvent): string {
@@ -58,47 +66,82 @@ function eventCount(event: NetworkProcessEvent): number {
   return c > 0 ? c : 1;
 }
 
+function normalizeProcessName(name?: string): string {
+  const trimmed = (name || "unknown").trim();
+  return trimmed || "unknown";
+}
+
 export function NetworkAssistantMonitorPanel(props: NetworkAssistantMonitorPanelProps) {
   const [pinnedProcessName, setPinnedProcessName] = useState("");
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
 
-  const groups = useMemo<ProcessGroup[]>(() => {
-    const map = new Map<string, ProcessGroup>();
+  const rows = useMemo<ProcessRow[]>(() => {
+    const selectedLower = props.selectedProcess.trim().toLowerCase();
+    const eventsMap = new Map<string, NetworkProcessEvent[]>();
+
     for (const event of props.processEvents) {
-      const processName = (event.process_name || "unknown").trim() || "unknown";
-      if (props.selectedProcess && processName.toLowerCase() !== props.selectedProcess.toLowerCase()) {
-        continue;
-      }
+      const processName = normalizeProcessName(event.process_name);
       const key = processName.toLowerCase();
-      const existing = map.get(key);
-      if (!existing) {
-        map.set(key, {
-          processName,
-          totalCount: eventCount(event),
-          latestTimestamp: event.timestamp || 0,
-          records: [event],
-        });
+      if (selectedLower && key !== selectedLower) {
         continue;
       }
-      existing.totalCount += eventCount(event);
-      existing.records.push(event);
-      if ((event.timestamp || 0) > existing.latestTimestamp) {
-        existing.latestTimestamp = event.timestamp || 0;
+      const list = eventsMap.get(key);
+      if (list) {
+        list.push(event);
+      } else {
+        eventsMap.set(key, [event]);
       }
     }
 
-    const list = Array.from(map.values());
-    list.forEach((group) => {
-      group.records.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    });
-    list.sort((a, b) => {
+    const result: ProcessRow[] = [];
+    const seen = new Set<string>();
+
+    for (const processInfo of props.processList) {
+      const processName = normalizeProcessName(processInfo.name);
+      const key = processName.toLowerCase();
+      if (selectedLower && key !== selectedLower) {
+        continue;
+      }
+      seen.add(key);
+      const records = (eventsMap.get(key) || []).slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      let totalCount = 0;
+      let latestTimestamp = 0;
+      for (const ev of records) {
+        totalCount += eventCount(ev);
+        latestTimestamp = Math.max(latestTimestamp, ev.timestamp || 0);
+      }
+      result.push({ key, processName, processInfo, totalCount, latestTimestamp, records });
+    }
+
+    for (const [key, recordsRaw] of eventsMap.entries()) {
+      if (seen.has(key)) continue;
+      const records = recordsRaw.slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      let totalCount = 0;
+      let latestTimestamp = 0;
+      for (const ev of records) {
+        totalCount += eventCount(ev);
+        latestTimestamp = Math.max(latestTimestamp, ev.timestamp || 0);
+      }
+      result.push({
+        key,
+        processName: normalizeProcessName(records[0]?.process_name || key),
+        totalCount,
+        latestTimestamp,
+        records,
+      });
+    }
+
+    result.sort((a, b) => {
       const aPinned = pinnedProcessName && a.processName.toLowerCase() === pinnedProcessName.toLowerCase();
       const bPinned = pinnedProcessName && b.processName.toLowerCase() === pinnedProcessName.toLowerCase();
       if (aPinned && !bPinned) return -1;
       if (!aPinned && bPinned) return 1;
-      return b.latestTimestamp - a.latestTimestamp;
+      if (b.latestTimestamp !== a.latestTimestamp) return b.latestTimestamp - a.latestTimestamp;
+      return a.processName.localeCompare(b.processName, "zh-CN");
     });
-    return list;
-  }, [pinnedProcessName, props.processEvents, props.selectedProcess]);
+
+    return result;
+  }, [pinnedProcessName, props.processEvents, props.processList, props.selectedProcess]);
 
   return (
     <>
@@ -112,6 +155,7 @@ export function NetworkAssistantMonitorPanel(props: NetworkAssistantMonitorPanel
         <button className="btn" onClick={props.onClearEvents}>清空</button>
         {props.isMonitoring && <span style={{ fontSize: 12, color: "#888" }}>监视中，每 2 秒刷新…</span>}
       </div>
+
       <div className="content-actions" style={{ gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
         <span style={{ fontSize: 12, color: "#aaa" }}>进程：</span>
         <select
@@ -125,60 +169,99 @@ export function NetworkAssistantMonitorPanel(props: NetworkAssistantMonitorPanel
             <option key={p.name.toLowerCase()} value={p.name}>{p.name}</option>
           ))}
         </select>
-        <span style={{ fontSize: 12, color: "#888" }}>共 {props.processList.length} 个</span>
+        <span style={{ fontSize: 12, color: "#888" }}>共 {rows.length} 个（含监视事件）</span>
       </div>
+
       {props.processListStatus && <div className="status">{props.processListStatus}</div>}
       {props.processEventsStatus && <div className="status">{props.processEventsStatus}</div>}
-      {groups.length === 0 ? (
+
+      {rows.length === 0 ? (
         <div className="status">暂无事件</div>
       ) : (
-        <div style={{ display: "grid", gap: 10, marginTop: 8 }}>
-          {groups.map((group) => {
-            const pinned = pinnedProcessName && group.processName.toLowerCase() === pinnedProcessName.toLowerCase();
+        <div style={{ marginTop: 8, border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+          {rows.map((row, idx) => {
+            const pinned = pinnedProcessName && row.processName.toLowerCase() === pinnedProcessName.toLowerCase();
+            const expanded = expandedMap[row.key] ?? true;
             return (
-              <div key={group.processName.toLowerCase()} style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "8px 10px", background: pinned ? "#2b3650" : "#1f1f1f" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <strong style={{ fontFamily: "monospace" }}>{group.processName}</strong>
-                    <span style={{ fontSize: 12, color: "#aaa" }}>记录数：{group.records.length}</span>
-                    <span style={{ fontSize: 12, color: "#aaa" }}>连接次数：{group.totalCount}</span>
-                    <span style={{ fontSize: 12, color: "#aaa" }}>最近：{formatTimestamp(group.latestTimestamp)}</span>
+              <div key={row.key} style={{ borderTop: idx === 0 ? "none" : "1px solid #2a2a2a" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(240px, 2fr) minmax(90px, 0.8fr) minmax(90px, 0.8fr) minmax(90px, 0.8fr) minmax(120px, 1fr) auto",
+                    gap: 8,
+                    alignItems: "center",
+                    padding: "8px 10px",
+                    background: pinned ? "#2b3650" : "#1f1f1f",
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <strong style={{ fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.processName}</strong>
+                      {row.processInfo?.pid ? <span style={{ fontSize: 12, color: "#aaa" }}>PID {row.processInfo.pid}</span> : null}
+                    </div>
+                    {row.processInfo?.exe_path ? (
+                      <div style={{ fontSize: 11, color: "#888", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {row.processInfo.exe_path}
+                      </div>
+                    ) : null}
                   </div>
-                  <button
-                    className="btn"
-                    style={{ padding: "2px 10px", minWidth: 70, fontSize: 12 }}
-                    onClick={() => setPinnedProcessName(pinned ? "" : group.processName)}
-                  >
-                    {pinned ? "取消置顶" : "铆定置顶"}
-                  </button>
+
+                  <div style={{ fontSize: 12, color: "#aaa" }}>记录 {row.records.length}</div>
+                  <div style={{ fontSize: 12, color: "#aaa" }}>次数 {row.totalCount}</div>
+                  <div style={{ fontSize: 12, color: "#aaa" }}>连接 {row.records.length}</div>
+                  <div style={{ fontSize: 12, color: "#aaa", fontFamily: "monospace" }}>最近 {formatTimestamp(row.latestTimestamp)}</div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <button
+                      className="btn"
+                      style={{ padding: "2px 8px", minWidth: 56, fontSize: 12 }}
+                      onClick={() => setExpandedMap((prev) => ({ ...prev, [row.key]: !(prev[row.key] ?? true) }))}
+                    >
+                      {expanded ? "折叠" : "展开"}
+                    </button>
+                    <button
+                      className="btn"
+                      style={{ padding: "2px 8px", minWidth: 72, fontSize: 12 }}
+                      onClick={() => setPinnedProcessName(pinned ? "" : row.processName)}
+                    >
+                      {pinned ? "取消置顶" : "置顶"}
+                    </button>
+                  </div>
                 </div>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ background: "#f0f0f0" }}>
-                      <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>时间</th>
-                      <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>协议</th>
-                      <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名</th>
-                      <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP</th>
-                      <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>路由</th>
-                      <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #ddd" }}>次数</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {group.records.map((ev, i) => {
-                      const routeGroup = [routeLabel(ev), ev.group].filter(Boolean).join(" / ");
-                      return (
-                        <tr key={`${group.processName}-${ev.kind}-${ev.timestamp}-${i}`} style={{ borderBottom: "1px solid #eee" }}>
-                          <td style={{ padding: "4px 8px", fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{formatTimestamp(ev.timestamp)}</td>
-                          <td style={{ padding: "4px 8px" }}>{protocolLabel(ev)}</td>
-                          <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{domainLabel(ev)}</td>
-                          <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{ipLabel(ev)}</td>
-                          <td style={{ padding: "4px 8px" }}>{routeGroup || "-"}</td>
-                          <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "monospace" }}>{eventCount(ev)}</td>
+
+                {expanded ? (
+                  row.records.length === 0 ? (
+                    <div style={{ padding: "8px 12px", fontSize: 12, color: "#888", background: "#161616" }}>暂无连接事件</div>
+                  ) : (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, background: "#161616" }}>
+                      <thead>
+                        <tr style={{ background: "#222" }}>
+                          <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "1px solid #333" }}>时间</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "1px solid #333" }}>协议</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "1px solid #333" }}>DNS</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "1px solid #333" }}>IP / 目标</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "1px solid #333" }}>路由</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right", borderBottom: "1px solid #333" }}>次数</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody>
+                        {row.records.map((ev, i) => {
+                          const routeGroup = [routeLabel(ev), ev.group].filter(Boolean).join(" / ");
+                          return (
+                            <tr key={`${row.key}-${ev.kind}-${ev.timestamp}-${i}`} style={{ borderBottom: "1px solid #222" }}>
+                              <td style={{ padding: "4px 8px", fontFamily: "monospace", whiteSpace: "nowrap" }}>{formatTimestamp(ev.timestamp)}</td>
+                              <td style={{ padding: "4px 8px" }}>{protocolLabel(ev)}</td>
+                              <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{domainLabel(ev)}</td>
+                              <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{ipLabel(ev)}</td>
+                              <td style={{ padding: "4px 8px" }}>{routeGroup || "-"}</td>
+                              <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "monospace" }}>{eventCount(ev)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )
+                ) : null}
               </div>
             );
           })}
