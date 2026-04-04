@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -795,6 +796,157 @@ func (s *tunnelMuxStream) closeLocal(err error) {
 
 func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, error) {
 	return s.ensureTunnelMuxClientForNode("")
+}
+
+func (s *networkAssistantService) startMuxAutoMaintainLoop() {
+	s.mu.Lock()
+	if s.muxMaintainerStop != nil {
+		s.mu.Unlock()
+		return
+	}
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	s.muxMaintainerStop = stopCh
+	s.muxMaintainerDone = doneCh
+	s.mu.Unlock()
+
+	go func() {
+		defer close(doneCh)
+		s.maintainSelectedTunnelMuxClients()
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				s.maintainSelectedTunnelMuxClients()
+			}
+		}
+	}()
+}
+
+func (s *networkAssistantService) stopMuxAutoMaintainLoop() {
+	s.mu.Lock()
+	stopCh := s.muxMaintainerStop
+	doneCh := s.muxMaintainerDone
+	s.muxMaintainerStop = nil
+	s.muxMaintainerDone = nil
+	s.mu.Unlock()
+
+	if stopCh != nil {
+		close(stopCh)
+	}
+	if doneCh != nil {
+		<-doneCh
+	}
+}
+
+func (s *networkAssistantService) triggerMuxAutoMaintainNow() {
+	go s.maintainSelectedTunnelMuxClients()
+}
+
+func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
+	s.mu.RLock()
+	mode := strings.TrimSpace(s.mode)
+	tunEnabled := s.tunEnabled
+	selectedNodeID := strings.TrimSpace(s.nodeID)
+	availableNodes := append([]string(nil), s.availableNodes...)
+	routing := s.ruleRouting
+	s.mu.RUnlock()
+
+	if mode != networkModeTUN || !tunEnabled {
+		return nil
+	}
+	if selectedNodeID == "" {
+		selectedNodeID = defaultNodeID
+	}
+
+	desired := make(map[string]string)
+	addNode := func(raw string) {
+		node := strings.TrimSpace(raw)
+		if node == "" {
+			return
+		}
+		desired[strings.ToLower(node)] = node
+	}
+
+	addNode(selectedNodeID)
+	tunnelOptions := buildRuleTunnelOptions(availableNodes, selectedNodeID)
+	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
+	groups = append(groups, ruleFallbackGroupKey)
+	for _, group := range groups {
+		policy, err := readRulePolicyForGroup(routing, group, selectedNodeID, tunnelOptions)
+		if err != nil || !strings.EqualFold(strings.TrimSpace(policy.Action), rulePolicyActionTunnel) {
+			continue
+		}
+		targetNodeID := strings.TrimSpace(policy.TunnelNodeID)
+		if targetNodeID == "" {
+			targetNodeID = selectedNodeID
+		}
+		if targetNodeID == "" {
+			targetNodeID = defaultNodeID
+		}
+		addNode(targetNodeID)
+	}
+
+	result := make([]string, 0, len(desired))
+	for _, nodeID := range desired {
+		result = append(result, nodeID)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
+	targetNodeIDs := s.collectAutoMaintainTunnelNodeIDs()
+	if len(targetNodeIDs) == 0 {
+		_ = s.stopTunnelMuxClients()
+		return
+	}
+
+	desired := make(map[string]struct{}, len(targetNodeIDs))
+	for _, nodeID := range targetNodeIDs {
+		normalized := strings.ToLower(strings.TrimSpace(nodeID))
+		if normalized == "" {
+			continue
+		}
+		desired[normalized] = struct{}{}
+		if _, err := s.ensureTunnelMuxClientForNode(nodeID); err != nil {
+			s.logf("auto maintain tunnel mux failed: node=%s err=%v", strings.TrimSpace(nodeID), err)
+		}
+	}
+
+	s.mu.Lock()
+	selectedNodeID := strings.TrimSpace(s.nodeID)
+	if selectedNodeID == "" {
+		selectedNodeID = defaultNodeID
+	}
+	selectedKey := strings.ToLower(selectedNodeID)
+	var stalePrimary *tunnelMuxClient
+	if _, ok := desired[selectedKey]; !ok {
+		stalePrimary = s.tunnelMuxClient
+		s.tunnelMuxClient = nil
+	}
+	staleExtra := make([]*tunnelMuxClient, 0)
+	for nodeID, client := range s.ruleMuxClients {
+		nodeKey := strings.ToLower(strings.TrimSpace(nodeID))
+		if _, ok := desired[nodeKey]; ok {
+			continue
+		}
+		if client != nil {
+			staleExtra = append(staleExtra, client)
+		}
+		delete(s.ruleMuxClients, nodeID)
+	}
+	s.mu.Unlock()
+
+	if stalePrimary != nil {
+		stalePrimary.close()
+	}
+	for _, client := range staleExtra {
+		client.close()
+	}
 }
 
 func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Duration, bool) {

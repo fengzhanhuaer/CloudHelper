@@ -413,6 +413,8 @@ type networkAssistantService struct {
 	logRateState    map[string]time.Time
 
 	lastChainRefreshAt map[string]time.Time
+	muxMaintainerStop  chan struct{}
+	muxMaintainerDone  chan struct{}
 
 	processMonitor *processMonitor
 }
@@ -462,6 +464,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		logStore.Appendf(logSourceManager, "init", "failed to load tun preference state: %v", err)
 	}
 	service.syncTUNInstallState()
+	service.startMuxAutoMaintainLoop()
 	service.logf("service initialized, mode=%s", service.mode)
 	return service
 }
@@ -1041,6 +1044,7 @@ func saveTUNPreferenceState(state tunPreferenceState) error {
 }
 
 func (s *networkAssistantService) Shutdown() error {
+	s.stopMuxAutoMaintainLoop()
 	errStopTUN := s.stopLocalTUNDataPlane()
 	errTunRouting := s.clearTUNSystemRouting()
 	errStopMux := s.stopTunnelMuxClients()
