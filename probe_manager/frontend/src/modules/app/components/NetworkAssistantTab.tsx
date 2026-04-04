@@ -253,7 +253,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
                 {pingState.ok === null
                   ? `⏳ ${pingState.message}`
                   : pingState.ok
-                    ? `✅ 已通 (${pingState.durationMS}ms)`
+                    ? `✅ ${pingState.message}`
                     : `❌ ${pingState.message}`}
               </span>
             )}

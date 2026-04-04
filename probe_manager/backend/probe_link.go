@@ -461,7 +461,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	}
 	startedAt := time.Now()
 
-	// 优先复用已有 mux 连接（yamux Ping，不走 relay hop）
+	// 优先复用已有 mux 连接（yamux Ping，代表保活已建立）
 	if rtt, ok := a.networkAssistant.tryPingExistingMux(endpoint.TargetID); ok {
 		return ProbeChainPingResult{
 			OK:         true,
@@ -470,11 +470,26 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 			EntryPort:  endpoint.EntryPort,
 			LinkLayer:  endpoint.LinkLayer,
 			DurationMS: rtt.Milliseconds(),
-			Message:    fmt.Sprintf("连接成功（已有连接）(%dms)", rtt.Milliseconds()),
+			Message:    fmt.Sprintf("连接成功（保活已建立）(%dms)", rtt.Milliseconds()),
 		}, nil
 	}
 
-	// 无已有连接：新建 relay hop 测延迟
+	// 无已有连接：按需建立 mux，再次探测。
+	if err := probeLinkEnsureMuxForNode(a.networkAssistant, endpoint.TargetID); err == nil {
+		if rtt, ok := a.networkAssistant.tryPingExistingMux(endpoint.TargetID); ok {
+			return ProbeChainPingResult{
+				OK:         true,
+				ChainID:    resolvedChainID,
+				EntryHost:  endpoint.EntryHost,
+				EntryPort:  endpoint.EntryPort,
+				LinkLayer:  endpoint.LinkLayer,
+				DurationMS: rtt.Milliseconds(),
+				Message:    fmt.Sprintf("连接成功（按需建链并建立保活）(%dms)", rtt.Milliseconds()),
+			}, nil
+		}
+	}
+
+	// 兜底：仅验证入口可达性（不代表保活建立）。
 	hop, err := openProbeChainRelayHop(endpoint)
 	elapsed := time.Since(startedAt)
 	if err != nil {
@@ -487,7 +502,6 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 			Message:   fmt.Sprintf("连接失败: %v", err),
 		}, nil
 	}
-	// 关闭测试连接——只关心是否可达
 	if hop.CloseFn != nil {
 		_ = hop.CloseFn()
 	}
@@ -499,7 +513,7 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 		EntryPort:  endpoint.EntryPort,
 		LinkLayer:  endpoint.LinkLayer,
 		DurationMS: elapsed.Milliseconds(),
-		Message:    fmt.Sprintf("连接成功 (%dms)", elapsed.Milliseconds()),
+		Message:    fmt.Sprintf("入口可达（保活未建立）(%dms)", elapsed.Milliseconds()),
 	}, nil
 }
 
