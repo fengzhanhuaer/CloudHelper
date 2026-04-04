@@ -332,12 +332,30 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		return
 	}
 
+	dnsDomain := ""
+	if routedHost, _, splitErr := net.SplitHostPort(route.TargetAddr); splitErr == nil {
+		if hint, ok := n.service.loadDNSRouteHint(routedHost); ok {
+			dnsDomain = strings.TrimSpace(hint.Domain)
+		}
+	}
+	if dnsDomain == "" {
+		if targetHost, _, splitErr := net.SplitHostPort(targetAddr); splitErr == nil {
+			if hint, ok := n.service.loadDNSRouteHint(targetHost); ok {
+				dnsDomain = strings.TrimSpace(hint.Domain)
+			}
+		}
+	}
+	if dnsDomain == "" {
+		dnsDomain = "-"
+	}
+	
 	n.service.logfRateLimited(
 		"tun:tcp:connected:"+strings.ToLower(strings.TrimSpace(targetAddr)),
 		2*time.Second,
-		"local tun tcp relay connected: target=%s routed=%s direct=%v node=%s group=%s",
+		"local tun tcp relay connected: target=%s routed=%s dns=%s direct=%v node=%s group=%s",
 		targetAddr,
 		route.TargetAddr,
+		dnsDomain,
 		route.Direct,
 		route.NodeID,
 		route.Group,
@@ -404,12 +422,30 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 		timeout:  localTUNUDPAssociationTimeout,
 	}
 	bridge.start()
+	dnsDomain := ""
+	if routedHost, _, splitErr := net.SplitHostPort(route.TargetAddr); splitErr == nil {
+		if hint, ok := n.service.loadDNSRouteHint(routedHost); ok {
+			dnsDomain = strings.TrimSpace(hint.Domain)
+		}
+	}
+	if dnsDomain == "" {
+		if targetHost, _, splitErr := net.SplitHostPort(targetAddr); splitErr == nil {
+			if hint, ok := n.service.loadDNSRouteHint(targetHost); ok {
+				dnsDomain = strings.TrimSpace(hint.Domain)
+			}
+		}
+	}
+	if dnsDomain == "" {
+		dnsDomain = "-"
+	}
+	
 	n.service.logfRateLimited(
 		"tun:udp:associated:"+strings.ToLower(strings.TrimSpace(targetAddr)),
 		2*time.Second,
-		"local tun udp association created: target=%s routed=%s direct=%v node=%s group=%s",
+		"local tun udp association created: target=%s routed=%s dns=%s direct=%v node=%s group=%s",
 		targetAddr,
 		route.TargetAddr,
+		dnsDomain,
 		route.Direct,
 		route.NodeID,
 		route.Group,

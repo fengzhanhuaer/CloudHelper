@@ -35,8 +35,7 @@ const (
 	tunnelRoutePath       = "/api/ws/tunnel/"
 	maxTunnelFailures     = 20
 
-	ruleDNSCacheMinTTLSeconds  = 15
-	ruleDNSCacheMaxTTLSeconds  = 600
+	dnsSharedTTLSeconds        = int(dnsCacheTTL / time.Second)
 	ruleDNSResolveTimeout      = 8 * time.Second
 	ruleDNSResolveReadTimeout  = 5 * time.Second
 	ruleDNSResolveServerTrials = 2
@@ -1392,13 +1391,8 @@ func choosePreferredResolvedAddress(addresses []string) string {
 }
 
 func clampRuleDNSTTL(ttlSeconds int) int {
-	if ttlSeconds < ruleDNSCacheMinTTLSeconds {
-		return ruleDNSCacheMinTTLSeconds
-	}
-	if ttlSeconds > ruleDNSCacheMaxTTLSeconds {
-		return ruleDNSCacheMaxTTLSeconds
-	}
-	return ttlSeconds
+	_ = ttlSeconds
+	return dnsSharedTTLSeconds
 }
 
 func (s *networkAssistantService) loadRuleDNSCache(cacheKey string) ([]string, bool) {
@@ -1643,7 +1637,7 @@ func parseDNSResponseAddrs(payload []byte, expectedID uint16, qType uint16) ([]s
 		return nil, 0, errors.New("dns response has no address records")
 	}
 	if minTTL <= 0 {
-		minTTL = ruleDNSCacheMinTTLSeconds
+		minTTL = dnsSharedTTLSeconds
 	}
 	return addresses, clampRuleDNSTTL(minTTL), nil
 }

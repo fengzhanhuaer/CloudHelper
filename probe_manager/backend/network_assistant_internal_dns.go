@@ -17,7 +17,7 @@ const (
 	internalDNSListenIPv4        = "198.18.0.1"
 	internalDNSListenPort        = 53
 	internalDNSReadBufferSize    = 2048
-	internalDNSDefaultTTLSeconds = 60
+	internalDNSDefaultTTLSeconds = dnsSharedTTLSeconds
 )
 
 type localInternalDNSServer struct {
@@ -159,9 +159,8 @@ func (d *localInternalDNSServer) handlePacket(packet []byte, peerAddr net.Addr) 
 	if isFakeIPQuery && normalizedDomain != "" && d.service.shouldUseFakeIP(normalizedDomain) {
 		fakeAddr, fakeErr := d.service.assignFakeIP(normalizedDomain)
 		if fakeErr == nil && fakeAddr != "" {
-			const fakeIPTTL = 10
 			var response []byte
-			response, err = buildDNSSuccessResponse(queryID, domain, 1 /* A */, []string{fakeAddr}, fakeIPTTL)
+			response, err = buildDNSSuccessResponse(queryID, domain, 1 /* A */, []string{fakeAddr}, dnsSharedTTLSeconds)
 			if err == nil && len(response) > 0 {
 				_, _ = d.conn.WriteTo(response, peerAddr)
 			}
@@ -651,8 +650,7 @@ func (s *networkAssistantService) storeDNSRouteHint(addrs []string, domain strin
 }
 
 func (s *networkAssistantService) storeFakeIPRouteHint(fakeAddr string, domain string, route tunnelRouteDecision) {
-	const fakeIPTTL = 3600
-	expiresAt := time.Now().Add(time.Duration(fakeIPTTL) * time.Second)
+	expiresAt := time.Now().Add(time.Duration(dnsSharedTTLSeconds) * time.Second)
 	hint := dnsRouteHintEntry{
 		Direct:    route.Direct,
 		BypassTUN: route.BypassTUN,

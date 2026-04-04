@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	// fakeIP 默认 TTL（秒）
-	fakeIPDefaultTTLSeconds = 3600
+	// fakeIP 默认 TTL（秒），与 DNS 全局共享 TTL 保持一致。
+	fakeIPDefaultTTLSeconds = dnsSharedTTLSeconds
 )
 
 // fakeIPEntry 记录 fake IP 到域名的映射
@@ -97,7 +97,7 @@ func (p *fakeIPPool) AllocateOrGet(domain string, route tunnelRouteDecision) (st
 		if entry, exists := p.ipToEntry[existingIP]; exists {
 			// 刷新过期时间
 			entry.Route = route
-			entry.Expires = time.Now().Add(fakeIPDefaultTTLSeconds * time.Second)
+			entry.Expires = time.Now().Add(time.Duration(fakeIPDefaultTTLSeconds) * time.Second)
 			p.ipToEntry[existingIP] = entry
 			return existingIP, fakeIPDefaultTTLSeconds
 		}
@@ -110,7 +110,7 @@ func (p *fakeIPPool) AllocateOrGet(domain string, route tunnelRouteDecision) (st
 		return "", 0
 	}
 
-	expires := time.Now().Add(fakeIPDefaultTTLSeconds * time.Second)
+	expires := time.Now().Add(time.Duration(fakeIPDefaultTTLSeconds) * time.Second)
 	p.domainToIP[normalized] = fakeIP
 	p.ipToEntry[fakeIP] = fakeIPEntry{
 		Domain:  normalized,
