@@ -27,7 +27,7 @@ const (
 	networkModeDirect = "direct"
 	networkModeTUN    = "tun"
 
-	defaultNodeID         = "cloudserver"
+	defaultNodeID         = networkModeDirect
 	chainTargetNodePrefix = "chain:"
 	ruleRouteFile         = "rule_routes.txt"
 	ruleGroupFile         = "rule_groups.txt"
@@ -54,7 +54,7 @@ var defaultRuleRoutes = []string{
 }
 
 var defaultRuleGroups = []string{
-	"default,cloudserver",
+	"default," + networkModeDirect,
 }
 
 var defaultDirectLANCIDRRules = []string{

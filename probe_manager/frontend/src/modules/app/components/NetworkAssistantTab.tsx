@@ -287,7 +287,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
         <>
           <div className="identity-card">
             <div>当前模式：{props.status.mode || "direct"}</div>
-            <div>隧道路由：{props.status.tunnel_route || "/api/ws/tunnel/cloudserver"}</div>
+            <div>隧道路由：{props.status.tunnel_route || "/api/ws/tunnel/direct"}</div>
             <div>隧道状态：{props.status.tunnel_status || "未启用"}</div>
             <div>系统代理：{props.status.system_proxy_status || "未设置"}</div>
             <div>复用连接：{props.status.mux_connected ? "已连接" : "未连接"}</div>

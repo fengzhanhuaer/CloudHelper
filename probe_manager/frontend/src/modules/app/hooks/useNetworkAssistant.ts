@@ -40,10 +40,10 @@ import type {
 const defaultStatus: NetworkAssistantStatus = {
   enabled: false,
   mode: "direct",
-  node_id: "cloudserver",
-  available_nodes: ["cloudserver"],
+  node_id: "direct",
+  available_nodes: ["direct"],
   socks5_listen: "127.0.0.1:10808",
-  tunnel_route: "/api/ws/tunnel/cloudserver",
+  tunnel_route: "/api/ws/tunnel/direct",
   tunnel_status: "未启用",
   system_proxy_status: "未设置",
   last_error: "",
@@ -300,7 +300,7 @@ export function useNetworkAssistant() {
 
   const switchMode = useCallback(async (controllerBaseURL: string, token: string, mode: NetworkAssistantMode, nodeIdInput?: string) => {
     setIsOperating(true);
-    const nodeID = (nodeIdInput ?? selectedNode).trim() || "cloudserver";
+    const nodeID = (nodeIdInput ?? selectedNode).trim() || "direct";
     try {
       const data = (await SetNetworkAssistantMode(controllerBaseURL, token, mode, nodeID)) as NetworkAssistantStatus;
       setStatus(data);
