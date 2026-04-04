@@ -37,21 +37,26 @@ func (s *networkAssistantService) clearTUNDynamicBypassRoutes() error {
 }
 
 func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
+	startedAt := time.Now()
+	s.logf("tun routing apply start")
 	// 仅使用按连接动态 bypass（acquireTUNDirectBypassRoute），
 	// 不再对主控/探针域名做软件内置独立直连保护。
 	targets := tunControlPlaneTargets{IPv4Addrs: make([]string, 0)}
 	if err := s.applyPlatformTUNSystemRouting(targets); err != nil {
+		s.logf("tun routing apply failed in platform routing stage: err=%v elapsed=%s", err, time.Since(startedAt))
 		return err
 	}
 	if err := s.startInternalDNSServer(); err != nil {
 		_ = s.clearPlatformTUNSystemRouting()
 		s.clearDNSRouteHints()
+		s.logf("tun routing apply failed in internal dns stage: err=%v elapsed=%s", err, time.Since(startedAt))
 		return err
 	}
 	s.mu.Lock()
 	s.tunRouteSyncedAt = time.Now()
 	s.tunRouteHost = ""
 	s.mu.Unlock()
+	s.logf("tun routing apply success: elapsed=%s", time.Since(startedAt))
 	return nil
 }
 
@@ -84,12 +89,19 @@ func (s *networkAssistantService) ensureControlPlaneDialReady(_ string) error {
 	if !needRefresh {
 		return nil
 	}
+	startedAt := time.Now()
+	s.logf("tun routing refresh start: last_sync_at=%s", lastSyncAt.Format(time.RFC3339))
 	err := s.applyTUNSystemRouting("")
 	s.mu.Lock()
 	s.tunRouteSyncing = false
 	mode = s.mode
 	tunEnabled = s.tunEnabled
 	s.mu.Unlock()
+	if err != nil {
+		s.logf("tun routing refresh failed: err=%v elapsed=%s mode=%s tun_enabled=%t", err, time.Since(startedAt), mode, tunEnabled)
+	} else {
+		s.logf("tun routing refresh success: elapsed=%s", time.Since(startedAt))
+	}
 	if err != nil && mode == networkModeTUN && tunEnabled {
 		return s.fallbackToDirectModeOnTUNRoutingFailure("refresh tun direct routes failed", err)
 	}

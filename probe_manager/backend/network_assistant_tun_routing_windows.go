@@ -199,6 +199,7 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(targetAddr string)
 	state := s.tunRouteState
 	if state.BypassInterfaceIndex <= 0 || strings.TrimSpace(state.BypassNextHop) == "" {
 		s.mu.Unlock()
+		s.logf("tun bypass skipped: route state unavailable target=%s if=%d next_hop=%q", strings.TrimSpace(targetAddr), state.BypassInterfaceIndex, strings.TrimSpace(state.BypassNextHop))
 		return func() {}, nil
 	}
 	if state.AdapterIndex > 0 && state.BypassInterfaceIndex == state.AdapterIndex {
@@ -226,8 +227,10 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(targetAddr string)
 			s.mu.Lock()
 			delete(s.tunDynamicBypass, prefix)
 			s.mu.Unlock()
+			s.logf("tun bypass route create failed: prefix=%s if=%d next_hop=%s err=%v", prefix, ifIndex, nextHop, err)
 			return nil, err
 		}
+		s.logf("tun bypass route created: prefix=%s if=%d next_hop=%s", prefix, ifIndex, nextHop)
 	}
 
 	released := false
