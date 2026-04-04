@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os/exec"
 	"strings"
 )
 
@@ -43,24 +44,8 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 	if targets.ControllerHost != "" && len(targets.IPv4Addrs) == 0 {
 		return fmt.Errorf("resolve controller ipv4 failed: %s", targets.ControllerHost)
 	}
-	// 先探测当前系统主路由，再下发 TUN 分流路由。
-	// 否则在部分 Windows 环境里，/1 路由刚写入后 GetBestRoute 可能返回无可达路由（1232）。
-	egress, routeErr := detectWindowsPrimaryIPv4Route()
-	if routeErr != nil {
-		return routeErr
-	}
-	if adapter, findErr := windowsFindAdapterByNameOrDescription(tunAdapterName, tunAdapterDescription); findErr == nil && adapter.InterfaceIndex > 0 {
-		if egress.InterfaceIndex == adapter.InterfaceIndex {
-			return fmt.Errorf("invalid primary route interface: matched tun adapter (if=%d)", egress.InterfaceIndex)
-		}
-	}
 	if err := windowsClearIPv4StaticRoutesForTUN(); err != nil {
 		return err
-	}
-	// 静态路由清理后重新确认主出口，避免基线变化导致 bypass 写入错误网卡。
-	egress, routeErr = detectWindowsPrimaryIPv4Route()
-	if routeErr != nil {
-		return routeErr
 	}
 
 	adapter, err := ensureWindowsTUNAdapterIPv4Routing()
@@ -68,8 +53,36 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 		return err
 	}
 
-	if egress.InterfaceIndex == adapter.InterfaceIndex {
-		return fmt.Errorf("invalid bypass interface: matched tun adapter (if=%d)", egress.InterfaceIndex)
+	var egress windowsRouteInfo
+	useCachedBypass := false
+	if prevState.BypassInterfaceIndex > 0 && strings.TrimSpace(prevState.BypassNextHop) != "" {
+		if prevState.BypassInterfaceIndex != adapter.InterfaceIndex {
+			if _, findErr := windowsFindAdapterByIfIndex(prevState.BypassInterfaceIndex); findErr == nil {
+				egress = windowsRouteInfo{
+					InterfaceIndex: prevState.BypassInterfaceIndex,
+					NextHop:        strings.TrimSpace(prevState.BypassNextHop),
+				}
+				useCachedBypass = true
+				s.logf("reuse cached bypass interface: bypass_if=%d next_hop=%s", egress.InterfaceIndex, egress.NextHop)
+			}
+		}
+	}
+	if !useCachedBypass {
+		// 首次启用或缓存失效时才重新探测主出口。
+		// 在部分 Windows 环境里，/1 路由刚写入后 GetBestRoute 可能返回无可达路由（1232）。
+		detected, routeErr := detectWindowsPrimaryIPv4Route()
+		if routeErr != nil {
+			return routeErr
+		}
+		egress = detected
+		if egress.InterfaceIndex == adapter.InterfaceIndex {
+			fallbackEgress, detectErr := detectWindowsPrimaryIPv4RouteExcluding(adapter.InterfaceIndex)
+			if detectErr != nil {
+				return fmt.Errorf("invalid bypass interface: matched tun adapter (if=%d): %w", egress.InterfaceIndex, detectErr)
+			}
+			egress = fallbackEgress
+			s.logf("fallback bypass interface selected after excluding tun adapter: bypass_if=%d next_hop=%s", egress.InterfaceIndex, strings.TrimSpace(egress.NextHop))
+		}
 	}
 	state := tunSystemRouteState{
 		AdapterIndex:         adapter.InterfaceIndex,
@@ -237,6 +250,10 @@ func detectWindowsPrimaryIPv4Route() (windowsRouteInfo, error) {
 	return windowsDetectPrimaryIPv4Route()
 }
 
+func detectWindowsPrimaryIPv4RouteExcluding(interfaceIndex int) (windowsRouteInfo, error) {
+	return windowsDetectPrimaryIPv4RouteExcludingInterface(interfaceIndex)
+}
+
 func detectWindowsInterfaceIPv4DNSServers(interfaceIndex int) ([]string, error) {
 	if interfaceIndex <= 0 {
 		return nil, errors.New("invalid interface index")
@@ -250,6 +267,16 @@ func detectWindowsInterfaceIPv4DNSServers(interfaceIndex int) ([]string, error) 
 
 func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 	adapter, err := windowsFindAdapterByNameOrDescription(tunAdapterName, tunAdapterDescription)
+	if err != nil {
+		return windowsAdapterInfo{}, err
+	}
+	if adapter.InterfaceIndex <= 0 {
+		return windowsAdapterInfo{}, errors.New("invalid tun adapter interface index")
+	}
+	if err := windowsResetAdapterState(adapter.InterfaceIndex); err != nil {
+		return windowsAdapterInfo{}, err
+	}
+	adapter, err = windowsFindAdapterByNameOrDescription(tunAdapterName, tunAdapterDescription)
 	if err != nil {
 		return windowsAdapterInfo{}, err
 	}
@@ -303,6 +330,20 @@ func ensureWindowsIPv4BypassRoute(prefix string, interfaceIndex int, nextHop str
 	}
 	if err := windowsEnsureIPv4Route(cleanPrefix, interfaceIndex, cleanHop, 1); err != nil {
 		return fmt.Errorf("apply bypass route failed (%s via %s if %d): %w", cleanPrefix, cleanHop, interfaceIndex, err)
+	}
+	return nil
+}
+
+func windowsResetAdapterState(interfaceIndex int) error {
+	if interfaceIndex <= 0 {
+		return errors.New("invalid interface index")
+	}
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Disable-NetAdapter -InterfaceIndex %d -Confirm:$false | Out-Null; Start-Sleep -Milliseconds 300; Enable-NetAdapter -InterfaceIndex %d -Confirm:$false | Out-Null", interfaceIndex, interfaceIndex)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	hideWindowSysProcAttr(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("reset tun adapter state failed (if=%d): %w, output=%s", interfaceIndex, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

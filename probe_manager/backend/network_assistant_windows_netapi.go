@@ -366,6 +366,53 @@ func windowsDetectPrimaryIPv4Route() (windowsRouteInfo, error) {
 	return windowsRouteInfo{InterfaceIndex: int(row.ForwardIfIndex), NextHop: nextHop}, nil
 }
 
+func windowsDetectPrimaryIPv4RouteExcludingInterface(excludedIfIndex int) (windowsRouteInfo, error) {
+	egress, err := windowsDetectPrimaryIPv4Route()
+	if excludedIfIndex <= 0 {
+		return egress, err
+	}
+	if err == nil && egress.InterfaceIndex != excludedIfIndex {
+		return egress, nil
+	}
+
+	rows, listErr := windowsListIPForwardRows()
+	if listErr != nil {
+		if err != nil {
+			return windowsRouteInfo{}, err
+		}
+		return windowsRouteInfo{}, listErr
+	}
+
+	bestFound := false
+	var bestRow mibIPForwardRow
+	for _, row := range rows {
+		if row.ForwardDest != 0 || row.ForwardMask != 0 {
+			continue
+		}
+		if row.ForwardIfIndex == 0 || int(row.ForwardIfIndex) == excludedIfIndex {
+			continue
+		}
+		nextHop := strings.TrimSpace(uint32ToIPv4(row.ForwardNextHop))
+		if net.ParseIP(nextHop).To4() == nil {
+			continue
+		}
+		if !bestFound || row.ForwardMetric1 < bestRow.ForwardMetric1 {
+			bestRow = row
+			bestFound = true
+		}
+	}
+	if !bestFound {
+		if err != nil {
+			return windowsRouteInfo{}, err
+		}
+		return windowsRouteInfo{}, fmt.Errorf("usable ipv4 default route not found (excluding if=%d)", excludedIfIndex)
+	}
+	return windowsRouteInfo{
+		InterfaceIndex: int(bestRow.ForwardIfIndex),
+		NextHop:        strings.TrimSpace(uint32ToIPv4(bestRow.ForwardNextHop)),
+	}, nil
+}
+
 func windowsEnsureIPv4Route(prefix string, interfaceIndex int, nextHop string, metric uint32) error {
 	cleanPrefix := strings.TrimSpace(prefix)
 	cleanHop := strings.TrimSpace(nextHop)
