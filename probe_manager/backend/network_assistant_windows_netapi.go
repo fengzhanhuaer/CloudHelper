@@ -342,28 +342,41 @@ func waitForWindowsInterfaceIPv4Bindable(interfaceIndex int, ip4 net.IP, timeout
 }
 
 func windowsDetectPrimaryIPv4Route() (windowsRouteInfo, error) {
-	dest, ok := ipv4ToUint32(net.ParseIP("1.1.1.1").To4())
-	if !ok {
-		return windowsRouteInfo{}, errors.New("build best route destination failed")
-	}
-	var row mibIPForwardRow
-	ret, _, callErr := procGetBestRouteNet.Call(uintptr(dest), uintptr(0), uintptr(unsafe.Pointer(&row)))
-	if ret != 0 {
-		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
-			return windowsRouteInfo{}, fmt.Errorf("GetBestRoute failed: %w", callErr)
+	probeTargets := []string{"223.5.5.5", "119.29.29.29"}
+	var lastErr error
+	for _, probeIP := range probeTargets {
+		dest, ok := ipv4ToUint32(net.ParseIP(probeIP).To4())
+		if !ok {
+			lastErr = errors.New("build best route destination failed")
+			continue
 		}
-		return windowsRouteInfo{}, fmt.Errorf("GetBestRoute failed: code=%d", ret)
+		var row mibIPForwardRow
+		ret, _, callErr := procGetBestRouteNet.Call(uintptr(dest), uintptr(0), uintptr(unsafe.Pointer(&row)))
+		if ret != 0 {
+			if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+				lastErr = fmt.Errorf("GetBestRoute failed via %s: %w", probeIP, callErr)
+				continue
+			}
+			lastErr = fmt.Errorf("GetBestRoute failed via %s: code=%d", probeIP, ret)
+			continue
+		}
+		nextHop := strings.TrimSpace(uint32ToIPv4(row.ForwardNextHop))
+		if row.ForwardIfIndex == 0 || nextHop == "" {
+			lastErr = fmt.Errorf("usable ipv4 default route not found via %s", probeIP)
+			continue
+		}
+		// Some Windows environments legitimately return on-link default route with
+		// next hop 0.0.0.0. Treat it as usable as long as interface index is valid.
+		if net.ParseIP(nextHop).To4() == nil {
+			lastErr = fmt.Errorf("usable ipv4 default route not found via %s", probeIP)
+			continue
+		}
+		return windowsRouteInfo{InterfaceIndex: int(row.ForwardIfIndex), NextHop: nextHop}, nil
 	}
-	nextHop := strings.TrimSpace(uint32ToIPv4(row.ForwardNextHop))
-	if row.ForwardIfIndex == 0 || nextHop == "" {
-		return windowsRouteInfo{}, errors.New("usable ipv4 default route not found")
+	if lastErr != nil {
+		return windowsRouteInfo{}, lastErr
 	}
-	// Some Windows environments legitimately return on-link default route with
-	// next hop 0.0.0.0. Treat it as usable as long as interface index is valid.
-	if net.ParseIP(nextHop).To4() == nil {
-		return windowsRouteInfo{}, errors.New("usable ipv4 default route not found")
-	}
-	return windowsRouteInfo{InterfaceIndex: int(row.ForwardIfIndex), NextHop: nextHop}, nil
+	return windowsRouteInfo{}, errors.New("usable ipv4 default route not found")
 }
 
 func windowsDetectPrimaryIPv4RouteExcludingInterface(excludedIfIndex int) (windowsRouteInfo, error) {

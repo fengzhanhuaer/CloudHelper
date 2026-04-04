@@ -222,7 +222,8 @@ func (s *networkAssistantService) ensureControlPlaneDialReady(_ string) error {
 	tunEnabled := s.tunEnabled
 	lastSyncAt := s.tunRouteSyncedAt
 	if mode == networkModeTUN && tunEnabled {
-		if (lastSyncAt.IsZero() || time.Since(lastSyncAt) >= tunRouteRefreshInterval) && !s.tunRouteSyncing {
+		// 仅在本次进入 TUN 后首次建立控制面路由，后续持续复用已缓存的 bypass 出口。
+		if lastSyncAt.IsZero() && !s.tunRouteSyncing {
 			s.tunRouteSyncing = true
 			needRefresh = true
 		}
