@@ -415,3 +415,13 @@ func isWindowsRouteInvalidParameterError(err error) bool {
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(msg, "code=87") || strings.Contains(msg, "ret=87") || strings.Contains(msg, "error_invalid_parameter") || strings.Contains(msg, "invalid parameter")
 }
+
+func flushPlatformDNSResolverCache() error {
+	cmd := exec.Command("ipconfig", "/flushdns")
+	hideWindowSysProcAttr(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ipconfig /flushdns failed: %w, output=%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}

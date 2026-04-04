@@ -981,6 +981,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 			s.setLastError(err)
 			return err
 		}
+		s.forceRefreshDNSOnModeSwitch("after_switch_direct")
 		s.mu.Lock()
 		s.mode = networkModeDirect
 		s.tunnelStatusMessage = "直连模式"
@@ -1180,6 +1181,10 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 				Group:      group,
 			}, nil
 		}
+	}
+
+	if s.isControlPlaneHost(host) {
+		return tunnelRouteDecision{Direct: true, BypassTUN: true, TargetAddr: normalizedTarget, NodeID: "", Group: "direct"}, nil
 	}
 
 	fallbackPolicy, fallbackErr := readRulePolicyForGroup(routing, ruleFallbackGroupKey, nodeID, tunnelOptions)

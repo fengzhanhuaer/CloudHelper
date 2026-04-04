@@ -30,3 +30,7 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(_ string) (func(),
 
 func (s *networkAssistantService) releaseTUNDirectBypassRoute(_ string) {
 }
+
+func flushPlatformDNSResolverCache() error {
+	return nil
+}

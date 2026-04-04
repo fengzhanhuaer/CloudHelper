@@ -59,6 +59,8 @@ func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
 		s.logf("tun routing apply failed in internal dns stage: err=%v elapsed=%s", err, time.Since(startedAt))
 		return err
 	}
+	s.seedStaticDNSRouteHints()
+	s.seedControlPlaneRouteHints(targets)
 	s.mu.Lock()
 	s.tunRouteSyncedAt = time.Now()
 	s.tunRouteHost = targets.ControllerHost
@@ -77,6 +79,140 @@ func (s *networkAssistantService) clearTUNSystemRouting() error {
 	s.tunRouteSyncing = false
 	s.mu.Unlock()
 	return errors.Join(errDNS, err)
+}
+
+func (s *networkAssistantService) forceRefreshDNSOnModeSwitch(stage string) {
+	s.clearDNSCache()
+	if err := flushPlatformDNSResolverCache(); err != nil {
+		s.logf("dns flush on mode switch failed: stage=%s err=%v", strings.TrimSpace(stage), err)
+		return
+	}
+	s.logf("dns flush on mode switch success: stage=%s", strings.TrimSpace(stage))
+}
+
+func (s *networkAssistantService) seedStaticDNSRouteHints() {
+	s.mu.RLock()
+	routing := s.ruleRouting
+	nodeID := strings.TrimSpace(s.nodeID)
+	availableNodes := append([]string(nil), s.availableNodes...)
+	s.mu.RUnlock()
+	if nodeID == "" {
+		nodeID = defaultNodeID
+	}
+	tunnelOptions := buildRuleTunnelOptions(availableNodes, nodeID)
+
+	seeded := 0
+	for _, rule := range routing.RuleSet.Rules {
+		if rule.Kind != ruleMatcherDomainStaticIP {
+			continue
+		}
+		ipValue := canonicalIP(net.ParseIP(strings.TrimSpace(rule.IP)))
+		domain := normalizeRuleDomain(rule.Domain)
+		if ipValue == "" || domain == "" {
+			continue
+		}
+		group := normalizeRuleGroupName(rule.Group)
+		policy, err := readRulePolicyForGroup(routing, group, nodeID, tunnelOptions)
+		if err != nil {
+			continue
+		}
+		decision := tunnelRouteDecision{Group: group}
+		switch policy.Action {
+		case rulePolicyActionReject:
+			continue
+		case rulePolicyActionDirect:
+			decision.Direct = true
+			decision.BypassTUN = isDirectRuleGroupKey(group)
+		case rulePolicyActionTunnel:
+			if isDirectRuleGroupKey(group) {
+				decision.Direct = true
+				decision.BypassTUN = true
+			} else {
+				decision.Direct = false
+				targetNodeID := strings.TrimSpace(policy.TunnelNodeID)
+				if targetNodeID == "" {
+					targetNodeID = nodeID
+				}
+				if targetNodeID == "" {
+					targetNodeID = defaultNodeID
+				}
+				decision.NodeID = targetNodeID
+			}
+		default:
+			decision.Direct = true
+		}
+		s.storeDNSRouteHint([]string{ipValue}, domain, decision, internalDNSDefaultTTLSeconds)
+		seeded++
+	}
+	if seeded > 0 {
+		s.logf("seeded static dns route hints: count=%d", seeded)
+	}
+}
+
+func (s *networkAssistantService) seedControlPlaneRouteHints(targets tunControlPlaneTargets) {
+	decision := tunnelRouteDecision{Direct: true, BypassTUN: true, Group: "direct"}
+	seeded := 0
+
+	for host := range targets.Hosts {
+		if host == "" {
+			continue
+		}
+		if ipHost := normalizeControlPlaneIP(host); ipHost != "" {
+			s.storeDNSRouteHint([]string{ipHost}, host, decision, internalDNSDefaultTTLSeconds)
+			seeded++
+			continue
+		}
+		if cachedIP, ok := getProbeDNSCachedIP(host); ok {
+			s.storeDNSRouteHint([]string{cachedIP}, host, decision, internalDNSDefaultTTLSeconds)
+			seeded++
+		}
+	}
+
+	if controllerIP := normalizeControlPlaneIP(targets.ControllerHost); controllerIP != "" {
+		s.storeDNSRouteHint([]string{controllerIP}, targets.ControllerHost, decision, internalDNSDefaultTTLSeconds)
+		seeded++
+	}
+
+	fallbackDomain := strings.TrimSpace(targets.ControllerHost)
+	for _, ipValue := range targets.IPv4Addrs {
+		canonical := canonicalIP(net.ParseIP(ipValue))
+		if canonical == "" {
+			continue
+		}
+		domain := fallbackDomain
+		if domain == "" {
+			domain = canonical
+		}
+		s.storeDNSRouteHint([]string{canonical}, domain, decision, internalDNSDefaultTTLSeconds)
+		seeded++
+	}
+
+	if seeded > 0 {
+		s.logf("seeded control-plane dns route hints: count=%d", seeded)
+	}
+}
+
+func (s *networkAssistantService) isControlPlaneHost(host string) bool {
+	normalizedHost := normalizeControlPlaneHost(host)
+	if normalizedHost == "" {
+		return false
+	}
+
+	s.mu.RLock()
+	baseURL := strings.TrimSpace(s.controllerBaseURL)
+	chainTargets := copyProbeChainTargets(s.chainTargets)
+	s.mu.RUnlock()
+
+	controllerHost := normalizeControlPlaneHost(resolveControllerHostForProtection(baseURL))
+	if controllerHost != "" && normalizedHost == controllerHost {
+		return true
+	}
+	for _, endpoint := range chainTargets {
+		if normalizedHost == normalizeControlPlaneHost(endpoint.EntryHost) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *networkAssistantService) ensureControlPlaneDialReady(_ string) error {
