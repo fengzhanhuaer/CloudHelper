@@ -338,12 +338,20 @@ func windowsResetAdapterState(interfaceIndex int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid interface index")
 	}
-	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Disable-NetAdapter -InterfaceIndex %d -Confirm:$false | Out-Null; Start-Sleep -Milliseconds 300; Enable-NetAdapter -InterfaceIndex %d -Confirm:$false | Out-Null", interfaceIndex, interfaceIndex)
+	adapter, err := windowsFindAdapterByIfIndex(interfaceIndex)
+	if err != nil {
+		return err
+	}
+	adapterName := strings.TrimSpace(adapter.Name)
+	if adapterName == "" {
+		return fmt.Errorf("adapter name is empty for interface index: %d", interfaceIndex)
+	}
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Disable-NetAdapter -Name '%s' -Confirm:$false | Out-Null; Start-Sleep -Milliseconds 300; Enable-NetAdapter -Name '%s' -Confirm:$false | Out-Null", strings.ReplaceAll(adapterName, "'", "''"), strings.ReplaceAll(adapterName, "'", "''"))
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	hideWindowSysProcAttr(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("reset tun adapter state failed (if=%d): %w, output=%s", interfaceIndex, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("reset tun adapter state failed (if=%d name=%s): %w, output=%s", interfaceIndex, adapterName, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
