@@ -278,16 +278,6 @@ func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 	if adapter.InterfaceIndex <= 0 {
 		return windowsAdapterInfo{}, errors.New("invalid tun adapter interface index")
 	}
-	if err := windowsResetAdapterState(adapter.InterfaceIndex); err != nil {
-		return windowsAdapterInfo{}, err
-	}
-	adapter, err = windowsFindAdapterByNameOrDescription(tunAdapterName, tunAdapterDescription)
-	if err != nil {
-		return windowsAdapterInfo{}, err
-	}
-	if adapter.InterfaceIndex <= 0 {
-		return windowsAdapterInfo{}, errors.New("invalid tun adapter interface index")
-	}
 	if err := windowsEnsureInterfaceIPv4Address(adapter.InterfaceIndex, tunRouteIPv4Address, tunRouteIPv4PrefixLength); err != nil {
 		if !strings.Contains(strings.ToLower(err.Error()), "ipv4 address not bindable in time") {
 			return windowsAdapterInfo{}, err
