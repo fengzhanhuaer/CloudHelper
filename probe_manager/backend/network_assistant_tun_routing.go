@@ -26,6 +26,16 @@ type tunControlPlaneTargets struct {
 	IPv4Addrs      []string
 }
 
+func (s *networkAssistantService) clearTUNDynamicBypassRoutes() error {
+	err := s.clearPlatformTUNDynamicBypassRoutes()
+	s.mu.Lock()
+	s.tunRouteSyncedAt = time.Time{}
+	s.tunRouteHost = ""
+	s.tunRouteSyncing = false
+	s.mu.Unlock()
+	return err
+}
+
 func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
 	// 仅使用按连接动态 bypass（acquireTUNDirectBypassRoute），
 	// 不再对主控/探针域名做软件内置独立直连保护。

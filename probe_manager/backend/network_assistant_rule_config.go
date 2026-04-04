@@ -127,6 +127,11 @@ func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID stri
 		return NetworkAssistantRuleConfig{}, fmt.Errorf("rule group not found in rule_routes: %s", targetKey)
 	}
 
+	previousPolicy, err := readRulePolicyForGroup(routing, targetKey, currentNode, tunnelOptions)
+	if err != nil {
+		return NetworkAssistantRuleConfig{}, err
+	}
+
 	normalizedPolicy, err := normalizeRuleGroupPolicy(
 		ruleGroupPolicy{
 			Action:       action,
@@ -139,6 +144,7 @@ func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID stri
 	if err != nil {
 		return NetworkAssistantRuleConfig{}, err
 	}
+	needClearDynamicBypass := shouldClearDynamicBypassForPolicyTransition(previousPolicy, normalizedPolicy)
 
 	if routing.GroupNodeMap == nil {
 		routing.GroupNodeMap = make(map[string]string)
@@ -153,9 +159,18 @@ func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID stri
 	s.mu.Lock()
 	s.ruleRouting = routing
 	s.ruleDNSCache = make(map[string]dnsCacheEntry)
+	tunModeEnabled := s.mode == networkModeTUN && s.tunEnabled
 	s.mu.Unlock()
 
-	return buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets), nil
+	cfg := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets)
+	if needClearDynamicBypass && tunModeEnabled {
+		if err := s.clearTUNDynamicBypassRoutes(); err != nil {
+			return cfg, err
+		}
+		s.logf("rule policy switched from direct, dynamic tun bypass routes cleared: group=%s", targetKey)
+	}
+
+	return cfg, nil
 }
 
 func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []string, defaultNode string, chainTargets map[string]probeChainEndpoint) NetworkAssistantRuleConfig {
@@ -391,6 +406,10 @@ func readRulePolicyForGroup(routing tunnelRuleRouting, group string, defaultNode
 		rawValue = strings.TrimSpace(routing.GroupNodeMap[key])
 	}
 	return normalizeRuleGroupPolicy(decodeRuleGroupPolicy(rawValue), defaultNode, tunnelOptions, defaultAction)
+}
+
+func shouldClearDynamicBypassForPolicyTransition(previous, next ruleGroupPolicy) bool {
+	return normalizeRulePolicyAction(previous.Action) == rulePolicyActionDirect && normalizeRulePolicyAction(next.Action) != rulePolicyActionDirect
 }
 
 func extractRuleGroupsFromRuleSet(ruleSet tunnelRuleSet) []string {

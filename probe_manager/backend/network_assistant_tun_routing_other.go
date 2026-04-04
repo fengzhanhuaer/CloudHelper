@@ -9,9 +9,17 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(_ tunControlPlan
 	return nil
 }
 
+func (s *networkAssistantService) clearPlatformTUNDynamicBypassRoutes() error {
+	s.mu.Lock()
+	s.tunDynamicBypass = make(map[string]int)
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *networkAssistantService) clearPlatformTUNSystemRouting() error {
 	s.mu.Lock()
 	s.tunRouteState = tunSystemRouteState{}
+	s.tunDynamicBypass = make(map[string]int)
 	s.mu.Unlock()
 	return nil
 }

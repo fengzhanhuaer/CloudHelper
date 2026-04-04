@@ -49,12 +49,28 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 	if routeErr != nil {
 		return routeErr
 	}
+	if adapter, findErr := windowsFindAdapterByNameOrDescription(tunAdapterName, tunAdapterDescription); findErr == nil && adapter.InterfaceIndex > 0 {
+		if egress.InterfaceIndex == adapter.InterfaceIndex {
+			return fmt.Errorf("invalid primary route interface: matched tun adapter (if=%d)", egress.InterfaceIndex)
+		}
+	}
+	if err := windowsClearIPv4StaticRoutesForTUN(); err != nil {
+		return err
+	}
+	// 静态路由清理后重新确认主出口，避免基线变化导致 bypass 写入错误网卡。
+	egress, routeErr = detectWindowsPrimaryIPv4Route()
+	if routeErr != nil {
+		return routeErr
+	}
 
 	adapter, err := ensureWindowsTUNAdapterIPv4Routing()
 	if err != nil {
 		return err
 	}
 
+	if egress.InterfaceIndex == adapter.InterfaceIndex {
+		return fmt.Errorf("invalid bypass interface: matched tun adapter (if=%d)", egress.InterfaceIndex)
+	}
 	state := tunSystemRouteState{
 		AdapterIndex:         adapter.InterfaceIndex,
 		AdapterDNSServers:    append([]string(nil), adapter.PreviousDNSServers...),
@@ -105,7 +121,7 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 	return nil
 }
 
-func (s *networkAssistantService) clearPlatformTUNSystemRouting() error {
+func (s *networkAssistantService) clearPlatformTUNDynamicBypassRoutes() error {
 	s.mu.RLock()
 	state := s.tunRouteState
 	dynamicBypass := make([]string, 0, len(s.tunDynamicBypass))
@@ -121,6 +137,22 @@ func (s *networkAssistantService) clearPlatformTUNSystemRouting() error {
 				allErr = errors.Join(allErr, err)
 			}
 		}
+	}
+
+	s.mu.Lock()
+	s.tunDynamicBypass = make(map[string]int)
+	s.mu.Unlock()
+
+	return allErr
+}
+
+func (s *networkAssistantService) clearPlatformTUNSystemRouting() error {
+	s.mu.RLock()
+	state := s.tunRouteState
+	s.mu.RUnlock()
+
+	allErr := s.clearPlatformTUNDynamicBypassRoutes()
+	if state.BypassInterfaceIndex > 0 && strings.TrimSpace(state.BypassNextHop) != "" {
 		for _, prefix := range state.BypassRoutePrefixes {
 			if err := removeWindowsIPv4BypassRoute(prefix, state.BypassInterfaceIndex, state.BypassNextHop); err != nil {
 				allErr = errors.Join(allErr, err)
@@ -155,6 +187,10 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(targetAddr string)
 	if state.BypassInterfaceIndex <= 0 || strings.TrimSpace(state.BypassNextHop) == "" {
 		s.mu.Unlock()
 		return func() {}, nil
+	}
+	if state.AdapterIndex > 0 && state.BypassInterfaceIndex == state.AdapterIndex {
+		s.mu.Unlock()
+		return func() {}, fmt.Errorf("invalid bypass interface: matched tun adapter (if=%d)", state.BypassInterfaceIndex)
 	}
 	for _, existing := range state.BypassRoutePrefixes {
 		if strings.EqualFold(strings.TrimSpace(existing), prefix) {

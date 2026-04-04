@@ -136,3 +136,46 @@ func TestBuildRuleConfigFromRoutingKeepsRuleGroupDefinitionOrder(t *testing.T) {
 		t.Fatalf("group[2]=%s, want group_m", got)
 	}
 }
+
+func TestShouldClearDynamicBypassForPolicyTransition(t *testing.T) {
+	cases := []struct {
+		name     string
+		previous ruleGroupPolicy
+		next     ruleGroupPolicy
+		want     bool
+	}{
+		{
+			name:     "direct_to_tunnel",
+			previous: ruleGroupPolicy{Action: rulePolicyActionDirect},
+			next:     ruleGroupPolicy{Action: rulePolicyActionTunnel, TunnelNodeID: defaultNodeID},
+			want:     true,
+		},
+		{
+			name:     "direct_to_reject",
+			previous: ruleGroupPolicy{Action: rulePolicyActionDirect},
+			next:     ruleGroupPolicy{Action: rulePolicyActionReject},
+			want:     true,
+		},
+		{
+			name:     "tunnel_to_direct",
+			previous: ruleGroupPolicy{Action: rulePolicyActionTunnel, TunnelNodeID: defaultNodeID},
+			next:     ruleGroupPolicy{Action: rulePolicyActionDirect},
+			want:     false,
+		},
+		{
+			name:     "tunnel_to_reject",
+			previous: ruleGroupPolicy{Action: rulePolicyActionTunnel, TunnelNodeID: defaultNodeID},
+			next:     ruleGroupPolicy{Action: rulePolicyActionReject},
+			want:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldClearDynamicBypassForPolicyTransition(tc.previous, tc.next)
+			if got != tc.want {
+				t.Fatalf("shouldClearDynamicBypassForPolicyTransition()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}

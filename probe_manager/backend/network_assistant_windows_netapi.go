@@ -237,6 +237,18 @@ type mibIPForwardTable2 struct {
 	Table      [1]mibIPForwardRow2
 }
 
+type windowsIPv4RouteEntry struct {
+	InterfaceIndex int
+	Prefix         string
+	Destination    net.IP
+	PrefixLength   int
+	NextHop        net.IP
+	Metric         uint32
+	Protocol       uint32
+	Loopback       bool
+	Autoconf       bool
+}
+
 func windowsEnsureInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid interface index")
@@ -576,6 +588,93 @@ func windowsListIPForwardRows2() ([]mibIPForwardRow2, error) {
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func windowsListIPv4RouteEntries2() ([]windowsIPv4RouteEntry, error) {
+	rows, err := windowsListIPForwardRows2()
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]windowsIPv4RouteEntry, 0, len(rows))
+	for _, row := range rows {
+		destination := windowsRawSockaddrInetIPv4(row.DestinationPrefix.Prefix)
+		if destination == nil {
+			continue
+		}
+		nextHop := windowsRawSockaddrInetIPv4(row.NextHop)
+		prefixLength := int(row.DestinationPrefix.PrefixLength)
+		entries = append(entries, windowsIPv4RouteEntry{
+			InterfaceIndex: int(row.InterfaceIndex),
+			Prefix:         fmt.Sprintf("%s/%d", destination.String(), prefixLength),
+			Destination:    destination,
+			PrefixLength:   prefixLength,
+			NextHop:        nextHop,
+			Metric:         row.Metric,
+			Protocol:       row.Protocol,
+			Loopback:       row.Loopback != 0,
+			Autoconf:       row.AutoconfigureAddress != 0,
+		})
+	}
+	return entries, nil
+}
+
+func windowsShouldPreserveIPv4StaticRoute(entry windowsIPv4RouteEntry, tunAdapterIfIndex int) bool {
+	if entry.PrefixLength == 0 {
+		return true
+	}
+	if entry.Loopback || isIPv4InCIDR(entry.Destination, "127.0.0.0/8") {
+		return true
+	}
+	if isIPv4InCIDR(entry.Destination, "169.254.0.0/16") {
+		return true
+	}
+	if entry.NextHop != nil && entry.NextHop.Equal(net.IPv4zero) {
+		if tunAdapterIfIndex > 0 && entry.InterfaceIndex == tunAdapterIfIndex {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func windowsClearIPv4StaticRoutesForTUN() error {
+	tunAdapterIfIndex := 0
+	if adapter, err := windowsFindAdapterByNameOrDescription(tunAdapterName, tunAdapterDescription); err == nil {
+		tunAdapterIfIndex = adapter.InterfaceIndex
+	}
+	entries, err := windowsListIPv4RouteEntries2()
+	if err != nil {
+		return err
+	}
+	var allErr error
+	for _, entry := range entries {
+		if entry.InterfaceIndex <= 0 || entry.Protocol != windowsRouteProtoNetMgmt {
+			continue
+		}
+		if windowsShouldPreserveIPv4StaticRoute(entry, tunAdapterIfIndex) {
+			continue
+		}
+		nextHopText := "0.0.0.0"
+		if entry.NextHop != nil {
+			nextHopText = entry.NextHop.String()
+		}
+		if err := windowsDeleteIPv4Route(entry.Prefix, entry.InterfaceIndex, nextHopText, true); err != nil {
+			allErr = errors.Join(allErr, err)
+		}
+	}
+	return allErr
+}
+
+func isIPv4InCIDR(ip net.IP, cidr string) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	_, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+	if err != nil || network == nil {
+		return false
+	}
+	return network.Contains(ip4)
 }
 
 func windowsListIPForwardRows() ([]mibIPForwardRow, error) {
