@@ -1,10 +1,16 @@
 import { useMemo, useState } from "react";
-import type { NetworkProcessEvent } from "../types";
+import type { NetworkProcessEvent, NetworkProcessInfo } from "../types";
 
 type NetworkAssistantMonitorPanelProps = {
   isMonitoring: boolean;
+  processList: NetworkProcessInfo[];
+  isLoadingProcessList: boolean;
+  processListStatus: string;
+  selectedProcess: string;
   processEvents: NetworkProcessEvent[];
   processEventsStatus: string;
+  onRefreshProcessList: () => void;
+  onSelectProcess: (name: string) => void;
   onStartMonitor: () => void;
   onStopMonitor: () => void;
   onClearEvents: () => void;
@@ -59,6 +65,9 @@ export function NetworkAssistantMonitorPanel(props: NetworkAssistantMonitorPanel
     const map = new Map<string, ProcessGroup>();
     for (const event of props.processEvents) {
       const processName = (event.process_name || "unknown").trim() || "unknown";
+      if (props.selectedProcess && processName.toLowerCase() !== props.selectedProcess.toLowerCase()) {
+        continue;
+      }
       const key = processName.toLowerCase();
       const existing = map.get(key);
       if (!existing) {
@@ -89,11 +98,12 @@ export function NetworkAssistantMonitorPanel(props: NetworkAssistantMonitorPanel
       return b.latestTimestamp - a.latestTimestamp;
     });
     return list;
-  }, [pinnedProcessName, props.processEvents]);
+  }, [pinnedProcessName, props.processEvents, props.selectedProcess]);
 
   return (
     <>
       <div className="content-actions" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn" onClick={props.onRefreshProcessList} disabled={props.isLoadingProcessList}>刷新进程列表</button>
         {!props.isMonitoring ? (
           <button className="btn" onClick={props.onStartMonitor}>开始监视</button>
         ) : (
@@ -102,6 +112,22 @@ export function NetworkAssistantMonitorPanel(props: NetworkAssistantMonitorPanel
         <button className="btn" onClick={props.onClearEvents}>清空</button>
         {props.isMonitoring && <span style={{ fontSize: 12, color: "#888" }}>监视中，每 2 秒刷新…</span>}
       </div>
+      <div className="content-actions" style={{ gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
+        <span style={{ fontSize: 12, color: "#aaa" }}>进程：</span>
+        <select
+          className="text-input"
+          style={{ minWidth: 280 }}
+          value={props.selectedProcess}
+          onChange={(e) => props.onSelectProcess(e.target.value)}
+        >
+          <option value="">全部进程</option>
+          {props.processList.map((p) => (
+            <option key={p.name.toLowerCase()} value={p.name}>{p.name}</option>
+          ))}
+        </select>
+        <span style={{ fontSize: 12, color: "#888" }}>共 {props.processList.length} 个</span>
+      </div>
+      {props.processListStatus && <div className="status">{props.processListStatus}</div>}
       {props.processEventsStatus && <div className="status">{props.processEventsStatus}</div>}
       {groups.length === 0 ? (
         <div className="status">暂无事件</div>

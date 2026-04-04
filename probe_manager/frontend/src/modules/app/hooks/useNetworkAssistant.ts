@@ -522,21 +522,22 @@ export function useNetworkAssistant() {
   const startProcessMonitor = useCallback(async () => {
     try {
       await StartNetworkAssistantProcessMonitor();
+      await refreshProcessList();
       setMonitorProcessName("");
       setIsMonitoring(true);
       setProcessEvents([]);
       if (status.mode !== "tun") {
-        setProcessEventsStatus("监视已启动：当前为直连模式，通常不会产生监视事件；请切换到 TUN 模式后再观察。")
+        setProcessEventsStatus("监视已启动：当前为直连模式，通常不会产生监视事件；请切换到 TUN 模式后再观察。");
       } else if (!status.tun_enabled) {
-        setProcessEventsStatus("监视已启动：当前 TUN 尚未启用，暂无事件；请先启用 TUN 并产生网络流量。")
+        setProcessEventsStatus("监视已启动：当前 TUN 尚未启用，暂无事件；请先启用 TUN 并产生网络流量。");
       } else {
-        setProcessEventsStatus("监视已启动：请产生网络流量，事件会每 2 秒刷新。")
+        setProcessEventsStatus("监视已启动：请产生网络流量，事件会每 2 秒刷新。");
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       setProcessEventsStatus(`启动监视失败：${msg}`);
     }
-  }, [status.mode, status.tun_enabled]);
+  }, [refreshProcessList, status.mode, status.tun_enabled]);
 
   const clearProcessEvents = useCallback(async () => {
     try {
@@ -581,13 +582,21 @@ export function useNetworkAssistant() {
           };
         });
         setProcessEvents(events);
-        setProcessEventsStatus("");
+        if (events.length > 0) {
+          setProcessEventsStatus("");
+        } else if (status.mode !== "tun") {
+          setProcessEventsStatus("当前为直连模式，通常不会产生监视事件；请切换到 TUN 模式后再观察。");
+        } else if (!status.tun_enabled) {
+          setProcessEventsStatus("当前 TUN 尚未启用，暂无事件；请先启用 TUN 并产生网络流量。");
+        } else {
+          setProcessEventsStatus("暂无事件：请产生网络流量后观察。DNS/TCP/UDP 命中后会在此处展示。");
+        }
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       setProcessEventsStatus(`监视轮询失败：${msg}`);
     }
-  }, [isMonitoring]);
+  }, [isMonitoring, status.mode, status.tun_enabled]);
 
   // 监视轮询：每 2 秒刷新一次事件
   useEffect(() => {

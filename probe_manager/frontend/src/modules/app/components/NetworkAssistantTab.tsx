@@ -431,8 +431,14 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
       ) : subTab === "monitor" ? (
         <NetworkAssistantMonitorPanel
           isMonitoring={props.isMonitoring}
+          processList={props.processList}
+          isLoadingProcessList={props.isLoadingProcessList}
+          processListStatus={props.processListStatus}
+          selectedProcess={props.selectedProcess}
           processEvents={props.processEvents}
           processEventsStatus={props.processEventsStatus}
+          onRefreshProcessList={props.onRefreshProcessList}
+          onSelectProcess={props.onSelectProcess}
           onStartMonitor={props.onStartMonitor}
           onStopMonitor={props.onStopMonitor}
           onClearEvents={props.onClearEvents}
