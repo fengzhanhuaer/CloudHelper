@@ -212,6 +212,11 @@ func (s *networkAssistantService) resolveDomainForInternalDNS(domain string, qTy
 	if cached, ok := s.loadRuleDNSCache(cacheKey); ok && len(cached) > 0 {
 		return filterDNSResponseAddrs(cached, qType), clampRuleDNSTTL(internalDNSDefaultTTLSeconds), route, nil
 	}
+	if staticAddrs, matched := s.ruleRouting.RuleSet.matchStaticDomainIP(normalizedDomain, qType); matched {
+		ttl := clampRuleDNSTTL(internalDNSDefaultTTLSeconds)
+		s.storeRuleDNSCache(cacheKey, staticAddrs, ttl)
+		return staticAddrs, ttl, route, nil
+	}
 
 	var addrs []string
 	var ttl int

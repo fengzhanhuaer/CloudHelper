@@ -286,15 +286,20 @@ type adminWSResponse struct {
 type ruleMatcherKind string
 
 const (
-	ruleMatcherDomainSuffix ruleMatcherKind = "domain_suffix"
-	ruleMatcherIP           ruleMatcherKind = "ip"
-	ruleMatcherCIDR         ruleMatcherKind = "cidr"
+	ruleMatcherDomainExact    ruleMatcherKind = "domain_exact"
+	ruleMatcherDomainSuffix   ruleMatcherKind = "domain_suffix"
+	ruleMatcherDomainPrefix   ruleMatcherKind = "domain_prefix"
+	ruleMatcherDomainContains ruleMatcherKind = "domain_contains"
+	ruleMatcherDomainStaticIP ruleMatcherKind = "domain_static_ip"
+	ruleMatcherIP             ruleMatcherKind = "ip"
+	ruleMatcherCIDR           ruleMatcherKind = "cidr"
 )
 
 type tunnelRule struct {
 	RawPattern string
 	Group      string
 	Kind       ruleMatcherKind
+	Domain     string
 	Suffix     string
 	IP         string
 	CIDR       *net.IPNet
@@ -1226,32 +1231,35 @@ func (set tunnelRuleSet) matchHost(host string) (tunnelRule, bool) {
 	}
 	targetHostLower := strings.ToLower(targetHost)
 	targetIP := net.ParseIP(targetHostLower)
-	targetIPCanonical := ""
 	if targetIP != nil {
-		targetIPCanonical = canonicalIP(targetIP)
+		targetIPCanonical := canonicalIP(targetIP)
+		for _, rule := range set.Rules {
+			switch rule.Kind {
+			case ruleMatcherIP:
+				if targetIPCanonical == rule.IP {
+					return rule, true
+				}
+			case ruleMatcherCIDR:
+				if rule.CIDR != nil && rule.CIDR.Contains(targetIP) {
+					return rule, true
+				}
+			}
+		}
+		return tunnelRule{}, false
 	}
 
-	for _, rule := range set.Rules {
-		switch rule.Kind {
-		case ruleMatcherDomainSuffix:
-			if targetIP != nil {
+	domainPriorities := []ruleMatcherKind{
+		ruleMatcherDomainExact,
+		ruleMatcherDomainSuffix,
+		ruleMatcherDomainPrefix,
+		ruleMatcherDomainContains,
+	}
+	for _, kind := range domainPriorities {
+		for _, rule := range set.Rules {
+			if rule.Kind != kind {
 				continue
 			}
-			if domainMatchesRuleSuffix(targetHostLower, rule.Suffix) {
-				return rule, true
-			}
-		case ruleMatcherIP:
-			if targetIP == nil {
-				continue
-			}
-			if targetIPCanonical == rule.IP {
-				return rule, true
-			}
-		case ruleMatcherCIDR:
-			if targetIP == nil || rule.CIDR == nil {
-				continue
-			}
-			if rule.CIDR.Contains(targetIP) {
+			if domainMatchesRule(targetHostLower, rule) {
 				return rule, true
 			}
 		}
@@ -1259,16 +1267,55 @@ func (set tunnelRuleSet) matchHost(host string) (tunnelRule, bool) {
 	return tunnelRule{}, false
 }
 
-func domainMatchesRuleSuffix(host string, suffix string) bool {
+func (set tunnelRuleSet) matchStaticDomainIP(domain string, qType uint16) ([]string, bool) {
+	normalizedDomain := normalizeRuleDomain(domain)
+	if normalizedDomain == "" {
+		return nil, false
+	}
+	for _, rule := range set.Rules {
+		if rule.Kind != ruleMatcherDomainStaticIP {
+			continue
+		}
+		if normalizedDomain != domainPatternFromRule(rule) {
+			continue
+		}
+		addrs := filterDNSResponseAddrs([]string{rule.IP}, qType)
+		if len(addrs) == 0 {
+			continue
+		}
+		return addrs, true
+	}
+	return nil, false
+}
+
+func domainMatchesRule(host string, rule tunnelRule) bool {
 	normalizedHost := strings.TrimSpace(strings.ToLower(host))
-	normalizedSuffix := strings.TrimSpace(strings.ToLower(strings.TrimPrefix(suffix, ".")))
-	if normalizedHost == "" || normalizedSuffix == "" {
+	normalizedDomain := domainPatternFromRule(rule)
+	if normalizedHost == "" || normalizedDomain == "" {
 		return false
 	}
-	if normalizedHost == normalizedSuffix {
-		return true
+	switch rule.Kind {
+	case ruleMatcherDomainExact:
+		return normalizedHost == normalizedDomain
+	case ruleMatcherDomainSuffix:
+		if normalizedHost == normalizedDomain {
+			return true
+		}
+		return strings.HasSuffix(normalizedHost, "."+normalizedDomain)
+	case ruleMatcherDomainPrefix:
+		return strings.HasPrefix(normalizedHost, normalizedDomain)
+	case ruleMatcherDomainContains:
+		return strings.Contains(normalizedHost, normalizedDomain)
+	default:
+		return false
 	}
-	return strings.HasSuffix(normalizedHost, "."+normalizedSuffix)
+}
+
+func domainPatternFromRule(rule tunnelRule) string {
+	if normalized := normalizeRuleDomain(rule.Domain); normalized != "" {
+		return normalized
+	}
+	return normalizeRuleDomain(rule.Suffix)
 }
 
 func normalizeRuleGroupName(raw string) string {
@@ -2605,8 +2652,12 @@ func ensureTunnelRuleRouteFile(routePath string) error {
 		"# format:\n" +
 		"# <proxy_group>\n" +
 		"# {\n" +
-		"#   <domain suffix|ip|cidr>\n" +
+		"#   <pattern>                 # route rule (exact/suffix/prefix/contains/ip/cidr)\n" +
+		"#   <domain>,<ip>             # static dns (exact domain only, no wildcard)\n" +
 		"# }\n" +
+		"# wildcard priority: exact > suffix > prefix > contains\n" +
+		"# wildcard syntax: *domain (suffix), domain* (prefix), *domain* (contains)\n" +
+		"# no '*' means exact domain match\n" +
 		"# braces must be on their own lines\n" +
 		"# examples:\n" +
 		strings.Join(defaultRuleRoutes, "\n") + "\n"
@@ -2686,7 +2737,15 @@ func parseTunnelRuleFile(path string) (tunnelRuleSet, error) {
 			continue
 		}
 
-		rule, parseErr := parseTunnelRuleLine(line + "," + currentGroup)
+		var (
+			rule     tunnelRule
+			parseErr error
+		)
+		if strings.Contains(line, ",") {
+			rule, parseErr = parseTunnelStaticRuleLine(line, currentGroup)
+		} else {
+			rule, parseErr = parseTunnelRuleLine(line + "," + currentGroup)
+		}
 		if parseErr != nil {
 			return tunnelRuleSet{}, fmt.Errorf("invalid rule_routes line %d: %w", lineNo, parseErr)
 		}
@@ -2737,19 +2796,97 @@ func parseTunnelRuleLine(line string) (tunnelRule, error) {
 		}, nil
 	}
 
-	suffix := strings.TrimSpace(strings.TrimPrefix(patternLower, "*."))
-	suffix = strings.TrimPrefix(suffix, ".")
-	if suffix == "" {
-		return tunnelRule{}, errors.New("domain suffix is required")
+	wildcardCount := strings.Count(patternLower, "*")
+	if wildcardCount == 0 {
+		domain := normalizeRuleDomain(patternLower)
+		if domain == "" || strings.Contains(domain, ",") {
+			return tunnelRule{}, errors.New("invalid exact domain pattern")
+		}
+		return tunnelRule{
+			RawPattern: pattern,
+			Group:      group,
+			Kind:       ruleMatcherDomainExact,
+			Domain:     domain,
+		}, nil
 	}
-	if strings.Contains(suffix, " ") || strings.Contains(suffix, ",") {
-		return tunnelRule{}, errors.New("invalid domain suffix")
+
+	if wildcardCount == 1 && strings.HasPrefix(patternLower, "*") {
+		suffix := normalizeRuleDomain(strings.TrimPrefix(patternLower, "*"))
+		suffix = strings.TrimPrefix(suffix, ".")
+		if suffix == "" || strings.Contains(suffix, ",") {
+			return tunnelRule{}, errors.New("invalid suffix domain pattern")
+		}
+		return tunnelRule{
+			RawPattern: pattern,
+			Group:      group,
+			Kind:       ruleMatcherDomainSuffix,
+			Domain:     suffix,
+		}, nil
+	}
+	if wildcardCount == 1 && strings.HasSuffix(patternLower, "*") {
+		prefix := normalizeRuleDomain(strings.TrimSuffix(patternLower, "*"))
+		if prefix == "" || strings.Contains(prefix, ",") {
+			return tunnelRule{}, errors.New("invalid prefix domain pattern")
+		}
+		return tunnelRule{
+			RawPattern: pattern,
+			Group:      group,
+			Kind:       ruleMatcherDomainPrefix,
+			Domain:     prefix,
+		}, nil
+	}
+	if wildcardCount == 2 && strings.HasPrefix(patternLower, "*") && strings.HasSuffix(patternLower, "*") {
+		contains := normalizeRuleDomain(strings.TrimSuffix(strings.TrimPrefix(patternLower, "*"), "*"))
+		if contains == "" || strings.Contains(contains, ",") {
+			return tunnelRule{}, errors.New("invalid contains domain pattern")
+		}
+		return tunnelRule{
+			RawPattern: pattern,
+			Group:      group,
+			Kind:       ruleMatcherDomainContains,
+			Domain:     contains,
+		}, nil
+	}
+	return tunnelRule{}, errors.New("unsupported wildcard domain pattern")
+}
+
+func parseTunnelStaticRuleLine(line string, group string) (tunnelRule, error) {
+	parts := strings.SplitN(strings.TrimSpace(line), ",", 2)
+	if len(parts) != 2 {
+		return tunnelRule{}, errors.New("expected <domain>,<ip> for static dns rule")
+	}
+	pattern := strings.TrimSpace(parts[0])
+	ipText := strings.TrimSpace(parts[1])
+	if pattern == "" {
+		return tunnelRule{}, errors.New("static dns domain pattern is required")
+	}
+	if ipText == "" {
+		return tunnelRule{}, errors.New("static dns ip is required")
+	}
+	if strings.Contains(pattern, "*") {
+		return tunnelRule{}, errors.New("static dns domain pattern does not support wildcard '*'")
+	}
+	patternLower := strings.ToLower(pattern)
+	if _, _, err := net.ParseCIDR(patternLower); err == nil {
+		return tunnelRule{}, errors.New("static dns pattern must be a domain, cidr is not allowed")
+	}
+	if ip := net.ParseIP(patternLower); ip != nil {
+		return tunnelRule{}, errors.New("static dns pattern must be a domain, ip is not allowed")
+	}
+	domain := normalizeRuleDomain(patternLower)
+	if domain == "" || strings.Contains(domain, ",") {
+		return tunnelRule{}, errors.New("invalid static dns domain pattern")
+	}
+	ipValue := net.ParseIP(ipText)
+	if ipValue == nil {
+		return tunnelRule{}, errors.New("invalid static dns ip")
 	}
 	return tunnelRule{
 		RawPattern: pattern,
-		Group:      group,
-		Kind:       ruleMatcherDomainSuffix,
-		Suffix:     suffix,
+		Group:      normalizeRuleGroupName(group),
+		Kind:       ruleMatcherDomainStaticIP,
+		Domain:     domain,
+		IP:         canonicalIP(ipValue),
 	}, nil
 }
 

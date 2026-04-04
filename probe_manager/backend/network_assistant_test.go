@@ -38,7 +38,10 @@ func TestParseTunnelRuleLine(t *testing.T) {
 		wantKind  ruleMatcherKind
 		wantGroup string
 	}{
-		{name: "domain suffix", line: "example.com,group_a", wantKind: ruleMatcherDomainSuffix, wantGroup: "group_a"},
+		{name: "domain exact", line: "example.com,group_a", wantKind: ruleMatcherDomainExact, wantGroup: "group_a"},
+		{name: "domain suffix", line: "*example.com,group_a", wantKind: ruleMatcherDomainSuffix, wantGroup: "group_a"},
+		{name: "domain prefix", line: "api.*,group_a", wantKind: ruleMatcherDomainPrefix, wantGroup: "group_a"},
+		{name: "domain contains", line: "*ample.co*,group_a", wantKind: ruleMatcherDomainContains, wantGroup: "group_a"},
 		{name: "ip", line: "1.2.3.4,group_b", wantKind: ruleMatcherIP, wantGroup: "group_b"},
 		{name: "cidr", line: "10.0.0.0/8,group_c", wantKind: ruleMatcherCIDR, wantGroup: "group_c"},
 	}
@@ -65,11 +68,12 @@ func TestParseTunnelRuleFileBlockFormat(t *testing.T) {
 		"{\n" +
 		"10.0.0.0/8\n" +
 		"192.168.1.10\n" +
-		"example.com\n" +
+		"*example.com\n" +
 		"}\n" +
 		"direct_local\n" +
 		"{\n" +
 		"localhost\n" +
+		"localhost,127.0.0.1\n" +
 		"}\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write rule file: %v", err)
@@ -79,8 +83,8 @@ func TestParseTunnelRuleFileBlockFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseTunnelRuleFile returned error: %v", err)
 	}
-	if len(ruleSet.Rules) != 4 {
-		t.Fatalf("rule count=%d, want 4", len(ruleSet.Rules))
+	if len(ruleSet.Rules) != 5 {
+		t.Fatalf("rule count=%d, want 5", len(ruleSet.Rules))
 	}
 	if ruleSet.Rules[0].Group != "lan" || ruleSet.Rules[0].Kind != ruleMatcherCIDR {
 		t.Fatalf("rule 0 = %#v", ruleSet.Rules[0])
@@ -91,8 +95,11 @@ func TestParseTunnelRuleFileBlockFormat(t *testing.T) {
 	if ruleSet.Rules[2].Group != "lan" || ruleSet.Rules[2].Kind != ruleMatcherDomainSuffix {
 		t.Fatalf("rule 2 = %#v", ruleSet.Rules[2])
 	}
-	if ruleSet.Rules[3].Group != "direct_local" || ruleSet.Rules[3].Kind != ruleMatcherDomainSuffix {
+	if ruleSet.Rules[3].Group != "direct_local" || ruleSet.Rules[3].Kind != ruleMatcherDomainExact {
 		t.Fatalf("rule 3 = %#v", ruleSet.Rules[3])
+	}
+	if ruleSet.Rules[4].Group != "direct_local" || ruleSet.Rules[4].Kind != ruleMatcherDomainStaticIP {
+		t.Fatalf("rule 4 = %#v", ruleSet.Rules[4])
 	}
 }
 
@@ -116,14 +123,26 @@ func TestTunnelRuleSetMatchHost(t *testing.T) {
 	}
 	rules := tunnelRuleSet{
 		Rules: []tunnelRule{
-			{Kind: ruleMatcherDomainSuffix, Suffix: "example.com", Group: "domain"},
+			{Kind: ruleMatcherDomainContains, Domain: "ample", Group: "contains"},
+			{Kind: ruleMatcherDomainPrefix, Domain: "www.", Group: "prefix"},
+			{Kind: ruleMatcherDomainSuffix, Domain: "example.com", Group: "suffix"},
+			{Kind: ruleMatcherDomainExact, Domain: "www.example.com", Group: "exact"},
 			{Kind: ruleMatcherIP, IP: "1.2.3.4", Group: "ip"},
 			{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "cidr"},
 		},
 	}
 
-	if got, ok := rules.matchHost("www.example.com"); !ok || got.Group != "domain" {
-		t.Fatalf("domain match failed: ok=%v group=%s", ok, got.Group)
+	if got, ok := rules.matchHost("www.example.com"); !ok || got.Group != "exact" {
+		t.Fatalf("domain priority match failed: ok=%v group=%s", ok, got.Group)
+	}
+	if got, ok := rules.matchHost("api.example.com"); !ok || got.Group != "suffix" {
+		t.Fatalf("suffix match failed: ok=%v group=%s", ok, got.Group)
+	}
+	if got, ok := rules.matchHost("www.foo.test"); !ok || got.Group != "prefix" {
+		t.Fatalf("prefix match failed: ok=%v group=%s", ok, got.Group)
+	}
+	if got, ok := rules.matchHost("fooamplebar.test"); !ok || got.Group != "contains" {
+		t.Fatalf("contains match failed: ok=%v group=%s", ok, got.Group)
 	}
 	if got, ok := rules.matchHost("1.2.3.4"); !ok || got.Group != "ip" {
 		t.Fatalf("ip match failed: ok=%v group=%s", ok, got.Group)
@@ -365,7 +384,7 @@ func TestDecideRouteForTargetRuleModeTunnelDomainKeepsDomainTarget(t *testing.T)
 		ruleRouting: tunnelRuleRouting{
 			RuleSet: tunnelRuleSet{
 				Rules: []tunnelRule{
-					{Kind: ruleMatcherDomainSuffix, Suffix: "example.com", Group: "group_example"},
+					{Kind: ruleMatcherDomainSuffix, Domain: "example.com", Group: "group_example"},
 				},
 			},
 			GroupNodeMap: map[string]string{
@@ -391,6 +410,55 @@ func TestDecideRouteForTargetRuleModeTunnelDomainKeepsDomainTarget(t *testing.T)
 	}
 	if decision.Group != "group_example" {
 		t.Fatalf("group=%s, want group_example", decision.Group)
+	}
+}
+
+func TestResolveDomainForInternalDNSStaticIP(t *testing.T) {
+	service := &networkAssistantService{
+		mode:   networkModeTUN,
+		nodeID: "cloudserver",
+		ruleRouting: tunnelRuleRouting{
+			RuleSet: tunnelRuleSet{
+				Rules: []tunnelRule{
+					{Kind: ruleMatcherDomainStaticIP, Domain: "localhost", IP: "127.0.0.1", Group: "direct_local"},
+				},
+			},
+			GroupNodeMap: map[string]string{ruleFallbackGroupKey: rulePolicyActionDirect},
+		},
+		ruleDNSCache: make(map[string]dnsCacheEntry),
+	}
+
+	addrs, ttl, _, err := service.resolveDomainForInternalDNS("localhost", 1)
+	if err != nil {
+		t.Fatalf("resolveDomainForInternalDNS returned error: %v", err)
+	}
+	if len(addrs) != 1 || addrs[0] != "127.0.0.1" {
+		t.Fatalf("unexpected static dns addrs: %#v", addrs)
+	}
+	if ttl <= 0 {
+		t.Fatalf("unexpected static dns ttl=%d", ttl)
+	}
+
+	addrs6, _, _, err := service.resolveDomainForInternalDNS("localhost", 28)
+	if err == nil {
+		t.Fatalf("expected AAAA query to fail when static rule only contains ipv4, got addrs=%#v", addrs6)
+	}
+}
+
+func TestParseTunnelRuleFileRejectsWildcardStaticIP(t *testing.T) {
+	tempDir := t.TempDir()
+	path := tempDir + "/rule_routes.txt"
+	content := "direct_local\n" +
+		"{\n" +
+		"*baidu.com,127.0.0.1\n" +
+		"}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write rule file: %v", err)
+	}
+
+	_, err := parseTunnelRuleFile(path)
+	if err == nil {
+		t.Fatal("expected parse error for wildcard static dns rule")
 	}
 }
 
