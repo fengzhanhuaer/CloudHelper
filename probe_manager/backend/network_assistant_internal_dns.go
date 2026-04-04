@@ -219,10 +219,10 @@ func (s *networkAssistantService) resolveDomainForInternalDNS(domain string, qTy
 
 	var addrs []string
 	var ttl int
-	if route.BypassTUN {
-		addrs, ttl, err = s.queryRuleDomainViaSystemDNS(normalizedDomain, qType)
-	} else {
+	if shouldUseTunnelDNSForRoute(route) {
 		addrs, ttl, err = s.queryRuleDomainViaTunnel(route.NodeID, normalizedDomain, qType)
+	} else {
+		addrs, ttl, err = s.queryRuleDomainViaSystemDNS(normalizedDomain, qType)
 	}
 	if err != nil {
 		s.logDNSResolveFailed(normalizedDomain, qType, route, err)
@@ -278,13 +278,17 @@ func (s *networkAssistantService) logDNSResolveFailed(domain string, qType uint1
 
 func buildInternalDNSCacheKey(route tunnelRouteDecision, domain string, qType uint16) string {
 	nodeKey := "direct"
-	if !route.BypassTUN {
+	if shouldUseTunnelDNSForRoute(route) {
 		nodeKey = strings.TrimSpace(route.NodeID)
 		if nodeKey == "" {
 			nodeKey = defaultNodeID
 		}
 	}
 	return strings.ToLower(nodeKey) + "|" + strconv.Itoa(int(qType)) + "|" + strings.ToLower(strings.TrimSpace(domain))
+}
+
+func shouldUseTunnelDNSForRoute(route tunnelRouteDecision) bool {
+	return !route.Direct && !route.BypassTUN
 }
 
 func (s *networkAssistantService) queryRuleDomainViaSystemDNS(domain string, qType uint16) ([]string, int, error) {

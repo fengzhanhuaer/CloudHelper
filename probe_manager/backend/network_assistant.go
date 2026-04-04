@@ -415,6 +415,9 @@ type networkAssistantService struct {
 	lastChainRefreshAt map[string]time.Time
 	muxMaintainerStop  chan struct{}
 	muxMaintainerDone  chan struct{}
+	muxMaintaining     bool
+	muxMaintainFails   map[string]int
+	muxMaintainRetryAt map[string]time.Time
 
 	processMonitor *processMonitor
 }
@@ -452,6 +455,8 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunDynamicBypass:    make(map[string]int),
 		dnsRouteHints:       make(map[string]dnsRouteHintEntry),
 		logRateState:        make(map[string]time.Time),
+		muxMaintainFails:    make(map[string]int),
+		muxMaintainRetryAt:  make(map[string]time.Time),
 		processMonitor:      newProcessMonitor(),
 	}
 	if _, err := getDNSUpstreamConfig(); err != nil {

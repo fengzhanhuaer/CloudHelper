@@ -445,6 +445,72 @@ func TestResolveDomainForInternalDNSStaticIP(t *testing.T) {
 	}
 }
 
+func TestShouldUseTunnelDNSForRoute(t *testing.T) {
+	tests := []struct {
+		name  string
+		route tunnelRouteDecision
+		want  bool
+	}{
+		{
+			name:  "fallback direct should use system dns",
+			route: tunnelRouteDecision{Direct: true, BypassTUN: false, Group: ruleFallbackGroupKey},
+			want:  false,
+		},
+		{
+			name:  "direct bypass should use system dns",
+			route: tunnelRouteDecision{Direct: true, BypassTUN: true, Group: "direct"},
+			want:  false,
+		},
+		{
+			name:  "tunnel route should use tunnel dns",
+			route: tunnelRouteDecision{Direct: false, BypassTUN: false, NodeID: "chain:edge-a", Group: "group_example"},
+			want:  true,
+		},
+		{
+			name:  "bypassed non-direct should still use system dns",
+			route: tunnelRouteDecision{Direct: false, BypassTUN: true, Group: "group_example"},
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		if got := shouldUseTunnelDNSForRoute(tt.route); got != tt.want {
+			t.Fatalf("%s: got=%v, want=%v, route=%#v", tt.name, got, tt.want, tt.route)
+		}
+	}
+}
+
+func TestBuildInternalDNSCacheKeyUsesDirectBucketForDirectRoutes(t *testing.T) {
+	tests := []struct {
+		name  string
+		route tunnelRouteDecision
+		want  string
+	}{
+		{
+			name:  "fallback direct should not fallback to cloudserver bucket",
+			route: tunnelRouteDecision{Direct: true, BypassTUN: false, Group: ruleFallbackGroupKey},
+			want:  "direct|1|example.com",
+		},
+		{
+			name:  "tunnel route without node id should use default node bucket",
+			route: tunnelRouteDecision{Direct: false, BypassTUN: false, Group: "group_example"},
+			want:  defaultNodeID + "|1|example.com",
+		},
+		{
+			name:  "tunnel route with explicit node id should use that bucket",
+			route: tunnelRouteDecision{Direct: false, BypassTUN: false, NodeID: "chain:edge-a", Group: "group_example"},
+			want:  "chain:edge-a|1|example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		got := buildInternalDNSCacheKey(tt.route, "example.com", 1)
+		if got != tt.want {
+			t.Fatalf("%s: key=%s, want=%s, route=%#v", tt.name, got, tt.want, tt.route)
+		}
+	}
+}
+
 func TestParseTunnelRuleFileRejectsWildcardStaticIP(t *testing.T) {
 	tempDir := t.TempDir()
 	path := tempDir + "/rule_routes.txt"

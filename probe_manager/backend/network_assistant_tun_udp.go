@@ -3,10 +3,13 @@ package backend
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type localTUNUDPPacket struct {
@@ -122,7 +125,16 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 	s.mu.Unlock()
 
 	relay.startReadLoop()
-	s.logf(
+	rateKey := fmt.Sprintf(
+		"tun:udp:relay_created:%s|%t|%s|%s",
+		strings.ToLower(strings.TrimSpace(relay.routeTarget)),
+		route.Direct,
+		strings.ToLower(strings.TrimSpace(relay.routeNodeID)),
+		strings.ToLower(strings.TrimSpace(relay.routeGroup)),
+	)
+	s.logfRateLimited(
+		rateKey,
+		15*time.Second,
 		"local tun udp relay created: src=%s:%d dst=%s:%d target=%s direct=%v node=%s group=%s",
 		frame.SrcIP.String(),
 		frame.SrcPort,

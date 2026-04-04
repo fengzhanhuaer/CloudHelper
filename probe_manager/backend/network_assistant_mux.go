@@ -30,6 +30,11 @@ import (
 const (
 	tunnelStreamOpenTimeout = 20 * time.Second
 
+	muxAutoMaintainInterval        = 20 * time.Second
+	muxAutoMaintainMinRetry        = 30 * time.Second
+	muxAutoMaintainMaxRetry        = 5 * time.Minute
+	muxAutoMaintainFailLogInterval = 30 * time.Second
+
 	probeChainRelayAPIPath         = "/api/node/chain/relay"
 	probeChainAuthPacketVersion    = "2025-03-22"
 	probeChainLegacyChainIDHeader  = "X-CH-Chain-ID"
@@ -813,7 +818,7 @@ func (s *networkAssistantService) startMuxAutoMaintainLoop() {
 	go func() {
 		defer close(doneCh)
 		s.maintainSelectedTunnelMuxClients()
-		ticker := time.NewTicker(20 * time.Second)
+		ticker := time.NewTicker(muxAutoMaintainInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -899,22 +904,76 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 }
 
 func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
+	s.mu.Lock()
+	if s.muxMaintaining {
+		s.mu.Unlock()
+		return
+	}
+	s.muxMaintaining = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.muxMaintaining = false
+		s.mu.Unlock()
+	}()
+
 	targetNodeIDs := s.collectAutoMaintainTunnelNodeIDs()
 	if len(targetNodeIDs) == 0 {
 		_ = s.stopTunnelMuxClients()
+		s.mu.Lock()
+		clear(s.muxMaintainFails)
+		clear(s.muxMaintainRetryAt)
+		s.mu.Unlock()
 		return
 	}
 
+	now := time.Now()
 	desired := make(map[string]struct{}, len(targetNodeIDs))
 	for _, nodeID := range targetNodeIDs {
-		normalized := strings.ToLower(strings.TrimSpace(nodeID))
+		node := strings.TrimSpace(nodeID)
+		normalized := strings.ToLower(node)
 		if normalized == "" {
 			continue
 		}
 		desired[normalized] = struct{}{}
-		if _, err := s.ensureTunnelMuxClientForNode(nodeID); err != nil {
-			s.logf("auto maintain tunnel mux failed: node=%s err=%v", strings.TrimSpace(nodeID), err)
+
+		s.mu.Lock()
+		retryAt := s.muxMaintainRetryAt[normalized]
+		s.mu.Unlock()
+		if !retryAt.IsZero() && now.Before(retryAt) {
+			continue
 		}
+
+		if _, err := s.ensureTunnelMuxClientForNode(node); err != nil {
+			s.mu.Lock()
+			if s.muxMaintainFails == nil {
+				s.muxMaintainFails = make(map[string]int)
+			}
+			if s.muxMaintainRetryAt == nil {
+				s.muxMaintainRetryAt = make(map[string]time.Time)
+			}
+			attempt := s.muxMaintainFails[normalized] + 1
+			s.muxMaintainFails[normalized] = attempt
+			backoff := calcMuxAutoMaintainBackoff(attempt)
+			s.muxMaintainRetryAt[normalized] = now.Add(backoff)
+			s.mu.Unlock()
+
+			s.logfRateLimited(
+				"mux:auto-maintain:failed:"+normalized,
+				muxAutoMaintainFailLogInterval,
+				"auto maintain tunnel mux failed: node=%s err=%v retry_in=%s attempt=%d",
+				node,
+				err,
+				backoff,
+				attempt,
+			)
+			continue
+		}
+
+		s.mu.Lock()
+		delete(s.muxMaintainFails, normalized)
+		delete(s.muxMaintainRetryAt, normalized)
+		s.mu.Unlock()
 	}
 
 	s.mu.Lock()
@@ -939,6 +998,16 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 		}
 		delete(s.ruleMuxClients, nodeID)
 	}
+	for key := range s.muxMaintainFails {
+		if _, ok := desired[key]; !ok {
+			delete(s.muxMaintainFails, key)
+		}
+	}
+	for key := range s.muxMaintainRetryAt {
+		if _, ok := desired[key]; !ok {
+			delete(s.muxMaintainRetryAt, key)
+		}
+	}
 	s.mu.Unlock()
 
 	if stalePrimary != nil {
@@ -947,6 +1016,23 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 	for _, client := range staleExtra {
 		client.close()
 	}
+}
+
+func calcMuxAutoMaintainBackoff(attempt int) time.Duration {
+	if attempt <= 1 {
+		return muxAutoMaintainMinRetry
+	}
+	backoff := muxAutoMaintainMinRetry
+	for i := 1; i < attempt; i++ {
+		backoff *= 2
+		if backoff >= muxAutoMaintainMaxRetry {
+			return muxAutoMaintainMaxRetry
+		}
+	}
+	if backoff > muxAutoMaintainMaxRetry {
+		return muxAutoMaintainMaxRetry
+	}
+	return backoff
 }
 
 func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Duration, bool) {
