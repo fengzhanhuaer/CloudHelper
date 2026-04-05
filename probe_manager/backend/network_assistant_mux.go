@@ -1218,18 +1218,10 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	}
 
 	if !hasChainTarget {
-		s.mu.RLock()
-		preflightBaseURL := strings.TrimSpace(s.controllerBaseURL)
-		s.mu.RUnlock()
-		if err := s.ensureControlPlaneDialReady(preflightBaseURL); err != nil {
-			s.logf("ensure tunnel mux control-plane preflight failed: requested=%s target=%s base=%s err=%v", requestedNodeID, targetNodeID, preflightBaseURL, err)
-			return nil, err
-		}
+		return nil, fmt.Errorf("selected node does not support chain mux keepalive: %s", targetNodeID)
 	}
 
 	s.mu.Lock()
-	baseURL := strings.TrimSpace(s.controllerBaseURL)
-	token := strings.TrimSpace(s.sessionToken)
 	selectedNodeID := strings.TrimSpace(s.nodeID)
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
@@ -1245,31 +1237,13 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		return nil, errors.New("selected node does not require tunnel mux")
 	}
 
-	if !hasChainTarget {
-		var fallbackResolveErr error
-		chainTarget, hasChainTarget, targetNodeID, fallbackResolveErr = resolveProbeChainTargetFromSnapshot(targetNodeID, s.chainTargets)
-		if fallbackResolveErr != nil {
-			s.mu.Unlock()
-			return nil, fallbackResolveErr
-		}
-	}
-
-	modeKey := "ws"
-	if hasChainTarget {
-		modeKey = fmt.Sprintf(
-			"chain:%s@%s:%d/%s",
-			strings.TrimSpace(chainTarget.ChainID),
-			strings.TrimSpace(chainTarget.EntryHost),
-			chainTarget.EntryPort,
-			strings.TrimSpace(chainTarget.LinkLayer),
-		)
-	}
-
-	if !hasChainTarget && (baseURL == "" || token == "") {
-		s.mu.Unlock()
-		s.logf("tunnel mux connect skipped: missing controller url or session token")
-		return nil, errors.New("missing controller url or session token")
-	}
+	modeKey := fmt.Sprintf(
+		"chain:%s@%s:%d/%s",
+		strings.TrimSpace(chainTarget.ChainID),
+		strings.TrimSpace(chainTarget.EntryHost),
+		chainTarget.EntryPort,
+		strings.TrimSpace(chainTarget.LinkLayer),
+	)
 
 	isPrimary := strings.EqualFold(targetNodeID, selectedNodeID)
 	var staleClient *tunnelMuxClient
@@ -1285,7 +1259,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		hasChainTarget,
 	)
 	if isPrimary {
-		if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint(baseURL, token, targetNodeID, modeKey) {
+		if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint("", "", targetNodeID, modeKey) {
 			client := s.tunnelMuxClient
 			s.mu.Unlock()
 			return client, nil
@@ -1299,7 +1273,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 			s.ruleMuxClients = make(map[string]*tunnelMuxClient)
 		}
 		if existing := s.ruleMuxClients[targetNodeID]; existing != nil {
-			if !existing.isClosed() && existing.sameEndpoint(baseURL, token, targetNodeID, modeKey) {
+			if !existing.isClosed() && existing.sameEndpoint("", "", targetNodeID, modeKey) {
 				s.mu.Unlock()
 				return existing, nil
 			}
@@ -1331,7 +1305,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		modeKey,
 		time.Since(startedAt),
 	)
-	client, err := s.newTunnelMuxClientLocked(baseURL, token, targetNodeID, chainTarget, hasChainTarget)
+	client, err := s.newTunnelMuxClientLocked(targetNodeID, chainTarget)
 	if err != nil {
 		s.logfRateLimited(
 			"mux:ensure:dial-failed:"+strings.ToLower(targetNodeID),
@@ -1374,21 +1348,17 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	reconnects := s.muxReconnects
 	s.mu.Unlock()
 
-	if hasChainTarget {
-		s.logf(
-			"tunnel mux connected via chain, node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d elapsed=%s",
-			targetNodeID,
-			strings.TrimSpace(chainTarget.ChainID),
-			strings.TrimSpace(chainTarget.EntryNode),
-			strings.TrimSpace(chainTarget.EntryHost),
-			chainTarget.EntryPort,
-			strings.TrimSpace(chainTarget.LinkLayer),
-			reconnects,
-			time.Since(startedAt),
-		)
-	} else {
-		s.logf("tunnel mux connected, node=%s reconnects=%d elapsed=%s", targetNodeID, reconnects, time.Since(startedAt))
-	}
+	s.logf(
+		"tunnel mux connected via chain, node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d elapsed=%s",
+		targetNodeID,
+		strings.TrimSpace(chainTarget.ChainID),
+		strings.TrimSpace(chainTarget.EntryNode),
+		strings.TrimSpace(chainTarget.EntryHost),
+		chainTarget.EntryPort,
+		strings.TrimSpace(chainTarget.LinkLayer),
+		reconnects,
+		time.Since(startedAt),
+	)
 	return client, nil
 }
 
@@ -1480,82 +1450,46 @@ func resolveProbeChainTargetFromSnapshot(targetNodeID string, targets map[string
 	return probeChainEndpoint{}, false, cleanTargetID, fmt.Errorf("chain target config not found in local cache: node=%s", cleanTargetID)
 }
 
-func (s *networkAssistantService) newTunnelMuxClientLocked(baseURL, token, nodeID string, chainTarget probeChainEndpoint, hasChainTarget bool) (*tunnelMuxClient, error) {
+func (s *networkAssistantService) newTunnelMuxClientLocked(nodeID string, chainTarget probeChainEndpoint) (*tunnelMuxClient, error) {
 	startedAt := time.Now()
-	if hasChainTarget {
-		s.logfRateLimited(
-			"mux:new-client:chain-begin:"+strings.ToLower(strings.TrimSpace(nodeID)),
-			5*time.Second,
-			"create tunnel mux client begin: node=%s mode=chain chain=%s entry=%s:%d layer=%s",
+	s.logfRateLimited(
+		"mux:new-client:chain-begin:"+strings.ToLower(strings.TrimSpace(nodeID)),
+		5*time.Second,
+		"create tunnel mux client begin: node=%s mode=chain chain=%s entry=%s:%d layer=%s",
+		nodeID,
+		strings.TrimSpace(chainTarget.ChainID),
+		strings.TrimSpace(chainTarget.EntryHost),
+		chainTarget.EntryPort,
+		strings.TrimSpace(chainTarget.LinkLayer),
+	)
+
+	client, err := newTunnelMuxClientViaProbeChain("", "", nodeID, chainTarget, func(category, message string) {
+		s.logController(category, message)
+	})
+	if err != nil {
+		s.logf(
+			"create tunnel mux client failed, node=%s chain=%s entry=%s:%d layer=%s elapsed=%s err=%v",
 			nodeID,
 			strings.TrimSpace(chainTarget.ChainID),
 			strings.TrimSpace(chainTarget.EntryHost),
 			chainTarget.EntryPort,
 			strings.TrimSpace(chainTarget.LinkLayer),
+			time.Since(startedAt),
+			err,
 		)
-	} else {
-		s.logfRateLimited(
-			"mux:new-client:ws-begin:"+strings.ToLower(strings.TrimSpace(nodeID)),
-			5*time.Second,
-			"create tunnel mux client begin: node=%s mode=ws base=%s",
-			nodeID,
-			baseURL,
-		)
-	}
-
-	var (
-		client *tunnelMuxClient
-		err    error
-	)
-	if hasChainTarget {
-		client, err = newTunnelMuxClientViaProbeChain(baseURL, token, nodeID, chainTarget, func(category, message string) {
-			s.logController(category, message)
-		})
-	} else {
-		client, err = newTunnelMuxClient(baseURL, token, nodeID, func(category, message string) {
-			s.logController(category, message)
-		})
-	}
-	if err != nil {
-		if hasChainTarget {
-			s.logf(
-				"create tunnel mux client failed, node=%s base=%s chain=%s entry=%s:%d layer=%s elapsed=%s err=%v",
-				nodeID,
-				baseURL,
-				strings.TrimSpace(chainTarget.ChainID),
-				strings.TrimSpace(chainTarget.EntryHost),
-				chainTarget.EntryPort,
-				strings.TrimSpace(chainTarget.LinkLayer),
-				time.Since(startedAt),
-				err,
-			)
-		} else {
-			s.logf("create tunnel mux client failed, node=%s base=%s elapsed=%s err=%v", nodeID, baseURL, time.Since(startedAt), err)
-		}
 		return nil, err
 	}
-	if hasChainTarget {
-		s.logfRateLimited(
-			"mux:new-client:chain-done:"+strings.ToLower(strings.TrimSpace(nodeID)),
-			5*time.Second,
-			"create tunnel mux client done: node=%s mode=chain chain=%s entry=%s:%d layer=%s elapsed=%s",
-			nodeID,
-			strings.TrimSpace(chainTarget.ChainID),
-			strings.TrimSpace(chainTarget.EntryHost),
-			chainTarget.EntryPort,
-			strings.TrimSpace(chainTarget.LinkLayer),
-			time.Since(startedAt),
-		)
-	} else {
-		s.logfRateLimited(
-			"mux:new-client:ws-done:"+strings.ToLower(strings.TrimSpace(nodeID)),
-			5*time.Second,
-			"create tunnel mux client done: node=%s mode=ws base=%s elapsed=%s",
-			nodeID,
-			baseURL,
-			time.Since(startedAt),
-		)
-	}
+	s.logfRateLimited(
+		"mux:new-client:chain-done:"+strings.ToLower(strings.TrimSpace(nodeID)),
+		5*time.Second,
+		"create tunnel mux client done: node=%s mode=chain chain=%s entry=%s:%d layer=%s elapsed=%s",
+		nodeID,
+		strings.TrimSpace(chainTarget.ChainID),
+		strings.TrimSpace(chainTarget.EntryHost),
+		chainTarget.EntryPort,
+		strings.TrimSpace(chainTarget.LinkLayer),
+		time.Since(startedAt),
+	)
 	return client, nil
 }
 
