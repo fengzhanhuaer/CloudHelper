@@ -619,16 +619,16 @@ export function useNetworkAssistant() {
     return () => clearInterval(timer);
   }, [isMonitoring, pollProcessEvents]);
 
-  // TUN 模式下定时刷新状态（包含分组保活），避免保活展示滞后。
+  // 网络助手页定时刷新状态（包含分组保活），避免保活展示滞后。
   useEffect(() => {
-    if (status.mode !== "tun" || isOperating) {
+    if (isOperating) {
       return;
     }
     const timer = setInterval(() => {
       void refreshStatus();
     }, 3000);
     return () => clearInterval(timer);
-  }, [isOperating, refreshStatus, status.mode]);
+  }, [isOperating, refreshStatus]);
 
   const appendDebugLog = useCallback(async (category: string, message: string) => {
     try {

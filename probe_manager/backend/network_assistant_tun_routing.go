@@ -47,14 +47,19 @@ func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
 	}
 	if len(targets.IPv4Addrs) > 0 {
 		s.logf("tun routing control-plane bypass targets prepared: controller=%s ipv4=%s", targets.ControllerHost, strings.Join(targets.IPv4Addrs, ","))
+	} else {
+		s.logf("tun routing control-plane bypass targets prepared: controller=%s ipv4=none", targets.ControllerHost)
 	}
 
 	if err := s.applyPlatformTUNSystemRouting(targets); err != nil {
 		s.logf("tun routing apply failed in platform routing stage: err=%v elapsed=%s", err, time.Since(startedAt))
 		return err
 	}
+	s.logf("tun routing stage success: platform-routing elapsed=%s", time.Since(startedAt))
 	s.seedStaticDNSRouteHints()
+	s.logf("tun routing stage success: seed-static-dns elapsed=%s", time.Since(startedAt))
 	s.seedControlPlaneRouteHints(targets)
+	s.logf("tun routing stage success: seed-control-plane-dns elapsed=%s", time.Since(startedAt))
 	s.mu.Lock()
 	s.tunRouteSyncedAt = time.Now()
 	s.tunRouteHost = targets.ControllerHost

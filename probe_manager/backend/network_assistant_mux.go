@@ -982,12 +982,6 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 
 	targetNodeIDs := s.collectAutoMaintainTunnelNodeIDs()
 	if len(targetNodeIDs) == 0 {
-		s.logRuntimeNodeState("mux auto maintain empty-targets")
-		s.logfRateLimited(
-			"mux:auto-maintain:empty-targets",
-			30*time.Second,
-			"mux auto maintain found no tunnel targets; stopping mux clients",
-		)
 		_ = s.stopTunnelMuxClients()
 		s.mu.Lock()
 		clear(s.muxMaintainFails)
@@ -996,13 +990,6 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 		return
 	}
 
-	s.logRuntimeNodeState("mux auto maintain begin")
-	s.logfRateLimited(
-		"mux:auto-maintain:targets",
-		15*time.Second,
-		"mux auto maintain target nodes: %s",
-		strings.Join(targetNodeIDs, ","),
-	)
 
 	now := time.Now()
 	desired := make(map[string]struct{}, len(targetNodeIDs))
@@ -1018,23 +1005,9 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 		retryAt := s.muxMaintainRetryAt[normalized]
 		s.mu.Unlock()
 		if !retryAt.IsZero() && now.Before(retryAt) {
-			s.logfRateLimited(
-				"mux:auto-maintain:retry-wait:"+normalized,
-				10*time.Second,
-				"mux auto maintain retry pending: node=%s retry_at=%s",
-				node,
-				retryAt.Format(time.RFC3339Nano),
-			)
 			continue
 		}
 
-		startedAt := time.Now()
-		s.logfRateLimited(
-			"mux:auto-maintain:ensure-begin:"+normalized,
-			5*time.Second,
-			"mux auto maintain ensure begin: node=%s",
-			node,
-		)
 		if _, err := s.ensureTunnelMuxClientForNode(node); err != nil {
 			s.mu.Lock()
 			if s.muxMaintainFails == nil {
@@ -1049,25 +1022,8 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 			s.muxMaintainRetryAt[normalized] = now.Add(backoff)
 			s.mu.Unlock()
 
-			s.logfRateLimited(
-				"mux:auto-maintain:failed:"+normalized,
-				muxAutoMaintainFailLogInterval,
-				"auto maintain tunnel mux failed: node=%s err=%v retry_in=%s attempt=%d elapsed=%s",
-				node,
-				err,
-				backoff,
-				attempt,
-				time.Since(startedAt),
-			)
 			continue
 		}
-		s.logfRateLimited(
-			"mux:auto-maintain:ensure-done:"+normalized,
-			5*time.Second,
-			"mux auto maintain ensure done: node=%s elapsed=%s",
-			node,
-			time.Since(startedAt),
-		)
 
 		s.mu.Lock()
 		delete(s.muxMaintainFails, normalized)
