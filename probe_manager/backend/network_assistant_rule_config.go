@@ -65,11 +65,21 @@ type NetworkAssistantRuleConfig struct {
 	Fallback     NetworkAssistantRuleGroupConfig   `json:"fallback"`
 }
 
-func (a *App) GetNetworkAssistantRuleConfig() (NetworkAssistantRuleConfig, error) {
+func (a *App) GetNetworkAssistantRuleConfig() (cfg NetworkAssistantRuleConfig, err error) {
 	if a.networkAssistant == nil {
 		return NetworkAssistantRuleConfig{}, errors.New("network assistant service is not initialized")
 	}
-	return a.networkAssistant.GetRuleConfig()
+	startedAt := time.Now()
+	a.networkAssistant.logf("wails get rule config enter")
+	defer func() {
+		if err != nil {
+			a.networkAssistant.logf("wails get rule config exit error: elapsed=%s err=%v", time.Since(startedAt), err)
+			return
+		}
+		a.networkAssistant.logf("wails get rule config exit success: elapsed=%s groups=%d", time.Since(startedAt), len(cfg.Groups))
+	}()
+	cfg, err = a.networkAssistant.GetRuleConfig()
+	return cfg, err
 }
 
 func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {

@@ -1462,6 +1462,13 @@ func (s *networkAssistantService) newTunnelMuxClientLocked(nodeID string, chainT
 		chainTarget.EntryPort,
 		strings.TrimSpace(chainTarget.LinkLayer),
 	)
+	s.logfRateLimited(
+		"mux:new-client:chain-call:"+strings.ToLower(strings.TrimSpace(nodeID)),
+		5*time.Second,
+		"create tunnel mux client calling probe-chain dial: node=%s elapsed=%s",
+		nodeID,
+		time.Since(startedAt),
+	)
 
 	client, err := newTunnelMuxClientViaProbeChain("", "", nodeID, chainTarget, func(category, message string) {
 		s.logController(category, message)
