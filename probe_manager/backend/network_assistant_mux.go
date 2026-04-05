@@ -878,14 +878,29 @@ func (s *networkAssistantService) triggerMuxAutoMaintainNow() {
 func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	s.mu.RLock()
 	selectedNodeID := strings.TrimSpace(s.nodeID)
+	availableNodes := append([]string(nil), s.availableNodes...)
 	s.mu.RUnlock()
 
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
 	}
 	if selectedNodeID == "" || strings.EqualFold(selectedNodeID, defaultNodeID) {
+		s.logfRateLimited(
+			"mux:auto-maintain:collect-empty",
+			15*time.Second,
+			"mux auto maintain collect skipped: selected=%s available=%v reason=direct-or-empty",
+			selectedNodeID,
+			availableNodes,
+		)
 		return nil
 	}
+	s.logfRateLimited(
+		"mux:auto-maintain:collect-selected",
+		15*time.Second,
+		"mux auto maintain collect selected node: selected=%s available=%v",
+		selectedNodeID,
+		availableNodes,
+	)
 	return []string{selectedNodeID}
 }
 
@@ -905,6 +920,7 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 
 	targetNodeIDs := s.collectAutoMaintainTunnelNodeIDs()
 	if len(targetNodeIDs) == 0 {
+		s.logRuntimeNodeState("mux auto maintain empty-targets")
 		s.logfRateLimited(
 			"mux:auto-maintain:empty-targets",
 			30*time.Second,
@@ -918,6 +934,7 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 		return
 	}
 
+	s.logRuntimeNodeState("mux auto maintain begin")
 	s.logfRateLimited(
 		"mux:auto-maintain:targets",
 		15*time.Second,
@@ -1072,7 +1089,8 @@ func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Durati
 }
 
 func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput string) (*tunnelMuxClient, error) {
-	targetNodeID := strings.TrimSpace(nodeIDInput)
+	requestedNodeID := strings.TrimSpace(nodeIDInput)
+	targetNodeID := requestedNodeID
 	if targetNodeID == "" {
 		s.mu.RLock()
 		targetNodeID = strings.TrimSpace(s.nodeID)
@@ -1082,12 +1100,30 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		targetNodeID = defaultNodeID
 	}
 	if strings.EqualFold(targetNodeID, defaultNodeID) {
+		s.logfRateLimited(
+			"mux:ensure:skip-direct",
+			15*time.Second,
+			"ensure tunnel mux skipped: requested=%s effective=%s reason=direct",
+			requestedNodeID,
+			targetNodeID,
+		)
 		return nil, errors.New("selected node does not require tunnel mux")
 	}
 
 	chainTarget, hasChainTarget, resolvedNodeID, resolveErr := s.resolveTunnelMuxChainTargetForNode(targetNodeID)
 	if resolveErr != nil {
+		s.logf("ensure tunnel mux resolve target failed: requested=%s effective=%s err=%v", requestedNodeID, targetNodeID, resolveErr)
 		return nil, resolveErr
+	}
+	if resolvedNodeID != "" && !strings.EqualFold(resolvedNodeID, targetNodeID) {
+		s.logfRateLimited(
+			"mux:ensure:resolved-node:"+strings.ToLower(resolvedNodeID),
+			15*time.Second,
+			"ensure tunnel mux resolved target node: requested=%s resolved=%s has_chain=%v",
+			requestedNodeID,
+			resolvedNodeID,
+			hasChainTarget,
+		)
 	}
 	if resolvedNodeID != "" {
 		targetNodeID = resolvedNodeID
@@ -1098,6 +1134,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		preflightBaseURL := strings.TrimSpace(s.controllerBaseURL)
 		s.mu.RUnlock()
 		if err := s.ensureControlPlaneDialReady(preflightBaseURL); err != nil {
+			s.logf("ensure tunnel mux control-plane preflight failed: requested=%s target=%s base=%s err=%v", requestedNodeID, targetNodeID, preflightBaseURL, err)
 			return nil, err
 		}
 	}
@@ -1149,7 +1186,8 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	s.logfRateLimited(
 		"mux:ensure:start:"+strings.ToLower(targetNodeID),
 		10*time.Second,
-		"ensure tunnel mux client: target=%s selected=%s primary=%v mode_key=%s has_chain=%v",
+		"ensure tunnel mux client: requested=%s target=%s selected=%s primary=%v mode_key=%s has_chain=%v",
+		requestedNodeID,
 		targetNodeID,
 		selectedNodeID,
 		isPrimary,
@@ -1217,7 +1255,34 @@ func (s *networkAssistantService) resolveTunnelMuxChainTargetForNode(nodeID stri
 	if err != nil {
 		return probeChainEndpoint{}, false, targetNodeID, err
 	}
-	return resolveProbeChainTargetFromSnapshot(targetNodeID, targets)
+	endpoint, hasChainTarget, resolvedNodeID, resolveErr := resolveProbeChainTargetFromSnapshot(targetNodeID, targets)
+	if resolveErr != nil {
+		s.logf("resolve tunnel mux chain target failed: requested=%s cached_targets=%d err=%v", targetNodeID, len(targets), resolveErr)
+		return probeChainEndpoint{}, false, resolvedNodeID, resolveErr
+	}
+	if hasChainTarget {
+		s.logfRateLimited(
+			"mux:resolve-chain-target:"+strings.ToLower(strings.TrimSpace(resolvedNodeID)),
+			15*time.Second,
+			"resolve tunnel mux chain target hit cache: requested=%s resolved=%s chain=%s entry=%s:%d layer=%s cached_targets=%d",
+			targetNodeID,
+			resolvedNodeID,
+			strings.TrimSpace(endpoint.ChainID),
+			strings.TrimSpace(endpoint.EntryHost),
+			endpoint.EntryPort,
+			strings.TrimSpace(endpoint.LinkLayer),
+			len(targets),
+		)
+	} else {
+		s.logfRateLimited(
+			"mux:resolve-chain-target:miss:"+strings.ToLower(strings.TrimSpace(targetNodeID)),
+			15*time.Second,
+			"resolve tunnel mux chain target miss: requested=%s cached_targets=%d",
+			targetNodeID,
+			len(targets),
+		)
+	}
+	return endpoint, hasChainTarget, resolvedNodeID, nil
 }
 
 func resolveProbeChainTargetFromSnapshot(targetNodeID string, targets map[string]probeChainEndpoint) (probeChainEndpoint, bool, string, error) {
