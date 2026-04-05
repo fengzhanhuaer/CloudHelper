@@ -906,54 +906,54 @@ func (s *networkAssistantService) triggerMuxAutoMaintainNow() {
 	go s.maintainSelectedTunnelMuxClients()
 }
 
-func collectAutoMaintainPolicyTunnelNodeIDs(routing tunnelRuleRouting, availableNodes []string, selectedNodeID string) []string {
-	defaultNode := strings.TrimSpace(selectedNodeID)
-	if defaultNode == "" {
-		defaultNode = defaultNodeID
+func collectAutoMaintainPolicyTunnelNodeIDs(routing tunnelRuleRouting, availableNodes []string, selectedChainID string) []string {
+	defaultChainID := strings.TrimSpace(selectedChainID)
+	if defaultChainID == "" {
+		defaultChainID = defaultNodeID
 	}
-	tunnelOptions := buildRuleTunnelOptions(availableNodes, defaultNode)
+	tunnelOptions := buildRuleTunnelOptions(availableNodes, defaultChainID)
 	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
 	groups = append(groups, ruleFallbackGroupKey)
 
-	nodes := make([]string, 0, len(groups))
+	chainIDs := make([]string, 0, len(groups))
 	for _, group := range groups {
-		policy, err := readRulePolicyForGroup(routing, group, defaultNode, tunnelOptions)
+		policy, err := readRulePolicyForGroup(routing, group, defaultChainID, tunnelOptions)
 		if err != nil || !strings.EqualFold(strings.TrimSpace(policy.Action), rulePolicyActionTunnel) {
 			continue
 		}
-		nodeID := strings.TrimSpace(policy.TunnelNodeID)
-		if nodeID == "" {
-			nodeID = defaultNode
+		chainID := strings.TrimSpace(policy.TunnelNodeID)
+		if chainID == "" {
+			chainID = defaultChainID
 		}
-		if nodeID == "" || strings.EqualFold(nodeID, defaultNodeID) || containsNodeID(nodes, nodeID) {
+		if chainID == "" || strings.EqualFold(chainID, defaultNodeID) || containsNodeID(chainIDs, chainID) {
 			continue
 		}
-		nodes = append(nodes, nodeID)
+		chainIDs = append(chainIDs, chainID)
 	}
-	return nodes
+	return chainIDs
 }
 
 func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	s.mu.RLock()
-	selectedNodeID := strings.TrimSpace(s.nodeID)
+	selectedChainID := strings.TrimSpace(s.nodeID)
 	availableNodes := append([]string(nil), s.availableNodes...)
 	routing := s.ruleRouting
 	s.mu.RUnlock()
 
-	if selectedNodeID == "" {
-		selectedNodeID = defaultNodeID
+	if selectedChainID == "" {
+		selectedChainID = defaultNodeID
 	}
-	targetNodeIDs := collectAutoMaintainPolicyTunnelNodeIDs(routing, availableNodes, selectedNodeID)
-	if len(targetNodeIDs) == 0 {
+	targetChainIDs := collectAutoMaintainPolicyTunnelNodeIDs(routing, availableNodes, selectedChainID)
+	if len(targetChainIDs) == 0 {
 		reason := "no-policy-tunnel-targets"
-		if strings.EqualFold(selectedNodeID, defaultNodeID) {
+		if strings.EqualFold(selectedChainID, defaultNodeID) {
 			reason = "direct-selected-no-explicit-chain-targets"
 		}
 		s.logfRateLimited(
 			"mux:auto-maintain:collect-empty",
 			15*time.Second,
 			"mux auto maintain collect skipped: selected=%s available=%v groups=%d reason=%s",
-			selectedNodeID,
+			selectedChainID,
 			availableNodes,
 			len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1,
 			reason,
@@ -964,11 +964,11 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 		"mux:auto-maintain:collect-selected",
 		15*time.Second,
 		"mux auto maintain collect policy nodes: selected=%s available=%v targets=%v",
-		selectedNodeID,
+		selectedChainID,
 		availableNodes,
-		targetNodeIDs,
+		targetChainIDs,
 	)
-	return targetNodeIDs
+	return targetChainIDs
 }
 
 func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
