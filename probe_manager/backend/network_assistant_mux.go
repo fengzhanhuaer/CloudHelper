@@ -349,6 +349,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}
 
 	startedAt := time.Now()
+	log.Printf("[probe-chain/relay] request begin chain=%s entry=%s:%d layer=%s url=%s", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, entryURL)
 	response, err := client.Do(request)
 	if err != nil {
 		sanitizedURL := ""
@@ -358,6 +359,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		}
 		_ = bodyWriter.Close()
 		_ = closeTransport()
+		log.Printf("[probe-chain/relay] request failed chain=%s entry=%s:%d layer=%s elapsed=%s err=%v", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, time.Since(startedAt), err)
 		return nil, fmt.Errorf("probe relay connect failed: url=%s dial_host=%s host_header=%s layer=%s server_name=%s elapsed=%s err=%w", sanitizedURL, entryDialHost, entryHostHeader, layer, tlsServerName, time.Since(startedAt), err)
 	}
 	if response.StatusCode != http.StatusOK {
@@ -365,9 +367,11 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		_ = response.Body.Close()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
+		log.Printf("[probe-chain/relay] request bad status chain=%s entry=%s:%d layer=%s status=%d elapsed=%s body=%s", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, response.StatusCode, time.Since(startedAt), strings.TrimSpace(string(body)))
 		return nil, fmt.Errorf("probe relay failed: status=%d elapsed=%s body=%s", response.StatusCode, time.Since(startedAt), strings.TrimSpace(string(body)))
 	}
 
+	log.Printf("[probe-chain/relay] request success chain=%s entry=%s:%d layer=%s elapsed=%s", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, time.Since(startedAt))
 	return &probeChainRelayHop{
 		Writer: bodyWriter,
 		Reader: response.Body,
@@ -939,25 +943,20 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
 	}
-	if strings.EqualFold(selectedNodeID, defaultNodeID) {
-		s.logfRateLimited(
-			"mux:auto-maintain:collect-skip-direct-selected",
-			15*time.Second,
-			"mux auto maintain collect skipped: selected=%s available=%v reason=direct-selected",
-			selectedNodeID,
-			availableNodes,
-		)
-		return nil
-	}
 	targetNodeIDs := collectAutoMaintainPolicyTunnelNodeIDs(routing, availableNodes, selectedNodeID)
 	if len(targetNodeIDs) == 0 {
+		reason := "no-policy-tunnel-targets"
+		if strings.EqualFold(selectedNodeID, defaultNodeID) {
+			reason = "direct-selected-no-explicit-chain-targets"
+		}
 		s.logfRateLimited(
 			"mux:auto-maintain:collect-empty",
 			15*time.Second,
-			"mux auto maintain collect skipped: selected=%s available=%v groups=%d reason=no-policy-tunnel-targets",
+			"mux auto maintain collect skipped: selected=%s available=%v groups=%d reason=%s",
 			selectedNodeID,
 			availableNodes,
 			len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1,
+			reason,
 		)
 		return nil
 	}
