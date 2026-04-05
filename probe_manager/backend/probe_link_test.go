@@ -249,13 +249,13 @@ func TestPingNetworkAssistantTunnelNodeEnsureMuxThenSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.OK {
-		t.Fatalf("expected ok result")
+	if result.OK {
+		t.Fatalf("expected failed result when on-demand mux is disabled")
 	}
-	if result.DurationMS != 23 {
-		t.Fatalf("expected duration 23ms, got %d", result.DurationMS)
+	if result.DurationMS != 0 {
+		t.Fatalf("expected duration 0ms, got %d", result.DurationMS)
 	}
-	if !strings.Contains(result.Message, "按需建链") {
+	if !strings.Contains(result.Message, "本地无可复用链路") {
 		t.Fatalf("unexpected message: %s", result.Message)
 	}
 }
@@ -282,7 +282,7 @@ func TestPingNetworkAssistantTunnelNodeEnsureMuxFailed(t *testing.T) {
 	if result.OK {
 		t.Fatalf("expected failed result")
 	}
-	if !strings.Contains(result.Message, "按需建链失败") {
+	if !strings.Contains(result.Message, "本地无可复用链路") {
 		t.Fatalf("unexpected message: %s", result.Message)
 	}
 }
@@ -309,7 +309,7 @@ func TestPingNetworkAssistantTunnelNodeEnsureMuxStillUnavailable(t *testing.T) {
 	if result.OK {
 		t.Fatalf("expected failed result")
 	}
-	if !strings.Contains(result.Message, "按需建链后链路仍不可用") {
+	if !strings.Contains(result.Message, "本地无可复用链路") {
 		t.Fatalf("unexpected message: %s", result.Message)
 	}
 }

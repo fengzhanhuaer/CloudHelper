@@ -249,23 +249,24 @@ type ProbeLinkChainCachePortForward struct {
 }
 
 type ProbeLinkChainCacheItem struct {
-	ChainID        string                            `json:"chain_id"`
-	Name           string                            `json:"name"`
-	UserID         string                            `json:"user_id"`
-	UserPublicKey  string                            `json:"user_public_key"`
-	Secret         string                            `json:"secret"`
-	EntryNodeID    string                            `json:"entry_node_id"`
-	ExitNodeID     string                            `json:"exit_node_id"`
-	CascadeNodeIDs []string                          `json:"cascade_node_ids"`
-	ListenHost     string                            `json:"listen_host"`
-	ListenPort     int                               `json:"listen_port"`
-	LinkLayer      string                            `json:"link_layer,omitempty"`
-	HopConfigs     []ProbeLinkChainCacheHopConfig    `json:"hop_configs,omitempty"`
-	PortForwards   []ProbeLinkChainCachePortForward  `json:"port_forwards,omitempty"`
-	EgressHost     string                            `json:"egress_host"`
-	EgressPort     int                               `json:"egress_port"`
-	CreatedAt      string                            `json:"created_at,omitempty"`
-	UpdatedAt      string                            `json:"updated_at,omitempty"`
+	ChainID        string                           `json:"chain_id"`
+	Name           string                           `json:"name"`
+	UserID         string                           `json:"user_id"`
+	UserPublicKey  string                           `json:"user_public_key"`
+	Secret         string                           `json:"secret"`
+	EntryNodeID    string                           `json:"entry_node_id"`
+	ExitNodeID     string                           `json:"exit_node_id"`
+	CascadeNodeIDs []string                         `json:"cascade_node_ids"`
+	NodeNameByID   map[string]string                `json:"node_name_by_id,omitempty"`
+	ListenHost     string                           `json:"listen_host"`
+	ListenPort     int                              `json:"listen_port"`
+	LinkLayer      string                           `json:"link_layer,omitempty"`
+	HopConfigs     []ProbeLinkChainCacheHopConfig   `json:"hop_configs,omitempty"`
+	PortForwards   []ProbeLinkChainCachePortForward `json:"port_forwards,omitempty"`
+	EgressHost     string                           `json:"egress_host"`
+	EgressPort     int                              `json:"egress_port"`
+	CreatedAt      string                           `json:"created_at,omitempty"`
+	UpdatedAt      string                           `json:"updated_at,omitempty"`
 }
 
 type adminWSRequest struct {
@@ -685,16 +686,54 @@ func (s *networkAssistantService) getOrLoadChainTargetsSnapshot() (map[string]pr
 		return map[string]probeChainEndpoint{}, nil
 	}
 
+	nodes := mergeAvailableNodeIDs(cachedNodes, cachedTargets)
 	s.mu.Lock()
-	if len(s.chainTargets) == 0 {
-		s.chainTargets = copyProbeChainTargets(cachedTargets)
-	}
-	if len(s.availableNodes) == 0 && len(cachedNodes) > 0 {
-		s.availableNodes = append([]string(nil), cachedNodes...)
+	s.chainTargets = copyProbeChainTargets(cachedTargets)
+	if len(nodes) > 0 {
+		s.availableNodes = nodes
+		if !containsNodeID(nodes, s.nodeID) {
+			s.nodeID = nodes[0]
+		}
 	}
 	targets = copyProbeChainTargets(s.chainTargets)
 	s.mu.Unlock()
 	return targets, nil
+}
+
+func mergeAvailableNodeIDs(nodeIDs []string, chainTargets map[string]probeChainEndpoint) []string {
+	seen := make(map[string]struct{}, len(nodeIDs)+len(chainTargets)+1)
+	out := make([]string, 0, len(nodeIDs)+len(chainTargets)+1)
+	add := func(raw string) {
+		nodeID := strings.TrimSpace(raw)
+		if nodeID == "" {
+			return
+		}
+		if _, ok := seen[strings.ToLower(nodeID)]; ok {
+			return
+		}
+		seen[strings.ToLower(nodeID)] = struct{}{}
+		out = append(out, nodeID)
+	}
+
+	for _, nodeID := range nodeIDs {
+		add(nodeID)
+	}
+	for _, item := range mustLoadProbeNodes() {
+		add(strconv.Itoa(item.NodeNo))
+	}
+	for nodeID := range chainTargets {
+		add(nodeID)
+	}
+	add(defaultNodeID)
+	return out
+}
+
+func mustLoadProbeNodes() []ProbeNode {
+	nodes, _, err := loadProbeNodes()
+	if err != nil {
+		return nil
+	}
+	return nodes
 }
 
 func (s *networkAssistantService) UpdateSession(controllerBaseURL, sessionToken string) {
@@ -718,9 +757,10 @@ func (s *networkAssistantService) GetProbeLinkChainsCache() ([]ProbeLinkChainCac
 	if err != nil {
 		return nil, err
 	}
+	nodeNameByID := loadProbeNodeNameByID()
 	items := make([]ProbeLinkChainCacheItem, 0, len(targets))
 	for _, endpoint := range targets {
-		items = append(items, buildProbeLinkChainCacheItem(endpoint))
+		items = append(items, buildProbeLinkChainCacheItem(endpoint, nodeNameByID))
 	}
 	sort.Slice(items, func(i, j int) bool {
 		leftKey := strings.TrimSpace(items[i].UpdatedAt)
@@ -739,7 +779,7 @@ func (s *networkAssistantService) GetProbeLinkChainsCache() ([]ProbeLinkChainCac
 	return items, nil
 }
 
-func buildProbeLinkChainCacheItem(endpoint probeChainEndpoint) ProbeLinkChainCacheItem {
+func buildProbeLinkChainCacheItem(endpoint probeChainEndpoint, nodeNameByID map[string]string) ProbeLinkChainCacheItem {
 	hops := make([]ProbeLinkChainCacheHopConfig, 0, len(endpoint.HopConfigs))
 	for _, hop := range endpoint.HopConfigs {
 		hops = append(hops, ProbeLinkChainCacheHopConfig{
@@ -775,6 +815,7 @@ func buildProbeLinkChainCacheItem(endpoint probeChainEndpoint) ProbeLinkChainCac
 		EntryNodeID:    strings.TrimSpace(endpoint.EntryNode),
 		ExitNodeID:     strings.TrimSpace(endpoint.ExitNode),
 		CascadeNodeIDs: append([]string(nil), endpoint.CascadeNodeIDs...),
+		NodeNameByID:   buildProbeChainNodeNameMap(endpoint, nodeNameByID),
 		ListenHost:     strings.TrimSpace(endpoint.ListenHost),
 		ListenPort:     endpoint.ListenPort,
 		LinkLayer:      strings.TrimSpace(endpoint.LinkLayer),
@@ -785,6 +826,55 @@ func buildProbeLinkChainCacheItem(endpoint probeChainEndpoint) ProbeLinkChainCac
 		CreatedAt:      strings.TrimSpace(endpoint.CreatedAt),
 		UpdatedAt:      strings.TrimSpace(endpoint.UpdatedAt),
 	}
+}
+
+func loadProbeNodeNameByID() map[string]string {
+	nodes, _, err := loadProbeNodes()
+	if err != nil || len(nodes) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(nodes))
+	for _, item := range nodes {
+		if item.NodeNo <= 0 {
+			continue
+		}
+		name := strings.TrimSpace(item.NodeName)
+		if name == "" {
+			continue
+		}
+		out[strconv.Itoa(item.NodeNo)] = name
+	}
+	return out
+}
+
+func buildProbeChainNodeNameMap(endpoint probeChainEndpoint, allNodeNameByID map[string]string) map[string]string {
+	out := make(map[string]string)
+	add := func(raw string) {
+		nodeID := strings.TrimSpace(raw)
+		if nodeID == "" {
+			return
+		}
+		name := strings.TrimSpace(allNodeNameByID[nodeID])
+		if name == "" {
+			return
+		}
+		out[nodeID] = name
+	}
+	add(endpoint.EntryNode)
+	add(endpoint.ExitNode)
+	for _, nodeID := range endpoint.CascadeNodeIDs {
+		add(nodeID)
+	}
+	for _, hop := range endpoint.HopConfigs {
+		if hop.NodeNo <= 0 {
+			continue
+		}
+		add(strconv.Itoa(hop.NodeNo))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *networkAssistantService) Status() NetworkAssistantStatus {
@@ -1915,15 +2005,7 @@ func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
 	if !forceRemote {
 		cachedNodes, cachedTargets, cacheErr := loadChainCacheFromFile()
 		if cacheErr == nil && (len(cachedNodes) > 0 || len(cachedTargets) > 0) {
-			nodes := append([]string(nil), cachedNodes...)
-			if len(nodes) == 0 {
-				for nodeID := range cachedTargets {
-					nodes = append(nodes, nodeID)
-				}
-			}
-			if !containsNodeID(nodes, defaultNodeID) {
-				nodes = append(nodes, defaultNodeID)
-			}
+			nodes := mergeAvailableNodeIDs(cachedNodes, cachedTargets)
 			s.mu.Lock()
 			s.availableNodes = nodes
 			s.chainTargets = copyProbeChainTargets(cachedTargets)

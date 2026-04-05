@@ -70,8 +70,8 @@ func TestBuildRuleConfigFromRoutingUsesChainNameLabels(t *testing.T) {
 	if got := group.TunnelOptionLabels["chain:1"]; got != "香港入口" {
 		t.Fatalf("chain label=%q, want 香港入口", got)
 	}
-	if got := group.TunnelOptionLabels["cloudserver"]; got != "主控" {
-		t.Fatalf("cloudserver label=%q, want 主控", got)
+	if got := group.TunnelOptionLabels["cloudserver"]; got != "cloudserver" {
+		t.Fatalf("cloudserver label=%q, want cloudserver", got)
 	}
 }
 

@@ -469,6 +469,7 @@ export type ProbeLinkChainItem = {
   entry_node_id: string;
   exit_node_id: string;
   cascade_node_ids: string[];
+  node_name_by_id?: Record<string, string>;
   listen_host: string;
   listen_port: number;
   link_layer?: "http" | "http2" | "http3";

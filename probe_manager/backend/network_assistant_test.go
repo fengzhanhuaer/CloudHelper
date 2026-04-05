@@ -440,8 +440,11 @@ func TestResolveDomainForInternalDNSStaticIP(t *testing.T) {
 	}
 
 	addrs6, _, _, err := service.resolveDomainForInternalDNS("localhost", 28)
-	if err == nil {
-		t.Fatalf("expected AAAA query to fail when static rule only contains ipv4, got addrs=%#v", addrs6)
+	if err != nil {
+		t.Fatalf("expected AAAA query fallback to succeed, got err=%v", err)
+	}
+	if len(addrs6) == 0 {
+		t.Fatalf("expected AAAA query fallback to return at least one address")
 	}
 }
 

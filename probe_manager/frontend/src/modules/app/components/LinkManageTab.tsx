@@ -216,19 +216,21 @@ export function LinkManageTab(props: LinkManageTabProps) {
   );
   const nodeNameByID = useMemo(() => {
     const out: Record<string, string> = {};
-    for (const item of nodes) {
-      const nodeID = normalizeNodeIDText(String(item.node_no || ""));
-      if (!nodeID) {
-        continue;
+    for (const item of chains) {
+      const entries = item.node_name_by_id && typeof item.node_name_by_id === "object"
+        ? Object.entries(item.node_name_by_id)
+        : [];
+      for (const [nodeIDRaw, nodeNameRaw] of entries) {
+        const nodeID = normalizeNodeIDText(nodeIDRaw);
+        const nodeName = String(nodeNameRaw || "").trim();
+        if (!nodeID || !nodeName || out[nodeID]) {
+          continue;
+        }
+        out[nodeID] = nodeName;
       }
-      const nodeName = String(item.node_name || "").trim();
-      if (!nodeName) {
-        continue;
-      }
-      out[nodeID] = nodeName;
     }
     return out;
-  }, [nodes]);
+  }, [chains]);
   const selectedRuntime = useMemo(() => {
     if (!selectedNode) {
       return undefined;
