@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	probeLinkInfoPath     = "/api/node/info"
-	probeLinkHealthPath   = "/healthz"
-	probeLinkTestPingPath = "/api/node/link-test/ping"
-	probeLinkTimeout      = 8 * time.Second
+	probeLinkInfoPath           = "/api/node/info"
+	probeLinkHealthPath         = "/healthz"
+	probeLinkTestPingPath       = "/api/node/link-test/ping"
+	probeLinkTimeout            = 8 * time.Second
+	controlPlaneBypassStageName = "control_plane_bypass"
 )
 
 const (
@@ -223,6 +224,10 @@ func testProbeLinkWithProgress(service *networkAssistantService, nodeID, endpoin
 	}
 	reporter := newProbeLinkProgressReporter(service, nodeID, reporterProtocol, host, port)
 	reporter.stage(probeLinkStagePrepare, "开始测试连接", fmt.Sprintf("endpoint_type=%s scheme=%s", strings.TrimSpace(endpointType), strings.TrimSpace(scheme)))
+	if err := ensureControlPlaneReadyForOperation(service, reporter, "probe_link"); err != nil {
+		reporter.stage(probeLinkStageFailure, "控制面绕行预热失败", reporter.classifyError(err))
+		return ProbeLinkConnectResult{}, err
+	}
 
 	trimmedHost := strings.TrimSpace(host)
 	if trimmedHost == "" {
@@ -784,6 +789,25 @@ func resolveProbeLinkTarget(host string, reporter *probeLinkProgressReporter) (p
 		reporter.stage(probeLinkStageDNSSuccess, "初始化阶段 DNS 解析成功", strings.Join(resolved.IPs, ","))
 	}
 	return resolved, nil
+}
+
+func ensureControlPlaneReadyForOperation(service *networkAssistantService, reporter *probeLinkProgressReporter, operation string) error {
+	if service == nil {
+		return nil
+	}
+	if reporter != nil {
+		reporter.stage(controlPlaneBypassStageName, "开始预热控制面绕行", strings.TrimSpace(operation))
+	}
+	startedAt := time.Now()
+	err := service.ensureControlPlaneDialReady("")
+	if reporter != nil {
+		if err != nil {
+			reporter.stage(controlPlaneBypassStageName, "控制面绕行预热失败", reporter.classifyError(err))
+		} else {
+			reporter.stage(controlPlaneBypassStageName, "控制面绕行预热完成", fmt.Sprintf("operation=%s elapsed=%s", strings.TrimSpace(operation), time.Since(startedAt)))
+		}
+	}
+	return err
 }
 
 func buildProbeLinkURL(host, scheme string, port int, pathValue string) (string, error) {

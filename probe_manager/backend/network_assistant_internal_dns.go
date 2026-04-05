@@ -416,7 +416,7 @@ func (s *networkAssistantService) queryRuleDomainViaSystemDNS(domain string, qTy
 				lastErr = errors.New("dns resolve timeout")
 				return nil, 0, false
 			}
-			payload, queryErr := queryRawDNSPacket(server.Address, packet, remaining)
+			payload, queryErr := s.queryRawDNSPacket(server.Address, packet, remaining)
 			if queryErr != nil {
 				lastErr = queryErr
 				continue
@@ -454,8 +454,23 @@ func (s *networkAssistantService) queryRuleDomainViaSystemDNS(domain string, qTy
 	return nil, 0, errors.New("dns resolvers are not configured")
 }
 
-func queryRawDNSPacket(serverAddr string, packet []byte, timeout time.Duration) ([]byte, error) {
-	conn, err := net.DialTimeout("udp", serverAddr, timeout)
+func (s *networkAssistantService) queryRawDNSPacket(serverAddr string, packet []byte, timeout time.Duration) ([]byte, error) {
+	targetAddr := strings.TrimSpace(serverAddr)
+	if targetAddr == "" {
+		return nil, errors.New("dns server address is empty")
+	}
+	if timeout <= 0 {
+		timeout = ruleDNSResolveTimeout
+	}
+	if s != nil {
+		releaseBypass, bypassErr := s.acquireTUNDirectBypassRoute(targetAddr)
+		if bypassErr != nil {
+			s.logfRateLimited("dns-plain:bypass-failed:"+strings.ToLower(targetAddr), 5*time.Second, "plain dns bypass setup failed: server=%s err=%v", targetAddr, bypassErr)
+			return nil, bypassErr
+		}
+		defer releaseBypass()
+	}
+	conn, err := net.DialTimeout("udp", targetAddr, timeout)
 	if err != nil {
 		return nil, err
 	}

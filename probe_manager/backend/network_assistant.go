@@ -616,6 +616,10 @@ func (s *networkAssistantService) ForceRefreshProbeDNSCache(controllerBaseURL, s
 	if baseURLInput != "" || tokenInput != "" {
 		s.UpdateSession(baseURLInput, tokenInput)
 	}
+	if err := s.ensureControlPlaneDialReady(baseURLInput); err != nil {
+		s.logfRateLimited("dns-cache-refresh:control-plane-preheat-failed", 5*time.Second, "force refresh dns cache: control-plane preheat failed: %v", err)
+		return "", err
+	}
 
 	s.clearDNSCache()
 

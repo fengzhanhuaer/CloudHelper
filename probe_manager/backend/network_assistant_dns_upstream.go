@@ -592,7 +592,7 @@ func (s *networkAssistantService) collectConfiguredDNSBypassIPv4Addrs() []string
 	return out
 }
 
-func resolveDNSUpstreamDialHost(rawHost string, bootstrapServers []dnsPlainServer, timeout time.Duration) (string, error) {
+func resolveDNSUpstreamDialHost(service *networkAssistantService, rawHost string, bootstrapServers []dnsPlainServer, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = dnsUpstreamResolveTimeout
 	}
@@ -626,7 +626,7 @@ func resolveDNSUpstreamDialHost(rawHost string, bootstrapServers []dnsPlainServe
 			lastErr = errors.New("dns resolve timeout")
 			break
 		}
-		payload, queryErr := queryRawDNSPacket(server.Address, packet, remaining)
+		payload, queryErr := service.queryRawDNSPacket(server.Address, packet, remaining)
 		if queryErr != nil {
 			lastErr = queryErr
 			continue
@@ -663,7 +663,7 @@ func (s *networkAssistantService) queryRawDNSPacketViaDoT(server dnsDoTServer, p
 	if len(packet) <= 0 || len(packet) > 0xffff {
 		return nil, errors.New("invalid dns query payload")
 	}
-	dialHost, err := resolveDNSUpstreamDialHost(server.Host, bootstrapServers, timeout)
+	dialHost, err := resolveDNSUpstreamDialHost(s, server.Host, bootstrapServers, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -725,7 +725,7 @@ func (s *networkAssistantService) queryRawDNSPacketViaDoH(server dnsDoHServer, p
 	if strings.TrimSpace(server.URL) == "" || strings.TrimSpace(server.Host) == "" || strings.TrimSpace(server.Port) == "" {
 		return nil, errors.New("invalid doh server")
 	}
-	dialHost, err := resolveDNSUpstreamDialHost(server.Host, bootstrapServers, timeout)
+	dialHost, err := resolveDNSUpstreamDialHost(s, server.Host, bootstrapServers, timeout)
 	if err != nil {
 		return nil, err
 	}
