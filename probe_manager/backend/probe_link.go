@@ -100,23 +100,35 @@ type probeLinkProgressSnapshot struct {
 	UpdatedAt  string `json:"updated_at"`
 }
 
+type probeLinkResolvedTarget struct {
+	OriginalHost string
+	DialHost     string
+	IPs          []string
+}
+
 type probeLinkProgressReporter struct {
-	service   *networkAssistantService
-	nodeID    string
-	host      string
-	port      int
-	protocol  string
-	targetURL string
-	startedAt time.Time
+	service        *networkAssistantService
+	nodeID         string
+	host           string
+	resolvedTarget probeLinkResolvedTarget
+	port           int
+	protocol       string
+	targetURL      string
+	startedAt      time.Time
 }
 
 func newProbeLinkProgressReporter(service *networkAssistantService, nodeID, protocol, host string, port int) *probeLinkProgressReporter {
+	trimmedHost := strings.TrimSpace(host)
 	return &probeLinkProgressReporter{
-		service:  service,
-		nodeID:   strings.TrimSpace(nodeID),
-		host:     strings.TrimSpace(host),
-		port:     port,
-		protocol: strings.TrimSpace(protocol),
+		service: service,
+		nodeID:  strings.TrimSpace(nodeID),
+		host:    trimmedHost,
+		resolvedTarget: probeLinkResolvedTarget{
+			OriginalHost: trimmedHost,
+			DialHost:     trimmedHost,
+		},
+		port:      port,
+		protocol:  strings.TrimSpace(protocol),
 		startedAt: time.Now(),
 	}
 }
@@ -126,6 +138,19 @@ func (r *probeLinkProgressReporter) withURL(targetURL string) {
 		return
 	}
 	r.targetURL = strings.TrimSpace(targetURL)
+}
+
+func (r *probeLinkProgressReporter) setResolvedTarget(target probeLinkResolvedTarget) {
+	if r == nil {
+		return
+	}
+	if strings.TrimSpace(target.OriginalHost) == "" {
+		target.OriginalHost = r.host
+	}
+	if strings.TrimSpace(target.DialHost) == "" {
+		target.DialHost = target.OriginalHost
+	}
+	r.resolvedTarget = target
 }
 
 func (r *probeLinkProgressReporter) stage(stage string, status string, detail string) {
@@ -172,7 +197,10 @@ func (r *probeLinkProgressReporter) classifyError(err error) string {
 	return strings.TrimSpace(err.Error())
 }
 
-func probeLinkNetworkAssistantService() *networkAssistantService {
+func probeLinkNetworkAssistantService(app *App) *networkAssistantService {
+	if app != nil && app.networkAssistant != nil {
+		return app.networkAssistant
+	}
 	if globalNetworkAssistantService != nil {
 		return globalNetworkAssistantService
 	}
@@ -180,7 +208,7 @@ func probeLinkNetworkAssistantService() *networkAssistantService {
 }
 
 func (a *App) TestProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLinkConnectResult, error) {
-	return testProbeLinkWithProgress(probeLinkNetworkAssistantService(), nodeID, endpointType, scheme, host, port)
+	return testProbeLinkWithProgress(probeLinkNetworkAssistantService(a), nodeID, endpointType, scheme, host, port)
 }
 
 func testProbeLink(nodeID, endpointType, scheme, host string, port int) (ProbeLinkConnectResult, error) {
@@ -195,17 +223,7 @@ func testProbeLinkWithProgress(service *networkAssistantService, nodeID, endpoin
 	}
 	reporter := newProbeLinkProgressReporter(service, nodeID, reporterProtocol, host, port)
 	reporter.stage(probeLinkStagePrepare, "开始测试连接", fmt.Sprintf("endpoint_type=%s scheme=%s", strings.TrimSpace(endpointType), strings.TrimSpace(scheme)))
-	if protocol != "" {
-		return testProbeLinkByProtocol(nodeID, protocol, host, port, reporter)
-	}
 
-	// Backward compatibility for old service/public HTTP link checks.
-	normalizedType := strings.ToLower(strings.TrimSpace(endpointType))
-	if normalizedType != "public" {
-		normalizedType = "service"
-	}
-
-	normalizedScheme := normalizeProbeLinkScheme(scheme)
 	trimmedHost := strings.TrimSpace(host)
 	if trimmedHost == "" {
 		err := fmt.Errorf("host is required")
@@ -218,12 +236,29 @@ func testProbeLinkWithProgress(service *networkAssistantService, nodeID, endpoin
 		return ProbeLinkConnectResult{}, err
 	}
 
+	resolvedTarget, err := resolveProbeLinkTarget(trimmedHost, reporter)
+	if err != nil {
+		reporter.stage(probeLinkStageFailure, "测试连接失败", reporter.classifyError(err))
+		return ProbeLinkConnectResult{}, err
+	}
+	reporter.setResolvedTarget(resolvedTarget)
+	if protocol != "" {
+		return testProbeLinkByProtocol(nodeID, protocol, resolvedTarget, port, reporter)
+	}
+
+	// Backward compatibility for old service/public HTTP link checks.
+	normalizedType := strings.ToLower(strings.TrimSpace(endpointType))
+	if normalizedType != "public" {
+		normalizedType = "service"
+	}
+
+	normalizedScheme := normalizeProbeLinkScheme(scheme)
 	client := &http.Client{Timeout: probeLinkTimeout}
 	paths := []string{probeLinkInfoPath, probeLinkHealthPath}
 	var lastErr error
 	for _, candidatePath := range paths {
 		reporter.stage(probeLinkStageRequest, "准备请求探针服务信息", fmt.Sprintf("path=%s", candidatePath))
-		result, err := probeLinkRequest(client, strings.TrimSpace(nodeID), normalizedType, normalizedScheme, trimmedHost, port, candidatePath, reporter)
+		result, err := probeLinkRequest(client, strings.TrimSpace(nodeID), normalizedType, normalizedScheme, resolvedTarget, port, candidatePath, reporter)
 		if err == nil {
 			reporter.stage(probeLinkStageSuccess, "测试连接成功", result.Message)
 			return result, nil
@@ -238,14 +273,14 @@ func testProbeLinkWithProgress(service *networkAssistantService, nodeID, endpoin
 	return ProbeLinkConnectResult{}, lastErr
 }
 
-func testProbeLinkByProtocol(nodeID string, protocol string, host string, port int, reporter *probeLinkProgressReporter) (ProbeLinkConnectResult, error) {
+func testProbeLinkByProtocol(nodeID string, protocol string, target probeLinkResolvedTarget, port int, reporter *probeLinkProgressReporter) (ProbeLinkConnectResult, error) {
 	switch protocol {
 	case "http":
-		return probeLinkHTTPPing(nodeID, protocol, host, port, reporter)
+		return probeLinkHTTPPing(nodeID, protocol, target, port, reporter)
 	case "https":
-		return probeLinkHTTPPing(nodeID, protocol, host, port, reporter)
+		return probeLinkHTTPPing(nodeID, protocol, target, port, reporter)
 	case "http3":
-		return probeLinkHTTP3Ping(nodeID, host, port, reporter)
+		return probeLinkHTTP3Ping(nodeID, target, port, reporter)
 	default:
 		err := fmt.Errorf("unsupported protocol: %s", protocol)
 		if reporter != nil {
@@ -255,8 +290,8 @@ func testProbeLinkByProtocol(nodeID string, protocol string, host string, port i
 	}
 }
 
-func probeLinkHTTPPing(nodeID string, protocol string, host string, port int, reporter *probeLinkProgressReporter) (ProbeLinkConnectResult, error) {
-	targetURL, nonce, err := buildProbeLinkTestURL(host, port, protocol)
+func probeLinkHTTPPing(nodeID string, protocol string, target probeLinkResolvedTarget, port int, reporter *probeLinkProgressReporter) (ProbeLinkConnectResult, error) {
+	targetURL, nonce, err := buildProbeLinkTestURL(target.OriginalHost, port, protocol)
 	if err != nil {
 		return ProbeLinkConnectResult{}, err
 	}
@@ -264,7 +299,7 @@ func probeLinkHTTPPing(nodeID string, protocol string, host string, port int, re
 		reporter.withURL(targetURL)
 	}
 
-	transport := newProbeLinkHTTPTransport(protocol, reporter)
+	transport := newProbeLinkHTTPTransport(protocol, target, reporter)
 	if protocol == "https" {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
@@ -345,8 +380,8 @@ func probeLinkHTTPPing(nodeID string, protocol string, host string, port int, re
 	return result, nil
 }
 
-func probeLinkHTTP3Ping(nodeID string, host string, port int, reporter *probeLinkProgressReporter) (ProbeLinkConnectResult, error) {
-	targetURL, nonce, err := buildProbeLinkTestURL(host, port, "http3")
+func probeLinkHTTP3Ping(nodeID string, target probeLinkResolvedTarget, port int, reporter *probeLinkProgressReporter) (ProbeLinkConnectResult, error) {
+	targetURL, nonce, err := buildProbeLinkTestURL(target.OriginalHost, port, "http3")
 	if err != nil {
 		return ProbeLinkConnectResult{}, err
 	}
@@ -442,45 +477,38 @@ func probeLinkHTTP3Ping(nodeID string, host string, port int, reporter *probeLin
 	return result, nil
 }
 
-func newProbeLinkHTTPTransport(protocol string, reporter *probeLinkProgressReporter) *http.Transport {
+func newProbeLinkHTTPTransport(protocol string, target probeLinkResolvedTarget, reporter *probeLinkProgressReporter) *http.Transport {
 	transport := &http.Transport{}
 	if strings.EqualFold(strings.TrimSpace(protocol), "https") {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, _, splitErr := net.SplitHostPort(addr)
+		dialHost := strings.TrimSpace(target.DialHost)
+		if dialHost == "" {
+			host, _, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				host = addr
+			}
+			dialHost = strings.TrimSpace(host)
+		}
+		_, port, splitErr := net.SplitHostPort(addr)
 		if splitErr != nil {
-			host = addr
+			port = ""
+		}
+		resolvedAddr := addr
+		if dialHost != "" && strings.TrimSpace(port) != "" {
+			resolvedAddr = net.JoinHostPort(dialHost, port)
 		}
 		if reporter != nil {
-			reporter.stage(probeLinkStageDNSStart, "开始 DNS 解析", fmt.Sprintf("network=%s host=%s", network, strings.TrimSpace(host)))
-		}
-		var resolvedIPs []string
-		resolver := net.DefaultResolver
-		if ip := net.ParseIP(strings.TrimSpace(host)); ip == nil {
-			ips, lookupErr := resolver.LookupIPAddr(ctx, strings.TrimSpace(host))
-			if lookupErr != nil {
-				if reporter != nil {
-					reporter.stage(probeLinkStageFailure, "DNS 解析失败", reporter.classifyError(lookupErr))
-				}
-				return nil, lookupErr
+			detail := fmt.Sprintf("network=%s host=%s", network, strings.TrimSpace(target.OriginalHost))
+			if len(target.IPs) > 0 {
+				detail = detail + " ips=" + strings.Join(target.IPs, ",")
 			}
-			for _, item := range ips {
-				if item.IP != nil {
-					resolvedIPs = append(resolvedIPs, item.IP.String())
-				}
-			}
-			if reporter != nil {
-				reporter.stage(probeLinkStageDNSSuccess, "DNS 解析成功", strings.Join(resolvedIPs, ","))
-			}
-		} else if reporter != nil {
-			reporter.stage(probeLinkStageDNSSuccess, "目标为 IP，跳过 DNS 解析", ip.String())
+			reporter.stage(probeLinkStageDNSSuccess, "复用初始化阶段 DNS 结果", detail)
+			reporter.stage(probeLinkStageConnect, "开始建立 TCP 连接", fmt.Sprintf("network=%s addr=%s", network, resolvedAddr))
 		}
-		if reporter != nil {
-			reporter.stage(probeLinkStageConnect, "开始建立 TCP 连接", fmt.Sprintf("network=%s addr=%s", network, addr))
-		}
-		dialer := &net.Dialer{}
-		conn, err := dialer.DialContext(ctx, network, addr)
+		dialer := &net.Dialer{Timeout: probeLinkTimeout}
+		conn, err := dialer.DialContext(ctx, network, resolvedAddr)
 		if err != nil {
 			if reporter != nil {
 				reporter.stage(probeLinkStageFailure, "TCP 连接失败", reporter.classifyError(err))
@@ -608,8 +636,8 @@ func buildProbeLinkTestURL(host string, port int, protocol string) (string, stri
 	return target.String(), nonce, nil
 }
 
-func probeLinkRequest(client *http.Client, nodeID, endpointType, scheme, host string, port int, pathValue string, reporter *probeLinkProgressReporter) (ProbeLinkConnectResult, error) {
-	targetURL, err := buildProbeLinkURL(scheme, host, port, pathValue)
+func probeLinkRequest(client *http.Client, nodeID, endpointType, scheme string, target probeLinkResolvedTarget, port int, pathValue string, reporter *probeLinkProgressReporter) (ProbeLinkConnectResult, error) {
+	targetURL, err := buildProbeLinkURL(target.OriginalHost, scheme, port, pathValue)
 	if err != nil {
 		if reporter != nil {
 			reporter.stage(probeLinkStageFailure, "构造探测 URL 失败", reporter.classifyError(err))
@@ -621,7 +649,7 @@ func probeLinkRequest(client *http.Client, nodeID, endpointType, scheme, host st
 	}
 
 	startedAt := time.Now()
-	transport := newProbeLinkHTTPTransport(scheme, reporter)
+	transport := newProbeLinkHTTPTransport(scheme, target, reporter)
 	clientToUse := client
 	if transport != nil {
 		baseClient := client
@@ -705,7 +733,60 @@ func probeLinkRequest(client *http.Client, nodeID, endpointType, scheme, host st
 	return result, nil
 }
 
-func buildProbeLinkURL(scheme, host string, port int, pathValue string) (string, error) {
+func resolveProbeLinkTarget(host string, reporter *probeLinkProgressReporter) (probeLinkResolvedTarget, error) {
+	trimmedHost := strings.TrimSpace(host)
+	if trimmedHost == "" {
+		return probeLinkResolvedTarget{}, fmt.Errorf("host is required")
+	}
+	resolved := probeLinkResolvedTarget{
+		OriginalHost: trimmedHost,
+		DialHost:     trimmedHost,
+	}
+	if ip := net.ParseIP(trimmedHost); ip != nil {
+		canonical := canonicalIP(ip)
+		resolved.DialHost = canonical
+		resolved.IPs = []string{canonical}
+		if reporter != nil {
+			reporter.stage(probeLinkStageDNSSuccess, "目标为 IP，跳过 DNS 解析", canonical)
+		}
+		return resolved, nil
+	}
+	if reporter != nil {
+		reporter.stage(probeLinkStageDNSStart, "初始化阶段开始 DNS 解析", fmt.Sprintf("host=%s", trimmedHost))
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), trimmedHost)
+	if err != nil {
+		if reporter != nil {
+			reporter.stage(probeLinkStageFailure, "初始化阶段 DNS 解析失败", reporter.classifyError(err))
+		}
+		return probeLinkResolvedTarget{}, err
+	}
+	seen := make(map[string]struct{}, len(ips))
+	for _, item := range ips {
+		if item.IP == nil {
+			continue
+		}
+		canonical := canonicalIP(item.IP)
+		if canonical == "" {
+			continue
+		}
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		resolved.IPs = append(resolved.IPs, canonical)
+	}
+	if len(resolved.IPs) == 0 {
+		return probeLinkResolvedTarget{}, fmt.Errorf("dns resolve returned no usable ip for host %s", trimmedHost)
+	}
+	resolved.DialHost = resolved.IPs[0]
+	if reporter != nil {
+		reporter.stage(probeLinkStageDNSSuccess, "初始化阶段 DNS 解析成功", strings.Join(resolved.IPs, ","))
+	}
+	return resolved, nil
+}
+
+func buildProbeLinkURL(host, scheme string, port int, pathValue string) (string, error) {
 	normalizedScheme := normalizeProbeLinkScheme(scheme)
 	trimmedHost := strings.TrimSpace(host)
 	if trimmedHost == "" {

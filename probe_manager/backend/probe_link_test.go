@@ -21,7 +21,7 @@ import (
 )
 
 func TestBuildProbeLinkURL(t *testing.T) {
-	got, err := buildProbeLinkURL("http", "127.0.0.1", 16030, probeLinkInfoPath)
+	got, err := buildProbeLinkURL("127.0.0.1", "http", 16030, probeLinkInfoPath)
 	if err != nil {
 		t.Fatalf("buildProbeLinkURL returned error: %v", err)
 	}
