@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import logo from "./assets/images/site-icon.png";
 import "./App.css";
 import { resolveTabs } from "./modules/app/authz";
@@ -16,6 +16,7 @@ import type { TabKey } from "./modules/app/types";
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [networkLogAutoScroll, setNetworkLogAutoScroll] = useState(true);
+  const networkAssistantInitKeyRef = useRef("");
 
   const settings = useLocalSettings();
   const auth = useAuthFlow();
@@ -43,22 +44,35 @@ function App() {
     if (!auth.sessionToken) {
       return;
     }
-    if (activeTab === "network-assistant") {
+    if (activeTab !== "network-assistant") {
+      networkAssistantInitKeyRef.current = "";
+      return;
+    }
+    const initKey = `${activeTab}|${auth.sessionToken}|${settings.baseUrl}`;
+    if (networkAssistantInitKeyRef.current === initKey) {
       void networkAssistant.appendDebugLog(
         "frontend-rule-config",
-        `[trigger:app-effect] ${JSON.stringify({
-          activeTab,
-          hasSessionToken: !!auth.sessionToken,
-          baseUrl: settings.baseUrl,
-        })}`,
+        `[skip:app-effect-duplicate] ${JSON.stringify({ initKey })}`,
       );
-      void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
-      void networkAssistant.refreshLogs();
-      void networkAssistant.refreshRuleConfig();
+      return;
     }
+    networkAssistantInitKeyRef.current = initKey;
+    void networkAssistant.appendDebugLog(
+      "frontend-rule-config",
+      `[trigger:app-effect] ${JSON.stringify({
+        activeTab,
+        hasSessionToken: !!auth.sessionToken,
+        baseUrl: settings.baseUrl,
+        initKey,
+      })}`,
+    );
+    void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
+    void networkAssistant.refreshLogs();
+    void networkAssistant.refreshRuleConfig();
   }, [
     activeTab,
     auth.sessionToken,
+    networkAssistant.appendDebugLog,
     networkAssistant.refreshLogs,
     networkAssistant.refreshRuleConfig,
     networkAssistant.refreshStatus,
