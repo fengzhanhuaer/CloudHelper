@@ -347,6 +347,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		}
 	}
 
+	startedAt := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
 		sanitizedURL := ""
@@ -356,14 +357,14 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		}
 		_ = bodyWriter.Close()
 		_ = closeTransport()
-		return nil, fmt.Errorf("probe relay connect failed: url=%s dial_host=%s host_header=%s layer=%s server_name=%s err=%w", sanitizedURL, entryDialHost, entryHostHeader, layer, tlsServerName, err)
+		return nil, fmt.Errorf("probe relay connect failed: url=%s dial_host=%s host_header=%s layer=%s server_name=%s elapsed=%s err=%w", sanitizedURL, entryDialHost, entryHostHeader, layer, tlsServerName, time.Since(startedAt), err)
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 		_ = response.Body.Close()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
-		return nil, fmt.Errorf("probe relay failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("probe relay failed: status=%d elapsed=%s body=%s", response.StatusCode, time.Since(startedAt), strings.TrimSpace(string(body)))
 	}
 
 	return &probeChainRelayHop{
@@ -987,9 +988,23 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 		retryAt := s.muxMaintainRetryAt[normalized]
 		s.mu.Unlock()
 		if !retryAt.IsZero() && now.Before(retryAt) {
+			s.logfRateLimited(
+				"mux:auto-maintain:retry-wait:"+normalized,
+				10*time.Second,
+				"mux auto maintain retry pending: node=%s retry_at=%s",
+				node,
+				retryAt.Format(time.RFC3339Nano),
+			)
 			continue
 		}
 
+		startedAt := time.Now()
+		s.logfRateLimited(
+			"mux:auto-maintain:ensure-begin:"+normalized,
+			5*time.Second,
+			"mux auto maintain ensure begin: node=%s",
+			node,
+		)
 		if _, err := s.ensureTunnelMuxClientForNode(node); err != nil {
 			s.mu.Lock()
 			if s.muxMaintainFails == nil {
@@ -1007,14 +1022,22 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 			s.logfRateLimited(
 				"mux:auto-maintain:failed:"+normalized,
 				muxAutoMaintainFailLogInterval,
-				"auto maintain tunnel mux failed: node=%s err=%v retry_in=%s attempt=%d",
+				"auto maintain tunnel mux failed: node=%s err=%v retry_in=%s attempt=%d elapsed=%s",
 				node,
 				err,
 				backoff,
 				attempt,
+				time.Since(startedAt),
 			)
 			continue
 		}
+		s.logfRateLimited(
+			"mux:auto-maintain:ensure-done:"+normalized,
+			5*time.Second,
+			"mux auto maintain ensure done: node=%s elapsed=%s",
+			node,
+			time.Since(startedAt),
+		)
 
 		s.mu.Lock()
 		delete(s.muxMaintainFails, normalized)
@@ -1120,6 +1143,7 @@ func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Durati
 }
 
 func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput string) (*tunnelMuxClient, error) {
+	startedAt := time.Now()
 	requestedNodeID := strings.TrimSpace(nodeIDInput)
 	targetNodeID := requestedNodeID
 	if targetNodeID == "" {
@@ -1141,6 +1165,13 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		return nil, errors.New("selected node does not require tunnel mux")
 	}
 
+	s.logfRateLimited(
+		"mux:ensure:begin:"+strings.ToLower(targetNodeID),
+		5*time.Second,
+		"ensure tunnel mux begin: requested=%s effective=%s",
+		requestedNodeID,
+		targetNodeID,
+	)
 	chainTarget, hasChainTarget, resolvedNodeID, resolveErr := s.resolveTunnelMuxChainTargetForNode(targetNodeID)
 	if resolveErr != nil {
 		s.logf("ensure tunnel mux resolve target failed: requested=%s effective=%s err=%v", requestedNodeID, targetNodeID, resolveErr)
@@ -1171,8 +1202,6 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	baseURL := strings.TrimSpace(s.controllerBaseURL)
 	token := strings.TrimSpace(s.sessionToken)
 	selectedNodeID := strings.TrimSpace(s.nodeID)
@@ -1186,14 +1215,16 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		targetNodeID = defaultNodeID
 	}
 	if strings.EqualFold(targetNodeID, defaultNodeID) {
+		s.mu.Unlock()
 		return nil, errors.New("selected node does not require tunnel mux")
 	}
 
 	if !hasChainTarget {
-		var resolveErr error
-		chainTarget, hasChainTarget, targetNodeID, resolveErr = resolveProbeChainTargetFromSnapshot(targetNodeID, s.chainTargets)
-		if resolveErr != nil {
-			return nil, resolveErr
+		var fallbackResolveErr error
+		chainTarget, hasChainTarget, targetNodeID, fallbackResolveErr = resolveProbeChainTargetFromSnapshot(targetNodeID, s.chainTargets)
+		if fallbackResolveErr != nil {
+			s.mu.Unlock()
+			return nil, fallbackResolveErr
 		}
 	}
 
@@ -1209,11 +1240,13 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	}
 
 	if !hasChainTarget && (baseURL == "" || token == "") {
+		s.mu.Unlock()
 		s.logf("tunnel mux connect skipped: missing controller url or session token")
 		return nil, errors.New("missing controller url or session token")
 	}
 
 	isPrimary := strings.EqualFold(targetNodeID, selectedNodeID)
+	var staleClient *tunnelMuxClient
 	s.logfRateLimited(
 		"mux:ensure:start:"+strings.ToLower(targetNodeID),
 		10*time.Second,
@@ -1227,11 +1260,12 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	)
 	if isPrimary {
 		if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint(baseURL, token, targetNodeID, modeKey) {
-			return s.tunnelMuxClient, nil
+			client := s.tunnelMuxClient
+			s.mu.Unlock()
+			return client, nil
 		}
 		if s.tunnelMuxClient != nil {
-			s.logf("closing stale tunnel mux client")
-			s.tunnelMuxClient.close()
+			staleClient = s.tunnelMuxClient
 			s.tunnelMuxClient = nil
 		}
 	} else {
@@ -1240,38 +1274,94 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		}
 		if existing := s.ruleMuxClients[targetNodeID]; existing != nil {
 			if !existing.isClosed() && existing.sameEndpoint(baseURL, token, targetNodeID, modeKey) {
+				s.mu.Unlock()
 				return existing, nil
 			}
-			existing.close()
+			staleClient = existing
 			delete(s.ruleMuxClients, targetNodeID)
 		}
 	}
+	s.mu.Unlock()
 
+	if staleClient != nil {
+		s.logfRateLimited(
+			"mux:ensure:close-stale:"+strings.ToLower(targetNodeID),
+			5*time.Second,
+			"ensure tunnel mux closing stale client: requested=%s target=%s has_chain=%v",
+			requestedNodeID,
+			targetNodeID,
+			hasChainTarget,
+		)
+		staleClient.close()
+	}
+
+	s.logfRateLimited(
+		"mux:ensure:dial-begin:"+strings.ToLower(targetNodeID),
+		5*time.Second,
+		"ensure tunnel mux dial begin: requested=%s target=%s has_chain=%v mode_key=%s elapsed=%s",
+		requestedNodeID,
+		targetNodeID,
+		hasChainTarget,
+		modeKey,
+		time.Since(startedAt),
+	)
 	client, err := s.newTunnelMuxClientLocked(baseURL, token, targetNodeID, chainTarget, hasChainTarget)
 	if err != nil {
+		s.logfRateLimited(
+			"mux:ensure:dial-failed:"+strings.ToLower(targetNodeID),
+			5*time.Second,
+			"ensure tunnel mux dial failed: requested=%s target=%s has_chain=%v elapsed=%s err=%v",
+			requestedNodeID,
+			targetNodeID,
+			hasChainTarget,
+			time.Since(startedAt),
+			err,
+		)
 		return nil, err
 	}
 
+	s.mu.Lock()
 	if isPrimary {
-		s.tunnelMuxClient = client
+		if s.tunnelMuxClient != nil && s.tunnelMuxClient != client {
+			old := s.tunnelMuxClient
+			s.tunnelMuxClient = client
+			s.mu.Unlock()
+			old.close()
+			s.mu.Lock()
+		} else {
+			s.tunnelMuxClient = client
+		}
 	} else {
-		s.ruleMuxClients[targetNodeID] = client
+		if s.ruleMuxClients == nil {
+			s.ruleMuxClients = make(map[string]*tunnelMuxClient)
+		}
+		if old := s.ruleMuxClients[targetNodeID]; old != nil && old != client {
+			s.ruleMuxClients[targetNodeID] = client
+			s.mu.Unlock()
+			old.close()
+			s.mu.Lock()
+		} else {
+			s.ruleMuxClients[targetNodeID] = client
+		}
 	}
 	s.muxReconnects++
+	reconnects := s.muxReconnects
+	s.mu.Unlock()
 
 	if hasChainTarget {
 		s.logf(
-			"tunnel mux connected via chain, node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d",
+			"tunnel mux connected via chain, node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d elapsed=%s",
 			targetNodeID,
 			strings.TrimSpace(chainTarget.ChainID),
 			strings.TrimSpace(chainTarget.EntryNode),
 			strings.TrimSpace(chainTarget.EntryHost),
 			chainTarget.EntryPort,
 			strings.TrimSpace(chainTarget.LinkLayer),
-			s.muxReconnects,
+			reconnects,
+			time.Since(startedAt),
 		)
 	} else {
-		s.logf("tunnel mux connected, node=%s reconnects=%d", targetNodeID, s.muxReconnects)
+		s.logf("tunnel mux connected, node=%s reconnects=%d elapsed=%s", targetNodeID, reconnects, time.Since(startedAt))
 	}
 	return client, nil
 }
