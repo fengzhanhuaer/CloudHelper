@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -79,26 +80,45 @@ func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) 
 }
 
 func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, error) {
-	s.refreshAvailableNodesForRuleConfig()
+	startedAt := time.Now()
+	s.logfRateLimited("rule-config:get:begin", 3*time.Second, "get rule config begin")
 
+	refreshStartedAt := time.Now()
+	s.refreshAvailableNodesForRuleConfig()
+	s.logfRateLimited("rule-config:get:after-refresh-nodes", 3*time.Second, "get rule config refresh available nodes done: elapsed=%s", time.Since(refreshStartedAt))
+
+	loadStartedAt := time.Now()
 	routing, err := loadOrCreateTunnelRuleRouting()
 	if err != nil {
+		s.logf("get rule config load routing failed: elapsed=%s err=%v", time.Since(loadStartedAt), err)
 		return NetworkAssistantRuleConfig{}, err
 	}
+	s.logfRateLimited("rule-config:get:after-load-routing", 3*time.Second, "get rule config load routing done: elapsed=%s groups=%d", time.Since(loadStartedAt), len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1)
 
+	lockStartedAt := time.Now()
 	s.mu.Lock()
 	s.ruleRouting = routing
 	availableNodes := append([]string(nil), s.availableNodes...)
 	chainTargets := copyProbeChainTargets(s.chainTargets)
 	currentNode := strings.TrimSpace(s.nodeID)
 	s.mu.Unlock()
+	s.logfRateLimited("rule-config:get:after-state-snapshot", 3*time.Second, "get rule config snapshot state done: elapsed=%s available=%d chain_targets=%d current=%s", time.Since(lockStartedAt), len(availableNodes), len(chainTargets), currentNode)
 
+	buildStartedAt := time.Now()
 	tunnelOptions := buildRuleTunnelOptions(availableNodes, currentNode)
 	if currentNode == "" {
 		currentNode = defaultNodeID
 	}
 	config := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets)
-	s.triggerMuxAutoMaintainNow()
+	s.logfRateLimited("rule-config:get:after-build", 3*time.Second, "get rule config build done: elapsed=%s groups=%d fallback_action=%s", time.Since(buildStartedAt), len(config.Groups), config.Fallback.Action)
+
+	s.logfRateLimited("rule-config:get:done", 3*time.Second, "get rule config done: total_elapsed=%s", time.Since(startedAt))
+	go func() {
+		maintainStartedAt := time.Now()
+		s.logfRateLimited("rule-config:get:trigger-maintain", 3*time.Second, "get rule config trigger mux maintain begin")
+		s.triggerMuxAutoMaintainNow()
+		s.logfRateLimited("rule-config:get:trigger-maintain-done", 3*time.Second, "get rule config trigger mux maintain dispatched: elapsed=%s", time.Since(maintainStartedAt))
+	}()
 	return config, nil
 }
 

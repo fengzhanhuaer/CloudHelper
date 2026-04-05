@@ -11,3 +11,4 @@ cloudhelper-probe-controller-linux-amd64
 /data/*
 probe_manager/data/*
 .gocache/*
+probe_manager/backend/network_assistant_test.go
