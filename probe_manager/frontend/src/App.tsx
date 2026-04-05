@@ -68,6 +68,7 @@ function App() {
     );
     void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
     void networkAssistant.refreshLogs();
+    void networkAssistant.refreshRuleConfig();
   }, [
     activeTab,
     auth.sessionToken,

@@ -116,15 +116,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     }
   }
 
-  useEffect(() => {
-    if (subTab !== "settings") {
-      return;
-    }
-    if (props.ruleConfig || props.isLoadingRuleConfig) {
-      return;
-    }
-    props.onRefreshRuleConfig();
-  }, [props.isLoadingRuleConfig, props.onRefreshRuleConfig, props.ruleConfig, subTab]);
 
   useEffect(() => {
     if (subTab !== "dns") {
