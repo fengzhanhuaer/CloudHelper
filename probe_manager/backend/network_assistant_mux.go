@@ -116,8 +116,6 @@ type tunnelMuxStream struct {
 }
 
 type tunnelMuxClient struct {
-	baseURL string
-	token   string
 	nodeID  string
 	modeKey string
 
@@ -181,8 +179,6 @@ func newTunnelMuxClient(baseURL, token, nodeID string, onControllerLog func(stri
 	}
 
 	c := &tunnelMuxClient{
-		baseURL:         baseURL,
-		token:           token,
 		nodeID:          nodeID,
 		modeKey:         "ws",
 		onControllerLog: onControllerLog,
@@ -228,8 +224,6 @@ func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint pro
 		strings.TrimSpace(endpoint.LinkLayer),
 	)
 	c := &tunnelMuxClient{
-		baseURL:         baseURL,
-		token:           token,
 		nodeID:          nodeID,
 		modeKey:         modeKey,
 		onControllerLog: onControllerLog,
@@ -649,12 +643,6 @@ func (c *tunnelMuxClient) handleIncomingStream(stream net.Conn) {
 	c.onControllerLog(category, message)
 }
 
-func (c *tunnelMuxClient) sameEndpoint(baseURL, token, nodeID, modeKey string) bool {
-	return strings.TrimSpace(c.baseURL) == strings.TrimSpace(baseURL) &&
-		strings.TrimSpace(c.token) == strings.TrimSpace(token) &&
-		strings.TrimSpace(c.nodeID) == strings.TrimSpace(nodeID) &&
-		strings.TrimSpace(c.modeKey) == strings.TrimSpace(modeKey)
-}
 
 func (c *tunnelMuxClient) isClosed() bool {
 	if c.closed.Load() {
@@ -1265,7 +1253,8 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(chainIDInput stri
 		strings.TrimSpace(chainTarget.LinkLayer),
 	)
 	if client, ok := getExistingTunnelMuxClientFromSnapshot(snapshot, targetChainID); ok {
-		if client.sameEndpoint("", "", targetChainID, modeKey) {
+		if strings.TrimSpace(client.nodeID) == strings.TrimSpace(targetChainID) &&
+			strings.TrimSpace(client.modeKey) == strings.TrimSpace(modeKey) {
 			return client, nil
 		}
 	}
