@@ -34,6 +34,7 @@ const (
 	muxAutoMaintainMinRetry        = 30 * time.Second
 	muxAutoMaintainMaxRetry        = 5 * time.Minute
 	muxAutoMaintainFailLogInterval = 30 * time.Second
+	muxKeepAliveFailThreshold      = 3
 
 	probeChainRelayAPIPath         = "/api/node/chain/relay"
 	probeChainAuthPacketVersion    = "2025-03-22"
@@ -124,10 +125,11 @@ type tunnelMuxClient struct {
 	wsConn  *websocket.Conn
 	session *yamux.Session
 
-	mu      sync.Mutex
-	streams map[string]*tunnelMuxStream
-	seq     uint64
-	closed  atomic.Bool
+	mu                sync.Mutex
+	streams           map[string]*tunnelMuxStream
+	seq               uint64
+	closed            atomic.Bool
+	keepAliveFailures atomic.Int32
 
 	lastRecv atomic.Int64
 	lastPong atomic.Int64
@@ -687,9 +689,14 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 			return
 		}
 		if _, err := c.session.Ping(); err != nil {
-			c.close()
-			return
+			failures := c.keepAliveFailures.Add(1)
+			if failures >= muxKeepAliveFailThreshold {
+				c.close()
+				return
+			}
+			continue
 		}
+		c.keepAliveFailures.Store(0)
 		c.lastPong.Store(time.Now().Unix())
 	}
 }
@@ -960,22 +967,15 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 }
 
 func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
-	muxGuardWaitStartedAt := time.Now()
-	s.logf("mux auto maintain guard lock wait begin")
 	s.mu.Lock()
-	s.logf("mux auto maintain guard lock acquired: elapsed=%s", time.Since(muxGuardWaitStartedAt))
 	if s.muxMaintaining {
 		s.mu.Unlock()
-		s.logf("mux auto maintain skipped: already maintaining")
 		return
 	}
 	s.muxMaintaining = true
 	s.mu.Unlock()
 	defer func() {
-		guardReleaseWaitStartedAt := time.Now()
-		s.logf("mux auto maintain guard release lock wait begin")
 		s.mu.Lock()
-		s.logf("mux auto maintain guard release lock acquired: elapsed=%s", time.Since(guardReleaseWaitStartedAt))
 		s.muxMaintaining = false
 		s.mu.Unlock()
 	}()
