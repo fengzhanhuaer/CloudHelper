@@ -81,15 +81,40 @@ func createConfiguredTUNAdapter(libraryPath, adapterName, tunnelType, requestedG
 		if errors.Is(callErr, syscall.ERROR_ACCESS_DENIED) {
 			return 0, errors.New("WintunCreateAdapter access denied, please run manager as administrator")
 		}
-		return 0, fmt.Errorf("WintunCreateAdapter failed: %w", callErr)
+		return 0, fmt.Errorf("WintunCreateAdapter failed: %s", formatWindowsCallErr(callErr))
 	}
 	if openErr != nil && !errors.Is(openErr, syscall.Errno(0)) {
 		if errors.Is(openErr, syscall.ERROR_ACCESS_DENIED) {
 			return 0, errors.New("WintunOpenAdapter access denied, please run manager as administrator")
 		}
-		return 0, fmt.Errorf("WintunOpenAdapter failed: %w", openErr)
+		return 0, fmt.Errorf("WintunOpenAdapter failed: %s", formatWindowsCallErr(openErr))
 	}
-	return 0, errors.New("wintun adapter creation/open returned empty adapter handle")
+	return 0, fmt.Errorf("wintun adapter creation/open returned empty adapter handle (create=%s open=%s)", formatWindowsCallErr(callErr), formatWindowsCallErr(openErr))
+}
+
+func formatWindowsCallErr(err error) string {
+	if err == nil {
+		return "nil"
+	}
+	if errors.Is(err, syscall.Errno(0)) {
+		return "errno=0"
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		if errno == 0 {
+			return "errno=0"
+		}
+		message := strings.TrimSpace(errno.Error())
+		if message == "" || strings.EqualFold(message, "unknown error") {
+			return fmt.Sprintf("errno=%d", uint32(errno))
+		}
+		return fmt.Sprintf("errno=%d (%s)", uint32(errno), message)
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		return fmt.Sprintf("%T", err)
+	}
+	return message
 }
 
 func closeConfiguredTUNAdapter(libraryPath string, handle uintptr) error {
