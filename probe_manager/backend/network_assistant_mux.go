@@ -1237,7 +1237,10 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		return nil, fmt.Errorf("selected node does not support chain mux keepalive: %s", targetNodeID)
 	}
 
+	lockWaitStartedAt := time.Now()
+	s.logf("ensure tunnel mux state lock wait begin: requested=%s target=%s elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
 	s.mu.Lock()
+	s.logf("ensure tunnel mux state lock acquired: requested=%s target=%s wait=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(lockWaitStartedAt), time.Since(startedAt))
 	selectedNodeID := strings.TrimSpace(s.nodeID)
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
@@ -1249,6 +1252,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		targetNodeID = defaultNodeID
 	}
 	if strings.EqualFold(targetNodeID, defaultNodeID) {
+		s.logf("ensure tunnel mux state lock releasing via direct-return: requested=%s target=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
 		s.mu.Unlock()
 		return nil, errors.New("selected node does not require tunnel mux")
 	}
@@ -1277,6 +1281,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	if isPrimary {
 		if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint("", "", targetNodeID, modeKey) {
 			client := s.tunnelMuxClient
+			s.logf("ensure tunnel mux state lock releasing via existing-primary-return: requested=%s target=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
 			s.mu.Unlock()
 			return client, nil
 		}
@@ -1290,6 +1295,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		}
 		if existing := s.ruleMuxClients[targetNodeID]; existing != nil {
 			if !existing.isClosed() && existing.sameEndpoint("", "", targetNodeID, modeKey) {
+				s.logf("ensure tunnel mux state lock releasing via existing-extra-return: requested=%s target=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
 				s.mu.Unlock()
 				return existing, nil
 			}
@@ -1297,6 +1303,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 			delete(s.ruleMuxClients, targetNodeID)
 		}
 	}
+	s.logf("ensure tunnel mux state lock releasing before dial: requested=%s target=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
 	s.mu.Unlock()
 
 	if staleClient != nil {
