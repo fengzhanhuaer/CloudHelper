@@ -34,8 +34,8 @@ func TestBuildRuleConfigFromRoutingIncludesSelectedTunnelOption(t *testing.T) {
 	if containsNodeID(group.TunnelOptions, "cloudserver") {
 		t.Fatalf("tunnel options should exclude legacy non-chain option: %#v", group.TunnelOptions)
 	}
-	if !containsNodeID(group.TunnelOptions, defaultNodeID) {
-		t.Fatalf("tunnel options missing direct default: %#v", group.TunnelOptions)
+	if containsNodeID(group.TunnelOptions, defaultNodeID) {
+		t.Fatalf("tunnel options should exclude default node option: %#v", group.TunnelOptions)
 	}
 	if !containsNodeID(group.TunnelOptions, "chain:legacy-path") {
 		t.Fatalf("tunnel options missing selected tunnel: %#v", group.TunnelOptions)
@@ -79,8 +79,8 @@ func TestBuildRuleConfigFromRoutingUsesChainNameLabels(t *testing.T) {
 	if _, ok := group.TunnelOptionLabels["cloudserver"]; ok {
 		t.Fatalf("legacy non-chain label should not appear in tunnel options: %#v", group.TunnelOptionLabels)
 	}
-	if got := group.TunnelOptionLabels[defaultNodeID]; got != "直连" {
-		t.Fatalf("default node label=%q, want 直连", got)
+	if _, ok := group.TunnelOptionLabels[defaultNodeID]; ok {
+		t.Fatalf("default node label should not appear in tunnel options: %#v", group.TunnelOptionLabels)
 	}
 	if _, ok := group.TunnelOptionLabels["3"]; ok {
 		t.Fatalf("probe node label should not appear in tunnel options: %#v", group.TunnelOptionLabels)
@@ -136,6 +136,11 @@ func TestBuildRuleConfigFromRoutingKeepsRuleGroupDefinitionOrder(t *testing.T) {
 	config := buildRuleConfigFromRouting(routing, []string{defaultNodeID}, defaultNodeID, nil)
 	if len(config.Groups) != 3 {
 		t.Fatalf("group count=%d, want 3", len(config.Groups))
+	}
+	for _, group := range config.Groups {
+		if len(group.TunnelOptions) != 0 {
+			t.Fatalf("group %s tunnel options=%#v, want empty", group.Group, group.TunnelOptions)
+		}
 	}
 
 	if got := config.Groups[0].Group; got != "group_z" {

@@ -237,9 +237,6 @@ func resolveRuleTunnelOptionLabel(nodeID string, chainTargets map[string]probeCh
 	if cleanNodeID == "" {
 		return ""
 	}
-	if strings.EqualFold(cleanNodeID, defaultNodeID) {
-		return "直连"
-	}
 	if chainID, ok := parseChainTargetNodeID(cleanNodeID); ok {
 		target, found := chainTargets[cleanNodeID]
 		if !found {
@@ -259,7 +256,7 @@ func resolveRuleTunnelOptionLabel(nodeID string, chainTargets map[string]probeCh
 }
 
 func buildRuleTunnelOptions(availableNodes []string, currentNode string) []string {
-	options := make([]string, 0, len(availableNodes)+2)
+	options := make([]string, 0, len(availableNodes)+1)
 	add := func(raw string) {
 		node := strings.TrimSpace(raw)
 		if node == "" || containsNodeID(options, node) {
@@ -272,7 +269,6 @@ func buildRuleTunnelOptions(availableNodes []string, currentNode string) []strin
 		add(node)
 	}
 	add(currentNode)
-	add(defaultNodeID)
 	return filterRuleTunnelOptions(options)
 }
 
@@ -283,16 +279,9 @@ func filterRuleTunnelOptions(nodes []string) []string {
 		if node == "" || containsNodeID(options, node) {
 			continue
 		}
-		if strings.EqualFold(node, defaultNodeID) {
-			options = append(options, node)
-			continue
-		}
 		if _, ok := parseChainTargetNodeID(node); ok {
 			options = append(options, node)
 		}
-	}
-	if len(options) == 0 {
-		options = append(options, defaultNodeID)
 	}
 	return options
 }
@@ -303,10 +292,8 @@ func mergeRuleTunnelOptions(base []string, selected string) []string {
 	if selectedNode == "" || containsNodeID(options, selectedNode) {
 		return options
 	}
-	if !strings.EqualFold(selectedNode, defaultNodeID) {
-		if _, ok := parseChainTargetNodeID(selectedNode); !ok {
-			return options
-		}
+	if _, ok := parseChainTargetNodeID(selectedNode); !ok {
+		return options
 	}
 	return append(options, selectedNode)
 }
