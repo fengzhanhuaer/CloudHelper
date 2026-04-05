@@ -9,6 +9,61 @@ import (
 	"time"
 )
 
+func TestCollectAutoMaintainPolicyTunnelNodeIDs(t *testing.T) {
+	_, cidr, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("parse cidr: %v", err)
+	}
+
+	routing := tunnelRuleRouting{
+		RuleSet: tunnelRuleSet{
+			Rules: []tunnelRule{
+				{Kind: ruleMatcherCIDR, CIDR: cidr, Group: "google"},
+				{Kind: ruleMatcherDomainExact, Domain: "github.com", Group: "github"},
+				{Kind: ruleMatcherDomainExact, Domain: "example.com", Group: "shared"},
+			},
+		},
+		GroupNodeMap: map[string]string{
+			"google":               rulePolicyActionTunnel + ":chain:1",
+			"github":               rulePolicyActionTunnel + ":chain:2",
+			"shared":               rulePolicyActionTunnel + ":chain:2",
+			ruleFallbackGroupKey:    rulePolicyActionDirect,
+		},
+	}
+
+	nodes := collectAutoMaintainPolicyTunnelNodeIDs(routing, []string{"direct", "chain:1", "chain:2"}, defaultNodeID)
+	if len(nodes) != 2 {
+		t.Fatalf("node count=%d, want 2 (%v)", len(nodes), nodes)
+	}
+	if nodes[0] != "chain:1" {
+		t.Fatalf("node[0]=%s, want chain:1", nodes[0])
+	}
+	if nodes[1] != "chain:2" {
+		t.Fatalf("node[1]=%s, want chain:2", nodes[1])
+	}
+}
+
+func TestCollectAutoMaintainPolicyTunnelNodeIDsSkipsDirectRejectAndFallbackDirect(t *testing.T) {
+	routing := tunnelRuleRouting{
+		RuleSet: tunnelRuleSet{
+			Rules: []tunnelRule{
+				{Kind: ruleMatcherDomainExact, Domain: "direct.example.com", Group: "direct_group"},
+				{Kind: ruleMatcherDomainExact, Domain: "reject.example.com", Group: "reject_group"},
+			},
+		},
+		GroupNodeMap: map[string]string{
+			"direct_group":         rulePolicyActionDirect,
+			"reject_group":         rulePolicyActionReject,
+			ruleFallbackGroupKey:    rulePolicyActionDirect,
+		},
+	}
+
+	nodes := collectAutoMaintainPolicyTunnelNodeIDs(routing, []string{"direct", "chain:1"}, defaultNodeID)
+	if len(nodes) != 0 {
+		t.Fatalf("node count=%d, want 0 (%v)", len(nodes), nodes)
+	}
+}
+
 func TestBuildTunnelWSURL(t *testing.T) {
 	u, err := buildTunnelWSURL("https://controller.example.com", "cloudserver", "tok-1")
 	if err != nil {

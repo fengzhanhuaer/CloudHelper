@@ -875,33 +875,64 @@ func (s *networkAssistantService) triggerMuxAutoMaintainNow() {
 	go s.maintainSelectedTunnelMuxClients()
 }
 
+func collectAutoMaintainPolicyTunnelNodeIDs(routing tunnelRuleRouting, availableNodes []string, selectedNodeID string) []string {
+	defaultNode := strings.TrimSpace(selectedNodeID)
+	if defaultNode == "" {
+		defaultNode = defaultNodeID
+	}
+	tunnelOptions := buildRuleTunnelOptions(availableNodes, defaultNode)
+	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
+	groups = append(groups, ruleFallbackGroupKey)
+
+	nodes := make([]string, 0, len(groups))
+	for _, group := range groups {
+		policy, err := readRulePolicyForGroup(routing, group, defaultNode, tunnelOptions)
+		if err != nil || !strings.EqualFold(strings.TrimSpace(policy.Action), rulePolicyActionTunnel) {
+			continue
+		}
+		nodeID := strings.TrimSpace(policy.TunnelNodeID)
+		if nodeID == "" {
+			nodeID = defaultNode
+		}
+		if nodeID == "" || strings.EqualFold(nodeID, defaultNodeID) || containsNodeID(nodes, nodeID) {
+			continue
+		}
+		nodes = append(nodes, nodeID)
+	}
+	return nodes
+}
+
 func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	s.mu.RLock()
 	selectedNodeID := strings.TrimSpace(s.nodeID)
 	availableNodes := append([]string(nil), s.availableNodes...)
+	routing := s.ruleRouting
 	s.mu.RUnlock()
 
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
 	}
-	if selectedNodeID == "" || strings.EqualFold(selectedNodeID, defaultNodeID) {
+	targetNodeIDs := collectAutoMaintainPolicyTunnelNodeIDs(routing, availableNodes, selectedNodeID)
+	if len(targetNodeIDs) == 0 {
 		s.logfRateLimited(
 			"mux:auto-maintain:collect-empty",
 			15*time.Second,
-			"mux auto maintain collect skipped: selected=%s available=%v reason=direct-or-empty",
+			"mux auto maintain collect skipped: selected=%s available=%v groups=%d reason=no-policy-tunnel-targets",
 			selectedNodeID,
 			availableNodes,
+			len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1,
 		)
 		return nil
 	}
 	s.logfRateLimited(
 		"mux:auto-maintain:collect-selected",
 		15*time.Second,
-		"mux auto maintain collect selected node: selected=%s available=%v",
+		"mux auto maintain collect policy nodes: selected=%s available=%v targets=%v",
 		selectedNodeID,
 		availableNodes,
+		targetNodeIDs,
 	)
-	return []string{selectedNodeID}
+	return targetNodeIDs
 }
 
 func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
