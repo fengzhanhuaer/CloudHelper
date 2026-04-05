@@ -113,17 +113,6 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 	s.logfRateLimited("rule-config:get:after-build", 3*time.Second, "get rule config build done: elapsed=%s groups=%d fallback_action=%s", time.Since(buildStartedAt), len(config.Groups), config.Fallback.Action)
 
 	s.logfRateLimited("rule-config:get:done", 3*time.Second, "get rule config done: total_elapsed=%s", time.Since(startedAt))
-	go func() {
-		maintainStartedAt := time.Now()
-		s.logfRateLimited("rule-config:get:trigger-maintain", 3*time.Second, "get rule config trigger mux maintain begin")
-		defer func() {
-			if r := recover(); r != nil {
-				s.logf("get rule config trigger mux maintain panic recovered: %v", r)
-			}
-		}()
-		s.triggerMuxAutoMaintainNow()
-		s.logfRateLimited("rule-config:get:trigger-maintain-done", 3*time.Second, "get rule config trigger mux maintain dispatched: elapsed=%s", time.Since(maintainStartedAt))
-	}()
 	return config, nil
 }
 
