@@ -38,7 +38,10 @@ func (s *networkAssistantService) startInternalDNSServer() error {
 
 	listenAddr := net.JoinHostPort(internalDNSListenIPv4, strconv.Itoa(internalDNSListenPort))
 	conn, err := net.ListenPacket("udp4", listenAddr)
-	if err != nil && isListenAddrNotAvailableError(err) {
+	if err != nil && isInternalDNSRetryableListenError(err) {
+		if stopErr := s.stopInternalDNSServer(); stopErr != nil {
+			s.logf("local internal dns pre-listen cleanup failed: listen=%s err=%v", listenAddr, stopErr)
+		}
 		deadline := time.Now().Add(3 * time.Second)
 		for attempt := 1; time.Now().Before(deadline); attempt++ {
 			time.Sleep(200 * time.Millisecond)
@@ -47,7 +50,7 @@ func (s *networkAssistantService) startInternalDNSServer() error {
 				s.logf("local internal dns listen recovered after retry: listen=%s attempt=%d", listenAddr, attempt)
 				break
 			}
-			if !isListenAddrNotAvailableError(err) {
+			if !isInternalDNSRetryableListenError(err) {
 				break
 			}
 		}
@@ -124,6 +127,33 @@ func isListenAddrNotAvailableError(err error) bool {
 		return true
 	}
 	return false
+}
+
+func isListenAddrInUseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		if errno == syscall.EADDRINUSE || errno == syscall.Errno(10048) {
+			return true
+		}
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "only one usage of each socket address") {
+		return true
+	}
+	if strings.Contains(msg, "address already in use") {
+		return true
+	}
+	if strings.Contains(msg, "eaddrinuse") {
+		return true
+	}
+	return false
+}
+
+func isInternalDNSRetryableListenError(err error) bool {
+	return isListenAddrNotAvailableError(err) || isListenAddrInUseError(err)
 }
 
 func (d *localInternalDNSServer) serve() {
