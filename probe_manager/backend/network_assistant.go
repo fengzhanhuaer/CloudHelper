@@ -487,6 +487,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		service.logf("internal dns service auto-started during service init")
 	}
 	service.startMuxAutoMaintainLoop()
+	service.triggerMuxAutoMaintainNow()
 	service.logf("service initialized, mode=%s available_nodes=%d", service.mode, len(service.availableNodes))
 	return service
 }
@@ -496,7 +497,6 @@ func (a *App) GetNetworkAssistantStatus() NetworkAssistantStatus {
 		return NetworkAssistantStatus{}
 	}
 	_, _ = a.networkAssistant.getOrLoadChainTargetsSnapshot()
-	a.networkAssistant.triggerMuxAutoMaintainNow()
 	return a.networkAssistant.Status()
 }
 
