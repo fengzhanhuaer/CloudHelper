@@ -1242,6 +1242,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	s.mu.Lock()
 	s.logf("ensure tunnel mux state lock acquired: requested=%s target=%s wait=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(lockWaitStartedAt), time.Since(startedAt))
 	selectedNodeID := strings.TrimSpace(s.nodeID)
+	s.logf("ensure tunnel mux state lock step: selected-node-read requested=%s target=%s selected=%s total_elapsed=%s", requestedNodeID, targetNodeID, selectedNodeID, time.Since(startedAt))
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
 	}
@@ -1264,6 +1265,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		chainTarget.EntryPort,
 		strings.TrimSpace(chainTarget.LinkLayer),
 	)
+	s.logf("ensure tunnel mux state lock step: mode-key-built requested=%s target=%s mode_key=%s total_elapsed=%s", requestedNodeID, targetNodeID, modeKey, time.Since(startedAt))
 
 	isPrimary := strings.EqualFold(targetNodeID, selectedNodeID)
 	var staleClient *tunnelMuxClient
@@ -1279,6 +1281,9 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		hasChainTarget,
 	)
 	if isPrimary {
+		if s.tunnelMuxClient != nil {
+			s.logf("ensure tunnel mux state lock step: primary-client-check requested=%s target=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
+		}
 		if s.tunnelMuxClient != nil && !s.tunnelMuxClient.isClosed() && s.tunnelMuxClient.sameEndpoint("", "", targetNodeID, modeKey) {
 			client := s.tunnelMuxClient
 			s.logf("ensure tunnel mux state lock releasing via existing-primary-return: requested=%s target=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
@@ -1293,7 +1298,9 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		if s.ruleMuxClients == nil {
 			s.ruleMuxClients = make(map[string]*tunnelMuxClient)
 		}
+		s.logf("ensure tunnel mux state lock step: extra-client-map-ready requested=%s target=%s map_len=%d total_elapsed=%s", requestedNodeID, targetNodeID, len(s.ruleMuxClients), time.Since(startedAt))
 		if existing := s.ruleMuxClients[targetNodeID]; existing != nil {
+			s.logf("ensure tunnel mux state lock step: extra-client-found requested=%s target=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
 			if !existing.isClosed() && existing.sameEndpoint("", "", targetNodeID, modeKey) {
 				s.logf("ensure tunnel mux state lock releasing via existing-extra-return: requested=%s target=%s total_elapsed=%s", requestedNodeID, targetNodeID, time.Since(startedAt))
 				s.mu.Unlock()
