@@ -139,34 +139,12 @@ export function useNetworkAssistant() {
   const logCategories = useMemo(() => {
     const set = new Set<string>();
     for (const entry of logEntries) {
-      if (logSourceFilter !== "all" && entry.source !== logSourceFilter) {
-        continue;
-      }
       set.add(entry.category || "general");
     }
     return Array.from(set).sort((left, right) => left.localeCompare(right));
-  }, [logEntries, logSourceFilter]);
+  }, [logEntries]);
 
-  useEffect(() => {
-    if (logCategoryFilter === "all") {
-      return;
-    }
-    if (!logCategories.includes(logCategoryFilter)) {
-      setLogCategoryFilter("all");
-    }
-  }, [logCategories, logCategoryFilter]);
-
-  const visibleLogEntries = useMemo(() => {
-    return logEntries.filter((entry) => {
-      if (logSourceFilter !== "all" && entry.source !== logSourceFilter) {
-        return false;
-      }
-      if (logCategoryFilter !== "all" && entry.category !== logCategoryFilter) {
-        return false;
-      }
-      return true;
-    });
-  }, [logCategoryFilter, logEntries, logSourceFilter]);
+  const visibleLogEntries = useMemo(() => logEntries, [logEntries]);
 
   const visibleLogContent = useMemo(() => {
     return visibleLogEntries.map((entry) => entry.line || buildLogLine(entry)).join("\n");

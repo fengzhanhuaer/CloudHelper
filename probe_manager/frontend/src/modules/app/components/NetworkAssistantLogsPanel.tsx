@@ -127,7 +127,7 @@ export function NetworkAssistantLogsPanel(props: NetworkAssistantLogsPanelProps)
       </div>
 
       <div className="status">{props.logStatus}</div>
-      <div className="status">日志筛选：{props.logVisibleCount}/{props.logTotalCount}</div>
+      <div className="status">日志条数：{props.logVisibleCount}/{props.logTotalCount}</div>
       <div className="status">{props.logCopyStatus || "复制状态：未执行"}</div>
       <pre ref={outputRef} className="log-viewer-output">{props.logContent || "暂无网络助手日志"}</pre>
     </>
