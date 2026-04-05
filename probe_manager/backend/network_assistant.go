@@ -472,9 +472,15 @@ func newNetworkAssistantService() *networkAssistantService {
 	} else {
 		logStore.Appendf(logSourceManager, "init", "failed to load tun preference state: %v", err)
 	}
+	if err := service.refreshAvailableNodes(); err != nil {
+		logStore.Appendf(logSourceManager, "init", "load local available nodes skipped: %v", err)
+	}
+	if _, err := service.getOrLoadChainTargetsSnapshot(); err != nil {
+		logStore.Appendf(logSourceManager, "init", "load local chain targets skipped: %v", err)
+	}
 	service.syncTUNInstallState()
 	service.startMuxAutoMaintainLoop()
-	service.logf("service initialized, mode=%s", service.mode)
+	service.logf("service initialized, mode=%s available_nodes=%d", service.mode, len(service.availableNodes))
 	return service
 }
 
@@ -482,6 +488,7 @@ func (a *App) GetNetworkAssistantStatus() NetworkAssistantStatus {
 	if a.networkAssistant == nil {
 		return NetworkAssistantStatus{}
 	}
+	_, _ = a.networkAssistant.getOrLoadChainTargetsSnapshot()
 	return a.networkAssistant.Status()
 }
 
