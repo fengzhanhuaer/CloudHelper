@@ -276,6 +276,12 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 
 	layer := normalizeChainLinkLayerValue(endpoint.LinkLayer)
 	tlsServerName := resolveProbeChainClientTLSServerName(layer, entryDialHost, entryHostHeader)
+	const probeChainRelayConnectTimeout = 8 * time.Second
+
+	ctx, cancel := context.WithTimeout(request.Context(), probeChainRelayConnectTimeout)
+	defer cancel()
+	request = request.WithContext(ctx)
+
 	var closeTransport func() error
 	var client *http.Client
 	switch layer {
@@ -288,27 +294,43 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 				InsecureSkipVerify: true,
 			},
 		}
-		client = &http.Client{Transport: transport}
+		client = &http.Client{
+			Transport: transport,
+			Timeout:   probeChainRelayConnectTimeout,
+		}
 		closeTransport = func() error { return transport.Close() }
 	case "http2":
+		dialer := &net.Dialer{Timeout: probeChainRelayConnectTimeout, KeepAlive: 30 * time.Second}
 		transport := &http.Transport{
-			Proxy:             nil,
-			ForceAttemptHTTP2: true,
+			Proxy:               nil,
+			ForceAttemptHTTP2:   true,
+			DialContext:         dialer.DialContext,
+			TLSHandshakeTimeout: probeChainRelayConnectTimeout,
+			ResponseHeaderTimeout: probeChainRelayConnectTimeout,
+			ExpectContinueTimeout: 1 * time.Second,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
 				ServerName:         tlsServerName,
 				InsecureSkipVerify: true,
 			},
 		}
-		client = &http.Client{Transport: transport}
+		client = &http.Client{
+			Transport: transport,
+			Timeout:   probeChainRelayConnectTimeout,
+		}
 		closeTransport = func() error {
 			transport.CloseIdleConnections()
 			return nil
 		}
 	default:
+		dialer := &net.Dialer{Timeout: probeChainRelayConnectTimeout, KeepAlive: 30 * time.Second}
 		transport := &http.Transport{
-			Proxy:             nil,
-			ForceAttemptHTTP2: false,
+			Proxy:                 nil,
+			ForceAttemptHTTP2:     false,
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   probeChainRelayConnectTimeout,
+			ResponseHeaderTimeout: probeChainRelayConnectTimeout,
+			ExpectContinueTimeout: 1 * time.Second,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
 				ServerName:         tlsServerName,
@@ -316,7 +338,10 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 			},
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 		}
-		client = &http.Client{Transport: transport}
+		client = &http.Client{
+			Transport: transport,
+			Timeout:   probeChainRelayConnectTimeout,
+		}
 		closeTransport = func() error {
 			transport.CloseIdleConnections()
 			return nil
