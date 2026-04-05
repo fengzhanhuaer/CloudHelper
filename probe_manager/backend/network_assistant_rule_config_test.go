@@ -79,8 +79,8 @@ func TestBuildRuleConfigFromRoutingUsesChainNameLabels(t *testing.T) {
 	if _, ok := group.TunnelOptionLabels["cloudserver"]; ok {
 		t.Fatalf("legacy non-chain label should not appear in tunnel options: %#v", group.TunnelOptionLabels)
 	}
-	if got := group.TunnelOptionLabels[defaultNodeID]; got != "主控" {
-		t.Fatalf("default node label=%q, want 主控", got)
+	if got := group.TunnelOptionLabels[defaultNodeID]; got != "直连" {
+		t.Fatalf("default node label=%q, want 直连", got)
 	}
 	if _, ok := group.TunnelOptionLabels["3"]; ok {
 		t.Fatalf("probe node label should not appear in tunnel options: %#v", group.TunnelOptionLabels)

@@ -238,7 +238,7 @@ func resolveRuleTunnelOptionLabel(nodeID string, chainTargets map[string]probeCh
 		return ""
 	}
 	if strings.EqualFold(cleanNodeID, defaultNodeID) {
-		return "主控"
+		return "直连"
 	}
 	if chainID, ok := parseChainTargetNodeID(cleanNodeID); ok {
 		target, found := chainTargets[cleanNodeID]
