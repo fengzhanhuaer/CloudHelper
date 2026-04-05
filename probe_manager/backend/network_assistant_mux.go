@@ -1072,11 +1072,31 @@ func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Durati
 }
 
 func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput string) (*tunnelMuxClient, error) {
-	s.mu.RLock()
-	preflightBaseURL := strings.TrimSpace(s.controllerBaseURL)
-	s.mu.RUnlock()
-	if err := s.ensureControlPlaneDialReady(preflightBaseURL); err != nil {
-		return nil, err
+	targetNodeID := strings.TrimSpace(nodeIDInput)
+	if targetNodeID == "" {
+		s.mu.RLock()
+		targetNodeID = strings.TrimSpace(s.nodeID)
+		s.mu.RUnlock()
+	}
+	if targetNodeID == "" {
+		targetNodeID = defaultNodeID
+	}
+
+	chainTarget, hasChainTarget, resolvedNodeID, resolveErr := s.resolveTunnelMuxChainTargetForNode(targetNodeID)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	if resolvedNodeID != "" {
+		targetNodeID = resolvedNodeID
+	}
+
+	if !hasChainTarget {
+		s.mu.RLock()
+		preflightBaseURL := strings.TrimSpace(s.controllerBaseURL)
+		s.mu.RUnlock()
+		if err := s.ensureControlPlaneDialReady(preflightBaseURL); err != nil {
+			return nil, err
+		}
 	}
 
 	s.mu.Lock()
@@ -1088,7 +1108,6 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
 	}
-	targetNodeID := strings.TrimSpace(nodeIDInput)
 	if targetNodeID == "" {
 		targetNodeID = selectedNodeID
 	}
@@ -1096,14 +1115,12 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		targetNodeID = defaultNodeID
 	}
 
-	chainTarget, hasChainTarget := s.chainTargets[targetNodeID]
-
-	// Local-first: never implicitly refresh from controller here.
-	// Chain targets must already exist in local cache; remote sync is manual-only.
-
-	// Never fall back to controller WebSocket for chain: nodes — it will always get 404.
-	if !hasChainTarget && strings.HasPrefix(targetNodeID, chainTargetNodePrefix) {
-		return nil, fmt.Errorf("chain target config not found on server: node=%s", targetNodeID)
+	if !hasChainTarget {
+		var resolveErr error
+		chainTarget, hasChainTarget, targetNodeID, resolveErr = resolveProbeChainTargetFromSnapshot(targetNodeID, s.chainTargets)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
 	}
 
 	modeKey := "ws"
@@ -1117,7 +1134,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		)
 	}
 
-	if baseURL == "" || token == "" {
+	if !hasChainTarget && (baseURL == "" || token == "") {
 		s.logf("tunnel mux connect skipped: missing controller url or session token")
 		return nil, errors.New("missing controller url or session token")
 	}
@@ -1182,6 +1199,67 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 		s.logf("tunnel mux connected, node=%s reconnects=%d", targetNodeID, s.muxReconnects)
 	}
 	return client, nil
+}
+
+func (s *networkAssistantService) resolveTunnelMuxChainTargetForNode(nodeID string) (probeChainEndpoint, bool, string, error) {
+	targetNodeID := strings.TrimSpace(nodeID)
+	if targetNodeID == "" {
+		return probeChainEndpoint{}, false, "", nil
+	}
+
+	targets, err := s.getOrLoadChainTargetsSnapshot()
+	if err != nil {
+		return probeChainEndpoint{}, false, targetNodeID, err
+	}
+	return resolveProbeChainTargetFromSnapshot(targetNodeID, targets)
+}
+
+func resolveProbeChainTargetFromSnapshot(targetNodeID string, targets map[string]probeChainEndpoint) (probeChainEndpoint, bool, string, error) {
+	cleanTargetID := normalizeProbeChainPingTargetID(targetNodeID)
+	if cleanTargetID == "" {
+		return probeChainEndpoint{}, false, strings.TrimSpace(targetNodeID), nil
+	}
+
+	candidateChainIDs, explicitChainTarget := buildProbeChainPingCandidateChainIDs(cleanTargetID)
+	if !explicitChainTarget {
+		return probeChainEndpoint{}, false, cleanTargetID, nil
+	}
+
+	for _, candidateID := range candidateChainIDs {
+		if key := buildChainTargetNodeID(candidateID); key != "" {
+			if item, ok := targets[key]; ok {
+				resolvedNodeID := strings.TrimSpace(item.TargetID)
+				if resolvedNodeID == "" {
+					resolvedNodeID = key
+				}
+				return item, true, resolvedNodeID, nil
+			}
+		}
+	}
+
+	candidateSet := make(map[string]struct{}, len(candidateChainIDs))
+	for _, candidateID := range candidateChainIDs {
+		clean := strings.ToLower(strings.TrimSpace(candidateID))
+		if clean == "" {
+			continue
+		}
+		candidateSet[clean] = struct{}{}
+	}
+	for key, item := range targets {
+		if _, ok := candidateSet[strings.ToLower(strings.TrimSpace(item.ChainID))]; !ok {
+			continue
+		}
+		resolvedNodeID := strings.TrimSpace(item.TargetID)
+		if resolvedNodeID == "" {
+			resolvedNodeID = strings.TrimSpace(key)
+		}
+		if resolvedNodeID == "" {
+			resolvedNodeID = buildChainTargetNodeID(item.ChainID)
+		}
+		return item, true, resolvedNodeID, nil
+	}
+
+	return probeChainEndpoint{}, false, cleanTargetID, fmt.Errorf("chain target config not found in local cache: node=%s", cleanTargetID)
 }
 
 func (s *networkAssistantService) newTunnelMuxClientLocked(baseURL, token, nodeID string, chainTarget probeChainEndpoint, hasChainTarget bool) (*tunnelMuxClient, error) {
