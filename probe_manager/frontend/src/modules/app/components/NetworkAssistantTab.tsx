@@ -98,16 +98,15 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     setTunnelPingingID(chainID);
     setTunnelPingStates((prev) => ({ ...prev, [chainID]: { ok: null, durationMS: null, message: "测试中..." } }));
     try {
-      // 按当前选中的链路目标进行测试。
       const result = await PingProbeChain(chainID);
       setTunnelPingStates((prev) => ({
         ...prev,
-        [chainID]: { ok: result.ok, durationMS: result.duration_ms ?? null, message: result.message ?? (result.ok ? "成功" : "失败") },
+        [chainID]: {
+          ok: result.ok,
+          durationMS: result.duration_ms ?? null,
+          message: result.message ?? (result.ok ? "成功" : "失败"),
+        },
       }));
-      // 测试成功后立即刷新状态，避免“测试已建链”与“保活未建立”短时不同步。
-      if (result.ok) {
-        props.onRefreshStatus();
-      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setTunnelPingStates((prev) => ({ ...prev, [chainID]: { ok: false, durationMS: null, message: msg } }));
@@ -188,7 +187,7 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             );
           })}
         </div>
-        {(activeTunnelID || keepalive) && (
+        {(activeTunnelID || keepalive || pingState) && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
             {activeTunnelID && (
               <>
@@ -241,15 +240,15 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
                     pingState.ok === null
                       ? "#aaa"
                       : pingState.ok
-                        ? "#4ade80"
+                        ? "#60a5fa"
                         : "#f87171",
                 }}
               >
                 {pingState.ok === null
-                  ? `⏳ ${pingState.message}`
+                  ? `测试：${pingState.message}`
                   : pingState.ok
-                    ? `✅ ${pingState.message}`
-                    : `❌ ${pingState.message}`}
+                    ? `测试：${pingState.durationMS ?? 0}ms`
+                    : `测试失败：${pingState.message}`}
               </span>
             )}
           </div>
