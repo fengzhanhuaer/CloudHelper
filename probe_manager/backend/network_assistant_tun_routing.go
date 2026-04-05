@@ -81,13 +81,8 @@ func (s *networkAssistantService) clearTUNSystemRouting() error {
 	return errors.Join(errDNS, err)
 }
 
-func (s *networkAssistantService) forceRefreshDNSOnModeSwitch(stage string) {
+func (s *networkAssistantService) forceRefreshDNSOnModeSwitch(_ string) {
 	s.clearDNSCache()
-	if err := flushPlatformDNSResolverCache(); err != nil {
-		s.logf("dns flush on mode switch failed: stage=%s err=%v", strings.TrimSpace(stage), err)
-		return
-	}
-	s.logf("dns flush on mode switch success: stage=%s", strings.TrimSpace(stage))
 }
 
 func (s *networkAssistantService) seedStaticDNSRouteHints() {

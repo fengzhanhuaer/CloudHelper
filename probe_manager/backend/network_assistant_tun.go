@@ -318,12 +318,7 @@ func (s *networkAssistantService) EnableTUN() error {
 			return err
 		}
 	}
-	s.forceRefreshDNSOnModeSwitch("before_enable_tun")
 	if err := s.stopLocalTUNDataPlane(); err != nil {
-		s.setLastError(err)
-		return err
-	}
-	if err := s.clearTUNSystemRouting(); err != nil {
 		s.setLastError(err)
 		return err
 	}
@@ -364,7 +359,6 @@ func (s *networkAssistantService) EnableTUN() error {
 		s.logf("failed to persist tun preference state: %v", err)
 	}
 
-	s.forceRefreshDNSOnModeSwitch("after_enable_tun")
 	s.logf("switched mode to tun, library=%s", libraryPath)
 	return nil
 }

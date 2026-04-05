@@ -46,10 +46,6 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 	if targets.ControllerHost != "" && len(targets.IPv4Addrs) == 0 {
 		return fmt.Errorf("resolve controller ipv4 failed: %s", targets.ControllerHost)
 	}
-	if err := windowsClearIPv4StaticRoutesForTUN(); err != nil {
-		return err
-	}
-
 	adapter, err := ensureWindowsTUNAdapterIPv4Routing()
 	if err != nil {
 		return err
