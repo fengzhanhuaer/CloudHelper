@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -438,29 +439,44 @@ func resolveProbeChainDialIPHostWithCache(rawHost string, forceRefresh bool) (di
 		}
 	}
 
+	startedAt := time.Now()
+	log.Printf("[manager/mux] resolve relay host begin: host=%s force_refresh=%v", host, forceRefresh)
+
 	resolver := &networkAssistantService{}
+	upstreamStartedAt := time.Now()
+	log.Printf("[manager/mux] resolve relay host via upstream begin: host=%s", host)
 	if addrs, _, upstreamErr := resolver.queryRuleDomainViaSystemDNS(host, 1); upstreamErr == nil && len(addrs) > 0 {
+		log.Printf("[manager/mux] resolve relay host via upstream success: host=%s addrs=%v elapsed=%s", host, addrs, time.Since(upstreamStartedAt))
 		for _, addr := range addrs {
 			if parsed := net.ParseIP(strings.TrimSpace(addr)); parsed != nil {
 				resolvedIP := parsed.String()
 				_ = setProbeDNSCachedIP(host, resolvedIP)
+				log.Printf("[manager/mux] resolve relay host done: host=%s ip=%s source=upstream elapsed=%s", host, resolvedIP, time.Since(startedAt))
 				return resolvedIP, host, nil
 			}
 		}
+		log.Printf("[manager/mux] resolve relay host via upstream unusable addrs: host=%s addrs=%v elapsed=%s", host, addrs, time.Since(upstreamStartedAt))
+	} else {
+		log.Printf("[manager/mux] resolve relay host via upstream failed: host=%s elapsed=%s err=%v", host, time.Since(upstreamStartedAt), upstreamErr)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	systemStartedAt := time.Now()
+	log.Printf("[manager/mux] resolve relay host via system begin: host=%s", host)
 	ips, resolveErr := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if resolveErr != nil {
+		log.Printf("[manager/mux] resolve relay host via system failed: host=%s elapsed=%s err=%v", host, time.Since(systemStartedAt), resolveErr)
 		return "", "", fmt.Errorf("resolve relay host failed: %w", resolveErr)
 	}
 	ip := selectProbeChainPreferredDialIP(ips)
 	if ip == nil {
+		log.Printf("[manager/mux] resolve relay host via system empty: host=%s ips=%v elapsed=%s", host, ips, time.Since(systemStartedAt))
 		return "", "", fmt.Errorf("resolve relay host failed: no ip")
 	}
 	resolvedIP := ip.String()
 	_ = setProbeDNSCachedIP(host, resolvedIP)
+	log.Printf("[manager/mux] resolve relay host done: host=%s ip=%s source=system elapsed=%s", host, resolvedIP, time.Since(startedAt))
 	return resolvedIP, host, nil
 }
 

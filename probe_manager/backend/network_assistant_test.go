@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -256,6 +258,68 @@ func TestDecideRouteForTargetRuleModeByIP(t *testing.T) {
 	if !directDecision.Direct {
 		t.Fatal("expected direct route for unmatched target")
 	}
+}
+
+func TestRealDataCollectAutoMaintainTargetsAndResolveRelayHost(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	dataDir := filepath.Clean(filepath.Join(cwd, "..", "data"))
+	if _, err := os.Stat(filepath.Join(dataDir, "rule_routes.txt")); err != nil {
+		t.Fatalf("real data rule_routes missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "probe_chain.json")); err != nil {
+		t.Fatalf("real data probe_chain missing: %v", err)
+	}
+
+	routing, err := loadOrCreateTunnelRuleRouting()
+	if err != nil {
+		t.Fatalf("loadOrCreateTunnelRuleRouting: %v", err)
+	}
+	nodes, chainTargets, err := loadChainCacheFromFile()
+	if err != nil {
+		t.Fatalf("loadChainCacheFromFile: %v", err)
+	}
+	if len(nodes) == 0 {
+		t.Fatal("real data available nodes is empty")
+	}
+	if len(chainTargets) == 0 {
+		t.Fatal("real data chain targets is empty")
+	}
+
+	targets := collectAutoMaintainPolicyTunnelNodeIDs(routing, nodes, defaultNodeID)
+	if len(targets) == 0 {
+		t.Fatal("real data auto maintain targets is empty")
+	}
+	t.Logf("real data auto maintain targets: %v", targets)
+
+	firstTarget := strings.TrimSpace(targets[0])
+	endpoint, hasChainTarget, resolvedNodeID, err := resolveProbeChainTargetFromSnapshot(firstTarget, chainTargets)
+	if err != nil {
+		t.Fatalf("resolveProbeChainTargetFromSnapshot: %v", err)
+	}
+	if !hasChainTarget {
+		t.Fatalf("resolved target %s is not a chain target", firstTarget)
+	}
+	if strings.TrimSpace(endpoint.EntryHost) == "" {
+		t.Fatalf("resolved endpoint entry host is empty: %+v", endpoint)
+	}
+	if strings.TrimSpace(resolvedNodeID) == "" {
+		t.Fatalf("resolved node id is empty: %+v", endpoint)
+	}
+
+	resolvedIP, hostHeader, err := resolveProbeChainDialIPHostWithCache(endpoint.EntryHost, true)
+	if err != nil {
+		t.Fatalf("resolveProbeChainDialIPHostWithCache: host=%s err=%v", endpoint.EntryHost, err)
+	}
+	if net.ParseIP(strings.TrimSpace(resolvedIP)) == nil {
+		t.Fatalf("resolved relay ip is invalid: %s", resolvedIP)
+	}
+	if strings.TrimSpace(hostHeader) == "" {
+		t.Fatalf("resolved relay host header is empty: host=%s", endpoint.EntryHost)
+	}
+	t.Logf("resolved relay host: target=%s resolved=%s chain=%s entry_host=%s host_header=%s ip=%s", firstTarget, resolvedNodeID, endpoint.ChainID, endpoint.EntryHost, hostHeader, resolvedIP)
 }
 
 func TestDecideRouteForTargetTUNModeUsesRuleRouting(t *testing.T) {
