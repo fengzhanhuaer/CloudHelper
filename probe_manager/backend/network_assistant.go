@@ -798,7 +798,10 @@ func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) e
 }
 
 func (s *networkAssistantService) syncAvailableNodesFromController() error {
+	readWaitStartedAt := time.Now()
+	s.logf("sync available nodes read lock wait begin")
 	s.mu.RLock()
+	s.logf("sync available nodes read lock acquired: elapsed=%s", time.Since(readWaitStartedAt))
 	baseURL := strings.TrimSpace(s.controllerBaseURL)
 	token := strings.TrimSpace(s.sessionToken)
 	s.mu.RUnlock()
@@ -817,7 +820,10 @@ func (s *networkAssistantService) syncAvailableNodesFromController() error {
 	}
 	nodes := mergeAvailableNodeIDs(chainNodes, chainTargets)
 
+	commitWaitStartedAt := time.Now()
+	s.logf("sync available nodes commit lock wait begin")
 	s.mu.Lock()
+	s.logf("sync available nodes commit lock acquired: elapsed=%s", time.Since(commitWaitStartedAt))
 	if chainErr == nil {
 		s.chainTargets = chainTargets
 	} else {

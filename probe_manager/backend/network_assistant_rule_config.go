@@ -91,33 +91,37 @@ func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) 
 
 func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, error) {
 	startedAt := time.Now()
-	s.logfRateLimited("rule-config:get:begin", 3*time.Second, "get rule config begin")
+	s.logf("get rule config begin")
+	s.logf("get rule config before snapshot")
 
 	availableNodes, chainTargets, currentNode, routing := s.getRuleConfigSnapshot()
-	s.logfRateLimited(
-		"rule-config:get:snapshot",
-		3*time.Second,
-		"get rule config snapshot loaded: available=%d chain_targets=%d current=%s groups=%d",
+	s.logf(
+		"get rule config snapshot loaded: available=%d chain_targets=%d current=%s groups=%d elapsed=%s",
 		len(availableNodes),
 		len(chainTargets),
 		currentNode,
 		len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1,
+		time.Since(startedAt),
 	)
 
 	buildStartedAt := time.Now()
+	s.logf("get rule config before build: elapsed=%s", time.Since(startedAt))
 	tunnelOptions := buildRuleTunnelOptions(availableNodes, currentNode)
 	if currentNode == "" {
 		currentNode = defaultNodeID
 	}
 	config := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets)
-	s.logfRateLimited("rule-config:get:after-build", 3*time.Second, "get rule config build done: elapsed=%s groups=%d fallback_action=%s", time.Since(buildStartedAt), len(config.Groups), config.Fallback.Action)
+	s.logf("get rule config build done: elapsed=%s build_elapsed=%s groups=%d fallback_action=%s", time.Since(startedAt), time.Since(buildStartedAt), len(config.Groups), config.Fallback.Action)
 
-	s.logfRateLimited("rule-config:get:done", 3*time.Second, "get rule config done: total_elapsed=%s", time.Since(startedAt))
+	s.logf("get rule config done: total_elapsed=%s", time.Since(startedAt))
 	return config, nil
 }
 
 func (s *networkAssistantService) getRuleConfigSnapshot() ([]string, map[string]probeChainEndpoint, string, tunnelRuleRouting) {
+	waitStartedAt := time.Now()
+	s.logf("get rule config snapshot wait rlock begin")
 	s.mu.RLock()
+	s.logf("get rule config snapshot wait rlock done: elapsed=%s", time.Since(waitStartedAt))
 	availableNodes := append([]string(nil), s.availableNodes...)
 	chainTargets := copyProbeChainTargets(s.chainTargets)
 	currentNode := strings.TrimSpace(s.nodeID)

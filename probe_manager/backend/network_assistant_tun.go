@@ -57,7 +57,10 @@ func (s *networkAssistantService) syncTUNInstallState() {
 	// Throttle: only re-detect TUN state at most once every 5 seconds to avoid
 	// spawning a PowerShell process on every GetNetworkAssistantStatus() call.
 	now := time.Now()
+	throttleWaitStartedAt := time.Now()
+	s.logf("sync tun install state throttle lock wait begin")
 	s.mu.Lock()
+	s.logf("sync tun install state throttle lock acquired: elapsed=%s", time.Since(throttleWaitStartedAt))
 	if now.Sub(s.tunLastSyncAt) < 5*time.Second {
 		s.mu.Unlock()
 		return
@@ -83,7 +86,10 @@ func (s *networkAssistantService) syncTUNInstallState() {
 	}
 	installed := installedByLibrary || installedByAdapter
 
+	stateCommitWaitStartedAt := time.Now()
+	s.logf("sync tun install state commit lock wait begin")
 	s.mu.Lock()
+	s.logf("sync tun install state commit lock acquired: elapsed=%s", time.Since(stateCommitWaitStartedAt))
 	defer s.mu.Unlock()
 
 	s.tunSupported = isTUNSupported()

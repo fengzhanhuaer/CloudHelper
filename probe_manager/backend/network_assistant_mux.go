@@ -972,15 +972,22 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 }
 
 func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
+	muxGuardWaitStartedAt := time.Now()
+	s.logf("mux auto maintain guard lock wait begin")
 	s.mu.Lock()
+	s.logf("mux auto maintain guard lock acquired: elapsed=%s", time.Since(muxGuardWaitStartedAt))
 	if s.muxMaintaining {
 		s.mu.Unlock()
+		s.logf("mux auto maintain skipped: already maintaining")
 		return
 	}
 	s.muxMaintaining = true
 	s.mu.Unlock()
 	defer func() {
+		guardReleaseWaitStartedAt := time.Now()
+		s.logf("mux auto maintain guard release lock wait begin")
 		s.mu.Lock()
+		s.logf("mux auto maintain guard release lock acquired: elapsed=%s", time.Since(guardReleaseWaitStartedAt))
 		s.muxMaintaining = false
 		s.mu.Unlock()
 	}()
