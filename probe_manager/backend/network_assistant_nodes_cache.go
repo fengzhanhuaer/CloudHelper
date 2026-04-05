@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -248,21 +247,10 @@ func loadChainCacheFromFile() (nodes []string, chainTargets map[string]probeChai
 	for _, id := range payload.Nodes {
 		addNode(id)
 	}
-	// 兼容旧缓存：若 nodes 为空，尝试从 chain_targets 回填可选节点。
+	// 兼容旧缓存：若 nodes 为空，尝试从 chain_targets 回填可选链路目标。
 	if len(outNodes) == 0 {
 		for nodeID := range targets {
 			addNode(nodeID)
-		}
-	}
-	// 最后兜底：统一从 probe_nodes.json 回填节点编号。
-	if len(outNodes) == 0 {
-		if probeNodes, _, loadErr := loadProbeNodes(); loadErr == nil {
-			for _, item := range probeNodes {
-				if item.NodeNo <= 0 {
-					continue
-				}
-				addNode(strconv.Itoa(item.NodeNo))
-			}
 		}
 	}
 

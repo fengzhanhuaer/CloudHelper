@@ -174,14 +174,15 @@ func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID stri
 }
 
 func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []string, defaultNode string, chainTargets map[string]probeChainEndpoint) NetworkAssistantRuleConfig {
+	filteredTunnelOptions := filterRuleTunnelOptions(tunnelOptions)
 	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
 	items := make([]NetworkAssistantRuleGroupConfig, 0, len(groups))
 	for _, group := range groups {
 		if isDirectRuleGroupKey(group) {
 			continue
 		}
-		policy, _ := readRulePolicyForGroup(routing, group, defaultNode, tunnelOptions)
-		groupOptions := mergeRuleTunnelOptions(tunnelOptions, policy.TunnelNodeID)
+		policy, _ := readRulePolicyForGroup(routing, group, defaultNode, filteredTunnelOptions)
+		groupOptions := mergeRuleTunnelOptions(filteredTunnelOptions, policy.TunnelNodeID)
 		groupOptionLabels := buildRuleTunnelOptionLabels(groupOptions, chainTargets)
 		items = append(items, NetworkAssistantRuleGroupConfig{
 			Group:              group,
@@ -192,8 +193,8 @@ func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []strin
 		})
 	}
 
-	fallbackPolicy, _ := readRulePolicyForGroup(routing, ruleFallbackGroupKey, defaultNode, tunnelOptions)
-	fallbackOptions := mergeRuleTunnelOptions(tunnelOptions, fallbackPolicy.TunnelNodeID)
+	fallbackPolicy, _ := readRulePolicyForGroup(routing, ruleFallbackGroupKey, defaultNode, filteredTunnelOptions)
+	fallbackOptions := mergeRuleTunnelOptions(filteredTunnelOptions, fallbackPolicy.TunnelNodeID)
 	fallbackOptionLabels := buildRuleTunnelOptionLabels(fallbackOptions, chainTargets)
 	return NetworkAssistantRuleConfig{
 		RuleFilePath: strings.TrimSpace(routing.RuleFilePath),
@@ -272,6 +273,24 @@ func buildRuleTunnelOptions(availableNodes []string, currentNode string) []strin
 	}
 	add(currentNode)
 	add(defaultNodeID)
+	return filterRuleTunnelOptions(options)
+}
+
+func filterRuleTunnelOptions(nodes []string) []string {
+	options := make([]string, 0, len(nodes))
+	for _, raw := range nodes {
+		node := strings.TrimSpace(raw)
+		if node == "" || containsNodeID(options, node) {
+			continue
+		}
+		if strings.EqualFold(node, defaultNodeID) {
+			options = append(options, node)
+			continue
+		}
+		if _, ok := parseChainTargetNodeID(node); ok {
+			options = append(options, node)
+		}
+	}
 	if len(options) == 0 {
 		options = append(options, defaultNodeID)
 	}
@@ -283,6 +302,11 @@ func mergeRuleTunnelOptions(base []string, selected string) []string {
 	selectedNode := strings.TrimSpace(selected)
 	if selectedNode == "" || containsNodeID(options, selectedNode) {
 		return options
+	}
+	if !strings.EqualFold(selectedNode, defaultNodeID) {
+		if _, ok := parseChainTargetNodeID(selectedNode); !ok {
+			return options
+		}
 	}
 	return append(options, selectedNode)
 }
@@ -343,6 +367,11 @@ func normalizeRuleGroupPolicy(policy ruleGroupPolicy, defaultNode string, tunnel
 		normalized.TunnelNodeID = strings.TrimSpace(node)
 		if normalized.TunnelNodeID == "" {
 			normalized.TunnelNodeID = defaultNodeID
+		}
+		if !strings.EqualFold(normalized.TunnelNodeID, defaultNodeID) {
+			if _, ok := parseChainTargetNodeID(normalized.TunnelNodeID); !ok {
+				normalized.TunnelNodeID = defaultNodeID
+			}
 		}
 		return normalized, nil
 	default:

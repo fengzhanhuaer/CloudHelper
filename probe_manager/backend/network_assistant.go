@@ -723,10 +723,9 @@ func mergeAvailableNodeIDs(nodeIDs []string, chainTargets map[string]probeChainE
 	}
 
 	for _, nodeID := range nodeIDs {
-		add(nodeID)
-	}
-	for _, item := range mustLoadProbeNodes() {
-		add(strconv.Itoa(item.NodeNo))
+		if _, ok := parseChainTargetNodeID(nodeID); ok {
+			add(nodeID)
+		}
 	}
 	for nodeID := range chainTargets {
 		add(nodeID)
@@ -774,31 +773,10 @@ func (s *networkAssistantService) syncAvailableNodesFromController() error {
 	}
 
 	chainTargets, chainNodes, _, chainErr := fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token, s.logf)
-	nodes := make([]string, 0, len(chainNodes)+1)
-	if chainErr == nil && len(chainNodes) > 0 {
-		nodes = append(nodes, chainNodes...)
+	if chainErr != nil {
+		return chainErr
 	}
-	// Fall back to regular tunnel node list when chain list is unavailable or empty.
-	if chainErr != nil || len(nodes) == 0 {
-		payload, err := fetchTunnelNodesViaAdminWS(baseURL, token)
-		if err != nil {
-			if chainErr != nil && len(nodes) == 0 {
-				return chainErr
-			}
-			return err
-		}
-		for _, item := range payload.Nodes {
-			if !item.Online {
-				continue
-			}
-			id := strings.TrimSpace(item.ID)
-			if id == "" {
-				continue
-			}
-			nodes = append(nodes, id)
-		}
-	}
-	nodes = mergeAvailableNodeIDs(nodes, chainTargets)
+	nodes := mergeAvailableNodeIDs(chainNodes, chainTargets)
 
 	s.mu.Lock()
 	if chainErr == nil {
@@ -1136,7 +1114,11 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	}
 
 	s.mu.Lock()
-	if !containsNodeID(s.availableNodes, normalizedNode) {
+	isValidSelectedNode := strings.EqualFold(normalizedNode, defaultNodeID)
+	if !isValidSelectedNode {
+		_, isValidSelectedNode = parseChainTargetNodeID(normalizedNode)
+	}
+	if !isValidSelectedNode || !containsNodeID(s.availableNodes, normalizedNode) {
 		s.mu.Unlock()
 		err := fmt.Errorf("selected node is unavailable: %s", normalizedNode)
 		s.setLastError(err)

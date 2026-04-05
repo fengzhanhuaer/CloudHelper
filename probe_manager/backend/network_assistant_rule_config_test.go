@@ -16,7 +16,7 @@ func TestBuildRuleConfigFromRoutingIncludesSelectedTunnelOption(t *testing.T) {
 		RuleFilePath: "data/rule_routes.txt",
 	}
 
-	config := buildRuleConfigFromRouting(routing, []string{"cloudserver"}, "cloudserver", nil)
+	config := buildRuleConfigFromRouting(routing, []string{"cloudserver", "1", "2"}, defaultNodeID, nil)
 	if len(config.Groups) != 1 {
 		t.Fatalf("group count=%d, want 1", len(config.Groups))
 	}
@@ -28,8 +28,14 @@ func TestBuildRuleConfigFromRoutingIncludesSelectedTunnelOption(t *testing.T) {
 	if group.TunnelNodeID != "chain:legacy-path" {
 		t.Fatalf("group tunnel node=%s, want chain:legacy-path", group.TunnelNodeID)
 	}
-	if !containsNodeID(group.TunnelOptions, "cloudserver") {
-		t.Fatalf("tunnel options missing cloudserver: %#v", group.TunnelOptions)
+	if containsNodeID(group.TunnelOptions, "1") || containsNodeID(group.TunnelOptions, "2") {
+		t.Fatalf("tunnel options should exclude probe nodes: %#v", group.TunnelOptions)
+	}
+	if containsNodeID(group.TunnelOptions, "cloudserver") {
+		t.Fatalf("tunnel options should exclude legacy non-chain option: %#v", group.TunnelOptions)
+	}
+	if !containsNodeID(group.TunnelOptions, defaultNodeID) {
+		t.Fatalf("tunnel options missing direct default: %#v", group.TunnelOptions)
 	}
 	if !containsNodeID(group.TunnelOptions, "chain:legacy-path") {
 		t.Fatalf("tunnel options missing selected tunnel: %#v", group.TunnelOptions)
@@ -52,8 +58,8 @@ func TestBuildRuleConfigFromRoutingUsesChainNameLabels(t *testing.T) {
 
 	config := buildRuleConfigFromRouting(
 		routing,
-		[]string{"cloudserver", "chain:1"},
-		"cloudserver",
+		[]string{defaultNodeID, "cloudserver", "chain:1", "3"},
+		defaultNodeID,
 		map[string]probeChainEndpoint{
 			"chain:1": {
 				ChainID:   "1",
@@ -70,8 +76,14 @@ func TestBuildRuleConfigFromRoutingUsesChainNameLabels(t *testing.T) {
 	if got := group.TunnelOptionLabels["chain:1"]; got != "香港入口" {
 		t.Fatalf("chain label=%q, want 香港入口", got)
 	}
-	if got := group.TunnelOptionLabels["cloudserver"]; got != "cloudserver" {
-		t.Fatalf("cloudserver label=%q, want cloudserver", got)
+	if _, ok := group.TunnelOptionLabels["cloudserver"]; ok {
+		t.Fatalf("legacy non-chain label should not appear in tunnel options: %#v", group.TunnelOptionLabels)
+	}
+	if got := group.TunnelOptionLabels[defaultNodeID]; got != "主控" {
+		t.Fatalf("default node label=%q, want 主控", got)
+	}
+	if _, ok := group.TunnelOptionLabels["3"]; ok {
+		t.Fatalf("probe node label should not appear in tunnel options: %#v", group.TunnelOptionLabels)
 	}
 }
 
