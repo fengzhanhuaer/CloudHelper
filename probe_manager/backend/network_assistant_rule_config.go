@@ -97,7 +97,9 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 	if currentNode == "" {
 		currentNode = defaultNodeID
 	}
-	return buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets), nil
+	config := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets)
+	s.triggerMuxAutoMaintainNow()
+	return config, nil
 }
 
 func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {

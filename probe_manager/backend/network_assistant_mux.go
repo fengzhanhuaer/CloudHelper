@@ -842,7 +842,6 @@ func (s *networkAssistantService) startMuxAutoMaintainLoop() {
 
 	go func() {
 		defer close(doneCh)
-		s.maintainSelectedTunnelMuxClients()
 		ticker := time.NewTicker(muxAutoMaintainInterval)
 		defer ticker.Stop()
 		for {
