@@ -37,6 +37,8 @@ var probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID st
 	return err
 }
 
+var probeLinkEnableOnDemandMux = false
+
 type ProbeLinkConnectResult struct {
 	OK           bool   `json:"ok"`
 	NodeID       string `json:"node_id"`
@@ -474,18 +476,21 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 		}, nil
 	}
 
-	// 无已有连接：按需建立 mux，再次探测。
-	if err := probeLinkEnsureMuxForNode(a.networkAssistant, endpoint.TargetID); err == nil {
-		if rtt, ok := a.networkAssistant.tryPingExistingMux(endpoint.TargetID); ok {
-			return ProbeChainPingResult{
-				OK:         true,
-				ChainID:    resolvedChainID,
-				EntryHost:  endpoint.EntryHost,
-				EntryPort:  endpoint.EntryPort,
-				LinkLayer:  endpoint.LinkLayer,
-				DurationMS: rtt.Milliseconds(),
-				Message:    fmt.Sprintf("连接成功（按需建链并建立保活）(%dms)", rtt.Milliseconds()),
-			}, nil
+	// 默认不在“测试链路”里按需建链。近期修改引入这里后，会进入较深的建链路径，
+	// 一旦底层存在等待或锁竞争，前端就会表现为长时间卡住。
+	if probeLinkEnableOnDemandMux {
+		if err := probeLinkEnsureMuxForNode(a.networkAssistant, endpoint.TargetID); err == nil {
+			if rtt, ok := a.networkAssistant.tryPingExistingMux(endpoint.TargetID); ok {
+				return ProbeChainPingResult{
+					OK:         true,
+					ChainID:    resolvedChainID,
+					EntryHost:  endpoint.EntryHost,
+					EntryPort:  endpoint.EntryPort,
+					LinkLayer:  endpoint.LinkLayer,
+					DurationMS: rtt.Milliseconds(),
+					Message:    fmt.Sprintf("连接成功（按需建链并建立保活）(%dms)", rtt.Milliseconds()),
+				}, nil
+			}
 		}
 	}
 
@@ -601,22 +606,30 @@ func pingNetworkAssistantTunnelNode(service *networkAssistantService, nodeID str
 		}, nil
 	}
 
-	// 2) 无可复用链路时按需建链，再次尝试 ping。
-	if err := probeLinkEnsureMuxForNode(service, trimmedNodeID); err != nil {
+	// 默认不在“测试链路”里触发按需建链，避免测试动作进入完整建链流程导致界面卡住。
+	if probeLinkEnableOnDemandMux {
+		if err := probeLinkEnsureMuxForNode(service, trimmedNodeID); err != nil {
+			return ProbeChainPingResult{
+				OK:        false,
+				ChainID:   trimmedNodeID,
+				LinkLayer: "ws",
+				Message:   fmt.Sprintf("连接失败: 本地无可复用链路，按需建链失败: %v", err),
+			}, nil
+		}
+		if rtt, ok := probeLinkTryPingExistingMux(service, trimmedNodeID); ok {
+			return ProbeChainPingResult{
+				OK:         true,
+				ChainID:    trimmedNodeID,
+				LinkLayer:  "ws",
+				DurationMS: rtt.Milliseconds(),
+				Message:    fmt.Sprintf("连接成功（按需建链）(%dms)", rtt.Milliseconds()),
+			}, nil
+		}
 		return ProbeChainPingResult{
 			OK:        false,
 			ChainID:   trimmedNodeID,
 			LinkLayer: "ws",
-			Message:   fmt.Sprintf("连接失败: 本地无可复用链路，按需建链失败: %v", err),
-		}, nil
-	}
-	if rtt, ok := probeLinkTryPingExistingMux(service, trimmedNodeID); ok {
-		return ProbeChainPingResult{
-			OK:         true,
-			ChainID:    trimmedNodeID,
-			LinkLayer:  "ws",
-			DurationMS: rtt.Milliseconds(),
-			Message:    fmt.Sprintf("连接成功（按需建链）(%dms)", rtt.Milliseconds()),
+			Message:   "连接失败: 本地无可复用链路，按需建链后链路仍不可用",
 		}, nil
 	}
 
@@ -624,6 +637,6 @@ func pingNetworkAssistantTunnelNode(service *networkAssistantService, nodeID str
 		OK:        false,
 		ChainID:   trimmedNodeID,
 		LinkLayer: "ws",
-		Message:   "连接失败: 本地无可复用链路，按需建链后链路仍不可用",
+		Message:   "连接失败: 本地无可复用链路",
 	}, nil
 }
