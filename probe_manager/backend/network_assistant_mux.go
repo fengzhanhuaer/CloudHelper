@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -878,63 +877,16 @@ func (s *networkAssistantService) triggerMuxAutoMaintainNow() {
 
 func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	s.mu.RLock()
-	mode := strings.TrimSpace(s.mode)
-	tunEnabled := s.tunEnabled
 	selectedNodeID := strings.TrimSpace(s.nodeID)
-	availableNodes := append([]string(nil), s.availableNodes...)
-	routing := s.ruleRouting
 	s.mu.RUnlock()
 
-	if mode != networkModeTUN || !tunEnabled {
-		s.logfRateLimited(
-			"mux:auto-maintain:skip:not-tun",
-			30*time.Second,
-			"mux auto maintain skipped: mode=%s tun_enabled=%v selected_node=%s available_nodes=%d",
-			mode,
-			tunEnabled,
-			selectedNodeID,
-			len(availableNodes),
-		)
-		return nil
-	}
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
 	}
-
-	desired := make(map[string]string)
-	addNode := func(raw string) {
-		node := strings.TrimSpace(raw)
-		if node == "" {
-			return
-		}
-		desired[strings.ToLower(node)] = node
+	if selectedNodeID == "" {
+		return nil
 	}
-
-	addNode(selectedNodeID)
-	tunnelOptions := buildRuleTunnelOptions(availableNodes, selectedNodeID)
-	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
-	groups = append(groups, ruleFallbackGroupKey)
-	for _, group := range groups {
-		policy, err := readRulePolicyForGroup(routing, group, selectedNodeID, tunnelOptions)
-		if err != nil || !strings.EqualFold(strings.TrimSpace(policy.Action), rulePolicyActionTunnel) {
-			continue
-		}
-		targetNodeID := strings.TrimSpace(policy.TunnelNodeID)
-		if targetNodeID == "" {
-			targetNodeID = selectedNodeID
-		}
-		if targetNodeID == "" {
-			targetNodeID = defaultNodeID
-		}
-		addNode(targetNodeID)
-	}
-
-	result := make([]string, 0, len(desired))
-	for _, nodeID := range desired {
-		result = append(result, nodeID)
-	}
-	sort.Strings(result)
-	return result
+	return []string{selectedNodeID}
 }
 
 func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
@@ -1081,7 +1033,7 @@ func calcMuxAutoMaintainBackoff(attempt int) time.Duration {
 	return backoff
 }
 
-func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Duration, bool) {
+func (s *networkAssistantService) getExistingTunnelMuxClientForNode(nodeID string) (*tunnelMuxClient, bool) {
 	targetNodeID := strings.TrimSpace(nodeID)
 
 	s.mu.RLock()
@@ -1102,6 +1054,14 @@ func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Durati
 	s.mu.RUnlock()
 
 	if client == nil || client.isClosed() {
+		return nil, false
+	}
+	return client, true
+}
+
+func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Duration, bool) {
+	client, ok := s.getExistingTunnelMuxClientForNode(nodeID)
+	if !ok {
 		return 0, false
 	}
 	rtt, err := client.ping()
@@ -1271,16 +1231,16 @@ func (s *networkAssistantService) openTunnelStreamForNode(network, targetAddr, n
 		targetAddr,
 		nodeID,
 	)
-	client, err := s.ensureTunnelMuxClientForNode(nodeID)
-	if err != nil {
+	client, ok := s.getExistingTunnelMuxClientForNode(nodeID)
+	if !ok {
+		err := fmt.Errorf("no available tunnel mux client: node=%s", strings.TrimSpace(nodeID))
 		s.logfRateLimited(
-			fmt.Sprintf("mux:stream-open:ensure-failed:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
+			fmt.Sprintf("mux:stream-open:no-client:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
 			5*time.Second,
-			"open tunnel stream ensure client failed: network=%s target=%s node=%s err=%v",
+			"open tunnel stream skipped: no available mux client: network=%s target=%s node=%s",
 			network,
 			targetAddr,
 			nodeID,
-			err,
 		)
 		return nil, err
 	}
@@ -1300,14 +1260,16 @@ func (s *networkAssistantService) openTunnelStreamForNode(network, targetAddr, n
 		)
 		return nil, err
 	}
-	s.logf("open tunnel stream failed, retrying: network=%s target=%s node=%s err=%v", network, targetAddr, nodeID, err)
-
-	client.close()
-	client, err = s.ensureTunnelMuxClientForNode(nodeID)
-	if err != nil {
-		return nil, err
-	}
-	return client.openStream(network, targetAddr)
+	s.logfRateLimited(
+		fmt.Sprintf("mux:stream-open:failed:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
+		5*time.Second,
+		"open tunnel stream failed with existing mux: network=%s target=%s node=%s err=%v",
+		network,
+		targetAddr,
+		nodeID,
+		err,
+	)
+	return nil, err
 }
 
 func writeAll(w io.Writer, payload []byte) error {

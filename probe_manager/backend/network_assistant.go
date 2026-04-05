@@ -479,6 +479,12 @@ func newNetworkAssistantService() *networkAssistantService {
 		logStore.Appendf(logSourceManager, "init", "load local chain targets skipped: %v", err)
 	}
 	service.syncTUNInstallState()
+	if err := service.startInternalDNSServer(); err != nil {
+		service.setLastError(err)
+		service.logf("failed to auto-start internal dns service: %v", err)
+	} else {
+		service.logf("internal dns service auto-started during service init")
+	}
 	service.startMuxAutoMaintainLoop()
 	service.logf("service initialized, mode=%s available_nodes=%d", service.mode, len(service.availableNodes))
 	return service
@@ -759,6 +765,7 @@ func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) e
 		s.setLastError(err)
 		return err
 	}
+	s.triggerMuxAutoMaintainNow()
 	return nil
 }
 
@@ -1130,6 +1137,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	}
 	s.nodeID = normalizedNode
 	s.mu.Unlock()
+	s.triggerMuxAutoMaintainNow()
 
 	if normalizedMode == networkModeDirect {
 		errStopTUN := s.stopLocalTUNDataPlane()
@@ -1203,6 +1211,7 @@ func (s *networkAssistantService) Shutdown() error {
 	s.stopMuxAutoMaintainLoop()
 	errStopTUN := s.stopLocalTUNDataPlane()
 	errTunRouting := s.clearTUNSystemRouting()
+	errStopDNS := s.stopInternalDNSServer()
 	errStopMux := s.stopTunnelMuxClients()
 	errDirect := applyDirectSystemProxy()
 
@@ -1239,7 +1248,10 @@ func (s *networkAssistantService) Shutdown() error {
 	if errStopTUN != nil {
 		s.logf("shutdown tun dataplane cleanup returned error: %v", errStopTUN)
 	}
-	return errors.Join(errStopTUN, errTunRouting, errStopMux, errDirect, errCloseAdapter)
+	if errStopDNS != nil {
+		s.logf("shutdown internal dns cleanup returned error: %v", errStopDNS)
+	}
+	return errors.Join(errStopTUN, errTunRouting, errStopDNS, errStopMux, errDirect, errCloseAdapter)
 }
 func (s *networkAssistantService) stopTunnelMuxClients() error {
 	s.mu.Lock()

@@ -78,6 +78,33 @@ func (s *networkAssistantService) startInternalDNSServer() error {
 	return nil
 }
 
+func (s *networkAssistantService) ensureInternalDNSServerHealthy() error {
+	s.mu.RLock()
+	server := s.internalDNS
+	s.mu.RUnlock()
+	if server == nil {
+		return s.startInternalDNSServer()
+	}
+	if err := probeInternalDNSUDPListen(); err == nil {
+		return nil
+	} else {
+		s.logf("local internal dns health check failed, restarting: err=%v", err)
+	}
+	if err := s.stopInternalDNSServer(); err != nil {
+		s.logf("local internal dns stop before restart failed: %v", err)
+	}
+	return s.startInternalDNSServer()
+}
+
+func probeInternalDNSUDPListen() error {
+	conn, err := net.DialTimeout("udp4", net.JoinHostPort(internalDNSListenIPv4, strconv.Itoa(internalDNSListenPort)), 500*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
+}
+
 func (s *networkAssistantService) stopInternalDNSServer() error {
 	s.mu.Lock()
 	server := s.internalDNS

@@ -274,6 +274,9 @@ func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 	if adapter.InterfaceIndex <= 0 {
 		return windowsAdapterInfo{}, errors.New("invalid tun adapter interface index")
 	}
+	if windowsTUNAdapterIPv4RoutingReady(adapter) {
+		return adapter, nil
+	}
 	if err := windowsEnsureInterfaceIPv4Address(adapter.InterfaceIndex, tunRouteIPv4Address, tunRouteIPv4PrefixLength); err != nil {
 		if !strings.Contains(strings.ToLower(err.Error()), "ipv4 address not bindable in time") {
 			return windowsAdapterInfo{}, err
@@ -325,7 +328,29 @@ func ensureWindowsTUNAdapterIPv4Routing() (windowsAdapterInfo, error) {
 			return windowsAdapterInfo{}, err
 		}
 	}
-	return adapter, nil
+	return windowsFindAdapterByIfIndex(adapter.InterfaceIndex)
+}
+
+func windowsTUNAdapterIPv4RoutingReady(adapter windowsAdapterInfo) bool {
+	if adapter.InterfaceIndex <= 0 {
+		return false
+	}
+	hasTunIPv4 := false
+	for _, ipValue := range adapter.IPv4Addrs {
+		if strings.TrimSpace(ipValue) == tunRouteIPv4Address {
+			hasTunIPv4 = true
+			break
+		}
+	}
+	if !hasTunIPv4 {
+		return false
+	}
+	for _, dnsServer := range adapter.PreviousDNSServers {
+		if strings.TrimSpace(dnsServer) == internalDNSListenIPv4 {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureWindowsIPv4BypassRoute(prefix string, interfaceIndex int, nextHop string) error {

@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -184,10 +183,8 @@ func TestPingNetworkAssistantTunnelNodeRequiresNodeID(t *testing.T) {
 
 func TestPingNetworkAssistantTunnelNodeExistingMux(t *testing.T) {
 	oldPing := probeLinkTryPingExistingMux
-	oldEnsure := probeLinkEnsureMuxForNode
 	defer func() {
 		probeLinkTryPingExistingMux = oldPing
-		probeLinkEnsureMuxForNode = oldEnsure
 	}()
 
 	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
@@ -198,10 +195,6 @@ func TestPingNetworkAssistantTunnelNodeExistingMux(t *testing.T) {
 			t.Fatalf("unexpected node id: %s", nodeID)
 		}
 		return 12 * time.Millisecond, true
-	}
-	probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
-		t.Fatalf("ensure should not be called when mux already exists")
-		return nil
 	}
 
 	result, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "cloudserver")
@@ -219,30 +212,20 @@ func TestPingNetworkAssistantTunnelNodeExistingMux(t *testing.T) {
 	}
 }
 
-func TestPingNetworkAssistantTunnelNodeEnsureMuxThenSuccess(t *testing.T) {
+func TestPingNetworkAssistantTunnelNodeWithoutReusableMux(t *testing.T) {
 	oldPing := probeLinkTryPingExistingMux
-	oldEnsure := probeLinkEnsureMuxForNode
 	defer func() {
 		probeLinkTryPingExistingMux = oldPing
-		probeLinkEnsureMuxForNode = oldEnsure
 	}()
 
-	var pingCount int
 	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
-		pingCount++
-		if pingCount == 1 {
-			return 0, false
-		}
-		return 23 * time.Millisecond, true
-	}
-	probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
 		if service == nil {
 			t.Fatalf("service should not be nil")
 		}
 		if nodeID != "cloudserver" {
 			t.Fatalf("unexpected node id: %s", nodeID)
 		}
-		return nil
+		return 0, false
 	}
 
 	result, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "cloudserver")
@@ -250,64 +233,10 @@ func TestPingNetworkAssistantTunnelNodeEnsureMuxThenSuccess(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.OK {
-		t.Fatalf("expected failed result when on-demand mux is disabled")
+		t.Fatalf("expected failed result when no reusable mux exists")
 	}
 	if result.DurationMS != 0 {
 		t.Fatalf("expected duration 0ms, got %d", result.DurationMS)
-	}
-	if !strings.Contains(result.Message, "本地无可复用链路") {
-		t.Fatalf("unexpected message: %s", result.Message)
-	}
-}
-
-func TestPingNetworkAssistantTunnelNodeEnsureMuxFailed(t *testing.T) {
-	oldPing := probeLinkTryPingExistingMux
-	oldEnsure := probeLinkEnsureMuxForNode
-	defer func() {
-		probeLinkTryPingExistingMux = oldPing
-		probeLinkEnsureMuxForNode = oldEnsure
-	}()
-
-	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
-		return 0, false
-	}
-	probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
-		return fmt.Errorf("dial failed")
-	}
-
-	result, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "cloudserver")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.OK {
-		t.Fatalf("expected failed result")
-	}
-	if !strings.Contains(result.Message, "本地无可复用链路") {
-		t.Fatalf("unexpected message: %s", result.Message)
-	}
-}
-
-func TestPingNetworkAssistantTunnelNodeEnsureMuxStillUnavailable(t *testing.T) {
-	oldPing := probeLinkTryPingExistingMux
-	oldEnsure := probeLinkEnsureMuxForNode
-	defer func() {
-		probeLinkTryPingExistingMux = oldPing
-		probeLinkEnsureMuxForNode = oldEnsure
-	}()
-
-	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
-		return 0, false
-	}
-	probeLinkEnsureMuxForNode = func(service *networkAssistantService, nodeID string) error {
-		return nil
-	}
-
-	result, err := pingNetworkAssistantTunnelNode(&networkAssistantService{}, "cloudserver")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.OK {
-		t.Fatalf("expected failed result")
 	}
 	if !strings.Contains(result.Message, "本地无可复用链路") {
 		t.Fatalf("unexpected message: %s", result.Message)

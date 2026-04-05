@@ -53,12 +53,6 @@ func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
 		s.logf("tun routing apply failed in platform routing stage: err=%v elapsed=%s", err, time.Since(startedAt))
 		return err
 	}
-	if err := s.startInternalDNSServer(); err != nil {
-		_ = s.clearPlatformTUNSystemRouting()
-		s.clearDNSRouteHints()
-		s.logf("tun routing apply failed in internal dns stage: err=%v elapsed=%s", err, time.Since(startedAt))
-		return err
-	}
 	s.seedStaticDNSRouteHints()
 	s.seedControlPlaneRouteHints(targets)
 	s.mu.Lock()
@@ -70,7 +64,6 @@ func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
 }
 
 func (s *networkAssistantService) clearTUNSystemRouting() error {
-	errDNS := s.stopInternalDNSServer()
 	err := s.clearPlatformTUNSystemRouting()
 	s.clearDNSRouteHints()
 	s.mu.Lock()
@@ -78,7 +71,7 @@ func (s *networkAssistantService) clearTUNSystemRouting() error {
 	s.tunRouteHost = ""
 	s.tunRouteSyncing = false
 	s.mu.Unlock()
-	return errors.Join(errDNS, err)
+	return err
 }
 
 func (s *networkAssistantService) forceRefreshDNSOnModeSwitch(_ string) {

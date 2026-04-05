@@ -318,14 +318,6 @@ func (s *networkAssistantService) EnableTUN() error {
 			return err
 		}
 	}
-	if err := s.stopLocalTUNDataPlane(); err != nil {
-		s.setLastError(err)
-		return err
-	}
-	if err := s.clearTUNSystemRouting(); err != nil {
-		s.setLastError(err)
-		return err
-	}
 	if err := s.stopTunnelMuxClients(); err != nil {
 		s.setLastError(err)
 		return err
@@ -335,6 +327,10 @@ func (s *networkAssistantService) EnableTUN() error {
 		return err
 	}
 	if err := s.startLocalTUNDataPlane(); err != nil {
+		s.setLastError(err)
+		return err
+	}
+	if err := s.ensureInternalDNSServerHealthy(); err != nil {
 		s.setLastError(err)
 		return err
 	}
@@ -364,6 +360,7 @@ func (s *networkAssistantService) EnableTUN() error {
 	}
 
 	s.logf("switched mode to tun, library=%s", libraryPath)
+	s.triggerMuxAutoMaintainNow()
 	return nil
 }
 
