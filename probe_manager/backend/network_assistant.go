@@ -752,6 +752,71 @@ func (s *networkAssistantService) Sync(controllerBaseURL, sessionToken string) e
 	return nil
 }
 
+func (s *networkAssistantService) syncAvailableNodesFromController() error {
+	s.mu.RLock()
+	baseURL := strings.TrimSpace(s.controllerBaseURL)
+	token := strings.TrimSpace(s.sessionToken)
+	s.mu.RUnlock()
+
+	if baseURL == "" || token == "" {
+		return errors.New("controller url and session token are required")
+	}
+
+	if err := s.ensureControlPlaneDialReady(baseURL); err != nil {
+		return err
+	}
+
+	chainTargets, chainNodes, _, chainErr := fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token, s.logf)
+	nodes := make([]string, 0, len(chainNodes)+1)
+	if chainErr == nil && len(chainNodes) > 0 {
+		nodes = append(nodes, chainNodes...)
+	}
+	// Fall back to regular tunnel node list when chain list is unavailable or empty.
+	if chainErr != nil || len(nodes) == 0 {
+		payload, err := fetchTunnelNodesViaAdminWS(baseURL, token)
+		if err != nil {
+			if chainErr != nil && len(nodes) == 0 {
+				return chainErr
+			}
+			return err
+		}
+		for _, item := range payload.Nodes {
+			if !item.Online {
+				continue
+			}
+			id := strings.TrimSpace(item.ID)
+			if id == "" {
+				continue
+			}
+			nodes = append(nodes, id)
+		}
+	}
+	nodes = mergeAvailableNodeIDs(nodes, chainTargets)
+
+	s.mu.Lock()
+	if chainErr == nil {
+		s.chainTargets = chainTargets
+	} else {
+		// Keep prior chain cache on transient controller failures to avoid UI option loss.
+		s.logf("refresh chain targets failed, keep cached chain targets: %v", chainErr)
+		for nodeID := range s.chainTargets {
+			if _, exists := chainTargets[nodeID]; !exists {
+				chainTargets[nodeID] = s.chainTargets[nodeID]
+			}
+		}
+		nodes = mergeAvailableNodeIDs(nodes, chainTargets)
+	}
+	s.availableNodes = nodes
+	if !containsNodeID(nodes, s.nodeID) {
+		s.nodeID = nodes[0]
+	}
+	s.mu.Unlock()
+	if saveErr := saveChainCacheToFile(nodes, s.getChainTargetsSnapshot()); saveErr != nil {
+		s.logf("save local chain cache failed: %v", saveErr)
+	}
+	return nil
+}
+
 func (s *networkAssistantService) GetProbeLinkChainsCache() ([]ProbeLinkChainCacheItem, error) {
 	targets, err := s.getOrLoadChainTargetsSnapshot()
 	if err != nil {
@@ -1987,97 +2052,23 @@ func isCredentialMissingErr(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "missing controller url or session token")
 }
 
-func (s *networkAssistantService) refreshAvailableNodes(options ...bool) error {
-	forceRemote := false
-	if len(options) > 0 {
-		forceRemote = options[0]
-	}
-
-	s.mu.RLock()
-	baseURL := strings.TrimSpace(s.controllerBaseURL)
-	token := strings.TrimSpace(s.sessionToken)
-	s.mu.RUnlock()
-
-	if baseURL == "" || token == "" {
-		return errors.New("controller url and session token are required")
-	}
-
-	if !forceRemote {
-		cachedNodes, cachedTargets, cacheErr := loadChainCacheFromFile()
-		if cacheErr == nil && (len(cachedNodes) > 0 || len(cachedTargets) > 0) {
-			nodes := mergeAvailableNodeIDs(cachedNodes, cachedTargets)
-			s.mu.Lock()
-			s.availableNodes = nodes
-			s.chainTargets = copyProbeChainTargets(cachedTargets)
-			if !containsNodeID(nodes, s.nodeID) {
-				s.nodeID = nodes[0]
-			}
-			s.mu.Unlock()
-			return nil
+func (s *networkAssistantService) refreshAvailableNodes() error {
+	cachedNodes, cachedTargets, cacheErr := loadChainCacheFromFile()
+	if cacheErr == nil && (len(cachedNodes) > 0 || len(cachedTargets) > 0) {
+		nodes := mergeAvailableNodeIDs(cachedNodes, cachedTargets)
+		s.mu.Lock()
+		s.availableNodes = nodes
+		s.chainTargets = copyProbeChainTargets(cachedTargets)
+		if !containsNodeID(nodes, s.nodeID) {
+			s.nodeID = nodes[0]
 		}
-		if cacheErr != nil {
-			s.logf("load local chain cache failed: %v", cacheErr)
-		}
-		return errors.New("local chain cache is empty, please click from-controller fetch")
+		s.mu.Unlock()
+		return nil
 	}
-
-	if err := s.ensureControlPlaneDialReady(baseURL); err != nil {
-		return err
+	if cacheErr != nil {
+		s.logf("load local chain cache failed: %v", cacheErr)
 	}
-
-	chainTargets, chainNodes, _, chainErr := fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token, s.logf)
-	nodes := make([]string, 0, len(chainNodes)+1)
-	if chainErr == nil && len(chainNodes) > 0 {
-		nodes = append(nodes, chainNodes...)
-	}
-	// Fall back to regular tunnel node list when chain list is unavailable or empty.
-	if chainErr != nil || len(nodes) == 0 {
-		payload, err := fetchTunnelNodesViaAdminWS(baseURL, token)
-		if err != nil {
-			if chainErr != nil && len(nodes) == 0 {
-				return chainErr
-			}
-			return err
-		}
-		for _, item := range payload.Nodes {
-			if !item.Online {
-				continue
-			}
-			id := strings.TrimSpace(item.ID)
-			if id == "" {
-				continue
-			}
-			nodes = append(nodes, id)
-		}
-	}
-	if !containsNodeID(nodes, defaultNodeID) {
-		nodes = append(nodes, defaultNodeID)
-	}
-	if len(nodes) == 0 {
-		nodes = []string{defaultNodeID}
-	}
-
-	s.mu.Lock()
-	if chainErr == nil {
-		s.chainTargets = chainTargets
-	} else {
-		// Keep prior chain cache on transient controller failures to avoid UI option loss.
-		s.logf("refresh chain targets failed, keep cached chain targets: %v", chainErr)
-		for nodeID := range s.chainTargets {
-			if !containsNodeID(nodes, nodeID) {
-				nodes = append(nodes, nodeID)
-			}
-		}
-	}
-	s.availableNodes = nodes
-	if !containsNodeID(nodes, s.nodeID) {
-		s.nodeID = nodes[0]
-	}
-	s.mu.Unlock()
-	if saveErr := saveChainCacheToFile(nodes, s.getChainTargetsSnapshot()); saveErr != nil {
-		s.logf("save local chain cache failed: %v", saveErr)
-	}
-	return nil
+	return errors.New("local chain cache is empty, please click from-controller fetch")
 }
 
 func fetchTunnelNodesViaAdminWS(baseURL, token string) (tunnelNodesResponse, error) {

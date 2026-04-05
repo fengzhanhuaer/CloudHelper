@@ -173,7 +173,7 @@ func (a *App) ForceRefreshNetworkAssistantNodes(baseURL, token string) error {
 		return errors.New("network assistant not initialized")
 	}
 	a.networkAssistant.UpdateSession(baseURL, token)
-	if err := a.networkAssistant.refreshAvailableNodes(true); err != nil {
+	if err := a.networkAssistant.syncAvailableNodesFromController(); err != nil {
 		return fmt.Errorf("force refresh network assistant nodes failed: %w", err)
 	}
 	return nil

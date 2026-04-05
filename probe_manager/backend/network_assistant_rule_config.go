@@ -593,15 +593,7 @@ func (s *networkAssistantService) refreshAvailableNodesForRuleConfig() {
 	if s == nil {
 		return
 	}
-
-	s.mu.RLock()
-	baseURL := strings.TrimSpace(s.controllerBaseURL)
-	token := strings.TrimSpace(s.sessionToken)
-	s.mu.RUnlock()
-	if baseURL == "" || token == "" {
-		return
-	}
-	if err := s.refreshAvailableNodes(false); err != nil {
+	if err := s.refreshAvailableNodes(); err != nil {
 		s.logf("refresh available nodes for rule config failed: %v", err)
 	}
 }
