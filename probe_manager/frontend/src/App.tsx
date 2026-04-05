@@ -44,11 +44,14 @@ function App() {
       return;
     }
     if (activeTab === "network-assistant") {
-      console.log("[network-assistant][rule-config] trigger from App effect", {
-        activeTab,
-        hasSessionToken: !!auth.sessionToken,
-        baseUrl: settings.baseUrl,
-      });
+      void networkAssistant.appendDebugLog(
+        "frontend-rule-config",
+        `[trigger:app-effect] ${JSON.stringify({
+          activeTab,
+          hasSessionToken: !!auth.sessionToken,
+          baseUrl: settings.baseUrl,
+        })}`,
+      );
       void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
       void networkAssistant.refreshLogs();
       void networkAssistant.refreshRuleConfig();

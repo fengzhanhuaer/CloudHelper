@@ -70,6 +70,10 @@ export function GetNetworkAssistantLogs(arg1) {
   return window['go']['main']['App']['GetNetworkAssistantLogs'](arg1);
 }
 
+export function AppendNetworkAssistantDebugLog(arg1, arg2) {
+  return window['go']['main']['App']['AppendNetworkAssistantDebugLog'](arg1, arg2);
+}
+
 export function GetNetworkAssistantRuleConfig() {
   return window['go']['main']['App']['GetNetworkAssistantRuleConfig']();
 }

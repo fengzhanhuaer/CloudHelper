@@ -95,6 +95,10 @@ func (a *App) GetNetworkAssistantLogs(lines int) (NetworkAssistantLogResponse, e
 	return a.inner.GetNetworkAssistantLogs(lines)
 }
 
+func (a *App) AppendNetworkAssistantDebugLog(category, message string) error {
+	return a.inner.AppendNetworkAssistantDebugLog(category, message)
+}
+
 func (a *App) SetNetworkAssistantMode(controllerBaseURL, sessionToken, mode, nodeID string) (NetworkAssistantStatus, error) {
 	return a.inner.SetNetworkAssistantMode(controllerBaseURL, sessionToken, mode, nodeID)
 }

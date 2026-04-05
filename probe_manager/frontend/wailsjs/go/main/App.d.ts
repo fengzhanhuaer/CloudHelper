@@ -36,6 +36,8 @@ export function GetNetworkAssistantDNSUpstreamConfig():Promise<backend.NetworkAs
 
 export function GetNetworkAssistantLogs(arg1:number):Promise<backend.NetworkAssistantLogResponse>;
 
+export function AppendNetworkAssistantDebugLog(arg1:string,arg2:string):Promise<void>;
+
 export function GetNetworkAssistantRuleConfig():Promise<backend.NetworkAssistantRuleConfig>;
 
 export function GetNetworkAssistantStatus():Promise<backend.NetworkAssistantStatus>;

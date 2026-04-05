@@ -20,6 +20,7 @@ import {
 	StopNetworkAssistantProcessMonitor,
 	QueryNetworkAssistantProcessEvents,
 	ClearNetworkAssistantProcessEvents,
+	AppendNetworkAssistantDebugLog,
 } from "../../../../wailsjs/go/main/App";
 import * as AppBindings from "../../../../wailsjs/go/main/App";
 import type {
@@ -228,37 +229,40 @@ export function useNetworkAssistant() {
 
   const refreshRuleConfig = useCallback(async () => {
     const requestID = ++ruleConfigRequestSeqRef.current;
-    console.log("[network-assistant][rule-config] begin", {
+    const beginPayload = {
       requestID,
       previousLoading: isLoadingRuleConfig,
       currentStatus: ruleConfigStatus,
       hasRuleConfig: !!ruleConfig,
-    });
+    };
+    void AppendNetworkAssistantDebugLog("frontend-rule-config", `[begin] ${JSON.stringify(beginPayload)}`);
     setIsLoadingRuleConfig(true);
     setRuleConfigStatus("正在加载规则策略...");
     try {
       const data = (await GetNetworkAssistantRuleConfig()) as NetworkAssistantRuleConfig;
-      console.log("[network-assistant][rule-config] success", {
-        requestID,
-        groups: Array.isArray(data.groups) ? data.groups.length : 0,
-        fallbackAction: data.fallback?.action ?? "",
-        ruleFilePath: data.rule_file_path ?? "",
-      });
+      void AppendNetworkAssistantDebugLog(
+        "frontend-rule-config",
+        `[success] ${JSON.stringify({
+          requestID,
+          groups: Array.isArray(data.groups) ? data.groups.length : 0,
+          fallbackAction: data.fallback?.action ?? "",
+          ruleFilePath: data.rule_file_path ?? "",
+        })}`,
+      );
       setRuleConfig(data);
       setRuleConfigStatus("规则策略已加载");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
-      console.log("[network-assistant][rule-config] error", {
-        requestID,
-        message: msg,
-        error,
-      });
+      void AppendNetworkAssistantDebugLog(
+        "frontend-rule-config",
+        `[error] ${JSON.stringify({ requestID, message: msg })}`,
+      );
       setRuleConfigStatus(`规则策略加载失败：${msg}`);
     } finally {
-      console.log("[network-assistant][rule-config] finally", {
-        requestID,
-        nextLoading: false,
-      });
+      void AppendNetworkAssistantDebugLog(
+        "frontend-rule-config",
+        `[finally] ${JSON.stringify({ requestID, nextLoading: false })}`,
+      );
       setIsLoadingRuleConfig(false);
     }
   }, [isLoadingRuleConfig, ruleConfig, ruleConfigStatus]);
@@ -273,10 +277,10 @@ export function useNetworkAssistant() {
         setSelectedNode(data.node_id);
       }
       if (data.mode === "tun") {
-        console.log("[network-assistant][rule-config] trigger from refreshStatus", {
-          mode: data.mode,
-          nodeID: data.node_id,
-        });
+        void AppendNetworkAssistantDebugLog(
+          "frontend-rule-config",
+          `[trigger:refreshStatus] ${JSON.stringify({ mode: data.mode, nodeID: data.node_id })}`,
+        );
         void refreshRuleConfig();
       }
     } catch (error) {
@@ -315,10 +319,10 @@ export function useNetworkAssistant() {
         setOperateStatus("已切换为直连模式，并恢复系统 DNS/系统代理");
       } else if (mode === "tun") {
         setOperateStatus("已切换为 TUN 模式（按规则分流）");
-        console.log("[network-assistant][rule-config] trigger from switchMode", {
-          mode,
-          nodeID,
-        });
+        void AppendNetworkAssistantDebugLog(
+          "frontend-rule-config",
+          `[trigger:switchMode] ${JSON.stringify({ mode, nodeID })}`,
+        );
         void refreshRuleConfig();
       } else {
         setOperateStatus(`模式已切换：${mode}`);
@@ -626,6 +630,15 @@ export function useNetworkAssistant() {
     return () => clearInterval(timer);
   }, [isOperating, refreshStatus, status.mode]);
 
+  const appendDebugLog = useCallback(async (category: string, message: string) => {
+    try {
+      await AppendNetworkAssistantDebugLog(category.trim(), message.trim());
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      console.warn("[network-assistant][debug-log] append failed", { category, message, error: msg });
+    }
+  }, []);
+
   return {
     status,
     selectedNode,
@@ -655,6 +668,7 @@ export function useNetworkAssistant() {
     ruleConfigStatus,
     isSyncingRuleRoutes,
     ruleRoutesSyncStatus,
+    appendDebugLog,
     refreshRuleConfig,
     setRulePolicy,
     uploadRuleRoutes,

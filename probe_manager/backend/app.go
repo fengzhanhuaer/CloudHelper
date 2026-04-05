@@ -179,6 +179,14 @@ func (a *App) ForceRefreshNetworkAssistantNodes(baseURL, token string) error {
 	return nil
 }
 
+func (a *App) AppendNetworkAssistantDebugLog(category, message string) error {
+	if a.networkAssistant == nil {
+		return errors.New("network assistant service is not initialized")
+	}
+	a.networkAssistant.logStore.Append(logSourceManager, category, strings.TrimSpace(message))
+	return nil
+}
+
 func (a *App) GetProbeLinkChainsCache() ([]ProbeLinkChainCacheItem, error) {
 	if a.networkAssistant == nil {
 		return nil, errors.New("network assistant not initialized")
