@@ -102,7 +102,11 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
-		conn, dialErr := dialUDPWithRetry("udp", nil, udpAddr)
+		var localAddr *net.UDPAddr
+		if frame.SrcIP.To4() != nil && !frame.SrcIP.IsUnspecified() {
+			localAddr = &net.UDPAddr{IP: append(net.IP(nil), frame.SrcIP...), Port: int(frame.SrcPort)}
+		}
+		conn, dialErr := dialUDPWithRetry("udp", localAddr, udpAddr)
 		if dialErr != nil {
 			return nil, dialErr
 		}
