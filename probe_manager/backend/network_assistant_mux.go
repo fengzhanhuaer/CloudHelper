@@ -883,7 +883,7 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
 	}
-	if selectedNodeID == "" {
+	if selectedNodeID == "" || strings.EqualFold(selectedNodeID, defaultNodeID) {
 		return nil
 	}
 	return []string{selectedNodeID}
@@ -1081,6 +1081,9 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	if targetNodeID == "" {
 		targetNodeID = defaultNodeID
 	}
+	if strings.EqualFold(targetNodeID, defaultNodeID) {
+		return nil, errors.New("selected node does not require tunnel mux")
+	}
 
 	chainTarget, hasChainTarget, resolvedNodeID, resolveErr := s.resolveTunnelMuxChainTargetForNode(targetNodeID)
 	if resolveErr != nil {
@@ -1113,6 +1116,9 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(nodeIDInput strin
 	}
 	if targetNodeID == "" {
 		targetNodeID = defaultNodeID
+	}
+	if strings.EqualFold(targetNodeID, defaultNodeID) {
+		return nil, errors.New("selected node does not require tunnel mux")
 	}
 
 	if !hasChainTarget {
