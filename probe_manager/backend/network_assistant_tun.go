@@ -322,6 +322,10 @@ func (s *networkAssistantService) EnableTUN() error {
 		s.setLastError(err)
 		return err
 	}
+	if err := s.clearTUNSystemRouting(); err != nil {
+		s.setLastError(err)
+		return err
+	}
 	if err := s.stopTunnelMuxClients(); err != nil {
 		s.setLastError(err)
 		return err
