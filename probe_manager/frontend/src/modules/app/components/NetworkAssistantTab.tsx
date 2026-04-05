@@ -117,12 +117,22 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
   }
 
   useEffect(() => {
+    console.log("[network-assistant][rule-config] settings effect check", {
+      subTab,
+      mode: props.status.mode,
+      isLoadingRuleConfig: props.isLoadingRuleConfig,
+      hasRuleConfig: !!props.ruleConfig,
+    });
     if (subTab !== "settings" || props.status.mode !== "tun") {
       return;
     }
     if (props.ruleConfig || props.isLoadingRuleConfig) {
       return;
     }
+    console.log("[network-assistant][rule-config] trigger from settings effect", {
+      subTab,
+      mode: props.status.mode,
+    });
     props.onRefreshRuleConfig();
   }, [props.isLoadingRuleConfig, props.onRefreshRuleConfig, props.ruleConfig, props.status.mode, subTab]);
 
@@ -313,7 +323,19 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
           <div className="content-actions">
             <button className="btn" onClick={props.onSwitchDirect} disabled={props.isOperating}>直连模式</button>
             <button className="btn" onClick={props.onSwitchTUN} disabled={props.isOperating}>TUN 模式</button>
-            <button className="btn" onClick={props.onRefreshRuleConfig} disabled={props.isOperating || props.isLoadingRuleConfig}>
+            <button
+              className="btn"
+              onClick={() => {
+                console.log("[network-assistant][rule-config] trigger from refresh button", {
+                  isOperating: props.isOperating,
+                  isLoadingRuleConfig: props.isLoadingRuleConfig,
+                  hasRuleConfig: !!props.ruleConfig,
+                  mode: props.status.mode,
+                });
+                props.onRefreshRuleConfig();
+              }}
+              disabled={props.isOperating || props.isLoadingRuleConfig}
+            >
               {props.isLoadingRuleConfig ? "加载规则中..." : "刷新规则组"}
             </button>
             <button

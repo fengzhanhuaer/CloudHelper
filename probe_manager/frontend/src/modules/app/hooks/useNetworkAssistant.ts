@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   downloadNetworkRuleRoutes,
 } from "../services/controller-api";
@@ -136,6 +136,8 @@ export function useNetworkAssistant() {
   const [isSyncingRuleRoutes, setIsSyncingRuleRoutes] = useState(false);
   const [ruleRoutesSyncStatus, setRuleRoutesSyncStatus] = useState("规则文件主控备份：未执行");
 
+  const ruleConfigRequestSeqRef = useRef(0);
+
   const logCategories = useMemo(() => {
     const set = new Set<string>();
     for (const entry of logEntries) {
@@ -225,19 +227,41 @@ export function useNetworkAssistant() {
   }
 
   const refreshRuleConfig = useCallback(async () => {
+    const requestID = ++ruleConfigRequestSeqRef.current;
+    console.log("[network-assistant][rule-config] begin", {
+      requestID,
+      previousLoading: isLoadingRuleConfig,
+      currentStatus: ruleConfigStatus,
+      hasRuleConfig: !!ruleConfig,
+    });
     setIsLoadingRuleConfig(true);
     setRuleConfigStatus("正在加载规则策略...");
     try {
       const data = (await GetNetworkAssistantRuleConfig()) as NetworkAssistantRuleConfig;
+      console.log("[network-assistant][rule-config] success", {
+        requestID,
+        groups: Array.isArray(data.groups) ? data.groups.length : 0,
+        fallbackAction: data.fallback?.action ?? "",
+        ruleFilePath: data.rule_file_path ?? "",
+      });
       setRuleConfig(data);
       setRuleConfigStatus("规则策略已加载");
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
+      console.log("[network-assistant][rule-config] error", {
+        requestID,
+        message: msg,
+        error,
+      });
       setRuleConfigStatus(`规则策略加载失败：${msg}`);
     } finally {
+      console.log("[network-assistant][rule-config] finally", {
+        requestID,
+        nextLoading: false,
+      });
       setIsLoadingRuleConfig(false);
     }
-  }, []);
+  }, [isLoadingRuleConfig, ruleConfig, ruleConfigStatus]);
 
   const refreshStatus = useCallback(async (controllerBaseURL?: string, token?: string) => {
     try {
@@ -249,6 +273,10 @@ export function useNetworkAssistant() {
         setSelectedNode(data.node_id);
       }
       if (data.mode === "tun") {
+        console.log("[network-assistant][rule-config] trigger from refreshStatus", {
+          mode: data.mode,
+          nodeID: data.node_id,
+        });
         void refreshRuleConfig();
       }
     } catch (error) {
@@ -287,6 +315,10 @@ export function useNetworkAssistant() {
         setOperateStatus("已切换为直连模式，并恢复系统 DNS/系统代理");
       } else if (mode === "tun") {
         setOperateStatus("已切换为 TUN 模式（按规则分流）");
+        console.log("[network-assistant][rule-config] trigger from switchMode", {
+          mode,
+          nodeID,
+        });
         void refreshRuleConfig();
       } else {
         setOperateStatus(`模式已切换：${mode}`);
