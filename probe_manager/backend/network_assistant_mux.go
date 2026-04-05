@@ -438,6 +438,17 @@ func resolveProbeChainDialIPHostWithCache(rawHost string, forceRefresh bool) (di
 		}
 	}
 
+	resolver := &networkAssistantService{}
+	if addrs, _, upstreamErr := resolver.queryRuleDomainViaSystemDNS(host, 1); upstreamErr == nil && len(addrs) > 0 {
+		for _, addr := range addrs {
+			if parsed := net.ParseIP(strings.TrimSpace(addr)); parsed != nil {
+				resolvedIP := parsed.String()
+				_ = setProbeDNSCachedIP(host, resolvedIP)
+				return resolvedIP, host, nil
+			}
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ips, resolveErr := net.DefaultResolver.LookupIP(ctx, "ip", host)
