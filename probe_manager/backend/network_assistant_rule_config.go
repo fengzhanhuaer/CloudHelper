@@ -93,26 +93,16 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 	startedAt := time.Now()
 	s.logfRateLimited("rule-config:get:begin", 3*time.Second, "get rule config begin")
 
-	refreshStartedAt := time.Now()
-	s.refreshAvailableNodesForRuleConfig()
-	s.logfRateLimited("rule-config:get:after-refresh-nodes", 3*time.Second, "get rule config refresh available nodes done: elapsed=%s", time.Since(refreshStartedAt))
-
-	loadStartedAt := time.Now()
-	routing, err := loadOrCreateTunnelRuleRouting()
-	if err != nil {
-		s.logf("get rule config load routing failed: elapsed=%s err=%v", time.Since(loadStartedAt), err)
-		return NetworkAssistantRuleConfig{}, err
-	}
-	s.logfRateLimited("rule-config:get:after-load-routing", 3*time.Second, "get rule config load routing done: elapsed=%s groups=%d", time.Since(loadStartedAt), len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1)
-
-	lockStartedAt := time.Now()
-	s.mu.Lock()
-	s.ruleRouting = routing
-	availableNodes := append([]string(nil), s.availableNodes...)
-	chainTargets := copyProbeChainTargets(s.chainTargets)
-	currentNode := strings.TrimSpace(s.nodeID)
-	s.mu.Unlock()
-	s.logfRateLimited("rule-config:get:after-state-snapshot", 3*time.Second, "get rule config snapshot state done: elapsed=%s available=%d chain_targets=%d current=%s", time.Since(lockStartedAt), len(availableNodes), len(chainTargets), currentNode)
+	availableNodes, chainTargets, currentNode, routing := s.getRuleConfigSnapshot()
+	s.logfRateLimited(
+		"rule-config:get:snapshot",
+		3*time.Second,
+		"get rule config snapshot loaded: available=%d chain_targets=%d current=%s groups=%d",
+		len(availableNodes),
+		len(chainTargets),
+		currentNode,
+		len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1,
+	)
 
 	buildStartedAt := time.Now()
 	tunnelOptions := buildRuleTunnelOptions(availableNodes, currentNode)
@@ -126,19 +116,47 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 	return config, nil
 }
 
-func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {
-	s.refreshAvailableNodesForRuleConfig()
-
-	routing, err := loadOrCreateTunnelRuleRouting()
-	if err != nil {
-		return NetworkAssistantRuleConfig{}, err
-	}
-
+func (s *networkAssistantService) getRuleConfigSnapshot() ([]string, map[string]probeChainEndpoint, string, tunnelRuleRouting) {
 	s.mu.RLock()
 	availableNodes := append([]string(nil), s.availableNodes...)
 	chainTargets := copyProbeChainTargets(s.chainTargets)
 	currentNode := strings.TrimSpace(s.nodeID)
+	routing := s.ruleRouting
 	s.mu.RUnlock()
+	return availableNodes, chainTargets, currentNode, routing
+}
+
+func (s *networkAssistantService) reloadRuleConfigState() (tunnelRuleRouting, []string, map[string]probeChainEndpoint, string, error) {
+	if s == nil {
+		return tunnelRuleRouting{}, nil, nil, "", errors.New("network assistant service is nil")
+	}
+	refreshStartedAt := time.Now()
+	s.refreshAvailableNodesForRuleConfig()
+	s.logfRateLimited("rule-config:reload:after-refresh-nodes", 3*time.Second, "reload rule config refresh available nodes done: elapsed=%s", time.Since(refreshStartedAt))
+
+	loadStartedAt := time.Now()
+	routing, err := loadOrCreateTunnelRuleRouting()
+	if err != nil {
+		s.logf("reload rule config load routing failed: elapsed=%s err=%v", time.Since(loadStartedAt), err)
+		return tunnelRuleRouting{}, nil, nil, "", err
+	}
+	s.logfRateLimited("rule-config:reload:after-load-routing", 3*time.Second, "reload rule config load routing done: elapsed=%s groups=%d", time.Since(loadStartedAt), len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1)
+
+	s.mu.Lock()
+	s.ruleRouting = routing
+	availableNodes := append([]string(nil), s.availableNodes...)
+	chainTargets := copyProbeChainTargets(s.chainTargets)
+	currentNode := strings.TrimSpace(s.nodeID)
+	s.mu.Unlock()
+	s.logfRateLimited("rule-config:reload:after-state-commit", 3*time.Second, "reload rule config state committed: available=%d chain_targets=%d current=%s", len(availableNodes), len(chainTargets), currentNode)
+	return routing, availableNodes, chainTargets, currentNode, nil
+}
+
+func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {
+	routing, availableNodes, chainTargets, currentNode, err := s.reloadRuleConfigState()
+	if err != nil {
+		return NetworkAssistantRuleConfig{}, err
+	}
 	if currentNode == "" {
 		currentNode = defaultNodeID
 	}

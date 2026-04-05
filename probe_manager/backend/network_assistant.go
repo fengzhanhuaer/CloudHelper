@@ -495,7 +495,6 @@ func (a *App) GetNetworkAssistantStatus() NetworkAssistantStatus {
 	if a.networkAssistant == nil {
 		return NetworkAssistantStatus{}
 	}
-	_, _ = a.networkAssistant.getOrLoadChainTargetsSnapshot()
 	return a.networkAssistant.Status()
 }
 

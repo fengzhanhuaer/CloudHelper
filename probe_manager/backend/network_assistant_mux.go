@@ -939,6 +939,16 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
 	}
+	if strings.EqualFold(selectedNodeID, defaultNodeID) {
+		s.logfRateLimited(
+			"mux:auto-maintain:collect-skip-direct-selected",
+			15*time.Second,
+			"mux auto maintain collect skipped: selected=%s available=%v reason=direct-selected",
+			selectedNodeID,
+			availableNodes,
+		)
+		return nil
+	}
 	targetNodeIDs := collectAutoMaintainPolicyTunnelNodeIDs(routing, availableNodes, selectedNodeID)
 	if len(targetNodeIDs) == 0 {
 		s.logfRateLimited(
@@ -1368,10 +1378,7 @@ func (s *networkAssistantService) resolveTunnelMuxChainTargetForNode(nodeID stri
 		return probeChainEndpoint{}, false, "", nil
 	}
 
-	targets, err := s.getOrLoadChainTargetsSnapshot()
-	if err != nil {
-		return probeChainEndpoint{}, false, targetNodeID, err
-	}
+	targets := s.getChainTargetsSnapshot()
 	endpoint, hasChainTarget, resolvedNodeID, resolveErr := resolveProbeChainTargetFromSnapshot(targetNodeID, targets)
 	if resolveErr != nil {
 		s.logf("resolve tunnel mux chain target failed: requested=%s cached_targets=%d err=%v", targetNodeID, len(targets), resolveErr)
