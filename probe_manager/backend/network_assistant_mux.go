@@ -1455,6 +1455,28 @@ func resolveProbeChainTargetFromSnapshot(targetNodeID string, targets map[string
 }
 
 func (s *networkAssistantService) newTunnelMuxClientLocked(baseURL, token, nodeID string, chainTarget probeChainEndpoint, hasChainTarget bool) (*tunnelMuxClient, error) {
+	startedAt := time.Now()
+	if hasChainTarget {
+		s.logfRateLimited(
+			"mux:new-client:chain-begin:"+strings.ToLower(strings.TrimSpace(nodeID)),
+			5*time.Second,
+			"create tunnel mux client begin: node=%s mode=chain chain=%s entry=%s:%d layer=%s",
+			nodeID,
+			strings.TrimSpace(chainTarget.ChainID),
+			strings.TrimSpace(chainTarget.EntryHost),
+			chainTarget.EntryPort,
+			strings.TrimSpace(chainTarget.LinkLayer),
+		)
+	} else {
+		s.logfRateLimited(
+			"mux:new-client:ws-begin:"+strings.ToLower(strings.TrimSpace(nodeID)),
+			5*time.Second,
+			"create tunnel mux client begin: node=%s mode=ws base=%s",
+			nodeID,
+			baseURL,
+		)
+	}
+
 	var (
 		client *tunnelMuxClient
 		err    error
@@ -1471,19 +1493,42 @@ func (s *networkAssistantService) newTunnelMuxClientLocked(baseURL, token, nodeI
 	if err != nil {
 		if hasChainTarget {
 			s.logf(
-				"create tunnel mux client failed, node=%s base=%s chain=%s entry=%s:%d layer=%s err=%v",
+				"create tunnel mux client failed, node=%s base=%s chain=%s entry=%s:%d layer=%s elapsed=%s err=%v",
 				nodeID,
 				baseURL,
 				strings.TrimSpace(chainTarget.ChainID),
 				strings.TrimSpace(chainTarget.EntryHost),
 				chainTarget.EntryPort,
 				strings.TrimSpace(chainTarget.LinkLayer),
+				time.Since(startedAt),
 				err,
 			)
 		} else {
-			s.logf("create tunnel mux client failed, node=%s base=%s err=%v", nodeID, baseURL, err)
+			s.logf("create tunnel mux client failed, node=%s base=%s elapsed=%s err=%v", nodeID, baseURL, time.Since(startedAt), err)
 		}
 		return nil, err
+	}
+	if hasChainTarget {
+		s.logfRateLimited(
+			"mux:new-client:chain-done:"+strings.ToLower(strings.TrimSpace(nodeID)),
+			5*time.Second,
+			"create tunnel mux client done: node=%s mode=chain chain=%s entry=%s:%d layer=%s elapsed=%s",
+			nodeID,
+			strings.TrimSpace(chainTarget.ChainID),
+			strings.TrimSpace(chainTarget.EntryHost),
+			chainTarget.EntryPort,
+			strings.TrimSpace(chainTarget.LinkLayer),
+			time.Since(startedAt),
+		)
+	} else {
+		s.logfRateLimited(
+			"mux:new-client:ws-done:"+strings.ToLower(strings.TrimSpace(nodeID)),
+			5*time.Second,
+			"create tunnel mux client done: node=%s mode=ws base=%s elapsed=%s",
+			nodeID,
+			baseURL,
+			time.Since(startedAt),
+		)
 	}
 	return client, nil
 }
