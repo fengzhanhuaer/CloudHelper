@@ -79,6 +79,9 @@ func (a *App) GetNetworkAssistantRuleConfig() (cfg NetworkAssistantRuleConfig, e
 		a.networkAssistant.logf("wails get rule config exit success: elapsed=%s groups=%d", time.Since(startedAt), len(cfg.Groups))
 	}()
 	cfg, err = a.networkAssistant.GetRuleConfig()
+	if err == nil {
+		go a.networkAssistant.triggerMuxAutoMaintainNow()
+	}
 	return cfg, err
 }
 
