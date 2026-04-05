@@ -48,14 +48,19 @@ function App() {
       networkAssistantInitKeyRef.current = "";
       return;
     }
-    const initKey = `${activeTab}|${auth.sessionToken}|${settings.baseUrl}`;
-    if (networkAssistantInitKeyRef.current === initKey) {
+    if (networkAssistantInitKeyRef.current) {
       void networkAssistant.appendDebugLog(
         "frontend-rule-config",
-        `[skip:app-effect-duplicate] ${JSON.stringify({ initKey })}`,
+        `[skip:app-effect-duplicate] ${JSON.stringify({
+          initKey: networkAssistantInitKeyRef.current,
+          activeTab,
+          hasSessionToken: !!auth.sessionToken,
+          baseUrl: settings.baseUrl,
+        })}`,
       );
       return;
     }
+    const initKey = `${activeTab}|${auth.sessionToken}|${settings.baseUrl}`;
     networkAssistantInitKeyRef.current = initKey;
     void networkAssistant.appendDebugLog(
       "frontend-rule-config",
