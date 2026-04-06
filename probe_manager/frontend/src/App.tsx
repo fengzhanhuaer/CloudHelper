@@ -13,6 +13,16 @@ import { useNetworkAssistant } from "./modules/app/hooks/useNetworkAssistant";
 import { useUpgradeFlow } from "./modules/app/hooks/useUpgradeFlow";
 import type { TabKey } from "./modules/app/types";
 
+type WailsHeartbeatWindow = Window & {
+  go?: {
+    main?: {
+      App?: {
+        NotifyFrontendHeartbeat?: () => Promise<void>;
+      };
+    };
+  };
+};
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [networkLogAutoScroll, setNetworkLogAutoScroll] = useState(true);
@@ -32,6 +42,17 @@ function App() {
       setActiveTab(tabs[0].key);
     }
   }, [activeTab, tabs]);
+
+  useEffect(() => {
+    const heartbeatWindow = window as WailsHeartbeatWindow;
+    const sendHeartbeat = () => {
+      void heartbeatWindow.go?.main?.App?.NotifyFrontendHeartbeat?.();
+    };
+
+    sendHeartbeat();
+    const timer = window.setInterval(sendHeartbeat, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (auth.sessionToken && activeTab === "system-settings") {

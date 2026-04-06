@@ -47,6 +47,10 @@ func (a *App) shutdown(ctx context.Context) {
 	a.inner.Shutdown(ctx)
 }
 
+func (a *App) NotifyFrontendHeartbeat() {
+	a.inner.NotifyFrontendHeartbeat()
+}
+
 func (a *App) Greet(name string) string {
 	return a.inner.Greet(name)
 }

@@ -110,6 +110,10 @@ export function MarkProbeNodeDeleted(arg1) {
   return window['go']['main']['App']['MarkProbeNodeDeleted'](arg1);
 }
 
+export function NotifyFrontendHeartbeat() {
+  return window['go']['main']['App']['NotifyFrontendHeartbeat']();
+}
+
 export function PingProbeChain(arg1) {
   return window['go']['main']['App']['PingProbeChain'](arg1);
 }

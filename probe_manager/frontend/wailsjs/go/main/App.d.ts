@@ -56,6 +56,8 @@ export function ListNetworkAssistantProcesses():Promise<Array<backend.NetworkPro
 
 export function MarkProbeNodeDeleted(arg1:number):Promise<void>;
 
+export function NotifyFrontendHeartbeat():Promise<void>;
+
 export function PingProbeChain(arg1:string):Promise<backend.ProbeChainPingResult>;
 
 export function PingProbeLinkSession():Promise<backend.ProbeLinkConnectResult>;

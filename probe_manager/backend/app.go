@@ -12,9 +12,18 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 var BuildVersion = "dev"
+
+const (
+	frontendWatchdogTimeout      = 45 * time.Second
+	frontendWatchdogCheckInterval = 10 * time.Second
+	frontendWatchdogStartupGrace = 90 * time.Second
+)
 
 var globalNetworkAssistantService *networkAssistantService
 
@@ -23,6 +32,12 @@ type App struct {
 	ctx              context.Context
 	networkAssistant *networkAssistantService
 	aiDebugService   *aiDebugService
+
+	frontendWatchdogMu   sync.Mutex
+	frontendWatchdogStop chan struct{}
+	frontendHeartbeatAt  atomic.Int64
+	frontendHeartbeatSeen atomic.Bool
+	terminating          atomic.Bool
 }
 
 type PrivateKeyStatus struct {
@@ -42,6 +57,7 @@ func NewApp() *App {
 // Startup is called when the app starts.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	a.startFrontendWatchdog()
 	if err := cleanupManagerStaleExecutables(); err != nil {
 		logManagerWarnf("failed to cleanup stale manager executable files: %v", err)
 	}
@@ -55,6 +71,8 @@ func (a *App) Startup(ctx context.Context) {
 }
 
 func (a *App) Shutdown(ctx context.Context) {
+	a.terminating.Store(true)
+	a.stopFrontendWatchdog()
 	_, _ = stopProbeLinkSession("manager shutdown")
 	if err := a.stopAIDebugServer(); err != nil {
 		logManagerWarnf("failed to shutdown AI debug server: %v", err)
@@ -65,6 +83,93 @@ func (a *App) Shutdown(ctx context.Context) {
 	if err := a.networkAssistant.Shutdown(); err != nil {
 		logManagerWarnf("failed to shutdown network assistant: %v", err)
 	}
+}
+
+func (a *App) NotifyFrontendHeartbeat() {
+	if a == nil {
+		return
+	}
+	a.frontendHeartbeatSeen.Store(true)
+	a.frontendHeartbeatAt.Store(time.Now().Unix())
+}
+
+func (a *App) startFrontendWatchdog() {
+	if a == nil {
+		return
+	}
+	a.frontendWatchdogMu.Lock()
+	if a.frontendWatchdogStop != nil {
+		a.frontendWatchdogMu.Unlock()
+		return
+	}
+	stopCh := make(chan struct{})
+	a.frontendWatchdogStop = stopCh
+	a.frontendWatchdogMu.Unlock()
+
+	startedAt := time.Now()
+	go func() {
+		ticker := time.NewTicker(frontendWatchdogCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				if a.terminating.Load() {
+					return
+				}
+				if !a.frontendHeartbeatSeen.Load() {
+					if time.Since(startedAt) > frontendWatchdogStartupGrace {
+						a.exitBecauseFrontendLost("frontend heartbeat not started within grace period")
+					}
+					continue
+				}
+				lastHeartbeatAt := a.frontendHeartbeatAt.Load()
+				if lastHeartbeatAt <= 0 {
+					continue
+				}
+				lastHeartbeat := time.Unix(lastHeartbeatAt, 0)
+				if time.Since(lastHeartbeat) > frontendWatchdogTimeout {
+						a.exitBecauseFrontendLost(fmt.Sprintf("frontend heartbeat timeout: last=%s timeout=%s", lastHeartbeat.UTC().Format(time.RFC3339), frontendWatchdogTimeout))
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (a *App) stopFrontendWatchdog() {
+	if a == nil {
+		return
+	}
+	a.frontendWatchdogMu.Lock()
+	stopCh := a.frontendWatchdogStop
+	a.frontendWatchdogStop = nil
+	a.frontendWatchdogMu.Unlock()
+	if stopCh != nil {
+		close(stopCh)
+	}
+}
+
+func (a *App) exitBecauseFrontendLost(reason string) {
+	if a == nil {
+		os.Exit(0)
+	}
+	if !a.terminating.CompareAndSwap(false, true) {
+		return
+	}
+	a.stopFrontendWatchdog()
+	logManagerWarnf("frontend unavailable, manager exiting: %s", strings.TrimSpace(reason))
+	_, _ = stopProbeLinkSession("frontend unavailable")
+	if err := a.stopAIDebugServer(); err != nil {
+		logManagerWarnf("failed to stop AI debug server during frontend-loss exit: %v", err)
+	}
+	if a.networkAssistant != nil {
+		if err := a.networkAssistant.Shutdown(); err != nil {
+			logManagerWarnf("failed to shutdown network assistant during frontend-loss exit: %v", err)
+		}
+	}
+	os.Exit(0)
 }
 
 // Greet returns a greeting for the given name
