@@ -357,17 +357,17 @@ func (s *networkAssistantService) EnableTUN() error {
 		return err
 	}
 	
+	s.logf("enable tun stage: apply-routing begin: base=%s", effectiveBase)
+	if err := s.applyTUNSystemRouting(effectiveBase); err != nil {
+		s.logf("enable tun failed at apply-routing: %v", err)
+		return s.fallbackToDirectModeOnTUNRoutingFailure("enable tun: apply direct routes failed", err)
+	}
+
 	s.logf("enable tun stage: ensure-internal-dns begin")
 	if err := s.ensureInternalDNSServerHealthy(); err != nil {
 		s.logf("enable tun failed at ensure-internal-dns: %v", err)
 		s.setLastError(err)
 		return err
-	}
-	
-	s.logf("enable tun stage: apply-routing begin: base=%s", effectiveBase)
-	if err := s.applyTUNSystemRouting(effectiveBase); err != nil {
-		s.logf("enable tun failed at apply-routing: %v", err)
-		return s.fallbackToDirectModeOnTUNRoutingFailure("enable tun: apply direct routes failed", err)
 	}
 
 	s.logf("enable tun stage: commit-runtime-state begin")
