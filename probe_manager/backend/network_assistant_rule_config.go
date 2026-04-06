@@ -52,11 +52,20 @@ func isRuleRouteRejectErr(err error) bool {
 }
 
 type NetworkAssistantRuleGroupConfig struct {
-	Group              string            `json:"group"`
-	Action             string            `json:"action"`
-	TunnelNodeID       string            `json:"tunnel_node_id,omitempty"`
-	TunnelOptions      []string          `json:"tunnel_options"`
-	TunnelOptionLabels map[string]string `json:"tunnel_option_labels,omitempty"`
+	Group                string            `json:"group"`
+	Action               string            `json:"action"`
+	TunnelNodeID         string            `json:"tunnel_node_id,omitempty"`
+	TunnelOptions        []string          `json:"tunnel_options"`
+	TunnelOptionLabels   map[string]string `json:"tunnel_option_labels,omitempty"`
+	SelectedLabel        string            `json:"selected_label,omitempty"`
+	RuntimeAction        string            `json:"runtime_action,omitempty"`
+	RuntimeTunnelNodeID  string            `json:"runtime_tunnel_node_id,omitempty"`
+	RuntimeTunnelLabel   string            `json:"runtime_tunnel_label,omitempty"`
+	RuntimeConnected     bool              `json:"runtime_connected"`
+	RuntimeStatus        string            `json:"runtime_status,omitempty"`
+	RuntimeLastRecv      string            `json:"runtime_last_recv,omitempty"`
+	RuntimeLastPong      string            `json:"runtime_last_pong,omitempty"`
+	RuntimeActiveStreams int               `json:"runtime_active_streams,omitempty"`
 }
 
 type NetworkAssistantRuleConfig struct {
@@ -94,7 +103,7 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 	s.logf("get rule config begin")
 	s.logf("get rule config before snapshot")
 
-	availableNodes, chainTargets, currentNode, routing := s.getRuleConfigSnapshot()
+	availableNodes, chainTargets, currentNode, routing, groupRuntime := s.getRuleConfigSnapshot()
 	s.logf(
 		"get rule config snapshot loaded: available=%d chain_targets=%d current=%s groups=%d elapsed=%s",
 		len(availableNodes),
@@ -110,14 +119,14 @@ func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, e
 	if currentNode == "" {
 		currentNode = defaultNodeID
 	}
-	config := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets)
+	config := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets, groupRuntime)
 	s.logf("get rule config build done: elapsed=%s build_elapsed=%s groups=%d fallback_action=%s", time.Since(startedAt), time.Since(buildStartedAt), len(config.Groups), config.Fallback.Action)
 
 	s.logf("get rule config done: total_elapsed=%s", time.Since(startedAt))
 	return config, nil
 }
 
-func (s *networkAssistantService) getRuleConfigSnapshot() ([]string, map[string]probeChainEndpoint, string, tunnelRuleRouting) {
+func (s *networkAssistantService) getRuleConfigSnapshot() ([]string, map[string]probeChainEndpoint, string, tunnelRuleRouting, map[string]NetworkAssistantGroupKeepaliveItem) {
 	waitStartedAt := time.Now()
 	s.logf("get rule config snapshot wait rlock begin")
 	s.mu.RLock()
@@ -127,7 +136,8 @@ func (s *networkAssistantService) getRuleConfigSnapshot() ([]string, map[string]
 	currentNode := strings.TrimSpace(s.nodeID)
 	routing := s.ruleRouting
 	s.mu.RUnlock()
-	return availableNodes, chainTargets, currentNode, routing
+	groupRuntime := s.buildGroupKeepaliveSnapshot()
+	return availableNodes, chainTargets, currentNode, routing, groupRuntime
 }
 
 func (s *networkAssistantService) reloadRuleConfigState() (tunnelRuleRouting, []string, map[string]probeChainEndpoint, string, error) {
@@ -210,7 +220,8 @@ func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID stri
 	tunModeEnabled := s.mode == networkModeTUN && s.tunEnabled
 	s.mu.Unlock()
 
-	cfg := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets)
+	s.maintainSelectedTunnelMuxClients()
+	cfg := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets, s.buildGroupKeepaliveSnapshot())
 	if needClearDynamicBypass && tunModeEnabled {
 		if err := s.clearTUNDynamicBypassRoutes(); err != nil {
 			return cfg, err
@@ -221,7 +232,7 @@ func (s *networkAssistantService) SetRulePolicy(group, action, tunnelNodeID stri
 	return cfg, nil
 }
 
-func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []string, defaultNode string, chainTargets map[string]probeChainEndpoint) NetworkAssistantRuleConfig {
+func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []string, defaultNode string, chainTargets map[string]probeChainEndpoint, groupRuntime map[string]NetworkAssistantGroupKeepaliveItem) NetworkAssistantRuleConfig {
 	filteredTunnelOptions := filterRuleTunnelOptions(tunnelOptions)
 	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
 	items := make([]NetworkAssistantRuleGroupConfig, 0, len(groups))
@@ -232,27 +243,48 @@ func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []strin
 		policy, _ := readRulePolicyForGroup(routing, group, defaultNode, filteredTunnelOptions)
 		groupOptions := mergeRuleTunnelOptions(filteredTunnelOptions, policy.TunnelNodeID)
 		groupOptionLabels := buildRuleTunnelOptionLabels(groupOptions, chainTargets)
+		runtime := groupRuntime[strings.ToLower(strings.TrimSpace(group))]
+		selectedLabel := resolveRuleTunnelOptionLabel(policy.TunnelNodeID, chainTargets)
 		items = append(items, NetworkAssistantRuleGroupConfig{
-			Group:              group,
-			Action:             policy.Action,
-			TunnelNodeID:       policy.TunnelNodeID,
-			TunnelOptions:      groupOptions,
-			TunnelOptionLabels: groupOptionLabels,
+			Group:                group,
+			Action:               policy.Action,
+			TunnelNodeID:         policy.TunnelNodeID,
+			TunnelOptions:        groupOptions,
+			TunnelOptionLabels:   groupOptionLabels,
+			SelectedLabel:        selectedLabel,
+			RuntimeAction:        runtime.Action,
+			RuntimeTunnelNodeID:  runtime.TunnelNodeID,
+			RuntimeTunnelLabel:   runtime.TunnelLabel,
+			RuntimeConnected:     runtime.Connected,
+			RuntimeStatus:        runtime.Status,
+			RuntimeLastRecv:      runtime.LastRecv,
+			RuntimeLastPong:      runtime.LastPong,
+			RuntimeActiveStreams: runtime.ActiveStreams,
 		})
 	}
 
 	fallbackPolicy, _ := readRulePolicyForGroup(routing, ruleFallbackGroupKey, defaultNode, filteredTunnelOptions)
 	fallbackOptions := mergeRuleTunnelOptions(filteredTunnelOptions, fallbackPolicy.TunnelNodeID)
 	fallbackOptionLabels := buildRuleTunnelOptionLabels(fallbackOptions, chainTargets)
+	fallbackRuntime := groupRuntime[strings.ToLower(ruleFallbackGroupKey)]
 	return NetworkAssistantRuleConfig{
 		RuleFilePath: strings.TrimSpace(routing.RuleFilePath),
 		Groups:       items,
 		Fallback: NetworkAssistantRuleGroupConfig{
-			Group:              ruleFallbackGroupKey,
-			Action:             fallbackPolicy.Action,
-			TunnelNodeID:       fallbackPolicy.TunnelNodeID,
-			TunnelOptions:      fallbackOptions,
-			TunnelOptionLabels: fallbackOptionLabels,
+			Group:                ruleFallbackGroupKey,
+			Action:               fallbackPolicy.Action,
+			TunnelNodeID:         fallbackPolicy.TunnelNodeID,
+			TunnelOptions:        fallbackOptions,
+			TunnelOptionLabels:   fallbackOptionLabels,
+			SelectedLabel:        resolveRuleTunnelOptionLabel(fallbackPolicy.TunnelNodeID, chainTargets),
+			RuntimeAction:        fallbackRuntime.Action,
+			RuntimeTunnelNodeID:  fallbackRuntime.TunnelNodeID,
+			RuntimeTunnelLabel:   fallbackRuntime.TunnelLabel,
+			RuntimeConnected:     fallbackRuntime.Connected,
+			RuntimeStatus:        fallbackRuntime.Status,
+			RuntimeLastRecv:      fallbackRuntime.LastRecv,
+			RuntimeLastPong:      fallbackRuntime.LastPong,
+			RuntimeActiveStreams: fallbackRuntime.ActiveStreams,
 		},
 	}
 }

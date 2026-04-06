@@ -16,7 +16,7 @@ func TestBuildRuleConfigFromRoutingIncludesSelectedTunnelOption(t *testing.T) {
 		RuleFilePath: "data/rule_routes.txt",
 	}
 
-	config := buildRuleConfigFromRouting(routing, []string{"cloudserver", "1", "2"}, defaultNodeID, nil)
+	config := buildRuleConfigFromRouting(routing, []string{"cloudserver", "1", "2"}, defaultNodeID, nil, map[string]NetworkAssistantGroupKeepaliveItem{})
 	if len(config.Groups) != 1 {
 		t.Fatalf("group count=%d, want 1", len(config.Groups))
 	}
@@ -66,6 +66,7 @@ func TestBuildRuleConfigFromRoutingUsesChainNameLabels(t *testing.T) {
 				ChainName: "香港入口",
 			},
 		},
+		map[string]NetworkAssistantGroupKeepaliveItem{},
 	)
 
 	if len(config.Groups) != 1 {
@@ -84,6 +85,66 @@ func TestBuildRuleConfigFromRoutingUsesChainNameLabels(t *testing.T) {
 	}
 	if _, ok := group.TunnelOptionLabels["3"]; ok {
 		t.Fatalf("probe node label should not appear in tunnel options: %#v", group.TunnelOptionLabels)
+	}
+}
+
+func TestBuildRuleConfigFromRoutingIncludesRuntimeSnapshot(t *testing.T) {
+	routing := tunnelRuleRouting{
+		RuleSet: tunnelRuleSet{
+			Rules: []tunnelRule{{Kind: ruleMatcherDomainSuffix, Suffix: "example.com", Group: "group_a"}},
+		},
+		GroupNodeMap: map[string]string{
+			"group_a":            "tunnel:chain:1",
+			ruleFallbackGroupKey: rulePolicyActionDirect,
+		},
+	}
+
+	config := buildRuleConfigFromRouting(
+		routing,
+		[]string{"chain:1"},
+		defaultNodeID,
+		map[string]probeChainEndpoint{
+			"chain:1": {ChainID: "1", ChainName: "香港入口"},
+		},
+		map[string]NetworkAssistantGroupKeepaliveItem{
+			"group_a": {
+				Group:         "group_a",
+				Action:        rulePolicyActionTunnel,
+				TunnelNodeID:  "chain:1",
+				TunnelLabel:   "香港入口",
+				Connected:     true,
+				ActiveStreams: 2,
+				LastRecv:      "recv-at",
+				LastPong:      "pong-at",
+				Status:        "在线",
+			},
+		},
+	)
+
+	group := config.Groups[0]
+	if group.SelectedLabel != "香港入口" {
+		t.Fatalf("selected label=%q, want 香港入口", group.SelectedLabel)
+	}
+	if group.RuntimeAction != rulePolicyActionTunnel {
+		t.Fatalf("runtime action=%q, want %q", group.RuntimeAction, rulePolicyActionTunnel)
+	}
+	if group.RuntimeTunnelNodeID != "chain:1" {
+		t.Fatalf("runtime tunnel node=%q, want chain:1", group.RuntimeTunnelNodeID)
+	}
+	if group.RuntimeTunnelLabel != "香港入口" {
+		t.Fatalf("runtime tunnel label=%q, want 香港入口", group.RuntimeTunnelLabel)
+	}
+	if !group.RuntimeConnected {
+		t.Fatalf("runtime connected=false, want true")
+	}
+	if group.RuntimeStatus != "在线" {
+		t.Fatalf("runtime status=%q, want 在线", group.RuntimeStatus)
+	}
+	if group.RuntimeLastRecv != "recv-at" || group.RuntimeLastPong != "pong-at" {
+		t.Fatalf("runtime recv/pong=(%q,%q), want (recv-at,pong-at)", group.RuntimeLastRecv, group.RuntimeLastPong)
+	}
+	if group.RuntimeActiveStreams != 2 {
+		t.Fatalf("runtime active streams=%d, want 2", group.RuntimeActiveStreams)
 	}
 }
 
@@ -133,7 +194,7 @@ func TestBuildRuleConfigFromRoutingKeepsRuleGroupDefinitionOrder(t *testing.T) {
 		},
 	}
 
-	config := buildRuleConfigFromRouting(routing, []string{defaultNodeID}, defaultNodeID, nil)
+	config := buildRuleConfigFromRouting(routing, []string{defaultNodeID}, defaultNodeID, nil, map[string]NetworkAssistantGroupKeepaliveItem{})
 	if len(config.Groups) != 3 {
 		t.Fatalf("group count=%d, want 3", len(config.Groups))
 	}

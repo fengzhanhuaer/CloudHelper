@@ -1012,55 +1012,142 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 		s.mu.Unlock()
 	}()
 
-	targetNodeIDs := s.collectAutoMaintainTunnelNodeIDs()
-	if len(targetNodeIDs) == 0 {
-		_ = s.stopTunnelMuxClients()
-		s.mu.Lock()
-		clear(s.muxMaintainFails)
-		clear(s.muxMaintainRetryAt)
-		s.mu.Unlock()
-		return
+	s.mu.RLock()
+	selectedChainID := strings.TrimSpace(s.nodeID)
+	availableNodes := append([]string(nil), s.availableNodes...)
+	routing := s.ruleRouting
+	chainTargets := copyProbeChainTargets(s.chainTargets)
+	s.mu.RUnlock()
+	if selectedChainID == "" {
+		selectedChainID = defaultNodeID
 	}
 
-
+	tunnelOptions := buildRuleTunnelOptions(availableNodes, selectedChainID)
+	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
+	groups = append(groups, ruleFallbackGroupKey)
 	now := time.Now()
-	desired := make(map[string]struct{}, len(targetNodeIDs))
-	for _, nodeID := range targetNodeIDs {
-		node := strings.TrimSpace(nodeID)
-		normalized := strings.ToLower(node)
-		if normalized == "" {
+	desired := make(map[string]struct{}, len(groups))
+	groupRuntime := make(map[string]NetworkAssistantGroupKeepaliveItem, len(groups))
+	ensured := make(map[string]*tunnelMuxClient)
+	ensureErrs := make(map[string]error)
+
+	for _, group := range groups {
+		groupKey := strings.ToLower(strings.TrimSpace(group))
+		if groupKey == "" {
 			continue
 		}
-		desired[normalized] = struct{}{}
-
-		s.mu.Lock()
-		retryAt := s.muxMaintainRetryAt[normalized]
-		s.mu.Unlock()
-		if !retryAt.IsZero() && now.Before(retryAt) {
+		policy, err := readRulePolicyForGroup(routing, group, selectedChainID, tunnelOptions)
+		item := NetworkAssistantGroupKeepaliveItem{
+			Group: strings.TrimSpace(group),
+		}
+		if err != nil {
+			item.Status = "规则错误"
+			groupRuntime[groupKey] = item
 			continue
 		}
 
-		if _, err := s.ensureTunnelMuxClientForNode(node); err != nil {
+		item.Action = strings.TrimSpace(policy.Action)
+		switch policy.Action {
+		case rulePolicyActionDirect:
+			item.Status = "直连（无需隧道保活）"
+		case rulePolicyActionReject:
+			item.Status = "拒绝（无链路）"
+		case rulePolicyActionTunnel:
+			nodeID := strings.TrimSpace(policy.TunnelNodeID)
+			if nodeID == "" {
+				nodeID = selectedChainID
+			}
+			if nodeID == "" {
+				nodeID = defaultNodeID
+			}
+			item.TunnelNodeID = nodeID
+			item.TunnelLabel = resolveRuleTunnelOptionLabel(nodeID, chainTargets)
+			normalized := strings.ToLower(nodeID)
+			if normalized == "" || strings.EqualFold(nodeID, defaultNodeID) {
+				item.Status = "未建立"
+				groupRuntime[groupKey] = item
+				continue
+			}
+			desired[normalized] = struct{}{}
+
+			if cachedErr, ok := ensureErrs[normalized]; ok {
+				item.Status = "离线"
+				if cachedErr != nil {
+					s.logfRateLimited(
+						"mux:auto-maintain:group-error:"+groupKey,
+						15*time.Second,
+						"group mux runtime reuse previous ensure error: group=%s node=%s err=%v",
+						group,
+						nodeID,
+						cachedErr,
+					)
+				}
+				groupRuntime[groupKey] = item
+				continue
+			}
+			if cachedClient, ok := ensured[normalized]; ok {
+				if cachedClient != nil {
+					item.Connected, item.ActiveStreams, item.LastRecv, item.LastPong = cachedClient.snapshot()
+					if item.Connected {
+						item.Status = "在线"
+					} else {
+						item.Status = "离线"
+					}
+				} else {
+					item.Status = "未建立"
+				}
+				groupRuntime[groupKey] = item
+				continue
+			}
+
 			s.mu.Lock()
-			if s.muxMaintainFails == nil {
-				s.muxMaintainFails = make(map[string]int)
-			}
-			if s.muxMaintainRetryAt == nil {
-				s.muxMaintainRetryAt = make(map[string]time.Time)
-			}
-			attempt := s.muxMaintainFails[normalized] + 1
-			s.muxMaintainFails[normalized] = attempt
-			backoff := calcMuxAutoMaintainBackoff(attempt)
-			s.muxMaintainRetryAt[normalized] = now.Add(backoff)
+			retryAt := s.muxMaintainRetryAt[normalized]
 			s.mu.Unlock()
+			if !retryAt.IsZero() && now.Before(retryAt) {
+				item.Status = "重试中"
+				groupRuntime[groupKey] = item
+				continue
+			}
 
-			continue
+			client, ensureErr := s.ensureTunnelMuxClientForNode(nodeID)
+			if ensureErr != nil {
+				s.mu.Lock()
+				if s.muxMaintainFails == nil {
+					s.muxMaintainFails = make(map[string]int)
+				}
+				if s.muxMaintainRetryAt == nil {
+					s.muxMaintainRetryAt = make(map[string]time.Time)
+				}
+				attempt := s.muxMaintainFails[normalized] + 1
+				s.muxMaintainFails[normalized] = attempt
+				backoff := calcMuxAutoMaintainBackoff(attempt)
+				s.muxMaintainRetryAt[normalized] = now.Add(backoff)
+				s.mu.Unlock()
+				ensureErrs[normalized] = ensureErr
+				item.Status = "离线"
+				groupRuntime[groupKey] = item
+				continue
+			}
+
+			s.mu.Lock()
+			delete(s.muxMaintainFails, normalized)
+			delete(s.muxMaintainRetryAt, normalized)
+			s.mu.Unlock()
+			ensured[normalized] = client
+			if client != nil {
+				item.Connected, item.ActiveStreams, item.LastRecv, item.LastPong = client.snapshot()
+				if item.Connected {
+					item.Status = "在线"
+				} else {
+					item.Status = "离线"
+				}
+			} else {
+				item.Status = "未建立"
+			}
+		default:
+			item.Status = "未知"
 		}
-
-		s.mu.Lock()
-		delete(s.muxMaintainFails, normalized)
-		delete(s.muxMaintainRetryAt, normalized)
-		s.mu.Unlock()
+		groupRuntime[groupKey] = item
 	}
 
 	s.mu.Lock()
@@ -1095,6 +1182,7 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 			delete(s.muxMaintainRetryAt, key)
 		}
 	}
+	s.ruleRouting.GroupRuntime = copyGroupKeepaliveSnapshot(groupRuntime)
 	s.mu.Unlock()
 
 	if stalePrimary != nil {

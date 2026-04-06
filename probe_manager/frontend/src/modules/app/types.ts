@@ -122,6 +122,15 @@ export type NetworkAssistantRuleGroupConfig = {
   tunnel_node_id?: string;
   tunnel_options: string[];
   tunnel_option_labels?: Record<string, string>;
+  selected_label?: string;
+  runtime_action?: NetworkAssistantRuleAction;
+  runtime_tunnel_node_id?: string;
+  runtime_tunnel_label?: string;
+  runtime_connected?: boolean;
+  runtime_status?: string;
+  runtime_last_recv?: string;
+  runtime_last_pong?: string;
+  runtime_active_streams?: number;
 };
 
 export type NetworkAssistantRuleConfig = {

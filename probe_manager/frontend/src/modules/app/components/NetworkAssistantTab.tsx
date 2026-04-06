@@ -163,11 +163,23 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
     // The currently selected chain ID when action is tunnel
     const activeTunnelID = group.action === "tunnel" ? (group.tunnel_node_id || "").trim() : "";
-    const activeTunnelLabel = activeTunnelID ? (tunnelOptionLabels[activeTunnelID] || activeTunnelID) : "";
+    const activeTunnelLabel = (group.selected_label || (activeTunnelID ? (tunnelOptionLabels[activeTunnelID] || activeTunnelID) : "")).trim();
     const pingState = activeTunnelID ? tunnelPingStates[activeTunnelID] : undefined;
     const keepalive = (props.status.group_keepalive || []).find(
       (item) => (item.group || "").trim().toLowerCase() === (group.group || "").trim().toLowerCase(),
     );
+    const runtimeAction = (group.runtime_action || keepalive?.action || "").trim();
+    const runtimeTunnelID = (group.runtime_tunnel_node_id || keepalive?.tunnel_node_id || "").trim();
+    const runtimeTunnelLabel = (group.runtime_tunnel_label || keepalive?.tunnel_label || "").trim();
+    const runtimeStatus = (group.runtime_status || keepalive?.status || "").trim();
+    const runtimeLastRecv = (group.runtime_last_recv || keepalive?.last_recv || "").trim();
+    const runtimeLastPong = (group.runtime_last_pong || keepalive?.last_pong || "").trim();
+    const runtimeActiveStreams = typeof group.runtime_active_streams === "number"
+      ? group.runtime_active_streams
+      : (keepalive?.active_streams ?? 0);
+    const runtimeConnected = typeof group.runtime_connected === "boolean"
+      ? group.runtime_connected
+      : (keepalive?.connected ?? false);
 
     return (
       <div key={group.group} className="rule-policy-group-row">
@@ -187,49 +199,52 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             );
           })}
         </div>
-        {(activeTunnelID || keepalive || pingState) && (
+        {(activeTunnelID || runtimeAction || pingState) && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: "#aaa" }}>
+              配置：
+              {group.action === "tunnel"
+                ? `隧道 ${activeTunnelLabel || activeTunnelID || "-"}`
+                : group.action === "direct"
+                  ? "直连"
+                  : "拒绝"}
+            </span>
             {activeTunnelID && (
-              <>
-                <span style={{ fontSize: 12, color: "#aaa" }}>
-                  当前链路：{activeTunnelLabel}
-                </span>
-                <button
-                  className="btn"
-                  id={`tunnel-ping-btn-${group.group}`}
-                  onClick={() => void handlePingTunnel(activeTunnelID)}
-                  disabled={!!tunnelPingingID}
-                  style={{
-                    fontSize: 11,
-                    padding: "2px 10px",
-                    minWidth: 52,
-                    background: tunnelPingingID === activeTunnelID ? "#555" : undefined,
-                  }}
-                >
-                  {tunnelPingingID === activeTunnelID ? "测试中" : "测试链路"}
-                </button>
-              </>
+              <button
+                className="btn"
+                id={`tunnel-ping-btn-${group.group}`}
+                onClick={() => void handlePingTunnel(activeTunnelID)}
+                disabled={!!tunnelPingingID}
+                style={{
+                  fontSize: 11,
+                  padding: "2px 10px",
+                  minWidth: 52,
+                  background: tunnelPingingID === activeTunnelID ? "#555" : undefined,
+                }}
+              >
+                {tunnelPingingID === activeTunnelID ? "测试中" : "测试链路"}
+              </button>
             )}
-            {keepalive && (
+            {runtimeAction && (
               <span
                 style={{
                   fontSize: 12,
                   color:
-                    keepalive.action === "tunnel"
-                      ? keepalive.connected
+                    runtimeAction === "tunnel"
+                      ? runtimeConnected
                         ? "#4ade80"
                         : "#f87171"
                       : "#aaa",
                 }}
                 title={
-                  keepalive.action === "tunnel"
-                    ? `最近心跳：${keepalive.last_pong || "-"}，最近收包：${keepalive.last_recv || "-"}`
+                  runtimeAction === "tunnel"
+                    ? `最近心跳：${runtimeLastPong || "-"}，最近收包：${runtimeLastRecv || "-"}，活跃流：${runtimeActiveStreams}`
                     : undefined
                 }
               >
-                {keepalive.action === "tunnel"
-                  ? `保活：${keepalive.status || "-"}${keepalive.tunnel_label ? ` (${keepalive.tunnel_label})` : ""}`
-                  : `保活：${keepalive.status || "-"}`}
+                {runtimeAction === "tunnel"
+                  ? `运行：${runtimeStatus || (runtimeConnected ? "在线" : "离线")}${runtimeTunnelLabel ? ` (${runtimeTunnelLabel})` : runtimeTunnelID ? ` (${runtimeTunnelID})` : ""} / streams=${runtimeActiveStreams}`
+                  : `运行：${runtimeStatus || (runtimeAction === "direct" ? "直连" : "拒绝")}`}
               </span>
             )}
             {pingState && (

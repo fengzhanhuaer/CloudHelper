@@ -314,6 +314,7 @@ type tunnelRuleRouting struct {
 	GroupNodeMap  map[string]string
 	RuleFilePath  string
 	GroupFilePath string
+	GroupRuntime  map[string]NetworkAssistantGroupKeepaliveItem
 }
 
 type tunnelRouteDecision struct {
@@ -989,11 +990,6 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	muxClient := s.tunnelMuxClient
 	muxReconnects := s.muxReconnects
 	ruleRouting := s.ruleRouting
-	chainTargets := copyProbeChainTargets(s.chainTargets)
-	ruleMuxClients := make(map[string]*tunnelMuxClient, len(s.ruleMuxClients))
-	for key, client := range s.ruleMuxClients {
-		ruleMuxClients[key] = client
-	}
 	s.mu.RUnlock()
 
 	selectedNodeID := strings.TrimSpace(nodeID)
@@ -1005,33 +1001,11 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 	muxActiveStreams := 0
 	muxLastRecv := ""
 	muxLastPong := ""
-	muxSnapshots := make(map[string]NetworkAssistantGroupKeepaliveItem, len(ruleMuxClients)+1)
 	if muxClient != nil {
 		muxConnected, muxActiveStreams, muxLastRecv, muxLastPong = muxClient.snapshot()
-		muxSnapshots[strings.ToLower(selectedNodeID)] = NetworkAssistantGroupKeepaliveItem{
-			Connected:     muxConnected,
-			ActiveStreams: muxActiveStreams,
-			LastRecv:      muxLastRecv,
-			LastPong:      muxLastPong,
-		}
 	}
-	for rawNodeID, client := range ruleMuxClients {
-		if client == nil {
-			continue
-		}
-		connected, activeStreams, lastRecv, lastPong := client.snapshot()
-		nodeKey := strings.ToLower(strings.TrimSpace(rawNodeID))
-		if nodeKey == "" {
-			continue
-		}
-		muxSnapshots[nodeKey] = NetworkAssistantGroupKeepaliveItem{
-			Connected:     connected,
-			ActiveStreams: activeStreams,
-			LastRecv:      lastRecv,
-			LastPong:      lastPong,
-		}
-	}
-	groupKeepalive := buildGroupKeepaliveItems(ruleRouting, availableNodes, selectedNodeID, chainTargets, muxSnapshots)
+	groupRuntime := s.buildGroupKeepaliveSnapshot()
+	groupKeepalive := orderedGroupKeepaliveItems(ruleRouting, groupRuntime)
 
 	return NetworkAssistantStatus{
 		Enabled:           mode == networkModeTUN,
@@ -1113,6 +1087,98 @@ func buildGroupKeepaliveItems(
 		items = append(items, item)
 	}
 	return items
+}
+
+func indexGroupKeepaliveItems(items []NetworkAssistantGroupKeepaliveItem) map[string]NetworkAssistantGroupKeepaliveItem {
+	indexed := make(map[string]NetworkAssistantGroupKeepaliveItem, len(items))
+	for _, item := range items {
+		key := strings.ToLower(strings.TrimSpace(item.Group))
+		if key == "" {
+			continue
+		}
+		indexed[key] = item
+	}
+	return indexed
+}
+
+func copyGroupKeepaliveSnapshot(source map[string]NetworkAssistantGroupKeepaliveItem) map[string]NetworkAssistantGroupKeepaliveItem {
+	if len(source) == 0 {
+		return map[string]NetworkAssistantGroupKeepaliveItem{}
+	}
+	target := make(map[string]NetworkAssistantGroupKeepaliveItem, len(source))
+	for key, item := range source {
+		target[key] = item
+	}
+	return target
+}
+
+func orderedGroupKeepaliveItems(routing tunnelRuleRouting, groupRuntime map[string]NetworkAssistantGroupKeepaliveItem) []NetworkAssistantGroupKeepaliveItem {
+	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
+	groups = append(groups, ruleFallbackGroupKey)
+	items := make([]NetworkAssistantGroupKeepaliveItem, 0, len(groups))
+	for _, group := range groups {
+		key := strings.ToLower(strings.TrimSpace(group))
+		if key == "" {
+			continue
+		}
+		if item, ok := groupRuntime[key]; ok {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func (s *networkAssistantService) buildGroupKeepaliveSnapshot() map[string]NetworkAssistantGroupKeepaliveItem {
+	if s == nil {
+		return map[string]NetworkAssistantGroupKeepaliveItem{}
+	}
+
+	s.mu.RLock()
+	availableNodes := append([]string(nil), s.availableNodes...)
+	selectedNodeID := strings.TrimSpace(s.nodeID)
+	if selectedNodeID == "" {
+		selectedNodeID = defaultNodeID
+	}
+	routing := s.ruleRouting
+	chainTargets := copyProbeChainTargets(s.chainTargets)
+	muxClient := s.tunnelMuxClient
+	ruleMuxClients := make(map[string]*tunnelMuxClient, len(s.ruleMuxClients))
+	for key, client := range s.ruleMuxClients {
+		ruleMuxClients[key] = client
+	}
+	s.mu.RUnlock()
+
+	muxSnapshots := make(map[string]NetworkAssistantGroupKeepaliveItem, len(ruleMuxClients)+1)
+	if muxClient != nil {
+		connected, activeStreams, lastRecv, lastPong := muxClient.snapshot()
+		muxSnapshots[strings.ToLower(selectedNodeID)] = NetworkAssistantGroupKeepaliveItem{
+			Connected:     connected,
+			ActiveStreams: activeStreams,
+			LastRecv:      lastRecv,
+			LastPong:      lastPong,
+		}
+	}
+	for rawNodeID, client := range ruleMuxClients {
+		if client == nil {
+			continue
+		}
+		connected, activeStreams, lastRecv, lastPong := client.snapshot()
+		nodeKey := strings.ToLower(strings.TrimSpace(rawNodeID))
+		if nodeKey == "" {
+			continue
+		}
+		muxSnapshots[nodeKey] = NetworkAssistantGroupKeepaliveItem{
+			Connected:     connected,
+			ActiveStreams: activeStreams,
+			LastRecv:      lastRecv,
+			LastPong:      lastPong,
+		}
+	}
+	indexed := indexGroupKeepaliveItems(buildGroupKeepaliveItems(routing, availableNodes, selectedNodeID, chainTargets, muxSnapshots))
+	s.mu.Lock()
+	s.ruleRouting.GroupRuntime = copyGroupKeepaliveSnapshot(indexed)
+	s.mu.Unlock()
+	return copyGroupKeepaliveSnapshot(indexed)
 }
 
 func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mode, nodeID string) error {
