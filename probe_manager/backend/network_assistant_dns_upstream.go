@@ -33,15 +33,33 @@ var (
 	defaultDNSUpstreamPlainServers = []string{"223.5.5.5", "119.29.29.29"}
 	defaultDNSUpstreamDoTServers   = []string{"dns.alidns.com:853", "dot.pub:853"}
 	defaultDNSUpstreamDoHServers   = []string{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"}
+
+	defaultTUNDNSUpstreamPlainServers = []string{"8.8.8.8", "1.1.1.1"}
+	defaultTUNDNSUpstreamDoHServers   = []string{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
 )
 
+type dnsRouteUpstreamConfigFilePayload struct {
+	Prefer     string   `json:"prefer,omitempty"`
+	DNSServers []string `json:"dns_servers,omitempty"`
+	DoTServers []string `json:"dot_servers,omitempty"`
+	DoHServers []string `json:"doh_servers,omitempty"`
+}
+
 type dnsUpstreamConfigFilePayload struct {
-	Prefer          string   `json:"prefer"`
-	DNSServers      []string `json:"dns_servers"`
-	DoTServers      []string `json:"dot_servers"`
-	DoHServers      []string `json:"doh_servers"`
-	FakeIPCIDR      string   `json:"fake_ip_cidr,omitempty"`
-	FakeIPWhitelist []string `json:"fake_ip_whitelist,omitempty"`
+	Prefer          string                            `json:"prefer"`
+	DNSServers      []string                          `json:"dns_servers"`
+	DoTServers      []string                          `json:"dot_servers"`
+	DoHServers      []string                          `json:"doh_servers"`
+	FakeIPCIDR      string                            `json:"fake_ip_cidr,omitempty"`
+	FakeIPWhitelist []string                          `json:"fake_ip_whitelist,omitempty"`
+	TUN             dnsRouteUpstreamConfigFilePayload `json:"tun,omitempty"`
+}
+
+type dnsRouteUpstreamConfig struct {
+	Prefer     string
+	DNSServers []dnsPlainServer
+	DoTServers []dnsDoTServer
+	DoHServers []dnsDoHServer
 }
 
 type dnsUpstreamConfig struct {
@@ -51,6 +69,7 @@ type dnsUpstreamConfig struct {
 	DoHServers      []dnsDoHServer
 	FakeIPCIDR      string
 	FakeIPWhitelist []string
+	TUN             dnsRouteUpstreamConfig
 }
 
 type dnsPlainServer struct {
@@ -73,6 +92,54 @@ type dnsDoHServer struct {
 	TLSServerName string
 }
 
+type dnsTimeoutError struct {
+	op string
+}
+
+func (e *dnsTimeoutError) Error() string {
+	if e == nil || strings.TrimSpace(e.op) == "" {
+		return "i/o timeout"
+	}
+	return strings.TrimSpace(e.op) + " timeout"
+}
+
+func (e *dnsTimeoutError) Timeout() bool {
+	return true
+}
+
+func (e *dnsTimeoutError) Temporary() bool {
+	return true
+}
+
+type dnsTunnelStreamNetAddr struct {
+	network string
+	address string
+}
+
+func (a dnsTunnelStreamNetAddr) Network() string {
+	return a.network
+}
+
+func (a dnsTunnelStreamNetAddr) String() string {
+	return a.address
+}
+
+type dnsTunnelStreamNetConn struct {
+	stream *tunnelMuxStream
+
+	localAddr  net.Addr
+	remoteAddr net.Addr
+
+	readMu     sync.Mutex
+	writeMu    sync.Mutex
+	deadlineMu sync.Mutex
+	closeOnce  sync.Once
+	pending    []byte
+
+	readDeadline  time.Time
+	writeDeadline time.Time
+}
+
 var dnsUpstreamConfigState = struct {
 	mu         sync.Mutex
 	loaded     bool
@@ -82,6 +149,15 @@ var dnsUpstreamConfigState = struct {
 	config     dnsUpstreamConfig
 }{}
 
+func defaultTUNDNSUpstreamConfigFilePayload() dnsRouteUpstreamConfigFilePayload {
+	return dnsRouteUpstreamConfigFilePayload{
+		Prefer:     "doh",
+		DNSServers: append([]string(nil), defaultTUNDNSUpstreamPlainServers...),
+		DoTServers: []string{},
+		DoHServers: append([]string(nil), defaultTUNDNSUpstreamDoHServers...),
+	}
+}
+
 func defaultDNSUpstreamConfigFilePayload() dnsUpstreamConfigFilePayload {
 	return dnsUpstreamConfigFilePayload{
 		Prefer:          "doh",
@@ -90,11 +166,21 @@ func defaultDNSUpstreamConfigFilePayload() dnsUpstreamConfigFilePayload {
 		DoHServers:      append([]string(nil), defaultDNSUpstreamDoHServers...),
 		FakeIPCIDR:      "198.18.0.0/15",
 		FakeIPWhitelist: []string{},
+		TUN:             defaultTUNDNSUpstreamConfigFilePayload(),
 	}
 }
 
 func defaultDNSUpstreamConfig() dnsUpstreamConfig {
 	return normalizeDNSUpstreamConfig(defaultDNSUpstreamConfigFilePayload())
+}
+
+func cloneDNSRouteUpstreamConfig(source dnsRouteUpstreamConfig) dnsRouteUpstreamConfig {
+	return dnsRouteUpstreamConfig{
+		Prefer:     source.Prefer,
+		DNSServers: append([]dnsPlainServer(nil), source.DNSServers...),
+		DoTServers: append([]dnsDoTServer(nil), source.DoTServers...),
+		DoHServers: append([]dnsDoHServer(nil), source.DoHServers...),
+	}
 }
 
 func cloneDNSUpstreamConfig(source dnsUpstreamConfig) dnsUpstreamConfig {
@@ -105,7 +191,195 @@ func cloneDNSUpstreamConfig(source dnsUpstreamConfig) dnsUpstreamConfig {
 		DoHServers:      append([]dnsDoHServer(nil), source.DoHServers...),
 		FakeIPCIDR:      source.FakeIPCIDR,
 		FakeIPWhitelist: append([]string(nil), source.FakeIPWhitelist...),
+		TUN:             cloneDNSRouteUpstreamConfig(source.TUN),
 	}
+}
+
+func newDNSTunnelStreamNetConn(stream *tunnelMuxStream, network, targetAddr, group string) net.Conn {
+	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
+	if cleanNetwork == "" {
+		cleanNetwork = "tcp"
+	}
+	cleanGroup := strings.TrimSpace(group)
+	if cleanGroup == "" {
+		cleanGroup = "default"
+	}
+	cleanTarget := strings.TrimSpace(targetAddr)
+	if cleanTarget == "" {
+		cleanTarget = cleanGroup
+	}
+	return &dnsTunnelStreamNetConn{
+		stream:     stream,
+		localAddr:  dnsTunnelStreamNetAddr{network: cleanNetwork, address: "tunnel://" + cleanGroup},
+		remoteAddr: dnsTunnelStreamNetAddr{network: cleanNetwork, address: cleanTarget},
+	}
+}
+
+func (c *dnsTunnelStreamNetConn) currentReadDeadline() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	return c.readDeadline
+}
+
+func (c *dnsTunnelStreamNetConn) currentWriteDeadline() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	return c.writeDeadline
+}
+
+func (c *dnsTunnelStreamNetConn) Read(data []byte) (int, error) {
+	if c == nil || c.stream == nil {
+		return 0, io.EOF
+	}
+	if len(data) == 0 {
+		return 0, nil
+	}
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	if len(c.pending) > 0 {
+		n := copy(data, c.pending)
+		if n >= len(c.pending) {
+			c.pending = c.pending[:0]
+		} else {
+			c.pending = append(c.pending[:0], c.pending[n:]...)
+		}
+		return n, nil
+	}
+	for {
+		deadline := c.currentReadDeadline()
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return 0, &dnsTimeoutError{op: "read"}
+		}
+		var timeoutCh <-chan time.Time
+		var timer *time.Timer
+		if !deadline.IsZero() {
+			timer = time.NewTimer(time.Until(deadline))
+			timeoutCh = timer.C
+		}
+		select {
+		case payload := <-c.stream.readCh:
+			if timer != nil {
+				timer.Stop()
+			}
+			if len(payload) == 0 {
+				continue
+			}
+			n := copy(data, payload)
+			if n < len(payload) {
+				c.pending = append(c.pending[:0], payload[n:]...)
+			}
+			return n, nil
+		case err := <-c.stream.errCh:
+			if timer != nil {
+				timer.Stop()
+			}
+			if err == nil {
+				err = io.EOF
+			}
+			return 0, err
+		case <-timeoutCh:
+			return 0, &dnsTimeoutError{op: "read"}
+		}
+	}
+}
+
+func (c *dnsTunnelStreamNetConn) Write(data []byte) (int, error) {
+	if c == nil || c.stream == nil {
+		return 0, io.EOF
+	}
+	if len(data) == 0 {
+		return 0, nil
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	deadline := c.currentWriteDeadline()
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return 0, &dnsTimeoutError{op: "write"}
+	}
+	payload := append([]byte(nil), data...)
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- c.stream.write(payload)
+	}()
+	if deadline.IsZero() {
+		if err := <-resultCh; err != nil {
+			return 0, err
+		}
+		return len(data), nil
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			return 0, err
+		}
+		return len(data), nil
+	case <-timer.C:
+		c.Close()
+		return 0, &dnsTimeoutError{op: "write"}
+	}
+}
+
+func (c *dnsTunnelStreamNetConn) Close() error {
+	if c == nil || c.stream == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() {
+		c.stream.close()
+	})
+	return nil
+}
+
+func (c *dnsTunnelStreamNetConn) LocalAddr() net.Addr {
+	if c == nil || c.localAddr == nil {
+		return dnsTunnelStreamNetAddr{network: "tcp", address: "tunnel://local"}
+	}
+	return c.localAddr
+}
+
+func (c *dnsTunnelStreamNetConn) RemoteAddr() net.Addr {
+	if c == nil || c.remoteAddr == nil {
+		return dnsTunnelStreamNetAddr{network: "tcp", address: "tunnel://remote"}
+	}
+	return c.remoteAddr
+}
+
+func (c *dnsTunnelStreamNetConn) SetDeadline(t time.Time) error {
+	if c == nil {
+		return nil
+	}
+	c.deadlineMu.Lock()
+	c.readDeadline = t
+	c.writeDeadline = t
+	c.deadlineMu.Unlock()
+	return nil
+}
+
+func (c *dnsTunnelStreamNetConn) SetReadDeadline(t time.Time) error {
+	if c == nil {
+		return nil
+	}
+	c.deadlineMu.Lock()
+	c.readDeadline = t
+	c.deadlineMu.Unlock()
+	return nil
+}
+
+func (c *dnsTunnelStreamNetConn) SetWriteDeadline(t time.Time) error {
+	if c == nil {
+		return nil
+	}
+	c.deadlineMu.Lock()
+	c.writeDeadline = t
+	c.deadlineMu.Unlock()
+	return nil
 }
 
 func getDNSUpstreamConfig() (dnsUpstreamConfig, error) {
@@ -265,11 +539,10 @@ func writeDNSUpstreamConfigFile(path string, payload dnsUpstreamConfigFilePayloa
 	return nil
 }
 
-func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstreamConfig {
-	config := dnsUpstreamConfig{
-		Prefer:          normalizeDNSUpstreamPrefer(payload.Prefer),
-		FakeIPCIDR:      strings.TrimSpace(payload.FakeIPCIDR),
-		FakeIPWhitelist: normalizeDNSUpstreamFakeIPWhitelist(payload.FakeIPWhitelist),
+func normalizeDNSRouteUpstreamConfig(payload dnsRouteUpstreamConfigFilePayload, defaultPrefer string, defaultPlainServers []string, defaultDoTServers []string, defaultDoHServers []string) dnsRouteUpstreamConfig {
+	config := dnsRouteUpstreamConfig{Prefer: normalizeDNSUpstreamPrefer(payload.Prefer)}
+	if strings.TrimSpace(config.Prefer) == "" {
+		config.Prefer = normalizeDNSUpstreamPrefer(defaultPrefer)
 	}
 
 	for _, rawServer := range payload.DNSServers {
@@ -293,7 +566,7 @@ func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstrea
 	config.DoHServers = dedupeDNSDoHServers(config.DoHServers)
 
 	if len(config.DNSServers) == 0 {
-		for _, rawServer := range defaultDNSUpstreamPlainServers {
+		for _, rawServer := range defaultPlainServers {
 			if item, ok := normalizeDNSPlainServer(rawServer); ok {
 				config.DNSServers = append(config.DNSServers, item)
 			}
@@ -301,7 +574,7 @@ func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstrea
 		config.DNSServers = dedupeDNSPlainServers(config.DNSServers)
 	}
 	if len(config.DoTServers) == 0 {
-		for _, rawServer := range defaultDNSUpstreamDoTServers {
+		for _, rawServer := range defaultDoTServers {
 			if item, ok := normalizeDNSDoTServer(rawServer); ok {
 				config.DoTServers = append(config.DoTServers, item)
 			}
@@ -309,7 +582,7 @@ func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstrea
 		config.DoTServers = dedupeDNSDoTServers(config.DoTServers)
 	}
 	if len(config.DoHServers) == 0 {
-		for _, rawServer := range defaultDNSUpstreamDoHServers {
+		for _, rawServer := range defaultDoHServers {
 			if item, ok := normalizeDNSDoHServer(rawServer); ok {
 				config.DoHServers = append(config.DoHServers, item)
 			}
@@ -317,6 +590,37 @@ func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstrea
 		config.DoHServers = dedupeDNSDoHServers(config.DoHServers)
 	}
 
+	return config
+}
+
+func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstreamConfig {
+	config := dnsUpstreamConfig{
+		Prefer:          normalizeDNSUpstreamPrefer(payload.Prefer),
+		FakeIPCIDR:      strings.TrimSpace(payload.FakeIPCIDR),
+		FakeIPWhitelist: normalizeDNSUpstreamFakeIPWhitelist(payload.FakeIPWhitelist),
+	}
+	baseRouteConfig := normalizeDNSRouteUpstreamConfig(
+		dnsRouteUpstreamConfigFilePayload{
+			Prefer:     payload.Prefer,
+			DNSServers: payload.DNSServers,
+			DoTServers: payload.DoTServers,
+			DoHServers: payload.DoHServers,
+		},
+		"doh",
+		defaultDNSUpstreamPlainServers,
+		defaultDNSUpstreamDoTServers,
+		defaultDNSUpstreamDoHServers,
+	)
+	config.DNSServers = baseRouteConfig.DNSServers
+	config.DoTServers = baseRouteConfig.DoTServers
+	config.DoHServers = baseRouteConfig.DoHServers
+	config.TUN = normalizeDNSRouteUpstreamConfig(
+		payload.TUN,
+		"doh",
+		defaultTUNDNSUpstreamPlainServers,
+		nil,
+		defaultTUNDNSUpstreamDoHServers,
+	)
 	return config
 }
 
@@ -592,6 +896,14 @@ func (s *networkAssistantService) collectConfiguredDNSBypassIPv4Addrs() []string
 	return out
 }
 
+func (s *networkAssistantService) openTunnelStreamNetConnForGroup(network, targetAddr, group string) (net.Conn, error) {
+	stream, err := s.openTunnelStreamForGroup(network, targetAddr, group)
+	if err != nil {
+		return nil, err
+	}
+	return newDNSTunnelStreamNetConn(stream, network, targetAddr, group), nil
+}
+
 func resolveDNSUpstreamDialHost(service *networkAssistantService, rawHost string, bootstrapServers []dnsPlainServer, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = dnsUpstreamResolveTimeout
@@ -719,6 +1031,141 @@ func (s *networkAssistantService) queryRawDNSPacketViaDoT(server dnsDoTServer, p
 		return nil, err
 	}
 	return response, nil
+}
+
+func (s *networkAssistantService) queryRawDNSPacketViaTunnelUDP(server dnsPlainServer, packet []byte, timeout time.Duration, group string) ([]byte, error) {
+	if strings.TrimSpace(server.Address) == "" {
+		return nil, errors.New("invalid dns server")
+	}
+	if timeout <= 0 {
+		timeout = dnsUpstreamResolveTimeout
+	}
+	stream, err := s.openTunnelStreamForGroup("udp", server.Address, group)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.close()
+	if err := stream.write(packet); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, &dnsTimeoutError{op: "udp dns read"}
+		}
+		select {
+		case payload := <-stream.readCh:
+			if len(payload) == 0 {
+				continue
+			}
+			return append([]byte(nil), payload...), nil
+		case err := <-stream.errCh:
+			if err == nil {
+				err = io.EOF
+			}
+			return nil, err
+		case <-time.After(remaining):
+			return nil, &dnsTimeoutError{op: "udp dns read"}
+		}
+	}
+}
+
+func (s *networkAssistantService) queryRawDNSPacketViaTunnelDoT(server dnsDoTServer, packet []byte, timeout time.Duration, group string) ([]byte, error) {
+	if strings.TrimSpace(server.Address) == "" {
+		return nil, errors.New("invalid dot server")
+	}
+	conn, err := s.openTunnelStreamNetConnForGroup("tcp", server.Address, group)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	tlsServerName := strings.TrimSpace(server.TLSServerName)
+	if tlsServerName == "" {
+		tlsServerName = strings.TrimSpace(server.Host)
+	}
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ServerName: tlsServerName,
+	})
+	defer tlsConn.Close()
+	if err := tlsConn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, err
+	}
+	lengthHeader := [2]byte{}
+	binary.BigEndian.PutUint16(lengthHeader[:], uint16(len(packet)))
+	if err := writeAll(tlsConn, lengthHeader[:]); err != nil {
+		return nil, err
+	}
+	if err := writeAll(tlsConn, packet); err != nil {
+		return nil, err
+	}
+	if _, err := io.ReadFull(tlsConn, lengthHeader[:]); err != nil {
+		return nil, err
+	}
+	responseLen := int(binary.BigEndian.Uint16(lengthHeader[:]))
+	if responseLen <= 0 {
+		return nil, errors.New("dns resolve returned empty payload")
+	}
+	response := make([]byte, responseLen)
+	if _, err := io.ReadFull(tlsConn, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func (s *networkAssistantService) queryRawDNSPacketViaTunnelDoHProxy(server dnsDoHServer, packet []byte, timeout time.Duration, group string) ([]byte, error) {
+	if strings.TrimSpace(server.URL) == "" || strings.TrimSpace(server.Host) == "" || strings.TrimSpace(server.Port) == "" {
+		return nil, errors.New("invalid doh server")
+	}
+	proxyURL := &url.URL{Scheme: "http", Host: net.JoinHostPort(server.Host, server.Port)}
+	tlsServerName := strings.TrimSpace(server.TLSServerName)
+	if tlsServerName == "" {
+		tlsServerName = strings.TrimSpace(server.Host)
+	}
+	transport := &http.Transport{
+		Proxy: func(*http.Request) (*url.URL, error) {
+			return proxyURL, nil
+		},
+		ForceAttemptHTTP2: true,
+		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+			return s.openTunnelStreamNetConnForGroup("http", address, group)
+		},
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: tlsServerName,
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: timeout}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(packet))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/dns-message")
+	request.Header.Set("Accept", "application/dns-message")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return nil, fmt.Errorf("doh status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	payload, err := io.ReadAll(io.LimitReader(response.Body, dnsUpstreamDoHReadLimit))
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) == 0 {
+		return nil, errors.New("dns resolve returned empty payload")
+	}
+	return payload, nil
 }
 
 func (s *networkAssistantService) queryRawDNSPacketViaDoH(server dnsDoHServer, packet []byte, timeout time.Duration, bootstrapServers []dnsPlainServer) ([]byte, error) {

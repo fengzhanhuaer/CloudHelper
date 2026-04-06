@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -1642,86 +1643,126 @@ func (s *networkAssistantService) queryRuleDomainViaTunnelGroup(group string, do
 		return nil, 0, errors.New("group is required")
 	}
 
-	stream, err := s.openTunnelStreamForGroup("dns", buildTunnelDNSResolveAddress(normalizedDomain, qType), normalizedGroup)
+	queryID := uint16(atomic.AddUint32(&s.ruleDNSQuerySeq, 1))
+	packet, err := buildDNSQueryPacket(normalizedDomain, qType, queryID)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer stream.close()
+	config, configErr := getDNSUpstreamConfig()
+	if configErr != nil {
+		s.logfRateLimited("dns-upstream-config-load", 30*time.Second, "load dns upstream config failed, fallback to defaults: %v", configErr)
+	}
 
 	deadline := time.Now().Add(ruleDNSResolveTimeout)
-	responsePayload := make([]byte, 0, 1024)
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return nil, 0, errors.New("dns resolve timeout")
+	var lastErr error
+	tryParseResponse := func(payload []byte) ([]string, int, error) {
+		addrs, ttlSeconds, parseErr := parseDNSResponseAddrs(payload, queryID, qType)
+		if parseErr != nil {
+			return nil, 0, parseErr
 		}
-		waitTimeout := ruleDNSResolveReadTimeout
-		if remaining < waitTimeout {
-			waitTimeout = remaining
+		if len(addrs) == 0 {
+			return nil, 0, errors.New("dns resolve returned empty result")
 		}
-		select {
-		case payload := <-stream.readCh:
-			if len(payload) == 0 {
+		return addrs, ttlSeconds, nil
+	}
+	queryByDoH := func() ([]string, int, bool) {
+		trials := 0
+		for _, server := range config.TUN.DoHServers {
+			if trials >= ruleDNSResolveServerTrials {
+				break
+			}
+			trials++
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				lastErr = errors.New("dns resolve timeout")
+				return nil, 0, false
+			}
+			payload, queryErr := s.queryRawDNSPacketViaTunnelDoHProxy(server, packet, remaining, normalizedGroup)
+			if queryErr != nil {
+				lastErr = queryErr
 				continue
 			}
-			responsePayload = append(responsePayload, payload...)
-			if len(responsePayload) > 64*1024 {
-				return nil, 0, errors.New("dns resolve payload too large")
+			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
+			if parseErr != nil {
+				lastErr = parseErr
+				continue
 			}
-		case streamErr := <-stream.errCh:
-			if len(responsePayload) == 0 {
-				if streamErr == nil || errors.Is(streamErr, io.EOF) {
-					return nil, 0, errors.New("dns resolve returned empty response")
-				}
-				return nil, 0, streamErr
+			return addrs, ttlSeconds, true
+		}
+		return nil, 0, false
+	}
+	queryByDoT := func() ([]string, int, bool) {
+		trials := 0
+		for _, server := range config.TUN.DoTServers {
+			if trials >= ruleDNSResolveServerTrials {
+				break
 			}
-			if streamErr != nil && !errors.Is(streamErr, io.EOF) {
-				return nil, 0, streamErr
+			trials++
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				lastErr = errors.New("dns resolve timeout")
+				return nil, 0, false
 			}
-			addrs, ttl, decodeErr := decodeTunnelDNSResolveResponse(responsePayload, qType)
-			if decodeErr != nil {
-				return nil, 0, decodeErr
+			payload, queryErr := s.queryRawDNSPacketViaTunnelDoT(server, packet, remaining, normalizedGroup)
+			if queryErr != nil {
+				lastErr = queryErr
+				continue
 			}
-			return addrs, ttl, nil
-		case <-time.After(waitTimeout):
-			return nil, 0, errors.New("dns tunnel read timeout")
+			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
+			if parseErr != nil {
+				lastErr = parseErr
+				continue
+			}
+			return addrs, ttlSeconds, true
+		}
+		return nil, 0, false
+	}
+	queryByPlainDNS := func() ([]string, int, bool) {
+		trials := 0
+		for _, server := range config.TUN.DNSServers {
+			if trials >= ruleDNSResolveServerTrials {
+				break
+			}
+			trials++
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				lastErr = errors.New("dns resolve timeout")
+				return nil, 0, false
+			}
+			payload, queryErr := s.queryRawDNSPacketViaTunnelUDP(server, packet, remaining, normalizedGroup)
+			if queryErr != nil {
+				lastErr = queryErr
+				continue
+			}
+			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
+			if parseErr != nil {
+				lastErr = parseErr
+				continue
+			}
+			return addrs, ttlSeconds, true
+		}
+		return nil, 0, false
+	}
+	for _, tier := range buildDNSUpstreamQueryOrder(config.TUN.Prefer) {
+		switch tier {
+		case "doh":
+			if addrs, ttlSeconds, ok := queryByDoH(); ok {
+				return addrs, ttlSeconds, nil
+			}
+		case "dot":
+			if addrs, ttlSeconds, ok := queryByDoT(); ok {
+				return addrs, ttlSeconds, nil
+			}
+		default:
+			if addrs, ttlSeconds, ok := queryByPlainDNS(); ok {
+				return addrs, ttlSeconds, nil
+			}
 		}
 	}
-}
-
-func buildTunnelDNSResolveAddress(domain string, qType uint16) string {
-	return strconv.Itoa(int(qType)) + "|" + normalizeRuleDomain(domain)
-}
-
-func decodeTunnelDNSResolveResponse(payload []byte, qType uint16) ([]string, int, error) {
-	if len(payload) == 0 {
-		return nil, 0, errors.New("empty dns resolve response")
+	if lastErr != nil {
+		return nil, 0, lastErr
 	}
-	var response tunnelDNSResolveResponse
-	if err := json.Unmarshal(payload, &response); err != nil {
-		return nil, 0, err
-	}
-	if strings.TrimSpace(response.Error) != "" {
-		return nil, 0, errors.New(strings.TrimSpace(response.Error))
-	}
-	addresses := make([]string, 0, len(response.Addrs))
-	for _, rawAddr := range response.Addrs {
-		ip := net.ParseIP(strings.TrimSpace(rawAddr))
-		if ip == nil {
-			continue
-		}
-		if qType == 1 && ip.To4() == nil {
-			continue
-		}
-		if qType == 28 && ip.To4() != nil {
-			continue
-		}
-		addresses = append(addresses, canonicalIP(ip))
-	}
-	if len(addresses) == 0 {
-		return nil, 0, errors.New("dns resolve returned empty result")
-	}
-	return addresses, clampRuleDNSTTL(response.TTL), nil
+	return nil, 0, errors.New("dns resolve failed")
 }
 
 func buildDNSQueryPacket(domain string, qType uint16, queryID uint16) ([]byte, error) {
