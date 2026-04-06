@@ -61,7 +61,6 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 					NextHop:        strings.TrimSpace(prevState.BypassNextHop),
 				}
 				useCachedBypass = true
-				s.logf("reuse cached bypass interface: bypass_if=%d next_hop=%s", egress.InterfaceIndex, egress.NextHop)
 			}
 		}
 	}
@@ -79,7 +78,6 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 				return fmt.Errorf("invalid bypass interface: matched tun adapter (if=%d): %w", egress.InterfaceIndex, detectErr)
 			}
 			egress = fallbackEgress
-			s.logf("fallback bypass interface selected after excluding tun adapter: bypass_if=%d next_hop=%s", egress.InterfaceIndex, strings.TrimSpace(egress.NextHop))
 		}
 	}
 	state := tunSystemRouteState{
@@ -124,11 +122,6 @@ func (s *networkAssistantService) applyPlatformTUNSystemRouting(targets tunContr
 	s.tunRouteState = state
 	s.mu.Unlock()
 
-	if len(state.BypassRoutePrefixes) > 0 {
-		s.logf("tun system routing applied: adapter_if=%d bypass_if=%d next_hop=%s routes=%s", state.AdapterIndex, state.BypassInterfaceIndex, state.BypassNextHop, strings.Join(state.BypassRoutePrefixes, ","))
-	} else {
-		s.logf("tun system routing applied: adapter_if=%d", state.AdapterIndex)
-	}
 	return nil
 }
 
@@ -197,7 +190,6 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(targetAddr string)
 	state := s.tunRouteState
 	if state.BypassInterfaceIndex <= 0 || strings.TrimSpace(state.BypassNextHop) == "" {
 		s.mu.Unlock()
-		s.logf("tun bypass skipped: route state unavailable target=%s if=%d next_hop=%q", strings.TrimSpace(targetAddr), state.BypassInterfaceIndex, strings.TrimSpace(state.BypassNextHop))
 		return func() {}, nil
 	}
 	if state.AdapterIndex > 0 && state.BypassInterfaceIndex == state.AdapterIndex {
@@ -228,7 +220,6 @@ func (s *networkAssistantService) acquireTUNDirectBypassRoute(targetAddr string)
 			s.logf("tun bypass route create failed: prefix=%s if=%d next_hop=%s err=%v", prefix, ifIndex, nextHop, err)
 			return nil, err
 		}
-		s.logf("tun bypass route created: prefix=%s if=%d next_hop=%s", prefix, ifIndex, nextHop)
 	}
 
 	released := false

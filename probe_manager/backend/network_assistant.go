@@ -506,16 +506,12 @@ func newNetworkAssistantService() *networkAssistantService {
 	if _, err := service.getOrLoadChainTargetsSnapshot(); err != nil {
 		logStore.Appendf(logSourceManager, "init", "load local chain targets skipped: %v", err)
 	}
-	service.logRuntimeNodeState("service init after local cache warmup")
 	service.syncTUNInstallState()
 	if err := service.startInternalDNSServer(); err != nil {
 		service.setLastError(err)
 		service.logf("failed to auto-start internal dns service: %v", err)
-	} else {
-		service.logf("internal dns service auto-started during service init")
 	}
 	service.startMuxAutoMaintainLoop()
-	service.logf("service initialized, mode=%s available_nodes=%d", service.mode, len(service.availableNodes))
 	return service
 }
 
@@ -720,12 +716,6 @@ func (s *networkAssistantService) getChainTargetsSnapshot() map[string]probeChai
 func (s *networkAssistantService) getOrLoadChainTargetsSnapshot() (map[string]probeChainEndpoint, error) {
 	targets := s.getChainTargetsSnapshot()
 	if len(targets) > 0 {
-		s.logfRateLimited(
-			"chain-targets:snapshot:memory-hit",
-			15*time.Second,
-			"chain target snapshot hit memory cache: targets=%d",
-			len(targets),
-		)
 		return targets, nil
 	}
 
@@ -734,19 +724,11 @@ func (s *networkAssistantService) getOrLoadChainTargetsSnapshot() (map[string]pr
 		return nil, err
 	}
 	if len(cachedTargets) == 0 {
-		s.logfRateLimited(
-			"chain-targets:snapshot:file-empty",
-			15*time.Second,
-			"chain target snapshot file empty: cached_nodes=%d cached_targets=%d",
-			len(cachedNodes),
-			len(cachedTargets),
-		)
 		return map[string]probeChainEndpoint{}, nil
 	}
 
 	nodes := mergeAvailableNodeIDs(cachedNodes, cachedTargets)
 	s.mu.Lock()
-	previousNodeID := strings.TrimSpace(s.nodeID)
 	s.chainTargets = copyProbeChainTargets(cachedTargets)
 	if len(nodes) > 0 {
 		s.availableNodes = nodes
@@ -754,22 +736,8 @@ func (s *networkAssistantService) getOrLoadChainTargetsSnapshot() (map[string]pr
 			s.nodeID = nodes[0]
 		}
 	}
-	effectiveNodeID := strings.TrimSpace(s.nodeID)
 	targets = copyProbeChainTargets(s.chainTargets)
-	effectiveNodes := append([]string(nil), s.availableNodes...)
 	s.mu.Unlock()
-	if !strings.EqualFold(previousNodeID, effectiveNodeID) {
-		s.logf("chain target snapshot loaded from file and adjusted selected node: previous=%s next=%s nodes=%v targets=%d", previousNodeID, effectiveNodeID, effectiveNodes, len(targets))
-	} else {
-		s.logfRateLimited(
-			"chain-targets:snapshot:file-load",
-			15*time.Second,
-			"chain target snapshot loaded from file: selected=%s nodes=%v targets=%d",
-			effectiveNodeID,
-			effectiveNodes,
-			len(targets),
-		)
-	}
 	return targets, nil
 }
 
@@ -1156,9 +1124,6 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	if normalizedNode == "" {
 		normalizedNode = defaultNodeID
 	}
-	s.logf("apply mode requested: mode=%s node=%s", normalizedMode, normalizedNode)
-	s.logRuntimeNodeState("apply mode before refresh")
-
 	normalizedBase := strings.TrimSpace(controllerBaseURL)
 	normalizedToken := strings.TrimSpace(sessionToken)
 
@@ -1176,13 +1141,11 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	s.mu.Unlock()
 
 	if effectiveBase != "" && effectiveToken != "" {
-		s.logf("refreshing available nodes from controller: %s", effectiveBase)
 		if err := s.refreshAvailableNodes(); err != nil {
 			s.logf("refresh available nodes failed: %v", err)
 			s.setLastError(err)
 			return err
 		}
-		s.logRuntimeNodeState("apply mode after refresh")
 	}
 
 	s.mu.Lock()
@@ -1201,7 +1164,6 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 	}
 	s.nodeID = normalizedNode
 	s.mu.Unlock()
-	s.logf("apply mode accepted selected node: previous=%s next=%s available=%v", previousNodeID, normalizedNode, availableNodesSnapshot)
 	s.triggerMuxAutoMaintainNow()
 
 	if normalizedMode == networkModeDirect {
@@ -1223,9 +1185,7 @@ func (s *networkAssistantService) ApplyMode(controllerBaseURL, sessionToken, mod
 		s.tunStatus = tunStatusAfterDisable(s.tunSupported, s.tunInstalled)
 		s.mu.Unlock()
 		if wasUsingTUNCapture {
-			s.logf("switched from tun capture to direct mode")
 		}
-		s.logf("switched mode to direct and restored system dns/proxy, node=%s", normalizedNode)
 		return nil
 	}
 
@@ -2167,28 +2127,12 @@ func (s *networkAssistantService) refreshAvailableNodes() error {
 	if cacheErr == nil && (len(cachedNodes) > 0 || len(cachedTargets) > 0) {
 		nodes := mergeAvailableNodeIDs(cachedNodes, cachedTargets)
 		s.mu.Lock()
-		previousNodeID := strings.TrimSpace(s.nodeID)
 		s.availableNodes = nodes
 		s.chainTargets = copyProbeChainTargets(cachedTargets)
 		if !containsNodeID(nodes, s.nodeID) {
 			s.nodeID = nodes[0]
 		}
-		effectiveNodeID := strings.TrimSpace(s.nodeID)
-		effectiveNodes := append([]string(nil), s.availableNodes...)
-		targetCount := len(s.chainTargets)
 		s.mu.Unlock()
-		if !strings.EqualFold(previousNodeID, effectiveNodeID) {
-			s.logf("refresh available nodes adjusted selected node from cache: previous=%s next=%s nodes=%v targets=%d", previousNodeID, effectiveNodeID, effectiveNodes, targetCount)
-		} else {
-			s.logfRateLimited(
-				"available-nodes:refresh:cache-hit",
-				15*time.Second,
-				"refresh available nodes loaded from cache: selected=%s nodes=%v targets=%d",
-				effectiveNodeID,
-				effectiveNodes,
-				targetCount,
-			)
-		}
 		return nil
 	}
 	if cacheErr != nil {

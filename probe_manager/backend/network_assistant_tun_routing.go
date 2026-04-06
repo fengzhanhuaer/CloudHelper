@@ -39,32 +39,22 @@ func (s *networkAssistantService) clearTUNDynamicBypassRoutes() error {
 
 func (s *networkAssistantService) applyTUNSystemRouting(_ string) error {
 	startedAt := time.Now()
-	s.logf("tun routing apply start")
 
 	targets, collectErr := s.collectTUNControlPlaneTargets()
 	if collectErr != nil {
 		s.logf("collect control-plane bypass targets partially failed: %v", collectErr)
-	}
-	if len(targets.IPv4Addrs) > 0 {
-		s.logf("tun routing control-plane bypass targets prepared: controller=%s ipv4=%s", targets.ControllerHost, strings.Join(targets.IPv4Addrs, ","))
-	} else {
-		s.logf("tun routing control-plane bypass targets prepared: controller=%s ipv4=none", targets.ControllerHost)
 	}
 
 	if err := s.applyPlatformTUNSystemRouting(targets); err != nil {
 		s.logf("tun routing apply failed in platform routing stage: err=%v elapsed=%s", err, time.Since(startedAt))
 		return err
 	}
-	s.logf("tun routing stage success: platform-routing elapsed=%s", time.Since(startedAt))
 	s.seedStaticDNSRouteHints()
-	s.logf("tun routing stage success: seed-static-dns elapsed=%s", time.Since(startedAt))
 	s.seedControlPlaneRouteHints(targets)
-	s.logf("tun routing stage success: seed-control-plane-dns elapsed=%s", time.Since(startedAt))
 	s.mu.Lock()
 	s.tunRouteSyncedAt = time.Now()
 	s.tunRouteHost = targets.ControllerHost
 	s.mu.Unlock()
-	s.logf("tun routing apply success: elapsed=%s", time.Since(startedAt))
 	return nil
 }
 
@@ -137,9 +127,7 @@ func (s *networkAssistantService) seedStaticDNSRouteHints() {
 		s.storeDNSRouteHint([]string{ipValue}, domain, decision, internalDNSDefaultTTLSeconds)
 		seeded++
 	}
-	if seeded > 0 {
-		s.logf("seeded static dns route hints: count=%d", seeded)
-	}
+	_ = seeded
 }
 
 func (s *networkAssistantService) seedControlPlaneRouteHints(targets tunControlPlaneTargets) {
@@ -180,9 +168,7 @@ func (s *networkAssistantService) seedControlPlaneRouteHints(targets tunControlP
 		seeded++
 	}
 
-	if seeded > 0 {
-		s.logf("seeded control-plane dns route hints: count=%d", seeded)
-	}
+	_ = seeded
 }
 
 func (s *networkAssistantService) isControlPlaneHost(host string) bool {

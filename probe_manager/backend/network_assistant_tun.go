@@ -227,7 +227,6 @@ func (s *networkAssistantService) InstallTUN() error {
 		}
 		s.mu.Unlock()
 
-		s.logf("tun adapter already exists, skip install: name=%s description=%s", tunAdapterName, tunAdapterDescription)
 		return nil
 	}
 
@@ -271,23 +270,17 @@ func (s *networkAssistantService) InstallTUN() error {
 	}
 	s.mu.Unlock()
 
-	s.logf("tun library prepared from embed: source=%s target=%s size=%d", tunEmbeddedLibraryPath, path, len(embeddedWintunAMD64))
-	s.logf("tun adapter installed: name=%s description=%s", tunAdapterName, tunAdapterDescription)
 	return nil
 }
 
 func (s *networkAssistantService) EnableTUN() error {
-	s.logf("enable tun begin")
 	if !isTUNSupported() {
 		err := errors.New(tunStatusUnsupported)
-		s.logf("enable tun failed: unsupported")
 		s.setLastError(err)
 		s.syncTUNInstallState()
 		return err
 	}
 	if !isWindowsAdmin() {
-		s.logf("enable tun stage: ensure-admin begin")
-		s.logf("tun enable requires admin privileges, requesting elevation")
 		if err := relaunchAsAdmin(); err != nil {
 			if errors.Is(err, ErrRelaunchAsAdmin) {
 				// UAC 提权已触发，新进程将以管理员身份启动，当前进程应尽快退出
@@ -303,13 +296,11 @@ func (s *networkAssistantService) EnableTUN() error {
 		}
 	}
 	
-	s.logf("enable tun stage: install begin")
 	if err := s.InstallTUN(); err != nil {
 		s.logf("enable tun failed at install: %v", err)
 		return err
 	}
 	
-	s.logf("enable tun stage: load-rule-routing begin")
 	routing, err := loadOrCreateTunnelRuleRouting()
 	if err != nil {
 		s.logf("enable tun failed at load-rule-routing: %v", err)
@@ -322,7 +313,6 @@ func (s *networkAssistantService) EnableTUN() error {
 	effectiveToken := strings.TrimSpace(s.sessionToken)
 	s.mu.RUnlock()
 	if effectiveBase != "" && effectiveToken != "" {
-		s.logf("enable tun stage: refresh-available-nodes begin: base=%s has_token=%t", effectiveBase, effectiveToken != "")
 		if err := s.refreshAvailableNodes(); err != nil {
 			s.logf("enable tun failed at refresh-available-nodes: %v", err)
 			s.setLastError(err)
@@ -330,41 +320,35 @@ func (s *networkAssistantService) EnableTUN() error {
 		}
 	}
 	
-	s.logf("enable tun stage: stop-mux begin")
 	if err := s.stopTunnelMuxClients(); err != nil {
 		s.logf("enable tun failed at stop-mux: %v", err)
 		s.setLastError(err)
 		return err
 	}
 	
-	s.logf("enable tun stage: apply-direct-proxy begin")
 	if err := applyDirectSystemProxy(); err != nil {
 		s.logf("enable tun failed at apply-direct-proxy: %v", err)
 		s.setLastError(err)
 		return err
 	}
 	
-	s.logf("enable tun stage: start-dataplane begin")
 	if err := s.startLocalTUNDataPlane(); err != nil {
 		s.logf("enable tun failed at start-dataplane: %v", err)
 		s.setLastError(err)
 		return err
 	}
 	
-	s.logf("enable tun stage: apply-routing begin: base=%s", effectiveBase)
 	if err := s.applyTUNSystemRouting(effectiveBase); err != nil {
 		s.logf("enable tun failed at apply-routing: %v", err)
 		return s.fallbackToDirectModeOnTUNRoutingFailure("enable tun: apply direct routes failed", err)
 	}
 
-	s.logf("enable tun stage: ensure-internal-dns begin")
 	if err := s.ensureInternalDNSServerHealthy(); err != nil {
 		s.logf("enable tun failed at ensure-internal-dns: %v", err)
 		s.setLastError(err)
 		return err
 	}
 
-	s.logf("enable tun stage: commit-runtime-state begin")
 	s.mu.Lock()
 	s.mode = networkModeTUN
 	s.tunSupported = true
@@ -379,15 +363,12 @@ func (s *networkAssistantService) EnableTUN() error {
 	s.lastError = ""
 	s.ruleRouting = routing
 	s.ruleDNSCache = make(map[string]dnsCacheEntry)
-	libraryPath := s.tunLibraryPath
 	pref := tunPreferenceState{EverEnabled: s.tunEverEnabled, ManualClosed: s.tunManualClosed}
 	s.mu.Unlock()
 	if err := saveTUNPreferenceState(pref); err != nil {
 		s.logf("failed to persist tun preference state: %v", err)
 	}
 
-	s.logf("enable tun success: library=%s", libraryPath)
-	s.logf("switched mode to tun, library=%s", libraryPath)
 	s.triggerMuxAutoMaintainNow()
 	return nil
 }

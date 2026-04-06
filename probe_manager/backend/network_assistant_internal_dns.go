@@ -47,7 +47,6 @@ func (s *networkAssistantService) startInternalDNSServer() error {
 			time.Sleep(200 * time.Millisecond)
 			conn, err = net.ListenPacket("udp4", listenAddr)
 			if err == nil {
-				s.logf("local internal dns listen recovered after retry: listen=%s attempt=%d", listenAddr, attempt)
 				break
 			}
 			if !isInternalDNSRetryableListenError(err) {
@@ -74,27 +73,22 @@ func (s *networkAssistantService) startInternalDNSServer() error {
 	s.mu.Unlock()
 
 	go server.serve()
-	s.logf("local internal dns service started: listen=%s", listenAddr)
 	return nil
 }
 
 func (s *networkAssistantService) ensureInternalDNSServerHealthy() error {
-	s.logf("ensure internal dns healthy begin")
 	s.mu.RLock()
 	server := s.internalDNS
 	s.mu.RUnlock()
 	if server == nil {
-		s.logf("ensure internal dns healthy: server missing, starting")
 		err := s.startInternalDNSServer()
 		if err != nil {
 			s.logf("ensure internal dns healthy failed at start-missing: %v", err)
 			return err
 		}
-		s.logf("ensure internal dns healthy success after start-missing")
 		return nil
 	}
 	if err := probeInternalDNSUDPListen(); err == nil {
-		s.logf("ensure internal dns healthy success: probe ok")
 		return nil
 	} else {
 		s.logf("local internal dns health check failed, restarting: err=%v", err)
@@ -107,7 +101,6 @@ func (s *networkAssistantService) ensureInternalDNSServerHealthy() error {
 		s.logf("ensure internal dns healthy failed at restart: %v", err)
 		return err
 	}
-	s.logf("ensure internal dns healthy success after restart")
 	return nil
 }
 
