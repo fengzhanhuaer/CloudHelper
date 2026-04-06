@@ -74,21 +74,11 @@ type NetworkAssistantRuleConfig struct {
 	Fallback     NetworkAssistantRuleGroupConfig   `json:"fallback"`
 }
 
-func (a *App) GetNetworkAssistantRuleConfig() (cfg NetworkAssistantRuleConfig, err error) {
+func (a *App) GetNetworkAssistantRuleConfig() (NetworkAssistantRuleConfig, error) {
 	if a.networkAssistant == nil {
 		return NetworkAssistantRuleConfig{}, errors.New("network assistant service is not initialized")
 	}
-	startedAt := time.Now()
-	a.networkAssistant.logf("wails get rule config enter")
-	defer func() {
-		if err != nil {
-			a.networkAssistant.logf("wails get rule config exit error: elapsed=%s err=%v", time.Since(startedAt), err)
-			return
-		}
-		a.networkAssistant.logf("wails get rule config exit success: elapsed=%s groups=%d", time.Since(startedAt), len(cfg.Groups))
-	}()
-	cfg, err = a.networkAssistant.GetRuleConfig()
-	return cfg, err
+	return a.networkAssistant.GetRuleConfig()
 }
 
 func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) (NetworkAssistantRuleConfig, error) {
@@ -99,38 +89,17 @@ func (a *App) SetNetworkAssistantRulePolicy(group, action, tunnelNodeID string) 
 }
 
 func (s *networkAssistantService) GetRuleConfig() (NetworkAssistantRuleConfig, error) {
-	startedAt := time.Now()
-	s.logf("get rule config begin")
-	s.logf("get rule config before snapshot")
-
 	availableNodes, chainTargets, currentNode, routing, groupRuntime := s.getRuleConfigSnapshot()
-	s.logf(
-		"get rule config snapshot loaded: available=%d chain_targets=%d current=%s groups=%d elapsed=%s",
-		len(availableNodes),
-		len(chainTargets),
-		currentNode,
-		len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1,
-		time.Since(startedAt),
-	)
-
-	buildStartedAt := time.Now()
-	s.logf("get rule config before build: elapsed=%s", time.Since(startedAt))
 	tunnelOptions := buildRuleTunnelOptions(availableNodes, currentNode)
 	if currentNode == "" {
 		currentNode = defaultNodeID
 	}
 	config := buildRuleConfigFromRouting(routing, tunnelOptions, currentNode, chainTargets, groupRuntime)
-	s.logf("get rule config build done: elapsed=%s build_elapsed=%s groups=%d fallback_action=%s", time.Since(startedAt), time.Since(buildStartedAt), len(config.Groups), config.Fallback.Action)
-
-	s.logf("get rule config done: total_elapsed=%s", time.Since(startedAt))
 	return config, nil
 }
 
 func (s *networkAssistantService) getRuleConfigSnapshot() ([]string, map[string]probeChainEndpoint, string, tunnelRuleRouting, map[string]NetworkAssistantGroupKeepaliveItem) {
-	waitStartedAt := time.Now()
-	s.logf("get rule config snapshot wait rlock begin")
 	s.mu.RLock()
-	s.logf("get rule config snapshot wait rlock done: elapsed=%s", time.Since(waitStartedAt))
 	availableNodes := append([]string(nil), s.availableNodes...)
 	chainTargets := copyProbeChainTargets(s.chainTargets)
 	currentNode := strings.TrimSpace(s.nodeID)
