@@ -661,6 +661,18 @@ func (c *tunnelMuxClient) close() {
 		return
 	}
 
+	connected, activeStreams, lastRecvAt, lastPongAt := c.snapshot()
+	log.Printf(
+		"[network-assistant] tunnel mux close: node=%s mode_key=%s connected=%v active_streams=%d keepalive_failures=%d last_recv=%s last_pong=%s",
+		strings.TrimSpace(c.nodeID),
+		strings.TrimSpace(c.modeKey),
+		connected,
+		activeStreams,
+		c.keepAliveFailures.Load(),
+		strings.TrimSpace(lastRecvAt),
+		strings.TrimSpace(lastPongAt),
+	)
+
 	if c.session != nil {
 		_ = c.session.Close()
 	}
@@ -690,7 +702,27 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 		}
 		if _, err := c.session.Ping(); err != nil {
 			failures := c.keepAliveFailures.Add(1)
+			connected, activeStreams, lastRecvAt, lastPongAt := c.snapshot()
+			log.Printf(
+				"[network-assistant] tunnel mux keepalive ping failed: node=%s mode_key=%s failures=%d threshold=%d connected=%v active_streams=%d last_recv=%s last_pong=%s err=%v",
+				strings.TrimSpace(c.nodeID),
+				strings.TrimSpace(c.modeKey),
+				failures,
+				muxKeepAliveFailThreshold,
+				connected,
+				activeStreams,
+				strings.TrimSpace(lastRecvAt),
+				strings.TrimSpace(lastPongAt),
+				err,
+			)
 			if failures >= muxKeepAliveFailThreshold {
+				log.Printf(
+					"[network-assistant] tunnel mux keepalive threshold reached: node=%s mode_key=%s failures=%d threshold=%d action=close",
+					strings.TrimSpace(c.nodeID),
+					strings.TrimSpace(c.modeKey),
+					failures,
+					muxKeepAliveFailThreshold,
+				)
 				c.close()
 				return
 			}
@@ -1213,6 +1245,22 @@ func (s *networkAssistantService) ensureTunnelMuxClientForNode(chainIDInput stri
 			strings.TrimSpace(client.modeKey) == strings.TrimSpace(modeKey) {
 			return client, nil
 		}
+		connected, activeStreams, lastRecvAt, lastPongAt := client.snapshot()
+		s.logf(
+			"ensure tunnel mux rebuild required: requested=%s target=%s snapshot_selected=%s existing_node=%s existing_mode_key=%s next_mode_key=%s existing_connected=%v existing_closed=%v active_streams=%d keepalive_failures=%d last_recv=%s last_pong=%s",
+			requestedChainID,
+			targetChainID,
+			snapshot.selectedChainID,
+			strings.TrimSpace(client.nodeID),
+			strings.TrimSpace(client.modeKey),
+			strings.TrimSpace(modeKey),
+			connected,
+			client.isClosed(),
+			activeStreams,
+			client.keepAliveFailures.Load(),
+			strings.TrimSpace(lastRecvAt),
+			strings.TrimSpace(lastPongAt),
+		)
 	}
 
 	s.logfRateLimited(
