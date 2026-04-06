@@ -12,3 +12,5 @@ cloudhelper-probe-controller-linux-amd64
 probe_manager/data/*
 .gocache/*
 probe_manager/backup/*
+probe_manager/backend/backup/*
+probe_manager/backend/data/*

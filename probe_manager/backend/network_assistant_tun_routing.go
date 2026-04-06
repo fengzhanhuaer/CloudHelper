@@ -200,6 +200,13 @@ func (s *networkAssistantService) isControlPlaneHost(host string) bool {
 	if controllerHost != "" && normalizedHost == controllerHost {
 		return true
 	}
+	preferredTarget, err := resolvePreferredControllerDialTarget(baseURL)
+	if err == nil {
+		preferredIP := normalizeControlPlaneHost(preferredTarget.PreferredIP)
+		if preferredIP != "" && normalizedHost == preferredIP {
+			return true
+		}
+	}
 	for _, endpoint := range chainTargets {
 		if normalizedHost == normalizeControlPlaneHost(endpoint.EntryHost) {
 			return true
@@ -281,6 +288,10 @@ func (s *networkAssistantService) collectTUNControlPlaneTargets() (tunControlPla
 	controllerHost := resolveControllerHostForProtection(baseURL)
 	targets.ControllerHost = controllerHost
 	addHost(controllerHost)
+	preferredTarget, preferredErr := resolvePreferredControllerDialTarget(baseURL)
+	if preferredTarget.Enabled {
+		addIP(preferredTarget.PreferredIP)
+	}
 
 	chainTargets, chainErr := s.getOrLoadChainTargetsSnapshot()
 	if chainErr == nil {
@@ -293,10 +304,17 @@ func (s *networkAssistantService) collectTUNControlPlaneTargets() (tunControlPla
 	if chainErr != nil {
 		allErr = errors.Join(allErr, chainErr)
 	}
+	if preferredErr != nil {
+		allErr = errors.Join(allErr, preferredErr)
+	}
 
 	for host := range targets.Hosts {
 		if cachedIP, ok := getProbeDNSCachedIP(host); ok {
 			addIP(cachedIP)
+		}
+		if preferredTarget.Enabled && controllerHost != "" && strings.EqualFold(host, controllerHost) {
+			addIP(preferredTarget.PreferredIP)
+			continue
 		}
 		dialHost, _, err := resolveProbeChainDialIPHostFresh(host)
 		if err != nil {

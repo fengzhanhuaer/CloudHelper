@@ -56,6 +56,7 @@ func resolveManagerBackupControllerBaseURL() (string, error) {
 }
 
 func loginControllerForBackupUpload(ctx context.Context, baseURL string) (string, error) {
+	client := buildControllerHTTPClient(baseURL)
 	nonceURL := strings.TrimRight(baseURL, "/") + "/api/auth/nonce"
 	nonceReq, err := http.NewRequestWithContext(ctx, http.MethodGet, nonceURL, nil)
 	if err != nil {
@@ -64,7 +65,7 @@ func loginControllerForBackupUpload(ctx context.Context, baseURL string) (string
 	nonceReq.Header.Set("Accept", "application/json")
 	nonceReq.Header.Set("X-Forwarded-Proto", "https")
 
-	nonceResp, err := http.DefaultClient.Do(nonceReq)
+	nonceResp, err := client.Do(nonceReq)
 	if err != nil {
 		return "", err
 	}
@@ -107,7 +108,7 @@ func loginControllerForBackupUpload(ctx context.Context, baseURL string) (string
 	loginReq.Header.Set("Accept", "application/json")
 	loginReq.Header.Set("X-Forwarded-Proto", "https")
 
-	loginResp, err := http.DefaultClient.Do(loginReq)
+	loginResp, err := client.Do(loginReq)
 	if err != nil {
 		return "", err
 	}

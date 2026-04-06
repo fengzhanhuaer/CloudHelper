@@ -3,6 +3,8 @@ package backend
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -2344,9 +2346,147 @@ func buildAdminWSURL(baseURL string) (string, error) {
 	return strings.TrimSpace(parsed.String()), nil
 }
 
+type controllerPreferredDialTarget struct {
+	Enabled       bool
+	PreferredIP   string
+	Address       string
+	TLSServerName string
+}
+
+func resolvePreferredControllerDialTarget(baseURL string) (controllerPreferredDialTarget, error) {
+	config, _, err := loadManagerGlobalConfig()
+	if err != nil {
+		return controllerPreferredDialTarget{}, err
+	}
+	return resolveControllerPreferredDialTargetForConfig(baseURL, config.ControllerIP)
+}
+
+func resolveControllerPreferredDialTargetForConfig(baseURL, configuredIP string) (controllerPreferredDialTarget, error) {
+	parsed, err := parseControllerBaseURLForDial(baseURL)
+	if err != nil {
+		return controllerPreferredDialTarget{}, err
+	}
+	preferredIP := sanitizeControllerIP(configuredIP)
+	if preferredIP == "" {
+		return controllerPreferredDialTarget{}, nil
+	}
+	originalHost := strings.TrimSpace(parsed.Hostname())
+	if originalHost == "" || net.ParseIP(originalHost) != nil {
+		return controllerPreferredDialTarget{}, nil
+	}
+	port := strings.TrimSpace(parsed.Port())
+	if port == "" {
+		port = controllerDefaultPortForScheme(parsed.Scheme)
+	}
+	if port == "" {
+		port = "80"
+	}
+	target := controllerPreferredDialTarget{
+		Enabled:     true,
+		PreferredIP: preferredIP,
+		Address:     net.JoinHostPort(preferredIP, port),
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "https", "wss":
+		target.TLSServerName = originalHost
+	}
+	return target, nil
+}
+
+func parseControllerBaseURLForDial(rawBaseURL string) (*url.URL, error) {
+	value := strings.TrimSpace(rawBaseURL)
+	if value == "" {
+		return nil, errors.New("controller base url is required")
+	}
+	if !strings.Contains(value, "://") {
+		value = "http://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || strings.TrimSpace(parsed.Host) == "" {
+		return nil, errors.New("invalid controller base url")
+	}
+	return parsed, nil
+}
+
+func controllerDefaultPortForScheme(rawScheme string) string {
+	switch strings.ToLower(strings.TrimSpace(rawScheme)) {
+	case "https", "wss":
+		return "443"
+	case "http", "ws":
+		return "80"
+	default:
+		return ""
+	}
+}
+
+func cloneDefaultHTTPTransport() *http.Transport {
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		return base.Clone()
+	}
+	return &http.Transport{}
+}
+
+func cloneDefaultWSDialer() websocket.Dialer {
+	if websocket.DefaultDialer == nil {
+		return websocket.Dialer{}
+	}
+	cloned := *websocket.DefaultDialer
+	if cloned.TLSClientConfig != nil {
+		cloned.TLSClientConfig = cloned.TLSClientConfig.Clone()
+	}
+	return cloned
+}
+
+func buildControllerHTTPTransport(baseURL string) *http.Transport {
+	transport := cloneDefaultHTTPTransport()
+	target, err := resolvePreferredControllerDialTarget(baseURL)
+	if err != nil || !target.Enabled || strings.TrimSpace(target.Address) == "" {
+		return transport
+	}
+	netDialer := &net.Dialer{KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return netDialer.DialContext(ctx, network, target.Address)
+	}
+	if target.TLSServerName != "" {
+		cfg := transport.TLSClientConfig
+		if cfg != nil {
+			cfg = cfg.Clone()
+		} else {
+			cfg = &tls.Config{}
+		}
+		cfg.ServerName = target.TLSServerName
+		transport.TLSClientConfig = cfg
+	}
+	return transport
+}
+
+func buildControllerHTTPClient(baseURL string) *http.Client {
+	return &http.Client{Transport: buildControllerHTTPTransport(baseURL)}
+}
+
 // buildControllerWSDialer 构造用于连接主控的 WebSocket Dialer。
-func buildControllerWSDialer(_ string) websocket.Dialer {
-	return websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+func buildControllerWSDialer(baseURL string) websocket.Dialer {
+	dialer := cloneDefaultWSDialer()
+	dialer.HandshakeTimeout = 10 * time.Second
+	target, err := resolvePreferredControllerDialTarget(baseURL)
+	if err != nil || !target.Enabled || strings.TrimSpace(target.Address) == "" {
+		return dialer
+	}
+	netDialer := &net.Dialer{KeepAlive: 30 * time.Second}
+	dialer.NetDialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return netDialer.DialContext(ctx, network, target.Address)
+	}
+	if target.TLSServerName != "" {
+		cfg := dialer.TLSClientConfig
+		if cfg != nil {
+			cfg = cfg.Clone()
+		} else {
+			cfg = &tls.Config{}
+		}
+		cfg.ServerName = target.TLSServerName
+		dialer.TLSClientConfig = cfg
+	}
+	return dialer
 }
 
 func buildNetworkAssistantTunnelRoute(nodeID string) string {

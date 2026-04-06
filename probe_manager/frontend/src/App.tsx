@@ -166,6 +166,12 @@ function App() {
             onPingServer={() => connection.pingServer(settings.baseUrl, auth.sessionToken)}
             onCheckAdminStatus={() => connection.checkAdminStatus(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
             controllerBaseUrl={settings.baseUrl}
+            controllerPreferredIP={settings.controllerIP}
+            controllerPreferredIPStatus={settings.controllerIPStatus}
+            isLoadingControllerPreferredIP={settings.isLoadingControllerIP}
+            isSavingControllerPreferredIP={settings.isSavingControllerIP}
+            onRefreshControllerPreferredIP={() => void settings.refreshControllerIP()}
+            onSaveControllerPreferredIP={(value) => void settings.saveControllerIP(value)}
             onRefreshPrivateKeyStatus={auth.refreshPrivateKeyStatus}
             managerVersion={upgrade.managerVersion}
             controllerVersion={upgrade.controllerVersion}

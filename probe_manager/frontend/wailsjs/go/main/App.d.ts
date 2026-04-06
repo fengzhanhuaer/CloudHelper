@@ -18,6 +18,8 @@ export function GetAIDebugListenEnabled():Promise<boolean>;
 
 export function GetDeletedProbeNodeNos():Promise<Array<number>>;
 
+export function GetGlobalControllerIP():Promise<string>;
+
 export function GetGlobalControllerURL():Promise<string>;
 
 export function GetLatestGitHubRelease(arg1:string):Promise<backend.ReleaseInfo>;
@@ -69,6 +71,8 @@ export function RestoreDeletedProbeNode(arg1:number):Promise<void>;
 export function RestoreNetworkAssistantDirect():Promise<backend.NetworkAssistantStatus>;
 
 export function SetAIDebugListenEnabled(arg1:boolean):Promise<boolean>;
+
+export function SetGlobalControllerIP(arg1:string):Promise<string>;
 
 export function SetGlobalControllerURL(arg1:string):Promise<string>;
 

@@ -27,6 +27,12 @@ type SystemSettingsTabProps = {
   managerUpgradeStatus: string;
   managerUpgradeProgress: UpgradeProgress;
   managerUpgradeMessages: string[];
+  controllerPreferredIP: string;
+  controllerPreferredIPStatus: string;
+  isLoadingControllerPreferredIP: boolean;
+  isSavingControllerPreferredIP: boolean;
+  onRefreshControllerPreferredIP: () => void;
+  onSaveControllerPreferredIP: (value: string) => void;
   backupEnabled: boolean;
   backupRcloneRemote: string;
   backupSettingsStatus: string;
@@ -78,8 +84,13 @@ function UpgradeTimeline(props: { title: string; lines: string[] }) {
 
 export function SystemSettingsTab(props: SystemSettingsTabProps) {
   const [subTab, setSubTab] = useState<"upgrade" | "controller" | "ai-debug">("upgrade");
+  const [controllerPreferredIPInput, setControllerPreferredIPInput] = useState(props.controllerPreferredIP || "");
   const [backupEnabledInput, setBackupEnabledInput] = useState(Boolean(props.backupEnabled));
   const [backupRemoteInput, setBackupRemoteInput] = useState(props.backupRcloneRemote || "");
+
+  useEffect(() => {
+    setControllerPreferredIPInput(props.controllerPreferredIP || "");
+  }, [props.controllerPreferredIP]);
 
   useEffect(() => {
     setBackupEnabledInput(Boolean(props.backupEnabled));
@@ -148,7 +159,41 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
 
       {subTab === "controller" && (
         <>
-          <div className="identity-card">
+          <div className="identity-card" style={{ marginBottom: 12 }}>
+            <div><strong>controller_ip</strong></div>
+            <div className="status" style={{ marginTop: 8 }}>
+              独立配置字段，留空表示不配置。若 controller_url 的 host 使用域名且这里填写了 IP，则连接主控时会直接按该 IP 拨号，跳过 DNS 解析；controller_url 本身保持不变。
+            </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>controller_ip</label>
+              <input
+                className="input"
+                value={controllerPreferredIPInput}
+                onChange={(event) => setControllerPreferredIPInput(event.target.value)}
+                placeholder="例如：203.0.113.10；留空表示不配置"
+                disabled={props.isLoadingControllerPreferredIP || props.isSavingControllerPreferredIP}
+              />
+            </div>
+            <div className="content-actions inline">
+              <button
+                className="btn"
+                onClick={props.onRefreshControllerPreferredIP}
+                disabled={props.isLoadingControllerPreferredIP || props.isSavingControllerPreferredIP}
+              >
+                {props.isLoadingControllerPreferredIP ? "读取中..." : "读取设置"}
+              </button>
+              <button
+                className="btn"
+                onClick={() => props.onSaveControllerPreferredIP(controllerPreferredIPInput)}
+                disabled={props.isLoadingControllerPreferredIP || props.isSavingControllerPreferredIP}
+              >
+                {props.isSavingControllerPreferredIP ? "保存中..." : "保存设置"}
+              </button>
+            </div>
+          </div>
+          <div className="status">{props.controllerPreferredIPStatus}</div>
+
+          <div className="identity-card" style={{ marginTop: 12 }}>
             <div><strong>主控备份设置</strong></div>
             <label className="probe-direct-toggle" style={{ marginTop: 0 }}>
               <input

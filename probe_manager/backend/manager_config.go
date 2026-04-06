@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ const (
 
 type managerGlobalConfig struct {
 	ControllerURL        string `json:"controller_url"`
+	ControllerIP         string `json:"controller_ip"`
 	AIDebugListenEnabled bool   `json:"ai_debug_listen_enabled"`
 }
 
@@ -42,6 +44,32 @@ func (a *App) SetGlobalControllerURL(rawURL string) (string, error) {
 		return "", err
 	}
 	config.ControllerURL = value
+
+	if err := writeManagerGlobalConfig(configPath, config); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func (a *App) GetGlobalControllerIP() (string, error) {
+	config, _, err := loadManagerGlobalConfig()
+	if err != nil {
+		return "", err
+	}
+	return sanitizeControllerIP(config.ControllerIP), nil
+}
+
+func (a *App) SetGlobalControllerIP(rawIP string) (string, error) {
+	value, err := validateControllerIP(rawIP)
+	if err != nil {
+		return "", err
+	}
+
+	config, configPath, err := loadManagerGlobalConfig()
+	if err != nil {
+		return "", err
+	}
+	config.ControllerIP = value
 
 	if err := writeManagerGlobalConfig(configPath, config); err != nil {
 		return "", err
@@ -90,7 +118,7 @@ func loadManagerGlobalConfig() (managerGlobalConfig, string, error) {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, AIDebugListenEnabled: false}
+			defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, ControllerIP: "", AIDebugListenEnabled: false}
 			if writeErr := writeManagerGlobalConfig(configPath, defaultConfig); writeErr != nil {
 				return managerGlobalConfig{}, configPath, writeErr
 			}
@@ -101,7 +129,7 @@ func loadManagerGlobalConfig() (managerGlobalConfig, string, error) {
 
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
-		defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, AIDebugListenEnabled: false}
+		defaultConfig := managerGlobalConfig{ControllerURL: defaultControllerURL, ControllerIP: "", AIDebugListenEnabled: false}
 		if writeErr := writeManagerGlobalConfig(configPath, defaultConfig); writeErr != nil {
 			return managerGlobalConfig{}, configPath, writeErr
 		}
@@ -115,7 +143,32 @@ func loadManagerGlobalConfig() (managerGlobalConfig, string, error) {
 	if strings.TrimSpace(config.ControllerURL) == "" {
 		config.ControllerURL = defaultControllerURL
 	}
+	config.ControllerIP = sanitizeControllerIP(config.ControllerIP)
 	return config, configPath, nil
+}
+
+func sanitizeControllerIP(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	ip := net.ParseIP(value)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+func validateControllerIP(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	ip := net.ParseIP(value)
+	if ip == nil {
+		return "", errors.New("controller_ip must be a valid IP address")
+	}
+	return ip.String(), nil
 }
 
 func writeManagerGlobalConfig(configPath string, config managerGlobalConfig) error {

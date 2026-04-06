@@ -86,6 +86,35 @@ func TestResolveControllerHostForProtection(t *testing.T) {
 	}
 }
 
+func TestResolveControllerPreferredDialTargetForConfig(t *testing.T) {
+	target, err := resolveControllerPreferredDialTargetForConfig("https://controller.example.com:8443/path", "203.0.113.10")
+	if err != nil {
+		t.Fatalf("resolveControllerPreferredDialTargetForConfig returned error: %v", err)
+	}
+	if !target.Enabled {
+		t.Fatal("expected preferred dial target to be enabled")
+	}
+	if target.PreferredIP != "203.0.113.10" {
+		t.Fatalf("preferred ip=%s, want 203.0.113.10", target.PreferredIP)
+	}
+	if target.Address != "203.0.113.10:8443" {
+		t.Fatalf("address=%s, want 203.0.113.10:8443", target.Address)
+	}
+	if target.TLSServerName != "controller.example.com" {
+		t.Fatalf("tls server name=%s, want controller.example.com", target.TLSServerName)
+	}
+}
+
+func TestResolveControllerPreferredDialTargetForConfigSkipsIPHost(t *testing.T) {
+	target, err := resolveControllerPreferredDialTargetForConfig("https://203.0.113.20:9443", "203.0.113.10")
+	if err != nil {
+		t.Fatalf("resolveControllerPreferredDialTargetForConfig returned error: %v", err)
+	}
+	if target.Enabled {
+		t.Fatalf("expected preferred dial target to be disabled for ip host: %#v", target)
+	}
+}
+
 func TestParseTunnelRuleLine(t *testing.T) {
 	tests := []struct {
 		name      string

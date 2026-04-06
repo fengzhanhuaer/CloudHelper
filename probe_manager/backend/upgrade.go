@@ -21,8 +21,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const defaultManagerUpgradeRepo = "fengzhanhuaer/CloudHelper"
@@ -134,7 +132,7 @@ func fetchProxyLatestReleaseViaAdminWS(baseURL, token, project string) (proxyLat
 		return proxyLatestResponse{}, err
 	}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	dialer := buildControllerWSDialer(baseURL)
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Proto", "https")
 	conn, resp, err := dialer.Dial(wsURL, headers)
@@ -607,7 +605,7 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 			return err
 		}
 
-		dialer := *websocket.DefaultDialer
+		dialer := buildControllerWSDialer(base)
 		dialer.HandshakeTimeout = 12 * time.Second
 		headers := http.Header{}
 		headers.Set("X-Forwarded-Proto", "https")

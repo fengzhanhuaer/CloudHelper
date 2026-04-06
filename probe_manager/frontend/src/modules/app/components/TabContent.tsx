@@ -33,6 +33,12 @@ type TabContentProps = {
   onPingServer: () => void;
   onCheckAdminStatus: () => void;
   controllerBaseUrl: string;
+  controllerPreferredIP: string;
+  controllerPreferredIPStatus: string;
+  isLoadingControllerPreferredIP: boolean;
+  isSavingControllerPreferredIP: boolean;
+  onRefreshControllerPreferredIP: () => void;
+  onSaveControllerPreferredIP: (value: string) => void;
   onRefreshPrivateKeyStatus: () => void;
   managerVersion: string;
   controllerVersion: string;
@@ -290,6 +296,12 @@ export function TabContent(props: TabContentProps) {
           managerUpgradeStatus={props.managerUpgradeStatus}
           managerUpgradeProgress={props.managerUpgradeProgress}
           managerUpgradeMessages={props.managerUpgradeMessages}
+          controllerPreferredIP={props.controllerPreferredIP}
+          controllerPreferredIPStatus={props.controllerPreferredIPStatus}
+          isLoadingControllerPreferredIP={props.isLoadingControllerPreferredIP}
+          isSavingControllerPreferredIP={props.isSavingControllerPreferredIP}
+          onRefreshControllerPreferredIP={props.onRefreshControllerPreferredIP}
+          onSaveControllerPreferredIP={props.onSaveControllerPreferredIP}
           backupEnabled={props.backupEnabled}
           backupRcloneRemote={props.backupRcloneRemote}
           backupSettingsStatus={props.backupSettingsStatus}
