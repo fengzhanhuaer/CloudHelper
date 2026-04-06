@@ -314,6 +314,15 @@ export namespace backend {
 	    tunnel_node_id?: string;
 	    tunnel_options: string[];
 	    tunnel_option_labels?: Record<string, string>;
+	    selected_label?: string;
+	    runtime_action?: string;
+	    runtime_tunnel_node_id?: string;
+	    runtime_tunnel_label?: string;
+	    runtime_connected: boolean;
+	    runtime_status?: string;
+	    runtime_last_recv?: string;
+	    runtime_last_pong?: string;
+	    runtime_active_streams?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new NetworkAssistantRuleGroupConfig(source);
@@ -326,6 +335,15 @@ export namespace backend {
 	        this.tunnel_node_id = source["tunnel_node_id"];
 	        this.tunnel_options = source["tunnel_options"];
 	        this.tunnel_option_labels = source["tunnel_option_labels"];
+	        this.selected_label = source["selected_label"];
+	        this.runtime_action = source["runtime_action"];
+	        this.runtime_tunnel_node_id = source["runtime_tunnel_node_id"];
+	        this.runtime_tunnel_label = source["runtime_tunnel_label"];
+	        this.runtime_connected = source["runtime_connected"];
+	        this.runtime_status = source["runtime_status"];
+	        this.runtime_last_recv = source["runtime_last_recv"];
+	        this.runtime_last_pong = source["runtime_last_pong"];
+	        this.runtime_active_streams = source["runtime_active_streams"];
 	    }
 	}
 	export class NetworkAssistantRuleConfig {
