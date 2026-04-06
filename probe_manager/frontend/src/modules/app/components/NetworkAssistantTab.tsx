@@ -168,18 +168,18 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     const keepalive = (props.status.group_keepalive || []).find(
       (item) => (item.group || "").trim().toLowerCase() === (group.group || "").trim().toLowerCase(),
     );
-    const runtimeAction = (group.runtime_action || keepalive?.action || "").trim();
-    const runtimeTunnelID = (group.runtime_tunnel_node_id || keepalive?.tunnel_node_id || "").trim();
-    const runtimeTunnelLabel = (group.runtime_tunnel_label || keepalive?.tunnel_label || "").trim();
-    const runtimeStatus = (group.runtime_status || keepalive?.status || "").trim();
-    const runtimeLastRecv = (group.runtime_last_recv || keepalive?.last_recv || "").trim();
-    const runtimeLastPong = (group.runtime_last_pong || keepalive?.last_pong || "").trim();
-    const runtimeActiveStreams = typeof group.runtime_active_streams === "number"
-      ? group.runtime_active_streams
-      : (keepalive?.active_streams ?? 0);
-    const runtimeConnected = typeof group.runtime_connected === "boolean"
-      ? group.runtime_connected
-      : (keepalive?.connected ?? false);
+    const runtimeAction = (keepalive?.action || group.runtime_action || "").trim();
+    const runtimeTunnelID = (keepalive?.tunnel_node_id || group.runtime_tunnel_node_id || "").trim();
+    const runtimeTunnelLabel = (keepalive?.tunnel_label || group.runtime_tunnel_label || "").trim();
+    const runtimeStatus = (keepalive?.status || group.runtime_status || "").trim();
+    const runtimeLastRecv = (keepalive?.last_recv || group.runtime_last_recv || "").trim();
+    const runtimeLastPong = (keepalive?.last_pong || group.runtime_last_pong || "").trim();
+    const runtimeActiveStreams = typeof keepalive?.active_streams === "number"
+      ? keepalive.active_streams
+      : (group.runtime_active_streams ?? 0);
+    const runtimeConnected = keepalive
+      ? keepalive.connected
+      : (typeof group.runtime_connected === "boolean" ? group.runtime_connected : false);
 
     return (
       <div key={group.group} className="rule-policy-group-row">
