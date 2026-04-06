@@ -115,7 +115,7 @@ func (s *networkAssistantService) seedStaticDNSRouteHints() {
 			continue
 		case rulePolicyActionDirect:
 			decision.Direct = true
-			decision.BypassTUN = isDirectRuleGroupKey(group)
+			decision.BypassTUN = true
 		case rulePolicyActionTunnel:
 			if isDirectRuleGroupKey(group) {
 				decision.Direct = true

@@ -1411,7 +1411,7 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 		}
 		switch policy.Action {
 		case rulePolicyActionDirect:
-			return tunnelRouteDecision{Direct: true, BypassTUN: isDirectRuleGroupKey(group), TargetAddr: normalizedTarget, NodeID: "", Group: group}, nil
+			return tunnelRouteDecision{Direct: true, BypassTUN: true, TargetAddr: normalizedTarget, NodeID: "", Group: group}, nil
 		case rulePolicyActionReject:
 			return tunnelRouteDecision{}, &ruleRouteRejectError{Group: group}
 		default:
@@ -1468,7 +1468,7 @@ func (s *networkAssistantService) decideRouteForTarget(targetAddr string) (tunne
 			Group:      ruleFallbackGroupKey,
 		}, nil
 	default:
-		return tunnelRouteDecision{Direct: true, BypassTUN: false, TargetAddr: normalizedTarget, NodeID: "", Group: ruleFallbackGroupKey}, nil
+		return tunnelRouteDecision{Direct: true, BypassTUN: true, TargetAddr: normalizedTarget, NodeID: "", Group: ruleFallbackGroupKey}, nil
 	}
 }
 

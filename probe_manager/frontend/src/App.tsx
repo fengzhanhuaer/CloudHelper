@@ -70,35 +70,16 @@ function App() {
       return;
     }
     if (networkAssistantInitKeyRef.current) {
-      void networkAssistant.appendDebugLog(
-        "frontend-rule-config",
-        `[skip:app-effect-duplicate] ${JSON.stringify({
-          initKey: networkAssistantInitKeyRef.current,
-          activeTab,
-          hasSessionToken: !!auth.sessionToken,
-          baseUrl: settings.baseUrl,
-        })}`,
-      );
       return;
     }
     const initKey = `${activeTab}|${auth.sessionToken}|${settings.baseUrl}`;
     networkAssistantInitKeyRef.current = initKey;
-    void networkAssistant.appendDebugLog(
-      "frontend-rule-config",
-      `[trigger:app-effect] ${JSON.stringify({
-        activeTab,
-        hasSessionToken: !!auth.sessionToken,
-        baseUrl: settings.baseUrl,
-        initKey,
-      })}`,
-    );
     void networkAssistant.refreshStatus(settings.baseUrl, auth.sessionToken);
     void networkAssistant.refreshLogs();
     void networkAssistant.refreshRuleConfig();
   }, [
     activeTab,
     auth.sessionToken,
-    networkAssistant.appendDebugLog,
     networkAssistant.refreshLogs,
     networkAssistant.refreshRuleConfig,
     networkAssistant.refreshStatus,

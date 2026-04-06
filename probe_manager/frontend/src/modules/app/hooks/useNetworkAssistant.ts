@@ -229,26 +229,10 @@ export function useNetworkAssistant() {
 
   const refreshRuleConfig = useCallback(async () => {
     const requestID = ++ruleConfigRequestSeqRef.current;
-    const beginPayload = {
-      requestID,
-      previousLoading: isLoadingRuleConfig,
-      currentStatus: ruleConfigStatus,
-      hasRuleConfig: !!ruleConfig,
-    };
-    void AppendNetworkAssistantDebugLog("frontend-rule-config", `[begin] ${JSON.stringify(beginPayload)}`);
     setIsLoadingRuleConfig(true);
     setRuleConfigStatus("正在加载规则策略...");
     try {
       const data = (await GetNetworkAssistantRuleConfig()) as NetworkAssistantRuleConfig;
-      void AppendNetworkAssistantDebugLog(
-        "frontend-rule-config",
-        `[success] ${JSON.stringify({
-          requestID,
-          groups: Array.isArray(data.groups) ? data.groups.length : 0,
-          fallbackAction: data.fallback?.action ?? "",
-          ruleFilePath: data.rule_file_path ?? "",
-        })}`,
-      );
       setRuleConfig(data);
       setRuleConfigStatus("规则策略已加载");
     } catch (error) {
@@ -259,13 +243,9 @@ export function useNetworkAssistant() {
       );
       setRuleConfigStatus(`规则策略加载失败：${msg}`);
     } finally {
-      void AppendNetworkAssistantDebugLog(
-        "frontend-rule-config",
-        `[finally] ${JSON.stringify({ requestID, nextLoading: false })}`,
-      );
       setIsLoadingRuleConfig(false);
     }
-  }, [isLoadingRuleConfig, ruleConfig, ruleConfigStatus]);
+  }, []);
 
   const refreshStatus = useCallback(async (controllerBaseURL?: string, token?: string) => {
     try {
@@ -277,10 +257,6 @@ export function useNetworkAssistant() {
         setSelectedNode(data.node_id);
       }
       if (data.mode === "tun") {
-        void AppendNetworkAssistantDebugLog(
-          "frontend-rule-config",
-          `[trigger:refreshStatus] ${JSON.stringify({ mode: data.mode, nodeID: data.node_id })}`,
-        );
         void refreshRuleConfig();
       }
     } catch (error) {
@@ -319,10 +295,6 @@ export function useNetworkAssistant() {
         setOperateStatus("已切换为直连模式，并恢复系统 DNS/系统代理");
       } else if (mode === "tun") {
         setOperateStatus("已切换为 TUN 模式（按规则分流）");
-        void AppendNetworkAssistantDebugLog(
-          "frontend-rule-config",
-          `[trigger:switchMode] ${JSON.stringify({ mode, nodeID })}`,
-        );
         void refreshRuleConfig();
       } else {
         setOperateStatus(`模式已切换：${mode}`);

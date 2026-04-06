@@ -332,8 +332,8 @@ func TestDecideRouteForTargetTUNModeUsesRuleRouting(t *testing.T) {
 	if !unmatchedDecision.Direct {
 		t.Fatal("expected direct route for unmatched target in tun mode")
 	}
-	if unmatchedDecision.BypassTUN {
-		t.Fatal("expected fallback direct to stay in tun path")
+	if !unmatchedDecision.BypassTUN {
+		t.Fatal("expected fallback direct to bypass tun")
 	}
 }
 
@@ -375,7 +375,7 @@ func TestDecideRouteForTargetDirectGroupAlwaysBypassTUN(t *testing.T) {
 	}
 }
 
-func TestDecideRouteForTargetNormalGroupDirectStaysInTUNPath(t *testing.T) {
+func TestDecideRouteForTargetNormalGroupDirectBypassesTUN(t *testing.T) {
 	_, cidr, err := net.ParseCIDR("0.0.0.0/0")
 	if err != nil {
 		t.Fatalf("parse cidr: %v", err)
@@ -405,8 +405,8 @@ func TestDecideRouteForTargetNormalGroupDirectStaysInTUNPath(t *testing.T) {
 	if !decision.Direct {
 		t.Fatal("expected normal group direct policy to stay direct")
 	}
-	if decision.BypassTUN {
-		t.Fatal("expected normal group direct policy to stay in tun path")
+	if !decision.BypassTUN {
+		t.Fatal("expected normal group direct policy to bypass tun")
 	}
 	if decision.Group != "group_normal" {
 		t.Fatalf("group=%s, want group_normal", decision.Group)
@@ -541,7 +541,7 @@ func TestShouldUseTunnelDNSForRoute(t *testing.T) {
 	}{
 		{
 			name:  "fallback direct should use system dns",
-			route: tunnelRouteDecision{Direct: true, BypassTUN: false, Group: ruleFallbackGroupKey},
+			route: tunnelRouteDecision{Direct: true, BypassTUN: true, Group: ruleFallbackGroupKey},
 			want:  false,
 		},
 		{
@@ -576,7 +576,7 @@ func TestBuildInternalDNSCacheKeyUsesDirectBucketForDirectRoutes(t *testing.T) {
 	}{
 		{
 			name:  "fallback direct should not fallback to cloudserver bucket",
-			route: tunnelRouteDecision{Direct: true, BypassTUN: false, Group: ruleFallbackGroupKey},
+			route: tunnelRouteDecision{Direct: true, BypassTUN: true, Group: ruleFallbackGroupKey},
 			want:  "direct|1|example.com",
 		},
 		{
