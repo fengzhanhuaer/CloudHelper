@@ -661,17 +661,6 @@ func (c *tunnelMuxClient) close() {
 		return
 	}
 
-	connected, activeStreams, lastRecvAt, lastPongAt := c.snapshot()
-	log.Printf(
-		"[network-assistant] tunnel mux close: node=%s mode_key=%s connected=%v active_streams=%d keepalive_failures=%d last_recv=%s last_pong=%s",
-		strings.TrimSpace(c.nodeID),
-		strings.TrimSpace(c.modeKey),
-		connected,
-		activeStreams,
-		c.keepAliveFailures.Load(),
-		strings.TrimSpace(lastRecvAt),
-		strings.TrimSpace(lastPongAt),
-	)
 
 	if c.session != nil {
 		_ = c.session.Close()
@@ -968,29 +957,8 @@ func (s *networkAssistantService) collectAutoMaintainTunnelNodeIDs() []string {
 	}
 	targetChainIDs := collectAutoMaintainPolicyTunnelNodeIDs(routing, availableNodes, selectedChainID)
 	if len(targetChainIDs) == 0 {
-		reason := "no-policy-tunnel-targets"
-		if strings.EqualFold(selectedChainID, defaultNodeID) {
-			reason = "direct-selected-no-explicit-chain-targets"
-		}
-		s.logfRateLimited(
-			"mux:auto-maintain:collect-empty",
-			15*time.Second,
-			"mux auto maintain collect skipped: selected=%s available=%v groups=%d reason=%s",
-			selectedChainID,
-			availableNodes,
-			len(extractRuleGroupsFromRuleSet(routing.RuleSet))+1,
-			reason,
-		)
 		return nil
 	}
-	s.logfRateLimited(
-		"mux:auto-maintain:collect-selected",
-		15*time.Second,
-		"mux auto maintain collect policy nodes: selected=%s available=%v targets=%v",
-		selectedChainID,
-		availableNodes,
-		targetChainIDs,
-	)
 	return targetChainIDs
 }
 
@@ -1349,7 +1317,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 		}
 	}
 
-	client, reused := findReusableTunnelMuxClientForTarget(routing.GroupState, groupKey, nodeID, modeKey)
+	client, _ := findReusableTunnelMuxClientForTarget(routing.GroupState, groupKey, nodeID, modeKey)
 	created := false
 	startedAt := time.Now()
 	if client == nil {
@@ -1413,33 +1381,8 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 		}
 	}
 
-	if created {
-		s.logf(
-			"tunnel mux connected via group, group=%s node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d elapsed=%s",
-			groupName,
-			nodeID,
-			strings.TrimSpace(chainTarget.ChainID),
-			strings.TrimSpace(chainTarget.EntryNode),
-			strings.TrimSpace(chainTarget.EntryHost),
-			chainTarget.EntryPort,
-			strings.TrimSpace(chainTarget.LinkLayer),
-			reconnects,
-			time.Since(startedAt),
-		)
-	} else if reused {
-		s.logfRateLimited(
-			"mux:reuse-group:"+strings.ToLower(groupKey)+":"+strings.ToLower(nodeID),
-			15*time.Second,
-			"tunnel mux reused via group, group=%s node=%s chain=%s entry_node=%s entry=%s:%d layer=%s",
-			groupName,
-			nodeID,
-			strings.TrimSpace(chainTarget.ChainID),
-			strings.TrimSpace(chainTarget.EntryNode),
-			strings.TrimSpace(chainTarget.EntryHost),
-			chainTarget.EntryPort,
-			strings.TrimSpace(chainTarget.LinkLayer),
-		)
-	}
+	_ = reconnects
+	_ = startedAt
 	return client, nil
 }
 
@@ -1491,28 +1434,6 @@ func (s *networkAssistantService) resolveTunnelMuxChainTargetForNode(nodeID stri
 	if resolveErr != nil {
 		s.logf("resolve tunnel mux chain target failed: requested=%s cached_targets=%d err=%v", targetNodeID, len(targets), resolveErr)
 		return probeChainEndpoint{}, false, resolvedNodeID, resolveErr
-	}
-	if hasChainTarget {
-		s.logfRateLimited(
-			"mux:resolve-chain-target:"+strings.ToLower(strings.TrimSpace(resolvedNodeID)),
-			15*time.Second,
-			"resolve tunnel mux chain target hit cache: requested=%s resolved=%s chain=%s entry=%s:%d layer=%s cached_targets=%d",
-			targetNodeID,
-			resolvedNodeID,
-			strings.TrimSpace(endpoint.ChainID),
-			strings.TrimSpace(endpoint.EntryHost),
-			endpoint.EntryPort,
-			strings.TrimSpace(endpoint.LinkLayer),
-			len(targets),
-		)
-	} else {
-		s.logfRateLimited(
-			"mux:resolve-chain-target:miss:"+strings.ToLower(strings.TrimSpace(targetNodeID)),
-			15*time.Second,
-			"resolve tunnel mux chain target miss: requested=%s cached_targets=%d",
-			targetNodeID,
-			len(targets),
-		)
 	}
 	return endpoint, hasChainTarget, resolvedNodeID, nil
 }
@@ -1567,23 +1488,6 @@ func resolveProbeChainTargetFromSnapshot(targetNodeID string, targets map[string
 
 func (s *networkAssistantService) newTunnelMuxClientLocked(nodeID string, chainTarget probeChainEndpoint) (*tunnelMuxClient, error) {
 	startedAt := time.Now()
-	s.logfRateLimited(
-		"mux:new-client:chain-begin:"+strings.ToLower(strings.TrimSpace(nodeID)),
-		5*time.Second,
-		"create tunnel mux client begin: node=%s mode=chain chain=%s entry=%s:%d layer=%s",
-		nodeID,
-		strings.TrimSpace(chainTarget.ChainID),
-		strings.TrimSpace(chainTarget.EntryHost),
-		chainTarget.EntryPort,
-		strings.TrimSpace(chainTarget.LinkLayer),
-	)
-	s.logfRateLimited(
-		"mux:new-client:chain-call:"+strings.ToLower(strings.TrimSpace(nodeID)),
-		5*time.Second,
-		"create tunnel mux client calling probe-chain dial: node=%s elapsed=%s",
-		nodeID,
-		time.Since(startedAt),
-	)
 
 	client, err := newTunnelMuxClientViaProbeChain("", "", nodeID, chainTarget, func(category, message string) {
 		s.logController(category, message)
@@ -1601,30 +1505,12 @@ func (s *networkAssistantService) newTunnelMuxClientLocked(nodeID string, chainT
 		)
 		return nil, err
 	}
-	s.logfRateLimited(
-		"mux:new-client:chain-done:"+strings.ToLower(strings.TrimSpace(nodeID)),
-		5*time.Second,
-		"create tunnel mux client done: node=%s mode=chain chain=%s entry=%s:%d layer=%s elapsed=%s",
-		nodeID,
-		strings.TrimSpace(chainTarget.ChainID),
-		strings.TrimSpace(chainTarget.EntryHost),
-		chainTarget.EntryPort,
-		strings.TrimSpace(chainTarget.LinkLayer),
-		time.Since(startedAt),
-	)
+	_ = startedAt
 	return client, nil
 }
 
 func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, group string) (*tunnelMuxStream, error) {
 	groupName := strings.TrimSpace(group)
-	s.logfRateLimited(
-		fmt.Sprintf("mux:stream-open:start:%s|%s|group:%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(groupName)),
-		5*time.Second,
-		"open tunnel stream begin: network=%s target=%s group=%s",
-		network,
-		targetAddr,
-		groupName,
-	)
 	client, ok := s.getExistingTunnelMuxClientForGroup(groupName)
 	if !ok {
 		var err error
