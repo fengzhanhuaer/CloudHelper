@@ -292,7 +292,7 @@ func (s *networkAssistantService) resolveDomainForInternalDNS(domain string, qTy
 	var addrs []string
 	var ttl int
 	if shouldUseTunnelDNSForRoute(route) {
-		addrs, ttl, err = s.queryRuleDomainViaTunnel(route.NodeID, normalizedDomain, qType)
+		addrs, ttl, err = s.queryRuleDomainViaTunnelGroup(route.Group, normalizedDomain, qType)
 	} else {
 		addrs, ttl, err = s.queryRuleDomainViaSystemDNS(normalizedDomain, qType)
 	}

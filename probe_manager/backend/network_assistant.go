@@ -104,6 +104,20 @@ type NetworkAssistantGroupKeepaliveItem struct {
 	Status        string `json:"status"`
 }
 
+// ruleGroupRuntimeState 是规则组的唯一运行时状态承载体。
+// 连接对象、保活失败次数、重试时间等内部状态都跟随规则组存储，
+// 不再依赖额外的 node->mux 私有映射作为最终事实来源。
+type ruleGroupRuntimeState struct {
+	Snapshot      NetworkAssistantGroupKeepaliveItem `json:"-"`
+	Client        *tunnelMuxClient                   `json:"-"`
+	RetryAt       time.Time                          `json:"-"`
+	FailureCount  int                                `json:"-"`
+	LastError     string                             `json:"-"`
+	PolicyAction  string                             `json:"-"`
+	PolicyNodeID  string                             `json:"-"`
+	ResolvedGroup string                             `json:"-"`
+}
+
 type tunnelControlMessage struct {
 	Type    string `json:"type"`
 	Network string `json:"network,omitempty"`
@@ -316,7 +330,10 @@ type tunnelRuleRouting struct {
 	GroupNodeMap  map[string]string
 	RuleFilePath  string
 	GroupFilePath string
-	GroupRuntime  map[string]NetworkAssistantGroupKeepaliveItem
+	// GroupRuntime 仅用于对外导出当前组保活快照；内部唯一运行时真相在 GroupState。
+	GroupRuntime map[string]NetworkAssistantGroupKeepaliveItem
+	// GroupState 是组级连接/保活/重试状态的唯一内部事实来源。
+	GroupState map[string]*ruleGroupRuntimeState
 }
 
 type tunnelRouteDecision struct {
@@ -429,6 +446,18 @@ type networkAssistantService struct {
 	processMonitor *processMonitor
 }
 
+func ensureRuleRoutingRuntimeMaps(routing *tunnelRuleRouting) {
+	if routing == nil {
+		return
+	}
+	if routing.GroupRuntime == nil {
+		routing.GroupRuntime = map[string]NetworkAssistantGroupKeepaliveItem{}
+	}
+	if routing.GroupState == nil {
+		routing.GroupState = map[string]*ruleGroupRuntimeState{}
+	}
+}
+
 func newNetworkAssistantService() *networkAssistantService {
 	logStore := newNetworkAssistantLogStore()
 
@@ -436,10 +465,13 @@ func newNetworkAssistantService() *networkAssistantService {
 	if ruleErr != nil {
 		logStore.Appendf(logSourceManager, "init", "failed to load rule routing config, using empty rules: %v", ruleErr)
 		ruleRouting = tunnelRuleRouting{
-			RuleSet:      tunnelRuleSet{Rules: []tunnelRule{}},
-			GroupNodeMap: map[string]string{},
+			RuleSet:       tunnelRuleSet{Rules: []tunnelRule{}},
+			GroupNodeMap:  map[string]string{},
+			GroupRuntime:  map[string]NetworkAssistantGroupKeepaliveItem{},
+			GroupState:    map[string]*ruleGroupRuntimeState{},
 		}
 	}
+	ensureRuleRoutingRuntimeMaps(&ruleRouting)
 
 	service := &networkAssistantService{
 		mode:                networkModeDirect,
@@ -1114,6 +1146,34 @@ func copyGroupKeepaliveSnapshot(source map[string]NetworkAssistantGroupKeepalive
 	return target
 }
 
+func indexGroupKeepaliveSnapshotFromState(state map[string]*ruleGroupRuntimeState) map[string]NetworkAssistantGroupKeepaliveItem {
+	if len(state) == 0 {
+		return map[string]NetworkAssistantGroupKeepaliveItem{}
+	}
+	indexed := make(map[string]NetworkAssistantGroupKeepaliveItem, len(state))
+	for rawGroup, runtimeState := range state {
+		if runtimeState == nil {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(rawGroup))
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(runtimeState.ResolvedGroup))
+		}
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(runtimeState.Snapshot.Group))
+		}
+		if key == "" {
+			continue
+		}
+		snapshot := runtimeState.Snapshot
+		if strings.TrimSpace(snapshot.Group) == "" {
+			snapshot.Group = strings.TrimSpace(runtimeState.ResolvedGroup)
+		}
+		indexed[key] = snapshot
+	}
+	return indexed
+}
+
 func orderedGroupKeepaliveItems(routing tunnelRuleRouting, groupRuntime map[string]NetworkAssistantGroupKeepaliveItem) []NetworkAssistantGroupKeepaliveItem {
 	groups := extractRuleGroupsFromRuleSet(routing.RuleSet)
 	groups = append(groups, ruleFallbackGroupKey)
@@ -1148,7 +1208,16 @@ func (s *networkAssistantService) buildGroupKeepaliveSnapshot() map[string]Netwo
 	for key, client := range s.ruleMuxClients {
 		ruleMuxClients[key] = client
 	}
+	stateIndexed := indexGroupKeepaliveSnapshotFromState(routing.GroupState)
 	s.mu.RUnlock()
+
+	if len(stateIndexed) > 0 {
+		s.mu.Lock()
+		ensureRuleRoutingRuntimeMaps(&s.ruleRouting)
+		s.ruleRouting.GroupRuntime = copyGroupKeepaliveSnapshot(stateIndexed)
+		s.mu.Unlock()
+		return copyGroupKeepaliveSnapshot(stateIndexed)
+	}
 
 	muxSnapshots := make(map[string]NetworkAssistantGroupKeepaliveItem, len(ruleMuxClients)+1)
 	if muxClient != nil {
@@ -1178,6 +1247,7 @@ func (s *networkAssistantService) buildGroupKeepaliveSnapshot() map[string]Netwo
 	}
 	indexed := indexGroupKeepaliveItems(buildGroupKeepaliveItems(routing, availableNodes, selectedNodeID, chainTargets, muxSnapshots))
 	s.mu.Lock()
+	ensureRuleRoutingRuntimeMaps(&s.ruleRouting)
 	s.ruleRouting.GroupRuntime = copyGroupKeepaliveSnapshot(indexed)
 	s.mu.Unlock()
 	return copyGroupKeepaliveSnapshot(indexed)
@@ -1370,15 +1440,49 @@ func (s *networkAssistantService) stopTunnelMuxClients() error {
 			extraMuxClients = append(extraMuxClients, client)
 		}
 	}
+	groupMuxClients := make([]*tunnelMuxClient, 0, len(s.ruleRouting.GroupState))
+	for _, state := range s.ruleRouting.GroupState {
+		if state == nil || state.Client == nil {
+			continue
+		}
+		groupMuxClients = append(groupMuxClients, state.Client)
+		state.Client = nil
+		state.RetryAt = time.Time{}
+		state.FailureCount = 0
+		state.LastError = ""
+		snapshot := state.Snapshot
+		if strings.TrimSpace(snapshot.Status) != "" {
+			snapshot.Status = "未建立"
+		}
+		snapshot.Connected = false
+		snapshot.ActiveStreams = 0
+		snapshot.LastRecv = ""
+		snapshot.LastPong = ""
+		state.Snapshot = snapshot
+	}
+	ensureRuleRoutingRuntimeMaps(&s.ruleRouting)
+	s.ruleRouting.GroupRuntime = indexGroupKeepaliveSnapshotFromState(s.ruleRouting.GroupState)
 	s.ruleMuxClients = make(map[string]*tunnelMuxClient)
 	s.tunnelMuxClient = nil
 	s.mu.Unlock()
 
-	if muxClient != nil {
-		muxClient.close()
-	}
-	for _, client := range extraMuxClients {
+	closed := make(map[*tunnelMuxClient]struct{}, len(extraMuxClients)+len(groupMuxClients)+1)
+	closeClient := func(client *tunnelMuxClient) {
+		if client == nil {
+			return
+		}
+		if _, ok := closed[client]; ok {
+			return
+		}
+		closed[client] = struct{}{}
 		client.close()
+	}
+	closeClient(muxClient)
+	for _, client := range extraMuxClients {
+		closeClient(client)
+	}
+	for _, client := range groupMuxClients {
+		closeClient(client)
 	}
 	return nil
 }
@@ -1736,6 +1840,63 @@ func (s *networkAssistantService) queryRuleDomainViaTunnel(nodeID string, domain
 	}
 
 	stream, err := s.openTunnelStreamForNode("dns", buildTunnelDNSResolveAddress(normalizedDomain, qType), normalizedNodeID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer stream.close()
+
+	deadline := time.Now().Add(ruleDNSResolveTimeout)
+	responsePayload := make([]byte, 0, 1024)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, 0, errors.New("dns resolve timeout")
+		}
+		waitTimeout := ruleDNSResolveReadTimeout
+		if remaining < waitTimeout {
+			waitTimeout = remaining
+		}
+		select {
+		case payload := <-stream.readCh:
+			if len(payload) == 0 {
+				continue
+			}
+			responsePayload = append(responsePayload, payload...)
+			if len(responsePayload) > 64*1024 {
+				return nil, 0, errors.New("dns resolve payload too large")
+			}
+		case streamErr := <-stream.errCh:
+			if len(responsePayload) == 0 {
+				if streamErr == nil || errors.Is(streamErr, io.EOF) {
+					return nil, 0, errors.New("dns resolve returned empty response")
+				}
+				return nil, 0, streamErr
+			}
+			if streamErr != nil && !errors.Is(streamErr, io.EOF) {
+				return nil, 0, streamErr
+			}
+			addrs, ttl, decodeErr := decodeTunnelDNSResolveResponse(responsePayload, qType)
+			if decodeErr != nil {
+				return nil, 0, decodeErr
+			}
+			return addrs, ttl, nil
+		case <-time.After(waitTimeout):
+			return nil, 0, errors.New("dns tunnel read timeout")
+		}
+	}
+}
+
+func (s *networkAssistantService) queryRuleDomainViaTunnelGroup(group string, domain string, qType uint16) ([]string, int, error) {
+	normalizedDomain := normalizeRuleDomain(domain)
+	if normalizedDomain == "" {
+		return nil, 0, errors.New("invalid domain")
+	}
+	normalizedGroup := strings.TrimSpace(group)
+	if normalizedGroup == "" {
+		return nil, 0, errors.New("group is required")
+	}
+
+	stream, err := s.openTunnelStreamForGroup("dns", buildTunnelDNSResolveAddress(normalizedDomain, qType), normalizedGroup)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -2189,6 +2350,29 @@ func (s *networkAssistantService) logRuntimeNodeState(reason string) {
 		connected, _, _, _ := client.snapshot()
 		ruleMuxStates = append(ruleMuxStates, fmt.Sprintf("%s(connected=%v,mode=%s)", strings.TrimSpace(rawNodeID), connected, strings.TrimSpace(client.modeKey)))
 	}
+	groupStates := make([]string, 0, len(s.ruleRouting.GroupState))
+	for rawGroup, state := range s.ruleRouting.GroupState {
+		if state == nil {
+			continue
+		}
+		groupName := strings.TrimSpace(state.ResolvedGroup)
+		if groupName == "" {
+			groupName = strings.TrimSpace(rawGroup)
+		}
+		groupStates = append(
+			groupStates,
+			fmt.Sprintf(
+				"%s(action=%s,node=%s,status=%s,connected=%v,retry_at=%s,failures=%d)",
+				groupName,
+				strings.TrimSpace(state.PolicyAction),
+				strings.TrimSpace(state.PolicyNodeID),
+				strings.TrimSpace(state.Snapshot.Status),
+				state.Snapshot.Connected,
+				strings.TrimSpace(state.RetryAt.Format(time.RFC3339)),
+				state.FailureCount,
+			),
+		)
+	}
 	s.mu.RUnlock()
 	if selectedNodeID == "" {
 		selectedNodeID = defaultNodeID
@@ -2196,7 +2380,7 @@ func (s *networkAssistantService) logRuntimeNodeState(reason string) {
 	s.logfRateLimited(
 		"runtime-node-state:"+strings.ToLower(strings.TrimSpace(reason)),
 		10*time.Second,
-		"runtime node state: reason=%s mode=%s selected=%s available=%v chain_targets=%d controller=%v token=%v primary_mux_node=%s primary_mux_connected=%v primary_mux_mode=%s rule_mux=%v",
+		"runtime node state: reason=%s mode=%s selected=%s available=%v chain_targets=%d controller=%v token=%v primary_mux_node=%s primary_mux_connected=%v primary_mux_mode=%s rule_mux=%v group_state=%v",
 		reason,
 		mode,
 		selectedNodeID,
@@ -2208,6 +2392,7 @@ func (s *networkAssistantService) logRuntimeNodeState(reason string) {
 		muxPrimaryConnected,
 		muxPrimaryModeKey,
 		ruleMuxStates,
+		groupStates,
 	)
 }
 

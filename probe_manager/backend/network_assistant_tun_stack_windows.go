@@ -482,7 +482,7 @@ func (n *localTUNNetstack) openOutboundTCP(targetAddr string) (net.Conn, tunnelR
 		return &directBypassManagedConn{Conn: conn, release: release}, route, nil
 	}
 
-	stream, openErr := n.service.openTunnelStreamForNode("tcp", route.TargetAddr, route.NodeID)
+	stream, openErr := n.service.openTunnelStreamForGroup("tcp", route.TargetAddr, route.Group)
 	if openErr != nil {
 		return nil, route, openErr
 	}
@@ -517,7 +517,7 @@ func (n *localTUNNetstack) openOutboundUDP(targetAddr string) (io.ReadWriteClose
 		return &directBypassManagedConn{Conn: conn, release: release}, route, nil
 	}
 
-	stream, openErr := n.service.openTunnelStreamForNode("udp", route.TargetAddr, route.NodeID)
+	stream, openErr := n.service.openTunnelStreamForGroup("udp", route.TargetAddr, route.Group)
 	if openErr != nil {
 		return nil, route, openErr
 	}

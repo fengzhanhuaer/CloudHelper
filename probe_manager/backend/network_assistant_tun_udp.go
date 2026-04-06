@@ -112,7 +112,7 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 		}
 		relay.directConn = conn
 	} else {
-		stream, openErr := s.openTunnelStreamForNode("udp", route.TargetAddr, route.NodeID)
+		stream, openErr := s.openTunnelStreamForGroup("udp", route.TargetAddr, route.Group)
 		if openErr != nil {
 			return nil, openErr
 		}
