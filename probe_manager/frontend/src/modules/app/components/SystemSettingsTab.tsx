@@ -6,9 +6,9 @@ type SystemSettingsTabProps = {
   controllerVersion: string;
   controllerLatestVersion: string;
   versionStatus: string;
-  upgradeStatus: string;
+  mergedUpgradeStatus: string;
   controllerUpgradeProgress: UpgradeProgress;
-  controllerUpgradeMessages: string[];
+  mergedUpgradeMessages: string[];
   isUpgradingController: boolean;
   isUpgradingManager: boolean;
   onRefreshSystemVersions: () => void;
@@ -24,9 +24,7 @@ type SystemSettingsTabProps = {
   onUpgradeManagerProxy: () => void;
   directRelease: ReleaseInfo | null;
   proxyRelease: ReleaseInfo | null;
-  managerUpgradeStatus: string;
   managerUpgradeProgress: UpgradeProgress;
-  managerUpgradeMessages: string[];
   controllerPreferredIP: string;
   controllerPreferredIPStatus: string;
   isLoadingControllerPreferredIP: boolean;
@@ -126,11 +124,10 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
           </div>
 
           <div className="status">{props.versionStatus}</div>
-          <div className="status">{props.upgradeStatus}</div>
+          <div className="status">{props.mergedUpgradeStatus}</div>
           {(props.isUpgradingController || props.controllerUpgradeProgress.percent > 0) && (
             <ProgressLine title="主控升级进度" progress={props.controllerUpgradeProgress} />
           )}
-          <UpgradeTimeline title="主控升级消息" lines={props.controllerUpgradeMessages} />
 
           <div className="content-actions">
             <button className="btn" onClick={props.onCheckManagerReleaseDirect} disabled={props.isCheckingDirect || props.isUpgradingManager || props.isUpgradingController}>
@@ -149,11 +146,10 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
 
           <ReleaseInfoStatus title="直连结果" release={props.directRelease} />
           <ReleaseInfoStatus title="代理结果" release={props.proxyRelease} />
-          <div className="status">{props.managerUpgradeStatus}</div>
           {(props.isUpgradingManager || props.managerUpgradeProgress.percent > 0) && (
             <ProgressLine title="管理端升级进度" progress={props.managerUpgradeProgress} />
           )}
-          <UpgradeTimeline title="管理端升级消息" lines={props.managerUpgradeMessages} />
+          <UpgradeTimeline title="升级消息" lines={props.mergedUpgradeMessages} />
         </>
       )}
 

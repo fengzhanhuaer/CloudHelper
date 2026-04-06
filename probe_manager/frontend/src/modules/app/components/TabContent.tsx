@@ -44,9 +44,9 @@ type TabContentProps = {
   controllerVersion: string;
   controllerLatestVersion: string;
   versionStatus: string;
-  upgradeStatus: string;
+  mergedUpgradeStatus: string;
   controllerUpgradeProgress: UpgradeProgress;
-  controllerUpgradeMessages: string[];
+  mergedUpgradeMessages: string[];
   isUpgradingController: boolean;
   isUpgradingManager: boolean;
   onRefreshSystemVersions: () => void;
@@ -62,9 +62,7 @@ type TabContentProps = {
   onUpgradeManagerProxy: () => void;
   directRelease: ReleaseInfo | null;
   proxyRelease: ReleaseInfo | null;
-  managerUpgradeStatus: string;
   managerUpgradeProgress: UpgradeProgress;
-  managerUpgradeMessages: string[];
   backupEnabled: boolean;
   backupRcloneRemote: string;
   backupSettingsStatus: string;
@@ -275,9 +273,9 @@ export function TabContent(props: TabContentProps) {
           controllerVersion={props.controllerVersion}
           controllerLatestVersion={props.controllerLatestVersion}
           versionStatus={props.versionStatus}
-          upgradeStatus={props.upgradeStatus}
+          mergedUpgradeStatus={props.mergedUpgradeStatus}
           controllerUpgradeProgress={props.controllerUpgradeProgress}
-          controllerUpgradeMessages={props.controllerUpgradeMessages}
+          mergedUpgradeMessages={props.mergedUpgradeMessages}
           isUpgradingController={props.isUpgradingController}
           isUpgradingManager={props.isUpgradingManager}
           onRefreshSystemVersions={props.onRefreshSystemVersions}
@@ -293,9 +291,7 @@ export function TabContent(props: TabContentProps) {
           onUpgradeManagerProxy={props.onUpgradeManagerProxy}
           directRelease={props.directRelease}
           proxyRelease={props.proxyRelease}
-          managerUpgradeStatus={props.managerUpgradeStatus}
           managerUpgradeProgress={props.managerUpgradeProgress}
-          managerUpgradeMessages={props.managerUpgradeMessages}
           controllerPreferredIP={props.controllerPreferredIP}
           controllerPreferredIPStatus={props.controllerPreferredIPStatus}
           isLoadingControllerPreferredIP={props.isLoadingControllerPreferredIP}
