@@ -182,12 +182,12 @@ func TestPingNetworkAssistantTunnelNodeRequiresNodeID(t *testing.T) {
 }
 
 func TestPingNetworkAssistantTunnelNodeExistingMux(t *testing.T) {
-	oldPing := probeLinkTryPingExistingMux
+	oldPing := probeLinkTryPingExistingGroupMuxForNode
 	defer func() {
-		probeLinkTryPingExistingMux = oldPing
+		probeLinkTryPingExistingGroupMuxForNode = oldPing
 	}()
 
-	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
+	probeLinkTryPingExistingGroupMuxForNode = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
 		if service == nil {
 			t.Fatalf("service should not be nil")
 		}
@@ -213,12 +213,12 @@ func TestPingNetworkAssistantTunnelNodeExistingMux(t *testing.T) {
 }
 
 func TestPingNetworkAssistantTunnelNodeWithoutReusableMux(t *testing.T) {
-	oldPing := probeLinkTryPingExistingMux
+	oldPing := probeLinkTryPingExistingGroupMuxForNode
 	defer func() {
-		probeLinkTryPingExistingMux = oldPing
+		probeLinkTryPingExistingGroupMuxForNode = oldPing
 	}()
 
-	probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
+	probeLinkTryPingExistingGroupMuxForNode = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
 		if service == nil {
 			t.Fatalf("service should not be nil")
 		}

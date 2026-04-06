@@ -43,11 +43,11 @@ const (
 	probeLinkStageFailure     = "failure"
 )
 
-var probeLinkTryPingExistingMux = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
+var probeLinkTryPingExistingGroupMuxForNode = func(service *networkAssistantService, nodeID string) (time.Duration, bool) {
 	if service == nil {
 		return 0, false
 	}
-	return service.tryPingExistingMux(nodeID)
+	return service.tryPingExistingGroupMuxForNode(nodeID)
 }
 
 
@@ -934,8 +934,8 @@ func (a *App) PingProbeChain(chainID string) (ProbeChainPingResult, error) {
 	}
 	startedAt := time.Now()
 
-	// 优先复用已有 mux 连接（yamux Ping，代表保活已建立）
-	if rtt, ok := a.networkAssistant.tryPingExistingMux(endpoint.TargetID); ok {
+	// 优先复用已有组连接（yamux Ping，代表保活已建立）
+	if rtt, ok := a.networkAssistant.tryPingExistingGroupMuxForNode(endpoint.TargetID); ok {
 		return ProbeChainPingResult{
 			OK:         true,
 			ChainID:    resolvedChainID,
@@ -1049,8 +1049,8 @@ func pingNetworkAssistantTunnelNode(service *networkAssistantService, nodeID str
 		}, nil
 	}
 
-	// 1) 优先复用已有 mux 连接（yamux Ping）
-	if rtt, ok := probeLinkTryPingExistingMux(service, trimmedNodeID); ok {
+	// 1) 优先复用已有组连接（yamux Ping）
+	if rtt, ok := probeLinkTryPingExistingGroupMuxForNode(service, trimmedNodeID); ok {
 		return ProbeChainPingResult{
 			OK:         true,
 			ChainID:    trimmedNodeID,

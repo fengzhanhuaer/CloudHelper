@@ -882,10 +882,6 @@ func (s *tunnelMuxStream) closeLocal(err error) {
 	}
 }
 
-func (s *networkAssistantService) ensureTunnelMuxClient() (*tunnelMuxClient, error) {
-	return s.ensureTunnelMuxClientForNode("")
-}
-
 func (s *networkAssistantService) startMuxAutoMaintainLoop() {
 	s.mu.Lock()
 	if s.muxMaintainerStop != nil {
@@ -1170,49 +1166,33 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 	}
 
 	groupRuntime := indexGroupKeepaliveSnapshotFromState(groupState)
-	var nextPrimary *tunnelMuxClient
-	for _, group := range groups {
-		groupKey := strings.ToLower(strings.TrimSpace(group))
-		state := groupState[groupKey]
-		if state == nil || state.Client == nil || state.Client.isClosed() {
+	staleClients := make([]*tunnelMuxClient, 0, len(routing.GroupState))
+	for _, state := range routing.GroupState {
+		if state == nil || state.Client == nil {
 			continue
 		}
-		if nextPrimary == nil {
-			nextPrimary = state.Client
+		if _, ok := activeClients[state.Client]; ok {
+			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(state.PolicyNodeID), selectedChainID) {
-			nextPrimary = state.Client
-			break
-		}
+		staleClients = append(staleClients, state.Client)
 	}
 
 	s.mu.Lock()
 	ensureRuleRoutingRuntimeMaps(&s.ruleRouting)
-	oldPrimary := s.tunnelMuxClient
-	staleExtra := make([]*tunnelMuxClient, 0, len(s.ruleMuxClients))
-	for nodeID, client := range s.ruleMuxClients {
-		if client != nil {
-			staleExtra = append(staleExtra, client)
-		}
-		delete(s.ruleMuxClients, nodeID)
-	}
-	s.tunnelMuxClient = nextPrimary
 	s.ruleRouting.GroupState = groupState
 	s.ruleRouting.GroupRuntime = copyGroupKeepaliveSnapshot(groupRuntime)
 	s.mu.Unlock()
 
-	closeIfStale := func(client *tunnelMuxClient) {
+	closed := make(map[*tunnelMuxClient]struct{}, len(staleClients))
+	for _, client := range staleClients {
 		if client == nil {
-			return
+			continue
 		}
-		if _, ok := activeClients[client]; ok {
-			return
+		if _, ok := closed[client]; ok {
+			continue
 		}
+		closed[client] = struct{}{}
 		client.close()
-	}
-	closeIfStale(oldPrimary)
-	for _, client := range staleExtra {
-		closeIfStale(client)
 	}
 }
 
@@ -1231,53 +1211,6 @@ func calcMuxAutoMaintainBackoff(attempt int) time.Duration {
 		return muxAutoMaintainMaxRetry
 	}
 	return backoff
-}
-
-type muxRuntimeSnapshot struct {
-	selectedChainID string
-	ruleMuxClients  map[string]*tunnelMuxClient
-	primaryMux      *tunnelMuxClient
-}
-
-func (s *networkAssistantService) getMuxRuntimeSnapshot() muxRuntimeSnapshot {
-	s.mu.RLock()
-	selectedChainID := strings.TrimSpace(s.nodeID)
-	if selectedChainID == "" {
-		selectedChainID = defaultNodeID
-	}
-	ruleMuxClients := make(map[string]*tunnelMuxClient, len(s.ruleMuxClients))
-	for chainID, client := range s.ruleMuxClients {
-		ruleMuxClients[chainID] = client
-	}
-	primaryMux := s.tunnelMuxClient
-	s.mu.RUnlock()
-	return muxRuntimeSnapshot{
-		selectedChainID: selectedChainID,
-		ruleMuxClients:  ruleMuxClients,
-		primaryMux:      primaryMux,
-	}
-}
-
-func getExistingTunnelMuxClientFromSnapshot(snapshot muxRuntimeSnapshot, chainID string) (*tunnelMuxClient, bool) {
-	targetChainID := strings.TrimSpace(chainID)
-	if targetChainID == "" {
-		targetChainID = snapshot.selectedChainID
-	}
-
-	var client *tunnelMuxClient
-	if strings.EqualFold(targetChainID, snapshot.selectedChainID) {
-		client = snapshot.primaryMux
-	} else {
-		client = snapshot.ruleMuxClients[targetChainID]
-	}
-	if client == nil || client.isClosed() {
-		return nil, false
-	}
-	return client, true
-}
-
-func (s *networkAssistantService) getExistingTunnelMuxClientForNode(chainID string) (*tunnelMuxClient, bool) {
-	return getExistingTunnelMuxClientFromSnapshot(s.getMuxRuntimeSnapshot(), chainID)
 }
 
 func cloneRuleGroupRuntimeState(src *ruleGroupRuntimeState) *ruleGroupRuntimeState {
@@ -1442,161 +1375,41 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 	return client, nil
 }
 
-func (s *networkAssistantService) tryPingExistingMux(nodeID string) (time.Duration, bool) {
-	client, ok := s.getExistingTunnelMuxClientForNode(nodeID)
-	if !ok {
+func (s *networkAssistantService) tryPingExistingGroupMuxForNode(nodeID string) (time.Duration, bool) {
+	targetNodeID := strings.TrimSpace(nodeID)
+	if targetNodeID == "" || s == nil {
 		return 0, false
 	}
-	rtt, err := client.ping()
-	if err != nil {
-		return 0, false
-	}
-	return rtt, true
-}
 
-func (s *networkAssistantService) ensureTunnelMuxClientForNode(chainIDInput string) (*tunnelMuxClient, error) {
-	startedAt := time.Now()
-	requestedChainID := strings.TrimSpace(chainIDInput)
-	snapshot := s.getMuxRuntimeSnapshot()
-	targetChainID := requestedChainID
-	if targetChainID == "" {
-		targetChainID = snapshot.selectedChainID
-	}
-	if targetChainID == "" {
-		targetChainID = defaultNodeID
-	}
-	if strings.EqualFold(targetChainID, defaultNodeID) {
-		s.logfRateLimited(
-			"mux:ensure:skip-direct",
-			15*time.Second,
-			"ensure tunnel mux skipped: requested=%s effective=%s reason=direct",
-			requestedChainID,
-			targetChainID,
-		)
-		return nil, errors.New("selected chain does not require tunnel mux")
-	}
-
-	s.logfRateLimited(
-		"mux:ensure:begin:"+strings.ToLower(targetChainID),
-		5*time.Second,
-		"ensure tunnel mux begin: requested=%s effective=%s",
-		requestedChainID,
-		targetChainID,
-	)
-	chainTarget, hasChainTarget, resolvedChainID, resolveErr := s.resolveTunnelMuxChainTargetForNode(targetChainID)
-	if resolveErr != nil {
-		s.logf("ensure tunnel mux resolve target failed: requested=%s effective=%s err=%v", requestedChainID, targetChainID, resolveErr)
-		return nil, resolveErr
-	}
-	if resolvedChainID != "" && !strings.EqualFold(resolvedChainID, targetChainID) {
-		s.logfRateLimited(
-			"mux:ensure:resolved-node:"+strings.ToLower(resolvedChainID),
-			15*time.Second,
-			"ensure tunnel mux resolved target node: requested=%s resolved=%s has_chain=%v",
-			requestedChainID,
-			resolvedChainID,
-			hasChainTarget,
-		)
-	}
-	if resolvedChainID != "" {
-		targetChainID = resolvedChainID
-	}
-	if !hasChainTarget {
-		return nil, fmt.Errorf("selected chain does not support chain mux keepalive: %s", targetChainID)
-	}
-
-	isPrimary := strings.EqualFold(targetChainID, snapshot.selectedChainID)
-	modeKey := fmt.Sprintf(
-		"chain:%s@%s:%d/%s",
-		strings.TrimSpace(chainTarget.ChainID),
-		strings.TrimSpace(chainTarget.EntryHost),
-		chainTarget.EntryPort,
-		strings.TrimSpace(chainTarget.LinkLayer),
-	)
-	if client, ok := getExistingTunnelMuxClientFromSnapshot(snapshot, targetChainID); ok {
-		if strings.TrimSpace(client.nodeID) == strings.TrimSpace(targetChainID) &&
-			strings.TrimSpace(client.modeKey) == strings.TrimSpace(modeKey) {
-			return client, nil
+	s.mu.RLock()
+	states := make([]*ruleGroupRuntimeState, 0, len(s.ruleRouting.GroupState))
+	for _, state := range s.ruleRouting.GroupState {
+		if state == nil {
+			continue
 		}
-		connected, activeStreams, lastRecvAt, lastPongAt := client.snapshot()
-		s.logf(
-			"ensure tunnel mux rebuild required: requested=%s target=%s snapshot_selected=%s existing_node=%s existing_mode_key=%s next_mode_key=%s existing_connected=%v existing_closed=%v active_streams=%d keepalive_failures=%d last_recv=%s last_pong=%s",
-			requestedChainID,
-			targetChainID,
-			snapshot.selectedChainID,
-			strings.TrimSpace(client.nodeID),
-			strings.TrimSpace(client.modeKey),
-			strings.TrimSpace(modeKey),
-			connected,
-			client.isClosed(),
-			activeStreams,
-			client.keepAliveFailures.Load(),
-			strings.TrimSpace(lastRecvAt),
-			strings.TrimSpace(lastPongAt),
-		)
+		states = append(states, cloneRuleGroupRuntimeState(state))
 	}
+	s.mu.RUnlock()
 
-	s.logfRateLimited(
-		"mux:ensure:dial-begin:"+strings.ToLower(targetChainID),
-		5*time.Second,
-		"ensure tunnel mux dial begin: requested=%s target=%s has_chain=%v mode_key=%s elapsed=%s",
-		requestedChainID,
-		targetChainID,
-		hasChainTarget,
-		modeKey,
-		time.Since(startedAt),
-	)
-	client, err := s.newTunnelMuxClientLocked(targetChainID, chainTarget)
-	if err != nil {
-		s.logfRateLimited(
-			"mux:ensure:dial-failed:"+strings.ToLower(targetChainID),
-			5*time.Second,
-			"ensure tunnel mux dial failed: requested=%s target=%s has_chain=%v elapsed=%s err=%v",
-			requestedChainID,
-			targetChainID,
-			hasChainTarget,
-			time.Since(startedAt),
-			err,
-		)
-		return nil, err
-	}
-
-	var staleClient *tunnelMuxClient
-	s.mu.Lock()
-	if isPrimary {
-		if s.tunnelMuxClient != nil && s.tunnelMuxClient != client {
-			staleClient = s.tunnelMuxClient
+	seen := make(map[*tunnelMuxClient]struct{}, len(states))
+	for _, state := range states {
+		if state == nil || state.Client == nil || state.Client.isClosed() {
+			continue
 		}
-		s.tunnelMuxClient = client
-	} else {
-		if s.ruleMuxClients == nil {
-			s.ruleMuxClients = make(map[string]*tunnelMuxClient)
+		if !strings.EqualFold(strings.TrimSpace(state.PolicyNodeID), targetNodeID) &&
+			!strings.EqualFold(strings.TrimSpace(state.Client.nodeID), targetNodeID) {
+			continue
 		}
-		if old := s.ruleMuxClients[targetChainID]; old != nil && old != client {
-			staleClient = old
+		if _, ok := seen[state.Client]; ok {
+			continue
 		}
-		s.ruleMuxClients[targetChainID] = client
+		seen[state.Client] = struct{}{}
+		rtt, err := state.Client.ping()
+		if err == nil {
+			return rtt, true
+		}
 	}
-	s.muxReconnects++
-	reconnects := s.muxReconnects
-	s.mu.Unlock()
-
-	if staleClient != nil {
-		staleClient.close()
-	}
-
-	s.logf(
-		"tunnel mux connected via chain, node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d elapsed=%s",
-		targetChainID,
-		strings.TrimSpace(chainTarget.ChainID),
-		strings.TrimSpace(chainTarget.EntryNode),
-		strings.TrimSpace(chainTarget.EntryHost),
-		chainTarget.EntryPort,
-		strings.TrimSpace(chainTarget.LinkLayer),
-		reconnects,
-		time.Since(startedAt),
-	)
-	return client, nil
+	return 0, false
 }
 
 func (s *networkAssistantService) resolveTunnelMuxChainTargetForNode(nodeID string) (probeChainEndpoint, bool, string, error) {
@@ -1734,10 +1547,6 @@ func (s *networkAssistantService) newTunnelMuxClientLocked(nodeID string, chainT
 	return client, nil
 }
 
-func (s *networkAssistantService) openTunnelStream(network, targetAddr string) (*tunnelMuxStream, error) {
-	return s.openTunnelStreamForNode(network, targetAddr, "")
-}
-
 func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, group string) (*tunnelMuxStream, error) {
 	groupName := strings.TrimSpace(group)
 	s.logfRateLimited(
@@ -1793,55 +1602,6 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 	return nil, err
 }
 
-func (s *networkAssistantService) openTunnelStreamForNode(network, targetAddr, nodeID string) (*tunnelMuxStream, error) {
-	s.logfRateLimited(
-		fmt.Sprintf("mux:stream-open:start:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
-		5*time.Second,
-		"open tunnel stream begin: network=%s target=%s node=%s",
-		network,
-		targetAddr,
-		nodeID,
-	)
-	client, ok := s.getExistingTunnelMuxClientForNode(nodeID)
-	if !ok {
-		err := fmt.Errorf("no available tunnel mux client: node=%s", strings.TrimSpace(nodeID))
-		s.logfRateLimited(
-			fmt.Sprintf("mux:stream-open:no-client:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
-			5*time.Second,
-			"open tunnel stream skipped: no available mux client: network=%s target=%s node=%s",
-			network,
-			targetAddr,
-			nodeID,
-		)
-		return nil, err
-	}
-	stream, err := client.openStream(network, targetAddr)
-	if err == nil {
-		return stream, nil
-	}
-	if isTunnelOpenRemoteError(err) {
-		s.logfRateLimited(
-			fmt.Sprintf("mux:stream-open:remote-failed:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
-			5*time.Second,
-			"open tunnel stream remote rejected: network=%s target=%s node=%s err=%v",
-			network,
-			targetAddr,
-			nodeID,
-			err,
-		)
-		return nil, err
-	}
-	s.logfRateLimited(
-		fmt.Sprintf("mux:stream-open:failed:%s|%s|%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(strings.TrimSpace(nodeID))),
-		5*time.Second,
-		"open tunnel stream failed with existing mux: network=%s target=%s node=%s err=%v",
-		network,
-		targetAddr,
-		nodeID,
-		err,
-	)
-	return nil, err
-}
 
 func writeAll(w io.Writer, payload []byte) error {
 	if len(payload) == 0 {
