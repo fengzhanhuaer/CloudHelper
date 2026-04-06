@@ -1096,7 +1096,6 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 				continue
 			}
 			if state.Client != nil && strings.TrimSpace(state.Client.nodeID) != strings.TrimSpace(nodeID) {
-				state.Client.close()
 				state.Client = nil
 			}
 			if state.Client != nil && state.Client.isClosed() {
@@ -1250,6 +1249,50 @@ func (s *networkAssistantService) getExistingTunnelMuxClientForGroup(group strin
 	return state.Client, true
 }
 
+func findReusableTunnelMuxClientForTarget(states map[string]*ruleGroupRuntimeState, excludeGroupKey, nodeID, modeKey string) (*tunnelMuxClient, bool) {
+	targetGroupKey := strings.ToLower(strings.TrimSpace(excludeGroupKey))
+	targetNodeID := strings.TrimSpace(nodeID)
+	targetModeKey := strings.TrimSpace(modeKey)
+	if targetNodeID == "" || targetModeKey == "" {
+		return nil, false
+	}
+	for groupKey, state := range states {
+		if strings.EqualFold(strings.TrimSpace(groupKey), targetGroupKey) {
+			continue
+		}
+		if state == nil || state.Client == nil || state.Client.isClosed() {
+			continue
+		}
+		if strings.TrimSpace(state.Client.nodeID) != targetNodeID {
+			continue
+		}
+		if strings.TrimSpace(state.Client.modeKey) != targetModeKey {
+			continue
+		}
+		return state.Client, true
+	}
+	return nil, false
+}
+
+func hasOtherGroupUsingTunnelMuxClient(states map[string]*ruleGroupRuntimeState, excludeGroupKey string, client *tunnelMuxClient) bool {
+	if client == nil {
+		return false
+	}
+	targetGroupKey := strings.ToLower(strings.TrimSpace(excludeGroupKey))
+	for groupKey, state := range states {
+		if strings.EqualFold(strings.TrimSpace(groupKey), targetGroupKey) {
+			continue
+		}
+		if state == nil || state.Client == nil {
+			continue
+		}
+		if state.Client == client {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*tunnelMuxClient, error) {
 	groupName := strings.TrimSpace(group)
 	groupKey := strings.ToLower(groupName)
@@ -1306,10 +1349,15 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 		}
 	}
 
+	client, reused := findReusableTunnelMuxClientForTarget(routing.GroupState, groupKey, nodeID, modeKey)
+	created := false
 	startedAt := time.Now()
-	client, err := s.newTunnelMuxClientLocked(nodeID, chainTarget)
-	if err != nil {
-		return nil, err
+	if client == nil {
+		client, err = s.newTunnelMuxClientLocked(nodeID, chainTarget)
+		if err != nil {
+			return nil, err
+		}
+		created = true
 	}
 
 	item := NetworkAssistantGroupKeepaliveItem{
@@ -1330,6 +1378,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 	}
 
 	var staleClient *tunnelMuxClient
+	var reconnects int64
 	s.mu.Lock()
 	ensureRuleRoutingRuntimeMaps(&s.ruleRouting)
 	state := s.ruleRouting.GroupState[groupKey]
@@ -1349,29 +1398,48 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 	state.LastError = ""
 	state.Snapshot = item
 	s.ruleRouting.GroupRuntime[groupKey] = item
-	s.muxReconnects++
-	reconnects := s.muxReconnects
+	if created {
+		s.muxReconnects++
+	}
+	reconnects = s.muxReconnects
 	s.mu.Unlock()
 
-	if staleClient != nil {
-		staleClient.close()
-	}
-	if existingState != nil && existingState.Client != nil && existingState.Client != client && existingState.Client != staleClient {
-		existingState.Client.close()
+	if staleClient != nil && staleClient != client {
+		s.mu.RLock()
+		stillUsed := hasOtherGroupUsingTunnelMuxClient(s.ruleRouting.GroupState, groupKey, staleClient)
+		s.mu.RUnlock()
+		if !stillUsed {
+			staleClient.close()
+		}
 	}
 
-	s.logf(
-		"tunnel mux connected via group, group=%s node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d elapsed=%s",
-		groupName,
-		nodeID,
-		strings.TrimSpace(chainTarget.ChainID),
-		strings.TrimSpace(chainTarget.EntryNode),
-		strings.TrimSpace(chainTarget.EntryHost),
-		chainTarget.EntryPort,
-		strings.TrimSpace(chainTarget.LinkLayer),
-		reconnects,
-		time.Since(startedAt),
-	)
+	if created {
+		s.logf(
+			"tunnel mux connected via group, group=%s node=%s chain=%s entry_node=%s entry=%s:%d layer=%s reconnects=%d elapsed=%s",
+			groupName,
+			nodeID,
+			strings.TrimSpace(chainTarget.ChainID),
+			strings.TrimSpace(chainTarget.EntryNode),
+			strings.TrimSpace(chainTarget.EntryHost),
+			chainTarget.EntryPort,
+			strings.TrimSpace(chainTarget.LinkLayer),
+			reconnects,
+			time.Since(startedAt),
+		)
+	} else if reused {
+		s.logfRateLimited(
+			"mux:reuse-group:"+strings.ToLower(groupKey)+":"+strings.ToLower(nodeID),
+			15*time.Second,
+			"tunnel mux reused via group, group=%s node=%s chain=%s entry_node=%s entry=%s:%d layer=%s",
+			groupName,
+			nodeID,
+			strings.TrimSpace(chainTarget.ChainID),
+			strings.TrimSpace(chainTarget.EntryNode),
+			strings.TrimSpace(chainTarget.EntryHost),
+			chainTarget.EntryPort,
+			strings.TrimSpace(chainTarget.LinkLayer),
+		)
+	}
 	return client, nil
 }
 
