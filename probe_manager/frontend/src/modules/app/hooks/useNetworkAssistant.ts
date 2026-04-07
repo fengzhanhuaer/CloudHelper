@@ -23,9 +23,9 @@ import {
 	AppendNetworkAssistantDebugLog,
 } from "../../../../wailsjs/go/main/App";
 import * as AppBindings from "../../../../wailsjs/go/main/App";
+import { backend } from "../../../../wailsjs/go/models";
 import type {
   NetworkAssistantDNSCacheEntry,
-  NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogEntry,
   NetworkAssistantLogFilterSource,
   NetworkAssistantLogResponse,
@@ -110,7 +110,7 @@ function parseLegacyLogEntries(content: string): NetworkAssistantLogEntry[] {
   });
 }
 
-const defaultDNSUpstreamConfig: NetworkAssistantDNSUpstreamConfig = {
+const defaultDNSUpstreamConfig: backend.NetworkAssistantDNSUpstreamConfig = {
   prefer: "doh",
   dns_servers: [],
   dot_servers: [],
@@ -422,7 +422,7 @@ export function useNetworkAssistant() {
   }, []);
 
   const [dnsUpstreamConfig, setDnsUpstreamConfig] =
-    useState<NetworkAssistantDNSUpstreamConfig>(defaultDNSUpstreamConfig);
+    useState<backend.NetworkAssistantDNSUpstreamConfig>(defaultDNSUpstreamConfig);
   const [isLoadingDNSConfig, setIsLoadingDNSConfig] = useState(false);
   const [dnsConfigStatus, setDnsConfigStatus] = useState("");
 
@@ -441,7 +441,7 @@ export function useNetworkAssistant() {
   }, []);
 
   const saveDNSUpstreamConfig = useCallback(
-    async (cfg: NetworkAssistantDNSUpstreamConfig) => {
+    async (cfg: backend.NetworkAssistantDNSUpstreamConfig) => {
       setDnsConfigStatus("");
       try {
         await SetNetworkAssistantDNSUpstreamConfig(cfg);

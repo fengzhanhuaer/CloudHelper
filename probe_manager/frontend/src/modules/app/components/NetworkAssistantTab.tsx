@@ -4,9 +4,9 @@ import { LinkManageTab } from "./LinkManageTab";
 import { NetworkAssistantDNSCachePanel } from "./NetworkAssistantDNSCachePanel";
 import { NetworkAssistantLogsPanel } from "./NetworkAssistantLogsPanel";
 import { NetworkAssistantMonitorPanel } from "./NetworkAssistantMonitorPanel";
+import { backend } from "../../../../wailsjs/go/models";
 import type {
   NetworkAssistantDNSCacheEntry,
-  NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogFilterSource,
   NetworkAssistantRuleAction,
   NetworkAssistantRuleConfig,
@@ -42,11 +42,11 @@ type NetworkAssistantTabProps = {
   onInstallTUN: () => void;
   onEnableTUN: () => void;
   onCloseTUN: () => void;
-  dnsUpstreamConfig: NetworkAssistantDNSUpstreamConfig;
+  dnsUpstreamConfig: backend.NetworkAssistantDNSUpstreamConfig;
   isLoadingDNSConfig: boolean;
   dnsConfigStatus: string;
   onRefreshDNSConfig: () => void;
-  onSaveDNSConfig: (cfg: NetworkAssistantDNSUpstreamConfig) => void;
+  onSaveDNSConfig: (cfg: backend.NetworkAssistantDNSUpstreamConfig) => void;
   dnsCacheEntries: NetworkAssistantDNSCacheEntry[];
   dnsCacheQuery: string;
   isDNSCacheLoading: boolean;

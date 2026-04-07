@@ -5,10 +5,10 @@ import { OverviewTab } from "./OverviewTab";
 import { ProbeManageTab } from "./ProbeManageTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
 import { TGAssistantTab } from "./TGAssistantTab";
+import { backend } from "../../../../wailsjs/go/models";
 import type {
   LogSource,
   NetworkAssistantDNSCacheEntry,
-  NetworkAssistantDNSUpstreamConfig,
   NetworkAssistantLogFilterSource,
   NetworkAssistantRuleAction,
   NetworkAssistantRuleConfig,
@@ -96,11 +96,11 @@ type TabContentProps = {
   onInstallNetworkTUN: () => void;
   onEnableNetworkTUN: () => void;
   onCloseNetworkTUN: () => void;
-  networkDNSUpstreamConfig: NetworkAssistantDNSUpstreamConfig;
+  networkDNSUpstreamConfig: backend.NetworkAssistantDNSUpstreamConfig;
   isLoadingNetworkDNSConfig: boolean;
   networkDNSConfigStatus: string;
   onRefreshNetworkDNSConfig: () => void;
-  onSaveNetworkDNSConfig: (cfg: NetworkAssistantDNSUpstreamConfig) => void;
+  onSaveNetworkDNSConfig: (cfg: backend.NetworkAssistantDNSUpstreamConfig) => void;
   networkDNSCacheEntries: NetworkAssistantDNSCacheEntry[];
   networkDNSCacheQuery: string;
   isNetworkDNSCacheLoading: boolean;
