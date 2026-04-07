@@ -358,10 +358,10 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             <button
               className="btn"
               onClick={() => {
-                props.onSaveDNSConfig({
+                props.onSaveDNSConfig(backend.NetworkAssistantDNSUpstreamConfig.createFrom({
                   ...props.dnsUpstreamConfig,
                   fake_ip_cidr: dnsEditCIDR.trim(),
-                });
+                }));
                 setDnsEditDirty(false);
               }}
               disabled={props.isLoadingDNSConfig || !dnsEditDirty}

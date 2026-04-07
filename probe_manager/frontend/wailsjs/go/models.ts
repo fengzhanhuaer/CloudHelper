@@ -202,13 +202,66 @@ export namespace backend {
 	        this.expires_at = source["expires_at"];
 	    }
 	}
+	export class NetworkAssistantDoHServerConfig {
+	    url?: string;
+	    dial_ip?: string;
+	    tls_server_name?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new NetworkAssistantDoHServerConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.dial_ip = source["dial_ip"];
+	        this.tls_server_name = source["tls_server_name"];
+	    }
+	}
+	export class NetworkAssistantDNSRouteConfig {
+	    prefer: string;
+	    dns_servers: string[];
+	    dot_servers: string[];
+	    doh_servers: NetworkAssistantDoHServerConfig[];
+	
+	    static createFrom(source: any = {}) {
+	        return new NetworkAssistantDNSRouteConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.prefer = source["prefer"];
+	        this.dns_servers = source["dns_servers"];
+	        this.dot_servers = source["dot_servers"];
+	        this.doh_servers = this.convertValues(source["doh_servers"], NetworkAssistantDoHServerConfig);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class NetworkAssistantDNSUpstreamConfig {
 	    prefer: string;
 	    dns_servers: string[];
 	    dot_servers: string[];
-	    doh_servers: string[];
+	    doh_servers: NetworkAssistantDoHServerConfig[];
 	    fake_ip_cidr: string;
 	    fake_ip_whitelist: string[];
+	    tun: NetworkAssistantDNSRouteConfig;
 	
 	    static createFrom(source: any = {}) {
 	        return new NetworkAssistantDNSUpstreamConfig(source);
@@ -219,11 +272,31 @@ export namespace backend {
 	        this.prefer = source["prefer"];
 	        this.dns_servers = source["dns_servers"];
 	        this.dot_servers = source["dot_servers"];
-	        this.doh_servers = source["doh_servers"];
+	        this.doh_servers = this.convertValues(source["doh_servers"], NetworkAssistantDoHServerConfig);
 	        this.fake_ip_cidr = source["fake_ip_cidr"];
 	        this.fake_ip_whitelist = source["fake_ip_whitelist"];
+	        this.tun = this.convertValues(source["tun"], NetworkAssistantDNSRouteConfig);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
+	
 	export class NetworkAssistantGroupKeepaliveItem {
 	    group: string;
 	    action: string;
