@@ -72,9 +72,10 @@ type probeChainRelayNetAddr struct {
 }
 
 type tunnelOpenRequest struct {
-	Type    string `json:"type"`
-	Network string `json:"network"`
-	Address string `json:"address"`
+	Type      string `json:"type"`
+	Network   string `json:"network"`
+	Address   string `json:"address"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 type tunnelOpenResponse struct {
@@ -806,7 +807,12 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 		return nil, err
 	}
 
-	req := tunnelOpenRequest{Type: "open", Network: strings.TrimSpace(network), Address: strings.TrimSpace(address)}
+	req := tunnelOpenRequest{
+		Type:      "open",
+		Network:   strings.TrimSpace(network),
+		Address:   strings.TrimSpace(address),
+		SessionID: strings.TrimSpace(c.sessionID),
+	}
 	_ = streamConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := json.NewEncoder(streamConn).Encode(req); err != nil {
 		_ = streamConn.Close()

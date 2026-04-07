@@ -136,9 +136,10 @@ type probeChainSocksRequest struct {
 }
 
 type probeChainTunnelOpenRequest struct {
-	Type    string `json:"type"`
-	Network string `json:"network"`
-	Address string `json:"address"`
+	Type      string `json:"type"`
+	Network   string `json:"network"`
+	Address   string `json:"address"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 type probeChainTunnelOpenResponse struct {
@@ -970,12 +971,12 @@ func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide strin
 		failurePrompt string
 	)
 	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
-		stream, err = openProbeChainUpstreamStream(runtime, probeChainDownstreamOpenTimeout)
+		stream, err = openProbeChainUpstreamStream(runtime, "", probeChainDownstreamOpenTimeout)
 		failurePrompt = "open upstream target failed"
 	} else if runtime.cfg.nextAuthMode == "proxy" {
 		return openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
 	} else {
-		stream, err = openProbeChainDownstreamStream(runtime, probeChainDownstreamOpenTimeout)
+		stream, err = openProbeChainDownstreamStream(runtime, "", probeChainDownstreamOpenTimeout)
 		failurePrompt = "open downstream target failed"
 	}
 	if err != nil {
@@ -1268,7 +1269,7 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 			if target.AssignDownstream {
 				routeDirection = "reverse"
 			}
-			go acceptProbeChainBridgeStreams(runtime, session, target.Tag+"|session:"+sessionID, routeDirection)
+			go acceptProbeChainBridgeStreams(runtime, session, sessionID, target.Tag+"|session:"+sessionID, routeDirection)
 		}
 
 		waitProbeChainBridgeSession(runtime.stopCh, session)
@@ -1328,23 +1329,24 @@ func waitProbeChainBridgeSession(stopCh <-chan struct{}, session *yamux.Session)
 	}
 }
 
-func acceptProbeChainBridgeStreams(runtime *probeChainRuntime, session *yamux.Session, tag string, routeDirection string) {
+func acceptProbeChainBridgeStreams(runtime *probeChainRuntime, session *yamux.Session, sessionID string, tag string, routeDirection string) {
 	if runtime == nil || session == nil {
 		return
 	}
+	cleanSessionID := strings.TrimSpace(sessionID)
 	for {
 		stream, acceptErr := session.Accept()
 		if acceptErr != nil {
 			if errors.Is(acceptErr, io.EOF) || errors.Is(acceptErr, net.ErrClosed) || session.IsClosed() {
 				return
 			}
-			log.Printf("probe chain bridge accept failed: chain=%s tag=%s err=%v", runtime.cfg.chainID, strings.TrimSpace(tag), acceptErr)
+			log.Printf("probe chain bridge accept failed: chain=%s tag=%s session_id=%s err=%v", runtime.cfg.chainID, strings.TrimSpace(tag), cleanSessionID, acceptErr)
 			return
 		}
 		if strings.EqualFold(strings.TrimSpace(routeDirection), "reverse") {
-			go handleProbeChainReverseConn(runtime, stream)
+			go handleProbeChainReverseConn(runtime, stream, cleanSessionID)
 		} else {
-			go handleProbeChainConn(runtime, stream)
+			go handleProbeChainConn(runtime, stream, cleanSessionID)
 		}
 	}
 }
@@ -1591,12 +1593,12 @@ func handleProbeChainBridgeRelayHTTP(runtime *probeChainRuntime, bridgeRole stri
 	log.Printf("probe chain inbound bridge connected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr, sessionID)
 	if role == probeChainBridgeRoleToPrev {
 		runtime.setDownstreamSession(sessionID, session, role, strings.TrimSpace(r.RemoteAddr))
-		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge|session:"+sessionID, "reverse")
+		go acceptProbeChainBridgeStreams(runtime, session, sessionID, "inbound-bridge|session:"+sessionID, "reverse")
 		waitProbeChainBridgeSession(runtime.stopCh, session)
 		runtime.clearDownstreamSession(sessionID, session)
 	} else {
 		runtime.setUpstreamSession(sessionID, session, role, strings.TrimSpace(r.RemoteAddr))
-		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge|session:"+sessionID, "forward")
+		go acceptProbeChainBridgeStreams(runtime, session, sessionID, "inbound-bridge|session:"+sessionID, "forward")
 		waitProbeChainBridgeSession(runtime.stopCh, session)
 		runtime.clearUpstreamSession(sessionID, session)
 	}
@@ -1847,7 +1849,7 @@ func stopProbeChainRuntime(chainID string, reason string) bool {
 	return true
 }
 
-func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn) {
+func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSessionID string) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -1864,7 +1866,7 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn) {
 		return
 	}
 
-	nextHop, err := openProbeChainNextHop(runtime)
+	nextHop, err := openProbeChainNextHop(runtime, preferredSessionID)
 	if err != nil {
 		log.Printf("probe chain open downstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
 		return
@@ -1895,7 +1897,7 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn) {
 	}
 }
 
-func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn) {
+func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, preferredSessionID string) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -1922,7 +1924,7 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn) {
 	}
 	log.Printf("probe chain reverse conn opening prev hop: chain=%s role=%s remote=%s upstream_session=%s upstream_closed=%t", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), upstreamState, upstreamClosed)
 
-	prevHop, err := openProbeChainPrevHop(runtime)
+	prevHop, err := openProbeChainPrevHop(runtime, preferredSessionID)
 	if err != nil {
 		latestUpstream := runtime.getUpstreamSession()
 		latestState := "nil"
@@ -1960,14 +1962,14 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn) {
 	}
 }
 
-func openProbeChainNextHop(runtime *probeChainRuntime) (*probeChainNextHop, error) {
+func openProbeChainNextHop(runtime *probeChainRuntime, preferredSessionID string) (*probeChainNextHop, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
 	if runtime.cfg.nextAuthMode == "proxy" {
 		return nil, errors.New("next hop is proxy mode")
 	}
-	stream, err := openProbeChainDownstreamStream(runtime, probeChainDownstreamOpenTimeout)
+	stream, err := openProbeChainDownstreamStream(runtime, strings.TrimSpace(preferredSessionID), probeChainDownstreamOpenTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -1980,11 +1982,11 @@ func openProbeChainNextHop(runtime *probeChainRuntime) (*probeChainNextHop, erro
 	}, nil
 }
 
-func openProbeChainPrevHop(runtime *probeChainRuntime) (*probeChainNextHop, error) {
+func openProbeChainPrevHop(runtime *probeChainRuntime, preferredSessionID string) (*probeChainNextHop, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
-	stream, err := openProbeChainUpstreamStream(runtime, probeChainDownstreamOpenTimeout)
+	stream, err := openProbeChainUpstreamStream(runtime, strings.TrimSpace(preferredSessionID), probeChainDownstreamOpenTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -1997,7 +1999,41 @@ func openProbeChainPrevHop(runtime *probeChainRuntime) (*probeChainNextHop, erro
 	}, nil
 }
 
-func openProbeChainDownstreamStream(runtime *probeChainRuntime, timeout time.Duration) (net.Conn, error) {
+func (rt *probeChainRuntime) getDownstreamSessionByID(sessionID string) *yamux.Session {
+	if rt == nil {
+		return nil
+	}
+	cleanID := strings.TrimSpace(sessionID)
+	if cleanID == "" {
+		return rt.getDownstreamSession()
+	}
+	rt.bridgeMu.Lock()
+	defer rt.bridgeMu.Unlock()
+	item, ok := rt.downstreamSessions[cleanID]
+	if !ok || item == nil || item.Session == nil || item.Session.IsClosed() {
+		return nil
+	}
+	return item.Session
+}
+
+func (rt *probeChainRuntime) getUpstreamSessionByID(sessionID string) *yamux.Session {
+	if rt == nil {
+		return nil
+	}
+	cleanID := strings.TrimSpace(sessionID)
+	if cleanID == "" {
+		return rt.getUpstreamSession()
+	}
+	rt.bridgeMu.Lock()
+	defer rt.bridgeMu.Unlock()
+	item, ok := rt.upstreamSessions[cleanID]
+	if !ok || item == nil || item.Session == nil || item.Session.IsClosed() {
+		return nil
+	}
+	return item.Session
+}
+
+func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration) (net.Conn, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
@@ -2006,7 +2042,7 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, timeout time.Dur
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		session := runtime.getDownstreamSession()
+		session := runtime.getDownstreamSessionByID(preferredSessionID)
 		if session != nil && !session.IsClosed() {
 			stream, openErr := session.Open()
 			if openErr == nil {
@@ -2025,10 +2061,13 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, timeout time.Dur
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
+	if strings.TrimSpace(preferredSessionID) != "" {
+		return nil, fmt.Errorf("downstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
+	}
 	return nil, fmt.Errorf("downstream bridge is unavailable")
 }
 
-func openProbeChainUpstreamStream(runtime *probeChainRuntime, timeout time.Duration) (net.Conn, error) {
+func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration) (net.Conn, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
@@ -2039,7 +2078,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, timeout time.Durat
 	attempt := 0
 	for {
 		attempt++
-		session := runtime.getUpstreamSession()
+		session := runtime.getUpstreamSessionByID(preferredSessionID)
 		if session != nil {
 			closed := session.IsClosed()
 			log.Printf("probe chain upstream stream attempt: chain=%s role=%s attempt=%d session=%p closed=%t", runtime.cfg.chainID, runtime.cfg.role, attempt, session, closed)
@@ -2067,7 +2106,10 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, timeout time.Durat
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
-	log.Printf("probe chain upstream stream unavailable: chain=%s role=%s attempts=%d timeout=%s", runtime.cfg.chainID, runtime.cfg.role, attempt, timeout)
+	log.Printf("probe chain upstream stream unavailable: chain=%s role=%s attempts=%d timeout=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, attempt, timeout, strings.TrimSpace(preferredSessionID))
+	if strings.TrimSpace(preferredSessionID) != "" {
+		return nil, fmt.Errorf("upstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
+	}
 	return nil, fmt.Errorf("upstream bridge is unavailable")
 }
 
@@ -2482,6 +2524,7 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 	}
 	_ = stream.SetReadDeadline(time.Time{})
 
+	requestedSessionID := strings.TrimSpace(req.SessionID)
 	network := strings.ToLower(strings.TrimSpace(req.Network))
 	if network == "" {
 		network = "tcp"
@@ -2490,6 +2533,10 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 	if target == "" {
 		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: "missing address"})
 		return
+	}
+
+	if requestedSessionID != "" {
+		log.Printf("probe chain proxy open request: chain=%s role=%s network=%s target=%s session_id=%s", strings.TrimSpace(runtime.cfg.chainID), strings.TrimSpace(runtime.cfg.role), network, target, requestedSessionID)
 	}
 
 	var proxyErr error
