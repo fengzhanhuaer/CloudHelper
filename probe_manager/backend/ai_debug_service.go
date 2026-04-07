@@ -103,6 +103,22 @@ func (s *aiDebugService) Start() error {
 	mux.HandleFunc("/debug/logs/manager", s.handleManagerLogs)
 	mux.HandleFunc("/debug/logs/controller", s.handleControllerLogs)
 	mux.HandleFunc("/debug/logs/probe", s.handleProbeLogs)
+	mux.HandleFunc("/debug/network/dns/state", s.handleNetworkDNSState)
+	mux.HandleFunc("/debug/network/dns/cache", s.handleNetworkDNSCache)
+	mux.HandleFunc("/debug/network/dns/bimap", s.handleNetworkDNSBiMap)
+	mux.HandleFunc("/debug/network/dns/resolve", s.handleNetworkDNSResolve)
+	mux.HandleFunc("/debug/network/dns/system-probe", s.handleNetworkDNSSystemProbe)
+	mux.HandleFunc("/debug/network/route/decide", s.handleNetworkRouteDecide)
+	mux.HandleFunc("/debug/network/direct/dial", s.handleNetworkDirectDial)
+	mux.HandleFunc("/debug/network/process/events", s.handleNetworkProcessEvents)
+	mux.HandleFunc("/debug/network/failures/events", s.handleNetworkFailureEvents)
+	mux.HandleFunc("/debug/network/failures/targets", s.handleNetworkFailureTargets)
+	mux.HandleFunc("/debug/network/mux/groups", s.handleNetworkMuxGroups)
+	mux.HandleFunc("/debug/network/mux/clients", s.handleNetworkMuxClients)
+	mux.HandleFunc("/debug/network/tun/status", s.handleNetworkTUNStatus)
+	mux.HandleFunc("/debug/network/tun/udp-port-conflicts", s.handleNetworkTUNUDPPortConflicts)
+	mux.HandleFunc("/debug/network/fake-ip/list", s.handleNetworkFakeIPList)
+	mux.HandleFunc("/debug/network/fake-ip/lookup", s.handleNetworkFakeIPLookup)
 
 	server := &http.Server{
 		Handler:           mux,
@@ -272,6 +288,242 @@ func (s *aiDebugService) handleProbeLogs(w http.ResponseWriter, r *http.Request)
 			"timestamp": payload.Timestamp,
 		},
 	})
+}
+
+func (s *aiDebugService) handleNetworkDNSState(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	payload, err := buildAIDebugDNSStatePayload(service)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkDNSCache(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	payload, err := buildAIDebugDNSCachePayload(service, strings.TrimSpace(r.URL.Query().Get("query")))
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkDNSBiMap(w http.ResponseWriter, r *http.Request) {
+	payload, err := buildAIDebugDNSBiMapPayload(strings.TrimSpace(r.URL.Query().Get("query")))
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkFakeIPList(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	payload, err := buildAIDebugFakeIPListPayload(service)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkDNSResolve(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
+	if domain == "" {
+		s.writeErrorMessage(w, http.StatusBadRequest, "domain is required")
+		return
+	}
+	payload, err := buildAIDebugDNSResolvePayload(service, domain, strings.TrimSpace(r.URL.Query().Get("qtype")), strings.TrimSpace(r.URL.Query().Get("mode")))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkRouteDecide(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	if target == "" {
+		s.writeErrorMessage(w, http.StatusBadRequest, "target is required")
+		return
+	}
+	payload, err := buildAIDebugRouteDecisionPayload(service, target)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkDNSSystemProbe(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
+	if domain == "" {
+		s.writeErrorMessage(w, http.StatusBadRequest, "domain is required")
+		return
+	}
+	payload, err := buildAIDebugDNSSystemProbePayload(service, domain, strings.TrimSpace(r.URL.Query().Get("qtype")))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkDirectDial(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	if target == "" {
+		s.writeErrorMessage(w, http.StatusBadRequest, "target is required")
+		return
+	}
+	payload, err := buildAIDebugDirectDialPayload(service, target)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkProcessEvents(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	sinceMS := int64(s.parseIntQuery(r, "since_ms", 0))
+	payload, err := buildAIDebugProcessEventsPayload(service, sinceMS)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkFailureEvents(w http.ResponseWriter, r *http.Request) {
+	sinceMS := int64(s.parseIntQuery(r, "since_ms", 0))
+	limit := s.parseIntQuery(r, "limit", defaultFailureEventsQueryLimit)
+	payload, err := buildAIDebugFailureEventsPayload(sinceMS, strings.TrimSpace(r.URL.Query().Get("kind")), limit)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkFailureTargets(w http.ResponseWriter, r *http.Request) {
+	sinceMS := int64(s.parseIntQuery(r, "since_ms", 0))
+	limit := s.parseIntQuery(r, "limit", defaultFailureEventsQueryLimit)
+	payload, err := buildAIDebugFailureTargetsPayload(sinceMS, strings.TrimSpace(r.URL.Query().Get("kind")), limit)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkMuxGroups(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	payload, err := buildAIDebugMuxGroupsPayload(service, strings.TrimSpace(r.URL.Query().Get("group")))
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkMuxClients(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	payload, err := buildAIDebugMuxClientsPayload(service, strings.TrimSpace(r.URL.Query().Get("group")))
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkTUNStatus(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	payload, err := buildAIDebugTUNStatusPayload(service)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkTUNUDPPortConflicts(w http.ResponseWriter, r *http.Request) {
+	lines := normalizeLogViewLines(s.parseIntQuery(r, "lines", defaultLogViewLines))
+	sinceMinutes := s.parseIntQuery(r, "since_minutes", 30)
+	payload, err := buildAIDebugUDPPortConflictsPayload(sinceMinutes, lines)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *aiDebugService) handleNetworkFakeIPLookup(w http.ResponseWriter, r *http.Request) {
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+	if ip == "" {
+		s.writeErrorMessage(w, http.StatusBadRequest, "ip is required")
+		return
+	}
+	payload, err := buildAIDebugFakeIPLookupPayload(service, ip)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *aiDebugService) parseIntQuery(r *http.Request, key string, fallback int) int {

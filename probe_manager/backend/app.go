@@ -20,9 +20,9 @@ import (
 var BuildVersion = "dev"
 
 const (
-	frontendWatchdogTimeout      = 45 * time.Second
+	frontendWatchdogTimeout       = 45 * time.Second
 	frontendWatchdogCheckInterval = 10 * time.Second
-	frontendWatchdogStartupGrace = 90 * time.Second
+	frontendWatchdogStartupGrace  = 90 * time.Second
 )
 
 var globalNetworkAssistantService *networkAssistantService
@@ -33,11 +33,11 @@ type App struct {
 	networkAssistant *networkAssistantService
 	aiDebugService   *aiDebugService
 
-	frontendWatchdogMu   sync.Mutex
-	frontendWatchdogStop chan struct{}
-	frontendHeartbeatAt  atomic.Int64
+	frontendWatchdogMu    sync.Mutex
+	frontendWatchdogStop  chan struct{}
+	frontendHeartbeatAt   atomic.Int64
 	frontendHeartbeatSeen atomic.Bool
-	terminating          atomic.Bool
+	terminating           atomic.Bool
 }
 
 type PrivateKeyStatus struct {
@@ -48,8 +48,10 @@ type PrivateKeyStatus struct {
 
 // NewApp creates a new App application struct
 func NewApp() *App {
+	service := newNetworkAssistantService()
+	globalNetworkAssistantService = service
 	return &App{
-		networkAssistant: newNetworkAssistantService(),
+		networkAssistant: service,
 		aiDebugService:   newAIDebugService(),
 	}
 }
@@ -130,7 +132,7 @@ func (a *App) startFrontendWatchdog() {
 				}
 				lastHeartbeat := time.Unix(lastHeartbeatAt, 0)
 				if time.Since(lastHeartbeat) > frontendWatchdogTimeout {
-						a.exitBecauseFrontendLost(fmt.Sprintf("frontend heartbeat timeout: last=%s timeout=%s", lastHeartbeat.UTC().Format(time.RFC3339), frontendWatchdogTimeout))
+					a.exitBecauseFrontendLost(fmt.Sprintf("frontend heartbeat timeout: last=%s timeout=%s", lastHeartbeat.UTC().Format(time.RFC3339), frontendWatchdogTimeout))
 					return
 				}
 			}

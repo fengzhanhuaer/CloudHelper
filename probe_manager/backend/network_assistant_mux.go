@@ -210,6 +210,16 @@ func newTunnelMuxClient(baseURL, token, nodeID string, onControllerLog func(stri
 func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint probeChainEndpoint, onControllerLog func(string, string)) (*tunnelMuxClient, error) {
 	hop, err := openProbeChainRelayHop(endpoint)
 	if err != nil {
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Scope:   "mux",
+			Kind:    "client_create_failed",
+			Target:  strings.TrimSpace(endpoint.EntryHost),
+			NodeID:  strings.TrimSpace(nodeID),
+			ModeKey: fmt.Sprintf("chain:%s@%s:%d/%s", strings.TrimSpace(endpoint.ChainID), strings.TrimSpace(endpoint.EntryHost), endpoint.EntryPort, strings.TrimSpace(endpoint.LinkLayer)),
+			Reason:  "relay_connect_failed",
+			Error:   err.Error(),
+			Message: "create tunnel mux client failed at relay hop setup",
+		})
 		return nil, err
 	}
 
@@ -751,6 +761,16 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 		if _, err := c.session.Ping(); err != nil {
 			failures := c.keepAliveFailures.Add(1)
 			connected, activeStreams, lastRecvAt, lastPongAt := c.snapshot()
+			recordNetworkDebugFailure(networkDebugFailureEvent{
+				Timestamp: time.Now().UTC(),
+				Scope:     "mux",
+				Kind:      "keepalive_failed",
+				NodeID:    strings.TrimSpace(c.nodeID),
+				ModeKey:   strings.TrimSpace(c.modeKey),
+				Reason:    "keepalive_ping_failed",
+				Error:     err.Error(),
+				Message:   fmt.Sprintf("keepalive failures=%d connected=%v active_streams=%d last_recv=%s last_pong=%s", failures, connected, activeStreams, strings.TrimSpace(lastRecvAt), strings.TrimSpace(lastPongAt)),
+			})
 			log.Printf(
 				"[network-assistant] tunnel mux keepalive ping failed: node=%s mode_key=%s failures=%d threshold=%d connected=%v active_streams=%d last_recv=%s last_pong=%s err=%v",
 				strings.TrimSpace(c.nodeID),
@@ -764,6 +784,16 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 				err,
 			)
 			if failures >= muxKeepAliveFailThreshold {
+				recordNetworkDebugFailure(networkDebugFailureEvent{
+					Timestamp: time.Now().UTC(),
+					Scope:     "mux",
+					Kind:      "keepalive_threshold_reached",
+					NodeID:    strings.TrimSpace(c.nodeID),
+					ModeKey:   strings.TrimSpace(c.modeKey),
+					Reason:    "keepalive_threshold",
+					Error:     err.Error(),
+					Message:   fmt.Sprintf("threshold=%d failures=%d", muxKeepAliveFailThreshold, failures),
+				})
 				log.Printf(
 					"[network-assistant] tunnel mux keepalive threshold reached: node=%s mode_key=%s failures=%d threshold=%d action=close",
 					strings.TrimSpace(c.nodeID),
@@ -796,6 +826,17 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 
 	streamConn, err := c.session.Open()
 	if err != nil {
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Timestamp: time.Now().UTC(),
+			Scope:     "mux",
+			Kind:      "session_open_failed",
+			Target:    strings.TrimSpace(address),
+			NodeID:    strings.TrimSpace(c.nodeID),
+			ModeKey:   strings.TrimSpace(c.modeKey),
+			Reason:    "session_open_failed",
+			Error:     err.Error(),
+			Message:   fmt.Sprintf("network=%s", strings.TrimSpace(network)),
+		})
 		log.Printf(
 			"[network-assistant] tunnel mux session open failed: node=%s mode_key=%s network=%s address=%s err=%v state={%s}",
 			strings.TrimSpace(c.nodeID),
@@ -835,6 +876,17 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 	if err := json.NewDecoder(streamConn).Decode(&resp); err != nil {
 		_ = streamConn.Close()
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			recordNetworkDebugFailure(networkDebugFailureEvent{
+				Timestamp: time.Now().UTC(),
+				Scope:     "mux",
+				Kind:      "stream_open_timeout",
+				Target:    strings.TrimSpace(address),
+				NodeID:    strings.TrimSpace(c.nodeID),
+				ModeKey:   strings.TrimSpace(c.modeKey),
+				Reason:    "open_timeout",
+				Error:     err.Error(),
+				Message:   fmt.Sprintf("network=%s timeout=%s", strings.TrimSpace(network), tunnelStreamOpenTimeout),
+			})
 			log.Printf(
 				"[network-assistant] tunnel mux stream open response timeout: node=%s mode_key=%s network=%s address=%s timeout=%s state={%s}",
 				strings.TrimSpace(c.nodeID),
@@ -846,6 +898,17 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 			)
 			return nil, errTunnelStreamOpenTimeout
 		}
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Timestamp: time.Now().UTC(),
+			Scope:     "mux",
+			Kind:      "stream_open_decode_failed",
+			Target:    strings.TrimSpace(address),
+			NodeID:    strings.TrimSpace(c.nodeID),
+			ModeKey:   strings.TrimSpace(c.modeKey),
+			Reason:    "open_decode_failed",
+			Error:     err.Error(),
+			Message:   fmt.Sprintf("network=%s", strings.TrimSpace(network)),
+		})
 		log.Printf(
 			"[network-assistant] tunnel mux stream open response decode failed: node=%s mode_key=%s network=%s address=%s err=%v state={%s}",
 			strings.TrimSpace(c.nodeID),
@@ -1693,6 +1756,16 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 	client, ok := s.getExistingTunnelMuxClientForGroup(groupName)
 	if !ok {
 		err := errors.New("no available mux client")
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Timestamp: time.Now().UTC(),
+			Scope:     "mux",
+			Kind:      "no_available_client",
+			Target:    strings.TrimSpace(targetAddr),
+			Group:     strings.TrimSpace(groupName),
+			Reason:    "no_available_mux_client",
+			Error:     err.Error(),
+			Message:   "open tunnel stream skipped: no available mux client",
+		})
 		s.logfRateLimited(
 			fmt.Sprintf("mux:stream-open:no-group-client:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 			5*time.Second,
@@ -1734,6 +1807,18 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 	}
 
 	if isTunnelOpenRemoteError(err) {
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Timestamp: time.Now().UTC(),
+			Scope:     "mux",
+			Kind:      "stream_remote_rejected",
+			Target:    strings.TrimSpace(targetAddr),
+			Group:     strings.TrimSpace(groupName),
+			NodeID:    strings.TrimSpace(client.nodeID),
+			ModeKey:   strings.TrimSpace(client.modeKey),
+			Reason:    strings.TrimSpace(reason),
+			Error:     err.Error(),
+			Message:   "open tunnel stream remote rejected",
+		})
 		s.logfRateLimited(
 			fmt.Sprintf("mux:stream-open:group-remote-failed:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 			5*time.Second,
@@ -1750,6 +1835,18 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 		return nil, err
 	}
 
+	recordNetworkDebugFailure(networkDebugFailureEvent{
+		Timestamp: time.Now().UTC(),
+		Scope:     "mux",
+		Kind:      "stream_open_failed",
+		Target:    strings.TrimSpace(targetAddr),
+		Group:     strings.TrimSpace(groupName),
+		NodeID:    strings.TrimSpace(client.nodeID),
+		ModeKey:   strings.TrimSpace(client.modeKey),
+		Reason:    strings.TrimSpace(reason),
+		Error:     err.Error(),
+		Message:   "open tunnel stream failed with existing mux",
+	})
 	s.logfRateLimited(
 		fmt.Sprintf("mux:stream-open:group-failed:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 		5*time.Second,

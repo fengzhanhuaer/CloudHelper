@@ -299,12 +299,21 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	ep, createErr := req.CreateEndpoint(&wq)
 	if createErr != nil {
 		req.Complete(true)
+		reason := classifyTUNEndpointCreateFailure(createErr.String())
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Scope:   "tun",
+			Kind:    "tcp_create_failed",
+			Target:  targetAddr,
+			Reason:  reason,
+			Error:   createErr.String(),
+			Message: "local tun tcp create endpoint failed",
+		})
 		n.service.logfRateLimited(
 			"tun:tcp:create_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
 			3*time.Second,
 			"local tun tcp create endpoint failed: target=%s reason=%s err=%s",
 			targetAddr,
-			classifyTUNEndpointCreateFailure(createErr.String()),
+			reason,
 			createErr.String(),
 		)
 		return
@@ -316,6 +325,18 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	if openErr != nil {
 		_ = inbound.Close()
 		reason := classifyTUNRouteOpenFailure(route, openErr)
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Scope:        "tun",
+			Kind:         "tcp_open_failed",
+			Target:       targetAddr,
+			RoutedTarget: route.TargetAddr,
+			Group:        route.Group,
+			NodeID:       route.NodeID,
+			Reason:       reason,
+			Error:        openErr.Error(),
+			Message:      "local tun tcp route open failed",
+			Direct:       route.Direct,
+		})
 		n.service.logfRateLimited(
 			"tun:tcp:open_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
 			3*time.Second,
@@ -356,12 +377,21 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	var wq waiter.Queue
 	ep, createErr := req.CreateEndpoint(&wq)
 	if createErr != nil {
+		reason := classifyTUNEndpointCreateFailure(createErr.String())
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Scope:   "tun",
+			Kind:    "udp_create_failed",
+			Target:  targetAddr,
+			Reason:  reason,
+			Error:   createErr.String(),
+			Message: "local tun udp create endpoint failed",
+		})
 		n.service.logfRateLimited(
 			"tun:udp:create_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
 			3*time.Second,
 			"local tun udp create endpoint failed: target=%s reason=%s err=%s",
 			targetAddr,
-			classifyTUNEndpointCreateFailure(createErr.String()),
+			reason,
 			createErr.String(),
 		)
 		return
@@ -372,6 +402,18 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	if openErr != nil {
 		_ = inbound.Close()
 		reason := classifyTUNRouteOpenFailure(route, openErr)
+		recordNetworkDebugFailure(networkDebugFailureEvent{
+			Scope:        "tun",
+			Kind:         "udp_open_failed",
+			Target:       targetAddr,
+			RoutedTarget: route.TargetAddr,
+			Group:        route.Group,
+			NodeID:       route.NodeID,
+			Reason:       reason,
+			Error:        openErr.Error(),
+			Message:      "local tun udp route open failed",
+			Direct:       route.Direct,
+		})
 		n.service.logfRateLimited(
 			"tun:udp:open_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
 			3*time.Second,
