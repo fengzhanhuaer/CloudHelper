@@ -18,12 +18,16 @@ func main() {
 
 	// Create an instance of the app structure
 	app := NewApp()
+	tray := newTrayController(app)
+	tray.Start()
+	defer tray.Stop()
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "Probe Manager",
-		Width:  1024,
-		Height: 768,
+		Title:             "Probe Manager",
+		Width:             1024,
+		Height:            768,
+		HideWindowOnClose: true,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

@@ -2,14 +2,24 @@ package main
 
 import (
 	"context"
+	"os"
+	"sync"
+	"time"
 
 	"github.com/cloudhelper/probe_manager/backend"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 var BuildVersion = "dev"
 
 type App struct {
 	inner *backend.App
+
+	ctx   context.Context
+	ctxMu sync.RWMutex
+
+	trayHeartbeatMu   sync.Mutex
+	trayHeartbeatStop chan struct{}
 }
 
 type PrivateKeyStatus = backend.PrivateKeyStatus
@@ -40,15 +50,93 @@ func NewApp() *App {
 }
 
 func (a *App) startup(ctx context.Context) {
+	a.setContext(ctx)
 	a.inner.Startup(ctx)
+	a.startTrayHeartbeat()
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.stopTrayHeartbeat()
 	a.inner.Shutdown(ctx)
+}
+
+func (a *App) setContext(ctx context.Context) {
+	a.ctxMu.Lock()
+	a.ctx = ctx
+	a.ctxMu.Unlock()
+}
+
+func (a *App) getContext() context.Context {
+	a.ctxMu.RLock()
+	defer a.ctxMu.RUnlock()
+	return a.ctx
+}
+
+func (a *App) startTrayHeartbeat() {
+	if a == nil || a.inner == nil {
+		return
+	}
+
+	a.trayHeartbeatMu.Lock()
+	if a.trayHeartbeatStop != nil {
+		a.trayHeartbeatMu.Unlock()
+		return
+	}
+	stopCh := make(chan struct{})
+	a.trayHeartbeatStop = stopCh
+	a.trayHeartbeatMu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		a.inner.NotifyFrontendHeartbeat()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				a.inner.NotifyFrontendHeartbeat()
+			}
+		}
+	}()
+}
+
+func (a *App) stopTrayHeartbeat() {
+	if a == nil {
+		return
+	}
+
+	a.trayHeartbeatMu.Lock()
+	stopCh := a.trayHeartbeatStop
+	a.trayHeartbeatStop = nil
+	a.trayHeartbeatMu.Unlock()
+
+	if stopCh != nil {
+		close(stopCh)
+	}
 }
 
 func (a *App) NotifyFrontendHeartbeat() {
 	a.inner.NotifyFrontendHeartbeat()
+}
+
+func (a *App) ShowMainWindowFromTray() {
+	ctx := a.getContext()
+	if ctx == nil {
+		return
+	}
+	runtime.WindowUnminimise(ctx)
+	runtime.WindowShow(ctx)
+}
+
+func (a *App) ExitFromTray() {
+	ctx := a.getContext()
+	if ctx != nil {
+		runtime.Quit(ctx)
+		return
+	}
+	os.Exit(0)
 }
 
 func (a *App) Greet(name string) string {
