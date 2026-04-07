@@ -1665,102 +1665,34 @@ func (s *networkAssistantService) queryRuleDomainViaTunnelGroup(group string, do
 		}
 		return addrs, ttlSeconds, nil
 	}
-	queryByDoH := func() ([]string, int, bool) {
-		trials := 0
-		for _, server := range config.TUN.DoHServers {
-			if trials >= ruleDNSResolveServerTrials {
-				break
-			}
-			trials++
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				lastErr = errors.New("dns resolve timeout")
-				return nil, 0, false
-			}
-			payload, queryErr := s.queryRawDNSPacketViaTunnelDoHProxy(server, packet, remaining, normalizedGroup)
-			if queryErr != nil {
-				lastErr = queryErr
-				continue
-			}
-			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
-			if parseErr != nil {
-				lastErr = parseErr
-				continue
-			}
-			return addrs, ttlSeconds, true
+	trials := 0
+	for _, server := range config.TUN.DoHServers {
+		if trials >= ruleDNSResolveServerTrials {
+			break
 		}
-		return nil, 0, false
-	}
-	queryByDoT := func() ([]string, int, bool) {
-		trials := 0
-		for _, server := range config.TUN.DoTServers {
-			if trials >= ruleDNSResolveServerTrials {
-				break
-			}
-			trials++
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				lastErr = errors.New("dns resolve timeout")
-				return nil, 0, false
-			}
-			payload, queryErr := s.queryRawDNSPacketViaTunnelDoT(server, packet, remaining, normalizedGroup)
-			if queryErr != nil {
-				lastErr = queryErr
-				continue
-			}
-			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
-			if parseErr != nil {
-				lastErr = parseErr
-				continue
-			}
-			return addrs, ttlSeconds, true
+		trials++
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			lastErr = errors.New("dns resolve timeout")
+			break
 		}
-		return nil, 0, false
-	}
-	queryByPlainDNS := func() ([]string, int, bool) {
-		trials := 0
-		for _, server := range config.TUN.DNSServers {
-			if trials >= ruleDNSResolveServerTrials {
-				break
-			}
-			trials++
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				lastErr = errors.New("dns resolve timeout")
-				return nil, 0, false
-			}
-			payload, queryErr := s.queryRawDNSPacketViaTunnelUDP(server, packet, remaining, normalizedGroup)
-			if queryErr != nil {
-				lastErr = queryErr
-				continue
-			}
-			addrs, ttlSeconds, parseErr := tryParseResponse(payload)
-			if parseErr != nil {
-				lastErr = parseErr
-				continue
-			}
-			return addrs, ttlSeconds, true
+		payload, queryErr := s.queryRawDNSPacketViaTunnelDoHProxy(server, packet, remaining, normalizedGroup)
+		if queryErr != nil {
+			lastErr = queryErr
+			continue
 		}
-		return nil, 0, false
-	}
-	for _, tier := range buildDNSUpstreamQueryOrder(config.TUN.Prefer) {
-		switch tier {
-		case "doh":
-			if addrs, ttlSeconds, ok := queryByDoH(); ok {
-				return addrs, ttlSeconds, nil
-			}
-		case "dot":
-			if addrs, ttlSeconds, ok := queryByDoT(); ok {
-				return addrs, ttlSeconds, nil
-			}
-		default:
-			if addrs, ttlSeconds, ok := queryByPlainDNS(); ok {
-				return addrs, ttlSeconds, nil
-			}
+		addrs, ttlSeconds, parseErr := tryParseResponse(payload)
+		if parseErr != nil {
+			lastErr = parseErr
+			continue
 		}
+		return addrs, ttlSeconds, nil
 	}
 	if lastErr != nil {
 		return nil, 0, lastErr
+	}
+	if len(config.TUN.DoHServers) == 0 {
+		return nil, 0, errors.New("tunnel doh resolvers are not configured")
 	}
 	return nil, 0, errors.New("dns resolve failed")
 }

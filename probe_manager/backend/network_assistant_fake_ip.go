@@ -224,7 +224,7 @@ func (p *fakeIPPool) pruneExpiredLocked() {
 // NetworkAssistantDoHServerConfig 表示单个 DoH 上游配置。
 type NetworkAssistantDoHServerConfig struct {
 	URL           string `json:"url,omitempty"`
-	DialIP        string `json:"dial_ip,omitempty"`
+	IP            string `json:"ip,omitempty"`
 	TLSServerName string `json:"tls_server_name,omitempty"`
 }
 
@@ -233,7 +233,7 @@ func copyNetworkAssistantDoHServerConfigs(items []dnsDoHServerFilePayload) []Net
 	for _, item := range items {
 		out = append(out, NetworkAssistantDoHServerConfig{
 			URL:           item.URL,
-			DialIP:        item.DialIP,
+			IP:            strings.TrimSpace(item.IP),
 			TLSServerName: item.TLSServerName,
 		})
 	}
@@ -245,7 +245,7 @@ func copyDNSDoHServerFilePayloads(items []NetworkAssistantDoHServerConfig) []dns
 	for _, item := range items {
 		out = append(out, dnsDoHServerFilePayload{
 			URL:           item.URL,
-			DialIP:        item.DialIP,
+			IP:            item.IP,
 			TLSServerName: item.TLSServerName,
 		})
 	}
@@ -254,9 +254,6 @@ func copyDNSDoHServerFilePayloads(items []NetworkAssistantDoHServerConfig) []dns
 
 // NetworkAssistantDNSRouteConfig 表示一套路由域名解析上游配置。
 type NetworkAssistantDNSRouteConfig struct {
-	Prefer     string                            `json:"prefer"`
-	DNSServers []string                          `json:"dns_servers"`
-	DoTServers []string                          `json:"dot_servers"`
 	DoHServers []NetworkAssistantDoHServerConfig `json:"doh_servers"`
 }
 
@@ -364,9 +361,6 @@ func (s *networkAssistantService) GetDNSUpstreamConfig() (NetworkAssistantDNSUps
 		FakeIPCIDR:      payload.FakeIPCIDR,
 		FakeIPWhitelist: append([]string(nil), payload.FakeIPWhitelist...),
 		TUN: NetworkAssistantDNSRouteConfig{
-			Prefer:     payload.TUN.Prefer,
-			DNSServers: append([]string(nil), payload.TUN.DNSServers...),
-			DoTServers: append([]string(nil), payload.TUN.DoTServers...),
 			DoHServers: copyNetworkAssistantDoHServerConfigs(payload.TUN.DoHServers),
 		},
 	}, nil
@@ -386,9 +380,6 @@ func (s *networkAssistantService) SetDNSUpstreamConfig(cfg NetworkAssistantDNSUp
 		FakeIPCIDR:      cfg.FakeIPCIDR,
 		FakeIPWhitelist: append([]string(nil), cfg.FakeIPWhitelist...),
 		TUN: dnsRouteUpstreamConfigFilePayload{
-			Prefer:     cfg.TUN.Prefer,
-			DNSServers: append([]string(nil), cfg.TUN.DNSServers...),
-			DoTServers: append([]string(nil), cfg.TUN.DoTServers...),
 			DoHServers: copyDNSDoHServerFilePayloads(cfg.TUN.DoHServers),
 		},
 	}

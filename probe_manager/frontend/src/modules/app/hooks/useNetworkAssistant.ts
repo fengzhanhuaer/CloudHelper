@@ -4,13 +4,11 @@ import {
 } from "../services/controller-api";
 import {
 	EnableNetworkAssistantTUN,
-	GetNetworkAssistantDNSUpstreamConfig,
 	GetNetworkAssistantLogs,
 	GetNetworkAssistantRuleConfig,
 	GetNetworkAssistantStatus,
 	InstallNetworkAssistantTUN,
 	RestoreNetworkAssistantDirect,
-	SetNetworkAssistantDNSUpstreamConfig,
 	SetNetworkAssistantMode,
 	SetNetworkAssistantRulePolicy,
 	SyncNetworkAssistant,
@@ -23,7 +21,6 @@ import {
 	AppendNetworkAssistantDebugLog,
 } from "../../../../wailsjs/go/main/App";
 import * as AppBindings from "../../../../wailsjs/go/main/App";
-import { backend } from "../../../../wailsjs/go/models";
 import type {
   NetworkAssistantDNSCacheEntry,
   NetworkAssistantLogEntry,
@@ -110,34 +107,6 @@ function parseLegacyLogEntries(content: string): NetworkAssistantLogEntry[] {
   });
 }
 
-function createDNSRouteConfig(source?: Partial<backend.NetworkAssistantDNSRouteConfig>): backend.NetworkAssistantDNSRouteConfig {
-  const input = source ?? {};
-  return backend.NetworkAssistantDNSRouteConfig.createFrom({
-    prefer: typeof input.prefer === "string" ? input.prefer : "doh",
-    dns_servers: Array.isArray(input.dns_servers) ? input.dns_servers : [],
-    dot_servers: Array.isArray(input.dot_servers) ? input.dot_servers : [],
-    doh_servers: Array.isArray(input.doh_servers)
-      ? input.doh_servers.map((item) => backend.NetworkAssistantDoHServerConfig.createFrom(item ?? {}))
-      : [],
-  });
-}
-
-function createDNSUpstreamConfig(source?: Partial<backend.NetworkAssistantDNSUpstreamConfig>): backend.NetworkAssistantDNSUpstreamConfig {
-  const input = source ?? {};
-  return backend.NetworkAssistantDNSUpstreamConfig.createFrom({
-    prefer: typeof input.prefer === "string" ? input.prefer : "doh",
-    dns_servers: Array.isArray(input.dns_servers) ? input.dns_servers : [],
-    dot_servers: Array.isArray(input.dot_servers) ? input.dot_servers : [],
-    doh_servers: Array.isArray(input.doh_servers)
-      ? input.doh_servers.map((item) => backend.NetworkAssistantDoHServerConfig.createFrom(item ?? {}))
-      : [],
-    fake_ip_cidr: typeof input.fake_ip_cidr === "string" ? input.fake_ip_cidr : "",
-    fake_ip_whitelist: Array.isArray(input.fake_ip_whitelist) ? input.fake_ip_whitelist : [],
-    tun: createDNSRouteConfig(input.tun),
-  });
-}
-
-const defaultDNSUpstreamConfig = createDNSUpstreamConfig();
 
 export function useNetworkAssistant() {
   const [status, setStatus] = useState<NetworkAssistantStatus>(defaultStatus);
@@ -441,46 +410,6 @@ export function useNetworkAssistant() {
     }
   }, []);
 
-  const [dnsUpstreamConfig, setDnsUpstreamConfig] =
-    useState<backend.NetworkAssistantDNSUpstreamConfig>(defaultDNSUpstreamConfig);
-  const [isLoadingDNSConfig, setIsLoadingDNSConfig] = useState(false);
-  const [dnsConfigStatus, setDnsConfigStatus] = useState("");
-
-  const refreshDNSUpstreamConfig = useCallback(async () => {
-    setIsLoadingDNSConfig(true);
-    setDnsConfigStatus("");
-    try {
-      const cfg = await GetNetworkAssistantDNSUpstreamConfig();
-      setDnsUpstreamConfig(createDNSUpstreamConfig(cfg));
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setDnsConfigStatus(`加载失败：${msg}`);
-    } finally {
-      setIsLoadingDNSConfig(false);
-    }
-  }, []);
-
-  const saveDNSUpstreamConfig = useCallback(
-    async (cfg: backend.NetworkAssistantDNSUpstreamConfig) => {
-      setDnsConfigStatus("");
-      try {
-        const normalizedCfg = createDNSUpstreamConfig(cfg);
-        await SetNetworkAssistantDNSUpstreamConfig(normalizedCfg);
-        setDnsUpstreamConfig(normalizedCfg);
-        setDnsConfigStatus("保存成功");
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : "unknown error";
-        setDnsConfigStatus(`保存失败：${msg}`);
-        throw error;
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    refreshDNSUpstreamConfig();
-  }, [refreshDNSUpstreamConfig]);
-
   // DNS Cache 查询
   const [dnsCacheEntries, setDnsCacheEntries] = useState<NetworkAssistantDNSCacheEntry[]>([]);
   const [dnsCacheQuery, setDnsCacheQuery] = useState("");
@@ -669,11 +598,6 @@ export function useNetworkAssistant() {
     refreshLogs,
     copyLogs,
     clearLogs,
-    dnsUpstreamConfig,
-    isLoadingDNSConfig,
-    dnsConfigStatus,
-    refreshDNSUpstreamConfig,
-    saveDNSUpstreamConfig,
     dnsCacheEntries,
     dnsCacheQuery,
     setDnsCacheQuery,

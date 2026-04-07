@@ -204,7 +204,7 @@ export namespace backend {
 	}
 	export class NetworkAssistantDoHServerConfig {
 	    url?: string;
-	    dial_ip?: string;
+	    ip?: string;
 	    tls_server_name?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -214,14 +214,11 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
-	        this.dial_ip = source["dial_ip"];
+	        this.ip = source["ip"];
 	        this.tls_server_name = source["tls_server_name"];
 	    }
 	}
 	export class NetworkAssistantDNSRouteConfig {
-	    prefer: string;
-	    dns_servers: string[];
-	    dot_servers: string[];
 	    doh_servers: NetworkAssistantDoHServerConfig[];
 	
 	    static createFrom(source: any = {}) {
@@ -230,9 +227,6 @@ export namespace backend {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.prefer = source["prefer"];
-	        this.dns_servers = source["dns_servers"];
-	        this.dot_servers = source["dot_servers"];
 	        this.doh_servers = this.convertValues(source["doh_servers"], NetworkAssistantDoHServerConfig);
 	    }
 	

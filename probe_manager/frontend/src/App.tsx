@@ -231,11 +231,6 @@ function App() {
             onInstallNetworkTUN={() => networkAssistant.installTUN()}
             onEnableNetworkTUN={() => networkAssistant.enableTUN()}
             onCloseNetworkTUN={() => networkAssistant.closeTUN()}
-            networkDNSUpstreamConfig={networkAssistant.dnsUpstreamConfig}
-            isLoadingNetworkDNSConfig={networkAssistant.isLoadingDNSConfig}
-            networkDNSConfigStatus={networkAssistant.dnsConfigStatus}
-            onRefreshNetworkDNSConfig={networkAssistant.refreshDNSUpstreamConfig}
-            onSaveNetworkDNSConfig={networkAssistant.saveDNSUpstreamConfig}
             networkDNSCacheEntries={networkAssistant.dnsCacheEntries}
             networkDNSCacheQuery={networkAssistant.dnsCacheQuery}
             isNetworkDNSCacheLoading={networkAssistant.isDNSCacheLoading}

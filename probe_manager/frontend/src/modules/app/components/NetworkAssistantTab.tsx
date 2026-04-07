@@ -1,10 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { PingProbeChain } from "../../../../wailsjs/go/main/App";
 import { LinkManageTab } from "./LinkManageTab";
 import { NetworkAssistantDNSCachePanel } from "./NetworkAssistantDNSCachePanel";
 import { NetworkAssistantLogsPanel } from "./NetworkAssistantLogsPanel";
 import { NetworkAssistantMonitorPanel } from "./NetworkAssistantMonitorPanel";
-import { backend } from "../../../../wailsjs/go/models";
 import type {
   NetworkAssistantDNSCacheEntry,
   NetworkAssistantLogFilterSource,
@@ -42,11 +41,6 @@ type NetworkAssistantTabProps = {
   onInstallTUN: () => void;
   onEnableTUN: () => void;
   onCloseTUN: () => void;
-  dnsUpstreamConfig: backend.NetworkAssistantDNSUpstreamConfig;
-  isLoadingDNSConfig: boolean;
-  dnsConfigStatus: string;
-  onRefreshDNSConfig: () => void;
-  onSaveDNSConfig: (cfg: backend.NetworkAssistantDNSUpstreamConfig) => void;
   dnsCacheEntries: NetworkAssistantDNSCacheEntry[];
   dnsCacheQuery: string;
   isDNSCacheLoading: boolean;
@@ -85,9 +79,7 @@ type NetworkAssistantTabProps = {
 };
 
 export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
-  const [subTab, setSubTab] = useState<"settings" | "dns" | "cache" | "monitor" | "link" | "forward" | "driver" | "status" | "logs">("settings");
-  const [dnsEditCIDR, setDnsEditCIDR] = useState("");
-  const [dnsEditDirty, setDnsEditDirty] = useState(false);
+  const [subTab, setSubTab] = useState<"settings" | "cache" | "monitor" | "link" | "forward" | "driver" | "status" | "logs">("settings");
 
   type TunnelPingState = { ok: boolean | null; durationMS: number | null; message: string };
   const [tunnelPingStates, setTunnelPingStates] = useState<Record<string, TunnelPingState>>({});
@@ -116,24 +108,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
   }
 
 
-  useEffect(() => {
-    if (subTab !== "dns") {
-      return;
-    }
-    if (!dnsEditDirty) {
-      setDnsEditCIDR(props.dnsUpstreamConfig.fake_ip_cidr ?? "");
-    }
-  }, [subTab, props.dnsUpstreamConfig, dnsEditDirty]);
-
-  useEffect(() => {
-    if (subTab !== "dns") {
-      return;
-    }
-    if (!props.isLoadingDNSConfig) {
-      props.onRefreshDNSConfig();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subTab]);
 
   function isRuleOptionSelected(group: NetworkAssistantRuleGroupConfig, action: NetworkAssistantRuleAction, tunnelNodeID?: string): boolean {
     if (group.action !== action) {
@@ -278,7 +252,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
 
       <div className="subtab-list" style={{ marginBottom: 12 }}>
         <button className={`subtab-btn ${subTab === "settings" ? "active" : ""}`} onClick={() => setSubTab("settings")}>模式切换</button>
-        <button className={`subtab-btn ${subTab === "dns" ? "active" : ""}`} onClick={() => setSubTab("dns")}>DNS 配置</button>
         <button className={`subtab-btn ${subTab === "cache" ? "active" : ""}`} onClick={() => setSubTab("cache")}>DNS 缓存</button>
         <button className={`subtab-btn ${subTab === "monitor" ? "active" : ""}`} onClick={() => setSubTab("monitor")}>网络监视</button>
         <button className={`subtab-btn ${subTab === "link" ? "active" : ""}`} onClick={() => setSubTab("link")}>链路管理</button>
@@ -338,63 +311,6 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
               {renderRuleGroupRow(props.ruleConfig.fallback, "兜底组（未命中规则）")}
             </div>
           ) : null}
-        </>
-      ) : subTab === "dns" ? (
-        <>
-          <div className="identity-card">
-            <div>Fake IP 模式：当 DNS 解析命中规则时，返回虚假 IP，实际流量由 TUN 层按域名路由</div>
-          </div>
-          <div className="content-actions">
-            <button
-              className="btn"
-              onClick={() => {
-                setDnsEditCIDR(props.dnsUpstreamConfig.fake_ip_cidr ?? "");
-                setDnsEditDirty(false);
-              }}
-              disabled={props.isLoadingDNSConfig}
-            >
-              重置编辑
-            </button>
-            <button
-              className="btn"
-              onClick={() => {
-                props.onSaveDNSConfig(backend.NetworkAssistantDNSUpstreamConfig.createFrom({
-                  ...props.dnsUpstreamConfig,
-                  fake_ip_cidr: dnsEditCIDR.trim(),
-                }));
-                setDnsEditDirty(false);
-              }}
-              disabled={props.isLoadingDNSConfig || !dnsEditDirty}
-            >
-              {props.isLoadingDNSConfig ? "保存中..." : "保存配置"}
-            </button>
-            <button
-              className="btn"
-              onClick={props.onRefreshDNSConfig}
-              disabled={props.isLoadingDNSConfig}
-            >
-              {props.isLoadingDNSConfig ? "加载中..." : "刷新配置"}
-            </button>
-          </div>
-          <div className="status">{props.dnsConfigStatus}</div>
-          <div className="rule-policy-group-list">
-            <div className="rule-policy-group">
-              <div className="rule-policy-group-title">Fake IP CIDR 段</div>
-              <div className="rule-policy-group-desc">分配给 Fake IP 的地址段，例如：198.18.0.0/15</div>
-              <input
-                className="text-input"
-                type="text"
-                value={dnsEditCIDR}
-                placeholder="198.18.0.0/15"
-                onChange={(e) => { setDnsEditCIDR(e.target.value); setDnsEditDirty(true); }}
-                disabled={props.isLoadingDNSConfig}
-              />
-            </div>
-            <div className="rule-policy-group">
-              <div className="rule-policy-group-title">Fake IP 排除来源</div>
-              <div className="rule-policy-group-desc">已改为使用规则组 direct 作为排除来源。命中 direct 组的域名不会分配 Fake IP，请在规则组中配置 direct 策略。</div>
-            </div>
-          </div>
         </>
       ) : subTab === "link" ? (
         <LinkManageTab key="link-tab" controllerBaseUrl={props.controllerBaseUrl} sessionToken={props.sessionToken} initialSubTab="list" />

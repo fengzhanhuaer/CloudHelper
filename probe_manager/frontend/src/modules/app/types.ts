@@ -139,14 +139,6 @@ export type NetworkAssistantRuleConfig = {
   fallback: NetworkAssistantRuleGroupConfig;
 };
 
-export type NetworkAssistantDNSUpstreamConfig = {
-  prefer: string;
-  dns_servers: string[];
-  dot_servers: string[];
-  doh_servers: string[];
-  fake_ip_cidr: string;
-  fake_ip_whitelist: string[];
-};
 
 export type NetworkAssistantDNSCacheEntry = {
   domain: string;

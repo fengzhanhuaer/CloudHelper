@@ -5,7 +5,6 @@ import { OverviewTab } from "./OverviewTab";
 import { ProbeManageTab } from "./ProbeManageTab";
 import { SystemSettingsTab } from "./SystemSettingsTab";
 import { TGAssistantTab } from "./TGAssistantTab";
-import { backend } from "../../../../wailsjs/go/models";
 import type {
   LogSource,
   NetworkAssistantDNSCacheEntry,
@@ -96,11 +95,6 @@ type TabContentProps = {
   onInstallNetworkTUN: () => void;
   onEnableNetworkTUN: () => void;
   onCloseNetworkTUN: () => void;
-  networkDNSUpstreamConfig: backend.NetworkAssistantDNSUpstreamConfig;
-  isLoadingNetworkDNSConfig: boolean;
-  networkDNSConfigStatus: string;
-  onRefreshNetworkDNSConfig: () => void;
-  onSaveNetworkDNSConfig: (cfg: backend.NetworkAssistantDNSUpstreamConfig) => void;
   networkDNSCacheEntries: NetworkAssistantDNSCacheEntry[];
   networkDNSCacheQuery: string;
   isNetworkDNSCacheLoading: boolean;
@@ -198,11 +192,6 @@ export function TabContent(props: TabContentProps) {
           onInstallTUN={props.onInstallNetworkTUN}
           onEnableTUN={props.onEnableNetworkTUN}
           onCloseTUN={props.onCloseNetworkTUN}
-          dnsUpstreamConfig={props.networkDNSUpstreamConfig}
-          isLoadingDNSConfig={props.isLoadingNetworkDNSConfig}
-          dnsConfigStatus={props.networkDNSConfigStatus}
-          onRefreshDNSConfig={props.onRefreshNetworkDNSConfig}
-          onSaveDNSConfig={props.onSaveNetworkDNSConfig}
           dnsCacheEntries={props.networkDNSCacheEntries}
           dnsCacheQuery={props.networkDNSCacheQuery}
           isDNSCacheLoading={props.isNetworkDNSCacheLoading}

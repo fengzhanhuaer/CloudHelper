@@ -34,13 +34,15 @@ var (
 	defaultDNSUpstreamDoTServers   = []string{"dns.alidns.com:853", "dot.pub:853"}
 	defaultDNSUpstreamDoHServers   = []string{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"}
 
-	defaultTUNDNSUpstreamPlainServers = []string{"8.8.8.8", "1.1.1.1"}
-	defaultTUNDNSUpstreamDoHServers   = []string{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
+	defaultTUNDNSUpstreamDoHServers = []dnsDoHServerFilePayload{
+		{URL: "https://dns.google/dns-query", IP: "8.8.8.8"},
+		{URL: "https://cloudflare-dns.com/dns-query", IP: "1.1.1.1"},
+	}
 )
 
 type dnsDoHServerFilePayload struct {
 	URL           string `json:"url,omitempty"`
-	DialIP        string `json:"dial_ip,omitempty"`
+	IP            string `json:"ip,omitempty"`
 	TLSServerName string `json:"tls_server_name,omitempty"`
 }
 
@@ -96,7 +98,7 @@ type dnsDoHServer struct {
 	Host          string
 	Port          string
 	TLSServerName string
-	DialIP        string
+	IP            string
 }
 
 type dnsTimeoutError struct {
@@ -182,10 +184,7 @@ func extractDNSDoHServerURLs(items []dnsDoHServerFilePayload) []string {
 
 func defaultTUNDNSUpstreamConfigFilePayload() dnsRouteUpstreamConfigFilePayload {
 	return dnsRouteUpstreamConfigFilePayload{
-		Prefer:     "doh",
-		DNSServers: append([]string(nil), defaultTUNDNSUpstreamPlainServers...),
-		DoTServers: []string{},
-		DoHServers: buildDNSDoHServerFilePayloadList(defaultTUNDNSUpstreamDoHServers),
+		DoHServers: append([]dnsDoHServerFilePayload(nil), defaultTUNDNSUpstreamDoHServers...),
 	}
 }
 
@@ -648,9 +647,9 @@ func normalizeDNSUpstreamConfig(payload dnsUpstreamConfigFilePayload) dnsUpstrea
 	config.TUN = normalizeDNSRouteUpstreamConfig(
 		payload.TUN,
 		"doh",
-		defaultTUNDNSUpstreamPlainServers,
 		nil,
-		defaultTUNDNSUpstreamDoHServers,
+		nil,
+		extractDNSDoHServerURLs(defaultTUNDNSUpstreamDoHServers),
 	)
 	return config
 }
@@ -771,8 +770,9 @@ func normalizeDNSDoHServerPayload(raw dnsDoHServerFilePayload) (dnsDoHServer, bo
 		path = "/" + path
 	}
 
-	dialIP := normalizeDNSUpstreamHost(raw.DialIP)
-	if strings.TrimSpace(raw.DialIP) != "" {
+	rawIP := strings.TrimSpace(raw.IP)
+	dialIP := normalizeDNSUpstreamHost(rawIP)
+	if rawIP != "" {
 		parsedIP := net.ParseIP(dialIP)
 		if parsedIP == nil {
 			return dnsDoHServer{}, false
@@ -800,7 +800,7 @@ func normalizeDNSDoHServerPayload(raw dnsDoHServerFilePayload) (dnsDoHServer, bo
 		Host:          host,
 		Port:          port,
 		TLSServerName: tlsServerName,
-		DialIP:        dialIP,
+		IP:            dialIP,
 	}, true
 }
 
@@ -894,7 +894,7 @@ func dedupeDNSDoHServers(items []dnsDoHServer) []dnsDoHServer {
 	out := make([]dnsDoHServer, 0, len(items))
 	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		key := strings.ToLower(strings.TrimSpace(item.URL)) + "|" + strings.ToLower(strings.TrimSpace(item.DialIP)) + "|" + strings.ToLower(strings.TrimSpace(item.TLSServerName))
+		key := strings.ToLower(strings.TrimSpace(item.URL)) + "|" + strings.ToLower(strings.TrimSpace(item.IP)) + "|" + strings.ToLower(strings.TrimSpace(item.TLSServerName))
 		if strings.TrimSpace(item.URL) == "" {
 			continue
 		}
@@ -933,7 +933,7 @@ func (s *networkAssistantService) collectConfiguredDNSBypassIPv4Addrs() []string
 	}
 	for _, server := range config.DoHServers {
 		addIPv4(server.Host)
-		addIPv4(server.DialIP)
+		addIPv4(server.IP)
 		if cachedIP, ok := getProbeDNSCachedIP(server.Host); ok {
 			addIPv4(cachedIP)
 		}
@@ -1172,33 +1172,35 @@ func (s *networkAssistantService) queryRawDNSPacketViaTunnelDoHProxy(server dnsD
 	if strings.TrimSpace(server.URL) == "" || strings.TrimSpace(server.Host) == "" || strings.TrimSpace(server.Port) == "" {
 		return nil, errors.New("invalid doh server")
 	}
-	proxyURL := &url.URL{Scheme: "http", Host: net.JoinHostPort(server.Host, server.Port)}
+	if timeout <= 0 {
+		timeout = dnsUpstreamResolveTimeout
+	}
+	dialHost := strings.TrimSpace(server.IP)
+	if dialHost != "" {
+		dialHost = normalizeDNSUpstreamHost(dialHost)
+		if parsedIP := net.ParseIP(dialHost); parsedIP == nil {
+			return nil, errors.New("invalid doh ip")
+		}
+	} else {
+		dialHost = strings.TrimSpace(server.Host)
+	}
+	dialAddr := net.JoinHostPort(dialHost, server.Port)
 	tlsServerName := strings.TrimSpace(server.TLSServerName)
 	if tlsServerName == "" {
 		tlsServerName = strings.TrimSpace(server.Host)
 	}
-	requestURL := strings.TrimSpace(server.URL)
-	requestHostHeader := ""
-	if strings.TrimSpace(server.DialIP) != "" {
-		parsed, err := url.Parse(requestURL)
-		if err != nil || parsed == nil {
-			return nil, errors.New("invalid doh server")
-		}
-		requestHostHeader = strings.TrimSpace(parsed.Host)
-		if server.Port == "443" {
-			parsed.Host = strings.TrimSpace(server.DialIP)
-		} else {
-			parsed.Host = net.JoinHostPort(strings.TrimSpace(server.DialIP), server.Port)
-		}
-		requestURL = parsed.String()
-	}
 	transport := &http.Transport{
-		Proxy: func(*http.Request) (*url.URL, error) {
-			return proxyURL, nil
-		},
+		Proxy:             nil,
 		ForceAttemptHTTP2: true,
-		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
-			return s.openTunnelStreamNetConnForGroup("http", address, group)
+		DialContext: func(ctx context.Context, network string, _ string) (net.Conn, error) {
+			conn, err := s.openTunnelStreamNetConnForGroup("tcp", dialAddr, group)
+			if err != nil {
+				return nil, err
+			}
+			if deadline, ok := ctx.Deadline(); ok {
+				_ = conn.SetDeadline(deadline)
+			}
+			return conn, nil
 		},
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
@@ -1209,12 +1211,9 @@ func (s *networkAssistantService) queryRawDNSPacketViaTunnelDoHProxy(server dnsD
 	client := &http.Client{Transport: transport, Timeout: timeout}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(packet))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(server.URL), bytes.NewReader(packet))
 	if err != nil {
 		return nil, err
-	}
-	if requestHostHeader != "" {
-		request.Host = requestHostHeader
 	}
 	request.Header.Set("Content-Type", "application/dns-message")
 	request.Header.Set("Accept", "application/dns-message")
@@ -1241,11 +1240,11 @@ func (s *networkAssistantService) queryRawDNSPacketViaDoH(server dnsDoHServer, p
 	if strings.TrimSpace(server.URL) == "" || strings.TrimSpace(server.Host) == "" || strings.TrimSpace(server.Port) == "" {
 		return nil, errors.New("invalid doh server")
 	}
-	dialHost := strings.TrimSpace(server.DialIP)
+	dialHost := strings.TrimSpace(server.IP)
 	if dialHost != "" {
 		dialHost = normalizeDNSUpstreamHost(dialHost)
 		if parsedIP := net.ParseIP(dialHost); parsedIP == nil {
-			return nil, errors.New("invalid doh dial_ip")
+			return nil, errors.New("invalid doh ip")
 		}
 	} else {
 		resolvedHost, err := resolveDNSUpstreamDialHost(s, server.Host, bootstrapServers, timeout)
