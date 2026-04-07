@@ -1217,6 +1217,53 @@ func (s *networkAssistantService) getExistingTunnelMuxClientForGroup(group strin
 	return state.Client, true
 }
 
+func formatMuxRuntimeTime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func describeTunnelMuxClientState(client *tunnelMuxClient) string {
+	if client == nil {
+		return "client=nil"
+	}
+	connected, activeStreams, lastRecv, lastPong := client.snapshot()
+	sessionClosed := true
+	if client.session != nil {
+		sessionClosed = client.session.IsClosed()
+	}
+	return fmt.Sprintf(
+		"node=%s mode=%s connected=%v closed=%v session_closed=%v keepalive_failures=%d active_streams=%d last_recv=%s last_pong=%s",
+		strings.TrimSpace(client.nodeID),
+		strings.TrimSpace(client.modeKey),
+		connected,
+		client.closed.Load(),
+		sessionClosed,
+		client.keepAliveFailures.Load(),
+		activeStreams,
+		strings.TrimSpace(lastRecv),
+		strings.TrimSpace(lastPong),
+	)
+}
+
+func (s *networkAssistantService) describeRuleGroupRuntimeState(group string) string {
+	state, ok := s.getRuleGroupRuntimeState(group)
+	if !ok || state == nil {
+		return "state=missing"
+	}
+	return fmt.Sprintf(
+		"state=present resolved_group=%s action=%s policy_node=%s failure_count=%d retry_at=%s last_error=%s client={%s}",
+		strings.TrimSpace(state.ResolvedGroup),
+		strings.TrimSpace(state.PolicyAction),
+		strings.TrimSpace(state.PolicyNodeID),
+		state.FailureCount,
+		formatMuxRuntimeTime(state.RetryAt),
+		strings.TrimSpace(state.LastError),
+		describeTunnelMuxClientState(state.Client),
+	)
+}
+
 func findReusableTunnelMuxClientForTarget(states map[string]*ruleGroupRuntimeState, excludeGroupKey, nodeID, modeKey string) (*tunnelMuxClient, bool) {
 	targetGroupKey := strings.ToLower(strings.TrimSpace(excludeGroupKey))
 	targetNodeID := strings.TrimSpace(nodeID)
@@ -1313,6 +1360,15 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 	if existingState != nil && existingState.Client != nil && !existingState.Client.isClosed() {
 		if strings.TrimSpace(existingState.Client.nodeID) == strings.TrimSpace(nodeID) &&
 			strings.TrimSpace(existingState.Client.modeKey) == strings.TrimSpace(modeKey) {
+			s.logfRateLimited(
+				fmt.Sprintf("mux:group-client:reuse-existing:group:%s|node:%s", strings.ToLower(groupKey), strings.ToLower(strings.TrimSpace(nodeID))),
+				5*time.Second,
+				"reuse existing tunnel mux client: group=%s node=%s mode=%s client_state={%s}",
+				groupName,
+				nodeID,
+				modeKey,
+				describeTunnelMuxClientState(existingState.Client),
+			)
 			return existingState.Client, nil
 		}
 	}
@@ -1381,8 +1437,18 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 		}
 	}
 
-	_ = reconnects
-	_ = startedAt
+	s.logfRateLimited(
+		fmt.Sprintf("mux:group-client:ready:group:%s|node:%s|created:%t", strings.ToLower(groupKey), strings.ToLower(strings.TrimSpace(nodeID)), created),
+		5*time.Second,
+		"tunnel mux client ready: group=%s node=%s mode=%s created=%v reconnects=%d elapsed=%s client_state={%s}",
+		groupName,
+		nodeID,
+		modeKey,
+		created,
+		reconnects,
+		time.Since(startedAt),
+		describeTunnelMuxClientState(client),
+	)
 	return client, nil
 }
 
@@ -1511,47 +1577,91 @@ func (s *networkAssistantService) newTunnelMuxClientLocked(nodeID string, chainT
 
 func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, group string) (*tunnelMuxStream, error) {
 	groupName := strings.TrimSpace(group)
+	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
+	cleanTarget := strings.ToLower(strings.TrimSpace(targetAddr))
+	startedAt := time.Now()
+
 	client, ok := s.getExistingTunnelMuxClientForGroup(groupName)
 	if !ok {
 		var err error
 		client, err = s.ensureTunnelMuxClientForGroup(groupName)
 		if err != nil {
 			s.logfRateLimited(
-				fmt.Sprintf("mux:stream-open:no-group-client:%s|%s|group:%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(groupName)),
+				fmt.Sprintf("mux:stream-open:no-group-client:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 				5*time.Second,
-				"open tunnel stream skipped: no available mux client: network=%s target=%s group=%s err=%v",
+				"open tunnel stream skipped: no available mux client: network=%s target=%s group=%s err=%v group_state={%s}",
 				network,
 				targetAddr,
 				groupName,
 				err,
+				s.describeRuleGroupRuntimeState(groupName),
 			)
 			return nil, err
 		}
+		s.logfRateLimited(
+			fmt.Sprintf("mux:stream-open:ensure-group-client:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
+			5*time.Second,
+			"open tunnel stream ensured group mux client: network=%s target=%s group=%s elapsed=%s client_state={%s}",
+			network,
+			targetAddr,
+			groupName,
+			time.Since(startedAt),
+			describeTunnelMuxClientState(client),
+		)
 	}
+
 	stream, err := client.openStream(network, targetAddr)
 	if err == nil {
 		return stream, nil
 	}
+
+	reason := "open_failed"
+	switch {
+	case errors.Is(err, errTunnelStreamOpenTimeout):
+		reason = "open_timeout"
+	case isTunnelOpenRemoteError(err):
+		reason = "remote_rejected"
+	case client == nil || client.isClosed():
+		reason = "client_closed"
+	default:
+		errText := strings.ToLower(strings.TrimSpace(err.Error()))
+		switch {
+		case strings.Contains(errText, "session shutdown"):
+			reason = "session_shutdown"
+		case strings.Contains(errText, "closed pipe"):
+			reason = "closed_pipe"
+		}
+	}
+
 	if isTunnelOpenRemoteError(err) {
 		s.logfRateLimited(
-			fmt.Sprintf("mux:stream-open:group-remote-failed:%s|%s|group:%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(groupName)),
+			fmt.Sprintf("mux:stream-open:group-remote-failed:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 			5*time.Second,
-			"open tunnel stream remote rejected: network=%s target=%s group=%s err=%v",
+			"open tunnel stream remote rejected: network=%s target=%s group=%s reason=%s elapsed=%s err=%v client_state={%s} group_state={%s}",
 			network,
 			targetAddr,
 			groupName,
+			reason,
+			time.Since(startedAt),
 			err,
+			describeTunnelMuxClientState(client),
+			s.describeRuleGroupRuntimeState(groupName),
 		)
 		return nil, err
 	}
+
 	s.logfRateLimited(
-		fmt.Sprintf("mux:stream-open:group-failed:%s|%s|group:%s", strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(targetAddr)), strings.ToLower(groupName)),
+		fmt.Sprintf("mux:stream-open:group-failed:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 		5*time.Second,
-		"open tunnel stream failed with existing mux: network=%s target=%s group=%s err=%v",
+		"open tunnel stream failed with existing mux: network=%s target=%s group=%s reason=%s elapsed=%s err=%v client_state={%s} group_state={%s}",
 		network,
 		targetAddr,
 		groupName,
+		reason,
+		time.Since(startedAt),
 		err,
+		describeTunnelMuxClientState(client),
+		s.describeRuleGroupRuntimeState(groupName),
 	)
 	return nil, err
 }
