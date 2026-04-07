@@ -303,16 +303,15 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		}
 		client = &http.Client{
 			Transport: transport,
-			Timeout:   probeChainRelayConnectTimeout,
 		}
 		closeTransport = func() error { return transport.Close() }
 	case "http2":
 		dialer := &net.Dialer{Timeout: probeChainRelayConnectTimeout, KeepAlive: 30 * time.Second}
 		transport := &http.Transport{
-			Proxy:               nil,
-			ForceAttemptHTTP2:   true,
-			DialContext:         dialer.DialContext,
-			TLSHandshakeTimeout: probeChainRelayConnectTimeout,
+			Proxy:                 nil,
+			ForceAttemptHTTP2:     true,
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   probeChainRelayConnectTimeout,
 			ResponseHeaderTimeout: probeChainRelayConnectTimeout,
 			ExpectContinueTimeout: 1 * time.Second,
 			TLSClientConfig: &tls.Config{
@@ -323,7 +322,6 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		}
 		client = &http.Client{
 			Transport: transport,
-			Timeout:   probeChainRelayConnectTimeout,
 		}
 		closeTransport = func() error {
 			transport.CloseIdleConnections()
@@ -347,7 +345,6 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		}
 		client = &http.Client{
 			Transport: transport,
-			Timeout:   probeChainRelayConnectTimeout,
 		}
 		closeTransport = func() error {
 			transport.CloseIdleConnections()
@@ -356,6 +353,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}
 
 	startedAt := time.Now()
+	log.Printf("[probe-chain/relay] request start chain=%s entry=%s:%d layer=%s host_header=%s server_name=%s", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, entryHostHeader, tlsServerName)
 	response, err := client.Do(request)
 	if err != nil {
 		sanitizedURL := ""
@@ -380,15 +378,19 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}
 
 	sessionID := strings.TrimSpace(response.Header.Get(probeChainCodexConnIDHeader))
+	headerElapsed := time.Since(startedAt)
+	log.Printf("[probe-chain/relay] request connected chain=%s entry=%s:%d layer=%s session_id=%s header_elapsed=%s", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, sessionID, headerElapsed)
 	return &probeChainRelayHop{
 		Writer:    bodyWriter,
 		Reader:    response.Body,
 		SessionID: sessionID,
 		CloseFn: func() error {
+			closeStartedAt := time.Now()
 			cancel()
 			_ = bodyWriter.Close()
 			_ = response.Body.Close()
 			_ = closeTransport()
+			log.Printf("[probe-chain/relay] request closed chain=%s entry=%s:%d layer=%s session_id=%s lived=%s close_elapsed=%s", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, sessionID, time.Since(startedAt), time.Since(closeStartedAt))
 			return nil
 		},
 	}, nil
