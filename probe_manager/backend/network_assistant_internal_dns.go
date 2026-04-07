@@ -731,6 +731,8 @@ func (s *networkAssistantService) storeDNSRouteHint(addrs []string, domain strin
 		s.dnsRouteHints[canonical] = hint
 	}
 	s.mu.Unlock()
+
+	s.storeDNSBiMap(addrs, domain, route)
 }
 
 func (s *networkAssistantService) storeFakeIPRouteHint(fakeAddr string, domain string, route tunnelRouteDecision) {

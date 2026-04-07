@@ -668,7 +668,6 @@ func (c *tunnelMuxClient) handleIncomingStream(stream net.Conn) {
 	c.onControllerLog(category, message)
 }
 
-
 func (c *tunnelMuxClient) isClosed() bool {
 	if c.closed.Load() {
 		return true
@@ -1297,7 +1296,7 @@ func (s *networkAssistantService) getRuleGroupRuntimeState(group string) (*ruleG
 	if s == nil {
 		return nil, false
 	}
-	
+
 	s.mu.RLock()
 	state, ok := s.ruleRouting.GroupState[groupKey]
 	s.mu.RUnlock()
@@ -1710,8 +1709,11 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 
 	stream, err := client.openStream(network, targetAddr)
 	if err == nil {
+		s.recordDNSBiMapConnectResult(targetAddr, groupName, true)
 		return stream, nil
 	}
+
+	s.recordDNSBiMapConnectResult(targetAddr, groupName, false)
 
 	reason := "open_failed"
 	switch {
@@ -1766,7 +1768,6 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 	}
 	return nil, err
 }
-
 
 func writeAll(w io.Writer, payload []byte) error {
 	if len(payload) == 0 {

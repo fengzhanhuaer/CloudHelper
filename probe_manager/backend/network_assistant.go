@@ -70,26 +70,26 @@ var defaultDirectLANCIDRRules = []string{
 }
 
 type NetworkAssistantStatus struct {
-	Enabled            bool                                 `json:"enabled"`
-	Mode               string                               `json:"mode"`
-	NodeID             string                               `json:"node_id"`
-	AvailableNodes     []string                             `json:"available_nodes"`
-	Socks5Listen       string                               `json:"socks5_listen"`
-	TunnelRoute        string                               `json:"tunnel_route"`
-	TunnelStatus       string                               `json:"tunnel_status"`
-	SystemProxyStatus  string                               `json:"system_proxy_status"`
-	LastError          string                               `json:"last_error"`
-	MuxConnected       bool                                 `json:"mux_connected"`
-	MuxActiveStreams   int                                  `json:"mux_active_streams"`
-	MuxReconnects      int64                                `json:"mux_reconnects"`
-	MuxLastRecv        string                               `json:"mux_last_recv"`
-	MuxLastPong        string                               `json:"mux_last_pong"`
-	GroupKeepalive     []NetworkAssistantGroupKeepaliveItem `json:"group_keepalive"`
-	TUNSupported       bool                                 `json:"tun_supported"`
-	TUNInstalled       bool                                 `json:"tun_installed"`
-	TUNEnabled         bool                                 `json:"tun_enabled"`
-	TUNLibraryPath     string                               `json:"tun_library_path"`
-	TUNStatus          string                               `json:"tun_status"`
+	Enabled           bool                                 `json:"enabled"`
+	Mode              string                               `json:"mode"`
+	NodeID            string                               `json:"node_id"`
+	AvailableNodes    []string                             `json:"available_nodes"`
+	Socks5Listen      string                               `json:"socks5_listen"`
+	TunnelRoute       string                               `json:"tunnel_route"`
+	TunnelStatus      string                               `json:"tunnel_status"`
+	SystemProxyStatus string                               `json:"system_proxy_status"`
+	LastError         string                               `json:"last_error"`
+	MuxConnected      bool                                 `json:"mux_connected"`
+	MuxActiveStreams  int                                  `json:"mux_active_streams"`
+	MuxReconnects     int64                                `json:"mux_reconnects"`
+	MuxLastRecv       string                               `json:"mux_last_recv"`
+	MuxLastPong       string                               `json:"mux_last_pong"`
+	GroupKeepalive    []NetworkAssistantGroupKeepaliveItem `json:"group_keepalive"`
+	TUNSupported      bool                                 `json:"tun_supported"`
+	TUNInstalled      bool                                 `json:"tun_installed"`
+	TUNEnabled        bool                                 `json:"tun_enabled"`
+	TUNLibraryPath    string                               `json:"tun_library_path"`
+	TUNStatus         string                               `json:"tun_status"`
 }
 
 // NetworkAssistantGroupKeepaliveItem 描述单个规则组当前生效链路的保活状态。
@@ -221,26 +221,26 @@ type probeChainPortForward struct {
 }
 
 type probeChainEndpoint struct {
-	TargetID        string
-	ChainName       string
-	ChainID         string
-	UserID          string
-	UserPublicKey   string
-	EntryNode       string
-	ExitNode        string
-	CascadeNodeIDs  []string
-	ListenHost      string
-	ListenPort      int
-	EgressHost      string
-	EgressPort      int
-	CreatedAt       string
-	UpdatedAt       string
-	EntryHost       string // public-facing host of the entry hop (DDNS or ip)
-	EntryPort       int    // public-facing port of the entry hop (external_port, fallback to listen_port)
-	LinkLayer       string
-	ChainSecret     string
-	HopConfigs      []probeChainHopConfig
-	PortForwards    []probeChainPortForward
+	TargetID       string
+	ChainName      string
+	ChainID        string
+	UserID         string
+	UserPublicKey  string
+	EntryNode      string
+	ExitNode       string
+	CascadeNodeIDs []string
+	ListenHost     string
+	ListenPort     int
+	EgressHost     string
+	EgressPort     int
+	CreatedAt      string
+	UpdatedAt      string
+	EntryHost      string // public-facing host of the entry hop (DDNS or ip)
+	EntryPort      int    // public-facing port of the entry hop (external_port, fallback to listen_port)
+	LinkLayer      string
+	ChainSecret    string
+	HopConfigs     []probeChainHopConfig
+	PortForwards   []probeChainPortForward
 }
 
 type ProbeLinkChainCacheHopConfig struct {
@@ -349,7 +349,6 @@ type dnsCacheEntry struct {
 	Addrs   []string
 	Expires time.Time
 }
-
 
 type tunPreferenceState struct {
 	EverEnabled  bool `json:"ever_enabled"`
@@ -462,10 +461,10 @@ func newNetworkAssistantService() *networkAssistantService {
 	if ruleErr != nil {
 		logStore.Appendf(logSourceManager, "init", "failed to load rule routing config, using empty rules: %v", ruleErr)
 		ruleRouting = tunnelRuleRouting{
-			RuleSet:       tunnelRuleSet{Rules: []tunnelRule{}},
-			GroupNodeMap:  map[string]string{},
-			GroupRuntime:  map[string]NetworkAssistantGroupKeepaliveItem{},
-			GroupState:    map[string]*ruleGroupRuntimeState{},
+			RuleSet:      tunnelRuleSet{Rules: []tunnelRule{}},
+			GroupNodeMap: map[string]string{},
+			GroupRuntime: map[string]NetworkAssistantGroupKeepaliveItem{},
+			GroupState:   map[string]*ruleGroupRuntimeState{},
 		}
 	}
 	ensureRuleRoutingRuntimeMaps(&ruleRouting)
@@ -494,6 +493,9 @@ func newNetworkAssistantService() *networkAssistantService {
 	}
 	if _, err := getDNSUpstreamConfig(); err != nil {
 		logStore.Appendf(logSourceManager, "init", "failed to load dns upstream config, fallback to defaults: %v", err)
+	}
+	if err := ensureDNSBiMapCacheLoaded(); err != nil {
+		logStore.Appendf(logSourceManager, "init", "failed to load dns bidirectional cache, fallback to in-memory: %v", err)
 	}
 	if pref, err := loadTUNPreferenceState(); err == nil {
 		service.tunEverEnabled = pref.EverEnabled
@@ -1010,7 +1012,6 @@ func (s *networkAssistantService) Status() NetworkAssistantStatus {
 		TUNStatus:         tunStatus,
 	}
 }
-
 
 func copyGroupKeepaliveSnapshot(source map[string]NetworkAssistantGroupKeepaliveItem) map[string]NetworkAssistantGroupKeepaliveItem {
 	if len(source) == 0 {
@@ -1543,7 +1544,6 @@ func normalizeRuleGroupName(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-
 func normalizeRuleDomain(domain string) string {
 	value := strings.TrimSpace(strings.Trim(domain, "."))
 	if value == "" {
@@ -1627,7 +1627,6 @@ func (s *networkAssistantService) storeRuleDNSCache(cacheKey string, addresses [
 	s.ruleDNSCache[normalizedKey] = dnsCacheEntry{Addrs: normalizedAddrs, Expires: expires}
 	s.mu.Unlock()
 }
-
 
 func (s *networkAssistantService) queryRuleDomainViaTunnelGroup(group string, domain string, qType uint16) ([]string, int, error) {
 	normalizedDomain := normalizeRuleDomain(domain)
@@ -3266,4 +3265,3 @@ func canonicalIP(ip net.IP) string {
 	}
 	return ip.String()
 }
-

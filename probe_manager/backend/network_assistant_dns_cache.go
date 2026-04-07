@@ -20,6 +20,7 @@ const (
 	dnsCacheKindRuleDNS    = "rule_dns"
 	dnsCacheKindRouteHint  = "route_hint"
 	dnsCacheKindFakeIP     = "fake_ip"
+	dnsCacheKindBiMap      = "bi_map"
 	dnsCacheKindTraffic    = "traffic"
 )
 
@@ -28,6 +29,7 @@ const (
 	dnsCacheSourceTunnel    = "tunnel"
 	dnsCacheSourceFake      = "fake"
 	dnsCacheSourceSynthetic = "synthetic"
+	dnsCacheSourceBiMap     = "bimap"
 	dnsCacheSourceMonitor   = "monitor"
 )
 
@@ -415,8 +417,10 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 		case dnsCacheKindFakeIP:
 			return 4
 		case dnsCacheKindRouteHint:
-			return 3
+			return 4
 		case dnsCacheKindRuleDNS:
+			return 3
+		case dnsCacheKindBiMap:
 			return 2
 		case dnsCacheKindDirectHost:
 			return 1
@@ -434,6 +438,8 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 			return 3
 		case dnsCacheSourceSynthetic:
 			return 2
+		case dnsCacheSourceBiMap:
+			return 1
 		case dnsCacheSourceSystem:
 			return 1
 		case dnsCacheSourceMonitor:
@@ -490,6 +496,9 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 		appendMerged(record)
 	}
 	for _, record := range fakeRecords {
+		appendMerged(record)
+	}
+	for _, record := range collectDNSBiMapRecordsForPresentation() {
 		appendMerged(record)
 	}
 

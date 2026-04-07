@@ -24,10 +24,10 @@ func TestCollectAutoMaintainPolicyTunnelNodeIDs(t *testing.T) {
 			},
 		},
 		GroupNodeMap: map[string]string{
-			"google":               rulePolicyActionTunnel + ":chain:1",
-			"github":               rulePolicyActionTunnel + ":chain:2",
-			"shared":               rulePolicyActionTunnel + ":chain:2",
-			ruleFallbackGroupKey:    rulePolicyActionDirect,
+			"google":             rulePolicyActionTunnel + ":chain:1",
+			"github":             rulePolicyActionTunnel + ":chain:2",
+			"shared":             rulePolicyActionTunnel + ":chain:2",
+			ruleFallbackGroupKey: rulePolicyActionDirect,
 		},
 	}
 
@@ -52,9 +52,9 @@ func TestCollectAutoMaintainPolicyTunnelNodeIDsSkipsDirectRejectAndFallbackDirec
 			},
 		},
 		GroupNodeMap: map[string]string{
-			"direct_group":         rulePolicyActionDirect,
-			"reject_group":         rulePolicyActionReject,
-			ruleFallbackGroupKey:    rulePolicyActionDirect,
+			"direct_group":       rulePolicyActionDirect,
+			"reject_group":       rulePolicyActionReject,
+			ruleFallbackGroupKey: rulePolicyActionDirect,
 		},
 	}
 
@@ -287,7 +287,6 @@ func TestDecideRouteForTargetRuleModeByIP(t *testing.T) {
 	}
 }
 
-
 func TestDecideRouteForTargetTUNModeUsesRuleRouting(t *testing.T) {
 	_, cidr, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
@@ -353,7 +352,7 @@ func TestDecideRouteForTargetDirectGroupAlwaysBypassTUN(t *testing.T) {
 				},
 			},
 			GroupNodeMap: map[string]string{
-				"direct":            rulePolicyActionTunnel + ":chain:test-chain",
+				"direct":             rulePolicyActionTunnel + ":chain:test-chain",
 				ruleFallbackGroupKey: rulePolicyActionTunnel + ":chain:test-chain",
 			},
 		},
@@ -391,7 +390,7 @@ func TestDecideRouteForTargetNormalGroupDirectBypassesTUN(t *testing.T) {
 				},
 			},
 			GroupNodeMap: map[string]string{
-				"group_normal":      rulePolicyActionDirect,
+				"group_normal":       rulePolicyActionDirect,
 				ruleFallbackGroupKey: rulePolicyActionDirect,
 			},
 		},
@@ -716,11 +715,41 @@ func TestQuerySplitDNSCacheEntriesIncludesIPOnlyTrafficAndCounters(t *testing.T)
 	directDNSCache.mu.Lock()
 	directDNSCache.entries = make(map[string]dnsCacheDirectEntry)
 	directDNSCache.mu.Unlock()
+	dnsBiMapCache.mu.Lock()
+	dnsBiMapCache.loaded = true
+	dnsBiMapCache.path = ""
+	dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+	dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+	dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+	dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+	dnsBiMapCache.mu.Unlock()
 	t.Cleanup(func() {
 		directDNSCache.mu.Lock()
 		directDNSCache.entries = make(map[string]dnsCacheDirectEntry)
 		directDNSCache.mu.Unlock()
+		dnsBiMapCache.mu.Lock()
+		dnsBiMapCache.loaded = true
+		dnsBiMapCache.path = ""
+		dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+		dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+		dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+		dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+		dnsBiMapCache.mu.Unlock()
 	})
+
+	now := time.Now()
+	dnsBiMapCache.mu.Lock()
+	bimapEntry := dnsBiMapEntry{
+		Domain:    "bimap.example.com",
+		IP:        "198.51.100.9",
+		Group:     "group_example",
+		NodeID:    "chain:edge-a",
+		ExpiresAt: now.Add(30 * time.Minute),
+		UpdatedAt: now,
+	}
+	dnsBiMapCache.entries[dnsBiMapKey(bimapEntry.Domain, bimapEntry.IP)] = bimapEntry
+	addDNSBiMapIndexLocked(bimapEntry.Domain, bimapEntry.IP)
+	dnsBiMapCache.mu.Unlock()
 
 	monitor := newProcessMonitor()
 	monitor.Start()
@@ -767,8 +796,8 @@ func TestQuerySplitDNSCacheEntriesIncludesIPOnlyTrafficAndCounters(t *testing.T)
 	}
 
 	entries := querySplitDNSCacheEntries(svc, "")
-	if len(entries) < 2 {
-		t.Fatalf("entries len=%d, want >=2", len(entries))
+	if len(entries) < 3 {
+		t.Fatalf("entries len=%d, want >=3", len(entries))
 	}
 
 	byIP := make(map[string]NetworkAssistantDNSCacheEntry, len(entries))
@@ -787,6 +816,20 @@ func TestQuerySplitDNSCacheEntriesIncludesIPOnlyTrafficAndCounters(t *testing.T)
 		t.Fatalf("unexpected counters: dns=%d ip=%d total=%d", entry.DNSCount, entry.IPConnectCount, entry.TotalCount)
 	}
 
+	biMapEntry, ok := byIP["198.51.100.9"]
+	if !ok {
+		t.Fatal("missing bi-map record for 198.51.100.9")
+	}
+	if biMapEntry.Domain != "bimap.example.com" {
+		t.Fatalf("bimap domain=%q, want bimap.example.com", biMapEntry.Domain)
+	}
+	if biMapEntry.Kind != dnsCacheKindBiMap || biMapEntry.Source != dnsCacheSourceBiMap {
+		t.Fatalf("bimap record kind/source=%s/%s, want %s/%s", biMapEntry.Kind, biMapEntry.Source, dnsCacheKindBiMap, dnsCacheSourceBiMap)
+	}
+	if biMapEntry.Direct {
+		t.Fatal("bimap record should be non-direct")
+	}
+
 	ipOnly, ok := byIP["203.0.113.9"]
 	if !ok {
 		t.Fatal("missing ip-only traffic record")
@@ -799,6 +842,147 @@ func TestQuerySplitDNSCacheEntriesIncludesIPOnlyTrafficAndCounters(t *testing.T)
 	}
 	if !ipOnly.Direct {
 		t.Fatal("ip-only record should inherit direct route")
+	}
+}
+
+func TestRecordDNSBiMapConnectResultEvictsAfterThreeFailuresInWindow(t *testing.T) {
+	dnsBiMapCache.mu.Lock()
+	dnsBiMapCache.loaded = true
+	dnsBiMapCache.path = ""
+	dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+	dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+	dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+	dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+	dnsBiMapCache.mu.Unlock()
+	t.Cleanup(func() {
+		dnsBiMapCache.mu.Lock()
+		dnsBiMapCache.loaded = true
+		dnsBiMapCache.path = ""
+		dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+		dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+		dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+		dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+		dnsBiMapCache.mu.Unlock()
+	})
+
+	now := time.Now()
+	dnsBiMapCache.mu.Lock()
+	entry := dnsBiMapEntry{
+		Domain:    "proxy.example.com",
+		IP:        "198.51.100.77",
+		Group:     "group_example",
+		NodeID:    "chain:edge-a",
+		ExpiresAt: now.Add(time.Hour),
+		UpdatedAt: now,
+	}
+	key := dnsBiMapKey(entry.Domain, entry.IP)
+	dnsBiMapCache.entries[key] = entry
+	addDNSBiMapIndexLocked(entry.Domain, entry.IP)
+	dnsBiMapCache.mu.Unlock()
+
+	svc := &networkAssistantService{mode: networkModeTUN, tunEnabled: true}
+	for i := 0; i < dnsBidirectionalFailureThreshold; i++ {
+		svc.recordDNSBiMapConnectResult(net.JoinHostPort(entry.IP, "443"), "group_example", false)
+	}
+
+	dnsBiMapCache.mu.Lock()
+	_, exists := dnsBiMapCache.entries[key]
+	dnsBiMapCache.mu.Unlock()
+	if exists {
+		t.Fatal("entry should be evicted after three failures within window")
+	}
+}
+
+func TestStoreDNSBiMapSkipsDirectAndStoresProxyGroup(t *testing.T) {
+	dnsBiMapCache.mu.Lock()
+	dnsBiMapCache.loaded = true
+	dnsBiMapCache.path = ""
+	dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+	dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+	dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+	dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+	dnsBiMapCache.mu.Unlock()
+	t.Cleanup(func() {
+		dnsBiMapCache.mu.Lock()
+		dnsBiMapCache.loaded = true
+		dnsBiMapCache.path = ""
+		dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+		dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+		dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+		dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+		dnsBiMapCache.mu.Unlock()
+	})
+
+	svc := &networkAssistantService{}
+	svc.storeDNSBiMap([]string{"198.51.100.10"}, "direct.example.com", tunnelRouteDecision{Direct: true, Group: "direct"})
+
+	dnsBiMapCache.mu.Lock()
+	if len(dnsBiMapCache.entries) != 0 {
+		dnsBiMapCache.mu.Unlock()
+		t.Fatalf("direct route should not be stored, got entries=%d", len(dnsBiMapCache.entries))
+	}
+	dnsBiMapCache.mu.Unlock()
+
+	svc.storeDNSBiMap([]string{"198.51.100.11"}, "proxy.example.com", tunnelRouteDecision{Direct: false, Group: "group_example", NodeID: "chain:edge-a"})
+
+	dnsBiMapCache.mu.Lock()
+	defer dnsBiMapCache.mu.Unlock()
+	if len(dnsBiMapCache.entries) != 1 {
+		t.Fatalf("proxy route should be stored once, got entries=%d", len(dnsBiMapCache.entries))
+	}
+	key := dnsBiMapKey("proxy.example.com", "198.51.100.11")
+	entry, ok := dnsBiMapCache.entries[key]
+	if !ok {
+		t.Fatalf("missing key=%s", key)
+	}
+	if entry.Group != "group_example" || entry.NodeID != "chain:edge-a" {
+		t.Fatalf("unexpected stored entry=%#v", entry)
+	}
+}
+
+func TestDNSBiMapForceRefreshOnModeSwitchDoesNotClear(t *testing.T) {
+	dnsBiMapCache.mu.Lock()
+	dnsBiMapCache.loaded = true
+	dnsBiMapCache.path = ""
+	dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+	dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+	dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+	dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+	now := time.Now()
+	entry := dnsBiMapEntry{
+		Domain:    "keep.example.com",
+		IP:        "198.51.100.88",
+		Group:     "group_example",
+		NodeID:    "chain:edge-a",
+		ExpiresAt: now.Add(time.Hour),
+		UpdatedAt: now,
+	}
+	key := dnsBiMapKey(entry.Domain, entry.IP)
+	dnsBiMapCache.entries[key] = entry
+	addDNSBiMapIndexLocked(entry.Domain, entry.IP)
+	dnsBiMapCache.mu.Unlock()
+	t.Cleanup(func() {
+		dnsBiMapCache.mu.Lock()
+		dnsBiMapCache.loaded = true
+		dnsBiMapCache.path = ""
+		dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+		dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+		dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+		dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+		dnsBiMapCache.mu.Unlock()
+	})
+
+	svc := &networkAssistantService{
+		ruleDNSCache:  map[string]dnsCacheEntry{"k": {Addrs: []string{"1.1.1.1"}, Expires: time.Now().Add(time.Minute)}},
+		dnsRouteHints: map[string]dnsRouteHintEntry{"1.1.1.1": {Domain: "example.com", Expires: time.Now().Add(time.Minute)}},
+	}
+	svc.forceRefreshDNSOnModeSwitch("test")
+
+	dnsBiMapCache.mu.Lock()
+	_, ok := dnsBiMapCache.entries[key]
+	dnsBiMapCache.mu.Unlock()
+	if !ok {
+		t.Fatal("bimap entry should survive forceRefreshDNSOnModeSwitch")
 	}
 }
 
