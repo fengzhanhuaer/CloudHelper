@@ -38,18 +38,24 @@ var (
 	defaultTUNDNSUpstreamDoHServers   = []string{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
 )
 
+type dnsDoHServerFilePayload struct {
+	URL           string `json:"url,omitempty"`
+	DialIP        string `json:"dial_ip,omitempty"`
+	TLSServerName string `json:"tls_server_name,omitempty"`
+}
+
 type dnsRouteUpstreamConfigFilePayload struct {
-	Prefer     string   `json:"prefer,omitempty"`
-	DNSServers []string `json:"dns_servers,omitempty"`
-	DoTServers []string `json:"dot_servers,omitempty"`
-	DoHServers []string `json:"doh_servers,omitempty"`
+	Prefer     string                    `json:"prefer,omitempty"`
+	DNSServers []string                  `json:"dns_servers,omitempty"`
+	DoTServers []string                  `json:"dot_servers,omitempty"`
+	DoHServers []dnsDoHServerFilePayload `json:"doh_servers,omitempty"`
 }
 
 type dnsUpstreamConfigFilePayload struct {
 	Prefer          string                            `json:"prefer"`
 	DNSServers      []string                          `json:"dns_servers"`
 	DoTServers      []string                          `json:"dot_servers"`
-	DoHServers      []string                          `json:"doh_servers"`
+	DoHServers      []dnsDoHServerFilePayload         `json:"doh_servers"`
 	FakeIPCIDR      string                            `json:"fake_ip_cidr,omitempty"`
 	FakeIPWhitelist []string                          `json:"fake_ip_whitelist,omitempty"`
 	TUN             dnsRouteUpstreamConfigFilePayload `json:"tun,omitempty"`
@@ -90,6 +96,7 @@ type dnsDoHServer struct {
 	Host          string
 	Port          string
 	TLSServerName string
+	DialIP        string
 }
 
 type dnsTimeoutError struct {
@@ -149,12 +156,36 @@ var dnsUpstreamConfigState = struct {
 	config     dnsUpstreamConfig
 }{}
 
+func buildDNSDoHServerFilePayloadList(urls []string) []dnsDoHServerFilePayload {
+	out := make([]dnsDoHServerFilePayload, 0, len(urls))
+	for _, rawURL := range urls {
+		cleanURL := strings.TrimSpace(rawURL)
+		if cleanURL == "" {
+			continue
+		}
+		out = append(out, dnsDoHServerFilePayload{URL: cleanURL})
+	}
+	return out
+}
+
+func extractDNSDoHServerURLs(items []dnsDoHServerFilePayload) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		cleanURL := strings.TrimSpace(item.URL)
+		if cleanURL == "" {
+			continue
+		}
+		out = append(out, cleanURL)
+	}
+	return out
+}
+
 func defaultTUNDNSUpstreamConfigFilePayload() dnsRouteUpstreamConfigFilePayload {
 	return dnsRouteUpstreamConfigFilePayload{
 		Prefer:     "doh",
 		DNSServers: append([]string(nil), defaultTUNDNSUpstreamPlainServers...),
 		DoTServers: []string{},
-		DoHServers: append([]string(nil), defaultTUNDNSUpstreamDoHServers...),
+		DoHServers: buildDNSDoHServerFilePayloadList(defaultTUNDNSUpstreamDoHServers),
 	}
 }
 
@@ -163,7 +194,7 @@ func defaultDNSUpstreamConfigFilePayload() dnsUpstreamConfigFilePayload {
 		Prefer:          "doh",
 		DNSServers:      append([]string(nil), defaultDNSUpstreamPlainServers...),
 		DoTServers:      append([]string(nil), defaultDNSUpstreamDoTServers...),
-		DoHServers:      append([]string(nil), defaultDNSUpstreamDoHServers...),
+		DoHServers:      buildDNSDoHServerFilePayloadList(defaultDNSUpstreamDoHServers),
 		FakeIPCIDR:      "198.18.0.0/15",
 		FakeIPWhitelist: []string{},
 		TUN:             defaultTUNDNSUpstreamConfigFilePayload(),
@@ -556,7 +587,7 @@ func normalizeDNSRouteUpstreamConfig(payload dnsRouteUpstreamConfigFilePayload, 
 		}
 	}
 	for _, rawServer := range payload.DoHServers {
-		if item, ok := normalizeDNSDoHServer(rawServer); ok {
+		if item, ok := normalizeDNSDoHServerPayload(rawServer); ok {
 			config.DoHServers = append(config.DoHServers, item)
 		}
 	}
@@ -703,7 +734,11 @@ func normalizeDNSDoTServer(raw string) (dnsDoTServer, bool) {
 }
 
 func normalizeDNSDoHServer(raw string) (dnsDoHServer, bool) {
-	value := strings.TrimSpace(raw)
+	return normalizeDNSDoHServerPayload(dnsDoHServerFilePayload{URL: raw})
+}
+
+func normalizeDNSDoHServerPayload(raw dnsDoHServerFilePayload) (dnsDoHServer, bool) {
+	value := strings.TrimSpace(raw.URL)
 	if value == "" {
 		return dnsDoHServer{}, false
 	}
@@ -736,6 +771,20 @@ func normalizeDNSDoHServer(raw string) (dnsDoHServer, bool) {
 		path = "/" + path
 	}
 
+	dialIP := normalizeDNSUpstreamHost(raw.DialIP)
+	if strings.TrimSpace(raw.DialIP) != "" {
+		parsedIP := net.ParseIP(dialIP)
+		if parsedIP == nil {
+			return dnsDoHServer{}, false
+		}
+		dialIP = canonicalIP(parsedIP)
+	}
+
+	tlsServerName := normalizeDNSUpstreamHost(raw.TLSServerName)
+	if tlsServerName == "" {
+		tlsServerName = host
+	}
+
 	rebuilt := &url.URL{
 		Scheme:   "https",
 		Host:     host,
@@ -750,7 +799,8 @@ func normalizeDNSDoHServer(raw string) (dnsDoHServer, bool) {
 		URL:           rebuilt.String(),
 		Host:          host,
 		Port:          port,
-		TLSServerName: host,
+		TLSServerName: tlsServerName,
+		DialIP:        dialIP,
 	}, true
 }
 
@@ -844,8 +894,8 @@ func dedupeDNSDoHServers(items []dnsDoHServer) []dnsDoHServer {
 	out := make([]dnsDoHServer, 0, len(items))
 	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		key := strings.ToLower(strings.TrimSpace(item.URL))
-		if key == "" {
+		key := strings.ToLower(strings.TrimSpace(item.URL)) + "|" + strings.ToLower(strings.TrimSpace(item.DialIP)) + "|" + strings.ToLower(strings.TrimSpace(item.TLSServerName))
+		if strings.TrimSpace(item.URL) == "" {
 			continue
 		}
 		if _, exists := seen[key]; exists {
@@ -883,6 +933,7 @@ func (s *networkAssistantService) collectConfiguredDNSBypassIPv4Addrs() []string
 	}
 	for _, server := range config.DoHServers {
 		addIPv4(server.Host)
+		addIPv4(server.DialIP)
 		if cachedIP, ok := getProbeDNSCachedIP(server.Host); ok {
 			addIPv4(cachedIP)
 		}
@@ -1126,6 +1177,21 @@ func (s *networkAssistantService) queryRawDNSPacketViaTunnelDoHProxy(server dnsD
 	if tlsServerName == "" {
 		tlsServerName = strings.TrimSpace(server.Host)
 	}
+	requestURL := strings.TrimSpace(server.URL)
+	requestHostHeader := ""
+	if strings.TrimSpace(server.DialIP) != "" {
+		parsed, err := url.Parse(requestURL)
+		if err != nil || parsed == nil {
+			return nil, errors.New("invalid doh server")
+		}
+		requestHostHeader = strings.TrimSpace(parsed.Host)
+		if server.Port == "443" {
+			parsed.Host = strings.TrimSpace(server.DialIP)
+		} else {
+			parsed.Host = net.JoinHostPort(strings.TrimSpace(server.DialIP), server.Port)
+		}
+		requestURL = parsed.String()
+	}
 	transport := &http.Transport{
 		Proxy: func(*http.Request) (*url.URL, error) {
 			return proxyURL, nil
@@ -1143,9 +1209,12 @@ func (s *networkAssistantService) queryRawDNSPacketViaTunnelDoHProxy(server dnsD
 	client := &http.Client{Transport: transport, Timeout: timeout}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(packet))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(packet))
 	if err != nil {
 		return nil, err
+	}
+	if requestHostHeader != "" {
+		request.Host = requestHostHeader
 	}
 	request.Header.Set("Content-Type", "application/dns-message")
 	request.Header.Set("Accept", "application/dns-message")
@@ -1172,9 +1241,18 @@ func (s *networkAssistantService) queryRawDNSPacketViaDoH(server dnsDoHServer, p
 	if strings.TrimSpace(server.URL) == "" || strings.TrimSpace(server.Host) == "" || strings.TrimSpace(server.Port) == "" {
 		return nil, errors.New("invalid doh server")
 	}
-	dialHost, err := resolveDNSUpstreamDialHost(s, server.Host, bootstrapServers, timeout)
-	if err != nil {
-		return nil, err
+	dialHost := strings.TrimSpace(server.DialIP)
+	if dialHost != "" {
+		dialHost = normalizeDNSUpstreamHost(dialHost)
+		if parsedIP := net.ParseIP(dialHost); parsedIP == nil {
+			return nil, errors.New("invalid doh dial_ip")
+		}
+	} else {
+		resolvedHost, err := resolveDNSUpstreamDialHost(s, server.Host, bootstrapServers, timeout)
+		if err != nil {
+			return nil, err
+		}
+		dialHost = resolvedHost
 	}
 	dialAddr := net.JoinHostPort(dialHost, server.Port)
 

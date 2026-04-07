@@ -36,7 +36,6 @@ type fakeIPPool struct {
 	domainToIP map[string]string
 	// fake IP -> entry
 	ipToEntry map[string]fakeIPEntry
-
 }
 
 // newFakeIPPool 根据 CIDR 字符串创建 fake IP 池
@@ -222,23 +221,54 @@ func (p *fakeIPPool) pruneExpiredLocked() {
 	}
 }
 
+// NetworkAssistantDoHServerConfig 表示单个 DoH 上游配置。
+type NetworkAssistantDoHServerConfig struct {
+	URL           string `json:"url,omitempty"`
+	DialIP        string `json:"dial_ip,omitempty"`
+	TLSServerName string `json:"tls_server_name,omitempty"`
+}
+
+func copyNetworkAssistantDoHServerConfigs(items []dnsDoHServerFilePayload) []NetworkAssistantDoHServerConfig {
+	out := make([]NetworkAssistantDoHServerConfig, 0, len(items))
+	for _, item := range items {
+		out = append(out, NetworkAssistantDoHServerConfig{
+			URL:           item.URL,
+			DialIP:        item.DialIP,
+			TLSServerName: item.TLSServerName,
+		})
+	}
+	return out
+}
+
+func copyDNSDoHServerFilePayloads(items []NetworkAssistantDoHServerConfig) []dnsDoHServerFilePayload {
+	out := make([]dnsDoHServerFilePayload, 0, len(items))
+	for _, item := range items {
+		out = append(out, dnsDoHServerFilePayload{
+			URL:           item.URL,
+			DialIP:        item.DialIP,
+			TLSServerName: item.TLSServerName,
+		})
+	}
+	return out
+}
+
 // NetworkAssistantDNSRouteConfig 表示一套路由域名解析上游配置。
 type NetworkAssistantDNSRouteConfig struct {
-	Prefer     string   `json:"prefer"`
-	DNSServers []string `json:"dns_servers"`
-	DoTServers []string `json:"dot_servers"`
-	DoHServers []string `json:"doh_servers"`
+	Prefer     string                            `json:"prefer"`
+	DNSServers []string                          `json:"dns_servers"`
+	DoTServers []string                          `json:"dot_servers"`
+	DoHServers []NetworkAssistantDoHServerConfig `json:"doh_servers"`
 }
 
 // NetworkAssistantDNSUpstreamConfig DNS 上游配置（暴露给前端的结构体）
 type NetworkAssistantDNSUpstreamConfig struct {
-	Prefer          string                         `json:"prefer"`
-	DNSServers      []string                       `json:"dns_servers"`
-	DoTServers      []string                       `json:"dot_servers"`
-	DoHServers      []string                       `json:"doh_servers"`
-	FakeIPCIDR      string                         `json:"fake_ip_cidr"`
-	FakeIPWhitelist []string                       `json:"fake_ip_whitelist"`
-	TUN             NetworkAssistantDNSRouteConfig `json:"tun"`
+	Prefer          string                            `json:"prefer"`
+	DNSServers      []string                          `json:"dns_servers"`
+	DoTServers      []string                          `json:"dot_servers"`
+	DoHServers      []NetworkAssistantDoHServerConfig `json:"doh_servers"`
+	FakeIPCIDR      string                            `json:"fake_ip_cidr"`
+	FakeIPWhitelist []string                          `json:"fake_ip_whitelist"`
+	TUN             NetworkAssistantDNSRouteConfig    `json:"tun"`
 }
 
 // shouldUseFakeIP 判断该域名是否应分配 fake IP。
@@ -328,16 +358,16 @@ func (s *networkAssistantService) GetDNSUpstreamConfig() (NetworkAssistantDNSUps
 	}
 	return NetworkAssistantDNSUpstreamConfig{
 		Prefer:          payload.Prefer,
-		DNSServers:      payload.DNSServers,
-		DoTServers:      payload.DoTServers,
-		DoHServers:      payload.DoHServers,
+		DNSServers:      append([]string(nil), payload.DNSServers...),
+		DoTServers:      append([]string(nil), payload.DoTServers...),
+		DoHServers:      copyNetworkAssistantDoHServerConfigs(payload.DoHServers),
 		FakeIPCIDR:      payload.FakeIPCIDR,
-		FakeIPWhitelist: payload.FakeIPWhitelist,
+		FakeIPWhitelist: append([]string(nil), payload.FakeIPWhitelist...),
 		TUN: NetworkAssistantDNSRouteConfig{
 			Prefer:     payload.TUN.Prefer,
 			DNSServers: append([]string(nil), payload.TUN.DNSServers...),
 			DoTServers: append([]string(nil), payload.TUN.DoTServers...),
-			DoHServers: append([]string(nil), payload.TUN.DoHServers...),
+			DoHServers: copyNetworkAssistantDoHServerConfigs(payload.TUN.DoHServers),
 		},
 	}, nil
 }
@@ -350,16 +380,16 @@ func (s *networkAssistantService) SetDNSUpstreamConfig(cfg NetworkAssistantDNSUp
 	}
 	payload := dnsUpstreamConfigFilePayload{
 		Prefer:          cfg.Prefer,
-		DNSServers:      cfg.DNSServers,
-		DoTServers:      cfg.DoTServers,
-		DoHServers:      cfg.DoHServers,
+		DNSServers:      append([]string(nil), cfg.DNSServers...),
+		DoTServers:      append([]string(nil), cfg.DoTServers...),
+		DoHServers:      copyDNSDoHServerFilePayloads(cfg.DoHServers),
 		FakeIPCIDR:      cfg.FakeIPCIDR,
-		FakeIPWhitelist: cfg.FakeIPWhitelist,
+		FakeIPWhitelist: append([]string(nil), cfg.FakeIPWhitelist...),
 		TUN: dnsRouteUpstreamConfigFilePayload{
 			Prefer:     cfg.TUN.Prefer,
 			DNSServers: append([]string(nil), cfg.TUN.DNSServers...),
 			DoTServers: append([]string(nil), cfg.TUN.DoTServers...),
-			DoHServers: append([]string(nil), cfg.TUN.DoHServers...),
+			DoHServers: copyDNSDoHServerFilePayloads(cfg.TUN.DoHServers),
 		},
 	}
 	if err := writeDNSUpstreamConfigFile(path, payload); err != nil {
