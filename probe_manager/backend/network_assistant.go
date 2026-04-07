@@ -508,10 +508,6 @@ func newNetworkAssistantService() *networkAssistantService {
 		logStore.Appendf(logSourceManager, "init", "load local chain targets skipped: %v", err)
 	}
 	service.syncTUNInstallState()
-	if err := service.startInternalDNSServer(); err != nil {
-		service.setLastError(err)
-		service.logf("failed to auto-start internal dns service: %v", err)
-	}
 	service.startMuxAutoMaintainLoop()
 	return service
 }

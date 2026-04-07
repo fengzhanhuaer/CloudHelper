@@ -50,6 +50,7 @@ const (
 )
 
 var errTunnelStreamOpenTimeout = errors.New("open stream timeout")
+var tunnelMuxClientSeq uint64
 
 type probeChainRelayHop struct {
 	Writer  io.WriteCloser
@@ -117,6 +118,7 @@ type tunnelMuxStream struct {
 }
 
 type tunnelMuxClient struct {
+	id      uint64
 	nodeID  string
 	modeKey string
 
@@ -181,6 +183,7 @@ func newTunnelMuxClient(baseURL, token, nodeID string, onControllerLog func(stri
 	}
 
 	c := &tunnelMuxClient{
+		id:              atomic.AddUint64(&tunnelMuxClientSeq, 1),
 		nodeID:          nodeID,
 		modeKey:         "ws",
 		onControllerLog: onControllerLog,
@@ -226,6 +229,7 @@ func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint pro
 		strings.TrimSpace(endpoint.LinkLayer),
 	)
 	c := &tunnelMuxClient{
+		id:              atomic.AddUint64(&tunnelMuxClientSeq, 1),
 		nodeID:          nodeID,
 		modeKey:         modeKey,
 		onControllerLog: onControllerLog,
@@ -1277,7 +1281,8 @@ func describeTunnelMuxClientState(client *tunnelMuxClient) string {
 		sessionClosed = client.session.IsClosed()
 	}
 	return fmt.Sprintf(
-		"node=%s mode=%s connected=%v closed=%v session_closed=%v keepalive_failures=%d active_streams=%d last_recv=%s last_pong=%s",
+		"id=%d node=%s mode=%s connected=%v closed=%v session_closed=%v keepalive_failures=%d active_streams=%d last_recv=%s last_pong=%s",
+		client.id,
 		strings.TrimSpace(client.nodeID),
 		strings.TrimSpace(client.modeKey),
 		connected,
@@ -1403,6 +1408,11 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 	if existingState != nil && existingState.Client != nil && !existingState.Client.isClosed() {
 		if strings.TrimSpace(existingState.Client.nodeID) == strings.TrimSpace(nodeID) &&
 			strings.TrimSpace(existingState.Client.modeKey) == strings.TrimSpace(modeKey) {
+			log.Printf(
+				"[network-assistant] mux client selected: group=%s source=group-state client_state={%s}",
+				groupName,
+				describeTunnelMuxClientState(existingState.Client),
+			)
 			return existingState.Client, nil
 		}
 	}
@@ -1416,6 +1426,18 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 			return nil, err
 		}
 		created = true
+	}
+	if client != nil {
+		source := "shared-existing"
+		if created {
+			source = "new"
+		}
+		log.Printf(
+			"[network-assistant] mux client selected: group=%s source=%s client_state={%s}",
+			groupName,
+			source,
+			describeTunnelMuxClientState(client),
+		)
 	}
 
 	item := NetworkAssistantGroupKeepaliveItem{
