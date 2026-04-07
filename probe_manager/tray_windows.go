@@ -4,7 +4,10 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -39,6 +42,11 @@ const (
 
 	trayCmdShow = 1001
 	trayCmdExit = 1002
+
+	imageIcon      = 1
+	lrLoadFromFile = 0x0010
+	smCxSmIcon     = 49
+	smCySmIcon     = 50
 )
 
 var (
@@ -56,14 +64,18 @@ var (
 	procPostQuitMessage  = modUser32.NewProc("PostQuitMessage")
 	procPostMessageW     = modUser32.NewProc("PostMessageW")
 	procLoadIconW        = modUser32.NewProc("LoadIconW")
+	procLoadImageW       = modUser32.NewProc("LoadImageW")
+	procDestroyIcon      = modUser32.NewProc("DestroyIcon")
 	procCreatePopupMenu  = modUser32.NewProc("CreatePopupMenu")
 	procAppendMenuW      = modUser32.NewProc("AppendMenuW")
 	procTrackPopupMenu   = modUser32.NewProc("TrackPopupMenu")
 	procDestroyMenu      = modUser32.NewProc("DestroyMenu")
 	procGetCursorPos     = modUser32.NewProc("GetCursorPos")
 	procSetForegroundWnd = modUser32.NewProc("SetForegroundWindow")
+	procGetSystemMetrics = modUser32.NewProc("GetSystemMetrics")
 
 	procShellNotifyIconW = modShell32.NewProc("Shell_NotifyIconW")
+	procExtractIconExW   = modShell32.NewProc("ExtractIconExW")
 	procGetModuleHandleW = modKernel32.NewProc("GetModuleHandleW")
 
 	trayWindowProc = windows.NewCallback(trayWndProc)
@@ -129,6 +141,9 @@ type trayController struct {
 
 	hwndMu sync.RWMutex
 	hwnd   windows.Handle
+
+	trayIcon      windows.Handle
+	trayIconOwned bool
 }
 
 func newTrayController(app *App) *trayController {
@@ -240,18 +255,30 @@ func (t *trayController) getHWND() windows.Handle {
 }
 
 func (t *trayController) addTrayIcon(hwnd windows.Handle) bool {
-	hIcon, _, _ := procLoadIconW.Call(0, idiApplication)
+	hIcon, owned := loadDefaultTrayIcon()
+	if hIcon == 0 {
+		hLoaded, _, _ := procLoadIconW.Call(0, idiApplication)
+		hIcon = windows.Handle(hLoaded)
+		owned = false
+	}
+	t.trayIcon = hIcon
+	t.trayIconOwned = owned
+
 	var nid notifyIconData
 	nid.CbSize = uint32(unsafe.Sizeof(nid))
 	nid.HWnd = hwnd
 	nid.UID = 1
 	nid.UFlags = nifMessage | nifIcon | nifTip
 	nid.UCallbackMessage = wmTrayMessage
-	nid.HIcon = windows.Handle(hIcon)
+	nid.HIcon = hIcon
 	copyUTF16(nid.SzTip[:], "Probe Manager")
 
 	ret, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
-	return ret != 0
+	if ret == 0 {
+		t.releaseTrayIcon()
+		return false
+	}
+	return true
 }
 
 func (t *trayController) removeTrayIcon(hwnd windows.Handle) {
@@ -260,6 +287,7 @@ func (t *trayController) removeTrayIcon(hwnd windows.Handle) {
 	nid.HWnd = hwnd
 	nid.UID = 1
 	procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&nid)))
+	t.releaseTrayIcon()
 }
 
 func (t *trayController) handleCommand(cmd uint16) {
@@ -335,6 +363,83 @@ func trayWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wParam, lParam)
 		return ret
 	}
+}
+
+func loadDefaultTrayIcon() (windows.Handle, bool) {
+	if exe, err := os.Executable(); err == nil && strings.TrimSpace(exe) != "" {
+		exePtr, convErr := windows.UTF16PtrFromString(exe)
+		if convErr == nil {
+			var small windows.Handle
+			count, _, _ := procExtractIconExW.Call(
+				uintptr(unsafe.Pointer(exePtr)),
+				0,
+				0,
+				uintptr(unsafe.Pointer(&small)),
+				1,
+			)
+			if count > 0 && small != 0 {
+				return small, true
+			}
+		}
+	}
+
+	iconPaths := []string{
+		filepath.Join(".", "build", "windows", "icon.ico"),
+	}
+	if exe, err := os.Executable(); err == nil && strings.TrimSpace(exe) != "" {
+		exeDir := filepath.Dir(exe)
+		iconPaths = append(iconPaths,
+			filepath.Join(exeDir, "build", "windows", "icon.ico"),
+			filepath.Join(exeDir, "icon.ico"),
+		)
+	}
+
+	cx, _, _ := procGetSystemMetrics.Call(smCxSmIcon)
+	cy, _, _ := procGetSystemMetrics.Call(smCySmIcon)
+	if cx <= 0 {
+		cx = 16
+	}
+	if cy <= 0 {
+		cy = 16
+	}
+
+	for _, iconPath := range iconPaths {
+		abs, absErr := filepath.Abs(iconPath)
+		if absErr != nil {
+			continue
+		}
+		if _, statErr := os.Stat(abs); statErr != nil {
+			continue
+		}
+		pathPtr, convErr := windows.UTF16PtrFromString(abs)
+		if convErr != nil {
+			continue
+		}
+		hIcon, _, _ := procLoadImageW.Call(
+			0,
+			uintptr(unsafe.Pointer(pathPtr)),
+			imageIcon,
+			cx,
+			cy,
+			lrLoadFromFile,
+		)
+		if hIcon != 0 {
+			return windows.Handle(hIcon), true
+		}
+	}
+
+	return 0, false
+}
+
+func (t *trayController) releaseTrayIcon() {
+	if t == nil {
+		return
+	}
+	if t.trayIconOwned && t.trayIcon != 0 {
+		procDestroyIcon.Call(uintptr(t.trayIcon))
+	}
+	t.trayIcon = 0
+	t.trayIconOwned = false
 }
 
 func copyUTF16(dst []uint16, text string) {
