@@ -1629,21 +1629,18 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 
 	client, ok := s.getExistingTunnelMuxClientForGroup(groupName)
 	if !ok {
-		var err error
-		client, err = s.ensureTunnelMuxClientForGroup(groupName)
-		if err != nil {
-			s.logfRateLimited(
-				fmt.Sprintf("mux:stream-open:no-group-client:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
-				5*time.Second,
-				"open tunnel stream skipped: no available mux client: network=%s target=%s group=%s err=%v group_state={%s}",
-				network,
-				targetAddr,
-				groupName,
-				err,
-				s.describeRuleGroupRuntimeState(groupName),
-			)
-			return nil, err
-		}
+		err := errors.New("no available mux client")
+		s.logfRateLimited(
+			fmt.Sprintf("mux:stream-open:no-group-client:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
+			5*time.Second,
+			"open tunnel stream skipped: no available mux client (maintainer-owned): network=%s target=%s group=%s err=%v group_state={%s}",
+			network,
+			targetAddr,
+			groupName,
+			err,
+			s.describeRuleGroupRuntimeState(groupName),
+		)
+		return nil, err
 	}
 
 	stream, err := client.openStream(network, targetAddr)
