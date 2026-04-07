@@ -69,17 +69,26 @@ type probeChainRuntimeConfig struct {
 	controllerURL   string
 }
 
+type probeChainBridgeSession struct {
+	ID         string
+	Session    *yamux.Session
+	BridgeRole string
+	RemoteAddr string
+	ConnectedAt time.Time
+}
+
 type probeChainRuntime struct {
-	cfg               probeChainRuntimeConfig
-	httpsServer       *http.Server
-	http3Server       *http3.Server
-	downstreamSession *yamux.Session
-	upstreamSession   *yamux.Session
-	bridgeMu          sync.Mutex
-	forwardMu         sync.Mutex
-	tcpForwards       []net.Listener
-	udpForwards       []net.PacketConn
-	stopCh            chan struct{}
+	cfg                probeChainRuntimeConfig
+	httpsServer        *http.Server
+	http3Server        *http3.Server
+	downstreamSessions map[string]*probeChainBridgeSession
+	upstreamSessions   map[string]*probeChainBridgeSession
+	bridgeMu           sync.Mutex
+	bridgeSeq          uint64
+	forwardMu          sync.Mutex
+	tcpForwards        []net.Listener
+	udpForwards        []net.PacketConn
+	stopCh             chan struct{}
 }
 
 type probeChainRuntimePortForward struct {
@@ -182,6 +191,7 @@ const (
 	probeChainCodexVersionHeader   = "X-Codex-Api-Version"
 	probeChainCodexRelayModeHeader = "X-Codex-Relay-Mode"
 	probeChainCodexRelayRoleHeader = "X-Codex-Relay-Role"
+	probeChainCodexConnIDHeader    = "X-Codex-Conn-Id"
 
 	probeChainRelayModeBridge  = "bridge"
 	probeChainBridgeRoleToNext = "to_next"
@@ -618,8 +628,10 @@ func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, er
 	_ = stopProbeChainRuntime(cfg.chainID, "restart before apply")
 
 	rt := &probeChainRuntime{
-		cfg:    cfg,
-		stopCh: make(chan struct{}),
+		cfg:                cfg,
+		downstreamSessions: make(map[string]*probeChainBridgeSession),
+		upstreamSessions:   make(map[string]*probeChainBridgeSession),
+		stopCh:             make(chan struct{}),
 	}
 
 	if err := startProbeChainPublicRelayServer(rt); err != nil {
@@ -1241,30 +1253,31 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 			backoff = nextProbeChainBridgeBackoff(backoff)
 			continue
 		}
-		log.Printf("probe chain bridge connected: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
+		sessionID := runtime.nextBridgeSessionID(target.Tag)
+		log.Printf("probe chain bridge connected: chain=%s role=%s tag=%s session_id=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t", runtime.cfg.chainID, runtime.cfg.role, target.Tag, sessionID, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
 		backoff = probeChainBridgeRetryMin
 
 		if target.AssignDownstream {
-			runtime.setDownstreamSession(session)
+			runtime.setDownstreamSession(sessionID, session, target.RoleHeader, net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 		}
 		if target.AssignUpstream {
-			runtime.setUpstreamSession(session)
+			runtime.setUpstreamSession(sessionID, session, target.RoleHeader, net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 		}
 		if target.AcceptStreams || target.AssignDownstream || target.AssignUpstream {
 			routeDirection := "forward"
 			if target.AssignDownstream {
 				routeDirection = "reverse"
 			}
-			go acceptProbeChainBridgeStreams(runtime, session, target.Tag, routeDirection)
+			go acceptProbeChainBridgeStreams(runtime, session, target.Tag+"|session:"+sessionID, routeDirection)
 		}
 
 		waitProbeChainBridgeSession(runtime.stopCh, session)
-		log.Printf("probe chain bridge disconnected: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
+		log.Printf("probe chain bridge disconnected: chain=%s role=%s tag=%s session_id=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t", runtime.cfg.chainID, runtime.cfg.role, target.Tag, sessionID, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
 		if target.AssignDownstream {
-			runtime.clearDownstreamSession(session)
+			runtime.clearDownstreamSession(sessionID, session)
 		}
 		if target.AssignUpstream {
-			runtime.clearUpstreamSession(session)
+			runtime.clearUpstreamSession(sessionID, session)
 		}
 		_ = session.Close()
 		_ = conn.Close()
@@ -1532,10 +1545,22 @@ func handleProbeChainBridgeRelayHTTP(runtime *probeChainRuntime, bridgeRole stri
 	defer pipeClient.Close()
 	defer pipeRuntime.Close()
 
+	role := normalizeProbeChainBridgeRole(bridgeRole)
+	assignTarget := "upstream"
+	routeDirection := "forward"
+	if role == probeChainBridgeRoleToPrev {
+		assignTarget = "downstream"
+		routeDirection = "reverse"
+	}
+	sessionID := runtime.nextBridgeSessionID(assignTarget)
+
 	if controller := http.NewResponseController(w); controller != nil {
 		_ = controller.EnableFullDuplex()
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	if sessionID != "" {
+		w.Header().Set(probeChainCodexConnIDHeader, sessionID)
+	}
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
 	if flusher != nil {
@@ -1559,30 +1584,23 @@ func handleProbeChainBridgeRelayHTTP(runtime *probeChainRuntime, bridgeRole stri
 
 	session, err := yamux.Server(pipeRuntime, newProbeChainYamuxConfig())
 	if err != nil {
-		log.Printf("probe chain inbound bridge session setup failed: chain=%s role=%s bridge_role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, bridgeRole, r.RemoteAddr, err)
+		log.Printf("probe chain inbound bridge session setup failed: chain=%s role=%s bridge_role=%s remote=%s session_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, bridgeRole, r.RemoteAddr, sessionID, err)
 		return
 	}
 
-	role := normalizeProbeChainBridgeRole(bridgeRole)
-	assignTarget := "upstream"
-	routeDirection := "forward"
+	log.Printf("probe chain inbound bridge connected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr, sessionID)
 	if role == probeChainBridgeRoleToPrev {
-		assignTarget = "downstream"
-		routeDirection = "reverse"
-	}
-	log.Printf("probe chain inbound bridge connected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr)
-	if role == probeChainBridgeRoleToPrev {
-		runtime.setDownstreamSession(session)
-		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge", "reverse")
+		runtime.setDownstreamSession(sessionID, session, role, strings.TrimSpace(r.RemoteAddr))
+		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge|session:"+sessionID, "reverse")
 		waitProbeChainBridgeSession(runtime.stopCh, session)
-		runtime.clearDownstreamSession(session)
+		runtime.clearDownstreamSession(sessionID, session)
 	} else {
-		runtime.setUpstreamSession(session)
-		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge", "forward")
+		runtime.setUpstreamSession(sessionID, session, role, strings.TrimSpace(r.RemoteAddr))
+		go acceptProbeChainBridgeStreams(runtime, session, "inbound-bridge|session:"+sessionID, "forward")
 		waitProbeChainBridgeSession(runtime.stopCh, session)
-		runtime.clearUpstreamSession(session)
+		runtime.clearUpstreamSession(sessionID, session)
 	}
-	log.Printf("probe chain inbound bridge disconnected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr)
+	log.Printf("probe chain inbound bridge disconnected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr, sessionID)
 	_ = session.Close()
 	<-done
 }
@@ -1592,10 +1610,16 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 		return
 	}
 	rt.bridgeMu.Lock()
-	downstreamSession := rt.downstreamSession
-	upstreamSession := rt.upstreamSession
-	rt.downstreamSession = nil
-	rt.upstreamSession = nil
+	downstreamSessions := make([]*probeChainBridgeSession, 0, len(rt.downstreamSessions))
+	for _, item := range rt.downstreamSessions {
+		downstreamSessions = append(downstreamSessions, item)
+	}
+	upstreamSessions := make([]*probeChainBridgeSession, 0, len(rt.upstreamSessions))
+	for _, item := range rt.upstreamSessions {
+		upstreamSessions = append(upstreamSessions, item)
+	}
+	rt.downstreamSessions = make(map[string]*probeChainBridgeSession)
+	rt.upstreamSessions = make(map[string]*probeChainBridgeSession)
 	rt.bridgeMu.Unlock()
 	rt.forwardMu.Lock()
 	tcpForwards := rt.tcpForwards
@@ -1603,11 +1627,22 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	rt.tcpForwards = nil
 	rt.udpForwards = nil
 	rt.forwardMu.Unlock()
-	if downstreamSession != nil {
-		_ = downstreamSession.Close()
+	closedSessions := make(map[*yamux.Session]struct{})
+	closeBridgeSession := func(item *probeChainBridgeSession) {
+		if item == nil || item.Session == nil {
+			return
+		}
+		if _, exists := closedSessions[item.Session]; exists {
+			return
+		}
+		closedSessions[item.Session] = struct{}{}
+		_ = item.Session.Close()
 	}
-	if upstreamSession != nil && upstreamSession != downstreamSession {
-		_ = upstreamSession.Close()
+	for _, item := range downstreamSessions {
+		closeBridgeSession(item)
+	}
+	for _, item := range upstreamSessions {
+		closeBridgeSession(item)
 	}
 	for _, ln := range tcpForwards {
 		if ln != nil {
@@ -1629,28 +1664,72 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	}
 }
 
-func (rt *probeChainRuntime) setDownstreamSession(session *yamux.Session) {
+func (rt *probeChainRuntime) nextBridgeSessionID(prefix string) string {
+	if rt == nil {
+		return ""
+	}
+	cleanPrefix := strings.ToLower(strings.TrimSpace(prefix))
+	if cleanPrefix == "" {
+		cleanPrefix = "bridge"
+	}
+	rt.bridgeMu.Lock()
+	rt.bridgeSeq++
+	seq := rt.bridgeSeq
+	rt.bridgeMu.Unlock()
+	return fmt.Sprintf("%s-%06d", cleanPrefix, seq)
+}
+
+func (rt *probeChainRuntime) setDownstreamSession(sessionID string, session *yamux.Session, bridgeRole string, remoteAddr string) {
 	if rt == nil || session == nil {
 		return
 	}
-	rt.bridgeMu.Lock()
-	old := rt.downstreamSession
-	rt.downstreamSession = session
-	rt.bridgeMu.Unlock()
-	if old != nil && old != session {
-		_ = old.Close()
+	cleanID := strings.TrimSpace(sessionID)
+	if cleanID == "" {
+		cleanID = rt.nextBridgeSessionID("downstream")
 	}
+	item := &probeChainBridgeSession{
+		ID:          cleanID,
+		Session:     session,
+		BridgeRole:  strings.TrimSpace(bridgeRole),
+		RemoteAddr:  strings.TrimSpace(remoteAddr),
+		ConnectedAt: time.Now().UTC(),
+	}
+	rt.bridgeMu.Lock()
+	if rt.downstreamSessions == nil {
+		rt.downstreamSessions = make(map[string]*probeChainBridgeSession)
+	}
+	rt.downstreamSessions[cleanID] = item
+	active := len(rt.downstreamSessions)
+	rt.bridgeMu.Unlock()
+	log.Printf("probe chain downstream session assigned: chain=%s role=%s session_id=%s active=%d remote=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, active, item.RemoteAddr)
 }
 
-func (rt *probeChainRuntime) clearDownstreamSession(target *yamux.Session) {
+func (rt *probeChainRuntime) clearDownstreamSession(sessionID string, target *yamux.Session) {
 	if rt == nil || target == nil {
 		return
 	}
+	cleanID := strings.TrimSpace(sessionID)
+	cleared := false
+	remaining := 0
 	rt.bridgeMu.Lock()
-	if rt.downstreamSession == target {
-		rt.downstreamSession = nil
+	if cleanID != "" {
+		if item, ok := rt.downstreamSessions[cleanID]; ok && item != nil && item.Session == target {
+			delete(rt.downstreamSessions, cleanID)
+			cleared = true
+		}
+	} else {
+		for key, item := range rt.downstreamSessions {
+			if item != nil && item.Session == target {
+				delete(rt.downstreamSessions, key)
+				cleanID = key
+				cleared = true
+				break
+			}
+		}
 	}
+	remaining = len(rt.downstreamSessions)
 	rt.bridgeMu.Unlock()
+	log.Printf("probe chain downstream session cleared: chain=%s role=%s session_id=%s target=%p cleared=%t remaining=%d", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, target, cleared, remaining)
 }
 
 func (rt *probeChainRuntime) getDownstreamSession() *yamux.Session {
@@ -1658,45 +1737,73 @@ func (rt *probeChainRuntime) getDownstreamSession() *yamux.Session {
 		return nil
 	}
 	rt.bridgeMu.Lock()
-	session := rt.downstreamSession
-	rt.bridgeMu.Unlock()
-	return session
+	defer rt.bridgeMu.Unlock()
+	var latest *probeChainBridgeSession
+	for _, item := range rt.downstreamSessions {
+		if item == nil || item.Session == nil || item.Session.IsClosed() {
+			continue
+		}
+		if latest == nil || item.ConnectedAt.After(latest.ConnectedAt) {
+			latest = item
+		}
+	}
+	if latest == nil {
+		return nil
+	}
+	return latest.Session
 }
 
-func (rt *probeChainRuntime) setUpstreamSession(session *yamux.Session) {
+func (rt *probeChainRuntime) setUpstreamSession(sessionID string, session *yamux.Session, bridgeRole string, remoteAddr string) {
 	if rt == nil || session == nil {
 		return
 	}
+	cleanID := strings.TrimSpace(sessionID)
+	if cleanID == "" {
+		cleanID = rt.nextBridgeSessionID("upstream")
+	}
+	item := &probeChainBridgeSession{
+		ID:          cleanID,
+		Session:     session,
+		BridgeRole:  strings.TrimSpace(bridgeRole),
+		RemoteAddr:  strings.TrimSpace(remoteAddr),
+		ConnectedAt: time.Now().UTC(),
+	}
 	rt.bridgeMu.Lock()
-	old := rt.upstreamSession
-	rt.upstreamSession = session
+	if rt.upstreamSessions == nil {
+		rt.upstreamSessions = make(map[string]*probeChainBridgeSession)
+	}
+	rt.upstreamSessions[cleanID] = item
+	active := len(rt.upstreamSessions)
 	rt.bridgeMu.Unlock()
-	chainID := strings.TrimSpace(rt.cfg.chainID)
-	role := strings.TrimSpace(rt.cfg.role)
-	if old == nil {
-		log.Printf("probe chain upstream session assigned: chain=%s role=%s new=%p old=nil", chainID, role, session)
-	} else if old == session {
-		log.Printf("probe chain upstream session assigned: chain=%s role=%s new=%p old=%p reused=true", chainID, role, session, old)
-	} else {
-		log.Printf("probe chain upstream session assigned: chain=%s role=%s new=%p old=%p replaced=true", chainID, role, session, old)
-	}
-	if old != nil && old != session {
-		_ = old.Close()
-	}
+	log.Printf("probe chain upstream session assigned: chain=%s role=%s session_id=%s active=%d remote=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, active, item.RemoteAddr)
 }
 
-func (rt *probeChainRuntime) clearUpstreamSession(target *yamux.Session) {
+func (rt *probeChainRuntime) clearUpstreamSession(sessionID string, target *yamux.Session) {
 	if rt == nil || target == nil {
 		return
 	}
+	cleanID := strings.TrimSpace(sessionID)
 	cleared := false
+	remaining := 0
 	rt.bridgeMu.Lock()
-	if rt.upstreamSession == target {
-		rt.upstreamSession = nil
-		cleared = true
+	if cleanID != "" {
+		if item, ok := rt.upstreamSessions[cleanID]; ok && item != nil && item.Session == target {
+			delete(rt.upstreamSessions, cleanID)
+			cleared = true
+		}
+	} else {
+		for key, item := range rt.upstreamSessions {
+			if item != nil && item.Session == target {
+				delete(rt.upstreamSessions, key)
+				cleanID = key
+				cleared = true
+				break
+			}
+		}
 	}
+	remaining = len(rt.upstreamSessions)
 	rt.bridgeMu.Unlock()
-	log.Printf("probe chain upstream session cleared: chain=%s role=%s target=%p cleared=%t", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), target, cleared)
+	log.Printf("probe chain upstream session cleared: chain=%s role=%s session_id=%s target=%p cleared=%t remaining=%d", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, target, cleared, remaining)
 }
 
 func (rt *probeChainRuntime) getUpstreamSession() *yamux.Session {
@@ -1704,9 +1811,20 @@ func (rt *probeChainRuntime) getUpstreamSession() *yamux.Session {
 		return nil
 	}
 	rt.bridgeMu.Lock()
-	session := rt.upstreamSession
-	rt.bridgeMu.Unlock()
-	return session
+	defer rt.bridgeMu.Unlock()
+	var latest *probeChainBridgeSession
+	for _, item := range rt.upstreamSessions {
+		if item == nil || item.Session == nil || item.Session.IsClosed() {
+			continue
+		}
+		if latest == nil || item.ConnectedAt.After(latest.ConnectedAt) {
+			latest = item
+		}
+	}
+	if latest == nil {
+		return nil
+	}
+	return latest.Session
 }
 
 func stopProbeChainRuntime(chainID string, reason string) bool {
@@ -1895,7 +2013,7 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, timeout time.Dur
 				return stream, nil
 			}
 			if session.IsClosed() {
-				runtime.clearDownstreamSession(session)
+				runtime.clearDownstreamSession("", session)
 			}
 		}
 		if time.Now().After(deadline) {
@@ -1934,7 +2052,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, timeout time.Durat
 				log.Printf("probe chain upstream stream open failed: chain=%s role=%s attempt=%d session=%p err=%v", runtime.cfg.chainID, runtime.cfg.role, attempt, session, openErr)
 				if session.IsClosed() {
 					log.Printf("probe chain upstream session became closed while opening stream: chain=%s role=%s attempt=%d session=%p", runtime.cfg.chainID, runtime.cfg.role, attempt, session)
-					runtime.clearUpstreamSession(session)
+					runtime.clearUpstreamSession("", session)
 				}
 			}
 		} else {

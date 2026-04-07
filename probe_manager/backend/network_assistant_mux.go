@@ -45,6 +45,7 @@ const (
 	probeChainCodexVersionHeader   = "X-Codex-Api-Version"
 	probeChainCodexRelayModeHeader = "X-Codex-Relay-Mode"
 	probeChainCodexRelayRoleHeader = "X-Codex-Relay-Role"
+	probeChainCodexConnIDHeader    = "X-Codex-Conn-Id"
 	probeChainRelayModeBridge      = "bridge"
 	probeChainBridgeRoleToNext     = "to_next"
 )
@@ -53,9 +54,10 @@ var errTunnelStreamOpenTimeout = errors.New("open stream timeout")
 var tunnelMuxClientSeq uint64
 
 type probeChainRelayHop struct {
-	Writer  io.WriteCloser
-	Reader  io.ReadCloser
-	CloseFn func() error
+	Writer    io.WriteCloser
+	Reader    io.ReadCloser
+	CloseFn   func() error
+	SessionID string
 }
 
 type probeChainRelayNetConn struct {
@@ -118,9 +120,10 @@ type tunnelMuxStream struct {
 }
 
 type tunnelMuxClient struct {
-	id      uint64
-	nodeID  string
-	modeKey string
+	id        uint64
+	nodeID    string
+	modeKey   string
+	sessionID string
 
 	onControllerLog func(string, string)
 
@@ -132,6 +135,9 @@ type tunnelMuxClient struct {
 	seq               uint64
 	closed            atomic.Bool
 	keepAliveFailures atomic.Int32
+	closeReason       string
+	closeSource       string
+	closeAt           time.Time
 
 	lastRecv atomic.Int64
 	lastPong atomic.Int64
@@ -232,6 +238,7 @@ func newTunnelMuxClientViaProbeChain(baseURL, token, nodeID string, endpoint pro
 		id:              atomic.AddUint64(&tunnelMuxClientSeq, 1),
 		nodeID:          nodeID,
 		modeKey:         modeKey,
+		sessionID:       strings.TrimSpace(hop.SessionID),
 		onControllerLog: onControllerLog,
 		wsConn:          nil,
 		session:         session,
@@ -371,9 +378,11 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		return nil, fmt.Errorf("probe relay failed: status=%d elapsed=%s body=%s", response.StatusCode, time.Since(startedAt), strings.TrimSpace(string(body)))
 	}
 
+	sessionID := strings.TrimSpace(response.Header.Get(probeChainCodexConnIDHeader))
 	return &probeChainRelayHop{
-		Writer: bodyWriter,
-		Reader: response.Body,
+		Writer:    bodyWriter,
+		Reader:    response.Body,
+		SessionID: sessionID,
 		CloseFn: func() error {
 			cancel()
 			_ = bodyWriter.Close()
@@ -624,7 +633,7 @@ func (c *tunnelMuxClient) acceptLoop() {
 				err,
 				describeTunnelMuxClientState(c),
 			)
-			c.close()
+			c.closeWithReason("accept_loop", err)
 			return
 		}
 		go c.handleIncomingStream(stream)
@@ -668,10 +677,47 @@ func (c *tunnelMuxClient) isClosed() bool {
 }
 
 func (c *tunnelMuxClient) close() {
+	c.closeWithReason("explicit_close", nil)
+}
+
+func (c *tunnelMuxClient) closeWithReason(source string, reason error) {
+	if c == nil {
+		return
+	}
+	cleanSource := strings.TrimSpace(source)
+	if cleanSource == "" {
+		cleanSource = "explicit_close"
+	}
+	cleanReason := "closed"
+	if reason != nil {
+		cleanReason = strings.TrimSpace(reason.Error())
+		if cleanReason == "" {
+			cleanReason = fmt.Sprintf("%v", reason)
+		}
+	}
+
+	c.mu.Lock()
+	if strings.TrimSpace(c.closeSource) == "" {
+		c.closeSource = cleanSource
+	}
+	if strings.TrimSpace(c.closeReason) == "" {
+		c.closeReason = cleanReason
+	}
+	if c.closeAt.IsZero() {
+		c.closeAt = time.Now().UTC()
+	}
+	c.mu.Unlock()
+
 	if c.closed.Swap(true) {
 		return
 	}
 
+	log.Printf(
+		"[network-assistant] tunnel mux client marked closed: source=%s reason=%s state={%s}",
+		cleanSource,
+		cleanReason,
+		describeTunnelMuxClientState(c),
+	)
 
 	if c.session != nil {
 		_ = c.session.Close()
@@ -723,7 +769,7 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 					failures,
 					muxKeepAliveFailThreshold,
 				)
-				c.close()
+				c.closeWithReason("keepalive_threshold", err)
 				return
 			}
 			continue
@@ -1206,7 +1252,7 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 			continue
 		}
 		closed[client] = struct{}{}
-		client.close()
+		client.closeWithReason("maintainer_cleanup_stale", nil)
 	}
 }
 
@@ -1280,11 +1326,17 @@ func describeTunnelMuxClientState(client *tunnelMuxClient) string {
 	if client.session != nil {
 		sessionClosed = client.session.IsClosed()
 	}
+	client.mu.Lock()
+	closeReason := strings.TrimSpace(client.closeReason)
+	closeSource := strings.TrimSpace(client.closeSource)
+	closeAt := client.closeAt
+	client.mu.Unlock()
 	return fmt.Sprintf(
-		"id=%d node=%s mode=%s connected=%v closed=%v session_closed=%v keepalive_failures=%d active_streams=%d last_recv=%s last_pong=%s",
+		"id=%d node=%s mode=%s session_id=%s connected=%v closed=%v session_closed=%v keepalive_failures=%d active_streams=%d last_recv=%s last_pong=%s close_source=%s close_reason=%s close_at=%s",
 		client.id,
 		strings.TrimSpace(client.nodeID),
 		strings.TrimSpace(client.modeKey),
+		firstNonEmptyMuxValue(client.sessionID, "-"),
 		connected,
 		client.closed.Load(),
 		sessionClosed,
@@ -1292,7 +1344,20 @@ func describeTunnelMuxClientState(client *tunnelMuxClient) string {
 		activeStreams,
 		strings.TrimSpace(lastRecv),
 		strings.TrimSpace(lastPong),
+		firstNonEmptyMuxValue(closeSource, "-"),
+		firstNonEmptyMuxValue(closeReason, "-"),
+		formatMuxRuntimeTime(closeAt),
 	)
+}
+
+func firstNonEmptyMuxValue(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (s *networkAssistantService) describeRuleGroupRuntimeState(group string) string {
@@ -1417,28 +1482,19 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 		}
 	}
 
-	client, _ := findReusableTunnelMuxClientForTarget(routing.GroupState, groupKey, nodeID, modeKey)
 	created := false
 	startedAt := time.Now()
-	if client == nil {
-		client, err = s.newTunnelMuxClientLocked(nodeID, chainTarget)
-		if err != nil {
-			return nil, err
-		}
-		created = true
+	client, err := s.newTunnelMuxClientLocked(nodeID, chainTarget)
+	if err != nil {
+		return nil, err
 	}
-	if client != nil {
-		source := "shared-existing"
-		if created {
-			source = "new"
-		}
-		log.Printf(
-			"[network-assistant] mux client selected: group=%s source=%s client_state={%s}",
-			groupName,
-			source,
-			describeTunnelMuxClientState(client),
-		)
-	}
+	created = true
+	log.Printf(
+		"[network-assistant] mux client selected: group=%s source=%s client_state={%s}",
+		groupName,
+		"group-owned-new",
+		describeTunnelMuxClientState(client),
+	)
 
 	item := NetworkAssistantGroupKeepaliveItem{
 		Group:        groupName,
@@ -1489,7 +1545,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 		stillUsed := hasOtherGroupUsingTunnelMuxClient(s.ruleRouting.GroupState, groupKey, staleClient)
 		s.mu.RUnlock()
 		if !stillUsed {
-			staleClient.close()
+			staleClient.closeWithReason("group_client_replaced", fmt.Errorf("group=%s new_client_id=%d", groupName, client.id))
 		}
 	}
 
@@ -1640,6 +1696,7 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 			err,
 			s.describeRuleGroupRuntimeState(groupName),
 		)
+		s.triggerMuxAutoMaintainNow()
 		return nil, err
 	}
 
@@ -1696,6 +1753,9 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 		describeTunnelMuxClientState(client),
 		s.describeRuleGroupRuntimeState(groupName),
 	)
+	if reason == "client_closed" || reason == "session_shutdown" || reason == "closed_pipe" || errors.Is(err, io.EOF) {
+		s.triggerMuxAutoMaintainNow()
+	}
 	return nil, err
 }
 
