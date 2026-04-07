@@ -274,8 +274,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	tlsServerName := resolveProbeChainClientTLSServerName(layer, entryDialHost, entryHostHeader)
 	const probeChainRelayConnectTimeout = 8 * time.Second
 
-	ctx, cancel := context.WithTimeout(request.Context(), probeChainRelayConnectTimeout)
-	defer cancel()
+	ctx, cancel := context.WithCancel(request.Context())
 	request = request.WithContext(ctx)
 
 	var closeTransport func() error
@@ -345,7 +344,6 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}
 
 	startedAt := time.Now()
-	log.Printf("[probe-chain/relay] request begin chain=%s entry=%s:%d layer=%s url=%s", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, entryURL)
 	response, err := client.Do(request)
 	if err != nil {
 		sanitizedURL := ""
@@ -353,6 +351,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 			parsed.RawQuery = ""
 			sanitizedURL = parsed.String()
 		}
+		cancel()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
 		log.Printf("[probe-chain/relay] request failed chain=%s entry=%s:%d layer=%s elapsed=%s err=%v", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, time.Since(startedAt), err)
@@ -360,6 +359,7 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		cancel()
 		_ = response.Body.Close()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
@@ -367,11 +367,11 @@ func openProbeChainRelayHop(endpoint probeChainEndpoint) (*probeChainRelayHop, e
 		return nil, fmt.Errorf("probe relay failed: status=%d elapsed=%s body=%s", response.StatusCode, time.Since(startedAt), strings.TrimSpace(string(body)))
 	}
 
-	log.Printf("[probe-chain/relay] request success chain=%s entry=%s:%d layer=%s elapsed=%s", strings.TrimSpace(endpoint.ChainID), entryDialHost, endpoint.EntryPort, layer, time.Since(startedAt))
 	return &probeChainRelayHop{
 		Writer: bodyWriter,
 		Reader: response.Body,
 		CloseFn: func() error {
+			cancel()
 			_ = bodyWriter.Close()
 			_ = response.Body.Close()
 			_ = closeTransport()
@@ -613,6 +613,13 @@ func (c *tunnelMuxClient) acceptLoop() {
 		}
 		stream, err := c.session.Accept()
 		if err != nil {
+			log.Printf(
+				"[network-assistant] tunnel mux accept failed: node=%s mode_key=%s err=%v state={%s}",
+				strings.TrimSpace(c.nodeID),
+				strings.TrimSpace(c.modeKey),
+				err,
+				describeTunnelMuxClientState(c),
+			)
 			c.close()
 			return
 		}
@@ -737,6 +744,15 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 
 	streamConn, err := c.session.Open()
 	if err != nil {
+		log.Printf(
+			"[network-assistant] tunnel mux session open failed: node=%s mode_key=%s network=%s address=%s err=%v state={%s}",
+			strings.TrimSpace(c.nodeID),
+			strings.TrimSpace(c.modeKey),
+			strings.TrimSpace(network),
+			strings.TrimSpace(address),
+			err,
+			describeTunnelMuxClientState(c),
+		)
 		return nil, err
 	}
 
@@ -744,6 +760,15 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 	_ = streamConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := json.NewEncoder(streamConn).Encode(req); err != nil {
 		_ = streamConn.Close()
+		log.Printf(
+			"[network-assistant] tunnel mux stream request encode failed: node=%s mode_key=%s network=%s address=%s err=%v state={%s}",
+			strings.TrimSpace(c.nodeID),
+			strings.TrimSpace(c.modeKey),
+			strings.TrimSpace(network),
+			strings.TrimSpace(address),
+			err,
+			describeTunnelMuxClientState(c),
+		)
 		return nil, err
 	}
 	_ = streamConn.SetWriteDeadline(time.Time{})
@@ -753,8 +778,26 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 	if err := json.NewDecoder(streamConn).Decode(&resp); err != nil {
 		_ = streamConn.Close()
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			log.Printf(
+				"[network-assistant] tunnel mux stream open response timeout: node=%s mode_key=%s network=%s address=%s timeout=%s state={%s}",
+				strings.TrimSpace(c.nodeID),
+				strings.TrimSpace(c.modeKey),
+				strings.TrimSpace(network),
+				strings.TrimSpace(address),
+				tunnelStreamOpenTimeout,
+				describeTunnelMuxClientState(c),
+			)
 			return nil, errTunnelStreamOpenTimeout
 		}
+		log.Printf(
+			"[network-assistant] tunnel mux stream open response decode failed: node=%s mode_key=%s network=%s address=%s err=%v state={%s}",
+			strings.TrimSpace(c.nodeID),
+			strings.TrimSpace(c.modeKey),
+			strings.TrimSpace(network),
+			strings.TrimSpace(address),
+			err,
+			describeTunnelMuxClientState(c),
+		)
 		return nil, err
 	}
 	_ = streamConn.SetReadDeadline(time.Time{})
@@ -1360,15 +1403,6 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 	if existingState != nil && existingState.Client != nil && !existingState.Client.isClosed() {
 		if strings.TrimSpace(existingState.Client.nodeID) == strings.TrimSpace(nodeID) &&
 			strings.TrimSpace(existingState.Client.modeKey) == strings.TrimSpace(modeKey) {
-			s.logfRateLimited(
-				fmt.Sprintf("mux:group-client:reuse-existing:group:%s|node:%s", strings.ToLower(groupKey), strings.ToLower(strings.TrimSpace(nodeID))),
-				5*time.Second,
-				"reuse existing tunnel mux client: group=%s node=%s mode=%s client_state={%s}",
-				groupName,
-				nodeID,
-				modeKey,
-				describeTunnelMuxClientState(existingState.Client),
-			)
 			return existingState.Client, nil
 		}
 	}
@@ -1437,18 +1471,8 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 		}
 	}
 
-	s.logfRateLimited(
-		fmt.Sprintf("mux:group-client:ready:group:%s|node:%s|created:%t", strings.ToLower(groupKey), strings.ToLower(strings.TrimSpace(nodeID)), created),
-		5*time.Second,
-		"tunnel mux client ready: group=%s node=%s mode=%s created=%v reconnects=%d elapsed=%s client_state={%s}",
-		groupName,
-		nodeID,
-		modeKey,
-		created,
-		reconnects,
-		time.Since(startedAt),
-		describeTunnelMuxClientState(client),
-	)
+	_ = reconnects
+	_ = startedAt
 	return client, nil
 }
 
@@ -1598,16 +1622,6 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 			)
 			return nil, err
 		}
-		s.logfRateLimited(
-			fmt.Sprintf("mux:stream-open:ensure-group-client:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
-			5*time.Second,
-			"open tunnel stream ensured group mux client: network=%s target=%s group=%s elapsed=%s client_state={%s}",
-			network,
-			targetAddr,
-			groupName,
-			time.Since(startedAt),
-			describeTunnelMuxClientState(client),
-		)
 	}
 
 	stream, err := client.openStream(network, targetAddr)
