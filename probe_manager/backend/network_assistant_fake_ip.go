@@ -162,6 +162,7 @@ func (p *fakeIPPool) nextIPLocked() string {
 		return ""
 	}
 	baseU32 := binary.BigEndian.Uint32(networkIP)
+	reservedMapleIP := strings.TrimSpace(internalDNSListenIPv4)
 
 	// 最多轮询 size 次，跳过已被占用且未过期的
 	for i := uint32(0); i < p.size; i++ {
@@ -170,6 +171,9 @@ func (p *fakeIPPool) nextIPLocked() string {
 		candidateBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(candidateBytes, candidate)
 		candidateIP := net.IP(candidateBytes).String()
+		if candidateIP == reservedMapleIP {
+			continue
+		}
 
 		if existing, ok := p.ipToEntry[candidateIP]; ok {
 			// 已被占用且未过期 → 跳过

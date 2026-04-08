@@ -510,6 +510,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		logStore.Appendf(logSourceManager, "init", "load local chain targets skipped: %v", err)
 	}
 	service.syncTUNInstallState()
+	service.reloadFakeIPPool()
 	service.startMuxAutoMaintainLoop()
 	return service
 }
