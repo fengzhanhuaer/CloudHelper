@@ -27,15 +27,22 @@ import (
 )
 
 const (
-	localTUNNetstackNICID         = tcpip.NICID(1)
-	localTUNNetstackQueueSize     = 4096
-	localTUNNetstackMTU           = 1500
-	localTUNTCPDialTimeout        = 10 * time.Second
-	localTUNUDPAssociationTimeout = 90 * time.Second
-	localTUNUDPReadBufferSize     = 65535
-	localTUNTCPForwarderWindow    = 0
-	localTUNTCPForwarderInFlight  = 2048
+	localTUNNetstackNICID            = tcpip.NICID(1)
+	localTUNNetstackQueueSize        = 4096
+	localTUNNetstackMTU              = 1500
+	localTUNTCPDialTimeout           = 10 * time.Second
+	localTUNUDPAssociationTimeout    = 90 * time.Second
+	localTUNUDPAssociationGCInterval = 15 * time.Second
+	localTUNUDPReadBufferSize        = 65535
+	localTUNTCPForwarderWindow       = 0
+	localTUNTCPForwarderInFlight     = 2048
 )
+
+var blockedLocalTUNPorts = map[uint16]struct{}{
+	137: {},
+	138: {},
+	139: {},
+}
 
 type localTUNDuplexConn interface {
 	net.Conn
@@ -296,6 +303,10 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		req.Complete(true)
 		return
 	}
+	if shouldBlockLocalTUNPort(id.LocalPort) {
+		req.Complete(true)
+		return
+	}
 
 	var wq waiter.Queue
 	ep, createErr := req.CreateEndpoint(&wq)
@@ -380,6 +391,9 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	id := req.ID()
 	targetAddr, err := transportIDToTarget(id.LocalAddress, id.LocalPort)
 	if err != nil {
+		return
+	}
+	if shouldBlockLocalTUNPort(id.LocalPort) {
 		return
 	}
 
@@ -781,6 +795,11 @@ func tcpipErrToError(err tcpip.Error) error {
 		return nil
 	}
 	return errors.New(err.String())
+}
+
+func shouldBlockLocalTUNPort(port uint16) bool {
+	_, blocked := blockedLocalTUNPorts[port]
+	return blocked
 }
 
 func localTUNProtocolFromPacket(packet []byte) (tcpip.NetworkProtocolNumber, error) {

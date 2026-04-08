@@ -135,12 +135,26 @@ type probeChainSocksRequest struct {
 	Address string
 }
 
+type probeChainAssociationV2Meta struct {
+	Version          int    `json:"version"`
+	AssocKeyV2       string `json:"assoc_key_v2,omitempty"`
+	FlowID           string `json:"flow_id,omitempty"`
+	SrcIP            string `json:"src_ip,omitempty"`
+	SrcPort          uint16 `json:"src_port,omitempty"`
+	DstIP            string `json:"dst_ip,omitempty"`
+	DstPort          uint16 `json:"dst_port,omitempty"`
+	RouteGroup       string `json:"route_group,omitempty"`
+	RouteNodeID      string `json:"route_node_id,omitempty"`
+	RouteTarget      string `json:"route_target,omitempty"`
+	RouteFingerprint string `json:"route_fingerprint,omitempty"`
+}
+
 type probeChainTunnelOpenRequest struct {
-	Type          string `json:"type"`
-	Network       string `json:"network"`
-	Address       string `json:"address"`
-	SessionID     string `json:"session_id,omitempty"`
-	AssociationID string `json:"association_id,omitempty"`
+	Type          string                       `json:"type"`
+	Network       string                       `json:"network"`
+	Address       string                       `json:"address"`
+	SessionID     string                       `json:"session_id,omitempty"`
+	AssociationV2 *probeChainAssociationV2Meta `json:"association_v2,omitempty"`
 }
 
 type probeChainTunnelOpenResponse struct {
@@ -221,6 +235,7 @@ const (
 	probeChainPortForwardResponseReadDeadline = 10 * time.Second
 	probeChainPortForwardListenRetryTimeout   = 5 * time.Second
 	probeChainPortForwardListenRetryInterval  = 100 * time.Millisecond
+	probeChainPortForwardListenRetryMaxBackoff = 800 * time.Millisecond
 
 	probeChainAuthPacketType        = "github_copilot_auth_request"
 	probeChainAuthPacketVersion     = "2025-03-22"
@@ -880,6 +895,7 @@ func listenTCPWithRetry(listenAddr string, timeout time.Duration) (net.Listener,
 		timeout = probeChainPortForwardListenRetryTimeout
 	}
 	deadline := time.Now().Add(timeout)
+	backoff := probeChainPortForwardListenRetryInterval
 	for {
 		ln, err := net.Listen("tcp", listenAddr)
 		if err == nil {
@@ -888,7 +904,8 @@ func listenTCPWithRetry(listenAddr string, timeout time.Duration) (net.Listener,
 		if !isRetryablePortForwardListenErr(err) || time.Now().After(deadline) {
 			return nil, err
 		}
-		time.Sleep(probeChainPortForwardListenRetryInterval)
+		time.Sleep(backoff)
+		backoff = nextProbeChainListenRetryBackoff(backoff)
 	}
 }
 
@@ -897,6 +914,7 @@ func listenUDPWithRetry(listenAddr string, timeout time.Duration) (net.PacketCon
 		timeout = probeChainPortForwardListenRetryTimeout
 	}
 	deadline := time.Now().Add(timeout)
+	backoff := probeChainPortForwardListenRetryInterval
 	for {
 		pc, err := net.ListenPacket("udp", listenAddr)
 		if err == nil {
@@ -905,8 +923,23 @@ func listenUDPWithRetry(listenAddr string, timeout time.Duration) (net.PacketCon
 		if !isRetryablePortForwardListenErr(err) || time.Now().After(deadline) {
 			return nil, err
 		}
-		time.Sleep(probeChainPortForwardListenRetryInterval)
+		time.Sleep(backoff)
+		backoff = nextProbeChainListenRetryBackoff(backoff)
 	}
+}
+
+func nextProbeChainListenRetryBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		current = probeChainPortForwardListenRetryInterval
+	}
+	next := current * 2
+	if next <= 0 {
+		next = probeChainPortForwardListenRetryInterval
+	}
+	if maxBackoff := probeChainPortForwardListenRetryMaxBackoff; maxBackoff > 0 && next > maxBackoff {
+		next = maxBackoff
+	}
+	return next
 }
 
 func isRetryablePortForwardListenErr(err error) bool {
@@ -953,10 +986,10 @@ func openProbeChainPortForwardLocalTarget(network string, targetAddr string) (ne
 }
 
 func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide string, network string, targetAddr string) (net.Conn, error) {
-	return openProbeChainPortForwardStreamWithAssociation(runtime, entrySide, network, targetAddr, "")
+	return openProbeChainPortForwardStreamWithAssociation(runtime, entrySide, network, targetAddr, nil)
 }
 
-func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, associationID string) (net.Conn, error) {
+func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
@@ -991,7 +1024,7 @@ func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, 
 		Type:          "open",
 		Network:       requestedNetwork,
 		Address:       strings.TrimSpace(targetAddr),
-		AssociationID: strings.TrimSpace(associationID),
+		AssociationV2: associationV2,
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
 	if err := json.NewEncoder(stream).Encode(request); err != nil {
@@ -1147,7 +1180,13 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 	}()
 
 	openSession := func(key string, addr net.Addr) (*udpForwardSession, error) {
-		stream, openErr := openProbeChainPortForwardStreamWithAssociation(runtime, cfg.EntrySide, probeChainPortForwardNetworkUDP, targetAddr, key)
+		associationV2 := &probeChainAssociationV2Meta{
+			Version:     2,
+			AssocKeyV2:  strings.TrimSpace(key),
+			FlowID:      strings.TrimSpace(key),
+			RouteTarget: strings.TrimSpace(targetAddr),
+		}
+		stream, openErr := openProbeChainPortForwardStreamWithAssociation(runtime, cfg.EntrySide, probeChainPortForwardNetworkUDP, targetAddr, associationV2)
 		if openErr != nil {
 			return nil, openErr
 		}
@@ -2545,13 +2584,13 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		log.Printf("probe chain proxy open request: chain=%s role=%s network=%s target=%s session_id=%s", strings.TrimSpace(runtime.cfg.chainID), strings.TrimSpace(runtime.cfg.role), network, target, requestedSessionID)
 	}
 
-	associationID := strings.TrimSpace(req.AssociationID)
+	associationV2 := req.AssociationV2
 	var proxyErr error
 	switch network {
 	case "tcp":
 		proxyErr = handleProbeChainTunnelTCPStream(stream, target)
 	case "udp":
-		proxyErr = handleProbeChainTunnelUDPStream(stream, target, associationID)
+		proxyErr = handleProbeChainTunnelUDPStream(stream, target, associationV2)
 	case "http":
 		proxyErr = handleProbeChainTunnelHTTPProxyStream(runtime, stream)
 	default:
@@ -2631,8 +2670,8 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 	return copyErr
 }
 
-func handleProbeChainTunnelUDPStream(stream net.Conn, target string, associationID string) error {
-	assoc, err := globalProbeChainUDPAssociationPool.Acquire(associationID, target)
+func handleProbeChainTunnelUDPStream(stream net.Conn, target string, associationV2 *probeChainAssociationV2Meta) error {
+	assoc, err := globalProbeChainUDPAssociationPool.Acquire(associationV2, target)
 	if err != nil {
 		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err

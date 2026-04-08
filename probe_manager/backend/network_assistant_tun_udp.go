@@ -20,19 +20,32 @@ type localTUNUDPPacket struct {
 	Payload []byte
 }
 
-type localTUNUDPRelay struct {
-	service *networkAssistantService
+type localTUNUDPSource struct {
 	key     string
+	srcIP   net.IP
+	srcPort uint16
+
+	refs           atomic.Int64
+	lastActiveUnix atomic.Int64
+}
+
+type localTUNUDPRelay struct {
+	service   *networkAssistantService
+	key       string
+	sourceKey string
 
 	srcIP   net.IP
 	dstIP   net.IP
 	srcPort uint16
 	dstPort uint16
 
-	routeTarget string
-	routeNodeID string
-	routeGroup  string
-	routeDirect bool
+	routeTarget      string
+	routeNodeID      string
+	routeGroup       string
+	routeDirect      bool
+	assocKeyV2       string
+	flowID           string
+	routeFingerprint string
 
 	directConn   *net.UDPConn
 	tunnelStream *tunnelMuxStream
@@ -82,29 +95,37 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 	}
 	s.mu.Unlock()
 
+	source, releaseSource := s.acquireLocalTUNUDPSource(frame.SrcIP, frame.SrcPort)
+
 	targetAddr := net.JoinHostPort(frame.DstIP.String(), strconv.Itoa(int(frame.DstPort)))
 	route, err := s.decideRouteForTarget(targetAddr)
 	if err != nil {
+		releaseSource()
 		return nil, err
 	}
 
 	relay := &localTUNUDPRelay{
-		service:     s,
-		key:         key,
-		srcIP:       append(net.IP(nil), frame.SrcIP...),
-		dstIP:       append(net.IP(nil), frame.DstIP...),
-		srcPort:     frame.SrcPort,
-		dstPort:     frame.DstPort,
-		routeTarget: route.TargetAddr,
-		routeNodeID: route.NodeID,
-		routeGroup:  route.Group,
-		routeDirect: route.Direct,
+		service:          s,
+		key:              key,
+		sourceKey:        source.key,
+		srcIP:            append(net.IP(nil), frame.SrcIP...),
+		dstIP:            append(net.IP(nil), frame.DstIP...),
+		srcPort:          frame.SrcPort,
+		dstPort:          frame.DstPort,
+		routeTarget:      route.TargetAddr,
+		routeNodeID:      route.NodeID,
+		routeGroup:       route.Group,
+		routeDirect:      route.Direct,
+		assocKeyV2:       key,
+		flowID:           key,
+		routeFingerprint: buildLocalTUNUDPRouteFingerprint(route),
 	}
 	relay.touch()
 
 	if route.Direct {
 		udpAddr, resolveErr := net.ResolveUDPAddr("udp", route.TargetAddr)
 		if resolveErr != nil {
+			releaseSource()
 			return nil, resolveErr
 		}
 		var localAddr *net.UDPAddr
@@ -113,12 +134,27 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 		}
 		conn, dialErr := dialUDPWithRetry("udp", localAddr, udpAddr)
 		if dialErr != nil {
+			releaseSource()
 			return nil, dialErr
 		}
 		relay.directConn = conn
 	} else {
-		stream, openErr := s.openTunnelStreamForGroupWithAssociation("udp", route.TargetAddr, route.Group, key)
+		associationV2 := &tunnelAssociationV2Meta{
+			Version:          2,
+			AssocKeyV2:       key,
+			FlowID:           key,
+			SrcIP:            frame.SrcIP.String(),
+			SrcPort:          frame.SrcPort,
+			DstIP:            frame.DstIP.String(),
+			DstPort:          frame.DstPort,
+			RouteGroup:       strings.TrimSpace(route.Group),
+			RouteNodeID:      strings.TrimSpace(route.NodeID),
+			RouteTarget:      strings.TrimSpace(route.TargetAddr),
+			RouteFingerprint: buildLocalTUNUDPRouteFingerprint(route),
+		}
+		stream, openErr := s.openTunnelStreamForGroupWithAssociationV2("udp", route.TargetAddr, route.Group, associationV2)
 		if openErr != nil {
+			releaseSource()
 			return nil, openErr
 		}
 		relay.tunnelStream = stream
@@ -282,6 +318,7 @@ func (r *localTUNUDPRelay) close() {
 			r.tunnelStream.close()
 		}
 		if r.service != nil {
+			r.service.releaseLocalTUNUDPSource(r.sourceKey)
 			r.service.removeLocalTUNUDPRelay(r.key, r)
 		}
 	})
@@ -299,7 +336,8 @@ func (r *localTUNUDPRelay) startIdleGC(idle time.Duration) {
 		return
 	}
 	go func() {
-		ticker := time.NewTicker(minDuration(idle/2, 10*time.Second))
+		gcInterval := localTUNUDPEffectiveGCInterval(idle)
+		ticker := time.NewTicker(gcInterval)
 		defer ticker.Stop()
 		for range ticker.C {
 			if r.closed.Load() {
@@ -315,6 +353,74 @@ func (r *localTUNUDPRelay) startIdleGC(idle time.Duration) {
 			}
 		}
 	}()
+}
+
+func (s *networkAssistantService) acquireLocalTUNUDPSource(srcIP net.IP, srcPort uint16) (*localTUNUDPSource, func()) {
+	key := buildLocalTUNUDPSourceKey(srcIP, srcPort)
+	s.mu.Lock()
+	if s.tunUDPSources == nil {
+		s.tunUDPSources = make(map[string]*localTUNUDPSource)
+	}
+	source, ok := s.tunUDPSources[key]
+	if !ok || source == nil {
+		source = &localTUNUDPSource{
+			key:     key,
+			srcIP:   append(net.IP(nil), srcIP...),
+			srcPort: srcPort,
+		}
+		s.tunUDPSources[key] = source
+	}
+	source.refs.Add(1)
+	source.lastActiveUnix.Store(time.Now().Unix())
+	s.mu.Unlock()
+
+	released := atomic.Bool{}
+	release := func() {
+		if released.Swap(true) {
+			return
+		}
+		s.releaseLocalTUNUDPSource(key)
+	}
+	return source, release
+}
+
+func (s *networkAssistantService) releaseLocalTUNUDPSource(key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	source, ok := s.tunUDPSources[key]
+	if !ok || source == nil {
+		return
+	}
+	source.lastActiveUnix.Store(time.Now().Unix())
+	remaining := source.refs.Add(-1)
+	if remaining <= 0 {
+		delete(s.tunUDPSources, key)
+	}
+}
+
+func buildLocalTUNUDPSourceKey(srcIP net.IP, srcPort uint16) string {
+	return srcIP.String() + ":" + strconv.Itoa(int(srcPort))
+}
+
+func buildLocalTUNUDPRouteFingerprint(route tunnelRouteDecision) string {
+	return strings.ToLower(strings.TrimSpace(route.Group)) + "|" +
+		strings.ToLower(strings.TrimSpace(route.NodeID)) + "|" +
+		strings.ToLower(strings.TrimSpace(route.TargetAddr))
+}
+
+func localTUNUDPEffectiveGCInterval(idle time.Duration) time.Duration {
+	gcInterval := localTUNUDPAssociationGCInterval
+	if half := idle / 2; half > 0 {
+		gcInterval = minDuration(gcInterval, half)
+	}
+	if gcInterval <= 0 {
+		gcInterval = time.Second
+	}
+	return gcInterval
 }
 
 func minDuration(left time.Duration, right time.Duration) time.Duration {

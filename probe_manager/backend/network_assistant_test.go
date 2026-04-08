@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net"
 	"os"
 	"testing"
@@ -1118,5 +1119,136 @@ func TestBackfillProbeNodeDomainsFromChains(t *testing.T) {
 	}
 	if out[1].DDNS != "node2.ddns.example.com" {
 		t.Fatalf("node2 ddns=%q, want keep original node2.ddns.example.com", out[1].DDNS)
+	}
+}
+
+func TestLocalTUNUDPSourceAcquireAndReleaseLifecycle(t *testing.T) {
+	svc := &networkAssistantService{
+		tunUDPSources: make(map[string]*localTUNUDPSource),
+	}
+	srcIP := net.ParseIP("10.10.0.2").To4()
+	if srcIP == nil {
+		t.Fatal("src ip parse failed")
+	}
+
+	source, release := svc.acquireLocalTUNUDPSource(srcIP, 53000)
+	if source == nil {
+		t.Fatal("source should not be nil")
+	}
+	if source.refs.Load() != 1 {
+		t.Fatalf("source refs=%d, want 1", source.refs.Load())
+	}
+	if got := buildLocalTUNUDPSourceKey(srcIP, 53000); got != source.key {
+		t.Fatalf("source key=%q, want %q", source.key, got)
+	}
+
+	source2, release2 := svc.acquireLocalTUNUDPSource(srcIP, 53000)
+	if source2 != source {
+		t.Fatal("same source tuple should reuse source object")
+	}
+	if source.refs.Load() != 2 {
+		t.Fatalf("source refs=%d, want 2", source.refs.Load())
+	}
+
+	release()
+	if source.refs.Load() != 1 {
+		t.Fatalf("source refs=%d, want 1 after first release", source.refs.Load())
+	}
+
+	release2()
+	svc.mu.RLock()
+	_, ok := svc.tunUDPSources[source.key]
+	svc.mu.RUnlock()
+	if ok {
+		t.Fatal("source should be removed when refs reaches zero")
+	}
+}
+
+func TestBuildAIDebugManagerUDPAssociationsPayloadIncludesSourceInfo(t *testing.T) {
+	sourceKey := "10.10.0.2:53000"
+	source := &localTUNUDPSource{key: sourceKey}
+	source.refs.Store(3)
+	source.lastActiveUnix.Store(time.Now().Unix())
+
+	relay := &localTUNUDPRelay{
+		key:              "10.10.0.2:53000->8.8.8.8:53",
+		sourceKey:        sourceKey,
+		srcIP:            net.ParseIP("10.10.0.2").To4(),
+		dstIP:            net.ParseIP("8.8.8.8").To4(),
+		srcPort:          53000,
+		dstPort:          53,
+		routeTarget:      "8.8.8.8:53",
+		routeNodeID:      "chain:edge-a",
+		routeGroup:       "group_a",
+		routeDirect:      false,
+		assocKeyV2:       "assoc-v2-key",
+		flowID:           "flow-v2-key",
+		routeFingerprint: "group_a|chain:edge-a|8.8.8.8:53",
+	}
+	relay.lastActiveUnix.Store(time.Now().Unix())
+
+	svc := &networkAssistantService{
+		tunUDPRelays: map[string]*localTUNUDPRelay{
+			relay.key: relay,
+		},
+		tunUDPSources: map[string]*localTUNUDPSource{
+			sourceKey: source,
+		},
+	}
+
+	payload, err := buildAIDebugManagerUDPAssociationsPayload(svc)
+	if err != nil {
+		t.Fatalf("buildAIDebugManagerUDPAssociationsPayload returned error: %v", err)
+	}
+	if payload.Count != 1 || len(payload.Items) != 1 {
+		t.Fatalf("payload count/items=(%d,%d), want (1,1)", payload.Count, len(payload.Items))
+	}
+
+	item := payload.Items[0]
+	if item.SourceKey != sourceKey {
+		t.Fatalf("source_key=%q, want %q", item.SourceKey, sourceKey)
+	}
+	if item.SourceRefs != 3 {
+		t.Fatalf("source_refs=%d, want 3", item.SourceRefs)
+	}
+	if item.AssocKeyV2 != "assoc-v2-key" || item.FlowID != "flow-v2-key" {
+		t.Fatalf("assoc/flow=(%q,%q), want (assoc-v2-key,flow-v2-key)", item.AssocKeyV2, item.FlowID)
+	}
+	if item.RouteTarget != "8.8.8.8:53" || item.NodeID != "chain:edge-a" || item.Group != "group_a" {
+		t.Fatalf("route fields unexpected: route=%q node=%q group=%q", item.RouteTarget, item.NodeID, item.Group)
+	}
+}
+
+func TestNextUDPDialRetryBackoff(t *testing.T) {
+	if got := nextUDPDialRetryBackoff(0); got != 2*udpDialRetryInitialBackoff {
+		t.Fatalf("backoff(0)=%s, want %s", got, 2*udpDialRetryInitialBackoff)
+	}
+
+	if got := nextUDPDialRetryBackoff(udpDialRetryInitialBackoff); got != 2*udpDialRetryInitialBackoff {
+		t.Fatalf("backoff(initial)=%s, want %s", got, 2*udpDialRetryInitialBackoff)
+	}
+
+	if got := nextUDPDialRetryBackoff(udpDialRetryMaxBackoff); got != udpDialRetryMaxBackoff {
+		t.Fatalf("backoff(max)=%s, want %s", got, udpDialRetryMaxBackoff)
+	}
+}
+
+func TestIsRetryableUDPSocketErr(t *testing.T) {
+	retryableErr := &net.OpError{
+		Op:  "dial",
+		Net: "udp",
+		Err: os.NewSyscallError("sendto", errors.New("WSAENOBUFS")),
+	}
+	if !isRetryableUDPSocketErr(retryableErr) {
+		t.Fatal("expected wrapped WSAENOBUFS to be retryable")
+	}
+
+	nonRetryableErr := &net.OpError{
+		Op:  "dial",
+		Net: "udp",
+		Err: os.NewSyscallError("sendto", errors.New("connection refused")),
+	}
+	if isRetryableUDPSocketErr(nonRetryableErr) {
+		t.Fatal("expected non-retryable udp dial error")
 	}
 }

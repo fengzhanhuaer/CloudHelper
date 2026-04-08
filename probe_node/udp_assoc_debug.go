@@ -11,18 +11,20 @@ import (
 )
 
 type probeUDPAssociationDebugItemPayload struct {
-	Key         string `json:"key"`
-	Target      string `json:"target,omitempty"`
-	RouteTarget string `json:"route_target,omitempty"`
-	NodeID      string `json:"node_id,omitempty"`
-	Group       string `json:"group,omitempty"`
-	Direct      bool   `json:"direct"`
-	Transport   string `json:"transport,omitempty"`
-	Refs        int32  `json:"refs,omitempty"`
-	Attached    bool   `json:"attached,omitempty"`
-	Active      bool   `json:"active"`
-	LastActive  string `json:"last_active,omitempty"`
-	IdleMS      int64  `json:"idle_ms"`
+	Key              string `json:"key"`
+	AssocKeyV2       string `json:"assoc_key_v2,omitempty"`
+	FlowID           string `json:"flow_id,omitempty"`
+	Target           string `json:"target,omitempty"`
+	RouteTarget      string `json:"route_target,omitempty"`
+	RouteFingerprint string `json:"route_fingerprint,omitempty"`
+	NodeID           string `json:"node_id,omitempty"`
+	Group            string `json:"group,omitempty"`
+	Direct           bool   `json:"direct"`
+	Transport        string `json:"transport,omitempty"`
+	Refs             int32  `json:"refs,omitempty"`
+	Active           bool   `json:"active"`
+	LastActive       string `json:"last_active,omitempty"`
+	IdleMS           int64  `json:"idle_ms"`
 }
 
 type probeUDPAssociationsResultPayload struct {
@@ -72,15 +74,18 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 			continue
 		}
 		item := probeUDPAssociationDebugItemPayload{
-			Key:       strings.TrimSpace(key),
-			Target:    strings.TrimSpace(assoc.target),
-			Transport: "udp",
-			Refs:      assoc.refs.Load(),
-			Active:    assoc.conn != nil,
+			Key:              strings.TrimSpace(key),
+			AssocKeyV2:       strings.TrimSpace(assoc.assocKeyV2),
+			FlowID:           strings.TrimSpace(assoc.flowID),
+			Target:           strings.TrimSpace(assoc.target),
+			RouteTarget:      strings.TrimSpace(assoc.routeTarget),
+			RouteFingerprint: strings.TrimSpace(assoc.routeFingerprint),
+			NodeID:           strings.TrimSpace(assoc.routeNodeID),
+			Group:            strings.TrimSpace(assoc.routeGroup),
+			Transport:        "udp",
+			Refs:             assoc.refs.Load(),
+			Active:           assoc.conn != nil,
 		}
-		assoc.mu.Lock()
-		item.Attached = assoc.attached
-		assoc.mu.Unlock()
 		if lastActive := assoc.lastActiveUnix.Load(); lastActive > 0 {
 			lastActiveAt := time.Unix(lastActive, 0).UTC()
 			item.LastActive = lastActiveAt.Format(time.RFC3339)

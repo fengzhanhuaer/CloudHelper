@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -348,7 +349,7 @@ func fetchProbeTCPDebugFromNode(nodeID string) (probeTCPDebugResultMessage, erro
 			if errMsg == "" {
 				errMsg = "probe tcp debug fetch failed"
 			}
-			return result, fmt.Errorf(errMsg)
+			return result, errors.New(errMsg)
 		}
 		return result, nil
 	case <-timer.C:

@@ -17,11 +17,25 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+type tunnelAssociationV2Meta struct {
+	Version          int    `json:"version"`
+	AssocKeyV2       string `json:"assoc_key_v2,omitempty"`
+	FlowID           string `json:"flow_id,omitempty"`
+	SrcIP            string `json:"src_ip,omitempty"`
+	SrcPort          uint16 `json:"src_port,omitempty"`
+	DstIP            string `json:"dst_ip,omitempty"`
+	DstPort          uint16 `json:"dst_port,omitempty"`
+	RouteGroup       string `json:"route_group,omitempty"`
+	RouteNodeID      string `json:"route_node_id,omitempty"`
+	RouteTarget      string `json:"route_target,omitempty"`
+	RouteFingerprint string `json:"route_fingerprint,omitempty"`
+}
+
 type tunnelOpenRequest struct {
-	Type          string `json:"type"`
-	Network       string `json:"network"`
-	Address       string `json:"address"`
-	AssociationID string `json:"association_id,omitempty"`
+	Type          string                   `json:"type"`
+	Network       string                   `json:"network"`
+	Address       string                   `json:"address"`
+	AssociationV2 *tunnelAssociationV2Meta `json:"association_v2,omitempty"`
 }
 
 type tunnelOpenResponse struct {
@@ -33,6 +47,27 @@ type tunnelInboundMessage struct {
 	Type     string `json:"type"`
 	Category string `json:"category,omitempty"`
 	Message  string `json:"message,omitempty"`
+}
+
+const (
+	tunnelControllerExceptionRateLimitWindow   = 3 * time.Second
+	tunnelControllerExceptionRateLimitBurst    = 6
+	tunnelControllerExceptionRateLimitMaxKeys  = 2048
+	tunnelControllerExceptionRateLimitKeyMaxLen = 160
+)
+
+type tunnelControllerExceptionBucket struct {
+	windowStart time.Time
+	count       int
+}
+
+type tunnelControllerExceptionRateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]tunnelControllerExceptionBucket
+}
+
+var globalTunnelControllerExceptionRateLimiter = tunnelControllerExceptionRateLimiter{
+	buckets: make(map[string]tunnelControllerExceptionBucket),
 }
 
 var tunnelWSUpgrader = websocket.Upgrader{
@@ -83,6 +118,9 @@ func NetworkAssistantTunnelWSHandler(w http.ResponseWriter, r *http.Request) {
 		if message == "" {
 			return
 		}
+		if !globalTunnelControllerExceptionRateLimiter.Allow(category, message, time.Now()) {
+			return
+		}
 		if err := pushTunnelControllerLog(session, strings.TrimSpace(category), message); err != nil {
 			log.Printf("tunnel controller log push failed: %v", err)
 		}
@@ -95,6 +133,57 @@ func NetworkAssistantTunnelWSHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		go handleTunnelStream(stream, pushControllerException)
 	}
+}
+
+func (l *tunnelControllerExceptionRateLimiter) Allow(category, message string, now time.Time) bool {
+	if l == nil {
+		return true
+	}
+	key := buildTunnelControllerExceptionRateLimitKey(category, message)
+	if key == "" {
+		return true
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.buckets == nil {
+		l.buckets = make(map[string]tunnelControllerExceptionBucket)
+	}
+
+	if len(l.buckets) >= tunnelControllerExceptionRateLimitMaxKeys {
+		threshold := now.Add(-2 * tunnelControllerExceptionRateLimitWindow)
+		for k, v := range l.buckets {
+			if v.windowStart.Before(threshold) {
+				delete(l.buckets, k)
+			}
+		}
+	}
+
+	bucket := l.buckets[key]
+	if bucket.windowStart.IsZero() || now.Sub(bucket.windowStart) >= tunnelControllerExceptionRateLimitWindow {
+		bucket.windowStart = now
+		bucket.count = 1
+		l.buckets[key] = bucket
+		return true
+	}
+	bucket.count++
+	l.buckets[key] = bucket
+	return bucket.count <= tunnelControllerExceptionRateLimitBurst
+}
+
+func buildTunnelControllerExceptionRateLimitKey(category, message string) string {
+	cat := strings.ToLower(strings.TrimSpace(category))
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if len(msg) > tunnelControllerExceptionRateLimitKeyMaxLen {
+		msg = msg[:tunnelControllerExceptionRateLimitKeyMaxLen]
+	}
+	if cat == "" && msg == "" {
+		return ""
+	}
+	return cat + "|" + msg
 }
 
 func handleTunnelStream(stream net.Conn, pushControllerException func(category string, format string, args ...any)) {
@@ -118,11 +207,12 @@ func handleTunnelStream(stream net.Conn, pushControllerException func(category s
 		return
 	}
 
+	associationV2 := req.AssociationV2
 	switch network {
 	case "tcp":
 		handleTCPTunnelStream(stream, target, pushControllerException)
 	case "udp":
-		handleUDPTunnelStream(stream, target, strings.TrimSpace(req.AssociationID), pushControllerException)
+		handleUDPTunnelStream(stream, target, associationV2, pushControllerException)
 	default:
 		_ = writeTunnelOpenResponse(stream, tunnelOpenResponse{OK: false, Error: "unsupported network"})
 		pushControllerException("state", "open stream rejected: network=%s target=%s err=unsupported network", network, target)
@@ -180,11 +270,15 @@ func handleTCPTunnelStream(stream net.Conn, target string, pushControllerExcepti
 	}
 }
 
-func handleUDPTunnelStream(stream net.Conn, target string, associationID string, pushControllerException func(category string, format string, args ...any)) {
-	assoc, err := globalTunnelUDPAssociationPool.Acquire(associationID, target)
+func handleUDPTunnelStream(stream net.Conn, target string, associationV2 *tunnelAssociationV2Meta, pushControllerException func(category string, format string, args ...any)) {
+	assoc, err := globalTunnelUDPAssociationPool.Acquire(associationV2, target)
 	if err != nil {
 		_ = writeTunnelOpenResponse(stream, tunnelOpenResponse{OK: false, Error: err.Error()})
-		pushControllerException("open", "open stream failed: network=udp target=%s association_id=%s err=%v", target, associationID, err)
+		assocKey := ""
+		if associationV2 != nil {
+			assocKey = strings.TrimSpace(associationV2.AssocKeyV2)
+		}
+		pushControllerException("open", "open stream failed: network=udp target=%s assoc_key_v2=%s err=%v", target, assocKey, err)
 		return
 	}
 	defer assoc.Release()
@@ -230,7 +324,11 @@ func handleUDPTunnelStream(stream net.Conn, target string, associationID string,
 
 	err = <-errCh
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		pushControllerException("read", "stream relay failed: network=udp target=%s association_id=%s err=%v", target, associationID, err)
+		assocKey := ""
+		if associationV2 != nil {
+			assocKey = strings.TrimSpace(associationV2.AssocKeyV2)
+		}
+		pushControllerException("read", "stream relay failed: network=udp target=%s assoc_key_v2=%s err=%v", target, assocKey, err)
 	}
 }
 

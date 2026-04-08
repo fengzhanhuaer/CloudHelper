@@ -16,13 +16,17 @@ const (
 )
 
 type tunnelUDPAssociation struct {
-	key    string
-	target string
-	conn   *net.UDPConn
-	pool   *tunnelUDPAssociationPool
+	key              string
+	target           string
+	assocKeyV2       string
+	flowID           string
+	routeGroup       string
+	routeNodeID      string
+	routeTarget      string
+	routeFingerprint string
+	conn             *net.UDPConn
+	pool             *tunnelUDPAssociationPool
 
-	mu             sync.Mutex
-	attached       bool
 	refs           atomic.Int32
 	lastActiveUnix atomic.Int64
 	closeOnce      sync.Once
@@ -42,13 +46,13 @@ func newTunnelUDPAssociationPool() *tunnelUDPAssociationPool {
 	return p
 }
 
-func buildTunnelUDPAssociationKey(associationID string, target string) string {
-	cleanAssociationID := strings.TrimSpace(associationID)
-	cleanTarget := strings.ToLower(strings.TrimSpace(target))
-	if cleanAssociationID == "" {
-		return cleanTarget
+func buildTunnelUDPAssociationKey(associationV2 *tunnelAssociationV2Meta, target string) string {
+	if associationV2 != nil {
+		if assocKey := strings.TrimSpace(associationV2.AssocKeyV2); assocKey != "" {
+			return assocKey
+		}
 	}
-	return cleanAssociationID + "|" + cleanTarget
+	return strings.ToLower(strings.TrimSpace(target))
 }
 
 func (p *tunnelUDPAssociationPool) startReaper() {
@@ -57,7 +61,7 @@ func (p *tunnelUDPAssociationPool) startReaper() {
 	}
 	p.reaperOnce.Do(func() {
 		go func() {
-			ticker := time.NewTicker(tunnelUDPAssociationGCInterval)
+			ticker := time.NewTicker(tunnelUDPAssociationEffectiveGCInterval(tunnelUDPAssociationIdleTTL))
 			defer ticker.Stop()
 			for range ticker.C {
 				p.collectIdle()
@@ -66,7 +70,20 @@ func (p *tunnelUDPAssociationPool) startReaper() {
 	})
 }
 
-func (p *tunnelUDPAssociationPool) Acquire(associationID string, target string) (*tunnelUDPAssociation, error) {
+func tunnelUDPAssociationEffectiveGCInterval(idle time.Duration) time.Duration {
+	gcInterval := tunnelUDPAssociationGCInterval
+	if half := idle / 2; half > 0 {
+		if gcInterval <= 0 || half < gcInterval {
+			gcInterval = half
+		}
+	}
+	if gcInterval <= 0 {
+		gcInterval = time.Second
+	}
+	return gcInterval
+}
+
+func (p *tunnelUDPAssociationPool) Acquire(associationV2 *tunnelAssociationV2Meta, target string) (*tunnelUDPAssociation, error) {
 	if p == nil {
 		return nil, fmt.Errorf("udp association pool is nil")
 	}
@@ -74,17 +91,33 @@ func (p *tunnelUDPAssociationPool) Acquire(associationID string, target string) 
 	if cleanTarget == "" {
 		return nil, fmt.Errorf("udp association target is required")
 	}
-	key := buildTunnelUDPAssociationKey(associationID, cleanTarget)
+	key := buildTunnelUDPAssociationKey(associationV2, cleanTarget)
 
 	p.mu.Lock()
 	if existing, ok := p.items[key]; ok && existing != nil && existing.conn != nil {
 		existing.refs.Add(1)
+		if associationV2 != nil {
+			if existing.assocKeyV2 == "" {
+				existing.assocKeyV2 = strings.TrimSpace(associationV2.AssocKeyV2)
+			}
+			if existing.flowID == "" {
+				existing.flowID = strings.TrimSpace(associationV2.FlowID)
+			}
+			if existing.routeGroup == "" {
+				existing.routeGroup = strings.TrimSpace(associationV2.RouteGroup)
+			}
+			if existing.routeNodeID == "" {
+				existing.routeNodeID = strings.TrimSpace(associationV2.RouteNodeID)
+			}
+			if existing.routeTarget == "" {
+				existing.routeTarget = strings.TrimSpace(associationV2.RouteTarget)
+			}
+			if existing.routeFingerprint == "" {
+				existing.routeFingerprint = strings.TrimSpace(associationV2.RouteFingerprint)
+			}
+		}
 		existing.Touch()
 		p.mu.Unlock()
-		if err := existing.attach(); err != nil {
-			existing.Release()
-			return nil, err
-		}
 		return existing, nil
 	}
 	p.mu.Unlock()
@@ -98,29 +131,32 @@ func (p *tunnelUDPAssociationPool) Acquire(associationID string, target string) 
 		return nil, err
 	}
 	assoc := &tunnelUDPAssociation{
-		key:    key,
-		target: cleanTarget,
-		conn:   conn,
-		pool:   p,
+		key:              key,
+		target:           cleanTarget,
+		conn:             conn,
+		pool:             p,
+		assocKeyV2:       cleanTarget,
+		flowID:           cleanTarget,
+		routeTarget:      cleanTarget,
+		routeFingerprint: strings.ToLower(cleanTarget),
+	}
+	if associationV2 != nil {
+		assoc.assocKeyV2 = strings.TrimSpace(associationV2.AssocKeyV2)
+		assoc.flowID = strings.TrimSpace(associationV2.FlowID)
+		assoc.routeGroup = strings.TrimSpace(associationV2.RouteGroup)
+		assoc.routeNodeID = strings.TrimSpace(associationV2.RouteNodeID)
+		assoc.routeTarget = strings.TrimSpace(associationV2.RouteTarget)
+		assoc.routeFingerprint = strings.TrimSpace(associationV2.RouteFingerprint)
 	}
 	assoc.refs.Store(1)
 	assoc.Touch()
-	if err := assoc.attach(); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
 
 	p.mu.Lock()
 	if existing, ok := p.items[key]; ok && existing != nil && existing.conn != nil {
 		existing.refs.Add(1)
 		existing.Touch()
 		p.mu.Unlock()
-		assoc.detach()
 		_ = conn.Close()
-		if err := existing.attach(); err != nil {
-			existing.Release()
-			return nil, err
-		}
 		return existing, nil
 	}
 	p.items[key] = assoc
@@ -165,29 +201,6 @@ func (a *tunnelUDPAssociation) Touch() {
 	a.lastActiveUnix.Store(time.Now().Unix())
 }
 
-func (a *tunnelUDPAssociation) attach() error {
-	if a == nil {
-		return fmt.Errorf("udp association is nil")
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.attached {
-		return fmt.Errorf("udp association is busy: %s", a.target)
-	}
-	a.attached = true
-	a.Touch()
-	return nil
-}
-
-func (a *tunnelUDPAssociation) detach() {
-	if a == nil {
-		return
-	}
-	a.mu.Lock()
-	a.attached = false
-	a.mu.Unlock()
-	a.Touch()
-}
 
 func (a *tunnelUDPAssociation) Write(payload []byte) error {
 	if a == nil || a.conn == nil {
@@ -219,7 +232,6 @@ func (a *tunnelUDPAssociation) Release() {
 	if a == nil {
 		return
 	}
-	a.detach()
 	remaining := a.refs.Add(-1)
 	if remaining < 0 {
 		a.refs.Store(0)

@@ -159,6 +159,21 @@ func TestResolveProbeChainTLSServerName(t *testing.T) {
 	}
 }
 
+func TestNextProbeChainListenRetryBackoff(t *testing.T) {
+	if got := nextProbeChainListenRetryBackoff(0); got != probeChainPortForwardListenRetryInterval*2 {
+		t.Fatalf("unexpected backoff for zero current: %s", got)
+	}
+	if got := nextProbeChainListenRetryBackoff(probeChainPortForwardListenRetryInterval); got != probeChainPortForwardListenRetryInterval*2 {
+		t.Fatalf("unexpected doubled backoff: %s", got)
+	}
+	if got := nextProbeChainListenRetryBackoff(probeChainPortForwardListenRetryMaxBackoff); got != probeChainPortForwardListenRetryMaxBackoff {
+		t.Fatalf("unexpected capped backoff at max: %s", got)
+	}
+	if got := nextProbeChainListenRetryBackoff(probeChainPortForwardListenRetryMaxBackoff * 2); got != probeChainPortForwardListenRetryMaxBackoff {
+		t.Fatalf("unexpected backoff over cap: %s", got)
+	}
+}
+
 func resetProbeChainAuthIPStateForTest() {
 	probeChainAuthIPStateMap.mu.Lock()
 	probeChainAuthIPStateMap.items = make(map[string]probeChainAuthIPState)

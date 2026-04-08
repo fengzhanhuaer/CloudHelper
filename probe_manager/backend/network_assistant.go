@@ -423,6 +423,7 @@ type networkAssistantService struct {
 	tunRouteSyncing  bool
 	tunEverEnabled   bool
 	tunManualClosed  bool
+	tunUDPSources    map[string]*localTUNUDPSource
 
 	logStore        *networkAssistantLogStore
 	ruleRouting     tunnelRuleRouting
@@ -486,6 +487,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		ruleRouting:         ruleRouting,
 		ruleDNSCache:        make(map[string]dnsCacheEntry),
 		tunUDPRelays:        make(map[string]*localTUNUDPRelay),
+		tunUDPSources:       make(map[string]*localTUNUDPSource),
 		tunDynamicBypass:    make(map[string]int),
 		dnsRouteHints:       make(map[string]dnsRouteHintEntry),
 		logRateState:        make(map[string]time.Time),
@@ -1842,10 +1844,6 @@ func dialUDPWithRetry(network string, laddr, raddr *net.UDPAddr) (*net.UDPConn, 
 	if backoff <= 0 {
 		backoff = 20 * time.Millisecond
 	}
-	maxBackoff := udpDialRetryMaxBackoff
-	if maxBackoff <= 0 {
-		maxBackoff = 300 * time.Millisecond
-	}
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -1858,12 +1856,33 @@ func dialUDPWithRetry(network string, laddr, raddr *net.UDPAddr) (*net.UDPConn, 
 			return nil, err
 		}
 		time.Sleep(backoff)
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
+		backoff = nextUDPDialRetryBackoff(backoff)
 	}
 	return nil, lastErr
+}
+
+func nextUDPDialRetryBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		current = udpDialRetryInitialBackoff
+	}
+	if current <= 0 {
+		current = 20 * time.Millisecond
+	}
+	next := current * 2
+	if next <= 0 {
+		next = udpDialRetryInitialBackoff
+	}
+	if next <= 0 {
+		next = 20 * time.Millisecond
+	}
+	maxBackoff := udpDialRetryMaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = 300 * time.Millisecond
+	}
+	if next > maxBackoff {
+		next = maxBackoff
+	}
+	return next
 }
 
 func isRetryableUDPSocketErr(err error) bool {
