@@ -619,6 +619,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeLogFetch(msg, identity, stream, encoder, writeMu)
 		return
 	}
+	if typeName == "udp_associations_get" {
+		go runProbeUDPAssociationsFetch(msg, identity, stream, encoder, writeMu)
+		return
+	}
 	if typeName == "link_test_control" {
 		go runProbeLinkTestControl(msg, identity, stream, encoder, writeMu)
 		return

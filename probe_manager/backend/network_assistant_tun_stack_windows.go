@@ -31,7 +31,7 @@ const (
 	localTUNNetstackQueueSize     = 4096
 	localTUNNetstackMTU           = 1500
 	localTUNTCPDialTimeout        = 10 * time.Second
-	localTUNUDPAssociationTimeout = 60 * time.Second
+	localTUNUDPAssociationTimeout = 90 * time.Second
 	localTUNUDPReadBufferSize     = 65535
 	localTUNTCPForwarderWindow    = 0
 	localTUNTCPForwarderInFlight  = 2048
@@ -398,6 +398,43 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	}
 	inbound := gonet.NewUDPConn(&wq, ep)
 
+	srcIP := net.ParseIP(strings.TrimSpace(id.RemoteAddress.String()))
+	dstIP := net.ParseIP(strings.TrimSpace(id.LocalAddress.String()))
+	if src4 := srcIP.To4(); src4 != nil {
+		if dst4 := dstIP.To4(); dst4 != nil {
+			relay, relayErr := n.service.getOrCreateLocalTUNUDPRelay(localTUNUDPPacket{
+				SrcIP:   append(net.IP(nil), src4...),
+				DstIP:   append(net.IP(nil), dst4...),
+				SrcPort: uint16(id.RemotePort),
+				DstPort: uint16(id.LocalPort),
+			})
+			if relayErr == nil && relay != nil {
+				if n.service.processMonitor != nil {
+					n.service.processMonitor.RecordUDPEvent(uint16(id.RemotePort), id.LocalAddress.String(), uint16(id.LocalPort), strings.TrimSpace(relay.routeNodeID) == "" && strings.TrimSpace(relay.routeGroup) == "", relay.routeNodeID, relay.routeGroup)
+				}
+				go n.forwardInboundUDPToRelay(inbound, relay, targetAddr)
+				return
+			}
+			if relayErr != nil {
+				recordNetworkDebugFailure(networkDebugFailureEvent{
+					Scope:   "tun",
+					Kind:    "udp_open_failed",
+					Target:  targetAddr,
+					Reason:  "association_create_failed",
+					Error:   relayErr.Error(),
+					Message: "local tun udp association create failed",
+				})
+				n.service.logfRateLimited(
+					"tun:udp:association_create_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
+					3*time.Second,
+					"local tun udp association create failed: target=%s err=%v",
+					targetAddr,
+					relayErr,
+				)
+			}
+		}
+	}
+
 	outbound, route, openErr := n.openOutboundUDP(targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
@@ -442,6 +479,54 @@ func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 		dstIP := id.LocalAddress.String()
 		dstPort := uint16(id.LocalPort)
 		n.service.processMonitor.RecordUDPEvent(srcPort, dstIP, dstPort, route.Direct, route.NodeID, route.Group)
+	}
+}
+
+func (n *localTUNNetstack) forwardInboundUDPToRelay(inbound *gonet.UDPConn, relay *localTUNUDPRelay, targetAddr string) {
+	if inbound == nil || relay == nil {
+		return
+	}
+	defer func() {
+		_ = inbound.Close()
+	}()
+
+	buf := make([]byte, localTUNUDPReadBufferSize)
+	for {
+		if localTUNUDPAssociationTimeout > 0 {
+			_ = inbound.SetReadDeadline(time.Now().Add(localTUNUDPAssociationTimeout))
+		}
+		readN, err := inbound.Read(buf)
+		if readN > 0 {
+			payload := append([]byte(nil), buf[:readN]...)
+			if sendErr := relay.send(payload); sendErr != nil {
+				recordNetworkDebugFailure(networkDebugFailureEvent{
+					Scope:        "tun",
+					Kind:         "udp_send_failed",
+					Target:       strings.TrimSpace(targetAddr),
+					RoutedTarget: strings.TrimSpace(relay.routeTarget),
+					Group:        strings.TrimSpace(relay.routeGroup),
+					NodeID:       strings.TrimSpace(relay.routeNodeID),
+					Reason:       "association_send_failed",
+					Error:        sendErr.Error(),
+					Message:      "local tun udp association send failed",
+				})
+				n.service.logfRateLimited(
+					"tun:udp:association_send_failed:"+strings.ToLower(strings.TrimSpace(targetAddr)),
+					3*time.Second,
+					"local tun udp association send failed: target=%s routed=%s node=%s group=%s err=%v",
+					targetAddr,
+					relay.routeTarget,
+					relay.routeNodeID,
+					relay.routeGroup,
+					sendErr,
+				)
+				relay.close()
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 

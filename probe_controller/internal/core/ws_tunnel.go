@@ -18,9 +18,10 @@ import (
 )
 
 type tunnelOpenRequest struct {
-	Type    string `json:"type"`
-	Network string `json:"network"`
-	Address string `json:"address"`
+	Type          string `json:"type"`
+	Network       string `json:"network"`
+	Address       string `json:"address"`
+	AssociationID string `json:"association_id,omitempty"`
 }
 
 type tunnelOpenResponse struct {
@@ -121,7 +122,7 @@ func handleTunnelStream(stream net.Conn, pushControllerException func(category s
 	case "tcp":
 		handleTCPTunnelStream(stream, target, pushControllerException)
 	case "udp":
-		handleUDPTunnelStream(stream, target, pushControllerException)
+		handleUDPTunnelStream(stream, target, strings.TrimSpace(req.AssociationID), pushControllerException)
 	default:
 		_ = writeTunnelOpenResponse(stream, tunnelOpenResponse{OK: false, Error: "unsupported network"})
 		pushControllerException("state", "open stream rejected: network=%s target=%s err=unsupported network", network, target)
@@ -158,20 +159,14 @@ func handleTCPTunnelStream(stream net.Conn, target string, pushControllerExcepti
 	}
 }
 
-func handleUDPTunnelStream(stream net.Conn, target string, pushControllerException func(category string, format string, args ...any)) {
-	udpAddr, err := net.ResolveUDPAddr("udp", target)
+func handleUDPTunnelStream(stream net.Conn, target string, associationID string, pushControllerException func(category string, format string, args ...any)) {
+	assoc, err := globalTunnelUDPAssociationPool.Acquire(associationID, target)
 	if err != nil {
 		_ = writeTunnelOpenResponse(stream, tunnelOpenResponse{OK: false, Error: err.Error()})
-		pushControllerException("open", "open stream failed: network=udp target=%s err=%v", target, err)
+		pushControllerException("open", "open stream failed: network=udp target=%s association_id=%s err=%v", target, associationID, err)
 		return
 	}
-	udpConn, err := net.DialUDP("udp", nil, udpAddr)
-	if err != nil {
-		_ = writeTunnelOpenResponse(stream, tunnelOpenResponse{OK: false, Error: err.Error()})
-		pushControllerException("open", "open stream failed: network=udp target=%s err=%v", target, err)
-		return
-	}
-	defer udpConn.Close()
+	defer assoc.Release()
 
 	if err := writeTunnelOpenResponse(stream, tunnelOpenResponse{OK: true}); err != nil {
 		return
@@ -188,7 +183,7 @@ func handleUDPTunnelStream(stream net.Conn, target string, pushControllerExcepti
 			if len(payload) == 0 {
 				continue
 			}
-			if _, writeErr := udpConn.Write(payload); writeErr != nil {
+			if writeErr := assoc.Write(payload); writeErr != nil {
 				errCh <- writeErr
 				return
 			}
@@ -196,9 +191,9 @@ func handleUDPTunnelStream(stream net.Conn, target string, pushControllerExcepti
 	}()
 
 	go func() {
-		buf := make([]byte, 64*1024)
+		buf := make([]byte, tunnelUDPAssociationReadBufSize)
 		for {
-			n, readErr := udpConn.Read(buf)
+			n, readErr := assoc.Read(buf)
 			if n > 0 {
 				if writeErr := writeFramedPacket(stream, buf[:n]); writeErr != nil {
 					errCh <- writeErr
@@ -214,7 +209,7 @@ func handleUDPTunnelStream(stream net.Conn, target string, pushControllerExcepti
 
 	err = <-errCh
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		pushControllerException("read", "stream relay failed: network=udp target=%s err=%v", target, err)
+		pushControllerException("read", "stream relay failed: network=udp target=%s association_id=%s err=%v", target, associationID, err)
 	}
 }
 

@@ -859,6 +859,24 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			"fetched":       time.Now().UTC().Format(time.RFC3339),
 			"timestamp":     strings.TrimSpace(result.Timestamp),
 		}, nil
+	case "admin.probe.udp.associations.get":
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		result, err := fetchProbeUDPAssociationsFromNode(nodeID)
+		if err != nil {
+			return nil, err
+		}
+		return buildProbeUDPAssociationsPayloadFromResult(result), nil
+	case "admin.tunnel.udp.associations":
+		return buildControllerUDPAssociationsPayload(), nil
 	case "admin.probe.report_interval.get":
 		return getProbeReportIntervalSnapshot(), nil
 	case "admin.probe.report_interval.set":

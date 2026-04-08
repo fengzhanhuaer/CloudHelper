@@ -32,13 +32,15 @@ type localTUNUDPRelay struct {
 	routeTarget string
 	routeNodeID string
 	routeGroup  string
+	routeDirect bool
 
 	directConn   *net.UDPConn
 	tunnelStream *tunnelMuxStream
 
-	closeOnce sync.Once
-	writeMu   sync.Mutex
-	closed    atomic.Bool
+	lastActiveUnix atomic.Int64
+	closeOnce      sync.Once
+	writeMu        sync.Mutex
+	closed         atomic.Bool
 }
 
 func (s *networkAssistantService) handleLocalTUNPacket(packet []byte) {
@@ -75,6 +77,7 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 	}
 	if existing, ok := s.tunUDPRelays[key]; ok {
 		s.mu.Unlock()
+		existing.touch()
 		return existing, nil
 	}
 	s.mu.Unlock()
@@ -95,7 +98,9 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 		routeTarget: route.TargetAddr,
 		routeNodeID: route.NodeID,
 		routeGroup:  route.Group,
+		routeDirect: route.Direct,
 	}
+	relay.touch()
 
 	if route.Direct {
 		udpAddr, resolveErr := net.ResolveUDPAddr("udp", route.TargetAddr)
@@ -112,7 +117,7 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 		}
 		relay.directConn = conn
 	} else {
-		stream, openErr := s.openTunnelStreamForGroup("udp", route.TargetAddr, route.Group)
+		stream, openErr := s.openTunnelStreamForGroupWithAssociation("udp", route.TargetAddr, route.Group, key)
 		if openErr != nil {
 			return nil, openErr
 		}
@@ -123,12 +128,14 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 	if existing, ok := s.tunUDPRelays[key]; ok {
 		s.mu.Unlock()
 		relay.close()
+		existing.touch()
 		return existing, nil
 	}
 	s.tunUDPRelays[key] = relay
 	s.mu.Unlock()
 
 	relay.startReadLoop()
+	relay.startIdleGC(localTUNUDPAssociationTimeout)
 	rateKey := fmt.Sprintf(
 		"tun:udp:relay_created:%s|%t|%s|%s",
 		strings.ToLower(strings.TrimSpace(relay.routeTarget)),
@@ -212,12 +219,20 @@ func (r *localTUNUDPRelay) send(payload []byte) error {
 	if r.closed.Load() {
 		return errors.New("local tun udp relay is closed")
 	}
+	r.touch()
 	if r.directConn != nil {
 		_, err := r.directConn.Write(payload)
+		if err == nil {
+			r.touch()
+		}
 		return err
 	}
 	if r.tunnelStream != nil {
-		return r.tunnelStream.write(payload)
+		err := r.tunnelStream.write(payload)
+		if err == nil {
+			r.touch()
+		}
+		return err
 	}
 	return errors.New("local tun udp relay has no transport")
 }
@@ -227,6 +242,7 @@ func (r *localTUNUDPRelay) readDirectLoop() {
 	for {
 		n, err := r.directConn.Read(buf)
 		if n > 0 {
+			r.touch()
 			payload := append([]byte(nil), buf[:n]...)
 			r.service.injectLocalTUNUDPResponse(r, payload)
 		}
@@ -244,6 +260,7 @@ func (r *localTUNUDPRelay) readTunnelLoop() {
 			if len(payload) == 0 {
 				continue
 			}
+			r.touch()
 			r.service.injectLocalTUNUDPResponse(r, payload)
 		case <-r.tunnelStream.errCh:
 			r.close()
@@ -268,6 +285,49 @@ func (r *localTUNUDPRelay) close() {
 			r.service.removeLocalTUNUDPRelay(r.key, r)
 		}
 	})
+}
+
+func (r *localTUNUDPRelay) touch() {
+	if r == nil {
+		return
+	}
+	r.lastActiveUnix.Store(time.Now().Unix())
+}
+
+func (r *localTUNUDPRelay) startIdleGC(idle time.Duration) {
+	if r == nil || idle <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(minDuration(idle/2, 10*time.Second))
+		defer ticker.Stop()
+		for range ticker.C {
+			if r.closed.Load() {
+				return
+			}
+			last := r.lastActiveUnix.Load()
+			if last <= 0 {
+				continue
+			}
+			if time.Since(time.Unix(last, 0)) >= idle {
+				r.close()
+				return
+			}
+		}
+	}()
+}
+
+func minDuration(left time.Duration, right time.Duration) time.Duration {
+	if left <= 0 {
+		return right
+	}
+	if right <= 0 {
+		return left
+	}
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (s *networkAssistantService) injectLocalTUNUDPResponse(relay *localTUNUDPRelay, payload []byte) {

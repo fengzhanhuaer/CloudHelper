@@ -72,10 +72,11 @@ type probeChainRelayNetAddr struct {
 }
 
 type tunnelOpenRequest struct {
-	Type      string `json:"type"`
-	Network   string `json:"network"`
-	Address   string `json:"address"`
-	SessionID string `json:"session_id,omitempty"`
+	Type          string `json:"type"`
+	Network       string `json:"network"`
+	Address       string `json:"address"`
+	SessionID     string `json:"session_id,omitempty"`
+	AssociationID string `json:"association_id,omitempty"`
 }
 
 type tunnelOpenResponse struct {
@@ -110,10 +111,11 @@ func isTunnelOpenRemoteError(err error) bool {
 }
 
 type tunnelMuxStream struct {
-	client  *tunnelMuxClient
-	id      string
-	network string
-	conn    net.Conn
+	client        *tunnelMuxClient
+	id            string
+	network       string
+	associationID string
+	conn          net.Conn
 
 	readCh chan []byte
 	errCh  chan error
@@ -820,6 +822,10 @@ func (c *tunnelMuxClient) ping() (time.Duration, error) {
 }
 
 func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream, error) {
+	return c.openStreamWithAssociation(network, address, "")
+}
+
+func (c *tunnelMuxClient) openStreamWithAssociation(network, address string, associationID string) (*tunnelMuxStream, error) {
 	if c.isClosed() {
 		return nil, errors.New("tunnel mux connection closed")
 	}
@@ -850,10 +856,11 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 	}
 
 	req := tunnelOpenRequest{
-		Type:      "open",
-		Network:   strings.TrimSpace(network),
-		Address:   strings.TrimSpace(address),
-		SessionID: strings.TrimSpace(c.sessionID),
+		Type:          "open",
+		Network:       strings.TrimSpace(network),
+		Address:       strings.TrimSpace(address),
+		SessionID:     strings.TrimSpace(c.sessionID),
+		AssociationID: strings.TrimSpace(associationID),
 	}
 	_ = streamConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := json.NewEncoder(streamConn).Encode(req); err != nil {
@@ -929,12 +936,13 @@ func (c *tunnelMuxClient) openStream(network, address string) (*tunnelMuxStream,
 
 	streamID := fmt.Sprintf("s%d", atomic.AddUint64(&c.seq, 1))
 	st := &tunnelMuxStream{
-		client:  c,
-		id:      streamID,
-		network: strings.ToLower(strings.TrimSpace(network)),
-		conn:    streamConn,
-		readCh:  make(chan []byte, 64),
-		errCh:   make(chan error, 4),
+		client:        c,
+		id:            streamID,
+		network:       strings.ToLower(strings.TrimSpace(network)),
+		associationID: strings.TrimSpace(associationID),
+		conn:          streamConn,
+		readCh:        make(chan []byte, 64),
+		errCh:         make(chan error, 4),
 	}
 
 	c.mu.Lock()
@@ -1748,9 +1756,14 @@ func (s *networkAssistantService) newTunnelMuxClientLocked(nodeID string, chainT
 }
 
 func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, group string) (*tunnelMuxStream, error) {
+	return s.openTunnelStreamForGroupWithAssociation(network, targetAddr, group, "")
+}
+
+func (s *networkAssistantService) openTunnelStreamForGroupWithAssociation(network, targetAddr, group string, associationID string) (*tunnelMuxStream, error) {
 	groupName := strings.TrimSpace(group)
 	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
 	cleanTarget := strings.ToLower(strings.TrimSpace(targetAddr))
+	cleanAssociationID := strings.TrimSpace(associationID)
 	startedAt := time.Now()
 
 	client, ok := s.getExistingTunnelMuxClientForGroup(groupName)
@@ -1769,10 +1782,11 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 		s.logfRateLimited(
 			fmt.Sprintf("mux:stream-open:no-group-client:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 			5*time.Second,
-			"open tunnel stream skipped: no available mux client (maintainer-owned): network=%s target=%s group=%s err=%v group_state={%s}",
+			"open tunnel stream skipped: no available mux client (maintainer-owned): network=%s target=%s group=%s association=%s err=%v group_state={%s}",
 			network,
 			targetAddr,
 			groupName,
+			cleanAssociationID,
 			err,
 			s.describeRuleGroupRuntimeState(groupName),
 		)
@@ -1780,7 +1794,7 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 		return nil, err
 	}
 
-	stream, err := client.openStream(network, targetAddr)
+	stream, err := client.openStreamWithAssociation(network, targetAddr, cleanAssociationID)
 	if err == nil {
 		s.recordDNSBiMapConnectResult(targetAddr, groupName, true)
 		return stream, nil
@@ -1822,10 +1836,11 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 		s.logfRateLimited(
 			fmt.Sprintf("mux:stream-open:group-remote-failed:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 			5*time.Second,
-			"open tunnel stream remote rejected: network=%s target=%s group=%s reason=%s elapsed=%s err=%v client_state={%s} group_state={%s}",
+			"open tunnel stream remote rejected: network=%s target=%s group=%s association=%s reason=%s elapsed=%s err=%v client_state={%s} group_state={%s}",
 			network,
 			targetAddr,
 			groupName,
+			cleanAssociationID,
 			reason,
 			time.Since(startedAt),
 			err,
@@ -1850,10 +1865,11 @@ func (s *networkAssistantService) openTunnelStreamForGroup(network, targetAddr, 
 	s.logfRateLimited(
 		fmt.Sprintf("mux:stream-open:group-failed:%s|%s|group:%s", cleanNetwork, cleanTarget, strings.ToLower(groupName)),
 		5*time.Second,
-		"open tunnel stream failed with existing mux: network=%s target=%s group=%s reason=%s elapsed=%s err=%v client_state={%s} group_state={%s}",
+		"open tunnel stream failed with existing mux: network=%s target=%s group=%s association=%s reason=%s elapsed=%s err=%v client_state={%s} group_state={%s}",
 		network,
 		targetAddr,
 		groupName,
+		cleanAssociationID,
 		reason,
 		time.Since(startedAt),
 		err,

@@ -70,10 +70,10 @@ type probeChainRuntimeConfig struct {
 }
 
 type probeChainBridgeSession struct {
-	ID         string
-	Session    *yamux.Session
-	BridgeRole string
-	RemoteAddr string
+	ID          string
+	Session     *yamux.Session
+	BridgeRole  string
+	RemoteAddr  string
 	ConnectedAt time.Time
 }
 
@@ -136,10 +136,11 @@ type probeChainSocksRequest struct {
 }
 
 type probeChainTunnelOpenRequest struct {
-	Type      string `json:"type"`
-	Network   string `json:"network"`
-	Address   string `json:"address"`
-	SessionID string `json:"session_id,omitempty"`
+	Type          string `json:"type"`
+	Network       string `json:"network"`
+	Address       string `json:"address"`
+	SessionID     string `json:"session_id,omitempty"`
+	AssociationID string `json:"association_id,omitempty"`
 }
 
 type probeChainTunnelOpenResponse struct {
@@ -181,9 +182,9 @@ var probeChainRuntimeState = struct {
 }{runtimes: make(map[string]*probeChainRuntime)}
 
 const (
-	probeChainRelayAPIPath         = "/api/node/chain/relay"
-	probeChainSourceIPHintPrefix   = "CHSRCIP "
-	probeChainAuthNoncePrefix      = "CHNONCE "
+	probeChainRelayAPIPath       = "/api/node/chain/relay"
+	probeChainSourceIPHintPrefix = "CHSRCIP "
+	probeChainAuthNoncePrefix    = "CHNONCE "
 
 	probeChainLegacyChainIDHeader  = "X-CH-Chain-ID"
 	probeChainCodexChainIDHeader   = "X-Codex-Chain-Id"
@@ -952,6 +953,10 @@ func openProbeChainPortForwardLocalTarget(network string, targetAddr string) (ne
 }
 
 func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide string, network string, targetAddr string) (net.Conn, error) {
+	return openProbeChainPortForwardStreamWithAssociation(runtime, entrySide, network, targetAddr, "")
+}
+
+func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, associationID string) (net.Conn, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
@@ -983,9 +988,10 @@ func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide strin
 		return nil, err
 	}
 	request := probeChainTunnelOpenRequest{
-		Type:    "open",
-		Network: requestedNetwork,
-		Address: strings.TrimSpace(targetAddr),
+		Type:          "open",
+		Network:       requestedNetwork,
+		Address:       strings.TrimSpace(targetAddr),
+		AssociationID: strings.TrimSpace(associationID),
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
 	if err := json.NewEncoder(stream).Encode(request); err != nil {
@@ -1141,7 +1147,7 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 	}()
 
 	openSession := func(key string, addr net.Addr) (*udpForwardSession, error) {
-		stream, openErr := openProbeChainPortForwardStream(runtime, cfg.EntrySide, probeChainPortForwardNetworkUDP, targetAddr)
+		stream, openErr := openProbeChainPortForwardStreamWithAssociation(runtime, cfg.EntrySide, probeChainPortForwardNetworkUDP, targetAddr, key)
 		if openErr != nil {
 			return nil, openErr
 		}
@@ -2539,12 +2545,13 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		log.Printf("probe chain proxy open request: chain=%s role=%s network=%s target=%s session_id=%s", strings.TrimSpace(runtime.cfg.chainID), strings.TrimSpace(runtime.cfg.role), network, target, requestedSessionID)
 	}
 
+	associationID := strings.TrimSpace(req.AssociationID)
 	var proxyErr error
 	switch network {
 	case "tcp":
 		proxyErr = handleProbeChainTunnelTCPStream(stream, target)
 	case "udp":
-		proxyErr = handleProbeChainTunnelUDPStream(stream, target)
+		proxyErr = handleProbeChainTunnelUDPStream(stream, target, associationID)
 	case "http":
 		proxyErr = handleProbeChainTunnelHTTPProxyStream(runtime, stream)
 	default:
@@ -2603,18 +2610,13 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 	return copyErr
 }
 
-func handleProbeChainTunnelUDPStream(stream net.Conn, target string) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", target)
+func handleProbeChainTunnelUDPStream(stream net.Conn, target string, associationID string) error {
+	assoc, err := globalProbeChainUDPAssociationPool.Acquire(associationID, target)
 	if err != nil {
 		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err
 	}
-	udpConn, err := net.DialUDP("udp", nil, udpAddr)
-	if err != nil {
-		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
-		return err
-	}
-	defer udpConn.Close()
+	defer assoc.Release()
 
 	if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
 		return err
@@ -2632,7 +2634,7 @@ func handleProbeChainTunnelUDPStream(stream net.Conn, target string) error {
 			if len(payload) == 0 {
 				continue
 			}
-			if _, writeErr := udpConn.Write(payload); writeErr != nil {
+			if writeErr := assoc.Write(payload); writeErr != nil {
 				errCh <- writeErr
 				return
 			}
@@ -2642,7 +2644,7 @@ func handleProbeChainTunnelUDPStream(stream net.Conn, target string) error {
 	go func() {
 		buf := make([]byte, 64*1024)
 		for {
-			n, readErr := udpConn.Read(buf)
+			n, readErr := assoc.Read(buf)
 			if n > 0 {
 				if writeErr := writeProbeChainFramedPacket(stream, buf[:n]); writeErr != nil {
 					errCh <- writeErr

@@ -1,0 +1,99 @@
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"net"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+type probeUDPAssociationDebugItemPayload struct {
+	Key         string `json:"key"`
+	Target      string `json:"target,omitempty"`
+	RouteTarget string `json:"route_target,omitempty"`
+	NodeID      string `json:"node_id,omitempty"`
+	Group       string `json:"group,omitempty"`
+	Direct      bool   `json:"direct"`
+	Transport   string `json:"transport,omitempty"`
+	Refs        int32  `json:"refs,omitempty"`
+	Attached    bool   `json:"attached,omitempty"`
+	Active      bool   `json:"active"`
+	LastActive  string `json:"last_active,omitempty"`
+	IdleMS      int64  `json:"idle_ms"`
+}
+
+type probeUDPAssociationsResultPayload struct {
+	Type      string                                `json:"type"`
+	RequestID string                                `json:"request_id"`
+	NodeID    string                                `json:"node_id"`
+	OK        bool                                  `json:"ok"`
+	Scope     string                                `json:"scope,omitempty"`
+	Count     int                                   `json:"count"`
+	Items     []probeUDPAssociationDebugItemPayload `json:"items"`
+	FetchedAt string                                `json:"fetched_at,omitempty"`
+	Error     string                                `json:"error,omitempty"`
+	Timestamp string                                `json:"timestamp,omitempty"`
+}
+
+func runProbeUDPAssociationsFetch(cmd probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
+	requestID := strings.TrimSpace(cmd.RequestID)
+	if requestID == "" {
+		return
+	}
+	payload := probeUDPAssociationsResultPayload{
+		Type:      "udp_associations_result",
+		RequestID: requestID,
+		NodeID:    strings.TrimSpace(identity.NodeID),
+		OK:        true,
+		Scope:     "probe",
+		Items:     snapshotProbeUDPAssociations(),
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	payload.Count = len(payload.Items)
+	if writeErr := writeProbeStreamJSON(stream, encoder, writeMu, payload); writeErr != nil {
+		log.Printf("probe udp associations response send failed: request_id=%s err=%v", requestID, writeErr)
+	}
+}
+
+func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
+	pool := globalProbeChainUDPAssociationPool
+	if pool == nil {
+		return []probeUDPAssociationDebugItemPayload{}
+	}
+	now := time.Now()
+	items := make([]probeUDPAssociationDebugItemPayload, 0)
+	pool.mu.Lock()
+	for key, assoc := range pool.items {
+		if assoc == nil {
+			continue
+		}
+		item := probeUDPAssociationDebugItemPayload{
+			Key:       strings.TrimSpace(key),
+			Target:    strings.TrimSpace(assoc.target),
+			Transport: "udp",
+			Refs:      assoc.refs.Load(),
+			Active:    assoc.conn != nil,
+		}
+		assoc.mu.Lock()
+		item.Attached = assoc.attached
+		assoc.mu.Unlock()
+		if lastActive := assoc.lastActiveUnix.Load(); lastActive > 0 {
+			lastActiveAt := time.Unix(lastActive, 0).UTC()
+			item.LastActive = lastActiveAt.Format(time.RFC3339)
+			item.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+		}
+		items = append(items, item)
+	}
+	pool.mu.Unlock()
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Target == items[j].Target {
+			return items[i].Key < items[j].Key
+		}
+		return items[i].Target < items[j].Target
+	})
+	return items
+}
