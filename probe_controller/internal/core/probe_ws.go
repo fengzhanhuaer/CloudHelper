@@ -128,6 +128,15 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeUDPAssociationsResult(msg)
+		case "tcp_debug_result":
+			var msg probeTCPDebugResultMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
+			if strings.TrimSpace(msg.NodeID) == "" {
+				msg.NodeID = nodeID
+			}
+			consumeProbeTCPDebugResult(msg)
 		case "link_test_control_result":
 			var msg probeLinkTestControlResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {

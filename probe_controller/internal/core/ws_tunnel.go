@@ -133,6 +133,7 @@ func handleTCPTunnelStream(stream net.Conn, target string, pushControllerExcepti
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	remoteConn, err := dialer.Dial("tcp", target)
 	if err != nil {
+		globalControllerTCPDebugState.recordFailure("open_failed", target, err)
 		_ = writeTunnelOpenResponse(stream, tunnelOpenResponse{OK: false, Error: err.Error()})
 		pushControllerException("open", "open stream failed: network=tcp target=%s err=%v", target, err)
 		return
@@ -143,18 +144,38 @@ func handleTCPTunnelStream(stream net.Conn, target string, pushControllerExcepti
 		return
 	}
 
+	relay := globalControllerTCPDebugState.beginRelay(target)
 	errCh := make(chan error, 2)
 	go func() {
-		_, copyErr := io.Copy(remoteConn, stream)
+		if relay != nil {
+			defer relay.releaseSide()
+		}
+		writer := io.Writer(remoteConn)
+		if relay != nil {
+			writer = &controllerTCPDebugWriter{dst: remoteConn, relay: relay, direction: "up"}
+		}
+		_, copyErr := io.Copy(writer, stream)
 		errCh <- copyErr
 	}()
 	go func() {
-		_, copyErr := io.Copy(stream, remoteConn)
+		if relay != nil {
+			defer relay.releaseSide()
+		}
+		writer := io.Writer(stream)
+		if relay != nil {
+			writer = &controllerTCPDebugWriter{dst: stream, relay: relay, direction: "down"}
+		}
+		_, copyErr := io.Copy(writer, remoteConn)
 		errCh <- copyErr
 	}()
 
 	err = <-errCh
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		if relay != nil {
+			globalControllerTCPDebugState.recordRelayFailure(relay, err)
+		} else {
+			globalControllerTCPDebugState.recordFailure("relay_failed", target, err)
+		}
 		pushControllerException("read", "stream relay failed: network=tcp target=%s err=%v", target, err)
 	}
 }

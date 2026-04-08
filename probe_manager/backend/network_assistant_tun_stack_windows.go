@@ -50,8 +50,9 @@ type localTUNReadDeadliner interface {
 type localTUNNetstack struct {
 	service *networkAssistantService
 
-	stack  *stack.Stack
-	linkEP *channel.Endpoint
+	stack    *stack.Stack
+	linkEP   *channel.Endpoint
+	tcpDebug *localTUNTCPDebugState
 
 	cancel context.CancelFunc
 	doneCh chan struct{}
@@ -191,11 +192,12 @@ func newLocalTUNNetstack(service *networkAssistantService) (*localTUNNetstack, e
 
 	ctx, cancel := context.WithCancel(context.Background())
 	netstackRunner := &localTUNNetstack{
-		service: service,
-		stack:   gStack,
-		linkEP:  linkEP,
-		cancel:  cancel,
-		doneCh:  make(chan struct{}),
+		service:  service,
+		stack:    gStack,
+		linkEP:   linkEP,
+		tcpDebug: newLocalTUNTCPDebugState(),
+		cancel:   cancel,
+		doneCh:   make(chan struct{}),
 	}
 
 	tcpForwarder := tcp.NewForwarder(gStack, localTUNTCPForwarderWindow, localTUNTCPForwarderInFlight, netstackRunner.handleTCPForwarder)
@@ -316,6 +318,9 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 			reason,
 			createErr.String(),
 		)
+		if n.tcpDebug != nil {
+			n.tcpDebug.recordFailure("create_failed", reason, targetAddr, tunnelRouteDecision{}, errors.New(createErr.String()))
+		}
 		return
 	}
 	req.Complete(false)
@@ -350,6 +355,9 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 			localTUNTCPDialTimeout,
 			openErr,
 		)
+		if n.tcpDebug != nil {
+			n.tcpDebug.recordFailure("open_failed", reason, targetAddr, route, openErr)
+		}
 		return
 	}
 
@@ -360,7 +368,8 @@ func (n *localTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		dstPort := uint16(id.LocalPort)
 		n.service.processMonitor.RecordTCPEvent(srcPort, dstIP, dstPort, route.Direct, route.NodeID, route.Group)
 	}
-	n.relayTCP(inbound, outbound)
+	relay := n.beginTCPRelay(targetAddr, route)
+	n.relayTCP(inbound, outbound, relay)
 }
 
 func (n *localTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
@@ -595,15 +604,35 @@ func (n *localTUNNetstack) openOutboundUDP(targetAddr string) (io.ReadWriteClose
 	return newTunnelStreamNetConn(stream, route.TargetAddr), route, nil
 }
 
-func (n *localTUNNetstack) relayTCP(inbound net.Conn, outbound net.Conn) {
-	go n.pipeAndCloseTCP(outbound, inbound)
-	go n.pipeAndCloseTCP(inbound, outbound)
+func (n *localTUNNetstack) relayTCP(inbound net.Conn, outbound net.Conn, relay *localTUNTCPRelay) {
+	go n.pipeAndCloseTCP(outbound, inbound, relay, "up")
+	go n.pipeAndCloseTCP(inbound, outbound, relay, "down")
 }
 
-func (n *localTUNNetstack) pipeAndCloseTCP(dst net.Conn, src net.Conn) {
+func (n *localTUNNetstack) pipeAndCloseTCP(dst net.Conn, src net.Conn, relay *localTUNTCPRelay, direction string) {
 	defer closeConnWrite(dst)
 	defer closeConnRead(src)
-	_, _ = io.Copy(dst, src)
+	if relay != nil {
+		defer relay.releaseSide()
+	}
+	writer := io.Writer(dst)
+	if relay != nil {
+		writer = &localTUNTCPDebugWriter{dst: dst, relay: relay, direction: direction}
+	}
+	_, err := io.Copy(writer, src)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		reason := classifyManagerTCPDebugError("relay_failed", err)
+		if relay != nil && relay.state != nil {
+			relay.state.recordFailure("relay_failed", reason, relay.target, tunnelRouteDecision{
+				Direct:     relay.direct,
+				TargetAddr: relay.routeTarget,
+				NodeID:     relay.nodeID,
+				Group:      relay.group,
+			}, err)
+		} else if n != nil && n.tcpDebug != nil {
+			n.tcpDebug.recordFailure("relay_failed", reason, "", tunnelRouteDecision{}, err)
+		}
+	}
 }
 
 func (b *localTUNUDPBridge) start() {

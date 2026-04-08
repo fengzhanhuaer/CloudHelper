@@ -875,8 +875,26 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			return nil, err
 		}
 		return buildProbeUDPAssociationsPayloadFromResult(result), nil
+	case "admin.probe.tcp.debug.get":
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		nodeID := normalizeProbeNodeID(req.NodeID)
+		if nodeID == "" {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		result, err := fetchProbeTCPDebugFromNode(nodeID)
+		if err != nil {
+			return nil, err
+		}
+		return buildProbeTCPDebugPayloadFromResult(result), nil
 	case "admin.tunnel.udp.associations":
 		return buildControllerUDPAssociationsPayload(), nil
+	case "admin.tunnel.tcp.debug":
+		return buildControllerTCPDebugPayload(), nil
 	case "admin.probe.report_interval.get":
 		return getProbeReportIntervalSnapshot(), nil
 	case "admin.probe.report_interval.set":

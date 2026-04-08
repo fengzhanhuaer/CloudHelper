@@ -2584,6 +2584,7 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 	dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
 	remoteConn, err := dialer.Dial("tcp", target)
 	if err != nil {
+		globalProbeTCPDebugState.recordFailure("open_failed", target, err)
 		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err
 	}
@@ -2593,19 +2594,39 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 		return err
 	}
 
+	relay := globalProbeTCPDebugState.beginRelay(target)
 	errCh := make(chan error, 2)
 	go func() {
-		_, copyErr := io.Copy(remoteConn, stream)
+		if relay != nil {
+			defer relay.releaseSide()
+		}
+		writer := io.Writer(remoteConn)
+		if relay != nil {
+			writer = &probeTCPDebugWriter{dst: remoteConn, relay: relay, direction: "up"}
+		}
+		_, copyErr := io.Copy(writer, stream)
 		errCh <- copyErr
 	}()
 	go func() {
-		_, copyErr := io.Copy(stream, remoteConn)
+		if relay != nil {
+			defer relay.releaseSide()
+		}
+		writer := io.Writer(stream)
+		if relay != nil {
+			writer = &probeTCPDebugWriter{dst: stream, relay: relay, direction: "down"}
+		}
+		_, copyErr := io.Copy(writer, remoteConn)
 		errCh <- copyErr
 	}()
 
 	copyErr := <-errCh
 	if copyErr == nil || errors.Is(copyErr, io.EOF) || errors.Is(copyErr, net.ErrClosed) {
 		return nil
+	}
+	if relay != nil {
+		globalProbeTCPDebugState.recordRelayFailure(relay, copyErr)
+	} else {
+		globalProbeTCPDebugState.recordFailure("relay_failed", target, copyErr)
 	}
 	return copyErr
 }
