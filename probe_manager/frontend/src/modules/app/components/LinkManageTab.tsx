@@ -1394,9 +1394,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
               </thead>
               <tbody>
                 {chains.length > 0 ? chains.map((item) => (
-                  <tr key={item.chain_id}>
+                  <tr key={item.chain_id} style={item.unavailable ? { opacity: 0.65 } : undefined}>
                     <td>
                       <div className="probe-table-name">{item.name || "-"}</div>
+                      {item.unavailable ? <div className="probe-table-sub" style={{ color: "#f59e0b" }}>不可用：{item.unavailable_reason || "关联已删除探针"}</div> : null}
                     </td>
                     <td>
                       <div>{item.user_id || "-"}</div>
@@ -1431,7 +1432,10 @@ export function LinkManageTab(props: LinkManageTabProps) {
                     </td>
                     <td>{item.hop_configs && item.hop_configs.length > 0 ? "按探针配置" : `${item.listen_host || defaultLinkChainListenHost}:${normalizePort(item.listen_port || 0)}`}</td>
                     <td>{normalizeProbeLinkLayer(item.link_layer)}</td>
-                    <td>{item.updated_at || item.created_at || "-"}</td>
+                    <td>
+                      <div>{item.updated_at || item.created_at || "-"}</div>
+                      {item.unavailable ? <div className="probe-table-sub">已跳过下发</div> : null}
+                    </td>
                     <td>
                       <div className="probe-table-actions">
                         <button
@@ -1452,7 +1456,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
                           className="btn"
                           id={`chain-ping-btn-${item.chain_id}`}
                           onClick={() => void handlePingChain(item.chain_id)}
-                          disabled={!!chainPingingID}
+                          disabled={!!chainPingingID || item.unavailable === true}
                           style={{
                             minWidth: 54,
                             background: chainPingingID === item.chain_id ? "#555" : undefined,
@@ -1795,6 +1799,9 @@ function sortProbeLinkChains(items: ProbeLinkChainItem[]): ProbeLinkChainItem[] 
   }
   const out = [...items];
   out.sort((left, right) => {
+    if ((left.unavailable === true) !== (right.unavailable === true)) {
+      return left.unavailable === true ? 1 : -1;
+    }
     const leftKey = String(left.updated_at || left.created_at || "").trim();
     const rightKey = String(right.updated_at || right.created_at || "").trim();
     if (leftKey === rightKey) {
@@ -2220,7 +2227,11 @@ function buildChainRouteSummary(item: ProbeLinkChainItem, nodeNameByID: Record<s
 	} else {
 		route.push("(未配置出口)");
 	}
-	return route.join(" -> ");
+	const summary = route.join(" -> ");
+	if (item.unavailable) {
+		return `${summary} [不可用]`;
+	}
+	return summary;
 }
 
 function resolveProbeRouteNodeLabel(nodeID: string, nodeNameByID: Record<string, string>): string {

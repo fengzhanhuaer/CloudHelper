@@ -1,21 +1,20 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
-  GetDeletedProbeNodeNos,
   GetProbeNodes,
-  MarkProbeNodeDeleted,
   ReplaceProbeNodes,
-  RestoreDeletedProbeNode,
 } from "../../../../wailsjs/go/main/App";
 import { backend } from "../../../../wailsjs/go/models";
 import {
   createProbeNodeOnController,
+  deleteProbeNodeOnController,
   deleteProbeShellShortcut,
   execProbeShellSessionOnController,
   fetchProbeNodeLogs,
   fetchProbeNodeStatus,
-  fetchProbeNodes,
+  fetchProbeNodesSnapshot,
   fetchProbeReportIntervalSettings,
   fetchProbeShellShortcuts,
+  restoreProbeNodeOnController,
   setProbeReportInterval,
   startProbeShellSessionOnController,
   stopProbeShellSessionOnController,
@@ -24,6 +23,7 @@ import {
   upgradeAllProbeNodes,
   upgradeProbeNode,
   type ProbeNodeLogsResponse,
+  type ProbeNodesSnapshot,
   type ProbeShellShortcutItem,
   type ProbeShellSessionControlResponse,
   type ProbeNodeStatusItem,
@@ -116,7 +116,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [upgradingNodeNos, setUpgradingNodeNos] = useState<number[]>([]);
   const [status, setStatus] = useState("正在加载探针列表...");
   const [settingsDraft, setSettingsDraft] = useState<ProbeNodeSettingsDraft | null>(null);
-  const [deletedNodeNos, setDeletedNodeNos] = useState<Set<number>>(new Set());
+  const [deletedNodes, setDeletedNodes] = useState<ProbeNodeItem[]>([]);
   const statusRows = buildProbeStatusRowsFromCache(nodes, nodeStatusItems);
   const [logNodeIDInput, setLogNodeIDInput] = useState("");
   const [logLinesInput, setLogLinesInput] = useState("200");
@@ -268,12 +268,10 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       setIsLoading(true);
     }
     try {
-      const [remoteNodes, deletedNos] = await Promise.all([
-        fetchProbeNodesFromController(controllerAddress, props.sessionToken),
-        GetDeletedProbeNodeNos().catch(() => [] as number[]),
-      ]);
-      setDeletedNodeNos(new Set(deletedNos ?? []));
-      const controllerNodes = sortNodes(remoteNodes as ProbeNodeItem[]);
+      const snapshot = await fetchProbeNodesSnapshotFromController(controllerAddress, props.sessionToken);
+      const controllerNodes = sortNodes(snapshot.nodes as ProbeNodeItem[]);
+      const controllerDeletedNodes = sortNodes(snapshot.deleted_nodes as ProbeNodeItem[]);
+      setDeletedNodes(controllerDeletedNodes);
 
       let baseNodes = controllerNodes;
       if (persistToCacheFile) {
@@ -296,7 +294,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
 
       setNodes(mergedNodes);
       if (!silent) {
-        setStatus(remoteNodes.length ? "已从主控同步探针列表" : "主控暂无探针，请先创建");
+        setStatus(controllerNodes.length ? "已从主控同步探针列表" : "主控暂无探针，请先创建");
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -498,30 +496,41 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   }
 
   async function deleteNode(nodeNo: number) {
+    setIsLoading(true);
     try {
-      await MarkProbeNodeDeleted(nodeNo);
-      setDeletedNodeNos((prev: Set<number>) => new Set([...prev, nodeNo]));
-      const node = nodes.find((n: ProbeNodeItem) => n.node_no === nodeNo);
-      setStatus(`探针已移入删除列表：${node?.node_name ?? `#${nodeNo}`}`);
+      const snapshot = await deleteProbeNodeOnController(controllerAddress, props.sessionToken, nodeNo);
+      const active = sortNodes(snapshot.nodes as ProbeNodeItem[]);
+      const deleted = sortNodes(snapshot.deleted_nodes as ProbeNodeItem[]);
+      await ReplaceProbeNodes(active as unknown as backend.ProbeNode[]);
+      setNodes(active);
+      setDeletedNodes(deleted);
+      setNodeStatusItems((prev) => prev.filter((item) => item.node_no !== nodeNo));
+      const node = [...active, ...deleted].find((n: ProbeNodeItem) => n.node_no === nodeNo);
+      setStatus(`探针已移入服务端删除列表：${node?.node_name ?? `#${nodeNo}`}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`删除探针失败：${msg}`);
+    } finally {
+      setIsLoading(false);
     }
   }
 
   async function restoreNode(nodeNo: number) {
+    setIsLoading(true);
     try {
-      await RestoreDeletedProbeNode(nodeNo);
-      setDeletedNodeNos((prev: Set<number>) => {
-        const next = new Set(prev);
-        next.delete(nodeNo);
-        return next;
-      });
-      const node = nodes.find((n: ProbeNodeItem) => n.node_no === nodeNo);
-      setStatus(`探针已恢复显示：${node?.node_name ?? `#${nodeNo}`}`);
+      const snapshot = await restoreProbeNodeOnController(controllerAddress, props.sessionToken, nodeNo);
+      const active = sortNodes(snapshot.nodes as ProbeNodeItem[]);
+      const deleted = sortNodes(snapshot.deleted_nodes as ProbeNodeItem[]);
+      await ReplaceProbeNodes(active as unknown as backend.ProbeNode[]);
+      setNodes(active);
+      setDeletedNodes(deleted);
+      const node = active.find((n: ProbeNodeItem) => n.node_no === nodeNo) || deleted.find((n: ProbeNodeItem) => n.node_no === nodeNo);
+      setStatus(`探针已恢复到活跃列表：${node?.node_name ?? `#${nodeNo}`}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`恢复探针失败：${msg}`);
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -969,8 +978,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
           </div>
 
           {(() => {
-            const activeNodes = nodes.filter((n: ProbeNodeItem) => !deletedNodeNos.has(n.node_no));
-            const deletedNodes = nodes.filter((n: ProbeNodeItem) => deletedNodeNos.has(n.node_no));
+            const activeNodes = nodes;
             return (
               <>
                 {activeNodes.length === 0 ? (
@@ -1033,7 +1041,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                 {deletedNodes.length > 0 && (
                   <div style={{ marginTop: 24 }}>
                     <div className="probe-deleted-section-title">
-                      已删除探针（{deletedNodes.length} 个）— 仅本地隐藏，探针仍存于主控
+                      已删除探针（{deletedNodes.length} 个）— 服务端已隔离，不参与 DDNS、网络助手与升级
                     </div>
                     <div className="probe-table-wrap">
                       <table className="probe-table probe-table-deleted">
@@ -1805,13 +1813,13 @@ async function copyText(text: string): Promise<void> {
   throw new Error("clipboard api unavailable");
 }
 
-async function fetchProbeNodesFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeNodeItem[]> {
+async function fetchProbeNodesSnapshotFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeNodesSnapshot> {
   const base = sanitizeControllerAddress(controllerBaseUrl);
   const token = sessionToken.trim();
   if (!token) {
     throw new Error("session token is empty, cannot fetch nodes from controller");
   }
-  return (await fetchProbeNodes(base, token)) as ProbeNodeItem[];
+  return await fetchProbeNodesSnapshot(base, token);
 }
 
 async function createProbeNodeFromController(controllerBaseUrl: string, sessionToken: string, nodeName: string): Promise<ProbeNodeItem> {

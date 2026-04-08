@@ -51,23 +51,25 @@ type probeLinkChainPortForwardConfig struct {
 }
 
 type probeLinkChainRecord struct {
-	ChainID        string                            `json:"chain_id"`
-	Name           string                            `json:"name"`
-	UserID         string                            `json:"user_id"`
-	UserPublicKey  string                            `json:"user_public_key"`
-	Secret         string                            `json:"secret"`
-	EntryNodeID    string                            `json:"entry_node_id"`
-	ExitNodeID     string                            `json:"exit_node_id"`
-	CascadeNodeIDs []string                          `json:"cascade_node_ids"`
-	ListenHost     string                            `json:"listen_host"`
-	ListenPort     int                               `json:"listen_port"`
-	LinkLayer      string                            `json:"link_layer"`
-	HopConfigs     []probeLinkChainHopConfig         `json:"hop_configs"`
-	PortForwards   []probeLinkChainPortForwardConfig `json:"port_forwards,omitempty"`
-	EgressHost     string                            `json:"egress_host"`
-	EgressPort     int                               `json:"egress_port"`
-	CreatedAt      string                            `json:"created_at"`
-	UpdatedAt      string                            `json:"updated_at"`
+	ChainID           string                            `json:"chain_id"`
+	Name              string                            `json:"name"`
+	UserID            string                            `json:"user_id"`
+	UserPublicKey     string                            `json:"user_public_key"`
+	Secret            string                            `json:"secret"`
+	EntryNodeID       string                            `json:"entry_node_id"`
+	ExitNodeID        string                            `json:"exit_node_id"`
+	CascadeNodeIDs    []string                          `json:"cascade_node_ids"`
+	ListenHost        string                            `json:"listen_host"`
+	ListenPort        int                               `json:"listen_port"`
+	LinkLayer         string                            `json:"link_layer"`
+	HopConfigs        []probeLinkChainHopConfig         `json:"hop_configs"`
+	PortForwards      []probeLinkChainPortForwardConfig `json:"port_forwards,omitempty"`
+	EgressHost        string                            `json:"egress_host"`
+	EgressPort        int                               `json:"egress_port"`
+	CreatedAt         string                            `json:"created_at"`
+	UpdatedAt         string                            `json:"updated_at"`
+	Unavailable       bool                              `json:"unavailable,omitempty"`
+	UnavailableReason string                            `json:"unavailable_reason,omitempty"`
 }
 
 func loadProbeLinkChainsLocked() []probeLinkChainRecord {
@@ -888,6 +890,69 @@ func buildProbeChainRouteNodes(item probeLinkChainRecord) []string {
 	return route
 }
 
+func describeProbeLinkChainUnavailableReasonLocked(item probeLinkChainRecord) string {
+	deletedNodeIDs := loadDeletedProbeNodeIDSetLocked()
+	if len(deletedNodeIDs) == 0 {
+		return ""
+	}
+	route := buildProbeChainRouteNodes(item)
+	if len(route) == 0 {
+		return ""
+	}
+	deletedLabels := make([]string, 0, len(route))
+	seen := make(map[string]struct{}, len(route))
+	for _, nodeID := range route {
+		normalized := normalizeProbeNodeID(nodeID)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := deletedNodeIDs[normalized]; !ok {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		deletedLabels = append(deletedLabels, "#"+normalized)
+	}
+	if len(deletedLabels) == 0 {
+		return ""
+	}
+	return "包含已删除探针：" + strings.Join(deletedLabels, ", ")
+}
+
+func annotateProbeLinkChainAvailability(items []probeLinkChainRecord) []probeLinkChainRecord {
+	if len(items) == 0 {
+		return []probeLinkChainRecord{}
+	}
+	ProbeStore.mu.RLock()
+	defer ProbeStore.mu.RUnlock()
+	out := make([]probeLinkChainRecord, 0, len(items))
+	for _, item := range items {
+		chain := item
+		chain.Unavailable = false
+		chain.UnavailableReason = ""
+		if reason := describeProbeLinkChainUnavailableReasonLocked(chain); strings.TrimSpace(reason) != "" {
+			chain.Unavailable = true
+			chain.UnavailableReason = reason
+		}
+		out = append(out, chain)
+	}
+	return out
+}
+
+func filterAvailableProbeLinkChains(items []probeLinkChainRecord) []probeLinkChainRecord {
+	annotated := annotateProbeLinkChainAvailability(items)
+	out := make([]probeLinkChainRecord, 0, len(annotated))
+	for _, item := range annotated {
+		if item.Unavailable {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 // fillChainRelayHosts looks up the Cloudflare business DDNS record for each hop node
 // and fills in RelayHost dynamically. The returned slice is a copy; original records are not modified.
 // ExternalPort is already auto-filled to ListenPort during save; no separate relay_port field is needed.
@@ -982,7 +1047,8 @@ func ProbeLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
 	all := loadProbeLinkChainsLocked()
 	ProbeLinkChainStore.mu.RUnlock()
 
-	related := filterProbeLinkChainsByNodeID(all, nodeID)
+	available := filterAvailableProbeLinkChains(all)
+	related := filterProbeLinkChainsByNodeID(available, nodeID)
 	enriched := fillChainRelayHosts(related)
 
 	writeJSON(w, http.StatusOK, map[string]any{"chains": enriched})

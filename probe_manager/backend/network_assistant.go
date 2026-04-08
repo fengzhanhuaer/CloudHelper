@@ -154,22 +154,24 @@ type cloudflareDDNSRecordItem struct {
 }
 
 type probeLinkChainAdminItem struct {
-	Name           string   `json:"name"`
-	ChainID        string   `json:"chain_id"`
-	UserID         string   `json:"user_id"`
-	UserPublicKey  string   `json:"user_public_key"`
-	Secret         string   `json:"secret"`
-	EntryNodeID    string   `json:"entry_node_id"`
-	ExitNodeID     string   `json:"exit_node_id"`
-	CascadeNodeIDs []string `json:"cascade_node_ids"`
-	ListenHost     string   `json:"listen_host"`
-	ListenPort     int      `json:"listen_port"`
-	LinkLayer      string   `json:"link_layer"`
-	EgressHost     string   `json:"egress_host"`
-	EgressPort     int      `json:"egress_port"`
-	CreatedAt      string   `json:"created_at"`
-	UpdatedAt      string   `json:"updated_at"`
-	HopConfigs     []struct {
+	Name              string   `json:"name"`
+	ChainID           string   `json:"chain_id"`
+	UserID            string   `json:"user_id"`
+	UserPublicKey     string   `json:"user_public_key"`
+	Secret            string   `json:"secret"`
+	EntryNodeID       string   `json:"entry_node_id"`
+	ExitNodeID        string   `json:"exit_node_id"`
+	CascadeNodeIDs    []string `json:"cascade_node_ids"`
+	ListenHost        string   `json:"listen_host"`
+	ListenPort        int      `json:"listen_port"`
+	LinkLayer         string   `json:"link_layer"`
+	EgressHost        string   `json:"egress_host"`
+	EgressPort        int      `json:"egress_port"`
+	CreatedAt         string   `json:"created_at"`
+	UpdatedAt         string   `json:"updated_at"`
+	Unavailable       bool     `json:"unavailable,omitempty"`
+	UnavailableReason string   `json:"unavailable_reason,omitempty"`
+	HopConfigs        []struct {
 		NodeNo       int    `json:"node_no"`
 		ListenHost   string `json:"listen_host,omitempty"`
 		ListenPort   int    `json:"listen_port,omitempty"`
@@ -221,26 +223,28 @@ type probeChainPortForward struct {
 }
 
 type probeChainEndpoint struct {
-	TargetID       string
-	ChainName      string
-	ChainID        string
-	UserID         string
-	UserPublicKey  string
-	EntryNode      string
-	ExitNode       string
-	CascadeNodeIDs []string
-	ListenHost     string
-	ListenPort     int
-	EgressHost     string
-	EgressPort     int
-	CreatedAt      string
-	UpdatedAt      string
-	EntryHost      string // public-facing host of the entry hop (DDNS or ip)
-	EntryPort      int    // public-facing port of the entry hop (external_port, fallback to listen_port)
-	LinkLayer      string
-	ChainSecret    string
-	HopConfigs     []probeChainHopConfig
-	PortForwards   []probeChainPortForward
+	TargetID          string
+	ChainName         string
+	ChainID           string
+	UserID            string
+	UserPublicKey     string
+	EntryNode         string
+	ExitNode          string
+	CascadeNodeIDs    []string
+	ListenHost        string
+	ListenPort        int
+	EgressHost        string
+	EgressPort        int
+	CreatedAt         string
+	UpdatedAt         string
+	EntryHost         string // public-facing host of the entry hop (DDNS or ip)
+	EntryPort         int    // public-facing port of the entry hop (external_port, fallback to listen_port)
+	LinkLayer         string
+	ChainSecret       string
+	HopConfigs        []probeChainHopConfig
+	PortForwards      []probeChainPortForward
+	Unavailable       bool
+	UnavailableReason string
 }
 
 type ProbeLinkChainCacheHopConfig struct {
@@ -266,24 +270,26 @@ type ProbeLinkChainCachePortForward struct {
 }
 
 type ProbeLinkChainCacheItem struct {
-	ChainID        string                           `json:"chain_id"`
-	Name           string                           `json:"name"`
-	UserID         string                           `json:"user_id"`
-	UserPublicKey  string                           `json:"user_public_key"`
-	Secret         string                           `json:"secret"`
-	EntryNodeID    string                           `json:"entry_node_id"`
-	ExitNodeID     string                           `json:"exit_node_id"`
-	CascadeNodeIDs []string                         `json:"cascade_node_ids"`
-	NodeNameByID   map[string]string                `json:"node_name_by_id,omitempty"`
-	ListenHost     string                           `json:"listen_host"`
-	ListenPort     int                              `json:"listen_port"`
-	LinkLayer      string                           `json:"link_layer,omitempty"`
-	HopConfigs     []ProbeLinkChainCacheHopConfig   `json:"hop_configs,omitempty"`
-	PortForwards   []ProbeLinkChainCachePortForward `json:"port_forwards,omitempty"`
-	EgressHost     string                           `json:"egress_host"`
-	EgressPort     int                              `json:"egress_port"`
-	CreatedAt      string                           `json:"created_at,omitempty"`
-	UpdatedAt      string                           `json:"updated_at,omitempty"`
+	ChainID           string                           `json:"chain_id"`
+	Name              string                           `json:"name"`
+	UserID            string                           `json:"user_id"`
+	UserPublicKey     string                           `json:"user_public_key"`
+	Secret            string                           `json:"secret"`
+	EntryNodeID       string                           `json:"entry_node_id"`
+	ExitNodeID        string                           `json:"exit_node_id"`
+	CascadeNodeIDs    []string                         `json:"cascade_node_ids"`
+	NodeNameByID      map[string]string                `json:"node_name_by_id,omitempty"`
+	ListenHost        string                           `json:"listen_host"`
+	ListenPort        int                              `json:"listen_port"`
+	LinkLayer         string                           `json:"link_layer,omitempty"`
+	HopConfigs        []ProbeLinkChainCacheHopConfig   `json:"hop_configs,omitempty"`
+	PortForwards      []ProbeLinkChainCachePortForward `json:"port_forwards,omitempty"`
+	EgressHost        string                           `json:"egress_host"`
+	EgressPort        int                              `json:"egress_port"`
+	CreatedAt         string                           `json:"created_at,omitempty"`
+	UpdatedAt         string                           `json:"updated_at,omitempty"`
+	Unavailable       bool                             `json:"unavailable,omitempty"`
+	UnavailableReason string                           `json:"unavailable_reason,omitempty"`
 }
 
 type adminWSRequest struct {
@@ -900,24 +906,26 @@ func buildProbeLinkChainCacheItem(endpoint probeChainEndpoint, nodeNameByID map[
 		})
 	}
 	return ProbeLinkChainCacheItem{
-		ChainID:        strings.TrimSpace(endpoint.ChainID),
-		Name:           strings.TrimSpace(endpoint.ChainName),
-		UserID:         strings.TrimSpace(endpoint.UserID),
-		UserPublicKey:  strings.TrimSpace(endpoint.UserPublicKey),
-		Secret:         strings.TrimSpace(endpoint.ChainSecret),
-		EntryNodeID:    strings.TrimSpace(endpoint.EntryNode),
-		ExitNodeID:     strings.TrimSpace(endpoint.ExitNode),
-		CascadeNodeIDs: append([]string(nil), endpoint.CascadeNodeIDs...),
-		NodeNameByID:   buildProbeChainNodeNameMap(endpoint, nodeNameByID),
-		ListenHost:     strings.TrimSpace(endpoint.ListenHost),
-		ListenPort:     endpoint.ListenPort,
-		LinkLayer:      strings.TrimSpace(endpoint.LinkLayer),
-		HopConfigs:     hops,
-		PortForwards:   portForwards,
-		EgressHost:     strings.TrimSpace(endpoint.EgressHost),
-		EgressPort:     endpoint.EgressPort,
-		CreatedAt:      strings.TrimSpace(endpoint.CreatedAt),
-		UpdatedAt:      strings.TrimSpace(endpoint.UpdatedAt),
+		ChainID:           strings.TrimSpace(endpoint.ChainID),
+		Name:              strings.TrimSpace(endpoint.ChainName),
+		UserID:            strings.TrimSpace(endpoint.UserID),
+		UserPublicKey:     strings.TrimSpace(endpoint.UserPublicKey),
+		Secret:            strings.TrimSpace(endpoint.ChainSecret),
+		EntryNodeID:       strings.TrimSpace(endpoint.EntryNode),
+		ExitNodeID:        strings.TrimSpace(endpoint.ExitNode),
+		CascadeNodeIDs:    append([]string(nil), endpoint.CascadeNodeIDs...),
+		NodeNameByID:      buildProbeChainNodeNameMap(endpoint, nodeNameByID),
+		ListenHost:        strings.TrimSpace(endpoint.ListenHost),
+		ListenPort:        endpoint.ListenPort,
+		LinkLayer:         strings.TrimSpace(endpoint.LinkLayer),
+		HopConfigs:        hops,
+		PortForwards:      portForwards,
+		EgressHost:        strings.TrimSpace(endpoint.EgressHost),
+		EgressPort:        endpoint.EgressPort,
+		CreatedAt:         strings.TrimSpace(endpoint.CreatedAt),
+		UpdatedAt:         strings.TrimSpace(endpoint.UpdatedAt),
+		Unavailable:       endpoint.Unavailable,
+		UnavailableReason: strings.TrimSpace(endpoint.UnavailableReason),
 	}
 }
 
@@ -2788,6 +2796,10 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 		if chainID == "" {
 			continue
 		}
+		if chain.Unavailable {
+			warnf("skip unavailable chain: chain_id=%s reason=%s", chainID, strings.TrimSpace(chain.UnavailableReason))
+			continue
+		}
 		targetID := buildChainTargetNodeID(chainID)
 		if targetID != "" {
 			if _, exists := seenIDs[targetID]; !exists {
@@ -2839,26 +2851,28 @@ func fetchProbeChainTargetsViaAdminWSWithNodes(baseURL, token string, warnf func
 			continue
 		}
 		targets[targetID] = probeChainEndpoint{
-			TargetID:       targetID,
-			ChainName:      strings.TrimSpace(chain.Name),
-			ChainID:        chainID,
-			UserID:         strings.TrimSpace(chain.UserID),
-			UserPublicKey:  strings.TrimSpace(chain.UserPublicKey),
-			EntryNode:      entryNodeID,
-			ExitNode:       normalizeProbeNodeIDValue(chain.ExitNodeID),
-			CascadeNodeIDs: append([]string(nil), chain.CascadeNodeIDs...),
-			ListenHost:     strings.TrimSpace(chain.ListenHost),
-			ListenPort:     chain.ListenPort,
-			EgressHost:     strings.TrimSpace(chain.EgressHost),
-			EgressPort:     chain.EgressPort,
-			CreatedAt:      strings.TrimSpace(chain.CreatedAt),
-			UpdatedAt:      strings.TrimSpace(chain.UpdatedAt),
-			EntryHost:      entryHost,
-			EntryPort:      entryPort,
-			LinkLayer:      resolveProbeChainEntryLinkLayer(chain, entryNodeID),
-			ChainSecret:    strings.TrimSpace(chain.Secret),
-			HopConfigs:     buildProbeChainHopConfigsForManager(chain),
-			PortForwards:   buildProbeChainPortForwardsForManager(chain),
+			TargetID:          targetID,
+			ChainName:         strings.TrimSpace(chain.Name),
+			ChainID:           chainID,
+			UserID:            strings.TrimSpace(chain.UserID),
+			UserPublicKey:     strings.TrimSpace(chain.UserPublicKey),
+			EntryNode:         entryNodeID,
+			ExitNode:          normalizeProbeNodeIDValue(chain.ExitNodeID),
+			CascadeNodeIDs:    append([]string(nil), chain.CascadeNodeIDs...),
+			ListenHost:        strings.TrimSpace(chain.ListenHost),
+			ListenPort:        chain.ListenPort,
+			EgressHost:        strings.TrimSpace(chain.EgressHost),
+			EgressPort:        chain.EgressPort,
+			CreatedAt:         strings.TrimSpace(chain.CreatedAt),
+			UpdatedAt:         strings.TrimSpace(chain.UpdatedAt),
+			EntryHost:         entryHost,
+			EntryPort:         entryPort,
+			LinkLayer:         resolveProbeChainEntryLinkLayer(chain, entryNodeID),
+			ChainSecret:       strings.TrimSpace(chain.Secret),
+			HopConfigs:        buildProbeChainHopConfigsForManager(chain),
+			PortForwards:      buildProbeChainPortForwardsForManager(chain),
+			Unavailable:       chain.Unavailable,
+			UnavailableReason: strings.TrimSpace(chain.UnavailableReason),
 		}
 	}
 	sort.Strings(ids)

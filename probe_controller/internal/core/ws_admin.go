@@ -310,8 +310,9 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 	case "admin.probe.nodes.get":
 		ProbeStore.mu.RLock()
 		nodes := loadProbeNodesLocked()
+		deletedNodes := loadDeletedProbeNodesLocked()
 		ProbeStore.mu.RUnlock()
-		return map[string]interface{}{"nodes": nodes}, nil
+		return map[string]interface{}{"nodes": nodes, "deleted_nodes": deletedNodes}, nil
 	case "admin.probe.node.create":
 		var req probeNodeCreateRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
@@ -342,6 +343,36 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 			return nil, err
 		}
 		return map[string]interface{}{"node": node}, nil
+	case "admin.probe.node.delete":
+		var req probeNodeDeleteRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		ProbeStore.mu.Lock()
+		node, nodes, deletedNodes, err := deleteProbeNodeLocked(req.NodeNo)
+		ProbeStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeStore.Save(); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"ok": true, "node": node, "nodes": nodes, "deleted_nodes": deletedNodes}, nil
+	case "admin.probe.node.restore":
+		var req probeNodeRestoreRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("invalid payload")
+		}
+		ProbeStore.mu.Lock()
+		node, nodes, deletedNodes, err := restoreDeletedProbeNodeLocked(req.NodeNo)
+		ProbeStore.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := ProbeStore.Save(); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"ok": true, "node": node, "nodes": nodes, "deleted_nodes": deletedNodes}, nil
 	case "admin.probe.link.update":
 		var req probeNodeLinkUpdateRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
@@ -641,7 +672,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		ProbeLinkChainStore.mu.RLock()
 		items := loadProbeLinkChainsLocked()
 		ProbeLinkChainStore.mu.RUnlock()
-		items = fillChainRelayHosts(items)
+		items = annotateProbeLinkChainAvailability(fillChainRelayHosts(items))
 		return map[string]interface{}{
 			"items": items,
 		}, nil

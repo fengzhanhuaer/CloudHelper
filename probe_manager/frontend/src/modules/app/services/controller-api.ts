@@ -359,6 +359,11 @@ export type ProbeNodeSyncItem = {
   updated_at: string;
 };
 
+export type ProbeNodesSnapshot = {
+  nodes: ProbeNodeSyncItem[];
+  deleted_nodes: ProbeNodeSyncItem[];
+};
+
 export type ProbeNodeStatusItem = {
   node_no: number;
   node_name: string;
@@ -473,6 +478,8 @@ export type ProbeLinkChainItem = {
   listen_host: string;
   listen_port: number;
   link_layer?: "http" | "http2" | "http3";
+  unavailable?: boolean;
+  unavailable_reason?: string;
 	hop_configs?: Array<{
 		node_no: number;
 		listen_host?: string;
@@ -546,9 +553,17 @@ export type ProbeLinkUserPublicKeyResponse = {
   public_key: string;
 };
 
+export async function fetchProbeNodesSnapshot(baseURL: string, token: string): Promise<ProbeNodesSnapshot> {
+  const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[]; deleted_nodes?: ProbeNodeSyncItem[] }>(baseURL, token, "admin.probe.nodes.get");
+  return {
+    nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
+    deleted_nodes: Array.isArray(payload.deleted_nodes) ? payload.deleted_nodes : [],
+  };
+}
+
 export async function fetchProbeNodes(baseURL: string, token: string): Promise<ProbeNodeSyncItem[]> {
-  const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[] }>(baseURL, token, "admin.probe.nodes.get");
-  return Array.isArray(payload.nodes) ? payload.nodes : [];
+  const payload = await fetchProbeNodesSnapshot(baseURL, token);
+  return payload.nodes;
 }
 
 export async function fetchProbeLinkChains(baseURL: string, token: string): Promise<ProbeLinkChainItem[]> {
@@ -681,6 +696,40 @@ export async function updateProbeNodeLinkOnController(
     throw new Error("controller returned empty node");
   }
   return result.node;
+}
+
+export async function deleteProbeNodeOnController(
+  baseURL: string,
+  token: string,
+  nodeNo: number,
+): Promise<ProbeNodesSnapshot> {
+  const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[]; deleted_nodes?: ProbeNodeSyncItem[] }>(
+    baseURL,
+    token,
+    "admin.probe.node.delete",
+    { node_no: nodeNo },
+  );
+  return {
+    nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
+    deleted_nodes: Array.isArray(payload.deleted_nodes) ? payload.deleted_nodes : [],
+  };
+}
+
+export async function restoreProbeNodeOnController(
+  baseURL: string,
+  token: string,
+  nodeNo: number,
+): Promise<ProbeNodesSnapshot> {
+  const payload = await callAdminWSRpc<{ nodes?: ProbeNodeSyncItem[]; deleted_nodes?: ProbeNodeSyncItem[] }>(
+    baseURL,
+    token,
+    "admin.probe.node.restore",
+    { node_no: nodeNo },
+  );
+  return {
+    nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
+    deleted_nodes: Array.isArray(payload.deleted_nodes) ? payload.deleted_nodes : [],
+  };
 }
 
 export async function startProbeLinkTestOnController(

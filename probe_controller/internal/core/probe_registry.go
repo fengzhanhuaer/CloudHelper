@@ -75,6 +75,14 @@ type probeNodeLinkUpdateRequest struct {
 	ServiceHost   string `json:"service_host"`
 }
 
+type probeNodeDeleteRequest struct {
+	NodeNo int `json:"node_no"`
+}
+
+type probeNodeRestoreRequest struct {
+	NodeNo int `json:"node_no"`
+}
+
 func AdminUpsertProbeSecretHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -121,13 +129,23 @@ func AdminGetProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	includeDeleted := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("include_deleted")); raw != "" {
+		lower := strings.ToLower(raw)
+		includeDeleted = lower == "1" || lower == "true" || lower == "yes"
+	}
+
 	ProbeStore.mu.RLock()
 	nodes := loadProbeNodesLocked()
+	resp := map[string]interface{}{
+		"nodes": nodes,
+	}
+	if includeDeleted {
+		resp["deleted_nodes"] = loadDeletedProbeNodesLocked()
+	}
 	ProbeStore.mu.RUnlock()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"nodes": nodes,
-	})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func AdminGetProbeNodeStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +160,70 @@ func AdminGetProbeNodeStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"items": items,
+	})
+}
+
+func AdminDeleteProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req probeNodeDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	ProbeStore.mu.Lock()
+	node, nodes, deletedNodes, err := deleteProbeNodeLocked(req.NodeNo)
+	ProbeStore.mu.Unlock()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := ProbeStore.Save(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist deleted probe node"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":            true,
+		"node":          node,
+		"nodes":         nodes,
+		"deleted_nodes": deletedNodes,
+	})
+}
+
+func AdminRestoreProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req probeNodeRestoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	ProbeStore.mu.Lock()
+	node, nodes, deletedNodes, err := restoreDeletedProbeNodeLocked(req.NodeNo)
+	ProbeStore.mu.Unlock()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := ProbeStore.Save(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist restored probe node"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":            true,
+		"node":          node,
+		"nodes":         nodes,
+		"deleted_nodes": deletedNodes,
 	})
 }
 
@@ -218,6 +300,37 @@ func loadProbeNodesLocked() []probeNodeRecord {
 	return normalized
 }
 
+func loadDeletedProbeNodesLocked() []probeNodeRecord {
+	result := make([]probeNodeRecord, 0)
+	rawAny := ProbeStore.data.DeletedProbeNodes
+	if len(rawAny) == 0 {
+		return result
+	}
+	result = append(result, rawAny...)
+
+	normalized, _ := normalizeProbeNodes(result)
+	activeNodeNos := make(map[int]struct{})
+	for _, node := range loadProbeNodesLocked() {
+		if node.NodeNo > 0 {
+			activeNodeNos[node.NodeNo] = struct{}{}
+		}
+	}
+	filtered := make([]probeNodeRecord, 0, len(normalized))
+	for _, node := range normalized {
+		if node.NodeNo <= 0 {
+			continue
+		}
+		if _, ok := activeNodeNos[node.NodeNo]; ok {
+			continue
+		}
+		filtered = append(filtered, node)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].NodeNo < filtered[j].NodeNo
+	})
+	return filtered
+}
+
 func loadProbeNodeStatusLocked() []probeNodeStatusRecord {
 	nodes := loadProbeNodesLocked()
 	runtimes := listProbeRuntimes()
@@ -225,6 +338,7 @@ func loadProbeNodeStatusLocked() []probeNodeStatusRecord {
 	for _, rt := range runtimes {
 		runtimeMap[normalizeProbeNodeID(rt.NodeID)] = rt
 	}
+	deletedNodeIDs := loadDeletedProbeNodeIDSetLocked()
 
 	out := make([]probeNodeStatusRecord, 0, len(nodes))
 	seen := make(map[string]struct{}, len(nodes))
@@ -240,6 +354,9 @@ func loadProbeNodeStatusLocked() []probeNodeStatusRecord {
 
 	for nodeID, rt := range runtimeMap {
 		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		if _, deleted := deletedNodeIDs[nodeID]; deleted {
 			continue
 		}
 		nodeNo := 0
@@ -284,6 +401,9 @@ func loadProbeNodeStatusByIDLocked(nodeID string) (probeNodeStatusRecord, bool) 
 			runtime = rt
 		}
 		return probeNodeStatusRecord{NodeNo: node.NodeNo, NodeName: node.NodeName, Runtime: runtime}, true
+	}
+	if isDeletedProbeNodeIDLocked(normalizedID) {
+		return probeNodeStatusRecord{}, false
 	}
 
 	if rt, ok := getProbeRuntime(normalizedID); ok {
@@ -378,6 +498,11 @@ func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
 			return probeNodeRecord{}, fmt.Errorf("node name already exists")
 		}
 	}
+	for _, item := range loadDeletedProbeNodesLocked() {
+		if strings.EqualFold(strings.TrimSpace(item.NodeName), name) {
+			return probeNodeRecord{}, fmt.Errorf("node name already exists in deleted probe list")
+		}
+	}
 
 	deletedSet := loadDeletedProbeNodeNosLocked()
 	nextNo := nextProbeNodeNo(nodes, deletedSet)
@@ -417,6 +542,95 @@ func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
 	return probeNodeRecord{}, fmt.Errorf("failed to create node")
 }
 
+func deleteProbeNodeLocked(nodeNo int) (probeNodeRecord, []probeNodeRecord, []probeNodeRecord, error) {
+	if nodeNo <= 0 {
+		return probeNodeRecord{}, nil, nil, fmt.Errorf("invalid node number")
+	}
+
+	nodes := loadProbeNodesLocked()
+	deletedNodes := loadDeletedProbeNodesLocked()
+	for _, node := range deletedNodes {
+		if node.NodeNo == nodeNo {
+			return probeNodeRecord{}, nil, nil, fmt.Errorf("node %d is already deleted", nodeNo)
+		}
+	}
+
+	found := -1
+	for i := range nodes {
+		if nodes[i].NodeNo == nodeNo {
+			found = i
+			break
+		}
+	}
+	if found < 0 {
+		return probeNodeRecord{}, nil, nil, fmt.Errorf("node %d not found", nodeNo)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	target := nodes[found]
+	target.UpdatedAt = now
+	activeNodes := append([]probeNodeRecord{}, nodes[:found]...)
+	activeNodes = append(activeNodes, nodes[found+1:]...)
+	deletedNodes = append(deletedNodes, target)
+	sort.Slice(deletedNodes, func(i, j int) bool {
+		return deletedNodes[i].NodeNo < deletedNodes[j].NodeNo
+	})
+
+	normalizedActive, secrets := normalizeProbeNodes(activeNodes)
+	normalizedDeleted, _ := normalizeProbeNodes(deletedNodes)
+	deletedSet := loadDeletedProbeNodeNosLocked()
+	deletedSet[nodeNo] = struct{}{}
+	ProbeStore.data.ProbeNodes = normalizedActive
+	ProbeStore.data.DeletedProbeNodes = normalizedDeleted
+	ProbeStore.data.ProbeSecrets = secrets
+	saveDeletedProbeNodeNosLocked(deletedSet)
+	return target, normalizedActive, normalizedDeleted, nil
+}
+
+func restoreDeletedProbeNodeLocked(nodeNo int) (probeNodeRecord, []probeNodeRecord, []probeNodeRecord, error) {
+	if nodeNo <= 0 {
+		return probeNodeRecord{}, nil, nil, fmt.Errorf("invalid node number")
+	}
+
+	nodes := loadProbeNodesLocked()
+	for _, node := range nodes {
+		if node.NodeNo == nodeNo {
+			return probeNodeRecord{}, nil, nil, fmt.Errorf("node %d is already active", nodeNo)
+		}
+	}
+	deletedNodes := loadDeletedProbeNodesLocked()
+	found := -1
+	for i := range deletedNodes {
+		if deletedNodes[i].NodeNo == nodeNo {
+			found = i
+			break
+		}
+	}
+	if found < 0 {
+		return probeNodeRecord{}, nil, nil, fmt.Errorf("deleted node %d not found", nodeNo)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	target := deletedNodes[found]
+	target.UpdatedAt = now
+	activeNodes := append(nodes, target)
+	sort.Slice(activeNodes, func(i, j int) bool {
+		return activeNodes[i].NodeNo < activeNodes[j].NodeNo
+	})
+	nextDeletedNodes := append([]probeNodeRecord{}, deletedNodes[:found]...)
+	nextDeletedNodes = append(nextDeletedNodes, deletedNodes[found+1:]...)
+
+	normalizedActive, secrets := normalizeProbeNodes(activeNodes)
+	normalizedDeleted, _ := normalizeProbeNodes(nextDeletedNodes)
+	deletedSet := loadDeletedProbeNodeNosLocked()
+	delete(deletedSet, nodeNo)
+	ProbeStore.data.ProbeNodes = normalizedActive
+	ProbeStore.data.DeletedProbeNodes = normalizedDeleted
+	ProbeStore.data.ProbeSecrets = secrets
+	saveDeletedProbeNodeNosLocked(deletedSet)
+	return target, normalizedActive, normalizedDeleted, nil
+}
+
 func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) {
 	if req.NodeNo <= 0 {
 		return probeNodeRecord{}, fmt.Errorf("invalid node number")
@@ -441,6 +655,14 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 		}
 		if strings.EqualFold(strings.TrimSpace(nodes[i].NodeName), name) {
 			return probeNodeRecord{}, fmt.Errorf("node name already exists")
+		}
+	}
+	for _, item := range loadDeletedProbeNodesLocked() {
+		if item.NodeNo == req.NodeNo {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.NodeName), name) {
+			return probeNodeRecord{}, fmt.Errorf("node name already exists in deleted probe list")
 		}
 	}
 	if found < 0 {
@@ -519,16 +741,26 @@ func updateProbeNodeLinkLocked(req probeNodeLinkUpdateRequest) (probeNodeRecord,
 func syncProbeNodesLocked(items []probeNodeRecord) ([]probeNodeRecord, error) {
 	incomingNodes, _ := normalizeProbeNodes(items)
 	existingNodes := loadProbeNodesLocked()
+	deletedNodes := loadDeletedProbeNodesLocked()
 	existingByNo := make(map[int]probeNodeRecord, len(existingNodes))
 	for _, node := range existingNodes {
 		if node.NodeNo > 0 {
 			existingByNo[node.NodeNo] = node
 		}
 	}
+	deletedByNo := make(map[int]probeNodeRecord, len(deletedNodes))
+	for _, node := range deletedNodes {
+		if node.NodeNo > 0 {
+			deletedByNo[node.NodeNo] = node
+		}
+	}
 
 	for _, node := range incomingNodes {
 		if node.NodeNo <= 0 {
 			continue
+		}
+		if _, ok := deletedByNo[node.NodeNo]; ok {
+			return nil, fmt.Errorf("node_no %d is deleted; use restore action", node.NodeNo)
 		}
 		if _, ok := existingByNo[node.NodeNo]; !ok {
 			return nil, fmt.Errorf("node_no %d is not assigned by controller; use create action", node.NodeNo)
@@ -561,19 +793,40 @@ func syncProbeNodesLocked(items []probeNodeRecord) ([]probeNodeRecord, error) {
 			incomingSet[node.NodeNo] = struct{}{}
 		}
 	}
+	mergedDeletedNodes := append([]probeNodeRecord{}, deletedNodes...)
+	deletedSeen := make(map[int]struct{}, len(mergedDeletedNodes))
+	for _, node := range mergedDeletedNodes {
+		if node.NodeNo > 0 {
+			deletedSeen[node.NodeNo] = struct{}{}
+			deletedSet[node.NodeNo] = struct{}{}
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
 	for _, oldNode := range existingNodes {
 		if oldNode.NodeNo <= 0 {
 			continue
 		}
-		if _, ok := incomingSet[oldNode.NodeNo]; !ok {
-			deletedSet[oldNode.NodeNo] = struct{}{}
+		if _, ok := incomingSet[oldNode.NodeNo]; ok {
+			continue
 		}
+		deletedSet[oldNode.NodeNo] = struct{}{}
+		if _, ok := deletedSeen[oldNode.NodeNo]; ok {
+			continue
+		}
+		oldNode.UpdatedAt = now
+		mergedDeletedNodes = append(mergedDeletedNodes, oldNode)
+		deletedSeen[oldNode.NodeNo] = struct{}{}
 	}
 	for no := range incomingSet {
 		delete(deletedSet, no)
 	}
+	normalizedDeletedNodes, _ := normalizeProbeNodes(mergedDeletedNodes)
+	sort.Slice(normalizedDeletedNodes, func(i, j int) bool {
+		return normalizedDeletedNodes[i].NodeNo < normalizedDeletedNodes[j].NodeNo
+	})
 
 	ProbeStore.data.ProbeNodes = finalNodes
+	ProbeStore.data.DeletedProbeNodes = normalizedDeletedNodes
 	ProbeStore.data.ProbeSecrets = secrets
 	saveDeletedProbeNodeNosLocked(deletedSet)
 	return finalNodes, nil
@@ -586,7 +839,28 @@ func loadDeletedProbeNodeNosLocked() map[int]struct{} {
 			set[no] = struct{}{}
 		}
 	}
+	for _, node := range ProbeStore.data.DeletedProbeNodes {
+		if node.NodeNo > 0 {
+			set[node.NodeNo] = struct{}{}
+		}
+	}
 	return set
+}
+
+func loadDeletedProbeNodeIDSetLocked() map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, node := range loadDeletedProbeNodesLocked() {
+		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+		if nodeID != "" {
+			set[nodeID] = struct{}{}
+		}
+	}
+	return set
+}
+
+func isDeletedProbeNodeIDLocked(nodeID string) bool {
+	_, ok := loadDeletedProbeNodeIDSetLocked()[normalizeProbeNodeID(nodeID)]
+	return ok
 }
 
 func saveDeletedProbeNodeNosLocked(set map[int]struct{}) {
@@ -598,6 +872,15 @@ func saveDeletedProbeNodeNosLocked(set map[int]struct{}) {
 	}
 	sort.Ints(nos)
 	ProbeStore.data.DeletedProbeNodeNos = nos
+}
+
+func isDeletedProbeNodeID(nodeID string) bool {
+	if ProbeStore == nil {
+		return false
+	}
+	ProbeStore.mu.RLock()
+	defer ProbeStore.mu.RUnlock()
+	return isDeletedProbeNodeIDLocked(nodeID)
 }
 
 func nextProbeNodeNo(nodes []probeNodeRecord, deletedSet map[int]struct{}) int {

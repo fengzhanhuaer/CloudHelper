@@ -14,6 +14,11 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 	if len(route) == 0 {
 		return fmt.Errorf("chain route is empty")
 	}
+	for _, nodeID := range route {
+		if isDeletedProbeNodeID(nodeID) {
+			return fmt.Errorf("chain unavailable: deleted probe node %s", normalizeProbeNodeID(nodeID))
+		}
+	}
 
 	var failures []string
 	for i, nodeID := range route {
@@ -122,6 +127,9 @@ func removeProbeLinkChainRecord(item probeLinkChainRecord) error {
 	}
 	var failures []string
 	for _, nodeID := range route {
+		if isDeletedProbeNodeID(nodeID) {
+			continue
+		}
 		_, err := dispatchProbeChainLinkControl(nodeID, probeChainLinkControlCommand{
 			Action:  "remove",
 			ChainID: strings.TrimSpace(item.ChainID),

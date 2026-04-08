@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -18,6 +19,7 @@ type probeConfigStore struct {
 
 type probeConfigData struct {
 	ProbeNodes          []probeNodeRecord          `json:"probe_nodes"`
+	DeletedProbeNodes   []probeNodeRecord          `json:"deleted_probe_nodes,omitempty"`
 	ProbeSecrets        map[string]string          `json:"probe_secrets"`
 	ProbeShellShortcuts []probeShellShortcutRecord `json:"probe_shell_shortcuts"`
 	DeletedProbeNodeNos []int                      `json:"deleted_probe_node_nos,omitempty"`
@@ -31,6 +33,7 @@ func initProbeStore() {
 		path: storePath,
 		data: probeConfigData{
 			ProbeNodes:          []probeNodeRecord{},
+			DeletedProbeNodes:   []probeNodeRecord{},
 			ProbeSecrets:        map[string]string{},
 			ProbeShellShortcuts: []probeShellShortcutRecord{},
 			DeletedProbeNodeNos: []int{},
@@ -47,15 +50,17 @@ func initProbeStore() {
 			if unmarshalErr := json.Unmarshal(content, &raw); unmarshalErr != nil {
 				log.Fatalf("failed to parse probe config file: %v", unmarshalErr)
 			}
-			nodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(raw.ProbeNodes, raw.ProbeSecrets, raw.ProbeShellShortcuts, raw.DeletedProbeNodeNos)
+			nodes, deletedNodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(raw.ProbeNodes, raw.DeletedProbeNodes, raw.ProbeSecrets, raw.ProbeShellShortcuts, raw.DeletedProbeNodeNos)
 			ProbeStore.data.ProbeNodes = nodes
+			ProbeStore.data.DeletedProbeNodes = deletedNodes
 			ProbeStore.data.ProbeSecrets = secrets
 			ProbeStore.data.ProbeShellShortcuts = shortcuts
 			ProbeStore.data.DeletedProbeNodeNos = deletedNos
 		}
 	} else if os.IsNotExist(err) {
-		nodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(loadLegacyProbeNodesFromMainStore(), loadLegacyProbeSecretsFromMainStore(), nil, nil)
+		nodes, deletedNodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(loadLegacyProbeNodesFromMainStore(), nil, loadLegacyProbeSecretsFromMainStore(), nil, nil)
 		ProbeStore.data.ProbeNodes = nodes
+		ProbeStore.data.DeletedProbeNodes = deletedNodes
 		ProbeStore.data.ProbeSecrets = secrets
 		ProbeStore.data.ProbeShellShortcuts = shortcuts
 		ProbeStore.data.DeletedProbeNodeNos = deletedNos
@@ -84,22 +89,54 @@ func (s *probeConfigStore) Save() error {
 	return nil
 }
 
-func normalizeProbeConfig(nodes []probeNodeRecord, secrets map[string]string, shortcuts []probeShellShortcutRecord, deletedNos []int) ([]probeNodeRecord, map[string]string, []probeShellShortcutRecord, []int) {
+func normalizeProbeConfig(nodes []probeNodeRecord, deletedNodes []probeNodeRecord, secrets map[string]string, shortcuts []probeShellShortcutRecord, deletedNos []int) ([]probeNodeRecord, []probeNodeRecord, map[string]string, []probeShellShortcutRecord, []int) {
 	normalizedNodes, secretsFromNodes := normalizeProbeNodes(nodes)
+	normalizedDeletedNodes, _ := normalizeProbeNodes(deletedNodes)
+	activeNodeIDs := make(map[string]struct{}, len(normalizedNodes))
+	activeNodeNos := make(map[int]struct{}, len(normalizedNodes))
+	for _, node := range normalizedNodes {
+		if node.NodeNo > 0 {
+			activeNodeNos[node.NodeNo] = struct{}{}
+		}
+		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+		if nodeID != "" {
+			activeNodeIDs[nodeID] = struct{}{}
+		}
+	}
+	filteredDeletedNodes := make([]probeNodeRecord, 0, len(normalizedDeletedNodes))
+	seenDeletedNos := make(map[int]struct{}, len(normalizedDeletedNodes))
+	for _, node := range normalizedDeletedNodes {
+		if node.NodeNo <= 0 {
+			continue
+		}
+		if _, ok := activeNodeNos[node.NodeNo]; ok {
+			continue
+		}
+		if _, ok := seenDeletedNos[node.NodeNo]; ok {
+			continue
+		}
+		seenDeletedNos[node.NodeNo] = struct{}{}
+		filteredDeletedNodes = append(filteredDeletedNodes, node)
+	}
 	normalizedSecrets := make(map[string]string)
 	for nodeID, secret := range secretsFromNodes {
-		normalizedSecrets[nodeID] = secret
+		if _, ok := activeNodeIDs[nodeID]; ok {
+			normalizedSecrets[nodeID] = secret
+		}
 	}
 	for key, value := range secrets {
 		nodeID := normalizeProbeNodeID(key)
 		trimmed := strings.TrimSpace(value)
-		if nodeID != "" && trimmed != "" {
+		if nodeID == "" || trimmed == "" {
+			continue
+		}
+		if _, ok := activeNodeIDs[nodeID]; ok {
 			normalizedSecrets[nodeID] = trimmed
 		}
 	}
 	normalizedShortcuts := normalizeProbeShellShortcuts(shortcuts)
 	normalizedDeletedNos := normalizeDeletedProbeNodeNos(deletedNos)
-	return normalizedNodes, normalizedSecrets, normalizedShortcuts, normalizedDeletedNos
+	return normalizedNodes, filteredDeletedNodes, normalizedSecrets, normalizedShortcuts, normalizedDeletedNos
 }
 
 func normalizeDeletedProbeNodeNos(items []int) []int {

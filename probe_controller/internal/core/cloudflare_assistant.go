@@ -675,6 +675,9 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 	if nodeID == "" {
 		return nil
 	}
+	if isDeletedProbeNodeID(nodeID) {
+		return nil
+	}
 
 	CloudflareStore.mu.RLock()
 	token := strings.TrimSpace(CloudflareStore.data.APIToken)
