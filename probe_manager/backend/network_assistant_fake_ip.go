@@ -285,7 +285,9 @@ func (s *networkAssistantService) shouldUseFakeIP(normalizedDomain string) bool 
 	if err != nil {
 		return false
 	}
-	return !decision.BypassTUN
+	// 仅“需要走隧道”的目标分配 fake IP。
+	// direct 组（无论是否 bypass）都不应走 fake IP。
+	return !decision.Direct && !decision.BypassTUN
 }
 
 // assignFakeIP 为域名分配 fake IP，并预先根据路由策略决定路由
@@ -329,6 +331,31 @@ func (s *networkAssistantService) lookupFakeIPDomain(ip string) (string, tunnelR
 		return "", tunnelRouteDecision{}, false
 	}
 	return entry.Domain, entry.Route, true
+}
+
+// rewriteRouteTargetForFakeIP 将 fake IP 目标改写为域名目标，避免把 fake IP 作为最终远端地址拨号。
+func (s *networkAssistantService) rewriteRouteTargetForFakeIP(route tunnelRouteDecision) tunnelRouteDecision {
+	host, port, err := splitTargetHostPort(route.TargetAddr)
+	if err != nil {
+		return route
+	}
+
+	domain, fakeRoute, ok := s.lookupFakeIPDomain(host)
+	if !ok || strings.TrimSpace(domain) == "" {
+		return route
+	}
+
+	rewritten := route
+	rewritten.TargetAddr = net.JoinHostPort(domain, port)
+	if strings.TrimSpace(fakeRoute.Group) != "" {
+		rewritten.Group = strings.TrimSpace(fakeRoute.Group)
+	}
+	if strings.TrimSpace(fakeRoute.NodeID) != "" || fakeRoute.Direct {
+		rewritten.NodeID = strings.TrimSpace(fakeRoute.NodeID)
+	}
+	rewritten.Direct = fakeRoute.Direct
+	rewritten.BypassTUN = fakeRoute.BypassTUN
+	return rewritten
 }
 
 // reloadFakeIPPool 根据当前 DNS 上游配置重新构建 fakeIPPool

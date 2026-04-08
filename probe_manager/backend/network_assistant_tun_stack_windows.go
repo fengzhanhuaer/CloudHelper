@@ -544,6 +544,7 @@ func (n *localTUNNetstack) openOutboundTCP(targetAddr string) (net.Conn, tunnelR
 	if err != nil {
 		return nil, tunnelRouteDecision{}, err
 	}
+	route = n.service.rewriteRouteTargetForFakeIP(route)
 
 	if route.Direct {
 		release := func() {}
@@ -574,6 +575,7 @@ func (n *localTUNNetstack) openOutboundUDP(targetAddr string) (io.ReadWriteClose
 	if err != nil {
 		return nil, tunnelRouteDecision{}, err
 	}
+	route = n.service.rewriteRouteTargetForFakeIP(route)
 
 	if route.Direct {
 		release := func() {}
