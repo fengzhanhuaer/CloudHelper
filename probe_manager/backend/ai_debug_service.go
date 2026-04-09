@@ -191,8 +191,7 @@ func (s *aiDebugService) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *aiDebugService) handleProbeNodes(w http.ResponseWriter, r *http.Request) {
-	app := NewApp()
-	nodes, err := app.GetProbeNodes()
+	nodes, _, err := loadProbeNodes()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err)
 		return
@@ -204,8 +203,12 @@ func (s *aiDebugService) handleProbeNodes(w http.ResponseWriter, r *http.Request
 }
 
 func (s *aiDebugService) handleProbeChains(w http.ResponseWriter, r *http.Request) {
-	app := NewApp()
-	items, err := app.GetProbeLinkChainsCache()
+	service, err := aiDebugActiveNetworkAssistant()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	items, err := service.GetProbeLinkChainsCache()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err)
 		return
@@ -220,8 +223,7 @@ func (s *aiDebugService) handleManagerLogs(w http.ResponseWriter, r *http.Reques
 	lines := normalizeLogViewLines(s.parseIntQuery(r, "lines", defaultLogViewLines))
 	sinceMinutes := s.parseIntQuery(r, "since_minutes", 0)
 	minLevel := strings.TrimSpace(r.URL.Query().Get("min_level"))
-	app := NewApp()
-	resp, err := app.GetLocalManagerLogs(lines, sinceMinutes, minLevel)
+	resp, err := fetchManagerLogsForDebug(lines, sinceMinutes, minLevel)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err)
 		return
@@ -573,6 +575,28 @@ func (s *aiDebugService) writeErrorMessage(w http.ResponseWriter, status int, me
 	})
 }
 
+func fetchManagerLogsForDebug(lines int, sinceMinutes int, minLevel string) (LogViewResponse, error) {
+	lineLimit := normalizeLogViewLines(lines)
+	logPath, err := resolveManagerLogPath()
+	if err != nil {
+		return LogViewResponse{}, err
+	}
+
+	content, entries, err := readLogTailLines(logPath, lineLimit, sinceMinutes, minLevel)
+	if err != nil {
+		return LogViewResponse{}, err
+	}
+
+	return LogViewResponse{
+		Source:   "local",
+		FilePath: logPath,
+		Lines:    lineLimit,
+		Content:  content,
+		Fetched:  time.Now().Format(time.RFC3339),
+		Entries:  entries,
+	}, nil
+}
+
 func fetchControllerLogsForDebug(lines int, sinceMinutes int, minLevel string) (aiDebugControllerLogsPayload, error) {
 	token, baseURL, err := loadManagerDebugControllerAuth()
 	if err != nil {
@@ -699,8 +723,7 @@ func resolveDebugProbeNodeName(nodeID string, fallback string) string {
 	if strings.TrimSpace(fallback) != "" {
 		return strings.TrimSpace(fallback)
 	}
-	app := NewApp()
-	nodes, err := app.GetProbeNodes()
+	nodes, _, err := loadProbeNodes()
 	if err != nil {
 		return ""
 	}
