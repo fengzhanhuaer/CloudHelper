@@ -148,6 +148,9 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
     const runtimeStatus = (keepalive?.status || group.runtime_status || "").trim();
     const runtimeLastRecv = (keepalive?.last_recv || group.runtime_last_recv || "").trim();
     const runtimeLastPong = (keepalive?.last_pong || group.runtime_last_pong || "").trim();
+    const runtimeLastPingRTTMS = typeof keepalive?.last_ping_rtt_ms === "number"
+      ? keepalive.last_ping_rtt_ms
+      : (typeof group.runtime_last_ping_rtt_ms === "number" ? group.runtime_last_ping_rtt_ms : undefined);
     const runtimeActiveStreams = typeof keepalive?.active_streams === "number"
       ? keepalive.active_streams
       : (group.runtime_active_streams ?? 0);
@@ -212,12 +215,12 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
                 }}
                 title={
                   runtimeAction === "tunnel"
-                    ? `最近心跳：${runtimeLastPong || "-"}，最近收包：${runtimeLastRecv || "-"}，活跃流：${runtimeActiveStreams}`
+                    ? `最近心跳：${runtimeLastPong || "-"}，最近收包：${runtimeLastRecv || "-"}，RTT：${typeof runtimeLastPingRTTMS === "number" ? `${runtimeLastPingRTTMS}ms` : "-"}，活跃流：${runtimeActiveStreams}`
                     : undefined
                 }
               >
                 {runtimeAction === "tunnel"
-                  ? `运行：${runtimeStatus || (runtimeConnected ? "在线" : "离线")}${runtimeTunnelLabel ? ` (${runtimeTunnelLabel})` : runtimeTunnelID ? ` (${runtimeTunnelID})` : ""} / streams=${runtimeActiveStreams}`
+                  ? `运行：${runtimeStatus || (runtimeConnected ? "在线" : "离线")}${runtimeTunnelLabel ? ` (${runtimeTunnelLabel})` : runtimeTunnelID ? ` (${runtimeTunnelID})` : ""} / RTT=${typeof runtimeLastPingRTTMS === "number" ? `${runtimeLastPingRTTMS}ms` : "-"} / streams=${runtimeActiveStreams}`
                   : `运行：${runtimeStatus || (runtimeAction === "direct" ? "直连" : "拒绝")}`}
               </span>
             )}
@@ -273,6 +276,24 @@ export function NetworkAssistantTab(props: NetworkAssistantTabProps) {
             <div>重连次数：{props.status.mux_reconnects ?? 0}</div>
             <div>最近收包：{props.status.mux_last_recv || "-"}</div>
             <div>最近心跳：{props.status.mux_last_pong || "-"}</div>
+            <div>
+              最近保活 RTT：{
+                (() => {
+                  const items = props.status.group_keepalive || [];
+                  let best: number | undefined;
+                  for (const item of items) {
+                    if (typeof item?.last_ping_rtt_ms !== "number") {
+                      continue;
+                    }
+                    if (item.last_ping_rtt_ms <= 0) {
+                      continue;
+                    }
+                    best = typeof best === "number" ? Math.min(best, item.last_ping_rtt_ms) : item.last_ping_rtt_ms;
+                  }
+                  return typeof best === "number" ? `${best}ms` : "-";
+                })()
+              }
+            </div>
           </div>
 
           <div className="content-actions">

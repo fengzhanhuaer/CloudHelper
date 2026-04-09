@@ -185,6 +185,7 @@ type aiDebugMuxClientSnapshotPayload struct {
 	ActiveStreams     int      `json:"active_streams"`
 	LastRecv          string   `json:"last_recv,omitempty"`
 	LastPong          string   `json:"last_pong,omitempty"`
+	LastPingRTTMS     int64    `json:"last_ping_rtt_ms,omitempty"`
 	CloseSource       string   `json:"close_source,omitempty"`
 	CloseReason       string   `json:"close_reason,omitempty"`
 	CloseAt           string   `json:"close_at,omitempty"`
@@ -1139,7 +1140,7 @@ func snapshotAIDebugMuxClient(client *tunnelMuxClient, groups []string) aiDebugM
 	if client == nil {
 		return payload
 	}
-	connected, activeStreams, lastRecv, lastPong := client.snapshot()
+	connected, activeStreams, lastRecv, lastPong, lastPingRTTMS := client.snapshot()
 	sessionClosed := true
 	if client.session != nil {
 		sessionClosed = client.session.IsClosed()
@@ -1161,6 +1162,7 @@ func snapshotAIDebugMuxClient(client *tunnelMuxClient, groups []string) aiDebugM
 		ActiveStreams:     activeStreams,
 		LastRecv:          strings.TrimSpace(lastRecv),
 		LastPong:          strings.TrimSpace(lastPong),
+		LastPingRTTMS:     lastPingRTTMS,
 		CloseSource:       closeSource,
 		CloseReason:       closeReason,
 		Groups:            append([]string(nil), groups...),

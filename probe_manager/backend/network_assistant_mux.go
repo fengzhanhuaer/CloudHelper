@@ -156,11 +156,12 @@ type tunnelMuxClient struct {
 	closeSource       string
 	closeAt           time.Time
 
-	lastRecv atomic.Int64
-	lastPong atomic.Int64
+	lastRecv         atomic.Int64
+	lastPong         atomic.Int64
+	lastPingRTTNanos atomic.Int64
 }
 
-func (c *tunnelMuxClient) snapshot() (connected bool, activeStreams int, lastRecv string, lastPong string) {
+func (c *tunnelMuxClient) snapshot() (connected bool, activeStreams int, lastRecv string, lastPong string, lastPingRTTMS int64) {
 	connected = !c.isClosed()
 	c.mu.Lock()
 	activeStreams = len(c.streams)
@@ -171,6 +172,9 @@ func (c *tunnelMuxClient) snapshot() (connected bool, activeStreams int, lastRec
 	}
 	if ts := c.lastPong.Load(); ts > 0 {
 		lastPong = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+	}
+	if nanos := c.lastPingRTTNanos.Load(); nanos > 0 {
+		lastPingRTTMS = time.Duration(nanos).Milliseconds()
 	}
 	return
 }
@@ -774,9 +778,10 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 		if c.isClosed() {
 			return
 		}
-		if _, err := c.session.Ping(); err != nil {
+		rtt, err := c.session.Ping()
+		if err != nil {
 			failures := c.keepAliveFailures.Add(1)
-			connected, activeStreams, lastRecvAt, lastPongAt := c.snapshot()
+			connected, activeStreams, lastRecvAt, lastPongAt, lastPingRTTMS := c.snapshot()
 			recordNetworkDebugFailure(networkDebugFailureEvent{
 				Timestamp: time.Now().UTC(),
 				Scope:     "mux",
@@ -785,10 +790,10 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 				ModeKey:   strings.TrimSpace(c.modeKey),
 				Reason:    "keepalive_ping_failed",
 				Error:     err.Error(),
-				Message:   fmt.Sprintf("keepalive failures=%d connected=%v active_streams=%d last_recv=%s last_pong=%s", failures, connected, activeStreams, strings.TrimSpace(lastRecvAt), strings.TrimSpace(lastPongAt)),
+				Message:   fmt.Sprintf("keepalive failures=%d connected=%v active_streams=%d last_recv=%s last_pong=%s last_ping_rtt_ms=%d", failures, connected, activeStreams, strings.TrimSpace(lastRecvAt), strings.TrimSpace(lastPongAt), lastPingRTTMS),
 			})
 			log.Printf(
-				"[network-assistant] tunnel mux keepalive ping failed: node=%s mode_key=%s failures=%d threshold=%d connected=%v active_streams=%d last_recv=%s last_pong=%s err=%v",
+				"[network-assistant] tunnel mux keepalive ping failed: node=%s mode_key=%s failures=%d threshold=%d connected=%v active_streams=%d last_recv=%s last_pong=%s last_ping_rtt_ms=%d err=%v",
 				strings.TrimSpace(c.nodeID),
 				strings.TrimSpace(c.modeKey),
 				failures,
@@ -797,6 +802,7 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 				activeStreams,
 				strings.TrimSpace(lastRecvAt),
 				strings.TrimSpace(lastPongAt),
+				lastPingRTTMS,
 				err,
 			)
 			if failures >= muxKeepAliveFailThreshold {
@@ -824,6 +830,9 @@ func (c *tunnelMuxClient) keepAliveLoop() {
 		}
 		c.keepAliveFailures.Store(0)
 		c.lastPong.Store(time.Now().Unix())
+		if rtt > 0 {
+			c.lastPingRTTNanos.Store(int64(rtt))
+		}
 	}
 }
 
@@ -1259,7 +1268,7 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 				state.Client = nil
 			}
 			if state.Client != nil {
-				item.Connected, item.ActiveStreams, item.LastRecv, item.LastPong = state.Client.snapshot()
+				item.Connected, item.ActiveStreams, item.LastRecv, item.LastPong, item.LastPingRTTMS = state.Client.snapshot()
 				if item.Connected {
 					item.Status = "在线"
 				} else {
@@ -1298,7 +1307,7 @@ func (s *networkAssistantService) maintainSelectedTunnelMuxClients() {
 			state.RetryAt = time.Time{}
 			state.LastError = ""
 			if client != nil {
-				item.Connected, item.ActiveStreams, item.LastRecv, item.LastPong = client.snapshot()
+				item.Connected, item.ActiveStreams, item.LastRecv, item.LastPong, item.LastPingRTTMS = client.snapshot()
 				if item.Connected {
 					item.Status = "在线"
 				} else {
@@ -1417,7 +1426,7 @@ func describeTunnelMuxClientState(client *tunnelMuxClient) string {
 	if client == nil {
 		return "client=nil"
 	}
-	connected, activeStreams, lastRecv, lastPong := client.snapshot()
+	connected, activeStreams, lastRecv, lastPong, lastPingRTTMS := client.snapshot()
 	sessionClosed := true
 	if client.session != nil {
 		sessionClosed = client.session.IsClosed()
@@ -1428,7 +1437,7 @@ func describeTunnelMuxClientState(client *tunnelMuxClient) string {
 	closeAt := client.closeAt
 	client.mu.Unlock()
 	return fmt.Sprintf(
-		"id=%d node=%s mode=%s session_id=%s connected=%v closed=%v session_closed=%v keepalive_failures=%d active_streams=%d last_recv=%s last_pong=%s close_source=%s close_reason=%s close_at=%s",
+		"id=%d node=%s mode=%s session_id=%s connected=%v closed=%v session_closed=%v keepalive_failures=%d active_streams=%d last_recv=%s last_pong=%s last_ping_rtt_ms=%d close_source=%s close_reason=%s close_at=%s",
 		client.id,
 		strings.TrimSpace(client.nodeID),
 		strings.TrimSpace(client.modeKey),
@@ -1440,6 +1449,7 @@ func describeTunnelMuxClientState(client *tunnelMuxClient) string {
 		activeStreams,
 		strings.TrimSpace(lastRecv),
 		strings.TrimSpace(lastPong),
+		lastPingRTTMS,
 		firstNonEmptyMuxValue(closeSource, "-"),
 		firstNonEmptyMuxValue(closeReason, "-"),
 		formatMuxRuntimeTime(closeAt),
@@ -1599,7 +1609,7 @@ func (s *networkAssistantService) ensureTunnelMuxClientForGroup(group string) (*
 		TunnelLabel:  resolveRuleTunnelOptionLabel(nodeID, chainTargets),
 	}
 	if client != nil {
-		item.Connected, item.ActiveStreams, item.LastRecv, item.LastPong = client.snapshot()
+		item.Connected, item.ActiveStreams, item.LastRecv, item.LastPong, item.LastPingRTTMS = client.snapshot()
 		if item.Connected {
 			item.Status = "在线"
 		} else {

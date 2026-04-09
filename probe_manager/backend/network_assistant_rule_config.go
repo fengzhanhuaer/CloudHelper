@@ -65,6 +65,7 @@ type NetworkAssistantRuleGroupConfig struct {
 	RuntimeStatus        string            `json:"runtime_status,omitempty"`
 	RuntimeLastRecv      string            `json:"runtime_last_recv,omitempty"`
 	RuntimeLastPong      string            `json:"runtime_last_pong,omitempty"`
+	RuntimeLastPingRTTMS int64             `json:"runtime_last_ping_rtt_ms,omitempty"`
 	RuntimeActiveStreams int               `json:"runtime_active_streams,omitempty"`
 }
 
@@ -228,6 +229,7 @@ func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []strin
 			RuntimeStatus:        runtime.Status,
 			RuntimeLastRecv:      runtime.LastRecv,
 			RuntimeLastPong:      runtime.LastPong,
+			RuntimeLastPingRTTMS: runtime.LastPingRTTMS,
 			RuntimeActiveStreams: runtime.ActiveStreams,
 		})
 	}
@@ -253,6 +255,7 @@ func buildRuleConfigFromRouting(routing tunnelRuleRouting, tunnelOptions []strin
 			RuntimeStatus:        fallbackRuntime.Status,
 			RuntimeLastRecv:      fallbackRuntime.LastRecv,
 			RuntimeLastPong:      fallbackRuntime.LastPong,
+			RuntimeLastPingRTTMS: fallbackRuntime.LastPingRTTMS,
 			RuntimeActiveStreams: fallbackRuntime.ActiveStreams,
 		},
 	}

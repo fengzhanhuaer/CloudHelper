@@ -102,6 +102,7 @@ type NetworkAssistantGroupKeepaliveItem struct {
 	ActiveStreams int    `json:"active_streams"`
 	LastRecv      string `json:"last_recv"`
 	LastPong      string `json:"last_pong"`
+	LastPingRTTMS int64  `json:"last_ping_rtt_ms,omitempty"`
 	Status        string `json:"status"`
 }
 

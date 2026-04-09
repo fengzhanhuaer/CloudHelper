@@ -88,6 +88,7 @@ export type NetworkAssistantGroupKeepaliveItem = {
   active_streams: number;
   last_recv: string;
   last_pong: string;
+  last_ping_rtt_ms?: number;
   status: string;
 };
 
@@ -130,6 +131,7 @@ export type NetworkAssistantRuleGroupConfig = {
   runtime_status?: string;
   runtime_last_recv?: string;
   runtime_last_pong?: string;
+  runtime_last_ping_rtt_ms?: number;
   runtime_active_streams?: number;
 };
 
