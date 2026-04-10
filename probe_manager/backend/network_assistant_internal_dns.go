@@ -216,8 +216,9 @@ func (d *localInternalDNSServer) handlePacket(packet []byte, peerAddr net.Addr) 
 		return
 	}
 
-	// Only handle A/AAAA queries for fake IP
-	isFakeIPQuery := qType == 1 || qType == 28
+	// fake IP 仅用于 A 查询；AAAA 查询应继续走正常上游解析流程。
+	isFakeIPQuery := qType == 1
+	isMonitoredDNSQuery := qType == 1 || qType == 28
 	normalizedDomain := normalizeRuleDomain(domain)
 
 	// Check if fake IP mode is enabled and domain is not whitelisted
@@ -239,7 +240,7 @@ func (d *localInternalDNSServer) handlePacket(packet []byte, peerAddr net.Addr) 
 	}
 
 	// 进程监视：记录 DNS 事件
-	if isFakeIPQuery && d.service.processMonitor != nil {
+	if isMonitoredDNSQuery && d.service.processMonitor != nil {
 		var srcPort uint16
 		if udpAddr, ok := peerAddr.(*net.UDPAddr); ok {
 			srcPort = uint16(udpAddr.Port)
