@@ -336,9 +336,9 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 
 	downloadOnce := func(offset int64) (int64, error) {
 		var (
-			reader io.ReadCloser
+			reader     io.ReadCloser
 			statusCode int
-			total int64 = -1
+			total      int64 = -1
 		)
 		if mode == "proxy" {
 			// Security boundary: probe can only use /api/probe/* endpoints.
@@ -544,6 +544,52 @@ func findProbeBinary(root string) (string, error) {
 	return candidate, nil
 }
 
+func resolveProbeUpgradeTargetPathForRuntime(exePath string, goos string) (string, string) {
+	targetPath := normalizeExecutablePathForUpgradeTarget(exePath)
+	if strings.TrimSpace(targetPath) == "" {
+		return "", ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(goos), "windows") {
+		return targetPath, ""
+	}
+	if !strings.EqualFold(filepath.Base(targetPath), "probe_node.exe") {
+		return targetPath, ""
+	}
+	parentDir := filepath.Dir(targetPath)
+	if strings.EqualFold(filepath.Base(parentDir), "probe_node") {
+		return targetPath, ""
+	}
+	runtimeDir := filepath.Join(parentDir, "probe_node")
+	return filepath.Join(runtimeDir, "probe_node.exe"), parentDir
+}
+
+func rewriteLegacyWinSWExecutablePathForRuntimeDir(legacyRoot string) error {
+	root := strings.TrimSpace(legacyRoot)
+	if root == "" {
+		return nil
+	}
+	matches, err := filepath.Glob(filepath.Join(root, "*-service.xml"))
+	if err != nil {
+		return err
+	}
+	for _, path := range matches {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		content := string(raw)
+		updated := strings.ReplaceAll(content, `%BASE%\probe_node.exe`, `%BASE%\probe_node\probe_node.exe`)
+		if updated == content {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			return err
+		}
+		log.Printf("probe upgrade legacy WinSW xml updated: %s", path)
+	}
+	return nil
+}
+
 func replaceCurrentExecutable(newBinary string) (string, string, error) {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -552,9 +598,13 @@ func replaceCurrentExecutable(newBinary string) (string, string, error) {
 	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && strings.TrimSpace(resolved) != "" {
 		exePath = resolved
 	}
-	targetPath := normalizeExecutablePathForUpgradeTarget(exePath)
+	resolvedCurrentPath := normalizeExecutablePathForUpgradeTarget(exePath)
+	targetPath, legacyRoot := resolveProbeUpgradeTargetPathForRuntime(resolvedCurrentPath, runtime.GOOS)
 	if strings.TrimSpace(targetPath) == "" {
 		return "", "", fmt.Errorf("resolved executable path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return "", "", err
 	}
 
 	cleanedCount, cleanErr := cleanupLegacyUpgradeBackups(targetPath)
@@ -567,6 +617,8 @@ func replaceCurrentExecutable(newBinary string) (string, string, error) {
 	mode := fs.FileMode(0o755)
 	if st, err := os.Stat(targetPath); err == nil {
 		mode = st.Mode().Perm()
+	} else if st, err := os.Stat(resolvedCurrentPath); err == nil {
+		mode = st.Mode().Perm()
 	} else if st, err := os.Stat(exePath); err == nil {
 		mode = st.Mode().Perm()
 	}
@@ -576,7 +628,12 @@ func replaceCurrentExecutable(newBinary string) (string, string, error) {
 	}
 	backup := targetPath + ".bak"
 	_ = os.Remove(backup)
-	if err := os.Rename(targetPath, backup); err != nil {
+
+	backupSource := targetPath
+	if _, statErr := os.Stat(backupSource); statErr != nil {
+		backupSource = resolvedCurrentPath
+	}
+	if err := os.Rename(backupSource, backup); err != nil {
 		_ = os.Remove(tmp)
 		return "", "", err
 	}
@@ -584,6 +641,12 @@ func replaceCurrentExecutable(newBinary string) (string, string, error) {
 		_ = os.Rename(backup, targetPath)
 		_ = os.Remove(tmp)
 		return "", "", err
+	}
+
+	if strings.TrimSpace(legacyRoot) != "" {
+		if err := rewriteLegacyWinSWExecutablePathForRuntimeDir(legacyRoot); err != nil {
+			log.Printf("probe upgrade warning: update legacy WinSW xml failed: root=%s err=%v", legacyRoot, err)
+		}
 	}
 	return targetPath, backup, nil
 }
