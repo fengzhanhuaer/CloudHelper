@@ -180,48 +180,112 @@ func pruneExpiredDNSBiMapLocked(now time.Time) bool {
 	return removed
 }
 
-func loadDNSBiMapFromDiskLocked(path string) error {
-	resetDNSBiMapCacheLocked()
+func dnsBiMapBackupPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return path + ".bak"
+}
+
+func decodeDNSBiMapPayloadFromDisk(path string) (dnsBiMapPersistPayload, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+		return dnsBiMapPersistPayload{}, err
 	}
 	defer file.Close()
-
 	var payload dnsBiMapPersistPayload
 	if err := gob.NewDecoder(file).Decode(&payload); err != nil {
-		return err
+		return dnsBiMapPersistPayload{}, err
 	}
+	return payload, nil
+}
 
-	now := time.Now()
+func applyDNSBiMapPayloadLocked(payload dnsBiMapPersistPayload, now time.Time) (requiresRewrite bool) {
+	resetDNSBiMapCacheLocked()
 	for _, raw := range payload.Entries {
 		domain := normalizeDNSCacheHost(raw.Domain)
 		ip := normalizeDNSCacheIP(raw.IP)
 		if domain == "" || ip == "" {
+			requiresRewrite = true
 			continue
 		}
 		if raw.ExpiresAt.IsZero() || now.After(raw.ExpiresAt) {
+			requiresRewrite = true
 			continue
 		}
+		cleanGroup := normalizeDNSBiMapGroup(raw.Group)
+		cleanNodeID := strings.TrimSpace(raw.NodeID)
 		entry := dnsBiMapEntry{
 			Domain:    domain,
 			IP:        ip,
-			Group:     normalizeDNSBiMapGroup(raw.Group),
-			NodeID:    strings.TrimSpace(raw.NodeID),
+			Group:     cleanGroup,
+			NodeID:    cleanNodeID,
 			ExpiresAt: raw.ExpiresAt,
 			UpdatedAt: raw.UpdatedAt,
 		}
 		if entry.UpdatedAt.IsZero() {
 			entry.UpdatedAt = now
+			requiresRewrite = true
+		}
+		if strings.TrimSpace(raw.Domain) != domain || strings.TrimSpace(raw.IP) != ip || strings.TrimSpace(raw.Group) != cleanGroup || strings.TrimSpace(raw.NodeID) != cleanNodeID {
+			requiresRewrite = true
 		}
 		key := dnsBiMapKey(domain, ip)
+		if _, exists := dnsBiMapCache.entries[key]; exists {
+			requiresRewrite = true
+		}
 		dnsBiMapCache.entries[key] = entry
 		addDNSBiMapIndexLocked(domain, ip)
 	}
-	return nil
+	return requiresRewrite
+}
+
+func loadDNSBiMapFromDiskLocked(path string) (loadedFromBackup bool, requiresRewrite bool, err error) {
+	mainPath := strings.TrimSpace(path)
+	if mainPath == "" {
+		resetDNSBiMapCacheLocked()
+		return false, false, nil
+	}
+	backupPath := dnsBiMapBackupPath(mainPath)
+
+	candidates := []struct {
+		Path       string
+		FromBackup bool
+	}{
+		{Path: mainPath, FromBackup: false},
+	}
+	if backupPath != "" {
+		candidates = append(candidates, struct {
+			Path       string
+			FromBackup bool
+		}{Path: backupPath, FromBackup: true})
+	}
+
+	var firstErr error
+	for _, candidate := range candidates {
+		payload, decodeErr := decodeDNSBiMapPayloadFromDisk(candidate.Path)
+		if decodeErr != nil {
+			if os.IsNotExist(decodeErr) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = decodeErr
+			}
+			continue
+		}
+		requiresRewrite = applyDNSBiMapPayloadLocked(payload, time.Now())
+		if candidate.FromBackup {
+			requiresRewrite = true
+		}
+		return candidate.FromBackup, requiresRewrite, nil
+	}
+
+	if firstErr != nil {
+		return false, false, firstErr
+	}
+	resetDNSBiMapCacheLocked()
+	return false, false, nil
 }
 
 func storeDNSBiMapToDiskLocked() error {
@@ -246,6 +310,7 @@ func storeDNSBiMapToDiskLocked() error {
 	payload := dnsBiMapPersistPayload{Version: 1, Entries: entries}
 
 	tmpPath := path + ".tmp"
+	backupPath := dnsBiMapBackupPath(path)
 	file, err := os.Create(tmpPath)
 	if err != nil {
 		return err
@@ -262,10 +327,31 @@ func storeDNSBiMapToDiskLocked() error {
 		return closeErr
 	}
 
-	_ = os.Remove(path)
+	if backupPath != "" {
+		_ = os.Remove(backupPath)
+		if _, statErr := os.Stat(path); statErr == nil {
+			if err := os.Rename(path, backupPath); err != nil {
+				_ = os.Remove(tmpPath)
+				return err
+			}
+		} else if !os.IsNotExist(statErr) {
+			_ = os.Remove(tmpPath)
+			return statErr
+		}
+	}
+
 	if err := os.Rename(tmpPath, path); err != nil {
+		if backupPath != "" {
+			if _, statErr := os.Stat(backupPath); statErr == nil {
+				_ = os.Rename(backupPath, path)
+			}
+		}
 		_ = os.Remove(tmpPath)
 		return err
+	}
+
+	if backupPath != "" {
+		_ = os.Remove(backupPath)
 	}
 	return nil
 }
@@ -280,13 +366,16 @@ func ensureDNSBiMapCacheLoaded() error {
 	if err != nil {
 		return err
 	}
-	if err := loadDNSBiMapFromDiskLocked(path); err != nil {
-		resetDNSBiMapCacheLocked()
+	loadedFromBackup, requiresRewrite, err := loadDNSBiMapFromDiskLocked(path)
+	if err != nil {
 		dnsBiMapCache.loaded = true
 		return err
 	}
-	_ = pruneExpiredDNSBiMapLocked(time.Now())
-	_ = enforceDNSBiMapCapacityLocked()
+	removedExpired := pruneExpiredDNSBiMapLocked(time.Now())
+	enforcedCapacity := enforceDNSBiMapCapacityLocked()
+	if loadedFromBackup || requiresRewrite || removedExpired || enforcedCapacity {
+		_ = storeDNSBiMapToDiskLocked()
+	}
 	dnsBiMapCache.loaded = true
 	return nil
 }
