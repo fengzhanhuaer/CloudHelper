@@ -133,6 +133,20 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 			localAddr = &net.UDPAddr{IP: append(net.IP(nil), frame.SrcIP...), Port: int(frame.SrcPort)}
 		}
 		conn, dialErr := dialUDPWithRetry("udp", localAddr, udpAddr)
+		if dialErr != nil && localAddr != nil && shouldFallbackLocalTUNUDPBind(dialErr) {
+			s.logfRateLimited(
+				"tun:udp:bind_fallback:"+strings.ToLower(strings.TrimSpace(route.TargetAddr)),
+				3*time.Second,
+				"local tun udp relay bind conflict detected, fallback to ephemeral local addr: src=%s:%d dst=%s:%d target=%s err=%v",
+				frame.SrcIP.String(),
+				frame.SrcPort,
+				frame.DstIP.String(),
+				frame.DstPort,
+				route.TargetAddr,
+				dialErr,
+			)
+			conn, dialErr = dialUDPWithRetry("udp", nil, udpAddr)
+		}
 		if dialErr != nil {
 			releaseSource()
 			return nil, dialErr
@@ -434,6 +448,13 @@ func minDuration(left time.Duration, right time.Duration) time.Duration {
 		return left
 	}
 	return right
+}
+
+func shouldFallbackLocalTUNUDPBind(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isListenAddrInUseError(err) || isListenAddrNotAvailableError(err)
 }
 
 func (s *networkAssistantService) injectLocalTUNUDPResponse(relay *localTUNUDPRelay, payload []byte) {

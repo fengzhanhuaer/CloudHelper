@@ -1370,3 +1370,18 @@ func TestIsRetryableUDPSocketErr(t *testing.T) {
 		t.Fatal("expected non-retryable udp dial error")
 	}
 }
+
+func TestShouldFallbackLocalTUNUDPBind(t *testing.T) {
+	if shouldFallbackLocalTUNUDPBind(nil) {
+		t.Fatal("nil error should not trigger fallback")
+	}
+	if !shouldFallbackLocalTUNUDPBind(errors.New("bind: address already in use")) {
+		t.Fatal("address already in use should trigger fallback")
+	}
+	if !shouldFallbackLocalTUNUDPBind(errors.New("connectex: The requested address is not valid in its context")) {
+		t.Fatal("requested address invalid should trigger fallback")
+	}
+	if shouldFallbackLocalTUNUDPBind(errors.New("connection refused")) {
+		t.Fatal("connection refused should not trigger fallback")
+	}
+}
