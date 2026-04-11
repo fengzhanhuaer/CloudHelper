@@ -53,8 +53,13 @@ function aggregateDNSCacheEntries(entries: NetworkAssistantDNSCacheEntry[]): Agg
       grouped.set(key, row);
     }
 
-    appendUnique(row.ips, entry.ip || "");
-    appendUnique(row.fakeIPs, entry.fake_ip_value || (entry.fake_ip ? entry.ip || "" : ""));
+    const entryIP = (entry.ip || "").trim();
+    const entryFakeIP = (entry.fake_ip_value || "").trim();
+    if (entry.fake_ip) {
+      appendUnique(row.fakeIPs, entryFakeIP || entryIP);
+    } else {
+      appendUnique(row.ips, entryIP);
+    }
     appendUnique(row.kinds, entry.kind || "");
     appendUnique(row.sources, entry.source || "");
     appendUnique(row.groups, entry.direct ? "直连" : (entry.group || "-"));
@@ -120,17 +125,17 @@ export function NetworkAssistantDNSCachePanel(props: NetworkAssistantDNSCachePan
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
           <thead>
-            <tr style={{ background: "#f0f0f0" }}>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>域名</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>FAKE IP</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>DNS次数</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>IP连接次数</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>总次数</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>类型</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>来源</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>组</th>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>过期时间</th>
+            <tr style={{ background: "rgba(18, 28, 42, 0.92)", color: "#e8f1ff" }}>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>域名</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>IP</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>FAKE IP</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>DNS次数</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>IP连接次数</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>总次数</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>类型</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>来源</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>组</th>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.18)" }}>过期时间</th>
             </tr>
           </thead>
           <tbody>
