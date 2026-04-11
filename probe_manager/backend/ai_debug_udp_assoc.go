@@ -21,6 +21,10 @@ type aiDebugUDPAssociationItemPayload struct {
 	RouteFingerprint string `json:"route_fingerprint,omitempty"`
 	NodeID           string `json:"node_id,omitempty"`
 	Group            string `json:"group,omitempty"`
+	NATMode          string `json:"nat_mode,omitempty"`
+	TTLProfile       string `json:"ttl_profile,omitempty"`
+	IdleTimeoutMS    int64  `json:"idle_timeout_ms,omitempty"`
+	GCIntervalMS     int64  `json:"gc_interval_ms,omitempty"`
 	Direct           bool   `json:"direct"`
 	Transport        string `json:"transport,omitempty"`
 	Refs             int32  `json:"refs,omitempty"`
@@ -103,6 +107,10 @@ func buildAIDebugManagerUDPAssociationsPayload(service *networkAssistantService)
 			RouteFingerprint: strings.TrimSpace(relay.routeFingerprint),
 			NodeID:           strings.TrimSpace(relay.routeNodeID),
 			Group:            strings.TrimSpace(relay.routeGroup),
+			NATMode:          strings.TrimSpace(relay.natMode),
+			TTLProfile:       strings.TrimSpace(relay.ttlProfile),
+			IdleTimeoutMS:    relay.idleTimeout.Milliseconds(),
+			GCIntervalMS:     relay.gcInterval.Milliseconds(),
 			Direct:           relay.routeDirect,
 			Active:           !relay.closed.Load(),
 		}

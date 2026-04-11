@@ -19,6 +19,11 @@ type probeUDPAssociationDebugItemPayload struct {
 	RouteFingerprint string `json:"route_fingerprint,omitempty"`
 	NodeID           string `json:"node_id,omitempty"`
 	Group            string `json:"group,omitempty"`
+	NATMode          string `json:"nat_mode,omitempty"`
+	TTLProfile       string `json:"ttl_profile,omitempty"`
+	IdleTimeoutMS    int64  `json:"idle_timeout_ms,omitempty"`
+	GCIntervalMS     int64  `json:"gc_interval_ms,omitempty"`
+	CreatedAtUnixMS  int64  `json:"created_at_unix_ms,omitempty"`
 	Direct           bool   `json:"direct"`
 	Transport        string `json:"transport,omitempty"`
 	Refs             int32  `json:"refs,omitempty"`
@@ -82,6 +87,11 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 			RouteFingerprint: strings.TrimSpace(assoc.routeFingerprint),
 			NodeID:           strings.TrimSpace(assoc.routeNodeID),
 			Group:            strings.TrimSpace(assoc.routeGroup),
+			NATMode:          strings.TrimSpace(assoc.natMode),
+			TTLProfile:       strings.TrimSpace(assoc.ttlProfile),
+			IdleTimeoutMS:    assoc.idleTimeout.Milliseconds(),
+			GCIntervalMS:     assoc.gcInterval.Milliseconds(),
+			CreatedAtUnixMS:  assoc.createdAtUnixMS,
 			Transport:        "udp",
 			Refs:             assoc.refs.Load(),
 			Active:           assoc.conn != nil,

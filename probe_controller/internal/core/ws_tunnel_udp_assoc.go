@@ -10,9 +10,21 @@ import (
 )
 
 const (
-	tunnelUDPAssociationIdleTTL     = 90 * time.Second
-	tunnelUDPAssociationGCInterval  = 15 * time.Second
-	tunnelUDPAssociationReadBufSize = 64 * 1024
+	tunnelUDPAssociationIdleTTL       = 90 * time.Second
+	tunnelUDPAssociationGCInterval    = 15 * time.Second
+	tunnelUDPAssociationReadBufSize   = 64 * 1024
+	tunnelUDPAssociationMinIdleTTL    = 30 * time.Second
+	tunnelUDPAssociationMaxIdleTTL    = 15 * time.Minute
+	tunnelUDPAssociationMinGCInterval = 10 * time.Second
+	tunnelUDPAssociationMaxGCInterval = 2 * time.Minute
+
+	tunnelUDPAssociationTTLProfileDNSFast    = "profile_dns_fast"
+	tunnelUDPAssociationTTLProfileDefault    = "profile_udp_default"
+	tunnelUDPAssociationTTLProfileQUICWarm   = "profile_quic_warm"
+	tunnelUDPAssociationTTLProfileQUICStable = "profile_quic_stable"
+	tunnelUDPAssociationTTLProfileQUICLong   = "profile_quic_long"
+
+	tunnelUDPAssociationNATModeDefault = "preserve_src_port"
 )
 
 type tunnelUDPAssociation struct {
@@ -24,6 +36,11 @@ type tunnelUDPAssociation struct {
 	routeNodeID      string
 	routeTarget      string
 	routeFingerprint string
+	natMode          string
+	ttlProfile       string
+	idleTimeout      time.Duration
+	gcInterval       time.Duration
+	createdAtUnixMS  int64
 	conn             *net.UDPConn
 	pool             *tunnelUDPAssociationPool
 
@@ -83,6 +100,58 @@ func tunnelUDPAssociationEffectiveGCInterval(idle time.Duration) time.Duration {
 	return gcInterval
 }
 
+func normalizeTunnelUDPAssociationDurationMS(rawMS int64, fallback, minValue, maxValue time.Duration) time.Duration {
+	if rawMS <= 0 {
+		return fallback
+	}
+	candidate := time.Duration(rawMS) * time.Millisecond
+	if minValue > 0 && candidate < minValue {
+		candidate = minValue
+	}
+	if maxValue > 0 && candidate > maxValue {
+		candidate = maxValue
+	}
+	return candidate
+}
+
+func resolveTunnelUDPAssociationPolicy(associationV2 *tunnelAssociationV2Meta) (ttlProfile string, idleTTL time.Duration, gcInterval time.Duration, natMode string, createdAtUnixMS int64) {
+	ttlProfile = tunnelUDPAssociationTTLProfileDefault
+	idleTTL = tunnelUDPAssociationIdleTTL
+	gcInterval = tunnelUDPAssociationGCInterval
+	natMode = tunnelUDPAssociationNATModeDefault
+	createdAtUnixMS = time.Now().UnixMilli()
+	if associationV2 != nil {
+		if profile := strings.TrimSpace(associationV2.TTLProfile); profile != "" {
+			ttlProfile = profile
+		}
+		idleTTL = normalizeTunnelUDPAssociationDurationMS(
+			associationV2.IdleTimeoutMS,
+			tunnelUDPAssociationIdleTTL,
+			tunnelUDPAssociationMinIdleTTL,
+			tunnelUDPAssociationMaxIdleTTL,
+		)
+		gcInterval = normalizeTunnelUDPAssociationDurationMS(
+			associationV2.GCIntervalMS,
+			tunnelUDPAssociationGCInterval,
+			tunnelUDPAssociationMinGCInterval,
+			tunnelUDPAssociationMaxGCInterval,
+		)
+		if mode := strings.TrimSpace(associationV2.NATMode); mode != "" {
+			natMode = mode
+		}
+		if associationV2.CreatedAtUnixMS > 0 {
+			createdAtUnixMS = associationV2.CreatedAtUnixMS
+		}
+	}
+	if half := idleTTL / 2; half > 0 && gcInterval > half {
+		gcInterval = half
+	}
+	if gcInterval <= 0 {
+		gcInterval = time.Second
+	}
+	return ttlProfile, idleTTL, gcInterval, natMode, createdAtUnixMS
+}
+
 func (p *tunnelUDPAssociationPool) Acquire(associationV2 *tunnelAssociationV2Meta, target string) (*tunnelUDPAssociation, error) {
 	if p == nil {
 		return nil, fmt.Errorf("udp association pool is nil")
@@ -92,6 +161,7 @@ func (p *tunnelUDPAssociationPool) Acquire(associationV2 *tunnelAssociationV2Met
 		return nil, fmt.Errorf("udp association target is required")
 	}
 	key := buildTunnelUDPAssociationKey(associationV2, cleanTarget)
+	ttlProfile, idleTTL, gcInterval, natMode, createdAtUnixMS := resolveTunnelUDPAssociationPolicy(associationV2)
 
 	p.mu.Lock()
 	if existing, ok := p.items[key]; ok && existing != nil && existing.conn != nil {
@@ -116,6 +186,21 @@ func (p *tunnelUDPAssociationPool) Acquire(associationV2 *tunnelAssociationV2Met
 				existing.routeFingerprint = strings.TrimSpace(associationV2.RouteFingerprint)
 			}
 		}
+		if existing.ttlProfile == "" {
+			existing.ttlProfile = ttlProfile
+		}
+		if existing.idleTimeout <= 0 {
+			existing.idleTimeout = idleTTL
+		}
+		if existing.gcInterval <= 0 {
+			existing.gcInterval = gcInterval
+		}
+		if existing.natMode == "" {
+			existing.natMode = natMode
+		}
+		if existing.createdAtUnixMS <= 0 {
+			existing.createdAtUnixMS = createdAtUnixMS
+		}
 		existing.Touch()
 		p.mu.Unlock()
 		return existing, nil
@@ -139,6 +224,11 @@ func (p *tunnelUDPAssociationPool) Acquire(associationV2 *tunnelAssociationV2Met
 		flowID:           cleanTarget,
 		routeTarget:      cleanTarget,
 		routeFingerprint: strings.ToLower(cleanTarget),
+		natMode:          natMode,
+		ttlProfile:       ttlProfile,
+		idleTimeout:      idleTTL,
+		gcInterval:       gcInterval,
+		createdAtUnixMS:  createdAtUnixMS,
 	}
 	if associationV2 != nil {
 		assoc.assocKeyV2 = strings.TrimSpace(associationV2.AssocKeyV2)
@@ -183,7 +273,11 @@ func (p *tunnelUDPAssociationPool) collectIdle() {
 		if lastActive <= 0 {
 			continue
 		}
-		if now.Sub(time.Unix(lastActive, 0)) >= tunnelUDPAssociationIdleTTL {
+		idleTTL := assoc.idleTimeout
+		if idleTTL <= 0 {
+			idleTTL = tunnelUDPAssociationIdleTTL
+		}
+		if now.Sub(time.Unix(lastActive, 0)) >= idleTTL {
 			delete(p.items, key)
 			stale = append(stale, assoc)
 		}
@@ -200,7 +294,6 @@ func (a *tunnelUDPAssociation) Touch() {
 	}
 	a.lastActiveUnix.Store(time.Now().Unix())
 }
-
 
 func (a *tunnelUDPAssociation) Write(payload []byte) error {
 	if a == nil || a.conn == nil {

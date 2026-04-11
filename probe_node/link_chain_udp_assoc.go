@@ -9,6 +9,21 @@ import (
 	"time"
 )
 
+const (
+	probeChainUDPAssociationMinIdleTTL    = 30 * time.Second
+	probeChainUDPAssociationMaxIdleTTL    = 15 * time.Minute
+	probeChainUDPAssociationMinGCInterval = 10 * time.Second
+	probeChainUDPAssociationMaxGCInterval = 2 * time.Minute
+
+	probeChainUDPAssociationTTLProfileDNSFast    = "profile_dns_fast"
+	probeChainUDPAssociationTTLProfileDefault    = "profile_udp_default"
+	probeChainUDPAssociationTTLProfileQUICWarm   = "profile_quic_warm"
+	probeChainUDPAssociationTTLProfileQUICStable = "profile_quic_stable"
+	probeChainUDPAssociationTTLProfileQUICLong   = "profile_quic_long"
+
+	probeChainUDPAssociationNATModeDefault = "preserve_src_port"
+)
+
 type probeChainUDPAssociation struct {
 	key              string
 	target           string
@@ -18,6 +33,11 @@ type probeChainUDPAssociation struct {
 	routeNodeID      string
 	routeTarget      string
 	routeFingerprint string
+	natMode          string
+	ttlProfile       string
+	idleTimeout      time.Duration
+	gcInterval       time.Duration
+	createdAtUnixMS  int64
 	conn             *net.UDPConn
 	pool             *probeChainUDPAssociationPool
 
@@ -77,6 +97,58 @@ func probeChainUDPAssociationEffectiveGCInterval(idle time.Duration) time.Durati
 	return gcInterval
 }
 
+func normalizeProbeChainUDPAssociationDurationMS(rawMS int64, fallback, minValue, maxValue time.Duration) time.Duration {
+	if rawMS <= 0 {
+		return fallback
+	}
+	candidate := time.Duration(rawMS) * time.Millisecond
+	if minValue > 0 && candidate < minValue {
+		candidate = minValue
+	}
+	if maxValue > 0 && candidate > maxValue {
+		candidate = maxValue
+	}
+	return candidate
+}
+
+func resolveProbeChainUDPAssociationPolicy(associationV2 *probeChainAssociationV2Meta) (ttlProfile string, idleTTL time.Duration, gcInterval time.Duration, natMode string, createdAtUnixMS int64) {
+	ttlProfile = probeChainUDPAssociationTTLProfileDefault
+	idleTTL = probeChainPortForwardSessionIdleTTL
+	gcInterval = probeChainPortForwardSessionGCInterval
+	natMode = probeChainUDPAssociationNATModeDefault
+	createdAtUnixMS = time.Now().UnixMilli()
+	if associationV2 != nil {
+		if profile := strings.TrimSpace(associationV2.TTLProfile); profile != "" {
+			ttlProfile = profile
+		}
+		idleTTL = normalizeProbeChainUDPAssociationDurationMS(
+			associationV2.IdleTimeoutMS,
+			probeChainPortForwardSessionIdleTTL,
+			probeChainUDPAssociationMinIdleTTL,
+			probeChainUDPAssociationMaxIdleTTL,
+		)
+		gcInterval = normalizeProbeChainUDPAssociationDurationMS(
+			associationV2.GCIntervalMS,
+			probeChainPortForwardSessionGCInterval,
+			probeChainUDPAssociationMinGCInterval,
+			probeChainUDPAssociationMaxGCInterval,
+		)
+		if mode := strings.TrimSpace(associationV2.NATMode); mode != "" {
+			natMode = mode
+		}
+		if associationV2.CreatedAtUnixMS > 0 {
+			createdAtUnixMS = associationV2.CreatedAtUnixMS
+		}
+	}
+	if half := idleTTL / 2; half > 0 && gcInterval > half {
+		gcInterval = half
+	}
+	if gcInterval <= 0 {
+		gcInterval = time.Second
+	}
+	return ttlProfile, idleTTL, gcInterval, natMode, createdAtUnixMS
+}
+
 func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociationV2Meta, target string) (*probeChainUDPAssociation, error) {
 	if p == nil {
 		return nil, fmt.Errorf("probe chain udp association pool is nil")
@@ -86,6 +158,7 @@ func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociat
 		return nil, fmt.Errorf("probe chain udp association target is required")
 	}
 	key := buildProbeChainUDPAssociationKey(associationV2, cleanTarget)
+	ttlProfile, idleTTL, gcInterval, natMode, createdAtUnixMS := resolveProbeChainUDPAssociationPolicy(associationV2)
 
 	p.mu.Lock()
 	if existing, ok := p.items[key]; ok && existing != nil && existing.conn != nil {
@@ -110,6 +183,21 @@ func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociat
 				existing.routeFingerprint = strings.TrimSpace(associationV2.RouteFingerprint)
 			}
 		}
+		if existing.ttlProfile == "" {
+			existing.ttlProfile = ttlProfile
+		}
+		if existing.idleTimeout <= 0 {
+			existing.idleTimeout = idleTTL
+		}
+		if existing.gcInterval <= 0 {
+			existing.gcInterval = gcInterval
+		}
+		if existing.natMode == "" {
+			existing.natMode = natMode
+		}
+		if existing.createdAtUnixMS <= 0 {
+			existing.createdAtUnixMS = createdAtUnixMS
+		}
 		existing.Touch()
 		p.mu.Unlock()
 		return existing, nil
@@ -133,6 +221,11 @@ func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociat
 		flowID:           cleanTarget,
 		routeTarget:      cleanTarget,
 		routeFingerprint: strings.ToLower(cleanTarget),
+		natMode:          natMode,
+		ttlProfile:       ttlProfile,
+		idleTimeout:      idleTTL,
+		gcInterval:       gcInterval,
+		createdAtUnixMS:  createdAtUnixMS,
 	}
 	if associationV2 != nil {
 		assoc.assocKeyV2 = strings.TrimSpace(associationV2.AssocKeyV2)
@@ -177,7 +270,11 @@ func (p *probeChainUDPAssociationPool) collectIdle() {
 		if lastActive <= 0 {
 			continue
 		}
-		if now.Sub(time.Unix(lastActive, 0)) >= probeChainPortForwardSessionIdleTTL {
+		idleTTL := assoc.idleTimeout
+		if idleTTL <= 0 {
+			idleTTL = probeChainPortForwardSessionIdleTTL
+		}
+		if now.Sub(time.Unix(lastActive, 0)) >= idleTTL {
 			delete(p.items, key)
 			stale = append(stale, assoc)
 		}
@@ -194,7 +291,6 @@ func (a *probeChainUDPAssociation) Touch() {
 	}
 	a.lastActiveUnix.Store(time.Now().Unix())
 }
-
 
 func (a *probeChainUDPAssociation) Write(payload []byte) error {
 	if a == nil || a.conn == nil {

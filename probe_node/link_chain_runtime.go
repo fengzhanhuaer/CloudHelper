@@ -143,10 +143,17 @@ type probeChainAssociationV2Meta struct {
 	SrcPort          uint16 `json:"src_port,omitempty"`
 	DstIP            string `json:"dst_ip,omitempty"`
 	DstPort          uint16 `json:"dst_port,omitempty"`
+	IPFamily         uint8  `json:"ip_family,omitempty"`
+	Transport        string `json:"transport,omitempty"`
 	RouteGroup       string `json:"route_group,omitempty"`
 	RouteNodeID      string `json:"route_node_id,omitempty"`
 	RouteTarget      string `json:"route_target,omitempty"`
 	RouteFingerprint string `json:"route_fingerprint,omitempty"`
+	NATMode          string `json:"nat_mode,omitempty"`
+	TTLProfile       string `json:"ttl_profile,omitempty"`
+	IdleTimeoutMS    int64  `json:"idle_timeout_ms,omitempty"`
+	GCIntervalMS     int64  `json:"gc_interval_ms,omitempty"`
+	CreatedAtUnixMS  int64  `json:"created_at_unix_ms,omitempty"`
 }
 
 type probeChainTunnelOpenRequest struct {
@@ -229,12 +236,12 @@ const (
 	probeChainPortForwardEntryChainEntry = "chain_entry"
 	probeChainPortForwardEntryChainExit  = "chain_exit"
 
-	probeChainPortForwardSessionIdleTTL       = 90 * time.Second
-	probeChainPortForwardSessionGCInterval    = 15 * time.Second
-	probeChainPortForwardDialTimeout          = 12 * time.Second
-	probeChainPortForwardResponseReadDeadline = 10 * time.Second
-	probeChainPortForwardListenRetryTimeout   = 5 * time.Second
-	probeChainPortForwardListenRetryInterval  = 100 * time.Millisecond
+	probeChainPortForwardSessionIdleTTL        = 90 * time.Second
+	probeChainPortForwardSessionGCInterval     = 15 * time.Second
+	probeChainPortForwardDialTimeout           = 12 * time.Second
+	probeChainPortForwardResponseReadDeadline  = 10 * time.Second
+	probeChainPortForwardListenRetryTimeout    = 5 * time.Second
+	probeChainPortForwardListenRetryInterval   = 100 * time.Millisecond
 	probeChainPortForwardListenRetryMaxBackoff = 800 * time.Millisecond
 
 	probeChainAuthPacketType        = "github_copilot_auth_request"
@@ -1181,10 +1188,16 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 
 	openSession := func(key string, addr net.Addr) (*udpForwardSession, error) {
 		associationV2 := &probeChainAssociationV2Meta{
-			Version:     2,
-			AssocKeyV2:  strings.TrimSpace(key),
-			FlowID:      strings.TrimSpace(key),
-			RouteTarget: strings.TrimSpace(targetAddr),
+			Version:         2,
+			AssocKeyV2:      strings.TrimSpace(key),
+			FlowID:          strings.TrimSpace(key),
+			Transport:       "udp",
+			RouteTarget:     strings.TrimSpace(targetAddr),
+			NATMode:         probeChainUDPAssociationNATModeDefault,
+			TTLProfile:      probeChainUDPAssociationTTLProfileDefault,
+			IdleTimeoutMS:   probeChainPortForwardSessionIdleTTL.Milliseconds(),
+			GCIntervalMS:    probeChainPortForwardSessionGCInterval.Milliseconds(),
+			CreatedAtUnixMS: time.Now().UnixMilli(),
 		}
 		stream, openErr := openProbeChainPortForwardStreamWithAssociation(runtime, cfg.EntrySide, probeChainPortForwardNetworkUDP, targetAddr, associationV2)
 		if openErr != nil {

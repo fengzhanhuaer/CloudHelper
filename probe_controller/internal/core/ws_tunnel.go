@@ -25,10 +25,17 @@ type tunnelAssociationV2Meta struct {
 	SrcPort          uint16 `json:"src_port,omitempty"`
 	DstIP            string `json:"dst_ip,omitempty"`
 	DstPort          uint16 `json:"dst_port,omitempty"`
+	IPFamily         uint8  `json:"ip_family,omitempty"`
+	Transport        string `json:"transport,omitempty"`
 	RouteGroup       string `json:"route_group,omitempty"`
 	RouteNodeID      string `json:"route_node_id,omitempty"`
 	RouteTarget      string `json:"route_target,omitempty"`
 	RouteFingerprint string `json:"route_fingerprint,omitempty"`
+	NATMode          string `json:"nat_mode,omitempty"`
+	TTLProfile       string `json:"ttl_profile,omitempty"`
+	IdleTimeoutMS    int64  `json:"idle_timeout_ms,omitempty"`
+	GCIntervalMS     int64  `json:"gc_interval_ms,omitempty"`
+	CreatedAtUnixMS  int64  `json:"created_at_unix_ms,omitempty"`
 }
 
 type tunnelOpenRequest struct {

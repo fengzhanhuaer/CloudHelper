@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+const (
+	udpTTLProfileDNSFast    = "profile_dns_fast"
+	udpTTLProfileDefault    = "profile_udp_default"
+	udpTTLProfileQUICWarm   = "profile_quic_warm"
+	udpTTLProfileQUICStable = "profile_quic_stable"
+	udpTTLProfileQUICLong   = "profile_quic_long"
+
+	udpNATModePreserveSrcPort       = "preserve_src_port"
+	udpNATModeAutoFallbackEphemeral = "auto_fallback_ephemeral"
+)
+
 type localTUNUDPPacket struct {
 	SrcIP   net.IP
 	DstIP   net.IP
@@ -46,6 +57,10 @@ type localTUNUDPRelay struct {
 	assocKeyV2       string
 	flowID           string
 	routeFingerprint string
+	natMode          string
+	ttlProfile       string
+	idleTimeout      time.Duration
+	gcInterval       time.Duration
 
 	directConn   *net.UDPConn
 	tunnelStream *tunnelMuxStream
@@ -104,6 +119,11 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 		return nil, err
 	}
 
+	ttlProfile, idleTimeout, gcInterval := resolveLocalTUNUDPTTLProfile(frame.DstPort)
+	natMode := udpNATModePreserveSrcPort
+	if route.Direct {
+		natMode = udpNATModeAutoFallbackEphemeral
+	}
 	relay := &localTUNUDPRelay{
 		service:          s,
 		key:              key,
@@ -119,6 +139,10 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 		assocKeyV2:       key,
 		flowID:           key,
 		routeFingerprint: buildLocalTUNUDPRouteFingerprint(route),
+		natMode:          natMode,
+		ttlProfile:       ttlProfile,
+		idleTimeout:      idleTimeout,
+		gcInterval:       gcInterval,
 	}
 	relay.touch()
 
@@ -146,6 +170,7 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 				dialErr,
 			)
 			conn, dialErr = dialUDPWithRetry("udp", nil, udpAddr)
+			relay.natMode = udpNATModeAutoFallbackEphemeral
 		}
 		if dialErr != nil {
 			releaseSource()
@@ -161,10 +186,17 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 			SrcPort:          frame.SrcPort,
 			DstIP:            frame.DstIP.String(),
 			DstPort:          frame.DstPort,
+			IPFamily:         4,
+			Transport:        "udp",
 			RouteGroup:       strings.TrimSpace(route.Group),
 			RouteNodeID:      strings.TrimSpace(route.NodeID),
 			RouteTarget:      strings.TrimSpace(route.TargetAddr),
 			RouteFingerprint: buildLocalTUNUDPRouteFingerprint(route),
+			NATMode:          strings.TrimSpace(relay.natMode),
+			TTLProfile:       strings.TrimSpace(relay.ttlProfile),
+			IdleTimeoutMS:    relay.idleTimeout.Milliseconds(),
+			GCIntervalMS:     relay.gcInterval.Milliseconds(),
+			CreatedAtUnixMS:  time.Now().UnixMilli(),
 		}
 		stream, openErr := s.openTunnelStreamForGroupWithAssociationV2("udp", route.TargetAddr, route.Group, associationV2)
 		if openErr != nil {
@@ -185,7 +217,7 @@ func (s *networkAssistantService) getOrCreateLocalTUNUDPRelay(frame localTUNUDPP
 	s.mu.Unlock()
 
 	relay.startReadLoop()
-	relay.startIdleGC(localTUNUDPAssociationTimeout)
+	relay.startIdleGCWithInterval(relay.idleTimeout, relay.gcInterval)
 	rateKey := fmt.Sprintf(
 		"tun:udp:relay_created:%s|%t|%s|%s",
 		strings.ToLower(strings.TrimSpace(relay.routeTarget)),
@@ -346,11 +378,24 @@ func (r *localTUNUDPRelay) touch() {
 }
 
 func (r *localTUNUDPRelay) startIdleGC(idle time.Duration) {
+	r.startIdleGCWithInterval(idle, 0)
+}
+
+func (r *localTUNUDPRelay) startIdleGCWithInterval(idle time.Duration, gcInterval time.Duration) {
 	if r == nil || idle <= 0 {
 		return
 	}
+	if gcInterval <= 0 {
+		gcInterval = localTUNUDPEffectiveGCInterval(idle)
+	} else {
+		if half := idle / 2; half > 0 {
+			gcInterval = minDuration(gcInterval, half)
+		}
+		if gcInterval <= 0 {
+			gcInterval = time.Second
+		}
+	}
 	go func() {
-		gcInterval := localTUNUDPEffectiveGCInterval(idle)
 		ticker := time.NewTicker(gcInterval)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -418,6 +463,26 @@ func (s *networkAssistantService) releaseLocalTUNUDPSource(key string) {
 
 func buildLocalTUNUDPSourceKey(srcIP net.IP, srcPort uint16) string {
 	return srcIP.String() + ":" + strconv.Itoa(int(srcPort))
+}
+
+func resolveLocalTUNUDPTTLProfile(dstPort uint16) (string, time.Duration, time.Duration) {
+	switch {
+	case dstPort == 53:
+		return udpTTLProfileDNSFast, 30 * time.Second, 10 * time.Second
+	case isLikelyQUICPort(dstPort):
+		return udpTTLProfileQUICWarm, 180 * time.Second, 30 * time.Second
+	default:
+		return udpTTLProfileDefault, localTUNUDPAssociationTimeout, localTUNUDPAssociationGCInterval
+	}
+}
+
+func isLikelyQUICPort(port uint16) bool {
+	switch port {
+	case 443, 784, 853:
+		return true
+	default:
+		return false
+	}
 }
 
 func buildLocalTUNUDPRouteFingerprint(route tunnelRouteDecision) string {
