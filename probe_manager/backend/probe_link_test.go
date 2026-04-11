@@ -338,6 +338,127 @@ func TestDownloadAssetViaProxyResume(t *testing.T) {
 	}
 }
 
+func TestDownloadAssetViaProxyReconnectResume(t *testing.T) {
+	initialChunk := []byte("hello ")
+	remainingChunk := []byte("world")
+
+	oldDefaultDialer := websocket.DefaultDialer
+	websocket.DefaultDialer = &websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+	}
+	defer func() {
+		websocket.DefaultDialer = oldDefaultDialer
+	}()
+
+	var streamAttempt atomic.Int32
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+
+		for {
+			var req adminWSRequest
+			if err := conn.ReadJSON(&req); err != nil {
+				return
+			}
+			switch req.Action {
+			case "auth.session":
+				authData, err := json.Marshal(map[string]bool{"authenticated": true})
+				if err != nil {
+					t.Fatalf("marshal auth response: %v", err)
+				}
+				if err := conn.WriteJSON(adminWSResponse{ID: req.ID, OK: true, Data: authData}); err != nil {
+					t.Fatalf("write auth response: %v", err)
+				}
+			case "admin.proxy.download.stream":
+				var payload map[string]any
+				rawPayload, err := json.Marshal(req.Payload)
+				if err != nil {
+					t.Fatalf("marshal request payload: %v", err)
+				}
+				if err := json.Unmarshal(rawPayload, &payload); err != nil {
+					t.Fatalf("unmarshal payload: %v", err)
+				}
+
+				attempt := streamAttempt.Add(1)
+				offset := int64(payload["offset"].(float64))
+				if attempt == 1 {
+					if offset != 0 {
+						t.Fatalf("unexpected first offset: %d", offset)
+					}
+					chunkData, err := json.Marshal(map[string]any{
+						"request_id":   req.ID,
+						"chunk_base64": base64.StdEncoding.EncodeToString(initialChunk),
+						"downloaded":   6,
+						"total":        11,
+						"status":       http.StatusOK,
+					})
+					if err != nil {
+						t.Fatalf("marshal first chunk: %v", err)
+					}
+					if err := conn.WriteJSON(adminWSResponse{Type: "proxy.download.chunk", Data: chunkData}); err != nil {
+						t.Fatalf("write first chunk: %v", err)
+					}
+					_ = conn.Close()
+					return
+				}
+
+				if offset != 6 {
+					t.Fatalf("unexpected resumed offset: %d", offset)
+				}
+				chunkData, err := json.Marshal(map[string]any{
+					"request_id":   req.ID,
+					"chunk_base64": base64.StdEncoding.EncodeToString(remainingChunk),
+					"downloaded":   11,
+					"total":        11,
+					"status":       http.StatusPartialContent,
+				})
+				if err != nil {
+					t.Fatalf("marshal resumed chunk: %v", err)
+				}
+				if err := conn.WriteJSON(adminWSResponse{Type: "proxy.download.chunk", Data: chunkData}); err != nil {
+					t.Fatalf("write resumed chunk: %v", err)
+				}
+				doneData, err := json.Marshal(map[string]any{
+					"downloaded": 11,
+					"total":      11,
+					"status":     http.StatusPartialContent,
+				})
+				if err != nil {
+					t.Fatalf("marshal done: %v", err)
+				}
+				if err := conn.WriteJSON(adminWSResponse{ID: req.ID, OK: true, Data: doneData}); err != nil {
+					t.Fatalf("write done: %v", err)
+				}
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	output := filepath.Join(dir, "manager.bin")
+
+	if err := downloadAssetViaProxy(t.Context(), server.URL, "token", "https://example.com/asset", output, nil); err != nil {
+		t.Fatalf("downloadAssetViaProxy returned error: %v", err)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Fatalf("unexpected output content: %q", string(got))
+	}
+	if streamAttempt.Load() < 2 {
+		t.Fatalf("expected reconnect attempts >=2, got %d", streamAttempt.Load())
+	}
+}
+
 type countingAcceptListener struct {
 	net.Listener
 	accepted *atomic.Int32

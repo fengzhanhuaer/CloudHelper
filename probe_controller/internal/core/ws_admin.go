@@ -19,6 +19,43 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	defaultAdminWSProxyDownloadTimeout = 45 * time.Minute
+	minAdminWSProxyDownloadTimeout     = 5 * time.Minute
+	maxAdminWSProxyDownloadTimeout     = 6 * time.Hour
+)
+
+func adminWSProxyDownloadTimeout() time.Duration {
+	return parseDurationEnvWithBounds(
+		"CLOUDHELPER_CONTROLLER_PROXY_DOWNLOAD_TIMEOUT",
+		defaultAdminWSProxyDownloadTimeout,
+		minAdminWSProxyDownloadTimeout,
+		maxAdminWSProxyDownloadTimeout,
+	)
+}
+
+func parseDurationEnvWithBounds(key string, fallback, min, max time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		if seconds, secErr := strconv.Atoi(raw); secErr == nil {
+			parsed = time.Duration(seconds) * time.Second
+		} else {
+			return fallback
+		}
+	}
+	if parsed < min {
+		return min
+	}
+	if max > 0 && parsed > max {
+		return max
+	}
+	return parsed
+}
+
 type adminWSRequest struct {
 	ID      string          `json:"id"`
 	Action  string          `json:"action"`
@@ -190,12 +227,12 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 		return nil, fmt.Errorf("offset must be >= 0")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), adminWSProxyDownloadTimeout())
 	defer cancel()
 
 	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("proxy download stream stage=request.build failed: request_id=%s err=%w", strings.TrimSpace(requestID), err)
 	}
 	proxyReq.Header.Set("User-Agent", "cloudhelper-proxy-download")
 	proxyReq.Header.Set("Accept", "application/octet-stream")
@@ -208,7 +245,7 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 
 	resp, err := http.DefaultClient.Do(proxyReq)
 	if err != nil {
-		return nil, fmt.Errorf("proxy download failed: %v", err)
+		return nil, fmt.Errorf("proxy download stream stage=upstream.do failed: request_id=%s url=%s err=%v", strings.TrimSpace(requestID), targetURL.String(), err)
 	}
 	defer resp.Body.Close()
 
@@ -221,7 +258,7 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("upstream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("proxy download stream stage=upstream.status failed: request_id=%s status=%d body=%s", strings.TrimSpace(requestID), resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	total := resp.ContentLength
@@ -243,14 +280,14 @@ func handleAdminWSProxyDownloadStream(requestID string, payload json.RawMessage,
 				"status":       resp.StatusCode,
 			}
 			if err := send(adminWSPush{Type: "proxy.download.chunk", Data: pushData}); err != nil {
-				return nil, fmt.Errorf("send download chunk failed: %v", err)
+				return nil, fmt.Errorf("proxy download stream stage=push.chunk failed: request_id=%s downloaded=%d total=%d err=%v", strings.TrimSpace(requestID), downloaded, total, err)
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				break
 			}
-			return nil, fmt.Errorf("proxy download failed: %v", readErr)
+			return nil, fmt.Errorf("proxy download stream stage=upstream.read failed: request_id=%s downloaded=%d total=%d err=%v", strings.TrimSpace(requestID), downloaded, total, readErr)
 		}
 	}
 

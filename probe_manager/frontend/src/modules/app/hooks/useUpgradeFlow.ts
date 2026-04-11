@@ -43,6 +43,117 @@ function isControllerUpgradeTransientError(error: unknown): boolean {
   );
 }
 
+type UpgradeErrorCategory = "auth" | "timeout" | "network" | "upstream" | "storage" | "config" | "unknown";
+
+type UpgradeErrorHint = {
+  category: UpgradeErrorCategory;
+  summary: string;
+  raw: string;
+};
+
+function normalizeErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return (error.message || "").trim() || "unknown error";
+  }
+  if (typeof error === "string") {
+    return error.trim() || "unknown error";
+  }
+  return "unknown error";
+}
+
+function truncateText(text: string, max = 220): string {
+  const raw = (text || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw.length <= max) {
+    return raw;
+  }
+  return `${raw.slice(0, Math.max(0, max - 3))}...`;
+}
+
+function parseStatusCode(text: string): number | null {
+  const m = text.match(/status\s*[=:]\s*(\d{3})/i);
+  if (!m) {
+    return null;
+  }
+  const v = Number.parseInt(m[1], 10);
+  return Number.isFinite(v) ? v : null;
+}
+
+function resolveUpgradeErrorHint(error: unknown): UpgradeErrorHint {
+  const raw = normalizeErrorMessage(error);
+  const message = raw.toLowerCase();
+
+  if (message.includes("invalid or expired session token") || message.includes("unauthorized") || message.includes(" 401") || message.includes("status=401")) {
+    return {
+      category: "auth",
+      summary: "登录会话已失效，请重新登录后重试。",
+      raw,
+    };
+  }
+
+  if (message.includes("project must be owner/repo")
+    || message.includes("invalid github project url")
+    || message.includes("latest release tag is empty")
+    || message.includes("no matching manager asset")
+    || message.includes("invalid release asset")) {
+    return {
+      category: "config",
+      summary: "升级参数或发布资产不匹配，请检查项目地址与发布包。",
+      raw,
+    };
+  }
+
+  if (message.includes("stage=upstream.status") || message.includes("upstream status=")) {
+    const code = parseStatusCode(raw);
+    return {
+      category: "upstream",
+      summary: code ? `上游下载源返回异常状态码 ${code}，请稍后重试或更换网络出口。` : "上游下载源返回异常状态码，请稍后重试。",
+      raw,
+    };
+  }
+
+  if (message.includes("timeout") || message.includes("deadline exceeded")) {
+    return {
+      category: "timeout",
+      summary: "请求或下载超时，请稍后重试；若持续出现，请检查主控与网络质量。",
+      raw,
+    };
+  }
+
+  if (message.includes("connection") || message.includes("websocket") || message.includes("disconnect") || message.includes("unexpected eof") || message.includes("broken pipe")) {
+    return {
+      category: "network",
+      summary: "网络连接中断，已建议重试；如频繁出现请检查链路稳定性。",
+      raw,
+    };
+  }
+
+  if (message.includes("stage=file.") || message.includes("rename") || message.includes("short write") || message.includes("no space left")) {
+    return {
+      category: "storage",
+      summary: "本地写入升级包失败，请检查磁盘空间与文件权限。",
+      raw,
+    };
+  }
+
+  return {
+    category: "unknown",
+    summary: "升级流程执行失败，请查看日志后重试。",
+    raw,
+  };
+}
+
+function formatUpgradeFailureStatus(prefix: string, hint: UpgradeErrorHint): string {
+  const raw = truncateText(hint.raw, 180);
+  return `${prefix}：${hint.summary}${raw ? `（原始错误：${raw}）` : ""}`;
+}
+
+function formatUpgradeFailureLog(prefix: string, hint: UpgradeErrorHint): string {
+  return `${prefix}：category=${hint.category} summary=${hint.summary} raw=${hint.raw || "unknown error"}`;
+}
+
 function formatUpgradeLogLine(text: string, timeInput?: string): string {
   const content = text.trim();
   if (!content) {
@@ -397,9 +508,9 @@ export function useUpgradeFlow() {
         return;
       }
 
-      const msg = error instanceof Error ? error.message : "unknown error";
-      updateControllerUpgradeStatus(`主控升级失败：${msg}`);
-      appendControllerUpgradeMessage(`主控升级失败：${msg}`);
+      const hint = resolveUpgradeErrorHint(error);
+      updateControllerUpgradeStatus(formatUpgradeFailureStatus("主控升级失败", hint));
+      appendControllerUpgradeMessage(formatUpgradeFailureLog("主控升级失败", hint));
     } finally {
       stopPolling();
       resetProgress(setControllerUpgradeProgress);
@@ -559,9 +670,9 @@ export function useUpgradeFlow() {
       updateManagerUpgradeStatus(`直连检查完成：latest=${release.tag_name}, assets=${release.assets.length}`);
       appendManagerUpgradeMessage(`管理端直连检查完成：latest=${release.tag_name} assets=${release.assets.length}`);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      updateManagerUpgradeStatus(`直连检查失败：${msg}`);
-      appendManagerUpgradeMessage(`管理端直连检查失败：${msg}`);
+      const hint = resolveUpgradeErrorHint(error);
+      updateManagerUpgradeStatus(formatUpgradeFailureStatus("直连检查失败", hint));
+      appendManagerUpgradeMessage(formatUpgradeFailureLog("管理端直连检查失败", hint));
     } finally {
       setIsCheckingDirect(false);
     }
@@ -602,9 +713,9 @@ export function useUpgradeFlow() {
       updateManagerUpgradeStatus(`${reloginUsed ? "已自动重新登录，" : ""}代理检查完成：latest=${release.tag_name}, assets=${release.assets.length}`);
       appendManagerUpgradeMessage(`管理端代理检查完成：latest=${release.tag_name} assets=${release.assets.length}`);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      updateManagerUpgradeStatus(`代理检查失败：${msg}`);
-      appendManagerUpgradeMessage(`管理端代理检查失败：${msg}`);
+      const hint = resolveUpgradeErrorHint(error);
+      updateManagerUpgradeStatus(formatUpgradeFailureStatus("代理检查失败", hint));
+      appendManagerUpgradeMessage(formatUpgradeFailureLog("管理端代理检查失败", hint));
     } finally {
       setIsCheckingProxy(false);
     }
@@ -644,9 +755,9 @@ export function useUpgradeFlow() {
         `管理端直连升级结果：updated=${result.updated ? "true" : "false"} current=${result.current_version || "-"} latest=${result.latest_version || "-"} msg=${result.message || "-"}`,
       );
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      updateManagerUpgradeStatus(`直连升级失败：${msg}`);
-      appendManagerUpgradeMessage(`管理端直连升级失败：${msg}`);
+      const hint = resolveUpgradeErrorHint(error);
+      updateManagerUpgradeStatus(formatUpgradeFailureStatus("直连升级失败", hint));
+      appendManagerUpgradeMessage(formatUpgradeFailureLog("管理端直连升级失败", hint));
     } finally {
       stopPolling();
       resetProgress(setManagerUpgradeProgress);
@@ -708,9 +819,9 @@ export function useUpgradeFlow() {
         `管理端代理升级结果：updated=${result.updated ? "true" : "false"} current=${result.current_version || "-"} latest=${result.latest_version || "-"} msg=${result.message || "-"}`,
       );
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      updateManagerUpgradeStatus(`代理升级失败：${msg}`);
-      appendManagerUpgradeMessage(`管理端代理升级失败：${msg}`);
+      const hint = resolveUpgradeErrorHint(error);
+      updateManagerUpgradeStatus(formatUpgradeFailureStatus("代理升级失败", hint));
+      appendManagerUpgradeMessage(formatUpgradeFailureLog("管理端代理升级失败", hint));
     } finally {
       stopPolling();
       resetProgress(setManagerUpgradeProgress);

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,7 +24,116 @@ import (
 	"time"
 )
 
-const defaultManagerUpgradeRepo = "fengzhanhuaer/CloudHelper"
+const (
+	defaultManagerUpgradeRepo = "fengzhanhuaer/CloudHelper"
+
+	defaultManagerUpgradeDownloadTimeout            = 45 * time.Minute
+	defaultManagerProxyDownloadReadIdleTimeout      = 90 * time.Second
+	defaultManagerProxyDownloadMaxReconnectAttempts = 12
+	defaultManagerProxyDownloadReconnectBaseDelay   = 1 * time.Second
+	defaultManagerProxyDownloadReconnectMaxDelay    = 12 * time.Second
+
+	minManagerUpgradeDownloadTimeout            = 5 * time.Minute
+	maxManagerUpgradeDownloadTimeout            = 6 * time.Hour
+	minManagerProxyDownloadReadIdleTimeout      = 15 * time.Second
+	maxManagerProxyDownloadReadIdleTimeout      = 10 * time.Minute
+	minManagerProxyDownloadMaxReconnectAttempts = 0
+	maxManagerProxyDownloadMaxReconnectAttempts = 120
+	minManagerProxyDownloadReconnectBaseDelay   = 200 * time.Millisecond
+	maxManagerProxyDownloadReconnectBaseDelay   = 30 * time.Second
+	minManagerProxyDownloadReconnectMaxDelay    = 1 * time.Second
+	maxManagerProxyDownloadReconnectMaxDelay    = 2 * time.Minute
+)
+
+func parseDurationEnvWithBounds(key string, fallback, min, max time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		if seconds, secErr := strconv.Atoi(raw); secErr == nil {
+			parsed = time.Duration(seconds) * time.Second
+		} else {
+			return fallback
+		}
+	}
+	if parsed < min {
+		return min
+	}
+	if max > 0 && parsed > max {
+		return max
+	}
+	return parsed
+}
+
+func parseIntEnvWithBounds(key string, fallback, min, max int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if parsed < min {
+		return min
+	}
+	if max > 0 && parsed > max {
+		return max
+	}
+	return parsed
+}
+
+func managerUpgradeDownloadTimeout() time.Duration {
+	return parseDurationEnvWithBounds(
+		"CLOUDHELPER_MANAGER_UPGRADE_DOWNLOAD_TIMEOUT",
+		defaultManagerUpgradeDownloadTimeout,
+		minManagerUpgradeDownloadTimeout,
+		maxManagerUpgradeDownloadTimeout,
+	)
+}
+
+func managerProxyDownloadReadIdleTimeout() time.Duration {
+	return parseDurationEnvWithBounds(
+		"CLOUDHELPER_MANAGER_PROXY_DOWNLOAD_READ_IDLE_TIMEOUT",
+		defaultManagerProxyDownloadReadIdleTimeout,
+		minManagerProxyDownloadReadIdleTimeout,
+		maxManagerProxyDownloadReadIdleTimeout,
+	)
+}
+
+func managerProxyDownloadMaxReconnectAttempts() int {
+	return parseIntEnvWithBounds(
+		"CLOUDHELPER_MANAGER_PROXY_DOWNLOAD_MAX_RECONNECT_ATTEMPTS",
+		defaultManagerProxyDownloadMaxReconnectAttempts,
+		minManagerProxyDownloadMaxReconnectAttempts,
+		maxManagerProxyDownloadMaxReconnectAttempts,
+	)
+}
+
+func managerProxyDownloadReconnectBaseDelay() time.Duration {
+	return parseDurationEnvWithBounds(
+		"CLOUDHELPER_MANAGER_PROXY_DOWNLOAD_RECONNECT_BASE_DELAY",
+		defaultManagerProxyDownloadReconnectBaseDelay,
+		minManagerProxyDownloadReconnectBaseDelay,
+		maxManagerProxyDownloadReconnectBaseDelay,
+	)
+}
+
+func managerProxyDownloadReconnectMaxDelay() time.Duration {
+	maxDelay := parseDurationEnvWithBounds(
+		"CLOUDHELPER_MANAGER_PROXY_DOWNLOAD_RECONNECT_MAX_DELAY",
+		defaultManagerProxyDownloadReconnectMaxDelay,
+		minManagerProxyDownloadReconnectMaxDelay,
+		maxManagerProxyDownloadReconnectMaxDelay,
+	)
+	baseDelay := managerProxyDownloadReconnectBaseDelay()
+	if maxDelay < baseDelay {
+		return baseDelay
+	}
+	return maxDelay
+}
 
 type ReleaseAsset struct {
 	Name        string `json:"name"`
@@ -272,7 +382,7 @@ func (a *App) performManagerUpgrade(result ManagerUpgradeResult, info ReleaseInf
 		return result, errors.New("invalid release asset")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), managerUpgradeDownloadTimeout())
 	defer cancel()
 
 	setManagerUpgradeProgress(ManagerUpgradeProgress{Active: true, Mode: result.Mode, Phase: "download", Percent: 20, Message: "下载升级包"})
@@ -282,14 +392,14 @@ func (a *App) performManagerUpgrade(result ManagerUpgradeResult, info ReleaseInf
 			setManagerDownloadProgress(result.Mode, downloaded, total)
 		}); err != nil {
 			setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "failed", Percent: 20, Message: "下载失败"})
-			return result, err
+			return result, fmt.Errorf("manager upgrade download failed: mode=%s asset=%s err=%w", result.Mode, strings.TrimSpace(asset.Name), err)
 		}
 	} else {
 		if err := downloadReleaseAsset(ctx, asset.DownloadURL, assetFile, func(downloaded, total int64) {
 			setManagerDownloadProgress(result.Mode, downloaded, total)
 		}); err != nil {
 			setManagerUpgradeProgress(ManagerUpgradeProgress{Active: false, Mode: result.Mode, Phase: "failed", Percent: 20, Message: "下载失败"})
-			return result, err
+			return result, fmt.Errorf("manager upgrade download failed: mode=%s asset=%s err=%w", result.Mode, strings.TrimSpace(asset.Name), err)
 		}
 	}
 
@@ -599,10 +709,16 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 		resumeOffset = st.Size()
 	}
 
+	reconnectAttempts := 0
+	maxReconnectAttempts := managerProxyDownloadMaxReconnectAttempts()
 	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("proxy download canceled: %w", ctxErr)
+		}
+
 		wsURL, err := buildAdminWSURL(base)
 		if err != nil {
-			return err
+			return fmt.Errorf("proxy download stage=prepare.ws_url failed: %w", err)
 		}
 
 		dialer := buildControllerWSDialer(base)
@@ -611,41 +727,74 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 		headers.Set("X-Forwarded-Proto", "https")
 		conn, resp, err := dialer.Dial(wsURL, headers)
 		if err != nil {
+			wrappedErr := err
 			if resp != nil {
-				defer resp.Body.Close()
 				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-				return fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+				resp.Body.Close()
+				wrappedErr = fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 			}
-			return err
+			if isRetryableProxyDownloadError(wrappedErr) && reconnectAttempts < maxReconnectAttempts {
+				reconnectAttempts++
+				delay := proxyDownloadReconnectDelay(reconnectAttempts)
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return fmt.Errorf("proxy download canceled while reconnecting: %w", ctx.Err())
+				case <-timer.C:
+				}
+				continue
+			}
+			return fmt.Errorf("proxy download stage=handshake failed: offset=%d reconnect=%d err=%w", resumeOffset, reconnectAttempts, wrappedErr)
 		}
 
-		readDeadline := time.Now().Add(10 * time.Minute)
-		if deadline, ok := ctx.Deadline(); ok {
-			readDeadline = deadline
-		}
-		if err := conn.SetReadDeadline(readDeadline); err != nil {
+		if err := conn.SetReadDeadline(proxyDownloadReadDeadline(ctx)); err != nil {
 			conn.Close()
-			return err
+			return fmt.Errorf("proxy download stage=auth.read_deadline failed: %w", err)
 		}
 		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			conn.Close()
-			return err
+			return fmt.Errorf("proxy download stage=auth.write_deadline failed: %w", err)
 		}
 
 		authID := fmt.Sprintf("upg-dl-auth-%d", time.Now().UnixNano())
 		authReq := adminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": token}}
 		if err := conn.WriteJSON(authReq); err != nil {
 			conn.Close()
-			return err
+			if isRetryableProxyDownloadError(err) && reconnectAttempts < maxReconnectAttempts {
+				reconnectAttempts++
+				delay := proxyDownloadReconnectDelay(reconnectAttempts)
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return fmt.Errorf("proxy download canceled while reconnecting: %w", ctx.Err())
+				case <-timer.C:
+				}
+				continue
+			}
+			return fmt.Errorf("proxy download stage=auth.write failed: offset=%d reconnect=%d err=%w", resumeOffset, reconnectAttempts, err)
 		}
 		authResp, err := readAdminWSResponseByID(conn, authID)
 		if err != nil {
 			conn.Close()
-			return err
+			if isRetryableProxyDownloadError(err) && reconnectAttempts < maxReconnectAttempts {
+				reconnectAttempts++
+				delay := proxyDownloadReconnectDelay(reconnectAttempts)
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return fmt.Errorf("proxy download canceled while reconnecting: %w", ctx.Err())
+				case <-timer.C:
+				}
+				continue
+			}
+			return fmt.Errorf("proxy download stage=auth.read failed: offset=%d reconnect=%d err=%w", resumeOffset, reconnectAttempts, err)
 		}
 		if !authResp.OK {
 			conn.Close()
-			return fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
+			return fmt.Errorf("proxy download stage=auth.reject failed: offset=%d reconnect=%d err=%s", resumeOffset, reconnectAttempts, strings.TrimSpace(authResp.Error))
 		}
 
 		streamID := fmt.Sprintf("upg-dl-%d", time.Now().UnixNano())
@@ -660,11 +809,23 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 		}
 		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			conn.Close()
-			return err
+			return fmt.Errorf("proxy download stage=stream.write_deadline failed: %w", err)
 		}
 		if err := conn.WriteJSON(streamReq); err != nil {
 			conn.Close()
-			return err
+			if isRetryableProxyDownloadError(err) && reconnectAttempts < maxReconnectAttempts {
+				reconnectAttempts++
+				delay := proxyDownloadReconnectDelay(reconnectAttempts)
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return fmt.Errorf("proxy download canceled while reconnecting: %w", ctx.Err())
+				case <-timer.C:
+				}
+				continue
+			}
+			return fmt.Errorf("proxy download stage=stream.request_write failed: offset=%d reconnect=%d err=%w", resumeOffset, reconnectAttempts, err)
 		}
 
 		total := int64(0)
@@ -672,18 +833,18 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 		statusCode := 0
 		truncate := resumeOffset == 0
 		var f *os.File
+		var streamErr error
+
 		for {
-			if deadline, ok := ctx.Deadline(); ok {
-				_ = conn.SetReadDeadline(deadline)
+			if err := conn.SetReadDeadline(proxyDownloadReadDeadline(ctx)); err != nil {
+				streamErr = fmt.Errorf("proxy download stage=stream.read_deadline failed: %w", err)
+				break
 			}
 
 			var msg adminWSResponse
 			if err := conn.ReadJSON(&msg); err != nil {
-				if f != nil {
-					_ = f.Close()
-				}
-				conn.Close()
-				return err
+				streamErr = fmt.Errorf("proxy download stage=stream.read failed: offset=%d request_id=%s err=%w", written, streamID, err)
+				break
 			}
 
 			if strings.TrimSpace(msg.Type) != "" {
@@ -698,11 +859,8 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 					Status      int    `json:"status"`
 				}
 				if err := json.Unmarshal(msg.Data, &chunk); err != nil {
-					if f != nil {
-						_ = f.Close()
-					}
-					conn.Close()
-					return err
+					streamErr = fmt.Errorf("proxy download stage=stream.chunk_decode failed: request_id=%s err=%w", streamID, err)
+					break
 				}
 				if strings.TrimSpace(chunk.RequestID) != streamID {
 					continue
@@ -719,30 +877,25 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 					}
 					f, err = os.OpenFile(partPath, flags, 0o644)
 					if err != nil {
-						conn.Close()
-						return err
+						streamErr = fmt.Errorf("proxy download stage=file.open failed: path=%s err=%w", partPath, err)
+						break
 					}
 				}
 				payload, err := base64.StdEncoding.DecodeString(strings.TrimSpace(chunk.ChunkBase64))
 				if err != nil {
-					if f != nil {
-						_ = f.Close()
-					}
-					conn.Close()
-					return err
+					streamErr = fmt.Errorf("proxy download stage=stream.chunk_base64_decode failed: request_id=%s err=%w", streamID, err)
+					break
 				}
 				if len(payload) > 0 {
 					n, writeErr := f.Write(payload)
 					written += int64(n)
 					if writeErr != nil {
-						_ = f.Close()
-						conn.Close()
-						return writeErr
+						streamErr = fmt.Errorf("proxy download stage=file.write failed: path=%s written=%d err=%w", partPath, written, writeErr)
+						break
 					}
 					if n != len(payload) {
-						_ = f.Close()
-						conn.Close()
-						return io.ErrShortWrite
+						streamErr = fmt.Errorf("proxy download stage=file.write_short failed: wrote=%d expect=%d", n, len(payload))
+						break
 					}
 				}
 				if chunk.Total > 0 {
@@ -758,11 +911,8 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 				continue
 			}
 			if !msg.OK {
-				if f != nil {
-					_ = f.Close()
-				}
-				conn.Close()
-				return fmt.Errorf("proxy download failed: %s", strings.TrimSpace(msg.Error))
+				streamErr = fmt.Errorf("proxy download stage=stream.done_failed failed: request_id=%s err=%s downloaded=%d total=%d status=%d", streamID, strings.TrimSpace(msg.Error), written, total, statusCode)
+				break
 			}
 
 			var done struct {
@@ -782,36 +932,127 @@ func downloadAssetViaProxy(ctx context.Context, controllerBaseURL, sessionToken,
 					statusCode = done.Status
 				}
 			}
-			if f != nil {
-				if err := f.Close(); err != nil {
-					conn.Close()
-					return err
-				}
+			break
+		}
+
+		if f != nil {
+			if closeErr := f.Close(); closeErr != nil && streamErr == nil {
+				streamErr = fmt.Errorf("proxy download stage=file.close failed: path=%s err=%w", partPath, closeErr)
 			}
-			conn.Close()
-			if statusCode == http.StatusRequestedRangeNotSatisfiable {
-				if err := os.Rename(partPath, outputPath); err == nil {
-					if onProgress != nil {
-						onProgress(written, total)
-					}
-					return nil
-				}
-				resumeOffset = 0
-				break
-			}
-			if total > 0 && written < total {
+		}
+		conn.Close()
+
+		if streamErr != nil {
+			if written > resumeOffset {
 				resumeOffset = written
-				break
 			}
-			if err := os.Rename(partPath, outputPath); err != nil {
-				return err
+			if isRetryableProxyDownloadError(streamErr) && reconnectAttempts < maxReconnectAttempts {
+				reconnectAttempts++
+				delay := proxyDownloadReconnectDelay(reconnectAttempts)
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return fmt.Errorf("proxy download canceled while reconnecting: %w", ctx.Err())
+				case <-timer.C:
+				}
+				continue
 			}
-			if onProgress != nil {
-				onProgress(written, total)
+			return fmt.Errorf("proxy download stage=stream.final_failed failed: offset=%d reconnect=%d max_reconnect=%d err=%w", resumeOffset, reconnectAttempts, maxReconnectAttempts, streamErr)
+		}
+
+		reconnectAttempts = 0
+		if statusCode == http.StatusRequestedRangeNotSatisfiable {
+			if err := os.Rename(partPath, outputPath); err == nil {
+				if onProgress != nil {
+					onProgress(written, total)
+				}
+				return nil
 			}
-			return nil
+			resumeOffset = 0
+			continue
+		}
+		if total > 0 && written < total {
+			if written <= resumeOffset {
+				return fmt.Errorf("proxy download stage=stream.stalled failed: downloaded=%d total=%d offset=%d reconnect=%d", written, total, resumeOffset, reconnectAttempts)
+			}
+			resumeOffset = written
+			continue
+		}
+		if err := os.Rename(partPath, outputPath); err != nil {
+			return fmt.Errorf("proxy download stage=file.rename failed: from=%s to=%s err=%w", partPath, outputPath, err)
+		}
+		if onProgress != nil {
+			onProgress(written, total)
+		}
+		return nil
+	}
+}
+
+func proxyDownloadReadDeadline(ctx context.Context) time.Time {
+	deadline := time.Now().Add(managerProxyDownloadReadIdleTimeout())
+	if ctx == nil {
+		return deadline
+	}
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		return ctxDeadline
+	}
+	return deadline
+}
+
+func proxyDownloadReconnectDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return managerProxyDownloadReconnectBaseDelay()
+	}
+	delay := managerProxyDownloadReconnectBaseDelay()
+	maxDelay := managerProxyDownloadReconnectMaxDelay()
+	for i := 1; i < attempt; i++ {
+		if delay >= maxDelay/2 {
+			return maxDelay
+		}
+		delay *= 2
+	}
+	if delay > maxDelay {
+		return maxDelay
+	}
+	return delay
+}
+
+func isRetryableProxyDownloadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	if message == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"i/o timeout",
+		"timeout",
+		"context deadline exceeded",
+		"connection reset",
+		"connection aborted",
+		"broken pipe",
+		"use of closed network connection",
+		"unexpected eof",
+		"websocket: close",
+		"connection refused",
+	} {
+		if strings.Contains(message, marker) {
+			return true
 		}
 	}
+	return false
 }
 
 func copyWithProgress(dst io.Writer, src io.Reader, total int64, onProgress func(downloaded, total int64)) (int64, error) {
