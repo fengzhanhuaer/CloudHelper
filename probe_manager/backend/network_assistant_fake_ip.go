@@ -12,6 +12,8 @@ import (
 const (
 	// fakeIP 默认 TTL（秒），与 DNS 全局共享 TTL 保持一致。
 	fakeIPDefaultTTLSeconds = dnsSharedTTLSeconds
+	// fake 域名真实 IP 预热最小间隔，避免每次 fake 分配都触发上游解析。
+	fakeDomainWarmupMinInterval = 30 * time.Second
 )
 
 // fakeIPEntry 记录 fake IP 到域名的映射
@@ -312,10 +314,56 @@ func (s *networkAssistantService) assignFakeIP(normalizedDomain string) (string,
 		return "", fmt.Errorf("fake IP pool exhausted")
 	}
 
-	// 分表路径：仅维护 fakeIP 池 + 路由提示映射
+	// 分表路径：维护 fakeIP 池 + 路由提示映射
 	s.storeFakeIPRouteHint(fakeIP, normalizedDomain, route)
+	s.maybeWarmupFakeDomainRealIPs(normalizedDomain, route)
 	_ = ttl
 	return fakeIP, nil
+}
+
+func (s *networkAssistantService) maybeWarmupFakeDomainRealIPs(normalizedDomain string, route tunnelRouteDecision) {
+	if s == nil {
+		return
+	}
+	domain := normalizeRuleDomain(normalizedDomain)
+	if domain == "" {
+		return
+	}
+	if route.Direct || route.BypassTUN {
+		return
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	if s.fakeDomainWarmupAt == nil {
+		s.fakeDomainWarmupAt = make(map[string]time.Time)
+	}
+	for d, at := range s.fakeDomainWarmupAt {
+		if now.Sub(at) > dnsCacheTTL {
+			delete(s.fakeDomainWarmupAt, d)
+		}
+	}
+	if last, ok := s.fakeDomainWarmupAt[domain]; ok && now.Sub(last) < fakeDomainWarmupMinInterval {
+		s.mu.Unlock()
+		return
+	}
+	s.fakeDomainWarmupAt[domain] = now
+	resolver := s.fakeDomainWarmupResolve
+	s.mu.Unlock()
+
+	if resolver == nil {
+		return
+	}
+
+	go func(dom string, decidedRoute tunnelRouteDecision) {
+		addrs, ttl, err := resolver(decidedRoute, dom)
+		if err != nil || len(addrs) == 0 {
+			return
+		}
+		ttl = clampRuleDNSTTL(ttl)
+		s.storeDNSRouteHint(addrs, dom, decidedRoute, ttl)
+		s.storeRuleDNSCache(buildInternalDNSCacheKey(decidedRoute, dom, 1), addrs, ttl)
+	}(domain, route)
 }
 
 // lookupFakeIPDomain 根据 fake IP 反查域名（若存在）

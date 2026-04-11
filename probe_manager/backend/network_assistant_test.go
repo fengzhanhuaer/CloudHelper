@@ -941,6 +941,124 @@ func TestStoreDNSBiMapSkipsDirectAndStoresProxyGroup(t *testing.T) {
 	}
 }
 
+func TestLookupDNSBiMapDomainByIPPrefersNewestEntry(t *testing.T) {
+	dnsBiMapCache.mu.Lock()
+	dnsBiMapCache.loaded = true
+	dnsBiMapCache.path = ""
+	dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+	dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+	dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+	dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+	now := time.Now()
+	oldEntry := dnsBiMapEntry{
+		Domain:    "old.example.com",
+		IP:        "198.51.100.21",
+		Group:     "group_a",
+		NodeID:    "chain:old",
+		ExpiresAt: now.Add(30 * time.Minute),
+		UpdatedAt: now.Add(-10 * time.Minute),
+	}
+	newEntry := dnsBiMapEntry{
+		Domain:    "new.example.com",
+		IP:        "198.51.100.21",
+		Group:     "group_b",
+		NodeID:    "chain:new",
+		ExpiresAt: now.Add(30 * time.Minute),
+		UpdatedAt: now,
+	}
+	dnsBiMapCache.entries[dnsBiMapKey(oldEntry.Domain, oldEntry.IP)] = oldEntry
+	dnsBiMapCache.entries[dnsBiMapKey(newEntry.Domain, newEntry.IP)] = newEntry
+	addDNSBiMapIndexLocked(oldEntry.Domain, oldEntry.IP)
+	addDNSBiMapIndexLocked(newEntry.Domain, newEntry.IP)
+	dnsBiMapCache.mu.Unlock()
+	t.Cleanup(func() {
+		dnsBiMapCache.mu.Lock()
+		dnsBiMapCache.loaded = true
+		dnsBiMapCache.path = ""
+		dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+		dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+		dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+		dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+		dnsBiMapCache.mu.Unlock()
+	})
+
+	domain, ok := lookupDNSBiMapDomainByIP("198.51.100.21")
+	if !ok {
+		t.Fatal("lookup should return a domain")
+	}
+	if domain != "new.example.com" {
+		t.Fatalf("domain=%q, want new.example.com", domain)
+	}
+}
+
+func TestQuerySplitDNSCacheEntriesBackfillsDomainForIPOnlyTraffic(t *testing.T) {
+	directDNSCache.mu.Lock()
+	directDNSCache.entries = make(map[string]dnsCacheDirectEntry)
+	directDNSCache.mu.Unlock()
+	dnsBiMapCache.mu.Lock()
+	dnsBiMapCache.loaded = true
+	dnsBiMapCache.path = ""
+	dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+	dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+	dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+	dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+	now := time.Now()
+	entry := dnsBiMapEntry{
+		Domain:    "proxy.example.com",
+		IP:        "198.51.100.50",
+		Group:     "group_example",
+		NodeID:    "chain:edge-a",
+		ExpiresAt: now.Add(30 * time.Minute),
+		UpdatedAt: now,
+	}
+	dnsBiMapCache.entries[dnsBiMapKey(entry.Domain, entry.IP)] = entry
+	addDNSBiMapIndexLocked(entry.Domain, entry.IP)
+	dnsBiMapCache.mu.Unlock()
+
+	t.Cleanup(func() {
+		directDNSCache.mu.Lock()
+		directDNSCache.entries = make(map[string]dnsCacheDirectEntry)
+		directDNSCache.mu.Unlock()
+		dnsBiMapCache.mu.Lock()
+		dnsBiMapCache.loaded = true
+		dnsBiMapCache.path = ""
+		dnsBiMapCache.entries = make(map[string]dnsBiMapEntry)
+		dnsBiMapCache.domainIPs = make(map[string]map[string]struct{})
+		dnsBiMapCache.ipDomains = make(map[string]map[string]struct{})
+		dnsBiMapCache.failures = make(map[string]dnsBiMapFailureState)
+		dnsBiMapCache.mu.Unlock()
+	})
+
+	monitor := newProcessMonitor()
+	monitor.Start()
+	monitor.appendEvent(NetworkProcessEvent{
+		Kind:      NetworkProcessEventTCP,
+		TargetIP:  "198.51.100.50",
+		Direct:    false,
+		NodeID:    "chain:edge-a",
+		Group:     "group_example",
+		Count:     3,
+		Timestamp: 100,
+	})
+
+	svc := &networkAssistantService{
+		ruleDNSCache:   make(map[string]dnsCacheEntry),
+		dnsRouteHints:  make(map[string]dnsRouteHintEntry),
+		processMonitor: monitor,
+	}
+
+	entries := querySplitDNSCacheEntries(svc, "proxy.example.com")
+	if len(entries) == 0 {
+		t.Fatal("expected filtered result for proxy.example.com")
+	}
+	if entries[0].Domain != "proxy.example.com" {
+		t.Fatalf("domain=%q, want proxy.example.com", entries[0].Domain)
+	}
+	if entries[0].IP != "198.51.100.50" {
+		t.Fatalf("ip=%q, want 198.51.100.50", entries[0].IP)
+	}
+}
+
 func TestDNSBiMapForceRefreshOnModeSwitchDoesNotClear(t *testing.T) {
 	dnsBiMapCache.mu.Lock()
 	dnsBiMapCache.loaded = true

@@ -309,7 +309,7 @@ func collectDNSCacheTrafficStats(events []NetworkProcessEvent) (map[string]dnsCa
 }
 
 func querySplitDNSCacheEntries(s *networkAssistantService, query string) []NetworkAssistantDNSCacheEntry {
-	q := strings.ToLower(strings.TrimSpace(query))
+	queryText := strings.ToLower(strings.TrimSpace(query))
 	now := time.Now()
 
 	directRecords := make([]dnsCachePresentationRecord, 0)
@@ -471,9 +471,6 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 		if ip == "" {
 			return
 		}
-		if q != "" && !strings.Contains(domain, q) && !strings.Contains(strings.ToLower(ip), q) {
-			return
-		}
 		record.Domain = domain
 		record.IP = ip
 		key := buildMergedKey(domain, ip)
@@ -533,11 +530,24 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 
 	results := make([]NetworkAssistantDNSCacheEntry, 0, len(merged))
 	for _, record := range merged {
+		effectiveDomain := strings.ToLower(strings.TrimSpace(record.Domain))
+		if effectiveDomain == "" {
+			if fakeDomain, _, ok := s.lookupFakeIPDomain(record.IP); ok {
+				effectiveDomain = strings.ToLower(strings.TrimSpace(fakeDomain))
+			} else if biMapDomain, ok := lookupDNSBiMapDomainByIP(record.IP); ok {
+				effectiveDomain = strings.ToLower(strings.TrimSpace(biMapDomain))
+			}
+		}
+
+		if queryText != "" && !strings.Contains(effectiveDomain, queryText) && !strings.Contains(strings.ToLower(record.IP), queryText) {
+			continue
+		}
+
 		fakeIPValue := ""
 		if record.FakeIP {
 			fakeIPValue = record.IP
 		}
-		domainStats := domainTrafficStats[record.Domain]
+		domainStats := domainTrafficStats[effectiveDomain]
 		ipStats := ipTrafficStats[record.IP]
 		dnsCount := domainStats.DNSCount
 		if dnsCount <= 0 {
@@ -549,7 +559,7 @@ func querySplitDNSCacheEntries(s *networkAssistantService, query string) []Netwo
 			expiresAt = record.Expires.Format(time.RFC3339)
 		}
 		results = append(results, NetworkAssistantDNSCacheEntry{
-			Domain:         record.Domain,
+			Domain:         effectiveDomain,
 			IP:             record.IP,
 			FakeIP:         record.FakeIP,
 			FakeIPValue:    fakeIPValue,

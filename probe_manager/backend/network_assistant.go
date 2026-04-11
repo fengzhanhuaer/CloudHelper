@@ -432,15 +432,17 @@ type networkAssistantService struct {
 	tunManualClosed  bool
 	tunUDPSources    map[string]*localTUNUDPSource
 
-	logStore        *networkAssistantLogStore
-	ruleRouting     tunnelRuleRouting
-	ruleDNSCache    map[string]dnsCacheEntry
-	ruleDNSQuerySeq uint32
-	tunUDPRelays    map[string]*localTUNUDPRelay
-	dnsRouteHints   map[string]dnsRouteHintEntry
-	fakeIPPool      *fakeIPPool
-	internalDNS     *localInternalDNSServer
-	logRateState    map[string]time.Time
+	logStore                *networkAssistantLogStore
+	ruleRouting             tunnelRuleRouting
+	ruleDNSCache            map[string]dnsCacheEntry
+	ruleDNSQuerySeq         uint32
+	tunUDPRelays            map[string]*localTUNUDPRelay
+	dnsRouteHints           map[string]dnsRouteHintEntry
+	fakeIPPool              *fakeIPPool
+	fakeDomainWarmupAt      map[string]time.Time
+	fakeDomainWarmupResolve func(route tunnelRouteDecision, domain string) ([]string, int, error)
+	internalDNS             *localInternalDNSServer
+	logRateState            map[string]time.Time
 
 	lastChainRefreshAt map[string]time.Time
 	muxMaintainerStop  chan struct{}
@@ -497,6 +499,7 @@ func newNetworkAssistantService() *networkAssistantService {
 		tunUDPSources:       make(map[string]*localTUNUDPSource),
 		tunDynamicBypass:    make(map[string]int),
 		dnsRouteHints:       make(map[string]dnsRouteHintEntry),
+		fakeDomainWarmupAt:  make(map[string]time.Time),
 		logRateState:        make(map[string]time.Time),
 		processMonitor:      newProcessMonitor(),
 	}
@@ -520,6 +523,7 @@ func newNetworkAssistantService() *networkAssistantService {
 	}
 	service.syncTUNInstallState()
 	service.reloadFakeIPPool()
+	service.fakeDomainWarmupResolve = service.warmupResolverForFakeDomain
 	service.startMuxAutoMaintainLoop()
 	return service
 }
@@ -1638,6 +1642,13 @@ func (s *networkAssistantService) storeRuleDNSCache(cacheKey string, addresses [
 	}
 	s.ruleDNSCache[normalizedKey] = dnsCacheEntry{Addrs: normalizedAddrs, Expires: expires}
 	s.mu.Unlock()
+}
+
+func (s *networkAssistantService) warmupResolverForFakeDomain(route tunnelRouteDecision, domain string) ([]string, int, error) {
+	if shouldUseTunnelDNSForRoute(route) {
+		return s.queryRuleDomainViaTunnelGroup(route.Group, domain, 1)
+	}
+	return s.queryRuleDomainViaSystemDNS(domain, 1)
 }
 
 func (s *networkAssistantService) queryRuleDomainViaTunnelGroup(group string, domain string, qType uint16) ([]string, int, error) {

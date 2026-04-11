@@ -462,6 +462,55 @@ func collectDNSBiMapRecordsForPresentation() []dnsCachePresentationRecord {
 	return records
 }
 
+func lookupDNSBiMapDomainByIP(ip string) (string, bool) {
+	cleanIP := normalizeDNSCacheIP(ip)
+	if cleanIP == "" {
+		return "", false
+	}
+	if err := ensureDNSBiMapCacheLoaded(); err != nil {
+		return "", false
+	}
+
+	now := time.Now()
+	dnsBiMapCache.mu.Lock()
+	removed := pruneExpiredDNSBiMapLocked(now)
+	defer func() {
+		if removed {
+			_ = storeDNSBiMapToDiskLocked()
+		}
+		dnsBiMapCache.mu.Unlock()
+	}()
+
+	domains := dnsBiMapCache.ipDomains[cleanIP]
+	if len(domains) == 0 {
+		return "", false
+	}
+
+	bestDomain := ""
+	var bestUpdatedAt time.Time
+	var bestExpiresAt time.Time
+	for domain := range domains {
+		key := dnsBiMapKey(domain, cleanIP)
+		entry, ok := dnsBiMapCache.entries[key]
+		if !ok {
+			continue
+		}
+		if entry.ExpiresAt.IsZero() || now.After(entry.ExpiresAt) {
+			continue
+		}
+		if bestDomain == "" || entry.UpdatedAt.After(bestUpdatedAt) || (entry.UpdatedAt.Equal(bestUpdatedAt) && entry.ExpiresAt.After(bestExpiresAt)) {
+			bestDomain = entry.Domain
+			bestUpdatedAt = entry.UpdatedAt
+			bestExpiresAt = entry.ExpiresAt
+		}
+	}
+	bestDomain = normalizeRuleDomain(bestDomain)
+	if bestDomain == "" {
+		return "", false
+	}
+	return bestDomain, true
+}
+
 func (s *networkAssistantService) recordDNSBiMapConnectResult(targetAddr, group string, success bool) {
 	if s == nil {
 		return
