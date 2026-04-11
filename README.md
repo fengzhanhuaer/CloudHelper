@@ -67,13 +67,15 @@ curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scri
 iwr -UseBasicParsing "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1" | iex
 ```
 
-默认安装目录是 `C:\Tools`，并注册 `probe_node` Windows 服务（自动启动）。
+默认安装根目录是 `C:\Tools`，实际运行目录统一为 `C:\Tools\probe_node`，并注册 `probe_node` Windows 服务（自动启动）。
+
+执行新脚本升级旧版本时，会自动将旧平铺目录资产迁移到 `INSTALL_DIR\probe_node`（含 `probe_node.exe`、`data/`、`logs/`、WinSW 文件与 `.bak*` 备份）。
 
 可选环境变量：
 - `PROBE_NODE_ID`
 - `PROBE_NODE_SECRET`
 - `PROBE_CONTROLLER_URL`
-- `INSTALL_DIR`（默认 `C:\Tools`）
+- `INSTALL_DIR`（默认 `C:\Tools`，运行目录为 `INSTALL_DIR\probe_node`）
 
 ## 运行验证
 

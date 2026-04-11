@@ -122,4 +122,41 @@ location / {
 - 在 Release 中确认资产名称
 - 通过 `ASSET_NAME=<实际文件名>` 显式指定
 
+## 9. Windows 探针节点安装与迁移（WinSW）
 
+使用管理员权限 PowerShell 执行：
+
+```powershell
+iwr -UseBasicParsing "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1" | iex
+```
+
+默认行为：
+
+- 安装根目录：`C:\Tools`（可通过 `INSTALL_DIR` 覆盖）
+- 运行目录：`INSTALL_DIR\probe_node`
+- 服务名：`probe_node`
+- WinSW 与探针二进制统一落在运行目录中
+
+目录结构（示例）：
+
+```text
+C:\Tools\probe_node\
+  probe_node.exe
+  probe_node-service.exe
+  probe_node-service.xml
+  data\
+  logs\
+```
+
+升级与迁移行为：
+
+- 重复执行安装脚本即可升级
+- 若存在旧平铺布局（如 `INSTALL_DIR\probe_node.exe`、`INSTALL_DIR\logs`、`INSTALL_DIR\data`），脚本会自动迁移到 `INSTALL_DIR\probe_node`
+- 迁移过程遇到同名冲突时，旧文件会自动改名为 `*.legacy.<timestamp>.*` 保留
+
+常用检查命令（cmd）：
+
+```cmd
+sc query probe_node
+dir C:\Tools\probe_node
+```

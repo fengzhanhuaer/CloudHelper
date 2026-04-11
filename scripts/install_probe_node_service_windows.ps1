@@ -357,6 +357,145 @@ $envBlock
   [System.IO.File]::WriteAllText($XmlPath, $xml, [Text.Encoding]::UTF8)
 }
 
+function New-LegacySuffix {
+  return "legacy.$([DateTime]::UtcNow.ToString("yyyyMMddHHmmss")).$(New-RandomHexToken -ByteLength 2)"
+}
+
+function Move-FileWithConflictHandling {
+  param(
+    [string]$SourcePath,
+    [string]$DestinationPath,
+    [string]$Label
+  )
+
+  if (-not (Test-Path -LiteralPath $SourcePath)) {
+    return
+  }
+
+  $targetDir = Split-Path -Path $DestinationPath -Parent
+  if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) {
+    New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+  }
+
+  if (Test-Path -LiteralPath $DestinationPath) {
+    $legacyDestination = "$DestinationPath.$(New-LegacySuffix)"
+    Write-Log "$Label destination already exists, moving legacy source to: $legacyDestination"
+    Move-Item -LiteralPath $SourcePath -Destination $legacyDestination -Force
+    return
+  }
+
+  Move-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+}
+
+function Move-DirectoryContentWithConflictHandling {
+  param(
+    [string]$SourceDir,
+    [string]$DestinationDir,
+    [string]$Label
+  )
+
+  if (-not (Test-Path -LiteralPath $SourceDir)) {
+    return
+  }
+
+  if (-not (Test-Path -LiteralPath $DestinationDir)) {
+    New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
+  }
+
+  $entries = Get-ChildItem -LiteralPath $SourceDir -Force -ErrorAction SilentlyContinue
+  foreach ($entry in $entries) {
+    $targetPath = Join-Path $DestinationDir $entry.Name
+    if ($entry.PSIsContainer) {
+      if (Test-Path -LiteralPath $targetPath) {
+        $targetItem = Get-Item -LiteralPath $targetPath -Force
+        if ($targetItem.PSIsContainer) {
+          Move-DirectoryContentWithConflictHandling -SourceDir $entry.FullName -DestinationDir $targetPath -Label $Label
+          if (Test-Path -LiteralPath $entry.FullName) {
+            $remaining = @(Get-ChildItem -LiteralPath $entry.FullName -Force -ErrorAction SilentlyContinue)
+            if ($remaining.Count -eq 0) {
+              Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction SilentlyContinue
+            }
+          }
+        } else {
+          $legacyTargetPath = "$targetPath.$(New-LegacySuffix)"
+          Write-Log "$Label conflict detected, moving source directory to: $legacyTargetPath"
+          Move-Item -LiteralPath $entry.FullName -Destination $legacyTargetPath -Force
+        }
+      } else {
+        Move-Item -LiteralPath $entry.FullName -Destination $targetPath -Force
+      }
+      continue
+    }
+
+    Move-FileWithConflictHandling -SourcePath $entry.FullName -DestinationPath $targetPath -Label $Label
+  }
+
+  if (Test-Path -LiteralPath $SourceDir) {
+    $remaining = @(Get-ChildItem -LiteralPath $SourceDir -Force -ErrorAction SilentlyContinue)
+    if ($remaining.Count -eq 0) {
+      Remove-Item -LiteralPath $SourceDir -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Move-LegacyProbeLayoutToRuntimeDir {
+  param(
+    [string]$InstallDir,
+    [string]$RuntimeDir,
+    [string]$ServiceName
+  )
+
+  $legacyProbeExePath = Join-Path $InstallDir "probe_node.exe"
+  $legacyDataDir = Join-Path $InstallDir "data"
+  $legacyLogsDir = Join-Path $InstallDir "logs"
+  $legacyWinSWExePath = Join-Path $InstallDir "$ServiceName-service.exe"
+  $legacyWinSWXmlPath = Join-Path $InstallDir "$ServiceName-service.xml"
+
+  Move-FileWithConflictHandling -SourcePath $legacyProbeExePath -DestinationPath (Join-Path $RuntimeDir "probe_node.exe") -Label "legacy binary"
+  Move-FileWithConflictHandling -SourcePath $legacyWinSWExePath -DestinationPath (Join-Path $RuntimeDir "$ServiceName-service.exe") -Label "legacy WinSW executable"
+  Move-FileWithConflictHandling -SourcePath $legacyWinSWXmlPath -DestinationPath (Join-Path $RuntimeDir "$ServiceName-service.xml") -Label "legacy WinSW xml"
+
+  $legacyBackups = Get-ChildItem -LiteralPath $InstallDir -Filter "probe_node.exe.bak*" -File -ErrorAction SilentlyContinue
+  foreach ($backup in $legacyBackups) {
+    Move-FileWithConflictHandling -SourcePath $backup.FullName -DestinationPath (Join-Path $RuntimeDir $backup.Name) -Label "legacy binary backup"
+  }
+
+  Move-DirectoryContentWithConflictHandling -SourceDir $legacyDataDir -DestinationDir (Join-Path $RuntimeDir "data") -Label "legacy data"
+  Move-DirectoryContentWithConflictHandling -SourceDir $legacyLogsDir -DestinationDir (Join-Path $RuntimeDir "logs") -Label "legacy logs"
+}
+
+function Invoke-ServiceUninstallBestEffort {
+  param(
+    [string]$ServiceName,
+    [string[]]$WinSWCandidates
+  )
+
+  foreach ($candidate in $WinSWCandidates) {
+    $path = if ($candidate) { $candidate.Trim() } else { "" }
+    if (-not $path) {
+      continue
+    }
+    if (-not (Test-Path -LiteralPath $path)) {
+      continue
+    }
+
+    try {
+      Write-Log "attempting service uninstall via: $path"
+      & $path uninstall | Out-Null
+    } catch {
+      Write-Log "warning: WinSW uninstall failed via ${path}: $($_.Exception.Message)"
+    }
+  }
+
+  if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+    try {
+      & sc.exe delete $ServiceName | Out-Null
+    } catch {
+      Write-Log "warning: sc delete failed for ${ServiceName}: $($_.Exception.Message)"
+    }
+  }
+}
+
 Require-Admin
 
 $releaseRepo = if ($env:RELEASE_REPO) { $env:RELEASE_REPO.Trim() } else { "fengzhanhuaer/CloudHelper" }
@@ -364,6 +503,7 @@ $releaseTag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG.Trim() } else { "latest" 
 $assetNameOverride = if ($env:ASSET_NAME) { $env:ASSET_NAME.Trim() } else { "" }
 
 $installDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR.Trim() } else { "C:\Tools" }
+$runtimeDir = Join-Path $installDir "probe_node"
 $serviceName = if ($env:SERVICE_NAME) { $env:SERVICE_NAME.Trim() } else { "probe_node" }
 $serviceDisplayName = if ($env:SERVICE_DISPLAY_NAME) { $env:SERVICE_DISPLAY_NAME.Trim() } else { "CloudHelper Probe Node" }
 $winswVersion = if ($env:WINSW_VERSION) { $env:WINSW_VERSION.Trim() } else { "v2.12.0" }
@@ -373,14 +513,22 @@ $nodeSecret = if ($env:PROBE_NODE_SECRET) { $env:PROBE_NODE_SECRET.Trim() } else
 $controllerURL = if ($env:PROBE_CONTROLLER_URL) { $env:PROBE_CONTROLLER_URL.Trim() } else { "" }
 $listenAddr = if ($env:PROBE_NODE_LISTEN) { $env:PROBE_NODE_LISTEN.Trim() } else { "" }
 
+$runtimeLogsDir = Join-Path $runtimeDir "logs"
+$runtimeDataDir = Join-Path $runtimeDir "data"
+
 if (-not (Test-Path -LiteralPath $installDir)) {
   Write-Log "creating install directory: $installDir"
   New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 }
-
-$logsDir = Join-Path $installDir "logs"
-if (-not (Test-Path -LiteralPath $logsDir)) {
-  New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+if (-not (Test-Path -LiteralPath $runtimeDir)) {
+  Write-Log "creating runtime directory: $runtimeDir"
+  New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+}
+if (-not (Test-Path -LiteralPath $runtimeLogsDir)) {
+  New-Item -ItemType Directory -Path $runtimeLogsDir -Force | Out-Null
+}
+if (-not (Test-Path -LiteralPath $runtimeDataDir)) {
+  New-Item -ItemType Directory -Path $runtimeDataDir -Force | Out-Null
 }
 
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("cloudhelper-probe-node-install-" + [Guid]::NewGuid().ToString("N"))
@@ -418,8 +566,10 @@ try {
   Write-Log "downloading probe asset: $assetName"
   Invoke-DownloadFile -Url $assetURL -OutFile $assetFile
 
-  $winswExePath = Join-Path $installDir "$serviceName-service.exe"
-  $winswXmlPath = Join-Path $installDir "$serviceName-service.xml"
+  $winswExePath = Join-Path $runtimeDir "$serviceName-service.exe"
+  $winswXmlPath = Join-Path $runtimeDir "$serviceName-service.xml"
+  $legacyWinswExePath = Join-Path $installDir "$serviceName-service.exe"
+
   $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
   if ($existingService) {
     Write-Log "service exists, stopping: $serviceName"
@@ -427,7 +577,10 @@ try {
     Start-Sleep -Seconds 2
   }
 
-  $probeExePath = Join-Path $installDir "probe_node.exe"
+  Write-Log "migrating legacy install layout to runtime directory: $runtimeDir"
+  Move-LegacyProbeLayoutToRuntimeDir -InstallDir $installDir -RuntimeDir $runtimeDir -ServiceName $serviceName
+
+  $probeExePath = Join-Path $runtimeDir "probe_node.exe"
   if (Test-Path -LiteralPath $probeExePath) {
     $backupPath = "$probeExePath.bak.$([DateTime]::UtcNow.ToString("yyyyMMddHHmmss"))"
     Write-Log "backup existing binary: $backupPath"
@@ -448,10 +601,7 @@ try {
 
   if ($existingService) {
     Write-Log "service exists, reinstalling: $serviceName"
-    try { & $winswExePath uninstall | Out-Null } catch {}
-    if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
-      try { & sc.exe delete $serviceName | Out-Null } catch {}
-    }
+    Invoke-ServiceUninstallBestEffort -ServiceName $serviceName -WinSWCandidates @($winswExePath, $legacyWinswExePath)
     Start-Sleep -Seconds 1
   }
 
@@ -462,6 +612,8 @@ try {
 
   Write-Log "installed successfully"
   Write-Log "service: $serviceName"
+  Write-Log "install root: $installDir"
+  Write-Log "runtime dir: $runtimeDir"
   Write-Log "binary: $probeExePath"
   Write-Log "release: $tagName"
   Write-Log "asset: $assetName"
