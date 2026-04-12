@@ -1,142 +1,54 @@
-import { useEffect, useRef, useState } from "react";
-import { fetchAdminStatus } from "../services/controller-api";
-import { buildAdminStatusWSURL, normalizeBaseUrl } from "../utils/url";
-import type { StatusWSMessage } from "../types";
+/**
+ * useConnectionFlow.ts — manager_service 健康连接状态管理
+ *
+ * 只轮询 manager_service 自身的健康检查，不直连主控 WebSocket。
+ * C-FE-04 / PKG-FE-R02 / RQ-003
+ */
+import { useCallback, useEffect, useState } from "react";
+import { fetchJson } from "../api";
 
-type AdminStatusResponse = { status: string; uptime: number; server_time: string };
-
-function isUnauthorizedError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  const message = error.message.toLowerCase();
-  return message.includes("401") || message.includes("invalid or expired session token");
-}
-
-export function useConnectionFlow(baseUrl: string, sessionToken: string) {
+export function useConnectionFlow(_baseUrl: string, sessionToken: string) {
   const [serverStatus, setServerStatus] = useState("");
-  const [wsStatus, setWsStatus] = useState("");
+  const [wsStatus] = useState(""); // WS 直连主控已移除 (RQ-003 / C-FE-04)
   const [adminStatus, setAdminStatus] = useState("");
-  const wsConnRef = useRef<WebSocket | null>(null);
 
+  // 登录后自动检查 manager_service 健康状态
   useEffect(() => {
     if (!sessionToken) {
-      if (wsConnRef.current) {
-        wsConnRef.current.close();
-        wsConnRef.current = null;
-      }
-      setWsStatus("");
+      setServerStatus("");
+      setAdminStatus("");
       return;
     }
+    checkHealth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionToken]);
 
-    const wsURL = buildAdminStatusWSURL(baseUrl);
-    if (!wsURL) {
-      setWsStatus("WebSocket URL 无效（仅支持 HTTPS/WSS）");
-      return;
-    }
-
-    setWsStatus("WebSocket 连接中...");
-    const ws = new WebSocket(wsURL);
-    wsConnRef.current = ws;
-
-    ws.onopen = () => {
-      setWsStatus("WebSocket 已连接，认证中...");
-      ws.send(JSON.stringify({ id: "status-auth", action: "auth.session", payload: { token: sessionToken } }));
-    };
-    ws.onerror = () => setWsStatus("WebSocket 连接异常");
-    ws.onclose = () => setWsStatus("WebSocket 已断开");
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data as string) as StatusWSMessage;
-        if ((data as { id?: string }).id === "status-auth") {
-          if ((data as { ok?: boolean }).ok) {
-            setWsStatus("WebSocket 已连接并认证");
-          } else {
-            setWsStatus("WebSocket 认证失败");
-            ws.close();
-          }
-          return;
-        }
-        if ((data.type ?? "") !== "status") {
-          return;
-        }
-        const uptime = typeof data.uptime === "number" ? `，运行 ${data.uptime}s` : "";
-        const serverTime = data.server_time ? `，时间 ${data.server_time}` : "";
-        setServerStatus(`主控在线：${data.message ?? "pong"} / ${data.service ?? "CloudHelper"}${uptime}${serverTime}`);
-      } catch {
-        // ignore malformed ws message
-      }
-    };
-
-    return () => {
-      ws.close();
-      if (wsConnRef.current === ws) {
-        wsConnRef.current = null;
-      }
-    };
-  }, [baseUrl, sessionToken]);
-
-  async function pingServer(baseUrlInput: string, token: string) {
-    const base = normalizeBaseUrl(baseUrlInput);
-    if (!base) {
-      setServerStatus("Controller URL is required");
-      return;
-    }
-    if (!token) {
-      setServerStatus("未登录，无法访问管理接口");
-      return;
-    }
-
+  const checkHealth = useCallback(async () => {
     try {
-      const data = await fetchAdminStatus(base, token);
-      const uptime = typeof data.uptime === "number" ? `，运行 ${data.uptime}s` : "";
-      const serverTime = data.server_time ? `，时间 ${data.server_time}` : "";
-      setServerStatus(`主控在线：status=${data.status}${uptime}${serverTime}`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setServerStatus(`主控状态获取失败：${msg}`);
+      const data = await fetchJson<{ version?: string }>("/system/version");
+      setServerStatus(`manager_service 在线，版本：${data?.version ?? "unknown"}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "unknown";
+      setServerStatus(`manager_service 状态异常：${msg}`);
     }
+  }, []);
+
+  async function pingServer(_baseUrlInput: string, _token: string) {
+    await checkHealth();
   }
 
-  async function checkAdminStatus(baseUrlInput: string, token: string, reauthenticate?: () => Promise<string>) {
-    const base = normalizeBaseUrl(baseUrlInput);
-    if (!base) {
-      setAdminStatus("Controller URL is required");
-      return;
-    }
-    if (!token) {
-      setAdminStatus("未登录，无法访问管理接口");
-      return;
-    }
-
+  async function checkAdminStatus(_baseUrlInput: string, _token: string) {
+    // 主控直连已禁用。manager_service healthz 替代。
     try {
-      let activeToken = token;
-      let reloginUsed = false;
-      let data: AdminStatusResponse;
-      try {
-        data = await fetchAdminStatus(base, activeToken);
-      } catch (error) {
-        if (!reauthenticate || !isUnauthorizedError(error)) {
-          throw error;
-        }
-
-        setAdminStatus("会话已过期，正在自动重新登录...");
-        activeToken = await reauthenticate();
-        reloginUsed = true;
-        data = await fetchAdminStatus(base, activeToken);
-      }
-
-      setAdminStatus(`${reloginUsed ? "已自动重新登录，" : ""}管理接口正常：status=${data.status}, uptime=${data.uptime}s`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setAdminStatus(`管理接口异常：${msg}`);
+      await fetchJson<unknown>("/healthz");
+      setAdminStatus("manager_service 健康检查正常");
+    } catch {
+      setAdminStatus("manager_service 健康检查失败");
     }
   }
 
   function clearStatusMessages() {
     setServerStatus("");
-    setWsStatus("");
     setAdminStatus("");
   }
 

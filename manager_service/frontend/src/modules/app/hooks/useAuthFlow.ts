@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { fetchJson } from "../api";
-import { normalizeClaim, normalizeUsernameClaim } from "../authz";
-import { normalizeBaseUrl } from "../utils/url";
+import { apiLogin, apiLogout, apiGetControllerSession } from "../manager-api";
+import { normalizeUsernameClaim } from "../authz";
 import type { StatusTone } from "../types";
 
 type LoginResult = {
@@ -31,14 +30,7 @@ export function useAuthFlow() {
     return () => window.removeEventListener("unauthorized", handleUnauthorized);
   }, []);
 
-  async function login(baseUrlInput: string, user: string, pass: string): Promise<LoginResult> {
-    const base = normalizeBaseUrl(baseUrlInput);
-    if (!base) {
-      setLoginTone("error");
-      setLoginStatus("Login failed: Controller URL is required");
-      return { ok: false };
-    }
-
+  async function login(_baseUrlInput: string, user: string, pass: string): Promise<LoginResult> {
     if (!user || !pass) {
       setLoginTone("error");
       setLoginStatus("Login failed: username and password required");
@@ -50,10 +42,7 @@ export function useAuthFlow() {
       setLoginTone("info");
       setLoginStatus("Authenticating...");
 
-      const loginData = await fetchJson<{ token: string; username: string }>("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ username: user, password: pass }),
-      });
+      const loginData = await apiLogin(user, pass);
 
       const normalizedUser = normalizeUsernameClaim(loginData.username, "admin");
       // we assume manager_service gives admin
@@ -68,17 +57,11 @@ export function useAuthFlow() {
 
       setLoginTone("success");
       setLoginStatus(`Login successful: username=${normalizedUser}`);
-      
-      // Attempt to proxy login to controller for downstream calls
-      try {
-        setLoginStatus("Authenticating with controller...");
-        const result = await fetchJson<{ token: string; message: string }>("/controller/session/login", {
-          method: "POST",
-          body: JSON.stringify({ base_url: base }), // Optional, usually we would pass base_url here if the backend API supports it, wait, manager_service doesn't take an argument for login in W2? Ah, the manager_service W2 adapter didn't expose /api/controller/session/login yet! Let me check standard router.go.
-        });
-      } catch (e) {
-        // Ignored for now if the endpoint doesn't exist, as it might be added in W3-03
-      }
+
+      // Attempt to refresh cached controller session token (non-blocking, C-FE-04)
+      apiGetControllerSession().catch(() => {
+        // Controller session may not be configured yet — not a login failure.
+      });
 
       return { ok: true, userRole: role, certType: type, sessionToken: loginData.token };
     } catch (error) {
@@ -96,7 +79,7 @@ export function useAuthFlow() {
   function logout() {
     setSessionToken("");
     localStorage.removeItem("manager_session_token");
-    fetchJson("/auth/logout", { method: "POST" }).catch(() => {});
+    apiLogout();
     setUsername("admin");
     setUserRole("viewer");
     setCertType("viewer");

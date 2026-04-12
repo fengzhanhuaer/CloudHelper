@@ -1,14 +1,20 @@
+/**
+ * useNetworkAssistant.ts — 网络助手状态管理
+ *
+ * 重构说明 (PKG-FE-R03 / RQ-003 / C-FE-01 / C-FE-04):
+ * - 已实现后端接口: GET /api/network-assistant/status, POST /api/network-assistant/mode
+ * - 未实现接口 (W4+): tun/install, tun/enable, rules, dns/cache, process monitor
+ *   → 这些函数保留语义接口，调用时返回明确的"功能暂不可用"状态，不得静默忽略
+ * - 禁止直连主控 WS-RPC (RQ-003)
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  downloadNetworkRuleRoutes,
-} from "../services/controller-api";
-import { fetchJson } from "../api";
+import { apiGetNetworkAssistantStatus, apiSwitchNetworkAssistantMode } from "../manager-api";
 import type {
   NetworkAssistantDNSCacheEntry,
   NetworkAssistantLogEntry,
   NetworkAssistantLogFilterSource,
-  NetworkAssistantLogResponse,
   NetworkAssistantLogSource,
+  NetworkAssistantLogResponse,
   NetworkAssistantRuleAction,
   NetworkAssistantRuleConfig,
   NetworkAssistantMode,
@@ -16,6 +22,8 @@ import type {
   NetworkProcessInfo,
   NetworkProcessEvent,
 } from "../types";
+
+// ─── 常量与工具函数（保留功能语义，PKG-FE-R03 / C-FE-01）─────────────────────
 
 const defaultStatus: NetworkAssistantStatus = {
   enabled: false,
@@ -46,8 +54,7 @@ function normalizeLogSource(raw: string): NetworkAssistantLogSource {
 }
 
 function normalizeLogCategory(raw: string): string {
-  const value = raw.trim().toLowerCase();
-  return value || "general";
+  return raw.trim().toLowerCase() || "general";
 }
 
 function buildLogLine(entry: NetworkAssistantLogEntry): string {
@@ -60,42 +67,33 @@ function normalizeLogEntry(raw: Partial<NetworkAssistantLogEntry>): NetworkAssis
   const category = normalizeLogCategory(String(raw.category ?? "general"));
   const message = String(raw.message ?? "").trim();
   const time = String(raw.time ?? "").trim();
-  const line = String(raw.line ?? "").trim();
-  const normalized: NetworkAssistantLogEntry = {
-    time,
-    source,
-    category,
-    message,
-    line: "",
-  };
-  normalized.line = line || buildLogLine(normalized);
+  const normalized: NetworkAssistantLogEntry = { time, source, category, message, line: "" };
+  normalized.line = String(raw.line ?? "").trim() || buildLogLine(normalized);
   return normalized;
 }
 
 function parseLegacyLogEntries(content: string): NetworkAssistantLogEntry[] {
   const normalized = content.replace(/\r\n/g, "\n").trim();
-  if (!normalized) {
-    return [];
-  }
+  if (!normalized) return [];
   return normalized.split("\n").map((line) => {
     const trimmed = line.trim();
-    return normalizeLogEntry({
-      time: "",
-      source: "manager",
-      category: "general",
-      message: trimmed,
-      line: trimmed,
-    });
+    return normalizeLogEntry({ time: "", source: "manager", category: "general", message: trimmed, line: trimmed });
   });
 }
 
+/** 未实现的后端端点统一错误消息 */
+function notImplementedError(feature: string): Error {
+  return new Error(`[W4-PENDING] ${feature} 功能暂未在 manager_service 实现，请等待 W4 后端代理端点就绪`);
+}
+
+// ─── Hook ────────────────────────────────────────────────────────────────────
 
 export function useNetworkAssistant() {
   const [status, setStatus] = useState<NetworkAssistantStatus>(defaultStatus);
   const [operateStatus, setOperateStatus] = useState("未操作");
   const [isOperating, setIsOperating] = useState(false);
   const [selectedNode, setSelectedNode] = useState(defaultStatus.node_id);
-  const [logLines, setLogLines] = useState(200);
+  const [logLines, setLogLinesState] = useState(200);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [logStatus, setLogStatus] = useState("未加载网络助手日志");
   const [logEntries, setLogEntries] = useState<NetworkAssistantLogEntry[]>([]);
@@ -108,305 +106,11 @@ export function useNetworkAssistant() {
   const [isSyncingRuleRoutes, setIsSyncingRuleRoutes] = useState(false);
   const [ruleRoutesSyncStatus, setRuleRoutesSyncStatus] = useState("规则文件主控备份：未执行");
 
-  const ruleConfigRequestSeqRef = useRef(0);
-
-  const logCategories = useMemo(() => {
-    const set = new Set<string>();
-    for (const entry of logEntries) {
-      set.add(entry.category || "general");
-    }
-    return Array.from(set).sort((left, right) => left.localeCompare(right));
-  }, [logEntries]);
-
-  const visibleLogEntries = useMemo(() => logEntries, [logEntries]);
-
-  const visibleLogContent = useMemo(() => {
-    return visibleLogEntries.map((entry) => entry.line || buildLogLine(entry)).join("\n");
-  }, [visibleLogEntries]);
-
-  const refreshLogs = useCallback(async () => {
-    setIsLoadingLogs(true);
-    setLogStatus("正在刷新网络助手日志...");
-    try {
-      const data = await fetchJson<NetworkAssistantLogResponse>('/network-assistant/logs?lines=' + logLines).catch(() => ({ entries: [], content: "" }) as unknown as NetworkAssistantLogResponse);
-      const entries = Array.isArray(data.entries) && data.entries.length > 0
-        ? data.entries.map((entry) => normalizeLogEntry(entry))
-        : parseLegacyLogEntries(data.content || "");
-      setLogEntries(entries);
-      setLogCopyStatus("");
-      setLogStatus(`已加载网络助手日志（${entries.length} 条）`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setLogStatus(`网络助手日志加载失败：${msg}`);
-    } finally {
-      setIsLoadingLogs(false);
-    }
-  }, [logLines]);
-
-  const copyLogs = useCallback(async () => {
-    const text = visibleLogContent.trim();
-    if (!text) {
-      setLogCopyStatus("暂无日志可复制");
-      return;
-    }
-
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(visibleLogContent);
-      } else if (typeof document !== "undefined") {
-        const textarea = document.createElement("textarea");
-        textarea.value = visibleLogContent;
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textarea);
-      } else {
-        throw new Error("clipboard api unavailable");
-      }
-      setLogCopyStatus("已复制网络助手日志");
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setLogCopyStatus(`复制失败：${msg}`);
-    }
-  }, [visibleLogContent]);
-
-  function updateLogLines(value: number) {
-    if (!Number.isFinite(value)) {
-      setLogLines(200);
-      return;
-    }
-    const normalized = Math.trunc(value);
-    if (normalized <= 0) {
-      setLogLines(200);
-      return;
-    }
-    if (normalized > 2000) {
-      setLogLines(2000);
-      return;
-    }
-    setLogLines(normalized);
-  }
-
-  function clearLogs() {
-    setLogStatus("未加载网络助手日志");
-    setLogEntries([]);
-    setLogSourceFilter("all");
-    setLogCategoryFilter("all");
-    setLogCopyStatus("");
-  }
-
-  const refreshRuleConfig = useCallback(async () => {
-    const requestID = ++ruleConfigRequestSeqRef.current;
-    setIsLoadingRuleConfig(true);
-    setRuleConfigStatus("正在加载规则策略...");
-    try {
-      const data = await fetchJson<NetworkAssistantRuleConfig>('/network-assistant/rules').catch(() => { throw new Error("not implemented"); });
-      setRuleConfig(data);
-      setRuleConfigStatus("规则策略已加载");
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setRuleConfigStatus(`规则策略加载失败：${msg}`);
-    } finally {
-      setIsLoadingRuleConfig(false);
-    }
-  }, []);
-
-  const refreshStatus = useCallback(async (controllerBaseURL?: string, token?: string) => {
-    try {
-      const data = await fetchJson<NetworkAssistantStatus>('/network-assistant/status', { method: 'GET' }).catch(() => defaultStatus);
-      setStatus(data);
-      if (data.node_id) {
-        setSelectedNode(data.node_id);
-      }
-      if (data.mode === "tun") {
-        void refreshRuleConfig();
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setOperateStatus(`状态刷新失败：${msg}`);
-    }
-  }, [refreshRuleConfig]);
-
-  const setRulePolicy = useCallback(async (group: string, action: NetworkAssistantRuleAction, tunnelNodeID = "") => {
-    setIsOperating(true);
-    setRuleConfigStatus("正在更新规则策略...");
-    try {
-      const data = await fetchJson<NetworkAssistantRuleConfig>('/network-assistant/rules/policy', { method: 'POST', body: JSON.stringify({ group, action, tunnelNodeID: tunnelNodeID.trim() }) }).catch(() => { throw new Error("not implemented"); });
-      setRuleConfig(data);
-      setRuleConfigStatus("规则策略已更新");
-      setOperateStatus("规则策略已应用");
-      void refreshLogs();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setRuleConfigStatus(`规则策略更新失败：${msg}`);
-      setOperateStatus(`规则策略更新失败：${msg}`);
-      throw error;
-    } finally {
-      setIsOperating(false);
-    }
-  }, [refreshLogs]);
-
-  const switchMode = useCallback(async (controllerBaseURL: string, token: string, mode: NetworkAssistantMode, nodeIdInput?: string) => {
-    setIsOperating(true);
-    const nodeID = (nodeIdInput ?? selectedNode).trim() || "direct";
-    try {
-      const data = await fetchJson<NetworkAssistantStatus>('/network-assistant/mode', { method: 'POST', body: JSON.stringify({ mode, node_id: nodeID }) }).catch(() => { throw new Error("not implemented"); });
-      setStatus(data);
-      setSelectedNode(data.node_id || nodeID);
-      if (mode === "direct") {
-        setOperateStatus("已切换为直连模式，并恢复系统 DNS/系统代理");
-      } else if (mode === "tun") {
-        setOperateStatus("已切换为 TUN 模式（按规则分流）");
-        void refreshRuleConfig();
-      } else {
-        setOperateStatus(`模式已切换：${mode}`);
-      }
-      void refreshLogs();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setOperateStatus(`模式切换失败：${msg}`);
-      void refreshLogs();
-      throw error;
-    } finally {
-      setIsOperating(false);
-    }
-  }, [refreshLogs, refreshRuleConfig, selectedNode]);
-
-  const installTUN = useCallback(async () => {
-    setIsOperating(true);
-    try {
-      const data = await fetchJson<NetworkAssistantStatus>('/network-assistant/tun/install', { method: 'POST' }).catch(() => { throw new Error("not implemented"); });
-      setStatus(data);
-      if (data.node_id) {
-        setSelectedNode(data.node_id);
-      }
-      setOperateStatus("TUN 安装完成");
-      void refreshLogs();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setOperateStatus(`TUN 安装失败：${msg}`);
-      void refreshLogs();
-      throw error;
-    } finally {
-      setIsOperating(false);
-    }
-  }, [refreshLogs]);
-
-  const enableTUN = useCallback(async () => {
-    setIsOperating(true);
-    try {
-      const data = await fetchJson<NetworkAssistantStatus>('/network-assistant/tun/enable', { method: 'POST' }).catch(() => { throw new Error("not implemented"); });
-      setStatus(data);
-      if (data.node_id) {
-        setSelectedNode(data.node_id);
-      }
-      setOperateStatus("TUN 模式已启用");
-      void refreshLogs();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      if (msg.includes("relaunch as admin")) {
-        setOperateStatus("正在请求管理员权限，请在 UAC 弹窗中确认后重新启动应用");
-      } else {
-        setOperateStatus(`启用 TUN 失败：${msg}`);
-      }
-      void refreshLogs();
-      throw error;
-    } finally {
-      setIsOperating(false);
-    }
-  }, [refreshLogs]);
-
-  const closeTUN = useCallback(async () => {
-    setIsOperating(true);
-    try {
-      const data = await fetchJson<NetworkAssistantStatus>('/network-assistant/direct/restore', { method: 'POST' }).catch(() => { throw new Error("not implemented"); });
-      setStatus(data);
-      if (data.node_id) {
-        setSelectedNode(data.node_id);
-      }
-      setOperateStatus("已关闭 TUN，并切回直连模式");
-      void refreshLogs();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setOperateStatus(`关闭 TUN 失败：${msg}`);
-      void refreshLogs();
-      throw error;
-    } finally {
-      setIsOperating(false);
-    }
-  }, [refreshLogs]);
-
-  const uploadRuleRoutes = useCallback(async (controllerBaseURL: string, token: string) => {
-    const uploadFn: any = null;
-    if (!uploadFn) {
-      setRuleRoutesSyncStatus("上传失败：当前版本未包含自动上传能力");
-      throw new Error("UploadNetworkAssistantRuleRoutes is not available");
-    }
-    setIsSyncingRuleRoutes(true);
-    setRuleRoutesSyncStatus("正在上传 rule_routes.txt 到主控备份...");
-    try {
-      const message = await uploadFn(controllerBaseURL, token);
-      setRuleRoutesSyncStatus(`上传成功：${message}`);
-      setRuleConfigStatus("规则策略已更新，请刷新规则组确认");
-      await refreshRuleConfig();
-      await refreshLogs();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setRuleRoutesSyncStatus(`上传失败：${msg}`);
-      throw error;
-    } finally {
-      setIsSyncingRuleRoutes(false);
-    }
-  }, [refreshLogs, refreshRuleConfig]);
-
-  const downloadRuleRoutes = useCallback(async (controllerBaseURL: string, token: string) => {
-    setIsSyncingRuleRoutes(true);
-    setRuleRoutesSyncStatus("正在从主控备份下载 rule_routes.txt...");
-    try {
-      const { fileName, content } = await downloadNetworkRuleRoutes(controllerBaseURL, token);
-      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = fileName || "rule_routes.txt";
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-      setRuleRoutesSyncStatus(`下载成功：${fileName || "rule_routes.txt"}`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      setRuleRoutesSyncStatus(`下载失败：${msg}`);
-      throw error;
-    } finally {
-      setIsSyncingRuleRoutes(false);
-    }
-  }, []);
-
-  // DNS Cache 查询
+  // DNS Cache
   const [dnsCacheEntries, setDnsCacheEntries] = useState<NetworkAssistantDNSCacheEntry[]>([]);
   const [dnsCacheQuery, setDnsCacheQuery] = useState("");
   const [isDNSCacheLoading, setIsDNSCacheLoading] = useState(false);
   const [dnsCacheStatus, setDnsCacheStatus] = useState("");
-
-  const queryDNSCache = useCallback(async (query: string) => {
-    setIsDNSCacheLoading(true);
-    setDnsCacheStatus("");
-    try {
-      const entries = await fetchJson<any[]>('/network-assistant/dns/cache?query=' + query).catch(() => []);
-      setDnsCacheEntries(Array.isArray(entries) ? entries : []);
-      setDnsCacheStatus("");
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      setDnsCacheStatus(`查询失败：${msg}`);
-      setDnsCacheEntries([]);
-    } finally {
-      setIsDNSCacheLoading(false);
-    }
-  }, []);
 
   // 进程监视
   const [processList, setProcessList] = useState<NetworkProcessInfo[]>([]);
@@ -417,125 +121,268 @@ export function useNetworkAssistant() {
   const [processEvents, setProcessEvents] = useState<NetworkProcessEvent[]>([]);
   const [processEventsStatus, setProcessEventsStatus] = useState("");
 
+  const ruleConfigRequestSeqRef = useRef(0);
+
+  const logCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (const entry of logEntries) set.add(entry.category || "general");
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [logEntries]);
+
+  const visibleLogEntries = useMemo(() => logEntries, [logEntries]);
+  const visibleLogContent = useMemo(
+    () => visibleLogEntries.map((e) => e.line || buildLogLine(e)).join("\n"),
+    [visibleLogEntries]
+  );
+
+  // ── 已实现 ──────────────────────────────────────────────────────────────────
+
+  /** GET /api/network-assistant/status — 已由 manager_service 实现 */
+  const refreshStatus = useCallback(async (_controllerBaseURL?: string, _token?: string) => {
+    try {
+      const raw = await apiGetNetworkAssistantStatus();
+      // probe_manager 返回的状态结构与 NetworkAssistantStatus 字段对齐，做类型转换
+      const data = raw as unknown as NetworkAssistantStatus;
+      setStatus((prev) => ({ ...prev, ...data }));
+      if (data.node_id) setSelectedNode(data.node_id);
+      if (data.mode === "tun") void refreshRuleConfig();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown";
+      setOperateStatus(`状态刷新失败：${msg}`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** POST /api/network-assistant/mode — 已由 manager_service 实现 */
+  const switchMode = useCallback(
+    async (_controllerBaseURL: string, _token: string, mode: NetworkAssistantMode, nodeIdInput?: string) => {
+      setIsOperating(true);
+      const nodeID = (nodeIdInput ?? selectedNode).trim() || "direct";
+      try {
+        const raw = await apiSwitchNetworkAssistantMode(mode);
+        const data = raw as unknown as NetworkAssistantStatus;
+        setStatus((prev) => ({ ...prev, ...data }));
+        setSelectedNode(data.node_id || nodeID);
+        if (mode === "direct") {
+          setOperateStatus("已切换为直连模式，并恢复系统 DNS/系统代理");
+        } else if (mode === "tun") {
+          setOperateStatus("已切换为 TUN 模式（按规则分流）");
+          void refreshRuleConfig();
+        } else {
+          setOperateStatus(`模式已切换：${mode}`);
+        }
+        void refreshLogs();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "unknown";
+        setOperateStatus(`模式切换失败：${msg}`);
+        void refreshLogs();
+        throw error;
+      } finally {
+        setIsOperating(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedNode]
+  );
+
+  // ── 待实现 (W4+) — 保留功能语义，显式报告不可用 ─────────────────────────────
+
+  /** @w4-pending GET /api/network-assistant/logs */
+  const refreshLogs = useCallback(async () => {
+    setIsLoadingLogs(true);
+    setLogStatus("正在刷新网络助手日志...");
+    try {
+      // TODO(W4): 后端代理 /api/network-assistant/logs 端点未实现
+      // 当 probe_manager 提供日志代理时，替换为 apiGetNetworkAssistantLogs()
+      throw notImplementedError("网络助手日志");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown";
+      setLogStatus(`网络助手日志：${msg}`);
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  }, []);
+
+  const copyLogs = useCallback(async () => {
+    const text = visibleLogContent.trim();
+    if (!text) { setLogCopyStatus("暂无日志可复制"); return; }
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(visibleLogContent);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = visibleLogContent;
+        ta.style.cssText = "position:fixed;opacity:0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setLogCopyStatus("已复制网络助手日志");
+    } catch (error) {
+      setLogCopyStatus(`复制失败：${error instanceof Error ? error.message : "unknown"}`);
+    }
+  }, [visibleLogContent]);
+
+  function clearLogs() {
+    setLogStatus("未加载网络助手日志");
+    setLogEntries([]);
+    setLogSourceFilter("all");
+    setLogCategoryFilter("all");
+    setLogCopyStatus("");
+  }
+
+  function updateLogLines(value: number) {
+    const n = Math.trunc(value);
+    setLogLinesState(!Number.isFinite(n) || n <= 0 ? 200 : n > 2000 ? 2000 : n);
+  }
+
+  /** @w4-pending GET /api/network-assistant/rules */
+  const refreshRuleConfig = useCallback(async () => {
+    ++ruleConfigRequestSeqRef.current;
+    setIsLoadingRuleConfig(true);
+    setRuleConfigStatus("正在加载规则策略...");
+    try {
+      throw notImplementedError("规则策略");
+    } catch (error) {
+      setRuleConfigStatus(`规则策略：${error instanceof Error ? error.message : "unknown"}`);
+    } finally {
+      setIsLoadingRuleConfig(false);
+    }
+  }, []);
+
+  /** @w4-pending POST /api/network-assistant/rules/policy */
+  const setRulePolicy = useCallback(
+    async (_group: string, _action: NetworkAssistantRuleAction, _tunnelNodeID = "") => {
+      setIsOperating(true);
+      try {
+        throw notImplementedError("规则策略更新");
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "unknown";
+        setRuleConfigStatus(`规则策略更新：${msg}`);
+        setOperateStatus(`规则策略更新：${msg}`);
+        throw error;
+      } finally {
+        setIsOperating(false);
+      }
+    },
+    []
+  );
+
+  /** @w4-pending POST /api/network-assistant/tun/install */
+  const installTUN = useCallback(async () => {
+    setIsOperating(true);
+    try {
+      throw notImplementedError("TUN 安装");
+    } catch (error) {
+      setOperateStatus(`TUN 安装：${error instanceof Error ? error.message : "unknown"}`);
+      throw error;
+    } finally {
+      setIsOperating(false);
+    }
+  }, []);
+
+  /** @w4-pending POST /api/network-assistant/tun/enable */
+  const enableTUN = useCallback(async () => {
+    setIsOperating(true);
+    try {
+      throw notImplementedError("TUN 启用");
+    } catch (error) {
+      setOperateStatus(`TUN 启用：${error instanceof Error ? error.message : "unknown"}`);
+      throw error;
+    } finally {
+      setIsOperating(false);
+    }
+  }, []);
+
+  /** @w4-pending POST /api/network-assistant/direct/restore */
+  const closeTUN = useCallback(async () => {
+    setIsOperating(true);
+    try {
+      throw notImplementedError("关闭 TUN");
+    } catch (error) {
+      setOperateStatus(`关闭 TUN：${error instanceof Error ? error.message : "unknown"}`);
+      throw error;
+    } finally {
+      setIsOperating(false);
+    }
+  }, []);
+
+  /** @w4-pending rule_routes 上传 */
+  const uploadRuleRoutes = useCallback(async (_controllerBaseURL: string, _token: string) => {
+    setIsSyncingRuleRoutes(true);
+    try {
+      throw notImplementedError("规则文件上传");
+    } catch (error) {
+      setRuleRoutesSyncStatus(`上传失败：${error instanceof Error ? error.message : "unknown"}`);
+      throw error;
+    } finally {
+      setIsSyncingRuleRoutes(false);
+    }
+  }, []);
+
+  /** @w4-pending rule_routes 下载 */
+  const downloadRuleRoutes = useCallback(async (_controllerBaseURL: string, _token: string) => {
+    setIsSyncingRuleRoutes(true);
+    try {
+      throw notImplementedError("规则文件下载");
+    } catch (error) {
+      setRuleRoutesSyncStatus(`下载失败：${error instanceof Error ? error.message : "unknown"}`);
+      throw error;
+    } finally {
+      setIsSyncingRuleRoutes(false);
+    }
+  }, []);
+
+  /** @w4-pending GET /api/network-assistant/dns/cache */
+  const queryDNSCache = useCallback(async (_query: string) => {
+    setIsDNSCacheLoading(true);
+    setDnsCacheStatus("");
+    try {
+      throw notImplementedError("DNS 缓存查询");
+    } catch (error) {
+      setDnsCacheStatus(`查询失败：${error instanceof Error ? error.message : "unknown"}`);
+      setDnsCacheEntries([]);
+    } finally {
+      setIsDNSCacheLoading(false);
+    }
+  }, []);
+
+  /** @w4-pending GET /api/network-assistant/processes */
   const refreshProcessList = useCallback(async () => {
     setIsLoadingProcesses(true);
-    setProcessListStatus("");
     try {
-      const list = await fetchJson<any[]>('/network-assistant/processes').catch(() => []);
-      setProcessList(Array.isArray(list) ? list : []);
+      throw notImplementedError("进程列表");
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      setProcessListStatus(`获取进程列表失败：${msg}`);
+      setProcessListStatus(`获取失败：${error instanceof Error ? error.message : "unknown"}`);
     } finally {
       setIsLoadingProcesses(false);
     }
   }, []);
 
   const startProcessMonitor = useCallback(async () => {
-    try {
-      await fetchJson('/network-assistant/monitor/start', { method: 'POST' }).catch(() => {});
-      await refreshProcessList();
-      setMonitorProcessName("");
-      setIsMonitoring(true);
-      setProcessEvents([]);
-      if (status.mode !== "tun") {
-        setProcessEventsStatus("监视已启动：当前为直连模式，通常不会产生监视事件；请切换到 TUN 模式后再观察。");
-      } else if (!status.tun_enabled) {
-        setProcessEventsStatus("监视已启动：当前 TUN 尚未启用，暂无事件；请先启用 TUN 并产生网络流量。");
-      } else {
-        setProcessEventsStatus("监视已启动：请产生网络流量，事件会每 2 秒刷新。");
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      setProcessEventsStatus(`启动监视失败：${msg}`);
-    }
-  }, [refreshProcessList, status.mode, status.tun_enabled]);
-
-  const clearProcessEvents = useCallback(async () => {
-    try {
-      await fetchJson('/network-assistant/monitor/clear', { method: 'POST' }).catch(() => {});
-      setProcessEvents([]);
-      setProcessEventsStatus("监视记录已清空");
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      setProcessEventsStatus(`清空监视记录失败：${msg}`);
-    }
+    setProcessEventsStatus("[W4-PENDING] 进程监视功能暂未在 manager_service 实现");
   }, []);
 
   const stopProcessMonitor = useCallback(async () => {
-    try {
-      await fetchJson('/network-assistant/monitor/stop', { method: 'POST' }).catch(() => {});
-      setIsMonitoring(false);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      setProcessEventsStatus(`停止监视失败：${msg}`);
-    }
+    setIsMonitoring(false);
   }, []);
 
-  const pollProcessEvents = useCallback(async () => {
-    if (!isMonitoring) return;
-    try {
-      const raw = await fetchJson<any[]>('/network-assistant/monitor/events?since=' + 0).catch(() => []);
-      if (Array.isArray(raw)) {
-        const events: NetworkProcessEvent[] = raw.map((e) => {
-          const source = e as unknown as { process_name?: string; count?: number };
-          return {
-            kind: e.kind as NetworkProcessEvent["kind"],
-            timestamp: e.timestamp,
-            process_name: source.process_name,
-            domain: e.domain,
-            target_ip: e.target_ip,
-            target_port: e.target_port,
-            direct: e.direct,
-            node_id: e.node_id,
-            group: e.group,
-            resolved_ips: e.resolved_ips,
-            count: source.count,
-          };
-        });
-        setProcessEvents(events);
-        if (events.length > 0) {
-          setProcessEventsStatus("");
-        } else if (status.mode !== "tun") {
-          setProcessEventsStatus("当前为直连模式，通常不会产生监视事件；请切换到 TUN 模式后再观察。");
-        } else if (!status.tun_enabled) {
-          setProcessEventsStatus("当前 TUN 尚未启用，暂无事件；请先启用 TUN 并产生网络流量。");
-        } else {
-          setProcessEventsStatus("暂无事件：请产生网络流量后观察。DNS/TCP/UDP 命中后会在此处展示。");
-        }
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      setProcessEventsStatus(`监视轮询失败：${msg}`);
-    }
-  }, [isMonitoring, status.mode, status.tun_enabled]);
+  const clearProcessEvents = useCallback(async () => {
+    setProcessEvents([]);
+    setProcessEventsStatus("监视记录已清空");
+  }, []);
 
-  // 监视轮询：每 2 秒刷新一次事件
-  useEffect(() => {
-    if (!isMonitoring) return;
-    const timer = setInterval(pollProcessEvents, 2000);
-    return () => clearInterval(timer);
-  }, [isMonitoring, pollProcessEvents]);
+  const appendDebugLog = useCallback(async (_category: string, _message: string) => {
+    // noop
+  }, []);
 
-  // 网络助手页定时刷新状态（包含分组保活），避免保活展示滞后。
+  // ── 定时刷新状态 ────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (isOperating) {
-      return;
-    }
-    const timer = setInterval(() => {
-      void refreshStatus();
-    }, 3000);
+    if (isOperating) return;
+    const timer = setInterval(() => void refreshStatus(), 3000);
     return () => clearInterval(timer);
   }, [isOperating, refreshStatus]);
-
-  const appendDebugLog = useCallback(async (category: string, message: string) => {
-    try {
-      // noop
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      console.warn("[network-assistant][debug-log] append failed", { category, message, error: msg });
-    }
-  }, []);
 
   return {
     status,

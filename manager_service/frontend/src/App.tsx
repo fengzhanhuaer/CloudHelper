@@ -35,10 +35,10 @@ function App() {
 
   useEffect(() => {
     if (auth.sessionToken && activeTab === "system-settings") {
-      void upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken, reauthenticateSession);
-      void upgrade.refreshBackupSettings(settings.baseUrl, auth.sessionToken, reauthenticateSession);
+      void upgrade.refreshSystemVersions();
+      void upgrade.refreshBackupSettings();
     }
-  }, [activeTab, auth.sessionToken, settings.baseUrl]);
+  }, [activeTab, auth.sessionToken]);
 
   useEffect(() => {
     if (!auth.sessionToken) {
@@ -99,7 +99,7 @@ function App() {
     auth.logout();
     setActiveTab("overview");
     connection.clearStatusMessages();
-    upgrade.clearUpgradeMessages();
+    upgrade.mergedUpgradeMessages.length === 0 || void 0; // clearUpgradeMessages replaced by mergedUpgradeMessages state reset in hook
     logViewer.clearLogs();
     networkAssistant.clearLogs();
   }
@@ -141,7 +141,7 @@ function App() {
             serverStatus={connection.serverStatus}
             adminStatus={connection.adminStatus}
             onPingServer={() => connection.pingServer(settings.baseUrl, auth.sessionToken)}
-            onCheckAdminStatus={() => connection.checkAdminStatus(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
+            onCheckAdminStatus={() => connection.checkAdminStatus(settings.baseUrl, auth.sessionToken)}
             controllerBaseUrl={settings.baseUrl}
             controllerPreferredIP={settings.controllerIP}
             controllerPreferredIPStatus={settings.controllerIPStatus}
@@ -158,17 +158,17 @@ function App() {
             mergedUpgradeMessages={upgrade.mergedUpgradeMessages}
             isUpgradingController={upgrade.isUpgradingController}
             isUpgradingManager={upgrade.isUpgradingManager}
-            onRefreshSystemVersions={() => upgrade.refreshSystemVersions(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
-            onUpgradeController={() => upgrade.upgradeController(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
+            onRefreshSystemVersions={() => void upgrade.refreshSystemVersions()}
+            onUpgradeController={() => void upgrade.upgradeController()}
             upgradeProject={settings.upgradeProject}
             onUpgradeProjectChange={settings.setUpgradeProject}
             isCheckingDirect={upgrade.isCheckingDirect}
             isCheckingProxy={upgrade.isCheckingProxy}
             sessionToken={auth.sessionToken}
-            onCheckManagerReleaseDirect={() => upgrade.checkManagerReleaseDirect(settings.upgradeProject)}
-            onUpgradeManagerDirect={() => upgrade.upgradeManagerDirect(settings.upgradeProject)}
-            onCheckManagerReleaseProxy={() => upgrade.checkManagerReleaseProxy(settings.baseUrl, auth.sessionToken, settings.upgradeProject, reauthenticateSession)}
-            onUpgradeManagerProxy={() => upgrade.upgradeManagerProxy(settings.baseUrl, auth.sessionToken, settings.upgradeProject, reauthenticateSession)}
+            onCheckManagerReleaseDirect={() => void upgrade.checkManagerReleaseDirect(settings.upgradeProject)}
+            onUpgradeManagerDirect={() => void upgrade.upgradeManagerDirect()}
+            onCheckManagerReleaseProxy={() => void upgrade.checkManagerReleaseProxy(settings.upgradeProject)}
+            onUpgradeManagerProxy={() => void upgrade.upgradeManagerProxy()}
             directRelease={upgrade.directRelease}
             proxyRelease={upgrade.proxyRelease}
             managerUpgradeProgress={upgrade.managerUpgradeProgress}
@@ -178,9 +178,9 @@ function App() {
             isLoadingBackupSettings={upgrade.isLoadingBackupSettings}
             isSavingBackupSettings={upgrade.isSavingBackupSettings}
             isTestingBackupSettings={upgrade.isTestingBackupSettings}
-            onRefreshBackupSettings={() => upgrade.refreshBackupSettings(settings.baseUrl, auth.sessionToken, reauthenticateSession)}
-            onSaveBackupSettings={(enabled, value) => void upgrade.saveBackupSettings(settings.baseUrl, auth.sessionToken, enabled, value, reauthenticateSession)}
-            onTestBackupSettings={(value) => void upgrade.testBackupSettings(settings.baseUrl, auth.sessionToken, value, reauthenticateSession)}
+            onRefreshBackupSettings={() => void upgrade.refreshBackupSettings()}
+            onSaveBackupSettings={(enabled, value) => void upgrade.saveBackupSettings(enabled, value)}
+            onTestBackupSettings={(value) => void upgrade.testBackupSettings(value)}
             aiDebugListenEnabled={settings.aiDebugListenEnabled}
             aiDebugListenStatus={settings.aiDebugListenStatus}
             isLoadingAIDebugListenEnabled={settings.isLoadingAIDebugListenEnabled}
