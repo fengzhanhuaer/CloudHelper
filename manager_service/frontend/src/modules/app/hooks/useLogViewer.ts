@@ -3,7 +3,7 @@
  *
  * 重构说明 (PKG-FE-R03 / RQ-003 / C-FE-01 / C-FE-04):
  * - local 模式: GET /api/logs/manager — 已由 manager_service 实现
- * - server 模式（主控日志）: [W4-PENDING] 后端代理端点未实现，显式报告不可用
+ * - server 模式（主控日志）: GET /api/system/controller-logs — W4 已实现，通过 SystemProxyHandler 代理主控 admin.logs
  * - 禁止调用 fetchServerLogs / fetchAdminStatus (controller-api 直连)
  */
 import { useCallback, useState } from "react";

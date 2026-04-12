@@ -98,10 +98,6 @@ function parseLegacyLogEntries(content: string): NetworkAssistantLogEntry[] {
   });
 }
 
-/** 未实现的后端端点统一错误消息 */
-function notImplementedError(feature: string): Error {
-  return new Error(`[W4-PENDING] ${feature} 功能暂未在 manager_service 实现，请等待 W4 后端代理端点就绪`);
-}
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
 

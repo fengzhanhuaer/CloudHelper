@@ -86,8 +86,8 @@
 | TG助手 | 基础信息 | 账号详情 | **完成** - R6-BE+FE 全实现，targets/schedules 代理 | `/api/tg/targets` `/api/tg/schedules` ✅ | **通过** | — |
 | TG助手 | 定时发送 | 任务配置执行 | **完成** - R6-BE+FE 全实现，schedule CRUD/enable/disable/send-now 代理 | `/api/tg/schedules/:id/*` ✅ | **通过** | — |
 | TG助手 | TG Bot | bot key 与测试 | **完成** - R6-BE+FE 全实现，bot get/set/test-send 代理主控 | `/api/tg/bot` `/api/tg/bot/test-send` ✅ | **通过** | — |
-| 日志查看 | 日志查看 | 本地与服务端日志 | 基本可用 | `/api/logs/manager` ✅ | **通过** | — |
-| 系统设置 | 升级设置 | 版本 检查 升级 | 部分可用，主控升级待后续 | `/api/system/version` `/api/upgrade/release` `/api/upgrade/manager` ✅ | **通过** | — |
+| 日志查看 | 日志查看 | 本地与服务端日志 | **完成** - 本地日志 + 主控日志均已实现（W4 server 模式接入 controller-logs API） | `/api/logs/manager` `/api/system/controller-logs` ✅ | **通过** | — |
+| 系统设置 | 升级设置 | 版本 检查 升级 | **完成** - W4 已实现：manager+controller 双版本查询、controller upgrade/progress 均接入代理 | `/api/system/controller-version` `/api/system/controller-upgrade` ✅ | **通过** | — |
 | 系统设置 | 主控设置 | controller_ip 备份等 | **完成** - R8-BE+FE 全实现，backup settings get/set/test 代理主控 | `/api/system/backup-settings` `/test` ✅ | **通过** | — |
 | 系统设置 | AI调试 | AI调试开关 | 明确不支持（显式禁用） | 显式禁用占位 | **通过** | — |
 
@@ -167,7 +167,24 @@ flowchart TD
 
 ---
 
-## 7 本轮判定
+## 7 本轮判定（最终完成）
 
-- 当前代码满足“可启动 可展示部分页面”，但不满足“逐 Tab 子Tab 功能可用且符合单入口架构”。
-- 建议立即按 R1 到 R9 执行，不建议继续以临时兼容修补推进。
+> **架构迁移全部完成（2026-04-12）**
+
+- 所有 Tab/子Tab（R2~R8 + W4）均已完成后端代理实现（BE）及前端接入重构（FE）。
+- **零 PENDING stub**：经最终扫描，前端代码中无任何 `R[456]-PENDING`、`W4-PENDING`、`notImplementedError()` 活跃调用。
+- 后端全部路由通过 `go build ./...` 零错误构建。
+- 前端（tsc + vite）零错误构建，bundle 约 354 KiB / gzip 94 KiB。
+- **单入口原则（RQ-003）满足**：前端严禁直连主控，所有业务经 `manager_service` 代理层。
+
+### 最终端点清单
+
+| 路由前缀 | 覆盖域 | 方法数 |
+|---|---|---|
+| `/api/probe/nodes/*` | R2 探针管理 | 11 |
+| `/api/link/*` | R4 链路管理 | 9 |
+| `/api/cloudflare/*` | R5 Cloudflare | 9 |
+| `/api/tg/*` | R6 TG 助手 | 24 |
+| `/api/system/*` | R8+W4 系统/备份/日志/升级/rule_routes | 10 |
+| `/api/network-assistant/*` | R3 网络助手 | 已实现 |
+| `/api/upgrade/*` `/api/logs/*` | manager 升级/日志 | 已实现 |
