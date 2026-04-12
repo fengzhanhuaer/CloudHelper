@@ -1,3 +1,7 @@
+/**
+ * @deprecated [Temporal Compatibility] Scheduled for complete phase-out in W4.
+ * Use manager_service APIs exclusively.
+ */
 import type {
   ControllerUpgradeResponse,
   ControllerVersionResponse,
@@ -72,14 +76,10 @@ export async function triggerControllerUpgrade(baseURL: string, token: string): 
 	);
 }
 
+// @deprecated [Temporal Compatibility - W4]
 export async function forceRefreshProbeDNSCache(baseURL: string, token: string): Promise<string> {
-  const appMain = (window as any)?.go?.main?.App;
-  const invoke = appMain?.ForceRefreshProbeDNSCache;
-  if (typeof invoke !== "function") {
-    throw new Error("ForceRefreshProbeDNSCache not available");
-  }
-  const result = await invoke(baseURL, token);
-  return typeof result === "string" ? result : String(result ?? "");
+  // Wails IPC removed. To be implemented natively in manager_service in W4.
+  throw new Error("forceRefreshProbeDNSCache is temporarily unavailable in Web mode");
 }
 
 export async function fetchControllerUpgradeProgress(baseURL: string, token: string): Promise<UpgradeProgress> {

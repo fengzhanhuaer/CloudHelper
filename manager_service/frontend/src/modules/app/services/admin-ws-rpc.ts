@@ -1,3 +1,7 @@
+/**
+ * @deprecated [Temporal Compatibility] Scheduled for complete phase-out in W4.
+ * Direct connections to controller bypass manager_service and violate the D-03 single entry architecture principle.
+ */
 import { normalizeBaseUrl } from "../utils/url";
 
 type WsRpcRequest = {

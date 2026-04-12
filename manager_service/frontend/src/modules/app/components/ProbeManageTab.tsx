@@ -1,10 +1,13 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { fetchJson } from "../api";
+
 async function GetProbeNodes() {
-  return JSON.parse(localStorage.getItem('probe_nodes') || '[]');
+  return fetchJson<any[]>('/probe/nodes').catch(() => []);
 }
 
 async function ReplaceProbeNodes(nodes: any) {
-  localStorage.setItem('probe_nodes', JSON.stringify(nodes));
+  // We don't support batch replace anymore, this was a legacy wails requirement.
+  // Instead, the nodes are handled directly in backend.
 }
 import {
   createProbeNodeOnController,

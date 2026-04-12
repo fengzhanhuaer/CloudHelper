@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { fetchJson } from "../api";
 const StopProbeLinkSession = async (...args: any[]) => { throw new Error("Not implemented"); };
-const PingProbeChain = async (...args: any[]) => { return { ok: false, duration_ms: 0, message: "Not implemented" } as any; };
+const PingProbeChain = async (chainID: string) => { 
+  return fetchJson<any>('/probe/link/test', {
+    method: 'POST',
+    body: JSON.stringify({ node_id: chainID, endpoint_type: 'chain' })
+  }).catch((e: any) => ({ ok: false, duration_ms: 0, message: e.message }));
+};
 const GetProbeLinkChainsCache = async (...args: any[]) => { return JSON.parse(localStorage.getItem('probe_link_chains') || '[]'); };
 const ForceRefreshNetworkAssistantNodes = async (...args: any[]) => { throw new Error("Not implemented"); };
 const StartProbeLinkSession = async (...args: any[]) => { throw new Error("Not implemented"); };

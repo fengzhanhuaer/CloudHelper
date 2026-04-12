@@ -55,3 +55,13 @@ func (h *UpgradeHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	response.OK(w, rid, resp)
 }
+
+// UpgradeManager handles POST /api/upgrade/manager
+// RQ-008: manager_service does not upgrade itself.
+func (h *UpgradeHandler) UpgradeManager(w http.ResponseWriter, r *http.Request) {
+	rid := r.Header.Get("X-Request-ID")
+	// Since upgrading execute path is frozen inside probe_manager (RQ-008),
+	// this endpoint just informs the client that web-based upgrading is discontinued
+	// and they should use the install script.
+	response.BadRequest(w, rid, "Self-upgrading in Web UI is no longer supported in manager_service. Please use the installation script.")
+}

@@ -1,5 +1,11 @@
 import { useState } from "react";
-const PingProbeChain = async (...args: any[]) => { return { ok: false, duration_ms: 0, message: "Not implemented" } as any; };
+import { fetchJson } from "../api";
+const PingProbeChain = async (chainID: string) => { 
+  return fetchJson<any>('/probe/link/test', {
+    method: 'POST',
+    body: JSON.stringify({ node_id: chainID, endpoint_type: 'chain' })
+  }).catch(e => ({ ok: false, duration_ms: 0, message: e.message }));
+};
 import { LinkManageTab } from "./LinkManageTab";
 import { NetworkAssistantDNSCachePanel } from "./NetworkAssistantDNSCachePanel";
 import { NetworkAssistantLogsPanel } from "./NetworkAssistantLogsPanel";

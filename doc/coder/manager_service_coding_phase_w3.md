@@ -2,15 +2,18 @@
 
 - 日期: 2026-04-12
 - 备注: 严格执行架构师对 W3 阶段“去 Wails 化”及 Web 前端标准化的核心要求。将原本重度依赖底层 IPC 通信的组件彻底解耦，转向基于 RESTful API 和本地强缓存标准（localStorage）的方案，已实现前端彻底与后端分离的目标。
-- 进度状态: 已完成
+- 进度状态: 部分完成 + 遗留列表 (依据架构核查整改)
 - 完成情况:
   - [x] PKG-W3-01 鉴权与基础状态 Web 化 (Wails 设置下线，改用浏览器 localStorage )
   - [x] PKG-W3-02 接口网络层全量切至纯 Fetch API (`useLogViewer`, `useUpgradeFlow` 等底层彻底解耦)
   - [x] PKG-W3-03 遗留组件 Wails 指令替换 (`CloudflareAssistantTab`, `ProbeManageTab` 等强行存本地文件逻辑的重构)
   - [x] PKG-W3-04 测试与验证层 (`wailsjs` 目录全网清退，依赖纯净化，确保 Vite 编译无错)
+- 目前遗留项:
+  - W3-LEGACY-01: 前端 `admin-ws-rpc.ts` 和 `controller-api.ts` 仍保留了绕过 `manager_service` 直接访问 Controller 的路径，已标注为临时兼容 (`@deprecated [Temporal Compatibility]`)，等待后端全量接管。
+  - W3-LEGACY-02: `forceRefreshProbeDNSCache` 及部分深度 IPC 操作因后端尚未实现替代端点，暂时返回报错。
 - 自测状态:
   - `npm run build` ✅ 零报错，静态包捆绑成功
-- 结论记录: W3 阶段所有规划内要求及遗留项目均已实现，前端侧已成功从传统的 Electron/Wails 客户端架构顺利转变为符合标准 `127.0.0.1:16033` 通则的单页 Web 应用程序 (SPA)，交付通过，进入整体集成阶段。
+- 结论记录: 根据架构师一致性核查，当前为可运行但未达架构全符合，部分直连 Controller 功能进入临时妥协状态待 W4 继续消化。
 
 ## 变更点清单
 

@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cloudhelper/manager_service/internal/adapter/controller"
+	"github.com/cloudhelper/manager_service/internal/adapter/netassist"
 	"github.com/cloudhelper/manager_service/internal/adapter/node"
 	"github.com/cloudhelper/manager_service/internal/api"
 	"github.com/cloudhelper/manager_service/internal/auth"
@@ -35,13 +37,17 @@ func main() {
 	}
 
 	nodeStore := node.NewStore(cfg.DataDir)
+	controllerSession := controller.NewSession("http://127.0.0.1:15030")
+	netAssistClient := netassist.NewClient("http://127.0.0.1:15030")
 	logDir := resolveLogDir()
 
 	router := api.NewRouter(api.RouterOptions{
-		AuthSvc:      authSvc,
-		NodeStore:    nodeStore,
-		BuildVersion: BuildVersion,
-		LogDir:       logDir,
+		AuthSvc:           authSvc,
+		NodeStore:         nodeStore,
+		ControllerSession: controllerSession,
+		NetAssistClient:   netAssistClient,
+		BuildVersion:      BuildVersion,
+		LogDir:            logDir,
 	})
 
 	srv := &http.Server{

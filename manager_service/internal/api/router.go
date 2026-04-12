@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/cloudhelper/manager_service/internal/adapter/controller"
+	"github.com/cloudhelper/manager_service/internal/adapter/netassist"
 	"github.com/cloudhelper/manager_service/internal/adapter/node"
 	"github.com/cloudhelper/manager_service/internal/api/handler"
 	"github.com/cloudhelper/manager_service/internal/api/middleware"
@@ -14,10 +16,12 @@ import (
 
 // RouterOptions carries runtime dependencies for the router.
 type RouterOptions struct {
-	AuthSvc      *auth.Service
-	NodeStore    *node.Store
-	BuildVersion string
-	LogDir       string
+	AuthSvc           *auth.Service
+	NodeStore         *node.Store
+	ControllerSession *controller.Session
+	NetAssistClient   *netassist.Client
+	BuildVersion      string
+	LogDir            string
 }
 
 // NewRouter creates and returns the fully configured HTTP router.
@@ -46,6 +50,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 	authH := handler.NewAuthHandler(opts.AuthSvc)
 	nodeH := handler.NewNodeHandler(opts.NodeStore)
 	upgradeH := handler.NewUpgradeHandler(opts.LogDir)
+	var ctrlH *handler.ControllerHandler
+	if opts.ControllerSession != nil {
+		ctrlH = handler.NewControllerHandler(opts.ControllerSession)
+	}
+	var netAssistH *handler.NetAssistHandler
+	if opts.NetAssistClient != nil {
+		netAssistH = handler.NewNetAssistHandler(opts.NetAssistClient)
+	}
 
 	requireAuth := middleware.Auth(opts.AuthSvc)
 
@@ -63,6 +75,15 @@ func NewRouter(opts RouterOptions) http.Handler {
 	mux.Handle("POST /api/auth/logout", requireAuth(http.HandlerFunc(authH.Logout)))
 	mux.Handle("POST /api/auth/password/change", requireAuth(http.HandlerFunc(authH.ChangePassword)))
 
+	// ---- Authenticated — W2: Controller & NetAssist ----
+	if ctrlH != nil {
+		mux.Handle("POST /api/controller/session/login", requireAuth(http.HandlerFunc(ctrlH.Login)))
+	}
+	if netAssistH != nil {
+		mux.Handle("GET /api/network-assistant/status", requireAuth(http.HandlerFunc(netAssistH.GetStatus)))
+		mux.Handle("POST /api/network-assistant/mode", requireAuth(http.HandlerFunc(netAssistH.SwitchMode)))
+	}
+
 	// ---- Authenticated — W2: Probe nodes ----
 	mux.Handle("GET /api/probe/nodes", requireAuth(http.HandlerFunc(nodeH.List)))
 	mux.Handle("POST /api/probe/nodes", requireAuth(http.HandlerFunc(nodeH.Create)))
@@ -73,6 +94,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 
 	// ---- Authenticated — W2: Upgrade & logs ----
 	mux.Handle("GET /api/upgrade/release", requireAuth(http.HandlerFunc(upgradeH.GetRelease)))
+	mux.Handle("POST /api/upgrade/manager", requireAuth(http.HandlerFunc(upgradeH.UpgradeManager)))
 	mux.Handle("GET /api/logs/manager", requireAuth(http.HandlerFunc(upgradeH.GetLogs)))
 
 	// Global middleware: RequestID → Logger → mux.
