@@ -122,7 +122,6 @@ export type NetworkAssistantStatusRaw = Record<string, unknown>;
 
 /**
  * GET /api/network-assistant/status
- * 返回 probe_manager 的网络助手状态（透传原始 JSON）。
  */
 export async function apiGetNetworkAssistantStatus(): Promise<NetworkAssistantStatusRaw> {
   return fetchJson<NetworkAssistantStatusRaw>("/network-assistant/status");
@@ -130,12 +129,99 @@ export async function apiGetNetworkAssistantStatus(): Promise<NetworkAssistantSt
 
 /**
  * POST /api/network-assistant/mode
- * 切换网络助手模式（direct / proxy / tun 等）。
  */
 export async function apiSwitchNetworkAssistantMode(mode: string): Promise<NetworkAssistantStatusRaw> {
   return fetchJson<NetworkAssistantStatusRaw>("/network-assistant/mode", {
     method: "POST",
     body: JSON.stringify({ mode }),
+  });
+}
+
+/**
+ * GET /api/network-assistant/logs?lines=N
+ */
+export async function apiGetNetworkAssistantLogs(lines = 200): Promise<unknown> {
+  return fetchJson<unknown>(`/network-assistant/logs?lines=${lines}`);
+}
+
+/**
+ * GET /api/network-assistant/dns/cache?query=Q
+ */
+export async function apiGetNetworkAssistantDNSCache(query = ""): Promise<unknown[]> {
+  const qs = query ? `?query=${encodeURIComponent(query)}` : "";
+  return fetchJson<unknown[]>(`/network-assistant/dns/cache${qs}`);
+}
+
+/**
+ * GET /api/network-assistant/processes
+ */
+export async function apiGetNetworkAssistantProcesses(): Promise<unknown[]> {
+  return fetchJson<unknown[]>("/network-assistant/processes");
+}
+
+/**
+ * POST /api/network-assistant/monitor/start
+ */
+export async function apiStartNetworkMonitor(): Promise<unknown> {
+  return fetchJson<unknown>("/network-assistant/monitor/start", { method: "POST" });
+}
+
+/**
+ * POST /api/network-assistant/monitor/stop
+ */
+export async function apiStopNetworkMonitor(): Promise<unknown> {
+  return fetchJson<unknown>("/network-assistant/monitor/stop", { method: "POST" });
+}
+
+/**
+ * POST /api/network-assistant/monitor/clear
+ */
+export async function apiClearNetworkMonitorEvents(): Promise<unknown> {
+  return fetchJson<unknown>("/network-assistant/monitor/clear", { method: "POST" });
+}
+
+/**
+ * GET /api/network-assistant/monitor/events?since=N
+ */
+export async function apiGetNetworkMonitorEvents(since = 0): Promise<unknown[]> {
+  return fetchJson<unknown[]>(`/network-assistant/monitor/events?since=${since}`);
+}
+
+/**
+ * POST /api/network-assistant/tun/install
+ */
+export async function apiInstallTUN(): Promise<NetworkAssistantStatusRaw> {
+  return fetchJson<NetworkAssistantStatusRaw>("/network-assistant/tun/install", { method: "POST" });
+}
+
+/**
+ * POST /api/network-assistant/tun/enable
+ */
+export async function apiEnableTUN(): Promise<NetworkAssistantStatusRaw> {
+  return fetchJson<NetworkAssistantStatusRaw>("/network-assistant/tun/enable", { method: "POST" });
+}
+
+/**
+ * POST /api/network-assistant/direct/restore
+ */
+export async function apiRestoreDirect(): Promise<NetworkAssistantStatusRaw> {
+  return fetchJson<NetworkAssistantStatusRaw>("/network-assistant/direct/restore", { method: "POST" });
+}
+
+/**
+ * GET /api/network-assistant/rules
+ */
+export async function apiGetNetworkRuleConfig(): Promise<unknown> {
+  return fetchJson<unknown>("/network-assistant/rules");
+}
+
+/**
+ * POST /api/network-assistant/rules/policy
+ */
+export async function apiSetNetworkRulePolicy(group: string, action: string, tunnelNodeID = ""): Promise<unknown> {
+  return fetchJson<unknown>("/network-assistant/rules/policy", {
+    method: "POST",
+    body: JSON.stringify({ group, action, tunnelNodeID }),
   });
 }
 

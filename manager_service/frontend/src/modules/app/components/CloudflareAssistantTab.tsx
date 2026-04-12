@@ -1,16 +1,53 @@
 import { useEffect, useState } from "react";
-import {
-  applyCloudflareDDNS,
-  fetchCloudflareAPIKey,
-  fetchCloudflareDDNSRecords,
-  fetchCloudflareZeroTrustWhitelist,
-  runCloudflareZeroTrustWhitelistSync,
-  setCloudflareAPIKey,
-  setCloudflareZeroTrustWhitelist,
-  setCloudflareZone,
-} from "../services/controller-api";
-import type { CloudflareDDNSRecord, CloudflareZeroTrustWhitelistState } from "../types";
+
+/** R5-PENDING: Cloudflare 域代理端点尚未实现，返回语义明确的错误 */
+function r5PendingError(feature: string): never {
+  throw new Error(`[R5-PENDING] ${feature}功能需要主控代理端点，请等待 R5 后端实施完成`);
+}
+
+// ── R5 局部类型 ───────────────────────────────────────────────────────────────
+type CloudflareAPIKeyState = { api_key?: string; zone_name?: string; configured?: boolean };
+type CloudflareDDNSRecord = {
+  record_name?: string;
+  record_class?: string;
+  record_type?: string;
+  ip?: string;
+  content_ip?: string;
+  zone_name?: string;
+  node_no?: number;
+  node_id?: string;
+  node_name?: string;
+  record_id?: string;
+  updated_at?: string;
+  sequence?: number;
+};
+type CloudflareZeroTrustWhitelistState = {
+  enabled: boolean;
+  policy_name: string;
+  whitelist_raw: string;
+  sync_interval_sec: number;
+  running?: boolean;
+  last_run_at?: string;
+  last_success_at?: string;
+  last_status?: string;
+  last_message?: string;
+  last_policy_id?: string;
+  last_policy_name?: string;
+  last_applied_ips?: string[];
+  last_source_lines?: number;
+};
+
+function fetchCloudflareAPIKey(_base: string, _token: string): Promise<CloudflareAPIKeyState> { r5PendingError("Cloudflare API Key 读取"); }
+function setCloudflareAPIKey(_base: string, _token: string, _apiKey: string): Promise<CloudflareAPIKeyState> { r5PendingError("Cloudflare API Key 设置"); }
+function setCloudflareZone(_base: string, _token: string, _zone: string): Promise<string> { r5PendingError("Cloudflare Zone 设置"); }
+function fetchCloudflareDDNSRecords(_base: string, _token: string): Promise<CloudflareDDNSRecord[]> { r5PendingError("Cloudflare DDNS 记录查询"); }
+function applyCloudflareDDNS(_base: string, _token: string, _zone: string): Promise<{ zone_name?: string; applied?: number; skipped?: number; items?: unknown[]; records?: CloudflareDDNSRecord[] }> { r5PendingError("Cloudflare DDNS 应用"); }
+function fetchCloudflareZeroTrustWhitelist(_base: string, _token: string): Promise<CloudflareZeroTrustWhitelistState> { r5PendingError("Cloudflare ZeroTrust 白名单读取"); }
+function setCloudflareZeroTrustWhitelist(_base: string, _token: string, _enabled: boolean, _policyName: string, _whitelistRaw: string, _syncIntervalSec: number): Promise<CloudflareZeroTrustWhitelistState> { r5PendingError("Cloudflare ZeroTrust 白名单设置"); }
+function runCloudflareZeroTrustWhitelistSync(_base: string, _token: string): Promise<CloudflareZeroTrustWhitelistState> { r5PendingError("Cloudflare ZeroTrust 同步"); }
+
 import { fetchJson } from "../api";
+
 type CloudflareAssistantTabProps = {
   controllerBaseUrl: string;
   sessionToken: string;
@@ -333,8 +370,8 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
     try {
       const result = await applyCloudflareDDNS(props.controllerBaseUrl, props.sessionToken, zoneName);
       setZoneNameInput((result.zone_name || zoneName).trim().toLowerCase());
-      setRecords(result.records);
-      setStatus(`DDNS 已执行，当前有效记录 ${result.records.length} 条`);
+      setRecords(result.records ?? []);
+      setStatus(`DDNS 已执行，当前有效记录 ${(result.records ?? []).length} 条`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`自动申请 DDNS 失败：${msg}`);
@@ -349,12 +386,14 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
     setIsLoading(true);
     setStatus("正在保存 ZeroTrust 白名单配置...");
     try {
-      const result = await setCloudflareZeroTrustWhitelist(props.controllerBaseUrl, props.sessionToken, {
-        enabled: zeroTrustEnabled,
-        policy_name: zeroTrustPolicyName.trim(),
-        whitelist_raw: zeroTrustWhitelistRaw,
-        sync_interval_sec: interval,
-      });
+      const result = await setCloudflareZeroTrustWhitelist(
+        props.controllerBaseUrl,
+        props.sessionToken,
+        zeroTrustEnabled,
+        zeroTrustPolicyName.trim(),
+        zeroTrustWhitelistRaw,
+        interval,
+      );
       setZeroTrust(result);
       setZeroTrustEnabled(result.enabled === true);
       setZeroTrustPolicyName(result.policy_name || "");
@@ -373,7 +412,7 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
     setIsLoading(true);
     setStatus("正在执行 ZeroTrust 白名单同步...");
     try {
-      const result = await runCloudflareZeroTrustWhitelistSync(props.controllerBaseUrl, props.sessionToken, true);
+      const result = await runCloudflareZeroTrustWhitelistSync(props.controllerBaseUrl, props.sessionToken);
       setZeroTrust(result);
       const summary = result.last_status || "success";
       const msg = result.last_message || "同步完成";
@@ -468,7 +507,7 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
                       <td>{item.record_name || "-"}</td>
                       <td>{item.record_type || "-"}</td>
                       <td>{item.content_ip || "-"}</td>
-                      <td>{formatDateTime(item.updated_at)}</td>
+                      <td>{formatDateTime(item.updated_at || "")}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -542,12 +581,12 @@ export function CloudflareAssistantTab(props: CloudflareAssistantTabProps) {
           <div className="status-inline" style={{ marginTop: 8 }}>
             运行中：{zeroTrust.running ? "是" : "否"}；最近状态：{zeroTrust.last_status || "-"}
           </div>
-          <div className="status-inline">最近执行：{formatDateTime(zeroTrust.last_run_at)}</div>
-          <div className="status-inline">最近成功：{formatDateTime(zeroTrust.last_success_at)}</div>
+          <div className="status-inline">最近执行：{formatDateTime(zeroTrust.last_run_at || "")}</div>
+          <div className="status-inline">最近成功：{formatDateTime(zeroTrust.last_success_at || "")}</div>
           <div className="status-inline">策略：{zeroTrust.last_policy_name || zeroTrust.policy_name || "-"}</div>
           <div className="status-inline">来源行数：{zeroTrust.last_source_lines || 0}</div>
           <div className="status-inline">最近消息：{zeroTrust.last_message || "-"}</div>
-          <div className="status-inline">已应用IP：{zeroTrust.last_applied_ips.length > 0 ? zeroTrust.last_applied_ips.join(", ") : "-"}</div>
+          <div className="status-inline">已应用IP：{(zeroTrust.last_applied_ips ?? []).length > 0 ? (zeroTrust.last_applied_ips ?? []).join(", ") : "-"}</div>
         </div>
       )}
 

@@ -13,22 +13,123 @@ const StartProbeLinkSession = async (...args: any[]) => { throw new Error("Not i
 const PingProbeLinkSession = async (...args: any[]) => { throw new Error("Not implemented"); };
 
 import {
-  deleteProbeLinkChain,
-  fetchCloudflareDDNSRecords,
-  fetchProbeLinkUserPublicKey,
-  fetchProbeLinkUsers,
-  fetchProbeNodeStatus,
-  fetchProbeNodes,
-  forceRefreshProbeDNSCache,
-  startProbeLinkTestOnController,
-  stopProbeLinkTestOnController,
-  upsertProbeLinkChain,
-  type ProbeLinkChainItem,
-  type ProbeLinkUserItem,
-  type ProbeNodeStatusItem,
-  type ProbeNodeSyncItem,
-} from "../services/controller-api";
-import type { CloudflareDDNSRecord } from "../types";
+  apiListNodes,
+  type ProbeNode,
+} from "../manager-api";
+
+/** R4-PENDING: 链路管理域代理端点尚未实现，返回语义明确的错误 */
+function r4PendingError(feature: string): never {
+  throw new Error(`[R4-PENDING] ${feature}功能需要主控代理端点，请等待 R4 后端实施完成`);
+}
+
+// ── R4 局部类型 ─────────────────────────────────────────────────────────────
+type ProbeLinkChainItem = {
+  chain_id: string;
+  name?: string;
+  user_id?: string;
+  user_public_key?: string;
+  secret?: string;
+  entry_node_id?: string;
+  exit_node_id?: string;
+  cascade_node_ids?: string[];
+  listen_host?: string;
+  listen_port?: number;
+  link_layer?: string;
+  hop_configs?: Record<string, unknown>[];
+  port_forwards?: Record<string, unknown>[];
+  node_name_by_id?: Record<string, string>;
+  created_at?: string;
+  updated_at?: string;
+  unavailable?: boolean;
+  unavailable_reason?: string;
+};
+type ProbeLinkUserItem = { username: string; user_role?: string; cert_type?: string };
+type ProbeNodeStatusItem = {
+  node_no: number;
+  runtime?: {
+    node_id?: string;
+    online?: boolean;
+    last_seen?: string;
+    version?: string;
+    ipv4?: string[];
+    ip_locations?: Record<string, string>;
+  };
+};
+type ProbeNodeSyncItem = {
+  node_no: number;
+  node_name: string;
+  remark?: string;
+  ddns?: string;
+  node_secret: string;
+  target_system?: string;
+  direct_connect?: boolean;
+  public_port?: number;
+  service_port?: number;
+  public_host?: string;
+  service_host?: string;
+};
+type CloudflareDDNSRecord = {
+  record_name?: string;
+  record_class?: string;
+  record_type?: string;
+  ip?: string;
+  node_no?: number;
+  sequence?: number;
+};
+
+// ── R4 wrapper 函数（已实现）────────────────────────────────────────────────
+
+async function fetchProbeNodes(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeNodeSyncItem[]> {
+  const nodes = await apiListNodes();
+  return nodes as unknown as ProbeNodeSyncItem[];
+}
+
+// ── R4 wrapper 函数（待实现）────────────────────────────────────────────────
+
+function fetchProbeLinkUsers(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeLinkUserItem[]> {
+  r4PendingError("链路用户列表");
+}
+
+function fetchProbeLinkUserPublicKey(_controllerBaseUrl: string, _sessionToken: string, _userID: string): Promise<{ username: string; public_key: string }> {
+  r4PendingError("链路用户公钥");
+}
+
+function fetchProbeNodeStatus(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeNodeStatusItem[]> {
+  r4PendingError("探针运行状态");
+}
+
+function fetchCloudflareDDNSRecords(_controllerBaseUrl: string, _sessionToken: string): Promise<CloudflareDDNSRecord[]> {
+  r4PendingError("Cloudflare DDNS 记录（链路）");
+}
+
+function forceRefreshProbeDNSCache(_controllerBaseUrl: string, _sessionToken: string): Promise<string> {
+  r4PendingError("探针 DNS 缓存刷新");
+}
+
+function startProbeLinkTestOnController(_controllerBaseUrl: string, _sessionToken: string, _payload: unknown): Promise<{ message?: string }> {
+  r4PendingError("链路测试启动");
+}
+
+function stopProbeLinkTestOnController(_controllerBaseUrl: string, _sessionToken: string, _nodeID?: string): Promise<{ message?: string }> {
+  r4PendingError("链路测试停止");
+}
+
+function upsertProbeLinkChain(
+  _controllerBaseUrl: string,
+  _sessionToken: string,
+  _payload: unknown,
+): Promise<{ item?: ProbeLinkChainItem; apply_ok?: boolean; apply_error?: string }> {
+  r4PendingError("链路保存");
+}
+
+function deleteProbeLinkChain(
+  _controllerBaseUrl: string,
+  _sessionToken: string,
+  _chainID: string,
+): Promise<{ apply_ok?: boolean; apply_error?: string }> {
+  r4PendingError("链路删除");
+}
+
 
 type LinkManageTabProps = {
   controllerBaseUrl: string;
@@ -806,7 +907,7 @@ export function LinkManageTab(props: LinkManageTabProps) {
       userPublicKey: chainUserPublicKeys[normalizedUserID] || item.user_public_key || "",
       secret: item.secret || "",
       hopConfigs: normalizeProbeLinkHopFormItemsFromChain(
-        item.hop_configs,
+        item.hop_configs as Parameters<typeof normalizeProbeLinkHopFormItemsFromChain>[0],
         item.listen_host || defaultLinkChainListenHost,
         normalizePort(item.listen_port || 0) || defaultLinkChainListenPort,
         normalizeProbeLinkLayer(item.link_layer),

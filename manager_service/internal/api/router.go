@@ -64,8 +64,23 @@ func NewRouter(opts RouterOptions) *gin.Engine {
 				authGroup.POST("/controller/session/set", middleware.LocalhostOnly(), ctrlH.SetSession)
 			}
 			if netAssistH != nil {
-				authGroup.GET("/network-assistant/status", netAssistH.GetStatus)
-				authGroup.POST("/network-assistant/mode", netAssistH.SwitchMode)
+				na := authGroup.Group("/network-assistant")
+				{
+					na.GET("/status", netAssistH.GetStatus)
+					na.POST("/mode", netAssistH.SwitchMode)
+					na.GET("/logs", netAssistH.GetLogs)
+					na.GET("/rules", netAssistH.GetRuleConfig)
+					na.POST("/rules/policy", netAssistH.SetRulePolicy)
+					na.GET("/dns/cache", netAssistH.GetDNSCache)
+					na.GET("/processes", netAssistH.GetProcesses)
+					na.POST("/monitor/start", netAssistH.StartMonitor)
+					na.POST("/monitor/stop", netAssistH.StopMonitor)
+					na.POST("/monitor/clear", netAssistH.ClearMonitorEvents)
+					na.GET("/monitor/events", netAssistH.GetMonitorEvents)
+					na.POST("/tun/install", netAssistH.InstallTUN)
+					na.POST("/tun/enable", netAssistH.EnableTUN)
+					na.POST("/direct/restore", netAssistH.RestoreDirect)
+				}
 			}
 
 			authGroup.GET("/probe/nodes", nodeH.List)

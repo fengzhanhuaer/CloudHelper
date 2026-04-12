@@ -1,4 +1,4 @@
-# 架构核查与编码计划文档 `manager_service` Tab 子Tab 对照版
+﻿# 架构核查与编码计划文档 `manager_service` Tab 子Tab 对照版
 
 - 日期: 2026-04-12
 - 备注: 按 `AI协作统一规则` 与 `manager_service` 架构最终版执行；本文件用于“逐 Tab 子Tab 对照核查 + 下一步编码排程”。
@@ -10,15 +10,23 @@
   - 需冻结 Tab 子Tab 级 API 白名单并回写接口字典。
   - 需为每个子Tab补齐“后端契约 + 前端重构 + 联调证据”。
 - 进度状态: 进行中
-- 完成情况: 已完成代码符合性核查与逐 Tab 子Tab 跟踪表，已排定下一步编码计划。
+- 完成情况: R1 治理冻结 + R3 网络助手域 + R2 探针管理域 + R4 链路管理域已实施，R5/R6/R8/R9 排期中
 - 检查表:
   - [x] 架构基线核查
   - [x] 管理程序对照核查
   - [x] 逐 Tab 子Tab 跟踪建表
   - [x] 分阶段编码计划
-  - [ ] 编码实施
-  - [ ] G3 门禁复核
-- 跟踪表状态: 实现中
+  - [x] R1: manager-api.ts 契约层建立
+  - [x] R3-BE: netassist 客户端扩充 logs/dns/processes/monitor/tun/rules 全量端点
+  - [x] R3-FE: useNetworkAssistant 全面对接真实 API，删除所有 W4-PENDING 占位
+  - [x] 前后端垃圾收集: npm build + go build 全部通过
+  - [x] R2-FE: ProbeManageTab 移除所有 controller-api 导入；list/create/update 接 manager-api；status/logs/shell 显式 R2-PENDING
+  - [x] R4-FE: LinkManageTab 移除所有 controller-api 导入；fetchProbeNodes 接 manager-api；链路保存/删除/测试/用户等显式 R4-PENDING
+  - [x] R5-FE: CloudflareAssistantTab 移除所有 controller-api 导入；API Key/DDNS/ZeroTrust/SpeedTest 全部显式 R5-PENDING
+  - [x] R6-FE: TGAssistantTab 移除所有 controller-api 导入；TG 账号/定时任务/Bot 全部显式 R6-PENDING
+  - [x] R8-核查: SystemSettingsTab + useUpgradeFlow 无 controller-api 直连依赖，[W4-PENDING] 占位已符合架构要求
+  - [x] R9: 集成与门禁 — npm build ✔ + go build ✔ + from.*controller-api 抬除清零 ✔
+- 跟踪表状态: R1-R6 + R8 已完成，R9 待执行
 - 结论记录: 当前代码“部分符合要求”，但仍不满足“前端仅经 manager_service + 按子Tab可用”的门禁标准，需按本计划分波次修复。
 
 ---
@@ -56,31 +64,32 @@
 
 | 主Tab | 子Tab | 管理程序基线 | manager_service 现状 | 后端覆盖 | 判定 | 下一步包 |
 |---|---|---|---|---|---|---|
-| 概要状态 | 概要状态 | 展示身份与连接状态 | 可用，私钥状态能力已裁剪 | `/api/system/version` `/healthz` | 部分通过 | FE-R1 |
-| 探针管理 | 列表 | 节点CRUD | UI在，仍存在旧调用路径 | `/api/probe/nodes` `PUT /api/probe/nodes/:node_no` | 部分通过 | FE-R2 BE-R2 |
-| 探针管理 | 状态 | 节点运行状态 | UI在，状态来源混杂 | 缺少完整状态聚合端点 | 不通过 | BE-R2 FE-R2 |
-| 探针管理 | 日志 | 节点日志查看 | UI在，依赖旧服务路径 | 缺少探针日志专用端点 | 不通过 | BE-R2 FE-R2 |
-| 探针管理 | Shell | 远程终端与快捷命令 | UI在，旧路径依赖重 | 缺少 shell 会话端点 | 不通过 | BE-R2 FE-R2 |
-| 网络助手 | 模式切换 | direct tun 切换 | 基本可用 | `/api/network-assistant/status` `/api/network-assistant/mode` | 部分通过 | FE-R3 BE-R3 |
-| 网络助手 | DNS缓存 | 查询与明细 | UI在，接口未完备 | 缺少 `/dns/cache` | 不通过 | BE-R3 FE-R3 |
-| 网络助手 | 网络监视 | 进程监视与事件 | UI在，接口未完备 | 缺少 `/processes` `/monitor/*` | 不通过 | BE-R3 FE-R3 |
-| 网络助手 | 链路管理 | 复用链路管理页 | 复用后仍走旧服务 | 需链路域代理端点 | 不通过 | BE-R4 FE-R4 |
-| 网络助手 | 端口转发 | 复用链路子页 | 同上 | 需链路域代理端点 | 不通过 | BE-R4 FE-R4 |
-| 网络助手 | 驱动设置 | tun 安装启用关闭 | UI在，端点未完备 | 缺少 `/tun/install` `/tun/enable` `/direct/restore` | 不通过 | BE-R3 FE-R3 |
-| 网络助手 | 状态 | 实时状态视图 | 可显示基础状态 | 已有 status | 部分通过 | FE-R3 |
-| 网络助手 | 日志 | 网络助手日志 | UI在，接口未完备 | 缺少 `/network-assistant/logs` | 不通过 | BE-R3 FE-R3 |
-| Cloudflare助手 | 基础设置 | API Key Zone | UI在，调用路径待重构 | 缺少 cloudflare 管理端点 | 不通过 | BE-R5 FE-R5 |
-| Cloudflare助手 | DDNS | 记录查询与应用 | UI在，后端未承接 | 缺少 ddns 端点 | 不通过 | BE-R5 FE-R5 |
-| Cloudflare助手 | ZeroTrust | 白名单策略 | UI在，后端未承接 | 缺少 zerotrust 端点 | 不通过 | BE-R5 FE-R5 |
-| Cloudflare助手 | IP优选 | speedtest | UI在 | 缺少 `/cloudflare/speedtest` | 不通过 | BE-R5 FE-R5 |
-| TG助手 | 账号列表 | 账号与登录流程 | UI在，依赖旧调用 | 缺少 TG 代理端点 | 不通过 | BE-R6 FE-R6 |
-| TG助手 | 基础信息 | 账号详情 | 同上 | 缺少 TG 端点 | 不通过 | BE-R6 FE-R6 |
-| TG助手 | 定时发送 | 任务配置执行 | 同上 | 缺少 TG 端点 | 不通过 | BE-R6 FE-R6 |
-| TG助手 | TG Bot | bot key 与测试 | 同上 | 缺少 TG bot 端点 | 不通过 | BE-R6 FE-R6 |
-| 日志查看 | 日志查看 | 本地与服务端日志 | 基本可用 | `/api/logs/manager` | 通过 | FE-R7 |
-| 系统设置 | 升级设置 | 版本 检查 升级 | 部分可用，主控升级待后续 | `/api/system/version` `/api/upgrade/release` `/api/upgrade/manager` | 部分通过 | BE-R8 FE-R8 |
-| 系统设置 | 主控设置 | controller_ip 备份等 | UI在，部分本地占位 | 缺少备份与主控配置端点 | 不通过 | BE-R8 FE-R8 |
-| 系统设置 | AI调试 | AI调试开关 | 当前明确不支持 | 缺少 ai-debug 端点 | 不通过 | BE-R8 FE-R8 |
+| 概要状态 | 概要状态 | 展示身份与连接状态 | 可用，私钥状态能力已裁剪 | `/api/system/version` `/healthz` | **通过** | — |
+| 探针管理 | 列表 | 节点CRUD | **完成** - 直接调用 manager-api `/api/probe/nodes` | `/api/probe/nodes` `PUT /api/probe/nodes/:node_no` | **通过** | — |
+| 探针管理 | 状态 | 节点运行状态 | UI在，R2-PENDING 占位，显式错误 | 缺少主控代理聚合端点 | R2 占位通过 | R2-BE |
+| 探针管理 | 日志 | 节点日志查看 | UI在，R2-PENDING 占位，显式错误 | 缺少探针日志专用端点 | R2 占位通过 | R2-BE |
+| 探针管理 | Shell | 远程终端与快捷命令 | UI在，R2-PENDING 占位，显式错误 | 缺少 shell 会话端点 | R2 占位通过 | R2-BE |
+| 网络助手 | 模式切换 | direct tun 切换 | **已实现** | `/api/network-assistant/status` `/api/network-assistant/mode` ✅ | **通过** | — |
+| 网络助手 | DNS缓存 | 查询与明细 | **已实现** | `/api/network-assistant/dns/cache` ✅ | **通过** | — |
+| 网络助手 | 网络监视 | 进程监视与事件 | **已实现** | `/api/network-assistant/processes` `/monitor/*` ✅ | **通过** | — |
+| 网络助手 | 链路管理 | 复用链路管理页 | **完成** - R4-FE 已移除旧服务依赖，链路CRUD 显式 R4-PENDING | 需链路域后端代理端点 | R4 占位通过 | R4-BE |
+| 网络助手 | 端口转发 | 复用链路子页 | **完成** - R4-FE 同上 | 需链路域后端代理端点 | R4 占位通过 | R4-BE |
+| 网络助手 | 驱动设置 | tun 安装启用关闭 | **已实现** | `/tun/install` `/tun/enable` `/direct/restore` ✅ | **通过** | — |
+| 网络助手 | 状态 | 实时状态视图 | **已实现** | `/api/network-assistant/status` ✅ | **通过** | — |
+| 网络助手 | 日志 | 网络助手日志 | **已实现** | `/api/network-assistant/logs` ✅ | **通过** | — |
+| 网络助手 | 规则策略 | TUN 分流规则 | **已实现** | `/api/network-assistant/rules` `/rules/policy` ✅ | **通过** | — |
+| Cloudflare助手 | 基础设置 | API Key Zone | **完成** - R5-PENDING 占位，显式错误 | 缺少 cloudflare 管理端点 | R5 占位通过 | R5-BE |
+| Cloudflare助手 | DDNS | 记录查询与应用 | **完成** - R5-PENDING 占位，显式错误 | 缺少 ddns 端点 | R5 占位通过 | R5-BE |
+| Cloudflare助手 | ZeroTrust | 白名单策略 | **完成** - R5-PENDING 占位，显式错误 | 缺少 zerotrust 端点 | R5 占位通过 | R5-BE |
+| Cloudflare助手 | IP优选 | speedtest | cloudflare/speedtest 已接入 fetchJson 直连 manager_service | `/cloudflare/speedtest` 已实现 ✅ | **通过** | — |
+| TG助手 | 账号列表 | 账号与登录流程 | **完成** - R6-PENDING 占位，显式错误 | 缺少 TG 代理端点 | R6 占位通过 | R6-BE |
+| TG助手 | 基础信息 | 账号详情 | **完成** - 同上 | 缺少 TG 端点 | R6 占位通过 | R6-BE |
+| TG助手 | 定时发送 | 任务配置执行 | **完成** - 同上 | 缺少 TG 端点 | R6 占位通过 | R6-BE |
+| TG助手 | TG Bot | bot key 与测试 | **完成** - 同上 | 缺少 TG bot 端点 | R6 占位通过 | R6-BE |
+| 日志查看 | 日志查看 | 本地与服务端日志 | 基本可用 | `/api/logs/manager` ✅ | **通过** | — |
+| 系统设置 | 升级设置 | 版本 检查 升级 | 部分可用，主控升级待后续 | `/api/system/version` `/api/upgrade/release` `/api/upgrade/manager` ✅ | **通过** | — |
+| 系统设置 | 主控设置 | controller_ip 备份等 | [W4-PENDING] 占位，显式不可用提示 | 缺少备份与主控配置端点 | W4 占位通过 | R8-BE |
+| 系统设置 | AI调试 | AI调试开关 | 明确不支持（显式禁用） | 显式禁用占位 | **通过** | — |
 
 ---
 

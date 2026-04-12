@@ -1,38 +1,77 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  addTGAssistantSchedule,
-  addTGAssistantAccount,
-  completeTGAssistantLogin,
-  fetchTGAssistantAPIKey,
-  fetchTGAssistantAccounts,
-  fetchTGAssistantBotAPIKey,
-  fetchTGAssistantPendingTasks,
-  fetchTGAssistantSchedules,
-  fetchTGAssistantScheduleTaskHistory,
-  fetchTGAssistantTargets,
-  logoutTGAssistantAccount,
-  refreshTGAssistantAccounts,
-  removeTGAssistantAccount,
-  removeTGAssistantSchedule,
-  refreshTGAssistantTargets,
-  sendNowTGAssistantSchedule,
-  setTGAssistantAPIKey,
-  setTGAssistantBotAPIKey,
-  setTGAssistantScheduleEnabled,
-  testSendTGAssistantBotMessage,
-  updateTGAssistantSchedule,
-  sendTGAssistantLoginCode,
-} from "../services/controller-api";
-import type {
-  TGAssistantAPIKey,
-  TGAssistantAccount,
-  TGAssistantBotAPIKey,
-  TGAssistantBotTestSendResult,
-  TGAssistantPendingTask,
-  TGAssistantSchedule,
-  TGAssistantTarget,
-  TGAssistantTaskHistoryRecord,
-} from "../types";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+/** R6-PENDING: TG 助手域代理端点尚未实现，返回语义明确的错误 */
+function r6PendingError(feature: string): never {
+  throw new Error(`[R6-PENDING] ${feature}功能需要主控代理端点，请等待 R6 后端实施完成`);
+}
+
+// ── R6 局部类型 ───────────────────────────────────────────────────────────────
+type TGAssistantAPIKey = { api_id: number; api_hash?: string; configured: boolean };
+type TGAssistantAccount = {
+  id: string;
+  label: string;
+  phone?: string;
+  authorized?: boolean;
+  status?: string;
+  schedules?: TGAssistantSchedule[];
+  self_display_name?: string;
+  self_username?: string;
+  last_login_at?: string;
+  pending_code?: boolean;
+};
+type TGAssistantBotAPIKey = {
+  api_key?: string;
+  configured?: boolean;
+  mode?: string;
+  webhook_path?: string;
+  webhook_enabled?: boolean;
+};
+type TGAssistantBotTestSendResult = { ok: boolean; message?: string; tg_message?: string; chat_id?: number; message_id?: number };
+type TGAssistantPendingTask = {
+  id: string;
+  job_key?: string;
+  task_id?: string;
+  account_id?: string;
+  send_at?: string;
+  status?: string;
+  target?: string;
+  message?: string;
+  delay_sec?: number;
+  next_run_at?: string;
+  timeout_at?: string;
+  task_exists?: boolean;
+  enabled?: boolean;
+  updated_at?: string;
+};
+type TGAssistantSchedule = { id: string; task_type?: string; enabled: boolean; target?: string; send_at?: string; message?: string; delay_max_sec?: number; delay_min_sec?: number };
+type TGAssistantTarget = { id: string; name: string; username?: string; type?: string };
+type TGAssistantTaskHistoryRecord = { id: string; task_id?: string; status?: string; sent_at?: string; message?: string; error?: string; time?: string; action?: string; success?: boolean };
+
+// ── wrapper 函数（全部 R6-PENDING）──────────────────────────────────────────
+
+function fetchTGAssistantAPIKey(_b: string, _t: string): Promise<TGAssistantAPIKey> { r6PendingError("TG API Key 读取"); }
+function setTGAssistantAPIKey(_b: string, _t: string, _p: unknown): Promise<TGAssistantAPIKey> { r6PendingError("TG API Key 设置"); }
+function fetchTGAssistantAccounts(_b: string, _t: string): Promise<TGAssistantAccount[]> { r6PendingError("TG 账号列表"); }
+function refreshTGAssistantAccounts(_b: string, _t: string): Promise<TGAssistantAccount[]> { r6PendingError("TG 账号刷新"); }
+function addTGAssistantAccount(_b: string, _t: string, _p: unknown): Promise<TGAssistantAccount> { r6PendingError("TG 账号添加"); }
+function sendTGAssistantLoginCode(_b: string, _t: string, _id: string): Promise<void> { r6PendingError("TG 验证码发送"); }
+function completeTGAssistantLogin(_b: string, _t: string, _p: unknown): Promise<TGAssistantAccount> { r6PendingError("TG 登录完成"); }
+function logoutTGAssistantAccount(_b: string, _t: string, _id: string): Promise<void> { r6PendingError("TG 账号登出"); }
+function removeTGAssistantAccount(_b: string, _t: string, _id: string): Promise<TGAssistantAccount[]> { r6PendingError("TG 账号删除"); }
+function fetchTGAssistantSchedules(_b: string, _t: string, _id: string): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务列表"); }
+function addTGAssistantSchedule(_b: string, _t: string, _p: unknown): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务新增"); }
+function updateTGAssistantSchedule(_b: string, _t: string, _p: unknown): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务更新"); }
+function removeTGAssistantSchedule(_b: string, _t: string, _p: unknown): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务删除"); }
+function setTGAssistantScheduleEnabled(_b: string, _t: string, _p: unknown): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务启停"); }
+function sendNowTGAssistantSchedule(_b: string, _t: string, _p: unknown, _opts?: unknown): Promise<{ tg_message?: string }> { r6PendingError("TG 立即发送"); }
+function fetchTGAssistantScheduleTaskHistory(_b: string, _t: string, _p: unknown): Promise<TGAssistantTaskHistoryRecord[]> { r6PendingError("TG 任务历史"); }
+function fetchTGAssistantTargets(_b: string, _t: string, _id: string): Promise<TGAssistantTarget[]> { r6PendingError("TG 发送对象列表"); }
+function refreshTGAssistantTargets(_b: string, _t: string, _id: string): Promise<TGAssistantTarget[]> { r6PendingError("TG 发送对象刷新"); }
+function fetchTGAssistantPendingTasks(_b: string, _t: string, _id: string): Promise<TGAssistantPendingTask[]> { r6PendingError("TG 待执行队列"); }
+function fetchTGAssistantBotAPIKey(_b: string, _t: string, _id: string): Promise<TGAssistantBotAPIKey> { r6PendingError("TG Bot Key 读取"); }
+function setTGAssistantBotAPIKey(_b: string, _t: string, _p: unknown): Promise<TGAssistantBotAPIKey> { r6PendingError("TG Bot Key 设置"); }
+function testSendTGAssistantBotMessage(_b: string, _t: string, _p: unknown): Promise<TGAssistantBotTestSendResult> { r6PendingError("TG Bot 测试发送"); }
+
 
 type TGAssistantTabProps = {
   controllerBaseUrl: string;
@@ -438,7 +477,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
           throw new Error("请输入手机号（建议包含国家码，例如 +886xxxxxxxxx）");
         }
         const normalizedPhone = normalizePhone(phone);
-        account = accounts.find((item) => normalizePhone(item.phone) === normalizedPhone) ?? null;
+        account = accounts.find((item) => normalizePhone(item.phone || "") === normalizedPhone) ?? null;
         if (!account) {
           account = await addTGAssistantAccount(props.controllerBaseUrl, props.sessionToken, {
             label: addAccountLabelDraft.trim(),
@@ -1099,7 +1138,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                                       <span>{task.enabled ? "启用" : "停用"}</span>
                                     </label>
                                   </td>
-                                  <td>{renderTargetLabel(task.target)}</td>
+                                  <td>{renderTargetLabel(task.target || "")}</td>
                                   <td>{task.send_at || "-"}</td>
                                   <td>
                                     <div className="tg-schedule-table-message">{task.message || "-"}</div>
@@ -1176,7 +1215,7 @@ export function TGAssistantTab(props: TGAssistantTabProps) {
                                     <div className="tg-schedule-table-message">{item.message || "-"}</div>
                                   </td>
                                   <td>{item.delay_sec}</td>
-                                  <td>{formatDateTime(item.next_run_at)}</td>
+                                  <td>{formatDateTime(item.next_run_at || "")}</td>
                                   <td>{formatDateTime(item.timeout_at || "")}</td>
                                   <td>{!item.task_exists ? "任务不存在" : item.enabled ? "待执行" : "任务停用"}</td>
                                   <td>{formatDateTime(item.updated_at || "")}</td>

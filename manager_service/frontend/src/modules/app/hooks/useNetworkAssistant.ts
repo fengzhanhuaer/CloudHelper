@@ -8,7 +8,22 @@
  * - 禁止直连主控 WS-RPC (RQ-003)
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { apiGetNetworkAssistantStatus, apiSwitchNetworkAssistantMode } from "../manager-api";
+import {
+  apiGetNetworkAssistantStatus,
+  apiSwitchNetworkAssistantMode,
+  apiGetNetworkAssistantLogs,
+  apiGetNetworkAssistantDNSCache,
+  apiGetNetworkAssistantProcesses,
+  apiStartNetworkMonitor,
+  apiStopNetworkMonitor,
+  apiClearNetworkMonitorEvents,
+  apiGetNetworkMonitorEvents,
+  apiInstallTUN,
+  apiEnableTUN,
+  apiRestoreDirect,
+  apiGetNetworkRuleConfig,
+  apiSetNetworkRulePolicy,
+} from "../manager-api";
 import type {
   NetworkAssistantDNSCacheEntry,
   NetworkAssistantLogEntry,
@@ -187,21 +202,26 @@ export function useNetworkAssistant() {
 
   // ── 待实现 (W4+) — 保留功能语义，显式报告不可用 ─────────────────────────────
 
-  /** @w4-pending GET /api/network-assistant/logs */
+  /** GET /api/network-assistant/logs — 已由 netassist 代理实现 */
   const refreshLogs = useCallback(async () => {
     setIsLoadingLogs(true);
     setLogStatus("正在刷新网络助手日志...");
     try {
-      // TODO(W4): 后端代理 /api/network-assistant/logs 端点未实现
-      // 当 probe_manager 提供日志代理时，替换为 apiGetNetworkAssistantLogs()
-      throw notImplementedError("网络助手日志");
+      const raw = await apiGetNetworkAssistantLogs(logLines);
+      const data = raw as { entries?: Partial<NetworkAssistantLogEntry>[]; content?: string };
+      const entries = Array.isArray(data?.entries) && (data.entries as []).length > 0
+        ? (data.entries as Partial<NetworkAssistantLogEntry>[]).map(normalizeLogEntry)
+        : parseLegacyLogEntries(String(data?.content ?? ""));
+      setLogEntries(entries);
+      setLogCopyStatus("");
+      setLogStatus(`已加载网络助手日志（${entries.length} 条）`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown";
-      setLogStatus(`网络助手日志：${msg}`);
+      setLogStatus(`网络助手日志加载失败：${msg}`);
     } finally {
       setIsLoadingLogs(false);
     }
-  }, []);
+  }, [logLines]);
 
   const copyLogs = useCallback(async () => {
     const text = visibleLogContent.trim();
@@ -237,109 +257,131 @@ export function useNetworkAssistant() {
     setLogLinesState(!Number.isFinite(n) || n <= 0 ? 200 : n > 2000 ? 2000 : n);
   }
 
-  /** @w4-pending GET /api/network-assistant/rules */
+  /** GET /api/network-assistant/rules — 代理实现 */
   const refreshRuleConfig = useCallback(async () => {
     ++ruleConfigRequestSeqRef.current;
     setIsLoadingRuleConfig(true);
     setRuleConfigStatus("正在加载规则策略...");
     try {
-      throw notImplementedError("规则策略");
+      const data = await apiGetNetworkRuleConfig() as NetworkAssistantRuleConfig;
+      setRuleConfig(data);
+      setRuleConfigStatus("规则策略已加载");
     } catch (error) {
-      setRuleConfigStatus(`规则策略：${error instanceof Error ? error.message : "unknown"}`);
+      const msg = error instanceof Error ? error.message : "unknown";
+      setRuleConfigStatus(`规则策略加载失败：${msg}`);
     } finally {
       setIsLoadingRuleConfig(false);
     }
   }, []);
 
-  /** @w4-pending POST /api/network-assistant/rules/policy */
+  /** POST /api/network-assistant/rules/policy — 代理实现 */
   const setRulePolicy = useCallback(
-    async (_group: string, _action: NetworkAssistantRuleAction, _tunnelNodeID = "") => {
+    async (group: string, action: NetworkAssistantRuleAction, tunnelNodeID = "") => {
       setIsOperating(true);
+      setRuleConfigStatus("正在更新规则策略...");
       try {
-        throw notImplementedError("规则策略更新");
+        const data = await apiSetNetworkRulePolicy(group, action, tunnelNodeID) as NetworkAssistantRuleConfig;
+        setRuleConfig(data);
+        setRuleConfigStatus("规则策略已更新");
+        setOperateStatus("规则策略已应用");
+        void refreshLogs();
       } catch (error) {
         const msg = error instanceof Error ? error.message : "unknown";
-        setRuleConfigStatus(`规则策略更新：${msg}`);
-        setOperateStatus(`规则策略更新：${msg}`);
+        setRuleConfigStatus(`规则策略更新失败：${msg}`);
+        setOperateStatus(`规则策略更新失败：${msg}`);
         throw error;
       } finally {
         setIsOperating(false);
       }
     },
-    []
+    [refreshLogs]
   );
 
-  /** @w4-pending POST /api/network-assistant/tun/install */
+  /** POST /api/network-assistant/tun/install — 代理实现 */
   const installTUN = useCallback(async () => {
     setIsOperating(true);
     try {
-      throw notImplementedError("TUN 安装");
+      const data = await apiInstallTUN() as unknown as NetworkAssistantStatus;
+      setStatus((prev) => ({ ...prev, ...data }));
+      setOperateStatus("TUN 安装完成");
+      void refreshLogs();
     } catch (error) {
-      setOperateStatus(`TUN 安装：${error instanceof Error ? error.message : "unknown"}`);
+      const msg = error instanceof Error ? error.message : "unknown";
+      setOperateStatus(`TUN 安装失败：${msg}`);
+      void refreshLogs();
       throw error;
     } finally {
       setIsOperating(false);
     }
-  }, []);
+  }, [refreshLogs]);
 
-  /** @w4-pending POST /api/network-assistant/tun/enable */
+  /** POST /api/network-assistant/tun/enable — 代理实现 */
   const enableTUN = useCallback(async () => {
     setIsOperating(true);
     try {
-      throw notImplementedError("TUN 启用");
+      const data = await apiEnableTUN() as unknown as NetworkAssistantStatus;
+      setStatus((prev) => ({ ...prev, ...data }));
+      setOperateStatus("TUN 模式已启用");
+      void refreshLogs();
     } catch (error) {
-      setOperateStatus(`TUN 启用：${error instanceof Error ? error.message : "unknown"}`);
+      const msg = error instanceof Error ? error.message : "unknown";
+      if (msg.includes("relaunch as admin")) {
+        setOperateStatus("正在请求管理员权限，请在 UAC 弹窗中确认后重新启动应用");
+      } else {
+        setOperateStatus(`启用 TUN 失败：${msg}`);
+      }
+      void refreshLogs();
       throw error;
     } finally {
       setIsOperating(false);
     }
-  }, []);
+  }, [refreshLogs]);
 
-  /** @w4-pending POST /api/network-assistant/direct/restore */
+  /** POST /api/network-assistant/direct/restore — 代理实现 */
   const closeTUN = useCallback(async () => {
     setIsOperating(true);
     try {
-      throw notImplementedError("关闭 TUN");
+      const data = await apiRestoreDirect() as unknown as NetworkAssistantStatus;
+      setStatus((prev) => ({ ...prev, ...data }));
+      setOperateStatus("已关闭 TUN，并切回直连模式");
+      void refreshLogs();
     } catch (error) {
-      setOperateStatus(`关闭 TUN：${error instanceof Error ? error.message : "unknown"}`);
+      const msg = error instanceof Error ? error.message : "unknown";
+      setOperateStatus(`关闭 TUN 失败：${msg}`);
+      void refreshLogs();
       throw error;
     } finally {
       setIsOperating(false);
     }
-  }, []);
+  }, [refreshLogs]);
 
-  /** @w4-pending rule_routes 上传 */
+  /** @deprecated [W4-pending] rule_routes 备份上传 (需主控代理) */
   const uploadRuleRoutes = useCallback(async (_controllerBaseURL: string, _token: string) => {
     setIsSyncingRuleRoutes(true);
     try {
-      throw notImplementedError("规则文件上传");
-    } catch (error) {
-      setRuleRoutesSyncStatus(`上传失败：${error instanceof Error ? error.message : "unknown"}`);
-      throw error;
+      setRuleRoutesSyncStatus("[W4-PENDING] 规则文件上传：需主控备份代理端点，请等待 W4 实现");
     } finally {
       setIsSyncingRuleRoutes(false);
     }
   }, []);
 
-  /** @w4-pending rule_routes 下载 */
+  /** @deprecated [W4-pending] rule_routes 备份下载 (需主控代理) */
   const downloadRuleRoutes = useCallback(async (_controllerBaseURL: string, _token: string) => {
     setIsSyncingRuleRoutes(true);
     try {
-      throw notImplementedError("规则文件下载");
-    } catch (error) {
-      setRuleRoutesSyncStatus(`下载失败：${error instanceof Error ? error.message : "unknown"}`);
-      throw error;
+      setRuleRoutesSyncStatus("[W4-PENDING] 规则文件下载：需主控备份代理端点，请等待 W4 实现");
     } finally {
       setIsSyncingRuleRoutes(false);
     }
   }, []);
 
-  /** @w4-pending GET /api/network-assistant/dns/cache */
-  const queryDNSCache = useCallback(async (_query: string) => {
+  /** GET /api/network-assistant/dns/cache — 代理实现 */
+  const queryDNSCache = useCallback(async (query: string) => {
     setIsDNSCacheLoading(true);
     setDnsCacheStatus("");
     try {
-      throw notImplementedError("DNS 缓存查询");
+      const entries = await apiGetNetworkAssistantDNSCache(query);
+      setDnsCacheEntries(Array.isArray(entries) ? entries as NetworkAssistantDNSCacheEntry[] : []);
     } catch (error) {
       setDnsCacheStatus(`查询失败：${error instanceof Error ? error.message : "unknown"}`);
       setDnsCacheEntries([]);
@@ -348,11 +390,12 @@ export function useNetworkAssistant() {
     }
   }, []);
 
-  /** @w4-pending GET /api/network-assistant/processes */
+  /** GET /api/network-assistant/processes — 代理实现 */
   const refreshProcessList = useCallback(async () => {
     setIsLoadingProcesses(true);
     try {
-      throw notImplementedError("进程列表");
+      const list = await apiGetNetworkAssistantProcesses();
+      setProcessList(Array.isArray(list) ? list as NetworkProcessInfo[] : []);
     } catch (error) {
       setProcessListStatus(`获取失败：${error instanceof Error ? error.message : "unknown"}`);
     } finally {
@@ -360,22 +403,70 @@ export function useNetworkAssistant() {
     }
   }, []);
 
+  /** POST /api/network-assistant/monitor/start — 代理实现 */
   const startProcessMonitor = useCallback(async () => {
-    setProcessEventsStatus("[W4-PENDING] 进程监视功能暂未在 manager_service 实现");
-  }, []);
+    try {
+      await apiStartNetworkMonitor();
+      await refreshProcessList();
+      setMonitorProcessName("");
+      setIsMonitoring(true);
+      setProcessEvents([]);
+      if (status.mode !== "tun") {
+        setProcessEventsStatus("监视已启动：当前为直连模式，通常不会产生监视事件；请切换到 TUN 模式后再观察。");
+      } else if (!status.tun_enabled) {
+        setProcessEventsStatus("监视已启动：当前 TUN 尚未启用，暂无事件；请先启用 TUN 并产生网络流量。");
+      } else {
+        setProcessEventsStatus("监视已启动：请产生网络流量，事件会每 2 秒刷新。");
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown";
+      setProcessEventsStatus(`启动监视失败：${msg}`);
+    }
+  }, [refreshProcessList, status.mode, status.tun_enabled]);
 
+  /** POST /api/network-assistant/monitor/stop — 代理实现 */
   const stopProcessMonitor = useCallback(async () => {
+    try {
+      await apiStopNetworkMonitor();
+    } catch { /* ignore */ }
     setIsMonitoring(false);
   }, []);
 
+  /** POST /api/network-assistant/monitor/clear — 代理实现 */
   const clearProcessEvents = useCallback(async () => {
+    try {
+      await apiClearNetworkMonitorEvents();
+    } catch { /* ignore */ }
     setProcessEvents([]);
     setProcessEventsStatus("监视记录已清空");
   }, []);
 
-  const appendDebugLog = useCallback(async (_category: string, _message: string) => {
-    // noop
-  }, []);
+  // ── 进程事件轮询 ────────────────────────────────────────────────────────────
+  const pollProcessEvents = useCallback(async () => {
+    if (!isMonitoring) return;
+    try {
+      const raw = await apiGetNetworkMonitorEvents(0);
+      if (Array.isArray(raw)) {
+        const events = raw as NetworkProcessEvent[];
+        setProcessEvents(events);
+        if (events.length > 0) {
+          setProcessEventsStatus("");
+        } else if (status.mode !== "tun") {
+          setProcessEventsStatus("当前为直连模式，通常不会产生监视事件；请切换到 TUN 模式后再观察。");
+        } else {
+          setProcessEventsStatus("暂无事件：请产生网络流量后观察。");
+        }
+      }
+    } catch (error) {
+      setProcessEventsStatus(`监视轮询失败：${error instanceof Error ? error.message : "unknown"}`);
+    }
+  }, [isMonitoring, status.mode]);
+
+  useEffect(() => {
+    if (!isMonitoring) return;
+    const timer = setInterval(() => void pollProcessEvents(), 2000);
+    return () => clearInterval(timer);
+  }, [isMonitoring, pollProcessEvents]);
 
   // ── 定时刷新状态 ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -383,6 +474,10 @@ export function useNetworkAssistant() {
     const timer = setInterval(() => void refreshStatus(), 3000);
     return () => clearInterval(timer);
   }, [isOperating, refreshStatus]);
+
+  const appendDebugLog = useCallback(async (_category: string, _message: string) => {
+    // noop — debug logging not supported in web mode
+  }, []);
 
   return {
     status,

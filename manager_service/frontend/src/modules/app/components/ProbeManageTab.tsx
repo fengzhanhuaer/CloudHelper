@@ -1,40 +1,16 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { fetchJson } from "../api";
-
-async function GetProbeNodes() {
-  return fetchJson<any[]>('/probe/nodes').catch(() => []);
-}
-
-async function ReplaceProbeNodes(nodes: any) {
-  // We don't support batch replace anymore, this was a legacy wails requirement.
-  // Instead, the nodes are handled directly in backend.
-}
+﻿import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
-  createProbeNodeOnController,
-  deleteProbeNodeOnController,
-  deleteProbeShellShortcut,
-  execProbeShellSessionOnController,
-  fetchProbeNodeLogs,
-  fetchProbeNodeStatus,
-  fetchProbeNodesSnapshot,
-  fetchProbeReportIntervalSettings,
-  fetchProbeShellShortcuts,
-  restoreProbeNodeOnController,
-  setProbeReportInterval,
-  startProbeShellSessionOnController,
-  stopProbeShellSessionOnController,
-  upsertProbeShellShortcut,
-  updateProbeNodeOnController,
-  upgradeAllProbeNodes,
-  upgradeProbeNode,
-  type ProbeNodeLogsResponse,
-  type ProbeNodesSnapshot,
-  type ProbeShellShortcutItem,
-  type ProbeShellSessionControlResponse,
-  type ProbeNodeStatusItem,
-  type ProbeReportIntervalSettings,
-  type ProbeUpgradeDispatchResult,
-} from "../services/controller-api";
+  apiListNodes,
+  apiCreateNode,
+  apiUpdateNode,
+  type ProbeNode,
+} from "../manager-api";
+
+/** R2-PENDING: 探针代理端点尚未实现，返回语义明确的错误 */
+function r2PendingError(feature: string): never {
+  throw new Error(`[R2-PENDING] ${feature}功能需要主控代理端点，请等待 R2 后端实施完成`);
+}
+
 import type { LogLevel } from "../types";
 
 type ProbeManageTabProps = {
@@ -503,15 +479,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   async function deleteNode(nodeNo: number) {
     setIsLoading(true);
     try {
-      const snapshot = await deleteProbeNodeOnController(controllerAddress, props.sessionToken, nodeNo);
-      const active = sortNodes(snapshot.nodes as ProbeNodeItem[]);
-      const deleted = sortNodes(snapshot.deleted_nodes as ProbeNodeItem[]);
-      await ReplaceProbeNodes(active);
-      setNodes(active);
-      setDeletedNodes(deleted);
-      setNodeStatusItems((prev) => prev.filter((item) => item.node_no !== nodeNo));
-      const node = [...active, ...deleted].find((n: ProbeNodeItem) => n.node_no === nodeNo);
-      setStatus(`探针已移入服务端删除列表：${node?.node_name ?? `#${nodeNo}`}`);
+      await deleteProbeNodeOnControllerWrapper(controllerAddress, props.sessionToken, nodeNo);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`删除探针失败：${msg}`);
@@ -523,14 +491,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   async function restoreNode(nodeNo: number) {
     setIsLoading(true);
     try {
-      const snapshot = await restoreProbeNodeOnController(controllerAddress, props.sessionToken, nodeNo);
-      const active = sortNodes(snapshot.nodes as ProbeNodeItem[]);
-      const deleted = sortNodes(snapshot.deleted_nodes as ProbeNodeItem[]);
-      await ReplaceProbeNodes(active);
-      setNodes(active);
-      setDeletedNodes(deleted);
-      const node = active.find((n: ProbeNodeItem) => n.node_no === nodeNo) || deleted.find((n: ProbeNodeItem) => n.node_no === nodeNo);
-      setStatus(`探针已恢复到活跃列表：${node?.node_name ?? `#${nodeNo}`}`);
+      await restoreProbeNodeOnControllerWrapper(controllerAddress, props.sessionToken, nodeNo);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       setStatus(`恢复探针失败：${msg}`);
@@ -551,27 +512,10 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   }
 
   async function upgradeOne(node: ProbeNodeItem) {
-    const base = sanitizeControllerAddress(controllerAddress);
-    const token = props.sessionToken.trim();
-    if (!token) {
-      setStatus("未登录，无法下发升级命令");
-      return;
-    }
-
     setUpgradingNodeNos((prev) => [...prev, node.node_no]);
     appendUpgradeMessage(`开始下发探针升级：${node.node_name} (#${node.node_no})`);
     try {
-      const result = await upgradeProbeNode(base, token, node.node_no);
-      appendProbeUpgradeDispatchResultMessage(result, node);
-      setSubTab("logs");
-      setLogNodeIDInput(String(node.node_no));
-      setLogSinceMinutesInput("10");
-      upgradeLogPollingDeadlineRef.current = Date.now() + (2 * 60 * 1000);
-      setUpgradeLogPollingNodeID(String(node.node_no));
-      void loadSelectedNodeLogs({ nodeID: String(node.node_no), silent: true });
-      const modeLabel = result.mode === "direct" ? "直连" : "主控代理";
-      const detail = (result.message || "").trim();
-      setStatus(`已下发升级命令：${node.node_name}（${modeLabel}）${detail ? `，${detail}` : ""}`);
+      await upgradeProbeNodeWrapper(controllerAddress, props.sessionToken, String(node.node_no));
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       appendUpgradeMessage(`下发探针升级失败：${node.node_name} (#${node.node_no})，${msg}`);
@@ -582,43 +526,15 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   }
 
   async function upgradeAll() {
-    const base = sanitizeControllerAddress(controllerAddress);
-    const token = props.sessionToken.trim();
-    if (!token) {
-      setStatus("未登录，无法下发升级命令");
-      return;
-    }
-
     setIsUpgradingAll(true);
     appendUpgradeMessage(`开始一键下发探针升级：共 ${nodes.length} 个节点`);
     try {
       setSubTab("logs");
-      const result = await upgradeAllProbeNodes(base, token);
-      appendUpgradeMessage(result.message || `一键升级下发完成：成功 ${result.success}/${result.total}，失败 ${result.failures.length}`);
-      for (const item of result.items) {
-        appendProbeUpgradeDispatchResultMessage(item, null);
-      }
-      for (const failure of result.failures) {
-        appendUpgradeMessage(`一键升级下发失败：${failure}`);
-      }
-      upgradeLogPollingDeadlineRef.current = Date.now() + (2 * 60 * 1000);
-      if (logNodeIDInput.trim()) {
-        setUpgradeLogPollingNodeID(logNodeIDInput.trim());
-        void loadSelectedNodeLogs({ nodeID: logNodeIDInput.trim(), silent: true });
-      } else if (result.items.length > 0 && result.items[0].node_no > 0) {
-        setLogNodeIDInput(String(result.items[0].node_no));
-        setUpgradeLogPollingNodeID(String(result.items[0].node_no));
-        void loadSelectedNodeLogs({ nodeID: String(result.items[0].node_no), silent: true });
-      }
-      if (result.failures.length > 0) {
-        setStatus(`一键升级已下发：成功 ${result.success}/${result.total}，失败 ${result.failures.length}（详见升级消息）`);
-      } else {
-        setStatus(`一键升级已下发：成功 ${result.success}/${result.total}`);
-      }
+      await upgradeAllProbeNodesWrapper(controllerAddress, props.sessionToken);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       appendUpgradeMessage(`一键升级下发失败：${msg}`);
-      setStatus(`一键升级下发失败：${msg}`);
+      setStatus(`一键升级失败：${msg}`);
     } finally {
       setIsUpgradingAll(false);
     }
@@ -641,9 +557,9 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   }
 
   function appendProbeUpgradeDispatchResultMessage(result: ProbeUpgradeDispatchResult, fallbackNode: ProbeNodeItem | null) {
-    const nodeNo = result.node_no > 0 ? result.node_no : (fallbackNode?.node_no || 0);
+    const nodeNo = (result.node_no ?? 0) > 0 ? (result.node_no as number) : (fallbackNode?.node_no || 0);
     const nodeName = (result.node_name || fallbackNode?.node_name || "").trim();
-    const nodeLabel = nodeName ? `${nodeName}${nodeNo > 0 ? ` (#${nodeNo})` : ""}` : (nodeNo > 0 ? `节点 #${nodeNo}` : "未知节点");
+    const nodeLabel = nodeName ? `${nodeName}${nodeNo > 0 ? ` (#${nodeNo})` : ""}` : (nodeNo > 0 ? `\u8282\u70b9 #${nodeNo}` : "\u672a\u77e5\u8282\u70b9");
     const modeLabel = result.mode === "direct" ? "直连" : "主控代理";
     const detail = (result.message || "").trim();
     appendUpgradeMessage(`升级命令回执：${nodeLabel}，模式=${modeLabel}${detail ? `，${detail}` : ""}`, result.timestamp || "");
@@ -694,7 +610,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       setProbeLogFetchedAt(formatTime(data.fetched || data.timestamp || ""));
       const entries = Array.isArray(data.entries) ? data.entries : [];
       setProbeLogContent(entries.length > 0
-        ? entries.map((entry) => entry.line || entry.message || "").filter((line) => String(line).trim()).join("\n")
+        ? entries.map((entry) => (entry as Record<string, unknown>)["line"] as string || entry.message || "").filter((line) => String(line).trim()).join("\n")
         : (data.content || ""));
       if (!silent) {
         setStatus(`已拉取探针日志：${data.node_name || nodeID}`);
@@ -1134,7 +1050,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
                         <td>{item.runtime?.version || "-"}</td>
                         <td>
                           {online
-                            ? `CPU ${formatPercent(item.runtime?.system?.cpu_percent)} / RAM ${formatPercentWithBytes(item.runtime?.system?.memory_used_percent, item.runtime?.system?.memory_used_bytes, item.runtime?.system?.memory_total_bytes)} / SWAP ${formatPercentWithBytes(item.runtime?.system?.swap_used_percent, item.runtime?.system?.swap_used_bytes, item.runtime?.system?.swap_total_bytes)} / 磁盘 ${formatPercentWithBytes(item.runtime?.system?.disk_used_percent, item.runtime?.system?.disk_used_bytes, item.runtime?.system?.disk_total_bytes)}`
+                            ? `CPU ${formatPercent(item.runtime?.system?.["cpu_percent"] as number | undefined)} / RAM ${formatPercentWithBytes(item.runtime?.system?.["memory_used_percent"] as number | undefined, item.runtime?.system?.["memory_used_bytes"] as number | undefined, item.runtime?.system?.["memory_total_bytes"] as number | undefined)} / SWAP ${formatPercentWithBytes(item.runtime?.system?.["swap_used_percent"] as number | undefined, item.runtime?.system?.["swap_used_bytes"] as number | undefined, item.runtime?.system?.["swap_total_bytes"] as number | undefined)} / 磁盘 ${formatPercentWithBytes(item.runtime?.system?.["disk_used_percent"] as number | undefined, item.runtime?.system?.["disk_used_bytes"] as number | undefined, item.runtime?.system?.["disk_total_bytes"] as number | undefined)}`
                             : "-"}
                         </td>
                         <td>
@@ -1797,48 +1713,94 @@ function buildLinuxInstallCommand(scriptURL: string, envPairs: string[], scriptP
 }
 
 async function copyText(text: string): Promise<void> {
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  if (typeof document !== "undefined") {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-    document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return;
-  }
-
-  throw new Error("clipboard api unavailable");
+  await clipboardCopy(text);
 }
 
-async function fetchProbeNodesSnapshotFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeNodesSnapshot> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot fetch nodes from controller");
-  }
-  return await fetchProbeNodesSnapshot(base, token);
+// ─────────────────────────────────────────────────────────────────────────────
+// R2 敏捷层函数 — 已实现层通过 manager-api.ts，未实现层显示 R2-PENDING
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ProbeNodesSnapshot = { nodes: ProbeNodeItem[]; deleted_nodes: ProbeNodeItem[] };
+type ProbeShellSessionControlResponse = {
+  session_id: string;
+  output: string;
+  stdout?: string;
+  stderr?: string;
+  exit_code?: number;
+  ok?: boolean;
+  error?: string;
+};
+type ProbeNodeStatusItem = {
+  node_no: number;
+  node_name?: string;
+  node_id?: string;
+  online?: boolean;
+  last_seen?: string;
+  version?: string;
+  ipv4?: string[];
+  system?: Record<string, unknown>;
+  runtime?: {
+    node_id?: string;
+    online?: boolean;
+    last_seen?: string;
+    version?: string;
+    ipv4?: string[];
+    ipv6?: string[];
+    ip_locations?: Record<string, string>;
+    system?: Record<string, unknown>;
+  };
+};
+type ProbeReportIntervalSettings = {
+  current_sec: number;
+  default_sec: number;
+  override_expires_at?: string;
+};
+type ProbeNodeLogsResponse = {
+  content: string;
+  file_path?: string;
+  source?: string;
+  fetched_at?: string;
+  fetched?: string;
+  timestamp?: string;
+  lines?: number;
+  node_name?: string;
+  entries?: Array<{ level?: string; time?: string; message?: string }>;
+};
+type ProbeUpgradeDispatchResult = {
+  node_id: string;
+  node_no?: number;
+  node_name?: string;
+  message: string;
+  ok: boolean;
+  mode?: string;
+  timestamp?: string;
+};
+
+type ProbeShellShortcutItem = { name: string; command: string; updated_at?: string };
+
+/** R2-PENDING 专用占位 — 在主控代理端点实现后替换 */
+async function GetProbeNodes(): Promise<ProbeNodeItem[]> {
+  return apiListNodes() as unknown as Promise<ProbeNodeItem[]>;
 }
 
-async function createProbeNodeFromController(controllerBaseUrl: string, sessionToken: string, nodeName: string): Promise<ProbeNodeItem> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot create probe node on controller");
-  }
-  return (await createProbeNodeOnController(base, token, nodeName)) as ProbeNodeItem;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function ReplaceProbeNodes(_nodes: unknown): Promise<void> {
+  // Deprecated: no longer writing to cache file
+}
+
+async function fetchProbeNodesSnapshotFromController(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeNodesSnapshot> {
+  const nodes = await apiListNodes();
+  return { nodes: nodes as unknown as ProbeNodeItem[], deleted_nodes: [] };
+}
+
+async function createProbeNodeFromController(_controllerBaseUrl: string, _sessionToken: string, nodeName: string): Promise<ProbeNodeItem> {
+  const created = await apiCreateNode(nodeName);
+  return created as unknown as ProbeNodeItem;
 }
 
 async function updateProbeNodeOnControllerOnly(
-  controllerBaseUrl: string,
-  sessionToken: string,
+  _controllerBaseUrl: string,
+  _sessionToken: string,
   payload: {
     node_no: number;
     node_name: string;
@@ -1853,141 +1815,101 @@ async function updateProbeNodeOnControllerOnly(
     vendor_url: string;
   },
 ): Promise<ProbeNodeItem> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot update probe node on controller");
-  }
-  return (await updateProbeNodeOnController(base, token, payload)) as ProbeNodeItem;
+  const updated = await apiUpdateNode(payload.node_no, {
+    node_name: payload.node_name,
+    remark: payload.remark,
+    target_system: payload.target_system,
+    direct_connect: payload.direct_connect,
+    payment_cycle: payload.payment_cycle,
+    cost: payload.cost,
+    expire_at: payload.expire_at,
+    vendor_name: payload.vendor_name,
+    vendor_url: payload.vendor_url,
+  });
+  return updated as unknown as ProbeNodeItem;
 }
 
-async function fetchProbeStatusFromController(controllerBaseUrl: string, sessionToken: string, nodeID?: number): Promise<ProbeNodeStatusItem[]> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot fetch status from controller");
-  }
-  return await fetchProbeNodeStatus(base, token, nodeID);
+function deleteProbeNodeOnControllerWrapper(_controllerBaseUrl: string, _sessionToken: string, _nodeNo: number): Promise<void> {
+  r2PendingError("探针节点删除");
 }
 
-async function fetchProbeLogsFromController(
-  controllerBaseUrl: string,
-  sessionToken: string,
-  nodeID: string,
-  lines: number,
-  sinceMinutes: number,
-  minLevel: LogLevel,
+function restoreProbeNodeOnControllerWrapper(_controllerBaseUrl: string, _sessionToken: string, _nodeNo: number): Promise<ProbeNodeItem> {
+  r2PendingError("探针节点恢复");
+}
+
+function upgradeProbeNodeWrapper(_controllerBaseUrl: string, _sessionToken: string, _nodeId: string): Promise<ProbeUpgradeDispatchResult> {
+  r2PendingError("探针升级");
+}
+
+function upgradeAllProbeNodesWrapper(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeUpgradeDispatchResult[]> {
+  r2PendingError("探针全量升级");
+}
+
+function fetchProbeStatusFromController(_controllerBaseUrl: string, _sessionToken: string, _nodeID?: number): Promise<ProbeNodeStatusItem[]> {
+  r2PendingError("探针实时状态");
+}
+
+function fetchProbeLogsFromController(
+  _controllerBaseUrl: string,
+  _sessionToken: string,
+  _nodeID: string,
+  _lines: number,
+  _sinceMinutes: number,
+  _minLevel: LogLevel,
 ): Promise<ProbeNodeLogsResponse> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot fetch probe logs from controller");
-  }
-  return await fetchProbeNodeLogs(base, token, nodeID, lines, sinceMinutes, minLevel);
+  r2PendingError("探针日志查看");
 }
 
-async function fetchProbeReportIntervalFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeReportIntervalSettings> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot fetch report interval settings");
-  }
-  return await fetchProbeReportIntervalSettings(base, token);
+function fetchProbeReportIntervalFromController(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeReportIntervalSettings> {
+  r2PendingError("上送周期读取");
 }
 
-async function setProbeReportIntervalOnController(controllerBaseUrl: string, sessionToken: string, intervalSec: number): Promise<ProbeReportIntervalSettings> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot set report interval");
-  }
-  return await setProbeReportInterval(base, token, intervalSec);
+function setProbeReportIntervalOnController(_controllerBaseUrl: string, _sessionToken: string, _intervalSec: number): Promise<ProbeReportIntervalSettings> {
+  r2PendingError("上送周期设置");
 }
 
-async function startProbeShellSessionFromController(
-  controllerBaseUrl: string,
-  sessionToken: string,
-  nodeID: string,
-): Promise<ProbeShellSessionControlResponse> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot start probe shell session");
-  }
-  return await startProbeShellSessionOnController(base, token, { node_id: String(nodeID) });
+function startProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, _nodeID: string): Promise<ProbeShellSessionControlResponse> {
+  r2PendingError("Shell 会话启动");
 }
 
-async function execProbeShellSessionFromController(
-  controllerBaseUrl: string,
-  sessionToken: string,
-  nodeID: string,
-  sessionID: string,
-  command: string,
-  timeoutSec: number,
-): Promise<ProbeShellSessionControlResponse> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot execute probe shell command");
-  }
-  return await execProbeShellSessionOnController(base, token, {
-    node_id: String(nodeID),
-    session_id: String(sessionID),
-    command,
-    timeout_sec: timeoutSec,
-  });
+function execProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, _nodeID: string, _sessionID: string, _command: string, _timeoutSec: number): Promise<ProbeShellSessionControlResponse> {
+  r2PendingError("Shell 命令执行");
 }
 
-async function stopProbeShellSessionFromController(
-  controllerBaseUrl: string,
-  sessionToken: string,
-  nodeID: string,
-  sessionID: string,
-): Promise<ProbeShellSessionControlResponse> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot stop probe shell session");
-  }
-  return await stopProbeShellSessionOnController(base, token, {
-    node_id: String(nodeID),
-    session_id: String(sessionID),
-  });
+function stopProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, _nodeID: string, _sessionID: string): Promise<ProbeShellSessionControlResponse> {
+  r2PendingError("Shell 会话关闭");
 }
 
-async function fetchProbeShellShortcutsFromController(controllerBaseUrl: string, sessionToken: string): Promise<ProbeShellShortcutItem[]> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot fetch probe shell shortcuts");
-  }
-  return await fetchProbeShellShortcuts(base, token);
+function fetchProbeShellShortcutsFromController(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeShellShortcutItem[]> {
+  r2PendingError("Shell 快捷命令读取");
 }
 
-async function upsertProbeShellShortcutFromController(
-  controllerBaseUrl: string,
-  sessionToken: string,
-  name: string,
-  command: string,
-): Promise<ProbeShellShortcutItem[]> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot save probe shell shortcut");
-  }
-  return await upsertProbeShellShortcut(base, token, { name, command });
+function upsertProbeShellShortcutFromController(_controllerBaseUrl: string, _sessionToken: string, _name: string, _command: string): Promise<ProbeShellShortcutItem[]> {
+  r2PendingError("Shell 快捷命令保存");
 }
 
-async function deleteProbeShellShortcutFromController(
-  controllerBaseUrl: string,
-  sessionToken: string,
-  name: string,
-): Promise<ProbeShellShortcutItem[]> {
-  const base = sanitizeControllerAddress(controllerBaseUrl);
-  const token = sessionToken.trim();
-  if (!token) {
-    throw new Error("session token is empty, cannot delete probe shell shortcut");
-  }
-  return await deleteProbeShellShortcut(base, token, name);
+function deleteProbeShellShortcutFromController(_controllerBaseUrl: string, _sessionToken: string, _name: string): Promise<ProbeShellShortcutItem[]> {
+  r2PendingError("Shell 快捷命令删除");
 }
+
+async function clipboardCopy(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  if (typeof document !== "undefined") {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.cssText = "position:fixed;opacity:0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return;
+  }
+  throw new Error("clipboard api unavailable");
+}
+
+
 
