@@ -1,26 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson } from "../api";
-const StopProbeLinkSession = async (...args: any[]) => { throw new Error("Not implemented"); };
-const PingProbeChain = async (chainID: string) => { 
-  return fetchJson<any>('/probe/link/test', {
-    method: 'POST',
-    body: JSON.stringify({ node_id: chainID, endpoint_type: 'chain' })
-  }).catch((e: any) => ({ ok: false, duration_ms: 0, message: e.message }));
-};
-const GetProbeLinkChainsCache = async (...args: any[]) => { return JSON.parse(localStorage.getItem('probe_link_chains') || '[]'); };
-const ForceRefreshNetworkAssistantNodes = async (...args: any[]) => { throw new Error("Not implemented"); };
-const StartProbeLinkSession = async (...args: any[]) => { throw new Error("Not implemented"); };
-const PingProbeLinkSession = async (...args: any[]) => { throw new Error("Not implemented"); };
-
 import {
   apiListNodes,
+  apiGetLinkChains,
+  apiUpsertLinkChain,
+  apiDeleteLinkChain,
+  apiGetLinkUsers,
+  apiGetLinkUserPubKey,
+  apiGetNodesStatus,
+  apiStartLinkTest,
+  apiStopLinkTest,
+  apiRefreshProbeDNS,
   type ProbeNode,
 } from "../manager-api";
 
-/** R4-PENDING: 链路管理域代理端点尚未实现，返回语义明确的错误 */
-function r4PendingError(feature: string): never {
-  throw new Error(`[R4-PENDING] ${feature}功能需要主控代理端点，请等待 R4 后端实施完成`);
-}
+const StopProbeLinkSession = async (..._args: unknown[]) => { throw new Error("Not implemented"); };
+const PingProbeChain = async (chainID: string) => {
+  return fetchJson<{ ok: boolean; duration_ms: number; message?: string }>('/probe/link/test', {
+    method: 'POST',
+    body: JSON.stringify({ node_id: chainID, endpoint_type: 'chain' })
+  }).catch((e: unknown) => ({ ok: false, duration_ms: 0, message: e instanceof Error ? e.message : String(e) }));
+};
+const GetProbeLinkChainsCache = async (..._args: unknown[]) => { return JSON.parse(localStorage.getItem('probe_link_chains') || '[]') as unknown[]; };
+const ForceRefreshNetworkAssistantNodes = async (..._args: unknown[]) => { throw new Error("Not implemented"); };
+const StartProbeLinkSession = async (..._args: unknown[]) => { throw new Error("Not implemented"); };
+const PingProbeLinkSession = async (..._args: unknown[]) => { throw new Error("Not implemented"); };
 
 // ── R4 局部类型 ─────────────────────────────────────────────────────────────
 type ProbeLinkChainItem = {
@@ -77,57 +81,59 @@ type CloudflareDDNSRecord = {
   sequence?: number;
 };
 
-// ── R4 wrapper 函数（已实现）────────────────────────────────────────────────
+// ── R4 wrapper 函数（全部已实现，通过 manager-api 代理主控）────────────────
 
 async function fetchProbeNodes(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeNodeSyncItem[]> {
   const nodes = await apiListNodes();
   return nodes as unknown as ProbeNodeSyncItem[];
 }
 
-// ── R4 wrapper 函数（待实现）────────────────────────────────────────────────
-
-function fetchProbeLinkUsers(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeLinkUserItem[]> {
-  r4PendingError("链路用户列表");
+async function fetchProbeLinkUsers(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeLinkUserItem[]> {
+  const result = await apiGetLinkUsers();
+  return (result.users ?? []) as ProbeLinkUserItem[];
 }
 
-function fetchProbeLinkUserPublicKey(_controllerBaseUrl: string, _sessionToken: string, _userID: string): Promise<{ username: string; public_key: string }> {
-  r4PendingError("链路用户公钥");
+async function fetchProbeLinkUserPublicKey(_controllerBaseUrl: string, _sessionToken: string, userID: string): Promise<{ username: string; public_key: string }> {
+  return apiGetLinkUserPubKey(userID);
 }
 
-function fetchProbeNodeStatus(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeNodeStatusItem[]> {
-  r4PendingError("探针运行状态");
+async function fetchProbeNodeStatus(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeNodeStatusItem[]> {
+  const items = await apiGetNodesStatus();
+  return items as unknown as ProbeNodeStatusItem[];
 }
 
 function fetchCloudflareDDNSRecords(_controllerBaseUrl: string, _sessionToken: string): Promise<CloudflareDDNSRecord[]> {
-  r4PendingError("Cloudflare DDNS 记录（链路）");
+  throw new Error("[R4-CF-PENDING] Cloudflare DDNS 记录读取请通过 Cloudflare 助手域完成");
 }
 
-function forceRefreshProbeDNSCache(_controllerBaseUrl: string, _sessionToken: string): Promise<string> {
-  r4PendingError("探针 DNS 缓存刷新");
+async function forceRefreshProbeDNSCache(_controllerBaseUrl: string, _sessionToken: string): Promise<string> {
+  await apiRefreshProbeDNS();
+  return "DNS 缓存刷新已触发";
 }
 
-function startProbeLinkTestOnController(_controllerBaseUrl: string, _sessionToken: string, _payload: unknown): Promise<{ message?: string }> {
-  r4PendingError("链路测试启动");
+async function startProbeLinkTestOnController(_controllerBaseUrl: string, _sessionToken: string, payload: unknown): Promise<{ message?: string }> {
+  return apiStartLinkTest(payload) as Promise<{ message?: string }>;
 }
 
-function stopProbeLinkTestOnController(_controllerBaseUrl: string, _sessionToken: string, _nodeID?: string): Promise<{ message?: string }> {
-  r4PendingError("链路测试停止");
+async function stopProbeLinkTestOnController(_controllerBaseUrl: string, _sessionToken: string, nodeID?: string): Promise<{ message?: string }> {
+  return apiStopLinkTest({ node_id: nodeID }) as Promise<{ message?: string }>;
 }
 
-function upsertProbeLinkChain(
+async function upsertProbeLinkChain(
   _controllerBaseUrl: string,
   _sessionToken: string,
-  _payload: unknown,
+  payload: unknown,
 ): Promise<{ item?: ProbeLinkChainItem; apply_ok?: boolean; apply_error?: string }> {
-  r4PendingError("链路保存");
+  const result = await apiUpsertLinkChain(payload);
+  return result as { item?: ProbeLinkChainItem; apply_ok?: boolean; apply_error?: string };
 }
 
-function deleteProbeLinkChain(
+async function deleteProbeLinkChain(
   _controllerBaseUrl: string,
   _sessionToken: string,
-  _chainID: string,
+  chainID: string,
 ): Promise<{ apply_ok?: boolean; apply_error?: string }> {
-  r4PendingError("链路删除");
+  return apiDeleteLinkChain(chainID);
 }
 
 

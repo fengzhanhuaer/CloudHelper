@@ -7,8 +7,9 @@
  * - 禁止调用 fetchServerLogs / fetchAdminStatus (controller-api 直连)
  */
 import { useCallback, useState } from "react";
-import { apiGetLogs } from "../manager-api";
+import { apiGetLogs, apiGetControllerLogs } from "../manager-api";
 import type { LogEntry, LogLevel, LogSource } from "../types";
+
 
 function clampLogLines(lines: number): number {
   if (!Number.isFinite(lines)) return 200;
@@ -84,8 +85,16 @@ export function useLogViewer() {
           setStatus(`已加载本地日志 (${entries.length} 行，级别≥${minLevel})`);
           setLogFilePath("");
         } else {
-          // [W4-PENDING] 主控日志代理端点未实现
-          throw new Error("[W4-PENDING] 主控日志查看功能暂未在 manager_service 实现，请等待 W4 后端代理端点就绪");
+          // [W4] GET /api/system/controller-logs — W4 实现
+          const data = await apiGetControllerLogs({ lines: lineLimit, sinceMinutes, minLevel });
+          const entries = Array.isArray(data.entries)
+            ? (data.entries as Partial<LogEntry>[]).map(normalizeLogEntry)
+            : [];
+          const resolvedContent = buildLogContent(entries, data.content ?? "");
+          setContent(resolvedContent);
+          setCopyStatus("");
+          setStatus(`已加载主控日志 (${entries.length} 行，级别≥${minLevel})`);
+          setLogFilePath(data.file_path ?? "");
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : "unknown error";

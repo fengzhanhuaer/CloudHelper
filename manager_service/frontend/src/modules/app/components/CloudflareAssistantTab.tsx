@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
-
-/** R5-PENDING: Cloudflare 域代理端点尚未实现，返回语义明确的错误 */
-function r5PendingError(feature: string): never {
-  throw new Error(`[R5-PENDING] ${feature}功能需要主控代理端点，请等待 R5 后端实施完成`);
-}
+import {
+  apiGetCloudflareAPIKey,
+  apiSetCloudflareAPIKey,
+  apiSetCloudflareZone,
+  apiGetCloudflareDDNSRecords,
+  apiApplyCloudflareDDNS,
+  apiGetZeroTrustWhitelist,
+  apiSetZeroTrustWhitelist,
+  apiRunZeroTrustSync,
+} from "../manager-api";
 
 // ── R5 局部类型 ───────────────────────────────────────────────────────────────
 type CloudflareAPIKeyState = { api_key?: string; zone_name?: string; configured?: boolean };
@@ -37,16 +42,36 @@ type CloudflareZeroTrustWhitelistState = {
   last_source_lines?: number;
 };
 
-function fetchCloudflareAPIKey(_base: string, _token: string): Promise<CloudflareAPIKeyState> { r5PendingError("Cloudflare API Key 读取"); }
-function setCloudflareAPIKey(_base: string, _token: string, _apiKey: string): Promise<CloudflareAPIKeyState> { r5PendingError("Cloudflare API Key 设置"); }
-function setCloudflareZone(_base: string, _token: string, _zone: string): Promise<string> { r5PendingError("Cloudflare Zone 设置"); }
-function fetchCloudflareDDNSRecords(_base: string, _token: string): Promise<CloudflareDDNSRecord[]> { r5PendingError("Cloudflare DDNS 记录查询"); }
-function applyCloudflareDDNS(_base: string, _token: string, _zone: string): Promise<{ zone_name?: string; applied?: number; skipped?: number; items?: unknown[]; records?: CloudflareDDNSRecord[] }> { r5PendingError("Cloudflare DDNS 应用"); }
-function fetchCloudflareZeroTrustWhitelist(_base: string, _token: string): Promise<CloudflareZeroTrustWhitelistState> { r5PendingError("Cloudflare ZeroTrust 白名单读取"); }
-function setCloudflareZeroTrustWhitelist(_base: string, _token: string, _enabled: boolean, _policyName: string, _whitelistRaw: string, _syncIntervalSec: number): Promise<CloudflareZeroTrustWhitelistState> { r5PendingError("Cloudflare ZeroTrust 白名单设置"); }
-function runCloudflareZeroTrustWhitelistSync(_base: string, _token: string): Promise<CloudflareZeroTrustWhitelistState> { r5PendingError("Cloudflare ZeroTrust 同步"); }
+// ── R5 wrapper 函数（全部已实现，通过 manager-api 代理主控）─────────────────
+async function fetchCloudflareAPIKey(_base: string, _token: string): Promise<CloudflareAPIKeyState> {
+  return apiGetCloudflareAPIKey() as Promise<CloudflareAPIKeyState>;
+}
+async function setCloudflareAPIKey(_base: string, _token: string, apiKey: string): Promise<CloudflareAPIKeyState> {
+  return apiSetCloudflareAPIKey(apiKey) as Promise<CloudflareAPIKeyState>;
+}
+async function setCloudflareZone(_base: string, _token: string, zone: string): Promise<string> {
+  const result = await apiSetCloudflareZone(zone);
+  return result.zone_name ?? zone;
+}
+async function fetchCloudflareDDNSRecords(_base: string, _token: string): Promise<CloudflareDDNSRecord[]> {
+  const result = await apiGetCloudflareDDNSRecords();
+  return (result.records ?? []) as CloudflareDDNSRecord[];
+}
+async function applyCloudflareDDNS(_base: string, _token: string, zone: string): Promise<{ zone_name?: string; applied?: number; skipped?: number; items?: unknown[]; records?: CloudflareDDNSRecord[] }> {
+  return apiApplyCloudflareDDNS(zone) as Promise<{ zone_name?: string; applied?: number; skipped?: number; items?: unknown[]; records?: CloudflareDDNSRecord[] }>;
+}
+async function fetchCloudflareZeroTrustWhitelist(_base: string, _token: string): Promise<CloudflareZeroTrustWhitelistState> {
+  return apiGetZeroTrustWhitelist() as Promise<CloudflareZeroTrustWhitelistState>;
+}
+async function setCloudflareZeroTrustWhitelist(_base: string, _token: string, enabled: boolean, policyName: string, whitelistRaw: string, syncIntervalSec: number): Promise<CloudflareZeroTrustWhitelistState> {
+  return apiSetZeroTrustWhitelist({ enabled, policy_name: policyName, whitelist_raw: whitelistRaw, sync_interval_sec: syncIntervalSec }) as Promise<CloudflareZeroTrustWhitelistState>;
+}
+async function runCloudflareZeroTrustWhitelistSync(_base: string, _token: string): Promise<CloudflareZeroTrustWhitelistState> {
+  return apiRunZeroTrustSync(true) as Promise<CloudflareZeroTrustWhitelistState>;
+}
 
 import { fetchJson } from "../api";
+
 
 type CloudflareAssistantTabProps = {
   controllerBaseUrl: string;

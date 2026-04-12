@@ -1,9 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-
-/** R6-PENDING: TG 助手域代理端点尚未实现，返回语义明确的错误 */
-function r6PendingError(feature: string): never {
-  throw new Error(`[R6-PENDING] ${feature}功能需要主控代理端点，请等待 R6 后端实施完成`);
-}
+import {
+  apiGetTGAPIKey,
+  apiSetTGAPIKey,
+  apiListTGAccounts,
+  apiRefreshTGAccounts,
+  apiAddTGAccount,
+  apiTGSendCode,
+  apiTGSignIn,
+  apiLogoutTGAccount,
+  apiRemoveTGAccount,
+  apiListTGSchedules,
+  apiAddTGSchedule,
+  apiUpdateTGSchedule,
+  apiRemoveTGSchedule,
+  apiEnableTGSchedule,
+  apiDisableTGSchedule,
+  apiTGSendNow,
+  apiGetTGHistory,
+  apiListTGTargets,
+  apiRefreshTGTargets,
+  apiGetTGPendingTasks,
+  apiGetTGBot,
+  apiSetTGBot,
+  apiTGBotTestSend,
+} from "../manager-api";
 
 // ── R6 局部类型 ───────────────────────────────────────────────────────────────
 type TGAssistantAPIKey = { api_id: number; api_hash?: string; configured: boolean };
@@ -47,31 +67,90 @@ type TGAssistantSchedule = { id: string; task_type?: string; enabled: boolean; t
 type TGAssistantTarget = { id: string; name: string; username?: string; type?: string };
 type TGAssistantTaskHistoryRecord = { id: string; task_id?: string; status?: string; sent_at?: string; message?: string; error?: string; time?: string; action?: string; success?: boolean };
 
-// ── wrapper 函数（全部 R6-PENDING）──────────────────────────────────────────
+// ── wrapper 函数（全部已实现，通过 manager-api 代理主控）──────────────────
 
-function fetchTGAssistantAPIKey(_b: string, _t: string): Promise<TGAssistantAPIKey> { r6PendingError("TG API Key 读取"); }
-function setTGAssistantAPIKey(_b: string, _t: string, _p: unknown): Promise<TGAssistantAPIKey> { r6PendingError("TG API Key 设置"); }
-function fetchTGAssistantAccounts(_b: string, _t: string): Promise<TGAssistantAccount[]> { r6PendingError("TG 账号列表"); }
-function refreshTGAssistantAccounts(_b: string, _t: string): Promise<TGAssistantAccount[]> { r6PendingError("TG 账号刷新"); }
-function addTGAssistantAccount(_b: string, _t: string, _p: unknown): Promise<TGAssistantAccount> { r6PendingError("TG 账号添加"); }
-function sendTGAssistantLoginCode(_b: string, _t: string, _id: string): Promise<void> { r6PendingError("TG 验证码发送"); }
-function completeTGAssistantLogin(_b: string, _t: string, _p: unknown): Promise<TGAssistantAccount> { r6PendingError("TG 登录完成"); }
-function logoutTGAssistantAccount(_b: string, _t: string, _id: string): Promise<void> { r6PendingError("TG 账号登出"); }
-function removeTGAssistantAccount(_b: string, _t: string, _id: string): Promise<TGAssistantAccount[]> { r6PendingError("TG 账号删除"); }
-function fetchTGAssistantSchedules(_b: string, _t: string, _id: string): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务列表"); }
-function addTGAssistantSchedule(_b: string, _t: string, _p: unknown): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务新增"); }
-function updateTGAssistantSchedule(_b: string, _t: string, _p: unknown): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务更新"); }
-function removeTGAssistantSchedule(_b: string, _t: string, _p: unknown): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务删除"); }
-function setTGAssistantScheduleEnabled(_b: string, _t: string, _p: unknown): Promise<TGAssistantSchedule[]> { r6PendingError("TG 定时任务启停"); }
-function sendNowTGAssistantSchedule(_b: string, _t: string, _p: unknown, _opts?: unknown): Promise<{ tg_message?: string }> { r6PendingError("TG 立即发送"); }
-function fetchTGAssistantScheduleTaskHistory(_b: string, _t: string, _p: unknown): Promise<TGAssistantTaskHistoryRecord[]> { r6PendingError("TG 任务历史"); }
-function fetchTGAssistantTargets(_b: string, _t: string, _id: string): Promise<TGAssistantTarget[]> { r6PendingError("TG 发送对象列表"); }
-function refreshTGAssistantTargets(_b: string, _t: string, _id: string): Promise<TGAssistantTarget[]> { r6PendingError("TG 发送对象刷新"); }
-function fetchTGAssistantPendingTasks(_b: string, _t: string, _id: string): Promise<TGAssistantPendingTask[]> { r6PendingError("TG 待执行队列"); }
-function fetchTGAssistantBotAPIKey(_b: string, _t: string, _id: string): Promise<TGAssistantBotAPIKey> { r6PendingError("TG Bot Key 读取"); }
-function setTGAssistantBotAPIKey(_b: string, _t: string, _p: unknown): Promise<TGAssistantBotAPIKey> { r6PendingError("TG Bot Key 设置"); }
-function testSendTGAssistantBotMessage(_b: string, _t: string, _p: unknown): Promise<TGAssistantBotTestSendResult> { r6PendingError("TG Bot 测试发送"); }
-
+async function fetchTGAssistantAPIKey(_b: string, _t: string): Promise<TGAssistantAPIKey> {
+  return apiGetTGAPIKey() as Promise<TGAssistantAPIKey>;
+}
+async function setTGAssistantAPIKey(_b: string, _t: string, p: unknown): Promise<TGAssistantAPIKey> {
+  return apiSetTGAPIKey(p) as Promise<TGAssistantAPIKey>;
+}
+async function fetchTGAssistantAccounts(_b: string, _t: string): Promise<TGAssistantAccount[]> {
+  const r = await apiListTGAccounts();
+  return (r.accounts ?? []) as TGAssistantAccount[];
+}
+async function refreshTGAssistantAccounts(_b: string, _t: string): Promise<TGAssistantAccount[]> {
+  const r = await apiRefreshTGAccounts();
+  return (r.accounts ?? []) as TGAssistantAccount[];
+}
+async function addTGAssistantAccount(_b: string, _t: string, p: unknown): Promise<TGAssistantAccount> {
+  return apiAddTGAccount(p) as Promise<TGAssistantAccount>;
+}
+async function sendTGAssistantLoginCode(_b: string, _t: string, id: string): Promise<void> {
+  await apiTGSendCode({ id });
+}
+async function completeTGAssistantLogin(_b: string, _t: string, p: unknown): Promise<TGAssistantAccount> {
+  return apiTGSignIn(p) as Promise<TGAssistantAccount>;
+}
+async function logoutTGAssistantAccount(_b: string, _t: string, id: string): Promise<void> {
+  await apiLogoutTGAccount({ id });
+}
+async function removeTGAssistantAccount(_b: string, _t: string, id: string): Promise<TGAssistantAccount[]> {
+  const r = await apiRemoveTGAccount({ id });
+  return (r as { accounts?: TGAssistantAccount[] }).accounts ?? [];
+}
+async function fetchTGAssistantSchedules(_b: string, _t: string, _id: string): Promise<TGAssistantSchedule[]> {
+  const r = await apiListTGSchedules();
+  return (r.schedules ?? []) as TGAssistantSchedule[];
+}
+async function addTGAssistantSchedule(_b: string, _t: string, p: unknown): Promise<TGAssistantSchedule[]> {
+  const r = await apiAddTGSchedule(p);
+  return (r as { schedules?: TGAssistantSchedule[] }).schedules ?? [];
+}
+async function updateTGAssistantSchedule(_b: string, _t: string, p: unknown): Promise<TGAssistantSchedule[]> {
+  const payload = p as { id: string } & Record<string, unknown>;
+  const r = await apiUpdateTGSchedule(payload.id ?? "", p);
+  return (r as { schedules?: TGAssistantSchedule[] }).schedules ?? [];
+}
+async function removeTGAssistantSchedule(_b: string, _t: string, p: unknown): Promise<TGAssistantSchedule[]> {
+  const id = (p as { id?: string }).id ?? String(p);
+  const r = await apiRemoveTGSchedule(id);
+  return (r as { schedules?: TGAssistantSchedule[] }).schedules ?? [];
+}
+async function setTGAssistantScheduleEnabled(_b: string, _t: string, p: unknown): Promise<TGAssistantSchedule[]> {
+  const { id, enabled } = p as { id: string; enabled: boolean };
+  const r = enabled ? await apiEnableTGSchedule(id) : await apiDisableTGSchedule(id);
+  return (r as { schedules?: TGAssistantSchedule[] }).schedules ?? [];
+}
+async function sendNowTGAssistantSchedule(_b: string, _t: string, p: unknown, _opts?: unknown): Promise<{ tg_message?: string }> {
+  const id = (p as { id?: string }).id ?? String(p);
+  return apiTGSendNow(id) as Promise<{ tg_message?: string }>;
+}
+async function fetchTGAssistantScheduleTaskHistory(_b: string, _t: string, p: unknown): Promise<TGAssistantTaskHistoryRecord[]> {
+  const r = await apiGetTGHistory(p);
+  return (r.records ?? []) as TGAssistantTaskHistoryRecord[];
+}
+async function fetchTGAssistantTargets(_b: string, _t: string, _id: string): Promise<TGAssistantTarget[]> {
+  const r = await apiListTGTargets();
+  return (r.targets ?? []) as TGAssistantTarget[];
+}
+async function refreshTGAssistantTargets(_b: string, _t: string, _id: string): Promise<TGAssistantTarget[]> {
+  const r = await apiRefreshTGTargets();
+  return (r.targets ?? []) as TGAssistantTarget[];
+}
+async function fetchTGAssistantPendingTasks(_b: string, _t: string, _id: string): Promise<TGAssistantPendingTask[]> {
+  const r = await apiGetTGPendingTasks();
+  return (r.tasks ?? []) as TGAssistantPendingTask[];
+}
+async function fetchTGAssistantBotAPIKey(_b: string, _t: string, _id: string): Promise<TGAssistantBotAPIKey> {
+  return apiGetTGBot() as Promise<TGAssistantBotAPIKey>;
+}
+async function setTGAssistantBotAPIKey(_b: string, _t: string, p: unknown): Promise<TGAssistantBotAPIKey> {
+  return apiSetTGBot(p) as Promise<TGAssistantBotAPIKey>;
+}
+async function testSendTGAssistantBotMessage(_b: string, _t: string, p: unknown): Promise<TGAssistantBotTestSendResult> {
+  return apiTGBotTestSend(p) as Promise<TGAssistantBotTestSendResult>;
+}
 
 type TGAssistantTabProps = {
   controllerBaseUrl: string;

@@ -1,4 +1,4 @@
-﻿# 架构核查与编码计划文档 `manager_service` Tab 子Tab 对照版
+# 架构核查与编码计划文档 `manager_service` Tab 子Tab 对照版
 
 - 日期: 2026-04-12
 - 备注: 按 `AI协作统一规则` 与 `manager_service` 架构最终版执行；本文件用于“逐 Tab 子Tab 对照核查 + 下一步编码排程”。
@@ -65,30 +65,30 @@
 | 主Tab | 子Tab | 管理程序基线 | manager_service 现状 | 后端覆盖 | 判定 | 下一步包 |
 |---|---|---|---|---|---|---|
 | 概要状态 | 概要状态 | 展示身份与连接状态 | 可用，私钥状态能力已裁剪 | `/api/system/version` `/healthz` | **通过** | — |
-| 探针管理 | 列表 | 节点CRUD | **完成** - 直接调用 manager-api `/api/probe/nodes` | `/api/probe/nodes` `PUT /api/probe/nodes/:node_no` | **通过** | — |
-| 探针管理 | 状态 | 节点运行状态 | UI在，R2-PENDING 占位，显式错误 | 缺少主控代理聚合端点 | R2 占位通过 | R2-BE |
-| 探针管理 | 日志 | 节点日志查看 | UI在，R2-PENDING 占位，显式错误 | 缺少探针日志专用端点 | R2 占位通过 | R2-BE |
-| 探针管理 | Shell | 远程终端与快捷命令 | UI在，R2-PENDING 占位，显式错误 | 缺少 shell 会话端点 | R2 占位通过 | R2-BE |
+| 探针管理 | 列表 | 节点CRUD | **完成** - list/create/update/delete/restore 全接 manager-api | `/api/probe/nodes` `PUT/DELETE/POST restore` ✅ | **通过** | — |
+| 探针管理 | 状态 | 节点运行状态 | **完成** - 通过 `/api/probe/nodes/status` 代理主控 | `/api/probe/nodes/status` → 主控 admin API ✅ | **通过** | — |
+| 探针管理 | 日志 | 节点日志查看 | **完成** - 通过 `/api/probe/nodes/:node_no/logs` 代理主控 | `/api/probe/nodes/:node_no/logs` → 主控 admin API ✅ | **通过** | — |
+| 探针管理 | Shell | 远程终端与快捷命令 | **完成** - shell start/exec/stop 全路径代理实现 | `/api/probe/nodes/:node_no/shell/*` → 主控 admin API ✅ | **通过** | — |
 | 网络助手 | 模式切换 | direct tun 切换 | **已实现** | `/api/network-assistant/status` `/api/network-assistant/mode` ✅ | **通过** | — |
 | 网络助手 | DNS缓存 | 查询与明细 | **已实现** | `/api/network-assistant/dns/cache` ✅ | **通过** | — |
 | 网络助手 | 网络监视 | 进程监视与事件 | **已实现** | `/api/network-assistant/processes` `/monitor/*` ✅ | **通过** | — |
-| 网络助手 | 链路管理 | 复用链路管理页 | **完成** - R4-FE 已移除旧服务依赖，链路CRUD 显式 R4-PENDING | 需链路域后端代理端点 | R4 占位通过 | R4-BE |
-| 网络助手 | 端口转发 | 复用链路子页 | **完成** - R4-FE 同上 | 需链路域后端代理端点 | R4 占位通过 | R4-BE |
+| 网络助手 | 链路管理 | 复用链路管理页 | **完成** - R4-BE+FE 全实现，chains/users/test/DNS 全接 manager-api | `/api/link/chains` `/api/link/users` `/api/link/test/*` ✅ | **通过** | — |
+| 网络助手 | 端口转发 | 复用链路子页 | **完成** - 同 R4，链路 upsert 含 port_forwards 字段代理 | `/api/link/chains` upsert payload ✅ | **通过** | — |
 | 网络助手 | 驱动设置 | tun 安装启用关闭 | **已实现** | `/tun/install` `/tun/enable` `/direct/restore` ✅ | **通过** | — |
 | 网络助手 | 状态 | 实时状态视图 | **已实现** | `/api/network-assistant/status` ✅ | **通过** | — |
 | 网络助手 | 日志 | 网络助手日志 | **已实现** | `/api/network-assistant/logs` ✅ | **通过** | — |
 | 网络助手 | 规则策略 | TUN 分流规则 | **已实现** | `/api/network-assistant/rules` `/rules/policy` ✅ | **通过** | — |
-| Cloudflare助手 | 基础设置 | API Key Zone | **完成** - R5-PENDING 占位，显式错误 | 缺少 cloudflare 管理端点 | R5 占位通过 | R5-BE |
-| Cloudflare助手 | DDNS | 记录查询与应用 | **完成** - R5-PENDING 占位，显式错误 | 缺少 ddns 端点 | R5 占位通过 | R5-BE |
-| Cloudflare助手 | ZeroTrust | 白名单策略 | **完成** - R5-PENDING 占位，显式错误 | 缺少 zerotrust 端点 | R5 占位通过 | R5-BE |
+| Cloudflare助手 | 基础设置 | API Key Zone | **完成** - R5-BE+FE 全实现，API Key/Zone 代理主控 WS-RPC | `/api/cloudflare/api-key` `/api/cloudflare/zone` ✅ | **通过** | — |
+| Cloudflare助手 | DDNS | 记录查询与应用 | **完成** - R5-BE+FE 全实现，DDNS records/apply 代理主控 | `/api/cloudflare/ddns/records` `/api/cloudflare/ddns/apply` ✅ | **通过** | — |
+| Cloudflare助手 | ZeroTrust | 白名单策略 | **完成** - R5-BE+FE 全实现，whitelist get/set/sync 代理主控 | `/api/cloudflare/zerotrust/*` ✅ | **通过** | — |
 | Cloudflare助手 | IP优选 | speedtest | cloudflare/speedtest 已接入 fetchJson 直连 manager_service | `/cloudflare/speedtest` 已实现 ✅ | **通过** | — |
-| TG助手 | 账号列表 | 账号与登录流程 | **完成** - R6-PENDING 占位，显式错误 | 缺少 TG 代理端点 | R6 占位通过 | R6-BE |
-| TG助手 | 基础信息 | 账号详情 | **完成** - 同上 | 缺少 TG 端点 | R6 占位通过 | R6-BE |
-| TG助手 | 定时发送 | 任务配置执行 | **完成** - 同上 | 缺少 TG 端点 | R6 占位通过 | R6-BE |
-| TG助手 | TG Bot | bot key 与测试 | **完成** - 同上 | 缺少 TG bot 端点 | R6 占位通过 | R6-BE |
+| TG助手 | 账号列表 | 账号与登录流程 | **完成** - R6-BE+FE 全实现，accounts CRUD/login/logout 代理主控 | `/api/tg/accounts` `/api/tg/accounts/*` ✅ | **通过** | — |
+| TG助手 | 基础信息 | 账号详情 | **完成** - R6-BE+FE 全实现，targets/schedules 代理 | `/api/tg/targets` `/api/tg/schedules` ✅ | **通过** | — |
+| TG助手 | 定时发送 | 任务配置执行 | **完成** - R6-BE+FE 全实现，schedule CRUD/enable/disable/send-now 代理 | `/api/tg/schedules/:id/*` ✅ | **通过** | — |
+| TG助手 | TG Bot | bot key 与测试 | **完成** - R6-BE+FE 全实现，bot get/set/test-send 代理主控 | `/api/tg/bot` `/api/tg/bot/test-send` ✅ | **通过** | — |
 | 日志查看 | 日志查看 | 本地与服务端日志 | 基本可用 | `/api/logs/manager` ✅ | **通过** | — |
 | 系统设置 | 升级设置 | 版本 检查 升级 | 部分可用，主控升级待后续 | `/api/system/version` `/api/upgrade/release` `/api/upgrade/manager` ✅ | **通过** | — |
-| 系统设置 | 主控设置 | controller_ip 备份等 | [W4-PENDING] 占位，显式不可用提示 | 缺少备份与主控配置端点 | W4 占位通过 | R8-BE |
+| 系统设置 | 主控设置 | controller_ip 备份等 | **完成** - R8-BE+FE 全实现，backup settings get/set/test 代理主控 | `/api/system/backup-settings` `/test` ✅ | **通过** | — |
 | 系统设置 | AI调试 | AI调试开关 | 明确不支持（显式禁用） | 显式禁用占位 | **通过** | — |
 
 ---

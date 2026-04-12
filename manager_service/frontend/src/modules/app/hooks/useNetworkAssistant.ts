@@ -23,6 +23,8 @@ import {
   apiRestoreDirect,
   apiGetNetworkRuleConfig,
   apiSetNetworkRulePolicy,
+  apiUploadRuleRoutes,
+  apiDownloadRuleRoutes,
 } from "../manager-api";
 import type {
   NetworkAssistantDNSCacheEntry,
@@ -355,25 +357,45 @@ export function useNetworkAssistant() {
     }
   }, [refreshLogs]);
 
-  /** @deprecated [W4-pending] rule_routes 备份上传 (需主控代理) */
+  /** POST /api/system/rule-routes/upload — W4 实现 */
   const uploadRuleRoutes = useCallback(async (_controllerBaseURL: string, _token: string) => {
     setIsSyncingRuleRoutes(true);
     try {
-      setRuleRoutesSyncStatus("[W4-PENDING] 规则文件上传：需主控备份代理端点，请等待 W4 实现");
+      // 获取当前规则文件内容
+      const ruleData = await apiGetNetworkRuleConfig();
+      const content = (ruleData as Record<string, unknown>).rule_routes_content as string ?? "";
+      if (!content.trim()) {
+        setRuleRoutesSyncStatus("规则文件内容为空，跳过上传");
+        return;
+      }
+      const result = await apiUploadRuleRoutes(content);
+      setRuleRoutesSyncStatus(`备份上传成功：${result.target_path ?? ""}（大小 ${result.size ?? 0} 字节）`);
+    } catch (error) {
+      setRuleRoutesSyncStatus(`备份上传失败：${error instanceof Error ? error.message : "unknown"}`);
     } finally {
       setIsSyncingRuleRoutes(false);
     }
   }, []);
 
-  /** @deprecated [W4-pending] rule_routes 备份下载 (需主控代理) */
+  /** POST /api/system/rule-routes/download — W4 实现 */
   const downloadRuleRoutes = useCallback(async (_controllerBaseURL: string, _token: string) => {
     setIsSyncingRuleRoutes(true);
     try {
-      setRuleRoutesSyncStatus("[W4-PENDING] 规则文件下载：需主控备份代理端点，请等待 W4 实现");
+      const result = await apiDownloadRuleRoutes();
+      if (!result.content_base64) {
+        setRuleRoutesSyncStatus("主控备份中无规则文件");
+        return;
+      }
+      const content = atob(result.content_base64);
+      setRuleRoutesSyncStatus(`主控备份下载成功：${result.size ?? 0} 字节，请手动应用到规则文件`);
+      console.log("[rule_routes downloaded]", content.slice(0, 200));
+    } catch (error) {
+      setRuleRoutesSyncStatus(`备份下载失败：${error instanceof Error ? error.message : "unknown"}`);
     } finally {
       setIsSyncingRuleRoutes(false);
     }
   }, []);
+
 
   /** GET /api/network-assistant/dns/cache — 代理实现 */
   const queryDNSCache = useCallback(async (query: string) => {

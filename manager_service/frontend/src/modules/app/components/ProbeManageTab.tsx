@@ -1,15 +1,24 @@
-﻿import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   apiListNodes,
   apiCreateNode,
   apiUpdateNode,
+  apiDeleteNode,
+  apiRestoreNode,
+  apiUpgradeNode,
+  apiUpgradeAllNodes,
+  apiGetNodesStatus,
+  apiGetNodeLogs,
+  apiGetReportInterval,
+  apiSetReportInterval,
+  apiStartShell,
+  apiExecShell,
+  apiStopShell,
+  apiGetShellShortcuts,
+  apiSaveShellShortcut,
+  apiDeleteShellShortcut,
   type ProbeNode,
 } from "../manager-api";
-
-/** R2-PENDING: 探针代理端点尚未实现，返回语义明确的错误 */
-function r2PendingError(feature: string): never {
-  throw new Error(`[R2-PENDING] ${feature}功能需要主控代理端点，请等待 R2 后端实施完成`);
-}
 
 import type { LogLevel } from "../types";
 
@@ -515,7 +524,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
     setUpgradingNodeNos((prev) => [...prev, node.node_no]);
     appendUpgradeMessage(`开始下发探针升级：${node.node_name} (#${node.node_no})`);
     try {
-      await upgradeProbeNodeWrapper(controllerAddress, props.sessionToken, String(node.node_no));
+      await upgradeProbeNodeWrapper(controllerAddress, props.sessionToken, String(node.node_no), node.node_no);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       appendUpgradeMessage(`下发探针升级失败：${node.node_name} (#${node.node_no})，${msg}`);
@@ -1778,7 +1787,8 @@ type ProbeUpgradeDispatchResult = {
 
 type ProbeShellShortcutItem = { name: string; command: string; updated_at?: string };
 
-/** R2-PENDING 专用占位 — 在主控代理端点实现后替换 */
+/** R2 已实现 — 通过 manager-api.ts 调用后端代理 */
+
 async function GetProbeNodes(): Promise<ProbeNodeItem[]> {
   return apiListNodes() as unknown as Promise<ProbeNodeItem[]>;
 }
@@ -1829,68 +1839,87 @@ async function updateProbeNodeOnControllerOnly(
   return updated as unknown as ProbeNodeItem;
 }
 
-function deleteProbeNodeOnControllerWrapper(_controllerBaseUrl: string, _sessionToken: string, _nodeNo: number): Promise<void> {
-  r2PendingError("探针节点删除");
+async function deleteProbeNodeOnControllerWrapper(_controllerBaseUrl: string, _sessionToken: string, nodeNo: number): Promise<void> {
+  await apiDeleteNode(nodeNo);
 }
 
-function restoreProbeNodeOnControllerWrapper(_controllerBaseUrl: string, _sessionToken: string, _nodeNo: number): Promise<ProbeNodeItem> {
-  r2PendingError("探针节点恢复");
+async function restoreProbeNodeOnControllerWrapper(_controllerBaseUrl: string, _sessionToken: string, nodeNo: number): Promise<ProbeNodeItem> {
+  const restored = await apiRestoreNode(nodeNo);
+  return restored as unknown as ProbeNodeItem;
 }
 
-function upgradeProbeNodeWrapper(_controllerBaseUrl: string, _sessionToken: string, _nodeId: string): Promise<ProbeUpgradeDispatchResult> {
-  r2PendingError("探针升级");
+async function upgradeProbeNodeWrapper(_controllerBaseUrl: string, _sessionToken: string, _nodeId: string, nodeNo: number): Promise<ProbeUpgradeDispatchResult> {
+  const result = await apiUpgradeNode(nodeNo);
+  return result as ProbeUpgradeDispatchResult;
 }
 
-function upgradeAllProbeNodesWrapper(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeUpgradeDispatchResult[]> {
-  r2PendingError("探针全量升级");
+async function upgradeAllProbeNodesWrapper(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeUpgradeDispatchResult[]> {
+  const results = await apiUpgradeAllNodes();
+  return results as ProbeUpgradeDispatchResult[];
 }
 
-function fetchProbeStatusFromController(_controllerBaseUrl: string, _sessionToken: string, _nodeID?: number): Promise<ProbeNodeStatusItem[]> {
-  r2PendingError("探针实时状态");
+async function fetchProbeStatusFromController(_controllerBaseUrl: string, _sessionToken: string, nodeNo?: number): Promise<ProbeNodeStatusItem[]> {
+  const status = await apiGetNodesStatus(nodeNo);
+  return status as unknown as ProbeNodeStatusItem[];
 }
 
-function fetchProbeLogsFromController(
+async function fetchProbeLogsFromController(
   _controllerBaseUrl: string,
   _sessionToken: string,
-  _nodeID: string,
-  _lines: number,
-  _sinceMinutes: number,
-  _minLevel: LogLevel,
+  nodeID: string,
+  lines: number,
+  sinceMinutes: number,
+  minLevel: LogLevel,
 ): Promise<ProbeNodeLogsResponse> {
-  r2PendingError("探针日志查看");
+  const nodeNo = Number(nodeID);
+  if (!Number.isFinite(nodeNo) || nodeNo <= 0) {
+    throw new Error("invalid node_no: " + nodeID);
+  }
+  return apiGetNodeLogs(nodeNo, {
+    lines,
+    sinceMinutes,
+    minLevel: minLevel === "normal" ? undefined : minLevel,
+  });
 }
 
-function fetchProbeReportIntervalFromController(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeReportIntervalSettings> {
-  r2PendingError("上送周期读取");
+async function fetchProbeReportIntervalFromController(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeReportIntervalSettings> {
+  return apiGetReportInterval() as unknown as Promise<ProbeReportIntervalSettings>;
 }
 
-function setProbeReportIntervalOnController(_controllerBaseUrl: string, _sessionToken: string, _intervalSec: number): Promise<ProbeReportIntervalSettings> {
-  r2PendingError("上送周期设置");
+async function setProbeReportIntervalOnController(_controllerBaseUrl: string, _sessionToken: string, intervalSec: number): Promise<ProbeReportIntervalSettings> {
+  return apiSetReportInterval(intervalSec) as unknown as Promise<ProbeReportIntervalSettings>;
 }
 
-function startProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, _nodeID: string): Promise<ProbeShellSessionControlResponse> {
-  r2PendingError("Shell 会话启动");
+async function startProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, nodeID: string): Promise<ProbeShellSessionControlResponse> {
+  const nodeNo = Number(nodeID);
+  if (!Number.isFinite(nodeNo) || nodeNo <= 0) throw new Error("invalid node_no: " + nodeID);
+  return apiStartShell(nodeNo) as unknown as Promise<ProbeShellSessionControlResponse>;
 }
 
-function execProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, _nodeID: string, _sessionID: string, _command: string, _timeoutSec: number): Promise<ProbeShellSessionControlResponse> {
-  r2PendingError("Shell 命令执行");
+async function execProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, nodeID: string, sessionID: string, command: string, timeoutSec: number): Promise<ProbeShellSessionControlResponse> {
+  const nodeNo = Number(nodeID);
+  if (!Number.isFinite(nodeNo) || nodeNo <= 0) throw new Error("invalid node_no: " + nodeID);
+  return apiExecShell(nodeNo, sessionID, command, timeoutSec) as unknown as Promise<ProbeShellSessionControlResponse>;
 }
 
-function stopProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, _nodeID: string, _sessionID: string): Promise<ProbeShellSessionControlResponse> {
-  r2PendingError("Shell 会话关闭");
+async function stopProbeShellSessionFromController(_controllerBaseUrl: string, _sessionToken: string, nodeID: string, sessionID: string): Promise<ProbeShellSessionControlResponse> {
+  const nodeNo = Number(nodeID);
+  if (!Number.isFinite(nodeNo) || nodeNo <= 0) throw new Error("invalid node_no: " + nodeID);
+  return apiStopShell(nodeNo, sessionID) as unknown as Promise<ProbeShellSessionControlResponse>;
 }
 
-function fetchProbeShellShortcutsFromController(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeShellShortcutItem[]> {
-  r2PendingError("Shell 快捷命令读取");
+async function fetchProbeShellShortcutsFromController(_controllerBaseUrl: string, _sessionToken: string): Promise<ProbeShellShortcutItem[]> {
+  return apiGetShellShortcuts() as unknown as Promise<ProbeShellShortcutItem[]>;
 }
 
-function upsertProbeShellShortcutFromController(_controllerBaseUrl: string, _sessionToken: string, _name: string, _command: string): Promise<ProbeShellShortcutItem[]> {
-  r2PendingError("Shell 快捷命令保存");
+async function upsertProbeShellShortcutFromController(_controllerBaseUrl: string, _sessionToken: string, name: string, command: string): Promise<ProbeShellShortcutItem[]> {
+  return apiSaveShellShortcut(name, command) as unknown as Promise<ProbeShellShortcutItem[]>;
 }
 
-function deleteProbeShellShortcutFromController(_controllerBaseUrl: string, _sessionToken: string, _name: string): Promise<ProbeShellShortcutItem[]> {
-  r2PendingError("Shell 快捷命令删除");
+async function deleteProbeShellShortcutFromController(_controllerBaseUrl: string, _sessionToken: string, name: string): Promise<ProbeShellShortcutItem[]> {
+  return apiDeleteShellShortcut(name) as unknown as Promise<ProbeShellShortcutItem[]>;
 }
+
 
 async function clipboardCopy(text: string): Promise<void> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {

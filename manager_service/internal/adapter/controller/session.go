@@ -174,6 +174,68 @@ func (s *Session) AuthorizedGet(ctx context.Context, path string) ([]byte, int, 
 	return body, resp.StatusCode, err
 }
 
+// AuthorizedPost performs a POST against the controller API using the session token.
+// bodyJSON may be nil for empty-body requests.
+func (s *Session) AuthorizedPost(ctx context.Context, path string, bodyJSON []byte) ([]byte, int, error) {
+	s.mu.RLock()
+	base := s.baseURL
+	token := s.token
+	s.mu.RUnlock()
+
+	rawURL := base + path
+	var bodyReader io.Reader
+	if len(bodyJSON) > 0 {
+		bodyReader = strings.NewReader(string(bodyJSON))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bodyReader)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	return body, resp.StatusCode, err
+}
+
+// AuthorizedDelete performs a DELETE against the controller API using the session token.
+func (s *Session) AuthorizedDelete(ctx context.Context, path string) ([]byte, int, error) {
+	s.mu.RLock()
+	base := s.baseURL
+	token := s.token
+	s.mu.RUnlock()
+
+	rawURL := base + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, rawURL, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	return body, resp.StatusCode, err
+}
+
+// HasToken reports whether a controller session token is configured.
+func (s *Session) HasToken() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.token != ""
+}
+
+
 func normalizeBaseURL(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
