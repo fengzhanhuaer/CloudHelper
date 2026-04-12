@@ -1,20 +1,15 @@
-// Package api wires up all HTTP routes for manager_service.
 package api
 
 import (
-	"net/http"
-	"os"
-	"path/filepath"
-
 	"github.com/cloudhelper/manager_service/internal/adapter/controller"
 	"github.com/cloudhelper/manager_service/internal/adapter/netassist"
 	"github.com/cloudhelper/manager_service/internal/adapter/node"
 	"github.com/cloudhelper/manager_service/internal/api/handler"
 	"github.com/cloudhelper/manager_service/internal/api/middleware"
 	"github.com/cloudhelper/manager_service/internal/auth"
+	"github.com/gin-gonic/gin"
 )
 
-// RouterOptions carries runtime dependencies for the router.
 type RouterOptions struct {
 	AuthSvc           *auth.Service
 	NodeStore         *node.Store
@@ -24,32 +19,18 @@ type RouterOptions struct {
 	LogDir            string
 }
 
-// NewRouter creates and returns the fully configured HTTP router.
-//
-// W1 routes (auth + system):
-//
-//	GET  /healthz                              — public
-//	GET  /api/system/version                   — auth
-//	POST /api/auth/login                       — public
-//	POST /api/auth/logout                      — auth
-//	POST /api/auth/password/change             — auth
-//	POST /api/auth/password/reset-local        — localhost only
-//
-// W2 routes (probe node, link test, upgrade, logs):
-//
-//	GET  /api/probe/nodes                      — auth
-//	POST /api/probe/nodes                      — auth
-//	PUT  /api/probe/nodes/{node_no}            — auth
-//	POST /api/probe/link/test                  — auth
-//	GET  /api/upgrade/release                  — auth
-//	GET  /api/logs/manager                     — auth
-func NewRouter(opts RouterOptions) http.Handler {
-	mux := http.NewServeMux()
+func NewRouter(opts RouterOptions) *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	mux := gin.New()
+	mux.Use(gin.Recovery())
+	mux.Use(middleware.RequestID())
+	mux.Use(middleware.Logger())
 
 	sysH := handler.NewSystemHandler(opts.BuildVersion)
 	authH := handler.NewAuthHandler(opts.AuthSvc)
 	nodeH := handler.NewNodeHandler(opts.NodeStore)
 	upgradeH := handler.NewUpgradeHandler(opts.LogDir)
+	
 	var ctrlH *handler.ControllerHandler
 	if opts.ControllerSession != nil {
 		ctrlH = handler.NewControllerHandler(opts.ControllerSession)
@@ -59,56 +40,37 @@ func NewRouter(opts RouterOptions) http.Handler {
 		netAssistH = handler.NewNetAssistHandler(opts.NetAssistClient)
 	}
 
-	requireAuth := middleware.Auth(opts.AuthSvc)
+	mux.GET("/healthz", sysH.Healthz)
+	
+	apiGroup := mux.Group("/api")
+	{
+		apiGroup.POST("/auth/login", authH.Login)
+		apiGroup.POST("/auth/password/reset-local", middleware.LocalhostOnly(), authH.ResetLocal)
 
-	// ---- Public ----
-	mux.HandleFunc("GET /healthz", sysH.Healthz)
-	mux.HandleFunc("POST /api/auth/login", authH.Login)
+		authGroup := apiGroup.Group("")
+		authGroup.Use(middleware.Auth(opts.AuthSvc))
+		{
+			authGroup.GET("/system/version", sysH.Version)
+			authGroup.POST("/auth/logout", authH.Logout)
+			authGroup.POST("/auth/password/change", authH.ChangePassword)
 
-	// Localhost-only reset.
-	mux.Handle("POST /api/auth/password/reset-local",
-		middleware.LocalhostOnly(http.HandlerFunc(authH.ResetLocal)),
-	)
+			if ctrlH != nil {
+				authGroup.POST("/controller/session/login", ctrlH.Login)
+			}
+			if netAssistH != nil {
+				authGroup.GET("/network-assistant/status", netAssistH.GetStatus)
+				authGroup.POST("/network-assistant/mode", netAssistH.SwitchMode)
+			}
 
-	// ---- Authenticated — W1 ----
-	mux.Handle("GET /api/system/version", requireAuth(http.HandlerFunc(sysH.Version)))
-	mux.Handle("POST /api/auth/logout", requireAuth(http.HandlerFunc(authH.Logout)))
-	mux.Handle("POST /api/auth/password/change", requireAuth(http.HandlerFunc(authH.ChangePassword)))
+			authGroup.GET("/probe/nodes", nodeH.List)
+			authGroup.POST("/probe/nodes", nodeH.Create)
+			authGroup.PUT("/probe/nodes/:node_no", nodeH.Update)
+			authGroup.POST("/probe/link/test", nodeH.TestLink)
 
-	// ---- Authenticated — W2: Controller & NetAssist ----
-	if ctrlH != nil {
-		mux.Handle("POST /api/controller/session/login", requireAuth(http.HandlerFunc(ctrlH.Login)))
+			authGroup.GET("/upgrade/release", upgradeH.GetRelease)
+			authGroup.POST("/upgrade/manager", upgradeH.UpgradeManager)
+			authGroup.GET("/logs/manager", upgradeH.GetLogs)
+		}
 	}
-	if netAssistH != nil {
-		mux.Handle("GET /api/network-assistant/status", requireAuth(http.HandlerFunc(netAssistH.GetStatus)))
-		mux.Handle("POST /api/network-assistant/mode", requireAuth(http.HandlerFunc(netAssistH.SwitchMode)))
-	}
-
-	// ---- Authenticated — W2: Probe nodes ----
-	mux.Handle("GET /api/probe/nodes", requireAuth(http.HandlerFunc(nodeH.List)))
-	mux.Handle("POST /api/probe/nodes", requireAuth(http.HandlerFunc(nodeH.Create)))
-	mux.Handle("PUT /api/probe/nodes/{node_no}", requireAuth(http.HandlerFunc(nodeH.Update)))
-
-	// ---- Authenticated — W2: Link test ----
-	mux.Handle("POST /api/probe/link/test", requireAuth(http.HandlerFunc(nodeH.TestLink)))
-
-	// ---- Authenticated — W2: Upgrade & logs ----
-	mux.Handle("GET /api/upgrade/release", requireAuth(http.HandlerFunc(upgradeH.GetRelease)))
-	mux.Handle("POST /api/upgrade/manager", requireAuth(http.HandlerFunc(upgradeH.UpgradeManager)))
-	mux.Handle("GET /api/logs/manager", requireAuth(http.HandlerFunc(upgradeH.GetLogs)))
-
-	// Global middleware: RequestID → Logger → mux.
-	var h http.Handler = mux
-	h = middleware.Logger(h)
-	h = middleware.RequestID(h)
-	return h
+	return mux
 }
-
-// resolveLogDir returns the log directory path based on the executable location.
-func resolveLogDir() string {
-	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "log")
-	}
-	return filepath.Join(".", "log")
-}
-
