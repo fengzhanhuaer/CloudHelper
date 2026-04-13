@@ -77,6 +77,25 @@ iwr -UseBasicParsing "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelpe
 - `PROBE_CONTROLLER_URL`
 - `INSTALL_DIR`（默认 `C:\Tools`，运行目录为 `INSTALL_DIR\probe_node`）
 
+## Windows 一键安装（manager_service）
+
+使用管理员权限 PowerShell 执行（下载脚本并立即安装）：
+
+```powershell
+$u='https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_manager_service_windows.ps1';$s=Join-Path $env:TEMP 'install_manager_service_windows.ps1';iwr -UseBasicParsing $u -OutFile $s;powershell -NoProfile -ExecutionPolicy Bypass -File $s
+```
+
+默认会：
+- 从 GitHub Releases 下载最新 `cloudhelper-manager-service-windows-amd64.exe`
+- 安装到 `C:\Tools\CloudManager\`
+- 注册并启动 `CloudManagerService` Windows 服务
+
+指定版本安装示例：
+
+```powershell
+$u='https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_manager_service_windows.ps1';$s=Join-Path $env:TEMP 'install_manager_service_windows.ps1';iwr -UseBasicParsing $u -OutFile $s;powershell -NoProfile -ExecutionPolicy Bypass -File $s -Version v1.2.3
+```
+
 ## 运行验证
 
 ```bash

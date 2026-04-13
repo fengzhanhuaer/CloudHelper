@@ -95,26 +95,18 @@ func writeConfig(path string, cfg *Config) error {
 }
 
 // resolveDataDir returns the directory where manager_service stores its state.
-// Priority: env MANAGER_SERVICE_DATA_DIR → exe-relative "data" → "./data".
+// Constraint: data MUST be stored under install directory (exe-dir/data),
+// and MUST NOT be redirected to external paths.
 func resolveDataDir() (string, error) {
-	if env := strings.TrimSpace(os.Getenv("MANAGER_SERVICE_DATA_DIR")); env != "" {
-		if err := os.MkdirAll(env, 0o755); err != nil {
-			return "", fmt.Errorf("create data dir from env: %w", err)
-		}
-		return env, nil
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
 	}
 
-	candidates := []string{}
-	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "data"))
+	installDir := filepath.Dir(exe)
+	dataDir := filepath.Join(installDir, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return "", fmt.Errorf("create install data dir: %w", err)
 	}
-	candidates = append(candidates, filepath.Join(".", "data"))
-
-	for _, dir := range candidates {
-		if err := os.MkdirAll(dir, 0o755); err == nil {
-			return dir, nil
-		}
-	}
-
-	return "", errors.New("cannot create data directory")
+	return dataDir, nil
 }

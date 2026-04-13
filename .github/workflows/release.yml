@@ -171,12 +171,49 @@ jobs:
           name: cloudhelper-probe-manager-windows-amd64.exe
           path: probe_manager/build/bin/cloudhelper-probe-manager-windows-amd64.exe
 
+  build-manager-service:
+    needs: prepare-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+          cache-dependency-path: |
+            manager_service/go.sum
+
+      - name: Build Manager Service (Windows amd64)
+        working-directory: manager_service
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
+        shell: bash
+        run: |
+          mkdir -p build/bin
+          go build -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o build/bin/cloudhelper-manager-service-windows-amd64.exe .
+
+      - name: Upload Manager Service Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudhelper-manager-service-windows-amd64.exe
+          path: manager_service/build/bin/cloudhelper-manager-service-windows-amd64.exe
+
   create-release:
     needs:
       - prepare-release
       - build-probe-controller
       - build-probe-node
       - build-probe-manager
+      - build-manager-service
     runs-on: ubuntu-latest
     steps:
       - name: Download Probe Controller Artifact
@@ -209,6 +246,12 @@ jobs:
           name: cloudhelper-probe-manager-windows-amd64.exe
           path: release-assets
 
+      - name: Download Manager Service Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-manager-service-windows-amd64.exe
+          path: release-assets
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -220,3 +263,4 @@ jobs:
             release-assets/cloudhelper-probe-node-linux-arm64
             release-assets/cloudhelper-probe-node-windows-amd64.exe
             release-assets/cloudhelper-probe-manager-windows-amd64.exe
+            release-assets/cloudhelper-manager-service-windows-amd64.exe
