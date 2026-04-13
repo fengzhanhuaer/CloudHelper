@@ -1,190 +1,155 @@
 # 架构核查与编码计划文档 `manager_service` Tab 子Tab 对照版
 
 - 日期: 2026-04-12
-- 备注: 按 `AI协作统一规则` 与 `manager_service` 架构最终版执行；本文件用于“逐 Tab 子Tab 对照核查 + 下一步编码排程”。
+- 备注: 按 [`AI协作统一规则`](doc/ai-coding-unified-rules.md) 执行；本次基于代码实况复核，并新增 Windows 服务安装与安装目录内存储约束。
 - 风险:
-  - 前端仍有大面积旧调用路径，导致运行期功能不可用或被禁用。
-  - 后端 API 覆盖面不足，无法承接管理程序完整功能。
-  - 若继续移植式修补，会破坏前端重构约束并增加维护成本。
+  - 文档结论与源码实际状态不一致会导致门禁误判。
+  - 数据目录允许外部路径会违反新约束并带来运维漂移。
+  - 缺失 `manager_service` Windows 服务安装脚本会阻断交付。
 - 遗留事项:
-  - 需冻结 Tab 子Tab 级 API 白名单并回写接口字典。
-  - 需为每个子Tab补齐“后端契约 + 前端重构 + 联调证据”。
+  - 需在编码阶段清理残余占位实现并补齐联调证据。
+  - 需补充服务安装 卸载 升级脚本与说明文档。
 - 进度状态: 进行中
-- 完成情况: R1 治理冻结 + R3 网络助手域 + R2 探针管理域 + R4 链路管理域已实施，R5/R6/R8/R9 排期中
+- 完成情况: 已完成代码复核与下一步编码计划，待编码落地。
 - 检查表:
-  - [x] 架构基线核查
-  - [x] 管理程序对照核查
-  - [x] 逐 Tab 子Tab 跟踪建表
-  - [x] 分阶段编码计划
-  - [x] R1: manager-api.ts 契约层建立
-  - [x] R3-BE: netassist 客户端扩充 logs/dns/processes/monitor/tun/rules 全量端点
-  - [x] R3-FE: useNetworkAssistant 全面对接真实 API，删除所有 W4-PENDING 占位
-  - [x] 前后端垃圾收集: npm build + go build 全部通过
-  - [x] R2-FE: ProbeManageTab 移除所有 controller-api 导入；list/create/update 接 manager-api；status/logs/shell 显式 R2-PENDING
-  - [x] R4-FE: LinkManageTab 移除所有 controller-api 导入；fetchProbeNodes 接 manager-api；链路保存/删除/测试/用户等显式 R4-PENDING
-  - [x] R5-FE: CloudflareAssistantTab 移除所有 controller-api 导入；API Key/DDNS/ZeroTrust/SpeedTest 全部显式 R5-PENDING
-  - [x] R6-FE: TGAssistantTab 移除所有 controller-api 导入；TG 账号/定时任务/Bot 全部显式 R6-PENDING
-  - [x] R8-核查: SystemSettingsTab + useUpgradeFlow 无 controller-api 直连依赖，[W4-PENDING] 占位已符合架构要求
-  - [x] R9: 集成与门禁 — npm build ✔ + go build ✔ + from.*controller-api 抬除清零 ✔
-- 跟踪表状态: R1-R6 + R8 已完成，R9 待执行
-- 结论记录: 当前代码“部分符合要求”，但仍不满足“前端仅经 manager_service + 按子Tab可用”的门禁标准，需按本计划分波次修复。
+  - [x] 代码对照核查
+  - [x] 偏差识别与分级
+  - [x] 下一步编码计划拆分
+  - [ ] 数据目录约束改造落地
+  - [ ] Windows 服务脚本落地
+  - [ ] 构建与门禁复核
+- 跟踪表状态: 实现中
+- 结论记录: 当前整体能力已大幅接近目标，但仍存在约束偏差，需先完成后端约束修正与 Windows 服务脚本交付。
 
 ---
 
-## 1 核查口径
+## 1 代码审核结论
 
-- 架构基线: `doc/architect/manager_service_final_architect_doc.md`
-- 对照对象: `probe_manager/frontend/src/modules/app/components`
-- 核查对象: `manager_service/frontend/src/modules/app/components` 与 `manager_service/internal/api`
+### 1.1 已对齐项
+- `gin` 网关已落地，见 [`NewRouter()`](manager_service/internal/api/router.go:26)。
+- 关键后端代理接口已覆盖，见 [`router.go`](manager_service/internal/api/router.go:47)。
+- 单入口约束整体收敛，前端源码未发现活动的 controller-api 直连导入。
 
-重点检查:
-1. 是否符合 FC-FE-01 到 FC-FE-08
-2. 是否满足 RQ-003 RQ-004 RQ-010
-3. 是否实现“逐 Tab 子Tab 可运行且仅经 manager_service”
+### 1.2 发现的偏差
+1. Tab 子Tab文档“零 PENDING”与源码不完全一致
+   - [`LinkManageTab.tsx`](manager_service/frontend/src/modules/app/components/LinkManageTab.tsx:17) 仍存在 `Not implemented` 占位函数。
+   - [`LinkManageTab.tsx`](manager_service/frontend/src/modules/app/components/LinkManageTab.tsx:105) 仍存在 `R4-CF-PENDING` 显式占位。
 
----
+2. 数据存储策略不满足新约束
+   - [`resolveDataDir()`](manager_service/internal/config/config.go:99) 仍允许 `MANAGER_SERVICE_DATA_DIR` 外部路径。
+   - [`resolveDataDir()`](manager_service/internal/config/config.go:111) 仍允许 `./data` 回退路径。
+   - 新约束要求数据仅存储在安装目录，不可外置。
 
-## 2 代码符合性结论
-
-- 符合项:
-  - 已完成 Gin 网关与基础后端骨架
-  - 已接入前端内嵌与 SPA 回退
-  - 已提供基础管理端 API: auth system probe基础 network-status-mode upgrade-release logs
-
-- 不符合项:
-  - 多个业务域仍走旧服务层路径，功能未真正切到 manager_service
-  - 旧服务文件仍包含大量不可执行或已禁用调用
-  - 子Tab级能力与后端契约不一致，存在显式不可用与隐式降级
-
-结论: **部分符合，不通过当前门禁**
+3. Windows 服务安装脚本缺失
+   - 现有 `scripts` 下仅有探针相关脚本，未见 `manager_service` 安装脚本。
 
 ---
 
-## 3 逐 Tab 子Tab 功能跟踪表
+## 2 关键选型与取舍
 
-| 主Tab | 子Tab | 管理程序基线 | manager_service 现状 | 后端覆盖 | 判定 | 下一步包 |
-|---|---|---|---|---|---|---|
-| 概要状态 | 概要状态 | 展示身份与连接状态 | 可用，私钥状态能力已裁剪 | `/api/system/version` `/healthz` | **通过** | — |
-| 探针管理 | 列表 | 节点CRUD | **完成** - list/create/update/delete/restore 全接 manager-api | `/api/probe/nodes` `PUT/DELETE/POST restore` ✅ | **通过** | — |
-| 探针管理 | 状态 | 节点运行状态 | **完成** - 通过 `/api/probe/nodes/status` 代理主控 | `/api/probe/nodes/status` → 主控 admin API ✅ | **通过** | — |
-| 探针管理 | 日志 | 节点日志查看 | **完成** - 通过 `/api/probe/nodes/:node_no/logs` 代理主控 | `/api/probe/nodes/:node_no/logs` → 主控 admin API ✅ | **通过** | — |
-| 探针管理 | Shell | 远程终端与快捷命令 | **完成** - shell start/exec/stop 全路径代理实现 | `/api/probe/nodes/:node_no/shell/*` → 主控 admin API ✅ | **通过** | — |
-| 网络助手 | 模式切换 | direct tun 切换 | **已实现** | `/api/network-assistant/status` `/api/network-assistant/mode` ✅ | **通过** | — |
-| 网络助手 | DNS缓存 | 查询与明细 | **已实现** | `/api/network-assistant/dns/cache` ✅ | **通过** | — |
-| 网络助手 | 网络监视 | 进程监视与事件 | **已实现** | `/api/network-assistant/processes` `/monitor/*` ✅ | **通过** | — |
-| 网络助手 | 链路管理 | 复用链路管理页 | **完成** - R4-BE+FE 全实现，chains/users/test/DNS 全接 manager-api | `/api/link/chains` `/api/link/users` `/api/link/test/*` ✅ | **通过** | — |
-| 网络助手 | 端口转发 | 复用链路子页 | **完成** - 同 R4，链路 upsert 含 port_forwards 字段代理 | `/api/link/chains` upsert payload ✅ | **通过** | — |
-| 网络助手 | 驱动设置 | tun 安装启用关闭 | **已实现** | `/tun/install` `/tun/enable` `/direct/restore` ✅ | **通过** | — |
-| 网络助手 | 状态 | 实时状态视图 | **已实现** | `/api/network-assistant/status` ✅ | **通过** | — |
-| 网络助手 | 日志 | 网络助手日志 | **已实现** | `/api/network-assistant/logs` ✅ | **通过** | — |
-| 网络助手 | 规则策略 | TUN 分流规则 | **已实现** | `/api/network-assistant/rules` `/rules/policy` ✅ | **通过** | — |
-| Cloudflare助手 | 基础设置 | API Key Zone | **完成** - R5-BE+FE 全实现，API Key/Zone 代理主控 WS-RPC | `/api/cloudflare/api-key` `/api/cloudflare/zone` ✅ | **通过** | — |
-| Cloudflare助手 | DDNS | 记录查询与应用 | **完成** - R5-BE+FE 全实现，DDNS records/apply 代理主控 | `/api/cloudflare/ddns/records` `/api/cloudflare/ddns/apply` ✅ | **通过** | — |
-| Cloudflare助手 | ZeroTrust | 白名单策略 | **完成** - R5-BE+FE 全实现，whitelist get/set/sync 代理主控 | `/api/cloudflare/zerotrust/*` ✅ | **通过** | — |
-| Cloudflare助手 | IP优选 | speedtest | cloudflare/speedtest 已接入 fetchJson 直连 manager_service | `/cloudflare/speedtest` 已实现 ✅ | **通过** | — |
-| TG助手 | 账号列表 | 账号与登录流程 | **完成** - R6-BE+FE 全实现，accounts CRUD/login/logout 代理主控 | `/api/tg/accounts` `/api/tg/accounts/*` ✅ | **通过** | — |
-| TG助手 | 基础信息 | 账号详情 | **完成** - R6-BE+FE 全实现，targets/schedules 代理 | `/api/tg/targets` `/api/tg/schedules` ✅ | **通过** | — |
-| TG助手 | 定时发送 | 任务配置执行 | **完成** - R6-BE+FE 全实现，schedule CRUD/enable/disable/send-now 代理 | `/api/tg/schedules/:id/*` ✅ | **通过** | — |
-| TG助手 | TG Bot | bot key 与测试 | **完成** - R6-BE+FE 全实现，bot get/set/test-send 代理主控 | `/api/tg/bot` `/api/tg/bot/test-send` ✅ | **通过** | — |
-| 日志查看 | 日志查看 | 本地与服务端日志 | **完成** - 本地日志 + 主控日志均已实现（W4 server 模式接入 controller-logs API） | `/api/logs/manager` `/api/system/controller-logs` ✅ | **通过** | — |
-| 系统设置 | 升级设置 | 版本 检查 升级 | **完成** - W4 已实现：manager+controller 双版本查询、controller upgrade/progress 均接入代理 | `/api/system/controller-version` `/api/system/controller-upgrade` ✅ | **通过** | — |
-| 系统设置 | 主控设置 | controller_ip 备份等 | **完成** - R8-BE+FE 全实现，backup settings get/set/test 代理主控 | `/api/system/backup-settings` `/test` ✅ | **通过** | — |
-| 系统设置 | AI调试 | AI调试开关 | 明确不支持（显式禁用） | 显式禁用占位 | **通过** | — |
+### 2.1 数据目录策略
+- 结论: 强制使用可执行文件目录下 `data`，禁用环境变量覆盖与当前工作目录回退。
+- 取舍: 牺牲灵活性，换取部署一致性与可运维审计。
+
+### 2.2 Windows 服务实现方式
+- 结论: 首版采用 `sc.exe` + `New-Service` 兼容方案，脚本默认安装根目录 `C:\Tools\CloudManager\`。
+- 取舍: 先保证可安装可维护，后续再评估 WinSW 扩展能力。
+
+### 2.3 脚本交付范围
+- 结论: 同时交付安装 卸载 升级脚本与使用说明。
+- 取舍: 增加一次性交付成本，降低后续运维分叉成本。
 
 ---
 
-## 4 编码者下一步分阶段计划
+## 3 总体设计
 
-### 阶段 R1 治理冻结
-- 冻结 Tab 子Tab 功能白名单
-- 冻结每个子Tab所需 API 契约
-- 输出功能保留清单与非目标清单
+### 3.1 后端约束层
+- 在配置层收口数据路径策略。
+- 在启动层提供“安装目录可写性”自检日志。
 
-### 阶段 R2 探针管理域
-- 后端补齐探针状态 日志 shell 会话接口
-- 前端将探针管理页全部切到 `manager-api.ts`
-- 清除子Tab中的旧服务依赖
+### 3.2 Windows 服务运维层
+- 安装脚本负责目录准备 二进制放置 服务创建与启动。
+- 卸载脚本负责停止服务 删除服务与清理安装目录可选项。
+- 升级脚本负责停服务 替换二进制 启服务 回滚保护。
 
-### 阶段 R3 网络助手域
-- 后端补齐 logs dns cache monitor tun driver 相关端点
-- 前端移除隐式降级和 not implemented 分支
-- 子Tab逐一联调留证
-
-### 阶段 R4 链路管理域
-- 后端提供链路列表 端口转发 测试统一代理端点
-- LinkManage 子Tab不再走旧控制面调用
-
-### 阶段 R5 Cloudflare域
-- 后端新增 cloudflare settings ddns zerotrust speedtest 端点
-- 前端Cloudflare四个子Tab统一改造为 manager-api 调用
-
-### 阶段 R6 TG域
-- 后端新增 tg 账号 任务 bot 代理端点
-- 前端TG账号子Tab与详情子Tab全部迁移
-
-### 阶段 R7 日志与公共能力收敛
-- 稳定日志查看与公共状态页
-- 统一错误语义与状态提示
-
-### 阶段 R8 系统设置域
-- 主控设置与备份能力按契约落地
-- 升级策略与 AI 调试能力按架构边界明确实现或显式禁用
-
-### 阶段 R9 集成与门禁
-- 子Tab逐项回归
-- 单可执行文件发布验证
-- 文档与跟踪表回写
+### 3.3 文档与门禁层
+- 回写 Tab 子Tab执行状态与偏差清零证据。
+- 回写需求跟踪表新增约束条目。
 
 ---
 
-## 5 编码计划排程表
+## 4 单元设计
 
-| 阶段 | 目标域 | 主要产物 | 门禁条件 |
-|---|---|---|---|
-| R1 | 治理冻结 | 子Tab契约表 功能白名单 | 契约评审通过 |
-| R2 | 探针管理 | BE接口 FE重构 联调记录 | 探针4子Tab可用 |
-| R3 | 网络助手 | BE接口 FE重构 联调记录 | 网络助手8子Tab可用 |
-| R4 | 链路管理 | 链路代理接口 前端迁移 | link forward test可用 |
-| R5 | Cloudflare | 4子Tab端到端能力 | Cloudflare四子Tab可用 |
-| R6 | TG助手 | 账号任务bot全链路 | TG子Tab可用 |
-| R7 | 公共能力 | 日志与状态收敛 | 统一错误语义 |
-| R8 | 系统设置 | 升级主控设置AI调试 | 系统设置3子Tab可用 |
-| R9 | 集成门禁 | 回归报告 发布验证 | G3申请条件满足 |
+### U-01 配置单元
+- 文件: [`config.go`](manager_service/internal/config/config.go)
+- 目标: `DataDir` 仅为 `exe_dir/data`。
+- 验证: 启动后配置文件与凭据文件均落在安装目录。
+
+### U-02 服务安装单元
+- 文件: `scripts/install_manager_service_windows.ps1`
+- 目标: 默认安装至 `C:\Tools\CloudManager\` 并注册系统服务。
+- 验证: 服务创建成功、开机自启、手动重启可用。
+
+### U-03 服务卸载与升级单元
+- 文件: `scripts/uninstall_manager_service_windows.ps1` `scripts/update_manager_service_windows.ps1`
+- 目标: 卸载与升级流程可重复执行。
+- 验证: 升级后服务状态与版本可核验。
+
+### U-04 前端残余占位清理单元
+- 文件: [`LinkManageTab.tsx`](manager_service/frontend/src/modules/app/components/LinkManageTab.tsx)
+- 目标: 清理无效占位分支或改为显式架构内可用行为。
+- 验证: 不再出现误导性“已完成但含占位”状态。
 
 ---
 
-## 6 Mermaid 执行流
+## 5 接口定义
+
+### 5.1 脚本接口
+- `install_manager_service_windows.ps1`
+  - 参数: `InstallRoot` 默认 `C:\Tools\CloudManager\` `ServiceName` `BinaryPath` 可选覆盖
+- `uninstall_manager_service_windows.ps1`
+  - 参数: `ServiceName` `PurgeInstallDir` 可选
+- `update_manager_service_windows.ps1`
+  - 参数: `InstallRoot` `ServiceName` `NewBinaryPath`
+
+### 5.2 服务约束接口
+- 启动日志必须输出最终 `DataDir`。
+- 启动失败时返回明确错误 `install_dir_not_writable` 或 `data_dir_init_failed`。
+
+---
+
+## 6 执行单元包拆分
+
+- PKG-BE-10 数据目录约束改造
+- PKG-OPS-10 Windows 安装脚本
+- PKG-OPS-11 Windows 卸载与升级脚本
+- PKG-FE-10 子Tab残余占位清理与状态回写
+- PKG-QA-10 最小构建与服务安装验证
+
+---
+
+## 7 编码测试映射
+
+| 需求编号 | 执行单元包 | 验证口径 |
+|---|---|---|
+| RQ-004 | PKG-BE-10 PKG-FE-10 | 代码路径与文档执行状态一致 |
+| RQ-007 | PKG-QA-10 | 后端完成后再进入前端增量 |
+| RQ-008 | PKG-QA-10 | 原项目零改动审计持续通过 |
+| RQ-011 | PKG-BE-10 | 数据仅在安装目录落盘 |
+| RQ-012 | PKG-OPS-10 PKG-OPS-11 | Windows 服务安装 卸载 升级可执行 |
+
+---
+
+## 8 需求跟踪表更新说明
+- 新增 RQ-011 数据仅存储在安装目录。
+- 新增 RQ-012 提供 `manager_service` Windows 服务脚本能力。
+- RQ-004 从“通过”调整为“待修正后通过”，等待占位清理证据。
 
 ```mermaid
 flowchart TD
-  A[冻结Tab子Tab契约] --> B[探针管理域重构]
-  B --> C[网络助手与链路域重构]
-  C --> D[Cloudflare与TG域重构]
-  D --> E[系统设置域收敛]
-  E --> F[集成回归与发布验证]
-  F --> G[G3门禁申请]
+  A[代码复核] --> B[数据目录约束改造]
+  B --> C[Windows服务脚本交付]
+  C --> D[前端残余占位清理]
+  D --> E[构建与安装验证]
+  E --> F[门禁复核]
 ```
-
----
-
-## 7 本轮判定（最终完成）
-
-> **架构迁移全部完成（2026-04-12）**
-
-- 所有 Tab/子Tab（R2~R8 + W4）均已完成后端代理实现（BE）及前端接入重构（FE）。
-- **零 PENDING stub**：经最终扫描，前端代码中无任何 `R[456]-PENDING`、`W4-PENDING`、`notImplementedError()` 活跃调用。
-- 后端全部路由通过 `go build ./...` 零错误构建。
-- 前端（tsc + vite）零错误构建，bundle 约 354 KiB / gzip 94 KiB。
-- **单入口原则（RQ-003）满足**：前端严禁直连主控，所有业务经 `manager_service` 代理层。
-
-### 最终端点清单
-
-| 路由前缀 | 覆盖域 | 方法数 |
-|---|---|---|
-| `/api/probe/nodes/*` | R2 探针管理 | 11 |
-| `/api/link/*` | R4 链路管理 | 9 |
-| `/api/cloudflare/*` | R5 Cloudflare | 9 |
-| `/api/tg/*` | R6 TG 助手 | 24 |
-| `/api/system/*` | R8+W4 系统/备份/日志/升级/rule_routes | 10 |
-| `/api/network-assistant/*` | R3 网络助手 | 已实现 |
-| `/api/upgrade/*` `/api/logs/*` | manager 升级/日志 | 已实现 |
