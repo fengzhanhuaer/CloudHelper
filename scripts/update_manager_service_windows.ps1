@@ -2,7 +2,7 @@ param(
   [string]$InstallRoot = 'C:\Tools\CloudManager\',
   [string]$ServiceName = "CloudManagerService",
   [string]$NewBinaryPath = "",
-  [string]$GitHubRepo = "cloudhelper/CloudHelper",
+  [string]$GitHubRepo = "fengzhanhuaer/CloudHelper",
   [string]$AssetName = "cloudhelper-manager-service-windows-amd64.exe",
   [string]$Version = ""
 )

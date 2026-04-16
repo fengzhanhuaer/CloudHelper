@@ -5,7 +5,7 @@ param(
   [string]$ServiceDisplayName = "CloudManager Service",
   [string]$ServiceDescription = "CloudHelper manager_service backend service",
   [string]$ControllerURL = "http://127.0.0.1:15030",
-  [string]$GitHubRepo = "cloudhelper/CloudHelper",
+  [string]$GitHubRepo = "fengzhanhuaer/CloudHelper",
   [string]$AssetName = "cloudhelper-manager-service-windows-amd64.exe",
   [string]$Version = "",
   [switch]$Force

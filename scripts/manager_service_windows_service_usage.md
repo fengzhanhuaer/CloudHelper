@@ -30,7 +30,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_manager_se
 
 ## 安装参数说明
 - `-InstallRoot` 默认 `C:\Tools\CloudManager\`
-- `-GitHubRepo` 默认 `cloudhelper/CloudHelper`
+- `-GitHubRepo` 默认 `fengzhanhuaer/CloudHelper`
 - `-AssetName` 默认 `cloudhelper-manager-service-windows-amd64.exe`
 - `-Version` 可选，支持 `v1.2.3` 或 `1.2.3`，未传则下载 latest
 - `-BinaryPath` 可选，本地二进制覆盖（调试/离线兜底）
@@ -40,7 +40,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_manager_se
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_manager_service_windows.ps1 \
   -InstallRoot 'C:\Tools\CloudManager\' \
-  -GitHubRepo 'cloudhelper/CloudHelper' \
+  -GitHubRepo 'fengzhanhuaer/CloudHelper' \
   -AssetName 'cloudhelper-manager-service-windows-amd64.exe' \
   -Version 'v1.2.3' \
   -ControllerURL 'http://127.0.0.1:15030' \

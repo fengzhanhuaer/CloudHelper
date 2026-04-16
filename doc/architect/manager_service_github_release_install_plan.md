@@ -71,7 +71,7 @@
 
 ### PowerShell 参数扩展
 - 安装脚本新增
-  - `-GitHubRepo` 默认 `cloudhelper/CloudHelper`
+  - `-GitHubRepo` 默认 `fengzhanhuaer/CloudHelper`
   - `-AssetName` 默认 `cloudhelper-manager-service-windows-amd64.exe`
   - `-Version` 可选，支持 `v1.2.3` 或 `1.2.3`
 - 升级脚本新增同名参数，保持一致。
