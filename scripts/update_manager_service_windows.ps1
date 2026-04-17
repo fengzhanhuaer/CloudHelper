@@ -34,10 +34,10 @@ function Get-ServiceExists {
 }
 
 function Exec-Sc {
-  param([string[]]$Args)
-  & sc.exe @Args | Out-Host
+  param([string[]]$ScArgs)
+  & sc.exe @ScArgs | Out-Host
   if ($LASTEXITCODE -ne 0) {
-    Fail "sc.exe failed: $($Args -join ' ')"
+    Fail "sc.exe failed: $($ScArgs -join ' ')"
   }
 }
 
@@ -179,7 +179,7 @@ try {
   Write-Log "new binary: $newExe"
 
   try {
-    Exec-Sc -Args @("stop", $ServiceName)
+    Exec-Sc -ScArgs @("stop", $ServiceName)
   } catch {
     Write-Log "stop service ignored: $($_.Exception.Message)"
   }
@@ -193,7 +193,7 @@ try {
   Write-Log "binary replaced"
 
   try {
-    Exec-Sc -Args @("start", $ServiceName)
+    Exec-Sc -ScArgs @("start", $ServiceName)
     $svc = Get-Service -Name $ServiceName -ErrorAction Stop
     Write-Log "service status: $($svc.Status)"
     Write-Log "update completed"
@@ -201,7 +201,7 @@ try {
     Write-Log "start failed, rolling back binary..."
     Copy-Item -LiteralPath $backupExe -Destination $targetExe -Force
     try {
-      Exec-Sc -Args @("start", $ServiceName)
+      Exec-Sc -ScArgs @("start", $ServiceName)
     } catch {
       Write-Log "rollback start failed: $($_.Exception.Message)"
     }

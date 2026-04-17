@@ -31,10 +31,10 @@ function Get-ServiceExists {
 }
 
 function Exec-Sc {
-  param([string[]]$Args)
-  & sc.exe @Args | Out-Host
+  param([string[]]$ScArgs)
+  & sc.exe @ScArgs | Out-Host
   if ($LASTEXITCODE -ne 0) {
-    throw "sc.exe failed: $($Args -join ' ')"
+    throw "sc.exe failed: $($ScArgs -join ' ')"
   }
 }
 
@@ -57,13 +57,13 @@ Write-Log "install root: $installDir"
 
 if (Get-ServiceExists -Name $ServiceName) {
   try {
-    Exec-Sc -Args @("stop", $ServiceName)
+    Exec-Sc -ScArgs @("stop", $ServiceName)
   } catch {
     Write-Log "stop service ignored: $($_.Exception.Message)"
   }
 
   try {
-    Exec-Sc -Args @("delete", $ServiceName)
+    Exec-Sc -ScArgs @("delete", $ServiceName)
   } catch {
     Fail "delete service failed: $($_.Exception.Message)"
   }

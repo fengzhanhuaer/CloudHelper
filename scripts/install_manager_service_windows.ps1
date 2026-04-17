@@ -49,10 +49,10 @@ function Wait-ServiceDeleted {
 }
 
 function Exec-Sc {
-  param([string[]]$Args)
-  & sc.exe @Args | Out-Host
+  param([string[]]$ScArgs)
+  & sc.exe @ScArgs | Out-Host
   if ($LASTEXITCODE -ne 0) {
-    Fail "sc.exe failed: $($Args -join ' ')"
+    Fail "sc.exe failed: $($ScArgs -join ' ')"
   }
 }
 
@@ -218,13 +218,13 @@ try {
 
     Write-Log "existing service detected, reinstalling..."
     try {
-      Exec-Sc -Args @("stop", $ServiceName)
+      Exec-Sc -ScArgs @("stop", $ServiceName)
     } catch {
       Write-Log "stop existing service ignored: $($_.Exception.Message)"
     }
 
     try {
-      Exec-Sc -Args @("delete", $ServiceName)
+      Exec-Sc -ScArgs @("delete", $ServiceName)
     } catch {
       Write-Log "delete existing service ignored: $($_.Exception.Message)"
     }
@@ -232,13 +232,13 @@ try {
   }
 
   $binPath = '"' + $targetExe + '"'
-  Exec-Sc -Args @("create", $ServiceName, "binPath=", $binPath, "start=", "auto", "DisplayName=", $ServiceDisplayName)
-  Exec-Sc -Args @("description", $ServiceName, $ServiceDescription)
+  Exec-Sc -ScArgs @("create", $ServiceName, "binPath=", $binPath, "start=", "auto", "DisplayName=", $ServiceDisplayName)
+  Exec-Sc -ScArgs @("description", $ServiceName, $ServiceDescription)
 
   Write-ConfigFile -DataDir $dataDir -Controller $ControllerURL
   Write-Log "config written: $(Join-Path $dataDir 'manager_service_config.json')"
 
-  Exec-Sc -Args @("start", $ServiceName)
+  Exec-Sc -ScArgs @("start", $ServiceName)
   $svc = Get-Service -Name $ServiceName -ErrorAction Stop
   Write-Log "service status: $($svc.Status)"
   Write-Log "install completed"
