@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -23,17 +24,31 @@ import (
 var BuildVersion = "dev"
 
 func main() {
+	ranAsService, err := tryRunWindowsService()
+	if err != nil {
+		log.Fatalf("failed to bootstrap windows service mode: %v", err)
+	}
+	if ranAsService {
+		return
+	}
+
+	if err := runManager(nil); err != nil {
+		log.Fatalf("manager_service exited with error: %v", err)
+	}
+}
+
+func runManager(stop <-chan struct{}) error {
 	logging.Init()
 	logging.Infof("manager_service starting, version=%s", BuildVersion)
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
 	authSvc, err := auth.NewService(cfg.DataDir)
 	if err != nil {
-		log.Fatalf("failed to initialize auth service: %v", err)
+		return fmt.Errorf("failed to initialize auth service: %w", err)
 	}
 
 	nodeStore := node.NewStore(cfg.DataDir)
@@ -58,19 +73,43 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErrCh <- err
+			return
+		}
+		serverErrCh <- nil
+	}()
+
 	// RQ-002: only 127.0.0.1:16033 is permitted (enforced in config.Load()).
 	logging.Infof("listening on %s", cfg.ListenAddr)
 
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logging.Errorf("server error: %v", err)
-			os.Exit(1)
-		}
-	}()
+	if stop == nil {
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(quit)
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+		select {
+		case err := <-serverErrCh:
+			if err != nil {
+				return fmt.Errorf("server error: %w", err)
+			}
+			logging.Infof("manager_service stopped")
+			return nil
+		case <-quit:
+		}
+	} else {
+		select {
+		case err := <-serverErrCh:
+			if err != nil {
+				return fmt.Errorf("server error: %w", err)
+			}
+			logging.Infof("manager_service stopped")
+			return nil
+		case <-stop:
+		}
+	}
 
 	logging.Infof("shutting down manager_service...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -78,7 +117,12 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		logging.Errorf("graceful shutdown error: %v", err)
 	}
+
+	if err := <-serverErrCh; err != nil {
+		return fmt.Errorf("server error: %w", err)
+	}
 	logging.Infof("manager_service stopped")
+	return nil
 }
 
 func resolveLogDir() string {
@@ -87,4 +131,3 @@ func resolveLogDir() string {
 	}
 	return filepath.Join(".", "log")
 }
-
