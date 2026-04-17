@@ -12,6 +12,9 @@
 - 卸载：`scripts/uninstall_manager_service_windows.ps1`
 - 升级：`scripts/update_manager_service_windows.ps1`
 
+> 说明：安装脚本在服务已存在时会自动执行“停服务→删服务→重建服务”，无需再传 `-Force`。
+> `-Force` 参数仅保留兼容性，不再影响该行为。
+
 ## 前置条件
 1. 使用“管理员权限”打开 PowerShell
 2. 机器可访问 GitHub Release
@@ -34,7 +37,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_manager_se
 - `-AssetName` 默认 `cloudhelper-manager-service-windows-amd64.exe`
 - `-Version` 可选，支持 `v1.2.3` 或 `1.2.3`，未传则下载 latest
 - `-BinaryPath` 可选，本地二进制覆盖（调试/离线兜底）
-- `-Force` 服务存在时强制重装
+- `-Force` 兼容参数（当前安装脚本默认即会重装已存在服务）
 
 完整示例：
 ```powershell
@@ -43,8 +46,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_manager_se
   -GitHubRepo 'fengzhanhuaer/CloudHelper' \
   -AssetName 'cloudhelper-manager-service-windows-amd64.exe' \
   -Version 'v1.2.3' \
-  -ControllerURL 'http://127.0.0.1:15030' \
-  -Force
+  -ControllerURL 'http://127.0.0.1:15030'
 ```
 
 ## 卸载

@@ -212,11 +212,11 @@ try {
   Write-Log "binary copied: $targetExe"
 
   if (Get-ServiceExists -Name $ServiceName) {
-    if (-not $Force) {
-      Fail "service '$ServiceName' already exists; re-run with -Force to reinstall"
+    if ($Force) {
+      Write-Log "-Force detected; compatibility mode (reinstall is now default)"
     }
 
-    Write-Log "existing service detected, reinstalling..."
+    Write-Log "existing service detected, uninstalling and reinstalling..."
     try {
       Exec-Sc -ScArgs @("stop", $ServiceName)
     } catch {
