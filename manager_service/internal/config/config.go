@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,7 +56,13 @@ func Load() (*Config, error) {
 	if len(raw) > 0 {
 		raw = stripUTF8BOM(raw)
 		if err := json.Unmarshal(raw, cfg); err != nil {
-			return nil, fmt.Errorf("parse config file: %w", err)
+			fallbackRaw := stripTrailingPowerShellLiteralEOL(raw)
+			if bytes.Equal(fallbackRaw, raw) {
+				return nil, fmt.Errorf("parse config file: %w", err)
+			}
+			if err2 := json.Unmarshal(fallbackRaw, cfg); err2 != nil {
+				return nil, fmt.Errorf("parse config file: %w", err)
+			}
 		}
 	}
 
@@ -100,6 +107,23 @@ func stripUTF8BOM(raw []byte) []byte {
 		return raw[3:]
 	}
 	return raw
+}
+
+func stripTrailingPowerShellLiteralEOL(raw []byte) []byte {
+	cleaned := bytes.TrimRight(raw, " \t\r\n")
+	for {
+		switched := false
+		for _, suffix := range [][]byte{[]byte("`r`n"), []byte("`n"), []byte("`r")} {
+			if bytes.HasSuffix(cleaned, suffix) {
+				cleaned = bytes.TrimRight(cleaned[:len(cleaned)-len(suffix)], " \t\r\n")
+				switched = true
+			}
+		}
+		if !switched {
+			break
+		}
+	}
+	return cleaned
 }
 
 // resolveDataDir returns the directory where manager_service stores its state.

@@ -201,6 +201,51 @@ jobs:
           mkdir -p build/bin
           go build -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o build/bin/cloudhelper-manager-service-windows-amd64.exe .
 
+      - name: Smoke Test Manager Service Binary (Windows)
+        working-directory: manager_service
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD "build/bin/cloudhelper-manager-service-windows-amd64.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "binary not found: $exe"
+          }
+
+          $runtimeDir = Join-Path $PWD "build/smoke-runtime"
+          $dataDir = Join-Path $runtimeDir "data"
+          New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+
+          # Validate config backward compatibility: UTF-8 BOM JSON should be accepted.
+          $cfgPath = Join-Path $dataDir "manager_service_config.json"
+          $cfgJson = @'
+          {
+            "listen_addr": "127.0.0.1:16033",
+            "controller_url": "http://127.0.0.1:15030"
+          }
+          '@
+          $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+          [System.IO.File]::WriteAllText($cfgPath, $cfgJson, $utf8Bom)
+
+          $runtimeExe = Join-Path $runtimeDir "manager_service.exe"
+          Copy-Item -LiteralPath $exe -Destination $runtimeExe -Force
+
+          $proc = Start-Process -FilePath $runtimeExe -PassThru
+          try {
+            Start-Sleep -Seconds 2
+            if ($proc.HasExited) {
+              throw "manager_service exited early with code $($proc.ExitCode)"
+            }
+
+            $health = Invoke-WebRequest -Uri "http://127.0.0.1:16033/healthz" -UseBasicParsing -TimeoutSec 10
+            if ($health.StatusCode -ne 200) {
+              throw "healthz status=$($health.StatusCode)"
+            }
+          }
+          finally {
+            if (-not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force
+            }
+          }
+
       - name: Upload Manager Service Artifact
         uses: actions/upload-artifact@v4
         with:
