@@ -96,6 +96,27 @@ $u='https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/ins
 $u='https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_manager_service_windows.ps1';$s=Join-Path $env:TEMP 'install_manager_service_windows.ps1';iwr -UseBasicParsing $u -OutFile $s;powershell -NoProfile -ExecutionPolicy Bypass -File $s -Version v1.2.3
 ```
 
+## Windows 服务重启（manager_service）
+
+使用管理员权限 PowerShell：
+
+```powershell
+sc.exe stop CloudManagerService
+sc.exe start CloudManagerService
+```
+
+或直接：
+
+```powershell
+Restart-Service -Name CloudManagerService
+```
+
+状态检查：
+
+```powershell
+sc.exe query CloudManagerService
+```
+
 ## 运行验证
 
 ```bash
