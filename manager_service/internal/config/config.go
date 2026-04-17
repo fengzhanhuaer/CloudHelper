@@ -53,6 +53,7 @@ func Load() (*Config, error) {
 	}
 
 	if len(raw) > 0 {
+		raw = stripUTF8BOM(raw)
 		if err := json.Unmarshal(raw, cfg); err != nil {
 			return nil, fmt.Errorf("parse config file: %w", err)
 		}
@@ -92,6 +93,13 @@ func writeConfig(path string, cfg *Config) error {
 	}
 	raw = append(raw, '\n')
 	return os.WriteFile(path, raw, 0o644)
+}
+
+func stripUTF8BOM(raw []byte) []byte {
+	if len(raw) >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF {
+		return raw[3:]
+	}
+	return raw
 }
 
 // resolveDataDir returns the directory where manager_service stores its state.

@@ -178,7 +178,8 @@ function Write-ConfigFile {
     controller_url = $Controller
   }
   $raw = ($cfg | ConvertTo-Json -Depth 4)
-  Set-Content -LiteralPath $cfgPath -Value ($raw + "`r`n") -Encoding UTF8
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($cfgPath, ($raw + "`r`n"), $utf8NoBom)
 }
 
 Require-Admin
