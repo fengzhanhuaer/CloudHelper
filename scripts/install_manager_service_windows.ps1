@@ -215,9 +215,6 @@ try {
   $sourceExe = Resolve-SourceBinary -Requested $BinaryPath -Repo $GitHubRepo -Asset $AssetName -InputVersion $Version -TempDir $tempDir
   Write-Log "source exe: $sourceExe"
 
-  Copy-Item -LiteralPath $sourceExe -Destination $targetExe -Force
-  Write-Log "binary copied: $targetExe"
-
   if (Get-ServiceExists -Name $ServiceName) {
     if ($Force) {
       Write-Log "-Force detected; compatibility mode (reinstall is now default)"
@@ -237,6 +234,9 @@ try {
     }
     Wait-ServiceDeleted -Name $ServiceName
   }
+
+  Copy-Item -LiteralPath $sourceExe -Destination $targetExe -Force
+  Write-Log "binary copied: $targetExe"
 
   $binPath = '"' + $targetExe + '"'
   Exec-Sc -ScArgs @("create", $ServiceName, "binPath=", $binPath, "start=", "auto", "DisplayName=", $ServiceDisplayName)
