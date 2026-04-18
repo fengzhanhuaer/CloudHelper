@@ -1,9 +1,7 @@
-import React, { useState } from "react";
+import React from "react";
 import type { StatusTone } from "../types";
 
 type LoginPanelProps = {
-  baseUrl: string;
-  onBaseUrlChange: (value: string) => void;
   isAuthenticating: boolean;
   onLogin: (user: string, pass: string) => void;
   loginTone: StatusTone;
@@ -16,16 +14,6 @@ export function LoginPanel(props: LoginPanelProps) {
 
   return (
     <div className="panel login-panel">
-      <div className="row">
-        <label htmlFor="base-url">Controller URL</label>
-        <input
-          id="base-url"
-          className="input"
-          value={props.baseUrl}
-          onChange={(e) => props.onBaseUrlChange(e.target.value)}
-        />
-      </div>
-
       <div className="row">
         <label htmlFor="username">Username</label>
         <input

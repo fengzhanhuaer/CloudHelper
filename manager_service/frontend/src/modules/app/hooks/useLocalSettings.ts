@@ -6,6 +6,9 @@ import {
 
 export function useLocalSettings() {
   const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem("controller_base_url") || "http://127.0.0.1:15030");
+  const [baseUrlStatus, setBaseUrlStatus] = useState("");
+  const [isLoadingBaseUrl, setIsLoadingBaseUrl] = useState(false);
+  const [isSavingBaseUrl, setIsSavingBaseUrl] = useState(false);
   const [controllerIP, setControllerIPState] = useState(() => localStorage.getItem("controller_ip") || "");
   const [upgradeProject, setUpgradeProject] = useState(() => localStorage.getItem(STORAGE_UPGRADE_PROJECT) || DEFAULT_UPGRADE_PROJECT);
   const [controllerLoaded, setControllerLoaded] = useState(true);
@@ -28,6 +31,25 @@ export function useLocalSettings() {
       // ignore localStorage errors
     }
   }, [upgradeProject]);
+
+  async function refreshBaseUrl() {
+    setIsLoadingBaseUrl(true);
+    const next = (localStorage.getItem("controller_base_url") || "http://127.0.0.1:15030").trim() || "http://127.0.0.1:15030";
+    setBaseUrl(next);
+    setBaseUrlStatus(`Controller URL loaded: ${next}`);
+    setIsLoadingBaseUrl(false);
+    return next;
+  }
+
+  async function saveBaseUrl(value: string) {
+    setIsSavingBaseUrl(true);
+    const next = value.trim() || "http://127.0.0.1:15030";
+    localStorage.setItem("controller_base_url", next);
+    setBaseUrl(next);
+    setBaseUrlStatus(`Controller URL saved: ${next}`);
+    setIsSavingBaseUrl(false);
+    return next;
+  }
 
   async function refreshControllerIP() {
     setIsLoadingControllerIP(true);
@@ -59,6 +81,11 @@ export function useLocalSettings() {
   return {
     baseUrl,
     setBaseUrl,
+    baseUrlStatus,
+    isLoadingBaseUrl,
+    isSavingBaseUrl,
+    refreshBaseUrl,
+    saveBaseUrl,
     controllerIP,
     controllerIPStatus,
     isLoadingControllerIP,

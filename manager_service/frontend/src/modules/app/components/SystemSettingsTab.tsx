@@ -25,6 +25,12 @@ type SystemSettingsTabProps = {
   directRelease: ReleaseInfo | null;
   proxyRelease: ReleaseInfo | null;
   managerUpgradeProgress: UpgradeProgress;
+  controllerBaseUrl: string;
+  controllerBaseUrlStatus: string;
+  isLoadingControllerBaseUrl: boolean;
+  isSavingControllerBaseUrl: boolean;
+  onRefreshControllerBaseUrl: () => void;
+  onSaveControllerBaseUrl: (value: string) => void;
   controllerPreferredIP: string;
   controllerPreferredIPStatus: string;
   isLoadingControllerPreferredIP: boolean;
@@ -82,9 +88,14 @@ function UpgradeTimeline(props: { title: string; lines: string[] }) {
 
 export function SystemSettingsTab(props: SystemSettingsTabProps) {
   const [subTab, setSubTab] = useState<"upgrade" | "controller" | "ai-debug">("upgrade");
+  const [controllerBaseUrlInput, setControllerBaseUrlInput] = useState(props.controllerBaseUrl || "");
   const [controllerPreferredIPInput, setControllerPreferredIPInput] = useState(props.controllerPreferredIP || "");
   const [backupEnabledInput, setBackupEnabledInput] = useState(Boolean(props.backupEnabled));
   const [backupRemoteInput, setBackupRemoteInput] = useState(props.backupRcloneRemote || "");
+
+  useEffect(() => {
+    setControllerBaseUrlInput(props.controllerBaseUrl || "");
+  }, [props.controllerBaseUrl]);
 
   useEffect(() => {
     setControllerPreferredIPInput(props.controllerPreferredIP || "");
@@ -156,6 +167,40 @@ export function SystemSettingsTab(props: SystemSettingsTabProps) {
       {subTab === "controller" && (
         <>
           <div className="identity-card" style={{ marginBottom: 12 }}>
+            <div><strong>controller_url</strong></div>
+            <div className="status" style={{ marginTop: 8 }}>
+              主控地址统一由系统设置维护，登录界面与探针管理页不再单独配置。
+            </div>
+            <div className="row" style={{ marginBottom: 0 }}>
+              <label>controller_url</label>
+              <input
+                className="input"
+                value={controllerBaseUrlInput}
+                onChange={(event) => setControllerBaseUrlInput(event.target.value)}
+                placeholder="例如：http://127.0.0.1:15030"
+                disabled={props.isLoadingControllerBaseUrl || props.isSavingControllerBaseUrl}
+              />
+            </div>
+            <div className="content-actions inline">
+              <button
+                className="btn"
+                onClick={props.onRefreshControllerBaseUrl}
+                disabled={props.isLoadingControllerBaseUrl || props.isSavingControllerBaseUrl}
+              >
+                {props.isLoadingControllerBaseUrl ? "读取中..." : "读取设置"}
+              </button>
+              <button
+                className="btn"
+                onClick={() => props.onSaveControllerBaseUrl(controllerBaseUrlInput)}
+                disabled={props.isLoadingControllerBaseUrl || props.isSavingControllerBaseUrl}
+              >
+                {props.isSavingControllerBaseUrl ? "保存中..." : "保存设置"}
+              </button>
+            </div>
+          </div>
+          <div className="status">{props.controllerBaseUrlStatus}</div>
+
+          <div className="identity-card" style={{ marginTop: 12, marginBottom: 12 }}>
             <div><strong>controller_ip</strong></div>
             <div className="status" style={{ marginTop: 8 }}>
               独立配置字段，留空表示不配置。若 controller_url 的 host 使用域名且这里填写了 IP，则连接主控时会直接按该 IP 拨号，跳过 DNS 解析；controller_url 本身保持不变。

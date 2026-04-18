@@ -30,6 +30,11 @@ type TabContentProps = {
   onPingServer: () => void;
   onCheckAdminStatus: () => void;
   controllerBaseUrl: string;
+  controllerBaseUrlStatus: string;
+  isLoadingControllerBaseUrl: boolean;
+  isSavingControllerBaseUrl: boolean;
+  onRefreshControllerBaseUrl: () => void;
+  onSaveControllerBaseUrl: (value: string) => void;
   controllerPreferredIP: string;
   controllerPreferredIPStatus: string;
   isLoadingControllerPreferredIP: boolean;
@@ -275,6 +280,12 @@ export function TabContent(props: TabContentProps) {
           directRelease={props.directRelease}
           proxyRelease={props.proxyRelease}
           managerUpgradeProgress={props.managerUpgradeProgress}
+          controllerBaseUrl={props.controllerBaseUrl}
+          controllerBaseUrlStatus={props.controllerBaseUrlStatus}
+          isLoadingControllerBaseUrl={props.isLoadingControllerBaseUrl}
+          isSavingControllerBaseUrl={props.isSavingControllerBaseUrl}
+          onRefreshControllerBaseUrl={props.onRefreshControllerBaseUrl}
+          onSaveControllerBaseUrl={props.onSaveControllerBaseUrl}
           controllerPreferredIP={props.controllerPreferredIP}
           controllerPreferredIPStatus={props.controllerPreferredIPStatus}
           isLoadingControllerPreferredIP={props.isLoadingControllerPreferredIP}

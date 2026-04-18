@@ -95,7 +95,7 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const shellOutputRef = useRef<HTMLPreElement | null>(null);
   const upgradeLogPollingDeadlineRef = useRef(0);
   const [nodeNameInput, setNodeNameInput] = useState("");
-  const [controllerAddress, setControllerAddress] = useState(props.controllerBaseUrl || "");
+  const controllerAddress = props.controllerBaseUrl;
   const [nodes, setNodes] = useState<ProbeNodeItem[]>([]);
   const [nodeStatusItems, setNodeStatusItems] = useState<ProbeNodeStatusItem[]>([]);
   const [reportIntervalInput, setReportIntervalInput] = useState("60");
@@ -131,12 +131,6 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
   const [shortcutCommandInput, setShortcutCommandInput] = useState("");
   const [upgradeMessages, setUpgradeMessages] = useState<string[]>([]);
   const [upgradeMessageCopyStatus, setUpgradeMessageCopyStatus] = useState("");
-
-  useEffect(() => {
-    if (!controllerAddress.trim() && props.controllerBaseUrl.trim()) {
-      setControllerAddress(props.controllerBaseUrl.trim());
-    }
-  }, [controllerAddress, props.controllerBaseUrl]);
 
   useEffect(() => {
     void (async () => {
@@ -891,14 +885,10 @@ export function ProbeManageTab(props: ProbeManageTabProps) {
       {subTab === "list" ? (
         <div style={{ marginTop: 12 }}>
           <div className="identity-card" style={{ marginBottom: 12 }}>
-            <div>主控地址（用于"非直连"安装命令）</div>
-            <input
-              className="input"
-              value={controllerAddress}
-              placeholder="例如：https://controller.example.com"
-              onChange={(event) => setControllerAddress(event.target.value)}
-              disabled={isLoading}
-            />
+            <div>主控地址（来自系统设置，用于"非直连"安装命令）</div>
+            <div className="status" style={{ marginTop: 8 }}>
+              {controllerAddress ? controllerAddress : "未配置，默认使用 http://127.0.0.1:15030"}
+            </div>
             <div className="content-actions">
               <button className="btn" onClick={() => void loadNodes({ includeStatus: false, persistToCacheFile: true })} disabled={isLoading}>刷新列表</button>
               <button className="btn" onClick={() => setShowCreateModal(true)} disabled={isLoading}>新建探针</button>

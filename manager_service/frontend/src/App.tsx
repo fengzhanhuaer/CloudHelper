@@ -109,8 +109,6 @@ function App() {
       <div id="App">
         <img src={logo} id="logo" alt="logo" />
         <LoginPanel
-          baseUrl={settings.baseUrl}
-          onBaseUrlChange={settings.setBaseUrl}
           isAuthenticating={auth.isAuthenticating}
           onLogin={handleLogin}
           loginTone={auth.loginTone}
@@ -143,6 +141,11 @@ function App() {
             onPingServer={() => connection.pingServer(settings.baseUrl, auth.sessionToken)}
             onCheckAdminStatus={() => connection.checkAdminStatus(settings.baseUrl, auth.sessionToken)}
             controllerBaseUrl={settings.baseUrl}
+            controllerBaseUrlStatus={settings.baseUrlStatus}
+            isLoadingControllerBaseUrl={settings.isLoadingBaseUrl}
+            isSavingControllerBaseUrl={settings.isSavingBaseUrl}
+            onRefreshControllerBaseUrl={() => void settings.refreshBaseUrl()}
+            onSaveControllerBaseUrl={(value) => void settings.saveBaseUrl(value)}
             controllerPreferredIP={settings.controllerIP}
             controllerPreferredIPStatus={settings.controllerIPStatus}
             isLoadingControllerPreferredIP={settings.isLoadingControllerIP}
