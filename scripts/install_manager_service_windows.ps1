@@ -166,13 +166,18 @@ function Resolve-SourceBinary {
   return $target
 }
 
-function Write-ConfigFile {
+function Ensure-ConfigFile {
   param(
     [string]$DataDir,
     [string]$Controller
   )
 
   $cfgPath = Join-Path $DataDir "manager_service_config.json"
+  if (Test-Path -LiteralPath $cfgPath) {
+    Write-Log "config exists, keep unchanged: $cfgPath"
+    return
+  }
+
   $cfg = [ordered]@{
     listen_addr    = "127.0.0.1:16033"
     controller_url = $Controller
@@ -180,6 +185,7 @@ function Write-ConfigFile {
   $raw = ($cfg | ConvertTo-Json -Depth 4)
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($cfgPath, ($raw + "`r`n"), $utf8NoBom)
+  Write-Log "config created: $cfgPath"
 }
 
 Require-Admin
@@ -236,8 +242,7 @@ try {
   Exec-Sc -ScArgs @("create", $ServiceName, "binPath=", $binPath, "start=", "auto", "DisplayName=", $ServiceDisplayName)
   Exec-Sc -ScArgs @("description", $ServiceName, $ServiceDescription)
 
-  Write-ConfigFile -DataDir $dataDir -Controller $ControllerURL
-  Write-Log "config written: $(Join-Path $dataDir 'manager_service_config.json')"
+  Ensure-ConfigFile -DataDir $dataDir -Controller $ControllerURL
 
   Exec-Sc -ScArgs @("start", $ServiceName)
   $svc = Get-Service -Name $ServiceName -ErrorAction Stop

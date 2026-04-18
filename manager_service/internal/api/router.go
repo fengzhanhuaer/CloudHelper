@@ -3,6 +3,7 @@ package api
 import (
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/cloudhelper/manager_service/internal/adapter/controller"
 	"github.com/cloudhelper/manager_service/internal/adapter/netassist"
@@ -34,7 +35,7 @@ func NewRouter(opts RouterOptions) *gin.Engine {
 	authH := handler.NewAuthHandler(opts.AuthSvc)
 	nodeH := handler.NewNodeHandler(opts.NodeStore)
 	upgradeH := handler.NewUpgradeHandler(opts.LogDir)
-	
+
 	var ctrlH *handler.ControllerHandler
 	if opts.ControllerSession != nil {
 		ctrlH = handler.NewControllerHandler(opts.ControllerSession, opts.AuthSvc)
@@ -45,7 +46,7 @@ func NewRouter(opts RouterOptions) *gin.Engine {
 	}
 
 	mux.GET("/healthz", sysH.Healthz)
-	
+
 	apiGroup := mux.Group("/api")
 	{
 		apiGroup.POST("/auth/login", authH.Login)
@@ -199,14 +200,16 @@ func NewRouter(opts RouterOptions) *gin.Engine {
 	if err == nil {
 		fileServer := http.FileServer(http.FS(distFS))
 		mux.NoRoute(func(c *gin.Context) {
-			path := c.Request.URL.Path
+			path := strings.TrimPrefix(c.Request.URL.Path, "/")
 			// Try to serve the static asset; fall back to index.html for SPA routes.
-			if _, err := distFS.(fs.StatFS).Stat(path[1:]); err == nil {
-				fileServer.ServeHTTP(c.Writer, c.Request)
-			} else {
-				c.Request.URL.Path = "/"
-				fileServer.ServeHTTP(c.Writer, c.Request)
+			if path != "" {
+				if _, err := fs.Stat(distFS, path); err == nil {
+					fileServer.ServeHTTP(c.Writer, c.Request)
+					return
+				}
 			}
+			c.Request.URL.Path = "/"
+			fileServer.ServeHTTP(c.Writer, c.Request)
 		})
 	}
 	return mux

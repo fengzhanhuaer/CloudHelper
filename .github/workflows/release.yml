@@ -239,6 +239,14 @@ jobs:
             if ($health.StatusCode -ne 200) {
               throw "healthz status=$($health.StatusCode)"
             }
+
+            $index = Invoke-WebRequest -Uri "http://127.0.0.1:16033/" -UseBasicParsing -TimeoutSec 10
+            if ($index.StatusCode -ne 200) {
+              throw "index status=$($index.StatusCode)"
+            }
+            if (-not $index.Content.Contains("<div id=\"root\"></div>")) {
+              throw "index content missing SPA root"
+            }
           }
           finally {
             if (-not $proc.HasExited) {

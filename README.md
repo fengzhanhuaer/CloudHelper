@@ -121,8 +121,8 @@ sc.exe query CloudManagerService
 
 ```bash
 sudo systemctl status probe_controller --no-pager
-curl -I http://127.0.0.1:15030/dashboard
-curl -s -H "X-Forwarded-Proto: https" http://127.0.0.1:15030/dashboard/status
+curl -I http://127.0.0.1:16033/dashboard
+curl -s -H "X-Forwarded-Proto: https" http://127.0.0.1:16033/dashboard/status
 ```
 
 ## 常用服务命令
