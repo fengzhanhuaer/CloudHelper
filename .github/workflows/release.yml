@@ -244,7 +244,7 @@ jobs:
             if ($index.StatusCode -ne 200) {
               throw "index status=$($index.StatusCode)"
             }
-            if (-not $index.Content.Contains("<div id=\"root\"></div>")) {
+            if (-not $index.Content.Contains('<div id="root"></div>')) {
               throw "index content missing SPA root"
             }
           }
