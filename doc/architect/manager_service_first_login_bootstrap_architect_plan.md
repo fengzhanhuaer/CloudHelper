@@ -27,10 +27,12 @@
 - 跟踪表状态: 待实现
 - 结论记录: 采用 首次本机注册 + 永久关闭注册接口 + reset-local 回到未初始化态 的统一方案。
 
-## 编码格式基线
-- Go: 使用 [`gofmt`](manager_service/main.go:1) 与 [`go vet`](manager_service/main.go:1) 作为基线。
-- TypeScript: 沿用现有 ESLint 与 Prettier 规范，保持 [`manager_service/frontend/src`](manager_service/frontend/src) 既有风格。
-- PowerShell: 保持 [`scripts`](scripts) 目录既有脚本风格。
+## 字符集编码基线
+- 字符集类型: 保持原格式，不做统一改写；新增与修改文件沿用各自文件当前字符集。
+- BOM策略: 保持原格式，不额外新增或移除 BOM。
+- 换行符规则: 保持原格式，不做全量 CRLF 或 LF 迁移。
+- 跨平台兼容: 在不改变现有文件编码与换行的前提下，确保 Go 与前端与 PowerShell 文件在现有工具链可读可编辑。
+- 历史文件迁移策略: 本需求不做批量迁移，仅在必要变更文件内延续原有编码与换行。
 
 ## 关键选型与取舍
 
