@@ -62,6 +62,9 @@
 - 构建链路改造：
   - `manager_service/frontend/vite.config.js` 作为唯一构建配置，保留 `/api` 代理至 `http://127.0.0.1:16033`。
   - `manager_service/frontend/package.json` 构建脚本为 `vite build`，仅保留 Vite 开发依赖。
+- 嵌入链路落地：
+  - 前端构建产物已同步至 `manager_service/web/dist`，由 `manager_service/web/embed.go` 的 `//go:embed all:dist` 参与打包进 `manager_service` 可执行文件。
+  - 发布流水线 `/.github/workflows/release.yml` 的 `build-manager-service` 已新增前端依赖安装、`npm run build` 与 `frontend/dist -> web/dist` 同步步骤，再执行 `go build`。
 - 历史 React/TS 工程文件清理：
   - 删除 `manager_service/frontend/vite.config.ts`、`manager_service/frontend/tsconfig.json`、`manager_service/frontend/tsconfig.node.json`。
   - 删除 `manager_service/frontend/src/main.tsx`、`manager_service/frontend/src/App.tsx`、`manager_service/frontend/src/vite-env.d.ts`。
@@ -71,6 +74,8 @@
 - `npm run build`（`manager_service/frontend`）通过。
 - 产物校验通过：`dist/index.html`、`dist/assets/index.*.js`、`dist/assets/index.*.css` 正常生成。
 - 清理校验通过：源码目录无 `.ts`/`.tsx` 业务文件残留（仅 `node_modules/*.d.ts` 依赖声明文件保留）。
+- 嵌入同步校验通过：`manager_service/frontend/dist` 与 `manager_service/web/dist` 文件清单及 SHA256 一致。
+- 二进制构建校验通过：`manager_service` 执行 `go build -o build/bin/cloudhelper-manager-service-windows-amd64.exe .` 成功。
 
 ## 待测试移交项
 - 登录/登出流程回归（含 401 失效后重登）。

@@ -189,6 +189,32 @@ jobs:
           cache-dependency-path: |
             manager_service/go.sum
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: |
+            manager_service/frontend/package-lock.json
+
+      - name: Install Manager Frontend Dependencies
+        working-directory: manager_service/frontend
+        shell: bash
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Build Manager Frontend
+        working-directory: manager_service/frontend
+        shell: bash
+        run: npm run build
+
+      - name: Sync Frontend Dist to Embed Directory
+        working-directory: manager_service
+        shell: bash
+        run: |
+          rm -rf web/dist
+          mkdir -p web/dist
+          cp -R frontend/dist/. web/dist/
+
       - name: Build Manager Service (Windows amd64)
         working-directory: manager_service
         env:
