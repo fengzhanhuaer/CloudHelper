@@ -66,3 +66,14 @@ func (s *DataStore) Save() error {
 	triggerAutoBackupControllerDataAsync("main_store_save")
 	return nil
 }
+
+func NewDataStoreForTest(path string) *DataStore {
+	return &DataStore{
+		path: path,
+		Data: make(map[string]interface{}),
+	}
+}
+
+func SetStoreForTest(store *DataStore) {
+	Store = store
+}

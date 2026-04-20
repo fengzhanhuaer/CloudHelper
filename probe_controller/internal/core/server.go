@@ -27,6 +27,7 @@ func Run() {
 		logControllerWarnf("failed to cleanup stale controller executable files: %v", err)
 	}
 	initAuth()
+	initMngAuth()
 	initProbeReportIntervalControl()
 	triggerAutoBackupControllerDataAsync("startup")
 
@@ -58,6 +59,14 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/dashboard/status", dashboardStatusHandler)
 	mux.HandleFunc("/dashboard/probes", dashboardProbesHandler)
 	mux.HandleFunc("/dashboard", dashboardHandler)
+	mux.HandleFunc("/mng/api/bootstrap", mngBootstrapHandler)
+	mux.HandleFunc("/mng/api/register", mngRegisterHandler)
+	mux.HandleFunc("/mng/api/login", mngLoginHandler)
+	mux.HandleFunc("/mng/api/logout", mngLogoutHandler)
+	mux.HandleFunc("/mng/api/session", mngSessionHandler)
+	mux.HandleFunc("/mng/api/panel/summary", mngAuthRequiredMiddleware(mngPanelSummaryHandler))
+	mux.HandleFunc("/mng", mngEntryHandler)
+	mux.HandleFunc("/mng/panel", mngAuthRequiredMiddleware(mngPanelHandler))
 	mux.HandleFunc("/dashboard/favicon.svg", faviconSVGHandler)
 	mux.HandleFunc("/dashboard/favicon.ico", faviconICOHandler)
 	mux.HandleFunc("/favicon.svg", faviconSVGHandler)

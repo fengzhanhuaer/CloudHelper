@@ -54,6 +54,21 @@ func authRequiredMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func mngAuthRequiredMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, _, err := currentMngSessionFromRequest(r)
+		if err != nil {
+			if strings.HasPrefix(strings.TrimSpace(r.URL.Path), "/mng/api/") {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired mng session"})
+				return
+			}
+			http.Redirect(w, r, "/mng", http.StatusFound)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func requireHTTPSMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !isHTTPSRequest(r) {
