@@ -40,6 +40,9 @@
     .split { display:grid; grid-template-columns:2fr 1fr; gap:10px; }
     .card { border:1px solid #30363d; border-radius:10px; padding:10px; background:#0d1117; }
     ul { margin:6px 0; padding-left:18px; }
+    .ip-list { display:flex; flex-direction:column; gap:4px; margin:4px 0 6px; }
+    .ip-copy-btn { display:block; width:100%; text-align:left; padding:4px 6px; border-radius:6px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; cursor:pointer; }
+    .ip-copy-btn:hover { border-color:#58a6ff; color:#58a6ff; }
   </style>
 </head>
 <body>
@@ -240,6 +243,20 @@
       return `${v.toFixed(precision)} ${units[idx]}`;
     }
 
+    function renderIPLines(family, list) {
+      if (!Array.isArray(list) || list.length === 0) {
+        return `<div class="muted">${family}: -</div>`;
+      }
+      const lines = list.map((value) => {
+        const ip = String(value || '').trim();
+        if (!ip) return '';
+        const encoded = encodeURIComponent(ip);
+        return `<button class="ip-copy-btn mono" type="button" data-action="copy-ip" data-ip="${encoded}" title="点击复制">${ip}</button>`;
+      }).filter(Boolean).join('');
+      if (!lines) return `<div class="muted">${family}: -</div>`;
+      return `<div class="muted">${family}:</div><div class="ip-list">${lines}</div>`;
+    }
+
 
     function renderNodeSelect() {
       const options = state.nodes.map((node) => `<option value="${node.node_no}">${node.node_no} - ${node.node_name}</option>`).join('');
@@ -301,8 +318,8 @@
       body.innerHTML = state.statusItems.map((item) => {
         const rt = item.runtime || {};
         const metrics = rt.system || {};
-        const ips4 = Array.isArray(rt.ipv4) ? rt.ipv4.join(', ') : '-';
-        const ips6 = Array.isArray(rt.ipv6) ? rt.ipv6.join(', ') : '-';
+        const ips4Html = renderIPLines('v4', rt.ipv4);
+        const ips6Html = renderIPLines('v6', rt.ipv6);
         const online = rt.online === true;
         const cpuPercent = formatPercent(metrics.cpu_percent);
         const memoryPercent = formatPercent(metrics.memory_used_percent);
@@ -320,7 +337,7 @@
           <td><span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : '离线'}</span></td>
           <td>${formatTime(rt.last_seen)}</td>
           <td>${rt.version || '-'}</td>
-          <td><div class="muted">v4: ${ips4}</div><div class="muted">v6: ${ips6}</div></td>
+          <td>${ips4Html}${ips6Html}</td>
           <td class="mono">
             <div>CPU：相对 ${cpuPercent} / 绝对 -</div>
             <div>内存：相对 ${memoryPercent} / 绝对 ${memoryUsed} / ${memoryTotal}</div>
@@ -484,6 +501,29 @@
       setStatus('已填充快捷命令，点击“执行命令”即可运行', 'ok');
     }
 
+    async function copyIP(value) {
+      const text = String(value || '').trim();
+      if (!text) return;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const input = document.createElement('textarea');
+          input.value = text;
+          input.setAttribute('readonly', 'readonly');
+          input.style.position = 'fixed';
+          input.style.left = '-9999px';
+          document.body.appendChild(input);
+          input.select();
+          document.execCommand('copy');
+          document.body.removeChild(input);
+        }
+        setStatus(`已复制 IP：${text}`, 'ok');
+      } catch (_) {
+        setStatus('复制失败，请手动复制', 'warn');
+      }
+    }
+
     async function createNode() {
       const nodeName = String(document.getElementById('create-node-name').value || '').trim();
       if (!nodeName) {
@@ -628,6 +668,11 @@
       const action = String(button.getAttribute('data-action') || '').trim();
       if (!action) return;
 
+      if (action === 'copy-ip') {
+        const encoded = String(button.getAttribute('data-ip') || '');
+        void copyIP(decodeURIComponent(encoded));
+        return;
+      }
       if (action === 'node-edit') {
         const nodeNo = Number(button.getAttribute('data-node-no'));
         if (Number.isFinite(nodeNo) && nodeNo > 0) {
