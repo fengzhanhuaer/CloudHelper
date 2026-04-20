@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CloudHelper 管理面板</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { max-width:980px; margin:5vh auto; padding:20px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    h1 { margin:0; font-size:24px; }
+    .sub { color:#8b949e; margin:4px 0 0; font-size:13px; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
+    .tile { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:16px; min-height:126px; box-sizing:border-box; }
+    .tile-title { font-size:15px; font-weight:600; margin-bottom:8px; }
+    .tile-value { font-size:24px; font-family:Consolas,monospace; }
+    .tile-sub { margin-top:8px; color:#8b949e; font-size:12px; }
+    .tile-link { display:block; text-decoration:none; color:#c9d1d9; transition:all .15s ease; }
+    .tile-link:hover { border-color:#58a6ff; transform:translateY(-1px); box-shadow:0 4px 16px rgba(31,111,235,.2); }
+    .ok { color:#7ee787; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>/mng 磁贴面板</h1>
+        <p class="sub">磁贴数量可扩展，系统设置入口位于下方磁贴。</p>
+      </div>
+      <button id="btn-logout" class="btn" type="button">退出登录</button>
+    </div>
+
+    <div class="tiles">
+      <a href="/mng/settings" class="tile tile-link" id="tile-settings" target="_blank" rel="noopener noreferrer">
+        <div class="tile-title">系统设置</div>
+        <div class="tile-value">⚙</div>
+        <div class="tile-sub">进入设置与升级页面</div>
+      </a>
+
+      <div class="tile">
+        <div class="tile-title">运行状态</div>
+        <div class="tile-value ok">在线</div>
+        <div class="tile-sub" id="server-time">--</div>
+      </div>
+
+      <div class="tile">
+        <div class="tile-title">当前版本</div>
+        <div class="tile-value" id="version">--</div>
+        <div class="tile-sub">Controller Version</div>
+      </div>
+
+      <div class="tile">
+        <div class="tile-title">运行时长</div>
+        <div class="tile-value" id="uptime">--:--:--</div>
+        <div class="tile-sub">从服务启动开始计时</div>
+      </div>
+
+      <div class="tile">
+        <div class="tile-title">当前账号</div>
+        <div class="tile-value" id="username">--</div>
+        <div class="tile-sub">/mng 独立会话</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function formatUptime(seconds) {
+      const sec = Number(seconds || 0);
+      const h = Math.floor(sec / 3600).toString().padStart(2, '0');
+      const m = Math.floor((sec % 3600) / 60).toString().padStart(2, '0');
+      const s = Math.floor(sec % 60).toString().padStart(2, '0');
+      return h + ':' + m + ':' + s;
+    }
+
+    async function loadSummary() {
+      const res = await fetch('/mng/api/panel/summary', { credentials: 'same-origin' });
+      if (res.status === 401) {
+        location.href = '/mng';
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) return;
+      document.getElementById('uptime').textContent = formatUptime(data.uptime);
+      document.getElementById('version').textContent = data.version || 'dev';
+      document.getElementById('server-time').textContent = data.server_time || '--';
+    }
+
+    async function loadSession() {
+      const res = await fetch('/mng/api/session', { credentials: 'same-origin' });
+      const data = await res.json();
+      if (!res.ok || !data.authenticated) {
+        location.href = '/mng';
+        return;
+      }
+      document.getElementById('username').textContent = data.username || '--';
+    }
+
+    async function logout() {
+      await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.href = '/mng';
+    }
+
+    document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
+
+    loadSession();
+    loadSummary();
+    setInterval(loadSummary, 2000);
+  </script>
+</body>
+</html>
