@@ -171,128 +171,12 @@ jobs:
           name: cloudhelper-probe-manager-windows-amd64.exe
           path: probe_manager/build/bin/cloudhelper-probe-manager-windows-amd64.exe
 
-  build-manager-service:
-    needs: prepare-release
-    runs-on: windows-latest
-    steps:
-      - name: Checkout Tagged Source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: v${{ needs.prepare-release.outputs.new_version }}
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.1'
-          cache: true
-          cache-dependency-path: |
-            manager_service/go.sum
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: |
-            manager_service/frontend/package-lock.json
-
-      - name: Install Manager Frontend Dependencies
-        working-directory: manager_service/frontend
-        shell: bash
-        run: npm ci --prefer-offline --no-audit --fund=false
-
-      - name: Build Manager Frontend
-        working-directory: manager_service/frontend
-        shell: bash
-        run: npm run build
-
-      - name: Sync Frontend Dist to Embed Directory
-        working-directory: manager_service
-        shell: bash
-        run: |
-          rm -rf web/dist
-          mkdir -p web/dist
-          cp -R frontend/dist/. web/dist/
-
-      - name: Build Manager Service (Windows amd64)
-        working-directory: manager_service
-        env:
-          GOOS: windows
-          GOARCH: amd64
-          CGO_ENABLED: 0
-          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
-        shell: bash
-        run: |
-          mkdir -p build/bin
-          go build -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o build/bin/cloudhelper-manager-service-windows-amd64.exe .
-
-      - name: Smoke Test Manager Service Binary (Windows)
-        working-directory: manager_service
-        shell: pwsh
-        run: |
-          $exe = Join-Path $PWD "build/bin/cloudhelper-manager-service-windows-amd64.exe"
-          if (-not (Test-Path -LiteralPath $exe)) {
-            throw "binary not found: $exe"
-          }
-
-          $runtimeDir = Join-Path $PWD "build/smoke-runtime"
-          $dataDir = Join-Path $runtimeDir "data"
-          New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
-
-          # Validate config backward compatibility: UTF-8 BOM JSON should be accepted.
-          $cfgPath = Join-Path $dataDir "manager_service_config.json"
-          $cfgJson = @'
-          {
-            "listen_addr": "127.0.0.1:16033",
-            "controller_url": "http://127.0.0.1:15030"
-          }
-          '@
-          $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-          [System.IO.File]::WriteAllText($cfgPath, $cfgJson, $utf8Bom)
-
-          $runtimeExe = Join-Path $runtimeDir "manager_service.exe"
-          Copy-Item -LiteralPath $exe -Destination $runtimeExe -Force
-
-          $proc = Start-Process -FilePath $runtimeExe -PassThru
-          try {
-            Start-Sleep -Seconds 2
-            if ($proc.HasExited) {
-              throw "manager_service exited early with code $($proc.ExitCode)"
-            }
-
-            $health = Invoke-WebRequest -Uri "http://127.0.0.1:16033/healthz" -UseBasicParsing -TimeoutSec 10
-            if ($health.StatusCode -ne 200) {
-              throw "healthz status=$($health.StatusCode)"
-            }
-
-            $index = Invoke-WebRequest -Uri "http://127.0.0.1:16033/" -UseBasicParsing -TimeoutSec 10
-            if ($index.StatusCode -ne 200) {
-              throw "index status=$($index.StatusCode)"
-            }
-            if (-not $index.Content.Contains('<div id="root"></div>')) {
-              throw "index content missing SPA root"
-            }
-          }
-          finally {
-            if (-not $proc.HasExited) {
-              Stop-Process -Id $proc.Id -Force
-            }
-          }
-
-      - name: Upload Manager Service Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloudhelper-manager-service-windows-amd64.exe
-          path: manager_service/build/bin/cloudhelper-manager-service-windows-amd64.exe
-
   create-release:
     needs:
       - prepare-release
       - build-probe-controller
       - build-probe-node
       - build-probe-manager
-      - build-manager-service
     runs-on: ubuntu-latest
     steps:
       - name: Download Probe Controller Artifact
@@ -325,12 +209,6 @@ jobs:
           name: cloudhelper-probe-manager-windows-amd64.exe
           path: release-assets
 
-      - name: Download Manager Service Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: cloudhelper-manager-service-windows-amd64.exe
-          path: release-assets
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -342,4 +220,3 @@ jobs:
             release-assets/cloudhelper-probe-node-linux-arm64
             release-assets/cloudhelper-probe-node-windows-amd64.exe
             release-assets/cloudhelper-probe-manager-windows-amd64.exe
-            release-assets/cloudhelper-manager-service-windows-amd64.exe

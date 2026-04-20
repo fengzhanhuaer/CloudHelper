@@ -77,52 +77,12 @@ iwr -UseBasicParsing "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelpe
 - `PROBE_CONTROLLER_URL`
 - `INSTALL_DIR`（默认 `C:\Tools`，运行目录为 `INSTALL_DIR\probe_node`）
 
-## Windows 一键安装（manager_service）
-
-使用管理员权限 PowerShell 执行（下载脚本并立即安装）：
-
-```powershell
-$ts=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();$u="https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_manager_service_windows.ps1?ts=$ts";$s=Join-Path $env:TEMP ("install_manager_service_windows_"+[guid]::NewGuid().ToString("N")+".ps1");iwr -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} $u -OutFile $s -ErrorAction Stop;powershell -NoProfile -ExecutionPolicy Bypass -File $s
-```
-
-默认会：
-- 从 GitHub Releases 下载最新 `cloudhelper-manager-service-windows-amd64.exe`
-- 安装到 `C:\Tools\CloudManager\`
-- 注册并启动 `CloudManagerService` Windows 服务
-
-指定版本安装示例：
-
-```powershell
-$ts=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();$u="https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_manager_service_windows.ps1?ts=$ts";$s=Join-Path $env:TEMP ("install_manager_service_windows_"+[guid]::NewGuid().ToString("N")+".ps1");iwr -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} $u -OutFile $s -ErrorAction Stop;powershell -NoProfile -ExecutionPolicy Bypass -File $s -Version v1.2.3
-```
-
-## Windows 服务重启（manager_service）
-
-使用管理员权限 PowerShell：
-
-```powershell
-sc.exe stop CloudManagerService
-sc.exe start CloudManagerService
-```
-
-或直接：
-
-```powershell
-Restart-Service -Name CloudManagerService
-```
-
-状态检查：
-
-```powershell
-sc.exe query CloudManagerService
-```
-
 ## 运行验证
 
 ```bash
 sudo systemctl status probe_controller --no-pager
-curl -I http://127.0.0.1:16033/dashboard
-curl -s -H "X-Forwarded-Proto: https" http://127.0.0.1:16033/dashboard/status
+curl -I http://127.0.0.1:15030/dashboard
+curl -s -H "X-Forwarded-Proto: https" http://127.0.0.1:15030/dashboard/status
 ```
 
 ## 常用服务命令

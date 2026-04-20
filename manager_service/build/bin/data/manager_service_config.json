@@ -1,5 +1,0 @@
-{
-  "listen_addr": "127.0.0.1:16033",
-  "controller_url": "http://127.0.0.1:15030",
-  "data_dir": "d:\\Code\\CloudHelper\\manager_service\\build\\bin\\data"
-}
