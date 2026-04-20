@@ -79,10 +79,9 @@
             <tr>
               <th>#</th>
               <th>名称</th>
-              <th>系统</th>
-              <th>连接</th>
+              <th>系统/连接</th>
               <th>备注/DDNS</th>
-              <th>更新时间</th>
+              <th>版本/更新时间</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -220,9 +219,27 @@
       return Number.isNaN(dt.getTime()) ? text : dt.toLocaleString();
     }
 
-    function tabButtonMarkup(name, className) {
-      return `<button class="btn ${className || ''}" type="button">${name}</button>`;
+    function formatPercent(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return '-';
+      return `${n.toFixed(1)}%`;
     }
+
+    function formatBytes(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0) return '-';
+      if (n === 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+      let v = n;
+      let idx = 0;
+      while (v >= 1024 && idx < units.length - 1) {
+        v /= 1024;
+        idx += 1;
+      }
+      const precision = v >= 100 ? 0 : (v >= 10 ? 1 : 2);
+      return `${v.toFixed(precision)} ${units[idx]}`;
+    }
+
 
     function renderNodeSelect() {
       const options = state.nodes.map((node) => `<option value="${node.node_no}">${node.node_no} - ${node.node_name}</option>`).join('');
@@ -233,20 +250,25 @@
     function renderNodes() {
       const body = document.getElementById('node-list-body');
       if (!state.nodes.length) {
-        body.innerHTML = '<tr><td colspan="7" class="muted">暂无活跃探针</td></tr>';
+        body.innerHTML = '<tr><td colspan="6" class="muted">暂无活跃探针</td></tr>';
       } else {
+        const statusByNodeNo = new Map(
+          state.statusItems.map((entry) => [Number(entry.node_no), entry])
+        );
         body.innerHTML = state.nodes.map((item) => {
+          const status = statusByNodeNo.get(Number(item.node_no));
+          const runtime = status && status.runtime ? status.runtime : {};
+          const version = runtime && runtime.version ? runtime.version : '-';
           return `<tr>
             <td>${item.node_no}</td>
             <td>${item.node_name}</td>
-            <td>${item.target_system || '-'}</td>
-            <td>${item.direct_connect ? '直连' : '主控转发'}</td>
+            <td>${item.target_system || '-'}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'}</span></td>
             <td>${item.remark || '-'}<br><span class="muted">${item.ddns || '-'}</span></td>
-            <td>${formatTime(item.updated_at)}</td>
+            <td>${version}<br><span class="muted">${formatTime(item.updated_at)}</span></td>
             <td>
-              <button class="btn" type="button" onclick="editNode(${item.node_no})">编辑</button>
-              <button class="btn" type="button" onclick="upgradeNode(${item.node_no})">升级</button>
-              <button class="btn warn" type="button" onclick="deleteNode(${item.node_no})">删除</button>
+              <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
+              <button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>
+              <button class="btn warn" type="button" data-action="node-delete" data-node-no="${item.node_no}">删除</button>
             </td>
           </tr>`;
         }).join('');
@@ -262,7 +284,7 @@
             <td>${item.node_name}</td>
             <td>${item.target_system || '-'}</td>
             <td>${formatTime(item.updated_at)}</td>
-            <td><button class="btn" type="button" onclick="restoreNode(${item.node_no})">恢复</button></td>
+            <td><button class="btn" type="button" data-action="node-restore" data-node-no="${item.node_no}">恢复</button></td>
           </tr>`;
         }).join('');
       }
@@ -282,6 +304,16 @@
         const ips4 = Array.isArray(rt.ipv4) ? rt.ipv4.join(', ') : '-';
         const ips6 = Array.isArray(rt.ipv6) ? rt.ipv6.join(', ') : '-';
         const online = rt.online === true;
+        const cpuPercent = formatPercent(metrics.cpu_percent);
+        const memoryPercent = formatPercent(metrics.memory_used_percent);
+        const memoryUsed = formatBytes(metrics.memory_used_bytes);
+        const memoryTotal = formatBytes(metrics.memory_total_bytes);
+        const swapPercent = formatPercent(metrics.swap_used_percent);
+        const swapUsed = formatBytes(metrics.swap_used_bytes);
+        const swapTotal = formatBytes(metrics.swap_total_bytes);
+        const diskPercent = formatPercent(metrics.disk_used_percent);
+        const diskUsed = formatBytes(metrics.disk_used_bytes);
+        const diskTotal = formatBytes(metrics.disk_total_bytes);
         return `<tr>
           <td>${item.node_no || '-'}</td>
           <td>${item.node_name || '-'}</td>
@@ -289,7 +321,12 @@
           <td>${formatTime(rt.last_seen)}</td>
           <td>${rt.version || '-'}</td>
           <td><div class="muted">v4: ${ips4}</div><div class="muted">v6: ${ips6}</div></td>
-          <td class="mono">CPU ${metrics.cpu_percent || 0}% / MEM ${metrics.memory_used_percent || 0}% / DISK ${metrics.disk_used_percent || 0}%</td>
+          <td class="mono">
+            <div>CPU：相对 ${cpuPercent} / 绝对 -</div>
+            <div>内存：相对 ${memoryPercent} / 绝对 ${memoryUsed} / ${memoryTotal}</div>
+            <div>Swap：相对 ${swapPercent} / 绝对 ${swapUsed} / ${swapTotal}</div>
+            <div>磁盘：相对 ${diskPercent} / 绝对 ${diskUsed} / ${diskTotal}</div>
+          </td>
         </tr>`;
       }).join('');
     }
@@ -303,9 +340,11 @@
       list.innerHTML = state.shellShortcuts.map((item) => {
         const name = String(item.name || '');
         const command = String(item.command || '');
+        const encodedCommand = encodeURIComponent(command);
+        const encodedName = encodeURIComponent(name);
         return `<li><span class="mono">${name}</span> → <span class="muted">${command}</span>
-          <button class="btn" type="button" onclick="runShortcut(${JSON.stringify(command)})">执行</button>
-          <button class="btn warn" type="button" onclick="deleteShortcut(${JSON.stringify(name)})">删除</button>
+          <button class="btn" type="button" data-action="shortcut-run" data-command="${encodedCommand}">执行</button>
+          <button class="btn warn" type="button" data-action="shortcut-delete" data-name="${encodedName}">删除</button>
         </li>`;
       }).join('');
     }
@@ -580,12 +619,53 @@
     document.getElementById('btn-shell-exec').addEventListener('click', () => { execShellCommand().catch((err) => setStatus(`命令执行失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shortcut-upsert').addEventListener('click', () => { upsertShortcut().catch((err) => setStatus(`快捷命令保存失败：${err.message || err}`, 'err')); });
 
-    window.editNode = (nodeNo) => { editNode(nodeNo).catch((err) => setStatus(`编辑失败：${err.message || err}`, 'err')); };
-    window.deleteNode = (nodeNo) => { deleteNode(nodeNo).catch((err) => setStatus(`删除失败：${err.message || err}`, 'err')); };
-    window.restoreNode = (nodeNo) => { restoreNode(nodeNo).catch((err) => setStatus(`恢复失败：${err.message || err}`, 'err')); };
-    window.upgradeNode = (nodeNo) => { upgradeNode(nodeNo).catch((err) => setStatus(`升级失败：${err.message || err}`, 'err')); };
-    window.runShortcut = (command) => runShortcut(command);
-    window.deleteShortcut = (name) => { deleteShortcut(name).catch((err) => setStatus(`快捷命令删除失败：${err.message || err}`, 'err')); };
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const button = target.closest('button[data-action]');
+      if (!button) return;
+
+      const action = String(button.getAttribute('data-action') || '').trim();
+      if (!action) return;
+
+      if (action === 'node-edit') {
+        const nodeNo = Number(button.getAttribute('data-node-no'));
+        if (Number.isFinite(nodeNo) && nodeNo > 0) {
+          void editNode(nodeNo).catch((err) => setStatus(`编辑失败：${err.message || err}`, 'err'));
+        }
+        return;
+      }
+      if (action === 'node-delete') {
+        const nodeNo = Number(button.getAttribute('data-node-no'));
+        if (Number.isFinite(nodeNo) && nodeNo > 0) {
+          void deleteNode(nodeNo).catch((err) => setStatus(`删除失败：${err.message || err}`, 'err'));
+        }
+        return;
+      }
+      if (action === 'node-restore') {
+        const nodeNo = Number(button.getAttribute('data-node-no'));
+        if (Number.isFinite(nodeNo) && nodeNo > 0) {
+          void restoreNode(nodeNo).catch((err) => setStatus(`恢复失败：${err.message || err}`, 'err'));
+        }
+        return;
+      }
+      if (action === 'node-upgrade') {
+        const nodeNo = Number(button.getAttribute('data-node-no'));
+        if (Number.isFinite(nodeNo) && nodeNo > 0) {
+          void upgradeNode(nodeNo).catch((err) => setStatus(`升级失败：${err.message || err}`, 'err'));
+        }
+        return;
+      }
+      if (action === 'shortcut-run') {
+        const encoded = String(button.getAttribute('data-command') || '');
+        runShortcut(decodeURIComponent(encoded));
+        return;
+      }
+      if (action === 'shortcut-delete') {
+        const encoded = String(button.getAttribute('data-name') || '');
+        void deleteShortcut(decodeURIComponent(encoded)).catch((err) => setStatus(`快捷命令删除失败：${err.message || err}`, 'err'));
+      }
+    });
 
     (async function init() {
       try {
