@@ -11,4 +11,7 @@ var (
 
 	//go:embed mng_pages/settings.html
 	mngSettingsPageHTML string
+
+	//go:embed mng_pages/probe.html
+	mngProbePageHTML string
 )

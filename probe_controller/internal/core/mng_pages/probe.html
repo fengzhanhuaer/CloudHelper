@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CloudHelper 探针管理</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { max-width:1200px; margin:4vh auto; padding:20px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    h1 { margin:0; font-size:24px; }
+    .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .btn.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
+    .btn.warn { background:#8b2d2d; border-color:#b54b4b; color:#fff; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .status { margin:8px 0 12px; border-radius:8px; border:1px solid #30363d; background:#161b22; padding:10px; font-size:13px; white-space:pre-wrap; }
+    .status.ok { color:#7ee787; }
+    .status.warn { color:#f2cc60; }
+    .status.err { color:#ff7b72; }
+    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+    .tab { padding:8px 12px; border-radius:999px; border:1px solid #30363d; background:#161b22; color:#c9d1d9; cursor:pointer; }
+    .tab.active { border-color:#58a6ff; color:#58a6ff; }
+    .panel { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
+    .section { display:none; }
+    .section.active { display:block; }
+    .row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+    input, select, textarea { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; }
+    textarea { width:100%; min-height:90px; resize:vertical; }
+    table { width:100%; border-collapse:collapse; margin-top:8px; }
+    th, td { border-bottom:1px solid #30363d; padding:8px 6px; text-align:left; vertical-align:top; font-size:13px; }
+    th { color:#8b949e; font-weight:600; }
+    .mono { font-family:Consolas,monospace; }
+    .muted { color:#8b949e; }
+    .pill { display:inline-block; border:1px solid #30363d; border-radius:999px; padding:2px 8px; font-size:12px; }
+    .pill.online { color:#7ee787; border-color:#2ea043; }
+    .pill.offline { color:#ff7b72; border-color:#b54b4b; }
+    pre { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+    .split { display:grid; grid-template-columns:2fr 1fr; gap:10px; }
+    .card { border:1px solid #30363d; border-radius:10px; padding:10px; background:#0d1117; }
+    ul { margin:6px 0; padding-left:18px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>/mng/probe 探针管理</h1>
+        <p class="sub">子页签：探针列表（增删改升级）、探针状态、探针日志、探针 Shell。</p>
+      </div>
+      <div>
+        <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
+        <button id="btn-logout" class="btn" type="button">退出登录</button>
+      </div>
+    </div>
+
+    <div id="status-box" class="status">初始化中...</div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="list" type="button">探针列表</button>
+      <button class="tab" data-tab="status" type="button">探针状态</button>
+      <button class="tab" data-tab="logs" type="button">探针日志</button>
+      <button class="tab" data-tab="shell" type="button">探针 Shell</button>
+    </div>
+
+    <div class="panel">
+      <section id="section-list" class="section active">
+        <div class="row">
+          <input id="create-node-name" placeholder="新探针名称" />
+          <button id="btn-create-node" class="btn primary" type="button">创建</button>
+          <button id="btn-refresh-nodes" class="btn" type="button">刷新列表</button>
+          <button id="btn-upgrade-all" class="btn" type="button">一键升级</button>
+        </div>
+
+        <h3>活跃探针</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>名称</th>
+              <th>系统</th>
+              <th>连接</th>
+              <th>备注/DDNS</th>
+              <th>更新时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="node-list-body"></tbody>
+        </table>
+
+        <h3>已删除探针</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>名称</th>
+              <th>系统</th>
+              <th>更新时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="deleted-node-list-body"></tbody>
+        </table>
+      </section>
+
+      <section id="section-status" class="section">
+        <div class="row">
+          <button id="btn-refresh-status" class="btn" type="button">立即刷新状态</button>
+          <span class="muted">当前页每 2 秒自动刷新。</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>节点</th>
+              <th>在线</th>
+              <th>最近上报</th>
+              <th>版本</th>
+              <th>IPv4 / IPv6</th>
+              <th>系统指标</th>
+            </tr>
+          </thead>
+          <tbody id="status-list-body"></tbody>
+        </table>
+      </section>
+
+      <section id="section-logs" class="section">
+        <div class="row">
+          <select id="logs-node-id"></select>
+          <input id="logs-lines" value="200" placeholder="lines" />
+          <input id="logs-since" value="0" placeholder="since_minutes" />
+          <select id="logs-min-level">
+            <option value="normal">normal</option>
+            <option value="warning">warning</option>
+            <option value="error">error</option>
+            <option value="realtime">realtime</option>
+          </select>
+          <button id="btn-load-logs" class="btn" type="button">读取日志</button>
+        </div>
+        <div id="logs-meta" class="muted">-</div>
+        <pre id="logs-output"></pre>
+      </section>
+
+      <section id="section-shell" class="section">
+        <div class="split">
+          <div class="card">
+            <div class="row">
+              <select id="shell-node-id"></select>
+              <input id="shell-timeout" value="60" placeholder="timeout_sec" />
+              <button id="btn-shell-start" class="btn" type="button">启动会话</button>
+              <button id="btn-shell-stop" class="btn warn" type="button">停止会话</button>
+            </div>
+            <div class="row muted">会话ID：<span id="shell-session-id" class="mono">-</span></div>
+            <textarea id="shell-command" placeholder="输入命令后执行"></textarea>
+            <div class="row">
+              <button id="btn-shell-exec" class="btn primary" type="button">执行命令</button>
+            </div>
+            <pre id="shell-output"></pre>
+          </div>
+          <div class="card">
+            <h4 style="margin-top:0">快捷命令</h4>
+            <div class="row">
+              <input id="shortcut-name" placeholder="名称" />
+              <input id="shortcut-command" placeholder="命令" />
+              <button id="btn-shortcut-upsert" class="btn" type="button">保存</button>
+            </div>
+            <ul id="shortcut-list"></ul>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      activeTab: 'list',
+      nodes: [],
+      deletedNodes: [],
+      statusItems: [],
+      shellSessionID: '',
+      statusTimer: null,
+      shellShortcuts: [],
+    };
+
+    function setStatus(message, level) {
+      const box = document.getElementById('status-box');
+      box.textContent = String(message || '');
+      box.className = 'status';
+      if (level) box.classList.add(level);
+    }
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: 'same-origin',
+        ...options,
+      });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) {}
+      if (!response.ok) {
+        const msg = payload && payload.error ? payload.error : `HTTP ${response.status}`;
+        throw new Error(msg);
+      }
+      return payload;
+    }
+
+    async function ensureSession() {
+      const payload = await requestJSON('/mng/api/session');
+      if (!payload.authenticated) {
+        location.href = '/mng';
+        return false;
+      }
+      return true;
+    }
+
+    function formatTime(value) {
+      const text = String(value || '').trim();
+      if (!text) return '-';
+      const dt = new Date(text);
+      return Number.isNaN(dt.getTime()) ? text : dt.toLocaleString();
+    }
+
+    function tabButtonMarkup(name, className) {
+      return `<button class="btn ${className || ''}" type="button">${name}</button>`;
+    }
+
+    function renderNodeSelect() {
+      const options = state.nodes.map((node) => `<option value="${node.node_no}">${node.node_no} - ${node.node_name}</option>`).join('');
+      document.getElementById('logs-node-id').innerHTML = options || '<option value="">(无节点)</option>';
+      document.getElementById('shell-node-id').innerHTML = options || '<option value="">(无节点)</option>';
+    }
+
+    function renderNodes() {
+      const body = document.getElementById('node-list-body');
+      if (!state.nodes.length) {
+        body.innerHTML = '<tr><td colspan="7" class="muted">暂无活跃探针</td></tr>';
+      } else {
+        body.innerHTML = state.nodes.map((item) => {
+          return `<tr>
+            <td>${item.node_no}</td>
+            <td>${item.node_name}</td>
+            <td>${item.target_system || '-'}</td>
+            <td>${item.direct_connect ? '直连' : '主控转发'}</td>
+            <td>${item.remark || '-'}<br><span class="muted">${item.ddns || '-'}</span></td>
+            <td>${formatTime(item.updated_at)}</td>
+            <td>
+              <button class="btn" type="button" onclick="editNode(${item.node_no})">编辑</button>
+              <button class="btn" type="button" onclick="upgradeNode(${item.node_no})">升级</button>
+              <button class="btn warn" type="button" onclick="deleteNode(${item.node_no})">删除</button>
+            </td>
+          </tr>`;
+        }).join('');
+      }
+
+      const deletedBody = document.getElementById('deleted-node-list-body');
+      if (!state.deletedNodes.length) {
+        deletedBody.innerHTML = '<tr><td colspan="5" class="muted">暂无已删除探针</td></tr>';
+      } else {
+        deletedBody.innerHTML = state.deletedNodes.map((item) => {
+          return `<tr>
+            <td>${item.node_no}</td>
+            <td>${item.node_name}</td>
+            <td>${item.target_system || '-'}</td>
+            <td>${formatTime(item.updated_at)}</td>
+            <td><button class="btn" type="button" onclick="restoreNode(${item.node_no})">恢复</button></td>
+          </tr>`;
+        }).join('');
+      }
+
+      renderNodeSelect();
+    }
+
+    function renderStatus() {
+      const body = document.getElementById('status-list-body');
+      if (!state.statusItems.length) {
+        body.innerHTML = '<tr><td colspan="7" class="muted">暂无状态数据</td></tr>';
+        return;
+      }
+      body.innerHTML = state.statusItems.map((item) => {
+        const rt = item.runtime || {};
+        const metrics = rt.system || {};
+        const ips4 = Array.isArray(rt.ipv4) ? rt.ipv4.join(', ') : '-';
+        const ips6 = Array.isArray(rt.ipv6) ? rt.ipv6.join(', ') : '-';
+        const online = rt.online === true;
+        return `<tr>
+          <td>${item.node_no || '-'}</td>
+          <td>${item.node_name || '-'}</td>
+          <td><span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : '离线'}</span></td>
+          <td>${formatTime(rt.last_seen)}</td>
+          <td>${rt.version || '-'}</td>
+          <td><div class="muted">v4: ${ips4}</div><div class="muted">v6: ${ips6}</div></td>
+          <td class="mono">CPU ${metrics.cpu_percent || 0}% / MEM ${metrics.memory_used_percent || 0}% / DISK ${metrics.disk_used_percent || 0}%</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderShortcuts() {
+      const list = document.getElementById('shortcut-list');
+      if (!state.shellShortcuts.length) {
+        list.innerHTML = '<li class="muted">暂无快捷命令</li>';
+        return;
+      }
+      list.innerHTML = state.shellShortcuts.map((item) => {
+        const name = String(item.name || '');
+        const command = String(item.command || '');
+        return `<li><span class="mono">${name}</span> → <span class="muted">${command}</span>
+          <button class="btn" type="button" onclick="runShortcut(${JSON.stringify(command)})">执行</button>
+          <button class="btn warn" type="button" onclick="deleteShortcut(${JSON.stringify(name)})">删除</button>
+        </li>`;
+      }).join('');
+    }
+
+    async function refreshNodes(silent) {
+      const payload = await requestJSON('/mng/api/probe/nodes');
+      state.nodes = Array.isArray(payload.nodes) ? payload.nodes : [];
+      state.deletedNodes = Array.isArray(payload.deleted_nodes) ? payload.deleted_nodes : [];
+      renderNodes();
+      if (!silent) setStatus(`已刷新探针列表：活跃 ${state.nodes.length}，已删除 ${state.deletedNodes.length}`, 'ok');
+    }
+
+    async function refreshStatus(silent) {
+      const payload = await requestJSON('/mng/api/probe/status');
+      state.statusItems = Array.isArray(payload.items) ? payload.items : [];
+      renderStatus();
+      if (!silent) setStatus(`已刷新探针状态：${state.statusItems.length} 条`, 'ok');
+    }
+
+    async function loadLogs() {
+      const nodeID = String(document.getElementById('logs-node-id').value || '').trim();
+      if (!nodeID) {
+        setStatus('请选择日志节点', 'warn');
+        return;
+      }
+      const lines = encodeURIComponent(document.getElementById('logs-lines').value || '200');
+      const since = encodeURIComponent(document.getElementById('logs-since').value || '0');
+      const minLevel = encodeURIComponent(document.getElementById('logs-min-level').value || 'normal');
+      const payload = await requestJSON(`/mng/api/probe/logs?node_id=${encodeURIComponent(nodeID)}&lines=${lines}&since_minutes=${since}&min_level=${minLevel}`);
+      document.getElementById('logs-meta').textContent = `节点 ${payload.node_name || payload.node_id || '-'} | 来源 ${payload.source || '-'} | 路径 ${payload.file_path || '-'} | 拉取时间 ${formatTime(payload.fetched)}`;
+      document.getElementById('logs-output').textContent = String(payload.content || '');
+      setStatus('日志读取完成', 'ok');
+    }
+
+    async function startShellSession() {
+      const nodeID = String(document.getElementById('shell-node-id').value || '').trim();
+      if (!nodeID) {
+        setStatus('请选择 Shell 节点', 'warn');
+        return;
+      }
+      const payload = await requestJSON('/mng/api/probe/shell/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_id: nodeID }),
+      });
+      state.shellSessionID = String(payload.session_id || '');
+      document.getElementById('shell-session-id').textContent = state.shellSessionID || '-';
+      document.getElementById('shell-output').textContent = `会话已启动：${state.shellSessionID}\n`;
+      setStatus(payload.message || 'Shell 会话已启动', 'ok');
+    }
+
+    async function stopShellSession() {
+      const nodeID = String(document.getElementById('shell-node-id').value || '').trim();
+      if (!nodeID || !state.shellSessionID) {
+        setStatus('当前无可停止的会话', 'warn');
+        return;
+      }
+      const payload = await requestJSON('/mng/api/probe/shell/session/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_id: nodeID, session_id: state.shellSessionID }),
+      });
+      document.getElementById('shell-output').textContent += `\n[stop] ${payload.message || '会话已停止'}`;
+      state.shellSessionID = '';
+      document.getElementById('shell-session-id').textContent = '-';
+      setStatus(payload.message || 'Shell 会话已停止', 'ok');
+    }
+
+    async function execShellCommand() {
+      const nodeID = String(document.getElementById('shell-node-id').value || '').trim();
+      const command = String(document.getElementById('shell-command').value || '').trim();
+      const timeoutSec = Number.parseInt(String(document.getElementById('shell-timeout').value || '60'), 10) || 60;
+      if (!nodeID) {
+        setStatus('请选择 Shell 节点', 'warn');
+        return;
+      }
+      if (!state.shellSessionID) {
+        setStatus('请先启动会话', 'warn');
+        return;
+      }
+      if (!command) {
+        setStatus('请输入命令', 'warn');
+        return;
+      }
+      const payload = await requestJSON('/mng/api/probe/shell/session/exec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_id: nodeID, session_id: state.shellSessionID, command, timeout_sec: timeoutSec }),
+      });
+      const output = [
+        `\n$ ${command}`,
+        payload.stdout ? String(payload.stdout) : '',
+        payload.stderr ? String(payload.stderr) : '',
+        payload.error ? `[error] ${payload.error}` : '',
+      ].filter(Boolean).join('\n');
+      document.getElementById('shell-output').textContent += output + '\n';
+      setStatus(payload.error ? '命令执行返回错误（见输出）' : '命令执行完成', payload.error ? 'warn' : 'ok');
+    }
+
+    async function loadShellShortcuts() {
+      const payload = await requestJSON('/mng/api/probe/shell/shortcuts');
+      state.shellShortcuts = Array.isArray(payload.items) ? payload.items : [];
+      renderShortcuts();
+    }
+
+    async function upsertShortcut() {
+      const name = String(document.getElementById('shortcut-name').value || '').trim();
+      const command = String(document.getElementById('shortcut-command').value || '').trim();
+      if (!name || !command) {
+        setStatus('快捷命令名称和命令不能为空', 'warn');
+        return;
+      }
+      const payload = await requestJSON('/mng/api/probe/shell/shortcuts/upsert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, command }),
+      });
+      state.shellShortcuts = Array.isArray(payload.items) ? payload.items : [];
+      renderShortcuts();
+      setStatus('快捷命令已保存', 'ok');
+    }
+
+    async function deleteShortcut(name) {
+      if (!confirm(`确认删除快捷命令：${name} ?`)) return;
+      const payload = await requestJSON('/mng/api/probe/shell/shortcuts/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      state.shellShortcuts = Array.isArray(payload.items) ? payload.items : [];
+      renderShortcuts();
+      setStatus('快捷命令已删除', 'ok');
+    }
+
+    function runShortcut(command) {
+      document.getElementById('shell-command').value = String(command || '');
+      setStatus('已填充快捷命令，点击“执行命令”即可运行', 'ok');
+    }
+
+    async function createNode() {
+      const nodeName = String(document.getElementById('create-node-name').value || '').trim();
+      if (!nodeName) {
+        setStatus('请输入探针名称', 'warn');
+        return;
+      }
+      const payload = await requestJSON('/mng/api/probe/node/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_name: nodeName }),
+      });
+      document.getElementById('create-node-name').value = '';
+      await refreshNodes(true);
+      setStatus(`探针创建成功：${payload.node && payload.node.node_name ? payload.node.node_name : nodeName}`, 'ok');
+    }
+
+    async function editNode(nodeNo) {
+      const node = state.nodes.find((item) => Number(item.node_no) === Number(nodeNo));
+      if (!node) return;
+      const nodeName = prompt('节点名称', node.node_name || '');
+      if (nodeName === null) return;
+      const targetSystem = prompt('目标系统（linux/windows）', node.target_system || 'linux');
+      if (targetSystem === null) return;
+      const directConnectRaw = prompt('是否直连（true/false）', node.direct_connect ? 'true' : 'false');
+      if (directConnectRaw === null) return;
+      const remark = prompt('备注', node.remark || '');
+      if (remark === null) return;
+      const ddns = prompt('DDNS', node.ddns || '');
+      if (ddns === null) return;
+
+      await requestJSON('/mng/api/probe/node/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          node_no: Number(node.node_no),
+          node_name: String(nodeName || '').trim(),
+          remark: String(remark || '').trim(),
+          ddns: String(ddns || '').trim(),
+          target_system: String(targetSystem || '').trim().toLowerCase() || 'linux',
+          direct_connect: String(directConnectRaw || '').trim().toLowerCase() === 'true',
+          payment_cycle: String(node.payment_cycle || ''),
+          cost: String(node.cost || ''),
+          expire_at: String(node.expire_at || ''),
+          vendor_name: String(node.vendor_name || ''),
+          vendor_url: String(node.vendor_url || ''),
+        }),
+      });
+      await refreshNodes(true);
+      setStatus(`探针已更新：#${nodeNo}`, 'ok');
+    }
+
+    async function deleteNode(nodeNo) {
+      if (!confirm(`确认删除探针 #${nodeNo} ?`)) return;
+      await requestJSON('/mng/api/probe/node/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_no: Number(nodeNo) }),
+      });
+      await refreshNodes(true);
+      setStatus(`探针已删除：#${nodeNo}`, 'ok');
+    }
+
+    async function restoreNode(nodeNo) {
+      await requestJSON('/mng/api/probe/node/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_no: Number(nodeNo) }),
+      });
+      await refreshNodes(true);
+      setStatus(`探针已恢复：#${nodeNo}`, 'ok');
+    }
+
+    async function upgradeNode(nodeNo) {
+      await requestJSON('/mng/api/probe/upgrade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_id: String(nodeNo) }),
+      });
+      setStatus(`升级命令已下发：#${nodeNo}`, 'ok');
+    }
+
+    async function upgradeAllNodes() {
+      const payload = await requestJSON('/mng/api/probe/upgrade/all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      setStatus(payload.message || '一键升级命令已下发', 'ok');
+    }
+
+    function switchTab(tab) {
+      state.activeTab = tab;
+      document.querySelectorAll('.tab').forEach((btn) => {
+        btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
+      });
+      document.querySelectorAll('.section').forEach((section) => {
+        section.classList.toggle('active', section.id === `section-${tab}`);
+      });
+      if (state.statusTimer) {
+        clearInterval(state.statusTimer);
+        state.statusTimer = null;
+      }
+      if (tab === 'status') {
+        void refreshStatus(true);
+        state.statusTimer = window.setInterval(() => {
+          void refreshStatus(true);
+        }, 2000);
+      }
+      if (tab === 'shell') {
+        void loadShellShortcuts();
+      }
+    }
+
+    async function logout() {
+      await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.href = '/mng';
+    }
+
+    document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
+    document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
+
+    document.querySelectorAll('.tab').forEach((btn) => {
+      btn.addEventListener('click', () => switchTab(btn.getAttribute('data-tab')));
+    });
+
+    document.getElementById('btn-create-node').addEventListener('click', () => { createNode().catch((err) => setStatus(`创建失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-refresh-nodes').addEventListener('click', () => { refreshNodes(false).catch((err) => setStatus(`刷新失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-upgrade-all').addEventListener('click', () => { upgradeAllNodes().catch((err) => setStatus(`一键升级失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-refresh-status').addEventListener('click', () => { refreshStatus(false).catch((err) => setStatus(`状态刷新失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-load-logs').addEventListener('click', () => { loadLogs().catch((err) => setStatus(`日志读取失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-shell-start').addEventListener('click', () => { startShellSession().catch((err) => setStatus(`会话启动失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-shell-stop').addEventListener('click', () => { stopShellSession().catch((err) => setStatus(`会话停止失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-shell-exec').addEventListener('click', () => { execShellCommand().catch((err) => setStatus(`命令执行失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-shortcut-upsert').addEventListener('click', () => { upsertShortcut().catch((err) => setStatus(`快捷命令保存失败：${err.message || err}`, 'err')); });
+
+    window.editNode = (nodeNo) => { editNode(nodeNo).catch((err) => setStatus(`编辑失败：${err.message || err}`, 'err')); };
+    window.deleteNode = (nodeNo) => { deleteNode(nodeNo).catch((err) => setStatus(`删除失败：${err.message || err}`, 'err')); };
+    window.restoreNode = (nodeNo) => { restoreNode(nodeNo).catch((err) => setStatus(`恢复失败：${err.message || err}`, 'err')); };
+    window.upgradeNode = (nodeNo) => { upgradeNode(nodeNo).catch((err) => setStatus(`升级失败：${err.message || err}`, 'err')); };
+    window.runShortcut = (command) => runShortcut(command);
+    window.deleteShortcut = (name) => { deleteShortcut(name).catch((err) => setStatus(`快捷命令删除失败：${err.message || err}`, 'err')); };
+
+    (async function init() {
+      try {
+        const ok = await ensureSession();
+        if (!ok) return;
+        await refreshNodes(true);
+        setStatus('探针管理页面已就绪', 'ok');
+      } catch (err) {
+        setStatus(`初始化失败：${err && err.message ? err.message : err}`, 'err');
+      }
+    })();
+  </script>
+</body>
+</html>

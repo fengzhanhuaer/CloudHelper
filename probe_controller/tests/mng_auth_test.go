@@ -185,6 +185,23 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 		t.Fatalf("expected /mng/api/panel/summary without cookie to return 401, got %d body=%s", summaryRRWithoutCookie.Code, summaryRRWithoutCookie.Body.String())
 	}
 
+	probeReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/probe", nil)
+	probeRRWithoutCookie := httptest.NewRecorder()
+	mux.ServeHTTP(probeRRWithoutCookie, probeReqWithoutCookie)
+	if probeRRWithoutCookie.Code != http.StatusFound {
+		t.Fatalf("expected /mng/probe without cookie to redirect, got %d body=%s", probeRRWithoutCookie.Code, probeRRWithoutCookie.Body.String())
+	}
+	if loc := probeRRWithoutCookie.Header().Get("Location"); loc != "/mng" {
+		t.Fatalf("expected /mng/probe redirect location /mng, got %q", loc)
+	}
+
+	probeNodesReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/api/probe/nodes", nil)
+	probeNodesRRWithoutCookie := httptest.NewRecorder()
+	mux.ServeHTTP(probeNodesRRWithoutCookie, probeNodesReqWithoutCookie)
+	if probeNodesRRWithoutCookie.Code != http.StatusUnauthorized {
+		t.Fatalf("expected /mng/api/probe/nodes without cookie to return 401, got %d body=%s", probeNodesRRWithoutCookie.Code, probeNodesRRWithoutCookie.Body.String())
+	}
+
 	registerBody := []byte(`{"username":"panel-admin","password":"Passw0rd!","confirm_password":"Passw0rd!"}`)
 	registerReq := httptest.NewRequest(http.MethodPost, "/mng/api/register", bytes.NewReader(registerBody))
 	registerReq.Header.Set("Content-Type", "application/json")
@@ -217,6 +234,9 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	if !strings.Contains(panelRR.Body.String(), "系统设置") {
 		t.Fatalf("expected /mng/panel html to include settings tile")
 	}
+	if !strings.Contains(panelRR.Body.String(), "探针管理") {
+		t.Fatalf("expected /mng/panel html to include probe management tile")
+	}
 
 	settingsReq := httptest.NewRequest(http.MethodGet, "/mng/settings", nil)
 	settingsReq.AddCookie(cookie)
@@ -227,6 +247,20 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	}
 	if !strings.Contains(settingsRR.Body.String(), "检查更新") {
 		t.Fatalf("expected /mng/settings html to include check update button")
+	}
+
+	probeReq := httptest.NewRequest(http.MethodGet, "/mng/probe", nil)
+	probeReq.AddCookie(cookie)
+	probeRR := httptest.NewRecorder()
+	mux.ServeHTTP(probeRR, probeReq)
+	if probeRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/probe with session to return 200, got %d body=%s", probeRR.Code, probeRR.Body.String())
+	}
+	if !strings.Contains(probeRR.Body.String(), "探针列表") {
+		t.Fatalf("expected /mng/probe html to include probe list tab")
+	}
+	if !strings.Contains(probeRR.Body.String(), "探针 Shell") {
+		t.Fatalf("expected /mng/probe html to include probe shell tab")
 	}
 
 	summaryReq := httptest.NewRequest(http.MethodGet, "/mng/api/panel/summary", nil)
@@ -272,6 +306,18 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	}
 	if _, ok := progressPayload["percent"]; !ok {
 		t.Fatalf("expected progress payload to include percent, got %+v", progressPayload)
+	}
+
+	probeNodesReq := httptest.NewRequest(http.MethodGet, "/mng/api/probe/nodes", nil)
+	probeNodesReq.AddCookie(cookie)
+	probeNodesRR := httptest.NewRecorder()
+	mux.ServeHTTP(probeNodesRR, probeNodesReq)
+	if probeNodesRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/api/probe/nodes with session to return 200, got %d body=%s", probeNodesRR.Code, probeNodesRR.Body.String())
+	}
+	probeNodesPayload := decodeJSONMap(t, probeNodesRR)
+	if _, ok := probeNodesPayload["nodes"]; !ok {
+		t.Fatalf("expected probe nodes payload to include nodes, got %+v", probeNodesPayload)
 	}
 
 	reconnectReq := httptest.NewRequest(http.MethodGet, "/mng/api/system/reconnect/check", nil)
