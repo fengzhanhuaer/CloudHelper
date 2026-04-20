@@ -168,6 +168,16 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 		t.Fatalf("expected /mng/panel redirect location /mng, got %q", loc)
 	}
 
+	settingsReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/settings", nil)
+	settingsRRWithoutCookie := httptest.NewRecorder()
+	mux.ServeHTTP(settingsRRWithoutCookie, settingsReqWithoutCookie)
+	if settingsRRWithoutCookie.Code != http.StatusFound {
+		t.Fatalf("expected /mng/settings without cookie to redirect, got %d body=%s", settingsRRWithoutCookie.Code, settingsRRWithoutCookie.Body.String())
+	}
+	if loc := settingsRRWithoutCookie.Header().Get("Location"); loc != "/mng" {
+		t.Fatalf("expected /mng/settings redirect location /mng, got %q", loc)
+	}
+
 	summaryReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/api/panel/summary", nil)
 	summaryRRWithoutCookie := httptest.NewRecorder()
 	mux.ServeHTTP(summaryRRWithoutCookie, summaryReqWithoutCookie)
@@ -204,8 +214,19 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	if panelRR.Code != http.StatusOK {
 		t.Fatalf("expected /mng/panel with session to return 200, got %d body=%s", panelRR.Code, panelRR.Body.String())
 	}
-	if !strings.Contains(panelRR.Body.String(), "/mng/api/panel/summary") {
-		t.Fatalf("expected /mng/panel html to include summary api call")
+	if !strings.Contains(panelRR.Body.String(), "系统设置") {
+		t.Fatalf("expected /mng/panel html to include settings tile")
+	}
+
+	settingsReq := httptest.NewRequest(http.MethodGet, "/mng/settings", nil)
+	settingsReq.AddCookie(cookie)
+	settingsRR := httptest.NewRecorder()
+	mux.ServeHTTP(settingsRR, settingsReq)
+	if settingsRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/settings with session to return 200, got %d body=%s", settingsRR.Code, settingsRR.Body.String())
+	}
+	if !strings.Contains(settingsRR.Body.String(), "检查更新") {
+		t.Fatalf("expected /mng/settings html to include check update button")
 	}
 
 	summaryReq := httptest.NewRequest(http.MethodGet, "/mng/api/panel/summary", nil)
@@ -222,5 +243,45 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	version, _ := summaryPayload["version"].(string)
 	if strings.TrimSpace(version) == "" {
 		t.Fatalf("expected summary to include version")
+	}
+
+	versionReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/api/system/version", nil)
+	versionRRWithoutCookie := httptest.NewRecorder()
+	mux.ServeHTTP(versionRRWithoutCookie, versionReqWithoutCookie)
+	if versionRRWithoutCookie.Code != http.StatusUnauthorized {
+		t.Fatalf("expected /mng/api/system/version without cookie to return 401, got %d body=%s", versionRRWithoutCookie.Code, versionRRWithoutCookie.Body.String())
+	}
+
+	progressReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/api/system/upgrade/progress", nil)
+	progressRRWithoutCookie := httptest.NewRecorder()
+	mux.ServeHTTP(progressRRWithoutCookie, progressReqWithoutCookie)
+	if progressRRWithoutCookie.Code != http.StatusUnauthorized {
+		t.Fatalf("expected /mng/api/system/upgrade/progress without cookie to return 401, got %d body=%s", progressRRWithoutCookie.Code, progressRRWithoutCookie.Body.String())
+	}
+
+	progressReq := httptest.NewRequest(http.MethodGet, "/mng/api/system/upgrade/progress", nil)
+	progressReq.AddCookie(cookie)
+	progressRR := httptest.NewRecorder()
+	mux.ServeHTTP(progressRR, progressReq)
+	if progressRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/api/system/upgrade/progress with session to return 200, got %d body=%s", progressRR.Code, progressRR.Body.String())
+	}
+	progressPayload := decodeJSONMap(t, progressRR)
+	if _, ok := progressPayload["active"]; !ok {
+		t.Fatalf("expected progress payload to include active, got %+v", progressPayload)
+	}
+	if _, ok := progressPayload["percent"]; !ok {
+		t.Fatalf("expected progress payload to include percent, got %+v", progressPayload)
+	}
+
+	reconnectReq := httptest.NewRequest(http.MethodGet, "/mng/api/system/reconnect/check", nil)
+	reconnectRR := httptest.NewRecorder()
+	mux.ServeHTTP(reconnectRR, reconnectReq)
+	if reconnectRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/api/system/reconnect/check to return 200, got %d body=%s", reconnectRR.Code, reconnectRR.Body.String())
+	}
+	reconnectPayload := decodeJSONMap(t, reconnectRR)
+	if ok, _ := reconnectPayload["ok"].(bool); !ok {
+		t.Fatalf("expected reconnect check payload ok=true, got %+v", reconnectPayload)
 	}
 }
