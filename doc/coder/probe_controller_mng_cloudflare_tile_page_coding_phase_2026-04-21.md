@@ -11,18 +11,18 @@
 - 备注: 按用户确认口径实现“系统设置同构”方案，即 Cloudflare 在 `/mng` 下走 HTTP + Cookie + `mng` 鉴权，不直接走 admin websocket。
 - 风险:
   - Cloudflare 外部网络相关错误在运行期可能出现波动，当前仅实现透传与分层状态码映射。
-  - 当前自动化测试覆盖了路由鉴权与页面关键文案，Cloudflare 业务接口错误分支覆盖仍需补强。
+  - 当前自动化测试已覆盖路由鉴权、页面关键文案与 Cloudflare 关键错误分支；外部网络波动相关场景仍建议在线上联调回归。
 - 遗留事项:
-  - 增补 `/mng/api/cloudflare/ddns/apply`、`/mng/api/cloudflare/zerotrust/whitelist`、`/mng/api/cloudflare/zerotrust/whitelist/run` 的错误分支测试。
+  - 无（本轮计划内编码与测试项已完成）
 - 进度状态: 已完成
-- 完成情况: 已完成 Cloudflare 磁贴、独立页面、`/mng/api/cloudflare/*` 薄封装接口与基础测试，`go test ./...` 通过。
+- 完成情况: 已完成 Cloudflare 磁贴、独立页面、`/mng/api/cloudflare/*` 薄封装接口与错误分支测试，`go test ./...` 通过。
 - 检查表:
   - [x] 工作依据与规则传递声明完整
   - [x] Cloudflare 页面与 embed 已落盘
   - [x] `/mng/cloudflare` 页面路由与 `/mng/api/cloudflare/*` 接口已接入
   - [x] 走 HTTP + Cookie + `mngAuthRequiredMiddleware` 模式
   - [x] `gofmt` 与 `go test ./...` 通过
-- 跟踪表状态: 测试中
+- 跟踪表状态: 已完成
 - 结论记录: 本次实现满足“在 `/mng` 新增 Cloudflare 磁贴并进入新页面，页面含基础设置/DDNS/ZeroTrust 子Tab，接口沿用系统设置同构模式”的要求。
 
 ## 执行单元包编号与需求编号映射
@@ -75,9 +75,17 @@
   - 增加已登录后 `/mng/panel` 包含 “Cloudflare 管理” 磁贴断言。
   - 增加已登录访问 `/mng/cloudflare` 含 “基础设置/DDNS/ZeroTrust” 文案断言。
   - 增加已登录访问 `/mng/api/cloudflare/api` 返回结构含 `configured` 断言。
+  - 新增 `TestMngCloudflareAPIErrorBranches`，覆盖：
+    - `POST /mng/api/cloudflare/ddns/apply` 无效 JSON 与 datastore 未初始化错误映射。
+    - `POST /mng/api/cloudflare/zerotrust/whitelist` 无效 JSON 与 datastore 未初始化错误映射。
+    - `POST /mng/api/cloudflare/zerotrust/whitelist/run` 无效 JSON 与 datastore 未初始化错误映射。
+
+- `probe_controller/internal/core/mng_pages/tg.html`（补齐）
+  - 补齐被 `//go:embed mng_pages/tg.html` 引用但缺失的页面文件，修复 `go test ./...` 编译期失败。
 
 ## 自测结果
 - `cd probe_controller && gofmt -w internal/core/mng_cloudflare_handlers.go internal/core/server.go internal/core/mng_pages.go tests/mng_auth_test.go` ✅
+- `cd probe_controller && go test ./tests -run TestMngCloudflareAPIErrorBranches -v` ✅
 - `cd probe_controller && go test ./...` ✅
   - `internal/core` 通过
   - `tests` 通过
@@ -88,3 +96,4 @@
 - TST-MNG-CF-03: DDNS 页执行 apply 并核对返回记录列表。
 - TST-MNG-CF-04: ZeroTrust 页验证保存与立即同步链路及错误提示。
 - TST-MNG-CF-05: 未登录访问 `/mng/cloudflare` 与 `/mng/api/cloudflare/*` 的鉴权行为回归。
+- TST-MNG-CF-06: 校验 `mng_pages/tg.html` 占位页可正常打开 `/mng/tg`，避免 embed 资源缺失回归。

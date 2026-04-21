@@ -17,4 +17,7 @@ var (
 
 	//go:embed mng_pages/cloudflare.html
 	mngCloudflarePageHTML string
+
+	//go:embed mng_pages/tg.html
+	mngTGPageHTML string
 )

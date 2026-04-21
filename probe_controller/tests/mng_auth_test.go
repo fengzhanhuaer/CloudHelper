@@ -380,3 +380,99 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 		t.Fatalf("expected reconnect check payload ok=true, got %+v", reconnectPayload)
 	}
 }
+
+func TestMngCloudflareAPIErrorBranches(t *testing.T) {
+	setupMngTestState(t)
+	mux := core.NewMux()
+
+	registerBody := []byte(`{"username":"cf-admin","password":"Passw0rd!","confirm_password":"Passw0rd!"}`)
+	registerReq := httptest.NewRequest(http.MethodPost, "/mng/api/register", bytes.NewReader(registerBody))
+	registerReq.Header.Set("Content-Type", "application/json")
+	registerRR := httptest.NewRecorder()
+	mux.ServeHTTP(registerRR, registerReq)
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("expected register to return 200, got %d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/mng/api/login", bytes.NewReader([]byte(`{"username":"cf-admin","password":"Passw0rd!"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.RemoteAddr = "10.9.9.9:3456"
+	loginRR := httptest.NewRecorder()
+	mux.ServeHTTP(loginRR, loginReq)
+	if loginRR.Code != http.StatusOK {
+		t.Fatalf("expected login to return 200, got %d body=%s", loginRR.Code, loginRR.Body.String())
+	}
+	cookie := findCookieByName(loginRR.Result().Cookies(), "mng_session")
+	if cookie == nil {
+		t.Fatalf("expected mng_session cookie after login")
+	}
+
+	ddnsInvalidReq := httptest.NewRequest(http.MethodPost, "/mng/api/cloudflare/ddns/apply", bytes.NewReader([]byte(`{"zone_name"`)))
+	ddnsInvalidReq.Header.Set("Content-Type", "application/json")
+	ddnsInvalidReq.AddCookie(cookie)
+	ddnsInvalidRR := httptest.NewRecorder()
+	mux.ServeHTTP(ddnsInvalidRR, ddnsInvalidReq)
+	if ddnsInvalidRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected ddns apply invalid json to return 400, got %d body=%s", ddnsInvalidRR.Code, ddnsInvalidRR.Body.String())
+	}
+
+	ddnsApplyReq := httptest.NewRequest(http.MethodPost, "/mng/api/cloudflare/ddns/apply", bytes.NewReader([]byte(`{}`)))
+	ddnsApplyReq.Header.Set("Content-Type", "application/json")
+	ddnsApplyReq.AddCookie(cookie)
+	ddnsApplyRR := httptest.NewRecorder()
+	mux.ServeHTTP(ddnsApplyRR, ddnsApplyReq)
+	if ddnsApplyRR.Code != http.StatusInternalServerError {
+		t.Fatalf("expected ddns apply to return 500 when cloudflare store is not initialized, got %d body=%s", ddnsApplyRR.Code, ddnsApplyRR.Body.String())
+	}
+	ddnsApplyPayload := decodeJSONMap(t, ddnsApplyRR)
+	ddnsApplyErr, _ := ddnsApplyPayload["error"].(string)
+	if !strings.Contains(ddnsApplyErr, "cloudflare datastore is not initialized") {
+		t.Fatalf("expected ddns apply error to mention cloudflare datastore not initialized, got %+v", ddnsApplyPayload)
+	}
+
+	zeroTrustInvalidReq := httptest.NewRequest(http.MethodPost, "/mng/api/cloudflare/zerotrust/whitelist", bytes.NewReader([]byte(`{"enabled"`)))
+	zeroTrustInvalidReq.Header.Set("Content-Type", "application/json")
+	zeroTrustInvalidReq.AddCookie(cookie)
+	zeroTrustInvalidRR := httptest.NewRecorder()
+	mux.ServeHTTP(zeroTrustInvalidRR, zeroTrustInvalidReq)
+	if zeroTrustInvalidRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected zerotrust whitelist invalid json to return 400, got %d body=%s", zeroTrustInvalidRR.Code, zeroTrustInvalidRR.Body.String())
+	}
+
+	zeroTrustReq := httptest.NewRequest(http.MethodPost, "/mng/api/cloudflare/zerotrust/whitelist", bytes.NewReader([]byte(`{"enabled":true}`)))
+	zeroTrustReq.Header.Set("Content-Type", "application/json")
+	zeroTrustReq.AddCookie(cookie)
+	zeroTrustRR := httptest.NewRecorder()
+	mux.ServeHTTP(zeroTrustRR, zeroTrustReq)
+	if zeroTrustRR.Code != http.StatusInternalServerError {
+		t.Fatalf("expected zerotrust whitelist to return 500 when cloudflare store is not initialized, got %d body=%s", zeroTrustRR.Code, zeroTrustRR.Body.String())
+	}
+	zeroTrustPayload := decodeJSONMap(t, zeroTrustRR)
+	zeroTrustErr, _ := zeroTrustPayload["error"].(string)
+	if !strings.Contains(zeroTrustErr, "cloudflare datastore is not initialized") {
+		t.Fatalf("expected zerotrust whitelist error to mention cloudflare datastore not initialized, got %+v", zeroTrustPayload)
+	}
+
+	zeroTrustRunInvalidReq := httptest.NewRequest(http.MethodPost, "/mng/api/cloudflare/zerotrust/whitelist/run", bytes.NewReader([]byte(`{"force"`)))
+	zeroTrustRunInvalidReq.Header.Set("Content-Type", "application/json")
+	zeroTrustRunInvalidReq.AddCookie(cookie)
+	zeroTrustRunInvalidRR := httptest.NewRecorder()
+	mux.ServeHTTP(zeroTrustRunInvalidRR, zeroTrustRunInvalidReq)
+	if zeroTrustRunInvalidRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected zerotrust run invalid json to return 400, got %d body=%s", zeroTrustRunInvalidRR.Code, zeroTrustRunInvalidRR.Body.String())
+	}
+
+	zeroTrustRunReq := httptest.NewRequest(http.MethodPost, "/mng/api/cloudflare/zerotrust/whitelist/run", bytes.NewReader([]byte(`{}`)))
+	zeroTrustRunReq.Header.Set("Content-Type", "application/json")
+	zeroTrustRunReq.AddCookie(cookie)
+	zeroTrustRunRR := httptest.NewRecorder()
+	mux.ServeHTTP(zeroTrustRunRR, zeroTrustRunReq)
+	if zeroTrustRunRR.Code != http.StatusInternalServerError {
+		t.Fatalf("expected zerotrust run to return 500 when cloudflare store is not initialized, got %d body=%s", zeroTrustRunRR.Code, zeroTrustRunRR.Body.String())
+	}
+	zeroTrustRunPayload := decodeJSONMap(t, zeroTrustRunRR)
+	zeroTrustRunErr, _ := zeroTrustRunPayload["error"].(string)
+	if !strings.Contains(zeroTrustRunErr, "cloudflare datastore is not initialized") {
+		t.Fatalf("expected zerotrust run error to mention cloudflare datastore not initialized, got %+v", zeroTrustRunPayload)
+	}
+}
