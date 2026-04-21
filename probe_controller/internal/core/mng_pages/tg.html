@@ -1,14 +1,601 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CloudHelper - TG 管理</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CloudHelper TG 助手管理</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { max-width:1200px; margin:4vh auto; padding:20px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    h1 { margin:0; font-size:24px; }
+    .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .btn.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
+    .btn.warn { background:#9e6a03; border-color:#bb8009; color:#fff; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .status { margin:8px 0 12px; border-radius:8px; border:1px solid #30363d; background:#161b22; padding:10px; font-size:13px; white-space:pre-wrap; }
+    .status.ok { color:#7ee787; }
+    .status.warn { color:#f2cc60; }
+    .status.err { color:#ff7b72; }
+    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+    .tab { padding:8px 12px; border-radius:999px; border:1px solid #30363d; background:#161b22; color:#c9d1d9; cursor:pointer; }
+    .tab.active { border-color:#58a6ff; color:#58a6ff; }
+    .panel { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
+    .section { display:none; }
+    .section.active { display:block; }
+    .row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+    input, select, textarea { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; }
+    input, select { min-width:220px; }
+    textarea { width:100%; min-height:110px; resize:vertical; }
+    table { width:100%; border-collapse:collapse; margin-top:8px; }
+    th, td { border-bottom:1px solid #30363d; padding:8px 6px; text-align:left; vertical-align:top; font-size:13px; }
+    th { color:#8b949e; font-weight:600; }
+    .muted { color:#8b949e; }
+    .mono { font-family:Consolas,monospace; }
+    .stack { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    @media (max-width: 980px) {
+      .stack { grid-template-columns:1fr; }
+    }
+    .box { border:1px solid #30363d; border-radius:10px; padding:10px; }
+  </style>
 </head>
 <body>
-  <main>
-    <h1>TG 管理</h1>
-    <p>该页面模板用于管理端 TG 功能占位，避免嵌入资源缺失导致编译失败。</p>
-  </main>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>/mng/tg</h1>
+        <p class="sub">TG 助手完整管理：账号、登录、任务、Bot。</p>
+      </div>
+      <div>
+        <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
+        <button id="btn-logout" class="btn" type="button">退出登录</button>
+      </div>
+    </div>
+
+    <div id="status-box" class="status">初始化中...</div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="apikey" type="button">共享 API Key</button>
+      <button class="tab" data-tab="accounts" type="button">账号与登录</button>
+      <button class="tab" data-tab="schedule" type="button">任务管理</button>
+      <button class="tab" data-tab="bot" type="button">Bot 管理</button>
+    </div>
+
+    <div class="panel">
+      <section id="section-apikey" class="section active">
+        <div class="row">
+          <input id="api-id" type="number" min="1" placeholder="TG API ID" />
+          <input id="api-hash" type="text" placeholder="TG API HASH" />
+          <button id="btn-save-api" class="btn primary" type="button">保存共享 API Key</button>
+        </div>
+        <div class="muted">当前状态：<span id="api-configured" class="mono">--</span></div>
+      </section>
+
+      <section id="section-accounts" class="section">
+        <div class="stack">
+          <div class="box">
+            <div class="row">
+              <input id="account-label" type="text" placeholder="账号标签（可选）" />
+              <input id="account-phone" type="text" placeholder="手机号（如 +8613xxxx）" />
+              <button id="btn-add-account" class="btn primary" type="button">新增账号</button>
+            </div>
+            <div class="row">
+              <button id="btn-refresh-accounts" class="btn" type="button">刷新账号列表</button>
+            </div>
+            <div class="row">
+              <select id="account-select"></select>
+              <button id="btn-remove-account" class="btn warn" type="button">删除账号</button>
+            </div>
+            <div class="row">
+              <button id="btn-send-code" class="btn" type="button">发送验证码</button>
+              <input id="login-code" type="text" placeholder="验证码" />
+              <input id="login-password" type="password" placeholder="2FA 密码（如需要）" />
+              <button id="btn-sign-in" class="btn primary" type="button">完成登录</button>
+              <button id="btn-logout-account" class="btn" type="button">账号登出</button>
+            </div>
+          </div>
+          <div class="box">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>标签</th>
+                  <th>手机号</th>
+                  <th>授权</th>
+                  <th>错误</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="section-schedule" class="section">
+        <div class="row">
+          <select id="schedule-account"></select>
+          <button id="btn-list-schedules" class="btn" type="button">刷新任务</button>
+          <button id="btn-list-pending" class="btn" type="button">查看待执行</button>
+        </div>
+        <div class="row">
+          <input id="schedule-id" type="text" placeholder="任务ID（更新/删除/启停/立即发送时必填）" />
+          <input id="schedule-target" type="text" placeholder="目标（username/chat id）" />
+          <input id="schedule-send-at" type="text" placeholder="发送时间表达式，如 daily@09:00" />
+        </div>
+        <div class="row">
+          <input id="schedule-delay-min" type="number" min="0" value="0" placeholder="最小随机延迟秒" />
+          <input id="schedule-delay-max" type="number" min="0" value="0" placeholder="最大随机延迟秒" />
+          <label><input id="schedule-enabled" type="checkbox" checked /> 启用任务</label>
+        </div>
+        <div class="row">
+          <textarea id="schedule-message" placeholder="发送消息内容"></textarea>
+        </div>
+        <div class="row">
+          <button id="btn-add-schedule" class="btn primary" type="button">新增任务</button>
+          <button id="btn-update-schedule" class="btn" type="button">更新任务</button>
+          <button id="btn-remove-schedule" class="btn warn" type="button">删除任务</button>
+          <button id="btn-set-enabled" class="btn" type="button">设置启停</button>
+          <button id="btn-send-now" class="btn" type="button">立即发送</button>
+          <button id="btn-history" class="btn" type="button">查看历史</button>
+        </div>
+        <div class="stack">
+          <div class="box">
+            <div class="muted">任务列表</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>任务ID</th>
+                  <th>目标</th>
+                  <th>时间</th>
+                  <th>启用</th>
+                </tr>
+              </thead>
+              <tbody id="schedules-body"></tbody>
+            </table>
+          </div>
+          <div class="box">
+            <div class="muted">历史/待执行输出</div>
+            <pre id="schedule-output" class="mono">[]</pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="section-bot" class="section">
+        <div class="row">
+          <select id="bot-account"></select>
+          <button id="btn-bot-get" class="btn" type="button">读取 Bot 配置</button>
+        </div>
+        <div class="row">
+          <input id="bot-api-key" type="text" placeholder="Bot API Key" />
+          <select id="bot-mode">
+            <option value="polling">polling</option>
+            <option value="webhook">webhook</option>
+          </select>
+          <button id="btn-bot-set" class="btn primary" type="button">保存 Bot 配置</button>
+        </div>
+        <div class="row">
+          <input id="bot-test-message" type="text" placeholder="测试消息内容" />
+          <button id="btn-bot-test-send" class="btn" type="button">测试发送</button>
+        </div>
+        <pre id="bot-output" class="mono">{}</pre>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      activeTab: 'apikey',
+      api: null,
+      accounts: [],
+      schedules: [],
+      selectedAccountID: '',
+    };
+
+    function setStatus(message, level) {
+      const box = document.getElementById('status-box');
+      box.textContent = String(message || '');
+      box.className = 'status';
+      if (level) box.classList.add(level);
+    }
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, { credentials: 'same-origin', ...options });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) {}
+      if (!response.ok) {
+        const msg = payload && payload.error ? payload.error : `HTTP ${response.status}`;
+        throw new Error(msg);
+      }
+      return payload;
+    }
+
+    async function ensureSession() {
+      const payload = await requestJSON('/mng/api/session');
+      if (!payload.authenticated) {
+        location.href = '/mng';
+        return false;
+      }
+      return true;
+    }
+
+    function selectedAccountID() {
+      return String(document.getElementById('account-select').value || '').trim();
+    }
+
+    function renderTabs() {
+      const tabs = Array.from(document.querySelectorAll('.tab'));
+      tabs.forEach((button) => {
+        button.classList.toggle('active', button.dataset.tab === state.activeTab);
+      });
+      document.querySelectorAll('.section').forEach((section) => {
+        section.classList.toggle('active', section.id === `section-${state.activeTab}`);
+      });
+    }
+
+    function renderAPI() {
+      const api = state.api || {};
+      document.getElementById('api-id').value = api.api_id || '';
+      document.getElementById('api-hash').value = api.api_hash || '';
+      document.getElementById('api-configured').textContent = api.configured ? '已配置' : '未配置';
+    }
+
+    function renderAccounts() {
+      const accounts = Array.isArray(state.accounts) ? state.accounts : [];
+      const options = accounts.map((a) => `<option value="${a.id}">${a.label || a.phone || a.id}</option>`).join('');
+      document.getElementById('account-select').innerHTML = options || '<option value="">暂无账号</option>';
+      document.getElementById('schedule-account').innerHTML = options || '<option value="">暂无账号</option>';
+      document.getElementById('bot-account').innerHTML = options || '<option value="">暂无账号</option>';
+      if (accounts.length > 0) {
+        const firstID = String(accounts[0].id || '');
+        if (!state.selectedAccountID || !accounts.some((a) => a.id === state.selectedAccountID)) {
+          state.selectedAccountID = firstID;
+        }
+      } else {
+        state.selectedAccountID = '';
+      }
+      document.getElementById('account-select').value = state.selectedAccountID;
+      document.getElementById('schedule-account').value = state.selectedAccountID;
+      document.getElementById('bot-account').value = state.selectedAccountID;
+
+      const body = document.getElementById('accounts-body');
+      if (accounts.length === 0) {
+        body.innerHTML = '<tr><td colspan="5" class="muted">暂无账号</td></tr>';
+        return;
+      }
+      body.innerHTML = accounts.map((item) => `<tr>
+        <td class="mono">${item.id || '-'}</td>
+        <td>${item.label || '-'}</td>
+        <td>${item.phone || '-'}</td>
+        <td>${item.authorized ? '是' : '否'}</td>
+        <td>${item.last_error || '-'}</td>
+      </tr>`).join('');
+    }
+
+    function renderSchedules() {
+      const list = Array.isArray(state.schedules) ? state.schedules : [];
+      const body = document.getElementById('schedules-body');
+      if (list.length === 0) {
+        body.innerHTML = '<tr><td colspan="4" class="muted">暂无任务</td></tr>';
+        return;
+      }
+      body.innerHTML = list.map((item) => `<tr>
+        <td class="mono">${item.id || '-'}</td>
+        <td>${item.target || '-'}</td>
+        <td>${item.send_at || '-'}</td>
+        <td>${item.enabled ? '是' : '否'}</td>
+      </tr>`).join('');
+    }
+
+    function currentSchedulePayload() {
+      const accountID = String(document.getElementById('schedule-account').value || '').trim();
+      return {
+        account_id: accountID,
+        task_id: String(document.getElementById('schedule-id').value || '').trim(),
+        task_type: 'scheduled_send',
+        enabled: document.getElementById('schedule-enabled').checked,
+        target: String(document.getElementById('schedule-target').value || '').trim(),
+        send_at: String(document.getElementById('schedule-send-at').value || '').trim(),
+        message: String(document.getElementById('schedule-message').value || ''),
+        delay_min_sec: Number.parseInt(String(document.getElementById('schedule-delay-min').value || '0'), 10) || 0,
+        delay_max_sec: Number.parseInt(String(document.getElementById('schedule-delay-max').value || '0'), 10) || 0,
+      };
+    }
+
+    async function loadAPI() {
+      state.api = await requestJSON('/mng/api/tg/api/get');
+      renderAPI();
+    }
+
+    async function saveAPI() {
+      const apiID = Number.parseInt(String(document.getElementById('api-id').value || '0'), 10);
+      const apiHash = String(document.getElementById('api-hash').value || '').trim();
+      state.api = await requestJSON('/mng/api/tg/api/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_id: apiID, api_hash: apiHash }),
+      });
+      renderAPI();
+      setStatus('共享 API Key 已保存', 'ok');
+    }
+
+    async function loadAccounts(silent) {
+      const payload = await requestJSON('/mng/api/tg/accounts/list');
+      state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+      renderAccounts();
+      if (!silent) setStatus(`账号列表已刷新：${state.accounts.length} 个`, 'ok');
+    }
+
+    async function refreshAccounts() {
+      const payload = await requestJSON('/mng/api/tg/accounts/refresh', { method: 'POST' });
+      state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+      renderAccounts();
+      setStatus('账号状态已刷新', 'ok');
+    }
+
+    async function addAccount() {
+      const label = String(document.getElementById('account-label').value || '').trim();
+      const phone = String(document.getElementById('account-phone').value || '').trim();
+      const payload = await requestJSON('/mng/api/tg/account/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, phone }),
+      });
+      await loadAccounts(true);
+      if (payload && payload.account && payload.account.id) {
+        state.selectedAccountID = String(payload.account.id);
+        renderAccounts();
+      }
+      setStatus('账号已新增', 'ok');
+    }
+
+    async function removeAccount() {
+      const accountID = selectedAccountID();
+      await requestJSON('/mng/api/tg/account/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountID }),
+      });
+      await loadAccounts(true);
+      setStatus('账号已删除', 'ok');
+    }
+
+    async function sendCode() {
+      const accountID = selectedAccountID();
+      await requestJSON('/mng/api/tg/account/send_code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountID }),
+      });
+      await loadAccounts(true);
+      setStatus('验证码发送请求已提交', 'ok');
+    }
+
+    async function signIn() {
+      const accountID = selectedAccountID();
+      const code = String(document.getElementById('login-code').value || '').trim();
+      const password = String(document.getElementById('login-password').value || '');
+      await requestJSON('/mng/api/tg/account/sign_in', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountID, code, password }),
+      });
+      await loadAccounts(true);
+      setStatus('账号登录完成', 'ok');
+    }
+
+    async function logoutAccount() {
+      const accountID = selectedAccountID();
+      await requestJSON('/mng/api/tg/account/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountID }),
+      });
+      await loadAccounts(true);
+      setStatus('账号已登出', 'ok');
+    }
+
+    async function listSchedules() {
+      const account_id = String(document.getElementById('schedule-account').value || '').trim();
+      const payload = await requestJSON('/mng/api/tg/schedule/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id }),
+      });
+      state.schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
+      renderSchedules();
+      setStatus(`任务列表已刷新：${state.schedules.length} 条`, 'ok');
+    }
+
+    async function addSchedule() {
+      const payload = currentSchedulePayload();
+      const res = await requestJSON('/mng/api/tg/schedule/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      state.schedules = Array.isArray(res.schedules) ? res.schedules : [];
+      renderSchedules();
+      setStatus('任务已新增', 'ok');
+    }
+
+    async function updateSchedule() {
+      const payload = currentSchedulePayload();
+      const res = await requestJSON('/mng/api/tg/schedule/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      state.schedules = Array.isArray(res.schedules) ? res.schedules : [];
+      renderSchedules();
+      setStatus('任务已更新', 'ok');
+    }
+
+    async function removeSchedule() {
+      const payload = currentSchedulePayload();
+      const res = await requestJSON('/mng/api/tg/schedule/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: payload.account_id, task_id: payload.task_id }),
+      });
+      state.schedules = Array.isArray(res.schedules) ? res.schedules : [];
+      renderSchedules();
+      setStatus('任务已删除', 'ok');
+    }
+
+    async function setScheduleEnabled() {
+      const payload = currentSchedulePayload();
+      const res = await requestJSON('/mng/api/tg/schedule/set_enabled', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: payload.account_id, task_id: payload.task_id, enabled: payload.enabled }),
+      });
+      state.schedules = Array.isArray(res.schedules) ? res.schedules : [];
+      renderSchedules();
+      setStatus(`任务启停已设置：${payload.enabled ? '启用' : '禁用'}`, 'ok');
+    }
+
+    async function sendScheduleNow() {
+      const payload = currentSchedulePayload();
+      const res = await requestJSON('/mng/api/tg/schedule/send_now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: payload.account_id, task_id: payload.task_id }),
+      });
+      document.getElementById('schedule-output').textContent = JSON.stringify(res.result || {}, null, 2);
+      setStatus('已执行立即发送', 'ok');
+    }
+
+    async function listScheduleHistory() {
+      const payload = currentSchedulePayload();
+      const res = await requestJSON('/mng/api/tg/schedule/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: payload.account_id, task_id: payload.task_id, limit: 50 }),
+      });
+      document.getElementById('schedule-output').textContent = JSON.stringify(res.history || [], null, 2);
+      setStatus('已加载任务历史', 'ok');
+    }
+
+    async function listPendingTasks() {
+      const account_id = String(document.getElementById('schedule-account').value || '').trim();
+      const res = await requestJSON('/mng/api/tg/schedule/pending', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id }),
+      });
+      document.getElementById('schedule-output').textContent = JSON.stringify(res.pending || [], null, 2);
+      setStatus('已加载待执行队列', 'ok');
+    }
+
+    async function getBotConfig() {
+      const account_id = String(document.getElementById('bot-account').value || '').trim();
+      const res = await requestJSON('/mng/api/tg/bot/get', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id }),
+      });
+      document.getElementById('bot-api-key').value = res.api_key || '';
+      document.getElementById('bot-mode').value = res.mode || 'polling';
+      document.getElementById('bot-output').textContent = JSON.stringify(res, null, 2);
+      setStatus('Bot 配置已加载', 'ok');
+    }
+
+    async function setBotConfig() {
+      const account_id = String(document.getElementById('bot-account').value || '').trim();
+      const api_key = String(document.getElementById('bot-api-key').value || '').trim();
+      const mode = String(document.getElementById('bot-mode').value || 'polling');
+      const res = await requestJSON('/mng/api/tg/bot/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id, api_key, mode }),
+      });
+      document.getElementById('bot-output').textContent = JSON.stringify(res, null, 2);
+      setStatus('Bot 配置已保存', 'ok');
+    }
+
+    async function testBotSend() {
+      const account_id = String(document.getElementById('bot-account').value || '').trim();
+      const message = String(document.getElementById('bot-test-message').value || '').trim();
+      const res = await requestJSON('/mng/api/tg/bot/test_send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id, message }),
+      });
+      document.getElementById('bot-output').textContent = JSON.stringify(res.result || {}, null, 2);
+      setStatus('Bot 测试发送完成', 'ok');
+    }
+
+    async function logout() {
+      await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.href = '/mng';
+    }
+
+    function bindEvents() {
+      document.querySelectorAll('.tab').forEach((button) => {
+        button.addEventListener('click', () => {
+          state.activeTab = String(button.dataset.tab || 'apikey');
+          renderTabs();
+        });
+      });
+      document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
+      document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
+
+      document.getElementById('account-select').addEventListener('change', (e) => {
+        state.selectedAccountID = String(e.target.value || '').trim();
+        document.getElementById('schedule-account').value = state.selectedAccountID;
+        document.getElementById('bot-account').value = state.selectedAccountID;
+      });
+      document.getElementById('schedule-account').addEventListener('change', (e) => {
+        state.selectedAccountID = String(e.target.value || '').trim();
+        document.getElementById('account-select').value = state.selectedAccountID;
+        document.getElementById('bot-account').value = state.selectedAccountID;
+      });
+      document.getElementById('bot-account').addEventListener('change', (e) => {
+        state.selectedAccountID = String(e.target.value || '').trim();
+        document.getElementById('account-select').value = state.selectedAccountID;
+        document.getElementById('schedule-account').value = state.selectedAccountID;
+      });
+
+      document.getElementById('btn-save-api').addEventListener('click', () => saveAPI().catch((err) => setStatus(`保存 API Key 失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-refresh-accounts').addEventListener('click', () => refreshAccounts().catch((err) => setStatus(`刷新账号失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-add-account').addEventListener('click', () => addAccount().catch((err) => setStatus(`新增账号失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-remove-account').addEventListener('click', () => removeAccount().catch((err) => setStatus(`删除账号失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-send-code').addEventListener('click', () => sendCode().catch((err) => setStatus(`发送验证码失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-sign-in').addEventListener('click', () => signIn().catch((err) => setStatus(`登录失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-logout-account').addEventListener('click', () => logoutAccount().catch((err) => setStatus(`账号登出失败：${err.message || err}`, 'err')));
+
+      document.getElementById('btn-list-schedules').addEventListener('click', () => listSchedules().catch((err) => setStatus(`加载任务失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-add-schedule').addEventListener('click', () => addSchedule().catch((err) => setStatus(`新增任务失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-update-schedule').addEventListener('click', () => updateSchedule().catch((err) => setStatus(`更新任务失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-remove-schedule').addEventListener('click', () => removeSchedule().catch((err) => setStatus(`删除任务失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-set-enabled').addEventListener('click', () => setScheduleEnabled().catch((err) => setStatus(`设置启停失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-send-now').addEventListener('click', () => sendScheduleNow().catch((err) => setStatus(`立即发送失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-history').addEventListener('click', () => listScheduleHistory().catch((err) => setStatus(`查看历史失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-list-pending').addEventListener('click', () => listPendingTasks().catch((err) => setStatus(`查看待执行失败：${err.message || err}`, 'err')));
+
+      document.getElementById('btn-bot-get').addEventListener('click', () => getBotConfig().catch((err) => setStatus(`读取 Bot 失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-bot-set').addEventListener('click', () => setBotConfig().catch((err) => setStatus(`保存 Bot 失败：${err.message || err}`, 'err')));
+      document.getElementById('btn-bot-test-send').addEventListener('click', () => testBotSend().catch((err) => setStatus(`Bot 测试发送失败：${err.message || err}`, 'err')));
+    }
+
+    async function bootstrap() {
+      bindEvents();
+      renderTabs();
+      const ok = await ensureSession().catch(() => false);
+      if (!ok) {
+        location.href = '/mng';
+        return;
+      }
+      await loadAPI();
+      await loadAccounts(true);
+      setStatus('TG 页面初始化完成', 'ok');
+    }
+
+    bootstrap().catch((err) => {
+      setStatus(`初始化失败：${err && err.message ? err.message : err}`, 'err');
+    });
+  </script>
 </body>
 </html>

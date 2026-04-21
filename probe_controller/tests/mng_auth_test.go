@@ -202,6 +202,23 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 		t.Fatalf("expected /mng/api/cloudflare/api without cookie to return 401, got %d body=%s", cloudflareAPIRRWithoutCookie.Code, cloudflareAPIRRWithoutCookie.Body.String())
 	}
 
+	tgReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/tg", nil)
+	tgRRWithoutCookie := httptest.NewRecorder()
+	mux.ServeHTTP(tgRRWithoutCookie, tgReqWithoutCookie)
+	if tgRRWithoutCookie.Code != http.StatusFound {
+		t.Fatalf("expected /mng/tg without cookie to redirect, got %d body=%s", tgRRWithoutCookie.Code, tgRRWithoutCookie.Body.String())
+	}
+	if loc := tgRRWithoutCookie.Header().Get("Location"); loc != "/mng" {
+		t.Fatalf("expected /mng/tg redirect location /mng, got %q", loc)
+	}
+
+	tgAPIReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/api/tg/api/get", nil)
+	tgAPIRRWithoutCookie := httptest.NewRecorder()
+	mux.ServeHTTP(tgAPIRRWithoutCookie, tgAPIReqWithoutCookie)
+	if tgAPIRRWithoutCookie.Code != http.StatusUnauthorized {
+		t.Fatalf("expected /mng/api/tg/api/get without cookie to return 401, got %d body=%s", tgAPIRRWithoutCookie.Code, tgAPIRRWithoutCookie.Body.String())
+	}
+
 	probeReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/probe", nil)
 	probeRRWithoutCookie := httptest.NewRecorder()
 	mux.ServeHTTP(probeRRWithoutCookie, probeReqWithoutCookie)
@@ -257,6 +274,9 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	if !strings.Contains(panelRR.Body.String(), "Cloudflare 管理") {
 		t.Fatalf("expected /mng/panel html to include cloudflare tile")
 	}
+	if !strings.Contains(panelRR.Body.String(), "TG 助手") {
+		t.Fatalf("expected /mng/panel html to include tg tile")
+	}
 
 	settingsReq := httptest.NewRequest(http.MethodGet, "/mng/settings", nil)
 	settingsReq.AddCookie(cookie)
@@ -310,6 +330,38 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	cloudflareAPIPayload := decodeJSONMap(t, cloudflareAPIRR)
 	if _, ok := cloudflareAPIPayload["configured"]; !ok {
 		t.Fatalf("expected cloudflare api payload to include configured, got %+v", cloudflareAPIPayload)
+	}
+
+	tgReq := httptest.NewRequest(http.MethodGet, "/mng/tg", nil)
+	tgReq.AddCookie(cookie)
+	tgRR := httptest.NewRecorder()
+	mux.ServeHTTP(tgRR, tgReq)
+	if tgRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/tg with session to return 200, got %d body=%s", tgRR.Code, tgRR.Body.String())
+	}
+	if !strings.Contains(tgRR.Body.String(), "共享 API Key") {
+		t.Fatalf("expected /mng/tg html to include api key section")
+	}
+	if !strings.Contains(tgRR.Body.String(), "账号与登录") {
+		t.Fatalf("expected /mng/tg html to include account/login section")
+	}
+	if !strings.Contains(tgRR.Body.String(), "任务管理") {
+		t.Fatalf("expected /mng/tg html to include schedule section")
+	}
+	if !strings.Contains(tgRR.Body.String(), "Bot 管理") {
+		t.Fatalf("expected /mng/tg html to include bot section")
+	}
+
+	tgAPIReq := httptest.NewRequest(http.MethodGet, "/mng/api/tg/api/get", nil)
+	tgAPIReq.AddCookie(cookie)
+	tgAPIRR := httptest.NewRecorder()
+	mux.ServeHTTP(tgAPIRR, tgAPIReq)
+	if tgAPIRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/api/tg/api/get with session to return 200, got %d body=%s", tgAPIRR.Code, tgAPIRR.Body.String())
+	}
+	tgAPIPayload := decodeJSONMap(t, tgAPIRR)
+	if _, ok := tgAPIPayload["configured"]; !ok {
+		t.Fatalf("expected tg api payload to include configured, got %+v", tgAPIPayload)
 	}
 
 	summaryReq := httptest.NewRequest(http.MethodGet, "/mng/api/panel/summary", nil)
