@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CloudHelper Cloudflare 管理</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { max-width:1100px; margin:4vh auto; padding:20px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    h1 { margin:0; font-size:24px; }
+    .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .btn.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .status { margin:8px 0 12px; border-radius:8px; border:1px solid #30363d; background:#161b22; padding:10px; font-size:13px; white-space:pre-wrap; }
+    .status.ok { color:#7ee787; }
+    .status.warn { color:#f2cc60; }
+    .status.err { color:#ff7b72; }
+    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+    .tab { padding:8px 12px; border-radius:999px; border:1px solid #30363d; background:#161b22; color:#c9d1d9; cursor:pointer; }
+    .tab.active { border-color:#58a6ff; color:#58a6ff; }
+    .panel { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
+    .section { display:none; }
+    .section.active { display:block; }
+    .row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+    input, textarea { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; }
+    input { min-width:280px; }
+    textarea { width:100%; min-height:120px; resize:vertical; }
+    table { width:100%; border-collapse:collapse; margin-top:8px; }
+    th, td { border-bottom:1px solid #30363d; padding:8px 6px; text-align:left; vertical-align:top; font-size:13px; }
+    th { color:#8b949e; font-weight:600; }
+    .muted { color:#8b949e; }
+    .mono { font-family:Consolas,monospace; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>/mng/cloudflare</h1>
+        <p class="sub">子页签：基础设置、DDNS、ZeroTrust。</p>
+      </div>
+      <div>
+        <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
+        <button id="btn-logout" class="btn" type="button">退出登录</button>
+      </div>
+    </div>
+
+    <div id="status-box" class="status">初始化中...</div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="settings" type="button">基础设置</button>
+      <button class="tab" data-tab="ddns" type="button">DDNS</button>
+      <button class="tab" data-tab="zerotrust" type="button">ZeroTrust</button>
+    </div>
+
+    <div class="panel">
+      <section id="section-settings" class="section active">
+        <div class="row">
+          <input id="api-key" type="password" placeholder="Cloudflare API Token" />
+          <button id="btn-save-api" class="btn primary" type="button">保存 API Key</button>
+        </div>
+        <div class="row">
+          <input id="zone-name" placeholder="Zone 域名，例如 example.com" />
+          <button id="btn-save-zone" class="btn" type="button">保存 Zone</button>
+          <span class="muted">API 状态：<span id="api-configured" class="mono">--</span></span>
+        </div>
+      </section>
+
+      <section id="section-ddns" class="section">
+        <div class="row">
+          <button id="btn-apply-ddns" class="btn primary" type="button">自动为探针申请 DDNS</button>
+          <button id="btn-refresh-ddns" class="btn" type="button">刷新记录</button>
+          <span class="muted">当前 Zone：<span id="ddns-zone" class="mono">--</span></span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>节点</th>
+              <th>记录</th>
+              <th>类型</th>
+              <th>IP</th>
+              <th>更新时间</th>
+            </tr>
+          </thead>
+          <tbody id="ddns-records-body"></tbody>
+        </table>
+      </section>
+
+      <section id="section-zerotrust" class="section">
+        <div class="row">
+          <label><input id="zt-enabled" type="checkbox" /> 启用自动同步</label>
+        </div>
+        <div class="row">
+          <input id="zt-policy" placeholder="策略名称，例如 office-whitelist" />
+        </div>
+        <div class="row">
+          <textarea id="zt-whitelist" placeholder="白名单（IP / CIDR / 域名，一行一个）"></textarea>
+        </div>
+        <div class="row">
+          <input id="zt-interval" type="number" min="30" value="300" placeholder="同步间隔（秒）" />
+        </div>
+        <div class="row">
+          <button id="btn-save-zt" class="btn primary" type="button">保存 ZeroTrust 配置</button>
+          <button id="btn-run-zt" class="btn" type="button">立即执行同步</button>
+          <button id="btn-refresh-zt" class="btn" type="button">刷新状态</button>
+        </div>
+        <div class="muted">运行中：<span id="zt-running">--</span></div>
+        <div class="muted">最近状态：<span id="zt-last-status">--</span></div>
+        <div class="muted">最近执行：<span id="zt-last-run">--</span></div>
+        <div class="muted">最近成功：<span id="zt-last-success">--</span></div>
+        <div class="muted">最近消息：<span id="zt-last-message">--</span></div>
+        <div class="muted">已应用IP：<span id="zt-last-ips">--</span></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      activeTab: 'settings',
+      zoneName: '',
+      apiConfigured: false,
+      ddnsRecords: [],
+      zeroTrust: null,
+    };
+
+    function setStatus(message, level) {
+      const box = document.getElementById('status-box');
+      box.textContent = String(message || '');
+      box.className = 'status';
+      if (level) box.classList.add(level);
+    }
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: 'same-origin',
+        ...options,
+      });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) {}
+      if (!response.ok) {
+        const msg = payload && payload.error ? payload.error : `HTTP ${response.status}`;
+        throw new Error(msg);
+      }
+      return payload;
+    }
+
+    async function ensureSession() {
+      const payload = await requestJSON('/mng/api/session');
+      if (!payload.authenticated) {
+        location.href = '/mng';
+        return false;
+      }
+      return true;
+    }
+
+    function formatTime(value) {
+      const text = String(value || '').trim();
+      if (!text) return '-';
+      const dt = new Date(text);
+      return Number.isNaN(dt.getTime()) ? text : dt.toLocaleString();
+    }
+
+    function bindTabs() {
+      const tabs = Array.from(document.querySelectorAll('.tab'));
+      tabs.forEach((button) => {
+        button.addEventListener('click', () => {
+          const next = String(button.dataset.tab || '').trim();
+          if (!next) return;
+          state.activeTab = next;
+          tabs.forEach((btn) => btn.classList.toggle('active', btn === button));
+          document.querySelectorAll('.section').forEach((section) => {
+            section.classList.toggle('active', section.id === `section-${next}`);
+          });
+        });
+      });
+    }
+
+    function renderSettings() {
+      document.getElementById('zone-name').value = state.zoneName || '';
+      document.getElementById('api-configured').textContent = state.apiConfigured ? '已配置' : '未配置';
+      document.getElementById('ddns-zone').textContent = state.zoneName || '--';
+    }
+
+    function renderDDNSRecords() {
+      const body = document.getElementById('ddns-records-body');
+      if (!Array.isArray(state.ddnsRecords) || state.ddnsRecords.length === 0) {
+        body.innerHTML = '<tr><td colspan="5" class="muted">暂无 DDNS 记录</td></tr>';
+        return;
+      }
+      body.innerHTML = state.ddnsRecords.map((item) => {
+        return `<tr>
+          <td>${item.node_name || item.node_id || '-'}</td>
+          <td>${item.record_name || '-'}</td>
+          <td>${item.record_type || '-'}</td>
+          <td>${item.content_ip || '-'}</td>
+          <td>${formatTime(item.updated_at)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderZeroTrust() {
+      const zt = state.zeroTrust || {};
+      document.getElementById('zt-enabled').checked = zt.enabled === true;
+      document.getElementById('zt-policy').value = zt.policy_name || '';
+      document.getElementById('zt-whitelist').value = zt.whitelist_raw || '';
+      document.getElementById('zt-interval').value = String(zt.sync_interval_sec || 300);
+      document.getElementById('zt-running').textContent = zt.running ? '是' : '否';
+      document.getElementById('zt-last-status').textContent = zt.last_status || '-';
+      document.getElementById('zt-last-run').textContent = formatTime(zt.last_run_at);
+      document.getElementById('zt-last-success').textContent = formatTime(zt.last_success_at);
+      document.getElementById('zt-last-message').textContent = zt.last_message || '-';
+      document.getElementById('zt-last-ips').textContent = Array.isArray(zt.last_applied_ips) && zt.last_applied_ips.length ? zt.last_applied_ips.join(', ') : '-';
+    }
+
+    async function loadBase() {
+      const payload = await requestJSON('/mng/api/cloudflare/api');
+      state.apiConfigured = payload.configured === true;
+      document.getElementById('api-key').value = payload.api_key || '';
+      state.zoneName = String(payload.zone_name || '').trim().toLowerCase();
+      if (!state.zoneName) {
+        const zone = await requestJSON('/mng/api/cloudflare/zone');
+        state.zoneName = String(zone.zone_name || '').trim().toLowerCase();
+      }
+      renderSettings();
+    }
+
+    async function loadDDNSRecords(silent) {
+      const payload = await requestJSON('/mng/api/cloudflare/ddns/records');
+      state.ddnsRecords = Array.isArray(payload.records) ? payload.records : [];
+      renderDDNSRecords();
+      if (!silent) setStatus(`DDNS 记录已刷新：${state.ddnsRecords.length} 条`, 'ok');
+    }
+
+    async function loadZeroTrust(silent) {
+      const payload = await requestJSON('/mng/api/cloudflare/zerotrust/whitelist');
+      state.zeroTrust = payload || {};
+      renderZeroTrust();
+      if (!silent) setStatus('ZeroTrust 状态已刷新', 'ok');
+    }
+
+    async function loadAll() {
+      await loadBase();
+      await Promise.all([loadDDNSRecords(true), loadZeroTrust(true)]);
+      setStatus('Cloudflare 配置加载完成', 'ok');
+    }
+
+    async function saveAPIKey() {
+      const apiKey = String(document.getElementById('api-key').value || '').trim();
+      if (!apiKey) {
+        setStatus('API Key 不能为空', 'warn');
+        return;
+      }
+      const payload = await requestJSON('/mng/api/cloudflare/api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: apiKey }),
+      });
+      state.apiConfigured = payload.configured === true;
+      state.zoneName = String(payload.zone_name || state.zoneName || '').trim().toLowerCase();
+      renderSettings();
+      setStatus('API Key 已保存', 'ok');
+    }
+
+    async function saveZone() {
+      const zoneName = String(document.getElementById('zone-name').value || '').trim().toLowerCase();
+      if (!zoneName) {
+        setStatus('Zone 不能为空', 'warn');
+        return;
+      }
+      const payload = await requestJSON('/mng/api/cloudflare/zone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zone_name: zoneName }),
+      });
+      state.zoneName = String(payload.zone_name || zoneName).trim().toLowerCase();
+      renderSettings();
+      setStatus(`Zone 已保存：${state.zoneName}`, 'ok');
+    }
+
+    async function applyDDNS() {
+      const zoneName = String(state.zoneName || document.getElementById('zone-name').value || '').trim().toLowerCase();
+      if (!zoneName) {
+        setStatus('请先配置 Zone', 'warn');
+        return;
+      }
+      const payload = await requestJSON('/mng/api/cloudflare/ddns/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zone_name: zoneName }),
+      });
+      state.zoneName = String(payload.zone_name || zoneName).trim().toLowerCase();
+      state.ddnsRecords = Array.isArray(payload.records) ? payload.records : [];
+      renderSettings();
+      renderDDNSRecords();
+      setStatus(`DDNS 执行完成：applied=${payload.applied || 0} skipped=${payload.skipped || 0}`, 'ok');
+    }
+
+    async function saveZeroTrust() {
+      const enabled = document.getElementById('zt-enabled').checked;
+      const policyName = String(document.getElementById('zt-policy').value || '').trim();
+      const whitelistRaw = String(document.getElementById('zt-whitelist').value || '');
+      const intervalInput = Number.parseInt(String(document.getElementById('zt-interval').value || '300'), 10);
+      const interval = Number.isFinite(intervalInput) ? Math.max(30, intervalInput) : 300;
+      const payload = await requestJSON('/mng/api/cloudflare/zerotrust/whitelist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled,
+          policy_name: policyName,
+          whitelist_raw: whitelistRaw,
+          sync_interval_sec: interval,
+        }),
+      });
+      state.zeroTrust = payload || {};
+      renderZeroTrust();
+      setStatus('ZeroTrust 配置已保存', 'ok');
+    }
+
+    async function runZeroTrust() {
+      const payload = await requestJSON('/mng/api/cloudflare/zerotrust/whitelist/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      });
+      state.zeroTrust = payload || {};
+      renderZeroTrust();
+      setStatus(`ZeroTrust 执行完成：${payload.last_status || 'success'} ${payload.last_message || ''}`, 'ok');
+    }
+
+    async function logout() {
+      await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.href = '/mng';
+    }
+
+    function bindActions() {
+      document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
+      document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
+      document.getElementById('btn-save-api').addEventListener('click', () => { saveAPIKey().catch((err) => setStatus(`保存 API Key 失败：${err.message || err}`, 'err')); });
+      document.getElementById('btn-save-zone').addEventListener('click', () => { saveZone().catch((err) => setStatus(`保存 Zone 失败：${err.message || err}`, 'err')); });
+      document.getElementById('btn-apply-ddns').addEventListener('click', () => { applyDDNS().catch((err) => setStatus(`执行 DDNS 失败：${err.message || err}`, 'err')); });
+      document.getElementById('btn-refresh-ddns').addEventListener('click', () => { loadDDNSRecords(false).catch((err) => setStatus(`刷新 DDNS 失败：${err.message || err}`, 'err')); });
+      document.getElementById('btn-save-zt').addEventListener('click', () => { saveZeroTrust().catch((err) => setStatus(`保存 ZeroTrust 失败：${err.message || err}`, 'err')); });
+      document.getElementById('btn-run-zt').addEventListener('click', () => { runZeroTrust().catch((err) => setStatus(`执行 ZeroTrust 失败：${err.message || err}`, 'err')); });
+      document.getElementById('btn-refresh-zt').addEventListener('click', () => { loadZeroTrust(false).catch((err) => setStatus(`刷新 ZeroTrust 失败：${err.message || err}`, 'err')); });
+    }
+
+    async function bootstrap() {
+      bindTabs();
+      bindActions();
+      const ok = await ensureSession().catch(() => false);
+      if (!ok) {
+        location.href = '/mng';
+        return;
+      }
+      await loadAll().catch((err) => {
+        setStatus(`初始化失败：${err && err.message ? err.message : err}`, 'err');
+      });
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>
