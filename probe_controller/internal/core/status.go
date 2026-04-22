@@ -50,6 +50,7 @@ func dashboardProbesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type dashboardPublicProbeItem struct {
+	NodeNo   int                `json:"node_no"`
 	NodeName string             `json:"node_name"`
 	Online   bool               `json:"online"`
 	LastSeen string             `json:"last_seen"`
@@ -59,19 +60,40 @@ type dashboardPublicProbeItem struct {
 func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 	// Security note: /dashboard/* is public. Do not expose node_id/ip/version here.
 	runtimes := listProbeRuntimes()
-	nameMap := map[string]string{}
+	type nodeMeta struct {
+		no   int
+		name string
+	}
+	metaMap := map[string]nodeMeta{}
 	if ProbeStore != nil {
 		ProbeStore.mu.RLock()
 		for _, node := range loadProbeNodesLocked() {
-			nameMap[normalizeProbeNodeID(strconv.Itoa(node.NodeNo))] = strings.TrimSpace(node.NodeName)
+			normalizedID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+			metaMap[normalizedID] = nodeMeta{
+				no:   node.NodeNo,
+				name: strings.TrimSpace(node.NodeName),
+			}
 		}
 		ProbeStore.mu.RUnlock()
 	}
 
 	out := make([]dashboardPublicProbeItem, 0, len(runtimes))
 	for _, rt := range runtimes {
-		nodeName := strings.TrimSpace(nameMap[normalizeProbeNodeID(rt.NodeID)])
+		normalizedID := normalizeProbeNodeID(rt.NodeID)
+		meta, ok := metaMap[normalizedID]
+		nodeNo := 0
+		nodeName := ""
+		if ok {
+			nodeNo = meta.no
+			nodeName = meta.name
+		}
+		if nodeNo <= 0 {
+			if n, err := strconv.Atoi(normalizedID); err == nil && n > 0 {
+				nodeNo = n
+			}
+		}
 		out = append(out, dashboardPublicProbeItem{
+			NodeNo:   nodeNo,
 			NodeName: nodeName,
 			Online:   rt.Online,
 			LastSeen: strings.TrimSpace(rt.LastSeen),
@@ -79,10 +101,20 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Online == out[j].Online {
-			return i < j
+		leftNo := out[i].NodeNo
+		rightNo := out[j].NodeNo
+		switch {
+		case leftNo > 0 && rightNo > 0 && leftNo != rightNo:
+			return leftNo < rightNo
+		case leftNo > 0 && rightNo <= 0:
+			return true
+		case leftNo <= 0 && rightNo > 0:
+			return false
 		}
-		return out[i].Online && !out[j].Online
+		if out[i].NodeName != out[j].NodeName {
+			return out[i].NodeName < out[j].NodeName
+		}
+		return i < j
 	})
 	return out
 }
