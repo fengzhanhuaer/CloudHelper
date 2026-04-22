@@ -277,6 +277,9 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	if !strings.Contains(panelRR.Body.String(), "TG 助手") {
 		t.Fatalf("expected /mng/panel html to include tg tile")
 	}
+	if !strings.Contains(panelRR.Body.String(), "探针面板") {
+		t.Fatalf("expected /mng/panel html to include dashboard tile")
+	}
 
 	settingsReq := httptest.NewRequest(http.MethodGet, "/mng/settings", nil)
 	settingsReq.AddCookie(cookie)
