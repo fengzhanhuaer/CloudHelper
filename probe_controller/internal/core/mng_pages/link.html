@@ -1,13 +1,13 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>CloudHelper 链路管理</title>
   <style>
     :root { color-scheme: dark; }
     body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
-    .wrap { max-width:1200px; margin:4vh auto; padding:20px; }
+    .wrap { max-width:1280px; margin:4vh auto; padding:20px; }
     .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
     h1 { margin:0; font-size:24px; }
     .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
@@ -26,18 +26,35 @@
     .section { display:none; }
     .section.active { display:block; }
     .row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
-    input, select, textarea { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; }
+    .row label { min-width:120px; color:#8b949e; font-size:13px; }
+    input, select, textarea {
+      background:#0d1117;
+      color:#c9d1d9;
+      border:1px solid #30363d;
+      border-radius:8px;
+      padding:7px 8px;
+    }
     input, select { min-width:180px; }
-    textarea { width:100%; min-height:96px; resize:vertical; }
+    input.small, select.small { min-width:120px; }
+    input.wide, select.wide { min-width:260px; }
     table { width:100%; border-collapse:collapse; margin-top:8px; }
     th, td { border-bottom:1px solid #30363d; padding:8px 6px; text-align:left; vertical-align:top; font-size:13px; }
     th { color:#8b949e; font-weight:600; }
     .mono { font-family:Consolas,monospace; }
     .muted { color:#8b949e; }
     .stack { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    @media (max-width: 980px) { .stack { grid-template-columns:1fr; } }
+    @media (max-width: 1080px) { .stack { grid-template-columns:1fr; } }
     .box { border:1px solid #30363d; border-radius:10px; padding:10px; }
     .small { font-size:12px; }
+    .inline-tag {
+      display:inline-block;
+      border:1px solid #30363d;
+      border-radius:999px;
+      padding:2px 8px;
+      font-size:12px;
+      color:#8b949e;
+      margin-right:6px;
+    }
   </style>
 </head>
 <body>
@@ -45,7 +62,7 @@
     <div class="topbar">
       <div>
         <h1>/mng/link</h1>
-        <p class="sub">链路管理：链路添加、链路查看、端口转发。</p>
+        <p class="sub">链路管理：极简添加、链路编辑、端口转发（默认值对齐 manager）。</p>
       </div>
       <div>
         <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
@@ -57,7 +74,7 @@
 
     <div class="tabs">
       <button class="tab active" data-tab="add" type="button">链路添加</button>
-      <button class="tab" data-tab="list" type="button">链路查看</button>
+      <button class="tab" data-tab="edit" type="button">链路查看（编辑）</button>
       <button class="tab" data-tab="pf" type="button">端口转发</button>
     </div>
 
@@ -66,138 +83,153 @@
         <div class="stack">
           <div class="box">
             <div class="row">
-              <input id="chain-id" placeholder="chain_id（留空新建）" />
-              <input id="chain-name" placeholder="链路名称" />
-              <input id="chain-secret" placeholder="secret（可留空自动生成）" />
+              <label for="add-chain-name">链路名称</label>
+              <input id="add-chain-name" class="wide" placeholder="例如：CN-Relay-01" />
             </div>
             <div class="row">
-              <select id="chain-user"></select>
-              <input id="chain-entry" placeholder="入口节点ID（可留空）" />
-              <input id="chain-exit" placeholder="出口节点ID（必填）" />
-            </div>
-            <div class="row">
-              <input id="chain-cascades" placeholder="级联节点ID（逗号分隔）" />
-              <input id="chain-listen-host" placeholder="listen_host" value="0.0.0.0" />
-              <input id="chain-listen-port" type="number" min="1" max="65535" placeholder="listen_port" />
-            </div>
-            <div class="row">
-              <select id="chain-link-layer">
-                <option value="http">http</option>
-                <option value="http2">http2</option>
-                <option value="http3">http3</option>
+              <label for="add-chain-type">链路类型</label>
+              <select id="add-chain-type" class="wide">
+                <option value="port_forward">端口转发</option>
+                <option value="proxy_chain">代理链路</option>
               </select>
-              <input id="chain-egress-host" placeholder="egress_host" />
-              <input id="chain-egress-port" type="number" min="1" max="65535" placeholder="egress_port" />
             </div>
             <div class="row">
-              <button id="btn-chain-upsert" class="btn primary" type="button">保存链路</button>
-              <button id="btn-chain-reset" class="btn" type="button">清空表单</button>
+              <label for="add-node-id">节点</label>
+              <select id="add-node-id" class="wide"></select>
             </div>
-            <div class="small muted">提示：链路节点跳配置与端口转发可在“端口转发”子Tab编辑，提交时会一起保存。</div>
+            <div class="row">
+              <label>默认用户</label>
+              <div id="add-default-user" class="mono muted">-</div>
+            </div>
+            <div class="row">
+              <button id="btn-create-minimal-chain" class="btn primary" type="button">创建链路</button>
+              <button id="btn-add-reset" class="btn" type="button">清空</button>
+            </div>
+            <div class="small muted">
+              默认值：listen_host=0.0.0.0，listen_port=16030，link_layer=http，dial_mode=forward，egress=127.0.0.1:1080。
+            </div>
           </div>
+
           <div class="box">
             <div class="muted">提交预览</div>
-            <pre id="chain-preview" class="mono">{}</pre>
+            <pre id="add-preview" class="mono">{}</pre>
           </div>
         </div>
       </section>
 
-      <section id="section-list" class="section">
+      <section id="section-edit" class="section">
         <div class="row">
           <button id="btn-refresh-chains" class="btn" type="button">刷新链路列表</button>
-          <button id="btn-load-selected" class="btn" type="button">载入到“链路添加”</button>
-          <button id="btn-delete-selected" class="btn warn" type="button">删除选中链路</button>
+          <button id="btn-delete-selected" class="btn warn" type="button">删除当前链路</button>
         </div>
         <div class="row">
-          <select id="chain-select"></select>
+          <label for="edit-chain-select">选择链路</label>
+          <select id="edit-chain-select" class="wide"></select>
         </div>
+
+        <div class="box" style="margin-bottom:12px;">
+          <div class="row">
+            <label for="edit-chain-name">链路名称</label>
+            <input id="edit-chain-name" class="wide" />
+          </div>
+          <div class="row">
+            <label for="edit-chain-type">链路类型</label>
+            <select id="edit-chain-type" class="wide">
+              <option value="port_forward">端口转发</option>
+              <option value="proxy_chain">代理链路</option>
+            </select>
+          </div>
+          <div class="row">
+            <label for="edit-chain-user">用户</label>
+            <select id="edit-chain-user" class="wide"></select>
+            <span id="edit-user-key-hint" class="small muted"></span>
+          </div>
+          <div class="row">
+            <button id="btn-save-chain" class="btn primary" type="button">保存链路</button>
+            <button id="btn-add-hop" class="btn" type="button">添加节点</button>
+          </div>
+        </div>
+
         <table>
           <thead>
             <tr>
-              <th>ChainID</th>
-              <th>名称</th>
-              <th>入口/出口</th>
-              <th>级联</th>
-              <th>监听</th>
-              <th>转发条目</th>
-              <th>状态</th>
+              <th>顺序</th>
+              <th>节点</th>
+              <th>监听地址</th>
+              <th>监听端口</th>
+              <th>外部端口</th>
+              <th>链路协议</th>
+              <th>建立方向</th>
+              <th>relay_host</th>
+              <th>操作</th>
             </tr>
           </thead>
-          <tbody id="chain-list-body"></tbody>
+          <tbody id="edit-hop-body"></tbody>
         </table>
       </section>
 
       <section id="section-pf" class="section">
-        <div class="stack">
-          <div class="box">
-            <div class="row">
-              <input id="hop-node-no" type="number" min="1" placeholder="node_no" />
-              <input id="hop-listen-host" placeholder="listen_host" value="0.0.0.0" />
-              <input id="hop-listen-port" type="number" min="1" max="65535" placeholder="listen_port" />
-            </div>
-            <div class="row">
-              <input id="hop-external-port" type="number" min="1" max="65535" placeholder="external_port" />
-              <select id="hop-link-layer">
-                <option value="http">http</option>
-                <option value="http2">http2</option>
-                <option value="http3">http3</option>
-              </select>
-              <select id="hop-dial-mode">
-                <option value="forward">forward</option>
-                <option value="reverse">reverse</option>
-              </select>
-              <button id="btn-add-hop" class="btn" type="button">添加跳配置</button>
-            </div>
-            <table>
-              <thead><tr><th>node_no</th><th>listen</th><th>external</th><th>layer/mode</th><th></th></tr></thead>
-              <tbody id="hop-body"></tbody>
-            </table>
-          </div>
-
-          <div class="box">
-            <div class="row">
-              <input id="pf-id" placeholder="id（可留空自动）" />
-              <input id="pf-name" placeholder="name" />
-              <select id="pf-entry-side">
-                <option value="chain_entry">chain_entry</option>
-                <option value="chain_exit">chain_exit</option>
-              </select>
-            </div>
-            <div class="row">
-              <input id="pf-listen-host" placeholder="listen_host" value="0.0.0.0" />
-              <input id="pf-listen-port" type="number" min="1" max="65535" placeholder="listen_port" />
-              <input id="pf-target-host" placeholder="target_host" />
-              <input id="pf-target-port" type="number" min="1" max="65535" placeholder="target_port" />
-            </div>
-            <div class="row">
-              <select id="pf-network">
-                <option value="tcp">tcp</option>
-                <option value="udp">udp</option>
-                <option value="both">both</option>
-              </select>
-              <label><input id="pf-enabled" type="checkbox" checked /> enabled</label>
-              <button id="btn-add-pf" class="btn" type="button">添加端口转发</button>
-            </div>
-            <table>
-              <thead><tr><th>id</th><th>listen</th><th>target</th><th>network</th><th></th></tr></thead>
-              <tbody id="pf-body"></tbody>
-            </table>
-          </div>
+        <div class="row">
+          <label for="pf-chain-select">端口转发链路</label>
+          <select id="pf-chain-select" class="wide"></select>
+          <button id="btn-pf-add" class="btn" type="button">添加规则</button>
+          <button id="btn-pf-save" class="btn primary" type="button">保存规则</button>
         </div>
+
+        <div class="row">
+          <span class="inline-tag">仅显示 chain_type=port_forward 链路</span>
+          <span id="pf-summary" class="small muted">暂无规则</span>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>规则</th>
+              <th>入口侧</th>
+              <th>本地监听</th>
+              <th>远端目标</th>
+              <th>协议</th>
+              <th>启用</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="pf-body"></tbody>
+        </table>
       </section>
     </div>
   </div>
 
   <script>
+    const DEFAULTS = {
+      listenHost: '0.0.0.0',
+      listenPort: 16030,
+      linkLayer: 'http',
+      dialMode: 'forward',
+      egressHost: '127.0.0.1',
+      egressPort: 1080,
+      portForwardListenHost: '0.0.0.0',
+    };
+
     const state = {
       activeTab: 'add',
       users: [],
       selectedUser: '',
       selectedPublicKey: '',
+      nodes: [],
       chains: [],
       selectedChainID: '',
-      hopConfigs: [],
-      portForwards: [],
+      nodeDomainsByID: {},
+      nodeDomainsLoading: {},
+      editForm: {
+        chainID: '',
+        name: '',
+        chainType: 'port_forward',
+        userID: '',
+        userPublicKey: '',
+        secret: '',
+        hops: [],
+        portForwards: [],
+      },
     };
 
     function setStatus(message, level) {
@@ -227,6 +259,153 @@
       return true;
     }
 
+    function normalizeNodeID(raw) {
+      const value = String(raw || '').trim();
+      if (!value) return '';
+      const n = Number.parseInt(value, 10);
+      if (!Number.isFinite(n) || n <= 0) return '';
+      return String(n);
+    }
+
+    function normalizeChainType(raw) {
+      const value = String(raw || '').trim().toLowerCase();
+      return value === 'proxy_chain' ? 'proxy_chain' : 'port_forward';
+    }
+
+    function normalizeLayer(raw) {
+      const value = String(raw || '').trim().toLowerCase();
+      if (value === 'http2' || value === 'h2') return 'http2';
+      if (value === 'http3' || value === 'h3') return 'http3';
+      return 'http';
+    }
+
+    function normalizeDialMode(raw) {
+      return String(raw || '').trim().toLowerCase() === 'reverse' ? 'reverse' : 'forward';
+    }
+
+    function normalizePort(raw, fallback = 0) {
+      const n = Number.parseInt(String(raw || ''), 10);
+      if (!Number.isFinite(n) || n <= 0 || n > 65535) return fallback;
+      return n;
+    }
+
+    function parseRouteNodeIDs(chain) {
+      const out = [];
+      const add = (v) => {
+        const id = normalizeNodeID(v);
+        if (!id) return;
+        if (out.includes(id)) return;
+        out.push(id);
+      };
+      add(chain.entry_node_id);
+      const cascades = Array.isArray(chain.cascade_node_ids) ? chain.cascade_node_ids : [];
+      cascades.forEach(add);
+      add(chain.exit_node_id);
+      return out;
+    }
+
+    function selectedChain() {
+      return state.chains.find((c) => String(c.chain_id || '') === String(state.selectedChainID || '')) || null;
+    }
+
+    function generateRuleID() {
+      return `pf-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    }
+
+    async function ensureNodeDomains(nodeID) {
+      const normalized = normalizeNodeID(nodeID);
+      if (!normalized) return [];
+      if (Array.isArray(state.nodeDomainsByID[normalized])) {
+        return state.nodeDomainsByID[normalized].slice();
+      }
+      if (state.nodeDomainsLoading[normalized]) {
+        return state.nodeDomainsLoading[normalized];
+      }
+      const pending = requestJSON('/mng/api/link/node/domains?node_id=' + encodeURIComponent(normalized))
+        .then((payload) => {
+          const domains = Array.isArray(payload.domains)
+            ? payload.domains.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+          state.nodeDomainsByID[normalized] = domains;
+          return domains.slice();
+        })
+        .catch(() => {
+          state.nodeDomainsByID[normalized] = [];
+          return [];
+        })
+        .finally(() => {
+          delete state.nodeDomainsLoading[normalized];
+          renderEditHops();
+        });
+      state.nodeDomainsLoading[normalized] = pending;
+      return pending;
+    }
+
+    async function refreshSelectedPublicKey() {
+      const userID = String(state.selectedUser || '').trim();
+      if (!userID) {
+        state.selectedPublicKey = '';
+        renderAddPreview();
+        return;
+      }
+      const payload = await requestJSON('/mng/api/link/user/public_key?username=' + encodeURIComponent(userID));
+      state.selectedPublicKey = String(payload.public_key || '').trim();
+      renderAddPreview();
+    }
+
+    async function refreshEditUserPublicKey() {
+      const userID = String(state.editForm.userID || '').trim();
+      if (!userID) {
+        state.editForm.userPublicKey = '';
+        renderEditUserHint();
+        return;
+      }
+      const payload = await requestJSON('/mng/api/link/user/public_key?username=' + encodeURIComponent(userID));
+      state.editForm.userPublicKey = String(payload.public_key || '').trim();
+      renderEditUserHint();
+    }
+
+    function renderEditUserHint() {
+      const hint = document.getElementById('edit-user-key-hint');
+      hint.textContent = state.editForm.userPublicKey ? '公钥已就绪' : '公钥为空';
+    }
+
+    async function loadUsers() {
+      const payload = await requestJSON('/mng/api/link/users');
+      state.users = Array.isArray(payload.users) ? payload.users : [];
+      if (!state.selectedUser && state.users.length > 0) {
+        state.selectedUser = String(state.users[0].username || '').trim();
+      }
+      renderAddDefaultUser();
+      renderEditUserSelect();
+      await refreshSelectedPublicKey();
+    }
+
+    async function loadNodes() {
+      const payload = await requestJSON('/mng/api/probe/nodes');
+      state.nodes = Array.isArray(payload.nodes)
+        ? payload.nodes
+          .map((item) => ({
+            node_no: Number.parseInt(String(item.node_no || '0'), 10),
+            node_name: String(item.node_name || '').trim(),
+          }))
+          .filter((item) => Number.isFinite(item.node_no) && item.node_no > 0)
+          .sort((a, b) => a.node_no - b.node_no)
+        : [];
+      renderAddNodeOptions();
+      renderEditHops();
+    }
+
+    async function loadChains(silent) {
+      const payload = await requestJSON('/mng/api/link/chains');
+      state.chains = Array.isArray(payload.items) ? payload.items : [];
+      if (!state.selectedChainID && state.chains.length > 0) {
+        state.selectedChainID = String(state.chains[0].chain_id || '');
+      }
+      renderChainSelects();
+      if (!silent) setStatus(`链路列表已刷新：${state.chains.length} 条`, 'ok');
+    }
+
     function bindTabs() {
       const tabs = Array.from(document.querySelectorAll('.tab'));
       tabs.forEach((button) => {
@@ -236,238 +415,533 @@
           document.querySelectorAll('.section').forEach((section) => {
             section.classList.toggle('active', section.id === `section-${state.activeTab}`);
           });
+          if (state.activeTab === 'pf') {
+            renderPFSection();
+          }
         });
       });
     }
 
-    function parseNodeList(text) {
-      return String(text || '').split(',').map((v) => String(v || '').trim()).filter(Boolean);
+    function renderAddDefaultUser() {
+      const el = document.getElementById('add-default-user');
+      el.textContent = state.selectedUser || (state.users.length ? String(state.users[0].username || '').trim() : '-');
     }
 
-    function selectedChain() {
-      return state.chains.find((c) => String(c.chain_id || '') === String(state.selectedChainID || '')) || null;
-    }
-
-    function renderUsers() {
-      const select = document.getElementById('chain-user');
-      const options = (state.users || []).map((u) => `<option value="${u.username}">${u.username}</option>`).join('');
-      select.innerHTML = options || '<option value="">当前无可用用户</option>';
-      if (!state.selectedUser && state.users.length > 0) {
-        state.selectedUser = state.users[0].username;
-      }
-      select.value = state.selectedUser;
-    }
-
-    function renderChains() {
-      const select = document.getElementById('chain-select');
-      const options = (state.chains || []).map((item) => {
-        const id = String(item.chain_id || '');
-        const name = String(item.name || id || 'unnamed');
-        return `<option value="${id}">${name} (${id})</option>`;
-      }).join('');
-      select.innerHTML = options || '<option value="">暂无链路</option>';
-      if (!state.selectedChainID && state.chains.length > 0) {
-        state.selectedChainID = String(state.chains[0].chain_id || '');
-      }
-      select.value = state.selectedChainID;
-
-      const body = document.getElementById('chain-list-body');
-      if (!state.chains.length) {
-        body.innerHTML = '<tr><td colspan="7" class="muted">暂无链路</td></tr>';
+    function renderAddNodeOptions() {
+      const select = document.getElementById('add-node-id');
+      if (!state.nodes.length) {
+        select.innerHTML = '<option value="">暂无节点</option>';
+        renderAddPreview();
         return;
       }
-      body.innerHTML = state.chains.map((item) => {
-        const route = `${item.entry_node_id || '-'} / ${item.exit_node_id || '-'}`;
-        const casc = Array.isArray(item.cascade_node_ids) ? item.cascade_node_ids.join(', ') : '-';
-        const listen = `${item.listen_host || '-'}:${item.listen_port || '-'}`;
-        const pfCount = Array.isArray(item.port_forwards) ? item.port_forwards.length : 0;
-        const status = item.unavailable ? `不可用: ${item.unavailable_reason || '-'}` : '可用';
-        return `<tr>
-          <td class="mono">${item.chain_id || '-'}</td>
-          <td>${item.name || '-'}</td>
-          <td class="mono">${route}</td>
-          <td class="mono">${casc || '-'}</td>
-          <td class="mono">${listen}</td>
-          <td>${pfCount}</td>
-          <td>${status}</td>
-        </tr>`;
-      }).join('');
+      select.innerHTML = state.nodes
+        .map((item) => `<option value="${item.node_no}">#${item.node_no} ${item.node_name || ''}</option>`)
+        .join('');
+      renderAddPreview();
     }
 
-    function renderHops() {
-      const body = document.getElementById('hop-body');
-      if (!state.hopConfigs.length) {
-        body.innerHTML = '<tr><td colspan="5" class="muted">暂无跳配置</td></tr>';
-        return;
+    function renderEditUserSelect() {
+      const select = document.getElementById('edit-chain-user');
+      const current = String(state.editForm.userID || '').trim();
+      const seen = new Set();
+      const options = [];
+      if (current) {
+        seen.add(current);
+        options.push(`<option value="${current}">${current}</option>`);
       }
-      body.innerHTML = state.hopConfigs.map((item, idx) => `<tr>
-        <td>${item.node_no || '-'}</td>
-        <td class="mono">${item.listen_host || '-'}:${item.listen_port || '-'}</td>
-        <td>${item.external_port || '-'}</td>
-        <td>${item.link_layer || '-'} / ${item.dial_mode || '-'}</td>
-        <td><button class="btn" data-hop-rm="${idx}" type="button">删除</button></td>
-      </tr>`).join('');
-      body.querySelectorAll('[data-hop-rm]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const idx = Number.parseInt(btn.getAttribute('data-hop-rm') || '-1', 10);
-          if (idx >= 0) state.hopConfigs.splice(idx, 1);
-          renderHops();
-          renderPreview();
-        });
+      state.users.forEach((u) => {
+        const id = String(u.username || '').trim();
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        options.push(`<option value="${id}">${id}</option>`);
       });
-    }
-
-    function renderPFs() {
-      const body = document.getElementById('pf-body');
-      if (!state.portForwards.length) {
-        body.innerHTML = '<tr><td colspan="5" class="muted">暂无端口转发</td></tr>';
-        return;
+      if (!options.length) {
+        select.innerHTML = '<option value="">暂无用户</option>';
+      } else {
+        select.innerHTML = options.join('');
       }
-      body.innerHTML = state.portForwards.map((item, idx) => `<tr>
-        <td class="mono">${item.id || '-'}</td>
-        <td class="mono">${item.listen_host || '-'}:${item.listen_port || '-'}</td>
-        <td class="mono">${item.target_host || '-'}:${item.target_port || '-'}</td>
-        <td>${item.network || '-'} / ${item.enabled ? 'enabled' : 'disabled'}</td>
-        <td><button class="btn" data-pf-rm="${idx}" type="button">删除</button></td>
-      </tr>`).join('');
-      body.querySelectorAll('[data-pf-rm]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const idx = Number.parseInt(btn.getAttribute('data-pf-rm') || '-1', 10);
-          if (idx >= 0) state.portForwards.splice(idx, 1);
-          renderPFs();
-          renderPreview();
-        });
-      });
+      select.value = current;
+      renderEditUserHint();
     }
 
-    function currentChainPayload() {
-      const chainID = String(document.getElementById('chain-id').value || '').trim();
-      const name = String(document.getElementById('chain-name').value || '').trim();
-      const secret = String(document.getElementById('chain-secret').value || '').trim();
-      const userID = String(document.getElementById('chain-user').value || '').trim();
-      const entry = String(document.getElementById('chain-entry').value || '').trim();
-      const exit = String(document.getElementById('chain-exit').value || '').trim();
-      const cascades = parseNodeList(document.getElementById('chain-cascades').value || '');
-      const listenHost = String(document.getElementById('chain-listen-host').value || '').trim();
-      const listenPort = Number.parseInt(String(document.getElementById('chain-listen-port').value || '0'), 10);
-      const linkLayer = String(document.getElementById('chain-link-layer').value || 'http').trim();
-      const egressHost = String(document.getElementById('chain-egress-host').value || '').trim();
-      const egressPort = Number.parseInt(String(document.getElementById('chain-egress-port').value || '0'), 10);
+    function renderChainSelects() {
+      const editSelect = document.getElementById('edit-chain-select');
+      const options = state.chains
+        .map((item) => {
+          const id = String(item.chain_id || '');
+          const name = String(item.name || id || 'unnamed');
+          const chainType = normalizeChainType(item.chain_type);
+          return `<option value="${id}">${name} (${id}) [${chainType}]</option>`;
+        })
+        .join('');
+      editSelect.innerHTML = options || '<option value="">暂无链路</option>';
+      editSelect.value = state.selectedChainID;
+
+      renderPFChainSelect();
+      renderPFSection();
+    }
+
+    function renderPFChainSelect() {
+      const select = document.getElementById('pf-chain-select');
+      const portForwardChains = state.chains.filter((item) => normalizeChainType(item.chain_type) === 'port_forward');
+      const options = portForwardChains
+        .map((item) => {
+          const id = String(item.chain_id || '');
+          const name = String(item.name || id || 'unnamed');
+          return `<option value="${id}">${name} (${id})</option>`;
+        })
+        .join('');
+      select.innerHTML = options || '<option value="">暂无端口转发链路</option>';
+      const currentIsPF = portForwardChains.some((item) => String(item.chain_id || '') === String(state.selectedChainID || ''));
+      select.value = currentIsPF ? state.selectedChainID : '';
+    }
+
+    function buildAddPayloadPreview() {
+      const name = String(document.getElementById('add-chain-name').value || '').trim();
+      const chainType = normalizeChainType(document.getElementById('add-chain-type').value);
+      const nodeID = normalizeNodeID(document.getElementById('add-node-id').value);
+      const relayDomains = state.nodeDomainsByID[nodeID] || [];
+      const relayHost = relayDomains[0] || '';
       return {
-        chain_id: chainID,
         name,
-        user_id: userID,
-        user_public_key: state.selectedPublicKey,
-        secret,
-        entry_node_id: entry,
-        exit_node_id: exit,
-        cascade_node_ids: cascades,
-        listen_host: listenHost,
-        listen_port: Number.isFinite(listenPort) ? listenPort : 0,
-        link_layer: linkLayer,
-        hop_configs: state.hopConfigs.slice(),
-        port_forwards: state.portForwards.slice(),
-        egress_host: egressHost,
-        egress_port: Number.isFinite(egressPort) ? egressPort : 0,
+        chain_type: chainType,
+        node_id: nodeID,
+        defaults: {
+          listen_host: DEFAULTS.listenHost,
+          listen_port: DEFAULTS.listenPort,
+          link_layer: DEFAULTS.linkLayer,
+          dial_mode: DEFAULTS.dialMode,
+          egress_host: DEFAULTS.egressHost,
+          egress_port: DEFAULTS.egressPort,
+          relay_host: relayHost,
+        },
       };
     }
 
-    function renderPreview() {
-      document.getElementById('chain-preview').textContent = JSON.stringify(currentChainPayload(), null, 2);
+    function renderAddPreview() {
+      document.getElementById('add-preview').textContent = JSON.stringify(buildAddPayloadPreview(), null, 2);
     }
 
-    async function loadUsers() {
-      const payload = await requestJSON('/mng/api/link/users');
-      state.users = Array.isArray(payload.users) ? payload.users : [];
-      renderUsers();
-      await refreshSelectedPublicKey();
-    }
-
-    async function refreshSelectedPublicKey() {
-      state.selectedUser = String(document.getElementById('chain-user').value || '').trim();
+    async function createMinimalChain() {
+      const name = String(document.getElementById('add-chain-name').value || '').trim();
+      const chainType = normalizeChainType(document.getElementById('add-chain-type').value);
+      const nodeID = normalizeNodeID(document.getElementById('add-node-id').value);
+      if (!name) {
+        setStatus('链路名称不能为空', 'warn');
+        return;
+      }
+      if (!nodeID) {
+        setStatus('请选择节点', 'warn');
+        return;
+      }
       if (!state.selectedUser) {
-        state.selectedPublicKey = '';
-        renderPreview();
+        setStatus('当前无可用用户，无法创建链路', 'warn');
         return;
       }
-      const payload = await requestJSON('/mng/api/link/user/public_key?username=' + encodeURIComponent(state.selectedUser));
-      state.selectedPublicKey = String(payload.public_key || '').trim();
-      renderPreview();
-    }
-
-    async function loadChains(silent) {
-      const payload = await requestJSON('/mng/api/link/chains');
-      state.chains = Array.isArray(payload.items) ? payload.items : [];
-      if (!state.selectedChainID && state.chains.length > 0) {
-        state.selectedChainID = String(state.chains[0].chain_id || '');
+      if (!state.selectedPublicKey) {
+        await refreshSelectedPublicKey();
+        if (!state.selectedPublicKey) {
+          setStatus('默认用户公钥为空，无法创建链路', 'warn');
+          return;
+        }
       }
-      renderChains();
-      if (!silent) setStatus(`链路列表已刷新：${state.chains.length} 条`, 'ok');
+
+      const domains = await ensureNodeDomains(nodeID);
+      const relayHost = domains[0] || '';
+
+      const payload = {
+        name,
+        chain_type: chainType,
+        user_id: state.selectedUser,
+        user_public_key: state.selectedPublicKey,
+        secret: '',
+        entry_node_id: nodeID,
+        exit_node_id: nodeID,
+        cascade_node_ids: [],
+        listen_host: DEFAULTS.listenHost,
+        listen_port: DEFAULTS.listenPort,
+        link_layer: DEFAULTS.linkLayer,
+        hop_configs: [{
+          node_no: Number.parseInt(nodeID, 10),
+          listen_host: DEFAULTS.listenHost,
+          listen_port: DEFAULTS.listenPort,
+          external_port: 0,
+          link_layer: DEFAULTS.linkLayer,
+          dial_mode: DEFAULTS.dialMode,
+          relay_host: relayHost,
+        }],
+        port_forwards: [],
+        egress_host: DEFAULTS.egressHost,
+        egress_port: DEFAULTS.egressPort,
+      };
+
+      const result = await requestJSON('/mng/api/link/chain/upsert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      await loadChains(true);
+      state.selectedChainID = String((result.item && result.item.chain_id) || '');
+      await selectChainForEdit(state.selectedChainID);
+      renderChainSelects();
+      renderPFSection();
+      setStatus(result.apply_ok === false ? `链路已创建，但应用失败：${result.apply_error || '-'}` : '链路已创建并应用', result.apply_ok === false ? 'warn' : 'ok');
     }
 
-    function resetForm() {
-      document.getElementById('chain-id').value = '';
-      document.getElementById('chain-name').value = '';
-      document.getElementById('chain-secret').value = '';
-      document.getElementById('chain-entry').value = '';
-      document.getElementById('chain-exit').value = '';
-      document.getElementById('chain-cascades').value = '';
-      document.getElementById('chain-listen-host').value = '0.0.0.0';
-      document.getElementById('chain-listen-port').value = '';
-      document.getElementById('chain-link-layer').value = 'http';
-      document.getElementById('chain-egress-host').value = '';
-      document.getElementById('chain-egress-port').value = '';
-      state.hopConfigs = [];
-      state.portForwards = [];
-      renderHops();
-      renderPFs();
-      renderPreview();
+    function resetAddForm() {
+      document.getElementById('add-chain-name').value = '';
+      document.getElementById('add-chain-type').value = 'port_forward';
+      if (state.nodes.length) {
+        document.getElementById('add-node-id').value = String(state.nodes[0].node_no);
+      }
+      renderAddPreview();
     }
 
-    function loadSelectedToForm() {
-      const item = selectedChain();
-      if (!item) {
-        setStatus('请先在链路查看中选择链路', 'warn');
+    async function selectChainForEdit(chainID) {
+      state.selectedChainID = String(chainID || '').trim();
+      const chain = selectedChain();
+      if (!chain) {
+        state.editForm = {
+          chainID: '',
+          name: '',
+          chainType: 'port_forward',
+          userID: '',
+          userPublicKey: '',
+          secret: '',
+          hops: [],
+          portForwards: [],
+        };
+        renderEditUserSelect();
+        renderEditHops();
+        renderPFSection();
         return;
       }
-      document.getElementById('chain-id').value = item.chain_id || '';
-      document.getElementById('chain-name').value = item.name || '';
-      document.getElementById('chain-secret').value = item.secret || '';
-      document.getElementById('chain-entry').value = item.entry_node_id || '';
-      document.getElementById('chain-exit').value = item.exit_node_id || '';
-      document.getElementById('chain-cascades').value = Array.isArray(item.cascade_node_ids) ? item.cascade_node_ids.join(',') : '';
-      document.getElementById('chain-listen-host').value = item.listen_host || '0.0.0.0';
-      document.getElementById('chain-listen-port').value = item.listen_port || '';
-      document.getElementById('chain-link-layer').value = item.link_layer || 'http';
-      document.getElementById('chain-egress-host').value = item.egress_host || '';
-      document.getElementById('chain-egress-port').value = item.egress_port || '';
-      state.hopConfigs = Array.isArray(item.hop_configs) ? item.hop_configs.map((x) => ({
-        node_no: x.node_no,
-        listen_host: x.listen_host || '0.0.0.0',
-        listen_port: x.listen_port || 0,
-        external_port: x.external_port || 0,
-        link_layer: x.link_layer || 'http',
-        dial_mode: x.dial_mode || 'forward',
-      })) : [];
-      state.portForwards = Array.isArray(item.port_forwards) ? item.port_forwards.map((x) => ({
-        id: x.id || '',
-        name: x.name || '',
-        entry_side: x.entry_side || 'chain_entry',
-        listen_host: x.listen_host || '0.0.0.0',
-        listen_port: x.listen_port || 0,
-        target_host: x.target_host || '',
-        target_port: x.target_port || 0,
-        network: x.network || 'tcp',
-        enabled: x.enabled === true,
-      })) : [];
-      renderHops();
-      renderPFs();
-      renderPreview();
-      setStatus(`已载入链路：${item.name || item.chain_id}`, 'ok');
+
+      const routeNodeIDs = parseRouteNodeIDs(chain);
+      const hopMap = new Map();
+      (Array.isArray(chain.hop_configs) ? chain.hop_configs : []).forEach((hop) => {
+        const id = normalizeNodeID(hop.node_no);
+        if (!id) return;
+        hopMap.set(id, hop);
+      });
+
+      const hops = [];
+      for (const nodeID of routeNodeIDs) {
+        const hop = hopMap.get(nodeID) || {};
+        const domains = await ensureNodeDomains(nodeID);
+        let relayHost = String(hop.relay_host || '').trim();
+        if (!relayHost && domains.length > 0) {
+          relayHost = domains[0];
+        }
+        hops.push({
+          node_no: Number.parseInt(nodeID, 10),
+          listen_host: String(hop.listen_host || chain.listen_host || DEFAULTS.listenHost).trim() || DEFAULTS.listenHost,
+          listen_port: normalizePort(hop.listen_port, normalizePort(chain.listen_port, DEFAULTS.listenPort)),
+          external_port: normalizePort(hop.external_port, 0),
+          link_layer: normalizeLayer(hop.link_layer || chain.link_layer || DEFAULTS.linkLayer),
+          dial_mode: normalizeDialMode(hop.dial_mode || DEFAULTS.dialMode),
+          relay_host: relayHost,
+        });
+      }
+
+      const portForwards = (Array.isArray(chain.port_forwards) ? chain.port_forwards : []).map((rule) => ({
+        id: String(rule.id || '').trim() || generateRuleID(),
+        name: String(rule.name || '').trim(),
+        entry_side: String(rule.entry_side || 'chain_entry').trim() === 'chain_exit' ? 'chain_exit' : 'chain_entry',
+        listen_host: String(rule.listen_host || DEFAULTS.portForwardListenHost).trim() || DEFAULTS.portForwardListenHost,
+        listen_port: normalizePort(rule.listen_port, 0),
+        target_host: String(rule.target_host || '').trim(),
+        target_port: normalizePort(rule.target_port, 0),
+        network: (() => {
+          const net = String(rule.network || 'tcp').trim().toLowerCase();
+          if (net === 'udp') return 'udp';
+          if (net === 'both') return 'both';
+          return 'tcp';
+        })(),
+        enabled: rule.enabled === true,
+      }));
+
+      state.editForm = {
+        chainID: String(chain.chain_id || '').trim(),
+        name: String(chain.name || '').trim(),
+        chainType: normalizeChainType(chain.chain_type),
+        userID: String(chain.user_id || '').trim(),
+        userPublicKey: String(chain.user_public_key || '').trim(),
+        secret: String(chain.secret || '').trim(),
+        hops,
+        portForwards,
+      };
+
+      document.getElementById('edit-chain-name').value = state.editForm.name;
+      document.getElementById('edit-chain-type').value = state.editForm.chainType;
+      renderEditUserSelect();
+      document.getElementById('edit-chain-user').value = state.editForm.userID;
+      renderEditHops();
+      renderPFSection();
     }
 
-    async function upsertChain() {
-      const payload = currentChainPayload();
+    function buildDomainSelectOptions(nodeID, currentValue) {
+      const normalized = normalizeNodeID(nodeID);
+      const list = Array.isArray(state.nodeDomainsByID[normalized]) ? state.nodeDomainsByID[normalized] : [];
+      const values = list.slice();
+      const current = String(currentValue || '').trim();
+      if (current && !values.includes(current)) {
+        values.unshift(current);
+      }
+      if (!values.length) {
+        return '<option value="">(无可选域名)</option>';
+      }
+      return values
+        .map((item, idx) => {
+          const selected = current ? item === current : idx === 0;
+          return `<option value="${item}" ${selected ? 'selected' : ''}>${item}</option>`;
+        })
+        .join('');
+    }
+
+    function renderEditHops() {
+      const body = document.getElementById('edit-hop-body');
+      if (!state.editForm.hops.length) {
+        body.innerHTML = '<tr><td colspan="9" class="muted">当前链路无节点，请点击“添加节点”。</td></tr>';
+        return;
+      }
+
+      body.innerHTML = state.editForm.hops.map((hop, index) => {
+        const nodeID = normalizeNodeID(hop.node_no);
+        const usedNodeIDs = new Set(state.editForm.hops.map((item) => normalizeNodeID(item.node_no)).filter(Boolean));
+        usedNodeIDs.delete(nodeID);
+
+        const nodeOptions = state.nodes.map((item) => {
+          const candidate = normalizeNodeID(item.node_no);
+          if (!candidate) return '';
+          const disabled = usedNodeIDs.has(candidate) ? 'disabled' : '';
+          const selected = candidate === nodeID ? 'selected' : '';
+          return `<option value="${candidate}" ${disabled} ${selected}>#${candidate} ${item.node_name || ''}</option>`;
+        }).join('');
+
+        const relayOptions = buildDomainSelectOptions(nodeID, hop.relay_host);
+        const relayLoadingHint = state.nodeDomainsLoading[nodeID] ? '<div class="small muted">域名加载中...</div>' : '';
+
+        return `<tr>
+          <td>${index + 1}${index === state.editForm.hops.length - 1 ? ' (出口)' : ''}</td>
+          <td>
+            <select data-hop-node="${index}" class="small">${nodeOptions}</select>
+          </td>
+          <td><input data-hop-listen-host="${index}" class="small" value="${hop.listen_host || ''}" /></td>
+          <td><input data-hop-listen-port="${index}" class="small" type="number" min="1" max="65535" value="${hop.listen_port > 0 ? hop.listen_port : ''}" /></td>
+          <td><input data-hop-external-port="${index}" class="small" type="number" min="1" max="65535" value="${hop.external_port > 0 ? hop.external_port : ''}" /></td>
+          <td>
+            <select data-hop-link-layer="${index}" class="small">
+              <option value="http" ${hop.link_layer === 'http' ? 'selected' : ''}>http</option>
+              <option value="http2" ${hop.link_layer === 'http2' ? 'selected' : ''}>http2</option>
+              <option value="http3" ${hop.link_layer === 'http3' ? 'selected' : ''}>http3</option>
+            </select>
+          </td>
+          <td>
+            <select data-hop-dial-mode="${index}" class="small">
+              <option value="forward" ${hop.dial_mode === 'forward' ? 'selected' : ''}>forward</option>
+              <option value="reverse" ${hop.dial_mode === 'reverse' ? 'selected' : ''}>reverse</option>
+            </select>
+          </td>
+          <td>
+            <select data-hop-relay-host="${index}" class="wide">${relayOptions}</select>
+            ${relayLoadingHint}
+          </td>
+          <td>
+            <button class="btn" data-hop-up="${index}" type="button" ${index <= 0 ? 'disabled' : ''}>上移</button>
+            <button class="btn" data-hop-down="${index}" type="button" ${index >= state.editForm.hops.length - 1 ? 'disabled' : ''}>下移</button>
+            <button class="btn" data-hop-remove="${index}" type="button">删除</button>
+          </td>
+        </tr>`;
+      }).join('');
+
+      bindEditHopEvents();
+    }
+
+    function bindEditHopEvents() {
+      document.querySelectorAll('[data-hop-node]').forEach((el) => {
+        el.addEventListener('change', async () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-node') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length) return;
+          const nodeID = normalizeNodeID(el.value);
+          if (!nodeID) return;
+          state.editForm.hops[idx].node_no = Number.parseInt(nodeID, 10);
+          const domains = await ensureNodeDomains(nodeID);
+          state.editForm.hops[idx].relay_host = domains[0] || '';
+          renderEditHops();
+        });
+      });
+
+      document.querySelectorAll('[data-hop-listen-host]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-listen-host') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length) return;
+          state.editForm.hops[idx].listen_host = String(el.value || '').trim() || DEFAULTS.listenHost;
+        });
+      });
+
+      document.querySelectorAll('[data-hop-listen-port]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-listen-port') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length) return;
+          state.editForm.hops[idx].listen_port = normalizePort(el.value, 0);
+        });
+      });
+
+      document.querySelectorAll('[data-hop-external-port]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-external-port') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length) return;
+          state.editForm.hops[idx].external_port = normalizePort(el.value, 0);
+        });
+      });
+
+      document.querySelectorAll('[data-hop-link-layer]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-link-layer') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length) return;
+          state.editForm.hops[idx].link_layer = normalizeLayer(el.value);
+        });
+      });
+
+      document.querySelectorAll('[data-hop-dial-mode]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-dial-mode') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length) return;
+          state.editForm.hops[idx].dial_mode = normalizeDialMode(el.value);
+        });
+      });
+
+      document.querySelectorAll('[data-hop-relay-host]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-relay-host') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length) return;
+          state.editForm.hops[idx].relay_host = String(el.value || '').trim();
+        });
+      });
+
+      document.querySelectorAll('[data-hop-up]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-up') || '-1', 10);
+          if (idx <= 0 || idx >= state.editForm.hops.length) return;
+          const temp = state.editForm.hops[idx - 1];
+          state.editForm.hops[idx - 1] = state.editForm.hops[idx];
+          state.editForm.hops[idx] = temp;
+          renderEditHops();
+        });
+      });
+
+      document.querySelectorAll('[data-hop-down]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-down') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length - 1) return;
+          const temp = state.editForm.hops[idx + 1];
+          state.editForm.hops[idx + 1] = state.editForm.hops[idx];
+          state.editForm.hops[idx] = temp;
+          renderEditHops();
+        });
+      });
+
+      document.querySelectorAll('[data-hop-remove]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-hop-remove') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.hops.length) return;
+          state.editForm.hops.splice(idx, 1);
+          renderEditHops();
+        });
+      });
+    }
+
+    async function addHopToEdit() {
+      const used = new Set(state.editForm.hops.map((item) => normalizeNodeID(item.node_no)).filter(Boolean));
+      const candidate = state.nodes.find((item) => !used.has(normalizeNodeID(item.node_no)));
+      if (!candidate) {
+        setStatus('没有可添加的新节点（节点不可重复）', 'warn');
+        return;
+      }
+      const nodeID = normalizeNodeID(candidate.node_no);
+      const domains = await ensureNodeDomains(nodeID);
+      state.editForm.hops.push({
+        node_no: Number.parseInt(nodeID, 10),
+        listen_host: DEFAULTS.listenHost,
+        listen_port: DEFAULTS.listenPort,
+        external_port: 0,
+        link_layer: DEFAULTS.linkLayer,
+        dial_mode: DEFAULTS.dialMode,
+        relay_host: domains[0] || '',
+      });
+      renderEditHops();
+    }
+
+    function buildUpsertPayloadFromEdit(portForwardsOverride) {
+      const hops = state.editForm.hops.map((hop) => ({
+        node_no: Number.parseInt(normalizeNodeID(hop.node_no), 10),
+        listen_host: String(hop.listen_host || '').trim() || DEFAULTS.listenHost,
+        listen_port: normalizePort(hop.listen_port, 0),
+        external_port: normalizePort(hop.external_port, 0),
+        link_layer: normalizeLayer(hop.link_layer),
+        dial_mode: normalizeDialMode(hop.dial_mode),
+        relay_host: String(hop.relay_host || '').trim(),
+      })).filter((hop) => Number.isFinite(hop.node_no) && hop.node_no > 0);
+
+      if (!hops.length) {
+        throw new Error('请至少保留一个节点');
+      }
+
+      const routeNodeIDs = hops.map((item) => String(item.node_no));
+      const entryNodeID = routeNodeIDs[0];
+      const exitNodeID = routeNodeIDs[routeNodeIDs.length - 1];
+      const cascadeNodeIDs = routeNodeIDs.slice(1, -1);
+      const firstHop = hops[0];
+
+      const selectedUserID = String(state.editForm.userID || '').trim() || state.selectedUser;
+      const selectedPublicKey = String(state.editForm.userPublicKey || '').trim() || state.selectedPublicKey;
+      if (!selectedUserID) {
+        throw new Error('用户不能为空');
+      }
+      if (!selectedPublicKey) {
+        throw new Error('用户公钥为空');
+      }
+
+      const portForwards = Array.isArray(portForwardsOverride)
+        ? portForwardsOverride
+        : state.editForm.portForwards.slice();
+
+      return {
+        chain_id: String(state.editForm.chainID || '').trim(),
+        name: String(state.editForm.name || '').trim(),
+        chain_type: normalizeChainType(state.editForm.chainType),
+        user_id: selectedUserID,
+        user_public_key: selectedPublicKey,
+        secret: String(state.editForm.secret || '').trim(),
+        entry_node_id: entryNodeID,
+        exit_node_id: exitNodeID,
+        cascade_node_ids: cascadeNodeIDs,
+        listen_host: firstHop.listen_host || DEFAULTS.listenHost,
+        listen_port: normalizePort(firstHop.listen_port, DEFAULTS.listenPort),
+        link_layer: normalizeLayer(firstHop.link_layer || DEFAULTS.linkLayer),
+        hop_configs: hops,
+        port_forwards: portForwards,
+        egress_host: DEFAULTS.egressHost,
+        egress_port: DEFAULTS.egressPort,
+      };
+    }
+
+    async function saveCurrentChain(portForwardsOverride) {
+      if (!state.editForm.chainID) {
+        throw new Error('请先选择链路');
+      }
+      state.editForm.name = String(document.getElementById('edit-chain-name').value || '').trim();
+      state.editForm.chainType = normalizeChainType(document.getElementById('edit-chain-type').value);
+      state.editForm.userID = String(document.getElementById('edit-chain-user').value || '').trim();
+      if (!state.editForm.name) {
+        throw new Error('链路名称不能为空');
+      }
+      if (!state.editForm.userPublicKey) {
+        await refreshEditUserPublicKey();
+      }
+
+      const payload = buildUpsertPayloadFromEdit(portForwardsOverride);
       const result = await requestJSON('/mng/api/link/chain/upsert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -475,14 +949,21 @@
       });
       await loadChains(true);
       state.selectedChainID = String((result.item && result.item.chain_id) || payload.chain_id || state.selectedChainID || '');
-      renderChains();
+      await selectChainForEdit(state.selectedChainID);
+      renderChainSelects();
+      renderPFSection();
       setStatus(result.apply_ok === false ? `链路已保存，但应用失败：${result.apply_error || '-'}` : '链路已保存并应用', result.apply_ok === false ? 'warn' : 'ok');
     }
 
-    async function deleteSelectedChain() {
-      const chainID = String(document.getElementById('chain-select').value || '').trim();
+    async function deleteCurrentChain() {
+      const chainID = String(state.selectedChainID || '').trim();
       if (!chainID) {
         setStatus('请先选择要删除的链路', 'warn');
+        return;
+      }
+      const chain = selectedChain();
+      const display = chain ? (chain.name || chain.chain_id || chainID) : chainID;
+      if (!window.confirm(`确认删除链路 ${display} ?`)) {
         return;
       }
       const result = await requestJSON('/mng/api/link/chain/delete', {
@@ -492,7 +973,9 @@
       });
       await loadChains(true);
       state.selectedChainID = state.chains.length ? String(state.chains[0].chain_id || '') : '';
-      renderChains();
+      await selectChainForEdit(state.selectedChainID);
+      renderChainSelects();
+      renderPFSection();
       if (result.apply_ok === false) {
         setStatus(`链路已删除，但下发移除失败：${result.apply_error || '-'}`, 'warn');
       } else {
@@ -500,48 +983,181 @@
       }
     }
 
-    function addHop() {
-      const nodeNo = Number.parseInt(String(document.getElementById('hop-node-no').value || '0'), 10);
-      const listenHost = String(document.getElementById('hop-listen-host').value || '').trim() || '0.0.0.0';
-      const listenPort = Number.parseInt(String(document.getElementById('hop-listen-port').value || '0'), 10);
-      const externalPort = Number.parseInt(String(document.getElementById('hop-external-port').value || '0'), 10);
-      const linkLayer = String(document.getElementById('hop-link-layer').value || 'http').trim();
-      const dialMode = String(document.getElementById('hop-dial-mode').value || 'forward').trim();
-      state.hopConfigs.push({
-        node_no: Number.isFinite(nodeNo) ? nodeNo : 0,
-        listen_host: listenHost,
-        listen_port: Number.isFinite(listenPort) ? listenPort : 0,
-        external_port: Number.isFinite(externalPort) ? externalPort : 0,
-        link_layer: linkLayer,
-        dial_mode: dialMode,
-      });
-      renderHops();
-      renderPreview();
+    function renderPFSummary() {
+      const summary = document.getElementById('pf-summary');
+      const rules = state.editForm.portForwards || [];
+      const enabled = rules.filter((item) => item.enabled === true).length;
+      summary.textContent = rules.length
+        ? `共 ${rules.length} 条，已启用 ${enabled} 条，入口端 ${rules.filter((item) => item.entry_side === 'chain_entry').length} 条，出口端 ${rules.filter((item) => item.entry_side === 'chain_exit').length} 条`
+        : '暂无规则';
     }
 
-    function addPortForward() {
-      const id = String(document.getElementById('pf-id').value || '').trim();
-      const name = String(document.getElementById('pf-name').value || '').trim();
-      const entrySide = String(document.getElementById('pf-entry-side').value || 'chain_entry').trim();
-      const listenHost = String(document.getElementById('pf-listen-host').value || '').trim() || '0.0.0.0';
-      const listenPort = Number.parseInt(String(document.getElementById('pf-listen-port').value || '0'), 10);
-      const targetHost = String(document.getElementById('pf-target-host').value || '').trim();
-      const targetPort = Number.parseInt(String(document.getElementById('pf-target-port').value || '0'), 10);
-      const network = String(document.getElementById('pf-network').value || 'tcp').trim();
-      const enabled = document.getElementById('pf-enabled').checked;
-      state.portForwards.push({
-        id,
-        name,
-        entry_side: entrySide,
-        listen_host: listenHost,
-        listen_port: Number.isFinite(listenPort) ? listenPort : 0,
-        target_host: targetHost,
-        target_port: Number.isFinite(targetPort) ? targetPort : 0,
-        network,
-        enabled,
+    function renderPFSection() {
+      renderPFChainSelect();
+      const body = document.getElementById('pf-body');
+      const pfSelect = document.getElementById('pf-chain-select');
+      const selectedPFChainID = String(pfSelect.value || '').trim();
+      const chain = state.chains.find((item) => String(item.chain_id || '') === selectedPFChainID) || null;
+      if (!chain || normalizeChainType(chain.chain_type) !== 'port_forward') {
+        body.innerHTML = '<tr><td colspan="7" class="muted">请先选择端口转发链路（chain_type=port_forward）。</td></tr>';
+        renderPFSummary();
+        return;
+      }
+      if (String(state.editForm.chainID || '') !== selectedPFChainID) {
+        body.innerHTML = '<tr><td colspan="7" class="muted">请先切换到该链路，加载其可编辑规则。</td></tr>';
+        renderPFSummary();
+        return;
+      }
+
+      const rules = state.editForm.portForwards || [];
+      if (!rules.length) {
+        body.innerHTML = '<tr><td colspan="7" class="muted">暂无规则，请点击“添加规则”。</td></tr>';
+        renderPFSummary();
+        return;
+      }
+
+      body.innerHTML = rules.map((rule, idx) => `
+        <tr>
+          <td><input data-pf-name="${idx}" value="${rule.name || ''}" placeholder="${rule.id}" /></td>
+          <td>
+            <select data-pf-entry="${idx}">
+              <option value="chain_entry" ${rule.entry_side === 'chain_entry' ? 'selected' : ''}>chain_entry</option>
+              <option value="chain_exit" ${rule.entry_side === 'chain_exit' ? 'selected' : ''}>chain_exit</option>
+            </select>
+          </td>
+          <td>
+            <input data-pf-listen-host="${idx}" class="small" value="${rule.listen_host || ''}" />
+            <input data-pf-listen-port="${idx}" class="small" type="number" min="1" max="65535" value="${rule.listen_port > 0 ? rule.listen_port : ''}" />
+          </td>
+          <td>
+            <input data-pf-target-host="${idx}" class="small" value="${rule.target_host || ''}" />
+            <input data-pf-target-port="${idx}" class="small" type="number" min="1" max="65535" value="${rule.target_port > 0 ? rule.target_port : ''}" />
+          </td>
+          <td>
+            <select data-pf-network="${idx}">
+              <option value="tcp" ${rule.network === 'tcp' ? 'selected' : ''}>tcp</option>
+              <option value="udp" ${rule.network === 'udp' ? 'selected' : ''}>udp</option>
+              <option value="both" ${rule.network === 'both' ? 'selected' : ''}>both</option>
+            </select>
+          </td>
+          <td>
+            <label><input data-pf-enabled="${idx}" type="checkbox" ${rule.enabled ? 'checked' : ''} /> enabled</label>
+          </td>
+          <td>
+            <button class="btn" data-pf-remove="${idx}" type="button">删除</button>
+            <div class="small muted">${rule.id}</div>
+          </td>
+        </tr>
+      `).join('');
+      bindPFEvents();
+      renderPFSummary();
+    }
+
+    function bindPFEvents() {
+      document.querySelectorAll('[data-pf-name]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-name') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          state.editForm.portForwards[idx].name = String(el.value || '').trim();
+        });
       });
-      renderPFs();
-      renderPreview();
+
+      document.querySelectorAll('[data-pf-entry]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-entry') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          state.editForm.portForwards[idx].entry_side = String(el.value || '').trim() === 'chain_exit' ? 'chain_exit' : 'chain_entry';
+          renderPFSummary();
+        });
+      });
+
+      document.querySelectorAll('[data-pf-listen-host]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-listen-host') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          state.editForm.portForwards[idx].listen_host = String(el.value || '').trim() || DEFAULTS.portForwardListenHost;
+        });
+      });
+
+      document.querySelectorAll('[data-pf-listen-port]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-listen-port') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          state.editForm.portForwards[idx].listen_port = normalizePort(el.value, 0);
+        });
+      });
+
+      document.querySelectorAll('[data-pf-target-host]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-target-host') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          state.editForm.portForwards[idx].target_host = String(el.value || '').trim();
+        });
+      });
+
+      document.querySelectorAll('[data-pf-target-port]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-target-port') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          state.editForm.portForwards[idx].target_port = normalizePort(el.value, 0);
+        });
+      });
+
+      document.querySelectorAll('[data-pf-network]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-network') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          const value = String(el.value || '').trim().toLowerCase();
+          state.editForm.portForwards[idx].network = value === 'udp' ? 'udp' : (value === 'both' ? 'both' : 'tcp');
+        });
+      });
+
+      document.querySelectorAll('[data-pf-enabled]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-enabled') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          state.editForm.portForwards[idx].enabled = !!el.checked;
+          renderPFSummary();
+        });
+      });
+
+      document.querySelectorAll('[data-pf-remove]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-pf-remove') || '-1', 10);
+          if (idx < 0 || idx >= state.editForm.portForwards.length) return;
+          state.editForm.portForwards.splice(idx, 1);
+          renderPFSection();
+        });
+      });
+    }
+
+    function addPFRule() {
+      const chain = selectedChain();
+      if (!chain || normalizeChainType(chain.chain_type) !== 'port_forward') {
+        setStatus('仅端口转发链路可添加规则', 'warn');
+        return;
+      }
+      state.editForm.portForwards.push({
+        id: generateRuleID(),
+        name: '',
+        entry_side: 'chain_entry',
+        listen_host: DEFAULTS.portForwardListenHost,
+        listen_port: 0,
+        target_host: '',
+        target_port: 0,
+        network: 'tcp',
+        enabled: true,
+      });
+      renderPFSection();
+    }
+
+    async function savePFRules() {
+      const chain = selectedChain();
+      if (!chain || normalizeChainType(chain.chain_type) !== 'port_forward') {
+        setStatus('仅端口转发链路可保存规则', 'warn');
+        return;
+      }
+      await saveCurrentChain(state.editForm.portForwards.slice());
     }
 
     async function logout() {
@@ -552,27 +1168,51 @@
     function bindActions() {
       document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
       document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
-      document.getElementById('chain-user').addEventListener('change', () => { refreshSelectedPublicKey().catch((err) => setStatus(`读取公钥失败：${err.message || err}`, 'err')); });
 
-      document.getElementById('btn-chain-upsert').addEventListener('click', () => { upsertChain().catch((err) => setStatus(`保存链路失败：${err.message || err}`, 'err')); });
-      document.getElementById('btn-chain-reset').addEventListener('click', () => { resetForm(); setStatus('已清空表单', 'ok'); });
-      document.getElementById('btn-refresh-chains').addEventListener('click', () => { loadChains(false).catch((err) => setStatus(`刷新链路失败：${err.message || err}`, 'err')); });
-      document.getElementById('btn-load-selected').addEventListener('click', () => { loadSelectedToForm(); });
-      document.getElementById('btn-delete-selected').addEventListener('click', () => { deleteSelectedChain().catch((err) => setStatus(`删除链路失败：${err.message || err}`, 'err')); });
-      document.getElementById('chain-select').addEventListener('change', (e) => {
-        state.selectedChainID = String(e.target.value || '').trim();
+      document.getElementById('add-chain-name').addEventListener('input', renderAddPreview);
+      document.getElementById('add-chain-type').addEventListener('change', renderAddPreview);
+      document.getElementById('add-node-id').addEventListener('change', async () => {
+        const nodeID = normalizeNodeID(document.getElementById('add-node-id').value);
+        if (nodeID) {
+          await ensureNodeDomains(nodeID);
+        }
+        renderAddPreview();
       });
 
-      document.getElementById('btn-add-hop').addEventListener('click', addHop);
-      document.getElementById('btn-add-pf').addEventListener('click', addPortForward);
+      document.getElementById('btn-create-minimal-chain').addEventListener('click', () => {
+        createMinimalChain().catch((err) => setStatus(`创建链路失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-add-reset').addEventListener('click', resetAddForm);
 
-      ['chain-id','chain-name','chain-secret','chain-entry','chain-exit','chain-cascades','chain-listen-host','chain-listen-port','chain-link-layer','chain-egress-host','chain-egress-port']
-        .forEach((id) => {
-          const el = document.getElementById(id);
-          if (!el) return;
-          el.addEventListener('input', renderPreview);
-          el.addEventListener('change', renderPreview);
-        });
+      document.getElementById('btn-refresh-chains').addEventListener('click', () => {
+        loadChains(false)
+          .then(() => selectChainForEdit(state.selectedChainID))
+          .catch((err) => setStatus(`刷新链路失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('edit-chain-select').addEventListener('change', (e) => {
+        selectChainForEdit(String(e.target.value || '')).catch((err) => setStatus(`载入链路失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('edit-chain-user').addEventListener('change', () => {
+        state.editForm.userID = String(document.getElementById('edit-chain-user').value || '').trim();
+        refreshEditUserPublicKey().catch((err) => setStatus(`读取用户公钥失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-delete-selected').addEventListener('click', () => {
+        deleteCurrentChain().catch((err) => setStatus(`删除链路失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-save-chain').addEventListener('click', () => {
+        saveCurrentChain().catch((err) => setStatus(`保存链路失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-add-hop').addEventListener('click', () => {
+        addHopToEdit().catch((err) => setStatus(`添加节点失败：${err.message || err}`, 'err'));
+      });
+
+      document.getElementById('pf-chain-select').addEventListener('change', (e) => {
+        selectChainForEdit(String(e.target.value || '')).catch((err) => setStatus(`切换链路失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-pf-add').addEventListener('click', addPFRule);
+      document.getElementById('btn-pf-save').addEventListener('click', () => {
+        savePFRules().catch((err) => setStatus(`保存规则失败：${err.message || err}`, 'err'));
+      });
     }
 
     async function bootstrap() {
@@ -583,11 +1223,22 @@
         location.href = '/mng';
         return;
       }
+
       await loadUsers();
+      await loadNodes();
       await loadChains(true);
-      renderHops();
-      renderPFs();
-      renderPreview();
+
+      if (state.nodes.length) {
+        document.getElementById('add-node-id').value = String(state.nodes[0].node_no);
+        await ensureNodeDomains(String(state.nodes[0].node_no));
+      }
+      renderAddDefaultUser();
+      renderAddPreview();
+
+      if (state.selectedChainID) {
+        await selectChainForEdit(state.selectedChainID);
+      }
+
       setStatus('链路管理页面初始化完成', 'ok');
     }
 
