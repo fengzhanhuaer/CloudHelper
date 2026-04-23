@@ -54,3 +54,23 @@ func TestResolveProbeLocalListenAddrPriority(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveProbeLocalListenAddrIgnoresProbeNodeListen(t *testing.T) {
+	t.Run("default local listen does not depend on probe node listen", func(t *testing.T) {
+		t.Setenv("PROBE_NODE_LISTEN", ":26030")
+		t.Setenv("PROBE_LOCAL_LISTEN", "")
+		got := resolveProbeLocalListenAddr("")
+		if got != probeLocalListenAddrDefault {
+			t.Fatalf("local listen should stay default, got=%q want=%q", got, probeLocalListenAddrDefault)
+		}
+	})
+
+	t.Run("local env still takes priority over probe node listen", func(t *testing.T) {
+		t.Setenv("PROBE_NODE_LISTEN", ":26030")
+		t.Setenv("PROBE_LOCAL_LISTEN", "127.0.0.1:26666")
+		got := resolveProbeLocalListenAddr("")
+		if got != "127.0.0.1:26666" {
+			t.Fatalf("local listen should use PROBE_LOCAL_LISTEN, got=%q", got)
+		}
+	})
+}
