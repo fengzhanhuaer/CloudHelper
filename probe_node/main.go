@@ -186,8 +186,9 @@ func runProbeNode(options probeLaunchOptions) error {
 	}
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 
-	mux := buildProbeNodeHTTPMux(identity)
-	if err := startProbeLocalConsoleServer(mux, strings.TrimSpace(options.LocalListenAddr)); err != nil {
+	nodeMux := buildProbeNodeHTTPMux(identity)
+	localMux := buildProbeLocalConsoleMux()
+	if err := startProbeLocalConsoleServer(localMux, strings.TrimSpace(options.LocalListenAddr)); err != nil {
 		return fmt.Errorf("failed to start local console: %w", err)
 	}
 
@@ -198,7 +199,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	}
 	restoreProbeChainRuntimesFromTopologyCache(identity, controllerBaseURL)
 	startProbeLinkChainsSyncLoop(identity, controllerBaseURL)
-	startProbeServiceRuntimeLoop(mux, identity, controllerBaseURL)
+	startProbeServiceRuntimeLoop(nodeMux, identity, controllerBaseURL)
 
 	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
 	select {}
@@ -260,7 +261,6 @@ func buildProbeNodeHTTPMux(identity nodeIdentity) *http.ServeMux {
 		})
 	})
 	mux.HandleFunc(probeChainRelayAPIPath, handleProbeChainRelayHTTP)
-	registerProbeLocalConsoleRoutes(mux)
 	return mux
 }
 

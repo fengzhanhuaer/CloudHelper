@@ -61,3 +61,28 @@ func TestProbeLocalPanelMethodNotAllowed(t *testing.T) {
 		t.Fatalf("POST /local/panel status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
+
+func TestProbeLocalRootRedirectsToLoginWithoutSession(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/", nil)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("GET / status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if location := resp.Header().Get("Location"); location != "/local/login" {
+		t.Fatalf("GET / redirect location=%q", location)
+	}
+}
+
+func TestProbeLocalRootRedirectsToPanelAfterLogin(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/", nil, sessionCookie)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("GET / (with session) status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if location := resp.Header().Get("Location"); location != "/local/panel" {
+		t.Fatalf("GET / (with session) redirect location=%q", location)
+	}
+}

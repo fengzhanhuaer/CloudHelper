@@ -546,6 +546,13 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 	return nil
 }
 
+func buildProbeLocalConsoleMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", probeLocalRootHandler)
+	registerProbeLocalConsoleRoutes(mux)
+	return mux
+}
+
 func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	if mux == nil {
 		return
@@ -574,6 +581,22 @@ type probeLocalRegisterRequest struct {
 type probeLocalLoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+func probeLocalRootHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, _, err := currentProbeLocalSessionFromRequest(r); err == nil {
+		http.Redirect(w, r, "/local/panel", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/local/login", http.StatusFound)
 }
 
 func probeLocalLoginPageHandler(w http.ResponseWriter, r *http.Request) {

@@ -22,7 +22,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 		resetProbeLocalProxyHooksForTest()
 		resetProbeLocalTUNHooksForTest()
 	})
-	return buildProbeNodeHTTPMux(nodeIdentity{NodeID: "node-local", Secret: "secret-local"})
+	return buildProbeLocalConsoleMux()
 }
 
 func doProbeLocalRequest(t *testing.T, mux *http.ServeMux, method, path string, payload any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
