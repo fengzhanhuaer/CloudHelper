@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Probe Node 本地控制台</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #1f2937; }
+    main { max-width: 780px; margin: 0 auto; }
+    h1 { margin-bottom: 8px; }
+    .hint { color: #6b7280; font-size: 13px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-top: 14px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button { padding: 8px 12px; border: 0; border-radius: 6px; cursor: pointer; background: #2563eb; color: #fff; }
+    button.secondary { background: #4b5563; }
+    button.warn { background: #b91c1c; }
+    .kv { display: grid; grid-template-columns: 170px 1fr; row-gap: 6px; column-gap: 8px; margin-top: 8px; font-size: 14px; }
+    .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
+    .msg.error { color: #b91c1c; }
+    .msg.success { color: #166534; }
+    code { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Probe Node 本地控制台</h1>
+    <p class="hint">当前页面用于本地 TUN 驱动准备与代理接管切换。</p>
+
+    <section class="card">
+      <strong>当前会话</strong>
+      <div class="kv">
+        <div>登录用户</div><div id="sessionUser">-</div>
+        <div>会话过期时间</div><div id="sessionExpire">-</div>
+      </div>
+      <div class="actions">
+        <button id="refreshSessionBtn" class="secondary">刷新会话状态</button>
+        <button id="logoutBtn" class="warn">退出登录</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <strong>TUN 状态</strong>
+      <div class="kv">
+        <div>平台</div><div id="tunPlatform">-</div>
+        <div>已安装</div><div id="tunInstalled">-</div>
+        <div>已启用</div><div id="tunEnabled">-</div>
+        <div>最后更新时间</div><div id="tunUpdatedAt">-</div>
+        <div>最近错误</div><div id="tunLastError">-</div>
+      </div>
+      <div class="actions">
+        <button id="tunInstallBtn">安装/检查 TUN</button>
+        <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <strong>代理状态</strong>
+      <div class="kv">
+        <div>接管开关</div><div id="proxyEnabled">-</div>
+        <div>当前模式</div><div id="proxyMode">-</div>
+        <div>最后更新时间</div><div id="proxyUpdatedAt">-</div>
+        <div>最近错误</div><div id="proxyLastError">-</div>
+      </div>
+      <div class="actions">
+        <button id="proxyEnableBtn">启用 TUN 接管</button>
+        <button id="proxyDirectBtn" class="secondary">切回直连</button>
+        <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
+      </div>
+      <p class="hint">模式值：<code>direct</code> 表示直连，<code>tunnel</code> 表示已接管。</p>
+    </section>
+
+    <p id="message" class="msg"></p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById('message');
+
+    function setMessage(text, type) {
+      messageEl.textContent = text || '';
+      messageEl.className = 'msg' + (type ? ' ' + type : '');
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const clean = (value === undefined || value === null || value === '') ? '-' : String(value);
+      el.textContent = clean;
+    }
+
+    async function requestJSON(url, options) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
+      if (!res.ok) {
+        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    }
+
+    async function loadSession() {
+      try {
+        const data = await requestJSON('/local/api/auth/session', { method: 'GET' });
+        if (!data.authenticated) {
+          window.location.href = '/local/login';
+          return;
+        }
+        setText('sessionUser', data.username);
+        setText('sessionExpire', data.expires_at);
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return;
+        }
+        setMessage('读取会话失败：' + err.message, 'error');
+      }
+    }
+
+    async function loadTunStatus() {
+      try {
+        const data = await requestJSON('/local/api/tun/status', { method: 'GET' });
+        setText('tunPlatform', data.platform);
+        setText('tunInstalled', data.installed ? '是' : '否');
+        setText('tunEnabled', data.enabled ? '是' : '否');
+        setText('tunUpdatedAt', data.updated_at);
+        setText('tunLastError', data.last_error);
+      } catch (err) {
+        setMessage('读取 TUN 状态失败：' + err.message, 'error');
+      }
+    }
+
+    async function loadProxyStatus() {
+      try {
+        const data = await requestJSON('/local/api/proxy/status', { method: 'GET' });
+        setText('proxyEnabled', data.enabled ? '是' : '否');
+        setText('proxyMode', data.mode);
+        setText('proxyUpdatedAt', data.updated_at);
+        setText('proxyLastError', data.last_error);
+      } catch (err) {
+        setMessage('读取代理状态失败：' + err.message, 'error');
+      }
+    }
+
+    async function refreshAll() {
+      setMessage('');
+      await loadSession();
+      await loadTunStatus();
+      await loadProxyStatus();
+    }
+
+    document.getElementById('refreshSessionBtn').addEventListener('click', async () => {
+      setMessage('刷新会话中...');
+      await loadSession();
+      setMessage('会话已刷新', 'success');
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      setMessage('退出中...');
+      try {
+        await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' });
+      } catch (_) {
+      }
+      window.location.href = '/local/login';
+    });
+
+    document.getElementById('tunInstallBtn').addEventListener('click', async () => {
+      setMessage('执行 TUN 安装/检查...');
+      try {
+        await requestJSON('/local/api/tun/install', { method: 'POST', body: '{}' });
+        await loadTunStatus();
+        await loadProxyStatus();
+        setMessage('TUN 安装/检查完成', 'success');
+      } catch (err) {
+        setMessage('TUN 安装失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('tunRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新 TUN 状态...');
+      await loadTunStatus();
+      setMessage('TUN 状态已刷新', 'success');
+    });
+
+    document.getElementById('proxyEnableBtn').addEventListener('click', async () => {
+      setMessage('启用 TUN 接管中...');
+      try {
+        await requestJSON('/local/api/proxy/enable', { method: 'POST', body: '{}' });
+        await loadTunStatus();
+        await loadProxyStatus();
+        setMessage('已启用 TUN 接管', 'success');
+      } catch (err) {
+        setMessage('启用失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyDirectBtn').addEventListener('click', async () => {
+      setMessage('切换直连中...');
+      try {
+        await requestJSON('/local/api/proxy/direct', { method: 'POST', body: '{}' });
+        await loadTunStatus();
+        await loadProxyStatus();
+        setMessage('已切回直连', 'success');
+      } catch (err) {
+        setMessage('切换直连失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新代理状态...');
+      await loadProxyStatus();
+      setMessage('代理状态已刷新', 'success');
+    });
+
+    refreshAll();
+  </script>
+</body>
+</html>

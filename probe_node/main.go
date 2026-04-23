@@ -133,6 +133,7 @@ type probeControlMessage struct {
 
 type probeLaunchOptions struct {
 	ListenAddr               string
+	LocalListenAddr          string
 	NodeID                   string
 	NodeSecret               string
 	ControllerURL            string
@@ -163,6 +164,7 @@ func main() {
 func parseProbeLaunchOptions() probeLaunchOptions {
 	options := probeLaunchOptions{}
 	flag.StringVar(&options.ListenAddr, "listen", "", "probe listen address (fallback: PROBE_NODE_LISTEN or :16030)")
+	flag.StringVar(&options.LocalListenAddr, "local-listen", "", "probe local console listen address (fallback: PROBE_LOCAL_LISTEN or 127.0.0.1:16032)")
 	flag.StringVar(&options.NodeID, "node-id", "", "probe node id (fallback: PROBE_NODE_ID)")
 	flag.StringVar(&options.NodeSecret, "node-secret", "", "probe node secret (fallback: PROBE_NODE_SECRET)")
 	flag.StringVar(&options.ControllerURL, "controller-url", "", "controller base url, e.g. https://127.0.0.1:15030 (fallback: PROBE_CONTROLLER_URL)")
@@ -179,9 +181,15 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err != nil {
 		return fmt.Errorf("failed to load node identity: %w", err)
 	}
+	if _, err := ensureProbeLocalAuthManager(); err != nil {
+		return fmt.Errorf("failed to initialize local console auth: %w", err)
+	}
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 
 	mux := buildProbeNodeHTTPMux(identity)
+	if err := startProbeLocalConsoleServer(mux, strings.TrimSpace(options.LocalListenAddr)); err != nil {
+		return fmt.Errorf("failed to start local console: %w", err)
+	}
 
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
 		go startProbeReporter(wsURL, identity)
@@ -252,6 +260,7 @@ func buildProbeNodeHTTPMux(identity nodeIdentity) *http.ServeMux {
 		})
 	})
 	mux.HandleFunc(probeChainRelayAPIPath, handleProbeChainRelayHTTP)
+	registerProbeLocalConsoleRoutes(mux)
 	return mux
 }
 
@@ -377,7 +386,11 @@ func resolveNodeIdentity(explicitNodeID string, explicitSecret string) (nodeIden
 }
 
 func resolveDataDir() (string, error) {
-	candidates := []string{filepath.Join(".", "data")}
+	candidates := make([]string, 0, 4)
+	if envDir := strings.TrimSpace(os.Getenv("PROBE_NODE_DATA_DIR")); envDir != "" {
+		candidates = append(candidates, envDir)
+	}
+	candidates = append(candidates, filepath.Join(".", "data"))
 	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)
 		candidates = append(candidates,
