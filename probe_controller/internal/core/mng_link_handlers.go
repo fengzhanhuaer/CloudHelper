@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -53,6 +54,24 @@ func mngLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mngLinkDispatchAction(w, r, "admin.probe.link.chains.get", nil)
+}
+
+func mngLinkNodeDomainsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	nodeID := normalizeProbeNodeID(r.URL.Query().Get("node_id"))
+	if nodeID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+	domains := listProbeLinkNodeDomains(nodeID)
+	sort.Strings(domains)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"node_id": nodeID,
+		"domains": domains,
+	})
 }
 
 func mngLinkChainUpsertHandler(w http.ResponseWriter, r *http.Request) {

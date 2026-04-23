@@ -717,6 +717,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		var req struct {
 			ChainID        string   `json:"chain_id"`
 			Name           string   `json:"name"`
+			ChainType      string   `json:"chain_type"`
 			UserID         string   `json:"user_id"`
 			UserPublicKey  string   `json:"user_public_key"`
 			Secret         string   `json:"secret"`
@@ -736,6 +737,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 				ExternalPort int    `json:"external_port"`
 				LinkLayer    string `json:"link_layer"`
 				DialMode     string `json:"dial_mode"`
+				RelayHost    string `json:"relay_host"`
 			} `json:"hop_configs"`
 			PortForwards []struct {
 				ID         string `json:"id"`
@@ -770,6 +772,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		item, items, err := upsertProbeLinkChainLocked(probeLinkChainRecord{
 			ChainID:        strings.TrimSpace(req.ChainID),
 			Name:           strings.TrimSpace(req.Name),
+			ChainType:      strings.TrimSpace(req.ChainType),
 			UserID:         strings.TrimSpace(req.UserID),
 			UserPublicKey:  strings.TrimSpace(req.UserPublicKey),
 			Secret:         strings.TrimSpace(req.Secret),
@@ -793,6 +796,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 						ExternalPort: cfg.ExternalPort,
 						LinkLayer:    strings.TrimSpace(cfg.LinkLayer),
 						DialMode:     strings.TrimSpace(cfg.DialMode),
+						RelayHost:    strings.TrimSpace(cfg.RelayHost),
 					})
 				}
 				return out

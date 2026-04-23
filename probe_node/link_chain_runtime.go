@@ -45,6 +45,7 @@ type probeChainLinkControlResultPayload struct {
 
 type probeChainRuntimeConfig struct {
 	chainID         string
+	chainType       string
 	name            string
 	userID          string
 	userPublicKey   ed25519.PublicKey
@@ -572,6 +573,7 @@ func buildProbeChainRuntimeConfigFromControl(cmd probeControlMessage) (probeChai
 
 	cfg := probeChainRuntimeConfig{
 		chainID:         chainID,
+		chainType:       strings.TrimSpace(cmd.ChainType),
 		name:            strings.TrimSpace(cmd.Name),
 		userID:          strings.TrimSpace(cmd.UserID),
 		rawPublicKey:    strings.TrimSpace(cmd.UserPublicKey),

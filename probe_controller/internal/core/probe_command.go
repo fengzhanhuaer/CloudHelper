@@ -101,6 +101,7 @@ type probeChainLinkControlCommand struct {
 	RequestID         string                         `json:"request_id"`
 	Action            string                         `json:"action"`
 	ChainID           string                         `json:"chain_id"`
+	ChainType         string                         `json:"chain_type,omitempty"`
 	Name              string                         `json:"name,omitempty"`
 	UserID            string                         `json:"user_id,omitempty"`
 	UserPublicKey     string                         `json:"user_public_key,omitempty"`

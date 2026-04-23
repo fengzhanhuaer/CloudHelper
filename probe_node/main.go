@@ -97,6 +97,7 @@ type probeControlMessage struct {
 	Action            string                         `json:"action"`
 	Protocol          string                         `json:"protocol"`
 	ChainID           string                         `json:"chain_id"`
+	ChainType         string                         `json:"chain_type"`
 	Name              string                         `json:"name"`
 	UserID            string                         `json:"user_id"`
 	UserPublicKey     string                         `json:"user_public_key"`

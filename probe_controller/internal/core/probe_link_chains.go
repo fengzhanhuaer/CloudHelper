@@ -10,20 +10,21 @@ import (
 )
 
 const (
-	maxProbeLinkChainCount          = 500
-	maxProbeLinkChainNameLen        = 128
-	maxProbeLinkChainUserIDLen      = 128
-	maxProbeLinkChainPublicKeyLen   = 8192
-	maxProbeLinkChainSecretLen      = 256
-	maxProbeLinkChainHopCount       = 64
-	maxProbeLinkChainPortForwardCnt = 256
-	defaultProbeLinkChainListenHost = "0.0.0.0"
-	defaultProbeLinkChainLinkLayer  = "http"
-	defaultProbeLinkChainDialMode   = "forward"
-	defaultProbeLinkChainPFNetwork  = "tcp"
+	maxProbeLinkChainCount           = 500
+	maxProbeLinkChainNameLen         = 128
+	maxProbeLinkChainUserIDLen       = 128
+	maxProbeLinkChainPublicKeyLen    = 8192
+	maxProbeLinkChainSecretLen       = 256
+	maxProbeLinkChainHopCount        = 64
+	maxProbeLinkChainPortForwardCnt  = 256
+	defaultProbeLinkChainListenHost  = "0.0.0.0"
+	defaultProbeLinkChainLinkLayer   = "http"
+	defaultProbeLinkChainDialMode    = "forward"
+	defaultProbeLinkChainPFNetwork   = "tcp"
 	defaultProbeLinkChainPFEntrySide = "chain_entry"
-	defaultProbeLinkChainPFHost     = "0.0.0.0"
-	defaultProbeLinkChainSecretLen  = 48
+	defaultProbeLinkChainPFHost      = "0.0.0.0"
+	defaultProbeLinkChainSecretLen   = 48
+	defaultProbeLinkChainType        = "port_forward"
 )
 
 type probeLinkChainHopConfig struct {
@@ -33,8 +34,8 @@ type probeLinkChainHopConfig struct {
 	ExternalPort int    `json:"external_port,omitempty"` // public-facing port used for connections
 	LinkLayer    string `json:"link_layer"`
 	DialMode     string `json:"dial_mode,omitempty"`
-	// RelayHost is dynamically filled from the Cloudflare DDNS store (business record).
-	// It is NOT persisted; omitempty ensures it does not appear in stored JSON.
+	// RelayHost is the selected relay domain for this hop node.
+	// When empty, controller may fallback to Cloudflare business DDNS.
 	RelayHost string `json:"relay_host,omitempty"`
 }
 
@@ -53,6 +54,7 @@ type probeLinkChainPortForwardConfig struct {
 type probeLinkChainRecord struct {
 	ChainID           string                            `json:"chain_id"`
 	Name              string                            `json:"name"`
+	ChainType         string                            `json:"chain_type,omitempty"`
 	UserID            string                            `json:"user_id"`
 	UserPublicKey     string                            `json:"user_public_key"`
 	Secret            string                            `json:"secret"`
@@ -200,6 +202,14 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	if !ok {
 		return probeLinkChainRecord{}, nil, fmt.Errorf("link_layer must be http/http2/http3")
 	}
+	chainType, chainTypeOK := parseProbeLinkChainType(input.ChainType)
+	if !chainTypeOK {
+		return probeLinkChainRecord{}, nil, fmt.Errorf("chain_type must be port_forward/proxy_chain")
+	}
+	if strings.TrimSpace(chainType) == "" {
+		chainType = defaultProbeLinkChainType
+	}
+
 	egressHost := strings.TrimSpace(input.EgressHost)
 	if egressHost == "" {
 		return probeLinkChainRecord{}, nil, fmt.Errorf("egress_host is required")
@@ -228,6 +238,9 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	portForwards, forwardErr := normalizeProbeLinkChainPortForwardsForUpsert(input.PortForwards)
 	if forwardErr != nil {
 		return probeLinkChainRecord{}, nil, forwardErr
+	}
+	if chainType == "proxy_chain" {
+		portForwards = []probeLinkChainPortForwardConfig{}
 	}
 	if listenPort <= 0 && len(hopConfigs) > 0 {
 		listenPort = hopConfigs[0].ExternalPort
@@ -283,6 +296,7 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	record := probeLinkChainRecord{
 		ChainID:        chainID,
 		Name:           name,
+		ChainType:      chainType,
 		UserID:         userID,
 		UserPublicKey:  userPublicKey,
 		Secret:         secret,
@@ -364,6 +378,7 @@ func normalizeProbeLinkChains(items []probeLinkChainRecord) []probeLinkChainReco
 		}
 		seen[chainID] = struct{}{}
 		name := strings.TrimSpace(item.Name)
+		chainType := normalizeProbeLinkChainType(item.ChainType)
 		userID := strings.TrimSpace(item.UserID)
 		pubKey := strings.TrimSpace(item.UserPublicKey)
 		secret := strings.TrimSpace(item.Secret)
@@ -389,6 +404,7 @@ func normalizeProbeLinkChains(items []probeLinkChainRecord) []probeLinkChainReco
 		out = append(out, probeLinkChainRecord{
 			ChainID:        chainID,
 			Name:           name,
+			ChainType:      chainType,
 			UserID:         userID,
 			UserPublicKey:  pubKey,
 			Secret:         secret,
@@ -544,6 +560,30 @@ func parseProbeLinkChainDialMode(raw string) (string, bool) {
 	}
 }
 
+func normalizeProbeLinkChainType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "proxy_chain", "proxy", "chain_proxy":
+		return "proxy_chain"
+	default:
+		return defaultProbeLinkChainType
+	}
+}
+
+func parseProbeLinkChainType(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", true
+	}
+	switch strings.ToLower(trimmed) {
+	case "port_forward", "pf", "port-forward":
+		return "port_forward", true
+	case "proxy_chain", "proxy", "chain_proxy":
+		return "proxy_chain", true
+	default:
+		return "", false
+	}
+}
+
 func normalizeProbeLinkChainPFNetwork(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "udp":
@@ -652,6 +692,13 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		}
 		seen[nodeID] = struct{}{}
 		nodeNo, _ := strconv.Atoi(nodeID)
+		relayHost := strings.TrimSpace(item.RelayHost)
+		if relayHost != "" {
+			relayHost = normalizeProbeLinkChainDialHost(relayHost)
+			if relayHost == "" {
+				return nil, fmt.Errorf("hop relay_host is invalid")
+			}
+		}
 		out = append(out, probeLinkChainHopConfig{
 			NodeNo:       nodeNo,
 			ListenHost:   listenHost,
@@ -659,6 +706,7 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 			ExternalPort: externalPort,
 			LinkLayer:    linkLayer,
 			DialMode:     dialMode,
+			RelayHost:    relayHost,
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break
@@ -730,6 +778,7 @@ func normalizeProbeLinkChainHopConfigsForStore(values []probeLinkChainHopConfig,
 			ExternalPort: externalPort,
 			LinkLayer:    linkLayer,
 			DialMode:     dialMode,
+			RelayHost:    normalizeProbeLinkChainDialHost(item.RelayHost),
 		})
 		if len(out) >= maxProbeLinkChainHopCount {
 			break
@@ -953,9 +1002,8 @@ func filterAvailableProbeLinkChains(items []probeLinkChainRecord) []probeLinkCha
 	return out
 }
 
-// fillChainRelayHosts looks up the Cloudflare business DDNS record for each hop node
-// and fills in RelayHost dynamically. The returned slice is a copy; original records are not modified.
-// ExternalPort is already auto-filled to ListenPort during save; no separate relay_port field is needed.
+// fillChainRelayHosts fills hop relay_host dynamically when not explicitly configured.
+// The returned slice is a copy; original records are not modified.
 func fillChainRelayHosts(items []probeLinkChainRecord) []probeLinkChainRecord {
 	relayHostByNodeID := buildNodeRelayHostMap()
 
@@ -983,38 +1031,66 @@ func fillChainRelayHosts(items []probeLinkChainRecord) []probeLinkChainRecord {
 	return out
 }
 
-// buildNodeRelayHostMap returns a map from nodeID to its business-class API DDNS
-// (e.g. "api.codex.<tag>.example.com") from the Cloudflare store.
+// buildNodeRelayHostMap returns a map from nodeID to one selectable relay domain.
+// It now uses all known node domains (Cloudflare/DDNS/service host) instead of
+// fixed business-class records only.
 func buildNodeRelayHostMap() map[string]string {
 	result := make(map[string]string)
 	if ProbeStore == nil {
 		return result
 	}
 	ProbeStore.mu.RLock()
-	records := loadCloudflareRecordsFromProbeNodesLocked()
+	nodes := loadProbeNodesLocked()
 	ProbeStore.mu.RUnlock()
 
-	for _, rec := range records {
-		if !strings.EqualFold(strings.TrimSpace(rec.RecordClass), "business") {
-			continue
-		}
-		recordName := strings.TrimSpace(rec.RecordName)
-		if recordName == "" {
-			continue
-		}
-		nodeID := normalizeProbeNodeID(rec.NodeID)
+	for _, node := range nodes {
+		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 		if nodeID == "" {
 			continue
 		}
-		// Use sequence 1 (primary record) as the relay host.
-		if rec.Sequence != 1 {
+		domains := buildProbeLinkNodeDomainsFromRecord(node)
+		if len(domains) == 0 {
 			continue
 		}
-		if _, exists := result[nodeID]; !exists {
-			result[nodeID] = recordName
-		}
+		result[nodeID] = domains[0]
 	}
 	return result
+}
+
+func buildProbeLinkNodeDomainsFromRecord(node probeNodeRecord) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(node.CloudflareDDNSRecords)+2)
+	add := func(raw string) {
+		host := normalizeProbeLinkChainDialHost(raw)
+		if host == "" {
+			return
+		}
+		key := strings.ToLower(host)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, host)
+	}
+	for _, rec := range node.CloudflareDDNSRecords {
+		add(rec.RecordName)
+	}
+	add(node.DDNS)
+	add(node.ServiceHost)
+	sort.Strings(out)
+	return out
+}
+
+func listProbeLinkNodeDomains(nodeID string) []string {
+	normalized := normalizeProbeNodeID(nodeID)
+	if normalized == "" {
+		return []string{}
+	}
+	node, ok := getProbeNodeByID(normalized)
+	if !ok {
+		return []string{}
+	}
+	return buildProbeLinkNodeDomainsFromRecord(node)
 }
 
 // ProbeLinkChainsHandler serves GET /api/probe/link/chains.

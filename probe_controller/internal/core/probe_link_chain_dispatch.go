@@ -39,13 +39,17 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 		nextDialMode := "none"
 		if i < len(route)-1 {
 			nextNodeID := route[i+1]
-			resolvedHost, err := resolveProbeLinkChainNodeDialHost(nextNodeID)
-			if err != nil {
-				failures = append(failures, fmt.Sprintf("node=%s resolve next host failed: %v", nodeID, err))
-				continue
+			nextNodeSettings := resolveProbeLinkChainNodeSettings(item, nextNodeID)
+			resolvedHost := strings.TrimSpace(nextNodeSettings.RelayHost)
+			if resolvedHost == "" {
+				var err error
+				resolvedHost, err = resolveProbeLinkChainNodeDialHost(nextNodeID)
+				if err != nil {
+					failures = append(failures, fmt.Sprintf("node=%s resolve next host failed: %v", nodeID, err))
+					continue
+				}
 			}
 			nextHost = resolvedHost
-			nextNodeSettings := resolveProbeLinkChainNodeSettings(item, nextNodeID)
 			if nextNodeSettings.ExternalPort > 0 {
 				nextPort = nextNodeSettings.ExternalPort
 			} else {
@@ -63,13 +67,17 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 		prevDialMode := "none"
 		if i > 0 {
 			prevNodeID := route[i-1]
-			resolvedPrevHost, err := resolveProbeLinkChainNodeDialHost(prevNodeID)
-			if err != nil {
-				failures = append(failures, fmt.Sprintf("node=%s resolve prev host failed: %v", nodeID, err))
-				continue
+			prevNodeSettings := resolveProbeLinkChainNodeSettings(item, prevNodeID)
+			resolvedPrevHost := strings.TrimSpace(prevNodeSettings.RelayHost)
+			if resolvedPrevHost == "" {
+				var err error
+				resolvedPrevHost, err = resolveProbeLinkChainNodeDialHost(prevNodeID)
+				if err != nil {
+					failures = append(failures, fmt.Sprintf("node=%s resolve prev host failed: %v", nodeID, err))
+					continue
+				}
 			}
 			prevHost = resolvedPrevHost
-			prevNodeSettings := resolveProbeLinkChainNodeSettings(item, prevNodeID)
 			if prevNodeSettings.ExternalPort > 0 {
 				prevPort = prevNodeSettings.ExternalPort
 			} else {
@@ -83,6 +91,7 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 		_, err := dispatchProbeChainLinkControl(nodeID, probeChainLinkControlCommand{
 			Action:        "apply",
 			ChainID:       strings.TrimSpace(item.ChainID),
+			ChainType:     strings.TrimSpace(item.ChainType),
 			Name:          strings.TrimSpace(item.Name),
 			UserID:        strings.TrimSpace(item.UserID),
 			UserPublicKey: strings.TrimSpace(item.UserPublicKey),
@@ -171,6 +180,7 @@ type probeLinkChainNodeSettings struct {
 	ExternalPort int
 	LinkLayer    string
 	DialMode     string
+	RelayHost    string
 }
 
 func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string) probeLinkChainNodeSettings {
@@ -205,6 +215,7 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 			ExternalPort: externalPort,
 			LinkLayer:    layer,
 			DialMode:     dialMode,
+			RelayHost:    normalizeProbeLinkChainDialHost(hop.RelayHost),
 		}
 	}
 	return probeLinkChainNodeSettings{
@@ -213,6 +224,7 @@ func resolveProbeLinkChainNodeSettings(item probeLinkChainRecord, nodeID string)
 		ExternalPort: 0,
 		LinkLayer:    defaultLayer,
 		DialMode:     defaultProbeLinkChainDialMode,
+		RelayHost:    "",
 	}
 }
 

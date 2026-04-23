@@ -14,10 +14,10 @@ import (
 // probeLinkChainsSyncAPIPath is the controller endpoint that returns all chains
 // where this probe node appears (entry / cascade / exit).
 const (
-	probeLinkChainsSyncAPIPath          = "/api/probe/link/chains"
-	probeLinkChainsSyncPollInterval     = 60 * time.Minute
-	probeLinkChainsSyncFetchTimeout     = 15 * time.Second
-	probeChainTopologyCacheFileName     = "probe_link_chain_config.json"
+	probeLinkChainsSyncAPIPath      = "/api/probe/link/chains"
+	probeLinkChainsSyncPollInterval = 60 * time.Minute
+	probeLinkChainsSyncFetchTimeout = 15 * time.Second
+	probeChainTopologyCacheFileName = "probe_link_chain_config.json"
 )
 
 // probeLinkChainsResponse mirrors the JSON returned by ProbeLinkChainsHandler.
@@ -27,14 +27,15 @@ type probeLinkChainsResponse struct {
 
 // probeChainTopologyCacheFile stores full chain topology fetched from controller.
 type probeChainTopologyCacheFile struct {
-	UpdatedAt string                      `json:"updated_at"`
-	Items     []probeLinkChainServerItem  `json:"items"`
+	UpdatedAt string                     `json:"updated_at"`
+	Items     []probeLinkChainServerItem `json:"items"`
 }
 
 // probeLinkChainServerItem is a single chain record returned by the controller.
 // Fields map 1-to-1 with probeLinkChainRecord / probeChainRuntimeCacheItem.
 type probeLinkChainServerItem struct {
 	ChainID        string                            `json:"chain_id"`
+	ChainType      string                            `json:"chain_type"`
 	Name           string                            `json:"name"`
 	UserID         string                            `json:"user_id"`
 	UserPublicKey  string                            `json:"user_public_key"`
@@ -50,7 +51,7 @@ type probeLinkChainServerItem struct {
 }
 
 // probeLinkChainHopServerItem maps one entry in hop_configs.
-// relay_host is filled by the controller from Cloudflare DDNS.
+// relay_host is the selected domain for this hop node.
 type probeLinkChainHopServerItem struct {
 	NodeNo       int    `json:"node_no"`
 	ListenHost   string `json:"listen_host"`
@@ -247,6 +248,7 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 
 	msg := probeControlMessage{
 		ChainID:         chainID,
+		ChainType:       strings.TrimSpace(item.ChainType),
 		Name:            strings.TrimSpace(item.Name),
 		UserID:          strings.TrimSpace(item.UserID),
 		UserPublicKey:   strings.TrimSpace(item.UserPublicKey),
@@ -513,7 +515,8 @@ func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) 
 		return false
 	}
 	c := rt.cfg
-	return c.role == cfg.role &&
+	return c.chainType == cfg.chainType &&
+		c.role == cfg.role &&
 		c.listenHost == cfg.listenHost &&
 		c.listenPort == cfg.listenPort &&
 		c.linkLayer == cfg.linkLayer &&
@@ -602,6 +605,7 @@ func sanitizeProbeChainServerItemsForCache(items []probeLinkChainServerItem) []p
 	for _, item := range items {
 		next := item
 		next.ChainID = strings.TrimSpace(item.ChainID)
+		next.ChainType = strings.TrimSpace(item.ChainType)
 		next.Name = strings.TrimSpace(item.Name)
 		next.UserID = strings.TrimSpace(item.UserID)
 		next.UserPublicKey = strings.TrimSpace(item.UserPublicKey)
