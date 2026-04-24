@@ -20,6 +20,8 @@
     button.secondary { background: #4b5563; }
     button.warn { background: #b91c1c; }
     .kv { display: grid; grid-template-columns: 170px 1fr; row-gap: 6px; column-gap: 8px; margin-top: 8px; font-size: 14px; }
+    .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #374151; }
+    .field select { min-width: 220px; padding: 7px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #111827; }
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
     .msg.error { color: #b91c1c; }
     .msg.success { color: #166534; }
@@ -48,15 +50,28 @@
       <div class="kv">
         <div>接管开关</div><div id="proxyEnabled">-</div>
         <div>当前模式</div><div id="proxyMode">-</div>
+        <div>当前生效组</div><div id="proxyActiveGroup">-</div>
+        <div>当前生效链路</div><div id="proxyActiveTunnel">-</div>
         <div>最后更新时间</div><div id="proxyUpdatedAt">-</div>
         <div>最近错误</div><div id="proxyLastError">-</div>
       </div>
       <div class="actions">
-        <button id="proxyEnableBtn">启用 TUN 接管</button>
-        <button id="proxyDirectBtn" class="secondary">切回直连</button>
-        <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
+        <label class="field" for="proxyGroupSelect">
+          <span>代理组</span>
+          <select id="proxyGroupSelect"></select>
+        </label>
+        <label class="field" for="proxyChainSelect">
+          <span>代理链路</span>
+          <select id="proxyChainSelect"></select>
+        </label>
       </div>
-      <p class="hint">模式值：<code>direct</code> 表示直连，<code>tunnel</code> 表示已接管。</p>
+      <div class="actions">
+        <button id="proxyEnableBtn">按选择启用 TUN 接管</button>
+        <button id="proxyDirectBtn" class="secondary">按选择切回直连</button>
+        <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
+        <button id="proxySelectionRefreshBtn" class="secondary">刷新组与链路</button>
+      </div>
+      <p class="hint">模式值：<code>direct</code> 表示直连，<code>tunnel</code> 表示已接管。<code>tunnel_node_id</code> 将写入运行态文件。</p>
     </section>
 
     <section id="panelTun" class="card tab-panel">
@@ -79,6 +94,9 @@
 
   <script>
     const messageEl = document.getElementById('message');
+    const proxyGroupSelectEl = document.getElementById('proxyGroupSelect');
+    const proxyChainSelectEl = document.getElementById('proxyChainSelect');
+    let proxyStateGroupsCache = [];
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -90,6 +108,39 @@
       if (!el) return;
       const clean = (value === undefined || value === null || value === '') ? '-' : String(value);
       el.textContent = clean;
+    }
+
+    function normalizeChainID(chainValue) {
+      const text = String(chainValue || '').trim();
+      if (!text) return '';
+      if (text.toLowerCase().startsWith('chain:')) {
+        return text.slice('chain:'.length).trim();
+      }
+      return text;
+    }
+
+    function setSelectOptions(selectEl, options, selectedValue) {
+      if (!selectEl) return;
+      const keepValue = (selectedValue === undefined || selectedValue === null) ? '' : String(selectedValue);
+      selectEl.innerHTML = '';
+      options.forEach((opt) => {
+        const optionEl = document.createElement('option');
+        optionEl.value = String(opt.value);
+        optionEl.textContent = String(opt.label);
+        if (optionEl.value === keepValue) {
+          optionEl.selected = true;
+        }
+        selectEl.appendChild(optionEl);
+      });
+      if (!Array.from(selectEl.options).some((opt) => opt.value === keepValue) && selectEl.options.length > 0) {
+        selectEl.options[0].selected = true;
+      }
+    }
+
+    function updateProxyActiveFromState() {
+      const active = proxyStateGroupsCache.find((item) => String(item && item.action || '').trim().toLowerCase() === 'tunnel');
+      setText('proxyActiveGroup', active && active.group);
+      setText('proxyActiveTunnel', active && active.tunnel_node_id);
     }
 
     function switchTab(targetId) {
@@ -156,11 +207,48 @@
       setText('proxyLastError', data.last_error);
     }
 
+    async function loadProxySelections() {
+      const [groupsData, chainsData, stateData] = await Promise.all([
+        requestJSON('/local/api/proxy/groups', { method: 'GET' }),
+        requestJSON('/local/api/proxy/chains', { method: 'GET' }),
+        requestJSON('/local/api/proxy/state', { method: 'GET' }),
+      ]);
+
+      const configuredGroups = Array.isArray(groupsData.groups)
+        ? groupsData.groups.map((item) => String(item && item.group || '').trim()).filter(Boolean)
+        : [];
+      const allGroups = ['fallback', ...configuredGroups.filter((name) => name.toLowerCase() !== 'fallback')];
+      const uniqueGroups = [...new Set(allGroups.map((name) => name.trim()).filter(Boolean))];
+
+      const selectedGroup = (proxyGroupSelectEl && proxyGroupSelectEl.value) ? proxyGroupSelectEl.value : 'fallback';
+      setSelectOptions(proxyGroupSelectEl, uniqueGroups.map((name) => ({ value: name, label: name })), selectedGroup);
+
+      const chains = Array.isArray(chainsData.items) ? chainsData.items : [];
+      const chainOptions = [{ value: '', label: '未指定（不绑定具体链路）' }].concat(
+        chains.map((item) => {
+          const chainID = String(item && item.chain_id || '').trim();
+          const chainName = String(item && item.name || '').trim();
+          const label = chainName ? `${chainName} (${chainID})` : chainID;
+          return { value: chainID, label };
+        }).filter((item) => item.value)
+      );
+
+      const stateGroups = Array.isArray(stateData.groups) ? stateData.groups : [];
+      proxyStateGroupsCache = stateGroups;
+      const selectedState = stateGroups.find((entry) => String(entry && entry.group || '').trim().toLowerCase() === String(proxyGroupSelectEl.value || '').trim().toLowerCase());
+      const selectedChain = normalizeChainID(selectedState && selectedState.tunnel_node_id);
+      const active = stateGroups.find((entry) => String(entry && entry.action || '').trim().toLowerCase() === 'tunnel');
+      const activeChain = normalizeChainID(active && active.tunnel_node_id);
+      setSelectOptions(proxyChainSelectEl, chainOptions, selectedChain || activeChain || '');
+      updateProxyActiveFromState();
+    }
+
     async function refreshAll() {
       setMessage('');
       const ok = await ensureSession();
       if (!ok) return;
       await loadProxyStatus();
+      await loadProxySelections();
       await loadTunStatus();
     }
 
@@ -209,22 +297,29 @@
     });
 
     document.getElementById('proxyEnableBtn').addEventListener('click', async () => {
-      setMessage('启用 TUN 接管中...');
+      setMessage('按选择启用 TUN 接管中...');
       try {
-        await requestJSON('/local/api/proxy/enable', { method: 'POST', body: '{}' });
+        const payload = {
+          group: proxyGroupSelectEl.value || 'fallback',
+          tunnel_node_id: proxyChainSelectEl.value || '',
+        };
+        await requestJSON('/local/api/proxy/enable', { method: 'POST', body: JSON.stringify(payload) });
         await refreshAll();
-        setMessage('已启用 TUN 接管', 'success');
+        setMessage('已按选择启用 TUN 接管', 'success');
       } catch (err) {
         setMessage('启用失败：' + err.message, 'error');
       }
     });
 
     document.getElementById('proxyDirectBtn').addEventListener('click', async () => {
-      setMessage('切换直连中...');
+      setMessage('按选择切换直连中...');
       try {
-        await requestJSON('/local/api/proxy/direct', { method: 'POST', body: '{}' });
+        const payload = {
+          group: proxyGroupSelectEl.value || 'fallback',
+        };
+        await requestJSON('/local/api/proxy/direct', { method: 'POST', body: JSON.stringify(payload) });
         await refreshAll();
-        setMessage('已切回直连', 'success');
+        setMessage('已按选择切回直连', 'success');
       } catch (err) {
         setMessage('切换直连失败：' + err.message, 'error');
       }
@@ -234,9 +329,33 @@
       setMessage('刷新代理状态...');
       try {
         await loadProxyStatus();
+        await loadProxySelections();
         setMessage('代理状态已刷新', 'success');
       } catch (err) {
         setMessage('读取代理状态失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxySelectionRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新代理组与链路...');
+      try {
+        await loadProxySelections();
+        setMessage('代理组与链路已刷新', 'success');
+      } catch (err) {
+        setMessage('读取代理组与链路失败：' + err.message, 'error');
+      }
+    });
+
+    proxyGroupSelectEl.addEventListener('change', () => {
+      const stateEntry = proxyStateGroupsCache.find((entry) => {
+        return String(entry && entry.group || '').trim().toLowerCase() === String(proxyGroupSelectEl.value || '').trim().toLowerCase();
+      });
+      const stateChain = normalizeChainID(stateEntry && stateEntry.tunnel_node_id);
+      if (stateChain) {
+        const hasOption = Array.from(proxyChainSelectEl.options).some((opt) => opt.value === stateChain);
+        if (hasOption) {
+          proxyChainSelectEl.value = stateChain;
+        }
       }
     });
 

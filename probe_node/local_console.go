@@ -763,6 +763,80 @@ func validateProbeLocalRuntimeAction(action string) bool {
 	}
 }
 
+func validateProbeLocalRuntimeGroup(group string) error {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "group is required"}
+	}
+	if strings.EqualFold(group, "fallback") {
+		return nil
+	}
+	payload, err := loadProbeLocalProxyGroupFile()
+	if err != nil {
+		return err
+	}
+	for _, item := range payload.Groups {
+		if strings.EqualFold(strings.TrimSpace(item.Group), group) {
+			return nil
+		}
+	}
+	return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("group %q not found", group)}
+}
+
+func normalizeProbeLocalTunnelNodeID(raw string) (normalized string, chainID string, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", nil
+	}
+	if len(trimmed) >= len("chain:") && strings.EqualFold(trimmed[:len("chain:")], "chain:") {
+		trimmed = strings.TrimSpace(trimmed[len("chain:"):])
+	}
+	if trimmed == "" {
+		return "", "", &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "tunnel_node_id is invalid"}
+	}
+	return "chain:" + trimmed, trimmed, nil
+}
+
+func validateProbeLocalRuntimeTunnelSelection(tunnelNodeID string) (string, error) {
+	normalized, chainID, err := normalizeProbeLocalTunnelNodeID(tunnelNodeID)
+	if err != nil {
+		return "", err
+	}
+	if chainID == "" {
+		return "", nil
+	}
+	items, err := loadProbeLocalProxyChainItems()
+	if err != nil {
+		return "", err
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.ChainID), chainID) {
+			return normalized, nil
+		}
+	}
+	return "", &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("tunnel_node_id %q not found in proxy chains", strings.TrimSpace(tunnelNodeID))}
+}
+
+func resolveProbeLocalProxyEnableSelection(req probeLocalProxyEnableRequest) (group string, tunnelNodeID string, err error) {
+	group = firstNonEmpty(strings.TrimSpace(req.Group), "fallback")
+	if err := validateProbeLocalRuntimeGroup(group); err != nil {
+		return "", "", err
+	}
+	tunnelNodeID, err = validateProbeLocalRuntimeTunnelSelection(req.TunnelNodeID)
+	if err != nil {
+		return "", "", err
+	}
+	return group, tunnelNodeID, nil
+}
+
+func resolveProbeLocalProxyDirectGroup(req probeLocalProxyDirectRequest) (string, error) {
+	group := firstNonEmpty(strings.TrimSpace(req.Group), "fallback")
+	if err := validateProbeLocalRuntimeGroup(group); err != nil {
+		return "", err
+	}
+	return group, nil
+}
+
 func upsertProbeLocalRuntimeStateGroup(group, action, tunnelNodeID, runtimeStatus string) error {
 	group = strings.TrimSpace(group)
 	action = strings.ToLower(strings.TrimSpace(action))
@@ -904,6 +978,19 @@ func persistProbeLocalHostMappings(hosts []probeLocalHostMapping) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+func ensureProbeLocalProxyDefaultsInitialized() error {
+	if _, err := loadProbeLocalProxyGroupFile(); err != nil {
+		return err
+	}
+	if _, err := loadProbeLocalProxyStateFile(); err != nil {
+		return err
+	}
+	if _, _, err := loadProbeLocalHostMappingsWithContent(); err != nil {
+		return err
+	}
+	return nil
 }
 
 type probeLocalProxyChainsFile struct {
@@ -1109,6 +1196,15 @@ type probeLocalLoginRequest struct {
 	Password string `json:"password"`
 }
 
+type probeLocalProxyEnableRequest struct {
+	Group        string `json:"group"`
+	TunnelNodeID string `json:"tunnel_node_id"`
+}
+
+type probeLocalProxyDirectRequest struct {
+	Group string `json:"group"`
+}
+
 type probeLocalProxyHostsSaveRequest struct {
 	Content string `json:"content"`
 }
@@ -1295,15 +1391,41 @@ func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalProxyEnableRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	group, tunnelNodeID, err := resolveProbeLocalProxyEnableSelection(req)
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
 	tunState, proxyState, err := probeLocalControl.enableProxy()
 	if err != nil {
 		writeProbeLocalError(w, err)
 		return
 	}
-	if updateErr := upsertProbeLocalRuntimeStateGroup("fallback", "tunnel", "", "online"); updateErr != nil {
+	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "tunnel", tunnelNodeID, "online"); updateErr != nil {
 		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": tunState, "proxy": proxyState})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"tun":   tunState,
+		"proxy": proxyState,
+		"selection": map[string]any{
+			"group":          group,
+			"tunnel_node_id": tunnelNodeID,
+		},
+	})
 }
 
 func probeLocalProxyDirectHandler(w http.ResponseWriter, r *http.Request) {
@@ -1314,15 +1436,40 @@ func probeLocalProxyDirectHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalProxyDirectRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	group, err := resolveProbeLocalProxyDirectGroup(req)
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
 	tunState, proxyState, err := probeLocalControl.directProxy()
 	if err != nil {
 		writeProbeLocalError(w, err)
 		return
 	}
-	if updateErr := upsertProbeLocalRuntimeStateGroup("fallback", "direct", "", "online"); updateErr != nil {
+	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "direct", "", "online"); updateErr != nil {
 		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": tunState, "proxy": proxyState})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"tun":   tunState,
+		"proxy": proxyState,
+		"selection": map[string]any{
+			"group": group,
+		},
+	})
 }
 
 func probeLocalProxyStatusHandler(w http.ResponseWriter, r *http.Request) {

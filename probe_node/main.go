@@ -184,6 +184,9 @@ func runProbeNode(options probeLaunchOptions) error {
 	if _, err := ensureProbeLocalAuthManager(); err != nil {
 		return fmt.Errorf("failed to initialize local console auth: %w", err)
 	}
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		return fmt.Errorf("failed to initialize local proxy default files: %w", err)
+	}
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)
 

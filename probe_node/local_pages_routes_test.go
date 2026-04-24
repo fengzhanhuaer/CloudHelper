@@ -61,6 +61,15 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tabTun\"") {
 		t.Fatalf("panel should contain tun tab button")
 	}
+	if !strings.Contains(body, "id=\"proxyGroupSelect\"") {
+		t.Fatalf("panel should contain proxy group selector")
+	}
+	if !strings.Contains(body, "id=\"proxyChainSelect\"") {
+		t.Fatalf("panel should contain proxy chain selector")
+	}
+	if !strings.Contains(body, "id=\"proxySelectionRefreshBtn\"") {
+		t.Fatalf("panel should contain proxy selection refresh button")
+	}
 }
 
 func TestProbeLocalPanelMethodNotAllowed(t *testing.T) {
