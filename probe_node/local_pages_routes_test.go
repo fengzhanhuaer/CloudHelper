@@ -46,11 +46,20 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 		t.Fatalf("GET /local/panel content-type=%q", got)
 	}
 	body := resp.Body.String()
-	if !strings.Contains(body, "TUN 状态") {
-		t.Fatalf("panel should contain tun status section")
+	if strings.Contains(body, "当前会话") {
+		t.Fatalf("panel should not contain session section")
 	}
 	if !strings.Contains(body, "代理状态") {
 		t.Fatalf("panel should contain proxy status section")
+	}
+	if !strings.Contains(body, "TUN 状态") {
+		t.Fatalf("panel should contain tun status section")
+	}
+	if !strings.Contains(body, "id=\"tabProxy\"") {
+		t.Fatalf("panel should contain proxy tab button")
+	}
+	if !strings.Contains(body, "id=\"tabTun\"") {
+		t.Fatalf("panel should contain tun tab button")
 	}
 }
 

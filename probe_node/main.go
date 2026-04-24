@@ -185,6 +185,7 @@ func runProbeNode(options probeLaunchOptions) error {
 		return fmt.Errorf("failed to initialize local console auth: %w", err)
 	}
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
+	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)
 
 	nodeMux := buildProbeNodeHTTPMux(identity)
 	localMux := buildProbeLocalConsoleMux()

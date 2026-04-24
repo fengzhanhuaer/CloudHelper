@@ -18,6 +18,7 @@ const (
 	probeLinkChainsSyncPollInterval = 60 * time.Minute
 	probeLinkChainsSyncFetchTimeout = 15 * time.Second
 	probeChainTopologyCacheFileName = "probe_link_chain_config.json"
+	probeProxyChainsCacheFileName   = "proxy_chain.json"
 )
 
 // probeLinkChainsResponse mirrors the JSON returned by ProbeLinkChainsHandler.
@@ -116,6 +117,9 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 
 	if err := persistProbeChainTopologyCache(items); err != nil {
 		log.Printf("warning: persist probe chain topology cache failed: %v", err)
+	}
+	if err := persistProbeProxyChainCache(items); err != nil {
+		log.Printf("warning: persist probe proxy chain cache failed: %v", err)
 	}
 
 	applyProbeLinkChainServerItems(identity, controllerBaseURL, items)
@@ -597,6 +601,14 @@ func resolveProbeChainTopologyCachePath() (string, error) {
 	return filepath.Join(dataPath, probeChainTopologyCacheFileName), nil
 }
 
+func resolveProbeProxyChainsCachePath() (string, error) {
+	dataPath, err := resolveDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataPath, probeProxyChainsCacheFileName), nil
+}
+
 func sanitizeProbeChainServerItemsForCache(items []probeLinkChainServerItem) []probeLinkChainServerItem {
 	if len(items) == 0 {
 		return []probeLinkChainServerItem{}
@@ -636,4 +648,36 @@ func sanitizeProbeChainServerItemsForCache(items []probeLinkChainServerItem) []p
 		out = append(out, next)
 	}
 	return out
+}
+
+func persistProbeProxyChainCache(items []probeLinkChainServerItem) error {
+	cachePath, err := resolveProbeProxyChainsCachePath()
+	if err != nil {
+		return err
+	}
+	all := sanitizeProbeChainServerItemsForCache(items)
+	proxyOnly := make([]probeLinkChainServerItem, 0, len(all))
+	for _, item := range all {
+		if !strings.EqualFold(strings.TrimSpace(item.ChainType), "proxy_chain") {
+			continue
+		}
+		next := item
+		next.PortForwards = []probeChainPortForwardServerItem{}
+		proxyOnly = append(proxyOnly, next)
+	}
+	payload := struct {
+		UpdatedAt string                     `json:"updated_at"`
+		Items     []probeLinkChainServerItem `json:"items"`
+	}{
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Items:     proxyOnly,
+	}
+	encoded, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(cachePath, append(encoded, '\n'), 0o644)
 }

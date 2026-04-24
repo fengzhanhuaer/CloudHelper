@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -409,6 +411,210 @@ func TestProbeLocalTUNInstallReturnsNotImplementedOnUnsupported(t *testing.T) {
 	errText, _ := payload["error"].(string)
 	if !strings.Contains(strings.ToLower(errText), "not supported") {
 		t.Fatalf("tun/install unsupported error=%q", errText)
+	}
+}
+
+func TestProbeLocalProxyGroupsAndStateAndHostsLifecycle(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	groupsResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/groups", nil, sessionCookie)
+	if groupsResp.Code != http.StatusOK {
+		t.Fatalf("groups get status=%d body=%s", groupsResp.Code, groupsResp.Body.String())
+	}
+	groupsPayload := decodeProbeLocalJSON(t, groupsResp)
+	if int(groupsPayload["version"].(float64)) != 1 {
+		t.Fatalf("groups version=%v", groupsPayload["version"])
+	}
+	groupsArr, ok := groupsPayload["groups"].([]any)
+	if !ok || len(groupsArr) == 0 {
+		t.Fatalf("groups payload invalid: %v", groupsPayload["groups"])
+	}
+
+	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "default", "rules_text": "domain_suffix:example.com\ndomain_prefix:api."},
+			{"group": "media", "rules_text": "domain_keyword:stream"},
+		},
+	}, sessionCookie)
+	if saveGroupsResp.Code != http.StatusOK {
+		t.Fatalf("groups save status=%d body=%s", saveGroupsResp.Code, saveGroupsResp.Body.String())
+	}
+
+	invalidGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
+		"version": 1,
+		"groups":  []map[string]any{{"group": "fallback", "rules_text": "domain_suffix:x"}},
+	}, sessionCookie)
+	if invalidGroupsResp.Code != http.StatusBadRequest {
+		t.Fatalf("invalid groups save status=%d body=%s", invalidGroupsResp.Code, invalidGroupsResp.Body.String())
+	}
+
+	stateResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)
+	if stateResp.Code != http.StatusOK {
+		t.Fatalf("state get status=%d body=%s", stateResp.Code, stateResp.Body.String())
+	}
+	statePayload := decodeProbeLocalJSON(t, stateResp)
+	backupObj, ok := statePayload["backup"].(map[string]any)
+	if !ok {
+		t.Fatalf("state backup payload type=%T", statePayload["backup"])
+	}
+	if backupObj["last_upload_status"] != "idle" {
+		t.Fatalf("state backup status=%v", backupObj["last_upload_status"])
+	}
+
+	hostsGetResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/hosts", nil, sessionCookie)
+	if hostsGetResp.Code != http.StatusOK {
+		t.Fatalf("hosts get status=%d body=%s", hostsGetResp.Code, hostsGetResp.Body.String())
+	}
+	hostsGetPayload := decodeProbeLocalJSON(t, hostsGetResp)
+	if content, _ := hostsGetPayload["content"].(string); !strings.Contains(content, "# dns,ip") {
+		t.Fatalf("hosts default content=%q", content)
+	}
+
+	hostsSaveResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/hosts/save", map[string]any{
+		"content": "# dns,ip\napi.internal.example,10.20.30.40\napi.internal.example,10.20.30.41\ncdn.edge.example,203.0.113.20\n",
+	}, sessionCookie)
+	if hostsSaveResp.Code != http.StatusOK {
+		t.Fatalf("hosts save status=%d body=%s", hostsSaveResp.Code, hostsSaveResp.Body.String())
+	}
+	hostsSavePayload := decodeProbeLocalJSON(t, hostsSaveResp)
+	hostsArr, ok := hostsSavePayload["hosts"].([]any)
+	if !ok || len(hostsArr) != 2 {
+		t.Fatalf("hosts save hosts payload invalid: %v", hostsSavePayload["hosts"])
+	}
+	firstHost, _ := hostsArr[0].(map[string]any)
+	if firstHost["dns"] != "api.internal.example" || firstHost["ip"] != "10.20.30.41" {
+		t.Fatalf("hosts duplicate replacement failed: %v", firstHost)
+	}
+
+	invalidHostResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/hosts/save", map[string]any{
+		"content": "bad.example,not_an_ip\n",
+	}, sessionCookie)
+	if invalidHostResp.Code != http.StatusBadRequest {
+		t.Fatalf("invalid hosts save status=%d body=%s", invalidHostResp.Code, invalidHostResp.Body.String())
+	}
+}
+
+func TestProbeLocalProxyChainsAndBackupEndpoints(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	proxyChainPath, err := resolveProbeLocalProxyChainPath()
+	if err != nil {
+		t.Fatalf("resolve proxy_chain path failed: %v", err)
+	}
+	proxyChainPayload := `{
+	  "updated_at": "2026-04-24T00:00:00Z",
+	  "items": [
+	    {"chain_id":"chain-proxy-1","chain_type":"proxy_chain","name":"Proxy 1"},
+	    {"chain_id":"chain-forward-1","chain_type":"port_forward","name":"Forward 1"}
+	  ]
+	}`
+	if err := os.WriteFile(proxyChainPath, []byte(proxyChainPayload), 0o644); err != nil {
+		t.Fatalf("write proxy_chain file failed: %v", err)
+	}
+
+	chainsResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/chains", nil, sessionCookie)
+	if chainsResp.Code != http.StatusOK {
+		t.Fatalf("proxy chains status=%d body=%s", chainsResp.Code, chainsResp.Body.String())
+	}
+	chainsPayload := decodeProbeLocalJSON(t, chainsResp)
+	items, ok := chainsPayload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("proxy chains payload invalid: %v", chainsPayload["items"])
+	}
+	chainObj, _ := items[0].(map[string]any)
+	if chainObj["chain_type"] != "proxy_chain" {
+		t.Fatalf("proxy chains filter failed: %v", chainObj)
+	}
+
+	backupNoControllerResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/backup", map[string]any{}, sessionCookie)
+	if backupNoControllerResp.Code != http.StatusConflict {
+		t.Fatalf("backup without controller status=%d body=%s", backupNoControllerResp.Code, backupNoControllerResp.Body.String())
+	}
+}
+
+func TestProbeLocalProxyGroupsBackupEndpointSuccess(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+	t.Cleanup(func() { setProbeLocalProxyRuntimeContext(nodeIdentity{}, "") })
+
+	if _, err := loadProbeLocalProxyGroupFile(); err != nil {
+		t.Fatalf("prepare proxy_group file failed: %v", err)
+	}
+
+	reqBodyCh := make(chan map[string]any, 1)
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != probeLocalProxyBackupAPIPath {
+			t.Fatalf("backup path=%q", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("backup method=%q", r.Method)
+		}
+		payload := map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode controller request body failed: %v", err)
+		}
+		reqBodyCh <- payload
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer controller.Close()
+
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-backup-success"}, "  "+controller.URL+"  ")
+	ctx := currentProbeLocalProxyRuntimeContext()
+	if ctx.Identity.NodeID != "node-backup-success" {
+		t.Fatalf("runtime context node id=%q", ctx.Identity.NodeID)
+	}
+	if ctx.ControllerBaseURL != controller.URL {
+		t.Fatalf("runtime context controller base url=%q want=%q", ctx.ControllerBaseURL, controller.URL)
+	}
+
+	backupResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/backup", map[string]any{}, sessionCookie)
+	if backupResp.Code != http.StatusOK {
+		t.Fatalf("backup status=%d body=%s", backupResp.Code, backupResp.Body.String())
+	}
+
+	var controllerPayload map[string]any
+	select {
+	case controllerPayload = <-reqBodyCh:
+	default:
+		t.Fatalf("controller did not receive backup request")
+	}
+	if controllerPayload["file_name"] != probeLocalProxyGroupFileName {
+		t.Fatalf("backup file_name=%v", controllerPayload["file_name"])
+	}
+	if controllerPayload["node_id"] != "node-backup-success" {
+		t.Fatalf("backup node_id=%v", controllerPayload["node_id"])
+	}
+	contentBase64, _ := controllerPayload["content_base64"].(string)
+	if strings.TrimSpace(contentBase64) == "" {
+		t.Fatalf("backup content_base64 is empty")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(contentBase64)
+	if err != nil {
+		t.Fatalf("decode content_base64 failed: %v", err)
+	}
+	if !strings.Contains(string(decoded), `"groups"`) {
+		t.Fatalf("backup payload content mismatch: %q", string(decoded))
+	}
+
+	stateResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)
+	if stateResp.Code != http.StatusOK {
+		t.Fatalf("state status=%d body=%s", stateResp.Code, stateResp.Body.String())
+	}
+	statePayload := decodeProbeLocalJSON(t, stateResp)
+	backupObj, ok := statePayload["backup"].(map[string]any)
+	if !ok {
+		t.Fatalf("state backup payload type=%T", statePayload["backup"])
+	}
+	if backupObj["last_upload_status"] != "ok" {
+		t.Fatalf("backup status=%v", backupObj["last_upload_status"])
+	}
+	if uploadedAt, _ := backupObj["last_uploaded_at"].(string); strings.TrimSpace(uploadedAt) == "" {
+		t.Fatalf("backup uploaded_at should not be empty")
 	}
 }
 
