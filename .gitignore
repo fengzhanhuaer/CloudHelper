@@ -14,3 +14,4 @@ probe_manager/data/*
 probe_manager/backup/*
 probe_manager/backend/backup/*
 probe_manager/backend/data/*
+probe_node/cover.out
