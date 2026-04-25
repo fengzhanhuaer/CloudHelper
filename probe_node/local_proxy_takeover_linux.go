@@ -167,3 +167,7 @@ func isProbeLocalLinuxRouteMissingErr(err error) bool {
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(text, "no such process") || strings.Contains(text, "no such file or directory")
 }
+
+func currentProbeLocalTUNDNSListenHost() string {
+	return ""
+}

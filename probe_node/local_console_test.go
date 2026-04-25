@@ -176,6 +176,16 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("dns/status without session status=%d", dnsStatusResp.Code)
 	}
 
+	dnsFakeIPListResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/list", nil)
+	if dnsFakeIPListResp.Code != http.StatusUnauthorized {
+		t.Fatalf("dns/fake_ip/list without session status=%d", dnsFakeIPListResp.Code)
+	}
+
+	dnsFakeIPLookupResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/lookup?ip=198.18.0.9", nil)
+	if dnsFakeIPLookupResp.Code != http.StatusUnauthorized {
+		t.Fatalf("dns/fake_ip/lookup without session status=%d", dnsFakeIPLookupResp.Code)
+	}
+
 	proxyStatusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/status", nil)
 	if proxyStatusResp.Code != http.StatusUnauthorized {
 		t.Fatalf("proxy/status without session status=%d", proxyStatusResp.Code)
@@ -256,11 +266,51 @@ func TestProbeLocalDNSStatusWithSession(t *testing.T) {
 	if _, ok := payload["enabled"].(bool); !ok {
 		t.Fatalf("dns/status enabled type=%T", payload["enabled"])
 	}
+	tunListener, ok := payload["tun_listener"].(map[string]any)
+	if !ok {
+		t.Fatalf("dns/status tun_listener type=%T", payload["tun_listener"])
+	}
+	if _, ok := tunListener["enabled"].(bool); !ok {
+		t.Fatalf("dns/status tun_listener.enabled type=%T", tunListener["enabled"])
+	}
+	if _, ok := payload["fake_ip_cidr"].(string); !ok {
+		t.Fatalf("dns/status fake_ip_cidr type=%T", payload["fake_ip_cidr"])
+	}
+	if _, ok := payload["fake_ip_entries"].([]any); !ok {
+		t.Fatalf("dns/status fake_ip_entries type=%T", payload["fake_ip_entries"])
+	}
+	if _, ok := payload["route_hint_count"].(float64); !ok {
+		t.Fatalf("dns/status route_hint_count type=%T", payload["route_hint_count"])
+	}
 	if ttl, ok := payload["cache_ttl_seconds"].(float64); !ok || int64(ttl) != int64(probeLocalDNSCacheTTL/time.Second) {
 		t.Fatalf("dns/status cache_ttl_seconds=%v", payload["cache_ttl_seconds"])
 	}
 	if records, ok := payload["cache_records"].([]any); !ok || len(records) != 0 {
 		t.Fatalf("dns/status cache_records=%v", payload["cache_records"])
+	}
+}
+
+func TestProbeLocalDNSFakeIPDebugAPIs(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	listResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/list", nil, sessionCookie)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("dns/fake_ip/list status=%d body=%s", listResp.Code, listResp.Body.String())
+	}
+	listPayload := decodeProbeLocalJSON(t, listResp)
+	if _, ok := listPayload["items"].([]any); !ok {
+		t.Fatalf("dns/fake_ip/list items type=%T", listPayload["items"])
+	}
+
+	missingIPResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/lookup", nil, sessionCookie)
+	if missingIPResp.Code != http.StatusBadRequest {
+		t.Fatalf("dns/fake_ip/lookup missing ip status=%d body=%s", missingIPResp.Code, missingIPResp.Body.String())
+	}
+
+	notFoundResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/lookup?ip=198.18.0.10", nil, sessionCookie)
+	if notFoundResp.Code != http.StatusNotFound {
+		t.Fatalf("dns/fake_ip/lookup not found status=%d body=%s", notFoundResp.Code, notFoundResp.Body.String())
 	}
 }
 

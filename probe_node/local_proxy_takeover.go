@@ -14,3 +14,7 @@ func applyProbeLocalProxyTakeover() error {
 func restoreProbeLocalProxyDirect() error {
 	return nil
 }
+
+func currentProbeLocalTUNDNSListenHost() string {
+	return ""
+}

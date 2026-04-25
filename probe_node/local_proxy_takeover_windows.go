@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -181,4 +182,17 @@ func isProbeLocalWindowsRouteMissingErr(err error) bool {
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(text, "route specified was not found") || strings.Contains(text, "找不到指定的路由")
+}
+
+func currentProbeLocalTUNDNSListenHost() string {
+	probeLocalWindowsTakeoverState.mu.Lock()
+	defer probeLocalWindowsTakeoverState.mu.Unlock()
+	if !probeLocalWindowsTakeoverState.enabled {
+		return ""
+	}
+	host := strings.TrimSpace(probeLocalWindowsTakeoverState.tunGateway)
+	if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
+		return ""
+	}
+	return host
 }

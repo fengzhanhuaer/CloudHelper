@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ const (
 	probeLocalDNSUpstreamTimeout = 5 * time.Second
 	probeLocalDNSDoHReadLimit    = 64 * 1024
 	probeLocalDNSCacheTTL        = 15 * 24 * time.Hour
+	probeLocalFakeIPDefaultCIDR  = "198.18.0.0/15"
 )
 
 type probeLocalDNSStatus struct {
@@ -56,15 +58,58 @@ type probeLocalDNSCacheEntry struct {
 	ExpiresAt time.Time
 }
 
+type probeLocalDNSRouteDecision struct {
+	Group        string
+	Action       string
+	TunnelNodeID string
+	UseTunnelDNS bool
+	Reject       bool
+}
+
+type probeLocalDNSFakeIPRuntimeEntry struct {
+	Domain    string
+	Decision  probeLocalDNSRouteDecision
+	ExpiresAt time.Time
+}
+
+type probeLocalDNSFakeIPEntry struct {
+	Domain       string `json:"domain"`
+	FakeIP       string `json:"fake_ip"`
+	Group        string `json:"group,omitempty"`
+	Action       string `json:"action,omitempty"`
+	TunnelNodeID string `json:"tunnel_node_id,omitempty"`
+	ExpiresAt    string `json:"expires_at"`
+}
+
+type probeLocalDNSRouteHintEntry struct {
+	Domain    string
+	Decision  probeLocalDNSRouteDecision
+	ExpiresAt time.Time
+}
+
 var probeLocalDNSState = struct {
-	mu      sync.Mutex
-	started bool
-	conn    net.PacketConn
-	status  probeLocalDNSStatus
-	cache   map[string]probeLocalDNSCacheEntry
+	mu             sync.Mutex
+	started        bool
+	conn           net.PacketConn
+	tunConn        net.PacketConn
+	status         probeLocalDNSStatus
+	tunStatus      probeLocalDNSStatus
+	cache          map[string]probeLocalDNSCacheEntry
+	fakeCIDR       string
+	fakeNetwork    *net.IPNet
+	fakeCursor     uint32
+	fakeDomainToIP map[string]string
+	fakeIPToEntry  map[string]probeLocalDNSFakeIPRuntimeEntry
+	routeHints     map[string]probeLocalDNSRouteHintEntry
 }{
-	cache: make(map[string]probeLocalDNSCacheEntry),
+	cache:          make(map[string]probeLocalDNSCacheEntry),
+	fakeDomainToIP: make(map[string]string),
+	fakeIPToEntry:  make(map[string]probeLocalDNSFakeIPRuntimeEntry),
+	routeHints:     make(map[string]probeLocalDNSRouteHintEntry),
 	status: probeLocalDNSStatus{
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	},
+	tunStatus: probeLocalDNSStatus{
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	},
 }
@@ -92,13 +137,32 @@ func defaultProbeLocalDoHProxyServers() []string {
 
 func ensureProbeLocalDNSServiceStarted() {
 	probeLocalDNSState.mu.Lock()
-	if probeLocalDNSState.started {
-		probeLocalDNSState.mu.Unlock()
-		return
+	alreadyStarted := probeLocalDNSState.started
+	if !alreadyStarted {
+		probeLocalDNSState.started = true
 	}
-	probeLocalDNSState.started = true
 	probeLocalDNSState.mu.Unlock()
 
+	if !alreadyStarted {
+		startProbeLocalDNSLoopbackListener()
+	}
+	reconcileProbeLocalDNSRuntime()
+}
+
+func reconcileProbeLocalDNSRuntime() {
+	if runtime.GOOS != "windows" {
+		stopProbeLocalDNSTUNListener()
+		return
+	}
+	host := strings.TrimSpace(currentProbeLocalTUNDNSListenHost())
+	if host == "" {
+		stopProbeLocalDNSTUNListener()
+		return
+	}
+	startProbeLocalDNSTUNListener(host)
+}
+
+func startProbeLocalDNSLoopbackListener() {
 	candidates := []struct {
 		port         int
 		fallbackUsed bool
@@ -148,6 +212,76 @@ func ensureProbeLocalDNSServiceStarted() {
 	}
 }
 
+func startProbeLocalDNSTUNListener(host string) {
+	cleanHost := strings.TrimSpace(host)
+	ip := net.ParseIP(cleanHost)
+	if ip == nil || ip.To4() == nil {
+		stopProbeLocalDNSTUNListener()
+		return
+	}
+	addr := net.JoinHostPort(cleanHost, strconv.Itoa(probeLocalDNSPrimaryPort))
+	probeLocalDNSState.mu.Lock()
+	if probeLocalDNSState.tunConn != nil && probeLocalDNSState.tunStatus.Enabled && strings.EqualFold(strings.TrimSpace(probeLocalDNSState.tunStatus.ListenAddr), addr) {
+		probeLocalDNSState.mu.Unlock()
+		return
+	}
+	oldConn := probeLocalDNSState.tunConn
+	probeLocalDNSState.tunConn = nil
+	probeLocalDNSState.tunStatus = probeLocalDNSStatus{
+		Enabled:      false,
+		ListenAddr:   addr,
+		Port:         probeLocalDNSPrimaryPort,
+		FallbackUsed: false,
+		LastError:    "",
+		UpdatedAt:    probeLocalDNSNow().UTC().Format(time.RFC3339),
+	}
+	probeLocalDNSState.mu.Unlock()
+	if oldConn != nil {
+		_ = oldConn.Close()
+	}
+	conn, err := probeLocalDNSListenPacket("udp", addr)
+	if err != nil {
+		probeLocalDNSState.mu.Lock()
+		probeLocalDNSState.tunStatus.Enabled = false
+		probeLocalDNSState.tunStatus.LastError = strings.TrimSpace(errorString(err))
+		probeLocalDNSState.tunStatus.UpdatedAt = probeLocalDNSNow().UTC().Format(time.RFC3339)
+		probeLocalDNSState.mu.Unlock()
+		logProbeWarnf("probe local dns tun listener startup failed: %v", err)
+		return
+	}
+	probeLocalDNSState.mu.Lock()
+	probeLocalDNSState.tunConn = conn
+	probeLocalDNSState.tunStatus = probeLocalDNSStatus{
+		Enabled:      true,
+		ListenAddr:   addr,
+		Port:         probeLocalDNSPrimaryPort,
+		FallbackUsed: false,
+		LastError:    "",
+		UpdatedAt:    probeLocalDNSNow().UTC().Format(time.RFC3339),
+	}
+	probeLocalDNSState.mu.Unlock()
+	logProbeInfof("probe local dns tun listener enabled: listen=%s", addr)
+	go serveProbeLocalDNS(conn)
+}
+
+func stopProbeLocalDNSTUNListener() {
+	probeLocalDNSState.mu.Lock()
+	conn := probeLocalDNSState.tunConn
+	probeLocalDNSState.tunConn = nil
+	probeLocalDNSState.tunStatus = probeLocalDNSStatus{
+		Enabled:      false,
+		ListenAddr:   "",
+		Port:         0,
+		FallbackUsed: false,
+		LastError:    "",
+		UpdatedAt:    probeLocalDNSNow().UTC().Format(time.RFC3339),
+	}
+	probeLocalDNSState.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
 func serveProbeLocalDNS(conn net.PacketConn) {
 	if conn == nil {
 		return
@@ -188,8 +322,17 @@ func handleProbeLocalDNSPacket(conn net.PacketConn, remoteAddr net.Addr, packet 
 }
 
 func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, error) {
-	domain := parseProbeLocalDNSQueryDomain(packet)
-	candidates := currentProbeLocalDNSUpstreamCandidates()
+	domain, qType := parseProbeLocalDNSQueryDomainAndType(packet)
+	decision := resolveProbeLocalDNSRouteDecision(domain)
+	if decision.Reject {
+		return buildProbeLocalDNSRefused(packet), domain, nil, nil
+	}
+	if shouldUseProbeLocalDNSFakeIP(domain, qType, decision) {
+		if fakeIP, ok := allocateProbeLocalDNSFakeIP(domain, decision); ok {
+			return buildProbeLocalDNSSuccessA(packet, fakeIP), domain, []string{fakeIP}, nil
+		}
+	}
+	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(decision)
 	if len(candidates) == 0 {
 		return nil, domain, nil, errors.New("dns upstream list is empty")
 	}
@@ -224,7 +367,7 @@ func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, erro
 	return nil, domain, nil, lastErr
 }
 
-func currentProbeLocalDNSUpstreamCandidates() []probeLocalDNSUpstreamCandidate {
+func currentProbeLocalDNSUpstreamCandidatesForDecision(decision probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
 	cfg, err := loadProbeLocalProxyGroupFile()
 	if err != nil {
 		logProbeWarnf("load proxy_group for dns upstream failed, use defaults: %v", err)
@@ -261,6 +404,12 @@ func currentProbeLocalDNSUpstreamCandidates() []probeLocalDNSUpstreamCandidate {
 		}
 	}
 
+	if decision.UseTunnelDNS {
+		appendDoH(cfg.TUN.DoHServers)
+		if len(candidates) > 0 {
+			return candidates
+		}
+	}
 	appendDoH(cfg.DoHProxyServers)
 	appendDoH(cfg.DoHServers)
 	appendHostPort("dot", cfg.DoTServers, "853")
@@ -360,17 +509,17 @@ func queryProbeLocalDNSViaPlain(address string, packet []byte) ([]byte, error) {
 	return append([]byte(nil), response[:n]...), nil
 }
 
-func parseProbeLocalDNSQueryDomain(packet []byte) string {
+func parseProbeLocalDNSQueryDomainAndType(packet []byte) (string, dnsmessage.Type) {
 	parser := dnsmessage.Parser{}
 	if _, err := parser.Start(packet); err != nil {
-		return ""
+		return "", dnsmessage.TypeA
 	}
 	question, err := parser.Question()
 	if err != nil {
-		return ""
+		return "", dnsmessage.TypeA
 	}
 	name := strings.TrimSpace(strings.TrimSuffix(strings.ToLower(question.Name.String()), "."))
-	return name
+	return name, question.Type
 }
 
 func extractProbeLocalDNSResponseIPs(packet []byte) ([]string, error) {
@@ -434,7 +583,15 @@ func extractProbeLocalDNSResponseIPs(packet []byte) ([]string, error) {
 	return ips, nil
 }
 
+func buildProbeLocalDNSRefused(request []byte) []byte {
+	return buildProbeLocalDNSResponseWithRCode(request, dnsmessage.RCodeRefused)
+}
+
 func buildProbeLocalDNSServfail(request []byte) []byte {
+	return buildProbeLocalDNSResponseWithRCode(request, dnsmessage.RCodeServerFailure)
+}
+
+func buildProbeLocalDNSResponseWithRCode(request []byte, rcode dnsmessage.RCode) []byte {
 	parser := dnsmessage.Parser{}
 	requestHeader, err := parser.Start(request)
 	if err != nil {
@@ -457,7 +614,7 @@ func buildProbeLocalDNSServfail(request []byte) []byte {
 		OpCode:             requestHeader.OpCode,
 		RecursionDesired:   requestHeader.RecursionDesired,
 		RecursionAvailable: true,
-		RCode:              dnsmessage.RCodeServerFailure,
+		RCode:              rcode,
 	}
 	builder := dnsmessage.NewBuilder(nil, responseHeader)
 	builder.EnableCompression()
@@ -468,6 +625,73 @@ func buildProbeLocalDNSServfail(request []byte) []byte {
 		if err := builder.Question(question); err != nil {
 			return nil
 		}
+	}
+	message, err := builder.Finish()
+	if err != nil {
+		return nil
+	}
+	return message
+}
+
+func buildProbeLocalDNSSuccessA(request []byte, ip string) []byte {
+	parser := dnsmessage.Parser{}
+	requestHeader, err := parser.Start(request)
+	if err != nil {
+		return nil
+	}
+	questions := make([]dnsmessage.Question, 0, 1)
+	var firstA *dnsmessage.Question
+	for {
+		question, qErr := parser.Question()
+		if qErr != nil {
+			if errors.Is(qErr, dnsmessage.ErrSectionDone) {
+				break
+			}
+			return nil
+		}
+		questions = append(questions, question)
+		if firstA == nil && question.Type == dnsmessage.TypeA {
+			qCopy := question
+			firstA = &qCopy
+		}
+	}
+	if firstA == nil {
+		return nil
+	}
+	parsedIP := net.ParseIP(strings.TrimSpace(ip))
+	if parsedIP == nil || parsedIP.To4() == nil {
+		return nil
+	}
+	responseHeader := dnsmessage.Header{
+		ID:                 requestHeader.ID,
+		Response:           true,
+		OpCode:             requestHeader.OpCode,
+		RecursionDesired:   requestHeader.RecursionDesired,
+		RecursionAvailable: true,
+		RCode:              dnsmessage.RCodeSuccess,
+	}
+	builder := dnsmessage.NewBuilder(nil, responseHeader)
+	builder.EnableCompression()
+	if err := builder.StartQuestions(); err != nil {
+		return nil
+	}
+	for _, question := range questions {
+		if err := builder.Question(question); err != nil {
+			return nil
+		}
+	}
+	if err := builder.StartAnswers(); err != nil {
+		return nil
+	}
+	var a dnsmessage.AResource
+	copy(a.A[:], parsedIP.To4())
+	if err := builder.AResource(dnsmessage.ResourceHeader{
+		Name:  firstA.Name,
+		Type:  dnsmessage.TypeA,
+		Class: dnsmessage.ClassINET,
+		TTL:   uint32(probeLocalDNSCacheTTL / time.Second),
+	}, a); err != nil {
+		return nil
 	}
 	message, err := builder.Finish()
 	if err != nil {
@@ -588,6 +812,321 @@ func normalizeProbeLocalDoHURLList(items []string, fallback []string) []string {
 	return out
 }
 
+func resolveProbeLocalDNSRouteDecision(domain string) probeLocalDNSRouteDecision {
+	decision := probeLocalDNSRouteDecision{Group: "fallback", Action: "direct"}
+	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
+	if cleanDomain == "" {
+		return decision
+	}
+	groupFile, err := loadProbeLocalProxyGroupFile()
+	if err != nil {
+		return decision
+	}
+	stateFile, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		return decision
+	}
+	matchGroup := "fallback"
+	for _, item := range groupFile.Groups {
+		groupName := strings.TrimSpace(item.Group)
+		if groupName == "" {
+			continue
+		}
+		if probeLocalDNSDomainMatchesRules(cleanDomain, item.RulesText) {
+			matchGroup = groupName
+			break
+		}
+	}
+	decision.Group = matchGroup
+	for _, entry := range stateFile.Groups {
+		if !strings.EqualFold(strings.TrimSpace(entry.Group), matchGroup) {
+			continue
+		}
+		action := strings.ToLower(strings.TrimSpace(entry.Action))
+		switch action {
+		case "reject":
+			decision.Action = "reject"
+			decision.Reject = true
+		case "tunnel":
+			decision.Action = "tunnel"
+			decision.UseTunnelDNS = true
+			decision.TunnelNodeID = strings.TrimSpace(entry.TunnelNodeID)
+		default:
+			decision.Action = "direct"
+		}
+		break
+	}
+	return decision
+}
+
+func probeLocalDNSDomainMatchesRules(domain string, rulesText string) bool {
+	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
+	if cleanDomain == "" {
+		return false
+	}
+	lines := strings.Split(strings.ReplaceAll(rulesText, "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.ToLower(strings.TrimSpace(parts[1]))
+		if value == "" {
+			continue
+		}
+		switch key {
+		case "domain_suffix":
+			if cleanDomain == value || strings.HasSuffix(cleanDomain, "."+value) {
+				return true
+			}
+		case "domain_keyword":
+			if strings.Contains(cleanDomain, value) {
+				return true
+			}
+		case "domain_prefix":
+			if strings.HasPrefix(cleanDomain, value) {
+				return true
+			}
+		case "domain":
+			if cleanDomain == value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func shouldUseProbeLocalDNSFakeIP(domain string, qType dnsmessage.Type, decision probeLocalDNSRouteDecision) bool {
+	if qType != dnsmessage.TypeA {
+		return false
+	}
+	if decision.Reject {
+		return false
+	}
+	if !decision.UseTunnelDNS {
+		return false
+	}
+	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
+	if cleanDomain == "" {
+		return false
+	}
+	cfg, err := loadProbeLocalProxyGroupFile()
+	if err != nil {
+		cfg = defaultProbeLocalProxyGroupFile()
+	}
+	for _, bypass := range cfg.FakeIPWhitelist {
+		item := strings.TrimSpace(strings.ToLower(strings.Trim(bypass, ".")))
+		if item == "" {
+			continue
+		}
+		if cleanDomain == item || strings.HasSuffix(cleanDomain, "."+item) {
+			return false
+		}
+	}
+	return true
+}
+
+func allocateProbeLocalDNSFakeIP(domain string, decision probeLocalDNSRouteDecision) (string, bool) {
+	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
+	if cleanDomain == "" {
+		return "", false
+	}
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	ensureProbeLocalDNSFakePoolLocked()
+	pruneProbeLocalDNSFakeEntriesLocked(now)
+	if probeLocalDNSState.fakeNetwork == nil {
+		return "", false
+	}
+	if existingIP, exists := probeLocalDNSState.fakeDomainToIP[cleanDomain]; exists {
+		if entry, ok := probeLocalDNSState.fakeIPToEntry[existingIP]; ok {
+			entry.Decision = decision
+			entry.ExpiresAt = now.Add(probeLocalDNSCacheTTL)
+			probeLocalDNSState.fakeIPToEntry[existingIP] = entry
+			storeProbeLocalDNSRouteHintLocked(cleanDomain, decision, now)
+			return existingIP, true
+		}
+		delete(probeLocalDNSState.fakeDomainToIP, cleanDomain)
+	}
+	ip := nextProbeLocalDNSFakeIPLocked(now)
+	if ip == "" {
+		return "", false
+	}
+	probeLocalDNSState.fakeDomainToIP[cleanDomain] = ip
+	probeLocalDNSState.fakeIPToEntry[ip] = probeLocalDNSFakeIPRuntimeEntry{
+		Domain:    cleanDomain,
+		Decision:  decision,
+		ExpiresAt: now.Add(probeLocalDNSCacheTTL),
+	}
+	storeProbeLocalDNSRouteHintLocked(cleanDomain, decision, now)
+	return ip, true
+}
+
+func ensureProbeLocalDNSFakePoolLocked() {
+	cfg, err := loadProbeLocalProxyGroupFile()
+	if err != nil {
+		cfg = defaultProbeLocalProxyGroupFile()
+	}
+	cidr := strings.TrimSpace(cfg.FakeIPCIDR)
+	if cidr == "" {
+		cidr = probeLocalFakeIPDefaultCIDR
+	}
+	if strings.EqualFold(cidr, probeLocalDNSState.fakeCIDR) && probeLocalDNSState.fakeNetwork != nil {
+		return
+	}
+	probeLocalDNSState.fakeCIDR = cidr
+	probeLocalDNSState.fakeCursor = 0
+	probeLocalDNSState.fakeDomainToIP = make(map[string]string)
+	probeLocalDNSState.fakeIPToEntry = make(map[string]probeLocalDNSFakeIPRuntimeEntry)
+	_, network, parseErr := net.ParseCIDR(cidr)
+	if parseErr != nil || network == nil || network.IP.To4() == nil {
+		probeLocalDNSState.fakeNetwork = nil
+		return
+	}
+	probeLocalDNSState.fakeNetwork = network
+}
+
+func pruneProbeLocalDNSFakeEntriesLocked(now time.Time) {
+	for ip, entry := range probeLocalDNSState.fakeIPToEntry {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			delete(probeLocalDNSState.fakeIPToEntry, ip)
+			if probeLocalDNSState.fakeDomainToIP[entry.Domain] == ip {
+				delete(probeLocalDNSState.fakeDomainToIP, entry.Domain)
+			}
+		}
+	}
+	for domain, ip := range probeLocalDNSState.fakeDomainToIP {
+		if _, ok := probeLocalDNSState.fakeIPToEntry[ip]; !ok {
+			delete(probeLocalDNSState.fakeDomainToIP, domain)
+		}
+	}
+	for domain, entry := range probeLocalDNSState.routeHints {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			delete(probeLocalDNSState.routeHints, domain)
+		}
+	}
+}
+
+func nextProbeLocalDNSFakeIPLocked(now time.Time) string {
+	if probeLocalDNSState.fakeNetwork == nil {
+		return ""
+	}
+	networkIP := probeLocalDNSState.fakeNetwork.IP.To4()
+	if networkIP == nil {
+		return ""
+	}
+	ones, bits := probeLocalDNSState.fakeNetwork.Mask.Size()
+	if bits != 32 || ones >= 31 {
+		return ""
+	}
+	hostBits := uint32(bits - ones)
+	size := (uint32(1) << hostBits) - 2
+	if size == 0 {
+		return ""
+	}
+	baseU32 := binary.BigEndian.Uint32(networkIP)
+	reserved := strings.TrimSpace(currentProbeLocalTUNDNSListenHost())
+	for i := uint32(0); i < size; i++ {
+		probeLocalDNSState.fakeCursor = (probeLocalDNSState.fakeCursor % size) + 1
+		candidate := baseU32 + probeLocalDNSState.fakeCursor
+		candidateBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(candidateBytes, candidate)
+		candidateIP := net.IP(candidateBytes).String()
+		if candidateIP == "" {
+			continue
+		}
+		if candidateIP == reserved {
+			continue
+		}
+		if existing, ok := probeLocalDNSState.fakeIPToEntry[candidateIP]; ok {
+			if !existing.ExpiresAt.IsZero() && now.Before(existing.ExpiresAt) {
+				continue
+			}
+			delete(probeLocalDNSState.fakeIPToEntry, candidateIP)
+			if probeLocalDNSState.fakeDomainToIP[existing.Domain] == candidateIP {
+				delete(probeLocalDNSState.fakeDomainToIP, existing.Domain)
+			}
+		}
+		return candidateIP
+	}
+	return ""
+}
+
+func storeProbeLocalDNSRouteHintLocked(domain string, decision probeLocalDNSRouteDecision, now time.Time) {
+	if probeLocalDNSState.routeHints == nil {
+		probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
+	}
+	probeLocalDNSState.routeHints[domain] = probeLocalDNSRouteHintEntry{
+		Domain:    domain,
+		Decision:  decision,
+		ExpiresAt: now.Add(probeLocalDNSCacheTTL),
+	}
+}
+
+func queryProbeLocalDNSFakeIPEntries() []probeLocalDNSFakeIPEntry {
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	pruneProbeLocalDNSFakeEntriesLocked(now)
+	out := make([]probeLocalDNSFakeIPEntry, 0, len(probeLocalDNSState.fakeIPToEntry))
+	for ip, entry := range probeLocalDNSState.fakeIPToEntry {
+		out = append(out, probeLocalDNSFakeIPEntry{
+			Domain:       entry.Domain,
+			FakeIP:       ip,
+			Group:        entry.Decision.Group,
+			Action:       entry.Decision.Action,
+			TunnelNodeID: entry.Decision.TunnelNodeID,
+			ExpiresAt:    entry.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Domain < out[j].Domain })
+	return out
+}
+
+func lookupProbeLocalDNSFakeIPEntry(ip string) (probeLocalDNSFakeIPEntry, bool) {
+	cleanIP := strings.TrimSpace(ip)
+	if net.ParseIP(cleanIP) == nil {
+		return probeLocalDNSFakeIPEntry{}, false
+	}
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	pruneProbeLocalDNSFakeEntriesLocked(now)
+	entry, ok := probeLocalDNSState.fakeIPToEntry[cleanIP]
+	if !ok {
+		return probeLocalDNSFakeIPEntry{}, false
+	}
+	return probeLocalDNSFakeIPEntry{
+		Domain:       entry.Domain,
+		FakeIP:       cleanIP,
+		Group:        entry.Decision.Group,
+		Action:       entry.Decision.Action,
+		TunnelNodeID: entry.Decision.TunnelNodeID,
+		ExpiresAt:    entry.ExpiresAt.UTC().Format(time.RFC3339),
+	}, true
+}
+
+func probeLocalDNSRouteHintCount() int {
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	pruneProbeLocalDNSFakeEntriesLocked(now)
+	return len(probeLocalDNSState.routeHints)
+}
+
+func currentProbeLocalDNSFakeIPCIDR() string {
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	ensureProbeLocalDNSFakePoolLocked()
+	return strings.TrimSpace(probeLocalDNSState.fakeCIDR)
+}
+
 func storeProbeLocalDNSCacheRecords(urlText string, ips []string) {
 	cleanURL := strings.TrimSpace(strings.ToLower(urlText))
 	if cleanURL == "" || len(ips) == 0 {
@@ -661,7 +1200,21 @@ func updateProbeLocalDNSStatusError(err error) {
 	probeLocalDNSState.mu.Lock()
 	probeLocalDNSState.status.LastError = strings.TrimSpace(err.Error())
 	probeLocalDNSState.status.UpdatedAt = probeLocalDNSNow().UTC().Format(time.RFC3339)
+	if probeLocalDNSState.tunStatus.Enabled {
+		probeLocalDNSState.tunStatus.LastError = strings.TrimSpace(err.Error())
+		probeLocalDNSState.tunStatus.UpdatedAt = probeLocalDNSNow().UTC().Format(time.RFC3339)
+	}
 	probeLocalDNSState.mu.Unlock()
+}
+
+func currentProbeLocalDNSTUNStatus() probeLocalDNSStatus {
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	status := probeLocalDNSState.tunStatus
+	if strings.TrimSpace(status.UpdatedAt) == "" {
+		status.UpdatedAt = probeLocalDNSNow().UTC().Format(time.RFC3339)
+	}
+	return status
 }
 
 func isProbeLocalDNSClosedErr(err error) bool {
@@ -692,10 +1245,21 @@ func resetProbeLocalDNSServiceForTest() {
 	if probeLocalDNSState.conn != nil {
 		_ = probeLocalDNSState.conn.Close()
 	}
+	if probeLocalDNSState.tunConn != nil {
+		_ = probeLocalDNSState.tunConn.Close()
+	}
 	probeLocalDNSState.conn = nil
+	probeLocalDNSState.tunConn = nil
 	probeLocalDNSState.started = false
 	probeLocalDNSState.cache = make(map[string]probeLocalDNSCacheEntry)
+	probeLocalDNSState.fakeCIDR = ""
+	probeLocalDNSState.fakeNetwork = nil
+	probeLocalDNSState.fakeCursor = 0
+	probeLocalDNSState.fakeDomainToIP = make(map[string]string)
+	probeLocalDNSState.fakeIPToEntry = make(map[string]probeLocalDNSFakeIPRuntimeEntry)
+	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
 	probeLocalDNSState.status = probeLocalDNSStatus{UpdatedAt: probeLocalDNSNow().UTC().Format(time.RFC3339)}
+	probeLocalDNSState.tunStatus = probeLocalDNSStatus{UpdatedAt: probeLocalDNSNow().UTC().Format(time.RFC3339)}
 	probeLocalDNSState.mu.Unlock()
 	resetProbeLocalDNSHooksForTest()
 }

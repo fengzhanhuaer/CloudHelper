@@ -85,6 +85,10 @@
         <div>监听地址</div><div id="dnsListenAddr">-</div>
         <div>监听端口</div><div id="dnsPort">-</div>
         <div>端口回退</div><div id="dnsFallbackUsed">-</div>
+        <div>TUN DNS 监听</div><div id="dnsTunListener">-</div>
+        <div>Fake IP 网段</div><div id="dnsFakeIPCIDR">-</div>
+        <div>Fake IP 记录数</div><div id="dnsFakeIPRecords">-</div>
+        <div>路由提示数</div><div id="dnsRouteHintCount">-</div>
         <div>缓存 TTL（秒）</div><div id="dnsCacheTTL">-</div>
         <div>缓存记录数</div><div id="dnsCacheRecords">-</div>
         <div>最后更新时间</div><div id="dnsUpdatedAt">-</div>
@@ -350,11 +354,19 @@
     async function loadDNSStatus() {
       const data = await requestJSON('/local/api/dns/status', { method: 'GET' });
       const cacheRecords = Array.isArray(data.cache_records) ? data.cache_records : [];
+      const fakeIPEntries = Array.isArray(data.fake_ip_entries) ? data.fake_ip_entries : [];
       const ttlSeconds = Number.isFinite(Number(data.cache_ttl_seconds)) ? Number(data.cache_ttl_seconds) : 0;
+      const routeHintCount = Number.isFinite(Number(data.route_hint_count)) ? Number(data.route_hint_count) : 0;
+      const tunListener = (data.tun_listener && typeof data.tun_listener === 'object') ? data.tun_listener : {};
+      const tunListenerText = tunListener.enabled ? (tunListener.listen_addr || '已启用') : '未启用';
       setText('dnsEnabled', data.enabled ? '是' : '否');
       setText('dnsListenAddr', data.listen_addr);
       setText('dnsPort', data.port);
       setText('dnsFallbackUsed', data.fallback_used ? '是' : '否');
+      setText('dnsTunListener', tunListenerText);
+      setText('dnsFakeIPCIDR', data.fake_ip_cidr);
+      setText('dnsFakeIPRecords', fakeIPEntries.length);
+      setText('dnsRouteHintCount', String(Math.trunc(routeHintCount)));
       setText('dnsCacheTTL', ttlSeconds > 0 ? String(Math.trunc(ttlSeconds)) : '-');
       setText('dnsCacheRecords', cacheRecords.length);
       setText('dnsUpdatedAt', data.updated_at);

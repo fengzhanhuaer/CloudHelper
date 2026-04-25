@@ -102,14 +102,21 @@ type probeLocalProxyGroupEntry struct {
 	RulesText string `json:"rules_text"`
 }
 
+type probeLocalProxyGroupTUNConfig struct {
+	DoHServers []string `json:"doh_servers,omitempty"`
+}
+
 type probeLocalProxyGroupFile struct {
-	Version         int                         `json:"version"`
-	DNSServers      []string                    `json:"dns_servers,omitempty"`
-	DoTServers      []string                    `json:"dot_servers,omitempty"`
-	DoHServers      []string                    `json:"doh_servers,omitempty"`
-	DoHProxyServers []string                    `json:"doh_proxy_servers,omitempty"`
-	Groups          []probeLocalProxyGroupEntry `json:"groups"`
-	Note            string                      `json:"note,omitempty"`
+	Version         int                           `json:"version"`
+	DNSServers      []string                      `json:"dns_servers,omitempty"`
+	DoTServers      []string                      `json:"dot_servers,omitempty"`
+	DoHServers      []string                      `json:"doh_servers,omitempty"`
+	DoHProxyServers []string                      `json:"doh_proxy_servers,omitempty"`
+	FakeIPCIDR      string                        `json:"fake_ip_cidr,omitempty"`
+	FakeIPWhitelist []string                      `json:"fake_ip_whitelist,omitempty"`
+	TUN             probeLocalProxyGroupTUNConfig `json:"tun,omitempty"`
+	Groups          []probeLocalProxyGroupEntry   `json:"groups"`
+	Note            string                        `json:"note,omitempty"`
 }
 
 type probeLocalProxyStateGroupEntry struct {
@@ -228,6 +235,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 	m.proxy.Mode = probeLocalProxyModeTUN
 	m.proxy.LastError = ""
 	m.proxy.UpdatedAt = now
+	reconcileProbeLocalDNSRuntime()
 	return m.tun, m.proxy, nil
 }
 
@@ -252,6 +260,7 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	m.proxy.Mode = probeLocalProxyModeDirect
 	m.proxy.LastError = ""
 	m.proxy.UpdatedAt = now
+	reconcileProbeLocalDNSRuntime()
 	return m.tun, m.proxy, nil
 }
 
@@ -548,6 +557,11 @@ func defaultProbeLocalProxyGroupFile() probeLocalProxyGroupFile {
 		DoTServers:      append([]string(nil), defaultProbeLocalDoTServers()...),
 		DoHServers:      append([]string(nil), defaultProbeLocalDoHServers()...),
 		DoHProxyServers: append([]string(nil), defaultProbeLocalDoHProxyServers()...),
+		FakeIPCIDR:      "198.18.0.0/15",
+		FakeIPWhitelist: []string{},
+		TUN: probeLocalProxyGroupTUNConfig{
+			DoHServers: append([]string(nil), defaultProbeLocalDoHProxyServers()...),
+		},
 		Groups: []probeLocalProxyGroupEntry{
 			{Group: "default", RulesText: ""},
 		},
@@ -627,9 +641,59 @@ func normalizeProbeLocalProxyGroupDNSConfig(payload *probeLocalProxyGroupFile) {
 	payload.DoTServers = normalizeProbeLocalDNSHostPortList(payload.DoTServers, "853", defaultProbeLocalDoTServers())
 	payload.DoHServers = normalizeProbeLocalDoHURLList(payload.DoHServers, defaultProbeLocalDoHServers())
 	payload.DoHProxyServers = normalizeProbeLocalDoHURLList(payload.DoHProxyServers, defaultProbeLocalDoHProxyServers())
+	payload.FakeIPCIDR = strings.TrimSpace(payload.FakeIPCIDR)
+	if payload.FakeIPCIDR == "" {
+		payload.FakeIPCIDR = "198.18.0.0/15"
+	}
+	payload.FakeIPWhitelist = normalizeProbeLocalDomainList(payload.FakeIPWhitelist)
+	payload.TUN.DoHServers = normalizeProbeLocalDoHURLList(payload.TUN.DoHServers, payload.DoHProxyServers)
+}
+
+func normalizeProbeLocalDomainList(items []string) []string {
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		value := strings.TrimSpace(strings.ToLower(strings.Trim(item, ".")))
+		if value == "" {
+			continue
+		}
+		if strings.Contains(value, " ") {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func validateProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
+	payload.FakeIPCIDR = strings.TrimSpace(payload.FakeIPCIDR)
+	if payload.FakeIPCIDR != "" && payload.FakeIPCIDR != "0.0.0.0/0" {
+		ipValue, ipnet, err := net.ParseCIDR(payload.FakeIPCIDR)
+		if err != nil || ipValue == nil || ipnet == nil || ipValue.To4() == nil {
+			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "fake_ip_cidr is invalid"}
+		}
+	}
+	for i, item := range payload.FakeIPWhitelist {
+		value := strings.TrimSpace(strings.ToLower(strings.Trim(item, ".")))
+		if value == "" {
+			continue
+		}
+		if strings.Contains(value, " ") {
+			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("fake_ip_whitelist[%d] is invalid", i)}
+		}
+	}
+	for i, item := range payload.TUN.DoHServers {
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		if _, ok := normalizeProbeLocalDoHURL(item); !ok {
+			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("tun.doh_servers[%d] is invalid", i)}
+		}
+	}
 	for i, item := range payload.DNSServers {
 		if strings.TrimSpace(item) == "" {
 			continue
@@ -730,6 +794,7 @@ func loadProbeLocalProxyGroupFile() (probeLocalProxyGroupFile, error) {
 	for i := range payload.Groups {
 		payload.Groups[i].Group = strings.TrimSpace(payload.Groups[i].Group)
 	}
+	normalizeProbeLocalProxyGroupDNSConfig(&payload)
 	payload.Note = firstNonEmpty(strings.TrimSpace(payload.Note), "fallback is built in")
 	if err := validateProbeLocalProxyGroupFile(payload); err != nil {
 		return probeLocalProxyGroupFile{}, err
@@ -741,6 +806,7 @@ func persistProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
 	if payload.Version <= 0 {
 		payload.Version = 1
 	}
+	normalizeProbeLocalProxyGroupDNSConfig(&payload)
 	payload.Note = firstNonEmpty(strings.TrimSpace(payload.Note), "fallback is built in")
 	if err := validateProbeLocalProxyGroupFile(payload); err != nil {
 		return err
@@ -1235,6 +1301,8 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/hosts", probeLocalProxyHostsHandler)
 	mux.HandleFunc("/local/api/proxy/hosts/save", probeLocalProxyHostsSaveHandler)
 	mux.HandleFunc("/local/api/dns/status", probeLocalDNSStatusHandler)
+	mux.HandleFunc("/local/api/dns/fake_ip/list", probeLocalDNSFakeIPListHandler)
+	mux.HandleFunc("/local/api/dns/fake_ip/lookup", probeLocalDNSFakeIPLookupHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
 }
@@ -1455,16 +1523,61 @@ func probeLocalDNSStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := currentProbeLocalDNSStatus()
+	tunStatus := currentProbeLocalDNSTUNStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":           status.Enabled,
-		"listen_addr":       status.ListenAddr,
-		"port":              status.Port,
-		"fallback_used":     status.FallbackUsed,
-		"last_error":        status.LastError,
-		"updated_at":        status.UpdatedAt,
+		"enabled":       status.Enabled,
+		"listen_addr":   status.ListenAddr,
+		"port":          status.Port,
+		"fallback_used": status.FallbackUsed,
+		"last_error":    status.LastError,
+		"updated_at":    status.UpdatedAt,
+		"tun_listener": map[string]any{
+			"enabled":     tunStatus.Enabled,
+			"listen_addr": tunStatus.ListenAddr,
+			"port":        tunStatus.Port,
+			"last_error":  tunStatus.LastError,
+			"updated_at":  tunStatus.UpdatedAt,
+		},
+		"fake_ip_cidr":      currentProbeLocalDNSFakeIPCIDR(),
+		"fake_ip_entries":   queryProbeLocalDNSFakeIPEntries(),
+		"route_hint_count":  probeLocalDNSRouteHintCount(),
 		"cache_ttl_seconds": int64(probeLocalDNSCacheTTL / time.Second),
 		"cache_records":     queryProbeLocalDNSCacheRecords(),
 	})
+}
+
+func probeLocalDNSFakeIPListHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": queryProbeLocalDNSFakeIPEntries(),
+	})
+}
+
+func probeLocalDNSFakeIPLookupHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	ipText := strings.TrimSpace(r.URL.Query().Get("ip"))
+	if ipText == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ip is required"})
+		return
+	}
+	item, ok := lookupProbeLocalDNSFakeIPEntry(ipText)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "fake ip not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": item})
 }
 
 func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {
@@ -1660,6 +1773,7 @@ func probeLocalProxyGroupsSaveHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, err)
 		return
 	}
+	normalizeProbeLocalProxyGroupDNSConfig(&payload)
 	payload.Note = firstNonEmpty(strings.TrimSpace(payload.Note), "fallback is built in")
 	if payload.Version <= 0 {
 		payload.Version = 1

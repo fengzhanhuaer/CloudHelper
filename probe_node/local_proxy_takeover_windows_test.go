@@ -133,3 +133,27 @@ func hasWindowsRouteCommand(calls []string, verb string, prefix string) bool {
 	}
 	return false
 }
+
+func TestCurrentProbeLocalTUNDNSListenHost(t *testing.T) {
+	resetProbeLocalWindowsTakeoverStateForTest()
+	t.Cleanup(resetProbeLocalWindowsTakeoverStateForTest)
+
+	if got := currentProbeLocalTUNDNSListenHost(); got != "" {
+		t.Fatalf("expected empty host when disabled, got=%q", got)
+	}
+
+	probeLocalWindowsTakeoverState.mu.Lock()
+	probeLocalWindowsTakeoverState.enabled = true
+	probeLocalWindowsTakeoverState.tunGateway = "198.18.0.1"
+	probeLocalWindowsTakeoverState.mu.Unlock()
+	if got := currentProbeLocalTUNDNSListenHost(); got != "198.18.0.1" {
+		t.Fatalf("host=%q", got)
+	}
+
+	probeLocalWindowsTakeoverState.mu.Lock()
+	probeLocalWindowsTakeoverState.tunGateway = "bad-ip"
+	probeLocalWindowsTakeoverState.mu.Unlock()
+	if got := currentProbeLocalTUNDNSListenHost(); got != "" {
+		t.Fatalf("expected empty host for invalid ip, got=%q", got)
+	}
+}
