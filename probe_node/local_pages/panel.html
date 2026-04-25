@@ -38,16 +38,10 @@
     <h1>Probe Node 本地控制台</h1>
     <p class="hint">当前页面用于本地 TUN 驱动准备与代理接管切换。</p>
 
-    <section class="card">
-      <div class="actions">
-        <button id="refreshAllBtn" class="secondary">刷新全部状态</button>
-        <button id="logoutBtn" class="warn">退出登录</button>
-      </div>
-    </section>
-
     <div class="tabs">
       <button id="tabProxy" class="tab-btn active" data-target="panelProxy">代理状态</button>
       <button id="tabTun" class="tab-btn" data-target="panelTun">TUN 状态</button>
+      <button id="tabSystem" class="tab-btn" data-target="panelSystem">系统设置</button>
     </div>
 
     <section id="panelProxy" class="card tab-panel active">
@@ -81,6 +75,20 @@
         <button id="tunInstallBtn">安装/检查 TUN</button>
         <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
       </div>
+    </section>
+
+    <section id="panelSystem" class="card tab-panel">
+      <strong>系统设置</strong>
+      <div class="kv" style="grid-template-columns: 170px minmax(0, 1fr); align-items: center;">
+        <div>发布仓库</div>
+        <div><input id="upgradeRepoInput" type="text" value="fengzhanhuaer/CloudHelper" style="width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;" /></div>
+      </div>
+      <div class="actions">
+        <button id="upgradeDirectBtn">直连升级</button>
+        <button id="upgradeProxyBtn" class="secondary">代理升级</button>
+        <button id="logoutBtn" class="warn">退出登录</button>
+      </div>
+      <p class="hint">直连升级将直接访问 GitHub，代理升级将通过 controller `/api/probe/proxy/*` 中转。</p>
     </section>
 
     <p id="message" class="msg"></p>
@@ -353,6 +361,32 @@
       btn.addEventListener('click', () => switchTab(btn.dataset.target));
     });
 
+    async function triggerSystemUpgrade(mode) {
+      const repoInput = document.getElementById('upgradeRepoInput');
+      const releaseRepo = String(repoInput && repoInput.value || '').trim();
+      setMessage(`提交${mode === 'proxy' ? '代理' : '直连'}升级中...`);
+      try {
+        await requestJSON('/local/api/system/upgrade', {
+          method: 'POST',
+          body: JSON.stringify({
+            mode,
+            release_repo: releaseRepo,
+          }),
+        });
+        setMessage(`已提交${mode === 'proxy' ? '代理' : '直连'}升级任务`, 'success');
+      } catch (err) {
+        setMessage(`提交升级失败：${err.message}`, 'error');
+      }
+    }
+
+    document.getElementById('upgradeDirectBtn').addEventListener('click', () => {
+      triggerSystemUpgrade('direct');
+    });
+
+    document.getElementById('upgradeProxyBtn').addEventListener('click', () => {
+      triggerSystemUpgrade('proxy');
+    });
+
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       setMessage('退出中...');
       try {
@@ -360,16 +394,6 @@
       } catch (_) {
       }
       window.location.href = '/local/login';
-    });
-
-    document.getElementById('refreshAllBtn').addEventListener('click', async () => {
-      setMessage('刷新中...');
-      try {
-        await refreshAll();
-        setMessage('全部状态已刷新', 'success');
-      } catch (err) {
-        setMessage('刷新失败：' + err.message, 'error');
-      }
     });
 
     document.getElementById('tunInstallBtn').addEventListener('click', async () => {

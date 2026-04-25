@@ -144,6 +144,7 @@ var (
 	probeLocalInstallTUNDriver    = installProbeLocalTUNDriver
 	probeLocalApplyProxyTakeover  = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect  = restoreProbeLocalProxyDirect
+	probeLocalRunUpgrade          = runProbeUpgrade
 )
 
 func newProbeLocalControlManager() *probeLocalControlManager {
@@ -1183,6 +1184,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/state", probeLocalProxyStateHandler)
 	mux.HandleFunc("/local/api/proxy/hosts", probeLocalProxyHostsHandler)
 	mux.HandleFunc("/local/api/proxy/hosts/save", probeLocalProxyHostsSaveHandler)
+	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
 }
 
@@ -1208,6 +1210,11 @@ type probeLocalProxyDirectRequest struct {
 
 type probeLocalProxyRejectRequest struct {
 	Group string `json:"group"`
+}
+
+type probeLocalSystemUpgradeRequest struct {
+	Mode        string `json:"mode"`
+	ReleaseRepo string `json:"release_repo"`
 }
 
 type probeLocalProxyHostsSaveRequest struct {
@@ -1658,6 +1665,55 @@ func probeLocalProxyHostsSaveHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": content, "hosts": normalizedHosts})
 }
 
+func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalSystemUpgradeRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if mode == "" {
+		mode = "direct"
+	}
+	if mode != "direct" && mode != "proxy" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be direct or proxy"})
+		return
+	}
+	runtimeContext := currentProbeLocalProxyRuntimeContext()
+	if mode == "proxy" && strings.TrimSpace(runtimeContext.ControllerBaseURL) == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "controller base url is empty"})
+		return
+	}
+	repo := strings.TrimSpace(req.ReleaseRepo)
+	go probeLocalRunUpgrade(probeControlMessage{
+		Type:              "upgrade",
+		Mode:              mode,
+		ReleaseRepo:       repo,
+		ControllerBaseURL: strings.TrimSpace(runtimeContext.ControllerBaseURL),
+	}, runtimeContext.Identity)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"accepted":     true,
+		"mode":         mode,
+		"release_repo": repo,
+	})
+}
+
 func probeLocalProxyGroupsBackupHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1701,6 +1757,10 @@ func resetProbeLocalProxyHooksForTest() {
 
 func resetProbeLocalTUNHooksForTest() {
 	probeLocalInstallTUNDriver = installProbeLocalTUNDriver
+}
+
+func resetProbeLocalUpgradeHooksForTest() {
+	probeLocalRunUpgrade = runProbeUpgrade
 }
 
 func setProbeLocalProxyRuntimeContext(identity nodeIdentity, controllerBaseURL string) {

@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
@@ -24,6 +25,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 		resetProbeLocalControlStateForTest()
 		resetProbeLocalProxyHooksForTest()
 		resetProbeLocalTUNHooksForTest()
+		resetProbeLocalUpgradeHooksForTest()
 	})
 	return buildProbeLocalConsoleMux()
 }
@@ -643,6 +645,140 @@ func TestProbeLocalProxyRejectRejectsUnknownGroup(t *testing.T) {
 	errText, _ := payload["error"].(string)
 	if !strings.Contains(strings.ToLower(errText), "not found") {
 		t.Fatalf("proxy/reject unknown group error=%q", errText)
+	}
+}
+
+func TestProbeLocalSystemUpgradeDirectAccepted(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	upgradeCmdCh := make(chan probeControlMessage, 1)
+	identityCh := make(chan nodeIdentity, 1)
+	probeLocalRunUpgrade = func(cmd probeControlMessage, identity nodeIdentity) {
+		upgradeCmdCh <- cmd
+		identityCh <- identity
+	}
+	t.Cleanup(func() {
+		resetProbeLocalUpgradeHooksForTest()
+		setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+	})
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-upgrade-direct", Secret: "secret-direct"}, "")
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade", map[string]any{
+		"mode":         "direct",
+		"release_repo": "  fengzhanhuaer/CloudHelper  ",
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("system/upgrade direct status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["mode"] != "direct" {
+		t.Fatalf("system/upgrade direct mode=%v", payload["mode"])
+	}
+	if payload["release_repo"] != "fengzhanhuaer/CloudHelper" {
+		t.Fatalf("system/upgrade direct release_repo=%v", payload["release_repo"])
+	}
+
+	select {
+	case cmd := <-upgradeCmdCh:
+		if cmd.Type != "upgrade" {
+			t.Fatalf("upgrade cmd type=%q", cmd.Type)
+		}
+		if cmd.Mode != "direct" {
+			t.Fatalf("upgrade cmd mode=%q", cmd.Mode)
+		}
+		if cmd.ReleaseRepo != "fengzhanhuaer/CloudHelper" {
+			t.Fatalf("upgrade cmd release_repo=%q", cmd.ReleaseRepo)
+		}
+		if strings.TrimSpace(cmd.ControllerBaseURL) != "" {
+			t.Fatalf("upgrade cmd controller_base_url should be empty, got=%q", cmd.ControllerBaseURL)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("system/upgrade direct did not trigger upgrade hook")
+	}
+
+	select {
+	case identity := <-identityCh:
+		if identity.NodeID != "node-upgrade-direct" {
+			t.Fatalf("upgrade identity node_id=%q", identity.NodeID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("system/upgrade direct did not pass runtime identity")
+	}
+}
+
+func TestProbeLocalSystemUpgradeProxyRequiresController(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	t.Cleanup(func() { setProbeLocalProxyRuntimeContext(nodeIdentity{}, "") })
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-upgrade-proxy-empty"}, "")
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade", map[string]any{
+		"mode": "proxy",
+	}, sessionCookie)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("system/upgrade proxy without controller status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	errText, _ := payload["error"].(string)
+	if !strings.Contains(strings.ToLower(errText), "controller") {
+		t.Fatalf("system/upgrade proxy without controller error=%q", errText)
+	}
+}
+
+func TestProbeLocalSystemUpgradeProxyAccepted(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	upgradeCmdCh := make(chan probeControlMessage, 1)
+	probeLocalRunUpgrade = func(cmd probeControlMessage, identity nodeIdentity) {
+		upgradeCmdCh <- cmd
+	}
+	t.Cleanup(func() {
+		resetProbeLocalUpgradeHooksForTest()
+		setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+	})
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-upgrade-proxy"}, "  https://controller.example.com/base  ")
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade", map[string]any{
+		"mode": "proxy",
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("system/upgrade proxy status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["mode"] != "proxy" {
+		t.Fatalf("system/upgrade proxy mode=%v", payload["mode"])
+	}
+
+	select {
+	case cmd := <-upgradeCmdCh:
+		if cmd.Mode != "proxy" {
+			t.Fatalf("upgrade cmd mode=%q", cmd.Mode)
+		}
+		if cmd.ControllerBaseURL != "https://controller.example.com/base" {
+			t.Fatalf("upgrade cmd controller_base_url=%q", cmd.ControllerBaseURL)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("system/upgrade proxy did not trigger upgrade hook")
+	}
+}
+
+func TestProbeLocalSystemUpgradeRejectsInvalidMode(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade", map[string]any{
+		"mode": "invalid-mode",
+	}, sessionCookie)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("system/upgrade invalid mode status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	errText, _ := payload["error"].(string)
+	if !strings.Contains(strings.ToLower(errText), "mode") {
+		t.Fatalf("system/upgrade invalid mode error=%q", errText)
 	}
 }
 

@@ -61,6 +61,12 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tabTun\"") {
 		t.Fatalf("panel should contain tun tab button")
 	}
+	if !strings.Contains(body, "id=\"tabSystem\"") {
+		t.Fatalf("panel should contain system tab button")
+	}
+	if strings.Contains(body, "id=\"refreshAllBtn\"") {
+		t.Fatalf("panel should not contain top refresh all button")
+	}
 	if !strings.Contains(body, "id=\"proxyRuleGroups\"") {
 		t.Fatalf("panel should contain proxy rule group list")
 	}
@@ -72,6 +78,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	}
 	if !strings.Contains(body, "直连 + 拒绝 + 可用链路") {
 		t.Fatalf("panel should contain reject option hint text")
+	}
+	if !strings.Contains(body, "id=\"upgradeDirectBtn\"") || !strings.Contains(body, "id=\"upgradeProxyBtn\"") {
+		t.Fatalf("panel should contain system upgrade buttons")
 	}
 }
 
