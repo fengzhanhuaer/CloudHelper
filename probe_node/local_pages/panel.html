@@ -36,11 +36,12 @@
 <body>
   <main>
     <h1>Probe Node 本地控制台</h1>
-    <p class="hint">当前页面用于本地 TUN 驱动准备与代理接管切换。</p>
+    <p class="hint">当前页面用于本地 DNS 状态观测、TUN 驱动准备与代理接管切换。</p>
 
     <div class="tabs">
       <button id="tabProxy" class="tab-btn active" data-target="panelProxy">代理状态</button>
       <button id="tabTun" class="tab-btn" data-target="panelTun">TUN 状态</button>
+      <button id="tabDNS" class="tab-btn" data-target="panelDNS">DNS 状态</button>
       <button id="tabSystem" class="tab-btn" data-target="panelSystem">系统设置</button>
     </div>
 
@@ -75,6 +76,24 @@
         <button id="tunInstallBtn">安装/检查 TUN</button>
         <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
       </div>
+    </section>
+
+    <section id="panelDNS" class="card tab-panel">
+      <strong>DNS 状态</strong>
+      <div class="kv">
+        <div>服务启用</div><div id="dnsEnabled">-</div>
+        <div>监听地址</div><div id="dnsListenAddr">-</div>
+        <div>监听端口</div><div id="dnsPort">-</div>
+        <div>端口回退</div><div id="dnsFallbackUsed">-</div>
+        <div>缓存 TTL（秒）</div><div id="dnsCacheTTL">-</div>
+        <div>缓存记录数</div><div id="dnsCacheRecords">-</div>
+        <div>最后更新时间</div><div id="dnsUpdatedAt">-</div>
+        <div>最近错误</div><div id="dnsLastError">-</div>
+      </div>
+      <div class="actions">
+        <button id="dnsRefreshBtn" class="secondary">刷新 DNS 状态</button>
+      </div>
+      <p class="hint">监听固定为回环地址，端口策略为 <code>53</code> 优先，失败回退 <code>5353</code>。</p>
     </section>
 
     <section id="panelSystem" class="card tab-panel">
@@ -328,6 +347,20 @@
       setText('proxyLastError', data.last_error);
     }
 
+    async function loadDNSStatus() {
+      const data = await requestJSON('/local/api/dns/status', { method: 'GET' });
+      const cacheRecords = Array.isArray(data.cache_records) ? data.cache_records : [];
+      const ttlSeconds = Number.isFinite(Number(data.cache_ttl_seconds)) ? Number(data.cache_ttl_seconds) : 0;
+      setText('dnsEnabled', data.enabled ? '是' : '否');
+      setText('dnsListenAddr', data.listen_addr);
+      setText('dnsPort', data.port);
+      setText('dnsFallbackUsed', data.fallback_used ? '是' : '否');
+      setText('dnsCacheTTL', ttlSeconds > 0 ? String(Math.trunc(ttlSeconds)) : '-');
+      setText('dnsCacheRecords', cacheRecords.length);
+      setText('dnsUpdatedAt', data.updated_at);
+      setText('dnsLastError', data.last_error);
+    }
+
     async function loadProxySelections() {
       const [groupsData, chainsData, stateData] = await Promise.all([
         requestJSON('/local/api/proxy/groups', { method: 'GET' }),
@@ -355,6 +388,7 @@
       await loadProxyStatus();
       await loadProxySelections();
       await loadTunStatus();
+      await loadDNSStatus();
     }
 
     document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -436,6 +470,16 @@
         setMessage('代理组与链路已刷新', 'success');
       } catch (err) {
         setMessage('读取代理组与链路失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('dnsRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新 DNS 状态...');
+      try {
+        await loadDNSStatus();
+        setMessage('DNS 状态已刷新', 'success');
+      } catch (err) {
+        setMessage('读取 DNS 状态失败：' + err.message, 'error');
       }
     });
 

@@ -61,6 +61,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tabTun\"") {
 		t.Fatalf("panel should contain tun tab button")
 	}
+	if !strings.Contains(body, "id=\"tabDNS\"") {
+		t.Fatalf("panel should contain dns tab button")
+	}
 	if !strings.Contains(body, "id=\"tabSystem\"") {
 		t.Fatalf("panel should contain system tab button")
 	}
@@ -81,6 +84,15 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	}
 	if !strings.Contains(body, "id=\"upgradeDirectBtn\"") || !strings.Contains(body, "id=\"upgradeProxyBtn\"") {
 		t.Fatalf("panel should contain system upgrade buttons")
+	}
+	if !strings.Contains(body, "DNS 状态") {
+		t.Fatalf("panel should contain dns status section")
+	}
+	if !strings.Contains(body, "id=\"dnsRefreshBtn\"") {
+		t.Fatalf("panel should contain dns refresh button")
+	}
+	if !strings.Contains(body, "53") || !strings.Contains(body, "5353") {
+		t.Fatalf("panel should contain dns port fallback hint")
 	}
 }
 

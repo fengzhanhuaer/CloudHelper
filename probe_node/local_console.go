@@ -103,9 +103,13 @@ type probeLocalProxyGroupEntry struct {
 }
 
 type probeLocalProxyGroupFile struct {
-	Version int                         `json:"version"`
-	Groups  []probeLocalProxyGroupEntry `json:"groups"`
-	Note    string                      `json:"note,omitempty"`
+	Version         int                         `json:"version"`
+	DNSServers      []string                    `json:"dns_servers,omitempty"`
+	DoTServers      []string                    `json:"dot_servers,omitempty"`
+	DoHServers      []string                    `json:"doh_servers,omitempty"`
+	DoHProxyServers []string                    `json:"doh_proxy_servers,omitempty"`
+	Groups          []probeLocalProxyGroupEntry `json:"groups"`
+	Note            string                      `json:"note,omitempty"`
 }
 
 type probeLocalProxyStateGroupEntry struct {
@@ -539,7 +543,11 @@ func writeProbeLocalError(w http.ResponseWriter, err error) {
 
 func defaultProbeLocalProxyGroupFile() probeLocalProxyGroupFile {
 	return probeLocalProxyGroupFile{
-		Version: 1,
+		Version:         1,
+		DNSServers:      append([]string(nil), defaultProbeLocalDNSServers()...),
+		DoTServers:      append([]string(nil), defaultProbeLocalDoTServers()...),
+		DoHServers:      append([]string(nil), defaultProbeLocalDoHServers()...),
+		DoHProxyServers: append([]string(nil), defaultProbeLocalDoHProxyServers()...),
 		Groups: []probeLocalProxyGroupEntry{
 			{Group: "default", RulesText: ""},
 		},
@@ -611,7 +619,49 @@ func decodeProbeLocalJSONStrict(raw []byte, out any) error {
 	return nil
 }
 
+func normalizeProbeLocalProxyGroupDNSConfig(payload *probeLocalProxyGroupFile) {
+	if payload == nil {
+		return
+	}
+	payload.DNSServers = normalizeProbeLocalDNSHostPortList(payload.DNSServers, "53", defaultProbeLocalDNSServers())
+	payload.DoTServers = normalizeProbeLocalDNSHostPortList(payload.DoTServers, "853", defaultProbeLocalDoTServers())
+	payload.DoHServers = normalizeProbeLocalDoHURLList(payload.DoHServers, defaultProbeLocalDoHServers())
+	payload.DoHProxyServers = normalizeProbeLocalDoHURLList(payload.DoHProxyServers, defaultProbeLocalDoHProxyServers())
+}
+
 func validateProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
+	for i, item := range payload.DNSServers {
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		if _, ok := normalizeProbeLocalDNSHostPort(item, "53"); !ok {
+			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("dns_servers[%d] is invalid", i)}
+		}
+	}
+	for i, item := range payload.DoTServers {
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		if _, ok := normalizeProbeLocalDNSHostPort(item, "853"); !ok {
+			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("dot_servers[%d] is invalid", i)}
+		}
+	}
+	for i, item := range payload.DoHServers {
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		if _, ok := normalizeProbeLocalDoHURL(item); !ok {
+			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("doh_servers[%d] is invalid", i)}
+		}
+	}
+	for i, item := range payload.DoHProxyServers {
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		if _, ok := normalizeProbeLocalDoHURL(item); !ok {
+			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("doh_proxy_servers[%d] is invalid", i)}
+		}
+	}
 	if len(payload.Groups) == 0 {
 		return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "groups is required"}
 	}
@@ -1184,6 +1234,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/state", probeLocalProxyStateHandler)
 	mux.HandleFunc("/local/api/proxy/hosts", probeLocalProxyHostsHandler)
 	mux.HandleFunc("/local/api/proxy/hosts/save", probeLocalProxyHostsSaveHandler)
+	mux.HandleFunc("/local/api/dns/status", probeLocalDNSStatusHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
 }
@@ -1393,6 +1444,27 @@ func probeLocalTUNInstallHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": state})
+}
+
+func probeLocalDNSStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	status := currentProbeLocalDNSStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":           status.Enabled,
+		"listen_addr":       status.ListenAddr,
+		"port":              status.Port,
+		"fallback_used":     status.FallbackUsed,
+		"last_error":        status.LastError,
+		"updated_at":        status.UpdatedAt,
+		"cache_ttl_seconds": int64(probeLocalDNSCacheTTL / time.Second),
+		"cache_records":     queryProbeLocalDNSCacheRecords(),
+	})
 }
 
 func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {

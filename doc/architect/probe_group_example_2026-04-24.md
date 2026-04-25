@@ -9,13 +9,33 @@
 - 动态数据用于回显当前命中组的执行状态与通道状态。
 - 前缀匹配示例: `domain_prefix:api.` 表示匹配以 `api.` 开头的域名。
 - 静态配置不包含日期字段。
+- `proxy_group.json` 顶层支持全局 DNS 配置字段 `dns_servers` `dot_servers` `doh_servers` `doh_proxy_servers`。
+- `doh_proxy_servers` 专用于代理组域名解析上游。
+- 远方 DNS 来源优先级: `doh_proxy_servers` > `doh_servers` > `dot_servers` > `dns_servers`。
 - `fallback` 为内置组，不需要在 `proxy_group.json` 中显式配置。
 - 当 `proxy_group.json` 或 `proxy_state.json` 或 `proxy_host.txt` 文件不存在时，系统会自动生成默认配置文件。
+- DNS 缓存 TTL 固定为 15 天。
 
 `proxy_group.json` 静态配置示例
 ```json
 {
   "version": 1,
+  "dns_servers": [
+    "223.5.5.5",
+    "119.29.29.29"
+  ],
+  "dot_servers": [
+    "dns.alidns.com:853",
+    "dot.pub:853"
+  ],
+  "doh_servers": [
+    "https://dns.alidns.com/dns-query",
+    "https://doh.pub/dns-query"
+  ],
+  "doh_proxy_servers": [
+    "https://cloudflare-dns.com/dns-query",
+    "https://dns.google/dns-query"
+  ],
   "groups": [
     {
       "group": "default",

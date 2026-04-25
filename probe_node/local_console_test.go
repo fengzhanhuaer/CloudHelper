@@ -20,9 +20,11 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalAuthManagerForTest()
 	resetProbeLocalControlStateForTest()
+	resetProbeLocalDNSServiceForTest()
 	t.Cleanup(func() {
 		resetProbeLocalAuthManagerForTest()
 		resetProbeLocalControlStateForTest()
+		resetProbeLocalDNSServiceForTest()
 		resetProbeLocalProxyHooksForTest()
 		resetProbeLocalTUNHooksForTest()
 		resetProbeLocalUpgradeHooksForTest()
@@ -169,6 +171,11 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("tun/status without session status=%d", tunStatusResp.Code)
 	}
 
+	dnsStatusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/status", nil)
+	if dnsStatusResp.Code != http.StatusUnauthorized {
+		t.Fatalf("dns/status without session status=%d", dnsStatusResp.Code)
+	}
+
 	proxyStatusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/status", nil)
 	if proxyStatusResp.Code != http.StatusUnauthorized {
 		t.Fatalf("proxy/status without session status=%d", proxyStatusResp.Code)
@@ -234,6 +241,26 @@ func TestProbeLocalProxyFlowWithSession(t *testing.T) {
 	}
 	if enabled, _ := proxyObj["enabled"].(bool); enabled {
 		t.Fatalf("proxy/direct enabled should be false")
+	}
+}
+
+func TestProbeLocalDNSStatusWithSession(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/status", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("dns/status status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if _, ok := payload["enabled"].(bool); !ok {
+		t.Fatalf("dns/status enabled type=%T", payload["enabled"])
+	}
+	if ttl, ok := payload["cache_ttl_seconds"].(float64); !ok || int64(ttl) != int64(probeLocalDNSCacheTTL/time.Second) {
+		t.Fatalf("dns/status cache_ttl_seconds=%v", payload["cache_ttl_seconds"])
+	}
+	if records, ok := payload["cache_records"].([]any); !ok || len(records) != 0 {
+		t.Fatalf("dns/status cache_records=%v", payload["cache_records"])
 	}
 }
 

@@ -187,6 +187,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
 		return fmt.Errorf("failed to initialize local proxy default files: %w", err)
 	}
+	ensureProbeLocalDNSServiceStarted()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)
 
