@@ -38,7 +38,7 @@
 - RQ-PN-WIN-TUN-DNS-004: 代理组分流按 `rules_text` 命中组，再按 `proxy_state` 的 `action` 与 `tunnel_node_id` 决策。
 - RQ-PN-WIN-TUN-DNS-005: `action=reject` 返回拒绝响应，`action=direct` 走直连 DNS，`action=tunnel` 走隧道链路 DNS。
 - RQ-PN-WIN-TUN-DNS-006: 新增并扩展状态接口，输出双监听状态 fake ip 统计 route hint 统计。
-- RQ-PN-WIN-TUN-DNS-007: `proxy_group` 扩展 `fake_ip_cidr` `fake_ip_whitelist` `tun.doh_servers`。
+- RQ-PN-WIN-TUN-DNS-007: `proxy_group` 扩展 `fake_ip_cidr` `fake_ip_whitelist`，不再单独维护 `tun.doh_servers`，上游统一使用本地 DNS 服务配置。
 - RQ-PN-WIN-TUN-DNS-008: Linux 维持当前行为，不引入 fake ip 数据面。
 
 ## 总体设计

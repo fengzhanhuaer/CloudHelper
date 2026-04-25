@@ -103,21 +103,17 @@ type probeLocalProxyGroupEntry struct {
 	RulesText string   `json:"rules_text,omitempty"`
 }
 
-type probeLocalProxyGroupTUNConfig struct {
-	DoHServers []string `json:"doh_servers,omitempty"`
-}
-
 type probeLocalProxyGroupFile struct {
-	Version         int                           `json:"version"`
-	DNSServers      []string                      `json:"dns_servers,omitempty"`
-	DoTServers      []string                      `json:"dot_servers,omitempty"`
-	DoHServers      []string                      `json:"doh_servers,omitempty"`
-	DoHProxyServers []string                      `json:"doh_proxy_servers,omitempty"`
-	FakeIPCIDR      string                        `json:"fake_ip_cidr,omitempty"`
-	FakeIPWhitelist []string                      `json:"fake_ip_whitelist,omitempty"`
-	TUN             probeLocalProxyGroupTUNConfig `json:"tun,omitempty"`
-	Groups          []probeLocalProxyGroupEntry   `json:"groups"`
-	Note            string                        `json:"note,omitempty"`
+	Version         int                         `json:"version"`
+	DNSServers      []string                    `json:"dns_servers,omitempty"`
+	DoTServers      []string                    `json:"dot_servers,omitempty"`
+	DoHServers      []string                    `json:"doh_servers,omitempty"`
+	DoHProxyServers []string                    `json:"doh_proxy_servers,omitempty"`
+	FakeIPCIDR      string                      `json:"fake_ip_cidr,omitempty"`
+	FakeIPWhitelist []string                    `json:"fake_ip_whitelist,omitempty"`
+	LegacyTUN       json.RawMessage             `json:"tun,omitempty"`
+	Groups          []probeLocalProxyGroupEntry `json:"groups"`
+	Note            string                      `json:"note,omitempty"`
 }
 
 type probeLocalProxyStateGroupEntry struct {
@@ -560,13 +556,11 @@ func defaultProbeLocalProxyGroupFile() probeLocalProxyGroupFile {
 		DoHProxyServers: append([]string(nil), defaultProbeLocalDoHProxyServers()...),
 		FakeIPCIDR:      "198.18.0.0/15",
 		FakeIPWhitelist: []string{},
-		TUN: probeLocalProxyGroupTUNConfig{
-			DoHServers: append([]string(nil), defaultProbeLocalDoHProxyServers()...),
-		},
 		Groups: []probeLocalProxyGroupEntry{
-			{Group: "default", Rules: []string{}},
+			{Group: "default", Rules: []string{"domain_suffix:example.com", "domain_prefix:api."}},
+			{Group: "media", Rules: []string{"domain_keyword:stream"}},
 		},
-		Note: "fallback is built in",
+		Note: "fallback is built in; rules are examples",
 	}
 }
 
@@ -647,7 +641,7 @@ func normalizeProbeLocalProxyGroupDNSConfig(payload *probeLocalProxyGroupFile) {
 		payload.FakeIPCIDR = "198.18.0.0/15"
 	}
 	payload.FakeIPWhitelist = normalizeProbeLocalDomainList(payload.FakeIPWhitelist)
-	payload.TUN.DoHServers = normalizeProbeLocalDoHURLList(payload.TUN.DoHServers, payload.DoHProxyServers)
+	payload.LegacyTUN = nil
 }
 
 func normalizeProbeLocalDomainList(items []string) []string {
@@ -718,14 +712,6 @@ func validateProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
 		}
 		if strings.Contains(value, " ") {
 			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("fake_ip_whitelist[%d] is invalid", i)}
-		}
-	}
-	for i, item := range payload.TUN.DoHServers {
-		if strings.TrimSpace(item) == "" {
-			continue
-		}
-		if _, ok := normalizeProbeLocalDoHURL(item); !ok {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("tun.doh_servers[%d] is invalid", i)}
 		}
 	}
 	for i, item := range payload.DNSServers {

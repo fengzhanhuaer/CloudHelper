@@ -367,7 +367,7 @@ func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, erro
 	return nil, domain, nil, lastErr
 }
 
-func currentProbeLocalDNSUpstreamCandidatesForDecision(decision probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
+func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
 	cfg, err := loadProbeLocalProxyGroupFile()
 	if err != nil {
 		logProbeWarnf("load proxy_group for dns upstream failed, use defaults: %v", err)
@@ -404,12 +404,6 @@ func currentProbeLocalDNSUpstreamCandidatesForDecision(decision probeLocalDNSRou
 		}
 	}
 
-	if decision.UseTunnelDNS {
-		appendDoH(cfg.TUN.DoHServers)
-		if len(candidates) > 0 {
-			return candidates
-		}
-	}
 	appendDoH(cfg.DoHProxyServers)
 	appendDoH(cfg.DoHServers)
 	appendHostPort("dot", cfg.DoTServers, "853")
