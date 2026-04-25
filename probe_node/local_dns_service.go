@@ -832,7 +832,7 @@ func resolveProbeLocalDNSRouteDecision(domain string) probeLocalDNSRouteDecision
 		if groupName == "" {
 			continue
 		}
-		if probeLocalDNSDomainMatchesRules(cleanDomain, item.RulesText) {
+		if probeLocalDNSDomainMatchesRules(cleanDomain, item.Rules) {
 			matchGroup = groupName
 			break
 		}
@@ -859,14 +859,13 @@ func resolveProbeLocalDNSRouteDecision(domain string) probeLocalDNSRouteDecision
 	return decision
 }
 
-func probeLocalDNSDomainMatchesRules(domain string, rulesText string) bool {
+func probeLocalDNSDomainMatchesRules(domain string, rules []string) bool {
 	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
 	if cleanDomain == "" {
 		return false
 	}
-	lines := strings.Split(strings.ReplaceAll(rulesText, "\r\n", "\n"), "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+	for _, rule := range rules {
+		trimmed := strings.TrimSpace(rule)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}

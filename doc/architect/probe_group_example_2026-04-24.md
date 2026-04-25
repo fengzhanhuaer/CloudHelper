@@ -3,8 +3,8 @@
 说明
 - 行为语义对齐 `probe_manager` 的规则执行方式。
 - `proxy_group.json` 由用户维护分组匹配静态规则。
-- `rules_text` 使用行式规则文本 每行一条规则 不使用数组字段。
-- `rules_text` 的行内容不需要 JSON 逗号分隔 每行直接写规则表达式。
+- `rules` 使用字符串数组，每个元素一条规则表达式。
+- 推荐规则键: `domain_suffix` `domain_keyword` `domain_prefix` `domain`。
 - `action` 与 `tunnel_node_id` 仅作为动态运行态写入 `proxy_state.json`。
 - 动态数据用于回显当前命中组的执行状态与通道状态。
 - 前缀匹配示例: `domain_prefix:api.` 表示匹配以 `api.` 开头的域名。
@@ -39,15 +39,24 @@
   "groups": [
     {
       "group": "default",
-      "rules_text": "domain_suffix:example.com\r\ndomain_prefix:api.\r\ncidr:10.10.0.0/16"
+      "rules": [
+        "domain_suffix:example.com",
+        "domain_prefix:api.",
+        "cidr:10.10.0.0/16"
+      ]
     },
     {
       "group": "media",
-      "rules_text": "domain_suffix:video.example\r\ndomain_keyword:stream"
+      "rules": [
+        "domain_suffix:video.example",
+        "domain_keyword:stream"
+      ]
     },
     {
       "group": "blocked",
-      "rules_text": "domain_suffix:blocked.example"
+      "rules": [
+        "domain_suffix:blocked.example"
+      ]
     }
   ],
   "note": "fallback is built in"

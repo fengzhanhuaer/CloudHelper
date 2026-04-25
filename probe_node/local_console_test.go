@@ -435,8 +435,8 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
 		"version": 1,
 		"groups": []map[string]any{
-			{"group": "default", "rules_text": "domain_suffix:example.com"},
-			{"group": "media", "rules_text": "domain_keyword:stream"},
+			{"group": "default", "rules": []string{"domain_suffix:example.com"}},
+			{"group": "media", "rules": []string{"domain_keyword:stream"}},
 		},
 	}, sessionCookie)
 	if saveGroupsResp.Code != http.StatusOK {
@@ -570,8 +570,8 @@ func TestProbeLocalProxyDirectSelectionWritesRuntimeStateGroup(t *testing.T) {
 	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
 		"version": 1,
 		"groups": []map[string]any{
-			{"group": "default", "rules_text": "domain_suffix:example.com"},
-			{"group": "media", "rules_text": "domain_keyword:stream"},
+			{"group": "default", "rules": []string{"domain_suffix:example.com"}},
+			{"group": "media", "rules": []string{"domain_keyword:stream"}},
 		},
 	}, sessionCookie)
 	if saveGroupsResp.Code != http.StatusOK {
@@ -651,8 +651,8 @@ func TestProbeLocalProxyRejectSelectionWritesRuntimeStateGroup(t *testing.T) {
 	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
 		"version": 1,
 		"groups": []map[string]any{
-			{"group": "default", "rules_text": "domain_suffix:example.com"},
-			{"group": "media", "rules_text": "domain_keyword:stream"},
+			{"group": "default", "rules": []string{"domain_suffix:example.com"}},
+			{"group": "media", "rules": []string{"domain_keyword:stream"}},
 		},
 	}, sessionCookie)
 	if saveGroupsResp.Code != http.StatusOK {
@@ -959,8 +959,8 @@ func TestProbeLocalProxyGroupsAndStateAndHostsLifecycle(t *testing.T) {
 	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
 		"version": 1,
 		"groups": []map[string]any{
-			{"group": "default", "rules_text": "domain_suffix:example.com\ndomain_prefix:api."},
-			{"group": "media", "rules_text": "domain_keyword:stream"},
+			{"group": "default", "rules": []string{"domain_suffix:example.com", "domain_prefix:api."}},
+			{"group": "media", "rules": []string{"domain_keyword:stream"}},
 		},
 	}, sessionCookie)
 	if saveGroupsResp.Code != http.StatusOK {
@@ -969,7 +969,7 @@ func TestProbeLocalProxyGroupsAndStateAndHostsLifecycle(t *testing.T) {
 
 	invalidGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
 		"version": 1,
-		"groups":  []map[string]any{{"group": "fallback", "rules_text": "domain_suffix:x"}},
+		"groups":  []map[string]any{{"group": "fallback", "rules": []string{"domain_suffix:x"}}},
 	}, sessionCookie)
 	if invalidGroupsResp.Code != http.StatusBadRequest {
 		t.Fatalf("invalid groups save status=%d body=%s", invalidGroupsResp.Code, invalidGroupsResp.Body.String())

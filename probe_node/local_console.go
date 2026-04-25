@@ -98,8 +98,9 @@ type probeLocalControlManager struct {
 }
 
 type probeLocalProxyGroupEntry struct {
-	Group     string `json:"group"`
-	RulesText string `json:"rules_text"`
+	Group     string   `json:"group"`
+	Rules     []string `json:"rules,omitempty"`
+	RulesText string   `json:"rules_text,omitempty"`
 }
 
 type probeLocalProxyGroupTUNConfig struct {
@@ -563,7 +564,7 @@ func defaultProbeLocalProxyGroupFile() probeLocalProxyGroupFile {
 			DoHServers: append([]string(nil), defaultProbeLocalDoHProxyServers()...),
 		},
 		Groups: []probeLocalProxyGroupEntry{
-			{Group: "default", RulesText: ""},
+			{Group: "default", Rules: []string{}},
 		},
 		Note: "fallback is built in",
 	}
@@ -669,6 +670,39 @@ func normalizeProbeLocalDomainList(items []string) []string {
 	return out
 }
 
+func normalizeProbeLocalProxyGroupRules(payload *probeLocalProxyGroupFile) {
+	if payload == nil {
+		return
+	}
+	for i := range payload.Groups {
+		rules := payload.Groups[i].Rules
+		if len(rules) == 0 {
+			legacy := strings.TrimSpace(payload.Groups[i].RulesText)
+			if legacy != "" {
+				lines := strings.Split(strings.ReplaceAll(legacy, "\r\n", "\n"), "\n")
+				rules = make([]string, 0, len(lines))
+				for _, line := range lines {
+					trimmed := strings.TrimSpace(line)
+					if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+						continue
+					}
+					rules = append(rules, trimmed)
+				}
+			}
+		}
+		normalized := make([]string, 0, len(rules))
+		for _, rule := range rules {
+			trimmed := strings.TrimSpace(rule)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			normalized = append(normalized, trimmed)
+		}
+		payload.Groups[i].Rules = normalized
+		payload.Groups[i].RulesText = ""
+	}
+}
+
 func validateProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
 	payload.FakeIPCIDR = strings.TrimSpace(payload.FakeIPCIDR)
 	if payload.FakeIPCIDR != "" && payload.FakeIPCIDR != "0.0.0.0/0" {
@@ -743,14 +777,13 @@ func validateProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
 			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("duplicate group: %s", name)}
 		}
 		seen[key] = struct{}{}
-		lines := strings.Split(strings.ReplaceAll(group.RulesText, "\r\n", "\n"), "\n")
-		for lineNo, line := range lines {
-			trimmed := strings.TrimSpace(line)
+		for ruleIndex, rule := range group.Rules {
+			trimmed := strings.TrimSpace(rule)
 			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 				continue
 			}
 			if !strings.Contains(trimmed, ":") {
-				return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("groups[%d].rules_text line %d must contain ':'", i, lineNo+1)}
+				return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("groups[%d].rules[%d] must contain ':'", i, ruleIndex)}
 			}
 		}
 	}
@@ -795,6 +828,7 @@ func loadProbeLocalProxyGroupFile() (probeLocalProxyGroupFile, error) {
 		payload.Groups[i].Group = strings.TrimSpace(payload.Groups[i].Group)
 	}
 	normalizeProbeLocalProxyGroupDNSConfig(&payload)
+	normalizeProbeLocalProxyGroupRules(&payload)
 	payload.Note = firstNonEmpty(strings.TrimSpace(payload.Note), "fallback is built in")
 	if err := validateProbeLocalProxyGroupFile(payload); err != nil {
 		return probeLocalProxyGroupFile{}, err
@@ -807,6 +841,7 @@ func persistProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
 		payload.Version = 1
 	}
 	normalizeProbeLocalProxyGroupDNSConfig(&payload)
+	normalizeProbeLocalProxyGroupRules(&payload)
 	payload.Note = firstNonEmpty(strings.TrimSpace(payload.Note), "fallback is built in")
 	if err := validateProbeLocalProxyGroupFile(payload); err != nil {
 		return err
