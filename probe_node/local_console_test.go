@@ -565,6 +565,87 @@ func TestProbeLocalProxyDirectRejectsUnknownGroup(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyRejectSelectionWritesRuntimeStateGroup(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "default", "rules_text": "domain_suffix:example.com"},
+			{"group": "media", "rules_text": "domain_keyword:stream"},
+		},
+	}, sessionCookie)
+	if saveGroupsResp.Code != http.StatusOK {
+		t.Fatalf("groups save status=%d body=%s", saveGroupsResp.Code, saveGroupsResp.Body.String())
+	}
+
+	rejectResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/reject", map[string]any{
+		"group": "media",
+	}, sessionCookie)
+	if rejectResp.Code != http.StatusOK {
+		t.Fatalf("proxy/reject with group status=%d body=%s", rejectResp.Code, rejectResp.Body.String())
+	}
+	rejectPayload := decodeProbeLocalJSON(t, rejectResp)
+	selectionObj, ok := rejectPayload["selection"].(map[string]any)
+	if !ok {
+		t.Fatalf("proxy/reject selection payload type=%T", rejectPayload["selection"])
+	}
+	if selectionObj["group"] != "media" {
+		t.Fatalf("proxy/reject selection group=%v", selectionObj["group"])
+	}
+	if selectionObj["action"] != "reject" {
+		t.Fatalf("proxy/reject selection action=%v", selectionObj["action"])
+	}
+
+	stateResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)
+	if stateResp.Code != http.StatusOK {
+		t.Fatalf("state get status=%d body=%s", stateResp.Code, stateResp.Body.String())
+	}
+	statePayload := decodeProbeLocalJSON(t, stateResp)
+	groups, ok := statePayload["groups"].([]any)
+	if !ok {
+		t.Fatalf("state groups payload type=%T", statePayload["groups"])
+	}
+	found := false
+	for _, item := range groups {
+		entry, _ := item.(map[string]any)
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(entry["group"])), "media") {
+			found = true
+			if entry["action"] != "reject" {
+				t.Fatalf("media action=%v", entry["action"])
+			}
+			if entry["runtime_status"] != "blocked" {
+				t.Fatalf("media runtime_status=%v", entry["runtime_status"])
+			}
+			if tunnelNodeID, _ := entry["tunnel_node_id"].(string); strings.TrimSpace(tunnelNodeID) != "" {
+				t.Fatalf("media tunnel_node_id should be empty on reject, got=%v", entry["tunnel_node_id"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("state groups missing media entry: %v", groups)
+	}
+}
+
+func TestProbeLocalProxyRejectRejectsUnknownGroup(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/reject", map[string]any{
+		"group": "unknown-group",
+	}, sessionCookie)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("proxy/reject unknown group status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	errText, _ := payload["error"].(string)
+	if !strings.Contains(strings.ToLower(errText), "not found") {
+		t.Fatalf("proxy/reject unknown group error=%q", errText)
+	}
+}
+
 func TestProbeLocalProxyDirectReturnsNotImplementedOnUnsupported(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

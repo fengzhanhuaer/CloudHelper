@@ -1175,6 +1175,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/tun/install", probeLocalTUNInstallHandler)
 	mux.HandleFunc("/local/api/proxy/enable", probeLocalProxyEnableHandler)
 	mux.HandleFunc("/local/api/proxy/direct", probeLocalProxyDirectHandler)
+	mux.HandleFunc("/local/api/proxy/reject", probeLocalProxyRejectHandler)
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
 	mux.HandleFunc("/local/api/proxy/groups", probeLocalProxyGroupsHandler)
@@ -1202,6 +1203,10 @@ type probeLocalProxyEnableRequest struct {
 }
 
 type probeLocalProxyDirectRequest struct {
+	Group string `json:"group"`
+}
+
+type probeLocalProxyRejectRequest struct {
 	Group string `json:"group"`
 }
 
@@ -1468,6 +1473,46 @@ func probeLocalProxyDirectHandler(w http.ResponseWriter, r *http.Request) {
 		"proxy": proxyState,
 		"selection": map[string]any{
 			"group": group,
+		},
+	})
+}
+
+func probeLocalProxyRejectHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalProxyRejectRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	group, err := resolveProbeLocalProxyDirectGroup(probeLocalProxyDirectRequest{Group: req.Group})
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "reject", "", "blocked"); updateErr != nil {
+		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"tun":   probeLocalControl.tunStatus(),
+		"proxy": probeLocalControl.proxyStatus(),
+		"selection": map[string]any{
+			"group":  group,
+			"action": "reject",
 		},
 	})
 }

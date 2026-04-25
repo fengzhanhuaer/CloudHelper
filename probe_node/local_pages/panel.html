@@ -20,8 +20,13 @@
     button.secondary { background: #4b5563; }
     button.warn { background: #b91c1c; }
     .kv { display: grid; grid-template-columns: 170px 1fr; row-gap: 6px; column-gap: 8px; margin-top: 8px; font-size: 14px; }
-    .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #374151; }
-    .field select { min-width: 220px; padding: 7px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #111827; }
+    .rule-group-list { display: grid; gap: 10px; margin-top: 10px; }
+    .rule-group-row { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; }
+    .rule-group-title { font-weight: 600; font-size: 13px; color: #374151; margin-bottom: 6px; }
+    .rule-options-flat { display: flex; gap: 8px; flex-wrap: wrap; }
+    .rule-option-flat { border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #374151; padding: 6px 10px; cursor: pointer; }
+    .rule-option-flat.active { border-color: #2563eb; background: #2563eb; color: #fff; }
+    .rule-runtime { margin-top: 6px; font-size: 12px; color: #6b7280; }
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
     .msg.error { color: #b91c1c; }
     .msg.success { color: #166534; }
@@ -55,23 +60,12 @@
         <div>最后更新时间</div><div id="proxyUpdatedAt">-</div>
         <div>最近错误</div><div id="proxyLastError">-</div>
       </div>
+      <div id="proxyRuleGroups" class="rule-group-list"></div>
       <div class="actions">
-        <label class="field" for="proxyGroupSelect">
-          <span>代理组</span>
-          <select id="proxyGroupSelect"></select>
-        </label>
-        <label class="field" for="proxyChainSelect">
-          <span>代理链路</span>
-          <select id="proxyChainSelect"></select>
-        </label>
-      </div>
-      <div class="actions">
-        <button id="proxyEnableBtn">按选择启用 TUN 接管</button>
-        <button id="proxyDirectBtn" class="secondary">按选择切回直连</button>
         <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
         <button id="proxySelectionRefreshBtn" class="secondary">刷新组与链路</button>
       </div>
-      <p class="hint">模式值：<code>direct</code> 表示直连，<code>tunnel</code> 表示已接管。<code>tunnel_node_id</code> 将写入运行态文件。</p>
+      <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），点击即下发。</p>
     </section>
 
     <section id="panelTun" class="card tab-panel">
@@ -94,9 +88,9 @@
 
   <script>
     const messageEl = document.getElementById('message');
-    const proxyGroupSelectEl = document.getElementById('proxyGroupSelect');
-    const proxyChainSelectEl = document.getElementById('proxyChainSelect');
+    const proxyRuleGroupsEl = document.getElementById('proxyRuleGroups');
     let proxyStateGroupsCache = [];
+    let proxyChainItemsCache = [];
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -119,28 +113,147 @@
       return text;
     }
 
-    function setSelectOptions(selectEl, options, selectedValue) {
-      if (!selectEl) return;
-      const keepValue = (selectedValue === undefined || selectedValue === null) ? '' : String(selectedValue);
-      selectEl.innerHTML = '';
-      options.forEach((opt) => {
-        const optionEl = document.createElement('option');
-        optionEl.value = String(opt.value);
-        optionEl.textContent = String(opt.label);
-        if (optionEl.value === keepValue) {
-          optionEl.selected = true;
-        }
-        selectEl.appendChild(optionEl);
+    function normalizeAction(actionValue) {
+      return String(actionValue || '').trim().toLowerCase();
+    }
+
+    function resolveChainLabel(chainID) {
+      const clean = normalizeChainID(chainID);
+      if (!clean) return '-';
+      const found = proxyChainItemsCache.find((item) => {
+        return normalizeChainID(item && item.chain_id) === clean;
       });
-      if (!Array.from(selectEl.options).some((opt) => opt.value === keepValue) && selectEl.options.length > 0) {
-        selectEl.options[0].selected = true;
-      }
+      if (!found) return clean;
+      const name = String(found && found.name || '').trim();
+      return name ? `${name} (${clean})` : clean;
     }
 
     function updateProxyActiveFromState() {
-      const active = proxyStateGroupsCache.find((item) => String(item && item.action || '').trim().toLowerCase() === 'tunnel');
+      const active = proxyStateGroupsCache.find((item) => normalizeAction(item && item.action) === 'tunnel');
       setText('proxyActiveGroup', active && active.group);
-      setText('proxyActiveTunnel', active && active.tunnel_node_id);
+      const activeTunnelID = active && active.tunnel_node_id;
+      setText('proxyActiveTunnel', activeTunnelID ? resolveChainLabel(activeTunnelID) : '-');
+    }
+
+    async function applyGroupPolicy(group, action, tunnelNodeID) {
+      if (action === 'direct') {
+        await requestJSON('/local/api/proxy/direct', {
+          method: 'POST',
+          body: JSON.stringify({ group }),
+        });
+        return;
+      }
+      if (action === 'reject') {
+        await requestJSON('/local/api/proxy/reject', {
+          method: 'POST',
+          body: JSON.stringify({ group }),
+        });
+        return;
+      }
+      await requestJSON('/local/api/proxy/enable', {
+        method: 'POST',
+        body: JSON.stringify({
+          group,
+          tunnel_node_id: tunnelNodeID || '',
+        }),
+      });
+    }
+
+    function isGroupOptionSelected(stateEntry, action, tunnelNodeID) {
+      const currentAction = normalizeAction(stateEntry && stateEntry.action);
+      if (currentAction !== normalizeAction(action)) {
+        return false;
+      }
+      if (normalizeAction(action) !== 'tunnel') {
+        return true;
+      }
+      return normalizeChainID(stateEntry && stateEntry.tunnel_node_id) === normalizeChainID(tunnelNodeID);
+    }
+
+    function renderProxyRuleGroupRows(groupNames) {
+      proxyRuleGroupsEl.innerHTML = '';
+      const chainOptions = proxyChainItemsCache.map((item) => ({
+        chainID: normalizeChainID(item && item.chain_id),
+        label: resolveChainLabel(item && item.chain_id),
+      })).filter((item) => item.chainID);
+
+      groupNames.forEach((groupName) => {
+        const stateEntry = proxyStateGroupsCache.find((entry) => {
+          return String(entry && entry.group || '').trim().toLowerCase() === groupName.toLowerCase();
+        }) || null;
+
+        const rowEl = document.createElement('div');
+        rowEl.className = 'rule-group-row';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'rule-group-title';
+        titleEl.textContent = groupName === 'fallback' ? '兜底组（未命中规则）' : `组：${groupName}`;
+        rowEl.appendChild(titleEl);
+
+        const optionsEl = document.createElement('div');
+        optionsEl.className = 'rule-options-flat';
+
+        const directBtn = document.createElement('button');
+        directBtn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'direct', '') ? 'active' : ''}`;
+        directBtn.textContent = '直连';
+        directBtn.addEventListener('click', async () => {
+          setMessage(`组 ${groupName} 切换直连中...`);
+          try {
+            await applyGroupPolicy(groupName, 'direct', '');
+            await refreshAll();
+            setMessage(`组 ${groupName} 已切换直连`, 'success');
+          } catch (err) {
+            setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
+          }
+        });
+        optionsEl.appendChild(directBtn);
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'reject', '') ? 'active' : ''}`;
+        rejectBtn.textContent = '拒绝';
+        rejectBtn.addEventListener('click', async () => {
+          setMessage(`组 ${groupName} 切换拒绝中...`);
+          try {
+            await applyGroupPolicy(groupName, 'reject', '');
+            await refreshAll();
+            setMessage(`组 ${groupName} 已切换拒绝`, 'success');
+          } catch (err) {
+            setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
+          }
+        });
+        optionsEl.appendChild(rejectBtn);
+
+        chainOptions.forEach((item) => {
+          const btn = document.createElement('button');
+          btn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'tunnel', item.chainID) ? 'active' : ''}`;
+          btn.textContent = `隧道 ${item.label}`;
+          btn.addEventListener('click', async () => {
+            setMessage(`组 ${groupName} 切换链路中...`);
+            try {
+              await applyGroupPolicy(groupName, 'tunnel', item.chainID);
+              await refreshAll();
+              setMessage(`组 ${groupName} 已切换到 ${item.label}`, 'success');
+            } catch (err) {
+              setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
+            }
+          });
+          optionsEl.appendChild(btn);
+        });
+
+        rowEl.appendChild(optionsEl);
+
+        const runtimeEl = document.createElement('div');
+        runtimeEl.className = 'rule-runtime';
+        const runtimeAction = normalizeAction(stateEntry && stateEntry.action);
+        const runtimeStatus = String(stateEntry && stateEntry.runtime_status || '').trim();
+        const runtimeTunnelLabel = runtimeAction === 'tunnel'
+          ? resolveChainLabel(stateEntry && stateEntry.tunnel_node_id)
+          : '-';
+        runtimeEl.textContent = `运行：${runtimeAction || '-'}${runtimeAction === 'tunnel' ? ` (${runtimeTunnelLabel})` : ''}${runtimeStatus ? ` ｜ 状态：${runtimeStatus}` : ''}`;
+        rowEl.appendChild(runtimeEl);
+
+        proxyRuleGroupsEl.appendChild(rowEl);
+      });
     }
 
     function switchTab(targetId) {
@@ -220,26 +333,10 @@
       const allGroups = ['fallback', ...configuredGroups.filter((name) => name.toLowerCase() !== 'fallback')];
       const uniqueGroups = [...new Set(allGroups.map((name) => name.trim()).filter(Boolean))];
 
-      const selectedGroup = (proxyGroupSelectEl && proxyGroupSelectEl.value) ? proxyGroupSelectEl.value : 'fallback';
-      setSelectOptions(proxyGroupSelectEl, uniqueGroups.map((name) => ({ value: name, label: name })), selectedGroup);
+      proxyChainItemsCache = Array.isArray(chainsData.items) ? chainsData.items : [];
+      proxyStateGroupsCache = Array.isArray(stateData.groups) ? stateData.groups : [];
 
-      const chains = Array.isArray(chainsData.items) ? chainsData.items : [];
-      const chainOptions = [{ value: '', label: '未指定（不绑定具体链路）' }].concat(
-        chains.map((item) => {
-          const chainID = String(item && item.chain_id || '').trim();
-          const chainName = String(item && item.name || '').trim();
-          const label = chainName ? `${chainName} (${chainID})` : chainID;
-          return { value: chainID, label };
-        }).filter((item) => item.value)
-      );
-
-      const stateGroups = Array.isArray(stateData.groups) ? stateData.groups : [];
-      proxyStateGroupsCache = stateGroups;
-      const selectedState = stateGroups.find((entry) => String(entry && entry.group || '').trim().toLowerCase() === String(proxyGroupSelectEl.value || '').trim().toLowerCase());
-      const selectedChain = normalizeChainID(selectedState && selectedState.tunnel_node_id);
-      const active = stateGroups.find((entry) => String(entry && entry.action || '').trim().toLowerCase() === 'tunnel');
-      const activeChain = normalizeChainID(active && active.tunnel_node_id);
-      setSelectOptions(proxyChainSelectEl, chainOptions, selectedChain || activeChain || '');
+      renderProxyRuleGroupRows(uniqueGroups);
       updateProxyActiveFromState();
     }
 
@@ -296,34 +393,6 @@
       }
     });
 
-    document.getElementById('proxyEnableBtn').addEventListener('click', async () => {
-      setMessage('按选择启用 TUN 接管中...');
-      try {
-        const payload = {
-          group: proxyGroupSelectEl.value || 'fallback',
-          tunnel_node_id: proxyChainSelectEl.value || '',
-        };
-        await requestJSON('/local/api/proxy/enable', { method: 'POST', body: JSON.stringify(payload) });
-        await refreshAll();
-        setMessage('已按选择启用 TUN 接管', 'success');
-      } catch (err) {
-        setMessage('启用失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('proxyDirectBtn').addEventListener('click', async () => {
-      setMessage('按选择切换直连中...');
-      try {
-        const payload = {
-          group: proxyGroupSelectEl.value || 'fallback',
-        };
-        await requestJSON('/local/api/proxy/direct', { method: 'POST', body: JSON.stringify(payload) });
-        await refreshAll();
-        setMessage('已按选择切回直连', 'success');
-      } catch (err) {
-        setMessage('切换直连失败：' + err.message, 'error');
-      }
-    });
 
     document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {
       setMessage('刷新代理状态...');
@@ -343,19 +412,6 @@
         setMessage('代理组与链路已刷新', 'success');
       } catch (err) {
         setMessage('读取代理组与链路失败：' + err.message, 'error');
-      }
-    });
-
-    proxyGroupSelectEl.addEventListener('change', () => {
-      const stateEntry = proxyStateGroupsCache.find((entry) => {
-        return String(entry && entry.group || '').trim().toLowerCase() === String(proxyGroupSelectEl.value || '').trim().toLowerCase();
-      });
-      const stateChain = normalizeChainID(stateEntry && stateEntry.tunnel_node_id);
-      if (stateChain) {
-        const hasOption = Array.from(proxyChainSelectEl.options).some((opt) => opt.value === stateChain);
-        if (hasOption) {
-          proxyChainSelectEl.value = stateChain;
-        }
       }
     });
 

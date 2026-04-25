@@ -61,14 +61,17 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tabTun\"") {
 		t.Fatalf("panel should contain tun tab button")
 	}
-	if !strings.Contains(body, "id=\"proxyGroupSelect\"") {
-		t.Fatalf("panel should contain proxy group selector")
+	if !strings.Contains(body, "id=\"proxyRuleGroups\"") {
+		t.Fatalf("panel should contain proxy rule group list")
 	}
-	if !strings.Contains(body, "id=\"proxyChainSelect\"") {
-		t.Fatalf("panel should contain proxy chain selector")
+	if !strings.Contains(body, "rule-option-flat") {
+		t.Fatalf("panel should contain flat rule option style")
 	}
-	if !strings.Contains(body, "id=\"proxySelectionRefreshBtn\"") {
-		t.Fatalf("panel should contain proxy selection refresh button")
+	if !strings.Contains(body, "刷新组与链路") {
+		t.Fatalf("panel should contain proxy selection refresh button text")
+	}
+	if !strings.Contains(body, "直连 + 拒绝 + 可用链路") {
+		t.Fatalf("panel should contain reject option hint text")
 	}
 }
 
