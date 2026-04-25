@@ -94,6 +94,12 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "53") || !strings.Contains(body, "5353") {
 		t.Fatalf("panel should contain dns port fallback hint")
 	}
+	if !strings.Contains(body, "id=\"dnsMapTableBody\"") {
+		t.Fatalf("panel should contain dns map table body")
+	}
+	if !strings.Contains(body, "域名") || !strings.Contains(body, "IP") || !strings.Contains(body, "fake IP") {
+		t.Fatalf("panel should contain dns map columns")
+	}
 }
 
 func TestProbeLocalPanelMethodNotAllowed(t *testing.T) {

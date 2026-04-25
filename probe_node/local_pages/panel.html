@@ -31,6 +31,11 @@
     .msg.error { color: #b91c1c; }
     .msg.success { color: #166534; }
     code { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; }
+    .dns-map-table-wrap { margin-top: 10px; overflow-x: auto; }
+    .dns-map-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .dns-map-table th, .dns-map-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }
+    .dns-map-table th { background: #f9fafb; color: #374151; font-weight: 600; }
+    .dns-map-empty { color: #6b7280; font-size: 13px; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -98,6 +103,21 @@
         <button id="dnsRefreshBtn" class="secondary">刷新 DNS 状态</button>
       </div>
       <p class="hint">监听固定为回环地址，端口策略为 <code>53</code> 优先，失败回退 <code>5353</code>。</p>
+      <div class="dns-map-table-wrap">
+        <table class="dns-map-table">
+          <thead>
+            <tr>
+              <th>域名</th>
+              <th>IP</th>
+              <th>fake IP</th>
+            </tr>
+          </thead>
+          <tbody id="dnsMapTableBody">
+            <tr><td colspan="3">-</td></tr>
+          </tbody>
+        </table>
+        <div id="dnsMapEmpty" class="dns-map-empty" style="display:none;">暂无 DNS 映射记录</div>
+      </div>
     </section>
 
     <section id="panelSystem" class="card tab-panel">
@@ -371,6 +391,63 @@
       setText('dnsCacheRecords', cacheRecords.length);
       setText('dnsUpdatedAt', data.updated_at);
       setText('dnsLastError', data.last_error);
+      renderDNSDomainMapTable(cacheRecords, fakeIPEntries);
+    }
+
+    function renderDNSDomainMapTable(cacheRecords, fakeIPEntries) {
+      const bodyEl = document.getElementById('dnsMapTableBody');
+      const emptyEl = document.getElementById('dnsMapEmpty');
+      if (!bodyEl) return;
+      const cacheArr = Array.isArray(cacheRecords) ? cacheRecords : [];
+      const fakeArr = Array.isArray(fakeIPEntries) ? fakeIPEntries : [];
+
+      const domainToIPs = new Map();
+      cacheArr.forEach((item) => {
+        const domain = String(item && item.url || '').trim();
+        const ip = String(item && item.ip || '').trim();
+        if (!domain || !ip) return;
+        if (!domainToIPs.has(domain)) domainToIPs.set(domain, new Set());
+        domainToIPs.get(domain).add(ip);
+      });
+
+      const domainToFakeIP = new Map();
+      fakeArr.forEach((item) => {
+        const domain = String(item && item.domain || '').trim();
+        const fakeIP = String(item && item.fake_ip || '').trim();
+        if (!domain || !fakeIP) return;
+        domainToFakeIP.set(domain, fakeIP);
+      });
+
+      const domains = [...new Set([...domainToIPs.keys(), ...domainToFakeIP.keys()])].sort((a, b) => a.localeCompare(b));
+
+      bodyEl.innerHTML = '';
+      if (domains.length === 0) {
+        bodyEl.innerHTML = '<tr><td colspan="3">-</td></tr>';
+        if (emptyEl) emptyEl.style.display = '';
+        return;
+      }
+      if (emptyEl) emptyEl.style.display = 'none';
+
+      domains.forEach((domain) => {
+        const ips = domainToIPs.has(domain) ? [...domainToIPs.get(domain)].sort((a, b) => a.localeCompare(b)) : [];
+        const fakeIP = domainToFakeIP.get(domain) || '-';
+        const tr = document.createElement('tr');
+
+        const tdDomain = document.createElement('td');
+        tdDomain.textContent = domain;
+        tr.appendChild(tdDomain);
+
+        const tdIP = document.createElement('td');
+        tdIP.textContent = ips.length > 0 ? ips.join('\n') : '-';
+        tdIP.style.whiteSpace = 'pre-line';
+        tr.appendChild(tdIP);
+
+        const tdFake = document.createElement('td');
+        tdFake.textContent = fakeIP;
+        tr.appendChild(tdFake);
+
+        bodyEl.appendChild(tr);
+      });
     }
 
     async function loadProxySelections() {
