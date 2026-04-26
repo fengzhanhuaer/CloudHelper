@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -101,10 +102,8 @@ func installProbeLocalTUNDriver() error {
 		)
 	}
 	steps = append(steps, "create_or_open_adapter: ok")
-	handleLUID := uint64(0)
 	if handle != 0 {
 		if luid, luidErr := probeLocalGetWintunAdapterLUIDFromHandle(libraryPath, handle); luidErr == nil && luid > 0 {
-			handleLUID = luid
 			steps = append(steps, "resolve_adapter_luid_from_handle: ok")
 		} else {
 			steps = append(steps, "resolve_adapter_luid_from_handle: failed")
@@ -141,14 +140,6 @@ func installProbeLocalTUNDriver() error {
 	}
 	if detected {
 		steps = append(steps, "verify_adapter: found")
-		return nil
-	}
-	if createdOrOpened {
-		if handleLUID != 0 {
-			steps = append(steps, "verify_adapter: created_or_opened_with_luid")
-		} else {
-			steps = append(steps, "verify_adapter: created_or_opened")
-		}
 		return nil
 	}
 	if detectErr != nil {
@@ -251,21 +242,60 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 	if err != nil {
 		return err
 	}
-	if !exists {
-		return errors.New("wintun adapter is not detected after install")
-	}
-	if adapter.InterfaceIndex <= 0 {
-		if adapterLUID, luidExists, luidErr := findProbeLocalWintunAdapterLUID(); luidErr == nil && luidExists {
-			ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(adapterLUID)
-			if convertErr == nil && ifIndex > 0 {
-				adapter.InterfaceIndex = ifIndex
+	if exists {
+		if adapter.InterfaceIndex <= 0 {
+			if adapterLUID, luidExists, luidErr := findProbeLocalWintunAdapterLUID(); luidErr == nil && luidExists {
+				ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(adapterLUID)
+				if convertErr == nil && ifIndex > 0 {
+					adapter.InterfaceIndex = ifIndex
+				}
 			}
 		}
+		if adapter.InterfaceIndex > 0 {
+			return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(adapter.InterfaceIndex)
+		}
 	}
-	if adapter.InterfaceIndex <= 0 {
-		return errors.New("invalid wintun adapter interface index")
+
+	ifIndex, fallbackErr := resolveProbeLocalWintunInterfaceIndexFallback()
+	if fallbackErr != nil || ifIndex <= 0 {
+		return fmt.Errorf("wintun adapter is not detected after install: %w", firstProbeLocalTUNErr(fallbackErr, errors.New("invalid wintun adapter interface index")))
 	}
-	return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(adapter.InterfaceIndex)
+	return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex)
+}
+
+func resolveProbeLocalWintunInterfaceIndexFallback() (int, error) {
+	if rawIfIndex := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); rawIfIndex != "" {
+		if ifIndex, parseErr := strconv.Atoi(rawIfIndex); parseErr == nil && ifIndex > 0 {
+			return ifIndex, nil
+		}
+	}
+
+	libraryPath, err := probeLocalResolveWintunPath()
+	if err != nil {
+		return 0, fmt.Errorf("resolve wintun library path failed: %w", err)
+	}
+	handle, err := probeLocalCreateWintunAdapter(libraryPath, probeLocalTUNAdapterName, probeLocalTUNTunnelType)
+	if err != nil {
+		return 0, fmt.Errorf("create/open wintun adapter for route target failed: %w", err)
+	}
+	if handle == 0 {
+		return 0, errors.New("create/open wintun adapter for route target returned empty handle")
+	}
+	defer func() {
+		if closeErr := probeLocalCloseWintunAdapter(libraryPath, handle); closeErr != nil {
+			logProbeWarnf("close wintun adapter handle failed while resolving route target: %v", closeErr)
+		}
+	}()
+
+	adapterLUID, luidErr := probeLocalGetWintunAdapterLUIDFromHandle(libraryPath, handle)
+	if luidErr != nil || adapterLUID == 0 {
+		return 0, fmt.Errorf("resolve adapter luid from handle failed: %w", firstProbeLocalTUNErr(luidErr, errors.New("invalid adapter luid")))
+	}
+	ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(adapterLUID)
+	if convertErr != nil || ifIndex <= 0 {
+		return 0, fmt.Errorf("convert adapter luid to interface index failed: luid=%d err=%w", adapterLUID, firstProbeLocalTUNErr(convertErr, errors.New("invalid interface index")))
+	}
+	return ifIndex, nil
 }
 
 func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) error {
