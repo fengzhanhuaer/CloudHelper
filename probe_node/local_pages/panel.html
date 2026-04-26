@@ -230,6 +230,7 @@
       <div class="actions">
         <button id="upgradeDirectBtn">直连升级</button>
         <button id="upgradeProxyBtn" class="secondary">代理升级</button>
+        <button id="restartServiceBtn" class="secondary">重启服务</button>
         <button id="logoutBtn" class="warn">退出登录</button>
       </div>
       <p class="hint">直连升级将直接访问 GitHub，代理升级将通过 controller `/api/probe/proxy/*` 中转。</p>
@@ -277,7 +278,7 @@
       });
       if (!found) return clean;
       const name = String(found && found.name || '').trim();
-      return name ? `${name} (${clean})` : clean;
+      return name || clean;
     }
 
     function updateProxyActiveFromState() {
@@ -378,7 +379,7 @@
         chainOptions.forEach((item) => {
           const btn = document.createElement('button');
           btn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'tunnel', item.chainID) ? 'active' : ''}`;
-          btn.textContent = `隧道 ${item.label}`;
+          btn.textContent = item.label;
           btn.addEventListener('click', async () => {
             setMessage(`组 ${groupName} 切换链路中...`);
             try {
@@ -561,8 +562,11 @@
       const configuredGroups = Array.isArray(groupsData.groups)
         ? groupsData.groups.map((item) => String(item && item.group || '').trim()).filter(Boolean)
         : [];
-      const allGroups = ['fallback', ...configuredGroups.filter((name) => name.toLowerCase() !== 'fallback')];
-      const uniqueGroups = [...new Set(allGroups.map((name) => name.trim()).filter(Boolean))];
+      const nonFallbackGroups = configuredGroups
+        .map((name) => name.trim())
+        .filter((name) => name && name.toLowerCase() !== 'fallback');
+      const uniqueGroups = [...new Set(nonFallbackGroups)];
+      uniqueGroups.push('fallback');
 
       proxyChainItemsCache = Array.isArray(chainsData.items) ? chainsData.items : [];
       proxyStateGroupsCache = Array.isArray(stateData.groups) ? stateData.groups : [];
@@ -609,6 +613,16 @@
 
     document.getElementById('upgradeProxyBtn').addEventListener('click', () => {
       triggerSystemUpgrade('proxy');
+    });
+
+    document.getElementById('restartServiceBtn').addEventListener('click', async () => {
+      setMessage('提交重启服务...');
+      try {
+        await requestJSON('/local/api/system/restart', { method: 'POST', body: '{}' });
+        setMessage('已提交重启，服务将短暂断开后恢复', 'success');
+      } catch (err) {
+        setMessage('重启服务失败：' + err.message, 'error');
+      }
     });
 
     document.getElementById('logoutBtn').addEventListener('click', async () => {

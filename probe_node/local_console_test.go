@@ -818,6 +818,33 @@ func TestProbeLocalSystemUpgradeProxyRequiresController(t *testing.T) {
 	}
 }
 
+func TestProbeLocalSystemRestartAccepted(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	restartCalled := make(chan struct{}, 1)
+	probeLocalRestartProcess = func(_ string) error {
+		restartCalled <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() { resetProbeLocalUpgradeHooksForTest() })
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/restart", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("system/restart status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	accepted, _ := payload["accepted"].(bool)
+	if !accepted {
+		t.Fatalf("system/restart accepted=%v", payload["accepted"])
+	}
+	select {
+	case <-restartCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("system/restart did not trigger restart hook")
+	}
+}
+
 func TestProbeLocalSystemUpgradeProxyAccepted(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

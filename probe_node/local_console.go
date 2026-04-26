@@ -156,6 +156,7 @@ var (
 	probeLocalApplyProxyTakeover  = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect  = restoreProbeLocalProxyDirect
 	probeLocalRunUpgrade          = runProbeUpgrade
+	probeLocalRestartProcess      = restartCurrentProcess
 )
 
 func newProbeLocalControlManager() *probeLocalControlManager {
@@ -1364,6 +1365,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/dns/fake_ip/list", probeLocalDNSFakeIPListHandler)
 	mux.HandleFunc("/local/api/dns/fake_ip/lookup", probeLocalDNSFakeIPLookupHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
+	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
 }
 
@@ -1960,6 +1962,26 @@ func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func probeLocalSystemRestartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"accepted": true,
+	})
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		if err := probeLocalRestartProcess(""); err != nil {
+			logProbeErrorf("probe local restart failed: %v", err)
+		}
+	}()
+}
+
 func probeLocalProxyGroupsBackupHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2008,6 +2030,7 @@ func resetProbeLocalTUNHooksForTest() {
 
 func resetProbeLocalUpgradeHooksForTest() {
 	probeLocalRunUpgrade = runProbeUpgrade
+	probeLocalRestartProcess = restartCurrentProcess
 }
 
 func setProbeLocalProxyRuntimeContext(identity nodeIdentity, controllerBaseURL string) {

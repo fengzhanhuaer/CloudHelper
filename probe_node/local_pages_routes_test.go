@@ -85,6 +85,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"upgradeDirectBtn\"") || !strings.Contains(body, "id=\"upgradeProxyBtn\"") {
 		t.Fatalf("panel should contain system upgrade buttons")
 	}
+	if !strings.Contains(body, "id=\"restartServiceBtn\"") {
+		t.Fatalf("panel should contain restart service button")
+	}
 	if !strings.Contains(body, "DNS 状态") {
 		t.Fatalf("panel should contain dns status section")
 	}
