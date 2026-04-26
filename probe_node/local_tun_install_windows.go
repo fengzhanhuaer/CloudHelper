@@ -36,7 +36,7 @@ var (
 )
 
 func installProbeLocalTUNDriver() error {
-	steps := make([]string, 0, 16)
+	steps := make([]string, 0, 24)
 	steps = append(steps, "start: install_probe_local_tun_driver")
 	if err := probeLocalEnsureWintunLibrary(); err != nil {
 		steps = append(steps, "ensure_wintun_library: failed")
@@ -102,8 +102,10 @@ func installProbeLocalTUNDriver() error {
 		)
 	}
 	steps = append(steps, "create_or_open_adapter: ok")
+	handleLUID := uint64(0)
 	if handle != 0 {
 		if luid, luidErr := probeLocalGetWintunAdapterLUIDFromHandle(libraryPath, handle); luidErr == nil && luid > 0 {
+			handleLUID = luid
 			steps = append(steps, "resolve_adapter_luid_from_handle: ok")
 		} else {
 			steps = append(steps, "resolve_adapter_luid_from_handle: failed")
@@ -121,7 +123,7 @@ func installProbeLocalTUNDriver() error {
 		detectErr error
 		detected  bool
 	)
-	for _, delay := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond, 2500 * time.Millisecond, 3500 * time.Millisecond} {
+	for _, delay := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond, 2500 * time.Millisecond, 3500 * time.Millisecond, 5000 * time.Millisecond, 6500 * time.Millisecond} {
 		if delay > 0 {
 			probeLocalTUNInstallSleep(delay)
 		}
@@ -162,6 +164,22 @@ func installProbeLocalTUNDriver() error {
 		)
 	}
 	if createdOrOpened {
+		if handleLUID != 0 {
+			ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(handleLUID)
+			if convertErr == nil && ifIndex > 0 {
+				setProbeLocalWindowsRouteTargetEnv(ifIndex)
+				steps = append(steps, "verify_adapter: fallback_luid_ifindex_ok")
+				return nil
+			}
+			steps = append(steps, "verify_adapter: fallback_luid_ifindex_failed")
+			return newProbeLocalTUNInstallError(
+				probeLocalTUNInstallCodeAdapterNotDetected,
+				"verify_adapter",
+				"句柄创建成功但系统枚举不可见，且 LUID 无法转换接口索引，请检查网卡子系统状态",
+				fmt.Errorf("wintun adapter is not detected after install and luid->ifindex failed: luid=%d err=%w", handleLUID, firstProbeLocalTUNErr(convertErr, errors.New("invalid interface index"))),
+				steps,
+			)
+		}
 		steps = append(steps, "verify_adapter: created_handle_but_not_detected")
 		return newProbeLocalTUNInstallError(
 			probeLocalTUNInstallCodeAdapterNotDetected,
