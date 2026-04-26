@@ -21,16 +21,19 @@ const (
 )
 
 var (
-	probeLocalEnsureWintunLibrary      = ensureProbeEmbeddedWintunLibrary
-	probeLocalResolveWintunPath        = resolveProbeWintunPath
-	probeLocalDetectWintunAdapter      = detectProbeLocalWintunAdapter
-	probeLocalFindWintunAdapter        = findProbeLocalWintunAdapter
-	probeLocalCreateWintunAdapter      = createProbeLocalWintunAdapter
-	probeLocalCloseWintunAdapter       = closeProbeLocalWintunAdapter
-	probeLocalEnsureWindowsRouteTarget = ensureProbeLocalWindowsRouteTargetConfigured
-	probeLocalIsWindowsAdmin           = isWindowsAdmin
-	probeLocalRelaunchAsAdminInstall   = relaunchAsAdminForProbeLocalTUNInstall
-	probeLocalTUNInstallSleep          = time.Sleep
+	probeLocalEnsureWintunLibrary            = ensureProbeEmbeddedWintunLibrary
+	probeLocalResolveWintunPath              = resolveProbeWintunPath
+	probeLocalDetectWintunAdapter            = detectProbeLocalWintunAdapter
+	probeLocalFindWintunAdapter              = findProbeLocalWintunAdapter
+	probeLocalCreateWintunAdapter            = createProbeLocalWintunAdapter
+	probeLocalCloseWintunAdapter             = closeProbeLocalWintunAdapter
+	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle
+	probeLocalEnsureWindowsRouteTarget       = ensureProbeLocalWindowsRouteTargetConfigured
+	probeLocalEnsureWindowsInterfaceIPv4     = ensureProbeLocalWindowsInterfaceIPv4Address
+	probeLocalConvertInterfaceLUIDToIndex    = convertProbeLocalInterfaceLUIDToIndex
+	probeLocalIsWindowsAdmin                 = isWindowsAdmin
+	probeLocalRelaunchAsAdminInstall         = relaunchAsAdminForProbeLocalTUNInstall
+	probeLocalTUNInstallSleep                = time.Sleep
 )
 
 func installProbeLocalTUNDriver() error {
@@ -115,7 +118,14 @@ func installProbeLocalTUNDriver() error {
 		)
 	}
 	steps = append(steps, "create_or_open_adapter: ok")
+	handleLUID := uint64(0)
 	if handle != 0 {
+		if luid, luidErr := probeLocalGetWintunAdapterLUIDFromHandle(libraryPath, handle); luidErr == nil && luid > 0 {
+			handleLUID = luid
+			steps = append(steps, "resolve_adapter_luid_from_handle: ok")
+		} else {
+			steps = append(steps, "resolve_adapter_luid_from_handle: failed")
+		}
 		if closeErr := probeLocalCloseWintunAdapter(libraryPath, handle); closeErr != nil {
 			logProbeWarnf("close wintun adapter handle failed: %v", closeErr)
 			steps = append(steps, "close_adapter_handle: failed")
@@ -163,6 +173,37 @@ func installProbeLocalTUNDriver() error {
 		}
 		steps = append(steps, "configure_route_target: ok")
 		return nil
+	}
+	if createdOrOpened && handleLUID != 0 {
+		steps = append(steps, "verify_adapter: fallback_luid")
+		ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(handleLUID)
+		if convertErr != nil || ifIndex <= 0 {
+			steps = append(steps, "convert_luid_to_ifindex: failed")
+			return newProbeLocalTUNInstallError(
+				probeLocalTUNInstallCodeIfIndexInvalid,
+				"convert_luid_to_ifindex",
+				"已获取网卡 LUID，但无法转换接口索引，请检查系统网络组件状态",
+				fmt.Errorf("convert adapter luid to interface index failed: luid=%d err=%w", handleLUID, firstProbeLocalTUNErr(convertErr, errors.New("invalid interface index"))),
+				steps,
+			)
+		}
+		if ensureErr := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex); ensureErr == nil {
+			steps = append(steps, "configure_route_target_by_luid: ok")
+			return nil
+		} else {
+			steps = append(steps, "configure_route_target_by_luid: failed")
+			code := probeLocalTUNInstallCodeRouteTargetFailed
+			if strings.Contains(strings.ToLower(strings.TrimSpace(ensureErr.Error())), "interface index") {
+				code = probeLocalTUNInstallCodeIfIndexInvalid
+			}
+			return newProbeLocalTUNInstallError(
+				code,
+				"configure_route_target_by_luid",
+				"网卡枚举不可见，但已拿到句柄 LUID；请检查网卡可见性与地址绑定权限",
+				fmt.Errorf("configure route target by adapter luid failed: %w", ensureErr),
+				steps,
+			)
+		}
 	}
 	if detectErr != nil {
 		steps = append(steps, "detect_adapter_retry: failed")
@@ -272,7 +313,7 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 	}
 	if adapter.InterfaceIndex <= 0 {
 		if adapterLUID, luidExists, luidErr := findProbeLocalWintunAdapterLUID(); luidErr == nil && luidExists {
-			ifIndex, convertErr := convertProbeLocalInterfaceLUIDToIndex(adapterLUID)
+			ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(adapterLUID)
 			if convertErr == nil && ifIndex > 0 {
 				adapter.InterfaceIndex = ifIndex
 			}
@@ -281,11 +322,25 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 	if adapter.InterfaceIndex <= 0 {
 		return errors.New("invalid wintun adapter interface index")
 	}
-	if err := ensureProbeLocalWindowsInterfaceIPv4Address(adapter.InterfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+	return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(adapter.InterfaceIndex)
+}
+
+func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) error {
+	if interfaceIndex <= 0 {
+		return errors.New("invalid wintun adapter interface index")
+	}
+	if err := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 		return err
 	}
-	setProbeLocalWindowsRouteTargetEnv(adapter.InterfaceIndex)
+	setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
 	return nil
+}
+
+func firstProbeLocalTUNErr(primary error, fallback error) error {
+	if primary != nil {
+		return primary
+	}
+	return fallback
 }
 
 func resetProbeLocalTUNInstallWindowsHooksForTest() {
@@ -295,7 +350,10 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalFindWintunAdapter = findProbeLocalWintunAdapter
 	probeLocalCreateWintunAdapter = createProbeLocalWintunAdapter
 	probeLocalCloseWintunAdapter = closeProbeLocalWintunAdapter
+	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle
 	probeLocalEnsureWindowsRouteTarget = ensureProbeLocalWindowsRouteTargetConfigured
+	probeLocalEnsureWindowsInterfaceIPv4 = ensureProbeLocalWindowsInterfaceIPv4Address
+	probeLocalConvertInterfaceLUIDToIndex = convertProbeLocalInterfaceLUIDToIndex
 	probeLocalIsWindowsAdmin = isWindowsAdmin
 	probeLocalRelaunchAsAdminInstall = relaunchAsAdminForProbeLocalTUNInstall
 	probeLocalTUNInstallSleep = time.Sleep

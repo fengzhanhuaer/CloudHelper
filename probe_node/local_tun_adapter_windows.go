@@ -201,6 +201,36 @@ func closeProbeLocalWintunAdapter(libraryPath string, handle uintptr) error {
 	return nil
 }
 
+func getProbeLocalWintunAdapterLUIDFromHandle(libraryPath string, handle uintptr) (uint64, error) {
+	if handle == 0 {
+		return 0, errors.New("empty wintun adapter handle")
+	}
+	path := strings.TrimSpace(libraryPath)
+	if path == "" {
+		return 0, errors.New("empty wintun.dll path")
+	}
+	if absPath, err := filepath.Abs(path); err == nil {
+		path = absPath
+	}
+	wintunDLL := syscall.NewLazyDLL(path)
+	getLUIDProc := wintunDLL.NewProc("WintunGetAdapterLUID")
+	if err := wintunDLL.Load(); err != nil {
+		return 0, fmt.Errorf("failed to load wintun.dll for luid query: %w", err)
+	}
+	var luid uint64
+	_, _, callErr := getLUIDProc.Call(
+		handle,
+		uintptr(unsafe.Pointer(&luid)),
+	)
+	if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+		return 0, fmt.Errorf("WintunGetAdapterLUID call failed: %w", callErr)
+	}
+	if luid == 0 {
+		return 0, errors.New("WintunGetAdapterLUID returned zero")
+	}
+	return luid, nil
+}
+
 func formatProbeLocalWindowsCallErr(err error) string {
 	if err == nil {
 		return "nil"

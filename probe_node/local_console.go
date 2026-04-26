@@ -198,6 +198,7 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	logProbeInfof("probe local tun install/check started: platform=%s", runtime.GOOS)
 	if err := probeLocalInstallTUNDriver(); err != nil {
 		m.tun.LastError = strings.TrimSpace(err.Error())
 		m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -205,12 +206,28 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		if errors.Is(err, errProbeLocalTUNUnsupported) {
 			status = http.StatusNotImplemented
 		}
+		var installErr *probeLocalTUNInstallError
+		if errors.As(err, &installErr) && installErr != nil {
+			if len(installErr.Diagnostic.Steps) > 0 {
+				logProbeWarnf("probe local tun install diagnostic steps: %s", strings.Join(installErr.Diagnostic.Steps, " | "))
+			}
+			logProbeErrorf(
+				"probe local tun install/check failed: code=%s stage=%s hint=%s details=%s",
+				strings.TrimSpace(installErr.Diagnostic.Code),
+				strings.TrimSpace(installErr.Diagnostic.Stage),
+				strings.TrimSpace(installErr.Diagnostic.Hint),
+				strings.TrimSpace(installErr.Diagnostic.Details),
+			)
+		} else {
+			logProbeErrorf("probe local tun install/check failed: %v", err)
+		}
 		return m.tun, &probeLocalHTTPError{Status: status, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(err)}
 	}
 
 	m.tun.Installed = true
 	m.tun.LastError = ""
 	m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	logProbeInfof("probe local tun install/check completed: installed=true")
 	return m.tun, nil
 }
 
