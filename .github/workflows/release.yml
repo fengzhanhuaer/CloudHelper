@@ -123,60 +123,11 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: probe_node/${{ matrix.output }}
 
-  build-probe-manager:
-    needs: prepare-release
-    runs-on: windows-latest
-    steps:
-      - name: Checkout Tagged Source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: v${{ needs.prepare-release.outputs.new_version }}
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.1'
-          cache: true
-          cache-dependency-path: |
-            probe_manager/go.sum
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: |
-            probe_manager/frontend/package-lock.json
-
-      - name: Install Frontend Dependencies
-        working-directory: probe_manager/frontend
-        shell: bash
-        run: npm ci --prefer-offline --no-audit --fund=false
-
-      - name: Install Wails CLI
-        shell: bash
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
-
-      - name: Build Probe Manager (Windows amd64)
-        working-directory: probe_manager
-        env:
-          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
-        shell: bash
-        run: wails build -platform windows/amd64 -ldflags "-X main.BuildVersion=v${NEW_VERSION}" && mv build/bin/probe_manager.exe build/bin/cloudhelper-probe-manager-windows-amd64.exe
-
-      - name: Upload Probe Manager Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloudhelper-probe-manager-windows-amd64.exe
-          path: probe_manager/build/bin/cloudhelper-probe-manager-windows-amd64.exe
-
   create-release:
     needs:
       - prepare-release
       - build-probe-controller
       - build-probe-node
-      - build-probe-manager
     runs-on: ubuntu-latest
     steps:
       - name: Download Probe Controller Artifact
@@ -203,12 +154,6 @@ jobs:
           name: cloudhelper-probe-node-windows-amd64.exe
           path: release-assets
 
-      - name: Download Probe Manager Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: cloudhelper-probe-manager-windows-amd64.exe
-          path: release-assets
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -219,4 +164,3 @@ jobs:
             release-assets/cloudhelper-probe-node-linux-amd64
             release-assets/cloudhelper-probe-node-linux-arm64
             release-assets/cloudhelper-probe-node-windows-amd64.exe
-            release-assets/cloudhelper-probe-manager-windows-amd64.exe
