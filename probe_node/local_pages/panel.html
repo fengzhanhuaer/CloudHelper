@@ -163,6 +163,7 @@
       </div>
       <div id="proxyRuleGroups" class="rule-group-list"></div>
       <div class="actions">
+        <button id="proxyGlobalToggleBtn" class="secondary">启用代理</button>
         <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
         <button id="proxySelectionRefreshBtn" class="secondary">刷新组与链路</button>
       </div>
@@ -244,6 +245,7 @@
     const proxyRuleGroupsEl = document.getElementById('proxyRuleGroups');
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
+    let proxyStatusCache = { enabled: false, mode: '' };
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -255,6 +257,24 @@
       if (!el) return;
       const clean = (value === undefined || value === null || value === '') ? '-' : String(value);
       el.textContent = clean;
+    }
+
+    function isProxyGloballyEnabled() {
+      return !!proxyStatusCache.enabled && normalizeAction(proxyStatusCache.mode) === 'tunnel';
+    }
+
+    function updateProxyGlobalToggleButton() {
+      const btn = document.getElementById('proxyGlobalToggleBtn');
+      if (!btn) return;
+      if (isProxyGloballyEnabled()) {
+        btn.textContent = '关闭代理';
+        btn.classList.remove('secondary');
+        btn.classList.add('warn');
+        return;
+      }
+      btn.textContent = '启用代理';
+      btn.classList.remove('warn');
+      btn.classList.add('secondary');
     }
 
     function normalizeChainID(chainValue) {
@@ -467,10 +487,15 @@
 
     async function loadProxyStatus() {
       const data = await requestJSON('/local/api/proxy/status', { method: 'GET' });
+      proxyStatusCache = {
+        enabled: !!data.enabled,
+        mode: String(data.mode || '').trim(),
+      };
       setText('proxyEnabled', data.enabled ? '是' : '否');
       setText('proxyMode', data.mode);
       setText('proxyUpdatedAt', data.updated_at);
       setText('proxyLastError', data.last_error);
+      updateProxyGlobalToggleButton();
     }
 
     async function loadDNSStatus() {
@@ -575,6 +600,28 @@
       updateProxyActiveFromState();
     }
 
+    function resolveGlobalToggleEnableSelection() {
+      const preferred = proxyStateGroupsCache.find((entry) => {
+        return normalizeAction(entry && entry.action) === 'tunnel'
+          && normalizeChainID(entry && entry.tunnel_node_id) !== '';
+      });
+      if (preferred) {
+        const group = String(preferred && preferred.group || '').trim() || 'fallback';
+        const chainID = normalizeChainID(preferred && preferred.tunnel_node_id);
+        if (chainID) {
+          return { group, chainID };
+        }
+      }
+      const firstChain = proxyChainItemsCache.find((item) => normalizeChainID(item && item.chain_id));
+      if (!firstChain) {
+        return null;
+      }
+      return {
+        group: 'fallback',
+        chainID: normalizeChainID(firstChain.chain_id),
+      };
+    }
+
     async function refreshAll() {
       setMessage('');
       const ok = await ensureSession();
@@ -674,6 +721,42 @@
         setMessage('代理组与链路已刷新', 'success');
       } catch (err) {
         setMessage('读取代理组与链路失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyGlobalToggleBtn').addEventListener('click', async () => {
+      if (isProxyGloballyEnabled()) {
+        setMessage('关闭代理中...');
+        try {
+          await requestJSON('/local/api/proxy/direct', {
+            method: 'POST',
+            body: JSON.stringify({ group: 'fallback' }),
+          });
+          await refreshAll();
+          setMessage('代理已关闭', 'success');
+        } catch (err) {
+          setMessage('关闭代理失败：' + err.message, 'error');
+        }
+        return;
+      }
+      const selection = resolveGlobalToggleEnableSelection();
+      if (!selection || !selection.chainID) {
+        setMessage('启用代理失败：请先配置可用链路', 'error');
+        return;
+      }
+      setMessage('启用代理中...');
+      try {
+        await requestJSON('/local/api/proxy/enable', {
+          method: 'POST',
+          body: JSON.stringify({
+            group: selection.group,
+            tunnel_node_id: selection.chainID,
+          }),
+        });
+        await refreshAll();
+        setMessage('代理已启用', 'success');
+      } catch (err) {
+        setMessage('启用代理失败：' + err.message, 'error');
       }
     });
 
