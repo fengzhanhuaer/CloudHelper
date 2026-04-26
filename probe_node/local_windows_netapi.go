@@ -40,6 +40,10 @@ var (
 	probeLocalProcCreateUnicastIPAddressEntryNet     = probeLocalModIphlpapiNet.NewProc("CreateUnicastIpAddressEntry")
 	probeLocalProcInitializeUnicastIPAddressEntryNet = probeLocalModIphlpapiNet.NewProc("InitializeUnicastIpAddressEntry")
 	probeLocalProcConvertInterfaceLuidToIndexNet     = probeLocalModIphlpapiNet.NewProc("ConvertInterfaceLuidToIndex")
+
+	probeLocalConvertInterfaceLUIDToIndexNative = convertProbeLocalInterfaceLUIDToIndexNative
+	probeLocalListNetAdaptersForLUIDLookup      = listProbeLocalWindowsNetAdapters
+	probeLocalNetapiSleep                       = time.Sleep
 )
 
 func ensureProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
@@ -223,6 +227,27 @@ func convertProbeLocalInterfaceLUIDToIndex(luid uint64) (int, error) {
 	if luid == 0 {
 		return 0, errors.New("invalid interface luid")
 	}
+	ifIndex, nativeErr := probeLocalConvertInterfaceLUIDToIndexNative(luid)
+	if nativeErr == nil && ifIndex > 0 {
+		return ifIndex, nil
+	}
+
+	primaryErr := firstProbeLocalTUNErr(nativeErr, errors.New("ConvertInterfaceLuidToIndex returned zero"))
+	var lookupErr error
+	for _, delay := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond} {
+		if delay > 0 {
+			probeLocalNetapiSleep(delay)
+		}
+		ifIndexByList, err := lookupProbeLocalInterfaceIndexByLUID(luid)
+		if err == nil && ifIndexByList > 0 {
+			return ifIndexByList, nil
+		}
+		lookupErr = err
+	}
+	return 0, fmt.Errorf("convert interface luid to index failed: %w", errors.Join(primaryErr, lookupErr))
+}
+
+func convertProbeLocalInterfaceLUIDToIndexNative(luid uint64) (int, error) {
 	var ifIndex uint32
 	ret, _, callErr := probeLocalProcConvertInterfaceLuidToIndexNet.Call(
 		uintptr(unsafe.Pointer(&luid)),
@@ -238,6 +263,19 @@ func convertProbeLocalInterfaceLUIDToIndex(luid uint64) (int, error) {
 		return 0, errors.New("ConvertInterfaceLuidToIndex returned zero")
 	}
 	return int(ifIndex), nil
+}
+
+func lookupProbeLocalInterfaceIndexByLUID(luid uint64) (int, error) {
+	adapters, err := probeLocalListNetAdaptersForLUIDLookup()
+	if err != nil {
+		return 0, err
+	}
+	for _, adapter := range adapters {
+		if adapter.InterfaceLUID == luid && adapter.InterfaceIndex > 0 {
+			return adapter.InterfaceIndex, nil
+		}
+	}
+	return 0, fmt.Errorf("adapter not found for interface luid: %d", luid)
 }
 
 func ipv4ToUint32(ip net.IP) (uint32, bool) {

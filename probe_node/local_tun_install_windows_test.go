@@ -38,11 +38,6 @@ func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
 		createCalled++
 		return 0, errors.New("should not create")
 	}
-	routeTargetCalls := 0
-	probeLocalEnsureWindowsRouteTarget = func() error {
-		routeTargetCalls++
-		return nil
-	}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	if err := installProbeLocalTUNDriver(); err != nil {
@@ -50,9 +45,6 @@ func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
 	}
 	if createCalled != 0 {
 		t.Fatalf("create called=%d, want 0", createCalled)
-	}
-	if routeTargetCalls != 1 {
-		t.Fatalf("route target calls=%d, want 1", routeTargetCalls)
 	}
 }
 
@@ -78,11 +70,6 @@ func TestInstallProbeLocalTUNDriverCreateAndVerify(t *testing.T) {
 		closeCalled++
 		return nil
 	}
-	routeTargetCalls := 0
-	probeLocalEnsureWindowsRouteTarget = func() error {
-		routeTargetCalls++
-		return nil
-	}
 	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
@@ -95,9 +82,6 @@ func TestInstallProbeLocalTUNDriverCreateAndVerify(t *testing.T) {
 	if closeCalled != 1 {
 		t.Fatalf("close called=%d, want 1", closeCalled)
 	}
-	if routeTargetCalls != 1 {
-		t.Fatalf("route target calls=%d, want 1", routeTargetCalls)
-	}
 }
 
 func TestInstallProbeLocalTUNDriverCreateFailure(t *testing.T) {
@@ -108,11 +92,6 @@ func TestInstallProbeLocalTUNDriverCreateFailure(t *testing.T) {
 	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) {
 		return 0, errors.New("access denied")
 	}
-	routeTargetCalls := 0
-	probeLocalEnsureWindowsRouteTarget = func() error {
-		routeTargetCalls++
-		return nil
-	}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	err := installProbeLocalTUNDriver()
@@ -121,41 +100,6 @@ func TestInstallProbeLocalTUNDriverCreateFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "create/open wintun adapter") {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if routeTargetCalls != 0 {
-		t.Fatalf("route target calls=%d, want 0", routeTargetCalls)
-	}
-}
-
-func TestInstallProbeLocalTUNDriverVerifyFailure(t *testing.T) {
-	forceProbeLocalInstallAsAdminForTest()
-	probeLocalEnsureWintunLibrary = func() error { return nil }
-	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
-	probeLocalDetectWintunAdapter = func() (bool, error) { return false, nil }
-	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) {
-		return uintptr(1), nil
-	}
-	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
-	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) {
-		return 12345, nil
-	}
-	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
-		if luid == 12345 {
-			return 77, nil
-		}
-		return 0, errors.New("unexpected luid")
-	}
-	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
-		if interfaceIndex != 77 {
-			return errors.New("unexpected interface index")
-		}
-		return nil
-	}
-	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
-	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
-
-	if err := installProbeLocalTUNDriver(); err != nil {
-		t.Fatalf("expected fallback by handle luid to succeed, got error: %v", err)
 	}
 }
 
@@ -184,45 +128,5 @@ func TestInstallProbeLocalTUNDriverVerifyFailureWithoutAdapterHandle(t *testing.
 	}
 	if detectCalls < 2 {
 		t.Fatalf("detect calls=%d, want >=2", detectCalls)
-	}
-}
-
-func TestInstallProbeLocalTUNDriverFallbackByHandleLUIDRouteConfigureFailure(t *testing.T) {
-	forceProbeLocalInstallAsAdminForTest()
-	probeLocalEnsureWintunLibrary = func() error { return nil }
-	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
-	probeLocalDetectWintunAdapter = func() (bool, error) { return false, nil }
-	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) {
-		return uintptr(1), nil
-	}
-	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
-	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) {
-		return 20001, nil
-	}
-	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
-		if luid != 20001 {
-			return 0, errors.New("unexpected luid")
-		}
-		return 99, nil
-	}
-	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
-		return errors.New("bind failed for test")
-	}
-	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
-	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
-
-	err := installProbeLocalTUNDriver()
-	if err == nil {
-		t.Fatal("expected installProbeLocalTUNDriver error")
-	}
-	var installErr *probeLocalTUNInstallError
-	if !errors.As(err, &installErr) || installErr == nil {
-		t.Fatalf("expected probeLocalTUNInstallError, got: %T %v", err, err)
-	}
-	if installErr.Diagnostic.Code != probeLocalTUNInstallCodeRouteTargetFailed {
-		t.Fatalf("diagnostic code=%q", installErr.Diagnostic.Code)
-	}
-	if installErr.Diagnostic.Stage != "configure_route_target_by_luid" {
-		t.Fatalf("diagnostic stage=%q", installErr.Diagnostic.Stage)
 	}
 }

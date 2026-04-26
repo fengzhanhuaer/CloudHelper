@@ -69,12 +69,14 @@ func TestDeleteProbeLocalWindowsSplitRouteIgnoresMissing(t *testing.T) {
 func TestApplyProbeLocalProxyTakeoverRollbackOnSecondRouteFailure(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldEnsure := probeLocalWindowsEnsureWintunLibrary
+	oldEnsureRoute := probeLocalWindowsEnsureRouteTarget
 	oldRun := probeLocalWindowsRunCommand
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
 
 	probeLocalWindowsEnsureWintunLibrary = func() error { return nil }
+	probeLocalWindowsEnsureRouteTarget = func() error { return nil }
 	calls := make([]string, 0, 8)
 	probeLocalWindowsRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
 		line := name + " " + strings.Join(args, " ")
@@ -89,6 +91,7 @@ func TestApplyProbeLocalProxyTakeoverRollbackOnSecondRouteFailure(t *testing.T) 
 	}
 	t.Cleanup(func() {
 		probeLocalWindowsEnsureWintunLibrary = oldEnsure
+		probeLocalWindowsEnsureRouteTarget = oldEnsureRoute
 		probeLocalWindowsRunCommand = oldRun
 		resetProbeLocalWindowsTakeoverStateForTest()
 	})
@@ -132,6 +135,28 @@ func hasWindowsRouteCommand(calls []string, verb string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func TestApplyProbeLocalProxyTakeoverReturnsRouteTargetConfigureFailure(t *testing.T) {
+	resetProbeLocalWindowsTakeoverStateForTest()
+	oldEnsure := probeLocalWindowsEnsureWintunLibrary
+	oldEnsureRoute := probeLocalWindowsEnsureRouteTarget
+	t.Cleanup(func() {
+		probeLocalWindowsEnsureWintunLibrary = oldEnsure
+		probeLocalWindowsEnsureRouteTarget = oldEnsureRoute
+		resetProbeLocalWindowsTakeoverStateForTest()
+	})
+
+	probeLocalWindowsEnsureWintunLibrary = func() error { return nil }
+	probeLocalWindowsEnsureRouteTarget = func() error { return errors.New("route target configure failed for test") }
+
+	err := applyProbeLocalProxyTakeover()
+	if err == nil {
+		t.Fatalf("expected configure route target failure")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "configure windows tun route target failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestCurrentProbeLocalTUNDNSListenHost(t *testing.T) {
