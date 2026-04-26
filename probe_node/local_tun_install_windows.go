@@ -41,6 +41,7 @@ func installProbeLocalTUNDriver() error {
 	if err != nil {
 		return fmt.Errorf("create/open wintun adapter: %w", err)
 	}
+	createdOrOpened := handle != 0
 	if handle != 0 {
 		if closeErr := probeLocalCloseWintunAdapter(libraryPath, handle); closeErr != nil {
 			logProbeWarnf("close wintun adapter handle failed: %v", closeErr)
@@ -62,7 +63,15 @@ func installProbeLocalTUNDriver() error {
 		}
 	}
 	if detectErr != nil {
+		if createdOrOpened {
+			logProbeWarnf("verify wintun adapter after install got transient errors, continue: %v", detectErr)
+			return nil
+		}
 		return fmt.Errorf("verify wintun adapter after install: %w", detectErr)
+	}
+	if createdOrOpened {
+		logProbeWarnf("wintun adapter is not detected after install, treat as success because adapter handle was created/opened")
+		return nil
 	}
 	return errors.New("wintun adapter is not detected after install")
 }

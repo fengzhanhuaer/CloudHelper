@@ -106,6 +106,22 @@ func TestInstallProbeLocalTUNDriverVerifyFailure(t *testing.T) {
 	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
+	if err := installProbeLocalTUNDriver(); err != nil {
+		t.Fatalf("installProbeLocalTUNDriver returned error: %v", err)
+	}
+}
+
+func TestInstallProbeLocalTUNDriverVerifyFailureWithoutAdapterHandle(t *testing.T) {
+	probeLocalEnsureWintunLibrary = func() error { return nil }
+	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalDetectWintunAdapter = func() (bool, error) { return false, nil }
+	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) {
+		return uintptr(0), nil
+	}
+	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
+	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
 	err := installProbeLocalTUNDriver()
 	if err == nil {
 		t.Fatal("expected installProbeLocalTUNDriver error")

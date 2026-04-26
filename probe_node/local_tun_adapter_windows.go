@@ -52,7 +52,7 @@ func listProbeLocalWindowsNetAdapters() ([]probeLocalWindowsNetAdapter, error) {
 	buf := make([]byte, size)
 	for i := 0; i < 3; i++ {
 		first := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0]))
-		errCode := windows.GetAdaptersAddresses(windows.AF_INET, flags, 0, first, &size)
+		errCode := windows.GetAdaptersAddresses(windows.AF_UNSPEC, flags, 0, first, &size)
 		if errCode == nil {
 			return parseProbeLocalWindowsNetAdapters(first), nil
 		}
