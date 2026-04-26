@@ -32,6 +32,11 @@ func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
 		createCalled++
 		return 0, errors.New("should not create")
 	}
+	routeTargetCalls := 0
+	probeLocalEnsureWindowsRouteTarget = func() error {
+		routeTargetCalls++
+		return nil
+	}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	if err := installProbeLocalTUNDriver(); err != nil {
@@ -39,6 +44,9 @@ func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
 	}
 	if createCalled != 0 {
 		t.Fatalf("create called=%d, want 0", createCalled)
+	}
+	if routeTargetCalls != 1 {
+		t.Fatalf("route target calls=%d, want 1", routeTargetCalls)
 	}
 }
 
@@ -63,6 +71,11 @@ func TestInstallProbeLocalTUNDriverCreateAndVerify(t *testing.T) {
 		closeCalled++
 		return nil
 	}
+	routeTargetCalls := 0
+	probeLocalEnsureWindowsRouteTarget = func() error {
+		routeTargetCalls++
+		return nil
+	}
 	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
@@ -75,6 +88,9 @@ func TestInstallProbeLocalTUNDriverCreateAndVerify(t *testing.T) {
 	if closeCalled != 1 {
 		t.Fatalf("close called=%d, want 1", closeCalled)
 	}
+	if routeTargetCalls != 1 {
+		t.Fatalf("route target calls=%d, want 1", routeTargetCalls)
+	}
 }
 
 func TestInstallProbeLocalTUNDriverCreateFailure(t *testing.T) {
@@ -84,6 +100,11 @@ func TestInstallProbeLocalTUNDriverCreateFailure(t *testing.T) {
 	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) {
 		return 0, errors.New("access denied")
 	}
+	routeTargetCalls := 0
+	probeLocalEnsureWindowsRouteTarget = func() error {
+		routeTargetCalls++
+		return nil
+	}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	err := installProbeLocalTUNDriver()
@@ -92,6 +113,9 @@ func TestInstallProbeLocalTUNDriverCreateFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "create/open wintun adapter") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if routeTargetCalls != 0 {
+		t.Fatalf("route target calls=%d, want 0", routeTargetCalls)
 	}
 }
 
@@ -106,15 +130,23 @@ func TestInstallProbeLocalTUNDriverVerifyFailure(t *testing.T) {
 	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := installProbeLocalTUNDriver(); err != nil {
-		t.Fatalf("installProbeLocalTUNDriver returned error: %v", err)
+	err := installProbeLocalTUNDriver()
+	if err == nil {
+		t.Fatal("expected installProbeLocalTUNDriver error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "not detected") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestInstallProbeLocalTUNDriverVerifyFailureWithoutAdapterHandle(t *testing.T) {
 	probeLocalEnsureWintunLibrary = func() error { return nil }
 	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
-	probeLocalDetectWintunAdapter = func() (bool, error) { return false, nil }
+	detectCalls := 0
+	probeLocalDetectWintunAdapter = func() (bool, error) {
+		detectCalls++
+		return false, errors.New("adapter enumerate failed")
+	}
 	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) {
 		return uintptr(0), nil
 	}
@@ -126,7 +158,10 @@ func TestInstallProbeLocalTUNDriverVerifyFailureWithoutAdapterHandle(t *testing.
 	if err == nil {
 		t.Fatal("expected installProbeLocalTUNDriver error")
 	}
-	if !strings.Contains(err.Error(), "not detected") {
+	if !strings.Contains(strings.ToLower(err.Error()), "verify wintun adapter") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if detectCalls < 2 {
+		t.Fatalf("detect calls=%d, want >=2", detectCalls)
 	}
 }

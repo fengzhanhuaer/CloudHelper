@@ -17,21 +17,30 @@ import (
 const probeLocalWindowsErrorInsufficientBuffer = 122
 
 type probeLocalWindowsNetAdapter struct {
+	InterfaceIndex       int
 	Name                 string
 	InterfaceDescription string
 }
 
 func detectProbeLocalWintunAdapter() (bool, error) {
-	adapters, err := listProbeLocalWindowsNetAdapters()
+	_, exists, err := findProbeLocalWintunAdapter()
 	if err != nil {
 		return false, err
 	}
+	return exists, nil
+}
+
+func findProbeLocalWintunAdapter() (probeLocalWindowsNetAdapter, bool, error) {
+	adapters, err := listProbeLocalWindowsNetAdapters()
+	if err != nil {
+		return probeLocalWindowsNetAdapter{}, false, err
+	}
 	for _, adapter := range adapters {
 		if probeLocalWintunAdapterMatches(adapter.Name, adapter.InterfaceDescription) {
-			return true, nil
+			return adapter, true, nil
 		}
 	}
-	return false, nil
+	return probeLocalWindowsNetAdapter{}, false, nil
 }
 
 func probeLocalWintunAdapterMatches(name, description string) bool {
@@ -69,6 +78,7 @@ func parseProbeLocalWindowsNetAdapters(first *windows.IpAdapterAddresses) []prob
 	items := make([]probeLocalWindowsNetAdapter, 0)
 	for curr := first; curr != nil; curr = curr.Next {
 		items = append(items, probeLocalWindowsNetAdapter{
+			InterfaceIndex:       int(curr.IfIndex),
 			Name:                 strings.TrimSpace(windows.UTF16PtrToString(curr.FriendlyName)),
 			InterfaceDescription: strings.TrimSpace(windows.UTF16PtrToString(curr.Description)),
 		})
@@ -113,10 +123,19 @@ func createProbeLocalWintunAdapter(libraryPath, adapterName, tunnelType string) 
 		return 0, fmt.Errorf("invalid tun tunnel type: %w", err)
 	}
 
+	guidArg := uintptr(0)
+	if guidText := strings.TrimSpace(probeLocalTUNAdapterRequestedGUID); guidText != "" {
+		reqGUID, parseErr := windows.GUIDFromString(guidText)
+		if parseErr != nil {
+			return 0, fmt.Errorf("invalid requested adapter guid: %w", parseErr)
+		}
+		guidArg = uintptr(unsafe.Pointer(&reqGUID))
+	}
+
 	handle, _, createErr := createProc.Call(
 		uintptr(unsafe.Pointer(namePtr)),
 		uintptr(unsafe.Pointer(kindPtr)),
-		0,
+		guidArg,
 	)
 	if handle != 0 {
 		return handle, nil
