@@ -17,6 +17,7 @@ func TestProbeLocalAPIMethodGuards(t *testing.T) {
 	}{
 		{name: "auth session should only allow GET", method: http.MethodPost, path: "/local/api/auth/session", body: map[string]any{}},
 		{name: "tun status should only allow GET", method: http.MethodPost, path: "/local/api/tun/status", body: map[string]any{}},
+		{name: "logs should only allow GET", method: http.MethodPost, path: "/local/api/logs", body: map[string]any{}},
 		{name: "dns status should only allow GET", method: http.MethodPost, path: "/local/api/dns/status", body: map[string]any{}},
 		{name: "dns fake ip list should only allow GET", method: http.MethodPost, path: "/local/api/dns/fake_ip/list", body: map[string]any{}},
 		{name: "dns fake ip lookup should only allow GET", method: http.MethodPost, path: "/local/api/dns/fake_ip/lookup", body: map[string]any{}},

@@ -64,6 +64,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tabDNS\"") {
 		t.Fatalf("panel should contain dns tab button")
 	}
+	if !strings.Contains(body, "id=\"tabLogs\"") {
+		t.Fatalf("panel should contain logs tab button")
+	}
 	if !strings.Contains(body, "id=\"tabSystem\"") {
 		t.Fatalf("panel should contain system tab button")
 	}
@@ -105,6 +108,15 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	}
 	if !strings.Contains(body, "域名") || !strings.Contains(body, "IP") || !strings.Contains(body, "fake IP") {
 		t.Fatalf("panel should contain dns map columns")
+	}
+	if !strings.Contains(body, "id=\"logsRefreshBtn\"") {
+		t.Fatalf("panel should contain logs refresh button")
+	}
+	if !strings.Contains(body, "id=\"logsAutoRefresh\"") {
+		t.Fatalf("panel should contain logs auto refresh switch")
+	}
+	if !strings.Contains(body, "id=\"logsKeyword\"") {
+		t.Fatalf("panel should contain logs keyword filter")
 	}
 }
 

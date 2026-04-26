@@ -191,6 +191,11 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("proxy/status without session status=%d", proxyStatusResp.Code)
 	}
 
+	logsResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/logs", nil)
+	if logsResp.Code != http.StatusUnauthorized {
+		t.Fatalf("logs without session status=%d", logsResp.Code)
+	}
+
 	panelResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/panel", nil)
 	if panelResp.Code != http.StatusFound {
 		t.Fatalf("panel without session status=%d", panelResp.Code)
@@ -977,6 +982,41 @@ func TestProbeLocalTUNInstallReturnsNotImplementedOnUnsupported(t *testing.T) {
 	errText, _ := payload["error"].(string)
 	if !strings.Contains(strings.ToLower(errText), "not supported") {
 		t.Fatalf("tun/install unsupported error=%q", errText)
+	}
+}
+
+func TestProbeLocalLogsEndpointWithFilters(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	_, _ = probeLogStore.Write([]byte("2026/04/26 15:21:02 [normal] panel logs smoke info\n"))
+	_, _ = probeLogStore.Write([]byte("2026/04/26 15:21:02 [warning] panel logs smoke warning\n"))
+	_, _ = probeLogStore.Write([]byte("2026/04/26 15:21:02 [error] panel logs smoke error\n"))
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/logs?lines=50&min_level=warning&keyword=smoke", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("logs endpoint status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if okValue, ok := payload["ok"].(bool); !ok || !okValue {
+		t.Fatalf("logs endpoint ok=%v raw=%v", okValue, payload["ok"])
+	}
+	if payload["source"] != probeLogSourceName {
+		t.Fatalf("logs source=%v", payload["source"])
+	}
+	if payload["keyword"] != "smoke" {
+		t.Fatalf("logs keyword=%v", payload["keyword"])
+	}
+	entries, ok := payload["entries"].([]any)
+	if !ok {
+		t.Fatalf("logs entries type=%T", payload["entries"])
+	}
+	if len(entries) < 2 {
+		t.Fatalf("logs entries should include warning/error, got=%d payload=%v", len(entries), payload)
+	}
+	content, _ := payload["content"].(string)
+	if !strings.Contains(strings.ToLower(content), "warning") || !strings.Contains(strings.ToLower(content), "error") {
+		t.Fatalf("logs content should contain warning and error lines: %q", content)
 	}
 }
 

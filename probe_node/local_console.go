@@ -67,6 +67,7 @@ type probeLocalAuthManager struct {
 type probeLocalHTTPError struct {
 	Status  int
 	Message string
+	Payload map[string]any
 }
 
 func (e *probeLocalHTTPError) Error() string {
@@ -204,7 +205,7 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		if errors.Is(err, errProbeLocalTUNUnsupported) {
 			status = http.StatusNotImplemented
 		}
-		return m.tun, &probeLocalHTTPError{Status: status, Message: m.tun.LastError}
+		return m.tun, &probeLocalHTTPError{Status: status, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(err)}
 	}
 
 	m.tun.Installed = true
@@ -581,10 +582,46 @@ func clearProbeLocalSessionCookie(w http.ResponseWriter) {
 
 func writeProbeLocalError(w http.ResponseWriter, err error) {
 	if httpErr, ok := err.(*probeLocalHTTPError); ok {
-		writeJSON(w, httpErr.Status, map[string]string{"error": httpErr.Message})
+		payload := map[string]any{"error": httpErr.Message}
+		for key, value := range httpErr.Payload {
+			if strings.TrimSpace(key) == "" || value == nil {
+				continue
+			}
+			payload[key] = value
+		}
+		writeJSON(w, httpErr.Status, payload)
 		return
 	}
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": strings.TrimSpace(err.Error())})
+}
+
+func buildProbeLocalTUNErrorPayload(err error) map[string]any {
+	if err == nil {
+		return nil
+	}
+	var installErr *probeLocalTUNInstallError
+	if !errors.As(err, &installErr) || installErr == nil {
+		return nil
+	}
+	payload := map[string]any{
+		"diagnostic": installErr.Diagnostic,
+	}
+	if strings.TrimSpace(installErr.Diagnostic.Code) != "" {
+		payload["code"] = strings.TrimSpace(installErr.Diagnostic.Code)
+	}
+	if strings.TrimSpace(installErr.Diagnostic.Stage) != "" {
+		payload["stage"] = strings.TrimSpace(installErr.Diagnostic.Stage)
+	}
+	if strings.TrimSpace(installErr.Diagnostic.Hint) != "" {
+		payload["hint"] = strings.TrimSpace(installErr.Diagnostic.Hint)
+	}
+	if strings.TrimSpace(installErr.Diagnostic.Details) != "" {
+		payload["details"] = strings.TrimSpace(installErr.Diagnostic.Details)
+	}
+	if len(installErr.Diagnostic.Steps) > 0 {
+		payload["steps"] = append([]string(nil), installErr.Diagnostic.Steps...)
+	}
+	return payload
 }
 
 func defaultProbeLocalProxyGroupFile() probeLocalProxyGroupFile {
@@ -1351,6 +1388,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("/local/api/tun/status", probeLocalTUNStatusHandler)
 	mux.HandleFunc("/local/api/tun/install", probeLocalTUNInstallHandler)
+	mux.HandleFunc("/local/api/logs", probeLocalLogsHandler)
 	mux.HandleFunc("/local/api/proxy/enable", probeLocalProxyEnableHandler)
 	mux.HandleFunc("/local/api/proxy/direct", probeLocalProxyDirectHandler)
 	mux.HandleFunc("/local/api/proxy/reject", probeLocalProxyRejectHandler)
@@ -1574,6 +1612,84 @@ func probeLocalTUNInstallHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": state})
+}
+
+func probeLocalLogsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+
+	lines := defaultProbeLogLines
+	if raw := strings.TrimSpace(r.URL.Query().Get("lines")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			lines = parsed
+		}
+	}
+	lines = normalizeProbeLogLines(lines)
+
+	sinceMinutes := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("since_minutes")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			sinceMinutes = parsed
+		}
+	}
+	sinceMinutes = normalizeProbeLogSinceMinutes(sinceMinutes)
+
+	minLevel := strings.TrimSpace(r.URL.Query().Get("min_level"))
+	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
+	content, entries := probeLogStore.Tail(lines, sinceMinutes, minLevel)
+	if keyword != "" {
+		entries = filterProbeLocalLogEntriesByKeyword(entries, keyword)
+		content = buildProbeLocalLogContent(entries)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"source":        probeLogSourceName,
+		"file_path":     probeLogSourcePath,
+		"lines":         lines,
+		"since_minutes": sinceMinutes,
+		"min_level":     minLevel,
+		"keyword":       keyword,
+		"content":       content,
+		"entries":       entries,
+		"count":         len(entries),
+	})
+}
+
+func filterProbeLocalLogEntriesByKeyword(entries []probeLogViewEntry, keyword string) []probeLogViewEntry {
+	needle := strings.ToLower(strings.TrimSpace(keyword))
+	if needle == "" {
+		return entries
+	}
+	filtered := make([]probeLogViewEntry, 0, len(entries))
+	for _, entry := range entries {
+		line := strings.ToLower(strings.TrimSpace(entry.Line))
+		message := strings.ToLower(strings.TrimSpace(entry.Message))
+		if strings.Contains(line, needle) || strings.Contains(message, needle) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func buildProbeLocalLogContent(entries []probeLogViewEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		line := strings.TrimSpace(entry.Line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func probeLocalDNSStatusHandler(w http.ResponseWriter, r *http.Request) {

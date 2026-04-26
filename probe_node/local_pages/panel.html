@@ -137,6 +137,42 @@
     }
     .dns-map-table td { background: rgba(13, 17, 23, 0.4); }
     .dns-map-empty { color: var(--text-secondary); font-size: 13px; margin-top: 6px; }
+    .logs-toolbar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .logs-toolbar label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .logs-toolbar input,
+    .logs-toolbar select {
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-soft);
+      background: rgba(13, 17, 23, 0.55);
+      color: var(--text-primary);
+    }
+    .logs-content {
+      margin-top: 10px;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      background: rgba(13, 17, 23, 0.55);
+      padding: 10px;
+      min-height: 180px;
+      max-height: 420px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #c9d1d9;
+    }
   </style>
 </head>
 <body>
@@ -148,6 +184,7 @@
       <button id="tabProxy" class="tab-btn active" data-target="panelProxy">代理状态</button>
       <button id="tabTun" class="tab-btn" data-target="panelTun">TUN 状态</button>
       <button id="tabDNS" class="tab-btn" data-target="panelDNS">DNS 状态</button>
+      <button id="tabLogs" class="tab-btn" data-target="panelLogs">运行日志</button>
       <button id="tabSystem" class="tab-btn" data-target="panelSystem">系统设置</button>
     </div>
 
@@ -222,6 +259,59 @@
       </div>
     </section>
 
+    <section id="panelLogs" class="card tab-panel">
+      <strong>运行日志</strong>
+      <div class="logs-toolbar">
+        <label>级别
+          <select id="logsMinLevel">
+            <option value="">全部</option>
+            <option value="normal">normal</option>
+            <option value="warning">warning</option>
+            <option value="error">error</option>
+            <option value="realtime">realtime</option>
+          </select>
+        </label>
+        <label>关键词
+          <input id="logsKeyword" type="text" placeholder="输入关键词过滤" />
+        </label>
+        <label>行数
+          <input id="logsLines" type="number" min="1" max="2000" value="200" />
+        </label>
+        <label>时间窗口（分钟）
+          <select id="logsSinceMinutes">
+            <option value="0">全部</option>
+            <option value="5">近 5 分钟</option>
+            <option value="15">近 15 分钟</option>
+            <option value="60">近 1 小时</option>
+            <option value="240">近 4 小时</option>
+          </select>
+        </label>
+        <label>自动刷新
+          <select id="logsAutoRefresh">
+            <option value="off">关闭</option>
+            <option value="on">开启</option>
+          </select>
+        </label>
+        <label>刷新间隔（秒）
+          <select id="logsRefreshIntervalSec">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="5">5</option>
+            <option value="10">10</option>
+          </select>
+        </label>
+      </div>
+      <div class="actions">
+        <button id="logsRefreshBtn" class="secondary">刷新日志</button>
+      </div>
+      <div class="kv">
+        <div>日志来源</div><div id="logsSource">-</div>
+        <div>命中条数</div><div id="logsCount">-</div>
+        <div>最后更新时间</div><div id="logsUpdatedAt">-</div>
+      </div>
+      <pre id="logsContent" class="logs-content">-</pre>
+    </section>
+
     <section id="panelSystem" class="card tab-panel">
       <strong>系统设置</strong>
       <div class="kv" style="grid-template-columns: 170px minmax(0, 1fr); align-items: center;">
@@ -246,6 +336,7 @@
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
     let proxyStatusCache = { enabled: false, mode: '' };
+    let logsAutoRefreshTimer = null;
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -454,6 +545,7 @@
         const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
         const err = new Error(msg);
         err.status = res.status;
+        err.payload = data;
         throw err;
       }
       return data;
@@ -622,6 +714,48 @@
       };
     }
 
+    async function loadLogs() {
+      const params = new URLSearchParams();
+      const minLevel = String(document.getElementById('logsMinLevel')?.value || '').trim();
+      const keyword = String(document.getElementById('logsKeyword')?.value || '').trim();
+      const lines = String(document.getElementById('logsLines')?.value || '').trim();
+      const sinceMinutes = String(document.getElementById('logsSinceMinutes')?.value || '').trim();
+      if (minLevel) params.set('min_level', minLevel);
+      if (keyword) params.set('keyword', keyword);
+      if (lines) params.set('lines', lines);
+      if (sinceMinutes) params.set('since_minutes', sinceMinutes);
+      const qs = params.toString();
+      const path = qs ? `/local/api/logs?${qs}` : '/local/api/logs';
+      const data = await requestJSON(path, { method: 'GET' });
+      setText('logsSource', data.source || '-');
+      setText('logsCount', String(Number(data.count || 0)));
+      setText('logsUpdatedAt', new Date().toLocaleString());
+      const content = String(data.content || '').trim();
+      const logsContentEl = document.getElementById('logsContent');
+      if (logsContentEl) {
+        logsContentEl.textContent = content || '-';
+      }
+    }
+
+    function stopLogsAutoRefresh() {
+      if (logsAutoRefreshTimer) {
+        clearInterval(logsAutoRefreshTimer);
+        logsAutoRefreshTimer = null;
+      }
+    }
+
+    function applyLogsAutoRefresh() {
+      stopLogsAutoRefresh();
+      const auto = String(document.getElementById('logsAutoRefresh')?.value || 'off') === 'on';
+      if (!auto) return;
+      const intervalSec = Math.max(2, Number(document.getElementById('logsRefreshIntervalSec')?.value || 3));
+      logsAutoRefreshTimer = setInterval(() => {
+        loadLogs().catch((err) => {
+          setMessage('自动刷新日志失败：' + err.message, 'error');
+        });
+      }, intervalSec * 1000);
+    }
+
     async function refreshAll() {
       setMessage('');
       const ok = await ensureSession();
@@ -630,6 +764,7 @@
       await loadProxySelections();
       await loadTunStatus();
       await loadDNSStatus();
+      await loadLogs();
     }
 
     document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -688,7 +823,13 @@
         await refreshAll();
         setMessage('TUN 安装/检查完成', 'success');
       } catch (err) {
-        setMessage('TUN 安装失败：' + err.message, 'error');
+        const payload = err && err.payload ? err.payload : {};
+        const extras = [];
+        if (payload.code) extras.push(`code=${payload.code}`);
+        if (payload.stage) extras.push(`stage=${payload.stage}`);
+        if (payload.hint) extras.push(`hint=${payload.hint}`);
+        const suffix = extras.length > 0 ? `（${extras.join('，')}）` : '';
+        setMessage('TUN 安装失败：' + err.message + suffix, 'error');
       }
     });
 
@@ -770,6 +911,45 @@
       }
     });
 
+    document.getElementById('logsRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新运行日志...');
+      try {
+        await loadLogs();
+        setMessage('运行日志已刷新', 'success');
+      } catch (err) {
+        setMessage('读取运行日志失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('logsAutoRefresh').addEventListener('change', () => {
+      applyLogsAutoRefresh();
+    });
+    document.getElementById('logsRefreshIntervalSec').addEventListener('change', () => {
+      applyLogsAutoRefresh();
+    });
+
+    document.getElementById('logsKeyword').addEventListener('keydown', async (ev) => {
+      if (ev.key !== 'Enter') return;
+      setMessage('按关键词筛选日志...');
+      try {
+        await loadLogs();
+        setMessage('日志筛选已刷新', 'success');
+      } catch (err) {
+        setMessage('日志筛选失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      stopLogsAutoRefresh();
+      setMessage('退出中...');
+      try {
+        await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' });
+      } catch (_) {
+      }
+      window.location.href = '/local/login';
+    });
+
+    applyLogsAutoRefresh();
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
   </script>
 </body>
