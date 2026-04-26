@@ -70,7 +70,7 @@ func installProbeLocalTUNDriver() error {
 		detectErr error
 		detected  bool
 	)
-	for _, delay := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond} {
+	for _, delay := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond, 2500 * time.Millisecond, 3500 * time.Millisecond} {
 		if delay > 0 {
 			probeLocalTUNInstallSleep(delay)
 		}
@@ -92,14 +92,12 @@ func installProbeLocalTUNDriver() error {
 	}
 	if detectErr != nil {
 		if createdOrOpened {
-			logProbeWarnf("verify wintun adapter after install got transient errors, continue: %v", detectErr)
-			return nil
+			return fmt.Errorf("verify wintun adapter after install failed (adapter handle was created/opened but adapter is still not detectable): %w", detectErr)
 		}
 		return fmt.Errorf("verify wintun adapter after install: %w", detectErr)
 	}
 	if createdOrOpened {
-		logProbeWarnf("wintun adapter is not detected after install, treat as success because adapter handle was created/opened")
-		return nil
+		return errors.New("wintun adapter is not detected after install (adapter handle was created/opened but adapter is still not detectable)")
 	}
 	return errors.New("wintun adapter is not detected after install")
 }

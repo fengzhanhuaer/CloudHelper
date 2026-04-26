@@ -139,8 +139,12 @@ func TestInstallProbeLocalTUNDriverVerifyFailure(t *testing.T) {
 	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := installProbeLocalTUNDriver(); err != nil {
-		t.Fatalf("installProbeLocalTUNDriver returned error: %v", err)
+	err := installProbeLocalTUNDriver()
+	if err == nil {
+		t.Fatal("expected installProbeLocalTUNDriver error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "not detectable") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
