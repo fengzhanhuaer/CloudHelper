@@ -5,37 +5,138 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Probe Node 本地控制台</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #1f2937; }
-    main { max-width: 860px; margin: 0 auto; }
-    h1 { margin-bottom: 8px; }
-    .hint { color: #6b7280; font-size: 13px; }
-    .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-top: 14px; }
-    .tabs { display: flex; gap: 8px; margin-top: 14px; }
-    .tab-btn { background: #e5e7eb; color: #1f2937; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
-    .tab-btn.active { background: #2563eb; color: #fff; }
+    :root {
+      --bg-color: #0d1117;
+      --panel-bg: rgba(22, 27, 34, 0.68);
+      --panel-bg-solid: #161b22;
+      --text-primary: #c9d1d9;
+      --text-secondary: #8b949e;
+      --heading: #e6edf3;
+      --accent: #58a6ff;
+      --accent-strong: #1f6feb;
+      --success: #2ea043;
+      --warn: #f85149;
+      --border-soft: rgba(255, 255, 255, 0.12);
+      --border-strong: rgba(88, 166, 255, 0.45);
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      color: var(--text-primary);
+      background: var(--bg-color);
+      background-image: radial-gradient(circle at 50% 0%, #1f2937 0%, transparent 70%);
+      min-height: 100vh;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    main { max-width: 920px; margin: 0 auto; }
+    h1 { margin-bottom: 8px; color: #fff; }
+    .hint { color: var(--text-secondary); font-size: 13px; }
+    .card {
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 14px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+    }
+    .tabs { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+    .tab-btn {
+      background: rgba(139, 148, 158, 0.2);
+      color: var(--text-primary);
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.2);
+      box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.28) inset;
+    }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-    button { padding: 8px 12px; border: 0; border-radius: 6px; cursor: pointer; background: #2563eb; color: #fff; }
-    button.secondary { background: #4b5563; }
-    button.warn { background: #b91c1c; }
-    .kv { display: grid; grid-template-columns: 170px 1fr; row-gap: 6px; column-gap: 8px; margin-top: 8px; font-size: 14px; }
+    button {
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      font-weight: 600;
+    }
+    button:hover { filter: brightness(1.07); }
+    button.secondary {
+      background: rgba(139, 148, 158, 0.2);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #d0d7de;
+    }
+    button.warn {
+      background: linear-gradient(135deg, #ff7b72, #d73a49);
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      row-gap: 6px;
+      column-gap: 8px;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    .kv > div:nth-child(odd) { color: var(--text-secondary); }
     .rule-group-list { display: grid; gap: 10px; margin-top: 10px; }
-    .rule-group-row { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; }
-    .rule-group-title { font-weight: 600; font-size: 13px; color: #374151; margin-bottom: 6px; }
+    .rule-group-row {
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(13, 17, 23, 0.45);
+    }
+    .rule-group-title { font-weight: 600; font-size: 13px; color: var(--heading); margin-bottom: 6px; }
     .rule-options-flat { display: flex; gap: 8px; flex-wrap: wrap; }
-    .rule-option-flat { border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #374151; padding: 6px 10px; cursor: pointer; }
-    .rule-option-flat.active { border-color: #2563eb; background: #2563eb; color: #fff; }
-    .rule-runtime { margin-top: 6px; font-size: 12px; color: #6b7280; }
+    .rule-option-flat {
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 7px;
+      background: rgba(139, 148, 158, 0.12);
+      color: #d0d7de;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .rule-option-flat.active {
+      border-color: var(--border-strong);
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+    }
+    .rule-runtime { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
-    .msg.error { color: #b91c1c; }
-    .msg.success { color: #166534; }
-    code { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; }
+    .msg.error { color: #ff938d; }
+    .msg.success { color: #7ee787; }
+    code {
+      background: rgba(88, 166, 255, 0.12);
+      color: #9cd0ff;
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(88, 166, 255, 0.25);
+    }
     .dns-map-table-wrap { margin-top: 10px; overflow-x: auto; }
     .dns-map-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .dns-map-table th, .dns-map-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }
-    .dns-map-table th { background: #f9fafb; color: #374151; font-weight: 600; }
-    .dns-map-empty { color: #6b7280; font-size: 13px; margin-top: 6px; }
+    .dns-map-table th, .dns-map-table td {
+      border: 1px solid var(--border-soft);
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .dns-map-table th {
+      background: rgba(88, 166, 255, 0.1);
+      color: #cfe6ff;
+      font-weight: 600;
+    }
+    .dns-map-table td { background: rgba(13, 17, 23, 0.4); }
+    .dns-map-empty { color: var(--text-secondary); font-size: 13px; margin-top: 6px; }
   </style>
 </head>
 <body>
