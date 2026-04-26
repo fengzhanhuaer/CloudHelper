@@ -141,12 +141,22 @@ type probeLaunchOptions struct {
 	ServiceName              string
 	UpgradeVerify            bool
 	UpgradeVerifyDurationSec int
+	LocalTUNInstall          bool
 }
 
 func main() {
 	initProbeLogger()
 	reportIntervalSec.Store(defaultReportIntervalSec)
 	options := parseProbeLaunchOptions()
+	if options.LocalTUNInstall {
+		if err := installProbeLocalTUNDriver(); err != nil {
+			logProbeErrorf("probe local tun install mode failed: %v", err)
+			log.Fatalf("probe local tun install mode failed: %v", err)
+		}
+		logProbeInfof("probe local tun install mode finished")
+		return
+	}
+
 	if options.UpgradeVerify {
 		if err := runProbeUpgradeVerifyMode(options); err != nil {
 			logProbeErrorf("probe upgrade verification failed: %v", err)
@@ -172,6 +182,7 @@ func parseProbeLaunchOptions() probeLaunchOptions {
 	flag.StringVar(&options.ServiceName, "service-name", "", "windows service name")
 	flag.BoolVar(&options.UpgradeVerify, "upgrade-verify", false, "internal: run upgrade verification mode")
 	flag.IntVar(&options.UpgradeVerifyDurationSec, "upgrade-verify-duration", defaultUpgradeVerifyDurationSec, "internal: upgrade verification duration in seconds")
+	flag.BoolVar(&options.LocalTUNInstall, "local-tun-install", false, "internal: run local tun install mode")
 	flag.Parse()
 	return options
 }

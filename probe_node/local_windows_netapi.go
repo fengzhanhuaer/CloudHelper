@@ -39,6 +39,7 @@ var (
 	probeLocalModIphlpapiNet                         = windows.NewLazySystemDLL("iphlpapi.dll")
 	probeLocalProcCreateUnicastIPAddressEntryNet     = probeLocalModIphlpapiNet.NewProc("CreateUnicastIpAddressEntry")
 	probeLocalProcInitializeUnicastIPAddressEntryNet = probeLocalModIphlpapiNet.NewProc("InitializeUnicastIpAddressEntry")
+	probeLocalProcConvertInterfaceLuidToIndexNet     = probeLocalModIphlpapiNet.NewProc("ConvertInterfaceLuidToIndex")
 )
 
 func ensureProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
@@ -216,6 +217,27 @@ func dedupeProbeLocalIPv4Strings(items []string) []string {
 		out = append(out, key)
 	}
 	return out
+}
+
+func convertProbeLocalInterfaceLUIDToIndex(luid uint64) (int, error) {
+	if luid == 0 {
+		return 0, errors.New("invalid interface luid")
+	}
+	var ifIndex uint32
+	ret, _, callErr := probeLocalProcConvertInterfaceLuidToIndexNet.Call(
+		uintptr(unsafe.Pointer(&luid)),
+		uintptr(unsafe.Pointer(&ifIndex)),
+	)
+	if ret != 0 {
+		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+			return 0, callErr
+		}
+		return 0, syscall.Errno(ret)
+	}
+	if ifIndex == 0 {
+		return 0, errors.New("ConvertInterfaceLuidToIndex returned zero")
+	}
+	return int(ifIndex), nil
 }
 
 func ipv4ToUint32(ip net.IP) (uint32, bool) {

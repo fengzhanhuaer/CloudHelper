@@ -18,6 +18,7 @@ const probeLocalWindowsErrorInsufficientBuffer = 122
 
 type probeLocalWindowsNetAdapter struct {
 	InterfaceIndex       int
+	InterfaceLUID        uint64
 	Name                 string
 	InterfaceDescription string
 }
@@ -41,6 +42,20 @@ func findProbeLocalWintunAdapter() (probeLocalWindowsNetAdapter, bool, error) {
 		}
 	}
 	return probeLocalWindowsNetAdapter{}, false, nil
+}
+
+func findProbeLocalWintunAdapterLUID() (uint64, bool, error) {
+	adapter, exists, err := findProbeLocalWintunAdapter()
+	if err != nil {
+		return 0, false, err
+	}
+	if !exists {
+		return 0, false, nil
+	}
+	if adapter.InterfaceLUID == 0 {
+		return 0, false, nil
+	}
+	return adapter.InterfaceLUID, true, nil
 }
 
 func probeLocalWintunAdapterMatches(name, description string) bool {
@@ -79,6 +94,7 @@ func parseProbeLocalWindowsNetAdapters(first *windows.IpAdapterAddresses) []prob
 	for curr := first; curr != nil; curr = curr.Next {
 		items = append(items, probeLocalWindowsNetAdapter{
 			InterfaceIndex:       int(curr.IfIndex),
+			InterfaceLUID:        curr.Luid,
 			Name:                 strings.TrimSpace(windows.UTF16PtrToString(curr.FriendlyName)),
 			InterfaceDescription: strings.TrimSpace(windows.UTF16PtrToString(curr.Description)),
 		})

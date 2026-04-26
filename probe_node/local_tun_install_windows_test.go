@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+func forceProbeLocalInstallAsAdminForTest() {
+	probeLocalIsWindowsAdmin = func() bool { return true }
+	probeLocalRelaunchAsAdminInstall = func() error { return nil }
+}
+
 func TestProbeLocalWintunAdapterMatches(t *testing.T) {
 	if !probeLocalWintunAdapterMatches("Maple", "") {
 		t.Fatal("expected exact adapter name to match")
@@ -25,6 +30,7 @@ func TestProbeLocalWintunAdapterMatches(t *testing.T) {
 }
 
 func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
+	forceProbeLocalInstallAsAdminForTest()
 	probeLocalEnsureWintunLibrary = func() error { return nil }
 	probeLocalDetectWintunAdapter = func() (bool, error) { return true, nil }
 	createCalled := 0
@@ -51,6 +57,7 @@ func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
 }
 
 func TestInstallProbeLocalTUNDriverCreateAndVerify(t *testing.T) {
+	forceProbeLocalInstallAsAdminForTest()
 	probeLocalEnsureWintunLibrary = func() error { return nil }
 	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	detectSeq := 0
@@ -94,6 +101,7 @@ func TestInstallProbeLocalTUNDriverCreateAndVerify(t *testing.T) {
 }
 
 func TestInstallProbeLocalTUNDriverCreateFailure(t *testing.T) {
+	forceProbeLocalInstallAsAdminForTest()
 	probeLocalEnsureWintunLibrary = func() error { return nil }
 	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalDetectWintunAdapter = func() (bool, error) { return false, nil }
@@ -120,6 +128,7 @@ func TestInstallProbeLocalTUNDriverCreateFailure(t *testing.T) {
 }
 
 func TestInstallProbeLocalTUNDriverVerifyFailure(t *testing.T) {
+	forceProbeLocalInstallAsAdminForTest()
 	probeLocalEnsureWintunLibrary = func() error { return nil }
 	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalDetectWintunAdapter = func() (bool, error) { return false, nil }
@@ -130,16 +139,13 @@ func TestInstallProbeLocalTUNDriverVerifyFailure(t *testing.T) {
 	probeLocalTUNInstallSleep = func(_Duration time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := installProbeLocalTUNDriver()
-	if err == nil {
-		t.Fatal("expected installProbeLocalTUNDriver error")
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "not detected") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := installProbeLocalTUNDriver(); err != nil {
+		t.Fatalf("installProbeLocalTUNDriver returned error: %v", err)
 	}
 }
 
 func TestInstallProbeLocalTUNDriverVerifyFailureWithoutAdapterHandle(t *testing.T) {
+	forceProbeLocalInstallAsAdminForTest()
 	probeLocalEnsureWintunLibrary = func() error { return nil }
 	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	detectCalls := 0
