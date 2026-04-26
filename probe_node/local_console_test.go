@@ -372,7 +372,14 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 
 	probeLocalApplyProxyTakeover = func() error { return nil }
 	probeLocalRestoreProxyDirect = func() error { return nil }
-	t.Cleanup(func() { resetProbeLocalProxyHooksForTest() })
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNDataPlaneHooksForTest() })
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{}, sessionCookie)
 	if enableResp.Code != http.StatusOK {
@@ -448,7 +455,14 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	probeLocalControl.mu.Unlock()
 
 	probeLocalApplyProxyTakeover = func() error { return nil }
-	t.Cleanup(func() { resetProbeLocalProxyHooksForTest() })
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNDataPlaneHooksForTest() })
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{
 		"group":          "media",
