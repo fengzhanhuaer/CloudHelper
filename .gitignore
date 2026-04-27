@@ -15,3 +15,5 @@ probe_manager/backup/*
 probe_manager/backend/backup/*
 probe_manager/backend/data/*
 probe_node/cover.out
+probe_node/'+'''$log'''+
+probe_node/temp/Lib/wintun/amd64/wintun.dll

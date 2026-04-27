@@ -25,6 +25,7 @@ var (
 	probeLocalResolveWintunPath              = resolveProbeWintunPath
 	probeLocalDetectWintunAdapter            = detectProbeLocalWintunAdapter
 	probeLocalFindWintunAdapter              = findProbeLocalWintunAdapter
+	probeLocalFindWintunAdapterByLUID        = findProbeLocalWintunAdapterByLUID
 	probeLocalCreateWintunAdapter            = createProbeLocalWintunAdapter
 	probeLocalCloseWintunAdapter             = closeProbeLocalWintunAdapter
 	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle
@@ -38,6 +39,11 @@ var (
 func installProbeLocalTUNDriver() error {
 	steps := make([]string, 0, 24)
 	steps = append(steps, "start: install_probe_local_tun_driver")
+	logInstallSuccess := func() {
+		if len(steps) > 0 {
+			logProbeInfof("probe local tun install diagnostic steps: %s", strings.Join(steps, " | "))
+		}
+	}
 	if err := probeLocalEnsureWintunLibrary(); err != nil {
 		steps = append(steps, "ensure_wintun_library: failed")
 		return newProbeLocalTUNInstallError(
@@ -67,12 +73,14 @@ func installProbeLocalTUNDriver() error {
 			)
 		}
 		steps = append(steps, "request_elevation: ok")
+		logInstallSuccess()
 		return nil
 	}
 	steps = append(steps, "permission: admin")
 
 	if exists, err := probeLocalDetectWintunAdapter(); err == nil && exists {
 		steps = append(steps, "detect_adapter_precheck: found")
+		logInstallSuccess()
 		return nil
 	}
 	steps = append(steps, "detect_adapter_precheck: not_found")
@@ -110,12 +118,12 @@ func installProbeLocalTUNDriver() error {
 		} else {
 			steps = append(steps, "resolve_adapter_luid_from_handle: failed")
 		}
-		if closeErr := probeLocalCloseWintunAdapter(libraryPath, handle); closeErr != nil {
-			logProbeWarnf("close wintun adapter handle failed: %v", closeErr)
-			steps = append(steps, "close_adapter_handle: failed")
-		} else {
-			steps = append(steps, "close_adapter_handle: ok")
-		}
+		steps = append(steps, "close_adapter_handle: deferred")
+		defer func() {
+			if closeErr := probeLocalCloseWintunAdapter(libraryPath, handle); closeErr != nil {
+				logProbeWarnf("close wintun adapter handle failed: %v", closeErr)
+			}
+		}()
 	}
 
 	createdOrOpened := handle != 0
@@ -142,6 +150,7 @@ func installProbeLocalTUNDriver() error {
 	}
 	if detected {
 		steps = append(steps, "verify_adapter: found")
+		logInstallSuccess()
 		return nil
 	}
 	if detectErr != nil {
@@ -165,10 +174,24 @@ func installProbeLocalTUNDriver() error {
 	}
 	if createdOrOpened {
 		if handleLUID != 0 {
+			for _, delay := range []time.Duration{0, 300 * time.Millisecond, 700 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond} {
+				if delay > 0 {
+					probeLocalTUNInstallSleep(delay)
+				}
+				if adapterByLUID, ok, findErr := probeLocalFindWintunAdapterByLUID(handleLUID); findErr == nil && ok {
+					if adapterByLUID.InterfaceIndex > 0 {
+						setProbeLocalWindowsRouteTargetEnv(adapterByLUID.InterfaceIndex)
+						steps = append(steps, "verify_adapter: fallback_luid_adapter_found")
+						logInstallSuccess()
+						return nil
+					}
+				}
+			}
 			ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(handleLUID)
 			if convertErr == nil && ifIndex > 0 {
 				setProbeLocalWindowsRouteTargetEnv(ifIndex)
 				steps = append(steps, "verify_adapter: fallback_luid_ifindex_ok")
+				logInstallSuccess()
 				return nil
 			}
 			steps = append(steps, "verify_adapter: fallback_luid_ifindex_failed")
@@ -212,40 +235,7 @@ func installProbeLocalTUNDriverViaElevation() error {
 		)
 	}
 	steps = append(steps, "request_elevation: accepted")
-	var detectErr error
-	for _, delay := range []time.Duration{300 * time.Millisecond, 500 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond, 2500 * time.Millisecond, 3500 * time.Millisecond} {
-		if delay > 0 {
-			probeLocalTUNInstallSleep(delay)
-		}
-		_, exists, findErr := probeLocalFindWintunAdapter()
-		if findErr != nil {
-			detectErr = findErr
-			steps = append(steps, "wait_elevation_result: detect_error")
-			continue
-		}
-		if !exists {
-			steps = append(steps, "wait_elevation_result: not_found")
-			continue
-		}
-		steps = append(steps, "wait_elevation_result: found")
-		return nil
-	}
-	if detectErr != nil {
-		return newProbeLocalTUNInstallError(
-			probeLocalTUNInstallCodeElevationTimeout,
-			"wait_elevation_result",
-			"提权后等待网卡出现失败，请检查服务上下文是否一致",
-			fmt.Errorf("wait elevated tun install result failed: %w", detectErr),
-			steps,
-		)
-	}
-	return newProbeLocalTUNInstallError(
-		probeLocalTUNInstallCodeElevationTimeout,
-		"wait_elevation_result",
-		"提权后等待网卡出现超时，请检查 UAC 与驱动安装日志",
-		errors.New("wait elevated tun install result timeout"),
-		steps,
-	)
+	return nil
 }
 
 func setProbeLocalWindowsRouteTargetEnv(interfaceIndex int) {
@@ -339,6 +329,7 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalResolveWintunPath = resolveProbeWintunPath
 	probeLocalDetectWintunAdapter = detectProbeLocalWintunAdapter
 	probeLocalFindWintunAdapter = findProbeLocalWintunAdapter
+	probeLocalFindWintunAdapterByLUID = findProbeLocalWintunAdapterByLUID
 	probeLocalCreateWintunAdapter = createProbeLocalWintunAdapter
 	probeLocalCloseWintunAdapter = closeProbeLocalWintunAdapter
 	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle

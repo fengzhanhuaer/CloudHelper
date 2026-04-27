@@ -145,17 +145,45 @@ type probeLaunchOptions struct {
 }
 
 func main() {
-	initProbeLogger()
 	reportIntervalSec.Store(defaultReportIntervalSec)
 	options := parseProbeLaunchOptions()
 	if options.LocalTUNInstall {
+		initProbeLoggerWithStderrMirror()
+		if exePath, err := os.Executable(); err == nil && strings.TrimSpace(exePath) != "" {
+			debugLogPath := filepath.Join(filepath.Dir(exePath), "temp", "probe_local_tun_install_debug.log")
+			if mkErr := os.MkdirAll(filepath.Dir(debugLogPath), 0o755); mkErr == nil {
+				if f, openErr := os.OpenFile(debugLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); openErr == nil {
+					defer f.Close()
+					initProbeLoggerWithExtraMirrors(f)
+					logProbeInfof("probe local tun install debug log path: %s", debugLogPath)
+				} else {
+					logProbeWarnf("probe local tun install debug log open failed: %v", openErr)
+				}
+			} else {
+				logProbeWarnf("probe local tun install debug log mkdir failed: %v", mkErr)
+			}
+		}
 		if err := installProbeLocalTUNDriver(); err != nil {
 			logProbeErrorf("probe local tun install mode failed: %v", err)
+			var installErr *probeLocalTUNInstallError
+			if errors.As(err, &installErr) && installErr != nil {
+				if len(installErr.Diagnostic.Steps) > 0 {
+					logProbeWarnf("probe local tun install diagnostic steps: %s", strings.Join(installErr.Diagnostic.Steps, " | "))
+				}
+				logProbeErrorf(
+					"probe local tun install/check failed: code=%s stage=%s hint=%s details=%s",
+					strings.TrimSpace(installErr.Diagnostic.Code),
+					strings.TrimSpace(installErr.Diagnostic.Stage),
+					strings.TrimSpace(installErr.Diagnostic.Hint),
+					strings.TrimSpace(installErr.Diagnostic.Details),
+				)
+			}
 			log.Fatalf("probe local tun install mode failed: %v", err)
 		}
 		logProbeInfof("probe local tun install mode finished")
 		return
 	}
+	initProbeLogger()
 
 	if options.UpgradeVerify {
 		if err := runProbeUpgradeVerifyMode(options); err != nil {

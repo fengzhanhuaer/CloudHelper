@@ -21,6 +21,7 @@ type probeLocalWindowsNetAdapter struct {
 	InterfaceLUID        uint64
 	Name                 string
 	InterfaceDescription string
+	AdapterGUID          string
 }
 
 func detectProbeLocalWintunAdapter() (bool, error) {
@@ -37,7 +38,23 @@ func findProbeLocalWintunAdapter() (probeLocalWindowsNetAdapter, bool, error) {
 		return probeLocalWindowsNetAdapter{}, false, err
 	}
 	for _, adapter := range adapters {
-		if probeLocalWintunAdapterMatches(adapter.Name, adapter.InterfaceDescription) {
+		if probeLocalWintunAdapterMatchesWithGUID(adapter.Name, adapter.InterfaceDescription, adapter.AdapterGUID) {
+			return adapter, true, nil
+		}
+	}
+	return probeLocalWindowsNetAdapter{}, false, nil
+}
+
+func findProbeLocalWintunAdapterByLUID(luid uint64) (probeLocalWindowsNetAdapter, bool, error) {
+	if luid == 0 {
+		return probeLocalWindowsNetAdapter{}, false, nil
+	}
+	adapters, err := listProbeLocalWindowsNetAdapters()
+	if err != nil {
+		return probeLocalWindowsNetAdapter{}, false, err
+	}
+	for _, adapter := range adapters {
+		if adapter.InterfaceLUID == luid {
 			return adapter, true, nil
 		}
 	}
@@ -59,12 +76,21 @@ func findProbeLocalWintunAdapterLUID() (uint64, bool, error) {
 }
 
 func probeLocalWintunAdapterMatches(name, description string) bool {
+	return probeLocalWintunAdapterMatchesWithGUID(name, description, "")
+}
+
+func probeLocalWintunAdapterMatchesWithGUID(name, description, adapterGUID string) bool {
 	cleanName := strings.TrimSpace(name)
 	cleanDesc := strings.TrimSpace(description)
 	if strings.EqualFold(cleanName, probeLocalTUNAdapterName) || strings.HasPrefix(strings.ToLower(cleanName), strings.ToLower(probeLocalTUNAdapterName)+" ") {
 		return true
 	}
 	if strings.EqualFold(cleanDesc, probeLocalTUNAdapterDescription) {
+		return true
+	}
+	reqGUID := strings.ToLower(strings.Trim(strings.TrimSpace(probeLocalTUNAdapterRequestedGUID), "{}"))
+	curGUID := strings.ToLower(strings.Trim(strings.TrimSpace(adapterGUID), "{}"))
+	if reqGUID != "" && curGUID != "" && reqGUID == curGUID {
 		return true
 	}
 	return false
@@ -92,12 +118,17 @@ func listProbeLocalWindowsNetAdapters() ([]probeLocalWindowsNetAdapter, error) {
 func parseProbeLocalWindowsNetAdapters(first *windows.IpAdapterAddresses) []probeLocalWindowsNetAdapter {
 	items := make([]probeLocalWindowsNetAdapter, 0)
 	for curr := first; curr != nil; curr = curr.Next {
-		items = append(items, probeLocalWindowsNetAdapter{
+		item := probeLocalWindowsNetAdapter{
 			InterfaceIndex:       int(curr.IfIndex),
 			InterfaceLUID:        curr.Luid,
 			Name:                 strings.TrimSpace(windows.UTF16PtrToString(curr.FriendlyName)),
 			InterfaceDescription: strings.TrimSpace(windows.UTF16PtrToString(curr.Description)),
-		})
+		}
+		adapterName := strings.TrimSpace(windows.BytePtrToString(curr.AdapterName))
+		if adapterName != "" {
+			item.AdapterGUID = "{" + strings.Trim(adapterName, "{}") + "}"
+		}
+		items = append(items, item)
 	}
 	return items
 }

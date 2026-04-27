@@ -1,7 +1,9 @@
 package main
 
 import (
+	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +60,23 @@ func newProbeInMemoryLogStore(maxBytes int) *probeInMemoryLogStore {
 
 func initProbeLogger() {
 	log.SetOutput(probeLogStore)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+}
+
+func initProbeLoggerWithStderrMirror() {
+	initProbeLoggerWithExtraMirrors()
+}
+
+func initProbeLoggerWithExtraMirrors(extraWriters ...io.Writer) {
+	writers := make([]io.Writer, 0, 2+len(extraWriters))
+	writers = append(writers, os.Stderr, probeLogStore)
+	for _, w := range extraWriters {
+		if w == nil {
+			continue
+		}
+		writers = append(writers, w)
+	}
+	log.SetOutput(io.MultiWriter(writers...))
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 }
 
