@@ -982,6 +982,18 @@ func TestProbeLocalTUNInstallReturnsInternalErrorOnFailure(t *testing.T) {
 	if !strings.Contains(errText, "tun install failed for test") {
 		t.Fatalf("tun/install error=%q", errText)
 	}
+	codeText, _ := payload["code"].(string)
+	if codeText != probeLocalTUNInstallCodeAdapterCreateFailed {
+		t.Fatalf("tun/install payload code=%q", codeText)
+	}
+	stageText, _ := payload["stage"].(string)
+	if stageText != "create_or_open_adapter" {
+		t.Fatalf("tun/install payload stage=%q", stageText)
+	}
+	hintText, _ := payload["hint"].(string)
+	if !strings.Contains(hintText, "Wintun") {
+		t.Fatalf("tun/install payload hint=%q", hintText)
+	}
 	observation, ok := payload["install_observation"].(map[string]any)
 	if !ok {
 		t.Fatalf("tun/install failure observation type=%T", payload["install_observation"])
@@ -994,6 +1006,57 @@ func TestProbeLocalTUNInstallReturnsInternalErrorOnFailure(t *testing.T) {
 	rawErr, _ := diagnosticObj["raw_error"].(string)
 	if !strings.Contains(strings.ToLower(rawErr), "access denied") {
 		t.Fatalf("failure observation diagnostic.raw_error=%q", rawErr)
+	}
+}
+
+func TestProbeLocalTUNInstallReturnsSuccessNotReadyOnJointVisibilityMissing(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeLocalInstallTUNDriver = func() error {
+		obs := newProbeLocalTUNInstallObservation()
+		obs.Driver.PackageExists = true
+		obs.Driver.PackagePath = `C:\\temp\\wintun.dll`
+		obs.Create.Called = true
+		obs.Create.HandleNonZero = true
+		obs.Visibility.DetectVisible = false
+		obs.Visibility.IfIndexResolved = true
+		obs.Visibility.IfIndexValue = 9
+		obs.Final.Success = true
+		obs.Final.ReasonCode = probeLocalTUNInstallCodeAdapterJointVisibilityMiss
+		obs.Final.Reason = "LUID 路径冲突后重建仍未满足 present PnP + NetAdapter 联合可见"
+		obs.Diagnostic.Code = probeLocalTUNInstallCodeAdapterJointVisibilityMiss
+		obs.Diagnostic.Stage = "verify_adapter"
+		obs.Diagnostic.Hint = "LUID 路径冲突后重建仍未满足 present PnP + NetAdapter 联合可见"
+		obs.Diagnostic.RawError = "fallback fresh create still joint visibility missing: joint visibility still missing"
+		obs.Diagnostic.Details = obs.Diagnostic.RawError
+		setProbeLocalTUNInstallObservation(obs)
+		return nil
+	}
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/install", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("tun/install status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	observation, ok := payload["install_observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/install success-not-ready observation type=%T", payload["install_observation"])
+	}
+	finalObj, _ := observation["final"].(map[string]any)
+	if success, _ := finalObj["success"].(bool); !success {
+		t.Fatalf("success-not-ready final.success=%v", finalObj["success"])
+	}
+	if reasonCode, _ := finalObj["reason_code"].(string); reasonCode != probeLocalTUNInstallCodeAdapterJointVisibilityMiss {
+		t.Fatalf("success-not-ready final.reason_code=%q", reasonCode)
+	}
+	diagnosticObj, _ := observation["diagnostic"].(map[string]any)
+	if stage, _ := diagnosticObj["stage"].(string); stage != "verify_adapter" {
+		t.Fatalf("success-not-ready diagnostic.stage=%q", stage)
+	}
+	if hint, _ := diagnosticObj["hint"].(string); !strings.Contains(hint, "联合可见") {
+		t.Fatalf("success-not-ready diagnostic.hint=%q", hint)
 	}
 }
 

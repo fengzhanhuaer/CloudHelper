@@ -44,6 +44,9 @@ type probeLocalTUNInstallObservationFinal struct {
 type probeLocalTUNInstallObservationDiagnostic struct {
 	Code     string `json:"code"`
 	RawError string `json:"raw_error"`
+	Stage    string `json:"stage,omitempty"`
+	Hint     string `json:"hint,omitempty"`
+	Details  string `json:"details,omitempty"`
 }
 
 type probeLocalTUNInstallObservation struct {
@@ -65,6 +68,9 @@ func normalizeProbeLocalTUNInstallObservation(obs probeLocalTUNInstallObservatio
 	obs.Final.Reason = strings.TrimSpace(obs.Final.Reason)
 	obs.Diagnostic.Code = strings.TrimSpace(obs.Diagnostic.Code)
 	obs.Diagnostic.RawError = strings.TrimSpace(obs.Diagnostic.RawError)
+	obs.Diagnostic.Stage = strings.TrimSpace(obs.Diagnostic.Stage)
+	obs.Diagnostic.Hint = strings.TrimSpace(obs.Diagnostic.Hint)
+	obs.Diagnostic.Details = strings.TrimSpace(obs.Diagnostic.Details)
 	return obs
 }
 

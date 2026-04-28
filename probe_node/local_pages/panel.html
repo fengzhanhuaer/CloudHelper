@@ -829,8 +829,15 @@
     document.getElementById('tunInstallBtn').addEventListener('click', async () => {
       setMessage('执行 TUN 安装/检查...');
       try {
-        await requestJSON('/local/api/tun/install', { method: 'POST', body: '{}' });
+        const installData = await requestJSON('/local/api/tun/install', { method: 'POST', body: '{}' });
         await refreshAll();
+        const finalObs = (installData && installData.install_observation && typeof installData.install_observation.final === 'object')
+          ? installData.install_observation.final
+          : {};
+        if (String(finalObs.reason_code || '').trim() === 'TUN_ADAPTER_JOINT_VISIBILITY_MISSING') {
+          setMessage('TUN 已安装但未就绪，请稍后刷新确认', 'success');
+          return;
+        }
         setMessage('TUN 安装/检查完成', 'success');
       } catch (err) {
         const payload = err && err.payload ? err.payload : {};

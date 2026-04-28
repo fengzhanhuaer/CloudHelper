@@ -582,12 +582,23 @@ func installProbeLocalTUNDriver() error {
 							fmt.Errorf("fallback fresh create remains phantom-only: %w", recreateCause),
 						)
 					}
-					return failInstall(
+					probeLocalRetainWintunAdapterHandle(libraryPath, handle)
+					handle = 0
+					steps = append(steps, "retain_adapter_handle: ok")
+					steps = append(steps, "verify_adapter: fallback_fresh_still_joint_visibility_missing_not_ready")
+					notReadyHint := "LUID 路径冲突后重建仍未满足 present PnP + NetAdapter 联合可见"
+					notReadyRawErr := fmt.Errorf("fallback fresh create still joint visibility missing: %w", firstProbeLocalTUNErr(freshDetectErr, recreateCause))
+					setSuccessNotReadyObservation(
 						probeLocalTUNInstallCodeAdapterJointVisibilityMiss,
-						"verify_adapter",
-						"LUID 路径冲突后重建仍未满足 present PnP + NetAdapter 联合可见",
-						fmt.Errorf("fallback fresh create still joint visibility missing: %w", firstProbeLocalTUNErr(freshDetectErr, recreateCause)),
+						notReadyHint,
+						notReadyRawErr,
 					)
+					observation.Diagnostic.Stage = "verify_adapter"
+					observation.Diagnostic.Hint = notReadyHint
+					observation.Diagnostic.Details = strings.TrimSpace(notReadyRawErr.Error())
+					setProbeLocalTUNInstallObservation(observation)
+					logInstallSuccess()
+					return nil
 				}
 				steps = append(steps, "verify_adapter: fallback_luid_adapter_not_found")
 			}
