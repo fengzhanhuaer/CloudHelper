@@ -3,9 +3,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -24,12 +26,71 @@ type probeLocalWindowsNetAdapter struct {
 	AdapterGUID          string
 }
 
+type probeLocalWintunVisibilityEvidence struct {
+	NetAdapter             probeLocalWindowsNetAdapter
+	NetAdapterMatched      bool
+	PresentPnPMatched      bool
+	PhantomPnPMatched      bool
+	MatchedPnPStatus       string
+	MatchedPnPProblem      string
+	MatchedPnPInstanceID   string
+	MatchedPnPFriendlyName string
+}
+
+func (e probeLocalWintunVisibilityEvidence) isJointlyVisible() bool {
+	return e.NetAdapterMatched && e.PresentPnPMatched
+}
+
+func (e probeLocalWintunVisibilityEvidence) isPhantomOnly() bool {
+	return e.PhantomPnPMatched && !e.PresentPnPMatched
+}
+
 func detectProbeLocalWintunAdapter() (bool, error) {
-	_, exists, err := findProbeLocalWintunAdapter()
+	evidence, err := inspectProbeLocalWintunVisibility()
 	if err != nil {
 		return false, err
 	}
-	return exists, nil
+	return evidence.isJointlyVisible(), nil
+}
+
+func inspectProbeLocalWintunVisibility() (probeLocalWintunVisibilityEvidence, error) {
+	evidence := probeLocalWintunVisibilityEvidence{}
+	adapter, exists, adapterErr := findProbeLocalWintunAdapter()
+	if exists {
+		evidence.NetAdapterMatched = true
+		evidence.NetAdapter = adapter
+	}
+	devices, pnpErr := listProbeLocalWindowsPnPDevices()
+	for _, device := range devices {
+		if !probeLocalWintunPnPDeviceMatches(device) {
+			continue
+		}
+		if device.Present {
+			evidence.PresentPnPMatched = true
+			evidence.MatchedPnPStatus = strings.TrimSpace(device.Status)
+			evidence.MatchedPnPProblem = strings.TrimSpace(device.Problem)
+			evidence.MatchedPnPFriendlyName = strings.TrimSpace(device.FriendlyName)
+			evidence.MatchedPnPInstanceID = strings.TrimSpace(device.InstanceID)
+			break
+		}
+		if probeLocalPnPDeviceIsPhantom(device) {
+			evidence.PhantomPnPMatched = true
+			evidence.MatchedPnPStatus = strings.TrimSpace(device.Status)
+			evidence.MatchedPnPProblem = strings.TrimSpace(device.Problem)
+			evidence.MatchedPnPFriendlyName = strings.TrimSpace(device.FriendlyName)
+			evidence.MatchedPnPInstanceID = strings.TrimSpace(device.InstanceID)
+		}
+	}
+	if adapterErr != nil && pnpErr != nil {
+		return evidence, errors.Join(adapterErr, pnpErr)
+	}
+	if adapterErr != nil {
+		return evidence, adapterErr
+	}
+	if pnpErr != nil {
+		return evidence, pnpErr
+	}
+	return evidence, nil
 }
 
 func findProbeLocalWintunAdapter() (probeLocalWindowsNetAdapter, bool, error) {
@@ -134,6 +195,23 @@ func parseProbeLocalWindowsNetAdapters(first *windows.IpAdapterAddresses) []prob
 }
 
 func createProbeLocalWintunAdapter(libraryPath, adapterName, tunnelType string) (uintptr, error) {
+	return createProbeLocalWintunAdapterWithIdentity(libraryPath, adapterName, tunnelType, strings.TrimSpace(probeLocalTUNAdapterRequestedGUID), true)
+}
+
+func createProbeLocalWintunAdapterFresh(libraryPath, adapterName, tunnelType string) (uintptr, error) {
+	guid, guidErr := windows.GenerateGUID()
+	if guidErr != nil {
+		return 0, fmt.Errorf("generate fresh adapter guid failed: %w", guidErr)
+	}
+	freshName := strings.TrimSpace(adapterName)
+	if freshName == "" {
+		freshName = probeLocalTUNAdapterName
+	}
+	freshName = fmt.Sprintf("%s %s", freshName, strings.ToUpper(strings.Trim(guid.String(), "{}"))[:8])
+	return createProbeLocalWintunAdapterWithIdentity(libraryPath, freshName, tunnelType, guid.String(), false)
+}
+
+func createProbeLocalWintunAdapterWithIdentity(libraryPath, adapterName, tunnelType, requestedGUID string, allowOpen bool) (uintptr, error) {
 	path := strings.TrimSpace(libraryPath)
 	if path == "" {
 		return 0, errors.New("empty wintun.dll path")
@@ -171,7 +249,7 @@ func createProbeLocalWintunAdapter(libraryPath, adapterName, tunnelType string) 
 	}
 
 	guidArg := uintptr(0)
-	if guidText := strings.TrimSpace(probeLocalTUNAdapterRequestedGUID); guidText != "" {
+	if guidText := strings.TrimSpace(requestedGUID); guidText != "" {
 		reqGUID, parseErr := windows.GUIDFromString(guidText)
 		if parseErr != nil {
 			return 0, fmt.Errorf("invalid requested adapter guid: %w", parseErr)
@@ -188,9 +266,20 @@ func createProbeLocalWintunAdapter(libraryPath, adapterName, tunnelType string) 
 		return handle, nil
 	}
 
-	openHandle, _, openErr := openProc.Call(uintptr(unsafe.Pointer(namePtr)))
-	if openHandle != 0 {
-		return openHandle, nil
+	if allowOpen {
+		openHandle, _, openErr := openProc.Call(uintptr(unsafe.Pointer(namePtr)))
+		if openHandle != 0 {
+			return openHandle, nil
+		}
+		if openErr != nil && !errors.Is(openErr, syscall.Errno(0)) {
+			if errors.Is(openErr, syscall.ERROR_ACCESS_DENIED) {
+				return 0, errors.New("WintunOpenAdapter access denied, please run probe as administrator")
+			}
+			return 0, fmt.Errorf("WintunOpenAdapter failed: %s", formatProbeLocalWindowsCallErr(openErr))
+		}
+		if createErr == nil || errors.Is(createErr, syscall.Errno(0)) {
+			return 0, fmt.Errorf("wintun adapter creation/open returned empty adapter handle (create=%s open=%s)", formatProbeLocalWindowsCallErr(createErr), formatProbeLocalWindowsCallErr(openErr))
+		}
 	}
 
 	if createErr != nil && !errors.Is(createErr, syscall.Errno(0)) {
@@ -199,13 +288,10 @@ func createProbeLocalWintunAdapter(libraryPath, adapterName, tunnelType string) 
 		}
 		return 0, fmt.Errorf("WintunCreateAdapter failed: %s", formatProbeLocalWindowsCallErr(createErr))
 	}
-	if openErr != nil && !errors.Is(openErr, syscall.Errno(0)) {
-		if errors.Is(openErr, syscall.ERROR_ACCESS_DENIED) {
-			return 0, errors.New("WintunOpenAdapter access denied, please run probe as administrator")
-		}
-		return 0, fmt.Errorf("WintunOpenAdapter failed: %s", formatProbeLocalWindowsCallErr(openErr))
+	if allowOpen {
+		return 0, fmt.Errorf("wintun adapter creation/open returned empty adapter handle (create=%s open=errno=0)", formatProbeLocalWindowsCallErr(createErr))
 	}
-	return 0, fmt.Errorf("wintun adapter creation/open returned empty adapter handle (create=%s open=%s)", formatProbeLocalWindowsCallErr(createErr), formatProbeLocalWindowsCallErr(openErr))
+	return 0, fmt.Errorf("wintun adapter creation returned empty adapter handle (create=%s)", formatProbeLocalWindowsCallErr(createErr))
 }
 
 func closeProbeLocalWintunAdapter(libraryPath string, handle uintptr) error {
@@ -260,6 +346,115 @@ func getProbeLocalWintunAdapterLUIDFromHandle(libraryPath string, handle uintptr
 		return 0, errors.New("WintunGetAdapterLUID returned zero")
 	}
 	return luid, nil
+}
+
+type probeLocalWindowsPnPDevice struct {
+	FriendlyName string `json:"friendly_name"`
+	InstanceID   string `json:"instance_id"`
+	Class        string `json:"class"`
+	Status       string `json:"status"`
+	Present      bool   `json:"present"`
+	Problem      string `json:"problem"`
+}
+
+func listProbeLocalWindowsPnPDevices() ([]probeLocalWindowsPnPDevice, error) {
+	script := "$ErrorActionPreference='Stop'; $items=Get-PnpDevice -PresentOnly:$false | ForEach-Object { [PSCustomObject]@{ friendly_name=[string]$_.FriendlyName; instance_id=[string]$_.InstanceId; class=[string]$_.Class; status=[string]$_.Status; present=([bool]$_.Present); problem=if ($null -eq $_.Problem) { '' } else { [string]$_.Problem } } }; $items | ConvertTo-Json -Compress"
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("query pnp devices failed: %w (%s)", err, strings.TrimSpace(string(output)))
+	}
+	text := strings.TrimSpace(string(output))
+	if text == "" || strings.EqualFold(text, "null") {
+		return nil, nil
+	}
+	var list []probeLocalWindowsPnPDevice
+	if strings.HasPrefix(text, "[") {
+		if unmarshalErr := json.Unmarshal([]byte(text), &list); unmarshalErr != nil {
+			return nil, fmt.Errorf("decode pnp devices json array failed: %w", unmarshalErr)
+		}
+		return list, nil
+	}
+	var single probeLocalWindowsPnPDevice
+	if unmarshalErr := json.Unmarshal([]byte(text), &single); unmarshalErr != nil {
+		return nil, fmt.Errorf("decode pnp devices json object failed: %w", unmarshalErr)
+	}
+	return []probeLocalWindowsPnPDevice{single}, nil
+}
+
+func probeLocalWintunPnPDeviceMatches(device probeLocalWindowsPnPDevice) bool {
+	friendly := strings.TrimSpace(device.FriendlyName)
+	instanceID := strings.TrimSpace(device.InstanceID)
+	className := strings.TrimSpace(device.Class)
+	if probeLocalWintunAdapterMatchesWithGUID(friendly, friendly, "") {
+		return true
+	}
+	lowerFriendly := strings.ToLower(friendly)
+	lowerInstance := strings.ToLower(instanceID)
+	if strings.Contains(lowerFriendly, "wintun") || strings.Contains(lowerFriendly, "wireguard") || strings.Contains(lowerFriendly, "cloudhelper") {
+		return true
+	}
+	if strings.Contains(lowerInstance, "wintun") || strings.Contains(lowerInstance, "wireguard") || strings.Contains(lowerInstance, "cloudhelper") {
+		return true
+	}
+	if strings.EqualFold(className, "Net") && (strings.Contains(lowerFriendly, "tunnel") || strings.Contains(lowerInstance, "wintun")) {
+		return true
+	}
+	return false
+}
+
+func probeLocalPnPDeviceIsPhantom(device probeLocalWindowsPnPDevice) bool {
+	if device.Present {
+		return false
+	}
+	problemText := strings.TrimSpace(strings.ToUpper(device.Problem))
+	if strings.Contains(problemText, "PHANTOM") || strings.EqualFold(problemText, "45") {
+		return true
+	}
+	statusText := strings.TrimSpace(strings.ToUpper(device.Status))
+	if statusText == "UNKNOWN" {
+		return true
+	}
+	return false
+}
+
+func removeProbeLocalPhantomWintunDevices() (int, error) {
+	devices, err := listProbeLocalWindowsPnPDevices()
+	if err != nil {
+		return 0, err
+	}
+	instanceIDs := make([]string, 0, len(devices))
+	seen := make(map[string]struct{}, len(devices))
+	for _, device := range devices {
+		if !probeLocalWintunPnPDeviceMatches(device) || !probeLocalPnPDeviceIsPhantom(device) {
+			continue
+		}
+		instanceID := strings.TrimSpace(device.InstanceID)
+		if instanceID == "" {
+			continue
+		}
+		key := strings.ToUpper(instanceID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		instanceIDs = append(instanceIDs, instanceID)
+	}
+	removed := 0
+	var removeErr error
+	for _, instanceID := range instanceIDs {
+		cmd := exec.Command("pnputil", "/remove-device", instanceID)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			removeErr = errors.Join(removeErr, fmt.Errorf("remove phantom pnp device failed: instance=%s err=%w output=%s", instanceID, err, strings.TrimSpace(string(output))))
+			continue
+		}
+		removed++
+	}
+	if removeErr != nil {
+		return removed, removeErr
+	}
+	return removed, nil
 }
 
 func formatProbeLocalWindowsCallErr(err error) string {

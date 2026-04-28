@@ -78,14 +78,16 @@ func (e *probeLocalHTTPError) Error() string {
 }
 
 type probeLocalTunRuntimeState struct {
-	Platform       string `json:"platform"`
-	Installed      bool   `json:"installed"`
-	Enabled        bool   `json:"enabled"`
-	DataPlane      bool   `json:"data_plane"`
-	DataPlaneRX    uint64 `json:"data_plane_rx_packets,omitempty"`
-	DataPlaneBytes uint64 `json:"data_plane_rx_bytes,omitempty"`
-	LastError      string `json:"last_error,omitempty"`
-	UpdatedAt      string `json:"updated_at,omitempty"`
+	Platform               string                           `json:"platform"`
+	Installed              bool                             `json:"installed"`
+	Enabled                bool                             `json:"enabled"`
+	DataPlane              bool                             `json:"data_plane"`
+	DataPlaneRX            uint64                           `json:"data_plane_rx_packets,omitempty"`
+	DataPlaneBytes         uint64                           `json:"data_plane_rx_bytes,omitempty"`
+	LastError              string                           `json:"last_error,omitempty"`
+	InstallObservation     *probeLocalTUNInstallObservation `json:"install_observation,omitempty"`
+	LastInstallObservation *probeLocalTUNInstallObservation `json:"last_install_observation,omitempty"`
+	UpdatedAt              string                           `json:"updated_at,omitempty"`
 }
 
 type probeLocalProxyRuntimeState struct {
@@ -201,11 +203,6 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 	logProbeInfof("probe local tun install/check started: platform=%s", runtime.GOOS)
 	if err := probeLocalInstallTUNDriver(); err != nil {
 		m.tun.LastError = strings.TrimSpace(err.Error())
-		m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		status := http.StatusInternalServerError
-		if errors.Is(err, errProbeLocalTUNUnsupported) {
-			status = http.StatusNotImplemented
-		}
 		var installErr *probeLocalTUNInstallError
 		if errors.As(err, &installErr) && installErr != nil {
 			if len(installErr.Diagnostic.Steps) > 0 {
@@ -221,11 +218,42 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		} else {
 			logProbeErrorf("probe local tun install/check failed: %v", err)
 		}
+		if observation, ok := currentProbeLocalTUNInstallObservation(); ok {
+			m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
+			m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
+		} else {
+			fallbackObservation := newProbeLocalTUNInstallObservation()
+			fallbackObservation.Final.Success = false
+			fallbackObservation.Final.ReasonCode = "TUN_INSTALL_FAILED"
+			fallbackObservation.Final.Reason = m.tun.LastError
+			fallbackObservation.Diagnostic.Code = "TUN_INSTALL_FAILED"
+			fallbackObservation.Diagnostic.RawError = m.tun.LastError
+			setProbeLocalTUNInstallObservation(fallbackObservation)
+			m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
+			m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
+		}
+		m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		status := http.StatusInternalServerError
+		if errors.Is(err, errProbeLocalTUNUnsupported) {
+			status = http.StatusNotImplemented
+		}
 		return m.tun, &probeLocalHTTPError{Status: status, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(err)}
 	}
 
 	m.tun.Installed = true
 	m.tun.LastError = ""
+	if observation, ok := currentProbeLocalTUNInstallObservation(); ok {
+		m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
+		m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
+	} else {
+		fallbackObservation := newProbeLocalTUNInstallObservation()
+		fallbackObservation.Final.Success = true
+		fallbackObservation.Final.ReasonCode = "TUN_INSTALL_SUCCEEDED"
+		fallbackObservation.Final.Reason = "安装流程完成"
+		setProbeLocalTUNInstallObservation(fallbackObservation)
+		m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
+		m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
+	}
 	m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	logProbeInfof("probe local tun install/check completed: installed=true")
 	return m.tun, nil
@@ -616,27 +644,36 @@ func buildProbeLocalTUNErrorPayload(err error) map[string]any {
 	if err == nil {
 		return nil
 	}
+	payload := map[string]any{}
 	var installErr *probeLocalTUNInstallError
-	if !errors.As(err, &installErr) || installErr == nil {
+	if errors.As(err, &installErr) && installErr != nil {
+		payload["diagnostic"] = installErr.Diagnostic
+		if strings.TrimSpace(installErr.Diagnostic.Code) != "" {
+			payload["code"] = strings.TrimSpace(installErr.Diagnostic.Code)
+		}
+		if strings.TrimSpace(installErr.Diagnostic.Stage) != "" {
+			payload["stage"] = strings.TrimSpace(installErr.Diagnostic.Stage)
+		}
+		if strings.TrimSpace(installErr.Diagnostic.Hint) != "" {
+			payload["hint"] = strings.TrimSpace(installErr.Diagnostic.Hint)
+		}
+		if strings.TrimSpace(installErr.Diagnostic.Details) != "" {
+			payload["details"] = strings.TrimSpace(installErr.Diagnostic.Details)
+		}
+		if len(installErr.Diagnostic.Steps) > 0 {
+			payload["steps"] = append([]string(nil), installErr.Diagnostic.Steps...)
+		}
+		if observation, ok := installErr.InstallObservation(); ok {
+			payload["install_observation"] = observation
+		}
+	}
+	if _, exists := payload["install_observation"]; !exists {
+		if observation, ok := currentProbeLocalTUNInstallObservation(); ok {
+			payload["install_observation"] = observation
+		}
+	}
+	if len(payload) == 0 {
 		return nil
-	}
-	payload := map[string]any{
-		"diagnostic": installErr.Diagnostic,
-	}
-	if strings.TrimSpace(installErr.Diagnostic.Code) != "" {
-		payload["code"] = strings.TrimSpace(installErr.Diagnostic.Code)
-	}
-	if strings.TrimSpace(installErr.Diagnostic.Stage) != "" {
-		payload["stage"] = strings.TrimSpace(installErr.Diagnostic.Stage)
-	}
-	if strings.TrimSpace(installErr.Diagnostic.Hint) != "" {
-		payload["hint"] = strings.TrimSpace(installErr.Diagnostic.Hint)
-	}
-	if strings.TrimSpace(installErr.Diagnostic.Details) != "" {
-		payload["details"] = strings.TrimSpace(installErr.Diagnostic.Details)
-	}
-	if len(installErr.Diagnostic.Steps) > 0 {
-		payload["steps"] = append([]string(nil), installErr.Diagnostic.Steps...)
 	}
 	return payload
 }
@@ -1612,7 +1649,14 @@ func probeLocalTUNStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, probeLocalControl.tunStatus())
+	status := probeLocalControl.tunStatus()
+	status.InstallObservation = nil
+	if status.LastInstallObservation == nil {
+		if observation, ok := currentProbeLocalTUNInstallObservation(); ok {
+			status.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
+		}
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func probeLocalTUNInstallHandler(w http.ResponseWriter, r *http.Request) {
@@ -1628,7 +1672,7 @@ func probeLocalTUNInstallHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": state})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": state, "install_observation": state.InstallObservation})
 }
 
 func probeLocalLogsHandler(w http.ResponseWriter, r *http.Request) {
@@ -2148,6 +2192,7 @@ func resetProbeLocalAuthManagerForTest() {
 }
 
 func resetProbeLocalControlStateForTest() {
+	clearProbeLocalTUNInstallObservation()
 	probeLocalControl = newProbeLocalControlManager()
 }
 

@@ -15,5 +15,7 @@ probe_manager/backup/*
 probe_manager/backend/backup/*
 probe_manager/backend/data/*
 probe_node/cover.out
-probe_node/'+'''$log'''+
-probe_node/temp/Lib/wintun/amd64/wintun.dll
+probe_node/temp/*
+probe_node/data/
+probe_node/temp/data/probe_local_auth.json
+probe_node/temp/data/proxy_host.txt

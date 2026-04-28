@@ -950,7 +950,26 @@ func TestProbeLocalTUNInstallReturnsInternalErrorOnFailure(t *testing.T) {
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
 	probeLocalInstallTUNDriver = func() error {
-		return errors.New("tun install failed for test")
+		obs := newProbeLocalTUNInstallObservation()
+		obs.Driver.PackageExists = true
+		obs.Driver.PackagePath = `C:\\temp\\wintun.dll`
+		obs.Create.Called = true
+		obs.Create.HandleNonZero = false
+		obs.Create.RawError = "create/open wintun adapter: access denied"
+		obs.Visibility.DetectVisible = false
+		obs.Final.Success = false
+		obs.Final.ReasonCode = probeLocalTUNInstallCodeAdapterCreateFailed
+		obs.Final.Reason = "Wintun 适配器创建失败"
+		obs.Diagnostic.Code = probeLocalTUNInstallCodeAdapterCreateFailed
+		obs.Diagnostic.RawError = "create/open wintun adapter: access denied"
+		return newProbeLocalTUNInstallError(
+			probeLocalTUNInstallCodeAdapterCreateFailed,
+			"create_or_open_adapter",
+			"Wintun 适配器创建失败，请检查管理员权限与驱动状态",
+			errors.New("tun install failed for test"),
+			[]string{"create_or_open_adapter: failed"},
+			obs,
+		)
 	}
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
 
@@ -962,6 +981,19 @@ func TestProbeLocalTUNInstallReturnsInternalErrorOnFailure(t *testing.T) {
 	errText, _ := payload["error"].(string)
 	if !strings.Contains(errText, "tun install failed for test") {
 		t.Fatalf("tun/install error=%q", errText)
+	}
+	observation, ok := payload["install_observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/install failure observation type=%T", payload["install_observation"])
+	}
+	finalObj, _ := observation["final"].(map[string]any)
+	if finalObj["reason_code"] != probeLocalTUNInstallCodeAdapterCreateFailed {
+		t.Fatalf("failure observation reason_code=%v", finalObj["reason_code"])
+	}
+	diagnosticObj, _ := observation["diagnostic"].(map[string]any)
+	rawErr, _ := diagnosticObj["raw_error"].(string)
+	if !strings.Contains(strings.ToLower(rawErr), "access denied") {
+		t.Fatalf("failure observation diagnostic.raw_error=%q", rawErr)
 	}
 }
 
@@ -1228,7 +1260,22 @@ func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
-	probeLocalInstallTUNDriver = func() error { return nil }
+	probeLocalInstallTUNDriver = func() error {
+		obs := newProbeLocalTUNInstallObservation()
+		obs.Driver.PackageExists = true
+		obs.Driver.PackagePath = `C:\\temp\\wintun.dll`
+		obs.Create.Called = true
+		obs.Create.HandleNonZero = true
+		obs.Create.RawError = ""
+		obs.Visibility.DetectVisible = true
+		obs.Visibility.IfIndexResolved = true
+		obs.Visibility.IfIndexValue = 7
+		obs.Final.Success = true
+		obs.Final.ReasonCode = "TUN_INSTALL_SUCCEEDED"
+		obs.Final.Reason = "创建后检测到 TUN 适配器可见"
+		setProbeLocalTUNInstallObservation(obs)
+		return nil
+	}
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
 
 	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/install", map[string]any{}, sessionCookie)
@@ -1242,6 +1289,90 @@ func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
 	}
 	if installed, _ := tunObj["installed"].(bool); !installed {
 		t.Fatalf("tun/install installed should be true")
+	}
+	observation, ok := payload["install_observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/install success observation type=%T", payload["install_observation"])
+	}
+	driverObj, _ := observation["driver"].(map[string]any)
+	if pkgExists, _ := driverObj["package_exists"].(bool); !pkgExists {
+		t.Fatalf("success observation driver.package_exists=%v", driverObj["package_exists"])
+	}
+	createObj, _ := observation["create"].(map[string]any)
+	if called, _ := createObj["called"].(bool); !called {
+		t.Fatalf("success observation create.called=%v", createObj["called"])
+	}
+	visibilityObj, _ := observation["visibility"].(map[string]any)
+	if visible, _ := visibilityObj["detect_visible"].(bool); !visible {
+		t.Fatalf("success observation visibility.detect_visible=%v", visibilityObj["detect_visible"])
+	}
+	finalObj, _ := observation["final"].(map[string]any)
+	if success, _ := finalObj["success"].(bool); !success {
+		t.Fatalf("success observation final.success=%v", finalObj["success"])
+	}
+
+	statusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/tun/status", nil, sessionCookie)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("tun/status status=%d body=%s", statusResp.Code, statusResp.Body.String())
+	}
+	statusPayload := decodeProbeLocalJSON(t, statusResp)
+	if _, exists := statusPayload["install_observation"]; exists {
+		t.Fatalf("tun/status should not expose install_observation")
+	}
+	lastObs, ok := statusPayload["last_install_observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/status last_install_observation type=%T", statusPayload["last_install_observation"])
+	}
+	lastFinal, _ := lastObs["final"].(map[string]any)
+	if success, _ := lastFinal["success"].(bool); !success {
+		t.Fatalf("tun/status last_install_observation.final.success=%v", lastFinal["success"])
+	}
+}
+
+func TestProbeLocalTUNStatusReturnsLastInstallObservation(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeLocalInstallTUNDriver = func() error {
+		obs := newProbeLocalTUNInstallObservation()
+		obs.Driver.PackageExists = true
+		obs.Driver.PackagePath = `C:\\temp\\wintun.dll`
+		obs.Create.Called = true
+		obs.Create.HandleNonZero = true
+		obs.Visibility.DetectVisible = true
+		obs.Visibility.IfIndexResolved = true
+		obs.Visibility.IfIndexValue = 11
+		obs.Final.Success = true
+		obs.Final.ReasonCode = "TUN_INSTALL_SUCCEEDED"
+		obs.Final.Reason = "status-check"
+		setProbeLocalTUNInstallObservation(obs)
+		return nil
+	}
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
+
+	installResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/install", map[string]any{}, sessionCookie)
+	if installResp.Code != http.StatusOK {
+		t.Fatalf("tun/install status=%d body=%s", installResp.Code, installResp.Body.String())
+	}
+
+	statusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/tun/status", nil, sessionCookie)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("tun/status status=%d body=%s", statusResp.Code, statusResp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, statusResp)
+	if _, exists := payload["install_observation"]; exists {
+		t.Fatalf("tun/status should not include install_observation")
+	}
+	lastObs, ok := payload["last_install_observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/status last_install_observation type=%T", payload["last_install_observation"])
+	}
+	finalObj, _ := lastObs["final"].(map[string]any)
+	if success, _ := finalObj["success"].(bool); !success {
+		t.Fatalf("tun/status last_install_observation.final.success=%v", finalObj["success"])
+	}
+	if reasonCode, _ := finalObj["reason_code"].(string); reasonCode != "TUN_INSTALL_SUCCEEDED" {
+		t.Fatalf("tun/status last_install_observation.final.reason_code=%q", reasonCode)
 	}
 }
 
