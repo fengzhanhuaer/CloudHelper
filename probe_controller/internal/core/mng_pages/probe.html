@@ -43,6 +43,15 @@
     .ip-list { display:flex; flex-direction:column; gap:4px; margin:4px 0 6px; }
     .ip-copy-btn { display:block; width:100%; text-align:left; padding:4px 6px; border-radius:6px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; cursor:pointer; }
     .ip-copy-btn:hover { border-color:#58a6ff; color:#58a6ff; }
+    .modal-backdrop { position:fixed; inset:0; background:rgba(1,4,9,.72); display:flex; align-items:center; justify-content:center; padding:16px; z-index:1000; }
+    .modal-backdrop[hidden] { display:none; }
+    .modal { width:min(760px, 100%); max-height:90vh; overflow:auto; border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
+    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .form-field { display:flex; flex-direction:column; gap:6px; }
+    .form-field.full { grid-column:1 / -1; }
+    .form-field label { color:#8b949e; font-size:12px; }
+    .modal h3 { margin-top:0; }
+    .checkbox-row { display:flex; align-items:center; gap:8px; min-height:36px; }
   </style>
 </head>
 <body>
@@ -174,6 +183,64 @@
     </div>
   </div>
 
+  <div id="node-edit-modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <h3>编辑探针</h3>
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="edit-node-name">node_name</label>
+          <input id="edit-node-name" />
+        </div>
+        <div class="form-field">
+          <label for="edit-target-system">target_system</label>
+          <select id="edit-target-system">
+            <option value="linux">linux</option>
+            <option value="windows">windows</option>
+          </select>
+        </div>
+        <div class="form-field full">
+          <label for="edit-remark">remark</label>
+          <input id="edit-remark" />
+        </div>
+        <div class="form-field full">
+          <label for="edit-ddns">ddns</label>
+          <input id="edit-ddns" />
+        </div>
+        <div class="form-field">
+          <label for="edit-payment-cycle">payment_cycle</label>
+          <input id="edit-payment-cycle" />
+        </div>
+        <div class="form-field">
+          <label for="edit-cost">cost</label>
+          <input id="edit-cost" />
+        </div>
+        <div class="form-field">
+          <label for="edit-expire-at">expire_at</label>
+          <input id="edit-expire-at" placeholder="YYYY-MM-DD" />
+        </div>
+        <div class="form-field">
+          <label for="edit-vendor-name">vendor_name</label>
+          <input id="edit-vendor-name" />
+        </div>
+        <div class="form-field full">
+          <label for="edit-vendor-url">vendor_url</label>
+          <input id="edit-vendor-url" />
+        </div>
+        <div class="form-field full">
+          <label>direct_connect</label>
+          <div class="checkbox-row">
+            <input id="edit-direct-connect" type="checkbox" />
+            <label for="edit-direct-connect">直连</label>
+          </div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px; justify-content:flex-end;">
+        <button id="btn-edit-node-cancel" class="btn" type="button">取消</button>
+        <button id="btn-edit-node-save" class="btn primary" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const state = {
       activeTab: 'list',
@@ -183,6 +250,7 @@
       shellSessionID: '',
       statusTimer: null,
       shellShortcuts: [],
+      editingNodeNo: 0,
     };
 
     function setStatus(message, level) {
@@ -378,6 +446,7 @@
       const payload = await requestJSON('/mng/api/probe/status');
       state.statusItems = Array.isArray(payload.items) ? payload.items : [];
       renderStatus();
+      renderNodes();
       if (!silent) setStatus(`已刷新探针状态：${state.statusItems.length} 条`, 'ok');
     }
 
@@ -540,39 +609,109 @@
       setStatus(`探针创建成功：${payload.node && payload.node.node_name ? payload.node.node_name : nodeName}`, 'ok');
     }
 
-    async function editNode(nodeNo) {
-      const node = state.nodes.find((item) => Number(item.node_no) === Number(nodeNo));
-      if (!node) return;
-      const nodeName = prompt('节点名称', node.node_name || '');
-      if (nodeName === null) return;
-      const targetSystem = prompt('目标系统（linux/windows）', node.target_system || 'linux');
-      if (targetSystem === null) return;
-      const directConnectRaw = prompt('是否直连（true/false）', node.direct_connect ? 'true' : 'false');
-      if (directConnectRaw === null) return;
-      const remark = prompt('备注', node.remark || '');
-      if (remark === null) return;
-      const ddns = prompt('DDNS', node.ddns || '');
-      if (ddns === null) return;
+    function closeEditNodeModal() {
+      state.editingNodeNo = 0;
+      const modal = document.getElementById('node-edit-modal');
+      modal.setAttribute('hidden', 'hidden');
+    }
 
+    function openEditNodeModal(node) {
+      state.editingNodeNo = Number(node.node_no);
+      document.getElementById('edit-node-name').value = String(node.node_name || '');
+      document.getElementById('edit-remark').value = String(node.remark || '');
+      document.getElementById('edit-ddns').value = String(node.ddns || '');
+      const targetSystem = String(node.target_system || 'linux').toLowerCase();
+      document.getElementById('edit-target-system').value = targetSystem === 'windows' ? 'windows' : 'linux';
+      document.getElementById('edit-direct-connect').checked = node.direct_connect === true;
+      document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
+      document.getElementById('edit-cost').value = String(node.cost || '');
+      document.getElementById('edit-expire-at').value = String(node.expire_at || '');
+      document.getElementById('edit-vendor-name').value = String(node.vendor_name || '');
+      document.getElementById('edit-vendor-url').value = String(node.vendor_url || '');
+      const modal = document.getElementById('node-edit-modal');
+      modal.removeAttribute('hidden');
+    }
+
+    function buildEditValidationError(message) {
+      const err = new Error(String(message || '输入不合法'));
+      err.isEditValidationError = true;
+      return err;
+    }
+
+    function formatEditSaveError(err) {
+      const raw = String((err && err.message) ? err.message : err || '').trim();
+      if (err && err.isEditValidationError) {
+        return `输入校验失败：${raw}`;
+      }
+      const message = raw.toLowerCase();
+      if (message.includes('node name already exists in deleted probe list')) {
+        return `保存失败：节点名称与已删除探针冲突（${raw}）`;
+      }
+      if (message.includes('node name already exists')) {
+        return `保存失败：节点名称已存在（${raw}）`;
+      }
+      if (message.includes('target system must be linux or windows')) {
+        return `保存失败：目标系统只能是 linux 或 windows（${raw}）`;
+      }
+      if (message.includes('invalid node number')) {
+        return `保存失败：节点编号无效（${raw}）`;
+      }
+      if (message.includes('not found')) {
+        return `保存失败：节点不存在或已变化（${raw}）`;
+      }
+      if (message.includes('failed to persist probe node')) {
+        return `保存失败：写入存储失败（${raw}）`;
+      }
+      return `保存失败：${raw || '未知错误'}`;
+    }
+
+    function collectEditNodePayload() {
+      const nodeName = String(document.getElementById('edit-node-name').value || '').trim();
+      const targetSystem = String(document.getElementById('edit-target-system').value || '').trim().toLowerCase();
+      const expireAt = String(document.getElementById('edit-expire-at').value || '').trim();
+      if (!nodeName) {
+        throw buildEditValidationError('node_name 不能为空');
+      }
+      if (targetSystem !== 'linux' && targetSystem !== 'windows') {
+        throw buildEditValidationError('target_system 只能是 linux 或 windows');
+      }
+      if (expireAt && !/^\d{4}-\d{2}-\d{2}$/.test(expireAt)) {
+        throw buildEditValidationError('expire_at 格式必须是 YYYY-MM-DD');
+      }
+      return {
+        node_no: Number(state.editingNodeNo),
+        node_name: nodeName,
+        remark: String(document.getElementById('edit-remark').value || '').trim(),
+        ddns: String(document.getElementById('edit-ddns').value || '').trim(),
+        target_system: targetSystem,
+        direct_connect: document.getElementById('edit-direct-connect').checked === true,
+        payment_cycle: String(document.getElementById('edit-payment-cycle').value || '').trim(),
+        cost: String(document.getElementById('edit-cost').value || '').trim(),
+        expire_at: expireAt,
+        vendor_name: String(document.getElementById('edit-vendor-name').value || '').trim(),
+        vendor_url: String(document.getElementById('edit-vendor-url').value || '').trim(),
+      };
+    }
+
+    async function saveEditedNode() {
+      if (!Number.isFinite(state.editingNodeNo) || state.editingNodeNo <= 0) {
+        throw buildEditValidationError('未选择可编辑的探针');
+      }
+      const payload = collectEditNodePayload();
       await requestJSON('/mng/api/probe/node/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          node_no: Number(node.node_no),
-          node_name: String(nodeName || '').trim(),
-          remark: String(remark || '').trim(),
-          ddns: String(ddns || '').trim(),
-          target_system: String(targetSystem || '').trim().toLowerCase() || 'linux',
-          direct_connect: String(directConnectRaw || '').trim().toLowerCase() === 'true',
-          payment_cycle: String(node.payment_cycle || ''),
-          cost: String(node.cost || ''),
-          expire_at: String(node.expire_at || ''),
-          vendor_name: String(node.vendor_name || ''),
-          vendor_url: String(node.vendor_url || ''),
-        }),
+        body: JSON.stringify(payload),
       });
+      closeEditNodeModal();
       await refreshNodes(true);
-      setStatus(`探针已更新：#${nodeNo}`, 'ok');
+      setStatus(`探针已更新：#${payload.node_no}`, 'ok');
+    }
+
+    async function editNode(nodeNo) {
+      const node = state.nodes.find((item) => Number(item.node_no) === Number(nodeNo));
+      if (!node) return;
+      openEditNodeModal(node);
     }
 
     async function deleteNode(nodeNo) {
@@ -658,6 +797,18 @@
     document.getElementById('btn-shell-stop').addEventListener('click', () => { stopShellSession().catch((err) => setStatus(`会话停止失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shell-exec').addEventListener('click', () => { execShellCommand().catch((err) => setStatus(`命令执行失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shortcut-upsert').addEventListener('click', () => { upsertShortcut().catch((err) => setStatus(`快捷命令保存失败：${err.message || err}`, 'err')); });
+
+    document.getElementById('btn-edit-node-cancel').addEventListener('click', () => {
+      closeEditNodeModal();
+    });
+    document.getElementById('btn-edit-node-save').addEventListener('click', () => {
+      saveEditedNode().catch((err) => setStatus(formatEditSaveError(err), 'err'));
+    });
+    document.getElementById('node-edit-modal').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) {
+        closeEditNodeModal();
+      }
+    });
 
     document.addEventListener('click', (event) => {
       const target = event.target;
