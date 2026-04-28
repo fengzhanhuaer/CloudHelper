@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -359,9 +361,14 @@ type probeLocalWindowsPnPDevice struct {
 
 func listProbeLocalWindowsPnPDevices() ([]probeLocalWindowsPnPDevice, error) {
 	script := "$ErrorActionPreference='Stop'; $items=Get-PnpDevice -PresentOnly:$false | ForEach-Object { [PSCustomObject]@{ friendly_name=[string]$_.FriendlyName; instance_id=[string]$_.InstanceId; class=[string]$_.Class; status=[string]$_.Status; present=([bool]$_.Present); problem=if ($null -eq $_.Problem) { '' } else { [string]$_.Problem } } }; $items | ConvertTo-Json -Compress"
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("query pnp devices timeout after 10s: %w (%s)", ctx.Err(), strings.TrimSpace(string(output)))
+		}
 		return nil, fmt.Errorf("query pnp devices failed: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 	text := strings.TrimSpace(string(output))
@@ -443,9 +450,15 @@ func removeProbeLocalPhantomWintunDevices() (int, error) {
 	removed := 0
 	var removeErr error
 	for _, instanceID := range instanceIDs {
-		cmd := exec.Command("pnputil", "/remove-device", instanceID)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cmd := exec.CommandContext(ctx, "pnputil", "/remove-device", instanceID)
 		output, err := cmd.CombinedOutput()
+		cancel()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				removeErr = errors.Join(removeErr, fmt.Errorf("remove phantom pnp device timeout after 10s: instance=%s err=%w output=%s", instanceID, ctx.Err(), strings.TrimSpace(string(output))))
+				continue
+			}
 			removeErr = errors.Join(removeErr, fmt.Errorf("remove phantom pnp device failed: instance=%s err=%w output=%s", instanceID, err, strings.TrimSpace(string(output))))
 			continue
 		}

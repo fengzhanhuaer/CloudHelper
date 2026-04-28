@@ -532,11 +532,24 @@
     }
 
     async function requestJSON(url, options) {
-      const res = await fetch(url, {
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        ...options,
-      });
+      const controller = new AbortController();
+      const timeoutID = setTimeout(() => controller.abort(), 20000);
+      let res;
+      try {
+        res = await fetch(url, {
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          ...options,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          throw new Error(`请求超时: ${url}`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeoutID);
+      }
       let data = {};
       try {
         data = await res.json();
