@@ -305,20 +305,27 @@ func TestInstallProbeLocalTUNDriverLUIDIfIndexDiagnosticOnlyWithoutDetect(t *tes
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	err := installProbeLocalTUNDriver()
-	if err == nil {
-		t.Fatal("expected installProbeLocalTUNDriver error")
+	if err != nil {
+		t.Fatalf("installProbeLocalTUNDriver returned error: %v", err)
 	}
-	var installErr *probeLocalTUNInstallError
-	if !errors.As(err, &installErr) || installErr == nil {
-		t.Fatalf("expected probeLocalTUNInstallError, got: %T %v", err, err)
+	observation, ok := currentProbeLocalTUNInstallObservation()
+	if !ok {
+		t.Fatal("expected install observation after success")
 	}
-	if installErr.Diagnostic.Code != probeLocalTUNInstallCodeAdapterNotDetected {
-		t.Fatalf("diagnostic code=%q, want %q", installErr.Diagnostic.Code, probeLocalTUNInstallCodeAdapterNotDetected)
+	if !observation.Final.Success {
+		t.Fatalf("observation.final.success=%v, want true", observation.Final.Success)
 	}
-	if !strings.Contains(strings.Join(installErr.Diagnostic.Steps, "|"), "fallback_luid_ifindex_diagnostic_only") {
-		t.Fatalf("expected fallback_luid_ifindex_diagnostic_only in steps, got: %v", installErr.Diagnostic.Steps)
+	if observation.Final.ReasonCode != probeLocalTUNInstallCodeAdapterJointVisibilityMiss {
+		t.Fatalf("observation.final.reason_code=%q, want %q", observation.Final.ReasonCode, probeLocalTUNInstallCodeAdapterJointVisibilityMiss)
 	}
+	if !strings.Contains(observation.Final.Reason, "联合可见") {
+		t.Fatalf("observation.final.reason=%q, want mention 联合可见", observation.Final.Reason)
+	}
+	if closeCalled != 0 {
+		t.Fatalf("close called=%d, want 0 before retained-handle release", closeCalled)
+	}
+	releaseProbeLocalRetainedWintunAdapterHandle()
 	if closeCalled != 1 {
-		t.Fatalf("close called=%d, want 1", closeCalled)
+		t.Fatalf("close called=%d, want 1 after retained-handle release", closeCalled)
 	}
 }

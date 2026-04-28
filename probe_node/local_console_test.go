@@ -1374,6 +1374,9 @@ func TestProbeLocalTUNStatusReturnsLastInstallObservation(t *testing.T) {
 	if reasonCode, _ := finalObj["reason_code"].(string); reasonCode != "TUN_INSTALL_SUCCEEDED" {
 		t.Fatalf("tun/status last_install_observation.final.reason_code=%q", reasonCode)
 	}
+	if reason, _ := finalObj["reason"].(string); strings.TrimSpace(reason) == "" {
+		t.Fatalf("tun/status last_install_observation.final.reason should not be empty")
+	}
 }
 
 func TestEnsureProbeLocalProxyDefaultsInitializedCreatesFiles(t *testing.T) {

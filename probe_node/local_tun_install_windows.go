@@ -52,7 +52,8 @@ func installProbeLocalTUNDriver() error {
 	steps = append(steps, "start: install_probe_local_tun_driver")
 	observation := newProbeLocalTUNInstallObservation()
 	const (
-		reasonCodeSuccess = "TUN_INSTALL_SUCCEEDED"
+		reasonCodeSuccess         = "TUN_INSTALL_SUCCEEDED"
+		reasonCodeSuccessNotReady = "TUN_INSTALL_SUCCEEDED_NOT_READY"
 	)
 	logInstallSuccess := func() {
 		if len(steps) > 0 {
@@ -76,6 +77,22 @@ func installProbeLocalTUNDriver() error {
 		observation.Final.ReasonCode = reasonCodeSuccess
 		observation.Final.Reason = strings.TrimSpace(reason)
 		observation.Diagnostic = probeLocalTUNInstallObservationDiagnostic{}
+		setProbeLocalTUNInstallObservation(observation)
+	}
+	setSuccessNotReadyObservation := func(reasonCode string, reason string, rawErr error) {
+		rawText := ""
+		if rawErr != nil {
+			rawText = strings.TrimSpace(rawErr.Error())
+		}
+		cleanCode := strings.TrimSpace(reasonCode)
+		if cleanCode == "" {
+			cleanCode = reasonCodeSuccessNotReady
+		}
+		observation.Final.Success = true
+		observation.Final.ReasonCode = cleanCode
+		observation.Final.Reason = strings.TrimSpace(reason)
+		observation.Diagnostic.Code = cleanCode
+		observation.Diagnostic.RawError = rawText
 		setProbeLocalTUNInstallObservation(observation)
 	}
 	setFailureObservation := func(code string, reason string, rawErr error) {
@@ -435,12 +452,25 @@ func installProbeLocalTUNDriver() error {
 	if detectErr != nil {
 		steps = append(steps, "detect_adapter_retry: failed")
 		if createdOrOpened {
-			return failInstall(
-				probeLocalTUNInstallCodeAdapterNotDetected,
-				"verify_adapter",
-				"句柄创建成功但系统仍不可见网卡，建议查看驱动服务与网卡枚举",
-				fmt.Errorf("verify wintun adapter after install failed (adapter handle was created/opened but adapter is still not detectable): %w", detectErr),
+			if handleLUID != 0 {
+				ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(handleLUID)
+				if convertErr == nil && ifIndex > 0 {
+					observation.Visibility.IfIndexResolved = true
+					observation.Visibility.IfIndexValue = ifIndex
+					setProbeLocalWindowsRouteTargetEnv(ifIndex)
+					steps = append(steps, "verify_adapter: detect_error_but_luid_ifindex_resolved")
+				}
+			}
+			probeLocalRetainWintunAdapterHandle(libraryPath, handle)
+			handle = 0
+			steps = append(steps, "retain_adapter_handle: ok")
+			setSuccessNotReadyObservation(
+				probeLocalTUNInstallCodeAdapterJointVisibilityMiss,
+				"驱动安装流程已完成且适配器已创建/打开，但联合可见检测失败，请稍后刷新确认",
+				fmt.Errorf("verify wintun adapter after install detect failed: %w", detectErr),
 			)
+			logInstallSuccess()
+			return nil
 		}
 		return failInstall(
 			probeLocalTUNInstallCodeAdapterNotDetected,
@@ -570,20 +600,29 @@ func installProbeLocalTUNDriver() error {
 			} else {
 				steps = append(steps, "verify_adapter: fallback_luid_ifindex_failed")
 			}
-			return failInstall(
-				probeLocalTUNInstallCodeAdapterNotDetected,
-				"verify_adapter",
-				"句柄创建成功但系统枚举不可见；LUID->ifIndex 仅用于诊断不代表安装成功，请检查驱动服务与网卡枚举",
-				fmt.Errorf("wintun adapter not detected after install; luid=%d ifindex=%d err=%w", handleLUID, ifIndex, firstProbeLocalTUNErr(convertErr, errors.New("adapter not visible in system enumeration"))),
+			probeLocalRetainWintunAdapterHandle(libraryPath, handle)
+			handle = 0
+			steps = append(steps, "retain_adapter_handle: ok")
+			steps = append(steps, "verify_adapter: fallback_luid_ifindex_confirm_install_not_ready")
+			setSuccessNotReadyObservation(
+				probeLocalTUNInstallCodeAdapterJointVisibilityMiss,
+				"已完成驱动安装并可通过 LUID/ifIndex 识别适配器，但尚未满足 present PnP + NetAdapter 联合可见，请稍后刷新确认",
+				fmt.Errorf("wintun adapter joint visibility missing after install; luid=%d ifindex=%d err=%w", handleLUID, ifIndex, firstProbeLocalTUNErr(convertErr, errors.New("adapter not visible in system enumeration"))),
 			)
+			logInstallSuccess()
+			return nil
 		}
-		steps = append(steps, "verify_adapter: created_handle_but_not_visible")
-		return failInstall(
-			probeLocalTUNInstallCodeAdapterNotDetected,
-			"verify_adapter",
-			"句柄创建成功但系统仍不可见网卡，建议重启网卡子系统后重试",
-			errors.New("wintun adapter is not detected after install (adapter handle was created/opened but adapter is still not detectable)"),
+		steps = append(steps, "verify_adapter: created_handle_but_not_jointly_visible")
+		probeLocalRetainWintunAdapterHandle(libraryPath, handle)
+		handle = 0
+		steps = append(steps, "retain_adapter_handle: ok")
+		setSuccessNotReadyObservation(
+			probeLocalTUNInstallCodeAdapterJointVisibilityMiss,
+			"已完成驱动安装并已创建/打开适配器，但尚未满足 present PnP + NetAdapter 联合可见，请稍后刷新确认",
+			errors.New("wintun adapter was created/opened but joint visibility is not reached yet"),
 		)
+		logInstallSuccess()
+		return nil
 	}
 	steps = append(steps, "verify_adapter: not_detected")
 	return failInstall(

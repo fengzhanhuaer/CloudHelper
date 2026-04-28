@@ -215,6 +215,8 @@
         <div>已启用</div><div id="tunEnabled">-</div>
         <div>最后更新时间</div><div id="tunUpdatedAt">-</div>
         <div>最近错误</div><div id="tunLastError">-</div>
+        <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
+        <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
       </div>
       <div class="actions">
         <button id="tunInstallBtn">安装/检查 TUN</button>
@@ -575,6 +577,14 @@
       setText('tunEnabled', data.enabled ? '是' : '否');
       setText('tunUpdatedAt', data.updated_at);
       setText('tunLastError', data.last_error);
+      const lastObs = (data && typeof data.last_install_observation === 'object' && data.last_install_observation)
+        ? data.last_install_observation
+        : {};
+      const finalObs = (lastObs && typeof lastObs.final === 'object' && lastObs.final)
+        ? lastObs.final
+        : {};
+      setText('tunInstallFinalReasonCode', finalObs.reason_code);
+      setText('tunInstallFinalReason', finalObs.reason);
     }
 
     async function loadProxyStatus() {
