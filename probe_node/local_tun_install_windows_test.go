@@ -39,7 +39,7 @@ func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
 	probeLocalInspectWintunVisibility = func() (probeLocalWintunVisibilityEvidence, error) {
 		return probeLocalWintunVisibilityEvidence{
 			NetAdapterMatched: true,
-			PresentPnPMatched: true,
+			PresentPnPMatched: false,
 			NetAdapter: probeLocalWindowsNetAdapter{
 				InterfaceIndex: 19,
 			},
@@ -330,7 +330,7 @@ func TestInstallProbeLocalTUNDriverLUIDIfIndexDiagnosticOnlyWithoutDetect(t *tes
 	}
 }
 
-func TestInstallProbeLocalTUNDriverFallbackFreshCreateStillJointVisibilityMissingReturnsSuccessNotReady(t *testing.T) {
+func TestInstallProbeLocalTUNDriverFallbackVisibilityConflictNoRecreate(t *testing.T) {
 	forceProbeLocalInstallAsAdminForTest()
 	clearProbeLocalTUNInstallObservation()
 	t.Cleanup(func() { clearProbeLocalTUNInstallObservation() })
@@ -341,18 +341,19 @@ func TestInstallProbeLocalTUNDriverFallbackFreshCreateStillJointVisibilityMissin
 	probeLocalFindWintunAdapterByLUID = func(uint64) (probeLocalWindowsNetAdapter, bool, error) {
 		return probeLocalWindowsNetAdapter{InterfaceIndex: 9}, true, nil
 	}
-	probeLocalCreateWintunAdapterFresh = func(_, _, _ string) (uintptr, error) { return uintptr(2), nil }
-	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
+	closeCalls := 0
+	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error {
+		closeCalls++
+		return nil
+	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	inspectCalls := 0
 	probeLocalInspectWintunVisibility = func() (probeLocalWintunVisibilityEvidence, error) {
 		inspectCalls++
-		switch {
-		case inspectCalls <= 11:
+		if inspectCalls <= 11 {
 			return probeLocalWintunVisibilityEvidence{}, nil
-		default:
-			return probeLocalWintunVisibilityEvidence{}, errors.New("joint visibility still missing")
 		}
+		return probeLocalWintunVisibilityEvidence{}, errors.New("joint visibility still missing")
 	}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
@@ -367,67 +368,11 @@ func TestInstallProbeLocalTUNDriverFallbackFreshCreateStillJointVisibilityMissin
 	if !observation.Final.Success {
 		t.Fatalf("observation.final.success=%v, want true", observation.Final.Success)
 	}
-	if observation.Final.ReasonCode != probeLocalTUNInstallCodeAdapterJointVisibilityMiss {
-		t.Fatalf("observation.final.reason_code=%q, want %q", observation.Final.ReasonCode, probeLocalTUNInstallCodeAdapterJointVisibilityMiss)
+	if !strings.Contains(observation.Final.Reason, "禁止重建") {
+		t.Fatalf("observation.final.reason=%q, want mention 禁止重建", observation.Final.Reason)
 	}
-	if observation.Diagnostic.Code != probeLocalTUNInstallCodeAdapterJointVisibilityMiss {
-		t.Fatalf("observation.diagnostic.code=%q, want %q", observation.Diagnostic.Code, probeLocalTUNInstallCodeAdapterJointVisibilityMiss)
-	}
-	if observation.Diagnostic.Stage != "verify_adapter" {
-		t.Fatalf("observation.diagnostic.stage=%q, want verify_adapter", observation.Diagnostic.Stage)
-	}
-	if !strings.Contains(observation.Diagnostic.Hint, "联合可见") {
-		t.Fatalf("observation.diagnostic.hint=%q, want mention 联合可见", observation.Diagnostic.Hint)
-	}
-	if !strings.Contains(observation.Diagnostic.RawError, "fallback fresh create still joint visibility missing") {
-		t.Fatalf("observation.diagnostic.raw_error=%q, want fallback fresh create still joint visibility missing", observation.Diagnostic.RawError)
-	}
-}
-
-func TestInstallProbeLocalTUNDriverFallbackFreshCreateFailureStillReturnsFailure(t *testing.T) {
-	forceProbeLocalInstallAsAdminForTest()
-	clearProbeLocalTUNInstallObservation()
-	t.Cleanup(func() { clearProbeLocalTUNInstallObservation() })
-	probeLocalEnsureWintunLibrary = func() error { return nil }
-	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
-	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
-	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) { return 1001, nil }
-	probeLocalFindWintunAdapterByLUID = func(uint64) (probeLocalWindowsNetAdapter, bool, error) {
-		return probeLocalWindowsNetAdapter{InterfaceIndex: 9}, true, nil
-	}
-	probeLocalCreateWintunAdapterFresh = func(_, _, _ string) (uintptr, error) {
-		return 0, errors.New("fresh create denied")
-	}
-	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
-	probeLocalTUNInstallSleep = func(_ time.Duration) {}
-	inspectCalls := 0
-	probeLocalInspectWintunVisibility = func() (probeLocalWintunVisibilityEvidence, error) {
-		inspectCalls++
-		if inspectCalls <= 11 {
-			return probeLocalWintunVisibilityEvidence{}, nil
-		}
-		return probeLocalWintunVisibilityEvidence{}, errors.New("joint visibility still missing")
-	}
-	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
-
-	err := installProbeLocalTUNDriver()
-	if err == nil {
-		t.Fatal("expected installProbeLocalTUNDriver error")
-	}
-	var installErr *probeLocalTUNInstallError
-	if !errors.As(err, &installErr) || installErr == nil {
-		t.Fatalf("expected probeLocalTUNInstallError, got: %T %v", err, err)
-	}
-	if installErr.Diagnostic.Code != probeLocalTUNInstallCodeAdapterJointVisibilityMiss {
-		t.Fatalf("diagnostic code=%q, want %q", installErr.Diagnostic.Code, probeLocalTUNInstallCodeAdapterJointVisibilityMiss)
-	}
-	if installErr.Diagnostic.Stage != "verify_adapter" {
-		t.Fatalf("diagnostic stage=%q, want verify_adapter", installErr.Diagnostic.Stage)
-	}
-	if !strings.Contains(installErr.Diagnostic.Hint, "联合可见") {
-		t.Fatalf("diagnostic hint=%q", installErr.Diagnostic.Hint)
-	}
-	if !strings.Contains(strings.ToLower(installErr.Diagnostic.Details), "fresh create denied") {
-		t.Fatalf("diagnostic details=%q", installErr.Diagnostic.Details)
+	releaseProbeLocalRetainedWintunAdapterHandle()
+	if closeCalls != 1 {
+		t.Fatalf("close calls=%d, want 1", closeCalls)
 	}
 }

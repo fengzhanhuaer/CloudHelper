@@ -40,7 +40,7 @@ type probeLocalWintunVisibilityEvidence struct {
 }
 
 func (e probeLocalWintunVisibilityEvidence) isJointlyVisible() bool {
-	return e.NetAdapterMatched && e.PresentPnPMatched
+	return e.NetAdapterMatched
 }
 
 func (e probeLocalWintunVisibilityEvidence) isPhantomOnly() bool {
@@ -198,19 +198,6 @@ func parseProbeLocalWindowsNetAdapters(first *windows.IpAdapterAddresses) []prob
 
 func createProbeLocalWintunAdapter(libraryPath, adapterName, tunnelType string) (uintptr, error) {
 	return createProbeLocalWintunAdapterWithIdentity(libraryPath, adapterName, tunnelType, strings.TrimSpace(probeLocalTUNAdapterRequestedGUID), true)
-}
-
-func createProbeLocalWintunAdapterFresh(libraryPath, adapterName, tunnelType string) (uintptr, error) {
-	guid, guidErr := windows.GenerateGUID()
-	if guidErr != nil {
-		return 0, fmt.Errorf("generate fresh adapter guid failed: %w", guidErr)
-	}
-	freshName := strings.TrimSpace(adapterName)
-	if freshName == "" {
-		freshName = probeLocalTUNAdapterName
-	}
-	freshName = fmt.Sprintf("%s %s", freshName, strings.ToUpper(strings.Trim(guid.String(), "{}"))[:8])
-	return createProbeLocalWintunAdapterWithIdentity(libraryPath, freshName, tunnelType, guid.String(), false)
 }
 
 func createProbeLocalWintunAdapterWithIdentity(libraryPath, adapterName, tunnelType, requestedGUID string, allowOpen bool) (uintptr, error) {

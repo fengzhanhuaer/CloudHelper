@@ -30,7 +30,6 @@ var (
 	probeLocalFindWintunAdapter              = findProbeLocalWintunAdapter
 	probeLocalFindWintunAdapterByLUID        = findProbeLocalWintunAdapterByLUID
 	probeLocalCreateWintunAdapter            = createProbeLocalWintunAdapter
-	probeLocalCreateWintunAdapterFresh       = createProbeLocalWintunAdapterFresh
 	probeLocalCloseWintunAdapter             = closeProbeLocalWintunAdapter
 	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle
 	probeLocalEnsureWindowsInterfaceIPv4     = ensureProbeLocalWindowsInterfaceIPv4Address
@@ -245,33 +244,80 @@ func installProbeLocalTUNDriver() error {
 	}
 	steps = append(steps, "permission: admin")
 
-	if evidence, err := probeLocalInspectWintunVisibility(); err == nil {
-		if evidence.NetAdapterMatched && evidence.NetAdapter.InterfaceIndex > 0 {
-			observation.Visibility.IfIndexResolved = true
-			observation.Visibility.IfIndexValue = evidence.NetAdapter.InterfaceIndex
-			setProbeLocalWindowsRouteTargetEnv(evidence.NetAdapter.InterfaceIndex)
-		}
-		if evidence.isJointlyVisible() {
-			observation.Visibility.DetectVisible = true
-			steps = append(steps, "detect_adapter_precheck: found")
-			setSuccessObservation("系统中已检测到 TUN 适配器（present PnP + NetAdapter）")
-			logInstallSuccess()
-			return nil
-		}
-		if evidence.isPhantomOnly() {
-			steps = append(steps, "detect_adapter_precheck: phantom_only")
+	precheckEvidence, precheckErr := probeLocalInspectWintunVisibility()
+	if precheckErr != nil {
+		steps = append(steps, "detect_adapter_precheck: error")
+		return failInstall(
+			probeLocalTUNInstallCodeAdapterNotDetected,
+			"detect_adapter_precheck",
+			"无法确认现有 TUN 网卡状态，已禁止重建，请检查系统设备状态后重试",
+			fmt.Errorf("inspect existing wintun adapter before create failed: %w", precheckErr),
+		)
+	}
+	if precheckEvidence.NetAdapterMatched && precheckEvidence.NetAdapter.InterfaceIndex > 0 {
+		observation.Visibility.IfIndexResolved = true
+		observation.Visibility.IfIndexValue = precheckEvidence.NetAdapter.InterfaceIndex
+		setProbeLocalWindowsRouteTargetEnv(precheckEvidence.NetAdapter.InterfaceIndex)
+	}
+	if precheckEvidence.isJointlyVisible() {
+		observation.Visibility.DetectVisible = true
+		steps = append(steps, "detect_adapter_precheck: found")
+		setSuccessObservation("系统中已检测到 TUN 适配器（present PnP + NetAdapter）")
+		logInstallSuccess()
+		return nil
+	}
+	if precheckEvidence.NetAdapterMatched || precheckEvidence.PresentPnPMatched || precheckEvidence.PhantomPnPMatched {
+		steps = append(steps, "detect_adapter_precheck: existing_target_instance")
+		if precheckEvidence.isPhantomOnly() {
 			removedPhantoms, removePhantomErr := probeLocalRemovePhantomWintunDevices()
 			if removePhantomErr != nil {
 				steps = append(steps, "detect_adapter_precheck: remove_phantom_failed")
 			} else if removedPhantoms > 0 {
 				steps = append(steps, "detect_adapter_precheck: remove_phantom_ok")
 			}
-		} else {
-			steps = append(steps, "detect_adapter_precheck: not_found")
 		}
-	} else {
-		steps = append(steps, "detect_adapter_precheck: error")
+		if precheckEvidence.NetAdapterMatched {
+			ifIndex := precheckEvidence.NetAdapter.InterfaceIndex
+			if ifIndex <= 0 && precheckEvidence.NetAdapter.InterfaceLUID > 0 {
+				if resolvedIfIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(precheckEvidence.NetAdapter.InterfaceLUID); convertErr == nil && resolvedIfIndex > 0 {
+					ifIndex = resolvedIfIndex
+					observation.Visibility.IfIndexResolved = true
+					observation.Visibility.IfIndexValue = ifIndex
+					setProbeLocalWindowsRouteTargetEnv(ifIndex)
+					steps = append(steps, "detect_adapter_precheck: ifindex_recover_from_luid_ok")
+				} else {
+					steps = append(steps, "detect_adapter_precheck: ifindex_recover_from_luid_failed")
+				}
+			}
+			if ifIndex > 0 {
+				if routeErr := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex); routeErr != nil {
+					steps = append(steps, "detect_adapter_precheck: route_target_repair_failed")
+					setSuccessNotReadyObservation(
+						probeLocalTUNInstallCodeAdapterJointVisibilityMiss,
+						"已检测到既有 TUN 网卡，仅执行可用性修复；路由目标修复失败，请检查网卡状态后重试",
+						fmt.Errorf("repair existing wintun route target failed: %w", routeErr),
+					)
+					logInstallSuccess()
+					return nil
+				}
+				steps = append(steps, "detect_adapter_precheck: route_target_repair_ok")
+			}
+			setSuccessNotReadyObservation(
+				probeLocalTUNInstallCodeAdapterJointVisibilityMiss,
+				"已检测到既有 TUN 网卡，仅执行可用性修复；当前尚未满足 present PnP + NetAdapter 联合可见",
+				errors.New("existing wintun adapter is not jointly visible after repair-only path"),
+			)
+			logInstallSuccess()
+			return nil
+		}
+		return failInstall(
+			probeLocalTUNInstallCodeAdapterPhantomOnly,
+			"detect_adapter_precheck",
+			"检测到既有目标 TUN 网卡实例（PnP），已禁止重建，请清理异常实例后重试",
+			fmt.Errorf("existing target adapter instance is present but net adapter is unavailable: %s", formatProbeLocalWintunVisibilityEvidence(precheckEvidence)),
+		)
 	}
+	steps = append(steps, "detect_adapter_precheck: not_found")
 
 	libraryPath, err := probeLocalResolveWintunPath()
 	if err != nil {
@@ -374,80 +420,16 @@ func installProbeLocalTUNDriver() error {
 		} else if removedPhantoms > 0 {
 			steps = append(steps, "verify_adapter: remove_phantom_ok")
 		}
-		freshHandle, freshErr := probeLocalCreateWintunAdapterFresh(libraryPath, probeLocalTUNAdapterName, probeLocalTUNTunnelType)
-		if freshErr != nil || freshHandle == 0 {
-			return failInstall(
-				probeLocalTUNInstallCodeAdapterPhantomOnly,
-				"verify_adapter",
-				"检测到固定标识复用到 Phantom 节点，尝试重建新 TUN 适配器失败",
-				fmt.Errorf("phantom-only adapter reused and fresh create failed: %w; removed_phantom=%d remove_err=%v evidence=%s", firstProbeLocalTUNErr(freshErr, errors.New("fresh adapter handle is zero")), removedPhantoms, removePhantomErr, formatProbeLocalWintunVisibilityEvidence(lastVisibilityEvidence)),
-			)
-		}
-		if handle != 0 {
-			if closeErr := probeLocalCloseWintunAdapter(libraryPath, handle); closeErr != nil {
-				logProbeWarnf("close reused wintun adapter handle failed before fresh handle replace: %v", closeErr)
-			}
-		}
-		handle = freshHandle
-		observation.Create.Called = true
-		observation.Create.HandleNonZero = true
-		steps = append(steps, "verify_adapter: create_fresh_identity_ok")
-		if luid, luidErr := probeLocalGetWintunAdapterLUIDFromHandle(libraryPath, handle); luidErr == nil && luid > 0 {
-			handleLUID = luid
-			steps = append(steps, "verify_adapter: fresh_handle_luid_ok")
-		} else {
-			steps = append(steps, "verify_adapter: fresh_handle_luid_failed")
-		}
-
-		freshDetectErr := error(nil)
-		freshPhantomOnly := false
-		for _, delay := range []time.Duration{0, 300 * time.Millisecond, 700 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond, 2500 * time.Millisecond, 3500 * time.Millisecond} {
-			if delay > 0 {
-				probeLocalTUNInstallSleep(delay)
-			}
-			evidence, err := probeLocalInspectWintunVisibility()
-			if err != nil {
-				freshDetectErr = err
-				steps = append(steps, "verify_adapter: fresh_detect_retry_error")
-				continue
-			}
-			if evidence.NetAdapterMatched && evidence.NetAdapter.InterfaceIndex > 0 {
-				observation.Visibility.IfIndexResolved = true
-				observation.Visibility.IfIndexValue = evidence.NetAdapter.InterfaceIndex
-				setProbeLocalWindowsRouteTargetEnv(evidence.NetAdapter.InterfaceIndex)
-			}
-			if evidence.isJointlyVisible() {
-				observation.Visibility.DetectVisible = true
-				probeLocalRetainWintunAdapterHandle(libraryPath, handle)
-				handle = 0
-				steps = append(steps, "verify_adapter: fresh_detect_retry_found")
-				steps = append(steps, "retain_adapter_handle: ok")
-				setSuccessObservation("检测到固定标识命中 Phantom 后已重建新适配器并形成联合可见")
-				logInstallSuccess()
-				return nil
-			}
-			if evidence.isPhantomOnly() {
-				freshPhantomOnly = true
-				lastVisibilityEvidence = evidence
-				steps = append(steps, "verify_adapter: fresh_detect_retry_phantom_only")
-				continue
-			}
-			steps = append(steps, "verify_adapter: fresh_detect_retry_not_found")
-		}
-		if freshPhantomOnly {
-			return failInstall(
-				probeLocalTUNInstallCodeAdapterPhantomOnly,
-				"verify_adapter",
-				"重建后仍仅检测到 Phantom PnP 节点，未出现 present 设备",
-				fmt.Errorf("fresh adapter remains phantom-only: %s", formatProbeLocalWintunVisibilityEvidence(lastVisibilityEvidence)),
-			)
-		}
-		return failInstall(
-			probeLocalTUNInstallCodeAdapterJointVisibilityMiss,
-			"verify_adapter",
-			"重建后仍未满足 present PnP + NetAdapter 联合可见",
-			fmt.Errorf("fresh adapter joint visibility missing: %w", firstProbeLocalTUNErr(freshDetectErr, errors.New("joint visibility not reached after fresh create"))),
+		probeLocalRetainWintunAdapterHandle(libraryPath, handle)
+		handle = 0
+		steps = append(steps, "retain_adapter_handle: ok")
+		setSuccessNotReadyObservation(
+			probeLocalTUNInstallCodeAdapterPhantomOnly,
+			"检测到 Phantom 可见性异常，仅执行可用性修复并禁止重建，请清理异常实例后重试",
+			fmt.Errorf("phantom-only adapter detected in repair-only mode: removed_phantom=%d remove_err=%v evidence=%s", removedPhantoms, removePhantomErr, formatProbeLocalWintunVisibilityEvidence(lastVisibilityEvidence)),
 		)
+		logInstallSuccess()
+		return nil
 	}
 	if detectErr != nil {
 		steps = append(steps, "detect_adapter_retry: failed")
@@ -515,87 +497,18 @@ func installProbeLocalTUNDriver() error {
 						recreateHint = "LUID 可解析但仅存在 Phantom PnP 节点，不满足联合可见"
 						recreateCause = fmt.Errorf("fallback luid resolved but adapter is phantom-only: %s", formatProbeLocalWintunVisibilityEvidence(evidence))
 					}
-					steps = append(steps, "verify_adapter: fallback_visibility_conflict_recreate")
-					freshHandle, freshErr := probeLocalCreateWintunAdapterFresh(libraryPath, probeLocalTUNAdapterName, probeLocalTUNTunnelType)
-					if freshErr != nil || freshHandle == 0 {
-						return failInstall(
-							recreateReasonCode,
-							"verify_adapter",
-							recreateHint,
-							fmt.Errorf("fallback visibility conflict and fresh create failed: %w; cause=%v", firstProbeLocalTUNErr(freshErr, errors.New("fresh adapter handle is zero")), recreateCause),
-						)
-					}
-					if handle != 0 {
-						if closeErr := probeLocalCloseWintunAdapter(libraryPath, handle); closeErr != nil {
-							logProbeWarnf("close conflict adapter handle failed before fresh fallback create: %v", closeErr)
-						}
-					}
-					handle = freshHandle
-					observation.Create.Called = true
-					observation.Create.HandleNonZero = true
-					steps = append(steps, "verify_adapter: fallback_fresh_create_ok")
-					if freshLUID, freshLUIDErr := probeLocalGetWintunAdapterLUIDFromHandle(libraryPath, handle); freshLUIDErr == nil && freshLUID > 0 {
-						handleLUID = freshLUID
-						steps = append(steps, "verify_adapter: fallback_fresh_luid_ok")
-					} else {
-						steps = append(steps, "verify_adapter: fallback_fresh_luid_failed")
-					}
-					freshDetectErr := error(nil)
-					freshPhantomOnly := false
-					for _, freshDelay := range []time.Duration{0, 300 * time.Millisecond, 700 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond, 2500 * time.Millisecond, 3500 * time.Millisecond} {
-						if freshDelay > 0 {
-							probeLocalTUNInstallSleep(freshDelay)
-						}
-						freshEvidence, freshInspectErr := probeLocalInspectWintunVisibility()
-						if freshInspectErr != nil {
-							freshDetectErr = freshInspectErr
-							steps = append(steps, "verify_adapter: fallback_fresh_detect_error")
-							continue
-						}
-						if freshEvidence.NetAdapterMatched && freshEvidence.NetAdapter.InterfaceIndex > 0 {
-							observation.Visibility.IfIndexResolved = true
-							observation.Visibility.IfIndexValue = freshEvidence.NetAdapter.InterfaceIndex
-							setProbeLocalWindowsRouteTargetEnv(freshEvidence.NetAdapter.InterfaceIndex)
-						}
-						if freshEvidence.isJointlyVisible() {
-							observation.Visibility.DetectVisible = true
-							probeLocalRetainWintunAdapterHandle(libraryPath, handle)
-							handle = 0
-							steps = append(steps, "verify_adapter: fallback_fresh_detect_found")
-							steps = append(steps, "retain_adapter_handle: ok")
-							setSuccessObservation("检测到 LUID 冲突可见性异常后已重建新适配器并形成联合可见")
-							logInstallSuccess()
-							return nil
-						}
-						if freshEvidence.isPhantomOnly() {
-							freshPhantomOnly = true
-							steps = append(steps, "verify_adapter: fallback_fresh_detect_phantom_only")
-							continue
-						}
-						steps = append(steps, "verify_adapter: fallback_fresh_detect_not_found")
-					}
-					if freshPhantomOnly {
-						return failInstall(
-							probeLocalTUNInstallCodeAdapterPhantomOnly,
-							"verify_adapter",
-							"LUID 路径冲突后重建仍仅检测到 Phantom PnP 节点",
-							fmt.Errorf("fallback fresh create remains phantom-only: %w", recreateCause),
-						)
-					}
+					steps = append(steps, "verify_adapter: fallback_visibility_conflict_no_recreate")
 					probeLocalRetainWintunAdapterHandle(libraryPath, handle)
 					handle = 0
 					steps = append(steps, "retain_adapter_handle: ok")
-					steps = append(steps, "verify_adapter: fallback_fresh_still_joint_visibility_missing_not_ready")
-					notReadyHint := "LUID 路径冲突后重建仍未满足 present PnP + NetAdapter 联合可见"
-					notReadyRawErr := fmt.Errorf("fallback fresh create still joint visibility missing: %w", firstProbeLocalTUNErr(freshDetectErr, recreateCause))
 					setSuccessNotReadyObservation(
-						probeLocalTUNInstallCodeAdapterJointVisibilityMiss,
-						notReadyHint,
-						notReadyRawErr,
+						recreateReasonCode,
+						"检测到可见性冲突，仅执行可用性修复并禁止重建，请稍后刷新确认",
+						fmt.Errorf("fallback visibility conflict in repair-only mode: %w; hint=%s", recreateCause, recreateHint),
 					)
 					observation.Diagnostic.Stage = "verify_adapter"
-					observation.Diagnostic.Hint = notReadyHint
-					observation.Diagnostic.Details = strings.TrimSpace(notReadyRawErr.Error())
+					observation.Diagnostic.Hint = recreateHint
+					observation.Diagnostic.Details = strings.TrimSpace(recreateCause.Error())
 					setProbeLocalTUNInstallObservation(observation)
 					logInstallSuccess()
 					return nil
@@ -822,7 +735,6 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalFindWintunAdapter = findProbeLocalWintunAdapter
 	probeLocalFindWintunAdapterByLUID = findProbeLocalWintunAdapterByLUID
 	probeLocalCreateWintunAdapter = createProbeLocalWintunAdapter
-	probeLocalCreateWintunAdapterFresh = createProbeLocalWintunAdapterFresh
 	probeLocalCloseWintunAdapter = closeProbeLocalWintunAdapter
 	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle
 	probeLocalEnsureWindowsInterfaceIPv4 = ensureProbeLocalWindowsInterfaceIPv4Address
