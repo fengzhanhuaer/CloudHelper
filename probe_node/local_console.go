@@ -200,6 +200,7 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	startedAt := time.Now()
 	logProbeInfof("probe local tun install/check started: platform=%s", runtime.GOOS)
 	if err := probeLocalInstallTUNDriver(); err != nil {
 		m.tun.LastError = strings.TrimSpace(err.Error())
@@ -218,6 +219,7 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		} else {
 			logProbeErrorf("probe local tun install/check failed: %v", err)
 		}
+		logProbeWarnf("probe local tun install/check failed elapsed=%s", time.Since(startedAt).String())
 		if observation, ok := currentProbeLocalTUNInstallObservation(); ok {
 			m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
 			m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
@@ -255,7 +257,7 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
 	}
 	m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	logProbeInfof("probe local tun install/check completed: installed=true")
+	logProbeInfof("probe local tun install/check completed: installed=true elapsed=%s", time.Since(startedAt).String())
 	return m.tun, nil
 }
 

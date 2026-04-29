@@ -531,9 +531,23 @@
       });
     }
 
-    async function requestJSON(url, options) {
+    const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
+    const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
+
+    function resolveRequestTimeoutMs(url, timeoutMs) {
+      if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+        return Number(timeoutMs);
+      }
+      if (String(url || '').trim() === '/local/api/tun/install') {
+        return REQUEST_TIMEOUT_TUN_INSTALL_MS;
+      }
+      return REQUEST_TIMEOUT_DEFAULT_MS;
+    }
+
+    async function requestJSON(url, options, timeoutMs) {
+      const requestTimeoutMs = resolveRequestTimeoutMs(url, timeoutMs);
       const controller = new AbortController();
-      const timeoutID = setTimeout(() => controller.abort(), 20000);
+      const timeoutID = setTimeout(() => controller.abort(), requestTimeoutMs);
       let res;
       try {
         res = await fetch(url, {
@@ -544,7 +558,7 @@
         });
       } catch (err) {
         if (err && err.name === 'AbortError') {
-          throw new Error(`请求超时: ${url}`);
+          throw new Error(`请求超时(${Math.trunc(requestTimeoutMs / 1000)}s): ${url}`);
         }
         throw err;
       } finally {
