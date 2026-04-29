@@ -377,6 +377,46 @@ func TestInstallProbeLocalTUNDriverFallbackVisibilityConflictNoRecreate(t *testi
 	}
 }
 
+func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetriesOnBindableTimeout(t *testing.T) {
+	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
+		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
+	}
+	sleepCalls := 0
+	probeLocalTUNInstallSleep = func(_ time.Duration) { sleepCalls++ }
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18)
+	if err == nil {
+		t.Fatal("expected route target configure error")
+	}
+	if sleepCalls != 3 {
+		t.Fatalf("sleepCalls=%d, want 3", sleepCalls)
+	}
+}
+
+func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetryRecovers(t *testing.T) {
+	calls := 0
+	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
+		calls++
+		if calls <= 2 {
+			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
+		}
+		return nil
+	}
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18); err != nil {
+		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceIndex returned error: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("ensure calls=%d, want 3", calls)
+	}
+	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
+		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
+	}
+}
+
 func TestInstallProbeLocalTUNDriverPhantomOnlyPrecheckRecheckThenCreate(t *testing.T) {
 	forceProbeLocalInstallAsAdminForTest()
 	clearProbeLocalTUNInstallObservation()
@@ -452,5 +492,30 @@ func TestInstallProbeLocalTUNDriverPhantomOnlyPrecheckRecheckThenCreate(t *testi
 	releaseProbeLocalRetainedWintunAdapterHandle()
 	if closeCalls != 1 {
 		t.Fatalf("close calls=%d, want 1", closeCalls)
+	}
+}
+
+func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterBindableTimeout(t *testing.T) {
+	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
+		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
+	}
+	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
+		if interfaceIndex == 18 {
+			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
+		}
+		if interfaceIndex == 19 {
+			return nil
+		}
+		return errors.New("unexpected interface index")
+	}
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "19")
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
+		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured returned error: %v", err)
+	}
+	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "19" {
+		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 19", got)
 	}
 }

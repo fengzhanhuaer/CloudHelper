@@ -623,13 +623,20 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 			}
 		}
 		if adapter.InterfaceIndex > 0 {
-			return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(adapter.InterfaceIndex)
+			if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(adapter.InterfaceIndex); err == nil {
+				return nil
+			} else if !isProbeLocalIPv4BindableTimeoutErr(err) {
+				return err
+			}
 		}
 	}
 
 	ifIndex, fallbackErr := resolveProbeLocalWintunInterfaceIndexFallback()
 	if fallbackErr != nil || ifIndex <= 0 {
 		return fmt.Errorf("wintun adapter is not detected after install: %w", firstProbeLocalTUNErr(fallbackErr, errors.New("invalid wintun adapter interface index")))
+	}
+	if adapter.InterfaceIndex > 0 && ifIndex == adapter.InterfaceIndex {
+		logProbeWarnf("probe local tun route target fallback kept same ifindex=%d after bind-timeout path", ifIndex)
 	}
 	return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex)
 }
@@ -674,10 +681,27 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) erro
 		return errors.New("invalid wintun adapter interface index")
 	}
 	if err := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+		if isProbeLocalIPv4BindableTimeoutErr(err) {
+			for _, delay := range []time.Duration{250 * time.Millisecond, 600 * time.Millisecond, 1200 * time.Millisecond} {
+				probeLocalTUNInstallSleep(delay)
+				if retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen); retryErr == nil {
+					setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
+					return nil
+				}
+			}
+		}
 		return err
 	}
 	setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
 	return nil
+}
+
+func isProbeLocalIPv4BindableTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "ipv4 address not bindable in time")
 }
 
 func firstProbeLocalTUNErr(primary error, fallback error) error {
