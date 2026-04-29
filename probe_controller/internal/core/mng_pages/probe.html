@@ -52,6 +52,8 @@
     .form-field label { color:#8b949e; font-size:12px; }
     .modal h3 { margin-top:0; }
     .checkbox-row { display:flex; align-items:center; gap:8px; min-height:36px; }
+    .status-time-lines { display:flex; flex-direction:column; gap:2px; }
+    .status-time-lines .label { color:#8b949e; margin-right:6px; }
   </style>
 </head>
 <body>
@@ -296,6 +298,40 @@
       return `${n.toFixed(1)}%`;
     }
 
+    function parseExpireAt(value) {
+      const text = String(value || '').trim();
+      if (!text) return null;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+        const dt = new Date(`${text}T23:59:59`);
+        return Number.isNaN(dt.getTime()) ? null : dt;
+      }
+      const dt = new Date(text);
+      return Number.isNaN(dt.getTime()) ? null : dt;
+    }
+
+    function formatDuration(ms) {
+      let seconds = Math.floor(ms / 1000);
+      if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+      const days = Math.floor(seconds / 86400);
+      seconds -= days * 86400;
+      const hours = Math.floor(seconds / 3600);
+      seconds -= hours * 3600;
+      const minutes = Math.floor(seconds / 60);
+      if (days > 0) return `${days}天${hours}小时`;
+      if (hours > 0) return `${hours}小时${minutes}分钟`;
+      if (minutes > 0) return `${minutes}分钟`;
+      return `${seconds}秒`;
+    }
+
+    function formatRemainingTime(expireAt) {
+      const expireDt = parseExpireAt(expireAt);
+      if (!expireDt) return '-';
+      const delta = expireDt.getTime() - Date.now();
+      if (!Number.isFinite(delta)) return '-';
+      if (delta < 0) return `已过期 ${formatDuration(-delta)}`;
+      return formatDuration(delta);
+    }
+
     function formatBytes(value) {
       const n = Number(value);
       if (!Number.isFinite(n) || n < 0) return '-';
@@ -404,7 +440,13 @@
           <td>${item.node_no || '-'}</td>
           <td>${item.node_name || '-'}</td>
           <td><span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : '离线'}</span></td>
-          <td>${formatTime(rt.last_seen)}</td>
+          <td>
+            <div class="status-time-lines">
+              <div><span class="label">最近上报</span><span>${formatTime(rt.last_seen)}</span></div>
+              <div><span class="label">到期时间</span><span>${formatTime(item.expire_at)}</span></div>
+              <div><span class="label">剩余时间</span><span>${formatRemainingTime(item.expire_at)}</span></div>
+            </div>
+          </td>
           <td>${rt.version || '-'}</td>
           <td>${ips4Html}${ips6Html}</td>
           <td class="mono">

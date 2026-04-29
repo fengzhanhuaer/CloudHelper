@@ -376,3 +376,81 @@ func TestInstallProbeLocalTUNDriverFallbackVisibilityConflictNoRecreate(t *testi
 		t.Fatalf("close calls=%d, want 1", closeCalls)
 	}
 }
+
+func TestInstallProbeLocalTUNDriverPhantomOnlyPrecheckRecheckThenCreate(t *testing.T) {
+	forceProbeLocalInstallAsAdminForTest()
+	clearProbeLocalTUNInstallObservation()
+	t.Cleanup(func() { clearProbeLocalTUNInstallObservation() })
+	probeLocalEnsureWintunLibrary = func() error { return nil }
+	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+
+	removeCalls := 0
+	probeLocalRemovePhantomWintunDevices = func() (int, error) {
+		removeCalls++
+		return 1, nil
+	}
+
+	inspectCalls := 0
+	probeLocalInspectWintunVisibility = func() (probeLocalWintunVisibilityEvidence, error) {
+		inspectCalls++
+		switch inspectCalls {
+		case 1:
+			return probeLocalWintunVisibilityEvidence{
+				PhantomPnPMatched:      true,
+				MatchedPnPFriendlyName: "Maple Tunnel",
+				MatchedPnPStatus:       "Unknown",
+				MatchedPnPProblem:      "CM_PROB_PHANTOM",
+			}, nil
+		case 2:
+			return probeLocalWintunVisibilityEvidence{}, nil
+		default:
+			return probeLocalWintunVisibilityEvidence{
+				NetAdapterMatched: true,
+				PresentPnPMatched: true,
+				NetAdapter:        probeLocalWindowsNetAdapter{InterfaceIndex: 12},
+			}, nil
+		}
+	}
+
+	createCalls := 0
+	probeLocalCreateWintunAdapter = func(_, adapterName, _ string) (uintptr, error) {
+		createCalls++
+		if adapterName != probeLocalTUNAdapterName {
+			return 0, errors.New("unexpected non-default adapter name")
+		}
+		return uintptr(1), nil
+	}
+	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) { return 1002, nil }
+	closeCalls := 0
+	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error {
+		closeCalls++
+		return nil
+	}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	if err := installProbeLocalTUNDriver(); err != nil {
+		t.Fatalf("installProbeLocalTUNDriver returned error: %v", err)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("remove phantom calls=%d, want 1", removeCalls)
+	}
+	if createCalls != 1 {
+		t.Fatalf("create calls=%d, want 1", createCalls)
+	}
+
+	observation, ok := currentProbeLocalTUNInstallObservation()
+	if !ok {
+		t.Fatal("expected install observation")
+	}
+	if !observation.Final.Success {
+		t.Fatalf("observation.final.success=%v, want true", observation.Final.Success)
+	}
+	if observation.Visibility.IfIndexValue != 12 {
+		t.Fatalf("observation.visibility.ifindex=%d, want 12", observation.Visibility.IfIndexValue)
+	}
+	releaseProbeLocalRetainedWintunAdapterHandle()
+	if closeCalls != 1 {
+		t.Fatalf("close calls=%d, want 1", closeCalls)
+	}
+}

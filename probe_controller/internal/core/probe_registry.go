@@ -44,6 +44,7 @@ type probeNodeRecord struct {
 type probeNodeStatusRecord struct {
 	NodeNo   int                `json:"node_no"`
 	NodeName string             `json:"node_name"`
+	ExpireAt string             `json:"expire_at"`
 	Runtime  probeRuntimeStatus `json:"runtime"`
 }
 
@@ -349,7 +350,7 @@ func loadProbeNodeStatusLocked() []probeNodeStatusRecord {
 		if rt, ok := runtimeMap[nodeID]; ok {
 			runtime = rt
 		}
-		out = append(out, probeNodeStatusRecord{NodeNo: node.NodeNo, NodeName: node.NodeName, Runtime: runtime})
+		out = append(out, probeNodeStatusRecord{NodeNo: node.NodeNo, NodeName: node.NodeName, ExpireAt: node.ExpireAt, Runtime: runtime})
 	}
 
 	for nodeID, rt := range runtimeMap {
@@ -367,7 +368,7 @@ func loadProbeNodeStatusLocked() []probeNodeStatusRecord {
 		if nodeID != "" {
 			name = name + "(" + nodeID + ")"
 		}
-		out = append(out, probeNodeStatusRecord{NodeNo: nodeNo, NodeName: name, Runtime: rt})
+		out = append(out, probeNodeStatusRecord{NodeNo: nodeNo, NodeName: name, ExpireAt: "", Runtime: rt})
 	}
 
 	sort.Slice(out, func(i, j int) bool {
@@ -400,7 +401,7 @@ func loadProbeNodeStatusByIDLocked(nodeID string) (probeNodeStatusRecord, bool) 
 		if rt, ok := getProbeRuntime(normalizedID); ok {
 			runtime = rt
 		}
-		return probeNodeStatusRecord{NodeNo: node.NodeNo, NodeName: node.NodeName, Runtime: runtime}, true
+		return probeNodeStatusRecord{NodeNo: node.NodeNo, NodeName: node.NodeName, ExpireAt: node.ExpireAt, Runtime: runtime}, true
 	}
 	if isDeletedProbeNodeIDLocked(normalizedID) {
 		return probeNodeStatusRecord{}, false
@@ -415,7 +416,7 @@ func loadProbeNodeStatusByIDLocked(nodeID string) (probeNodeStatusRecord, bool) 
 		if normalizedID != "" {
 			name += "(" + normalizedID + ")"
 		}
-		return probeNodeStatusRecord{NodeNo: nodeNo, NodeName: name, Runtime: rt}, true
+		return probeNodeStatusRecord{NodeNo: nodeNo, NodeName: name, ExpireAt: "", Runtime: rt}, true
 	}
 
 	return probeNodeStatusRecord{}, false

@@ -275,6 +275,29 @@ func installProbeLocalTUNDriver() error {
 			} else if removedPhantoms > 0 {
 				steps = append(steps, "detect_adapter_precheck: remove_phantom_ok")
 			}
+			refreshedEvidence, refreshErr := probeLocalInspectWintunVisibility()
+			if refreshErr != nil {
+				steps = append(steps, "detect_adapter_precheck: recheck_after_remove_phantom_failed")
+			} else {
+				precheckEvidence = refreshedEvidence
+				steps = append(steps, "detect_adapter_precheck: recheck_after_remove_phantom_ok")
+				if precheckEvidence.NetAdapterMatched && precheckEvidence.NetAdapter.InterfaceIndex > 0 {
+					observation.Visibility.IfIndexResolved = true
+					observation.Visibility.IfIndexValue = precheckEvidence.NetAdapter.InterfaceIndex
+					setProbeLocalWindowsRouteTargetEnv(precheckEvidence.NetAdapter.InterfaceIndex)
+				}
+				if precheckEvidence.isJointlyVisible() {
+					observation.Visibility.DetectVisible = true
+					steps = append(steps, "detect_adapter_precheck: found_after_remove_phantom")
+					setSuccessObservation("清理 Phantom 后检测到 TUN 适配器（present PnP + NetAdapter）")
+					logInstallSuccess()
+					return nil
+				}
+				if !precheckEvidence.NetAdapterMatched {
+					steps = append(steps, "detect_adapter_precheck: recreate_after_remove_phantom")
+					goto createOrOpenAdapter
+				}
+			}
 		}
 		if precheckEvidence.NetAdapterMatched {
 			ifIndex := precheckEvidence.NetAdapter.InterfaceIndex
@@ -310,15 +333,20 @@ func installProbeLocalTUNDriver() error {
 			logInstallSuccess()
 			return nil
 		}
+		if precheckEvidence.isPhantomOnly() {
+			steps = append(steps, "detect_adapter_precheck: recreate_after_phantom_only")
+			goto createOrOpenAdapter
+		}
 		return failInstall(
 			probeLocalTUNInstallCodeAdapterPhantomOnly,
 			"detect_adapter_precheck",
-			"检测到既有目标 TUN 网卡实例（PnP），已禁止重建，请清理异常实例后重试",
+			"检测到既有目标 TUN 网卡实例（PnP），且无法恢复 NetAdapter，请检查系统设备状态后重试",
 			fmt.Errorf("existing target adapter instance is present but net adapter is unavailable: %s", formatProbeLocalWintunVisibilityEvidence(precheckEvidence)),
 		)
 	}
 	steps = append(steps, "detect_adapter_precheck: not_found")
 
+createOrOpenAdapter:
 	libraryPath, err := probeLocalResolveWintunPath()
 	if err != nil {
 		steps = append(steps, "resolve_wintun_path: failed")
