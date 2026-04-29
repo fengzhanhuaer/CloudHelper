@@ -138,7 +138,7 @@ func AdminGetProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 	ProbeStore.mu.RLock()
 	nodes := loadProbeNodesLocked()
 	resp := map[string]interface{}{
-		"nodes": nodes,
+		"nodes": attachProbeRuntimeToNodes(nodes),
 	}
 	if includeDeleted {
 		resp["deleted_nodes"] = loadDeletedProbeNodesLocked()
@@ -484,6 +484,33 @@ func normalizeProbeNodeID(raw string) string {
 		return strconv.Itoa(n)
 	}
 	return v
+}
+
+type probeNodeWithRuntime struct {
+	probeNodeRecord
+	Runtime *probeRuntimeStatus `json:"runtime,omitempty"`
+}
+
+func attachProbeRuntimeToNodes(nodes []probeNodeRecord) []probeNodeWithRuntime {
+	if len(nodes) == 0 {
+		return []probeNodeWithRuntime{}
+	}
+	runtimes := listProbeRuntimes()
+	runtimeByNodeID := make(map[string]probeRuntimeStatus, len(runtimes))
+	for _, rt := range runtimes {
+		runtimeByNodeID[normalizeProbeNodeID(rt.NodeID)] = rt
+	}
+	out := make([]probeNodeWithRuntime, 0, len(nodes))
+	for _, node := range nodes {
+		item := probeNodeWithRuntime{probeNodeRecord: node}
+		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+		if rt, ok := runtimeByNodeID[nodeID]; ok {
+			runtime := rt
+			item.Runtime = &runtime
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
@@ -914,7 +941,6 @@ func normalizeProbeEndpointScheme(raw string) string {
 	}
 	return "http"
 }
-
 
 func randomProbeNodeSecret(length int) string {
 	if length <= 0 {

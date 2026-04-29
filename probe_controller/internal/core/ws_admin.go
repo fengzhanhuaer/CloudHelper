@@ -349,7 +349,7 @@ func handleAdminWSAction(action string, payload json.RawMessage, controllerBaseU
 		nodes := loadProbeNodesLocked()
 		deletedNodes := loadDeletedProbeNodesLocked()
 		ProbeStore.mu.RUnlock()
-		return map[string]interface{}{"nodes": nodes, "deleted_nodes": deletedNodes}, nil
+		return map[string]interface{}{"nodes": attachProbeRuntimeToNodes(nodes), "deleted_nodes": deletedNodes}, nil
 	case "admin.probe.node.create":
 		var req probeNodeCreateRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

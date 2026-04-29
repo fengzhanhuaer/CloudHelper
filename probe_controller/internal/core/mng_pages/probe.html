@@ -343,7 +343,8 @@
         body.innerHTML = state.nodes.map((item) => {
           const status = statusByNodeNo.get(Number(item.node_no));
           const runtime = status && status.runtime ? status.runtime : {};
-          const version = runtime && runtime.version ? runtime.version : '-';
+          const fallbackRuntime = item && item.runtime ? item.runtime : {};
+          const version = (runtime && runtime.version) || (fallbackRuntime && fallbackRuntime.version) || '-';
           return `<tr>
             <td>${item.node_no}</td>
             <td>${item.node_name}</td>

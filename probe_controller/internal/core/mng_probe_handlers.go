@@ -66,7 +66,7 @@ func mngProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 	ProbeStore.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"nodes":         nodes,
+		"nodes":         attachProbeRuntimeToNodes(nodes),
 		"deleted_nodes": deletedNodes,
 	})
 }
