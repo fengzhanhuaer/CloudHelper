@@ -22,6 +22,7 @@ func restartCurrentProcess(executablePath string) error {
 		exePath = resolved
 	}
 	cmd := exec.Command(exePath, os.Args[1:]...)
+	hideWindowSysProcAttr(cmd)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

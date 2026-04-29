@@ -351,6 +351,7 @@ func listProbeLocalWindowsPnPDevices() ([]probeLocalWindowsPnPDevice, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	hideWindowSysProcAttr(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -439,6 +440,7 @@ func removeProbeLocalPhantomWintunDevices() (int, error) {
 	for _, instanceID := range instanceIDs {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, "pnputil", "/remove-device", instanceID)
+		hideWindowSysProcAttr(cmd)
 		output, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {

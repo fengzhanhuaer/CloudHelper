@@ -23,6 +23,7 @@ func runProbeLocalCommand(timeout time.Duration, name string, args ...string) (s
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cleanName, args...)
+	hideWindowSysProcAttr(cmd)
 	raw, err := cmd.CombinedOutput()
 	out := strings.TrimSpace(string(raw))
 	if err != nil {

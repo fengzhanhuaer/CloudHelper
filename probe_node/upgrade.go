@@ -791,6 +791,7 @@ func verifyProbeCandidateRuntime(binaryPath string) error {
 		fmt.Sprintf("--upgrade-verify-duration=%d", verifySec),
 	}
 	cmd := exec.CommandContext(ctx, candidate, args...)
+	hideWindowSysProcAttr(cmd)
 	cmd.Env = os.Environ()
 	output, err := cmd.CombinedOutput()
 	outputText := trimUpgradeVerifyOutputForLog(output, probeUpgradeVerifyOutputLimit)

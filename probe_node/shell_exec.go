@@ -102,7 +102,9 @@ func sendProbeShellExecResult(stream net.Conn, encoder *json.Encoder, writeMu *s
 
 func buildProbeShellCommand(ctx context.Context, commandText string) *exec.Cmd {
 	if runtime.GOOS == "windows" {
-		return exec.CommandContext(ctx, "powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", commandText)
+		cmd := exec.CommandContext(ctx, "powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", commandText)
+		hideWindowSysProcAttr(cmd)
+		return cmd
 	}
 	return exec.CommandContext(ctx, "sh", "-lc", commandText)
 }

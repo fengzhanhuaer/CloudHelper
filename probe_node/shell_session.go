@@ -307,7 +307,9 @@ func newProbeShellSessionRuntime(nodeID string) (*probeShellSessionRuntime, erro
 
 func buildProbeInteractiveShellCommand() *exec.Cmd {
 	if runtime.GOOS == "windows" {
-		return exec.Command("powershell", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-")
+		cmd := exec.Command("powershell", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-")
+		hideWindowSysProcAttr(cmd)
+		return cmd
 	}
 	return exec.Command("sh")
 }
