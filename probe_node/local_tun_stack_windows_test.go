@@ -112,6 +112,51 @@ func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesNode(t *testing.T) {
 	}
 }
 
+func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesNodeUDPFakeIP(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{{Group: "media", Rules: []string{"domain_suffix:example.com"}}}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{{Group: "media", Action: "tunnel", TunnelNodeID: "chain:chain-proxy-1"}}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	dnsDecision := resolveProbeLocalProxyRouteDecisionByDomain("api.example.com")
+	fakeIP, ok := allocateProbeLocalDNSFakeIP("api.example.com", dnsDecision)
+	if !ok {
+		t.Fatal("allocate fake ip failed")
+	}
+
+	probeLocalControl.mu.Lock()
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+
+	packet := make([]byte, 40)
+	packet[0] = 0x45
+	packet[9] = 17
+	ip := net.ParseIP(fakeIP).To4()
+	copy(packet[16:20], ip)
+	binary.BigEndian.PutUint16(packet[22:24], uint16(443))
+
+	stack := &probeLocalTUNSimplePacketStack{}
+	n, err := stack.Write(packet)
+	if err != nil {
+		t.Fatalf("write packet failed: %v", err)
+	}
+	if n != len(packet) {
+		t.Fatalf("n=%d len=%d", n, len(packet))
+	}
+}
+
 func TestProbeLocalTUNSimplePacketStackWriteRejectRoute(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	groups := defaultProbeLocalProxyGroupFile()

@@ -56,13 +56,15 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 		return decision, nil
 	}
 
-	domainForPolicy := host
-	if parsed := net.ParseIP(host); parsed != nil {
-		entry, ok := lookupProbeLocalDNSFakeIPEntry(parsed.String())
-		if !ok {
-			return decision, nil
-		}
-		domainForPolicy = strings.TrimSpace(entry.Domain)
+	rewrittenTarget, domainForPolicy, fakeMatched := rewriteProbeLocalRouteTargetForFakeIP(host, port)
+	if rewrittenTarget != "" {
+		decision.TargetAddr = rewrittenTarget
+	}
+	if domainForPolicy == "" {
+		domainForPolicy = host
+	}
+	if parsed := net.ParseIP(domainForPolicy); parsed != nil && !fakeMatched {
+		return decision, nil
 	}
 
 	dnsDecision := resolveProbeLocalProxyRouteDecisionByDomain(domainForPolicy)
@@ -86,6 +88,26 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 		decision.TunnelNodeID = ""
 		return decision, nil
 	}
+}
+
+func rewriteProbeLocalRouteTargetForFakeIP(host string, port string) (rewrittenTarget string, policyDomain string, fakeMatched bool) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	cleanPort := strings.TrimSpace(port)
+	if cleanHost == "" || cleanPort == "" {
+		return "", "", false
+	}
+	if parsed := net.ParseIP(cleanHost); parsed != nil {
+		entry, ok := lookupProbeLocalDNSFakeIPEntry(parsed.String())
+		if !ok {
+			return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
+		}
+		domain := strings.TrimSpace(strings.ToLower(strings.Trim(entry.Domain, ".")))
+		if domain == "" {
+			return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
+		}
+		return net.JoinHostPort(domain, cleanPort), domain, true
+	}
+	return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
 }
 
 func openProbeLocalTunnelConn(network, targetAddr, tunnelNodeID string) (net.Conn, error) {

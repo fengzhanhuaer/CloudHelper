@@ -139,4 +139,47 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	if route.TunnelNodeID != "chain:chain-proxy-1" {
 		t.Fatalf("tunnel_node_id=%q", route.TunnelNodeID)
 	}
+	if route.TargetAddr != "api.example.com:443" {
+		t.Fatalf("target_addr=%q", route.TargetAddr)
+	}
+}
+
+func TestDecideProbeLocalRouteForTargetDirectByFakeIPRewriteTarget(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "media", Rules: []string{"domain_suffix:example.com"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "media", Action: "direct"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	probeLocalControl.mu.Lock()
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+
+	dnsDecision := resolveProbeLocalProxyRouteDecisionByDomain("api.example.com")
+	fakeIP, ok := allocateProbeLocalDNSFakeIP("api.example.com", dnsDecision)
+	if !ok {
+		t.Fatal("allocate fake ip failed")
+	}
+
+	route, err := decideProbeLocalRouteForTarget(net.JoinHostPort(fakeIP, "443"))
+	if err != nil {
+		t.Fatalf("decideProbeLocalRouteForTarget returned error: %v", err)
+	}
+	if !route.Direct || route.Reject {
+		t.Fatalf("route=%+v", route)
+	}
+	if route.TargetAddr != "api.example.com:443" {
+		t.Fatalf("target_addr=%q", route.TargetAddr)
+	}
 }
