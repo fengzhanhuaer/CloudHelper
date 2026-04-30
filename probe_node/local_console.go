@@ -2035,6 +2035,80 @@ func probeLocalProxyRejectHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func resolveProbeLocalSelectedTunnelNodeID(state probeLocalProxyStateFile) string {
+	for _, entry := range state.Groups {
+		if normalizeAction := strings.ToLower(strings.TrimSpace(entry.Action)); normalizeAction == "tunnel" {
+			normalized, _, err := normalizeProbeLocalTunnelNodeID(entry.TunnelNodeID)
+			if err == nil {
+				return normalized
+			}
+		}
+	}
+	return ""
+}
+
+func resolveProbeLocalChainNameByID(chainID string) string {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return ""
+	}
+	items, err := loadProbeLocalProxyChainItems()
+	if err != nil {
+		return cleanID
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.ChainID), cleanID) {
+			name := strings.TrimSpace(item.Name)
+			if name != "" {
+				return name
+			}
+			break
+		}
+	}
+	return cleanID
+}
+
+func resolveProbeLocalChainKeepaliveAndLatency(chainID string) (string, *int64, string, string) {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return "none", nil, "", ""
+	}
+	rt := getProbeChainRuntime(cleanID)
+	if rt == nil {
+		return "not_running", nil, "", ""
+	}
+	downstream := rt.getDownstreamSession() != nil
+	upstream := rt.getUpstreamSession() != nil
+	if !downstream && !upstream {
+		return "disconnected", nil, "", ""
+	}
+
+	keepalive := "connected"
+	targetHost := strings.TrimSpace(rt.cfg.nextHost)
+	targetPort := rt.cfg.nextPort
+	if targetHost == "" || targetPort <= 0 {
+		targetHost = strings.TrimSpace(rt.cfg.prevHost)
+		targetPort = rt.cfg.prevPort
+	}
+	if targetHost == "" || targetPort <= 0 {
+		return keepalive, nil, "", "latency target is unavailable"
+	}
+
+	addr := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", addr, 1800*time.Millisecond)
+	if err != nil {
+		return keepalive, nil, "", strings.TrimSpace(err.Error())
+	}
+	_ = conn.Close()
+	latencyMS := int64(time.Since(start) / time.Millisecond)
+	if latencyMS < 0 {
+		latencyMS = 0
+	}
+	updatedAt := time.Now().UTC().Format(time.RFC3339)
+	return keepalive, &latencyMS, updatedAt, ""
+}
+
 func probeLocalProxyStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2043,7 +2117,38 @@ func probeLocalProxyStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, probeLocalControl.proxyStatus())
+
+	status := probeLocalControl.proxyStatus()
+	payload := map[string]any{
+		"enabled":    status.Enabled,
+		"mode":       status.Mode,
+		"last_error": status.LastError,
+		"updated_at": status.UpdatedAt,
+	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+	selectedTunnelNodeID := resolveProbeLocalSelectedTunnelNodeID(state)
+	selectedChainID := ""
+	if normalized, chainID, normalizeErr := normalizeProbeLocalTunnelNodeID(selectedTunnelNodeID); normalizeErr == nil {
+		selectedTunnelNodeID = normalized
+		selectedChainID = chainID
+	}
+	payload["selected_tunnel_node_id"] = selectedTunnelNodeID
+	payload["selected_chain_id"] = selectedChainID
+	payload["selected_chain_name"] = resolveProbeLocalChainNameByID(selectedChainID)
+
+	keepalive, latencyMS, latencyUpdatedAt, latencyError := resolveProbeLocalChainKeepaliveAndLatency(selectedChainID)
+	payload["selected_chain_keepalive"] = keepalive
+	if latencyMS != nil {
+		payload["selected_chain_latency_ms"] = *latencyMS
+	}
+	payload["selected_chain_latency_updated_at"] = latencyUpdatedAt
+	payload["selected_chain_latency_error"] = latencyError
+
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func probeLocalProxyChainsHandler(w http.ResponseWriter, r *http.Request) {

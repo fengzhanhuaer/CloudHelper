@@ -2548,7 +2548,7 @@ func (c *probeChainStreamProxyConn) Read(payload []byte) (int, error) {
 func newProbeChainYamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.EnableKeepAlive = true
-	cfg.KeepAliveInterval = 20 * time.Second
+	cfg.KeepAliveInterval = 60 * time.Second
 	return cfg
 }
 

@@ -209,6 +209,10 @@
         <div>当前模式</div><div id="proxyMode">-</div>
         <div>当前生效组</div><div id="proxyActiveGroup">-</div>
         <div>当前生效链路</div><div id="proxyActiveTunnel">-</div>
+        <div>选中链路保活</div><div id="proxySelectedKeepalive">-</div>
+        <div>选中链路延迟(ms)</div><div id="proxySelectedLatencyMs">-</div>
+        <div>延迟测量时间</div><div id="proxySelectedLatencyUpdatedAt">-</div>
+        <div>链路测量错误</div><div id="proxySelectedLatencyError">-</div>
         <div>最后更新时间</div><div id="proxyUpdatedAt">-</div>
         <div>最近错误</div><div id="proxyLastError">-</div>
       </div>
@@ -640,14 +644,27 @@
       setText('tunInstallFinalReason', finalObs.reason);
     }
 
+    function formatProxyKeepaliveStatus(raw) {
+      const status = String(raw || '').trim().toLowerCase();
+      if (status === 'connected') return '已连接';
+      if (status === 'disconnected') return '未连接';
+      if (status === 'not_running') return '未运行';
+      return '-';
+    }
+
     async function loadProxyStatus() {
       const data = await requestJSON('/local/api/proxy/status', { method: 'GET' });
       proxyStatusCache = {
         enabled: !!data.enabled,
         mode: String(data.mode || '').trim(),
       };
+      const latencyMs = Number(data.selected_chain_latency_ms);
       setText('proxyEnabled', data.enabled ? '是' : '否');
       setText('proxyMode', data.mode);
+      setText('proxySelectedKeepalive', formatProxyKeepaliveStatus(data.selected_chain_keepalive));
+      setText('proxySelectedLatencyMs', Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '-');
+      setText('proxySelectedLatencyUpdatedAt', data.selected_chain_latency_updated_at);
+      setText('proxySelectedLatencyError', data.selected_chain_latency_error);
       setText('proxyUpdatedAt', data.updated_at);
       setText('proxyLastError', data.last_error);
       updateProxyGlobalToggleButton();
