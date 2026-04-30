@@ -185,10 +185,12 @@ func TestCurrentProbeLocalTUNDNSListenHost(t *testing.T) {
 	probeLocalWindowsTakeoverState.enabled = true
 	probeLocalWindowsTakeoverState.tunGateway = "198.18.0.1"
 	probeLocalWindowsTakeoverState.mu.Unlock()
-	if got := currentProbeLocalTUNDNSListenHost(); got != "198.18.0.1" {
+	t.Setenv("PROBE_LOCAL_TUN_DNS_HOST", "198.18.0.2")
+	if got := currentProbeLocalTUNDNSListenHost(); got != "198.18.0.2" {
 		t.Fatalf("host=%q", got)
 	}
 
+	t.Setenv("PROBE_LOCAL_TUN_DNS_HOST", "")
 	probeLocalWindowsTakeoverState.mu.Lock()
 	probeLocalWindowsTakeoverState.tunGateway = "bad-ip"
 	probeLocalWindowsTakeoverState.mu.Unlock()

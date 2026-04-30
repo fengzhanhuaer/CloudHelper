@@ -176,6 +176,16 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("dns/status without session status=%d", dnsStatusResp.Code)
 	}
 
+	dnsRealIPListResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/real_ip/list", nil)
+	if dnsRealIPListResp.Code != http.StatusUnauthorized {
+		t.Fatalf("dns/real_ip/list without session status=%d", dnsRealIPListResp.Code)
+	}
+
+	dnsRealIPLookupResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/real_ip/lookup?domain=api.example.com", nil)
+	if dnsRealIPLookupResp.Code != http.StatusUnauthorized {
+		t.Fatalf("dns/real_ip/lookup without session status=%d", dnsRealIPLookupResp.Code)
+	}
+
 	dnsFakeIPListResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/list", nil)
 	if dnsFakeIPListResp.Code != http.StatusUnauthorized {
 		t.Fatalf("dns/fake_ip/list without session status=%d", dnsFakeIPListResp.Code)
@@ -300,17 +310,36 @@ func TestProbeLocalDNSStatusWithSession(t *testing.T) {
 	}
 }
 
-func TestProbeLocalDNSFakeIPDebugAPIs(t *testing.T) {
+func TestProbeLocalDNSDebugAPIs(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
-	listResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/list", nil, sessionCookie)
-	if listResp.Code != http.StatusOK {
-		t.Fatalf("dns/fake_ip/list status=%d body=%s", listResp.Code, listResp.Body.String())
+	realListResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/real_ip/list", nil, sessionCookie)
+	if realListResp.Code != http.StatusOK {
+		t.Fatalf("dns/real_ip/list status=%d body=%s", realListResp.Code, realListResp.Body.String())
 	}
-	listPayload := decodeProbeLocalJSON(t, listResp)
-	if _, ok := listPayload["items"].([]any); !ok {
-		t.Fatalf("dns/fake_ip/list items type=%T", listPayload["items"])
+	realListPayload := decodeProbeLocalJSON(t, realListResp)
+	if _, ok := realListPayload["items"].([]any); !ok {
+		t.Fatalf("dns/real_ip/list items type=%T", realListPayload["items"])
+	}
+
+	missingDomainResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/real_ip/lookup", nil, sessionCookie)
+	if missingDomainResp.Code != http.StatusBadRequest {
+		t.Fatalf("dns/real_ip/lookup missing domain status=%d body=%s", missingDomainResp.Code, missingDomainResp.Body.String())
+	}
+
+	realNotFoundResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/real_ip/lookup?domain=api.example.com", nil, sessionCookie)
+	if realNotFoundResp.Code != http.StatusNotFound {
+		t.Fatalf("dns/real_ip/lookup not found status=%d body=%s", realNotFoundResp.Code, realNotFoundResp.Body.String())
+	}
+
+	fakeListResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/list", nil, sessionCookie)
+	if fakeListResp.Code != http.StatusOK {
+		t.Fatalf("dns/fake_ip/list status=%d body=%s", fakeListResp.Code, fakeListResp.Body.String())
+	}
+	fakeListPayload := decodeProbeLocalJSON(t, fakeListResp)
+	if _, ok := fakeListPayload["items"].([]any); !ok {
+		t.Fatalf("dns/fake_ip/list items type=%T", fakeListPayload["items"])
 	}
 
 	missingIPResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/lookup", nil, sessionCookie)
@@ -318,9 +347,9 @@ func TestProbeLocalDNSFakeIPDebugAPIs(t *testing.T) {
 		t.Fatalf("dns/fake_ip/lookup missing ip status=%d body=%s", missingIPResp.Code, missingIPResp.Body.String())
 	}
 
-	notFoundResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/lookup?ip=198.18.0.10", nil, sessionCookie)
-	if notFoundResp.Code != http.StatusNotFound {
-		t.Fatalf("dns/fake_ip/lookup not found status=%d body=%s", notFoundResp.Code, notFoundResp.Body.String())
+	fakeNotFoundResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/fake_ip/lookup?ip=198.18.0.10", nil, sessionCookie)
+	if fakeNotFoundResp.Code != http.StatusNotFound {
+		t.Fatalf("dns/fake_ip/lookup not found status=%d body=%s", fakeNotFoundResp.Code, fakeNotFoundResp.Body.String())
 	}
 }
 

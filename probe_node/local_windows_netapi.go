@@ -107,10 +107,12 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 	}
 	cleanIP := ip4.String()
 	cleanDNS := cleanIP
-	cleanGateway := ""
-	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNRouteGatewayIPv4)).To4(); parsedDNS != nil {
+	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)).To4(); parsedDNS != nil {
 		cleanDNS = parsedDNS.String()
-		cleanGateway = parsedDNS.String()
+	}
+	cleanGateway := ""
+	if parsedGateway := net.ParseIP(strings.TrimSpace(probeLocalTUNRouteGatewayIPv4)).To4(); parsedGateway != nil {
+		cleanGateway = parsedGateway.String()
 	}
 
 	adapterAlias := ""

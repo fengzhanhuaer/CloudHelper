@@ -18,6 +18,7 @@ const (
 	probeLocalTUNTunnelType           = "Maple"
 	probeLocalTUNAdapterRequestedGUID = "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"
 	probeLocalTUNRouteGatewayIPv4     = "198.18.0.1"
+	probeLocalTUNInterfaceIPv4        = "198.18.0.2"
 	probeLocalTUNRouteIPv4PrefixLen   = 15
 )
 
@@ -640,6 +641,7 @@ func installProbeLocalTUNDriverViaElevation() error {
 
 func setProbeLocalWindowsRouteTargetEnv(interfaceIndex int) {
 	_ = os.Setenv("PROBE_LOCAL_TUN_GATEWAY", probeLocalTUNRouteGatewayIPv4)
+	_ = os.Setenv("PROBE_LOCAL_TUN_DNS_HOST", probeLocalTUNInterfaceIPv4)
 	if interfaceIndex > 0 {
 		_ = os.Setenv("PROBE_LOCAL_TUN_IF_INDEX", strconv.Itoa(interfaceIndex))
 	}
@@ -669,12 +671,12 @@ func verifyProbeLocalWindowsRouteTargetPresent() error {
 		return findErr
 	}
 	for _, existing := range adapterInfo.IPv4Addrs {
-		if strings.EqualFold(strings.TrimSpace(existing), probeLocalTUNRouteGatewayIPv4) {
+		if strings.EqualFold(strings.TrimSpace(existing), probeLocalTUNInterfaceIPv4) {
 			setProbeLocalWindowsRouteTargetEnv(adapter.InterfaceIndex)
 			return nil
 		}
 	}
-	return fmt.Errorf("wintun route target ipv4 is missing: if=%d ip=%s", adapter.InterfaceIndex, probeLocalTUNRouteGatewayIPv4)
+	return fmt.Errorf("wintun route target ipv4 is missing: if=%d ip=%s", adapter.InterfaceIndex, probeLocalTUNInterfaceIPv4)
 }
 
 func ensureProbeLocalWindowsRouteTargetConfigured() error {
@@ -757,14 +759,14 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) erro
 	if interfaceIndex <= 0 {
 		return errors.New("invalid wintun adapter interface index")
 	}
-	if err := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+	if err := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 		if !isProbeLocalIPv4BindableTimeoutErr(err) {
 			return err
 		}
 		lastTimeoutErr := err
 		for _, delay := range []time.Duration{250 * time.Millisecond, 600 * time.Millisecond, 1200 * time.Millisecond} {
 			probeLocalTUNInstallSleep(delay)
-			retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen)
+			retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
 			if retryErr == nil {
 				setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
 				return nil
@@ -781,7 +783,7 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) erro
 				if delay > 0 {
 					probeLocalTUNInstallSleep(delay)
 				}
-				retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen)
+				retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
 				if retryErr == nil {
 					setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
 					return nil
@@ -804,7 +806,7 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) erro
 			if delay > 0 {
 				probeLocalTUNInstallSleep(delay)
 			}
-			retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen)
+			retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
 			if retryErr == nil {
 				setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
 				return nil
@@ -827,7 +829,7 @@ func repairProbeLocalWindowsRouteTargetIPv4(interfaceIndex int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid wintun adapter interface index")
 	}
-	command := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -DadTransmits 0 -ErrorAction SilentlyContinue | Out-Null; Remove-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 120; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null; $ready=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $ready) { throw 'tun ipv4 target missing after repair' }`, interfaceIndex, probeLocalTUNRouteGatewayIPv4, probeLocalTUNRouteIPv4PrefixLen)
+	command := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -DadTransmits 0 -ErrorAction SilentlyContinue | Out-Null; Remove-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 120; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null; $ready=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $ready) { throw 'tun ipv4 target missing after repair' }`, interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
 	if output, err := probeLocalRunCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command); err != nil {
 		return fmt.Errorf("repair route target ipv4 by powershell failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
 	}

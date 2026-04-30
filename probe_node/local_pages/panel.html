@@ -671,26 +671,30 @@
     }
 
     async function loadDNSStatus() {
-      const data = await requestJSON('/local/api/dns/status', { method: 'GET' });
-      const cacheRecords = Array.isArray(data.cache_records) ? data.cache_records : [];
-      const fakeIPEntries = Array.isArray(data.fake_ip_entries) ? data.fake_ip_entries : [];
-      const ttlSeconds = Number.isFinite(Number(data.cache_ttl_seconds)) ? Number(data.cache_ttl_seconds) : 0;
-      const routeHintCount = Number.isFinite(Number(data.route_hint_count)) ? Number(data.route_hint_count) : 0;
-      const tunListener = (data.tun_listener && typeof data.tun_listener === 'object') ? data.tun_listener : {};
+      const [statusData, realIPData, fakeIPData] = await Promise.all([
+        requestJSON('/local/api/dns/status', { method: 'GET' }),
+        requestJSON('/local/api/dns/real_ip/list', { method: 'GET' }),
+        requestJSON('/local/api/dns/fake_ip/list', { method: 'GET' }),
+      ]);
+      const realIPRecords = Array.isArray(realIPData.items) ? realIPData.items : [];
+      const fakeIPEntries = Array.isArray(fakeIPData.items) ? fakeIPData.items : [];
+      const ttlSeconds = Number.isFinite(Number(statusData.cache_ttl_seconds)) ? Number(statusData.cache_ttl_seconds) : 0;
+      const routeHintCount = Number.isFinite(Number(statusData.route_hint_count)) ? Number(statusData.route_hint_count) : 0;
+      const tunListener = (statusData.tun_listener && typeof statusData.tun_listener === 'object') ? statusData.tun_listener : {};
       const tunListenerText = tunListener.enabled ? (tunListener.listen_addr || '已启用') : '未启用';
-      setText('dnsEnabled', data.enabled ? '是' : '否');
-      setText('dnsListenAddr', data.listen_addr);
-      setText('dnsPort', data.port);
-      setText('dnsFallbackUsed', data.fallback_used ? '是' : '否');
+      setText('dnsEnabled', statusData.enabled ? '是' : '否');
+      setText('dnsListenAddr', statusData.listen_addr);
+      setText('dnsPort', statusData.port);
+      setText('dnsFallbackUsed', statusData.fallback_used ? '是' : '否');
       setText('dnsTunListener', tunListenerText);
-      setText('dnsFakeIPCIDR', data.fake_ip_cidr);
+      setText('dnsFakeIPCIDR', statusData.fake_ip_cidr);
       setText('dnsFakeIPRecords', fakeIPEntries.length);
       setText('dnsRouteHintCount', String(Math.trunc(routeHintCount)));
       setText('dnsCacheTTL', ttlSeconds > 0 ? String(Math.trunc(ttlSeconds)) : '-');
-      setText('dnsCacheRecords', cacheRecords.length);
-      setText('dnsUpdatedAt', data.updated_at);
-      setText('dnsLastError', data.last_error);
-      renderDNSDomainMapTable(cacheRecords, fakeIPEntries);
+      setText('dnsCacheRecords', realIPRecords.length);
+      setText('dnsUpdatedAt', statusData.updated_at);
+      setText('dnsLastError', statusData.last_error);
+      renderDNSDomainMapTable(realIPRecords, fakeIPEntries);
     }
 
     function renderDNSDomainMapTable(cacheRecords, fakeIPEntries) {

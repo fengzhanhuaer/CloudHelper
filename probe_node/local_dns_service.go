@@ -329,7 +329,7 @@ func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, erro
 	}
 	if shouldUseProbeLocalDNSFakeIP(domain, qType, decision) {
 		if fakeIP, ok := allocateProbeLocalDNSFakeIP(domain, decision); ok {
-			return buildProbeLocalDNSSuccessA(packet, fakeIP), domain, []string{fakeIP}, nil
+			return buildProbeLocalDNSSuccessA(packet, fakeIP), domain, nil, nil
 		}
 	}
 	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(decision)
@@ -982,6 +982,14 @@ func nextProbeLocalDNSFakeIPLocked(now time.Time) string {
 	}
 	baseU32 := binary.BigEndian.Uint32(networkIP)
 	reserved := strings.TrimSpace(currentProbeLocalTUNDNSListenHost())
+	gatewayReserved := ""
+	if ip := net.ParseIP(strings.TrimSpace(probeLocalTUNRouteGatewayIPv4)).To4(); ip != nil {
+		gatewayReserved = ip.String()
+	}
+	interfaceReserved := ""
+	if ip := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)).To4(); ip != nil {
+		interfaceReserved = ip.String()
+	}
 	for i := uint32(0); i < size; i++ {
 		probeLocalDNSState.fakeCursor = (probeLocalDNSState.fakeCursor % size) + 1
 		candidate := baseU32 + probeLocalDNSState.fakeCursor
@@ -992,6 +1000,12 @@ func nextProbeLocalDNSFakeIPLocked(now time.Time) string {
 			continue
 		}
 		if candidateIP == reserved {
+			continue
+		}
+		if gatewayReserved != "" && candidateIP == gatewayReserved {
+			continue
+		}
+		if interfaceReserved != "" && candidateIP == interfaceReserved {
 			continue
 		}
 		if existing, ok := probeLocalDNSState.fakeIPToEntry[candidateIP]; ok {
@@ -1120,6 +1134,25 @@ func queryProbeLocalDNSCacheRecords() []probeLocalDNSCacheRecord {
 		return records[i].URL < records[j].URL
 	})
 	return records
+}
+
+func lookupProbeLocalDNSCacheRecordsByDomain(domain string) []probeLocalDNSCacheRecord {
+	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
+	if cleanDomain == "" {
+		return nil
+	}
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	pruneProbeLocalDNSCacheLocked(now)
+	out := make([]probeLocalDNSCacheRecord, 0, 2)
+	for _, entry := range probeLocalDNSState.cache {
+		if strings.EqualFold(strings.TrimSpace(entry.URL), cleanDomain) {
+			out = append(out, probeLocalDNSCacheRecord{URL: entry.URL, IP: entry.IP})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].IP < out[j].IP })
+	return out
 }
 
 func pruneProbeLocalDNSCacheLocked(now time.Time) {

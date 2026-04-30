@@ -1540,6 +1540,8 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/hosts", probeLocalProxyHostsHandler)
 	mux.HandleFunc("/local/api/proxy/hosts/save", probeLocalProxyHostsSaveHandler)
 	mux.HandleFunc("/local/api/dns/status", probeLocalDNSStatusHandler)
+	mux.HandleFunc("/local/api/dns/real_ip/list", probeLocalDNSRealIPListHandler)
+	mux.HandleFunc("/local/api/dns/real_ip/lookup", probeLocalDNSRealIPLookupHandler)
 	mux.HandleFunc("/local/api/dns/fake_ip/list", probeLocalDNSFakeIPListHandler)
 	mux.HandleFunc("/local/api/dns/fake_ip/lookup", probeLocalDNSFakeIPLookupHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
@@ -1870,6 +1872,40 @@ func probeLocalDNSStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"cache_ttl_seconds": int64(probeLocalDNSCacheTTL / time.Second),
 		"cache_records":     queryProbeLocalDNSCacheRecords(),
 	})
+}
+
+func probeLocalDNSRealIPListHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": queryProbeLocalDNSCacheRecords(),
+	})
+}
+
+func probeLocalDNSRealIPLookupHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	domainText := strings.TrimSpace(r.URL.Query().Get("domain"))
+	if domainText == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "domain is required"})
+		return
+	}
+	items := lookupProbeLocalDNSCacheRecordsByDomain(domainText)
+	if len(items) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "real ip not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func probeLocalDNSFakeIPListHandler(w http.ResponseWriter, r *http.Request) {

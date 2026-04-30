@@ -182,13 +182,18 @@ func isProbeLocalWindowsRouteMissingErr(err error) bool {
 
 func currentProbeLocalTUNDNSListenHost() string {
 	probeLocalWindowsTakeoverState.mu.Lock()
-	defer probeLocalWindowsTakeoverState.mu.Unlock()
-	if !probeLocalWindowsTakeoverState.enabled {
+	enabled := probeLocalWindowsTakeoverState.enabled
+	gateway := strings.TrimSpace(probeLocalWindowsTakeoverState.tunGateway)
+	probeLocalWindowsTakeoverState.mu.Unlock()
+	if !enabled {
 		return ""
 	}
-	host := strings.TrimSpace(probeLocalWindowsTakeoverState.tunGateway)
-	if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
-		return ""
+	host := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_DNS_HOST"))
+	if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+		return ip.To4().String()
 	}
-	return host
+	if ip := net.ParseIP(gateway); ip != nil && ip.To4() != nil {
+		return ip.To4().String()
+	}
+	return ""
 }
