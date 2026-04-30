@@ -117,6 +117,17 @@ func waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex int, ip4 net.IP, 
 			if !isProbeLocalListenAddrNotAvailableError(bindErr) {
 				return bindErr
 			}
+			if repairErr := probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex, cleanIP, 15); repairErr == nil {
+				time.Sleep(220 * time.Millisecond)
+				conn2, bindErr2 := net.ListenPacket("udp4", listenAddr)
+				if bindErr2 == nil {
+					_ = conn2.Close()
+					return nil
+				}
+				if !isProbeLocalListenAddrNotAvailableError(bindErr2) {
+					return bindErr2
+				}
+			}
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("ipv4 address not bindable in time: if=%d ip=%s", interfaceIndex, cleanIP)
@@ -140,6 +151,25 @@ func isProbeLocalListenAddrNotAvailableError(err error) bool {
 		return true
 	}
 	return false
+}
+
+func probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
+	if interfaceIndex <= 0 {
+		return errors.New("invalid interface index")
+	}
+	ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip4 == nil {
+		return errors.New("invalid ipv4 address")
+	}
+	if prefixLength <= 0 || prefixLength > 32 {
+		prefixLength = 15
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; Remove-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 120; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null`, interfaceIndex, ip4.String(), prefixLength)
+	_, err := runProbeLocalCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 type windowsAdapterInfo struct {

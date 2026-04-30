@@ -1358,6 +1358,7 @@ func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
 		setProbeLocalTUNInstallObservation(obs)
 		return nil
 	}
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
 
 	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/install", map[string]any{}, sessionCookie)
@@ -1430,6 +1431,7 @@ func TestProbeLocalTUNStatusReturnsLastInstallObservation(t *testing.T) {
 		setProbeLocalTUNInstallObservation(obs)
 		return nil
 	}
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
 
 	installResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/install", map[string]any{}, sessionCookie)
@@ -1458,6 +1460,58 @@ func TestProbeLocalTUNStatusReturnsLastInstallObservation(t *testing.T) {
 	}
 	if reason, _ := finalObj["reason"].(string); strings.TrimSpace(reason) == "" {
 		t.Fatalf("tun/status last_install_observation.final.reason should not be empty")
+	}
+}
+
+func TestProbeLocalTUNInstallReturnsInternalErrorWhenPostCheckFails(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeLocalInstallTUNDriver = func() error {
+		obs := newProbeLocalTUNInstallObservation()
+		obs.Driver.PackageExists = true
+		obs.Driver.PackagePath = `C:\\temp\\wintun.dll`
+		obs.Create.Called = true
+		obs.Create.HandleNonZero = true
+		obs.Visibility.DetectVisible = true
+		obs.Visibility.IfIndexResolved = true
+		obs.Visibility.IfIndexValue = 17
+		obs.Final.Success = true
+		obs.Final.ReasonCode = "TUN_INSTALL_SUCCEEDED"
+		obs.Final.Reason = "driver-ready"
+		setProbeLocalTUNInstallObservation(obs)
+		return nil
+	}
+	probeLocalCheckTUNReadyAfterInstall = func() error {
+		return errors.New("ipv4 address not bindable in time")
+	}
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/install", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("tun/install post-check-fail status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	errText, _ := payload["error"].(string)
+	if !strings.Contains(strings.ToLower(errText), "bindable") {
+		t.Fatalf("tun/install post-check-fail error=%q", errText)
+	}
+	if code, _ := payload["code"].(string); code != probeLocalTUNInstallCodeRouteTargetFailed {
+		t.Fatalf("tun/install post-check-fail code=%q", code)
+	}
+	if stage, _ := payload["stage"].(string); stage != "post_install_route_target_check" {
+		t.Fatalf("tun/install post-check-fail stage=%q", stage)
+	}
+	observation, ok := payload["install_observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/install post-check-fail observation type=%T", payload["install_observation"])
+	}
+	finalObj, _ := observation["final"].(map[string]any)
+	if success, _ := finalObj["success"].(bool); success {
+		t.Fatalf("post-check-fail final.success=%v", finalObj["success"])
+	}
+	if reasonCode, _ := finalObj["reason_code"].(string); reasonCode != probeLocalTUNInstallCodeRouteTargetFailed {
+		t.Fatalf("post-check-fail final.reason_code=%q", reasonCode)
 	}
 }
 

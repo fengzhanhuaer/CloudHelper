@@ -163,14 +163,19 @@ type probeLocalUpgradeRuntimeState struct {
 	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
+func probeLocalNoopPostInstallTUNReadyCheck() error {
+	return nil
+}
+
 var (
-	errProbeLocalProxyUnsupported = errors.New("probe local proxy takeover is not supported on this platform")
-	errProbeLocalTUNUnsupported   = errors.New("probe local tun install is not supported on this platform")
-	probeLocalInstallTUNDriver    = installProbeLocalTUNDriver
-	probeLocalApplyProxyTakeover  = applyProbeLocalProxyTakeover
-	probeLocalRestoreProxyDirect  = restoreProbeLocalProxyDirect
-	probeLocalRunUpgrade          = runProbeUpgrade
-	probeLocalRestartProcess      = restartCurrentProcess
+	errProbeLocalProxyUnsupported       = errors.New("probe local proxy takeover is not supported on this platform")
+	errProbeLocalTUNUnsupported         = errors.New("probe local tun install is not supported on this platform")
+	probeLocalInstallTUNDriver          = installProbeLocalTUNDriver
+	probeLocalCheckTUNReadyAfterInstall = probeLocalNoopPostInstallTUNReadyCheck
+	probeLocalApplyProxyTakeover        = applyProbeLocalProxyTakeover
+	probeLocalRestoreProxyDirect        = restoreProbeLocalProxyDirect
+	probeLocalRunUpgrade                = runProbeUpgrade
+	probeLocalRestartProcess            = restartCurrentProcess
 )
 
 func newProbeLocalControlManager() *probeLocalControlManager {
@@ -251,6 +256,46 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 			status = http.StatusNotImplemented
 		}
 		return m.tun, &probeLocalHTTPError{Status: status, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(err)}
+	}
+
+	if err := probeLocalCheckTUNReadyAfterInstall(); err != nil {
+		wrappedErr := newProbeLocalTUNInstallError(
+			probeLocalTUNInstallCodeRouteTargetFailed,
+			"post_install_route_target_check",
+			"TUN 网卡已安装但路由目标 IP 不可达，请检查网卡状态后重试",
+			err,
+			nil,
+		)
+		m.tun.LastError = strings.TrimSpace(wrappedErr.Error())
+		if observation, ok := currentProbeLocalTUNInstallObservation(); ok {
+			observation.Final.Success = false
+			observation.Final.ReasonCode = probeLocalTUNInstallCodeRouteTargetFailed
+			observation.Final.Reason = "TUN 网卡已安装但路由目标 IP 不可达，请检查网卡状态后重试"
+			observation.Diagnostic.Code = probeLocalTUNInstallCodeRouteTargetFailed
+			observation.Diagnostic.Stage = "post_install_route_target_check"
+			observation.Diagnostic.Hint = "TUN 网卡已安装但路由目标 IP 不可达，请检查网卡状态后重试"
+			observation.Diagnostic.RawError = strings.TrimSpace(err.Error())
+			observation.Diagnostic.Details = strings.TrimSpace(err.Error())
+			setProbeLocalTUNInstallObservation(observation)
+			m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
+			m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
+		} else {
+			fallbackObservation := newProbeLocalTUNInstallObservation()
+			fallbackObservation.Final.Success = false
+			fallbackObservation.Final.ReasonCode = probeLocalTUNInstallCodeRouteTargetFailed
+			fallbackObservation.Final.Reason = "TUN 网卡已安装但路由目标 IP 不可达，请检查网卡状态后重试"
+			fallbackObservation.Diagnostic.Code = probeLocalTUNInstallCodeRouteTargetFailed
+			fallbackObservation.Diagnostic.Stage = "post_install_route_target_check"
+			fallbackObservation.Diagnostic.Hint = "TUN 网卡已安装但路由目标 IP 不可达，请检查网卡状态后重试"
+			fallbackObservation.Diagnostic.RawError = strings.TrimSpace(err.Error())
+			fallbackObservation.Diagnostic.Details = strings.TrimSpace(err.Error())
+			setProbeLocalTUNInstallObservation(fallbackObservation)
+			m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
+			m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
+		}
+		m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		logProbeWarnf("probe local tun post-install ready check failed elapsed=%s err=%v", time.Since(startedAt).String(), err)
+		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(wrappedErr)}
 	}
 
 	m.tun.Installed = true
@@ -2248,6 +2293,7 @@ func resetProbeLocalProxyHooksForTest() {
 
 func resetProbeLocalTUNHooksForTest() {
 	probeLocalInstallTUNDriver = installProbeLocalTUNDriver
+	probeLocalCheckTUNReadyAfterInstall = probeLocalNoopPostInstallTUNReadyCheck
 	resetProbeLocalTUNDataPlaneHooksForTest()
 }
 
