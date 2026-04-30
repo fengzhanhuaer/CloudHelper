@@ -312,6 +312,22 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
 		m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
 	}
+	if strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")) != "" {
+		if err := startProbeLocalTUNDataPlane(); err != nil {
+			m.tun.Enabled = false
+			m.tun.DataPlane = false
+			m.tun.DataPlaneRX = 0
+			m.tun.DataPlaneBytes = 0
+			m.tun.LastError = strings.TrimSpace(err.Error())
+			m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
+		}
+		stats := probeLocalTUNDataPlaneStatsSnapshot()
+		m.tun.Enabled = stats.Running
+		m.tun.DataPlane = stats.Running
+		m.tun.DataPlaneRX = stats.RXPackets
+		m.tun.DataPlaneBytes = stats.RXBytes
+	}
 	m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	logProbeInfof("probe local tun install/check completed: installed=true elapsed=%s", time.Since(startedAt).String())
 	return m.tun, nil

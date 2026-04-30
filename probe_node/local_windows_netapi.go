@@ -107,8 +107,10 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 	}
 	cleanIP := ip4.String()
 	cleanDNS := cleanIP
+	cleanGateway := ""
 	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNRouteGatewayIPv4)).To4(); parsedDNS != nil {
 		cleanDNS = parsedDNS.String()
+		cleanGateway = parsedDNS.String()
 	}
 
 	adapterAlias := ""
@@ -121,7 +123,11 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 			return maskErr
 		}
 		_, _ = runProbeLocalCommand(6*time.Second, "netsh", "interface", "ipv4", "delete", "dnsservers", fmt.Sprintf(`name="%s"`, adapterAlias), "all")
-		if output, err := runProbeLocalCommand(8*time.Second, "netsh", "interface", "ipv4", "set", "address", fmt.Sprintf(`name="%s"`, adapterAlias), "source=static", fmt.Sprintf("address=%s", cleanIP), fmt.Sprintf("mask=%s", maskText), "gateway=none", "store=persistent"); err != nil {
+		gatewayArg := "gateway=none"
+		if cleanGateway != "" {
+			gatewayArg = fmt.Sprintf("gateway=%s", cleanGateway)
+		}
+		if output, err := runProbeLocalCommand(8*time.Second, "netsh", "interface", "ipv4", "set", "address", fmt.Sprintf(`name="%s"`, adapterAlias), "source=static", fmt.Sprintf("address=%s", cleanIP), fmt.Sprintf("mask=%s", maskText), gatewayArg, "store=persistent"); err != nil {
 			return fmt.Errorf("apply static tun ipv4 address by netsh failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
 		}
 		if output, err := runProbeLocalCommand(8*time.Second, "netsh", "interface", "ipv4", "set", "dnsservers", fmt.Sprintf(`name="%s"`, adapterAlias), "source=static", fmt.Sprintf("address=%s", cleanDNS), "register=none", "validate=no"); err != nil {
