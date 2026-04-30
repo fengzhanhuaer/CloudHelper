@@ -68,15 +68,11 @@ func TestDeleteProbeLocalWindowsSplitRouteIgnoresMissing(t *testing.T) {
 
 func TestApplyProbeLocalProxyTakeoverRollbackOnSecondRouteFailure(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
-	oldEnsure := probeLocalWindowsEnsureWintunLibrary
-	oldEnsureRoute := probeLocalWindowsEnsureRouteTarget
 	oldRun := probeLocalWindowsRunCommand
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
 
-	probeLocalWindowsEnsureWintunLibrary = func() error { return nil }
-	probeLocalWindowsEnsureRouteTarget = func() error { return nil }
 	calls := make([]string, 0, 8)
 	probeLocalWindowsRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
 		line := name + " " + strings.Join(args, " ")
@@ -90,8 +86,6 @@ func TestApplyProbeLocalProxyTakeoverRollbackOnSecondRouteFailure(t *testing.T) 
 		return "", nil
 	}
 	t.Cleanup(func() {
-		probeLocalWindowsEnsureWintunLibrary = oldEnsure
-		probeLocalWindowsEnsureRouteTarget = oldEnsureRoute
 		probeLocalWindowsRunCommand = oldRun
 		resetProbeLocalWindowsTakeoverStateForTest()
 	})
@@ -137,25 +131,45 @@ func hasWindowsRouteCommand(calls []string, verb string, prefix string) bool {
 	return false
 }
 
-func TestApplyProbeLocalProxyTakeoverReturnsRouteTargetConfigureFailure(t *testing.T) {
+func TestApplyProbeLocalProxyTakeoverSuccessWithRouteOnly(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
-	oldEnsure := probeLocalWindowsEnsureWintunLibrary
-	oldEnsureRoute := probeLocalWindowsEnsureRouteTarget
+	oldRun := probeLocalWindowsRunCommand
 	t.Cleanup(func() {
-		probeLocalWindowsEnsureWintunLibrary = oldEnsure
-		probeLocalWindowsEnsureRouteTarget = oldEnsureRoute
+		probeLocalWindowsRunCommand = oldRun
 		resetProbeLocalWindowsTakeoverStateForTest()
 	})
 
-	probeLocalWindowsEnsureWintunLibrary = func() error { return nil }
-	probeLocalWindowsEnsureRouteTarget = func() error { return errors.New("route target configure failed for test") }
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+
+	calls := make([]string, 0, 8)
+	probeLocalWindowsRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		line := name + " " + strings.Join(args, " ")
+		calls = append(calls, line)
+		if len(args) >= 1 && strings.EqualFold(args[0], "PRINT") {
+			return "route print snapshot", nil
+		}
+		return "", nil
+	}
 
 	err := applyProbeLocalProxyTakeover()
-	if err == nil {
-		t.Fatalf("expected configure route target failure")
+	if err != nil {
+		t.Fatalf("expected takeover success with route-only path, got: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "configure windows tun route target failed") {
-		t.Fatalf("unexpected error: %v", err)
+	if !hasWindowsRouteCommand(calls, "ADD", probeLocalWindowsRouteSplitPrefixA) {
+		t.Fatalf("expected split route A add call, calls=%v", calls)
+	}
+	if !hasWindowsRouteCommand(calls, "ADD", probeLocalWindowsRouteSplitPrefixB) {
+		t.Fatalf("expected split route B add call, calls=%v", calls)
+	}
+
+	probeLocalWindowsTakeoverState.mu.Lock()
+	enabled := probeLocalWindowsTakeoverState.enabled
+	gateway := probeLocalWindowsTakeoverState.tunGateway
+	ifIndex := probeLocalWindowsTakeoverState.tunIfIndex
+	probeLocalWindowsTakeoverState.mu.Unlock()
+	if !enabled || gateway != "198.18.0.1" || ifIndex != 9 {
+		t.Fatalf("unexpected takeover state: enabled=%v gateway=%q ifIndex=%d", enabled, gateway, ifIndex)
 	}
 }
 

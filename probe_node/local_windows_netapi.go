@@ -57,12 +57,16 @@ func ensureProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	if ip4 == nil {
 		return errors.New("invalid ipv4 address")
 	}
+	cleanIP := ip4.String()
 
 	adapter, err := windowsFindAdapterByIfIndex(interfaceIndex)
 	if err == nil {
 		for _, existing := range adapter.IPv4Addrs {
-			if strings.EqualFold(strings.TrimSpace(existing), ip4.String()) {
-				return waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex, ip4, 5*time.Second)
+			if strings.EqualFold(strings.TrimSpace(existing), cleanIP) {
+				if bindErr := waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex, ip4, 5*time.Second); bindErr != nil {
+					return bindErr
+				}
+				return ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex, cleanIP, prefixLength)
 			}
 		}
 	}
@@ -84,7 +88,34 @@ func ensureProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 		}
 		return fmt.Errorf("CreateUnicastIpAddressEntry failed: code=%d", ret)
 	}
-	return waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex, ip4, 5*time.Second)
+	if bindErr := waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex, ip4, 5*time.Second); bindErr != nil {
+		return bindErr
+	}
+	return ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex, cleanIP, prefixLength)
+}
+
+func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipText string, prefixLength int) error {
+	if interfaceIndex <= 0 {
+		return errors.New("invalid interface index")
+	}
+	ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip4 == nil {
+		return errors.New("invalid ipv4 address")
+	}
+	if prefixLength <= 0 || prefixLength > 32 {
+		prefixLength = probeLocalTUNRouteIPv4PrefixLen
+	}
+	cleanIP := ip4.String()
+	cleanDNS := cleanIP
+	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNRouteGatewayIPv4)).To4(); parsedDNS != nil {
+		cleanDNS = parsedDNS.String()
+	}
+
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; $dns=@('%s'); Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Disabled -DadTransmits 0 -ErrorAction SilentlyContinue | Out-Null; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null; Set-DnsClientServerAddress -InterfaceIndex $idx -ServerAddresses $dns -ErrorAction Stop | Out-Null; $ready=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $ready) { throw 'tun ipv4 profile missing after static apply' }; $dnsCurrent=(Get-DnsClientServerAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses; if (-not $dnsCurrent -or $dnsCurrent.Count -lt 1) { throw 'tun dns server missing after static apply' }; if (($dnsCurrent[0].Trim()) -ne $dns[0]) { throw ('tun dns mismatch after static apply current=' + $dnsCurrent[0] + ' expect=' + $dns[0]) }`, interfaceIndex, cleanIP, prefixLength, cleanDNS)
+	if output, err := runProbeLocalCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script); err != nil {
+		return fmt.Errorf("apply static tun ipv4 profile failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
+	}
+	return nil
 }
 
 func waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex int, ip4 net.IP, timeout time.Duration) error {
