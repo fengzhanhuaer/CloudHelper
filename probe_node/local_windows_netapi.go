@@ -111,11 +111,40 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 		cleanDNS = parsedDNS.String()
 	}
 
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; $dns=@('%s'); Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Disabled -DadTransmits 0 -ErrorAction SilentlyContinue | Out-Null; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null; Set-DnsClientServerAddress -InterfaceIndex $idx -ServerAddresses $dns -ErrorAction Stop | Out-Null; $ready=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $ready) { throw 'tun ipv4 profile missing after static apply' }; $dnsCurrent=(Get-DnsClientServerAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses; if (-not $dnsCurrent -or $dnsCurrent.Count -lt 1) { throw 'tun dns server missing after static apply' }; if (($dnsCurrent[0].Trim()) -ne $dns[0]) { throw ('tun dns mismatch after static apply current=' + $dnsCurrent[0] + ' expect=' + $dns[0]) }`, interfaceIndex, cleanIP, prefixLength, cleanDNS)
+	adapterAlias := ""
+	if adapter, adapterErr := windowsFindAdapterByIfIndex(interfaceIndex); adapterErr == nil {
+		adapterAlias = strings.TrimSpace(adapter.Name)
+	}
+	if adapterAlias != "" {
+		maskText, maskErr := probeLocalIPv4MaskFromPrefix(prefixLength)
+		if maskErr != nil {
+			return maskErr
+		}
+		_, _ = runProbeLocalCommand(6*time.Second, "netsh", "interface", "ipv4", "delete", "dnsservers", fmt.Sprintf(`name="%s"`, adapterAlias), "all")
+		if output, err := runProbeLocalCommand(8*time.Second, "netsh", "interface", "ipv4", "set", "address", fmt.Sprintf(`name="%s"`, adapterAlias), "source=static", fmt.Sprintf("address=%s", cleanIP), fmt.Sprintf("mask=%s", maskText), "gateway=none", "store=persistent"); err != nil {
+			return fmt.Errorf("apply static tun ipv4 address by netsh failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
+		}
+		if output, err := runProbeLocalCommand(8*time.Second, "netsh", "interface", "ipv4", "set", "dnsservers", fmt.Sprintf(`name="%s"`, adapterAlias), "source=static", fmt.Sprintf("address=%s", cleanDNS), "register=none", "validate=no"); err != nil {
+			return fmt.Errorf("apply static tun dns by netsh failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
+		}
+	}
+
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; $dns=@('%s'); Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Disabled -DadTransmits 0 -ErrorAction SilentlyContinue | Out-Null; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore PersistentStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null; Set-DnsClientServerAddress -InterfaceIndex $idx -ServerAddresses $dns -ErrorAction Stop | Out-Null; $ready=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $ready) { throw 'tun ipv4 profile missing after static apply' }; $dnsCurrent=(Get-DnsClientServerAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses; if (-not $dnsCurrent -or $dnsCurrent.Count -lt 1) { throw 'tun dns server missing after static apply' }; if (($dnsCurrent[0].Trim()) -ne $dns[0]) { throw ('tun dns mismatch after static apply current=' + $dnsCurrent[0] + ' expect=' + $dns[0]) }`, interfaceIndex, cleanIP, prefixLength, cleanDNS)
 	if output, err := runProbeLocalCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script); err != nil {
 		return fmt.Errorf("apply static tun ipv4 profile failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
 	}
 	return nil
+}
+
+func probeLocalIPv4MaskFromPrefix(prefixLength int) (string, error) {
+	if prefixLength < 0 || prefixLength > 32 {
+		return "", fmt.Errorf("invalid ipv4 prefix length: %d", prefixLength)
+	}
+	mask := net.CIDRMask(prefixLength, 32)
+	if len(mask) != net.IPv4len {
+		return "", fmt.Errorf("invalid ipv4 mask length for prefix: %d", prefixLength)
+	}
+	return net.IP(mask).String(), nil
 }
 
 func waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex int, ip4 net.IP, timeout time.Duration) error {
