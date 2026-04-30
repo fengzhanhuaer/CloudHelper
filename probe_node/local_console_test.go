@@ -196,6 +196,11 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("logs without session status=%d", logsResp.Code)
 	}
 
+	upgradeStatusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/system/upgrade/status", nil)
+	if upgradeStatusResp.Code != http.StatusUnauthorized {
+		t.Fatalf("system/upgrade/status without session status=%d", upgradeStatusResp.Code)
+	}
+
 	panelResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/panel", nil)
 	if panelResp.Code != http.StatusFound {
 		t.Fatalf("panel without session status=%d", panelResp.Code)
@@ -800,6 +805,20 @@ func TestProbeLocalSystemUpgradeDirectAccepted(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("system/upgrade direct did not pass runtime identity")
+	}
+	upgradeStatusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/system/upgrade/status", nil, sessionCookie)
+	if upgradeStatusResp.Code != http.StatusOK {
+		t.Fatalf("system/upgrade/status status=%d body=%s", upgradeStatusResp.Code, upgradeStatusResp.Body.String())
+	}
+	statusPayload := decodeProbeLocalJSON(t, upgradeStatusResp)
+	if statusPayload["status"] != "accepted" {
+		t.Fatalf("system/upgrade/status status=%v", statusPayload["status"])
+	}
+	if statusPayload["mode"] != "direct" {
+		t.Fatalf("system/upgrade/status mode=%v", statusPayload["mode"])
+	}
+	if statusPayload["release_repo"] != "fengzhanhuaer/CloudHelper" {
+		t.Fatalf("system/upgrade/status release_repo=%v", statusPayload["release_repo"])
 	}
 }
 

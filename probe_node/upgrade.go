@@ -83,6 +83,14 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	if repo == "" {
 		repo = "fengzhanhuaer/CloudHelper"
 	}
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "prepare",
+		Progress:    5,
+		Message:     "准备升级环境",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	controllerBase := strings.TrimSpace(cmd.ControllerBaseURL)
 	platform := detectRuntimePlatformInfo()
 	log.Printf(
@@ -100,9 +108,18 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "fetch_release",
+		Progress:    12,
+		Message:     "获取最新版本信息",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	release, err := fetchProbeRelease(ctx, mode, repo, controllerBase, identity)
 	if err != nil {
 		log.Printf("probe upgrade failed: fetch release: %v", err)
+		reportProbeLocalUpgradeFailed("fetch_release", err, mode, repo, 12)
 		return
 	}
 	log.Printf(
@@ -113,65 +130,134 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	)
 	if normalizeVersionTag(release.TagName) == normalizeVersionTag(BuildVersion) {
 		log.Printf("probe already latest: %s", release.TagName)
+		reportProbeLocalUpgradeSuccess("当前已是最新版本", mode, repo)
 		return
 	}
 
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "pick_asset",
+		Progress:    20,
+		Message:     "选择平台安装包",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	asset, err := pickProbeNodeAsset(release.Assets, platform)
 	if err != nil {
 		log.Printf("probe upgrade failed: pick asset: %v", err)
+		reportProbeLocalUpgradeFailed("pick_asset", err, mode, repo, 20)
 		return
 	}
 	log.Printf("probe upgrade asset selected: name=%s", strings.TrimSpace(asset.Name))
 
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "prepare_workspace",
+		Progress:    28,
+		Message:     "创建升级工作目录",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	tmpDir, err := createProbeUpgradeWorkspace()
 	if err != nil {
 		log.Printf("probe upgrade failed: temp dir: %v", err)
+		reportProbeLocalUpgradeFailed("prepare_workspace", err, mode, repo, 28)
 		return
 	}
 	defer cleanupProbeUpgradeWorkspace(tmpDir)
 
 	assetFile := filepath.Join(tmpDir, filepath.Base(asset.Name))
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "download",
+		Progress:    42,
+		Message:     "下载升级包",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	log.Printf("probe upgrade download: target=%s mode=%s", assetFile, mode)
 	if err := downloadProbeAsset(ctx, mode, asset.DownloadURL, controllerBase, identity, assetFile); err != nil {
 		log.Printf("probe upgrade failed: download asset: %v", err)
+		reportProbeLocalUpgradeFailed("download", err, mode, repo, 42)
 		return
 	}
 	if st, err := os.Stat(assetFile); err == nil {
 		log.Printf("probe upgrade download complete: file=%s size=%d", assetFile, st.Size())
 	}
 
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "extract",
+		Progress:    58,
+		Message:     "解压升级包",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	binaryPath, err := extractProbeBinary(assetFile, asset.Name, tmpDir)
 	if err != nil {
 		log.Printf("probe upgrade failed: extract binary: %v", err)
+		reportProbeLocalUpgradeFailed("extract", err, mode, repo, 58)
 		return
 	}
 	log.Printf("probe upgrade extract complete: binary=%s", binaryPath)
+
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "verify",
+		Progress:    72,
+		Message:     "校验安装包兼容性",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	if err := verifyBinaryCompatibility(binaryPath, platform); err != nil {
 		log.Printf("probe upgrade failed: compatibility check: %v", err)
+		reportProbeLocalUpgradeFailed("verify_compatibility", err, mode, repo, 72)
 		return
 	}
 	if err := verifyProbeCandidateRuntime(binaryPath); err != nil {
 		log.Printf("probe upgrade failed: candidate runtime verify: %v", err)
+		reportProbeLocalUpgradeFailed("verify_runtime", err, mode, repo, 76)
 		return
 	}
 	log.Printf("probe upgrade candidate runtime verify complete: binary=%s", binaryPath)
 
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "replace",
+		Progress:    86,
+		Message:     "替换当前可执行文件",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	exePath, backupPath, err := replaceCurrentExecutable(binaryPath)
 	if err != nil {
 		log.Printf("probe upgrade failed: replace executable: %v", err)
+		reportProbeLocalUpgradeFailed("replace", err, mode, repo, 86)
 		return
 	}
 	log.Printf("probe upgrade replace complete: exe=%s backup=%s", exePath, backupPath)
 
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "running",
+		Step:        "restart",
+		Progress:    95,
+		Message:     "重启服务应用新版本",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	log.Printf("probe upgrade complete: %s -> %s, restarting", BuildVersion, release.TagName)
 	if err := restartCurrentProcess(exePath); err != nil {
 		log.Printf("probe upgrade restart failed: %v", err)
 		if rollbackErr := rollbackExecutable(exePath, backupPath); rollbackErr != nil {
 			log.Printf("probe upgrade rollback failed: %v", rollbackErr)
+			reportProbeLocalUpgradeFailed("rollback", rollbackErr, mode, repo, 96)
 			return
 		}
 		log.Printf("probe upgrade rollback complete, old binary restored")
+		reportProbeLocalUpgradeFailed("restart", err, mode, repo, 96)
+		return
 	}
+	reportProbeLocalUpgradeSuccess("升级完成，服务重启中", mode, repo)
 }
 
 func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase string, identity nodeIdentity) (releaseInfo, error) {

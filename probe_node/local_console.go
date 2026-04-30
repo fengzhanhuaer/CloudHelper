@@ -152,6 +152,17 @@ type probeLocalProxyRuntimeContext struct {
 	ControllerBaseURL string
 }
 
+type probeLocalUpgradeRuntimeState struct {
+	Status      string `json:"status"`
+	Step        string `json:"step,omitempty"`
+	Progress    int    `json:"progress"`
+	Message     string `json:"message,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+	ReleaseRepo string `json:"release_repo,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
 var (
 	errProbeLocalProxyUnsupported = errors.New("probe local proxy takeover is not supported on this platform")
 	errProbeLocalTUNUnsupported   = errors.New("probe local tun install is not supported on this platform")
@@ -359,6 +370,18 @@ var probeLocalRuntimeState = struct {
 	mu      sync.RWMutex
 	context probeLocalProxyRuntimeContext
 }{}
+
+var probeLocalUpgradeState = struct {
+	mu    sync.RWMutex
+	state probeLocalUpgradeRuntimeState
+}{
+	state: probeLocalUpgradeRuntimeState{
+		Status:    "idle",
+		Progress:  0,
+		Message:   "尚未触发升级",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	},
+}
 
 var probeLocalConsoleState = struct {
 	mu         sync.Mutex
@@ -1459,6 +1482,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/dns/fake_ip/list", probeLocalDNSFakeIPListHandler)
 	mux.HandleFunc("/local/api/dns/fake_ip/lookup", probeLocalDNSFakeIPLookupHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
+	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
 }
@@ -2127,6 +2151,14 @@ func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repo := strings.TrimSpace(req.ReleaseRepo)
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "accepted",
+		Step:        "accepted",
+		Progress:    0,
+		Message:     "升级任务已提交",
+		Mode:        mode,
+		ReleaseRepo: repo,
+	})
 	go probeLocalRunUpgrade(probeControlMessage{
 		Type:              "upgrade",
 		Mode:              mode,
@@ -2139,6 +2171,17 @@ func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 		"mode":         mode,
 		"release_repo": repo,
 	})
+}
+
+func probeLocalSystemUpgradeStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, currentProbeLocalUpgradeState())
 }
 
 func probeLocalSystemRestartHandler(w http.ResponseWriter, r *http.Request) {
@@ -2211,6 +2254,7 @@ func resetProbeLocalTUNHooksForTest() {
 func resetProbeLocalUpgradeHooksForTest() {
 	probeLocalRunUpgrade = runProbeUpgrade
 	probeLocalRestartProcess = restartCurrentProcess
+	resetProbeLocalUpgradeRuntimeStateForTest()
 }
 
 func setProbeLocalProxyRuntimeContext(identity nodeIdentity, controllerBaseURL string) {
@@ -2226,6 +2270,71 @@ func currentProbeLocalProxyRuntimeContext() probeLocalProxyRuntimeContext {
 	probeLocalRuntimeState.mu.RLock()
 	defer probeLocalRuntimeState.mu.RUnlock()
 	return probeLocalRuntimeState.context
+}
+
+func reportProbeLocalUpgradeProgress(state probeLocalUpgradeRuntimeState) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	state.Status = strings.TrimSpace(strings.ToLower(state.Status))
+	if state.Status == "" {
+		state.Status = "running"
+	}
+	if state.Progress < 0 {
+		state.Progress = 0
+	}
+	if state.Progress > 100 {
+		state.Progress = 100
+	}
+	state.Step = strings.TrimSpace(state.Step)
+	state.Message = strings.TrimSpace(state.Message)
+	state.Error = strings.TrimSpace(state.Error)
+	state.Mode = strings.TrimSpace(strings.ToLower(state.Mode))
+	state.ReleaseRepo = strings.TrimSpace(state.ReleaseRepo)
+	state.UpdatedAt = now
+
+	probeLocalUpgradeState.mu.Lock()
+	probeLocalUpgradeState.state = state
+	probeLocalUpgradeState.mu.Unlock()
+}
+
+func reportProbeLocalUpgradeSuccess(message, mode, repo string) {
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "succeeded",
+		Step:        "done",
+		Progress:    100,
+		Message:     strings.TrimSpace(message),
+		Mode:        strings.TrimSpace(strings.ToLower(mode)),
+		ReleaseRepo: strings.TrimSpace(repo),
+	})
+}
+
+func reportProbeLocalUpgradeFailed(step string, err error, mode, repo string, progress int) {
+	errText := ""
+	if err != nil {
+		errText = strings.TrimSpace(err.Error())
+	}
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:      "failed",
+		Step:        strings.TrimSpace(step),
+		Progress:    progress,
+		Message:     "升级失败",
+		Error:       errText,
+		Mode:        strings.TrimSpace(strings.ToLower(mode)),
+		ReleaseRepo: strings.TrimSpace(repo),
+	})
+}
+
+func currentProbeLocalUpgradeState() probeLocalUpgradeRuntimeState {
+	probeLocalUpgradeState.mu.RLock()
+	defer probeLocalUpgradeState.mu.RUnlock()
+	return probeLocalUpgradeState.state
+}
+
+func resetProbeLocalUpgradeRuntimeStateForTest() {
+	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+		Status:   "idle",
+		Progress: 0,
+		Message:  "尚未触发升级",
+	})
 }
 
 func currentProbeLocalConsoleListen() string {

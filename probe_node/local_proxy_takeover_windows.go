@@ -31,7 +31,7 @@ var probeLocalWindowsTakeoverState = struct {
 
 var (
 	probeLocalWindowsEnsureWintunLibrary = ensureProbeEmbeddedWintunLibrary
-	probeLocalWindowsEnsureRouteTarget   = ensureProbeLocalWindowsRouteTargetConfigured
+	probeLocalWindowsEnsureRouteTarget   = verifyProbeLocalWindowsRouteTargetPresent
 	probeLocalWindowsRunCommand          = runProbeLocalCommand
 )
 

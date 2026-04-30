@@ -173,6 +173,20 @@
       line-height: 1.45;
       color: #c9d1d9;
     }
+    .upgrade-progress {
+      margin-top: 10px;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      overflow: hidden;
+      height: 10px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .upgrade-progress-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--success));
+      transition: width 0.3s ease;
+    }
   </style>
 </head>
 <body>
@@ -327,6 +341,17 @@
         <button id="logoutBtn" class="warn">退出登录</button>
       </div>
       <p class="hint">直连升级将直接访问 GitHub，代理升级将通过 controller `/api/probe/proxy/*` 中转。</p>
+      <div class="kv" style="margin-top: 10px;">
+        <div>升级状态</div><div id="upgradeStatusText">-</div>
+        <div>当前阶段</div><div id="upgradeStepText">-</div>
+        <div>进度（%）</div><div id="upgradeProgressText">0</div>
+        <div>说明</div><div id="upgradeMessageText">-</div>
+        <div>错误信息</div><div id="upgradeErrorText">-</div>
+        <div>更新时间</div><div id="upgradeUpdatedAtText">-</div>
+      </div>
+      <div class="upgrade-progress" aria-label="升级进度">
+        <div id="upgradeProgressFill" class="upgrade-progress-fill"></div>
+      </div>
     </section>
 
     <p id="message" class="msg"></p>
@@ -339,6 +364,7 @@
     let proxyChainItemsCache = [];
     let proxyStatusCache = { enabled: false, mode: '' };
     let logsAutoRefreshTimer = null;
+    let upgradeStatusPollingTimer = null;
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -793,6 +819,72 @@
       }, intervalSec * 1000);
     }
 
+    function stopUpgradeStatusPolling() {
+      if (upgradeStatusPollingTimer) {
+        clearInterval(upgradeStatusPollingTimer);
+        upgradeStatusPollingTimer = null;
+      }
+    }
+
+    function setUpgradeButtonsBusy(busy) {
+      const directBtn = document.getElementById('upgradeDirectBtn');
+      const proxyBtn = document.getElementById('upgradeProxyBtn');
+      if (directBtn) directBtn.disabled = !!busy;
+      if (proxyBtn) proxyBtn.disabled = !!busy;
+    }
+
+    function normalizeUpgradeProgress(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      return Math.max(0, Math.min(100, Math.trunc(n)));
+    }
+
+    function shouldPollUpgradeStatus(statusText) {
+      const status = String(statusText || '').trim().toLowerCase();
+      return status === 'accepted' || status === 'running';
+    }
+
+    function renderUpgradeStatus(data) {
+      const status = String(data && data.status || '').trim() || 'idle';
+      const step = String(data && data.step || '').trim();
+      const progress = normalizeUpgradeProgress(data && data.progress);
+      const message = String(data && data.message || '').trim();
+      const error = String(data && data.error || '').trim();
+      const updatedAt = String(data && data.updated_at || '').trim();
+
+      setText('upgradeStatusText', status);
+      setText('upgradeStepText', step || '-');
+      setText('upgradeProgressText', String(progress));
+      setText('upgradeMessageText', message || '-');
+      setText('upgradeErrorText', error || '-');
+      setText('upgradeUpdatedAtText', updatedAt || '-');
+
+      const fill = document.getElementById('upgradeProgressFill');
+      if (fill) {
+        fill.style.width = `${progress}%`;
+      }
+
+      const busy = shouldPollUpgradeStatus(status);
+      setUpgradeButtonsBusy(busy);
+      if (!busy) {
+        stopUpgradeStatusPolling();
+      }
+    }
+
+    async function loadUpgradeStatus() {
+      const data = await requestJSON('/local/api/system/upgrade/status', { method: 'GET' });
+      renderUpgradeStatus(data || {});
+      return data || {};
+    }
+
+    function startUpgradeStatusPolling() {
+      if (upgradeStatusPollingTimer) return;
+      upgradeStatusPollingTimer = setInterval(() => {
+        loadUpgradeStatus().catch(() => {
+        });
+      }, 1500);
+    }
+
     async function refreshAll() {
       setMessage('');
       const ok = await ensureSession();
@@ -802,6 +894,7 @@
       await loadTunStatus();
       await loadDNSStatus();
       await loadLogs();
+      await loadUpgradeStatus();
     }
 
     document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -811,6 +904,7 @@
     async function triggerSystemUpgrade(mode) {
       const repoInput = document.getElementById('upgradeRepoInput');
       const releaseRepo = String(repoInput && repoInput.value || '').trim();
+      setUpgradeButtonsBusy(true);
       setMessage(`提交${mode === 'proxy' ? '代理' : '直连'}升级中...`);
       try {
         await requestJSON('/local/api/system/upgrade', {
@@ -820,8 +914,11 @@
             release_repo: releaseRepo,
           }),
         });
+        await loadUpgradeStatus();
+        startUpgradeStatusPolling();
         setMessage(`已提交${mode === 'proxy' ? '代理' : '直连'}升级任务`, 'success');
       } catch (err) {
+        setUpgradeButtonsBusy(false);
         setMessage(`提交升级失败：${err.message}`, 'error');
       }
     }
@@ -985,6 +1082,7 @@
 
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       stopLogsAutoRefresh();
+      stopUpgradeStatusPolling();
       setMessage('退出中...');
       try {
         await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' });

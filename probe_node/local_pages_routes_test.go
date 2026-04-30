@@ -88,6 +88,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"upgradeDirectBtn\"") || !strings.Contains(body, "id=\"upgradeProxyBtn\"") {
 		t.Fatalf("panel should contain system upgrade buttons")
 	}
+	if !strings.Contains(body, "id=\"upgradeStatusText\"") || !strings.Contains(body, "id=\"upgradeProgressFill\"") {
+		t.Fatalf("panel should contain upgrade status and progress elements")
+	}
 	if !strings.Contains(body, "id=\"proxyGlobalToggleBtn\"") {
 		t.Fatalf("panel should contain proxy global toggle button")
 	}

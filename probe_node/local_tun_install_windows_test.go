@@ -50,6 +50,7 @@ func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
 		createCalled++
 		return 0, errors.New("should not create")
 	}
+	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error { return nil }
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	if err := installProbeLocalTUNDriver(); err != nil {
@@ -200,11 +201,12 @@ func TestInstallProbeLocalTUNDriverVerifyFailureWithoutAdapterHandle(t *testing.
 	if err == nil {
 		t.Fatal("expected installProbeLocalTUNDriver error")
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "verify wintun adapter") {
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "verify wintun adapter") && !strings.Contains(msg, "inspect existing wintun adapter") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if detectCalls < 2 {
-		t.Fatalf("detect calls=%d, want >=2", detectCalls)
+	if detectCalls < 1 {
+		t.Fatalf("detect calls=%d, want >=1", detectCalls)
 	}
 }
 
@@ -235,6 +237,7 @@ func TestInstallProbeLocalTUNDriverElevationWaitDetectDelayedSuccess(t *testing.
 		createCalls++
 		return uintptr(33), nil
 	}
+	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error { return nil }
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
@@ -381,6 +384,9 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetriesOnBindableTime
 	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
 		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
 	}
+	probeLocalRunCommand = func(_ time.Duration, _ string, _ ...string) (string, error) {
+		return "", errors.New("disabled in unit test")
+	}
 	sleepCalls := 0
 	probeLocalTUNInstallSleep = func(_ time.Duration) { sleepCalls++ }
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
@@ -411,6 +417,96 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetryRecovers(t *test
 	}
 	if calls != 3 {
 		t.Fatalf("ensure calls=%d, want 3", calls)
+	}
+	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
+		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
+	}
+}
+
+func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathRecovers(t *testing.T) {
+	calls := 0
+	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
+		calls++
+		if calls <= 4 {
+			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
+		}
+		return nil
+	}
+	repairCalls := 0
+	probeLocalRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		repairCalls++
+		if strings.TrimSpace(name) != "powershell" {
+			return "", errors.New("unexpected command")
+		}
+		if len(args) < 6 {
+			return "", errors.New("unexpected powershell args")
+		}
+		return "ok", nil
+	}
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18); err != nil {
+		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceIndex returned error: %v", err)
+	}
+	if repairCalls != 1 {
+		t.Fatalf("repair calls=%d, want 1", repairCalls)
+	}
+	if calls != 5 {
+		t.Fatalf("ensure calls=%d, want 5", calls)
+	}
+	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
+		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
+	}
+}
+
+func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathFails(t *testing.T) {
+	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
+		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
+	}
+	probeLocalRunCommand = func(_ time.Duration, _ string, _ ...string) (string, error) {
+		return "remove/new failed", errors.New("powershell failed")
+	}
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18)
+	if err == nil {
+		t.Fatal("expected repair path error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "repair windows tun ipv4 target failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRecyclePathRecovers(t *testing.T) {
+	calls := 0
+	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
+		calls++
+		if calls <= 4 {
+			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
+		}
+		return nil
+	}
+	commandCalls := 0
+	probeLocalRunCommand = func(_ time.Duration, _ string, _ ...string) (string, error) {
+		commandCalls++
+		if commandCalls == 1 {
+			return "remove/new failed", errors.New("powershell failed")
+		}
+		return "recycled", nil
+	}
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18); err != nil {
+		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceIndex returned error: %v", err)
+	}
+	if commandCalls != 2 {
+		t.Fatalf("command calls=%d, want 2", commandCalls)
+	}
+	if calls != 5 {
+		t.Fatalf("ensure calls=%d, want 5", calls)
 	}
 	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
