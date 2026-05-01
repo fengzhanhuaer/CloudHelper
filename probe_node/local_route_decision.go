@@ -41,7 +41,6 @@ func resolveProbeLocalProxyRouteDecisionByDomain(domain string) probeLocalDNSRou
 			decision.Reject = true
 		case "tunnel":
 			decision.Action = "tunnel"
-			decision.UseTunnelDNS = true
 			decision.TunnelNodeID = strings.TrimSpace(entry.TunnelNodeID)
 		default:
 			decision.Action = "direct"

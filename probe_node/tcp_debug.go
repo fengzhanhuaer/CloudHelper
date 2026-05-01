@@ -63,6 +63,10 @@ type probeTCPDebugFailureEvent struct {
 	Reason      string
 	Target      string
 	RouteTarget string
+	NodeID      string
+	Group       string
+	Direct      bool
+	Transport   string
 	Error       string
 	At          time.Time
 }
@@ -71,6 +75,10 @@ type probeTCPDebugRelay struct {
 	id          string
 	target      string
 	routeTarget string
+	nodeID      string
+	group       string
+	direct      bool
+	transport   string
 	openedAt    time.Time
 	state       *probeTCPDebugState
 
@@ -111,15 +119,29 @@ func (w *probeTCPDebugWriter) Write(payload []byte) (int, error) {
 }
 
 func (s *probeTCPDebugState) beginRelay(target string) *probeTCPDebugRelay {
+	return s.beginRelayWithRoute(target, probeLocalTunnelRouteDecision{})
+}
+
+func (s *probeTCPDebugState) beginRelayWithRoute(target string, route probeLocalTunnelRouteDecision) *probeTCPDebugRelay {
 	if s == nil {
 		return nil
 	}
 	now := time.Now().UTC()
 	id := "probe-tcp-" + strconv.FormatInt(now.UnixNano(), 10) + "-" + strconv.FormatUint(s.seq.Add(1), 10)
+	transport := "tcp"
+	if route.Direct {
+		transport = "direct"
+	} else if strings.TrimSpace(route.Group) != "" || strings.TrimSpace(route.TunnelNodeID) != "" {
+		transport = "tunnel"
+	}
 	relay := &probeTCPDebugRelay{
 		id:          id,
 		target:      strings.TrimSpace(target),
-		routeTarget: strings.TrimSpace(target),
+		routeTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(route.TargetAddr), strings.TrimSpace(target)),
+		nodeID:      strings.TrimSpace(route.TunnelNodeID),
+		group:       strings.TrimSpace(route.Group),
+		direct:      route.Direct,
+		transport:   transport,
 		openedAt:    now,
 		state:       s,
 	}
@@ -160,14 +182,28 @@ func (r *probeTCPDebugRelay) releaseSide() {
 }
 
 func (s *probeTCPDebugState) recordFailure(kind string, target string, err error) {
+	s.recordFailureWithRoute(kind, target, probeLocalTunnelRouteDecision{}, err)
+}
+
+func (s *probeTCPDebugState) recordFailureWithRoute(kind string, target string, route probeLocalTunnelRouteDecision, err error) {
 	if s == nil || err == nil {
 		return
+	}
+	transport := "tcp"
+	if route.Direct {
+		transport = "direct"
+	} else if strings.TrimSpace(route.Group) != "" || strings.TrimSpace(route.TunnelNodeID) != "" {
+		transport = "tunnel"
 	}
 	event := probeTCPDebugFailureEvent{
 		Kind:        strings.TrimSpace(kind),
 		Reason:      classifyProbeTCPDebugError(kind, err),
 		Target:      strings.TrimSpace(target),
-		RouteTarget: strings.TrimSpace(target),
+		RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(route.TargetAddr), strings.TrimSpace(target)),
+		NodeID:      strings.TrimSpace(route.TunnelNodeID),
+		Group:       strings.TrimSpace(route.Group),
+		Direct:      route.Direct,
+		Transport:   transport,
 		Error:       strings.TrimSpace(err.Error()),
 		At:          time.Now().UTC(),
 	}
@@ -218,7 +254,10 @@ func (s *probeTCPDebugState) snapshotPayload(nodeID string, requestID string) pr
 			ID:          strings.TrimSpace(relay.id),
 			Target:      strings.TrimSpace(relay.target),
 			RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.routeTarget), strings.TrimSpace(relay.target)),
-			Transport:   "tcp",
+			NodeID:      strings.TrimSpace(relay.nodeID),
+			Group:       strings.TrimSpace(relay.group),
+			Direct:      relay.direct,
+			Transport:   firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.transport), "tcp"),
 			OpenedAt:    relay.openedAt.UTC().Format(time.RFC3339),
 			AgeMS:       now.Sub(relay.openedAt).Milliseconds(),
 			BytesUp:     relay.bytesUp.Load(),
@@ -244,7 +283,10 @@ func (s *probeTCPDebugState) snapshotPayload(nodeID string, requestID string) pr
 			Reason:      strings.TrimSpace(event.Reason),
 			Target:      strings.TrimSpace(event.Target),
 			RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(event.RouteTarget), strings.TrimSpace(event.Target)),
-			Transport:   "tcp",
+			NodeID:      strings.TrimSpace(event.NodeID),
+			Group:       strings.TrimSpace(event.Group),
+			Direct:      event.Direct,
+			Transport:   firstNonEmptyProbeTCPDebugString(strings.TrimSpace(event.Transport), "tcp"),
 			Error:       strings.TrimSpace(event.Error),
 			LastSeen:    event.At.UTC().Format(time.RFC3339),
 		})

@@ -111,6 +111,10 @@ func rewriteProbeLocalRouteTargetForFakeIP(host string, port string) (rewrittenT
 }
 
 func openProbeLocalTunnelConn(network, targetAddr, tunnelNodeID string) (net.Conn, error) {
+	return openProbeLocalTunnelConnWithAssociation(network, targetAddr, tunnelNodeID, nil)
+}
+
+func openProbeLocalTunnelConnWithAssociation(network, targetAddr, tunnelNodeID string, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
 	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
 	if cleanNetwork == "" {
 		cleanNetwork = "tcp"
@@ -126,7 +130,10 @@ func openProbeLocalTunnelConn(network, targetAddr, tunnelNodeID string) (net.Con
 	if runtime == nil {
 		return nil, fmt.Errorf("tunnel chain runtime not found: %s", normalizedNodeID)
 	}
-	return openProbeChainPortForwardStream(runtime, "", cleanNetwork, strings.TrimSpace(targetAddr))
+	if associationV2 == nil {
+		return openProbeChainPortForwardStream(runtime, "", cleanNetwork, strings.TrimSpace(targetAddr))
+	}
+	return openProbeChainPortForwardStreamWithAssociation(runtime, "", cleanNetwork, strings.TrimSpace(targetAddr), associationV2)
 }
 
 func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, error) {

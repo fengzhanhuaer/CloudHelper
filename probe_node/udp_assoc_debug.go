@@ -14,6 +14,8 @@ type probeUDPAssociationDebugItemPayload struct {
 	Key              string `json:"key"`
 	AssocKeyV2       string `json:"assoc_key_v2,omitempty"`
 	FlowID           string `json:"flow_id,omitempty"`
+	SourceKey        string `json:"source_key,omitempty"`
+	SourceRefs       int64  `json:"source_refs,omitempty"`
 	Target           string `json:"target,omitempty"`
 	RouteTarget      string `json:"route_target,omitempty"`
 	RouteFingerprint string `json:"route_fingerprint,omitempty"`
@@ -82,6 +84,8 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 			Key:              strings.TrimSpace(key),
 			AssocKeyV2:       strings.TrimSpace(assoc.assocKeyV2),
 			FlowID:           strings.TrimSpace(assoc.flowID),
+			SourceKey:        strings.TrimSpace(assoc.sourceKey),
+			SourceRefs:       assoc.sourceRefs,
 			Target:           strings.TrimSpace(assoc.target),
 			RouteTarget:      strings.TrimSpace(assoc.routeTarget),
 			RouteFingerprint: strings.TrimSpace(assoc.routeFingerprint),

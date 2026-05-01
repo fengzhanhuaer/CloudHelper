@@ -4,8 +4,10 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -281,5 +283,81 @@ func TestProbeLocalTUNSimplePacketStackCloseReleasesBypass(t *testing.T) {
 	}
 	if releaseCalls != 1 {
 		t.Fatalf("releaseCalls=%d", releaseCalls)
+	}
+}
+
+func TestAcquireProbeLocalTUNUDPSourceRefCount(t *testing.T) {
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+
+	sourceKey, refs, release1 := acquireProbeLocalTUNUDPSource("10.0.0.8", 53000)
+	if sourceKey != "10.0.0.8:53000" {
+		t.Fatalf("sourceKey=%q", sourceKey)
+	}
+	if refs != 1 {
+		t.Fatalf("refs=%d", refs)
+	}
+	if got := probeLocalTUNUDPSourceRefs(sourceKey); got != 1 {
+		t.Fatalf("got refs=%d", got)
+	}
+
+	_, refs2, release2 := acquireProbeLocalTUNUDPSource("10.0.0.8", 53000)
+	if refs2 != 2 {
+		t.Fatalf("refs2=%d", refs2)
+	}
+	if got := probeLocalTUNUDPSourceRefs(sourceKey); got != 2 {
+		t.Fatalf("got refs=%d", got)
+	}
+
+	release1()
+	if got := probeLocalTUNUDPSourceRefs(sourceKey); got != 1 {
+		t.Fatalf("after release1 refs=%d", got)
+	}
+	release2()
+	if got := probeLocalTUNUDPSourceRefs(sourceKey); got != 0 {
+		t.Fatalf("after release2 refs=%d", got)
+	}
+}
+
+func TestShouldFallbackProbeLocalUDPBind(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{err: nil, want: false},
+		{err: syscall.Errno(10048), want: true},
+		{err: syscall.Errno(10049), want: true},
+		{err: errors.New("address already in use"), want: true},
+		{err: errors.New("requested address is not valid in its context"), want: true},
+		{err: errors.New("random network error"), want: false},
+	}
+	for i, tc := range cases {
+		if got := shouldFallbackProbeLocalUDPBind(tc.err); got != tc.want {
+			t.Fatalf("case=%d got=%v want=%v err=%v", i, got, tc.want, tc.err)
+		}
+	}
+}
+
+func TestClassifyProbeLocalTUNError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{err: errors.New("i/o timeout"), want: "timeout"},
+		{err: errors.New("connection refused"), want: "connection_refused"},
+		{err: errors.New("connection reset by peer"), want: "connection_reset"},
+		{err: errors.New("broken pipe"), want: "broken_pipe"},
+		{err: errors.New("address already in use"), want: "address_in_use"},
+		{err: errors.New("cannot assign requested address"), want: "address_not_available"},
+		{err: errors.New("EOF"), want: "eof"},
+		{err: errors.New("use of closed network connection"), want: "closed"},
+	}
+	for i, tc := range cases {
+		if got := classifyProbeLocalTUNError("open_failed", tc.err); got != tc.want {
+			t.Fatalf("case=%d got=%q want=%q", i, got, tc.want)
+		}
+	}
+	if got := classifyProbeLocalTUNError("open_failed", nil); got != "open_failed" {
+		t.Fatalf("nil err got=%q", got)
 	}
 }

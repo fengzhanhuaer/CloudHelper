@@ -18,9 +18,6 @@ func TestResolveProbeLocalProxyRouteDecisionByDomainFallbackDirect(t *testing.T)
 	if decision.Reject {
 		t.Fatal("reject should be false")
 	}
-	if decision.UseTunnelDNS {
-		t.Fatal("UseTunnelDNS should be false")
-	}
 }
 
 func TestResolveProbeLocalProxyRouteDecisionByDomainTunnel(t *testing.T) {
@@ -48,9 +45,6 @@ func TestResolveProbeLocalProxyRouteDecisionByDomainTunnel(t *testing.T) {
 	}
 	if decision.Action != "tunnel" {
 		t.Fatalf("action=%q", decision.Action)
-	}
-	if !decision.UseTunnelDNS {
-		t.Fatal("UseTunnelDNS should be true")
 	}
 	if decision.TunnelNodeID != "chain:chain-proxy-1" {
 		t.Fatalf("tunnel_node_id=%q", decision.TunnelNodeID)
@@ -88,8 +82,5 @@ func TestResolveProbeLocalProxyRouteDecisionByDomainReject(t *testing.T) {
 	}
 	if !decision.Reject {
 		t.Fatal("reject should be true")
-	}
-	if decision.UseTunnelDNS {
-		t.Fatal("UseTunnelDNS should be false")
 	}
 }

@@ -140,6 +140,8 @@ type probeChainAssociationV2Meta struct {
 	Version          int    `json:"version"`
 	AssocKeyV2       string `json:"assoc_key_v2,omitempty"`
 	FlowID           string `json:"flow_id,omitempty"`
+	SourceKey        string `json:"source_key,omitempty"`
+	SourceRefs       int64  `json:"source_refs,omitempty"`
 	SrcIP            string `json:"src_ip,omitempty"`
 	SrcPort          uint16 `json:"src_port,omitempty"`
 	DstIP            string `json:"dst_ip,omitempty"`

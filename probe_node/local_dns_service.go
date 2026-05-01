@@ -62,7 +62,6 @@ type probeLocalDNSRouteDecision struct {
 	Group        string
 	Action       string
 	TunnelNodeID string
-	UseTunnelDNS bool
 	Reject       bool
 }
 
@@ -855,28 +854,15 @@ func shouldUseProbeLocalDNSFakeIP(domain string, qType dnsmessage.Type, decision
 	if qType != dnsmessage.TypeA {
 		return false
 	}
-	if decision.Reject {
+	if decision.Reject || strings.EqualFold(strings.TrimSpace(decision.Action), "reject") {
 		return false
 	}
-	if !decision.UseTunnelDNS {
+	if strings.EqualFold(strings.TrimSpace(decision.Group), "fallback") {
 		return false
 	}
 	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
 	if cleanDomain == "" {
 		return false
-	}
-	cfg, err := loadProbeLocalProxyGroupFile()
-	if err != nil {
-		cfg = defaultProbeLocalProxyGroupFile()
-	}
-	for _, bypass := range cfg.FakeIPWhitelist {
-		item := strings.TrimSpace(strings.ToLower(strings.Trim(bypass, ".")))
-		if item == "" {
-			continue
-		}
-		if cleanDomain == item || strings.HasSuffix(cleanDomain, "."+item) {
-			return false
-		}
 	}
 	return true
 }

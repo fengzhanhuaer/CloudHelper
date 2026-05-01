@@ -29,6 +29,8 @@ type probeChainUDPAssociation struct {
 	target           string
 	assocKeyV2       string
 	flowID           string
+	sourceKey        string
+	sourceRefs       int64
 	routeGroup       string
 	routeNodeID      string
 	routeTarget      string
@@ -170,6 +172,12 @@ func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociat
 			if existing.flowID == "" {
 				existing.flowID = strings.TrimSpace(associationV2.FlowID)
 			}
+			if existing.sourceKey == "" {
+				existing.sourceKey = strings.TrimSpace(associationV2.SourceKey)
+			}
+			if existing.sourceRefs <= 0 && associationV2.SourceRefs > 0 {
+				existing.sourceRefs = associationV2.SourceRefs
+			}
 			if existing.routeGroup == "" {
 				existing.routeGroup = strings.TrimSpace(associationV2.RouteGroup)
 			}
@@ -230,6 +238,8 @@ func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociat
 	if associationV2 != nil {
 		assoc.assocKeyV2 = strings.TrimSpace(associationV2.AssocKeyV2)
 		assoc.flowID = strings.TrimSpace(associationV2.FlowID)
+		assoc.sourceKey = strings.TrimSpace(associationV2.SourceKey)
+		assoc.sourceRefs = associationV2.SourceRefs
 		assoc.routeGroup = strings.TrimSpace(associationV2.RouteGroup)
 		assoc.routeNodeID = strings.TrimSpace(associationV2.RouteNodeID)
 		assoc.routeTarget = strings.TrimSpace(associationV2.RouteTarget)

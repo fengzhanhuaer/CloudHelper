@@ -116,7 +116,6 @@ type probeLocalProxyGroupFile struct {
 	DoHServers      []string                    `json:"doh_servers,omitempty"`
 	DoHProxyServers []string                    `json:"doh_proxy_servers,omitempty"`
 	FakeIPCIDR      string                      `json:"fake_ip_cidr,omitempty"`
-	FakeIPWhitelist []string                    `json:"fake_ip_whitelist,omitempty"`
 	LegacyTUN       json.RawMessage             `json:"tun,omitempty"`
 	Groups          []probeLocalProxyGroupEntry `json:"groups"`
 	Note            string                      `json:"note,omitempty"`
@@ -772,7 +771,6 @@ func defaultProbeLocalProxyGroupFile() probeLocalProxyGroupFile {
 		DoHServers:      append([]string(nil), defaultProbeLocalDoHServers()...),
 		DoHProxyServers: append([]string(nil), defaultProbeLocalDoHProxyServers()...),
 		FakeIPCIDR:      "198.18.0.0/15",
-		FakeIPWhitelist: []string{},
 		Groups: []probeLocalProxyGroupEntry{
 			{Group: "default", Rules: []string{"domain_suffix:example.com", "domain_prefix:api."}},
 			{Group: "media", Rules: []string{"domain_keyword:stream"}},
@@ -857,28 +855,7 @@ func normalizeProbeLocalProxyGroupDNSConfig(payload *probeLocalProxyGroupFile) {
 	if payload.FakeIPCIDR == "" {
 		payload.FakeIPCIDR = "198.18.0.0/15"
 	}
-	payload.FakeIPWhitelist = normalizeProbeLocalDomainList(payload.FakeIPWhitelist)
 	payload.LegacyTUN = nil
-}
-
-func normalizeProbeLocalDomainList(items []string) []string {
-	out := make([]string, 0, len(items))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		value := strings.TrimSpace(strings.ToLower(strings.Trim(item, ".")))
-		if value == "" {
-			continue
-		}
-		if strings.Contains(value, " ") {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
 }
 
 func normalizeProbeLocalProxyGroupRules(payload *probeLocalProxyGroupFile) {
@@ -920,15 +897,6 @@ func validateProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
 		ipValue, ipnet, err := net.ParseCIDR(payload.FakeIPCIDR)
 		if err != nil || ipValue == nil || ipnet == nil || ipValue.To4() == nil {
 			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "fake_ip_cidr is invalid"}
-		}
-	}
-	for i, item := range payload.FakeIPWhitelist {
-		value := strings.TrimSpace(strings.ToLower(strings.Trim(item, ".")))
-		if value == "" {
-			continue
-		}
-		if strings.Contains(value, " ") {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("fake_ip_whitelist[%d] is invalid", i)}
 		}
 	}
 	for i, item := range payload.DNSServers {
