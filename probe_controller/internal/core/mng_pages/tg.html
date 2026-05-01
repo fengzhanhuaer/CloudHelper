@@ -6,39 +6,278 @@
   <title>CloudHelper TG 助手管理</title>
   <style>
     :root { color-scheme: dark; }
-    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
-    .wrap { max-width:1200px; margin:4vh auto; padding:20px; }
-    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
-    h1 { margin:0; font-size:24px; }
-    .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
-    .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
-    .btn.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
-    .btn.warn { background:#9e6a03; border-color:#bb8009; color:#fff; }
-    .btn:disabled { opacity:.6; cursor:not-allowed; }
-    .status { margin:8px 0 12px; border-radius:8px; border:1px solid #30363d; background:#161b22; padding:10px; font-size:13px; white-space:pre-wrap; }
-    .status.ok { color:#7ee787; }
-    .status.warn { color:#f2cc60; }
-    .status.err { color:#ff7b72; }
-    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
-    .tab { padding:8px 12px; border-radius:999px; border:1px solid #30363d; background:#161b22; color:#c9d1d9; cursor:pointer; }
-    .tab.active { border-color:#58a6ff; color:#58a6ff; }
-    .panel { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
-    .section { display:none; }
-    .section.active { display:block; }
-    .row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
-    input, select, textarea { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; }
-    input, select { min-width:220px; }
-    textarea { width:100%; min-height:110px; resize:vertical; }
-    table { width:100%; border-collapse:collapse; margin-top:8px; }
-    th, td { border-bottom:1px solid #30363d; padding:8px 6px; text-align:left; vertical-align:top; font-size:13px; }
-    th { color:#8b949e; font-weight:600; }
-    .muted { color:#8b949e; }
-    .mono { font-family:Consolas,monospace; }
-    .stack { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    @media (max-width: 980px) {
-      .stack { grid-template-columns:1fr; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      background: radial-gradient(circle at top, #1a2436 0%, #0d1117 45%, #090c12 100%);
+      color: #dceaff;
+      min-height: 100vh;
     }
-    .box { border:1px solid #30363d; border-radius:10px; padding:10px; }
+    .wrap {
+      width: min(1280px, 96vw);
+      margin: 3vh auto;
+      border: 1px solid rgba(150, 185, 240, 0.2);
+      border-radius: 14px;
+      background: rgba(10, 16, 26, 0.78);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+      padding: 16px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: 24px; }
+    .sub { margin: 6px 0 0; color: #9fc2ff; font-size: 13px; }
+    .btn {
+      min-width: 108px;
+      border: 1px solid rgba(130, 176, 246, 0.36);
+      background: rgba(35, 52, 78, 0.75);
+      color: #fff;
+      border-radius: 8px;
+      height: 34px;
+      padding: 0 12px;
+      cursor: pointer;
+    }
+    .btn.primary {
+      border-color: rgba(126, 200, 255, 0.66);
+      background: linear-gradient(180deg, rgba(77, 138, 220, 0.88) 0%, rgba(55, 107, 186, 0.92) 100%);
+    }
+    .btn.warn {
+      border-color: rgba(250, 176, 108, 0.66);
+      background: linear-gradient(180deg, rgba(171, 110, 48, 0.92) 0%, rgba(132, 82, 36, 0.92) 100%);
+    }
+    .btn:disabled { opacity: .58; cursor: not-allowed; }
+    .btn:hover:enabled { filter: brightness(1.06); }
+
+    .status {
+      border: 1px solid rgba(126, 200, 255, 0.3);
+      background: rgba(8, 14, 23, 0.62);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      min-height: 38px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 12px;
+    }
+    .status.ok { border-color: rgba(112, 221, 159, 0.46); color: #9ff7c0; }
+    .status.err { border-color: rgba(255, 145, 145, 0.52); color: #ffadad; }
+    .status.warn { border-color: rgba(255, 196, 122, 0.52); color: #ffd38f; }
+
+    .content-block {
+      border: 1px solid rgba(150, 185, 240, 0.2);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 14px;
+    }
+    .title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .title-row h2 { margin: 0; font-size: 22px; }
+    .content-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .identity-card {
+      border: 1px solid rgba(150, 185, 240, 0.2);
+      border-radius: 12px;
+      background: rgba(7, 11, 18, 0.42);
+      padding: 12px;
+      color: #e1ecff;
+      display: grid;
+      gap: 10px;
+    }
+    .subtab-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .subtab-btn {
+      border: 1px solid rgba(140, 177, 238, 0.4);
+      background: rgba(30, 47, 73, 0.7);
+      border-radius: 999px;
+      color: #dceaff;
+      height: 34px;
+      padding: 0 14px;
+      cursor: pointer;
+    }
+    .subtab-btn.active {
+      border-color: rgba(153, 204, 255, 0.82);
+      background: rgba(70, 122, 204, 0.68);
+    }
+
+    .tg-account-summary {
+      border: 1px solid rgba(150, 185, 240, 0.2);
+      border-radius: 10px;
+      background: rgba(8, 14, 24, 0.55);
+      padding: 12px;
+      display: grid;
+      gap: 12px;
+    }
+    .tg-account-basic-list {
+      display: grid;
+      gap: 8px;
+    }
+    .tg-account-basic-row {
+      display: grid;
+      grid-template-columns: 132px 1fr;
+      gap: 10px;
+      align-items: center;
+      font-size: 14px;
+    }
+    .tg-account-basic-label { color: #9fc2ff; font-size: 13px; }
+    .tg-account-basic-value { word-break: break-word; }
+    .tg-account-summary-line { color: #b9d7ff; font-size: 13px; line-height: 1.45; }
+
+    .tg-schedule-panel,
+    .tg-schedule-list {
+      display: grid;
+      gap: 10px;
+    }
+    .probe-table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid rgba(150, 185, 240, 0.2);
+      border-radius: 8px;
+      background: rgba(7, 12, 18, 0.58);
+    }
+    table.probe-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+    }
+    .probe-table th,
+    .probe-table td {
+      border-bottom: 1px solid rgba(150, 185, 240, 0.14);
+      text-align: left;
+      vertical-align: top;
+      padding: 8px 7px;
+      font-size: 13px;
+      color: #dceaff;
+    }
+    .probe-table th {
+      color: #9fc2ff;
+      font-weight: 600;
+      background: rgba(30, 45, 71, 0.38);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .probe-table-sub {
+      color: #8caedc;
+      font-size: 12px;
+      margin-top: 2px;
+      word-break: break-all;
+    }
+    .tg-schedule-table-message {
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-width: 420px;
+    }
+    .tg-schedule-table-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .tg-schedule-row-toggle,
+    .tg-schedule-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+    }
+
+    .probe-settings-modal-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 8, 12, 0.66);
+      display: grid;
+      place-items: center;
+      z-index: 999;
+      padding: 12px;
+    }
+    .probe-settings-modal {
+      width: min(860px, 96vw);
+      max-height: 92vh;
+      overflow: auto;
+      border: 1px solid rgba(150, 185, 240, 0.28);
+      border-radius: 12px;
+      background: rgba(10, 16, 26, 0.98);
+      box-shadow: 0 12px 42px rgba(0, 0, 0, 0.5);
+      padding: 14px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 126px 1fr;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .row label {
+      color: #9fc2ff;
+      text-align: right;
+      font-size: 13px;
+    }
+    .input,
+    select.input,
+    textarea.input {
+      width: 100%;
+      border: 1px solid rgba(150, 185, 240, 0.32);
+      border-radius: 8px;
+      outline: none;
+      background: rgba(7, 12, 19, 0.84);
+      color: #fff;
+      padding: 7px 10px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .input:focus,
+    select.input:focus,
+    textarea.input:focus {
+      border-color: rgba(154, 210, 255, 0.92);
+    }
+    textarea.input { min-height: 100px; resize: vertical; }
+
+    .tg-schedule-field {
+      margin-bottom: 10px;
+      display: grid;
+      gap: 6px;
+    }
+    .tg-target-picker {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .muted { color: #8eaed6; }
+
+    @media (max-width: 860px) {
+      .row,
+      .tg-account-basic-row {
+        grid-template-columns: 1fr;
+      }
+      .row label,
+      .tg-account-basic-label {
+        text-align: left;
+      }
+      .topbar { align-items: flex-start; }
+      .btn { min-width: 94px; }
+    }
   </style>
 </head>
 <body>
@@ -46,9 +285,9 @@
     <div class="topbar">
       <div>
         <h1>/mng/tg</h1>
-        <p class="sub">TG 助手完整管理：账号、登录、任务、Bot。</p>
+        <p class="sub">参照 manager 侧统一交互：账号登录、任务管理、TG Bot 全流程。</p>
       </div>
-      <div>
+      <div class="content-actions">
         <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
         <button id="btn-logout" class="btn" type="button">退出登录</button>
       </div>
@@ -56,148 +295,115 @@
 
     <div id="status-box" class="status">初始化中...</div>
 
-    <div class="tabs">
-      <button class="tab active" data-tab="apikey" type="button">共享 API Key</button>
-      <button class="tab" data-tab="accounts" type="button">账号与登录</button>
-      <button class="tab" data-tab="schedule" type="button">任务管理</button>
-      <button class="tab" data-tab="bot" type="button">Bot 管理</button>
-    </div>
+    <div class="content-block">
+      <div class="title-row">
+        <h2>TG助手</h2>
+        <div class="content-actions">
+          <button id="btn-account-manage" class="btn" type="button">账号管理</button>
+          <button id="btn-login-account" class="btn" type="button">登录账号</button>
+          <button id="btn-api-settings" class="btn" type="button">设置API</button>
+        </div>
+      </div>
 
-    <div class="panel">
-      <section id="section-apikey" class="section active">
-        <div class="row">
-          <input id="api-id" type="number" min="1" placeholder="TG API ID" />
-          <input id="api-hash" type="text" placeholder="TG API HASH" />
-          <button id="btn-save-api" class="btn primary" type="button">保存共享 API Key</button>
-        </div>
-        <div class="muted">当前状态：<span id="api-configured" class="mono">--</span></div>
-      </section>
-
-      <section id="section-accounts" class="section">
-        <div class="stack">
-          <div class="box">
-            <div class="row">
-              <input id="account-label" type="text" placeholder="账号标签（可选）" />
-              <input id="account-phone" type="text" placeholder="手机号（如 +8613xxxx）" />
-              <button id="btn-add-account" class="btn primary" type="button">新增账号</button>
-            </div>
-            <div class="row">
-              <button id="btn-refresh-accounts" class="btn" type="button">刷新账号列表</button>
-            </div>
-            <div class="row">
-              <select id="account-select"></select>
-              <button id="btn-remove-account" class="btn warn" type="button">删除账号</button>
-            </div>
-            <div class="row">
-              <button id="btn-send-code" class="btn" type="button">发送验证码</button>
-              <input id="login-code" type="text" placeholder="验证码" />
-              <input id="login-password" type="password" placeholder="2FA 密码（如需要）" />
-              <button id="btn-sign-in" class="btn primary" type="button">完成登录</button>
-              <button id="btn-logout-account" class="btn" type="button">账号登出</button>
-            </div>
-          </div>
-          <div class="box">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>标签</th>
-                  <th>手机号</th>
-                  <th>授权</th>
-                  <th>错误</th>
-                </tr>
-              </thead>
-              <tbody id="accounts-body"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section id="section-schedule" class="section">
-        <div class="row">
-          <select id="schedule-account"></select>
-          <button id="btn-list-schedules" class="btn" type="button">刷新任务</button>
-          <button id="btn-list-pending" class="btn" type="button">查看待执行</button>
-        </div>
-        <div class="row">
-          <input id="schedule-id" type="text" placeholder="任务ID（更新/删除/启停/立即发送时必填）" />
-          <input id="schedule-target" type="text" placeholder="目标（username/chat id）" />
-          <input id="schedule-send-at" type="text" placeholder="发送时间表达式，如 daily@09:00" />
-        </div>
-        <div class="row">
-          <input id="schedule-delay-min" type="number" min="0" value="0" placeholder="最小随机延迟秒" />
-          <input id="schedule-delay-max" type="number" min="0" value="0" placeholder="最大随机延迟秒" />
-          <label><input id="schedule-enabled" type="checkbox" checked /> 启用任务</label>
-        </div>
-        <div class="row">
-          <textarea id="schedule-message" placeholder="发送消息内容"></textarea>
-        </div>
-        <div class="row">
-          <button id="btn-add-schedule" class="btn primary" type="button">新增任务</button>
-          <button id="btn-update-schedule" class="btn" type="button">更新任务</button>
-          <button id="btn-remove-schedule" class="btn warn" type="button">删除任务</button>
-          <button id="btn-set-enabled" class="btn" type="button">设置启停</button>
-          <button id="btn-send-now" class="btn" type="button">立即发送</button>
-          <button id="btn-history" class="btn" type="button">查看历史</button>
-        </div>
-        <div class="stack">
-          <div class="box">
-            <div class="muted">任务列表</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>任务ID</th>
-                  <th>目标</th>
-                  <th>时间</th>
-                  <th>启用</th>
-                </tr>
-              </thead>
-              <tbody id="schedules-body"></tbody>
-            </table>
-          </div>
-          <div class="box">
-            <div class="muted">历史/待执行输出</div>
-            <pre id="schedule-output" class="mono">[]</pre>
-          </div>
-        </div>
-      </section>
-
-      <section id="section-bot" class="section">
-        <div class="row">
-          <select id="bot-account"></select>
-          <button id="btn-bot-get" class="btn" type="button">读取 Bot 配置</button>
-        </div>
-        <div class="row">
-          <input id="bot-api-key" type="text" placeholder="Bot API Key" />
-          <select id="bot-mode">
-            <option value="polling">polling</option>
-            <option value="webhook">webhook</option>
-          </select>
-          <button id="btn-bot-set" class="btn primary" type="button">保存 Bot 配置</button>
-        </div>
-        <div class="row">
-          <input id="bot-test-message" type="text" placeholder="测试消息内容" />
-          <button id="btn-bot-test-send" class="btn" type="button">测试发送</button>
-        </div>
-        <pre id="bot-output" class="mono">{}</pre>
-      </section>
+      <div id="identity-card" class="identity-card"></div>
     </div>
   </div>
 
+  <div id="modal-root"></div>
+
   <script>
     const state = {
-      activeTab: 'apikey',
-      api: null,
+      loading: false,
+      scheduleLoading: false,
+      pendingLoading: false,
+      targetRefreshing: false,
+      botLoading: false,
+      scheduleHistoryLoading: false,
+
+      status: '初始化中...',
+      statusLevel: '',
+
+      api: { api_id: 0, api_hash: '', configured: false },
       accounts: [],
-      schedules: [],
       selectedAccountID: '',
+      activeLoggedInAccountID: '',
+      activeSubTab: 'basic-info',
+
+      scheduleList: [],
+      targetList: [],
+      filteredTargetList: [],
+      pendingTaskItems: [],
+      scheduleHistoryItems: [],
+      scheduleHistoryTaskID: '',
+
+      botConfig: {
+        api_key: '',
+        configured: false,
+        mode: 'polling',
+        webhook_path: '',
+        webhook_enabled: false,
+      },
+
+      modal: {
+        apiKey: false,
+        addAccount: false,
+        manageAccount: false,
+        scheduleTask: false,
+        scheduleHistory: false,
+        botAPIKey: false,
+      },
+
+      draft: {
+        apiKeyID: '',
+        apiKeyHash: '',
+
+        addAccountSelectedID: '',
+        addAccountLabel: '',
+        addAccountPhone: '',
+        loginCode: '',
+        loginPassword: '',
+
+        scheduleEditingTaskID: '',
+        scheduleEnabled: false,
+        scheduleTarget: '',
+        scheduleTargetSearch: '',
+        scheduleSendAt: '每天 09:00',
+        scheduleMessage: '',
+        scheduleDelayMax: '0',
+
+        botMode: 'polling',
+        botAPIKey: '',
+        botTestMessage: 'ping from bot test',
+      },
+      scheduleRequestSeq: 0,
     };
 
+    function qs(id) {
+      return document.getElementById(id);
+    }
+
     function setStatus(message, level) {
-      const box = document.getElementById('status-box');
-      box.textContent = String(message || '');
+      state.status = String(message || '');
+      state.statusLevel = String(level || '');
+      renderStatus();
+    }
+
+    function renderStatus() {
+      const box = qs('status-box');
+      box.textContent = state.status;
       box.className = 'status';
-      if (level) box.classList.add(level);
+      if (state.statusLevel) {
+        box.classList.add(state.statusLevel);
+      }
+    }
+    function escapeHTML(value) {
+      return String(value || '').replace(/[&<>"\x27]/g, (ch) => {
+        if (ch === '&') return '&' + 'amp;';
+        if (ch === '<') return '&' + 'lt;';
+        if (ch === '>') return '&' + 'gt;';
+        if (ch === '"') return '&' + 'quot;';
+        return '&' + '#39;';
+      });
     }
 
     async function requestJSON(url, options = {}) {
@@ -211,6 +417,1545 @@
       return payload;
     }
 
+    function getLoggedInAccounts() {
+      return state.accounts.filter((item) => item && item.authorized);
+    }
+
+    function getSelectedAccount() {
+      return state.accounts.find((item) => item.id === state.selectedAccountID) || null;
+    }
+
+    function getActiveLoggedInAccount() {
+      return getLoggedInAccounts().find((item) => item.id === state.activeLoggedInAccountID) || null;
+    }
+
+    function normalizePhone(raw) {
+      const value = String(raw || '').trim();
+      if (!value) return '';
+      return value.replace(/[^+\d]/g, '');
+    }
+
+    function formatDateTime(raw) {
+      const value = String(raw || '').trim();
+      if (!value) return '-';
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return value;
+      return dt.toLocaleString();
+    }
+
+    function renderTargetLabel(targetID) {
+      const id = String(targetID || '').trim();
+      if (!id) return '-';
+      const hit = state.targetList.find((item) => item.id === id);
+      if (!hit) return id;
+      if (hit.username && String(hit.username).trim()) {
+        return `${hit.name} (@${hit.username})`;
+      }
+      return hit.name;
+    }
+
+    function syncSelectedAccounts() {
+      if (state.accounts.length === 0) {
+        state.selectedAccountID = '';
+        state.activeLoggedInAccountID = '';
+        return;
+      }
+      if (!state.accounts.some((item) => item.id === state.selectedAccountID)) {
+        state.selectedAccountID = state.accounts[0].id;
+      }
+      const loggedIn = getLoggedInAccounts();
+      if (loggedIn.length === 0) {
+        state.activeLoggedInAccountID = '';
+        return;
+      }
+      if (!loggedIn.some((item) => item.id === state.activeLoggedInAccountID)) {
+        state.activeLoggedInAccountID = loggedIn[0].id;
+      }
+    }
+
+    function setLoadingState(patch) {
+      Object.assign(state, patch);
+      renderMain();
+    }
+
+    function openModal(key) {
+      state.modal[key] = true;
+      renderModal();
+    }
+
+    function closeModal(key) {
+      if (key === 'scheduleTask' && state.scheduleLoading) return;
+      if (key === 'scheduleHistory' && state.scheduleHistoryLoading) return;
+      if (key === 'botAPIKey' && state.botLoading) return;
+      if ((key === 'addAccount' || key === 'manageAccount' || key === 'apiKey') && state.loading) return;
+      state.modal[key] = false;
+      renderModal();
+    }
+
+    function renderMain() {
+      syncSelectedAccounts();
+      const loggedInAccounts = getLoggedInAccounts();
+      const activeLoggedInAccount = getActiveLoggedInAccount();
+
+      const headerButtonsDisabled = state.loading;
+      qs('btn-account-manage').disabled = headerButtonsDisabled;
+      qs('btn-login-account').disabled = headerButtonsDisabled || !state.api.configured;
+      qs('btn-api-settings').disabled = headerButtonsDisabled;
+
+      let html = '';
+      html += '<div>已登录账号 Tab</div>';
+
+      if (loggedInAccounts.length === 0) {
+        html += '<div>当前没有已登录账号。</div>';
+      } else {
+        html += '<div class="subtab-list">';
+        loggedInAccounts.forEach((item) => {
+          const active = state.activeLoggedInAccountID === item.id ? ' active' : '';
+          html += `<button class="subtab-btn${active}" data-action="switch-active-account" data-account-id="${escapeHTML(item.id)}" type="button">${escapeHTML(item.label || item.id)}</button>`;
+        });
+        html += '</div>';
+
+        html += '<div class="subtab-list">';
+        html += `<button class="subtab-btn${state.activeSubTab === 'basic-info' ? ' active' : ''}" data-action="switch-subtab" data-subtab="basic-info" type="button">基础信息</button>`;
+        html += `<button class="subtab-btn${state.activeSubTab === 'scheduled-send' ? ' active' : ''}" data-action="switch-subtab" data-subtab="scheduled-send" type="button">定时发送</button>`;
+        html += `<button class="subtab-btn${state.activeSubTab === 'tg-bot' ? ' active' : ''}" data-action="switch-subtab" data-subtab="tg-bot" type="button">TG BOT</button>`;
+        html += '</div>';
+
+        if (activeLoggedInAccount) {
+          html += '<div class="tg-account-summary">';
+
+          if (state.activeSubTab === 'basic-info') {
+            html += renderBasicInfoBlock(activeLoggedInAccount);
+          } else if (state.activeSubTab === 'tg-bot') {
+            html += renderBotBlock(activeLoggedInAccount);
+          } else {
+            html += renderScheduleBlock(activeLoggedInAccount);
+          }
+
+          html += '</div>';
+        } else {
+          html += '<div class="tg-account-summary-line">请先选择一个已登录账号。</div>';
+        }
+      }
+
+      qs('identity-card').innerHTML = html;
+      bindDynamicMainEvents();
+    }
+
+    function renderBasicInfoBlock(account) {
+      return `
+        <div class="tg-account-basic-list">
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">当前账号</div><div class="tg-account-basic-value">${escapeHTML(account.label || '-')}</div></div>
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">手机号</div><div class="tg-account-basic-value">${escapeHTML(account.phone || '-')}</div></div>
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">显示名</div><div class="tg-account-basic-value">${escapeHTML(account.self_display_name || '-')}</div></div>
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">用户名</div><div class="tg-account-basic-value">${escapeHTML(account.self_username || '-')}</div></div>
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">最近登录</div><div class="tg-account-basic-value">${escapeHTML(formatDateTime(account.last_login_at || ''))}</div></div>
+        </div>
+      `;
+    }
+
+    function renderBotBlock(account) {
+      const bot = state.botConfig;
+      return `
+        <div class="tg-schedule-panel">
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">当前账号</div><div class="tg-account-basic-value">${escapeHTML(account.label)} (${escapeHTML(account.phone)})</div></div>
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">BOT 状态</div><div class="tg-account-basic-value">${bot.configured ? '已配置' : '未配置'}</div></div>
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">接收模式</div><div class="tg-account-basic-value">${bot.mode === 'webhook' ? 'webhook' : 'getUpdates'}</div></div>
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">当前 Key</div><div class="tg-account-basic-value">${bot.configured ? escapeHTML(bot.api_key) : '-'}</div></div>
+          ${bot.mode === 'webhook' ? `<div class="tg-account-basic-row"><div class="tg-account-basic-label">Webhook 回调</div><div class="tg-account-basic-value">${escapeHTML(bot.webhook_path || '-')} ${bot.webhook_enabled ? '(已启用)' : '(未启用)'}</div></div>` : ''}
+          <div class="tg-schedule-field">
+            <label class="tg-account-basic-label" for="tg-bot-test-message">测试消息</label>
+            <textarea id="tg-bot-test-message" class="input" ${state.loading || state.botLoading ? 'disabled' : ''}>${escapeHTML(state.draft.botTestMessage)}</textarea>
+          </div>
+          <div class="content-actions">
+            <button class="btn" data-action="open-bot-api-modal" type="button" ${state.loading || state.botLoading ? 'disabled' : ''}>设置 BOT API key</button>
+            <button class="btn" data-action="refresh-bot-config" type="button" ${state.loading || state.botLoading ? 'disabled' : ''}>${state.botLoading ? '刷新中...' : '刷新 BOT 配置'}</button>
+            <button class="btn" data-action="test-bot-send" type="button" ${state.loading || state.botLoading || !bot.configured ? 'disabled' : ''}>测试发送</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderScheduleBlock(account) {
+      let taskRows = '';
+      if (state.scheduleList.length === 0) {
+        taskRows = '<div class="tg-account-summary-line">当前账号暂无任务。</div>';
+      } else {
+        taskRows += '<div class="probe-table-wrap"><table class="probe-table" style="min-width:900px"><thead><tr>';
+        taskRows += '<th>任务类型</th><th>启用</th><th>发送目标</th><th>发送时间</th><th>发送内容</th><th>操作</th>';
+        taskRows += '</tr></thead><tbody>';
+        state.scheduleList.forEach((task) => {
+          taskRows += '<tr>';
+          taskRows += `<td>${escapeHTML(task.task_type === 'scheduled_send' ? '定时发送' : (task.task_type || '-'))}</td>`;
+          taskRows += `<td><label class="tg-schedule-row-toggle"><input data-action="toggle-task" data-task-id="${escapeHTML(task.id)}" type="checkbox" ${task.enabled ? 'checked' : ''} ${state.loading || state.scheduleLoading ? 'disabled' : ''}><span>${task.enabled ? '启用' : '停用'}</span></label></td>`;
+          taskRows += `<td>${escapeHTML(renderTargetLabel(task.target || ''))}</td>`;
+          taskRows += `<td>${escapeHTML(task.send_at || '-')}</td>`;
+          taskRows += `<td><div class="tg-schedule-table-message">${escapeHTML(task.message || '-')}</div></td>`;
+          taskRows += '<td><div class="tg-schedule-table-actions">';
+          taskRows += `<button class="btn" data-action="edit-task" data-task-id="${escapeHTML(task.id)}" ${state.loading || state.scheduleLoading || task.task_type !== 'scheduled_send' ? 'disabled' : ''}>编辑</button>`;
+          taskRows += `<button class="btn" data-action="send-now" data-task-id="${escapeHTML(task.id)}" ${state.loading || state.scheduleLoading || task.task_type !== 'scheduled_send' ? 'disabled' : ''}>立即发送</button>`;
+          taskRows += `<button class="btn" data-action="task-history" data-task-id="${escapeHTML(task.id)}" ${state.loading || state.scheduleLoading ? 'disabled' : ''}>任务记录</button>`;
+          taskRows += `<button class="btn" data-action="remove-task" data-task-id="${escapeHTML(task.id)}" ${state.loading || state.scheduleLoading ? 'disabled' : ''}>删除任务</button>`;
+          taskRows += '</div></td>';
+          taskRows += '</tr>';
+        });
+        taskRows += '</tbody></table></div>';
+      }
+
+      let pendingRows = '';
+      if (state.pendingTaskItems.length === 0) {
+        pendingRows = '<div class="tg-account-summary-line">当前没有待执行任务。</div>';
+      } else {
+        pendingRows += '<div class="probe-table-wrap"><table class="probe-table" style="min-width:980px"><thead><tr>';
+        pendingRows += '<th>任务ID</th><th>发送目标</th><th>发送时间</th><th>发送内容</th><th>随机延时(秒)</th><th>下一次执行</th><th>超时执行</th><th>状态</th><th>更新时间</th>';
+        pendingRows += '</tr></thead><tbody>';
+        state.pendingTaskItems.forEach((item) => {
+          pendingRows += '<tr>';
+          pendingRows += `<td><div>${escapeHTML(item.task_id || '-')}</div><div class="probe-table-sub">${escapeHTML(item.job_key || '-')}</div></td>`;
+          pendingRows += `<td>${escapeHTML(renderTargetLabel(item.target || ''))}</td>`;
+          pendingRows += `<td>${escapeHTML(item.send_at || '-')}</td>`;
+          pendingRows += `<td><div class="tg-schedule-table-message">${escapeHTML(item.message || '-')}</div></td>`;
+          pendingRows += `<td>${escapeHTML(String(item.delay_sec ?? 0))}</td>`;
+          pendingRows += `<td>${escapeHTML(formatDateTime(item.next_run_at || ''))}</td>`;
+          pendingRows += `<td>${escapeHTML(formatDateTime(item.timeout_at || ''))}</td>`;
+          pendingRows += `<td>${!item.task_exists ? '任务不存在' : item.enabled ? '待执行' : '任务停用'}</td>`;
+          pendingRows += `<td>${escapeHTML(formatDateTime(item.updated_at || ''))}</td>`;
+          pendingRows += '</tr>';
+        });
+        pendingRows += '</tbody></table></div>';
+      }
+
+      return `
+        <div class="tg-schedule-panel">
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">发送账号</div><div class="tg-account-basic-value">${escapeHTML(account.label)} (${escapeHTML(account.phone)})</div></div>
+          <div class="content-actions">
+            <button class="btn" data-action="open-add-task-modal" type="button" ${state.loading || state.scheduleLoading || state.targetRefreshing ? 'disabled' : ''}>新增定时发送任务</button>
+            <button class="btn" data-action="refresh-targets" type="button" ${state.loading || state.scheduleLoading || state.targetRefreshing ? 'disabled' : ''}>${state.targetRefreshing ? '刷新对象中...' : '刷新发送对象'}</button>
+            <button class="btn" data-action="refresh-pending" type="button" ${state.loading || state.scheduleLoading || state.pendingLoading ? 'disabled' : ''}>${state.pendingLoading ? '刷新队列中...' : '刷新待执行队列'}</button>
+          </div>
+          <div class="tg-schedule-list">${taskRows}</div>
+          <div class="tg-schedule-list">
+            <div class="tg-account-basic-label">待执行队列（${state.pendingTaskItems.length}）</div>
+            ${pendingRows}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderModal() {
+      const root = qs('modal-root');
+      const selectedAccount = getSelectedAccount();
+      const activeLoggedInAccount = getActiveLoggedInAccount();
+      let html = '';
+
+      if (state.modal.scheduleTask) {
+        html += renderScheduleTaskModal();
+      }
+      if (state.modal.scheduleHistory) {
+        html += renderScheduleHistoryModal();
+      }
+      if (state.modal.addAccount) {
+        html += renderAddAccountModal(selectedAccount);
+      }
+      if (state.modal.manageAccount) {
+        html += renderManageAccountModal(selectedAccount);
+      }
+      if (state.modal.apiKey) {
+        html += renderAPIKeyModal();
+      }
+      if (state.modal.botAPIKey) {
+        html += renderBotAPIKeyModal(activeLoggedInAccount);
+      }
+
+      root.innerHTML = html;
+      bindModalEvents();
+    }
+
+    function renderScheduleTaskModal() {
+      const list = buildFilteredTargetList();
+      const editing = state.draft.scheduleEditingTaskID.trim();
+      const title = editing ? '修改任务' : '新增定时发送任务';
+      return `
+        <div class="probe-settings-modal-mask" data-action="close-modal" data-modal="scheduleTask">
+          <div class="probe-settings-modal" data-stop="1">
+            <h3 style="margin-top:0">${title}</h3>
+            <label class="tg-schedule-toggle"><input id="schedule-enabled" type="checkbox" ${state.draft.scheduleEnabled ? 'checked' : ''} ${state.loading || state.scheduleLoading ? 'disabled' : ''}>启用定时发送</label>
+            <div class="tg-schedule-field">
+              <label class="tg-account-basic-label" for="schedule-target-search">发送目标</label>
+              <input id="schedule-target-search" class="input" value="${escapeHTML(state.draft.scheduleTargetSearch)}" placeholder="搜索名称 / @username / ID" ${state.loading || state.scheduleLoading || state.targetRefreshing ? 'disabled' : ''}>
+              <div class="tg-target-picker">
+                <select id="schedule-target" class="input" ${state.loading || state.scheduleLoading || state.targetRefreshing ? 'disabled' : ''}>
+                  <option value="">请选择发送对象</option>
+                  ${state.draft.scheduleTarget && !list.some((item) => item.id === state.draft.scheduleTarget) ? `<option value="${escapeHTML(state.draft.scheduleTarget)}">${escapeHTML(state.draft.scheduleTarget)}</option>` : ''}
+                  ${list.map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === state.draft.scheduleTarget ? 'selected' : ''}>${escapeHTML(item.username ? `${item.name} (@${item.username})` : item.name)}</option>`).join('')}
+                </select>
+                <button class="btn" data-action="refresh-targets" type="button" ${state.loading || state.scheduleLoading || state.targetRefreshing ? 'disabled' : ''}>${state.targetRefreshing ? '刷新中...' : '刷新'}</button>
+              </div>
+            </div>
+            <div class="tg-schedule-field">
+              <label class="tg-account-basic-label" for="schedule-time">发送时间</label>
+              <input id="schedule-time" class="input" value="${escapeHTML(state.draft.scheduleSendAt)}" placeholder="例如：每天 09:00 / 每周一 10:30" ${state.loading || state.scheduleLoading ? 'disabled' : ''}>
+            </div>
+            <div class="tg-schedule-field">
+              <label class="tg-account-basic-label" for="schedule-message">发送内容</label>
+              <textarea id="schedule-message" class="input" placeholder="请输入计划发送的消息内容" ${state.loading || state.scheduleLoading ? 'disabled' : ''}>${escapeHTML(state.draft.scheduleMessage)}</textarea>
+            </div>
+            <div class="tg-schedule-field">
+              <label class="tg-account-basic-label" for="schedule-delay-max">随机延时最大值（秒）</label>
+              <input id="schedule-delay-max" class="input" type="number" min="0" value="${escapeHTML(state.draft.scheduleDelayMax)}" placeholder="例如：30" ${state.loading || state.scheduleLoading ? 'disabled' : ''}>
+            </div>
+            <div class="content-actions">
+              <button class="btn primary" data-action="save-schedule-task" type="button" ${state.loading || state.scheduleLoading ? 'disabled' : ''}>${editing ? '保存修改' : '新增任务'}</button>
+              <button class="btn" data-action="close-modal" data-modal="scheduleTask" type="button" ${state.loading || state.scheduleLoading ? 'disabled' : ''}>取消</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderScheduleHistoryModal() {
+      const body = state.scheduleHistoryLoading
+        ? '<div class="tg-account-summary-line">加载中...</div>'
+        : state.scheduleHistoryItems.length === 0
+          ? '<div class="tg-account-summary-line">暂无任务记录。</div>'
+          : `<div class="probe-table-wrap"><table class="probe-table" style="min-width:860px"><thead><tr><th>时间</th><th>动作</th><th>结果</th><th>内容</th></tr></thead><tbody>${state.scheduleHistoryItems.map((item, idx) => `<tr><td>${escapeHTML(formatDateTime(item.time || ''))}</td><td>${escapeHTML(item.action || '-')}</td><td>${item.success ? '成功' : '失败'}</td><td><div class="tg-schedule-table-message">${escapeHTML(item.message || '-')}</div></td></tr>`).join('')}</tbody></table></div>`;
+
+      return `
+        <div class="probe-settings-modal-mask" data-action="close-modal" data-modal="scheduleHistory">
+          <div class="probe-settings-modal" data-stop="1">
+            <h3 style="margin-top:0">任务记录</h3>
+            <div class="tg-account-summary-line" style="margin-bottom:8px">任务ID：${escapeHTML(state.scheduleHistoryTaskID || '-')}</div>
+            ${body}
+            <div class="content-actions">
+              <button class="btn" data-action="close-modal" data-modal="scheduleHistory" type="button" ${state.scheduleHistoryLoading ? 'disabled' : ''}>关闭</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderAddAccountModal(selectedAccount) {
+      return `
+        <div class="probe-settings-modal-mask" data-action="close-modal" data-modal="addAccount">
+          <div class="probe-settings-modal" data-stop="1">
+            <h3 style="margin-top:0">登录账号</h3>
+            <div class="row">
+              <label>已有账号</label>
+              <select id="add-account-select" class="input" ${state.loading ? 'disabled' : ''}>
+                <option value="">不选择（手动输入）</option>
+                ${state.accounts.map((item) => `<option value="${escapeHTML(item.id)}" ${state.draft.addAccountSelectedID === item.id ? 'selected' : ''}>${escapeHTML(item.label)} (${escapeHTML(item.phone)}) ${item.authorized ? '[已登录]' : '[未登录]'}</option>`).join('')}
+              </select>
+            </div>
+            <div class="row">
+              <label>账号备注</label>
+              <input id="add-account-label" class="input" value="${escapeHTML(state.draft.addAccountLabel)}" placeholder="例如：运营主号" ${state.loading || state.draft.addAccountSelectedID ? 'disabled' : ''}>
+            </div>
+            <div class="row">
+              <label>手机号</label>
+              <input id="add-account-phone" class="input" value="${escapeHTML(state.draft.addAccountPhone)}" placeholder="例如：+886912345678" ${state.loading || state.draft.addAccountSelectedID ? 'disabled' : ''}>
+            </div>
+            <div class="row">
+              <label>验证码</label>
+              <input id="login-code" class="input" value="${escapeHTML(state.draft.loginCode)}" placeholder="输入短信/APP 验证码" ${state.loading || !selectedAccount || !selectedAccount.pending_code ? 'disabled' : ''}>
+            </div>
+            <div class="row" style="margin-bottom:0">
+              <label>2FA密码</label>
+              <input id="login-password" class="input" type="password" value="${escapeHTML(state.draft.loginPassword)}" placeholder="如账号开启两步验证则必填" ${state.loading || !selectedAccount || !selectedAccount.pending_code ? 'disabled' : ''}>
+            </div>
+            ${selectedAccount ? `<div class="tg-account-summary-line" style="margin-top:10px">当前账号：${escapeHTML(selectedAccount.label)} (${escapeHTML(selectedAccount.phone)}) ${selectedAccount.authorized ? '[已登录]' : selectedAccount.pending_code ? '[待验证]' : '[未发送验证码]'}</div>` : ''}
+            <div class="content-actions">
+              <button class="btn" data-action="send-login-code" type="button" ${state.loading ? 'disabled' : ''}>发送验证码</button>
+              <button class="btn primary" data-action="complete-sign-in" type="button" ${state.loading || !selectedAccount || !selectedAccount.pending_code || selectedAccount.authorized ? 'disabled' : ''}>完成登录</button>
+              <button class="btn" data-action="close-modal" data-modal="addAccount" type="button" ${state.loading ? 'disabled' : ''}>取消</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderManageAccountModal(selectedAccount) {
+      return `
+        <div class="probe-settings-modal-mask" data-action="close-modal" data-modal="manageAccount">
+          <div class="probe-settings-modal" data-stop="1">
+            <h3 style="margin-top:0">账号管理</h3>
+            <div class="row" style="margin-bottom:0">
+              <label>账号</label>
+              <select id="manage-account-select" class="input" ${state.loading ? 'disabled' : ''}>
+                <option value="">请选择账号</option>
+                ${state.accounts.map((item) => `<option value="${escapeHTML(item.id)}" ${state.selectedAccountID === item.id ? 'selected' : ''}>${escapeHTML(item.label)} (${escapeHTML(item.phone)}) ${item.authorized ? '[已登录]' : '[未登录]'}</option>`).join('')}
+              </select>
+            </div>
+            ${selectedAccount ? `<div class="tg-account-summary-line" style="margin-top:10px">当前账号：${escapeHTML(selectedAccount.label)} (${escapeHTML(selectedAccount.phone)}) ${selectedAccount.authorized ? '[已登录]' : '[未登录]'}</div>` : ''}
+            <div class="content-actions">
+              <button class="btn" data-action="refresh-accounts" type="button" ${state.loading ? 'disabled' : ''}>刷新状态</button>
+              <button class="btn" data-action="logout-account" type="button" ${state.loading || !selectedAccount ? 'disabled' : ''}>登出账号</button>
+              <button class="btn warn" data-action="remove-account" type="button" ${state.loading || !selectedAccount ? 'disabled' : ''}>删除账号</button>
+              <button class="btn" data-action="close-modal" data-modal="manageAccount" type="button" ${state.loading ? 'disabled' : ''}>关闭</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderAPIKeyModal() {
+      return `
+        <div class="probe-settings-modal-mask" data-action="close-modal" data-modal="apiKey">
+          <div class="probe-settings-modal" data-stop="1">
+            <h3 style="margin-top:0">设置API</h3>
+            <div class="row">
+              <label>共享 API ID</label>
+              <input id="api-key-id" class="input" value="${escapeHTML(state.draft.apiKeyID)}" placeholder="来自 my.telegram.org" ${state.loading ? 'disabled' : ''}>
+            </div>
+            <div class="row">
+              <label>共享 API Hash</label>
+              <input id="api-key-hash" class="input" value="${escapeHTML(state.draft.apiKeyHash)}" placeholder="来自 my.telegram.org" ${state.loading ? 'disabled' : ''}>
+            </div>
+            <div class="content-actions">
+              <button class="btn primary" data-action="save-api-key" type="button" ${state.loading ? 'disabled' : ''}>保存</button>
+              <button class="btn" data-action="close-modal" data-modal="apiKey" type="button" ${state.loading ? 'disabled' : ''}>取消</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderBotAPIKeyModal(activeLoggedInAccount) {
+      return `
+        <div class="probe-settings-modal-mask" data-action="close-modal" data-modal="botAPIKey">
+          <div class="probe-settings-modal" data-stop="1">
+            <h3 style="margin-top:0">设置 TG BOT API key</h3>
+            <div class="row">
+              <label>当前账号</label>
+              <div class="muted">${activeLoggedInAccount ? `${escapeHTML(activeLoggedInAccount.label)} (${escapeHTML(activeLoggedInAccount.phone)})` : '-'}</div>
+            </div>
+            <div class="row">
+              <label>接收模式</label>
+              <select id="bot-mode" class="input" ${state.botLoading ? 'disabled' : ''}>
+                <option value="polling" ${state.draft.botMode === 'polling' ? 'selected' : ''}>getUpdates（长轮询）</option>
+                <option value="webhook" ${state.draft.botMode === 'webhook' ? 'selected' : ''}>webhook（回调）</option>
+              </select>
+            </div>
+            <div class="row" style="margin-bottom:0">
+              <label>BOT API key</label>
+              <input id="bot-api-key" class="input" value="${escapeHTML(state.draft.botAPIKey)}" placeholder="例如：123456:AA..." ${state.botLoading ? 'disabled' : ''}>
+            </div>
+            <div class="content-actions">
+              <button class="btn primary" data-action="save-bot-key" type="button" ${state.botLoading ? 'disabled' : ''}>保存</button>
+              <button class="btn" data-action="close-modal" data-modal="botAPIKey" type="button" ${state.botLoading ? 'disabled' : ''}>取消</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function buildFilteredTargetList() {
+      const keyword = String(state.draft.scheduleTargetSearch || '').trim().toLowerCase();
+      let list = Array.isArray(state.targetList) ? state.targetList.slice() : [];
+      if (keyword) {
+        list = list.filter((item) => {
+          const id = String(item.id || '').toLowerCase();
+          const name = String(item.name || '').toLowerCase();
+          const username = String(item.username || '').toLowerCase();
+          return id.includes(keyword) || name.includes(keyword) || username.includes(keyword);
+        });
+      }
+      if (state.draft.scheduleTarget.trim()) {
+        const selected = state.targetList.find((item) => item.id === state.draft.scheduleTarget.trim());
+        if (selected && !list.some((item) => item.id === selected.id)) {
+          list = [selected, ...list];
+        }
+      }
+      state.filteredTargetList = list;
+      return list;
+    }
+
+    function bindStaticEvents() {
+      qs('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
+      qs('btn-logout').addEventListener('click', () => logout().catch(() => { location.href = '/mng'; }));
+      qs('btn-account-manage').addEventListener('click', () => {
+        state.modal.manageAccount = true;
+        renderModal();
+      });
+      qs('btn-login-account').addEventListener('click', () => {
+        openAddAccountModal();
+      });
+      qs('btn-api-settings').addEventListener('click', () => {
+        openAPIKeyModal();
+      });
+    }
+
+    function bindDynamicMainEvents() {
+      document.querySelectorAll('[data-action="switch-active-account"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const accountID = String(btn.getAttribute('data-account-id') || '').trim();
+          state.activeLoggedInAccountID = accountID;
+          state.activeSubTab = 'basic-info';
+          renderMain();
+          if (accountID) {
+            loadSchedule(accountID, { silent: true }).catch(() => {});
+            loadPendingTasks(accountID, { silent: true }).catch(() => {});
+            loadTargets(accountID, { silent: true }).catch(() => {});
+            loadBotAPIKey(accountID, { silent: true }).catch(() => {});
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-action="switch-subtab"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const tab = String(btn.getAttribute('data-subtab') || 'basic-info');
+          state.activeSubTab = tab;
+          renderMain();
+        });
+      });
+
+      document.querySelectorAll('[data-action="open-add-task-modal"]').forEach((btn) => {
+        btn.addEventListener('click', () => openAddScheduleTaskModal());
+      });
+
+      document.querySelectorAll('[data-action="refresh-targets"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleRefreshTargets().catch((err) => setStatus(`刷新发送对象失败：${err.message || err}`, 'err')));
+      });
+
+      document.querySelectorAll('[data-action="refresh-pending"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const account = getActiveLoggedInAccount();
+          if (!account) return;
+          loadPendingTasks(account.id).catch((err) => setStatus(`加载待执行队列失败：${err.message || err}`, 'err'));
+        });
+      });
+
+      document.querySelectorAll('[data-action="toggle-task"]').forEach((toggle) => {
+        toggle.addEventListener('change', () => {
+          const taskID = String(toggle.getAttribute('data-task-id') || '').trim();
+          const enabled = !!toggle.checked;
+          handleToggleScheduleTaskEnabled(taskID, enabled).catch((err) => setStatus(`更新任务状态失败：${err.message || err}`, 'err'));
+        });
+      });
+
+      document.querySelectorAll('[data-action="edit-task"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const taskID = String(btn.getAttribute('data-task-id') || '').trim();
+          const task = state.scheduleList.find((item) => item.id === taskID);
+          if (!task) return;
+          openEditScheduleTaskModal(task);
+        });
+      });
+
+      document.querySelectorAll('[data-action="send-now"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const taskID = String(btn.getAttribute('data-task-id') || '').trim();
+          handleSendNowScheduleTask(taskID).catch((err) => setStatus(`立即发送失败：${err.message || err}`, 'err'));
+        });
+      });
+
+      document.querySelectorAll('[data-action="task-history"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const taskID = String(btn.getAttribute('data-task-id') || '').trim();
+          openScheduleTaskHistoryModal(taskID).catch((err) => setStatus(`加载任务记录失败：${err.message || err}`, 'err'));
+        });
+      });
+
+      document.querySelectorAll('[data-action="remove-task"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const taskID = String(btn.getAttribute('data-task-id') || '').trim();
+          handleRemoveScheduleTask(taskID).catch((err) => setStatus(`删除任务失败：${err.message || err}`, 'err'));
+        });
+      });
+
+      const botMessage = qs('tg-bot-test-message');
+      if (botMessage) {
+        botMessage.addEventListener('input', () => {
+          state.draft.botTestMessage = botMessage.value;
+        });
+      }
+      document.querySelectorAll('[data-action="open-bot-api-modal"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          openBotAPIKeyModal();
+        });
+      });
+      document.querySelectorAll('[data-action="refresh-bot-config"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const account = getActiveLoggedInAccount();
+          if (!account) return;
+          loadBotAPIKey(account.id).catch((err) => setStatus(`加载 BOT 配置失败：${err.message || err}`, 'err'));
+        });
+      });
+      document.querySelectorAll('[data-action="test-bot-send"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          handleTestBotSend().catch((err) => setStatus(`BOT 测试发送失败：${err.message || err}`, 'err'));
+        });
+      });
+    }
+
+    function bindModalEvents() {
+      document.querySelectorAll('[data-action="close-modal"]').forEach((node) => {
+        node.addEventListener('click', (event) => {
+          if (node.getAttribute('data-stop') === '1') {
+            return;
+          }
+          if (event.target && event.target.getAttribute('data-stop') === '1') {
+            return;
+          }
+          const modal = String(node.getAttribute('data-modal') || '').trim();
+          if (!modal) return;
+          closeModal(modal);
+        });
+      });
+
+      document.querySelectorAll('.probe-settings-modal').forEach((node) => {
+        node.addEventListener('click', (event) => {
+          event.stopPropagation();
+        });
+      });
+
+      const addAccountSelect = qs('add-account-select');
+      if (addAccountSelect) {
+        addAccountSelect.addEventListener('change', () => {
+          handleSelectAccountForLogin(addAccountSelect.value);
+        });
+      }
+
+      const addLabel = qs('add-account-label');
+      if (addLabel) {
+        addLabel.addEventListener('input', () => {
+          state.draft.addAccountLabel = addLabel.value;
+        });
+      }
+      const addPhone = qs('add-account-phone');
+      if (addPhone) {
+        addPhone.addEventListener('input', () => {
+          state.draft.addAccountPhone = addPhone.value;
+        });
+      }
+      const loginCode = qs('login-code');
+      if (loginCode) {
+        loginCode.addEventListener('input', () => {
+          state.draft.loginCode = loginCode.value;
+        });
+      }
+      const loginPassword = qs('login-password');
+      if (loginPassword) {
+        loginPassword.addEventListener('input', () => {
+          state.draft.loginPassword = loginPassword.value;
+        });
+      }
+
+      const manageSelect = qs('manage-account-select');
+      if (manageSelect) {
+        manageSelect.addEventListener('change', () => {
+          state.selectedAccountID = String(manageSelect.value || '').trim();
+          renderMain();
+          renderModal();
+        });
+      }
+
+      const apiID = qs('api-key-id');
+      if (apiID) {
+        apiID.addEventListener('input', () => {
+          state.draft.apiKeyID = apiID.value;
+        });
+      }
+      const apiHash = qs('api-key-hash');
+      if (apiHash) {
+        apiHash.addEventListener('input', () => {
+          state.draft.apiKeyHash = apiHash.value;
+        });
+      }
+
+      const targetSearch = qs('schedule-target-search');
+      if (targetSearch) {
+        targetSearch.addEventListener('input', () => {
+          state.draft.scheduleTargetSearch = targetSearch.value;
+          renderModal();
+        });
+      }
+      const target = qs('schedule-target');
+      if (target) {
+        target.addEventListener('change', () => {
+          state.draft.scheduleTarget = target.value;
+        });
+      }
+      const scheduleEnabled = qs('schedule-enabled');
+      if (scheduleEnabled) {
+        scheduleEnabled.addEventListener('change', () => {
+          state.draft.scheduleEnabled = !!scheduleEnabled.checked;
+        });
+      }
+      const scheduleTime = qs('schedule-time');
+      if (scheduleTime) {
+        scheduleTime.addEventListener('input', () => {
+          state.draft.scheduleSendAt = scheduleTime.value;
+        });
+      }
+      const scheduleMessage = qs('schedule-message');
+      if (scheduleMessage) {
+        scheduleMessage.addEventListener('input', () => {
+          state.draft.scheduleMessage = scheduleMessage.value;
+        });
+      }
+      const delayMax = qs('schedule-delay-max');
+      if (delayMax) {
+        delayMax.addEventListener('input', () => {
+          state.draft.scheduleDelayMax = delayMax.value;
+        });
+      }
+
+      const botMode = qs('bot-mode');
+      if (botMode) {
+        botMode.addEventListener('change', () => {
+          state.draft.botMode = botMode.value === 'webhook' ? 'webhook' : 'polling';
+        });
+      }
+      const botKey = qs('bot-api-key');
+      if (botKey) {
+        botKey.addEventListener('input', () => {
+          state.draft.botAPIKey = botKey.value;
+        });
+      }
+
+      document.querySelectorAll('[data-action="send-login-code"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleStartLoginFromInput().catch((err) => setStatus(`发送验证码失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="complete-sign-in"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleSignIn().catch((err) => setStatus(`完成登录失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="refresh-accounts"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleRefreshAccounts().catch((err) => setStatus(`刷新账号失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="logout-account"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleLogout().catch((err) => setStatus(`登出账号失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="remove-account"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleRemove().catch((err) => setStatus(`删除账号失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="save-api-key"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleSaveSharedAPIKey().catch((err) => setStatus(`保存 API 失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="save-schedule-task"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleSaveScheduleTask().catch((err) => setStatus(`保存任务失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="save-bot-key"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleSaveBotAPIKey().catch((err) => setStatus(`保存 BOT 配置失败：${err.message || err}`, 'err')));
+      });
+    }
+
+    function openAPIKeyModal() {
+      state.draft.apiKeyID = state.api.api_id > 0 ? String(state.api.api_id) : '';
+      state.draft.apiKeyHash = state.api.api_hash || '';
+      openModal('apiKey');
+    }
+
+    function openAddAccountModal() {
+      state.draft.addAccountSelectedID = '';
+      state.draft.addAccountLabel = '';
+      state.draft.addAccountPhone = '';
+      state.selectedAccountID = '';
+      state.draft.loginCode = '';
+      state.draft.loginPassword = '';
+      openModal('addAccount');
+    }
+
+    function handleSelectAccountForLogin(value) {
+      const selectedID = String(value || '').trim();
+      state.draft.addAccountSelectedID = selectedID;
+      state.selectedAccountID = selectedID;
+      if (!selectedID) {
+        state.draft.addAccountLabel = '';
+        state.draft.addAccountPhone = '';
+        renderMain();
+        renderModal();
+        return;
+      }
+      const account = state.accounts.find((item) => item.id === selectedID);
+      if (!account) {
+        renderMain();
+        renderModal();
+        return;
+      }
+      state.draft.addAccountLabel = account.label || '';
+      state.draft.addAccountPhone = account.phone || '';
+      renderMain();
+      renderModal();
+    }
+
+    async function loadData(options = {}) {
+      const silent = options.silent === true;
+      if (!silent) {
+        state.loading = true;
+        setStatus('正在加载 TG 设置与账号...');
+        renderMain();
+      }
+      try {
+        const [apiKey, accountsData] = await Promise.all([
+          requestJSON('/mng/api/tg/api/get'),
+          requestJSON('/mng/api/tg/accounts/list'),
+        ]);
+        state.api = apiKey || { api_id: 0, api_hash: '', configured: false };
+        state.accounts = Array.isArray(accountsData.accounts) ? accountsData.accounts : [];
+        syncSelectedAccounts();
+        renderMain();
+        renderModal();
+        if (!silent) {
+          if (!state.api.configured) {
+            setStatus('请先设置 API，再添加/登录账号', 'warn');
+          } else {
+            setStatus(state.accounts.length > 0 ? `已加载 TG 账号（${state.accounts.length} 个）` : '暂无 TG 账号，请先添加', 'ok');
+          }
+        }
+      } catch (error) {
+        if (!silent) {
+          setStatus(`加载 TG 数据失败：${error.message || error}`, 'err');
+        }
+      } finally {
+        if (!silent) {
+          state.loading = false;
+          renderMain();
+          renderModal();
+        }
+      }
+    }
+
+    async function loadAccounts(options = {}) {
+      const silent = options.silent === true;
+      if (!silent) {
+        setLoadingState({ loading: true });
+        setStatus('正在加载 TG 账号列表...');
+      }
+      try {
+        const payload = await requestJSON('/mng/api/tg/accounts/list');
+        state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+        syncSelectedAccounts();
+        renderMain();
+        renderModal();
+        if (!silent) {
+          setStatus(state.accounts.length > 0 ? `已加载 TG 账号（${state.accounts.length} 个）` : '暂无 TG 账号，请先添加', 'ok');
+        }
+      } catch (error) {
+        if (!silent) {
+          setStatus(`加载 TG 账号失败：${error.message || error}`, 'err');
+        }
+      } finally {
+        if (!silent) {
+          setLoadingState({ loading: false });
+        }
+      }
+    }
+
+    async function loadSchedule(accountID, options = {}) {
+      const normalizedAccountID = String(accountID || '').trim();
+      if (!normalizedAccountID) return;
+      const requestSeq = state.scheduleRequestSeq + 1;
+      state.scheduleRequestSeq = requestSeq;
+      const silent = options.silent === true;
+      state.scheduleLoading = true;
+      renderMain();
+      if (!silent) {
+        setStatus('正在加载任务列表...');
+      }
+      try {
+        const payload = await requestJSON('/mng/api/tg/schedule/list', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: normalizedAccountID }),
+        });
+        if (requestSeq !== state.scheduleRequestSeq) {
+          return;
+        }
+        state.scheduleList = Array.isArray(payload.schedules) ? payload.schedules : [];
+        renderMain();
+        if (!silent) {
+          const account = getActiveLoggedInAccount();
+          setStatus(`已加载账号 ${account ? account.label : normalizedAccountID} 的任务列表（${state.scheduleList.length} 个）`, 'ok');
+        }
+      } catch (error) {
+        if (!silent) {
+          setStatus(`加载任务列表失败：${error.message || error}`, 'err');
+        }
+      } finally {
+        state.scheduleLoading = false;
+        renderMain();
+      }
+    }
+
+    async function loadTargets(accountID, options = {}) {
+      const normalizedAccountID = String(accountID || '').trim();
+      if (!normalizedAccountID) return;
+      const silent = options.silent === true;
+      if (!silent) {
+        setStatus('正在加载发送对象列表...');
+      }
+      try {
+        const payload = await requestJSON('/mng/api/tg/targets/list', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: normalizedAccountID }),
+        });
+        state.targetList = Array.isArray(payload.targets) ? payload.targets : [];
+        if (!state.targetList.some((item) => item.id === state.draft.scheduleTarget)) {
+          state.draft.scheduleTarget = '';
+        }
+        buildFilteredTargetList();
+        renderMain();
+        renderModal();
+        if (!silent) {
+          setStatus(`已加载发送对象（${state.targetList.length} 个）`, 'ok');
+        }
+      } catch (error) {
+        if (!silent) {
+          setStatus(`加载发送对象失败：${error.message || error}`, 'err');
+        }
+      }
+    }
+
+    async function handleRefreshTargets() {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      state.targetRefreshing = true;
+      renderMain();
+      renderModal();
+      setStatus(`正在从服务器刷新会话对象：${active.label}...`);
+      try {
+        const payload = await requestJSON('/mng/api/tg/targets/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: active.id }),
+        });
+        state.targetList = Array.isArray(payload.targets) ? payload.targets : [];
+        if (!state.targetList.some((item) => item.id === state.draft.scheduleTarget)) {
+          state.draft.scheduleTarget = '';
+        }
+        buildFilteredTargetList();
+        setStatus(`已刷新发送对象（${state.targetList.length} 个）`, 'ok');
+      } finally {
+        state.targetRefreshing = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function loadPendingTasks(accountID, options = {}) {
+      const normalizedAccountID = String(accountID || '').trim();
+      if (!normalizedAccountID) return;
+      const silent = options.silent === true;
+      state.pendingLoading = true;
+      renderMain();
+      if (!silent) {
+        setStatus('正在加载待执行队列...');
+      }
+      try {
+        const payload = await requestJSON('/mng/api/tg/schedule/pending', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: normalizedAccountID }),
+        });
+        state.pendingTaskItems = Array.isArray(payload.pending) ? payload.pending : [];
+        renderMain();
+        if (!silent) {
+          setStatus(`已加载待执行队列（${state.pendingTaskItems.length} 条）`, 'ok');
+        }
+      } catch (error) {
+        if (!silent) {
+          setStatus(`加载待执行队列失败：${error.message || error}`, 'err');
+        }
+      } finally {
+        state.pendingLoading = false;
+        renderMain();
+      }
+    }
+
+    async function loadBotAPIKey(accountID, options = {}) {
+      const normalizedAccountID = String(accountID || '').trim();
+      if (!normalizedAccountID) return;
+      const silent = options.silent === true;
+      state.botLoading = true;
+      renderMain();
+      renderModal();
+      if (!silent) {
+        setStatus('正在加载 TG BOT 配置...');
+      }
+      try {
+        const payload = await requestJSON('/mng/api/tg/bot/get', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: normalizedAccountID }),
+        });
+        state.botConfig = {
+          api_key: payload.api_key || '',
+          configured: payload.configured === true,
+          mode: payload.mode === 'webhook' ? 'webhook' : 'polling',
+          webhook_path: payload.webhook_path || '',
+          webhook_enabled: payload.webhook_enabled === true,
+        };
+        if (!silent) {
+          setStatus(state.botConfig.configured ? '已加载 TG BOT 配置' : '当前账号尚未配置 TG BOT API key', 'ok');
+        }
+      } catch (error) {
+        if (!silent) {
+          setStatus(`加载 TG BOT 配置失败：${error.message || error}`, 'err');
+        }
+      } finally {
+        state.botLoading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleRefreshAccounts() {
+      state.loading = true;
+      renderMain();
+      renderModal();
+      setStatus('正在刷新 TG 登录状态...');
+      try {
+        const [apiKey, payload] = await Promise.all([
+          requestJSON('/mng/api/tg/api/get'),
+          requestJSON('/mng/api/tg/accounts/refresh', { method: 'POST' }),
+        ]);
+        state.api = apiKey || { api_id: 0, api_hash: '', configured: false };
+        state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+        syncSelectedAccounts();
+        renderMain();
+        renderModal();
+        setStatus(`刷新完成：共 ${state.accounts.length} 个账号`, 'ok');
+      } catch (error) {
+        setStatus(`刷新状态失败：${error.message || error}`, 'err');
+      } finally {
+        state.loading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleSaveSharedAPIKey() {
+      const apiID = Number.parseInt(String(state.draft.apiKeyID || '').trim(), 10);
+      const apiHash = String(state.draft.apiKeyHash || '').trim();
+      if (!Number.isFinite(apiID) || apiID <= 0) {
+        setStatus('共享 API ID 必须是正整数', 'warn');
+        return;
+      }
+      if (!apiHash) {
+        setStatus('共享 API Hash 不能为空', 'warn');
+        return;
+      }
+
+      state.loading = true;
+      renderMain();
+      renderModal();
+      setStatus('正在设置 API...');
+      try {
+        const result = await requestJSON('/mng/api/tg/api/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_id: apiID, api_hash: apiHash }),
+        });
+        state.api = result || { api_id: apiID, api_hash: apiHash, configured: true };
+        state.modal.apiKey = false;
+        setStatus('API 已保存，所有账号将使用该配置', 'ok');
+      } catch (error) {
+        setStatus(`设置 API 失败：${error.message || error}`, 'err');
+      } finally {
+        state.loading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleStartLoginFromInput() {
+      if (!state.api.configured) {
+        setStatus('请先设置 API', 'warn');
+        return;
+      }
+      const selectedID = String(state.draft.addAccountSelectedID || '').trim();
+      const inputLabel = String(state.draft.addAccountLabel || '').trim();
+      const inputPhone = normalizePhone(state.draft.addAccountPhone || '');
+
+      state.loading = true;
+      renderMain();
+      renderModal();
+      setStatus('正在准备步骤1：输入账号并开始登录...');
+      try {
+        let account = null;
+        if (selectedID) {
+          account = state.accounts.find((item) => item.id === selectedID) || null;
+          if (!account) {
+            throw new Error('所选账号不存在，请重新选择');
+          }
+        } else {
+          if (!inputPhone) {
+            throw new Error('手机号不能为空');
+          }
+          if (!inputPhone.startsWith('+')) {
+            throw new Error('手机号必须包含国家区号，例如 +86...');
+          }
+          const payload = await requestJSON('/mng/api/tg/account/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label: inputLabel, phone: inputPhone }),
+          });
+          account = payload.account || null;
+          await loadAccounts({ silent: true });
+        }
+
+        await requestJSON('/mng/api/tg/account/send_code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: account.id }),
+        });
+
+        await loadAccounts({ silent: true });
+        state.selectedAccountID = String(account.id || '');
+        state.draft.addAccountSelectedID = String(account.id || '');
+        state.draft.loginCode = '';
+        state.draft.loginPassword = '';
+        setStatus(`验证码已发送到 ${account.phone}，请在弹窗继续完成登录`, 'ok');
+      } catch (error) {
+        setStatus(`发送验证码失败：${error.message || error}`, 'err');
+      } finally {
+        state.loading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleSignIn() {
+      const selectedAccount = getSelectedAccount();
+      if (!selectedAccount) {
+        setStatus('请先在弹窗选择或输入账号并发送验证码', 'warn');
+        return;
+      }
+      const code = String(state.draft.loginCode || '').trim();
+      const password = String(state.draft.loginPassword || '');
+      if (!code) {
+        setStatus('请输入验证码', 'warn');
+        return;
+      }
+
+      state.loading = true;
+      renderMain();
+      renderModal();
+      setStatus(`正在登录账号 ${selectedAccount.label}...`);
+      try {
+        await requestJSON('/mng/api/tg/account/sign_in', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            account_id: selectedAccount.id,
+            code,
+            password,
+          }),
+        });
+
+        await loadAccounts({ silent: true });
+        state.modal.addAccount = false;
+        state.draft.loginCode = '';
+        state.draft.loginPassword = '';
+        setStatus(`登录成功：${selectedAccount.label}`, 'ok');
+      } catch (error) {
+        setStatus(`完成登录失败：${error.message || error}`, 'err');
+      } finally {
+        state.loading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleLogout() {
+      const selectedAccount = getSelectedAccount();
+      if (!selectedAccount) {
+        setStatus('请先选择一个账号', 'warn');
+        return;
+      }
+      state.loading = true;
+      renderMain();
+      renderModal();
+      setStatus(`正在登出账号：${selectedAccount.label}...`);
+      try {
+        await requestJSON('/mng/api/tg/account/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: selectedAccount.id }),
+        });
+        await loadAccounts({ silent: true });
+        setStatus(`已登出账号：${selectedAccount.label}`, 'ok');
+      } catch (error) {
+        setStatus(`登出账号失败：${error.message || error}`, 'err');
+      } finally {
+        state.loading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleRemove() {
+      const selectedAccount = getSelectedAccount();
+      if (!selectedAccount) {
+        setStatus('请先选择一个账号', 'warn');
+        return;
+      }
+      if (!window.confirm(`确认删除账号 ${selectedAccount.label} (${selectedAccount.phone}) 吗？`)) {
+        return;
+      }
+
+      state.loading = true;
+      renderMain();
+      renderModal();
+      setStatus(`正在删除账号：${selectedAccount.label}...`);
+      try {
+        await requestJSON('/mng/api/tg/account/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: selectedAccount.id }),
+        });
+        await loadAccounts({ silent: true });
+        state.draft.addAccountSelectedID = '';
+        state.draft.addAccountLabel = '';
+        state.draft.addAccountPhone = '';
+        state.draft.loginCode = '';
+        state.draft.loginPassword = '';
+        setStatus(`账号已删除：${selectedAccount.label}`, 'ok');
+      } catch (error) {
+        setStatus(`删除账号失败：${error.message || error}`, 'err');
+      } finally {
+        state.loading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    function resetScheduleDraft() {
+      state.draft.scheduleEditingTaskID = '';
+      state.draft.scheduleEnabled = false;
+      state.draft.scheduleTarget = '';
+      state.draft.scheduleTargetSearch = '';
+      state.draft.scheduleSendAt = '每天 09:00';
+      state.draft.scheduleMessage = '';
+      state.draft.scheduleDelayMax = '0';
+    }
+
+    function openAddScheduleTaskModal() {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      resetScheduleDraft();
+      state.modal.scheduleTask = true;
+      renderModal();
+    }
+
+    function openEditScheduleTaskModal(task) {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      state.draft.scheduleEditingTaskID = String(task.id || '');
+      state.draft.scheduleEnabled = task.enabled === true;
+      state.draft.scheduleTarget = String(task.target || '');
+      state.draft.scheduleTargetSearch = '';
+      state.draft.scheduleSendAt = String(task.send_at || '');
+      state.draft.scheduleMessage = String(task.message || '');
+      state.draft.scheduleDelayMax = String(task.delay_max_sec || 0);
+      state.modal.scheduleTask = true;
+      renderModal();
+    }
+
+    function closeScheduleTaskModal() {
+      if (state.scheduleLoading) return;
+      state.modal.scheduleTask = false;
+      state.draft.scheduleEditingTaskID = '';
+      renderModal();
+    }
+
+    async function handleSaveScheduleTask() {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+
+      const editingTaskID = String(state.draft.scheduleEditingTaskID || '').trim();
+      const target = String(state.draft.scheduleTarget || '').trim();
+      const sendAt = String(state.draft.scheduleSendAt || '').trim();
+      const message = String(state.draft.scheduleMessage || '').trim();
+      const delayMax = Number.parseInt(String(state.draft.scheduleDelayMax || '0').trim(), 10) || 0;
+      const enabled = state.draft.scheduleEnabled === true;
+      const isEditing = !!editingTaskID;
+
+      if (!target) {
+        setStatus('请先选择发送目标', 'warn');
+        return;
+      }
+      if (enabled && !sendAt) {
+        setStatus('请填写定时发送时间', 'warn');
+        return;
+      }
+      if (enabled && !message) {
+        setStatus('请填写定时发送内容', 'warn');
+        return;
+      }
+      if (delayMax < 0) {
+        setStatus('随机延时最大值不能小于 0', 'warn');
+        return;
+      }
+
+      state.scheduleLoading = true;
+      renderMain();
+      renderModal();
+      setStatus(isEditing ? `正在修改任务：${editingTaskID}...` : `正在为账号 ${active.label} 新增任务...`);
+      try {
+        const endpoint = isEditing ? '/mng/api/tg/schedule/update' : '/mng/api/tg/schedule/add';
+        const payload = {
+          account_id: active.id,
+          task_id: editingTaskID,
+          task_type: 'scheduled_send',
+          enabled,
+          target,
+          send_at: sendAt,
+          message,
+          delay_min_sec: 0,
+          delay_max_sec: delayMax,
+        };
+        const res = await requestJSON(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const schedules = Array.isArray(res.schedules) ? res.schedules : [];
+        state.scheduleList = schedules;
+        state.modal.scheduleTask = false;
+        state.draft.scheduleEditingTaskID = '';
+        state.draft.scheduleTargetSearch = '';
+
+        await loadPendingTasks(active.id, { silent: true });
+        setStatus(isEditing ? `任务已更新（当前共 ${schedules.length} 个）` : `已新增任务：${active.label}（当前共 ${schedules.length} 个）`, 'ok');
+      } catch (error) {
+        setStatus(`${isEditing ? '修改任务' : '新增任务'}失败：${error.message || error}`, 'err');
+      } finally {
+        state.scheduleLoading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleRemoveScheduleTask(taskID) {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      if (!window.confirm('确认删除该任务吗？')) {
+        return;
+      }
+      state.scheduleLoading = true;
+      renderMain();
+      renderModal();
+      setStatus(`正在删除任务：${taskID}...`);
+      try {
+        const res = await requestJSON('/mng/api/tg/schedule/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: active.id, task_id: taskID }),
+        });
+        const schedules = Array.isArray(res.schedules) ? res.schedules : [];
+        state.scheduleList = schedules;
+        await loadPendingTasks(active.id, { silent: true });
+        setStatus(`任务已删除，当前共 ${schedules.length} 个`, 'ok');
+      } catch (error) {
+        setStatus(`删除任务失败：${error.message || error}`, 'err');
+      } finally {
+        state.scheduleLoading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleToggleScheduleTaskEnabled(taskID, enabled) {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      state.scheduleLoading = true;
+      renderMain();
+      renderModal();
+      setStatus(`正在更新任务状态：${taskID}...`);
+      try {
+        const res = await requestJSON('/mng/api/tg/schedule/set_enabled', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: active.id, task_id: taskID, enabled }),
+        });
+        const schedules = Array.isArray(res.schedules) ? res.schedules : [];
+        state.scheduleList = schedules;
+        await loadPendingTasks(active.id, { silent: true });
+        setStatus(`任务状态已更新：${enabled ? '启用' : '停用'}`, 'ok');
+      } catch (error) {
+        setStatus(`更新任务状态失败：${error.message || error}`, 'err');
+      } finally {
+        state.scheduleLoading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleSendNowScheduleTask(taskID) {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      state.scheduleLoading = true;
+      renderMain();
+      setStatus(`正在立即发送任务：${taskID}...`);
+      try {
+        const res = await requestJSON('/mng/api/tg/schedule/send_now', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: active.id, task_id: taskID }),
+        });
+        const result = res.result || {};
+        const target = result.target || '-';
+        const sentAt = formatDateTime(result.sent_at || '');
+        setStatus(`任务已立即发送：目标 ${target}，时间 ${sentAt}`, 'ok');
+      } catch (error) {
+        setStatus(`立即发送失败：${error.message || error}`, 'err');
+      } finally {
+        state.scheduleLoading = false;
+        renderMain();
+      }
+    }
+
+    async function openScheduleTaskHistoryModal(taskID) {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      state.modal.scheduleHistory = true;
+      state.scheduleHistoryTaskID = taskID;
+      state.scheduleHistoryItems = [];
+      state.scheduleHistoryLoading = true;
+      renderModal();
+      setStatus(`正在加载任务记录：${taskID}...`);
+      try {
+        const res = await requestJSON('/mng/api/tg/schedule/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: active.id, task_id: taskID, limit: 50 }),
+        });
+        const history = Array.isArray(res.history) ? res.history : [];
+        state.scheduleHistoryItems = history;
+        setStatus(`已加载任务记录：${history.length} 条`, 'ok');
+      } catch (error) {
+        setStatus(`加载任务记录失败：${error.message || error}`, 'err');
+      } finally {
+        state.scheduleHistoryLoading = false;
+        renderModal();
+      }
+    }
+
+    function openBotAPIKeyModal() {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      state.draft.botAPIKey = state.botConfig.api_key || '';
+      state.draft.botMode = state.botConfig.mode === 'webhook' ? 'webhook' : 'polling';
+      state.modal.botAPIKey = true;
+      renderModal();
+    }
+
+    async function handleSaveBotAPIKey() {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      const apiKey = String(state.draft.botAPIKey || '').trim();
+      const mode = state.draft.botMode === 'webhook' ? 'webhook' : 'polling';
+
+      if (!apiKey) {
+        setStatus('BOT API key 不能为空', 'warn');
+        return;
+      }
+      if (!apiKey.includes(':')) {
+        setStatus('BOT API key 格式不正确', 'warn');
+        return;
+      }
+
+      state.botLoading = true;
+      renderMain();
+      renderModal();
+      setStatus('正在保存 TG BOT API key...');
+      try {
+        const payload = await requestJSON('/mng/api/tg/bot/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            account_id: active.id,
+            api_key: apiKey,
+            mode,
+          }),
+        });
+        state.botConfig = {
+          api_key: payload.api_key || apiKey,
+          configured: payload.configured === true,
+          mode: payload.mode === 'webhook' ? 'webhook' : 'polling',
+          webhook_path: payload.webhook_path || '',
+          webhook_enabled: payload.webhook_enabled === true,
+        };
+        state.modal.botAPIKey = false;
+        setStatus(`TG BOT 配置已保存（模式：${mode === 'webhook' ? 'webhook' : 'getUpdates'}）`, 'ok');
+      } catch (error) {
+        setStatus(`保存 TG BOT API key 失败：${error.message || error}`, 'err');
+      } finally {
+        state.botLoading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleTestBotSend() {
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      const message = String(state.draft.botTestMessage || '').trim();
+      if (!message) {
+        setStatus('请输入测试消息内容', 'warn');
+        return;
+      }
+
+      state.botLoading = true;
+      renderMain();
+      setStatus('正在发送 TG BOT 测试消息...');
+      try {
+        const res = await requestJSON('/mng/api/tg/bot/test_send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: active.id, message }),
+        });
+        const result = res.result || {};
+        const text = String(result.message || '').trim();
+        if (text) {
+          setStatus(`TG BOT 测试发送成功：${text}`, 'ok');
+        } else {
+          setStatus(`TG BOT 测试发送成功：chat_id=${result.chat_id} message_id=${result.message_id}`, 'ok');
+        }
+      } catch (error) {
+        setStatus(`TG BOT 测试发送失败：${error.message || error}`, 'err');
+      } finally {
+        state.botLoading = false;
+        renderMain();
+      }
+    }
+
     async function ensureSession() {
       const payload = await requestJSON('/mng/api/session');
       if (!payload.authenticated) {
@@ -220,377 +1965,36 @@
       return true;
     }
 
-    function selectedAccountID() {
-      return String(document.getElementById('account-select').value || '').trim();
-    }
-
-    function renderTabs() {
-      const tabs = Array.from(document.querySelectorAll('.tab'));
-      tabs.forEach((button) => {
-        button.classList.toggle('active', button.dataset.tab === state.activeTab);
-      });
-      document.querySelectorAll('.section').forEach((section) => {
-        section.classList.toggle('active', section.id === `section-${state.activeTab}`);
-      });
-    }
-
-    function renderAPI() {
-      const api = state.api || {};
-      document.getElementById('api-id').value = api.api_id || '';
-      document.getElementById('api-hash').value = api.api_hash || '';
-      document.getElementById('api-configured').textContent = api.configured ? '已配置' : '未配置';
-    }
-
-    function renderAccounts() {
-      const accounts = Array.isArray(state.accounts) ? state.accounts : [];
-      const options = accounts.map((a) => `<option value="${a.id}">${a.label || a.phone || a.id}</option>`).join('');
-      document.getElementById('account-select').innerHTML = options || '<option value="">暂无账号</option>';
-      document.getElementById('schedule-account').innerHTML = options || '<option value="">暂无账号</option>';
-      document.getElementById('bot-account').innerHTML = options || '<option value="">暂无账号</option>';
-      if (accounts.length > 0) {
-        const firstID = String(accounts[0].id || '');
-        if (!state.selectedAccountID || !accounts.some((a) => a.id === state.selectedAccountID)) {
-          state.selectedAccountID = firstID;
-        }
-      } else {
-        state.selectedAccountID = '';
-      }
-      document.getElementById('account-select').value = state.selectedAccountID;
-      document.getElementById('schedule-account').value = state.selectedAccountID;
-      document.getElementById('bot-account').value = state.selectedAccountID;
-
-      const body = document.getElementById('accounts-body');
-      if (accounts.length === 0) {
-        body.innerHTML = '<tr><td colspan="5" class="muted">暂无账号</td></tr>';
-        return;
-      }
-      body.innerHTML = accounts.map((item) => `<tr>
-        <td class="mono">${item.id || '-'}</td>
-        <td>${item.label || '-'}</td>
-        <td>${item.phone || '-'}</td>
-        <td>${item.authorized ? '是' : '否'}</td>
-        <td>${item.last_error || '-'}</td>
-      </tr>`).join('');
-    }
-
-    function renderSchedules() {
-      const list = Array.isArray(state.schedules) ? state.schedules : [];
-      const body = document.getElementById('schedules-body');
-      if (list.length === 0) {
-        body.innerHTML = '<tr><td colspan="4" class="muted">暂无任务</td></tr>';
-        return;
-      }
-      body.innerHTML = list.map((item) => `<tr>
-        <td class="mono">${item.id || '-'}</td>
-        <td>${item.target || '-'}</td>
-        <td>${item.send_at || '-'}</td>
-        <td>${item.enabled ? '是' : '否'}</td>
-      </tr>`).join('');
-    }
-
-    function currentSchedulePayload() {
-      const accountID = String(document.getElementById('schedule-account').value || '').trim();
-      return {
-        account_id: accountID,
-        task_id: String(document.getElementById('schedule-id').value || '').trim(),
-        task_type: 'scheduled_send',
-        enabled: document.getElementById('schedule-enabled').checked,
-        target: String(document.getElementById('schedule-target').value || '').trim(),
-        send_at: String(document.getElementById('schedule-send-at').value || '').trim(),
-        message: String(document.getElementById('schedule-message').value || ''),
-        delay_min_sec: Number.parseInt(String(document.getElementById('schedule-delay-min').value || '0'), 10) || 0,
-        delay_max_sec: Number.parseInt(String(document.getElementById('schedule-delay-max').value || '0'), 10) || 0,
-      };
-    }
-
-    async function loadAPI() {
-      state.api = await requestJSON('/mng/api/tg/api/get');
-      renderAPI();
-    }
-
-    async function saveAPI() {
-      const apiID = Number.parseInt(String(document.getElementById('api-id').value || '0'), 10);
-      const apiHash = String(document.getElementById('api-hash').value || '').trim();
-      state.api = await requestJSON('/mng/api/tg/api/set', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_id: apiID, api_hash: apiHash }),
-      });
-      renderAPI();
-      setStatus('共享 API Key 已保存', 'ok');
-    }
-
-    async function loadAccounts(silent) {
-      const payload = await requestJSON('/mng/api/tg/accounts/list');
-      state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
-      renderAccounts();
-      if (!silent) setStatus(`账号列表已刷新：${state.accounts.length} 个`, 'ok');
-    }
-
-    async function refreshAccounts() {
-      const payload = await requestJSON('/mng/api/tg/accounts/refresh', { method: 'POST' });
-      state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
-      renderAccounts();
-      setStatus('账号状态已刷新', 'ok');
-    }
-
-    async function addAccount() {
-      const label = String(document.getElementById('account-label').value || '').trim();
-      const phone = String(document.getElementById('account-phone').value || '').trim();
-      const payload = await requestJSON('/mng/api/tg/account/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, phone }),
-      });
-      await loadAccounts(true);
-      if (payload && payload.account && payload.account.id) {
-        state.selectedAccountID = String(payload.account.id);
-        renderAccounts();
-      }
-      setStatus('账号已新增', 'ok');
-    }
-
-    async function removeAccount() {
-      const accountID = selectedAccountID();
-      await requestJSON('/mng/api/tg/account/remove', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountID }),
-      });
-      await loadAccounts(true);
-      setStatus('账号已删除', 'ok');
-    }
-
-    async function sendCode() {
-      const accountID = selectedAccountID();
-      await requestJSON('/mng/api/tg/account/send_code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountID }),
-      });
-      await loadAccounts(true);
-      setStatus('验证码发送请求已提交', 'ok');
-    }
-
-    async function signIn() {
-      const accountID = selectedAccountID();
-      const code = String(document.getElementById('login-code').value || '').trim();
-      const password = String(document.getElementById('login-password').value || '');
-      await requestJSON('/mng/api/tg/account/sign_in', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountID, code, password }),
-      });
-      await loadAccounts(true);
-      setStatus('账号登录完成', 'ok');
-    }
-
-    async function logoutAccount() {
-      const accountID = selectedAccountID();
-      await requestJSON('/mng/api/tg/account/logout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountID }),
-      });
-      await loadAccounts(true);
-      setStatus('账号已登出', 'ok');
-    }
-
-    async function listSchedules() {
-      const account_id = String(document.getElementById('schedule-account').value || '').trim();
-      const payload = await requestJSON('/mng/api/tg/schedule/list', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id }),
-      });
-      state.schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
-      renderSchedules();
-      setStatus(`任务列表已刷新：${state.schedules.length} 条`, 'ok');
-    }
-
-    async function addSchedule() {
-      const payload = currentSchedulePayload();
-      const res = await requestJSON('/mng/api/tg/schedule/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      state.schedules = Array.isArray(res.schedules) ? res.schedules : [];
-      renderSchedules();
-      setStatus('任务已新增', 'ok');
-    }
-
-    async function updateSchedule() {
-      const payload = currentSchedulePayload();
-      const res = await requestJSON('/mng/api/tg/schedule/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      state.schedules = Array.isArray(res.schedules) ? res.schedules : [];
-      renderSchedules();
-      setStatus('任务已更新', 'ok');
-    }
-
-    async function removeSchedule() {
-      const payload = currentSchedulePayload();
-      const res = await requestJSON('/mng/api/tg/schedule/remove', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: payload.account_id, task_id: payload.task_id }),
-      });
-      state.schedules = Array.isArray(res.schedules) ? res.schedules : [];
-      renderSchedules();
-      setStatus('任务已删除', 'ok');
-    }
-
-    async function setScheduleEnabled() {
-      const payload = currentSchedulePayload();
-      const res = await requestJSON('/mng/api/tg/schedule/set_enabled', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: payload.account_id, task_id: payload.task_id, enabled: payload.enabled }),
-      });
-      state.schedules = Array.isArray(res.schedules) ? res.schedules : [];
-      renderSchedules();
-      setStatus(`任务启停已设置：${payload.enabled ? '启用' : '禁用'}`, 'ok');
-    }
-
-    async function sendScheduleNow() {
-      const payload = currentSchedulePayload();
-      const res = await requestJSON('/mng/api/tg/schedule/send_now', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: payload.account_id, task_id: payload.task_id }),
-      });
-      document.getElementById('schedule-output').textContent = JSON.stringify(res.result || {}, null, 2);
-      setStatus('已执行立即发送', 'ok');
-    }
-
-    async function listScheduleHistory() {
-      const payload = currentSchedulePayload();
-      const res = await requestJSON('/mng/api/tg/schedule/history', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: payload.account_id, task_id: payload.task_id, limit: 50 }),
-      });
-      document.getElementById('schedule-output').textContent = JSON.stringify(res.history || [], null, 2);
-      setStatus('已加载任务历史', 'ok');
-    }
-
-    async function listPendingTasks() {
-      const account_id = String(document.getElementById('schedule-account').value || '').trim();
-      const res = await requestJSON('/mng/api/tg/schedule/pending', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id }),
-      });
-      document.getElementById('schedule-output').textContent = JSON.stringify(res.pending || [], null, 2);
-      setStatus('已加载待执行队列', 'ok');
-    }
-
-    async function getBotConfig() {
-      const account_id = String(document.getElementById('bot-account').value || '').trim();
-      const res = await requestJSON('/mng/api/tg/bot/get', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id }),
-      });
-      document.getElementById('bot-api-key').value = res.api_key || '';
-      document.getElementById('bot-mode').value = res.mode || 'polling';
-      document.getElementById('bot-output').textContent = JSON.stringify(res, null, 2);
-      setStatus('Bot 配置已加载', 'ok');
-    }
-
-    async function setBotConfig() {
-      const account_id = String(document.getElementById('bot-account').value || '').trim();
-      const api_key = String(document.getElementById('bot-api-key').value || '').trim();
-      const mode = String(document.getElementById('bot-mode').value || 'polling');
-      const res = await requestJSON('/mng/api/tg/bot/set', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id, api_key, mode }),
-      });
-      document.getElementById('bot-output').textContent = JSON.stringify(res, null, 2);
-      setStatus('Bot 配置已保存', 'ok');
-    }
-
-    async function testBotSend() {
-      const account_id = String(document.getElementById('bot-account').value || '').trim();
-      const message = String(document.getElementById('bot-test-message').value || '').trim();
-      const res = await requestJSON('/mng/api/tg/bot/test_send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id, message }),
-      });
-      document.getElementById('bot-output').textContent = JSON.stringify(res.result || {}, null, 2);
-      setStatus('Bot 测试发送完成', 'ok');
-    }
-
     async function logout() {
       await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
       location.href = '/mng';
     }
 
-    function bindEvents() {
-      document.querySelectorAll('.tab').forEach((button) => {
-        button.addEventListener('click', () => {
-          state.activeTab = String(button.dataset.tab || 'apikey');
-          renderTabs();
-        });
-      });
-      document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
-      document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
-
-      document.getElementById('account-select').addEventListener('change', (e) => {
-        state.selectedAccountID = String(e.target.value || '').trim();
-        document.getElementById('schedule-account').value = state.selectedAccountID;
-        document.getElementById('bot-account').value = state.selectedAccountID;
-      });
-      document.getElementById('schedule-account').addEventListener('change', (e) => {
-        state.selectedAccountID = String(e.target.value || '').trim();
-        document.getElementById('account-select').value = state.selectedAccountID;
-        document.getElementById('bot-account').value = state.selectedAccountID;
-      });
-      document.getElementById('bot-account').addEventListener('change', (e) => {
-        state.selectedAccountID = String(e.target.value || '').trim();
-        document.getElementById('account-select').value = state.selectedAccountID;
-        document.getElementById('schedule-account').value = state.selectedAccountID;
-      });
-
-      document.getElementById('btn-save-api').addEventListener('click', () => saveAPI().catch((err) => setStatus(`保存 API Key 失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-refresh-accounts').addEventListener('click', () => refreshAccounts().catch((err) => setStatus(`刷新账号失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-add-account').addEventListener('click', () => addAccount().catch((err) => setStatus(`新增账号失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-remove-account').addEventListener('click', () => removeAccount().catch((err) => setStatus(`删除账号失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-send-code').addEventListener('click', () => sendCode().catch((err) => setStatus(`发送验证码失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-sign-in').addEventListener('click', () => signIn().catch((err) => setStatus(`登录失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-logout-account').addEventListener('click', () => logoutAccount().catch((err) => setStatus(`账号登出失败：${err.message || err}`, 'err')));
-
-      document.getElementById('btn-list-schedules').addEventListener('click', () => listSchedules().catch((err) => setStatus(`加载任务失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-add-schedule').addEventListener('click', () => addSchedule().catch((err) => setStatus(`新增任务失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-update-schedule').addEventListener('click', () => updateSchedule().catch((err) => setStatus(`更新任务失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-remove-schedule').addEventListener('click', () => removeSchedule().catch((err) => setStatus(`删除任务失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-set-enabled').addEventListener('click', () => setScheduleEnabled().catch((err) => setStatus(`设置启停失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-send-now').addEventListener('click', () => sendScheduleNow().catch((err) => setStatus(`立即发送失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-history').addEventListener('click', () => listScheduleHistory().catch((err) => setStatus(`查看历史失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-list-pending').addEventListener('click', () => listPendingTasks().catch((err) => setStatus(`查看待执行失败：${err.message || err}`, 'err')));
-
-      document.getElementById('btn-bot-get').addEventListener('click', () => getBotConfig().catch((err) => setStatus(`读取 Bot 失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-bot-set').addEventListener('click', () => setBotConfig().catch((err) => setStatus(`保存 Bot 失败：${err.message || err}`, 'err')));
-      document.getElementById('btn-bot-test-send').addEventListener('click', () => testBotSend().catch((err) => setStatus(`Bot 测试发送失败：${err.message || err}`, 'err')));
-    }
-
     async function bootstrap() {
-      bindEvents();
-      renderTabs();
+      bindStaticEvents();
+      renderStatus();
+      renderMain();
+      renderModal();
+
       const ok = await ensureSession().catch(() => false);
       if (!ok) {
         location.href = '/mng';
         return;
       }
-      await loadAPI();
-      await loadAccounts(true);
+
+      await loadData();
+      const active = getActiveLoggedInAccount();
+      if (active) {
+        await Promise.all([
+          loadSchedule(active.id, { silent: true }),
+          loadPendingTasks(active.id, { silent: true }),
+          loadTargets(active.id, { silent: true }),
+          loadBotAPIKey(active.id, { silent: true }),
+        ]);
+      }
       setStatus('TG 页面初始化完成', 'ok');
+      renderMain();
+      renderModal();
     }
 
     bootstrap().catch((err) => {
