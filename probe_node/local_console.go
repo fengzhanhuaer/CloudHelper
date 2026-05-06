@@ -2146,9 +2146,12 @@ func probeLocalProxyStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	keepalive, latencyMS, latencyUpdatedAt, latencyError := resolveProbeLocalChainKeepaliveAndLatency(selectedChainID)
 	payload["selected_chain_keepalive"] = keepalive
+	latencyStatus := "unreachable"
 	if latencyMS != nil {
 		payload["selected_chain_latency_ms"] = *latencyMS
+		latencyStatus = "reachable"
 	}
+	payload["selected_chain_latency_status"] = latencyStatus
 	payload["selected_chain_latency_updated_at"] = latencyUpdatedAt
 	payload["selected_chain_latency_error"] = latencyError
 

@@ -52,6 +52,15 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "代理状态") {
 		t.Fatalf("panel should contain proxy status section")
 	}
+	if !strings.Contains(body, "selected_chain_latency_status") {
+		t.Fatalf("panel should contain selected_chain_latency_status handling")
+	}
+	if !strings.Contains(body, "最近测试延迟: 不可达") {
+		t.Fatalf("panel should contain unreachable latency text")
+	}
+	if !strings.Contains(body, "60000") {
+		t.Fatalf("panel should contain 60s proxy status polling interval")
+	}
 	if !strings.Contains(body, "TUN 状态") {
 		t.Fatalf("panel should contain tun status section")
 	}

@@ -19,3 +19,4 @@ probe_node/temp/*
 probe_node/data/
 probe_node/temp/data/probe_local_auth.json
 probe_node/temp/data/proxy_host.txt
+encoding_tools/.tmp_patch*.json

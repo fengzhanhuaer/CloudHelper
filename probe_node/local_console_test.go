@@ -247,6 +247,9 @@ func TestProbeLocalProxyFlowWithSession(t *testing.T) {
 	if enabled, _ := proxyPayload["enabled"].(bool); enabled {
 		t.Fatalf("proxy enabled should be false at init")
 	}
+	if latencyStatus, _ := proxyPayload["selected_chain_latency_status"].(string); latencyStatus != "unreachable" {
+		t.Fatalf("proxy latency status=%q", latencyStatus)
+	}
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{}, sessionCookie)
 	if enableResp.Code != http.StatusConflict {

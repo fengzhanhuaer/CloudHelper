@@ -367,9 +367,13 @@
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
     let proxyStatusCache = { enabled: false, mode: '' };
-    let proxySelectedLatencyDisplay = '-';
+    let proxySelectedLatencyDisplay = '不可达';
+    let proxySelectedLatencyStatus = 'unreachable';
+    let proxyStatusPollingTimer = null;
     let logsAutoRefreshTimer = null;
     let upgradeStatusPollingTimer = null;
+
+    const PROXY_STATUS_POLL_INTERVAL_MS = 60000;
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -657,8 +661,8 @@
       const status = String(rawStatus || '').trim();
       if (!status) return '';
       if (status.toLowerCase() !== 'online') return status;
-      if (proxySelectedLatencyDisplay === '-') {
-        return '最近测试延迟: -';
+      if (proxySelectedLatencyStatus !== 'reachable') {
+        return '最近测试延迟: 不可达';
       }
       return `最近测试延迟: ${proxySelectedLatencyDisplay}ms`;
     }
@@ -670,7 +674,18 @@
         mode: String(data.mode || '').trim(),
       };
       const latencyMs = Number(data.selected_chain_latency_ms);
-      proxySelectedLatencyDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '-';
+      const latencyMsDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '';
+      const latencyStatus = String(data.selected_chain_latency_status || '').trim().toLowerCase();
+      if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
+        proxySelectedLatencyStatus = 'reachable';
+        proxySelectedLatencyDisplay = latencyMsDisplay;
+      } else if (latencyMsDisplay !== '' && latencyStatus !== 'unreachable') {
+        proxySelectedLatencyStatus = 'reachable';
+        proxySelectedLatencyDisplay = latencyMsDisplay;
+      } else {
+        proxySelectedLatencyStatus = 'unreachable';
+        proxySelectedLatencyDisplay = '不可达';
+      }
       setText('proxyEnabled', data.enabled ? '是' : '否');
       setText('proxyMode', data.mode);
       setText('proxySelectedKeepalive', formatProxyKeepaliveStatus(data.selected_chain_keepalive));
@@ -918,6 +933,21 @@
       }, 1500);
     }
 
+    function stopProxyStatusPolling() {
+      if (proxyStatusPollingTimer) {
+        clearInterval(proxyStatusPollingTimer);
+        proxyStatusPollingTimer = null;
+      }
+    }
+
+    function startProxyStatusPolling() {
+      if (proxyStatusPollingTimer) return;
+      proxyStatusPollingTimer = setInterval(() => {
+        loadProxyStatus().catch(() => {
+        });
+      }, PROXY_STATUS_POLL_INTERVAL_MS);
+    }
+
     async function refreshAll() {
       setMessage('');
       const ok = await ensureSession();
@@ -975,6 +1005,7 @@
     });
 
     document.getElementById('logoutBtn').addEventListener('click', async () => {
+      stopProxyStatusPolling();
       setMessage('退出中...');
       try {
         await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' });
@@ -1116,6 +1147,7 @@
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       stopLogsAutoRefresh();
       stopUpgradeStatusPolling();
+      stopProxyStatusPolling();
       setMessage('退出中...');
       try {
         await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' });
@@ -1125,6 +1157,7 @@
     });
 
     applyLogsAutoRefresh();
+    startProxyStatusPolling();
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
   </script>
 </body>
