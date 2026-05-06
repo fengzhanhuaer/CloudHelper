@@ -610,6 +610,112 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	proxyChainPath, err := resolveProbeLocalProxyChainPath()
+	if err != nil {
+		t.Fatalf("resolve proxy_chain path failed: %v", err)
+	}
+	proxyChainPayload := `{
+  "updated_at": "2026-04-24T00:00:00Z",
+  "items": [
+    {"chain_id":"chain-proxy-1","chain_type":"proxy_chain","name":"Proxy 1"}
+  ]
+}`
+	if err := os.WriteFile(proxyChainPath, []byte(proxyChainPayload), 0o644); err != nil {
+		t.Fatalf("write proxy_chain file failed: %v", err)
+	}
+
+	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "default", "rules": []string{"domain_suffix:example.com"}},
+			{"group": "media", "rules": []string{"domain_keyword:stream"}},
+		},
+	}, sessionCookie)
+	if saveGroupsResp.Code != http.StatusOK {
+		t.Fatalf("groups save status=%d body=%s", saveGroupsResp.Code, saveGroupsResp.Body.String())
+	}
+
+	probeLocalControl.mu.Lock()
+	probeLocalControl.tun.Installed = true
+	probeLocalControl.mu.Unlock()
+
+	probeLocalApplyProxyTakeover = func() error {
+		t.Fatalf("proxy takeover should not be called for /proxy/select")
+		return nil
+	}
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNDataPlaneHooksForTest() })
+
+	selectResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/select", map[string]any{
+		"group":          "media",
+		"tunnel_node_id": "chain-proxy-1",
+	}, sessionCookie)
+	if selectResp.Code != http.StatusOK {
+		t.Fatalf("proxy/select status=%d body=%s", selectResp.Code, selectResp.Body.String())
+	}
+	selectPayload := decodeProbeLocalJSON(t, selectResp)
+	selectionObj, ok := selectPayload["selection"].(map[string]any)
+	if !ok {
+		t.Fatalf("proxy/select selection payload type=%T", selectPayload["selection"])
+	}
+	if selectionObj["group"] != "media" {
+		t.Fatalf("proxy/select selection group=%v", selectionObj["group"])
+	}
+	if selectionObj["tunnel_node_id"] != "chain:chain-proxy-1" {
+		t.Fatalf("proxy/select selection tunnel_node_id=%v", selectionObj["tunnel_node_id"])
+	}
+	proxyObj, ok := selectPayload["proxy"].(map[string]any)
+	if !ok {
+		t.Fatalf("proxy/select proxy payload type=%T", selectPayload["proxy"])
+	}
+	if proxyObj["enabled"] != false {
+		t.Fatalf("proxy/select enabled=%v", proxyObj["enabled"])
+	}
+	if proxyObj["mode"] != probeLocalProxyModeDirect {
+		t.Fatalf("proxy/select mode=%v", proxyObj["mode"])
+	}
+
+	stateResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)
+	if stateResp.Code != http.StatusOK {
+		t.Fatalf("state get status=%d body=%s", stateResp.Code, stateResp.Body.String())
+	}
+	statePayload := decodeProbeLocalJSON(t, stateResp)
+	groups, ok := statePayload["groups"].([]any)
+	if !ok {
+		t.Fatalf("state groups payload type=%T", statePayload["groups"])
+	}
+	found := false
+	for _, item := range groups {
+		entry, _ := item.(map[string]any)
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(entry["group"])), "media") {
+			found = true
+			if entry["action"] != "tunnel" {
+				t.Fatalf("media action=%v", entry["action"])
+			}
+			if entry["tunnel_node_id"] != "chain:chain-proxy-1" {
+				t.Fatalf("media tunnel_node_id=%v", entry["tunnel_node_id"])
+			}
+			if entry["runtime_status"] != "online" {
+				t.Fatalf("media runtime_status=%v", entry["runtime_status"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("state groups missing media entry: %v", groups)
+	}
+}
+
 func TestProbeLocalProxyEnableRejectsUnknownGroup(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

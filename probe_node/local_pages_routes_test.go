@@ -88,6 +88,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "rule-option-flat") {
 		t.Fatalf("panel should contain flat rule option style")
 	}
+	if !strings.Contains(body, "/local/api/proxy/select") {
+		t.Fatalf("panel should contain proxy select endpoint")
+	}
 	if !strings.Contains(body, "刷新组与链路") {
 		t.Fatalf("panel should contain proxy selection refresh button text")
 	}

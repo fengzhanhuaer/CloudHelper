@@ -1498,6 +1498,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/tun/install", probeLocalTUNInstallHandler)
 	mux.HandleFunc("/local/api/logs", probeLocalLogsHandler)
 	mux.HandleFunc("/local/api/proxy/enable", probeLocalProxyEnableHandler)
+	mux.HandleFunc("/local/api/proxy/select", probeLocalProxySelectHandler)
 	mux.HandleFunc("/local/api/proxy/direct", probeLocalProxyDirectHandler)
 	mux.HandleFunc("/local/api/proxy/reject", probeLocalProxyRejectHandler)
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
@@ -1948,6 +1949,46 @@ func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {
 		"ok":    true,
 		"tun":   tunState,
 		"proxy": proxyState,
+		"selection": map[string]any{
+			"group":          group,
+			"tunnel_node_id": tunnelNodeID,
+		},
+	})
+}
+
+func probeLocalProxySelectHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalProxyEnableRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	group, tunnelNodeID, err := resolveProbeLocalProxyEnableSelection(req)
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "tunnel", tunnelNodeID, "online"); updateErr != nil {
+		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"tun": probeLocalControl.tunStatus(),
+		"proxy": probeLocalControl.proxyStatus(),
 		"selection": map[string]any{
 			"group":          group,
 			"tunnel_node_id": tunnelNodeID,

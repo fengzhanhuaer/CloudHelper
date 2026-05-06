@@ -31,6 +31,7 @@ func TestProbeLocalAPIMethodGuards(t *testing.T) {
 		{name: "system upgrade status should only allow GET", method: http.MethodPost, path: "/local/api/system/upgrade/status", body: map[string]any{}},
 		{name: "system restart should only allow POST", method: http.MethodGet, path: "/local/api/system/restart", body: nil},
 		{name: "proxy status should only allow GET", method: http.MethodPost, path: "/local/api/proxy/status", body: map[string]any{}},
+		{name: "proxy select should only allow POST", method: http.MethodGet, path: "/local/api/proxy/select", body: nil},
 		{name: "proxy chains should only allow GET", method: http.MethodPost, path: "/local/api/proxy/chains", body: map[string]any{}},
 		{name: "proxy groups should only allow GET", method: http.MethodPost, path: "/local/api/proxy/groups", body: map[string]any{}},
 		{name: "proxy groups save should only allow POST", method: http.MethodGet, path: "/local/api/proxy/groups/save", body: nil},
