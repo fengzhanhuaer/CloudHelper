@@ -110,6 +110,10 @@ var (
 	probeLocalReleaseDirectBypassRoute = releaseProbeLocalTUNDirectBypassRoute
 )
 
+func init() {
+	probeLocalDNSEnsureDirectBypassForTarget = ensureProbeLocalDirectBypassForTarget
+}
+
 var probeLocalDirectBypassState = struct {
 	mu      sync.Mutex
 	ref     map[string]int

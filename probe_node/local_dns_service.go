@@ -116,6 +116,9 @@ var probeLocalDNSState = struct {
 var (
 	probeLocalDNSListenPacket = net.ListenPacket
 	probeLocalDNSNow          = time.Now
+	probeLocalDNSEnsureDirectBypassForTarget = func(string) error {
+		return nil
+	}
 )
 
 func defaultProbeLocalDNSServers() []string {
@@ -410,11 +413,81 @@ func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecis
 	return candidates
 }
 
+func resolveProbeLocalDNSUpstreamBypassTarget(kind string, address string) (string, bool) {
+	cleanKind := strings.ToLower(strings.TrimSpace(kind))
+	switch cleanKind {
+	case "dns", "dot":
+		defaultPort := "53"
+		if cleanKind == "dot" {
+			defaultPort = "853"
+		}
+		cleanAddress, ok := normalizeProbeLocalDNSHostPort(address, defaultPort)
+		if !ok {
+			return "", false
+		}
+		host, port, err := net.SplitHostPort(cleanAddress)
+		if err != nil {
+			return "", false
+		}
+		parsedIP := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
+		if parsedIP == nil || parsedIP.To4() == nil {
+			return "", false
+		}
+		return net.JoinHostPort(parsedIP.String(), strings.TrimSpace(port)), true
+	case "doh":
+		cleanEndpoint, ok := normalizeProbeLocalDoHURL(address)
+		if !ok {
+			return "", false
+		}
+		parsed, err := url.Parse(cleanEndpoint)
+		if err != nil {
+			return "", false
+		}
+		host := strings.TrimSpace(parsed.Hostname())
+		parsedIP := net.ParseIP(host)
+		if parsedIP == nil || parsedIP.To4() == nil {
+			return "", false
+		}
+		port := strings.TrimSpace(parsed.Port())
+		if port == "" {
+			if strings.EqualFold(strings.TrimSpace(parsed.Scheme), "http") {
+				port = "80"
+			} else {
+				port = "443"
+			}
+		}
+		portNum, convErr := strconv.Atoi(port)
+		if convErr != nil || portNum <= 0 || portNum > 65535 {
+			return "", false
+		}
+		return net.JoinHostPort(parsedIP.String(), strconv.Itoa(portNum)), true
+	default:
+		return "", false
+	}
+}
+
+func ensureProbeLocalDNSUpstreamDirectBypass(kind string, address string) {
+	targetAddr, ok := resolveProbeLocalDNSUpstreamBypassTarget(kind, address)
+	if !ok {
+		return
+	}
+	if err := probeLocalDNSEnsureDirectBypassForTarget(targetAddr); err != nil {
+		logProbeWarnf(
+			"probe local dns upstream bypass ensure failed: kind=%s upstream=%s target=%s err=%v",
+			strings.ToLower(strings.TrimSpace(kind)),
+			strings.TrimSpace(address),
+			targetAddr,
+			err,
+		)
+	}
+}
+
 func queryProbeLocalDNSViaDoH(endpoint string, packet []byte) ([]byte, error) {
 	cleanEndpoint, ok := normalizeProbeLocalDoHURL(endpoint)
 	if !ok {
 		return nil, fmt.Errorf("invalid doh endpoint: %q", endpoint)
 	}
+	ensureProbeLocalDNSUpstreamDirectBypass("doh", cleanEndpoint)
 	ctx, cancel := context.WithTimeout(context.Background(), probeLocalDNSUpstreamTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, cleanEndpoint, bytes.NewReader(packet))
@@ -447,6 +520,7 @@ func queryProbeLocalDNSViaDoT(address string, packet []byte) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid dot upstream: %q", address)
 	}
+	ensureProbeLocalDNSUpstreamDirectBypass("dot", cleanAddress)
 	dialer := &net.Dialer{Timeout: probeLocalDNSUpstreamTimeout}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if host := probeLocalDNSHostFromAddress(cleanAddress); host != "" && net.ParseIP(host) == nil {
@@ -482,6 +556,7 @@ func queryProbeLocalDNSViaPlain(address string, packet []byte) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid dns upstream: %q", address)
 	}
+	ensureProbeLocalDNSUpstreamDirectBypass("dns", cleanAddress)
 	conn, err := net.DialTimeout("udp", cleanAddress, probeLocalDNSUpstreamTimeout)
 	if err != nil {
 		return nil, err

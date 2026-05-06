@@ -356,6 +356,60 @@ func TestProbeLocalDNSDebugAPIs(t *testing.T) {
 	}
 }
 
+func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      string
+		address   string
+		want      string
+		wantFound bool
+	}{
+		{name: "dns ipv4", kind: "dns", address: "119.29.29.29", want: "119.29.29.29:53", wantFound: true},
+		{name: "dns domain", kind: "dns", address: "dns.alidns.com:53", want: "", wantFound: false},
+		{name: "dot ipv4", kind: "dot", address: "1.1.1.1:853", want: "1.1.1.1:853", wantFound: true},
+		{name: "doh ipv4 https", kind: "doh", address: "https://1.1.1.1/dns-query", want: "1.1.1.1:443", wantFound: true},
+		{name: "doh ipv4 http", kind: "doh", address: "http://8.8.8.8/dns-query", want: "8.8.8.8:80", wantFound: true},
+		{name: "doh domain", kind: "doh", address: "https://dns.google/dns-query", want: "", wantFound: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := resolveProbeLocalDNSUpstreamBypassTarget(tt.kind, tt.address)
+			if ok != tt.wantFound {
+				t.Fatalf("found=%v want=%v target=%q", ok, tt.wantFound, got)
+			}
+			if got != tt.want {
+				t.Fatalf("target=%q want=%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnsureProbeLocalDNSUpstreamDirectBypass(t *testing.T) {
+	oldEnsure := probeLocalDNSEnsureDirectBypassForTarget
+	t.Cleanup(func() {
+		probeLocalDNSEnsureDirectBypassForTarget = oldEnsure
+	})
+	calls := make([]string, 0, 4)
+	probeLocalDNSEnsureDirectBypassForTarget = func(target string) error {
+		calls = append(calls, strings.TrimSpace(target))
+		return nil
+	}
+
+	ensureProbeLocalDNSUpstreamDirectBypass("dns", "119.29.29.29")
+	ensureProbeLocalDNSUpstreamDirectBypass("dns", "dns.alidns.com")
+	ensureProbeLocalDNSUpstreamDirectBypass("doh", "https://1.1.1.1/dns-query")
+
+	if len(calls) != 2 {
+		t.Fatalf("bypass calls len=%d want=2 calls=%v", len(calls), calls)
+	}
+	if calls[0] != "119.29.29.29:53" {
+		t.Fatalf("dns bypass target=%q", calls[0])
+	}
+	if calls[1] != "1.1.1.1:443" {
+		t.Fatalf("doh bypass target=%q", calls[1])
+	}
+}
+
 func TestProbeLocalProxyEnableReturnsInternalErrorOnTakeoverFailure(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
