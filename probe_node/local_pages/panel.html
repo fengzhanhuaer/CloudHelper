@@ -367,6 +367,7 @@
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
     let proxyStatusCache = { enabled: false, mode: '' };
+    let proxySelectedLatencyDisplay = '-';
     let logsAutoRefreshTimer = null;
     let upgradeStatusPollingTimer = null;
 
@@ -541,11 +542,11 @@
         const runtimeEl = document.createElement('div');
         runtimeEl.className = 'rule-runtime';
         const runtimeAction = normalizeAction(stateEntry && stateEntry.action);
-        const runtimeStatus = String(stateEntry && stateEntry.runtime_status || '').trim();
+        const runtimeStatusText = formatRuntimeStatusText(stateEntry && stateEntry.runtime_status, stateEntry);
         const runtimeTunnelLabel = runtimeAction === 'tunnel'
           ? resolveChainLabel(stateEntry && stateEntry.tunnel_node_id)
           : '-';
-        runtimeEl.textContent = `运行：${runtimeAction || '-'}${runtimeAction === 'tunnel' ? ` (${runtimeTunnelLabel})` : ''}${runtimeStatus ? ` ｜ 状态：${runtimeStatus}` : ''}`;
+        runtimeEl.textContent = `运行：${runtimeAction || '-'}${runtimeAction === 'tunnel' ? ` (${runtimeTunnelLabel})` : ''}${runtimeStatusText ? ` ｜ 状态：${runtimeStatusText}` : ''}`;
         rowEl.appendChild(runtimeEl);
 
         proxyRuleGroupsEl.appendChild(rowEl);
@@ -652,6 +653,16 @@
       return '-';
     }
 
+    function formatRuntimeStatusText(rawStatus, stateEntry) {
+      const status = String(rawStatus || '').trim();
+      if (!status) return '';
+      if (status.toLowerCase() !== 'online') return status;
+      if (proxySelectedLatencyDisplay === '-') {
+        return '最近测试延迟: -';
+      }
+      return `最近测试延迟: ${proxySelectedLatencyDisplay}ms`;
+    }
+
     async function loadProxyStatus() {
       const data = await requestJSON('/local/api/proxy/status', { method: 'GET' });
       proxyStatusCache = {
@@ -659,10 +670,11 @@
         mode: String(data.mode || '').trim(),
       };
       const latencyMs = Number(data.selected_chain_latency_ms);
+      proxySelectedLatencyDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '-';
       setText('proxyEnabled', data.enabled ? '是' : '否');
       setText('proxyMode', data.mode);
       setText('proxySelectedKeepalive', formatProxyKeepaliveStatus(data.selected_chain_keepalive));
-      setText('proxySelectedLatencyMs', Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '-');
+      setText('proxySelectedLatencyMs', proxySelectedLatencyDisplay);
       setText('proxySelectedLatencyUpdatedAt', data.selected_chain_latency_updated_at);
       setText('proxySelectedLatencyError', data.selected_chain_latency_error);
       setText('proxyUpdatedAt', data.updated_at);
