@@ -941,6 +941,135 @@ func TestProbeLocalProxyRejectRejectsUnknownGroup(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyDirectKeepsSelectedTunnelWhenForwardingDisabled(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	proxyChainPath, err := resolveProbeLocalProxyChainPath()
+	if err != nil {
+		t.Fatalf("resolve proxy_chain path failed: %v", err)
+	}
+	proxyChainPayload := `{
+  "updated_at": "2026-04-24T00:00:00Z",
+  "items": [
+    {"chain_id":"chain-proxy-1","chain_type":"proxy_chain","name":"Proxy 1"}
+  ]
+}`
+	if err := os.WriteFile(proxyChainPath, []byte(proxyChainPayload), 0o644); err != nil {
+		t.Fatalf("write proxy_chain file failed: %v", err)
+	}
+
+	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "default", "rules": []string{"domain_suffix:example.com"}},
+			{"group": "media", "rules": []string{"domain_keyword:stream"}},
+		},
+	}, sessionCookie)
+	if saveGroupsResp.Code != http.StatusOK {
+		t.Fatalf("groups save status=%d body=%s", saveGroupsResp.Code, saveGroupsResp.Body.String())
+	}
+
+	selectResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/select", map[string]any{
+		"group":          "media",
+		"tunnel_node_id": "chain-proxy-1",
+	}, sessionCookie)
+	if selectResp.Code != http.StatusOK {
+		t.Fatalf("proxy/select status=%d body=%s", selectResp.Code, selectResp.Body.String())
+	}
+
+	probeLocalRestoreProxyDirect = func() error { return nil }
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest() })
+
+	directResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/direct", map[string]any{
+		"group": "media",
+	}, sessionCookie)
+	if directResp.Code != http.StatusOK {
+		t.Fatalf("proxy/direct status=%d body=%s", directResp.Code, directResp.Body.String())
+	}
+
+	statusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/status", nil, sessionCookie)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("proxy/status status=%d body=%s", statusResp.Code, statusResp.Body.String())
+	}
+	statusPayload := decodeProbeLocalJSON(t, statusResp)
+	if enabled, _ := statusPayload["enabled"].(bool); enabled {
+		t.Fatalf("proxy/status enabled should be false")
+	}
+	if mode, _ := statusPayload["mode"].(string); mode != probeLocalProxyModeDirect {
+		t.Fatalf("proxy/status mode=%q", mode)
+	}
+	if selectedTunnel, _ := statusPayload["selected_tunnel_node_id"].(string); selectedTunnel != "chain:chain-proxy-1" {
+		t.Fatalf("proxy/status selected_tunnel_node_id=%q", selectedTunnel)
+	}
+	if selectedChainID, _ := statusPayload["selected_chain_id"].(string); selectedChainID != "chain-proxy-1" {
+		t.Fatalf("proxy/status selected_chain_id=%q", selectedChainID)
+	}
+}
+
+func TestProbeLocalProxyRejectKeepsSelectedTunnelWhenForwardingBlocked(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	proxyChainPath, err := resolveProbeLocalProxyChainPath()
+	if err != nil {
+		t.Fatalf("resolve proxy_chain path failed: %v", err)
+	}
+	proxyChainPayload := `{
+  "updated_at": "2026-04-24T00:00:00Z",
+  "items": [
+    {"chain_id":"chain-proxy-1","chain_type":"proxy_chain","name":"Proxy 1"}
+  ]
+}`
+	if err := os.WriteFile(proxyChainPath, []byte(proxyChainPayload), 0o644); err != nil {
+		t.Fatalf("write proxy_chain file failed: %v", err)
+	}
+
+	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "default", "rules": []string{"domain_suffix:example.com"}},
+			{"group": "media", "rules": []string{"domain_keyword:stream"}},
+		},
+	}, sessionCookie)
+	if saveGroupsResp.Code != http.StatusOK {
+		t.Fatalf("groups save status=%d body=%s", saveGroupsResp.Code, saveGroupsResp.Body.String())
+	}
+
+	selectResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/select", map[string]any{
+		"group":          "media",
+		"tunnel_node_id": "chain-proxy-1",
+	}, sessionCookie)
+	if selectResp.Code != http.StatusOK {
+		t.Fatalf("proxy/select status=%d body=%s", selectResp.Code, selectResp.Body.String())
+	}
+
+	rejectResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/reject", map[string]any{
+		"group": "media",
+	}, sessionCookie)
+	if rejectResp.Code != http.StatusOK {
+		t.Fatalf("proxy/reject status=%d body=%s", rejectResp.Code, rejectResp.Body.String())
+	}
+
+	statusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/status", nil, sessionCookie)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("proxy/status status=%d body=%s", statusResp.Code, statusResp.Body.String())
+	}
+	statusPayload := decodeProbeLocalJSON(t, statusResp)
+	if enabled, _ := statusPayload["enabled"].(bool); enabled {
+		t.Fatalf("proxy/status enabled should be false")
+	}
+	if mode, _ := statusPayload["mode"].(string); mode != probeLocalProxyModeDirect {
+		t.Fatalf("proxy/status mode=%q", mode)
+	}
+	if selectedTunnel, _ := statusPayload["selected_tunnel_node_id"].(string); selectedTunnel != "chain:chain-proxy-1" {
+		t.Fatalf("proxy/status selected_tunnel_node_id=%q", selectedTunnel)
+	}
+	if selectedChainID, _ := statusPayload["selected_chain_id"].(string); selectedChainID != "chain-proxy-1" {
+		t.Fatalf("proxy/status selected_chain_id=%q", selectedChainID)
+	}
+}
+
 func TestProbeLocalSystemUpgradeDirectAccepted(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

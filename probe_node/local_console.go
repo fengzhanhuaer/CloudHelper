@@ -1171,9 +1171,6 @@ func upsertProbeLocalRuntimeStateGroup(group, action, tunnelNodeID, runtimeStatu
 	if !validateProbeLocalRuntimeAction(action) {
 		return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "invalid runtime action"}
 	}
-	if action != "tunnel" {
-		tunnelNodeID = ""
-	}
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
 		return err
@@ -1183,7 +1180,9 @@ func upsertProbeLocalRuntimeStateGroup(group, action, tunnelNodeID, runtimeStatu
 		if strings.EqualFold(strings.TrimSpace(state.Groups[i].Group), group) {
 			state.Groups[i].Group = group
 			state.Groups[i].Action = action
-			state.Groups[i].TunnelNodeID = tunnelNodeID
+			if tunnelNodeID != "" {
+				state.Groups[i].TunnelNodeID = tunnelNodeID
+			}
 			state.Groups[i].RuntimeStatus = runtimeStatus
 			matched = true
 			break
@@ -2082,11 +2081,9 @@ func probeLocalProxyRejectHandler(w http.ResponseWriter, r *http.Request) {
 
 func resolveProbeLocalSelectedTunnelNodeID(state probeLocalProxyStateFile) string {
 	for _, entry := range state.Groups {
-		if normalizeAction := strings.ToLower(strings.TrimSpace(entry.Action)); normalizeAction == "tunnel" {
-			normalized, _, err := normalizeProbeLocalTunnelNodeID(entry.TunnelNodeID)
-			if err == nil {
-				return normalized
-			}
+		normalized, _, err := normalizeProbeLocalTunnelNodeID(entry.TunnelNodeID)
+		if err == nil && normalized != "" {
+			return normalized
 		}
 	}
 	return ""
