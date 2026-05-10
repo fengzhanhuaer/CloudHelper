@@ -33,7 +33,7 @@ func TestResolveProbeLocalProxyRouteDecisionByDomainTunnel(t *testing.T) {
 
 	state := defaultProbeLocalProxyStateFile()
 	state.Groups = []probeLocalProxyStateGroupEntry{
-		{Group: "media", Action: "tunnel", TunnelNodeID: "chain:chain-proxy-1"},
+		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
 	}
 	if err := persistProbeLocalProxyStateFile(state); err != nil {
 		t.Fatalf("persist state failed: %v", err)
@@ -45,6 +45,9 @@ func TestResolveProbeLocalProxyRouteDecisionByDomainTunnel(t *testing.T) {
 	}
 	if decision.Action != "tunnel" {
 		t.Fatalf("action=%q", decision.Action)
+	}
+	if decision.SelectedChainID != "chain-proxy-1" {
+		t.Fatalf("selected_chain_id=%q", decision.SelectedChainID)
 	}
 	if decision.TunnelNodeID != "chain:chain-proxy-1" {
 		t.Fatalf("tunnel_node_id=%q", decision.TunnelNodeID)

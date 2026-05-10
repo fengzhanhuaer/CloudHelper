@@ -69,7 +69,7 @@ func TestParseProbeLocalTUNIPv6TargetTCP(t *testing.T) {
 	}
 }
 
-func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesNode(t *testing.T) {
+func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesSelectedChain(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
 		t.Fatalf("ensure defaults failed: %v", err)
@@ -81,7 +81,7 @@ func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesNode(t *testing.T) {
 		t.Fatalf("persist groups failed: %v", err)
 	}
 	state := defaultProbeLocalProxyStateFile()
-	state.Groups = []probeLocalProxyStateGroupEntry{{Group: "media", Action: "tunnel", TunnelNodeID: "chain:chain-proxy-1"}}
+	state.Groups = []probeLocalProxyStateGroupEntry{{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"}}
 	if err := persistProbeLocalProxyStateFile(state); err != nil {
 		t.Fatalf("persist state failed: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesNode(t *testing.T) {
 	}
 }
 
-func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesNodeUDPFakeIP(t *testing.T) {
+func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesSelectedChainUDPFakeIP(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
 		t.Fatalf("ensure defaults failed: %v", err)
@@ -126,7 +126,7 @@ func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesNodeUDPFakeIP(t *test
 		t.Fatalf("persist groups failed: %v", err)
 	}
 	state := defaultProbeLocalProxyStateFile()
-	state.Groups = []probeLocalProxyStateGroupEntry{{Group: "media", Action: "tunnel", TunnelNodeID: "chain:chain-proxy-1"}}
+	state.Groups = []probeLocalProxyStateGroupEntry{{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"}}
 	if err := persistProbeLocalProxyStateFile(state); err != nil {
 		t.Fatalf("persist state failed: %v", err)
 	}

@@ -10,9 +10,11 @@
 
 | 缺陷编号 | 需求编号 | 测试项编号 | 缺陷描述 | 严重级别 | 修复状态 | 修复证据 | 备注 |
 |---|---|---|---|---|---|---|---|
-| DEF-001 | REQ-PN-TUN-PROXY-REFAC-001-R2 | TI-005 | panel 最近测试延迟在不可达场景长期显示 `-`，语义不明确 | 中 | 已完成 | proxy/status 增加 selected_chain_latency_status；panel 渲染不可达文案并启用 60s 单定时器轮询 | 对应 T-007 |
-| DEF-002 | REQ-PN-TUN-PROXY-REFAC-001-R1 | TI-004 | TCP/UDP 调试字段跨端口径存在不一致风险 | 中 | 已完成 | tcp_debug/udp_assoc_debug 投影字段已统一（group/node_id/route_target/transport 等） | 对应 T-004,T-005 |
-| DEF-000 | REQ-PN-TUN-PROXY-REFAC-001-R1,R2 | TI-001~TI-006 | 本轮复核未发现新增缺陷 | 无 | 已完成 | go test ./... 通过；定向测试通过 | 无新增阻塞项 |
+| DEF-001 | REQ-PN-TUN-PROXY-REFAC-001-R1 | TI-001 | TUN 代理此前误把组选链消费建立在 probe link chain 内部 runtime 上，边界错误 | 高 | 已完成 | 新增 [`probe_node/local_tun_group_runtime.go`](probe_node/local_tun_group_runtime.go)，按 group 独立维护 tun proxy 客户端 runtime | 已与链路内部 runtime 解耦 |
+| DEF-002 | REQ-PN-TUN-PROXY-REFAC-001-R2 | TI-002,TI-003 | 控制面与路由层仍以 tunnel_node_id 为主语义，导致 API/状态表达与业务边界不一致 | 高 | 已完成 | enable/select/status、DNS route hint、route decision 已切换为 selected_chain_id 主语义，并保留 legacy alias | 完成兼容迁移 |
+| DEF-003 | REQ-PN-TUN-PROXY-REFAC-001-R3 | TI-004,TI-005 | direct/reject 与不可用场景可能误清空组选链或走回退语义，削弱“不可用即不可用”要求 | 高 | 已完成 | proxy/status 读取组选 runtime；direct/reject 保留 selected chain 状态；相关测试通过 | 满足 fail-closed 要求 |
+| DEF-000 | REQ-PN-TUN-PROXY-REFAC-001-R1,R2,R3 | TI-001~TI-006 | 本轮实现与回归未发现新增阻塞缺陷 | 无 | 已完成 | `go test ./...` 通过 | 无新增阻塞项 |
 
 ## 结论
-- 本轮全量重启执行后无遗留阻塞缺陷，缺陷项均已闭环。
+- 本轮缺陷均围绕“边界纠偏、控制面纠偏、不可用语义纠偏”完成闭环修复。
+- 当前提交范围内无新增阻塞缺陷。

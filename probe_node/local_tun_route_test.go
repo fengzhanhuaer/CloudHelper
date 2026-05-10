@@ -37,7 +37,7 @@ func TestDecideProbeLocalRouteForTargetTunnelByDomainRule(t *testing.T) {
 	}
 	state := defaultProbeLocalProxyStateFile()
 	state.Groups = []probeLocalProxyStateGroupEntry{
-		{Group: "media", Action: "tunnel", TunnelNodeID: "chain:chain-proxy-1"},
+		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
 	}
 	if err := persistProbeLocalProxyStateFile(state); err != nil {
 		t.Fatalf("persist state failed: %v", err)
@@ -58,8 +58,14 @@ func TestDecideProbeLocalRouteForTargetTunnelByDomainRule(t *testing.T) {
 	if route.Group != "media" {
 		t.Fatalf("group=%q", route.Group)
 	}
+	if route.SelectedChainID != "chain-proxy-1" {
+		t.Fatalf("selected_chain_id=%q", route.SelectedChainID)
+	}
 	if route.TunnelNodeID != "chain:chain-proxy-1" {
 		t.Fatalf("tunnel_node_id=%q", route.TunnelNodeID)
+	}
+	if route.GroupRuntime == nil {
+		t.Fatal("group_runtime should not be nil")
 	}
 }
 
@@ -109,7 +115,7 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	}
 	state := defaultProbeLocalProxyStateFile()
 	state.Groups = []probeLocalProxyStateGroupEntry{
-		{Group: "media", Action: "tunnel", TunnelNodeID: "chain:chain-proxy-1"},
+		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
 	}
 	if err := persistProbeLocalProxyStateFile(state); err != nil {
 		t.Fatalf("persist state failed: %v", err)
@@ -136,8 +142,14 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	if route.Direct || route.Reject {
 		t.Fatalf("route=%+v", route)
 	}
+	if route.SelectedChainID != "chain-proxy-1" {
+		t.Fatalf("selected_chain_id=%q", route.SelectedChainID)
+	}
 	if route.TunnelNodeID != "chain:chain-proxy-1" {
 		t.Fatalf("tunnel_node_id=%q", route.TunnelNodeID)
+	}
+	if route.GroupRuntime == nil {
+		t.Fatal("group_runtime should not be nil")
 	}
 	if route.TargetAddr != "api.example.com:443" {
 		t.Fatalf("target_addr=%q", route.TargetAddr)

@@ -59,10 +59,11 @@ type probeLocalDNSCacheEntry struct {
 }
 
 type probeLocalDNSRouteDecision struct {
-	Group        string
-	Action       string
-	TunnelNodeID string
-	Reject       bool
+	Group           string
+	Action          string
+	SelectedChainID string
+	TunnelNodeID    string
+	Reject          bool
 }
 
 type probeLocalDNSFakeIPRuntimeEntry struct {
@@ -72,12 +73,13 @@ type probeLocalDNSFakeIPRuntimeEntry struct {
 }
 
 type probeLocalDNSFakeIPEntry struct {
-	Domain       string `json:"domain"`
-	FakeIP       string `json:"fake_ip"`
-	Group        string `json:"group,omitempty"`
-	Action       string `json:"action,omitempty"`
-	TunnelNodeID string `json:"tunnel_node_id,omitempty"`
-	ExpiresAt    string `json:"expires_at"`
+	Domain          string `json:"domain"`
+	FakeIP          string `json:"fake_ip"`
+	Group           string `json:"group,omitempty"`
+	Action          string `json:"action,omitempty"`
+	SelectedChainID string `json:"selected_chain_id,omitempty"`
+	TunnelNodeID    string `json:"tunnel_node_id,omitempty"`
+	ExpiresAt       string `json:"expires_at"`
 }
 
 type probeLocalDNSRouteHintEntry struct {
@@ -1102,12 +1104,13 @@ func queryProbeLocalDNSFakeIPEntries() []probeLocalDNSFakeIPEntry {
 	out := make([]probeLocalDNSFakeIPEntry, 0, len(probeLocalDNSState.fakeIPToEntry))
 	for ip, entry := range probeLocalDNSState.fakeIPToEntry {
 		out = append(out, probeLocalDNSFakeIPEntry{
-			Domain:       entry.Domain,
-			FakeIP:       ip,
-			Group:        entry.Decision.Group,
-			Action:       entry.Decision.Action,
-			TunnelNodeID: entry.Decision.TunnelNodeID,
-			ExpiresAt:    entry.ExpiresAt.UTC().Format(time.RFC3339),
+			Domain:          entry.Domain,
+			FakeIP:          ip,
+			Group:           entry.Decision.Group,
+			Action:          entry.Decision.Action,
+			SelectedChainID: firstNonEmpty(strings.TrimSpace(entry.Decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(entry.Decision.TunnelNodeID)),
+			TunnelNodeID:    entry.Decision.TunnelNodeID,
+			ExpiresAt:       entry.ExpiresAt.UTC().Format(time.RFC3339),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Domain < out[j].Domain })
@@ -1128,12 +1131,13 @@ func lookupProbeLocalDNSFakeIPEntry(ip string) (probeLocalDNSFakeIPEntry, bool) 
 		return probeLocalDNSFakeIPEntry{}, false
 	}
 	return probeLocalDNSFakeIPEntry{
-		Domain:       entry.Domain,
-		FakeIP:       cleanIP,
-		Group:        entry.Decision.Group,
-		Action:       entry.Decision.Action,
-		TunnelNodeID: entry.Decision.TunnelNodeID,
-		ExpiresAt:    entry.ExpiresAt.UTC().Format(time.RFC3339),
+		Domain:          entry.Domain,
+		FakeIP:          cleanIP,
+		Group:           entry.Decision.Group,
+		Action:          entry.Decision.Action,
+		SelectedChainID: firstNonEmpty(strings.TrimSpace(entry.Decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(entry.Decision.TunnelNodeID)),
+		TunnelNodeID:    entry.Decision.TunnelNodeID,
+		ExpiresAt:       entry.ExpiresAt.UTC().Format(time.RFC3339),
 	}, true
 }
 

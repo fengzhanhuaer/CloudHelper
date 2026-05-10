@@ -10,44 +10,45 @@
 
 ## 执行边界
 - 允许修改:
-  - `probe_node` 中与组级策略运行态 路由决策 TUN 出站调试投影 面板链路状态相关的实现与测试文件。
+  - `probe_node` 中与组选链状态、组挂接 runtime、route 决策、TUN 出站、状态展示相关的实现与测试文件。
   - 需求对应的 Architect 与 Code 跟踪文档。
 - 禁止修改:
   - `probe_manager` 运行时代码。
-  - 与本需求无关的控制面业务接口与认证逻辑。
+  - [`probe link chain`](probe_node/probe_link_chains_sync.go:97) 的内部互联业务语义。
+  - 与本需求无关的认证、备份、系统升级、非代理控制面逻辑。
 
 ## 任务清单
 | 任务编号 | 需求编号 | 单元编号 | 文件范围 | 操作类型 | 验收标准 |
 |---|---|---|---|---|---|
-| T-001 | REQ-PN-TUN-PROXY-REFAC-001 | U1 | `probe_node/local_console.go` `probe_node/local_route_decision.go` | 修改 | 形成每组唯一 runtime 状态模型，避免同组多状态来源 |
-| T-002 | REQ-PN-TUN-PROXY-REFAC-001 | U2 | `probe_node/local_tun_route.go` `probe_node/local_dns_service.go` | 修改 | route 决策消费组级 runtime，tunnel 缺节点时返回结构化错误 |
-| T-003 | REQ-PN-TUN-PROXY-REFAC-001 | U3 | `probe_node/local_tun_stack_windows.go` `probe_node/link_chain_runtime.go` | 修改 | tunnel 开流路径按组级 runtime 解析并输出一致错误口径 |
-| T-004 | REQ-PN-TUN-PROXY-REFAC-001 | U4 | `probe_node/tcp_debug.go` | 修改 | TCP 调试输出字段语义对齐 manager，包含 `group` `node_id` `route_target` `direct` `transport` |
-| T-005 | REQ-PN-TUN-PROXY-REFAC-001 | U5 | `probe_node/udp_assoc_debug.go` `probe_node/link_chain_udp_assoc.go` | 修改 | UDP 调试输出字段语义对齐 manager，保留 association 生命周期关键信息 |
-| T-006 | REQ-PN-TUN-PROXY-REFAC-001 | U6 | `probe_node/local_console_test.go` `probe_node/local_route_decision_test.go` `probe_node/local_tun_route_test.go` `probe_node/local_tun_stack_windows_test.go` | 修改 新增 | 增加组级 runtime 唯一性与字段对齐测试，回归通过 |
-| T-007 | REQ-PN-TUN-PROXY-REFAC-001 | U7 | `probe_node/local_console.go` `probe_node/local_pages/panel.html` `probe_node/local_console_test.go` `probe_node/local_pages_routes_test.go` | 修改 新增 | 后端输出延迟可达性状态字段，前端失败显示 `不可达` 成功显示毫秒值，并以 60 秒单定时器自动刷新 |
+| T-001 | REQ-PN-TUN-PROXY-REFAC-001 | U1 | `probe_node/local_console.go` `probe_node/local_route_decision.go` | 修改 | 代理组运行态与请求响应字段统一改为 `selected_chain_id` 语义 |
+| T-002 | REQ-PN-TUN-PROXY-REFAC-001 | U2 | `probe_node/local_console.go` `probe_node/local_tun_group_runtime.go` | 修改 新增 | 为每个组建立并挂接唯一的 `tun proxy` 客户端 runtime，承载 socket 状态 错误 入口信息 |
+| T-003 | REQ-PN-TUN-PROXY-REFAC-001 | U3 | `probe_node/local_route_decision.go` `probe_node/local_tun_route.go` | 修改 | route 命中组后直接绑定并传递组 runtime 指针，不再把 [`getProbeChainRuntime()`](probe_node/link_chain_runtime.go:2512) 作为主路径依赖 |
+| T-004 | REQ-PN-TUN-PROXY-REFAC-001 | U4 | `probe_node/local_tun_route.go` `probe_node/local_tun_stack_windows.go` `probe_node/local_tun_group_runtime.go` | 修改 新增 | 基于组 runtime 独立维护链路入口客户端连接与后续代理行为 |
+| T-005 | REQ-PN-TUN-PROXY-REFAC-001 | U5 | `probe_node/probe_link_chains_sync.go` `probe_node/link_chain_runtime.go` | 审核性最小修改 | 仅在元数据暴露 注释说明 或测试补强需要时最小修改，不得把内部链路 runtime 改造成组选链 runtime |
+| T-006 | REQ-PN-TUN-PROXY-REFAC-001 | U6 | `probe_node/local_console.go` `probe_node/local_console_test.go` | 修改 | 状态输出必须来自组挂接 runtime，失败显示不可用，不做直连回退 |
+| T-007 | REQ-PN-TUN-PROXY-REFAC-001 | U1 U2 U3 U4 U6 | `probe_node/local_console_test.go` `probe_node/local_route_decision_test.go` `probe_node/local_tun_route_test.go` `probe_node/local_tun_stack_windows_test.go` | 修改 新增 | 覆盖每组一个 runtime 指针 任意 chain 消费 入口开流失败 不可用无回退等回归场景 |
+| T-008 | REQ-PN-TUN-PROXY-REFAC-001 | U1 U2 U3 U4 U5 U6 | `doc/Code/requirement-trace-matrix-REQ-PN-TUN-PROXY-REFAC-001.md` `doc/Code/interface-trace-matrix-REQ-PN-TUN-PROXY-REFAC-001.md` `doc/Code/test-item-trace-matrix-REQ-PN-TUN-PROXY-REFAC-001.md` `doc/Code/defect-trace-matrix-REQ-PN-TUN-PROXY-REFAC-001.md` | 新增 | 代码变更完成后补齐证据、接口映射、测试项与缺陷跟踪矩阵 |
 
 ## 源码修改规则
-- 必须使用 [`encoding_tools/README.md`](encoding_tools/README.md:1) 描述的接口。
-- 必须优先使用 [`encoding_tools/encoding_safe_patch.py`](encoding_tools/encoding_safe_patch.py:1)。
+- 必须使用 [encoding_tools/README.md](encoding_tools/README.md:1) 描述的接口。
+- 必须优先使用 [encoding_tools/encoding_safe_patch.py](encoding_tools/encoding_safe_patch.py:1)。
 - 禁止直接普通编辑源代码。
+- 必须保持“组挂接客户端 runtime”与“内部链路互联 runtime”业务隔离。
 
 ## 交付物
-- `probe_node` 组级 runtime 模型重构代码。
-- TCP UDP 调试口径对齐实现与测试。
-- `local/panel` 最近测试延迟状态语义修复与 60 秒自动刷新实现及测试。
-- Code 阶段矩阵文档:
-  - `doc/Code/requirement-trace-matrix-REQ-PN-TUN-PROXY-REFAC-001.md`
-  - `doc/Code/interface-trace-matrix-REQ-PN-TUN-PROXY-REFAC-001.md`
-  - `doc/Code/test-item-trace-matrix-REQ-PN-TUN-PROXY-REFAC-001.md`
-  - `doc/Code/defect-trace-matrix-REQ-PN-TUN-PROXY-REFAC-001.md`
+- `selected_chain_id` 语义重命名与控制面 API 调整。
+- 每组一个 `tun proxy` 客户端 runtime 的实现。
+- route 直接消费组 runtime 指针的出站代理逻辑。
+- 不可用无回退的状态展示与回归测试。
+- Code 阶段矩阵文档。
 
 ## 门禁输入
 - 变更文件清单与 `encoding_tools` 执行记录。
 - 单元测试与回归测试结果。
-- manager 与 node 字段映射对齐证据。
-- 面板延迟不可达与 60 秒刷新行为的验证证据。
+- 组 runtime 结构、生命周期与状态字段证据。
+- route 直接消费组 runtime 指针的验证证据。
+- 不再错误依赖 [`getProbeChainRuntime()`](probe_node/link_chain_runtime.go:2512) 作为组选链主路径的实现证据。
 - 需求与接口追踪矩阵更新结果。
 
 ## 结论
-- 任务包已明确实现边界、任务拆分与验收口径，可直接进入 Code 模式执行。
+- 任务包已按“每组挂接一个 `tun proxy` 客户端 runtime”重写，Code 阶段必须围绕该模型实施。

@@ -5,59 +5,71 @@
 - 需求编号: REQ-PN-TUN-PROXY-REFAC-001
 - 需求后缀: REQ-PN-TUN-PROXY-REFAC-001
 - 当前角色: Architect
-- 工作依据文档: [doc/architect/requirements-REQ-PN-TUN-PROXY-REFAC-001.md](doc/architect/requirements-REQ-PN-TUN-PROXY-REFAC-001.md:1)、[probe_node/local_tun_route.go](probe_node/local_tun_route.go:39)、[probe_node/local_console.go](probe_node/local_console.go:1163)、[probe_manager/backend/network_assistant.go](probe_manager/backend/network_assistant.go:95)、[probe_manager/backend/network_assistant_mux.go](probe_manager/backend/network_assistant_mux.go:1537)
+- 工作依据文档: [doc/architect/requirements-REQ-PN-TUN-PROXY-REFAC-001.md](doc/architect/requirements-REQ-PN-TUN-PROXY-REFAC-001.md:1)、[resolveProbeLocalProxyRouteDecisionByDomain()](probe_node/local_route_decision.go:5)、[decideProbeLocalRouteForTarget()](probe_node/local_tun_route.go:39)、[openProbeLocalTunnelConnWithAssociation()](probe_node/local_tun_route.go:117)、[getProbeChainRuntime()](probe_node/link_chain_runtime.go:2512)、[startProbeLinkChainsSyncLoop()](probe_node/probe_link_chains_sync.go:97)
 - 状态: 进行中
 
 ## 架构目标
-- 在 `probe_node` 落地“每个代理组一个 runtime”的唯一运行态模型。
-- 将当前 `group + action + tunnel_node_id` 的分散状态管理，收敛为组级 runtime 事实来源。
-- 对齐 manager 口径，使 `probe_node` 的组级 runtime 快照与 TCP/UDP 调试字段可稳定映射。
-- 保持现有 TUN 出站语义不变，重构以结构收敛与可观测一致性为主。
-- 修复 `local/panel` 最近测试延迟状态语义，失败展示 `不可达`，成功展示毫秒值，并保持状态可持续刷新。
+- 建立“每个代理组挂接一个 `tun proxy` 专属链路 runtime”的唯一运行态模型。
+- 让 route 决策在命中组后，直接消费组 runtime 指针进入后续代理行为。
+- 将 [`tun proxy`](probe_node/local_tun_route.go:117) 的组选链客户端 runtime，与 [`probe link chain`](probe_node/probe_link_chains_sync.go:97) 的内部互联 runtime 完全分离。
+- 保持选中链路不可用时直接失败并显示不可用，不允许自动回退到直连。
 
 ## 总体设计
-- 设计采用“控制面配置态 + 组级运行态 + 数据面消费态”三层模型。
-- 控制面保留 [`proxy_group.json`](probe_node/local_console.go:39) 和 [`proxy_state.json`](probe_node/local_console.go:40) 作为配置与策略输入。
-- 新增组级 runtime 聚合层，负责承载每组唯一 runtime 对象，维护 `action` `tunnel_node_id` `connected` `status` `failure_count` `retry_at` `last_error` 等状态。
-- 数据面在 [`decideProbeLocalRouteForTarget()`](probe_node/local_tun_route.go:39) 读取策略时，优先按组级 runtime 口径输出路由决策并回填调试上下文。
-- TUN TCP/UDP 出站执行逻辑保持原函数入口，重点把调试字段来源切换到组级 runtime 快照，减少分支散落取值。
+- 设计采用“组选链配置态 + 组挂接客户端 runtime + 链路内部互联 runtime”三层分工。
+- 控制面为每个组保存 `selected_chain_id`，并驱动该组挂接的 `tun proxy` runtime 创建、更新、销毁。
+- route 决策先按域名规则命中组，再直接读取该组挂接的 runtime 指针，决定后续 `tunnel` 行为。
+- `tun proxy` runtime 负责维护与该组选中链路有关的入口连接、socket 或 session、状态、错误与更新时间。
+- [`probe link chain`](probe_node/probe_link_chains_sync.go:97) 继续仅负责与本节点有关的 chain 内部互联，不为 `tun proxy` 提供组选链客户端运行态。
+
+## 术语澄清
+- [`getProbeChainRuntime()`](probe_node/link_chain_runtime.go:2512) 返回的是 [`probeChainRuntime`](probe_node/link_chain_runtime.go:81) 指针，即当前节点内部链路互联运行态句柄。
+- `group attached tun runtime` 指的是挂在某个 [`proxy group`](probe_node/local_console.go:106) 上的客户端运行态，服务于该组选择的 chain。
+- 两者可能引用同一条 chain 的元数据，但它们的职责、生命周期、状态源、错误语义都不同。
+
+## 关系示意
+```mermaid
+flowchart LR
+  A[Proxy group config] --> B[Group attached tun runtime]
+  B --> C[Selected chain entry]
+  D[Route decision] --> B
+  E[Probe link chain internal runtime] --> F[Local related chain peers]
+  G[Chain metadata cache] --> B
+  G --> E
+```
 
 ## 关键模块
 | 模块编号 | 模块名称 | 职责 | 输入 | 输出 |
 |---|---|---|---|---|
-| M1 | Group Runtime Registry | 每组维护唯一 runtime 状态对象，提供查询 更新 快照接口 | group action tunnel_node_id 连接事件 失败事件 | runtime state snapshot |
-| M2 | Route Decision Adapter | 将域名匹配与运行态策略组装为 direct reject tunnel 决策 | target domain proxy_group proxy_state runtime snapshot | route decision target group node |
-| M3 | Tunnel Runtime Resolver | 按组解析并确保对应 runtime 链路可用 | group runtime tunnel_node_id chain cache | runtime handle stream open result |
-| M4 | Debug Projection | 将 TCP/UDP 生命周期事件投影为统一调试字段 | route decision runtime snapshot tcp udp events | tcp_debug udp_assoc_debug payload |
-| M5 | Compatibility Facade | 兼容现有 API 与文件格式，屏蔽内部重构细节 | local api request old state files | unchanged api response with aligned runtime fields |
-| M6 | Panel Latency Status Sync | 统一延迟可达性语义并提供固定周期刷新触发点 | selected chain runtime dial result panel polling cadence | latency status reachable unreachable with periodic refresh |
+| M1 | Group Selection Store | 管理每个组的 `selected_chain_id` 与策略动作 | group action selected_chain_id | normalized group selection |
+| M2 | Group Attached TUN Runtime Registry | 为每个组维护唯一的 `tun proxy` 客户端 runtime | group selection chain metadata connect events | group runtime pointer and snapshot |
+| M3 | Route Decision Adapter | 域名命中组后直接绑定组 runtime 指针 | target domain group selection group runtime | route decision with runtime reference |
+| M4 | TUN Entry Client | 使用组 runtime 建立和维护到链路入口的连接 | group runtime target network | tunnel stream or error |
+| M5 | Probe Link Chain Internal Runtime | 维护本节点相关的 chain 内部互联 | chain topology hop config lifecycle events | internal chain connectivity |
+| M6 | Status Projection | 把组 runtime 状态投影为控制面可观测字段 | group runtime snapshot connect result | unavailable or reachable status |
 
 ## 关键接口
 | 接口编号 | 接口名称 | 调用方 | 提供方 | 说明 |
 |---|---|---|---|---|
-| IF-001 | GetOrInitGroupRuntime | Route Decision Adapter | Group Runtime Registry | 获取或初始化组级 runtime，保证每组唯一对象 |
-| IF-002 | UpdateGroupRuntimeByPolicy | 控制面策略写入流程 | Group Runtime Registry | 根据 `action` 与 `tunnel_node_id` 更新组级 runtime |
-| IF-003 | ResolveRouteByDomainWithRuntime | TUN route 层 | Route Decision Adapter | 按域名规则和组级 runtime 产出最终路由决策 |
-| IF-004 | EnsureGroupTunnelRuntime | TUN TCP/UDP 出站 | Tunnel Runtime Resolver | 为组级 tunnel 决策解析并校验 runtime 可用性 |
-| IF-005 | BuildGroupRuntimeSnapshot | 调试输出与状态接口 | Group Runtime Registry | 输出对齐 manager 的组级快照字段 |
-| IF-006 | ProjectTCPDebugPayload | TCP forwarder | Debug Projection | 输出包含 `group` `node_id` `route_target` `direct` `transport` 的统一字段 |
-| IF-007 | ProjectUDPDebugPayload | UDP association | Debug Projection | 输出包含 `group` `node_id` `route_target` `route_fingerprint` 的统一字段 |
-| IF-008 | BuildProxyLatencyStatusView | Proxy Status Handler | Panel Latency Status Sync | 生成 `selected_chain_latency_ms` 与 `selected_chain_latency_status` 视图字段 |
-| IF-009 | StartPanelProxyStatusPolling | Panel Script Runtime | Panel Latency Status Sync | 启动 60 秒周期 `loadProxyStatus` 轮询并避免重复注册 |
+| IF-001 | PersistGroupSelection | 控制面保存流程 | M1 | 保存组动作与 `selected_chain_id` |
+| IF-002 | GetOrRefreshGroupTunRuntime | 控制面与运行态同步流程 | M2 | 为组创建或刷新挂接 runtime |
+| IF-003 | ResolveRouteWithGroupRuntime | TUN route 层 | M3 | 直接把命中的组绑定到其 runtime 指针 |
+| IF-004 | OpenTunnelByGroupRuntime | TUN TCP UDP 出站 | M4 | 使用组 runtime 与链路入口交互 |
+| IF-005 | MaintainLocalChainInternals | chain 同步循环 | M5 | 维护与本节点有关的链路内部互联 |
+| IF-006 | BuildGroupRuntimeStatus | 状态接口 | M6 | 输出该组客户端 runtime 的可用性与错误状态 |
 
 ## 关键约束
-- 单组唯一性: 任一时刻一个组仅允许绑定一个 runtime 状态对象。
-- 分层约束: 配置态文件不直接承载连接对象，连接态只能存在于运行态内存模型。
-- 兼容约束: 外部 API 请求体与核心响应字段保持兼容，避免破坏现有控制台调用。
-- 语义约束: 对齐 manager 字段时，优先语义一致，其次名称一致。
-- 回退约束: runtime 不可用时，必须输出可诊断错误，禁止静默降级为错误路径成功。
-- 展示约束: 延迟不可达时必须输出明确状态供前端渲染 `不可达`，禁止仅依赖字段缺失触发 `-`。
-- 刷新约束: `panel` 侧最多保留一个 proxy status 轮询定时器，轮询周期固定 60 秒。
+- 单组单 runtime 约束: 每个组同一时刻只能挂接一个 `tun proxy` runtime。
+- 直接指针消费约束: route 命中组后，后续代理行为必须直接消费该组 runtime 指针。
+- 禁耦合约束: `tun proxy` 主路径不得再把 [getProbeChainRuntime()](probe_node/link_chain_runtime.go:2512) 作为组选链 runtime 来源。
+- 业务隔离约束: M2 M3 M4 M6 属于 `tun proxy` 业务域，M5 属于 [`probe link chain`](probe_node/probe_link_chains_sync.go:97) 业务域。
+- 任意 chain 消费约束: `tun proxy` 可消费任意 chain，不要求本节点属于该 chain。
+- 无回退约束: 链路入口不可用时禁止自动降级为 `direct`。
 
 ## 风险
-- 运行态收敛过程可能引入并发读写竞态，需通过统一锁域与快照拷贝控制。
-- 若 route 层和 debug 层引用不同状态源，会再次形成口径分裂。
-- 组级 runtime 与链路 runtime 的生命周期不一致时，可能出现 stale 状态。
+- 若组切换 chain 后旧 runtime 未及时回收，可能发生组配置与实际代理连接不一致。
+- 若状态投影仍引用内部链路 runtime，控制面会错误显示可用性。
+- 若链路入口元数据解析路径与组 runtime 刷新路径不同步，可能出现空指针或陈旧连接。
 
 ## 结论
-- 架构采用“每组唯一 runtime + 分层消费 + 调试口径投影”方案，满足 `probe_node` 对齐 manager 的核心目标，且可在不改变主业务语义前提下渐进落地。
+- 架构已经收敛为“双 runtime 分离”模型：组上挂接 [`tun proxy`](probe_node/local_tun_route.go:117) 客户端 runtime，节点上维护 [`probe link chain`](probe_node/probe_link_chains_sync.go:97) 内部互联 runtime。
+- 后续 Code 阶段应围绕“按组挂 runtime、按组 runtime 走代理、内部互联独立维护”实施。

@@ -41,7 +41,8 @@ func resolveProbeLocalProxyRouteDecisionByDomain(domain string) probeLocalDNSRou
 			decision.Reject = true
 		case "tunnel":
 			decision.Action = "tunnel"
-			decision.TunnelNodeID = strings.TrimSpace(entry.TunnelNodeID)
+			decision.SelectedChainID = firstNonEmpty(strings.TrimSpace(entry.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID))
+			decision.TunnelNodeID = formatProbeLocalLegacyTunnelNodeID(decision.SelectedChainID)
 		default:
 			decision.Action = "direct"
 		}

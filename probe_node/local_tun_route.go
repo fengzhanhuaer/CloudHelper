@@ -2,18 +2,19 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"time"
 )
 
 type probeLocalTunnelRouteDecision struct {
-	Direct       bool
-	Reject       bool
-	TargetAddr   string
-	Group        string
-	TunnelNodeID string
+	Direct          bool
+	Reject          bool
+	TargetAddr      string
+	Group           string
+	SelectedChainID string
+	TunnelNodeID    string
+	GroupRuntime    *probeLocalTUNGroupRuntime
 }
 
 type probeLocalRouteRejectError struct {
@@ -77,15 +78,23 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 	case "tunnel":
 		decision.Direct = false
 		decision.Reject = false
-		decision.TunnelNodeID = strings.TrimSpace(dnsDecision.TunnelNodeID)
-		if decision.TunnelNodeID == "" {
-			return probeLocalTunnelRouteDecision{}, errors.New("tunnel route missing tunnel_node_id")
+		decision.SelectedChainID = firstNonEmpty(strings.TrimSpace(dnsDecision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(dnsDecision.TunnelNodeID))
+		if decision.SelectedChainID == "" {
+			return probeLocalTunnelRouteDecision{}, errors.New("tunnel route missing selected_chain_id")
 		}
+		decision.TunnelNodeID = formatProbeLocalLegacyTunnelNodeID(decision.SelectedChainID)
+		groupRuntime, runtimeErr := ensureProbeLocalTUNGroupRuntime(decision.Group, decision.SelectedChainID)
+		if runtimeErr != nil {
+			return probeLocalTunnelRouteDecision{}, runtimeErr
+		}
+		decision.GroupRuntime = groupRuntime
 		return decision, nil
 	default:
 		decision.Direct = true
 		decision.Reject = false
+		decision.SelectedChainID = ""
 		decision.TunnelNodeID = ""
+		decision.GroupRuntime = nil
 		return decision, nil
 	}
 }
@@ -110,30 +119,34 @@ func rewriteProbeLocalRouteTargetForFakeIP(host string, port string) (rewrittenT
 	return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
 }
 
-func openProbeLocalTunnelConn(network, targetAddr, tunnelNodeID string) (net.Conn, error) {
-	return openProbeLocalTunnelConnWithAssociation(network, targetAddr, tunnelNodeID, nil)
+func openProbeLocalTunnelConn(network, targetAddr, selectedChainID string) (net.Conn, error) {
+	return openProbeLocalTunnelConnWithAssociation(network, targetAddr, selectedChainID, nil)
 }
 
-func openProbeLocalTunnelConnWithAssociation(network, targetAddr, tunnelNodeID string, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
-	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
-	if cleanNetwork == "" {
-		cleanNetwork = "tcp"
-	}
-	normalizedNodeID, chainID, err := normalizeProbeLocalTunnelNodeID(tunnelNodeID)
+func openProbeLocalTunnelConnWithAssociation(network, targetAddr, selectedChainID string, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
+	chainID, err := normalizeProbeLocalSelectedChainID(selectedChainID)
 	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(chainID) == "" {
-		return nil, errors.New("empty tunnel chain id")
+		return nil, errors.New("empty selected chain id")
 	}
-	runtime := getProbeChainRuntime(chainID)
-	if runtime == nil {
-		return nil, fmt.Errorf("tunnel chain runtime not found: %s", normalizedNodeID)
+	groupRuntime, err := ensureProbeLocalTUNGroupRuntime("@selected_chain:"+chainID, chainID)
+	if err != nil {
+		return nil, err
 	}
-	if associationV2 == nil {
-		return openProbeChainPortForwardStream(runtime, "", cleanNetwork, strings.TrimSpace(targetAddr))
+	return openProbeLocalTunnelConnWithGroupRuntime(network, targetAddr, groupRuntime, associationV2)
+}
+
+func openProbeLocalTunnelConnWithGroupRuntime(network, targetAddr string, groupRuntime *probeLocalTUNGroupRuntime, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
+	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
+	if cleanNetwork == "" {
+		cleanNetwork = "tcp"
 	}
-	return openProbeChainPortForwardStreamWithAssociation(runtime, "", cleanNetwork, strings.TrimSpace(targetAddr), associationV2)
+	if groupRuntime == nil {
+		return nil, errors.New("group runtime is nil")
+	}
+	return groupRuntime.openStream(cleanNetwork, strings.TrimSpace(targetAddr), associationV2)
 }
 
 func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, error) {
@@ -143,5 +156,5 @@ func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, err
 	if route.Direct {
 		return net.DialTimeout("tcp", strings.TrimSpace(route.TargetAddr), 10*time.Second)
 	}
-	return openProbeLocalTunnelConn("tcp", route.TargetAddr, route.TunnelNodeID)
+	return openProbeLocalTunnelConnWithGroupRuntime("tcp", route.TargetAddr, route.GroupRuntime, nil)
 }

@@ -21,10 +21,12 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	resetProbeLocalAuthManagerForTest()
 	resetProbeLocalControlStateForTest()
 	resetProbeLocalDNSServiceForTest()
+	resetProbeLocalTUNGroupRuntimeRegistryForTest()
 	t.Cleanup(func() {
 		resetProbeLocalAuthManagerForTest()
 		resetProbeLocalControlStateForTest()
 		resetProbeLocalDNSServiceForTest()
+		resetProbeLocalTUNGroupRuntimeRegistryForTest()
 		resetProbeLocalProxyHooksForTest()
 		resetProbeLocalTUNHooksForTest()
 		resetProbeLocalUpgradeHooksForTest()
@@ -561,8 +563,8 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNDataPlaneHooksForTest() })
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{
-		"group":          "media",
-		"tunnel_node_id": "chain-proxy-1",
+		"group":             "media",
+		"selected_chain_id": "chain-proxy-1",
 	}, sessionCookie)
 	if enableResp.Code != http.StatusOK {
 		t.Fatalf("proxy/enable with selection status=%d body=%s", enableResp.Code, enableResp.Body.String())
@@ -574,6 +576,9 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	}
 	if selectionObj["group"] != "media" {
 		t.Fatalf("proxy/enable selection group=%v", selectionObj["group"])
+	}
+	if selectionObj["selected_chain_id"] != "chain-proxy-1" {
+		t.Fatalf("proxy/enable selection selected_chain_id=%v", selectionObj["selected_chain_id"])
 	}
 	if selectionObj["tunnel_node_id"] != "chain:chain-proxy-1" {
 		t.Fatalf("proxy/enable selection tunnel_node_id=%v", selectionObj["tunnel_node_id"])
@@ -595,6 +600,9 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 			found = true
 			if entry["action"] != "tunnel" {
 				t.Fatalf("media action=%v", entry["action"])
+			}
+			if entry["selected_chain_id"] != "chain-proxy-1" {
+				t.Fatalf("media selected_chain_id=%v", entry["selected_chain_id"])
 			}
 			if entry["tunnel_node_id"] != "chain:chain-proxy-1" {
 				t.Fatalf("media tunnel_node_id=%v", entry["tunnel_node_id"])
@@ -657,8 +665,8 @@ func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t 
 	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNDataPlaneHooksForTest() })
 
 	selectResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/select", map[string]any{
-		"group":          "media",
-		"tunnel_node_id": "chain-proxy-1",
+		"group":             "media",
+		"selected_chain_id": "chain-proxy-1",
 	}, sessionCookie)
 	if selectResp.Code != http.StatusOK {
 		t.Fatalf("proxy/select status=%d body=%s", selectResp.Code, selectResp.Body.String())
@@ -670,6 +678,9 @@ func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t 
 	}
 	if selectionObj["group"] != "media" {
 		t.Fatalf("proxy/select selection group=%v", selectionObj["group"])
+	}
+	if selectionObj["selected_chain_id"] != "chain-proxy-1" {
+		t.Fatalf("proxy/select selection selected_chain_id=%v", selectionObj["selected_chain_id"])
 	}
 	if selectionObj["tunnel_node_id"] != "chain:chain-proxy-1" {
 		t.Fatalf("proxy/select selection tunnel_node_id=%v", selectionObj["tunnel_node_id"])
@@ -701,6 +712,9 @@ func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t 
 			found = true
 			if entry["action"] != "tunnel" {
 				t.Fatalf("media action=%v", entry["action"])
+			}
+			if entry["selected_chain_id"] != "chain-proxy-1" {
+				t.Fatalf("media selected_chain_id=%v", entry["selected_chain_id"])
 			}
 			if entry["tunnel_node_id"] != "chain:chain-proxy-1" {
 				t.Fatalf("media tunnel_node_id=%v", entry["tunnel_node_id"])
@@ -766,8 +780,8 @@ func TestProbeLocalProxyEnableRejectsUnknownTunnelNodeID(t *testing.T) {
 	t.Cleanup(func() { resetProbeLocalProxyHooksForTest() })
 
 	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{
-		"group":          "default",
-		"tunnel_node_id": "chain-not-exists",
+		"group":             "default",
+		"selected_chain_id": "chain-not-exists",
 	}, sessionCookie)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("proxy/enable unknown tunnel status=%d body=%s", resp.Code, resp.Body.String())
@@ -971,8 +985,8 @@ func TestProbeLocalProxyDirectKeepsSelectedTunnelWhenForwardingDisabled(t *testi
 	}
 
 	selectResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/select", map[string]any{
-		"group":          "media",
-		"tunnel_node_id": "chain-proxy-1",
+		"group":             "media",
+		"selected_chain_id": "chain-proxy-1",
 	}, sessionCookie)
 	if selectResp.Code != http.StatusOK {
 		t.Fatalf("proxy/select status=%d body=%s", selectResp.Code, selectResp.Body.String())
@@ -1037,8 +1051,8 @@ func TestProbeLocalProxyRejectKeepsSelectedTunnelWhenForwardingBlocked(t *testin
 	}
 
 	selectResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/select", map[string]any{
-		"group":          "media",
-		"tunnel_node_id": "chain-proxy-1",
+		"group":             "media",
+		"selected_chain_id": "chain-proxy-1",
 	}, sessionCookie)
 	if selectResp.Code != http.StatusOK {
 		t.Fatalf("proxy/select status=%d body=%s", selectResp.Code, selectResp.Body.String())

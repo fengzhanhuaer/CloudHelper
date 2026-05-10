@@ -357,7 +357,7 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 		}
 		return &probeLocalDirectBypassManagedConn{Conn: conn, release: func() { releaseProbeLocalDirectBypassForHost(host) }}, route, nil
 	}
-	conn, openErr := openProbeLocalTunnelConn("tcp", route.TargetAddr, route.TunnelNodeID)
+	conn, openErr := openProbeLocalTunnelConnWithGroupRuntime("tcp", route.TargetAddr, route.GroupRuntime, nil)
 	if openErr != nil {
 		return nil, route, openErr
 	}
@@ -470,7 +470,7 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 		Version:          2,
 		Transport:        "udp",
 		RouteGroup:       strings.TrimSpace(route.Group),
-		RouteNodeID:      strings.TrimSpace(route.TunnelNodeID),
+		RouteNodeID:      firstNonEmpty(strings.TrimSpace(route.TunnelNodeID), formatProbeLocalLegacyTunnelNodeID(route.SelectedChainID)),
 		RouteTarget:      strings.TrimSpace(route.TargetAddr),
 		RouteFingerprint: strings.ToLower(strings.TrimSpace(route.TargetAddr)),
 		NATMode:          probeChainUDPAssociationNATModeDefault,
@@ -496,7 +496,7 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	association.AssocKeyV2 = assocKey
 	association.FlowID = assocKey
 
-	stream, openErr := openProbeLocalTunnelConnWithAssociation("udp", route.TargetAddr, route.TunnelNodeID, association)
+	stream, openErr := openProbeLocalTunnelConnWithGroupRuntime("udp", route.TargetAddr, route.GroupRuntime, association)
 	if openErr != nil {
 		releaseSource()
 		return nil, route, openErr
