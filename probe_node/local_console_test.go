@@ -22,6 +22,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	resetProbeLocalControlStateForTest()
 	resetProbeLocalDNSServiceForTest()
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
 	t.Cleanup(func() {
 		resetProbeLocalAuthManagerForTest()
 		resetProbeLocalControlStateForTest()
@@ -30,6 +31,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 		resetProbeLocalProxyHooksForTest()
 		resetProbeLocalTUNHooksForTest()
 		resetProbeLocalUpgradeHooksForTest()
+		setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
 	})
 	return buildProbeLocalConsoleMux()
 }
@@ -530,7 +532,21 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	proxyChainPayload := `{
   "updated_at": "2026-04-24T00:00:00Z",
   "items": [
-    {"chain_id":"chain-proxy-1","chain_type":"proxy_chain","name":"Proxy 1"}
+    {
+      "chain_id":"chain-proxy-1",
+      "chain_type":"proxy_chain",
+      "name":"Proxy 1",
+      "entry_node_id":"node-10",
+      "exit_node_id":"node-35",
+      "cascade_node_ids":["node-21"],
+      "link_layer":"http2",
+      "secret":"secret-1",
+      "hop_configs":[
+        {"node_no":10,"relay_host":"entry.example.com","external_port":11110,"listen_port":11010,"link_layer":"http2"},
+        {"node_no":21,"relay_host":"relay.example.com","external_port":12121,"listen_port":12021,"link_layer":"http2"},
+        {"node_no":35,"relay_host":"exit.example.com","external_port":13131,"listen_port":13031,"link_layer":"http2"}
+      ]
+    }
   ]
 }`
 	if err := os.WriteFile(proxyChainPath, []byte(proxyChainPayload), 0o644); err != nil {
@@ -552,6 +568,12 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	probeLocalControl.tun.Installed = true
 	probeLocalControl.mu.Unlock()
 
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-enable-test"}, "https://controller.example.com/base")
+	bypassTargets := make([]string, 0, 8)
+	probeLocalEnsureExplicitDirectBypass = func(target string) error {
+		bypassTargets = append(bypassTargets, strings.TrimSpace(target))
+		return nil
+	}
 	probeLocalApplyProxyTakeover = func() error { return nil }
 	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
@@ -615,6 +637,12 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("state groups missing media entry: %v", groups)
+	}
+	joinedTargets := strings.Join(bypassTargets, ",")
+	for _, want := range []string{"controller.example.com", "entry.example.com", "relay.example.com", "exit.example.com"} {
+		if !strings.Contains(joinedTargets, want) {
+			t.Fatalf("missing bypass target host=%s targets=%v", want, bypassTargets)
+		}
 	}
 }
 

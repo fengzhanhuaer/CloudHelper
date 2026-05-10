@@ -114,6 +114,10 @@ func init() {
 	probeLocalDNSEnsureDirectBypassForTarget = ensureProbeLocalDirectBypassForTarget
 }
 
+func ensureProbeLocalExplicitDirectBypassForTarget(targetAddr string) error {
+	return ensureProbeLocalDirectBypassForTarget(targetAddr)
+}
+
 var probeLocalDirectBypassState = struct {
 	mu      sync.Mutex
 	ref     map[string]int

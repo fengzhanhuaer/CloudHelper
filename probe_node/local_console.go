@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -168,14 +169,15 @@ func probeLocalNoopPostInstallTUNReadyCheck() error {
 }
 
 var (
-	errProbeLocalProxyUnsupported       = errors.New("probe local proxy takeover is not supported on this platform")
-	errProbeLocalTUNUnsupported         = errors.New("probe local tun install is not supported on this platform")
-	probeLocalInstallTUNDriver          = installProbeLocalTUNDriver
-	probeLocalCheckTUNReadyAfterInstall = probeLocalNoopPostInstallTUNReadyCheck
-	probeLocalApplyProxyTakeover        = applyProbeLocalProxyTakeover
-	probeLocalRestoreProxyDirect        = restoreProbeLocalProxyDirect
-	probeLocalRunUpgrade                = runProbeUpgrade
-	probeLocalRestartProcess            = restartCurrentProcess
+	errProbeLocalProxyUnsupported         = errors.New("probe local proxy takeover is not supported on this platform")
+	errProbeLocalTUNUnsupported           = errors.New("probe local tun install is not supported on this platform")
+	probeLocalInstallTUNDriver            = installProbeLocalTUNDriver
+	probeLocalCheckTUNReadyAfterInstall   = probeLocalNoopPostInstallTUNReadyCheck
+	probeLocalApplyProxyTakeover          = applyProbeLocalProxyTakeover
+	probeLocalRestoreProxyDirect          = restoreProbeLocalProxyDirect
+	probeLocalEnsureExplicitDirectBypass  = ensureProbeLocalExplicitDirectBypassForTarget
+	probeLocalRunUpgrade                  = runProbeUpgrade
+	probeLocalRestartProcess              = restartCurrentProcess
 )
 
 func newProbeLocalControlManager() *probeLocalControlManager {
@@ -193,6 +195,169 @@ func newProbeLocalControlManager() *probeLocalControlManager {
 			UpdatedAt: now,
 		},
 	}
+}
+
+func resolveProbeLocalExplicitBypassTarget(host string, port int) (string, error) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return "", errors.New("bypass host is empty")
+	}
+	if port <= 0 || port > 65535 {
+		return "", fmt.Errorf("invalid bypass port: %d", port)
+	}
+	if parsed := net.ParseIP(cleanHost); parsed != nil {
+		return net.JoinHostPort(parsed.String(), strconv.Itoa(port)), nil
+	}
+	return net.JoinHostPort(cleanHost, strconv.Itoa(port)), nil
+}
+
+func appendProbeLocalExplicitBypassTarget(targets []string, seen map[string]struct{}, host string, port int) ([]string, error) {
+	targetAddr, err := resolveProbeLocalExplicitBypassTarget(host, port)
+	if err != nil {
+		return targets, err
+	}
+	if _, ok := seen[targetAddr]; ok {
+		return targets, nil
+	}
+	seen[targetAddr] = struct{}{}
+	return append(targets, targetAddr), nil
+}
+
+func resolveProbeLocalExplicitBypassTargetsForChain(item probeLinkChainServerItem) ([]string, error) {
+	route := buildChainRoute(item)
+	seen := make(map[string]struct{}, len(route))
+	targets := make([]string, 0, len(route))
+	for _, nodeID := range route {
+		hop := findHopConfigForNode(item, nodeID)
+		host := strings.TrimSpace(hop.RelayHost)
+		port := hop.ExternalPort
+		if port <= 0 {
+			port = hop.ListenPort
+		}
+		if host == "" || port <= 0 {
+			continue
+		}
+		var err error
+		targets, err = appendProbeLocalExplicitBypassTarget(targets, seen, host, port)
+		if err != nil {
+			return nil, fmt.Errorf("resolve chain bypass target failed: chain=%s node=%s err=%w", strings.TrimSpace(item.ChainID), strings.TrimSpace(nodeID), err)
+		}
+	}
+	return targets, nil
+}
+
+func collectProbeLocalSelectedChainIDs(extraSelectedChainIDs ...string) ([]string, error) {
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(state.Groups)+len(extraSelectedChainIDs))
+	chainIDs := make([]string, 0, len(state.Groups)+len(extraSelectedChainIDs))
+	appendChainID := func(raw string) error {
+		chainID, err := normalizeProbeLocalSelectedChainID(raw)
+		if err != nil {
+			return err
+		}
+		if chainID == "" {
+			return nil
+		}
+		if _, ok := seen[chainID]; ok {
+			return nil
+		}
+		seen[chainID] = struct{}{}
+		chainIDs = append(chainIDs, chainID)
+		return nil
+	}
+	for _, entry := range state.Groups {
+		if !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") {
+			continue
+		}
+		if err := appendChainID(firstNonEmpty(strings.TrimSpace(entry.SelectedChainID), strings.TrimSpace(entry.TunnelNodeID))); err != nil {
+			return nil, err
+		}
+	}
+	for _, raw := range extraSelectedChainIDs {
+		if err := appendChainID(raw); err != nil {
+			return nil, err
+		}
+	}
+	return chainIDs, nil
+}
+
+func resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs ...string) ([]string, error) {
+	seen := make(map[string]struct{}, 8)
+	targets := make([]string, 0, 8)
+	runtimeContext := currentProbeLocalProxyRuntimeContext()
+	if controllerBaseURL := strings.TrimSpace(runtimeContext.ControllerBaseURL); controllerBaseURL != "" {
+		parsed, err := url.Parse(controllerBaseURL)
+		if err != nil || parsed == nil || strings.TrimSpace(parsed.Host) == "" {
+			return nil, fmt.Errorf("parse controller base url failed: %s", controllerBaseURL)
+		}
+		port := 0
+		if rawPort := strings.TrimSpace(parsed.Port()); rawPort != "" {
+			port, err = strconv.Atoi(rawPort)
+			if err != nil {
+				return nil, fmt.Errorf("invalid controller port: %s", rawPort)
+			}
+		} else if strings.EqualFold(strings.TrimSpace(parsed.Scheme), "http") {
+			port = 80
+		} else {
+			port = 443
+		}
+		targets, err = appendProbeLocalExplicitBypassTarget(targets, seen, parsed.Hostname(), port)
+		if err != nil {
+			return nil, fmt.Errorf("resolve controller bypass target failed: %w", err)
+		}
+	}
+	chainIDs, err := collectProbeLocalSelectedChainIDs(extraSelectedChainIDs...)
+	if err != nil {
+		return nil, err
+	}
+	if len(chainIDs) == 0 {
+		return targets, nil
+	}
+	items, err := loadProbeLocalProxyChainItems()
+	if err != nil {
+		return nil, err
+	}
+	itemByChainID := make(map[string]probeLinkChainServerItem, len(items))
+	for _, item := range items {
+		itemByChainID[strings.TrimSpace(item.ChainID)] = item
+	}
+	for _, chainID := range chainIDs {
+		item, ok := itemByChainID[strings.TrimSpace(chainID)]
+		if !ok {
+			return nil, fmt.Errorf("selected chain not found for bypass prewarm: %s", chainID)
+		}
+		chainTargets, err := resolveProbeLocalExplicitBypassTargetsForChain(item)
+		if err != nil {
+			return nil, err
+		}
+		for _, target := range chainTargets {
+			if _, ok := seen[target]; ok {
+				continue
+			}
+			seen[target] = struct{}{}
+			targets = append(targets, target)
+		}
+	}
+	return targets, nil
+}
+
+func ensureProbeLocalProxyBootstrapDirectBypass(extraSelectedChainIDs ...string) error {
+	targets, err := resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs...)
+	if err != nil {
+		return err
+	}
+	for _, target := range targets {
+		if err := probeLocalEnsureExplicitDirectBypass(target); err != nil {
+			return fmt.Errorf("ensure explicit direct bypass failed: target=%s err=%w", target, err)
+		}
+	}
+	if len(targets) > 0 {
+		logProbeInfof("probe local proxy explicit direct bypass prepared: targets=%s", strings.Join(targets, ", "))
+	}
+	return nil
 }
 
 func (m *probeLocalControlManager) tunStatus() probeLocalTunRuntimeState {
@@ -1942,12 +2107,16 @@ func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, err)
 		return
 	}
+	selectedChainID := mustProbeLocalSelectedChainIDFromLegacy(tunnelNodeID)
+	if err := ensureProbeLocalProxyBootstrapDirectBypass(selectedChainID); err != nil {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
+		return
+	}
 	tunState, proxyState, err := probeLocalControl.enableProxy()
 	if err != nil {
 		writeProbeLocalError(w, err)
 		return
 	}
-	selectedChainID := mustProbeLocalSelectedChainIDFromLegacy(tunnelNodeID)
 	if selectedChainID != "" {
 		syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
 	}
@@ -2546,6 +2715,7 @@ func resetProbeLocalControlStateForTest() {
 func resetProbeLocalProxyHooksForTest() {
 	probeLocalApplyProxyTakeover = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect = restoreProbeLocalProxyDirect
+	probeLocalEnsureExplicitDirectBypass = ensureProbeLocalExplicitDirectBypassForTarget
 }
 
 func resetProbeLocalTUNHooksForTest() {
