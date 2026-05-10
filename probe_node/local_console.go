@@ -2293,6 +2293,55 @@ func probeLocalProxyGroupsSaveHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "groups": payload})
 }
 
+func buildProbeLocalProxyStateGroupPayload(entry probeLocalProxyStateGroupEntry) map[string]any {
+	group := strings.TrimSpace(entry.Group)
+	action := strings.TrimSpace(entry.Action)
+	selectedChainID := firstNonEmpty(
+		strings.TrimSpace(entry.SelectedChainID),
+		mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID),
+	)
+	tunnelNodeID := firstNonEmpty(strings.TrimSpace(entry.TunnelNodeID), formatProbeLocalLegacyTunnelNodeID(selectedChainID))
+	runtimeStatus := strings.TrimSpace(entry.RuntimeStatus)
+
+	payload := map[string]any{
+		"group": group,
+	}
+	if action != "" {
+		payload["action"] = action
+	}
+	if selectedChainID != "" {
+		payload["selected_chain_id"] = selectedChainID
+	}
+	if tunnelNodeID != "" {
+		payload["tunnel_node_id"] = tunnelNodeID
+	}
+
+	if strings.EqualFold(action, "tunnel") && group != "" && selectedChainID != "" {
+		syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
+		if rt := currentProbeLocalTUNGroupRuntime(group); rt != nil {
+			snapshot := rt.snapshot()
+			if groupRuntimeStatus := strings.TrimSpace(snapshot.RuntimeStatus); groupRuntimeStatus != "" {
+				payload["group_runtime_status"] = groupRuntimeStatus
+			}
+			keepalive, latencyMS, latencyUpdatedAt, latencyError := resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt)
+			payload["selected_chain_keepalive"] = keepalive
+			latencyStatus := "unreachable"
+			if latencyMS != nil {
+				payload["selected_chain_latency_ms"] = *latencyMS
+				latencyStatus = "reachable"
+			}
+			payload["selected_chain_latency_status"] = latencyStatus
+			payload["selected_chain_latency_updated_at"] = latencyUpdatedAt
+			payload["selected_chain_latency_error"] = latencyError
+		}
+	}
+
+	if runtimeStatus != "" {
+		payload["runtime_status"] = runtimeStatus
+	}
+	return payload
+}
+
 func probeLocalProxyStateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2306,7 +2355,16 @@ func probeLocalProxyStateHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, state)
+	groups := make([]map[string]any, 0, len(state.Groups))
+	for _, entry := range state.Groups {
+		groups = append(groups, buildProbeLocalProxyStateGroupPayload(entry))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":    state.Version,
+		"updated_at": state.UpdatedAt,
+		"groups":     groups,
+		"backup":     state.Backup,
+	})
 }
 
 func probeLocalProxyHostsHandler(w http.ResponseWriter, r *http.Request) {

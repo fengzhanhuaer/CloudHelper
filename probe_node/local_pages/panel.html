@@ -455,7 +455,7 @@
         method: 'POST',
         body: JSON.stringify({
           group,
-          tunnel_node_id: tunnelNodeID || '',
+          selected_chain_id: tunnelNodeID || '',
         }),
       });
     }
@@ -546,9 +546,9 @@
         const runtimeEl = document.createElement('div');
         runtimeEl.className = 'rule-runtime';
         const runtimeAction = normalizeAction(stateEntry && stateEntry.action);
-        const runtimeStatusText = formatRuntimeStatusText(stateEntry && stateEntry.runtime_status, stateEntry);
+        const runtimeStatusText = formatRuntimeStatusText((stateEntry && stateEntry.group_runtime_status) || (stateEntry && stateEntry.runtime_status), stateEntry);
         const runtimeTunnelLabel = runtimeAction === 'tunnel'
-          ? resolveChainLabel(stateEntry && stateEntry.tunnel_node_id)
+          ? resolveChainLabel(stateEntry && stateEntry.selected_chain_id)
           : '-';
         runtimeEl.textContent = `运行：${runtimeAction || '-'}${runtimeAction === 'tunnel' ? ` (${runtimeTunnelLabel})` : ''}${runtimeStatusText ? ` ｜ 状态：${runtimeStatusText}` : ''}`;
         rowEl.appendChild(runtimeEl);
@@ -658,13 +658,26 @@
     }
 
     function formatRuntimeStatusText(rawStatus, stateEntry) {
+      const action = normalizeAction(stateEntry && stateEntry.action);
       const status = String(rawStatus || '').trim();
-      if (!status) return '';
-      if (status.toLowerCase() !== 'online') return status;
-      if (proxySelectedLatencyStatus !== 'reachable') {
+      if (action === 'tunnel') {
+        const latencyMs = Number(stateEntry && stateEntry.selected_chain_latency_ms);
+        const latencyMsDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '';
+        const latencyStatus = String(stateEntry && stateEntry.selected_chain_latency_status || '').trim().toLowerCase();
+        const latencyError = String(stateEntry && stateEntry.selected_chain_latency_error || '').trim();
+        if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
+          return `最近测试延迟: ${latencyMsDisplay}ms`;
+        }
+        if (latencyError) {
+          return `最近测试延迟: 不可达（${latencyError}）`;
+        }
+        if (status) {
+          return `最近测试延迟: 不可达（${status}）`;
+        }
         return '最近测试延迟: 不可达';
       }
-      return `最近测试延迟: ${proxySelectedLatencyDisplay}ms`;
+      if (!status) return '';
+      return status;
     }
 
     async function loadProxyStatus() {
