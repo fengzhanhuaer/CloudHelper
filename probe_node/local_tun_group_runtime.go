@@ -344,17 +344,18 @@ func (rt *probeLocalTUNGroupRuntime) closeLocked() {
 }
 
 func (rt *probeLocalTUNGroupRuntime) markFailureLocked(err error, status string) error {
+	failureErr := err
+	if failureErr == nil {
+		failureErr = errors.New("group runtime failure")
+	}
 	if rt == nil {
-		if err == nil {
-			return errors.New("group runtime is nil")
-		}
-		return err
+		return failureErr
 	}
 	rt.FailureCount++
-	rt.LastError = strings.TrimSpace(firstProbeLocalTUNErr(err, errors.New("group runtime failure")).Error())
+	rt.LastError = strings.TrimSpace(failureErr.Error())
 	rt.RuntimeStatus = firstNonEmpty(strings.TrimSpace(status), "unavailable")
 	rt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	return err
+	return failureErr
 }
 
 func (rt *probeLocalTUNGroupRuntime) ensureConnectedLocked() error {
