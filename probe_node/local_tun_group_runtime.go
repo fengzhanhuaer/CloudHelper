@@ -209,27 +209,92 @@ func resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt *probeLocalTUNGroupR
 	if strings.TrimSpace(snapshot.SelectedChainID) == "" {
 		return "none", nil, "", ""
 	}
+
 	if !snapshot.Connected {
-		if strings.TrimSpace(snapshot.LastError) != "" {
-			return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "disconnected"), nil, "", strings.TrimSpace(snapshot.LastError)
+		startedAt := time.Now()
+		rt.mu.Lock()
+		err := rt.ensureConnectedLocked()
+		rt.mu.Unlock()
+		snapshot = rt.snapshot()
+		updatedAt := firstNonEmpty(strings.TrimSpace(snapshot.UpdatedAt), time.Now().UTC().Format(time.RFC3339))
+		if err != nil {
+			reason := strings.TrimSpace(err.Error())
+			logProbeWarnf(
+				"probe local tun group runtime reachability failed: group=%s chain=%s entry=%s:%d layer=%s phase=connect status=%s reason=%s",
+				strings.TrimSpace(snapshot.Group),
+				strings.TrimSpace(snapshot.SelectedChainID),
+				strings.TrimSpace(snapshot.EntryHost),
+				snapshot.EntryPort,
+				strings.TrimSpace(snapshot.LinkLayer),
+				firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "unavailable"),
+				reason,
+			)
+			return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "unavailable"), nil, updatedAt, reason
 		}
-		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "disconnected"), nil, "", ""
+		latencyMS := int64(time.Since(startedAt) / time.Millisecond)
+		if latencyMS < 0 {
+			latencyMS = 0
+		}
+		logProbeInfof(
+			"probe local tun group runtime reachability ok: group=%s chain=%s entry=%s:%d layer=%s phase=connect latency_ms=%d",
+			strings.TrimSpace(snapshot.Group),
+			strings.TrimSpace(snapshot.SelectedChainID),
+			strings.TrimSpace(snapshot.EntryHost),
+			snapshot.EntryPort,
+			strings.TrimSpace(snapshot.LinkLayer),
+			latencyMS,
+		)
+		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), &latencyMS, updatedAt, ""
 	}
-	if strings.TrimSpace(snapshot.EntryHost) == "" || snapshot.EntryPort <= 0 {
-		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), nil, "", "entry target is unavailable"
-	}
-	addr := net.JoinHostPort(strings.TrimSpace(snapshot.EntryHost), strconv.Itoa(snapshot.EntryPort))
-	startedAt := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, 1800*time.Millisecond)
+
+	endpoint, err := resolveProbeLocalChainEntryEndpointByID(snapshot.SelectedChainID)
+	updatedAt := time.Now().UTC().Format(time.RFC3339)
 	if err != nil {
-		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), nil, "", strings.TrimSpace(err.Error())
+		reason := strings.TrimSpace(err.Error())
+		logProbeWarnf(
+			"probe local tun group runtime reachability failed: group=%s chain=%s entry=%s:%d layer=%s phase=resolve_endpoint status=%s reason=%s",
+			strings.TrimSpace(snapshot.Group),
+			strings.TrimSpace(snapshot.SelectedChainID),
+			strings.TrimSpace(snapshot.EntryHost),
+			snapshot.EntryPort,
+			strings.TrimSpace(snapshot.LinkLayer),
+			firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"),
+			reason,
+		)
+		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), nil, updatedAt, reason
+	}
+
+	startedAt := time.Now()
+	conn, err := openProbeChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	if err != nil {
+		reason := strings.TrimSpace(err.Error())
+		logProbeWarnf(
+			"probe local tun group runtime reachability failed: group=%s chain=%s entry=%s:%d layer=%s phase=probe status=%s reason=%s",
+			strings.TrimSpace(snapshot.Group),
+			strings.TrimSpace(endpoint.ChainID),
+			strings.TrimSpace(endpoint.EntryHost),
+			endpoint.EntryPort,
+			strings.TrimSpace(endpoint.LinkLayer),
+			firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"),
+			reason,
+		)
+		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), nil, updatedAt, reason
 	}
 	_ = conn.Close()
 	latencyMS := int64(time.Since(startedAt) / time.Millisecond)
 	if latencyMS < 0 {
 		latencyMS = 0
 	}
-	return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), &latencyMS, time.Now().UTC().Format(time.RFC3339), ""
+	logProbeInfof(
+		"probe local tun group runtime reachability ok: group=%s chain=%s entry=%s:%d layer=%s phase=probe latency_ms=%d",
+		strings.TrimSpace(snapshot.Group),
+		strings.TrimSpace(endpoint.ChainID),
+		strings.TrimSpace(endpoint.EntryHost),
+		endpoint.EntryPort,
+		strings.TrimSpace(endpoint.LinkLayer),
+		latencyMS,
+	)
+	return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), &latencyMS, updatedAt, ""
 }
 
 func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocalTUNChainEndpoint, error) {
