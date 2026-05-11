@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestParseProbeLocalTUNIPv4TargetTCP(t *testing.T) {
@@ -335,6 +336,162 @@ func TestShouldFallbackProbeLocalUDPBind(t *testing.T) {
 		if got := shouldFallbackProbeLocalUDPBind(tc.err); got != tc.want {
 			t.Fatalf("case=%d got=%v want=%v err=%v", i, got, tc.want, tc.err)
 		}
+	}
+}
+
+func TestEnsureProbeLocalDirectBypassForTargetUsesPrimaryEgressRoute(t *testing.T) {
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+	oldRun := probeLocalWindowsRunCommand
+	t.Cleanup(func() {
+		probeLocalWindowsRunCommand = oldRun
+	})
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+
+	detected := false
+	added := false
+	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		joined := name + " " + strings.Join(args, " ")
+		switch name {
+		case "powershell":
+			detected = true
+			if !strings.Contains(joined, "$exclude=9") {
+				t.Fatalf("powershell command did not exclude tun ifindex: %s", joined)
+			}
+			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
+		case "route":
+			added = true
+			if strings.Contains(joined, "198.18.0.1") || strings.Contains(joined, " IF 9") {
+				t.Fatalf("route add unexpectedly used tun route target: %s", joined)
+			}
+			if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
+				t.Fatalf("route add used unexpected egress target: %s", joined)
+			}
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+
+	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
+		t.Fatalf("ensure bypass failed: %v", err)
+	}
+	if !detected {
+		t.Fatal("expected primary egress route detection")
+	}
+	if !added {
+		t.Fatal("expected route add command")
+	}
+}
+
+func TestReleaseProbeLocalTUNDirectBypassRouteUsesStoredPrimaryEgressRoute(t *testing.T) {
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+	oldRun := probeLocalWindowsRunCommand
+	t.Cleanup(func() {
+		probeLocalWindowsRunCommand = oldRun
+	})
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+
+	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		joined := name + " " + strings.Join(args, " ")
+		switch name {
+		case "powershell":
+			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
+		case "route":
+			if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
+				t.Fatalf("unexpected route create target: %s", joined)
+			}
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
+		t.Fatalf("ensure bypass failed: %v", err)
+	}
+
+	detectedOnRelease := false
+	deleted := false
+	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		joined := name + " " + strings.Join(args, " ")
+		switch name {
+		case "powershell":
+			detectedOnRelease = true
+			return `{"interface_index":13,"next_hop":"192.168.1.254"}`, nil
+		case "route":
+			deleted = true
+			if !strings.Contains(joined, "DELETE 1.2.3.4") {
+				t.Fatalf("unexpected route delete command: %s", joined)
+			}
+			if strings.Contains(joined, "192.168.1.254") || strings.Contains(joined, " IF 13") {
+				t.Fatalf("route delete should use stored egress target: %s", joined)
+			}
+			if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
+				t.Fatalf("route delete used unexpected stored target: %s", joined)
+			}
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+
+	releaseProbeLocalDirectBypassForHost("1.2.3.4")
+	if detectedOnRelease {
+		t.Fatal("release should not redetect primary egress route")
+	}
+	if !deleted {
+		t.Fatal("expected route delete command")
+	}
+}
+
+func TestReleaseProbeLocalAllDirectBypassRoutesUsesStoredPrimaryEgressRoute(t *testing.T) {
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+	oldRun := probeLocalWindowsRunCommand
+	t.Cleanup(func() {
+		probeLocalWindowsRunCommand = oldRun
+	})
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+
+	createCalls := 0
+	deleteCalls := 0
+	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		joined := name + " " + strings.Join(args, " ")
+		switch name {
+		case "powershell":
+			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
+		case "route":
+			if strings.Contains(joined, "DELETE") {
+				deleteCalls++
+				if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
+					t.Fatalf("route delete used unexpected stored target: %s", joined)
+				}
+				return "", nil
+			}
+			createCalls++
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+
+	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
+		t.Fatalf("ensure bypass #1 failed: %v", err)
+	}
+	if err := ensureProbeLocalDirectBypassForTarget("5.6.7.8:443"); err != nil {
+		t.Fatalf("ensure bypass #2 failed: %v", err)
+	}
+	if createCalls != 2 {
+		t.Fatalf("createCalls=%d", createCalls)
+	}
+
+	releaseProbeLocalAllDirectBypassRoutes()
+	if deleteCalls != 2 {
+		t.Fatalf("deleteCalls=%d", deleteCalls)
 	}
 }
 

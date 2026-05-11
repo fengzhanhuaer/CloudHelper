@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -118,15 +119,56 @@ func ensureProbeLocalExplicitDirectBypassForTarget(targetAddr string) error {
 	return ensureProbeLocalDirectBypassForTarget(targetAddr)
 }
 
+type probeLocalWindowsDirectBypassRouteTarget struct {
+	InterfaceIndex int    `json:"interface_index"`
+	NextHop        string `json:"next_hop"`
+}
+
 var probeLocalDirectBypassState = struct {
 	mu      sync.Mutex
 	ref     map[string]int
 	hosts   map[string]string
 	targets map[string]map[string]struct{}
+	routes  map[string]probeLocalWindowsDirectBypassRouteTarget
 }{
 	ref:     map[string]int{},
 	hosts:   map[string]string{},
 	targets: map[string]map[string]struct{}{},
+	routes:  map[string]probeLocalWindowsDirectBypassRouteTarget{},
+}
+
+var probeLocalDirectBypassRouteTargetState = struct {
+	mu          sync.Mutex
+	routeTarget probeLocalWindowsDirectBypassRouteTarget
+	ready       bool
+}{}
+
+func prepareProbeLocalWindowsDirectBypassRouteTarget() error {
+	routeTarget, err := resolveProbeLocalWindowsDirectBypassRouteTarget()
+	if err != nil {
+		return err
+	}
+	probeLocalDirectBypassRouteTargetState.mu.Lock()
+	probeLocalDirectBypassRouteTargetState.routeTarget = routeTarget
+	probeLocalDirectBypassRouteTargetState.ready = true
+	probeLocalDirectBypassRouteTargetState.mu.Unlock()
+	return nil
+}
+
+func currentProbeLocalWindowsDirectBypassRouteTarget() (probeLocalWindowsDirectBypassRouteTarget, bool) {
+	probeLocalDirectBypassRouteTargetState.mu.Lock()
+	defer probeLocalDirectBypassRouteTargetState.mu.Unlock()
+	if !probeLocalDirectBypassRouteTargetState.ready {
+		return probeLocalWindowsDirectBypassRouteTarget{}, false
+	}
+	return probeLocalDirectBypassRouteTargetState.routeTarget, true
+}
+
+func clearProbeLocalWindowsDirectBypassRouteTarget() {
+	probeLocalDirectBypassRouteTargetState.mu.Lock()
+	probeLocalDirectBypassRouteTargetState.routeTarget = probeLocalWindowsDirectBypassRouteTarget{}
+	probeLocalDirectBypassRouteTargetState.ready = false
+	probeLocalDirectBypassRouteTargetState.mu.Unlock()
 }
 
 var probeLocalTUNUDPSourceState = struct {
@@ -941,6 +983,9 @@ func ensureProbeLocalDirectBypassForTarget(targetAddr string) error {
 	if probeLocalDirectBypassState.targets == nil {
 		probeLocalDirectBypassState.targets = map[string]map[string]struct{}{}
 	}
+	if probeLocalDirectBypassState.routes == nil {
+		probeLocalDirectBypassState.routes = map[string]probeLocalWindowsDirectBypassRouteTarget{}
+	}
 	probeLocalDirectBypassState.ref[ipText]++
 	probeLocalDirectBypassState.hosts[ipText] = ipText
 	if _, ok := probeLocalDirectBypassState.targets[ipText]; !ok {
@@ -961,6 +1006,7 @@ func ensureProbeLocalDirectBypassForTarget(targetAddr string) error {
 			delete(probeLocalDirectBypassState.ref, ipText)
 			delete(probeLocalDirectBypassState.hosts, ipText)
 			delete(probeLocalDirectBypassState.targets, ipText)
+			delete(probeLocalDirectBypassState.routes, ipText)
 		}
 		probeLocalDirectBypassState.mu.Unlock()
 		return acqErr
@@ -971,27 +1017,72 @@ func ensureProbeLocalDirectBypassForTarget(targetAddr string) error {
 	return nil
 }
 
+func resolveProbeLocalWindowsDirectBypassRouteTarget() (probeLocalWindowsDirectBypassRouteTarget, error) {
+	_, tunIfIndex, err := resolveProbeLocalWindowsRouteTarget()
+	if err != nil {
+		return probeLocalWindowsDirectBypassRouteTarget{}, err
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $exclude=%d; $route=Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $exclude -and $_.NextHop } | Sort-Object @{Expression='RouteMetric';Ascending=$true}, @{Expression='InterfaceMetric';Ascending=$true} | Select-Object -First 1 @{Name='interface_index';Expression={[int]$_.InterfaceIndex}}, @{Name='next_hop';Expression={[string]$_.NextHop}}; if (-not $route) { throw 'usable ipv4 default route not found' }; $route | ConvertTo-Json -Compress`, tunIfIndex)
+	output, runErr := probeLocalWindowsRunCommand(6*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	if runErr != nil {
+		trimmed := strings.TrimSpace(output)
+		if trimmed != "" {
+			return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("detect windows bypass route target failed: %w: %s", runErr, trimmed)
+		}
+		return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("detect windows bypass route target failed: %w", runErr)
+	}
+	var routeTarget probeLocalWindowsDirectBypassRouteTarget
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &routeTarget); err != nil {
+		return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("decode windows bypass route target failed: %w", err)
+	}
+	if routeTarget.InterfaceIndex <= 0 {
+		return probeLocalWindowsDirectBypassRouteTarget{}, errors.New("invalid bypass route interface index")
+	}
+	cleanNextHop := strings.TrimSpace(routeTarget.NextHop)
+	if parsed := net.ParseIP(cleanNextHop); parsed == nil || parsed.To4() == nil {
+		return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("invalid bypass route next hop: %s", cleanNextHop)
+	} else {
+		routeTarget.NextHop = parsed.To4().String()
+	}
+	if routeTarget.InterfaceIndex == tunIfIndex {
+		return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("invalid bypass interface: matched tun adapter (if=%d)", tunIfIndex)
+	}
+	return routeTarget, nil
+}
+
 func acquireProbeLocalTUNDirectBypassRoute(host string) (func(), error) {
 	ip := strings.TrimSpace(host)
 	if parsed := net.ParseIP(ip); parsed == nil || parsed.To4() == nil {
 		return nil, fmt.Errorf("invalid bypass host: %s", host)
 	}
-	gateway, ifIndex, err := resolveProbeLocalWindowsRouteTarget()
-	if err != nil {
-		return nil, err
+	routeTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
+	if !ok {
+		if err := prepareProbeLocalWindowsDirectBypassRouteTarget(); err != nil {
+			return nil, errors.New("direct bypass route target is not prepared")
+		}
+		routeTarget, ok = currentProbeLocalWindowsDirectBypassRouteTarget()
+		if !ok {
+			return nil, errors.New("direct bypass route target is not prepared")
+		}
 	}
 	metric := strconv.Itoa(probeLocalWindowsRouteMetric)
-	ifText := strconv.Itoa(ifIndex)
-	_, addErr := probeLocalWindowsRunCommand(6*time.Second, "route", "ADD", ip, "MASK", "255.255.255.255", gateway, "METRIC", metric, "IF", ifText)
+	ifText := strconv.Itoa(routeTarget.InterfaceIndex)
+	_, addErr := probeLocalWindowsRunCommand(6*time.Second, "route", "ADD", ip, "MASK", "255.255.255.255", routeTarget.NextHop, "METRIC", metric, "IF", ifText)
 	if addErr != nil && !isProbeLocalWindowsRouteExistsErr(addErr) {
 		return nil, addErr
 	}
 	if addErr != nil && isProbeLocalWindowsRouteExistsErr(addErr) {
-		_, changeErr := probeLocalWindowsRunCommand(6*time.Second, "route", "CHANGE", ip, "MASK", "255.255.255.255", gateway, "METRIC", metric, "IF", ifText)
+		_, changeErr := probeLocalWindowsRunCommand(6*time.Second, "route", "CHANGE", ip, "MASK", "255.255.255.255", routeTarget.NextHop, "METRIC", metric, "IF", ifText)
 		if changeErr != nil {
 			return nil, changeErr
 		}
 	}
+	probeLocalDirectBypassState.mu.Lock()
+	if probeLocalDirectBypassState.routes == nil {
+		probeLocalDirectBypassState.routes = map[string]probeLocalWindowsDirectBypassRouteTarget{}
+	}
+	probeLocalDirectBypassState.routes[ip] = routeTarget
+	probeLocalDirectBypassState.mu.Unlock()
 	return func() {}, nil
 }
 
@@ -1000,12 +1091,17 @@ func releaseProbeLocalTUNDirectBypassRoute(host string) {
 	if parsed := net.ParseIP(ip); parsed == nil || parsed.To4() == nil {
 		return
 	}
-	gateway, ifIndex, err := resolveProbeLocalWindowsRouteTarget()
-	if err != nil {
+	probeLocalDirectBypassState.mu.Lock()
+	routeTarget, ok := probeLocalDirectBypassState.routes[ip]
+	if ok {
+		delete(probeLocalDirectBypassState.routes, ip)
+	}
+	probeLocalDirectBypassState.mu.Unlock()
+	if !ok {
 		return
 	}
-	ifText := strconv.Itoa(ifIndex)
-	_, delErr := probeLocalWindowsRunCommand(6*time.Second, "route", "DELETE", ip, "MASK", "255.255.255.255", gateway, "IF", ifText)
+	ifText := strconv.Itoa(routeTarget.InterfaceIndex)
+	_, delErr := probeLocalWindowsRunCommand(6*time.Second, "route", "DELETE", ip, "MASK", "255.255.255.255", routeTarget.NextHop, "IF", ifText)
 	if delErr != nil && !isProbeLocalWindowsRouteMissingErr(delErr) {
 		logProbeWarnf("probe local bypass route delete failed: host=%s err=%v", ip, delErr)
 	}
@@ -1039,13 +1135,16 @@ func releaseProbeLocalAllDirectBypassRoutes() {
 	for host := range probeLocalDirectBypassState.hosts {
 		hosts = append(hosts, host)
 	}
-	probeLocalDirectBypassState.ref = map[string]int{}
-	probeLocalDirectBypassState.hosts = map[string]string{}
-	probeLocalDirectBypassState.targets = map[string]map[string]struct{}{}
 	probeLocalDirectBypassState.mu.Unlock()
 	for _, host := range hosts {
 		probeLocalReleaseDirectBypassRoute(host)
 	}
+	probeLocalDirectBypassState.mu.Lock()
+	probeLocalDirectBypassState.ref = map[string]int{}
+	probeLocalDirectBypassState.hosts = map[string]string{}
+	probeLocalDirectBypassState.targets = map[string]map[string]struct{}{}
+	probeLocalDirectBypassState.routes = map[string]probeLocalWindowsDirectBypassRouteTarget{}
+	probeLocalDirectBypassState.mu.Unlock()
 }
 
 func resetProbeLocalDirectBypassStateForTest() {
@@ -1053,7 +1152,9 @@ func resetProbeLocalDirectBypassStateForTest() {
 	probeLocalDirectBypassState.ref = map[string]int{}
 	probeLocalDirectBypassState.hosts = map[string]string{}
 	probeLocalDirectBypassState.targets = map[string]map[string]struct{}{}
+	probeLocalDirectBypassState.routes = map[string]probeLocalWindowsDirectBypassRouteTarget{}
 	probeLocalDirectBypassState.mu.Unlock()
+	clearProbeLocalWindowsDirectBypassRouteTarget()
 
 	probeLocalTUNUDPSourceState.mu.Lock()
 	probeLocalTUNUDPSourceState.refs = map[string]int64{}

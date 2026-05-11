@@ -47,7 +47,11 @@ func startProbeLocalTUNDataPlane() error {
 	}
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
+	if err := prepareProbeLocalWindowsDirectBypassRouteTarget(); err != nil {
+		return fmt.Errorf("prepare direct bypass route target: %w", err)
+	}
 	if err := probeLocalEnsureWintunLibraryForDataPlane(); err != nil {
+		clearProbeLocalWindowsDirectBypassRouteTarget()
 		return fmt.Errorf("prepare wintun library: %w", err)
 	}
 	libraryPath, err := probeLocalResolveWintunPathForDataPlane()
@@ -56,6 +60,7 @@ func startProbeLocalTUNDataPlane() error {
 	}
 	handle, err := probeLocalCreateWintunAdapterForDataPlane(libraryPath, probeLocalTUNAdapterName, probeLocalTUNTunnelType)
 	if err != nil {
+		clearProbeLocalWindowsDirectBypassRouteTarget()
 		return fmt.Errorf("create/open wintun adapter: %w", err)
 	}
 	dataPlane, err := probeLocalNewTUNDataPlaneRunner(libraryPath, handle, func(packet []byte) {
@@ -68,6 +73,7 @@ func startProbeLocalTUNDataPlane() error {
 	})
 	if err != nil {
 		_ = probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle)
+		clearProbeLocalWindowsDirectBypassRouteTarget()
 		return err
 	}
 
@@ -93,6 +99,7 @@ func startProbeLocalTUNDataPlane() error {
 		probeLocalTUNDataPlaneState.mu.Unlock()
 		_ = dataPlane.Close()
 		_ = probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle)
+		clearProbeLocalWindowsDirectBypassRouteTarget()
 		return err
 	}
 
@@ -111,6 +118,7 @@ func stopProbeLocalTUNDataPlane() error {
 	probeLocalTUNDataPlaneState.dataPlane = nil
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
+	defer clearProbeLocalWindowsDirectBypassRouteTarget()
 	errStack := stopProbeLocalTUNPacketStack()
 	var allErr error
 	if dataPlane != nil {
