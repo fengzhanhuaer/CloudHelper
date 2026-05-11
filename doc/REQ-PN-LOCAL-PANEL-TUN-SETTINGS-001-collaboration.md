@@ -130,14 +130,6 @@
 - 处理规则: 保持原函数签名；必要时将系统设置相关刷新解耦为局部刷新函数。
 - 异常规则: 升级状态轮询失败不影响 TUN 状态展示。
 
-##### 单元编号 U7
-- 单元名称: Startup Recovery Unit
-- 职责: 重启后读取持久化与系统可见性，恢复已安装和已启用状态。
-- 输入: 启动时的持久化文件与适配器探测结果。
-- 输出: 可恢复的 TUN 内存态。
-- 处理规则: 已安装时不重复安装；已启用且条件满足时自动恢复启用。
-- 异常规则: 恢复失败仅回落到已安装未启用，不破坏已安装识别。
-
 ##### 单元编号 U3
 - 单元名称: TUN Install Event Unit
 - 职责: 在系统设置区触发安装/检查 TUN 并回填结果。
@@ -153,14 +145,6 @@
 - 输出: 直接成功或进入后续安装流程。
 - 处理规则: 命中 jointly visible 时直接修复路由目标并结束。
 - 异常规则: 可见但路由目标修复失败时仍返回 [`probeLocalTUNInstallCodeRouteTargetFailed`](probe_node/local_console.go:428)。
-
-##### 单元编号 U7
-- 单元名称: Startup Recovery Unit
-- 职责: 进程启动后补齐已安装与已启用的恢复逻辑。
-- 输入: 启动态恢复文件与系统适配器探测结果。
-- 输出: 复用现有适配器的恢复态。
-- 处理规则: 先识别可用适配器，再决定是否直接进入启用路径。
-- 异常规则: 若仅能识别已安装，则不强制启用。
 
 ##### 单元编号 U5
 - 单元名称: Elevation Wait Optimization Unit
@@ -178,6 +162,14 @@
 - 处理规则: 仅在前序安装成功后执行；失败映射到 [`post_install_route_target_check`](probe_node/local_console.go:429)。
 - 异常规则: 不能为了加速而绕过该检查。
 
+##### 单元编号 U7
+- 单元名称: Startup Recovery Unit
+- 职责: 重启后读取持久化与系统可见性，恢复已安装和已启用状态。
+- 输入: 启动时的持久化文件与适配器探测结果。
+- 输出: 可恢复的 TUN 内存态。
+- 处理规则: 已安装时不重复安装；已启用且条件满足时自动恢复启用。
+- 异常规则: 恢复失败仅回落到已安装未启用，不破坏已安装识别。
+
 #### 1.3.3 风险
 - 复用旧 DOM id 会降低改动量，但需避免重复元素 ID 并保证删除旧区块后脚本仍唯一匹配。
 - 提权等待窗口压缩需同步修正 [`probe_node/local_tun_install_windows_test.go`](probe_node/local_tun_install_windows_test.go) 中 sleep 次数断言。
@@ -189,7 +181,7 @@
 - 状态: 进行中
 
 #### 1.4.1 执行边界
-- 允许修改: [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:198)、[`probe_node/local_console.go`](probe_node/local_console.go:363)、[`probe_node/local_tun_install_windows.go`](probe_node/local_tun_install_windows.go:51)、[`probe_node/local_console_test.go`](probe_node/local_console_test.go:231)、[`probe_node/local_tun_install_windows_test.go`](probe_node/local_tun_install_windows_test.go:97)
+- 允许修改: [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:198)、[`probe_node/local_console.go`](probe_node/local_console.go:363)、[`probe_node/main.go`](probe_node/main.go:218)、[`probe_node/local_tun_install_windows.go`](probe_node/local_tun_install_windows.go:51)、[`probe_node/local_console_test.go`](probe_node/local_console_test.go:231)、[`probe_node/local_tun_install_windows_test.go`](probe_node/local_tun_install_windows_test.go:97)、[`probe_node/local_pages_routes_test.go`](probe_node/local_pages_routes_test.go:37)
 - 禁止修改: manager 端页面文件、controller 端 `/mng` 页面、TUN 数据面核心转发实现如 [`probe_node/local_tun_dataplane_windows.go`](probe_node/local_tun_dataplane_windows.go:42)
 
 #### 1.4.2 任务清单
@@ -199,7 +191,7 @@
 | T-002 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | U2 U3 | [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:635) | 修改 | 现有 TUN 状态加载 安装按钮 刷新按钮在系统设置区继续可用，初始化刷新不回归 |
 | T-003 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | U4 U5 | [`probe_node/local_tun_install_windows.go`](probe_node/local_tun_install_windows.go:51) | 修改 | 成功快路径减少固定等待，提权等待总时长与轮询节奏优化，但错误码 观测结构 保持兼容 |
 | T-004 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | U6 U7 | [`probe_node/local_console.go`](probe_node/local_console.go:380); [`probe_node/main.go`](probe_node/main.go:218) | 修改 | 安装优化后状态回填与启动恢复语义不变，重启后可自动恢复已启用态 |
-| T-005 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | U1 U2 U3 | [`probe_node/local_console_test.go`](probe_node/local_console_test.go:231) | 修改 | 本地控制台接口与状态投影测试通过，合并 UI 依赖字段不回归 |
+| T-005 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | U1 U2 U3 | [`probe_node/local_console_test.go`](probe_node/local_console_test.go:231); [`probe_node/local_pages_routes_test.go`](probe_node/local_pages_routes_test.go:37) | 修改 | 本地控制台接口、页面路由与状态投影测试通过，合并 UI 依赖字段不回归 |
 | T-006 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | U4 U5 U6 U7 | [`probe_node/local_tun_install_windows_test.go`](probe_node/local_tun_install_windows_test.go:97); [`probe_node/local_console_test.go`](probe_node/local_console_test.go:1778) | 修改 | 安装快路径 提权轮询 启动恢复 失败诊断与 post-check 测试通过 |
 
 #### 1.4.3 源码修改规则
@@ -275,49 +267,87 @@
 
 ## 第2章 Code章节
 - 章节责任角色: Code
-- 状态: 未开始
+- 状态: 已完成
 
 ### 2.1 Code需求跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 需求编号 | 任务编号 | 实现文件 | 实现状态 | 自测状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|
+| REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | T-001 | [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:197) | 已完成 | 已通过 | 独立 TUN 页签已移除，TUN 状态区迁入系统设置 | 保留原 TUN 字段 DOM id |
+| REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | T-002 | [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:317) | 已完成 | 已通过 | 系统设置内继续提供安装/检查与刷新 TUN 操作 | 复用既有本地接口 |
+| REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | T-003 | [`probe_node/local_tun_install_windows.go`](probe_node/local_tun_install_windows.go:72) | 已完成 | 已通过 | Windows 安装提权等待与安装后探测等待窗口已压缩 | 保留可见性证据与失败码 |
+| REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | T-004 | [`probe_node/local_console.go`](probe_node/local_console.go:108)；[`probe_node/main.go`](probe_node/main.go:222) | 已完成 | 已通过 | TUN 已安装/已启用状态写入并从持久化和系统适配器可见性恢复 | 恢复失败不阻断服务启动 |
+| REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | T-005 | [`probe_node/local_console_test.go`](probe_node/local_console_test.go:231)；[`probe_node/local_pages_routes_test.go`](probe_node/local_pages_routes_test.go:37) | 已完成 | 已通过 | 安装成功后持久化 TUN 已安装状态；页面路由断言已更新为无独立 TUN 页签 | 接口契约保持兼容 |
+| REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | T-006 | [`probe_node/local_console_test.go`](probe_node/local_console_test.go:1778)；[`probe_node/local_tun_install_windows_test.go`](probe_node/local_tun_install_windows_test.go:258) | 已完成 | 已通过 | 启动恢复、提权等待节奏、Windows 已安装探测与路由修复均有测试覆盖 | 定向测试通过 |
 
 ### 2.2 Code关键接口跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
+| IF-001 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | [`probe_node/local_console.go`](probe_node/local_console.go:985) | [`loadTunStatus()`](probe_node/local_pages/panel.html:635) | [`probeLocalTUNStatusHandler`](probe_node/local_console.go:1666) | 未变更接口，已验证 | 定向测试通过 | UI 入口迁移但响应字段不变 |
+| IF-002 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | [`probe_node/local_console.go`](probe_node/local_console.go:472) | [`tunInstallBtn`](probe_node/local_pages/panel.html:1033) | [`probeLocalTUNInstallHandler`](probe_node/local_console.go:1667) | 已扩展持久化回填，已验证 | 定向测试通过 | 安装成功后保存 installed/enabled |
+| IF-003 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:335) | [`loadUpgradeStatus()`](probe_node/local_pages/panel.html:935) | [`probeLocalSystemUpgradeStatusHandler`](probe_node/local_console.go:1686) | 未变更接口，已验证 | 系统设置同页展示 | 升级区和 TUN 区同页共存 |
+| IF-004 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | [`probe_node/local_tun_install_windows.go`](probe_node/local_tun_install_windows.go:72) | [`probeLocalControlManager.installTUN()`](probe_node/local_console.go:467) | [`installProbeLocalTUNDriver()`](probe_node/local_tun_install_windows.go:72) | 已优化，已验证 | Windows 安装等待测试通过 | 等待序列缩短为 150ms 到 2500ms |
+| IF-005 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | [`probe_node/local_console.go`](probe_node/local_console.go:418)；[`probe_node/main.go`](probe_node/main.go:222) | [`runProbeNode()`](probe_node/main.go:218) | [`recoverProbeLocalTUNRuntimeOnStartup()`](probe_node/local_console.go:418) | 已实现，已验证 | 启动恢复测试通过 | 可自动恢复已启用 TUN |
 
 ### 2.3 Code测试项跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 测试项编号 | 需求编号 | 任务编号 | 测试目标 | 测试方法 | 结果 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
+| TC-001 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | T-001 T-002 | 验证 TUN 状态区迁入系统设置后接口和字段契约不回归 | 代码检查 + 定向本地控制台测试 + 完整包级回归 | 通过 | [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:317)；[`TestProbeLocalPanelServedAfterLogin`](probe_node/local_pages_routes_test.go:37)；测试命令 go test ./... | 独立 TUN 页签已删除 |
+| TC-002 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | T-004 T-006 | 验证启动时识别已有适配器并持久化已安装状态 | 自动化测试 | 通过 | [`TestProbeLocalTUNStartupRecoveryDetectsInstalledAdapter`](probe_node/local_console_test.go:1778) | 无需重新安装 |
+| TC-003 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | T-004 T-006 | 验证启动时自动恢复已启用 TUN 与代理接管态 | 自动化测试 | 通过 | [`TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState`](probe_node/local_console_test.go:1816) | 服务起来后直接工作 |
+| TC-004 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | T-003 T-006 | 验证 Windows 提权等待优化后的探测次数和 sleep 序列 | 自动化测试 | 通过 | [`TestInstallProbeLocalTUNDriverElevationWaitDetectTimeout`](probe_node/local_tun_install_windows_test.go:258) | 总等待窗口缩短 |
+| TC-005 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | T-003 T-006 | 验证 Windows 启动探测能识别已安装并修复路由目标 | 自动化测试 | 通过 | [`TestDetectProbeLocalTUNInstalledWindowsRepairsRouteTarget`](probe_node/local_tun_install_windows_test.go:307) | 复用现有适配器 |
+| TC-006 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 R2 | T-001 至 T-006 | 验证本次 Go 改动格式化、定向回归、完整包级回归与空白差异检查 | gofmt + go test 定向命令 + go test ./... + git diff --check | 通过 | gofmt -w 目标文件；go test -run TestProbeLocalTUN... -count=1 .；go test ./...；git diff --check | 定向测试输出 ok github.com/cloudhelper/probe_node 4.143s；完整回归输出 ok github.com/cloudhelper/probe_node 13.020s |
 
 ### 2.4 Code缺陷跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 缺陷编号 | 需求编号 | 测试项编号 | 缺陷描述 | 严重级别 | 修复状态 | 修复证据 | 备注 |
 |---|---|---|---|---|---|---|---|
+| D-001 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R2 | TC-002 TC-003 | 初始实现中启动恢复 hook 重置与 enabled 失败路径持久化补丁存在局部未应用风险 | 中 | 已修复 | [`resetProbeLocalTUNHooksForTest()`](probe_node/local_console.go:2078)；[`probeLocalResetTUNDetectInstalledHook`](probe_node/local_console.go:173) | 已复查并通过定向测试 |
+| D-002 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 R2 | TC-006 | 协作文档第 1.3.2 节存在重复 U7 设计块 | 低 | 已修复 | [`doc/REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-collaboration.md`](doc/REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-collaboration.md:133) | 本次文档回填同步清理 |
+| D-003 | REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-R1 | TC-001 | 完整回归发现旧页面路由测试仍要求存在独立 TUN 页签 | 中 | 已修复 | [`TestProbeLocalPanelServedAfterLogin`](probe_node/local_pages_routes_test.go:37) | 已改为断言独立 TUN 页签和面板不存在 |
 
 ### 2.5 Code执行证据
-- 状态: 未开始
+- 状态: 已完成
 
 #### 2.5.1 修改接口
--
+- 前端本地面板继续使用 [`/local/api/tun/status`](probe_node/local_console.go:1666)、[`/local/api/tun/install`](probe_node/local_console.go:1667)、[`/local/api/proxy/enable`](probe_node/local_console.go:2207)、[`/local/api/proxy/direct`](probe_node/local_console.go:2306)、[`/local/api/system/upgrade/status`](probe_node/local_console.go:1686)。
+- 后端新增启动恢复入口 [`recoverProbeLocalTUNRuntimeOnStartup()`](probe_node/local_console.go:418)，由 [`runProbeNode()`](probe_node/main.go:218) 在本地上下文就绪后调用。
+- 持久化状态扩展到 [`probeLocalProxyStateFile`](probe_node/local_console.go:108) 的 TUN 字段，保存 installed、enabled 与 updated_at。
 
 #### 2.5.2 配置文件
--
+- 未新增外部配置文件。
+- 复用既有 proxy_state.json 持久化文件模型，由 [`loadProbeLocalProxyStateFile()`](probe_node/local_console.go:1634) 与 [`persistProbeLocalProxyStateFile()`](probe_node/local_console.go:1659) 读写。
 
 #### 2.5.3 执行报告
--
+- UI 合并: [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:197) 已移除独立 TUN 页签，[`panelSystem`](probe_node/local_pages/panel.html:317) 内保留唯一 TUN 操作入口。
+- 启动恢复: [`recoverProbeLocalTUNRuntimeOnStartup()`](probe_node/local_console.go:418) 从持久化状态和系统探测恢复 installed，并在 persisted enabled 为 true 时调用启用路径恢复代理接管。
+- Windows 安装优化: [`installProbeLocalTUNDriver()`](probe_node/local_tun_install_windows.go:72) 的提权等待与安装后等待序列缩短，新增 [`detectProbeLocalTUNInstalledWindows()`](probe_node/local_tun_install_windows.go:50) 用于服务启动复用现有适配器。
+- 格式化: 已执行 gofmt -w probe_node/local_console.go probe_node/local_console_test.go probe_node/local_tun_install_windows.go probe_node/local_tun_install_windows_test.go probe_node/main.go。
+- 定向测试: 已执行 go test -run TestProbeLocalTUN|TestInstallProbeLocalTUNDriver|TestDetectProbeLocalTUNInstalledWindows|TestEnsureProbeLocalWindowsRouteTarget|TestEnsureProbeLocalProxyDefaultsInitialized -count=1 .，结果 ok github.com/cloudhelper/probe_node 4.143s。
+- 完整回归: 首次 go test ./... 暴露 [`TestProbeLocalPanelServedAfterLogin`](probe_node/local_pages_routes_test.go:37) 旧断言仍要求独立 TUN 页签；修复后已执行 gofmt -w local_pages_routes_test.go && go test ./... && git diff --check，结果 ok github.com/cloudhelper/probe_node 13.020s，空白差异检查通过。
 
 #### 2.5.4 影响文件
--
+- [`probe_node/local_pages/panel.html`](probe_node/local_pages/panel.html:197)
+- [`probe_node/local_console.go`](probe_node/local_console.go:108)
+- [`probe_node/main.go`](probe_node/main.go:218)
+- [`probe_node/local_tun_install_windows.go`](probe_node/local_tun_install_windows.go:1)
+- [`probe_node/local_console_test.go`](probe_node/local_console_test.go:1778)
+- [`probe_node/local_tun_install_windows_test.go`](probe_node/local_tun_install_windows_test.go:258)
+- [`probe_node/local_pages_routes_test.go`](probe_node/local_pages_routes_test.go:37)
+- [`doc/REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-collaboration.md`](doc/REQ-PN-LOCAL-PANEL-TUN-SETTINGS-001-collaboration.md:276)
 
 #### 2.5.5 自测结果
--
+- gofmt: 通过。
+- 定向 go test: 通过，输出 ok github.com/cloudhelper/probe_node 4.143s。
+- 完整 go test ./...: 通过，输出 ok github.com/cloudhelper/probe_node 13.020s。
+- git diff --check: 通过；仅提示 Windows 工作区换行转换 warning，不影响检查结果。
 
 #### 2.5.6 结论
--
+- 本次 Code 实现满足 TUN 状态并入系统设置、缩短 Windows TUN 安装等待、重启后识别已安装并自动恢复已启用状态的验收要求。

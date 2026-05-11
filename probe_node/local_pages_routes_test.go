@@ -67,8 +67,8 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tabProxy\"") {
 		t.Fatalf("panel should contain proxy tab button")
 	}
-	if !strings.Contains(body, "id=\"tabTun\"") {
-		t.Fatalf("panel should contain tun tab button")
+	if strings.Contains(body, "id=\"tabTun\"") || strings.Contains(body, "id=\"panelTun\"") {
+		t.Fatalf("panel should not contain standalone tun tab or panel")
 	}
 	if !strings.Contains(body, "id=\"tabDNS\"") {
 		t.Fatalf("panel should contain dns tab button")

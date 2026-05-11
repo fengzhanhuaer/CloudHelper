@@ -196,7 +196,6 @@
 
     <div class="tabs">
       <button id="tabProxy" class="tab-btn active" data-target="panelProxy">代理状态</button>
-      <button id="tabTun" class="tab-btn" data-target="panelTun">TUN 状态</button>
       <button id="tabDNS" class="tab-btn" data-target="panelDNS">DNS 状态</button>
       <button id="tabLogs" class="tab-btn" data-target="panelLogs">运行日志</button>
       <button id="tabSystem" class="tab-btn" data-target="panelSystem">系统设置</button>
@@ -223,23 +222,6 @@
         <button id="proxySelectionRefreshBtn" class="secondary">刷新组与链路</button>
       </div>
       <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），点击即下发。</p>
-    </section>
-
-    <section id="panelTun" class="card tab-panel">
-      <strong>TUN 状态</strong>
-      <div class="kv">
-        <div>平台</div><div id="tunPlatform">-</div>
-        <div>已安装</div><div id="tunInstalled">-</div>
-        <div>已启用</div><div id="tunEnabled">-</div>
-        <div>最后更新时间</div><div id="tunUpdatedAt">-</div>
-        <div>最近错误</div><div id="tunLastError">-</div>
-        <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
-        <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
-      </div>
-      <div class="actions">
-        <button id="tunInstallBtn">安装/检查 TUN</button>
-        <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
-      </div>
     </section>
 
     <section id="panelDNS" class="card tab-panel">
@@ -334,6 +316,22 @@
 
     <section id="panelSystem" class="card tab-panel">
       <strong>系统设置</strong>
+      <h2>TUN 状态</h2>
+      <div class="kv">
+        <div>平台</div><div id="tunPlatform">-</div>
+        <div>已安装</div><div id="tunInstalled">-</div>
+        <div>已启用</div><div id="tunEnabled">-</div>
+        <div>最后更新时间</div><div id="tunUpdatedAt">-</div>
+        <div>最近错误</div><div id="tunLastError">-</div>
+        <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
+        <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
+      </div>
+      <div class="actions">
+        <button id="tunInstallBtn">安装/检查 TUN</button>
+        <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
+      </div>
+      <p class="hint">TUN 状态已合并到系统设置；服务重启后会优先识别并复用现有适配器。</p>
+      <h2>系统升级</h2>
       <div class="kv" style="grid-template-columns: 170px minmax(0, 1fr); align-items: center;">
         <div>发布仓库</div>
         <div><input id="upgradeRepoInput" type="text" value="fengzhanhuaer/CloudHelper" style="width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;" /></div>

@@ -229,6 +229,9 @@ func runProbeNode(options probeLaunchOptions) error {
 	ensureProbeLocalDNSServiceStarted()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)
+	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
+		logProbeWarnf("probe local tun startup recovery skipped: %v", err)
+	}
 
 	nodeMux := buildProbeNodeHTTPMux(identity)
 	localMux := buildProbeLocalConsoleMux()

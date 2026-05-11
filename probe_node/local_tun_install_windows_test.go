@@ -264,7 +264,10 @@ func TestInstallProbeLocalTUNDriverElevationWaitDetectTimeout(t *testing.T) {
 		detectCalls++
 		return probeLocalWintunVisibilityEvidence{}, nil
 	}
-	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	sleepDelays := make([]time.Duration, 0, 8)
+	probeLocalTUNInstallSleep = func(delay time.Duration) {
+		sleepDelays = append(sleepDelays, delay)
+	}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	err := installProbeLocalTUNDriver()
@@ -281,8 +284,56 @@ func TestInstallProbeLocalTUNDriverElevationWaitDetectTimeout(t *testing.T) {
 	if installErr.Diagnostic.Stage != "await_adapter_visibility_after_elevation" {
 		t.Fatalf("diagnostic stage=%q, want await_adapter_visibility_after_elevation", installErr.Diagnostic.Stage)
 	}
-	if detectCalls < 1 {
-		t.Fatalf("detect calls=%d, want >=1", detectCalls)
+	if detectCalls != 7 {
+		t.Fatalf("detect calls=%d, want 7", detectCalls)
+	}
+	wantDelays := []time.Duration{
+		150 * time.Millisecond,
+		300 * time.Millisecond,
+		600 * time.Millisecond,
+		1000 * time.Millisecond,
+		1600 * time.Millisecond,
+		2500 * time.Millisecond,
+	}
+	if len(sleepDelays) != len(wantDelays) {
+		t.Fatalf("sleep delays=%v, want %v", sleepDelays, wantDelays)
+	}
+	for i := range wantDelays {
+		if sleepDelays[i] != wantDelays[i] {
+			t.Fatalf("sleep delay[%d]=%s, want %s", i, sleepDelays[i], wantDelays[i])
+		}
+	}
+}
+
+func TestDetectProbeLocalTUNInstalledWindowsRepairsRouteTarget(t *testing.T) {
+	inspectCalls := 0
+	probeLocalInspectWintunVisibility = func() (probeLocalWintunVisibilityEvidence, error) {
+		inspectCalls++
+		return probeLocalWintunVisibilityEvidence{
+			NetAdapterMatched: true,
+			PresentPnPMatched: true,
+			NetAdapter:        probeLocalWindowsNetAdapter{InterfaceIndex: 23},
+		}, nil
+	}
+	routeCalls := 0
+	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
+		routeCalls++
+		if interfaceIndex != 23 {
+			t.Fatalf("interface index=%d, want 23", interfaceIndex)
+		}
+		return nil
+	}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	installed, err := detectProbeLocalTUNInstalledWindows()
+	if err != nil {
+		t.Fatalf("detectProbeLocalTUNInstalledWindows returned error: %v", err)
+	}
+	if !installed {
+		t.Fatalf("installed=%v, want true", installed)
+	}
+	if inspectCalls != 1 || routeCalls != 1 {
+		t.Fatalf("inspectCalls=%d routeCalls=%d, want 1/1", inspectCalls, routeCalls)
 	}
 }
 

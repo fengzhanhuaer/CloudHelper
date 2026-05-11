@@ -48,6 +48,27 @@ var probeLocalRetainedWintunAdapterState = struct {
 	handle      uintptr
 }{}
 
+func init() {
+	probeLocalDetectTUNInstalled = detectProbeLocalTUNInstalledWindows
+	probeLocalResetTUNDetectInstalledHook = func() { probeLocalDetectTUNInstalled = detectProbeLocalTUNInstalledWindows }
+}
+
+func detectProbeLocalTUNInstalledWindows() (bool, error) {
+	evidence, err := probeLocalInspectWintunVisibility()
+	if err != nil {
+		return false, err
+	}
+	if !evidence.isJointlyVisible() {
+		return false, nil
+	}
+	if evidence.NetAdapter.InterfaceIndex > 0 {
+		if routeErr := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(evidence.NetAdapter.InterfaceIndex); routeErr != nil {
+			return true, routeErr
+		}
+	}
+	return true, nil
+}
+
 func installProbeLocalTUNDriver() error {
 	steps := make([]string, 0, 24)
 	steps = append(steps, "start: install_probe_local_tun_driver")
@@ -183,7 +204,7 @@ func installProbeLocalTUNDriver() error {
 		var elevationDetectErr error
 		elevationPhantomOnly := false
 		lastElevationEvidence := probeLocalWintunVisibilityEvidence{}
-		for _, delay := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond, 2500 * time.Millisecond, 3500 * time.Millisecond, 5000 * time.Millisecond, 6500 * time.Millisecond} {
+		for _, delay := range []time.Duration{0, 150 * time.Millisecond, 300 * time.Millisecond, 600 * time.Millisecond, 1000 * time.Millisecond, 1600 * time.Millisecond, 2500 * time.Millisecond} {
 			if delay > 0 {
 				probeLocalTUNInstallSleep(delay)
 			}
@@ -426,7 +447,7 @@ createOrOpenAdapter:
 	)
 	phantomOnlyDetected := false
 	lastVisibilityEvidence := probeLocalWintunVisibilityEvidence{}
-	for _, delay := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond, 1800 * time.Millisecond, 2500 * time.Millisecond, 3500 * time.Millisecond, 5000 * time.Millisecond, 6500 * time.Millisecond} {
+	for _, delay := range []time.Duration{0, 150 * time.Millisecond, 300 * time.Millisecond, 600 * time.Millisecond, 1000 * time.Millisecond, 1600 * time.Millisecond, 2500 * time.Millisecond} {
 		if delay > 0 {
 			probeLocalTUNInstallSleep(delay)
 		}
@@ -933,6 +954,7 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalEnsureWintunLibrary = ensureProbeEmbeddedWintunLibrary
 	probeLocalResolveWintunPath = resolveProbeWintunPath
 	probeLocalDetectWintunAdapter = detectProbeLocalWintunAdapter
+	probeLocalResetTUNDetectInstalledHook()
 	probeLocalInspectWintunVisibility = inspectProbeLocalWintunVisibility
 	probeLocalRemovePhantomWintunDevices = removeProbeLocalPhantomWintunDevices
 	probeLocalFindWintunAdapter = findProbeLocalWintunAdapter
