@@ -64,8 +64,8 @@ func applyProbeLocalProxyTakeover() error {
 		return errors.New("linux default ipv4 route is empty")
 	}
 
-	appliedPrefixes := make([]string, 0, 2)
-	for _, prefix := range []string{probeLocalLinuxRouteSplitPrefixA, probeLocalLinuxRouteSplitPrefixB} {
+	appliedPrefixes := make([]string, 0, 5)
+	for _, prefix := range probeLocalLinuxTakeoverRoutePrefixes() {
 		if routeErr := ensureProbeLocalLinuxSplitRoute(prefix, dev, gateway); routeErr != nil {
 			var rollbackErr error
 			for i := len(appliedPrefixes) - 1; i >= 0; i-- {
@@ -108,7 +108,7 @@ func restoreProbeLocalProxyDirect() error {
 	}
 
 	var allErr error
-	for _, prefix := range []string{probeLocalLinuxRouteSplitPrefixA, probeLocalLinuxRouteSplitPrefixB} {
+	for _, prefix := range probeLocalLinuxTakeoverRoutePrefixes() {
 		if err := deleteProbeLocalLinuxSplitRoute(prefix, dev, gateway); err != nil {
 			allErr = errors.Join(allErr, err)
 		}
@@ -129,6 +129,16 @@ func resolveProbeLocalLinuxRouteTarget() (string, string, error) {
 	}
 	gateway := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY"))
 	return dev, gateway, nil
+}
+
+func probeLocalLinuxTakeoverRoutePrefixes() []string {
+	return []string{
+		probeLocalLinuxRouteSplitPrefixA,
+		probeLocalLinuxRouteSplitPrefixB,
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	}
 }
 
 func ensureProbeLocalLinuxSplitRoute(prefix, dev, gateway string) error {
