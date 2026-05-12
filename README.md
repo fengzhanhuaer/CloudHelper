@@ -1,13 +1,12 @@
 ﻿# CloudHelper
 
 
-CloudHelper 是一个探针主控与管理端项目，当前版本：`0.0.7`。
+CloudHelper 是一个探针主控与节点项目，当前版本：`0.0.7`。
 
 ## 项目结构
 
 - `probe_controller`：探针主控服务（Go）
 - `probe_node`：探针节点服务（Go）
-- `probe_manager`：管理端（Wails）
 - `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd）
 - `scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（支持 systemd / 非 systemd）
 - `scripts/install_probe_node_service_windows.ps1`：Windows 探针节点安装脚本（WinSW 服务）
@@ -103,29 +102,6 @@ sudo journalctl -u probe_controller -f
 - 受保护路由示例：`GET /api/ping`、`GET /api/admin/status`
 - 重点：`/dashboard/*` 仅允许公开脱敏指标；默认禁止公开节点号、IP、版本、密钥及其他服务端状态，除非有明确需求评审。
 
-## 管理端升级（新增）
-
-管理端在「系统设置」页支持两种自身升级方式：
-
-- `直连升级`：管理端直接请求 GitHub Release，下载并升级自身。
-- `代理升级`：管理端将项目地址发送给主控，主控通过已鉴权接口代查 Release 与代下载文件并转发给管理端，管理端自行决定是否执行升级。
-
-代理相关接口（主控）：
-
-- `POST /api/admin/proxy/github/latest`
-- `GET /api/admin/proxy/download?url=...`
-
-管理端与主控通讯约束：
-
-- 管理端已改为通过 WSS 与主控通信（`/api/admin/ws`、`/api/admin/ws/status`）。
-- 非 HTTPS/WSS 地址会被拒绝（不允许明文 WS/HTTP 作为管理通信通道）。
-- 认证顺序：先建立 WSS 连接，再在连接内发送 `auth.session` 完成鉴权。
-
-注意：
-
-- 代理接口必须在已登录会话（Bearer Token）下访问。
-- 主控代理下载默认允许任意 HTTPS 下载地址。
-
 ## 本地构建（Windows）
 
 主控：
@@ -153,13 +129,6 @@ $env:GOARCH="amd64"
 go build -o cloudhelper-probe-node-windows-amd64.exe .
 ```
 
-管理端：
-
-```powershell
-cd probe_manager
-wails build -clean -platform windows/amd64 -o probe_manager -nopackage
-```
-
 ## 文档
 
 - 安装与升级：`doc/install_upgrade.md`
@@ -169,7 +138,6 @@ wails build -clean -platform windows/amd64 -o probe_manager -nopackage
 
 ## 探针节点数据文件
 
-- 管理端探针列表：`probe_manager/data/probe_nodes.json`（Wails 管理端运行目录下 `data/`）
 - 探针节点身份：`probe_node/data/node_identity.json`（探针节点运行目录下 `data/`）
 
 ## 探针上报链路（WSS）
@@ -182,6 +150,6 @@ wails build -clean -platform windows/amd64 -o probe_manager -nopackage
   - `X-Probe-Signature`
 - 安全约束（强制）：探针 WSS 会话仅允许访问 `/api/probe/*` 探针接口；严禁访问 `/api/admin/*` 私有管理接口，除非经过明确评审和需求变更。
 - 主控主动限制：若请求携带 `X-Probe-Node-Id / X-Probe-Nonce / X-Probe-Signature` 任一探针鉴权头，且目标不是 `/api/probe/*`，主控直接拒绝（`403`）。
-- 不再使用共享密钥；探针密钥由管理端通过 `wss /api/admin/ws` 自动同步到主控。
+- 不再使用共享密钥；探针密钥由主控侧配置并用于探针鉴权。
 - 探针周期上报：IPv4/IPv6、CPU、内存、磁盘、Swap
 
