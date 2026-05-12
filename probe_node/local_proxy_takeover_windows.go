@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -55,12 +54,12 @@ func applyProbeLocalProxyTakeover() error {
 	}
 	probeLocalWindowsTakeoverState.mu.Unlock()
 
-	bypassTarget, err := resolveProbeLocalWindowsDirectBypassRouteTarget()
+	bypassTarget, err := probeLocalResolveWindowsPrimaryEgressRoute(ifIndex)
 	if err != nil {
 		return fmt.Errorf("resolve windows local bypass route target failed: %w", err)
 	}
 
-	out, err := probeLocalWindowsRunCommand(6*time.Second, "route", "print", "-4")
+	out, err := probeLocalSnapshotWindowsIPv4Routes()
 	if err != nil {
 		return fmt.Errorf("inspect windows route table failed: %w", err)
 	}
@@ -131,7 +130,7 @@ func restoreProbeLocalProxyDirect() error {
 			}
 		}
 	}
-	if _, err := probeLocalWindowsRunCommand(6*time.Second, "route", "print", "-4"); err != nil {
+	if _, err := probeLocalSnapshotWindowsIPv4Routes(); err != nil {
 		logProbeWarnf("probe local proxy restore on windows route inspect failed: %v", err)
 	}
 	if allErr != nil {
@@ -176,20 +175,7 @@ func ensureProbeLocalWindowsSplitRoute(prefix, mask, gateway string, ifIndex int
 }
 
 func ensureProbeLocalWindowsRoute(routeDef probeLocalWindowsRouteDef) (bool, error) {
-	metric := strconv.Itoa(probeLocalWindowsRouteMetric)
-	ifText := strconv.Itoa(routeDef.IfIndex)
-	_, addErr := probeLocalWindowsRunCommand(6*time.Second, "route", "ADD", routeDef.Prefix, "MASK", routeDef.Mask, routeDef.Gateway, "METRIC", metric, "IF", ifText)
-	if addErr == nil {
-		return true, nil
-	}
-	if !isProbeLocalWindowsRouteExistsErr(addErr) {
-		return false, addErr
-	}
-	_, changeErr := probeLocalWindowsRunCommand(6*time.Second, "route", "CHANGE", routeDef.Prefix, "MASK", routeDef.Mask, routeDef.Gateway, "METRIC", metric, "IF", ifText)
-	if changeErr != nil {
-		return false, fmt.Errorf("route exists but update failed: %w", changeErr)
-	}
-	return false, nil
+	return probeLocalCreateWindowsRouteEntry(routeDef)
 }
 
 func deleteProbeLocalWindowsSplitRoute(prefix, mask, gateway string, ifIndex int) error {
@@ -200,12 +186,7 @@ func deleteProbeLocalWindowsRoute(routeDef probeLocalWindowsRouteDef) error {
 	if strings.TrimSpace(routeDef.Gateway) == "" || routeDef.IfIndex <= 0 {
 		return nil
 	}
-	ifText := strconv.Itoa(routeDef.IfIndex)
-	_, err := probeLocalWindowsRunCommand(6*time.Second, "route", "DELETE", routeDef.Prefix, "MASK", routeDef.Mask, routeDef.Gateway, "IF", ifText)
-	if err != nil && !isProbeLocalWindowsRouteMissingErr(err) {
-		return err
-	}
-	return nil
+	return probeLocalDeleteWindowsRouteEntry(routeDef)
 }
 
 func isProbeLocalWindowsRouteExistsErr(err error) bool {

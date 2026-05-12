@@ -435,8 +435,11 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetriesOnBindableTime
 	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
 		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
 	}
-	probeLocalRunCommand = func(_ time.Duration, _ string, _ ...string) (string, error) {
-		return "", errors.New("disabled in unit test")
+	probeLocalRepairWindowsRouteTargetIPv4Hook = func(_ int, _ string, _ int) error {
+		return errors.New("disabled in unit test")
+	}
+	probeLocalRecycleWindowsTunAdapterHook = func(_ int) error {
+		return errors.New("disabled in unit test")
 	}
 	sleepCalls := 0
 	probeLocalTUNInstallSleep = func(_ time.Duration) { sleepCalls++ }
@@ -484,15 +487,12 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathRecovers(t 
 		return nil
 	}
 	repairCalls := 0
-	probeLocalRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+	probeLocalRepairWindowsRouteTargetIPv4Hook = func(_ int, _ string, _ int) error {
 		repairCalls++
-		if strings.TrimSpace(name) != "powershell" {
-			return "", errors.New("unexpected command")
-		}
-		if len(args) < 6 {
-			return "", errors.New("unexpected powershell args")
-		}
-		return "ok", nil
+		return nil
+	}
+	probeLocalRecycleWindowsTunAdapterHook = func(_ int) error {
+		return errors.New("unexpected recycle path")
 	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
@@ -515,8 +515,11 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathFails(t *te
 	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
 		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
 	}
-	probeLocalRunCommand = func(_ time.Duration, _ string, _ ...string) (string, error) {
-		return "remove/new failed", errors.New("powershell failed")
+	probeLocalRepairWindowsRouteTargetIPv4Hook = func(_ int, _ string, _ int) error {
+		return errors.New("remove/new failed")
+	}
+	probeLocalRecycleWindowsTunAdapterHook = func(_ int) error {
+		return errors.New("powershell failed")
 	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
@@ -539,13 +542,15 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRecyclePathRecovers(t
 		}
 		return nil
 	}
-	commandCalls := 0
-	probeLocalRunCommand = func(_ time.Duration, _ string, _ ...string) (string, error) {
-		commandCalls++
-		if commandCalls == 1 {
-			return "remove/new failed", errors.New("powershell failed")
-		}
-		return "recycled", nil
+	repairCalls := 0
+	recycleCalls := 0
+	probeLocalRepairWindowsRouteTargetIPv4Hook = func(_ int, _ string, _ int) error {
+		repairCalls++
+		return errors.New("remove/new failed")
+	}
+	probeLocalRecycleWindowsTunAdapterHook = func(_ int) error {
+		recycleCalls++
+		return nil
 	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
@@ -553,8 +558,11 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRecyclePathRecovers(t
 	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18); err != nil {
 		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceIndex returned error: %v", err)
 	}
-	if commandCalls != 2 {
-		t.Fatalf("command calls=%d, want 2", commandCalls)
+	if repairCalls != 1 {
+		t.Fatalf("repair calls=%d, want 1", repairCalls)
+	}
+	if recycleCalls != 1 {
+		t.Fatalf("recycle calls=%d, want 1", recycleCalls)
 	}
 	if calls != 5 {
 		t.Fatalf("ensure calls=%d, want 5", calls)

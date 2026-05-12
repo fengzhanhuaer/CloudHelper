@@ -3,7 +3,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -39,8 +41,10 @@ func TestEnsureProbeLocalWindowsSplitRouteFallsBackToChange(t *testing.T) {
 		}
 		return "", errors.New("unexpected route args")
 	}
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 
 	created, err := ensureProbeLocalWindowsSplitRoute(probeLocalWindowsRouteSplitPrefixA, probeLocalWindowsRouteSplitMaskA, "198.18.0.1", 9)
@@ -57,8 +61,10 @@ func TestDeleteProbeLocalWindowsSplitRouteIgnoresMissing(t *testing.T) {
 	probeLocalWindowsRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
 		return "", errors.New("The route specified was not found")
 	}
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 
 	if err := deleteProbeLocalWindowsSplitRoute(probeLocalWindowsRouteSplitPrefixA, probeLocalWindowsRouteSplitMaskA, "198.18.0.1", 9); err != nil {
@@ -66,9 +72,66 @@ func TestDeleteProbeLocalWindowsSplitRouteIgnoresMissing(t *testing.T) {
 	}
 }
 
+func resetProbeLocalWindowsNativeRouteHooksForTest() {
+	probeLocalCreateWindowsRouteEntry = ensureProbeLocalWindowsRouteNative
+	probeLocalDeleteWindowsRouteEntry = deleteProbeLocalWindowsRouteNative
+	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
+	probeLocalSnapshotWindowsIPv4Routes = snapshotProbeLocalWindowsIPv4Routes
+}
+
+func useProbeLocalWindowsCommandBackedRouteHooksForTest() {
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		metric := fmt.Sprintf("%d", probeLocalWindowsRouteMetric)
+		ifText := fmt.Sprintf("%d", routeDef.IfIndex)
+		_, addErr := probeLocalWindowsRunCommand(6*time.Second, "route", "ADD", routeDef.Prefix, "MASK", routeDef.Mask, routeDef.Gateway, "METRIC", metric, "IF", ifText)
+		if addErr == nil {
+			return true, nil
+		}
+		if !isProbeLocalWindowsRouteExistsErr(addErr) {
+			return false, addErr
+		}
+		_, changeErr := probeLocalWindowsRunCommand(6*time.Second, "route", "CHANGE", routeDef.Prefix, "MASK", routeDef.Mask, routeDef.Gateway, "METRIC", metric, "IF", ifText)
+		if changeErr != nil {
+			return false, fmt.Errorf("route exists but update failed: %w", changeErr)
+		}
+		return false, nil
+	}
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) error {
+		if strings.TrimSpace(routeDef.Gateway) == "" || routeDef.IfIndex <= 0 {
+			return nil
+		}
+		ifText := fmt.Sprintf("%d", routeDef.IfIndex)
+		_, err := probeLocalWindowsRunCommand(6*time.Second, "route", "DELETE", routeDef.Prefix, "MASK", routeDef.Mask, routeDef.Gateway, "IF", ifText)
+		if err != nil && !isProbeLocalWindowsRouteMissingErr(err) {
+			return err
+		}
+		return nil
+	}
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+		script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $exclude=%d; $route=Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $exclude -and $_.NextHop } | Sort-Object @{Expression='RouteMetric';Ascending=$true}, @{Expression='InterfaceMetric';Ascending=$true} | Select-Object -First 1 @{Name='interface_index';Expression={[int]$_.InterfaceIndex}}, @{Name='next_hop';Expression={[string]$_.NextHop}}; if (-not $route) { throw 'usable ipv4 default route not found' }; $route | ConvertTo-Json -Compress`, excludedIfIndex)
+		output, err := probeLocalWindowsRunCommand(6*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		if err != nil {
+			trimmed := strings.TrimSpace(output)
+			if trimmed != "" {
+				return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("detect windows bypass route target failed: %w: %s", err, trimmed)
+			}
+			return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("detect windows bypass route target failed: %w", err)
+		}
+		var routeTarget probeLocalWindowsDirectBypassRouteTarget
+		if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &routeTarget); err != nil {
+			return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("decode windows bypass route target failed: %w", err)
+		}
+		return routeTarget, nil
+	}
+	probeLocalSnapshotWindowsIPv4Routes = func() (string, error) {
+		return probeLocalWindowsRunCommand(6*time.Second, "route", "PRINT", "-4")
+	}
+}
+
 func TestApplyProbeLocalProxyTakeoverRollbackOnSecondRouteFailure(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldRun := probeLocalWindowsRunCommand
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
@@ -91,6 +154,7 @@ func TestApplyProbeLocalProxyTakeoverRollbackOnSecondRouteFailure(t *testing.T) 
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
 		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 
 	err := applyProbeLocalProxyTakeover()
@@ -139,9 +203,11 @@ func hasWindowsRouteCommand(calls []string, verb string, prefix string) bool {
 func TestApplyProbeLocalProxyTakeoverRollbackOnLocalBypassFailure(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldRun := probeLocalWindowsRunCommand
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
 		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
@@ -180,9 +246,11 @@ func TestApplyProbeLocalProxyTakeoverRollbackOnLocalBypassFailure(t *testing.T) 
 func TestApplyProbeLocalProxyTakeoverSuccessWithRouteOnly(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldRun := probeLocalWindowsRunCommand
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
 		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
@@ -232,9 +300,11 @@ func TestApplyProbeLocalProxyTakeoverSuccessWithRouteOnly(t *testing.T) {
 func TestRestoreProbeLocalProxyDirectDeletesLocalBypassRoutes(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldRun := probeLocalWindowsRunCommand
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
 		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 
 	probeLocalWindowsTakeoverState.mu.Lock()

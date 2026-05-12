@@ -38,13 +38,77 @@ type probeLocalMIBUnicastIPAddressRow struct {
 var (
 	probeLocalModIphlpapiNet                         = windows.NewLazySystemDLL("iphlpapi.dll")
 	probeLocalProcCreateUnicastIPAddressEntryNet     = probeLocalModIphlpapiNet.NewProc("CreateUnicastIpAddressEntry")
+	probeLocalProcDeleteUnicastIPAddressEntryNet     = probeLocalModIphlpapiNet.NewProc("DeleteUnicastIpAddressEntry")
+	probeLocalProcSetUnicastIPAddressEntryNet        = probeLocalModIphlpapiNet.NewProc("SetUnicastIpAddressEntry")
 	probeLocalProcInitializeUnicastIPAddressEntryNet = probeLocalModIphlpapiNet.NewProc("InitializeUnicastIpAddressEntry")
 	probeLocalProcConvertInterfaceLuidToIndexNet     = probeLocalModIphlpapiNet.NewProc("ConvertInterfaceLuidToIndex")
+	probeLocalProcCreateIpForwardEntry2Net           = probeLocalModIphlpapiNet.NewProc("CreateIpForwardEntry2")
+	probeLocalProcDeleteIpForwardEntry2Net           = probeLocalModIphlpapiNet.NewProc("DeleteIpForwardEntry2")
+	probeLocalProcGetIpForwardTable2Net              = probeLocalModIphlpapiNet.NewProc("GetIpForwardTable2")
+	probeLocalProcInitializeIpForwardEntryNet        = probeLocalModIphlpapiNet.NewProc("InitializeIpForwardEntry")
+	probeLocalProcSetIpForwardEntry2Net              = probeLocalModIphlpapiNet.NewProc("SetIpForwardEntry2")
+	probeLocalProcFreeMibTableNet                    = probeLocalModIphlpapiNet.NewProc("FreeMibTable")
+	probeLocalProcSetInterfaceDnsSettingsNet         = probeLocalModIphlpapiNet.NewProc("SetInterfaceDnsSettings")
+
+	probeLocalCreateWindowsRouteEntry          = ensureProbeLocalWindowsRouteNative
+	probeLocalDeleteWindowsRouteEntry          = deleteProbeLocalWindowsRouteNative
+	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
+	probeLocalSnapshotWindowsIPv4Routes        = snapshotProbeLocalWindowsIPv4Routes
+	probeLocalSetWindowsInterfaceDNS           = setProbeLocalWindowsInterfaceDNS
 
 	probeLocalConvertInterfaceLUIDToIndexNative = convertProbeLocalInterfaceLUIDToIndexNative
 	probeLocalListNetAdaptersForLUIDLookup      = listProbeLocalWindowsNetAdapters
 	probeLocalNetapiSleep                       = time.Sleep
 )
+
+type probeLocalSockaddrInet struct {
+	Family uint16
+	Port   uint16
+	Data   [24]byte
+}
+
+type probeLocalIPAddressPrefix struct {
+	Prefix       probeLocalSockaddrInet
+	PrefixLength uint8
+	Pad          [3]byte
+}
+
+type probeLocalMIBIPForwardRow2 struct {
+	InterfaceLuid     uint64
+	InterfaceIndex    uint32
+	DestinationPrefix probeLocalIPAddressPrefix
+	NextHop           probeLocalSockaddrInet
+	SitePrefixLength  uint8
+	Pad               [3]byte
+	ValidLifetime     uint32
+	PreferredLifetime uint32
+	Metric            uint32
+	Protocol          uint32
+	Loopback          uint8
+	Autoconfigure     uint8
+	Publish           uint8
+	Immortal          uint8
+	Age               uint32
+	Origin            uint32
+}
+
+type probeLocalMIBIPForwardTable2Header struct {
+	NumEntries uint32
+	Pad        uint32
+}
+
+type probeLocalDNSInterfaceSettings struct {
+	Version             uint32
+	Flags               uint64
+	Domain              *uint16
+	NameServer          *uint16
+	SearchList          *uint16
+	RegistrationEnabled uint32
+	RegisterAdapterName uint32
+	EnableLLMNR         uint32
+	QueryAdapterName    uint32
+	ProfileNameServer   *uint16
+}
 
 func ensureProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
 	if interfaceIndex <= 0 {
@@ -110,36 +174,18 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)).To4(); parsedDNS != nil {
 		cleanDNS = parsedDNS.String()
 	}
-	cleanGateway := ""
-	if parsedGateway := net.ParseIP(strings.TrimSpace(probeLocalTUNRouteGatewayIPv4)).To4(); parsedGateway != nil {
-		cleanGateway = parsedGateway.String()
+	adapter, err := windowsFindAdapterByIfIndex(interfaceIndex)
+	if err != nil {
+		return err
 	}
-
-	adapterAlias := ""
-	if adapter, adapterErr := windowsFindAdapterByIfIndex(interfaceIndex); adapterErr == nil {
-		adapterAlias = strings.TrimSpace(adapter.Name)
+	if err := upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex, cleanIP, prefixLength); err != nil {
+		return err
 	}
-	if adapterAlias != "" {
-		maskText, maskErr := probeLocalIPv4MaskFromPrefix(prefixLength)
-		if maskErr != nil {
-			return maskErr
-		}
-		_, _ = runProbeLocalCommand(6*time.Second, "netsh", "interface", "ipv4", "delete", "dnsservers", fmt.Sprintf(`name="%s"`, adapterAlias), "all")
-		gatewayArg := "gateway=none"
-		if cleanGateway != "" {
-			gatewayArg = fmt.Sprintf("gateway=%s", cleanGateway)
-		}
-		if output, err := runProbeLocalCommand(8*time.Second, "netsh", "interface", "ipv4", "set", "address", fmt.Sprintf(`name="%s"`, adapterAlias), "source=static", fmt.Sprintf("address=%s", cleanIP), fmt.Sprintf("mask=%s", maskText), gatewayArg, "store=persistent"); err != nil {
-			return fmt.Errorf("apply static tun ipv4 address by netsh failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
-		}
-		if output, err := runProbeLocalCommand(8*time.Second, "netsh", "interface", "ipv4", "set", "dnsservers", fmt.Sprintf(`name="%s"`, adapterAlias), "source=static", fmt.Sprintf("address=%s", cleanDNS), "register=none", "validate=no"); err != nil {
-			return fmt.Errorf("apply static tun dns by netsh failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
-		}
+	if strings.TrimSpace(adapter.AdapterGUID) == "" {
+		return errors.New("adapter guid is empty")
 	}
-
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; $dns=@('%s'); Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Disabled -DadTransmits 0 -ErrorAction SilentlyContinue | Out-Null; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore PersistentStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null; Set-DnsClientServerAddress -InterfaceIndex $idx -ServerAddresses $dns -ErrorAction Stop | Out-Null; $ready=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $ready) { throw 'tun ipv4 profile missing after static apply' }; $dnsCurrent=(Get-DnsClientServerAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses; if (-not $dnsCurrent -or $dnsCurrent.Count -lt 1) { throw 'tun dns server missing after static apply' }; if (($dnsCurrent[0].Trim()) -ne $dns[0]) { throw ('tun dns mismatch after static apply current=' + $dnsCurrent[0] + ' expect=' + $dns[0]) }`, interfaceIndex, cleanIP, prefixLength, cleanDNS)
-	if output, err := runProbeLocalCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script); err != nil {
-		return fmt.Errorf("apply static tun ipv4 profile failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
+	if err := probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, []string{cleanDNS}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -232,18 +278,63 @@ func probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	if prefixLength <= 0 || prefixLength > 32 {
 		prefixLength = 15
 	}
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; Remove-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 120; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null`, interfaceIndex, ip4.String(), prefixLength)
-	_, err := runProbeLocalCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
-	if err != nil {
+	if err := deleteProbeLocalWindowsInterfaceIPv4Address(interfaceIndex, ip4.String()); err != nil {
 		return err
 	}
+	return upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex, ip4.String(), prefixLength)
+}
+
+func upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
+	ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip4 == nil {
+		return errors.New("invalid ipv4 address")
+	}
+	var row probeLocalMIBUnicastIPAddressRow
+	probeLocalProcInitializeUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	row.Address[0] = byte(windows.AF_INET)
+	row.Address[1] = byte(windows.AF_INET >> 8)
+	copy(row.Address[4:8], ip4)
+	row.InterfaceIndex = uint32(interfaceIndex)
+	row.OnLinkPrefixLength = uint8(prefixLength)
+	row.ValidLifetime = 0xFFFFFFFF
+	row.PreferredLifetime = 0xFFFFFFFF
+	ret, _, callErr := probeLocalProcSetUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	if ret == 0 {
+		return nil
+	}
+	if ret != uintptr(windows.ERROR_NOT_FOUND) {
+		return probeLocalWindowsNetapiCallErr("SetUnicastIpAddressEntry", ret, callErr)
+	}
+	ret, _, callErr = probeLocalProcCreateUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	if ret != 0 && ret != uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
+		return probeLocalWindowsNetapiCallErr("CreateUnicastIpAddressEntry", ret, callErr)
+	}
 	return nil
+}
+
+func deleteProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText string) error {
+	ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip4 == nil {
+		return errors.New("invalid ipv4 address")
+	}
+	var row probeLocalMIBUnicastIPAddressRow
+	probeLocalProcInitializeUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	row.Address[0] = byte(windows.AF_INET)
+	row.Address[1] = byte(windows.AF_INET >> 8)
+	copy(row.Address[4:8], ip4)
+	row.InterfaceIndex = uint32(interfaceIndex)
+	ret, _, callErr := probeLocalProcDeleteUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	if ret == 0 || ret == uintptr(windows.ERROR_NOT_FOUND) {
+		return nil
+	}
+	return probeLocalWindowsNetapiCallErr("DeleteUnicastIpAddressEntry", ret, callErr)
 }
 
 type windowsAdapterInfo struct {
 	InterfaceIndex int
 	Name           string
 	Description    string
+	AdapterGUID    string
 	IPv4Addrs      []string
 }
 
@@ -289,6 +380,10 @@ func parseWindowsAdapterInfos(first *windows.IpAdapterAddresses) []windowsAdapte
 			InterfaceIndex: int(curr.IfIndex),
 			Name:           strings.TrimSpace(windows.UTF16PtrToString(curr.FriendlyName)),
 			Description:    strings.TrimSpace(windows.UTF16PtrToString(curr.Description)),
+		}
+		adapterName := strings.TrimSpace(windows.BytePtrToString(curr.AdapterName))
+		if adapterName != "" {
+			item.AdapterGUID = "{" + strings.Trim(adapterName, "{}") + "}"
 		}
 		for uni := curr.FirstUnicastAddress; uni != nil; uni = uni.Next {
 			ip := uni.Address.IP()
@@ -382,4 +477,206 @@ func ipv4ToUint32(ip net.IP) (uint32, bool) {
 		return 0, false
 	}
 	return binary.LittleEndian.Uint32(ip4), true
+}
+
+func encodeProbeLocalSockaddrInetIPv4(ipText string) (probeLocalSockaddrInet, error) {
+	ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip4 == nil {
+		return probeLocalSockaddrInet{}, fmt.Errorf("invalid ipv4 address: %s", ipText)
+	}
+	var addr probeLocalSockaddrInet
+	addr.Family = uint16(windows.AF_INET)
+	copy(addr.Data[0:4], ip4)
+	return addr, nil
+}
+
+func decodeProbeLocalSockaddrInetIPv4(addr probeLocalSockaddrInet) string {
+	if addr.Family != uint16(windows.AF_INET) {
+		return ""
+	}
+	ip4 := net.IPv4(addr.Data[0], addr.Data[1], addr.Data[2], addr.Data[3]).To4()
+	if ip4 == nil {
+		return ""
+	}
+	return ip4.String()
+}
+
+func probeLocalIPv4PrefixLengthFromMask(maskText string) (int, error) {
+	ip4 := net.ParseIP(strings.TrimSpace(maskText)).To4()
+	if ip4 == nil {
+		return 0, fmt.Errorf("invalid ipv4 mask: %s", maskText)
+	}
+	ones, bits := net.IPMask(ip4).Size()
+	if bits != 32 || ones < 0 {
+		return 0, fmt.Errorf("invalid ipv4 mask: %s", maskText)
+	}
+	return ones, nil
+}
+
+func probeLocalWindowsNetapiCallErr(op string, ret uintptr, callErr error) error {
+	if ret == 0 {
+		return nil
+	}
+	if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+		return fmt.Errorf("%s failed: %w", op, callErr)
+	}
+	return fmt.Errorf("%s failed: code=%d", op, ret)
+}
+
+func ensureProbeLocalWindowsRouteNative(routeDef probeLocalWindowsRouteDef) (bool, error) {
+	prefixLength, err := probeLocalIPv4PrefixLengthFromMask(routeDef.Mask)
+	if err != nil {
+		return false, err
+	}
+	prefixAddr, err := encodeProbeLocalSockaddrInetIPv4(routeDef.Prefix)
+	if err != nil {
+		return false, err
+	}
+	nextHopAddr, err := encodeProbeLocalSockaddrInetIPv4(routeDef.Gateway)
+	if err != nil {
+		return false, err
+	}
+
+	var row probeLocalMIBIPForwardRow2
+	probeLocalProcInitializeIpForwardEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	row.InterfaceIndex = uint32(routeDef.IfIndex)
+	row.DestinationPrefix.Prefix = prefixAddr
+	row.DestinationPrefix.PrefixLength = uint8(prefixLength)
+	row.NextHop = nextHopAddr
+	row.SitePrefixLength = uint8(prefixLength)
+	row.Metric = uint32(probeLocalWindowsRouteMetric)
+
+	ret, _, callErr := probeLocalProcCreateIpForwardEntry2Net.Call(uintptr(unsafe.Pointer(&row)))
+	if ret == 0 {
+		return true, nil
+	}
+	if ret != uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
+		return false, probeLocalWindowsNetapiCallErr("CreateIpForwardEntry2", ret, callErr)
+	}
+	ret, _, callErr = probeLocalProcSetIpForwardEntry2Net.Call(uintptr(unsafe.Pointer(&row)))
+	if ret != 0 {
+		return false, probeLocalWindowsNetapiCallErr("SetIpForwardEntry2", ret, callErr)
+	}
+	return false, nil
+}
+
+func deleteProbeLocalWindowsRouteNative(routeDef probeLocalWindowsRouteDef) error {
+	prefixLength, err := probeLocalIPv4PrefixLengthFromMask(routeDef.Mask)
+	if err != nil {
+		return err
+	}
+	prefixAddr, err := encodeProbeLocalSockaddrInetIPv4(routeDef.Prefix)
+	if err != nil {
+		return err
+	}
+	nextHopAddr, err := encodeProbeLocalSockaddrInetIPv4(routeDef.Gateway)
+	if err != nil {
+		return err
+	}
+	var row probeLocalMIBIPForwardRow2
+	row.InterfaceIndex = uint32(routeDef.IfIndex)
+	row.DestinationPrefix.Prefix = prefixAddr
+	row.DestinationPrefix.PrefixLength = uint8(prefixLength)
+	row.NextHop = nextHopAddr
+	ret, _, callErr := probeLocalProcDeleteIpForwardEntry2Net.Call(uintptr(unsafe.Pointer(&row)))
+	if ret == 0 || ret == uintptr(windows.ERROR_NOT_FOUND) {
+		return nil
+	}
+	return probeLocalWindowsNetapiCallErr("DeleteIpForwardEntry2", ret, callErr)
+}
+
+func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+	var tablePtr uintptr
+	ret, _, callErr := probeLocalProcGetIpForwardTable2Net.Call(uintptr(windows.AF_INET), uintptr(unsafe.Pointer(&tablePtr)))
+	if ret != 0 {
+		return probeLocalWindowsDirectBypassRouteTarget{}, probeLocalWindowsNetapiCallErr("GetIpForwardTable2", ret, callErr)
+	}
+	if tablePtr == 0 {
+		return probeLocalWindowsDirectBypassRouteTarget{}, errors.New("GetIpForwardTable2 returned empty table")
+	}
+	defer probeLocalProcFreeMibTableNet.Call(tablePtr)
+
+	header := (*probeLocalMIBIPForwardTable2Header)(unsafe.Pointer(tablePtr))
+	rowsBase := tablePtr + unsafe.Sizeof(probeLocalMIBIPForwardTable2Header{})
+	rows := unsafe.Slice((*probeLocalMIBIPForwardRow2)(unsafe.Pointer(rowsBase)), int(header.NumEntries))
+
+	best := probeLocalWindowsDirectBypassRouteTarget{}
+	bestMetric := uint32(^uint32(0))
+	for _, row := range rows {
+		if int(row.InterfaceIndex) <= 0 || int(row.InterfaceIndex) == excludedIfIndex {
+			continue
+		}
+		if row.DestinationPrefix.PrefixLength != 0 {
+			continue
+		}
+		prefixIP := decodeProbeLocalSockaddrInetIPv4(row.DestinationPrefix.Prefix)
+		if prefixIP != "0.0.0.0" {
+			continue
+		}
+		nextHop := decodeProbeLocalSockaddrInetIPv4(row.NextHop)
+		if nextHop == "" || nextHop == "0.0.0.0" {
+			continue
+		}
+		metric := row.Metric
+		if best.InterfaceIndex == 0 || metric < bestMetric || (metric == bestMetric && int(row.InterfaceIndex) < best.InterfaceIndex) {
+			best = probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: int(row.InterfaceIndex), NextHop: nextHop}
+			bestMetric = metric
+		}
+	}
+	if best.InterfaceIndex <= 0 || strings.TrimSpace(best.NextHop) == "" {
+		return probeLocalWindowsDirectBypassRouteTarget{}, errors.New("usable ipv4 default route not found")
+	}
+	return best, nil
+}
+
+func snapshotProbeLocalWindowsIPv4Routes() (string, error) {
+	var tablePtr uintptr
+	ret, _, callErr := probeLocalProcGetIpForwardTable2Net.Call(uintptr(windows.AF_INET), uintptr(unsafe.Pointer(&tablePtr)))
+	if ret != 0 {
+		return "", probeLocalWindowsNetapiCallErr("GetIpForwardTable2", ret, callErr)
+	}
+	if tablePtr == 0 {
+		return "", errors.New("GetIpForwardTable2 returned empty table")
+	}
+	defer probeLocalProcFreeMibTableNet.Call(tablePtr)
+	header := (*probeLocalMIBIPForwardTable2Header)(unsafe.Pointer(tablePtr))
+	return fmt.Sprintf("ipv4_routes=%d", header.NumEntries), nil
+}
+
+func setProbeLocalWindowsInterfaceDNS(interfaceGUID string, dnsServers []string) error {
+	cleanGUID := strings.TrimSpace(interfaceGUID)
+	if cleanGUID == "" {
+		return errors.New("empty interface guid")
+	}
+	guid, err := windows.GUIDFromString(cleanGUID)
+	if err != nil {
+		return fmt.Errorf("invalid interface guid: %w", err)
+	}
+	items := make([]string, 0, len(dnsServers))
+	for _, item := range dnsServers {
+		ip4 := net.ParseIP(strings.TrimSpace(item)).To4()
+		if ip4 == nil {
+			continue
+		}
+		items = append(items, ip4.String())
+	}
+	if len(items) == 0 {
+		return errors.New("empty dns servers")
+	}
+	nameServerPtr, err := syscall.UTF16PtrFromString(strings.Join(items, ","))
+	if err != nil {
+		return fmt.Errorf("encode dns servers failed: %w", err)
+	}
+	settings := probeLocalDNSInterfaceSettings{
+		Version:             1,
+		Flags:               0x0002 | 0x0008 | 0x0010,
+		NameServer:          nameServerPtr,
+		RegistrationEnabled: 0,
+		RegisterAdapterName: 0,
+	}
+	ret, _, callErr := probeLocalProcSetInterfaceDnsSettingsNet.Call(uintptr(unsafe.Pointer(&guid)), uintptr(unsafe.Pointer(&settings)))
+	if ret != 0 {
+		return probeLocalWindowsNetapiCallErr("SetInterfaceDnsSettings", ret, callErr)
+	}
+	return nil
 }

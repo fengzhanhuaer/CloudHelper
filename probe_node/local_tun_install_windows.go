@@ -23,23 +23,25 @@ const (
 )
 
 var (
-	probeLocalEnsureWintunLibrary            = ensureProbeEmbeddedWintunLibrary
-	probeLocalResolveWintunPath              = resolveProbeWintunPath
-	probeLocalDetectWintunAdapter            = detectProbeLocalWintunAdapter
-	probeLocalInspectWintunVisibility        = inspectProbeLocalWintunVisibility
-	probeLocalRemovePhantomWintunDevices     = removeProbeLocalPhantomWintunDevices
-	probeLocalFindWintunAdapter              = findProbeLocalWintunAdapter
-	probeLocalFindWintunAdapterByLUID        = findProbeLocalWintunAdapterByLUID
-	probeLocalCreateWintunAdapter            = createProbeLocalWintunAdapter
-	probeLocalCloseWintunAdapter             = closeProbeLocalWintunAdapter
-	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle
-	probeLocalEnsureWindowsInterfaceIPv4     = ensureProbeLocalWindowsInterfaceIPv4Address
-	probeLocalConvertInterfaceLUIDToIndex    = convertProbeLocalInterfaceLUIDToIndex
-	probeLocalRunCommand                     = runProbeLocalCommand
-	probeLocalIsWindowsAdmin                 = isWindowsAdmin
-	probeLocalRelaunchAsAdminInstall         = relaunchAsAdminForProbeLocalTUNInstall
-	probeLocalTUNInstallSleep                = time.Sleep
-	probeLocalRetainWintunAdapterHandle      = retainProbeLocalWintunAdapterHandle
+	probeLocalEnsureWintunLibrary              = ensureProbeEmbeddedWintunLibrary
+	probeLocalResolveWintunPath                = resolveProbeWintunPath
+	probeLocalDetectWintunAdapter              = detectProbeLocalWintunAdapter
+	probeLocalInspectWintunVisibility          = inspectProbeLocalWintunVisibility
+	probeLocalRemovePhantomWintunDevices       = removeProbeLocalPhantomWintunDevices
+	probeLocalFindWintunAdapter                = findProbeLocalWintunAdapter
+	probeLocalFindWintunAdapterByLUID          = findProbeLocalWintunAdapterByLUID
+	probeLocalCreateWintunAdapter              = createProbeLocalWintunAdapter
+	probeLocalCloseWintunAdapter               = closeProbeLocalWintunAdapter
+	probeLocalGetWintunAdapterLUIDFromHandle   = getProbeLocalWintunAdapterLUIDFromHandle
+	probeLocalEnsureWindowsInterfaceIPv4       = ensureProbeLocalWindowsInterfaceIPv4Address
+	probeLocalRepairWindowsRouteTargetIPv4Hook = probeLocalRepairWindowsInterfaceIPv4Address
+	probeLocalRecycleWindowsTunAdapterHook     = recycleProbeLocalWindowsNetAdapter
+	probeLocalConvertInterfaceLUIDToIndex      = convertProbeLocalInterfaceLUIDToIndex
+	probeLocalRunCommand                       = runProbeLocalCommand
+	probeLocalIsWindowsAdmin                   = isWindowsAdmin
+	probeLocalRelaunchAsAdminInstall           = relaunchAsAdminForProbeLocalTUNInstall
+	probeLocalTUNInstallSleep                  = time.Sleep
+	probeLocalRetainWintunAdapterHandle        = retainProbeLocalWintunAdapterHandle
 )
 
 var probeLocalRetainedWintunAdapterState = struct {
@@ -798,7 +800,7 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) erro
 			lastTimeoutErr = retryErr
 		}
 
-		repairErr := repairProbeLocalWindowsRouteTargetIPv4(interfaceIndex)
+		repairErr := probeLocalRepairWindowsRouteTargetIPv4Hook(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
 		if repairErr == nil {
 			for _, delay := range []time.Duration{150 * time.Millisecond, 450 * time.Millisecond, 900 * time.Millisecond} {
 				if delay > 0 {
@@ -816,7 +818,7 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) erro
 			}
 		}
 
-		recycleErr := recycleProbeLocalWindowsTunAdapter(interfaceIndex)
+		recycleErr := probeLocalRecycleWindowsTunAdapterHook(interfaceIndex)
 		if recycleErr != nil {
 			if repairErr != nil {
 				return fmt.Errorf("repair windows tun ipv4 target failed: %w", errors.Join(lastTimeoutErr, repairErr, recycleErr))
@@ -850,22 +852,14 @@ func repairProbeLocalWindowsRouteTargetIPv4(interfaceIndex int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid wintun adapter interface index")
 	}
-	command := fmt.Sprintf(`$ErrorActionPreference='Stop'; $idx=%d; $ip='%s'; $prefix=%d; Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -DadTransmits 0 -ErrorAction SilentlyContinue | Out-Null; Remove-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 120; $existing=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $existing) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null }; Set-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -SkipAsSource $false -ErrorAction SilentlyContinue | Out-Null; $ready=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; if (-not $ready) { throw 'tun ipv4 target missing after repair' }`, interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
-	if output, err := probeLocalRunCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command); err != nil {
-		return fmt.Errorf("repair route target ipv4 by powershell failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
-	}
-	return nil
+	return probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
 }
 
 func recycleProbeLocalWindowsTunAdapter(interfaceIndex int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid wintun adapter interface index")
 	}
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $adapter = Get-NetAdapter -InterfaceIndex %d -ErrorAction Stop; Disable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 320; Enable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction Stop | Out-Null`, interfaceIndex)
-	if output, err := probeLocalRunCommand(10*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script); err != nil {
-		return fmt.Errorf("recycle wintun adapter by powershell failed: %w", firstProbeLocalTUNErr(err, errors.New(strings.TrimSpace(output))))
-	}
-	return nil
+	return recycleProbeLocalWindowsNetAdapter(interfaceIndex)
 }
 
 func isProbeLocalIPv4BindableTimeoutErr(err error) bool {
@@ -963,6 +957,8 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalCloseWintunAdapter = closeProbeLocalWintunAdapter
 	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle
 	probeLocalEnsureWindowsInterfaceIPv4 = ensureProbeLocalWindowsInterfaceIPv4Address
+	probeLocalRepairWindowsRouteTargetIPv4Hook = probeLocalRepairWindowsInterfaceIPv4Address
+	probeLocalRecycleWindowsTunAdapterHook = recycleProbeLocalWindowsNetAdapter
 	probeLocalConvertInterfaceLUIDToIndex = convertProbeLocalInterfaceLUIDToIndex
 	probeLocalRunCommand = runProbeLocalCommand
 	probeLocalIsWindowsAdmin = isWindowsAdmin

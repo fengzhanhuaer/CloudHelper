@@ -341,10 +341,12 @@ func TestShouldFallbackProbeLocalUDPBind(t *testing.T) {
 
 func TestEnsureProbeLocalDirectBypassForTargetUsesPrimaryEgressRoute(t *testing.T) {
 	resetProbeLocalDirectBypassStateForTest()
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
 	oldRun := probeLocalWindowsRunCommand
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
@@ -387,10 +389,12 @@ func TestEnsureProbeLocalDirectBypassForTargetUsesPrimaryEgressRoute(t *testing.
 
 func TestReleaseProbeLocalTUNDirectBypassRouteUsesStoredPrimaryEgressRoute(t *testing.T) {
 	resetProbeLocalDirectBypassStateForTest()
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
 	oldRun := probeLocalWindowsRunCommand
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
@@ -449,10 +453,12 @@ func TestReleaseProbeLocalTUNDirectBypassRouteUsesStoredPrimaryEgressRoute(t *te
 
 func TestReleaseProbeLocalAllDirectBypassRoutesUsesStoredPrimaryEgressRoute(t *testing.T) {
 	resetProbeLocalDirectBypassStateForTest()
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
 	oldRun := probeLocalWindowsRunCommand
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")

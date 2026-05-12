@@ -5,7 +5,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1022,32 +1021,7 @@ func resolveProbeLocalWindowsDirectBypassRouteTarget() (probeLocalWindowsDirectB
 	if err != nil {
 		return probeLocalWindowsDirectBypassRouteTarget{}, err
 	}
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $exclude=%d; $route=Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $exclude -and $_.NextHop } | Sort-Object @{Expression='RouteMetric';Ascending=$true}, @{Expression='InterfaceMetric';Ascending=$true} | Select-Object -First 1 @{Name='interface_index';Expression={[int]$_.InterfaceIndex}}, @{Name='next_hop';Expression={[string]$_.NextHop}}; if (-not $route) { throw 'usable ipv4 default route not found' }; $route | ConvertTo-Json -Compress`, tunIfIndex)
-	output, runErr := probeLocalWindowsRunCommand(6*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
-	if runErr != nil {
-		trimmed := strings.TrimSpace(output)
-		if trimmed != "" {
-			return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("detect windows bypass route target failed: %w: %s", runErr, trimmed)
-		}
-		return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("detect windows bypass route target failed: %w", runErr)
-	}
-	var routeTarget probeLocalWindowsDirectBypassRouteTarget
-	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &routeTarget); err != nil {
-		return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("decode windows bypass route target failed: %w", err)
-	}
-	if routeTarget.InterfaceIndex <= 0 {
-		return probeLocalWindowsDirectBypassRouteTarget{}, errors.New("invalid bypass route interface index")
-	}
-	cleanNextHop := strings.TrimSpace(routeTarget.NextHop)
-	if parsed := net.ParseIP(cleanNextHop); parsed == nil || parsed.To4() == nil {
-		return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("invalid bypass route next hop: %s", cleanNextHop)
-	} else {
-		routeTarget.NextHop = parsed.To4().String()
-	}
-	if routeTarget.InterfaceIndex == tunIfIndex {
-		return probeLocalWindowsDirectBypassRouteTarget{}, fmt.Errorf("invalid bypass interface: matched tun adapter (if=%d)", tunIfIndex)
-	}
-	return routeTarget, nil
+	return probeLocalResolveWindowsPrimaryEgressRoute(tunIfIndex)
 }
 
 func acquireProbeLocalTUNDirectBypassRoute(host string) (func(), error) {
@@ -1065,17 +1039,9 @@ func acquireProbeLocalTUNDirectBypassRoute(host string) (func(), error) {
 			return nil, errors.New("direct bypass route target is not prepared")
 		}
 	}
-	metric := strconv.Itoa(probeLocalWindowsRouteMetric)
-	ifText := strconv.Itoa(routeTarget.InterfaceIndex)
-	_, addErr := probeLocalWindowsRunCommand(6*time.Second, "route", "ADD", ip, "MASK", "255.255.255.255", routeTarget.NextHop, "METRIC", metric, "IF", ifText)
-	if addErr != nil && !isProbeLocalWindowsRouteExistsErr(addErr) {
-		return nil, addErr
-	}
-	if addErr != nil && isProbeLocalWindowsRouteExistsErr(addErr) {
-		_, changeErr := probeLocalWindowsRunCommand(6*time.Second, "route", "CHANGE", ip, "MASK", "255.255.255.255", routeTarget.NextHop, "METRIC", metric, "IF", ifText)
-		if changeErr != nil {
-			return nil, changeErr
-		}
+	routeDef := probeLocalWindowsRouteDef{Prefix: ip, Mask: "255.255.255.255", Gateway: routeTarget.NextHop, IfIndex: routeTarget.InterfaceIndex}
+	if _, err := probeLocalCreateWindowsRouteEntry(routeDef); err != nil {
+		return nil, err
 	}
 	probeLocalDirectBypassState.mu.Lock()
 	if probeLocalDirectBypassState.routes == nil {
@@ -1100,9 +1066,8 @@ func releaseProbeLocalTUNDirectBypassRoute(host string) {
 	if !ok {
 		return
 	}
-	ifText := strconv.Itoa(routeTarget.InterfaceIndex)
-	_, delErr := probeLocalWindowsRunCommand(6*time.Second, "route", "DELETE", ip, "MASK", "255.255.255.255", routeTarget.NextHop, "IF", ifText)
-	if delErr != nil && !isProbeLocalWindowsRouteMissingErr(delErr) {
+	routeDef := probeLocalWindowsRouteDef{Prefix: ip, Mask: "255.255.255.255", Gateway: routeTarget.NextHop, IfIndex: routeTarget.InterfaceIndex}
+	if delErr := probeLocalDeleteWindowsRouteEntry(routeDef); delErr != nil {
 		logProbeWarnf("probe local bypass route delete failed: host=%s err=%v", ip, delErr)
 	}
 }

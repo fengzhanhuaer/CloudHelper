@@ -33,10 +33,12 @@ func (f *fakeProbeLocalTUNDataPlane) WritePacket(_ []byte) error {
 
 func TestProbeLocalTUNDataPlaneStartStopLifecycle(t *testing.T) {
 	resetProbeLocalTUNDataPlaneHooksForTest()
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(resetProbeLocalTUNDataPlaneHooksForTest)
 	oldRun := probeLocalWindowsRunCommand
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 
 	createCalls := 0
@@ -96,9 +98,13 @@ func TestProbeLocalTUNDataPlaneStartStopLifecycle(t *testing.T) {
 
 func TestProbeLocalTUNDataPlaneStartPreparesDirectBypassRouteTargetOnce(t *testing.T) {
 	resetProbeLocalTUNDataPlaneHooksForTest()
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(resetProbeLocalTUNDataPlaneHooksForTest)
 	resetProbeLocalDirectBypassStateForTest()
-	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+	t.Cleanup(func() {
+		resetProbeLocalDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
 
 	prepareCalls := 0
 	routeCalls := 0
@@ -164,10 +170,12 @@ func TestProbeLocalTUNDataPlaneStartPreparesDirectBypassRouteTargetOnce(t *testi
 
 func TestProbeLocalTUNDataPlaneStartRunnerFailureClosesAdapter(t *testing.T) {
 	resetProbeLocalTUNDataPlaneHooksForTest()
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(resetProbeLocalTUNDataPlaneHooksForTest)
 	oldRun := probeLocalWindowsRunCommand
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 
 	closeAdapterCalls := 0

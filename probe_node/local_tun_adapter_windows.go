@@ -3,12 +3,9 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -19,6 +16,58 @@ import (
 )
 
 const probeLocalWindowsErrorInsufficientBuffer = 122
+
+const (
+	probeLocalSetupDIGCFPresent      = 0x00000002
+	probeLocalSetupDIGCFAllClasses   = 0x00000004
+	probeLocalSPDRPDevDesc           = 0x00000000
+	probeLocalSPDRPClass             = 0x00000007
+	probeLocalSPDRPFriendlyName      = 0x0000000C
+	probeLocalDIFPropertyChange      = 0x00000012
+	probeLocalDICSEnable             = 0x00000001
+	probeLocalDICSDisable            = 0x00000002
+	probeLocalDICSFlagGlobal         = 0x00000001
+	probeLocalCMLocateDevNodePhantom = 0x00000001
+	probeLocalCMProblemPhantom       = 45
+	probeLocalCfgmgrCRSuccess        = 0x00000000
+	probeLocalWindowsInvalidHandle   = ^uintptr(0)
+)
+
+var (
+	probeLocalModSetupapi                           = windows.NewLazySystemDLL("setupapi.dll")
+	probeLocalProcSetupDiGetClassDevsW              = probeLocalModSetupapi.NewProc("SetupDiGetClassDevsW")
+	probeLocalProcSetupDiEnumDeviceInfo             = probeLocalModSetupapi.NewProc("SetupDiEnumDeviceInfo")
+	probeLocalProcSetupDiGetDeviceInstanceIDW       = probeLocalModSetupapi.NewProc("SetupDiGetDeviceInstanceIdW")
+	probeLocalProcSetupDiGetDeviceRegistryPropertyW = probeLocalModSetupapi.NewProc("SetupDiGetDeviceRegistryPropertyW")
+	probeLocalProcSetupDiDestroyDeviceInfoList      = probeLocalModSetupapi.NewProc("SetupDiDestroyDeviceInfoList")
+	probeLocalProcSetupDiSetClassInstallParamsW     = probeLocalModSetupapi.NewProc("SetupDiSetClassInstallParamsW")
+	probeLocalProcSetupDiCallClassInstaller         = probeLocalModSetupapi.NewProc("SetupDiCallClassInstaller")
+
+	probeLocalModCfgmgr32                 = windows.NewLazySystemDLL("cfgmgr32.dll")
+	probeLocalProcCMGetDevNodeStatus      = probeLocalModCfgmgr32.NewProc("CM_Get_DevNode_Status")
+	probeLocalProcCMLocateDevNodeW        = probeLocalModCfgmgr32.NewProc("CM_Locate_DevNodeW")
+	probeLocalProcCMUninstallDevNode      = probeLocalModCfgmgr32.NewProc("CM_Uninstall_DevNode")
+	probeLocalProcCMQueryAndRemoveSubTree = probeLocalModCfgmgr32.NewProc("CM_Query_And_Remove_SubTreeW")
+)
+
+type probeLocalSPDevinfoData struct {
+	Size      uint32
+	ClassGUID windows.GUID
+	DevInst   uint32
+	Reserved  uintptr
+}
+
+type probeLocalSPClassInstallHeader struct {
+	Size            uint32
+	InstallFunction uint32
+}
+
+type probeLocalSPPropchangeParams struct {
+	ClassInstallHeader probeLocalSPClassInstallHeader
+	StateChange        uint32
+	Scope              uint32
+	HwProfile          uint32
+}
 
 type probeLocalWindowsNetAdapter struct {
 	InterfaceIndex       int
@@ -347,34 +396,223 @@ type probeLocalWindowsPnPDevice struct {
 }
 
 func listProbeLocalWindowsPnPDevices() ([]probeLocalWindowsPnPDevice, error) {
-	script := "$ErrorActionPreference='Stop'; $items=Get-PnpDevice -PresentOnly:$false | ForEach-Object { [PSCustomObject]@{ friendly_name=[string]$_.FriendlyName; instance_id=[string]$_.InstanceId; class=[string]$_.Class; status=[string]$_.Status; present=([bool]$_.Present); problem=if ($null -eq $_.Problem) { '' } else { [string]$_.Problem } } }; $items | ConvertTo-Json -Compress"
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	hideWindowSysProcAttr(cmd)
-	output, err := cmd.CombinedOutput()
+	allDevices, err := probeLocalSnapshotWindowsPnPDevices(probeLocalSetupDIGCFAllClasses)
 	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("query pnp devices timeout after 10s: %w (%s)", ctx.Err(), strings.TrimSpace(string(output)))
+		return nil, err
+	}
+	presentDevices, err := probeLocalSnapshotWindowsPnPDevices(probeLocalSetupDIGCFAllClasses | probeLocalSetupDIGCFPresent)
+	if err != nil {
+		return nil, err
+	}
+
+	presentMap := make(map[string]probeLocalWindowsPnPDevice, len(presentDevices))
+	for _, device := range presentDevices {
+		key := strings.ToUpper(strings.TrimSpace(device.InstanceID))
+		if key == "" {
+			continue
 		}
-		return nil, fmt.Errorf("query pnp devices failed: %w (%s)", err, strings.TrimSpace(string(output)))
-	}
-	text := strings.TrimSpace(string(output))
-	if text == "" || strings.EqualFold(text, "null") {
-		return nil, nil
-	}
-	var list []probeLocalWindowsPnPDevice
-	if strings.HasPrefix(text, "[") {
-		if unmarshalErr := json.Unmarshal([]byte(text), &list); unmarshalErr != nil {
-			return nil, fmt.Errorf("decode pnp devices json array failed: %w", unmarshalErr)
+		device.Present = true
+		if strings.TrimSpace(device.Status) == "" {
+			device.Status = "OK"
 		}
-		return list, nil
+		presentMap[key] = device
 	}
-	var single probeLocalWindowsPnPDevice
-	if unmarshalErr := json.Unmarshal([]byte(text), &single); unmarshalErr != nil {
-		return nil, fmt.Errorf("decode pnp devices json object failed: %w", unmarshalErr)
+
+	items := make([]probeLocalWindowsPnPDevice, 0, len(allDevices)+len(presentDevices))
+	seen := make(map[string]struct{}, len(allDevices)+len(presentDevices))
+	for _, device := range allDevices {
+		key := strings.ToUpper(strings.TrimSpace(device.InstanceID))
+		if key == "" {
+			continue
+		}
+		if presentDevice, ok := presentMap[key]; ok {
+			device.Present = true
+			if strings.TrimSpace(device.FriendlyName) == "" {
+				device.FriendlyName = presentDevice.FriendlyName
+			}
+			if strings.TrimSpace(device.Class) == "" {
+				device.Class = presentDevice.Class
+			}
+			if strings.TrimSpace(device.Status) == "" {
+				device.Status = presentDevice.Status
+			}
+			if strings.TrimSpace(device.Problem) == "" {
+				device.Problem = presentDevice.Problem
+			}
+		} else {
+			device.Present = false
+			if strings.TrimSpace(device.Status) == "" {
+				device.Status = "Unknown"
+			}
+			if strings.TrimSpace(device.Problem) == "" {
+				device.Problem = "CM_PROB_PHANTOM"
+			}
+		}
+		seen[key] = struct{}{}
+		items = append(items, device)
 	}
-	return []probeLocalWindowsPnPDevice{single}, nil
+	for key, device := range presentMap {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		items = append(items, device)
+	}
+	return items, nil
+}
+
+func probeLocalSnapshotWindowsPnPDevices(flags uint32) ([]probeLocalWindowsPnPDevice, error) {
+	handle, err := probeLocalOpenWindowsDeviceInfoSet(flags)
+	if err != nil {
+		return nil, err
+	}
+	defer probeLocalProcSetupDiDestroyDeviceInfoList.Call(handle)
+
+	items := make([]probeLocalWindowsPnPDevice, 0, 16)
+	for index := 0; ; index++ {
+		var devInfo probeLocalSPDevinfoData
+		devInfo.Size = uint32(unsafe.Sizeof(devInfo))
+		ret, _, callErr := probeLocalProcSetupDiEnumDeviceInfo.Call(
+			handle,
+			uintptr(index),
+			uintptr(unsafe.Pointer(&devInfo)),
+		)
+		if ret == 0 {
+			if errors.Is(callErr, windows.ERROR_NO_MORE_ITEMS) {
+				break
+			}
+			return nil, probeLocalWindowsSetupAPICallErr("SetupDiEnumDeviceInfo", callErr)
+		}
+
+		instanceID, err := probeLocalGetWindowsDeviceInstanceID(handle, &devInfo)
+		if err != nil {
+			return nil, err
+		}
+		friendlyName, err := probeLocalGetWindowsDeviceRegistryPropertyString(handle, &devInfo, probeLocalSPDRPFriendlyName)
+		if err != nil {
+			return nil, err
+		}
+		deviceDesc, err := probeLocalGetWindowsDeviceRegistryPropertyString(handle, &devInfo, probeLocalSPDRPDevDesc)
+		if err != nil {
+			return nil, err
+		}
+		className, err := probeLocalGetWindowsDeviceRegistryPropertyString(handle, &devInfo, probeLocalSPDRPClass)
+		if err != nil {
+			return nil, err
+		}
+		statusText, problemText := probeLocalGetWindowsDevNodeState(devInfo.DevInst)
+		if strings.TrimSpace(friendlyName) == "" {
+			friendlyName = deviceDesc
+		}
+		items = append(items, probeLocalWindowsPnPDevice{
+			FriendlyName: strings.TrimSpace(friendlyName),
+			InstanceID:   strings.TrimSpace(instanceID),
+			Class:        strings.TrimSpace(className),
+			Status:       strings.TrimSpace(statusText),
+			Problem:      strings.TrimSpace(problemText),
+		})
+	}
+	return items, nil
+}
+
+func probeLocalOpenWindowsDeviceInfoSet(flags uint32) (uintptr, error) {
+	handle, _, callErr := probeLocalProcSetupDiGetClassDevsW.Call(0, 0, 0, uintptr(flags))
+	if handle == probeLocalWindowsInvalidHandle {
+		return 0, probeLocalWindowsSetupAPICallErr("SetupDiGetClassDevsW", callErr)
+	}
+	return handle, nil
+}
+
+func probeLocalGetWindowsDeviceInstanceID(handle uintptr, devInfo *probeLocalSPDevinfoData) (string, error) {
+	bufLen := uint32(256)
+	for attempt := 0; attempt < 3; attempt++ {
+		buf := make([]uint16, bufLen)
+		var required uint32
+		ret, _, callErr := probeLocalProcSetupDiGetDeviceInstanceIDW.Call(
+			handle,
+			uintptr(unsafe.Pointer(devInfo)),
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(bufLen),
+			uintptr(unsafe.Pointer(&required)),
+		)
+		if ret != 0 {
+			return strings.TrimSpace(windows.UTF16ToString(buf)), nil
+		}
+		if errors.Is(callErr, syscall.ERROR_INSUFFICIENT_BUFFER) && required > bufLen {
+			bufLen = required + 1
+			continue
+		}
+		return "", probeLocalWindowsSetupAPICallErr("SetupDiGetDeviceInstanceIdW", callErr)
+	}
+	return "", errors.New("SetupDiGetDeviceInstanceIdW failed after retries")
+}
+
+func probeLocalGetWindowsDeviceRegistryPropertyString(handle uintptr, devInfo *probeLocalSPDevinfoData, property uint32) (string, error) {
+	bufLen := uint32(256)
+	for attempt := 0; attempt < 3; attempt++ {
+		buf := make([]uint16, bufLen)
+		var regDataType uint32
+		var required uint32
+		ret, _, callErr := probeLocalProcSetupDiGetDeviceRegistryPropertyW.Call(
+			handle,
+			uintptr(unsafe.Pointer(devInfo)),
+			uintptr(property),
+			uintptr(unsafe.Pointer(&regDataType)),
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(len(buf)*2),
+			uintptr(unsafe.Pointer(&required)),
+		)
+		if ret != 0 {
+			return strings.TrimSpace(windows.UTF16ToString(buf)), nil
+		}
+		if errors.Is(callErr, windows.ERROR_INVALID_DATA) || errors.Is(callErr, syscall.ERROR_NOT_FOUND) {
+			return "", nil
+		}
+		if errors.Is(callErr, syscall.ERROR_INSUFFICIENT_BUFFER) && required > uint32(len(buf)*2) {
+			bufLen = required/2 + 2
+			continue
+		}
+		return "", probeLocalWindowsSetupAPICallErr("SetupDiGetDeviceRegistryPropertyW", callErr)
+	}
+	return "", errors.New("SetupDiGetDeviceRegistryPropertyW failed after retries")
+}
+
+func probeLocalGetWindowsDevNodeState(devInst uint32) (string, string) {
+	var status uint32
+	var problem uint32
+	ret, _, _ := probeLocalProcCMGetDevNodeStatus.Call(
+		uintptr(unsafe.Pointer(&status)),
+		uintptr(unsafe.Pointer(&problem)),
+		uintptr(devInst),
+		0,
+	)
+	if ret != probeLocalCfgmgrCRSuccess {
+		return "", ""
+	}
+	statusText := "OK"
+	problemText := ""
+	if problem != 0 {
+		statusText = "Unknown"
+		if problem == probeLocalCMProblemPhantom {
+			problemText = "CM_PROB_PHANTOM"
+		} else {
+			problemText = fmt.Sprintf("%d", problem)
+		}
+	}
+	return statusText, problemText
+}
+
+func probeLocalWindowsSetupAPICallErr(op string, callErr error) error {
+	if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
+		return fmt.Errorf("%s failed: %s", op, formatProbeLocalWindowsCallErr(callErr))
+	}
+	return fmt.Errorf("%s failed", op)
+}
+
+func probeLocalWindowsCfgMgrCallErr(op string, ret uintptr) error {
+	if ret == probeLocalCfgmgrCRSuccess {
+		return nil
+	}
+	return fmt.Errorf("%s failed: code=%d", op, ret)
 }
 
 func probeLocalWintunPnPDeviceMatches(device probeLocalWindowsPnPDevice) bool {
@@ -413,6 +651,127 @@ func probeLocalPnPDeviceIsPhantom(device probeLocalWindowsPnPDevice) bool {
 	return false
 }
 
+func recycleProbeLocalWindowsNetAdapter(interfaceIndex int) error {
+	if interfaceIndex <= 0 {
+		return errors.New("invalid wintun adapter interface index")
+	}
+	device, err := probeLocalResolveWindowsPnPDeviceForAdapter(interfaceIndex)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(device.InstanceID) == "" {
+		return fmt.Errorf("wintun pnp device instance id is empty for interface index: %d", interfaceIndex)
+	}
+	if err := probeLocalChangeWindowsDeviceState(device.InstanceID, probeLocalDICSDisable); err != nil {
+		return err
+	}
+	time.Sleep(320 * time.Millisecond)
+	return probeLocalChangeWindowsDeviceState(device.InstanceID, probeLocalDICSEnable)
+}
+
+func probeLocalResolveWindowsPnPDeviceForAdapter(interfaceIndex int) (probeLocalWindowsPnPDevice, error) {
+	adapters, err := listProbeLocalWindowsNetAdapters()
+	if err != nil {
+		return probeLocalWindowsPnPDevice{}, err
+	}
+	adapterName := ""
+	for _, adapter := range adapters {
+		if adapter.InterfaceIndex == interfaceIndex {
+			adapterName = strings.TrimSpace(adapter.Name)
+			break
+		}
+	}
+	devices, err := listProbeLocalWindowsPnPDevices()
+	if err != nil {
+		return probeLocalWindowsPnPDevice{}, err
+	}
+	var fallback probeLocalWindowsPnPDevice
+	for _, device := range devices {
+		if !device.Present || !probeLocalWintunPnPDeviceMatches(device) {
+			continue
+		}
+		if adapterName != "" && strings.EqualFold(strings.TrimSpace(device.FriendlyName), adapterName) {
+			return device, nil
+		}
+		if strings.TrimSpace(fallback.InstanceID) == "" {
+			fallback = device
+		}
+	}
+	if strings.TrimSpace(fallback.InstanceID) != "" {
+		return fallback, nil
+	}
+	return probeLocalWindowsPnPDevice{}, fmt.Errorf("present wintun pnp device not found for interface index: %d", interfaceIndex)
+}
+
+func probeLocalChangeWindowsDeviceState(instanceID string, stateChange uint32) error {
+	handle, err := probeLocalOpenWindowsDeviceInfoSet(probeLocalSetupDIGCFAllClasses)
+	if err != nil {
+		return err
+	}
+	defer probeLocalProcSetupDiDestroyDeviceInfoList.Call(handle)
+
+	devInfo, found, err := probeLocalFindWindowsDeviceInfoByInstanceID(handle, instanceID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("device instance not found: %s", strings.TrimSpace(instanceID))
+	}
+	params := probeLocalSPPropchangeParams{
+		ClassInstallHeader: probeLocalSPClassInstallHeader{
+			Size:            uint32(unsafe.Sizeof(probeLocalSPClassInstallHeader{})),
+			InstallFunction: probeLocalDIFPropertyChange,
+		},
+		StateChange: stateChange,
+		Scope:       probeLocalDICSFlagGlobal,
+		HwProfile:   0,
+	}
+	ret, _, callErr := probeLocalProcSetupDiSetClassInstallParamsW.Call(
+		handle,
+		uintptr(unsafe.Pointer(&devInfo)),
+		uintptr(unsafe.Pointer(&params)),
+		unsafe.Sizeof(params),
+	)
+	if ret == 0 {
+		return probeLocalWindowsSetupAPICallErr("SetupDiSetClassInstallParamsW", callErr)
+	}
+	ret, _, callErr = probeLocalProcSetupDiCallClassInstaller.Call(
+		uintptr(probeLocalDIFPropertyChange),
+		handle,
+		uintptr(unsafe.Pointer(&devInfo)),
+	)
+	if ret == 0 {
+		return probeLocalWindowsSetupAPICallErr("SetupDiCallClassInstaller", callErr)
+	}
+	return nil
+}
+
+func probeLocalFindWindowsDeviceInfoByInstanceID(handle uintptr, instanceID string) (probeLocalSPDevinfoData, bool, error) {
+	cleanID := strings.TrimSpace(instanceID)
+	for index := 0; ; index++ {
+		var devInfo probeLocalSPDevinfoData
+		devInfo.Size = uint32(unsafe.Sizeof(devInfo))
+		ret, _, callErr := probeLocalProcSetupDiEnumDeviceInfo.Call(
+			handle,
+			uintptr(index),
+			uintptr(unsafe.Pointer(&devInfo)),
+		)
+		if ret == 0 {
+			if errors.Is(callErr, windows.ERROR_NO_MORE_ITEMS) {
+				return probeLocalSPDevinfoData{}, false, nil
+			}
+			return probeLocalSPDevinfoData{}, false, probeLocalWindowsSetupAPICallErr("SetupDiEnumDeviceInfo", callErr)
+		}
+		currentInstanceID, err := probeLocalGetWindowsDeviceInstanceID(handle, &devInfo)
+		if err != nil {
+			return probeLocalSPDevinfoData{}, false, err
+		}
+		if strings.EqualFold(strings.TrimSpace(currentInstanceID), cleanID) {
+			return devInfo, true, nil
+		}
+	}
+}
+
 func removeProbeLocalPhantomWintunDevices() (int, error) {
 	devices, err := listProbeLocalWindowsPnPDevices()
 	if err != nil {
@@ -438,17 +797,8 @@ func removeProbeLocalPhantomWintunDevices() (int, error) {
 	removed := 0
 	var removeErr error
 	for _, instanceID := range instanceIDs {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		cmd := exec.CommandContext(ctx, "pnputil", "/remove-device", instanceID)
-		hideWindowSysProcAttr(cmd)
-		output, err := cmd.CombinedOutput()
-		cancel()
-		if err != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				removeErr = errors.Join(removeErr, fmt.Errorf("remove phantom pnp device timeout after 10s: instance=%s err=%w output=%s", instanceID, ctx.Err(), strings.TrimSpace(string(output))))
-				continue
-			}
-			removeErr = errors.Join(removeErr, fmt.Errorf("remove phantom pnp device failed: instance=%s err=%w output=%s", instanceID, err, strings.TrimSpace(string(output))))
+		if err := probeLocalUninstallWindowsPhantomDevice(instanceID); err != nil {
+			removeErr = errors.Join(removeErr, fmt.Errorf("remove phantom pnp device failed: instance=%s err=%w", instanceID, err))
 			continue
 		}
 		removed++
@@ -457,6 +807,35 @@ func removeProbeLocalPhantomWintunDevices() (int, error) {
 		return removed, removeErr
 	}
 	return removed, nil
+}
+
+func probeLocalUninstallWindowsPhantomDevice(instanceID string) error {
+	cleanID := strings.TrimSpace(instanceID)
+	if cleanID == "" {
+		return errors.New("empty device instance id")
+	}
+	instanceIDPtr, err := syscall.UTF16PtrFromString(cleanID)
+	if err != nil {
+		return fmt.Errorf("encode device instance id failed: %w", err)
+	}
+	var devInst uint32
+	ret, _, _ := probeLocalProcCMLocateDevNodeW.Call(
+		uintptr(unsafe.Pointer(&devInst)),
+		uintptr(unsafe.Pointer(instanceIDPtr)),
+		uintptr(probeLocalCMLocateDevNodePhantom),
+	)
+	if ret != probeLocalCfgmgrCRSuccess {
+		return probeLocalWindowsCfgMgrCallErr("CM_Locate_DevNodeW", ret)
+	}
+	ret, _, _ = probeLocalProcCMUninstallDevNode.Call(uintptr(devInst), 0)
+	if ret == probeLocalCfgmgrCRSuccess {
+		return nil
+	}
+	ret, _, _ = probeLocalProcCMQueryAndRemoveSubTree.Call(uintptr(devInst), 0, 0, 0, 0)
+	if ret != probeLocalCfgmgrCRSuccess {
+		return probeLocalWindowsCfgMgrCallErr("CM_Query_And_Remove_SubTreeW", ret)
+	}
+	return nil
 }
 
 func formatProbeLocalWindowsCallErr(err error) string {
