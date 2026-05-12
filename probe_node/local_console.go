@@ -205,6 +205,7 @@ var (
 	probeLocalEnsureExplicitDirectBypass  = ensureProbeLocalExplicitDirectBypassForTarget
 	probeLocalRunUpgrade                  = runProbeUpgrade
 	probeLocalRestartProcess              = restartCurrentProcess
+	probeLocalRefreshProxyChainCache      = refreshProbeProxyChainCacheFromController
 )
 
 func newProbeLocalControlManager() *probeLocalControlManager {
@@ -1795,7 +1796,9 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/reject", probeLocalProxyRejectHandler)
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
+	mux.HandleFunc("/local/api/proxy/chains/refresh", probeLocalProxyChainsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/groups", probeLocalProxyGroupsHandler)
+	mux.HandleFunc("/local/api/proxy/groups/refresh", probeLocalProxyGroupsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/groups/save", probeLocalProxyGroupsSaveHandler)
 	mux.HandleFunc("/local/api/proxy/state", probeLocalProxyStateHandler)
 	mux.HandleFunc("/local/api/proxy/hosts", probeLocalProxyHostsHandler)
@@ -2536,6 +2539,39 @@ func probeLocalProxyChainsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func probeLocalProxyChainsRefreshHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	runtimeContext := currentProbeLocalProxyRuntimeContext()
+	ctx, cancel := context.WithTimeout(r.Context(), probeLinkChainsSyncFetchTimeout)
+	defer cancel()
+	items, err := probeLocalRefreshProxyChainCache(ctx, runtimeContext.Identity, runtimeContext.ControllerBaseURL)
+	if err != nil {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusBadGateway, Message: strings.TrimSpace(err.Error())})
+		return
+	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	groups := make([]map[string]any, 0, len(state.Groups))
+	for _, entry := range state.Groups {
+		groups = append(groups, buildProbeLocalProxyStateGroupPayload(entry))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"items":      items,
+		"state":      map[string]any{"version": state.Version, "updated_at": state.UpdatedAt, "groups": groups, "backup": state.Backup},
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
 func probeLocalProxyGroupsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2550,6 +2586,52 @@ func probeLocalProxyGroupsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, groups)
+}
+
+func probeLocalProxyGroupsRefreshHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	groupsFile, err := loadProbeLocalProxyGroupFile()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
+	stateGroups := make([]map[string]any, 0, len(state.Groups))
+	for _, entry := range state.Groups {
+		stateGroups = append(stateGroups, buildProbeLocalProxyStateGroupPayload(entry))
+	}
+	status := currentProbeLocalDNSStatus()
+	tunStatus := currentProbeLocalDNSTUNStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"groups": groupsFile,
+		"state":  map[string]any{"version": state.Version, "updated_at": state.UpdatedAt, "groups": stateGroups, "backup": state.Backup},
+		"dns": map[string]any{
+			"enabled":           status.Enabled,
+			"listen_addr":       status.ListenAddr,
+			"port":              status.Port,
+			"fallback_used":     status.FallbackUsed,
+			"last_error":        status.LastError,
+			"updated_at":        status.UpdatedAt,
+			"tun_listener":      tunStatus,
+			"fake_ip_cidr":      currentProbeLocalDNSFakeIPCIDR(),
+			"fake_ip_entries":   queryProbeLocalDNSFakeIPEntries(),
+			"route_hint_count":  probeLocalDNSRouteHintCount(),
+			"cache_ttl_seconds": int64(probeLocalDNSCacheTTL / time.Second),
+			"cache_records":     queryProbeLocalDNSCacheRecords(),
+		},
+	})
 }
 
 func probeLocalProxyGroupsSaveHandler(w http.ResponseWriter, r *http.Request) {
@@ -2839,6 +2921,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalApplyProxyTakeover = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect = restoreProbeLocalProxyDirect
 	probeLocalEnsureExplicitDirectBypass = ensureProbeLocalExplicitDirectBypassForTarget
+	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
 }
 
 func resetProbeLocalTUNHooksForTest() {

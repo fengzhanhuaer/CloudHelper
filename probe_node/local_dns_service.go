@@ -116,8 +116,8 @@ var probeLocalDNSState = struct {
 }
 
 var (
-	probeLocalDNSListenPacket = net.ListenPacket
-	probeLocalDNSNow          = time.Now
+	probeLocalDNSListenPacket                = net.ListenPacket
+	probeLocalDNSNow                         = time.Now
 	probeLocalDNSEnsureDirectBypassForTarget = func(string) error {
 		return nil
 	}
@@ -1239,6 +1239,23 @@ func currentProbeLocalDNSStatus() probeLocalDNSStatus {
 		status.UpdatedAt = probeLocalDNSNow().UTC().Format(time.RFC3339)
 	}
 	return status
+}
+
+func resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh() {
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	now := probeLocalDNSNow().UTC().Format(time.RFC3339)
+	probeLocalDNSState.cache = make(map[string]probeLocalDNSCacheEntry)
+	probeLocalDNSState.fakeCIDR = ""
+	probeLocalDNSState.fakeNetwork = nil
+	probeLocalDNSState.fakeCursor = 0
+	probeLocalDNSState.fakeDomainToIP = make(map[string]string)
+	probeLocalDNSState.fakeIPToEntry = make(map[string]probeLocalDNSFakeIPRuntimeEntry)
+	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
+	probeLocalDNSState.status.UpdatedAt = now
+	if probeLocalDNSState.tunStatus.Enabled {
+		probeLocalDNSState.tunStatus.UpdatedAt = now
+	}
 }
 
 func updateProbeLocalDNSStatusError(err error) {

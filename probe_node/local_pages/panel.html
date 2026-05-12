@@ -219,9 +219,10 @@
       <div class="actions">
         <button id="proxyGlobalToggleBtn" class="secondary">启用代理</button>
         <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
-        <button id="proxySelectionRefreshBtn" class="secondary">刷新组与链路</button>
+        <button id="proxyGroupRefreshBtn" class="secondary">刷新代理组</button>
+        <button id="proxyChainRefreshBtn" class="secondary">刷新链路</button>
       </div>
-      <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），点击即下发。</p>
+      <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），刷新代理组会清空本地 DNS / Fake IP 缓存。</p>
     </section>
 
     <section id="panelDNS" class="card tab-panel">
@@ -791,14 +792,8 @@
       });
     }
 
-    async function loadProxySelections() {
-      const [groupsData, chainsData, stateData] = await Promise.all([
-        requestJSON('/local/api/proxy/groups', { method: 'GET' }),
-        requestJSON('/local/api/proxy/chains', { method: 'GET' }),
-        requestJSON('/local/api/proxy/state', { method: 'GET' }),
-      ]);
-
-      const configuredGroups = Array.isArray(groupsData.groups)
+    function resolveConfiguredProxyGroups(groupsData) {
+      const configuredGroups = Array.isArray(groupsData && groupsData.groups)
         ? groupsData.groups.map((item) => String(item && item.group || '').trim()).filter(Boolean)
         : [];
       const nonFallbackGroups = configuredGroups
@@ -806,12 +801,34 @@
         .filter((name) => name && name.toLowerCase() !== 'fallback');
       const uniqueGroups = [...new Set(nonFallbackGroups)];
       uniqueGroups.push('fallback');
+      return uniqueGroups;
+    }
 
-      proxyChainItemsCache = Array.isArray(chainsData.items) ? chainsData.items : [];
-      proxyStateGroupsCache = Array.isArray(stateData.groups) ? stateData.groups : [];
-
+    function applyProxySelectionData(groupsData, chainsData, stateData) {
+      const uniqueGroups = resolveConfiguredProxyGroups(groupsData || {});
+      if (chainsData) {
+        proxyChainItemsCache = Array.isArray(chainsData.items) ? chainsData.items : [];
+      }
+      proxyStateGroupsCache = Array.isArray(stateData && stateData.groups) ? stateData.groups : [];
       renderProxyRuleGroupRows(uniqueGroups);
       updateProxyActiveFromState();
+    }
+
+    async function loadProxySelections() {
+      const [groupsData, chainsData, stateData] = await Promise.all([
+        requestJSON('/local/api/proxy/groups', { method: 'GET' }),
+        requestJSON('/local/api/proxy/chains', { method: 'GET' }),
+        requestJSON('/local/api/proxy/state', { method: 'GET' }),
+      ]);
+      applyProxySelectionData(groupsData, chainsData, stateData);
+    }
+
+    async function loadProxyGroupsOnly() {
+      const [groupsData, stateData] = await Promise.all([
+        requestJSON('/local/api/proxy/groups', { method: 'GET' }),
+        requestJSON('/local/api/proxy/state', { method: 'GET' }),
+      ]);
+      applyProxySelectionData(groupsData, null, stateData);
     }
 
     function resolveGlobalToggleEnableSelection() {
@@ -1061,23 +1078,35 @@
 
 
     document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新代理状态...');
+      setMessage('验证代理状态...');
       try {
         await loadProxyStatus();
-        await loadProxySelections();
-        setMessage('代理状态已刷新', 'success');
+        setMessage('代理状态已验证', 'success');
       } catch (err) {
         setMessage('读取代理状态失败：' + err.message, 'error');
       }
     });
 
-    document.getElementById('proxySelectionRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新代理组与链路...');
+    document.getElementById('proxyGroupRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新本地代理组并清空 DNS / Fake IP 缓存...');
       try {
-        await loadProxySelections();
-        setMessage('代理组与链路已刷新', 'success');
+        await requestJSON('/local/api/proxy/groups/refresh', { method: 'POST', body: '{}' });
+        await loadProxyGroupsOnly();
+        await loadDNSStatus();
+        setMessage('代理组已刷新，DNS / Fake IP 缓存已清空', 'success');
       } catch (err) {
-        setMessage('读取代理组与链路失败：' + err.message, 'error');
+        setMessage('刷新代理组失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyChainRefreshBtn').addEventListener('click', async () => {
+      setMessage('从主控刷新链路...');
+      try {
+        await requestJSON('/local/api/proxy/chains/refresh', { method: 'POST', body: '{}' });
+        await loadProxySelections();
+        setMessage('链路已刷新', 'success');
+      } catch (err) {
+        setMessage('刷新链路失败：' + err.message, 'error');
       }
     });
 

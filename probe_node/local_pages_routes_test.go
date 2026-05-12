@@ -91,8 +91,14 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "/local/api/proxy/select") {
 		t.Fatalf("panel should contain proxy select endpoint")
 	}
-	if !strings.Contains(body, "刷新组与链路") {
-		t.Fatalf("panel should contain proxy selection refresh button text")
+	if !strings.Contains(body, "刷新代理组") {
+		t.Fatalf("panel should contain proxy group refresh button text")
+	}
+	if !strings.Contains(body, "刷新链路") {
+		t.Fatalf("panel should contain proxy chain refresh button text")
+	}
+	if !strings.Contains(body, "/local/api/proxy/groups/refresh") || !strings.Contains(body, "/local/api/proxy/chains/refresh") {
+		t.Fatalf("panel should contain split proxy refresh endpoints")
 	}
 	if !strings.Contains(body, "直连 + 拒绝 + 可用链路") {
 		t.Fatalf("panel should contain reject option hint text")

@@ -196,6 +196,21 @@ func fetchProbeLinkChains(ctx context.Context, controllerBaseURL string, identit
 	return fetchProbeLinkChainsViaAdminWS(ctx, controllerBaseURL, token)
 }
 
+func refreshProbeProxyChainCacheFromController(ctx context.Context, identity nodeIdentity, controllerBaseURL string) ([]probeLinkChainServerItem, error) {
+	base := strings.TrimSpace(controllerBaseURL)
+	if base == "" {
+		return nil, errors.New("controller base url is empty")
+	}
+	items, err := fetchProbeLinkChains(ctx, base, identity)
+	if err != nil {
+		return nil, err
+	}
+	if err := persistProbeProxyChainCache(items); err != nil {
+		return nil, err
+	}
+	return loadProbeLocalProxyChainItems()
+}
+
 func resolveProbeControllerSessionToken() string {
 	return firstNonEmpty(
 		strings.TrimSpace(os.Getenv(probeControllerSessionTokenEnv)),

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1576,6 +1577,91 @@ func TestProbeLocalProxyGroupsAndStateAndHostsLifecycle(t *testing.T) {
 	}, sessionCookie)
 	if invalidHostResp.Code != http.StatusBadRequest {
 		t.Fatalf("invalid hosts save status=%d body=%s", invalidHostResp.Code, invalidHostResp.Body.String())
+	}
+}
+
+func TestProbeLocalProxyGroupsRefreshClearsDNSRuntimeCaches(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{{Group: "media", Rules: []string{"domain_suffix:example.com"}}}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	decision := probeLocalDNSRouteDecision{Group: "media", Action: "tunnel", SelectedChainID: "chain-1"}
+	fakeIP, ok := allocateProbeLocalDNSFakeIP("video.example.com", decision)
+	if !ok || strings.TrimSpace(fakeIP) == "" {
+		t.Fatalf("allocate fake ip failed: ip=%q ok=%v", fakeIP, ok)
+	}
+	storeProbeLocalDNSCacheRecords("video.example.com", []string{"203.0.113.10"})
+	if got := len(queryProbeLocalDNSCacheRecords()); got == 0 {
+		t.Fatalf("dns cache should be populated before refresh")
+	}
+	if got := len(queryProbeLocalDNSFakeIPEntries()); got == 0 {
+		t.Fatalf("fake ip cache should be populated before refresh")
+	}
+	if got := probeLocalDNSRouteHintCount(); got == 0 {
+		t.Fatalf("route hint should be populated before refresh")
+	}
+
+	refreshResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/refresh", map[string]any{}, sessionCookie)
+	if refreshResp.Code != http.StatusOK {
+		t.Fatalf("groups refresh status=%d body=%s", refreshResp.Code, refreshResp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, refreshResp)
+	if okValue, _ := payload["ok"].(bool); !okValue {
+		t.Fatalf("groups refresh ok=%v payload=%v", payload["ok"], payload)
+	}
+	if got := len(queryProbeLocalDNSCacheRecords()); got != 0 {
+		t.Fatalf("dns cache records after refresh=%d, want 0", got)
+	}
+	if got := len(queryProbeLocalDNSFakeIPEntries()); got != 0 {
+		t.Fatalf("fake ip entries after refresh=%d, want 0", got)
+	}
+	if got := probeLocalDNSRouteHintCount(); got != 0 {
+		t.Fatalf("route hint count after refresh=%d, want 0", got)
+	}
+	dnsObj, ok := payload["dns"].(map[string]any)
+	if !ok {
+		t.Fatalf("groups refresh dns payload type=%T", payload["dns"])
+	}
+	if routeHintCount, _ := dnsObj["route_hint_count"].(float64); routeHintCount != 0 {
+		t.Fatalf("groups refresh dns route_hint_count=%v", dnsObj["route_hint_count"])
+	}
+	fakeEntries, ok := dnsObj["fake_ip_entries"].([]any)
+	if !ok || len(fakeEntries) != 0 {
+		t.Fatalf("groups refresh fake_ip_entries=%v", dnsObj["fake_ip_entries"])
+	}
+}
+
+func TestProbeLocalProxyChainsRefreshEndpointUsesHook(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-refresh"}, "https://controller.example")
+	probeLocalRefreshProxyChainCache = func(ctx context.Context, identity nodeIdentity, controllerBaseURL string) ([]probeLinkChainServerItem, error) {
+		if identity.NodeID != "node-refresh" {
+			t.Fatalf("refresh identity node id=%q", identity.NodeID)
+		}
+		if controllerBaseURL != "https://controller.example" {
+			t.Fatalf("refresh controller url=%q", controllerBaseURL)
+		}
+		return []probeLinkChainServerItem{{ChainID: "chain-refresh", ChainType: "proxy_chain", Name: "Refreshed Chain"}}, nil
+	}
+	defer resetProbeLocalProxyHooksForTest()
+
+	refreshResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/chains/refresh", map[string]any{}, sessionCookie)
+	if refreshResp.Code != http.StatusOK {
+		t.Fatalf("chains refresh status=%d body=%s", refreshResp.Code, refreshResp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, refreshResp)
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("chains refresh items invalid: %v", payload["items"])
+	}
+	first, _ := items[0].(map[string]any)
+	if first["chain_id"] != "chain-refresh" {
+		t.Fatalf("chains refresh first item=%v", first)
 	}
 }
 
