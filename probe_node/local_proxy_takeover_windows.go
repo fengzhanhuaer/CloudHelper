@@ -38,10 +38,14 @@ var probeLocalWindowsTakeoverState = struct {
 }{}
 
 var (
-	probeLocalWindowsRunCommand = runProbeLocalCommand
+	probeLocalWindowsRunCommand             = runProbeLocalCommand
+	probeLocalEnsureWindowsRouteTargetReady = ensureProbeLocalWindowsRouteTargetConfigured
 )
 
 func applyProbeLocalProxyTakeover() error {
+	if err := probeLocalEnsureWindowsRouteTargetReady(); err != nil {
+		return fmt.Errorf("prepare windows tun route target failed: %w", err)
+	}
 	gateway, ifIndex, err := resolveProbeLocalWindowsRouteTarget()
 	if err != nil {
 		return err

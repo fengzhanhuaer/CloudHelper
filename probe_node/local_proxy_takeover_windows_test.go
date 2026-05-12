@@ -77,6 +77,7 @@ func resetProbeLocalWindowsNativeRouteHooksForTest() {
 	probeLocalDeleteWindowsRouteEntry = deleteProbeLocalWindowsRouteNative
 	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
 	probeLocalSnapshotWindowsIPv4Routes = snapshotProbeLocalWindowsIPv4Routes
+	probeLocalEnsureWindowsRouteTargetReady = ensureProbeLocalWindowsRouteTargetConfigured
 }
 
 func useProbeLocalWindowsCommandBackedRouteHooksForTest() {
@@ -135,6 +136,11 @@ func TestApplyProbeLocalProxyTakeoverRollbackOnSecondRouteFailure(t *testing.T) 
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	prepareCalls := 0
+	probeLocalEnsureWindowsRouteTargetReady = func() error {
+		prepareCalls++
+		return nil
+	}
 
 	calls := make([]string, 0, 12)
 	probeLocalWindowsRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
@@ -160,6 +166,9 @@ func TestApplyProbeLocalProxyTakeoverRollbackOnSecondRouteFailure(t *testing.T) 
 	err := applyProbeLocalProxyTakeover()
 	if err == nil {
 		t.Fatalf("expected apply failure")
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("prepareCalls=%d, want 1", prepareCalls)
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "rollback") {
 		t.Fatalf("expected rollback marker in error, got: %v", err)
@@ -212,6 +221,7 @@ func TestApplyProbeLocalProxyTakeoverRollbackOnLocalBypassFailure(t *testing.T) 
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	probeLocalEnsureWindowsRouteTargetReady = func() error { return nil }
 
 	calls := make([]string, 0, 16)
 	probeLocalWindowsRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
@@ -255,6 +265,11 @@ func TestApplyProbeLocalProxyTakeoverSuccessWithRouteOnly(t *testing.T) {
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	prepareCalls := 0
+	probeLocalEnsureWindowsRouteTargetReady = func() error {
+		prepareCalls++
+		return nil
+	}
 
 	calls := make([]string, 0, 12)
 	probeLocalWindowsRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
@@ -272,6 +287,9 @@ func TestApplyProbeLocalProxyTakeoverSuccessWithRouteOnly(t *testing.T) {
 	err := applyProbeLocalProxyTakeover()
 	if err != nil {
 		t.Fatalf("expected takeover success with route-only path, got: %v", err)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("prepareCalls=%d, want 1", prepareCalls)
 	}
 	if !hasWindowsRouteCommand(calls, "ADD", probeLocalWindowsRouteSplitPrefixA) {
 		t.Fatalf("expected split route A add call, calls=%v", calls)
@@ -294,6 +312,39 @@ func TestApplyProbeLocalProxyTakeoverSuccessWithRouteOnly(t *testing.T) {
 	probeLocalWindowsTakeoverState.mu.Unlock()
 	if !enabled || gateway != "198.18.0.1" || ifIndex != 9 || bypassGateway != "192.168.1.1" || bypassIfIndex != 12 {
 		t.Fatalf("unexpected takeover state: enabled=%v gateway=%q ifIndex=%d bypassGateway=%q bypassIfIndex=%d", enabled, gateway, ifIndex, bypassGateway, bypassIfIndex)
+	}
+}
+
+func TestApplyProbeLocalProxyTakeoverStopsBeforeRouteWhenTargetPrepareFails(t *testing.T) {
+	resetProbeLocalWindowsTakeoverStateForTest()
+	oldRun := probeLocalWindowsRunCommand
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
+	t.Cleanup(func() {
+		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	probeLocalEnsureWindowsRouteTargetReady = func() error {
+		return errors.New("route target missing for test")
+	}
+	calls := make([]string, 0, 4)
+	probeLocalWindowsRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return "", nil
+	}
+
+	err := applyProbeLocalProxyTakeover()
+	if err == nil {
+		t.Fatalf("expected prepare failure")
+	}
+	if !strings.Contains(err.Error(), "prepare windows tun route target failed") || !strings.Contains(err.Error(), "route target missing for test") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("route commands should not run when prepare failed: %v", calls)
 	}
 }
 
