@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Probe Node 运行日志</title>
+  <style>
+    :root {
+      --bg-color: #0d1117;
+      --panel-bg: rgba(22, 27, 34, 0.68);
+      --text-primary: #c9d1d9;
+      --text-secondary: #8b949e;
+      --accent: #58a6ff;
+      --accent-strong: #1f6feb;
+      --border-soft: rgba(255, 255, 255, 0.12);
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      color: var(--text-primary);
+      background: var(--bg-color);
+      background-image: radial-gradient(circle at 50% 0%, #1f2937 0%, transparent 70%);
+      min-height: 100vh;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    main { max-width: 920px; margin: 0 auto; }
+    h1 { margin-bottom: 8px; color: #fff; }
+    .hint { color: var(--text-secondary); font-size: 13px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    .nav { display:flex; gap:8px; flex-wrap:wrap; }
+    .nav a {
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: #d0d7de;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(139, 148, 158, 0.2);
+    }
+    .nav a.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      border-color: rgba(255,255,255,0.2);
+    }
+    .card {
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 14px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+    }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button {
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: rgba(139, 148, 158, 0.2);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #d0d7de;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      row-gap: 6px;
+      column-gap: 8px;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    .kv > div:nth-child(odd) { color: var(--text-secondary); }
+    .logs-toolbar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .logs-toolbar label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .logs-toolbar input,
+    .logs-toolbar select {
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-soft);
+      background: rgba(13, 17, 23, 0.55);
+      color: var(--text-primary);
+    }
+    .logs-content {
+      margin-top: 10px;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      background: rgba(13, 17, 23, 0.55);
+      padding: 10px;
+      min-height: 180px;
+      max-height: 560px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #c9d1d9;
+    }
+    .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
+    .msg.error { color: #ff938d; }
+    .msg.success { color: #7ee787; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>运行日志</h1>
+        <p class="hint">按级别、关键词、行数与时间窗口筛选探针本地日志。</p>
+      </div>
+      <div class="nav">
+        <a href="/local/panel">首页</a>
+        <a href="/local/proxy">代理状态</a>
+        <a href="/local/dns">DNS 状态</a>
+        <a href="/local/logs" class="active">运行日志</a>
+        <a href="/local/system">系统设置</a>
+      </div>
+    </div>
+
+    <section id="panelLogs" class="card active">
+      <strong>运行日志</strong>
+      <div class="logs-toolbar">
+        <label>级别
+          <select id="logsMinLevel">
+            <option value="">全部</option>
+            <option value="normal">normal</option>
+            <option value="warning">warning</option>
+            <option value="error">error</option>
+            <option value="realtime">realtime</option>
+          </select>
+        </label>
+        <label>关键词
+          <input id="logsKeyword" type="text" placeholder="输入关键词过滤" />
+        </label>
+        <label>行数
+          <input id="logsLines" type="number" min="1" max="2000" value="200" />
+        </label>
+        <label>时间窗口（分钟）
+          <select id="logsSinceMinutes">
+            <option value="0">全部</option>
+            <option value="5">近 5 分钟</option>
+            <option value="15">近 15 分钟</option>
+            <option value="60">近 1 小时</option>
+            <option value="240">近 4 小时</option>
+          </select>
+        </label>
+        <label>自动刷新
+          <select id="logsAutoRefresh">
+            <option value="off">关闭</option>
+            <option value="on">开启</option>
+          </select>
+        </label>
+        <label>刷新间隔（秒）
+          <select id="logsRefreshIntervalSec">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="5">5</option>
+            <option value="10">10</option>
+          </select>
+        </label>
+      </div>
+      <div class="actions">
+        <button id="logsRefreshBtn" class="secondary">刷新日志</button>
+      </div>
+      <div class="kv">
+        <div>日志来源</div><div id="logsSource">-</div>
+        <div>命中条数</div><div id="logsCount">-</div>
+        <div>最后更新时间</div><div id="logsUpdatedAt">-</div>
+      </div>
+      <pre id="logsContent" class="logs-content">-</pre>
+    </section>
+
+    <p id="message" class="msg"></p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById('message');
+    let logsAutoRefreshTimer = null;
+
+    function setMessage(text, type) {
+      messageEl.textContent = text || '';
+      messageEl.className = 'msg' + (type ? ' ' + type : '');
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const clean = (value === undefined || value === null || value === '') ? '-' : String(value);
+      el.textContent = clean;
+    }
+
+    async function requestJSON(url, options) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
+      if (!res.ok) {
+        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    }
+
+    async function ensureSession() {
+      try {
+        const data = await requestJSON('/local/api/auth/session', { method: 'GET' });
+        if (!data.authenticated) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        return true;
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        throw err;
+      }
+    }
+
+    async function loadLogs() {
+      const params = new URLSearchParams();
+      const minLevel = String(document.getElementById('logsMinLevel')?.value || '').trim();
+      const keyword = String(document.getElementById('logsKeyword')?.value || '').trim();
+      const lines = String(document.getElementById('logsLines')?.value || '').trim();
+      const sinceMinutes = String(document.getElementById('logsSinceMinutes')?.value || '').trim();
+      if (minLevel) params.set('min_level', minLevel);
+      if (keyword) params.set('keyword', keyword);
+      if (lines) params.set('lines', lines);
+      if (sinceMinutes) params.set('since_minutes', sinceMinutes);
+      const qs = params.toString();
+      const path = qs ? `/local/api/logs?${qs}` : '/local/api/logs';
+      const data = await requestJSON(path, { method: 'GET' });
+      setText('logsSource', data.source || '-');
+      setText('logsCount', String(Number(data.count || 0)));
+      setText('logsUpdatedAt', new Date().toLocaleString());
+      const content = String(data.content || '').trim();
+      const logsContentEl = document.getElementById('logsContent');
+      if (logsContentEl) {
+        logsContentEl.textContent = content || '-';
+      }
+    }
+
+    function stopLogsAutoRefresh() {
+      if (logsAutoRefreshTimer) {
+        clearInterval(logsAutoRefreshTimer);
+        logsAutoRefreshTimer = null;
+      }
+    }
+
+    function applyLogsAutoRefresh() {
+      stopLogsAutoRefresh();
+      const auto = String(document.getElementById('logsAutoRefresh')?.value || 'off') === 'on';
+      if (!auto) return;
+      const intervalSec = Math.max(2, Number(document.getElementById('logsRefreshIntervalSec')?.value || 3));
+      logsAutoRefreshTimer = setInterval(() => {
+        loadLogs().catch((err) => {
+          setMessage('自动刷新日志失败：' + err.message, 'error');
+        });
+      }, intervalSec * 1000);
+    }
+
+    document.getElementById('logsRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新运行日志...');
+      try {
+        await loadLogs();
+        setMessage('运行日志已刷新', 'success');
+      } catch (err) {
+        setMessage('读取运行日志失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('logsAutoRefresh').addEventListener('change', () => {
+      applyLogsAutoRefresh();
+    });
+    document.getElementById('logsRefreshIntervalSec').addEventListener('change', () => {
+      applyLogsAutoRefresh();
+    });
+    document.getElementById('logsKeyword').addEventListener('keydown', async (ev) => {
+      if (ev.key !== 'Enter') return;
+      setMessage('按关键词筛选日志...');
+      try {
+        await loadLogs();
+        setMessage('日志筛选已刷新', 'success');
+      } catch (err) {
+        setMessage('日志筛选失败：' + err.message, 'error');
+      }
+    });
+
+    ensureSession().then((ok) => {
+      if (!ok) return;
+      applyLogsAutoRefresh();
+      return loadLogs();
+    }).catch((err) => setMessage('初始化失败：' + err.message, 'error'));
+    window.addEventListener('beforeunload', () => stopLogsAutoRefresh());
+  </script>
+</body>
+</html>

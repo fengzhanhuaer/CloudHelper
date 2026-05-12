@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Probe Node 代理状态</title>
+  <style>
+    :root {
+      --bg-color: #0d1117;
+      --panel-bg: rgba(22, 27, 34, 0.68);
+      --text-primary: #c9d1d9;
+      --text-secondary: #8b949e;
+      --heading: #e6edf3;
+      --accent: #58a6ff;
+      --accent-strong: #1f6feb;
+      --warn: #f85149;
+      --border-soft: rgba(255, 255, 255, 0.12);
+      --border-strong: rgba(88, 166, 255, 0.45);
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      color: var(--text-primary);
+      background: var(--bg-color);
+      background-image: radial-gradient(circle at 50% 0%, #1f2937 0%, transparent 70%);
+      min-height: 100vh;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    main { max-width: 920px; margin: 0 auto; }
+    h1 { margin-bottom: 8px; color: #fff; }
+    .hint { color: var(--text-secondary); font-size: 13px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    .nav { display:flex; gap:8px; flex-wrap:wrap; }
+    .nav a {
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: #d0d7de;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(139, 148, 158, 0.2);
+    }
+    .nav a.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      border-color: rgba(255,255,255,0.2);
+    }
+    .card {
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 14px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+    }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button {
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      font-weight: 600;
+    }
+    button:hover { filter: brightness(1.07); }
+    button.secondary {
+      background: rgba(139, 148, 158, 0.2);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #d0d7de;
+    }
+    button.warn {
+      background: linear-gradient(135deg, #ff7b72, #d73a49);
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      row-gap: 6px;
+      column-gap: 8px;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    .kv > div:nth-child(odd) { color: var(--text-secondary); }
+    .rule-group-list { display: grid; gap: 10px; margin-top: 10px; }
+    .rule-group-row {
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(13, 17, 23, 0.45);
+    }
+    .rule-group-title { font-weight: 600; font-size: 13px; color: var(--heading); margin-bottom: 6px; }
+    .rule-options-flat { display: flex; gap: 8px; flex-wrap: wrap; }
+    .rule-option-flat {
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 7px;
+      background: rgba(139, 148, 158, 0.12);
+      color: #d0d7de;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .rule-option-flat.active {
+      border-color: var(--border-strong);
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+    }
+    .rule-runtime { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+    .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
+    .msg.error { color: #ff938d; }
+    .msg.success { color: #7ee787; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>代理状态</h1>
+        <p class="hint">代理状态、组选链与开关控制。</p>
+      </div>
+      <div class="nav">
+        <a href="/local/panel">首页</a>
+        <a href="/local/proxy" class="active">代理状态</a>
+        <a href="/local/dns">DNS 状态</a>
+        <a href="/local/logs">运行日志</a>
+        <a href="/local/system">系统设置</a>
+      </div>
+    </div>
+
+    <section id="panelProxy" class="card active">
+      <strong>代理状态</strong>
+      <div class="kv">
+        <div>接管开关</div><div id="proxyEnabled">-</div>
+        <div>当前模式</div><div id="proxyMode">-</div>
+        <div>当前生效组</div><div id="proxyActiveGroup">-</div>
+        <div>当前生效链路</div><div id="proxyActiveTunnel">-</div>
+        <div>选中链路保活</div><div id="proxySelectedKeepalive">-</div>
+        <div>选中链路延迟(ms)</div><div id="proxySelectedLatencyMs">-</div>
+        <div>延迟测量时间</div><div id="proxySelectedLatencyUpdatedAt">-</div>
+        <div>链路测量错误</div><div id="proxySelectedLatencyError">-</div>
+        <div>最后更新时间</div><div id="proxyUpdatedAt">-</div>
+        <div>最近错误</div><div id="proxyLastError">-</div>
+      </div>
+      <div id="proxyRuleGroups" class="rule-group-list"></div>
+      <div class="actions">
+        <button id="proxyGlobalToggleBtn" class="secondary">启用代理</button>
+        <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
+        <button id="proxyGroupRefreshBtn" class="secondary">刷新代理组</button>
+        <button id="proxyChainRefreshBtn" class="secondary">刷新链路</button>
+      </div>
+      <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），刷新代理组会清空本地 DNS / Fake IP 缓存。</p>
+    </section>
+
+    <p id="message" class="msg"></p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById('message');
+    const proxyRuleGroupsEl = document.getElementById('proxyRuleGroups');
+    let proxyStateGroupsCache = [];
+    let proxyChainItemsCache = [];
+    let proxyStatusCache = { enabled: false, mode: '' };
+    let proxySelectedLatencyDisplay = '不可达';
+    let proxySelectedLatencyStatus = 'unreachable';
+    let proxyStatusPollingTimer = null;
+    const PROXY_STATUS_POLL_INTERVAL_MS = 60000;
+
+    function setMessage(text, type) {
+      messageEl.textContent = text || '';
+      messageEl.className = 'msg' + (type ? ' ' + type : '');
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const clean = (value === undefined || value === null || value === '') ? '-' : String(value);
+      el.textContent = clean;
+    }
+
+    function isProxyGloballyEnabled() {
+      return !!proxyStatusCache.enabled && normalizeAction(proxyStatusCache.mode) === 'tunnel';
+    }
+
+    function updateProxyGlobalToggleButton() {
+      const btn = document.getElementById('proxyGlobalToggleBtn');
+      if (!btn) return;
+      if (isProxyGloballyEnabled()) {
+        btn.textContent = '关闭代理';
+        btn.classList.remove('secondary');
+        btn.classList.add('warn');
+        return;
+      }
+      btn.textContent = '启用代理';
+      btn.classList.remove('warn');
+      btn.classList.add('secondary');
+    }
+
+    function normalizeChainID(chainValue) {
+      const text = String(chainValue || '').trim();
+      if (!text) return '';
+      if (text.toLowerCase().startsWith('chain:')) {
+        return text.slice('chain:'.length).trim();
+      }
+      return text;
+    }
+
+    function normalizeAction(actionValue) {
+      return String(actionValue || '').trim().toLowerCase();
+    }
+
+    function resolveChainLabel(chainID) {
+      const clean = normalizeChainID(chainID);
+      if (!clean) return '-';
+      const found = proxyChainItemsCache.find((item) => {
+        return normalizeChainID(item && item.chain_id) === clean;
+      });
+      if (!found) return clean;
+      const name = String(found && found.name || '').trim();
+      return name || clean;
+    }
+
+    function updateProxyActiveFromState() {
+      const active = proxyStateGroupsCache.find((item) => normalizeAction(item && item.action) === 'tunnel');
+      setText('proxyActiveGroup', active && active.group);
+      const activeTunnelID = active && active.tunnel_node_id;
+      setText('proxyActiveTunnel', activeTunnelID ? resolveChainLabel(activeTunnelID) : '-');
+    }
+
+    async function applyGroupPolicy(group, action, tunnelNodeID) {
+      if (action === 'direct') {
+        await requestJSON('/local/api/proxy/direct', {
+          method: 'POST',
+          body: JSON.stringify({ group }),
+        });
+        return;
+      }
+      if (action === 'reject') {
+        await requestJSON('/local/api/proxy/reject', {
+          method: 'POST',
+          body: JSON.stringify({ group }),
+        });
+        return;
+      }
+      await requestJSON('/local/api/proxy/select', {
+        method: 'POST',
+        body: JSON.stringify({
+          group,
+          selected_chain_id: tunnelNodeID || '',
+        }),
+      });
+    }
+
+    function isGroupOptionSelected(stateEntry, action, tunnelNodeID) {
+      const currentAction = normalizeAction(stateEntry && stateEntry.action);
+      if (currentAction !== normalizeAction(action)) {
+        return false;
+      }
+      if (normalizeAction(action) !== 'tunnel') {
+        return true;
+      }
+      return normalizeChainID(stateEntry && stateEntry.tunnel_node_id) === normalizeChainID(tunnelNodeID);
+    }
+
+    function renderProxyRuleGroupRows(groupNames) {
+      proxyRuleGroupsEl.innerHTML = '';
+      const chainOptions = proxyChainItemsCache.map((item) => ({
+        chainID: normalizeChainID(item && item.chain_id),
+        label: resolveChainLabel(item && item.chain_id),
+      })).filter((item) => item.chainID);
+
+      groupNames.forEach((groupName) => {
+        const stateEntry = proxyStateGroupsCache.find((entry) => {
+          return String(entry && entry.group || '').trim().toLowerCase() === groupName.toLowerCase();
+        }) || null;
+
+        const rowEl = document.createElement('div');
+        rowEl.className = 'rule-group-row';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'rule-group-title';
+        titleEl.textContent = groupName === 'fallback' ? '兜底组（未命中规则）' : `组：${groupName}`;
+        rowEl.appendChild(titleEl);
+
+        const optionsEl = document.createElement('div');
+        optionsEl.className = 'rule-options-flat';
+
+        const directBtn = document.createElement('button');
+        directBtn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'direct', '') ? 'active' : ''}`;
+        directBtn.textContent = '直连';
+        directBtn.addEventListener('click', async () => {
+          setMessage(`组 ${groupName} 切换直连中...`);
+          try {
+            await applyGroupPolicy(groupName, 'direct', '');
+            await refreshAll();
+            setMessage(`组 ${groupName} 已切换直连`, 'success');
+          } catch (err) {
+            setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
+          }
+        });
+        optionsEl.appendChild(directBtn);
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'reject', '') ? 'active' : ''}`;
+        rejectBtn.textContent = '拒绝';
+        rejectBtn.addEventListener('click', async () => {
+          setMessage(`组 ${groupName} 切换拒绝中...`);
+          try {
+            await applyGroupPolicy(groupName, 'reject', '');
+            await refreshAll();
+            setMessage(`组 ${groupName} 已切换拒绝`, 'success');
+          } catch (err) {
+            setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
+          }
+        });
+        optionsEl.appendChild(rejectBtn);
+
+        chainOptions.forEach((item) => {
+          const btn = document.createElement('button');
+          btn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'tunnel', item.chainID) ? 'active' : ''}`;
+          btn.textContent = item.label;
+          btn.addEventListener('click', async () => {
+            setMessage(`组 ${groupName} 切换链路中...`);
+            try {
+              await applyGroupPolicy(groupName, 'tunnel', item.chainID);
+              await refreshAll();
+              setMessage(`组 ${groupName} 已切换到 ${item.label}`, 'success');
+            } catch (err) {
+              setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
+            }
+          });
+          optionsEl.appendChild(btn);
+        });
+
+        rowEl.appendChild(optionsEl);
+
+        const runtimeEl = document.createElement('div');
+        runtimeEl.className = 'rule-runtime';
+        const runtimeAction = normalizeAction(stateEntry && stateEntry.action);
+        const runtimeStatusText = formatRuntimeStatusText((stateEntry && stateEntry.group_runtime_status) || (stateEntry && stateEntry.runtime_status), stateEntry);
+        const runtimeTunnelLabel = runtimeAction === 'tunnel'
+          ? resolveChainLabel(stateEntry && stateEntry.selected_chain_id)
+          : '-';
+        runtimeEl.textContent = `运行：${runtimeAction || '-'}${runtimeAction === 'tunnel' ? ` (${runtimeTunnelLabel})` : ''}${runtimeStatusText ? ` ｜ 状态：${runtimeStatusText}` : ''}`;
+        rowEl.appendChild(runtimeEl);
+
+        proxyRuleGroupsEl.appendChild(rowEl);
+      });
+    }
+
+    const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
+
+    function resolveRequestTimeoutMs(url, timeoutMs) {
+      if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+        return Number(timeoutMs);
+      }
+      return REQUEST_TIMEOUT_DEFAULT_MS;
+    }
+
+    async function requestJSON(url, options, timeoutMs) {
+      const requestTimeoutMs = resolveRequestTimeoutMs(url, timeoutMs);
+      const controller = new AbortController();
+      const timeoutID = setTimeout(() => controller.abort(), requestTimeoutMs);
+      let res;
+      try {
+        res = await fetch(url, {
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          ...options,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          throw new Error(`请求超时(${Math.trunc(requestTimeoutMs / 1000)}s): ${url}`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeoutID);
+      }
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
+      if (!res.ok) {
+        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
+        const err = new Error(msg);
+        err.status = res.status;
+        err.payload = data;
+        throw err;
+      }
+      return data;
+    }
+
+    async function ensureSession() {
+      try {
+        const data = await requestJSON('/local/api/auth/session', { method: 'GET' });
+        if (!data.authenticated) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        return true;
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        throw err;
+      }
+    }
+
+    function formatProxyKeepaliveStatus(raw) {
+      const status = String(raw || '').trim().toLowerCase();
+      if (status === 'connected') return '已连接';
+      if (status === 'disconnected') return '未连接';
+      if (status === 'not_running') return '未运行';
+      return '-';
+    }
+
+    function formatRuntimeStatusText(rawStatus, stateEntry) {
+      const action = normalizeAction(stateEntry && stateEntry.action);
+      const status = String(rawStatus || '').trim();
+      if (action === 'tunnel') {
+        const latencyMs = Number(stateEntry && stateEntry.selected_chain_latency_ms);
+        const latencyMsDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '';
+        const latencyStatus = String(stateEntry && stateEntry.selected_chain_latency_status || '').trim().toLowerCase();
+        const latencyError = String(stateEntry && stateEntry.selected_chain_latency_error || '').trim();
+        if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
+          return `最近测试延迟: ${latencyMsDisplay}ms`;
+        }
+        if (latencyError) {
+          return `最近测试延迟: 不可达（${latencyError}）`;
+        }
+        if (status) {
+          return `最近测试延迟: 不可达（${status}）`;
+        }
+        return '最近测试延迟: 不可达';
+      }
+      if (!status) return '';
+      return status;
+    }
+
+    async function loadProxyStatus() {
+      const data = await requestJSON('/local/api/proxy/status', { method: 'GET' });
+      proxyStatusCache = {
+        enabled: !!data.enabled,
+        mode: String(data.mode || '').trim(),
+      };
+      const latencyMs = Number(data.selected_chain_latency_ms);
+      const latencyMsDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '';
+      const latencyStatus = String(data.selected_chain_latency_status || '').trim().toLowerCase();
+      if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
+        proxySelectedLatencyStatus = 'reachable';
+        proxySelectedLatencyDisplay = latencyMsDisplay;
+      } else if (latencyMsDisplay !== '' && latencyStatus !== 'unreachable') {
+        proxySelectedLatencyStatus = 'reachable';
+        proxySelectedLatencyDisplay = latencyMsDisplay;
+      } else {
+        proxySelectedLatencyStatus = 'unreachable';
+        proxySelectedLatencyDisplay = '不可达';
+      }
+      setText('proxyEnabled', data.enabled ? '是' : '否');
+      setText('proxyMode', data.mode);
+      setText('proxySelectedKeepalive', formatProxyKeepaliveStatus(data.selected_chain_keepalive));
+      setText('proxySelectedLatencyMs', proxySelectedLatencyDisplay);
+      setText('proxySelectedLatencyUpdatedAt', data.selected_chain_latency_updated_at);
+      setText('proxySelectedLatencyError', data.selected_chain_latency_error);
+      setText('proxyUpdatedAt', data.updated_at);
+      setText('proxyLastError', data.last_error);
+      updateProxyGlobalToggleButton();
+    }
+
+    function resolveConfiguredProxyGroups(groupsData) {
+      const configuredGroups = Array.isArray(groupsData && groupsData.groups)
+        ? groupsData.groups.map((item) => String(item && item.group || '').trim()).filter(Boolean)
+        : [];
+      const nonFallbackGroups = configuredGroups
+        .map((name) => name.trim())
+        .filter((name) => name && name.toLowerCase() !== 'fallback');
+      const uniqueGroups = [...new Set(nonFallbackGroups)];
+      uniqueGroups.push('fallback');
+      return uniqueGroups;
+    }
+
+    function applyProxySelectionData(groupsData, chainsData, stateData) {
+      const uniqueGroups = resolveConfiguredProxyGroups(groupsData || {});
+      if (chainsData) {
+        proxyChainItemsCache = Array.isArray(chainsData.items) ? chainsData.items : [];
+      }
+      proxyStateGroupsCache = Array.isArray(stateData && stateData.groups) ? stateData.groups : [];
+      renderProxyRuleGroupRows(uniqueGroups);
+      updateProxyActiveFromState();
+    }
+
+    async function loadProxySelections() {
+      const [groupsData, chainsData, stateData] = await Promise.all([
+        requestJSON('/local/api/proxy/groups', { method: 'GET' }),
+        requestJSON('/local/api/proxy/chains', { method: 'GET' }),
+        requestJSON('/local/api/proxy/state', { method: 'GET' }),
+      ]);
+      applyProxySelectionData(groupsData, chainsData, stateData);
+    }
+
+    async function loadProxyGroupsOnly() {
+      const [groupsData, stateData] = await Promise.all([
+        requestJSON('/local/api/proxy/groups', { method: 'GET' }),
+        requestJSON('/local/api/proxy/state', { method: 'GET' }),
+      ]);
+      applyProxySelectionData(groupsData, null, stateData);
+    }
+
+    function resolveGlobalToggleEnableSelection() {
+      const preferred = proxyStateGroupsCache.find((entry) => {
+        return normalizeAction(entry && entry.action) === 'tunnel'
+          && normalizeChainID(entry && entry.tunnel_node_id) !== '';
+      });
+      if (preferred) {
+        const group = String(preferred && preferred.group || '').trim() || 'fallback';
+        const chainID = normalizeChainID(preferred && preferred.tunnel_node_id);
+        if (chainID) {
+          return { group, chainID };
+        }
+      }
+      const firstChain = proxyChainItemsCache.find((item) => normalizeChainID(item && item.chain_id));
+      if (!firstChain) {
+        return null;
+      }
+      return {
+        group: 'fallback',
+        chainID: normalizeChainID(firstChain.chain_id),
+      };
+    }
+
+    function stopProxyStatusPolling() {
+      if (proxyStatusPollingTimer) {
+        clearInterval(proxyStatusPollingTimer);
+        proxyStatusPollingTimer = null;
+      }
+    }
+
+    function startProxyStatusPolling() {
+      if (proxyStatusPollingTimer) return;
+      proxyStatusPollingTimer = setInterval(() => {
+        loadProxyStatus().catch(() => {
+        });
+      }, PROXY_STATUS_POLL_INTERVAL_MS);
+    }
+
+    async function refreshAll() {
+      setMessage('');
+      const ok = await ensureSession();
+      if (!ok) return;
+      await loadProxyStatus();
+      await loadProxySelections();
+    }
+
+    document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {
+      setMessage('验证代理状态...');
+      try {
+        await loadProxyStatus();
+        setMessage('代理状态已验证', 'success');
+      } catch (err) {
+        setMessage('读取代理状态失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyGroupRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新本地代理组并清空 DNS / Fake IP 缓存...');
+      try {
+        await requestJSON('/local/api/proxy/groups/refresh', { method: 'POST', body: '{}' });
+        await loadProxyGroupsOnly();
+        setMessage('代理组已刷新，DNS / Fake IP 缓存已清空', 'success');
+      } catch (err) {
+        setMessage('刷新代理组失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyChainRefreshBtn').addEventListener('click', async () => {
+      setMessage('从主控刷新链路...');
+      try {
+        await requestJSON('/local/api/proxy/chains/refresh', { method: 'POST', body: '{}' });
+        await loadProxySelections();
+        setMessage('链路已刷新', 'success');
+      } catch (err) {
+        setMessage('刷新链路失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyGlobalToggleBtn').addEventListener('click', async () => {
+      if (isProxyGloballyEnabled()) {
+        setMessage('关闭代理中...');
+        try {
+          await requestJSON('/local/api/proxy/direct', {
+            method: 'POST',
+            body: JSON.stringify({ group: 'fallback' }),
+          });
+          await refreshAll();
+          setMessage('代理已关闭', 'success');
+        } catch (err) {
+          setMessage('关闭代理失败：' + err.message, 'error');
+        }
+        return;
+      }
+      const selection = resolveGlobalToggleEnableSelection();
+      if (!selection || !selection.chainID) {
+        setMessage('启用代理失败：请先配置可用链路', 'error');
+        return;
+      }
+      setMessage('启用代理中...');
+      try {
+        await requestJSON('/local/api/proxy/enable', {
+          method: 'POST',
+          body: JSON.stringify({
+            group: selection.group,
+            tunnel_node_id: selection.chainID,
+          }),
+        });
+        await refreshAll();
+        setMessage('代理已启用', 'success');
+      } catch (err) {
+        setMessage('启用代理失败：' + err.message, 'error');
+      }
+    });
+
+    startProxyStatusPolling();
+    refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
+    window.addEventListener('beforeunload', () => stopProxyStatusPolling());
+  </script>
+</body>
+</html>

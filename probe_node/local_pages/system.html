@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Probe Node 系统设置</title>
+  <style>
+    :root {
+      --bg-color: #0d1117;
+      --panel-bg: rgba(22, 27, 34, 0.68);
+      --text-primary: #c9d1d9;
+      --text-secondary: #8b949e;
+      --accent: #58a6ff;
+      --accent-strong: #1f6feb;
+      --success: #2ea043;
+      --border-soft: rgba(255, 255, 255, 0.12);
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      color: var(--text-primary);
+      background: var(--bg-color);
+      background-image: radial-gradient(circle at 50% 0%, #1f2937 0%, transparent 70%);
+      min-height: 100vh;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    main { max-width: 920px; margin: 0 auto; }
+    h1 { margin-bottom: 8px; color: #fff; }
+    h2 { margin: 16px 0 8px; color: #e6edf3; font-size: 17px; }
+    .hint { color: var(--text-secondary); font-size: 13px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    .nav { display:flex; gap:8px; flex-wrap:wrap; }
+    .nav a {
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: #d0d7de;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(139, 148, 158, 0.2);
+    }
+    .nav a.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      border-color: rgba(255,255,255,0.2);
+    }
+    .card {
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 14px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+    }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button {
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: rgba(139, 148, 158, 0.2);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #d0d7de;
+    }
+    button.warn {
+      background: linear-gradient(135deg, #ff7b72, #d73a49);
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      row-gap: 6px;
+      column-gap: 8px;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    .kv > div:nth-child(odd) { color: var(--text-secondary); }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      background: rgba(13, 17, 23, 0.55);
+      color: var(--text-primary);
+    }
+    .upgrade-progress {
+      margin-top: 10px;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      overflow: hidden;
+      height: 10px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .upgrade-progress-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--success));
+      transition: width 0.3s ease;
+    }
+    .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
+    .msg.error { color: #ff938d; }
+    .msg.success { color: #7ee787; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>系统设置</h1>
+        <p class="hint">TUN 驱动状态、系统升级、服务重启与退出登录。</p>
+      </div>
+      <div class="nav">
+        <a href="/local/panel">首页</a>
+        <a href="/local/proxy">代理状态</a>
+        <a href="/local/dns">DNS 状态</a>
+        <a href="/local/logs">运行日志</a>
+        <a href="/local/system" class="active">系统设置</a>
+      </div>
+    </div>
+
+    <section id="panelSystem" class="card active">
+      <strong>系统设置</strong>
+      <h2>TUN 状态</h2>
+      <div class="kv">
+        <div>平台</div><div id="tunPlatform">-</div>
+        <div>已安装</div><div id="tunInstalled">-</div>
+        <div>已启用</div><div id="tunEnabled">-</div>
+        <div>最后更新时间</div><div id="tunUpdatedAt">-</div>
+        <div>最近错误</div><div id="tunLastError">-</div>
+        <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
+        <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
+      </div>
+      <div class="actions">
+        <button id="tunInstallBtn">安装/检查 TUN</button>
+        <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
+      </div>
+      <h2>系统升级</h2>
+      <div class="kv" style="grid-template-columns: 170px minmax(0, 1fr); align-items: center;">
+        <div>发布仓库</div>
+        <div><input id="upgradeRepoInput" type="text" value="fengzhanhuaer/CloudHelper" /></div>
+      </div>
+      <div class="actions">
+        <button id="upgradeDirectBtn">直连升级</button>
+        <button id="upgradeProxyBtn" class="secondary">代理升级</button>
+        <button id="restartServiceBtn" class="secondary">重启服务</button>
+        <button id="logoutBtn" class="warn">退出登录</button>
+      </div>
+      <p class="hint">直连升级将直接访问 GitHub，代理升级将通过 controller `/api/probe/proxy/*` 中转。</p>
+      <div class="kv" style="margin-top: 10px;">
+        <div>升级状态</div><div id="upgradeStatusText">-</div>
+        <div>当前阶段</div><div id="upgradeStepText">-</div>
+        <div>进度（%）</div><div id="upgradeProgressText">0</div>
+        <div>说明</div><div id="upgradeMessageText">-</div>
+        <div>错误信息</div><div id="upgradeErrorText">-</div>
+        <div>更新时间</div><div id="upgradeUpdatedAtText">-</div>
+      </div>
+      <div class="upgrade-progress" aria-label="升级进度">
+        <div id="upgradeProgressFill" class="upgrade-progress-fill"></div>
+      </div>
+    </section>
+
+    <p id="message" class="msg"></p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById('message');
+    let upgradeStatusPollingTimer = null;
+    const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
+    const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
+
+    function setMessage(text, type) {
+      messageEl.textContent = text || '';
+      messageEl.className = 'msg' + (type ? ' ' + type : '');
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const clean = (value === undefined || value === null || value === '') ? '-' : String(value);
+      el.textContent = clean;
+    }
+
+    function resolveRequestTimeoutMs(url, timeoutMs) {
+      if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+        return Number(timeoutMs);
+      }
+      if (String(url || '').trim() === '/local/api/tun/install') {
+        return REQUEST_TIMEOUT_TUN_INSTALL_MS;
+      }
+      return REQUEST_TIMEOUT_DEFAULT_MS;
+    }
+
+    async function requestJSON(url, options, timeoutMs) {
+      const requestTimeoutMs = resolveRequestTimeoutMs(url, timeoutMs);
+      const controller = new AbortController();
+      const timeoutID = setTimeout(() => controller.abort(), requestTimeoutMs);
+      let res;
+      try {
+        res = await fetch(url, {
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          ...options,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          throw new Error(`请求超时(${Math.trunc(requestTimeoutMs / 1000)}s): ${url}`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeoutID);
+      }
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
+      if (!res.ok) {
+        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
+        const err = new Error(msg);
+        err.status = res.status;
+        err.payload = data;
+        throw err;
+      }
+      return data;
+    }
+
+    async function ensureSession() {
+      try {
+        const data = await requestJSON('/local/api/auth/session', { method: 'GET' });
+        if (!data.authenticated) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        return true;
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        throw err;
+      }
+    }
+
+    async function loadTunStatus() {
+      const data = await requestJSON('/local/api/tun/status', { method: 'GET' });
+      setText('tunPlatform', data.platform);
+      setText('tunInstalled', data.installed ? '是' : '否');
+      setText('tunEnabled', data.enabled ? '是' : '否');
+      setText('tunUpdatedAt', data.updated_at);
+      setText('tunLastError', data.last_error);
+      const lastObs = (data && typeof data.last_install_observation === 'object' && data.last_install_observation)
+        ? data.last_install_observation
+        : {};
+      const finalObs = (lastObs && typeof lastObs.final === 'object' && lastObs.final)
+        ? lastObs.final
+        : {};
+      setText('tunInstallFinalReasonCode', finalObs.reason_code);
+      setText('tunInstallFinalReason', finalObs.reason);
+    }
+
+    function stopUpgradeStatusPolling() {
+      if (upgradeStatusPollingTimer) {
+        clearInterval(upgradeStatusPollingTimer);
+        upgradeStatusPollingTimer = null;
+      }
+    }
+
+    function setUpgradeButtonsBusy(busy) {
+      const directBtn = document.getElementById('upgradeDirectBtn');
+      const proxyBtn = document.getElementById('upgradeProxyBtn');
+      if (directBtn) directBtn.disabled = !!busy;
+      if (proxyBtn) proxyBtn.disabled = !!busy;
+    }
+
+    function normalizeUpgradeProgress(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      return Math.max(0, Math.min(100, Math.trunc(n)));
+    }
+
+    function shouldPollUpgradeStatus(statusText) {
+      const status = String(statusText || '').trim().toLowerCase();
+      return status === 'accepted' || status === 'running';
+    }
+
+    function renderUpgradeStatus(data) {
+      const status = String(data && data.status || '').trim() || 'idle';
+      const step = String(data && data.step || '').trim();
+      const progress = normalizeUpgradeProgress(data && data.progress);
+      const message = String(data && data.message || '').trim();
+      const error = String(data && data.error || '').trim();
+      const updatedAt = String(data && data.updated_at || '').trim();
+      setText('upgradeStatusText', status);
+      setText('upgradeStepText', step || '-');
+      setText('upgradeProgressText', String(progress));
+      setText('upgradeMessageText', message || '-');
+      setText('upgradeErrorText', error || '-');
+      setText('upgradeUpdatedAtText', updatedAt || '-');
+      const fill = document.getElementById('upgradeProgressFill');
+      if (fill) {
+        fill.style.width = `${progress}%`;
+      }
+      const busy = shouldPollUpgradeStatus(status);
+      setUpgradeButtonsBusy(busy);
+      if (!busy) {
+        stopUpgradeStatusPolling();
+      }
+    }
+
+    async function loadUpgradeStatus() {
+      const data = await requestJSON('/local/api/system/upgrade/status', { method: 'GET' });
+      renderUpgradeStatus(data || {});
+      return data || {};
+    }
+
+    function startUpgradeStatusPolling() {
+      if (upgradeStatusPollingTimer) return;
+      upgradeStatusPollingTimer = setInterval(() => {
+        loadUpgradeStatus().catch(() => {
+        });
+      }, 1500);
+    }
+
+    async function refreshAll() {
+      setMessage('');
+      const ok = await ensureSession();
+      if (!ok) return;
+      await loadTunStatus();
+      await loadUpgradeStatus();
+    }
+
+    async function triggerSystemUpgrade(mode) {
+      const repoInput = document.getElementById('upgradeRepoInput');
+      const releaseRepo = String(repoInput && repoInput.value || '').trim();
+      setUpgradeButtonsBusy(true);
+      setMessage(`提交${mode === 'proxy' ? '代理' : '直连'}升级中...`);
+      try {
+        await requestJSON('/local/api/system/upgrade', {
+          method: 'POST',
+          body: JSON.stringify({
+            mode,
+            release_repo: releaseRepo,
+          }),
+        });
+        await loadUpgradeStatus();
+        startUpgradeStatusPolling();
+        setMessage(`已提交${mode === 'proxy' ? '代理' : '直连'}升级任务`, 'success');
+      } catch (err) {
+        setUpgradeButtonsBusy(false);
+        setMessage(`提交升级失败：${err.message}`, 'error');
+      }
+    }
+
+    document.getElementById('upgradeDirectBtn').addEventListener('click', () => {
+      triggerSystemUpgrade('direct');
+    });
+
+    document.getElementById('upgradeProxyBtn').addEventListener('click', () => {
+      triggerSystemUpgrade('proxy');
+    });
+
+    document.getElementById('restartServiceBtn').addEventListener('click', async () => {
+      setMessage('提交重启服务...');
+      try {
+        await requestJSON('/local/api/system/restart', { method: 'POST', body: '{}' });
+        setMessage('已提交重启，服务将短暂断开后恢复', 'success');
+      } catch (err) {
+        setMessage('重启服务失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('tunInstallBtn').addEventListener('click', async () => {
+      setMessage('执行 TUN 安装/检查...');
+      try {
+        const installData = await requestJSON('/local/api/tun/install', { method: 'POST', body: '{}' });
+        await refreshAll();
+        const finalObs = (installData && installData.install_observation && typeof installData.install_observation.final === 'object')
+          ? installData.install_observation.final
+          : {};
+        if (String(finalObs.reason_code || '').trim() === 'TUN_ADAPTER_JOINT_VISIBILITY_MISSING') {
+          setMessage('TUN 已安装但未就绪，请稍后刷新确认', 'success');
+          return;
+        }
+        setMessage('TUN 安装/检查完成', 'success');
+      } catch (err) {
+        const payload = err && err.payload ? err.payload : {};
+        const extras = [];
+        if (payload.code) extras.push(`code=${payload.code}`);
+        if (payload.stage) extras.push(`stage=${payload.stage}`);
+        if (payload.hint) extras.push(`hint=${payload.hint}`);
+        const suffix = extras.length > 0 ? `（${extras.join('，')}）` : '';
+        setMessage('TUN 安装失败：' + err.message + suffix, 'error');
+      }
+    });
+
+    document.getElementById('tunRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新 TUN 状态...');
+      try {
+        await loadTunStatus();
+        setMessage('TUN 状态已刷新', 'success');
+      } catch (err) {
+        setMessage('读取 TUN 状态失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      stopUpgradeStatusPolling();
+      setMessage('退出中...');
+      try {
+        await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' });
+      } catch (_) {
+      }
+      window.location.href = '/local/login';
+    });
+
+    refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
+    window.addEventListener('beforeunload', () => stopUpgradeStatusPolling());
+  </script>
+</body>
+</html>

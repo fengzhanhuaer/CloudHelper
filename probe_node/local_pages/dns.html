@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Probe Node DNS 状态</title>
+  <style>
+    :root {
+      --bg-color: #0d1117;
+      --panel-bg: rgba(22, 27, 34, 0.68);
+      --text-primary: #c9d1d9;
+      --text-secondary: #8b949e;
+      --accent: #58a6ff;
+      --accent-strong: #1f6feb;
+      --border-soft: rgba(255, 255, 255, 0.12);
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      color: var(--text-primary);
+      background: var(--bg-color);
+      background-image: radial-gradient(circle at 50% 0%, #1f2937 0%, transparent 70%);
+      min-height: 100vh;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    main { max-width: 920px; margin: 0 auto; }
+    h1 { margin-bottom: 8px; color: #fff; }
+    .hint { color: var(--text-secondary); font-size: 13px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    .nav { display:flex; gap:8px; flex-wrap:wrap; }
+    .nav a {
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: #d0d7de;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(139, 148, 158, 0.2);
+    }
+    .nav a.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      border-color: rgba(255,255,255,0.2);
+    }
+    .card {
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 14px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+    }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button {
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: rgba(139, 148, 158, 0.2);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #d0d7de;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      row-gap: 6px;
+      column-gap: 8px;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    .kv > div:nth-child(odd) { color: var(--text-secondary); }
+    code {
+      background: rgba(88, 166, 255, 0.12);
+      color: #9cd0ff;
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(88, 166, 255, 0.25);
+    }
+    .dns-map-table-wrap { margin-top: 10px; overflow-x: auto; }
+    .dns-map-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .dns-map-table th, .dns-map-table td {
+      border: 1px solid var(--border-soft);
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .dns-map-table th {
+      background: rgba(88, 166, 255, 0.1);
+      color: #cfe6ff;
+      font-weight: 600;
+    }
+    .dns-map-table td { background: rgba(13, 17, 23, 0.4); }
+    .dns-map-empty { color: var(--text-secondary); font-size: 13px; margin-top: 6px; }
+    .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
+    .msg.error { color: #ff938d; }
+    .msg.success { color: #7ee787; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>DNS 状态</h1>
+        <p class="hint">本地 DNS 监听、缓存、Fake IP 与域名映射。</p>
+      </div>
+      <div class="nav">
+        <a href="/local/panel">首页</a>
+        <a href="/local/proxy">代理状态</a>
+        <a href="/local/dns" class="active">DNS 状态</a>
+        <a href="/local/logs">运行日志</a>
+        <a href="/local/system">系统设置</a>
+      </div>
+    </div>
+
+    <section id="panelDNS" class="card active">
+      <strong>DNS 状态</strong>
+      <div class="kv">
+        <div>服务启用</div><div id="dnsEnabled">-</div>
+        <div>监听地址</div><div id="dnsListenAddr">-</div>
+        <div>监听端口</div><div id="dnsPort">-</div>
+        <div>端口回退</div><div id="dnsFallbackUsed">-</div>
+        <div>TUN DNS 监听</div><div id="dnsTunListener">-</div>
+        <div>Fake IP 网段</div><div id="dnsFakeIPCIDR">-</div>
+        <div>Fake IP 记录数</div><div id="dnsFakeIPRecords">-</div>
+        <div>路由提示数</div><div id="dnsRouteHintCount">-</div>
+        <div>缓存 TTL（秒）</div><div id="dnsCacheTTL">-</div>
+        <div>缓存记录数</div><div id="dnsCacheRecords">-</div>
+        <div>最后更新时间</div><div id="dnsUpdatedAt">-</div>
+        <div>最近错误</div><div id="dnsLastError">-</div>
+      </div>
+      <div class="actions">
+        <button id="dnsRefreshBtn" class="secondary">刷新 DNS 状态</button>
+      </div>
+      <p class="hint">监听固定为回环地址，端口策略为 <code>53</code> 优先，失败回退 <code>5353</code>。</p>
+      <div class="dns-map-table-wrap">
+        <table class="dns-map-table">
+          <thead>
+            <tr>
+              <th>域名</th>
+              <th>IP</th>
+              <th>fake IP</th>
+            </tr>
+          </thead>
+          <tbody id="dnsMapTableBody">
+            <tr><td colspan="3">-</td></tr>
+          </tbody>
+        </table>
+        <div id="dnsMapEmpty" class="dns-map-empty" style="display:none;">暂无 DNS 映射记录</div>
+      </div>
+    </section>
+
+    <p id="message" class="msg"></p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById('message');
+
+    function setMessage(text, type) {
+      messageEl.textContent = text || '';
+      messageEl.className = 'msg' + (type ? ' ' + type : '');
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const clean = (value === undefined || value === null || value === '') ? '-' : String(value);
+      el.textContent = clean;
+    }
+
+    async function requestJSON(url, options) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
+      if (!res.ok) {
+        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    }
+
+    async function ensureSession() {
+      try {
+        const data = await requestJSON('/local/api/auth/session', { method: 'GET' });
+        if (!data.authenticated) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        return true;
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        throw err;
+      }
+    }
+
+    async function loadDNSStatus() {
+      const [statusData, realIPData, fakeIPData] = await Promise.all([
+        requestJSON('/local/api/dns/status', { method: 'GET' }),
+        requestJSON('/local/api/dns/real_ip/list', { method: 'GET' }),
+        requestJSON('/local/api/dns/fake_ip/list', { method: 'GET' }),
+      ]);
+      const realIPRecords = Array.isArray(realIPData.items) ? realIPData.items : [];
+      const fakeIPEntries = Array.isArray(fakeIPData.items) ? fakeIPData.items : [];
+      const ttlSeconds = Number.isFinite(Number(statusData.cache_ttl_seconds)) ? Number(statusData.cache_ttl_seconds) : 0;
+      const routeHintCount = Number.isFinite(Number(statusData.route_hint_count)) ? Number(statusData.route_hint_count) : 0;
+      const tunListener = (statusData.tun_listener && typeof statusData.tun_listener === 'object') ? statusData.tun_listener : {};
+      const tunListenerText = tunListener.enabled ? (tunListener.listen_addr || '已启用') : '未启用';
+      setText('dnsEnabled', statusData.enabled ? '是' : '否');
+      setText('dnsListenAddr', statusData.listen_addr);
+      setText('dnsPort', statusData.port);
+      setText('dnsFallbackUsed', statusData.fallback_used ? '是' : '否');
+      setText('dnsTunListener', tunListenerText);
+      setText('dnsFakeIPCIDR', statusData.fake_ip_cidr);
+      setText('dnsFakeIPRecords', fakeIPEntries.length);
+      setText('dnsRouteHintCount', String(Math.trunc(routeHintCount)));
+      setText('dnsCacheTTL', ttlSeconds > 0 ? String(Math.trunc(ttlSeconds)) : '-');
+      setText('dnsCacheRecords', realIPRecords.length);
+      setText('dnsUpdatedAt', statusData.updated_at);
+      setText('dnsLastError', statusData.last_error);
+      renderDNSDomainMapTable(realIPRecords, fakeIPEntries);
+    }
+
+    function renderDNSDomainMapTable(cacheRecords, fakeIPEntries) {
+      const bodyEl = document.getElementById('dnsMapTableBody');
+      const emptyEl = document.getElementById('dnsMapEmpty');
+      if (!bodyEl) return;
+      const cacheArr = Array.isArray(cacheRecords) ? cacheRecords : [];
+      const fakeArr = Array.isArray(fakeIPEntries) ? fakeIPEntries : [];
+      const domainToIPs = new Map();
+      cacheArr.forEach((item) => {
+        const domain = String(item && item.url || '').trim();
+        const ip = String(item && item.ip || '').trim();
+        if (!domain || !ip) return;
+        if (!domainToIPs.has(domain)) domainToIPs.set(domain, new Set());
+        domainToIPs.get(domain).add(ip);
+      });
+      const domainToFakeIP = new Map();
+      fakeArr.forEach((item) => {
+        const domain = String(item && item.domain || '').trim();
+        const fakeIP = String(item && item.fake_ip || '').trim();
+        if (!domain || !fakeIP) return;
+        domainToFakeIP.set(domain, fakeIP);
+      });
+      const domains = [...new Set([...domainToIPs.keys(), ...domainToFakeIP.keys()])].sort((a, b) => a.localeCompare(b));
+      bodyEl.innerHTML = '';
+      if (domains.length === 0) {
+        bodyEl.innerHTML = '<tr><td colspan="3">-</td></tr>';
+        if (emptyEl) emptyEl.style.display = '';
+        return;
+      }
+      if (emptyEl) emptyEl.style.display = 'none';
+      domains.forEach((domain) => {
+        const ips = domainToIPs.has(domain) ? [...domainToIPs.get(domain)].sort((a, b) => a.localeCompare(b)) : [];
+        const fakeIP = domainToFakeIP.get(domain) || '-';
+        const tr = document.createElement('tr');
+        const tdDomain = document.createElement('td');
+        tdDomain.textContent = domain;
+        tr.appendChild(tdDomain);
+        const tdIP = document.createElement('td');
+        tdIP.textContent = ips.length > 0 ? ips.join('\n') : '-';
+        tdIP.style.whiteSpace = 'pre-line';
+        tr.appendChild(tdIP);
+        const tdFake = document.createElement('td');
+        tdFake.textContent = fakeIP;
+        tr.appendChild(tdFake);
+        bodyEl.appendChild(tr);
+      });
+    }
+
+    document.getElementById('dnsRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新 DNS 状态...');
+      try {
+        await loadDNSStatus();
+        setMessage('DNS 状态已刷新', 'success');
+      } catch (err) {
+        setMessage('读取 DNS 状态失败：' + err.message, 'error');
+      }
+    });
+
+    ensureSession().then((ok) => {
+      if (!ok) return;
+      return loadDNSStatus();
+    }).catch((err) => setMessage('初始化失败：' + err.message, 'error'));
+  </script>
+</body>
+</html>

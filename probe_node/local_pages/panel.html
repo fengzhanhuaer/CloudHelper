@@ -5,599 +5,112 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Probe Node 本地控制台</title>
   <style>
-    :root {
-      --bg-color: #0d1117;
-      --panel-bg: rgba(22, 27, 34, 0.68);
-      --panel-bg-solid: #161b22;
-      --text-primary: #c9d1d9;
-      --text-secondary: #8b949e;
-      --heading: #e6edf3;
-      --accent: #58a6ff;
-      --accent-strong: #1f6feb;
-      --success: #2ea043;
-      --warn: #f85149;
-      --border-soft: rgba(255, 255, 255, 0.12);
-      --border-strong: rgba(88, 166, 255, 0.45);
-    }
+    :root { color-scheme: dark; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       margin: 0;
-      color: var(--text-primary);
-      background: var(--bg-color);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: #0d1117;
       background-image: radial-gradient(circle at 50% 0%, #1f2937 0%, transparent 70%);
-      min-height: 100vh;
-      padding: 24px;
-      box-sizing: border-box;
-    }
-    main { max-width: 920px; margin: 0 auto; }
-    h1 { margin-bottom: 8px; color: #fff; }
-    .hint { color: var(--text-secondary); font-size: 13px; }
-    .card {
-      border: 1px solid var(--border-soft);
-      border-radius: 12px;
-      padding: 16px;
-      margin-top: 14px;
-      background: var(--panel-bg);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
-    }
-    .tabs { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-    .tab-btn {
-      background: rgba(139, 148, 158, 0.2);
-      color: var(--text-primary);
-      border: 1px solid transparent;
-      border-radius: 8px;
-      padding: 8px 12px;
-      cursor: pointer;
-    }
-    .tab-btn.active {
-      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-      color: #fff;
-      border-color: rgba(255, 255, 255, 0.2);
-      box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.28) inset;
-    }
-    .tab-panel { display: none; }
-    .tab-panel.active { display: block; }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-    button {
-      padding: 8px 12px;
-      border: 1px solid transparent;
-      border-radius: 8px;
-      cursor: pointer;
-      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-      color: #fff;
-      font-weight: 600;
-    }
-    button:hover { filter: brightness(1.07); }
-    button.secondary {
-      background: rgba(139, 148, 158, 0.2);
-      border-color: rgba(255, 255, 255, 0.18);
-      color: #d0d7de;
-    }
-    button.warn {
-      background: linear-gradient(135deg, #ff7b72, #d73a49);
-      border-color: rgba(255, 255, 255, 0.12);
-    }
-    .kv {
-      display: grid;
-      grid-template-columns: 170px 1fr;
-      row-gap: 6px;
-      column-gap: 8px;
-      margin-top: 8px;
-      font-size: 14px;
-    }
-    .kv > div:nth-child(odd) { color: var(--text-secondary); }
-    .rule-group-list { display: grid; gap: 10px; margin-top: 10px; }
-    .rule-group-row {
-      border: 1px solid var(--border-soft);
-      border-radius: 10px;
-      padding: 10px;
-      background: rgba(13, 17, 23, 0.45);
-    }
-    .rule-group-title { font-weight: 600; font-size: 13px; color: var(--heading); margin-bottom: 6px; }
-    .rule-options-flat { display: flex; gap: 8px; flex-wrap: wrap; }
-    .rule-option-flat {
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      border-radius: 7px;
-      background: rgba(139, 148, 158, 0.12);
-      color: #d0d7de;
-      padding: 6px 10px;
-      cursor: pointer;
-      font-size: 12px;
-    }
-    .rule-option-flat.active {
-      border-color: var(--border-strong);
-      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-      color: #fff;
-    }
-    .rule-runtime { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
-    .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
-    .msg.error { color: #ff938d; }
-    .msg.success { color: #7ee787; }
-    code {
-      background: rgba(88, 166, 255, 0.12);
-      color: #9cd0ff;
-      padding: 1px 6px;
-      border-radius: 4px;
-      border: 1px solid rgba(88, 166, 255, 0.25);
-    }
-    .dns-map-table-wrap { margin-top: 10px; overflow-x: auto; }
-    .dns-map-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .dns-map-table th, .dns-map-table td {
-      border: 1px solid var(--border-soft);
-      padding: 6px 8px;
-      text-align: left;
-      vertical-align: top;
-    }
-    .dns-map-table th {
-      background: rgba(88, 166, 255, 0.1);
-      color: #cfe6ff;
-      font-weight: 600;
-    }
-    .dns-map-table td { background: rgba(13, 17, 23, 0.4); }
-    .dns-map-empty { color: var(--text-secondary); font-size: 13px; margin-top: 6px; }
-    .logs-toolbar {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 8px;
-      margin-top: 10px;
-    }
-    .logs-toolbar label {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 12px;
-      color: var(--text-secondary);
-    }
-    .logs-toolbar input,
-    .logs-toolbar select {
-      padding: 6px 8px;
-      border-radius: 6px;
-      border: 1px solid var(--border-soft);
-      background: rgba(13, 17, 23, 0.55);
-      color: var(--text-primary);
-    }
-    .logs-content {
-      margin-top: 10px;
-      border: 1px solid var(--border-soft);
-      border-radius: 8px;
-      background: rgba(13, 17, 23, 0.55);
-      padding: 10px;
-      min-height: 180px;
-      max-height: 420px;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 12px;
-      line-height: 1.45;
       color: #c9d1d9;
+      min-height: 100vh;
     }
-    .upgrade-progress {
-      margin-top: 10px;
-      border: 1px solid var(--border-soft);
+    .wrap { max-width: 980px; margin: 5vh auto; padding: 20px; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+    h1 { margin: 0; font-size: 24px; color: #fff; }
+    .sub { color: #8b949e; margin: 4px 0 0; font-size: 13px; }
+    .btn {
+      padding: 8px 12px;
       border-radius: 8px;
-      overflow: hidden;
-      height: 10px;
-      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #c9d1d9;
+      cursor: pointer;
     }
-    .upgrade-progress-fill {
-      width: 0%;
-      height: 100%;
-      background: linear-gradient(90deg, var(--accent), var(--success));
-      transition: width 0.3s ease;
+    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+    .tile {
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      background: rgba(22, 27, 34, 0.82);
+      padding: 16px;
+      min-height: 126px;
+      box-sizing: border-box;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
     }
+    .tile-title { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+    .tile-value { font-size: 24px; font-family: Consolas, monospace; }
+    .tile-sub { margin-top: 8px; color: #8b949e; font-size: 12px; line-height: 1.45; }
+    .tile-link { display: block; text-decoration: none; color: #c9d1d9; transition: all .15s ease; }
+    .tile-link:hover { border-color: #58a6ff; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(31,111,235,.2); }
+    .ok { color: #7ee787; }
+    .msg { min-height: 20px; color: #8b949e; font-size: 13px; }
+    .msg.error { color: #ff938d; }
   </style>
 </head>
 <body>
-  <main>
-    <h1>Probe Node 本地控制台</h1>
-    <p class="hint">当前页面用于本地 DNS 状态观测、TUN 驱动准备与代理接管切换。</p>
-
-    <div class="tabs">
-      <button id="tabProxy" class="tab-btn active" data-target="panelProxy">代理状态</button>
-      <button id="tabDNS" class="tab-btn" data-target="panelDNS">DNS 状态</button>
-      <button id="tabLogs" class="tab-btn" data-target="panelLogs">运行日志</button>
-      <button id="tabSystem" class="tab-btn" data-target="panelSystem">系统设置</button>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>Probe Node 本地控制台</h1>
+        <p class="sub">磁贴入口页，可进入代理状态、DNS 状态、运行日志与系统设置。</p>
+      </div>
+      <button id="btn-logout" class="btn" type="button">退出登录</button>
     </div>
 
-    <section id="panelProxy" class="card tab-panel active">
-      <strong>代理状态</strong>
-      <div class="kv">
-        <div>接管开关</div><div id="proxyEnabled">-</div>
-        <div>当前模式</div><div id="proxyMode">-</div>
-        <div>当前生效组</div><div id="proxyActiveGroup">-</div>
-        <div>当前生效链路</div><div id="proxyActiveTunnel">-</div>
-        <div>选中链路保活</div><div id="proxySelectedKeepalive">-</div>
-        <div>选中链路延迟(ms)</div><div id="proxySelectedLatencyMs">-</div>
-        <div>延迟测量时间</div><div id="proxySelectedLatencyUpdatedAt">-</div>
-        <div>链路测量错误</div><div id="proxySelectedLatencyError">-</div>
-        <div>最后更新时间</div><div id="proxyUpdatedAt">-</div>
-        <div>最近错误</div><div id="proxyLastError">-</div>
-      </div>
-      <div id="proxyRuleGroups" class="rule-group-list"></div>
-      <div class="actions">
-        <button id="proxyGlobalToggleBtn" class="secondary">启用代理</button>
-        <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
-        <button id="proxyGroupRefreshBtn" class="secondary">刷新代理组</button>
-        <button id="proxyChainRefreshBtn" class="secondary">刷新链路</button>
-      </div>
-      <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），刷新代理组会清空本地 DNS / Fake IP 缓存。</p>
-    </section>
+    <div class="tiles">
+      <a href="/local/proxy" class="tile tile-link" id="tile-proxy">
+        <div class="tile-title">代理状态</div>
+        <div class="tile-value">🧭</div>
+        <div class="tile-sub">进入代理接管、代理组选链、链路刷新与运行状态页面</div>
+      </a>
 
-    <section id="panelDNS" class="card tab-panel">
-      <strong>DNS 状态</strong>
-      <div class="kv">
-        <div>服务启用</div><div id="dnsEnabled">-</div>
-        <div>监听地址</div><div id="dnsListenAddr">-</div>
-        <div>监听端口</div><div id="dnsPort">-</div>
-        <div>端口回退</div><div id="dnsFallbackUsed">-</div>
-        <div>TUN DNS 监听</div><div id="dnsTunListener">-</div>
-        <div>Fake IP 网段</div><div id="dnsFakeIPCIDR">-</div>
-        <div>Fake IP 记录数</div><div id="dnsFakeIPRecords">-</div>
-        <div>路由提示数</div><div id="dnsRouteHintCount">-</div>
-        <div>缓存 TTL（秒）</div><div id="dnsCacheTTL">-</div>
-        <div>缓存记录数</div><div id="dnsCacheRecords">-</div>
-        <div>最后更新时间</div><div id="dnsUpdatedAt">-</div>
-        <div>最近错误</div><div id="dnsLastError">-</div>
-      </div>
-      <div class="actions">
-        <button id="dnsRefreshBtn" class="secondary">刷新 DNS 状态</button>
-      </div>
-      <p class="hint">监听固定为回环地址，端口策略为 <code>53</code> 优先，失败回退 <code>5353</code>。</p>
-      <div class="dns-map-table-wrap">
-        <table class="dns-map-table">
-          <thead>
-            <tr>
-              <th>域名</th>
-              <th>IP</th>
-              <th>fake IP</th>
-            </tr>
-          </thead>
-          <tbody id="dnsMapTableBody">
-            <tr><td colspan="3">-</td></tr>
-          </tbody>
-        </table>
-        <div id="dnsMapEmpty" class="dns-map-empty" style="display:none;">暂无 DNS 映射记录</div>
-      </div>
-    </section>
+      <a href="/local/dns" class="tile tile-link" id="tile-dns">
+        <div class="tile-title">DNS 状态</div>
+        <div class="tile-value">🌐</div>
+        <div class="tile-sub">查看本地 DNS、Fake IP、真实 IP 缓存与映射关系</div>
+      </a>
 
-    <section id="panelLogs" class="card tab-panel">
-      <strong>运行日志</strong>
-      <div class="logs-toolbar">
-        <label>级别
-          <select id="logsMinLevel">
-            <option value="">全部</option>
-            <option value="normal">normal</option>
-            <option value="warning">warning</option>
-            <option value="error">error</option>
-            <option value="realtime">realtime</option>
-          </select>
-        </label>
-        <label>关键词
-          <input id="logsKeyword" type="text" placeholder="输入关键词过滤" />
-        </label>
-        <label>行数
-          <input id="logsLines" type="number" min="1" max="2000" value="200" />
-        </label>
-        <label>时间窗口（分钟）
-          <select id="logsSinceMinutes">
-            <option value="0">全部</option>
-            <option value="5">近 5 分钟</option>
-            <option value="15">近 15 分钟</option>
-            <option value="60">近 1 小时</option>
-            <option value="240">近 4 小时</option>
-          </select>
-        </label>
-        <label>自动刷新
-          <select id="logsAutoRefresh">
-            <option value="off">关闭</option>
-            <option value="on">开启</option>
-          </select>
-        </label>
-        <label>刷新间隔（秒）
-          <select id="logsRefreshIntervalSec">
-            <option value="2">2</option>
-            <option value="3" selected>3</option>
-            <option value="5">5</option>
-            <option value="10">10</option>
-          </select>
-        </label>
-      </div>
-      <div class="actions">
-        <button id="logsRefreshBtn" class="secondary">刷新日志</button>
-      </div>
-      <div class="kv">
-        <div>日志来源</div><div id="logsSource">-</div>
-        <div>命中条数</div><div id="logsCount">-</div>
-        <div>最后更新时间</div><div id="logsUpdatedAt">-</div>
-      </div>
-      <pre id="logsContent" class="logs-content">-</pre>
-    </section>
+      <a href="/local/logs" class="tile tile-link" id="tile-logs">
+        <div class="tile-title">运行日志</div>
+        <div class="tile-value">📜</div>
+        <div class="tile-sub">按级别、关键词、时间窗口查看本地探针运行日志</div>
+      </a>
 
-    <section id="panelSystem" class="card tab-panel">
-      <strong>系统设置</strong>
-      <h2>TUN 状态</h2>
-      <div class="kv">
-        <div>平台</div><div id="tunPlatform">-</div>
-        <div>已安装</div><div id="tunInstalled">-</div>
-        <div>已启用</div><div id="tunEnabled">-</div>
-        <div>最后更新时间</div><div id="tunUpdatedAt">-</div>
-        <div>最近错误</div><div id="tunLastError">-</div>
-        <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
-        <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
+      <a href="/local/system" class="tile tile-link" id="tile-system">
+        <div class="tile-title">系统设置</div>
+        <div class="tile-value">⚙</div>
+        <div class="tile-sub">进入 TUN 安装/检查、系统升级、服务重启与退出登录页面</div>
+      </a>
+
+      <div class="tile">
+        <div class="tile-title">运行状态</div>
+        <div class="tile-value ok">在线</div>
+        <div class="tile-sub" id="local-time">--</div>
       </div>
-      <div class="actions">
-        <button id="tunInstallBtn">安装/检查 TUN</button>
-        <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
+
+      <div class="tile">
+        <div class="tile-title">当前账号</div>
+        <div class="tile-value" id="username">--</div>
+        <div class="tile-sub">/local 独立本地会话</div>
       </div>
-      <p class="hint">TUN 状态已合并到系统设置；服务重启后会优先识别并复用现有适配器。</p>
-      <h2>系统升级</h2>
-      <div class="kv" style="grid-template-columns: 170px minmax(0, 1fr); align-items: center;">
-        <div>发布仓库</div>
-        <div><input id="upgradeRepoInput" type="text" value="fengzhanhuaer/CloudHelper" style="width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;" /></div>
-      </div>
-      <div class="actions">
-        <button id="upgradeDirectBtn">直连升级</button>
-        <button id="upgradeProxyBtn" class="secondary">代理升级</button>
-        <button id="restartServiceBtn" class="secondary">重启服务</button>
-        <button id="logoutBtn" class="warn">退出登录</button>
-      </div>
-      <p class="hint">直连升级将直接访问 GitHub，代理升级将通过 controller `/api/probe/proxy/*` 中转。</p>
-      <div class="kv" style="margin-top: 10px;">
-        <div>升级状态</div><div id="upgradeStatusText">-</div>
-        <div>当前阶段</div><div id="upgradeStepText">-</div>
-        <div>进度（%）</div><div id="upgradeProgressText">0</div>
-        <div>说明</div><div id="upgradeMessageText">-</div>
-        <div>错误信息</div><div id="upgradeErrorText">-</div>
-        <div>更新时间</div><div id="upgradeUpdatedAtText">-</div>
-      </div>
-      <div class="upgrade-progress" aria-label="升级进度">
-        <div id="upgradeProgressFill" class="upgrade-progress-fill"></div>
-      </div>
-    </section>
+    </div>
 
     <p id="message" class="msg"></p>
-  </main>
+  </div>
 
   <script>
     const messageEl = document.getElementById('message');
-    const proxyRuleGroupsEl = document.getElementById('proxyRuleGroups');
-    let proxyStateGroupsCache = [];
-    let proxyChainItemsCache = [];
-    let proxyStatusCache = { enabled: false, mode: '' };
-    let proxySelectedLatencyDisplay = '不可达';
-    let proxySelectedLatencyStatus = 'unreachable';
-    let proxyStatusPollingTimer = null;
-    let logsAutoRefreshTimer = null;
-    let upgradeStatusPollingTimer = null;
-
-    const PROXY_STATUS_POLL_INTERVAL_MS = 60000;
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
       messageEl.className = 'msg' + (type ? ' ' + type : '');
     }
 
-    function setText(id, value) {
-      const el = document.getElementById(id);
-      if (!el) return;
-      const clean = (value === undefined || value === null || value === '') ? '-' : String(value);
-      el.textContent = clean;
-    }
-
-    function isProxyGloballyEnabled() {
-      return !!proxyStatusCache.enabled && normalizeAction(proxyStatusCache.mode) === 'tunnel';
-    }
-
-    function updateProxyGlobalToggleButton() {
-      const btn = document.getElementById('proxyGlobalToggleBtn');
-      if (!btn) return;
-      if (isProxyGloballyEnabled()) {
-        btn.textContent = '关闭代理';
-        btn.classList.remove('secondary');
-        btn.classList.add('warn');
-        return;
-      }
-      btn.textContent = '启用代理';
-      btn.classList.remove('warn');
-      btn.classList.add('secondary');
-    }
-
-    function normalizeChainID(chainValue) {
-      const text = String(chainValue || '').trim();
-      if (!text) return '';
-      if (text.toLowerCase().startsWith('chain:')) {
-        return text.slice('chain:'.length).trim();
-      }
-      return text;
-    }
-
-    function normalizeAction(actionValue) {
-      return String(actionValue || '').trim().toLowerCase();
-    }
-
-    function resolveChainLabel(chainID) {
-      const clean = normalizeChainID(chainID);
-      if (!clean) return '-';
-      const found = proxyChainItemsCache.find((item) => {
-        return normalizeChainID(item && item.chain_id) === clean;
+    async function requestJSON(url, options) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
       });
-      if (!found) return clean;
-      const name = String(found && found.name || '').trim();
-      return name || clean;
-    }
-
-    function updateProxyActiveFromState() {
-      const active = proxyStateGroupsCache.find((item) => normalizeAction(item && item.action) === 'tunnel');
-      setText('proxyActiveGroup', active && active.group);
-      const activeTunnelID = active && active.tunnel_node_id;
-      setText('proxyActiveTunnel', activeTunnelID ? resolveChainLabel(activeTunnelID) : '-');
-    }
-
-    async function applyGroupPolicy(group, action, tunnelNodeID) {
-      if (action === 'direct') {
-        await requestJSON('/local/api/proxy/direct', {
-          method: 'POST',
-          body: JSON.stringify({ group }),
-        });
-        return;
-      }
-      if (action === 'reject') {
-        await requestJSON('/local/api/proxy/reject', {
-          method: 'POST',
-          body: JSON.stringify({ group }),
-        });
-        return;
-      }
-      await requestJSON('/local/api/proxy/select', {
-        method: 'POST',
-        body: JSON.stringify({
-          group,
-          selected_chain_id: tunnelNodeID || '',
-        }),
-      });
-    }
-
-    function isGroupOptionSelected(stateEntry, action, tunnelNodeID) {
-      const currentAction = normalizeAction(stateEntry && stateEntry.action);
-      if (currentAction !== normalizeAction(action)) {
-        return false;
-      }
-      if (normalizeAction(action) !== 'tunnel') {
-        return true;
-      }
-      return normalizeChainID(stateEntry && stateEntry.tunnel_node_id) === normalizeChainID(tunnelNodeID);
-    }
-
-    function renderProxyRuleGroupRows(groupNames) {
-      proxyRuleGroupsEl.innerHTML = '';
-      const chainOptions = proxyChainItemsCache.map((item) => ({
-        chainID: normalizeChainID(item && item.chain_id),
-        label: resolveChainLabel(item && item.chain_id),
-      })).filter((item) => item.chainID);
-
-      groupNames.forEach((groupName) => {
-        const stateEntry = proxyStateGroupsCache.find((entry) => {
-          return String(entry && entry.group || '').trim().toLowerCase() === groupName.toLowerCase();
-        }) || null;
-
-        const rowEl = document.createElement('div');
-        rowEl.className = 'rule-group-row';
-
-        const titleEl = document.createElement('div');
-        titleEl.className = 'rule-group-title';
-        titleEl.textContent = groupName === 'fallback' ? '兜底组（未命中规则）' : `组：${groupName}`;
-        rowEl.appendChild(titleEl);
-
-        const optionsEl = document.createElement('div');
-        optionsEl.className = 'rule-options-flat';
-
-        const directBtn = document.createElement('button');
-        directBtn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'direct', '') ? 'active' : ''}`;
-        directBtn.textContent = '直连';
-        directBtn.addEventListener('click', async () => {
-          setMessage(`组 ${groupName} 切换直连中...`);
-          try {
-            await applyGroupPolicy(groupName, 'direct', '');
-            await refreshAll();
-            setMessage(`组 ${groupName} 已切换直连`, 'success');
-          } catch (err) {
-            setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
-          }
-        });
-        optionsEl.appendChild(directBtn);
-
-        const rejectBtn = document.createElement('button');
-        rejectBtn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'reject', '') ? 'active' : ''}`;
-        rejectBtn.textContent = '拒绝';
-        rejectBtn.addEventListener('click', async () => {
-          setMessage(`组 ${groupName} 切换拒绝中...`);
-          try {
-            await applyGroupPolicy(groupName, 'reject', '');
-            await refreshAll();
-            setMessage(`组 ${groupName} 已切换拒绝`, 'success');
-          } catch (err) {
-            setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
-          }
-        });
-        optionsEl.appendChild(rejectBtn);
-
-        chainOptions.forEach((item) => {
-          const btn = document.createElement('button');
-          btn.className = `rule-option-flat ${isGroupOptionSelected(stateEntry, 'tunnel', item.chainID) ? 'active' : ''}`;
-          btn.textContent = item.label;
-          btn.addEventListener('click', async () => {
-            setMessage(`组 ${groupName} 切换链路中...`);
-            try {
-              await applyGroupPolicy(groupName, 'tunnel', item.chainID);
-              await refreshAll();
-              setMessage(`组 ${groupName} 已切换到 ${item.label}`, 'success');
-            } catch (err) {
-              setMessage(`组 ${groupName} 切换失败：${err.message}`, 'error');
-            }
-          });
-          optionsEl.appendChild(btn);
-        });
-
-        rowEl.appendChild(optionsEl);
-
-        const runtimeEl = document.createElement('div');
-        runtimeEl.className = 'rule-runtime';
-        const runtimeAction = normalizeAction(stateEntry && stateEntry.action);
-        const runtimeStatusText = formatRuntimeStatusText((stateEntry && stateEntry.group_runtime_status) || (stateEntry && stateEntry.runtime_status), stateEntry);
-        const runtimeTunnelLabel = runtimeAction === 'tunnel'
-          ? resolveChainLabel(stateEntry && stateEntry.selected_chain_id)
-          : '-';
-        runtimeEl.textContent = `运行：${runtimeAction || '-'}${runtimeAction === 'tunnel' ? ` (${runtimeTunnelLabel})` : ''}${runtimeStatusText ? ` ｜ 状态：${runtimeStatusText}` : ''}`;
-        rowEl.appendChild(runtimeEl);
-
-        proxyRuleGroupsEl.appendChild(rowEl);
-      });
-    }
-
-    function switchTab(targetId) {
-      document.querySelectorAll('.tab-btn').forEach((btn) => {
-        btn.classList.toggle('active', btn.dataset.target === targetId);
-      });
-      document.querySelectorAll('.tab-panel').forEach((panel) => {
-        panel.classList.toggle('active', panel.id === targetId);
-      });
-    }
-
-    const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
-    const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
-
-    function resolveRequestTimeoutMs(url, timeoutMs) {
-      if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
-        return Number(timeoutMs);
-      }
-      if (String(url || '').trim() === '/local/api/tun/install') {
-        return REQUEST_TIMEOUT_TUN_INSTALL_MS;
-      }
-      return REQUEST_TIMEOUT_DEFAULT_MS;
-    }
-
-    async function requestJSON(url, options, timeoutMs) {
-      const requestTimeoutMs = resolveRequestTimeoutMs(url, timeoutMs);
-      const controller = new AbortController();
-      const timeoutID = setTimeout(() => controller.abort(), requestTimeoutMs);
-      let res;
-      try {
-        res = await fetch(url, {
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          ...options,
-          signal: controller.signal,
-        });
-      } catch (err) {
-        if (err && err.name === 'AbortError') {
-          throw new Error(`请求超时(${Math.trunc(requestTimeoutMs / 1000)}s): ${url}`);
-        }
-        throw err;
-      } finally {
-        clearTimeout(timeoutID);
-      }
       let data = {};
       try {
         data = await res.json();
@@ -605,600 +118,50 @@
         data = {};
       }
       if (!res.ok) {
-        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
+        const msg = data && data.error ? data.error : ('HTTP ' + res.status);
         const err = new Error(msg);
         err.status = res.status;
-        err.payload = data;
         throw err;
       }
       return data;
     }
 
-    async function ensureSession() {
+    function updateLocalTime() {
+      document.getElementById('local-time').textContent = new Date().toLocaleString();
+    }
+
+    async function loadSession() {
       try {
         const data = await requestJSON('/local/api/auth/session', { method: 'GET' });
         if (!data.authenticated) {
           window.location.href = '/local/login';
-          return false;
+          return;
         }
-        return true;
+        document.getElementById('username').textContent = data.username || '--';
       } catch (err) {
         if (err && err.status === 401) {
           window.location.href = '/local/login';
-          return false;
-        }
-        throw err;
-      }
-    }
-
-    async function loadTunStatus() {
-      const data = await requestJSON('/local/api/tun/status', { method: 'GET' });
-      setText('tunPlatform', data.platform);
-      setText('tunInstalled', data.installed ? '是' : '否');
-      setText('tunEnabled', data.enabled ? '是' : '否');
-      setText('tunUpdatedAt', data.updated_at);
-      setText('tunLastError', data.last_error);
-      const lastObs = (data && typeof data.last_install_observation === 'object' && data.last_install_observation)
-        ? data.last_install_observation
-        : {};
-      const finalObs = (lastObs && typeof lastObs.final === 'object' && lastObs.final)
-        ? lastObs.final
-        : {};
-      setText('tunInstallFinalReasonCode', finalObs.reason_code);
-      setText('tunInstallFinalReason', finalObs.reason);
-    }
-
-    function formatProxyKeepaliveStatus(raw) {
-      const status = String(raw || '').trim().toLowerCase();
-      if (status === 'connected') return '已连接';
-      if (status === 'disconnected') return '未连接';
-      if (status === 'not_running') return '未运行';
-      return '-';
-    }
-
-    function formatRuntimeStatusText(rawStatus, stateEntry) {
-      const action = normalizeAction(stateEntry && stateEntry.action);
-      const status = String(rawStatus || '').trim();
-      if (action === 'tunnel') {
-        const latencyMs = Number(stateEntry && stateEntry.selected_chain_latency_ms);
-        const latencyMsDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '';
-        const latencyStatus = String(stateEntry && stateEntry.selected_chain_latency_status || '').trim().toLowerCase();
-        const latencyError = String(stateEntry && stateEntry.selected_chain_latency_error || '').trim();
-        if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
-          return `最近测试延迟: ${latencyMsDisplay}ms`;
-        }
-        if (latencyError) {
-          return `最近测试延迟: 不可达（${latencyError}）`;
-        }
-        if (status) {
-          return `最近测试延迟: 不可达（${status}）`;
-        }
-        return '最近测试延迟: 不可达';
-      }
-      if (!status) return '';
-      return status;
-    }
-
-    async function loadProxyStatus() {
-      const data = await requestJSON('/local/api/proxy/status', { method: 'GET' });
-      proxyStatusCache = {
-        enabled: !!data.enabled,
-        mode: String(data.mode || '').trim(),
-      };
-      const latencyMs = Number(data.selected_chain_latency_ms);
-      const latencyMsDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '';
-      const latencyStatus = String(data.selected_chain_latency_status || '').trim().toLowerCase();
-      if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
-        proxySelectedLatencyStatus = 'reachable';
-        proxySelectedLatencyDisplay = latencyMsDisplay;
-      } else if (latencyMsDisplay !== '' && latencyStatus !== 'unreachable') {
-        proxySelectedLatencyStatus = 'reachable';
-        proxySelectedLatencyDisplay = latencyMsDisplay;
-      } else {
-        proxySelectedLatencyStatus = 'unreachable';
-        proxySelectedLatencyDisplay = '不可达';
-      }
-      setText('proxyEnabled', data.enabled ? '是' : '否');
-      setText('proxyMode', data.mode);
-      setText('proxySelectedKeepalive', formatProxyKeepaliveStatus(data.selected_chain_keepalive));
-      setText('proxySelectedLatencyMs', proxySelectedLatencyDisplay);
-      setText('proxySelectedLatencyUpdatedAt', data.selected_chain_latency_updated_at);
-      setText('proxySelectedLatencyError', data.selected_chain_latency_error);
-      setText('proxyUpdatedAt', data.updated_at);
-      setText('proxyLastError', data.last_error);
-      updateProxyGlobalToggleButton();
-    }
-
-    async function loadDNSStatus() {
-      const [statusData, realIPData, fakeIPData] = await Promise.all([
-        requestJSON('/local/api/dns/status', { method: 'GET' }),
-        requestJSON('/local/api/dns/real_ip/list', { method: 'GET' }),
-        requestJSON('/local/api/dns/fake_ip/list', { method: 'GET' }),
-      ]);
-      const realIPRecords = Array.isArray(realIPData.items) ? realIPData.items : [];
-      const fakeIPEntries = Array.isArray(fakeIPData.items) ? fakeIPData.items : [];
-      const ttlSeconds = Number.isFinite(Number(statusData.cache_ttl_seconds)) ? Number(statusData.cache_ttl_seconds) : 0;
-      const routeHintCount = Number.isFinite(Number(statusData.route_hint_count)) ? Number(statusData.route_hint_count) : 0;
-      const tunListener = (statusData.tun_listener && typeof statusData.tun_listener === 'object') ? statusData.tun_listener : {};
-      const tunListenerText = tunListener.enabled ? (tunListener.listen_addr || '已启用') : '未启用';
-      setText('dnsEnabled', statusData.enabled ? '是' : '否');
-      setText('dnsListenAddr', statusData.listen_addr);
-      setText('dnsPort', statusData.port);
-      setText('dnsFallbackUsed', statusData.fallback_used ? '是' : '否');
-      setText('dnsTunListener', tunListenerText);
-      setText('dnsFakeIPCIDR', statusData.fake_ip_cidr);
-      setText('dnsFakeIPRecords', fakeIPEntries.length);
-      setText('dnsRouteHintCount', String(Math.trunc(routeHintCount)));
-      setText('dnsCacheTTL', ttlSeconds > 0 ? String(Math.trunc(ttlSeconds)) : '-');
-      setText('dnsCacheRecords', realIPRecords.length);
-      setText('dnsUpdatedAt', statusData.updated_at);
-      setText('dnsLastError', statusData.last_error);
-      renderDNSDomainMapTable(realIPRecords, fakeIPEntries);
-    }
-
-    function renderDNSDomainMapTable(cacheRecords, fakeIPEntries) {
-      const bodyEl = document.getElementById('dnsMapTableBody');
-      const emptyEl = document.getElementById('dnsMapEmpty');
-      if (!bodyEl) return;
-      const cacheArr = Array.isArray(cacheRecords) ? cacheRecords : [];
-      const fakeArr = Array.isArray(fakeIPEntries) ? fakeIPEntries : [];
-
-      const domainToIPs = new Map();
-      cacheArr.forEach((item) => {
-        const domain = String(item && item.url || '').trim();
-        const ip = String(item && item.ip || '').trim();
-        if (!domain || !ip) return;
-        if (!domainToIPs.has(domain)) domainToIPs.set(domain, new Set());
-        domainToIPs.get(domain).add(ip);
-      });
-
-      const domainToFakeIP = new Map();
-      fakeArr.forEach((item) => {
-        const domain = String(item && item.domain || '').trim();
-        const fakeIP = String(item && item.fake_ip || '').trim();
-        if (!domain || !fakeIP) return;
-        domainToFakeIP.set(domain, fakeIP);
-      });
-
-      const domains = [...new Set([...domainToIPs.keys(), ...domainToFakeIP.keys()])].sort((a, b) => a.localeCompare(b));
-
-      bodyEl.innerHTML = '';
-      if (domains.length === 0) {
-        bodyEl.innerHTML = '<tr><td colspan="3">-</td></tr>';
-        if (emptyEl) emptyEl.style.display = '';
-        return;
-      }
-      if (emptyEl) emptyEl.style.display = 'none';
-
-      domains.forEach((domain) => {
-        const ips = domainToIPs.has(domain) ? [...domainToIPs.get(domain)].sort((a, b) => a.localeCompare(b)) : [];
-        const fakeIP = domainToFakeIP.get(domain) || '-';
-        const tr = document.createElement('tr');
-
-        const tdDomain = document.createElement('td');
-        tdDomain.textContent = domain;
-        tr.appendChild(tdDomain);
-
-        const tdIP = document.createElement('td');
-        tdIP.textContent = ips.length > 0 ? ips.join('\n') : '-';
-        tdIP.style.whiteSpace = 'pre-line';
-        tr.appendChild(tdIP);
-
-        const tdFake = document.createElement('td');
-        tdFake.textContent = fakeIP;
-        tr.appendChild(tdFake);
-
-        bodyEl.appendChild(tr);
-      });
-    }
-
-    function resolveConfiguredProxyGroups(groupsData) {
-      const configuredGroups = Array.isArray(groupsData && groupsData.groups)
-        ? groupsData.groups.map((item) => String(item && item.group || '').trim()).filter(Boolean)
-        : [];
-      const nonFallbackGroups = configuredGroups
-        .map((name) => name.trim())
-        .filter((name) => name && name.toLowerCase() !== 'fallback');
-      const uniqueGroups = [...new Set(nonFallbackGroups)];
-      uniqueGroups.push('fallback');
-      return uniqueGroups;
-    }
-
-    function applyProxySelectionData(groupsData, chainsData, stateData) {
-      const uniqueGroups = resolveConfiguredProxyGroups(groupsData || {});
-      if (chainsData) {
-        proxyChainItemsCache = Array.isArray(chainsData.items) ? chainsData.items : [];
-      }
-      proxyStateGroupsCache = Array.isArray(stateData && stateData.groups) ? stateData.groups : [];
-      renderProxyRuleGroupRows(uniqueGroups);
-      updateProxyActiveFromState();
-    }
-
-    async function loadProxySelections() {
-      const [groupsData, chainsData, stateData] = await Promise.all([
-        requestJSON('/local/api/proxy/groups', { method: 'GET' }),
-        requestJSON('/local/api/proxy/chains', { method: 'GET' }),
-        requestJSON('/local/api/proxy/state', { method: 'GET' }),
-      ]);
-      applyProxySelectionData(groupsData, chainsData, stateData);
-    }
-
-    async function loadProxyGroupsOnly() {
-      const [groupsData, stateData] = await Promise.all([
-        requestJSON('/local/api/proxy/groups', { method: 'GET' }),
-        requestJSON('/local/api/proxy/state', { method: 'GET' }),
-      ]);
-      applyProxySelectionData(groupsData, null, stateData);
-    }
-
-    function resolveGlobalToggleEnableSelection() {
-      const preferred = proxyStateGroupsCache.find((entry) => {
-        return normalizeAction(entry && entry.action) === 'tunnel'
-          && normalizeChainID(entry && entry.tunnel_node_id) !== '';
-      });
-      if (preferred) {
-        const group = String(preferred && preferred.group || '').trim() || 'fallback';
-        const chainID = normalizeChainID(preferred && preferred.tunnel_node_id);
-        if (chainID) {
-          return { group, chainID };
-        }
-      }
-      const firstChain = proxyChainItemsCache.find((item) => normalizeChainID(item && item.chain_id));
-      if (!firstChain) {
-        return null;
-      }
-      return {
-        group: 'fallback',
-        chainID: normalizeChainID(firstChain.chain_id),
-      };
-    }
-
-    async function loadLogs() {
-      const params = new URLSearchParams();
-      const minLevel = String(document.getElementById('logsMinLevel')?.value || '').trim();
-      const keyword = String(document.getElementById('logsKeyword')?.value || '').trim();
-      const lines = String(document.getElementById('logsLines')?.value || '').trim();
-      const sinceMinutes = String(document.getElementById('logsSinceMinutes')?.value || '').trim();
-      if (minLevel) params.set('min_level', minLevel);
-      if (keyword) params.set('keyword', keyword);
-      if (lines) params.set('lines', lines);
-      if (sinceMinutes) params.set('since_minutes', sinceMinutes);
-      const qs = params.toString();
-      const path = qs ? `/local/api/logs?${qs}` : '/local/api/logs';
-      const data = await requestJSON(path, { method: 'GET' });
-      setText('logsSource', data.source || '-');
-      setText('logsCount', String(Number(data.count || 0)));
-      setText('logsUpdatedAt', new Date().toLocaleString());
-      const content = String(data.content || '').trim();
-      const logsContentEl = document.getElementById('logsContent');
-      if (logsContentEl) {
-        logsContentEl.textContent = content || '-';
-      }
-    }
-
-    function stopLogsAutoRefresh() {
-      if (logsAutoRefreshTimer) {
-        clearInterval(logsAutoRefreshTimer);
-        logsAutoRefreshTimer = null;
-      }
-    }
-
-    function applyLogsAutoRefresh() {
-      stopLogsAutoRefresh();
-      const auto = String(document.getElementById('logsAutoRefresh')?.value || 'off') === 'on';
-      if (!auto) return;
-      const intervalSec = Math.max(2, Number(document.getElementById('logsRefreshIntervalSec')?.value || 3));
-      logsAutoRefreshTimer = setInterval(() => {
-        loadLogs().catch((err) => {
-          setMessage('自动刷新日志失败：' + err.message, 'error');
-        });
-      }, intervalSec * 1000);
-    }
-
-    function stopUpgradeStatusPolling() {
-      if (upgradeStatusPollingTimer) {
-        clearInterval(upgradeStatusPollingTimer);
-        upgradeStatusPollingTimer = null;
-      }
-    }
-
-    function setUpgradeButtonsBusy(busy) {
-      const directBtn = document.getElementById('upgradeDirectBtn');
-      const proxyBtn = document.getElementById('upgradeProxyBtn');
-      if (directBtn) directBtn.disabled = !!busy;
-      if (proxyBtn) proxyBtn.disabled = !!busy;
-    }
-
-    function normalizeUpgradeProgress(value) {
-      const n = Number(value);
-      if (!Number.isFinite(n)) return 0;
-      return Math.max(0, Math.min(100, Math.trunc(n)));
-    }
-
-    function shouldPollUpgradeStatus(statusText) {
-      const status = String(statusText || '').trim().toLowerCase();
-      return status === 'accepted' || status === 'running';
-    }
-
-    function renderUpgradeStatus(data) {
-      const status = String(data && data.status || '').trim() || 'idle';
-      const step = String(data && data.step || '').trim();
-      const progress = normalizeUpgradeProgress(data && data.progress);
-      const message = String(data && data.message || '').trim();
-      const error = String(data && data.error || '').trim();
-      const updatedAt = String(data && data.updated_at || '').trim();
-
-      setText('upgradeStatusText', status);
-      setText('upgradeStepText', step || '-');
-      setText('upgradeProgressText', String(progress));
-      setText('upgradeMessageText', message || '-');
-      setText('upgradeErrorText', error || '-');
-      setText('upgradeUpdatedAtText', updatedAt || '-');
-
-      const fill = document.getElementById('upgradeProgressFill');
-      if (fill) {
-        fill.style.width = `${progress}%`;
-      }
-
-      const busy = shouldPollUpgradeStatus(status);
-      setUpgradeButtonsBusy(busy);
-      if (!busy) {
-        stopUpgradeStatusPolling();
-      }
-    }
-
-    async function loadUpgradeStatus() {
-      const data = await requestJSON('/local/api/system/upgrade/status', { method: 'GET' });
-      renderUpgradeStatus(data || {});
-      return data || {};
-    }
-
-    function startUpgradeStatusPolling() {
-      if (upgradeStatusPollingTimer) return;
-      upgradeStatusPollingTimer = setInterval(() => {
-        loadUpgradeStatus().catch(() => {
-        });
-      }, 1500);
-    }
-
-    function stopProxyStatusPolling() {
-      if (proxyStatusPollingTimer) {
-        clearInterval(proxyStatusPollingTimer);
-        proxyStatusPollingTimer = null;
-      }
-    }
-
-    function startProxyStatusPolling() {
-      if (proxyStatusPollingTimer) return;
-      proxyStatusPollingTimer = setInterval(() => {
-        loadProxyStatus().catch(() => {
-        });
-      }, PROXY_STATUS_POLL_INTERVAL_MS);
-    }
-
-    async function refreshAll() {
-      setMessage('');
-      const ok = await ensureSession();
-      if (!ok) return;
-      await loadProxyStatus();
-      await loadProxySelections();
-      await loadTunStatus();
-      await loadDNSStatus();
-      await loadLogs();
-      await loadUpgradeStatus();
-    }
-
-    document.querySelectorAll('.tab-btn').forEach((btn) => {
-      btn.addEventListener('click', () => switchTab(btn.dataset.target));
-    });
-
-    async function triggerSystemUpgrade(mode) {
-      const repoInput = document.getElementById('upgradeRepoInput');
-      const releaseRepo = String(repoInput && repoInput.value || '').trim();
-      setUpgradeButtonsBusy(true);
-      setMessage(`提交${mode === 'proxy' ? '代理' : '直连'}升级中...`);
-      try {
-        await requestJSON('/local/api/system/upgrade', {
-          method: 'POST',
-          body: JSON.stringify({
-            mode,
-            release_repo: releaseRepo,
-          }),
-        });
-        await loadUpgradeStatus();
-        startUpgradeStatusPolling();
-        setMessage(`已提交${mode === 'proxy' ? '代理' : '直连'}升级任务`, 'success');
-      } catch (err) {
-        setUpgradeButtonsBusy(false);
-        setMessage(`提交升级失败：${err.message}`, 'error');
-      }
-    }
-
-    document.getElementById('upgradeDirectBtn').addEventListener('click', () => {
-      triggerSystemUpgrade('direct');
-    });
-
-    document.getElementById('upgradeProxyBtn').addEventListener('click', () => {
-      triggerSystemUpgrade('proxy');
-    });
-
-    document.getElementById('restartServiceBtn').addEventListener('click', async () => {
-      setMessage('提交重启服务...');
-      try {
-        await requestJSON('/local/api/system/restart', { method: 'POST', body: '{}' });
-        setMessage('已提交重启，服务将短暂断开后恢复', 'success');
-      } catch (err) {
-        setMessage('重启服务失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('logoutBtn').addEventListener('click', async () => {
-      stopProxyStatusPolling();
-      setMessage('退出中...');
-      try {
-        await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' });
-      } catch (_) {
-      }
-      window.location.href = '/local/login';
-    });
-
-    document.getElementById('tunInstallBtn').addEventListener('click', async () => {
-      setMessage('执行 TUN 安装/检查...');
-      try {
-        const installData = await requestJSON('/local/api/tun/install', { method: 'POST', body: '{}' });
-        await refreshAll();
-        const finalObs = (installData && installData.install_observation && typeof installData.install_observation.final === 'object')
-          ? installData.install_observation.final
-          : {};
-        if (String(finalObs.reason_code || '').trim() === 'TUN_ADAPTER_JOINT_VISIBILITY_MISSING') {
-          setMessage('TUN 已安装但未就绪，请稍后刷新确认', 'success');
           return;
         }
-        setMessage('TUN 安装/检查完成', 'success');
-      } catch (err) {
-        const payload = err && err.payload ? err.payload : {};
-        const extras = [];
-        if (payload.code) extras.push(`code=${payload.code}`);
-        if (payload.stage) extras.push(`stage=${payload.stage}`);
-        if (payload.hint) extras.push(`hint=${payload.hint}`);
-        const suffix = extras.length > 0 ? `（${extras.join('，')}）` : '';
-        setMessage('TUN 安装失败：' + err.message + suffix, 'error');
+        setMessage('读取会话失败：' + err.message, 'error');
       }
-    });
+    }
 
-    document.getElementById('tunRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新 TUN 状态...');
-      try {
-        await loadTunStatus();
-        setMessage('TUN 状态已刷新', 'success');
-      } catch (err) {
-        setMessage('读取 TUN 状态失败：' + err.message, 'error');
-      }
-    });
-
-
-    document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {
-      setMessage('验证代理状态...');
-      try {
-        await loadProxyStatus();
-        setMessage('代理状态已验证', 'success');
-      } catch (err) {
-        setMessage('读取代理状态失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('proxyGroupRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新本地代理组并清空 DNS / Fake IP 缓存...');
-      try {
-        await requestJSON('/local/api/proxy/groups/refresh', { method: 'POST', body: '{}' });
-        await loadProxyGroupsOnly();
-        await loadDNSStatus();
-        setMessage('代理组已刷新，DNS / Fake IP 缓存已清空', 'success');
-      } catch (err) {
-        setMessage('刷新代理组失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('proxyChainRefreshBtn').addEventListener('click', async () => {
-      setMessage('从主控刷新链路...');
-      try {
-        await requestJSON('/local/api/proxy/chains/refresh', { method: 'POST', body: '{}' });
-        await loadProxySelections();
-        setMessage('链路已刷新', 'success');
-      } catch (err) {
-        setMessage('刷新链路失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('proxyGlobalToggleBtn').addEventListener('click', async () => {
-      if (isProxyGloballyEnabled()) {
-        setMessage('关闭代理中...');
-        try {
-          await requestJSON('/local/api/proxy/direct', {
-            method: 'POST',
-            body: JSON.stringify({ group: 'fallback' }),
-          });
-          await refreshAll();
-          setMessage('代理已关闭', 'success');
-        } catch (err) {
-          setMessage('关闭代理失败：' + err.message, 'error');
-        }
-        return;
-      }
-      const selection = resolveGlobalToggleEnableSelection();
-      if (!selection || !selection.chainID) {
-        setMessage('启用代理失败：请先配置可用链路', 'error');
-        return;
-      }
-      setMessage('启用代理中...');
-      try {
-        await requestJSON('/local/api/proxy/enable', {
-          method: 'POST',
-          body: JSON.stringify({
-            group: selection.group,
-            tunnel_node_id: selection.chainID,
-          }),
-        });
-        await refreshAll();
-        setMessage('代理已启用', 'success');
-      } catch (err) {
-        setMessage('启用代理失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('dnsRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新 DNS 状态...');
-      try {
-        await loadDNSStatus();
-        setMessage('DNS 状态已刷新', 'success');
-      } catch (err) {
-        setMessage('读取 DNS 状态失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('logsRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新运行日志...');
-      try {
-        await loadLogs();
-        setMessage('运行日志已刷新', 'success');
-      } catch (err) {
-        setMessage('读取运行日志失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('logsAutoRefresh').addEventListener('change', () => {
-      applyLogsAutoRefresh();
-    });
-    document.getElementById('logsRefreshIntervalSec').addEventListener('change', () => {
-      applyLogsAutoRefresh();
-    });
-
-    document.getElementById('logsKeyword').addEventListener('keydown', async (ev) => {
-      if (ev.key !== 'Enter') return;
-      setMessage('按关键词筛选日志...');
-      try {
-        await loadLogs();
-        setMessage('日志筛选已刷新', 'success');
-      } catch (err) {
-        setMessage('日志筛选失败：' + err.message, 'error');
-      }
-    });
-
-    document.getElementById('logoutBtn').addEventListener('click', async () => {
-      stopLogsAutoRefresh();
-      stopUpgradeStatusPolling();
-      stopProxyStatusPolling();
-      setMessage('退出中...');
+    async function logout() {
       try {
         await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' });
       } catch (_) {
       }
       window.location.href = '/local/login';
+    }
+
+    document.getElementById('btn-logout').addEventListener('click', () => {
+      logout().catch(() => { window.location.href = '/local/login'; });
     });
 
-    applyLogsAutoRefresh();
-    startProxyStatusPolling();
-    refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
+    updateLocalTime();
+    setInterval(updateLocalTime, 1000);
+    loadSession();
   </script>
 </body>
 </html>

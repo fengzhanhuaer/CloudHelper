@@ -216,12 +216,15 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("system/upgrade/status without session status=%d", upgradeStatusResp.Code)
 	}
 
-	panelResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/panel", nil)
-	if panelResp.Code != http.StatusFound {
-		t.Fatalf("panel without session status=%d", panelResp.Code)
-	}
-	if location := panelResp.Header().Get("Location"); location != "/local/login" {
-		t.Fatalf("panel redirect location=%q", location)
+	protectedPagePaths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/system"}
+	for _, path := range protectedPagePaths {
+		pageResp := doProbeLocalRequest(t, mux, http.MethodGet, path, nil)
+		if pageResp.Code != http.StatusFound {
+			t.Fatalf("%s without session status=%d", path, pageResp.Code)
+		}
+		if location := pageResp.Header().Get("Location"); location != "/local/login" {
+			t.Fatalf("%s redirect location=%q", path, location)
+		}
 	}
 }
 

@@ -1781,6 +1781,10 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("/local/login", probeLocalLoginPageHandler)
 	mux.HandleFunc("/local/panel", probeLocalPanelPageHandler)
+	mux.HandleFunc("/local/proxy", probeLocalProxyPageHandler)
+	mux.HandleFunc("/local/dns", probeLocalDNSPageHandler)
+	mux.HandleFunc("/local/logs", probeLocalLogsPageHandler)
+	mux.HandleFunc("/local/system", probeLocalSystemPageHandler)
 	mux.HandleFunc("/local/api/auth/bootstrap", probeLocalAuthBootstrapHandler)
 	mux.HandleFunc("/local/api/auth/register", probeLocalAuthRegisterHandler)
 	mux.HandleFunc("/local/api/auth/login", probeLocalAuthLoginHandler)
@@ -1878,11 +1882,31 @@ func probeLocalLoginPageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func probeLocalPanelPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/panel", probeLocalPanelPageHTML)
+}
+
+func probeLocalProxyPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/proxy", probeLocalProxyPageHTML)
+}
+
+func probeLocalDNSPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/dns", probeLocalDNSPageHTML)
+}
+
+func probeLocalLogsPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/logs", probeLocalLogsPageHTML)
+}
+
+func probeLocalSystemPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/system", probeLocalSystemPageHTML)
+}
+
+func serveProbeLocalHTMLPage(w http.ResponseWriter, r *http.Request, expectedPath string, pageHTML string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.URL.Path != "/local/panel" {
+	if r.URL.Path != expectedPath {
 		http.NotFound(w, r)
 		return
 	}
@@ -1891,7 +1915,7 @@ func probeLocalPanelPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(probeLocalPanelPageHTML))
+	_, _ = w.Write([]byte(pageHTML))
 }
 
 func probeLocalAuthBootstrapHandler(w http.ResponseWriter, r *http.Request) {
