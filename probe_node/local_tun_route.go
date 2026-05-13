@@ -64,13 +64,15 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 	if domainForPolicy == "" {
 		domainForPolicy = host
 	}
+	var routeDecision probeLocalDNSRouteDecision
 	if parsed := net.ParseIP(domainForPolicy); parsed != nil && !fakeMatched {
-		return decision, nil
+		routeDecision = resolveProbeLocalProxyRouteDecisionByIP(parsed.String())
+	} else {
+		routeDecision = resolveProbeLocalProxyRouteDecisionByDomain(domainForPolicy)
 	}
 
-	dnsDecision := resolveProbeLocalProxyRouteDecisionByDomain(domainForPolicy)
-	decision.Group = strings.TrimSpace(dnsDecision.Group)
-	switch strings.ToLower(strings.TrimSpace(dnsDecision.Action)) {
+	decision.Group = strings.TrimSpace(routeDecision.Group)
+	switch strings.ToLower(strings.TrimSpace(routeDecision.Action)) {
 	case "reject":
 		decision.Direct = false
 		decision.Reject = true
@@ -78,7 +80,7 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 	case "tunnel":
 		decision.Direct = false
 		decision.Reject = false
-		decision.SelectedChainID = firstNonEmpty(strings.TrimSpace(dnsDecision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(dnsDecision.TunnelNodeID))
+		decision.SelectedChainID = firstNonEmpty(strings.TrimSpace(routeDecision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(routeDecision.TunnelNodeID))
 		if decision.SelectedChainID == "" {
 			return probeLocalTunnelRouteDecision{}, errors.New("tunnel route missing selected_chain_id")
 		}

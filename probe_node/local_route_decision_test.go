@@ -87,3 +87,70 @@ func TestResolveProbeLocalProxyRouteDecisionByDomainReject(t *testing.T) {
 		t.Fatal("reject should be true")
 	}
 }
+
+func TestResolveProbeLocalProxyRouteDecisionByIPCidrTunnel(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"cidr:91.108.4.0/22"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "telegram", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	decision := resolveProbeLocalProxyRouteDecisionByIP("91.108.4.10")
+	if decision.Group != "telegram" {
+		t.Fatalf("group=%q", decision.Group)
+	}
+	if decision.Action != "tunnel" {
+		t.Fatalf("action=%q", decision.Action)
+	}
+	if decision.SelectedChainID != "chain-proxy-1" {
+		t.Fatalf("selected_chain_id=%q", decision.SelectedChainID)
+	}
+	if decision.TunnelNodeID != "chain:chain-proxy-1" {
+		t.Fatalf("tunnel_node_id=%q", decision.TunnelNodeID)
+	}
+
+	outside := resolveProbeLocalProxyRouteDecisionByIP("91.108.8.1")
+	if outside.Group != "fallback" || outside.Action != "direct" {
+		t.Fatalf("outside decision=%+v", outside)
+	}
+}
+
+func TestProbeLocalTunnelCIDRRulesOnlyIncludesTunnelGroups(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"cidr:91.108.4.0/22"}},
+		{Group: "direct-only", Rules: []string{"cidr:203.0.113.0/24"}},
+		{Group: "bad", Rules: []string{"cidr:not-a-cidr"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "telegram", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+		{Group: "direct-only", Action: "direct"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	rules := probeLocalTunnelCIDRRules()
+	if len(rules) != 1 || rules[0] != "91.108.4.0/22" {
+		t.Fatalf("cidr rules=%v", rules)
+	}
+}

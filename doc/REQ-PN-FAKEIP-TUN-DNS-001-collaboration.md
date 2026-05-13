@@ -6,7 +6,7 @@
 - 需求前缀: REQ-PN-FAKEIP-TUN-DNS-001
 - 当前阶段: Code修复
 - 最近更新角色: Code
-- 最近更新时间: 2026-05-13 13:05:00 +08:00
+- 最近更新时间: 2026-05-13 14:05:00 +08:00
 - 工作依据文档: doc/ai-coding-collaboration.md; 用户需求: probe node TUN 改为仅承接默认 DNS 并靠 fake IP 导入需代理流量，避免频繁操作路由表；DNS upstream 增加系统原默认 DNS，优先级在已添加 DNS 后边；系统设置添加 TUN 卸载、TUN 重置；启用 TUN 时设置主网卡 DNS 并启用代理 DNS。
 - 状态: 进行中
 
@@ -26,6 +26,7 @@
 - REQ-PN-FAKEIP-TUN-DNS-001-R6: 系统设置页新增 TUN 卸载与 TUN 重置入口，并提供对应本地 API。
 - REQ-PN-FAKEIP-TUN-DNS-001-R7: TUN 安装/检查成功时，将主出口网卡 DNS 备份到本地文件后改为本地代理 DNS；TUN 重置/卸载时恢复主出口网卡原 DNS。
 - REQ-PN-FAKEIP-TUN-DNS-001-R8: Windows probe node 重启恢复时，TUN installed 状态必须以当前可用性检测为准，不得因历史持久化 installed=true 而显示已安装。
+- REQ-PN-FAKEIP-TUN-DNS-001-R9: 代理组规则支持 `cidr:91.108.4.0/22` 格式；当该组运行态为 tunnel 时，Windows 启用代理需将该 CIDR 路由至 TUN，TUN 数据面收到真实目标 IP 后按该代理组走代理链。
 
 #### 1.1.2 需求范围
 - 修改 Windows 本地代理接管逻辑。
@@ -35,6 +36,7 @@
 - 更新单元测试覆盖新路由与 DNS upstream 行为。
 - 更新系统设置页与本地 API，支持 TUN 卸载、TUN 重置。
 - 增加 Windows 主出口网卡 DNS 文件备份、应用与恢复流程。
+- 增加代理组 `cidr:` 规则解析、Windows CIDR 路由下发与 TUN 真实 IP CIDR 决策。
 
 #### 1.1.3 非范围
 - 不新增旧模式与新模式的 UI 切换。
@@ -55,6 +57,7 @@
 - AC9: TUN 安装/检查成功后主出口网卡 DNS 指向本地代理 DNS，并启动本地 DNS 服务。
 - AC10: TUN 重置/卸载会先关闭代理接管与数据面，再恢复已备份主出口网卡 DNS，清理持久 TUN enabled 状态。
 - AC11: 重启恢复时如果当前 TUN 检测为不存在或不可用，界面显示未安装，并写回持久状态 `installed=false, enabled=false`。
+- AC12: 代理组配置 `cidr:91.108.4.0/22` 且该组运行态为 tunnel 时，Windows takeover 创建该 CIDR 到 TUN 的路由；TUN 收到该 CIDR 内真实 IP 目标时按该组 tunnel 链路出站。
 
 #### 1.1.5 风险
 - Windows 系统 DNS 原始配置读取不完整时，local dns 可能无法追加；应降级为仅使用已配置 DNS。
@@ -88,6 +91,7 @@
 | M3 | TUN route decision | 将 fake IP 目标还原为域名并选择 tunnel/direct/reject | TUN 目标地址 | route decision |
 | M4 | TUN netstack outbound | 执行 TUN 出站连接，不再维护 direct /32 bypass | route decision | direct/tunnel outbound |
 | M5 | TUN lifecycle control | 提供安装、重置、卸载生命周期控制 | 系统设置 API、Windows 网卡状态 | TUN 状态、DNS 恢复结果 |
+| M6 | CIDR route policy | 解析代理组 `cidr:` 规则，并将 tunnel 组 CIDR 同步到 Windows TUN 路由与数据面决策 | proxy_group、proxy_state、TUN 目标 IP | CIDR route defs、route decision |
 
 #### 1.2.4 关键接口
 | 接口编号 | 接口名称 | 调用方 | 提供方 | 说明 |
@@ -99,6 +103,7 @@
 | IF5 | openProbeLocalTUNOutboundTCP/UDP | gVisor netstack | local_tun_stack_windows | 打开 TUN 出站连接 |
 | IF6 | resetTUN/uninstallTUN | system settings API | local_console | TUN 重置与卸载控制 |
 | IF7 | apply/restoreProbeLocalTUNPrimaryDNS | TUN lifecycle | Windows netapi | 主出口网卡 DNS 备份、设置、恢复 |
+| IF8 | resolveProbeLocalProxyRouteDecisionByIP | TUN route decision | local_route_decision | 根据真实目标 IP 匹配代理组 CIDR 规则 |
 
 #### 1.2.5 关键约束
 - 不新增并存模式开关。
@@ -125,6 +130,7 @@
 | U6 | TUN direct without bypass | M4 | direct 出站不维护 /32 route | route decision | net.Conn/io.ReadWriteCloser |
 | U7 | TUN lifecycle API | M5 | 系统设置页调用重置/卸载 | HTTP request | TUN 状态 JSON |
 | U8 | primary NIC DNS takeover | M5 | 安装/检查成功后设置主出口 DNS | TUN ifIndex、本地 DNS host、原 DNS | DNS backup file、主出口 DNS 修改 |
+| U9 | CIDR tunnel rules | M6 | 支持 `cidr:` 代理组规则；Windows 下发 CIDR 到 TUN 路由，TUN 数据面按真实 IP 命中 CIDR 后走对应代理组 | proxy_group、proxy_state、目标 IP | Windows route defs、route decision |
 
 #### 1.3.2 单元设计
 ##### U1
@@ -191,6 +197,14 @@
 - 处理规则: DNS 备份使用文件落盘；已有同一网卡备份时复用；恢复成功后删除备份。
 - 异常规则: 主出口网卡或 DNS 不可枚举时阻塞安装/检查成功返回，避免“看似启用但 DNS 未接管”。
 
+##### U9
+- 单元名称: CIDR tunnel rules
+- 职责: 让代理组 `cidr:` 规则覆盖真实目标 IP 流量。
+- 输入: `proxy_group.json` 规则、`proxy_state.json` 运行态、TUN 目标 IP。
+- 输出: Windows CIDR route defs、TUN route decision。
+- 处理规则: 仅 action=tunnel 的代理组 CIDR 参与 Windows 路由下发；CIDR 命中后使用该组的 selected chain 出站；域名规则优先保持既有 fake-ip 逻辑。
+- 异常规则: 非法 CIDR 忽略；未配置 tunnel chain 时不下发该 CIDR 路由，数据面命中时返回缺少 chain 的现有错误语义。
+
 #### 1.3.3 风险
 - local DNS 读取需要新增 Windows DNS 字段解析，结构体字段必须与 `GetAdaptersAddresses` 兼容。
 
@@ -201,7 +215,7 @@
 - 状态: 已完成
 
 #### 1.4.1 执行边界
-- 允许修改: `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go`; `probe_node/local_windows_netapi.go`; `probe_node/local_dns_service.go`; `probe_node/local_route_decision_test.go`; `probe_node/local_tun_route_test.go`; `probe_node/local_tun_stack_windows.go`; `probe_node/local_tun_stack_windows_test.go`; `probe_node/local_console.go`; `probe_node/local_console_test.go`; `probe_node/local_console_methods_test.go`; `probe_node/local_proxy_takeover.go`; `probe_node/local_proxy_takeover_linux.go`; `probe_node/local_tun_install_windows.go`; `probe_node/local_tun_install_windows_test.go`; `probe_node/local_pages/system.html`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md`
+- 允许修改: `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go`; `probe_node/local_windows_netapi.go`; `probe_node/local_dns_service.go`; `probe_node/local_route_decision.go`; `probe_node/local_route_decision_test.go`; `probe_node/local_tun_route.go`; `probe_node/local_tun_route_test.go`; `probe_node/local_tun_stack_windows.go`; `probe_node/local_tun_stack_windows_test.go`; `probe_node/local_console.go`; `probe_node/local_console_test.go`; `probe_node/local_console_methods_test.go`; `probe_node/local_proxy_takeover.go`; `probe_node/local_proxy_takeover_linux.go`; `probe_node/local_tun_install_windows.go`; `probe_node/local_tun_install_windows_test.go`; `probe_node/local_pages/system.html`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md`
 - 禁止修改: 链路协议文件、控制器接口、Linux takeover 行为、C/C++ 文件、第三方依赖文件。
 
 #### 1.4.2 任务清单
@@ -220,6 +234,7 @@
 | T11 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | U8 | `probe_node/local_tun_install_windows.go`; `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go`; `probe_node/local_console.go`; `probe_node/local_console_test.go` | 修改 | TUN 安装/检查成功后设置主出口 DNS 为本地代理 DNS，重置/卸载恢复文件备份 DNS |
 | T12 | REQ-PN-FAKEIP-TUN-DNS-001-R6,R7 | U7,U8 | `probe_node` 测试 | 修改 | 新增/更新单元测试并保证 `go test ./...` 通过 |
 | T13 | REQ-PN-FAKEIP-TUN-DNS-001-R8 | U7 | `probe_node/local_console.go`; `probe_node/local_console_test.go`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md` | 修改 | 启动恢复不再信任历史 installed=true；当前检测不可用时状态与持久化均变为未安装 |
+| T14 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | U9 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go`; `probe_node/local_route_decision.go`; `probe_node/local_route_decision_test.go`; `probe_node/local_tun_route.go`; `probe_node/local_tun_route_test.go`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md` | 修改 | 支持 `cidr:` 规则；tunnel 组 CIDR 下发 Windows TUN 路由；真实 IP 命中 CIDR 时走对应 tunnel 链路；单元测试覆盖 route defs 与 route decision |
 
 #### 1.4.3 源码修改规则
 - 必须使用 encoding_tools/README.md 描述的接口。
@@ -256,6 +271,7 @@
 | REQ-PN-FAKEIP-TUN-DNS-001-R5 | 代理启停不修改网卡属性 | 1.2 | U2 | T9 | 进行中 | 网卡属性移入 TUN 生命周期 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | 系统设置页新增 TUN 卸载/重置 | 1.2 | U7 | T10,T12 | 进行中 | API 与 UI 同步 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | TUN 启用时设置主网卡 DNS 与代理 DNS | 1.2 | U8 | T11,T12 | 进行中 | DNS 备份文件落盘 |
+| REQ-PN-FAKEIP-TUN-DNS-001-R9 | 代理组 CIDR 规则导入 TUN 并走代理 | 1.2 | U9 | T14 | 进行中 | 支持 `cidr:91.108.4.0/22` |
 
 ### 1.6 Architect关键接口跟踪矩阵
 - 状态: 已完成
@@ -269,6 +285,7 @@
 | IF5 | REQ-PN-FAKEIP-TUN-DNS-001-R2 | openProbeLocalTUNOutboundTCP/UDP | gVisor netstack | local_tun_stack_windows | target | conn | 进行中 | direct 无 bypass |
 | IF6 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | resetTUN/uninstallTUN | system settings API | local_console | POST | tun state | 进行中 | 新增控制接口 |
 | IF7 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | apply/restoreProbeLocalTUNPrimaryDNS | TUN lifecycle | Windows netapi | ifIndex/DNS backup | error | 进行中 | 文件备份后设置/恢复 |
+| IF8 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | resolveProbeLocalProxyRouteDecisionByIP | TUN route decision | local_route_decision | target IP | route decision | 进行中 | 真实 IP CIDR 命中代理组 |
 
 ### 1.7 门禁裁判
 - 状态: 进行中
@@ -332,6 +349,7 @@
 | REQ-PN-FAKEIP-TUN-DNS-001-R5 | T9 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go` | 已完成 | 已完成 | 启用/关闭代理仅加删 fake-ip 路由，不改网卡属性 | 网卡属性仅在安装/检查阶段设置 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | T10,T12 | `probe_node/local_console.go`; `probe_node/local_console_methods_test.go`; `probe_node/local_pages/system.html` | 已完成 | 已完成 | 系统设置页新增 TUN 重置/卸载按钮；新增 `/local/api/tun/reset` 与 `/local/api/tun/uninstall` | API 方法保护测试覆盖 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11,T12 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_windows_netapi.go`; `probe_node/local_tun_install_windows.go`; `probe_node/local_console.go`; 对应测试文件 | 已完成 | 已完成 | 启用 TUN 时设置主出口 DNS 到本地代理 DNS，文件备份原 DNS，reset/uninstall 恢复；过滤已被 TUN 污染的主网卡 DNS | 代理启停仍不改网卡属性 |
+| REQ-PN-FAKEIP-TUN-DNS-001-R9 | T14 | `probe_node/local_route_decision.go`; `probe_node/local_tun_route.go`; `probe_node/local_proxy_takeover_windows.go`; 对应测试文件 | 已完成 | 已完成 | 支持 `cidr:91.108.4.0/22`；tunnel 组 CIDR 下发 Windows TUN 路由；真实 IP 命中 CIDR 后走对应代理链 | direct 组 CIDR 不下发 TUN 路由 |
 
 ### 2.2 Code关键接口跟踪矩阵
 - 状态: 已完成
@@ -345,6 +363,7 @@
 | IF5 | REQ-PN-FAKEIP-TUN-DNS-001-R2 | `probe_node/local_tun_stack_windows.go` | gVisor netstack | local_tun_stack_windows | 已完成 | direct TCP/UDP 直接 dial，不调用 bypass route | packet stack direct 路径也不再 ensure bypass |
 | IF6 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | `probe_node/local_console.go` | system settings API | local_console | 已完成 | `resetTUN`/`uninstallTUN` 关闭 takeover/data plane 并更新状态 | `/local/api/tun/reset`; `/local/api/tun/uninstall` |
 | IF7 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | `probe_node/local_proxy_takeover_windows.go` | TUN lifecycle | Windows netapi | 已完成 | `applyProbeLocalTUNPrimaryDNS`/`restoreProbeLocalTUNPrimaryDNS` 文件备份与恢复 DNS | 备份文件 `tun_primary_dns_backup.json` |
+| IF8 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | `probe_node/local_route_decision.go`; `probe_node/local_tun_route.go`; `probe_node/local_proxy_takeover_windows.go` | TUN route decision / Windows takeover | route decision / local_proxy_takeover_windows | 已完成 | `resolveProbeLocalProxyRouteDecisionByIP`; `probeLocalTunnelCIDRRules`; `probeLocalWindowsTakeoverRouteDefs` | CIDR route policy |
 
 ### 2.3 Code测试项跟踪矩阵
 - 状态: 已完成
@@ -362,7 +381,9 @@
 | TC9 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11 | 主出口 DNS 备份、应用与恢复 | `go test ./...` | 通过 | `TestApplyRestoreProbeLocalTUNPrimaryDNSBackup` | 无 | 校验备份文件与 DNS 调用顺序 |
 | TC10 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11 | 启用代理时应用 DNS、直连时恢复 DNS | `go test ./...` | 通过 | `TestProbeLocalProxyEnableAndDirectSuccessWithHooks`; startup recovery 测试 | 无 | 启用/恢复 hook 调用覆盖 |
 | TC12 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11 | 主网卡 DNS 已被 TUN DNS 污染时不误备份为系统原 DNS | `go test ./...` | 通过 | `TestCurrentProbeLocalSystemDNSServersSkipsTUNDNS`; `TestApplyProbeLocalTUNPrimaryDNSRejectsTUNOnlySystemDNS` | 无 | 过滤 `198.18.0.2` 等 TUN DNS，并在无可用原 DNS 时阻塞 |
-| TC11 | REQ-PN-FAKEIP-TUN-DNS-001-R1,R2,R3,R4,R5,R6,R7 | T6,T12 | 模块级回归 | `go test ./...` | 通过 | `ok github.com/cloudhelper/probe_node 10.078s` | 无 | 在 `probe_node` 目录执行 |
+| TC13 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | T14 | 代理组 `cidr:` 规则匹配真实目标 IP 并走 tunnel | `go test ./...` | 通过 | `TestResolveProbeLocalProxyRouteDecisionByIPCidrTunnel`; `TestDecideProbeLocalRouteForTargetTunnelByCIDRRule`; `TestDecideProbeLocalRouteForTargetDirectForIPOutsideCIDRRule` | 无 | 覆盖 CIDR 命中与不命中 |
+| TC14 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | T14 | Windows takeover 仅为 tunnel 组 CIDR 下发 TUN 路由 | `go test ./...` | 通过 | `TestProbeLocalTunnelCIDRRulesOnlyIncludesTunnelGroups`; `TestProbeLocalWindowsTakeoverRouteDefsIncludeTunnelCIDRRules` | 无 | direct 组 CIDR 不进入 route defs |
+| TC11 | REQ-PN-FAKEIP-TUN-DNS-001-R1,R2,R3,R4,R5,R6,R7,R9 | T6,T12,T14 | 模块级回归 | `go test ./...` | 通过 | `ok github.com/cloudhelper/probe_node 9.977s` | 无 | 在 `probe_node` 目录执行 |
 
 ### 2.4 Code缺陷跟踪矩阵
 - 状态: 已完成
@@ -409,6 +430,7 @@
 - 系统设置页新增 TUN 重置与卸载按钮，分别调用 `/local/api/tun/reset` 与 `/local/api/tun/uninstall`。
 - 启用 TUN/代理时先启动 TUN DNS listener，再把主出口网卡 DNS 指向本地代理 DNS；关闭直连、重置、卸载时恢复文件备份的原 DNS。
 - 主出口网卡 DNS 备份/读取会过滤 `PROBE_LOCAL_TUN_DNS_HOST` 与 `198.18.0.2` 等 TUN DNS 地址；若过滤后已无可用原 DNS，则阻塞本次 DNS 接管，避免把污染值误记成“系统原 DNS”。
+- 代理组规则新增 `cidr:` 支持；运行态为 tunnel 且选择了 chain 的组，其 CIDR 会在 Windows takeover 时生成到 TUN 的稳定路由；TUN 数据面收到真实 IP 后按 CIDR 命中对应组并走代理链。
 - Windows 卸载路径释放 Wintun handle，清理 TUN IPv4，尽力卸载/清理匹配 PnP 设备并清理 TUN 环境变量。
 
 #### 2.5.4 影响文件
@@ -416,10 +438,13 @@
 - `probe_node/local_console_methods_test.go`
 - `probe_node/local_console_test.go`
 - `probe_node/local_dns_service.go`
+- `probe_node/local_route_decision.go`
+- `probe_node/local_route_decision_test.go`
 - `probe_node/local_proxy_takeover.go`
 - `probe_node/local_proxy_takeover_linux.go`
 - `probe_node/local_proxy_takeover_windows.go`
 - `probe_node/local_proxy_takeover_windows_test.go`
+- `probe_node/local_tun_route.go`
 - `probe_node/local_tun_route_test.go`
 - `probe_node/local_tun_stack_windows.go`
 - `probe_node/local_tun_install_windows.go`
@@ -432,13 +457,13 @@
 - `go test ./...`
 
 #### 2.5.6 自测结果
-- `go test ./...` 通过，结果: `ok github.com/cloudhelper/probe_node 9.180s`
+- `go test ./...` 通过，结果: `ok github.com/cloudhelper/probe_node 9.977s`
 
 #### 2.5.7 未执行测试原因
 - 无
 
 #### 2.5.8 遗留风险
-- fake-ip 最终模式仍无法捕获直接访问 IP 的应用流量。
+- fake-ip 最终模式默认无法捕获直接访问 IP 的应用流量；已配置 `cidr:` 且下发到 TUN 的目标网段除外。
 - 应用自带 DoH/私有 DNS 仍可绕过本地 DNS，本需求不处理。
 - 若安装阶段 `post_install_route_target_check` 仍报网卡 IP 不可绑定，问题仍属于安装/网卡状态层，不属于启用代理路径。
 - Windows 真卸载依赖系统 PnP 状态与权限；失败时 API 会保留错误并不错误地清除 installed。
@@ -448,7 +473,7 @@
 - 若需要运行时恢复系统网络，可执行 TUN 重置或 `restoreProbeLocalTUNPrimaryDNS` 恢复主出口 DNS，并执行 `restoreProbeLocalProxyDirect` 删除 fake-ip route。
 
 #### 2.5.10 结论
-- Code 已按任务包完成实现与测试，满足 AC1-AC10。
+- Code 已按任务包完成实现与测试，满足 AC1-AC12。
 
 ### 2.6 Code任务反馈
 - 状态: 已完成
@@ -456,6 +481,7 @@
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
 | FB-001 | T5 | 文件范围缺失 | 为彻底消除动态 bypass，需修改 `probe_node/local_console.go` 的 bootstrap prewarm 逻辑；为跨平台编译还需在 `probe_node/local_proxy_takeover.go` 与 `probe_node/local_proxy_takeover_linux.go` 增加 `currentProbeLocalSystemDNSServers` stub | 若不补充，修改文件不在允许范围且编译不完整 | Architect 将上述文件补入允许范围 | 已处理 | 已在 1.4.1 与 T2/T5 中补充允许文件与任务覆盖 |
+| FB-002 | T14 | 任务缺失 | 用户新增规则诉求: 代理组规则需支持 `cidr:91.108.4.0/22` 这类 CIDR 表达；命中后目标 IP 因直连不通应强制走代理/TUN。当前实现仅支持 `domain_suffix` / `domain_keyword` / `domain_prefix` / `domain`，且实际决策文件 `probe_node/local_route_decision.go`、`probe_node/local_tun_route.go` 未包含在 1.4.1 允许范围与 1.4.2 任务清单中。 | 若直接修改将违反任务包边界；且缺少 CIDR 规则语义、优先级、fake-ip/真实 IP 命中路径与验收标准定义，无法安全实施。 | Architect 需补充新需求编号/任务编号，明确 `cidr:` 规则语义、命中优先级、作用范围（真实目标 IP / fake-ip 还原后 IP / 二者都支持）、允许修改文件与测试验收标准。 | 已处理 | 已补充 R9/U9/T14/IF8/AC12，允许修改策略与路由文件并完成实现 |
 
 #### 2.6.1 结论
 - 任务反馈已处理完毕，无未决阻塞。

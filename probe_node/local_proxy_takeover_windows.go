@@ -73,8 +73,9 @@ func applyProbeLocalProxyTakeover() error {
 		return fmt.Errorf("inspect windows route table failed: %w", err)
 	}
 
+	routeDefs := probeLocalWindowsTakeoverRouteDefs(gateway, ifIndex)
 	createdRoutes := make([]probeLocalWindowsRouteDef, 0, 5)
-	for _, routeDef := range probeLocalWindowsTakeoverRouteDefs(gateway, ifIndex) {
+	for _, routeDef := range routeDefs {
 		created, routeErr := ensureProbeLocalWindowsRoute(routeDef)
 		if routeErr != nil {
 			var rollbackErr error
@@ -100,10 +101,10 @@ func applyProbeLocalProxyTakeover() error {
 	probeLocalWindowsTakeoverState.tunIfIndex = ifIndex
 	probeLocalWindowsTakeoverState.bypassGateway = ""
 	probeLocalWindowsTakeoverState.bypassInterfaceIdx = 0
-	probeLocalWindowsTakeoverState.routeDefs = append([]probeLocalWindowsRouteDef(nil), probeLocalWindowsTakeoverRouteDefs(gateway, ifIndex)...)
+	probeLocalWindowsTakeoverState.routeDefs = append([]probeLocalWindowsRouteDef(nil), routeDefs...)
 	probeLocalWindowsTakeoverState.mu.Unlock()
 
-	logProbeInfof("probe local proxy takeover applied on windows fake-ip mode: gateway=%s if_index=%d route_snapshot_len=%d", gateway, ifIndex, len(strings.TrimSpace(out)))
+	logProbeInfof("probe local proxy takeover applied on windows fake-ip mode: gateway=%s if_index=%d routes=%d route_snapshot_len=%d", gateway, ifIndex, len(routeDefs), len(strings.TrimSpace(out)))
 	return nil
 }
 
@@ -162,9 +163,17 @@ func resolveProbeLocalWindowsRouteTarget() (string, int, error) {
 
 func probeLocalWindowsTakeoverRouteDefs(gateway string, ifIndex int) []probeLocalWindowsRouteDef {
 	prefix, mask := probeLocalWindowsFakeIPRoutePrefixAndMask(currentProbeLocalDNSFakeIPCIDR())
-	return []probeLocalWindowsRouteDef{
+	routeDefs := []probeLocalWindowsRouteDef{
 		{Prefix: prefix, Mask: mask, Gateway: gateway, IfIndex: ifIndex},
 	}
+	for _, cidr := range probeLocalTunnelCIDRRules() {
+		cidrPrefix, cidrMask := probeLocalWindowsCIDRRoutePrefixAndMask(cidr)
+		if cidrPrefix == "" || cidrMask == "" {
+			continue
+		}
+		routeDefs = append(routeDefs, probeLocalWindowsRouteDef{Prefix: cidrPrefix, Mask: cidrMask, Gateway: gateway, IfIndex: ifIndex})
+	}
+	return dedupeProbeLocalWindowsRouteDefs(routeDefs)
 }
 
 func probeLocalWindowsLocalBypassRouteDefs(routeTarget probeLocalWindowsDirectBypassRouteTarget) []probeLocalWindowsRouteDef {
@@ -215,6 +224,41 @@ func probeLocalWindowsFakeIPRoutePrefixAndMask(cidr string) (string, string) {
 		mask = "255.254.0.0"
 	}
 	return prefix.String(), mask
+}
+
+func probeLocalWindowsCIDRRoutePrefixAndMask(cidr string) (string, string) {
+	ip, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+	if err != nil || network == nil || ip == nil || ip.To4() == nil {
+		return "", ""
+	}
+	prefix := network.IP.To4()
+	if prefix == nil {
+		return "", ""
+	}
+	mask := net.IP(network.Mask).String()
+	if strings.TrimSpace(mask) == "" {
+		return "", ""
+	}
+	return prefix.String(), mask
+}
+
+func dedupeProbeLocalWindowsRouteDefs(routeDefs []probeLocalWindowsRouteDef) []probeLocalWindowsRouteDef {
+	out := make([]probeLocalWindowsRouteDef, 0, len(routeDefs))
+	seen := make(map[string]struct{}, len(routeDefs))
+	for _, routeDef := range routeDefs {
+		key := strings.Join([]string{
+			strings.TrimSpace(routeDef.Prefix),
+			strings.TrimSpace(routeDef.Mask),
+			strings.TrimSpace(routeDef.Gateway),
+			strconv.Itoa(routeDef.IfIndex),
+		}, "|")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, routeDef)
+	}
+	return out
 }
 
 func resolveProbeLocalTUNDNSListenHostForGateway(gateway string) string {

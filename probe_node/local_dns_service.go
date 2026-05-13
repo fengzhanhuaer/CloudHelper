@@ -883,19 +883,11 @@ func probeLocalDNSDomainMatchesRules(domain string, rules []string) bool {
 		return false
 	}
 	for _, rule := range rules {
-		trimmed := strings.TrimSpace(rule)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		key, value, ok := splitProbeLocalProxyRule(rule)
+		if !ok {
 			continue
 		}
-		parts := strings.SplitN(trimmed, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		value := strings.ToLower(strings.TrimSpace(parts[1]))
-		if value == "" {
-			continue
-		}
+		value = strings.ToLower(value)
 		switch key {
 		case "domain_suffix":
 			if cleanDomain == value || strings.HasSuffix(cleanDomain, "."+value) {

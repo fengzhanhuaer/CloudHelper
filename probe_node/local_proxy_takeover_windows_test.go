@@ -143,6 +143,39 @@ func TestProbeLocalWindowsFakeIPRoutePrefixAndMask(t *testing.T) {
 	}
 }
 
+func TestProbeLocalWindowsTakeoverRouteDefsIncludeTunnelCIDRRules(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"cidr:91.108.4.0/22"}},
+		{Group: "direct-only", Rules: []string{"cidr:203.0.113.0/24"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "telegram", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+		{Group: "direct-only", Action: "direct"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	routeDefs := probeLocalWindowsTakeoverRouteDefs("198.18.0.1", 9)
+	if len(routeDefs) != 2 {
+		t.Fatalf("route defs=%+v", routeDefs)
+	}
+	if routeDefs[0].Prefix != "198.18.0.0" || routeDefs[0].Mask != "255.254.0.0" {
+		t.Fatalf("fake ip route=%+v", routeDefs[0])
+	}
+	if routeDefs[1].Prefix != "91.108.4.0" || routeDefs[1].Mask != "255.255.252.0" || routeDefs[1].Gateway != "198.18.0.1" || routeDefs[1].IfIndex != 9 {
+		t.Fatalf("cidr route=%+v", routeDefs[1])
+	}
+}
+
 func TestApplyProbeLocalProxyTakeoverRollbackOnFakeIPRouteFailure(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldRun := probeLocalWindowsRunCommand

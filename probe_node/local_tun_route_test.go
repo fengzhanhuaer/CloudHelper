@@ -158,6 +158,80 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	}
 }
 
+func TestDecideProbeLocalRouteForTargetTunnelByCIDRRule(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"cidr:91.108.4.0/22"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "telegram", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	probeLocalControl.mu.Lock()
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+
+	route, err := decideProbeLocalRouteForTarget("91.108.4.10:443")
+	if err != nil {
+		t.Fatalf("decideProbeLocalRouteForTarget returned error: %v", err)
+	}
+	if route.Direct || route.Reject {
+		t.Fatalf("route=%+v", route)
+	}
+	if route.Group != "telegram" {
+		t.Fatalf("group=%q", route.Group)
+	}
+	if route.SelectedChainID != "chain-proxy-1" {
+		t.Fatalf("selected_chain_id=%q", route.SelectedChainID)
+	}
+	if route.TargetAddr != "91.108.4.10:443" {
+		t.Fatalf("target_addr=%q", route.TargetAddr)
+	}
+	if route.GroupRuntime == nil {
+		t.Fatal("group_runtime should not be nil")
+	}
+}
+
+func TestDecideProbeLocalRouteForTargetDirectForIPOutsideCIDRRule(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"cidr:91.108.4.0/22"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "telegram", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	probeLocalControl.mu.Lock()
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+
+	route, err := decideProbeLocalRouteForTarget("91.108.8.1:443")
+	if err != nil {
+		t.Fatalf("decideProbeLocalRouteForTarget returned error: %v", err)
+	}
+	if !route.Direct || route.Reject {
+		t.Fatalf("route=%+v", route)
+	}
+}
+
 func TestShouldUseProbeLocalDNSFakeIPSkipsDirectDecision(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	groups := defaultProbeLocalProxyGroupFile()
