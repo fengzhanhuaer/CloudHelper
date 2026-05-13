@@ -6,7 +6,7 @@
 - 需求前缀: REQ-PN-FAKEIP-TUN-DNS-001
 - 当前阶段: Code修复
 - 最近更新角色: Code
-- 最近更新时间: 2026-05-13 12:20:00 +08:00
+- 最近更新时间: 2026-05-13 13:05:00 +08:00
 - 工作依据文档: doc/ai-coding-collaboration.md; 用户需求: probe node TUN 改为仅承接默认 DNS 并靠 fake IP 导入需代理流量，避免频繁操作路由表；DNS upstream 增加系统原默认 DNS，优先级在已添加 DNS 后边；系统设置添加 TUN 卸载、TUN 重置；启用 TUN 时设置主网卡 DNS 并启用代理 DNS。
 - 状态: 进行中
 
@@ -331,7 +331,7 @@
 | REQ-PN-FAKEIP-TUN-DNS-001-R4 | T3 | `probe_node/local_dns_service.go`; `probe_node/local_tun_route_test.go` | 已完成 | 已完成 | fake IP 仅用于 tunnel 决策 | direct 域名返回真实解析 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R5 | T9 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go` | 已完成 | 已完成 | 启用/关闭代理仅加删 fake-ip 路由，不改网卡属性 | 网卡属性仅在安装/检查阶段设置 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | T10,T12 | `probe_node/local_console.go`; `probe_node/local_console_methods_test.go`; `probe_node/local_pages/system.html` | 已完成 | 已完成 | 系统设置页新增 TUN 重置/卸载按钮；新增 `/local/api/tun/reset` 与 `/local/api/tun/uninstall` | API 方法保护测试覆盖 |
-| REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11,T12 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_windows_netapi.go`; `probe_node/local_tun_install_windows.go`; `probe_node/local_console.go`; 对应测试文件 | 已完成 | 已完成 | 启用 TUN 时设置主出口 DNS 到本地代理 DNS，文件备份原 DNS，reset/uninstall 恢复 | 代理启停仍不改网卡属性 |
+| REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11,T12 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_windows_netapi.go`; `probe_node/local_tun_install_windows.go`; `probe_node/local_console.go`; 对应测试文件 | 已完成 | 已完成 | 启用 TUN 时设置主出口 DNS 到本地代理 DNS，文件备份原 DNS，reset/uninstall 恢复；过滤已被 TUN 污染的主网卡 DNS | 代理启停仍不改网卡属性 |
 
 ### 2.2 Code关键接口跟踪矩阵
 - 状态: 已完成
@@ -361,6 +361,7 @@
 | TC8 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | T10 | TUN reset/uninstall API 与方法保护 | `go test ./...` | 通过 | `TestProbeLocalAPIMethodGuards`; `TestProbeLocalTUNResetAndUninstallHandlers` | 无 | 覆盖状态清理与 installed 语义 |
 | TC9 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11 | 主出口 DNS 备份、应用与恢复 | `go test ./...` | 通过 | `TestApplyRestoreProbeLocalTUNPrimaryDNSBackup` | 无 | 校验备份文件与 DNS 调用顺序 |
 | TC10 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11 | 启用代理时应用 DNS、直连时恢复 DNS | `go test ./...` | 通过 | `TestProbeLocalProxyEnableAndDirectSuccessWithHooks`; startup recovery 测试 | 无 | 启用/恢复 hook 调用覆盖 |
+| TC12 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11 | 主网卡 DNS 已被 TUN DNS 污染时不误备份为系统原 DNS | `go test ./...` | 通过 | `TestCurrentProbeLocalSystemDNSServersSkipsTUNDNS`; `TestApplyProbeLocalTUNPrimaryDNSRejectsTUNOnlySystemDNS` | 无 | 过滤 `198.18.0.2` 等 TUN DNS，并在无可用原 DNS 时阻塞 |
 | TC11 | REQ-PN-FAKEIP-TUN-DNS-001-R1,R2,R3,R4,R5,R6,R7 | T6,T12 | 模块级回归 | `go test ./...` | 通过 | `ok github.com/cloudhelper/probe_node 10.078s` | 无 | 在 `probe_node` 目录执行 |
 
 ### 2.4 Code缺陷跟踪矩阵
@@ -370,6 +371,7 @@
 |---|---|---|---|---|---|---|---|
 | DEF-001 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | TC1 | fake-ip 模式下 DNS host 初始回退到了 gateway `198.18.0.1` 而非 TUN 接口地址 `198.18.0.2` | 中 | 已修复 | `resolveProbeLocalTUNDNSListenHostForGateway` 增加 `probeLocalTUNInterfaceIPv4` 优先级；测试通过 | 已关闭 |
 | DEF-002 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | TC6 | `prepare windows tun route target failed: CreateUnicastIpAddressEntry failed: code=1168`，原因是 stale `PROBE_LOCAL_TUN_IF_INDEX` 或 fallback ifIndex 被继续信任 | 高 | 已修复 | `resolveProbeLocalWintunInterfaceIndexFallback` 校验 env ifIndex 可枚举；最终 fallback ifIndex 写入仍为 1168 时排除该 ifIndex 并重新从 Wintun handle/LUID 解析；测试通过 | 已关闭 |
+| DEF-003 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | TC12 | 主网卡 DNS 已经指向 TUN DNS 时，原逻辑会把 TUN DNS 误备份为系统原 DNS，导致恢复仍可能回写 TUN DNS | 高 | 已修复 | `filterProbeLocalTUNPrimaryDNSServers` 过滤 TUN DNS；`applyProbeLocalTUNPrimaryDNS` 在无可用原 DNS 时阻塞；测试通过 | 已关闭 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -406,6 +408,7 @@
 - TUN route target fallback 不再信任系统中已找不到的 env ifIndex；fallback ifIndex 写入仍为 1168 时会二次排除并重新解析，避免 `CreateUnicastIpAddressEntry code=1168` 卡住启用。
 - 系统设置页新增 TUN 重置与卸载按钮，分别调用 `/local/api/tun/reset` 与 `/local/api/tun/uninstall`。
 - 启用 TUN/代理时先启动 TUN DNS listener，再把主出口网卡 DNS 指向本地代理 DNS；关闭直连、重置、卸载时恢复文件备份的原 DNS。
+- 主出口网卡 DNS 备份/读取会过滤 `PROBE_LOCAL_TUN_DNS_HOST` 与 `198.18.0.2` 等 TUN DNS 地址；若过滤后已无可用原 DNS，则阻塞本次 DNS 接管，避免把污染值误记成“系统原 DNS”。
 - Windows 卸载路径释放 Wintun handle，清理 TUN IPv4，尽力卸载/清理匹配 PnP 设备并清理 TUN 环境变量。
 
 #### 2.5.4 影响文件
@@ -429,7 +432,7 @@
 - `go test ./...`
 
 #### 2.5.6 自测结果
-- `go test ./...` 通过，结果: `ok github.com/cloudhelper/probe_node 10.078s`
+- `go test ./...` 通过，结果: `ok github.com/cloudhelper/probe_node 9.180s`
 
 #### 2.5.7 未执行测试原因
 - 无

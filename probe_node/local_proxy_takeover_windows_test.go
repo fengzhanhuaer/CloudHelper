@@ -338,6 +338,26 @@ func TestCurrentProbeLocalTUNDNSListenHost(t *testing.T) {
 	}
 }
 
+func TestCurrentProbeLocalSystemDNSServersSkipsTUNDNS(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	t.Setenv("PROBE_LOCAL_TUN_DNS_HOST", "198.18.0.2")
+
+	backup := probeLocalTUNPrimaryDNSBackup{
+		Version:        1,
+		InterfaceIndex: 12,
+		InterfaceGUID:  "{11111111-1111-1111-1111-111111111111}",
+		DNSServers:     []string{"198.18.0.2", "192.168.1.1", "8.8.8.8"},
+		AppliedDNS:     []string{"198.18.0.2"},
+	}
+	if err := persistProbeLocalTUNPrimaryDNSBackup(backup); err != nil {
+		t.Fatalf("persist backup failed: %v", err)
+	}
+
+	if got := strings.Join(currentProbeLocalSystemDNSServers(), ","); got != "192.168.1.1,8.8.8.8" {
+		t.Fatalf("system dns=%q", got)
+	}
+}
+
 func TestApplyRestoreProbeLocalTUNPrimaryDNSBackup(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
@@ -414,5 +434,51 @@ func TestApplyRestoreProbeLocalTUNPrimaryDNSBackup(t *testing.T) {
 	}
 	if _, err := os.Stat(backupPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("backup file should be removed, stat err=%v", err)
+	}
+}
+
+func TestApplyProbeLocalTUNPrimaryDNSRejectsTUNOnlySystemDNS(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_DNS_HOST", "198.18.0.2")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	resetProbeLocalWindowsTakeoverStateForTest()
+	resetProbeLocalDNSServiceForTest()
+	probeLocalWindowsTakeoverState.mu.Lock()
+	probeLocalWindowsTakeoverState.enabled = true
+	probeLocalWindowsTakeoverState.tunGateway = "198.18.0.1"
+	probeLocalWindowsTakeoverState.tunIfIndex = 9
+	probeLocalWindowsTakeoverState.mu.Unlock()
+	t.Cleanup(func() {
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalDNSServiceForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	probeLocalDNSListenPacket = func(_, _ string) (net.PacketConn, error) {
+		return net.ListenPacket("udp", "127.0.0.1:0")
+	}
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+		return probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 12, NextHop: "192.168.1.1"}, nil
+	}
+	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
+		return windowsAdapterInfo{
+			InterfaceIndex: interfaceIndex,
+			Name:           "Ethernet",
+			AdapterGUID:    "{11111111-1111-1111-1111-111111111111}",
+			DNSServers:     []string{"198.18.0.2"},
+		}, nil
+	}
+	probeLocalSetWindowsInterfaceDNS = func(interfaceGUID string, dnsServers []string) error {
+		t.Fatalf("unexpected dns apply for polluted system dns: guid=%s dns=%v", interfaceGUID, dnsServers)
+		return nil
+	}
+
+	err := applyProbeLocalTUNPrimaryDNS()
+	if err == nil || !strings.Contains(err.Error(), "match tun dns") {
+		t.Fatalf("expected polluted system dns error, got: %v", err)
+	}
+	if got := strings.Join(currentProbeLocalSystemDNSServers(), ","); got != "" {
+		t.Fatalf("system dns should skip tun dns only value, got=%q", got)
 	}
 }

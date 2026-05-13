@@ -260,7 +260,7 @@ func currentProbeLocalTUNDNSListenHost() string {
 
 func currentProbeLocalSystemDNSServers() []string {
 	if backup, ok := loadProbeLocalTUNPrimaryDNSBackupBestEffort(); ok {
-		return dedupeProbeLocalIPv4Strings(backup.DNSServers)
+		return filterProbeLocalTUNPrimaryDNSServers(backup.DNSServers)
 	}
 	probeLocalWindowsTakeoverState.mu.Lock()
 	tunIfIndex := probeLocalWindowsTakeoverState.tunIfIndex
@@ -278,7 +278,7 @@ func currentProbeLocalSystemDNSServers() []string {
 		logProbeWarnf("probe local system dns resolve failed: %v", err)
 		return nil
 	}
-	return dedupeProbeLocalIPv4Strings(out)
+	return filterProbeLocalTUNPrimaryDNSServers(out)
 }
 
 func applyProbeLocalTUNPrimaryDNS() error {
@@ -302,13 +302,27 @@ func applyProbeLocalTUNPrimaryDNS() error {
 		return errors.New("primary dns adapter guid is empty")
 	}
 	backup, exists := loadProbeLocalTUNPrimaryDNSBackupBestEffort()
-	if !exists || !strings.EqualFold(strings.TrimSpace(backup.InterfaceGUID), strings.TrimSpace(adapter.AdapterGUID)) {
+	systemDNSServers := []string(nil)
+	if exists && strings.EqualFold(strings.TrimSpace(backup.InterfaceGUID), strings.TrimSpace(adapter.AdapterGUID)) {
+		systemDNSServers = filterProbeLocalTUNPrimaryDNSServers(backup.DNSServers)
+		if len(systemDNSServers) == 0 {
+			return errors.New("primary dns backup has no usable dns servers")
+		}
+		backup.InterfaceIndex = adapter.InterfaceIndex
+		backup.InterfaceGUID = strings.TrimSpace(adapter.AdapterGUID)
+		backup.InterfaceName = strings.TrimSpace(adapter.Name)
+		backup.DNSServers = systemDNSServers
+	} else {
+		systemDNSServers = filterProbeLocalTUNPrimaryDNSServers(adapter.DNSServers)
+		if len(systemDNSServers) == 0 {
+			return errors.New("primary dns adapter dns servers are empty or match tun dns")
+		}
 		backup = probeLocalTUNPrimaryDNSBackup{
 			Version:        1,
 			InterfaceIndex: adapter.InterfaceIndex,
 			InterfaceGUID:  strings.TrimSpace(adapter.AdapterGUID),
 			InterfaceName:  strings.TrimSpace(adapter.Name),
-			DNSServers:     dedupeProbeLocalIPv4Strings(adapter.DNSServers),
+			DNSServers:     systemDNSServers,
 		}
 	}
 	backup.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -362,7 +376,7 @@ func loadProbeLocalTUNPrimaryDNSBackupBestEffort() (probeLocalTUNPrimaryDNSBacku
 		backup.Version = 1
 	}
 	backup.InterfaceGUID = strings.TrimSpace(backup.InterfaceGUID)
-	backup.DNSServers = dedupeProbeLocalIPv4Strings(backup.DNSServers)
+	backup.DNSServers = filterProbeLocalTUNPrimaryDNSServers(backup.DNSServers)
 	backup.AppliedDNS = dedupeProbeLocalIPv4Strings(backup.AppliedDNS)
 	return backup, backup.InterfaceGUID != ""
 }
@@ -372,7 +386,7 @@ func persistProbeLocalTUNPrimaryDNSBackup(backup probeLocalTUNPrimaryDNSBackup) 
 		backup.Version = 1
 	}
 	backup.InterfaceGUID = strings.TrimSpace(backup.InterfaceGUID)
-	backup.DNSServers = dedupeProbeLocalIPv4Strings(backup.DNSServers)
+	backup.DNSServers = filterProbeLocalTUNPrimaryDNSServers(backup.DNSServers)
 	backup.AppliedDNS = dedupeProbeLocalIPv4Strings(backup.AppliedDNS)
 	if strings.TrimSpace(backup.UpdatedAt) == "" {
 		backup.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -400,4 +414,44 @@ func deleteProbeLocalTUNPrimaryDNSBackup() error {
 		return err
 	}
 	return nil
+}
+
+func filterProbeLocalTUNPrimaryDNSServers(dnsServers []string) []string {
+	tunHosts := probeLocalTUNDNSHosts()
+	if len(dnsServers) == 0 {
+		return nil
+	}
+	blocked := make(map[string]struct{}, len(tunHosts))
+	for _, host := range tunHosts {
+		blocked[host] = struct{}{}
+	}
+	out := make([]string, 0, len(dnsServers))
+	seen := make(map[string]struct{}, len(dnsServers))
+	for _, raw := range dnsServers {
+		ip4 := net.ParseIP(strings.TrimSpace(raw)).To4()
+		if ip4 == nil {
+			continue
+		}
+		value := ip4.String()
+		if _, ok := blocked[value]; ok {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func probeLocalTUNDNSHosts() []string {
+	hosts := make([]string, 0, 2)
+	if ip := net.ParseIP(strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_DNS_HOST"))); ip != nil && ip.To4() != nil {
+		hosts = append(hosts, ip.To4().String())
+	}
+	if ip := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)); ip != nil && ip.To4() != nil {
+		hosts = append(hosts, ip.To4().String())
+	}
+	return dedupeProbeLocalIPv4Strings(hosts)
 }
