@@ -42,6 +42,7 @@ var (
 	probeLocalRelaunchAsAdminInstall           = relaunchAsAdminForProbeLocalTUNInstall
 	probeLocalTUNInstallSleep                  = time.Sleep
 	probeLocalRetainWintunAdapterHandle        = retainProbeLocalWintunAdapterHandle
+	probeLocalReleaseWintunAdapterHandle       = releaseProbeLocalRetainedWintunAdapterHandle
 )
 
 var probeLocalRetainedWintunAdapterState = struct {
@@ -741,6 +742,9 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 	}
 	if adapter.InterfaceIndex > 0 && ifIndex == adapter.InterfaceIndex {
 		logProbeWarnf("probe local tun route target fallback kept same ifindex=%d after bind-timeout path", ifIndex)
+		if bindTimeoutOnPrimary {
+			return recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(ifIndex)
+		}
 	}
 	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex); err != nil {
 		if !isProbeLocalWindowsInterfaceNotFoundErr(err) {
@@ -757,6 +761,31 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 		return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(retryIfIndex)
 	}
 	return nil
+}
+
+func recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(interfaceIndex int) error {
+	if interfaceIndex <= 0 {
+		return errors.New("invalid wintun adapter interface index")
+	}
+	logProbeWarnf("probe local tun route target same ifindex recovery releasing retained handle: ifindex=%d", interfaceIndex)
+	probeLocalReleaseWintunAdapterHandle()
+	if recycleErr := probeLocalRecycleWindowsTunAdapterHook(interfaceIndex); recycleErr != nil {
+		return fmt.Errorf("recover windows tun route target after same ifindex fallback failed: %w", recycleErr)
+	}
+	for _, delay := range []time.Duration{500 * time.Millisecond, 1200 * time.Millisecond, 2200 * time.Millisecond} {
+		if delay > 0 {
+			probeLocalTUNInstallSleep(delay)
+		}
+		retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
+		if retryErr == nil {
+			setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
+			return nil
+		}
+		if !isProbeLocalIPv4BindableTimeoutErr(retryErr) {
+			return retryErr
+		}
+	}
+	return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex)
 }
 
 func resolveProbeLocalWintunInterfaceIndexFallback(disallowIfIndex int) (int, error) {
@@ -1031,4 +1060,5 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalRelaunchAsAdminInstall = relaunchAsAdminForProbeLocalTUNInstall
 	probeLocalTUNInstallSleep = time.Sleep
 	probeLocalRetainWintunAdapterHandle = retainProbeLocalWintunAdapterHandle
+	probeLocalReleaseWintunAdapterHandle = releaseProbeLocalRetainedWintunAdapterHandle
 }
