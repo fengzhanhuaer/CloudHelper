@@ -42,7 +42,6 @@ var (
 	probeLocalRelaunchAsAdminInstall           = relaunchAsAdminForProbeLocalTUNInstall
 	probeLocalTUNInstallSleep                  = time.Sleep
 	probeLocalRetainWintunAdapterHandle        = retainProbeLocalWintunAdapterHandle
-	probeLocalReleaseWintunAdapterHandle       = releaseProbeLocalRetainedWintunAdapterHandle
 )
 
 var probeLocalRetainedWintunAdapterState = struct {
@@ -767,15 +766,13 @@ func recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(interfaceIndex i
 	if interfaceIndex <= 0 {
 		return errors.New("invalid wintun adapter interface index")
 	}
-	logProbeWarnf("probe local tun route target same ifindex recovery releasing retained handle: ifindex=%d", interfaceIndex)
-	probeLocalReleaseWintunAdapterHandle()
 	var recoveryErr error
 	if recycleErr := probeLocalRecycleWindowsTunAdapterHook(interfaceIndex); recycleErr != nil {
 		recoveryErr = recycleErr
 		logProbeWarnf("probe local tun route target same ifindex recycle failed, retrying handle refresh: ifindex=%d err=%v", interfaceIndex, recycleErr)
 	}
 	retryIfIndex := interfaceIndex
-	if resolvedIfIndex, resolveErr := resolveProbeLocalWintunInterfaceIndexFallback(interfaceIndex); resolveErr == nil && resolvedIfIndex > 0 {
+	if resolvedIfIndex, resolveErr := refreshProbeLocalWintunRouteTargetHandle(interfaceIndex); resolveErr == nil && resolvedIfIndex > 0 {
 		if resolvedIfIndex != interfaceIndex {
 			logProbeWarnf("probe local tun route target same ifindex recovery switched ifindex: old=%d new=%d", interfaceIndex, resolvedIfIndex)
 		}
@@ -802,6 +799,44 @@ func recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(interfaceIndex i
 		return fmt.Errorf("recover windows tun route target after same ifindex fallback failed: %w", errors.Join(recoveryErr, finalErr))
 	}
 	return finalErr
+}
+
+func refreshProbeLocalWintunRouteTargetHandle(disallowIfIndex int) (int, error) {
+	libraryPath, err := probeLocalResolveWintunPath()
+	if err != nil {
+		return 0, fmt.Errorf("resolve wintun library path failed: %w", err)
+	}
+	handle, err := probeLocalCreateWintunAdapter(libraryPath, probeLocalTUNAdapterName, probeLocalTUNTunnelType)
+	if err != nil {
+		return 0, fmt.Errorf("create/open wintun adapter for route target refresh failed: %w", err)
+	}
+	if handle == 0 {
+		return 0, errors.New("create/open wintun adapter for route target refresh returned empty handle")
+	}
+	shouldClose := true
+	defer func() {
+		if !shouldClose {
+			return
+		}
+		if closeErr := probeLocalCloseWintunAdapter(libraryPath, handle); closeErr != nil {
+			logProbeWarnf("close refreshed wintun adapter handle failed while resolving route target: %v", closeErr)
+		}
+	}()
+
+	adapterLUID, luidErr := probeLocalGetWintunAdapterLUIDFromHandle(libraryPath, handle)
+	if luidErr != nil || adapterLUID == 0 {
+		return 0, fmt.Errorf("resolve adapter luid from refreshed handle failed: %w", firstProbeLocalTUNErr(luidErr, errors.New("invalid adapter luid")))
+	}
+	ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(adapterLUID)
+	if convertErr != nil || ifIndex <= 0 {
+		return 0, fmt.Errorf("convert refreshed adapter luid to interface index failed: luid=%d err=%w", adapterLUID, firstProbeLocalTUNErr(convertErr, errors.New("invalid interface index")))
+	}
+	if disallowIfIndex > 0 && ifIndex == disallowIfIndex {
+		logProbeWarnf("probe local tun refreshed route target handle kept same ifindex=%d", ifIndex)
+	}
+	probeLocalRetainWintunAdapterHandle(libraryPath, handle)
+	shouldClose = false
+	return ifIndex, nil
 }
 
 func resolveProbeLocalWintunInterfaceIndexFallback(disallowIfIndex int) (int, error) {
@@ -1076,5 +1111,4 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalRelaunchAsAdminInstall = relaunchAsAdminForProbeLocalTUNInstall
 	probeLocalTUNInstallSleep = time.Sleep
 	probeLocalRetainWintunAdapterHandle = retainProbeLocalWintunAdapterHandle
-	probeLocalReleaseWintunAdapterHandle = releaseProbeLocalRetainedWintunAdapterHandle
 }
