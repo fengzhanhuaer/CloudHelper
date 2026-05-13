@@ -541,6 +541,12 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 			m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
 		}
 		m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		logProbeWarnf(
+			"probe local tun post-install ready check context: env_ifindex=%s env_gateway=%s env_dns=%s",
+			strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")),
+			strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY")),
+			strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_DNS_HOST")),
+		)
 		logProbeWarnf("probe local tun post-install ready check failed elapsed=%s err=%v", time.Since(startedAt).String(), err)
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(wrappedErr)}
 	}

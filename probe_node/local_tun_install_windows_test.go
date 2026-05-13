@@ -844,20 +844,6 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesSameFallbackIfIndexA
 		}
 		return nil
 	}
-	cliCalls := 0
-	probeLocalRepairWindowsRouteTargetViaCLI = func(interfaceIndex int, ipText string, prefixLength int) error {
-		cliCalls++
-		if interfaceIndex != 18 {
-			t.Fatalf("interfaceIndex=%d, want 18", interfaceIndex)
-		}
-		if ipText != probeLocalTUNInterfaceIPv4 {
-			t.Fatalf("ipText=%q, want %q", ipText, probeLocalTUNInterfaceIPv4)
-		}
-		if prefixLength != probeLocalTUNRouteIPv4PrefixLen {
-			t.Fatalf("prefixLength=%d, want %d", prefixLength, probeLocalTUNRouteIPv4PrefixLen)
-		}
-		return nil
-	}
 	ensureCalls := 0
 	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
 		if interfaceIndex != 18 {
@@ -867,7 +853,7 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesSameFallbackIfIndexA
 		if ensureCalls <= 4 {
 			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.2")
 		}
-		if ensureCalls <= 9 {
+		if ensureCalls <= 6 {
 			return errors.New("CreateUnicastIpAddressEntry failed: code=2")
 		}
 		return nil
@@ -884,9 +870,6 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesSameFallbackIfIndexA
 	}
 	if convertCalls < 2 {
 		t.Fatalf("convertCalls=%d, want >=2", convertCalls)
-	}
-	if cliCalls != 1 {
-		t.Fatalf("cliCalls=%d, want 1", cliCalls)
 	}
 	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
