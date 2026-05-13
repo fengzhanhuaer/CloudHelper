@@ -403,7 +403,7 @@
           `$scriptUrl=${quotePowerShellLiteral(scriptURL)}`,
           "$scriptPath=Join-Path $env:TEMP 'cloudhelper-probe-node-install.ps1'",
           'Invoke-WebRequest -UseBasicParsing -Uri $scriptUrl -OutFile $scriptPath',
-          '& $scriptPath',
+          'powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath',
         ].filter(Boolean).join('; ');
       }
 
@@ -456,7 +456,7 @@
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
               <button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>
-              <button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">探针安装</button>
+              <button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>
               <button class="btn warn" type="button" data-action="node-delete" data-node-no="${item.node_no}">删除</button>
             </td>
           </tr>`;
