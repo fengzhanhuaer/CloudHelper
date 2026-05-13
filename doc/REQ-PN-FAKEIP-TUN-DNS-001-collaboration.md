@@ -4,9 +4,9 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PN-FAKEIP-TUN-DNS-001
 - 需求前缀: REQ-PN-FAKEIP-TUN-DNS-001
-- 当前阶段: Code完成
+- 当前阶段: Code修复
 - 最近更新角色: Code
-- 最近更新时间: 2026-05-13 12:05:00 +08:00
+- 最近更新时间: 2026-05-13 12:20:00 +08:00
 - 工作依据文档: doc/ai-coding-collaboration.md; 用户需求: probe node TUN 改为仅承接默认 DNS 并靠 fake IP 导入需代理流量，避免频繁操作路由表；DNS upstream 增加系统原默认 DNS，优先级在已添加 DNS 后边；系统设置添加 TUN 卸载、TUN 重置；启用 TUN 时设置主网卡 DNS 并启用代理 DNS。
 - 状态: 进行中
 
@@ -25,6 +25,7 @@
 - REQ-PN-FAKEIP-TUN-DNS-001-R5: TUN 网卡属性仅在安装/安装后检查阶段设置；启用代理与关闭代理阶段不修改任何网卡属性。
 - REQ-PN-FAKEIP-TUN-DNS-001-R6: 系统设置页新增 TUN 卸载与 TUN 重置入口，并提供对应本地 API。
 - REQ-PN-FAKEIP-TUN-DNS-001-R7: TUN 安装/检查成功时，将主出口网卡 DNS 备份到本地文件后改为本地代理 DNS；TUN 重置/卸载时恢复主出口网卡原 DNS。
+- REQ-PN-FAKEIP-TUN-DNS-001-R8: Windows probe node 重启恢复时，TUN installed 状态必须以当前可用性检测为准，不得因历史持久化 installed=true 而显示已安装。
 
 #### 1.1.2 需求范围
 - 修改 Windows 本地代理接管逻辑。
@@ -53,6 +54,7 @@
 - AC8: 系统设置页展示并调用 TUN 卸载、TUN 重置 API。
 - AC9: TUN 安装/检查成功后主出口网卡 DNS 指向本地代理 DNS，并启动本地 DNS 服务。
 - AC10: TUN 重置/卸载会先关闭代理接管与数据面，再恢复已备份主出口网卡 DNS，清理持久 TUN enabled 状态。
+- AC11: 重启恢复时如果当前 TUN 检测为不存在或不可用，界面显示未安装，并写回持久状态 `installed=false, enabled=false`。
 
 #### 1.1.5 风险
 - Windows 系统 DNS 原始配置读取不完整时，local dns 可能无法追加；应降级为仅使用已配置 DNS。
@@ -217,6 +219,7 @@
 | T10 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | U7 | `probe_node/local_console.go`; `probe_node/local_console_methods_test.go`; `probe_node/local_pages/system.html` | 修改 | 新增 `/local/api/tun/reset` 与 `/local/api/tun/uninstall`，系统页按钮可调用并刷新状态 |
 | T11 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | U8 | `probe_node/local_tun_install_windows.go`; `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go`; `probe_node/local_console.go`; `probe_node/local_console_test.go` | 修改 | TUN 安装/检查成功后设置主出口 DNS 为本地代理 DNS，重置/卸载恢复文件备份 DNS |
 | T12 | REQ-PN-FAKEIP-TUN-DNS-001-R6,R7 | U7,U8 | `probe_node` 测试 | 修改 | 新增/更新单元测试并保证 `go test ./...` 通过 |
+| T13 | REQ-PN-FAKEIP-TUN-DNS-001-R8 | U7 | `probe_node/local_console.go`; `probe_node/local_console_test.go`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md` | 修改 | 启动恢复不再信任历史 installed=true；当前检测不可用时状态与持久化均变为未安装 |
 
 #### 1.4.3 源码修改规则
 - 必须使用 encoding_tools/README.md 描述的接口。

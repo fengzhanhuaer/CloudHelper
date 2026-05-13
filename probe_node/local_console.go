@@ -412,7 +412,7 @@ func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 	if detectErr != nil && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
 		logProbeWarnf("probe local tun startup detect failed: %v", detectErr)
 	}
-	installed := state.TUN.Installed || detectedInstalled
+	installed := detectedInstalled && detectErr == nil
 	persistedEnabled := state.TUN.Enabled
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -427,6 +427,8 @@ func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 		m.tun.LastError = ""
 	} else if strings.TrimSpace(m.tun.LastError) == "" && detectErr != nil && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
 		m.tun.LastError = strings.TrimSpace(detectErr.Error())
+	} else if !detectedInstalled && state.TUN.Installed {
+		m.tun.LastError = "tun adapter is not available after startup detection"
 	}
 	m.tun.UpdatedAt = now
 	m.proxy.Enabled = false

@@ -2014,6 +2014,41 @@ func TestProbeLocalTUNStartupRecoveryDetectsInstalledAdapter(t *testing.T) {
 	}
 }
 
+func TestProbeLocalTUNStartupRecoveryClearsStaleInstalledState(t *testing.T) {
+	_ = setupProbeLocalConsoleTest(t)
+	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
+		t.Fatalf("persist tun state failed: %v", err)
+	}
+
+	detectCalls := 0
+	probeLocalDetectTUNInstalled = func() (bool, error) {
+		detectCalls++
+		return false, nil
+	}
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
+
+	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
+		t.Fatalf("recoverProbeLocalTUNRuntimeOnStartup returned error: %v", err)
+	}
+	if detectCalls != 1 {
+		t.Fatalf("detect calls=%d, want 1", detectCalls)
+	}
+	status := probeLocalControl.tunStatus()
+	if status.Installed || status.Enabled {
+		t.Fatalf("startup recovery tun status=%+v, want installed=false enabled=false", status)
+	}
+	if !strings.Contains(strings.ToLower(status.LastError), "not available") {
+		t.Fatalf("startup recovery last error=%q, want not available", status.LastError)
+	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		t.Fatalf("load proxy state failed: %v", err)
+	}
+	if state.TUN.Installed || state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=false enabled=false", state.TUN)
+	}
+}
+
 func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
