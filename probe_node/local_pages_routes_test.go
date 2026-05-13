@@ -64,6 +64,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "当前账号") || !strings.Contains(body, "/local/api/auth/session") {
 		t.Fatalf("panel should contain local session summary")
 	}
+	if !strings.Contains(body, "当前版本") || !strings.Contains(body, "id=\"version\"") {
+		t.Fatalf("panel should contain current version tile")
+	}
 }
 
 func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {

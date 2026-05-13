@@ -2016,6 +2016,7 @@ func probeLocalAuthSessionHandler(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"username":      session.Username,
 		"expires_at":    session.ExpiresAt.UTC().Format(time.RFC3339),
+		"version":       BuildVersion,
 	})
 }
 

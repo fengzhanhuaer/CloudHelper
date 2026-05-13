@@ -156,6 +156,9 @@ func TestProbeLocalAuthFlowRegisterOnceAndSession(t *testing.T) {
 	if sessionPayload["username"] != "admin" {
 		t.Fatalf("session username=%v", sessionPayload["username"])
 	}
+	if sessionPayload["version"] != BuildVersion {
+		t.Fatalf("session version=%v want=%s", sessionPayload["version"], BuildVersion)
+	}
 
 	logoutResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/auth/logout", map[string]any{}, sessionCookie)
 	if logoutResp.Code != http.StatusOK {
