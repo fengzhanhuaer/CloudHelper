@@ -883,6 +883,38 @@ func recycleProbeLocalWindowsTunAdapter(interfaceIndex int) error {
 	return recycleProbeLocalWindowsNetAdapter(interfaceIndex)
 }
 
+func uninstallProbeLocalTUNDriver() error {
+	releaseProbeLocalRetainedWintunAdapterHandle()
+	evidence, err := probeLocalInspectWintunVisibility()
+	if err != nil {
+		return err
+	}
+	var allErr error
+	if evidence.NetAdapterMatched && evidence.NetAdapter.InterfaceIndex > 0 {
+		if err := deleteProbeLocalWindowsInterfaceIPv4Address(evidence.NetAdapter.InterfaceIndex, probeLocalTUNInterfaceIPv4); err != nil {
+			allErr = errors.Join(allErr, err)
+		}
+	}
+	if strings.TrimSpace(evidence.MatchedPnPInstanceID) != "" {
+		if err := probeLocalUninstallWindowsPhantomDevice(evidence.MatchedPnPInstanceID); err != nil {
+			allErr = errors.Join(allErr, err)
+		}
+	} else {
+		_, err := probeLocalRemovePhantomWintunDevices()
+		if err != nil {
+			allErr = errors.Join(allErr, err)
+		}
+	}
+	if allErr != nil {
+		return allErr
+	}
+	_ = os.Unsetenv("PROBE_LOCAL_TUN_GATEWAY")
+	_ = os.Unsetenv("PROBE_LOCAL_TUN_DNS_HOST")
+	_ = os.Unsetenv("PROBE_LOCAL_TUN_IF_INDEX")
+	clearProbeLocalTUNInstallObservation()
+	return nil
+}
+
 func isProbeLocalIPv4BindableTimeoutErr(err error) bool {
 	if err == nil {
 		return false

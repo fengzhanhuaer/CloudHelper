@@ -140,6 +140,8 @@
       </div>
       <div class="actions">
         <button id="tunInstallBtn">安装/检查 TUN</button>
+        <button id="tunResetBtn" class="secondary">重置 TUN</button>
+        <button id="tunUninstallBtn" class="warn">卸载 TUN</button>
         <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
       </div>
       <h2>系统升级</h2>
@@ -400,6 +402,31 @@
         if (payload.hint) extras.push(`hint=${payload.hint}`);
         const suffix = extras.length > 0 ? `（${extras.join('，')}）` : '';
         setMessage('TUN 安装失败：' + err.message + suffix, 'error');
+      }
+    });
+
+    document.getElementById('tunResetBtn').addEventListener('click', async () => {
+      setMessage('执行 TUN 重置...');
+      try {
+        await requestJSON('/local/api/tun/reset', { method: 'POST', body: '{}' });
+        await refreshAll();
+        setMessage('TUN 已重置', 'success');
+      } catch (err) {
+        setMessage('TUN 重置失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('tunUninstallBtn').addEventListener('click', async () => {
+      if (!window.confirm('确认卸载 TUN？这会恢复已备份的主网卡 DNS 并关闭 TUN 数据面。')) {
+        return;
+      }
+      setMessage('执行 TUN 卸载...');
+      try {
+        await requestJSON('/local/api/tun/uninstall', { method: 'POST', body: '{}' });
+        await refreshAll();
+        setMessage('TUN 已卸载', 'success');
+      } catch (err) {
+        setMessage('TUN 卸载失败：' + err.message, 'error');
       }
     });
 

@@ -3,13 +3,16 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -27,6 +30,16 @@ type probeLocalWindowsRouteDef struct {
 	IfIndex int
 }
 
+type probeLocalTUNPrimaryDNSBackup struct {
+	Version        int      `json:"version"`
+	UpdatedAt      string   `json:"updated_at"`
+	InterfaceIndex int      `json:"interface_index"`
+	InterfaceGUID  string   `json:"interface_guid"`
+	InterfaceName  string   `json:"interface_name,omitempty"`
+	DNSServers     []string `json:"dns_servers"`
+	AppliedDNS     []string `json:"applied_dns,omitempty"`
+}
+
 var probeLocalWindowsTakeoverState = struct {
 	mu                 sync.Mutex
 	enabled            bool
@@ -36,20 +49,13 @@ var probeLocalWindowsTakeoverState = struct {
 	bypassGateway      string
 	bypassInterfaceIdx int
 	routeDefs          []probeLocalWindowsRouteDef
-	dnsAdapterGUID     string
-	originalDNSServers []string
-	dnsChanged         bool
 }{}
 
 var (
-	probeLocalWindowsRunCommand             = runProbeLocalCommand
-	probeLocalEnsureWindowsRouteTargetReady = ensureProbeLocalWindowsRouteTargetConfigured
+	probeLocalWindowsRunCommand = runProbeLocalCommand
 )
 
 func applyProbeLocalProxyTakeover() error {
-	if err := probeLocalEnsureWindowsRouteTargetReady(); err != nil {
-		return fmt.Errorf("prepare windows tun route target failed: %w", err)
-	}
 	gateway, ifIndex, err := resolveProbeLocalWindowsRouteTarget()
 	if err != nil {
 		return err
@@ -67,11 +73,6 @@ func applyProbeLocalProxyTakeover() error {
 		return fmt.Errorf("inspect windows route table failed: %w", err)
 	}
 
-	dnsAdapterGUID, originalDNSServers, dnsErr := prepareProbeLocalWindowsPrimaryDNSForFakeIPMode(ifIndex, gateway)
-	if dnsErr != nil {
-		return fmt.Errorf("prepare windows primary dns failed: %w", dnsErr)
-	}
-
 	createdRoutes := make([]probeLocalWindowsRouteDef, 0, 5)
 	for _, routeDef := range probeLocalWindowsTakeoverRouteDefs(gateway, ifIndex) {
 		created, routeErr := ensureProbeLocalWindowsRoute(routeDef)
@@ -81,9 +82,6 @@ func applyProbeLocalProxyTakeover() error {
 				if delErr := deleteProbeLocalWindowsRoute(createdRoutes[i]); delErr != nil {
 					rollbackErr = errors.Join(rollbackErr, delErr)
 				}
-			}
-			if restoreErr := restoreProbeLocalWindowsPrimaryDNS(dnsAdapterGUID, originalDNSServers); restoreErr != nil {
-				rollbackErr = errors.Join(rollbackErr, restoreErr)
 			}
 			if rollbackErr != nil {
 				return fmt.Errorf("apply windows takeover route %s/%s failed: %w (rollback failed: %v)", routeDef.Prefix, routeDef.Mask, routeErr, rollbackErr)
@@ -103,9 +101,6 @@ func applyProbeLocalProxyTakeover() error {
 	probeLocalWindowsTakeoverState.bypassGateway = ""
 	probeLocalWindowsTakeoverState.bypassInterfaceIdx = 0
 	probeLocalWindowsTakeoverState.routeDefs = append([]probeLocalWindowsRouteDef(nil), probeLocalWindowsTakeoverRouteDefs(gateway, ifIndex)...)
-	probeLocalWindowsTakeoverState.dnsAdapterGUID = dnsAdapterGUID
-	probeLocalWindowsTakeoverState.originalDNSServers = append([]string(nil), originalDNSServers...)
-	probeLocalWindowsTakeoverState.dnsChanged = strings.TrimSpace(dnsAdapterGUID) != ""
 	probeLocalWindowsTakeoverState.mu.Unlock()
 
 	logProbeInfof("probe local proxy takeover applied on windows fake-ip mode: gateway=%s if_index=%d route_snapshot_len=%d", gateway, ifIndex, len(strings.TrimSpace(out)))
@@ -118,9 +113,6 @@ func restoreProbeLocalProxyDirect() error {
 	gateway := probeLocalWindowsTakeoverState.tunGateway
 	ifIndex := probeLocalWindowsTakeoverState.tunIfIndex
 	routeDefs := append([]probeLocalWindowsRouteDef(nil), probeLocalWindowsTakeoverState.routeDefs...)
-	dnsAdapterGUID := strings.TrimSpace(probeLocalWindowsTakeoverState.dnsAdapterGUID)
-	originalDNSServers := append([]string(nil), probeLocalWindowsTakeoverState.originalDNSServers...)
-	dnsChanged := probeLocalWindowsTakeoverState.dnsChanged
 	probeLocalWindowsTakeoverState.enabled = false
 	probeLocalWindowsTakeoverState.routePrintOutput = ""
 	probeLocalWindowsTakeoverState.tunGateway = ""
@@ -128,9 +120,6 @@ func restoreProbeLocalProxyDirect() error {
 	probeLocalWindowsTakeoverState.bypassGateway = ""
 	probeLocalWindowsTakeoverState.bypassInterfaceIdx = 0
 	probeLocalWindowsTakeoverState.routeDefs = nil
-	probeLocalWindowsTakeoverState.dnsAdapterGUID = ""
-	probeLocalWindowsTakeoverState.originalDNSServers = nil
-	probeLocalWindowsTakeoverState.dnsChanged = false
 	probeLocalWindowsTakeoverState.mu.Unlock()
 
 	if !wasEnabled {
@@ -145,9 +134,6 @@ func restoreProbeLocalProxyDirect() error {
 		if err := deleteProbeLocalWindowsRoute(routeDef); err != nil {
 			allErr = errors.Join(allErr, err)
 		}
-	}
-	if dnsChanged {
-		allErr = errors.Join(allErr, restoreProbeLocalWindowsPrimaryDNS(dnsAdapterGUID, originalDNSServers))
 	}
 	if _, err := probeLocalSnapshotWindowsIPv4Routes(); err != nil {
 		logProbeWarnf("probe local proxy restore on windows route inspect failed: %v", err)
@@ -245,45 +231,6 @@ func resolveProbeLocalTUNDNSListenHostForGateway(gateway string) string {
 	return ""
 }
 
-func prepareProbeLocalWindowsPrimaryDNSForFakeIPMode(tunIfIndex int, gateway string) (string, []string, error) {
-	routeTarget, err := probeLocalResolveWindowsPrimaryEgressRoute(tunIfIndex)
-	if err != nil {
-		return "", nil, err
-	}
-	adapter, err := probeLocalFindWindowsAdapterByIfIndex(routeTarget.InterfaceIndex)
-	if err != nil {
-		return "", nil, err
-	}
-	if strings.TrimSpace(adapter.AdapterGUID) == "" {
-		return "", nil, errors.New("primary adapter guid is empty")
-	}
-	dnsHost := resolveProbeLocalTUNDNSListenHostForGateway(gateway)
-	if dnsHost == "" {
-		return "", nil, errors.New("tun dns listen host is empty")
-	}
-	original := dedupeProbeLocalIPv4Strings(adapter.DNSServers)
-	if err := probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, []string{dnsHost}); err != nil {
-		return "", nil, err
-	}
-	return strings.TrimSpace(adapter.AdapterGUID), original, nil
-}
-
-func restoreProbeLocalWindowsPrimaryDNS(adapterGUID string, dnsServers []string) error {
-	cleanGUID := strings.TrimSpace(adapterGUID)
-	if cleanGUID == "" {
-		return nil
-	}
-	servers := dedupeProbeLocalIPv4Strings(dnsServers)
-	if len(servers) == 0 {
-		logProbeWarnf("probe local proxy restore primary dns skipped: original dns list is empty adapter=%s", cleanGUID)
-		return nil
-	}
-	if err := probeLocalSetWindowsInterfaceDNS(cleanGUID, servers); err != nil {
-		return err
-	}
-	return nil
-}
-
 func isProbeLocalWindowsRouteExistsErr(err error) bool {
 	if err == nil {
 		return false
@@ -312,17 +259,12 @@ func currentProbeLocalTUNDNSListenHost() string {
 }
 
 func currentProbeLocalSystemDNSServers() []string {
+	if backup, ok := loadProbeLocalTUNPrimaryDNSBackupBestEffort(); ok {
+		return dedupeProbeLocalIPv4Strings(backup.DNSServers)
+	}
 	probeLocalWindowsTakeoverState.mu.Lock()
-	enabled := probeLocalWindowsTakeoverState.enabled
-	servers := append([]string(nil), probeLocalWindowsTakeoverState.originalDNSServers...)
 	tunIfIndex := probeLocalWindowsTakeoverState.tunIfIndex
 	probeLocalWindowsTakeoverState.mu.Unlock()
-	if len(servers) > 0 {
-		return dedupeProbeLocalIPv4Strings(servers)
-	}
-	if enabled {
-		return nil
-	}
 	if tunIfIndex <= 0 {
 		if _, ifIndex, err := resolveProbeLocalWindowsRouteTarget(); err == nil {
 			tunIfIndex = ifIndex
@@ -337,4 +279,125 @@ func currentProbeLocalSystemDNSServers() []string {
 		return nil
 	}
 	return dedupeProbeLocalIPv4Strings(out)
+}
+
+func applyProbeLocalTUNPrimaryDNS() error {
+	_, tunIfIndex, err := resolveProbeLocalWindowsRouteTarget()
+	if err != nil {
+		return err
+	}
+	dnsHost := strings.TrimSpace(currentProbeLocalTUNDNSListenHost())
+	if dnsHost == "" {
+		dnsHost = probeLocalDNSListenHost
+	}
+	if ip := net.ParseIP(dnsHost); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("invalid tun dns host: %s", dnsHost)
+	}
+	reconcileProbeLocalDNSRuntime()
+	adapter, err := probeLocalResolveWindowsPrimaryDNSAdapter(tunIfIndex)
+	if err != nil {
+		return fmt.Errorf("resolve windows primary dns adapter failed: %w", err)
+	}
+	if strings.TrimSpace(adapter.AdapterGUID) == "" {
+		return errors.New("primary dns adapter guid is empty")
+	}
+	backup, exists := loadProbeLocalTUNPrimaryDNSBackupBestEffort()
+	if !exists || !strings.EqualFold(strings.TrimSpace(backup.InterfaceGUID), strings.TrimSpace(adapter.AdapterGUID)) {
+		backup = probeLocalTUNPrimaryDNSBackup{
+			Version:        1,
+			InterfaceIndex: adapter.InterfaceIndex,
+			InterfaceGUID:  strings.TrimSpace(adapter.AdapterGUID),
+			InterfaceName:  strings.TrimSpace(adapter.Name),
+			DNSServers:     dedupeProbeLocalIPv4Strings(adapter.DNSServers),
+		}
+	}
+	backup.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	backup.AppliedDNS = []string{net.ParseIP(dnsHost).To4().String()}
+	if err := persistProbeLocalTUNPrimaryDNSBackup(backup); err != nil {
+		return err
+	}
+	if err := probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, backup.AppliedDNS); err != nil {
+		return fmt.Errorf("set primary adapter dns to tun dns failed: %w", err)
+	}
+	logProbeInfof("probe local tun primary dns applied: if_index=%d dns=%s", adapter.InterfaceIndex, strings.Join(backup.AppliedDNS, ","))
+	return nil
+}
+
+func restoreProbeLocalTUNPrimaryDNS() error {
+	backup, ok := loadProbeLocalTUNPrimaryDNSBackupBestEffort()
+	if !ok {
+		return nil
+	}
+	if strings.TrimSpace(backup.InterfaceGUID) == "" {
+		_ = deleteProbeLocalTUNPrimaryDNSBackup()
+		return nil
+	}
+	if len(dedupeProbeLocalIPv4Strings(backup.DNSServers)) > 0 {
+		if err := probeLocalSetWindowsInterfaceDNS(backup.InterfaceGUID, backup.DNSServers); err != nil {
+			return fmt.Errorf("restore primary adapter dns failed: %w", err)
+		}
+	}
+	if err := deleteProbeLocalTUNPrimaryDNSBackup(); err != nil {
+		return err
+	}
+	logProbeInfof("probe local tun primary dns restored: if_index=%d", backup.InterfaceIndex)
+	return nil
+}
+
+func loadProbeLocalTUNPrimaryDNSBackupBestEffort() (probeLocalTUNPrimaryDNSBackup, bool) {
+	path, err := resolveProbeLocalTUNPrimaryDNSBackupPath()
+	if err != nil {
+		return probeLocalTUNPrimaryDNSBackup{}, false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return probeLocalTUNPrimaryDNSBackup{}, false
+	}
+	backup := probeLocalTUNPrimaryDNSBackup{}
+	if err := json.Unmarshal(raw, &backup); err != nil {
+		logProbeWarnf("probe local tun dns backup decode failed: %v", err)
+		return probeLocalTUNPrimaryDNSBackup{}, false
+	}
+	if backup.Version <= 0 {
+		backup.Version = 1
+	}
+	backup.InterfaceGUID = strings.TrimSpace(backup.InterfaceGUID)
+	backup.DNSServers = dedupeProbeLocalIPv4Strings(backup.DNSServers)
+	backup.AppliedDNS = dedupeProbeLocalIPv4Strings(backup.AppliedDNS)
+	return backup, backup.InterfaceGUID != ""
+}
+
+func persistProbeLocalTUNPrimaryDNSBackup(backup probeLocalTUNPrimaryDNSBackup) error {
+	if backup.Version <= 0 {
+		backup.Version = 1
+	}
+	backup.InterfaceGUID = strings.TrimSpace(backup.InterfaceGUID)
+	backup.DNSServers = dedupeProbeLocalIPv4Strings(backup.DNSServers)
+	backup.AppliedDNS = dedupeProbeLocalIPv4Strings(backup.AppliedDNS)
+	if strings.TrimSpace(backup.UpdatedAt) == "" {
+		backup.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	path, err := resolveProbeLocalTUNPrimaryDNSBackupPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(backup, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(raw, '\n'), 0o644)
+}
+
+func deleteProbeLocalTUNPrimaryDNSBackup() error {
+	path, err := resolveProbeLocalTUNPrimaryDNSBackupPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }

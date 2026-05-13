@@ -640,15 +640,23 @@ func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (prob
 }
 
 func probeLocalResolveWindowsPrimaryDNSServers(excludedIfIndex int) ([]string, error) {
-	routeTarget, err := probeLocalResolveWindowsPrimaryEgressRoute(excludedIfIndex)
-	if err != nil {
-		return nil, err
-	}
-	adapter, err := probeLocalFindWindowsAdapterByIfIndex(routeTarget.InterfaceIndex)
+	adapter, err := probeLocalResolveWindowsPrimaryDNSAdapter(excludedIfIndex)
 	if err != nil {
 		return nil, err
 	}
 	return dedupeProbeLocalIPv4Strings(adapter.DNSServers), nil
+}
+
+func probeLocalResolveWindowsPrimaryDNSAdapter(excludedIfIndex int) (windowsAdapterInfo, error) {
+	routeTarget, err := probeLocalResolveWindowsPrimaryEgressRoute(excludedIfIndex)
+	if err != nil {
+		return windowsAdapterInfo{}, err
+	}
+	adapter, err := probeLocalFindWindowsAdapterByIfIndex(routeTarget.InterfaceIndex)
+	if err != nil {
+		return windowsAdapterInfo{}, err
+	}
+	return adapter, nil
 }
 
 func snapshotProbeLocalWindowsIPv4Routes() (string, error) {

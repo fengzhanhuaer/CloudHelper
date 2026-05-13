@@ -22,3 +22,15 @@ func currentProbeLocalTUNDNSListenHost() string {
 func currentProbeLocalSystemDNSServers() []string {
 	return nil
 }
+
+func applyProbeLocalTUNPrimaryDNS() error {
+	return nil
+}
+
+func restoreProbeLocalTUNPrimaryDNS() error {
+	return nil
+}
+
+func uninstallProbeLocalTUNDriver() error {
+	return fmt.Errorf("%w: %s", errProbeLocalTUNUnsupported, runtime.GOOS)
+}

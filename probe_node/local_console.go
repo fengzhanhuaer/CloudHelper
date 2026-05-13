@@ -37,12 +37,13 @@ const (
 	probeLocalProxyModeDirect = "direct"
 	probeLocalProxyModeTUN    = "tunnel"
 
-	probeLocalProxyGroupFileName  = "proxy_group.json"
-	probeLocalProxyStateFileName  = "proxy_state.json"
-	probeLocalProxyHostFileName   = "proxy_host.txt"
-	probeLocalProxyChainFileName  = "proxy_chain.json"
-	probeLocalProxyBackupAPIPath  = "/api/probe/proxy_group/backup"
-	probeLocalProxyReadBodyMaxLen = 512 * 1024
+	probeLocalProxyGroupFileName          = "proxy_group.json"
+	probeLocalProxyStateFileName          = "proxy_state.json"
+	probeLocalProxyHostFileName           = "proxy_host.txt"
+	probeLocalProxyChainFileName          = "proxy_chain.json"
+	probeLocalTUNPrimaryDNSBackupFileName = "tun_primary_dns_backup.json"
+	probeLocalProxyBackupAPIPath          = "/api/probe/proxy_group/backup"
+	probeLocalProxyReadBodyMaxLen         = 512 * 1024
 )
 
 type probeLocalAuthState struct {
@@ -202,6 +203,9 @@ var (
 	probeLocalResetTUNDetectInstalledHook = func() { probeLocalDetectTUNInstalled = defaultProbeLocalDetectTUNInstalled }
 	probeLocalApplyProxyTakeover          = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect          = restoreProbeLocalProxyDirect
+	probeLocalApplyTUNPrimaryDNS          = applyProbeLocalTUNPrimaryDNS
+	probeLocalRestoreTUNPrimaryDNS        = restoreProbeLocalTUNPrimaryDNS
+	probeLocalUninstallTUNDriver          = uninstallProbeLocalTUNDriver
 	probeLocalEnsureExplicitDirectBypass  = ensureProbeLocalExplicitDirectBypassForTarget
 	probeLocalRunUpgrade                  = runProbeUpgrade
 	probeLocalRestartProcess              = restartCurrentProcess
@@ -597,15 +601,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		return m.tun, m.proxy, &probeLocalHTTPError{Status: status, Message: m.proxy.LastError}
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	m.tun.Enabled = true
-	m.tun.LastError = ""
-	m.tun.UpdatedAt = now
-	m.proxy.Enabled = true
-	m.proxy.Mode = probeLocalProxyModeTUN
-	m.proxy.LastError = ""
-	m.proxy.UpdatedAt = now
-
+	reconcileProbeLocalDNSRuntime()
 	if strings.TrimSpace(currentProbeLocalTUNDNSListenHost()) != "" {
 		if err := startProbeLocalTUNDataPlane(); err != nil {
 			_ = probeLocalRestoreProxyDirect()
@@ -623,6 +619,33 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 			return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 		}
 	}
+	if err := probeLocalApplyTUNPrimaryDNS(); err != nil {
+		_ = stopProbeLocalTUNDataPlane()
+		_ = probeLocalRestoreProxyDirect()
+		m.tun.Enabled = false
+		m.tun.DataPlane = false
+		m.tun.DataPlaneRX = 0
+		m.tun.DataPlaneBytes = 0
+		m.tun.LastError = strings.TrimSpace(err.Error())
+		m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		m.proxy.Enabled = false
+		m.proxy.Mode = probeLocalProxyModeDirect
+		m.proxy.LastError = m.tun.LastError
+		m.proxy.UpdatedAt = m.tun.UpdatedAt
+		persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
+		reconcileProbeLocalDNSRuntime()
+		return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.tun.Enabled = true
+	m.tun.LastError = ""
+	m.tun.UpdatedAt = now
+	m.proxy.Enabled = true
+	m.proxy.Mode = probeLocalProxyModeTUN
+	m.proxy.LastError = ""
+	m.proxy.UpdatedAt = now
+
 	stats := probeLocalTUNDataPlaneStatsSnapshot()
 	m.tun.DataPlane = stats.Running
 	m.tun.DataPlaneRX = stats.RXPackets
@@ -660,12 +683,75 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	m.proxy.UpdatedAt = now
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
 	reconcileProbeLocalDNSRuntime()
-	if errStopDataPlane != nil {
-		m.tun.LastError = strings.TrimSpace(errStopDataPlane.Error())
+	errRestoreDNS := probeLocalRestoreTUNPrimaryDNS()
+	if errStopDataPlane != nil || errRestoreDNS != nil {
+		m.tun.LastError = strings.TrimSpace(errors.Join(errStopDataPlane, errRestoreDNS).Error())
 		m.proxy.LastError = m.tun.LastError
 		return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 	}
 	return m.tun, m.proxy, nil
+}
+
+func (m *probeLocalControlManager) resetTUN() (probeLocalTunRuntimeState, error) {
+	return m.resetTUNLocked(false)
+}
+
+func (m *probeLocalControlManager) uninstallTUN() (probeLocalTunRuntimeState, error) {
+	return m.resetTUNLocked(true)
+}
+
+func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTunRuntimeState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var allErr error
+	if err := probeLocalRestoreProxyDirect(); err != nil {
+		allErr = errors.Join(allErr, err)
+	}
+	if err := stopProbeLocalTUNDataPlane(); err != nil {
+		allErr = errors.Join(allErr, err)
+	}
+	if err := probeLocalRestoreTUNPrimaryDNS(); err != nil {
+		allErr = errors.Join(allErr, err)
+	}
+	if uninstall {
+		if err := probeLocalUninstallTUNDriver(); err != nil {
+			allErr = errors.Join(allErr, err)
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	installed := m.tun.Installed
+	if uninstall && allErr == nil {
+		installed = false
+	} else if !uninstall {
+		if detected, detectErr := probeLocalDetectTUNInstalled(); detectErr == nil {
+			installed = detected
+		} else if !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
+			allErr = errors.Join(allErr, detectErr)
+		}
+	}
+	m.tun.Installed = installed
+	m.tun.Enabled = false
+	m.tun.DataPlane = false
+	m.tun.DataPlaneRX = 0
+	m.tun.DataPlaneBytes = 0
+	m.tun.UpdatedAt = now
+	m.proxy.Enabled = false
+	m.proxy.Mode = probeLocalProxyModeDirect
+	m.proxy.UpdatedAt = now
+	if allErr != nil {
+		m.tun.LastError = strings.TrimSpace(allErr.Error())
+		m.proxy.LastError = m.tun.LastError
+		persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
+		reconcileProbeLocalDNSRuntime()
+		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
+	}
+	m.tun.LastError = ""
+	m.proxy.LastError = ""
+	persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
+	reconcileProbeLocalDNSRuntime()
+	return m.tun, nil
 }
 
 var (
@@ -1349,6 +1435,14 @@ func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
 	return persistProbeLocalProxyStateFile(state)
 }
 
+func resolveProbeLocalTUNPrimaryDNSBackupPath() (string, error) {
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, probeLocalTUNPrimaryDNSBackupFileName), nil
+}
+
 func validateProbeLocalRuntimeAction(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case "", "direct", "reject", "tunnel":
@@ -1782,6 +1876,8 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("/local/api/tun/status", probeLocalTUNStatusHandler)
 	mux.HandleFunc("/local/api/tun/install", probeLocalTUNInstallHandler)
+	mux.HandleFunc("/local/api/tun/reset", probeLocalTUNResetHandler)
+	mux.HandleFunc("/local/api/tun/uninstall", probeLocalTUNUninstallHandler)
 	mux.HandleFunc("/local/api/logs", probeLocalLogsHandler)
 	mux.HandleFunc("/local/api/proxy/enable", probeLocalProxyEnableHandler)
 	mux.HandleFunc("/local/api/proxy/select", probeLocalProxySelectHandler)
@@ -2041,6 +2137,38 @@ func probeLocalTUNInstallHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": state, "install_observation": state.InstallObservation})
+}
+
+func probeLocalTUNResetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	state, err := probeLocalControl.resetTUN()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": state})
+}
+
+func probeLocalTUNUninstallHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	state, err := probeLocalControl.uninstallTUN()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tun": state})
 }
 
 func probeLocalLogsHandler(w http.ResponseWriter, r *http.Request) {
@@ -2942,6 +3070,9 @@ func resetProbeLocalTUNHooksForTest() {
 	probeLocalInstallTUNDriver = installProbeLocalTUNDriver
 	probeLocalCheckTUNReadyAfterInstall = probeLocalNoopPostInstallTUNReadyCheck
 	probeLocalResetTUNDetectInstalledHook()
+	probeLocalApplyTUNPrimaryDNS = applyProbeLocalTUNPrimaryDNS
+	probeLocalRestoreTUNPrimaryDNS = restoreProbeLocalTUNPrimaryDNS
+	probeLocalUninstallTUNDriver = uninstallProbeLocalTUNDriver
 	resetProbeLocalTUNDataPlaneHooksForTest()
 }
 

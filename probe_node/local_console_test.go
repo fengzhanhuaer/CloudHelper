@@ -507,6 +507,16 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 
 	probeLocalApplyProxyTakeover = func() error { return nil }
 	probeLocalRestoreProxyDirect = func() error { return nil }
+	applyDNSCalls := 0
+	restoreDNSCalls := 0
+	probeLocalApplyTUNPrimaryDNS = func() error {
+		applyDNSCalls++
+		return nil
+	}
+	probeLocalRestoreTUNPrimaryDNS = func() error {
+		restoreDNSCalls++
+		return nil
+	}
 	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
@@ -514,7 +524,7 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
 		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
 	}
-	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNDataPlaneHooksForTest() })
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNHooksForTest() })
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{}, sessionCookie)
 	if enableResp.Code != http.StatusOK {
@@ -538,6 +548,9 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 	if tunEnabled, _ := tunObj["enabled"].(bool); !tunEnabled {
 		t.Fatalf("proxy/enable tun.enabled should be true")
 	}
+	if applyDNSCalls != 1 {
+		t.Fatalf("apply dns calls=%d, want 1", applyDNSCalls)
+	}
 
 	directResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/direct", map[string]any{}, sessionCookie)
 	if directResp.Code != http.StatusOK {
@@ -553,6 +566,74 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 	}
 	if enabled, _ := directProxyObj["enabled"].(bool); enabled {
 		t.Fatalf("proxy/direct enabled should be false")
+	}
+	if restoreDNSCalls != 1 {
+		t.Fatalf("restore dns calls=%d, want 1", restoreDNSCalls)
+	}
+}
+
+func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeLocalControl.mu.Lock()
+	probeLocalControl.tun.Installed = true
+	probeLocalControl.tun.Enabled = true
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+
+	restoreProxyCalls := 0
+	restoreDNSCalls := 0
+	uninstallCalls := 0
+	probeLocalRestoreProxyDirect = func() error {
+		restoreProxyCalls++
+		return nil
+	}
+	probeLocalRestoreTUNPrimaryDNS = func() error {
+		restoreDNSCalls++
+		return nil
+	}
+	probeLocalUninstallTUNDriver = func() error {
+		uninstallCalls++
+		return nil
+	}
+	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNHooksForTest() })
+
+	resetResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/reset", map[string]any{}, sessionCookie)
+	if resetResp.Code != http.StatusOK {
+		t.Fatalf("tun/reset status=%d body=%s", resetResp.Code, resetResp.Body.String())
+	}
+	resetPayload := decodeProbeLocalJSON(t, resetResp)
+	resetTun, ok := resetPayload["tun"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/reset tun payload type=%T", resetPayload["tun"])
+	}
+	if installed, _ := resetTun["installed"].(bool); !installed {
+		t.Fatalf("tun/reset should keep detected installed state")
+	}
+	if enabled, _ := resetTun["enabled"].(bool); enabled {
+		t.Fatalf("tun/reset enabled should be false")
+	}
+	if restoreProxyCalls != 1 || restoreDNSCalls != 1 || uninstallCalls != 0 {
+		t.Fatalf("after reset restoreProxy=%d restoreDNS=%d uninstall=%d", restoreProxyCalls, restoreDNSCalls, uninstallCalls)
+	}
+
+	uninstallResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/uninstall", map[string]any{}, sessionCookie)
+	if uninstallResp.Code != http.StatusOK {
+		t.Fatalf("tun/uninstall status=%d body=%s", uninstallResp.Code, uninstallResp.Body.String())
+	}
+	uninstallPayload := decodeProbeLocalJSON(t, uninstallResp)
+	uninstallTun, ok := uninstallPayload["tun"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/uninstall tun payload type=%T", uninstallPayload["tun"])
+	}
+	if installed, _ := uninstallTun["installed"].(bool); installed {
+		t.Fatalf("tun/uninstall installed should be false")
+	}
+	if restoreProxyCalls != 2 || restoreDNSCalls != 2 || uninstallCalls != 1 {
+		t.Fatalf("after uninstall restoreProxy=%d restoreDNS=%d uninstall=%d", restoreProxyCalls, restoreDNSCalls, uninstallCalls)
 	}
 }
 
@@ -610,6 +691,7 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 		return nil
 	}
 	probeLocalApplyProxyTakeover = func() error { return nil }
+	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
 	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
@@ -617,7 +699,7 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
 		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
 	}
-	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNDataPlaneHooksForTest() })
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNHooksForTest() })
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{
 		"group":             "media",
@@ -1944,6 +2026,7 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 		takeoverCalls++
 		return nil
 	}
+	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
 
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
