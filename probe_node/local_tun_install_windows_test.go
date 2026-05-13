@@ -674,3 +674,28 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterBindableTimeou
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 19", got)
 	}
 }
+
+func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterCreateUnicastNotFound(t *testing.T) {
+	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
+		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
+	}
+	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
+		if interfaceIndex == 18 {
+			return errors.New("CreateUnicastIpAddressEntry failed: code=1168")
+		}
+		if interfaceIndex == 19 {
+			return nil
+		}
+		return errors.New("unexpected interface index")
+	}
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "19")
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
+		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured returned error: %v", err)
+	}
+	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "19" {
+		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 19", got)
+	}
+}

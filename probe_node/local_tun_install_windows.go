@@ -708,6 +708,7 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 		return err
 	}
 	bindTimeoutOnPrimary := false
+	notFoundOnPrimary := false
 	if exists {
 		if adapter.InterfaceIndex <= 0 {
 			if adapterLUID, luidExists, luidErr := findProbeLocalWintunAdapterLUID(); luidErr == nil && luidExists {
@@ -720,15 +721,18 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 		if adapter.InterfaceIndex > 0 {
 			if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(adapter.InterfaceIndex); err == nil {
 				return nil
+			} else if isProbeLocalWindowsInterfaceNotFoundErr(err) {
+				notFoundOnPrimary = true
 			} else if !isProbeLocalIPv4BindableTimeoutErr(err) {
 				return err
+			} else {
+				bindTimeoutOnPrimary = true
 			}
-			bindTimeoutOnPrimary = true
 		}
 	}
 
 	disallowIfIndex := 0
-	if bindTimeoutOnPrimary {
+	if bindTimeoutOnPrimary || notFoundOnPrimary {
 		disallowIfIndex = adapter.InterfaceIndex
 	}
 	ifIndex, fallbackErr := resolveProbeLocalWintunInterfaceIndexFallback(disallowIfIndex)
@@ -868,6 +872,17 @@ func isProbeLocalIPv4BindableTimeoutErr(err error) bool {
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(text, "ipv4 address not bindable in time")
+}
+
+func isProbeLocalWindowsInterfaceNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "code=1168") ||
+		strings.Contains(text, "error_not_found") ||
+		strings.Contains(text, "not found") ||
+		strings.Contains(text, "找不到")
 }
 
 func firstProbeLocalTUNErr(primary error, fallback error) error {
