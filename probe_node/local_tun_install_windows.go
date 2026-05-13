@@ -749,7 +749,10 @@ func resolveProbeLocalWintunInterfaceIndexFallback(disallowIfIndex int) (int, er
 	if rawIfIndex := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); rawIfIndex != "" {
 		if ifIndex, parseErr := strconv.Atoi(rawIfIndex); parseErr == nil && ifIndex > 0 {
 			if disallowIfIndex <= 0 || ifIndex != disallowIfIndex {
-				return ifIndex, nil
+				if _, findErr := probeLocalFindWindowsAdapterByIfIndex(ifIndex); findErr == nil {
+					return ifIndex, nil
+				}
+				logProbeWarnf("probe local tun fallback env ifindex is stale, resolving from wintun handle: ifindex=%d", ifIndex)
 			}
 		}
 	}

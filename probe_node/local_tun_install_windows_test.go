@@ -654,6 +654,12 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterBindableTimeou
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
 		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
 	}
+	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
+		if interfaceIndex == 19 {
+			return windowsAdapterInfo{InterfaceIndex: 19}, nil
+		}
+		return windowsAdapterInfo{}, errors.New("adapter not found")
+	}
 	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
 		if interfaceIndex == 18 {
 			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
@@ -679,6 +685,12 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterCreateUnicastN
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
 		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
 	}
+	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
+		if interfaceIndex == 19 {
+			return windowsAdapterInfo{InterfaceIndex: 19}, nil
+		}
+		return windowsAdapterInfo{}, errors.New("adapter not found")
+	}
 	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
 		if interfaceIndex == 18 {
 			return errors.New("CreateUnicastIpAddressEntry failed: code=1168")
@@ -697,5 +709,34 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterCreateUnicastN
 	}
 	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "19" {
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 19", got)
+	}
+}
+
+func TestResolveProbeLocalWintunInterfaceIndexFallbackSkipsStaleEnvIfIndex(t *testing.T) {
+	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
+		if interfaceIndex == 19 {
+			return windowsAdapterInfo{}, errors.New("adapter not found")
+		}
+		return windowsAdapterInfo{InterfaceIndex: interfaceIndex}, nil
+	}
+	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
+	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) { return 12345, nil }
+	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d", luid)
+		}
+		return 21, nil
+	}
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "19")
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	ifIndex, err := resolveProbeLocalWintunInterfaceIndexFallback(0)
+	if err != nil {
+		t.Fatalf("resolveProbeLocalWintunInterfaceIndexFallback returned error: %v", err)
+	}
+	if ifIndex != 21 {
+		t.Fatalf("ifIndex=%d, want 21", ifIndex)
 	}
 }
