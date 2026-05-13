@@ -56,6 +56,8 @@ var (
 	probeLocalSnapshotWindowsIPv4Routes        = snapshotProbeLocalWindowsIPv4Routes
 	probeLocalSetWindowsInterfaceDNS           = setProbeLocalWindowsInterfaceDNS
 	probeLocalFindWindowsAdapterByIfIndex      = windowsFindAdapterByIfIndex
+	probeLocalUpsertWindowsInterfaceIPv4       = upsertProbeLocalWindowsInterfaceIPv4Address
+	probeLocalDeleteWindowsInterfaceIPv4       = deleteProbeLocalWindowsInterfaceIPv4Address
 
 	probeLocalConvertInterfaceLUIDToIndexNative = convertProbeLocalInterfaceLUIDToIndexNative
 	probeLocalListNetAdaptersForLUIDLookup      = listProbeLocalWindowsNetAdapters
@@ -179,7 +181,7 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 	if err != nil {
 		return err
 	}
-	if err := upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex, cleanIP, prefixLength); err != nil {
+	if err := probeLocalUpsertWindowsInterfaceIPv4(interfaceIndex, cleanIP, prefixLength); err != nil {
 		return err
 	}
 	if strings.TrimSpace(adapter.AdapterGUID) == "" {
@@ -279,10 +281,23 @@ func probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	if prefixLength <= 0 || prefixLength > 32 {
 		prefixLength = 15
 	}
-	if err := deleteProbeLocalWindowsInterfaceIPv4Address(interfaceIndex, ip4.String()); err != nil {
-		return err
+	if err := probeLocalDeleteWindowsInterfaceIPv4(interfaceIndex, ip4.String()); err != nil {
+		if !isProbeLocalIgnorableDeleteIPv4Err(err) {
+			return err
+		}
+		logProbeWarnf("probe local tun ignored delete ipv4 repair error before recreate: if=%d ip=%s err=%v", interfaceIndex, ip4.String(), err)
 	}
-	return upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex, ip4.String(), prefixLength)
+	return probeLocalUpsertWindowsInterfaceIPv4(interfaceIndex, ip4.String(), prefixLength)
+}
+
+func isProbeLocalIgnorableDeleteIPv4Err(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "deleteunicastipaddressentry failed: code=87") ||
+		strings.Contains(text, "deleteunicastipaddressentry failed: error_invalid_parameter") ||
+		strings.Contains(text, "deleteunicastipaddressentry failed: invalid parameter")
 }
 
 func upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
