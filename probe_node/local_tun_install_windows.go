@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -36,6 +37,7 @@ var (
 	probeLocalEnsureWindowsInterfaceIPv4       = ensureProbeLocalWindowsInterfaceIPv4Address
 	probeLocalRepairWindowsRouteTargetIPv4Hook = probeLocalRepairWindowsInterfaceIPv4Address
 	probeLocalRecycleWindowsTunAdapterHook     = recycleProbeLocalWindowsNetAdapter
+	probeLocalRepairWindowsRouteTargetViaCLI   = repairProbeLocalWindowsRouteTargetViaCLI
 	probeLocalConvertInterfaceLUIDToIndex      = convertProbeLocalInterfaceLUIDToIndex
 	probeLocalRunCommand                       = runProbeLocalCommand
 	probeLocalIsWindowsAdmin                   = isWindowsAdmin
@@ -790,9 +792,26 @@ func recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(interfaceIndex i
 			setProbeLocalWindowsRouteTargetEnv(retryIfIndex)
 			return nil
 		}
-		if !isProbeLocalIPv4BindableTimeoutErr(retryErr) {
+		if !isProbeLocalIPv4BindableTimeoutErr(retryErr) && !isProbeLocalWindowsInterfaceNotFoundErr(retryErr) {
 			return retryErr
 		}
+	}
+	if cliErr := probeLocalRepairWindowsRouteTargetViaCLI(retryIfIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen); cliErr == nil {
+		for _, delay := range []time.Duration{350 * time.Millisecond, 900 * time.Millisecond} {
+			if delay > 0 {
+				probeLocalTUNInstallSleep(delay)
+			}
+			retryErr := probeLocalEnsureWindowsInterfaceIPv4(retryIfIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
+			if retryErr == nil {
+				setProbeLocalWindowsRouteTargetEnv(retryIfIndex)
+				return nil
+			}
+			if !isProbeLocalIPv4BindableTimeoutErr(retryErr) && !isProbeLocalWindowsInterfaceNotFoundErr(retryErr) {
+				return retryErr
+			}
+		}
+	} else {
+		recoveryErr = errors.Join(recoveryErr, cliErr)
 	}
 	finalErr := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(retryIfIndex)
 	if finalErr != nil && recoveryErr != nil {
@@ -877,6 +896,36 @@ func resolveProbeLocalWintunInterfaceIndexFallback(disallowIfIndex int) (int, er
 		return 0, fmt.Errorf("convert adapter luid to interface index failed: luid=%d err=%w", adapterLUID, firstProbeLocalTUNErr(convertErr, errors.New("invalid interface index")))
 	}
 	return ifIndex, nil
+}
+
+func repairProbeLocalWindowsRouteTargetViaCLI(interfaceIndex int, ipText string, prefixLength int) error {
+	if interfaceIndex <= 0 {
+		return errors.New("invalid wintun adapter interface index")
+	}
+	ip4 := strings.TrimSpace(ipText)
+	if parsed := net.ParseIP(ip4).To4(); parsed != nil {
+		ip4 = parsed.String()
+	} else {
+		return errors.New("invalid ipv4 address")
+	}
+	if prefixLength <= 0 || prefixLength > 32 {
+		prefixLength = probeLocalTUNRouteIPv4PrefixLen
+	}
+	ps := fmt.Sprintf(
+		"$idx=%d; $ip='%s'; $prefix=%d; "+
+			"$addr=Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; "+
+			"if (-not $addr) { New-NetIPAddress -InterfaceIndex $idx -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -Type Unicast -ErrorAction Stop | Out-Null } "+
+			"else { Set-NetIPAddress -InputObject $addr -PrefixLength $prefix -ErrorAction SilentlyContinue | Out-Null }; "+
+			"Set-DnsClientServerAddress -InterfaceIndex $idx -ServerAddresses @('%s') -ErrorAction Stop | Out-Null",
+		interfaceIndex,
+		ip4,
+		prefixLength,
+		probeLocalTUNInterfaceIPv4,
+	)
+	if _, err := probeLocalRunCommand(8*time.Second, "powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps); err != nil {
+		return fmt.Errorf("repair windows tun route target via cli failed: %w", err)
+	}
+	return nil
 }
 
 func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) error {
