@@ -347,6 +347,72 @@
       return `${v.toFixed(precision)} ${units[idx]}`;
     }
 
+    function normalizeControllerBaseURL(raw) {
+      const value = String(raw || '').trim().replace(/\/+$/, '');
+      return value || 'http://127.0.0.1:15030';
+    }
+
+    function quotePowerShellLiteral(value) {
+      return `'${String(value || '').replace(/'/g, "''")}'`;
+    }
+
+    function quoteBashLiteral(value) {
+      return `'${String(value || '').replace(/'/g, `'\"'\"'`)}'`;
+    }
+
+    function buildLinuxInstallCommand(scriptURL, envVars, scriptPath) {
+      return [
+        `SCRIPT_URL=${quoteBashLiteral(scriptURL)}`,
+        `SCRIPT_PATH=${quoteBashLiteral(scriptPath)}`,
+        'curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"',
+        `env ${envVars.join(' ')} bash "$SCRIPT_PATH"`,
+      ].join('; ');
+    }
+
+    function buildProbeInstallCommand(node, controllerBaseURL) {
+      const baseURL = normalizeControllerBaseURL(controllerBaseURL);
+      const nodeNo = Number(node && node.node_no);
+      const nodeID = Number.isFinite(nodeNo) && nodeNo > 0
+        ? String(nodeNo)
+        : String((node && node.node_no) || '').trim();
+      const secret = String((node && node.node_secret) || '').trim();
+      if (!nodeID || !secret) return '';
+      const proxyBaseURL = `${baseURL}/api/probe/proxy`;
+      const directConnect = node && node.direct_connect === true;
+      const targetSystem = String((node && node.target_system) || 'linux').toLowerCase() === 'windows' ? 'windows' : 'linux';
+
+      const envVars = [
+        `PROBE_NODE_ID=${quoteBashLiteral(nodeID)}`,
+        `PROBE_NODE_SECRET=${quoteBashLiteral(secret)}`,
+        `PROBE_CONTROLLER_URL=${quoteBashLiteral(baseURL)}`,
+      ];
+      if (!directConnect) {
+        envVars.push(`PROBE_PROXY_BASE_URL=${quoteBashLiteral(proxyBaseURL)}`);
+      }
+
+      const query = new URLSearchParams({ node_id: nodeID, secret });
+      if (targetSystem === 'windows') {
+        const scriptURL = directConnect
+          ? 'https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1'
+          : `${baseURL}/api/probe/proxy/probe-node/install-script?${query.toString()}&target=windows`;
+        return [
+          `$env:PROBE_NODE_ID=${quotePowerShellLiteral(nodeID)}`,
+          `$env:PROBE_NODE_SECRET=${quotePowerShellLiteral(secret)}`,
+          `$env:PROBE_CONTROLLER_URL=${quotePowerShellLiteral(baseURL)}`,
+          directConnect ? '' : `$env:PROBE_PROXY_BASE_URL=${quotePowerShellLiteral(proxyBaseURL)}`,
+          `$scriptUrl=${quotePowerShellLiteral(scriptURL)}`,
+          "$scriptPath=Join-Path $env:TEMP 'cloudhelper-probe-node-install.ps1'",
+          'Invoke-WebRequest -UseBasicParsing -Uri $scriptUrl -OutFile $scriptPath',
+          '& $scriptPath',
+        ].filter(Boolean).join('; ');
+      }
+
+      const scriptURL = directConnect
+        ? 'https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh'
+        : `${baseURL}/api/probe/proxy/probe-node/install-script?${query.toString()}&target=linux`;
+      return buildLinuxInstallCommand(scriptURL, envVars, '/tmp/cloudhelper-probe-node-install.sh');
+    }
+
     function renderIPLines(family, list) {
       if (!Array.isArray(list) || list.length === 0) {
         return `<div class="muted">${family}: -</div>`;
@@ -390,6 +456,7 @@
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
               <button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>
+              <button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">探针安装</button>
               <button class="btn warn" type="button" data-action="node-delete" data-node-no="${item.node_no}">删除</button>
             </td>
           </tr>`;
@@ -613,26 +680,50 @@
       setStatus('已填充快捷命令，点击“执行命令”即可运行', 'ok');
     }
 
+    async function copyText(value) {
+      const text = String(value || '');
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.setAttribute('readonly', 'readonly');
+      input.style.position = 'fixed';
+      input.style.left = '-9999px';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      document.body.removeChild(input);
+    }
+
     async function copyIP(value) {
       const text = String(value || '').trim();
       if (!text) return;
       try {
-        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-          await navigator.clipboard.writeText(text);
-        } else {
-          const input = document.createElement('textarea');
-          input.value = text;
-          input.setAttribute('readonly', 'readonly');
-          input.style.position = 'fixed';
-          input.style.left = '-9999px';
-          document.body.appendChild(input);
-          input.select();
-          document.execCommand('copy');
-          document.body.removeChild(input);
-        }
+        await copyText(text);
         setStatus(`已复制 IP：${text}`, 'ok');
       } catch (_) {
         setStatus('复制失败，请手动复制', 'warn');
+      }
+    }
+
+    async function copyNodeInstallCommand(nodeNo) {
+      const node = state.nodes.find((item) => Number(item.node_no) === Number(nodeNo));
+      if (!node) {
+        setStatus(`未找到探针：#${nodeNo}`, 'warn');
+        return;
+      }
+      const command = buildProbeInstallCommand(node, window.location.origin);
+      if (!command) {
+        setStatus(`探针 #${nodeNo} 缺少 node_secret，无法生成安装命令`, 'warn');
+        return;
+      }
+      try {
+        await copyText(command);
+        setStatus(`已复制探针安装命令：#${nodeNo}`, 'ok');
+      } catch (err) {
+        setStatus(`复制安装命令失败：${err && err.message ? err.message : err}`, 'err');
       }
     }
 
@@ -892,6 +983,13 @@
         const nodeNo = Number(button.getAttribute('data-node-no'));
         if (Number.isFinite(nodeNo) && nodeNo > 0) {
           void upgradeNode(nodeNo).catch((err) => setStatus(`升级失败：${err.message || err}`, 'err'));
+        }
+        return;
+      }
+      if (action === 'node-install-command') {
+        const nodeNo = Number(button.getAttribute('data-node-no'));
+        if (Number.isFinite(nodeNo) && nodeNo > 0) {
+          void copyNodeInstallCommand(nodeNo);
         }
         return;
       }
