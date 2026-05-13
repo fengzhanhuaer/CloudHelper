@@ -755,7 +755,7 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 			return fmt.Errorf("wintun adapter is not detected after stale fallback ifindex=%d: %w", ifIndex, firstProbeLocalTUNErr(retryErr, err))
 		}
 		if retryIfIndex == ifIndex {
-			return err
+			return recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(ifIndex)
 		}
 		return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(retryIfIndex)
 	}
@@ -1009,6 +1009,7 @@ func isProbeLocalWindowsInterfaceNotFoundErr(err error) bool {
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(text, "code=1168") ||
+		strings.Contains(text, "code=2") ||
 		strings.Contains(text, "error_not_found") ||
 		strings.Contains(text, "not found") ||
 		strings.Contains(text, "找不到")
