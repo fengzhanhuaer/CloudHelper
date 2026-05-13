@@ -6,7 +6,7 @@
 - 需求前缀: REQ-PN-FAKEIP-TUN-DNS-001
 - 当前阶段: Gate
 - 最近更新角色: Architect
-- 最近更新时间: 2026-05-13 10:25:00 +08:00
+- 最近更新时间: 2026-05-13 10:50:00 +08:00
 - 工作依据文档: doc/ai-coding-collaboration.md; 用户需求: probe node TUN 改为仅承接默认 DNS 并靠 fake IP 导入需代理流量，避免频繁操作路由表；DNS upstream 增加系统原默认 DNS，优先级在已添加 DNS 后边。
 - 状态: 进行中
 
@@ -180,7 +180,7 @@
 | T5 | REQ-PN-FAKEIP-TUN-DNS-001-R2 | U6 | `probe_node/local_console.go`; `probe_node/local_console_test.go` | 修改 | 启用代理前不再执行链路节点 direct bypass 预热 |
 | T6 | REQ-PN-FAKEIP-TUN-DNS-001-R1,REQ-PN-FAKEIP-TUN-DNS-001-R2,REQ-PN-FAKEIP-TUN-DNS-001-R3,REQ-PN-FAKEIP-TUN-DNS-001-R4 | U1,U2,U3,U4,U5,U6 | `probe_node` 测试 | 修改 | `go test ./...` 通过 |
 | T7 | REQ-PN-FAKEIP-TUN-DNS-001-R1,REQ-PN-FAKEIP-TUN-DNS-001-R2,REQ-PN-FAKEIP-TUN-DNS-001-R3,REQ-PN-FAKEIP-TUN-DNS-001-R4 | U1,U2,U3,U4,U5,U6 | `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md` | 修改 | Code 章节证据完整，门禁可裁判 |
-| T8 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | U2 | `probe_node/local_tun_install_windows.go`; `probe_node/local_tun_install_windows_test.go` | 修改 | `CreateUnicastIpAddressEntry failed: code=1168` 时不信任过期环境变量 ifIndex，重新从 Wintun handle/LUID 恢复有效 ifIndex |
+| T8 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | U2 | `probe_node/local_tun_install_windows.go`; `probe_node/local_tun_install_windows_test.go` | 修改 | `CreateUnicastIpAddressEntry failed: code=1168` 时不信任过期环境变量 ifIndex；若 fallback ifIndex 写入仍为 1168，则排除该 ifIndex 并重新从 Wintun handle/LUID 恢复有效 ifIndex |
 
 #### 1.4.3 源码修改规则
 - 必须使用 encoding_tools/README.md 描述的接口。
@@ -305,8 +305,8 @@
 | TC3 | REQ-PN-FAKEIP-TUN-DNS-001-R3 | T2 | local dns 追加顺序 | `go test ./...` | 通过 | `TestCurrentProbeLocalDNSUpstreamCandidatesAppendsSystemDNSLast` | 无 | 校验去重与尾部追加 |
 | TC4 | REQ-PN-FAKEIP-TUN-DNS-001-R4 | T3 | direct 决策不使用 fake IP | `go test ./...` | 通过 | `TestShouldUseProbeLocalDNSFakeIPSkipsDirectDecision` | 无 | tunnel fake IP 旧测试仍保留 |
 | TC5 | REQ-PN-FAKEIP-TUN-DNS-001-R2 | T4,T5 | 代理启用与 direct 出站路径不做 bypass 预热 | `go test ./...` | 通过 | `TestProbeLocalProxyEnableWithSelectionUpdatesRuntimeState`; direct path tests compiled and passed | 无 | 预热目标断言改为 0 |
-| TC6 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | T8 | stale TUN ifIndex 导致 `CreateUnicastIpAddressEntry failed: code=1168` 后恢复 | `go test ./...` | 通过 | `TestResolveProbeLocalWintunInterfaceIndexFallbackSkipsStaleEnvIfIndex`; 既有 1168 fallback 测试通过 | 无 | 针对用户现场错误追加 |
-| TC7 | REQ-PN-FAKEIP-TUN-DNS-001-R1,R2,R3,R4 | T6 | 模块级回归 | `go test ./...` | 通过 | `ok github.com/cloudhelper/probe_node 10.312s` | 无 | 在 `probe_node` 目录执行 |
+| TC6 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | T8 | stale TUN ifIndex 导致 `CreateUnicastIpAddressEntry failed: code=1168` 后恢复 | `go test ./...` | 通过 | `TestResolveProbeLocalWintunInterfaceIndexFallbackSkipsStaleEnvIfIndex`; `TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesWhenFallbackIfIndexNotFound`; 既有 1168 fallback 测试通过 | 无 | 针对用户现场错误追加 |
+| TC7 | REQ-PN-FAKEIP-TUN-DNS-001-R1,R2,R3,R4 | T6 | 模块级回归 | `go test ./...` | 通过 | `ok github.com/cloudhelper/probe_node 10.158s` | 无 | 在 `probe_node` 目录执行 |
 
 ### 2.4 Code缺陷跟踪矩阵
 - 状态: 已完成
@@ -314,7 +314,7 @@
 | 缺陷编号 | 需求编号 | 测试项编号 | 缺陷描述 | 严重级别 | 修复状态 | 修复证据 | 备注 |
 |---|---|---|---|---|---|---|---|
 | DEF-001 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | TC1 | fake-ip 模式下 DNS host 初始回退到了 gateway `198.18.0.1` 而非 TUN 接口地址 `198.18.0.2` | 中 | 已修复 | `resolveProbeLocalTUNDNSListenHostForGateway` 增加 `probeLocalTUNInterfaceIPv4` 优先级；测试通过 | 已关闭 |
-| DEF-002 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | TC6 | `prepare windows tun route target failed: CreateUnicastIpAddressEntry failed: code=1168`，原因是 stale `PROBE_LOCAL_TUN_IF_INDEX` 被 fallback 继续信任 | 高 | 已修复 | `resolveProbeLocalWintunInterfaceIndexFallback` 校验 env ifIndex 可枚举，否则从 Wintun handle/LUID 重新解析；测试通过 | 已关闭 |
+| DEF-002 | REQ-PN-FAKEIP-TUN-DNS-001-R1 | TC6 | `prepare windows tun route target failed: CreateUnicastIpAddressEntry failed: code=1168`，原因是 stale `PROBE_LOCAL_TUN_IF_INDEX` 或 fallback ifIndex 被继续信任 | 高 | 已修复 | `resolveProbeLocalWintunInterfaceIndexFallback` 校验 env ifIndex 可枚举；最终 fallback ifIndex 写入仍为 1168 时排除该 ifIndex 并重新从 Wintun handle/LUID 解析；测试通过 | 已关闭 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -341,7 +341,7 @@
 - DNS upstream 列表在已配置 DoH proxy、DoH、DoT、DNS 后追加系统原默认 DNS。
 - fake IP 仅用于 `action=tunnel` 的 A 记录查询。
 - direct TCP/UDP 出站与代理启用前预热不再写动态 bypass route。
-- TUN route target fallback 不再信任系统中已找不到的 env ifIndex，避免 `CreateUnicastIpAddressEntry code=1168` 卡住启用。
+- TUN route target fallback 不再信任系统中已找不到的 env ifIndex；fallback ifIndex 写入仍为 1168 时会二次排除并重新解析，避免 `CreateUnicastIpAddressEntry code=1168` 卡住启用。
 
 #### 2.5.4 影响文件
 - `probe_node/local_console.go`
@@ -362,7 +362,7 @@
 - `go test ./...`
 
 #### 2.5.6 自测结果
-- `go test ./...` 通过，结果: `ok github.com/cloudhelper/probe_node 10.312s`
+- `go test ./...` 通过，结果: `ok github.com/cloudhelper/probe_node 10.158s`
 
 #### 2.5.7 未执行测试原因
 - 无

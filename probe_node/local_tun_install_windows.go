@@ -742,7 +742,21 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 	if adapter.InterfaceIndex > 0 && ifIndex == adapter.InterfaceIndex {
 		logProbeWarnf("probe local tun route target fallback kept same ifindex=%d after bind-timeout path", ifIndex)
 	}
-	return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex)
+	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex); err != nil {
+		if !isProbeLocalWindowsInterfaceNotFoundErr(err) {
+			return err
+		}
+		logProbeWarnf("probe local tun fallback ifindex failed as not found, retrying handle resolution: ifindex=%d err=%v", ifIndex, err)
+		retryIfIndex, retryErr := resolveProbeLocalWintunInterfaceIndexFallback(ifIndex)
+		if retryErr != nil || retryIfIndex <= 0 {
+			return fmt.Errorf("wintun adapter is not detected after stale fallback ifindex=%d: %w", ifIndex, firstProbeLocalTUNErr(retryErr, err))
+		}
+		if retryIfIndex == ifIndex {
+			return err
+		}
+		return ensureProbeLocalWindowsRouteTargetByInterfaceIndex(retryIfIndex)
+	}
+	return nil
 }
 
 func resolveProbeLocalWintunInterfaceIndexFallback(disallowIfIndex int) (int, error) {
