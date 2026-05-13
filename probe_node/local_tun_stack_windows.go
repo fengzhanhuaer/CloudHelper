@@ -390,17 +390,11 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if route.Direct {
-		if err := ensureProbeLocalDirectBypassForTarget(route.TargetAddr); err != nil {
-			return nil, route, err
-		}
-		host, _, _ := net.SplitHostPort(route.TargetAddr)
-		host = strings.TrimSpace(strings.Trim(host, "[]"))
 		conn, dialErr := net.DialTimeout("tcp", strings.TrimSpace(route.TargetAddr), probeLocalTUNTCPDialTimeout)
 		if dialErr != nil {
-			releaseProbeLocalDirectBypassForHost(host)
 			return nil, route, dialErr
 		}
-		return &probeLocalDirectBypassManagedConn{Conn: conn, release: func() { releaseProbeLocalDirectBypassForHost(host) }}, route, nil
+		return conn, route, nil
 	}
 	conn, openErr := openProbeLocalTunnelConnWithGroupRuntime("tcp", route.TargetAddr, route.GroupRuntime, nil)
 	if openErr != nil {
@@ -477,15 +471,8 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	}
 
 	if route.Direct {
-		if err := ensureProbeLocalDirectBypassForTarget(route.TargetAddr); err != nil {
-			releaseSource()
-			return nil, route, err
-		}
-		host, _, _ := net.SplitHostPort(route.TargetAddr)
-		host = strings.TrimSpace(strings.Trim(host, "[]"))
 		udpAddr, resolveErr := net.ResolveUDPAddr("udp", route.TargetAddr)
 		if resolveErr != nil {
-			releaseProbeLocalDirectBypassForHost(host)
 			releaseSource()
 			return nil, route, resolveErr
 		}
@@ -502,13 +489,11 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 			natMode = probeLocalTUNUDPNATModeFallbackEphemeral
 		}
 		if dialErr != nil {
-			releaseProbeLocalDirectBypassForHost(host)
 			releaseSource()
 			return nil, route, dialErr
 		}
 		_ = natMode
-		managed := &probeLocalDirectBypassManagedConn{Conn: conn, release: func() { releaseProbeLocalDirectBypassForHost(host) }}
-		return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: managed, releaseSource: releaseSource}, route, nil
+		return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: conn, releaseSource: releaseSource}, route, nil
 	}
 
 	association := &probeChainAssociationV2Meta{
@@ -881,9 +866,6 @@ func (s *probeLocalTUNSimplePacketStack) Write(packet []byte) (int, error) {
 		}
 		logProbeInfof("probe local tun packet routed to tunnel: network=%s target=%s group=%s node=%s", network, route.TargetAddr, route.Group, route.TunnelNodeID)
 		return len(packet), nil
-	}
-	if err := ensureProbeLocalDirectBypassForTarget(route.TargetAddr); err != nil {
-		return 0, err
 	}
 	return len(packet), nil
 }

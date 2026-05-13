@@ -181,3 +181,7 @@ func isProbeLocalLinuxRouteMissingErr(err error) bool {
 func currentProbeLocalTUNDNSListenHost() string {
 	return ""
 }
+
+func currentProbeLocalSystemDNSServers() []string {
+	return nil
+}

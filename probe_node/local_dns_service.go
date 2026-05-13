@@ -118,6 +118,7 @@ var probeLocalDNSState = struct {
 var (
 	probeLocalDNSListenPacket                = net.ListenPacket
 	probeLocalDNSNow                         = time.Now
+	probeLocalDNSSystemServers               = currentProbeLocalSystemDNSServers
 	probeLocalDNSEnsureDirectBypassForTarget = func(string) error {
 		return nil
 	}
@@ -377,7 +378,7 @@ func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecis
 		logProbeWarnf("load proxy_group for dns upstream failed, use defaults: %v", err)
 		cfg = defaultProbeLocalProxyGroupFile()
 	}
-	candidates := make([]probeLocalDNSUpstreamCandidate, 0, 16)
+	candidates := make([]probeLocalDNSUpstreamCandidate, 0, 20)
 	seen := make(map[string]struct{}, 16)
 	appendDoH := func(items []string) {
 		for _, item := range items {
@@ -412,6 +413,7 @@ func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecis
 	appendDoH(cfg.DoHServers)
 	appendHostPort("dot", cfg.DoTServers, "853")
 	appendHostPort("dns", cfg.DNSServers, "53")
+	appendHostPort("dns", probeLocalDNSSystemServers(), "53")
 	return candidates
 }
 
@@ -469,19 +471,8 @@ func resolveProbeLocalDNSUpstreamBypassTarget(kind string, address string) (stri
 }
 
 func ensureProbeLocalDNSUpstreamDirectBypass(kind string, address string) {
-	targetAddr, ok := resolveProbeLocalDNSUpstreamBypassTarget(kind, address)
-	if !ok {
-		return
-	}
-	if err := probeLocalDNSEnsureDirectBypassForTarget(targetAddr); err != nil {
-		logProbeWarnf(
-			"probe local dns upstream bypass ensure failed: kind=%s upstream=%s target=%s err=%v",
-			strings.ToLower(strings.TrimSpace(kind)),
-			strings.TrimSpace(address),
-			targetAddr,
-			err,
-		)
-	}
+	_ = kind
+	_ = address
 }
 
 func queryProbeLocalDNSViaDoH(endpoint string, packet []byte) ([]byte, error) {
@@ -934,6 +925,12 @@ func shouldUseProbeLocalDNSFakeIP(domain string, qType dnsmessage.Type, decision
 	if decision.Reject || strings.EqualFold(strings.TrimSpace(decision.Action), "reject") {
 		return false
 	}
+	if !strings.EqualFold(strings.TrimSpace(decision.Action), "tunnel") {
+		return false
+	}
+	if strings.TrimSpace(decision.SelectedChainID) == "" && strings.TrimSpace(decision.TunnelNodeID) == "" {
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(decision.Group), "fallback") {
 		return false
 	}
@@ -1332,4 +1329,5 @@ func resetProbeLocalDNSServiceForTest() {
 func resetProbeLocalDNSHooksForTest() {
 	probeLocalDNSListenPacket = net.ListenPacket
 	probeLocalDNSNow = time.Now
+	probeLocalDNSSystemServers = currentProbeLocalSystemDNSServers
 }

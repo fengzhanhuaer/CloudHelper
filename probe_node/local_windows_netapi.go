@@ -55,6 +55,7 @@ var (
 	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
 	probeLocalSnapshotWindowsIPv4Routes        = snapshotProbeLocalWindowsIPv4Routes
 	probeLocalSetWindowsInterfaceDNS           = setProbeLocalWindowsInterfaceDNS
+	probeLocalFindWindowsAdapterByIfIndex      = windowsFindAdapterByIfIndex
 
 	probeLocalConvertInterfaceLUIDToIndexNative = convertProbeLocalInterfaceLUIDToIndexNative
 	probeLocalListNetAdaptersForLUIDLookup      = listProbeLocalWindowsNetAdapters
@@ -123,7 +124,7 @@ func ensureProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	}
 	cleanIP := ip4.String()
 
-	adapter, err := windowsFindAdapterByIfIndex(interfaceIndex)
+	adapter, err := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex)
 	if err == nil {
 		for _, existing := range adapter.IPv4Addrs {
 			if strings.EqualFold(strings.TrimSpace(existing), cleanIP) {
@@ -174,7 +175,7 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)).To4(); parsedDNS != nil {
 		cleanDNS = parsedDNS.String()
 	}
-	adapter, err := windowsFindAdapterByIfIndex(interfaceIndex)
+	adapter, err := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex)
 	if err != nil {
 		return err
 	}
@@ -213,7 +214,7 @@ func waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex int, ip4 net.IP, 
 	listenAddr := net.JoinHostPort(cleanIP, "0")
 	for {
 		ipPresent := false
-		adapter, listErr := windowsFindAdapterByIfIndex(interfaceIndex)
+		adapter, listErr := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex)
 		if listErr == nil {
 			for _, existing := range adapter.IPv4Addrs {
 				if strings.EqualFold(strings.TrimSpace(existing), cleanIP) {
@@ -336,6 +337,7 @@ type windowsAdapterInfo struct {
 	Description    string
 	AdapterGUID    string
 	IPv4Addrs      []string
+	DNSServers     []string
 }
 
 func windowsFindAdapterByIfIndex(interfaceIndex int) (windowsAdapterInfo, error) {
@@ -392,7 +394,15 @@ func parseWindowsAdapterInfos(first *windows.IpAdapterAddresses) []windowsAdapte
 			}
 			item.IPv4Addrs = append(item.IPv4Addrs, ip.To4().String())
 		}
+		for dns := curr.FirstDnsServerAddress; dns != nil; dns = dns.Next {
+			ip := dns.Address.IP()
+			if ip == nil || ip.To4() == nil {
+				continue
+			}
+			item.DNSServers = append(item.DNSServers, ip.To4().String())
+		}
 		item.IPv4Addrs = dedupeProbeLocalIPv4Strings(item.IPv4Addrs)
+		item.DNSServers = dedupeProbeLocalIPv4Strings(item.DNSServers)
 		items = append(items, item)
 	}
 	return items
@@ -627,6 +637,18 @@ func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (prob
 		return probeLocalWindowsDirectBypassRouteTarget{}, errors.New("usable ipv4 default route not found")
 	}
 	return best, nil
+}
+
+func probeLocalResolveWindowsPrimaryDNSServers(excludedIfIndex int) ([]string, error) {
+	routeTarget, err := probeLocalResolveWindowsPrimaryEgressRoute(excludedIfIndex)
+	if err != nil {
+		return nil, err
+	}
+	adapter, err := probeLocalFindWindowsAdapterByIfIndex(routeTarget.InterfaceIndex)
+	if err != nil {
+		return nil, err
+	}
+	return dedupeProbeLocalIPv4Strings(adapter.DNSServers), nil
 }
 
 func snapshotProbeLocalWindowsIPv4Routes() (string, error) {

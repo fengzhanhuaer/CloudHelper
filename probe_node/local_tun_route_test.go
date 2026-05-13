@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net"
 	"testing"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func TestDecideProbeLocalRouteForTargetDirectWhenProxyDirectMode(t *testing.T) {
@@ -156,7 +158,7 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	}
 }
 
-func TestDecideProbeLocalRouteForTargetDirectByFakeIPRewriteTarget(t *testing.T) {
+func TestShouldUseProbeLocalDNSFakeIPSkipsDirectDecision(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	groups := defaultProbeLocalProxyGroupFile()
 	groups.Groups = []probeLocalProxyGroupEntry{
@@ -179,19 +181,7 @@ func TestDecideProbeLocalRouteForTargetDirectByFakeIPRewriteTarget(t *testing.T)
 	probeLocalControl.mu.Unlock()
 
 	dnsDecision := resolveProbeLocalProxyRouteDecisionByDomain("api.example.com")
-	fakeIP, ok := allocateProbeLocalDNSFakeIP("api.example.com", dnsDecision)
-	if !ok {
-		t.Fatal("allocate fake ip failed")
-	}
-
-	route, err := decideProbeLocalRouteForTarget(net.JoinHostPort(fakeIP, "443"))
-	if err != nil {
-		t.Fatalf("decideProbeLocalRouteForTarget returned error: %v", err)
-	}
-	if !route.Direct || route.Reject {
-		t.Fatalf("route=%+v", route)
-	}
-	if route.TargetAddr != "api.example.com:443" {
-		t.Fatalf("target_addr=%q", route.TargetAddr)
+	if shouldUseProbeLocalDNSFakeIP("api.example.com", dnsmessage.TypeA, dnsDecision) {
+		t.Fatalf("direct decision should not use fake ip: %+v", dnsDecision)
 	}
 }

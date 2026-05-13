@@ -373,18 +373,7 @@ func resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs 
 }
 
 func ensureProbeLocalProxyBootstrapDirectBypass(extraSelectedChainIDs ...string) error {
-	targets, err := resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs...)
-	if err != nil {
-		return err
-	}
-	for _, target := range targets {
-		if err := probeLocalEnsureExplicitDirectBypass(target); err != nil {
-			return fmt.Errorf("ensure explicit direct bypass failed: target=%s err=%w", target, err)
-		}
-	}
-	if len(targets) > 0 {
-		logProbeInfof("probe local proxy explicit direct bypass prepared: targets=%s", strings.Join(targets, ", "))
-	}
+	_ = extraSelectedChainIDs
 	return nil
 }
 

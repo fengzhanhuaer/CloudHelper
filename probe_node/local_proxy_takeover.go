@@ -18,3 +18,7 @@ func restoreProbeLocalProxyDirect() error {
 func currentProbeLocalTUNDNSListenHost() string {
 	return ""
 }
+
+func currentProbeLocalSystemDNSServers() []string {
+	return nil
+}

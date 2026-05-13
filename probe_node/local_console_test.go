@@ -410,14 +410,42 @@ func TestEnsureProbeLocalDNSUpstreamDirectBypass(t *testing.T) {
 	ensureProbeLocalDNSUpstreamDirectBypass("dns", "dns.alidns.com")
 	ensureProbeLocalDNSUpstreamDirectBypass("doh", "https://1.1.1.1/dns-query")
 
-	if len(calls) != 2 {
-		t.Fatalf("bypass calls len=%d want=2 calls=%v", len(calls), calls)
+	if len(calls) != 0 {
+		t.Fatalf("bypass calls len=%d want=0 calls=%v", len(calls), calls)
 	}
-	if calls[0] != "119.29.29.29:53" {
-		t.Fatalf("dns bypass target=%q", calls[0])
+}
+
+func TestCurrentProbeLocalDNSUpstreamCandidatesAppendsSystemDNSLast(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	cfg := defaultProbeLocalProxyGroupFile()
+	cfg.DoHProxyServers = []string{"https://proxy.example/dns-query"}
+	cfg.DoHServers = []string{"https://doh.example/dns-query"}
+	cfg.DoTServers = []string{"1.1.1.1:853"}
+	cfg.DNSServers = []string{"8.8.8.8:53"}
+	if err := persistProbeLocalProxyGroupFile(cfg); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
 	}
-	if calls[1] != "1.1.1.1:443" {
-		t.Fatalf("doh bypass target=%q", calls[1])
+	oldSystemDNS := probeLocalDNSSystemServers
+	probeLocalDNSSystemServers = func() []string { return []string{"192.168.1.1", "8.8.8.8"} }
+	t.Cleanup(func() {
+		probeLocalDNSSystemServers = oldSystemDNS
+		resetProbeLocalDNSServiceForTest()
+	})
+
+	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(probeLocalDNSRouteDecision{})
+	got := make([]string, 0, len(candidates))
+	for _, item := range candidates {
+		got = append(got, item.Kind+"|"+item.Address)
+	}
+	want := []string{
+		"doh|https://proxy.example/dns-query",
+		"doh|https://doh.example/dns-query",
+		"dot|1.1.1.1:853",
+		"dns|8.8.8.8:53",
+		"dns|192.168.1.1:53",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("candidates=\n%v\nwant=\n%v", got, want)
 	}
 }
 
@@ -645,11 +673,8 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	if !found {
 		t.Fatalf("state groups missing media entry: %v", groups)
 	}
-	joinedTargets := strings.Join(bypassTargets, ",")
-	for _, want := range []string{"controller.example.com", "entry.example.com", "relay.example.com", "exit.example.com"} {
-		if !strings.Contains(joinedTargets, want) {
-			t.Fatalf("missing bypass target host=%s targets=%v", want, bypassTargets)
-		}
+	if len(bypassTargets) != 0 {
+		t.Fatalf("bootstrap direct bypass should be skipped in fake-ip mode, targets=%v", bypassTargets)
 	}
 }
 
