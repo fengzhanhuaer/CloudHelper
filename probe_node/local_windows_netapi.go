@@ -59,6 +59,9 @@ var (
 	probeLocalUpsertWindowsInterfaceIPv4ByLUID = upsertProbeLocalWindowsInterfaceIPv4AddressByLUID
 	probeLocalDeleteWindowsInterfaceIPv4       = deleteProbeLocalWindowsInterfaceIPv4Address
 	probeLocalCallCreateUnicastIPAddressEntry  = probeLocalCallCreateUnicastIPAddressEntryDefault
+	probeLocalCallSetInterfaceDNSSettingsByPtr = probeLocalCallSetInterfaceDNSSettingsByPtrDefault
+	probeLocalCallSetInterfaceDNSSettingsByQW  = probeLocalCallSetInterfaceDNSSettingsByQWordsDefault
+	probeLocalCallSetInterfaceDNSSettingsByDW  = probeLocalCallSetInterfaceDNSSettingsByDWordsDefault
 
 	probeLocalConvertInterfaceLUIDToIndexNative = convertProbeLocalInterfaceLUIDToIndexNative
 	probeLocalListNetAdaptersForLUIDLookup      = listProbeLocalWindowsNetAdapters
@@ -66,6 +69,23 @@ var (
 
 func probeLocalCallCreateUnicastIPAddressEntryDefault(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
 	ret, _, callErr := probeLocalProcCreateUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(row)))
+	return ret, callErr
+}
+
+func probeLocalCallSetInterfaceDNSSettingsByPtrDefault(guid *windows.GUID, settings *probeLocalDNSInterfaceSettings) (uintptr, error) {
+	ret, _, callErr := probeLocalProcSetInterfaceDnsSettingsNet.Call(uintptr(unsafe.Pointer(guid)), uintptr(unsafe.Pointer(settings)))
+	return ret, callErr
+}
+
+func probeLocalCallSetInterfaceDNSSettingsByQWordsDefault(guid *windows.GUID, settings *probeLocalDNSInterfaceSettings) (uintptr, error) {
+	part0, part1 := probeLocalGUIDToQWords(guid)
+	ret, _, callErr := probeLocalProcSetInterfaceDnsSettingsNet.Call(part0, part1, uintptr(unsafe.Pointer(settings)))
+	return ret, callErr
+}
+
+func probeLocalCallSetInterfaceDNSSettingsByDWordsDefault(guid *windows.GUID, settings *probeLocalDNSInterfaceSettings) (uintptr, error) {
+	part0, part1, part2, part3 := probeLocalGUIDToDWords(guid)
+	ret, _, callErr := probeLocalProcSetInterfaceDnsSettingsNet.Call(part0, part1, part2, part3, uintptr(unsafe.Pointer(settings)))
 	return ret, callErr
 }
 
@@ -117,6 +137,17 @@ type probeLocalDNSInterfaceSettings struct {
 	QueryAdapterName    uint32
 	ProfileNameServer   *uint16
 }
+
+const (
+	probeLocalDNSSettingIPv6          = uint64(0x0001)
+	probeLocalDNSSettingNameServer    = uint64(0x0002)
+	probeLocalDNSSettingSearchList    = uint64(0x0004)
+	probeLocalDNSSettingRegistration  = uint64(0x0008)
+	probeLocalDNSSettingAdapterName   = uint64(0x0010)
+	probeLocalDNSSettingEnableLLMNR   = uint64(0x0020)
+	probeLocalDNSSettingQueryAdapter  = uint64(0x0040)
+	probeLocalDNSSettingProfileServer = uint64(0x0080)
+)
 
 func ensureProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
 	if interfaceIndex <= 0 {
@@ -697,16 +728,55 @@ func setProbeLocalWindowsInterfaceDNS(interfaceGUID string, dnsServers []string)
 	if err != nil {
 		return fmt.Errorf("encode dns servers failed: %w", err)
 	}
+	searchListPtr, err := syscall.UTF16PtrFromString("")
+	if err != nil {
+		return fmt.Errorf("encode dns search list failed: %w", err)
+	}
 	settings := probeLocalDNSInterfaceSettings{
-		Version:             1,
-		Flags:               0x0002 | 0x0008 | 0x0010,
-		NameServer:          nameServerPtr,
-		RegistrationEnabled: 0,
-		RegisterAdapterName: 0,
+		Version:    1,
+		Flags:      probeLocalDNSSettingNameServer | probeLocalDNSSettingSearchList,
+		NameServer: nameServerPtr,
+		SearchList: searchListPtr,
 	}
-	ret, _, callErr := probeLocalProcSetInterfaceDnsSettingsNet.Call(uintptr(unsafe.Pointer(&guid)), uintptr(unsafe.Pointer(&settings)))
-	if ret != 0 {
-		return probeLocalWindowsNetapiCallErr("SetInterfaceDnsSettings", ret, callErr)
+	callers := []struct {
+		name string
+		fn   func(*windows.GUID, *probeLocalDNSInterfaceSettings) (uintptr, error)
+	}{
+		{name: "ptr", fn: probeLocalCallSetInterfaceDNSSettingsByPtr},
+		{name: "qwords", fn: probeLocalCallSetInterfaceDNSSettingsByQW},
+		{name: "dwords", fn: probeLocalCallSetInterfaceDNSSettingsByDW},
 	}
-	return nil
+	var lastErr error
+	for _, caller := range callers {
+		ret, callErr := caller.fn(&guid, &settings)
+		if ret == 0 {
+			return nil
+		}
+		lastErr = probeLocalWindowsNetapiCallErr("SetInterfaceDnsSettings("+caller.name+")", ret, callErr)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("SetInterfaceDnsSettings failed without details")
+	}
+	return lastErr
+}
+
+func probeLocalGUIDToQWords(guid *windows.GUID) (uintptr, uintptr) {
+	var raw [16]byte
+	binary.LittleEndian.PutUint32(raw[0:4], guid.Data1)
+	binary.LittleEndian.PutUint16(raw[4:6], guid.Data2)
+	binary.LittleEndian.PutUint16(raw[6:8], guid.Data3)
+	copy(raw[8:16], guid.Data4[:])
+	return uintptr(binary.LittleEndian.Uint64(raw[0:8])), uintptr(binary.LittleEndian.Uint64(raw[8:16]))
+}
+
+func probeLocalGUIDToDWords(guid *windows.GUID) (uintptr, uintptr, uintptr, uintptr) {
+	var raw [16]byte
+	binary.LittleEndian.PutUint32(raw[0:4], guid.Data1)
+	binary.LittleEndian.PutUint16(raw[4:6], guid.Data2)
+	binary.LittleEndian.PutUint16(raw[6:8], guid.Data3)
+	copy(raw[8:16], guid.Data4[:])
+	return uintptr(binary.LittleEndian.Uint32(raw[0:4])),
+		uintptr(binary.LittleEndian.Uint32(raw[4:8])),
+		uintptr(binary.LittleEndian.Uint32(raw[8:12])),
+		uintptr(binary.LittleEndian.Uint32(raw[12:16]))
 }
