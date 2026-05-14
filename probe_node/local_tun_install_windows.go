@@ -672,6 +672,9 @@ func setProbeLocalWindowsRouteTargetEnv(interfaceIndex int) {
 	_ = os.Setenv("PROBE_LOCAL_TUN_GATEWAY", probeLocalTUNRouteGatewayIPv4)
 	_ = os.Setenv("PROBE_LOCAL_TUN_DNS_HOST", probeLocalTUNInterfaceIPv4)
 	if interfaceIndex > 0 {
+		if adapter, err := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex); err == nil && adapter.InterfaceLUID > 0 {
+			_ = os.Setenv("PROBE_LOCAL_TUN_IF_LUID", strconv.FormatUint(adapter.InterfaceLUID, 10))
+		}
 		_ = os.Setenv("PROBE_LOCAL_TUN_IF_INDEX", strconv.Itoa(interfaceIndex))
 	}
 }
@@ -1121,6 +1124,7 @@ func uninstallProbeLocalTUNDriver() error {
 	}
 	_ = os.Unsetenv("PROBE_LOCAL_TUN_GATEWAY")
 	_ = os.Unsetenv("PROBE_LOCAL_TUN_DNS_HOST")
+	_ = os.Unsetenv("PROBE_LOCAL_TUN_IF_LUID")
 	_ = os.Unsetenv("PROBE_LOCAL_TUN_IF_INDEX")
 	clearProbeLocalTUNInstallObservation()
 	return nil

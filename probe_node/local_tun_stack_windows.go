@@ -999,11 +999,11 @@ func ensureProbeLocalDirectBypassForTarget(targetAddr string) error {
 }
 
 func resolveProbeLocalWindowsDirectBypassRouteTarget() (probeLocalWindowsDirectBypassRouteTarget, error) {
-	_, tunIfIndex, err := resolveProbeLocalWindowsRouteTarget()
+	routeTarget, err := resolveProbeLocalWindowsRouteTarget()
 	if err != nil {
 		return probeLocalWindowsDirectBypassRouteTarget{}, err
 	}
-	return probeLocalResolveWindowsPrimaryEgressRoute(tunIfIndex)
+	return probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
 }
 
 func acquireProbeLocalTUNDirectBypassRoute(host string) (func(), error) {

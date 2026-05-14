@@ -24,10 +24,17 @@ const (
 )
 
 type probeLocalWindowsRouteDef struct {
-	Prefix  string
-	Mask    string
-	Gateway string
-	IfIndex int
+	Prefix        string
+	Mask          string
+	Gateway       string
+	InterfaceLUID uint64
+	IfIndex       int
+}
+
+type probeLocalWindowsRouteTarget struct {
+	Gateway        string
+	InterfaceLUID  uint64
+	InterfaceIndex int
 }
 
 type probeLocalTUNPrimaryDNSBackup struct {
@@ -45,6 +52,7 @@ var probeLocalWindowsTakeoverState = struct {
 	enabled            bool
 	routePrintOutput   string
 	tunGateway         string
+	tunInterfaceLUID   uint64
 	tunIfIndex         int
 	bypassGateway      string
 	bypassInterfaceIdx int
@@ -56,7 +64,7 @@ var (
 )
 
 func applyProbeLocalProxyTakeover() error {
-	gateway, ifIndex, err := resolveProbeLocalWindowsRouteTarget()
+	routeTarget, err := resolveProbeLocalWindowsRouteTarget()
 	if err != nil {
 		return err
 	}
@@ -73,7 +81,7 @@ func applyProbeLocalProxyTakeover() error {
 		return fmt.Errorf("inspect windows route table failed: %w", err)
 	}
 
-	routeDefs := probeLocalWindowsTakeoverRouteDefs(gateway, ifIndex)
+	routeDefs := probeLocalWindowsTakeoverRouteDefs(routeTarget)
 	createdRoutes := make([]probeLocalWindowsRouteDef, 0, 5)
 	for _, routeDef := range routeDefs {
 		created, routeErr := ensureProbeLocalWindowsRoute(routeDef)
@@ -97,26 +105,38 @@ func applyProbeLocalProxyTakeover() error {
 	probeLocalWindowsTakeoverState.mu.Lock()
 	probeLocalWindowsTakeoverState.enabled = true
 	probeLocalWindowsTakeoverState.routePrintOutput = out
-	probeLocalWindowsTakeoverState.tunGateway = gateway
-	probeLocalWindowsTakeoverState.tunIfIndex = ifIndex
+	probeLocalWindowsTakeoverState.tunGateway = routeTarget.Gateway
+	probeLocalWindowsTakeoverState.tunInterfaceLUID = routeTarget.InterfaceLUID
+	probeLocalWindowsTakeoverState.tunIfIndex = routeTarget.InterfaceIndex
 	probeLocalWindowsTakeoverState.bypassGateway = ""
 	probeLocalWindowsTakeoverState.bypassInterfaceIdx = 0
 	probeLocalWindowsTakeoverState.routeDefs = append([]probeLocalWindowsRouteDef(nil), routeDefs...)
 	probeLocalWindowsTakeoverState.mu.Unlock()
 
-	logProbeInfof("probe local proxy takeover applied on windows fake-ip mode: gateway=%s if_index=%d routes=%d route_snapshot_len=%d", gateway, ifIndex, len(routeDefs), len(strings.TrimSpace(out)))
+	logProbeInfof(
+		"probe local proxy takeover applied on windows fake-ip mode: gateway=%s if_luid=%d if_index=%d routes=%d route_snapshot_len=%d",
+		routeTarget.Gateway,
+		routeTarget.InterfaceLUID,
+		routeTarget.InterfaceIndex,
+		len(routeDefs),
+		len(strings.TrimSpace(out)),
+	)
 	return nil
 }
 
 func restoreProbeLocalProxyDirect() error {
 	probeLocalWindowsTakeoverState.mu.Lock()
 	wasEnabled := probeLocalWindowsTakeoverState.enabled
-	gateway := probeLocalWindowsTakeoverState.tunGateway
-	ifIndex := probeLocalWindowsTakeoverState.tunIfIndex
+	routeTarget := probeLocalWindowsRouteTarget{
+		Gateway:        probeLocalWindowsTakeoverState.tunGateway,
+		InterfaceLUID:  probeLocalWindowsTakeoverState.tunInterfaceLUID,
+		InterfaceIndex: probeLocalWindowsTakeoverState.tunIfIndex,
+	}
 	routeDefs := append([]probeLocalWindowsRouteDef(nil), probeLocalWindowsTakeoverState.routeDefs...)
 	probeLocalWindowsTakeoverState.enabled = false
 	probeLocalWindowsTakeoverState.routePrintOutput = ""
 	probeLocalWindowsTakeoverState.tunGateway = ""
+	probeLocalWindowsTakeoverState.tunInterfaceLUID = 0
 	probeLocalWindowsTakeoverState.tunIfIndex = 0
 	probeLocalWindowsTakeoverState.bypassGateway = ""
 	probeLocalWindowsTakeoverState.bypassInterfaceIdx = 0
@@ -129,7 +149,7 @@ func restoreProbeLocalProxyDirect() error {
 
 	var allErr error
 	if len(routeDefs) == 0 {
-		routeDefs = probeLocalWindowsTakeoverRouteDefs(gateway, ifIndex)
+		routeDefs = probeLocalWindowsTakeoverRouteDefs(routeTarget)
 	}
 	for _, routeDef := range routeDefs {
 		if err := deleteProbeLocalWindowsRoute(routeDef); err != nil {
@@ -145,33 +165,43 @@ func restoreProbeLocalProxyDirect() error {
 	return nil
 }
 
-func resolveProbeLocalWindowsRouteTarget() (string, int, error) {
+func resolveProbeLocalWindowsRouteTarget() (probeLocalWindowsRouteTarget, error) {
 	gateway := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY"))
 	if gateway == "" {
-		return "", 0, errors.New("missing PROBE_LOCAL_TUN_GATEWAY")
+		return probeLocalWindowsRouteTarget{}, errors.New("missing PROBE_LOCAL_TUN_GATEWAY")
 	}
-	rawIfIndex := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX"))
-	if rawIfIndex == "" {
-		return "", 0, errors.New("missing PROBE_LOCAL_TUN_IF_INDEX")
+	rawInterfaceLUID := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_LUID"))
+	if rawInterfaceLUID == "" {
+		return probeLocalWindowsRouteTarget{}, errors.New("missing PROBE_LOCAL_TUN_IF_LUID")
 	}
-	ifIndex, err := strconv.Atoi(rawIfIndex)
-	if err != nil || ifIndex <= 0 {
-		return "", 0, fmt.Errorf("invalid PROBE_LOCAL_TUN_IF_INDEX=%q", rawIfIndex)
+	interfaceLUID, parseErr := strconv.ParseUint(rawInterfaceLUID, 10, 64)
+	if parseErr != nil || interfaceLUID == 0 {
+		return probeLocalWindowsRouteTarget{}, fmt.Errorf("invalid PROBE_LOCAL_TUN_IF_LUID=%q", rawInterfaceLUID)
 	}
-	return gateway, ifIndex, nil
+	interfaceIndex, indexErr := interfaceIndexFromLUID(interfaceLUID)
+	if indexErr != nil {
+		return probeLocalWindowsRouteTarget{}, fmt.Errorf("resolve interface index from PROBE_LOCAL_TUN_IF_LUID failed: %w", indexErr)
+	}
+	return probeLocalWindowsRouteTarget{Gateway: gateway, InterfaceLUID: interfaceLUID, InterfaceIndex: interfaceIndex}, nil
 }
 
-func probeLocalWindowsTakeoverRouteDefs(gateway string, ifIndex int) []probeLocalWindowsRouteDef {
+func probeLocalWindowsTakeoverRouteDefs(routeTarget probeLocalWindowsRouteTarget) []probeLocalWindowsRouteDef {
 	prefix, mask := probeLocalWindowsFakeIPRoutePrefixAndMask(currentProbeLocalDNSFakeIPCIDR())
 	routeDefs := []probeLocalWindowsRouteDef{
-		{Prefix: prefix, Mask: mask, Gateway: gateway, IfIndex: ifIndex},
+		{Prefix: prefix, Mask: mask, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
 	}
 	for _, cidr := range probeLocalTunnelCIDRRules() {
 		cidrPrefix, cidrMask := probeLocalWindowsCIDRRoutePrefixAndMask(cidr)
 		if cidrPrefix == "" || cidrMask == "" {
 			continue
 		}
-		routeDefs = append(routeDefs, probeLocalWindowsRouteDef{Prefix: cidrPrefix, Mask: cidrMask, Gateway: gateway, IfIndex: ifIndex})
+		routeDefs = append(routeDefs, probeLocalWindowsRouteDef{
+			Prefix:        cidrPrefix,
+			Mask:          cidrMask,
+			Gateway:       routeTarget.Gateway,
+			InterfaceLUID: routeTarget.InterfaceLUID,
+			IfIndex:       routeTarget.InterfaceIndex,
+		})
 	}
 	return dedupeProbeLocalWindowsRouteDefs(routeDefs)
 }
@@ -197,7 +227,7 @@ func deleteProbeLocalWindowsSplitRoute(prefix, mask, gateway string, ifIndex int
 }
 
 func deleteProbeLocalWindowsRoute(routeDef probeLocalWindowsRouteDef) error {
-	if strings.TrimSpace(routeDef.Gateway) == "" || routeDef.IfIndex <= 0 {
+	if strings.TrimSpace(routeDef.Gateway) == "" || (routeDef.InterfaceLUID == 0 && routeDef.IfIndex <= 0) {
 		return nil
 	}
 	return probeLocalDeleteWindowsRouteEntry(routeDef)
@@ -250,6 +280,7 @@ func dedupeProbeLocalWindowsRouteDefs(routeDefs []probeLocalWindowsRouteDef) []p
 			strings.TrimSpace(routeDef.Prefix),
 			strings.TrimSpace(routeDef.Mask),
 			strings.TrimSpace(routeDef.Gateway),
+			fmt.Sprintf("%d", routeDef.InterfaceLUID),
 			strconv.Itoa(routeDef.IfIndex),
 		}, "|")
 		if _, ok := seen[key]; ok {
@@ -307,11 +338,17 @@ func currentProbeLocalSystemDNSServers() []string {
 		return filterProbeLocalTUNPrimaryDNSServers(backup.DNSServers)
 	}
 	probeLocalWindowsTakeoverState.mu.Lock()
+	tunInterfaceLUID := probeLocalWindowsTakeoverState.tunInterfaceLUID
 	tunIfIndex := probeLocalWindowsTakeoverState.tunIfIndex
 	probeLocalWindowsTakeoverState.mu.Unlock()
-	if tunIfIndex <= 0 {
-		if _, ifIndex, err := resolveProbeLocalWindowsRouteTarget(); err == nil {
+	if tunIfIndex <= 0 && tunInterfaceLUID > 0 {
+		if ifIndex, err := interfaceIndexFromLUID(tunInterfaceLUID); err == nil {
 			tunIfIndex = ifIndex
+		}
+	}
+	if tunIfIndex <= 0 {
+		if routeTarget, err := resolveProbeLocalWindowsRouteTarget(); err == nil {
+			tunIfIndex = routeTarget.InterfaceIndex
 		}
 	}
 	if tunIfIndex <= 0 {
@@ -326,7 +363,7 @@ func currentProbeLocalSystemDNSServers() []string {
 }
 
 func applyProbeLocalTUNPrimaryDNS() error {
-	_, tunIfIndex, err := resolveProbeLocalWindowsRouteTarget()
+	routeTarget, err := resolveProbeLocalWindowsRouteTarget()
 	if err != nil {
 		return err
 	}
@@ -338,7 +375,7 @@ func applyProbeLocalTUNPrimaryDNS() error {
 		return fmt.Errorf("invalid tun dns host: %s", dnsHost)
 	}
 	reconcileProbeLocalDNSRuntime()
-	adapter, err := probeLocalResolveWindowsPrimaryDNSAdapter(tunIfIndex)
+	adapter, err := probeLocalResolveWindowsPrimaryDNSAdapter(routeTarget.InterfaceIndex)
 	if err != nil {
 		return fmt.Errorf("resolve windows primary dns adapter failed: %w", err)
 	}
