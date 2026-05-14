@@ -1054,6 +1054,42 @@ func TestResolveProbeLocalWintunInterfaceIndexFallbackRejectsStaleHandleIfIndex(
 	}
 }
 
+func TestResolveProbeLocalWintunInterfaceIndexFallbackRequireDifferentRejectsSameIfIndex(t *testing.T) {
+	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
+		if interfaceIndex == 47 {
+			return windowsAdapterInfo{InterfaceIndex: 47}, nil
+		}
+		return windowsAdapterInfo{}, errors.New("adapter not found")
+	}
+	probeLocalFindWintunAdapterByLUID = func(luid uint64) (probeLocalWindowsNetAdapter, bool, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d", luid)
+		}
+		return probeLocalWindowsNetAdapter{InterfaceIndex: 47, InterfaceLUID: luid, Name: "Maple"}, true, nil
+	}
+	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
+	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) { return 12345, nil }
+	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d", luid)
+		}
+		return 47, nil
+	}
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "47")
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	_, err := resolveProbeLocalWintunInterfaceIndexFallbackRequireDifferent(47)
+	if err == nil {
+		t.Fatal("expected resolveProbeLocalWintunInterfaceIndexFallbackRequireDifferent error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "stale") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesWhenFallbackIfIndexNotFound(t *testing.T) {
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
 		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
