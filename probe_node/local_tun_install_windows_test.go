@@ -876,6 +876,71 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesSameFallbackIfIndexA
 	}
 }
 
+func TestEnsureProbeLocalWindowsRouteTargetConfiguredResolvesNewIfIndexAfterSameIfIndexNotFound(t *testing.T) {
+	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
+	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) { return 12345, nil }
+	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d", luid)
+		}
+		return 53, nil
+	}
+	recycleCalls := 0
+	probeLocalRecycleWindowsTunAdapterHook = func(interfaceIndex int) error {
+		recycleCalls++
+		if interfaceIndex != 47 {
+			t.Fatalf("interfaceIndex=%d, want 47", interfaceIndex)
+		}
+		return nil
+	}
+	probeLocalRepairWindowsRouteTargetIPv4Hook = func(interfaceIndex int, _ string, _ int) error {
+		if interfaceIndex != 47 {
+			t.Fatalf("interfaceIndex=%d, want 47", interfaceIndex)
+		}
+		return nil
+	}
+	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
+		switch interfaceIndex {
+		case 47:
+			return errors.New("CreateUnicastIpAddressEntry failed: code=2")
+		case 53:
+			return nil
+		default:
+			return errors.New("unexpected interface index")
+		}
+	}
+	refreshCalls := 0
+	origRefresh := probeLocalRefreshWintunRouteTargetHandle
+	probeLocalRefreshWintunRouteTargetHandle = func(disallowIfIndex int) (int, error) {
+		refreshCalls++
+		if disallowIfIndex != 47 {
+			t.Fatalf("disallowIfIndex=%d, want 47", disallowIfIndex)
+		}
+		return 47, nil
+	}
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "47")
+	t.Cleanup(func() {
+		probeLocalRefreshWintunRouteTargetHandle = origRefresh
+		resetProbeLocalTUNInstallWindowsHooksForTest()
+	})
+
+	if err := recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(47); err != nil {
+		t.Fatalf("recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout returned error: %v", err)
+	}
+	if recycleCalls != 1 {
+		t.Fatalf("recycleCalls=%d, want 1", recycleCalls)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refreshCalls=%d, want 1", refreshCalls)
+	}
+	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "53" {
+		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 53", got)
+	}
+}
+
 func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterCreateUnicastNotFound(t *testing.T) {
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
 		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil

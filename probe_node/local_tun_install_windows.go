@@ -36,6 +36,7 @@ var (
 	probeLocalEnsureWindowsInterfaceIPv4       = ensureProbeLocalWindowsInterfaceIPv4Address
 	probeLocalRepairWindowsRouteTargetIPv4Hook = probeLocalRepairWindowsInterfaceIPv4Address
 	probeLocalRecycleWindowsTunAdapterHook     = recycleProbeLocalWindowsNetAdapter
+	probeLocalRefreshWintunRouteTargetHandle   = refreshProbeLocalWintunRouteTargetHandle
 	probeLocalConvertInterfaceLUIDToIndex      = convertProbeLocalInterfaceLUIDToIndex
 	probeLocalRunCommand                       = runProbeLocalCommand
 	probeLocalIsWindowsAdmin                   = isWindowsAdmin
@@ -853,7 +854,7 @@ func recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(interfaceIndex i
 		logProbeWarnf("probe local tun route target same ifindex recycle completed: ifindex=%d", interfaceIndex)
 	}
 	retryIfIndex := interfaceIndex
-	if resolvedIfIndex, resolveErr := refreshProbeLocalWintunRouteTargetHandle(interfaceIndex); resolveErr == nil && resolvedIfIndex > 0 {
+	if resolvedIfIndex, resolveErr := probeLocalRefreshWintunRouteTargetHandle(interfaceIndex); resolveErr == nil && resolvedIfIndex > 0 {
 		if resolvedIfIndex != interfaceIndex {
 			logProbeWarnf("probe local tun route target same ifindex recovery switched ifindex: old=%d new=%d", interfaceIndex, resolvedIfIndex)
 		}
@@ -872,13 +873,37 @@ func recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(interfaceIndex i
 			setProbeLocalWindowsRouteTargetEnv(retryIfIndex)
 			return nil
 		}
-		logProbeWarnf("probe local tun route target same-ifindex recovery retry failed: ifindex=%d attempt=%d bind_timeout=%t not_found=%t err=%v", retryIfIndex, attempt+1, isProbeLocalIPv4BindableTimeoutErr(retryErr), isProbeLocalWindowsInterfaceNotFoundErr(retryErr), retryErr)
-		if !isProbeLocalIPv4BindableTimeoutErr(retryErr) && !isProbeLocalWindowsInterfaceNotFoundErr(retryErr) {
+		bindTimeout := isProbeLocalIPv4BindableTimeoutErr(retryErr)
+		notFound := isProbeLocalWindowsInterfaceNotFoundErr(retryErr)
+		logProbeWarnf("probe local tun route target same-ifindex recovery retry failed: ifindex=%d attempt=%d bind_timeout=%t not_found=%t err=%v", retryIfIndex, attempt+1, bindTimeout, notFound, retryErr)
+		if notFound {
+			resolvedIfIndex, resolveErr := resolveProbeLocalWintunInterfaceIndexFallback(retryIfIndex)
+			if resolveErr == nil && resolvedIfIndex > 0 && resolvedIfIndex != retryIfIndex {
+				logProbeWarnf("probe local tun route target same-ifindex recovery switched ifindex after not-found: old=%d new=%d attempt=%d", retryIfIndex, resolvedIfIndex, attempt+1)
+				retryIfIndex = resolvedIfIndex
+				continue
+			}
+			if resolveErr != nil {
+				recoveryErr = errors.Join(recoveryErr, resolveErr)
+				logProbeWarnf("probe local tun route target same-ifindex recovery resolve fallback after not-found failed: ifindex=%d attempt=%d err=%v", retryIfIndex, attempt+1, resolveErr)
+			}
+		}
+		if !bindTimeout && !notFound {
 			logProbeLocalWindowsRouteTargetDebugContext("route_target_recover.retry_failed_non_timeout", retryIfIndex, retryErr)
 			return retryErr
 		}
 	}
 	finalErr := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(retryIfIndex)
+	if finalErr != nil && isProbeLocalWindowsInterfaceNotFoundErr(finalErr) {
+		if resolvedIfIndex, resolveErr := resolveProbeLocalWintunInterfaceIndexFallback(retryIfIndex); resolveErr == nil && resolvedIfIndex > 0 && resolvedIfIndex != retryIfIndex {
+			logProbeWarnf("probe local tun route target same-ifindex recovery final retry switched ifindex: old=%d new=%d", retryIfIndex, resolvedIfIndex)
+			retryIfIndex = resolvedIfIndex
+			finalErr = ensureProbeLocalWindowsRouteTargetByInterfaceIndex(retryIfIndex)
+		} else if resolveErr != nil {
+			recoveryErr = errors.Join(recoveryErr, resolveErr)
+			logProbeWarnf("probe local tun route target same-ifindex recovery final fallback resolve failed: ifindex=%d err=%v", retryIfIndex, resolveErr)
+		}
+	}
 	if finalErr != nil && recoveryErr != nil {
 		outErr := fmt.Errorf("recover windows tun route target after same ifindex fallback failed: %w", errors.Join(recoveryErr, finalErr))
 		logProbeLocalWindowsRouteTargetDebugContext("route_target_recover.final_failed_with_recovery_err", retryIfIndex, outErr)
@@ -1228,6 +1253,7 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalEnsureWindowsInterfaceIPv4 = ensureProbeLocalWindowsInterfaceIPv4Address
 	probeLocalRepairWindowsRouteTargetIPv4Hook = probeLocalRepairWindowsInterfaceIPv4Address
 	probeLocalRecycleWindowsTunAdapterHook = recycleProbeLocalWindowsNetAdapter
+	probeLocalRefreshWintunRouteTargetHandle = refreshProbeLocalWintunRouteTargetHandle
 	probeLocalUpsertWindowsInterfaceIPv4 = upsertProbeLocalWindowsInterfaceIPv4Address
 	probeLocalDeleteWindowsInterfaceIPv4 = deleteProbeLocalWindowsInterfaceIPv4Address
 	probeLocalConvertInterfaceLUIDToIndex = convertProbeLocalInterfaceLUIDToIndex
