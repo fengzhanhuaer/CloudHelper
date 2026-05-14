@@ -9,7 +9,6 @@ import (
 	"net"
 	"strings"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -39,7 +38,6 @@ var (
 	probeLocalModIphlpapiNet                         = windows.NewLazySystemDLL("iphlpapi.dll")
 	probeLocalProcCreateUnicastIPAddressEntryNet     = probeLocalModIphlpapiNet.NewProc("CreateUnicastIpAddressEntry")
 	probeLocalProcDeleteUnicastIPAddressEntryNet     = probeLocalModIphlpapiNet.NewProc("DeleteUnicastIpAddressEntry")
-	probeLocalProcSetUnicastIPAddressEntryNet        = probeLocalModIphlpapiNet.NewProc("SetUnicastIpAddressEntry")
 	probeLocalProcInitializeUnicastIPAddressEntryNet = probeLocalModIphlpapiNet.NewProc("InitializeUnicastIpAddressEntry")
 	probeLocalProcConvertInterfaceLuidToIndexNet     = probeLocalModIphlpapiNet.NewProc("ConvertInterfaceLuidToIndex")
 	probeLocalProcCreateIpForwardEntry2Net           = probeLocalModIphlpapiNet.NewProc("CreateIpForwardEntry2")
@@ -56,20 +54,15 @@ var (
 	probeLocalSnapshotWindowsIPv4Routes        = snapshotProbeLocalWindowsIPv4Routes
 	probeLocalSetWindowsInterfaceDNS           = setProbeLocalWindowsInterfaceDNS
 	probeLocalFindWindowsAdapterByIfIndex      = windowsFindAdapterByIfIndex
+	probeLocalFindWindowsAdapterByLUID         = windowsFindAdapterByLUID
 	probeLocalUpsertWindowsInterfaceIPv4       = upsertProbeLocalWindowsInterfaceIPv4Address
+	probeLocalUpsertWindowsInterfaceIPv4ByLUID = upsertProbeLocalWindowsInterfaceIPv4AddressByLUID
 	probeLocalDeleteWindowsInterfaceIPv4       = deleteProbeLocalWindowsInterfaceIPv4Address
-	probeLocalCallSetUnicastIPAddressEntry      = probeLocalCallSetUnicastIPAddressEntryDefault
-	probeLocalCallCreateUnicastIPAddressEntry   = probeLocalCallCreateUnicastIPAddressEntryDefault
+	probeLocalCallCreateUnicastIPAddressEntry  = probeLocalCallCreateUnicastIPAddressEntryDefault
 
 	probeLocalConvertInterfaceLUIDToIndexNative = convertProbeLocalInterfaceLUIDToIndexNative
 	probeLocalListNetAdaptersForLUIDLookup      = listProbeLocalWindowsNetAdapters
-	probeLocalNetapiSleep                       = time.Sleep
 )
-
-func probeLocalCallSetUnicastIPAddressEntryDefault(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
-	ret, _, callErr := probeLocalProcSetUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(row)))
-	return ret, callErr
-}
 
 func probeLocalCallCreateUnicastIPAddressEntryDefault(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
 	ret, _, callErr := probeLocalProcCreateUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(row)))
@@ -129,48 +122,47 @@ func ensureProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	if interfaceIndex <= 0 {
 		return errors.New("invalid interface index")
 	}
-	if prefixLength < 0 || prefixLength > 32 {
-		return errors.New("invalid ipv4 prefix length")
+	ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip4 == nil {
+		return errors.New("invalid ipv4 address")
+	}
+	if prefixLength <= 0 || prefixLength > 32 {
+		prefixLength = probeLocalTUNRouteIPv4PrefixLen
+	}
+	return ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex, ip4.String(), prefixLength)
+}
+
+func ensureProbeLocalWindowsInterfaceIPv4AddressByLUID(interfaceLUID uint64, ipText string, prefixLength int) error {
+	if interfaceLUID == 0 {
+		return errors.New("invalid interface luid")
 	}
 	ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
 	if ip4 == nil {
 		return errors.New("invalid ipv4 address")
 	}
+	if prefixLength <= 0 || prefixLength > 32 {
+		prefixLength = probeLocalTUNRouteIPv4PrefixLen
+	}
 	cleanIP := ip4.String()
-
-	adapter, err := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex)
-	if err == nil {
-		for _, existing := range adapter.IPv4Addrs {
-			if strings.EqualFold(strings.TrimSpace(existing), cleanIP) {
-				if bindErr := waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex, ip4, 5*time.Second); bindErr != nil {
-					return bindErr
-				}
-				return ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex, cleanIP, prefixLength)
-			}
-		}
+	cleanDNS := cleanIP
+	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)).To4(); parsedDNS != nil {
+		cleanDNS = parsedDNS.String()
 	}
 
-	var row probeLocalMIBUnicastIPAddressRow
-	probeLocalProcInitializeUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
-	row.Address[0] = byte(windows.AF_INET)
-	row.Address[1] = byte(windows.AF_INET >> 8)
-	copy(row.Address[4:8], ip4)
-	row.InterfaceIndex = uint32(interfaceIndex)
-	row.OnLinkPrefixLength = uint8(prefixLength)
-	row.ValidLifetime = 0xFFFFFFFF
-	row.PreferredLifetime = 0xFFFFFFFF
-
-	ret, _, callErr := probeLocalProcCreateUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
-	if ret != 0 && ret != uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
-		if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
-			return fmt.Errorf("CreateUnicastIpAddressEntry failed: %w", callErr)
-		}
-		return fmt.Errorf("CreateUnicastIpAddressEntry failed: code=%d", ret)
+	adapter, err := probeLocalFindWindowsAdapterByLUID(interfaceLUID)
+	if err != nil {
+		return err
 	}
-	if bindErr := waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex, ip4, 5*time.Second); bindErr != nil {
-		return bindErr
+	if err := probeLocalUpsertWindowsInterfaceIPv4ByLUID(interfaceLUID, adapter.InterfaceIndex, cleanIP, prefixLength); err != nil {
+		return err
 	}
-	return ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex, cleanIP, prefixLength)
+	if strings.TrimSpace(adapter.AdapterGUID) == "" {
+		return errors.New("adapter guid is empty")
+	}
+	if err := probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, []string{cleanDNS}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipText string, prefixLength int) error {
@@ -216,72 +208,6 @@ func probeLocalIPv4MaskFromPrefix(prefixLength int) (string, error) {
 	return net.IP(mask).String(), nil
 }
 
-func waitProbeLocalWindowsInterfaceIPv4Bindable(interfaceIndex int, ip4 net.IP, timeout time.Duration) error {
-	cleanIP := strings.TrimSpace(ip4.String())
-	if cleanIP == "" {
-		return errors.New("invalid ipv4 address")
-	}
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	deadline := time.Now().Add(timeout)
-	listenAddr := net.JoinHostPort(cleanIP, "0")
-	for {
-		ipPresent := false
-		adapter, listErr := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex)
-		if listErr == nil {
-			for _, existing := range adapter.IPv4Addrs {
-				if strings.EqualFold(strings.TrimSpace(existing), cleanIP) {
-					ipPresent = true
-					break
-				}
-			}
-		}
-		if ipPresent {
-			conn, bindErr := net.ListenPacket("udp4", listenAddr)
-			if bindErr == nil {
-				_ = conn.Close()
-				return nil
-			}
-			if !isProbeLocalListenAddrNotAvailableError(bindErr) {
-				return bindErr
-			}
-			if repairErr := probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex, cleanIP, 15); repairErr == nil {
-				time.Sleep(220 * time.Millisecond)
-				conn2, bindErr2 := net.ListenPacket("udp4", listenAddr)
-				if bindErr2 == nil {
-					_ = conn2.Close()
-					return nil
-				}
-				if !isProbeLocalListenAddrNotAvailableError(bindErr2) {
-					return bindErr2
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("ipv4 address not bindable in time: if=%d ip=%s", interfaceIndex, cleanIP)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func isProbeLocalListenAddrNotAvailableError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
-		if errno == syscall.EADDRNOTAVAIL || errno == syscall.Errno(10049) {
-			return true
-		}
-	}
-	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	if strings.Contains(message, "cannot assign requested address") || strings.Contains(message, "requested address is not valid") {
-		return true
-	}
-	return false
-}
-
 func probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex int, ipText string, prefixLength int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid interface index")
@@ -291,14 +217,9 @@ func probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 		return errors.New("invalid ipv4 address")
 	}
 	if prefixLength <= 0 || prefixLength > 32 {
-		prefixLength = 15
+		prefixLength = probeLocalTUNRouteIPv4PrefixLen
 	}
-	if err := probeLocalDeleteWindowsInterfaceIPv4(interfaceIndex, ip4.String()); err != nil {
-		if !isProbeLocalIgnorableDeleteIPv4Err(err) {
-			return err
-		}
-		logProbeWarnf("probe local tun ignored delete ipv4 repair error before recreate: if=%d ip=%s err=%v", interfaceIndex, ip4.String(), err)
-	}
+	_ = probeLocalDeleteWindowsInterfaceIPv4(interfaceIndex, ip4.String())
 	return probeLocalUpsertWindowsInterfaceIPv4(interfaceIndex, ip4.String(), prefixLength)
 }
 
@@ -317,6 +238,12 @@ func upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	if ip4 == nil {
 		return errors.New("invalid ipv4 address")
 	}
+	if interfaceIndex <= 0 {
+		return errors.New("invalid interface index")
+	}
+	if prefixLength <= 0 || prefixLength > 32 {
+		prefixLength = probeLocalTUNRouteIPv4PrefixLen
+	}
 	var row probeLocalMIBUnicastIPAddressRow
 	probeLocalProcInitializeUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
 	row.Address[0] = byte(windows.AF_INET)
@@ -326,14 +253,45 @@ func upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	row.OnLinkPrefixLength = uint8(prefixLength)
 	row.ValidLifetime = 0xFFFFFFFF
 	row.PreferredLifetime = 0xFFFFFFFF
-	ret, callErr := probeLocalCallSetUnicastIPAddressEntry(&row)
-	if ret == 0 {
-		return nil
+	row.DadState = 4 // DadStatePreferred
+
+	if adapter, err := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex); err == nil && adapter.InterfaceLUID > 0 {
+		row.InterfaceLuid = adapter.InterfaceLUID
 	}
-	if ret != uintptr(windows.ERROR_NOT_FOUND) && ret != uintptr(windows.ERROR_INVALID_PARAMETER) {
-		return probeLocalWindowsNetapiCallErr("SetUnicastIpAddressEntry", ret, callErr)
+
+	ret, callErr := probeLocalCallCreateUnicastIPAddressEntry(&row)
+	if ret != 0 && ret != uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
+		return probeLocalWindowsNetapiCallErr("CreateUnicastIpAddressEntry", ret, callErr)
 	}
-	ret, callErr = probeLocalCallCreateUnicastIPAddressEntry(&row)
+	return nil
+}
+
+func upsertProbeLocalWindowsInterfaceIPv4AddressByLUID(interfaceLUID uint64, interfaceIndex int, ipText string, prefixLength int) error {
+	ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip4 == nil {
+		return errors.New("invalid ipv4 address")
+	}
+	if interfaceLUID == 0 {
+		return errors.New("invalid interface luid")
+	}
+	if prefixLength <= 0 || prefixLength > 32 {
+		prefixLength = probeLocalTUNRouteIPv4PrefixLen
+	}
+	var row probeLocalMIBUnicastIPAddressRow
+	probeLocalProcInitializeUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	row.Address[0] = byte(windows.AF_INET)
+	row.Address[1] = byte(windows.AF_INET >> 8)
+	copy(row.Address[4:8], ip4)
+	row.InterfaceLuid = interfaceLUID
+	if interfaceIndex > 0 {
+		row.InterfaceIndex = uint32(interfaceIndex)
+	}
+	row.OnLinkPrefixLength = uint8(prefixLength)
+	row.ValidLifetime = 0xFFFFFFFF
+	row.PreferredLifetime = 0xFFFFFFFF
+	row.DadState = 4 // DadStatePreferred
+
+	ret, callErr := probeLocalCallCreateUnicastIPAddressEntry(&row)
 	if ret != 0 && ret != uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
 		return probeLocalWindowsNetapiCallErr("CreateUnicastIpAddressEntry", ret, callErr)
 	}
@@ -345,12 +303,18 @@ func deleteProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	if ip4 == nil {
 		return errors.New("invalid ipv4 address")
 	}
+	if interfaceIndex <= 0 {
+		return errors.New("invalid interface index")
+	}
 	var row probeLocalMIBUnicastIPAddressRow
 	probeLocalProcInitializeUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
 	row.Address[0] = byte(windows.AF_INET)
 	row.Address[1] = byte(windows.AF_INET >> 8)
 	copy(row.Address[4:8], ip4)
 	row.InterfaceIndex = uint32(interfaceIndex)
+	if adapter, err := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex); err == nil && adapter.InterfaceLUID > 0 {
+		row.InterfaceLuid = adapter.InterfaceLUID
+	}
 	ret, _, callErr := probeLocalProcDeleteUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
 	if ret == 0 || ret == uintptr(windows.ERROR_NOT_FOUND) {
 		return nil
@@ -360,6 +324,7 @@ func deleteProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 
 type windowsAdapterInfo struct {
 	InterfaceIndex int
+	InterfaceLUID  uint64
 	Name           string
 	Description    string
 	AdapterGUID    string
@@ -381,6 +346,22 @@ func windowsFindAdapterByIfIndex(interfaceIndex int) (windowsAdapterInfo, error)
 		}
 	}
 	return windowsAdapterInfo{}, fmt.Errorf("adapter not found for interface index: %d", interfaceIndex)
+}
+
+func windowsFindAdapterByLUID(interfaceLUID uint64) (windowsAdapterInfo, error) {
+	if interfaceLUID == 0 {
+		return windowsAdapterInfo{}, errors.New("invalid interface luid")
+	}
+	items, err := windowsListAdaptersIPv4()
+	if err != nil {
+		return windowsAdapterInfo{}, err
+	}
+	for _, item := range items {
+		if item.InterfaceLUID == interfaceLUID {
+			return item, nil
+		}
+	}
+	return windowsAdapterInfo{}, fmt.Errorf("adapter not found for interface luid: %d", interfaceLUID)
 }
 
 func windowsListAdaptersIPv4() ([]windowsAdapterInfo, error) {
@@ -407,6 +388,7 @@ func parseWindowsAdapterInfos(first *windows.IpAdapterAddresses) []windowsAdapte
 	for curr := first; curr != nil; curr = curr.Next {
 		item := windowsAdapterInfo{
 			InterfaceIndex: int(curr.IfIndex),
+			InterfaceLUID:  curr.Luid,
 			Name:           strings.TrimSpace(windows.UTF16PtrToString(curr.FriendlyName)),
 			Description:    strings.TrimSpace(windows.UTF16PtrToString(curr.Description)),
 		}
@@ -461,20 +443,11 @@ func convertProbeLocalInterfaceLUIDToIndex(luid uint64) (int, error) {
 	if nativeErr == nil && ifIndex > 0 {
 		return ifIndex, nil
 	}
-
-	primaryErr := firstProbeLocalTUNErr(nativeErr, errors.New("ConvertInterfaceLuidToIndex returned zero"))
-	var lookupErr error
-	for _, delay := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond, 800 * time.Millisecond, 1200 * time.Millisecond} {
-		if delay > 0 {
-			probeLocalNetapiSleep(delay)
-		}
-		ifIndexByList, err := lookupProbeLocalInterfaceIndexByLUID(luid)
-		if err == nil && ifIndexByList > 0 {
-			return ifIndexByList, nil
-		}
-		lookupErr = err
+	ifIndexByList, listErr := lookupProbeLocalInterfaceIndexByLUID(luid)
+	if listErr == nil && ifIndexByList > 0 {
+		return ifIndexByList, nil
 	}
-	return 0, fmt.Errorf("convert interface luid to index failed: %w", errors.Join(primaryErr, lookupErr))
+	return 0, fmt.Errorf("convert interface luid to index failed: %w", errors.Join(firstProbeLocalTUNErr(nativeErr, errors.New("ConvertInterfaceLuidToIndex returned zero")), listErr))
 }
 
 func convertProbeLocalInterfaceLUIDToIndexNative(luid uint64) (int, error) {

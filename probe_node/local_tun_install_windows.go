@@ -34,6 +34,7 @@ var (
 	probeLocalCloseWintunAdapter               = closeProbeLocalWintunAdapter
 	probeLocalGetWintunAdapterLUIDFromHandle   = getProbeLocalWintunAdapterLUIDFromHandle
 	probeLocalEnsureWindowsInterfaceIPv4       = ensureProbeLocalWindowsInterfaceIPv4Address
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = ensureProbeLocalWindowsInterfaceIPv4AddressByLUID
 	probeLocalRepairWindowsRouteTargetIPv4Hook = probeLocalRepairWindowsInterfaceIPv4Address
 	probeLocalRecycleWindowsTunAdapterHook     = recycleProbeLocalWindowsNetAdapter
 	probeLocalRefreshWintunRouteTargetHandle   = refreshProbeLocalWintunRouteTargetHandle
@@ -64,12 +65,16 @@ func detectProbeLocalTUNInstalledWindows() (bool, error) {
 	if !evidence.isJointlyVisible() {
 		return false, nil
 	}
-	if evidence.NetAdapter.InterfaceIndex > 0 {
-		if routeErr := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(evidence.NetAdapter.InterfaceIndex); routeErr != nil {
+	if evidence.NetAdapter.InterfaceLUID <= 0 {
+		return true, errors.New("wintun adapter interface luid is missing")
+	}
+	if evidence.NetAdapter.InterfaceLUID > 0 {
+		if routeErr := ensureProbeLocalWindowsRouteTargetByInterfaceLUID(evidence.NetAdapter.InterfaceLUID); routeErr != nil {
 			return true, routeErr
 		}
+		return true, nil
 	}
-	return true, nil
+	return true, errors.New("wintun adapter interface luid is missing")
 }
 
 func installProbeLocalTUNDriver() error {
@@ -729,28 +734,20 @@ func verifyProbeLocalWindowsRouteTargetPresent() error {
 	if !exists {
 		return errors.New("wintun adapter is not detected")
 	}
-	if adapter.InterfaceIndex <= 0 {
-		if adapterLUID, luidExists, luidErr := findProbeLocalWintunAdapterLUID(); luidErr == nil && luidExists {
-			ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(adapterLUID)
-			if convertErr == nil && ifIndex > 0 {
-				adapter.InterfaceIndex = ifIndex
-			}
-		}
+	if adapter.InterfaceLUID <= 0 {
+		return errors.New("invalid wintun adapter interface luid")
 	}
-	if adapter.InterfaceIndex <= 0 {
-		return errors.New("invalid wintun adapter interface index")
-	}
-	adapterInfo, findErr := windowsFindAdapterByIfIndex(adapter.InterfaceIndex)
+	adapterInfo, findErr := probeLocalFindWindowsAdapterByLUID(adapter.InterfaceLUID)
 	if findErr != nil {
 		return findErr
 	}
 	for _, existing := range adapterInfo.IPv4Addrs {
 		if strings.EqualFold(strings.TrimSpace(existing), probeLocalTUNInterfaceIPv4) {
-			setProbeLocalWindowsRouteTargetEnv(adapter.InterfaceIndex)
+			setProbeLocalWindowsRouteTargetEnv(adapterInfo.InterfaceIndex)
 			return nil
 		}
 	}
-	return fmt.Errorf("wintun route target ipv4 is missing: if=%d ip=%s", adapter.InterfaceIndex, probeLocalTUNInterfaceIPv4)
+	return fmt.Errorf("wintun route target ipv4 is missing: luid=%d ip=%s", adapter.InterfaceLUID, probeLocalTUNInterfaceIPv4)
 }
 
 func ensureProbeLocalWindowsRouteTargetConfigured() error {
@@ -760,83 +757,20 @@ func ensureProbeLocalWindowsRouteTargetConfigured() error {
 		return err
 	}
 	logProbeWarnf("probe local tun route target configured begin: adapter_exists=%t ifindex=%d luid=%d", exists, adapter.InterfaceIndex, adapter.InterfaceLUID)
-	bindTimeoutOnPrimary := false
-	notFoundOnPrimary := false
-	if exists {
-		if adapter.InterfaceIndex <= 0 {
-			if adapterLUID, luidExists, luidErr := findProbeLocalWintunAdapterLUID(); luidErr == nil && luidExists {
-				ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(adapterLUID)
-				if convertErr == nil && ifIndex > 0 {
-					adapter.InterfaceIndex = ifIndex
-					logProbeWarnf("probe local tun route target resolved primary ifindex from luid: luid=%d ifindex=%d", adapterLUID, ifIndex)
-				} else {
-					logProbeWarnf("probe local tun route target resolve primary ifindex from luid failed: luid=%d err=%v", adapterLUID, firstProbeLocalTUNErr(convertErr, errors.New("invalid interface index")))
-				}
-			} else if luidErr != nil {
-				logProbeWarnf("probe local tun route target read adapter luid failed: err=%v", luidErr)
-			}
-		}
-		if adapter.InterfaceIndex > 0 {
-			if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(adapter.InterfaceIndex); err == nil {
-				return nil
-			} else if isProbeLocalIPv4BindableTimeoutErr(err) {
-				bindTimeoutOnPrimary = true
-				logProbeWarnf("probe local tun route target primary ifindex bind-timeout: ifindex=%d err=%v", adapter.InterfaceIndex, err)
-			} else if isProbeLocalWindowsInterfaceNotFoundErr(err) {
-				notFoundOnPrimary = true
-				logProbeWarnf("probe local tun route target primary ifindex not-found: ifindex=%d err=%v", adapter.InterfaceIndex, err)
-			} else {
-				logProbeLocalWindowsRouteTargetDebugContext("route_target_configured.primary_ifindex_failed", adapter.InterfaceIndex, err)
-				return err
-			}
-		}
-	}
-
-	disallowIfIndex := 0
-	if bindTimeoutOnPrimary || notFoundOnPrimary {
-		disallowIfIndex = adapter.InterfaceIndex
-	}
-	logProbeWarnf(
-		"probe local tun route target fallback resolve start: disallow_ifindex=%d primary_ifindex=%d bind_timeout=%t not_found=%t",
-		disallowIfIndex,
-		adapter.InterfaceIndex,
-		bindTimeoutOnPrimary,
-		notFoundOnPrimary,
-	)
-	ifIndex, fallbackErr := resolveProbeLocalWintunInterfaceIndexFallback(disallowIfIndex)
-	if fallbackErr != nil || ifIndex <= 0 {
-		outErr := fmt.Errorf("wintun adapter is not detected after install: %w", firstProbeLocalTUNErr(fallbackErr, errors.New("invalid wintun adapter interface index")))
-		logProbeLocalWindowsRouteTargetDebugContext("route_target_configured.resolve_fallback_ifindex_failed", disallowIfIndex, outErr)
+	if !exists || adapter.InterfaceLUID <= 0 {
+		outErr := errors.New("wintun adapter is not detected after install or interface luid is missing")
+		logProbeLocalWindowsRouteTargetDebugContext("route_target_configured.resolve_luid_failed", adapter.InterfaceIndex, outErr)
 		return outErr
 	}
-	logProbeWarnf("probe local tun route target fallback resolved ifindex=%d (primary_ifindex=%d)", ifIndex, adapter.InterfaceIndex)
-	if adapter.InterfaceIndex > 0 && ifIndex == adapter.InterfaceIndex {
-		logProbeWarnf("probe local tun route target fallback kept same ifindex=%d after bind-timeout path", ifIndex)
-		if bindTimeoutOnPrimary {
-			return recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(ifIndex)
+	if err := ensureProbeLocalWindowsRouteTargetByInterfaceLUID(adapter.InterfaceLUID); err != nil {
+		ifIndex := adapter.InterfaceIndex
+		if ifIndex <= 0 {
+			if resolvedIndex, convertErr := interfaceIndexFromLUID(adapter.InterfaceLUID); convertErr == nil && resolvedIndex > 0 {
+				ifIndex = resolvedIndex
+			}
 		}
-	}
-	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex); err != nil {
-		if !isProbeLocalWindowsInterfaceNotFoundErr(err) {
-			logProbeLocalWindowsRouteTargetDebugContext("route_target_configured.fallback_ifindex_failed", ifIndex, err)
-			return err
-		}
-		logProbeWarnf("probe local tun fallback ifindex failed as not found, retrying handle resolution: ifindex=%d err=%v", ifIndex, err)
-		retryIfIndex, retryErr := resolveProbeLocalWintunInterfaceIndexFallback(ifIndex)
-		if retryErr != nil || retryIfIndex <= 0 {
-			outErr := fmt.Errorf("wintun adapter is not detected after stale fallback ifindex=%d: %w", ifIndex, firstProbeLocalTUNErr(retryErr, err))
-			logProbeLocalWindowsRouteTargetDebugContext("route_target_configured.retry_resolve_ifindex_failed", ifIndex, outErr)
-			return outErr
-		}
-		if retryIfIndex == ifIndex {
-			return recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(ifIndex)
-		}
-		logProbeWarnf("probe local tun route target retry resolved new ifindex: old=%d new=%d", ifIndex, retryIfIndex)
-		retryEnsureErr := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(retryIfIndex)
-		if retryEnsureErr != nil {
-			logProbeLocalWindowsRouteTargetDebugContext("route_target_configured.retry_ifindex_failed", retryIfIndex, retryEnsureErr)
-		}
-		return retryEnsureErr
+		logProbeLocalWindowsRouteTargetDebugContext("route_target_configured.luid_failed", ifIndex, err)
+		return err
 	}
 	return nil
 }
@@ -1106,92 +1040,44 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceIndex(interfaceIndex int) erro
 		return err
 	}
 	if err := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
-		if !isProbeLocalIPv4BindableTimeoutErr(err) {
-			logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.ensure_ipv4_failed", interfaceIndex, err)
-			return err
-		}
-		lastTimeoutErr := err
-		for attempt, delay := range []time.Duration{250 * time.Millisecond, 600 * time.Millisecond, 1200 * time.Millisecond} {
-			probeLocalTUNInstallSleep(delay)
-			retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
-			if retryErr == nil {
-				logProbeWarnf("probe local tun route target by ifindex retry succeeded: ifindex=%d attempt=%d", interfaceIndex, attempt+1)
-				setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
-				return nil
-			}
-			logProbeWarnf("probe local tun route target by ifindex retry failed: ifindex=%d attempt=%d bind_timeout=%t not_found=%t err=%v", interfaceIndex, attempt+1, isProbeLocalIPv4BindableTimeoutErr(retryErr), isProbeLocalWindowsInterfaceNotFoundErr(retryErr), retryErr)
-			if !isProbeLocalIPv4BindableTimeoutErr(retryErr) {
-				logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.retry_failed_non_timeout", interfaceIndex, retryErr)
-				return retryErr
-			}
-			lastTimeoutErr = retryErr
-		}
-
-		repairErr := probeLocalRepairWindowsRouteTargetIPv4Hook(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
-		if repairErr != nil {
-			logProbeWarnf("probe local tun route target by ifindex repair hook failed: ifindex=%d err=%v", interfaceIndex, repairErr)
-		} else {
-			logProbeWarnf("probe local tun route target by ifindex repair hook succeeded: ifindex=%d", interfaceIndex)
-		}
-		if repairErr == nil {
-			for attempt, delay := range []time.Duration{150 * time.Millisecond, 450 * time.Millisecond, 900 * time.Millisecond} {
-				if delay > 0 {
-					probeLocalTUNInstallSleep(delay)
-				}
-				retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
-				if retryErr == nil {
-					logProbeWarnf("probe local tun route target by ifindex repair-retry succeeded: ifindex=%d attempt=%d", interfaceIndex, attempt+1)
-					setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
-					return nil
-				}
-				logProbeWarnf("probe local tun route target by ifindex repair-retry failed: ifindex=%d attempt=%d bind_timeout=%t not_found=%t err=%v", interfaceIndex, attempt+1, isProbeLocalIPv4BindableTimeoutErr(retryErr), isProbeLocalWindowsInterfaceNotFoundErr(retryErr), retryErr)
-				if !isProbeLocalIPv4BindableTimeoutErr(retryErr) {
-					logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.repair_retry_failed_non_timeout", interfaceIndex, retryErr)
-					return retryErr
-				}
-				lastTimeoutErr = retryErr
-			}
-		}
-
-		recycleErr := probeLocalRecycleWindowsTunAdapterHook(interfaceIndex)
-		if recycleErr != nil {
-			if repairErr != nil {
-				outErr := fmt.Errorf("repair windows tun ipv4 target failed: %w", errors.Join(lastTimeoutErr, repairErr, recycleErr))
-				logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.recycle_failed_after_repair", interfaceIndex, outErr)
-				return outErr
-			}
-			outErr := fmt.Errorf("repair windows tun ipv4 target failed: %w", errors.Join(lastTimeoutErr, recycleErr))
-			logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.recycle_failed", interfaceIndex, outErr)
-			return outErr
-		}
-		logProbeWarnf("probe local tun route target by ifindex recycle succeeded: ifindex=%d", interfaceIndex)
-		for attempt, delay := range []time.Duration{300 * time.Millisecond, 800 * time.Millisecond, 1500 * time.Millisecond} {
-			if delay > 0 {
-				probeLocalTUNInstallSleep(delay)
-			}
-			retryErr := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
-			if retryErr == nil {
-				logProbeWarnf("probe local tun route target by ifindex recycle-retry succeeded: ifindex=%d attempt=%d", interfaceIndex, attempt+1)
-				setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
-				return nil
-			}
-			logProbeWarnf("probe local tun route target by ifindex recycle-retry failed: ifindex=%d attempt=%d bind_timeout=%t not_found=%t err=%v", interfaceIndex, attempt+1, isProbeLocalIPv4BindableTimeoutErr(retryErr), isProbeLocalWindowsInterfaceNotFoundErr(retryErr), retryErr)
-			if !isProbeLocalIPv4BindableTimeoutErr(retryErr) {
-				logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.recycle_retry_failed_non_timeout", interfaceIndex, retryErr)
-				return retryErr
-			}
-			lastTimeoutErr = retryErr
-		}
-		if repairErr != nil {
-			outErr := fmt.Errorf("repair windows tun ipv4 target failed: %w", errors.Join(lastTimeoutErr, repairErr))
-			logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.final_timeout_with_repair_err", interfaceIndex, outErr)
-			return outErr
-		}
-		logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.final_timeout", interfaceIndex, lastTimeoutErr)
-		return lastTimeoutErr
+		logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.ensure_ipv4_failed", interfaceIndex, err)
+		return err
 	}
 	setProbeLocalWindowsRouteTargetEnv(interfaceIndex)
 	return nil
+}
+
+func ensureProbeLocalWindowsRouteTargetByInterfaceLUID(interfaceLUID uint64) error {
+	if interfaceLUID == 0 {
+		err := errors.New("invalid wintun adapter interface luid")
+		logProbeLocalWindowsRouteTargetDebugContext("route_target_by_luid.invalid_luid", 0, err)
+		return err
+	}
+	if err := probeLocalEnsureWindowsInterfaceIPv4ByLUID(interfaceLUID, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+		interfaceIndex := 0
+		if ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(interfaceLUID); convertErr == nil && ifIndex > 0 {
+			interfaceIndex = ifIndex
+		}
+		logProbeLocalWindowsRouteTargetDebugContext("route_target_by_luid.ensure_ipv4_failed", interfaceIndex, err)
+		return err
+	}
+	ifIndex, convertErr := interfaceIndexFromLUID(interfaceLUID)
+	if convertErr != nil || ifIndex <= 0 {
+		return firstProbeLocalTUNErr(convertErr, errors.New("invalid interface index"))
+	}
+	setProbeLocalWindowsRouteTargetEnv(ifIndex)
+	return nil
+}
+
+func interfaceIndexFromLUID(interfaceLUID uint64) (int, error) {
+	if interfaceLUID == 0 {
+		return 0, errors.New("invalid interface luid")
+	}
+	adapter, err := probeLocalFindWindowsAdapterByLUID(interfaceLUID)
+	if err == nil && adapter.InterfaceIndex > 0 {
+		return adapter.InterfaceIndex, nil
+	}
+	return probeLocalConvertInterfaceLUIDToIndex(interfaceLUID)
 }
 
 func repairProbeLocalWindowsRouteTargetIPv4(interfaceIndex int) error {
@@ -1347,6 +1233,7 @@ func resetProbeLocalTUNInstallWindowsHooksForTest() {
 	probeLocalCloseWintunAdapter = closeProbeLocalWintunAdapter
 	probeLocalGetWintunAdapterLUIDFromHandle = getProbeLocalWintunAdapterLUIDFromHandle
 	probeLocalEnsureWindowsInterfaceIPv4 = ensureProbeLocalWindowsInterfaceIPv4Address
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = ensureProbeLocalWindowsInterfaceIPv4AddressByLUID
 	probeLocalRepairWindowsRouteTargetIPv4Hook = probeLocalRepairWindowsInterfaceIPv4Address
 	probeLocalRecycleWindowsTunAdapterHook = recycleProbeLocalWindowsNetAdapter
 	probeLocalRefreshWintunRouteTargetHandle = refreshProbeLocalWintunRouteTargetHandle

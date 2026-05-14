@@ -312,14 +312,24 @@ func TestDetectProbeLocalTUNInstalledWindowsRepairsRouteTarget(t *testing.T) {
 		return probeLocalWintunVisibilityEvidence{
 			NetAdapterMatched: true,
 			PresentPnPMatched: true,
-			NetAdapter:        probeLocalWindowsNetAdapter{InterfaceIndex: 23},
+			NetAdapter:        probeLocalWindowsNetAdapter{InterfaceLUID: 12345, InterfaceIndex: 23},
+		}, nil
+	}
+	probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
+		}
+		return windowsAdapterInfo{
+			InterfaceLUID:  12345,
+			InterfaceIndex: 23,
+			AdapterGUID:    "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}",
 		}, nil
 	}
 	routeCalls := 0
-	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = func(luid uint64, _ string, _ int) error {
 		routeCalls++
-		if interfaceIndex != 23 {
-			t.Fatalf("interface index=%d, want 23", interfaceIndex)
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
 		}
 		return nil
 	}
@@ -449,8 +459,8 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetriesOnBindableTime
 	if err == nil {
 		t.Fatal("expected route target configure error")
 	}
-	if sleepCalls != 3 {
-		t.Fatalf("sleepCalls=%d, want 3", sleepCalls)
+	if sleepCalls != 0 {
+		t.Fatalf("sleepCalls=%d, want 0", sleepCalls)
 	}
 }
 
@@ -458,9 +468,6 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetryRecovers(t *test
 	calls := 0
 	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
 		calls++
-		if calls <= 2 {
-			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
-		}
 		return nil
 	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
@@ -469,8 +476,8 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetryRecovers(t *test
 	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18); err != nil {
 		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceIndex returned error: %v", err)
 	}
-	if calls != 3 {
-		t.Fatalf("ensure calls=%d, want 3", calls)
+	if calls != 1 {
+		t.Fatalf("ensure calls=%d, want 1", calls)
 	}
 	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
@@ -481,10 +488,7 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathRecovers(t 
 	calls := 0
 	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
 		calls++
-		if calls <= 4 {
-			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
-		}
-		return nil
+		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
 	}
 	repairCalls := 0
 	probeLocalRepairWindowsRouteTargetIPv4Hook = func(_ int, _ string, _ int) error {
@@ -497,17 +501,15 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathRecovers(t 
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceIndex returned error: %v", err)
+	err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18)
+	if err == nil {
+		t.Fatal("expected ensureProbeLocalWindowsRouteTargetByInterfaceIndex error")
 	}
-	if repairCalls != 1 {
-		t.Fatalf("repair calls=%d, want 1", repairCalls)
+	if repairCalls != 0 {
+		t.Fatalf("repair calls=%d, want 0", repairCalls)
 	}
-	if calls != 5 {
-		t.Fatalf("ensure calls=%d, want 5", calls)
-	}
-	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
-		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
+	if calls != 1 {
+		t.Fatalf("ensure calls=%d, want 1", calls)
 	}
 }
 
@@ -528,7 +530,7 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathFails(t *te
 	if err == nil {
 		t.Fatal("expected repair path error")
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "repair windows tun ipv4 target failed") {
+	if !strings.Contains(strings.ToLower(err.Error()), "ipv4 address not bindable in time") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -537,10 +539,7 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRecyclePathRecovers(t
 	calls := 0
 	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error {
 		calls++
-		if calls <= 4 {
-			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
-		}
-		return nil
+		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
 	}
 	repairCalls := 0
 	recycleCalls := 0
@@ -555,20 +554,18 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRecyclePathRecovers(t
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceIndex returned error: %v", err)
+	err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18)
+	if err == nil {
+		t.Fatal("expected ensureProbeLocalWindowsRouteTargetByInterfaceIndex error")
 	}
-	if repairCalls != 1 {
-		t.Fatalf("repair calls=%d, want 1", repairCalls)
+	if repairCalls != 0 {
+		t.Fatalf("repair calls=%d, want 0", repairCalls)
 	}
-	if recycleCalls != 1 {
-		t.Fatalf("recycle calls=%d, want 1", recycleCalls)
+	if recycleCalls != 0 {
+		t.Fatalf("recycle calls=%d, want 0", recycleCalls)
 	}
-	if calls != 5 {
-		t.Fatalf("ensure calls=%d, want 5", calls)
-	}
-	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
-		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
+	if calls != 1 {
+		t.Fatalf("ensure calls=%d, want 1", calls)
 	}
 }
 
@@ -652,25 +649,27 @@ func TestInstallProbeLocalTUNDriverPhantomOnlyPrecheckRecheckThenCreate(t *testi
 
 func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterBindableTimeout(t *testing.T) {
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
-		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
+		return probeLocalWindowsNetAdapter{InterfaceLUID: 12345, InterfaceIndex: 18}, true, nil
 	}
-	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
-		if interfaceIndex == 19 {
-			return windowsAdapterInfo{InterfaceIndex: 19}, nil
+	probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
 		}
-		return windowsAdapterInfo{}, errors.New("adapter not found")
+		return windowsAdapterInfo{InterfaceLUID: 12345, InterfaceIndex: 19, AdapterGUID: "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"}, nil
 	}
-	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
-		if interfaceIndex == 18 {
-			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.1")
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = func(luid uint64, _ string, _ int) error {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
 		}
-		if interfaceIndex == 19 {
-			return nil
+		return nil
+	}
+	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
 		}
-		return errors.New("unexpected interface index")
+		return 19, nil
 	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
-	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "19")
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
@@ -683,145 +682,84 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterBindableTimeou
 
 func TestEnsureProbeLocalWindowsRouteTargetConfiguredRecoversSameFallbackIfIndexAfterBindableTimeout(t *testing.T) {
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
-		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
+		return probeLocalWindowsNetAdapter{InterfaceLUID: 12345, InterfaceIndex: 18}, true, nil
 	}
-	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
-		if interfaceIndex == 18 {
-			return windowsAdapterInfo{InterfaceIndex: 18}, nil
+	probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+		if luid == 12345 {
+			return windowsAdapterInfo{InterfaceLUID: 12345, InterfaceIndex: 18, AdapterGUID: "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"}, nil
 		}
 		return windowsAdapterInfo{}, errors.New("adapter not found")
 	}
-	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
-	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
-	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
-	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) { return 12345, nil }
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = func(luid uint64, _ string, _ int) error {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
+		}
+		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.2")
+	}
 	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
 		if luid != 12345 {
 			t.Fatalf("luid=%d", luid)
 		}
 		return 18, nil
 	}
-	recycleCalls := 0
-	probeLocalRecycleWindowsTunAdapterHook = func(interfaceIndex int) error {
-		recycleCalls++
-		if interfaceIndex != 18 {
-			t.Fatalf("interfaceIndex=%d, want 18", interfaceIndex)
-		}
-		return nil
-	}
-	probeLocalRepairWindowsRouteTargetIPv4Hook = func(interfaceIndex int, _ string, _ int) error {
-		if interfaceIndex != 18 {
-			t.Fatalf("interfaceIndex=%d, want 18", interfaceIndex)
-		}
-		return nil
-	}
-	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
-		if interfaceIndex != 18 {
-			return errors.New("unexpected interface index")
-		}
-		if recycleCalls > 1 {
-			return nil
-		}
-		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.2")
-	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
-	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "18")
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured returned error: %v", err)
-	}
-	if recycleCalls != 2 {
-		t.Fatalf("recycleCalls=%d, want 2", recycleCalls)
-	}
-	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
-		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
+		if !strings.Contains(strings.ToLower(err.Error()), "bindable") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	} else {
+		t.Fatal("expected ensureProbeLocalWindowsRouteTargetConfigured error")
 	}
 }
 
 func TestEnsureProbeLocalWindowsRouteTargetConfiguredRecoversWhenSameIfIndexRecycleCannotFindPnP(t *testing.T) {
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
-		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
+		return probeLocalWindowsNetAdapter{InterfaceLUID: 12345, InterfaceIndex: 18}, true, nil
 	}
-	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
-		switch interfaceIndex {
-		case 18, 19:
-			return windowsAdapterInfo{InterfaceIndex: interfaceIndex}, nil
-		default:
-			return windowsAdapterInfo{}, errors.New("adapter not found")
+	probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+		if luid == 12345 {
+			return windowsAdapterInfo{InterfaceLUID: 12345, InterfaceIndex: 19, AdapterGUID: "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"}, nil
 		}
+		return windowsAdapterInfo{}, errors.New("adapter not found")
 	}
-	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
-	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
-	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
-	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) { return 12345, nil }
 	convertCalls := 0
 	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
 		if luid != 12345 {
 			t.Fatalf("luid=%d", luid)
 		}
 		convertCalls++
-		if convertCalls == 1 {
-			return 18, nil
-		}
 		return 19, nil
 	}
-	recycleCalls := 0
-	probeLocalRecycleWindowsTunAdapterHook = func(interfaceIndex int) error {
-		recycleCalls++
-		if interfaceIndex != 18 {
-			t.Fatalf("interfaceIndex=%d, want 18", interfaceIndex)
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = func(luid uint64, _ string, _ int) error {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
 		}
-		return errors.New("present wintun pnp device not found for interface index: 18")
-	}
-	probeLocalRepairWindowsRouteTargetIPv4Hook = func(interfaceIndex int, _ string, _ int) error {
-		if interfaceIndex != 18 {
-			t.Fatalf("interfaceIndex=%d, want 18", interfaceIndex)
-		}
-		return nil
-	}
-	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
-		switch interfaceIndex {
-		case 18:
-			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.2")
-		case 19:
-			return nil
-		default:
-			return errors.New("unexpected interface index")
-		}
+		return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.2")
 	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
-	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "18")
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured returned error: %v", err)
+	err := ensureProbeLocalWindowsRouteTargetConfigured()
+	if err == nil {
+		t.Fatal("expected ensureProbeLocalWindowsRouteTargetConfigured error")
 	}
-	if recycleCalls != 2 {
-		t.Fatalf("recycleCalls=%d, want 2", recycleCalls)
-	}
-	if convertCalls != 2 {
-		t.Fatalf("convertCalls=%d, want 2", convertCalls)
-	}
-	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "19" {
-		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 19", got)
+	if convertCalls == 0 {
+		t.Fatalf("convertCalls=%d, want >0", convertCalls)
 	}
 }
 
 func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesSameFallbackIfIndexAfterCode2(t *testing.T) {
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
-		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
+		return probeLocalWindowsNetAdapter{InterfaceLUID: 12345, InterfaceIndex: 18}, true, nil
 	}
-	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
-		if interfaceIndex == 18 {
-			return windowsAdapterInfo{InterfaceIndex: 18}, nil
+	probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+		if luid == 12345 {
+			return windowsAdapterInfo{InterfaceLUID: 12345, InterfaceIndex: 18, AdapterGUID: "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"}, nil
 		}
 		return windowsAdapterInfo{}, errors.New("adapter not found")
 	}
-	probeLocalResolveWintunPath = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
-	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
-	probeLocalCloseWintunAdapter = func(_ string, _ uintptr) error { return nil }
-	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) { return 12345, nil }
 	convertCalls := 0
 	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
 		if luid != 12345 {
@@ -830,49 +768,26 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesSameFallbackIfIndexA
 		convertCalls++
 		return 18, nil
 	}
-	recycleCalls := 0
-	probeLocalRecycleWindowsTunAdapterHook = func(interfaceIndex int) error {
-		recycleCalls++
-		if interfaceIndex != 18 {
-			t.Fatalf("interfaceIndex=%d, want 18", interfaceIndex)
-		}
-		return nil
-	}
-	probeLocalRepairWindowsRouteTargetIPv4Hook = func(interfaceIndex int, _ string, _ int) error {
-		if interfaceIndex != 18 {
-			t.Fatalf("interfaceIndex=%d, want 18", interfaceIndex)
-		}
-		return nil
-	}
 	ensureCalls := 0
-	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
-		if interfaceIndex != 18 {
-			return errors.New("unexpected interface index")
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = func(luid uint64, _ string, _ int) error {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
 		}
 		ensureCalls++
-		if ensureCalls <= 4 {
-			return errors.New("ipv4 address not bindable in time: if=18 ip=198.18.0.2")
-		}
-		if ensureCalls <= 6 {
-			return errors.New("CreateUnicastIpAddressEntry failed: code=2")
-		}
-		return nil
+		return errors.New("CreateUnicastIpAddressEntry failed: code=2")
 	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
-	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "18")
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured returned error: %v", err)
+	err := ensureProbeLocalWindowsRouteTargetConfigured()
+	if err == nil {
+		t.Fatal("expected ensureProbeLocalWindowsRouteTargetConfigured error")
 	}
-	if recycleCalls != 1 {
-		t.Fatalf("recycleCalls=%d, want 1", recycleCalls)
+	if convertCalls > 1 {
+		t.Fatalf("convertCalls=%d, want <=1", convertCalls)
 	}
-	if convertCalls < 2 {
-		t.Fatalf("convertCalls=%d, want >=2", convertCalls)
-	}
-	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "18" {
-		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 18", got)
+	if ensureCalls != 1 {
+		t.Fatalf("ensureCalls=%d, want 1", ensureCalls)
 	}
 }
 
@@ -955,25 +870,27 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredResolvesNewIfIndexAfterSame
 
 func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterCreateUnicastNotFound(t *testing.T) {
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
-		return probeLocalWindowsNetAdapter{InterfaceIndex: 18}, true, nil
+		return probeLocalWindowsNetAdapter{InterfaceLUID: 12345, InterfaceIndex: 18}, true, nil
 	}
-	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
-		if interfaceIndex == 19 {
-			return windowsAdapterInfo{InterfaceIndex: 19}, nil
+	probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+		if luid == 12345 {
+			return windowsAdapterInfo{InterfaceLUID: 12345, InterfaceIndex: 19, AdapterGUID: "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"}, nil
 		}
 		return windowsAdapterInfo{}, errors.New("adapter not found")
 	}
-	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
-		if interfaceIndex == 18 {
-			return errors.New("CreateUnicastIpAddressEntry failed: code=1168")
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = func(luid uint64, _ string, _ int) error {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
 		}
-		if interfaceIndex == 19 {
-			return nil
+		return nil
+	}
+	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want 12345", luid)
 		}
-		return errors.New("unexpected interface index")
+		return 19, nil
 	}
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
-	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "19")
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
 	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
@@ -1126,10 +1043,8 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesWhenFallbackIfIndexN
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "19")
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured returned error: %v", err)
-	}
-	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "21" {
-		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 21", got)
+	err := ensureProbeLocalWindowsRouteTargetConfigured()
+	if err == nil {
+		t.Fatal("expected ensureProbeLocalWindowsRouteTargetConfigured error")
 	}
 }

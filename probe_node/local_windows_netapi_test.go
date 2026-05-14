@@ -46,7 +46,7 @@ func TestProbeLocalRepairWindowsInterfaceIPv4AddressIgnoresDeleteInvalidParamete
 	}
 }
 
-func TestProbeLocalRepairWindowsInterfaceIPv4AddressReturnsNonIgnorableDeleteError(t *testing.T) {
+func TestProbeLocalRepairWindowsInterfaceIPv4AddressIgnoresDeleteError(t *testing.T) {
 	deleteCalls := 0
 	upsertCalls := 0
 	probeLocalDeleteWindowsInterfaceIPv4 = func(interfaceIndex int, ipText string) error {
@@ -59,28 +59,19 @@ func TestProbeLocalRepairWindowsInterfaceIPv4AddressReturnsNonIgnorableDeleteErr
 	}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := probeLocalRepairWindowsInterfaceIPv4Address(18, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
-	if err == nil {
-		t.Fatal("expected repair error")
+	if err := probeLocalRepairWindowsInterfaceIPv4Address(18, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+		t.Fatalf("probeLocalRepairWindowsInterfaceIPv4Address returned error: %v", err)
 	}
 	if deleteCalls != 1 {
 		t.Fatalf("deleteCalls=%d, want 1", deleteCalls)
 	}
-	if upsertCalls != 0 {
-		t.Fatalf("upsertCalls=%d, want 0", upsertCalls)
+	if upsertCalls != 1 {
+		t.Fatalf("upsertCalls=%d, want 1", upsertCalls)
 	}
 }
 
-func TestUpsertProbeLocalWindowsInterfaceIPv4AddressFallsBackToCreateWhenSetInvalidParameter(t *testing.T) {
-	setCalls := 0
+func TestUpsertProbeLocalWindowsInterfaceIPv4AddressCreateOnly(t *testing.T) {
 	createCalls := 0
-	probeLocalCallSetUnicastIPAddressEntry = func(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
-		setCalls++
-		if row == nil {
-			t.Fatal("row is nil")
-		}
-		return uintptr(87), nil
-	}
 	probeLocalCallCreateUnicastIPAddressEntry = func(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
 		createCalls++
 		if row == nil {
@@ -89,15 +80,11 @@ func TestUpsertProbeLocalWindowsInterfaceIPv4AddressFallsBackToCreateWhenSetInva
 		return 0, nil
 	}
 	t.Cleanup(func() {
-		probeLocalCallSetUnicastIPAddressEntry = probeLocalCallSetUnicastIPAddressEntryDefault
 		probeLocalCallCreateUnicastIPAddressEntry = probeLocalCallCreateUnicastIPAddressEntryDefault
 	})
 
 	if err := upsertProbeLocalWindowsInterfaceIPv4Address(19, "198.18.0.2", 15); err != nil {
 		t.Fatalf("upsertProbeLocalWindowsInterfaceIPv4Address returned error: %v", err)
-	}
-	if setCalls != 1 {
-		t.Fatalf("setCalls=%d, want 1", setCalls)
 	}
 	if createCalls != 1 {
 		t.Fatalf("createCalls=%d, want 1", createCalls)
