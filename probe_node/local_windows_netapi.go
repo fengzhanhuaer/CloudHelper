@@ -359,6 +359,7 @@ type windowsAdapterInfo struct {
 	Name           string
 	Description    string
 	AdapterGUID    string
+	IPv4Metric     uint32
 	IPv4Addrs      []string
 	DNSServers     []string
 }
@@ -422,6 +423,7 @@ func parseWindowsAdapterInfos(first *windows.IpAdapterAddresses) []windowsAdapte
 			InterfaceLUID:  curr.Luid,
 			Name:           strings.TrimSpace(windows.UTF16PtrToString(curr.FriendlyName)),
 			Description:    strings.TrimSpace(windows.UTF16PtrToString(curr.Description)),
+			IPv4Metric:     curr.Ipv4Metric,
 		}
 		adapterName := strings.TrimSpace(windows.BytePtrToString(curr.AdapterName))
 		if adapterName != "" {
@@ -640,9 +642,24 @@ func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (prob
 	header := (*probeLocalMIBIPForwardTable2Header)(unsafe.Pointer(tablePtr))
 	rowsBase := tablePtr + unsafe.Sizeof(probeLocalMIBIPForwardTable2Header{})
 	rows := unsafe.Slice((*probeLocalMIBIPForwardRow2)(unsafe.Pointer(rowsBase)), int(header.NumEntries))
+	adapters, err := windowsListAdaptersIPv4()
+	if err != nil {
+		return probeLocalWindowsDirectBypassRouteTarget{}, err
+	}
+	return selectProbeLocalWindowsPrimaryEgressRouteTarget(rows, adapters, excludedIfIndex)
+}
 
+func selectProbeLocalWindowsPrimaryEgressRouteTarget(rows []probeLocalMIBIPForwardRow2, adapters []windowsAdapterInfo, excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+	adapterByIfIndex := make(map[int]windowsAdapterInfo, len(adapters))
+	for _, adapter := range adapters {
+		if adapter.InterfaceIndex > 0 {
+			adapterByIfIndex[adapter.InterfaceIndex] = adapter
+		}
+	}
 	best := probeLocalWindowsDirectBypassRouteTarget{}
-	bestMetric := uint32(^uint32(0))
+	bestTotalMetric := ^uint64(0)
+	bestRouteMetric := ^uint32(0)
+	bestInterfaceMetric := ^uint32(0)
 	for _, row := range rows {
 		if int(row.InterfaceIndex) <= 0 || int(row.InterfaceIndex) == excludedIfIndex {
 			continue
@@ -658,10 +675,20 @@ func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (prob
 		if nextHop == "" || nextHop == "0.0.0.0" {
 			continue
 		}
-		metric := row.Metric
-		if best.InterfaceIndex == 0 || metric < bestMetric || (metric == bestMetric && int(row.InterfaceIndex) < best.InterfaceIndex) {
+		adapterMetric := uint32(0)
+		if adapter, ok := adapterByIfIndex[int(row.InterfaceIndex)]; ok {
+			adapterMetric = adapter.IPv4Metric
+		}
+		totalMetric := uint64(row.Metric) + uint64(adapterMetric)
+		if best.InterfaceIndex == 0 ||
+			totalMetric < bestTotalMetric ||
+			(totalMetric == bestTotalMetric && row.Metric < bestRouteMetric) ||
+			(totalMetric == bestTotalMetric && row.Metric == bestRouteMetric && adapterMetric < bestInterfaceMetric) ||
+			(totalMetric == bestTotalMetric && row.Metric == bestRouteMetric && adapterMetric == bestInterfaceMetric && int(row.InterfaceIndex) < best.InterfaceIndex) {
 			best = probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: int(row.InterfaceIndex), NextHop: nextHop}
-			bestMetric = metric
+			bestTotalMetric = totalMetric
+			bestRouteMetric = row.Metric
+			bestInterfaceMetric = adapterMetric
 		}
 	}
 	if best.InterfaceIndex <= 0 || strings.TrimSpace(best.NextHop) == "" {

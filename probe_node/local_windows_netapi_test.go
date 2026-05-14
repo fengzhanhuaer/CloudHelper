@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"net"
 	"strings"
 	"testing"
 
@@ -182,4 +183,54 @@ func TestSetProbeLocalWindowsInterfaceDNSReturnsErrorWhenAllCallsFail(t *testing
 	if err == nil || !strings.Contains(err.Error(), "SetInterfaceDnsSettings(dwords)") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestSelectProbeLocalWindowsPrimaryEgressRouteTargetPrefersLowerTotalMetric(t *testing.T) {
+	rows := []probeLocalMIBIPForwardRow2{
+		newProbeLocalTestDefaultRouteRow(11, "192.168.1.1", 5),
+		newProbeLocalTestDefaultRouteRow(12, "10.0.0.1", 5),
+	}
+	adapters := []windowsAdapterInfo{
+		{InterfaceIndex: 11, IPv4Metric: 50},
+		{InterfaceIndex: 12, IPv4Metric: 5},
+	}
+
+	got, err := selectProbeLocalWindowsPrimaryEgressRouteTarget(rows, adapters, 9)
+	if err != nil {
+		t.Fatalf("selectProbeLocalWindowsPrimaryEgressRouteTarget returned error: %v", err)
+	}
+	if got.InterfaceIndex != 12 || got.NextHop != "10.0.0.1" {
+		t.Fatalf("routeTarget=%+v", got)
+	}
+}
+
+func TestSelectProbeLocalWindowsPrimaryEgressRouteTargetExcludesTunInterface(t *testing.T) {
+	rows := []probeLocalMIBIPForwardRow2{
+		newProbeLocalTestDefaultRouteRow(9, "198.18.0.1", 1),
+		newProbeLocalTestDefaultRouteRow(12, "10.0.0.1", 10),
+	}
+	adapters := []windowsAdapterInfo{
+		{InterfaceIndex: 9, IPv4Metric: 1},
+		{InterfaceIndex: 12, IPv4Metric: 5},
+	}
+
+	got, err := selectProbeLocalWindowsPrimaryEgressRouteTarget(rows, adapters, 9)
+	if err != nil {
+		t.Fatalf("selectProbeLocalWindowsPrimaryEgressRouteTarget returned error: %v", err)
+	}
+	if got.InterfaceIndex != 12 || got.NextHop != "10.0.0.1" {
+		t.Fatalf("routeTarget=%+v", got)
+	}
+}
+
+func newProbeLocalTestDefaultRouteRow(interfaceIndex int, nextHop string, metric uint32) probeLocalMIBIPForwardRow2 {
+	row := probeLocalMIBIPForwardRow2{
+		InterfaceIndex: uint32(interfaceIndex),
+		Metric:         metric,
+	}
+	row.DestinationPrefix.Prefix.Family = windows.AF_INET
+	row.NextHop.Family = windows.AF_INET
+	copy(row.DestinationPrefix.Prefix.Data[:4], net.ParseIP("0.0.0.0").To4())
+	copy(row.NextHop.Data[:4], net.ParseIP(nextHop).To4())
+	return row
 }
