@@ -70,3 +70,36 @@ func TestProbeLocalRepairWindowsInterfaceIPv4AddressReturnsNonIgnorableDeleteErr
 		t.Fatalf("upsertCalls=%d, want 0", upsertCalls)
 	}
 }
+
+func TestUpsertProbeLocalWindowsInterfaceIPv4AddressFallsBackToCreateWhenSetInvalidParameter(t *testing.T) {
+	setCalls := 0
+	createCalls := 0
+	probeLocalCallSetUnicastIPAddressEntry = func(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
+		setCalls++
+		if row == nil {
+			t.Fatal("row is nil")
+		}
+		return uintptr(87), nil
+	}
+	probeLocalCallCreateUnicastIPAddressEntry = func(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
+		createCalls++
+		if row == nil {
+			t.Fatal("row is nil")
+		}
+		return 0, nil
+	}
+	t.Cleanup(func() {
+		probeLocalCallSetUnicastIPAddressEntry = probeLocalCallSetUnicastIPAddressEntryDefault
+		probeLocalCallCreateUnicastIPAddressEntry = probeLocalCallCreateUnicastIPAddressEntryDefault
+	})
+
+	if err := upsertProbeLocalWindowsInterfaceIPv4Address(19, "198.18.0.2", 15); err != nil {
+		t.Fatalf("upsertProbeLocalWindowsInterfaceIPv4Address returned error: %v", err)
+	}
+	if setCalls != 1 {
+		t.Fatalf("setCalls=%d, want 1", setCalls)
+	}
+	if createCalls != 1 {
+		t.Fatalf("createCalls=%d, want 1", createCalls)
+	}
+}

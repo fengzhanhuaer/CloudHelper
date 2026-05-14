@@ -58,11 +58,23 @@ var (
 	probeLocalFindWindowsAdapterByIfIndex      = windowsFindAdapterByIfIndex
 	probeLocalUpsertWindowsInterfaceIPv4       = upsertProbeLocalWindowsInterfaceIPv4Address
 	probeLocalDeleteWindowsInterfaceIPv4       = deleteProbeLocalWindowsInterfaceIPv4Address
+	probeLocalCallSetUnicastIPAddressEntry      = probeLocalCallSetUnicastIPAddressEntryDefault
+	probeLocalCallCreateUnicastIPAddressEntry   = probeLocalCallCreateUnicastIPAddressEntryDefault
 
 	probeLocalConvertInterfaceLUIDToIndexNative = convertProbeLocalInterfaceLUIDToIndexNative
 	probeLocalListNetAdaptersForLUIDLookup      = listProbeLocalWindowsNetAdapters
 	probeLocalNetapiSleep                       = time.Sleep
 )
+
+func probeLocalCallSetUnicastIPAddressEntryDefault(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
+	ret, _, callErr := probeLocalProcSetUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(row)))
+	return ret, callErr
+}
+
+func probeLocalCallCreateUnicastIPAddressEntryDefault(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
+	ret, _, callErr := probeLocalProcCreateUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(row)))
+	return ret, callErr
+}
 
 type probeLocalSockaddrInet struct {
 	Family uint16
@@ -314,14 +326,14 @@ func upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	row.OnLinkPrefixLength = uint8(prefixLength)
 	row.ValidLifetime = 0xFFFFFFFF
 	row.PreferredLifetime = 0xFFFFFFFF
-	ret, _, callErr := probeLocalProcSetUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	ret, callErr := probeLocalCallSetUnicastIPAddressEntry(&row)
 	if ret == 0 {
 		return nil
 	}
-	if ret != uintptr(windows.ERROR_NOT_FOUND) {
+	if ret != uintptr(windows.ERROR_NOT_FOUND) && ret != uintptr(windows.ERROR_INVALID_PARAMETER) {
 		return probeLocalWindowsNetapiCallErr("SetUnicastIpAddressEntry", ret, callErr)
 	}
-	ret, _, callErr = probeLocalProcCreateUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	ret, callErr = probeLocalCallCreateUnicastIPAddressEntry(&row)
 	if ret != 0 && ret != uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
 		return probeLocalWindowsNetapiCallErr("CreateUnicastIpAddressEntry", ret, callErr)
 	}
