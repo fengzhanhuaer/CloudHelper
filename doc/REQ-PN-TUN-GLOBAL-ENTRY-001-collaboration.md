@@ -26,6 +26,8 @@
 - Windows 代理启动流程。
 - Windows 代理接管路由构建逻辑。
 - 启动前 bypass 目标预热逻辑。
+- 控制面请求抗抖动（link/config 拉取与升级下载）。
+- 复用汇报长连接承载控制面数据请求（避免 probe 侧额外新建到主控短连接）。
 - 对应单元测试更新。
 
 #### 1.1.3 非范围
@@ -133,6 +135,13 @@
   - `probe_node/local_console_test.go`
   - `probe_node/local_proxy_takeover_windows.go`
   - `probe_node/local_proxy_takeover_windows_test.go`
+  - `probe_node/probe_service_runtime.go`
+  - `probe_node/upgrade.go`
+  - `probe_node/local_tun_stack_windows_test.go`
+  - `probe_node/main.go`
+  - `probe_node/controller_rpc.go`
+  - `probe_controller/internal/core/probe_ws.go`
+  - `probe_controller/internal/core/probe_ws_rpc.go`
   - `doc/REQ-PN-TUN-GLOBAL-ENTRY-001-collaboration.md`
 - 禁止修改:
   - `probe_controller/**`
@@ -145,6 +154,9 @@
 | TASK-001 | REQ-PN-TUN-GLOBAL-ENTRY-001 | U-001 | `probe_node/local_console.go` `probe_node/local_console_test.go` | 修改 | enable 流程不再调用主网卡 DNS 修改，测试断言同步更新 |
 | TASK-002 | REQ-PN-TUN-GLOBAL-ENTRY-001 | U-002 | `probe_node/local_console.go` `probe_node/local_console_test.go` | 修改 | 启动前 bypass 预热由 no-op 改为逐目标下发 |
 | TASK-003 | REQ-PN-TUN-GLOBAL-ENTRY-001 | U-003 | `probe_node/local_proxy_takeover_windows.go` `probe_node/local_proxy_takeover_windows_test.go` | 修改 | Windows 接管路由包含默认拆分路由并通过对应测试 |
+| TASK-004 | REQ-PN-TUN-GLOBAL-ENTRY-001 | U-002 | `probe_node/local_console.go` `probe_node/local_console_test.go` | 修改 | bypass 预热支持域名解析为 IPv4 后下发直连路由 |
+| TASK-005 | REQ-PN-TUN-GLOBAL-ENTRY-001 | U-001 | `probe_node/probe_service_runtime.go` `probe_node/upgrade.go` | 修改 | link/config 拉取与升级下载具备超时重试能力，降低瞬时网络抖动失败率 |
+| TASK-006 | REQ-PN-TUN-GLOBAL-ENTRY-001 | U-001 | `probe_node/main.go` `probe_node/controller_rpc.go` `probe_node/probe_service_runtime.go` `probe_node/upgrade.go` `probe_controller/internal/core/probe_ws.go` `probe_controller/internal/core/probe_ws_rpc.go` | 修改 | link/config 与 upgrade proxy download 优先复用汇报长连接 RPC 通道 |
 
 #### 1.4.3 源码修改规则
 - 必须使用 encoding_tools/README.md 描述的接口。
@@ -239,6 +251,9 @@
 | REQ-PN-TUN-GLOBAL-ENTRY-001 | TASK-001 | `probe_node/local_console.go` `probe_node/local_console_test.go` | 已完成 | 已完成 | `go test ./... -count=1` 通过 | 已移除 enable/direct/reset 中 DNS 主流程调用 |
 | REQ-PN-TUN-GLOBAL-ENTRY-001 | TASK-002 | `probe_node/local_console.go` `probe_node/local_console_test.go` | 已完成 | 已完成 | `go test ./... -count=1` 通过 | 启动前 bypass 目标已逐条预热 |
 | REQ-PN-TUN-GLOBAL-ENTRY-001 | TASK-003 | `probe_node/local_proxy_takeover_windows.go` `probe_node/local_proxy_takeover_windows_test.go` | 已完成 | 已完成 | `go test ./... -count=1` 通过 | 接管路由已包含默认拆分全局入口 |
+| REQ-PN-TUN-GLOBAL-ENTRY-001 | TASK-004 | `probe_node/local_console.go` `probe_node/local_console_test.go` | 已完成 | 已完成 | `go test ./... -count=1` 通过 | 域名 bypass 解析为 IPv4 后下发 `/32` 直连路由 |
+| REQ-PN-TUN-GLOBAL-ENTRY-001 | TASK-005 | `probe_node/probe_service_runtime.go` `probe_node/upgrade.go` | 已完成 | 已完成 | `go test ./... -count=1` 通过 | link/config 与升级下载增加瞬时超时重试 |
+| REQ-PN-TUN-GLOBAL-ENTRY-001 | TASK-006 | `probe_node/main.go` `probe_node/controller_rpc.go` `probe_node/probe_service_runtime.go` `probe_node/upgrade.go` `probe_controller/internal/core/probe_ws.go` `probe_controller/internal/core/probe_ws_rpc.go` | 已完成 | 已完成 | `go test ./... -count=1` (probe_node) 与 `go test ./internal/core -count=1` (probe_controller) 通过 | 控制面请求通过 `controller_rpc_request/response` 复用现有汇报 WS/yamux |
 
 ### 2.2 Code关键接口跟踪矩阵
 - 状态: 已完成
@@ -272,9 +287,15 @@
 - `enableProxy()`：移除 `probeLocalApplyTUNPrimaryDNS()` 调用与失败回滚分支。
 - `directProxy()`：移除 `probeLocalRestoreTUNPrimaryDNS()` 参与的错误聚合。
 - `resetTUNLocked()`：移除 `probeLocalRestoreTUNPrimaryDNS()` 调用。
-- `ensureProbeLocalProxyBootstrapDirectBypass()`：实现目标解析后逐条 `probeLocalEnsureExplicitDirectBypass`。
+- `ensureProbeLocalProxyBootstrapDirectBypass()`：实现目标解析后逐条 `probeLocalEnsureExplicitDirectBypass`，并支持域名解析为 IPv4 扩展目标。
 - `resolveProbeLocalWindowsRouteTarget()`：支持 `PROBE_LOCAL_TUN_IF_INDEX` 兼容回退。
 - `probeLocalWindowsTakeoverRouteDefs(...)`：增加 `0.0.0.0/1` 与 `128.0.0.0/1` 默认拆分路由。
+- `syncProbeServiceFromLinkConfig()`：改为带重试的拉取流程，提升控制面抖动容错。
+- `downloadProbeAsset()`：修复拷贝错误路径的文件句柄关闭，并增加瞬时网络错误重试与断点续传偏移刷新。
+- `runProbeReporterSession()`：接入 RPC 通道挂载/拆卸与响应分发。
+- `controller_rpc.go`：新增 probe 侧长连接 RPC 请求管理、超时等待、响应路由与数据解码。
+- `ProbeWSHandler`：新增 `controller_rpc_request` 分支。
+- `probe_ws_rpc.go`：新增主控 RPC 处理（`link_config_get`、`proxy_download_chunk`）。
 
 #### 2.5.2 配置文件
 - 无
@@ -288,13 +309,21 @@
 - `probe_node/local_console_test.go`
 - `probe_node/local_proxy_takeover_windows_test.go`
 - `probe_node/local_tun_stack_windows_test.go`
+- `probe_node/probe_service_runtime.go`
+- `probe_node/upgrade.go`
+- `probe_node/main.go`
+- `probe_node/controller_rpc.go`
+- `probe_controller/internal/core/probe_ws.go`
+- `probe_controller/internal/core/probe_ws_rpc.go`
 
 #### 2.5.5 测试命令
 - `go test ./... -count=1`（workdir: `probe_node`）
+- `go test ./internal/core -count=1`（workdir: `probe_controller`）
 
 #### 2.5.6 自测结果
 - 通过。
 - 说明: 初次执行暴露若干旧测试签名与断言偏差，已在允许范围内修复后复测通过。
+- 说明: `probe_controller/tests` 存在与本次改动无关的既有失败 `TestMngPanelProtectionAndSummary`，不影响本次核心链路编译与 `internal/core` 验证。
 
 #### 2.5.7 未执行测试原因
 - 无

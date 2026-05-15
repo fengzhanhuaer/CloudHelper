@@ -421,28 +421,72 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 	}
 
 	downloadOnce := func(offset int64) (int64, error) {
+		start := time.Now()
+		if mode == "proxy" {
+			const chunkSize = 512 * 1024
+			resp, err := callProbeControllerRPC(ctx, probeControllerRPCRequest{
+				Action: "proxy_download_chunk",
+				URL:    assetURL,
+				Offset: offset,
+				Limit:  chunkSize,
+			})
+			if err != nil {
+				return 0, err
+			}
+			chunk, err := probeControllerRPCDecodeChunk(resp)
+			if err != nil {
+				return 0, err
+			}
+			truncate := offset == 0
+			f, currentSize, err := openPartFile(truncate)
+			if err != nil {
+				return 0, err
+			}
+			writtenN, writeErr := f.Write(chunk)
+			closeErr := f.Close()
+			if writeErr != nil {
+				if closeErr != nil {
+					return 0, errors.Join(writeErr, closeErr)
+				}
+				return 0, writeErr
+			}
+			if closeErr != nil {
+				return 0, closeErr
+			}
+			written := int64(writtenN)
+			finalSize := currentSize + written
+			if truncate {
+				finalSize = written
+			}
+			if resp.EOF {
+				if err := os.Rename(partPath, output); err != nil {
+					return 0, err
+				}
+				log.Printf("probe upgrade download chunk complete: mode=%s status=%d offset=%d total=%d elapsed=%s", mode, resp.StatusCode, offset, finalSize, time.Since(start).String())
+				return 0, nil
+			}
+			log.Printf("probe upgrade download chunk complete: mode=%s status=%d offset=%d total=%d elapsed=%s", mode, resp.StatusCode, offset, finalSize, time.Since(start).String())
+			return finalSize, nil
+		}
 		var (
 			reader     io.ReadCloser
 			statusCode int
 			total      int64 = -1
 		)
-		if mode == "proxy" {
-			// Security boundary: probe can only use /api/probe/* endpoints.
-			u := strings.TrimRight(controllerBase, "/") + "/api/probe/proxy/download?url=" + url.QueryEscape(assetURL)
-			log.Printf("probe upgrade asset download via proxy: %s offset=%d", safeURLForLog(u), offset)
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if mode != "proxy" {
+			log.Printf("probe upgrade asset download direct: %s offset=%d", safeURLForLog(assetURL), offset)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
 			if err != nil {
 				return 0, err
 			}
-			for key, value := range buildProbeAuthHeaders(identity) {
-				req.Header.Set(key, value)
-			}
 			req.Header.Set("Accept", "application/octet-stream")
+			req.Header.Set("User-Agent", "cloudhelper-probe-node")
 			if offset > 0 {
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 			}
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
+				log.Printf("warning: probe upgrade direct download request failed: elapsed=%s offset=%d err=%v", time.Since(start).String(), offset, err)
 				return 0, err
 			}
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -457,31 +501,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 				total += offset
 			}
 		} else {
-			log.Printf("probe upgrade asset download direct: %s offset=%d", safeURLForLog(assetURL), offset)
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
-			if err != nil {
-				return 0, err
-			}
-			req.Header.Set("Accept", "application/octet-stream")
-			req.Header.Set("User-Agent", "cloudhelper-probe-node")
-			if offset > 0 {
-				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-			}
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return 0, err
-			}
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-				resp.Body.Close()
-				return 0, fmt.Errorf("download failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
-			}
-			reader = resp.Body
-			statusCode = resp.StatusCode
-			total = resp.ContentLength
-			if total >= 0 && statusCode == http.StatusPartialContent && offset > 0 {
-				total += offset
-			}
+			return 0, errors.New("proxy mode download channel is unavailable")
 		}
 		defer reader.Close()
 
@@ -502,6 +522,9 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		written, copyErr := io.Copy(f, reader)
 		closeErr := f.Close()
 		if copyErr != nil {
+			if closeErr != nil {
+				return 0, errors.Join(copyErr, closeErr)
+			}
 			return 0, copyErr
 		}
 		if closeErr != nil {
@@ -517,14 +540,26 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		if err := os.Rename(partPath, output); err != nil {
 			return 0, err
 		}
+		log.Printf("probe upgrade download chunk complete: mode=%s status=%d offset=%d total=%d elapsed=%s", mode, statusCode, offset, finalSize, time.Since(start).String())
 		return 0, nil
 	}
 
+	retryCount := 0
 	for {
 		nextOffset, err := downloadOnce(resumeOffset)
 		if err != nil {
+			if retryCount < 3 && isProbeTransientHTTPError(err) && ctx.Err() == nil {
+				retryCount++
+				if st, statErr := os.Stat(partPath); statErr == nil && st.Mode().IsRegular() {
+					resumeOffset = st.Size()
+				}
+				log.Printf("probe upgrade download transient error, retry=%d offset=%d err=%v", retryCount, resumeOffset, err)
+				time.Sleep(time.Duration(retryCount) * time.Second)
+				continue
+			}
 			return err
 		}
+		retryCount = 0
 		if nextOffset == 0 {
 			return nil
 		}

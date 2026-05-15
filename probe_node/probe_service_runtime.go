@@ -17,7 +17,7 @@ import (
 
 const (
 	probeLinkConfigPollInterval  = 20 * time.Second
-	probeLinkConfigFetchTimeout  = 15 * time.Second
+	probeLinkConfigFetchTimeout  = 25 * time.Second
 	probeLinkConfigAPIPath       = "/api/probe/link/config"
 	probeLinkConfigCacheFileName = "probe_link_config.json"
 )
@@ -65,9 +65,7 @@ func syncProbeServiceFromLinkConfig(handler http.Handler, identity nodeIdentity,
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), probeLinkConfigFetchTimeout)
-	config, err := probeFetchLinkConfig(ctx, controllerBaseURL, identity)
-	cancel()
+	config, err := fetchProbeLinkConfigWithRetry(controllerBaseURL, identity)
 	if err != nil {
 		log.Printf("warning: failed to fetch probe link config: %v", err)
 		restoreProbeServiceFromLinkConfigCache(handler, identity, controllerBaseURL)
@@ -78,6 +76,59 @@ func syncProbeServiceFromLinkConfig(handler http.Handler, identity nodeIdentity,
 		log.Printf("warning: persist probe link config cache failed: %v", err)
 	}
 	probeApplyLinkConfig(handler, identity, controllerBaseURL, normalized, "controller")
+}
+
+func fetchProbeLinkConfigWithRetry(controllerBaseURL string, identity nodeIdentity) (probeLinkConfig, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), probeLinkConfigFetchTimeout)
+		config, err := probeFetchLinkConfig(ctx, controllerBaseURL, identity)
+		cancel()
+		if err == nil {
+			log.Printf(
+				"probe link config fetch ok: attempt=%d timeout=%s elapsed=%s controller=%s",
+				attempt,
+				probeLinkConfigFetchTimeout.String(),
+				time.Since(start).String(),
+				strings.TrimSpace(controllerBaseURL),
+			)
+			return config, nil
+		}
+		lastErr = err
+		log.Printf(
+			"warning: probe link config fetch failed: attempt=%d timeout=%s elapsed=%s transient=%t controller=%s err=%v",
+			attempt,
+			probeLinkConfigFetchTimeout.String(),
+			time.Since(start).String(),
+			isProbeTransientHTTPError(err),
+			strings.TrimSpace(controllerBaseURL),
+			err,
+		)
+		if attempt >= 2 || !isProbeTransientHTTPError(err) {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * time.Second)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("unknown link config fetch error")
+	}
+	return probeLinkConfig{}, lastErr
+}
+
+func isProbeTransientHTTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr != nil {
+		return netErr.Timeout()
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "timeout") || strings.Contains(text, "temporarily unavailable")
 }
 
 func applyProbeLinkConfig(handler http.Handler, identity nodeIdentity, controllerBaseURL string, config probeLinkConfig, source string) {
@@ -99,6 +150,18 @@ func applyProbeLinkConfig(handler http.Handler, identity nodeIdentity, controlle
 }
 
 func fetchProbeLinkConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkConfig, error) {
+	if resp, rpcErr := callProbeControllerRPC(ctx, probeControllerRPCRequest{
+		Action: "link_config_get",
+	}); rpcErr == nil {
+		body, decodeErr := probeControllerRPCPayloadJSON(resp)
+		if decodeErr == nil {
+			var config probeLinkConfig
+			if err := json.Unmarshal(body, &config); err == nil {
+				return normalizeProbeLinkConfig(config), nil
+			}
+		}
+	}
+
 	requestURL := strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/") + probeLinkConfigAPIPath
 	body, err := probeAuthedGet(ctx, requestURL, identity)
 	if err != nil {

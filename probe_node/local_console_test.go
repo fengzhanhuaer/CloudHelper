@@ -686,6 +686,20 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 
 	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-enable-test"}, "https://controller.example.com/base")
 	bypassTargets := make([]string, 0, 8)
+	probeLocalLookupIPv4ForBypass = func(host string) ([]string, error) {
+		switch strings.TrimSpace(host) {
+		case "controller.example.com":
+			return []string{"203.0.113.10"}, nil
+		case "entry.example.com":
+			return []string{"203.0.113.11"}, nil
+		case "relay.example.com":
+			return []string{"203.0.113.12"}, nil
+		case "exit.example.com":
+			return []string{"203.0.113.13"}, nil
+		default:
+			return nil, fmt.Errorf("unexpected host lookup: %s", host)
+		}
+	}
 	probeLocalEnsureExplicitDirectBypass = func(target string) error {
 		bypassTargets = append(bypassTargets, strings.TrimSpace(target))
 		return nil
@@ -756,10 +770,10 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 		t.Fatalf("state groups missing media entry: %v", groups)
 	}
 	expectedBypass := map[string]struct{}{
-		"controller.example.com:443": {},
-		"entry.example.com:11110":    {},
-		"relay.example.com:12121":    {},
-		"exit.example.com:13131":     {},
+		"203.0.113.10:443":   {},
+		"203.0.113.11:11110": {},
+		"203.0.113.12:12121": {},
+		"203.0.113.13:13131": {},
 	}
 	if len(bypassTargets) != len(expectedBypass) {
 		t.Fatalf("bootstrap direct bypass targets=%v want=%v", bypassTargets, expectedBypass)

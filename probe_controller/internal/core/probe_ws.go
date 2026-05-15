@@ -173,6 +173,18 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeChainLinkControlResult(msg)
+		case "controller_rpc_request":
+			var req probeControllerRPCRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				_ = probeSession.writeJSON(probeControllerRPCResponse{
+					Type:  "controller_rpc_response",
+					OK:    false,
+					Error: "invalid controller rpc request",
+				})
+				continue
+			}
+			resp := handleProbeControllerRPCRequest(nodeID, req)
+			_ = probeSession.writeJSON(resp)
 		default:
 			// Ignore unknown probe message types to keep backward compatibility.
 		}

@@ -222,6 +222,7 @@ var (
 	probeLocalRunUpgrade                  = runProbeUpgrade
 	probeLocalRestartProcess              = restartCurrentProcess
 	probeLocalRefreshProxyChainCache      = refreshProbeProxyChainCacheFromController
+	probeLocalLookupIPv4ForBypass         = lookupProbeLocalIPv4ForBypass
 )
 
 func newProbeLocalControlManager() *probeLocalControlManager {
@@ -393,12 +394,73 @@ func ensureProbeLocalProxyBootstrapDirectBypass(extraSelectedChainIDs ...string)
 	if err != nil {
 		return err
 	}
-	for _, target := range targets {
+	expandedTargets, err := expandProbeLocalBootstrapBypassTargets(targets)
+	if err != nil {
+		return err
+	}
+	for _, target := range expandedTargets {
 		if err := probeLocalEnsureExplicitDirectBypass(target); err != nil {
 			return fmt.Errorf("ensure bootstrap direct bypass failed: target=%s err=%w", strings.TrimSpace(target), err)
 		}
 	}
 	return nil
+}
+
+func lookupProbeLocalIPv4ForBypass(host string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", strings.TrimSpace(host))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil || ip.To4() == nil {
+			continue
+		}
+		out = append(out, ip.To4().String())
+	}
+	return dedupeProbeLocalIPv4Strings(out), nil
+}
+
+func expandProbeLocalBootstrapBypassTargets(targets []string) ([]string, error) {
+	expanded := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, rawTarget := range targets {
+		host, rawPort, err := net.SplitHostPort(strings.TrimSpace(rawTarget))
+		if err != nil {
+			return nil, fmt.Errorf("split bypass target failed: target=%s err=%w", strings.TrimSpace(rawTarget), err)
+		}
+		host = strings.TrimSpace(strings.Trim(host, "[]"))
+		if host == "" || strings.TrimSpace(rawPort) == "" {
+			return nil, fmt.Errorf("invalid bypass target: %s", strings.TrimSpace(rawTarget))
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			target := net.JoinHostPort(ip.To4().String(), rawPort)
+			if _, ok := seen[target]; ok {
+				continue
+			}
+			seen[target] = struct{}{}
+			expanded = append(expanded, target)
+			continue
+		}
+		ipv4List, lookupErr := probeLocalLookupIPv4ForBypass(host)
+		if lookupErr != nil {
+			return nil, fmt.Errorf("resolve bypass host failed: host=%s err=%w", host, lookupErr)
+		}
+		if len(ipv4List) == 0 {
+			return nil, fmt.Errorf("resolve bypass host has no ipv4 result: host=%s", host)
+		}
+		for _, ipText := range ipv4List {
+			target := net.JoinHostPort(ipText, rawPort)
+			if _, ok := seen[target]; ok {
+				continue
+			}
+			seen[target] = struct{}{}
+			expanded = append(expanded, target)
+		}
+	}
+	return expanded, nil
 }
 
 func (m *probeLocalControlManager) tunStatus() probeLocalTunRuntimeState {
@@ -464,6 +526,9 @@ func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 			logProbeInfof("probe local tun startup recovered installed state: enabled_restore=false")
 		}
 		return nil
+	}
+	if err := ensureProbeLocalProxyBootstrapDirectBypass(); err != nil {
+		return fmt.Errorf("recover probe local tun bootstrap bypass failed: %w", err)
 	}
 
 	if _, _, err := m.enableProxy(); err != nil {
@@ -3226,6 +3291,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalApplyProxyTakeover = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect = restoreProbeLocalProxyDirect
 	probeLocalEnsureExplicitDirectBypass = ensureProbeLocalExplicitDirectBypassForTarget
+	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass
 	probeLocalResolveGroupRuntimeLatency = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
 }

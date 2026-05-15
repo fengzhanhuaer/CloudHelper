@@ -562,6 +562,8 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 	encoder := json.NewEncoder(stream)
 	decoder := json.NewDecoder(stream)
 	writeMu := &sync.Mutex{}
+	attachProbeReporterRPCChannel(stream, encoder, writeMu)
+	defer detachProbeReporterRPCChannel()
 
 	log.Printf("probe reporter connected: %s", wsURL)
 
@@ -572,10 +574,17 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 	readErrCh := make(chan error, 1)
 	go func() {
 		for {
-			var msg probeControlMessage
-			if readErr := decoder.Decode(&msg); readErr != nil {
+			var raw json.RawMessage
+			if readErr := decoder.Decode(&raw); readErr != nil {
 				readErrCh <- readErr
 				return
+			}
+			if handleProbeReporterRPCResponseRaw(raw) {
+				continue
+			}
+			var msg probeControlMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
 			}
 			processProbeControlMessage(msg, identity, stream, encoder, writeMu)
 		}
