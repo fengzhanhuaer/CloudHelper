@@ -31,6 +31,7 @@ const (
 	probeLinkChainsSyncFetchTimeout        = 15 * time.Second
 	probeChainTopologyCacheFileName        = "probe_link_chain_config.json"
 	probeProxyChainsCacheFileName          = "proxy_chain.json"
+	probeControllerSessionCacheFileName    = "controller_session_token.json"
 	probeAdminWSPath                       = "/api/admin/ws"
 	probeControllerSessionTokenEnv         = "PROBE_CONTROLLER_SESSION_TOKEN"
 	probeControllerSessionTokenEnvAlt      = "CLOUDHELPER_CONTROLLER_SESSION_TOKEN"
@@ -50,6 +51,27 @@ type probeChainTopologyCacheFile struct {
 	UpdatedAt string                     `json:"updated_at"`
 	Items     []probeLinkChainServerItem `json:"items"`
 }
+
+type probeControllerSessionCacheFile struct {
+	ControllerBaseURL string `json:"controller_base_url"`
+	SessionToken      string `json:"session_token"`
+	UpdatedAt         string `json:"updated_at"`
+}
+
+type probeControllerSessionTokenSource string
+
+const (
+	probeControllerSessionTokenSourceNone  probeControllerSessionTokenSource = ""
+	probeControllerSessionTokenSourceEnv   probeControllerSessionTokenSource = "env"
+	probeControllerSessionTokenSourceCache probeControllerSessionTokenSource = "cache"
+	probeControllerSessionTokenSourceLogin probeControllerSessionTokenSource = "login"
+)
+
+var (
+	probeRequestControllerAuthNonce    = requestProbeControllerAuthNonce
+	probeRequestControllerSessionToken = requestProbeControllerSessionToken
+	probeFetchLinkChainsViaAdminWS     = fetchProbeLinkChainsViaAdminWS
+)
 
 // probeLinkChainServerItem is a single chain record returned by the controller.
 // Fields map 1-to-1 with probeLinkChainRecord / probeChainRuntimeCacheItem.
@@ -186,15 +208,28 @@ func loadProbeChainTopologyCacheItems() ([]probeLinkChainServerItem, error) {
 // fetchProbeLinkChains uses the dedicated manager-aligned admin ws action only.
 func fetchProbeLinkChains(ctx context.Context, controllerBaseURL string, identity nodeIdentity) ([]probeLinkChainServerItem, error) {
 	_ = identity
-	token := resolveProbeControllerSessionToken()
+	token, source := resolveProbeControllerSessionToken(controllerBaseURL)
 	if token == "" {
 		var err error
 		token, err = loginProbeControllerSessionToken(ctx, controllerBaseURL)
 		if err != nil {
 			return nil, err
 		}
+		source = probeControllerSessionTokenSourceLogin
 	}
-	return fetchProbeLinkChainsViaAdminWS(ctx, controllerBaseURL, token)
+	items, err := probeFetchLinkChainsViaAdminWS(ctx, controllerBaseURL, token)
+	if err != nil && shouldRetryProbeControllerSessionAuth(err) && source == probeControllerSessionTokenSourceCache {
+		clearErr := clearProbeControllerSessionTokenCache(controllerBaseURL)
+		if clearErr != nil {
+			log.Printf("warning: clear cached controller session token failed: %v", clearErr)
+		}
+		token, err = loginProbeControllerSessionToken(ctx, controllerBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return probeFetchLinkChainsViaAdminWS(ctx, controllerBaseURL, token)
+	}
+	return items, err
 }
 
 func refreshProbeProxyChainCacheFromController(ctx context.Context, identity nodeIdentity, controllerBaseURL string) ([]probeLinkChainServerItem, error) {
@@ -212,15 +247,26 @@ func refreshProbeProxyChainCacheFromController(ctx context.Context, identity nod
 	return loadProbeLocalProxyChainItems()
 }
 
-func resolveProbeControllerSessionToken() string {
-	return firstNonEmpty(
+func resolveProbeControllerSessionToken(controllerBaseURL string) (string, probeControllerSessionTokenSource) {
+	if token := firstNonEmpty(
 		strings.TrimSpace(os.Getenv(probeControllerSessionTokenEnv)),
 		strings.TrimSpace(os.Getenv(probeControllerSessionTokenEnvAlt)),
-	)
+	); token != "" {
+		return token, probeControllerSessionTokenSourceEnv
+	}
+	token, err := loadProbeControllerSessionTokenCache(controllerBaseURL)
+	if err != nil {
+		log.Printf("warning: load cached controller session token failed: %v", err)
+		return "", probeControllerSessionTokenSourceNone
+	}
+	if token != "" {
+		return token, probeControllerSessionTokenSourceCache
+	}
+	return "", probeControllerSessionTokenSourceNone
 }
 
 func loginProbeControllerSessionToken(ctx context.Context, controllerBaseURL string) (string, error) {
-	nonce, err := requestProbeControllerAuthNonce(ctx, controllerBaseURL)
+	nonce, err := probeRequestControllerAuthNonce(ctx, controllerBaseURL)
 	if err != nil {
 		return "", err
 	}
@@ -228,7 +274,14 @@ func loginProbeControllerSessionToken(ctx context.Context, controllerBaseURL str
 	if err != nil {
 		return "", err
 	}
-	return requestProbeControllerSessionToken(ctx, controllerBaseURL, nonce, signature)
+	token, err := probeRequestControllerSessionToken(ctx, controllerBaseURL, nonce, signature)
+	if err != nil {
+		return "", err
+	}
+	if err := persistProbeControllerSessionTokenCache(controllerBaseURL, token); err != nil {
+		log.Printf("warning: persist controller session token cache failed: %v", err)
+	}
+	return token, nil
 }
 
 func requestProbeControllerAuthNonce(ctx context.Context, controllerBaseURL string) (string, error) {
@@ -495,6 +548,100 @@ func buildProbeAdminWSURL(controllerBaseURL string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return strings.TrimSpace(parsed.String()), nil
+}
+
+func shouldRetryProbeControllerSessionAuth(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "admin ws auth failed")
+}
+
+func resolveProbeControllerSessionCachePath() (string, error) {
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, probeControllerSessionCacheFileName), nil
+}
+
+func normalizeProbeControllerBaseURL(controllerBaseURL string) string {
+	return strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
+}
+
+func loadProbeControllerSessionTokenCache(controllerBaseURL string) (string, error) {
+	path, err := resolveProbeControllerSessionCachePath()
+	if err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "", nil
+	}
+	var payload probeControllerSessionCacheFile
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return "", err
+	}
+	if normalizeProbeControllerBaseURL(payload.ControllerBaseURL) != normalizeProbeControllerBaseURL(controllerBaseURL) {
+		return "", nil
+	}
+	return strings.TrimSpace(payload.SessionToken), nil
+}
+
+func persistProbeControllerSessionTokenCache(controllerBaseURL string, token string) error {
+	cleanToken := strings.TrimSpace(token)
+	if cleanToken == "" {
+		return errors.New("controller session token is empty")
+	}
+	path, err := resolveProbeControllerSessionCachePath()
+	if err != nil {
+		return err
+	}
+	payload := probeControllerSessionCacheFile{
+		ControllerBaseURL: normalizeProbeControllerBaseURL(controllerBaseURL),
+		SessionToken:      cleanToken,
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339),
+	}
+	encoded, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(encoded, '\n'), 0o644)
+}
+
+func clearProbeControllerSessionTokenCache(controllerBaseURL string) error {
+	path, err := resolveProbeControllerSessionCachePath()
+	if err != nil {
+		return err
+	}
+	if normalizeProbeControllerBaseURL(controllerBaseURL) == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	payloadToken, err := loadProbeControllerSessionTokenCache(controllerBaseURL)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(payloadToken) == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // applyProbeLinkChainServerItems diffs server items against running runtimes.

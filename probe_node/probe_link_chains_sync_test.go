@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -267,5 +268,130 @@ func TestLoginProbeControllerSessionTokenWithLocalPrivateKey(t *testing.T) {
 	}
 	if !loginRequested {
 		t.Fatalf("login endpoint not requested")
+	}
+
+	cachedToken, source := resolveProbeControllerSessionToken(server.URL)
+	if cachedToken != wantToken {
+		t.Fatalf("cached token=%q, want %q", cachedToken, wantToken)
+	}
+	if source != probeControllerSessionTokenSourceCache {
+		t.Fatalf("cached token source=%q, want %q", source, probeControllerSessionTokenSourceCache)
+	}
+}
+
+func TestResolveProbeControllerSessionTokenPrefersCacheWhenEnvMissing(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
+	t.Setenv(probeControllerSessionTokenEnv, "")
+	t.Setenv(probeControllerSessionTokenEnvAlt, "")
+
+	const baseURL = "https://controller.example.com"
+	const wantToken = "cached-session-token"
+	if err := persistProbeControllerSessionTokenCache(baseURL, wantToken); err != nil {
+		t.Fatalf("persist session cache failed: %v", err)
+	}
+
+	token, source := resolveProbeControllerSessionToken(baseURL)
+	if token != wantToken {
+		t.Fatalf("token=%q, want %q", token, wantToken)
+	}
+	if source != probeControllerSessionTokenSourceCache {
+		t.Fatalf("source=%q, want %q", source, probeControllerSessionTokenSourceCache)
+	}
+}
+
+func TestFetchProbeLinkChainsRetriesWhenCachedSessionTokenIsInvalid(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	keyAny, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal pkcs8 private key: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyAny})
+	if len(pemBytes) == 0 {
+		t.Fatalf("encode private key pem failed")
+	}
+
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, probeControllerAdminPrivateKeyFileName), pemBytes, 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
+	t.Setenv(probeControllerAdminPrivateKeyPathEnv, "")
+	t.Setenv(probeControllerSessionTokenEnv, "")
+	t.Setenv(probeControllerSessionTokenEnvAlt, "")
+
+	const (
+		wantNonce = "retry-nonce"
+		wantToken = "fresh-session-token"
+		baseURL   = "http://controller.example.invalid"
+	)
+	if err := persistProbeControllerSessionTokenCache(baseURL, "stale-session-token"); err != nil {
+		t.Fatalf("persist stale session cache failed: %v", err)
+	}
+
+	var nonceRequests int
+	var loginRequests int
+	var wsAuthTokens []string
+
+	origRequestNonce := probeRequestControllerAuthNonce
+	origRequestSession := probeRequestControllerSessionToken
+	origFetchViaWS := probeFetchLinkChainsViaAdminWS
+	defer func() {
+		probeRequestControllerAuthNonce = origRequestNonce
+		probeRequestControllerSessionToken = origRequestSession
+		probeFetchLinkChainsViaAdminWS = origFetchViaWS
+	}()
+
+	probeRequestControllerAuthNonce = func(ctx context.Context, controllerBaseURL string) (string, error) {
+		nonceRequests++
+		return wantNonce, nil
+	}
+	probeRequestControllerSessionToken = func(ctx context.Context, controllerBaseURL string, nonce string, signature string) (string, error) {
+		loginRequests++
+		if nonce != wantNonce {
+			t.Fatalf("nonce=%q, want %q", nonce, wantNonce)
+		}
+		sigBytes, err := base64.StdEncoding.DecodeString(signature)
+		if err != nil {
+			t.Fatalf("decode login signature: %v", err)
+		}
+		if !ed25519.Verify(pub, []byte(wantNonce), sigBytes) {
+			t.Fatalf("invalid login signature")
+		}
+		return wantToken, nil
+	}
+	probeFetchLinkChainsViaAdminWS = func(ctx context.Context, controllerBaseURL string, sessionToken string) ([]probeLinkChainServerItem, error) {
+		wsAuthTokens = append(wsAuthTokens, sessionToken)
+		if sessionToken == "stale-session-token" {
+			return nil, errors.New("admin ws auth failed: invalid or expired session token")
+		}
+		return []probeLinkChainServerItem{{ChainID: "chain-1", ChainType: "proxy_chain", Name: "Chain 1"}}, nil
+	}
+
+	items, err := fetchProbeLinkChains(context.Background(), baseURL, nodeIdentity{})
+	if err != nil {
+		t.Fatalf("fetchProbeLinkChains failed: %v", err)
+	}
+	if len(items) != 1 || items[0].ChainID != "chain-1" {
+		t.Fatalf("unexpected items: %+v", items)
+	}
+	if nonceRequests != 1 {
+		t.Fatalf("nonceRequests=%d, want 1", nonceRequests)
+	}
+	if loginRequests != 1 {
+		t.Fatalf("loginRequests=%d, want 1", loginRequests)
+	}
+	if got, want := strings.Join(wsAuthTokens, ","), "stale-session-token,"+wantToken; got != want {
+		t.Fatalf("wsAuthTokens=%q, want %q", got, want)
+	}
+	cachedToken, source := resolveProbeControllerSessionToken(baseURL)
+	if cachedToken != wantToken {
+		t.Fatalf("cached token=%q, want %q", cachedToken, wantToken)
+	}
+	if source != probeControllerSessionTokenSourceCache {
+		t.Fatalf("source=%q, want %q", source, probeControllerSessionTokenSourceCache)
 	}
 }
