@@ -420,7 +420,28 @@ func lookupProbeLocalIPv4ForBypass(host string) ([]string, error) {
 		}
 		out = append(out, ip.To4().String())
 	}
-	return dedupeProbeLocalIPv4Strings(out), nil
+	return dedupeProbeLocalBypassIPv4Strings(out), nil
+}
+
+func dedupeProbeLocalBypassIPv4Strings(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, raw := range items {
+		ip4 := net.ParseIP(strings.TrimSpace(raw)).To4()
+		if ip4 == nil {
+			continue
+		}
+		value := ip4.String()
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func expandProbeLocalBootstrapBypassTargets(targets []string) ([]string, error) {

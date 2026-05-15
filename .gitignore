@@ -21,3 +21,6 @@ probe_node/temp/data/probe_local_auth.json
 probe_node/temp/data/proxy_host.txt
 encoding_tools/.tmp_patch*.json
 probe_manager/
+.tmp_gocache/
+probe_node/cloudhelper-probe-node-linux-amd64
+probe_node/cloudhelper-probe-node-linux-arm64
