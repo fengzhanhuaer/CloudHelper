@@ -389,7 +389,15 @@ func resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs 
 }
 
 func ensureProbeLocalProxyBootstrapDirectBypass(extraSelectedChainIDs ...string) error {
-	_ = extraSelectedChainIDs
+	targets, err := resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs...)
+	if err != nil {
+		return err
+	}
+	for _, target := range targets {
+		if err := probeLocalEnsureExplicitDirectBypass(target); err != nil {
+			return fmt.Errorf("ensure bootstrap direct bypass failed: target=%s err=%w", strings.TrimSpace(target), err)
+		}
+	}
 	return nil
 }
 
@@ -639,23 +647,6 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 			return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 		}
 	}
-	if err := probeLocalApplyTUNPrimaryDNS(); err != nil {
-		_ = stopProbeLocalTUNDataPlane()
-		_ = probeLocalRestoreProxyDirect()
-		m.tun.Enabled = false
-		m.tun.DataPlane = false
-		m.tun.DataPlaneRX = 0
-		m.tun.DataPlaneBytes = 0
-		m.tun.LastError = strings.TrimSpace(err.Error())
-		m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		m.proxy.Enabled = false
-		m.proxy.Mode = probeLocalProxyModeDirect
-		m.proxy.LastError = m.tun.LastError
-		m.proxy.UpdatedAt = m.tun.UpdatedAt
-		persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
-		reconcileProbeLocalDNSRuntime()
-		return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
-	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.tun.Enabled = true
@@ -703,9 +694,8 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	m.proxy.UpdatedAt = now
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
 	reconcileProbeLocalDNSRuntime()
-	errRestoreDNS := probeLocalRestoreTUNPrimaryDNS()
-	if errStopDataPlane != nil || errRestoreDNS != nil {
-		m.tun.LastError = strings.TrimSpace(errors.Join(errStopDataPlane, errRestoreDNS).Error())
+	if errStopDataPlane != nil {
+		m.tun.LastError = strings.TrimSpace(errStopDataPlane.Error())
 		m.proxy.LastError = m.tun.LastError
 		return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 	}
@@ -729,9 +719,6 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 		allErr = errors.Join(allErr, err)
 	}
 	if err := stopProbeLocalTUNDataPlane(); err != nil {
-		allErr = errors.Join(allErr, err)
-	}
-	if err := probeLocalRestoreTUNPrimaryDNS(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
 	if uninstall {

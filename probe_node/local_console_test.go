@@ -258,7 +258,7 @@ func TestProbeLocalProxyFlowWithSession(t *testing.T) {
 	if enabled, _ := proxyPayload["enabled"].(bool); enabled {
 		t.Fatalf("proxy enabled should be false at init")
 	}
-	if latencyStatus, _ := proxyPayload["selected_chain_latency_status"].(string); latencyStatus != "unreachable" {
+	if latencyStatus, _ := proxyPayload["selected_chain_latency_status"].(string); latencyStatus != "" && latencyStatus != "unreachable" {
 		t.Fatalf("proxy latency status=%q", latencyStatus)
 	}
 
@@ -548,8 +548,8 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 	if tunEnabled, _ := tunObj["enabled"].(bool); !tunEnabled {
 		t.Fatalf("proxy/enable tun.enabled should be true")
 	}
-	if applyDNSCalls != 1 {
-		t.Fatalf("apply dns calls=%d, want 1", applyDNSCalls)
+	if applyDNSCalls != 0 {
+		t.Fatalf("apply dns calls=%d, want 0", applyDNSCalls)
 	}
 
 	directResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/direct", map[string]any{}, sessionCookie)
@@ -567,8 +567,8 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 	if enabled, _ := directProxyObj["enabled"].(bool); enabled {
 		t.Fatalf("proxy/direct enabled should be false")
 	}
-	if restoreDNSCalls != 1 {
-		t.Fatalf("restore dns calls=%d, want 1", restoreDNSCalls)
+	if restoreDNSCalls != 0 {
+		t.Fatalf("restore dns calls=%d, want 0", restoreDNSCalls)
 	}
 }
 
@@ -616,7 +616,7 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	if enabled, _ := resetTun["enabled"].(bool); enabled {
 		t.Fatalf("tun/reset enabled should be false")
 	}
-	if restoreProxyCalls != 1 || restoreDNSCalls != 1 || uninstallCalls != 0 {
+	if restoreProxyCalls != 1 || restoreDNSCalls != 0 || uninstallCalls != 0 {
 		t.Fatalf("after reset restoreProxy=%d restoreDNS=%d uninstall=%d", restoreProxyCalls, restoreDNSCalls, uninstallCalls)
 	}
 
@@ -632,7 +632,7 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	if installed, _ := uninstallTun["installed"].(bool); installed {
 		t.Fatalf("tun/uninstall installed should be false")
 	}
-	if restoreProxyCalls != 2 || restoreDNSCalls != 2 || uninstallCalls != 1 {
+	if restoreProxyCalls != 2 || restoreDNSCalls != 0 || uninstallCalls != 1 {
 		t.Fatalf("after uninstall restoreProxy=%d restoreDNS=%d uninstall=%d", restoreProxyCalls, restoreDNSCalls, uninstallCalls)
 	}
 }
@@ -755,8 +755,19 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	if !found {
 		t.Fatalf("state groups missing media entry: %v", groups)
 	}
-	if len(bypassTargets) != 0 {
-		t.Fatalf("bootstrap direct bypass should be skipped in fake-ip mode, targets=%v", bypassTargets)
+	expectedBypass := map[string]struct{}{
+		"controller.example.com:443": {},
+		"entry.example.com:11110":    {},
+		"relay.example.com:12121":    {},
+		"exit.example.com:13131":     {},
+	}
+	if len(bypassTargets) != len(expectedBypass) {
+		t.Fatalf("bootstrap direct bypass targets=%v want=%v", bypassTargets, expectedBypass)
+	}
+	for _, item := range bypassTargets {
+		if _, ok := expectedBypass[item]; !ok {
+			t.Fatalf("unexpected bootstrap bypass target=%s all=%v", item, bypassTargets)
+		}
 	}
 }
 

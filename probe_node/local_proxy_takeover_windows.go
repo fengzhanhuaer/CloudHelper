@@ -114,7 +114,7 @@ func applyProbeLocalProxyTakeover() error {
 	probeLocalWindowsTakeoverState.mu.Unlock()
 
 	logProbeInfof(
-		"probe local proxy takeover applied on windows fake-ip mode: gateway=%s if_luid=%d if_index=%d routes=%d route_snapshot_len=%d",
+		"probe local proxy takeover applied on windows global-tun mode: gateway=%s if_luid=%d if_index=%d routes=%d route_snapshot_len=%d",
 		routeTarget.Gateway,
 		routeTarget.InterfaceLUID,
 		routeTarget.InterfaceIndex,
@@ -172,7 +172,15 @@ func resolveProbeLocalWindowsRouteTarget() (probeLocalWindowsRouteTarget, error)
 	}
 	rawInterfaceLUID := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_LUID"))
 	if rawInterfaceLUID == "" {
-		return probeLocalWindowsRouteTarget{}, errors.New("missing PROBE_LOCAL_TUN_IF_LUID")
+		rawInterfaceIndex := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX"))
+		if rawInterfaceIndex == "" {
+			return probeLocalWindowsRouteTarget{}, errors.New("missing PROBE_LOCAL_TUN_IF_LUID or PROBE_LOCAL_TUN_IF_INDEX")
+		}
+		interfaceIndex, parseErr := strconv.Atoi(rawInterfaceIndex)
+		if parseErr != nil || interfaceIndex <= 0 {
+			return probeLocalWindowsRouteTarget{}, fmt.Errorf("invalid PROBE_LOCAL_TUN_IF_INDEX=%q", rawInterfaceIndex)
+		}
+		return probeLocalWindowsRouteTarget{Gateway: gateway, InterfaceLUID: 0, InterfaceIndex: interfaceIndex}, nil
 	}
 	interfaceLUID, parseErr := strconv.ParseUint(rawInterfaceLUID, 10, 64)
 	if parseErr != nil || interfaceLUID == 0 {
@@ -188,6 +196,8 @@ func resolveProbeLocalWindowsRouteTarget() (probeLocalWindowsRouteTarget, error)
 func probeLocalWindowsTakeoverRouteDefs(routeTarget probeLocalWindowsRouteTarget) []probeLocalWindowsRouteDef {
 	prefix, mask := probeLocalWindowsFakeIPRoutePrefixAndMask(currentProbeLocalDNSFakeIPCIDR())
 	routeDefs := []probeLocalWindowsRouteDef{
+		{Prefix: probeLocalWindowsRouteSplitPrefixA, Mask: probeLocalWindowsRouteSplitMaskA, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
+		{Prefix: probeLocalWindowsRouteSplitPrefixB, Mask: probeLocalWindowsRouteSplitMaskB, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
 		{Prefix: prefix, Mask: mask, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
 	}
 	for _, cidr := range probeLocalTunnelCIDRRules() {

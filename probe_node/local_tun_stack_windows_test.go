@@ -349,6 +349,7 @@ func TestEnsureProbeLocalDirectBypassForTargetUsesPrimaryEgressRoute(t *testing.
 		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_LUID", "")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
 
 	detected := false
@@ -397,6 +398,7 @@ func TestReleaseProbeLocalTUNDirectBypassRouteUsesStoredPrimaryEgressRoute(t *te
 		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_LUID", "")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
 
 	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
@@ -461,6 +463,7 @@ func TestReleaseProbeLocalAllDirectBypassRoutesUsesStoredPrimaryEgressRoute(t *t
 		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_LUID", "")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
 
 	createCalls := 0
