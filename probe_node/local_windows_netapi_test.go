@@ -191,8 +191,8 @@ func TestSelectProbeLocalWindowsPrimaryEgressRouteTargetPrefersLowerTotalMetric(
 		newProbeLocalTestDefaultRouteRow(12, "10.0.0.1", 5),
 	}
 	adapters := []windowsAdapterInfo{
-		{InterfaceIndex: 11, IPv4Metric: 50},
-		{InterfaceIndex: 12, IPv4Metric: 5},
+		{InterfaceIndex: 11, OperStatus: windows.IfOperStatusUp, IPv4Metric: 50},
+		{InterfaceIndex: 12, OperStatus: windows.IfOperStatusUp, IPv4Metric: 5},
 	}
 
 	got, err := selectProbeLocalWindowsPrimaryEgressRouteTarget(rows, adapters, 9)
@@ -210,8 +210,8 @@ func TestSelectProbeLocalWindowsPrimaryEgressRouteTargetExcludesTunInterface(t *
 		newProbeLocalTestDefaultRouteRow(12, "10.0.0.1", 10),
 	}
 	adapters := []windowsAdapterInfo{
-		{InterfaceIndex: 9, IPv4Metric: 1},
-		{InterfaceIndex: 12, IPv4Metric: 5},
+		{InterfaceIndex: 9, OperStatus: windows.IfOperStatusUp, IPv4Metric: 1},
+		{InterfaceIndex: 12, OperStatus: windows.IfOperStatusUp, IPv4Metric: 5},
 	}
 
 	got, err := selectProbeLocalWindowsPrimaryEgressRouteTarget(rows, adapters, 9)
@@ -220,6 +220,39 @@ func TestSelectProbeLocalWindowsPrimaryEgressRouteTargetExcludesTunInterface(t *
 	}
 	if got.InterfaceIndex != 12 || got.NextHop != "10.0.0.1" {
 		t.Fatalf("routeTarget=%+v", got)
+	}
+}
+
+func TestSelectProbeLocalWindowsPrimaryEgressRouteTargetSkipsDisconnectedAdapter(t *testing.T) {
+	rows := []probeLocalMIBIPForwardRow2{
+		newProbeLocalTestDefaultRouteRow(10, "192.168.1.1", 1),
+		newProbeLocalTestDefaultRouteRow(12, "10.0.0.1", 20),
+	}
+	adapters := []windowsAdapterInfo{
+		{InterfaceIndex: 10, OperStatus: windows.IfOperStatusDown, IPv4Metric: 1},
+		{InterfaceIndex: 12, OperStatus: windows.IfOperStatusUp, IPv4Metric: 5},
+	}
+
+	got, err := selectProbeLocalWindowsPrimaryEgressRouteTarget(rows, adapters, 9)
+	if err != nil {
+		t.Fatalf("selectProbeLocalWindowsPrimaryEgressRouteTarget returned error: %v", err)
+	}
+	if got.InterfaceIndex != 12 || got.NextHop != "10.0.0.1" {
+		t.Fatalf("routeTarget=%+v", got)
+	}
+}
+
+func TestSelectProbeLocalWindowsPrimaryEgressRouteTargetReturnsErrorWithoutUpAdapter(t *testing.T) {
+	rows := []probeLocalMIBIPForwardRow2{
+		newProbeLocalTestDefaultRouteRow(10, "192.168.1.1", 1),
+	}
+	adapters := []windowsAdapterInfo{
+		{InterfaceIndex: 10, OperStatus: windows.IfOperStatusDown, IPv4Metric: 1},
+	}
+
+	_, err := selectProbeLocalWindowsPrimaryEgressRouteTarget(rows, adapters, 9)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "usable ipv4 default route not found") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

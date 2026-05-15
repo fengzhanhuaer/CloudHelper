@@ -359,6 +359,7 @@ type windowsAdapterInfo struct {
 	Name           string
 	Description    string
 	AdapterGUID    string
+	OperStatus     uint32
 	IPv4Metric     uint32
 	IPv4Addrs      []string
 	DNSServers     []string
@@ -423,6 +424,7 @@ func parseWindowsAdapterInfos(first *windows.IpAdapterAddresses) []windowsAdapte
 			InterfaceLUID:  curr.Luid,
 			Name:           strings.TrimSpace(windows.UTF16PtrToString(curr.FriendlyName)),
 			Description:    strings.TrimSpace(windows.UTF16PtrToString(curr.Description)),
+			OperStatus:     curr.OperStatus,
 			IPv4Metric:     curr.Ipv4Metric,
 		}
 		adapterName := strings.TrimSpace(windows.BytePtrToString(curr.AdapterName))
@@ -675,10 +677,14 @@ func selectProbeLocalWindowsPrimaryEgressRouteTarget(rows []probeLocalMIBIPForwa
 		if nextHop == "" || nextHop == "0.0.0.0" {
 			continue
 		}
-		adapterMetric := uint32(0)
-		if adapter, ok := adapterByIfIndex[int(row.InterfaceIndex)]; ok {
-			adapterMetric = adapter.IPv4Metric
+		adapter, ok := adapterByIfIndex[int(row.InterfaceIndex)]
+		if !ok {
+			continue
 		}
+		if adapter.OperStatus != windows.IfOperStatusUp {
+			continue
+		}
+		adapterMetric := adapter.IPv4Metric
 		totalMetric := uint64(row.Metric) + uint64(adapterMetric)
 		if best.InterfaceIndex == 0 ||
 			totalMetric < bestTotalMetric ||
