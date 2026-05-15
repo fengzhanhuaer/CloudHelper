@@ -151,6 +151,17 @@ type probeLocalProxyStateFile struct {
 	TUN       probeLocalTUNPersistentState     `json:"tun"`
 }
 
+type probeLocalProxyGroupRuntimeSnapshot struct {
+	Group                         string `json:"group,omitempty"`
+	SelectedChainID               string `json:"selected_chain_id,omitempty"`
+	GroupRuntimeStatus            string `json:"group_runtime_status,omitempty"`
+	SelectedChainKeepalive        string `json:"selected_chain_keepalive,omitempty"`
+	SelectedChainLatencyMS        *int64 `json:"selected_chain_latency_ms,omitempty"`
+	SelectedChainLatencyStatus    string `json:"selected_chain_latency_status,omitempty"`
+	SelectedChainLatencyUpdatedAt string `json:"selected_chain_latency_updated_at,omitempty"`
+	SelectedChainLatencyError     string `json:"selected_chain_latency_error,omitempty"`
+}
+
 type probeLocalHostMapping struct {
 	DNS string `json:"dns"`
 	IP  string `json:"ip"`
@@ -207,6 +218,7 @@ var (
 	probeLocalRestoreTUNPrimaryDNS        = restoreProbeLocalTUNPrimaryDNS
 	probeLocalUninstallTUNDriver          = uninstallProbeLocalTUNDriver
 	probeLocalEnsureExplicitDirectBypass  = ensureProbeLocalExplicitDirectBypassForTarget
+	probeLocalResolveGroupRuntimeLatency  = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalRunUpgrade                  = runProbeUpgrade
 	probeLocalRestartProcess              = restartCurrentProcess
 	probeLocalRefreshProxyChainCache      = refreshProbeProxyChainCacheFromController
@@ -772,6 +784,19 @@ var probeLocalRuntimeState = struct {
 	mu      sync.RWMutex
 	context probeLocalProxyRuntimeContext
 }{}
+
+var probeLocalProxyViewState = struct {
+	mu       sync.RWMutex
+	groups   probeLocalProxyGroupFile
+	state    probeLocalProxyStateFile
+	chains   []probeLinkChainServerItem
+	runtimes map[string]probeLocalProxyGroupRuntimeSnapshot
+}{
+	groups:   defaultProbeLocalProxyGroupFile(),
+	state:    defaultProbeLocalProxyStateFile(),
+	chains:   []probeLinkChainServerItem{},
+	runtimes: map[string]probeLocalProxyGroupRuntimeSnapshot{},
+}
 
 var probeLocalUpgradeState = struct {
 	mu    sync.RWMutex
@@ -1352,6 +1377,7 @@ func loadProbeLocalProxyGroupFile() (probeLocalProxyGroupFile, error) {
 	if err := validateProbeLocalProxyGroupFile(payload); err != nil {
 		return probeLocalProxyGroupFile{}, err
 	}
+	setProbeLocalProxyViewGroups(payload)
 	return payload, nil
 }
 
@@ -1369,7 +1395,11 @@ func persistProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
 	if err != nil {
 		return err
 	}
-	return persistProbeLocalJSONFile(path, payload)
+	if err := persistProbeLocalJSONFile(path, payload); err != nil {
+		return err
+	}
+	setProbeLocalProxyViewGroups(payload)
+	return nil
 }
 
 func loadProbeLocalProxyStateFile() (probeLocalProxyStateFile, error) {
@@ -1407,6 +1437,7 @@ func loadProbeLocalProxyStateFile() (probeLocalProxyStateFile, error) {
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = payload.UpdatedAt
 	}
+	setProbeLocalProxyViewState(payload)
 	return payload, nil
 }
 
@@ -1429,7 +1460,11 @@ func persistProbeLocalProxyStateFile(payload probeLocalProxyStateFile) error {
 	if err != nil {
 		return err
 	}
-	return persistProbeLocalJSONFile(path, payload)
+	if err := persistProbeLocalJSONFile(path, payload); err != nil {
+		return err
+	}
+	setProbeLocalProxyViewState(payload)
+	return nil
 }
 
 func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
@@ -1640,6 +1675,116 @@ func encodeProbeLocalHostMappingsContent(hosts []probeLocalHostMapping) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
+func cloneProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) probeLocalProxyGroupFile {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return payload
+	}
+	var cloned probeLocalProxyGroupFile
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return payload
+	}
+	return cloned
+}
+
+func cloneProbeLocalProxyStateFile(payload probeLocalProxyStateFile) probeLocalProxyStateFile {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return payload
+	}
+	var cloned probeLocalProxyStateFile
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return payload
+	}
+	return cloned
+}
+
+func cloneProbeLocalProxyChainItems(items []probeLinkChainServerItem) []probeLinkChainServerItem {
+	if len(items) == 0 {
+		return []probeLinkChainServerItem{}
+	}
+	return sanitizeProbeChainServerItemsForCache(items)
+}
+
+func setProbeLocalProxyViewGroups(payload probeLocalProxyGroupFile) {
+	probeLocalProxyViewState.mu.Lock()
+	probeLocalProxyViewState.groups = cloneProbeLocalProxyGroupFile(payload)
+	probeLocalProxyViewState.mu.Unlock()
+}
+
+func currentProbeLocalProxyViewGroups() probeLocalProxyGroupFile {
+	probeLocalProxyViewState.mu.RLock()
+	defer probeLocalProxyViewState.mu.RUnlock()
+	return cloneProbeLocalProxyGroupFile(probeLocalProxyViewState.groups)
+}
+
+func setProbeLocalProxyViewState(payload probeLocalProxyStateFile) {
+	probeLocalProxyViewState.mu.Lock()
+	probeLocalProxyViewState.state = cloneProbeLocalProxyStateFile(payload)
+	probeLocalProxyViewState.mu.Unlock()
+}
+
+func currentProbeLocalProxyViewState() probeLocalProxyStateFile {
+	probeLocalProxyViewState.mu.RLock()
+	defer probeLocalProxyViewState.mu.RUnlock()
+	return cloneProbeLocalProxyStateFile(probeLocalProxyViewState.state)
+}
+
+func setProbeLocalProxyViewChains(items []probeLinkChainServerItem) {
+	probeLocalProxyViewState.mu.Lock()
+	probeLocalProxyViewState.chains = cloneProbeLocalProxyChainItems(items)
+	probeLocalProxyViewState.mu.Unlock()
+}
+
+func currentProbeLocalProxyViewChains() []probeLinkChainServerItem {
+	probeLocalProxyViewState.mu.RLock()
+	defer probeLocalProxyViewState.mu.RUnlock()
+	return cloneProbeLocalProxyChainItems(probeLocalProxyViewState.chains)
+}
+
+func setProbeLocalProxyViewGroupRuntimeSnapshot(group string, snapshot probeLocalProxyGroupRuntimeSnapshot) {
+	cleanGroup := strings.TrimSpace(group)
+	if cleanGroup == "" {
+		return
+	}
+	snapshot.Group = cleanGroup
+	probeLocalProxyViewState.mu.Lock()
+	if probeLocalProxyViewState.runtimes == nil {
+		probeLocalProxyViewState.runtimes = make(map[string]probeLocalProxyGroupRuntimeSnapshot)
+	}
+	key := strings.ToLower(cleanGroup)
+	if snapshot.SelectedChainLatencyMS != nil {
+		value := *snapshot.SelectedChainLatencyMS
+		snapshot.SelectedChainLatencyMS = &value
+	}
+	probeLocalProxyViewState.runtimes[key] = snapshot
+	probeLocalProxyViewState.mu.Unlock()
+}
+
+func currentProbeLocalProxyViewGroupRuntimeSnapshot(group string) (probeLocalProxyGroupRuntimeSnapshot, bool) {
+	cleanGroup := strings.TrimSpace(group)
+	if cleanGroup == "" {
+		return probeLocalProxyGroupRuntimeSnapshot{}, false
+	}
+	probeLocalProxyViewState.mu.RLock()
+	defer probeLocalProxyViewState.mu.RUnlock()
+	snapshot, ok := probeLocalProxyViewState.runtimes[strings.ToLower(cleanGroup)]
+	if !ok {
+		return probeLocalProxyGroupRuntimeSnapshot{}, false
+	}
+	if snapshot.SelectedChainLatencyMS != nil {
+		value := *snapshot.SelectedChainLatencyMS
+		snapshot.SelectedChainLatencyMS = &value
+	}
+	return snapshot, true
+}
+
+func resetProbeLocalProxyViewGroupRuntimeSnapshots() {
+	probeLocalProxyViewState.mu.Lock()
+	probeLocalProxyViewState.runtimes = make(map[string]probeLocalProxyGroupRuntimeSnapshot)
+	probeLocalProxyViewState.mu.Unlock()
+}
+
 func loadProbeLocalHostMappingsWithContent() (string, []probeLocalHostMapping, error) {
 	path, err := resolveProbeLocalProxyHostPath()
 	if err != nil {
@@ -1697,6 +1842,9 @@ func ensureProbeLocalProxyDefaultsInitialized() error {
 	if _, _, err := loadProbeLocalHostMappingsWithContent(); err != nil {
 		return err
 	}
+	if _, err := loadProbeLocalProxyChainItems(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1742,6 +1890,7 @@ func loadProbeLocalProxyChainItems() ([]probeLinkChainServerItem, error) {
 			out = append(out, item)
 		}
 	}
+	setProbeLocalProxyViewChains(out)
 	return out, nil
 }
 
@@ -1892,6 +2041,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/direct", probeLocalProxyDirectHandler)
 	mux.HandleFunc("/local/api/proxy/reject", probeLocalProxyRejectHandler)
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
+	mux.HandleFunc("/local/api/proxy/status/refresh", probeLocalProxyStatusRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
 	mux.HandleFunc("/local/api/proxy/chains/refresh", probeLocalProxyChainsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/groups", probeLocalProxyGroupsHandler)
@@ -2399,6 +2549,13 @@ func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {
 	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "tunnel", tunnelNodeID, "online"); updateErr != nil {
 		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
 	}
+	refreshProbeLocalProxyGroupRuntimeSnapshotForEntry(probeLocalProxyStateGroupEntry{
+		Group:           group,
+		Action:          "tunnel",
+		SelectedChainID: selectedChainID,
+		TunnelNodeID:    tunnelNodeID,
+		RuntimeStatus:   "online",
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"tun":   tunState,
@@ -2444,6 +2601,13 @@ func probeLocalProxySelectHandler(w http.ResponseWriter, r *http.Request) {
 	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "tunnel", tunnelNodeID, "online"); updateErr != nil {
 		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
 	}
+	refreshProbeLocalProxyGroupRuntimeSnapshotForEntry(probeLocalProxyStateGroupEntry{
+		Group:           group,
+		Action:          "tunnel",
+		SelectedChainID: selectedChainID,
+		TunnelNodeID:    tunnelNodeID,
+		RuntimeStatus:   "online",
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"tun":   probeLocalControl.tunStatus(),
@@ -2490,6 +2654,7 @@ func probeLocalProxyDirectHandler(w http.ResponseWriter, r *http.Request) {
 	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "direct", "", "online"); updateErr != nil {
 		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
 	}
+	setProbeLocalProxyViewGroupRuntimeSnapshot(group, probeLocalProxyGroupRuntimeSnapshot{Group: group})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"tun":   tunState,
@@ -2529,6 +2694,7 @@ func probeLocalProxyRejectHandler(w http.ResponseWriter, r *http.Request) {
 	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "reject", "", "blocked"); updateErr != nil {
 		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
 	}
+	setProbeLocalProxyViewGroupRuntimeSnapshot(group, probeLocalProxyGroupRuntimeSnapshot{Group: group})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"tun":   probeLocalControl.tunStatus(),
@@ -2551,14 +2717,10 @@ func resolveProbeLocalSelectedTunnelNodeID(state probeLocalProxyStateFile) strin
 	return ""
 }
 
-func resolveProbeLocalChainNameByID(chainID string) string {
+func resolveProbeLocalChainNameByIDFromItems(chainID string, items []probeLinkChainServerItem) string {
 	cleanID := strings.TrimSpace(chainID)
 	if cleanID == "" {
 		return ""
-	}
-	items, err := loadProbeLocalProxyChainItems()
-	if err != nil {
-		return cleanID
 	}
 	for _, item := range items {
 		if strings.EqualFold(strings.TrimSpace(item.ChainID), cleanID) {
@@ -2572,45 +2734,59 @@ func resolveProbeLocalChainNameByID(chainID string) string {
 	return cleanID
 }
 
-func resolveProbeLocalChainKeepaliveAndLatency(chainID string) (string, *int64, string, string) {
-	cleanID := strings.TrimSpace(chainID)
-	if cleanID == "" {
-		return "none", nil, "", ""
+func buildProbeLocalProxyGroupRuntimeSnapshot(entry probeLocalProxyStateGroupEntry) probeLocalProxyGroupRuntimeSnapshot {
+	group := strings.TrimSpace(entry.Group)
+	selectedChainID := firstNonEmpty(
+		strings.TrimSpace(entry.SelectedChainID),
+		mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID),
+	)
+	snapshot := probeLocalProxyGroupRuntimeSnapshot{
+		Group:           group,
+		SelectedChainID: selectedChainID,
 	}
-	rt := getProbeChainRuntime(cleanID)
+	if group == "" || !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") || selectedChainID == "" {
+		return snapshot
+	}
+
+	syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
+	rt := currentProbeLocalTUNGroupRuntime(group)
 	if rt == nil {
-		return "not_running", nil, "", ""
+		return snapshot
 	}
-	downstream := rt.getDownstreamSession() != nil
-	upstream := rt.getUpstreamSession() != nil
-	if !downstream && !upstream {
-		return "disconnected", nil, "", ""
+	rtSnapshot := rt.snapshot()
+	snapshot.GroupRuntimeStatus = strings.TrimSpace(rtSnapshot.RuntimeStatus)
+	keepalive, latencyMS, latencyUpdatedAt, latencyError := probeLocalResolveGroupRuntimeLatency(rt)
+	snapshot.SelectedChainKeepalive = strings.TrimSpace(keepalive)
+	if latencyMS != nil {
+		value := *latencyMS
+		snapshot.SelectedChainLatencyMS = &value
+		snapshot.SelectedChainLatencyStatus = "reachable"
+	} else {
+		snapshot.SelectedChainLatencyStatus = "unreachable"
 	}
+	snapshot.SelectedChainLatencyUpdatedAt = strings.TrimSpace(latencyUpdatedAt)
+	snapshot.SelectedChainLatencyError = strings.TrimSpace(latencyError)
+	return snapshot
+}
 
-	keepalive := "connected"
-	targetHost := strings.TrimSpace(rt.cfg.nextHost)
-	targetPort := rt.cfg.nextPort
-	if targetHost == "" || targetPort <= 0 {
-		targetHost = strings.TrimSpace(rt.cfg.prevHost)
-		targetPort = rt.cfg.prevPort
+func refreshProbeLocalProxyGroupRuntimeSnapshotForEntry(entry probeLocalProxyStateGroupEntry) probeLocalProxyGroupRuntimeSnapshot {
+	snapshot := buildProbeLocalProxyGroupRuntimeSnapshot(entry)
+	if strings.TrimSpace(snapshot.Group) != "" {
+		setProbeLocalProxyViewGroupRuntimeSnapshot(snapshot.Group, snapshot)
 	}
-	if targetHost == "" || targetPort <= 0 {
-		return keepalive, nil, "", "latency target is unavailable"
-	}
+	return snapshot
+}
 
-	addr := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, 1800*time.Millisecond)
-	if err != nil {
-		return keepalive, nil, "", strings.TrimSpace(err.Error())
+func refreshProbeLocalProxyGroupRuntimeSnapshotsForState(state probeLocalProxyStateFile) map[string]probeLocalProxyGroupRuntimeSnapshot {
+	snapshots := make(map[string]probeLocalProxyGroupRuntimeSnapshot, len(state.Groups))
+	for _, entry := range state.Groups {
+		snapshot := refreshProbeLocalProxyGroupRuntimeSnapshotForEntry(entry)
+		if strings.TrimSpace(snapshot.Group) == "" {
+			continue
+		}
+		snapshots[strings.ToLower(snapshot.Group)] = snapshot
 	}
-	_ = conn.Close()
-	latencyMS := int64(time.Since(start) / time.Millisecond)
-	if latencyMS < 0 {
-		latencyMS = 0
-	}
-	updatedAt := time.Now().UTC().Format(time.RFC3339)
-	return keepalive, &latencyMS, updatedAt, ""
+	return snapshots
 }
 
 func probeLocalProxyStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -2629,47 +2805,52 @@ func probeLocalProxyStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"last_error": status.LastError,
 		"updated_at": status.UpdatedAt,
 	}
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		writeJSON(w, http.StatusOK, payload)
-		return
-	}
-	selectedGroup := ""
+	state := currentProbeLocalProxyViewState()
+	chains := currentProbeLocalProxyViewChains()
 	selectedChainID := ""
 	for _, entry := range state.Groups {
-		candidateGroup := strings.TrimSpace(entry.Group)
 		candidateChainID := firstNonEmpty(
 			strings.TrimSpace(entry.SelectedChainID),
 			mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID),
 		)
-		if candidateGroup == "" || candidateChainID == "" {
+		if strings.TrimSpace(entry.Group) == "" || candidateChainID == "" {
 			continue
 		}
-		selectedGroup = candidateGroup
 		selectedChainID = candidateChainID
 		break
 	}
 	selectedTunnelNodeID := formatProbeLocalLegacyTunnelNodeID(selectedChainID)
 	payload["selected_tunnel_node_id"] = selectedTunnelNodeID
 	payload["selected_chain_id"] = selectedChainID
-	payload["selected_chain_name"] = resolveProbeLocalChainNameByID(selectedChainID)
+	payload["selected_chain_name"] = resolveProbeLocalChainNameByIDFromItems(selectedChainID, chains)
+	payload["selected_chain_keepalive"] = ""
+	payload["selected_chain_latency_status"] = ""
+	payload["selected_chain_latency_updated_at"] = ""
+	payload["selected_chain_latency_error"] = ""
 
-	var selectedGroupRuntime *probeLocalTUNGroupRuntime
-	if selectedGroup != "" && selectedChainID != "" {
-		syncProbeLocalTUNGroupRuntimeSelection(selectedGroup, selectedChainID)
-		selectedGroupRuntime = currentProbeLocalTUNGroupRuntime(selectedGroup)
-	}
-	keepalive, latencyMS, latencyUpdatedAt, latencyError := resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(selectedGroupRuntime)
-	payload["selected_chain_keepalive"] = keepalive
-	latencyStatus := "unreachable"
-	if latencyMS != nil {
-		payload["selected_chain_latency_ms"] = *latencyMS
-		latencyStatus = "reachable"
-	}
-	payload["selected_chain_latency_status"] = latencyStatus
-	payload["selected_chain_latency_updated_at"] = latencyUpdatedAt
-	payload["selected_chain_latency_error"] = latencyError
+	writeJSON(w, http.StatusOK, payload)
+}
 
+func probeLocalProxyStatusRefreshHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+
+	status := probeLocalControl.proxyStatus()
+	state := currentProbeLocalProxyViewState()
+	refreshProbeLocalProxyGroupRuntimeSnapshotsForState(state)
+
+	payload := map[string]any{
+		"ok":         true,
+		"enabled":    status.Enabled,
+		"mode":       status.Mode,
+		"last_error": status.LastError,
+		"updated_at": status.UpdatedAt,
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -2681,11 +2862,7 @@ func probeLocalProxyChainsHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
-	items, err := loadProbeLocalProxyChainItems()
-	if err != nil {
-		writeProbeLocalError(w, err)
-		return
-	}
+	items := currentProbeLocalProxyViewChains()
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -2730,11 +2907,7 @@ func probeLocalProxyGroupsHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
-	groups, err := loadProbeLocalProxyGroupFile()
-	if err != nil {
-		writeProbeLocalError(w, err)
-		return
-	}
+	groups := currentProbeLocalProxyViewGroups()
 	writeJSON(w, http.StatusOK, groups)
 }
 
@@ -2841,22 +3014,20 @@ func buildProbeLocalProxyStateGroupPayload(entry probeLocalProxyStateGroupEntry)
 	}
 
 	if strings.EqualFold(action, "tunnel") && group != "" && selectedChainID != "" {
-		syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
-		if rt := currentProbeLocalTUNGroupRuntime(group); rt != nil {
-			snapshot := rt.snapshot()
-			if groupRuntimeStatus := strings.TrimSpace(snapshot.RuntimeStatus); groupRuntimeStatus != "" {
+		if snapshot, ok := currentProbeLocalProxyViewGroupRuntimeSnapshot(group); ok {
+			if groupRuntimeStatus := strings.TrimSpace(snapshot.GroupRuntimeStatus); groupRuntimeStatus != "" {
 				payload["group_runtime_status"] = groupRuntimeStatus
 			}
-			keepalive, latencyMS, latencyUpdatedAt, latencyError := resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt)
-			payload["selected_chain_keepalive"] = keepalive
-			latencyStatus := "unreachable"
-			if latencyMS != nil {
-				payload["selected_chain_latency_ms"] = *latencyMS
-				latencyStatus = "reachable"
+			if keepalive := strings.TrimSpace(snapshot.SelectedChainKeepalive); keepalive != "" {
+				payload["selected_chain_keepalive"] = keepalive
+			}
+			latencyStatus := firstNonEmpty(strings.TrimSpace(snapshot.SelectedChainLatencyStatus), "unreachable")
+			if snapshot.SelectedChainLatencyMS != nil {
+				payload["selected_chain_latency_ms"] = *snapshot.SelectedChainLatencyMS
 			}
 			payload["selected_chain_latency_status"] = latencyStatus
-			payload["selected_chain_latency_updated_at"] = latencyUpdatedAt
-			payload["selected_chain_latency_error"] = latencyError
+			payload["selected_chain_latency_updated_at"] = strings.TrimSpace(snapshot.SelectedChainLatencyUpdatedAt)
+			payload["selected_chain_latency_error"] = strings.TrimSpace(snapshot.SelectedChainLatencyError)
 		}
 	}
 
@@ -2874,11 +3045,7 @@ func probeLocalProxyStateHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		writeProbeLocalError(w, err)
-		return
-	}
+	state := currentProbeLocalProxyViewState()
 	groups := make([]map[string]any, 0, len(state.Groups))
 	for _, entry := range state.Groups {
 		groups = append(groups, buildProbeLocalProxyStateGroupPayload(entry))
@@ -3064,6 +3231,7 @@ func resetProbeLocalAuthManagerForTest() {
 func resetProbeLocalControlStateForTest() {
 	clearProbeLocalTUNInstallObservation()
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	resetProbeLocalProxyViewGroupRuntimeSnapshots()
 	probeLocalControl = newProbeLocalControlManager()
 }
 
@@ -3071,6 +3239,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalApplyProxyTakeover = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect = restoreProbeLocalProxyDirect
 	probeLocalEnsureExplicitDirectBypass = ensureProbeLocalExplicitDirectBypassForTarget
+	probeLocalResolveGroupRuntimeLatency = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
 }
 

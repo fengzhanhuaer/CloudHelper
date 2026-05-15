@@ -134,13 +134,6 @@
       <div class="kv">
         <div>接管开关</div><div id="proxyEnabled">-</div>
         <div>当前模式</div><div id="proxyMode">-</div>
-        <div>当前生效组</div><div id="proxyActiveGroup">-</div>
-        <div>当前生效链路</div><div id="proxyActiveTunnel">-</div>
-        <div>选中链路保活</div><div id="proxySelectedKeepalive">-</div>
-        <div>选中链路延迟(ms)</div><div id="proxySelectedLatencyMs">-</div>
-        <div>延迟测量时间</div><div id="proxySelectedLatencyUpdatedAt">-</div>
-        <div>链路测量错误</div><div id="proxySelectedLatencyError">-</div>
-        <div>最后更新时间</div><div id="proxyUpdatedAt">-</div>
         <div>最近错误</div><div id="proxyLastError">-</div>
       </div>
       <div class="actions">
@@ -162,8 +155,6 @@
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
     let proxyStatusCache = { enabled: false, mode: '' };
-    let proxySelectedLatencyDisplay = '不可达';
-    let proxySelectedLatencyStatus = 'unreachable';
     let proxyStatusPollingTimer = null;
     const PROXY_STATUS_POLL_INTERVAL_MS = 60000;
 
@@ -219,13 +210,6 @@
       if (!found) return clean;
       const name = String(found && found.name || '').trim();
       return name || clean;
-    }
-
-    function updateProxyActiveFromState() {
-      const active = proxyStateGroupsCache.find((item) => normalizeAction(item && item.action) === 'tunnel');
-      setText('proxyActiveGroup', active && active.group);
-      const activeTunnelID = active && active.tunnel_node_id;
-      setText('proxyActiveTunnel', activeTunnelID ? resolveChainLabel(activeTunnelID) : '-');
     }
 
     async function applyGroupPolicy(group, action, tunnelNodeID) {
@@ -411,14 +395,6 @@
       }
     }
 
-    function formatProxyKeepaliveStatus(raw) {
-      const status = String(raw || '').trim().toLowerCase();
-      if (status === 'connected') return '已连接';
-      if (status === 'disconnected') return '未连接';
-      if (status === 'not_running') return '未运行';
-      return '-';
-    }
-
     function formatRuntimeStatusText(rawStatus, stateEntry) {
       const action = normalizeAction(stateEntry && stateEntry.action);
       const status = String(rawStatus || '').trim();
@@ -448,26 +424,8 @@
         enabled: !!data.enabled,
         mode: String(data.mode || '').trim(),
       };
-      const latencyMs = Number(data.selected_chain_latency_ms);
-      const latencyMsDisplay = Number.isFinite(latencyMs) ? String(Math.max(0, Math.trunc(latencyMs))) : '';
-      const latencyStatus = String(data.selected_chain_latency_status || '').trim().toLowerCase();
-      if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
-        proxySelectedLatencyStatus = 'reachable';
-        proxySelectedLatencyDisplay = latencyMsDisplay;
-      } else if (latencyMsDisplay !== '' && latencyStatus !== 'unreachable') {
-        proxySelectedLatencyStatus = 'reachable';
-        proxySelectedLatencyDisplay = latencyMsDisplay;
-      } else {
-        proxySelectedLatencyStatus = 'unreachable';
-        proxySelectedLatencyDisplay = '不可达';
-      }
       setText('proxyEnabled', data.enabled ? '是' : '否');
       setText('proxyMode', data.mode);
-      setText('proxySelectedKeepalive', formatProxyKeepaliveStatus(data.selected_chain_keepalive));
-      setText('proxySelectedLatencyMs', proxySelectedLatencyDisplay);
-      setText('proxySelectedLatencyUpdatedAt', data.selected_chain_latency_updated_at);
-      setText('proxySelectedLatencyError', data.selected_chain_latency_error);
-      setText('proxyUpdatedAt', data.updated_at);
       setText('proxyLastError', data.last_error);
       updateProxyGlobalToggleButton();
     }
@@ -491,7 +449,6 @@
       }
       proxyStateGroupsCache = Array.isArray(stateData && stateData.groups) ? stateData.groups : [];
       renderProxyRuleGroupRows(uniqueGroups);
-      updateProxyActiveFromState();
     }
 
     async function loadProxySelections() {
@@ -557,12 +514,14 @@
     }
 
     document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {
-      setMessage('验证代理状态...');
+      setMessage('按组刷新代理状态与延迟...');
       try {
+        await requestJSON('/local/api/proxy/status/refresh', { method: 'POST', body: '{}' });
         await loadProxyStatus();
-        setMessage('代理状态已验证', 'success');
+        await loadProxySelections();
+        setMessage('代理状态与组延迟已刷新', 'success');
       } catch (err) {
-        setMessage('读取代理状态失败：' + err.message, 'error');
+        setMessage('刷新代理状态失败：' + err.message, 'error');
       }
     });
 

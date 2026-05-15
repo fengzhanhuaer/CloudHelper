@@ -1778,6 +1778,159 @@ func TestProbeLocalProxyChainsRefreshEndpointUsesHook(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyPageGetEndpointsDoNotTriggerRemoteRefresh(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	refreshCalls := 0
+	latencyCalls := 0
+	probeLocalRefreshProxyChainCache = func(ctx context.Context, identity nodeIdentity, controllerBaseURL string) ([]probeLinkChainServerItem, error) {
+		refreshCalls++
+		return []probeLinkChainServerItem{{ChainID: "chain-remote", ChainType: "proxy_chain", Name: "Remote"}}, nil
+	}
+	probeLocalResolveGroupRuntimeLatency = func(rt *probeLocalTUNGroupRuntime) (string, *int64, string, string) {
+		latencyCalls++
+		value := int64(123)
+		return "connected", &value, "2026-05-15T03:00:00Z", ""
+	}
+	defer resetProbeLocalProxyHooksForTest()
+
+	if err := persistProbeLocalProxyGroupFile(probeLocalProxyGroupFile{
+		Version: 1,
+		Groups: []probeLocalProxyGroupEntry{
+			{Group: "default", Rules: []string{"domain_suffix:example.com"}},
+		},
+	}); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	if err := persistProbeLocalProxyStateFile(probeLocalProxyStateFile{
+		Version:   1,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Groups: []probeLocalProxyStateGroupEntry{
+			{Group: "default", Action: "tunnel", SelectedChainID: "chain-local", TunnelNodeID: "chain:chain-local", RuntimeStatus: "online"},
+		},
+		Backup: probeLocalProxyBackupState{LastUploadStatus: "idle"},
+		TUN:    probeLocalTUNPersistentState{UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+	proxyChainPath, err := resolveProbeLocalProxyChainPath()
+	if err != nil {
+		t.Fatalf("resolve proxy chain path failed: %v", err)
+	}
+	if err := os.WriteFile(proxyChainPath, []byte(`{"updated_at":"2026-05-15T00:00:00Z","items":[{"chain_id":"chain-local","chain_type":"proxy_chain","name":"Local"}]}`), 0o644); err != nil {
+		t.Fatalf("write proxy chain file failed: %v", err)
+	}
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/groups", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("groups status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	resp = doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/chains", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("chains status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	resp = doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("state status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	resp = doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/status", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	if refreshCalls != 0 {
+		t.Fatalf("refreshCalls=%d, want 0", refreshCalls)
+	}
+	if latencyCalls != 0 {
+		t.Fatalf("latencyCalls=%d, want 0", latencyCalls)
+	}
+}
+
+func TestProbeLocalProxyStatusRefreshUpdatesGroupLatencySnapshots(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	if err := persistProbeLocalProxyStateFile(probeLocalProxyStateFile{
+		Version:   1,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Groups: []probeLocalProxyStateGroupEntry{
+			{Group: "default", Action: "tunnel", SelectedChainID: "chain-local", TunnelNodeID: "chain:chain-local", RuntimeStatus: "online"},
+		},
+		Backup: probeLocalProxyBackupState{LastUploadStatus: "idle"},
+		TUN:    probeLocalTUNPersistentState{UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	proxyChainPath, err := resolveProbeLocalProxyChainPath()
+	if err != nil {
+		t.Fatalf("resolve proxy chain path failed: %v", err)
+	}
+	if err := os.WriteFile(proxyChainPath, []byte(`{"updated_at":"2026-05-15T00:00:00Z","items":[{"chain_id":"chain-local","chain_type":"proxy_chain","name":"Local"}]}`), 0o644); err != nil {
+		t.Fatalf("write proxy chain file failed: %v", err)
+	}
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+
+	latencyCalls := 0
+	probeLocalResolveGroupRuntimeLatency = func(rt *probeLocalTUNGroupRuntime) (string, *int64, string, string) {
+		latencyCalls++
+		value := int64(523)
+		return "connected", &value, "2026-05-15T02:55:58Z", ""
+	}
+	defer resetProbeLocalProxyHooksForTest()
+
+	stateResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)
+	if stateResp.Code != http.StatusOK {
+		t.Fatalf("state before refresh status=%d body=%s", stateResp.Code, stateResp.Body.String())
+	}
+	statePayload := decodeProbeLocalJSON(t, stateResp)
+	groups, ok := statePayload["groups"].([]any)
+	if !ok || len(groups) != 1 {
+		t.Fatalf("state before refresh groups=%v", statePayload["groups"])
+	}
+	entry, _ := groups[0].(map[string]any)
+	if _, exists := entry["selected_chain_latency_ms"]; exists {
+		t.Fatalf("latency should not exist before manual refresh: %v", entry)
+	}
+	if latencyCalls != 0 {
+		t.Fatalf("latencyCalls before refresh=%d, want 0", latencyCalls)
+	}
+
+	refreshResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/status/refresh", map[string]any{}, sessionCookie)
+	if refreshResp.Code != http.StatusOK {
+		t.Fatalf("status refresh status=%d body=%s", refreshResp.Code, refreshResp.Body.String())
+	}
+	if latencyCalls != 1 {
+		t.Fatalf("latencyCalls after refresh=%d, want 1", latencyCalls)
+	}
+
+	stateResp = doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)
+	if stateResp.Code != http.StatusOK {
+		t.Fatalf("state after refresh status=%d body=%s", stateResp.Code, stateResp.Body.String())
+	}
+	statePayload = decodeProbeLocalJSON(t, stateResp)
+	groups, ok = statePayload["groups"].([]any)
+	if !ok || len(groups) != 1 {
+		t.Fatalf("state after refresh groups=%v", statePayload["groups"])
+	}
+	entry, _ = groups[0].(map[string]any)
+	if entry["selected_chain_latency_status"] != "reachable" {
+		t.Fatalf("latency status=%v", entry["selected_chain_latency_status"])
+	}
+	if latencyMS, ok := entry["selected_chain_latency_ms"].(float64); !ok || int64(latencyMS) != 523 {
+		t.Fatalf("latency ms=%v", entry["selected_chain_latency_ms"])
+	}
+	if entry["selected_chain_latency_updated_at"] != "2026-05-15T02:55:58Z" {
+		t.Fatalf("latency updated_at=%v", entry["selected_chain_latency_updated_at"])
+	}
+}
+
 func TestProbeLocalProxyChainsAndBackupEndpoints(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
