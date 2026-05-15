@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,9 +16,10 @@ import (
 )
 
 const (
-	probeLinkConfigPollInterval = 20 * time.Second
-	probeLinkConfigFetchTimeout = 15 * time.Second
-	probeLinkConfigAPIPath      = "/api/probe/link/config"
+	probeLinkConfigPollInterval  = 20 * time.Second
+	probeLinkConfigFetchTimeout  = 15 * time.Second
+	probeLinkConfigAPIPath       = "/api/probe/link/config"
+	probeLinkConfigCacheFileName = "probe_link_config.json"
 )
 
 type probeLinkConfig struct {
@@ -37,8 +41,14 @@ var probeHTTPSServiceState = struct {
 	serviceType string
 }{}
 
+var (
+	probeFetchLinkConfig = fetchProbeLinkConfig
+	probeApplyLinkConfig = applyProbeLinkConfig
+)
+
 func startProbeServiceRuntimeLoop(handler http.Handler, identity nodeIdentity, controllerBaseURL string) {
 	go func() {
+		restoreProbeServiceFromLinkConfigCache(handler, identity, controllerBaseURL)
 		syncProbeServiceFromLinkConfig(handler, identity, controllerBaseURL)
 		ticker := time.NewTicker(probeLinkConfigPollInterval)
 		defer ticker.Stop()
@@ -51,18 +61,23 @@ func startProbeServiceRuntimeLoop(handler http.Handler, identity nodeIdentity, c
 
 func syncProbeServiceFromLinkConfig(handler http.Handler, identity nodeIdentity, controllerBaseURL string) {
 	if strings.TrimSpace(controllerBaseURL) == "" {
-		stopProbeHTTPSService("controller base url is empty")
+		restoreProbeServiceFromLinkConfigCache(handler, identity, controllerBaseURL)
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), probeLinkConfigFetchTimeout)
-	config, err := fetchProbeLinkConfig(ctx, controllerBaseURL, identity)
+	config, err := probeFetchLinkConfig(ctx, controllerBaseURL, identity)
 	cancel()
 	if err != nil {
 		log.Printf("warning: failed to fetch probe link config: %v", err)
+		restoreProbeServiceFromLinkConfigCache(handler, identity, controllerBaseURL)
 		return
 	}
-	applyProbeLinkConfig(handler, identity, controllerBaseURL, config, "controller")
+	normalized := normalizeProbeLinkConfig(config)
+	if err := persistProbeLinkConfigCache(normalized); err != nil {
+		log.Printf("warning: persist probe link config cache failed: %v", err)
+	}
+	probeApplyLinkConfig(handler, identity, controllerBaseURL, normalized, "controller")
 }
 
 func applyProbeLinkConfig(handler http.Handler, identity nodeIdentity, controllerBaseURL string, config probeLinkConfig, source string) {
@@ -94,6 +109,18 @@ func fetchProbeLinkConfig(ctx context.Context, controllerBaseURL string, identit
 		return probeLinkConfig{}, err
 	}
 	return normalizeProbeLinkConfig(config), nil
+}
+
+func restoreProbeServiceFromLinkConfigCache(handler http.Handler, identity nodeIdentity, controllerBaseURL string) {
+	config, ok, err := loadProbeLinkConfigCache()
+	if err != nil {
+		log.Printf("warning: load probe link config cache failed: %v", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	probeApplyLinkConfig(handler, identity, controllerBaseURL, config, "cache")
 }
 
 func ensureProbeHTTPSService(handler http.Handler, identity nodeIdentity, controllerBaseURL string, listenAddr string, serviceType string) {
@@ -260,3 +287,57 @@ func normalizeProbeLinkConfig(config probeLinkConfig) probeLinkConfig {
 	return config
 }
 
+func persistProbeLinkConfigCache(config probeLinkConfig) error {
+	cachePath, err := resolveProbeLinkConfigCachePath()
+	if err != nil {
+		return err
+	}
+	normalized := normalizeProbeLinkConfig(config)
+	normalized.SavedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	encoded, err := json.MarshalIndent(normalized, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(cachePath, append(encoded, '\n'), 0o644)
+}
+
+func loadProbeLinkConfigCache() (probeLinkConfig, bool, error) {
+	cachePath, err := resolveProbeLinkConfigCachePath()
+	if err != nil {
+		return probeLinkConfig{}, false, err
+	}
+	raw, err := os.ReadFile(cachePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return probeLinkConfig{}, false, nil
+		}
+		return probeLinkConfig{}, false, err
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return probeLinkConfig{}, false, nil
+	}
+	var config probeLinkConfig
+	if err := json.Unmarshal([]byte(trimmed), &config); err != nil {
+		return probeLinkConfig{}, false, err
+	}
+	normalized := normalizeProbeLinkConfig(config)
+	if normalized.ListenAddr == "" && !shouldEnableProbeHTTPServiceForScheme(normalized.ServiceType) {
+		return normalized, true, nil
+	}
+	if normalized.ListenAddr == "" {
+		return probeLinkConfig{}, false, errors.New("cached probe link config listen address is empty")
+	}
+	return normalized, true, nil
+}
+
+func resolveProbeLinkConfigCachePath() (string, error) {
+	dataPath, err := resolveDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataPath, probeLinkConfigCacheFileName), nil
+}

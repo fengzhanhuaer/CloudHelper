@@ -130,7 +130,8 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	items, err := fetchProbeLinkChains(ctx, controllerBaseURL, identity)
 	cancel()
 	if err != nil {
-		log.Printf("warning: probe chain sync fetch failed: %v (runtimes unchanged)", err)
+		log.Printf("warning: probe chain sync fetch failed: %v (using local topology cache when available)", err)
+		restoreProbeChainRuntimesFromTopologyCache(identity, controllerBaseURL)
 		return
 	}
 
