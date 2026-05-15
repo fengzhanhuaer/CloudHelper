@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -18,6 +19,15 @@ type mngRegisterRequest struct {
 type mngLoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type mngSystemBlacklistDeleteRequest struct {
+	CIDR string `json:"cidr"`
+}
+
+type mngSystemBlacklistUpdateRequest struct {
+	OldCIDR string `json:"old_cidr"`
+	NewCIDR string `json:"new_cidr"`
 }
 
 func mngEntryHandler(w http.ResponseWriter, r *http.Request) {
@@ -275,5 +285,88 @@ func mngSystemReconnectCheckHandler(w http.ResponseWriter, r *http.Request) {
 		"ok":          true,
 		"server_time": time.Now().UTC().Format(time.RFC3339),
 		"version":     strings.TrimSpace(currentControllerVersion()),
+	})
+}
+
+func mngSystemBlacklistHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if authManager == nil || authManager.blacklist == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"items": []string{},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"items": authManager.blacklist.ListCIDRs(),
+	})
+}
+
+func mngSystemBlacklistDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if authManager == nil || authManager.blacklist == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "blacklist store is not initialized"})
+		return
+	}
+	var req mngSystemBlacklistDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	cidr := strings.TrimSpace(req.CIDR)
+	if cidr == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cidr is required"})
+		return
+	}
+	if err := authManager.blacklist.RemoveCIDR(cidr); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"items": authManager.blacklist.ListCIDRs(),
+	})
+}
+
+func mngSystemBlacklistUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if authManager == nil || authManager.blacklist == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "blacklist store is not initialized"})
+		return
+	}
+	var req mngSystemBlacklistUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	oldCIDR := strings.TrimSpace(req.OldCIDR)
+	newCIDR := strings.TrimSpace(req.NewCIDR)
+	if oldCIDR == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "old_cidr is required"})
+		return
+	}
+	if newCIDR == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "new_cidr is required"})
+		return
+	}
+	if _, err := netip.ParsePrefix(newCIDR); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "new_cidr is invalid"})
+		return
+	}
+	if err := authManager.blacklist.ReplaceCIDR(oldCIDR, newCIDR); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"items": authManager.blacklist.ListCIDRs(),
 	})
 }

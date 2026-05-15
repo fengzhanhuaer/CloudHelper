@@ -47,6 +47,33 @@ func TestBlacklistStorePersistsAndReloads(t *testing.T) {
 	}
 }
 
+func TestBlacklistStoreUpdateAndRemove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blacklist.json")
+	store, err := core.InitBlacklistStore(path)
+	if err != nil {
+		t.Fatalf("initBlacklistStore failed: %v", err)
+	}
+
+	if err := store.AddCIDR("10.20.0.0/16"); err != nil {
+		t.Fatalf("AddCIDR failed: %v", err)
+	}
+	if err := store.ReplaceCIDR("10.20.0.0/16", "10.30.0.0/16"); err != nil {
+		t.Fatalf("ReplaceCIDR failed: %v", err)
+	}
+	if store.HasCIDR("10.20.0.0/16") {
+		t.Fatalf("old cidr should be removed after replace")
+	}
+	if !store.HasCIDR("10.30.0.0/16") {
+		t.Fatalf("new cidr should exist after replace")
+	}
+	if err := store.RemoveCIDR("10.30.0.0/16"); err != nil {
+		t.Fatalf("RemoveCIDR failed: %v", err)
+	}
+	if store.HasCIDR("10.30.0.0/16") {
+		t.Fatalf("cidr should be removed")
+	}
+}
+
 func TestValidateAndConsumeNonce(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)

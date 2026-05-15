@@ -24,6 +24,15 @@
     .ok { color:#7ee787; }
     .warn { color:#f2cc60; }
     .err { color:#ff7b72; }
+    .panel + .panel { margin-top:16px; }
+    .list { display:flex; flex-direction:column; gap:10px; margin-top:14px; }
+    .row { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px,320px) auto auto; gap:10px; align-items:center; border:1px solid #30363d; border-radius:10px; background:#0d1117; padding:12px; }
+    .cidr { font-family:Consolas,monospace; font-size:15px; word-break:break-all; }
+    .input { width:100%; box-sizing:border-box; padding:9px 10px; border-radius:8px; border:1px solid #30363d; background:#161b22; color:#c9d1d9; }
+    .empty { color:#8b949e; border:1px dashed #30363d; border-radius:10px; padding:14px; margin-top:14px; }
+    @media (max-width: 860px) {
+      .row { grid-template-columns:1fr; }
+    }
   </style>
 </head>
 <body>
@@ -61,12 +70,24 @@
 
       <div class="status" id="status-box">尚未执行操作。</div>
     </div>
+
+    <div class="panel">
+      <p class="muted">CIDR 黑名单用于拒绝 `/api/auth/nonce` 与 `/api/auth/login` 来源。可在这里查看、修改与删除。</p>
+      <div class="actions">
+        <button id="btn-refresh-blacklist" class="btn" type="button">刷新黑名单</button>
+      </div>
+      <div id="blacklist-empty" class="empty" style="display:none;">当前没有黑名单 CIDR。</div>
+      <div id="blacklist-list" class="list"></div>
+    </div>
   </div>
 
   <script>
     const statusBox = document.getElementById('status-box');
     const checkBtn = document.getElementById('btn-check-update');
     const upgradeBtn = document.getElementById('btn-upgrade');
+    const blacklistList = document.getElementById('blacklist-list');
+    const blacklistEmpty = document.getElementById('blacklist-empty');
+    const refreshBlacklistBtn = document.getElementById('btn-refresh-blacklist');
     let progressTimer = null;
 
     function setStatus(text, level) {
@@ -82,6 +103,23 @@
       upgradeBtn.disabled = busy;
     }
 
+    async function requestJSON(url, options) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (res.status === 401) {
+        location.href = '/mng';
+        return null;
+      }
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || ('HTTP ' + res.status));
+      }
+      return data;
+    }
+
     async function ensureSession() {
       const res = await fetch('/mng/api/session', { credentials: 'same-origin' });
       const data = await res.json();
@@ -94,12 +132,10 @@
 
     async function checkUpdate() {
       setStatus('正在检查最新版本...', 'warn');
-      const res = await fetch('/mng/api/system/version', { credentials: 'same-origin' });
-      if (res.status === 401) {
-        location.href = '/mng';
+      const data = await requestJSON('/mng/api/system/version', { method: 'GET' });
+      if (!data) {
         return;
       }
-      const data = await res.json();
       document.getElementById('current-version').textContent = data.current_version || 'dev';
       document.getElementById('latest-version').textContent = data.latest_version || '--';
       document.getElementById('upgrade-available').textContent = data.upgrade_available ? '是' : '否';
@@ -113,12 +149,7 @@
     }
 
     async function readUpgradeProgress() {
-      const res = await fetch('/mng/api/system/upgrade/progress', { credentials: 'same-origin' });
-      if (res.status === 401) {
-        return null;
-      }
-      const data = await res.json();
-      return data;
+      return requestJSON('/mng/api/system/upgrade/progress', { method: 'GET' });
     }
 
     function sleep(ms) {
@@ -160,18 +191,10 @@
       setBusy(true);
       setStatus('正在触发主控升级...', 'warn');
 
-      const res = await fetch('/mng/api/system/upgrade', {
+      const data = await requestJSON('/mng/api/system/upgrade', {
         method: 'POST',
-        credentials: 'same-origin',
       });
-      if (res.status === 401) {
-        location.href = '/mng';
-        return;
-      }
-      const data = await res.json();
-      if (!res.ok) {
-        setStatus('升级触发失败：' + (data.error || 'unknown error'), 'err');
-        setBusy(false);
+      if (!data) {
         return;
       }
 
@@ -201,15 +224,91 @@
       location.href = '/mng';
     }
 
+    function renderBlacklist(items) {
+      const cidrs = Array.isArray(items) ? items : [];
+      blacklistList.innerHTML = '';
+      blacklistEmpty.style.display = cidrs.length ? 'none' : 'block';
+      cidrs.forEach((cidr) => {
+        const row = document.createElement('div');
+        row.className = 'row';
+
+        const cidrEl = document.createElement('div');
+        cidrEl.className = 'cidr';
+        cidrEl.textContent = cidr;
+        row.appendChild(cidrEl);
+
+        const input = document.createElement('input');
+        input.className = 'input';
+        input.type = 'text';
+        input.value = cidr;
+        row.appendChild(input);
+
+        const updateBtn = document.createElement('button');
+        updateBtn.className = 'btn';
+        updateBtn.type = 'button';
+        updateBtn.textContent = '修改';
+        updateBtn.addEventListener('click', async () => {
+          const newCIDR = input.value.trim();
+          if (!newCIDR) {
+            setStatus('修改失败：CIDR 不能为空', 'err');
+            return;
+          }
+          try {
+            const data = await requestJSON('/mng/api/system/blacklist/update', {
+              method: 'POST',
+              body: JSON.stringify({ old_cidr: cidr, new_cidr: newCIDR }),
+            });
+            if (!data) return;
+            renderBlacklist(data.items);
+            setStatus('黑名单已修改：' + cidr + ' -> ' + newCIDR, 'ok');
+          } catch (err) {
+            setStatus('修改黑名单失败：' + err.message, 'err');
+          }
+        });
+        row.appendChild(updateBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn';
+        deleteBtn.type = 'button';
+        deleteBtn.textContent = '删除';
+        deleteBtn.addEventListener('click', async () => {
+          try {
+            const data = await requestJSON('/mng/api/system/blacklist/delete', {
+              method: 'POST',
+              body: JSON.stringify({ cidr }),
+            });
+            if (!data) return;
+            renderBlacklist(data.items);
+            setStatus('黑名单已删除：' + cidr, 'ok');
+          } catch (err) {
+            setStatus('删除黑名单失败：' + err.message, 'err');
+          }
+        });
+        row.appendChild(deleteBtn);
+
+        blacklistList.appendChild(row);
+      });
+    }
+
+    async function loadBlacklist() {
+      const data = await requestJSON('/mng/api/system/blacklist', { method: 'GET' });
+      if (!data) return;
+      renderBlacklist(data.items);
+    }
+
     document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
     document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
     checkBtn.addEventListener('click', () => { checkUpdate().catch(err => setStatus('检查更新失败：' + (err && err.message ? err.message : 'unknown'), 'err')); });
     upgradeBtn.addEventListener('click', () => { triggerUpgrade().catch(err => { setBusy(false); setStatus('升级失败：' + (err && err.message ? err.message : 'unknown'), 'err'); }); });
+    refreshBlacklistBtn.addEventListener('click', () => { loadBlacklist().then(() => setStatus('黑名单已刷新', 'ok')).catch(err => setStatus('刷新黑名单失败：' + (err && err.message ? err.message : 'unknown'), 'err')); });
 
     ensureSession().then(ok => {
       if (!ok) return;
       checkUpdate().catch(() => {
         setStatus('初始化版本检查失败，可手动点击“检查更新”重试。', 'warn');
+      });
+      loadBlacklist().catch(() => {
+        setStatus('黑名单加载失败，可手动点击“刷新黑名单”重试。', 'warn');
       });
     });
   </script>

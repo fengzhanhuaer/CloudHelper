@@ -21,6 +21,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,6 +140,44 @@ func (b *BlacklistStore) AddCIDR(cidr string) error {
 		return nil
 	}
 	b.cidrs[cidr] = struct{}{}
+	return b.persistLocked()
+}
+
+func (b *BlacklistStore) ListCIDRs() []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	cidrs := make([]string, 0, len(b.cidrs))
+	for c := range b.cidrs {
+		cidrs = append(cidrs, c)
+	}
+	sort.Strings(cidrs)
+	return cidrs
+}
+
+func (b *BlacklistStore) RemoveCIDR(cidr string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, exists := b.cidrs[cidr]; !exists {
+		return nil
+	}
+	delete(b.cidrs, cidr)
+	return b.persistLocked()
+}
+
+func (b *BlacklistStore) ReplaceCIDR(oldCIDR, newCIDR string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if oldCIDR == newCIDR {
+		if _, exists := b.cidrs[oldCIDR]; !exists {
+			return nil
+		}
+		return b.persistLocked()
+	}
+	delete(b.cidrs, oldCIDR)
+	b.cidrs[newCIDR] = struct{}{}
 	return b.persistLocked()
 }
 
@@ -1072,4 +1111,11 @@ func (a *AuthManager) HasCIDRForTest(cidr string) bool {
 		return false
 	}
 	return a.blacklist.HasCIDR(cidr)
+}
+
+func (a *AuthManager) AddCIDRForTest(cidr string) error {
+	if a.blacklist == nil {
+		return errors.New("blacklist store is not initialized")
+	}
+	return a.blacklist.AddCIDR(strings.TrimSpace(cidr))
 }

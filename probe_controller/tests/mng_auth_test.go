@@ -324,6 +324,9 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	if !strings.Contains(settingsRR.Body.String(), "检查更新") {
 		t.Fatalf("expected /mng/settings html to include check update button")
 	}
+	if !strings.Contains(settingsRR.Body.String(), "刷新黑名单") {
+		t.Fatalf("expected /mng/settings html to include blacklist refresh button")
+	}
 
 	probeReq := httptest.NewRequest(http.MethodGet, "/mng/probe", nil)
 	probeReq.AddCookie(cookie)
@@ -522,6 +525,82 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	reconnectPayload := decodeJSONMap(t, reconnectRR)
 	if ok, _ := reconnectPayload["ok"].(bool); !ok {
 		t.Fatalf("expected reconnect check payload ok=true, got %+v", reconnectPayload)
+	}
+}
+
+func TestMngSystemBlacklistCRUD(t *testing.T) {
+	setupMngTestState(t)
+	mux := core.NewMux()
+	authMgr, err := core.NewAuthManagerForTest(filepath.Join(t.TempDir(), "blacklist.json"))
+	if err != nil {
+		t.Fatalf("NewAuthManagerForTest failed: %v", err)
+	}
+	pub := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	for i := range pub {
+		pub[i] = byte(i + 1)
+	}
+	authMgr.SetAdminPublicKeyForTest(pub)
+	if err := authMgr.AddCIDRForTest("10.20.0.0/16"); err != nil {
+		t.Fatalf("AddCIDRForTest failed: %v", err)
+	}
+	core.SetAuthManagerForTest(authMgr)
+
+	registerBody := []byte(`{"username":"system-admin","password":"Passw0rd!","confirm_password":"Passw0rd!"}`)
+	registerReq := httptest.NewRequest(http.MethodPost, "/mng/api/register", bytes.NewReader(registerBody))
+	registerReq.Header.Set("Content-Type", "application/json")
+	registerRR := httptest.NewRecorder()
+	mux.ServeHTTP(registerRR, registerReq)
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("expected register to return 200, got %d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/mng/api/login", bytes.NewReader([]byte(`{"username":"system-admin","password":"Passw0rd!"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.RemoteAddr = "10.2.3.4:3456"
+	loginRR := httptest.NewRecorder()
+	mux.ServeHTTP(loginRR, loginReq)
+	if loginRR.Code != http.StatusOK {
+		t.Fatalf("expected login to return 200, got %d body=%s", loginRR.Code, loginRR.Body.String())
+	}
+	cookie := findCookieByName(loginRR.Result().Cookies(), "mng_session")
+	if cookie == nil {
+		t.Fatalf("expected mng_session cookie after login")
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/mng/api/system/blacklist", nil)
+	listReq.AddCookie(cookie)
+	listRR := httptest.NewRecorder()
+	mux.ServeHTTP(listRR, listReq)
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("expected blacklist list to return 200, got %d body=%s", listRR.Code, listRR.Body.String())
+	}
+	listPayload := decodeJSONMap(t, listRR)
+	items, ok := listPayload["items"].([]interface{})
+	if !ok || len(items) != 1 || items[0] != "10.20.0.0/16" {
+		t.Fatalf("unexpected blacklist items: %+v", listPayload["items"])
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/mng/api/system/blacklist/update", bytes.NewReader([]byte(`{"old_cidr":"10.20.0.0/16","new_cidr":"10.30.0.0/16"}`)))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateReq.AddCookie(cookie)
+	updateRR := httptest.NewRecorder()
+	mux.ServeHTTP(updateRR, updateReq)
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("expected blacklist update to return 200, got %d body=%s", updateRR.Code, updateRR.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodPost, "/mng/api/system/blacklist/delete", bytes.NewReader([]byte(`{"cidr":"10.30.0.0/16"}`)))
+	deleteReq.Header.Set("Content-Type", "application/json")
+	deleteReq.AddCookie(cookie)
+	deleteRR := httptest.NewRecorder()
+	mux.ServeHTTP(deleteRR, deleteReq)
+	if deleteRR.Code != http.StatusOK {
+		t.Fatalf("expected blacklist delete to return 200, got %d body=%s", deleteRR.Code, deleteRR.Body.String())
+	}
+	deletePayload := decodeJSONMap(t, deleteRR)
+	items, ok = deletePayload["items"].([]interface{})
+	if !ok || len(items) != 0 {
+		t.Fatalf("expected empty blacklist after delete, got %+v", deletePayload["items"])
 	}
 }
 
