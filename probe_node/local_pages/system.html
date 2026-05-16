@@ -150,6 +150,8 @@
         <div><input id="upgradeRepoInput" type="text" value="fengzhanhuaer/CloudHelper" /></div>
       </div>
       <div class="actions">
+        <button id="upgradeCheckDirectBtn" class="secondary">直连检查</button>
+        <button id="upgradeCheckProxyBtn" class="secondary">代理检查</button>
         <button id="upgradeDirectBtn">直连升级</button>
         <button id="upgradeProxyBtn" class="secondary">代理升级</button>
         <button id="restartServiceBtn" class="secondary">重启服务</button>
@@ -157,6 +159,12 @@
       </div>
       <p class="hint">直连升级将直接访问 GitHub，代理升级将通过 controller `/api/probe/proxy/*` 中转。</p>
       <div class="kv" style="margin-top: 10px;">
+        <div>当前版本</div><div id="upgradeCurrentVersionText">-</div>
+        <div>最新版本</div><div id="upgradeLatestVersionText">-</div>
+        <div>是否可升级</div><div id="upgradeAvailableText">-</div>
+        <div>可用安装包</div><div id="upgradeAssetText">-</div>
+        <div>检查模式</div><div id="upgradeCheckModeText">-</div>
+        <div>检查时间</div><div id="upgradeCheckedAtText">-</div>
         <div>升级状态</div><div id="upgradeStatusText">-</div>
         <div>当前阶段</div><div id="upgradeStepText">-</div>
         <div>进度（%）</div><div id="upgradeProgressText">0</div>
@@ -243,6 +251,7 @@
           window.location.href = '/local/login';
           return false;
         }
+        setText('upgradeCurrentVersionText', data.version || '-');
         return true;
       } catch (err) {
         if (err && err.status === 401) {
@@ -278,8 +287,12 @@
     }
 
     function setUpgradeButtonsBusy(busy) {
+      const checkDirectBtn = document.getElementById('upgradeCheckDirectBtn');
+      const checkProxyBtn = document.getElementById('upgradeCheckProxyBtn');
       const directBtn = document.getElementById('upgradeDirectBtn');
       const proxyBtn = document.getElementById('upgradeProxyBtn');
+      if (checkDirectBtn) checkDirectBtn.disabled = !!busy;
+      if (checkProxyBtn) checkProxyBtn.disabled = !!busy;
       if (directBtn) directBtn.disabled = !!busy;
       if (proxyBtn) proxyBtn.disabled = !!busy;
     }
@@ -325,6 +338,19 @@
       return data || {};
     }
 
+    function renderUpgradeCheck(data) {
+      const currentVersion = String(data && data.current_version || '').trim();
+      const latestVersion = String(data && data.latest_version || '').trim();
+      const assetName = String(data && data.asset_name || '').trim();
+      const assetError = String(data && data.asset_error || '').trim();
+      setText('upgradeCurrentVersionText', currentVersion || '-');
+      setText('upgradeLatestVersionText', latestVersion || '-');
+      setText('upgradeAvailableText', data && data.upgradeable ? '是' : '否');
+      setText('upgradeAssetText', assetName || (assetError ? '未匹配：' + assetError : '-'));
+      setText('upgradeCheckModeText', data && data.mode || '-');
+      setText('upgradeCheckedAtText', data && data.checked_at || '-');
+    }
+
     function startUpgradeStatusPolling() {
       if (upgradeStatusPollingTimer) return;
       upgradeStatusPollingTimer = setInterval(() => {
@@ -362,6 +388,36 @@
         setMessage(`提交升级失败：${err.message}`, 'error');
       }
     }
+
+    async function checkSystemUpgrade(mode) {
+      const repoInput = document.getElementById('upgradeRepoInput');
+      const releaseRepo = String(repoInput && repoInput.value || '').trim();
+      setUpgradeButtonsBusy(true);
+      setMessage(`${mode === 'proxy' ? '代理' : '直连'}检查升级中...`);
+      try {
+        const data = await requestJSON('/local/api/system/upgrade/check', {
+          method: 'POST',
+          body: JSON.stringify({
+            mode,
+            release_repo: releaseRepo,
+          }),
+        }, 30000);
+        renderUpgradeCheck(data || {});
+        setMessage(data && data.upgradeable ? '发现可升级版本' : '当前已是最新版本', 'success');
+      } catch (err) {
+        setMessage(`检查升级失败：${err.message}`, 'error');
+      } finally {
+        setUpgradeButtonsBusy(shouldPollUpgradeStatus(document.getElementById('upgradeStatusText').textContent));
+      }
+    }
+
+    document.getElementById('upgradeCheckDirectBtn').addEventListener('click', () => {
+      checkSystemUpgrade('direct');
+    });
+
+    document.getElementById('upgradeCheckProxyBtn').addEventListener('click', () => {
+      checkSystemUpgrade('proxy');
+    });
 
     document.getElementById('upgradeDirectBtn').addEventListener('click', () => {
       triggerSystemUpgrade('direct');

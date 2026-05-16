@@ -116,7 +116,7 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		Mode:        mode,
 		ReleaseRepo: repo,
 	})
-	release, err := fetchProbeRelease(ctx, mode, repo, controllerBase, identity)
+	release, err := probeLocalFetchRelease(ctx, mode, repo, controllerBase, identity)
 	if err != nil {
 		log.Printf("probe upgrade failed: fetch release: %v", err)
 		reportProbeLocalUpgradeFailed("fetch_release", err, mode, repo, 12)

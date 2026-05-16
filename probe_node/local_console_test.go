@@ -807,6 +807,9 @@ func TestProbeLocalProxyEnableReturnsNotImplementedOnUnsupported(t *testing.T) {
 }
 
 func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TUN data plane hook success path is Windows-only")
+	}
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
@@ -947,6 +950,9 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 }
 
 func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TUN data plane hook success path is Windows-only")
+	}
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
@@ -1095,6 +1101,9 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 }
 
 func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TUN data plane hook success path is Windows-only")
+	}
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
@@ -1714,6 +1723,64 @@ func TestProbeLocalSystemUpgradeProxyRequiresController(t *testing.T) {
 	errText, _ := payload["error"].(string)
 	if !strings.Contains(strings.ToLower(errText), "controller") {
 		t.Fatalf("system/upgrade proxy without controller error=%q", errText)
+	}
+}
+
+func TestProbeLocalSystemUpgradeCheckDirect(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeLocalFetchRelease = func(_ context.Context, mode, repo, controllerBase string, identity nodeIdentity) (releaseInfo, error) {
+		if mode != "direct" {
+			t.Fatalf("mode=%q", mode)
+		}
+		if repo != "fengzhanhuaer/CloudHelper" {
+			t.Fatalf("repo=%q", repo)
+		}
+		if strings.TrimSpace(controllerBase) != "" {
+			t.Fatalf("controllerBase=%q", controllerBase)
+		}
+		return releaseInfo{
+			Repo:    repo,
+			TagName: "v9.9.9",
+			Assets:  []releaseAsset{{Name: "cloudhelper-probe-node-" + runtime.GOOS + "-" + runtime.GOARCH + ".zip", DownloadURL: "https://example.com/probe.zip"}},
+		}, nil
+	}
+	t.Cleanup(resetProbeLocalUpgradeHooksForTest)
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade/check", map[string]any{
+		"mode":         "direct",
+		"release_repo": "fengzhanhuaer/CloudHelper",
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("system/upgrade/check status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["current_version"] != BuildVersion {
+		t.Fatalf("current_version=%v want=%s", payload["current_version"], BuildVersion)
+	}
+	if payload["latest_version"] != "v9.9.9" {
+		t.Fatalf("latest_version=%v", payload["latest_version"])
+	}
+	if upgradable, _ := payload["upgradeable"].(bool); !upgradable {
+		t.Fatalf("upgradeable=%v", payload["upgradeable"])
+	}
+	if payload["asset_name"] == "" {
+		t.Fatalf("asset_name empty payload=%v", payload)
+	}
+}
+
+func TestProbeLocalSystemUpgradeCheckProxyRequiresController(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	t.Cleanup(func() { setProbeLocalProxyRuntimeContext(nodeIdentity{}, "") })
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-upgrade-check-proxy"}, "")
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade/check", map[string]any{
+		"mode": "proxy",
+	}, sessionCookie)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("system/upgrade/check proxy without controller status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 

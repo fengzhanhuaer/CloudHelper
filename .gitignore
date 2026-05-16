@@ -24,3 +24,4 @@ probe_manager/
 .tmp_gocache/
 probe_node/cloudhelper-probe-node-linux-amd64
 probe_node/cloudhelper-probe-node-linux-arm64
+probe_node/.gocache-linux/

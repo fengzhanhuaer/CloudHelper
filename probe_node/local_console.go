@@ -186,6 +186,18 @@ type probeLocalUpgradeRuntimeState struct {
 	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
+type probeLocalUpgradeCheckResult struct {
+	OK             bool   `json:"ok"`
+	CurrentVersion string `json:"current_version"`
+	LatestVersion  string `json:"latest_version,omitempty"`
+	Upgradeable    bool   `json:"upgradeable"`
+	Mode           string `json:"mode,omitempty"`
+	ReleaseRepo    string `json:"release_repo,omitempty"`
+	AssetName      string `json:"asset_name,omitempty"`
+	AssetError     string `json:"asset_error,omitempty"`
+	CheckedAt      string `json:"checked_at"`
+}
+
 func probeLocalNoopPostInstallTUNReadyCheck() error {
 	return nil
 }
@@ -223,6 +235,7 @@ var (
 	probeLocalEnsureExplicitDirectBypass  = ensureProbeLocalExplicitDirectBypassForTarget
 	probeLocalResolveGroupRuntimeLatency  = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalRunUpgrade                  = runProbeUpgrade
+	probeLocalFetchRelease                = fetchProbeRelease
 	probeLocalRestartProcess              = restartCurrentProcess
 	probeLocalRefreshProxyChainCache      = refreshProbeProxyChainCacheFromController
 	probeLocalLookupIPv4ForBypass         = lookupProbeLocalIPv4ForBypass
@@ -2310,6 +2323,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/dns/fake_ip/list", probeLocalDNSFakeIPListHandler)
 	mux.HandleFunc("/local/api/dns/fake_ip/lookup", probeLocalDNSFakeIPLookupHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
+	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
@@ -3475,6 +3489,69 @@ func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func probeLocalSystemUpgradeCheckHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalSystemUpgradeRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if mode == "" {
+		mode = "direct"
+	}
+	if mode != "direct" && mode != "proxy" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be direct or proxy"})
+		return
+	}
+	runtimeContext := currentProbeLocalProxyRuntimeContext()
+	if mode == "proxy" && strings.TrimSpace(runtimeContext.ControllerBaseURL) == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "controller base url is empty"})
+		return
+	}
+	repo := strings.TrimSpace(req.ReleaseRepo)
+	if repo == "" {
+		repo = "fengzhanhuaer/CloudHelper"
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	release, err := probeLocalFetchRelease(ctx, mode, repo, strings.TrimSpace(runtimeContext.ControllerBaseURL), runtimeContext.Identity)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": strings.TrimSpace(err.Error())})
+		return
+	}
+	result := probeLocalUpgradeCheckResult{
+		OK:             true,
+		CurrentVersion: BuildVersion,
+		LatestVersion:  strings.TrimSpace(release.TagName),
+		Upgradeable:    normalizeVersionTag(release.TagName) != normalizeVersionTag(BuildVersion),
+		Mode:           mode,
+		ReleaseRepo:    repo,
+		CheckedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if asset, assetErr := pickProbeNodeAsset(release.Assets, detectRuntimePlatformInfo()); assetErr != nil {
+		result.AssetError = strings.TrimSpace(assetErr.Error())
+	} else {
+		result.AssetName = strings.TrimSpace(asset.Name)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func probeLocalSystemUpgradeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3586,6 +3663,7 @@ func resetProbeLocalTUNHooksForTest() {
 
 func resetProbeLocalUpgradeHooksForTest() {
 	probeLocalRunUpgrade = runProbeUpgrade
+	probeLocalFetchRelease = fetchProbeRelease
 	probeLocalRestartProcess = restartCurrentProcess
 	resetProbeLocalUpgradeRuntimeStateForTest()
 }

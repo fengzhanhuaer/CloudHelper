@@ -29,6 +29,12 @@ type probeLocalTUNUDPBridgeMonitorItem struct {
 	BytesDown   int64  `json:"bytes_down,omitempty"`
 }
 
+type probeLocalTUNTCPDirectFailureCacheStats struct {
+	Active int   `json:"active"`
+	Hits   int64 `json:"hits"`
+	Stored int64 `json:"stored"`
+}
+
 func startProbeLocalTUNPacketStack() error { return nil }
 func stopProbeLocalTUNPacketStack() error  { return nil }
 
@@ -63,4 +69,8 @@ func isProbeLocalTUNLocalOrDiscoveryIP(ip net.IP) bool {
 
 func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorStats {
 	return probeLocalTUNUDPBridgeMonitorStats{}
+}
+
+func snapshotProbeLocalTUNTCPDirectFailureCacheStats() probeLocalTUNTCPDirectFailureCacheStats {
+	return probeLocalTUNTCPDirectFailureCacheStats{}
 }
