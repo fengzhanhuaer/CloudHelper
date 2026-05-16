@@ -43,6 +43,7 @@ func TestProbeLocalAPIMethodGuards(t *testing.T) {
 		{name: "proxy hosts should only allow GET", method: http.MethodPost, path: "/local/api/proxy/hosts", body: map[string]any{}},
 		{name: "proxy hosts save should only allow POST", method: http.MethodGet, path: "/local/api/proxy/hosts/save", body: nil},
 		{name: "proxy groups backup should only allow POST", method: http.MethodGet, path: "/local/api/proxy/groups/backup", body: nil},
+		{name: "proxy groups restore should only allow POST", method: http.MethodGet, path: "/local/api/proxy/groups/restore", body: nil},
 	}
 
 	for _, tc := range cases {

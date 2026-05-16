@@ -2142,6 +2142,77 @@ func TestProbeLocalProxyGroupsBackupEndpointSuccess(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyGroupsRestoreEndpointSuccess(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+	t.Cleanup(func() { setProbeLocalProxyRuntimeContext(nodeIdentity{}, "") })
+
+	restorePayload := probeLocalProxyGroupFile{
+		Version:    1,
+		FakeIPCIDR: "198.18.0.0/15",
+		Groups: []probeLocalProxyGroupEntry{
+			{Group: "restored", Rules: []string{"domain_suffix:restored.example"}},
+		},
+		Note: "from controller backup",
+	}
+	restoreRaw, err := json.Marshal(restorePayload)
+	if err != nil {
+		t.Fatalf("marshal restore payload failed: %v", err)
+	}
+
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != probeLocalProxyBackupAPIPath {
+			t.Fatalf("restore path=%q", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("restore method=%q", r.Method)
+		}
+		if got := strings.TrimSpace(r.Header.Get("X-Probe-Node-Id")); got != "node-restore-success" {
+			t.Fatalf("restore auth node id=%q", got)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":             true,
+			"node_id":        "node-restore-success",
+			"file_name":      probeLocalProxyGroupFileName,
+			"content_base64": base64.StdEncoding.EncodeToString(restoreRaw),
+			"updated_at":     "2026-05-16T01:02:03Z",
+		})
+	}))
+	defer controller.Close()
+
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-restore-success", Secret: "restore-secret"}, controller.URL)
+
+	restoreResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/restore", map[string]any{}, sessionCookie)
+	if restoreResp.Code != http.StatusOK {
+		t.Fatalf("restore status=%d body=%s", restoreResp.Code, restoreResp.Body.String())
+	}
+
+	groups, err := loadProbeLocalProxyGroupFile()
+	if err != nil {
+		t.Fatalf("load restored proxy_group failed: %v", err)
+	}
+	if len(groups.Groups) != 1 || groups.Groups[0].Group != "restored" {
+		t.Fatalf("unexpected restored groups: %+v", groups.Groups)
+	}
+
+	stateResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)
+	if stateResp.Code != http.StatusOK {
+		t.Fatalf("state status=%d body=%s", stateResp.Code, stateResp.Body.String())
+	}
+	statePayload := decodeProbeLocalJSON(t, stateResp)
+	backupObj, ok := statePayload["backup"].(map[string]any)
+	if !ok {
+		t.Fatalf("state backup payload type=%T", statePayload["backup"])
+	}
+	if backupObj["last_restore_status"] != "ok" {
+		t.Fatalf("restore status=%v", backupObj["last_restore_status"])
+	}
+	if restoredAt, _ := backupObj["last_restored_at"].(string); strings.TrimSpace(restoredAt) == "" {
+		t.Fatalf("restore restored_at should not be empty")
+	}
+}
+
 func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

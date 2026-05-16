@@ -135,12 +135,15 @@
         <div>接管开关</div><div id="proxyEnabled">-</div>
         <div>当前模式</div><div id="proxyMode">-</div>
         <div>最近错误</div><div id="proxyLastError">-</div>
+        <div>规则组备份</div><div id="proxyGroupBackupStatus">-</div>
       </div>
       <div class="actions">
         <button id="proxyGlobalToggleBtn" class="secondary">启用代理</button>
         <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
         <button id="proxyGroupRefreshBtn" class="secondary">刷新代理组</button>
         <button id="proxyChainRefreshBtn" class="secondary">刷新链路</button>
+        <button id="proxyGroupBackupBtn" class="secondary">备份代理规则组</button>
+        <button id="proxyGroupRestoreBtn" class="secondary">恢复代理规则组</button>
       </div>
       <div id="proxyRuleGroups" class="rule-group-list"></div>
       <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），刷新代理组会清空本地 DNS / Fake IP 缓存。</p>
@@ -186,6 +189,20 @@
       btn.textContent = '启用代理';
       btn.classList.remove('warn');
       btn.classList.add('secondary');
+    }
+
+    function updateProxyGroupBackupStatus(backup) {
+      const status = backup || {};
+      const uploadStatus = String(status.last_upload_status || 'idle').trim();
+      const uploadTime = String(status.last_uploaded_at || '').trim();
+      const uploadError = String(status.last_upload_error || '').trim();
+      const restoreStatus = String(status.last_restore_status || 'idle').trim();
+      const restoreTime = String(status.last_restored_at || '').trim();
+      const restoreError = String(status.last_restore_error || '').trim();
+      const parts = [];
+      parts.push(`备份: ${uploadStatus}${uploadTime ? ` ${uploadTime}` : ''}${uploadError ? ` (${uploadError})` : ''}`);
+      parts.push(`恢复: ${restoreStatus}${restoreTime ? ` ${restoreTime}` : ''}${restoreError ? ` (${restoreError})` : ''}`);
+      setText('proxyGroupBackupStatus', parts.join(' ｜ '));
     }
 
     function normalizeChainID(chainValue) {
@@ -448,6 +465,7 @@
         proxyChainItemsCache = Array.isArray(chainsData.items) ? chainsData.items : [];
       }
       proxyStateGroupsCache = Array.isArray(stateData && stateData.groups) ? stateData.groups : [];
+      updateProxyGroupBackupStatus(stateData && stateData.backup);
       renderProxyRuleGroupRows(uniqueGroups);
     }
 
@@ -544,6 +562,28 @@
         setMessage('链路已刷新', 'success');
       } catch (err) {
         setMessage('刷新链路失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyGroupBackupBtn').addEventListener('click', async () => {
+      setMessage('备份代理规则组到主控...');
+      try {
+        await requestJSON('/local/api/proxy/groups/backup', { method: 'POST', body: '{}' }, 30000);
+        await loadProxySelections();
+        setMessage('代理规则组已备份到主控', 'success');
+      } catch (err) {
+        setMessage('备份代理规则组失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyGroupRestoreBtn').addEventListener('click', async () => {
+      setMessage('从主控恢复代理规则组...');
+      try {
+        await requestJSON('/local/api/proxy/groups/restore', { method: 'POST', body: '{}' }, 30000);
+        await loadProxySelections();
+        setMessage('代理规则组已从主控恢复', 'success');
+      } catch (err) {
+        setMessage('恢复代理规则组失败：' + err.message, 'error');
       }
     });
 

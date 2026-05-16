@@ -18,11 +18,12 @@ type probeConfigStore struct {
 }
 
 type probeConfigData struct {
-	ProbeNodes          []probeNodeRecord          `json:"probe_nodes"`
-	DeletedProbeNodes   []probeNodeRecord          `json:"deleted_probe_nodes,omitempty"`
-	ProbeSecrets        map[string]string          `json:"probe_secrets"`
-	ProbeShellShortcuts []probeShellShortcutRecord `json:"probe_shell_shortcuts"`
-	DeletedProbeNodeNos []int                      `json:"deleted_probe_node_nos,omitempty"`
+	ProbeNodes             []probeNodeRecord                      `json:"probe_nodes"`
+	DeletedProbeNodes      []probeNodeRecord                      `json:"deleted_probe_nodes,omitempty"`
+	ProbeSecrets           map[string]string                      `json:"probe_secrets"`
+	ProbeShellShortcuts    []probeShellShortcutRecord             `json:"probe_shell_shortcuts"`
+	DeletedProbeNodeNos    []int                                  `json:"deleted_probe_node_nos,omitempty"`
+	ProbeProxyGroupBackups map[string]probeProxyGroupBackupRecord `json:"probe_proxy_group_backups,omitempty"`
 }
 
 var ProbeStore *probeConfigStore
@@ -32,11 +33,12 @@ func initProbeStore() {
 	ProbeStore = &probeConfigStore{
 		path: storePath,
 		data: probeConfigData{
-			ProbeNodes:          []probeNodeRecord{},
-			DeletedProbeNodes:   []probeNodeRecord{},
-			ProbeSecrets:        map[string]string{},
-			ProbeShellShortcuts: []probeShellShortcutRecord{},
-			DeletedProbeNodeNos: []int{},
+			ProbeNodes:             []probeNodeRecord{},
+			DeletedProbeNodes:      []probeNodeRecord{},
+			ProbeSecrets:           map[string]string{},
+			ProbeShellShortcuts:    []probeShellShortcutRecord{},
+			DeletedProbeNodeNos:    []int{},
+			ProbeProxyGroupBackups: map[string]probeProxyGroupBackupRecord{},
 		},
 	}
 
@@ -56,6 +58,7 @@ func initProbeStore() {
 			ProbeStore.data.ProbeSecrets = secrets
 			ProbeStore.data.ProbeShellShortcuts = shortcuts
 			ProbeStore.data.DeletedProbeNodeNos = deletedNos
+			ProbeStore.data.ProbeProxyGroupBackups = normalizeProbeProxyGroupBackups(raw.ProbeProxyGroupBackups)
 		}
 	} else if os.IsNotExist(err) {
 		nodes, deletedNodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(loadLegacyProbeNodesFromMainStore(), nil, loadLegacyProbeSecretsFromMainStore(), nil, nil)
@@ -64,6 +67,7 @@ func initProbeStore() {
 		ProbeStore.data.ProbeSecrets = secrets
 		ProbeStore.data.ProbeShellShortcuts = shortcuts
 		ProbeStore.data.DeletedProbeNodeNos = deletedNos
+		ProbeStore.data.ProbeProxyGroupBackups = map[string]probeProxyGroupBackupRecord{}
 		if saveErr := ProbeStore.Save(); saveErr != nil {
 			log.Fatalf("failed to initialize probe config file: %v", saveErr)
 		}

@@ -132,9 +132,12 @@ type probeLocalProxyStateGroupEntry struct {
 }
 
 type probeLocalProxyBackupState struct {
-	LastUploadedAt   string `json:"last_uploaded_at,omitempty"`
-	LastUploadStatus string `json:"last_upload_status,omitempty"`
-	LastUploadError  string `json:"last_upload_error,omitempty"`
+	LastUploadedAt    string `json:"last_uploaded_at,omitempty"`
+	LastUploadStatus  string `json:"last_upload_status,omitempty"`
+	LastUploadError   string `json:"last_upload_error,omitempty"`
+	LastRestoredAt    string `json:"last_restored_at,omitempty"`
+	LastRestoreStatus string `json:"last_restore_status,omitempty"`
+	LastRestoreError  string `json:"last_restore_error,omitempty"`
 }
 
 type probeLocalTUNPersistentState struct {
@@ -1312,9 +1315,12 @@ func defaultProbeLocalProxyStateFile() probeLocalProxyStateFile {
 		UpdatedAt: now,
 		Groups:    []probeLocalProxyStateGroupEntry{},
 		Backup: probeLocalProxyBackupState{
-			LastUploadedAt:   "",
-			LastUploadStatus: "idle",
-			LastUploadError:  "",
+			LastUploadedAt:    "",
+			LastUploadStatus:  "idle",
+			LastUploadError:   "",
+			LastRestoredAt:    "",
+			LastRestoreStatus: "idle",
+			LastRestoreError:  "",
 		},
 		TUN: probeLocalTUNPersistentState{
 			Installed: false,
@@ -1593,6 +1599,9 @@ func loadProbeLocalProxyStateFile() (probeLocalProxyStateFile, error) {
 	if strings.TrimSpace(payload.Backup.LastUploadStatus) == "" {
 		payload.Backup.LastUploadStatus = "idle"
 	}
+	if strings.TrimSpace(payload.Backup.LastRestoreStatus) == "" {
+		payload.Backup.LastRestoreStatus = "idle"
+	}
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = payload.UpdatedAt
 	}
@@ -1611,6 +1620,9 @@ func persistProbeLocalProxyStateFile(payload probeLocalProxyStateFile) error {
 	}
 	if strings.TrimSpace(payload.Backup.LastUploadStatus) == "" {
 		payload.Backup.LastUploadStatus = "idle"
+	}
+	if strings.TrimSpace(payload.Backup.LastRestoreStatus) == "" {
+		payload.Backup.LastRestoreStatus = "idle"
 	}
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = now
@@ -1783,6 +1795,17 @@ func setProbeLocalBackupStatus(status, lastError, uploadedAt string) error {
 	state.Backup.LastUploadStatus = firstNonEmpty(strings.TrimSpace(status), "idle")
 	state.Backup.LastUploadError = strings.TrimSpace(lastError)
 	state.Backup.LastUploadedAt = strings.TrimSpace(uploadedAt)
+	return persistProbeLocalProxyStateFile(state)
+}
+
+func setProbeLocalBackupRestoreStatus(status, lastError, restoredAt string) error {
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		return err
+	}
+	state.Backup.LastRestoreStatus = firstNonEmpty(strings.TrimSpace(status), "idle")
+	state.Backup.LastRestoreError = strings.TrimSpace(lastError)
+	state.Backup.LastRestoredAt = strings.TrimSpace(restoredAt)
 	return persistProbeLocalProxyStateFile(state)
 }
 
@@ -2104,6 +2127,61 @@ func backupProbeLocalProxyGroupToController(ctx context.Context) error {
 	return nil
 }
 
+func restoreProbeLocalProxyGroupFromController(ctx context.Context) (string, error) {
+	runtimeContext := currentProbeLocalProxyRuntimeContext()
+	baseURL := strings.TrimSpace(runtimeContext.ControllerBaseURL)
+	if baseURL == "" {
+		return "", &probeLocalHTTPError{Status: http.StatusConflict, Message: "controller base url is empty"}
+	}
+
+	requestURL := strings.TrimRight(baseURL, "/") + probeLocalProxyBackupAPIPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return "", err
+	}
+	for key, value := range buildProbeAuthHeaders(runtimeContext.Identity) {
+		req.Header.Set(key, value)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		message := strings.TrimSpace(string(responseBody))
+		if message == "" {
+			message = "controller backup restore failed"
+		}
+		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: fmt.Sprintf("controller backup restore failed: %d %s", resp.StatusCode, message)}
+	}
+
+	var payload struct {
+		FileName      string `json:"file_name"`
+		ContentBase64 string `json:"content_base64"`
+		UpdatedAt     string `json:"updated_at"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, probeLocalProxyReadBodyMaxLen)).Decode(&payload); err != nil {
+		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: "controller backup restore response is invalid"}
+	}
+	if fileName := firstNonEmpty(strings.TrimSpace(payload.FileName), probeLocalProxyGroupFileName); fileName != probeLocalProxyGroupFileName {
+		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: "controller backup file_name is invalid"}
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(payload.ContentBase64))
+	if err != nil || len(raw) == 0 {
+		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: "controller backup content_base64 is invalid"}
+	}
+	var groups probeLocalProxyGroupFile
+	if err := decodeProbeLocalJSONStrict(raw, &groups); err != nil {
+		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: "controller backup content is invalid"}
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		return "", err
+	}
+	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
+	return strings.TrimSpace(payload.UpdatedAt), nil
+}
+
 func normalizeProbeLocalListenAddr(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -2222,6 +2300,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
+	mux.HandleFunc("/local/api/proxy/groups/restore", probeLocalProxyGroupsRestoreHandler)
 }
 
 type probeLocalRegisterRequest struct {
@@ -3390,6 +3469,25 @@ func probeLocalProxyGroupsBackupHandler(w http.ResponseWriter, r *http.Request) 
 	now := time.Now().UTC().Format(time.RFC3339)
 	_ = setProbeLocalBackupStatus("ok", "", now)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uploaded_at": now})
+}
+
+func probeLocalProxyGroupsRestoreHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	backupUpdatedAt, err := restoreProbeLocalProxyGroupFromController(r.Context())
+	if err != nil {
+		_ = setProbeLocalBackupRestoreStatus("failed", strings.TrimSpace(err.Error()), "")
+		writeProbeLocalError(w, err)
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_ = setProbeLocalBackupRestoreStatus("ok", "", now)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restored_at": now, "backup_updated_at": backupUpdatedAt})
 }
 
 func probeLocalAuthDataFilePath() (string, error) {
