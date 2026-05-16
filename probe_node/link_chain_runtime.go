@@ -70,6 +70,13 @@ type probeChainRuntimeConfig struct {
 	controllerURL   string
 }
 
+type probeChainRelayResolveCacheEntry struct {
+	DialHost   string
+	HostHeader string
+	ExpiresAt  time.Time
+	StaleUntil time.Time
+}
+
 type probeChainBridgeSession struct {
 	ID          string
 	Session     *yamux.Session
@@ -91,6 +98,17 @@ type probeChainRuntime struct {
 	udpForwards        []net.PacketConn
 	stopCh             chan struct{}
 }
+
+var (
+	probeChainRelayResolveNow      = time.Now
+	probeChainRelayLookupIP        = net.DefaultResolver.LookupIP
+	probeChainRelayResolveCacheTTL = 24 * time.Hour
+	probeChainRelayResolveMaxStale = probeChainRelayResolveCacheTTL + 15*time.Minute
+	probeChainRelayResolveCache    = struct {
+		mu    sync.Mutex
+		items map[string]probeChainRelayResolveCacheEntry
+	}{items: make(map[string]probeChainRelayResolveCacheEntry)}
+)
 
 type probeChainRuntimePortForward struct {
 	ID         string
@@ -2287,6 +2305,7 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 		_ = closeTransport()
 		return nil, fmt.Errorf("probe relay failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
+	refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 
 	return &probeChainRelayNetConn{
 		reader: response.Body,
@@ -2437,18 +2456,83 @@ func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader st
 	if parsed := net.ParseIP(cleanHost); parsed != nil {
 		return parsed.String(), cleanHost, nil
 	}
+	if cachedDialHost, cachedHostHeader, ok := loadProbeChainRelayResolveCache(cleanHost, false); ok {
+		return cachedDialHost, cachedHostHeader, nil
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ips, resolveErr := net.DefaultResolver.LookupIP(ctx, "ip", cleanHost)
+	ips, resolveErr := probeChainRelayLookupIP(ctx, "ip", cleanHost)
 	if resolveErr != nil {
+		if cachedDialHost, cachedHostHeader, ok := loadProbeChainRelayResolveCache(cleanHost, true); ok {
+			return cachedDialHost, cachedHostHeader, nil
+		}
 		return "", "", fmt.Errorf("resolve relay host failed: %w", resolveErr)
 	}
 	ip := selectProbeChainPreferredDialIP(ips)
 	if ip == nil {
 		return "", "", fmt.Errorf("resolve relay host failed: no ip")
 	}
-	return ip.String(), cleanHost, nil
+	dialHost = ip.String()
+	hostHeader = cleanHost
+	return dialHost, hostHeader, nil
+}
+
+func loadProbeChainRelayResolveCache(host string, allowStale bool) (dialHost string, hostHeader string, ok bool) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return "", "", false
+	}
+	now := probeChainRelayResolveNow()
+	probeChainRelayResolveCache.mu.Lock()
+	defer probeChainRelayResolveCache.mu.Unlock()
+	entry, exists := probeChainRelayResolveCache.items[cleanHost]
+	if !exists {
+		return "", "", false
+	}
+	if entry.ExpiresAt.After(now) {
+		return entry.DialHost, entry.HostHeader, true
+	}
+	if allowStale && entry.StaleUntil.After(now) {
+		return entry.DialHost, entry.HostHeader, true
+	}
+	delete(probeChainRelayResolveCache.items, cleanHost)
+	return "", "", false
+}
+
+func storeProbeChainRelayResolveCache(host string, dialHost string, hostHeader string) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
+	cleanHostHeader := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
+	if cleanHost == "" || cleanDialHost == "" {
+		return
+	}
+	now := probeChainRelayResolveNow()
+	probeChainRelayResolveCache.mu.Lock()
+	probeChainRelayResolveCache.items[cleanHost] = probeChainRelayResolveCacheEntry{
+		DialHost:   cleanDialHost,
+		HostHeader: firstNonEmpty(cleanHostHeader, cleanHost),
+		ExpiresAt:  now.Add(probeChainRelayResolveCacheTTL),
+		StaleUntil: now.Add(probeChainRelayResolveMaxStale),
+	}
+	probeChainRelayResolveCache.mu.Unlock()
+}
+
+func refreshProbeChainRelayResolveCacheOnConnectSuccess(host string, dialHost string, hostHeader string) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return
+	}
+	if parsed := net.ParseIP(cleanHost); parsed != nil {
+		return
+	}
+	storeProbeChainRelayResolveCache(cleanHost, dialHost, hostHeader)
+}
+
+func resetProbeChainRelayResolveCacheForTest() {
+	probeChainRelayResolveCache.mu.Lock()
+	probeChainRelayResolveCache.items = make(map[string]probeChainRelayResolveCacheEntry)
+	probeChainRelayResolveCache.mu.Unlock()
 }
 
 func resolveProbeChainTLSServerName(layer string, dialHost string, hostHeader string) string {

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -157,6 +159,151 @@ func TestResolveProbeChainTLSServerName(t *testing.T) {
 	}
 	if got := resolveProbeChainTLSServerName("http3", "203.0.113.10", "203.0.113.10"); got != "203.0.113.10" {
 		t.Fatalf("http3 sni should fallback to dial ip when host is ip, got: %s", got)
+	}
+}
+
+func TestResolveProbeChainDialIPHostUsesFreshCache(t *testing.T) {
+	resetProbeChainRelayResolveCacheForTest()
+	defer resetProbeChainRelayResolveCacheForTest()
+
+	originalLookup := probeChainRelayLookupIP
+	originalNow := probeChainRelayResolveNow
+	baseNow := time.Date(2026, 5, 16, 15, 0, 0, 0, time.UTC)
+	probeChainRelayResolveNow = func() time.Time { return baseNow }
+	probeChainRelayLookupIP = func(ctx context.Context, network string, host string) ([]net.IP, error) {
+		t.Fatalf("lookup should not run when cache is fresh")
+		return nil, nil
+	}
+	defer func() {
+		probeChainRelayLookupIP = originalLookup
+		probeChainRelayResolveNow = originalNow
+	}()
+
+	storeProbeChainRelayResolveCache("relay.example.com", "203.0.113.7", "relay.example.com")
+	dialHost, hostHeader, err := resolveProbeChainDialIPHost("relay.example.com")
+	if err != nil {
+		t.Fatalf("resolveProbeChainDialIPHost returned error: %v", err)
+	}
+	if dialHost != "203.0.113.7" || hostHeader != "relay.example.com" {
+		t.Fatalf("unexpected cache result: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+}
+
+func TestResolveProbeChainDialIPHostLookupDoesNotPersistWithoutConnectSuccess(t *testing.T) {
+	resetProbeChainRelayResolveCacheForTest()
+	defer resetProbeChainRelayResolveCacheForTest()
+
+	originalLookup := probeChainRelayLookupIP
+	originalNow := probeChainRelayResolveNow
+	baseNow := time.Date(2026, 5, 16, 15, 0, 0, 0, time.UTC)
+	probeChainRelayResolveNow = func() time.Time { return baseNow }
+	lookupCalls := 0
+	probeChainRelayLookupIP = func(ctx context.Context, network string, host string) ([]net.IP, error) {
+		lookupCalls++
+		return []net.IP{net.ParseIP("203.0.113.13")}, nil
+	}
+	defer func() {
+		probeChainRelayLookupIP = originalLookup
+		probeChainRelayResolveNow = originalNow
+	}()
+
+	dialHost, hostHeader, err := resolveProbeChainDialIPHost("relay.example.com")
+	if err != nil {
+		t.Fatalf("resolveProbeChainDialIPHost returned error: %v", err)
+	}
+	if dialHost != "203.0.113.13" || hostHeader != "relay.example.com" {
+		t.Fatalf("unexpected lookup result: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("lookupCalls=%d", lookupCalls)
+	}
+	if _, _, ok := loadProbeChainRelayResolveCache("relay.example.com", false); ok {
+		t.Fatalf("lookup result should not be cached before connect success")
+	}
+}
+
+func TestResolveProbeChainDialIPHostFallsBackToStaleCacheOnLookupTimeout(t *testing.T) {
+	resetProbeChainRelayResolveCacheForTest()
+	defer resetProbeChainRelayResolveCacheForTest()
+
+	originalLookup := probeChainRelayLookupIP
+	originalNow := probeChainRelayResolveNow
+	baseNow := time.Date(2026, 5, 16, 15, 0, 0, 0, time.UTC)
+	currentNow := baseNow
+	probeChainRelayResolveNow = func() time.Time { return currentNow }
+	probeChainRelayLookupIP = func(ctx context.Context, network string, host string) ([]net.IP, error) {
+		return nil, errors.New("i/o timeout")
+	}
+	defer func() {
+		probeChainRelayLookupIP = originalLookup
+		probeChainRelayResolveNow = originalNow
+	}()
+
+	storeProbeChainRelayResolveCache("relay.example.com", "203.0.113.9", "relay.example.com")
+	currentNow = baseNow.Add(probeChainRelayResolveCacheTTL + 5*time.Second)
+
+	dialHost, hostHeader, err := resolveProbeChainDialIPHost("relay.example.com")
+	if err != nil {
+		t.Fatalf("resolveProbeChainDialIPHost returned error: %v", err)
+	}
+	if dialHost != "203.0.113.9" || hostHeader != "relay.example.com" {
+		t.Fatalf("unexpected stale cache result: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+}
+
+func TestRefreshProbeChainRelayResolveCacheOnConnectSuccessExtendsTTLToOneDay(t *testing.T) {
+	resetProbeChainRelayResolveCacheForTest()
+	defer resetProbeChainRelayResolveCacheForTest()
+
+	originalNow := probeChainRelayResolveNow
+	baseNow := time.Date(2026, 5, 16, 15, 0, 0, 0, time.UTC)
+	probeChainRelayResolveNow = func() time.Time { return baseNow }
+	defer func() {
+		probeChainRelayResolveNow = originalNow
+	}()
+
+	refreshProbeChainRelayResolveCacheOnConnectSuccess("relay.example.com", "203.0.113.21", "relay.example.com")
+
+	probeChainRelayResolveCache.mu.Lock()
+	entry, ok := probeChainRelayResolveCache.items["relay.example.com"]
+	probeChainRelayResolveCache.mu.Unlock()
+	if !ok {
+		t.Fatalf("expected cache entry after connect success")
+	}
+	if got := entry.ExpiresAt.Sub(baseNow); got != 24*time.Hour {
+		t.Fatalf("ttl=%s want=%s", got, 24*time.Hour)
+	}
+	if got := entry.StaleUntil.Sub(baseNow); got != 24*time.Hour+15*time.Minute {
+		t.Fatalf("stale=%s want=%s", got, 24*time.Hour+15*time.Minute)
+	}
+}
+
+func TestResolveProbeChainDialIPHostReturnsErrorWhenStaleCacheExpired(t *testing.T) {
+	resetProbeChainRelayResolveCacheForTest()
+	defer resetProbeChainRelayResolveCacheForTest()
+
+	originalLookup := probeChainRelayLookupIP
+	originalNow := probeChainRelayResolveNow
+	baseNow := time.Date(2026, 5, 16, 15, 0, 0, 0, time.UTC)
+	currentNow := baseNow
+	probeChainRelayResolveNow = func() time.Time { return currentNow }
+	probeChainRelayLookupIP = func(ctx context.Context, network string, host string) ([]net.IP, error) {
+		return nil, errors.New("i/o timeout")
+	}
+	defer func() {
+		probeChainRelayLookupIP = originalLookup
+		probeChainRelayResolveNow = originalNow
+	}()
+
+	storeProbeChainRelayResolveCache("relay.example.com", "203.0.113.11", "relay.example.com")
+	currentNow = baseNow.Add(probeChainRelayResolveMaxStale + 5*time.Second)
+
+	_, _, err := resolveProbeChainDialIPHost("relay.example.com")
+	if err == nil {
+		t.Fatalf("expected error after stale cache expiry")
+	}
+	if !strings.Contains(err.Error(), "resolve relay host failed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
