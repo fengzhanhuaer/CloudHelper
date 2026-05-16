@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestNormalizeProbeListenAddr(t *testing.T) {
@@ -164,5 +165,28 @@ func TestSyncProbeServiceFromLinkConfigPersistsControllerConfig(t *testing.T) {
 	}
 	if got.ListenAddr != want.ListenAddr || got.ServiceHost != want.ServiceHost {
 		t.Fatalf("cached config=%+v, want listen=%q host=%q", got, want.ListenAddr, want.ServiceHost)
+	}
+}
+
+func TestStartProbeServiceRuntimeLoopDoesNotPollLegacyControllerEndpoint(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+
+	oldFetch := probeFetchLinkConfig
+	t.Cleanup(func() {
+		probeFetchLinkConfig = oldFetch
+	})
+
+	fetched := make(chan struct{}, 1)
+	probeFetchLinkConfig = func(context.Context, string, nodeIdentity) (probeLinkConfig, error) {
+		fetched <- struct{}{}
+		return probeLinkConfig{}, errors.New("unexpected legacy fetch")
+	}
+
+	startProbeServiceRuntimeLoop(http.NewServeMux(), nodeIdentity{NodeID: "node-1"}, "https://controller.example.com")
+
+	select {
+	case <-fetched:
+		t.Fatal("legacy service runtime loop should not poll controller")
+	case <-time.After(80 * time.Millisecond):
 	}
 }

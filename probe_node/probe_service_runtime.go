@@ -48,14 +48,10 @@ var (
 
 func startProbeServiceRuntimeLoop(handler http.Handler, identity nodeIdentity, controllerBaseURL string) {
 	go func() {
+		// Link/proxy chain config is now pulled by startProbeLinkChainsSyncLoop via
+		// /api/probe/link/config/grouped. This legacy service config path is kept
+		// only for local cache restore and must not keep polling the controller.
 		restoreProbeServiceFromLinkConfigCache(handler, identity, controllerBaseURL)
-		syncProbeServiceFromLinkConfig(handler, identity, controllerBaseURL)
-		ticker := time.NewTicker(probeLinkConfigPollInterval)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			syncProbeServiceFromLinkConfig(handler, identity, controllerBaseURL)
-		}
 	}()
 }
 
