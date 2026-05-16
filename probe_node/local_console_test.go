@@ -184,6 +184,11 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("dns/status without session status=%d", dnsStatusResp.Code)
 	}
 
+	dnsRecordsResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/records", nil)
+	if dnsRecordsResp.Code != http.StatusUnauthorized {
+		t.Fatalf("dns/records without session status=%d", dnsRecordsResp.Code)
+	}
+
 	dnsRealIPListResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/real_ip/list", nil)
 	if dnsRealIPListResp.Code != http.StatusUnauthorized {
 		t.Fatalf("dns/real_ip/list without session status=%d", dnsRealIPListResp.Code)
@@ -327,6 +332,15 @@ func TestProbeLocalDNSStatusWithSession(t *testing.T) {
 func TestProbeLocalDNSDebugAPIs(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	recordsResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/records", nil, sessionCookie)
+	if recordsResp.Code != http.StatusOK {
+		t.Fatalf("dns/records status=%d body=%s", recordsResp.Code, recordsResp.Body.String())
+	}
+	recordsPayload := decodeProbeLocalJSON(t, recordsResp)
+	if _, ok := recordsPayload["items"].([]any); !ok {
+		t.Fatalf("dns/records items type=%T", recordsPayload["items"])
+	}
 
 	realListResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/dns/real_ip/list", nil, sessionCookie)
 	if realListResp.Code != http.StatusOK {
@@ -1962,7 +1976,7 @@ func TestProbeLocalProxyGroupsAndStateAndHostsLifecycle(t *testing.T) {
 	}
 }
 
-func TestProbeLocalProxyGroupsRefreshClearsDNSRuntimeCaches(t *testing.T) {
+func TestProbeLocalProxyGroupsRefreshReconcilesDNSRuntimeCaches(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
@@ -1995,25 +2009,44 @@ func TestProbeLocalProxyGroupsRefreshClearsDNSRuntimeCaches(t *testing.T) {
 	if okValue, _ := payload["ok"].(bool); !okValue {
 		t.Fatalf("groups refresh ok=%v payload=%v", payload["ok"], payload)
 	}
-	if got := len(queryProbeLocalDNSCacheRecords()); got != 0 {
-		t.Fatalf("dns cache records after refresh=%d, want 0", got)
+	if got := len(queryProbeLocalDNSCacheRecords()); got == 0 {
+		t.Fatalf("dns cache records after refresh=%d, want > 0", got)
 	}
-	if got := len(queryProbeLocalDNSFakeIPEntries()); got != 0 {
-		t.Fatalf("fake ip entries after refresh=%d, want 0", got)
+	fakeEntriesAfter := queryProbeLocalDNSFakeIPEntries()
+	if got := len(fakeEntriesAfter); got == 0 {
+		t.Fatalf("fake ip entries after refresh=%d, want > 0", got)
 	}
-	if got := probeLocalDNSRouteHintCount(); got != 0 {
-		t.Fatalf("route hint count after refresh=%d, want 0", got)
+	if fakeEntriesAfter[0].FakeIP != fakeIP {
+		t.Fatalf("fake ip after refresh=%q want=%q", fakeEntriesAfter[0].FakeIP, fakeIP)
+	}
+	if got := probeLocalDNSRouteHintCount(); got == 0 {
+		t.Fatalf("route hint count after refresh=%d, want > 0", got)
 	}
 	dnsObj, ok := payload["dns"].(map[string]any)
 	if !ok {
 		t.Fatalf("groups refresh dns payload type=%T", payload["dns"])
 	}
-	if routeHintCount, _ := dnsObj["route_hint_count"].(float64); routeHintCount != 0 {
+	if routeHintCount, _ := dnsObj["route_hint_count"].(float64); routeHintCount == 0 {
 		t.Fatalf("groups refresh dns route_hint_count=%v", dnsObj["route_hint_count"])
 	}
 	fakeEntries, ok := dnsObj["fake_ip_entries"].([]any)
-	if !ok || len(fakeEntries) != 0 {
+	if !ok || len(fakeEntries) == 0 {
 		t.Fatalf("groups refresh fake_ip_entries=%v", dnsObj["fake_ip_entries"])
+	}
+
+	groups.Groups = []probeLocalProxyGroupEntry{{Group: "media", Rules: []string{"domain_suffix:other.example"}}}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist rematched groups failed: %v", err)
+	}
+	refreshResp = doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/refresh", map[string]any{}, sessionCookie)
+	if refreshResp.Code != http.StatusOK {
+		t.Fatalf("groups refresh after rule change status=%d body=%s", refreshResp.Code, refreshResp.Body.String())
+	}
+	if got := len(queryProbeLocalDNSCacheRecords()); got == 0 {
+		t.Fatalf("dns cache records after rule change refresh=%d, want > 0", got)
+	}
+	if got := len(queryProbeLocalDNSFakeIPEntries()); got != 0 {
+		t.Fatalf("fake ip entries after rule change refresh=%d, want 0", got)
 	}
 }
 

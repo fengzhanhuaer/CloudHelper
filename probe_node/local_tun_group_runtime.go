@@ -62,6 +62,8 @@ var probeLocalTUNGroupRuntimeRegistry = struct {
 	items map[string]*probeLocalTUNGroupRuntime
 }{items: make(map[string]*probeLocalTUNGroupRuntime)}
 
+// Group runtime is the aggregation boundary for proxy behavior.
+// DNS records must not persist action or selected_chain_id as their primary state.
 func normalizeProbeLocalGroupKey(group string) string {
 	return strings.ToLower(strings.TrimSpace(group))
 }

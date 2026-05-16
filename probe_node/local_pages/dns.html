@@ -213,13 +213,11 @@
     }
 
     async function loadDNSStatus() {
-      const [statusData, realIPData, fakeIPData] = await Promise.all([
+      const [statusData, recordsData] = await Promise.all([
         requestJSON('/local/api/dns/status', { method: 'GET' }),
-        requestJSON('/local/api/dns/real_ip/list', { method: 'GET' }),
-        requestJSON('/local/api/dns/fake_ip/list', { method: 'GET' }),
+        requestJSON('/local/api/dns/records', { method: 'GET' }),
       ]);
-      const realIPRecords = Array.isArray(realIPData.items) ? realIPData.items : [];
-      const fakeIPEntries = Array.isArray(fakeIPData.items) ? fakeIPData.items : [];
+      const records = Array.isArray(recordsData.items) ? recordsData.items : [];
       const ttlSeconds = Number.isFinite(Number(statusData.cache_ttl_seconds)) ? Number(statusData.cache_ttl_seconds) : 0;
       const routeHintCount = Number.isFinite(Number(statusData.route_hint_count)) ? Number(statusData.route_hint_count) : 0;
       const tunListener = (statusData.tun_listener && typeof statusData.tun_listener === 'object') ? statusData.tun_listener : {};
@@ -230,57 +228,47 @@
       setText('dnsFallbackUsed', statusData.fallback_used ? '是' : '否');
       setText('dnsTunListener', tunListenerText);
       setText('dnsFakeIPCIDR', statusData.fake_ip_cidr);
-      setText('dnsFakeIPRecords', fakeIPEntries.length);
+      setText('dnsFakeIPRecords', records.filter((item) => String(item && item.fake_ip || '').trim()).length);
       setText('dnsRouteHintCount', String(Math.trunc(routeHintCount)));
       setText('dnsCacheTTL', ttlSeconds > 0 ? String(Math.trunc(ttlSeconds)) : '-');
-      setText('dnsCacheRecords', realIPRecords.length);
+      setText('dnsCacheRecords', records.reduce((sum, item) => sum + (Array.isArray(item && item.real_ips) ? item.real_ips.length : 0), 0));
       setText('dnsUpdatedAt', statusData.updated_at);
       setText('dnsLastError', statusData.last_error);
-      renderDNSDomainMapTable(realIPRecords, fakeIPEntries);
+      renderDNSDomainMapTable(records);
     }
 
-    function renderDNSDomainMapTable(cacheRecords, fakeIPEntries) {
+    function renderDNSDomainMapTable(records) {
       const bodyEl = document.getElementById('dnsMapTableBody');
       const emptyEl = document.getElementById('dnsMapEmpty');
       if (!bodyEl) return;
-      const cacheArr = Array.isArray(cacheRecords) ? cacheRecords : [];
-      const fakeArr = Array.isArray(fakeIPEntries) ? fakeIPEntries : [];
-      const domainToIPs = new Map();
-      cacheArr.forEach((item) => {
-        const domain = String(item && item.url || '').trim();
-        const ip = String(item && item.ip || '').trim();
-        if (!domain || !ip) return;
-        if (!domainToIPs.has(domain)) domainToIPs.set(domain, new Set());
-        domainToIPs.get(domain).add(ip);
-      });
-      const domainToFakeIP = new Map();
-      fakeArr.forEach((item) => {
-        const domain = String(item && item.domain || '').trim();
-        const fakeIP = String(item && item.fake_ip || '').trim();
-        if (!domain || !fakeIP) return;
-        domainToFakeIP.set(domain, fakeIP);
-      });
-      const domains = [...new Set([...domainToIPs.keys(), ...domainToFakeIP.keys()])].sort((a, b) => a.localeCompare(b));
+      const list = Array.isArray(records) ? records : [];
+      const rows = list
+        .map((item) => ({
+          domain: String(item && item.domain || '').trim(),
+          group: String(item && item.group || '').trim(),
+          realIPs: Array.isArray(item && item.real_ips) ? item.real_ips.map((ip) => String(ip || '').trim()).filter(Boolean) : [],
+          fakeIP: String(item && item.fake_ip || '').trim(),
+        }))
+        .filter((item) => item.domain);
+      rows.sort((a, b) => a.domain.localeCompare(b.domain));
       bodyEl.innerHTML = '';
-      if (domains.length === 0) {
+      if (rows.length === 0) {
         bodyEl.innerHTML = '<tr><td colspan="3">-</td></tr>';
         if (emptyEl) emptyEl.style.display = '';
         return;
       }
       if (emptyEl) emptyEl.style.display = 'none';
-      domains.forEach((domain) => {
-        const ips = domainToIPs.has(domain) ? [...domainToIPs.get(domain)].sort((a, b) => a.localeCompare(b)) : [];
-        const fakeIP = domainToFakeIP.get(domain) || '-';
+      rows.forEach((row) => {
         const tr = document.createElement('tr');
         const tdDomain = document.createElement('td');
-        tdDomain.textContent = domain;
+        tdDomain.textContent = row.domain;
         tr.appendChild(tdDomain);
         const tdIP = document.createElement('td');
-        tdIP.textContent = ips.length > 0 ? ips.join('\n') : '-';
+        tdIP.textContent = row.realIPs.length > 0 ? row.realIPs.join('\n') : '-';
         tdIP.style.whiteSpace = 'pre-line';
         tr.appendChild(tdIP);
         const tdFake = document.createElement('td');
-        tdFake.textContent = fakeIP;
+        tdFake.textContent = row.fakeIP || '-';
         tr.appendChild(tdFake);
         bodyEl.appendChild(tr);
       });
