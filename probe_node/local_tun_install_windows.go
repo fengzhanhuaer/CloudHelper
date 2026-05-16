@@ -1061,6 +1061,13 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceLUID(interfaceLUID uint64) err
 		if ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(interfaceLUID); convertErr == nil && ifIndex > 0 {
 			interfaceIndex = ifIndex
 		}
+		if isProbeLocalWindowsInterfaceNotFoundErr(err) {
+			if fallbackErr := ensureProbeLocalWindowsRouteTargetByCurrentWintunAdapter(interfaceLUID, err); fallbackErr == nil {
+				return nil
+			} else {
+				err = errors.Join(err, fallbackErr)
+			}
+		}
 		logProbeLocalWindowsRouteTargetDebugContext("route_target_by_luid.ensure_ipv4_failed", interfaceIndex, err)
 		return err
 	}
@@ -1069,6 +1076,29 @@ func ensureProbeLocalWindowsRouteTargetByInterfaceLUID(interfaceLUID uint64) err
 		return firstProbeLocalTUNErr(convertErr, errors.New("invalid interface index"))
 	}
 	setProbeLocalWindowsRouteTargetEnv(ifIndex)
+	return nil
+}
+
+func ensureProbeLocalWindowsRouteTargetByCurrentWintunAdapter(staleLUID uint64, cause error) error {
+	adapter, exists, err := probeLocalFindWintunAdapter()
+	if err != nil {
+		return fmt.Errorf("resolve current wintun adapter after stale luid failed: stale_luid=%d err=%w", staleLUID, err)
+	}
+	if !exists || adapter.InterfaceIndex <= 0 {
+		return fmt.Errorf("current wintun adapter unavailable after stale luid: stale_luid=%d exists=%t ifindex=%d cause=%w", staleLUID, exists, adapter.InterfaceIndex, cause)
+	}
+	if adapter.InterfaceLUID > 0 && adapter.InterfaceLUID == staleLUID {
+		return fmt.Errorf("current wintun adapter still has stale luid without adapter lookup: stale_luid=%d ifindex=%d cause=%w", staleLUID, adapter.InterfaceIndex, cause)
+	}
+	logProbeWarnf(
+		"probe local tun route target stale luid fallback: stale_luid=%d current_luid=%d current_ifindex=%d",
+		staleLUID,
+		adapter.InterfaceLUID,
+		adapter.InterfaceIndex,
+	)
+	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(adapter.InterfaceIndex); err != nil {
+		return fmt.Errorf("ensure route target by current wintun adapter failed: stale_luid=%d current_luid=%d current_ifindex=%d err=%w", staleLUID, adapter.InterfaceLUID, adapter.InterfaceIndex, err)
+	}
 	return nil
 }
 

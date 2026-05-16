@@ -1,11 +1,7 @@
 package core
 
 import (
-	"errors"
-	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +31,7 @@ type adminLogEntry struct {
 
 type adminLogsResponse struct {
 	Source   string          `json:"source"`
-	FilePath string          `json:"file_path"`
+	FilePath string          `json:"file_path,omitempty"`
 	Lines    int             `json:"lines"`
 	Content  string          `json:"content"`
 	Fetched  string          `json:"fetched_at"`
@@ -51,26 +47,7 @@ func AdminLogsHandler(w http.ResponseWriter, r *http.Request) {
 	lineLimit := normalizeAdminLogLines(r.URL.Query().Get("lines"))
 	sinceMinutes := normalizeAdminSinceMinutes(r.URL.Query().Get("since_minutes"))
 	minLevel := r.URL.Query().Get("min_level")
-	logPath, err := resolveControllerLogPath()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	content, entries, err := readControllerLogTailLines(logPath, lineLimit, sinceMinutes, minLevel)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, adminLogsResponse{
-		Source:   "server",
-		FilePath: logPath,
-		Lines:    lineLimit,
-		Content:  content,
-		Fetched:  time.Now().Format(time.RFC3339),
-		Entries:  entries,
-	})
+	writeJSON(w, http.StatusOK, buildControllerRuntimeLogsResponse(lineLimit, sinceMinutes, minLevel))
 }
 
 func normalizeAdminLogLines(raw string) int {
@@ -104,45 +81,19 @@ func normalizeAdminSinceMinutes(raw string) int {
 	return value
 }
 
-func resolveControllerLogPath() (string, error) {
-	dirs := candidateLogDirs()
-	if len(dirs) == 0 {
-		return "", errors.New("controller log directory is not available")
+func buildControllerRuntimeLogsResponse(lineLimit int, sinceMinutes int, minLevel string) adminLogsResponse {
+	content, entries := snapshotControllerRuntimeLogTailLines(lineLimit, sinceMinutes, minLevel)
+	return adminLogsResponse{
+		Source:  "controller_runtime_memory",
+		Lines:   lineLimit,
+		Content: content,
+		Fetched: time.Now().Format(time.RFC3339),
+		Entries: entries,
 	}
-
-	for _, dir := range dirs {
-		candidate := filepath.Join(dir, controllerLogFile)
-		info, err := os.Stat(candidate)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return "", err
-		}
-		if info.IsDir() {
-			continue
-		}
-		return candidate, nil
-	}
-
-	return filepath.Join(dirs[0], controllerLogFile), nil
 }
 
-func readControllerLogTailLines(filePath string, lineLimit int, sinceMinutes int, minLevel string) (string, []adminLogEntry, error) {
-	raw, err := os.ReadFile(filePath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", nil, nil
-		}
-		return "", nil, fmt.Errorf("read log file failed: %w", err)
-	}
-
-	normalized := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	lines := strings.Split(normalized, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-
+func snapshotControllerRuntimeLogTailLines(lineLimit int, sinceMinutes int, minLevel string) (string, []adminLogEntry) {
+	lines := controllerRuntimeLogs.snapshotLines()
 	cutoffEnabled := sinceMinutes > 0
 	cutoff := time.Now().Add(-time.Duration(sinceMinutes) * time.Minute)
 	threshold := normalizeAdminLogLevel(minLevel)
@@ -169,7 +120,7 @@ func readControllerLogTailLines(filePath string, lineLimit int, sinceMinutes int
 	for _, entry := range entries {
 		linesOut = append(linesOut, entry.Line)
 	}
-	return strings.Join(linesOut, "\n"), entries, nil
+	return strings.Join(linesOut, "\n"), entries
 }
 
 func parseControllerLogLineTime(line string) (time.Time, bool) {

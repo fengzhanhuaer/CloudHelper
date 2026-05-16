@@ -148,6 +148,7 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	if err := persistProbeProxyChainCache(config.GlobalProxyForwardChains); err != nil {
 		log.Printf("warning: persist probe proxy chain cache failed: %v", err)
 	}
+	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
 
 	applyProbeLinkChainServerItems(identity, controllerBaseURL, config.SelfChains)
 }

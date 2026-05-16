@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -898,6 +899,44 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterCreateUnicastN
 	}
 	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "19" {
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 19", got)
+	}
+}
+
+func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterStaleLUID(t *testing.T) {
+	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
+		return probeLocalWindowsNetAdapter{InterfaceLUID: 67890, InterfaceIndex: 53, Name: "Maple"}, true, nil
+	}
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = func(luid uint64, _ string, _ int) error {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want stale 12345", luid)
+		}
+		return fmt.Errorf("adapter not found for interface luid: %d", luid)
+	}
+	probeLocalConvertInterfaceLUIDToIndex = func(luid uint64) (int, error) {
+		if luid != 12345 {
+			t.Fatalf("luid=%d, want stale 12345", luid)
+		}
+		return 0, fmt.Errorf("adapter not found for interface luid: %d", luid)
+	}
+	probeLocalEnsureWindowsInterfaceIPv4 = func(interfaceIndex int, _ string, _ int) error {
+		if interfaceIndex != 53 {
+			t.Fatalf("interfaceIndex=%d, want 53", interfaceIndex)
+		}
+		return nil
+	}
+	probeLocalFindWindowsAdapterByIfIndex = func(interfaceIndex int) (windowsAdapterInfo, error) {
+		if interfaceIndex != 53 {
+			t.Fatalf("interfaceIndex=%d, want 53", interfaceIndex)
+		}
+		return windowsAdapterInfo{InterfaceIndex: 53, InterfaceLUID: 67890, AdapterGUID: "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"}, nil
+	}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	if err := ensureProbeLocalWindowsRouteTargetByInterfaceLUID(12345); err != nil {
+		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceLUID returned error: %v", err)
+	}
+	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "53" {
+		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 53", got)
 	}
 }
 

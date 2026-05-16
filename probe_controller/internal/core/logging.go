@@ -6,24 +6,28 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
 const (
-	controllerLogFile       = "probe_controller.log"
-	controllerLogMaxSize    = 1 * 1024 * 1024
-	controllerLogMaxBackups = 5
+	controllerLogFile            = "probe_controller.log"
+	controllerLogMaxSize         = 1 * 1024 * 1024
+	controllerLogMaxBackups      = 5
+	controllerRuntimeLogMaxLines = 5000
 )
 
+var controllerRuntimeLogs = newControllerRuntimeLogBuffer(controllerRuntimeLogMaxLines)
+
 func initControllerLogger() {
-	log.SetOutput(io.Discard)
+	log.SetOutput(controllerRuntimeLogs)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	writer, err := newControllerLogWriter()
 	if err != nil {
 		return
 	}
-	log.SetOutput(writer)
+	log.SetOutput(io.MultiWriter(writer, controllerRuntimeLogs))
 }
 
 func logControllerRealtimef(format string, args ...any) {
@@ -40,6 +44,74 @@ func logControllerWarnf(format string, args ...any) {
 
 func logControllerErrorf(format string, args ...any) {
 	log.Printf("[error] "+format, args...)
+}
+
+type controllerRuntimeLogBuffer struct {
+	mu      sync.Mutex
+	max     int
+	lines   []string
+	partial string
+}
+
+func newControllerRuntimeLogBuffer(max int) *controllerRuntimeLogBuffer {
+	if max <= 0 {
+		max = controllerRuntimeLogMaxLines
+	}
+	return &controllerRuntimeLogBuffer{max: max}
+}
+
+func (b *controllerRuntimeLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	text := strings.ReplaceAll(string(p), "\r\n", "\n")
+	if b.partial != "" {
+		text = b.partial + text
+		b.partial = ""
+	}
+	parts := strings.Split(text, "\n")
+	if len(parts) == 0 {
+		return len(p), nil
+	}
+	if !strings.HasSuffix(text, "\n") {
+		b.partial = parts[len(parts)-1]
+		parts = parts[:len(parts)-1]
+	}
+	for _, line := range parts {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		b.appendLocked(line)
+	}
+	return len(p), nil
+}
+
+func (b *controllerRuntimeLogBuffer) appendLocked(line string) {
+	b.lines = append(b.lines, line)
+	if overflow := len(b.lines) - b.max; overflow > 0 {
+		copy(b.lines, b.lines[overflow:])
+		b.lines = b.lines[:b.max]
+	}
+}
+
+func (b *controllerRuntimeLogBuffer) snapshotLines() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	out := make([]string, 0, len(b.lines)+1)
+	out = append(out, b.lines...)
+	if strings.TrimSpace(b.partial) != "" {
+		out = append(out, b.partial)
+	}
+	return out
+}
+
+func resetControllerRuntimeLogsForTest() {
+	controllerRuntimeLogs.mu.Lock()
+	defer controllerRuntimeLogs.mu.Unlock()
+	controllerRuntimeLogs.lines = nil
+	controllerRuntimeLogs.partial = ""
 }
 
 func newControllerLogWriter() (io.Writer, error) {

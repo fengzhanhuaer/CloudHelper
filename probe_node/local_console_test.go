@@ -2329,6 +2329,40 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 	}
 }
 
+func TestProbeLocalTUNChainSyncRecoveryRetriesPersistedEnabledState(t *testing.T) {
+	_ = setupProbeLocalConsoleTest(t)
+	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
+		t.Fatalf("persist tun state failed: %v", err)
+	}
+
+	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	takeoverCalls := 0
+	probeLocalApplyProxyTakeover = func() error {
+		takeoverCalls++
+		return nil
+	}
+	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
+
+	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
+	if takeoverCalls != 1 {
+		t.Fatalf("takeover calls=%d, want 1", takeoverCalls)
+	}
+	status := probeLocalControl.tunStatus()
+	if !status.Installed || !status.Enabled {
+		t.Fatalf("chain-sync recovery tun status=%+v, want installed=true enabled=true", status)
+	}
+	proxyStatus := probeLocalControl.proxyStatus()
+	if !proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeTUN {
+		t.Fatalf("chain-sync recovery proxy status=%+v, want enabled tunnel", proxyStatus)
+	}
+
+	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
+	if takeoverCalls != 1 {
+		t.Fatalf("takeover calls after second recovery=%d, want 1", takeoverCalls)
+	}
+}
+
 func TestProbeLocalTUNStatusReturnsLastInstallObservation(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

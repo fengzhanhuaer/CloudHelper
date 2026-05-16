@@ -91,26 +91,7 @@ func mngControllerLogsHandler(w http.ResponseWriter, r *http.Request) {
 	lineLimit := normalizeAdminLogLines(r.URL.Query().Get("lines"))
 	sinceMinutes := normalizeAdminSinceMinutes(r.URL.Query().Get("since_minutes"))
 	minLevel := r.URL.Query().Get("min_level")
-	logPath, err := resolveControllerLogPath()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	content, entries, err := readControllerLogTailLines(logPath, lineLimit, sinceMinutes, minLevel)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, adminLogsResponse{
-		Source:   "controller",
-		FilePath: logPath,
-		Lines:    lineLimit,
-		Content:  content,
-		Fetched:  time.Now().Format(time.RFC3339),
-		Entries:  entries,
-	})
+	writeJSON(w, http.StatusOK, buildControllerRuntimeLogsResponse(lineLimit, sinceMinutes, minLevel))
 }
 
 func mngBootstrapHandler(w http.ResponseWriter, r *http.Request) {

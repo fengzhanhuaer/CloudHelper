@@ -30,7 +30,7 @@
     <div class="topbar">
       <div>
         <h1>/mng/controller-logs 主控日志</h1>
-        <p class="sub">查看主控服务日志文件，支持按级别、时间窗口和行数过滤。</p>
+        <p class="sub">查看主控进程内存中的实时运行日志，支持按级别、时间窗口和行数过滤。</p>
       </div>
       <div>
         <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
@@ -52,7 +52,7 @@
             <option value="realtime">realtime</option>
           </select>
         </label>
-        <button id="btn-load-logs" class="btn primary" type="button">读取日志</button>
+        <button id="btn-load-logs" class="btn primary" type="button">刷新实时日志</button>
       </div>
       <div id="logs-meta" class="muted">-</div>
       <pre id="logs-output" class="mono"></pre>
@@ -102,9 +102,9 @@
       const since = encodeURIComponent(document.getElementById('logs-since').value || '0');
       const minLevel = encodeURIComponent(document.getElementById('logs-min-level').value || 'normal');
       const payload = await requestJSON(`/mng/api/controller/logs?lines=${lines}&since_minutes=${since}&min_level=${minLevel}`);
-      document.getElementById('logs-meta').textContent = `来源 ${payload.source || '-'} | 路径 ${payload.file_path || '-'} | 拉取时间 ${formatTime(payload.fetched_at)}`;
+      document.getElementById('logs-meta').textContent = `来源 ${payload.source || 'controller_runtime_memory'} | 行数 ${payload.lines || '-'} | 拉取时间 ${formatTime(payload.fetched_at)}`;
       document.getElementById('logs-output').textContent = String(payload.content || '');
-      setStatus('主控日志读取完成', 'ok');
+      setStatus('主控实时日志刷新完成', 'ok');
     }
 
     async function logout() {
@@ -115,7 +115,7 @@
     document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
     document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
     document.getElementById('btn-load-logs').addEventListener('click', () => {
-      loadLogs().catch((err) => setStatus(`主控日志读取失败：${err.message || err}`, 'err'));
+      loadLogs().catch((err) => setStatus(`主控实时日志刷新失败：${err.message || err}`, 'err'));
     });
 
     (async function init() {

@@ -566,6 +566,31 @@ func recoverProbeLocalTUNRuntimeOnStartup() error {
 	return probeLocalControl.recoverTUNOnStartup()
 }
 
+func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		logProbeWarnf("probe local tun chain-sync recovery state load failed: %v", err)
+		return
+	}
+	if !state.TUN.Enabled {
+		return
+	}
+	tunStatus := probeLocalControl.tunStatus()
+	proxyStatus := probeLocalControl.proxyStatus()
+	if tunStatus.Enabled && proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN) {
+		return
+	}
+	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
+		logProbeWarnf("probe local tun chain-sync recovery skipped: %v", err)
+		return
+	}
+	tunStatus = probeLocalControl.tunStatus()
+	proxyStatus = probeLocalControl.proxyStatus()
+	if tunStatus.Enabled && proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN) {
+		logProbeInfof("probe local tun recovered after chain config sync")
+	}
+}
+
 func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
