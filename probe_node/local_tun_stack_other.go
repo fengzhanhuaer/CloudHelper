@@ -4,6 +4,8 @@ package main
 
 type probeLocalTUNUDPBridgeMonitorStats struct {
 	Active int64                               `json:"active"`
+	Direct int64                               `json:"direct"`
+	Tunnel int64                               `json:"tunnel"`
 	Opened int64                               `json:"opened"`
 	Closed int64                               `json:"closed"`
 	Items  []probeLocalTUNUDPBridgeMonitorItem `json:"items,omitempty"`
@@ -16,6 +18,7 @@ type probeLocalTUNUDPBridgeMonitorItem struct {
 	Group       string `json:"group,omitempty"`
 	NodeID      string `json:"node_id,omitempty"`
 	Direct      bool   `json:"direct"`
+	TimeoutMS   int64  `json:"timeout_ms"`
 	OpenedAt    string `json:"opened_at,omitempty"`
 	LastActive  string `json:"last_active,omitempty"`
 	AgeMS       int64  `json:"age_ms"`

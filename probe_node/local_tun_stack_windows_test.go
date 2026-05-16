@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"syscall"
@@ -14,6 +15,12 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
+
+type nopProbeLocalTUNUDPReadWriteCloser struct{}
+
+func (nopProbeLocalTUNUDPReadWriteCloser) Read([]byte) (int, error)    { return 0, io.EOF }
+func (nopProbeLocalTUNUDPReadWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (nopProbeLocalTUNUDPReadWriteCloser) Close() error                { return nil }
 
 func TestParseProbeLocalTUNIPv4TargetTCP(t *testing.T) {
 	packet := make([]byte, 40)
@@ -493,6 +500,55 @@ func TestResolveProbeLocalTUNUDPAssociationTimeoutForQUIC(t *testing.T) {
 		if got := resolveProbeLocalTUNUDPTTLProfile(tc.target); got != tc.wantProfile {
 			t.Fatalf("target=%s profile=%s want=%s", tc.target, got, tc.wantProfile)
 		}
+	}
+}
+
+func TestResolveProbeLocalTUNUDPBridgeTimeoutForShortLivedTraffic(t *testing.T) {
+	direct := probeLocalTunnelRouteDecision{Direct: true, TargetAddr: "192.168.1.20:7680", Group: "fallback"}
+	if got := resolveProbeLocalTUNUDPBridgeTimeout("192.168.1.20:7680", direct); got != probeLocalTUNUDPShortAssociationTTL {
+		t.Fatalf("delivery optimization ttl=%s want=%s", got, probeLocalTUNUDPShortAssociationTTL)
+	}
+	if got := resolveProbeLocalTUNUDPBridgeTimeout("192.168.1.20:443", direct); got != probeLocalTUNUDPShortAssociationTTL {
+		t.Fatalf("private direct quic ttl=%s want=%s", got, probeLocalTUNUDPShortAssociationTTL)
+	}
+	tunnel := probeLocalTunnelRouteDecision{Direct: false, TargetAddr: "example.com:443", Group: "media"}
+	if got := resolveProbeLocalTUNUDPBridgeTimeout("example.com:443", tunnel); got != probeLocalTUNUDPQUICAssociationTimeout {
+		t.Fatalf("tunnel quic ttl=%s want=%s", got, probeLocalTUNUDPQUICAssociationTimeout)
+	}
+}
+
+func TestProbeLocalTUNUDPManagedOutboundReleaseSourceOnce(t *testing.T) {
+	released := 0
+	outbound := &probeLocalTUNUDPManagedOutbound{
+		ReadWriteCloser: nopProbeLocalTUNUDPReadWriteCloser{},
+		releaseSource: func() {
+			released++
+		},
+	}
+	if err := outbound.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if err := outbound.Close(); err != nil {
+		t.Fatalf("second close failed: %v", err)
+	}
+	if released != 1 {
+		t.Fatalf("released=%d want=1", released)
+	}
+}
+
+func TestShouldDropProbeLocalTUNUDPFlowForDiscoveryTraffic(t *testing.T) {
+	cases := []string{
+		"224.0.0.251:5353",
+		"239.255.255.250:1900",
+		"255.255.255.255:1900",
+	}
+	for _, target := range cases {
+		if !shouldDropProbeLocalTUNUDPFlow(target) {
+			t.Fatalf("target=%s should be dropped", target)
+		}
+	}
+	if shouldDropProbeLocalTUNUDPFlow("8.8.8.8:53") {
+		t.Fatal("public dns udp should not be dropped")
 	}
 }
 

@@ -35,10 +35,12 @@ const (
 	probeLocalTUNNetstackQueueSize         = 4096
 	probeLocalTUNNetstackMTU               = 1500
 	probeLocalTUNTCPDialTimeout            = 10 * time.Second
+	probeLocalTUNTCPRelayIdleTimeout       = 5 * time.Minute
 	probeLocalTUNTCPForwarderWindow        = 0
 	probeLocalTUNTCPForwarderInFlight      = 2048
-	probeLocalTUNUDPAssociationTimeout     = 90 * time.Second
-	probeLocalTUNUDPQUICAssociationTimeout = 10 * time.Minute
+	probeLocalTUNUDPAssociationTimeout     = 30 * time.Second
+	probeLocalTUNUDPQUICAssociationTimeout = 2 * time.Minute
+	probeLocalTUNUDPShortAssociationTTL    = 10 * time.Second
 	probeLocalTUNUDPAssociationGCInterval  = 15 * time.Second
 	probeLocalTUNUDPReadBufferSize         = 65535
 	probeLocalTUNUDPZeroReadBackoff        = 10 * time.Millisecond
@@ -77,6 +79,30 @@ type probeLocalTUNReadDeadliner interface {
 	SetReadDeadline(time.Time) error
 }
 
+type probeLocalTUNDeadlineRefreshWriter struct {
+	writer io.Writer
+	src    net.Conn
+	dst    net.Conn
+	idle   time.Duration
+}
+
+func (w *probeLocalTUNDeadlineRefreshWriter) Write(payload []byte) (int, error) {
+	if w == nil || w.writer == nil {
+		return 0, io.ErrClosedPipe
+	}
+	n, err := w.writer.Write(payload)
+	if n > 0 && w.idle > 0 {
+		deadline := time.Now().Add(w.idle)
+		if w.src != nil {
+			_ = w.src.SetReadDeadline(deadline)
+		}
+		if w.dst != nil {
+			_ = w.dst.SetReadDeadline(deadline)
+		}
+	}
+	return n, err
+}
+
 type probeLocalTUNUDPBridge struct {
 	inbound  *gonet.UDPConn
 	outbound io.ReadWriteCloser
@@ -90,6 +116,8 @@ type probeLocalTUNUDPBridge struct {
 
 type probeLocalTUNUDPBridgeMonitorStats struct {
 	Active int64                               `json:"active"`
+	Direct int64                               `json:"direct"`
+	Tunnel int64                               `json:"tunnel"`
 	Opened int64                               `json:"opened"`
 	Closed int64                               `json:"closed"`
 	Items  []probeLocalTUNUDPBridgeMonitorItem `json:"items,omitempty"`
@@ -102,6 +130,7 @@ type probeLocalTUNUDPBridgeMonitorItem struct {
 	Group       string `json:"group,omitempty"`
 	NodeID      string `json:"node_id,omitempty"`
 	Direct      bool   `json:"direct"`
+	TimeoutMS   int64  `json:"timeout_ms"`
 	OpenedAt    string `json:"opened_at,omitempty"`
 	LastActive  string `json:"last_active,omitempty"`
 	AgeMS       int64  `json:"age_ms"`
@@ -215,6 +244,7 @@ type probeLocalTUNUDPBridgeMonitorItemState struct {
 	target   string
 	route    probeLocalTunnelRouteDecision
 	openedAt time.Time
+	timeout  time.Duration
 
 	lastActiveUnix atomic.Int64
 	bytesUp        atomic.Int64
@@ -415,6 +445,12 @@ func (n *probeLocalTUNNetstack) pipeAndCloseTCP(dst net.Conn, src net.Conn, rela
 	if relay != nil {
 		writer = &probeTCPDebugWriter{dst: dst, relay: relay, direction: direction}
 	}
+	if probeLocalTUNTCPRelayIdleTimeout > 0 {
+		deadline := time.Now().Add(probeLocalTUNTCPRelayIdleTimeout)
+		_ = src.SetReadDeadline(deadline)
+		_ = dst.SetReadDeadline(deadline)
+		writer = &probeLocalTUNDeadlineRefreshWriter{writer: writer, src: src, dst: dst, idle: probeLocalTUNTCPRelayIdleTimeout}
+	}
 	_, err := io.Copy(writer, src)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		if relay != nil {
@@ -467,6 +503,9 @@ func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	if err != nil {
 		return
 	}
+	if shouldDropProbeLocalTUNUDPFlow(targetAddr) {
+		return
+	}
 
 	var wq waiter.Queue
 	ep, createErr := req.CreateEndpoint(&wq)
@@ -488,7 +527,7 @@ func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	bridge := &probeLocalTUNUDPBridge{
 		inbound:  inbound,
 		outbound: outbound,
-		timeout:  resolveProbeLocalTUNUDPAssociationTimeout(targetAddr),
+		timeout:  resolveProbeLocalTUNUDPBridgeTimeout(targetAddr, route),
 		target:   targetAddr,
 		route:    route,
 	}
@@ -550,8 +589,8 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 		RouteFingerprint: strings.ToLower(strings.TrimSpace(route.TargetAddr)),
 		NATMode:          probeChainUDPAssociationNATModeDefault,
 		TTLProfile:       resolveProbeLocalTUNUDPTTLProfile(route.TargetAddr),
-		IdleTimeoutMS:    resolveProbeLocalTUNUDPAssociationTimeout(route.TargetAddr).Milliseconds(),
-		GCIntervalMS:     probeChainUDPAssociationEffectiveGCInterval(resolveProbeLocalTUNUDPAssociationTimeout(route.TargetAddr)).Milliseconds(),
+		IdleTimeoutMS:    resolveProbeLocalTUNUDPBridgeTimeout(route.TargetAddr, route).Milliseconds(),
+		GCIntervalMS:     probeChainUDPAssociationEffectiveGCInterval(resolveProbeLocalTUNUDPBridgeTimeout(route.TargetAddr, route)).Milliseconds(),
 		CreatedAtUnixMS:  time.Now().UnixMilli(),
 		SrcIP:            srcIP,
 		SrcPort:          uint16(id.RemotePort),
@@ -582,7 +621,7 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 func (b *probeLocalTUNUDPBridge) start() {
 	probeLocalTUNUDPBridgeMonitorState.active.Add(1)
 	probeLocalTUNUDPBridgeMonitorState.opened.Add(1)
-	b.monitor = beginProbeLocalTUNUDPBridgeMonitorItem(strings.TrimSpace(b.target), b.route)
+	b.monitor = beginProbeLocalTUNUDPBridgeMonitorItem(strings.TrimSpace(b.target), b.route, b.timeout)
 	go b.forwardInboundToOutbound()
 	go b.forwardOutboundToInbound()
 }
@@ -676,6 +715,7 @@ func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorS
 			Group:       strings.TrimSpace(item.route.Group),
 			NodeID:      strings.TrimSpace(item.route.TunnelNodeID),
 			Direct:      item.route.Direct,
+			TimeoutMS:   item.timeout.Milliseconds(),
 			OpenedAt:    item.openedAt.UTC().Format(time.RFC3339),
 			AgeMS:       now.Sub(item.openedAt).Milliseconds(),
 			BytesUp:     item.bytesUp.Load(),
@@ -685,6 +725,11 @@ func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorS
 			lastActiveAt := time.Unix(lastActive, 0).UTC()
 			view.LastActive = lastActiveAt.Format(time.RFC3339)
 			view.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+		}
+		if view.Direct {
+			stats.Direct++
+		} else {
+			stats.Tunnel++
 		}
 		stats.Items = append(stats.Items, view)
 	}
@@ -700,7 +745,7 @@ func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorS
 	return stats
 }
 
-func beginProbeLocalTUNUDPBridgeMonitorItem(target string, route probeLocalTunnelRouteDecision) *probeLocalTUNUDPBridgeMonitorItemState {
+func beginProbeLocalTUNUDPBridgeMonitorItem(target string, route probeLocalTunnelRouteDecision, timeout time.Duration) *probeLocalTUNUDPBridgeMonitorItemState {
 	now := time.Now().UTC()
 	id := "probe-udp-" + strconv.FormatInt(now.UnixNano(), 10) + "-" + strconv.FormatUint(probeLocalTUNUDPBridgeMonitorState.seq.Add(1), 10)
 	item := &probeLocalTUNUDPBridgeMonitorItemState{
@@ -708,6 +753,7 @@ func beginProbeLocalTUNUDPBridgeMonitorItem(target string, route probeLocalTunne
 		target:   strings.TrimSpace(target),
 		route:    route,
 		openedAt: now,
+		timeout:  timeout,
 	}
 	item.lastActiveUnix.Store(now.Unix())
 	probeLocalTUNUDPBridgeMonitorState.mu.Lock()
@@ -822,6 +868,13 @@ func resolveProbeLocalTUNUDPAssociationTimeout(targetAddr string) time.Duration 
 	return probeLocalTUNUDPAssociationTimeout
 }
 
+func resolveProbeLocalTUNUDPBridgeTimeout(targetAddr string, route probeLocalTunnelRouteDecision) time.Duration {
+	if shouldUseProbeLocalTUNUDPShortTTL(targetAddr, route) {
+		return probeLocalTUNUDPShortAssociationTTL
+	}
+	return resolveProbeLocalTUNUDPAssociationTimeout(targetAddr)
+}
+
 func resolveProbeLocalTUNUDPTTLProfile(targetAddr string) string {
 	if isProbeLocalTUNUDPQUICTarget(targetAddr) {
 		return probeChainUDPAssociationTTLProfileQUICStable
@@ -840,6 +893,67 @@ func isProbeLocalTUNUDPQUICTarget(targetAddr string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldUseProbeLocalTUNUDPShortTTL(targetAddr string, route probeLocalTunnelRouteDecision) bool {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return false
+	}
+	cleanPort := strings.TrimSpace(port)
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	ip := net.ParseIP(cleanHost)
+	if cleanPort == "53" || cleanPort == "5353" || cleanPort == "1900" || cleanPort == "7680" {
+		return true
+	}
+	if ip == nil {
+		return false
+	}
+	return route.Direct && isProbeLocalTUNLocalOrDiscoveryIP(ip)
+}
+
+func shouldDropProbeLocalTUNUDPFlow(targetAddr string) bool {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return false
+	}
+	cleanPort := strings.TrimSpace(port)
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	ip := net.ParseIP(cleanHost)
+	if ip == nil {
+		return false
+	}
+	if ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+		return true
+	}
+	if cleanPort == "1900" || cleanPort == "5353" {
+		return true
+	}
+	return false
+}
+
+func isProbeLocalTUNLocalOrDiscoveryIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 10:
+			return true
+		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
+			return true
+		case ip4[0] == 192 && ip4[1] == 168:
+			return true
+		case ip4[0] == 169 && ip4[1] == 254:
+			return true
+		default:
+			return false
+		}
+	}
+	return ip.IsPrivate()
 }
 
 func ensureProbeLocalDirectBypassForRoutedTarget(targetAddr string) error {
