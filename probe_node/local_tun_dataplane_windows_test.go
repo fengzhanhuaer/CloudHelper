@@ -215,3 +215,41 @@ func TestProbeLocalTUNDataPlaneWriteWhenStopped(t *testing.T) {
 		t.Fatal("expected writeProbeLocalTUNPacket error when stopped")
 	}
 }
+
+func TestProbeLocalTUNDataPlaneRunnerHandleInboundPayloadIsSynchronous(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	returned := make(chan struct{})
+
+	runner := &probeLocalTUNDataPlaneRunner{
+		onPacket: func([]byte) {
+			close(started)
+			<-release
+		},
+	}
+
+	go func() {
+		runner.handleInboundPayload([]byte{0x45, 0x00})
+		close(returned)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("packet handler did not start")
+	}
+
+	select {
+	case <-returned:
+		t.Fatal("handleInboundPayload returned before packet handler completed")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleInboundPayload did not return after packet handler completed")
+	}
+}

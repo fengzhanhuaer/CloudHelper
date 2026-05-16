@@ -287,9 +287,7 @@ func (r *probeLocalTUNDataPlaneRunner) readLoop() {
 			r.rxPackets.Add(1)
 			r.rxBytes.Add(uint64(packetSize))
 			_, _, _ = r.releaseReceivePacketProc.Call(r.sessionHandle, packetPtr)
-			if len(payload) > 0 && r.onPacket != nil {
-				go r.onPacket(payload)
-			}
+			r.handleInboundPayload(payload)
 			continue
 		}
 
@@ -317,6 +315,13 @@ func (r *probeLocalTUNDataPlaneRunner) readLoop() {
 			continue
 		}
 	}
+}
+
+func (r *probeLocalTUNDataPlaneRunner) handleInboundPayload(payload []byte) {
+	if len(payload) == 0 || r.onPacket == nil {
+		return
+	}
+	r.onPacket(payload)
 }
 
 func (r *probeLocalTUNDataPlaneRunner) Close() error {

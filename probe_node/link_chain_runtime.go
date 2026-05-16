@@ -2493,8 +2493,11 @@ func loadProbeChainRelayResolveCache(host string, allowStale bool) (dialHost str
 	if entry.ExpiresAt.After(now) {
 		return entry.DialHost, entry.HostHeader, true
 	}
-	if allowStale && entry.StaleUntil.After(now) {
-		return entry.DialHost, entry.HostHeader, true
+	if entry.StaleUntil.After(now) {
+		if allowStale {
+			return entry.DialHost, entry.HostHeader, true
+		}
+		return "", "", false
 	}
 	delete(probeChainRelayResolveCache.items, cleanHost)
 	return "", "", false
