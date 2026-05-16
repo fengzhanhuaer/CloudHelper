@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Probe Node 状态监视</title>
+  <style>
+    :root {
+      --bg-color: #0d1117;
+      --panel-bg: rgba(22, 27, 34, 0.72);
+      --text-primary: #c9d1d9;
+      --text-secondary: #8b949e;
+      --heading: #e6edf3;
+      --accent: #58a6ff;
+      --accent-strong: #1f6feb;
+      --border-soft: rgba(255, 255, 255, 0.12);
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      color: var(--text-primary);
+      background: var(--bg-color);
+      background-image: radial-gradient(circle at 50% 0%, #1f2937 0%, transparent 70%);
+      min-height: 100vh;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    main { max-width: 960px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; color: #fff; }
+    .hint { color: var(--text-secondary); font-size: 13px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    .nav { display:flex; gap:8px; flex-wrap:wrap; }
+    .nav a {
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: #d0d7de;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(139, 148, 158, 0.2);
+    }
+    .nav a.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      border-color: rgba(255,255,255,0.2);
+    }
+    .card {
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 14px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+    }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button {
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: rgba(139, 148, 158, 0.2);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #d0d7de;
+    }
+    .monitor-tabs { display: flex; gap: 6px; margin-top: 12px; border-bottom: 1px solid #30363d; }
+    .monitor-tab {
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      color: var(--text-secondary);
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .monitor-tab.active { color: #fff; border-bottom-color: var(--accent); }
+    .monitor-panel { display: none; margin-top: 14px; }
+    .monitor-panel.active { display: block; }
+    .monitor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .metric {
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 10px;
+      padding: 12px;
+      background: rgba(13,17,23,.42);
+    }
+    .metric-label { color: var(--text-secondary); font-size: 12px; }
+    .metric-value { margin-top: 6px; font-family: Consolas, monospace; font-size: 20px; color: var(--heading); }
+    .monitor-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .monitor-table td {
+      padding: 9px 6px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      vertical-align: top;
+    }
+    .monitor-table td:first-child { color: var(--text-secondary); width: 190px; }
+    .msg { margin-top: 14px; min-height: 20px; font-size: 14px; color: var(--text-secondary); }
+    .msg.error { color: #ff938d; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>状态监视</h1>
+        <p class="hint">代理启用后的 CPU、内存、TUN、连接、runtime 与 DNS/FakeIP 快照。</p>
+      </div>
+      <div class="nav">
+        <a href="/local/panel">首页</a>
+        <a href="/local/proxy">代理状态</a>
+        <a href="/local/dns">DNS 状态</a>
+        <a href="/local/monitor" class="active">状态监视</a>
+        <a href="/local/logs">运行日志</a>
+        <a href="/local/system">系统设置</a>
+      </div>
+    </div>
+
+    <section id="panelMonitor" class="card">
+      <strong>运行负载监视</strong>
+      <p class="hint">数据来自本地内存快照，不写入运行日志。页面每 5 秒刷新一次。</p>
+      <div class="actions">
+        <button id="monitorRefreshBtn" type="button">刷新</button>
+        <button id="monitorAutoRefreshBtn" type="button" class="secondary">暂停自动刷新</button>
+      </div>
+      <div class="monitor-tabs" role="tablist">
+        <button class="monitor-tab active" type="button" data-monitor-tab="summary">概要</button>
+        <button class="monitor-tab" type="button" data-monitor-tab="details">监视数据</button>
+      </div>
+      <div id="monitor-panel-summary" class="monitor-panel active">
+        <div class="monitor-grid">
+          <div class="metric"><div class="metric-label">代理模式</div><div class="metric-value" id="mon-mode">--</div></div>
+          <div class="metric"><div class="metric-label">CPU</div><div class="metric-value" id="mon-cpu">--</div></div>
+          <div class="metric"><div class="metric-label">Goroutine</div><div class="metric-value" id="mon-goroutines">--</div></div>
+          <div class="metric"><div class="metric-label">TCP / UDP</div><div class="metric-value" id="mon-conns">--</div></div>
+          <div class="metric"><div class="metric-label">内存 Heap</div><div class="metric-value" id="mon-heap">--</div></div>
+          <div class="metric"><div class="metric-label">DNS / FakeIP</div><div class="metric-value" id="mon-dns-summary">--</div></div>
+        </div>
+        <p class="hint" id="mon-updated">最后刷新：--</p>
+      </div>
+      <div id="monitor-panel-details" class="monitor-panel">
+        <table class="monitor-table">
+          <tbody>
+            <tr><td>采样原因</td><td id="mon-reason">--</td></tr>
+            <tr><td>运行时长</td><td id="mon-uptime">--</td></tr>
+            <tr><td>Go 调度</td><td id="mon-go">--</td></tr>
+            <tr><td>CPU 累计</td><td id="mon-cpu-total">--</td></tr>
+            <tr><td>内存</td><td id="mon-memory">--</td></tr>
+            <tr><td>TUN 数据面</td><td id="mon-tun">--</td></tr>
+            <tr><td>代理组 runtime</td><td id="mon-groups">--</td></tr>
+            <tr><td>链路 runtime</td><td id="mon-chain">--</td></tr>
+            <tr><td>DNS / FakeIP</td><td id="mon-dns">--</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <p id="message" class="msg"></p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById('message');
+    let autoRefresh = true;
+    let autoRefreshTimer = null;
+
+    function setMessage(text, type) {
+      messageEl.textContent = text || '';
+      messageEl.className = 'msg' + (type ? ' ' + type : '');
+    }
+
+    async function requestJSON(url, options) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
+      if (!res.ok) {
+        const msg = data && data.error ? data.error : ('HTTP ' + res.status);
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const text = value === undefined || value === null || value === '' ? '--' : String(value);
+      el.textContent = text;
+    }
+
+    function formatBool(value, onText, offText) {
+      return value ? onText : offText;
+    }
+
+    function formatSeconds(total) {
+      const seconds = Number(total || 0);
+      if (!Number.isFinite(seconds) || seconds <= 0) return '0s';
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      const parts = [];
+      if (h) parts.push(h + 'h');
+      if (m) parts.push(m + 'm');
+      parts.push(s + 's');
+      return parts.join(' ');
+    }
+
+    function formatMB(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return '--';
+      return n.toFixed(2) + ' MB';
+    }
+
+    function formatCountMap(items) {
+      if (!items || typeof items !== 'object') return '-';
+      const parts = Object.keys(items).sort().map((key) => key + ':' + items[key]);
+      return parts.length ? parts.join(', ') : '-';
+    }
+
+    function switchMonitorTab(name) {
+      document.querySelectorAll('.monitor-tab').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.monitorTab === name);
+      });
+      document.querySelectorAll('.monitor-panel').forEach((panel) => {
+        panel.classList.remove('active');
+      });
+      const panel = document.getElementById('monitor-panel-' + name);
+      if (panel) panel.classList.add('active');
+    }
+
+    function renderMonitor(data) {
+      const memory = data.memory || {};
+      const tun = data.tun || {};
+      const groups = data.group_runtimes || {};
+      const dns = data.dns || {};
+      const cpuText = data.cpu_percent_text && data.cpu_percent_text !== 'unavailable' ? data.cpu_percent_text + '%' : '不可用';
+      setText('mon-mode', formatBool(data.enabled, '已启用 / ' + (data.mode || '-'), '未启用'));
+      setText('mon-cpu', cpuText);
+      setText('mon-goroutines', data.goroutines);
+      setText('mon-conns', 'TCP ' + (data.tcp_active || 0) + ' / UDP ' + (data.udp_associations || 0));
+      setText('mon-heap', formatMB(memory.heap_alloc_mb));
+      setText('mon-dns-summary', 'DNS ' + (dns.cache || 0) + ' / Fake ' + (dns.fake_ip || 0));
+      setText('mon-updated', '最后刷新：' + (data.fetched_at || '--'));
+      setText('mon-reason', data.reason);
+      setText('mon-uptime', formatSeconds(data.uptime_seconds));
+      setText('mon-go', 'GOMAXPROCS=' + (data.gomaxprocs || '-') + ', CPU=' + (data.num_cpu || '-') + ', goroutines=' + (data.goroutines || 0));
+      setText('mon-cpu-total', data.cpu_total_ms === undefined || data.cpu_total_ms === null ? '不可用' : data.cpu_total_ms + ' ms');
+      setText('mon-memory', 'alloc=' + formatMB(memory.alloc_mb) + ', heap=' + formatMB(memory.heap_alloc_mb) + ', inuse=' + formatMB(memory.heap_inuse_mb) + ', objects=' + (memory.heap_objects || 0) + ', gc=' + (memory.num_gc || 0));
+      setText('mon-tun', 'running=' + formatBool(tun.running, 'true', 'false') + ', rx_packets=' + (tun.rx_packets || 0) + ', rx_bytes=' + (tun.rx_bytes || 0));
+      setText('mon-groups', 'total=' + (groups.total || 0) + ', selected=' + (groups.selected || 0) + ', connected=' + (groups.connected || 0) + ', failures=' + (groups.failure_total || 0) + ', statuses=' + formatCountMap(groups.statuses));
+      setText('mon-chain', 'chain_runtimes=' + (data.chain_runtimes || 0) + ', tcp_failures=' + (data.tcp_failures || 0));
+      setText('mon-dns', 'loaded=' + formatBool(dns.loaded, 'true', 'false') + ', service=' + formatBool(dns.service, 'true', 'false') + ', tun_service=' + formatBool(dns.tun_service, 'true', 'false') + ', cache=' + (dns.cache || 0) + ', fake=' + (dns.fake_ip || 0) + ', hints=' + (dns.route_hints || 0) + '/' + (dns.route_ip_hints || 0));
+    }
+
+    async function loadMonitor() {
+      try {
+        const data = await requestJSON('/local/api/proxy/monitor', { method: 'GET' });
+        renderMonitor(data);
+        setMessage('');
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return;
+        }
+        setMessage('读取状态监视失败：' + err.message, 'error');
+      }
+    }
+
+    function syncAutoRefreshTimer() {
+      const btn = document.getElementById('monitorAutoRefreshBtn');
+      btn.textContent = autoRefresh ? '暂停自动刷新' : '恢复自动刷新';
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+      if (autoRefresh) {
+        autoRefreshTimer = setInterval(loadMonitor, 5000);
+      }
+    }
+
+    document.getElementById('monitorRefreshBtn').addEventListener('click', () => {
+      loadMonitor();
+    });
+    document.getElementById('monitorAutoRefreshBtn').addEventListener('click', () => {
+      autoRefresh = !autoRefresh;
+      syncAutoRefreshTimer();
+    });
+    document.querySelectorAll('.monitor-tab').forEach((btn) => {
+      btn.addEventListener('click', () => switchMonitorTab(btn.dataset.monitorTab));
+    });
+
+    loadMonitor();
+    syncAutoRefreshTimer();
+  </script>
+</body>
+</html>

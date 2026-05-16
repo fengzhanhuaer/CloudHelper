@@ -214,6 +214,11 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("proxy/status without session status=%d", proxyStatusResp.Code)
 	}
 
+	proxyMonitorResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/monitor", nil)
+	if proxyMonitorResp.Code != http.StatusUnauthorized {
+		t.Fatalf("proxy/monitor without session status=%d", proxyMonitorResp.Code)
+	}
+
 	logsResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/logs", nil)
 	if logsResp.Code != http.StatusUnauthorized {
 		t.Fatalf("logs without session status=%d", logsResp.Code)
@@ -224,7 +229,7 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("system/upgrade/status without session status=%d", upgradeStatusResp.Code)
 	}
 
-	protectedPagePaths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/system"}
+	protectedPagePaths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system"}
 	for _, path := range protectedPagePaths {
 		pageResp := doProbeLocalRequest(t, mux, http.MethodGet, path, nil)
 		if pageResp.Code != http.StatusFound {
@@ -265,6 +270,24 @@ func TestProbeLocalProxyFlowWithSession(t *testing.T) {
 	}
 	if latencyStatus, _ := proxyPayload["selected_chain_latency_status"].(string); latencyStatus != "" && latencyStatus != "unreachable" {
 		t.Fatalf("proxy latency status=%q", latencyStatus)
+	}
+
+	monitorResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/monitor", nil, sessionCookie)
+	if monitorResp.Code != http.StatusOK {
+		t.Fatalf("proxy/monitor status=%d body=%s", monitorResp.Code, monitorResp.Body.String())
+	}
+	monitorPayload := decodeProbeLocalJSON(t, monitorResp)
+	if monitorPayload["mode"] != probeLocalProxyModeDirect {
+		t.Fatalf("proxy/monitor mode=%v", monitorPayload["mode"])
+	}
+	if _, ok := monitorPayload["goroutines"].(float64); !ok {
+		t.Fatalf("proxy/monitor goroutines type=%T", monitorPayload["goroutines"])
+	}
+	if _, ok := monitorPayload["memory"].(map[string]any); !ok {
+		t.Fatalf("proxy/monitor memory type=%T", monitorPayload["memory"])
+	}
+	if _, ok := monitorPayload["dns"].(map[string]any); !ok {
+		t.Fatalf("proxy/monitor dns type=%T", monitorPayload["dns"])
 	}
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{}, sessionCookie)

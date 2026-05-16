@@ -830,6 +830,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, true)
 	reconcileProbeLocalDNSRuntime()
+	startProbeLocalProxyMonitor()
 	return m.tun, m.proxy, nil
 }
 
@@ -860,6 +861,7 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	m.proxy.UpdatedAt = now
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
 	reconcileProbeLocalDNSRuntime()
+	stopProbeLocalProxyMonitor()
 	if errStopDataPlane != nil {
 		m.tun.LastError = strings.TrimSpace(errStopDataPlane.Error())
 		m.proxy.LastError = m.tun.LastError
@@ -918,12 +920,14 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 		m.proxy.LastError = m.tun.LastError
 		persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
 		reconcileProbeLocalDNSRuntime()
+		stopProbeLocalProxyMonitor()
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 	}
 	m.tun.LastError = ""
 	m.proxy.LastError = ""
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
 	reconcileProbeLocalDNSRuntime()
+	stopProbeLocalProxyMonitor()
 	return m.tun, nil
 }
 
@@ -2265,6 +2269,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/proxy", probeLocalProxyPageHandler)
 	mux.HandleFunc("/local/dns", probeLocalDNSPageHandler)
 	mux.HandleFunc("/local/logs", probeLocalLogsPageHandler)
+	mux.HandleFunc("/local/monitor", probeLocalMonitorPageHandler)
 	mux.HandleFunc("/local/system", probeLocalSystemPageHandler)
 	mux.HandleFunc("/local/api/auth/bootstrap", probeLocalAuthBootstrapHandler)
 	mux.HandleFunc("/local/api/auth/register", probeLocalAuthRegisterHandler)
@@ -2283,6 +2288,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/reject", probeLocalProxyRejectHandler)
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
 	mux.HandleFunc("/local/api/proxy/status/refresh", probeLocalProxyStatusRefreshHandler)
+	mux.HandleFunc("/local/api/proxy/monitor", probeLocalProxyMonitorHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
 	mux.HandleFunc("/local/api/proxy/chains/refresh", probeLocalProxyChainsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/groups", probeLocalProxyGroupsHandler)
@@ -2381,6 +2387,10 @@ func probeLocalDNSPageHandler(w http.ResponseWriter, r *http.Request) {
 
 func probeLocalLogsPageHandler(w http.ResponseWriter, r *http.Request) {
 	serveProbeLocalHTMLPage(w, r, "/local/logs", probeLocalLogsPageHTML)
+}
+
+func probeLocalMonitorPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/monitor", probeLocalMonitorPageHTML)
 }
 
 func probeLocalSystemPageHandler(w http.ResponseWriter, r *http.Request) {
@@ -3123,6 +3133,17 @@ func probeLocalProxyStatusRefreshHandler(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, payload)
 }
 
+func probeLocalProxyMonitorHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, currentProbeLocalProxyMonitorSnapshot())
+}
+
 func probeLocalProxyChainsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3519,6 +3540,7 @@ func resetProbeLocalAuthManagerForTest() {
 }
 
 func resetProbeLocalControlStateForTest() {
+	resetProbeLocalProxyMonitorForTest()
 	clearProbeLocalTUNInstallObservation()
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
 	resetProbeLocalProxyViewGroupRuntimeSnapshots()

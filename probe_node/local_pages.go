@@ -18,6 +18,9 @@ var (
 	//go:embed local_pages/logs.html
 	probeLocalLogsPageHTML string
 
+	//go:embed local_pages/monitor.html
+	probeLocalMonitorPageHTML string
+
 	//go:embed local_pages/system.html
 	probeLocalSystemPageHTML string
 )

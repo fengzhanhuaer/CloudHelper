@@ -61,6 +61,12 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tile-system\"") || !strings.Contains(body, "href=\"/local/system\"") {
 		t.Fatalf("panel should contain system tile")
 	}
+	if !strings.Contains(body, "id=\"tile-monitor\"") || !strings.Contains(body, "href=\"/local/monitor\"") {
+		t.Fatalf("panel should contain proxy monitor tile")
+	}
+	if strings.Contains(body, "id=\"monitor-panel-details\"") || strings.Contains(body, "/local/api/proxy/monitor") {
+		t.Fatalf("panel should not inline monitor page details")
+	}
 	if !strings.Contains(body, "当前账号") || !strings.Contains(body, "/local/api/auth/session") {
 		t.Fatalf("panel should contain local session summary")
 	}
@@ -119,6 +125,17 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelSystem\""},
 		},
 		{
+			path: "/local/monitor",
+			contains: []string{
+				"<title>Probe Node 状态监视</title>",
+				"id=\"panelMonitor\"",
+				"id=\"monitor-panel-details\"",
+				"/local/api/proxy/monitor",
+				"监视数据",
+			},
+			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
+		},
+		{
 			path: "/local/system",
 			contains: []string{
 				"<title>Probe Node 系统设置</title>",
@@ -158,7 +175,7 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 
 func TestProbeLocalPanelMethodNotAllowed(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
-	paths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/system"}
+	paths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system"}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
 			resp := doProbeLocalRequest(t, mux, http.MethodPost, path, map[string]any{})
