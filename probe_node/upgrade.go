@@ -422,58 +422,53 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 
 	downloadOnce := func(offset int64) (int64, error) {
 		start := time.Now()
-		if mode == "proxy" {
-			const chunkSize = 512 * 1024
-			resp, err := callProbeControllerRPC(ctx, probeControllerRPCRequest{
-				Action: "proxy_download_chunk",
-				URL:    assetURL,
-				Offset: offset,
-				Limit:  chunkSize,
-			})
-			if err != nil {
-				return 0, err
-			}
-			chunk, err := probeControllerRPCDecodeChunk(resp)
-			if err != nil {
-				return 0, err
-			}
-			truncate := offset == 0
-			f, currentSize, err := openPartFile(truncate)
-			if err != nil {
-				return 0, err
-			}
-			writtenN, writeErr := f.Write(chunk)
-			closeErr := f.Close()
-			if writeErr != nil {
-				if closeErr != nil {
-					return 0, errors.Join(writeErr, closeErr)
-				}
-				return 0, writeErr
-			}
-			if closeErr != nil {
-				return 0, closeErr
-			}
-			written := int64(writtenN)
-			finalSize := currentSize + written
-			if truncate {
-				finalSize = written
-			}
-			if resp.EOF {
-				if err := os.Rename(partPath, output); err != nil {
-					return 0, err
-				}
-				log.Printf("probe upgrade download chunk complete: mode=%s status=%d offset=%d total=%d elapsed=%s", mode, resp.StatusCode, offset, finalSize, time.Since(start).String())
-				return 0, nil
-			}
-			log.Printf("probe upgrade download chunk complete: mode=%s status=%d offset=%d total=%d elapsed=%s", mode, resp.StatusCode, offset, finalSize, time.Since(start).String())
-			return finalSize, nil
-		}
 		var (
 			reader     io.ReadCloser
 			statusCode int
 			total      int64 = -1
 		)
-		if mode != "proxy" {
+		if mode == "proxy" {
+			requestURL, err := buildProbeUpgradeProxyDownloadURL(controllerBase, assetURL)
+			if err != nil {
+				return 0, err
+			}
+			log.Printf("probe upgrade asset download via controller proxy: %s offset=%d", safeURLForLog(requestURL), offset)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+			if err != nil {
+				return 0, err
+			}
+			for key, value := range buildProbeAuthHeaders(identity) {
+				req.Header.Set(key, value)
+			}
+			req.Header.Set("Accept", "application/octet-stream")
+			req.Header.Set("User-Agent", "cloudhelper-probe-node")
+			if offset > 0 {
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Printf("warning: probe upgrade proxy download request failed: elapsed=%s offset=%d err=%v", time.Since(start).String(), offset, err)
+				return 0, err
+			}
+			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+				resp.Body.Close()
+				if err := os.Rename(partPath, output); err == nil {
+					return 0, nil
+				}
+				return 0, fmt.Errorf("download failed: %d", resp.StatusCode)
+			}
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+				resp.Body.Close()
+				return 0, fmt.Errorf("download failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+			reader = resp.Body
+			statusCode = resp.StatusCode
+			total = resp.ContentLength
+			if total >= 0 && statusCode == http.StatusPartialContent && offset > 0 {
+				total += offset
+			}
+		} else {
 			log.Printf("probe upgrade asset download direct: %s offset=%d", safeURLForLog(assetURL), offset)
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
 			if err != nil {
@@ -500,8 +495,6 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			if total >= 0 && statusCode == http.StatusPartialContent && offset > 0 {
 				total += offset
 			}
-		} else {
-			return 0, errors.New("proxy mode download channel is unavailable")
 		}
 		defer reader.Close()
 
@@ -565,6 +558,19 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		}
 		resumeOffset = nextOffset
 	}
+}
+
+func buildProbeUpgradeProxyDownloadURL(controllerBase string, assetURL string) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(controllerBase), "/")
+	if base == "" {
+		return "", errors.New("controller base url is empty")
+	}
+	if strings.TrimSpace(assetURL) == "" {
+		return "", errors.New("asset url is empty")
+	}
+	query := url.Values{}
+	query.Set("url", strings.TrimSpace(assetURL))
+	return base + "/api/probe/proxy/download?" + query.Encode(), nil
 }
 
 func probeAuthedGet(ctx context.Context, requestURL string, identity nodeIdentity) ([]byte, error) {

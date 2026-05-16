@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -289,5 +290,54 @@ func TestDownloadProbeAssetResumeDirect(t *testing.T) {
 	}
 	if _, err := os.Stat(output + ".part"); !os.IsNotExist(err) {
 		t.Fatalf("expected part file removed, got err=%v", err)
+	}
+}
+
+func TestDownloadProbeAssetProxyStreamsThroughController(t *testing.T) {
+	partial := []byte("hello ")
+	remaining := []byte("proxy")
+	var gotPath string
+	var gotRange string
+	var gotNodeID string
+	var gotURL string
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotRange = r.Header.Get("Range")
+		gotNodeID = r.Header.Get("X-Probe-Node-Id")
+		gotURL = r.URL.Query().Get("url")
+		w.Header().Set("Content-Length", strconv.Itoa(len(remaining)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(remaining)
+	}))
+	defer controller.Close()
+
+	dir := t.TempDir()
+	output := filepath.Join(dir, "probe-node.bin")
+	if err := os.WriteFile(output+".part", partial, 0o644); err != nil {
+		t.Fatalf("write part file: %v", err)
+	}
+
+	assetURL := "https://github.com/example/repo/releases/download/v1/probe-node"
+	if err := downloadProbeAsset(t.Context(), "proxy", assetURL, controller.URL, nodeIdentity{NodeID: "9", Secret: "secret-9"}, output); err != nil {
+		t.Fatalf("downloadProbeAsset returned error: %v", err)
+	}
+	if gotPath != "/api/probe/proxy/download" {
+		t.Fatalf("proxy path=%q", gotPath)
+	}
+	if gotRange != "bytes=6-" {
+		t.Fatalf("range=%q", gotRange)
+	}
+	if gotNodeID != "9" {
+		t.Fatalf("node id header=%q", gotNodeID)
+	}
+	if gotURL != assetURL {
+		t.Fatalf("proxied url=%q want=%q", gotURL, assetURL)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != "hello proxy" {
+		t.Fatalf("unexpected output content: %q", string(got))
 	}
 }

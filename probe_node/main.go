@@ -619,16 +619,6 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 	if err := writeProbeStreamJSON(stream, encoder, writeMu, payload); err != nil {
 		return err
 	}
-	log.Printf(
-		"probe report sent: node_id=%s ipv4=%d ipv6=%d cpu=%.2f%% mem=%.2f%% disk=%.2f%% swap=%.2f%%",
-		identity.NodeID,
-		len(ipv4),
-		len(ipv6),
-		system.CPUPercent,
-		system.MemoryUsedPercent,
-		system.DiskUsedPercent,
-		system.SwapUsedPercent,
-	)
 	return nil
 }
 
