@@ -406,6 +406,67 @@ func ensureProbeLocalProxyBootstrapDirectBypass(extraSelectedChainIDs ...string)
 	return nil
 }
 
+func shouldEnsureProbeLocalProxySelectedChainDirectBypass(selectedChainID string) (bool, error) {
+	chainID, err := normalizeProbeLocalSelectedChainID(selectedChainID)
+	if err != nil {
+		return false, err
+	}
+	if chainID == "" {
+		return false, nil
+	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range state.Groups {
+		if !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") {
+			continue
+		}
+		existingChainID := firstNonEmpty(
+			strings.TrimSpace(entry.SelectedChainID),
+			mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID),
+		)
+		if strings.EqualFold(strings.TrimSpace(existingChainID), chainID) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func ensureProbeLocalProxySelectedChainDirectBypass(selectedChainID string) error {
+	chainID, err := normalizeProbeLocalSelectedChainID(selectedChainID)
+	if err != nil {
+		return err
+	}
+	if chainID == "" {
+		return nil
+	}
+	items, err := loadProbeLocalProxyChainItems()
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if !strings.EqualFold(strings.TrimSpace(item.ChainID), chainID) {
+			continue
+		}
+		targets, err := resolveProbeLocalExplicitBypassTargetsForChain(item)
+		if err != nil {
+			return err
+		}
+		expandedTargets, err := expandProbeLocalBootstrapBypassTargets(targets)
+		if err != nil {
+			return err
+		}
+		for _, target := range expandedTargets {
+			if err := probeLocalEnsureExplicitDirectBypass(target); err != nil {
+				return fmt.Errorf("ensure selected chain direct bypass failed: target=%s err=%w", strings.TrimSpace(target), err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("selected chain not found for bypass prewarm: %s", chainID)
+}
+
 func lookupProbeLocalIPv4ForBypass(host string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -2672,6 +2733,19 @@ func probeLocalProxySelectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	selectedChainID := mustProbeLocalSelectedChainIDFromLegacy(tunnelNodeID)
+	if selectedChainID != "" && isProbeLocalProxyTunnelModeEnabled() {
+		shouldEnsure, ensureErr := shouldEnsureProbeLocalProxySelectedChainDirectBypass(selectedChainID)
+		if ensureErr != nil {
+			writeProbeLocalError(w, ensureErr)
+			return
+		}
+		if shouldEnsure {
+			if ensureErr := ensureProbeLocalProxySelectedChainDirectBypass(selectedChainID); ensureErr != nil {
+				writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(ensureErr.Error())})
+				return
+			}
+		}
+	}
 	if selectedChainID != "" {
 		syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
 	}

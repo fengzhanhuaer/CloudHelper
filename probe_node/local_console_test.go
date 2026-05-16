@@ -897,6 +897,70 @@ func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t 
 	}
 }
 
+func TestProbeLocalProxySelectedChainDirectBypassPrewarmIsScoped(t *testing.T) {
+	setupProbeLocalConsoleTest(t)
+
+	if err := persistProbeLocalProxyStateFile(probeLocalProxyStateFile{
+		Version:   1,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Groups: []probeLocalProxyStateGroupEntry{
+			{Group: "default", Action: "tunnel", SelectedChainID: "chain-old", TunnelNodeID: "chain:chain-old", RuntimeStatus: "online"},
+		},
+	}); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+	if shouldEnsure, err := shouldEnsureProbeLocalProxySelectedChainDirectBypass("chain-old"); err != nil || shouldEnsure {
+		t.Fatalf("existing chain should not need bypass: should=%v err=%v", shouldEnsure, err)
+	}
+	if shouldEnsure, err := shouldEnsureProbeLocalProxySelectedChainDirectBypass("chain-new"); err != nil || !shouldEnsure {
+		t.Fatalf("new chain should need bypass: should=%v err=%v", shouldEnsure, err)
+	}
+
+	proxyChainPath, err := resolveProbeLocalProxyChainPath()
+	if err != nil {
+		t.Fatalf("resolve proxy_chain path failed: %v", err)
+	}
+	proxyChainPayload := `{
+	  "updated_at": "2026-05-15T00:00:00Z",
+	  "items": [
+	    {
+	      "chain_id": "chain-new",
+	      "chain_type": "proxy_chain",
+	      "name": "New Chain",
+	      "secret": "secret-new",
+	      "entry_node_id": "10",
+	      "exit_node_id": "10",
+	      "link_layer": "http3",
+	      "hop_configs": [
+	        {"node_no": 10, "relay_host": "entry-new.example.com", "external_port": 16030, "listen_port": 16030, "link_layer": "http3"}
+	      ]
+	    }
+	  ]
+	}`
+	if err := os.WriteFile(proxyChainPath, []byte(proxyChainPayload), 0o644); err != nil {
+		t.Fatalf("write proxy_chain file failed: %v", err)
+	}
+
+	bypassTargets := make([]string, 0, 1)
+	probeLocalLookupIPv4ForBypass = func(host string) ([]string, error) {
+		if strings.TrimSpace(host) != "entry-new.example.com" {
+			return nil, fmt.Errorf("unexpected host lookup: %s", host)
+		}
+		return []string{"203.0.113.30"}, nil
+	}
+	probeLocalEnsureExplicitDirectBypass = func(target string) error {
+		bypassTargets = append(bypassTargets, strings.TrimSpace(target))
+		return nil
+	}
+
+	if err := ensureProbeLocalProxySelectedChainDirectBypass("chain-new"); err != nil {
+		t.Fatalf("ensure selected chain bypass failed: %v", err)
+	}
+	if len(bypassTargets) != 1 || bypassTargets[0] != "203.0.113.30:16030" {
+		t.Fatalf("bypass targets=%v", bypassTargets)
+	}
+}
+
 func TestProbeLocalProxyEnableRejectsUnknownGroup(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

@@ -2241,7 +2241,7 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 		closeTransport = func() error { return transport.Close() }
 	case "http2":
 		transport := &http.Transport{
-			Proxy:             http.ProxyFromEnvironment,
+			Proxy:             nil,
 			ForceAttemptHTTP2: true,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
@@ -2256,7 +2256,7 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 		}
 	default:
 		transport := &http.Transport{
-			Proxy:             http.ProxyFromEnvironment,
+			Proxy:             nil,
 			ForceAttemptHTTP2: false,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
@@ -2277,7 +2277,7 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 		cancel()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
-		return nil, err
+		return nil, wrapProbeChainRelayDialError(layer, relayDialHost, relayPort, err)
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
@@ -2299,6 +2299,30 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 			return nil
 		},
 	}, nil
+}
+
+func wrapProbeChainRelayDialError(layer string, relayDialHost string, relayPort int, err error) error {
+	if err == nil {
+		return nil
+	}
+	if normalizeProbeChainLinkLayer(layer) != "http3" || !isProbeChainRelayUDPSocketResourceError(err) {
+		return err
+	}
+	return fmt.Errorf(
+		"probe relay http3 udp socket unavailable: relay=%s:%d note=each_proxy_group_uses_independent_quic_connection err=%w",
+		strings.TrimSpace(relayDialHost),
+		relayPort,
+		err,
+	)
+}
+
+func isProbeChainRelayUDPSocketResourceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "listen udp") &&
+		(strings.Contains(text, "buffer space") || strings.Contains(text, "queue was full"))
 }
 
 func (a probeChainRelayNetAddr) Network() string {

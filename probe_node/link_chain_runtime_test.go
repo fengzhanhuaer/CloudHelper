@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -171,6 +172,24 @@ func TestNextProbeChainListenRetryBackoff(t *testing.T) {
 	}
 	if got := nextProbeChainListenRetryBackoff(probeChainPortForwardListenRetryMaxBackoff * 2); got != probeChainPortForwardListenRetryMaxBackoff {
 		t.Fatalf("unexpected backoff over cap: %s", got)
+	}
+}
+
+func TestWrapProbeChainRelayDialErrorForHTTP3UDPSocketResource(t *testing.T) {
+	baseErr := errors.New("Post \"https://69.63.223.88:16030/api/node/chain/relay?chain_id=5\": listen udp :0: bind: An operation on a socket could not be performed because the system lacked sufficient buffer space or because a queue was full.")
+	err := wrapProbeChainRelayDialError("http3", "69.63.223.88", 16030, baseErr)
+	if err == nil {
+		t.Fatalf("expected wrapped error")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "http3 udp socket unavailable") || !strings.Contains(text, "each_proxy_group_uses_independent_quic_connection") {
+		t.Fatalf("unexpected wrapped error: %v", err)
+	}
+	if !errors.Is(err, baseErr) {
+		t.Fatalf("wrapped error should keep base error: %v", err)
+	}
+	if got := wrapProbeChainRelayDialError("http2", "69.63.223.88", 16030, baseErr); got != baseErr {
+		t.Fatalf("http2 error should not be wrapped: %v", got)
 	}
 }
 
