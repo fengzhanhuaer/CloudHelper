@@ -46,7 +46,6 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/ping", corsMiddleware(requireHTTPSMiddleware(authRequiredMiddleware(PingHandler))))
 	mux.HandleFunc("/api/auth/nonce", corsMiddleware(requireHTTPSMiddleware(NonceHandler)))
 	mux.HandleFunc("/api/auth/login", corsMiddleware(requireHTTPSMiddleware(LoginHandler)))
-	mux.HandleFunc("/api/admin/ws", AdminWSHandler)
 	mux.HandleFunc("/api/probe/proxy/github/latest", ProbeProxyGitHubLatestHandler)
 	mux.HandleFunc("/api/probe/proxy/download", ProbeProxyDownloadHandler)
 	mux.HandleFunc("/api/probe/proxy/probe-node/install-script", ProbeProxyInstallScriptHandler)

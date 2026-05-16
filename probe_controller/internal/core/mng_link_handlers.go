@@ -27,7 +27,8 @@ func mngLinkUsersHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	mngLinkDispatchAction(w, r, "admin.probe.link.users.get", nil)
+	result, err := getMngProbeLinkUsers()
+	writeMngLinkResult(w, result, err)
 }
 
 func mngLinkUserPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +46,8 @@ func mngLinkUserPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		payload = raw
 	}
-	mngLinkDispatchAction(w, r, "admin.probe.link.user.public_key.get", payload)
+	result, err := getMngProbeLinkUserPublicKey(payload)
+	writeMngLinkResult(w, result, err)
 }
 
 func mngLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +55,8 @@ func mngLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	mngLinkDispatchAction(w, r, "admin.probe.link.chains.get", nil)
+	result, err := listMngProbeLinkChains()
+	writeMngLinkResult(w, result, err)
 }
 
 func mngLinkNodeDomainsHandler(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +87,8 @@ func mngLinkChainUpsertHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
-	mngLinkDispatchAction(w, r, "admin.probe.link.chain.upsert", payload)
+	result, err := upsertMngProbeLinkChain(payload, controllerBaseURLFromRequest(r))
+	writeMngLinkResult(w, result, err)
 }
 
 func mngLinkChainDeleteHandler(w http.ResponseWriter, r *http.Request) {
@@ -97,16 +101,8 @@ func mngLinkChainDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
-	mngLinkDispatchAction(w, r, "admin.probe.link.chain.delete", payload)
-}
-
-func mngLinkDispatchAction(w http.ResponseWriter, r *http.Request, action string, payload json.RawMessage) {
-	result, err := handleAdminWSAction(action, payload, controllerBaseURLFromRequest(r))
-	if err != nil {
-		writeMngLinkError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+	result, err := deleteMngProbeLinkChain(payload)
+	writeMngLinkResult(w, result, err)
 }
 
 func readMngRawJSONPayload(r *http.Request) (json.RawMessage, error) {
@@ -152,4 +148,12 @@ func writeMngLinkError(w http.ResponseWriter, err error) {
 		status = http.StatusInternalServerError
 	}
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func writeMngLinkResult(w http.ResponseWriter, result map[string]interface{}, err error) {
+	if err != nil {
+		writeMngLinkError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }

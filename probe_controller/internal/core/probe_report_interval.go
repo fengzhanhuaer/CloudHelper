@@ -13,20 +13,18 @@ const (
 )
 
 type probeReportIntervalState struct {
-	mu               sync.Mutex
-	defaultSec       int
-	overrideSec      int
-	overrideExpires  time.Time
-	activeAdminConns int
-	expireTimer      *time.Timer
+	mu              sync.Mutex
+	defaultSec      int
+	overrideSec     int
+	overrideExpires time.Time
+	expireTimer     *time.Timer
 }
 
 type probeReportIntervalSnapshot struct {
-	DefaultSec             int    `json:"default_sec"`
-	CurrentSec             int    `json:"current_sec"`
-	OverrideSec            int    `json:"override_sec"`
-	OverrideExpiresAt      string `json:"override_expires_at,omitempty"`
-	ActiveAdminConnections int    `json:"active_admin_connections"`
+	DefaultSec        int    `json:"default_sec"`
+	CurrentSec        int    `json:"current_sec"`
+	OverrideSec       int    `json:"override_sec"`
+	OverrideExpiresAt string `json:"override_expires_at,omitempty"`
 }
 
 var probeReportIntervalCtl = &probeReportIntervalState{defaultSec: defaultProbeReportIntervalSec}
@@ -70,10 +68,9 @@ func getProbeReportIntervalSnapshot() probeReportIntervalSnapshot {
 	probeReportIntervalCtl.expireIfNeededLocked(now)
 
 	snapshot := probeReportIntervalSnapshot{
-		DefaultSec:             probeReportIntervalCtl.defaultSec,
-		CurrentSec:             probeReportIntervalCtl.defaultSec,
-		OverrideSec:            0,
-		ActiveAdminConnections: probeReportIntervalCtl.activeAdminConns,
+		DefaultSec:  probeReportIntervalCtl.defaultSec,
+		CurrentSec:  probeReportIntervalCtl.defaultSec,
+		OverrideSec: 0,
 	}
 	if probeReportIntervalCtl.overrideSec > 0 {
 		snapshot.CurrentSec = probeReportIntervalCtl.overrideSec
@@ -91,20 +88,15 @@ func setTemporaryProbeReportInterval(intervalSec int) (probeReportIntervalSnapsh
 	probeReportIntervalCtl.mu.Lock()
 	now := time.Now()
 	probeReportIntervalCtl.expireIfNeededLocked(now)
-	if probeReportIntervalCtl.activeAdminConns <= 0 {
-		probeReportIntervalCtl.mu.Unlock()
-		return probeReportIntervalSnapshot{}, ErrBadRequest("no active manager websocket connection")
-	}
 
 	probeReportIntervalCtl.overrideSec = intervalSec
 	probeReportIntervalCtl.overrideExpires = now.Add(temporaryIntervalTTL)
 	probeReportIntervalCtl.resetTimerLocked()
 	snapshot := probeReportIntervalSnapshot{
-		DefaultSec:             probeReportIntervalCtl.defaultSec,
-		CurrentSec:             probeReportIntervalCtl.overrideSec,
-		OverrideSec:            probeReportIntervalCtl.overrideSec,
-		OverrideExpiresAt:      probeReportIntervalCtl.overrideExpires.UTC().Format(time.RFC3339),
-		ActiveAdminConnections: probeReportIntervalCtl.activeAdminConns,
+		DefaultSec:        probeReportIntervalCtl.defaultSec,
+		CurrentSec:        probeReportIntervalCtl.overrideSec,
+		OverrideSec:       probeReportIntervalCtl.overrideSec,
+		OverrideExpiresAt: probeReportIntervalCtl.overrideExpires.UTC().Format(time.RFC3339),
 	}
 	probeReportIntervalCtl.mu.Unlock()
 
@@ -112,34 +104,11 @@ func setTemporaryProbeReportInterval(intervalSec int) (probeReportIntervalSnapsh
 	return snapshot, nil
 }
 
-func onAdminWSAuthenticated() {
-	probeReportIntervalCtl.mu.Lock()
-	probeReportIntervalCtl.activeAdminConns++
-	probeReportIntervalCtl.mu.Unlock()
-}
-
-func onAdminWSDisconnected() {
-	probeReportIntervalCtl.mu.Lock()
-	if probeReportIntervalCtl.activeAdminConns > 0 {
-		probeReportIntervalCtl.activeAdminConns--
-	}
-	shouldFallback := probeReportIntervalCtl.activeAdminConns == 0 && probeReportIntervalCtl.overrideSec > 0
-	defaultSec := probeReportIntervalCtl.defaultSec
-	if shouldFallback {
-		probeReportIntervalCtl.clearOverrideLocked()
-	}
-	probeReportIntervalCtl.mu.Unlock()
-
-	if shouldFallback {
-		broadcastProbeReportInterval(defaultSec)
-	}
-}
-
 func (s *probeReportIntervalState) expireIfNeededLocked(now time.Time) {
 	if s.overrideSec <= 0 {
 		return
 	}
-	if s.activeAdminConns <= 0 || now.After(s.overrideExpires) {
+	if now.After(s.overrideExpires) {
 		s.clearOverrideLocked()
 	}
 }

@@ -223,60 +223,6 @@ func TestAdminWSStatusRouteRequiresHTTPS(t *testing.T) {
 	}
 }
 
-func TestAdminWSStatusRouteConnectSuccess(t *testing.T) {
-	authManager := newTestAuthManager(t)
-	core.SetAuthManagerForTest(authManager)
-	core.SetServerStartTimeForTest(time.Now().Add(-1 * time.Minute))
-	authManager.AddSessionForTest("tok-ws-ok", time.Now().Add(2*time.Minute))
-
-	server := httptest.NewServer(core.NewMux())
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/admin/ws"
-	header := http.Header{}
-	header.Set("X-Forwarded-Proto", "https")
-
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
-	if err != nil {
-		t.Fatalf("failed to connect websocket: %v", err)
-	}
-	defer conn.Close()
-
-	if err := conn.WriteJSON(map[string]interface{}{
-		"id":     "auth-1",
-		"action": "auth.session",
-		"payload": map[string]string{
-			"token": "tok-ws-ok",
-		},
-	}); err != nil {
-		t.Fatalf("failed to send admin ws auth request: %v", err)
-	}
-
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var authResp map[string]interface{}
-	if err := conn.ReadJSON(&authResp); err != nil {
-		t.Fatalf("failed to read admin ws auth response: %v", err)
-	}
-	if ok, _ := authResp["ok"].(bool); !ok {
-		t.Fatalf("expected admin ws auth ok=true, got %+v", authResp)
-	}
-
-	var msg map[string]interface{}
-	if err := conn.ReadJSON(&msg); err != nil {
-		t.Fatalf("failed to read admin websocket status payload: %v", err)
-	}
-	if msg["type"] != "status" {
-		t.Fatalf("expected websocket message type=status, got %v", msg["type"])
-	}
-	data, ok := msg["data"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected websocket payload to contain data object, got %+v", msg)
-	}
-	if _, ok := data["uptime"]; !ok {
-		t.Fatalf("expected websocket data payload to contain uptime")
-	}
-}
-
 func TestNetworkTunnelWSRouteRequiresAuth(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
