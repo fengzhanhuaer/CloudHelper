@@ -423,6 +423,20 @@ func (rt *probeLocalTUNGroupRuntime) markFailureLocked(err error, status string)
 	return failureErr
 }
 
+func (rt *probeLocalTUNGroupRuntime) markStreamFailureLocked(session *yamux.Session, err error) error {
+	if rt == nil {
+		if err != nil {
+			return err
+		}
+		return errors.New("group runtime failure")
+	}
+	if session != nil && session.IsClosed() && rt.session == session {
+		rt.closeLocked()
+		return rt.markFailureLocked(err, "disconnected")
+	}
+	return rt.markFailureLocked(err, "degraded")
+}
+
 func (rt *probeLocalTUNGroupRuntime) ensureConnectedLocked() error {
 	if rt == nil {
 		return errors.New("group runtime is nil")
@@ -484,13 +498,18 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		}
 		stream, err := session.Open()
 		if err != nil {
+			sessionClosed := session.IsClosed()
 			rt.mu.Lock()
 			if rt.session == session {
-				rt.closeLocked()
-				_ = rt.markFailureLocked(err, "disconnected")
+				if sessionClosed {
+					rt.closeLocked()
+					_ = rt.markFailureLocked(err, "disconnected")
+				} else {
+					_ = rt.markFailureLocked(err, "degraded")
+				}
 			}
 			rt.mu.Unlock()
-			if attempt == 0 {
+			if attempt == 0 && sessionClosed {
 				continue
 			}
 			return nil, err
@@ -505,7 +524,7 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		if err := json.NewEncoder(stream).Encode(request); err != nil {
 			_ = stream.Close()
 			rt.mu.Lock()
-			_ = rt.markFailureLocked(err, "disconnected")
+			_ = rt.markStreamFailureLocked(session, err)
 			rt.mu.Unlock()
 			return nil, err
 		}
@@ -515,7 +534,7 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		if err := json.NewDecoder(stream).Decode(&response); err != nil {
 			_ = stream.Close()
 			rt.mu.Lock()
-			_ = rt.markFailureLocked(err, "disconnected")
+			_ = rt.markStreamFailureLocked(session, err)
 			rt.mu.Unlock()
 			return nil, err
 		}

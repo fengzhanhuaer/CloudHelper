@@ -43,6 +43,9 @@ func resolveProbeLocalProxyRouteDecisionByIP(ipText string) probeLocalDNSRouteDe
 	if ip == nil {
 		return decision
 	}
+	if hintedDecision, ok := lookupProbeLocalDNSRouteHintByIP(ip.String()); ok {
+		return hintedDecision
+	}
 	groupFile, err := loadProbeLocalProxyGroupFile()
 	if err != nil {
 		return decision

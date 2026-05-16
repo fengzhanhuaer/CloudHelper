@@ -127,6 +127,44 @@ func TestResolveProbeLocalProxyRouteDecisionByIPCidrTunnel(t *testing.T) {
 	}
 }
 
+func TestResolveProbeLocalProxyRouteDecisionByIPPrefersDNSDirectHint(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "direct-site", Rules: []string{"domain_suffix:example.com"}},
+		{Group: "cdn-cidr", Rules: []string{"cidr:203.0.113.0/24"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "direct-site", Action: "direct"},
+		{Group: "cdn-cidr", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	domainDecision := resolveProbeLocalProxyRouteDecisionByDomain("www.example.com")
+	if domainDecision.Group != "direct-site" || domainDecision.Action != "direct" {
+		t.Fatalf("domain decision=%+v", domainDecision)
+	}
+	storeProbeLocalDNSRouteHints("www.example.com", []string{"203.0.113.10"}, domainDecision)
+
+	ipDecision := resolveProbeLocalProxyRouteDecisionByIP("203.0.113.10")
+	if ipDecision.Group != "direct-site" || ipDecision.Action != "direct" {
+		t.Fatalf("ip decision should prefer dns direct hint, got %+v", ipDecision)
+	}
+	if ipDecision.SelectedChainID != "" || ipDecision.TunnelNodeID != "" {
+		t.Fatalf("direct hint should not carry tunnel chain: %+v", ipDecision)
+	}
+}
+
 func TestProbeLocalTunnelCIDRRulesOnlyIncludesTunnelGroups(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 

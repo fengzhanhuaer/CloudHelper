@@ -10,6 +10,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 func TestParseProbeLocalTUNIPv4TargetTCP(t *testing.T) {
@@ -284,6 +287,212 @@ func TestProbeLocalTUNSimplePacketStackCloseReleasesBypass(t *testing.T) {
 	}
 	if releaseCalls != 1 {
 		t.Fatalf("releaseCalls=%d", releaseCalls)
+	}
+}
+
+func TestReleaseProbeLocalManagedDirectBypassRoutesPreservesBootstrapBypass(t *testing.T) {
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+
+	acquireCalls := 0
+	releaseCalls := 0
+	probeLocalAcquireDirectBypassRoute = func(host string) (func(), error) {
+		acquireCalls++
+		if host != "1.2.3.4" {
+			t.Fatalf("host=%q", host)
+		}
+		return func() {}, nil
+	}
+	probeLocalReleaseDirectBypassRoute = func(host string) {
+		releaseCalls++
+		if host != "1.2.3.4" {
+			t.Fatalf("host=%q", host)
+		}
+	}
+
+	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
+		t.Fatalf("ensure bootstrap bypass failed: %v", err)
+	}
+	if err := ensureProbeLocalDirectBypassForRoutedTarget("1.2.3.4:8443"); err != nil {
+		t.Fatalf("ensure managed bypass failed: %v", err)
+	}
+	if acquireCalls != 1 {
+		t.Fatalf("acquireCalls=%d", acquireCalls)
+	}
+	releaseProbeLocalManagedDirectBypassRoutes()
+	if releaseCalls != 0 {
+		t.Fatalf("managed release should preserve bootstrap bypass, releaseCalls=%d", releaseCalls)
+	}
+	releaseProbeLocalDirectBypassForHost("1.2.3.4")
+	if releaseCalls != 1 {
+		t.Fatalf("releaseCalls=%d", releaseCalls)
+	}
+}
+
+func TestOpenProbeLocalTUNOutboundTCPDirectEnsuresBypass(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+	probeLocalControl.mu.Lock()
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+	t.Cleanup(func() {
+		probeLocalControl.mu.Lock()
+		probeLocalControl.proxy.Enabled = false
+		probeLocalControl.proxy.Mode = probeLocalProxyModeDirect
+		probeLocalControl.mu.Unlock()
+	})
+
+	acquired := make([]string, 0, 1)
+	released := make([]string, 0, 1)
+	probeLocalAcquireDirectBypassRoute = func(host string) (func(), error) {
+		acquired = append(acquired, host)
+		return func() {}, nil
+	}
+	probeLocalReleaseDirectBypassRoute = func(host string) {
+		released = append(released, host)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			accepted <- conn
+		}
+		close(accepted)
+	}()
+
+	conn, route, err := openProbeLocalTUNOutboundTCP(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("open direct tcp failed: %v", err)
+	}
+	if !route.Direct {
+		t.Fatalf("route=%+v", route)
+	}
+	if len(acquired) != 1 || acquired[0] != "127.0.0.1" {
+		t.Fatalf("acquired=%v", acquired)
+	}
+	if acceptedConn := <-accepted; acceptedConn != nil {
+		_ = acceptedConn.Close()
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close direct tcp failed: %v", err)
+	}
+	if len(released) != 0 {
+		t.Fatalf("released after tcp close=%v, want none", released)
+	}
+	if err := ensureProbeLocalDirectBypassForRoutedTarget(ln.Addr().String()); err != nil {
+		t.Fatalf("ensure repeated direct tcp bypass failed: %v", err)
+	}
+	if len(acquired) != 1 {
+		t.Fatalf("repeated direct tcp acquired=%v", acquired)
+	}
+	releaseProbeLocalManagedDirectBypassRoutes()
+	if len(released) != 1 || released[0] != "127.0.0.1" {
+		t.Fatalf("released=%v", released)
+	}
+}
+
+func TestOpenProbeLocalTUNOutboundUDPDirectEnsuresBypass(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+	probeLocalControl.mu.Lock()
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+	t.Cleanup(func() {
+		probeLocalControl.mu.Lock()
+		probeLocalControl.proxy.Enabled = false
+		probeLocalControl.proxy.Mode = probeLocalProxyModeDirect
+		probeLocalControl.mu.Unlock()
+	})
+
+	acquired := make([]string, 0, 1)
+	released := make([]string, 0, 1)
+	probeLocalAcquireDirectBypassRoute = func(host string) (func(), error) {
+		acquired = append(acquired, host)
+		return func() {}, nil
+	}
+	probeLocalReleaseDirectBypassRoute = func(host string) {
+		released = append(released, host)
+	}
+
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp failed: %v", err)
+	}
+	defer udpConn.Close()
+	id := stack.TransportEndpointID{
+		LocalAddress:  tcpip.AddrFrom4([4]byte{127, 0, 0, 1}),
+		LocalPort:     uint16(udpConn.LocalAddr().(*net.UDPAddr).Port),
+		RemoteAddress: tcpip.AddrFrom4([4]byte{10, 0, 0, 8}),
+		RemotePort:    53000,
+	}
+
+	outbound, route, err := openProbeLocalTUNOutboundUDP(id, udpConn.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("open direct udp failed: %v", err)
+	}
+	if !route.Direct {
+		t.Fatalf("route=%+v", route)
+	}
+	if len(acquired) != 1 || acquired[0] != "127.0.0.1" {
+		t.Fatalf("acquired=%v", acquired)
+	}
+	if err := outbound.Close(); err != nil {
+		t.Fatalf("close direct udp failed: %v", err)
+	}
+	if len(released) != 0 {
+		t.Fatalf("released after udp close=%v, want none", released)
+	}
+	releaseProbeLocalManagedDirectBypassRoutes()
+	if len(released) != 1 || released[0] != "127.0.0.1" {
+		t.Fatalf("released=%v", released)
+	}
+}
+
+func TestResolveProbeLocalTUNUDPAssociationTimeoutForQUIC(t *testing.T) {
+	cases := []struct {
+		target      string
+		wantTTL     time.Duration
+		wantProfile string
+	}{
+		{
+			target:      "example.com:443",
+			wantTTL:     probeLocalTUNUDPQUICAssociationTimeout,
+			wantProfile: probeChainUDPAssociationTTLProfileQUICStable,
+		},
+		{
+			target:      "example.com:8443",
+			wantTTL:     probeLocalTUNUDPQUICAssociationTimeout,
+			wantProfile: probeChainUDPAssociationTTLProfileQUICStable,
+		},
+		{
+			target:      "example.com:53",
+			wantTTL:     probeLocalTUNUDPAssociationTimeout,
+			wantProfile: probeChainUDPAssociationTTLProfileDefault,
+		},
+	}
+	for _, tc := range cases {
+		if got := resolveProbeLocalTUNUDPAssociationTimeout(tc.target); got != tc.wantTTL {
+			t.Fatalf("target=%s ttl=%s want=%s", tc.target, got, tc.wantTTL)
+		}
+		if got := resolveProbeLocalTUNUDPTTLProfile(tc.target); got != tc.wantProfile {
+			t.Fatalf("target=%s profile=%s want=%s", tc.target, got, tc.wantProfile)
+		}
 	}
 }
 

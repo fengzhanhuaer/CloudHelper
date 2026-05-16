@@ -84,6 +84,7 @@ type probeLocalDNSFakeIPEntry struct {
 
 type probeLocalDNSRouteHintEntry struct {
 	Domain    string
+	IP        string
 	Decision  probeLocalDNSRouteDecision
 	ExpiresAt time.Time
 }
@@ -102,11 +103,13 @@ var probeLocalDNSState = struct {
 	fakeDomainToIP map[string]string
 	fakeIPToEntry  map[string]probeLocalDNSFakeIPRuntimeEntry
 	routeHints     map[string]probeLocalDNSRouteHintEntry
+	routeIPHints   map[string]probeLocalDNSRouteHintEntry
 }{
 	cache:          make(map[string]probeLocalDNSCacheEntry),
 	fakeDomainToIP: make(map[string]string),
 	fakeIPToEntry:  make(map[string]probeLocalDNSFakeIPRuntimeEntry),
 	routeHints:     make(map[string]probeLocalDNSRouteHintEntry),
+	routeIPHints:   make(map[string]probeLocalDNSRouteHintEntry),
 	status: probeLocalDNSStatus{
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	},
@@ -310,7 +313,7 @@ func handleProbeLocalDNSPacket(conn net.PacketConn, remoteAddr net.Addr, packet 
 	if conn == nil || remoteAddr == nil || len(packet) == 0 {
 		return
 	}
-	response, domain, ips, err := resolveProbeLocalDNSResponse(packet)
+	response, domain, ips, decision, err := resolveProbeLocalDNSResponse(packet)
 	if err != nil {
 		updateProbeLocalDNSStatusError(err)
 		logProbeWarnf("probe local dns resolve failed: %v", err)
@@ -323,23 +326,24 @@ func handleProbeLocalDNSPacket(conn net.PacketConn, remoteAddr net.Addr, packet 
 	}
 	if domain != "" && len(ips) > 0 {
 		storeProbeLocalDNSCacheRecords(domain, ips)
+		storeProbeLocalDNSRouteHints(domain, ips, decision)
 	}
 }
 
-func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, error) {
+func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, probeLocalDNSRouteDecision, error) {
 	domain, qType := parseProbeLocalDNSQueryDomainAndType(packet)
 	decision := resolveProbeLocalDNSRouteDecision(domain)
 	if decision.Reject {
-		return buildProbeLocalDNSRefused(packet), domain, nil, nil
+		return buildProbeLocalDNSRefused(packet), domain, nil, decision, nil
 	}
 	if shouldUseProbeLocalDNSFakeIP(domain, qType, decision) {
 		if fakeIP, ok := allocateProbeLocalDNSFakeIP(domain, decision); ok {
-			return buildProbeLocalDNSSuccessA(packet, fakeIP), domain, nil, nil
+			return buildProbeLocalDNSSuccessA(packet, fakeIP), domain, nil, decision, nil
 		}
 	}
 	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(decision)
 	if len(candidates) == 0 {
-		return nil, domain, nil, errors.New("dns upstream list is empty")
+		return nil, domain, nil, decision, errors.New("dns upstream list is empty")
 	}
 	var lastErr error
 	for _, candidate := range candidates {
@@ -364,12 +368,12 @@ func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, erro
 			continue
 		}
 		ips, _ := extractProbeLocalDNSResponseIPs(response)
-		return response, domain, ips, nil
+		return response, domain, ips, decision, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("dns upstream resolve failed")
 	}
-	return nil, domain, nil, lastErr
+	return nil, domain, nil, decision, lastErr
 }
 
 func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
@@ -1013,6 +1017,11 @@ func pruneProbeLocalDNSFakeEntriesLocked(now time.Time) {
 			delete(probeLocalDNSState.routeHints, domain)
 		}
 	}
+	for ip, entry := range probeLocalDNSState.routeIPHints {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			delete(probeLocalDNSState.routeIPHints, ip)
+		}
+	}
 }
 
 func nextProbeLocalDNSFakeIPLocked(now time.Time) string {
@@ -1085,6 +1094,50 @@ func storeProbeLocalDNSRouteHintLocked(domain string, decision probeLocalDNSRout
 	}
 }
 
+func storeProbeLocalDNSRouteHints(domain string, ips []string, decision probeLocalDNSRouteDecision) {
+	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
+	if cleanDomain == "" || len(ips) == 0 || strings.EqualFold(strings.TrimSpace(decision.Group), "fallback") {
+		return
+	}
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	pruneProbeLocalDNSFakeEntriesLocked(now)
+	storeProbeLocalDNSRouteHintLocked(cleanDomain, decision, now)
+	if probeLocalDNSState.routeIPHints == nil {
+		probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
+	}
+	for _, rawIP := range ips {
+		ip := net.ParseIP(strings.TrimSpace(strings.Trim(rawIP, "[]")))
+		if ip == nil {
+			continue
+		}
+		ipText := ip.String()
+		probeLocalDNSState.routeIPHints[ipText] = probeLocalDNSRouteHintEntry{
+			Domain:    cleanDomain,
+			IP:        ipText,
+			Decision:  decision,
+			ExpiresAt: now.Add(probeLocalDNSCacheTTL),
+		}
+	}
+}
+
+func lookupProbeLocalDNSRouteHintByIP(ipText string) (probeLocalDNSRouteDecision, bool) {
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(ipText, "[]")))
+	if ip == nil {
+		return probeLocalDNSRouteDecision{}, false
+	}
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	pruneProbeLocalDNSFakeEntriesLocked(now)
+	entry, ok := probeLocalDNSState.routeIPHints[ip.String()]
+	if !ok {
+		return probeLocalDNSRouteDecision{}, false
+	}
+	return entry.Decision, true
+}
+
 func queryProbeLocalDNSFakeIPEntries() []probeLocalDNSFakeIPEntry {
 	now := probeLocalDNSNow().UTC()
 	probeLocalDNSState.mu.Lock()
@@ -1135,7 +1188,7 @@ func probeLocalDNSRouteHintCount() int {
 	probeLocalDNSState.mu.Lock()
 	defer probeLocalDNSState.mu.Unlock()
 	pruneProbeLocalDNSFakeEntriesLocked(now)
-	return len(probeLocalDNSState.routeHints)
+	return len(probeLocalDNSState.routeHints) + len(probeLocalDNSState.routeIPHints)
 }
 
 func currentProbeLocalDNSFakeIPCIDR() string {
@@ -1232,7 +1285,6 @@ func currentProbeLocalDNSStatus() probeLocalDNSStatus {
 
 func resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh() {
 	probeLocalDNSState.mu.Lock()
-	defer probeLocalDNSState.mu.Unlock()
 	now := probeLocalDNSNow().UTC().Format(time.RFC3339)
 	probeLocalDNSState.cache = make(map[string]probeLocalDNSCacheEntry)
 	probeLocalDNSState.fakeCIDR = ""
@@ -1241,10 +1293,13 @@ func resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh() {
 	probeLocalDNSState.fakeDomainToIP = make(map[string]string)
 	probeLocalDNSState.fakeIPToEntry = make(map[string]probeLocalDNSFakeIPRuntimeEntry)
 	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
+	probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
 	probeLocalDNSState.status.UpdatedAt = now
 	if probeLocalDNSState.tunStatus.Enabled {
 		probeLocalDNSState.tunStatus.UpdatedAt = now
 	}
+	probeLocalDNSState.mu.Unlock()
+	releaseProbeLocalManagedDirectBypassRoutes()
 }
 
 func updateProbeLocalDNSStatusError(err error) {
@@ -1312,6 +1367,7 @@ func resetProbeLocalDNSServiceForTest() {
 	probeLocalDNSState.fakeDomainToIP = make(map[string]string)
 	probeLocalDNSState.fakeIPToEntry = make(map[string]probeLocalDNSFakeIPRuntimeEntry)
 	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
+	probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
 	probeLocalDNSState.status = probeLocalDNSStatus{UpdatedAt: probeLocalDNSNow().UTC().Format(time.RFC3339)}
 	probeLocalDNSState.tunStatus = probeLocalDNSStatus{UpdatedAt: probeLocalDNSNow().UTC().Format(time.RFC3339)}
 	probeLocalDNSState.mu.Unlock()

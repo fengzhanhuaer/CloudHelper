@@ -1548,7 +1548,11 @@ func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
 	state.TUN.Installed = installed
 	state.TUN.Enabled = enabled
 	state.TUN.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	return persistProbeLocalProxyStateFile(state)
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		return err
+	}
+	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
+	return nil
 }
 
 func resolveProbeLocalTUNPrimaryDNSBackupPath() (string, error) {
@@ -3060,6 +3064,7 @@ func probeLocalProxyGroupsSaveHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, err)
 		return
 	}
+	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "groups": payload})
 }
 
@@ -3173,6 +3178,7 @@ func probeLocalProxyHostsSaveHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, err)
 		return
 	}
+	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
 	content, normalizedHosts, err := loadProbeLocalHostMappingsWithContent()
 	if err != nil {
 		writeProbeLocalError(w, err)
