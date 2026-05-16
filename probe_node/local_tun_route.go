@@ -11,6 +11,7 @@ type probeLocalTunnelRouteDecision struct {
 	Direct          bool
 	Reject          bool
 	TargetAddr      string
+	TargetAddrs     []string
 	Group           string
 	SelectedChainID string
 	TunnelNodeID    string
@@ -93,7 +94,10 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 		if fakeMatched {
 			realIPs := resolveProbeLocalDNSRealIPsForRouteDomain(domainForPolicy, routeDecision)
 			if len(realIPs) > 0 {
-				decision.TargetAddr = net.JoinHostPort(realIPs[0], port)
+				decision.TargetAddrs = buildProbeLocalTunnelRouteTargetCandidates(realIPs, port)
+				if len(decision.TargetAddrs) > 0 {
+					decision.TargetAddr = decision.TargetAddrs[0]
+				}
 			}
 		}
 		return decision, nil
@@ -105,6 +109,47 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 		decision.GroupRuntime = nil
 		return decision, nil
 	}
+}
+
+func buildProbeLocalTunnelRouteTargetCandidates(ips []string, port string) []string {
+	cleanPort := strings.TrimSpace(port)
+	if cleanPort == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	targets := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		cleanIP := strings.TrimSpace(strings.Trim(ip, "[]"))
+		if cleanIP == "" || net.ParseIP(cleanIP) == nil {
+			continue
+		}
+		target := net.JoinHostPort(cleanIP, cleanPort)
+		key := strings.ToLower(target)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func probeLocalTunnelRouteTargetCandidates(route probeLocalTunnelRouteDecision) []string {
+	seen := map[string]struct{}{}
+	candidates := make([]string, 0, len(route.TargetAddrs)+1)
+	for _, target := range append([]string{route.TargetAddr}, route.TargetAddrs...) {
+		cleanTarget := strings.TrimSpace(target)
+		if cleanTarget == "" {
+			continue
+		}
+		key := strings.ToLower(cleanTarget)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, cleanTarget)
+	}
+	return candidates
 }
 
 func rewriteProbeLocalRouteTargetForFakeIP(host string, port string) (rewrittenTarget string, policyDomain string, fakeMatched bool) {

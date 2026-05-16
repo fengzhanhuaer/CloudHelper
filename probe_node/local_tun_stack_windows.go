@@ -408,11 +408,19 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 		}
 		return conn, route, nil
 	}
-	conn, openErr := openProbeLocalTunnelConnWithGroupRuntime("tcp", route.TargetAddr, route.GroupRuntime, nil)
-	if openErr != nil {
-		return nil, route, openErr
+	var lastErr error
+	for _, target := range probeLocalTunnelRouteTargetCandidates(route) {
+		conn, openErr := openProbeLocalTunnelConnWithGroupRuntime("tcp", target, route.GroupRuntime, nil)
+		if openErr == nil {
+			route.TargetAddr = target
+			return conn, route, nil
+		}
+		lastErr = openErr
 	}
-	return conn, route, nil
+	if lastErr != nil {
+		return nil, route, lastErr
+	}
+	return nil, route, errors.New("tunnel route has no target candidates")
 }
 
 func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {

@@ -132,7 +132,7 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	t.Cleanup(func() {
 		resetProbeLocalDNSServiceForTest()
 	})
-	storeProbeLocalDNSCacheRecords("api.example.com", []string{"203.0.113.44"})
+	storeProbeLocalDNSCacheRecords("api.example.com", []string{"203.0.113.44", "203.0.113.45"})
 
 	dnsDecision := resolveProbeLocalProxyRouteDecisionByDomain("api.example.com")
 	fakeIP, ok := allocateProbeLocalDNSFakeIP("api.example.com", dnsDecision)
@@ -162,6 +162,9 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	if route.TargetAddr != "203.0.113.44:443" {
 		t.Fatalf("target_addr=%q", route.TargetAddr)
 	}
+	if got := strings.Join(route.TargetAddrs, ","); got != "203.0.113.44:443,203.0.113.45:443" {
+		t.Fatalf("target_addrs=%q", got)
+	}
 	records := queryProbeLocalDNSUnifiedRecords()
 	if len(records) != 1 {
 		t.Fatalf("unified records len=%d records=%+v", len(records), records)
@@ -170,8 +173,19 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	if strings.TrimSpace(record.FakeIP) != fakeIP {
 		t.Fatalf("record fake ip=%q want=%q record=%+v", record.FakeIP, fakeIP, record)
 	}
-	if got := strings.Join(record.RealIPs, ","); got != "203.0.113.44" {
+	if got := strings.Join(record.RealIPs, ","); got != "203.0.113.44,203.0.113.45" {
 		t.Fatalf("record real ips=%q record=%+v", got, record)
+	}
+}
+
+func TestProbeLocalTunnelRouteTargetCandidatesDeduplicatesAndKeepsPrimary(t *testing.T) {
+	route := probeLocalTunnelRouteDecision{
+		TargetAddr:  "203.0.113.45:443",
+		TargetAddrs: []string{"203.0.113.44:443", "203.0.113.45:443", "203.0.113.46:443"},
+	}
+	got := strings.Join(probeLocalTunnelRouteTargetCandidates(route), ",")
+	if got != "203.0.113.45:443,203.0.113.44:443,203.0.113.46:443" {
+		t.Fatalf("candidates=%q", got)
 	}
 }
 

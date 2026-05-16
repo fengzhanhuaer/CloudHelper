@@ -410,6 +410,39 @@ func TestProbeLocalDNSDebugAPIs(t *testing.T) {
 	}
 }
 
+func TestProbeLocalDNSClearAPI(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	decision := probeLocalDNSRouteDecision{Group: "media", Action: "tunnel", SelectedChainID: "chain-1"}
+	storeProbeLocalDNSCacheRecords("api.example.com", []string{"203.0.113.20"})
+	fakeIP, ok := allocateProbeLocalDNSFakeIP("api.example.com", decision)
+	if !ok || strings.TrimSpace(fakeIP) == "" {
+		t.Fatalf("allocate fake ip failed: %q", fakeIP)
+	}
+	storeProbeLocalDNSRouteHints("api.example.com", []string{"203.0.113.20"}, decision)
+
+	clearResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/dns/clear", map[string]any{}, sessionCookie)
+	if clearResp.Code != http.StatusOK {
+		t.Fatalf("dns/clear status=%d body=%s", clearResp.Code, clearResp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, clearResp)
+	if ok, _ := payload["ok"].(bool); !ok {
+		t.Fatalf("dns/clear ok=%v", payload["ok"])
+	}
+	if got := queryProbeLocalDNSUnifiedRecords(); len(got) != 0 {
+		t.Fatalf("dns records after clear=%+v", got)
+	}
+	if got := queryProbeLocalDNSFakeIPEntries(); len(got) != 0 {
+		t.Fatalf("fake ip entries after clear=%+v", got)
+	}
+	if got := probeLocalDNSRouteHintCount(); got != 0 {
+		t.Fatalf("route hints after clear=%d", got)
+	}
+}
+
 func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
@@ -524,7 +557,6 @@ func TestCurrentProbeLocalDNSUpstreamCandidatesAppendsSystemDNSLast(t *testing.T
 	want := []string{
 		"doh|https://doh.example/dns-query",
 		"dot|1.1.1.1:853",
-		"doh|https://proxy.example/dns-query",
 		"dns|8.8.8.8:53",
 		"dns|192.168.1.1:53",
 	}
@@ -558,18 +590,26 @@ func TestCurrentProbeLocalDNSUpstreamCandidatesKeepsDomainUpstreamsWhenTunnelEna
 		resetProbeLocalDNSServiceForTest()
 	})
 
-	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(probeLocalDNSRouteDecision{})
+	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(probeLocalDNSRouteDecision{
+		Group:           "google",
+		Action:          "tunnel",
+		SelectedChainID: "chain-1",
+	})
 	got := make([]string, 0, len(candidates))
 	for _, item := range candidates {
-		got = append(got, item.Kind+"|"+item.Address)
+		prefix := item.Kind
+		if item.ViaProxy {
+			prefix = prefix + "_proxy"
+		}
+		got = append(got, prefix+"|"+item.Address)
 	}
 	want := []string{
+		"doh_proxy|https://proxy.example/dns-query",
+		"doh_proxy|https://1.1.1.1/dns-query",
 		"doh|https://doh.example/dns-query",
 		"doh|https://8.8.8.8/dns-query",
 		"dot|dns.alidns.com:853",
 		"dot|1.0.0.1:853",
-		"doh|https://proxy.example/dns-query",
-		"doh|https://1.1.1.1/dns-query",
 		"dns|dns.example.com:53",
 		"dns|223.5.5.5:53",
 		"dns|resolver.example:53",

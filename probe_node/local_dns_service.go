@@ -74,8 +74,9 @@ type probeLocalDNSUnifiedRecordView struct {
 }
 
 type probeLocalDNSUpstreamCandidate struct {
-	Kind    string
-	Address string
+	Kind     string
+	Address  string
+	ViaProxy bool
 }
 
 type probeLocalDNSPersistRecord struct {
@@ -489,7 +490,7 @@ func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, prob
 		var err error
 		switch candidate.Kind {
 		case "doh":
-			response, err = queryProbeLocalDNSViaDoH(candidate.Address, packet)
+			response, err = queryProbeLocalDNSViaDoH(candidate.Address, packet, decision, candidate.ViaProxy)
 		case "dot":
 			response, err = queryProbeLocalDNSViaDoT(candidate.Address, packet)
 		case "dns":
@@ -551,7 +552,7 @@ func resolveProbeLocalDNSRealIPv4sFromUpstreams(domain string, decision probeLoc
 		var queryErr error
 		switch candidate.Kind {
 		case "doh":
-			response, queryErr = queryProbeLocalDNSViaDoH(candidate.Address, query)
+			response, queryErr = queryProbeLocalDNSViaDoH(candidate.Address, query, decision, candidate.ViaProxy)
 		case "dot":
 			response, queryErr = queryProbeLocalDNSViaDoT(candidate.Address, query)
 		case "dns":
@@ -576,7 +577,11 @@ func resolveProbeLocalDNSRealIPv4sFromUpstreams(domain string, decision probeLoc
 	return nil, lastErr
 }
 
-func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
+func currentProbeLocalDNSUpstreamCandidatesForDecision(decision probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
+	return currentProbeLocalDNSUpstreamCandidatesForRouteDecision(decision)
+}
+
+func currentProbeLocalDNSUpstreamCandidatesForRouteDecision(decision probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
 	cfg, err := loadProbeLocalProxyGroupFile()
 	if err != nil {
 		logProbeWarnf("load proxy_group for dns upstream failed, use defaults: %v", err)
@@ -601,6 +606,23 @@ func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecis
 			candidates = append(candidates, probeLocalDNSUpstreamCandidate{Kind: "doh", Address: normalized})
 		}
 	}
+	appendProxyDoH := func(items []string) {
+		for _, item := range items {
+			normalized, ok := normalizeProbeLocalDoHURL(item)
+			if !ok {
+				continue
+			}
+			if !shouldIncludeProbeLocalDNSUpstreamCandidate("doh", normalized) {
+				continue
+			}
+			key := "doh_proxy|" + normalized
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, probeLocalDNSUpstreamCandidate{Kind: "doh", Address: normalized, ViaProxy: true})
+		}
+	}
 	appendHostPort := func(kind string, items []string, defaultPort string) {
 		for _, item := range items {
 			normalized, ok := normalizeProbeLocalDNSHostPort(item, defaultPort)
@@ -619,9 +641,12 @@ func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecis
 		}
 	}
 
+	useProxyFirst := strings.EqualFold(strings.TrimSpace(decision.Action), "tunnel") && !strings.EqualFold(strings.TrimSpace(decision.Group), "fallback")
+	if useProxyFirst {
+		appendProxyDoH(cfg.DoHProxyServers)
+	}
 	appendDoH(cfg.DoHServers)
 	appendHostPort("dot", cfg.DoTServers, "853")
-	appendDoH(cfg.DoHProxyServers)
 	appendHostPort("dns", cfg.DNSServers, "53")
 	appendHostPort("dns", probeLocalDNSSystemServers(), "53")
 	return candidates
@@ -675,10 +700,29 @@ func ensureProbeLocalDNSUpstreamDirectBypass(kind string, address string) {
 	}
 }
 
-func queryProbeLocalDNSViaDoH(endpoint string, packet []byte) ([]byte, error) {
+type probeLocalDNSProxyDialConn struct {
+	net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *probeLocalDNSProxyDialConn) Close() error {
+	if c == nil || c.Conn == nil {
+		return nil
+	}
+	c.once.Do(func() {
+		close(c.done)
+	})
+	return c.Conn.Close()
+}
+
+func queryProbeLocalDNSViaDoH(endpoint string, packet []byte, decision probeLocalDNSRouteDecision, viaProxy bool) ([]byte, error) {
 	cleanEndpoint, ok := normalizeProbeLocalDoHURL(endpoint)
 	if !ok {
 		return nil, fmt.Errorf("invalid doh endpoint: %q", endpoint)
+	}
+	if viaProxy {
+		return queryProbeLocalDNSViaDoHOverProxy(cleanEndpoint, packet, decision)
 	}
 	dialTarget, serverName, transportEndpoint, err := resolveProbeLocalDoHDialTarget(cleanEndpoint)
 	if err != nil {
@@ -721,6 +765,75 @@ func queryProbeLocalDNSViaDoH(endpoint string, packet []byte) ([]byte, error) {
 	}
 	if len(payload) == 0 {
 		return nil, errors.New("doh upstream returned empty payload")
+	}
+	return payload, nil
+}
+
+func queryProbeLocalDNSViaDoHOverProxy(endpoint string, packet []byte, decision probeLocalDNSRouteDecision) ([]byte, error) {
+	transportEndpoint, serverName, err := resolveProbeLocalDoHProxyTransportEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	groupRuntime, err := resolveProbeLocalDNSProxyGroupRuntime(decision)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeLocalDNSUpstreamTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(packet))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/dns-message")
+	request.Header.Set("Accept", "application/dns-message")
+	transport := &http.Transport{
+		Proxy:             nil,
+		DisableKeepAlives: true,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: serverName,
+		},
+		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+			if !strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(transportEndpoint)) {
+				return nil, fmt.Errorf("unexpected doh proxy dial target: %s", strings.TrimSpace(addr))
+			}
+			conn, err := groupRuntime.openStream("tcp", transportEndpoint, nil)
+			if err != nil {
+				return nil, err
+			}
+			wrapped := &probeLocalDNSProxyDialConn{Conn: conn, done: make(chan struct{})}
+			deadline := probeLocalDNSNow().Add(probeLocalDNSUpstreamTimeout)
+			if ctxDeadline, ok := ctx.Deadline(); ok {
+				deadline = ctxDeadline
+			}
+			_ = wrapped.SetDeadline(deadline)
+			go func() {
+				select {
+				case <-ctx.Done():
+					_ = wrapped.Close()
+				case <-wrapped.done:
+				}
+			}()
+			return wrapped, nil
+		},
+	}
+	client := &http.Client{Timeout: probeLocalDNSUpstreamTimeout, Transport: transport}
+	response, err := client.Do(request)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return nil, err
+	}
+	defer transport.CloseIdleConnections()
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("doh proxy upstream status=%d", response.StatusCode)
+	}
+	payload, err := io.ReadAll(io.LimitReader(response.Body, probeLocalDNSDoHReadLimit))
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) == 0 {
+		return nil, errors.New("doh proxy upstream returned empty payload")
 	}
 	return payload, nil
 }
@@ -1036,6 +1149,45 @@ func resolveProbeLocalDoHDialTarget(endpoint string) (dialTarget string, serverN
 		return "", "", "", resolveErr
 	}
 	return net.JoinHostPort(resolvedIP, strconv.Itoa(portNum)), host, transportEndpoint, nil
+}
+
+func resolveProbeLocalDoHProxyTransportEndpoint(endpoint string) (transportEndpoint string, serverName string, err error) {
+	parsed, parseErr := url.Parse(strings.TrimSpace(endpoint))
+	if parseErr != nil {
+		return "", "", parseErr
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return "", "", errors.New("doh proxy upstream host is empty")
+	}
+	port := strings.TrimSpace(parsed.Port())
+	if port == "" {
+		if strings.EqualFold(strings.TrimSpace(parsed.Scheme), "http") {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	portNum, convErr := strconv.Atoi(port)
+	if convErr != nil || portNum <= 0 || portNum > 65535 {
+		return "", "", fmt.Errorf("invalid doh proxy upstream port: %s", port)
+	}
+	if net.ParseIP(host) == nil {
+		serverName = host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(portNum)), serverName, nil
+}
+
+func resolveProbeLocalDNSProxyGroupRuntime(decision probeLocalDNSRouteDecision) (*probeLocalTUNGroupRuntime, error) {
+	group := strings.TrimSpace(decision.Group)
+	if group == "" || strings.EqualFold(group, "fallback") {
+		return nil, errors.New("proxy dns route group is empty")
+	}
+	chainID := firstNonEmpty(strings.TrimSpace(decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(decision.TunnelNodeID))
+	if strings.TrimSpace(chainID) == "" {
+		return nil, errors.New("proxy dns route missing selected_chain_id")
+	}
+	return ensureProbeLocalTUNGroupRuntime(group, chainID)
 }
 
 func ensureProbeLocalDNSResolvedDirectBypassTarget(target string) {
@@ -1896,6 +2048,20 @@ func storeProbeLocalDNSCacheRecords(urlText string, ips []string) {
 	record.UpdatedAt = now
 	probeLocalDNSState.cache[cleanDomain] = record
 	probeLocalDNSState.cacheDirty = true
+}
+
+func clearProbeLocalDNSUnifiedCache() {
+	ensureProbeLocalDNSCacheLoaded()
+	probeLocalDNSState.mu.Lock()
+	probeLocalDNSState.cache = make(map[string]probeLocalDNSUnifiedRecord)
+	probeLocalDNSState.fakeDomainToIP = make(map[string]string)
+	probeLocalDNSState.fakeIPToEntry = make(map[string]probeLocalDNSFakeIPRuntimeEntry)
+	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
+	probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
+	probeLocalDNSState.fakeCursor = 0
+	probeLocalDNSState.cacheDirty = true
+	probeLocalDNSState.mu.Unlock()
+	flushProbeLocalDNSCacheToDisk()
 }
 
 func queryProbeLocalDNSCacheRecords() []probeLocalDNSCacheRecord {

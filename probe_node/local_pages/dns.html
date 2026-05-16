@@ -67,6 +67,11 @@
       border-color: rgba(255, 255, 255, 0.18);
       color: #d0d7de;
     }
+    button.danger {
+      background: rgba(248, 81, 73, 0.18);
+      border-color: rgba(248, 81, 73, 0.45);
+      color: #ffb4ad;
+    }
     .kv {
       display: grid;
       grid-template-columns: 170px 1fr;
@@ -137,6 +142,7 @@
       </div>
       <div class="actions">
         <button id="dnsRefreshBtn" class="secondary">刷新 DNS 状态</button>
+        <button id="dnsClearBtn" class="danger">清空 DNS 缓存</button>
       </div>
       <p class="hint">监听固定为回环地址，端口策略为 <code>53</code> 优先，失败回退 <code>5353</code>。</p>
       <div class="dns-map-table-wrap">
@@ -281,6 +287,18 @@
         setMessage('DNS 状态已刷新', 'success');
       } catch (err) {
         setMessage('读取 DNS 状态失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('dnsClearBtn').addEventListener('click', async () => {
+      if (!window.confirm('确认清空 DNS 缓存、Fake IP 与路由提示记录？')) return;
+      setMessage('正在清空 DNS 缓存...');
+      try {
+        await requestJSON('/local/api/dns/clear', { method: 'POST' });
+        await loadDNSStatus();
+        setMessage('DNS 缓存已清空', 'success');
+      } catch (err) {
+        setMessage('清空 DNS 缓存失败：' + err.message, 'error');
       }
     });
 

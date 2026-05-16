@@ -2299,6 +2299,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/hosts/save", probeLocalProxyHostsSaveHandler)
 	mux.HandleFunc("/local/api/dns/status", probeLocalDNSStatusHandler)
 	mux.HandleFunc("/local/api/dns/records", probeLocalDNSRecordsHandler)
+	mux.HandleFunc("/local/api/dns/clear", probeLocalDNSClearHandler)
 	mux.HandleFunc("/local/api/dns/real_ip/list", probeLocalDNSRealIPListHandler)
 	mux.HandleFunc("/local/api/dns/real_ip/lookup", probeLocalDNSRealIPLookupHandler)
 	mux.HandleFunc("/local/api/dns/fake_ip/list", probeLocalDNSFakeIPListHandler)
@@ -2703,6 +2704,18 @@ func probeLocalDNSRecordsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": queryProbeLocalDNSUnifiedRecords(),
 	})
+}
+
+func probeLocalDNSClearHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	clearProbeLocalDNSUnifiedCache()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func probeLocalDNSRealIPListHandler(w http.ResponseWriter, r *http.Request) {
