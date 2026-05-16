@@ -38,6 +38,9 @@ const (
 	probeLocalTUNTCPDirectFailureCacheTTL  = 30 * time.Second
 	probeLocalTUNTCPDirectFailureCacheMax  = 512
 	probeLocalTUNTCPRelayIdleTimeout       = 5 * time.Minute
+	probeLocalTUNTCPOpenConcurrencyLimit   = 256
+	probeLocalTUNTCPFailureLogInterval     = 5 * time.Second
+	probeLocalTUNTCPFailureLogCacheMax     = 512
 	probeLocalTUNTCPForwarderWindow        = 0
 	probeLocalTUNTCPForwarderInFlight      = 2048
 	probeLocalTUNUDPAssociationTimeout     = 30 * time.Second
@@ -98,6 +101,11 @@ type probeLocalTUNTCPDirectFailureCacheStats struct {
 	Active int   `json:"active"`
 	Hits   int64 `json:"hits"`
 	Stored int64 `json:"stored"`
+}
+
+type probeLocalTUNTCPFailureLogEntry struct {
+	nextAt     time.Time
+	suppressed int64
 }
 
 func (w *probeLocalTUNDeadlineRefreshWriter) Write(payload []byte) (int, error) {
@@ -221,6 +229,13 @@ var probeLocalTUNTCPDirectFailureCacheState = struct {
 	stored atomic.Int64
 	items  map[string]probeLocalTUNTCPDirectFailureCacheEntry
 }{items: map[string]probeLocalTUNTCPDirectFailureCacheEntry{}}
+
+var probeLocalTUNTCPOpenSemaphore = make(chan struct{}, probeLocalTUNTCPOpenConcurrencyLimit)
+
+var probeLocalTUNTCPFailureLogState = struct {
+	mu    sync.Mutex
+	items map[string]probeLocalTUNTCPFailureLogEntry
+}{items: map[string]probeLocalTUNTCPFailureLogEntry{}}
 
 func prepareProbeLocalWindowsDirectBypassRouteTarget() error {
 	routeTarget, err := resolveProbeLocalWindowsDirectBypassRouteTarget()
@@ -442,6 +457,12 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		req.Complete(true)
 		return
 	}
+	if !acquireProbeLocalTUNTCPOpenSlot() {
+		req.Complete(true)
+		globalProbeTCPDebugState.recordFailureWithRoute("open_limited", targetAddr, probeLocalTunnelRouteDecision{}, errors.New("tcp open concurrency limit reached"))
+		return
+	}
+	defer releaseProbeLocalTUNTCPOpenSlot()
 
 	var wq waiter.Queue
 	ep, createErr := req.CreateEndpoint(&wq)
@@ -459,8 +480,10 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		if errors.Is(openErr, errProbeLocalTUNFallbackBypassInstalled) {
 			return
 		}
-		globalProbeTCPDebugState.recordFailureWithRoute("open_failed", targetAddr, route, openErr)
-		logProbeWarnf("probe local tun tcp outbound open failed: inbound=tun outbound=%s target=%s route=%s group=%s node=%s err=%v", probeLocalTUNRouteOutboundPath(route), targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, openErr)
+		if shouldReportProbeLocalTUNTCPFailure("open_failed", targetAddr, route, openErr) {
+			globalProbeTCPDebugState.recordFailureWithRoute("open_failed", targetAddr, route, openErr)
+			logProbeWarnf("probe local tun tcp outbound open failed: inbound=tun outbound=%s target=%s route=%s group=%s node=%s err=%v", probeLocalTUNRouteOutboundPath(route), targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, openErr)
+		}
 		return
 	}
 
@@ -550,6 +573,64 @@ func probeLocalTUNRouteOutboundPath(route probeLocalTunnelRouteDecision) string 
 		return "reject"
 	}
 	return "tunnel"
+}
+
+func acquireProbeLocalTUNTCPOpenSlot() bool {
+	select {
+	case probeLocalTUNTCPOpenSemaphore <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func releaseProbeLocalTUNTCPOpenSlot() {
+	select {
+	case <-probeLocalTUNTCPOpenSemaphore:
+	default:
+	}
+}
+
+func shouldReportProbeLocalTUNTCPFailure(kind string, targetAddr string, route probeLocalTunnelRouteDecision, err error) bool {
+	key := strings.Join([]string{
+		strings.TrimSpace(kind),
+		strings.TrimSpace(probeLocalTUNRouteOutboundPath(route)),
+		strings.TrimSpace(route.Group),
+		strings.TrimSpace(route.TunnelNodeID),
+		strings.TrimSpace(targetAddr),
+		strings.TrimSpace(route.TargetAddr),
+		classifyProbeTCPDebugError(kind, err),
+	}, "|")
+	if strings.TrimSpace(key) == "" {
+		return true
+	}
+	now := time.Now()
+	probeLocalTUNTCPFailureLogState.mu.Lock()
+	defer probeLocalTUNTCPFailureLogState.mu.Unlock()
+	if probeLocalTUNTCPFailureLogState.items == nil {
+		probeLocalTUNTCPFailureLogState.items = map[string]probeLocalTUNTCPFailureLogEntry{}
+	}
+	entry, ok := probeLocalTUNTCPFailureLogState.items[key]
+	if ok && now.Before(entry.nextAt) {
+		entry.suppressed++
+		probeLocalTUNTCPFailureLogState.items[key] = entry
+		return false
+	}
+	if len(probeLocalTUNTCPFailureLogState.items) >= probeLocalTUNTCPFailureLogCacheMax {
+		for itemKey, item := range probeLocalTUNTCPFailureLogState.items {
+			if now.After(item.nextAt) {
+				delete(probeLocalTUNTCPFailureLogState.items, itemKey)
+			}
+		}
+	}
+	if len(probeLocalTUNTCPFailureLogState.items) >= probeLocalTUNTCPFailureLogCacheMax {
+		for itemKey := range probeLocalTUNTCPFailureLogState.items {
+			delete(probeLocalTUNTCPFailureLogState.items, itemKey)
+			break
+		}
+	}
+	probeLocalTUNTCPFailureLogState.items[key] = probeLocalTUNTCPFailureLogEntry{nextAt: now.Add(probeLocalTUNTCPFailureLogInterval)}
+	return true
 }
 
 func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
@@ -1693,6 +1774,9 @@ func resetProbeLocalDirectBypassStateForTest() {
 	probeLocalTUNUDPSourceState.refs = map[string]int64{}
 	probeLocalTUNUDPSourceState.mu.Unlock()
 	resetProbeLocalTUNTCPDirectFailureCacheForTest()
+	probeLocalTUNTCPFailureLogState.mu.Lock()
+	probeLocalTUNTCPFailureLogState.items = map[string]probeLocalTUNTCPFailureLogEntry{}
+	probeLocalTUNTCPFailureLogState.mu.Unlock()
 
 	probeLocalAcquireDirectBypassRoute = acquireProbeLocalTUNDirectBypassRoute
 	probeLocalReleaseDirectBypassRoute = releaseProbeLocalTUNDirectBypassRoute

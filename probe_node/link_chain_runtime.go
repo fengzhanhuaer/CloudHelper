@@ -2277,9 +2277,13 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 		client = &http.Client{Transport: transport}
 		closeTransport = func() error { return transport.Close() }
 	case "http2":
+		dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
 		transport := &http.Transport{
-			Proxy:             nil,
-			ForceAttemptHTTP2: true,
+			Proxy:                 nil,
+			ForceAttemptHTTP2:     true,
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   probeChainPortForwardDialTimeout,
+			ResponseHeaderTimeout: probeChainPortForwardResponseReadDeadline,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
 				ServerName:         tlsServerName,
@@ -2292,9 +2296,13 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 			return nil
 		}
 	default:
+		dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
 		transport := &http.Transport{
-			Proxy:             nil,
-			ForceAttemptHTTP2: false,
+			Proxy:                 nil,
+			ForceAttemptHTTP2:     false,
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   probeChainPortForwardDialTimeout,
+			ResponseHeaderTimeout: probeChainPortForwardResponseReadDeadline,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
 				ServerName:         tlsServerName,
@@ -2309,12 +2317,21 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 		}
 	}
 
+	openTimer := time.AfterFunc(probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline, cancel)
 	response, err := client.Do(request)
 	if err != nil {
+		openTimer.Stop()
 		cancel()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
 		return nil, wrapProbeChainRelayDialError(layer, relayDialHost, relayPort, err)
+	}
+	if !openTimer.Stop() {
+		_ = response.Body.Close()
+		cancel()
+		_ = bodyWriter.Close()
+		_ = closeTransport()
+		return nil, fmt.Errorf("probe relay open timeout: relay=%s:%d", relayDialHost, relayPort)
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
