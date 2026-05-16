@@ -47,6 +47,7 @@ const (
 	probeLocalTUNUDPQUICAssociationTimeout = 60 * time.Second
 	probeLocalTUNUDPShortAssociationTTL    = 10 * time.Second
 	probeLocalTUNUDPNoResponseTunnelTTL    = 15 * time.Second
+	probeLocalTUNUDPNoResponseDirectTTL    = 5 * time.Second
 	probeLocalTUNUDPAssociationGCInterval  = 15 * time.Second
 	probeLocalTUNUDPReadBufferSize         = 65535
 	probeLocalTUNUDPZeroReadBackoff        = 10 * time.Millisecond
@@ -681,6 +682,12 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	if route.Reject {
 		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
+	if shouldInstallProbeLocalFallbackDirectBypassAndFail(route) {
+		if bypassErr := ensureProbeLocalFallbackDirectBypassForTarget(route.TargetAddr); bypassErr != nil {
+			return nil, route, bypassErr
+		}
+		return nil, route, errProbeLocalTUNFallbackBypassInstalled
+	}
 
 	srcIP := strings.TrimSpace(id.RemoteAddress.String())
 	dstIP := strings.TrimSpace(id.LocalAddress.String())
@@ -768,8 +775,9 @@ func (b *probeLocalTUNUDPBridge) start() {
 func (b *probeLocalTUNUDPBridge) forwardInboundToOutbound() {
 	buf := make([]byte, probeLocalTUNUDPReadBufferSize)
 	for {
-		if b.timeout > 0 {
-			_ = b.inbound.SetReadDeadline(time.Now().Add(b.timeout))
+		readTimeout := b.currentReadTimeout()
+		if readTimeout > 0 {
+			_ = b.inbound.SetReadDeadline(time.Now().Add(readTimeout))
 		}
 		n, err := b.inbound.Read(buf)
 		if n > 0 {
@@ -793,10 +801,7 @@ func (b *probeLocalTUNUDPBridge) forwardInboundToOutbound() {
 func (b *probeLocalTUNUDPBridge) forwardOutboundToInbound() {
 	buf := make([]byte, probeLocalTUNUDPReadBufferSize)
 	for {
-		readTimeout := b.timeout
-		if b.shouldUseNoResponseTunnelTimeout() {
-			readTimeout = probeLocalTUNUDPNoResponseTunnelTTL
-		}
+		readTimeout := b.currentReadTimeout()
 		if readTimeout > 0 {
 			if deadliner, ok := b.outbound.(probeLocalTUNReadDeadliner); ok {
 				_ = deadliner.SetReadDeadline(time.Now().Add(readTimeout))
@@ -821,8 +826,21 @@ func (b *probeLocalTUNUDPBridge) forwardOutboundToInbound() {
 	}
 }
 
-func (b *probeLocalTUNUDPBridge) shouldUseNoResponseTunnelTimeout() bool {
-	if b == nil || b.route.Direct || b.monitor == nil {
+func (b *probeLocalTUNUDPBridge) currentReadTimeout() time.Duration {
+	if b == nil {
+		return 0
+	}
+	if b.shouldUseNoResponseTimeout() {
+		if b.route.Direct {
+			return probeLocalTUNUDPNoResponseDirectTTL
+		}
+		return probeLocalTUNUDPNoResponseTunnelTTL
+	}
+	return b.timeout
+}
+
+func (b *probeLocalTUNUDPBridge) shouldUseNoResponseTimeout() bool {
+	if b == nil || b.monitor == nil {
 		return false
 	}
 	return b.monitor.bytesUp.Load() > 0 && b.monitor.bytesDown.Load() == 0

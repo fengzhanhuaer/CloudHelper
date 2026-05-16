@@ -587,26 +587,35 @@ func TestProbeLocalTUNUDPManagedOutboundReleaseSourceOnce(t *testing.T) {
 	}
 }
 
-func TestProbeLocalTUNUDPBridgeNoResponseTunnelTimeout(t *testing.T) {
+func TestProbeLocalTUNUDPBridgeNoResponseTimeout(t *testing.T) {
 	bridge := &probeLocalTUNUDPBridge{
 		route:   probeLocalTunnelRouteDecision{Direct: false, Group: "media"},
 		monitor: &probeLocalTUNUDPBridgeMonitorItemState{},
 	}
-	if bridge.shouldUseNoResponseTunnelTimeout() {
+	if bridge.shouldUseNoResponseTimeout() {
 		t.Fatal("empty bridge should not use no-response timeout")
 	}
+	if got := bridge.currentReadTimeout(); got != 0 {
+		t.Fatalf("empty bridge timeout=%s want 0", got)
+	}
 	bridge.monitor.bytesUp.Store(128)
-	if !bridge.shouldUseNoResponseTunnelTimeout() {
+	if !bridge.shouldUseNoResponseTimeout() {
 		t.Fatal("tunnel with only upstream bytes should use no-response timeout")
 	}
+	if got := bridge.currentReadTimeout(); got != probeLocalTUNUDPNoResponseTunnelTTL {
+		t.Fatalf("tunnel no-response timeout=%s want=%s", got, probeLocalTUNUDPNoResponseTunnelTTL)
+	}
 	bridge.monitor.bytesDown.Store(64)
-	if bridge.shouldUseNoResponseTunnelTimeout() {
+	if bridge.shouldUseNoResponseTimeout() {
 		t.Fatal("tunnel with downstream bytes should use normal timeout")
 	}
 	bridge.route.Direct = true
 	bridge.monitor.bytesDown.Store(0)
-	if bridge.shouldUseNoResponseTunnelTimeout() {
-		t.Fatal("direct bridge should not use tunnel no-response timeout")
+	if !bridge.shouldUseNoResponseTimeout() {
+		t.Fatal("direct bridge with only upstream bytes should use no-response timeout")
+	}
+	if got := bridge.currentReadTimeout(); got != probeLocalTUNUDPNoResponseDirectTTL {
+		t.Fatalf("direct no-response timeout=%s want=%s", got, probeLocalTUNUDPNoResponseDirectTTL)
 	}
 }
 
