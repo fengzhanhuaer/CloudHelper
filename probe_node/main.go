@@ -229,6 +229,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	ensureProbeLocalDNSServiceStarted()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)
+	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, nil)
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
 		logProbeWarnf("probe local tun startup recovery skipped: %v", err)
 	}
@@ -534,7 +535,10 @@ func startProbeReporter(wsURL string, identity nodeIdentity) {
 }
 
 func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSampler) error {
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	dialer, err := newProbeResolvedWebSocketDialerForURL(wsURL, 10*time.Second)
+	if err != nil {
+		return err
+	}
 	headers := http.Header{}
 	for key, value := range buildProbeAuthHeaders(identity) {
 		headers.Set(key, value)

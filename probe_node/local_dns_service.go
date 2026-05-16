@@ -946,28 +946,13 @@ func ensureProbeLocalDNSResolvedDirectBypassTarget(target string) {
 }
 
 func resolveProbeLocalDNSUpstreamHostIPv4(host string) (string, error) {
-	cleanHost := normalizeProbeLocalDNSDomain(host)
-	if cleanHost == "" {
-		return "", errors.New("upstream host is empty")
-	}
-	if parsedIP := net.ParseIP(cleanHost); parsedIP != nil && parsedIP.To4() != nil {
-		return parsedIP.To4().String(), nil
-	}
-	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanHost); len(cached) > 0 {
-		return cached[0], nil
-	}
-	if mappedIP, ok := lookupProbeLocalStaticHostMappingIPv4(cleanHost); ok {
-		storeProbeLocalDNSCacheRecords(cleanHost, []string{mappedIP})
-		return mappedIP, nil
-	}
-	ips, err := probeLocalDNSBootstrapLookupIPv4(cleanHost)
+	ips, err := resolveProbeLocalDNSIPv4s(host)
 	if err != nil {
 		return "", err
 	}
 	if len(ips) == 0 {
-		return "", fmt.Errorf("bootstrap resolve returned no ipv4 for %s", cleanHost)
+		return "", fmt.Errorf("bootstrap resolve returned no ipv4 for %s", normalizeProbeLocalDNSDomain(host))
 	}
-	storeProbeLocalDNSCacheRecords(cleanHost, ips)
 	return ips[0], nil
 }
 
@@ -995,17 +980,36 @@ func bootstrapProbeLocalDNSResolveIPv4s(domain string) ([]string, error) {
 		}
 		return ips, nil
 	}
-	if !isProbeLocalProxyTunnelModeEnabled() {
-		if fallbackIPs, lookupErr := probeLocalLookupIPv4ForBypass(cleanDomain); lookupErr == nil && len(fallbackIPs) > 0 {
-			return fallbackIPs, nil
-		} else if lookupErr != nil {
-			lastErr = lookupErr
-		}
-	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("bootstrap dns servers are unavailable for %s", cleanDomain)
 	}
 	return nil, lastErr
+}
+
+func resolveProbeLocalDNSIPv4s(host string) ([]string, error) {
+	cleanHost := normalizeProbeLocalDNSDomain(host)
+	if cleanHost == "" {
+		return nil, errors.New("dns host is empty")
+	}
+	if parsedIP := net.ParseIP(cleanHost); parsedIP != nil && parsedIP.To4() != nil {
+		return []string{parsedIP.To4().String()}, nil
+	}
+	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanHost); len(cached) > 0 {
+		return cached, nil
+	}
+	if mappedIP, ok := lookupProbeLocalStaticHostMappingIPv4(cleanHost); ok {
+		storeProbeLocalDNSCacheRecords(cleanHost, []string{mappedIP})
+		return []string{mappedIP}, nil
+	}
+	ips, err := probeLocalDNSBootstrapLookupIPv4(cleanHost)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("bootstrap resolve returned no ipv4 for %s", cleanHost)
+	}
+	storeProbeLocalDNSCacheRecords(cleanHost, ips)
+	return ips, nil
 }
 
 func currentProbeLocalDNSBootstrapServerTargets() []string {

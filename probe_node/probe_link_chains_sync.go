@@ -142,6 +142,7 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 		return
 	}
 
+	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, append(append([]probeLinkChainServerItem{}, config.SelfChains...), config.GlobalProxyForwardChains...))
 	if err := persistProbeChainTopologyCache(config.SelfChains); err != nil {
 		log.Printf("warning: persist probe chain topology cache failed: %v", err)
 	}
@@ -159,6 +160,7 @@ func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controlle
 		log.Printf("warning: load probe chain topology cache failed: %v", err)
 		return
 	}
+	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, items)
 	if len(items) == 0 {
 		return
 	}
@@ -253,7 +255,12 @@ func requestProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Forwarded-Proto", "https")
 
-	resp, err := http.DefaultClient.Do(req)
+	client, closeClient, err := newProbeResolvedHTTPClientForURL(configURL, probeLinkChainsSyncFetchTimeout)
+	if err != nil {
+		return probeLinkChainConfigFetchResult{}, err
+	}
+	defer closeClient()
+	resp, err := client.Do(req)
 	if err != nil {
 		return probeLinkChainConfigFetchResult{}, err
 	}

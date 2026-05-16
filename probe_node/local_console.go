@@ -471,20 +471,11 @@ func ensureProbeLocalProxySelectedChainDirectBypass(selectedChainID string) erro
 }
 
 func lookupProbeLocalIPv4ForBypass(host string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", strings.TrimSpace(host))
+	ips, err := resolveProbeLocalDNSIPv4s(strings.TrimSpace(host))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		if ip == nil || ip.To4() == nil {
-			continue
-		}
-		out = append(out, ip.To4().String())
-	}
-	return dedupeProbeLocalBypassIPv4Strings(out), nil
+	return dedupeProbeLocalBypassIPv4Strings(ips), nil
 }
 
 func dedupeProbeLocalBypassIPv4Strings(items []string) []string {
@@ -2111,7 +2102,12 @@ func backupProbeLocalProxyGroupToController(ctx context.Context) error {
 	for key, value := range buildProbeAuthHeaders(runtimeContext.Identity) {
 		req.Header.Set(key, value)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client, closeClient, err := newProbeResolvedHTTPClientForURL(requestURL, 15*time.Second)
+	if err != nil {
+		return err
+	}
+	defer closeClient()
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -2142,7 +2138,12 @@ func restoreProbeLocalProxyGroupFromController(ctx context.Context) (string, err
 	for key, value := range buildProbeAuthHeaders(runtimeContext.Identity) {
 		req.Header.Set(key, value)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client, closeClient, err := newProbeResolvedHTTPClientForURL(requestURL, 15*time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer closeClient()
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

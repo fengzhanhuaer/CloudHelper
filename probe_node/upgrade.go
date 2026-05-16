@@ -445,11 +445,17 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			if offset > 0 {
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 			}
-			resp, err := http.DefaultClient.Do(req)
+			client, closeClient, err := newProbeResolvedHTTPClientForURL(requestURL, probeResolvedDialDefaultTimeout)
 			if err != nil {
+				return 0, err
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				closeClient()
 				log.Printf("warning: probe upgrade proxy download request failed: elapsed=%s offset=%d err=%v", time.Since(start).String(), offset, err)
 				return 0, err
 			}
+			defer closeClient()
 			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 				resp.Body.Close()
 				if err := os.Rename(partPath, output); err == nil {
@@ -581,7 +587,12 @@ func probeAuthedGet(ctx context.Context, requestURL string, identity nodeIdentit
 	for key, value := range buildProbeAuthHeaders(identity) {
 		req.Header.Set(key, value)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client, closeClient, err := newProbeResolvedHTTPClientForURL(requestURL, probeResolvedDialDefaultTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer closeClient()
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

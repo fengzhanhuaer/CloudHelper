@@ -101,7 +101,7 @@ type probeChainRuntime struct {
 
 var (
 	probeChainRelayResolveNow      = time.Now
-	probeChainRelayLookupIP        = net.DefaultResolver.LookupIP
+	probeChainRelayLookupIP        = defaultProbeChainRelayLookupIP
 	probeChainRelayResolveCacheTTL = 24 * time.Hour
 	probeChainRelayResolveMaxStale = probeChainRelayResolveCacheTTL + 15*time.Minute
 	probeChainRelayResolveCache    = struct {
@@ -109,6 +109,25 @@ var (
 		items map[string]probeChainRelayResolveCacheEntry
 	}{items: make(map[string]probeChainRelayResolveCacheEntry)}
 )
+
+func defaultProbeChainRelayLookupIP(_ context.Context, _ string, host string) ([]net.IP, error) {
+	ips, err := resolveProbeLocalDNSIPv4s(host)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]net.IP, 0, len(ips))
+	for _, rawIP := range ips {
+		parsed := net.ParseIP(strings.TrimSpace(rawIP))
+		if parsed == nil {
+			continue
+		}
+		out = append(out, parsed)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("resolve relay host failed: no ip")
+	}
+	return out, nil
+}
 
 type probeChainRuntimePortForward struct {
 	ID         string
