@@ -69,6 +69,50 @@ func mngSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(mngSettingsPageHTML))
 }
 
+func mngControllerLogsPageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/mng/controller-logs" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(mngControllerLogsPageHTML))
+}
+
+func mngControllerLogsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	lineLimit := normalizeAdminLogLines(r.URL.Query().Get("lines"))
+	sinceMinutes := normalizeAdminSinceMinutes(r.URL.Query().Get("since_minutes"))
+	minLevel := r.URL.Query().Get("min_level")
+	logPath, err := resolveControllerLogPath()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	content, entries, err := readControllerLogTailLines(logPath, lineLimit, sinceMinutes, minLevel)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, adminLogsResponse{
+		Source:   "controller",
+		FilePath: logPath,
+		Lines:    lineLimit,
+		Content:  content,
+		Fetched:  time.Now().Format(time.RFC3339),
+		Entries:  entries,
+	})
+}
+
 func mngBootstrapHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

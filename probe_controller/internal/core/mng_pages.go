@@ -23,4 +23,7 @@ var (
 
 	//go:embed mng_pages/tg.html
 	mngTGPageHTML string
+
+	//go:embed mng_pages/controller_logs.html
+	mngControllerLogsPageHTML string
 )

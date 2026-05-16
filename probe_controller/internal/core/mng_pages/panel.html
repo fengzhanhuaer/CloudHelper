@@ -27,7 +27,7 @@
     <div class="topbar">
       <div>
         <h1>/mng 磁贴面板</h1>
-        <p class="sub">磁贴数量可扩展，可从下方进入系统设置、探针管理、链路管理、探针面板、Cloudflare 管理与 TG 助手。</p>
+        <p class="sub">磁贴数量可扩展，可从下方进入系统设置、探针管理、主控日志、链路管理、探针面板、Cloudflare 管理与 TG 助手。</p>
       </div>
       <button id="btn-logout" class="btn" type="button">退出登录</button>
     </div>
@@ -43,6 +43,12 @@
         <div class="tile-title">探针管理</div>
         <div class="tile-value">🛰</div>
         <div class="tile-sub">打开探针管理页面（列表/状态/日志/Shell）</div>
+      </a>
+
+      <a href="/mng/controller-logs" class="tile tile-link" id="tile-controller-logs" target="_blank" rel="noopener noreferrer">
+        <div class="tile-title">主控日志</div>
+        <div class="tile-value">🧾</div>
+        <div class="tile-sub">查看主控服务日志（级别过滤/行数限制）</div>
       </a>
 
       <a href="/mng/link" class="tile tile-link" id="tile-link" target="_blank" rel="noopener noreferrer">

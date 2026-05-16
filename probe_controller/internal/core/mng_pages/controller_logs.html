@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CloudHelper 主控日志</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { max-width:1100px; margin:4vh auto; padding:20px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    h1 { margin:0; font-size:24px; }
+    .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .btn.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
+    .panel { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
+    .row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+    .status { margin:8px 0 12px; border-radius:8px; border:1px solid #30363d; background:#161b22; padding:10px; font-size:13px; white-space:pre-wrap; }
+    .status.ok { color:#7ee787; }
+    .status.warn { color:#f2cc60; }
+    .status.err { color:#ff7b72; }
+    .muted { color:#8b949e; }
+    input, select { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; }
+    pre { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px; max-height:70vh; overflow:auto; white-space:pre-wrap; word-break:break-word; margin:0; }
+    .mono { font-family:Consolas,monospace; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>/mng/controller-logs 主控日志</h1>
+        <p class="sub">查看主控服务日志文件，支持按级别、时间窗口和行数过滤。</p>
+      </div>
+      <div>
+        <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
+        <button id="btn-logout" class="btn" type="button">退出登录</button>
+      </div>
+    </div>
+
+    <div id="status-box" class="status">初始化中...</div>
+
+    <div class="panel">
+      <div class="row">
+        <label>行数 <input id="logs-lines" value="200" style="width:90px;"></label>
+        <label>最近分钟 <input id="logs-since" value="0" style="width:90px;"></label>
+        <label>最小级别
+          <select id="logs-min-level">
+            <option value="normal">normal</option>
+            <option value="warning">warning</option>
+            <option value="error">error</option>
+            <option value="realtime">realtime</option>
+          </select>
+        </label>
+        <button id="btn-load-logs" class="btn primary" type="button">读取日志</button>
+      </div>
+      <div id="logs-meta" class="muted">-</div>
+      <pre id="logs-output" class="mono"></pre>
+    </div>
+  </div>
+
+  <script>
+    function setStatus(message, level) {
+      const box = document.getElementById('status-box');
+      box.textContent = String(message || '');
+      box.className = 'status';
+      if (level) box.classList.add(level);
+    }
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: 'same-origin',
+        ...options,
+      });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) {}
+      if (!response.ok) {
+        const msg = payload && payload.error ? payload.error : `HTTP ${response.status}`;
+        throw new Error(msg);
+      }
+      return payload;
+    }
+
+    function formatTime(value) {
+      const text = String(value || '').trim();
+      if (!text) return '-';
+      const dt = new Date(text);
+      return Number.isNaN(dt.getTime()) ? text : dt.toLocaleString();
+    }
+
+    async function ensureSession() {
+      const payload = await requestJSON('/mng/api/session');
+      if (!payload.authenticated) {
+        location.href = '/mng';
+        return false;
+      }
+      return true;
+    }
+
+    async function loadLogs() {
+      const lines = encodeURIComponent(document.getElementById('logs-lines').value || '200');
+      const since = encodeURIComponent(document.getElementById('logs-since').value || '0');
+      const minLevel = encodeURIComponent(document.getElementById('logs-min-level').value || 'normal');
+      const payload = await requestJSON(`/mng/api/controller/logs?lines=${lines}&since_minutes=${since}&min_level=${minLevel}`);
+      document.getElementById('logs-meta').textContent = `来源 ${payload.source || '-'} | 路径 ${payload.file_path || '-'} | 拉取时间 ${formatTime(payload.fetched_at)}`;
+      document.getElementById('logs-output').textContent = String(payload.content || '');
+      setStatus('主控日志读取完成', 'ok');
+    }
+
+    async function logout() {
+      await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.href = '/mng';
+    }
+
+    document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
+    document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
+    document.getElementById('btn-load-logs').addEventListener('click', () => {
+      loadLogs().catch((err) => setStatus(`主控日志读取失败：${err.message || err}`, 'err'));
+    });
+
+    (async function init() {
+      try {
+        const ok = await ensureSession();
+        if (!ok) return;
+        await loadLogs();
+      } catch (err) {
+        setStatus(`初始化失败：${err && err.message ? err.message : err}`, 'err');
+      }
+    })();
+  </script>
+</body>
+</html>
