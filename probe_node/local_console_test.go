@@ -368,6 +368,23 @@ func TestProbeLocalDNSDebugAPIs(t *testing.T) {
 }
 
 func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
+		{DNS: "dns.alidns.com", IP: "223.5.5.5"},
+		{DNS: "dns.google", IP: "8.8.4.4"},
+	}); err != nil {
+		t.Fatalf("persist host mappings failed: %v", err)
+	}
+	storeProbeLocalDNSCacheRecords("cached.example", []string{"9.9.9.9"})
+	oldBootstrap := probeLocalDNSBootstrapLookupIPv4
+	probeLocalDNSBootstrapLookupIPv4 = func(string) ([]string, error) {
+		return nil, errors.New("unexpected bootstrap lookup")
+	}
+	t.Cleanup(func() {
+		probeLocalDNSBootstrapLookupIPv4 = oldBootstrap
+		resetProbeLocalDNSServiceForTest()
+	})
+
 	tests := []struct {
 		name      string
 		kind      string
@@ -376,11 +393,13 @@ func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 		wantFound bool
 	}{
 		{name: "dns ipv4", kind: "dns", address: "119.29.29.29", want: "119.29.29.29:53", wantFound: true},
-		{name: "dns domain", kind: "dns", address: "dns.alidns.com:53", want: "", wantFound: false},
+		{name: "dns domain static host", kind: "dns", address: "dns.alidns.com:53", want: "223.5.5.5:53", wantFound: true},
 		{name: "dot ipv4", kind: "dot", address: "1.1.1.1:853", want: "1.1.1.1:853", wantFound: true},
+		{name: "dot domain static host", kind: "dot", address: "dns.alidns.com:853", want: "223.5.5.5:853", wantFound: true},
 		{name: "doh ipv4 https", kind: "doh", address: "https://1.1.1.1/dns-query", want: "1.1.1.1:443", wantFound: true},
 		{name: "doh ipv4 http", kind: "doh", address: "http://8.8.8.8/dns-query", want: "8.8.8.8:80", wantFound: true},
-		{name: "doh domain", kind: "doh", address: "https://dns.google/dns-query", want: "", wantFound: false},
+		{name: "doh domain static host", kind: "doh", address: "https://dns.google/dns-query", want: "8.8.4.4:443", wantFound: true},
+		{name: "doh domain cached host", kind: "doh", address: "https://cached.example/dns-query", want: "9.9.9.9:443", wantFound: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -396,10 +415,23 @@ func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 }
 
 func TestEnsureProbeLocalDNSUpstreamDirectBypass(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
+		{DNS: "dns.alidns.com", IP: "223.5.5.5"},
+		{DNS: "dns.google", IP: "8.8.4.4"},
+	}); err != nil {
+		t.Fatalf("persist host mappings failed: %v", err)
+	}
 	oldEnsure := probeLocalDNSEnsureDirectBypassForTarget
+	oldBootstrap := probeLocalDNSBootstrapLookupIPv4
 	t.Cleanup(func() {
 		probeLocalDNSEnsureDirectBypassForTarget = oldEnsure
+		probeLocalDNSBootstrapLookupIPv4 = oldBootstrap
+		resetProbeLocalDNSServiceForTest()
 	})
+	probeLocalDNSBootstrapLookupIPv4 = func(string) ([]string, error) {
+		return nil, errors.New("unexpected bootstrap lookup")
+	}
 	calls := make([]string, 0, 4)
 	probeLocalDNSEnsureDirectBypassForTarget = func(target string) error {
 		calls = append(calls, strings.TrimSpace(target))
@@ -408,10 +440,19 @@ func TestEnsureProbeLocalDNSUpstreamDirectBypass(t *testing.T) {
 
 	ensureProbeLocalDNSUpstreamDirectBypass("dns", "119.29.29.29")
 	ensureProbeLocalDNSUpstreamDirectBypass("dns", "dns.alidns.com")
+	ensureProbeLocalDNSUpstreamDirectBypass("dot", "1.1.1.1:853")
 	ensureProbeLocalDNSUpstreamDirectBypass("doh", "https://1.1.1.1/dns-query")
+	ensureProbeLocalDNSUpstreamDirectBypass("doh", "https://dns.google/dns-query")
 
-	if len(calls) != 0 {
-		t.Fatalf("bypass calls len=%d want=0 calls=%v", len(calls), calls)
+	want := []string{
+		"119.29.29.29:53",
+		"223.5.5.5:53",
+		"1.1.1.1:853",
+		"1.1.1.1:443",
+		"8.8.4.4:443",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("bypass calls=\n%v\nwant=\n%v", calls, want)
 	}
 }
 
@@ -438,14 +479,153 @@ func TestCurrentProbeLocalDNSUpstreamCandidatesAppendsSystemDNSLast(t *testing.T
 		got = append(got, item.Kind+"|"+item.Address)
 	}
 	want := []string{
-		"doh|https://proxy.example/dns-query",
 		"doh|https://doh.example/dns-query",
 		"dot|1.1.1.1:853",
+		"doh|https://proxy.example/dns-query",
 		"dns|8.8.8.8:53",
 		"dns|192.168.1.1:53",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("candidates=\n%v\nwant=\n%v", got, want)
+	}
+}
+
+func TestCurrentProbeLocalDNSUpstreamCandidatesKeepsDomainUpstreamsWhenTunnelEnabled(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	cfg := defaultProbeLocalProxyGroupFile()
+	cfg.DoHProxyServers = []string{"https://proxy.example/dns-query", "https://1.1.1.1/dns-query"}
+	cfg.DoHServers = []string{"https://doh.example/dns-query", "https://8.8.8.8/dns-query"}
+	cfg.DoTServers = []string{"dns.alidns.com:853", "1.0.0.1:853"}
+	cfg.DNSServers = []string{"dns.example.com:53", "223.5.5.5:53"}
+	if err := persistProbeLocalProxyGroupFile(cfg); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	oldSystemDNS := probeLocalDNSSystemServers
+	probeLocalDNSSystemServers = func() []string { return []string{"resolver.example", "192.168.1.1"} }
+	probeLocalControl.mu.Lock()
+	oldProxy := probeLocalControl.proxy
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+	t.Cleanup(func() {
+		probeLocalDNSSystemServers = oldSystemDNS
+		probeLocalControl.mu.Lock()
+		probeLocalControl.proxy = oldProxy
+		probeLocalControl.mu.Unlock()
+		resetProbeLocalDNSServiceForTest()
+	})
+
+	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(probeLocalDNSRouteDecision{})
+	got := make([]string, 0, len(candidates))
+	for _, item := range candidates {
+		got = append(got, item.Kind+"|"+item.Address)
+	}
+	want := []string{
+		"doh|https://doh.example/dns-query",
+		"doh|https://8.8.8.8/dns-query",
+		"dot|dns.alidns.com:853",
+		"dot|1.0.0.1:853",
+		"doh|https://proxy.example/dns-query",
+		"doh|https://1.1.1.1/dns-query",
+		"dns|dns.example.com:53",
+		"dns|223.5.5.5:53",
+		"dns|resolver.example:53",
+		"dns|192.168.1.1:53",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("candidates=\n%v\nwant=\n%v", got, want)
+	}
+}
+
+func TestResolveProbeLocalDNSResponsePrefersCacheBeforeStaticHostMapping(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
+		{DNS: "static.example.com", IP: "203.0.113.10"},
+	}); err != nil {
+		t.Fatalf("persist host mappings failed: %v", err)
+	}
+	resetProbeLocalDNSServiceForTest()
+	storeProbeLocalDNSCacheRecords("static.example.com", []string{"203.0.113.20"})
+	packet, err := buildProbeLocalDNSQueryA("static.example.com")
+	if err != nil {
+		t.Fatalf("build dns query failed: %v", err)
+	}
+	response, domain, ips, _, err := resolveProbeLocalDNSResponse(packet)
+	if err != nil {
+		t.Fatalf("resolveProbeLocalDNSResponse returned error: %v", err)
+	}
+	if domain != "static.example.com" {
+		t.Fatalf("domain=%q", domain)
+	}
+	if strings.Join(ips, ",") != "203.0.113.20" {
+		t.Fatalf("ips=%v", ips)
+	}
+	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(response), ","); got != "203.0.113.20" {
+		t.Fatalf("response ips=%q", got)
+	}
+}
+
+func TestResolveProbeLocalDNSUpstreamHostIPv4CachesBootstrapResult(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	oldBootstrap := probeLocalDNSBootstrapLookupIPv4
+	lookupCalls := 0
+	probeLocalDNSBootstrapLookupIPv4 = func(host string) ([]string, error) {
+		lookupCalls++
+		if host != "bootstrap.example" {
+			return nil, fmt.Errorf("unexpected bootstrap host: %s", host)
+		}
+		return []string{"203.0.113.20"}, nil
+	}
+	t.Cleanup(func() {
+		probeLocalDNSBootstrapLookupIPv4 = oldBootstrap
+		resetProbeLocalDNSServiceForTest()
+	})
+
+	target1, ok1 := resolveProbeLocalDNSUpstreamBypassTarget("doh", "https://bootstrap.example/dns-query")
+	target2, ok2 := resolveProbeLocalDNSUpstreamBypassTarget("doh", "https://bootstrap.example/dns-query")
+	if !ok1 || !ok2 {
+		t.Fatalf("targets not resolved: ok1=%v ok2=%v target1=%q target2=%q", ok1, ok2, target1, target2)
+	}
+	if target1 != "203.0.113.20:443" || target2 != "203.0.113.20:443" {
+		t.Fatalf("unexpected targets: target1=%q target2=%q", target1, target2)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("bootstrap lookupCalls=%d want=1", lookupCalls)
+	}
+	if got := strings.Join(lookupProbeLocalDNSCacheIPv4ByDomain("bootstrap.example"), ","); got != "203.0.113.20" {
+		t.Fatalf("cached bootstrap ips=%q", got)
+	}
+}
+
+func TestProbeLocalDNSCachePersistsToDiskAndReloads(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	storeProbeLocalDNSCacheRecords("persist.example", []string{"203.0.113.30"})
+	flushProbeLocalDNSCacheToDisk()
+
+	resetProbeLocalDNSServiceForTest()
+
+	if got := strings.Join(lookupProbeLocalDNSCacheIPv4ByDomain("persist.example"), ","); got != "203.0.113.30" {
+		t.Fatalf("reloaded cache ips=%q", got)
+	}
+
+	packet, err := buildProbeLocalDNSQueryA("persist.example")
+	if err != nil {
+		t.Fatalf("build dns query failed: %v", err)
+	}
+	response, domain, ips, _, err := resolveProbeLocalDNSResponse(packet)
+	if err != nil {
+		t.Fatalf("resolveProbeLocalDNSResponse returned error: %v", err)
+	}
+	if domain != "persist.example" {
+		t.Fatalf("domain=%q", domain)
+	}
+	if strings.Join(ips, ",") != "203.0.113.30" {
+		t.Fatalf("ips=%v", ips)
+	}
+	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(response), ","); got != "203.0.113.30" {
+		t.Fatalf("response ips=%q", got)
 	}
 }
 
