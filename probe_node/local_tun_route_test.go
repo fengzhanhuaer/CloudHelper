@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net"
+	"strings"
 	"testing"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -108,6 +109,7 @@ func TestDecideProbeLocalRouteForTargetRejectByRule(t *testing.T) {
 
 func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
 	groups := defaultProbeLocalProxyGroupFile()
 	groups.Groups = []probeLocalProxyGroupEntry{
 		{Group: "media", Rules: []string{"domain_suffix:example.com"}},
@@ -127,6 +129,10 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	probeLocalControl.proxy.Enabled = true
 	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
 	probeLocalControl.mu.Unlock()
+	t.Cleanup(func() {
+		resetProbeLocalDNSServiceForTest()
+	})
+	storeProbeLocalDNSCacheRecords("api.example.com", []string{"203.0.113.44"})
 
 	dnsDecision := resolveProbeLocalProxyRouteDecisionByDomain("api.example.com")
 	fakeIP, ok := allocateProbeLocalDNSFakeIP("api.example.com", dnsDecision)
@@ -153,8 +159,19 @@ func TestDecideProbeLocalRouteForTargetTunnelByFakeIP(t *testing.T) {
 	if route.GroupRuntime == nil {
 		t.Fatal("group_runtime should not be nil")
 	}
-	if route.TargetAddr != "api.example.com:443" {
+	if route.TargetAddr != "203.0.113.44:443" {
 		t.Fatalf("target_addr=%q", route.TargetAddr)
+	}
+	records := queryProbeLocalDNSUnifiedRecords()
+	if len(records) != 1 {
+		t.Fatalf("unified records len=%d records=%+v", len(records), records)
+	}
+	record := records[0]
+	if strings.TrimSpace(record.FakeIP) != fakeIP {
+		t.Fatalf("record fake ip=%q want=%q record=%+v", record.FakeIP, fakeIP, record)
+	}
+	if got := strings.Join(record.RealIPs, ","); got != "203.0.113.44" {
+		t.Fatalf("record real ips=%q record=%+v", got, record)
 	}
 }
 

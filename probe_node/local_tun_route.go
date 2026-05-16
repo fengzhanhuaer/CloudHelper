@@ -90,6 +90,12 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 			return probeLocalTunnelRouteDecision{}, runtimeErr
 		}
 		decision.GroupRuntime = groupRuntime
+		if fakeMatched {
+			realIPs := resolveProbeLocalDNSRealIPsForRouteDomain(domainForPolicy, routeDecision)
+			if len(realIPs) > 0 {
+				decision.TargetAddr = net.JoinHostPort(realIPs[0], port)
+			}
+		}
 		return decision, nil
 	default:
 		decision.Direct = true

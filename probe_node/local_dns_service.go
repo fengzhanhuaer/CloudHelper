@@ -514,6 +514,68 @@ func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, prob
 	return nil, domain, nil, decision, lastErr
 }
 
+func resolveProbeLocalDNSRealIPsForRouteDomain(domain string, decision probeLocalDNSRouteDecision) []string {
+	cleanDomain := normalizeProbeLocalDNSDomain(domain)
+	if cleanDomain == "" {
+		return nil
+	}
+	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanDomain); len(cached) > 0 {
+		storeProbeLocalDNSRouteHints(cleanDomain, cached, decision)
+		return cached
+	}
+	ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreams(cleanDomain, decision)
+	if err != nil || len(ips) == 0 {
+		return nil
+	}
+	storeProbeLocalDNSCacheRecords(cleanDomain, ips)
+	storeProbeLocalDNSRouteHints(cleanDomain, ips, decision)
+	return ips
+}
+
+func resolveProbeLocalDNSRealIPv4sFromUpstreams(domain string, decision probeLocalDNSRouteDecision) ([]string, error) {
+	cleanDomain := normalizeProbeLocalDNSDomain(domain)
+	if cleanDomain == "" {
+		return nil, errors.New("dns domain is empty")
+	}
+	query, err := buildProbeLocalDNSQueryA(cleanDomain)
+	if err != nil {
+		return nil, err
+	}
+	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(decision)
+	if len(candidates) == 0 {
+		return nil, errors.New("dns upstream list is empty")
+	}
+	var lastErr error
+	for _, candidate := range candidates {
+		var response []byte
+		var queryErr error
+		switch candidate.Kind {
+		case "doh":
+			response, queryErr = queryProbeLocalDNSViaDoH(candidate.Address, query)
+		case "dot":
+			response, queryErr = queryProbeLocalDNSViaDoT(candidate.Address, query)
+		case "dns":
+			response, queryErr = queryProbeLocalDNSViaPlain(candidate.Address, query)
+		default:
+			continue
+		}
+		if queryErr != nil {
+			lastErr = queryErr
+			continue
+		}
+		ips := filterProbeLocalIPv4StringsFromList(extractProbeLocalDNSResponseIPsBestEffort(response))
+		if len(ips) == 0 {
+			lastErr = fmt.Errorf("dns upstream returned no ipv4: kind=%s domain=%s", strings.TrimSpace(candidate.Kind), cleanDomain)
+			continue
+		}
+		return ips, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("dns upstream resolve failed")
+	}
+	return nil, lastErr
+}
+
 func currentProbeLocalDNSUpstreamCandidatesForDecision(_ probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
 	cfg, err := loadProbeLocalProxyGroupFile()
 	if err != nil {
