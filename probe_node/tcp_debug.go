@@ -16,6 +16,7 @@ const probeTCPDebugMaxFailures = 128
 
 type probeTCPDebugConnectionItemPayload struct {
 	ID          string `json:"id"`
+	Scope       string `json:"scope,omitempty"`
 	Target      string `json:"target,omitempty"`
 	RouteTarget string `json:"route_target,omitempty"`
 	NodeID      string `json:"node_id,omitempty"`
@@ -61,6 +62,7 @@ type probeTCPDebugResultPayload struct {
 type probeTCPDebugFailureEvent struct {
 	Kind        string
 	Reason      string
+	Scope       string
 	Target      string
 	RouteTarget string
 	NodeID      string
@@ -73,6 +75,7 @@ type probeTCPDebugFailureEvent struct {
 
 type probeTCPDebugRelay struct {
 	id          string
+	scope       string
 	target      string
 	routeTarget string
 	nodeID      string
@@ -119,10 +122,14 @@ func (w *probeTCPDebugWriter) Write(payload []byte) (int, error) {
 }
 
 func (s *probeTCPDebugState) beginRelay(target string) *probeTCPDebugRelay {
-	return s.beginRelayWithRoute(target, probeLocalTunnelRouteDecision{})
+	return s.beginRelayWithScope("chain", target, probeLocalTunnelRouteDecision{})
 }
 
 func (s *probeTCPDebugState) beginRelayWithRoute(target string, route probeLocalTunnelRouteDecision) *probeTCPDebugRelay {
+	return s.beginRelayWithScope("tun", target, route)
+}
+
+func (s *probeTCPDebugState) beginRelayWithScope(scope string, target string, route probeLocalTunnelRouteDecision) *probeTCPDebugRelay {
 	if s == nil {
 		return nil
 	}
@@ -136,6 +143,7 @@ func (s *probeTCPDebugState) beginRelayWithRoute(target string, route probeLocal
 	}
 	relay := &probeTCPDebugRelay{
 		id:          id,
+		scope:       firstNonEmptyProbeTCPDebugString(strings.TrimSpace(scope), "unknown"),
 		target:      strings.TrimSpace(target),
 		routeTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(route.TargetAddr), strings.TrimSpace(target)),
 		nodeID:      strings.TrimSpace(route.TunnelNodeID),
@@ -198,6 +206,7 @@ func (s *probeTCPDebugState) recordFailureWithRoute(kind string, target string, 
 	event := probeTCPDebugFailureEvent{
 		Kind:        strings.TrimSpace(kind),
 		Reason:      classifyProbeTCPDebugError(kind, err),
+		Scope:       "unknown",
 		Target:      strings.TrimSpace(target),
 		RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(route.TargetAddr), strings.TrimSpace(target)),
 		NodeID:      strings.TrimSpace(route.TunnelNodeID),
@@ -252,6 +261,7 @@ func (s *probeTCPDebugState) snapshotPayload(nodeID string, requestID string) pr
 	for _, relay := range activeItems {
 		item := probeTCPDebugConnectionItemPayload{
 			ID:          strings.TrimSpace(relay.id),
+			Scope:       strings.TrimSpace(relay.scope),
 			Target:      strings.TrimSpace(relay.target),
 			RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.routeTarget), strings.TrimSpace(relay.target)),
 			NodeID:      strings.TrimSpace(relay.nodeID),

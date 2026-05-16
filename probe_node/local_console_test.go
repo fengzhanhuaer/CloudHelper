@@ -289,6 +289,12 @@ func TestProbeLocalProxyFlowWithSession(t *testing.T) {
 	if _, ok := monitorPayload["dns"].(map[string]any); !ok {
 		t.Fatalf("proxy/monitor dns type=%T", monitorPayload["dns"])
 	}
+	if _, ok := monitorPayload["tcp"].(map[string]any); !ok {
+		t.Fatalf("proxy/monitor tcp type=%T", monitorPayload["tcp"])
+	}
+	if _, ok := monitorPayload["udp"].(map[string]any); !ok {
+		t.Fatalf("proxy/monitor udp type=%T", monitorPayload["udp"])
+	}
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{}, sessionCookie)
 	if enableResp.Code != http.StatusConflict {

@@ -49,6 +49,20 @@ type probeLocalProxyMonitorTUNSnapshot struct {
 	RXBytes   uint64 `json:"rx_bytes"`
 }
 
+type probeLocalProxyMonitorTCPSnapshot struct {
+	Active   int            `json:"active"`
+	TUN      int            `json:"tun"`
+	Chain    int            `json:"chain"`
+	Other    int            `json:"other"`
+	Failures int            `json:"failures"`
+	Scopes   map[string]int `json:"scopes"`
+}
+
+type probeLocalProxyMonitorUDPSnapshot struct {
+	Bridges      probeLocalTUNUDPBridgeMonitorStats `json:"bridges"`
+	Associations int                                `json:"associations"`
+}
+
 type probeLocalProxyMonitorSnapshot struct {
 	FetchedAt       string                                `json:"fetched_at"`
 	Reason          string                                `json:"reason"`
@@ -67,6 +81,8 @@ type probeLocalProxyMonitorSnapshot struct {
 	TCPActive       int                                   `json:"tcp_active"`
 	TCPFailures     int                                   `json:"tcp_failures"`
 	UDPAssociations int                                   `json:"udp_associations"`
+	TCP             probeLocalProxyMonitorTCPSnapshot     `json:"tcp"`
+	UDP             probeLocalProxyMonitorUDPSnapshot     `json:"udp"`
 	ChainRuntimes   int                                   `json:"chain_runtimes"`
 	DNS             probeLocalDNSMonitorStats             `json:"dns"`
 }
@@ -86,6 +102,13 @@ func (s probeLocalProxyMonitorSnapshot) clone() probeLocalProxyMonitorSnapshot {
 			statuses[key] = value
 		}
 		s.GroupRuntimes.Statuses = statuses
+	}
+	if s.TCP.Scopes != nil {
+		scopes := make(map[string]int, len(s.TCP.Scopes))
+		for key, value := range s.TCP.Scopes {
+			scopes[key] = value
+		}
+		s.TCP.Scopes = scopes
 	}
 	return s
 }
@@ -188,8 +211,9 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 	tunStats := probeLocalTUNDataPlaneStatsSnapshot()
 	groupStats := snapshotProbeLocalTUNGroupRuntimeMonitorStats()
 	dnsStats := snapshotProbeLocalDNSMonitorStats()
-	tcpActive, tcpFailures := snapshotProbeLocalTCPDebugMonitorStats()
+	tcpStats := snapshotProbeLocalTCPDebugMonitorStats()
 	udpAssociations := snapshotProbeUDPAssociationMonitorCount()
+	udpBridgeStats := snapshotProbeLocalTUNUDPBridgeMonitorStats()
 	chainRuntimes := snapshotProbeChainRuntimeMonitorCount()
 
 	cpuPercent := probeLocalProxyMonitorCPUPercent(previousCPU, currentCPU)
@@ -209,9 +233,11 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 		Memory:          probeLocalProxyMonitorMemorySnapshot{AllocMB: bytesToMiB(mem.Alloc), HeapAllocMB: bytesToMiB(mem.HeapAlloc), HeapInuseMB: bytesToMiB(mem.HeapInuse), HeapObjects: mem.HeapObjects, NumGC: mem.NumGC},
 		TUN:             probeLocalProxyMonitorTUNSnapshot{Running: tunStats.Running, RXPackets: tunStats.RXPackets, RXBytes: tunStats.RXBytes},
 		GroupRuntimes:   groupStats,
-		TCPActive:       tcpActive,
-		TCPFailures:     tcpFailures,
+		TCPActive:       tcpStats.Active,
+		TCPFailures:     tcpStats.Failures,
 		UDPAssociations: udpAssociations,
+		TCP:             tcpStats,
+		UDP:             probeLocalProxyMonitorUDPSnapshot{Bridges: udpBridgeStats, Associations: udpAssociations},
 		ChainRuntimes:   chainRuntimes,
 		DNS:             dnsStats,
 	}
@@ -262,14 +288,32 @@ func snapshotProbeLocalDNSMonitorStats() probeLocalDNSMonitorStats {
 	}
 }
 
-func snapshotProbeLocalTCPDebugMonitorStats() (active int, failures int) {
+func snapshotProbeLocalTCPDebugMonitorStats() probeLocalProxyMonitorTCPSnapshot {
+	stats := probeLocalProxyMonitorTCPSnapshot{Scopes: map[string]int{}}
 	state := globalProbeTCPDebugState
 	if state == nil {
-		return 0, 0
+		return stats
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return len(state.active), len(state.failures)
+	stats.Active = len(state.active)
+	stats.Failures = len(state.failures)
+	for _, relay := range state.active {
+		scope := "other"
+		if relay != nil && strings.TrimSpace(relay.scope) != "" {
+			scope = strings.TrimSpace(relay.scope)
+		}
+		stats.Scopes[scope]++
+		switch scope {
+		case "tun":
+			stats.TUN++
+		case "chain":
+			stats.Chain++
+		default:
+			stats.Other++
+		}
+	}
+	return stats
 }
 
 func snapshotProbeUDPAssociationMonitorCount() int {

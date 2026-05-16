@@ -83,6 +83,12 @@ type probeLocalTUNUDPBridge struct {
 	closeOnce sync.Once
 }
 
+type probeLocalTUNUDPBridgeMonitorStats struct {
+	Active int64 `json:"active"`
+	Opened int64 `json:"opened"`
+	Closed int64 `json:"closed"`
+}
+
 type probeLocalTUNTunnelUDPConn struct {
 	stream net.Conn
 	reader *bufio.Reader
@@ -173,6 +179,12 @@ var probeLocalTUNUDPSourceState = struct {
 }{
 	refs: map[string]int64{},
 }
+
+var probeLocalTUNUDPBridgeMonitorState = struct {
+	active atomic.Int64
+	opened atomic.Int64
+	closed atomic.Int64
+}{}
 
 func startProbeLocalTUNPacketStack() error {
 	probeLocalTUNDataPlaneState.mu.Lock()
@@ -523,6 +535,8 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 }
 
 func (b *probeLocalTUNUDPBridge) start() {
+	probeLocalTUNUDPBridgeMonitorState.active.Add(1)
+	probeLocalTUNUDPBridgeMonitorState.opened.Add(1)
 	go b.forwardInboundToOutbound()
 	go b.forwardOutboundToInbound()
 }
@@ -571,6 +585,8 @@ func (b *probeLocalTUNUDPBridge) forwardOutboundToInbound() {
 
 func (b *probeLocalTUNUDPBridge) close() {
 	b.closeOnce.Do(func() {
+		probeLocalTUNUDPBridgeMonitorState.active.Add(-1)
+		probeLocalTUNUDPBridgeMonitorState.closed.Add(1)
 		if b.inbound != nil {
 			_ = b.inbound.Close()
 		}
@@ -578,6 +594,14 @@ func (b *probeLocalTUNUDPBridge) close() {
 			_ = b.outbound.Close()
 		}
 	})
+}
+
+func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorStats {
+	return probeLocalTUNUDPBridgeMonitorStats{
+		Active: probeLocalTUNUDPBridgeMonitorState.active.Load(),
+		Opened: probeLocalTUNUDPBridgeMonitorState.opened.Load(),
+		Closed: probeLocalTUNUDPBridgeMonitorState.closed.Load(),
+	}
 }
 
 func newProbeLocalTUNTunnelUDPConn(stream net.Conn) *probeLocalTUNTunnelUDPConn {
