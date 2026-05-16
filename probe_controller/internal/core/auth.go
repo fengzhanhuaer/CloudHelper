@@ -717,6 +717,15 @@ func NonceHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist blacklist"})
 			return
 		}
+		logControllerWarnf("blacklist cidr added after too many nonce requests: ip=%s cidr=%s count=%d remote_addr=%q cf_connecting_ip=%q x_forwarded_for=%q x_real_ip=%q",
+			ip,
+			cidr,
+			failed,
+			r.RemoteAddr,
+			strings.TrimSpace(r.Header.Get("CF-Connecting-IP")),
+			strings.TrimSpace(r.Header.Get("X-Forwarded-For")),
+			strings.TrimSpace(r.Header.Get("X-Real-IP")),
+		)
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "too many nonce requests, cidr is now blacklisted",
 			"cidr":  cidr,

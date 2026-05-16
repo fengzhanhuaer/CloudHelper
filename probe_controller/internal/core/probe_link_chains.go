@@ -74,6 +74,15 @@ type probeLinkChainRecord struct {
 	UnavailableReason string                            `json:"unavailable_reason,omitempty"`
 }
 
+type probeLinkChainConfigResponse struct {
+	NodeID                   string                 `json:"node_id"`
+	Chains                   []probeLinkChainRecord `json:"chains"`
+	SelfChains               []probeLinkChainRecord `json:"self_chains"`
+	PortForwardChains        []probeLinkChainRecord `json:"port_forward_chains"`
+	ProxyChains              []probeLinkChainRecord `json:"proxy_chains"`
+	GlobalProxyForwardChains []probeLinkChainRecord `json:"global_proxy_forward_chains"`
+}
+
 func loadProbeLinkChainsLocked() []probeLinkChainRecord {
 	if ProbeLinkChainStore == nil {
 		return []probeLinkChainRecord{}
@@ -1130,6 +1139,44 @@ func ProbeLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"chains": enriched})
 }
 
+// ProbeLinkChainConfigHandler serves grouped chain config for probe nodes.
+func ProbeLinkChainConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isHTTPSRequest(r) {
+		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
+		return
+	}
+
+	nodeID, err := authenticateProbeRequestOrQuerySecret(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if ProbeLinkChainStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "chain store not initialized"})
+		return
+	}
+
+	ProbeLinkChainStore.mu.RLock()
+	all := loadProbeLinkChainsLocked()
+	ProbeLinkChainStore.mu.RUnlock()
+
+	available := fillChainRelayHosts(filterAvailableProbeLinkChains(all))
+	selfChains := filterProbeLinkChainsByNodeID(available, nodeID)
+	writeJSON(w, http.StatusOK, probeLinkChainConfigResponse{
+		NodeID:                   nodeID,
+		Chains:                   selfChains,
+		SelfChains:               selfChains,
+		PortForwardChains:        filterProbeLinkChainsByType(selfChains, "port_forward"),
+		ProxyChains:              filterProbeLinkChainsByType(selfChains, "proxy_chain"),
+		GlobalProxyForwardChains: filterProbeLinkChainsByType(available, "proxy_chain"),
+	})
+}
+
 // filterProbeLinkChainsByNodeID returns chains where nodeID appears in the route
 // (entry, cascade, or exit node).
 func filterProbeLinkChainsByNodeID(chains []probeLinkChainRecord, nodeID string) []probeLinkChainRecord {
@@ -1160,4 +1207,15 @@ func isProbeLinkChainNodeInRoute(chain probeLinkChainRecord, nodeID string) bool
 		}
 	}
 	return false
+}
+
+func filterProbeLinkChainsByType(chains []probeLinkChainRecord, chainType string) []probeLinkChainRecord {
+	normalizedType := normalizeProbeLinkChainType(chainType)
+	result := make([]probeLinkChainRecord, 0, len(chains))
+	for _, chain := range chains {
+		if normalizeProbeLinkChainType(chain.ChainType) == normalizedType {
+			result = append(result, chain)
+		}
+	}
+	return result
 }

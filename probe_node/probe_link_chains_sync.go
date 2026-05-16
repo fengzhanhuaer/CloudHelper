@@ -1,13 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -19,31 +14,38 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // probeLinkChainsSyncAPIPath is the controller endpoint that returns all chains
 // where this probe node appears (entry / cascade / exit).
 const (
-	probeLinkChainsSyncAPIPath             = "/api/probe/link/chains"
-	probeLinkChainsSyncPollInterval        = 60 * time.Minute
-	probeLinkChainsSyncFetchTimeout        = 15 * time.Second
-	probeChainTopologyCacheFileName        = "probe_link_chain_config.json"
-	probeProxyChainsCacheFileName          = "proxy_chain.json"
-	probeControllerSessionCacheFileName    = "controller_session_token.json"
-	probeAdminWSPath                       = "/api/admin/ws"
-	probeControllerSessionTokenEnv         = "PROBE_CONTROLLER_SESSION_TOKEN"
-	probeControllerSessionTokenEnvAlt      = "CLOUDHELPER_CONTROLLER_SESSION_TOKEN"
-	probeControllerAuthNonceAPIPath        = "/api/auth/nonce"
-	probeControllerAuthLoginAPIPath        = "/api/auth/login"
-	probeControllerAdminPrivateKeyFileName = "admin_private_key.pem"
-	probeControllerAdminPrivateKeyPathEnv  = "CLOUDHELPER_ADMIN_PRIVATE_KEY_PATH"
+	probeLinkChainsSyncAPIPath         = "/api/probe/link/chains"
+	probeLinkChainGroupedConfigAPIPath = "/api/probe/link/config/grouped"
+	probeLinkChainsSyncPollInterval    = 60 * time.Minute
+	probeLinkChainsSyncFetchTimeout    = 15 * time.Second
+	probeChainTopologyCacheFileName    = "probe_link_chain_config.json"
+	probeProxyChainsCacheFileName      = "proxy_chain.json"
 )
 
 // probeLinkChainsResponse mirrors the JSON returned by ProbeLinkChainsHandler.
 type probeLinkChainsResponse struct {
 	Chains []probeLinkChainServerItem `json:"chains"`
+}
+
+type probeLinkChainConfigResponse struct {
+	NodeID                   string                     `json:"node_id"`
+	Chains                   []probeLinkChainServerItem `json:"chains"`
+	SelfChains               []probeLinkChainServerItem `json:"self_chains"`
+	PortForwardChains        []probeLinkChainServerItem `json:"port_forward_chains"`
+	ProxyChains              []probeLinkChainServerItem `json:"proxy_chains"`
+	GlobalProxyForwardChains []probeLinkChainServerItem `json:"global_proxy_forward_chains"`
+}
+
+type probeLinkChainConfigFetchResult struct {
+	SelfChains               []probeLinkChainServerItem
+	PortForwardChains        []probeLinkChainServerItem
+	ProxyChains              []probeLinkChainServerItem
+	GlobalProxyForwardChains []probeLinkChainServerItem
 }
 
 // probeChainTopologyCacheFile stores full chain topology fetched from controller.
@@ -52,25 +54,8 @@ type probeChainTopologyCacheFile struct {
 	Items     []probeLinkChainServerItem `json:"items"`
 }
 
-type probeControllerSessionCacheFile struct {
-	ControllerBaseURL string `json:"controller_base_url"`
-	SessionToken      string `json:"session_token"`
-	UpdatedAt         string `json:"updated_at"`
-}
-
-type probeControllerSessionTokenSource string
-
-const (
-	probeControllerSessionTokenSourceNone  probeControllerSessionTokenSource = ""
-	probeControllerSessionTokenSourceEnv   probeControllerSessionTokenSource = "env"
-	probeControllerSessionTokenSourceCache probeControllerSessionTokenSource = "cache"
-	probeControllerSessionTokenSourceLogin probeControllerSessionTokenSource = "login"
-)
-
 var (
-	probeRequestControllerAuthNonce    = requestProbeControllerAuthNonce
-	probeRequestControllerSessionToken = requestProbeControllerSessionToken
-	probeFetchLinkChainsViaAdminWS     = fetchProbeLinkChainsViaAdminWS
+	probeRequestLinkChainConfig = requestProbeLinkChainConfig
 )
 
 // probeLinkChainServerItem is a single chain record returned by the controller.
@@ -149,7 +134,7 @@ func startProbeLinkChainsSyncLoop(identity nodeIdentity, controllerBaseURL strin
 // On fetch failure the running runtimes are left untouched (best-effort).
 func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
-	items, err := fetchProbeLinkChains(ctx, controllerBaseURL, identity)
+	config, err := fetchProbeLinkChainConfig(ctx, controllerBaseURL, identity)
 	cancel()
 	if err != nil {
 		log.Printf("warning: probe chain sync fetch failed: %v (using local topology cache when available)", err)
@@ -157,14 +142,14 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 		return
 	}
 
-	if err := persistProbeChainTopologyCache(items); err != nil {
+	if err := persistProbeChainTopologyCache(config.SelfChains); err != nil {
 		log.Printf("warning: persist probe chain topology cache failed: %v", err)
 	}
-	if err := persistProbeProxyChainCache(items); err != nil {
+	if err := persistProbeProxyChainCache(config.GlobalProxyForwardChains); err != nil {
 		log.Printf("warning: persist probe proxy chain cache failed: %v", err)
 	}
 
-	applyProbeLinkChainServerItems(identity, controllerBaseURL, items)
+	applyProbeLinkChainServerItems(identity, controllerBaseURL, config.SelfChains)
 }
 
 func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controllerBaseURL string) {
@@ -205,31 +190,29 @@ func loadProbeChainTopologyCacheItems() ([]probeLinkChainServerItem, error) {
 	return sanitizeProbeChainServerItemsForCache(payload.Items), nil
 }
 
-// fetchProbeLinkChains uses the dedicated manager-aligned admin ws action only.
+func fetchProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
+	base := strings.TrimSpace(controllerBaseURL)
+	if base == "" {
+		return probeLinkChainConfigFetchResult{}, errors.New("controller base url is empty")
+	}
+	result, err := probeRequestLinkChainConfig(ctx, base, identity)
+	if err != nil {
+		return probeLinkChainConfigFetchResult{}, err
+	}
+	result.SelfChains = sanitizeProbeChainServerItemsForCache(result.SelfChains)
+	result.PortForwardChains = sanitizeProbeChainServerItemsForCache(result.PortForwardChains)
+	result.ProxyChains = sanitizeProbeChainServerItemsForCache(result.ProxyChains)
+	result.GlobalProxyForwardChains = sanitizeProbeChainServerItemsForCache(result.GlobalProxyForwardChains)
+	return result, nil
+}
+
+// fetchProbeLinkChains returns self chains for compatibility with older callers.
 func fetchProbeLinkChains(ctx context.Context, controllerBaseURL string, identity nodeIdentity) ([]probeLinkChainServerItem, error) {
-	_ = identity
-	token, source := resolveProbeControllerSessionToken(controllerBaseURL)
-	if token == "" {
-		var err error
-		token, err = loginProbeControllerSessionToken(ctx, controllerBaseURL)
-		if err != nil {
-			return nil, err
-		}
-		source = probeControllerSessionTokenSourceLogin
+	config, err := fetchProbeLinkChainConfig(ctx, controllerBaseURL, identity)
+	if err != nil {
+		return nil, err
 	}
-	items, err := probeFetchLinkChainsViaAdminWS(ctx, controllerBaseURL, token)
-	if err != nil && shouldRetryProbeControllerSessionAuth(err) && source == probeControllerSessionTokenSourceCache {
-		clearErr := clearProbeControllerSessionTokenCache(controllerBaseURL)
-		if clearErr != nil {
-			log.Printf("warning: clear cached controller session token failed: %v", clearErr)
-		}
-		token, err = loginProbeControllerSessionToken(ctx, controllerBaseURL)
-		if err != nil {
-			return nil, err
-		}
-		return probeFetchLinkChainsViaAdminWS(ctx, controllerBaseURL, token)
-	}
-	return items, err
+	return config.SelfChains, nil
 }
 
 func refreshProbeProxyChainCacheFromController(ctx context.Context, identity nodeIdentity, controllerBaseURL string) ([]probeLinkChainServerItem, error) {
@@ -237,411 +220,62 @@ func refreshProbeProxyChainCacheFromController(ctx context.Context, identity nod
 	if base == "" {
 		return nil, errors.New("controller base url is empty")
 	}
-	items, err := fetchProbeLinkChains(ctx, base, identity)
+	config, err := fetchProbeLinkChainConfig(ctx, base, identity)
 	if err != nil {
 		return nil, err
 	}
-	if err := persistProbeProxyChainCache(items); err != nil {
+	if err := persistProbeProxyChainCache(config.GlobalProxyForwardChains); err != nil {
 		return nil, err
 	}
 	return loadProbeLocalProxyChainItems()
 }
 
-func resolveProbeControllerSessionToken(controllerBaseURL string) (string, probeControllerSessionTokenSource) {
-	if token := firstNonEmpty(
-		strings.TrimSpace(os.Getenv(probeControllerSessionTokenEnv)),
-		strings.TrimSpace(os.Getenv(probeControllerSessionTokenEnvAlt)),
-	); token != "" {
-		return token, probeControllerSessionTokenSourceEnv
-	}
-	token, err := loadProbeControllerSessionTokenCache(controllerBaseURL)
-	if err != nil {
-		log.Printf("warning: load cached controller session token failed: %v", err)
-		return "", probeControllerSessionTokenSourceNone
-	}
-	if token != "" {
-		return token, probeControllerSessionTokenSourceCache
-	}
-	return "", probeControllerSessionTokenSourceNone
-}
-
-func loginProbeControllerSessionToken(ctx context.Context, controllerBaseURL string) (string, error) {
-	nonce, err := probeRequestControllerAuthNonce(ctx, controllerBaseURL)
-	if err != nil {
-		return "", err
-	}
-	signature, err := signProbeControllerNonceWithLocalKey(nonce)
-	if err != nil {
-		return "", err
-	}
-	token, err := probeRequestControllerSessionToken(ctx, controllerBaseURL, nonce, signature)
-	if err != nil {
-		return "", err
-	}
-	if err := persistProbeControllerSessionTokenCache(controllerBaseURL, token); err != nil {
-		log.Printf("warning: persist controller session token cache failed: %v", err)
-	}
-	return token, nil
-}
-
-func requestProbeControllerAuthNonce(ctx context.Context, controllerBaseURL string) (string, error) {
+func requestProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
 	if baseURL == "" {
-		return "", errors.New("controller base url is required")
+		return probeLinkChainConfigFetchResult{}, errors.New("controller base url is required")
 	}
-	nonceURL := baseURL + probeControllerAuthNonceAPIPath
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, nonceURL, nil)
+	nodeID := strings.TrimSpace(identity.NodeID)
+	secret := strings.TrimSpace(identity.Secret)
+	if nodeID == "" || secret == "" {
+		return probeLinkChainConfigFetchResult{}, errors.New("node identity is missing node id or secret")
+	}
+
+	query := url.Values{}
+	query.Set("node_id", nodeID)
+	query.Set("secret", secret)
+	configURL := baseURL + probeLinkChainGroupedConfigAPIPath + "?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
 	if err != nil {
-		return "", err
+		return probeLinkChainConfigFetchResult{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Forwarded-Proto", "https")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return probeLinkChainConfigFetchResult{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("request nonce failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return probeLinkChainConfigFetchResult{}, fmt.Errorf("request link chain config failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	var payload struct {
-		Nonce string `json:"nonce"`
+	var payload probeLinkChainConfigResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return probeLinkChainConfigFetchResult{}, err
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&payload); err != nil {
-		return "", err
+	selfChains := payload.SelfChains
+	if len(selfChains) == 0 && len(payload.Chains) > 0 {
+		selfChains = payload.Chains
 	}
-	nonce := strings.TrimSpace(payload.Nonce)
-	if nonce == "" {
-		return "", errors.New("nonce is empty")
-	}
-	return nonce, nil
-}
-
-func requestProbeControllerSessionToken(ctx context.Context, controllerBaseURL string, nonce string, signature string) (string, error) {
-	baseURL := strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
-	if baseURL == "" {
-		return "", errors.New("controller base url is required")
-	}
-	loginURL := baseURL + probeControllerAuthLoginAPIPath
-	body, err := json.Marshal(map[string]string{
-		"nonce":     strings.TrimSpace(nonce),
-		"signature": strings.TrimSpace(signature),
-	})
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, loginURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Forwarded-Proto", "https")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("login failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-
-	var payload struct {
-		SessionToken string `json:"session_token"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&payload); err != nil {
-		return "", err
-	}
-	token := strings.TrimSpace(payload.SessionToken)
-	if token == "" {
-		return "", errors.New("session token is empty")
-	}
-	return token, nil
-}
-
-func signProbeControllerNonceWithLocalKey(nonce string) (string, error) {
-	nonce = strings.TrimSpace(nonce)
-	if nonce == "" {
-		return "", errors.New("nonce is required")
-	}
-	keyPath, err := resolveProbeControllerAdminPrivateKeyPath()
-	if err != nil {
-		return "", err
-	}
-	raw, err := os.ReadFile(keyPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read private key %s: %w", keyPath, err)
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return "", fmt.Errorf("failed to decode pem private key: %s", keyPath)
-	}
-	keyAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse private key: %w", err)
-	}
-	priv, ok := keyAny.(ed25519.PrivateKey)
-	if !ok {
-		return "", errors.New("private key is not ed25519")
-	}
-	signature := ed25519.Sign(priv, []byte(nonce))
-	return base64.StdEncoding.EncodeToString(signature), nil
-}
-
-func resolveProbeControllerAdminPrivateKeyPath() (string, error) {
-	candidates := make([]string, 0, 3)
-	if envPath := strings.TrimSpace(os.Getenv(probeControllerAdminPrivateKeyPathEnv)); envPath != "" {
-		candidates = append(candidates, envPath)
-	}
-	if dataDir, err := resolveDataDir(); err == nil && strings.TrimSpace(dataDir) != "" {
-		candidates = append(candidates, filepath.Join(dataDir, probeControllerAdminPrivateKeyFileName))
-	}
-	candidates = append(candidates, filepath.Join(".", "data", probeControllerAdminPrivateKeyFileName))
-
-	seen := map[string]struct{}{}
-	for _, candidate := range candidates {
-		value := strings.TrimSpace(candidate)
-		if value == "" {
-			continue
-		}
-		if abs, err := filepath.Abs(value); err == nil {
-			value = abs
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		if info, err := os.Stat(value); err == nil && info != nil && !info.IsDir() {
-			return value, nil
-		}
-	}
-
-	return "", fmt.Errorf("local admin private key not found: expected %s or set %s", filepath.Join("data", probeControllerAdminPrivateKeyFileName), probeControllerAdminPrivateKeyPathEnv)
-}
-
-type probeAdminWSRequest struct {
-	ID      string      `json:"id"`
-	Action  string      `json:"action"`
-	Payload interface{} `json:"payload,omitempty"`
-}
-
-type probeAdminWSResponse struct {
-	ID    string          `json:"id"`
-	OK    bool            `json:"ok"`
-	Data  json.RawMessage `json:"data"`
-	Error string          `json:"error"`
-	Type  string          `json:"type"`
-}
-
-type probeAdminWSChainsPayload struct {
-	Items []probeLinkChainServerItem `json:"items"`
-}
-
-func fetchProbeLinkChainsViaAdminWS(ctx context.Context, controllerBaseURL string, sessionToken string) ([]probeLinkChainServerItem, error) {
-	wsURL, err := buildProbeAdminWSURL(controllerBaseURL)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	headers := http.Header{}
-	headers.Set("X-Forwarded-Proto", "https")
-	conn, resp, err := dialer.Dial(wsURL, headers)
-	if err != nil {
-		if resp != nil {
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-			return nil, fmt.Errorf("admin ws handshake failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-		}
-		return nil, err
-	}
-	defer conn.Close()
-
-	deadline := time.Now().Add(probeLinkChainsSyncFetchTimeout)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	if err := conn.SetReadDeadline(deadline); err != nil {
-		return nil, err
-	}
-	if err := conn.SetWriteDeadline(deadline); err != nil {
-		return nil, err
-	}
-
-	authID := fmt.Sprintf("pn-chain-auth-%d", time.Now().UnixNano())
-	authReq := probeAdminWSRequest{ID: authID, Action: "auth.session", Payload: map[string]string{"token": strings.TrimSpace(sessionToken)}}
-	if err := conn.WriteJSON(authReq); err != nil {
-		return nil, err
-	}
-	authResp, err := readProbeAdminWSResponseByID(conn, authID)
-	if err != nil {
-		return nil, err
-	}
-	if !authResp.OK {
-		return nil, fmt.Errorf("admin ws auth failed: %s", strings.TrimSpace(authResp.Error))
-	}
-
-	chainsID := fmt.Sprintf("pn-chain-items-%d", time.Now().UnixNano())
-	if err := conn.WriteJSON(probeAdminWSRequest{ID: chainsID, Action: "admin.probe.link.chains.get"}); err != nil {
-		return nil, err
-	}
-	chainsResp, err := readProbeAdminWSResponseByID(conn, chainsID)
-	if err != nil {
-		return nil, err
-	}
-	if !chainsResp.OK {
-		return nil, fmt.Errorf("fetch chain list failed: %s", strings.TrimSpace(chainsResp.Error))
-	}
-
-	payload := probeAdminWSChainsPayload{}
-	if len(chainsResp.Data) > 0 {
-		if err := json.Unmarshal(chainsResp.Data, &payload); err != nil {
-			return nil, err
-		}
-	}
-	return sanitizeProbeChainServerItemsForCache(payload.Items), nil
-}
-
-func readProbeAdminWSResponseByID(conn *websocket.Conn, requestID string) (probeAdminWSResponse, error) {
-	for {
-		var resp probeAdminWSResponse
-		if err := conn.ReadJSON(&resp); err != nil {
-			return probeAdminWSResponse{}, err
-		}
-		if strings.TrimSpace(resp.Type) != "" {
-			continue
-		}
-		if strings.TrimSpace(resp.ID) != strings.TrimSpace(requestID) {
-			continue
-		}
-		return resp, nil
-	}
-}
-
-func buildProbeAdminWSURL(controllerBaseURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(controllerBaseURL))
-	if err != nil || parsed == nil || strings.TrimSpace(parsed.Host) == "" {
-		return "", fmt.Errorf("invalid controller url")
-	}
-	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
-	switch scheme {
-	case "https":
-		parsed.Scheme = "wss"
-	case "http":
-		parsed.Scheme = "ws"
-	case "wss", "ws":
-		// keep
-	default:
-		return "", fmt.Errorf("unsupported controller url scheme")
-	}
-	parsed.Path = probeAdminWSPath
-	parsed.RawPath = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return strings.TrimSpace(parsed.String()), nil
-}
-
-func shouldRetryProbeControllerSessionAuth(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(message, "admin ws auth failed")
-}
-
-func resolveProbeControllerSessionCachePath() (string, error) {
-	dataDir, err := resolveDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dataDir, probeControllerSessionCacheFileName), nil
-}
-
-func normalizeProbeControllerBaseURL(controllerBaseURL string) string {
-	return strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
-}
-
-func loadProbeControllerSessionTokenCache(controllerBaseURL string) (string, error) {
-	path, err := resolveProbeControllerSessionCachePath()
-	if err != nil {
-		return "", err
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return "", nil
-	}
-	var payload probeControllerSessionCacheFile
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return "", err
-	}
-	if normalizeProbeControllerBaseURL(payload.ControllerBaseURL) != normalizeProbeControllerBaseURL(controllerBaseURL) {
-		return "", nil
-	}
-	return strings.TrimSpace(payload.SessionToken), nil
-}
-
-func persistProbeControllerSessionTokenCache(controllerBaseURL string, token string) error {
-	cleanToken := strings.TrimSpace(token)
-	if cleanToken == "" {
-		return errors.New("controller session token is empty")
-	}
-	path, err := resolveProbeControllerSessionCachePath()
-	if err != nil {
-		return err
-	}
-	payload := probeControllerSessionCacheFile{
-		ControllerBaseURL: normalizeProbeControllerBaseURL(controllerBaseURL),
-		SessionToken:      cleanToken,
-		UpdatedAt:         time.Now().UTC().Format(time.RFC3339),
-	}
-	encoded, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(encoded, '\n'), 0o644)
-}
-
-func clearProbeControllerSessionTokenCache(controllerBaseURL string) error {
-	path, err := resolveProbeControllerSessionCachePath()
-	if err != nil {
-		return err
-	}
-	if normalizeProbeControllerBaseURL(controllerBaseURL) == "" {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	payloadToken, err := loadProbeControllerSessionTokenCache(controllerBaseURL)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(payloadToken) == "" {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return probeLinkChainConfigFetchResult{
+		SelfChains:               selfChains,
+		PortForwardChains:        payload.PortForwardChains,
+		ProxyChains:              payload.ProxyChains,
+		GlobalProxyForwardChains: payload.GlobalProxyForwardChains,
+	}, nil
 }
 
 // applyProbeLinkChainServerItems diffs server items against running runtimes.
