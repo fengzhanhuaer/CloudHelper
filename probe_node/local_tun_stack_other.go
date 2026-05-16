@@ -3,9 +3,25 @@
 package main
 
 type probeLocalTUNUDPBridgeMonitorStats struct {
-	Active int64 `json:"active"`
-	Opened int64 `json:"opened"`
-	Closed int64 `json:"closed"`
+	Active int64                               `json:"active"`
+	Opened int64                               `json:"opened"`
+	Closed int64                               `json:"closed"`
+	Items  []probeLocalTUNUDPBridgeMonitorItem `json:"items,omitempty"`
+}
+
+type probeLocalTUNUDPBridgeMonitorItem struct {
+	ID          string `json:"id"`
+	Target      string `json:"target,omitempty"`
+	RouteTarget string `json:"route_target,omitempty"`
+	Group       string `json:"group,omitempty"`
+	NodeID      string `json:"node_id,omitempty"`
+	Direct      bool   `json:"direct"`
+	OpenedAt    string `json:"opened_at,omitempty"`
+	LastActive  string `json:"last_active,omitempty"`
+	AgeMS       int64  `json:"age_ms"`
+	IdleMS      int64  `json:"idle_ms"`
+	BytesUp     int64  `json:"bytes_up,omitempty"`
+	BytesDown   int64  `json:"bytes_down,omitempty"`
 }
 
 func startProbeLocalTUNPacketStack() error { return nil }

@@ -134,6 +134,7 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 				"监视数据",
 				"TCP relay 拆分",
 				"UDP bridge / association",
+				"UDP bridge 明细",
 			},
 			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
 		},

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ const (
 	probeLocalTUNUDPQUICAssociationTimeout = 10 * time.Minute
 	probeLocalTUNUDPAssociationGCInterval  = 15 * time.Second
 	probeLocalTUNUDPReadBufferSize         = 65535
+	probeLocalTUNUDPZeroReadBackoff        = 10 * time.Millisecond
 
 	probeLocalTUNUDPNATModeFallbackEphemeral = "auto_fallback_ephemeral"
 )
@@ -79,14 +81,33 @@ type probeLocalTUNUDPBridge struct {
 	inbound  *gonet.UDPConn
 	outbound io.ReadWriteCloser
 	timeout  time.Duration
+	target   string
+	route    probeLocalTunnelRouteDecision
+	monitor  *probeLocalTUNUDPBridgeMonitorItemState
 
 	closeOnce sync.Once
 }
 
 type probeLocalTUNUDPBridgeMonitorStats struct {
-	Active int64 `json:"active"`
-	Opened int64 `json:"opened"`
-	Closed int64 `json:"closed"`
+	Active int64                               `json:"active"`
+	Opened int64                               `json:"opened"`
+	Closed int64                               `json:"closed"`
+	Items  []probeLocalTUNUDPBridgeMonitorItem `json:"items,omitempty"`
+}
+
+type probeLocalTUNUDPBridgeMonitorItem struct {
+	ID          string `json:"id"`
+	Target      string `json:"target,omitempty"`
+	RouteTarget string `json:"route_target,omitempty"`
+	Group       string `json:"group,omitempty"`
+	NodeID      string `json:"node_id,omitempty"`
+	Direct      bool   `json:"direct"`
+	OpenedAt    string `json:"opened_at,omitempty"`
+	LastActive  string `json:"last_active,omitempty"`
+	AgeMS       int64  `json:"age_ms"`
+	IdleMS      int64  `json:"idle_ms"`
+	BytesUp     int64  `json:"bytes_up,omitempty"`
+	BytesDown   int64  `json:"bytes_down,omitempty"`
 }
 
 type probeLocalTUNTunnelUDPConn struct {
@@ -181,10 +202,24 @@ var probeLocalTUNUDPSourceState = struct {
 }
 
 var probeLocalTUNUDPBridgeMonitorState = struct {
+	mu     sync.Mutex
+	seq    atomic.Uint64
 	active atomic.Int64
 	opened atomic.Int64
 	closed atomic.Int64
-}{}
+	items  map[string]*probeLocalTUNUDPBridgeMonitorItemState
+}{items: map[string]*probeLocalTUNUDPBridgeMonitorItemState{}}
+
+type probeLocalTUNUDPBridgeMonitorItemState struct {
+	id       string
+	target   string
+	route    probeLocalTunnelRouteDecision
+	openedAt time.Time
+
+	lastActiveUnix atomic.Int64
+	bytesUp        atomic.Int64
+	bytesDown      atomic.Int64
+}
 
 func startProbeLocalTUNPacketStack() error {
 	probeLocalTUNDataPlaneState.mu.Lock()
@@ -454,6 +489,8 @@ func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 		inbound:  inbound,
 		outbound: outbound,
 		timeout:  resolveProbeLocalTUNUDPAssociationTimeout(targetAddr),
+		target:   targetAddr,
+		route:    route,
 	}
 	bridge.start()
 }
@@ -545,6 +582,7 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 func (b *probeLocalTUNUDPBridge) start() {
 	probeLocalTUNUDPBridgeMonitorState.active.Add(1)
 	probeLocalTUNUDPBridgeMonitorState.opened.Add(1)
+	b.monitor = beginProbeLocalTUNUDPBridgeMonitorItem(strings.TrimSpace(b.target), b.route)
 	go b.forwardInboundToOutbound()
 	go b.forwardOutboundToInbound()
 }
@@ -557,10 +595,15 @@ func (b *probeLocalTUNUDPBridge) forwardInboundToOutbound() {
 		}
 		n, err := b.inbound.Read(buf)
 		if n > 0 {
+			touchProbeLocalTUNUDPBridgeMonitorItem(b.monitor, "up", n)
 			if _, writeErr := b.outbound.Write(buf[:n]); writeErr != nil {
 				b.close()
 				return
 			}
+		}
+		if n == 0 && err == nil {
+			time.Sleep(probeLocalTUNUDPZeroReadBackoff)
+			continue
 		}
 		if err != nil {
 			b.close()
@@ -579,10 +622,15 @@ func (b *probeLocalTUNUDPBridge) forwardOutboundToInbound() {
 		}
 		n, err := b.outbound.Read(buf)
 		if n > 0 {
+			touchProbeLocalTUNUDPBridgeMonitorItem(b.monitor, "down", n)
 			if _, writeErr := b.inbound.Write(buf[:n]); writeErr != nil {
 				b.close()
 				return
 			}
+		}
+		if n == 0 && err == nil {
+			time.Sleep(probeLocalTUNUDPZeroReadBackoff)
+			continue
 		}
 		if err != nil {
 			b.close()
@@ -595,6 +643,7 @@ func (b *probeLocalTUNUDPBridge) close() {
 	b.closeOnce.Do(func() {
 		probeLocalTUNUDPBridgeMonitorState.active.Add(-1)
 		probeLocalTUNUDPBridgeMonitorState.closed.Add(1)
+		endProbeLocalTUNUDPBridgeMonitorItem(b.monitor)
 		if b.inbound != nil {
 			_ = b.inbound.Close()
 		}
@@ -605,11 +654,90 @@ func (b *probeLocalTUNUDPBridge) close() {
 }
 
 func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorStats {
-	return probeLocalTUNUDPBridgeMonitorStats{
+	stats := probeLocalTUNUDPBridgeMonitorStats{
 		Active: probeLocalTUNUDPBridgeMonitorState.active.Load(),
 		Opened: probeLocalTUNUDPBridgeMonitorState.opened.Load(),
 		Closed: probeLocalTUNUDPBridgeMonitorState.closed.Load(),
 	}
+	now := time.Now().UTC()
+	probeLocalTUNUDPBridgeMonitorState.mu.Lock()
+	items := make([]*probeLocalTUNUDPBridgeMonitorItemState, 0, len(probeLocalTUNUDPBridgeMonitorState.items))
+	for _, item := range probeLocalTUNUDPBridgeMonitorState.items {
+		if item != nil {
+			items = append(items, item)
+		}
+	}
+	probeLocalTUNUDPBridgeMonitorState.mu.Unlock()
+	for _, item := range items {
+		view := probeLocalTUNUDPBridgeMonitorItem{
+			ID:          strings.TrimSpace(item.id),
+			Target:      strings.TrimSpace(item.target),
+			RouteTarget: firstNonEmpty(strings.TrimSpace(item.route.TargetAddr), strings.TrimSpace(item.target)),
+			Group:       strings.TrimSpace(item.route.Group),
+			NodeID:      strings.TrimSpace(item.route.TunnelNodeID),
+			Direct:      item.route.Direct,
+			OpenedAt:    item.openedAt.UTC().Format(time.RFC3339),
+			AgeMS:       now.Sub(item.openedAt).Milliseconds(),
+			BytesUp:     item.bytesUp.Load(),
+			BytesDown:   item.bytesDown.Load(),
+		}
+		if lastActive := item.lastActiveUnix.Load(); lastActive > 0 {
+			lastActiveAt := time.Unix(lastActive, 0).UTC()
+			view.LastActive = lastActiveAt.Format(time.RFC3339)
+			view.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+		}
+		stats.Items = append(stats.Items, view)
+	}
+	sort.Slice(stats.Items, func(i, j int) bool {
+		if stats.Items[i].IdleMS == stats.Items[j].IdleMS {
+			return stats.Items[i].Target < stats.Items[j].Target
+		}
+		return stats.Items[i].IdleMS > stats.Items[j].IdleMS
+	})
+	if len(stats.Items) > 16 {
+		stats.Items = append([]probeLocalTUNUDPBridgeMonitorItem(nil), stats.Items[:16]...)
+	}
+	return stats
+}
+
+func beginProbeLocalTUNUDPBridgeMonitorItem(target string, route probeLocalTunnelRouteDecision) *probeLocalTUNUDPBridgeMonitorItemState {
+	now := time.Now().UTC()
+	id := "probe-udp-" + strconv.FormatInt(now.UnixNano(), 10) + "-" + strconv.FormatUint(probeLocalTUNUDPBridgeMonitorState.seq.Add(1), 10)
+	item := &probeLocalTUNUDPBridgeMonitorItemState{
+		id:       id,
+		target:   strings.TrimSpace(target),
+		route:    route,
+		openedAt: now,
+	}
+	item.lastActiveUnix.Store(now.Unix())
+	probeLocalTUNUDPBridgeMonitorState.mu.Lock()
+	if probeLocalTUNUDPBridgeMonitorState.items == nil {
+		probeLocalTUNUDPBridgeMonitorState.items = map[string]*probeLocalTUNUDPBridgeMonitorItemState{}
+	}
+	probeLocalTUNUDPBridgeMonitorState.items[id] = item
+	probeLocalTUNUDPBridgeMonitorState.mu.Unlock()
+	return item
+}
+
+func touchProbeLocalTUNUDPBridgeMonitorItem(item *probeLocalTUNUDPBridgeMonitorItemState, direction string, n int) {
+	if item == nil || n <= 0 {
+		return
+	}
+	item.lastActiveUnix.Store(time.Now().UTC().Unix())
+	if strings.EqualFold(strings.TrimSpace(direction), "down") {
+		item.bytesDown.Add(int64(n))
+		return
+	}
+	item.bytesUp.Add(int64(n))
+}
+
+func endProbeLocalTUNUDPBridgeMonitorItem(item *probeLocalTUNUDPBridgeMonitorItemState) {
+	if item == nil {
+		return
+	}
+	probeLocalTUNUDPBridgeMonitorState.mu.Lock()
+	delete(probeLocalTUNUDPBridgeMonitorState.items, item.id)
+	probeLocalTUNUDPBridgeMonitorState.mu.Unlock()
 }
 
 func newProbeLocalTUNTunnelUDPConn(stream net.Conn) *probeLocalTUNTunnelUDPConn {

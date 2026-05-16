@@ -100,6 +100,7 @@
       padding: 9px 6px;
       border-bottom: 1px solid rgba(255,255,255,.08);
       vertical-align: top;
+      white-space: pre-line;
     }
     .monitor-table td:first-child { color: var(--text-secondary); width: 190px; }
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; color: var(--text-secondary); }
@@ -157,6 +158,7 @@
             <tr><td>TUN 数据面</td><td id="mon-tun">--</td></tr>
             <tr><td>TCP relay 拆分</td><td id="mon-tcp-detail">--</td></tr>
             <tr><td>UDP bridge / association</td><td id="mon-udp-detail">--</td></tr>
+            <tr><td>UDP bridge 明细</td><td id="mon-udp-bridges">--</td></tr>
             <tr><td>代理组 runtime</td><td id="mon-groups">--</td></tr>
             <tr><td>链路 runtime</td><td id="mon-chain">--</td></tr>
             <tr><td>DNS / FakeIP</td><td id="mon-dns">--</td></tr>
@@ -271,9 +273,24 @@
       setText('mon-tun', 'running=' + formatBool(tun.running, 'true', 'false') + ', rx_packets=' + (tun.rx_packets || 0) + ', rx_bytes=' + (tun.rx_bytes || 0));
       setText('mon-tcp-detail', 'active=' + (tcp.active || data.tcp_active || 0) + ', tun=' + (tcp.tun || 0) + ', chain=' + (tcp.chain || 0) + ', other=' + (tcp.other || 0) + ', failures=' + (tcp.failures || data.tcp_failures || 0) + ', scopes=' + formatCountMap(tcp.scopes));
       setText('mon-udp-detail', 'bridges_active=' + (udpBridges.active || 0) + ', opened=' + (udpBridges.opened || 0) + ', closed=' + (udpBridges.closed || 0) + ', associations=' + (udp.associations || data.udp_associations || 0));
+      setText('mon-udp-bridges', formatUDPBridgeItems(udpBridges.items));
       setText('mon-groups', 'total=' + (groups.total || 0) + ', selected=' + (groups.selected || 0) + ', connected=' + (groups.connected || 0) + ', failures=' + (groups.failure_total || 0) + ', statuses=' + formatCountMap(groups.statuses));
       setText('mon-chain', 'chain_runtimes=' + (data.chain_runtimes || 0) + ', tcp_failures=' + (data.tcp_failures || 0));
       setText('mon-dns', 'loaded=' + formatBool(dns.loaded, 'true', 'false') + ', service=' + formatBool(dns.service, 'true', 'false') + ', tun_service=' + formatBool(dns.tun_service, 'true', 'false') + ', cache=' + (dns.cache || 0) + ', fake=' + (dns.fake_ip || 0) + ', hints=' + (dns.route_hints || 0) + '/' + (dns.route_ip_hints || 0));
+    }
+
+    function formatUDPBridgeItems(items) {
+      if (!Array.isArray(items) || items.length === 0) return '-';
+      return items.slice(0, 8).map((item) => {
+        const target = item.target || '-';
+        const routeTarget = item.route_target || '-';
+        const group = item.group || (item.direct ? 'direct' : '-');
+        const idle = Math.max(0, Math.round(Number(item.idle_ms || 0) / 1000));
+        const age = Math.max(0, Math.round(Number(item.age_ms || 0) / 1000));
+        const up = Number(item.bytes_up || 0);
+        const down = Number(item.bytes_down || 0);
+        return target + ' -> ' + routeTarget + ' group=' + group + ' idle=' + idle + 's age=' + age + 's up=' + up + ' down=' + down;
+      }).join('\n');
     }
 
     async function loadMonitor() {
