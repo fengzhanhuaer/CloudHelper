@@ -187,7 +187,8 @@ var (
 	probeLocalDNSEnsureDirectBypassForTarget = func(string) error {
 		return nil
 	}
-	probeLocalDNSHandlerSemaphore = make(chan struct{}, probeLocalDNSHandlerLimit)
+	probeLocalDNSFallbackDirectBypassForTarget = ensureProbeLocalFallbackDirectBypassForTarget
+	probeLocalDNSHandlerSemaphore              = make(chan struct{}, probeLocalDNSHandlerLimit)
 )
 
 func init() {
@@ -2085,6 +2086,52 @@ func queryProbeLocalDNSCacheRecords() []probeLocalDNSCacheRecord {
 	return records
 }
 
+func ensureProbeLocalDNSFallbackBypassRoutesFromCache() (int, error) {
+	ensureProbeLocalDNSCacheLoaded()
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	pruneProbeLocalDNSUnifiedRecordsLocked(now)
+	records := make([]probeLocalDNSUnifiedRecord, 0, len(probeLocalDNSState.cache))
+	for _, entry := range probeLocalDNSState.cache {
+		entry.RealIPs = append([]string(nil), entry.RealIPs...)
+		records = append(records, entry)
+	}
+	probeLocalDNSState.mu.Unlock()
+
+	seen := make(map[string]struct{}, len(records))
+	installed := 0
+	var allErr error
+	for _, entry := range records {
+		decision := resolveProbeLocalProxyRouteDecisionByDomain(entry.Domain)
+		if !isProbeLocalDNSFallbackDirectDecision(decision) {
+			continue
+		}
+		for _, rawIP := range entry.RealIPs {
+			ip := net.ParseIP(strings.TrimSpace(strings.Trim(rawIP, "[]")))
+			if ip == nil || ip.To4() == nil || isProbeLocalTUNLocalOrDiscoveryIP(ip) {
+				continue
+			}
+			ipText := ip.String()
+			if _, ok := seen[ipText]; ok {
+				continue
+			}
+			seen[ipText] = struct{}{}
+			if err := probeLocalDNSFallbackDirectBypassForTarget(net.JoinHostPort(ipText, "443")); err != nil {
+				allErr = errors.Join(allErr, err)
+				continue
+			}
+			installed++
+		}
+	}
+	return installed, allErr
+}
+
+func isProbeLocalDNSFallbackDirectDecision(decision probeLocalDNSRouteDecision) bool {
+	return strings.EqualFold(strings.TrimSpace(decision.Group), "fallback") &&
+		!decision.Reject &&
+		strings.EqualFold(strings.TrimSpace(decision.Action), "direct")
+}
+
 func queryProbeLocalDNSUnifiedRecords() []probeLocalDNSUnifiedRecordView {
 	ensureProbeLocalDNSCacheLoaded()
 	now := probeLocalDNSNow().UTC()
@@ -2424,4 +2471,5 @@ func resetProbeLocalDNSHooksForTest() {
 	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
 		return bootstrapProbeLocalDNSResolveIPv4s(domain)
 	}
+	probeLocalDNSFallbackDirectBypassForTarget = ensureProbeLocalFallbackDirectBypassForTarget
 }

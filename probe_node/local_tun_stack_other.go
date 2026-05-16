@@ -2,6 +2,8 @@
 
 package main
 
+import "net"
+
 type probeLocalTUNUDPBridgeMonitorStats struct {
 	Active int64                               `json:"active"`
 	Direct int64                               `json:"direct"`
@@ -31,8 +33,33 @@ func startProbeLocalTUNPacketStack() error { return nil }
 func stopProbeLocalTUNPacketStack() error  { return nil }
 
 func ensureProbeLocalExplicitDirectBypassForTarget(string) error { return nil }
+func ensureProbeLocalFallbackDirectBypassForTarget(string) error { return nil }
 func releaseProbeLocalAllDirectBypassRoutes()                    {}
 func releaseProbeLocalManagedDirectBypassRoutes()                {}
+
+func isProbeLocalTUNLocalOrDiscoveryIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 10:
+			return true
+		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
+			return true
+		case ip4[0] == 192 && ip4[1] == 168:
+			return true
+		case ip4[0] == 169 && ip4[1] == 254:
+			return true
+		default:
+			return false
+		}
+	}
+	return ip.IsPrivate()
+}
 
 func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorStats {
 	return probeLocalTUNUDPBridgeMonitorStats{}

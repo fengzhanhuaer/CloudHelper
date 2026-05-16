@@ -443,6 +443,52 @@ func TestProbeLocalDNSClearAPI(t *testing.T) {
 	}
 }
 
+func TestEnsureProbeLocalDNSFallbackBypassRoutesFromCacheOnlyFallback(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "media", Rules: []string{"domain_suffix:proxied.example"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	storeProbeLocalDNSCacheRecords("fallback.example", []string{"162.159.61.4", "10.0.0.8"})
+	storeProbeLocalDNSCacheRecords("api.proxied.example", []string{"203.0.113.10"})
+
+	var targets []string
+	probeLocalDNSFallbackDirectBypassForTarget = func(target string) error {
+		targets = append(targets, target)
+		return nil
+	}
+	t.Cleanup(func() {
+		probeLocalDNSFallbackDirectBypassForTarget = ensureProbeLocalFallbackDirectBypassForTarget
+	})
+
+	installed, err := ensureProbeLocalDNSFallbackBypassRoutesFromCache()
+	if err != nil {
+		t.Fatalf("prewarm failed: %v", err)
+	}
+	if installed != 1 {
+		t.Fatalf("installed=%d targets=%v", installed, targets)
+	}
+	if len(targets) != 1 || targets[0] != "162.159.61.4:443" {
+		t.Fatalf("targets=%v", targets)
+	}
+}
+
 func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{

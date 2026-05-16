@@ -50,12 +50,14 @@ type probeLocalProxyMonitorTUNSnapshot struct {
 }
 
 type probeLocalProxyMonitorTCPSnapshot struct {
-	Active   int            `json:"active"`
-	TUN      int            `json:"tun"`
-	Chain    int            `json:"chain"`
-	Other    int            `json:"other"`
-	Failures int            `json:"failures"`
-	Scopes   map[string]int `json:"scopes"`
+	Active             int                                     `json:"active"`
+	TUN                int                                     `json:"tun"`
+	Chain              int                                     `json:"chain"`
+	Other              int                                     `json:"other"`
+	Failures           int                                     `json:"failures"`
+	DirectFailureCache probeLocalTUNTCPDirectFailureCacheStats `json:"direct_failure_cache"`
+	Scopes             map[string]int                          `json:"scopes"`
+	Items              []probeTCPDebugConnectionItemPayload    `json:"items,omitempty"`
 }
 
 type probeLocalProxyMonitorUDPSnapshot struct {
@@ -109,6 +111,9 @@ func (s probeLocalProxyMonitorSnapshot) clone() probeLocalProxyMonitorSnapshot {
 			scopes[key] = value
 		}
 		s.TCP.Scopes = scopes
+	}
+	if s.TCP.Items != nil {
+		s.TCP.Items = append([]probeTCPDebugConnectionItemPayload(nil), s.TCP.Items...)
 	}
 	return s
 }
@@ -289,7 +294,10 @@ func snapshotProbeLocalDNSMonitorStats() probeLocalDNSMonitorStats {
 }
 
 func snapshotProbeLocalTCPDebugMonitorStats() probeLocalProxyMonitorTCPSnapshot {
-	stats := probeLocalProxyMonitorTCPSnapshot{Scopes: map[string]int{}}
+	stats := probeLocalProxyMonitorTCPSnapshot{
+		DirectFailureCache: snapshotProbeLocalTUNTCPDirectFailureCacheStats(),
+		Scopes:             map[string]int{},
+	}
 	state := globalProbeTCPDebugState
 	if state == nil {
 		return stats
@@ -298,6 +306,7 @@ func snapshotProbeLocalTCPDebugMonitorStats() probeLocalProxyMonitorTCPSnapshot 
 	defer state.mu.Unlock()
 	stats.Active = len(state.active)
 	stats.Failures = len(state.failures)
+	now := time.Now().UTC()
 	for _, relay := range state.active {
 		scope := "other"
 		if relay != nil && strings.TrimSpace(relay.scope) != "" {
@@ -312,6 +321,41 @@ func snapshotProbeLocalTCPDebugMonitorStats() probeLocalProxyMonitorTCPSnapshot 
 		default:
 			stats.Other++
 		}
+		if relay == nil {
+			continue
+		}
+		item := probeTCPDebugConnectionItemPayload{
+			ID:          strings.TrimSpace(relay.id),
+			Scope:       strings.TrimSpace(relay.scope),
+			Target:      strings.TrimSpace(relay.target),
+			RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.routeTarget), strings.TrimSpace(relay.target)),
+			NodeID:      strings.TrimSpace(relay.nodeID),
+			Group:       strings.TrimSpace(relay.group),
+			Direct:      relay.direct,
+			Transport:   firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.transport), "tcp"),
+			OpenedAt:    relay.openedAt.UTC().Format(time.RFC3339),
+			AgeMS:       now.Sub(relay.openedAt).Milliseconds(),
+			BytesUp:     relay.bytesUp.Load(),
+			BytesDown:   relay.bytesDown.Load(),
+		}
+		if lastActive := relay.lastActiveUnix.Load(); lastActive > 0 {
+			lastActiveAt := time.Unix(lastActive, 0).UTC()
+			item.LastActive = lastActiveAt.Format(time.RFC3339)
+			item.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+		}
+		stats.Items = append(stats.Items, item)
+	}
+	sort.Slice(stats.Items, func(i, j int) bool {
+		if stats.Items[i].IdleMS == stats.Items[j].IdleMS {
+			if stats.Items[i].Scope == stats.Items[j].Scope {
+				return stats.Items[i].Target < stats.Items[j].Target
+			}
+			return stats.Items[i].Scope < stats.Items[j].Scope
+		}
+		return stats.Items[i].IdleMS > stats.Items[j].IdleMS
+	})
+	if len(stats.Items) > 16 {
+		stats.Items = append([]probeTCPDebugConnectionItemPayload(nil), stats.Items[:16]...)
 	}
 	return stats
 }

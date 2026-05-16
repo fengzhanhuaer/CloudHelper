@@ -133,6 +133,7 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 				"/local/api/proxy/monitor",
 				"监视数据",
 				"TCP relay 拆分",
+				"TCP relay 明细",
 				"UDP bridge / association",
 				"UDP bridge 明细",
 			},

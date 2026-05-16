@@ -157,6 +157,7 @@
             <tr><td>内存</td><td id="mon-memory">--</td></tr>
             <tr><td>TUN 数据面</td><td id="mon-tun">--</td></tr>
             <tr><td>TCP relay 拆分</td><td id="mon-tcp-detail">--</td></tr>
+            <tr><td>TCP relay 明细</td><td id="mon-tcp-relays">--</td></tr>
             <tr><td>UDP bridge / association</td><td id="mon-udp-detail">--</td></tr>
             <tr><td>UDP bridge 明细</td><td id="mon-udp-bridges">--</td></tr>
             <tr><td>代理组 runtime</td><td id="mon-groups">--</td></tr>
@@ -254,6 +255,7 @@
       const groups = data.group_runtimes || {};
       const dns = data.dns || {};
       const tcp = data.tcp || {};
+      const tcpDirectFailureCache = tcp.direct_failure_cache || {};
       const udp = data.udp || {};
       const udpBridges = udp.bridges || {};
       const cpuText = data.cpu_percent_text && data.cpu_percent_text !== 'unavailable' ? data.cpu_percent_text + '%' : '不可用';
@@ -271,12 +273,28 @@
       setText('mon-cpu-total', data.cpu_total_ms === undefined || data.cpu_total_ms === null ? '不可用' : data.cpu_total_ms + ' ms');
       setText('mon-memory', 'alloc=' + formatMB(memory.alloc_mb) + ', heap=' + formatMB(memory.heap_alloc_mb) + ', inuse=' + formatMB(memory.heap_inuse_mb) + ', objects=' + (memory.heap_objects || 0) + ', gc=' + (memory.num_gc || 0));
       setText('mon-tun', 'running=' + formatBool(tun.running, 'true', 'false') + ', rx_packets=' + (tun.rx_packets || 0) + ', rx_bytes=' + (tun.rx_bytes || 0));
-      setText('mon-tcp-detail', 'active=' + (tcp.active || data.tcp_active || 0) + ', tun=' + (tcp.tun || 0) + ', chain=' + (tcp.chain || 0) + ', other=' + (tcp.other || 0) + ', failures=' + (tcp.failures || data.tcp_failures || 0) + ', scopes=' + formatCountMap(tcp.scopes));
+      setText('mon-tcp-detail', 'active=' + (tcp.active || data.tcp_active || 0) + ', tun=' + (tcp.tun || 0) + ', chain=' + (tcp.chain || 0) + ', other=' + (tcp.other || 0) + ', failures=' + (tcp.failures || data.tcp_failures || 0) + ', direct_fail_cache=' + (tcpDirectFailureCache.active || 0) + ', direct_fail_hits=' + (tcpDirectFailureCache.hits || 0) + ', scopes=' + formatCountMap(tcp.scopes));
+      setText('mon-tcp-relays', formatTCPRelayItems(tcp.items));
       setText('mon-udp-detail', 'bridges_active=' + (udpBridges.active || 0) + ', direct=' + (udpBridges.direct || 0) + ', tunnel=' + (udpBridges.tunnel || 0) + ', opened=' + (udpBridges.opened || 0) + ', closed=' + (udpBridges.closed || 0) + ', associations=' + (udp.associations || data.udp_associations || 0));
       setText('mon-udp-bridges', formatUDPBridgeItems(udpBridges.items));
       setText('mon-groups', 'total=' + (groups.total || 0) + ', selected=' + (groups.selected || 0) + ', connected=' + (groups.connected || 0) + ', failures=' + (groups.failure_total || 0) + ', statuses=' + formatCountMap(groups.statuses));
       setText('mon-chain', 'chain_runtimes=' + (data.chain_runtimes || 0) + ', tcp_failures=' + (data.tcp_failures || 0));
       setText('mon-dns', 'loaded=' + formatBool(dns.loaded, 'true', 'false') + ', service=' + formatBool(dns.service, 'true', 'false') + ', tun_service=' + formatBool(dns.tun_service, 'true', 'false') + ', cache=' + (dns.cache || 0) + ', fake=' + (dns.fake_ip || 0) + ', hints=' + (dns.route_hints || 0) + '/' + (dns.route_ip_hints || 0));
+    }
+
+    function formatTCPRelayItems(items) {
+      if (!Array.isArray(items) || items.length === 0) return '-';
+      return items.slice(0, 8).map((item) => {
+        const scope = item.scope || '-';
+        const target = item.target || '-';
+        const routeTarget = item.route_target || '-';
+        const group = item.group || (item.direct ? 'direct' : '-');
+        const idle = Math.max(0, Math.round(Number(item.idle_ms || 0) / 1000));
+        const age = Math.max(0, Math.round(Number(item.age_ms || 0) / 1000));
+        const up = Number(item.bytes_up || 0);
+        const down = Number(item.bytes_down || 0);
+        return scope + ' ' + target + ' -> ' + routeTarget + ' group=' + group + ' idle=' + idle + 's age=' + age + 's up=' + up + ' down=' + down;
+      }).join('\n');
     }
 
     function formatUDPBridgeItems(items) {

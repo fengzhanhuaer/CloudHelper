@@ -827,6 +827,11 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 	m.tun.DataPlane = stats.Running
 	m.tun.DataPlaneRX = stats.RXPackets
 	m.tun.DataPlaneBytes = stats.RXBytes
+	if installed, err := ensureProbeLocalDNSFallbackBypassRoutesFromCache(); err != nil {
+		logProbeWarnf("probe local fallback dns bypass prewarm partially failed: installed=%d err=%v", installed, err)
+	} else if installed > 0 {
+		logProbeInfof("probe local fallback dns bypass prewarmed: installed=%d", installed)
+	}
 
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, true)
 	reconcileProbeLocalDNSRuntime()

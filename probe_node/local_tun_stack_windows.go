@@ -35,12 +35,15 @@ const (
 	probeLocalTUNNetstackQueueSize         = 4096
 	probeLocalTUNNetstackMTU               = 1500
 	probeLocalTUNTCPDialTimeout            = 10 * time.Second
+	probeLocalTUNTCPDirectFailureCacheTTL  = 30 * time.Second
+	probeLocalTUNTCPDirectFailureCacheMax  = 512
 	probeLocalTUNTCPRelayIdleTimeout       = 5 * time.Minute
 	probeLocalTUNTCPForwarderWindow        = 0
 	probeLocalTUNTCPForwarderInFlight      = 2048
 	probeLocalTUNUDPAssociationTimeout     = 30 * time.Second
-	probeLocalTUNUDPQUICAssociationTimeout = 2 * time.Minute
+	probeLocalTUNUDPQUICAssociationTimeout = 60 * time.Second
 	probeLocalTUNUDPShortAssociationTTL    = 10 * time.Second
+	probeLocalTUNUDPNoResponseTunnelTTL    = 15 * time.Second
 	probeLocalTUNUDPAssociationGCInterval  = 15 * time.Second
 	probeLocalTUNUDPReadBufferSize         = 65535
 	probeLocalTUNUDPZeroReadBackoff        = 10 * time.Millisecond
@@ -84,6 +87,17 @@ type probeLocalTUNDeadlineRefreshWriter struct {
 	src    net.Conn
 	dst    net.Conn
 	idle   time.Duration
+}
+
+type probeLocalTUNTCPDirectFailureCacheEntry struct {
+	errText   string
+	expiresAt time.Time
+}
+
+type probeLocalTUNTCPDirectFailureCacheStats struct {
+	Active int   `json:"active"`
+	Hits   int64 `json:"hits"`
+	Stored int64 `json:"stored"`
 }
 
 func (w *probeLocalTUNDeadlineRefreshWriter) Write(payload []byte) (int, error) {
@@ -161,12 +175,18 @@ var (
 	probeLocalReleaseDirectBypassRoute = releaseProbeLocalTUNDirectBypassRoute
 )
 
+var errProbeLocalTUNFallbackBypassInstalled = errors.New("fallback direct bypass installed; close current tun flow and let application reconnect via system route")
+
 func init() {
 	probeLocalDNSEnsureDirectBypassForTarget = ensureProbeLocalDirectBypassForTarget
 }
 
 func ensureProbeLocalExplicitDirectBypassForTarget(targetAddr string) error {
 	return ensureProbeLocalDirectBypassForTarget(targetAddr)
+}
+
+func ensureProbeLocalFallbackDirectBypassForTarget(targetAddr string) error {
+	return ensureProbeLocalDirectBypassForRoutedTarget(targetAddr)
 }
 
 type probeLocalWindowsDirectBypassRouteTarget struct {
@@ -194,6 +214,13 @@ var probeLocalDirectBypassRouteTargetState = struct {
 	routeTarget probeLocalWindowsDirectBypassRouteTarget
 	ready       bool
 }{}
+
+var probeLocalTUNTCPDirectFailureCacheState = struct {
+	mu     sync.Mutex
+	hits   atomic.Int64
+	stored atomic.Int64
+	items  map[string]probeLocalTUNTCPDirectFailureCacheEntry
+}{items: map[string]probeLocalTUNTCPDirectFailureCacheEntry{}}
 
 func prepareProbeLocalWindowsDirectBypassRouteTarget() error {
 	routeTarget, err := resolveProbeLocalWindowsDirectBypassRouteTarget()
@@ -429,8 +456,11 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	outbound, route, openErr := openProbeLocalTUNOutboundTCP(targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
+		if errors.Is(openErr, errProbeLocalTUNFallbackBypassInstalled) {
+			return
+		}
 		globalProbeTCPDebugState.recordFailureWithRoute("open_failed", targetAddr, route, openErr)
-		logProbeWarnf("probe local tun tcp open failed: target=%s route=%s group=%s node=%s err=%v", targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, openErr)
+		logProbeWarnf("probe local tun tcp outbound open failed: inbound=tun outbound=%s target=%s route=%s group=%s node=%s err=%v", probeLocalTUNRouteOutboundPath(route), targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, openErr)
 		return
 	}
 
@@ -474,13 +504,24 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if route.Direct {
+		if shouldInstallProbeLocalFallbackDirectBypassAndFail(route) {
+			if bypassErr := ensureProbeLocalFallbackDirectBypassForTarget(route.TargetAddr); bypassErr != nil {
+				return nil, route, bypassErr
+			}
+			return nil, route, errProbeLocalTUNFallbackBypassInstalled
+		}
+		if cachedErr := lookupProbeLocalTUNTCPDirectFailure(route.TargetAddr); cachedErr != nil {
+			return nil, route, cachedErr
+		}
 		if bypassErr := ensureProbeLocalDirectBypassForRoutedTarget(route.TargetAddr); bypassErr != nil {
 			return nil, route, bypassErr
 		}
 		conn, dialErr := net.DialTimeout("tcp", strings.TrimSpace(route.TargetAddr), probeLocalTUNTCPDialTimeout)
 		if dialErr != nil {
+			rememberProbeLocalTUNTCPDirectFailure(route.TargetAddr, dialErr)
 			return nil, route, dialErr
 		}
+		clearProbeLocalTUNTCPDirectFailure(route.TargetAddr)
 		return conn, route, nil
 	}
 	var lastErr error
@@ -496,6 +537,19 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 		return nil, route, lastErr
 	}
 	return nil, route, errors.New("tunnel route has no target candidates")
+}
+
+func probeLocalTUNRouteOutboundPath(route probeLocalTunnelRouteDecision) string {
+	if route.Direct {
+		if isProbeLocalFallbackDirectRoute(route) {
+			return "fallback_bypass"
+		}
+		return "direct"
+	}
+	if route.Reject {
+		return "reject"
+	}
+	return "tunnel"
 }
 
 func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
@@ -658,9 +712,13 @@ func (b *probeLocalTUNUDPBridge) forwardInboundToOutbound() {
 func (b *probeLocalTUNUDPBridge) forwardOutboundToInbound() {
 	buf := make([]byte, probeLocalTUNUDPReadBufferSize)
 	for {
-		if b.timeout > 0 {
+		readTimeout := b.timeout
+		if b.shouldUseNoResponseTunnelTimeout() {
+			readTimeout = probeLocalTUNUDPNoResponseTunnelTTL
+		}
+		if readTimeout > 0 {
 			if deadliner, ok := b.outbound.(probeLocalTUNReadDeadliner); ok {
-				_ = deadliner.SetReadDeadline(time.Now().Add(b.timeout))
+				_ = deadliner.SetReadDeadline(time.Now().Add(readTimeout))
 			}
 		}
 		n, err := b.outbound.Read(buf)
@@ -680,6 +738,13 @@ func (b *probeLocalTUNUDPBridge) forwardOutboundToInbound() {
 			return
 		}
 	}
+}
+
+func (b *probeLocalTUNUDPBridge) shouldUseNoResponseTunnelTimeout() bool {
+	if b == nil || b.route.Direct || b.monitor == nil {
+		return false
+	}
+	return b.monitor.bytesUp.Load() > 0 && b.monitor.bytesDown.Load() == 0
 }
 
 func (b *probeLocalTUNUDPBridge) close() {
@@ -949,6 +1014,151 @@ func shouldDropProbeLocalTUNTCPFlow(targetAddr string) bool {
 		return false
 	}
 	return isProbeLocalTUNLocalOrDiscoveryIP(ip)
+}
+
+func shouldInstallProbeLocalFallbackDirectBypassAndFail(route probeLocalTunnelRouteDecision) bool {
+	if !isProbeLocalFallbackDirectRoute(route) {
+		return false
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(route.TargetAddr))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
+	if ip == nil || ip.To4() == nil {
+		return false
+	}
+	return !isProbeLocalTUNLocalOrDiscoveryIP(ip)
+}
+
+func isProbeLocalFallbackDirectRoute(route probeLocalTunnelRouteDecision) bool {
+	return route.Direct && !route.Reject && strings.EqualFold(strings.TrimSpace(route.Group), "fallback")
+}
+
+func lookupProbeLocalTUNTCPDirectFailure(targetAddr string) error {
+	key := normalizeProbeLocalTUNTCPDirectFailureKey(targetAddr)
+	if key == "" {
+		return nil
+	}
+	now := time.Now()
+	probeLocalTUNTCPDirectFailureCacheState.mu.Lock()
+	entry, ok := probeLocalTUNTCPDirectFailureCacheState.items[key]
+	if !ok {
+		probeLocalTUNTCPDirectFailureCacheState.mu.Unlock()
+		return nil
+	}
+	if !entry.expiresAt.After(now) {
+		delete(probeLocalTUNTCPDirectFailureCacheState.items, key)
+		probeLocalTUNTCPDirectFailureCacheState.mu.Unlock()
+		return nil
+	}
+	probeLocalTUNTCPDirectFailureCacheState.mu.Unlock()
+	probeLocalTUNTCPDirectFailureCacheState.hits.Add(1)
+	return fmt.Errorf("cached direct tcp dial failure for %s: %s", key, strings.TrimSpace(entry.errText))
+}
+
+func rememberProbeLocalTUNTCPDirectFailure(targetAddr string, err error) {
+	if !shouldCacheProbeLocalTUNTCPDirectFailure(err) {
+		return
+	}
+	key := normalizeProbeLocalTUNTCPDirectFailureKey(targetAddr)
+	if key == "" {
+		return
+	}
+	now := time.Now()
+	probeLocalTUNTCPDirectFailureCacheState.mu.Lock()
+	if probeLocalTUNTCPDirectFailureCacheState.items == nil {
+		probeLocalTUNTCPDirectFailureCacheState.items = map[string]probeLocalTUNTCPDirectFailureCacheEntry{}
+	}
+	if len(probeLocalTUNTCPDirectFailureCacheState.items) >= probeLocalTUNTCPDirectFailureCacheMax {
+		pruneProbeLocalTUNTCPDirectFailureCacheLocked(now)
+	}
+	if len(probeLocalTUNTCPDirectFailureCacheState.items) >= probeLocalTUNTCPDirectFailureCacheMax {
+		dropKey := ""
+		for itemKey := range probeLocalTUNTCPDirectFailureCacheState.items {
+			dropKey = itemKey
+			break
+		}
+		if dropKey != "" {
+			delete(probeLocalTUNTCPDirectFailureCacheState.items, dropKey)
+		}
+	}
+	probeLocalTUNTCPDirectFailureCacheState.items[key] = probeLocalTUNTCPDirectFailureCacheEntry{
+		errText:   strings.TrimSpace(err.Error()),
+		expiresAt: now.Add(probeLocalTUNTCPDirectFailureCacheTTL),
+	}
+	probeLocalTUNTCPDirectFailureCacheState.mu.Unlock()
+	probeLocalTUNTCPDirectFailureCacheState.stored.Add(1)
+}
+
+func clearProbeLocalTUNTCPDirectFailure(targetAddr string) {
+	key := normalizeProbeLocalTUNTCPDirectFailureKey(targetAddr)
+	if key == "" {
+		return
+	}
+	probeLocalTUNTCPDirectFailureCacheState.mu.Lock()
+	delete(probeLocalTUNTCPDirectFailureCacheState.items, key)
+	probeLocalTUNTCPDirectFailureCacheState.mu.Unlock()
+}
+
+func snapshotProbeLocalTUNTCPDirectFailureCacheStats() probeLocalTUNTCPDirectFailureCacheStats {
+	now := time.Now()
+	probeLocalTUNTCPDirectFailureCacheState.mu.Lock()
+	pruneProbeLocalTUNTCPDirectFailureCacheLocked(now)
+	active := len(probeLocalTUNTCPDirectFailureCacheState.items)
+	probeLocalTUNTCPDirectFailureCacheState.mu.Unlock()
+	return probeLocalTUNTCPDirectFailureCacheStats{
+		Active: active,
+		Hits:   probeLocalTUNTCPDirectFailureCacheState.hits.Load(),
+		Stored: probeLocalTUNTCPDirectFailureCacheState.stored.Load(),
+	}
+}
+
+func pruneProbeLocalTUNTCPDirectFailureCacheLocked(now time.Time) {
+	for key, entry := range probeLocalTUNTCPDirectFailureCacheState.items {
+		if !entry.expiresAt.After(now) {
+			delete(probeLocalTUNTCPDirectFailureCacheState.items, key)
+		}
+	}
+}
+
+func shouldCacheProbeLocalTUNTCPDirectFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "timeout") ||
+		strings.Contains(text, "no route to host") ||
+		strings.Contains(text, "network is unreachable") ||
+		strings.Contains(text, "host is unreachable")
+}
+
+func normalizeProbeLocalTUNTCPDirectFailureKey(targetAddr string) string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return ""
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	port = strings.TrimSpace(port)
+	if host == "" || port == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func resetProbeLocalTUNTCPDirectFailureCacheForTest() {
+	probeLocalTUNTCPDirectFailureCacheState.mu.Lock()
+	probeLocalTUNTCPDirectFailureCacheState.items = map[string]probeLocalTUNTCPDirectFailureCacheEntry{}
+	probeLocalTUNTCPDirectFailureCacheState.mu.Unlock()
+	probeLocalTUNTCPDirectFailureCacheState.hits.Store(0)
+	probeLocalTUNTCPDirectFailureCacheState.stored.Store(0)
 }
 
 func isProbeLocalTUNFakeIPBroadcast(ip net.IP) bool {
@@ -1482,6 +1692,7 @@ func resetProbeLocalDirectBypassStateForTest() {
 	probeLocalTUNUDPSourceState.mu.Lock()
 	probeLocalTUNUDPSourceState.refs = map[string]int64{}
 	probeLocalTUNUDPSourceState.mu.Unlock()
+	resetProbeLocalTUNTCPDirectFailureCacheForTest()
 
 	probeLocalAcquireDirectBypassRoute = acquireProbeLocalTUNDirectBypassRoute
 	probeLocalReleaseDirectBypassRoute = releaseProbeLocalTUNDirectBypassRoute

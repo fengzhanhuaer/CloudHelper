@@ -409,6 +409,57 @@ func TestOpenProbeLocalTUNOutboundTCPDirectEnsuresBypass(t *testing.T) {
 	}
 }
 
+func TestProbeLocalTUNTCPDirectFailureCache(t *testing.T) {
+	resetProbeLocalTUNTCPDirectFailureCacheForTest()
+	t.Cleanup(resetProbeLocalTUNTCPDirectFailureCacheForTest)
+
+	target := "162.159.61.4:443"
+	if got := lookupProbeLocalTUNTCPDirectFailure(target); got != nil {
+		t.Fatalf("empty cache lookup=%v", got)
+	}
+	if shouldCacheProbeLocalTUNTCPDirectFailure(errors.New("connection refused")) {
+		t.Fatal("connection refused should not be cached")
+	}
+	rememberProbeLocalTUNTCPDirectFailure(target, errors.New("i/o timeout"))
+	if got := lookupProbeLocalTUNTCPDirectFailure(target); got == nil {
+		t.Fatal("expected cached timeout")
+	} else if !strings.Contains(got.Error(), "162.159.61.4:443") || !strings.Contains(got.Error(), "i/o timeout") {
+		t.Fatalf("unexpected cached error=%v", got)
+	}
+	stats := snapshotProbeLocalTUNTCPDirectFailureCacheStats()
+	if stats.Active != 1 || stats.Hits != 1 || stats.Stored != 1 {
+		t.Fatalf("stats=%+v", stats)
+	}
+	clearProbeLocalTUNTCPDirectFailure(target)
+	if got := lookupProbeLocalTUNTCPDirectFailure(target); got != nil {
+		t.Fatalf("lookup after clear=%v", got)
+	}
+}
+
+func TestShouldInstallProbeLocalFallbackDirectBypassAndFail(t *testing.T) {
+	if !shouldInstallProbeLocalFallbackDirectBypassAndFail(probeLocalTunnelRouteDecision{
+		Direct:     true,
+		Group:      "fallback",
+		TargetAddr: "162.159.61.4:443",
+	}) {
+		t.Fatal("public fallback direct route should install bypass and fail current flow")
+	}
+	if shouldInstallProbeLocalFallbackDirectBypassAndFail(probeLocalTunnelRouteDecision{
+		Direct:     true,
+		Group:      "fallback",
+		TargetAddr: "10.0.0.8:443",
+	}) {
+		t.Fatal("private fallback direct route should not install public bypass")
+	}
+	if shouldInstallProbeLocalFallbackDirectBypassAndFail(probeLocalTunnelRouteDecision{
+		Direct:     false,
+		Group:      "media",
+		TargetAddr: "203.0.113.10:443",
+	}) {
+		t.Fatal("tunnel route should not install fallback bypass")
+	}
+}
+
 func TestOpenProbeLocalTUNOutboundUDPDirectEnsuresBypass(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDirectBypassStateForTest()
@@ -533,6 +584,29 @@ func TestProbeLocalTUNUDPManagedOutboundReleaseSourceOnce(t *testing.T) {
 	}
 	if released != 1 {
 		t.Fatalf("released=%d want=1", released)
+	}
+}
+
+func TestProbeLocalTUNUDPBridgeNoResponseTunnelTimeout(t *testing.T) {
+	bridge := &probeLocalTUNUDPBridge{
+		route:   probeLocalTunnelRouteDecision{Direct: false, Group: "media"},
+		monitor: &probeLocalTUNUDPBridgeMonitorItemState{},
+	}
+	if bridge.shouldUseNoResponseTunnelTimeout() {
+		t.Fatal("empty bridge should not use no-response timeout")
+	}
+	bridge.monitor.bytesUp.Store(128)
+	if !bridge.shouldUseNoResponseTunnelTimeout() {
+		t.Fatal("tunnel with only upstream bytes should use no-response timeout")
+	}
+	bridge.monitor.bytesDown.Store(64)
+	if bridge.shouldUseNoResponseTunnelTimeout() {
+		t.Fatal("tunnel with downstream bytes should use normal timeout")
+	}
+	bridge.route.Direct = true
+	bridge.monitor.bytesDown.Store(0)
+	if bridge.shouldUseNoResponseTunnelTimeout() {
+		t.Fatal("direct bridge should not use tunnel no-response timeout")
 	}
 }
 
