@@ -2087,7 +2087,6 @@ func backupProbeLocalProxyGroupToController(ctx context.Context) error {
 	}
 	body, err := json.Marshal(map[string]any{
 		"file_name":      probeLocalProxyGroupFileName,
-		"node_id":        strings.TrimSpace(runtimeContext.Identity.NodeID),
 		"content_base64": base64.StdEncoding.EncodeToString(raw),
 	})
 	if err != nil {

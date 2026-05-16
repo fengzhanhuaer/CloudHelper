@@ -13,6 +13,7 @@ const (
 	probeProxyGroupBackupFileName        = "proxy_group.json"
 	probeProxyGroupBackupReadBodyMaxLen  = 1024 * 1024
 	probeProxyGroupBackupContentMaxBytes = 512 * 1024
+	probeProxyGroupBackupGlobalKey       = "global"
 )
 
 type probeProxyGroupBackupRecord struct {
@@ -140,7 +141,7 @@ func saveProbeProxyGroupBackup(record probeProxyGroupBackupRecord) error {
 	if ProbeStore.data.ProbeProxyGroupBackups == nil {
 		ProbeStore.data.ProbeProxyGroupBackups = map[string]probeProxyGroupBackupRecord{}
 	}
-	ProbeStore.data.ProbeProxyGroupBackups[record.NodeID] = record
+	ProbeStore.data.ProbeProxyGroupBackups[probeProxyGroupBackupGlobalKey] = record
 	ProbeStore.mu.Unlock()
 	return ProbeStore.Save()
 }
@@ -149,23 +150,24 @@ func getProbeProxyGroupBackup(nodeID string) (probeProxyGroupBackupRecord, bool)
 	if ProbeStore == nil {
 		return probeProxyGroupBackupRecord{}, false
 	}
-	normalized := normalizeProbeNodeID(nodeID)
-	if normalized == "" {
-		return probeProxyGroupBackupRecord{}, false
-	}
 	ProbeStore.mu.RLock()
-	record, ok := ProbeStore.data.ProbeProxyGroupBackups[normalized]
+	record, ok := ProbeStore.data.ProbeProxyGroupBackups[probeProxyGroupBackupGlobalKey]
 	ProbeStore.mu.RUnlock()
 	if !ok || strings.TrimSpace(record.ContentBase64) == "" {
 		return probeProxyGroupBackupRecord{}, false
 	}
-	record.NodeID = normalized
+	if strings.TrimSpace(record.NodeID) == "" {
+		record.NodeID = normalizeProbeNodeID(nodeID)
+	}
 	record.FileName = firstNonEmptyProbeProxyGroupBackup(strings.TrimSpace(record.FileName), probeProxyGroupBackupFileName)
 	return record, true
 }
 
 func normalizeProbeProxyGroupBackups(items map[string]probeProxyGroupBackupRecord) map[string]probeProxyGroupBackupRecord {
-	out := make(map[string]probeProxyGroupBackupRecord)
+	out := make(map[string]probeProxyGroupBackupRecord, 1)
+	var selected probeProxyGroupBackupRecord
+	var hasSelected bool
+	var selectedAt time.Time
 	for key, item := range items {
 		nodeID := normalizeProbeNodeID(firstNonEmptyProbeProxyGroupBackup(item.NodeID, key))
 		if nodeID == "" {
@@ -181,12 +183,25 @@ func normalizeProbeProxyGroupBackups(items map[string]probeProxyGroupBackupRecor
 			continue
 		}
 		updatedAt := strings.TrimSpace(item.UpdatedAt)
-		out[nodeID] = probeProxyGroupBackupRecord{
+		record := probeProxyGroupBackupRecord{
 			NodeID:        nodeID,
 			FileName:      fileName,
 			ContentBase64: base64.StdEncoding.EncodeToString(decoded),
 			UpdatedAt:     updatedAt,
 		}
+		if !hasSelected {
+			selected = record
+			hasSelected = true
+			selectedAt = parseProbeProxyGroupBackupTime(updatedAt)
+			continue
+		}
+		if currentAt := parseProbeProxyGroupBackupTime(updatedAt); currentAt.After(selectedAt) {
+			selected = record
+			selectedAt = currentAt
+		}
+	}
+	if hasSelected {
+		out[probeProxyGroupBackupGlobalKey] = selected
 	}
 	return out
 }
@@ -198,4 +213,16 @@ func firstNonEmptyProbeProxyGroupBackup(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func parseProbeProxyGroupBackupTime(raw string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw))
+	if err == nil {
+		return parsed
+	}
+	parsed, err = time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err == nil {
+		return parsed
+	}
+	return time.Time{}
 }

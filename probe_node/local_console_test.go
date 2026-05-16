@@ -2290,8 +2290,8 @@ func TestProbeLocalProxyGroupsBackupEndpointSuccess(t *testing.T) {
 	if controllerPayload["file_name"] != probeLocalProxyGroupFileName {
 		t.Fatalf("backup file_name=%v", controllerPayload["file_name"])
 	}
-	if controllerPayload["node_id"] != "node-backup-success" {
-		t.Fatalf("backup node_id=%v", controllerPayload["node_id"])
+	if _, ok := controllerPayload["node_id"]; ok {
+		t.Fatalf("backup node_id should be omitted for global backup, got=%v", controllerPayload["node_id"])
 	}
 	contentBase64, _ := controllerPayload["content_base64"].(string)
 	if strings.TrimSpace(contentBase64) == "" {
