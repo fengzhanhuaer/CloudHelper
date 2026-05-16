@@ -541,6 +541,7 @@ func TestShouldDropProbeLocalTUNUDPFlowForDiscoveryTraffic(t *testing.T) {
 		"224.0.0.251:5353",
 		"239.255.255.250:1900",
 		"255.255.255.255:1900",
+		"198.19.255.255:137",
 	}
 	for _, target := range cases {
 		if !shouldDropProbeLocalTUNUDPFlow(target) {
@@ -549,6 +550,24 @@ func TestShouldDropProbeLocalTUNUDPFlowForDiscoveryTraffic(t *testing.T) {
 	}
 	if shouldDropProbeLocalTUNUDPFlow("8.8.8.8:53") {
 		t.Fatal("public dns udp should not be dropped")
+	}
+}
+
+func TestShouldDropProbeLocalTUNTCPFlowForDeliveryOptimization(t *testing.T) {
+	cases := []string{
+		"172.18.52.141:7680",
+		"192.168.10.28:7680",
+	}
+	for _, target := range cases {
+		if !shouldDropProbeLocalTUNTCPFlow(target) {
+			t.Fatalf("target=%s should be dropped", target)
+		}
+	}
+	if shouldDropProbeLocalTUNTCPFlow("8.8.8.8:7680") {
+		t.Fatal("public tcp 7680 should not be dropped")
+	}
+	if shouldDropProbeLocalTUNTCPFlow("192.168.10.28:443") {
+		t.Fatal("private tcp non-7680 should not be dropped")
 	}
 }
 

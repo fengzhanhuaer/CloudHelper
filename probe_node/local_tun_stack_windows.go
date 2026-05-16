@@ -411,6 +411,10 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		req.Complete(true)
 		return
 	}
+	if shouldDropProbeLocalTUNTCPFlow(targetAddr) {
+		req.Complete(true)
+		return
+	}
 
 	var wq waiter.Queue
 	ep, createErr := req.CreateEndpoint(&wq)
@@ -903,7 +907,7 @@ func shouldUseProbeLocalTUNUDPShortTTL(targetAddr string, route probeLocalTunnel
 	cleanPort := strings.TrimSpace(port)
 	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
 	ip := net.ParseIP(cleanHost)
-	if cleanPort == "53" || cleanPort == "5353" || cleanPort == "1900" || cleanPort == "7680" {
+	if cleanPort == "53" || cleanPort == "137" || cleanPort == "5353" || cleanPort == "1900" || cleanPort == "7680" {
 		return true
 	}
 	if ip == nil {
@@ -923,13 +927,39 @@ func shouldDropProbeLocalTUNUDPFlow(targetAddr string) bool {
 	if ip == nil {
 		return false
 	}
-	if ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+	if ip.IsMulticast() || ip.Equal(net.IPv4bcast) || isProbeLocalTUNFakeIPBroadcast(ip) {
 		return true
 	}
-	if cleanPort == "1900" || cleanPort == "5353" {
+	if cleanPort == "137" || cleanPort == "1900" || cleanPort == "5353" {
 		return true
 	}
 	return false
+}
+
+func shouldDropProbeLocalTUNTCPFlow(targetAddr string) bool {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return false
+	}
+	if strings.TrimSpace(port) != "7680" {
+		return false
+	}
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
+	if ip == nil {
+		return false
+	}
+	return isProbeLocalTUNLocalOrDiscoveryIP(ip)
+}
+
+func isProbeLocalTUNFakeIPBroadcast(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	return ip4[0] == 198 && ip4[1] == 19 && ip4[2] == 255 && ip4[3] == 255
 }
 
 func isProbeLocalTUNLocalOrDiscoveryIP(ip net.IP) bool {
