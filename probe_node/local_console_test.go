@@ -2722,7 +2722,7 @@ func TestProbeLocalTUNStartupRecoveryDetectsInstalledAdapter(t *testing.T) {
 	}
 }
 
-func TestProbeLocalTUNStartupRecoveryClearsStaleInstalledState(t *testing.T) {
+func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
@@ -2731,29 +2731,48 @@ func TestProbeLocalTUNStartupRecoveryClearsStaleInstalledState(t *testing.T) {
 	detectCalls := 0
 	probeLocalDetectTUNInstalled = func() (bool, error) {
 		detectCalls++
-		return false, nil
+		return detectCalls >= 2, nil
 	}
-	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
+	installCalls := 0
+	probeLocalInstallTUNDriver = func() error {
+		installCalls++
+		obs := newProbeLocalTUNInstallObservation()
+		obs.Final.Success = true
+		obs.Final.ReasonCode = "TUN_INSTALL_SUCCEEDED"
+		obs.Final.Reason = "startup repair"
+		setProbeLocalTUNInstallObservation(obs)
+		return nil
+	}
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
+	takeoverCalls := 0
+	probeLocalApplyProxyTakeover = func() error {
+		takeoverCalls++
+		return nil
+	}
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
 
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
 		t.Fatalf("recoverProbeLocalTUNRuntimeOnStartup returned error: %v", err)
 	}
-	if detectCalls != 1 {
-		t.Fatalf("detect calls=%d, want 1", detectCalls)
+	if detectCalls != 2 {
+		t.Fatalf("detect calls=%d, want 2", detectCalls)
+	}
+	if installCalls != 1 {
+		t.Fatalf("install calls=%d, want 1", installCalls)
+	}
+	if takeoverCalls != 1 {
+		t.Fatalf("takeover calls=%d, want 1", takeoverCalls)
 	}
 	status := probeLocalControl.tunStatus()
-	if status.Installed || status.Enabled {
-		t.Fatalf("startup recovery tun status=%+v, want installed=false enabled=false", status)
-	}
-	if !strings.Contains(strings.ToLower(status.LastError), "not available") {
-		t.Fatalf("startup recovery last error=%q, want not available", status.LastError)
+	if !status.Installed || !status.Enabled {
+		t.Fatalf("startup recovery tun status=%+v, want installed=true enabled=true", status)
 	}
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
 		t.Fatalf("load proxy state failed: %v", err)
 	}
-	if state.TUN.Installed || state.TUN.Enabled {
-		t.Fatalf("persisted tun state=%+v, want installed=false enabled=false", state.TUN)
+	if !state.TUN.Installed || !state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true", state.TUN)
 	}
 }
 

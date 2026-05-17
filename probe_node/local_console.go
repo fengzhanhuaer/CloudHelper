@@ -612,6 +612,19 @@ func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 	persistedEnabled := state.TUN.Enabled
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	if persistedEnabled && !installed && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
+		logProbeWarnf("probe local tun startup recovery will run install/check: persisted_installed=%v detected_installed=%v detect_err=%v", state.TUN.Installed, detectedInstalled, detectErr)
+		if _, installErr := m.installTUN(); installErr != nil {
+			logProbeWarnf("probe local tun startup install/check recovery failed: %v", installErr)
+		}
+		detectedInstalled, detectErr = probeLocalDetectTUNInstalled()
+		if detectErr != nil && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
+			logProbeWarnf("probe local tun startup redetect after install/check failed: %v", detectErr)
+		}
+		installed = detectedInstalled && detectErr == nil
+		now = time.Now().UTC().Format(time.RFC3339)
+	}
+
 	m.mu.Lock()
 	m.tun.Platform = runtime.GOOS
 	m.tun.Installed = installed
@@ -632,7 +645,7 @@ func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 	m.proxy.UpdatedAt = now
 	m.mu.Unlock()
 
-	if installed != state.TUN.Installed || (!installed && state.TUN.Enabled) {
+	if installed != state.TUN.Installed {
 		persistProbeLocalTUNStateBestEffort(installed, installed && persistedEnabled)
 	}
 	if !installed || !persistedEnabled {
