@@ -102,7 +102,46 @@
       font-weight: 600;
     }
     .dns-map-table td { background: rgba(13, 17, 23, 0.4); }
+    .dns-map-table tr.group-row td {
+      background: rgba(88, 166, 255, 0.16);
+      color: #d8ecff;
+      font-weight: 700;
+    }
     .dns-map-empty { color: var(--text-secondary); font-size: 13px; margin-top: 6px; }
+    .dns-filter-bar {
+      display: grid;
+      grid-template-columns: minmax(140px, 180px) minmax(160px, 220px) minmax(220px, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin-top: 14px;
+    }
+    .dns-filter-field label {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+    .dns-filter-field select,
+    .dns-filter-field input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px;
+      background: rgba(13, 17, 23, 0.62);
+      color: var(--text-primary);
+      outline: none;
+    }
+    .dns-filter-count {
+      color: var(--text-secondary);
+      font-size: 13px;
+      white-space: nowrap;
+      padding-bottom: 8px;
+    }
+    @media (max-width: 720px) {
+      .dns-filter-bar { grid-template-columns: 1fr; }
+      .dns-filter-count { padding-bottom: 0; }
+    }
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
     .msg.error { color: #ff938d; }
     .msg.success { color: #7ee787; }
@@ -145,17 +184,38 @@
         <button id="dnsClearBtn" class="danger">清空 DNS 缓存</button>
       </div>
       <p class="hint">监听固定为回环地址，端口策略为 <code>53</code> 优先，失败回退 <code>5353</code>。</p>
+      <div class="dns-filter-bar">
+        <div class="dns-filter-field">
+          <label for="dnsViewMode">展示方式</label>
+          <select id="dnsViewMode">
+            <option value="list">普通列表</option>
+            <option value="group">按组展示</option>
+          </select>
+        </div>
+        <div class="dns-filter-field">
+          <label for="dnsGroupFilter">按命中组展示</label>
+          <select id="dnsGroupFilter">
+            <option value="">全部组</option>
+          </select>
+        </div>
+        <div class="dns-filter-field">
+          <label for="dnsKeywordSearch">关键字搜索</label>
+          <input id="dnsKeywordSearch" type="search" placeholder="域名 / IP / Fake IP / 组 / 动作 / 链路" autocomplete="off" />
+        </div>
+        <div id="dnsFilterCount" class="dns-filter-count">-</div>
+      </div>
       <div class="dns-map-table-wrap">
         <table class="dns-map-table">
           <thead>
             <tr>
               <th>域名</th>
+              <th>命中组</th>
               <th>IP</th>
               <th>fake IP</th>
             </tr>
           </thead>
           <tbody id="dnsMapTableBody">
-            <tr><td colspan="3">-</td></tr>
+            <tr><td colspan="4">-</td></tr>
           </tbody>
         </table>
         <div id="dnsMapEmpty" class="dns-map-empty" style="display:none;">暂无 DNS 映射记录</div>
@@ -167,6 +227,7 @@
 
   <script>
     const messageEl = document.getElementById('message');
+    let dnsRecords = [];
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -240,35 +301,131 @@
       setText('dnsCacheRecords', records.reduce((sum, item) => sum + (Array.isArray(item && item.real_ips) ? item.real_ips.length : 0), 0));
       setText('dnsUpdatedAt', statusData.updated_at);
       setText('dnsLastError', statusData.last_error);
+      dnsRecords = records;
+      refreshDNSGroupFilterOptions(records);
       renderDNSDomainMapTable(records);
+    }
+
+    function normalizeDNSRecord(item) {
+      const selectedChainID = String(item && item.selected_chain_id || '').trim();
+      const tunnelNodeID = String(item && item.tunnel_node_id || '').trim();
+      return {
+        domain: String(item && item.domain || '').trim(),
+        group: String(item && item.group || '').trim() || 'fallback',
+        realIPs: Array.isArray(item && item.real_ips) ? item.real_ips.map((ip) => String(ip || '').trim()).filter(Boolean) : [],
+        fakeIP: String(item && item.fake_ip || '').trim(),
+        action: String(item && item.action || '').trim(),
+        selectedChainID,
+        tunnelNodeID,
+        routeText: selectedChainID || tunnelNodeID,
+      };
+    }
+
+    function refreshDNSGroupFilterOptions(records) {
+      const selectEl = document.getElementById('dnsGroupFilter');
+      if (!selectEl) return;
+      const previous = selectEl.value;
+      const groups = Array.from(new Set((Array.isArray(records) ? records : [])
+        .map((item) => normalizeDNSRecord(item).group)
+        .filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b));
+      selectEl.innerHTML = '';
+      const allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = '全部组';
+      selectEl.appendChild(allOption);
+      groups.forEach((group) => {
+        const option = document.createElement('option');
+        option.value = group;
+        option.textContent = group;
+        selectEl.appendChild(option);
+      });
+      if (previous && groups.includes(previous)) {
+        selectEl.value = previous;
+      }
+    }
+
+    function currentDNSFilteredRows(records) {
+      const groupFilter = String(document.getElementById('dnsGroupFilter')?.value || '').trim().toLowerCase();
+      const keyword = String(document.getElementById('dnsKeywordSearch')?.value || '').trim().toLowerCase();
+      return (Array.isArray(records) ? records : [])
+        .map(normalizeDNSRecord)
+        .filter((item) => item.domain)
+        .filter((item) => {
+          if (!groupFilter) return true;
+          return item.group.toLowerCase() === groupFilter;
+        })
+        .filter((item) => {
+          if (!keyword) return true;
+          const haystack = [
+            item.domain,
+            item.group,
+            item.fakeIP,
+            item.action,
+            item.selectedChainID,
+            item.tunnelNodeID,
+            ...item.realIPs,
+          ].join(' ').toLowerCase();
+          return haystack.includes(keyword);
+        });
+    }
+
+    function formatDNSGroupCell(row) {
+      const parts = [row.group || 'fallback'];
+      if (row.action) parts.push(row.action);
+      if (row.routeText) parts.push(row.routeText);
+      return parts.join('\n');
     }
 
     function renderDNSDomainMapTable(records) {
       const bodyEl = document.getElementById('dnsMapTableBody');
       const emptyEl = document.getElementById('dnsMapEmpty');
+      const countEl = document.getElementById('dnsFilterCount');
       if (!bodyEl) return;
-      const list = Array.isArray(records) ? records : [];
-      const rows = list
-        .map((item) => ({
-          domain: String(item && item.domain || '').trim(),
-          group: String(item && item.group || '').trim(),
-          realIPs: Array.isArray(item && item.real_ips) ? item.real_ips.map((ip) => String(ip || '').trim()).filter(Boolean) : [],
-          fakeIP: String(item && item.fake_ip || '').trim(),
-        }))
-        .filter((item) => item.domain);
-      rows.sort((a, b) => a.domain.localeCompare(b.domain));
+      const total = (Array.isArray(records) ? records : []).filter((item) => normalizeDNSRecord(item).domain).length;
+      const rows = currentDNSFilteredRows(records);
+      const viewMode = String(document.getElementById('dnsViewMode')?.value || '').trim();
+      if (viewMode === 'group') {
+        rows.sort((a, b) => {
+          const groupCompare = a.group.localeCompare(b.group);
+          if (groupCompare !== 0) return groupCompare;
+          return a.domain.localeCompare(b.domain);
+        });
+      } else {
+        rows.sort((a, b) => a.domain.localeCompare(b.domain));
+      }
+      if (countEl) countEl.textContent = `${rows.length} / ${total} 条`;
       bodyEl.innerHTML = '';
       if (rows.length === 0) {
-        bodyEl.innerHTML = '<tr><td colspan="3">-</td></tr>';
+        bodyEl.innerHTML = '<tr><td colspan="4">-</td></tr>';
         if (emptyEl) emptyEl.style.display = '';
         return;
       }
       if (emptyEl) emptyEl.style.display = 'none';
+      let currentGroup = '';
+      const groupCounts = rows.reduce((acc, row) => {
+        acc[row.group] = (acc[row.group] || 0) + 1;
+        return acc;
+      }, {});
       rows.forEach((row) => {
+        if (viewMode === 'group' && row.group !== currentGroup) {
+          currentGroup = row.group;
+          const groupTr = document.createElement('tr');
+          groupTr.className = 'group-row';
+          const groupTd = document.createElement('td');
+          groupTd.colSpan = 4;
+          groupTd.textContent = `${currentGroup || 'fallback'} (${groupCounts[currentGroup] || 0})`;
+          groupTr.appendChild(groupTd);
+          bodyEl.appendChild(groupTr);
+        }
         const tr = document.createElement('tr');
         const tdDomain = document.createElement('td');
         tdDomain.textContent = row.domain;
         tr.appendChild(tdDomain);
+        const tdGroup = document.createElement('td');
+        tdGroup.textContent = formatDNSGroupCell(row);
+        tdGroup.style.whiteSpace = 'pre-line';
+        tr.appendChild(tdGroup);
         const tdIP = document.createElement('td');
         tdIP.textContent = row.realIPs.length > 0 ? row.realIPs.join('\n') : '-';
         tdIP.style.whiteSpace = 'pre-line';
@@ -279,6 +436,18 @@
         bodyEl.appendChild(tr);
       });
     }
+
+    document.getElementById('dnsViewMode').addEventListener('change', () => {
+      renderDNSDomainMapTable(dnsRecords);
+    });
+
+    document.getElementById('dnsGroupFilter').addEventListener('change', () => {
+      renderDNSDomainMapTable(dnsRecords);
+    });
+
+    document.getElementById('dnsKeywordSearch').addEventListener('input', () => {
+      renderDNSDomainMapTable(dnsRecords);
+    });
 
     document.getElementById('dnsRefreshBtn').addEventListener('click', async () => {
       setMessage('刷新 DNS 状态...');
