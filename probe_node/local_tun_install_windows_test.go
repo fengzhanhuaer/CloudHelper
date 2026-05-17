@@ -62,6 +62,34 @@ func TestInstallProbeLocalTUNDriverSkipsCreateWhenAdapterExists(t *testing.T) {
 	}
 }
 
+func TestInstallProbeLocalTUNDriverRetriesPrecheckVisibilityError(t *testing.T) {
+	forceProbeLocalInstallAsAdminForTest()
+	probeLocalEnsureWintunLibrary = func() error { return nil }
+	inspectCalls := 0
+	probeLocalInspectWintunVisibility = func() (probeLocalWintunVisibilityEvidence, error) {
+		inspectCalls++
+		if inspectCalls == 1 {
+			return probeLocalWintunVisibilityEvidence{}, errors.New("temporary device enumeration failure")
+		}
+		return probeLocalWintunVisibilityEvidence{
+			NetAdapterMatched: true,
+			NetAdapter: probeLocalWindowsNetAdapter{
+				InterfaceIndex: 19,
+			},
+		}, nil
+	}
+	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error { return nil }
+	probeLocalTUNInstallSleep = func(_ time.Duration) {}
+	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
+
+	if err := installProbeLocalTUNDriver(); err != nil {
+		t.Fatalf("installProbeLocalTUNDriver returned error: %v", err)
+	}
+	if inspectCalls != 2 {
+		t.Fatalf("inspect calls=%d, want 2", inspectCalls)
+	}
+}
+
 func TestInstallProbeLocalTUNDriverCreateAndVerify(t *testing.T) {
 	forceProbeLocalInstallAsAdminForTest()
 	clearProbeLocalTUNInstallObservation()

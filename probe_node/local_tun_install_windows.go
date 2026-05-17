@@ -20,6 +20,7 @@ const (
 	probeLocalTUNRouteGatewayIPv4     = "198.18.0.1"
 	probeLocalTUNInterfaceIPv4        = "198.18.0.2"
 	probeLocalTUNRouteIPv4PrefixLen   = 15
+	probeLocalTUNVisibilityRetryCount = 5
 )
 
 var (
@@ -75,6 +76,33 @@ func detectProbeLocalTUNInstalledWindows() (bool, error) {
 		return true, nil
 	}
 	return true, errors.New("wintun adapter interface luid is missing")
+}
+
+func inspectProbeLocalWintunVisibilityWithRetry(steps *[]string, stage string) (probeLocalWintunVisibilityEvidence, error) {
+	cleanStage := strings.TrimSpace(stage)
+	if cleanStage == "" {
+		cleanStage = "inspect_visibility"
+	}
+	var lastEvidence probeLocalWintunVisibilityEvidence
+	var lastErr error
+	for attempt := 0; attempt < probeLocalTUNVisibilityRetryCount; attempt++ {
+		if attempt > 0 {
+			probeLocalTUNInstallSleep(time.Duration(150*attempt) * time.Millisecond)
+		}
+		evidence, err := probeLocalInspectWintunVisibility()
+		if err == nil {
+			if steps != nil && attempt > 0 {
+				*steps = append(*steps, fmt.Sprintf("%s: retry_ok_%d", cleanStage, attempt+1))
+			}
+			return evidence, nil
+		}
+		lastEvidence = evidence
+		lastErr = err
+		if steps != nil {
+			*steps = append(*steps, fmt.Sprintf("%s: retry_error_%d", cleanStage, attempt+1))
+		}
+	}
+	return lastEvidence, lastErr
 }
 
 func installProbeLocalTUNDriver() error {
@@ -287,7 +315,7 @@ func installProbeLocalTUNDriver() error {
 	}
 	steps = append(steps, "permission: admin")
 
-	precheckEvidence, precheckErr := probeLocalInspectWintunVisibility()
+	precheckEvidence, precheckErr := inspectProbeLocalWintunVisibilityWithRetry(&steps, "detect_adapter_precheck")
 	if precheckErr != nil {
 		steps = append(steps, "detect_adapter_precheck: error")
 		return failInstall(
