@@ -230,14 +230,15 @@ func runProbeNode(options probeLaunchOptions) error {
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)
 	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, nil)
-	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
-		logProbeWarnf("probe local tun startup recovery skipped: %v", err)
-	}
 
 	nodeMux := buildProbeNodeHTTPMux(identity)
 	localMux := buildProbeLocalConsoleMux()
 	if err := startProbeLocalConsoleServer(localMux, strings.TrimSpace(options.LocalListenAddr)); err != nil {
 		return fmt.Errorf("failed to start local console: %w", err)
+	}
+	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
+		logProbeWarnf("probe local tun startup recovery skipped: %v", err)
+		startProbeLocalTUNStartupRecoveryLoop()
 	}
 
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {

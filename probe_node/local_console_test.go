@@ -2814,6 +2814,45 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 	}
 }
 
+func TestProbeLocalTUNStartupRecoveryFailureKeepsPersistedEnabledIntent(t *testing.T) {
+	_ = setupProbeLocalConsoleTest(t)
+	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
+		t.Fatalf("persist tun state failed: %v", err)
+	}
+
+	probeLocalDetectTUNInstalled = func() (bool, error) { return false, nil }
+	probeLocalInstallTUNDriver = func() error { return errors.New("device stack not ready") }
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
+
+	err := recoverProbeLocalTUNRuntimeOnStartup()
+	if err == nil {
+		t.Fatal("expected startup recovery error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "device stack") {
+		t.Fatalf("startup recovery error=%q", err.Error())
+	}
+	state, loadErr := loadProbeLocalProxyStateFile()
+	if loadErr != nil {
+		t.Fatalf("load proxy state failed: %v", loadErr)
+	}
+	if state.TUN.Enabled != true {
+		t.Fatalf("persisted tun enabled=%v, want true after failed startup recovery", state.TUN.Enabled)
+	}
+	status := probeLocalControl.tunStatus()
+	if status.RecoveryStatus != "failed" {
+		t.Fatalf("recovery status=%q, want failed", status.RecoveryStatus)
+	}
+	if status.RecoveryAttempts != 1 {
+		t.Fatalf("recovery attempts=%d, want 1", status.RecoveryAttempts)
+	}
+	if !strings.Contains(strings.ToLower(status.RecoveryLastError), "device stack") {
+		t.Fatalf("recovery last error=%q", status.RecoveryLastError)
+	}
+	if !strings.Contains(strings.ToLower(status.LastError), "device stack") {
+		t.Fatalf("last error=%q", status.LastError)
+	}
+}
+
 func TestProbeLocalTUNChainSyncRecoveryRetriesPersistedEnabledState(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {

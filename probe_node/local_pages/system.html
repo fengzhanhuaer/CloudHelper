@@ -135,6 +135,11 @@
         <div>已启用</div><div id="tunEnabled">-</div>
         <div>最后更新时间</div><div id="tunUpdatedAt">-</div>
         <div>最近错误</div><div id="tunLastError">-</div>
+        <div>恢复状态</div><div id="tunRecoveryStatus">-</div>
+        <div>恢复次数</div><div id="tunRecoveryAttempts">-</div>
+        <div>下次恢复时间</div><div id="tunRecoveryNextAt">-</div>
+        <div>恢复错误</div><div id="tunRecoveryLastError">-</div>
+        <div>恢复更新时间</div><div id="tunRecoveryUpdatedAt">-</div>
         <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
         <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
       </div>
@@ -183,6 +188,7 @@
   <script>
     const messageEl = document.getElementById('message');
     let upgradeStatusPollingTimer = null;
+    let tunStatusPollingTimer = null;
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
 
@@ -269,6 +275,11 @@
       setText('tunEnabled', data.enabled ? '是' : '否');
       setText('tunUpdatedAt', data.updated_at);
       setText('tunLastError', data.last_error);
+      setText('tunRecoveryStatus', data.recovery_status);
+      setText('tunRecoveryAttempts', data.recovery_attempts);
+      setText('tunRecoveryNextAt', data.recovery_next_at);
+      setText('tunRecoveryLastError', data.recovery_last_error);
+      setText('tunRecoveryUpdatedAt', data.recovery_updated_at);
       const lastObs = (data && typeof data.last_install_observation === 'object' && data.last_install_observation)
         ? data.last_install_observation
         : {};
@@ -277,6 +288,21 @@
         : {};
       setText('tunInstallFinalReasonCode', finalObs.reason_code);
       setText('tunInstallFinalReason', finalObs.reason);
+    }
+
+    function startTunStatusPolling() {
+      if (tunStatusPollingTimer) return;
+      tunStatusPollingTimer = setInterval(() => {
+        loadTunStatus().catch(() => {
+        });
+      }, 3000);
+    }
+
+    function stopTunStatusPolling() {
+      if (tunStatusPollingTimer) {
+        clearInterval(tunStatusPollingTimer);
+        tunStatusPollingTimer = null;
+      }
     }
 
     function stopUpgradeStatusPolling() {
@@ -507,7 +533,11 @@
     });
 
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
-    window.addEventListener('beforeunload', () => stopUpgradeStatusPolling());
+    startTunStatusPolling();
+    window.addEventListener('beforeunload', () => {
+      stopUpgradeStatusPolling();
+      stopTunStatusPolling();
+    });
   </script>
 </body>
 </html>

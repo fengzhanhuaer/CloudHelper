@@ -87,6 +87,11 @@ type probeLocalTunRuntimeState struct {
 	DataPlaneRX            uint64                           `json:"data_plane_rx_packets,omitempty"`
 	DataPlaneBytes         uint64                           `json:"data_plane_rx_bytes,omitempty"`
 	LastError              string                           `json:"last_error,omitempty"`
+	RecoveryStatus         string                           `json:"recovery_status,omitempty"`
+	RecoveryAttempts       int                              `json:"recovery_attempts,omitempty"`
+	RecoveryLastError      string                           `json:"recovery_last_error,omitempty"`
+	RecoveryNextAt         string                           `json:"recovery_next_at,omitempty"`
+	RecoveryUpdatedAt      string                           `json:"recovery_updated_at,omitempty"`
 	InstallObservation     *probeLocalTUNInstallObservation `json:"install_observation,omitempty"`
 	LastInstallObservation *probeLocalTUNInstallObservation `json:"last_install_observation,omitempty"`
 	UpdatedAt              string                           `json:"updated_at,omitempty"`
@@ -569,8 +574,102 @@ func persistProbeLocalTUNStateBestEffort(installed, enabled bool) {
 	}
 }
 
+func (m *probeLocalControlManager) setTUNRecoveryStatus(status string, attempt int, nextAt time.Time, errText string) {
+	status = strings.TrimSpace(strings.ToLower(status))
+	errText = strings.TrimSpace(errText)
+	now := time.Now().UTC().Format(time.RFC3339)
+	nextText := ""
+	if !nextAt.IsZero() {
+		nextText = nextAt.UTC().Format(time.RFC3339)
+	}
+	m.mu.Lock()
+	m.tun.RecoveryStatus = status
+	if attempt > 0 {
+		m.tun.RecoveryAttempts = attempt
+	}
+	m.tun.RecoveryLastError = errText
+	m.tun.RecoveryNextAt = nextText
+	m.tun.RecoveryUpdatedAt = now
+	if errText != "" {
+		m.tun.LastError = errText
+	}
+	m.tun.UpdatedAt = now
+	m.mu.Unlock()
+}
+
+func (m *probeLocalControlManager) shouldRecoverTUNOnStartup() bool {
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		return false
+	}
+	if !state.TUN.Enabled {
+		return false
+	}
+	tunStatus := m.tunStatus()
+	proxyStatus := m.proxyStatus()
+	return !(tunStatus.Enabled && proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN))
+}
+
 func recoverProbeLocalTUNRuntimeOnStartup() error {
-	return probeLocalControl.recoverTUNOnStartup()
+	return probeLocalControl.recoverTUNOnStartup(1)
+}
+
+func startProbeLocalTUNStartupRecoveryLoop() {
+	if !probeLocalControl.shouldRecoverTUNOnStartup() {
+		return
+	}
+	probeLocalTUNStartupRecoveryLoopState.mu.Lock()
+	if probeLocalTUNStartupRecoveryLoopState.running {
+		probeLocalTUNStartupRecoveryLoopState.mu.Unlock()
+		return
+	}
+	probeLocalTUNStartupRecoveryLoopState.running = true
+	probeLocalTUNStartupRecoveryLoopState.mu.Unlock()
+
+	go func() {
+		defer func() {
+			probeLocalTUNStartupRecoveryLoopState.mu.Lock()
+			probeLocalTUNStartupRecoveryLoopState.running = false
+			probeLocalTUNStartupRecoveryLoopState.mu.Unlock()
+		}()
+		delays := []time.Duration{
+			5 * time.Second,
+			10 * time.Second,
+			20 * time.Second,
+			30 * time.Second,
+			45 * time.Second,
+			60 * time.Second,
+			90 * time.Second,
+			120 * time.Second,
+		}
+		for i, delay := range delays {
+			attempt := i + 2
+			nextAt := time.Now().Add(delay)
+			probeLocalControl.setTUNRecoveryStatus("waiting", attempt, nextAt, "")
+			logProbeInfof("probe local tun startup recovery retry scheduled: attempt=%d delay=%s", attempt, delay.String())
+			time.Sleep(delay)
+			if !probeLocalControl.shouldRecoverTUNOnStartup() {
+				probeLocalControl.setTUNRecoveryStatus("idle", attempt, time.Time{}, "")
+				return
+			}
+			if err := probeLocalControl.recoverTUNOnStartup(attempt); err != nil {
+				logProbeWarnf("probe local tun startup recovery retry failed: attempt=%d err=%v", attempt, err)
+				continue
+			}
+			logProbeInfof("probe local tun startup recovery retry succeeded: attempt=%d", attempt)
+			return
+		}
+		status := probeLocalControl.tunStatus()
+		errText := strings.TrimSpace(status.RecoveryLastError)
+		if errText == "" {
+			errText = strings.TrimSpace(status.LastError)
+		}
+		if errText == "" {
+			errText = "tun startup recovery exhausted retry attempts"
+		}
+		probeLocalControl.setTUNRecoveryStatus("failed", len(delays)+1, time.Time{}, errText)
+		logProbeWarnf("probe local tun startup recovery exhausted: attempts=%d err=%s", len(delays)+1, errText)
+	}()
 }
 
 func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
@@ -589,6 +688,7 @@ func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
 	}
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
 		logProbeWarnf("probe local tun chain-sync recovery skipped: %v", err)
+		startProbeLocalTUNStartupRecoveryLoop()
 		return
 	}
 	tunStatus = probeLocalControl.tunStatus()
@@ -598,9 +698,15 @@ func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
 	}
 }
 
-func (m *probeLocalControlManager) recoverTUNOnStartup() error {
+func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	m.setTUNRecoveryStatus("running", attempt, time.Time{}, "")
+	logProbeInfof("probe local tun startup recovery attempt started: attempt=%d", attempt)
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
+		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(err.Error()))
 		return err
 	}
 
@@ -611,10 +717,12 @@ func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 	installed := detectedInstalled && detectErr == nil
 	persistedEnabled := state.TUN.Enabled
 	now := time.Now().UTC().Format(time.RFC3339)
+	installErrText := ""
 
 	if persistedEnabled && !installed && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
 		logProbeWarnf("probe local tun startup recovery will run install/check: persisted_installed=%v detected_installed=%v detect_err=%v", state.TUN.Installed, detectedInstalled, detectErr)
 		if _, installErr := m.installTUN(); installErr != nil {
+			installErrText = strings.TrimSpace(installErr.Error())
 			logProbeWarnf("probe local tun startup install/check recovery failed: %v", installErr)
 		}
 		detectedInstalled, detectErr = probeLocalDetectTUNInstalled()
@@ -636,6 +744,8 @@ func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 		m.tun.LastError = ""
 	} else if strings.TrimSpace(m.tun.LastError) == "" && detectErr != nil && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
 		m.tun.LastError = strings.TrimSpace(detectErr.Error())
+	} else if installErrText != "" {
+		m.tun.LastError = installErrText
 	} else if !detectedInstalled && state.TUN.Installed {
 		m.tun.LastError = "tun adapter is not available after startup detection"
 	}
@@ -646,21 +756,39 @@ func (m *probeLocalControlManager) recoverTUNOnStartup() error {
 	m.mu.Unlock()
 
 	if installed != state.TUN.Installed {
-		persistProbeLocalTUNStateBestEffort(installed, installed && persistedEnabled)
+		persistProbeLocalTUNStateBestEffort(installed, persistedEnabled)
 	}
-	if !installed || !persistedEnabled {
+	if !installed {
+		errText := strings.TrimSpace(m.tunStatus().LastError)
+		if errText == "" {
+			errText = "tun adapter is not available after startup recovery"
+		}
+		err := errors.New(errText)
+		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, errText)
+		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, err)
+		return err
+	}
+	if !persistedEnabled {
 		if installed {
 			logProbeInfof("probe local tun startup recovered installed state: enabled_restore=false")
 		}
+		m.setTUNRecoveryStatus("idle", attempt, time.Time{}, "")
 		return nil
 	}
 	if err := ensureProbeLocalProxyBootstrapDirectBypass(); err != nil {
-		return fmt.Errorf("recover probe local tun bootstrap bypass failed: %w", err)
+		wrappedErr := fmt.Errorf("recover probe local tun bootstrap bypass failed: %w", err)
+		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(wrappedErr.Error()))
+		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, wrappedErr)
+		return wrappedErr
 	}
 
 	if _, _, err := m.enableProxy(); err != nil {
-		return fmt.Errorf("recover probe local tun enabled state failed: %w", err)
+		wrappedErr := fmt.Errorf("recover probe local tun enabled state failed: %w", err)
+		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(wrappedErr.Error()))
+		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, wrappedErr)
+		return wrappedErr
 	}
+	m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
 	logProbeInfof("probe local tun startup recovered enabled state")
 	return nil
 }
@@ -967,6 +1095,11 @@ var (
 	probeLocalAuthInstance *probeLocalAuthManager
 	probeLocalControl      = newProbeLocalControlManager()
 )
+
+var probeLocalTUNStartupRecoveryLoopState = struct {
+	mu      sync.Mutex
+	running bool
+}{}
 
 var probeLocalRuntimeState = struct {
 	mu      sync.RWMutex
