@@ -355,6 +355,9 @@ func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *te
 	if viewSnapshot.SelectedChainLatencyStatus != "reachable" {
 		t.Fatalf("media view snapshot=%+v", viewSnapshot)
 	}
+	if viewSnapshot.SelectedChainLatencyMS == nil || *viewSnapshot.SelectedChainLatencyMS <= 0 {
+		t.Fatalf("media view snapshot latency=%+v", viewSnapshot)
+	}
 	if currentProbeLocalTUNGroupRuntime("fallback") != nil {
 		t.Fatal("direct fallback group should not be preconnected")
 	}

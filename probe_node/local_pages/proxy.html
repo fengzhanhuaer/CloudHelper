@@ -417,10 +417,11 @@
       const status = String(rawStatus || '').trim();
       if (action === 'tunnel') {
         const latencyMs = Number(stateEntry && stateEntry.selected_chain_latency_ms);
-        const latencyMsDisplay = Number.isFinite(latencyMs) && latencyMs > 0 ? String(Math.trunc(latencyMs)) : '';
+        const hasLatencyMs = stateEntry && Object.prototype.hasOwnProperty.call(stateEntry, 'selected_chain_latency_ms') && Number.isFinite(latencyMs) && latencyMs > 0;
+        const latencyMsDisplay = hasLatencyMs ? String(Math.max(1, Math.trunc(latencyMs))) : '';
         const latencyStatus = String(stateEntry && stateEntry.selected_chain_latency_status || '').trim().toLowerCase();
         const latencyError = String(stateEntry && stateEntry.selected_chain_latency_error || '').trim();
-        if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
+        if (latencyStatus === 'reachable' && hasLatencyMs) {
           return `最近测试延迟: ${latencyMsDisplay}ms`;
         }
         if (latencyStatus === 'reachable') {
@@ -534,6 +535,9 @@
       const ok = await ensureSession();
       if (!ok) return;
       await loadProxyStatus();
+      if (isProxyGloballyEnabled()) {
+        await requestJSON('/local/api/proxy/status/refresh', { method: 'POST', body: '{}' });
+      }
       await loadProxySelections();
     }
 

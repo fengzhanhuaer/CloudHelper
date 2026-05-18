@@ -235,10 +235,7 @@ func resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt *probeLocalTUNGroupR
 			)
 			return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "unavailable"), nil, updatedAt, reason
 		}
-		latencyMS := int64(time.Since(startedAt) / time.Millisecond)
-		if latencyMS < 0 {
-			latencyMS = 0
-		}
+		latencyMS := probeLocalLatencyMilliseconds(startedAt)
 		logProbeInfof(
 			"probe local tun group runtime reachability ok: group=%s chain=%s entry=%s:%d layer=%s phase=connect latency_ms=%d",
 			strings.TrimSpace(snapshot.Group),
@@ -285,10 +282,7 @@ func resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt *probeLocalTUNGroupR
 		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), nil, updatedAt, reason
 	}
 	_ = conn.Close()
-	latencyMS := int64(time.Since(startedAt) / time.Millisecond)
-	if latencyMS < 0 {
-		latencyMS = 0
-	}
+	latencyMS := probeLocalLatencyMilliseconds(startedAt)
 	logProbeInfof(
 		"probe local tun group runtime reachability ok: group=%s chain=%s entry=%s:%d layer=%s phase=probe latency_ms=%d",
 		strings.TrimSpace(snapshot.Group),
@@ -299,6 +293,18 @@ func resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt *probeLocalTUNGroupR
 		latencyMS,
 	)
 	return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), &latencyMS, updatedAt, ""
+}
+
+func probeLocalLatencyMilliseconds(startedAt time.Time) int64 {
+	elapsed := time.Since(startedAt)
+	if elapsed <= 0 {
+		return 1
+	}
+	ms := int64(elapsed / time.Millisecond)
+	if ms <= 0 {
+		return 1
+	}
+	return ms
 }
 
 func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocalTUNChainEndpoint, error) {
