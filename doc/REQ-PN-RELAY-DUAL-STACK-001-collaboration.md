@@ -23,6 +23,7 @@
 - 约束 `HTTP/1.1` 在新方案中的职责边界，仅作为兼容或升级引导通道，不作为长期业务承载主路径。
 - 明确 `HTTP/2` 作为默认稳定业务通道、`HTTP/3` 作为直连优先高性能通道的架构方向。
 - 明确客户端连接策略、服务端入口能力、私有鉴权保留策略与后续 Cloudflare 兼容边界。
+- 明确主控新建链路时不再要求单独设置链路协议；存量 `link_layer` 参数默认写入 `http3` 仅为兼容保留，实际连接协议由客户端与服务端按自动协商/自动尝试策略决定。
 
 #### 1.1.2 需求范围
 - 服务端入口范围: relay 公网入口的 `http` / `http2` / `http3` 接入策略、监听模型、协议能力宣告。
@@ -42,6 +43,7 @@
 - 协作文档中必须明确 relay 入口的目标协议集合、每种协议的职责边界与推荐路径。
 - 协作文档中必须明确 `HTTP/1.1` 是否承载业务、是否允许升级、以及升级失败时的处理策略。
 - 协作文档中必须明确 `HTTP/2` 与 `HTTP/3` 在客户端与服务端两侧的连接与降级策略。
+- 协作文档中必须明确客户端在 `HTTP/2` 不可达时自动尝试 `HTTP/3` 的触发条件、连接顺序与失败回退边界。
 - 协作文档中必须明确直连模式与 Cloudflare 代理模式的共存方式，以及各自允许的入口协议。
 - 协作文档中必须明确现有私有鉴权逻辑的保留策略、Cloudflare 接入后的真实来源获取策略与兼容约束。
 - 后续进入 Code 阶段前，第1.4节 `Code任务执行包` 必须给出明确文件范围、操作类型与可测试验收标准。
@@ -72,6 +74,10 @@
 - 服务端入口采用双通道设计: `TCP` 侧提供 `HTTP/1.1 + HTTP/2`，`UDP` 侧提供 `HTTP/3`。
 - `HTTP/2` 作为默认稳定业务承载入口，直连与 Cloudflare 代理均优先围绕该通道兼容。
 - `HTTP/3` 作为直连优先高性能入口，通过能力宣告或客户端策略进行独立新连接切换，不定义为从 `HTTP/2` 同连接升级。
+- 客户端连接策略默认先尝试 `HTTP/2`；当 `HTTP/2` 对 relay 入口明确不可达时，自动发起一次新的 `HTTP/3` 连接尝试。
+- `HTTP/2 -> HTTP/3` 自动尝试仅适用于 relay 入口不可达、握手失败、连接建立失败等入口层故障；不适用于目标网站业务失败、鉴权拒绝或上游业务返回错误。
+- 主控新建链路时不再把 `link_layer` 作为独立运维配置项；为兼容现有数据结构，链路参数中的 `link_layer` 默认写入 `http3`，但该字段不再代表客户端必须固定使用 `HTTP/3`。
+- 客户端与服务端根据入口能力、连接结果与自动尝试策略决定实际连接协议，默认优先 `HTTP/2`，入口层失败时再尝试 `HTTP/3`。
 - `HTTP/1.1` 默认不作为长期业务主承载层，职责限定为兼容接入、升级引导或受控兜底。
 - 保留现有私有鉴权头、Bearer/HMAC 认证信封与链路认证逻辑；Cloudflare 接入后对来源地址解析单独适配。
 - 服务端内部业务 relay、`yamux` 会话管理与 chain runtime 逻辑继续复用现有模型，入口层负责协议接入、切换与兼容边界。
@@ -90,12 +96,15 @@
 |---|---|---|---|---|
 | IF-001 | `startProbeChainPublicRelayServer()` | chain runtime 启动路径 | Relay Ingress Negotiator | 启动 relay 公网入口并按协议暴露 |
 | IF-002 | `handleProbeChainRelayToRuntime()` | 外部 relay 请求入口 | Relay Auth Envelope / Relay Session Bridge | 对入口请求执行鉴权并桥接业务流 |
-| IF-003 | `openProbeChainRelayNetConn()` | relay 客户端/下游连接方 | Client Transport Strategy | 按配置选择 `http` / `http2` / `http3` 建链 |
+| IF-003 | `openProbeChainRelayNetConn()` | relay 客户端/下游连接方 | Client Transport Strategy | 按自动协商/自动尝试策略选择 `http` / `http2` / `http3` 建链 |
 | IF-004 | `resolveProbeChainSourceIPFromRequest()` | 鉴权失败计数与来源解析逻辑 | Cloudflare Compatibility Adapter | 在直连或代理模式下统一得到来源标识 |
 | IF-005 | `newProbeChainYamuxConfig()` | relay 桥接两端 | Relay Session Bridge | 提供统一复用会话参数 |
 
 #### 1.2.5 关键约束
 - `HTTP/3` 切换必须建新连接，不得在文档或实现中表述为从 `HTTP/2` 同连接升级。
+- `HTTP/2` 不可达时允许自动尝试 `HTTP/3`，但该尝试必须以“入口层连接失败”为前提，不能由目标网站业务失败直接触发。
+- 主控侧 `link_layer` 字段仅保留兼容语义，不再作为新建链路时必须人工选择的协议开关。
+- 若链路记录中的 `link_layer` 默认写为 `http3`，实现层不得将其直接解释为“客户端固定只走 `HTTP/3`”；必须继续走自动协商/自动尝试策略。
 - Cloudflare 代理模式下，origin 首选 `HTTPS + HTTP/2`，不要求 origin `HTTP/3` 透传。
 - 现有私有鉴权逻辑必须保留，Cloudflare Access 如后续引入，仅作为叠加身份层而非替换层。
 - 来源地址判断不得只依赖 `RemoteAddr`，必须为代理接入场景预留头字段解析路径。
@@ -129,6 +138,22 @@
 - 输出: 无
 - 处理规则: 无
 - 异常规则: 无
+
+##### 单元编号: U5
+- 单元名称: Client Protocol Strategy Unit
+- 职责: 管理 relay 客户端默认连接层、入口不可达时的自动尝试顺序，以及 `HTTP/2` / `HTTP/3` 的切换边界。
+- 输入: `selected_chain_id`、relay host/port、兼容字段 `link_layer`、最近一次入口连接结果、服务端能力配置。
+- 输出: 实际发起的入口连接层、是否需要自动尝试下一协议、最终连接结果。
+- 处理规则:
+  - 默认首选 `HTTP/2` 建链。
+  - 主控写入的 `link_layer=http3` 仅作为兼容字段保留，不改变“默认首选 `HTTP/2` 建链”的运行时策略。
+  - 当 `HTTP/2` 出现 relay 入口不可达、握手失败、拨号失败、传输层超时等入口层错误时，允许自动新建一次 `HTTP/3` 连接尝试。
+  - `HTTP/3` 自动尝试成功后，应将本次连接结果记录为 `HTTP/3` 命中，但不应把该行为描述为同连接升级。
+  - 目标网站业务失败、远端 open 拒绝、鉴权失败、目标不可达等非入口层错误，不触发 `HTTP/2 -> HTTP/3` 自动尝试。
+  - Cloudflare 代理模式下，客户端不强制要求 origin `HTTP/3`；自动尝试策略仅用于直连 relay 能力范围。
+- 异常规则:
+  - 若 `HTTP/2` 与 `HTTP/3` 均不可达，则返回入口连接失败，不得无限循环重试。
+  - 若服务端配置未声明 `HTTP/3` 能力，则 `HTTP/2` 不可达时仅返回失败，不进行盲目 `HTTP/3` 尝试。
 
 #### 1.3.3 风险
 - 单元边界尚未细化到字段与状态机级别，进入 Code 阶段前必须补齐。
@@ -178,7 +203,7 @@
 |---|---|---|---|---|---|---|---|---|
 | IF-001 | REQ-PN-RELAY-DUAL-STACK-001 | `startProbeChainPublicRelayServer()` | chain runtime 启动路径 | Relay Ingress Negotiator | 监听配置 | relay 入口 | 进行中 | 待细化同端口双栈策略 |
 | IF-002 | REQ-PN-RELAY-DUAL-STACK-001 | `handleProbeChainRelayToRuntime()` | 外部请求入口 | Relay Auth Envelope / Relay Session Bridge | 请求头、请求体 | 鉴权结果、桥接流 | 进行中 | 待细化协议边界 |
-| IF-003 | REQ-PN-RELAY-DUAL-STACK-001 | `openProbeChainRelayNetConn()` | 客户端连接路径 | Client Transport Strategy | chain 参数、link layer | 连接结果 | 进行中 | 待细化切换与降级 |
+| IF-003 | REQ-PN-RELAY-DUAL-STACK-001 | `openProbeChainRelayNetConn()` | 客户端连接路径 | Client Transport Strategy | chain 参数、兼容字段 `link_layer` | 连接结果 | 进行中 | 待细化自动协商、切换与降级 |
 | IF-004 | REQ-PN-RELAY-DUAL-STACK-001 | `resolveProbeChainSourceIPFromRequest()` | 鉴权来源解析 | Cloudflare Compatibility Adapter | 请求上下文 | 来源标识 | 进行中 | 待明确 Cloudflare 头字段 |
 | IF-005 | REQ-PN-RELAY-DUAL-STACK-001 | `newProbeChainYamuxConfig()` | relay 桥接两端 | Relay Session Bridge | 无 | yamux 配置 | 进行中 | 后续可能需要调优窗口 |
 
@@ -219,7 +244,7 @@
 #### 1.7.4 裁判结论
 - 结论: 有条件通过
 - 放行阻塞: 放行
-- 条件: 当前仅完成需求跟踪与初始架构，后续进入 Code 前必须补齐第1.4节任务包。
+- 条件: 当前仅完成需求跟踪与初始架构，后续进入 Code 前必须补齐第1.4节任务包，并将 `HTTP/2` 不可达自动尝试 `HTTP/3` 的触发条件、以及主控 `link_layer` 兼容字段的运行时解释细化为可测试任务。
 - 责任方: Architect
 - 关闭要求: 在进入源码修改前完成任务清单、文件范围、操作类型与可测试验收标准。
 - 整改要求: 无
