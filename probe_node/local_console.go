@@ -614,6 +614,33 @@ func recoverProbeLocalTUNRuntimeOnStartup() error {
 	return probeLocalControl.recoverTUNOnStartup(1)
 }
 
+func startProbeLocalTUNStartupRecoveryAsync() {
+	if !probeLocalControl.shouldRecoverTUNOnStartup() {
+		return
+	}
+	probeLocalTUNStartupRecoveryLoopState.mu.Lock()
+	if probeLocalTUNStartupRecoveryLoopState.running {
+		probeLocalTUNStartupRecoveryLoopState.mu.Unlock()
+		return
+	}
+	probeLocalTUNStartupRecoveryLoopState.running = true
+	probeLocalTUNStartupRecoveryLoopState.mu.Unlock()
+
+	go func() {
+		if err := probeLocalControl.recoverTUNOnStartup(1); err != nil {
+			logProbeWarnf("probe local tun startup recovery skipped: %v", err)
+			probeLocalTUNStartupRecoveryLoopState.mu.Lock()
+			probeLocalTUNStartupRecoveryLoopState.running = false
+			probeLocalTUNStartupRecoveryLoopState.mu.Unlock()
+			startProbeLocalTUNStartupRecoveryLoop()
+			return
+		}
+		probeLocalTUNStartupRecoveryLoopState.mu.Lock()
+		probeLocalTUNStartupRecoveryLoopState.running = false
+		probeLocalTUNStartupRecoveryLoopState.mu.Unlock()
+	}()
+}
+
 func startProbeLocalTUNStartupRecoveryLoop() {
 	if !probeLocalControl.shouldRecoverTUNOnStartup() {
 		return

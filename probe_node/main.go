@@ -183,7 +183,8 @@ func main() {
 		logProbeInfof("probe local tun install mode finished")
 		return
 	}
-	initProbeLogger()
+	closeLogFile := initProbeNodeRuntimeLogger()
+	defer closeLogFile()
 
 	if options.UpgradeVerify {
 		if err := runProbeUpgradeVerifyMode(options); err != nil {
@@ -192,10 +193,42 @@ func main() {
 		}
 		return
 	}
+	releaseStartupGate, err := enterProbeNodeStartupGate()
+	if err != nil {
+		logProbeErrorf("probe node startup gate failed: %v", err)
+		log.Fatalf("probe node startup gate failed: %v", err)
+	}
+	defer releaseStartupGate()
 
 	if err := runProbeNodeEntry(options); err != nil {
 		logProbeErrorf("probe node exited unexpectedly: %v", err)
 		log.Fatalf("probe node exited unexpectedly: %v", err)
+	}
+}
+
+func initProbeNodeRuntimeLogger() func() {
+	exePath, err := os.Executable()
+	if err != nil || strings.TrimSpace(exePath) == "" {
+		initProbeLoggerWithStderrMirror()
+		return func() {}
+	}
+	logDir := filepath.Join(filepath.Dir(exePath), "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		initProbeLoggerWithStderrMirror()
+		logProbeWarnf("probe runtime log directory create failed: %v", err)
+		return func() {}
+	}
+	logPath := filepath.Join(logDir, "probe_node.runtime.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		initProbeLoggerWithStderrMirror()
+		logProbeWarnf("probe runtime log open failed: path=%s err=%v", logPath, err)
+		return func() {}
+	}
+	initProbeLoggerWithExtraMirrors(f)
+	logProbeInfof("probe runtime log path: %s", logPath)
+	return func() {
+		_ = f.Close()
 	}
 }
 
@@ -236,10 +269,6 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err := startProbeLocalConsoleServer(localMux, strings.TrimSpace(options.LocalListenAddr)); err != nil {
 		return fmt.Errorf("failed to start local console: %w", err)
 	}
-	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
-		logProbeWarnf("probe local tun startup recovery skipped: %v", err)
-		startProbeLocalTUNStartupRecoveryLoop()
-	}
 
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
 		go startProbeReporter(wsURL, identity)
@@ -251,6 +280,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	startProbeServiceRuntimeLoop(nodeMux, identity, controllerBaseURL)
 
 	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
+	startProbeLocalTUNStartupRecoveryAsync()
 	select {}
 }
 
