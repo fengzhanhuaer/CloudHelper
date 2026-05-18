@@ -1946,6 +1946,7 @@ func lookupProbeLocalDNSRouteHintByIP(ipText string) (probeLocalDNSRouteDecision
 	if ip == nil {
 		return probeLocalDNSRouteDecision{}, false
 	}
+	ensureProbeLocalDNSCacheLoaded()
 	now := probeLocalDNSNow().UTC()
 	probeLocalDNSState.mu.Lock()
 	defer probeLocalDNSState.mu.Unlock()

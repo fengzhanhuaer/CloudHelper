@@ -290,3 +290,65 @@ func TestShouldUseProbeLocalDNSFakeIPSkipsDirectDecision(t *testing.T) {
 		t.Fatalf("direct decision should not use fake ip: %+v", dnsDecision)
 	}
 }
+
+func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	t.Cleanup(resetProbeLocalTUNGroupRuntimeRegistryForTest)
+
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{{
+		ChainID:     "chain-preconnect-1",
+		ChainType:   "proxy_chain",
+		Name:        "preconnect",
+		Secret:      "secret",
+		EntryNodeID: "12",
+		ExitNodeID:  "12",
+		LinkLayer:   "http",
+		HopConfigs: []probeLinkChainHopServerItem{{
+			NodeNo:       12,
+			ListenHost:   "0.0.0.0",
+			ListenPort:   16030,
+			ExternalPort: 16030,
+			LinkLayer:    "http",
+			RelayHost:    "127.0.0.1",
+		}},
+	}}); err != nil {
+		t.Fatalf("persist proxy chain cache failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.TUN.Enabled = true
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "media", Action: "tunnel", SelectedChainID: "chain-preconnect-1", TunnelNodeID: "chain:chain-preconnect-1"},
+		{Group: "fallback", Action: "direct", SelectedChainID: "chain-preconnect-1", TunnelNodeID: "chain:chain-preconnect-1"},
+	}
+
+	var peers []net.Conn
+	probeLocalTUNOpenChainRelayNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+		if chainID != "chain-preconnect-1" {
+			t.Fatalf("chainID=%q", chainID)
+		}
+		client, server := net.Pipe()
+		peers = append(peers, server)
+		return client, nil
+	}
+	t.Cleanup(func() {
+		probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	preconnectProbeLocalTUNGroupRuntimes(state, "test")
+
+	rt := currentProbeLocalTUNGroupRuntime("media")
+	if rt == nil {
+		t.Fatal("media runtime should be created")
+	}
+	snapshot := rt.snapshot()
+	if !snapshot.Connected || snapshot.RuntimeStatus != "connected" {
+		t.Fatalf("media runtime snapshot=%+v", snapshot)
+	}
+	if currentProbeLocalTUNGroupRuntime("fallback") != nil {
+		t.Fatal("direct fallback group should not be preconnected")
+	}
+}

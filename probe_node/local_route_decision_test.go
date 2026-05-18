@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestResolveProbeLocalProxyRouteDecisionByDomainFallbackDirect(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
@@ -162,6 +165,53 @@ func TestResolveProbeLocalProxyRouteDecisionByIPPrefersDNSDirectHint(t *testing.
 	}
 	if ipDecision.SelectedChainID != "" || ipDecision.TunnelNodeID != "" {
 		t.Fatalf("direct hint should not carry tunnel chain: %+v", ipDecision)
+	}
+}
+
+func TestResolveProbeLocalProxyRouteDecisionByIPLoadsPersistedDNSRouteHint(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "media", Rules: []string{"domain_suffix:example.com"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := persistProbeLocalDNSCacheRecordsToDisk([]probeLocalDNSPersistRecord{{
+		Domain:    "api.example.com",
+		Group:     "media",
+		RealIPs:   []string{"203.0.113.20"},
+		UpdatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
+	}}, probeLocalFakeIPDefaultCIDR); err != nil {
+		t.Fatalf("persist dns cache failed: %v", err)
+	}
+	probeLocalDNSState.mu.Lock()
+	probeLocalDNSState.cacheLoaded = false
+	probeLocalDNSState.cache = make(map[string]probeLocalDNSUnifiedRecord)
+	probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
+	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
+	probeLocalDNSState.fakeDomainToIP = make(map[string]string)
+	probeLocalDNSState.fakeIPToEntry = make(map[string]probeLocalDNSFakeIPRuntimeEntry)
+	probeLocalDNSState.mu.Unlock()
+
+	decision := resolveProbeLocalProxyRouteDecisionByIP("203.0.113.20")
+	if decision.Group != "media" || decision.Action != "tunnel" {
+		t.Fatalf("decision=%+v", decision)
+	}
+	if decision.SelectedChainID != "chain-proxy-1" || decision.TunnelNodeID != "chain:chain-proxy-1" {
+		t.Fatalf("decision chain=%+v", decision)
 	}
 }
 

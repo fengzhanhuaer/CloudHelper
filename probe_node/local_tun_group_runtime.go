@@ -62,6 +62,8 @@ var probeLocalTUNGroupRuntimeRegistry = struct {
 	items map[string]*probeLocalTUNGroupRuntime
 }{items: make(map[string]*probeLocalTUNGroupRuntime)}
 
+var probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+
 // Group runtime is the aggregation boundary for proxy behavior.
 // DNS records must not persist action or selected_chain_id as their primary state.
 func normalizeProbeLocalGroupKey(group string) string {
@@ -267,7 +269,7 @@ func resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt *probeLocalTUNGroupR
 	}
 
 	startedAt := time.Now()
-	conn, err := openProbeChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	conn, err := probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
 	if err != nil {
 		reason := strings.TrimSpace(err.Error())
 		logProbeWarnf(
@@ -366,6 +368,13 @@ func (rt *probeLocalTUNGroupRuntime) snapshot() probeLocalTUNGroupRuntimeSnapsho
 	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	return rt.snapshotLocked()
+}
+
+func (rt *probeLocalTUNGroupRuntime) snapshotLocked() probeLocalTUNGroupRuntimeSnapshot {
+	if rt == nil {
+		return probeLocalTUNGroupRuntimeSnapshot{}
+	}
 	connected := rt.session != nil && !rt.session.IsClosed()
 	return probeLocalTUNGroupRuntimeSnapshot{
 		Group:           strings.TrimSpace(rt.Group),
@@ -457,7 +466,7 @@ func (rt *probeLocalTUNGroupRuntime) ensureConnectedLocked() error {
 	if err != nil {
 		return rt.markFailureLocked(err, "unavailable")
 	}
-	conn, err := openProbeChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	conn, err := probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
 	if err != nil {
 		return rt.markFailureLocked(err, "unavailable")
 	}

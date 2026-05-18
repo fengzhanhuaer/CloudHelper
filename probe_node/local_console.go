@@ -488,6 +488,61 @@ func ensureProbeLocalProxySelectedChainDirectBypass(selectedChainID string) erro
 	return fmt.Errorf("selected chain not found for bypass prewarm: %s", chainID)
 }
 
+func preconnectProbeLocalTUNGroupRuntimesFromState(reason string) {
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		logProbeWarnf("probe local proxy group runtime preconnect state load failed: reason=%s err=%v", strings.TrimSpace(reason), err)
+		return
+	}
+	if !state.TUN.Enabled {
+		return
+	}
+	go preconnectProbeLocalTUNGroupRuntimes(state, reason)
+}
+
+func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason string) {
+	seen := map[string]struct{}{}
+	attempted := 0
+	connected := 0
+	for _, entry := range state.Groups {
+		group := strings.TrimSpace(entry.Group)
+		if group == "" || !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") {
+			continue
+		}
+		selectedChainID := firstNonEmpty(
+			strings.TrimSpace(entry.SelectedChainID),
+			mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID),
+		)
+		if strings.TrimSpace(selectedChainID) == "" {
+			continue
+		}
+		key := strings.ToLower(group) + "|" + strings.TrimSpace(selectedChainID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		rt, err := ensureProbeLocalTUNGroupRuntime(group, selectedChainID)
+		if err != nil {
+			logProbeWarnf("probe local proxy group runtime preconnect skipped: reason=%s group=%s chain=%s err=%v", strings.TrimSpace(reason), group, selectedChainID, err)
+			continue
+		}
+		attempted++
+		rt.mu.Lock()
+		err = rt.ensureConnectedLocked()
+		snapshot := rt.snapshotLocked()
+		rt.mu.Unlock()
+		if err != nil {
+			logProbeWarnf("probe local proxy group runtime preconnect failed: reason=%s group=%s chain=%s status=%s err=%v", strings.TrimSpace(reason), group, selectedChainID, strings.TrimSpace(snapshot.RuntimeStatus), err)
+			continue
+		}
+		connected++
+		logProbeInfof("probe local proxy group runtime preconnected: reason=%s group=%s chain=%s entry=%s:%d layer=%s", strings.TrimSpace(reason), group, selectedChainID, strings.TrimSpace(snapshot.EntryHost), snapshot.EntryPort, strings.TrimSpace(snapshot.LinkLayer))
+	}
+	if attempted > 0 {
+		logProbeInfof("probe local proxy group runtime preconnect completed: reason=%s attempted=%d connected=%d", strings.TrimSpace(reason), attempted, connected)
+	}
+}
+
 func lookupProbeLocalIPv4ForBypass(host string) ([]string, error) {
 	ips, err := resolveProbeLocalDNSIPv4s(strings.TrimSpace(host))
 	if err != nil {
@@ -722,6 +777,7 @@ func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
 	proxyStatus = probeLocalControl.proxyStatus()
 	if tunStatus.Enabled && proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN) {
 		logProbeInfof("probe local tun recovered after chain config sync")
+		preconnectProbeLocalTUNGroupRuntimesFromState("chain_config_sync")
 	}
 }
 
@@ -817,6 +873,7 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	}
 	m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
 	logProbeInfof("probe local tun startup recovered enabled state")
+	preconnectProbeLocalTUNGroupRuntimes(state, "startup_recovery")
 	return nil
 }
 
@@ -3902,6 +3959,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass
 	probeLocalResolveGroupRuntimeLatency = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
+	probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
 }
 
 func resetProbeLocalTUNHooksForTest() {
