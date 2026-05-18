@@ -2417,6 +2417,27 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 	return nil
 }
 
+func stopProbeLocalConsoleServer(reason string) {
+	probeLocalConsoleState.mu.Lock()
+	server := probeLocalConsoleState.server
+	addr := probeLocalConsoleState.listenAddr
+	probeLocalConsoleState.server = nil
+	probeLocalConsoleState.listenAddr = ""
+	probeLocalConsoleState.mu.Unlock()
+	if server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err := server.Shutdown(ctx)
+	cancel()
+	if err != nil {
+		_ = server.Close()
+		logProbeWarnf("probe local console shutdown forced: listen=%s reason=%s err=%v", addr, strings.TrimSpace(reason), err)
+		return
+	}
+	logProbeInfof("probe local console stopped: listen=%s reason=%s", addr, strings.TrimSpace(reason))
+}
+
 func buildProbeLocalConsoleMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", probeLocalRootHandler)
@@ -3723,10 +3744,24 @@ func probeLocalSystemRestartHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	go func() {
 		time.Sleep(200 * time.Millisecond)
+		prepareProbeLocalProcessRestart()
 		if err := probeLocalRestartProcess(""); err != nil {
 			logProbeErrorf("probe local restart failed: %v", err)
 		}
 	}()
+}
+
+func prepareProbeLocalProcessRestart() {
+	logProbeInfof("probe local restart preparing: closing listeners")
+	stopProbeLocalProxyMonitor()
+	_ = stopProbeLocalTUNDataPlane()
+	stopProbeHTTPSService("process restart")
+	stoppedChains := stopAllProbeChainRuntimes("process restart")
+	if stoppedChains > 0 {
+		logProbeInfof("probe local restart stopped chain runtimes: count=%d", stoppedChains)
+	}
+	stopProbeLocalConsoleServer("process restart")
+	time.Sleep(300 * time.Millisecond)
 }
 
 func probeLocalProxyGroupsBackupHandler(w http.ResponseWriter, r *http.Request) {

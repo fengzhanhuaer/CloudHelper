@@ -1948,6 +1948,22 @@ func stopProbeChainRuntime(chainID string, reason string) bool {
 	return true
 }
 
+func stopAllProbeChainRuntimes(reason string) int {
+	probeChainRuntimeState.mu.Lock()
+	ids := make([]string, 0, len(probeChainRuntimeState.runtimes))
+	for id := range probeChainRuntimeState.runtimes {
+		ids = append(ids, id)
+	}
+	probeChainRuntimeState.mu.Unlock()
+	stopped := 0
+	for _, id := range ids {
+		if stopProbeChainRuntime(id, reason) {
+			stopped++
+		}
+	}
+	return stopped
+}
+
 func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSessionID string) {
 	defer conn.Close()
 

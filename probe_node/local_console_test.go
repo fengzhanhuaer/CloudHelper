@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1807,6 +1808,42 @@ func TestProbeLocalSystemRestartAccepted(t *testing.T) {
 	select {
 	case <-restartCalled:
 	case <-time.After(2 * time.Second):
+		t.Fatalf("system/restart did not trigger restart hook")
+	}
+}
+
+func TestProbeLocalSystemRestartClosesLocalConsoleBeforeRestart(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	addr := reserveProbeLocalListenAddrForTest(t)
+	if err := startProbeLocalConsoleServer(http.NewServeMux(), addr); err != nil {
+		t.Fatalf("start local console failed: %v", err)
+	}
+	t.Cleanup(func() { cleanupProbeLocalConsoleServerForTest(t) })
+
+	restartCalled := make(chan struct{}, 1)
+	probeLocalRestartProcess = func(_ string) error {
+		if got := currentProbeLocalConsoleListen(); got != "" {
+			t.Errorf("local console listen still active before restart: %q", got)
+		}
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Errorf("local console addr not released before restart: %v", err)
+		} else {
+			_ = ln.Close()
+		}
+		restartCalled <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() { resetProbeLocalUpgradeHooksForTest() })
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/restart", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("system/restart status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	select {
+	case <-restartCalled:
+	case <-time.After(3 * time.Second):
 		t.Fatalf("system/restart did not trigger restart hook")
 	}
 }
