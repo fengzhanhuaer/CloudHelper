@@ -490,6 +490,33 @@ func TestEnsureProbeLocalDNSFallbackBypassRoutesFromCacheOnlyFallback(t *testing
 	}
 }
 
+func TestEnsureProbeLocalProxyDefaultsInitializedKeepsServiceRunningOnInvalidGroupConfig(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	path, err := resolveProbeLocalProxyGroupPath()
+	if err != nil {
+		t.Fatalf("resolve proxy group path failed: %v", err)
+	}
+	broken := []byte(`{"version":1,"groups":[{"group":"google","rules":["domain_suffix:google.ru" "domain_suffix:googleapis.com"]}]}`)
+	if err := os.WriteFile(path, broken, 0o644); err != nil {
+		t.Fatalf("write broken proxy group failed: %v", err)
+	}
+
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults should not fail on invalid proxy group config: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read proxy group failed: %v", err)
+	}
+	if string(raw) != string(broken) {
+		t.Fatalf("invalid proxy group config should be reported but not overwritten")
+	}
+	groups := currentProbeLocalProxyViewGroups()
+	if len(groups.Groups) == 0 {
+		t.Fatalf("runtime view should fall back to default groups")
+	}
+}
+
 func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{

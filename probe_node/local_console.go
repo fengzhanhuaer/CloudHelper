@@ -2198,24 +2198,30 @@ func persistProbeLocalHostMappings(hosts []probeLocalHostMapping) error {
 }
 
 func ensureProbeLocalProxyDefaultsInitialized() error {
-	if _, err := loadProbeLocalProxyGroupFile(); err != nil {
-		return err
+	if groups, err := loadProbeLocalProxyGroupFile(); err != nil {
+		logProbeErrorf("probe local proxy group config invalid, service will continue with defaults until fixed: %v", err)
+		setProbeLocalProxyViewGroups(defaultProbeLocalProxyGroupFile())
+	} else {
+		setProbeLocalProxyViewGroups(groups)
 	}
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(state.TUN.UpdatedAt) == "" {
+		logProbeErrorf("probe local proxy state config invalid, service will continue with defaults until fixed: %v", err)
+		setProbeLocalProxyViewState(defaultProbeLocalProxyStateFile())
+	} else if strings.TrimSpace(state.TUN.UpdatedAt) == "" {
 		state.TUN.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := persistProbeLocalProxyStateFile(state); err != nil {
-			return err
+			logProbeErrorf("probe local proxy state update failed, service will continue: %v", err)
 		}
 	}
 	if _, _, err := loadProbeLocalHostMappingsWithContent(); err != nil {
-		return err
+		logProbeErrorf("probe local proxy host config invalid, service will continue without static host mappings until fixed: %v", err)
 	}
-	if _, err := loadProbeLocalProxyChainItems(); err != nil {
-		return err
+	if chains, err := loadProbeLocalProxyChainItems(); err != nil {
+		logProbeErrorf("probe local proxy chain config invalid, service will continue without cached chains until fixed: %v", err)
+		setProbeLocalProxyViewChains(nil)
+	} else {
+		setProbeLocalProxyViewChains(chains)
 	}
 	return nil
 }
