@@ -527,6 +527,7 @@ func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason
 			continue
 		}
 		attempted++
+		startedAt := time.Now()
 		rt.mu.Lock()
 		err = rt.ensureConnectedLocked()
 		snapshot := rt.snapshotLocked()
@@ -536,6 +537,20 @@ func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason
 			continue
 		}
 		connected++
+		latencyMS := int64(time.Since(startedAt) / time.Millisecond)
+		if latencyMS < 0 {
+			latencyMS = 0
+		}
+		setProbeLocalProxyViewGroupRuntimeSnapshot(group, probeLocalProxyGroupRuntimeSnapshot{
+			Group:                         group,
+			SelectedChainID:               selectedChainID,
+			GroupRuntimeStatus:            firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"),
+			SelectedChainKeepalive:        "connected",
+			SelectedChainLatencyMS:        &latencyMS,
+			SelectedChainLatencyStatus:    "reachable",
+			SelectedChainLatencyUpdatedAt: firstNonEmpty(strings.TrimSpace(snapshot.UpdatedAt), time.Now().UTC().Format(time.RFC3339)),
+			SelectedChainLatencyError:     "",
+		})
 		logProbeInfof("probe local proxy group runtime preconnected: reason=%s group=%s chain=%s entry=%s:%d layer=%s", strings.TrimSpace(reason), group, selectedChainID, strings.TrimSpace(snapshot.EntryHost), snapshot.EntryPort, strings.TrimSpace(snapshot.LinkLayer))
 	}
 	if attempted > 0 {

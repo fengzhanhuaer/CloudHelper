@@ -423,8 +423,14 @@
         if (latencyStatus === 'reachable' && latencyMsDisplay !== '') {
           return `最近测试延迟: ${latencyMsDisplay}ms`;
         }
+        if (latencyStatus === 'reachable') {
+          return status ? `已连接（${status}）` : '已连接';
+        }
         if (latencyError) {
           return `最近测试延迟: 不可达（${latencyError}）`;
+        }
+        if (status === 'connected' || status === 'online') {
+          return status === 'connected' ? '已连接' : '在线';
         }
         if (status) {
           return `最近测试延迟: 不可达（${status}）`;
