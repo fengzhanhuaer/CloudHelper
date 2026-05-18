@@ -10,6 +10,7 @@ CloudHelper 是一个探针主控与节点项目，当前版本：`0.0.7`。
 - `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd）
 - `scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（支持 systemd / 非 systemd）
 - `scripts/install_probe_node_service_windows.ps1`：Windows 探针节点安装脚本（WinSW 服务）
+- `scripts/restart_probe_node_service_windows.ps1`：Windows 探针节点服务一键重启脚本
 - `doc/`：项目文档
 
 探针节点安装脚本支持变量：
@@ -76,6 +77,20 @@ iwr -UseBasicParsing "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelpe
 - `PROBE_NODE_SECRET`
 - `PROBE_CONTROLLER_URL`
 - `INSTALL_DIR`（默认 `C:\Tools`，运行目录为 `INSTALL_DIR\probe_node`）
+
+## Windows 一键重启（探针节点）
+
+使用管理员权限 PowerShell 执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\restart_probe_node_service_windows.ps1
+```
+
+默认重启 `probe_node` Windows 服务。服务名不同时可指定：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\restart_probe_node_service_windows.ps1 -ServiceName probe_node
+```
 
 ## 运行验证
 
