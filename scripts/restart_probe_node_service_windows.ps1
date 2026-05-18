@@ -3,7 +3,8 @@ param(
   [int]$StopTimeoutSec = 30,
   [int]$StartTimeoutSec = 30,
   [switch]$NoWinSW,
-  [switch]$KeepOrphanProcess
+  [switch]$KeepOrphanProcess,
+  [switch]$StopOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -261,6 +262,12 @@ if ($service.Status -ne "Stopped") {
 
 if (-not $KeepOrphanProcess) {
   Stop-OrphanProbeNodeProcesses -ProbeExePath $probeExePath -ServiceName $ServiceName
+}
+
+if ($StopOnly) {
+  Write-Log "service stopped and orphan processes cleaned: $ServiceName"
+  Write-ServiceDiagnostics -Name $ServiceName -WinSWPath $winswPath
+  exit 0
 }
 
 Write-Log "starting service"

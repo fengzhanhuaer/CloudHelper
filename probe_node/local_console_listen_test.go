@@ -166,6 +166,30 @@ func TestStartProbeLocalConsoleServerAndCurrentListen(t *testing.T) {
 	}
 }
 
+func TestStartProbeLocalConsoleServerFallsBackWhenPortInUse(t *testing.T) {
+	cleanupProbeLocalConsoleServerForTest(t)
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve blocker failed: %v", err)
+	}
+	defer blocker.Close()
+	addr := blocker.Addr().String()
+
+	handler := http.NewServeMux()
+	if err := startProbeLocalConsoleServer(handler, addr); err != nil {
+		t.Fatalf("startProbeLocalConsoleServer with occupied addr should fallback, err=%v", err)
+	}
+	t.Cleanup(func() { cleanupProbeLocalConsoleServerForTest(t) })
+
+	got := currentProbeLocalConsoleListen()
+	if got == "" {
+		t.Fatalf("currentProbeLocalConsoleListen should not be empty")
+	}
+	if got == addr {
+		t.Fatalf("fallback listen should not use occupied addr=%q", addr)
+	}
+}
+
 func TestStartProbeLocalConsoleServerNilHandler(t *testing.T) {
 	cleanupProbeLocalConsoleServerForTest(t)
 	if err := startProbeLocalConsoleServer(nil, "127.0.0.1:16033"); err == nil {

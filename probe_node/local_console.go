@@ -2406,6 +2406,45 @@ func resolveProbeLocalListenAddr(explicit string) string {
 	return probeLocalListenAddrDefault
 }
 
+func probeLocalListenFallbackCandidates(addr string) []string {
+	normalized := normalizeProbeLocalListenAddr(addr)
+	if normalized == "" {
+		normalized = probeLocalListenAddrDefault
+	}
+	candidates := []string{normalized}
+	host, portText, err := net.SplitHostPort(normalized)
+	if err != nil {
+		return candidates
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portText))
+	if err != nil || port <= 0 || port >= 65535 {
+		return candidates
+	}
+	for offset := 1; offset <= 10 && port+offset <= 65535; offset++ {
+		candidates = append(candidates, net.JoinHostPort(host, strconv.Itoa(port+offset)))
+	}
+	return candidates
+}
+
+func listenProbeLocalConsoleWithFallback(addr string) (net.Listener, string, error) {
+	var lastErr error
+	for i, candidate := range probeLocalListenFallbackCandidates(addr) {
+		listener, err := net.Listen("tcp", candidate)
+		if err == nil {
+			if i > 0 {
+				logProbeWarnf("probe local console fallback listen selected: requested=%s actual=%s previous_err=%v", addr, candidate, lastErr)
+			}
+			return listener, candidate, nil
+		}
+		lastErr = err
+		logProbeWarnf("probe local console listen failed: candidate=%s err=%v", candidate, err)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no local console listen candidates")
+	}
+	return nil, "", lastErr
+}
+
 func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) error {
 	if handler == nil {
 		return errors.New("nil local console handler")
@@ -2417,17 +2456,17 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 		probeLocalConsoleState.mu.Unlock()
 		return nil
 	}
-	listener, err := net.Listen("tcp", addr)
+	listener, listenAddr, err := listenProbeLocalConsoleWithFallback(addr)
 	if err != nil {
 		probeLocalConsoleState.mu.Unlock()
 		return err
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	probeLocalConsoleState.server = server
-	probeLocalConsoleState.listenAddr = addr
+	probeLocalConsoleState.listenAddr = listenAddr
 	probeLocalConsoleState.mu.Unlock()
 
-	logProbeInfof("probe local console listening on http://%s", addr)
+	logProbeInfof("probe local console listening on http://%s", listenAddr)
 	go func(s *http.Server, ln net.Listener, listenAddr string) {
 		err := s.Serve(ln)
 		if err != nil && err != http.ErrServerClosed {
@@ -2439,7 +2478,7 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 			probeLocalConsoleState.listenAddr = ""
 		}
 		probeLocalConsoleState.mu.Unlock()
-	}(server, listener, addr)
+	}(server, listener, listenAddr)
 
 	return nil
 }
