@@ -447,7 +447,7 @@ func (rt *probeLocalTUNGroupRuntime) markStreamFailureLocked(session *yamux.Sess
 		}
 		return errors.New("group runtime failure")
 	}
-	if session != nil && session.IsClosed() && rt.session == session {
+	if session != nil && rt.session == session && session.IsClosed() {
 		rt.closeLocked()
 		return rt.markFailureLocked(err, "disconnected")
 	}
@@ -515,10 +515,13 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		}
 		stream, err := session.Open()
 		if err != nil {
-			sessionClosed := session.IsClosed()
+			reconnect := session.IsClosed()
+			if !reconnect && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+				reconnect = shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
+			}
 			rt.mu.Lock()
 			if rt.session == session {
-				if sessionClosed {
+				if reconnect {
 					rt.closeLocked()
 					_ = rt.markFailureLocked(err, "disconnected")
 				} else {
@@ -526,7 +529,7 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 				}
 			}
 			rt.mu.Unlock()
-			if attempt == 0 && sessionClosed {
+			if attempt == 0 && reconnect {
 				continue
 			}
 			return nil, err
@@ -543,6 +546,9 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 			rt.mu.Lock()
 			_ = rt.markStreamFailureLocked(session, err)
 			rt.mu.Unlock()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
+				continue
+			}
 			return nil, err
 		}
 		_ = stream.SetWriteDeadline(time.Time{})
@@ -553,6 +559,9 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 			rt.mu.Lock()
 			_ = rt.markStreamFailureLocked(session, err)
 			rt.mu.Unlock()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
+				continue
+			}
 			return nil, err
 		}
 		_ = stream.SetReadDeadline(time.Time{})
@@ -560,8 +569,20 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 			_ = stream.Close()
 			openErr := errors.New(firstNonEmpty(strings.TrimSpace(response.Error), "open stream failed"))
 			rt.mu.Lock()
-			_ = rt.markFailureLocked(openErr, "unavailable")
+			reconnect := false
+			if shouldReconnectProbeLocalTUNGroupRuntimeOpenError(openErr) {
+				reconnect = shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
+			}
+			if rt.session == session && reconnect {
+				rt.closeLocked()
+				_ = rt.markFailureLocked(openErr, "disconnected")
+			} else {
+				_ = rt.markFailureLocked(openErr, "degraded")
+			}
 			rt.mu.Unlock()
+			if attempt == 0 && reconnect {
+				continue
+			}
 			return nil, openErr
 		}
 		rt.mu.Lock()
@@ -572,4 +593,61 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		return stream, nil
 	}
 	return nil, errors.New("group runtime stream open failed")
+}
+
+func shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt *probeLocalTUNGroupRuntime, session *yamux.Session, err error) bool {
+	if !shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+		return false
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
+}
+
+func shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt *probeLocalTUNGroupRuntime, session *yamux.Session) bool {
+	if rt == nil || session == nil || rt.session != session {
+		return false
+	}
+	if session.IsClosed() {
+		return true
+	}
+	snapshot := rt.snapshotLocked()
+	if strings.TrimSpace(snapshot.SelectedChainID) == "" {
+		return true
+	}
+	endpoint, err := resolveProbeLocalChainEntryEndpointByID(snapshot.SelectedChainID)
+	if err != nil {
+		return true
+	}
+	probeConn, err := probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	if err != nil {
+		return true
+	}
+	_ = probeConn.Close()
+	return false
+}
+
+func shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "/api/node/chain/relay") ||
+		strings.Contains(text, "probe relay") ||
+		strings.Contains(text, "yamux") ||
+		strings.Contains(text, "context canceled") ||
+		strings.Contains(text, "use of closed network connection") ||
+		strings.Contains(text, "closed pipe") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "connection aborted") ||
+		strings.Contains(text, "eof") ||
+		strings.Contains(text, "i/o deadline reached") ||
+		strings.Contains(text, "i/o timeout") {
+		return true
+	}
+	return false
 }

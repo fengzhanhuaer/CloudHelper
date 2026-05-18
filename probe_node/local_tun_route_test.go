@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/yamux"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -361,4 +363,193 @@ func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *te
 	if currentProbeLocalTUNGroupRuntime("fallback") != nil {
 		t.Fatal("direct fallback group should not be preconnected")
 	}
+}
+
+func TestProbeLocalTUNGroupRuntimeReconnectsWhenOpenFailureAndRelayProbeUnavailable(t *testing.T) {
+	resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	t.Cleanup(resetProbeLocalTUNGroupRuntimeRegistryForTest)
+
+	rt := &probeLocalTUNGroupRuntime{
+		Group:           "google",
+		SelectedChainID: "chain-stale",
+		RuntimeStatus:   "connected",
+	}
+	probeLocalTUNGroupRuntimeRegistry.mu.Lock()
+	probeLocalTUNGroupRuntimeRegistry.items[normalizeProbeLocalGroupKey("google")] = rt
+	probeLocalTUNGroupRuntimeRegistry.mu.Unlock()
+
+	client1, server1 := net.Pipe()
+	staleServer, err := yamux.Server(server1, newProbeChainYamuxConfig())
+	if err != nil {
+		t.Fatalf("create stale yamux server failed: %v", err)
+	}
+	staleClient, err := yamux.Client(client1, newProbeChainYamuxConfig())
+	if err != nil {
+		t.Fatalf("create stale yamux client failed: %v", err)
+	}
+	rt.session = staleClient
+	rt.relayConn = client1
+	t.Cleanup(func() {
+		_ = staleServer.Close()
+		_ = staleClient.Close()
+	})
+
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{{
+		ChainID:     "chain-stale",
+		ChainType:   "proxy_chain",
+		Name:        "stale",
+		Secret:      "secret",
+		EntryNodeID: "12",
+		ExitNodeID:  "12",
+		LinkLayer:   "http",
+		HopConfigs: []probeLinkChainHopServerItem{{
+			NodeNo:       12,
+			ListenHost:   "0.0.0.0",
+			ListenPort:   16030,
+			ExternalPort: 16030,
+			LinkLayer:    "http",
+			RelayHost:    "127.0.0.1",
+		}},
+	}}); err != nil {
+		t.Fatalf("persist proxy chain cache failed: %v", err)
+	}
+
+	probeCalls := 0
+	probeLocalTUNOpenChainRelayNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+		probeCalls++
+		return nil, errors.New(`Post "https://69.63.223.88:16030/api/node/chain/relay?chain_id=5": context canceled`)
+	}
+	t.Cleanup(func() {
+		probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+	})
+
+	rt.mu.Lock()
+	reconnect := shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, staleClient)
+	rt.mu.Unlock()
+	if !reconnect {
+		t.Fatal("expected reconnect decision when relay probe is unavailable")
+	}
+	if probeCalls != 1 {
+		t.Fatalf("probeCalls=%d, want 1", probeCalls)
+	}
+}
+
+func TestProbeLocalTUNGroupRuntimeKeepsSessionWhenOpenFailureButRelayProbeSucceeds(t *testing.T) {
+	resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	t.Cleanup(resetProbeLocalTUNGroupRuntimeRegistryForTest)
+
+	rt := &probeLocalTUNGroupRuntime{
+		Group:           "google",
+		SelectedChainID: "chain-stale",
+		RuntimeStatus:   "connected",
+	}
+	probeLocalTUNGroupRuntimeRegistry.mu.Lock()
+	probeLocalTUNGroupRuntimeRegistry.items[normalizeProbeLocalGroupKey("google")] = rt
+	probeLocalTUNGroupRuntimeRegistry.mu.Unlock()
+
+	client1, server1 := net.Pipe()
+	staleServer, err := yamux.Server(server1, newProbeChainYamuxConfig())
+	if err != nil {
+		t.Fatalf("create stale yamux server failed: %v", err)
+	}
+	staleClient, err := yamux.Client(client1, newProbeChainYamuxConfig())
+	if err != nil {
+		t.Fatalf("create stale yamux client failed: %v", err)
+	}
+	rt.session = staleClient
+	rt.relayConn = client1
+	t.Cleanup(func() {
+		_ = staleServer.Close()
+		_ = staleClient.Close()
+	})
+
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{{
+		ChainID:     "chain-stale",
+		ChainType:   "proxy_chain",
+		Name:        "stale",
+		Secret:      "secret",
+		EntryNodeID: "12",
+		ExitNodeID:  "12",
+		LinkLayer:   "http",
+		HopConfigs: []probeLinkChainHopServerItem{{
+			NodeNo:       12,
+			ListenHost:   "0.0.0.0",
+			ListenPort:   16030,
+			ExternalPort: 16030,
+			LinkLayer:    "http",
+			RelayHost:    "127.0.0.1",
+		}},
+	}}); err != nil {
+		t.Fatalf("persist proxy chain cache failed: %v", err)
+	}
+
+	var peers []net.Conn
+	probeCalls := 0
+	done := make(chan struct{})
+	probeLocalTUNOpenChainRelayNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+		probeCalls++
+		client, server := net.Pipe()
+		peers = append(peers, server)
+		go serveProbeLocalTUNRelayHealthProbe(server, done)
+		return client, nil
+	}
+	t.Cleanup(func() {
+		close(done)
+		probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	rt.mu.Lock()
+	reconnect := shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, staleClient)
+	rt.mu.Unlock()
+	if reconnect {
+		t.Fatal("did not expect reconnect decision when relay probe succeeds")
+	}
+	if probeCalls != 1 {
+		t.Fatalf("probeCalls=%d, want 1", probeCalls)
+	}
+}
+
+func serveProbeLocalTUNGroupRuntimeOpenError(session *yamux.Session, errText string) {
+	if session == nil {
+		return
+	}
+	defer session.Close()
+	stream, err := session.Accept()
+	if err != nil {
+		return
+	}
+	defer stream.Close()
+	var req probeChainTunnelOpenRequest
+	if err := json.NewDecoder(stream).Decode(&req); err != nil {
+		return
+	}
+	_ = json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: false, Error: errText})
+}
+
+func serveProbeLocalTUNGroupRuntimeOpenOK(conn net.Conn, done <-chan struct{}) {
+	defer conn.Close()
+	session, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	if err != nil {
+		return
+	}
+	defer session.Close()
+	stream, err := session.Accept()
+	if err != nil {
+		return
+	}
+	defer stream.Close()
+	var req probeChainTunnelOpenRequest
+	if err := json.NewDecoder(stream).Decode(&req); err != nil {
+		return
+	}
+	_ = json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: true})
+	<-done
+}
+
+func serveProbeLocalTUNRelayHealthProbe(conn net.Conn, done <-chan struct{}) {
+	defer conn.Close()
+	<-done
 }
