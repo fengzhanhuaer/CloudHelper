@@ -352,7 +352,7 @@ func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *te
 	if !ok {
 		t.Fatal("media view snapshot should be updated")
 	}
-	if viewSnapshot.SelectedChainLatencyStatus != "reachable" || viewSnapshot.SelectedChainLatencyMS == nil {
+	if viewSnapshot.SelectedChainLatencyStatus != "reachable" {
 		t.Fatalf("media view snapshot=%+v", viewSnapshot)
 	}
 	if currentProbeLocalTUNGroupRuntime("fallback") != nil {

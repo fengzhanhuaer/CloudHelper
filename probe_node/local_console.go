@@ -538,15 +538,17 @@ func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason
 		}
 		connected++
 		latencyMS := int64(time.Since(startedAt) / time.Millisecond)
-		if latencyMS < 0 {
-			latencyMS = 0
+		var latencyMSPtr *int64
+		if latencyMS > 0 {
+			value := latencyMS
+			latencyMSPtr = &value
 		}
 		setProbeLocalProxyViewGroupRuntimeSnapshot(group, probeLocalProxyGroupRuntimeSnapshot{
 			Group:                         group,
 			SelectedChainID:               selectedChainID,
 			GroupRuntimeStatus:            firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"),
 			SelectedChainKeepalive:        "connected",
-			SelectedChainLatencyMS:        &latencyMS,
+			SelectedChainLatencyMS:        latencyMSPtr,
 			SelectedChainLatencyStatus:    "reachable",
 			SelectedChainLatencyUpdatedAt: firstNonEmpty(strings.TrimSpace(snapshot.UpdatedAt), time.Now().UTC().Format(time.RFC3339)),
 			SelectedChainLatencyError:     "",

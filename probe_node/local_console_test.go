@@ -722,6 +722,57 @@ func TestResolveProbeLocalDNSResponsePrefersCacheBeforeStaticHostMapping(t *test
 	}
 }
 
+func TestResolveProbeLocalDNSResponsePrefersFakeIPForTunnelDomainWithRealCache(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "google", Rules: []string{"domain_suffix:google.com"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "google", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+	storeProbeLocalDNSCacheRecords("www.google.com", []string{"35.190.80.1"})
+
+	packet, err := buildProbeLocalDNSQueryA("www.google.com")
+	if err != nil {
+		t.Fatalf("build dns query failed: %v", err)
+	}
+	response, domain, ips, decision, err := resolveProbeLocalDNSResponse(packet)
+	if err != nil {
+		t.Fatalf("resolveProbeLocalDNSResponse returned error: %v", err)
+	}
+	if domain != "www.google.com" {
+		t.Fatalf("domain=%q", domain)
+	}
+	if len(ips) != 0 {
+		t.Fatalf("returned real ips=%v, want none for fake ip response", ips)
+	}
+	if decision.Group != "google" || decision.Action != "tunnel" {
+		t.Fatalf("decision=%+v", decision)
+	}
+	responseIPs := extractProbeLocalDNSResponseIPsBestEffort(response)
+	if len(responseIPs) != 1 || responseIPs[0] == "35.190.80.1" {
+		t.Fatalf("response ips=%v, want allocated fake ip", responseIPs)
+	}
+	if net.ParseIP(responseIPs[0]) == nil {
+		t.Fatalf("response fake ip is invalid: %v", responseIPs)
+	}
+	records := queryProbeLocalDNSUnifiedRecords()
+	if len(records) != 1 || records[0].FakeIP != responseIPs[0] || strings.Join(records[0].RealIPs, ",") != "35.190.80.1" {
+		t.Fatalf("unified records=%+v response_ips=%v", records, responseIPs)
+	}
+}
+
 func TestResolveProbeLocalDNSUpstreamHostIPv4CachesBootstrapResult(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()

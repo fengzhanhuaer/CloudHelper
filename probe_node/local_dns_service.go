@@ -79,6 +79,13 @@ type probeLocalDNSUpstreamCandidate struct {
 	ViaProxy bool
 }
 
+type probeLocalDNSApplicationResponse struct {
+	Response []byte
+	Domain   string
+	RealIPs  []string
+	Decision probeLocalDNSRouteDecision
+}
+
 type probeLocalDNSPersistRecord struct {
 	Domain    string
 	Group     string
@@ -445,45 +452,82 @@ func handleProbeLocalDNSPacket(conn net.PacketConn, remoteAddr net.Addr, packet 
 	if conn == nil || remoteAddr == nil || len(packet) == 0 {
 		return
 	}
-	response, domain, ips, decision, err := resolveProbeLocalDNSResponse(packet)
+	result, err := resolveProbeLocalDNSApplicationResponse(packet)
 	if err != nil {
 		updateProbeLocalDNSStatusError(err)
 		logProbeWarnf("probe local dns resolve failed: %v", err)
 	}
+	response := result.Response
 	if len(response) == 0 {
 		response = buildProbeLocalDNSServfail(packet)
 	}
 	if len(response) > 0 {
 		_, _ = conn.WriteTo(response, remoteAddr)
 	}
-	if domain != "" && len(ips) > 0 {
-		storeProbeLocalDNSCacheRecords(domain, ips)
-		storeProbeLocalDNSRouteHints(domain, ips, decision)
-	}
 }
 
 func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, probeLocalDNSRouteDecision, error) {
+	result, err := resolveProbeLocalDNSApplicationResponse(packet)
+	return result.Response, result.Domain, result.RealIPs, result.Decision, err
+}
+
+func resolveProbeLocalDNSApplicationResponse(packet []byte) (probeLocalDNSApplicationResponse, error) {
 	domain, qType := parseProbeLocalDNSQueryDomainAndType(packet)
 	decision := resolveProbeLocalDNSRouteDecision(domain)
+	result := probeLocalDNSApplicationResponse{
+		Domain:   domain,
+		Decision: decision,
+	}
 	if qType == dnsmessage.TypeA {
-		if cachedIPs := lookupProbeLocalDNSCacheIPv4ByDomain(domain); len(cachedIPs) > 0 {
-			return buildProbeLocalDNSSuccessA(packet, cachedIPs[0]), domain, []string{cachedIPs[0]}, decision, nil
+		if shouldUseProbeLocalDNSFakeIP(domain, qType, decision) {
+			result.Response = resolveProbeLocalDNSApplicationFakeIPResponse(packet, domain, decision)
+			return result, nil
 		}
-		if mappedIP, ok := lookupProbeLocalStaticHostMappingIPv4(domain); ok {
-			return buildProbeLocalDNSSuccessA(packet, mappedIP), domain, []string{mappedIP}, decision, nil
+		if response, realIPs, ok := resolveProbeLocalDNSApplicationCachedOrHostResponse(packet, domain, decision); ok {
+			result.Response = response
+			result.RealIPs = realIPs
+			return result, nil
 		}
 	}
 	if decision.Reject {
-		return buildProbeLocalDNSRefused(packet), domain, nil, decision, nil
+		result.Response = buildProbeLocalDNSRefused(packet)
+		return result, nil
 	}
-	if shouldUseProbeLocalDNSFakeIP(domain, qType, decision) {
-		if fakeIP, ok := allocateProbeLocalDNSFakeIP(domain, decision); ok {
-			return buildProbeLocalDNSSuccessA(packet, fakeIP), domain, nil, decision, nil
-		}
+	response, realIPs, err := resolveProbeLocalDNSApplicationUpstreamResponse(packet, domain, decision)
+	result.Response = response
+	result.RealIPs = realIPs
+	return result, err
+}
+
+func resolveProbeLocalDNSApplicationFakeIPResponse(packet []byte, domain string, decision probeLocalDNSRouteDecision) []byte {
+	fakeIP, ok := allocateProbeLocalDNSFakeIP(domain, decision)
+	if !ok {
+		return nil
 	}
+	return buildProbeLocalDNSSuccessA(packet, fakeIP)
+}
+
+func resolveProbeLocalDNSApplicationCachedOrHostResponse(packet []byte, domain string, decision probeLocalDNSRouteDecision) ([]byte, []string, bool) {
+	cleanDomain := normalizeProbeLocalDNSDomain(domain)
+	if cleanDomain == "" {
+		return nil, nil, false
+	}
+	if cachedIPs := lookupProbeLocalDNSCacheIPv4ByDomain(cleanDomain); len(cachedIPs) > 0 {
+		storeProbeLocalDNSRouteHints(cleanDomain, cachedIPs, decision)
+		return buildProbeLocalDNSSuccessA(packet, cachedIPs[0]), cachedIPs, true
+	}
+	if mappedIP, ok := lookupProbeLocalStaticHostMappingIPv4(cleanDomain); ok {
+		realIPs := []string{mappedIP}
+		storeProbeLocalDNSInternalRealIPv4s(cleanDomain, realIPs, decision)
+		return buildProbeLocalDNSSuccessA(packet, mappedIP), realIPs, true
+	}
+	return nil, nil, false
+}
+
+func resolveProbeLocalDNSApplicationUpstreamResponse(packet []byte, domain string, decision probeLocalDNSRouteDecision) ([]byte, []string, error) {
 	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(decision)
 	if len(candidates) == 0 {
-		return nil, domain, nil, decision, errors.New("dns upstream list is empty")
+		return nil, nil, errors.New("dns upstream list is empty")
 	}
 	var lastErr error
 	for _, candidate := range candidates {
@@ -508,30 +552,54 @@ func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, prob
 			continue
 		}
 		ips, _ := extractProbeLocalDNSResponseIPs(response)
-		return response, domain, ips, decision, nil
+		realIPs := filterProbeLocalIPv4StringsFromList(ips)
+		storeProbeLocalDNSInternalRealIPv4s(domain, realIPs, decision)
+		return response, realIPs, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("dns upstream resolve failed")
 	}
-	return nil, domain, nil, decision, lastErr
+	return nil, nil, lastErr
 }
 
 func resolveProbeLocalDNSRealIPsForRouteDomain(domain string, decision probeLocalDNSRouteDecision) []string {
-	cleanDomain := normalizeProbeLocalDNSDomain(domain)
-	if cleanDomain == "" {
-		return nil
-	}
-	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanDomain); len(cached) > 0 {
-		storeProbeLocalDNSRouteHints(cleanDomain, cached, decision)
-		return cached
-	}
-	ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreams(cleanDomain, decision)
+	ips, err := resolveProbeLocalDNSInternalRealIPv4s(domain, decision)
 	if err != nil || len(ips) == 0 {
 		return nil
 	}
-	storeProbeLocalDNSCacheRecords(cleanDomain, ips)
-	storeProbeLocalDNSRouteHints(cleanDomain, ips, decision)
 	return ips
+}
+
+func resolveProbeLocalDNSInternalRealIPv4s(domain string, decision probeLocalDNSRouteDecision) ([]string, error) {
+	cleanDomain := normalizeProbeLocalDNSDomain(domain)
+	if cleanDomain == "" {
+		return nil, errors.New("dns domain is empty")
+	}
+	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanDomain); len(cached) > 0 {
+		storeProbeLocalDNSRouteHints(cleanDomain, cached, decision)
+		return cached, nil
+	}
+	if mappedIP, ok := lookupProbeLocalStaticHostMappingIPv4(cleanDomain); ok {
+		ips := []string{mappedIP}
+		storeProbeLocalDNSInternalRealIPv4s(cleanDomain, ips, decision)
+		return ips, nil
+	}
+	ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreams(cleanDomain, decision)
+	if err != nil {
+		return nil, err
+	}
+	storeProbeLocalDNSInternalRealIPv4s(cleanDomain, ips, decision)
+	return ips, nil
+}
+
+func storeProbeLocalDNSInternalRealIPv4s(domain string, ips []string, decision probeLocalDNSRouteDecision) {
+	cleanDomain := normalizeProbeLocalDNSDomain(domain)
+	realIPs := filterProbeLocalIPv4StringsFromList(ips)
+	if cleanDomain == "" || len(realIPs) == 0 {
+		return
+	}
+	storeProbeLocalDNSCacheRecords(cleanDomain, realIPs)
+	storeProbeLocalDNSRouteHints(cleanDomain, realIPs, decision)
 }
 
 func resolveProbeLocalDNSRealIPv4sFromUpstreams(domain string, decision probeLocalDNSRouteDecision) ([]string, error) {
