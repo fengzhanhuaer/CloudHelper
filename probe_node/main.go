@@ -227,6 +227,7 @@ func initProbeNodeRuntimeLogger() func() {
 	}
 	initProbeLoggerWithExtraMirrors(f)
 	logProbeInfof("probe runtime log path: %s", logPath)
+	logProbeInfof("probe runtime logger initialized: version=%s pid=%d", BuildVersion, os.Getpid())
 	return func() {
 		_ = f.Close()
 	}
