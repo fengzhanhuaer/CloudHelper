@@ -16,7 +16,7 @@ func TestIsCloudflareManagedDDNSRecordName(t *testing.T) {
 		{name: "local prefix", input: "local_go_node-1.example.com", expected: true},
 		{name: "business prefix", input: "api.codex.abcd.example.com", expected: true},
 		{name: "business prefix uppercase with dot", input: "API.CODEX.XYZ.example.com.", expected: true},
-		{name: "copilot candidate is not ddns managed", input: "api.copilot.abcd.example.com", expected: false},
+		{name: "copilot candidate is not ddns managed", input: "api_copilot_abcd.example.com", expected: false},
 		{name: "not managed", input: "www.example.com", expected: false},
 		{name: "empty", input: "", expected: false},
 	}
@@ -59,7 +59,7 @@ func TestCloudflareCopilotCandidateDomainIsEditOnly(t *testing.T) {
 	}
 
 	copilotDomain := buildCloudflareCopilotCandidateDomain(7, "example.com")
-	if copilotDomain != "api.copilot.nw.example.com" {
+	if copilotDomain != "api_copilot_nw.example.com" {
 		t.Fatalf("unexpected copilot candidate: %q", copilotDomain)
 	}
 

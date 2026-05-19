@@ -157,7 +157,7 @@
 - 处理规则:
   - 内网候选来自节点 service host 或 local 类域名。
   - 公网候选来自 DDNS、Cloudflare business 或其他公网候选。
-  - Cloudflare 候选来自 `api.copilot.*` 等仅作为候选的域名。
+  - Cloudflare 候选来自 `api_copilot_*` 等仅作为候选的同级域名。
   - 候选只供编辑界面选择，不自动参与 DDNS 维护。
 - 异常规则:
   - 无候选时返回空列表，不影响链路本身配置。

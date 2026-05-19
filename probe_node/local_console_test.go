@@ -2517,7 +2517,7 @@ func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t
 		ExitNodeID:      "2",
 		LinkLayer:       "http",
 		HopConfigs: []probeLinkChainHopServerItem{
-			{NodeNo: 1, RelayHost: "api.copilot.example.com", ExternalPort: 443, LinkLayer: "http"},
+			{NodeNo: 1, RelayHost: "api_copilot_example.com", ExternalPort: 443, LinkLayer: "http"},
 			{NodeNo: 2, RelayHost: "exit.example.com", ExternalPort: 16031, LinkLayer: "http"},
 		},
 	}
@@ -2529,13 +2529,13 @@ func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t
 	}
 
 	probeLocalProxyLinkCFIPLookup = func(ctx context.Context, host string) ([]net.IP, error) {
-		if host != "api.copilot.example.com" {
+		if host != "api_copilot_example.com" {
 			t.Fatalf("lookup host=%q", host)
 		}
 		return []net.IP{net.ParseIP("203.0.113.11"), net.ParseIP("203.0.113.12")}, nil
 	}
 	probeLocalProxyLinkCFIPProbe = func(endpoint probeLocalTUNChainEndpoint, ip string, protocol string) (time.Duration, error) {
-		if endpoint.ChainID != "chain-origin" || endpoint.EntryHost != "api.copilot.example.com" || endpoint.EntryPort != 443 {
+		if endpoint.ChainID != "chain-origin" || endpoint.EntryHost != "api_copilot_example.com" || endpoint.EntryPort != 443 {
 			return 0, fmt.Errorf("unexpected endpoint: %+v", endpoint)
 		}
 		switch ip + "/" + protocol {
@@ -2558,7 +2558,7 @@ func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t
 	if payload["ok"] != true {
 		t.Fatalf("cf optimize payload=%v", payload)
 	}
-	if dialHost, hostHeader, ok := loadProbeChainRelayResolveCache("api.copilot.example.com", false); ok {
+	if dialHost, hostHeader, ok := loadProbeChainRelayResolveCache("api_copilot_example.com", false); ok {
 		t.Fatalf("cf optimize must not mutate relay resolve cache: dialHost=%s hostHeader=%s", dialHost, hostHeader)
 	}
 

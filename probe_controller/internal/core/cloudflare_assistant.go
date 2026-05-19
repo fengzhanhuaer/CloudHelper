@@ -24,7 +24,7 @@ import (
 const (
 	cloudflareStoreFile                         = "cloudflare.json"
 	cloudflareManagedBusinessNamePrefix         = "api.codex."
-	cloudflareCopilotCandidateNamePrefix        = "api.copilot."
+	cloudflareCopilotCandidateNamePrefix        = "api_copilot_"
 	cloudflareZeroTrustDefaultSyncIntervalSec   = 300
 	cloudflareZeroTrustMinSyncIntervalSec       = 30
 	cloudflareZeroTrustSchedulerTickIntervalSec = 15

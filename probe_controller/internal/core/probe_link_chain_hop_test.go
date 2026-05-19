@@ -159,7 +159,7 @@ func TestProjectProbeLinkEntriesForClientUsesIndependentEntryIDs(t *testing.T) {
 				ChainID: "5",
 				Entries: []probeLinkEntryConfig{
 					{EntryType: "pub", Host: "origin.example.com"},
-					{EntryType: "cf", Host: "api.copilot.nq.example.com"},
+					{EntryType: "cf", Host: "api_copilot_nq.example.com"},
 				},
 			}},
 		},
@@ -179,7 +179,7 @@ func TestProjectProbeLinkEntriesForClientUsesIndependentEntryIDs(t *testing.T) {
 	if cf.ChainID != "5_cf" || cf.RelayChainID != "5" || cf.Name != "github_cf" {
 		t.Fatalf("unexpected cf projection: %+v", cf)
 	}
-	if len(cf.HopConfigs) != 1 || cf.HopConfigs[0].RelayHost != "api.copilot.nq.example.com" || cf.HopConfigs[0].ExternalPort != 443 {
+	if len(cf.HopConfigs) != 1 || cf.HopConfigs[0].RelayHost != "api_copilot_nq.example.com" || cf.HopConfigs[0].ExternalPort != 443 {
 		t.Fatalf("unexpected cf hop projection: %+v", cf.HopConfigs)
 	}
 	if chain.HopConfigs[0].RelayHost != "origin.example.com" || chain.HopConfigs[0].ExternalPort != 16030 {
