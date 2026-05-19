@@ -77,6 +77,84 @@ func mngLinkNodeDomainsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngLinkRelayStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": listMngLinkRelayStatus(),
+	})
+}
+
+type mngLinkRelayStatusView struct {
+	NodeID        string                           `json:"node_id"`
+	Online        bool                             `json:"online"`
+	LastSeen      string                           `json:"last_seen,omitempty"`
+	ChainID       string                           `json:"chain_id"`
+	ChainName     string                           `json:"chain_name,omitempty"`
+	ChainType     string                           `json:"chain_type,omitempty"`
+	Role          string                           `json:"role,omitempty"`
+	ListenHost    string                           `json:"listen_host,omitempty"`
+	ListenPort    int                              `json:"listen_port,omitempty"`
+	LinkLayer     string                           `json:"link_layer,omitempty"`
+	NextHost      string                           `json:"next_host,omitempty"`
+	NextPort      int                              `json:"next_port,omitempty"`
+	NextLinkLayer string                           `json:"next_link_layer,omitempty"`
+	PrevHost      string                           `json:"prev_host,omitempty"`
+	PrevPort      int                              `json:"prev_port,omitempty"`
+	PrevLinkLayer string                           `json:"prev_link_layer,omitempty"`
+	ListenState   *probeRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
+	NextState     *probeRelayProtocolStateSnapshot `json:"next_state,omitempty"`
+	PrevState     *probeRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
+	UpdatedAt     string                           `json:"updated_at,omitempty"`
+}
+
+func listMngLinkRelayStatus() []mngLinkRelayStatusView {
+	runtimes := listProbeRuntimes()
+	items := make([]mngLinkRelayStatusView, 0)
+	for _, runtime := range runtimes {
+		for _, status := range runtime.RelayStatus {
+			chainID := strings.TrimSpace(status.ChainID)
+			if chainID == "" {
+				continue
+			}
+			items = append(items, mngLinkRelayStatusView{
+				NodeID:        strings.TrimSpace(runtime.NodeID),
+				Online:        runtime.Online,
+				LastSeen:      strings.TrimSpace(runtime.LastSeen),
+				ChainID:       chainID,
+				ChainName:     strings.TrimSpace(status.ChainName),
+				ChainType:     strings.TrimSpace(status.ChainType),
+				Role:          strings.TrimSpace(status.Role),
+				ListenHost:    strings.TrimSpace(status.ListenHost),
+				ListenPort:    status.ListenPort,
+				LinkLayer:     strings.TrimSpace(status.LinkLayer),
+				NextHost:      strings.TrimSpace(status.NextHost),
+				NextPort:      status.NextPort,
+				NextLinkLayer: strings.TrimSpace(status.NextLinkLayer),
+				PrevHost:      strings.TrimSpace(status.PrevHost),
+				PrevPort:      status.PrevPort,
+				PrevLinkLayer: strings.TrimSpace(status.PrevLinkLayer),
+				ListenState:   status.ListenState,
+				NextState:     status.NextState,
+				PrevState:     status.PrevState,
+				UpdatedAt:     strings.TrimSpace(status.UpdatedAt),
+			})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].NodeID != items[j].NodeID {
+			return items[i].NodeID < items[j].NodeID
+		}
+		if items[i].ChainID != items[j].ChainID {
+			return items[i].ChainID < items[j].ChainID
+		}
+		return items[i].Role < items[j].Role
+	})
+	return items
+}
+
 func mngLinkChainUpsertHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,6 +140,26 @@ type probeChainRelayProtocolStateSnapshot struct {
 	NextProbeAt       string                           `json:"next_probe_at,omitempty"`
 	ProtocolQualities []probeChainRelayProtocolQuality `json:"protocol_qualities,omitempty"`
 	ListenerStatuses  []probeChainRelayListenerStatus  `json:"listener_statuses,omitempty"`
+}
+
+type probeChainRelayReportItem struct {
+	ChainID       string                                `json:"chain_id"`
+	ChainName     string                                `json:"chain_name,omitempty"`
+	ChainType     string                                `json:"chain_type,omitempty"`
+	Role          string                                `json:"role,omitempty"`
+	ListenHost    string                                `json:"listen_host,omitempty"`
+	ListenPort    int                                   `json:"listen_port,omitempty"`
+	LinkLayer     string                                `json:"link_layer,omitempty"`
+	NextHost      string                                `json:"next_host,omitempty"`
+	NextPort      int                                   `json:"next_port,omitempty"`
+	NextLinkLayer string                                `json:"next_link_layer,omitempty"`
+	PrevHost      string                                `json:"prev_host,omitempty"`
+	PrevPort      int                                   `json:"prev_port,omitempty"`
+	PrevLinkLayer string                                `json:"prev_link_layer,omitempty"`
+	ListenState   *probeChainRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
+	NextState     *probeChainRelayProtocolStateSnapshot `json:"next_state,omitempty"`
+	PrevState     *probeChainRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
+	UpdatedAt     string                                `json:"updated_at,omitempty"`
 }
 
 type probeChainRelayProtocolState struct {
@@ -2784,6 +2805,68 @@ func snapshotProbeChainProtocolState(relayHost string, relayPort int) probeChain
 	probeChainRelayProtocolStateStore.mu.Unlock()
 	snapshot.ListenerStatuses = snapshotProbeChainRelayListenerStatuses(endpointKey, relayPort)
 	return snapshot
+}
+
+func snapshotProbeChainRelayReports() []probeChainRelayReportItem {
+	probeChainRuntimeState.mu.Lock()
+	configs := make([]probeChainRuntimeConfig, 0, len(probeChainRuntimeState.runtimes))
+	for _, runtime := range probeChainRuntimeState.runtimes {
+		if runtime == nil {
+			continue
+		}
+		configs = append(configs, runtime.cfg)
+	}
+	probeChainRuntimeState.mu.Unlock()
+
+	if len(configs) == 0 {
+		return nil
+	}
+	sort.Slice(configs, func(i, j int) bool {
+		return strings.TrimSpace(configs[i].chainID) < strings.TrimSpace(configs[j].chainID)
+	})
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	out := make([]probeChainRelayReportItem, 0, len(configs))
+	for _, cfg := range configs {
+		item := probeChainRelayReportItem{
+			ChainID:       strings.TrimSpace(cfg.chainID),
+			ChainName:     strings.TrimSpace(cfg.name),
+			ChainType:     strings.TrimSpace(cfg.chainType),
+			Role:          normalizeProbeChainRole(cfg.role),
+			ListenHost:    strings.TrimSpace(cfg.listenHost),
+			ListenPort:    cfg.listenPort,
+			LinkLayer:     normalizeProbeChainLinkLayer(cfg.linkLayer),
+			NextHost:      strings.TrimSpace(cfg.nextHost),
+			NextPort:      cfg.nextPort,
+			NextLinkLayer: normalizeProbeChainLinkLayer(cfg.nextLinkLayer),
+			PrevHost:      strings.TrimSpace(cfg.prevHost),
+			PrevPort:      cfg.prevPort,
+			PrevLinkLayer: normalizeProbeChainLinkLayer(cfg.prevLinkLayer),
+			UpdatedAt:     now,
+		}
+		if snapshot := snapshotProbeChainProtocolState(cfg.listenHost, cfg.listenPort); probeChainRelaySnapshotHasData(snapshot) {
+			item.ListenState = &snapshot
+		}
+		if cfg.nextPort > 0 && strings.TrimSpace(cfg.nextHost) != "" {
+			if snapshot := snapshotProbeChainProtocolState(cfg.nextHost, cfg.nextPort); probeChainRelaySnapshotHasData(snapshot) {
+				item.NextState = &snapshot
+			}
+		}
+		if cfg.prevPort > 0 && strings.TrimSpace(cfg.prevHost) != "" {
+			if snapshot := snapshotProbeChainProtocolState(cfg.prevHost, cfg.prevPort); probeChainRelaySnapshotHasData(snapshot) {
+				item.PrevState = &snapshot
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func probeChainRelaySnapshotHasData(snapshot probeChainRelayProtocolStateSnapshot) bool {
+	return strings.TrimSpace(snapshot.Endpoint) != "" ||
+		strings.TrimSpace(snapshot.SelectedProtocol) != "" ||
+		len(snapshot.ProtocolQualities) > 0 ||
+		len(snapshot.ListenerStatuses) > 0
 }
 
 func openProbeChainRelayNetConnWithLayer(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {

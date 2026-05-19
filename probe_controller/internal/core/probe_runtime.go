@@ -21,14 +21,66 @@ type probeSystemMetrics struct {
 }
 
 type probeRuntimeStatus struct {
-	NodeID      string             `json:"node_id"`
-	Online      bool               `json:"online"`
-	LastSeen    string             `json:"last_seen"`
-	IPv4        []string           `json:"ipv4,omitempty"`
-	IPv6        []string           `json:"ipv6,omitempty"`
-	IPLocations map[string]string  `json:"ip_locations,omitempty"`
-	Version     string             `json:"version,omitempty"`
-	System      probeSystemMetrics `json:"system"`
+	NodeID      string                 `json:"node_id"`
+	Online      bool                   `json:"online"`
+	LastSeen    string                 `json:"last_seen"`
+	IPv4        []string               `json:"ipv4,omitempty"`
+	IPv6        []string               `json:"ipv6,omitempty"`
+	IPLocations map[string]string      `json:"ip_locations,omitempty"`
+	Version     string                 `json:"version,omitempty"`
+	System      probeSystemMetrics     `json:"system"`
+	RelayStatus []probeRelayStatusItem `json:"relay_status,omitempty"`
+}
+
+type probeRelayProtocolQuality struct {
+	Protocol      string    `json:"protocol"`
+	Available     bool      `json:"available"`
+	LatencyMS     int64     `json:"latency_ms,omitempty"`
+	LossPermille  int       `json:"loss_permille,omitempty"`
+	RateBPS       int64     `json:"rate_bps,omitempty"`
+	Score         int64     `json:"score,omitempty"`
+	FailureCount  int       `json:"failure_count,omitempty"`
+	LastError     string    `json:"last_error,omitempty"`
+	LastTestedAt  time.Time `json:"last_tested_at,omitempty"`
+	NegativeUntil time.Time `json:"negative_until,omitempty"`
+}
+
+type probeRelayListenerStatus struct {
+	Protocol  string `json:"protocol"`
+	Status    string `json:"status"`
+	Listen    string `json:"listen,omitempty"`
+	LastError string `json:"last_error,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+type probeRelayProtocolStateSnapshot struct {
+	Endpoint          string                      `json:"endpoint"`
+	SelectedProtocol  string                      `json:"selected_protocol,omitempty"`
+	SelectionReason   string                      `json:"selection_reason,omitempty"`
+	UpdatedAt         string                      `json:"updated_at,omitempty"`
+	NextProbeAt       string                      `json:"next_probe_at,omitempty"`
+	ProtocolQualities []probeRelayProtocolQuality `json:"protocol_qualities,omitempty"`
+	ListenerStatuses  []probeRelayListenerStatus  `json:"listener_statuses,omitempty"`
+}
+
+type probeRelayStatusItem struct {
+	ChainID       string                           `json:"chain_id"`
+	ChainName     string                           `json:"chain_name,omitempty"`
+	ChainType     string                           `json:"chain_type,omitempty"`
+	Role          string                           `json:"role,omitempty"`
+	ListenHost    string                           `json:"listen_host,omitempty"`
+	ListenPort    int                              `json:"listen_port,omitempty"`
+	LinkLayer     string                           `json:"link_layer,omitempty"`
+	NextHost      string                           `json:"next_host,omitempty"`
+	NextPort      int                              `json:"next_port,omitempty"`
+	NextLinkLayer string                           `json:"next_link_layer,omitempty"`
+	PrevHost      string                           `json:"prev_host,omitempty"`
+	PrevPort      int                              `json:"prev_port,omitempty"`
+	PrevLinkLayer string                           `json:"prev_link_layer,omitempty"`
+	ListenState   *probeRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
+	NextState     *probeRelayProtocolStateSnapshot `json:"next_state,omitempty"`
+	PrevState     *probeRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
+	UpdatedAt     string                           `json:"updated_at,omitempty"`
 }
 
 var probeRuntimeStore = struct {
@@ -53,6 +105,10 @@ func setProbeRuntimeOnline(nodeID string, online bool) {
 }
 
 func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string) {
+	updateProbeRuntimeReportWithRelay(nodeID, ipv4, ipv6, metrics, version, nil)
+}
+
+func updateProbeRuntimeReportWithRelay(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string, relayStatus []probeRelayStatusItem) {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
 		return
@@ -117,6 +173,7 @@ func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metri
 		IPLocations: nextIPLocations,
 		Version:     strings.TrimSpace(version),
 		System:      metrics,
+		RelayStatus: cloneProbeRelayStatusItems(relayStatus),
 	}
 	probeRuntimeStore.mu.Unlock()
 
@@ -124,6 +181,35 @@ func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metri
 		resolveAndApplyProbeIPLocations(nodeID, pendingResolveIPs)
 	}
 	notifyCloudflareRuntimeChanged(nodeID, previousIPv4, previousIPv6, nextIPv4, nextIPv6)
+}
+
+func cloneProbeRelayStatusItems(values []probeRelayStatusItem) []probeRelayStatusItem {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]probeRelayStatusItem, 0, len(values))
+	for _, raw := range values {
+		item := raw
+		item.ChainID = strings.TrimSpace(item.ChainID)
+		if item.ChainID == "" {
+			continue
+		}
+		item.ChainName = strings.TrimSpace(item.ChainName)
+		item.ChainType = strings.TrimSpace(item.ChainType)
+		item.Role = strings.TrimSpace(item.Role)
+		item.ListenHost = strings.TrimSpace(item.ListenHost)
+		item.LinkLayer = strings.TrimSpace(item.LinkLayer)
+		item.NextHost = strings.TrimSpace(item.NextHost)
+		item.NextLinkLayer = strings.TrimSpace(item.NextLinkLayer)
+		item.PrevHost = strings.TrimSpace(item.PrevHost)
+		item.PrevLinkLayer = strings.TrimSpace(item.PrevLinkLayer)
+		item.UpdatedAt = strings.TrimSpace(item.UpdatedAt)
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func getProbeRuntime(nodeID string) (probeRuntimeStatus, bool) {

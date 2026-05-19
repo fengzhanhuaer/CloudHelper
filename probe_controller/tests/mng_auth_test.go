@@ -361,6 +361,9 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	if !strings.Contains(linkRR.Body.String(), "端口转发") {
 		t.Fatalf("expected /mng/link html to include port forward tab")
 	}
+	if !strings.Contains(linkRR.Body.String(), "链路查看") {
+		t.Fatalf("expected /mng/link html to include relay view tab")
+	}
 
 	linkUsersReq := httptest.NewRequest(http.MethodGet, "/mng/api/link/users", nil)
 	linkUsersReq.AddCookie(cookie)
@@ -396,6 +399,18 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	linkChainsPayload := decodeJSONMap(t, linkChainsRR)
 	if _, ok := linkChainsPayload["items"]; !ok {
 		t.Fatalf("expected link chains payload to include items, got %+v", linkChainsPayload)
+	}
+
+	linkRelayStatusReq := httptest.NewRequest(http.MethodGet, "/mng/api/link/relay_status", nil)
+	linkRelayStatusReq.AddCookie(cookie)
+	linkRelayStatusRR := httptest.NewRecorder()
+	mux.ServeHTTP(linkRelayStatusRR, linkRelayStatusReq)
+	if linkRelayStatusRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/api/link/relay_status with session to return 200, got %d body=%s", linkRelayStatusRR.Code, linkRelayStatusRR.Body.String())
+	}
+	linkRelayStatusPayload := decodeJSONMap(t, linkRelayStatusRR)
+	if _, ok := linkRelayStatusPayload["items"]; !ok {
+		t.Fatalf("expected link relay status payload to include items, got %+v", linkRelayStatusPayload)
 	}
 
 	cloudflareReq := httptest.NewRequest(http.MethodGet, "/mng/cloudflare", nil)
