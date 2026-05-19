@@ -2675,7 +2675,8 @@ type probeLocalProxyDirectRequest struct {
 }
 
 type probeLocalProxyLinkProbeRequest struct {
-	ChainID string `json:"chain_id"`
+	ChainID  string `json:"chain_id"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 type probeLocalProxyLinkStatusItem struct {
@@ -3697,8 +3698,8 @@ func runProbeLocalProxyLinkHandshakeProbe(endpoint probeLocalTUNChainEndpoint) (
 	return openProbeChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
 }
 
-func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint) []probeChainRelaySpeedTestResult {
-	return probeChainRelaySpeedTestAuto(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainRelaySpeedTestBytes)
+func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
+	return probeChainRelaySpeedTestAuto(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, protocol, probeChainRelaySpeedTestBytes)
 }
 
 func probeLocalProxyLinkStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -3819,6 +3820,11 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "chain_id is required"})
 		return
 	}
+	protocol := normalizeProbeChainLinkLayer(req.Protocol)
+	if protocol != "" && protocol != "http2" && protocol != "http3" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "protocol must be http2 or http3"})
+		return
+	}
 	items := currentProbeLocalProxyViewChains()
 	item, ok := findProbeLocalProxyLinkItemByID(chainID, items)
 	if !ok {
@@ -3836,7 +3842,7 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	results := probeLocalProxyLinkSpeedProbe(endpoint)
+	results := probeLocalProxyLinkSpeedProbe(endpoint, protocol)
 	snapshot := snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort)
 	rateBPS := int64(0)
 	status := "unreachable"
@@ -3862,6 +3868,7 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		"chain_id":       chainID,
 		"chain_name":     strings.TrimSpace(item.Name),
 		"status":         status,
+		"protocol":       protocol,
 		"rate_bps":       rateBPS,
 		"source":         "active_speed_test",
 		"results":        results,

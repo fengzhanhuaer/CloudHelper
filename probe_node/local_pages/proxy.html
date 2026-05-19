@@ -189,7 +189,6 @@
             <tr>
               <th>链路</th>
               <th>入口</th>
-              <th>命中组</th>
               <th>状态</th>
               <th>协议质量</th>
               <th>测速</th>
@@ -197,7 +196,7 @@
             </tr>
           </thead>
           <tbody id="proxyLinkStatusRows">
-            <tr><td colspan="7" class="muted">暂无链路状态</td></tr>
+            <tr><td colspan="6" class="muted">暂无链路状态</td></tr>
           </tbody>
         </table>
       </div>
@@ -547,11 +546,6 @@
       return formatRate(rateBps) || '-';
     }
 
-    function formatGroups(groups) {
-      if (!Array.isArray(groups) || groups.length === 0) return '-';
-      return groups.map((item) => String(item || '').trim()).filter(Boolean).join(', ') || '-';
-    }
-
     function formatLinkStatusText(item) {
       const status = String(item && item.status || '').trim();
       if (status === 'observed') return '有观测';
@@ -601,7 +595,7 @@
       proxyLinkStatusRowsEl.innerHTML = '';
       const rows = Array.isArray(items) ? items : [];
       if (rows.length === 0) {
-        proxyLinkStatusRowsEl.innerHTML = '<tr><td colspan="7" class="muted">暂无链路状态</td></tr>';
+        proxyLinkStatusRowsEl.innerHTML = '<tr><td colspan="6" class="muted">暂无链路状态</td></tr>';
         return;
       }
       rows.forEach((item) => {
@@ -616,11 +610,10 @@
         tr.innerHTML = `
           <td><strong>${escapeHTML(chainName)}</strong><br><span class="muted">${escapeHTML(chainID || '-')}</span>${route ? `<br><span class="muted">${escapeHTML(route)}</span>` : ''}</td>
           <td>${escapeHTML(endpoint)}<br><span class="muted">${escapeHTML(String(item && item.link_layer || '-'))}</span></td>
-          <td>${escapeHTML(formatGroups(item && item.selected_groups))}</td>
           <td class="${linkStatusClass(item && item.status)}">${escapeHTML(formatLinkStatusText(item))}${errorText ? `<br><span class="muted">${escapeHTML(errorText)}</span>` : ''}</td>
           <td style="white-space: pre-line">${escapeHTML(protocolText)}</td>
           <td>${escapeHTML(formatRateText(rate))}</td>
-          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}">测速</button></div></td>
+          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-protocol="http2" data-chain-id="${escapeHTML(chainID)}">H2 测速</button><button class="secondary" data-action="speed" data-protocol="http3" data-chain-id="${escapeHTML(chainID)}">H3 测速</button></div></td>
         `;
         proxyLinkStatusRowsEl.appendChild(tr);
       });
@@ -712,26 +705,27 @@
       }
     }
 
-    async function runProxyLinkSpeed(chainID) {
+    async function runProxyLinkSpeed(chainID, protocol) {
       const cleanID = normalizeChainID(chainID);
+      const cleanProtocol = String(protocol || '').trim().toLowerCase();
       if (!cleanID) return;
-      setMessage(`链路 ${cleanID} 真实测速中...`);
+      setMessage(`链路 ${cleanID} ${cleanProtocol.toUpperCase()} 真实测速中...`);
       try {
         const data = await requestJSON('/local/api/proxy/link/speed', {
           method: 'POST',
-          body: JSON.stringify({ chain_id: cleanID }),
-        }, 45000);
+          body: JSON.stringify({ chain_id: cleanID, protocol: cleanProtocol }),
+        }, 75000);
         await loadProxyLinkStatus();
         const rate = formatRateText(Number(data && data.rate_bps));
         const results = Array.isArray(data && data.results) ? data.results : [];
         const okCount = results.filter((item) => item && item.ok).length;
         if (okCount > 0) {
-          setMessage(`链路 ${cleanID} 测速完成：${rate}`, 'success');
+          setMessage(`链路 ${cleanID} ${cleanProtocol.toUpperCase()} 测速完成：${rate}`, 'success');
           return;
         }
-        setMessage(`链路 ${cleanID} 测速不可达：${String(data && data.status || data && data.error || 'unknown')}`, 'error');
+        setMessage(`链路 ${cleanID} ${cleanProtocol.toUpperCase()} 测速不可达：${String(data && data.status || data && data.error || 'unknown')}`, 'error');
       } catch (err) {
-        setMessage(`链路 ${cleanID} 测速失败：${err.message}`, 'error');
+        setMessage(`链路 ${cleanID} ${cleanProtocol.toUpperCase()} 测速失败：${err.message}`, 'error');
       }
     }
 
@@ -850,7 +844,7 @@
         return;
       }
       if (action === 'speed') {
-        runProxyLinkSpeed(chainID);
+        runProxyLinkSpeed(chainID, btn.getAttribute('data-protocol') || '');
       }
     });
 

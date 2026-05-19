@@ -2425,7 +2425,10 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 		}()
 		return client, nil
 	}
-	probeLocalProxyLinkSpeedProbe = func(endpoint probeLocalTUNChainEndpoint) []probeChainRelaySpeedTestResult {
+	probeLocalProxyLinkSpeedProbe = func(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
+		if protocol != "http3" {
+			t.Fatalf("speed protocol=%q", protocol)
+		}
 		endpointKey := probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort)
 		recordProbeChainRelayProtocolSuccess(endpointKey, probeChainRelayProtocolDialResult{
 			Protocol:  "http3",
@@ -2477,7 +2480,7 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 		t.Fatalf("link latency ms=%v", latencyPayload["latency_ms"])
 	}
 
-	speedResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/speed", map[string]any{"chain_id": "chain-local"}, sessionCookie)
+	speedResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/speed", map[string]any{"chain_id": "chain-local", "protocol": "http3"}, sessionCookie)
 	if speedResp.Code != http.StatusOK {
 		t.Fatalf("link speed status=%d body=%s", speedResp.Code, speedResp.Body.String())
 	}

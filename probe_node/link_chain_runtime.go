@@ -394,9 +394,9 @@ const (
 	probeChainRelayProtocolNegativeTTL         = 60 * time.Second
 	probeChainRelayProtocolProbeTimeout        = 6 * time.Second
 	probeChainRelayProtocolSwitchMinHold       = 30 * time.Second
-	probeChainRelaySpeedTestBytes              = 2 * 1024 * 1024
-	probeChainRelaySpeedTestMaxBytes           = 16 * 1024 * 1024
-	probeChainRelaySpeedTestTimeout            = 18 * time.Second
+	probeChainRelaySpeedTestBytes              = 32 * 1024 * 1024
+	probeChainRelaySpeedTestMaxBytes           = 64 * 1024 * 1024
+	probeChainRelaySpeedTestTimeout            = 60 * time.Second
 
 	probeChainAuthPacketType        = "github_copilot_auth_request"
 	probeChainAuthPacketVersion     = "2025-03-22"
@@ -3108,9 +3108,9 @@ func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, rela
 	}, nil
 }
 
-func probeChainRelaySpeedTestAuto(chainID string, secret string, relayHost string, relayPort int, layer string, byteCount int64) []probeChainRelaySpeedTestResult {
+func probeChainRelaySpeedTestAuto(chainID string, secret string, relayHost string, relayPort int, layer string, protocol string, byteCount int64) []probeChainRelaySpeedTestResult {
 	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
-	candidates := probeChainRelayProtocolCandidates(layer)
+	candidates := probeChainRelaySpeedTestCandidates(layer, protocol)
 	if byteCount <= 0 {
 		byteCount = probeChainRelaySpeedTestBytes
 	}
@@ -3152,6 +3152,14 @@ func probeChainRelaySpeedTestAuto(chainID string, secret string, relayHost strin
 		recordProbeChainRelayProtocolSelected(endpointKey, bestProtocol, "speed_test")
 	}
 	return results
+}
+
+func probeChainRelaySpeedTestCandidates(layer string, protocol string) []string {
+	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
+	if cleanProtocol == "http2" || cleanProtocol == "http3" {
+		return []string{cleanProtocol}
+	}
+	return probeChainRelayProtocolCandidates(layer)
 }
 
 func parseProbeChainRFC3339Time(raw string) time.Time {

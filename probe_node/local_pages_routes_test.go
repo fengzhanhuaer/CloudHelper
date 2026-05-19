@@ -103,6 +103,8 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 				"/local/api/proxy/link/latency",
 				"/local/api/proxy/link/speed",
 				"真实测速",
+				"H2 测速",
+				"H3 测速",
 			},
 			notExists: []string{"id=\"panelDNS\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
 		},
