@@ -441,6 +441,26 @@ func TestOpenProbeChainRelayNetConnAutoUsesNegativeCacheAfterHTTP3Failure(t *tes
 	if http2Calls < 2 {
 		t.Fatalf("http2 should serve both attempts, calls=%v", calls)
 	}
+	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
+	foundHTTP3Failure := false
+	for _, quality := range snapshot.ProtocolQualities {
+		if quality.Protocol != "http3" {
+			continue
+		}
+		foundHTTP3Failure = true
+		if quality.Available {
+			t.Fatalf("expected http3 unavailable after failure: %+v", quality)
+		}
+		if quality.LossPermille != 1000 {
+			t.Fatalf("expected failed http3 loss_permille=1000, got %+v", quality)
+		}
+		if quality.LatencyMS <= 0 {
+			t.Fatalf("expected failed http3 latency to preserve attempted duration, got %+v", quality)
+		}
+	}
+	if !foundHTTP3Failure {
+		t.Fatalf("missing http3 failure quality: %+v", snapshot.ProtocolQualities)
+	}
 }
 
 func TestOpenProbeChainRelayNetConnAutoFallsBackOnHTTP3ContextCanceled(t *testing.T) {

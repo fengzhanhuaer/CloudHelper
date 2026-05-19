@@ -303,9 +303,13 @@
 
     function formatProtocolQuality(quality) {
       const protocol = String((quality && quality.protocol) || '').trim() || '-';
-      const available = quality && quality.available === true ? '可用' : '不可用';
+      const isAvailable = quality && quality.available === true;
+      const available = isAvailable ? '可用' : '不可用';
       const latency = quality && Number(quality.latency_ms) > 0 ? `${quality.latency_ms}ms` : '-';
-      const loss = quality && Number(quality.loss_permille) > 0 ? `${(Number(quality.loss_permille) / 10).toFixed(1)}%` : '0%';
+      const lossValue = Number(quality && quality.loss_permille);
+      const loss = Number.isFinite(lossValue) && lossValue > 0
+        ? `${(lossValue / 10).toFixed(1)}%`
+        : (isAvailable ? '0%' : '-');
       const rate = formatBPS(quality && quality.rate_bps);
       const score = quality && Number(quality.score) > 0 ? quality.score : '-';
       const failures = quality && Number(quality.failure_count) > 0 ? ` 失败=${quality.failure_count}` : '';

@@ -2615,6 +2615,14 @@ func recordProbeChainRelayProtocolFailure(endpointKey string, result probeChainR
 	quality.LastError = strings.TrimSpace(err.Error())
 	quality.LastTestedAt = now
 	quality.NegativeUntil = now.Add(probeChainRelayProtocolNegativeTTL)
+	quality.LossPermille = 1000
+	if result.Latency > 0 {
+		latencyMS := int64(result.Latency / time.Millisecond)
+		if latencyMS <= 0 {
+			latencyMS = 1
+		}
+		quality.LatencyMS = latencyMS
+	}
 	quality.Score = probeChainRelayProtocolScore(0, 1000, 0, quality.FailureCount)
 	state.Qualities[result.Protocol] = quality
 	state.UpdatedAt = now
