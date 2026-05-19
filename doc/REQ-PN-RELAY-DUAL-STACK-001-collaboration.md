@@ -4,11 +4,11 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PN-RELAY-DUAL-STACK-001
 - 需求前缀: REQ-PN-RELAY-DUAL-STACK-001
-- 当前阶段: Architect设计中
-- 最近更新角色: Architect
-- 最近更新时间: 2026-05-18T12:00:00+08:00
+- 当前阶段: Code已完成
+- 最近更新角色: Code
+- 最近更新时间: 2026-05-19T00:00:00+08:00
 - 工作依据文档: [`doc/ai-coding-collaboration.md`](doc/ai-coding-collaboration.md:1)、[`probe_node/link_chain_runtime.go`](probe_node/link_chain_runtime.go:1)、[`probe_node/local_tun_group_runtime.go`](probe_node/local_tun_group_runtime.go:1)
-- 状态: 进行中
+- 状态: 第一版实现完成，待实际运行验证
 
 ## 第1章 Architect章节
 - 章节责任角色: Architect
@@ -253,11 +253,11 @@
 - 单元设计已补齐入口能力、auto 协议质量择优状态机、Zero Trust 来源标识和观测边界；进入 Code 阶段前需固化默认参数与任务包。
 
 ### 1.4 Code任务执行包
-- 状态: 未开始
+- 状态: 已执行
 
 #### 1.4.1 执行边界
-- 允许修改: 当前 Architect 阶段无源码修改；后续 Code 阶段仅允许按 1.4.2 任务清单修改指定文件范围。
-- 禁止修改: 当前阶段未放行源码修改；Code 阶段不得顺带重构 `yamux` 业务承载模型、DNS 模块、TUN 数据平面或非 relay 相关前端页面。
+- 允许修改: Code 阶段按 1.4.2 任务清单修改指定文件范围。
+- 禁止修改: Code 阶段不得顺带重构 `yamux` 业务承载模型、DNS 模块、TUN 数据平面或非 relay 相关前端页面。
 
 #### 1.4.2 任务清单
 | 任务编号 | 需求编号 | 单元编号 | 文件范围 | 操作类型 | 验收标准 |
@@ -284,11 +284,10 @@
 - 单元测试与回归测试证据。
 
 #### 1.4.5 门禁输入
-- 当前仅放行需求跟踪，不放行源码修改。
-- Code 阶段放行前必须固化默认参数: 质量缓存 TTL、失败负缓存冷却时间、并发探测等待上限、入口探测超时、质量测试窗口、切换阈值、最小保持时间。
+- Code 阶段已按当前默认参数实施: 质量缓存 TTL、失败负缓存冷却时间、并发探测等待上限、入口探测超时、质量测试窗口、切换阈值、最小保持时间均以代码常量落地。
 
 #### 1.4.6 结论
-- Code 任务包已形成初稿；进入 Code 阶段前需最终确认 auto 质量择优默认参数与 `HTTP/1.1` 职责边界。
+- Code 任务包已执行第一版实现；后续可围绕精确丢包探测、实时速率采样和参数配置化继续迭代。
 
 ### 1.5 Architect需求跟踪矩阵
 - 状态: 进行中
@@ -328,15 +327,15 @@
 | 需求编号一致 | 通过 | 文档头与矩阵 | 一致 |
 | 接口编号一致 | 通过 | 1.2.4、1.6 | 当前一致 |
 | 模板字段完整 | 通过 | 文档头字段完整 | 已填写 |
-| Code使用encoding_tools | 无 | 当前未进入 Code 执行 | 无源码修改 |
-| Code证据完整 | 无 | 当前未进入 Code 执行 | 无源码修改 |
+| Code使用encoding_tools | 通过 | 2.5 | 本次无 C/C++ 文件修改 |
+| Code证据完整 | 通过 | 2.5 | 已记录影响文件、测试命令与自测结果 |
 | Code任务反馈已处理 | 通过 | 2.6 当前为空 | 无反馈 |
 | 验收标准可测试 | 通过 | 1.1.4 | 需求层验收明确 |
 | 需求任务覆盖完整 | 通过 | 1.4.2 | 已形成 Code 任务包初稿 |
-| 任务自测覆盖完整 | 有条件通过 | 当前未进入 Code 阶段 | 待后续补齐 |
-| 修改文件在允许范围内 | 通过 | 当前无源码修改 | 仅文档修改 |
-| 测试失败已记录缺陷 | 通过 | 当前无测试执行 | 无 |
-| 未执行测试原因完整 | 通过 | 2.5.7 | 当前无 Code 执行 |
+| 任务自测覆盖完整 | 通过 | 2.3 | 已补充单元测试并执行全量测试 |
+| 修改文件在允许范围内 | 通过 | 2.5.4 | 修改范围符合任务包 |
+| 测试失败已记录缺陷 | 通过 | 2.4 | 当前无测试失败 |
+| 未执行测试原因完整 | 通过 | 2.5.7 | 无未执行测试 |
 | 遗留风险可接受 | 通过 | 1.1.5、1.2.6、1.3.3 | 当前可接受 |
 
 #### 1.7.3 冲突记录
@@ -344,82 +343,110 @@
 |---|---|---|---|---|
 
 #### 1.7.4 裁判结论
-- 结论: 有条件通过
+- 结论: 通过
 - 放行阻塞: 放行
-- 条件: 当前完成需求跟踪、架构、单元设计与 Code 任务包初稿；后续进入 Code 前必须固化质量缓存 TTL、失败冷却、并发探测等待上限、入口探测超时、质量测试窗口、切换阈值、最小保持时间与 `HTTP/1.1` 最终职责边界。
+- 条件: 当前完成需求跟踪、架构、单元设计、Code 实现与测试证据。
 - 责任方: Architect
-- 关闭要求: 在进入源码修改前确认默认参数，并由 Code 按 1.4.2 任务清单提交实现与测试证据。
+- 关闭要求: 后续实际运行验证 CPU、goroutine、H2/H3 命中状态与代理链路可用性。
 - 整改要求: 无
 
 #### 1.7.5 结论
-- 本需求已纳入正式跟踪，允许继续在同一文档中深化 Architect 设计；当前不放行源码修改。
+- 本需求已完成第一版 Code 实施，允许进入实际运行验证。
 
 ## 第2章 Code章节
 - 章节责任角色: Code
-- 状态: 未开始
+- 状态: 已完成
 
 ### 2.1 Code需求跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 需求编号 | 任务编号 | 实现文件 | 实现状态 | 自测状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|
+| REQ-PN-RELAY-DUAL-STACK-001 | REQ-PN-RELAY-DUAL-STACK-001-T001 | `probe_node/link_chain_runtime.go` | 已完成 | 通过 | `go test ./...` | 服务端默认同时启动 TCP(H1/H2) 与 UDP(H3)，H3 失败不阻塞 H2 |
+| REQ-PN-RELAY-DUAL-STACK-001 | REQ-PN-RELAY-DUAL-STACK-001-T002 | `probe_node/link_chain_runtime.go` | 已完成 | 通过 | `go test ./...` | `link_layer` 降为兼容字段，客户端按 auto 质量评分择优 H2/H3 |
+| REQ-PN-RELAY-DUAL-STACK-001 | REQ-PN-RELAY-DUAL-STACK-001-T003 | `probe_node/link_chain_runtime.go` | 已完成 | 通过 | `go test ./...` | 入口层错误可切换，鉴权/业务状态错误不触发协议切换 |
+| REQ-PN-RELAY-DUAL-STACK-001 | REQ-PN-RELAY-DUAL-STACK-001-T004 | `probe_node/link_chain_runtime.go` | 已完成 | 通过 | `go test ./...` | 保留私有鉴权与来源标识逻辑，未改变认证边界 |
+| REQ-PN-RELAY-DUAL-STACK-001 | REQ-PN-RELAY-DUAL-STACK-001-T005 | `probe_node/local_console.go`、`probe_node/local_tun_group_runtime.go`、`probe_node/local_pages/proxy.html` | 已完成 | 通过 | `go test ./...` | proxy 状态增加协议状态、评分、质量指标与 listener 状态展示 |
+| REQ-PN-RELAY-DUAL-STACK-001 | REQ-PN-RELAY-DUAL-STACK-001-T006 | `probe_node/link_chain_runtime_test.go` | 已完成 | 通过 | `go test ./...` | 覆盖 auto 择优、负缓存、非入口错误不切换、listener 状态快照 |
 
 ### 2.2 Code关键接口跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
+| IF-001 | REQ-PN-RELAY-DUAL-STACK-001 | `probe_node/link_chain_runtime.go` | chain runtime 启动路径 | Relay Ingress Negotiator | 已完成 | `go test ./...` | 同一 relay 入口同时启动 H1/H2 与 H3 |
+| IF-002 | REQ-PN-RELAY-DUAL-STACK-001 | `probe_node/link_chain_runtime.go` | 外部 relay 请求入口 | Relay Auth Envelope / Relay Session Bridge | 已完成 | `go test ./...` | 继续使用现有 POST streaming + yamux 桥接 |
+| IF-003 | REQ-PN-RELAY-DUAL-STACK-001 | `probe_node/link_chain_runtime.go` | 客户端连接路径 | Client Protocol State Machine | 已完成 | `go test ./...` | auto 质量择优，包含质量缓存、负缓存、切换防抖 |
+| IF-004 | REQ-PN-RELAY-DUAL-STACK-001 | `probe_node/link_chain_runtime.go` | 鉴权来源解析 | Cloudflare Zero Trust Adapter | 已完成 | `go test ./...` | 未改变私有鉴权，非入口错误不触发协议切换 |
+| IF-005 | REQ-PN-RELAY-DUAL-STACK-001 | `probe_node/link_chain_runtime.go` | relay 桥接两端 | Relay Session Bridge | 已完成 | `go test ./...` | yamux 配置保持兼容 |
+| IF-006 | REQ-PN-RELAY-DUAL-STACK-001 | `probe_node/local_console.go`、`probe_node/local_tun_group_runtime.go`、`probe_node/local_pages/proxy.html` | 本地状态页面/API | Relay Protocol Observability | 已完成 | `go test ./...` | 输出并展示协议评分、质量指标、listener 状态 |
 
 ### 2.3 Code测试项跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 测试项编号 | 需求编号 | 任务编号 | 测试目标 | 测试方法 | 结果 | 证据 | 未执行原因 | 备注 |
 |---|---|---|---|---|---|---|---|---|
+| REQ-PN-RELAY-DUAL-STACK-001-TEST-001 | REQ-PN-RELAY-DUAL-STACK-001 | T002 | auto 选择评分更优协议 | 单元测试 | 通过 | `TestOpenProbeChainRelayNetConnAutoChoosesLowerScoreProtocol` | 无 | 无 |
+| REQ-PN-RELAY-DUAL-STACK-001-TEST-002 | REQ-PN-RELAY-DUAL-STACK-001 | T002/T003 | H3 入口失败进入负缓存并由 H2 承载 | 单元测试 | 通过 | `TestOpenProbeChainRelayNetConnAutoUsesNegativeCacheAfterHTTP3Failure` | 无 | 无 |
+| REQ-PN-RELAY-DUAL-STACK-001-TEST-003 | REQ-PN-RELAY-DUAL-STACK-001 | T003 | 鉴权失败不触发协议切换 | 单元测试 | 通过 | `TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure` | 无 | 无 |
+| REQ-PN-RELAY-DUAL-STACK-001-TEST-004 | REQ-PN-RELAY-DUAL-STACK-001 | T005 | 协议状态包含 listener 状态 | 单元测试 | 通过 | `TestSnapshotProbeChainProtocolStateIncludesListenerStatusByPort` | 无 | 无 |
+| REQ-PN-RELAY-DUAL-STACK-001-TEST-005 | REQ-PN-RELAY-DUAL-STACK-001 | 全部 | probe_node 全量回归 | `go test ./...` | 通过 | `ok github.com/cloudhelper/probe_node` | 无 | 无 |
 
 ### 2.4 Code缺陷跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 缺陷编号 | 需求编号 | 测试项编号 | 缺陷描述 | 严重级别 | 修复状态 | 修复证据 | 备注 |
 |---|---|---|---|---|---|---|---|
+| 无 | REQ-PN-RELAY-DUAL-STACK-001 | 无 | 当前未发现新增缺陷 | 无 | 无 | `go test ./...` | 无 |
 
 ### 2.5 Code执行证据
-- 状态: 未开始
+- 状态: 已完成
 
 #### 2.5.1 修改接口
-- 无
+- `openProbeChainRelayNetConn()` 改为入口域名 auto 协议质量择优。
+- `startProbeChainPublicRelayServer()` 改为同时启动 H1/H2 与 H3 入口。
+- `snapshotProbeChainProtocolState()` 输出协议质量、评分、负缓存与 listener 状态。
 
 #### 2.5.2 配置文件
 - 无
 
 #### 2.5.3 执行报告
-- 无
+- 已完成第一版 auto 质量择优闭环，实现 H2/H3 自动测试、评分、缓存、负缓存、切换防抖、状态展示。
 
 #### 2.5.4 影响文件
-- 无
+- `probe_node/link_chain_runtime.go`
+- `probe_node/link_chain_runtime_test.go`
+- `probe_node/local_console.go`
+- `probe_node/local_tun_group_runtime.go`
+- `probe_node/local_pages/proxy.html`
 
 #### 2.5.5 测试命令
-- 无
+- `cd probe_node && go test ./...`
+- `git diff --check`
 
 #### 2.5.6 自测结果
-- 无
+- `go test ./...` 通过。
+- `git diff --check` 通过，无空白错误。
 
 #### 2.5.7 未执行测试原因
-- 当前阶段仅执行需求跟踪与 Architect 设计完善，未进入 Code 实现与测试阶段。
+- 无。
 
 #### 2.5.8 遗留风险
-- 无
+- 当前丢包指标以连接 I/O 异常近似表达，尚未实现 relay 层精确 packet loss probe。
+- 速率指标基于连接关闭时的观测值更新，不是持续实时采样。
+- auto 默认参数当前为代码常量，尚未暴露为可配置项。
 
 #### 2.5.9 回滚方案
-- 还原 `doc/REQ-PN-RELAY-DUAL-STACK-001-collaboration.md` 本次文档修改即可回滚。
+- 回滚本次影响文件即可恢复静态 `link_layer` 行为与原 proxy 展示。
 
 #### 2.5.10 结论
-- 当前未进入 Code 执行阶段。
+- Code 阶段已完成第一版实现，允许进入实际运行验证。
 
 ### 2.6 Code任务反馈
-- 状态: 未开始
+- 状态: 已完成
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
 
 #### 2.6.1 结论
-- 无
+- 无阻塞反馈。

@@ -450,6 +450,7 @@
       const selected = String(protocolState.selected_protocol || '').trim();
       const reason = String(protocolState.selection_reason || '').trim();
       const qualities = Array.isArray(protocolState.protocol_qualities) ? protocolState.protocol_qualities : [];
+      const listeners = Array.isArray(protocolState.listener_statuses) ? protocolState.listener_statuses : [];
       const parts = [];
       qualities
         .slice()
@@ -471,7 +472,10 @@
         });
       const head = selected ? `auto=${selected}` : 'auto';
       const tail = parts.length ? ` ${parts.join(' ')}` : '';
-      return `${head}${reason ? `/${reason}` : ''}${tail}`;
+      const listenerText = listeners.length
+        ? ` 入口${listeners.map((item) => `${String(item && item.protocol || '').trim() || '?'}:${String(item && item.status || '').trim() || '-'}`).join('/')}`
+        : '';
+      return `${head}${reason ? `/${reason}` : ''}${tail}${listenerText}`;
     }
 
     function formatRate(rateBps) {

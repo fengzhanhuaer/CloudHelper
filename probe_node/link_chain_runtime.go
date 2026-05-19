@@ -123,6 +123,14 @@ type probeChainRelayProtocolQuality struct {
 	NegativeUntil time.Time `json:"negative_until,omitempty"`
 }
 
+type probeChainRelayListenerStatus struct {
+	Protocol  string `json:"protocol"`
+	Status    string `json:"status"`
+	Listen    string `json:"listen,omitempty"`
+	LastError string `json:"last_error,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
 type probeChainRelayProtocolStateSnapshot struct {
 	Endpoint          string                           `json:"endpoint"`
 	SelectedProtocol  string                           `json:"selected_protocol,omitempty"`
@@ -130,6 +138,7 @@ type probeChainRelayProtocolStateSnapshot struct {
 	UpdatedAt         string                           `json:"updated_at,omitempty"`
 	NextProbeAt       string                           `json:"next_probe_at,omitempty"`
 	ProtocolQualities []probeChainRelayProtocolQuality `json:"protocol_qualities,omitempty"`
+	ListenerStatuses  []probeChainRelayListenerStatus  `json:"listener_statuses,omitempty"`
 }
 
 type probeChainRelayProtocolState struct {
@@ -154,6 +163,13 @@ var probeChainRelayProtocolStateStore = struct {
 	items map[string]*probeChainRelayProtocolState
 }{
 	items: make(map[string]*probeChainRelayProtocolState),
+}
+
+var probeChainRelayListenerStateStore = struct {
+	mu    sync.Mutex
+	items map[string]map[string]probeChainRelayListenerStatus
+}{
+	items: make(map[string]map[string]probeChainRelayListenerStatus),
 }
 
 var probeChainRelayOpenLayer = openProbeChainRelayNetConnWithLayer
@@ -1530,7 +1546,9 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	runtime.httpsServer = httpsServer
+	markProbeChainRelayListenerStatus(listenAddr, "http2", "starting", "")
 	go func(rt *probeChainRuntime, srv *http.Server, certFile string, keyFile string, protocol string) {
+		markProbeChainRelayListenerStatus(listenAddr, "http2", "listening", "")
 		serveErr := srv.ListenAndServeTLS(certFile, keyFile)
 		if serveErr != nil && serveErr != http.ErrServerClosed {
 			select {
@@ -1538,8 +1556,11 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 				return
 			default:
 			}
+			markProbeChainRelayListenerStatus(listenAddr, "http2", "failed", serveErr.Error())
 			log.Printf("probe chain runtime public relay exited: chain=%s layer=%s listen=%s err=%v", rt.cfg.chainID, protocol, listenAddr, serveErr)
+			return
 		}
+		markProbeChainRelayListenerStatus(listenAddr, "http2", "stopped", "")
 	}(runtime, httpsServer, cert.CertPath, cert.KeyPath, firstNonEmpty(layer, "http2"))
 
 	h3Server := &http3.Server{
@@ -1551,15 +1572,20 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		},
 	}
 	runtime.http3Server = h3Server
+	markProbeChainRelayListenerStatus(listenAddr, "http3", "starting", "")
 	go func(rt *probeChainRuntime, srv *http3.Server, certFile string, keyFile string) {
+		markProbeChainRelayListenerStatus(listenAddr, "http3", "listening", "")
 		if serveErr := srv.ListenAndServeTLS(certFile, keyFile); serveErr != nil {
 			select {
 			case <-rt.stopCh:
 				return
 			default:
 			}
+			markProbeChainRelayListenerStatus(listenAddr, "http3", "failed", serveErr.Error())
 			log.Printf("probe chain runtime public relay exited: chain=%s layer=http3 listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
+			return
 		}
+		markProbeChainRelayListenerStatus(listenAddr, "http3", "stopped", "")
 	}(runtime, h3Server, cert.CertPath, cert.KeyPath)
 
 	return nil
@@ -1815,6 +1841,13 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	}
 	if rt.http3Server != nil {
 		_ = rt.http3Server.Close()
+	}
+	listenAddr := net.JoinHostPort(rt.cfg.listenHost, strconv.Itoa(rt.cfg.listenPort))
+	if rt.httpsServer != nil {
+		markProbeChainRelayListenerStatus(listenAddr, "http2", "stopped", "")
+	}
+	if rt.http3Server != nil {
+		markProbeChainRelayListenerStatus(listenAddr, "http3", "stopped", "")
 	}
 }
 
@@ -2621,6 +2654,89 @@ func ensureProbeChainRelayProtocolStateLocked(endpointKey string) *probeChainRel
 	return state
 }
 
+func markProbeChainRelayListenerStatus(listenAddr string, protocol string, status string, errText string) {
+	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
+	cleanStatus := strings.TrimSpace(status)
+	if cleanProtocol == "" || cleanStatus == "" {
+		return
+	}
+	keys := probeChainRelayListenerKeys(listenAddr)
+	if len(keys) == 0 {
+		return
+	}
+	item := probeChainRelayListenerStatus{
+		Protocol:  cleanProtocol,
+		Status:    cleanStatus,
+		Listen:    strings.TrimSpace(listenAddr),
+		LastError: strings.TrimSpace(errText),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	probeChainRelayListenerStateStore.mu.Lock()
+	defer probeChainRelayListenerStateStore.mu.Unlock()
+	for _, key := range keys {
+		protocols := probeChainRelayListenerStateStore.items[key]
+		if protocols == nil {
+			protocols = make(map[string]probeChainRelayListenerStatus)
+			probeChainRelayListenerStateStore.items[key] = protocols
+		}
+		protocols[cleanProtocol] = item
+	}
+}
+
+func probeChainRelayListenerKeys(listenAddr string) []string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		return nil
+	}
+	cleanPort, err := strconv.Atoi(port)
+	if err != nil || cleanPort <= 0 {
+		return nil
+	}
+	keys := []string{probeChainRelayProtocolEndpointKey(host, cleanPort)}
+	keys = append(keys, probeChainRelayProtocolEndpointKey("*", cleanPort))
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		keys = append(keys, probeChainRelayProtocolEndpointKey("127.0.0.1", cleanPort))
+		keys = append(keys, probeChainRelayProtocolEndpointKey("localhost", cleanPort))
+	}
+	out := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	return out
+}
+
+func snapshotProbeChainRelayListenerStatuses(endpointKey string, relayPort int) []probeChainRelayListenerStatus {
+	keys := []string{strings.TrimSpace(endpointKey)}
+	if relayPort > 0 {
+		keys = append(keys, probeChainRelayProtocolEndpointKey("*", relayPort))
+	}
+	probeChainRelayListenerStateStore.mu.Lock()
+	defer probeChainRelayListenerStateStore.mu.Unlock()
+	out := make([]probeChainRelayListenerStatus, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		for protocol, item := range probeChainRelayListenerStateStore.items[key] {
+			if _, exists := seen[protocol]; exists {
+				continue
+			}
+			seen[protocol] = struct{}{}
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func probeChainRelayProtocolScore(latency time.Duration, lossPermille int, rateBPS int64, failures int) int64 {
 	score := int64(latency / time.Millisecond)
 	if score <= 0 {
@@ -2643,10 +2759,11 @@ func snapshotProbeChainProtocolState(relayHost string, relayPort int) probeChain
 		return probeChainRelayProtocolStateSnapshot{}
 	}
 	probeChainRelayProtocolStateStore.mu.Lock()
-	defer probeChainRelayProtocolStateStore.mu.Unlock()
 	state := probeChainRelayProtocolStateStore.items[endpointKey]
 	snapshot := probeChainRelayProtocolStateSnapshot{Endpoint: endpointKey}
 	if state == nil {
+		probeChainRelayProtocolStateStore.mu.Unlock()
+		snapshot.ListenerStatuses = snapshotProbeChainRelayListenerStatuses(endpointKey, relayPort)
 		return snapshot
 	}
 	snapshot.SelectedProtocol = strings.TrimSpace(state.SelectedProtocol)
@@ -2664,6 +2781,8 @@ func snapshotProbeChainProtocolState(relayHost string, relayPort int) probeChain
 	if !nextProbeAt.IsZero() {
 		snapshot.NextProbeAt = nextProbeAt.UTC().Format(time.RFC3339)
 	}
+	probeChainRelayProtocolStateStore.mu.Unlock()
+	snapshot.ListenerStatuses = snapshotProbeChainRelayListenerStatuses(endpointKey, relayPort)
 	return snapshot
 }
 

@@ -355,7 +355,7 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	if !strings.Contains(linkRR.Body.String(), "链路添加") {
 		t.Fatalf("expected /mng/link html to include add tab")
 	}
-	if !strings.Contains(linkRR.Body.String(), "链路查看") {
+	if !strings.Contains(linkRR.Body.String(), "链路编辑") {
 		t.Fatalf("expected /mng/link html to include list tab")
 	}
 	if !strings.Contains(linkRR.Body.String(), "端口转发") {

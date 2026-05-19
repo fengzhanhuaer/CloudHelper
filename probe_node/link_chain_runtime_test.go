@@ -493,6 +493,26 @@ func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) 
 	}
 }
 
+func TestSnapshotProbeChainProtocolStateIncludesListenerStatusByPort(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+
+	markProbeChainRelayListenerStatus("0.0.0.0:16030", "http3", "failed", "bind failed")
+	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
+	if len(snapshot.ListenerStatuses) == 0 {
+		t.Fatalf("expected listener status in snapshot: %+v", snapshot)
+	}
+	found := false
+	for _, item := range snapshot.ListenerStatuses {
+		if item.Protocol == "http3" && item.Status == "failed" && strings.Contains(item.LastError, "bind failed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing http3 failed listener status: %+v", snapshot.ListenerStatuses)
+	}
+}
+
 func resetProbeChainAuthIPStateForTest() {
 	probeChainAuthIPStateMap.mu.Lock()
 	probeChainAuthIPStateMap.items = make(map[string]probeChainAuthIPState)
@@ -503,4 +523,7 @@ func resetProbeChainRelayProtocolStateForTest() {
 	probeChainRelayProtocolStateStore.mu.Lock()
 	probeChainRelayProtocolStateStore.items = make(map[string]*probeChainRelayProtocolState)
 	probeChainRelayProtocolStateStore.mu.Unlock()
+	probeChainRelayListenerStateStore.mu.Lock()
+	probeChainRelayListenerStateStore.items = make(map[string]map[string]probeChainRelayListenerStatus)
+	probeChainRelayListenerStateStore.mu.Unlock()
 }
