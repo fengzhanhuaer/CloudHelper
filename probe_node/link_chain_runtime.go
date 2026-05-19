@@ -2971,6 +2971,18 @@ func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, rela
 	if err != nil {
 		return nil, err
 	}
+	return openProbeChainRelayNetConnWithResolvedHost(chainID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, true)
+}
+
+func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	relayDialHost = strings.TrimSpace(strings.Trim(relayDialHost, "[]"))
+	relayHostHeader = strings.TrimSpace(strings.Trim(relayHostHeader, "[]"))
+	if relayDialHost == "" {
+		return nil, errors.New("relay dial host is required")
+	}
+	if relayHostHeader == "" {
+		relayHostHeader = strings.TrimSpace(strings.Trim(relayHost, "[]"))
+	}
 	relayURL, err := buildProbeChainRelayURL(relayDialHost, relayPort, chainID)
 	if err != nil {
 		return nil, err
@@ -3090,7 +3102,9 @@ func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, rela
 		_ = closeTransport()
 		return nil, fmt.Errorf("probe relay failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
-	refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+	if cacheOnSuccess {
+		refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+	}
 
 	return &probeChainRelayNetConn{
 		reader:      response.Body,

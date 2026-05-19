@@ -42,6 +42,7 @@ func TestProbeLocalAPIMethodGuards(t *testing.T) {
 		{name: "proxy link status should only allow GET", method: http.MethodPost, path: "/local/api/proxy/link/status", body: map[string]any{}},
 		{name: "proxy link latency should only allow POST", method: http.MethodGet, path: "/local/api/proxy/link/latency", body: nil},
 		{name: "proxy link speed should only allow POST", method: http.MethodGet, path: "/local/api/proxy/link/speed", body: nil},
+		{name: "proxy link cf ip optimize should only allow POST", method: http.MethodGet, path: "/local/api/proxy/link/cf_ip_optimize", body: nil},
 		{name: "proxy groups should only allow GET", method: http.MethodPost, path: "/local/api/proxy/groups", body: map[string]any{}},
 		{name: "proxy groups refresh should only allow POST", method: http.MethodGet, path: "/local/api/proxy/groups/refresh", body: nil},
 		{name: "proxy groups save should only allow POST", method: http.MethodGet, path: "/local/api/proxy/groups/save", body: nil},

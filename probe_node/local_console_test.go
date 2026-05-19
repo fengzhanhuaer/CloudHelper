@@ -2497,6 +2497,88 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	resetProbeChainRelayResolveCacheForTest()
+	defer resetProbeChainRelayResolveCacheForTest()
+
+	chain := probeLinkChainServerItem{
+		ChainID:         "chain-origin_cf",
+		RelayChainID:    "chain-origin",
+		ClientEntryID:   "chain-origin_cf",
+		ClientEntryType: "cf",
+		ChainType:       "proxy_chain",
+		Name:            "Origin CF",
+		Secret:          "secret-origin",
+		EntryNodeID:     "1",
+		ExitNodeID:      "2",
+		LinkLayer:       "http",
+		HopConfigs: []probeLinkChainHopServerItem{
+			{NodeNo: 1, RelayHost: "api.copilot.example.com", ExternalPort: 443, LinkLayer: "http"},
+			{NodeNo: 2, RelayHost: "exit.example.com", ExternalPort: 16031, LinkLayer: "http"},
+		},
+	}
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{chain}); err != nil {
+		t.Fatalf("persist proxy chain failed: %v", err)
+	}
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+
+	probeLocalProxyLinkCFIPLookup = func(ctx context.Context, host string) ([]net.IP, error) {
+		if host != "api.copilot.example.com" {
+			t.Fatalf("lookup host=%q", host)
+		}
+		return []net.IP{net.ParseIP("203.0.113.11"), net.ParseIP("203.0.113.12")}, nil
+	}
+	probeLocalProxyLinkCFIPProbe = func(endpoint probeLocalTUNChainEndpoint, ip string, protocol string) (time.Duration, error) {
+		if endpoint.ChainID != "chain-origin" || endpoint.EntryHost != "api.copilot.example.com" || endpoint.EntryPort != 443 {
+			return 0, fmt.Errorf("unexpected endpoint: %+v", endpoint)
+		}
+		switch ip + "/" + protocol {
+		case "203.0.113.11/http3":
+			return 80 * time.Millisecond, nil
+		case "203.0.113.12/http2":
+			return 20 * time.Millisecond, nil
+		default:
+			return 0, errors.New("candidate unavailable")
+		}
+	}
+	probeLocalStartCFIPOptimizeTask = func(fn func()) { fn() }
+	defer resetProbeLocalProxyHooksForTest()
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/cf_ip_optimize", map[string]any{"chain_id": "chain-origin_cf"}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("cf optimize status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["ok"] != true {
+		t.Fatalf("cf optimize payload=%v", payload)
+	}
+	if dialHost, hostHeader, ok := loadProbeChainRelayResolveCache("api.copilot.example.com", false); ok {
+		t.Fatalf("cf optimize must not mutate relay resolve cache: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+
+	statusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/link/status", nil, sessionCookie)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("link status status=%d body=%s", statusResp.Code, statusResp.Body.String())
+	}
+	statusPayload := decodeProbeLocalJSON(t, statusResp)
+	items, ok := statusPayload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("link status items=%v", statusPayload["items"])
+	}
+	item, _ := items[0].(map[string]any)
+	cfStatus, ok := item["cf_optimize"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing cf optimize status: %v", item)
+	}
+	if cfStatus["status"] != "optimized" || cfStatus["best_ip"] != "203.0.113.12" || cfStatus["best_protocol"] != "http2" {
+		t.Fatalf("unexpected cf optimize status: %v", cfStatus)
+	}
+}
+
 func TestProbeLocalProxyPageGetEndpointsDoNotTriggerRemoteRefresh(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

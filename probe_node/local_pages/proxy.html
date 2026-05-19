@@ -127,6 +127,8 @@
     td.muted, .muted { color: var(--text-secondary); }
     .mini-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
     .mini-actions button { padding: 6px 9px; font-size: 12px; }
+    .copy-ip { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+    .copy-ip:hover { color: #79c0ff; }
     .status-ok { color: #7ee787; }
     .status-bad { color: #ff938d; }
     .status-warn { color: #f2cc60; }
@@ -591,6 +593,41 @@
       return parts.length ? parts.join('\n') : (selected ? `auto=${selected}` : '-');
     }
 
+    function isCFProxyLinkItem(item) {
+      const values = [
+        item && item.client_entry_type,
+        item && item.client_entry_id,
+        item && item.chain_id,
+        item && item.chain_name,
+      ].map((value) => String(value || '').trim().toLowerCase());
+      return values.some((value) => value === 'cf' || value.endsWith('_cf'));
+    }
+
+    function formatCFOptimizeStatusHTML(status, item) {
+      if (!status || typeof status !== 'object') return '';
+      const state = String(status.status || '').trim();
+      const parts = [];
+      if (state) parts.push(escapeHTML(state));
+      if (status.running) parts.push('后台优选中');
+      const bestIP = String(status.best_ip || '').trim();
+      const bestProtocol = String(status.best_protocol || '').trim();
+      const dns = String(status.entry_host || item && item.entry_host || '').trim();
+      const latency = Number(status.best_latency_ms);
+      if (bestIP) {
+        const copyValue = dns ? `${dns},${bestIP}` : bestIP;
+        const ipHTML = `<span class="copy-ip" role="button" tabindex="0" title="复制 ${escapeHTML(copyValue)}" data-copy-cf-ip="${escapeHTML(bestIP)}" data-copy-cf-dns="${escapeHTML(dns)}">${escapeHTML(bestIP)}</span>`;
+        parts.push(`best=${ipHTML}${bestProtocol ? '/' + escapeHTML(bestProtocol.toUpperCase()) : ''}${Number.isFinite(latency) && latency > 0 ? '/' + Math.trunc(latency) + 'ms' : ''}`);
+      }
+      const tested = Number(status.tested_count);
+      const candidates = Number(status.candidate_count);
+      if (Number.isFinite(tested) && tested > 0) {
+        parts.push(`已测=${Math.trunc(tested)}${Number.isFinite(candidates) && candidates > 0 ? '/' + Math.trunc(candidates * 2) : ''}`);
+      }
+      const err = String(status.error || '').trim();
+      if (err) parts.push(`错误=${escapeHTML(err)}`);
+      return parts.join(' ');
+    }
+
     function renderProxyLinkStatusRows(items) {
       proxyLinkStatusRowsEl.innerHTML = '';
       const rows = Array.isArray(items) ? items : [];
@@ -607,13 +644,15 @@
         const protocolText = formatProtocolQualities(item && item.protocol_state);
         const rate = Number(item && item.observed_rate_bps);
         const errorText = String(item && item.unavailable_error || '').trim();
+        const cfOptimizeHTML = formatCFOptimizeStatusHTML(item && item.cf_optimize, item);
+        const cfButton = isCFProxyLinkItem(item) ? `<button class="secondary" data-action="cf-ip-optimize" data-chain-id="${escapeHTML(chainID)}">CF IP优选</button>` : '';
         tr.innerHTML = `
           <td><strong>${escapeHTML(chainName)}</strong><br><span class="muted">${escapeHTML(chainID || '-')}</span>${route ? `<br><span class="muted">${escapeHTML(route)}</span>` : ''}</td>
           <td>${escapeHTML(endpoint)}<br><span class="muted">${escapeHTML(String(item && item.link_layer || '-'))}</span></td>
-          <td class="${linkStatusClass(item && item.status)}">${escapeHTML(formatLinkStatusText(item))}${errorText ? `<br><span class="muted">${escapeHTML(errorText)}</span>` : ''}</td>
+          <td class="${linkStatusClass(item && item.status)}">${escapeHTML(formatLinkStatusText(item))}${errorText ? `<br><span class="muted">${escapeHTML(errorText)}</span>` : ''}${cfOptimizeHTML ? `<br><span class="muted">CF优选: ${cfOptimizeHTML}</span>` : ''}</td>
           <td style="white-space: pre-line">${escapeHTML(protocolText)}</td>
           <td>${escapeHTML(formatRateText(rate))}</td>
-          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-protocol="http2" data-chain-id="${escapeHTML(chainID)}">H2 测速</button><button class="secondary" data-action="speed" data-protocol="http3" data-chain-id="${escapeHTML(chainID)}">H3 测速</button></div></td>
+          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-protocol="http2" data-chain-id="${escapeHTML(chainID)}">H2 测速</button><button class="secondary" data-action="speed" data-protocol="http3" data-chain-id="${escapeHTML(chainID)}">H3 测速</button>${cfButton}</div></td>
         `;
         proxyLinkStatusRowsEl.appendChild(tr);
       });
@@ -729,6 +768,82 @@
       }
     }
 
+    async function runProxyLinkCFIPOptimize(chainID) {
+      const cleanID = normalizeChainID(chainID);
+      if (!cleanID) return;
+      setMessage(`链路 ${cleanID} CF IP 优选已提交，后台测试 H3/H2 延迟...`);
+      try {
+        const data = await requestJSON('/local/api/proxy/link/cf_ip_optimize', {
+          method: 'POST',
+          body: JSON.stringify({ chain_id: cleanID }),
+        }, 10000);
+        await loadProxyLinkStatus();
+        if (data && data.ok) {
+          setMessage(data.accepted === false ? `链路 ${cleanID} CF IP 优选已在运行` : `链路 ${cleanID} CF IP 优选已进入后台`, 'success');
+          pollProxyLinkStatusUntilCFOptimizeDone(cleanID);
+          return;
+        }
+        setMessage(`链路 ${cleanID} CF IP 优选提交失败：${String(data && data.error || data && data.status || 'unknown')}`, 'error');
+      } catch (err) {
+        setMessage(`链路 ${cleanID} CF IP 优选失败：${err.message}`, 'error');
+      }
+    }
+
+    function pollProxyLinkStatusUntilCFOptimizeDone(chainID) {
+      const cleanID = normalizeChainID(chainID);
+      let attempts = 0;
+      const timer = setInterval(async () => {
+        attempts += 1;
+        try {
+          await loadProxyLinkStatus();
+          const item = proxyLinkStatusCache.find((row) => normalizeChainID(row && row.chain_id) === cleanID);
+          const cfStatus = item && item.cf_optimize ? item.cf_optimize : {};
+          if (!cfStatus.running || attempts >= 60) {
+            clearInterval(timer);
+          }
+        } catch (_) {
+          if (attempts >= 3) clearInterval(timer);
+        }
+      }, 2000);
+    }
+
+    async function copyTextToClipboard(text) {
+      const value = String(text || '').trim();
+      if (!value) return false;
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', 'readonly');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      let ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } finally {
+        document.body.removeChild(textarea);
+      }
+      return ok;
+    }
+
+    async function copyCFOptimizeIP(target) {
+      if (!target) return;
+      const dns = String(target.getAttribute('data-copy-cf-dns') || '').trim();
+      const ip = String(target.getAttribute('data-copy-cf-ip') || '').trim();
+      if (!ip) return;
+      const text = dns ? `${dns},${ip}` : ip;
+      try {
+        const ok = await copyTextToClipboard(text);
+        setMessage(ok ? `已复制：${text}` : `复制失败：${text}`, ok ? 'success' : 'error');
+      } catch (err) {
+        setMessage(`复制失败：${err.message}`, 'error');
+      }
+    }
+
     async function triggerProxyRuntimeRefresh(options = {}) {
       if (proxyRuntimeRefreshInFlight) {
         return;
@@ -835,6 +950,11 @@
     });
 
     proxyLinkStatusRowsEl.addEventListener('click', (event) => {
+      const copyTarget = event.target && event.target.closest ? event.target.closest('[data-copy-cf-ip]') : null;
+      if (copyTarget) {
+        copyCFOptimizeIP(copyTarget);
+        return;
+      }
       const btn = event.target && event.target.closest ? event.target.closest('button[data-action]') : null;
       if (!btn) return;
       const chainID = btn.getAttribute('data-chain-id') || '';
@@ -845,7 +965,19 @@
       }
       if (action === 'speed') {
         runProxyLinkSpeed(chainID, btn.getAttribute('data-protocol') || '');
+        return;
       }
+      if (action === 'cf-ip-optimize') {
+        runProxyLinkCFIPOptimize(chainID);
+      }
+    });
+
+    proxyLinkStatusRowsEl.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const copyTarget = event.target && event.target.closest ? event.target.closest('[data-copy-cf-ip]') : null;
+      if (!copyTarget) return;
+      event.preventDefault();
+      copyCFOptimizeIP(copyTarget);
     });
 
     document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {

@@ -44,6 +44,9 @@ const (
 	probeLocalTUNPrimaryDNSBackupFileName = "tun_primary_dns_backup.json"
 	probeLocalProxyBackupAPIPath          = "/api/probe/proxy_group/backup"
 	probeLocalProxyReadBodyMaxLen         = 512 * 1024
+	probeLocalProxyLinkCFOptimizeMaxIPs   = 16
+	probeLocalProxyLinkCFOptimizeParallel = 4
+	probeLocalProxyLinkCFOptimizeTimeout  = 6 * time.Second
 )
 
 type probeLocalAuthState struct {
@@ -242,6 +245,9 @@ var (
 	probeLocalResolveGroupRuntimeLatency  = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalProxyLinkHandshakeProbe     = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkSpeedProbe         = runProbeLocalProxyLinkSpeedProbe
+	probeLocalProxyLinkCFIPLookup         = defaultProbeLocalProxyLinkCFIPLookup
+	probeLocalProxyLinkCFIPProbe          = runProbeLocalProxyLinkCFIPProbe
+	probeLocalStartCFIPOptimizeTask       = func(fn func()) { go fn() }
 	probeLocalRunUpgrade                  = runProbeUpgrade
 	probeLocalFetchRelease                = fetchProbeRelease
 	probeLocalRestartProcess              = restartCurrentProcess
@@ -2637,6 +2643,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/link/status", probeLocalProxyLinkStatusHandler)
 	mux.HandleFunc("/local/api/proxy/link/latency", probeLocalProxyLinkLatencyHandler)
 	mux.HandleFunc("/local/api/proxy/link/speed", probeLocalProxyLinkSpeedHandler)
+	mux.HandleFunc("/local/api/proxy/link/cf_ip_optimize", probeLocalProxyLinkCFIPOptimizeHandler)
 	mux.HandleFunc("/local/api/proxy/groups", probeLocalProxyGroupsHandler)
 	mux.HandleFunc("/local/api/proxy/groups/refresh", probeLocalProxyGroupsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/groups/save", probeLocalProxyGroupsSaveHandler)
@@ -2688,6 +2695,9 @@ type probeLocalProxyLinkStatusItem struct {
 	ChainID          string                               `json:"chain_id"`
 	ChainName        string                               `json:"chain_name,omitempty"`
 	ChainType        string                               `json:"chain_type,omitempty"`
+	RelayChainID     string                               `json:"relay_chain_id,omitempty"`
+	ClientEntryID    string                               `json:"client_entry_id,omitempty"`
+	ClientEntryType  string                               `json:"client_entry_type,omitempty"`
 	Route            []string                             `json:"route,omitempty"`
 	EntryNodeID      string                               `json:"entry_node_id,omitempty"`
 	EntryHost        string                               `json:"entry_host,omitempty"`
@@ -2698,9 +2708,43 @@ type probeLocalProxyLinkStatusItem struct {
 	Status           string                               `json:"status,omitempty"`
 	ObservedRateBPS  int64                                `json:"observed_rate_bps,omitempty"`
 	ProtocolState    probeChainRelayProtocolStateSnapshot `json:"protocol_state,omitempty"`
+	CFOptimize       *probeLocalProxyLinkCFOptimizeStatus `json:"cf_optimize,omitempty"`
 	UnavailableError string                               `json:"unavailable_error,omitempty"`
 	UpdatedAt        string                               `json:"updated_at,omitempty"`
 }
+
+type probeLocalProxyLinkCFOptimizeResult struct {
+	IP        string `json:"ip"`
+	Protocol  string `json:"protocol"`
+	OK        bool   `json:"ok"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+	TestedAt  string `json:"tested_at,omitempty"`
+}
+
+type probeLocalProxyLinkCFOptimizeStatus struct {
+	ChainID        string                                `json:"chain_id"`
+	EntryHost      string                                `json:"entry_host,omitempty"`
+	EntryPort      int                                   `json:"entry_port,omitempty"`
+	Status         string                                `json:"status"`
+	Running        bool                                  `json:"running"`
+	CandidateCount int                                   `json:"candidate_count,omitempty"`
+	TestedCount    int                                   `json:"tested_count,omitempty"`
+	FailedCount    int                                   `json:"failed_count,omitempty"`
+	BestIP         string                                `json:"best_ip,omitempty"`
+	BestProtocol   string                                `json:"best_protocol,omitempty"`
+	BestLatencyMS  int64                                 `json:"best_latency_ms,omitempty"`
+	Error          string                                `json:"error,omitempty"`
+	StartedAt      string                                `json:"started_at,omitempty"`
+	FinishedAt     string                                `json:"finished_at,omitempty"`
+	UpdatedAt      string                                `json:"updated_at,omitempty"`
+	Results        []probeLocalProxyLinkCFOptimizeResult `json:"results,omitempty"`
+}
+
+var probeLocalProxyLinkCFOptimizeState = struct {
+	mu    sync.Mutex
+	items map[string]probeLocalProxyLinkCFOptimizeStatus
+}{items: make(map[string]probeLocalProxyLinkCFOptimizeStatus)}
 
 type probeLocalProxyRejectRequest struct {
 	Group string `json:"group"`
@@ -3669,13 +3713,17 @@ func buildProbeLocalProxyLinkStatusItems() []probeLocalProxyLinkStatusItem {
 			continue
 		}
 		status := probeLocalProxyLinkStatusItem{
-			ChainID:        chainID,
-			ChainName:      strings.TrimSpace(item.Name),
-			ChainType:      strings.TrimSpace(item.ChainType),
-			Route:          buildChainRoute(item),
-			SelectedGroups: append([]string{}, selectedGroups[strings.ToLower(chainID)]...),
-			Status:         "unknown",
-			UpdatedAt:      now,
+			ChainID:         chainID,
+			ChainName:       strings.TrimSpace(item.Name),
+			ChainType:       strings.TrimSpace(item.ChainType),
+			RelayChainID:    strings.TrimSpace(item.RelayChainID),
+			ClientEntryID:   strings.TrimSpace(item.ClientEntryID),
+			ClientEntryType: strings.TrimSpace(item.ClientEntryType),
+			Route:           buildChainRoute(item),
+			SelectedGroups:  append([]string{}, selectedGroups[strings.ToLower(chainID)]...),
+			Status:          "unknown",
+			CFOptimize:      snapshotProbeLocalProxyLinkCFOptimizeStatus(chainID),
+			UpdatedAt:       now,
 		}
 		endpoint, err := resolveProbeLocalProxyLinkEndpoint(item)
 		if err != nil {
@@ -3705,6 +3753,216 @@ func runProbeLocalProxyLinkHandshakeProbe(endpoint probeLocalTUNChainEndpoint) (
 
 func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
 	return probeChainRelaySpeedTestAuto(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, protocol, probeChainRelaySpeedTestBytes)
+}
+
+func defaultProbeLocalProxyLinkCFIPLookup(ctx context.Context, host string) ([]net.IP, error) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return nil, errors.New("cf entry host is empty")
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", cleanHost)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]net.IP, 0, len(ips))
+	seen := make(map[string]struct{}, len(ips))
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		candidate := ip.String()
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		out = append(out, ip)
+		if len(out) >= probeLocalProxyLinkCFOptimizeMaxIPs {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("cf entry host resolved no ip")
+	}
+	return out, nil
+}
+
+func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip string, protocol string) (time.Duration, error) {
+	cleanIP := strings.TrimSpace(strings.Trim(ip, "[]"))
+	if cleanIP == "" || net.ParseIP(cleanIP) == nil {
+		return 0, fmt.Errorf("invalid candidate ip: %s", ip)
+	}
+	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
+	if cleanProtocol != "http2" && cleanProtocol != "http3" {
+		return 0, fmt.Errorf("invalid cf probe protocol: %s", protocol)
+	}
+	startedAt := time.Now()
+	conn, err := openProbeChainRelayNetConnWithResolvedHost(
+		endpoint.ChainID,
+		endpoint.ChainSecret,
+		endpoint.EntryHost,
+		endpoint.EntryPort,
+		cleanProtocol,
+		probeChainBridgeRoleToNext,
+		cleanIP,
+		endpoint.EntryHost,
+		probeLocalProxyLinkCFOptimizeTimeout,
+		false,
+	)
+	latency := time.Since(startedAt)
+	if err != nil {
+		return latency, err
+	}
+	_ = conn.Close()
+	return latency, nil
+}
+
+func isProbeLocalProxyLinkCFEntry(item probeLinkChainServerItem) bool {
+	for _, value := range []string{
+		item.ClientEntryType,
+		item.ClientEntryID,
+		item.ChainID,
+		item.Name,
+	} {
+		clean := strings.ToLower(strings.TrimSpace(value))
+		if clean == "cf" || strings.HasSuffix(clean, "_cf") {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotProbeLocalProxyLinkCFOptimizeStatus(chainID string) *probeLocalProxyLinkCFOptimizeStatus {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return nil
+	}
+	probeLocalProxyLinkCFOptimizeState.mu.Lock()
+	status, ok := probeLocalProxyLinkCFOptimizeState.items[cleanID]
+	probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	status.Results = append([]probeLocalProxyLinkCFOptimizeResult{}, status.Results...)
+	return &status
+}
+
+func appendProbeLocalProxyLinkCFOptimizeResult(chainID string, result probeLocalProxyLinkCFOptimizeResult) {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	probeLocalProxyLinkCFOptimizeState.mu.Lock()
+	status := probeLocalProxyLinkCFOptimizeState.items[cleanID]
+	status.Results = append(status.Results, result)
+	status.TestedCount++
+	if !result.OK {
+		status.FailedCount++
+	} else if status.BestIP == "" || result.LatencyMS < status.BestLatencyMS {
+		status.BestIP = result.IP
+		status.BestProtocol = result.Protocol
+		status.BestLatencyMS = result.LatencyMS
+	}
+	status.UpdatedAt = now
+	probeLocalProxyLinkCFOptimizeState.items[cleanID] = status
+	probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+}
+
+func finishProbeLocalProxyLinkCFOptimizeStatus(chainID string, statusText string, errText string) {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	probeLocalProxyLinkCFOptimizeState.mu.Lock()
+	status := probeLocalProxyLinkCFOptimizeState.items[cleanID]
+	status.Status = strings.TrimSpace(statusText)
+	status.Running = false
+	status.Error = strings.TrimSpace(errText)
+	status.FinishedAt = now
+	status.UpdatedAt = now
+	probeLocalProxyLinkCFOptimizeState.items[cleanID] = status
+	probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+}
+
+func runProbeLocalProxyLinkCFIPOptimizeTask(chainID string, endpoint probeLocalTUNChainEndpoint, candidateIPs []net.IP) {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return
+	}
+	ipTexts := make([]string, 0, len(candidateIPs))
+	seen := make(map[string]struct{}, len(candidateIPs))
+	for _, ip := range candidateIPs {
+		if ip == nil {
+			continue
+		}
+		candidate := strings.TrimSpace(ip.String())
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		ipTexts = append(ipTexts, candidate)
+		if len(ipTexts) >= probeLocalProxyLinkCFOptimizeMaxIPs {
+			break
+		}
+	}
+	if len(ipTexts) == 0 {
+		finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "failed", "cf entry host resolved no ip")
+		return
+	}
+	probeLocalProxyLinkCFOptimizeState.mu.Lock()
+	status := probeLocalProxyLinkCFOptimizeState.items[cleanID]
+	status.CandidateCount = len(ipTexts)
+	status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	probeLocalProxyLinkCFOptimizeState.items[cleanID] = status
+	probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+
+	type probeJob struct {
+		ip       string
+		protocol string
+	}
+	jobs := make([]probeJob, 0, len(ipTexts)*2)
+	for _, ip := range ipTexts {
+		jobs = append(jobs, probeJob{ip: ip, protocol: "http3"}, probeJob{ip: ip, protocol: "http2"})
+	}
+	sem := make(chan struct{}, probeLocalProxyLinkCFOptimizeParallel)
+	var wg sync.WaitGroup
+	for _, job := range jobs {
+		job := job
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			latency, err := probeLocalProxyLinkCFIPProbe(endpoint, job.ip, job.protocol)
+			result := probeLocalProxyLinkCFOptimizeResult{
+				IP:        job.ip,
+				Protocol:  job.protocol,
+				LatencyMS: probeDurationMilliseconds(latency),
+				TestedAt:  time.Now().UTC().Format(time.RFC3339),
+			}
+			if err != nil {
+				result.Error = strings.TrimSpace(err.Error())
+			} else {
+				result.OK = true
+			}
+			appendProbeLocalProxyLinkCFOptimizeResult(cleanID, result)
+		}()
+	}
+	wg.Wait()
+
+	statusSnapshot := snapshotProbeLocalProxyLinkCFOptimizeStatus(cleanID)
+	if statusSnapshot == nil || statusSnapshot.BestIP == "" {
+		finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "failed", "all cf candidate ips are unreachable")
+		return
+	}
+	finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "optimized", "")
 }
 
 func probeLocalProxyLinkStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -3879,6 +4137,110 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		"results":        results,
 		"protocol_state": snapshot,
 		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func probeLocalProxyLinkCFIPOptimizeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalProxyLinkProbeRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	chainID := strings.TrimSpace(req.ChainID)
+	if chainID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "chain_id is required"})
+		return
+	}
+	items := currentProbeLocalProxyViewChains()
+	item, ok := findProbeLocalProxyLinkItemByID(chainID, items)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "chain not found"})
+		return
+	}
+	canonicalChainID := strings.TrimSpace(item.ChainID)
+	if canonicalChainID == "" {
+		canonicalChainID = chainID
+	}
+	if !isProbeLocalProxyLinkCFEntry(item) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "selected chain is not a cf entry"})
+		return
+	}
+	endpoint, err := resolveProbeLocalProxyLinkEndpoint(item)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         false,
+			"chain_id":   canonicalChainID,
+			"status":     "unconfigured",
+			"error":      strings.TrimSpace(err.Error()),
+			"updated_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	if net.ParseIP(strings.TrimSpace(strings.Trim(endpoint.EntryHost, "[]"))) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cf entry host must be a domain name"})
+		return
+	}
+
+	probeLocalProxyLinkCFOptimizeState.mu.Lock()
+	existing := probeLocalProxyLinkCFOptimizeState.items[canonicalChainID]
+	if existing.Running {
+		status := existing
+		status.Results = append([]probeLocalProxyLinkCFOptimizeResult{}, existing.Results...)
+		probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": false, "running": true, "status": status})
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	status := probeLocalProxyLinkCFOptimizeStatus{
+		ChainID:   canonicalChainID,
+		EntryHost: endpoint.EntryHost,
+		EntryPort: endpoint.EntryPort,
+		Status:    "resolving",
+		Running:   true,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	probeLocalProxyLinkCFOptimizeState.items[canonicalChainID] = status
+	probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+
+	probeLocalStartCFIPOptimizeTask(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		candidateIPs, lookupErr := probeLocalProxyLinkCFIPLookup(ctx, endpoint.EntryHost)
+		cancel()
+		if lookupErr != nil {
+			finishProbeLocalProxyLinkCFOptimizeStatus(canonicalChainID, "failed", lookupErr.Error())
+			return
+		}
+		probeLocalProxyLinkCFOptimizeState.mu.Lock()
+		status := probeLocalProxyLinkCFOptimizeState.items[canonicalChainID]
+		status.Status = "testing"
+		status.CandidateCount = len(candidateIPs)
+		status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		probeLocalProxyLinkCFOptimizeState.items[canonicalChainID] = status
+		probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+		runProbeLocalProxyLinkCFIPOptimizeTask(canonicalChainID, endpoint, candidateIPs)
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"accepted": true,
+		"running":  true,
+		"chain_id": canonicalChainID,
+		"status":   snapshotProbeLocalProxyLinkCFOptimizeStatus(canonicalChainID),
 	})
 }
 
@@ -4368,6 +4730,9 @@ func resetProbeLocalControlStateForTest() {
 	probeLocalProxyStatusRefreshState.lastFinishedAt = ""
 	probeLocalProxyStatusRefreshState.lastError = ""
 	probeLocalProxyStatusRefreshState.mu.Unlock()
+	probeLocalProxyLinkCFOptimizeState.mu.Lock()
+	probeLocalProxyLinkCFOptimizeState.items = make(map[string]probeLocalProxyLinkCFOptimizeStatus)
+	probeLocalProxyLinkCFOptimizeState.mu.Unlock()
 	probeLocalControl = newProbeLocalControlManager()
 }
 
@@ -4379,6 +4744,9 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalResolveGroupRuntimeLatency = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalProxyLinkHandshakeProbe = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkSpeedProbe = runProbeLocalProxyLinkSpeedProbe
+	probeLocalProxyLinkCFIPLookup = defaultProbeLocalProxyLinkCFIPLookup
+	probeLocalProxyLinkCFIPProbe = runProbeLocalProxyLinkCFIPProbe
+	probeLocalStartCFIPOptimizeTask = func(fn func()) { go fn() }
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
 	probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
 }
