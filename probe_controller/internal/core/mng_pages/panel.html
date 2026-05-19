@@ -19,15 +19,6 @@
     .tile-sub { margin-top:8px; color:#8b949e; font-size:12px; }
     .tile-link { display:block; text-decoration:none; color:#c9d1d9; transition:all .15s ease; }
     .tile-link:hover { border-color:#58a6ff; transform:translateY(-1px); box-shadow:0 4px 16px rgba(31,111,235,.2); }
-    .tile-link.active { border-color:#58a6ff; box-shadow:0 0 0 1px rgba(88,166,255,.18), 0 4px 16px rgba(31,111,235,.2); }
-    .submenu { display:none; margin:0 0 14px; border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
-    .submenu.active { display:block; }
-    .submenu-title { font-weight:600; margin-bottom:8px; }
-    .submenu-desc { color:#8b949e; font-size:12px; margin-bottom:10px; }
-    .submenu-actions { display:flex; flex-wrap:wrap; gap:8px; }
-    .submenu-actions a { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; text-decoration:none; font-size:13px; }
-    .submenu-actions a.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
-    .submenu-actions a:hover { border-color:#58a6ff; }
     .ok { color:#7ee787; }
   </style>
 </head>
@@ -41,53 +32,47 @@
       <button id="btn-logout" class="btn" type="button">退出登录</button>
     </div>
 
-    <div id="panel-submenu" class="submenu" aria-live="polite">
-      <div class="submenu-title" id="submenu-title">子菜单</div>
-      <div class="submenu-desc" id="submenu-desc">请选择具体入口。</div>
-      <div class="submenu-actions" id="submenu-actions"></div>
-    </div>
-
     <div class="tiles">
-      <a href="/mng/settings" class="tile tile-link" id="tile-settings" data-menu="settings">
+      <a href="/mng/settings" class="tile tile-link" id="tile-settings">
         <div class="tile-title">系统设置</div>
         <div class="tile-value">⚙</div>
-        <div class="tile-sub">展开设置与升级子菜单</div>
+        <div class="tile-sub">进入设置与升级页面</div>
       </a>
 
-      <a href="/mng/probe" class="tile tile-link" id="tile-probe" data-menu="probe">
+      <a href="/mng/probe" class="tile tile-link" id="tile-probe">
         <div class="tile-title">探针管理</div>
         <div class="tile-value">🛰</div>
-        <div class="tile-sub">展开探针列表、状态、日志、Shell 子菜单</div>
+        <div class="tile-sub">打开探针管理页面（列表/状态/日志/Shell）</div>
       </a>
 
-      <a href="/mng/controller-logs" class="tile tile-link" id="tile-controller-logs" data-menu="controllerLogs">
+      <a href="/mng/controller-logs" class="tile tile-link" id="tile-controller-logs">
         <div class="tile-title">主控日志</div>
         <div class="tile-value">🧾</div>
-        <div class="tile-sub">展开主控日志入口</div>
+        <div class="tile-sub">查看主控服务日志（级别过滤/行数限制）</div>
       </a>
 
-      <a href="/mng/link" class="tile tile-link" id="tile-link" data-menu="link">
+      <a href="/mng/link" class="tile tile-link" id="tile-link">
         <div class="tile-title">链路管理</div>
         <div class="tile-value">🔗</div>
-        <div class="tile-sub">展开链路添加、编辑、转发、查看子菜单</div>
+        <div class="tile-sub">打开链路管理页面（链路添加/链路编辑/端口转发/链路查看）</div>
       </a>
 
-      <a href="/dashboard" class="tile tile-link" id="tile-dashboard" data-menu="dashboard">
+      <a href="/dashboard" class="tile tile-link" id="tile-dashboard">
         <div class="tile-title">探针面板</div>
         <div class="tile-value">📊</div>
-        <div class="tile-sub">展开 Dashboard 入口</div>
+        <div class="tile-sub">打开探针面板 Dashboard（网格卡片视图）</div>
       </a>
 
-      <a href="/mng/cloudflare" class="tile tile-link" id="tile-cloudflare" data-menu="cloudflare">
+      <a href="/mng/cloudflare" class="tile tile-link" id="tile-cloudflare">
         <div class="tile-title">Cloudflare 管理</div>
         <div class="tile-value">☁</div>
-        <div class="tile-sub">展开基础设置、DDNS、ZeroTrust 子菜单</div>
+        <div class="tile-sub">打开 Cloudflare 页面（基础设置/DDNS/ZeroTrust）</div>
       </a>
 
-      <a href="/mng/tg" class="tile tile-link" id="tile-tg" data-menu="tg">
+      <a href="/mng/tg" class="tile tile-link" id="tile-tg">
         <div class="tile-title">TG 助手</div>
         <div class="tile-value">✈</div>
-        <div class="tile-sub">展开账号、任务、Bot 子菜单</div>
+        <div class="tile-sub">打开 TG 管理页面（账号/登录/任务/Bot）</div>
       </a>
 
       <div class="tile">
@@ -117,83 +102,6 @@
   </div>
 
   <script>
-    const menuItems = {
-      settings: {
-        title: '系统设置',
-        desc: '系统设置、版本升级、重启与基础运行配置。',
-        actions: [
-          { label: '打开系统设置', href: '/mng/settings', primary: true },
-        ],
-      },
-      probe: {
-        title: '探针管理',
-        desc: '探针列表、运行状态、日志与 Shell 入口。',
-        actions: [
-          { label: '探针列表', href: '/mng/probe', primary: true },
-          { label: '探针状态', href: '/mng/probe' },
-          { label: '探针日志', href: '/mng/probe' },
-          { label: '探针 Shell', href: '/mng/probe' },
-        ],
-      },
-      controllerLogs: {
-        title: '主控日志',
-        desc: '查看主控服务运行日志。',
-        actions: [
-          { label: '打开主控日志', href: '/mng/controller-logs', primary: true },
-        ],
-      },
-      link: {
-        title: '链路管理',
-        desc: '链路配置、端口转发与链路状态查看。',
-        actions: [
-          { label: '链路添加', href: '/mng/link', primary: true },
-          { label: '链路编辑', href: '/mng/link' },
-          { label: '端口转发', href: '/mng/link' },
-          { label: '链路查看', href: '/mng/link' },
-        ],
-      },
-      dashboard: {
-        title: '探针面板',
-        desc: '打开 Dashboard 网格视图。',
-        actions: [
-          { label: '打开 Dashboard', href: '/dashboard', primary: true },
-        ],
-      },
-      cloudflare: {
-        title: 'Cloudflare 管理',
-        desc: 'Cloudflare 基础配置、DDNS 与 ZeroTrust。',
-        actions: [
-          { label: '基础设置', href: '/mng/cloudflare', primary: true },
-          { label: 'DDNS', href: '/mng/cloudflare' },
-          { label: 'ZeroTrust', href: '/mng/cloudflare' },
-        ],
-      },
-      tg: {
-        title: 'TG 助手',
-        desc: 'TG 账号、任务调度与 Bot 管理。',
-        actions: [
-          { label: '账号与登录', href: '/mng/tg', primary: true },
-          { label: '任务管理', href: '/mng/tg' },
-          { label: 'Bot 管理', href: '/mng/tg' },
-        ],
-      },
-    };
-
-    function showSubmenu(key) {
-      const config = menuItems[key];
-      if (!config) return;
-      document.querySelectorAll('.tile-link').forEach((tile) => {
-        tile.classList.toggle('active', tile.getAttribute('data-menu') === key);
-      });
-      document.getElementById('submenu-title').textContent = config.title;
-      document.getElementById('submenu-desc').textContent = config.desc;
-      document.getElementById('submenu-actions').innerHTML = config.actions.map((item) => {
-        const className = item.primary ? ' class="primary"' : '';
-        return `<a${className} href="${item.href}">${item.label}</a>`;
-      }).join('');
-      document.getElementById('panel-submenu').classList.add('active');
-    }
-
     function formatUptime(seconds) {
       const sec = Number(seconds || 0);
       const h = Math.floor(sec / 3600).toString().padStart(2, '0');
@@ -231,12 +139,6 @@
     }
 
     document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
-    document.querySelectorAll('.tile-link[data-menu]').forEach((tile) => {
-      tile.addEventListener('click', (event) => {
-        event.preventDefault();
-        showSubmenu(tile.getAttribute('data-menu'));
-      });
-    });
 
     loadSession();
     loadSummary();
