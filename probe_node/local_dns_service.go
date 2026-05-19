@@ -237,6 +237,10 @@ func ensureProbeLocalDNSCacheLoaded() {
 		logProbeWarnf("probe local dns cache load failed: %v", err)
 		cache = make(map[string]probeLocalDNSUnifiedRecord)
 	}
+	hosts, hostErr := probeLocalDNSLoadHostMappings()
+	if hostErr != nil {
+		logProbeWarnf("probe local dns proxy_host load failed: %v", hostErr)
+	}
 	now := probeLocalDNSNow().UTC()
 	probeLocalDNSState.mu.Lock()
 	if !probeLocalDNSState.cacheLoaded {
@@ -244,11 +248,40 @@ func ensureProbeLocalDNSCacheLoaded() {
 		if strings.TrimSpace(fakeCIDR) != "" {
 			probeLocalDNSState.fakeCIDR = strings.TrimSpace(fakeCIDR)
 		}
+		overlayProbeLocalDNSHostMappingsLocked(hosts, now)
 		rebuildProbeLocalDNSRuntimeIndexesLocked(now)
 		probeLocalDNSState.cacheLoaded = true
 		pruneProbeLocalDNSUnifiedRecordsLocked(now)
 	}
 	probeLocalDNSState.mu.Unlock()
+}
+
+func overlayProbeLocalDNSHostMappingsLocked(hosts []probeLocalHostMapping, now time.Time) {
+	if len(hosts) == 0 {
+		return
+	}
+	if probeLocalDNSState.cache == nil {
+		probeLocalDNSState.cache = make(map[string]probeLocalDNSUnifiedRecord)
+	}
+	for _, item := range hosts {
+		domain := normalizeProbeLocalDNSDomain(item.DNS)
+		if domain == "" {
+			continue
+		}
+		parsedIP := net.ParseIP(strings.TrimSpace(item.IP))
+		if parsedIP == nil || parsedIP.To4() == nil {
+			continue
+		}
+		record := probeLocalDNSState.cache[domain]
+		record.Domain = domain
+		record.RealIPs = []string{parsedIP.To4().String()}
+		if record.ExpiresAt.IsZero() || now.After(record.ExpiresAt) {
+			record.ExpiresAt = now.Add(probeLocalDNSCacheTTL)
+		}
+		record.UpdatedAt = now
+		probeLocalDNSState.cache[domain] = record
+		probeLocalDNSState.cacheDirty = true
+	}
 }
 
 func runProbeLocalDNSCachePersistLoop(stopCh <-chan struct{}) {
@@ -516,11 +549,6 @@ func resolveProbeLocalDNSApplicationCachedOrHostResponse(packet []byte, domain s
 		storeProbeLocalDNSRouteHints(cleanDomain, cachedIPs, decision)
 		return buildProbeLocalDNSSuccessA(packet, cachedIPs[0]), cachedIPs, true
 	}
-	if mappedIP, ok := lookupProbeLocalStaticHostMappingIPv4(cleanDomain); ok {
-		realIPs := []string{mappedIP}
-		storeProbeLocalDNSInternalRealIPv4s(cleanDomain, realIPs, decision)
-		return buildProbeLocalDNSSuccessA(packet, mappedIP), realIPs, true
-	}
 	return nil, nil, false
 }
 
@@ -578,11 +606,6 @@ func resolveProbeLocalDNSInternalRealIPv4s(domain string, decision probeLocalDNS
 	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanDomain); len(cached) > 0 {
 		storeProbeLocalDNSRouteHints(cleanDomain, cached, decision)
 		return cached, nil
-	}
-	if mappedIP, ok := lookupProbeLocalStaticHostMappingIPv4(cleanDomain); ok {
-		ips := []string{mappedIP}
-		storeProbeLocalDNSInternalRealIPv4s(cleanDomain, ips, decision)
-		return ips, nil
 	}
 	ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreams(cleanDomain, decision)
 	if err != nil {
@@ -1317,10 +1340,6 @@ func resolveProbeLocalDNSIPv4s(host string) ([]string, error) {
 	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanHost); len(cached) > 0 {
 		return cached, nil
 	}
-	if mappedIP, ok := lookupProbeLocalStaticHostMappingIPv4(cleanHost); ok {
-		storeProbeLocalDNSCacheRecords(cleanHost, []string{mappedIP})
-		return []string{mappedIP}, nil
-	}
 	ips, err := probeLocalDNSBootstrapLookupIPv4(cleanHost)
 	if err != nil {
 		return nil, err
@@ -1371,26 +1390,6 @@ func resolveProbeLocalDNSIPv4LiteralHostPort(address string, defaultPort string)
 		return "", false
 	}
 	return net.JoinHostPort(parsedIP.To4().String(), strings.TrimSpace(port)), true
-}
-
-func lookupProbeLocalStaticHostMappingIPv4(domain string) (string, bool) {
-	cleanDomain := normalizeProbeLocalDNSDomain(domain)
-	if cleanDomain == "" {
-		return "", false
-	}
-	hosts, err := probeLocalDNSLoadHostMappings()
-	if err != nil {
-		return "", false
-	}
-	for _, item := range hosts {
-		if normalizeProbeLocalDNSDomain(item.DNS) != cleanDomain {
-			continue
-		}
-		if parsedIP := net.ParseIP(strings.TrimSpace(item.IP)); parsedIP != nil && parsedIP.To4() != nil {
-			return parsedIP.To4().String(), true
-		}
-	}
-	return "", false
 }
 
 func lookupProbeLocalDNSCacheIPv4ByDomain(domain string) []string {

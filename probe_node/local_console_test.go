@@ -695,15 +695,17 @@ func TestCurrentProbeLocalDNSUpstreamCandidatesKeepsDomainUpstreamsWhenTunnelEna
 	}
 }
 
-func TestResolveProbeLocalDNSResponsePrefersCacheBeforeStaticHostMapping(t *testing.T) {
+func TestProbeLocalDNSStartupLoadsCacheThenHostMapping(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	storeProbeLocalDNSCacheRecords("static.example.com", []string{"203.0.113.20"})
+	flushProbeLocalDNSCacheToDisk()
+	resetProbeLocalDNSServiceForTest()
 	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
 		{DNS: "static.example.com", IP: "203.0.113.10"},
 	}); err != nil {
 		t.Fatalf("persist host mappings failed: %v", err)
 	}
-	resetProbeLocalDNSServiceForTest()
-	storeProbeLocalDNSCacheRecords("static.example.com", []string{"203.0.113.20"})
 	packet, err := buildProbeLocalDNSQueryA("static.example.com")
 	if err != nil {
 		t.Fatalf("build dns query failed: %v", err)
@@ -715,10 +717,10 @@ func TestResolveProbeLocalDNSResponsePrefersCacheBeforeStaticHostMapping(t *test
 	if domain != "static.example.com" {
 		t.Fatalf("domain=%q", domain)
 	}
-	if strings.Join(ips, ",") != "203.0.113.20" {
+	if strings.Join(ips, ",") != "203.0.113.10" {
 		t.Fatalf("ips=%v", ips)
 	}
-	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(response), ","); got != "203.0.113.20" {
+	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(response), ","); got != "203.0.113.10" {
 		t.Fatalf("response ips=%q", got)
 	}
 }
