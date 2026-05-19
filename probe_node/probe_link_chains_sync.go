@@ -61,20 +61,23 @@ var (
 // probeLinkChainServerItem is a single chain record returned by the controller.
 // Fields map 1-to-1 with probeLinkChainRecord / probeChainRuntimeCacheItem.
 type probeLinkChainServerItem struct {
-	ChainID        string                            `json:"chain_id"`
-	ChainType      string                            `json:"chain_type"`
-	Name           string                            `json:"name"`
-	UserID         string                            `json:"user_id"`
-	UserPublicKey  string                            `json:"user_public_key"`
-	Secret         string                            `json:"secret"`
-	EntryNodeID    string                            `json:"entry_node_id"`
-	ExitNodeID     string                            `json:"exit_node_id"`
-	CascadeNodeIDs []string                          `json:"cascade_node_ids"`
-	LinkLayer      string                            `json:"link_layer"`
-	HopConfigs     []probeLinkChainHopServerItem     `json:"hop_configs"`
-	PortForwards   []probeChainPortForwardServerItem `json:"port_forwards"`
-	EgressHost     string                            `json:"egress_host"`
-	EgressPort     int                               `json:"egress_port"`
+	ChainID         string                            `json:"chain_id"`
+	RelayChainID    string                            `json:"relay_chain_id"`
+	ClientEntryID   string                            `json:"client_entry_id"`
+	ClientEntryType string                            `json:"client_entry_type"`
+	ChainType       string                            `json:"chain_type"`
+	Name            string                            `json:"name"`
+	UserID          string                            `json:"user_id"`
+	UserPublicKey   string                            `json:"user_public_key"`
+	Secret          string                            `json:"secret"`
+	EntryNodeID     string                            `json:"entry_node_id"`
+	ExitNodeID      string                            `json:"exit_node_id"`
+	CascadeNodeIDs  []string                          `json:"cascade_node_ids"`
+	LinkLayer       string                            `json:"link_layer"`
+	HopConfigs      []probeLinkChainHopServerItem     `json:"hop_configs"`
+	PortForwards    []probeChainPortForwardServerItem `json:"port_forwards"`
+	EgressHost      string                            `json:"egress_host"`
+	EgressPort      int                               `json:"egress_port"`
 }
 
 // probeLinkChainHopServerItem maps one entry in hop_configs.
@@ -727,6 +730,9 @@ func sanitizeProbeChainServerItemsForCache(items []probeLinkChainServerItem) []p
 	for _, item := range items {
 		next := item
 		next.ChainID = strings.TrimSpace(item.ChainID)
+		next.RelayChainID = strings.TrimSpace(item.RelayChainID)
+		next.ClientEntryID = strings.TrimSpace(item.ClientEntryID)
+		next.ClientEntryType = strings.TrimSpace(item.ClientEntryType)
 		next.ChainType = strings.TrimSpace(item.ChainType)
 		next.Name = strings.TrimSpace(item.Name)
 		next.UserID = strings.TrimSpace(item.UserID)

@@ -399,7 +399,12 @@ func resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs 
 	}
 	itemByChainID := make(map[string]probeLinkChainServerItem, len(items))
 	for _, item := range items {
-		itemByChainID[strings.TrimSpace(item.ChainID)] = item
+		if id := strings.TrimSpace(item.ChainID); id != "" {
+			itemByChainID[id] = item
+		}
+		if id := strings.TrimSpace(item.ClientEntryID); id != "" {
+			itemByChainID[id] = item
+		}
 	}
 	for _, chainID := range chainIDs {
 		item, ok := itemByChainID[strings.TrimSpace(chainID)]
@@ -478,7 +483,7 @@ func ensureProbeLocalProxySelectedChainDirectBypass(selectedChainID string) erro
 		return err
 	}
 	for _, item := range items {
-		if !strings.EqualFold(strings.TrimSpace(item.ChainID), chainID) {
+		if !matchesProbeLocalProxyChainSelection(item, chainID) {
 			continue
 		}
 		targets, err := resolveProbeLocalExplicitBypassTargetsForChain(item)
@@ -1984,7 +1989,7 @@ func validateProbeLocalRuntimeTunnelSelection(tunnelNodeID string) (string, erro
 		return "", err
 	}
 	for _, item := range items {
-		if strings.EqualFold(strings.TrimSpace(item.ChainID), chainID) {
+		if matchesProbeLocalProxyChainSelection(item, chainID) {
 			return normalized, nil
 		}
 	}
@@ -3380,7 +3385,7 @@ func resolveProbeLocalChainNameByIDFromItems(chainID string, items []probeLinkCh
 		return ""
 	}
 	for _, item := range items {
-		if strings.EqualFold(strings.TrimSpace(item.ChainID), cleanID) {
+		if matchesProbeLocalProxyChainSelection(item, cleanID) {
 			name := strings.TrimSpace(item.Name)
 			if name != "" {
 				return name
@@ -3603,7 +3608,7 @@ func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLoc
 		linkLayer = "http"
 	}
 	return probeLocalTUNChainEndpoint{
-		ChainID:     chainID,
+		ChainID:     effectiveProbeLocalRelayChainID(item),
 		ChainName:   strings.TrimSpace(item.Name),
 		EntryNodeID: entryNodeID,
 		EntryHost:   entryHost,
@@ -3619,7 +3624,7 @@ func findProbeLocalProxyLinkItemByID(chainID string, items []probeLinkChainServe
 		return probeLinkChainServerItem{}, false
 	}
 	for _, item := range items {
-		if strings.EqualFold(strings.TrimSpace(item.ChainID), cleanID) {
+		if matchesProbeLocalProxyChainSelection(item, cleanID) {
 			return item, true
 		}
 	}

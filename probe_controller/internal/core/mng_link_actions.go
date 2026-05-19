@@ -46,6 +46,48 @@ func listMngProbeLinkChains() (map[string]interface{}, error) {
 	}, nil
 }
 
+func listMngProbeLinkEntryProfiles(chainID string) (map[string]interface{}, error) {
+	if ProbeLinkChainStore == nil {
+		return nil, fmt.Errorf("probe link chain store is not initialized")
+	}
+	cleanChainID := strings.TrimSpace(chainID)
+	profiles := listProbeLinkEntryProfiles()
+	if cleanChainID == "" {
+		return map[string]interface{}{"items": profiles}, nil
+	}
+	candidates, profile, err := buildProbeLinkEntryCandidates(cleanChainID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"item":       profile,
+		"candidates": candidates,
+	}, nil
+}
+
+func upsertMngProbeLinkEntryProfile(payload json.RawMessage) (map[string]interface{}, error) {
+	var req struct {
+		ChainID string                 `json:"chain_id"`
+		Entries []probeLinkEntryConfig `json:"entries"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("invalid payload")
+	}
+	item, err := upsertProbeLinkEntryProfile(req.ChainID, req.Entries)
+	if err != nil {
+		return nil, err
+	}
+	candidates, profile, err := buildProbeLinkEntryCandidates(item.ChainID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"ok":         true,
+		"item":       profile,
+		"candidates": candidates,
+	}, nil
+}
+
 func upsertMngProbeLinkChain(payload json.RawMessage, controllerBaseURL string) (map[string]interface{}, error) {
 	var req struct {
 		ChainID        string   `json:"chain_id"`

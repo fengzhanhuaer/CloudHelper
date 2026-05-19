@@ -123,3 +123,66 @@ func TestNormalizeProbeLinkChainEntryAndCascades(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectProbeLinkEntriesForClientUsesIndependentEntryIDs(t *testing.T) {
+	oldStore := ProbeLinkChainStore
+	t.Cleanup(func() {
+		ProbeLinkChainStore = oldStore
+	})
+
+	chain := probeLinkChainRecord{
+		ChainID:       "5",
+		Name:          "github",
+		ChainType:     "proxy_chain",
+		UserID:        "u",
+		UserPublicKey: "pub",
+		Secret:        "secret",
+		EntryNodeID:   "1",
+		ExitNodeID:    "1",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    16030,
+		LinkLayer:     "http2",
+		EgressHost:    "127.0.0.1",
+		EgressPort:    1080,
+		HopConfigs: []probeLinkChainHopConfig{{
+			NodeNo:       1,
+			ListenPort:   16030,
+			ExternalPort: 16030,
+			RelayHost:    "origin.example.com",
+			LinkLayer:    "http2",
+		}},
+	}
+	ProbeLinkChainStore = &probeLinkChainStore{
+		data: probeLinkChainStoreData{
+			Chains: []probeLinkChainRecord{chain},
+			EntryProfiles: []probeLinkEntryProfileRecord{{
+				ChainID: "5",
+				Entries: []probeLinkEntryConfig{
+					{EntryType: "pub", Host: "origin.example.com"},
+					{EntryType: "cf", Host: "api.copilot.nq.example.com"},
+				},
+			}},
+		},
+	}
+
+	projected := projectProbeLinkEntriesForClient([]probeLinkChainRecord{chain})
+	if len(projected) != 2 {
+		t.Fatalf("expected 2 projected entries, got %d: %+v", len(projected), projected)
+	}
+	var cf probeLinkChainRecord
+	for _, item := range projected {
+		if item.ClientEntryType == "cf" {
+			cf = item
+			break
+		}
+	}
+	if cf.ChainID != "5_cf" || cf.RelayChainID != "5" || cf.Name != "github_cf" {
+		t.Fatalf("unexpected cf projection: %+v", cf)
+	}
+	if len(cf.HopConfigs) != 1 || cf.HopConfigs[0].RelayHost != "api.copilot.nq.example.com" || cf.HopConfigs[0].ExternalPort != 443 {
+		t.Fatalf("unexpected cf hop projection: %+v", cf.HopConfigs)
+	}
+	if chain.HopConfigs[0].RelayHost != "origin.example.com" || chain.HopConfigs[0].ExternalPort != 16030 {
+		t.Fatalf("original chain mutated: %+v", chain.HopConfigs[0])
+	}
+}

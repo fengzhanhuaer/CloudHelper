@@ -16,8 +16,9 @@ type probeLinkChainStore struct {
 }
 
 type probeLinkChainStoreData struct {
-	Chains      []probeLinkChainRecord `json:"chains"`
-	NextChainID int64                  `json:"next_chain_id,omitempty"`
+	Chains        []probeLinkChainRecord        `json:"chains"`
+	NextChainID   int64                         `json:"next_chain_id,omitempty"`
+	EntryProfiles []probeLinkEntryProfileRecord `json:"entry_profiles,omitempty"`
 }
 
 var ProbeLinkChainStore *probeLinkChainStore
@@ -27,8 +28,9 @@ func initProbeLinkChainStore() {
 	ProbeLinkChainStore = &probeLinkChainStore{
 		path: storePath,
 		data: probeLinkChainStoreData{
-			Chains:      []probeLinkChainRecord{},
-			NextChainID: 1,
+			Chains:        []probeLinkChainRecord{},
+			NextChainID:   1,
+			EntryProfiles: []probeLinkEntryProfileRecord{},
 		},
 	}
 
@@ -45,6 +47,7 @@ func initProbeLinkChainStore() {
 			normalizedChains := normalizeProbeLinkChains(raw.Chains)
 			ProbeLinkChainStore.data.Chains = normalizedChains
 			ProbeLinkChainStore.data.NextChainID = normalizeProbeLinkChainNextID(raw.NextChainID, normalizedChains)
+			ProbeLinkChainStore.data.EntryProfiles = normalizeProbeLinkEntryProfiles(raw.EntryProfiles, normalizedChains)
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := ProbeLinkChainStore.Save(); saveErr != nil {

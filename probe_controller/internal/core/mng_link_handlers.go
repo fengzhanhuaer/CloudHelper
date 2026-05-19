@@ -86,6 +86,29 @@ func mngLinkRelayStatusHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngLinkEntryProfilesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	result, err := listMngProbeLinkEntryProfiles(strings.TrimSpace(r.URL.Query().Get("chain_id")))
+	writeMngLinkResult(w, result, err)
+}
+
+func mngLinkEntryProfilesUpsertHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	payload, err := readMngRawJSONPayload(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	result, err := upsertMngProbeLinkEntryProfile(payload)
+	writeMngLinkResult(w, result, err)
+}
+
 type mngLinkRelayStatusView struct {
 	NodeID        string                           `json:"node_id"`
 	Online        bool                             `json:"online"`

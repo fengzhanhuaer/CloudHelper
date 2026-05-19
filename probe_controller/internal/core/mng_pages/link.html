@@ -75,6 +75,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="add" type="button">链路添加</button>
       <button class="tab" data-tab="edit" type="button">链路编辑</button>
+      <button class="tab" data-tab="entry" type="button">链路入口</button>
       <button class="tab" data-tab="pf" type="button">端口转发</button>
       <button class="tab" data-tab="view" type="button">链路查看</button>
     </div>
@@ -169,6 +170,34 @@
         </table>
       </section>
 
+      <section id="section-entry" class="section">
+        <div class="row">
+          <label for="entry-chain-select">选择链路</label>
+          <select id="entry-chain-select" class="wide"></select>
+          <button id="btn-entry-refresh" class="btn" type="button">刷新入口候选</button>
+          <button id="btn-entry-save" class="btn primary" type="button">保存入口配置</button>
+        </div>
+        <div class="row">
+          <span class="inline-tag">客户端组名=链路名 + _lan/_pub/_cf</span>
+          <span class="inline-tag">普通入口端口=链路外部端口</span>
+          <span class="inline-tag">CF入口端口=443</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>启用</th>
+              <th>客户端组名</th>
+              <th>类型</th>
+              <th>节点</th>
+              <th>入口地址</th>
+              <th>端口</th>
+              <th>协议</th>
+            </tr>
+          </thead>
+          <tbody id="entry-candidate-body"></tbody>
+        </table>
+      </section>
+
       <section id="section-pf" class="section">
         <div class="row">
           <label for="pf-chain-select">端口转发链路</label>
@@ -245,6 +274,9 @@
       chains: [],
       relayStatus: [],
       selectedChainID: '',
+      selectedEntryChainID: '',
+      entryProfile: null,
+      entryCandidates: [],
       nodeDomainsByID: {},
       nodeDomainsLoading: {},
       editForm: {
@@ -493,8 +525,27 @@
       if (!state.selectedChainID && state.chains.length > 0) {
         state.selectedChainID = String(state.chains[0].chain_id || '');
       }
+      if (!state.selectedEntryChainID && state.chains.length > 0) {
+        const firstProxy = state.chains.find((item) => normalizeChainType(item.chain_type) === 'proxy_chain') || state.chains[0];
+        state.selectedEntryChainID = String(firstProxy.chain_id || '');
+      }
       renderChainSelects();
       if (!silent) setStatus(`链路列表已刷新：${state.chains.length} 条`, 'ok');
+    }
+
+    async function loadEntryProfile(silent) {
+      const chainID = String(state.selectedEntryChainID || state.selectedChainID || '').trim();
+      if (!chainID) {
+        state.entryProfile = null;
+        state.entryCandidates = [];
+        renderEntrySection();
+        return;
+      }
+      const payload = await requestJSON('/mng/api/link/entry_profiles?chain_id=' + encodeURIComponent(chainID));
+      state.entryProfile = payload.item || { chain_id: chainID, entries: [] };
+      state.entryCandidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+      renderEntrySection();
+      if (!silent) setStatus(`链路入口候选已刷新：${state.entryCandidates.length} 个`, 'ok');
     }
 
     async function loadRelayStatus(silent) {
@@ -515,6 +566,9 @@
           });
           if (state.activeTab === 'pf') {
             renderPFSection();
+          }
+          if (state.activeTab === 'entry') {
+            loadEntryProfile(true).catch((err) => setStatus(`刷新链路入口失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'view') {
             loadRelayStatus(true).catch((err) => setStatus(`刷新链路状态失败：${err.message || err}`, 'err'));
@@ -578,8 +632,60 @@
       editSelect.innerHTML = options || '<option value="">暂无链路</option>';
       editSelect.value = state.selectedChainID;
 
+      renderEntryChainSelect();
       renderPFChainSelect();
       renderPFSection();
+    }
+
+    function renderEntryChainSelect() {
+      const select = document.getElementById('entry-chain-select');
+      const proxyChains = state.chains.filter((item) => normalizeChainType(item.chain_type) === 'proxy_chain');
+      const options = proxyChains
+        .map((item) => {
+          const id = String(item.chain_id || '');
+          const name = String(item.name || id || 'unnamed');
+          return `<option value="${id}">${name} (${id})</option>`;
+        })
+        .join('');
+      select.innerHTML = options || '<option value="">暂无代理链路</option>';
+      if (!proxyChains.some((item) => String(item.chain_id || '') === String(state.selectedEntryChainID || ''))) {
+        state.selectedEntryChainID = proxyChains.length ? String(proxyChains[0].chain_id || '') : '';
+      }
+      select.value = state.selectedEntryChainID;
+    }
+
+    function renderEntrySection() {
+      renderEntryChainSelect();
+      const body = document.getElementById('entry-candidate-body');
+      const rows = Array.isArray(state.entryCandidates) ? state.entryCandidates : [];
+      if (!String(state.selectedEntryChainID || '').trim()) {
+        body.innerHTML = '<tr><td colspan="7" class="muted">暂无可编辑的代理链路。</td></tr>';
+        return;
+      }
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="7" class="muted">暂无候选入口，请确认链路入口节点已配置域名或 Cloudflare Zone。</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((item, idx) => {
+        const protocols = Array.isArray(item.protocols) ? item.protocols.join(',') : 'http2,http3';
+        const checked = item.selected === true ? 'checked' : '';
+        return `<tr>
+          <td><input type="checkbox" data-entry-enabled="${idx}" ${checked} /></td>
+          <td>${escapeHTML(item.name || '-')}</td>
+          <td><span class="inline-tag">${escapeHTML(item.entry_type || '-')}</span></td>
+          <td>#${escapeHTML(item.node_no || '-')}</td>
+          <td class="mono">${escapeHTML(item.host || '-')}</td>
+          <td>${escapeHTML(item.port || '-')}</td>
+          <td>${escapeHTML(protocols)}</td>
+        </tr>`;
+      }).join('');
+      document.querySelectorAll('[data-entry-enabled]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-entry-enabled') || '-1', 10);
+          if (idx < 0 || idx >= state.entryCandidates.length) return;
+          state.entryCandidates[idx].selected = el.checked;
+        });
+      });
     }
 
     function renderPFChainSelect() {
@@ -1056,6 +1162,32 @@
       setStatus(result.apply_ok === false ? `链路已保存，但应用失败：${result.apply_error || '-'}` : '链路已保存并应用', result.apply_ok === false ? 'warn' : 'ok');
     }
 
+    async function saveEntryProfile() {
+      const chainID = String(state.selectedEntryChainID || '').trim();
+      if (!chainID) {
+        throw new Error('请先选择代理链路');
+      }
+      const entries = (Array.isArray(state.entryCandidates) ? state.entryCandidates : [])
+        .filter((item) => item && item.selected === true)
+        .map((item) => ({
+          entry_type: String(item.entry_type || '').trim(),
+          node_no: Number.parseInt(String(item.node_no || '0'), 10),
+          host: String(item.host || '').trim(),
+          port: normalizePort(item.port, 0),
+          protocols: Array.isArray(item.protocols) ? item.protocols : ['http2', 'http3'],
+          name: String(item.name || '').trim(),
+        }));
+      const result = await requestJSON('/mng/api/link/entry_profiles/upsert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chain_id: chainID, entries }),
+      });
+      state.entryProfile = result.item || null;
+      state.entryCandidates = Array.isArray(result.candidates) ? result.candidates : state.entryCandidates;
+      renderEntrySection();
+      setStatus(`链路入口配置已保存：${entries.length} 个入口`, 'ok');
+    }
+
     async function deleteCurrentChain() {
       const chainID = String(state.selectedChainID || '').trim();
       if (!chainID) {
@@ -1335,6 +1467,17 @@
         addHopToEdit().catch((err) => setStatus(`添加节点失败：${err.message || err}`, 'err'));
       });
 
+      document.getElementById('entry-chain-select').addEventListener('change', (e) => {
+        state.selectedEntryChainID = String(e.target.value || '').trim();
+        loadEntryProfile(false).catch((err) => setStatus(`载入链路入口失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-entry-refresh').addEventListener('click', () => {
+        loadEntryProfile(false).catch((err) => setStatus(`刷新链路入口失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-entry-save').addEventListener('click', () => {
+        saveEntryProfile().catch((err) => setStatus(`保存链路入口失败：${err.message || err}`, 'err'));
+      });
+
       document.getElementById('pf-chain-select').addEventListener('change', (e) => {
         selectChainForEdit(String(e.target.value || '')).catch((err) => setStatus(`切换链路失败：${err.message || err}`, 'err'));
       });
@@ -1359,6 +1502,7 @@
       await loadUsers();
       await loadNodes();
       await loadChains(true);
+      await loadEntryProfile(true);
       renderRelayStatus();
 
       if (state.nodes.length) {

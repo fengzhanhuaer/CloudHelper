@@ -321,7 +321,7 @@ func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocal
 		return probeLocalTUNChainEndpoint{}, err
 	}
 	for _, item := range items {
-		if !strings.EqualFold(strings.TrimSpace(item.ChainID), chainID) {
+		if !matchesProbeLocalProxyChainSelection(item, chainID) {
 			continue
 		}
 		if len(buildChainRoute(item)) == 0 {
@@ -355,7 +355,7 @@ func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocal
 			linkLayer = "http"
 		}
 		return probeLocalTUNChainEndpoint{
-			ChainID:           chainID,
+			ChainID:           effectiveProbeLocalRelayChainID(item),
 			ChainName:         strings.TrimSpace(item.Name),
 			EntryNodeID:       entryNodeID,
 			EntryHost:         entryHost,
@@ -367,6 +367,27 @@ func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocal
 		}, nil
 	}
 	return probeLocalTUNChainEndpoint{}, &probeLocalHTTPError{Status: 400, Message: fmt.Sprintf("selected_chain_id %q not found in proxy chains", strings.TrimSpace(selectedChainID))}
+}
+
+func matchesProbeLocalProxyChainSelection(item probeLinkChainServerItem, selectedID string) bool {
+	clean := strings.TrimSpace(selectedID)
+	if clean == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(item.ChainID), clean) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(item.ClientEntryID), clean) {
+		return true
+	}
+	return false
+}
+
+func effectiveProbeLocalRelayChainID(item probeLinkChainServerItem) string {
+	if relayID := strings.TrimSpace(item.RelayChainID); relayID != "" {
+		return relayID
+	}
+	return strings.TrimSpace(item.ChainID)
 }
 
 func (rt *probeLocalTUNGroupRuntime) snapshot() probeLocalTUNGroupRuntimeSnapshot {

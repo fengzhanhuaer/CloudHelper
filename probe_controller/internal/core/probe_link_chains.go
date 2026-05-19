@@ -17,6 +17,8 @@ const (
 	maxProbeLinkChainSecretLen       = 256
 	maxProbeLinkChainHopCount        = 64
 	maxProbeLinkChainPortForwardCnt  = 256
+	maxProbeLinkEntryProfileCount    = 500
+	maxProbeLinkEntryPerChainCount   = 16
 	defaultProbeLinkChainListenHost  = "0.0.0.0"
 	defaultProbeLinkChainLinkLayer   = "http"
 	defaultProbeLinkChainDialMode    = "forward"
@@ -25,6 +27,7 @@ const (
 	defaultProbeLinkChainPFHost      = "0.0.0.0"
 	defaultProbeLinkChainSecretLen   = 48
 	defaultProbeLinkChainType        = "port_forward"
+	defaultProbeLinkEntryCFPort      = 443
 )
 
 type probeLinkChainHopConfig struct {
@@ -53,6 +56,9 @@ type probeLinkChainPortForwardConfig struct {
 
 type probeLinkChainRecord struct {
 	ChainID           string                            `json:"chain_id"`
+	RelayChainID      string                            `json:"relay_chain_id,omitempty"`
+	ClientEntryID     string                            `json:"client_entry_id,omitempty"`
+	ClientEntryType   string                            `json:"client_entry_type,omitempty"`
 	Name              string                            `json:"name"`
 	ChainType         string                            `json:"chain_type,omitempty"`
 	UserID            string                            `json:"user_id"`
@@ -72,6 +78,32 @@ type probeLinkChainRecord struct {
 	UpdatedAt         string                            `json:"updated_at"`
 	Unavailable       bool                              `json:"unavailable,omitempty"`
 	UnavailableReason string                            `json:"unavailable_reason,omitempty"`
+}
+
+type probeLinkEntryProfileRecord struct {
+	ChainID   string                 `json:"chain_id"`
+	Entries   []probeLinkEntryConfig `json:"entries"`
+	UpdatedAt string                 `json:"updated_at,omitempty"`
+}
+
+type probeLinkEntryConfig struct {
+	EntryID   string   `json:"entry_id"`
+	EntryType string   `json:"entry_type"`
+	NodeNo    int      `json:"node_no"`
+	Host      string   `json:"host"`
+	Port      int      `json:"port"`
+	Protocols []string `json:"protocols"`
+	Name      string   `json:"name,omitempty"`
+}
+
+type probeLinkEntryCandidate struct {
+	EntryType string   `json:"entry_type"`
+	NodeNo    int      `json:"node_no"`
+	Host      string   `json:"host"`
+	Port      int      `json:"port"`
+	Protocols []string `json:"protocols"`
+	Name      string   `json:"name,omitempty"`
+	Selected  bool     `json:"selected"`
 }
 
 type probeLinkChainConfigResponse struct {
@@ -368,7 +400,250 @@ func removeProbeLinkChainLocked(chainID string) (probeLinkChainRecord, []probeLi
 	}
 	normalized := normalizeProbeLinkChains(next)
 	ProbeLinkChainStore.data.Chains = normalized
+	ProbeLinkChainStore.data.EntryProfiles = removeProbeLinkEntryProfileLocked(target, ProbeLinkChainStore.data.EntryProfiles, normalized)
 	return removed, normalized, nil
+}
+
+func normalizeProbeLinkEntryProfiles(items []probeLinkEntryProfileRecord, chains []probeLinkChainRecord) []probeLinkEntryProfileRecord {
+	if len(items) == 0 {
+		return []probeLinkEntryProfileRecord{}
+	}
+	chainByID := map[string]probeLinkChainRecord{}
+	for _, chain := range chains {
+		chainID := strings.TrimSpace(chain.ChainID)
+		if chainID == "" {
+			continue
+		}
+		chainByID[chainID] = chain
+	}
+	out := make([]probeLinkEntryProfileRecord, 0, len(items))
+	seenChains := map[string]struct{}{}
+	for _, item := range items {
+		chainID := strings.TrimSpace(item.ChainID)
+		if chainID == "" {
+			continue
+		}
+		chain, ok := chainByID[chainID]
+		if !ok {
+			continue
+		}
+		if _, exists := seenChains[chainID]; exists {
+			continue
+		}
+		entries := normalizeProbeLinkEntryConfigs(chain, item.Entries)
+		if len(entries) == 0 {
+			continue
+		}
+		seenChains[chainID] = struct{}{}
+		out = append(out, probeLinkEntryProfileRecord{
+			ChainID:   chainID,
+			Entries:   entries,
+			UpdatedAt: strings.TrimSpace(item.UpdatedAt),
+		})
+		if len(out) >= maxProbeLinkEntryProfileCount {
+			break
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ChainID < out[j].ChainID
+	})
+	return out
+}
+
+func normalizeProbeLinkEntryConfigs(chain probeLinkChainRecord, entries []probeLinkEntryConfig) []probeLinkEntryConfig {
+	if len(entries) == 0 {
+		return []probeLinkEntryConfig{}
+	}
+	route := buildProbeChainRouteNodes(chain)
+	entryNodeID := ""
+	if len(route) > 0 {
+		entryNodeID = normalizeProbeNodeID(route[0])
+	}
+	entryNodeNo, _ := strconv.Atoi(entryNodeID)
+	defaultPort := resolveProbeLinkChainEntryExternalPort(chain)
+	out := make([]probeLinkEntryConfig, 0, len(entries))
+	seenHosts := map[string]struct{}{}
+	for _, raw := range entries {
+		entryType := normalizeProbeLinkEntryType(raw.EntryType)
+		if entryType == "" {
+			continue
+		}
+		host := normalizeProbeLinkChainDialHost(raw.Host)
+		if host == "" {
+			continue
+		}
+		port := normalizeProbeLinkEntryPort(entryType, raw.Port, defaultPort)
+		if port <= 0 {
+			continue
+		}
+		nodeNo := raw.NodeNo
+		if nodeNo <= 0 {
+			nodeNo = entryNodeNo
+		}
+		protocols := normalizeProbeLinkEntryProtocols(raw.Protocols)
+		key := entryType + "|" + strings.ToLower(host) + "|" + strconv.Itoa(port)
+		if _, exists := seenHosts[key]; exists {
+			continue
+		}
+		seenHosts[key] = struct{}{}
+		next := probeLinkEntryConfig{
+			EntryID:   strings.TrimSpace(raw.EntryID),
+			EntryType: entryType,
+			NodeNo:    nodeNo,
+			Host:      host,
+			Port:      port,
+			Protocols: protocols,
+			Name:      strings.TrimSpace(raw.Name),
+		}
+		out = append(out, next)
+		if len(out) >= maxProbeLinkEntryPerChainCount {
+			break
+		}
+	}
+	assignProbeLinkEntryIDsAndNames(chain, out)
+	return out
+}
+
+func removeProbeLinkEntryProfileLocked(chainID string, profiles []probeLinkEntryProfileRecord, chains []probeLinkChainRecord) []probeLinkEntryProfileRecord {
+	target := strings.TrimSpace(chainID)
+	next := make([]probeLinkEntryProfileRecord, 0, len(profiles))
+	for _, item := range profiles {
+		if strings.TrimSpace(item.ChainID) == target {
+			continue
+		}
+		next = append(next, item)
+	}
+	return normalizeProbeLinkEntryProfiles(next, chains)
+}
+
+func normalizeProbeLinkEntryType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "lan", "local":
+		return "lan"
+	case "pub", "public":
+		return "pub"
+	case "cf", "cloudflare", "cf_proxy":
+		return "cf"
+	default:
+		return ""
+	}
+}
+
+func normalizeProbeLinkEntryProtocols(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 2)
+	add := func(raw string) {
+		v := normalizeProbeLinkChainLinkLayer(raw)
+		if v != "http2" && v != "http3" {
+			return
+		}
+		if _, exists := seen[v]; exists {
+			return
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	for _, value := range values {
+		add(value)
+	}
+	if len(out) == 0 {
+		out = append(out, "http2", "http3")
+	}
+	return out
+}
+
+func normalizeProbeLinkEntryPort(entryType string, rawPort int, defaultPort int) int {
+	if entryType == "cf" {
+		return defaultProbeLinkEntryCFPort
+	}
+	if rawPort > 0 && rawPort <= 65535 {
+		return rawPort
+	}
+	if defaultPort > 0 && defaultPort <= 65535 {
+		return defaultPort
+	}
+	return 0
+}
+
+func resolveProbeLinkChainEntryExternalPort(chain probeLinkChainRecord) int {
+	route := buildProbeChainRouteNodes(chain)
+	if len(route) == 0 {
+		return 0
+	}
+	entryID := normalizeProbeNodeID(route[0])
+	for _, hop := range chain.HopConfigs {
+		if normalizeProbeNodeID(strconv.Itoa(hop.NodeNo)) != entryID {
+			continue
+		}
+		if hop.ExternalPort > 0 && hop.ExternalPort <= 65535 {
+			return hop.ExternalPort
+		}
+		if hop.ListenPort > 0 && hop.ListenPort <= 65535 {
+			return hop.ListenPort
+		}
+	}
+	if chain.ListenPort > 0 && chain.ListenPort <= 65535 {
+		return chain.ListenPort
+	}
+	return 0
+}
+
+func assignProbeLinkEntryIDsAndNames(chain probeLinkChainRecord, entries []probeLinkEntryConfig) {
+	if len(entries) == 0 {
+		return
+	}
+	nameCounts := map[string]int{}
+	idCounts := map[string]int{}
+	baseName := strings.TrimSpace(chain.Name)
+	if baseName == "" {
+		baseName = strings.TrimSpace(chain.ChainID)
+	}
+	for i := range entries {
+		suffix := "_" + entries[i].EntryType
+		nameIndex := nameCounts[entries[i].EntryType] + 1
+		nameCounts[entries[i].EntryType] = nameIndex
+		entryName := baseName + suffix
+		if nameIndex > 1 {
+			entryName = fmt.Sprintf("%s%s%d", baseName, suffix, nameIndex)
+		}
+		if strings.TrimSpace(entries[i].Name) == "" {
+			entries[i].Name = entryName
+		}
+		baseID := sanitizeProbeLinkEntryID(strings.TrimSpace(chain.ChainID) + suffix)
+		idIndex := idCounts[baseID] + 1
+		idCounts[baseID] = idIndex
+		entryID := baseID
+		if idIndex > 1 {
+			entryID = fmt.Sprintf("%s%d", baseID, idIndex)
+		}
+		if strings.TrimSpace(entries[i].EntryID) == "" || strings.TrimSpace(entries[i].EntryID) == strings.TrimSpace(chain.ChainID) {
+			entries[i].EntryID = entryID
+		} else {
+			entries[i].EntryID = sanitizeProbeLinkEntryID(entries[i].EntryID)
+		}
+	}
+}
+
+func sanitizeProbeLinkEntryID(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return ""
+	}
+	builder := strings.Builder{}
+	lastUnderscore := false
+	for _, r := range value {
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if valid {
+			builder.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			builder.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(builder.String(), "_")
 }
 
 func normalizeProbeLinkChains(items []probeLinkChainRecord) []probeLinkChainRecord {
@@ -411,24 +686,27 @@ func normalizeProbeLinkChains(items []probeLinkChainRecord) []probeLinkChainReco
 			CascadeNodeIDs: cascades,
 		})
 		out = append(out, probeLinkChainRecord{
-			ChainID:        chainID,
-			Name:           name,
-			ChainType:      chainType,
-			UserID:         userID,
-			UserPublicKey:  pubKey,
-			Secret:         secret,
-			EntryNodeID:    entryNodeID,
-			ExitNodeID:     exitNodeID,
-			CascadeNodeIDs: cascades,
-			ListenHost:     normalizeProbeLinkChainListenHost(item.ListenHost),
-			ListenPort:     listenPort,
-			LinkLayer:      linkLayer,
-			HopConfigs:     normalizeProbeLinkChainHopConfigsForStore(item.HopConfigs, routeNodes),
-			PortForwards:   normalizeProbeLinkChainPortForwardsForStore(item.PortForwards),
-			EgressHost:     egressHost,
-			EgressPort:     egressPort,
-			CreatedAt:      strings.TrimSpace(item.CreatedAt),
-			UpdatedAt:      strings.TrimSpace(item.UpdatedAt),
+			ChainID:         chainID,
+			RelayChainID:    strings.TrimSpace(item.RelayChainID),
+			ClientEntryID:   strings.TrimSpace(item.ClientEntryID),
+			ClientEntryType: normalizeProbeLinkEntryType(item.ClientEntryType),
+			Name:            name,
+			ChainType:       chainType,
+			UserID:          userID,
+			UserPublicKey:   pubKey,
+			Secret:          secret,
+			EntryNodeID:     entryNodeID,
+			ExitNodeID:      exitNodeID,
+			CascadeNodeIDs:  cascades,
+			ListenHost:      normalizeProbeLinkChainListenHost(item.ListenHost),
+			ListenPort:      listenPort,
+			LinkLayer:       linkLayer,
+			HopConfigs:      normalizeProbeLinkChainHopConfigsForStore(item.HopConfigs, routeNodes),
+			PortForwards:    normalizeProbeLinkChainPortForwardsForStore(item.PortForwards),
+			EgressHost:      egressHost,
+			EgressPort:      egressPort,
+			CreatedAt:       strings.TrimSpace(item.CreatedAt),
+			UpdatedAt:       strings.TrimSpace(item.UpdatedAt),
 		})
 		if len(out) >= maxProbeLinkChainCount {
 			break
@@ -1119,6 +1397,260 @@ func listProbeLinkNodeEditCandidateDomains(nodeID string) []string {
 	return appendUniqueProbeLinkNodeDomain(domains, buildCloudflareCopilotCandidateDomain(node.NodeNo, zoneName))
 }
 
+func listProbeLinkEntryProfiles() []probeLinkEntryProfileRecord {
+	if ProbeLinkChainStore == nil {
+		return []probeLinkEntryProfileRecord{}
+	}
+	ProbeLinkChainStore.mu.RLock()
+	defer ProbeLinkChainStore.mu.RUnlock()
+	chains := loadProbeLinkChainsLocked()
+	return normalizeProbeLinkEntryProfiles(ProbeLinkChainStore.data.EntryProfiles, chains)
+}
+
+func findProbeLinkEntryProfileLocked(chainID string) (probeLinkEntryProfileRecord, bool) {
+	target := strings.TrimSpace(chainID)
+	if target == "" || ProbeLinkChainStore == nil {
+		return probeLinkEntryProfileRecord{}, false
+	}
+	for _, item := range normalizeProbeLinkEntryProfiles(ProbeLinkChainStore.data.EntryProfiles, loadProbeLinkChainsLocked()) {
+		if strings.TrimSpace(item.ChainID) == target {
+			return item, true
+		}
+	}
+	return probeLinkEntryProfileRecord{}, false
+}
+
+func upsertProbeLinkEntryProfile(chainID string, entries []probeLinkEntryConfig) (probeLinkEntryProfileRecord, error) {
+	if ProbeLinkChainStore == nil {
+		return probeLinkEntryProfileRecord{}, fmt.Errorf("probe link chain store is not initialized")
+	}
+	target := strings.TrimSpace(chainID)
+	if target == "" {
+		return probeLinkEntryProfileRecord{}, fmt.Errorf("chain_id is required")
+	}
+	ProbeLinkChainStore.mu.Lock()
+	chains := loadProbeLinkChainsLocked()
+	chain, ok := findProbeLinkChainByIDLocked(target)
+	if !ok {
+		ProbeLinkChainStore.mu.Unlock()
+		return probeLinkEntryProfileRecord{}, fmt.Errorf("chain not found")
+	}
+	normalizedEntries := normalizeProbeLinkEntryConfigs(chain, entries)
+	now := time.Now().UTC().Format(time.RFC3339)
+	nextProfiles := make([]probeLinkEntryProfileRecord, 0, len(ProbeLinkChainStore.data.EntryProfiles)+1)
+	replaced := false
+	for _, item := range ProbeLinkChainStore.data.EntryProfiles {
+		if strings.TrimSpace(item.ChainID) == target {
+			if len(normalizedEntries) > 0 {
+				nextProfiles = append(nextProfiles, probeLinkEntryProfileRecord{ChainID: target, Entries: normalizedEntries, UpdatedAt: now})
+			}
+			replaced = true
+			continue
+		}
+		nextProfiles = append(nextProfiles, item)
+	}
+	if !replaced && len(normalizedEntries) > 0 {
+		nextProfiles = append(nextProfiles, probeLinkEntryProfileRecord{ChainID: target, Entries: normalizedEntries, UpdatedAt: now})
+	}
+	ProbeLinkChainStore.data.EntryProfiles = normalizeProbeLinkEntryProfiles(nextProfiles, chains)
+	var saved probeLinkEntryProfileRecord
+	for _, item := range ProbeLinkChainStore.data.EntryProfiles {
+		if strings.TrimSpace(item.ChainID) == target {
+			saved = item
+			break
+		}
+	}
+	ProbeLinkChainStore.mu.Unlock()
+	if err := ProbeLinkChainStore.Save(); err != nil {
+		return probeLinkEntryProfileRecord{}, err
+	}
+	if strings.TrimSpace(saved.ChainID) == "" {
+		return probeLinkEntryProfileRecord{ChainID: target, Entries: []probeLinkEntryConfig{}, UpdatedAt: now}, nil
+	}
+	return saved, nil
+}
+
+func buildProbeLinkEntryCandidates(chainID string) ([]probeLinkEntryCandidate, probeLinkEntryProfileRecord, error) {
+	if ProbeLinkChainStore == nil {
+		return []probeLinkEntryCandidate{}, probeLinkEntryProfileRecord{}, fmt.Errorf("probe link chain store is not initialized")
+	}
+	target := strings.TrimSpace(chainID)
+	if target == "" {
+		return []probeLinkEntryCandidate{}, probeLinkEntryProfileRecord{}, fmt.Errorf("chain_id is required")
+	}
+	ProbeLinkChainStore.mu.RLock()
+	chain, ok := findProbeLinkChainByIDLocked(target)
+	profile, _ := findProbeLinkEntryProfileLocked(target)
+	ProbeLinkChainStore.mu.RUnlock()
+	if !ok {
+		return []probeLinkEntryCandidate{}, probeLinkEntryProfileRecord{}, fmt.Errorf("chain not found")
+	}
+	candidates := buildProbeLinkEntryCandidatesFromChain(chain, profile)
+	return candidates, profile, nil
+}
+
+func buildProbeLinkEntryCandidatesFromChain(chain probeLinkChainRecord, profile probeLinkEntryProfileRecord) []probeLinkEntryCandidate {
+	route := buildProbeChainRouteNodes(chain)
+	if len(route) == 0 {
+		return []probeLinkEntryCandidate{}
+	}
+	entryNodeID := normalizeProbeNodeID(route[0])
+	entryNodeNo, _ := strconv.Atoi(entryNodeID)
+	port := resolveProbeLinkChainEntryExternalPort(chain)
+	selected := map[string]struct{}{}
+	for _, item := range profile.Entries {
+		key := probeLinkEntryCandidateKey(item.EntryType, item.Host)
+		if key != "" {
+			selected[key] = struct{}{}
+		}
+	}
+
+	out := make([]probeLinkEntryCandidate, 0)
+	add := func(entryType string, host string) {
+		entryType = normalizeProbeLinkEntryType(entryType)
+		host = normalizeProbeLinkChainDialHost(host)
+		if entryType == "" || host == "" {
+			return
+		}
+		candidatePort := normalizeProbeLinkEntryPort(entryType, 0, port)
+		if candidatePort <= 0 {
+			return
+		}
+		key := probeLinkEntryCandidateKey(entryType, host)
+		for _, existing := range out {
+			if probeLinkEntryCandidateKey(existing.EntryType, existing.Host) == key {
+				return
+			}
+		}
+		name := strings.TrimSpace(chain.Name)
+		if name == "" {
+			name = strings.TrimSpace(chain.ChainID)
+		}
+		name += "_" + entryType
+		_, isSelected := selected[key]
+		out = append(out, probeLinkEntryCandidate{
+			EntryType: entryType,
+			NodeNo:    entryNodeNo,
+			Host:      host,
+			Port:      candidatePort,
+			Protocols: []string{"http2", "http3"},
+			Name:      name,
+			Selected:  isSelected,
+		})
+	}
+
+	if node, ok := getProbeNodeByID(entryNodeID); ok {
+		add("lan", node.ServiceHost)
+		add("pub", node.DDNS)
+		for _, rec := range node.CloudflareDDNSRecords {
+			recordName := strings.TrimSpace(rec.RecordName)
+			if recordName == "" {
+				continue
+			}
+			add("pub", recordName)
+		}
+		if zone := currentCloudflareZoneName(); zone != "" {
+			add("cf", buildCloudflareCopilotCandidateDomain(node.NodeNo, zone))
+		}
+	}
+	for _, hop := range chain.HopConfigs {
+		if normalizeProbeNodeID(strconv.Itoa(hop.NodeNo)) != entryNodeID {
+			continue
+		}
+		add("pub", hop.RelayHost)
+		break
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		order := map[string]int{"lan": 0, "pub": 1, "cf": 2}
+		if out[i].EntryType != out[j].EntryType {
+			return order[out[i].EntryType] < order[out[j].EntryType]
+		}
+		return out[i].Host < out[j].Host
+	})
+	return out
+}
+
+func probeLinkEntryCandidateKey(entryType string, host string) string {
+	entryType = normalizeProbeLinkEntryType(entryType)
+	host = normalizeProbeLinkChainDialHost(host)
+	if entryType == "" || host == "" {
+		return ""
+	}
+	return entryType + "|" + strings.ToLower(host)
+}
+
+func projectProbeLinkEntriesForClient(chains []probeLinkChainRecord) []probeLinkChainRecord {
+	if len(chains) == 0 || ProbeLinkChainStore == nil {
+		return []probeLinkChainRecord{}
+	}
+	ProbeLinkChainStore.mu.RLock()
+	profiles := normalizeProbeLinkEntryProfiles(ProbeLinkChainStore.data.EntryProfiles, chains)
+	ProbeLinkChainStore.mu.RUnlock()
+	profileByChain := make(map[string]probeLinkEntryProfileRecord, len(profiles))
+	for _, item := range profiles {
+		profileByChain[strings.TrimSpace(item.ChainID)] = item
+	}
+	out := make([]probeLinkChainRecord, 0)
+	seenIDs := map[string]struct{}{}
+	for _, chain := range chains {
+		if !strings.EqualFold(strings.TrimSpace(chain.ChainType), "proxy_chain") {
+			continue
+		}
+		profile, ok := profileByChain[strings.TrimSpace(chain.ChainID)]
+		if !ok || len(profile.Entries) == 0 {
+			continue
+		}
+		for _, entry := range profile.Entries {
+			projected := buildProbeLinkEntryProjectedChain(chain, entry)
+			if strings.TrimSpace(projected.ChainID) == "" {
+				continue
+			}
+			if _, exists := seenIDs[projected.ChainID]; exists {
+				continue
+			}
+			seenIDs[projected.ChainID] = struct{}{}
+			out = append(out, projected)
+		}
+	}
+	return out
+}
+
+func buildProbeLinkEntryProjectedChain(chain probeLinkChainRecord, entry probeLinkEntryConfig) probeLinkChainRecord {
+	projected := chain
+	relayChainID := strings.TrimSpace(chain.ChainID)
+	entryID := strings.TrimSpace(entry.EntryID)
+	if entryID == "" {
+		entryID = sanitizeProbeLinkEntryID(relayChainID + "_" + normalizeProbeLinkEntryType(entry.EntryType))
+	}
+	projected.ChainID = entryID
+	projected.RelayChainID = relayChainID
+	projected.ClientEntryID = entryID
+	projected.ClientEntryType = normalizeProbeLinkEntryType(entry.EntryType)
+	projected.Name = strings.TrimSpace(entry.Name)
+	if projected.Name == "" {
+		projected.Name = strings.TrimSpace(chain.Name) + "_" + projected.ClientEntryType
+	}
+	projected.LinkLayer = "http3"
+	route := buildProbeChainRouteNodes(chain)
+	if len(route) == 0 {
+		return projected
+	}
+	entryNodeID := normalizeProbeNodeID(route[0])
+	hops := append([]probeLinkChainHopConfig{}, chain.HopConfigs...)
+	for i := range hops {
+		if normalizeProbeNodeID(strconv.Itoa(hops[i].NodeNo)) != entryNodeID {
+			continue
+		}
+		hops[i].RelayHost = strings.TrimSpace(entry.Host)
+		hops[i].ExternalPort = entry.Port
+		hops[i].LinkLayer = "http3"
+		break
+	}
+	projected.HopConfigs = hops
+	return projected
+}
+
 func currentCloudflareZoneName() string {
 	if CloudflareStore == nil {
 		return ""
@@ -1206,13 +1738,14 @@ func ProbeLinkChainConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 	available := fillChainRelayHosts(filterAvailableProbeLinkChains(all))
 	selfChains := filterProbeLinkChainsByNodeID(available, nodeID)
+	clientEntryChains := projectProbeLinkEntriesForClient(filterProbeLinkChainsByType(available, "proxy_chain"))
 	writeJSON(w, http.StatusOK, probeLinkChainConfigResponse{
 		NodeID:                   nodeID,
 		Chains:                   selfChains,
 		SelfChains:               selfChains,
 		PortForwardChains:        filterProbeLinkChainsByType(selfChains, "port_forward"),
 		ProxyChains:              filterProbeLinkChainsByType(selfChains, "proxy_chain"),
-		GlobalProxyForwardChains: filterProbeLinkChainsByType(available, "proxy_chain"),
+		GlobalProxyForwardChains: clientEntryChains,
 	})
 }
 
