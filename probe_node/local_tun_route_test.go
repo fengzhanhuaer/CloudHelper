@@ -334,7 +334,7 @@ func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *te
 		return client, nil
 	}
 	t.Cleanup(func() {
-		probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+		probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
 		for _, peer := range peers {
 			_ = peer.Close()
 		}
@@ -420,7 +420,7 @@ func TestProbeLocalTUNGroupRuntimeReconnectsWhenOpenFailureAndRelayProbeUnavaila
 		return nil, errors.New(`Post "https://69.63.223.88:16030/api/node/chain/relay?chain_id=5": context canceled`)
 	}
 	t.Cleanup(func() {
-		probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+		probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
 	})
 
 	rt.mu.Lock()
@@ -495,7 +495,7 @@ func TestProbeLocalTUNGroupRuntimeKeepsSessionWhenOpenFailureButRelayProbeSuccee
 	}
 	t.Cleanup(func() {
 		close(done)
-		probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+		probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
 		for _, peer := range peers {
 			_ = peer.Close()
 		}

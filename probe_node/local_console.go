@@ -3737,7 +3737,7 @@ func buildProbeLocalProxyLinkStatusItems() []probeLocalProxyLinkStatusItem {
 		status.EntryPort = endpoint.EntryPort
 		status.LinkLayer = endpoint.LinkLayer
 		status.Endpoint = net.JoinHostPort(endpoint.EntryHost, strconv.Itoa(endpoint.EntryPort))
-		status.ProtocolState = snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort)
+		status.ProtocolState = snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort)
 		status.ObservedRateBPS = observedProbeLocalProxyLinkRateBPS(status.ProtocolState)
 		if strings.TrimSpace(status.ProtocolState.SelectedProtocol) != "" || len(status.ProtocolState.ProtocolQualities) > 0 {
 			status.Status = "observed"
@@ -3748,11 +3748,11 @@ func buildProbeLocalProxyLinkStatusItems() []probeLocalProxyLinkStatusItem {
 }
 
 func runProbeLocalProxyLinkHandshakeProbe(endpoint probeLocalTUNChainEndpoint) (net.Conn, error) {
-	return openProbeChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	return openProbeLocalTUNChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
 }
 
 func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
-	return probeChainRelaySpeedTestAuto(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, protocol, probeChainRelaySpeedTestBytes)
+	return probeLocalTUNChainRelaySpeedTest(endpoint, protocol)
 }
 
 func defaultProbeLocalProxyLinkCFIPLookup(ctx context.Context, host string) ([]net.IP, error) {
@@ -3799,7 +3799,7 @@ func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip str
 		return 0, fmt.Errorf("invalid cf probe protocol: %s", protocol)
 	}
 	startedAt := time.Now()
-	conn, err := openProbeChainRelayNetConnWithResolvedHost(
+	conn, err := openProbeLocalTUNChainRelayNetConnWithResolvedHost(
 		endpoint.ChainID,
 		endpoint.ChainSecret,
 		endpoint.EntryHost,
@@ -4037,7 +4037,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 			"entry_port":     endpoint.EntryPort,
 			"link_layer":     endpoint.LinkLayer,
 			"error":          strings.TrimSpace(err.Error()),
-			"protocol_state": snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort),
+			"protocol_state": snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort),
 			"updated_at":     time.Now().UTC().Format(time.RFC3339),
 		})
 		return
@@ -4052,7 +4052,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 		"entry_host":     endpoint.EntryHost,
 		"entry_port":     endpoint.EntryPort,
 		"link_layer":     endpoint.LinkLayer,
-		"protocol_state": snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort),
+		"protocol_state": snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort),
 		"updated_at":     time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -4106,7 +4106,7 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := probeLocalProxyLinkSpeedProbe(endpoint, protocol)
-	snapshot := snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort)
+	snapshot := snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort)
 	rateBPS := int64(0)
 	status := "unreachable"
 	okResult := false
@@ -4748,7 +4748,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalProxyLinkCFIPProbe = runProbeLocalProxyLinkCFIPProbe
 	probeLocalStartCFIPOptimizeTask = func(fn func()) { go fn() }
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
-	probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+	probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
 }
 
 func resetProbeLocalTUNHooksForTest() {

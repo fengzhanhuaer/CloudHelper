@@ -341,28 +341,25 @@ func TestWrapProbeChainRelayDialErrorForHTTP3UDPSocketResource(t *testing.T) {
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoChoosesLowerScoreProtocol(t *testing.T) {
+func TestOpenProbeChainRelayNetConnAutoUsesHTTP3WebSocketPrimary(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
 	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
 
 	var mu sync.Mutex
-	calls := make([]string, 0, 2)
+	calls := make([]string, 0, 3)
 	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
 		client, server := net.Pipe()
 		_ = server.Close()
-		latency := 50 * time.Millisecond
-		if normalizeProbeChainLinkLayer(layer) == "http2" {
-			latency = 5 * time.Millisecond
-		}
+		protocol := normalizeProbeChainLinkLayer(layer)
 		mu.Lock()
-		calls = append(calls, normalizeProbeChainLinkLayer(layer))
+		calls = append(calls, protocol)
 		mu.Unlock()
 		return probeChainRelayProtocolDialResult{
-			Protocol: normalizeProbeChainLinkLayer(layer),
+			Protocol: protocol,
 			Conn:     client,
-			Latency:  latency,
+			Latency:  50 * time.Millisecond,
 		}
 	}
 
@@ -373,17 +370,17 @@ func TestOpenProbeChainRelayNetConnAutoChoosesLowerScoreProtocol(t *testing.T) {
 	_ = conn.Close()
 
 	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
-	if snapshot.SelectedProtocol != "http2" {
-		t.Fatalf("selected protocol=%q want http2 snapshot=%+v", snapshot.SelectedProtocol, snapshot)
+	if snapshot.SelectedProtocol != "websocket-h3" {
+		t.Fatalf("selected protocol=%q want websocket-h3 snapshot=%+v", snapshot.SelectedProtocol, snapshot)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 2 {
-		t.Fatalf("expected both h2/h3 probes, got calls=%v", calls)
+	if len(calls) != 1 || calls[0] != "websocket-h3" {
+		t.Fatalf("expected h3 websocket primary only, got calls=%v", calls)
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoUsesNegativeCacheAfterHTTP3Failure(t *testing.T) {
+func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketFailure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -396,7 +393,7 @@ func TestOpenProbeChainRelayNetConnAutoUsesNegativeCacheAfterHTTP3Failure(t *tes
 		mu.Lock()
 		calls = append(calls, protocol)
 		mu.Unlock()
-		if protocol == "http3" {
+		if protocol == "websocket-h3" || protocol == "websocket" || protocol == "http3" {
 			return probeChainRelayProtocolDialResult{
 				Protocol: protocol,
 				Err:      errors.New("i/o timeout"),
@@ -425,10 +422,16 @@ func TestOpenProbeChainRelayNetConnAutoUsesNegativeCacheAfterHTTP3Failure(t *tes
 
 	mu.Lock()
 	defer mu.Unlock()
+	http3WebSocketCalls := 0
+	websocketCalls := 0
 	http3Calls := 0
 	http2Calls := 0
 	for _, call := range calls {
 		switch call {
+		case "websocket-h3":
+			http3WebSocketCalls++
+		case "websocket":
+			websocketCalls++
 		case "http3":
 			http3Calls++
 		case "http2":
@@ -440,6 +443,12 @@ func TestOpenProbeChainRelayNetConnAutoUsesNegativeCacheAfterHTTP3Failure(t *tes
 	}
 	if http2Calls < 2 {
 		t.Fatalf("http2 should serve both attempts, calls=%v", calls)
+	}
+	if websocketCalls < 2 {
+		t.Fatalf("websocket primary should be tried for both attempts, calls=%v", calls)
+	}
+	if http3WebSocketCalls < 2 {
+		t.Fatalf("h3 websocket primary should be tried for both attempts, calls=%v", calls)
 	}
 	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
 	foundHTTP3Failure := false
@@ -512,7 +521,7 @@ func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) 
 		mu.Lock()
 		calls = append(calls, protocol)
 		mu.Unlock()
-		if protocol == "http3" {
+		if protocol == "websocket-h3" {
 			return probeChainRelayProtocolDialResult{
 				Protocol: protocol,
 				Err:      errors.New("probe relay failed: status=401 body=unauthorized"),
@@ -538,14 +547,14 @@ func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) 
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	seenHTTP3 := false
+	seenHTTP3WebSocket := false
 	for _, call := range calls {
-		if call == "http3" {
-			seenHTTP3 = true
+		if call == "websocket-h3" {
+			seenHTTP3WebSocket = true
 		}
 	}
-	if !seenHTTP3 {
-		t.Fatalf("expected http3 auth failure probe, calls=%v", calls)
+	if !seenHTTP3WebSocket || len(calls) != 1 {
+		t.Fatalf("expected h3 websocket auth failure to stop switching, calls=%v", calls)
 	}
 }
 

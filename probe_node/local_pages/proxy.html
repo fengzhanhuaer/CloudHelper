@@ -505,7 +505,7 @@
       if (!protocolState || typeof protocolState !== 'object') {
         return '';
       }
-      const selected = String(protocolState.selected_protocol || '').trim();
+      const selected = normalizeRelayProtocol(protocolState.selected_protocol);
       const reason = String(protocolState.selection_reason || '').trim();
       const qualities = Array.isArray(protocolState.protocol_qualities) ? protocolState.protocol_qualities : [];
       const listeners = Array.isArray(protocolState.listener_statuses) ? protocolState.listener_statuses : [];
@@ -514,8 +514,9 @@
         .slice()
         .sort((a, b) => String(a && a.protocol || '').localeCompare(String(b && b.protocol || '')))
         .forEach((item) => {
-          const protocol = String(item && item.protocol || '').trim();
+          const protocol = normalizeRelayProtocol(item && item.protocol);
           if (!protocol) return;
+          const protocolLabel = formatRelayProtocolLabel(protocol);
           const latency = Number(item && item.latency_ms);
           const score = Number(item && item.score);
           const loss = Number(item && item.loss_permille);
@@ -526,14 +527,27 @@
           if (Number.isFinite(rate) && rate > 0) metrics.push(`${formatRate(rate)}`);
           if (Number.isFinite(score) && score > 0) metrics.push(`分${Math.trunc(score)}`);
           if (item && item.available === false) metrics.push('不可用');
-          parts.push(`${protocol}${metrics.length ? `(${metrics.join('/')})` : ''}`);
+          parts.push(`${protocolLabel}${metrics.length ? `(${metrics.join('/')})` : ''}`);
         });
-      const head = selected ? `auto=${selected}` : 'auto';
+      const head = selected ? `auto=${formatRelayProtocolLabel(selected)}` : 'auto';
       const tail = parts.length ? ` ${parts.join(' ')}` : '';
       const listenerText = listeners.length
-        ? ` 入口${listeners.map((item) => `${String(item && item.protocol || '').trim() || '?'}:${String(item && item.status || '').trim() || '-'}`).join('/')}`
+        ? ` 入口${listeners.map((item) => `${formatRelayProtocolLabel(item && item.protocol)}:${String(item && item.status || '').trim() || '-'}`).join('/')}`
         : '';
       return `${head}${reason ? `/${reason}` : ''}${tail}${listenerText}`;
+    }
+
+    function normalizeRelayProtocol(raw) {
+      return String(raw || '').trim().toLowerCase();
+    }
+
+    function formatRelayProtocolLabel(raw) {
+      const value = normalizeRelayProtocol(raw);
+      if (value === 'http2' || value === 'h2') return 'HTTP/2';
+      if (value === 'http3' || value === 'h3') return 'HTTP/3(QUIC)';
+      if (value === 'websocket') return 'WebSocket';
+      if (value === 'websocket-h3' || value === 'h3-websocket' || value === 'ws-h3') return 'WebSocket over HTTP/3';
+      return value || '?';
     }
 
     function formatRate(rateBps) {
@@ -567,14 +581,15 @@
 
     function formatProtocolQualities(protocolState) {
       if (!protocolState || typeof protocolState !== 'object') return '-';
-      const selected = String(protocolState.selected_protocol || '').trim();
+      const selected = normalizeRelayProtocol(protocolState.selected_protocol);
       const qualities = Array.isArray(protocolState.protocol_qualities) ? protocolState.protocol_qualities : [];
       const parts = qualities
         .slice()
         .sort((a, b) => String(a && a.protocol || '').localeCompare(String(b && b.protocol || '')))
         .map((item) => {
-          const protocol = String(item && item.protocol || '').trim();
+          const protocol = normalizeRelayProtocol(item && item.protocol);
           if (!protocol) return '';
+          const protocolLabel = formatRelayProtocolLabel(protocol);
           const latency = Number(item && item.latency_ms);
           const loss = Number(item && item.loss_permille);
           const rate = Number(item && item.rate_bps);
@@ -587,10 +602,10 @@
           metrics.push(`score=${Number.isFinite(score) && score > 0 ? Math.trunc(score) : '-'}`);
           if (Number.isFinite(failures) && failures > 0) metrics.push(`失败=${Math.trunc(failures)}`);
           if (item && item.available === false) metrics.push('不可用');
-          return `${protocol}${selected === protocol ? ' *' : ''}: ${metrics.join(' ')}`;
+          return `${protocolLabel}${selected === protocol ? ' *' : ''}: ${metrics.join(' ')}`;
         })
         .filter(Boolean);
-      return parts.length ? parts.join('\n') : (selected ? `auto=${selected}` : '-');
+      return parts.length ? parts.join('\n') : (selected ? `auto=${formatRelayProtocolLabel(selected)}` : '-');
     }
 
     function isCFProxyLinkItem(item) {
@@ -610,13 +625,13 @@
       if (state) parts.push(escapeHTML(state));
       if (status.running) parts.push('后台优选中');
       const bestIP = String(status.best_ip || '').trim();
-      const bestProtocol = String(status.best_protocol || '').trim();
+      const bestProtocol = normalizeRelayProtocol(status.best_protocol);
       const dns = String(status.entry_host || item && item.entry_host || '').trim();
       const latency = Number(status.best_latency_ms);
       if (bestIP) {
         const copyValue = dns ? `${dns},${bestIP}` : bestIP;
         const ipHTML = `<span class="copy-ip" role="button" tabindex="0" title="复制 ${escapeHTML(copyValue)}" data-copy-cf-ip="${escapeHTML(bestIP)}" data-copy-cf-dns="${escapeHTML(dns)}">${escapeHTML(bestIP)}</span>`;
-        parts.push(`best=${ipHTML}${bestProtocol ? '/' + escapeHTML(bestProtocol.toUpperCase()) : ''}${Number.isFinite(latency) && latency > 0 ? '/' + Math.trunc(latency) + 'ms' : ''}`);
+        parts.push(`best=${ipHTML}${bestProtocol ? '/' + escapeHTML(formatRelayProtocolLabel(bestProtocol)) : ''}${Number.isFinite(latency) && latency > 0 ? '/' + Math.trunc(latency) + 'ms' : ''}`);
       }
       const tested = Number(status.tested_count);
       const candidates = Number(status.candidate_count);
@@ -647,7 +662,7 @@
         const cfOptimizeHTML = formatCFOptimizeStatusHTML(item && item.cf_optimize, item);
         const cfButton = isCFProxyLinkItem(item) ? `<button class="secondary" data-action="cf-ip-optimize" data-chain-id="${escapeHTML(chainID)}">CF IP优选</button>` : '';
         tr.innerHTML = `
-          <td><strong>${escapeHTML(chainName)}</strong><br><span class="muted">${escapeHTML(chainID || '-')}</span><br><span class="muted">入口: ${escapeHTML(endpoint)}</span><br><span class="muted">协议: ${escapeHTML(String(item && item.link_layer || '-'))}</span>${route ? `<br><span class="muted">${escapeHTML(route)}</span>` : ''}</td>
+          <td><strong>${escapeHTML(chainName)}</strong><br><span class="muted">${escapeHTML(chainID || '-')}</span><br><span class="muted">入口: ${escapeHTML(endpoint)}</span><br><span class="muted">配置协议: ${escapeHTML(formatRelayProtocolLabel(item && item.link_layer))}</span>${route ? `<br><span class="muted">${escapeHTML(route)}</span>` : ''}</td>
           <td>
             <div class="link-info">
               <div class="link-info-line"><span class="muted">状态</span><span class="${linkStatusClass(item && item.status)}">${escapeHTML(formatLinkStatusText(item))}${errorText ? `<br><span class="muted">${escapeHTML(errorText)}</span>` : ''}${cfOptimizeHTML ? `<br><span class="muted">CF优选: ${cfOptimizeHTML}</span>` : ''}</span></div>
@@ -655,7 +670,7 @@
               <div class="link-info-line"><span class="muted">测速</span><span>${escapeHTML(formatRateText(rate))}</span></div>
             </div>
           </td>
-          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-protocol="http2" data-chain-id="${escapeHTML(chainID)}">H2 测速</button><button class="secondary" data-action="speed" data-protocol="http3" data-chain-id="${escapeHTML(chainID)}">H3 测速</button>${cfButton}</div></td>
+          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-protocol="http2" data-chain-id="${escapeHTML(chainID)}">HTTP/2 测速</button><button class="secondary" data-action="speed" data-protocol="http3" data-chain-id="${escapeHTML(chainID)}">HTTP/3 测速</button>${cfButton}</div></td>
         `;
         proxyLinkStatusRowsEl.appendChild(tr);
       });
@@ -750,8 +765,9 @@
     async function runProxyLinkSpeed(chainID, protocol) {
       const cleanID = normalizeChainID(chainID);
       const cleanProtocol = String(protocol || '').trim().toLowerCase();
+      const protocolLabel = formatRelayProtocolLabel(cleanProtocol);
       if (!cleanID) return;
-      setMessage(`链路 ${cleanID} ${cleanProtocol.toUpperCase()} 真实测速中...`);
+      setMessage(`链路 ${cleanID} ${protocolLabel} 真实测速中...`);
       try {
         const data = await requestJSON('/local/api/proxy/link/speed', {
           method: 'POST',
@@ -762,19 +778,19 @@
         const results = Array.isArray(data && data.results) ? data.results : [];
         const okCount = results.filter((item) => item && item.ok).length;
         if (okCount > 0) {
-          setMessage(`链路 ${cleanID} ${cleanProtocol.toUpperCase()} 测速完成：${rate}`, 'success');
+          setMessage(`链路 ${cleanID} ${protocolLabel} 测速完成：${rate}`, 'success');
           return;
         }
-        setMessage(`链路 ${cleanID} ${cleanProtocol.toUpperCase()} 测速不可达：${String(data && data.status || data && data.error || 'unknown')}`, 'error');
+        setMessage(`链路 ${cleanID} ${protocolLabel} 测速不可达：${String(data && data.status || data && data.error || 'unknown')}`, 'error');
       } catch (err) {
-        setMessage(`链路 ${cleanID} ${cleanProtocol.toUpperCase()} 测速失败：${err.message}`, 'error');
+        setMessage(`链路 ${cleanID} ${protocolLabel} 测速失败：${err.message}`, 'error');
       }
     }
 
     async function runProxyLinkCFIPOptimize(chainID) {
       const cleanID = normalizeChainID(chainID);
       if (!cleanID) return;
-      setMessage(`链路 ${cleanID} CF IP 优选已提交，后台测试 H3/H2 延迟...`);
+      setMessage(`链路 ${cleanID} CF IP 优选已提交，后台测试 HTTP/3 / HTTP/2 延迟...`);
       try {
         const data = await requestJSON('/local/api/proxy/link/cf_ip_optimize', {
           method: 'POST',

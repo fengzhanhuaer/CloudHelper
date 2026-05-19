@@ -63,7 +63,7 @@ var probeLocalTUNGroupRuntimeRegistry = struct {
 	items map[string]*probeLocalTUNGroupRuntime
 }{items: make(map[string]*probeLocalTUNGroupRuntime)}
 
-var probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
+var probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
 
 // Group runtime is the aggregation boundary for proxy behavior.
 // DNS records must not persist action or selected_chain_id as their primary state.
@@ -419,7 +419,7 @@ func (rt *probeLocalTUNGroupRuntime) snapshotLocked() probeLocalTUNGroupRuntimeS
 		Connected:       connected,
 	}
 	if strings.TrimSpace(rt.Endpoint.EntryHost) != "" && rt.Endpoint.EntryPort > 0 {
-		snapshot.ProtocolState = snapshotProbeChainProtocolState(rt.Endpoint.EntryHost, rt.Endpoint.EntryPort)
+		snapshot.ProtocolState = snapshotProbeLocalTUNChainRelayProtocolState(rt.Endpoint.EntryHost, rt.Endpoint.EntryPort)
 	}
 	return snapshot
 }
