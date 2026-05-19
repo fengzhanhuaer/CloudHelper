@@ -1102,6 +1102,45 @@ func listProbeLinkNodeDomains(nodeID string) []string {
 	return buildProbeLinkNodeDomainsFromRecord(node)
 }
 
+func listProbeLinkNodeEditCandidateDomains(nodeID string) []string {
+	normalized := normalizeProbeNodeID(nodeID)
+	if normalized == "" {
+		return []string{}
+	}
+	node, ok := getProbeNodeByID(normalized)
+	if !ok {
+		return []string{}
+	}
+	domains := buildProbeLinkNodeDomainsFromRecord(node)
+	zoneName := currentCloudflareZoneName()
+	if zoneName == "" {
+		return domains
+	}
+	return appendUniqueProbeLinkNodeDomain(domains, buildCloudflareCopilotCandidateDomain(node.NodeNo, zoneName))
+}
+
+func currentCloudflareZoneName() string {
+	if CloudflareStore == nil {
+		return ""
+	}
+	CloudflareStore.mu.RLock()
+	defer CloudflareStore.mu.RUnlock()
+	return normalizeCloudflareZoneName(CloudflareStore.data.ZoneName)
+}
+
+func appendUniqueProbeLinkNodeDomain(domains []string, raw string) []string {
+	host := normalizeProbeLinkChainDialHost(raw)
+	if host == "" {
+		return domains
+	}
+	for _, item := range domains {
+		if strings.EqualFold(strings.TrimSpace(item), host) {
+			return domains
+		}
+	}
+	return append(domains, host)
+}
+
 // ProbeLinkChainsHandler serves GET /api/probe/link/chains.
 // A probe authenticates with its secret and receives all chain configs
 // where it appears as entry, cascade, or exit node. The response includes

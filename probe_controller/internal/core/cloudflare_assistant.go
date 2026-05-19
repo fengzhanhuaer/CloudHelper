@@ -24,6 +24,7 @@ import (
 const (
 	cloudflareStoreFile                         = "cloudflare.json"
 	cloudflareManagedBusinessNamePrefix         = "api.codex."
+	cloudflareCopilotCandidateNamePrefix        = "api.copilot."
 	cloudflareZeroTrustDefaultSyncIntervalSec   = 300
 	cloudflareZeroTrustMinSyncIntervalSec       = 30
 	cloudflareZeroTrustSchedulerTickIntervalSec = 15
@@ -95,10 +96,10 @@ type cloudflareZeroTrustRunRequest struct {
 }
 
 type cloudflareZeroTrustPolicyItem struct {
-	ID      string                 `json:"id"`
-	Name    string                 `json:"name"`
+	ID      string                   `json:"id"`
+	Name    string                   `json:"name"`
 	Include []map[string]interface{} `json:"include"`
-	Raw     map[string]interface{} `json:"raw"`
+	Raw     map[string]interface{}   `json:"raw"`
 }
 
 type cloudflareAPIKeyResponse struct {
@@ -167,11 +168,11 @@ type cloudflareDDNSApplyItem struct {
 }
 
 type cloudflareDDNSApplyResponse struct {
-	ZoneName string                            `json:"zone_name"`
-	Applied  int                               `json:"applied"`
-	Skipped  int                               `json:"skipped"`
-	Items    []cloudflareDDNSApplyItem         `json:"items"`
-	Records  []cloudflareDDNSResolvedRecord    `json:"records"`
+	ZoneName string                         `json:"zone_name"`
+	Applied  int                            `json:"applied"`
+	Skipped  int                            `json:"skipped"`
+	Items    []cloudflareDDNSApplyItem      `json:"items"`
+	Records  []cloudflareDDNSResolvedRecord `json:"records"`
 }
 
 type cloudflareZoneListResponse struct {
@@ -969,6 +970,18 @@ func buildCloudflareBusinessRecordBase(nodeNo int) string {
 		return ""
 	}
 	return "api.codex." + tag
+}
+
+func buildCloudflareCopilotCandidateRecordBase(nodeNo int) string {
+	tag := buildCloudflareNodeBase64Tag(nodeNo)
+	if tag == "" {
+		return ""
+	}
+	return cloudflareCopilotCandidateNamePrefix + tag
+}
+
+func buildCloudflareCopilotCandidateDomain(nodeNo int, zoneName string) string {
+	return buildCloudflareRecordName(buildCloudflareCopilotCandidateRecordBase(nodeNo), zoneName, 1)
 }
 
 func buildCloudflareNodeBase64Tag(nodeNo int) string {
@@ -1869,9 +1882,9 @@ func cloudflareListZeroTrustPolicies(token, accountID string) ([]cloudflareZeroT
 		return nil, fmt.Errorf("cloudflare list zerotrust policies status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var parsed struct {
-		Success bool                             `json:"success"`
-		Result  []map[string]interface{}         `json:"result"`
-		Errors  []map[string]interface{}         `json:"errors"`
+		Success bool                     `json:"success"`
+		Result  []map[string]interface{} `json:"result"`
+		Errors  []map[string]interface{} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, err

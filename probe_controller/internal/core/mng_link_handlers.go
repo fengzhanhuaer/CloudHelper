@@ -69,8 +69,7 @@ func mngLinkNodeDomainsHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id is required"})
 		return
 	}
-	domains := listProbeLinkNodeDomains(nodeID)
-	sort.Strings(domains)
+	domains := listProbeLinkNodeEditCandidateDomains(nodeID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node_id": nodeID,
 		"domains": domains,

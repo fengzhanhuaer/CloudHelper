@@ -2,6 +2,7 @@ package core
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,7 @@ func TestIsCloudflareManagedDDNSRecordName(t *testing.T) {
 		{name: "local prefix", input: "local_go_node-1.example.com", expected: true},
 		{name: "business prefix", input: "api.codex.abcd.example.com", expected: true},
 		{name: "business prefix uppercase with dot", input: "API.CODEX.XYZ.example.com.", expected: true},
+		{name: "copilot candidate is not ddns managed", input: "api.copilot.abcd.example.com", expected: false},
 		{name: "not managed", input: "www.example.com", expected: false},
 		{name: "empty", input: "", expected: false},
 	}
@@ -24,6 +26,75 @@ func TestIsCloudflareManagedDDNSRecordName(t *testing.T) {
 			t.Fatalf("%s: expected %v, got %v", tt.name, tt.expected, got)
 		}
 	}
+}
+
+func TestCloudflareCopilotCandidateDomainIsEditOnly(t *testing.T) {
+	oldProbeStore := ProbeStore
+	oldCloudflareStore := CloudflareStore
+	t.Cleanup(func() {
+		ProbeStore = oldProbeStore
+		CloudflareStore = oldCloudflareStore
+	})
+
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{
+				{
+					NodeNo:      7,
+					NodeName:    "node-7",
+					DDNS:        "node7.example.net",
+					ServiceHost: "service7.example.net",
+					CloudflareDDNSRecords: []cloudflareDDNSRecord{
+						{RecordName: "api.codex.nw.example.com", RecordClass: "business", RecordType: "A", Sequence: 1},
+					},
+				},
+			},
+			ProbeSecrets: map[string]string{},
+		},
+	}
+	CloudflareStore = &cloudflareStore{
+		data: cloudflareStoreData{
+			ZoneName: "example.com",
+		},
+	}
+
+	copilotDomain := buildCloudflareCopilotCandidateDomain(7, "example.com")
+	if copilotDomain != "api.copilot.nw.example.com" {
+		t.Fatalf("unexpected copilot candidate: %q", copilotDomain)
+	}
+
+	runtimeDomains := listProbeLinkNodeDomains("7")
+	if containsStringFold(runtimeDomains, copilotDomain) {
+		t.Fatalf("copilot candidate must not be used by runtime relay host fallback: %v", runtimeDomains)
+	}
+
+	editDomains := listProbeLinkNodeEditCandidateDomains("7")
+	if !containsStringFold(editDomains, copilotDomain) {
+		t.Fatalf("copilot candidate missing from edit domains: %v", editDomains)
+	}
+	if len(editDomains) == 0 || !strings.EqualFold(editDomains[len(editDomains)-1], copilotDomain) {
+		t.Fatalf("copilot candidate should be appended after existing domains: %v", editDomains)
+	}
+
+	desired := buildCloudflareDesiredRecords(probeNodeStatusRecord{
+		NodeNo:   7,
+		NodeName: "node-7",
+		Runtime:  probeRuntimeStatus{IPv4: []string{"8.8.8.8"}},
+	}, "example.com")
+	for _, item := range desired {
+		if strings.HasPrefix(item.RecordName, cloudflareCopilotCandidateNamePrefix) {
+			t.Fatalf("copilot candidate must not be part of ddns desired records: %+v", item)
+		}
+	}
+}
+
+func containsStringFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCloudflareRecordNameTypeKey(t *testing.T) {
@@ -77,4 +148,3 @@ func TestParseCloudflareZeroTrustWhitelistIPs_NoDNS(t *testing.T) {
 		t.Fatalf("unexpected warnings: got=%v", warnings)
 	}
 }
-
