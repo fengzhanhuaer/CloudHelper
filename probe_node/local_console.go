@@ -154,12 +154,19 @@ type probeLocalTUNPersistentState struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
+type probeLocalProxyPersistentState struct {
+	Enabled   bool   `json:"enabled"`
+	Mode      string `json:"mode"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
 type probeLocalProxyStateFile struct {
 	Version   int                              `json:"version"`
 	UpdatedAt string                           `json:"updated_at"`
 	Groups    []probeLocalProxyStateGroupEntry `json:"groups"`
 	Backup    probeLocalProxyBackupState       `json:"backup"`
 	TUN       probeLocalTUNPersistentState     `json:"tun"`
+	Proxy     probeLocalProxyPersistentState   `json:"proxy"`
 }
 
 type probeLocalProxyGroupRuntimeSnapshot struct {
@@ -516,7 +523,7 @@ func preconnectProbeLocalTUNGroupRuntimesFromState(reason string) {
 		logProbeWarnf("probe local proxy group runtime preconnect state load failed: reason=%s err=%v", strings.TrimSpace(reason), err)
 		return
 	}
-	if !state.TUN.Enabled {
+	if !shouldRestoreProbeLocalProxyFromState(state) {
 		return
 	}
 	go preconnectProbeLocalTUNGroupRuntimes(state, reason)
@@ -692,12 +699,11 @@ func (m *probeLocalControlManager) shouldRecoverTUNOnStartup() bool {
 	if err != nil {
 		return false
 	}
-	if !state.TUN.Enabled {
+	if !shouldRestoreProbeLocalProxyFromState(state) {
 		return false
 	}
-	tunStatus := m.tunStatus()
 	proxyStatus := m.proxyStatus()
-	return !(tunStatus.Enabled && proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN))
+	return !(proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN))
 }
 
 func recoverProbeLocalTUNRuntimeOnStartup() error {
@@ -795,12 +801,11 @@ func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
 		logProbeWarnf("probe local tun chain-sync recovery state load failed: %v", err)
 		return
 	}
-	if !state.TUN.Enabled {
+	if !shouldRestoreProbeLocalProxyFromState(state) {
 		return
 	}
-	tunStatus := probeLocalControl.tunStatus()
 	proxyStatus := probeLocalControl.proxyStatus()
-	if tunStatus.Enabled && proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN) {
+	if proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN) {
 		return
 	}
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
@@ -808,9 +813,8 @@ func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
 		startProbeLocalTUNStartupRecoveryLoop()
 		return
 	}
-	tunStatus = probeLocalControl.tunStatus()
 	proxyStatus = probeLocalControl.proxyStatus()
-	if tunStatus.Enabled && proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN) {
+	if proxyStatus.Enabled && strings.EqualFold(strings.TrimSpace(proxyStatus.Mode), probeLocalProxyModeTUN) {
 		logProbeInfof("probe local tun recovered after chain config sync")
 		preconnectProbeLocalTUNGroupRuntimesFromState("chain_config_sync")
 	}
@@ -833,11 +837,11 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		logProbeWarnf("probe local tun startup detect failed: %v", detectErr)
 	}
 	installed := detectedInstalled && detectErr == nil
-	persistedEnabled := state.TUN.Enabled
+	restoreProxy := shouldRestoreProbeLocalProxyFromState(state)
 	now := time.Now().UTC().Format(time.RFC3339)
 	installErrText := ""
 
-	if persistedEnabled && !installed && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
+	if restoreProxy && !installed && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
 		logProbeWarnf("probe local tun startup recovery will run install/check: persisted_installed=%v detected_installed=%v detect_err=%v", state.TUN.Installed, detectedInstalled, detectErr)
 		if _, installErr := m.installTUN(); installErr != nil {
 			installErrText = strings.TrimSpace(installErr.Error())
@@ -874,7 +878,7 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	m.mu.Unlock()
 
 	if installed != state.TUN.Installed {
-		persistProbeLocalTUNStateBestEffort(installed, persistedEnabled)
+		persistProbeLocalTUNStateBestEffort(installed, false)
 	}
 	if !installed {
 		errText := strings.TrimSpace(m.tunStatus().LastError)
@@ -886,9 +890,9 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, err)
 		return err
 	}
-	if !persistedEnabled {
+	if !restoreProxy {
 		if installed {
-			logProbeInfof("probe local tun startup recovered installed state: enabled_restore=false")
+			logProbeInfof("probe local tun startup recovered installed state: proxy_restore=false")
 		}
 		m.setTUNRecoveryStatus("idle", attempt, time.Time{}, "")
 		return nil
@@ -1088,7 +1092,6 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	m.tun.Enabled = true
 	m.tun.LastError = ""
 	m.tun.UpdatedAt = now
 	m.proxy.Enabled = true
@@ -1097,6 +1100,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 	m.proxy.UpdatedAt = now
 
 	stats := probeLocalTUNDataPlaneStatsSnapshot()
+	m.tun.Enabled = stats.Running
 	m.tun.DataPlane = stats.Running
 	m.tun.DataPlaneRX = stats.RXPackets
 	m.tun.DataPlaneBytes = stats.RXBytes
@@ -1106,7 +1110,10 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		logProbeInfof("probe local fallback dns bypass prewarmed: installed=%d", installed)
 	}
 
-	persistProbeLocalTUNStateBestEffort(m.tun.Installed, true)
+	persistProbeLocalTUNStateBestEffort(m.tun.Installed, m.tun.DataPlane)
+	if err := persistProbeLocalProxyPersistentState(true, probeLocalProxyModeTUN); err != nil {
+		logProbeWarnf("probe local proxy persist enabled state failed: %v", err)
+	}
 	reconcileProbeLocalDNSRuntime()
 	startProbeLocalProxyMonitor()
 	return m.tun, m.proxy, nil
@@ -1138,6 +1145,9 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	m.proxy.LastError = ""
 	m.proxy.UpdatedAt = now
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
+	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
+		logProbeWarnf("probe local proxy persist direct state failed: %v", err)
+	}
 	reconcileProbeLocalDNSRuntime()
 	stopProbeLocalProxyMonitor()
 	if errStopDataPlane != nil {
@@ -1197,6 +1207,9 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 		m.tun.LastError = strings.TrimSpace(allErr.Error())
 		m.proxy.LastError = m.tun.LastError
 		persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
+		if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
+			logProbeWarnf("probe local proxy persist reset state failed: %v", err)
+		}
 		reconcileProbeLocalDNSRuntime()
 		stopProbeLocalProxyMonitor()
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
@@ -1204,6 +1217,9 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 	m.tun.LastError = ""
 	m.proxy.LastError = ""
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
+	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
+		logProbeWarnf("probe local proxy persist reset state failed: %v", err)
+	}
 	reconcileProbeLocalDNSRuntime()
 	stopProbeLocalProxyMonitor()
 	return m.tun, nil
@@ -1605,6 +1621,11 @@ func defaultProbeLocalProxyStateFile() probeLocalProxyStateFile {
 			Enabled:   false,
 			UpdatedAt: now,
 		},
+		Proxy: probeLocalProxyPersistentState{
+			Enabled:   false,
+			Mode:      probeLocalProxyModeDirect,
+			UpdatedAt: now,
+		},
 	}
 }
 
@@ -1883,6 +1904,7 @@ func loadProbeLocalProxyStateFile() (probeLocalProxyStateFile, error) {
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = payload.UpdatedAt
 	}
+	normalizeProbeLocalProxyPersistentState(&payload)
 	setProbeLocalProxyViewState(payload)
 	return payload, nil
 }
@@ -1905,6 +1927,7 @@ func persistProbeLocalProxyStateFile(payload probeLocalProxyStateFile) error {
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = now
 	}
+	normalizeProbeLocalProxyPersistentState(&payload)
 	path, err := resolveProbeLocalProxyStatePath()
 	if err != nil {
 		return err
@@ -1916,6 +1939,33 @@ func persistProbeLocalProxyStateFile(payload probeLocalProxyStateFile) error {
 	return nil
 }
 
+func normalizeProbeLocalProxyPersistentState(payload *probeLocalProxyStateFile) {
+	if payload == nil {
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(payload.Proxy.Mode))
+	if mode == "" {
+		if payload.TUN.Enabled {
+			mode = probeLocalProxyModeTUN
+			payload.Proxy.Enabled = true
+		} else {
+			mode = probeLocalProxyModeDirect
+		}
+	}
+	if mode != probeLocalProxyModeTUN {
+		mode = probeLocalProxyModeDirect
+		payload.Proxy.Enabled = false
+	}
+	payload.Proxy.Mode = mode
+	if strings.TrimSpace(payload.Proxy.UpdatedAt) == "" {
+		payload.Proxy.UpdatedAt = payload.UpdatedAt
+	}
+}
+
+func shouldRestoreProbeLocalProxyFromState(state probeLocalProxyStateFile) bool {
+	return state.Proxy.Enabled && strings.EqualFold(strings.TrimSpace(state.Proxy.Mode), probeLocalProxyModeTUN)
+}
+
 func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
@@ -1924,6 +1974,33 @@ func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
 	state.TUN.Installed = installed
 	state.TUN.Enabled = enabled
 	state.TUN.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		return err
+	}
+	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
+	return nil
+}
+
+func persistProbeLocalProxyPersistentState(enabled bool, mode string) error {
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		return err
+	}
+	cleanMode := strings.ToLower(strings.TrimSpace(mode))
+	if cleanMode == "" {
+		if enabled {
+			cleanMode = probeLocalProxyModeTUN
+		} else {
+			cleanMode = probeLocalProxyModeDirect
+		}
+	}
+	if cleanMode != probeLocalProxyModeTUN {
+		cleanMode = probeLocalProxyModeDirect
+		enabled = false
+	}
+	state.Proxy.Enabled = enabled
+	state.Proxy.Mode = cleanMode
+	state.Proxy.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := persistProbeLocalProxyStateFile(state); err != nil {
 		return err
 	}

@@ -318,7 +318,8 @@ func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *te
 		t.Fatalf("persist proxy chain cache failed: %v", err)
 	}
 	state := defaultProbeLocalProxyStateFile()
-	state.TUN.Enabled = true
+	state.Proxy.Enabled = true
+	state.Proxy.Mode = probeLocalProxyModeTUN
 	state.Groups = []probeLocalProxyStateGroupEntry{
 		{Group: "media", Action: "tunnel", SelectedChainID: "chain-preconnect-1", TunnelNodeID: "chain:chain-preconnect-1"},
 		{Group: "fallback", Action: "direct", SelectedChainID: "chain-preconnect-1", TunnelNodeID: "chain:chain-preconnect-1"},
