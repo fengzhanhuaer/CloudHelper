@@ -443,6 +443,42 @@ func TestOpenProbeChainRelayNetConnAutoUsesNegativeCacheAfterHTTP3Failure(t *tes
 	}
 }
 
+func TestOpenProbeChainRelayNetConnAutoFallsBackOnHTTP3ContextCanceled(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenLayer := probeChainRelayOpenLayer
+	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+
+	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		protocol := normalizeProbeChainLinkLayer(layer)
+		if protocol == "http3" {
+			return probeChainRelayProtocolDialResult{
+				Protocol: protocol,
+				Err:      errors.New(`Post "https://69.63.223.88:16030/api/node/chain/relay?chain_id=5": context canceled`),
+				Latency:  6 * time.Second,
+			}
+		}
+		client, server := net.Pipe()
+		t.Cleanup(func() {
+			_ = server.Close()
+		})
+		return probeChainRelayProtocolDialResult{
+			Protocol: protocol,
+			Conn:     client,
+			Latency:  2 * time.Millisecond,
+		}
+	}
+
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	if err != nil {
+		t.Fatalf("expected http2 fallback after http3 context canceled, got err=%v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected fallback connection")
+	}
+	_ = conn.Close()
+}
+
 func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()

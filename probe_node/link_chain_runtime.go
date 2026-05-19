@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -2557,6 +2558,7 @@ func isProbeChainRelayProtocolSwitchableError(err error) bool {
 		return false
 	}
 	return strings.Contains(text, "timeout") ||
+		strings.Contains(text, "context canceled") ||
 		strings.Contains(text, "deadline") ||
 		strings.Contains(text, "connection refused") ||
 		strings.Contains(text, "connection reset") ||
@@ -2976,13 +2978,20 @@ func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, rela
 	if openTimeout <= 0 {
 		openTimeout = probeChainPortForwardDialTimeout + probeChainPortForwardResponseReadDeadline
 	}
-	openTimer := time.AfterFunc(openTimeout, cancel)
+	var openTimedOut atomic.Bool
+	openTimer := time.AfterFunc(openTimeout, func() {
+		openTimedOut.Store(true)
+		cancel()
+	})
 	response, err := client.Do(request)
 	if err != nil {
 		openTimer.Stop()
 		cancel()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
+		if openTimedOut.Load() {
+			return nil, fmt.Errorf("probe relay open timeout: relay=%s:%d", relayDialHost, relayPort)
+		}
 		return nil, wrapProbeChainRelayDialError(layer, relayDialHost, relayPort, err)
 	}
 	if !openTimer.Stop() {

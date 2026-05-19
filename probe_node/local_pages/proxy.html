@@ -124,6 +124,7 @@
         <a href="/local/panel">首页</a>
         <a href="/local/proxy" class="active">代理状态</a>
         <a href="/local/dns">DNS 状态</a>
+        <a href="/local/monitor">状态监视</a>
         <a href="/local/logs">运行日志</a>
         <a href="/local/system">系统设置</a>
       </div>
@@ -159,6 +160,7 @@
     let proxyChainItemsCache = [];
     let proxyStatusCache = { enabled: false, mode: '' };
     let proxyStatusPollingTimer = null;
+    let proxyRuntimeRefreshInFlight = false;
     const PROXY_STATUS_POLL_INTERVAL_MS = 60000;
 
     function setMessage(text, type) {
@@ -537,6 +539,30 @@
       applyProxySelectionData(groupsData, null, stateData);
     }
 
+    async function triggerProxyRuntimeRefresh(options = {}) {
+      if (proxyRuntimeRefreshInFlight) {
+        return;
+      }
+      proxyRuntimeRefreshInFlight = true;
+      try {
+        const data = await requestJSON('/local/api/proxy/status/refresh', { method: 'POST', body: '{}' }, 5000);
+        if (!options.silent) {
+          const refresh = data && data.refresh ? data.refresh : {};
+          setMessage(refresh.already_running ? '代理状态刷新已在后台运行，先展示缓存数据' : '代理状态刷新已提交，先展示缓存数据', 'success');
+        }
+        setTimeout(() => {
+          loadProxySelections().catch(() => {
+          });
+        }, 1200);
+      } catch (err) {
+        if (!options.silent) {
+          setMessage('提交代理状态刷新失败：' + err.message, 'error');
+        }
+      } finally {
+        proxyRuntimeRefreshInFlight = false;
+      }
+    }
+
     function resolveGlobalToggleEnableSelection() {
       const preferred = proxyStateGroupsCache.find((entry) => {
         return normalizeAction(entry && entry.action) === 'tunnel'
@@ -578,22 +604,25 @@
       setMessage('');
       const ok = await ensureSession();
       if (!ok) return;
-      await loadProxyStatus();
+      await Promise.all([
+        loadProxyStatus(),
+        loadProxySelections(),
+      ]);
       if (isProxyGloballyEnabled()) {
-        await requestJSON('/local/api/proxy/status/refresh', { method: 'POST', body: '{}' });
+        triggerProxyRuntimeRefresh({ silent: true });
       }
-      await loadProxySelections();
     }
 
     document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {
-      setMessage('按组刷新代理状态与延迟...');
+      setMessage('正在提交后台刷新，页面先展示已有状态...');
       try {
-        await requestJSON('/local/api/proxy/status/refresh', { method: 'POST', body: '{}' });
-        await loadProxyStatus();
-        await loadProxySelections();
-        setMessage('代理状态与组延迟已刷新', 'success');
+        await Promise.all([
+          loadProxyStatus(),
+          loadProxySelections(),
+        ]);
+        triggerProxyRuntimeRefresh({ silent: false });
       } catch (err) {
-        setMessage('刷新代理状态失败：' + err.message, 'error');
+        setMessage('读取代理状态失败：' + err.message, 'error');
       }
     });
 

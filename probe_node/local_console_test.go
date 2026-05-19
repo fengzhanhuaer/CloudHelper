@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -2476,9 +2477,9 @@ func TestProbeLocalProxyStatusRefreshUpdatesGroupLatencySnapshots(t *testing.T) 
 		t.Fatalf("ensure defaults failed: %v", err)
 	}
 
-	latencyCalls := 0
+	var latencyCalls atomic.Int64
 	probeLocalResolveGroupRuntimeLatency = func(rt *probeLocalTUNGroupRuntime) (string, *int64, string, string) {
-		latencyCalls++
+		latencyCalls.Add(1)
 		value := int64(523)
 		return "connected", &value, "2026-05-15T02:55:58Z", ""
 	}
@@ -2497,16 +2498,24 @@ func TestProbeLocalProxyStatusRefreshUpdatesGroupLatencySnapshots(t *testing.T) 
 	if _, exists := entry["selected_chain_latency_ms"]; exists {
 		t.Fatalf("latency should not exist before manual refresh: %v", entry)
 	}
-	if latencyCalls != 0 {
-		t.Fatalf("latencyCalls before refresh=%d, want 0", latencyCalls)
+	if got := latencyCalls.Load(); got != 0 {
+		t.Fatalf("latencyCalls before refresh=%d, want 0", got)
 	}
 
 	refreshResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/status/refresh", map[string]any{}, sessionCookie)
 	if refreshResp.Code != http.StatusOK {
 		t.Fatalf("status refresh status=%d body=%s", refreshResp.Code, refreshResp.Body.String())
 	}
-	if latencyCalls != 1 {
-		t.Fatalf("latencyCalls after refresh=%d, want 1", latencyCalls)
+	refreshPayload := decodeProbeLocalJSON(t, refreshResp)
+	if refreshPayload["async"] != true {
+		t.Fatalf("expected async status refresh response, got %v", refreshPayload)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for latencyCalls.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := latencyCalls.Load(); got != 1 {
+		t.Fatalf("latencyCalls after refresh=%d, want 1", got)
 	}
 
 	stateResp = doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/state", nil, sessionCookie)

@@ -247,6 +247,14 @@ var (
 	probeLocalLookupIPv4ForBypass         = lookupProbeLocalIPv4ForBypass
 )
 
+var probeLocalProxyStatusRefreshState = struct {
+	mu             sync.Mutex
+	running        bool
+	lastStartedAt  string
+	lastFinishedAt string
+	lastError      string
+}{}
+
 func newProbeLocalControlManager() *probeLocalControlManager {
 	now := time.Now().UTC().Format(time.RFC3339)
 	return &probeLocalControlManager{
@@ -3411,6 +3419,47 @@ func refreshProbeLocalProxyGroupRuntimeSnapshotsForState(state probeLocalProxySt
 	return snapshots
 }
 
+func startProbeLocalProxyStatusRefreshAsync(state probeLocalProxyStateFile) map[string]any {
+	probeLocalProxyStatusRefreshState.mu.Lock()
+	if probeLocalProxyStatusRefreshState.running {
+		payload := probeLocalProxyStatusRefreshStatePayloadLocked(false, true)
+		probeLocalProxyStatusRefreshState.mu.Unlock()
+		return payload
+	}
+	probeLocalProxyStatusRefreshState.running = true
+	probeLocalProxyStatusRefreshState.lastStartedAt = time.Now().UTC().Format(time.RFC3339)
+	probeLocalProxyStatusRefreshState.lastError = ""
+	payload := probeLocalProxyStatusRefreshStatePayloadLocked(true, false)
+	probeLocalProxyStatusRefreshState.mu.Unlock()
+
+	go func(snapshotState probeLocalProxyStateFile) {
+		errText := ""
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				errText = fmt.Sprintf("panic: %v", recovered)
+			}
+			probeLocalProxyStatusRefreshState.mu.Lock()
+			probeLocalProxyStatusRefreshState.running = false
+			probeLocalProxyStatusRefreshState.lastFinishedAt = time.Now().UTC().Format(time.RFC3339)
+			probeLocalProxyStatusRefreshState.lastError = strings.TrimSpace(errText)
+			probeLocalProxyStatusRefreshState.mu.Unlock()
+		}()
+		refreshProbeLocalProxyGroupRuntimeSnapshotsForState(snapshotState)
+	}(cloneProbeLocalProxyStateFile(state))
+	return payload
+}
+
+func probeLocalProxyStatusRefreshStatePayloadLocked(accepted bool, alreadyRunning bool) map[string]any {
+	return map[string]any{
+		"accepted":         accepted,
+		"already_running":  alreadyRunning,
+		"running":          probeLocalProxyStatusRefreshState.running,
+		"last_started_at":  strings.TrimSpace(probeLocalProxyStatusRefreshState.lastStartedAt),
+		"last_finished_at": strings.TrimSpace(probeLocalProxyStatusRefreshState.lastFinishedAt),
+		"last_error":       strings.TrimSpace(probeLocalProxyStatusRefreshState.lastError),
+	}
+}
+
 func probeLocalProxyStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3464,14 +3513,16 @@ func probeLocalProxyStatusRefreshHandler(w http.ResponseWriter, r *http.Request)
 
 	status := probeLocalControl.proxyStatus()
 	state := currentProbeLocalProxyViewState()
-	refreshProbeLocalProxyGroupRuntimeSnapshotsForState(state)
+	refreshState := startProbeLocalProxyStatusRefreshAsync(state)
 
 	payload := map[string]any{
 		"ok":         true,
+		"async":      true,
 		"enabled":    status.Enabled,
 		"mode":       status.Mode,
 		"last_error": status.LastError,
 		"updated_at": status.UpdatedAt,
+		"refresh":    refreshState,
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -3967,6 +4018,12 @@ func resetProbeLocalControlStateForTest() {
 	clearProbeLocalTUNInstallObservation()
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
 	resetProbeLocalProxyViewGroupRuntimeSnapshots()
+	probeLocalProxyStatusRefreshState.mu.Lock()
+	probeLocalProxyStatusRefreshState.running = false
+	probeLocalProxyStatusRefreshState.lastStartedAt = ""
+	probeLocalProxyStatusRefreshState.lastFinishedAt = ""
+	probeLocalProxyStatusRefreshState.lastError = ""
+	probeLocalProxyStatusRefreshState.mu.Unlock()
 	probeLocalControl = newProbeLocalControlManager()
 }
 
