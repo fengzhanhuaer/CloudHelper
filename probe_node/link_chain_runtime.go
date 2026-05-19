@@ -110,6 +110,54 @@ var (
 	}{items: make(map[string]probeChainRelayResolveCacheEntry)}
 )
 
+type probeChainRelayProtocolQuality struct {
+	Protocol      string    `json:"protocol"`
+	Available     bool      `json:"available"`
+	LatencyMS     int64     `json:"latency_ms,omitempty"`
+	LossPermille  int       `json:"loss_permille,omitempty"`
+	RateBPS       int64     `json:"rate_bps,omitempty"`
+	Score         int64     `json:"score,omitempty"`
+	FailureCount  int       `json:"failure_count,omitempty"`
+	LastError     string    `json:"last_error,omitempty"`
+	LastTestedAt  time.Time `json:"last_tested_at,omitempty"`
+	NegativeUntil time.Time `json:"negative_until,omitempty"`
+}
+
+type probeChainRelayProtocolStateSnapshot struct {
+	Endpoint          string                           `json:"endpoint"`
+	SelectedProtocol  string                           `json:"selected_protocol,omitempty"`
+	SelectionReason   string                           `json:"selection_reason,omitempty"`
+	UpdatedAt         string                           `json:"updated_at,omitempty"`
+	NextProbeAt       string                           `json:"next_probe_at,omitempty"`
+	ProtocolQualities []probeChainRelayProtocolQuality `json:"protocol_qualities,omitempty"`
+}
+
+type probeChainRelayProtocolState struct {
+	SelectedProtocol string
+	SelectionReason  string
+	SelectedAt       time.Time
+	UpdatedAt        time.Time
+	Qualities        map[string]probeChainRelayProtocolQuality
+}
+
+type probeChainRelayProtocolDialResult struct {
+	Protocol  string
+	Conn      net.Conn
+	Latency   time.Duration
+	Err       error
+	StartedAt time.Time
+	EndedAt   time.Time
+}
+
+var probeChainRelayProtocolStateStore = struct {
+	mu    sync.Mutex
+	items map[string]*probeChainRelayProtocolState
+}{
+	items: make(map[string]*probeChainRelayProtocolState),
+}
+
+var probeChainRelayOpenLayer = openProbeChainRelayNetConnWithLayer
+
 func defaultProbeChainRelayLookupIP(_ context.Context, _ string, host string) ([]net.IP, error) {
 	ips, err := resolveProbeLocalDNSIPv4s(host)
 	if err != nil {
@@ -227,10 +275,17 @@ type probeChainNextHop struct {
 }
 
 type probeChainRelayNetConn struct {
-	reader    io.ReadCloser
-	writer    io.WriteCloser
-	closeFn   func() error
-	closeOnce sync.Once
+	reader       io.ReadCloser
+	writer       io.WriteCloser
+	closeFn      func() error
+	closeOnce    sync.Once
+	metricsMu    sync.Mutex
+	endpointKey  string
+	protocol     string
+	openedAt     time.Time
+	bytesRead    int64
+	bytesWritten int64
+	ioErrors     int
 }
 
 type probeChainRelayNetAddr struct {
@@ -283,6 +338,10 @@ const (
 	probeChainPortForwardListenRetryTimeout    = 5 * time.Second
 	probeChainPortForwardListenRetryInterval   = 100 * time.Millisecond
 	probeChainPortForwardListenRetryMaxBackoff = 800 * time.Millisecond
+	probeChainRelayProtocolQualityTTL          = 10 * time.Minute
+	probeChainRelayProtocolNegativeTTL         = 60 * time.Second
+	probeChainRelayProtocolProbeTimeout        = 6 * time.Second
+	probeChainRelayProtocolSwitchMinHold       = 30 * time.Second
 
 	probeChainAuthPacketType        = "github_copilot_auth_request"
 	probeChainAuthPacketVersion     = "2025-03-22"
@@ -1465,49 +1524,43 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		return fmt.Errorf("prepare chain relay certificate failed: %w", err)
 	}
 
-	switch layer {
-	case "http3":
-		h3Server := &http3.Server{
-			Addr:    listenAddr,
-			Handler: handler,
-			TLSConfig: &tls.Config{
-				MinVersion: tls.VersionTLS13,
-				NextProtos: []string{"h3"},
-			},
-		}
-		runtime.http3Server = h3Server
-		go func(rt *probeChainRuntime, srv *http3.Server, certFile string, keyFile string) {
-			if serveErr := srv.ListenAndServeTLS(certFile, keyFile); serveErr != nil {
-				select {
-				case <-rt.stopCh:
-					return
-				default:
-				}
-				log.Printf("probe chain runtime public relay exited: chain=%s layer=http3 listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
-			}
-		}(runtime, h3Server, cert.CertPath, cert.KeyPath)
-	default:
-		httpsServer := &http.Server{
-			Addr:              listenAddr,
-			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,
-		}
-		if layer == "http" {
-			httpsServer.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
-		}
-		runtime.httpsServer = httpsServer
-		go func(rt *probeChainRuntime, srv *http.Server, certFile string, keyFile string, protocol string) {
-			serveErr := srv.ListenAndServeTLS(certFile, keyFile)
-			if serveErr != nil && serveErr != http.ErrServerClosed {
-				select {
-				case <-rt.stopCh:
-					return
-				default:
-				}
-				log.Printf("probe chain runtime public relay exited: chain=%s layer=%s listen=%s err=%v", rt.cfg.chainID, protocol, listenAddr, serveErr)
-			}
-		}(runtime, httpsServer, cert.CertPath, cert.KeyPath, layer)
+	httpsServer := &http.Server{
+		Addr:              listenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
+	runtime.httpsServer = httpsServer
+	go func(rt *probeChainRuntime, srv *http.Server, certFile string, keyFile string, protocol string) {
+		serveErr := srv.ListenAndServeTLS(certFile, keyFile)
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			select {
+			case <-rt.stopCh:
+				return
+			default:
+			}
+			log.Printf("probe chain runtime public relay exited: chain=%s layer=%s listen=%s err=%v", rt.cfg.chainID, protocol, listenAddr, serveErr)
+		}
+	}(runtime, httpsServer, cert.CertPath, cert.KeyPath, firstNonEmpty(layer, "http2"))
+
+	h3Server := &http3.Server{
+		Addr:    listenAddr,
+		Handler: handler,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13,
+			NextProtos: []string{"h3"},
+		},
+	}
+	runtime.http3Server = h3Server
+	go func(rt *probeChainRuntime, srv *http3.Server, certFile string, keyFile string) {
+		if serveErr := srv.ListenAndServeTLS(certFile, keyFile); serveErr != nil {
+			select {
+			case <-rt.stopCh:
+				return
+			default:
+			}
+			log.Printf("probe chain runtime public relay exited: chain=%s layer=http3 listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
+		}
+	}(runtime, h3Server, cert.CertPath, cert.KeyPath)
 
 	return nil
 }
@@ -2244,6 +2297,391 @@ func openProbeChainBridgeRelayNetConn(cfg probeChainRuntimeConfig, target probeC
 }
 
 func openProbeChainRelayNetConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+	return openProbeChainRelayNetConnAuto(chainID, secret, relayHost, relayPort, layer, bridgeRole)
+}
+
+func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
+	if endpointKey == "" {
+		return nil, errors.New("relay endpoint is required")
+	}
+	candidates := probeChainRelayProtocolCandidates(layer)
+	if len(candidates) == 1 && candidates[0] == "http" {
+		result := probeChainRelayOpenLayer(chainID, secret, relayHost, relayPort, "http", bridgeRole, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		return result.Conn, nil
+	}
+
+	now := time.Now()
+	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, now); preferred != "" {
+		result := probeChainRelayOpenLayer(chainID, secret, relayHost, relayPort, preferred, bridgeRole, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
+		if result.Err == nil {
+			recordProbeChainRelayProtocolSuccess(endpointKey, result, "cached_preferred")
+			return result.Conn, nil
+		}
+		if !isProbeChainRelayProtocolSwitchableError(result.Err) {
+			return nil, result.Err
+		}
+		recordProbeChainRelayProtocolFailure(endpointKey, result, result.Err)
+	}
+
+	result, err := probeChainRelayProtocolProbeAndChoose(chainID, secret, relayHost, relayPort, bridgeRole, endpointKey, candidates)
+	if err != nil {
+		return nil, err
+	}
+	return result.Conn, nil
+}
+
+func probeChainRelayProtocolCandidates(layer string) []string {
+	switch normalizeProbeChainLinkLayer(layer) {
+	case "http":
+		return []string{"http3", "http2"}
+	case "http2", "http3":
+		return []string{"http3", "http2"}
+	default:
+		return []string{"http3", "http2"}
+	}
+}
+
+func probeChainRelayProtocolEndpointKey(relayHost string, relayPort int) string {
+	host := strings.ToLower(strings.TrimSpace(relayHost))
+	if host == "" || relayPort <= 0 {
+		return ""
+	}
+	return net.JoinHostPort(host, strconv.Itoa(relayPort))
+}
+
+func getProbeChainRelayProtocolPreferred(endpointKey string, candidates []string, now time.Time) string {
+	probeChainRelayProtocolStateStore.mu.Lock()
+	defer probeChainRelayProtocolStateStore.mu.Unlock()
+	state := probeChainRelayProtocolStateStore.items[endpointKey]
+	if state == nil {
+		return ""
+	}
+	if state.SelectedProtocol != "" && now.Sub(state.SelectedAt) <= probeChainRelayProtocolQualityTTL {
+		if probeChainRelayProtocolCandidateAllowedLocked(state, state.SelectedProtocol, candidates, now) {
+			return state.SelectedProtocol
+		}
+	}
+	best := ""
+	var bestScore int64
+	for _, candidate := range candidates {
+		if !probeChainRelayProtocolCandidateAllowedLocked(state, candidate, candidates, now) {
+			continue
+		}
+		quality := state.Qualities[candidate]
+		if !quality.Available || quality.LastTestedAt.IsZero() || now.Sub(quality.LastTestedAt) > probeChainRelayProtocolQualityTTL {
+			continue
+		}
+		if best == "" || quality.Score < bestScore {
+			best = candidate
+			bestScore = quality.Score
+		}
+	}
+	return best
+}
+
+func probeChainRelayProtocolCandidateAllowedLocked(state *probeChainRelayProtocolState, candidate string, candidates []string, now time.Time) bool {
+	if !probeChainRelayProtocolInCandidates(candidate, candidates) {
+		return false
+	}
+	if state == nil || state.Qualities == nil {
+		return true
+	}
+	quality := state.Qualities[candidate]
+	return quality.NegativeUntil.IsZero() || !now.Before(quality.NegativeUntil)
+}
+
+func probeChainRelayProtocolInCandidates(protocol string, candidates []string) bool {
+	clean := normalizeProbeChainLinkLayer(protocol)
+	for _, candidate := range candidates {
+		if normalizeProbeChainLinkLayer(candidate) == clean {
+			return true
+		}
+	}
+	return false
+}
+
+func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayHost string, relayPort int, bridgeRole string, endpointKey string, candidates []string) (probeChainRelayProtocolDialResult, error) {
+	now := time.Now()
+	active := make([]string, 0, len(candidates))
+	probeChainRelayProtocolStateStore.mu.Lock()
+	state := probeChainRelayProtocolStateStore.items[endpointKey]
+	for _, candidate := range candidates {
+		if probeChainRelayProtocolCandidateAllowedLocked(state, candidate, candidates, now) {
+			active = append(active, candidate)
+		}
+	}
+	probeChainRelayProtocolStateStore.mu.Unlock()
+	if len(active) == 0 {
+		active = append(active, candidates...)
+	}
+
+	resultCh := make(chan probeChainRelayProtocolDialResult, len(active))
+	for _, protocol := range active {
+		candidate := protocol
+		go func() {
+			resultCh <- probeChainRelayOpenLayer(chainID, secret, relayHost, relayPort, candidate, bridgeRole, probeChainRelayProtocolProbeTimeout)
+		}()
+	}
+
+	results := make([]probeChainRelayProtocolDialResult, 0, len(active))
+	var nonSwitchableErr error
+	for len(results) < len(active) {
+		result := <-resultCh
+		results = append(results, result)
+		if result.Err != nil {
+			if !isProbeChainRelayProtocolSwitchableError(result.Err) {
+				nonSwitchableErr = result.Err
+				continue
+			}
+			recordProbeChainRelayProtocolFailure(endpointKey, result, result.Err)
+			continue
+		}
+		recordProbeChainRelayProtocolSuccess(endpointKey, result, "auto_quality")
+	}
+	if nonSwitchableErr != nil {
+		for _, result := range results {
+			if result.Err == nil && result.Conn != nil {
+				_ = result.Conn.Close()
+			}
+		}
+		return probeChainRelayProtocolDialResult{}, nonSwitchableErr
+	}
+
+	bestIndex := -1
+	var bestScore int64
+	for i, result := range results {
+		if result.Err != nil || result.Conn == nil {
+			continue
+		}
+		score := probeChainRelayProtocolScore(result.Latency, 0, 0, 0)
+		if bestIndex < 0 || score < bestScore {
+			bestIndex = i
+			bestScore = score
+		}
+	}
+	if bestIndex >= 0 {
+		for i, result := range results {
+			if i != bestIndex && result.Conn != nil {
+				_ = result.Conn.Close()
+			}
+		}
+		best := results[bestIndex]
+		recordProbeChainRelayProtocolSelected(endpointKey, best.Protocol, "auto_quality")
+		return best, nil
+	}
+
+	errs := make([]string, 0, len(results))
+	for _, result := range results {
+		if result.Err != nil {
+			errs = append(errs, fmt.Sprintf("%s=%v", strings.TrimSpace(result.Protocol), result.Err))
+		}
+	}
+	if len(errs) == 0 {
+		errs = append(errs, "no protocol result")
+	}
+	return probeChainRelayProtocolDialResult{}, fmt.Errorf("probe relay protocol auto failed: relay=%s %s", endpointKey, strings.Join(errs, "; "))
+}
+
+func isProbeChainRelayProtocolSwitchableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "probe relay failed: status=") ||
+		strings.Contains(text, "unauthorized") ||
+		strings.Contains(text, "authentication failed") ||
+		strings.Contains(text, "chain runtime not found") ||
+		strings.Contains(text, "method not allowed") ||
+		strings.Contains(text, "chain_id is required") {
+		return false
+	}
+	return strings.Contains(text, "timeout") ||
+		strings.Contains(text, "deadline") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "connection aborted") ||
+		strings.Contains(text, "no route to host") ||
+		strings.Contains(text, "network is unreachable") ||
+		strings.Contains(text, "tls") ||
+		strings.Contains(text, "handshake") ||
+		strings.Contains(text, "quic") ||
+		strings.Contains(text, "http3 udp socket unavailable") ||
+		strings.Contains(text, "eof")
+}
+
+func recordProbeChainRelayProtocolSuccess(endpointKey string, result probeChainRelayProtocolDialResult, reason string) {
+	if endpointKey == "" || result.Protocol == "" {
+		return
+	}
+	now := time.Now()
+	latencyMS := int64(result.Latency / time.Millisecond)
+	if latencyMS <= 0 {
+		latencyMS = 1
+	}
+	score := probeChainRelayProtocolScore(result.Latency, 0, 0, 0)
+	probeChainRelayProtocolStateStore.mu.Lock()
+	defer probeChainRelayProtocolStateStore.mu.Unlock()
+	state := ensureProbeChainRelayProtocolStateLocked(endpointKey)
+	state.Qualities[result.Protocol] = probeChainRelayProtocolQuality{
+		Protocol:     result.Protocol,
+		Available:    true,
+		LatencyMS:    latencyMS,
+		LossPermille: 0,
+		RateBPS:      0,
+		Score:        score,
+		LastTestedAt: now,
+	}
+	state.SelectedProtocol = result.Protocol
+	state.SelectionReason = firstNonEmpty(strings.TrimSpace(reason), "success")
+	state.SelectedAt = now
+	state.UpdatedAt = now
+}
+
+func recordProbeChainRelayProtocolFailure(endpointKey string, result probeChainRelayProtocolDialResult, err error) {
+	if endpointKey == "" || result.Protocol == "" {
+		return
+	}
+	now := time.Now()
+	probeChainRelayProtocolStateStore.mu.Lock()
+	defer probeChainRelayProtocolStateStore.mu.Unlock()
+	state := ensureProbeChainRelayProtocolStateLocked(endpointKey)
+	quality := state.Qualities[result.Protocol]
+	quality.Protocol = result.Protocol
+	quality.Available = false
+	quality.FailureCount++
+	quality.LastError = strings.TrimSpace(err.Error())
+	quality.LastTestedAt = now
+	quality.NegativeUntil = now.Add(probeChainRelayProtocolNegativeTTL)
+	quality.Score = probeChainRelayProtocolScore(0, 1000, 0, quality.FailureCount)
+	state.Qualities[result.Protocol] = quality
+	state.UpdatedAt = now
+}
+
+func recordProbeChainRelayProtocolObservedTraffic(endpointKey string, protocol string, rateBPS int64, lossPermille int) {
+	if endpointKey == "" || protocol == "" {
+		return
+	}
+	now := time.Now()
+	probeChainRelayProtocolStateStore.mu.Lock()
+	defer probeChainRelayProtocolStateStore.mu.Unlock()
+	state := ensureProbeChainRelayProtocolStateLocked(endpointKey)
+	quality := state.Qualities[protocol]
+	quality.Protocol = protocol
+	if rateBPS > 0 {
+		quality.RateBPS = rateBPS
+	}
+	if lossPermille > 0 {
+		quality.LossPermille = lossPermille
+	}
+	if quality.LatencyMS > 0 {
+		quality.Score = probeChainRelayProtocolScore(time.Duration(quality.LatencyMS)*time.Millisecond, quality.LossPermille, quality.RateBPS, quality.FailureCount)
+	}
+	quality.LastTestedAt = now
+	state.Qualities[protocol] = quality
+	state.UpdatedAt = now
+}
+
+func recordProbeChainRelayProtocolSelected(endpointKey string, protocol string, reason string) {
+	if endpointKey == "" || protocol == "" {
+		return
+	}
+	now := time.Now()
+	probeChainRelayProtocolStateStore.mu.Lock()
+	defer probeChainRelayProtocolStateStore.mu.Unlock()
+	state := ensureProbeChainRelayProtocolStateLocked(endpointKey)
+	if state.SelectedProtocol != "" && state.SelectedProtocol != protocol && now.Sub(state.SelectedAt) < probeChainRelayProtocolSwitchMinHold {
+		old := state.Qualities[state.SelectedProtocol]
+		next := state.Qualities[protocol]
+		if old.Available && old.Score > 0 && next.Score > 0 && next.Score > old.Score/2 {
+			return
+		}
+	}
+	state.SelectedProtocol = protocol
+	state.SelectionReason = firstNonEmpty(strings.TrimSpace(reason), "auto_quality")
+	state.SelectedAt = now
+	state.UpdatedAt = now
+}
+
+func ensureProbeChainRelayProtocolStateLocked(endpointKey string) *probeChainRelayProtocolState {
+	state := probeChainRelayProtocolStateStore.items[endpointKey]
+	if state == nil {
+		state = &probeChainRelayProtocolState{Qualities: make(map[string]probeChainRelayProtocolQuality)}
+		probeChainRelayProtocolStateStore.items[endpointKey] = state
+	}
+	if state.Qualities == nil {
+		state.Qualities = make(map[string]probeChainRelayProtocolQuality)
+	}
+	return state
+}
+
+func probeChainRelayProtocolScore(latency time.Duration, lossPermille int, rateBPS int64, failures int) int64 {
+	score := int64(latency / time.Millisecond)
+	if score <= 0 {
+		score = 1
+	}
+	score += int64(lossPermille) * 10
+	if rateBPS > 0 {
+		score -= rateBPS / 1024 / 1024
+	}
+	score += int64(failures) * 10000
+	if score <= 0 {
+		return 1
+	}
+	return score
+}
+
+func snapshotProbeChainProtocolState(relayHost string, relayPort int) probeChainRelayProtocolStateSnapshot {
+	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
+	if endpointKey == "" {
+		return probeChainRelayProtocolStateSnapshot{}
+	}
+	probeChainRelayProtocolStateStore.mu.Lock()
+	defer probeChainRelayProtocolStateStore.mu.Unlock()
+	state := probeChainRelayProtocolStateStore.items[endpointKey]
+	snapshot := probeChainRelayProtocolStateSnapshot{Endpoint: endpointKey}
+	if state == nil {
+		return snapshot
+	}
+	snapshot.SelectedProtocol = strings.TrimSpace(state.SelectedProtocol)
+	snapshot.SelectionReason = strings.TrimSpace(state.SelectionReason)
+	if !state.UpdatedAt.IsZero() {
+		snapshot.UpdatedAt = state.UpdatedAt.UTC().Format(time.RFC3339)
+	}
+	nextProbeAt := time.Time{}
+	for _, quality := range state.Qualities {
+		snapshot.ProtocolQualities = append(snapshot.ProtocolQualities, quality)
+		if !quality.NegativeUntil.IsZero() && (nextProbeAt.IsZero() || quality.NegativeUntil.Before(nextProbeAt)) {
+			nextProbeAt = quality.NegativeUntil
+		}
+	}
+	if !nextProbeAt.IsZero() {
+		snapshot.NextProbeAt = nextProbeAt.UTC().Format(time.RFC3339)
+	}
+	return snapshot
+}
+
+func openProbeChainRelayNetConnWithLayer(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+	startedAt := time.Now()
+	conn, err := openProbeChainRelayNetConnWithLayerConn(chainID, secret, relayHost, relayPort, layer, bridgeRole, openTimeout)
+	endedAt := time.Now()
+	return probeChainRelayProtocolDialResult{
+		Protocol:  normalizeProbeChainLinkLayer(layer),
+		Conn:      conn,
+		Latency:   endedAt.Sub(startedAt),
+		Err:       err,
+		StartedAt: startedAt,
+		EndedAt:   endedAt,
+	}
+}
+
+func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) (net.Conn, error) {
 	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(relayHost)
 	if err != nil {
 		return nil, err
@@ -2333,7 +2771,10 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 		}
 	}
 
-	openTimer := time.AfterFunc(probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline, cancel)
+	if openTimeout <= 0 {
+		openTimeout = probeChainPortForwardDialTimeout + probeChainPortForwardResponseReadDeadline
+	}
+	openTimer := time.AfterFunc(openTimeout, cancel)
 	response, err := client.Do(request)
 	if err != nil {
 		openTimer.Stop()
@@ -2360,8 +2801,11 @@ func openProbeChainRelayNetConn(chainID string, secret string, relayHost string,
 	refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 
 	return &probeChainRelayNetConn{
-		reader: response.Body,
-		writer: bodyWriter,
+		reader:      response.Body,
+		writer:      bodyWriter,
+		endpointKey: probeChainRelayProtocolEndpointKey(relayHost, relayPort),
+		protocol:    normalizeProbeChainLinkLayer(layer),
+		openedAt:    time.Now(),
 		closeFn: func() error {
 			cancel()
 			_ = bodyWriter.Close()
@@ -2412,14 +2856,18 @@ func (c *probeChainRelayNetConn) Read(payload []byte) (int, error) {
 	if c == nil || c.reader == nil {
 		return 0, io.EOF
 	}
-	return c.reader.Read(payload)
+	n, err := c.reader.Read(payload)
+	c.recordIO(n, err)
+	return n, err
 }
 
 func (c *probeChainRelayNetConn) Write(payload []byte) (int, error) {
 	if c == nil || c.writer == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return c.writer.Write(payload)
+	n, err := c.writer.Write(payload)
+	c.recordWrite(n, err)
+	return n, err
 }
 
 func (c *probeChainRelayNetConn) Close() error {
@@ -2428,6 +2876,7 @@ func (c *probeChainRelayNetConn) Close() error {
 	}
 	var closeErr error
 	c.closeOnce.Do(func() {
+		c.flushMetrics()
 		if c.closeFn != nil {
 			closeErr = c.closeFn()
 			return
@@ -2440,6 +2889,61 @@ func (c *probeChainRelayNetConn) Close() error {
 		}
 	})
 	return closeErr
+}
+
+func (c *probeChainRelayNetConn) recordIO(n int, err error) {
+	if c == nil {
+		return
+	}
+	c.metricsMu.Lock()
+	if n > 0 {
+		c.bytesRead += int64(n)
+	}
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		c.ioErrors++
+	}
+	c.metricsMu.Unlock()
+}
+
+func (c *probeChainRelayNetConn) recordWrite(n int, err error) {
+	if c == nil {
+		return
+	}
+	c.metricsMu.Lock()
+	if n > 0 {
+		c.bytesWritten += int64(n)
+	}
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		c.ioErrors++
+	}
+	c.metricsMu.Unlock()
+}
+
+func (c *probeChainRelayNetConn) flushMetrics() {
+	if c == nil || strings.TrimSpace(c.endpointKey) == "" || strings.TrimSpace(c.protocol) == "" {
+		return
+	}
+	c.metricsMu.Lock()
+	bytesTotal := c.bytesRead + c.bytesWritten
+	ioErrors := c.ioErrors
+	openedAt := c.openedAt
+	c.metricsMu.Unlock()
+	if openedAt.IsZero() {
+		return
+	}
+	elapsed := time.Since(openedAt)
+	if elapsed <= 0 {
+		elapsed = time.Second
+	}
+	rateBPS := int64(0)
+	if bytesTotal > 0 {
+		rateBPS = int64(float64(bytesTotal) / elapsed.Seconds())
+	}
+	lossPermille := 0
+	if ioErrors > 0 {
+		lossPermille = 1000
+	}
+	recordProbeChainRelayProtocolObservedTraffic(c.endpointKey, c.protocol, rateBPS, lossPermille)
 }
 
 func (c *probeChainRelayNetConn) LocalAddr() net.Addr {

@@ -343,7 +343,8 @@
         const runtimeTunnelLabel = runtimeAction === 'tunnel'
           ? resolveChainLabel(stateEntry && stateEntry.selected_chain_id)
           : '-';
-        runtimeEl.textContent = `运行：${runtimeAction || '-'}${runtimeAction === 'tunnel' ? ` (${runtimeTunnelLabel})` : ''}${runtimeStatusText ? ` ｜ 状态：${runtimeStatusText}` : ''}`;
+        const protocolStatusText = formatProtocolStatusText(stateEntry && stateEntry.protocol_state);
+        runtimeEl.textContent = `运行：${runtimeAction || '-'}${runtimeAction === 'tunnel' ? ` (${runtimeTunnelLabel})` : ''}${runtimeStatusText ? ` ｜ 状态：${runtimeStatusText}` : ''}${protocolStatusText ? ` ｜ 协议：${protocolStatusText}` : ''}`;
         rowEl.appendChild(runtimeEl);
 
         proxyRuleGroupsEl.appendChild(rowEl);
@@ -440,6 +441,45 @@
       }
       if (!status) return '';
       return status;
+    }
+
+    function formatProtocolStatusText(protocolState) {
+      if (!protocolState || typeof protocolState !== 'object') {
+        return '';
+      }
+      const selected = String(protocolState.selected_protocol || '').trim();
+      const reason = String(protocolState.selection_reason || '').trim();
+      const qualities = Array.isArray(protocolState.protocol_qualities) ? protocolState.protocol_qualities : [];
+      const parts = [];
+      qualities
+        .slice()
+        .sort((a, b) => String(a && a.protocol || '').localeCompare(String(b && b.protocol || '')))
+        .forEach((item) => {
+          const protocol = String(item && item.protocol || '').trim();
+          if (!protocol) return;
+          const latency = Number(item && item.latency_ms);
+          const score = Number(item && item.score);
+          const loss = Number(item && item.loss_permille);
+          const rate = Number(item && item.rate_bps);
+          const metrics = [];
+          if (Number.isFinite(latency) && latency > 0) metrics.push(`${Math.trunc(latency)}ms`);
+          if (Number.isFinite(loss) && loss > 0) metrics.push(`丢包${(loss / 10).toFixed(1)}%`);
+          if (Number.isFinite(rate) && rate > 0) metrics.push(`${formatRate(rate)}`);
+          if (Number.isFinite(score) && score > 0) metrics.push(`分${Math.trunc(score)}`);
+          if (item && item.available === false) metrics.push('不可用');
+          parts.push(`${protocol}${metrics.length ? `(${metrics.join('/')})` : ''}`);
+        });
+      const head = selected ? `auto=${selected}` : 'auto';
+      const tail = parts.length ? ` ${parts.join(' ')}` : '';
+      return `${head}${reason ? `/${reason}` : ''}${tail}`;
+    }
+
+    function formatRate(rateBps) {
+      const value = Number(rateBps);
+      if (!Number.isFinite(value) || value <= 0) return '';
+      if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)}MB/s`;
+      if (value >= 1024) return `${(value / 1024).toFixed(1)}KB/s`;
+      return `${Math.trunc(value)}B/s`;
     }
 
     async function loadProxyStatus() {

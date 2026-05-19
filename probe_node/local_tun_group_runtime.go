@@ -43,18 +43,19 @@ type probeLocalTUNGroupRuntime struct {
 }
 
 type probeLocalTUNGroupRuntimeSnapshot struct {
-	Group           string `json:"group"`
-	SelectedChainID string `json:"selected_chain_id,omitempty"`
-	EntryNodeID     string `json:"entry_node_id,omitempty"`
-	EntryHost       string `json:"entry_host,omitempty"`
-	EntryPort       int    `json:"entry_port,omitempty"`
-	LinkLayer       string `json:"link_layer,omitempty"`
-	RuntimeStatus   string `json:"runtime_status,omitempty"`
-	LastError       string `json:"last_error,omitempty"`
-	FailureCount    int    `json:"failure_count,omitempty"`
-	UpdatedAt       string `json:"updated_at,omitempty"`
-	LastConnectedAt string `json:"last_connected_at,omitempty"`
-	Connected       bool   `json:"connected"`
+	Group           string                               `json:"group"`
+	SelectedChainID string                               `json:"selected_chain_id,omitempty"`
+	EntryNodeID     string                               `json:"entry_node_id,omitempty"`
+	EntryHost       string                               `json:"entry_host,omitempty"`
+	EntryPort       int                                  `json:"entry_port,omitempty"`
+	LinkLayer       string                               `json:"link_layer,omitempty"`
+	RuntimeStatus   string                               `json:"runtime_status,omitempty"`
+	LastError       string                               `json:"last_error,omitempty"`
+	FailureCount    int                                  `json:"failure_count,omitempty"`
+	UpdatedAt       string                               `json:"updated_at,omitempty"`
+	LastConnectedAt string                               `json:"last_connected_at,omitempty"`
+	Connected       bool                                 `json:"connected"`
+	ProtocolState   probeChainRelayProtocolStateSnapshot `json:"protocol_state,omitempty"`
 }
 
 var probeLocalTUNGroupRuntimeRegistry = struct {
@@ -382,7 +383,7 @@ func (rt *probeLocalTUNGroupRuntime) snapshotLocked() probeLocalTUNGroupRuntimeS
 		return probeLocalTUNGroupRuntimeSnapshot{}
 	}
 	connected := rt.session != nil && !rt.session.IsClosed()
-	return probeLocalTUNGroupRuntimeSnapshot{
+	snapshot := probeLocalTUNGroupRuntimeSnapshot{
 		Group:           strings.TrimSpace(rt.Group),
 		SelectedChainID: strings.TrimSpace(rt.SelectedChainID),
 		EntryNodeID:     strings.TrimSpace(rt.Endpoint.EntryNodeID),
@@ -396,6 +397,10 @@ func (rt *probeLocalTUNGroupRuntime) snapshotLocked() probeLocalTUNGroupRuntimeS
 		LastConnectedAt: strings.TrimSpace(rt.LastConnectedAt),
 		Connected:       connected,
 	}
+	if strings.TrimSpace(rt.Endpoint.EntryHost) != "" && rt.Endpoint.EntryPort > 0 {
+		snapshot.ProtocolState = snapshotProbeChainProtocolState(rt.Endpoint.EntryHost, rt.Endpoint.EntryPort)
+	}
+	return snapshot
 }
 
 func (rt *probeLocalTUNGroupRuntime) close() {

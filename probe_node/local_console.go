@@ -160,14 +160,15 @@ type probeLocalProxyStateFile struct {
 }
 
 type probeLocalProxyGroupRuntimeSnapshot struct {
-	Group                         string `json:"group,omitempty"`
-	SelectedChainID               string `json:"selected_chain_id,omitempty"`
-	GroupRuntimeStatus            string `json:"group_runtime_status,omitempty"`
-	SelectedChainKeepalive        string `json:"selected_chain_keepalive,omitempty"`
-	SelectedChainLatencyMS        *int64 `json:"selected_chain_latency_ms,omitempty"`
-	SelectedChainLatencyStatus    string `json:"selected_chain_latency_status,omitempty"`
-	SelectedChainLatencyUpdatedAt string `json:"selected_chain_latency_updated_at,omitempty"`
-	SelectedChainLatencyError     string `json:"selected_chain_latency_error,omitempty"`
+	Group                         string                               `json:"group,omitempty"`
+	SelectedChainID               string                               `json:"selected_chain_id,omitempty"`
+	GroupRuntimeStatus            string                               `json:"group_runtime_status,omitempty"`
+	SelectedChainKeepalive        string                               `json:"selected_chain_keepalive,omitempty"`
+	SelectedChainLatencyMS        *int64                               `json:"selected_chain_latency_ms,omitempty"`
+	SelectedChainLatencyStatus    string                               `json:"selected_chain_latency_status,omitempty"`
+	SelectedChainLatencyUpdatedAt string                               `json:"selected_chain_latency_updated_at,omitempty"`
+	SelectedChainLatencyError     string                               `json:"selected_chain_latency_error,omitempty"`
+	ProtocolState                 probeChainRelayProtocolStateSnapshot `json:"protocol_state,omitempty"`
 }
 
 type probeLocalHostMapping struct {
@@ -3375,6 +3376,7 @@ func buildProbeLocalProxyGroupRuntimeSnapshot(entry probeLocalProxyStateGroupEnt
 	}
 	rtSnapshot := rt.snapshot()
 	snapshot.GroupRuntimeStatus = strings.TrimSpace(rtSnapshot.RuntimeStatus)
+	snapshot.ProtocolState = rtSnapshot.ProtocolState
 	keepalive, latencyMS, latencyUpdatedAt, latencyError := probeLocalResolveGroupRuntimeLatency(rt)
 	snapshot.SelectedChainKeepalive = strings.TrimSpace(keepalive)
 	if latencyMS != nil {
@@ -3660,6 +3662,9 @@ func buildProbeLocalProxyStateGroupPayload(entry probeLocalProxyStateGroupEntry)
 			payload["selected_chain_latency_status"] = latencyStatus
 			payload["selected_chain_latency_updated_at"] = strings.TrimSpace(snapshot.SelectedChainLatencyUpdatedAt)
 			payload["selected_chain_latency_error"] = strings.TrimSpace(snapshot.SelectedChainLatencyError)
+			if strings.TrimSpace(snapshot.ProtocolState.Endpoint) != "" {
+				payload["protocol_state"] = snapshot.ProtocolState
+			}
 		}
 	}
 

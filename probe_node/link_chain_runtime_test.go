@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -340,8 +341,166 @@ func TestWrapProbeChainRelayDialErrorForHTTP3UDPSocketResource(t *testing.T) {
 	}
 }
 
+func TestOpenProbeChainRelayNetConnAutoChoosesLowerScoreProtocol(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenLayer := probeChainRelayOpenLayer
+	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+
+	var mu sync.Mutex
+	calls := make([]string, 0, 2)
+	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		client, server := net.Pipe()
+		_ = server.Close()
+		latency := 50 * time.Millisecond
+		if normalizeProbeChainLinkLayer(layer) == "http2" {
+			latency = 5 * time.Millisecond
+		}
+		mu.Lock()
+		calls = append(calls, normalizeProbeChainLinkLayer(layer))
+		mu.Unlock()
+		return probeChainRelayProtocolDialResult{
+			Protocol: normalizeProbeChainLinkLayer(layer),
+			Conn:     client,
+			Latency:  latency,
+		}
+	}
+
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	if err != nil {
+		t.Fatalf("openProbeChainRelayNetConn returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
+	if snapshot.SelectedProtocol != "http2" {
+		t.Fatalf("selected protocol=%q want http2 snapshot=%+v", snapshot.SelectedProtocol, snapshot)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("expected both h2/h3 probes, got calls=%v", calls)
+	}
+}
+
+func TestOpenProbeChainRelayNetConnAutoUsesNegativeCacheAfterHTTP3Failure(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenLayer := probeChainRelayOpenLayer
+	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+
+	var mu sync.Mutex
+	calls := make([]string, 0, 4)
+	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		protocol := normalizeProbeChainLinkLayer(layer)
+		mu.Lock()
+		calls = append(calls, protocol)
+		mu.Unlock()
+		if protocol == "http3" {
+			return probeChainRelayProtocolDialResult{
+				Protocol: protocol,
+				Err:      errors.New("i/o timeout"),
+				Latency:  20 * time.Millisecond,
+			}
+		}
+		client, server := net.Pipe()
+		_ = server.Close()
+		return probeChainRelayProtocolDialResult{
+			Protocol: protocol,
+			Conn:     client,
+			Latency:  10 * time.Millisecond,
+		}
+	}
+
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	if err != nil {
+		t.Fatalf("first openProbeChainRelayNetConn returned error: %v", err)
+	}
+	_ = conn.Close()
+	conn, err = openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	if err != nil {
+		t.Fatalf("second openProbeChainRelayNetConn returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	http3Calls := 0
+	http2Calls := 0
+	for _, call := range calls {
+		switch call {
+		case "http3":
+			http3Calls++
+		case "http2":
+			http2Calls++
+		}
+	}
+	if http3Calls != 1 {
+		t.Fatalf("http3 should be negative cached after first failure, calls=%v", calls)
+	}
+	if http2Calls < 2 {
+		t.Fatalf("http2 should serve both attempts, calls=%v", calls)
+	}
+}
+
+func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenLayer := probeChainRelayOpenLayer
+	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+
+	var mu sync.Mutex
+	calls := make([]string, 0, 2)
+	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		protocol := normalizeProbeChainLinkLayer(layer)
+		mu.Lock()
+		calls = append(calls, protocol)
+		mu.Unlock()
+		if protocol == "http3" {
+			return probeChainRelayProtocolDialResult{
+				Protocol: protocol,
+				Err:      errors.New("probe relay failed: status=401 body=unauthorized"),
+				Latency:  3 * time.Millisecond,
+			}
+		}
+		client, server := net.Pipe()
+		_ = server.Close()
+		return probeChainRelayProtocolDialResult{
+			Protocol: protocol,
+			Conn:     client,
+			Latency:  1 * time.Millisecond,
+		}
+	}
+
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("expected auth failure to stop auto switching")
+	}
+	if !strings.Contains(err.Error(), "status=401") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	seenHTTP3 := false
+	for _, call := range calls {
+		if call == "http3" {
+			seenHTTP3 = true
+		}
+	}
+	if !seenHTTP3 {
+		t.Fatalf("expected http3 auth failure probe, calls=%v", calls)
+	}
+}
+
 func resetProbeChainAuthIPStateForTest() {
 	probeChainAuthIPStateMap.mu.Lock()
 	probeChainAuthIPStateMap.items = make(map[string]probeChainAuthIPState)
 	probeChainAuthIPStateMap.mu.Unlock()
+}
+
+func resetProbeChainRelayProtocolStateForTest() {
+	probeChainRelayProtocolStateStore.mu.Lock()
+	probeChainRelayProtocolStateStore.items = make(map[string]*probeChainRelayProtocolState)
+	probeChainRelayProtocolStateStore.mu.Unlock()
 }
