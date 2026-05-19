@@ -56,6 +56,18 @@
       box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
     }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    .tab-btn {
+      background: rgba(139, 148, 158, 0.16);
+      border-color: rgba(255,255,255,0.16);
+      color: #d0d7de;
+    }
+    .tab-btn.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+    }
+    .proxy-tab-panel { display: none; }
+    .proxy-tab-panel.active { display: block; }
     button {
       padding: 8px 12px;
       border: 1px solid transparent;
@@ -108,6 +120,16 @@
       color: #fff;
     }
     .rule-runtime { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+    .table-wrap { overflow-x: auto; margin-top: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 960px; }
+    th, td { border-bottom: 1px solid var(--border-soft); padding: 9px 8px; text-align: left; vertical-align: top; }
+    th { color: var(--heading); font-weight: 700; background: rgba(13, 17, 23, 0.45); }
+    td.muted, .muted { color: var(--text-secondary); }
+    .mini-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .mini-actions button { padding: 6px 9px; font-size: 12px; }
+    .status-ok { color: #7ee787; }
+    .status-bad { color: #ff938d; }
+    .status-warn { color: #f2cc60; }
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
     .msg.error { color: #ff938d; }
     .msg.success { color: #7ee787; }
@@ -130,7 +152,12 @@
       </div>
     </div>
 
-    <section id="panelProxy" class="card active">
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="groups">代理组</button>
+      <button class="tab-btn" data-tab="links">链路状态</button>
+    </div>
+
+    <section id="panelProxy" class="card proxy-tab-panel active" data-tab-panel="groups">
       <strong>代理状态</strong>
       <div class="kv">
         <div>接管开关</div><div id="proxyEnabled">-</div>
@@ -150,14 +177,42 @@
       <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），刷新代理组会清空本地 DNS / Fake IP 缓存。</p>
     </section>
 
+    <section id="panelProxyLinks" class="card proxy-tab-panel" data-tab-panel="links">
+      <strong>链路状态</strong>
+      <p class="hint">每条代理链路一行。延迟执行链路握手探测；测速使用专用 speed_test 模式，真实读取测试数据，不进入业务 bridge。</p>
+      <div class="actions">
+        <button id="proxyLinkStatusRefreshBtn" class="secondary">刷新链路状态</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>链路</th>
+              <th>入口</th>
+              <th>命中组</th>
+              <th>状态</th>
+              <th>协议质量</th>
+              <th>测速</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="proxyLinkStatusRows">
+            <tr><td colspan="7" class="muted">暂无链路状态</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <p id="message" class="msg"></p>
   </main>
 
   <script>
     const messageEl = document.getElementById('message');
     const proxyRuleGroupsEl = document.getElementById('proxyRuleGroups');
+    const proxyLinkStatusRowsEl = document.getElementById('proxyLinkStatusRows');
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
+    let proxyLinkStatusCache = [];
     let proxyStatusCache = { enabled: false, mode: '' };
     let proxyStatusPollingTimer = null;
     let proxyRuntimeRefreshInFlight = false;
@@ -488,6 +543,98 @@
       return `${Math.trunc(value)}B/s`;
     }
 
+    function formatRateText(rateBps) {
+      return formatRate(rateBps) || '-';
+    }
+
+    function formatGroups(groups) {
+      if (!Array.isArray(groups) || groups.length === 0) return '-';
+      return groups.map((item) => String(item || '').trim()).filter(Boolean).join(', ') || '-';
+    }
+
+    function formatLinkStatusText(item) {
+      const status = String(item && item.status || '').trim();
+      if (status === 'observed') return '有观测';
+      if (status === 'tested') return '已测速';
+      if (status === 'unreachable') return '不可达';
+      if (status === 'unconfigured') return '配置不完整';
+      if (status === 'no_result') return '无结果';
+      return status || '-';
+    }
+
+    function linkStatusClass(status) {
+      const value = String(status || '').trim();
+      if (value === 'observed' || value === 'tested' || value === 'reachable') return 'status-ok';
+      if (value === 'unreachable' || value === 'unconfigured') return 'status-bad';
+      return 'status-warn';
+    }
+
+    function formatProtocolQualities(protocolState) {
+      if (!protocolState || typeof protocolState !== 'object') return '-';
+      const selected = String(protocolState.selected_protocol || '').trim();
+      const qualities = Array.isArray(protocolState.protocol_qualities) ? protocolState.protocol_qualities : [];
+      const parts = qualities
+        .slice()
+        .sort((a, b) => String(a && a.protocol || '').localeCompare(String(b && b.protocol || '')))
+        .map((item) => {
+          const protocol = String(item && item.protocol || '').trim();
+          if (!protocol) return '';
+          const latency = Number(item && item.latency_ms);
+          const loss = Number(item && item.loss_permille);
+          const rate = Number(item && item.rate_bps);
+          const score = Number(item && item.score);
+          const failures = Number(item && item.failure_count);
+          const metrics = [];
+          metrics.push(`延迟=${Number.isFinite(latency) && latency > 0 ? Math.trunc(latency) + 'ms' : '-'}`);
+          metrics.push(`丢包=${Number.isFinite(loss) ? (loss / 10).toFixed(1) + '%' : '-'}`);
+          metrics.push(`速率=${formatRateText(rate)}`);
+          metrics.push(`score=${Number.isFinite(score) && score > 0 ? Math.trunc(score) : '-'}`);
+          if (Number.isFinite(failures) && failures > 0) metrics.push(`失败=${Math.trunc(failures)}`);
+          if (item && item.available === false) metrics.push('不可用');
+          return `${protocol}${selected === protocol ? ' *' : ''}: ${metrics.join(' ')}`;
+        })
+        .filter(Boolean);
+      return parts.length ? parts.join('\n') : (selected ? `auto=${selected}` : '-');
+    }
+
+    function renderProxyLinkStatusRows(items) {
+      proxyLinkStatusRowsEl.innerHTML = '';
+      const rows = Array.isArray(items) ? items : [];
+      if (rows.length === 0) {
+        proxyLinkStatusRowsEl.innerHTML = '<tr><td colspan="7" class="muted">暂无链路状态</td></tr>';
+        return;
+      }
+      rows.forEach((item) => {
+        const tr = document.createElement('tr');
+        const chainID = normalizeChainID(item && item.chain_id);
+        const chainName = String(item && item.chain_name || '').trim() || chainID || '-';
+        const route = Array.isArray(item && item.route) ? item.route.join(' → ') : '';
+        const endpoint = String(item && item.endpoint || '').trim() || [item && item.entry_host, item && item.entry_port].filter(Boolean).join(':') || '-';
+        const protocolText = formatProtocolQualities(item && item.protocol_state);
+        const rate = Number(item && item.observed_rate_bps);
+        const errorText = String(item && item.unavailable_error || '').trim();
+        tr.innerHTML = `
+          <td><strong>${escapeHTML(chainName)}</strong><br><span class="muted">${escapeHTML(chainID || '-')}</span>${route ? `<br><span class="muted">${escapeHTML(route)}</span>` : ''}</td>
+          <td>${escapeHTML(endpoint)}<br><span class="muted">${escapeHTML(String(item && item.link_layer || '-'))}</span></td>
+          <td>${escapeHTML(formatGroups(item && item.selected_groups))}</td>
+          <td class="${linkStatusClass(item && item.status)}">${escapeHTML(formatLinkStatusText(item))}${errorText ? `<br><span class="muted">${escapeHTML(errorText)}</span>` : ''}</td>
+          <td style="white-space: pre-line">${escapeHTML(protocolText)}</td>
+          <td>${escapeHTML(formatRateText(rate))}</td>
+          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}">测速</button></div></td>
+        `;
+        proxyLinkStatusRowsEl.appendChild(tr);
+      });
+    }
+
+    function escapeHTML(value) {
+      return String(value === undefined || value === null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     async function loadProxyStatus() {
       const data = await requestJSON('/local/api/proxy/status', { method: 'GET' });
       proxyStatusCache = {
@@ -537,6 +684,55 @@
         requestJSON('/local/api/proxy/state', { method: 'GET' }),
       ]);
       applyProxySelectionData(groupsData, null, stateData);
+    }
+
+    async function loadProxyLinkStatus() {
+      const data = await requestJSON('/local/api/proxy/link/status', { method: 'GET' });
+      proxyLinkStatusCache = Array.isArray(data && data.items) ? data.items : [];
+      renderProxyLinkStatusRows(proxyLinkStatusCache);
+    }
+
+    async function runProxyLinkLatency(chainID) {
+      const cleanID = normalizeChainID(chainID);
+      if (!cleanID) return;
+      setMessage(`链路 ${cleanID} 延迟探测中...`);
+      try {
+        const data = await requestJSON('/local/api/proxy/link/latency', {
+          method: 'POST',
+          body: JSON.stringify({ chain_id: cleanID }),
+        }, 30000);
+        await loadProxyLinkStatus();
+        if (data && data.ok) {
+          setMessage(`链路 ${cleanID} 可达，延迟 ${Math.trunc(Number(data.latency_ms) || 0)}ms`, 'success');
+          return;
+        }
+        setMessage(`链路 ${cleanID} 不可达：${String(data && data.error || data && data.status || 'unknown')}`, 'error');
+      } catch (err) {
+        setMessage(`链路 ${cleanID} 延迟探测失败：${err.message}`, 'error');
+      }
+    }
+
+    async function runProxyLinkSpeed(chainID) {
+      const cleanID = normalizeChainID(chainID);
+      if (!cleanID) return;
+      setMessage(`链路 ${cleanID} 真实测速中...`);
+      try {
+        const data = await requestJSON('/local/api/proxy/link/speed', {
+          method: 'POST',
+          body: JSON.stringify({ chain_id: cleanID }),
+        }, 45000);
+        await loadProxyLinkStatus();
+        const rate = formatRateText(Number(data && data.rate_bps));
+        const results = Array.isArray(data && data.results) ? data.results : [];
+        const okCount = results.filter((item) => item && item.ok).length;
+        if (okCount > 0) {
+          setMessage(`链路 ${cleanID} 测速完成：${rate}`, 'success');
+          return;
+        }
+        setMessage(`链路 ${cleanID} 测速不可达：${String(data && data.status || data && data.error || 'unknown')}`, 'error');
+      } catch (err) {
+        setMessage(`链路 ${cleanID} 测速失败：${err.message}`, 'error');
+      }
     }
 
     async function triggerProxyRuntimeRefresh(options = {}) {
@@ -608,10 +804,55 @@
         loadProxyStatus(),
         loadProxySelections(),
       ]);
+      if (document.querySelector('.tab-btn[data-tab="links"].active')) {
+        loadProxyLinkStatus().catch(() => {
+        });
+      }
       if (isProxyGloballyEnabled()) {
         triggerProxyRuntimeRefresh({ silent: true });
       }
     }
+
+    function switchProxyTab(tabName) {
+      const clean = String(tabName || '').trim() || 'groups';
+      document.querySelectorAll('.tab-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.getAttribute('data-tab') === clean);
+      });
+      document.querySelectorAll('.proxy-tab-panel').forEach((panel) => {
+        panel.classList.toggle('active', panel.getAttribute('data-tab-panel') === clean);
+      });
+      if (clean === 'links') {
+        loadProxyLinkStatus().catch((err) => setMessage('读取链路状态失败：' + err.message, 'error'));
+      }
+    }
+
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => switchProxyTab(btn.getAttribute('data-tab')));
+    });
+
+    document.getElementById('proxyLinkStatusRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新链路状态...');
+      try {
+        await loadProxyLinkStatus();
+        setMessage('链路状态已刷新', 'success');
+      } catch (err) {
+        setMessage('刷新链路状态失败：' + err.message, 'error');
+      }
+    });
+
+    proxyLinkStatusRowsEl.addEventListener('click', (event) => {
+      const btn = event.target && event.target.closest ? event.target.closest('button[data-action]') : null;
+      if (!btn) return;
+      const chainID = btn.getAttribute('data-chain-id') || '';
+      const action = btn.getAttribute('data-action') || '';
+      if (action === 'latency') {
+        runProxyLinkLatency(chainID);
+        return;
+      }
+      if (action === 'speed') {
+        runProxyLinkSpeed(chainID);
+      }
+    });
 
     document.getElementById('proxyRefreshBtn').addEventListener('click', async () => {
       setMessage('正在提交后台刷新，页面先展示已有状态...');
@@ -642,6 +883,9 @@
       try {
         await requestJSON('/local/api/proxy/chains/refresh', { method: 'POST', body: '{}' });
         await loadProxySelections();
+        if (document.querySelector('.tab-btn[data-tab="links"].active')) {
+          await loadProxyLinkStatus();
+        }
         setMessage('链路已刷新', 'success');
       } catch (err) {
         setMessage('刷新链路失败：' + err.message, 'error');

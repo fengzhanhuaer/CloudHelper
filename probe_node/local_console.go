@@ -240,6 +240,8 @@ var (
 	probeLocalUninstallTUNDriver          = uninstallProbeLocalTUNDriver
 	probeLocalEnsureExplicitDirectBypass  = ensureProbeLocalExplicitDirectBypassForTarget
 	probeLocalResolveGroupRuntimeLatency  = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
+	probeLocalProxyLinkHandshakeProbe     = runProbeLocalProxyLinkHandshakeProbe
+	probeLocalProxyLinkSpeedProbe         = runProbeLocalProxyLinkSpeedProbe
 	probeLocalRunUpgrade                  = runProbeUpgrade
 	probeLocalFetchRelease                = fetchProbeRelease
 	probeLocalRestartProcess              = restartCurrentProcess
@@ -2627,6 +2629,9 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/monitor", probeLocalProxyMonitorHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
 	mux.HandleFunc("/local/api/proxy/chains/refresh", probeLocalProxyChainsRefreshHandler)
+	mux.HandleFunc("/local/api/proxy/link/status", probeLocalProxyLinkStatusHandler)
+	mux.HandleFunc("/local/api/proxy/link/latency", probeLocalProxyLinkLatencyHandler)
+	mux.HandleFunc("/local/api/proxy/link/speed", probeLocalProxyLinkSpeedHandler)
 	mux.HandleFunc("/local/api/proxy/groups", probeLocalProxyGroupsHandler)
 	mux.HandleFunc("/local/api/proxy/groups/refresh", probeLocalProxyGroupsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/groups/save", probeLocalProxyGroupsSaveHandler)
@@ -2667,6 +2672,28 @@ type probeLocalProxyEnableRequest struct {
 
 type probeLocalProxyDirectRequest struct {
 	Group string `json:"group"`
+}
+
+type probeLocalProxyLinkProbeRequest struct {
+	ChainID string `json:"chain_id"`
+}
+
+type probeLocalProxyLinkStatusItem struct {
+	ChainID          string                               `json:"chain_id"`
+	ChainName        string                               `json:"chain_name,omitempty"`
+	ChainType        string                               `json:"chain_type,omitempty"`
+	Route            []string                             `json:"route,omitempty"`
+	EntryNodeID      string                               `json:"entry_node_id,omitempty"`
+	EntryHost        string                               `json:"entry_host,omitempty"`
+	EntryPort        int                                  `json:"entry_port,omitempty"`
+	LinkLayer        string                               `json:"link_layer,omitempty"`
+	Endpoint         string                               `json:"endpoint,omitempty"`
+	SelectedGroups   []string                             `json:"selected_groups,omitempty"`
+	Status           string                               `json:"status,omitempty"`
+	ObservedRateBPS  int64                                `json:"observed_rate_bps,omitempty"`
+	ProtocolState    probeChainRelayProtocolStateSnapshot `json:"protocol_state,omitempty"`
+	UnavailableError string                               `json:"unavailable_error,omitempty"`
+	UpdatedAt        string                               `json:"updated_at,omitempty"`
 }
 
 type probeLocalProxyRejectRequest struct {
@@ -3538,6 +3565,311 @@ func probeLocalProxyMonitorHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, currentProbeLocalProxyMonitorSnapshot())
 }
 
+func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLocalTUNChainEndpoint, error) {
+	chainID := strings.TrimSpace(item.ChainID)
+	if chainID == "" {
+		return probeLocalTUNChainEndpoint{}, errors.New("chain_id is required")
+	}
+	route := buildChainRoute(item)
+	if len(route) == 0 {
+		return probeLocalTUNChainEndpoint{}, fmt.Errorf("chain route is empty: %s", chainID)
+	}
+	entryNodeID := strings.TrimSpace(route[0])
+	entryHost := ""
+	entryPort := 0
+	linkLayer := normalizeProbeChainLinkLayer(strings.TrimSpace(item.LinkLayer))
+	for _, hop := range item.HopConfigs {
+		hopNodeID := normalizeProbeChainNodeID(strconv.Itoa(hop.NodeNo))
+		if hopNodeID == "" || hopNodeID != normalizeProbeChainNodeID(entryNodeID) {
+			continue
+		}
+		entryHost = strings.TrimSpace(hop.RelayHost)
+		if hop.ExternalPort > 0 {
+			entryPort = hop.ExternalPort
+		} else if hop.ListenPort > 0 {
+			entryPort = hop.ListenPort
+		}
+		linkLayer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"))
+		break
+	}
+	if entryHost == "" {
+		return probeLocalTUNChainEndpoint{}, fmt.Errorf("selected chain entry host is unavailable: %s", chainID)
+	}
+	if entryPort <= 0 {
+		return probeLocalTUNChainEndpoint{}, fmt.Errorf("selected chain entry port is unavailable: %s", chainID)
+	}
+	if linkLayer == "" {
+		linkLayer = "http"
+	}
+	return probeLocalTUNChainEndpoint{
+		ChainID:     chainID,
+		ChainName:   strings.TrimSpace(item.Name),
+		EntryNodeID: entryNodeID,
+		EntryHost:   entryHost,
+		EntryPort:   entryPort,
+		LinkLayer:   linkLayer,
+		ChainSecret: strings.TrimSpace(item.Secret),
+	}, nil
+}
+
+func findProbeLocalProxyLinkItemByID(chainID string, items []probeLinkChainServerItem) (probeLinkChainServerItem, bool) {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return probeLinkChainServerItem{}, false
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.ChainID), cleanID) {
+			return item, true
+		}
+	}
+	return probeLinkChainServerItem{}, false
+}
+
+func selectedProbeLocalProxyGroupsByChainID(state probeLocalProxyStateFile) map[string][]string {
+	out := make(map[string][]string, len(state.Groups))
+	for _, entry := range state.Groups {
+		if !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") {
+			continue
+		}
+		group := strings.TrimSpace(entry.Group)
+		chainID := firstNonEmpty(strings.TrimSpace(entry.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID))
+		if group == "" || chainID == "" {
+			continue
+		}
+		out[strings.ToLower(chainID)] = append(out[strings.ToLower(chainID)], group)
+	}
+	return out
+}
+
+func observedProbeLocalProxyLinkRateBPS(snapshot probeChainRelayProtocolStateSnapshot) int64 {
+	var best int64
+	for _, quality := range snapshot.ProtocolQualities {
+		if quality.RateBPS > best {
+			best = quality.RateBPS
+		}
+	}
+	return best
+}
+
+func buildProbeLocalProxyLinkStatusItems() []probeLocalProxyLinkStatusItem {
+	items := currentProbeLocalProxyViewChains()
+	state := currentProbeLocalProxyViewState()
+	selectedGroups := selectedProbeLocalProxyGroupsByChainID(state)
+	out := make([]probeLocalProxyLinkStatusItem, 0, len(items))
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, item := range items {
+		chainID := strings.TrimSpace(item.ChainID)
+		if chainID == "" {
+			continue
+		}
+		status := probeLocalProxyLinkStatusItem{
+			ChainID:        chainID,
+			ChainName:      strings.TrimSpace(item.Name),
+			ChainType:      strings.TrimSpace(item.ChainType),
+			Route:          buildChainRoute(item),
+			SelectedGroups: append([]string{}, selectedGroups[strings.ToLower(chainID)]...),
+			Status:         "unknown",
+			UpdatedAt:      now,
+		}
+		endpoint, err := resolveProbeLocalProxyLinkEndpoint(item)
+		if err != nil {
+			status.Status = "unconfigured"
+			status.UnavailableError = strings.TrimSpace(err.Error())
+			out = append(out, status)
+			continue
+		}
+		status.EntryNodeID = endpoint.EntryNodeID
+		status.EntryHost = endpoint.EntryHost
+		status.EntryPort = endpoint.EntryPort
+		status.LinkLayer = endpoint.LinkLayer
+		status.Endpoint = net.JoinHostPort(endpoint.EntryHost, strconv.Itoa(endpoint.EntryPort))
+		status.ProtocolState = snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort)
+		status.ObservedRateBPS = observedProbeLocalProxyLinkRateBPS(status.ProtocolState)
+		if strings.TrimSpace(status.ProtocolState.SelectedProtocol) != "" || len(status.ProtocolState.ProtocolQualities) > 0 {
+			status.Status = "observed"
+		}
+		out = append(out, status)
+	}
+	return out
+}
+
+func runProbeLocalProxyLinkHandshakeProbe(endpoint probeLocalTUNChainEndpoint) (net.Conn, error) {
+	return openProbeChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+}
+
+func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint) []probeChainRelaySpeedTestResult {
+	return probeChainRelaySpeedTestAuto(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainRelaySpeedTestBytes)
+}
+
+func probeLocalProxyLinkStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"items":      buildProbeLocalProxyLinkStatusItems(),
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalProxyLinkProbeRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	chainID := strings.TrimSpace(req.ChainID)
+	if chainID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "chain_id is required"})
+		return
+	}
+	items := currentProbeLocalProxyViewChains()
+	item, ok := findProbeLocalProxyLinkItemByID(chainID, items)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "chain not found"})
+		return
+	}
+	endpoint, err := resolveProbeLocalProxyLinkEndpoint(item)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         false,
+			"chain_id":   chainID,
+			"status":     "unconfigured",
+			"error":      strings.TrimSpace(err.Error()),
+			"updated_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	startedAt := time.Now()
+	conn, err := probeLocalProxyLinkHandshakeProbe(endpoint)
+	latencyMS := probeLocalLatencyMilliseconds(startedAt)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":             false,
+			"chain_id":       chainID,
+			"chain_name":     strings.TrimSpace(item.Name),
+			"status":         "unreachable",
+			"latency_ms":     latencyMS,
+			"entry_host":     endpoint.EntryHost,
+			"entry_port":     endpoint.EntryPort,
+			"link_layer":     endpoint.LinkLayer,
+			"error":          strings.TrimSpace(err.Error()),
+			"protocol_state": snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort),
+			"updated_at":     time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	_ = conn.Close()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"chain_id":       chainID,
+		"chain_name":     strings.TrimSpace(item.Name),
+		"status":         "reachable",
+		"latency_ms":     latencyMS,
+		"entry_host":     endpoint.EntryHost,
+		"entry_port":     endpoint.EntryPort,
+		"link_layer":     endpoint.LinkLayer,
+		"protocol_state": snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort),
+		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var req probeLocalProxyLinkProbeRequest
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	chainID := strings.TrimSpace(req.ChainID)
+	if chainID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "chain_id is required"})
+		return
+	}
+	items := currentProbeLocalProxyViewChains()
+	item, ok := findProbeLocalProxyLinkItemByID(chainID, items)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "chain not found"})
+		return
+	}
+	endpoint, err := resolveProbeLocalProxyLinkEndpoint(item)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         false,
+			"chain_id":   chainID,
+			"status":     "unconfigured",
+			"error":      strings.TrimSpace(err.Error()),
+			"updated_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	results := probeLocalProxyLinkSpeedProbe(endpoint)
+	snapshot := snapshotProbeChainProtocolState(endpoint.EntryHost, endpoint.EntryPort)
+	rateBPS := int64(0)
+	status := "unreachable"
+	okResult := false
+	for _, result := range results {
+		if result.OK {
+			okResult = true
+			if result.RateBPS > rateBPS {
+				rateBPS = result.RateBPS
+			}
+		}
+	}
+	if okResult {
+		status = "tested"
+		if rateBPS <= 0 {
+			rateBPS = observedProbeLocalProxyLinkRateBPS(snapshot)
+		}
+	} else if len(results) == 0 {
+		status = "no_result"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             okResult,
+		"chain_id":       chainID,
+		"chain_name":     strings.TrimSpace(item.Name),
+		"status":         status,
+		"rate_bps":       rateBPS,
+		"source":         "active_speed_test",
+		"results":        results,
+		"protocol_state": snapshot,
+		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
 func probeLocalProxyChainsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -4033,6 +4365,8 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalEnsureExplicitDirectBypass = ensureProbeLocalExplicitDirectBypassForTarget
 	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass
 	probeLocalResolveGroupRuntimeLatency = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
+	probeLocalProxyLinkHandshakeProbe = runProbeLocalProxyLinkHandshakeProbe
+	probeLocalProxyLinkSpeedProbe = runProbeLocalProxyLinkSpeedProbe
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
 	probeLocalTUNOpenChainRelayNetConn = openProbeChainRelayNetConn
 }

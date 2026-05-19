@@ -2378,6 +2378,122 @@ func TestProbeLocalProxyChainsRefreshEndpointUsesHook(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+
+	chain := probeLinkChainServerItem{
+		ChainID:     "chain-local",
+		ChainType:   "proxy_chain",
+		Name:        "Local Proxy",
+		Secret:      "secret-local",
+		EntryNodeID: "1",
+		ExitNodeID:  "2",
+		LinkLayer:   "http",
+		HopConfigs: []probeLinkChainHopServerItem{
+			{NodeNo: 1, RelayHost: "entry.example.com", ExternalPort: 16030, LinkLayer: "http"},
+			{NodeNo: 2, RelayHost: "exit.example.com", ExternalPort: 16031, LinkLayer: "http"},
+		},
+	}
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{chain}); err != nil {
+		t.Fatalf("persist proxy chain failed: %v", err)
+	}
+	if err := persistProbeLocalProxyStateFile(probeLocalProxyStateFile{
+		Version:   1,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Groups: []probeLocalProxyStateGroupEntry{
+			{Group: "google", Action: "tunnel", SelectedChainID: "chain-local", TunnelNodeID: "chain:chain-local", RuntimeStatus: "online"},
+		},
+		Backup: probeLocalProxyBackupState{LastUploadStatus: "idle"},
+		TUN:    probeLocalTUNPersistentState{UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+
+	probeLocalProxyLinkHandshakeProbe = func(endpoint probeLocalTUNChainEndpoint) (net.Conn, error) {
+		if endpoint.ChainID != "chain-local" || endpoint.EntryHost != "entry.example.com" || endpoint.EntryPort != 16030 {
+			t.Fatalf("unexpected latency endpoint: %+v", endpoint)
+		}
+		client, server := net.Pipe()
+		go func() {
+			_ = server.Close()
+		}()
+		return client, nil
+	}
+	probeLocalProxyLinkSpeedProbe = func(endpoint probeLocalTUNChainEndpoint) []probeChainRelaySpeedTestResult {
+		endpointKey := probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort)
+		recordProbeChainRelayProtocolSuccess(endpointKey, probeChainRelayProtocolDialResult{
+			Protocol:  "http3",
+			Latency:   35 * time.Millisecond,
+			StartedAt: time.Now().Add(-40 * time.Millisecond),
+			EndedAt:   time.Now(),
+		}, "speed_test")
+		recordProbeChainRelayProtocolObservedTraffic(endpointKey, "http3", 5*1024*1024, 0)
+		return []probeChainRelaySpeedTestResult{{
+			Protocol:   "http3",
+			OK:         true,
+			LatencyMS:  35,
+			Bytes:      2 * 1024 * 1024,
+			DurationMS: 400,
+			RateBPS:    5 * 1024 * 1024,
+			StartedAt:  time.Now().UTC().Format(time.RFC3339),
+			EndedAt:    time.Now().UTC().Format(time.RFC3339),
+		}}
+	}
+	defer resetProbeLocalProxyHooksForTest()
+
+	statusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/link/status", nil, sessionCookie)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("link status status=%d body=%s", statusResp.Code, statusResp.Body.String())
+	}
+	statusPayload := decodeProbeLocalJSON(t, statusResp)
+	items, ok := statusPayload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("link status items=%v", statusPayload["items"])
+	}
+	item, _ := items[0].(map[string]any)
+	if item["chain_id"] != "chain-local" || item["endpoint"] != "entry.example.com:16030" {
+		t.Fatalf("link status item=%v", item)
+	}
+	groups, ok := item["selected_groups"].([]any)
+	if !ok || len(groups) != 1 || groups[0] != "google" {
+		t.Fatalf("link selected groups=%v", item["selected_groups"])
+	}
+
+	latencyResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/latency", map[string]any{"chain_id": "chain-local"}, sessionCookie)
+	if latencyResp.Code != http.StatusOK {
+		t.Fatalf("link latency status=%d body=%s", latencyResp.Code, latencyResp.Body.String())
+	}
+	latencyPayload := decodeProbeLocalJSON(t, latencyResp)
+	if latencyPayload["ok"] != true || latencyPayload["status"] != "reachable" {
+		t.Fatalf("link latency payload=%v", latencyPayload)
+	}
+	if latencyMS, ok := latencyPayload["latency_ms"].(float64); !ok || latencyMS <= 0 {
+		t.Fatalf("link latency ms=%v", latencyPayload["latency_ms"])
+	}
+
+	speedResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/speed", map[string]any{"chain_id": "chain-local"}, sessionCookie)
+	if speedResp.Code != http.StatusOK {
+		t.Fatalf("link speed status=%d body=%s", speedResp.Code, speedResp.Body.String())
+	}
+	speedPayload := decodeProbeLocalJSON(t, speedResp)
+	if speedPayload["ok"] != true || speedPayload["status"] != "tested" {
+		t.Fatalf("link speed payload=%v", speedPayload)
+	}
+	if rateBPS, ok := speedPayload["rate_bps"].(float64); !ok || int64(rateBPS) != 5*1024*1024 {
+		t.Fatalf("link speed rate=%v", speedPayload["rate_bps"])
+	}
+	results, ok := speedPayload["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("link speed results=%v", speedPayload["results"])
+	}
+}
+
 func TestProbeLocalProxyPageGetEndpointsDoNotTriggerRemoteRefresh(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
