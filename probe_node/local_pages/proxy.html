@@ -749,20 +749,29 @@
     async function runProxyLinkLatency(chainID) {
       const cleanID = normalizeChainID(chainID);
       if (!cleanID) return;
-      setMessage(`链路 ${cleanID} 延迟探测中...`);
+      setMessage(`链路 ${cleanID} 四种协议可达性测试中...`);
       try {
         const data = await requestJSON('/local/api/proxy/link/latency', {
           method: 'POST',
           body: JSON.stringify({ chain_id: cleanID }),
         }, 30000);
         await loadProxyLinkStatus();
+        const results = Array.isArray(data && data.results) ? data.results : [];
+        const summary = results.map((item) => {
+          const label = formatRelayProtocolLabel(item && item.protocol);
+          const ok = !!(item && item.ok);
+          const latency = Math.trunc(Number(item && item.latency_ms) || 0);
+          if (ok) return `${label} ${latency > 0 ? latency + 'ms' : '可达'}`;
+          const err = String(item && item.error || '').trim();
+          return `${label} 不可达${err ? `(${err})` : ''}`;
+        }).join('；');
         if (data && data.ok) {
-          setMessage(`链路 ${cleanID} 可达，延迟 ${Math.trunc(Number(data.latency_ms) || 0)}ms`, 'success');
+          setMessage(`链路 ${cleanID} 四种协议测试完成，${Number(data && data.reachable_count) || 0}/4 可达。${summary}`, 'success');
           return;
         }
-        setMessage(`链路 ${cleanID} 不可达：${String(data && data.error || data && data.status || 'unknown')}`, 'error');
+        setMessage(`链路 ${cleanID} 四种协议均不可达：${summary || String(data && data.error || data && data.status || 'unknown')}`, 'error');
       } catch (err) {
-        setMessage(`链路 ${cleanID} 延迟探测失败：${err.message}`, 'error');
+        setMessage(`链路 ${cleanID} 四种协议可达性测试失败：${err.message}`, 'error');
       }
     }
 

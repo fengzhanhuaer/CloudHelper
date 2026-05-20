@@ -2418,15 +2418,23 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 		t.Fatalf("ensure defaults failed: %v", err)
 	}
 
-	probeLocalProxyLinkHandshakeProbe = func(endpoint probeLocalTUNChainEndpoint) (net.Conn, error) {
+	probeLocalProxyLinkProtocolProbe = func(endpoint probeLocalTUNChainEndpoint, protocol string) (net.Conn, error) {
 		if endpoint.ChainID != "chain-local" || endpoint.EntryHost != "entry.example.com" || endpoint.EntryPort != 16030 {
 			t.Fatalf("unexpected latency endpoint: %+v", endpoint)
 		}
-		client, server := net.Pipe()
-		go func() {
-			_ = server.Close()
-		}()
-		return client, nil
+		switch normalizeProbeChainLinkLayer(protocol) {
+		case "websocket-h3", "websocket", "http3":
+			client, server := net.Pipe()
+			go func() {
+				_ = server.Close()
+			}()
+			return client, nil
+		case "http2":
+			return nil, errors.New("http2 unreachable")
+		default:
+			t.Fatalf("unexpected latency protocol=%q", protocol)
+			return nil, nil
+		}
 	}
 	probeLocalProxyLinkSpeedProbe = func(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
 		if protocol != "http3" {
@@ -2481,6 +2489,26 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 	}
 	if latencyMS, ok := latencyPayload["latency_ms"].(float64); !ok || latencyMS <= 0 {
 		t.Fatalf("link latency ms=%v", latencyPayload["latency_ms"])
+	}
+	if latencyPayload["reachable_count"] != float64(3) || latencyPayload["tested_count"] != float64(4) || latencyPayload["best_protocol"] != "websocket-h3" {
+		t.Fatalf("unexpected latency summary=%v", latencyPayload)
+	}
+	latencyResults, ok := latencyPayload["results"].([]any)
+	if !ok || len(latencyResults) != 4 {
+		t.Fatalf("link latency results=%v", latencyPayload["results"])
+	}
+	protocolSeen := make(map[string]bool)
+	for _, raw := range latencyResults {
+		item, _ := raw.(map[string]any)
+		protocol := item["protocol"]
+		if protocolText, _ := protocol.(string); protocolText != "" {
+			protocolSeen[protocolText] = true
+		}
+	}
+	for _, protocol := range []string{"websocket-h3", "websocket", "http3", "http2"} {
+		if !protocolSeen[protocol] {
+			t.Fatalf("missing latency protocol result %s in %v", protocol, latencyResults)
+		}
 	}
 
 	speedResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/speed", map[string]any{"chain_id": "chain-local", "protocol": "http3"}, sessionCookie)

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -252,6 +253,7 @@ var (
 	probeLocalEnsureExplicitDirectBypass  = ensureProbeLocalExplicitDirectBypassForTarget
 	probeLocalResolveGroupRuntimeLatency  = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalProxyLinkHandshakeProbe     = runProbeLocalProxyLinkHandshakeProbe
+	probeLocalProxyLinkProtocolProbe      = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe         = runProbeLocalProxyLinkSpeedProbe
 	probeLocalProxyLinkCFIPLookup         = defaultProbeLocalProxyLinkCFIPLookup
 	probeLocalProxyLinkCFIPProbe          = runProbeLocalProxyLinkCFIPProbe
@@ -2769,6 +2771,13 @@ type probeLocalProxyLinkProbeRequest struct {
 	Protocol string `json:"protocol,omitempty"`
 }
 
+type probeLocalProxyLinkReachabilityResult struct {
+	Protocol  string `json:"protocol"`
+	OK        bool   `json:"ok"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 type probeLocalProxyLinkStatusItem struct {
 	ChainID          string                               `json:"chain_id"`
 	ChainName        string                               `json:"chain_name,omitempty"`
@@ -3830,6 +3839,22 @@ func runProbeLocalProxyLinkHandshakeProbe(endpoint probeLocalTUNChainEndpoint) (
 	return openProbeLocalTUNChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
 }
 
+func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (net.Conn, error) {
+	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
+	switch cleanProtocol {
+	case "websocket-h3":
+		return openProbeChainRelayNetConnWithLayerConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
+	case "websocket", "http3", "http2":
+		return openProbeChainRelayNetConnWithLayerConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, probeChainBridgeRoleToNext, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
+	default:
+		return nil, fmt.Errorf("unsupported relay protocol: %s", protocol)
+	}
+}
+
+func probeLocalProxyLinkReachabilityProtocols() []string {
+	return []string{"websocket-h3", "websocket", "http3", "http2"}
+}
+
 func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
 	return probeLocalTUNChainRelaySpeedTest(endpoint, protocol)
 }
@@ -4162,37 +4187,95 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	startedAt := time.Now()
-	conn, err := probeLocalProxyLinkHandshakeProbe(endpoint)
-	latencyMS := probeLocalLatencyMilliseconds(startedAt)
-	if err != nil {
+	type latencyProbeResult struct {
+		probeLocalProxyLinkReachabilityResult
+	}
+	protocols := probeLocalProxyLinkReachabilityProtocols()
+	resultsCh := make(chan latencyProbeResult, len(protocols))
+	for _, protocol := range protocols {
+		protocol := protocol
+		go func() {
+			startedAt := time.Now()
+			conn, err := probeLocalProxyLinkProtocolProbe(endpoint, protocol)
+			latencyMS := probeLocalLatencyMilliseconds(startedAt)
+			if conn != nil {
+				_ = conn.Close()
+			}
+			result := latencyProbeResult{
+				probeLocalProxyLinkReachabilityResult: probeLocalProxyLinkReachabilityResult{
+					Protocol:  protocol,
+					OK:        err == nil,
+					LatencyMS: latencyMS,
+				},
+			}
+			if err != nil {
+				result.Error = strings.TrimSpace(err.Error())
+			}
+			resultsCh <- result
+		}()
+	}
+
+	results := make([]probeLocalProxyLinkReachabilityResult, 0, len(protocols))
+	reachableCount := 0
+	bestProtocol := ""
+	bestLatencyMS := int64(0)
+	protocolOrder := map[string]int{"websocket-h3": 0, "websocket": 1, "http3": 2, "http2": 3}
+	for range protocols {
+		result := (<-resultsCh).probeLocalProxyLinkReachabilityResult
+		results = append(results, result)
+		if !result.OK {
+			continue
+		}
+		reachableCount++
+		currentProtocol := normalizeProbeChainLinkLayer(result.Protocol)
+		if bestProtocol == "" ||
+			bestLatencyMS <= 0 ||
+			(result.LatencyMS > 0 && result.LatencyMS < bestLatencyMS) ||
+			(result.LatencyMS == bestLatencyMS && protocolOrder[currentProtocol] < protocolOrder[bestProtocol]) {
+			bestProtocol = currentProtocol
+			bestLatencyMS = result.LatencyMS
+		}
+	}
+	sort.Slice(results, func(i, j int) bool {
+		left := protocolOrder[normalizeProbeChainLinkLayer(results[i].Protocol)]
+		right := protocolOrder[normalizeProbeChainLinkLayer(results[j].Protocol)]
+		return left < right
+	})
+
+	if bestProtocol == "" {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":             false,
-			"chain_id":       chainID,
-			"chain_name":     strings.TrimSpace(item.Name),
-			"status":         "unreachable",
-			"latency_ms":     latencyMS,
-			"entry_host":     endpoint.EntryHost,
-			"entry_port":     endpoint.EntryPort,
-			"link_layer":     endpoint.LinkLayer,
-			"error":          strings.TrimSpace(err.Error()),
-			"protocol_state": snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort),
-			"updated_at":     time.Now().UTC().Format(time.RFC3339),
+			"ok":              false,
+			"chain_id":        chainID,
+			"chain_name":      strings.TrimSpace(item.Name),
+			"status":          "unreachable",
+			"reachable_count": reachableCount,
+			"tested_count":    len(results),
+			"entry_host":      endpoint.EntryHost,
+			"entry_port":      endpoint.EntryPort,
+			"link_layer":      endpoint.LinkLayer,
+			"error":           "all relay protocols are unreachable",
+			"results":         results,
+			"protocol_state":  snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort),
+			"updated_at":      time.Now().UTC().Format(time.RFC3339),
 		})
 		return
 	}
-	_ = conn.Close()
+	recordProbeChainRelayProtocolSelected(probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort), bestProtocol, "latency_test")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":             true,
-		"chain_id":       chainID,
-		"chain_name":     strings.TrimSpace(item.Name),
-		"status":         "reachable",
-		"latency_ms":     latencyMS,
-		"entry_host":     endpoint.EntryHost,
-		"entry_port":     endpoint.EntryPort,
-		"link_layer":     endpoint.LinkLayer,
-		"protocol_state": snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort),
-		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+		"ok":              true,
+		"chain_id":        chainID,
+		"chain_name":      strings.TrimSpace(item.Name),
+		"status":          "reachable",
+		"latency_ms":      bestLatencyMS,
+		"reachable_count": reachableCount,
+		"tested_count":    len(results),
+		"best_protocol":   bestProtocol,
+		"entry_host":      endpoint.EntryHost,
+		"entry_port":      endpoint.EntryPort,
+		"link_layer":      endpoint.LinkLayer,
+		"results":         results,
+		"protocol_state":  snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort),
+		"updated_at":      time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -4885,6 +4968,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass
 	probeLocalResolveGroupRuntimeLatency = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalProxyLinkHandshakeProbe = runProbeLocalProxyLinkHandshakeProbe
+	probeLocalProxyLinkProtocolProbe = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe = runProbeLocalProxyLinkSpeedProbe
 	probeLocalProxyLinkCFIPLookup = defaultProbeLocalProxyLinkCFIPLookup
 	probeLocalProxyLinkCFIPProbe = runProbeLocalProxyLinkCFIPProbe
