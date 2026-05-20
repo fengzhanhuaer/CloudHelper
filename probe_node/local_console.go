@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -2806,6 +2807,7 @@ type probeLocalProxyLinkCFOptimizeStatus struct {
 	Status         string                                `json:"status"`
 	Running        bool                                  `json:"running"`
 	CandidateCount int                                   `json:"candidate_count,omitempty"`
+	PlannedCount   int                                   `json:"planned_count,omitempty"`
 	TestedCount    int                                   `json:"tested_count,omitempty"`
 	FailedCount    int                                   `json:"failed_count,omitempty"`
 	BestIP         string                                `json:"best_ip,omitempty"`
@@ -3873,8 +3875,13 @@ func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip str
 	}
 	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
 	if cleanProtocol != "http2" && cleanProtocol != "http3" {
-		return 0, fmt.Errorf("invalid cf probe protocol: %s", protocol)
+		switch cleanProtocol {
+		case "websocket", "websocket-h3":
+		default:
+			return 0, fmt.Errorf("invalid cf probe protocol: %s", protocol)
+		}
 	}
+	log.Printf("probe local cf optimize probe start: chain=%s entry=%s:%d candidate_ip=%s protocol=%s timeout=%s", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, probeLocalProxyLinkCFOptimizeTimeout)
 	startedAt := time.Now()
 	conn, err := openProbeLocalTUNChainRelayNetConnWithResolvedHost(
 		endpoint.ChainID,
@@ -3890,10 +3897,33 @@ func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip str
 	)
 	latency := time.Since(startedAt)
 	if err != nil {
+		log.Printf("probe local cf optimize probe failed: chain=%s entry=%s:%d candidate_ip=%s protocol=%s latency_ms=%d err=%v", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, probeDurationMilliseconds(latency), err)
 		return latency, err
 	}
 	_ = conn.Close()
+	log.Printf("probe local cf optimize probe connected: chain=%s entry=%s:%d candidate_ip=%s protocol=%s latency_ms=%d", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, probeDurationMilliseconds(latency))
 	return latency, nil
+}
+
+func probeLocalProxyLinkCFOptimizeProtocols(layer string) []string {
+	candidates := probeChainRelayProtocolCandidates(layer)
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		protocol := normalizeProbeChainLinkLayer(candidate)
+		if protocol == "" {
+			continue
+		}
+		if _, ok := seen[protocol]; ok {
+			continue
+		}
+		seen[protocol] = struct{}{}
+		out = append(out, protocol)
+	}
+	return out
 }
 
 func isProbeLocalProxyLinkCFEntry(item probeLinkChainServerItem) bool {
@@ -4004,9 +4034,24 @@ func runProbeLocalProxyLinkCFIPOptimizeTask(chainID string, endpoint probeLocalT
 		ip       string
 		protocol string
 	}
-	jobs := make([]probeJob, 0, len(ipTexts)*2)
+	protocols := probeLocalProxyLinkCFOptimizeProtocols(endpoint.LinkLayer)
+	if len(protocols) == 0 {
+		finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "failed", "cf optimize relay protocols are unavailable")
+		return
+	}
+	log.Printf("probe local cf optimize start: chain=%s entry=%s:%d link_layer=%s candidate_ips=%s protocols=%s", cleanID, endpoint.EntryHost, endpoint.EntryPort, normalizeProbeChainLinkLayer(endpoint.LinkLayer), strings.Join(ipTexts, ","), strings.Join(protocols, ","))
+	probeLocalProxyLinkCFOptimizeState.mu.Lock()
+	status = probeLocalProxyLinkCFOptimizeState.items[cleanID]
+	status.PlannedCount = len(ipTexts) * len(protocols)
+	status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	probeLocalProxyLinkCFOptimizeState.items[cleanID] = status
+	probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+
+	jobs := make([]probeJob, 0, len(ipTexts)*len(protocols))
 	for _, ip := range ipTexts {
-		jobs = append(jobs, probeJob{ip: ip, protocol: "http3"}, probeJob{ip: ip, protocol: "http2"})
+		for _, protocol := range protocols {
+			jobs = append(jobs, probeJob{ip: ip, protocol: protocol})
+		}
 	}
 	sem := make(chan struct{}, probeLocalProxyLinkCFOptimizeParallel)
 	var wg sync.WaitGroup
@@ -4036,9 +4081,26 @@ func runProbeLocalProxyLinkCFIPOptimizeTask(chainID string, endpoint probeLocalT
 
 	statusSnapshot := snapshotProbeLocalProxyLinkCFOptimizeStatus(cleanID)
 	if statusSnapshot == nil || statusSnapshot.BestIP == "" {
+		log.Printf("probe local cf optimize failed: chain=%s entry=%s:%d tested=%d failed=%d planned=%d err=all cf candidate ips are unreachable", cleanID, endpoint.EntryHost, endpoint.EntryPort, func() int {
+			if statusSnapshot == nil {
+				return 0
+			}
+			return statusSnapshot.TestedCount
+		}(), func() int {
+			if statusSnapshot == nil {
+				return 0
+			}
+			return statusSnapshot.FailedCount
+		}(), func() int {
+			if statusSnapshot == nil {
+				return 0
+			}
+			return statusSnapshot.PlannedCount
+		}())
 		finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "failed", "all cf candidate ips are unreachable")
 		return
 	}
+	log.Printf("probe local cf optimize completed: chain=%s entry=%s:%d best_ip=%s best_protocol=%s best_latency_ms=%d tested=%d failed=%d planned=%d", cleanID, endpoint.EntryHost, endpoint.EntryPort, statusSnapshot.BestIP, statusSnapshot.BestProtocol, statusSnapshot.BestLatencyMS, statusSnapshot.TestedCount, statusSnapshot.FailedCount, statusSnapshot.PlannedCount)
 	finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "optimized", "")
 }
 
@@ -4297,12 +4359,15 @@ func probeLocalProxyLinkCFIPOptimizeHandler(w http.ResponseWriter, r *http.Reque
 
 	probeLocalStartCFIPOptimizeTask(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		log.Printf("probe local cf optimize lookup start: chain=%s entry_host=%s", canonicalChainID, endpoint.EntryHost)
 		candidateIPs, lookupErr := probeLocalProxyLinkCFIPLookup(ctx, endpoint.EntryHost)
 		cancel()
 		if lookupErr != nil {
+			log.Printf("probe local cf optimize lookup failed: chain=%s entry_host=%s err=%v", canonicalChainID, endpoint.EntryHost, lookupErr)
 			finishProbeLocalProxyLinkCFOptimizeStatus(canonicalChainID, "failed", lookupErr.Error())
 			return
 		}
+		log.Printf("probe local cf optimize lookup resolved: chain=%s entry_host=%s candidate_count=%d", canonicalChainID, endpoint.EntryHost, len(candidateIPs))
 		probeLocalProxyLinkCFOptimizeState.mu.Lock()
 		status := probeLocalProxyLinkCFOptimizeState.items[canonicalChainID]
 		status.Status = "testing"

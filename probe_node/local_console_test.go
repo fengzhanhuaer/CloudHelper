@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2578,6 +2579,101 @@ func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t
 	}
 	if cfStatus["status"] != "optimized" || cfStatus["best_ip"] != "203.0.113.12" || cfStatus["best_protocol"] != "http2" {
 		t.Fatalf("unexpected cf optimize status: %v", cfStatus)
+	}
+	if cfStatus["candidate_count"] != float64(2) || cfStatus["planned_count"] != float64(8) || cfStatus["tested_count"] != float64(8) {
+		t.Fatalf("unexpected cf optimize counts: %v", cfStatus)
+	}
+}
+
+func TestProbeLocalProxyLinkCFIPOptimizeIncludesRelayWebSocketProtocols(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	resetProbeChainRelayResolveCacheForTest()
+	defer resetProbeChainRelayResolveCacheForTest()
+
+	chain := probeLinkChainServerItem{
+		ChainID:         "chain-origin_cf",
+		RelayChainID:    "chain-origin",
+		ClientEntryID:   "chain-origin_cf",
+		ClientEntryType: "cf",
+		ChainType:       "proxy_chain",
+		Name:            "Origin CF",
+		Secret:          "secret-origin",
+		EntryNodeID:     "1",
+		ExitNodeID:      "2",
+		LinkLayer:       "http",
+		HopConfigs: []probeLinkChainHopServerItem{
+			{NodeNo: 1, RelayHost: "api_copilot_example.com", ExternalPort: 443, LinkLayer: "http"},
+			{NodeNo: 2, RelayHost: "exit.example.com", ExternalPort: 16031, LinkLayer: "http"},
+		},
+	}
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{chain}); err != nil {
+		t.Fatalf("persist proxy chain failed: %v", err)
+	}
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+
+	probeLocalProxyLinkCFIPLookup = func(ctx context.Context, host string) ([]net.IP, error) {
+		if host != "api_copilot_example.com" {
+			t.Fatalf("lookup host=%q", host)
+		}
+		return []net.IP{net.ParseIP("203.0.113.11")}, nil
+	}
+
+	var mu sync.Mutex
+	seenProtocols := make(map[string]int)
+	probeLocalProxyLinkCFIPProbe = func(endpoint probeLocalTUNChainEndpoint, ip string, protocol string) (time.Duration, error) {
+		mu.Lock()
+		seenProtocols[protocol]++
+		mu.Unlock()
+		if endpoint.ChainID != "chain-origin" || endpoint.EntryHost != "api_copilot_example.com" || endpoint.EntryPort != 443 {
+			return 0, fmt.Errorf("unexpected endpoint: %+v", endpoint)
+		}
+		if ip == "203.0.113.11" && protocol == "websocket" {
+			return 15 * time.Millisecond, nil
+		}
+		return 0, errors.New("candidate unavailable")
+	}
+	probeLocalStartCFIPOptimizeTask = func(fn func()) { fn() }
+	defer resetProbeLocalProxyHooksForTest()
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/cf_ip_optimize", map[string]any{"chain_id": "chain-origin_cf"}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("cf optimize status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["ok"] != true {
+		t.Fatalf("cf optimize payload=%v", payload)
+	}
+
+	statusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/link/status", nil, sessionCookie)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("link status status=%d body=%s", statusResp.Code, statusResp.Body.String())
+	}
+	statusPayload := decodeProbeLocalJSON(t, statusResp)
+	items, ok := statusPayload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("link status items=%v", statusPayload["items"])
+	}
+	item, _ := items[0].(map[string]any)
+	cfStatus, ok := item["cf_optimize"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing cf optimize status: %v", item)
+	}
+	if cfStatus["status"] != "optimized" || cfStatus["best_ip"] != "203.0.113.11" || cfStatus["best_protocol"] != "websocket" {
+		t.Fatalf("unexpected cf optimize status: %v", cfStatus)
+	}
+	if cfStatus["candidate_count"] != float64(1) || cfStatus["planned_count"] != float64(4) || cfStatus["tested_count"] != float64(4) {
+		t.Fatalf("unexpected cf optimize counts: %v", cfStatus)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, protocol := range []string{"websocket-h3", "websocket", "http3", "http2"} {
+		if seenProtocols[protocol] != 1 {
+			t.Fatalf("expected protocol %s to be probed once, seen=%v", protocol, seenProtocols)
+		}
 	}
 }
 

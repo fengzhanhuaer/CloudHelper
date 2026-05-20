@@ -634,9 +634,13 @@
         parts.push(`best=${ipHTML}${bestProtocol ? '/' + escapeHTML(formatRelayProtocolLabel(bestProtocol)) : ''}${Number.isFinite(latency) && latency > 0 ? '/' + Math.trunc(latency) + 'ms' : ''}`);
       }
       const tested = Number(status.tested_count);
+      const planned = Number(status.planned_count);
       const candidates = Number(status.candidate_count);
       if (Number.isFinite(tested) && tested > 0) {
-        parts.push(`已测=${Math.trunc(tested)}${Number.isFinite(candidates) && candidates > 0 ? '/' + Math.trunc(candidates * 2) : ''}`);
+        const total = Number.isFinite(planned) && planned > 0
+          ? Math.trunc(planned)
+          : (Number.isFinite(candidates) && candidates > 0 ? Math.trunc(candidates * 2) : 0);
+        parts.push(`已测=${Math.trunc(tested)}${total > 0 ? '/' + total : ''}`);
       }
       const err = String(status.error || '').trim();
       if (err) parts.push(`错误=${escapeHTML(err)}`);

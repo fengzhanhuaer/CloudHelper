@@ -508,6 +508,53 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnHTTP3ContextCanceled(t *testin
 	_ = conn.Close()
 }
 
+func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketExtendedConnectDisabled(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenLayer := probeChainRelayOpenLayer
+	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+
+	var mu sync.Mutex
+	calls := make([]string, 0, 2)
+	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		protocol := normalizeProbeChainLinkLayer(layer)
+		mu.Lock()
+		calls = append(calls, protocol)
+		mu.Unlock()
+		if protocol == "websocket-h3" {
+			return probeChainRelayProtocolDialResult{
+				Protocol: protocol,
+				Err:      errors.New("probe relay h3 websocket failed: server did not enable extended connect"),
+				Latency:  3 * time.Millisecond,
+			}
+		}
+		client, server := net.Pipe()
+		t.Cleanup(func() {
+			_ = server.Close()
+		})
+		return probeChainRelayProtocolDialResult{
+			Protocol: protocol,
+			Conn:     client,
+			Latency:  2 * time.Millisecond,
+		}
+	}
+
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	if err != nil {
+		t.Fatalf("expected websocket fallback after h3 extended connect disabled, got err=%v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected fallback connection")
+	}
+	_ = conn.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) < 2 || calls[0] != "websocket-h3" || calls[1] != "websocket" {
+		t.Fatalf("expected h3 websocket then websocket fallback, calls=%v", calls)
+	}
+}
+
 func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()

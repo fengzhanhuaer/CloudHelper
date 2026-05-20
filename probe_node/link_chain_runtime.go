@@ -1495,33 +1495,45 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 		return
 	}
 	if r.Method != http.MethodPost && !websocket.IsWebSocketUpgrade(r) && !isProbeChainHTTP3WebSocketRequest(r) {
+		log.Printf("probe chain relay request rejected: chain=%s role=%s remote=%s method=%s proto=%s host=%s reason=method_not_allowed", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Method, r.Proto, r.Host)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	chainID := resolveProbeChainIDFromRequest(r)
 	if chainID == "" {
+		log.Printf("probe chain relay request rejected: chain=%s role=%s remote=%s method=%s proto=%s host=%s reason=missing_chain_id", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Method, r.Proto, r.Host)
 		http.Error(w, "chain_id is required", http.StatusBadRequest)
 		return
 	}
 	if chainID != strings.TrimSpace(runtime.cfg.chainID) {
+		log.Printf("probe chain relay request rejected: chain=%s role=%s remote=%s method=%s proto=%s host=%s requested_chain=%s reason=runtime_not_found", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Method, r.Proto, r.Host, chainID)
 		http.Error(w, "chain runtime not found", http.StatusNotFound)
 		return
 	}
 	if err := verifyProbeChainRelayRequestAuth(runtime, r, chainID); err != nil {
+		log.Printf("probe chain relay request rejected: chain=%s role=%s remote=%s method=%s proto=%s host=%s reason=unauthorized err=%v", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Method, r.Proto, r.Host, err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	relayMode := strings.ToLower(strings.TrimSpace(r.Header.Get(probeChainCodexRelayModeHeader)))
+	bridgeRole := normalizeProbeChainBridgeRole(r.Header.Get(probeChainCodexRelayRoleHeader))
+	requestTransport := "http"
+	if isProbeChainHTTP3WebSocketRequest(r) {
+		requestTransport = "websocket-h3"
+	} else if websocket.IsWebSocketUpgrade(r) {
+		requestTransport = "websocket"
+	}
+	log.Printf("probe chain relay request accepted: chain=%s role=%s remote=%s method=%s proto=%s host=%s mode=%s bridge_role=%s transport=%s content_length=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Method, r.Proto, r.Host, firstNonEmpty(relayMode, probeChainRelayModeBridge), bridgeRole, requestTransport, r.ContentLength)
 	if relayMode == probeChainRelayModeSpeedTest {
 		if websocket.IsWebSocketUpgrade(r) || isProbeChainHTTP3WebSocketRequest(r) {
+			log.Printf("probe chain relay speed test rejected: chain=%s role=%s remote=%s transport=%s reason=method_not_allowed", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, requestTransport)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		handleProbeChainSpeedTestHTTP(runtime, w, r)
 		return
 	}
-	bridgeRole := normalizeProbeChainBridgeRole(r.Header.Get(probeChainCodexRelayRoleHeader))
 	if isProbeChainHTTP3WebSocketRequest(r) {
 		handleProbeChainBridgeRelayHTTP3WebSocket(runtime, bridgeRole, w, r)
 		return
@@ -1545,6 +1557,7 @@ func handleProbeChainBridgeRelayWebSocket(runtime *probeChainRuntime, bridgeRole
 		http.Error(w, "chain runtime not found", http.StatusNotFound)
 		return
 	}
+	log.Printf("probe chain websocket relay request: chain=%s role=%s bridge_role=%s remote=%s host=%s proto=%s", runtime.cfg.chainID, runtime.cfg.role, normalizeProbeChainBridgeRole(bridgeRole), r.RemoteAddr, r.Host, r.Proto)
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(*http.Request) bool { return true },
 	}
@@ -1591,8 +1604,10 @@ func handleProbeChainBridgeRelayHTTP3WebSocket(runtime *probeChainRuntime, bridg
 		http.Error(w, "chain runtime not found", http.StatusNotFound)
 		return
 	}
+	log.Printf("probe chain h3 websocket relay request: chain=%s role=%s bridge_role=%s remote=%s host=%s proto=%s", runtime.cfg.chainID, runtime.cfg.role, normalizeProbeChainBridgeRole(bridgeRole), r.RemoteAddr, r.Host, r.Proto)
 	streamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
+		log.Printf("probe chain h3 websocket relay rejected: chain=%s role=%s bridge_role=%s remote=%s reason=http3_stream_unavailable", runtime.cfg.chainID, runtime.cfg.role, normalizeProbeChainBridgeRole(bridgeRole), r.RemoteAddr)
 		http.Error(w, "http3 stream unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -1644,6 +1659,7 @@ func handleProbeChainSpeedTestHTTP(runtime *probeChainRuntime, w http.ResponseWr
 		return
 	}
 	byteCount := parseProbeChainSpeedTestBytes(r)
+	log.Printf("probe chain speed test request: chain=%s role=%s remote=%s proto=%s bytes=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Proto, byteCount)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set(probeChainCodexSpeedBytesHeader, strconv.FormatInt(byteCount, 10))
 	w.WriteHeader(http.StatusOK)
@@ -1662,6 +1678,7 @@ func handleProbeChainSpeedTestHTTP(runtime *probeChainRuntime, w http.ResponseWr
 			n = remaining
 		}
 		if _, err := w.Write(buf[:n]); err != nil {
+			log.Printf("probe chain speed test interrupted: chain=%s role=%s remote=%s bytes=%d remaining=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, byteCount, remaining, err)
 			return
 		}
 		remaining -= n
@@ -1669,6 +1686,7 @@ func handleProbeChainSpeedTestHTTP(runtime *probeChainRuntime, w http.ResponseWr
 	if flusher != nil {
 		flusher.Flush()
 	}
+	log.Printf("probe chain speed test completed: chain=%s role=%s remote=%s bytes=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, byteCount)
 }
 
 func parseProbeChainSpeedTestBytes(r *http.Request) int64 {
@@ -1783,6 +1801,7 @@ func handleProbeChainBridgeRelayHTTP(runtime *probeChainRuntime, bridgeRole stri
 		http.Error(w, "chain runtime not found", http.StatusNotFound)
 		return
 	}
+	log.Printf("probe chain http relay request: chain=%s role=%s bridge_role=%s remote=%s host=%s proto=%s content_length=%d", runtime.cfg.chainID, runtime.cfg.role, normalizeProbeChainBridgeRole(bridgeRole), r.RemoteAddr, r.Host, r.Proto, r.ContentLength)
 
 	pipeClient, pipeRuntime := net.Pipe()
 	defer pipeClient.Close()

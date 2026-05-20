@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -172,6 +173,67 @@ var probeChainRelayListenerStateStore = struct {
 
 var probeChainRelayOpenLayer = openProbeChainRelayNetConnWithLayer
 
+func probeChainRelayJoinProtocols(protocols []string) string {
+	cleaned := make([]string, 0, len(protocols))
+	for _, protocol := range protocols {
+		value := normalizeProbeChainLinkLayer(protocol)
+		if value == "" {
+			continue
+		}
+		cleaned = append(cleaned, value)
+	}
+	if len(cleaned) == 0 {
+		return "-"
+	}
+	return strings.Join(cleaned, ",")
+}
+
+func logProbeChainRelayDialAttempt(stage string, chainID string, protocol string, relayHost string, relayPort int, dialHost string, hostHeader string, bridgeRole string, openTimeout time.Duration) {
+	log.Printf(
+		"probe chain relay dial attempt: stage=%s chain=%s protocol=%s relay=%s:%d dial_host=%s host_header=%s bridge_role=%s timeout=%s",
+		strings.TrimSpace(stage),
+		strings.TrimSpace(chainID),
+		normalizeProbeChainLinkLayer(protocol),
+		strings.TrimSpace(relayHost),
+		relayPort,
+		strings.TrimSpace(dialHost),
+		strings.TrimSpace(hostHeader),
+		normalizeProbeChainBridgeRole(bridgeRole),
+		openTimeout,
+	)
+}
+
+func logProbeChainRelayDialOutcome(stage string, chainID string, protocol string, relayHost string, relayPort int, dialHost string, hostHeader string, bridgeRole string, elapsed time.Duration, err error) {
+	if err != nil {
+		log.Printf(
+			"probe chain relay dial failed: stage=%s chain=%s protocol=%s relay=%s:%d dial_host=%s host_header=%s bridge_role=%s latency_ms=%d err=%v",
+			strings.TrimSpace(stage),
+			strings.TrimSpace(chainID),
+			normalizeProbeChainLinkLayer(protocol),
+			strings.TrimSpace(relayHost),
+			relayPort,
+			strings.TrimSpace(dialHost),
+			strings.TrimSpace(hostHeader),
+			normalizeProbeChainBridgeRole(bridgeRole),
+			probeDurationMilliseconds(elapsed),
+			err,
+		)
+		return
+	}
+	log.Printf(
+		"probe chain relay dial connected: stage=%s chain=%s protocol=%s relay=%s:%d dial_host=%s host_header=%s bridge_role=%s latency_ms=%d",
+		strings.TrimSpace(stage),
+		strings.TrimSpace(chainID),
+		normalizeProbeChainLinkLayer(protocol),
+		strings.TrimSpace(relayHost),
+		relayPort,
+		strings.TrimSpace(dialHost),
+		strings.TrimSpace(hostHeader),
+		normalizeProbeChainBridgeRole(bridgeRole),
+		probeDurationMilliseconds(elapsed),
+	)
+}
+
 func openProbeChainRelayNetConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
 	return openProbeChainRelayNetConnAuto(chainID, secret, relayHost, relayPort, layer, bridgeRole)
 }
@@ -182,6 +244,15 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 		return nil, errors.New("relay endpoint is required")
 	}
 	candidates := probeChainRelayProtocolCandidates(layer)
+	log.Printf(
+		"probe chain relay auto dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
+		strings.TrimSpace(chainID),
+		strings.TrimSpace(relayHost),
+		normalizeProbeChainLinkLayer(layer),
+		normalizeProbeChainBridgeRole(bridgeRole),
+		endpointKey,
+		probeChainRelayJoinProtocols(candidates),
+	)
 	for len(candidates) > 0 && isProbeChainWebSocketRelayProtocol(candidates[0]) {
 		protocol := candidates[0]
 		openTimeout := probeChainPortForwardDialTimeout + probeChainPortForwardResponseReadDeadline
@@ -194,6 +265,7 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 			recordProbeChainRelayProtocolSelected(endpointKey, protocol, "websocket_primary")
 			return result.Conn, nil
 		}
+		log.Printf("probe chain relay auto dial websocket primary failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, protocol, result.Err)
 		if !isProbeChainRelayProtocolSwitchableError(result.Err) || len(candidates) == 1 {
 			return nil, result.Err
 		}
@@ -210,11 +282,13 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 
 	now := time.Now()
 	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, now); preferred != "" {
+		log.Printf("probe chain relay auto dial preferred protocol: chain=%s endpoint=%s protocol=%s candidates=%s", strings.TrimSpace(chainID), endpointKey, preferred, probeChainRelayJoinProtocols(candidates))
 		result := probeChainRelayOpenLayer(chainID, secret, relayHost, relayPort, preferred, bridgeRole, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
 		if result.Err == nil {
 			recordProbeChainRelayProtocolSuccess(endpointKey, result, "cached_preferred")
 			return result.Conn, nil
 		}
+		log.Printf("probe chain relay auto dial preferred failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, preferred, result.Err)
 		if !isProbeChainRelayProtocolSwitchableError(result.Err) {
 			return nil, result.Err
 		}
@@ -325,6 +399,7 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 	if len(active) == 0 {
 		active = append(active, candidates...)
 	}
+	log.Printf("probe chain relay protocol probe start: chain=%s endpoint=%s bridge_role=%s candidates=%s", strings.TrimSpace(chainID), endpointKey, normalizeProbeChainBridgeRole(bridgeRole), probeChainRelayJoinProtocols(active))
 
 	resultCh := make(chan probeChainRelayProtocolDialResult, len(active))
 	for _, protocol := range active {
@@ -340,6 +415,7 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 		result := <-resultCh
 		results = append(results, result)
 		if result.Err != nil {
+			log.Printf("probe chain relay protocol probe result: chain=%s endpoint=%s protocol=%s ok=false latency_ms=%d err=%v", strings.TrimSpace(chainID), endpointKey, result.Protocol, probeDurationMilliseconds(result.Latency), result.Err)
 			if !isProbeChainRelayProtocolSwitchableError(result.Err) {
 				nonSwitchableErr = result.Err
 				continue
@@ -347,6 +423,7 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 			recordProbeChainRelayProtocolFailure(endpointKey, result, result.Err)
 			continue
 		}
+		log.Printf("probe chain relay protocol probe result: chain=%s endpoint=%s protocol=%s ok=true latency_ms=%d", strings.TrimSpace(chainID), endpointKey, result.Protocol, probeDurationMilliseconds(result.Latency))
 		recordProbeChainRelayProtocolSuccess(endpointKey, result, "auto_quality")
 	}
 	if nonSwitchableErr != nil {
@@ -377,6 +454,7 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 			}
 		}
 		best := results[bestIndex]
+		log.Printf("probe chain relay protocol selected: chain=%s endpoint=%s protocol=%s reason=auto_quality latency_ms=%d", strings.TrimSpace(chainID), endpointKey, best.Protocol, probeDurationMilliseconds(best.Latency))
 		recordProbeChainRelayProtocolSelected(endpointKey, best.Protocol, "auto_quality")
 		return best, nil
 	}
@@ -390,6 +468,7 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 	if len(errs) == 0 {
 		errs = append(errs, "no protocol result")
 	}
+	log.Printf("probe chain relay protocol probe failed: chain=%s endpoint=%s errs=%s", strings.TrimSpace(chainID), endpointKey, strings.Join(errs, "; "))
 	return probeChainRelayProtocolDialResult{}, fmt.Errorf("probe relay protocol auto failed: relay=%s %s", endpointKey, strings.Join(errs, "; "))
 }
 
@@ -422,6 +501,7 @@ func isProbeChainRelayProtocolSwitchableError(err error) bool {
 		strings.Contains(text, "tls") ||
 		strings.Contains(text, "handshake") ||
 		strings.Contains(text, "quic") ||
+		strings.Contains(text, "extended connect") ||
 		strings.Contains(text, "http3 udp socket unavailable") ||
 		strings.Contains(text, "eof")
 }
@@ -756,6 +836,7 @@ func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, rela
 }
 
 func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	startedAt := time.Now()
 	relayDialHost = strings.TrimSpace(strings.Trim(relayDialHost, "[]"))
 	relayHostHeader = strings.TrimSpace(strings.Trim(relayHostHeader, "[]"))
 	if relayDialHost == "" {
@@ -859,6 +940,7 @@ func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, r
 	if openTimeout <= 0 {
 		openTimeout = probeChainPortForwardDialTimeout + probeChainPortForwardResponseReadDeadline
 	}
+	logProbeChainRelayDialAttempt("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
 	var openTimedOut atomic.Bool
 	openTimer := time.AfterFunc(openTimeout, func() {
 		openTimedOut.Store(true)
@@ -871,16 +953,22 @@ func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, r
 		_ = bodyWriter.Close()
 		_ = closeTransport()
 		if openTimedOut.Load() {
-			return nil, fmt.Errorf("probe relay open timeout: relay=%s:%d", relayDialHost, relayPort)
+			timeoutErr := fmt.Errorf("probe relay open timeout: relay=%s:%d", relayDialHost, relayPort)
+			logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), timeoutErr)
+			return nil, timeoutErr
 		}
-		return nil, wrapProbeChainRelayDialError(layer, relayDialHost, relayPort, err)
+		wrappedErr := wrapProbeChainRelayDialError(layer, relayDialHost, relayPort, err)
+		logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 	if !openTimer.Stop() {
 		_ = response.Body.Close()
 		cancel()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
-		return nil, fmt.Errorf("probe relay open timeout: relay=%s:%d", relayDialHost, relayPort)
+		timeoutErr := fmt.Errorf("probe relay open timeout: relay=%s:%d", relayDialHost, relayPort)
+		logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), timeoutErr)
+		return nil, timeoutErr
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
@@ -888,11 +976,14 @@ func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, r
 		cancel()
 		_ = bodyWriter.Close()
 		_ = closeTransport()
-		return nil, fmt.Errorf("probe relay failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+		statusErr := fmt.Errorf("probe relay failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+		logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), statusErr)
+		return nil, statusErr
 	}
 	if cacheOnSuccess {
 		refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 	}
+	logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
 
 	return &probeChainRelayNetConn{
 		reader:      response.Body,
@@ -911,6 +1002,7 @@ func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, r
 }
 
 func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHost string, relayPort int, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	startedAt := time.Now()
 	if openTimeout <= 0 {
 		openTimeout = probeChainPortForwardDialTimeout + probeChainPortForwardResponseReadDeadline
 	}
@@ -942,22 +1034,29 @@ func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHos
 			InsecureSkipVerify: true,
 		},
 	}
+	logProbeChainRelayDialAttempt("websocket", chainID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
 	ws, response, err := dialer.Dial(relayURL, header)
 	if err != nil {
 		if response != nil && response.Body != nil {
 			body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 			_ = response.Body.Close()
-			return nil, fmt.Errorf("probe relay websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+			statusErr := fmt.Errorf("probe relay websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+			logProbeChainRelayDialOutcome("websocket", chainID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), statusErr)
+			return nil, statusErr
 		}
-		return nil, wrapProbeChainRelayDialError("websocket", relayDialHost, relayPort, err)
+		wrappedErr := wrapProbeChainRelayDialError("websocket", relayDialHost, relayPort, err)
+		logProbeChainRelayDialOutcome("websocket", chainID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 	if cacheOnSuccess {
 		refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 	}
+	logProbeChainRelayDialOutcome("websocket", chainID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
 	return newWebSocketNetConn(ws), nil
 }
 
 func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, relayHost string, relayPort int, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	startedAt := time.Now()
 	if openTimeout <= 0 {
 		openTimeout = probeChainRelayProtocolProbeTimeout
 	}
@@ -973,35 +1072,49 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 		ServerName:         resolveProbeChainClientTLSServerName("websocket-h3", relayDialHost, relayHostHeader),
 		InsecureSkipVerify: true,
 	}
+	logProbeChainRelayDialAttempt("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
 	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, &quic.Config{KeepAlivePeriod: 10 * time.Second})
 	if err != nil {
 		cancel()
-		return nil, wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 
 	transport := &http3.Transport{}
 	clientConn := transport.NewClientConn(quicConn)
 	select {
 	case <-clientConn.ReceivedSettings():
+		settings := clientConn.Settings()
+		enableExtendedConnect := settings != nil && settings.EnableExtendedConnect
+		log.Printf("probe chain relay h3 websocket settings: chain=%s relay=%s:%d dial_host=%s host_header=%s extended_connect=%t", strings.TrimSpace(chainID), strings.TrimSpace(relayHost), relayPort, strings.TrimSpace(relayDialHost), strings.TrimSpace(relayHostHeader), enableExtendedConnect)
 	case <-ctx.Done():
 		_ = quicConn.CloseWithError(0, "h3 websocket settings timeout")
 		cancel()
-		return nil, fmt.Errorf("probe relay h3 websocket open timeout: relay=%s:%d", relayDialHost, relayPort)
+		timeoutErr := fmt.Errorf("probe relay h3 websocket open timeout: relay=%s:%d", relayDialHost, relayPort)
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), timeoutErr)
+		return nil, timeoutErr
 	case <-clientConn.Context().Done():
 		cancel()
-		return nil, fmt.Errorf("probe relay h3 websocket failed: %w", context.Cause(clientConn.Context()))
+		stateErr := fmt.Errorf("probe relay h3 websocket failed: %w", context.Cause(clientConn.Context()))
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), stateErr)
+		return nil, stateErr
 	}
 	if settings := clientConn.Settings(); settings == nil || !settings.EnableExtendedConnect {
 		_ = quicConn.CloseWithError(0, "h3 websocket extended connect disabled")
 		cancel()
-		return nil, errors.New("probe relay h3 websocket failed: server did not enable extended connect")
+		extendedErr := errors.New("probe relay h3 websocket failed: server did not enable extended connect")
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), extendedErr)
+		return nil, extendedErr
 	}
 
 	stream, err := clientConn.OpenRequestStream(ctx)
 	if err != nil {
 		_ = quicConn.CloseWithError(0, "h3 websocket stream open failed")
 		cancel()
-		return nil, wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, relayURL, nil)
 	if err != nil {
@@ -1034,7 +1147,9 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		_ = quicConn.CloseWithError(0, "h3 websocket header send failed")
 		cancel()
-		return nil, wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 	response, err := stream.ReadResponse()
 	if err != nil {
@@ -1042,18 +1157,23 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		_ = quicConn.CloseWithError(0, "h3 websocket response failed")
 		cancel()
-		return nil, wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 		_ = response.Body.Close()
 		_ = quicConn.CloseWithError(0, "h3 websocket status failed")
 		cancel()
-		return nil, fmt.Errorf("probe relay h3 websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+		statusErr := fmt.Errorf("probe relay h3 websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), statusErr)
+		return nil, statusErr
 	}
 	if cacheOnSuccess {
 		refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 	}
+	logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
 	cancelOnce := sync.Once{}
 	return &probeChainHTTP3StreamNetConn{
 		stream: stream,
@@ -1140,10 +1260,16 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 		Protocol:  normalizeProbeChainLinkLayer(layer),
 		StartedAt: startedAt.UTC().Format(time.RFC3339),
 	}
+	log.Printf("probe chain relay speed test start: chain=%s protocol=%s relay=%s:%d bytes=%d timeout=%s", strings.TrimSpace(chainID), normalizeProbeChainLinkLayer(layer), strings.TrimSpace(relayHost), relayPort, byteCount, timeout)
 	defer func() {
 		if strings.TrimSpace(result.EndedAt) == "" {
 			result.EndedAt = time.Now().UTC().Format(time.RFC3339)
 		}
+		if result.OK {
+			log.Printf("probe chain relay speed test done: chain=%s protocol=%s relay=%s:%d ok=true latency_ms=%d bytes=%d duration_ms=%d rate_bps=%d", strings.TrimSpace(chainID), normalizeProbeChainLinkLayer(layer), strings.TrimSpace(relayHost), relayPort, result.LatencyMS, result.Bytes, result.DurationMS, result.RateBPS)
+			return
+		}
+		log.Printf("probe chain relay speed test done: chain=%s protocol=%s relay=%s:%d ok=false latency_ms=%d bytes=%d duration_ms=%d err=%s", strings.TrimSpace(chainID), normalizeProbeChainLinkLayer(layer), strings.TrimSpace(relayHost), relayPort, result.LatencyMS, result.Bytes, result.DurationMS, strings.TrimSpace(result.Error))
 	}()
 	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(relayHost)
 	if err != nil {
