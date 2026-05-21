@@ -2497,6 +2497,14 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 	if !ok || len(latencyResults) != 4 {
 		t.Fatalf("link latency results=%v", latencyPayload["results"])
 	}
+	protocolState, ok := latencyPayload["protocol_state"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing latency protocol_state=%v", latencyPayload["protocol_state"])
+	}
+	protocolQualities, ok := protocolState["protocol_qualities"].([]any)
+	if !ok || len(protocolQualities) != 4 {
+		t.Fatalf("unexpected latency protocol_qualities=%v", protocolState["protocol_qualities"])
+	}
 	protocolSeen := make(map[string]bool)
 	for _, raw := range latencyResults {
 		item, _ := raw.(map[string]any)
@@ -2505,9 +2513,20 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 			protocolSeen[protocolText] = true
 		}
 	}
+	qualitySeen := make(map[string]bool)
+	for _, raw := range protocolQualities {
+		item, _ := raw.(map[string]any)
+		protocol := item["protocol"]
+		if protocolText, _ := protocol.(string); protocolText != "" {
+			qualitySeen[protocolText] = true
+		}
+	}
 	for _, protocol := range []string{"websocket-h3", "websocket", "http3", "http2"} {
 		if !protocolSeen[protocol] {
 			t.Fatalf("missing latency protocol result %s in %v", protocol, latencyResults)
+		}
+		if !qualitySeen[protocol] {
+			t.Fatalf("missing latency protocol quality %s in %v", protocol, protocolQualities)
 		}
 	}
 

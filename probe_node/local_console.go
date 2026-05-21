@@ -4219,10 +4219,22 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 	reachableCount := 0
 	bestProtocol := ""
 	bestLatencyMS := int64(0)
+	endpointKey := probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort)
 	protocolOrder := map[string]int{"websocket-h3": 0, "websocket": 1, "http3": 2, "http2": 3}
 	for range protocols {
 		result := (<-resultsCh).probeLocalProxyLinkReachabilityResult
 		results = append(results, result)
+		probeResult := probeChainRelayProtocolDialResult{
+			Protocol: normalizeProbeChainLinkLayer(result.Protocol),
+			Latency:  time.Duration(result.LatencyMS) * time.Millisecond,
+		}
+		if result.OK {
+			recordProbeChainRelayProtocolSuccess(endpointKey, probeResult, "latency_test")
+		} else {
+			probeErr := errors.New(firstNonEmpty(strings.TrimSpace(result.Error), "latency test failed"))
+			probeResult.Err = probeErr
+			recordProbeChainRelayProtocolFailure(endpointKey, probeResult, probeErr)
+		}
 		if !result.OK {
 			continue
 		}
@@ -4260,7 +4272,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	recordProbeChainRelayProtocolSelected(probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort), bestProtocol, "latency_test")
+	recordProbeChainRelayProtocolSelected(endpointKey, bestProtocol, "latency_test")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
 		"chain_id":        chainID,
