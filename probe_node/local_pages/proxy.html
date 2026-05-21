@@ -564,6 +564,7 @@
 
     function formatLinkStatusText(item) {
       const status = String(item && item.status || '').trim();
+      if (status === 'reachable') return '可达';
       if (status === 'observed') return '有观测';
       if (status === 'tested') return '已测速';
       if (status === 'unreachable') return '不可达';
@@ -606,6 +607,35 @@
         })
         .filter(Boolean);
       return parts.length ? parts.join('\n') : (selected ? `auto=${formatRelayProtocolLabel(selected)}` : '-');
+    }
+
+    function formatReachabilityResults(reachability) {
+      if (!reachability || typeof reachability !== 'object') return '-';
+      const results = Array.isArray(reachability.results) ? reachability.results : [];
+      const parts = results.map((item) => {
+        const protocol = normalizeRelayProtocol(item && item.protocol);
+        if (!protocol) return '';
+        const label = formatRelayProtocolLabel(protocol);
+        const latency = Number(item && item.latency_ms);
+        const err = String(item && item.error || '').trim();
+        if (item && item.ok) {
+          return `${label}${normalizeRelayProtocol(reachability.best_protocol) === protocol ? ' *' : ''}: 可达${Number.isFinite(latency) && latency > 0 ? ` ${Math.trunc(latency)}ms` : ''}`;
+        }
+        return `${label}: 不可达${err ? ` (${err})` : ''}`;
+      }).filter(Boolean);
+      if (parts.length === 0) return '-';
+      const reachable = Number(reachability.reachable_count);
+      const tested = Number(reachability.tested_count);
+      const head = Number.isFinite(reachable) && Number.isFinite(tested) && tested > 0 ? `本次测试 ${Math.trunc(reachable)}/${Math.trunc(tested)} 可达` : '本次测试';
+      return `${head}\n${parts.join('\n')}`;
+    }
+
+    function formatProtocolSummary(item) {
+      const reachability = item && item.reachability;
+      if (reachability && typeof reachability === 'object' && Array.isArray(reachability.results) && reachability.results.length > 0) {
+        return formatReachabilityResults(reachability);
+      }
+      return formatProtocolQualities(item && item.protocol_state);
     }
 
     function isCFProxyLinkItem(item) {
@@ -660,7 +690,7 @@
         const chainName = String(item && item.chain_name || '').trim() || chainID || '-';
         const route = Array.isArray(item && item.route) ? item.route.join(' → ') : '';
         const endpoint = String(item && item.endpoint || '').trim() || [item && item.entry_host, item && item.entry_port].filter(Boolean).join(':') || '-';
-        const protocolText = formatProtocolQualities(item && item.protocol_state);
+        const protocolText = formatProtocolSummary(item);
         const rate = Number(item && item.observed_rate_bps);
         const errorText = String(item && item.unavailable_error || '').trim();
         const cfOptimizeHTML = formatCFOptimizeStatusHTML(item && item.cf_optimize, item);
@@ -670,7 +700,7 @@
           <td>
             <div class="link-info">
               <div class="link-info-line"><span class="muted">状态</span><span class="${linkStatusClass(item && item.status)}">${escapeHTML(formatLinkStatusText(item))}${errorText ? `<br><span class="muted">${escapeHTML(errorText)}</span>` : ''}${cfOptimizeHTML ? `<br><span class="muted">CF优选: ${cfOptimizeHTML}</span>` : ''}</span></div>
-              <div class="link-info-line"><span class="muted">质量</span><span class="pre-line">${escapeHTML(protocolText)}</span></div>
+              <div class="link-info-line"><span class="muted">测试状态</span><span class="pre-line">${escapeHTML(protocolText)}</span></div>
               <div class="link-info-line"><span class="muted">测速</span><span>${escapeHTML(formatRateText(rate))}</span></div>
             </div>
           </td>

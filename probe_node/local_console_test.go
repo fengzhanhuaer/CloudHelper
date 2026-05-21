@@ -2529,6 +2529,26 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 			t.Fatalf("missing latency protocol quality %s in %v", protocol, protocolQualities)
 		}
 	}
+	statusAfterLatencyResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/link/status", nil, sessionCookie)
+	if statusAfterLatencyResp.Code != http.StatusOK {
+		t.Fatalf("link status after latency status=%d body=%s", statusAfterLatencyResp.Code, statusAfterLatencyResp.Body.String())
+	}
+	statusAfterLatencyPayload := decodeProbeLocalJSON(t, statusAfterLatencyResp)
+	statusAfterLatencyItems, ok := statusAfterLatencyPayload["items"].([]any)
+	if !ok || len(statusAfterLatencyItems) != 1 {
+		t.Fatalf("link status after latency items=%v", statusAfterLatencyPayload["items"])
+	}
+	statusAfterLatencyItem, _ := statusAfterLatencyItems[0].(map[string]any)
+	if statusAfterLatencyItem["status"] != "reachable" {
+		t.Fatalf("unexpected status after latency=%v", statusAfterLatencyItem)
+	}
+	reachability, ok := statusAfterLatencyItem["reachability"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing reachability in status item=%v", statusAfterLatencyItem)
+	}
+	if reachability["best_protocol"] != "websocket-h3" || reachability["reachable_count"] != float64(3) || reachability["tested_count"] != float64(4) {
+		t.Fatalf("unexpected reachability=%v", reachability)
+	}
 
 	speedResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/speed", map[string]any{"chain_id": "chain-local", "protocol": "http3"}, sessionCookie)
 	if speedResp.Code != http.StatusOK {

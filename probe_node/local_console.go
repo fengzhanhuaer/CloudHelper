@@ -2778,26 +2778,38 @@ type probeLocalProxyLinkReachabilityResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+type probeLocalProxyLinkReachabilityStatus struct {
+	ChainID        string                                  `json:"chain_id"`
+	EntryHost      string                                  `json:"entry_host,omitempty"`
+	EntryPort      int                                     `json:"entry_port,omitempty"`
+	BestProtocol   string                                  `json:"best_protocol,omitempty"`
+	ReachableCount int                                     `json:"reachable_count,omitempty"`
+	TestedCount    int                                     `json:"tested_count,omitempty"`
+	UpdatedAt      string                                  `json:"updated_at,omitempty"`
+	Results        []probeLocalProxyLinkReachabilityResult `json:"results,omitempty"`
+}
+
 type probeLocalProxyLinkStatusItem struct {
-	ChainID          string                               `json:"chain_id"`
-	ChainName        string                               `json:"chain_name,omitempty"`
-	ChainType        string                               `json:"chain_type,omitempty"`
-	RelayChainID     string                               `json:"relay_chain_id,omitempty"`
-	ClientEntryID    string                               `json:"client_entry_id,omitempty"`
-	ClientEntryType  string                               `json:"client_entry_type,omitempty"`
-	Route            []string                             `json:"route,omitempty"`
-	EntryNodeID      string                               `json:"entry_node_id,omitempty"`
-	EntryHost        string                               `json:"entry_host,omitempty"`
-	EntryPort        int                                  `json:"entry_port,omitempty"`
-	LinkLayer        string                               `json:"link_layer,omitempty"`
-	Endpoint         string                               `json:"endpoint,omitempty"`
-	SelectedGroups   []string                             `json:"selected_groups,omitempty"`
-	Status           string                               `json:"status,omitempty"`
-	ObservedRateBPS  int64                                `json:"observed_rate_bps,omitempty"`
-	ProtocolState    probeChainRelayProtocolStateSnapshot `json:"protocol_state,omitempty"`
-	CFOptimize       *probeLocalProxyLinkCFOptimizeStatus `json:"cf_optimize,omitempty"`
-	UnavailableError string                               `json:"unavailable_error,omitempty"`
-	UpdatedAt        string                               `json:"updated_at,omitempty"`
+	ChainID          string                                 `json:"chain_id"`
+	ChainName        string                                 `json:"chain_name,omitempty"`
+	ChainType        string                                 `json:"chain_type,omitempty"`
+	RelayChainID     string                                 `json:"relay_chain_id,omitempty"`
+	ClientEntryID    string                                 `json:"client_entry_id,omitempty"`
+	ClientEntryType  string                                 `json:"client_entry_type,omitempty"`
+	Route            []string                               `json:"route,omitempty"`
+	EntryNodeID      string                                 `json:"entry_node_id,omitempty"`
+	EntryHost        string                                 `json:"entry_host,omitempty"`
+	EntryPort        int                                    `json:"entry_port,omitempty"`
+	LinkLayer        string                                 `json:"link_layer,omitempty"`
+	Endpoint         string                                 `json:"endpoint,omitempty"`
+	SelectedGroups   []string                               `json:"selected_groups,omitempty"`
+	Status           string                                 `json:"status,omitempty"`
+	ObservedRateBPS  int64                                  `json:"observed_rate_bps,omitempty"`
+	Reachability     *probeLocalProxyLinkReachabilityStatus `json:"reachability,omitempty"`
+	ProtocolState    probeChainRelayProtocolStateSnapshot   `json:"protocol_state,omitempty"`
+	CFOptimize       *probeLocalProxyLinkCFOptimizeStatus   `json:"cf_optimize,omitempty"`
+	UnavailableError string                                 `json:"unavailable_error,omitempty"`
+	UpdatedAt        string                                 `json:"updated_at,omitempty"`
 }
 
 type probeLocalProxyLinkCFOptimizeResult struct {
@@ -2833,6 +2845,11 @@ var probeLocalProxyLinkCFOptimizeState = struct {
 	mu    sync.Mutex
 	items map[string]probeLocalProxyLinkCFOptimizeStatus
 }{items: make(map[string]probeLocalProxyLinkCFOptimizeStatus)}
+
+var probeLocalProxyLinkReachabilityState = struct {
+	mu    sync.Mutex
+	items map[string]probeLocalProxyLinkReachabilityStatus
+}{items: make(map[string]probeLocalProxyLinkReachabilityStatus)}
 
 type probeLocalProxyRejectRequest struct {
 	Group string `json:"group"`
@@ -3825,9 +3842,17 @@ func buildProbeLocalProxyLinkStatusItems() []probeLocalProxyLinkStatusItem {
 		status.EntryPort = endpoint.EntryPort
 		status.LinkLayer = endpoint.LinkLayer
 		status.Endpoint = net.JoinHostPort(endpoint.EntryHost, strconv.Itoa(endpoint.EntryPort))
+		status.Reachability = snapshotProbeLocalProxyLinkReachabilityStatus(chainID)
+		if status.Reachability != nil && status.Reachability.TestedCount > 0 {
+			if status.Reachability.ReachableCount > 0 {
+				status.Status = "reachable"
+			} else {
+				status.Status = "unreachable"
+			}
+		}
 		status.ProtocolState = snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort)
 		status.ObservedRateBPS = observedProbeLocalProxyLinkRateBPS(status.ProtocolState)
-		if strings.TrimSpace(status.ProtocolState.SelectedProtocol) != "" || len(status.ProtocolState.ProtocolQualities) > 0 {
+		if status.Status == "unknown" && (strings.TrimSpace(status.ProtocolState.SelectedProtocol) != "" || len(status.ProtocolState.ProtocolQualities) > 0) {
 			status.Status = "observed"
 		}
 		out = append(out, status)
@@ -3857,6 +3882,41 @@ func probeLocalProxyLinkReachabilityProtocols() []string {
 
 func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
 	return probeLocalTUNChainRelaySpeedTest(endpoint, protocol)
+}
+
+func snapshotProbeLocalProxyLinkReachabilityStatus(chainID string) *probeLocalProxyLinkReachabilityStatus {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return nil
+	}
+	probeLocalProxyLinkReachabilityState.mu.Lock()
+	status, ok := probeLocalProxyLinkReachabilityState.items[cleanID]
+	probeLocalProxyLinkReachabilityState.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	status.Results = append([]probeLocalProxyLinkReachabilityResult{}, status.Results...)
+	return &status
+}
+
+func storeProbeLocalProxyLinkReachabilityStatus(chainID string, endpoint probeLocalTUNChainEndpoint, bestProtocol string, reachableCount int, results []probeLocalProxyLinkReachabilityResult) {
+	cleanID := strings.TrimSpace(chainID)
+	if cleanID == "" {
+		return
+	}
+	status := probeLocalProxyLinkReachabilityStatus{
+		ChainID:        cleanID,
+		EntryHost:      strings.TrimSpace(endpoint.EntryHost),
+		EntryPort:      endpoint.EntryPort,
+		BestProtocol:   normalizeProbeChainLinkLayer(bestProtocol),
+		ReachableCount: reachableCount,
+		TestedCount:    len(results),
+		UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
+		Results:        append([]probeLocalProxyLinkReachabilityResult{}, results...),
+	}
+	probeLocalProxyLinkReachabilityState.mu.Lock()
+	probeLocalProxyLinkReachabilityState.items[cleanID] = status
+	probeLocalProxyLinkReachabilityState.mu.Unlock()
 }
 
 func defaultProbeLocalProxyLinkCFIPLookup(ctx context.Context, host string) ([]net.IP, error) {
@@ -4253,6 +4313,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 		right := protocolOrder[normalizeProbeChainLinkLayer(results[j].Protocol)]
 		return left < right
 	})
+	storeProbeLocalProxyLinkReachabilityStatus(chainID, endpoint, bestProtocol, reachableCount, results)
 
 	if bestProtocol == "" {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -4267,6 +4328,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 			"link_layer":      endpoint.LinkLayer,
 			"error":           "all relay protocols are unreachable",
 			"results":         results,
+			"reachability":    snapshotProbeLocalProxyLinkReachabilityStatus(chainID),
 			"protocol_state":  snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort),
 			"updated_at":      time.Now().UTC().Format(time.RFC3339),
 		})
@@ -4286,6 +4348,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 		"entry_port":      endpoint.EntryPort,
 		"link_layer":      endpoint.LinkLayer,
 		"results":         results,
+		"reachability":    snapshotProbeLocalProxyLinkReachabilityStatus(chainID),
 		"protocol_state":  snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort),
 		"updated_at":      time.Now().UTC().Format(time.RFC3339),
 	})
@@ -4970,6 +5033,9 @@ func resetProbeLocalControlStateForTest() {
 	probeLocalProxyLinkCFOptimizeState.mu.Lock()
 	probeLocalProxyLinkCFOptimizeState.items = make(map[string]probeLocalProxyLinkCFOptimizeStatus)
 	probeLocalProxyLinkCFOptimizeState.mu.Unlock()
+	probeLocalProxyLinkReachabilityState.mu.Lock()
+	probeLocalProxyLinkReachabilityState.items = make(map[string]probeLocalProxyLinkReachabilityStatus)
+	probeLocalProxyLinkReachabilityState.mu.Unlock()
 	probeLocalControl = newProbeLocalControlManager()
 }
 
