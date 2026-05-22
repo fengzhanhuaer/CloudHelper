@@ -1526,9 +1526,12 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 	}
 	log.Printf("probe chain relay request accepted: chain=%s role=%s remote=%s method=%s proto=%s host=%s mode=%s bridge_role=%s transport=%s content_length=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Method, r.Proto, r.Host, firstNonEmpty(relayMode, probeChainRelayModeBridge), bridgeRole, requestTransport, r.ContentLength)
 	if relayMode == probeChainRelayModeSpeedTest {
-		if websocket.IsWebSocketUpgrade(r) || isProbeChainHTTP3WebSocketRequest(r) {
-			log.Printf("probe chain relay speed test rejected: chain=%s role=%s remote=%s transport=%s reason=method_not_allowed", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, requestTransport)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		if isProbeChainHTTP3WebSocketRequest(r) {
+			handleProbeChainSpeedTestHTTP3WebSocket(runtime, w, r)
+			return
+		}
+		if websocket.IsWebSocketUpgrade(r) {
+			handleProbeChainSpeedTestWebSocket(runtime, w, r)
 			return
 		}
 		handleProbeChainSpeedTestHTTP(runtime, w, r)
@@ -1687,6 +1690,80 @@ func handleProbeChainSpeedTestHTTP(runtime *probeChainRuntime, w http.ResponseWr
 		flusher.Flush()
 	}
 	log.Printf("probe chain speed test completed: chain=%s role=%s remote=%s bytes=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, byteCount)
+}
+
+func handleProbeChainSpeedTestWebSocket(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {
+	if runtime == nil {
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+	byteCount := parseProbeChainSpeedTestBytes(r)
+	log.Printf("probe chain websocket speed test request: chain=%s role=%s remote=%s proto=%s bytes=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Proto, byteCount)
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("probe chain websocket speed test upgrade failed: chain=%s role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, err)
+		return
+	}
+	defer ws.Close()
+	conn := newWebSocketNetConn(ws)
+	defer conn.Close()
+	streamProbeChainSpeedTestBytes(runtime, conn, strings.TrimSpace(r.RemoteAddr), byteCount, "websocket")
+}
+
+func handleProbeChainSpeedTestHTTP3WebSocket(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {
+	if runtime == nil {
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+	streamer, ok := w.(http3.HTTPStreamer)
+	if !ok {
+		log.Printf("probe chain h3 websocket speed test rejected: chain=%s role=%s remote=%s reason=http3_stream_unavailable", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr)
+		http.Error(w, "http3 stream unavailable", http.StatusInternalServerError)
+		return
+	}
+	byteCount := parseProbeChainSpeedTestBytes(r)
+	log.Printf("probe chain h3 websocket speed test request: chain=%s role=%s remote=%s proto=%s bytes=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Proto, byteCount)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	stream := streamer.HTTPStream()
+	conn := &probeChainHTTP3StreamNetConn{
+		stream: stream,
+		local:  probeChainRelayNetAddr{label: "probe-chain-h3-speed-local"},
+		remote: probeChainRelayNetAddr{label: strings.TrimSpace(r.RemoteAddr)},
+		closeFn: func() error {
+			return stream.Close()
+		},
+	}
+	defer conn.Close()
+	streamProbeChainSpeedTestBytes(runtime, conn, strings.TrimSpace(r.RemoteAddr), byteCount, "websocket-h3")
+}
+
+func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer, remoteAddr string, byteCount int64, transport string) {
+	if runtime == nil || writer == nil {
+		return
+	}
+	buf := make([]byte, 32*1024)
+	for i := range buf {
+		buf[i] = byte(i % 251)
+	}
+	remaining := byteCount
+	for remaining > 0 {
+		n := int64(len(buf))
+		if remaining < n {
+			n = remaining
+		}
+		if _, err := writer.Write(buf[:n]); err != nil {
+			log.Printf("probe chain %s speed test interrupted: chain=%s role=%s remote=%s bytes=%d remaining=%d err=%v", strings.TrimSpace(transport), runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), byteCount, remaining, err)
+			return
+		}
+		remaining -= n
+	}
+	if flusher, ok := writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	log.Printf("probe chain %s speed test completed: chain=%s role=%s remote=%s bytes=%d", strings.TrimSpace(transport), runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), byteCount)
 }
 
 func parseProbeChainSpeedTestBytes(r *http.Request) int64 {

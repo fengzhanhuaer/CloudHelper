@@ -4658,9 +4658,12 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "chain_id is required"})
 		return
 	}
-	protocol := normalizeProbeChainLinkLayer(req.Protocol)
-	if protocol != "" && protocol != "http2" && protocol != "http3" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "protocol must be http2 or http3"})
+	protocol := ""
+	if strings.TrimSpace(req.Protocol) != "" {
+		protocol = normalizeProbeChainLinkLayer(req.Protocol)
+	}
+	if protocol != "" && !isProbeChainRelaySupportedProtocol(protocol) && protocol != "http2" && protocol != "http3" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "protocol must be websocket-h3, websocket, http2, or http3"})
 		return
 	}
 	items := currentProbeLocalProxyViewChains()

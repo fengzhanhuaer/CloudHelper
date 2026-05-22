@@ -2435,27 +2435,46 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 		}
 	}
 	probeLocalProxyLinkSpeedProbe = func(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
-		if protocol != "http3" {
+		if protocol != "" {
 			t.Fatalf("speed protocol=%q", protocol)
 		}
 		endpointKey := probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort)
 		recordProbeChainRelayProtocolSuccess(endpointKey, probeChainRelayProtocolDialResult{
-			Protocol:  "http3",
+			Protocol:  "websocket-h3",
 			Latency:   35 * time.Millisecond,
 			StartedAt: time.Now().Add(-40 * time.Millisecond),
 			EndedAt:   time.Now(),
 		}, "speed_test")
-		recordProbeChainRelayProtocolObservedTraffic(endpointKey, "http3", 5*1024*1024, 0)
-		return []probeChainRelaySpeedTestResult{{
-			Protocol:   "http3",
-			OK:         true,
-			LatencyMS:  35,
-			Bytes:      2 * 1024 * 1024,
-			DurationMS: 400,
-			RateBPS:    5 * 1024 * 1024,
-			StartedAt:  time.Now().UTC().Format(time.RFC3339),
-			EndedAt:    time.Now().UTC().Format(time.RFC3339),
-		}}
+		recordProbeChainRelayProtocolObservedTraffic(endpointKey, "websocket-h3", 5*1024*1024, 0)
+		recordProbeChainRelayProtocolSuccess(endpointKey, probeChainRelayProtocolDialResult{
+			Protocol:  "websocket",
+			Latency:   45 * time.Millisecond,
+			StartedAt: time.Now().Add(-50 * time.Millisecond),
+			EndedAt:   time.Now(),
+		}, "speed_test")
+		recordProbeChainRelayProtocolObservedTraffic(endpointKey, "websocket", 3*1024*1024, 0)
+		return []probeChainRelaySpeedTestResult{
+			{
+				Protocol:   "websocket-h3",
+				OK:         true,
+				LatencyMS:  35,
+				Bytes:      2 * 1024 * 1024,
+				DurationMS: 400,
+				RateBPS:    5 * 1024 * 1024,
+				StartedAt:  time.Now().UTC().Format(time.RFC3339),
+				EndedAt:    time.Now().UTC().Format(time.RFC3339),
+			},
+			{
+				Protocol:   "websocket",
+				OK:         true,
+				LatencyMS:  45,
+				Bytes:      2 * 1024 * 1024,
+				DurationMS: 650,
+				RateBPS:    3 * 1024 * 1024,
+				StartedAt:  time.Now().UTC().Format(time.RFC3339),
+				EndedAt:    time.Now().UTC().Format(time.RFC3339),
+			},
+		}
 	}
 	defer resetProbeLocalProxyHooksForTest()
 
@@ -2548,7 +2567,7 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 		t.Fatalf("unexpected reachability=%v", reachability)
 	}
 
-	speedResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/speed", map[string]any{"chain_id": "chain-local", "protocol": "http3"}, sessionCookie)
+	speedResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/link/speed", map[string]any{"chain_id": "chain-local"}, sessionCookie)
 	if speedResp.Code != http.StatusOK {
 		t.Fatalf("link speed status=%d body=%s", speedResp.Code, speedResp.Body.String())
 	}
@@ -2560,7 +2579,7 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 		t.Fatalf("link speed rate=%v", speedPayload["rate_bps"])
 	}
 	results, ok := speedPayload["results"].([]any)
-	if !ok || len(results) != 1 {
+	if !ok || len(results) != 2 {
 		t.Fatalf("link speed results=%v", speedPayload["results"])
 	}
 }
