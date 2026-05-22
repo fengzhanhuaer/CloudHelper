@@ -506,7 +506,7 @@
         return '';
       }
       const selected = normalizeRelayProtocol(protocolState.selected_protocol);
-      const reason = String(protocolState.selection_reason || '').trim();
+      const reason = formatProtocolSelectionReason(protocolState.selection_reason);
       const qualities = Array.isArray(protocolState.protocol_qualities) ? protocolState.protocol_qualities : [];
       const listeners = Array.isArray(protocolState.listener_statuses) ? protocolState.listener_statuses : [];
       const parts = [];
@@ -545,9 +545,18 @@
       const value = normalizeRelayProtocol(raw);
       if (value === 'http2' || value === 'h2') return 'HTTP/2';
       if (value === 'http3' || value === 'h3') return 'HTTP/3(QUIC)';
-      if (value === 'websocket') return 'WebSocket';
-      if (value === 'websocket-h3' || value === 'h3-websocket' || value === 'ws-h3') return 'WebSocket over HTTP/3';
+      if (value === 'websocket') return 'WS';
+      if (value === 'websocket-h3' || value === 'h3-websocket' || value === 'ws-h3') return 'WS-H3';
       return value || '?';
+    }
+
+    function formatProtocolSelectionReason(raw) {
+      const value = String(raw || '').trim().toLowerCase();
+      if (!value) return '';
+      if (value === 'websocket_primary') return 'ws_primary';
+      if (value === 'speed_test') return 'speed';
+      if (value === 'latency_test') return 'latency';
+      return value;
     }
 
     function formatRate(rateBps) {
@@ -717,7 +726,7 @@
               <div class="link-info-line"><span class="muted">测试状态</span><span class="pre-line">${escapeHTML(protocolText)}</span></div>
             </div>
           </td>
-          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}">测速</button>${cfButton}</div></td>
+          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket-h3">测速H3</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>${cfButton}</div></td>
         `;
         proxyLinkStatusRowsEl.appendChild(tr);
       });
