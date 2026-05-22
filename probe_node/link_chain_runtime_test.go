@@ -393,7 +393,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketFailure(t *testing
 		mu.Lock()
 		calls = append(calls, protocol)
 		mu.Unlock()
-		if protocol == "websocket-h3" || protocol == "websocket" || protocol == "http3" {
+		if protocol == "websocket-h3" {
 			return probeChainRelayProtocolDialResult{
 				Protocol: protocol,
 				Err:      errors.New("i/o timeout"),
@@ -424,25 +424,13 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketFailure(t *testing
 	defer mu.Unlock()
 	http3WebSocketCalls := 0
 	websocketCalls := 0
-	http3Calls := 0
-	http2Calls := 0
 	for _, call := range calls {
 		switch call {
 		case "websocket-h3":
 			http3WebSocketCalls++
 		case "websocket":
 			websocketCalls++
-		case "http3":
-			http3Calls++
-		case "http2":
-			http2Calls++
 		}
-	}
-	if http3Calls != 1 {
-		t.Fatalf("http3 should be negative cached after first failure, calls=%v", calls)
-	}
-	if http2Calls < 2 {
-		t.Fatalf("http2 should serve both attempts, calls=%v", calls)
 	}
 	if websocketCalls < 2 {
 		t.Fatalf("websocket primary should be tried for both attempts, calls=%v", calls)
@@ -451,28 +439,28 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketFailure(t *testing
 		t.Fatalf("h3 websocket primary should be tried for both attempts, calls=%v", calls)
 	}
 	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
-	foundHTTP3Failure := false
+	foundH3WebSocketFailure := false
 	for _, quality := range snapshot.ProtocolQualities {
-		if quality.Protocol != "http3" {
+		if quality.Protocol != "websocket-h3" {
 			continue
 		}
-		foundHTTP3Failure = true
+		foundH3WebSocketFailure = true
 		if quality.Available {
-			t.Fatalf("expected http3 unavailable after failure: %+v", quality)
+			t.Fatalf("expected websocket-h3 unavailable after failure: %+v", quality)
 		}
 		if quality.LossPermille != 1000 {
-			t.Fatalf("expected failed http3 loss_permille=1000, got %+v", quality)
+			t.Fatalf("expected failed websocket-h3 loss_permille=1000, got %+v", quality)
 		}
 		if quality.LatencyMS <= 0 {
-			t.Fatalf("expected failed http3 latency to preserve attempted duration, got %+v", quality)
+			t.Fatalf("expected failed websocket-h3 latency to preserve attempted duration, got %+v", quality)
 		}
 	}
-	if !foundHTTP3Failure {
-		t.Fatalf("missing http3 failure quality: %+v", snapshot.ProtocolQualities)
+	if !foundH3WebSocketFailure {
+		t.Fatalf("missing websocket-h3 failure quality: %+v", snapshot.ProtocolQualities)
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoFallsBackOnHTTP3ContextCanceled(t *testing.T) {
+func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketContextCanceled(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -480,10 +468,10 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnHTTP3ContextCanceled(t *testin
 
 	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
 		protocol := normalizeProbeChainLinkLayer(layer)
-		if protocol == "http3" {
+		if protocol == "websocket-h3" {
 			return probeChainRelayProtocolDialResult{
 				Protocol: protocol,
-				Err:      errors.New(`Post "https://69.63.223.88:16030/api/node/chain/relay?chain_id=5": context canceled`),
+				Err:      errors.New(`dial websocket-h3: context canceled`),
 				Latency:  6 * time.Second,
 			}
 		}
@@ -500,7 +488,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnHTTP3ContextCanceled(t *testin
 
 	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
 	if err != nil {
-		t.Fatalf("expected http2 fallback after http3 context canceled, got err=%v", err)
+		t.Fatalf("expected websocket fallback after websocket-h3 context canceled, got err=%v", err)
 	}
 	if conn == nil {
 		t.Fatal("expected fallback connection")
@@ -609,19 +597,19 @@ func TestSnapshotProbeChainProtocolStateIncludesListenerStatusByPort(t *testing.
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 
-	markProbeChainRelayListenerStatus("0.0.0.0:16030", "http3", "failed", "bind failed")
+	markProbeChainRelayListenerStatus("0.0.0.0:16030", "websocket-h3", "failed", "bind failed")
 	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
 	if len(snapshot.ListenerStatuses) == 0 {
 		t.Fatalf("expected listener status in snapshot: %+v", snapshot)
 	}
 	found := false
 	for _, item := range snapshot.ListenerStatuses {
-		if item.Protocol == "http3" && item.Status == "failed" && strings.Contains(item.LastError, "bind failed") {
+		if item.Protocol == "websocket-h3" && item.Status == "failed" && strings.Contains(item.LastError, "bind failed") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("missing http3 failed listener status: %+v", snapshot.ListenerStatuses)
+		t.Fatalf("missing websocket-h3 failed listener status: %+v", snapshot.ListenerStatuses)
 	}
 }
 

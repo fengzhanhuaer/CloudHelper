@@ -2423,14 +2423,12 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 			t.Fatalf("unexpected latency endpoint: %+v", endpoint)
 		}
 		switch normalizeProbeChainLinkLayer(protocol) {
-		case "websocket-h3", "websocket", "http3":
+		case "websocket-h3", "websocket":
 			client, server := net.Pipe()
 			go func() {
 				_ = server.Close()
 			}()
 			return client, nil
-		case "http2":
-			return nil, errors.New("http2 unreachable")
 		default:
 			t.Fatalf("unexpected latency protocol=%q", protocol)
 			return nil, nil
@@ -2490,11 +2488,11 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 	if latencyMS, ok := latencyPayload["latency_ms"].(float64); !ok || latencyMS <= 0 {
 		t.Fatalf("link latency ms=%v", latencyPayload["latency_ms"])
 	}
-	if latencyPayload["reachable_count"] != float64(3) || latencyPayload["tested_count"] != float64(4) || latencyPayload["best_protocol"] != "websocket-h3" {
+	if latencyPayload["reachable_count"] != float64(2) || latencyPayload["tested_count"] != float64(2) || latencyPayload["best_protocol"] != "websocket-h3" {
 		t.Fatalf("unexpected latency summary=%v", latencyPayload)
 	}
 	latencyResults, ok := latencyPayload["results"].([]any)
-	if !ok || len(latencyResults) != 4 {
+	if !ok || len(latencyResults) != 2 {
 		t.Fatalf("link latency results=%v", latencyPayload["results"])
 	}
 	protocolState, ok := latencyPayload["protocol_state"].(map[string]any)
@@ -2502,7 +2500,7 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 		t.Fatalf("missing latency protocol_state=%v", latencyPayload["protocol_state"])
 	}
 	protocolQualities, ok := protocolState["protocol_qualities"].([]any)
-	if !ok || len(protocolQualities) != 4 {
+	if !ok || len(protocolQualities) != 2 {
 		t.Fatalf("unexpected latency protocol_qualities=%v", protocolState["protocol_qualities"])
 	}
 	protocolSeen := make(map[string]bool)
@@ -2521,7 +2519,7 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 			qualitySeen[protocolText] = true
 		}
 	}
-	for _, protocol := range []string{"websocket-h3", "websocket", "http3", "http2"} {
+	for _, protocol := range []string{"websocket-h3", "websocket"} {
 		if !protocolSeen[protocol] {
 			t.Fatalf("missing latency protocol result %s in %v", protocol, latencyResults)
 		}
@@ -2546,7 +2544,7 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing reachability in status item=%v", statusAfterLatencyItem)
 	}
-	if reachability["best_protocol"] != "websocket-h3" || reachability["reachable_count"] != float64(3) || reachability["tested_count"] != float64(4) {
+	if reachability["best_protocol"] != "websocket-h3" || reachability["reachable_count"] != float64(2) || reachability["tested_count"] != float64(2) {
 		t.Fatalf("unexpected reachability=%v", reachability)
 	}
 
@@ -2607,9 +2605,9 @@ func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t
 			return 0, fmt.Errorf("unexpected endpoint: %+v", endpoint)
 		}
 		switch ip + "/" + protocol {
-		case "203.0.113.11/http3":
+		case "203.0.113.11/websocket-h3":
 			return 80 * time.Millisecond, nil
-		case "203.0.113.12/http2":
+		case "203.0.113.12/websocket":
 			return 20 * time.Millisecond, nil
 		default:
 			return 0, errors.New("candidate unavailable")
@@ -2644,10 +2642,10 @@ func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t
 	if !ok {
 		t.Fatalf("missing cf optimize status: %v", item)
 	}
-	if cfStatus["status"] != "optimized" || cfStatus["best_ip"] != "203.0.113.12" || cfStatus["best_protocol"] != "http2" {
+	if cfStatus["status"] != "optimized" || cfStatus["best_ip"] != "203.0.113.12" || cfStatus["best_protocol"] != "websocket" {
 		t.Fatalf("unexpected cf optimize status: %v", cfStatus)
 	}
-	if cfStatus["candidate_count"] != float64(2) || cfStatus["planned_count"] != float64(8) || cfStatus["tested_count"] != float64(8) {
+	if cfStatus["candidate_count"] != float64(2) || cfStatus["planned_count"] != float64(4) || cfStatus["tested_count"] != float64(4) {
 		t.Fatalf("unexpected cf optimize counts: %v", cfStatus)
 	}
 }
@@ -2731,13 +2729,13 @@ func TestProbeLocalProxyLinkCFIPOptimizeIncludesRelayWebSocketProtocols(t *testi
 	if cfStatus["status"] != "optimized" || cfStatus["best_ip"] != "203.0.113.11" || cfStatus["best_protocol"] != "websocket" {
 		t.Fatalf("unexpected cf optimize status: %v", cfStatus)
 	}
-	if cfStatus["candidate_count"] != float64(1) || cfStatus["planned_count"] != float64(4) || cfStatus["tested_count"] != float64(4) {
+	if cfStatus["candidate_count"] != float64(1) || cfStatus["planned_count"] != float64(2) || cfStatus["tested_count"] != float64(2) {
 		t.Fatalf("unexpected cf optimize counts: %v", cfStatus)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	for _, protocol := range []string{"websocket-h3", "websocket", "http3", "http2"} {
+	for _, protocol := range []string{"websocket-h3", "websocket"} {
 		if seenProtocols[protocol] != 1 {
 			t.Fatalf("expected protocol %s to be probed once, seen=%v", protocol, seenProtocols)
 		}

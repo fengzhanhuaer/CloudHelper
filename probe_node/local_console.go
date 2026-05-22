@@ -3869,7 +3869,7 @@ func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, pr
 	switch cleanProtocol {
 	case "websocket-h3":
 		return openProbeChainRelayNetConnWithLayerConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
-	case "websocket", "http3", "http2":
+	case "websocket":
 		return openProbeChainRelayNetConnWithLayerConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, probeChainBridgeRoleToNext, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
 	default:
 		return nil, fmt.Errorf("unsupported relay protocol: %s", protocol)
@@ -3877,7 +3877,7 @@ func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, pr
 }
 
 func probeLocalProxyLinkReachabilityProtocols() []string {
-	return []string{"websocket-h3", "websocket", "http3", "http2"}
+	return []string{"websocket-h3", "websocket"}
 }
 
 func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
@@ -3959,12 +3959,10 @@ func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip str
 		return 0, fmt.Errorf("invalid candidate ip: %s", ip)
 	}
 	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
-	if cleanProtocol != "http2" && cleanProtocol != "http3" {
-		switch cleanProtocol {
-		case "websocket", "websocket-h3":
-		default:
-			return 0, fmt.Errorf("invalid cf probe protocol: %s", protocol)
-		}
+	switch cleanProtocol {
+	case "websocket", "websocket-h3":
+	default:
+		return 0, fmt.Errorf("invalid cf probe protocol: %s", protocol)
 	}
 	log.Printf("probe local cf optimize probe start: chain=%s entry=%s:%d candidate_ip=%s protocol=%s timeout=%s", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, probeLocalProxyLinkCFOptimizeTimeout)
 	startedAt := time.Now()
@@ -4280,7 +4278,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 	bestProtocol := ""
 	bestLatencyMS := int64(0)
 	endpointKey := probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort)
-	protocolOrder := map[string]int{"websocket-h3": 0, "websocket": 1, "http3": 2, "http2": 3}
+	protocolOrder := map[string]int{"websocket-h3": 0, "websocket": 1}
 	for range protocols {
 		result := (<-resultsCh).probeLocalProxyLinkReachabilityResult
 		results = append(results, result)

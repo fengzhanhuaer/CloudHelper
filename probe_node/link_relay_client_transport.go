@@ -305,15 +305,24 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 func probeChainRelayProtocolCandidates(layer string) []string {
 	switch normalizeProbeChainLinkLayer(layer) {
 	case "http":
-		return []string{"websocket-h3", "websocket", "http3", "http2"}
+		return []string{"websocket-h3", "websocket"}
 	case "http2", "http3":
-		return []string{"websocket-h3", "websocket", "http3", "http2"}
+		return []string{"websocket-h3", "websocket"}
 	case "websocket":
 		return []string{"websocket"}
 	case "websocket-h3":
 		return []string{"websocket-h3"}
 	default:
-		return []string{"websocket-h3", "websocket", "http3", "http2"}
+		return []string{"websocket-h3", "websocket"}
+	}
+}
+
+func isProbeChainRelaySupportedProtocol(protocol string) bool {
+	switch normalizeProbeChainLinkLayer(protocol) {
+	case "websocket", "websocket-h3":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -692,6 +701,9 @@ func snapshotProbeChainRelayListenerStatuses(endpointKey string, relayPort int) 
 			continue
 		}
 		for protocol, item := range probeChainRelayListenerStateStore.items[key] {
+			if !isProbeChainRelaySupportedProtocol(protocol) {
+				continue
+			}
 			if _, exists := seen[protocol]; exists {
 				continue
 			}
@@ -732,12 +744,18 @@ func snapshotProbeChainProtocolState(relayHost string, relayPort int) probeChain
 		return snapshot
 	}
 	snapshot.SelectedProtocol = strings.TrimSpace(state.SelectedProtocol)
+	if !isProbeChainRelaySupportedProtocol(snapshot.SelectedProtocol) {
+		snapshot.SelectedProtocol = ""
+	}
 	snapshot.SelectionReason = strings.TrimSpace(state.SelectionReason)
 	if !state.UpdatedAt.IsZero() {
 		snapshot.UpdatedAt = state.UpdatedAt.UTC().Format(time.RFC3339)
 	}
 	nextProbeAt := time.Time{}
 	for _, quality := range state.Qualities {
+		if !isProbeChainRelaySupportedProtocol(quality.Protocol) {
+			continue
+		}
 		snapshot.ProtocolQualities = append(snapshot.ProtocolQualities, quality)
 		if !quality.NegativeUntil.IsZero() && (nextProbeAt.IsZero() || quality.NegativeUntil.Before(nextProbeAt)) {
 			nextProbeAt = quality.NegativeUntil
