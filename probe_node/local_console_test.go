@@ -2648,6 +2648,18 @@ func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t
 	if cfStatus["candidate_count"] != float64(2) || cfStatus["planned_count"] != float64(4) || cfStatus["tested_count"] != float64(4) {
 		t.Fatalf("unexpected cf optimize counts: %v", cfStatus)
 	}
+	topResults, ok := cfStatus["top_results"].([]any)
+	if !ok || len(topResults) != 2 {
+		t.Fatalf("unexpected cf optimize top_results: %v", cfStatus["top_results"])
+	}
+	firstTop, _ := topResults[0].(map[string]any)
+	secondTop, _ := topResults[1].(map[string]any)
+	if firstTop["ip"] != "203.0.113.12" || firstTop["protocol"] != "websocket" || firstTop["latency_ms"] != float64(20) {
+		t.Fatalf("unexpected first top result: %v", firstTop)
+	}
+	if secondTop["ip"] != "203.0.113.11" || secondTop["protocol"] != "websocket-h3" || secondTop["latency_ms"] != float64(80) {
+		t.Fatalf("unexpected second top result: %v", secondTop)
+	}
 }
 
 func TestProbeLocalProxyLinkCFIPOptimizeIncludesRelayWebSocketProtocols(t *testing.T) {
@@ -2732,6 +2744,14 @@ func TestProbeLocalProxyLinkCFIPOptimizeIncludesRelayWebSocketProtocols(t *testi
 	if cfStatus["candidate_count"] != float64(1) || cfStatus["planned_count"] != float64(2) || cfStatus["tested_count"] != float64(2) {
 		t.Fatalf("unexpected cf optimize counts: %v", cfStatus)
 	}
+	topResults, ok := cfStatus["top_results"].([]any)
+	if !ok || len(topResults) != 1 {
+		t.Fatalf("unexpected cf optimize top_results: %v", cfStatus["top_results"])
+	}
+	firstTop, _ := topResults[0].(map[string]any)
+	if firstTop["ip"] != "203.0.113.11" || firstTop["protocol"] != "websocket" || firstTop["latency_ms"] != float64(15) {
+		t.Fatalf("unexpected first top result: %v", firstTop)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -2739,6 +2759,40 @@ func TestProbeLocalProxyLinkCFIPOptimizeIncludesRelayWebSocketProtocols(t *testi
 		if seenProtocols[protocol] != 1 {
 			t.Fatalf("expected protocol %s to be probed once, seen=%v", protocol, seenProtocols)
 		}
+	}
+}
+
+func TestDefaultProbeLocalProxyLinkCFIPLookupSamplesAtLeast512CloudflareIPs(t *testing.T) {
+	probeLocalFetchCloudflareIPv4CIDRs = func(ctx context.Context) ([]string, error) {
+		return []string{
+			"198.51.100.0/24",
+			"203.0.113.0/24",
+			"203.0.114.0/23",
+		}, nil
+	}
+	defer resetProbeLocalProxyHooksForTest()
+
+	ips, err := defaultProbeLocalProxyLinkCFIPLookup(context.Background(), "api_copilot_example.com")
+	if err != nil {
+		t.Fatalf("default cf lookup failed: %v", err)
+	}
+	if len(ips) != probeLocalProxyLinkCFOptimizeMaxIPs {
+		t.Fatalf("expected %d sampled ips, got %d", probeLocalProxyLinkCFOptimizeMaxIPs, len(ips))
+	}
+
+	seen := make(map[string]struct{}, len(ips))
+	for _, ip := range ips {
+		if ip == nil || ip.To4() == nil {
+			t.Fatalf("expected ipv4 candidate, got %v", ip)
+		}
+		text := ip.String()
+		if _, ok := seen[text]; ok {
+			t.Fatalf("duplicate sampled ip: %s", text)
+		}
+		seen[text] = struct{}{}
+	}
+	if len(seen) != probeLocalProxyLinkCFOptimizeMaxIPs {
+		t.Fatalf("expected %d unique ips, got %d", probeLocalProxyLinkCFOptimizeMaxIPs, len(seen))
 	}
 }
 

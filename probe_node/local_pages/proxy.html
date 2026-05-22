@@ -663,6 +663,19 @@
         const ipHTML = `<span class="copy-ip" role="button" tabindex="0" title="复制 ${escapeHTML(copyValue)}" data-copy-cf-ip="${escapeHTML(bestIP)}" data-copy-cf-dns="${escapeHTML(dns)}">${escapeHTML(bestIP)}</span>`;
         parts.push(`best=${ipHTML}${bestProtocol ? '/' + escapeHTML(formatRelayProtocolLabel(bestProtocol)) : ''}${Number.isFinite(latency) && latency > 0 ? '/' + Math.trunc(latency) + 'ms' : ''}`);
       }
+      const topResults = Array.isArray(status.top_results) ? status.top_results : [];
+      if (topResults.length > 0) {
+        const topItems = topResults.slice(0, 10).map((result) => {
+          const ip = String(result && result.ip || '').trim();
+          if (!ip) return '';
+          const protocol = normalizeRelayProtocol(result && result.protocol);
+          const latencyMS = Number(result && result.latency_ms);
+          const copyValue = dns ? `${dns},${ip}` : ip;
+          const ipHTML = `<span class="copy-ip" role="button" tabindex="0" title="复制 ${escapeHTML(copyValue)}" data-copy-cf-ip="${escapeHTML(ip)}" data-copy-cf-dns="${escapeHTML(dns)}">${escapeHTML(ip)}</span>`;
+          return `${ipHTML}${protocol ? '/' + escapeHTML(formatRelayProtocolLabel(protocol)) : ''}${Number.isFinite(latencyMS) && latencyMS > 0 ? '/' + Math.trunc(latencyMS) + 'ms' : ''}`;
+        }).filter(Boolean);
+        if (topItems.length > 0) parts.push(`top10=${topItems.join(', ')}`);
+      }
       const tested = Number(status.tested_count);
       const planned = Number(status.planned_count);
       const candidates = Number(status.candidate_count);

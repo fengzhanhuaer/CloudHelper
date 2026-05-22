@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net"
@@ -46,8 +47,9 @@ const (
 	probeLocalTUNPrimaryDNSBackupFileName = "tun_primary_dns_backup.json"
 	probeLocalProxyBackupAPIPath          = "/api/probe/proxy_group/backup"
 	probeLocalProxyReadBodyMaxLen         = 512 * 1024
-	probeLocalProxyLinkCFOptimizeMaxIPs   = 16
-	probeLocalProxyLinkCFOptimizeParallel = 4
+	probeLocalProxyLinkCFOptimizeMaxIPs   = 512
+	probeLocalProxyLinkCFOptimizeTopN     = 10
+	probeLocalProxyLinkCFOptimizeParallel = 64
 	probeLocalProxyLinkCFOptimizeTimeout  = 6 * time.Second
 )
 
@@ -255,6 +257,7 @@ var (
 	probeLocalProxyLinkHandshakeProbe     = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkProtocolProbe      = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe         = runProbeLocalProxyLinkSpeedProbe
+	probeLocalFetchCloudflareIPv4CIDRs    = defaultProbeLocalFetchCloudflareIPv4CIDRs
 	probeLocalProxyLinkCFIPLookup         = defaultProbeLocalProxyLinkCFIPLookup
 	probeLocalProxyLinkCFIPProbe          = runProbeLocalProxyLinkCFIPProbe
 	probeLocalStartCFIPOptimizeTask       = func(fn func()) { go fn() }
@@ -2838,6 +2841,7 @@ type probeLocalProxyLinkCFOptimizeStatus struct {
 	StartedAt      string                                `json:"started_at,omitempty"`
 	FinishedAt     string                                `json:"finished_at,omitempty"`
 	UpdatedAt      string                                `json:"updated_at,omitempty"`
+	TopResults     []probeLocalProxyLinkCFOptimizeResult `json:"top_results,omitempty"`
 	Results        []probeLocalProxyLinkCFOptimizeResult `json:"results,omitempty"`
 }
 
@@ -3924,33 +3928,302 @@ func defaultProbeLocalProxyLinkCFIPLookup(ctx context.Context, host string) ([]n
 	if cleanHost == "" {
 		return nil, errors.New("cf entry host is empty")
 	}
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", cleanHost)
+	cidrs, err := probeLocalFetchCloudflareIPv4CIDRs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]net.IP, 0, len(ips))
-	seen := make(map[string]struct{}, len(ips))
-	for _, ip := range ips {
-		if ip == nil {
+	ips, err := sampleProbeLocalCloudflareIPs(cleanHost, cidrs, probeLocalProxyLinkCFOptimizeMaxIPs)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) < probeLocalProxyLinkCFOptimizeMaxIPs {
+		return nil, fmt.Errorf("cloudflare candidate sampling returned only %d ip(s)", len(ips))
+	}
+	return ips, nil
+}
+
+func defaultProbeLocalFetchCloudflareIPv4CIDRs(ctx context.Context) ([]string, error) {
+	type probeLocalCloudflareIPResponse struct {
+		Success bool `json:"success"`
+		Result  struct {
+			IPv4CIDRs []string `json:"ipv4_cidrs"`
+		} `json:"result"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	apiReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.cloudflare.com/client/v4/ips", nil)
+	if err == nil {
+		apiReq.Header.Set("Accept", "application/json")
+		apiReq.Header.Set("User-Agent", "probe-node-cf-optimize/1.0")
+		resp, doErr := client.Do(apiReq)
+		if doErr == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var payload probeLocalCloudflareIPResponse
+				if decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); decodeErr == nil {
+					cidrs := cleanProbeLocalCloudflareCIDRs(payload.Result.IPv4CIDRs)
+					if len(cidrs) > 0 {
+						return cidrs, nil
+					}
+				}
+			}
+		} else {
+			err = doErr
+		}
+	}
+
+	textReq, textReqErr := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.cloudflare.com/ips-v4", nil)
+	if textReqErr != nil {
+		if err != nil {
+			return nil, fmt.Errorf("fetch cloudflare ip ranges failed: api=%v, text=%v", err, textReqErr)
+		}
+		return nil, textReqErr
+	}
+	textReq.Header.Set("Accept", "text/plain")
+	textReq.Header.Set("User-Agent", "probe-node-cf-optimize/1.0")
+	resp, textErr := client.Do(textReq)
+	if textErr != nil {
+		if err != nil {
+			return nil, fmt.Errorf("fetch cloudflare ip ranges failed: api=%v, text=%v", err, textErr)
+		}
+		return nil, textErr
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		trimmed := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("fetch cloudflare ip ranges failed: api=%v, text status=%d body=%s", err, resp.StatusCode, trimmed)
+		}
+		return nil, fmt.Errorf("fetch cloudflare ip ranges failed: text status=%d body=%s", resp.StatusCode, trimmed)
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		if err != nil {
+			return nil, fmt.Errorf("fetch cloudflare ip ranges failed: api=%v, text=%v", err, readErr)
+		}
+		return nil, readErr
+	}
+	cidrs := cleanProbeLocalCloudflareCIDRs(strings.Fields(string(body)))
+	if len(cidrs) == 0 {
+		if err != nil {
+			return nil, fmt.Errorf("fetch cloudflare ip ranges failed: api=%v, text returned no ipv4 cidr", err)
+		}
+		return nil, errors.New("cloudflare ipv4 cidr list is empty")
+	}
+	return cidrs, nil
+}
+
+func cleanProbeLocalCloudflareCIDRs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		candidate := strings.TrimSpace(value)
+		if candidate == "" {
 			continue
 		}
-		candidate := ip.String()
-		if candidate == "" {
+		if _, ipNet, err := net.ParseCIDR(candidate); err != nil || ipNet == nil || ipNet.IP.To4() == nil {
 			continue
 		}
 		if _, ok := seen[candidate]; ok {
 			continue
 		}
 		seen[candidate] = struct{}{}
-		out = append(out, ip)
-		if len(out) >= probeLocalProxyLinkCFOptimizeMaxIPs {
+		out = append(out, candidate)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sampleProbeLocalCloudflareIPs(host string, cidrs []string, count int) ([]net.IP, error) {
+	if count <= 0 {
+		return nil, errors.New("cloudflare sample count must be positive")
+	}
+	cleanCIDRs := cleanProbeLocalCloudflareCIDRs(cidrs)
+	if len(cleanCIDRs) == 0 {
+		return nil, errors.New("cloudflare ipv4 cidr list is empty")
+	}
+
+	type sampleRange struct {
+		base       uint32
+		firstHost  uint64
+		hostCount  uint64
+		start      uint64
+		step       uint64
+		iterations uint64
+	}
+
+	seedHasher := fnv.New32a()
+	_, _ = seedHasher.Write([]byte(strings.ToLower(strings.TrimSpace(host))))
+	hostSeed := uint64(seedHasher.Sum32())
+	ranges := make([]sampleRange, 0, len(cleanCIDRs))
+	for index, cidr := range cleanCIDRs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil || ipNet == nil {
+			continue
+		}
+		ipv4 := ipNet.IP.To4()
+		if ipv4 == nil {
+			continue
+		}
+		ones, bits := ipNet.Mask.Size()
+		if bits != 32 || ones < 0 || ones > 32 {
+			continue
+		}
+		size := uint64(1) << uint(32-ones)
+		firstHost := uint64(0)
+		hostCount := size
+		if size > 2 {
+			firstHost = 1
+			hostCount = size - 2
+		}
+		if hostCount == 0 {
+			continue
+		}
+		base := probeLocalIPv4ToUint32(ipv4)
+		start := (hostSeed + uint64(index+1)*1315423911) % hostCount
+		step := probeLocalCoPrimeStep(hostCount, hostSeed+uint64(index+1)*2654435761)
+		ranges = append(ranges, sampleRange{
+			base:      base,
+			firstHost: firstHost,
+			hostCount: hostCount,
+			start:     start,
+			step:      step,
+		})
+	}
+	if len(ranges) == 0 {
+		return nil, errors.New("cloudflare ipv4 cidr list produced no usable range")
+	}
+
+	totalCapacity := uint64(0)
+	for _, item := range ranges {
+		totalCapacity += item.hostCount
+	}
+	limit := count
+	if totalCapacity < uint64(limit) {
+		limit = int(totalCapacity)
+	}
+	out := make([]net.IP, 0, limit)
+	seen := make(map[uint32]struct{}, limit)
+	for len(out) < limit {
+		progressed := false
+		for index := range ranges {
+			if len(out) >= limit {
+				break
+			}
+			item := &ranges[index]
+			if item.iterations >= item.hostCount {
+				continue
+			}
+			offset := (item.start + item.iterations*item.step) % item.hostCount
+			item.iterations++
+			candidate := item.base + uint32(item.firstHost+offset)
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			out = append(out, probeLocalUint32ToIPv4(candidate))
+			progressed = true
+		}
+		if !progressed {
 			break
 		}
 	}
 	if len(out) == 0 {
-		return nil, errors.New("cf entry host resolved no ip")
+		return nil, errors.New("cloudflare sample generated no ip")
 	}
 	return out, nil
+}
+
+func probeLocalIPv4ToUint32(ip net.IP) uint32 {
+	ipv4 := ip.To4()
+	if ipv4 == nil {
+		return 0
+	}
+	return uint32(ipv4[0])<<24 | uint32(ipv4[1])<<16 | uint32(ipv4[2])<<8 | uint32(ipv4[3])
+}
+
+func probeLocalUint32ToIPv4(value uint32) net.IP {
+	return net.IPv4(
+		byte(value>>24),
+		byte(value>>16),
+		byte(value>>8),
+		byte(value),
+	)
+}
+
+func probeLocalCoPrimeStep(limit uint64, seed uint64) uint64 {
+	if limit <= 1 {
+		return 1
+	}
+	step := (seed % limit) + 1
+	for probeLocalGCD64(step, limit) != 1 {
+		step++
+		if step > limit {
+			step = 1
+		}
+	}
+	return step
+}
+
+func probeLocalGCD64(a uint64, b uint64) uint64 {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	if a == 0 {
+		return 1
+	}
+	return a
+}
+
+func buildProbeLocalProxyLinkCFOptimizeTopResults(results []probeLocalProxyLinkCFOptimizeResult) []probeLocalProxyLinkCFOptimizeResult {
+	bestByIP := make(map[string]probeLocalProxyLinkCFOptimizeResult, len(results))
+	for _, result := range results {
+		if !result.OK {
+			continue
+		}
+		ip := strings.TrimSpace(result.IP)
+		if ip == "" {
+			continue
+		}
+		current, ok := bestByIP[ip]
+		if !ok || result.LatencyMS < current.LatencyMS || (result.LatencyMS == current.LatencyMS && strings.Compare(result.Protocol, current.Protocol) < 0) {
+			bestByIP[ip] = result
+		}
+	}
+	if len(bestByIP) == 0 {
+		return nil
+	}
+	out := make([]probeLocalProxyLinkCFOptimizeResult, 0, len(bestByIP))
+	for _, result := range bestByIP {
+		out = append(out, result)
+	}
+	sort.Slice(out, func(i int, j int) bool {
+		if out[i].LatencyMS != out[j].LatencyMS {
+			return out[i].LatencyMS < out[j].LatencyMS
+		}
+		if out[i].IP != out[j].IP {
+			return out[i].IP < out[j].IP
+		}
+		return out[i].Protocol < out[j].Protocol
+	})
+	if len(out) > probeLocalProxyLinkCFOptimizeTopN {
+		out = out[:probeLocalProxyLinkCFOptimizeTopN]
+	}
+	return append([]probeLocalProxyLinkCFOptimizeResult{}, out...)
+}
+
+func probeLocalPreviewTexts(values []string, limit int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	if limit <= 0 || len(values) <= limit {
+		return strings.Join(values, ",")
+	}
+	return strings.Join(values[:limit], ",") + fmt.Sprintf(" ... total=%d", len(values))
 }
 
 func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip string, protocol string) (time.Duration, error) {
@@ -4035,6 +4308,7 @@ func snapshotProbeLocalProxyLinkCFOptimizeStatus(chainID string) *probeLocalProx
 	if !ok {
 		return nil
 	}
+	status.TopResults = append([]probeLocalProxyLinkCFOptimizeResult{}, status.TopResults...)
 	status.Results = append([]probeLocalProxyLinkCFOptimizeResult{}, status.Results...)
 	return &status
 }
@@ -4051,10 +4325,12 @@ func appendProbeLocalProxyLinkCFOptimizeResult(chainID string, result probeLocal
 	status.TestedCount++
 	if !result.OK {
 		status.FailedCount++
-	} else if status.BestIP == "" || result.LatencyMS < status.BestLatencyMS {
-		status.BestIP = result.IP
-		status.BestProtocol = result.Protocol
-		status.BestLatencyMS = result.LatencyMS
+	}
+	status.TopResults = buildProbeLocalProxyLinkCFOptimizeTopResults(status.Results)
+	if len(status.TopResults) > 0 {
+		status.BestIP = status.TopResults[0].IP
+		status.BestProtocol = status.TopResults[0].Protocol
+		status.BestLatencyMS = status.TopResults[0].LatencyMS
 	}
 	status.UpdatedAt = now
 	probeLocalProxyLinkCFOptimizeState.items[cleanID] = status
@@ -4122,7 +4398,7 @@ func runProbeLocalProxyLinkCFIPOptimizeTask(chainID string, endpoint probeLocalT
 		finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "failed", "cf optimize relay protocols are unavailable")
 		return
 	}
-	log.Printf("probe local cf optimize start: chain=%s entry=%s:%d link_layer=%s candidate_ips=%s protocols=%s", cleanID, endpoint.EntryHost, endpoint.EntryPort, normalizeProbeChainLinkLayer(endpoint.LinkLayer), strings.Join(ipTexts, ","), strings.Join(protocols, ","))
+	log.Printf("probe local cf optimize start: chain=%s entry=%s:%d link_layer=%s candidate_count=%d candidate_preview=%s protocols=%s", cleanID, endpoint.EntryHost, endpoint.EntryPort, normalizeProbeChainLinkLayer(endpoint.LinkLayer), len(ipTexts), probeLocalPreviewTexts(ipTexts, 10), strings.Join(protocols, ","))
 	probeLocalProxyLinkCFOptimizeState.mu.Lock()
 	status = probeLocalProxyLinkCFOptimizeState.items[cleanID]
 	status.PlannedCount = len(ipTexts) * len(protocols)
@@ -4183,7 +4459,11 @@ func runProbeLocalProxyLinkCFIPOptimizeTask(chainID string, endpoint probeLocalT
 		finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "failed", "all cf candidate ips are unreachable")
 		return
 	}
-	log.Printf("probe local cf optimize completed: chain=%s entry=%s:%d best_ip=%s best_protocol=%s best_latency_ms=%d tested=%d failed=%d planned=%d", cleanID, endpoint.EntryHost, endpoint.EntryPort, statusSnapshot.BestIP, statusSnapshot.BestProtocol, statusSnapshot.BestLatencyMS, statusSnapshot.TestedCount, statusSnapshot.FailedCount, statusSnapshot.PlannedCount)
+	topPreview := make([]string, 0, len(statusSnapshot.TopResults))
+	for _, result := range statusSnapshot.TopResults {
+		topPreview = append(topPreview, fmt.Sprintf("%s/%s/%dms", result.IP, result.Protocol, result.LatencyMS))
+	}
+	log.Printf("probe local cf optimize completed: chain=%s entry=%s:%d best_ip=%s best_protocol=%s best_latency_ms=%d tested=%d failed=%d planned=%d top_results=%s", cleanID, endpoint.EntryHost, endpoint.EntryPort, statusSnapshot.BestIP, statusSnapshot.BestProtocol, statusSnapshot.BestLatencyMS, statusSnapshot.TestedCount, statusSnapshot.FailedCount, statusSnapshot.PlannedCount, strings.Join(topPreview, ","))
 	finishProbeLocalProxyLinkCFOptimizeStatus(cleanID, "optimized", "")
 }
 
@@ -4495,6 +4775,7 @@ func probeLocalProxyLinkCFIPOptimizeHandler(w http.ResponseWriter, r *http.Reque
 	existing := probeLocalProxyLinkCFOptimizeState.items[canonicalChainID]
 	if existing.Running {
 		status := existing
+		status.TopResults = append([]probeLocalProxyLinkCFOptimizeResult{}, existing.TopResults...)
 		status.Results = append([]probeLocalProxyLinkCFOptimizeResult{}, existing.Results...)
 		probeLocalProxyLinkCFOptimizeState.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": false, "running": true, "status": status})
@@ -5046,6 +5327,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalProxyLinkHandshakeProbe = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkProtocolProbe = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe = runProbeLocalProxyLinkSpeedProbe
+	probeLocalFetchCloudflareIPv4CIDRs = defaultProbeLocalFetchCloudflareIPv4CIDRs
 	probeLocalProxyLinkCFIPLookup = defaultProbeLocalProxyLinkCFIPLookup
 	probeLocalProxyLinkCFIPProbe = runProbeLocalProxyLinkCFIPProbe
 	probeLocalStartCFIPOptimizeTask = func(fn func()) { go fn() }
