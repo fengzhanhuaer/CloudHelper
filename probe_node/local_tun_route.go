@@ -207,7 +207,12 @@ func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, err
 		return nil, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if route.Direct {
-		return net.DialTimeout("tcp", strings.TrimSpace(route.TargetAddr), 10*time.Second)
+		conn, err := net.DialTimeout("tcp", strings.TrimSpace(route.TargetAddr), 10*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		tuneProbeChainNetConn(conn)
+		return conn, nil
 	}
 	return openProbeLocalTunnelConnWithGroupRuntime("tcp", route.TargetAddr, route.GroupRuntime, nil)
 }

@@ -41,7 +41,7 @@ const (
 	probeLocalTUNTCPOpenConcurrencyLimit   = 256
 	probeLocalTUNTCPFailureLogInterval     = 5 * time.Second
 	probeLocalTUNTCPFailureLogCacheMax     = 512
-	probeLocalTUNTCPForwarderWindow        = 0
+	probeLocalTUNTCPForwarderWindow        = 4 * 1024 * 1024
 	probeLocalTUNTCPForwarderInFlight      = 2048
 	probeLocalTUNUDPAssociationTimeout     = 30 * time.Second
 	probeLocalTUNUDPQUICAssociationTimeout = 60 * time.Second
@@ -509,7 +509,7 @@ func (n *probeLocalTUNNetstack) pipeAndCloseTCP(dst net.Conn, src net.Conn, rela
 		_ = dst.SetReadDeadline(deadline)
 		writer = &probeLocalTUNDeadlineRefreshWriter{writer: writer, src: src, dst: dst, idle: probeLocalTUNTCPRelayIdleTimeout}
 	}
-	_, err := io.Copy(writer, src)
+	_, err := probeChainCopy(writer, src)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		if relay != nil {
 			globalProbeTCPDebugState.recordRelayFailure(relay, err)
@@ -545,6 +545,7 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 			rememberProbeLocalTUNTCPDirectFailure(route.TargetAddr, dialErr)
 			return nil, route, dialErr
 		}
+		tuneProbeChainNetConn(conn)
 		clearProbeLocalTUNTCPDirectFailure(route.TargetAddr)
 		return conn, route, nil
 	}
@@ -722,6 +723,7 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 			releaseSource()
 			return nil, route, dialErr
 		}
+		tuneProbeChainUDPConn(conn)
 		_ = natMode
 		return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: conn, releaseSource: releaseSource}, route, nil
 	}
@@ -967,15 +969,7 @@ func (c *probeLocalTUNTunnelUDPConn) Read(payload []byte) (int, error) {
 	}
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
-	frame, err := readProbeChainFramedPacket(c.reader)
-	if err != nil {
-		return 0, err
-	}
-	if len(frame) == 0 {
-		return 0, nil
-	}
-	n := copy(payload, frame)
-	return n, nil
+	return readProbeChainFramedPacketInto(c.reader, payload)
 }
 
 func (c *probeLocalTUNTunnelUDPConn) Write(payload []byte) (int, error) {

@@ -27,6 +27,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -82,6 +83,7 @@ type probeChainRuntime struct {
 	cfg                probeChainRuntimeConfig
 	httpsServer        *http.Server
 	http3Server        *http3.Server
+	http3PacketConn    net.PacketConn
 	downstreamSessions map[string]*probeChainBridgeSession
 	upstreamSessions   map[string]*probeChainBridgeSession
 	bridgeMu           sync.Mutex
@@ -244,6 +246,22 @@ const (
 	probeChainRelaySpeedTestBytes              = 32 * 1024 * 1024
 	probeChainRelaySpeedTestMaxBytes           = 64 * 1024 * 1024
 	probeChainRelaySpeedTestTimeout            = 60 * time.Second
+	probeChainRelaySpeedTestChunkBytes         = 256 * 1024
+	probeChainRelayIOCopyBufferBytes           = 256 * 1024
+	probeChainRelayWebSocketBufferBytes        = 256 * 1024
+	probeChainRelayWebSocketWriteBatchBytes    = 256 * 1024
+	probeChainRelayTCPSocketBufferBytes        = 4 * 1024 * 1024
+	probeChainRelayUDPSocketBufferBytes        = 4 * 1024 * 1024
+	probeChainRelayUDPFrameBufferBytes         = 2 + 65535
+	probeChainRelayTCPKeepAlivePeriod          = 30 * time.Second
+	probeChainRelayYamuxAcceptBacklog          = 1024
+	probeChainRelayYamuxMaxStreamWindowBytes   = 16 * 1024 * 1024
+	probeChainRelayYamuxWriteTimeout           = 30 * time.Second
+	probeChainRelayQUICInitialStreamWindow     = 8 * 1024 * 1024
+	probeChainRelayQUICMaxStreamWindow         = 16 * 1024 * 1024
+	probeChainRelayQUICInitialConnectionWindow = 32 * 1024 * 1024
+	probeChainRelayQUICMaxConnectionWindow     = 64 * 1024 * 1024
+	probeChainRelayQUICMaxIncomingStreams      = 1024
 
 	probeChainAuthPacketType        = "github_copilot_auth_request"
 	probeChainAuthPacketVersion     = "2025-03-22"
@@ -258,6 +276,18 @@ var probeChainAuthIPStateMap = struct {
 	items map[string]probeChainAuthIPState
 }{
 	items: make(map[string]probeChainAuthIPState),
+}
+
+var probeChainCopyBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, probeChainRelayIOCopyBufferBytes)
+	},
+}
+
+var probeChainUDPFrameBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, probeChainRelayUDPFrameBufferBytes)
+	},
 }
 
 func runProbeChainLinkControl(cmd probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
@@ -910,9 +940,10 @@ func listenTCPWithRetry(listenAddr string, timeout time.Duration) (net.Listener,
 	deadline := time.Now().Add(timeout)
 	backoff := probeChainPortForwardListenRetryInterval
 	for {
-		ln, err := net.Listen("tcp", listenAddr)
+		listenConfig := net.ListenConfig{KeepAlive: probeChainRelayTCPKeepAlivePeriod}
+		ln, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
 		if err == nil {
-			return ln, nil
+			return &probeChainTunedTCPListener{Listener: ln}, nil
 		}
 		if !isRetryablePortForwardListenErr(err) || time.Now().After(deadline) {
 			return nil, err
@@ -931,6 +962,9 @@ func listenUDPWithRetry(listenAddr string, timeout time.Duration) (net.PacketCon
 	for {
 		pc, err := net.ListenPacket("udp", listenAddr)
 		if err == nil {
+			if udpConn, ok := pc.(*net.UDPConn); ok {
+				tuneProbeChainUDPConn(udpConn)
+			}
 			return pc, nil
 		}
 		if !isRetryablePortForwardListenErr(err) || time.Now().After(deadline) {
@@ -995,7 +1029,12 @@ func openProbeChainPortForwardLocalTarget(network string, targetAddr string) (ne
 		return nil, errors.New("single-hop udp port forward is not supported")
 	}
 	dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-	return dialer.Dial("tcp", strings.TrimSpace(targetAddr))
+	conn, err := dialer.Dial("tcp", strings.TrimSpace(targetAddr))
+	if err != nil {
+		return nil, err
+	}
+	tuneProbeChainNetConn(conn)
+	return conn, nil
 }
 
 func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide string, network string, targetAddr string) (net.Conn, error) {
@@ -1098,12 +1137,12 @@ func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 
 			errCh := make(chan error, 2)
 			go func() {
-				_, copyErr := io.Copy(downstream, localConn)
+				_, copyErr := probeChainCopy(downstream, localConn)
 				closeProbeChainConnWrite(downstream)
 				errCh <- copyErr
 			}()
 			go func() {
-				_, copyErr := io.Copy(localConn, downstream)
+				_, copyErr := probeChainCopy(localConn, downstream)
 				closeProbeChainConnWrite(localConn)
 				errCh <- copyErr
 			}()
@@ -1430,6 +1469,27 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		return fmt.Errorf("prepare chain relay certificate failed: %w", err)
 	}
 
+	listenConfig := net.ListenConfig{KeepAlive: probeChainRelayTCPKeepAlivePeriod}
+	tcpListener, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen chain relay tcp failed: %w", err)
+	}
+	tcpListener = &probeChainTunedTCPListener{Listener: tcpListener}
+	udpPacketConn, err := net.ListenPacket("udp", listenAddr)
+	if err != nil {
+		_ = tcpListener.Close()
+		return fmt.Errorf("listen chain relay udp failed: %w", err)
+	}
+	if udpConn, ok := udpPacketConn.(*net.UDPConn); ok {
+		tuneProbeChainUDPConn(udpConn)
+	}
+	h3Cert, err := tls.LoadX509KeyPair(cert.CertPath, cert.KeyPath)
+	if err != nil {
+		_ = tcpListener.Close()
+		_ = udpPacketConn.Close()
+		return fmt.Errorf("load chain relay certificate failed: %w", err)
+	}
+
 	httpsServer := &http.Server{
 		Addr:              listenAddr,
 		Handler:           handler,
@@ -1439,7 +1499,7 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 	markProbeChainRelayListenerStatus(listenAddr, "http2", "starting", "")
 	go func(rt *probeChainRuntime, srv *http.Server, certFile string, keyFile string, protocol string) {
 		markProbeChainRelayListenerStatus(listenAddr, "http2", "listening", "")
-		serveErr := srv.ListenAndServeTLS(certFile, keyFile)
+		serveErr := srv.ServeTLS(tcpListener, certFile, keyFile)
 		if serveErr != nil && serveErr != http.ErrServerClosed {
 			select {
 			case <-rt.stopCh:
@@ -1457,15 +1517,18 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		Addr:    listenAddr,
 		Handler: handler,
 		TLSConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13,
-			NextProtos: []string{"h3"},
+			Certificates: []tls.Certificate{h3Cert},
+			MinVersion:   tls.VersionTLS13,
+			NextProtos:   []string{"h3"},
 		},
+		QUICConfig: newProbeChainQUICConfig(probeChainRelayQUICMaxIncomingStreams),
 	}
 	runtime.http3Server = h3Server
+	runtime.http3PacketConn = udpPacketConn
 	markProbeChainRelayListenerStatus(listenAddr, "http3", "starting", "")
 	go func(rt *probeChainRuntime, srv *http3.Server, certFile string, keyFile string) {
 		markProbeChainRelayListenerStatus(listenAddr, "http3", "listening", "")
-		if serveErr := srv.ListenAndServeTLS(certFile, keyFile); serveErr != nil {
+		if serveErr := srv.Serve(udpPacketConn); serveErr != nil && serveErr != http.ErrServerClosed {
 			select {
 			case <-rt.stopCh:
 				return
@@ -1562,7 +1625,10 @@ func handleProbeChainBridgeRelayWebSocket(runtime *probeChainRuntime, bridgeRole
 	}
 	log.Printf("probe chain websocket relay request: chain=%s role=%s bridge_role=%s remote=%s host=%s proto=%s", runtime.cfg.chainID, runtime.cfg.role, normalizeProbeChainBridgeRole(bridgeRole), r.RemoteAddr, r.Host, r.Proto)
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
+		CheckOrigin:       func(*http.Request) bool { return true },
+		ReadBufferSize:    probeChainRelayWebSocketBufferBytes,
+		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
+		EnableCompression: false,
 	}
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -1670,7 +1736,7 @@ func handleProbeChainSpeedTestHTTP(runtime *probeChainRuntime, w http.ResponseWr
 	if flusher != nil {
 		flusher.Flush()
 	}
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, probeChainRelaySpeedTestChunkBytes)
 	for i := range buf {
 		buf[i] = byte(i % 251)
 	}
@@ -1700,7 +1766,10 @@ func handleProbeChainSpeedTestWebSocket(runtime *probeChainRuntime, w http.Respo
 	byteCount := parseProbeChainSpeedTestBytes(r)
 	log.Printf("probe chain websocket speed test request: chain=%s role=%s remote=%s proto=%s bytes=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Proto, byteCount)
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
+		CheckOrigin:       func(*http.Request) bool { return true },
+		ReadBufferSize:    probeChainRelayWebSocketBufferBytes,
+		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
+		EnableCompression: false,
 	}
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -1744,7 +1813,7 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 	if runtime == nil || writer == nil {
 		return
 	}
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, probeChainRelaySpeedTestChunkBytes)
 	for i := range buf {
 		buf[i] = byte(i % 251)
 	}
@@ -2001,6 +2070,9 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	if rt.http3Server != nil {
 		_ = rt.http3Server.Close()
 	}
+	if rt.http3PacketConn != nil {
+		_ = rt.http3PacketConn.Close()
+	}
 	listenAddr := net.JoinHostPort(rt.cfg.listenHost, strconv.Itoa(rt.cfg.listenPort))
 	if rt.httpsServer != nil {
 		markProbeChainRelayListenerStatus(listenAddr, "http2", "stopped", "")
@@ -2241,12 +2313,12 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 
 	relayErrCh := make(chan error, 2)
 	go func() {
-		_, copyErr := io.Copy(nextHop.Writer, reader)
+		_, copyErr := probeChainCopy(nextHop.Writer, reader)
 		closeProbeChainWriter(nextHop.Writer)
 		relayErrCh <- copyErr
 	}()
 	go func() {
-		_, copyErr := io.Copy(conn, nextReader)
+		_, copyErr := probeChainCopy(conn, nextReader)
 		relayErrCh <- copyErr
 	}()
 	relayErr := <-relayErrCh
@@ -2306,12 +2378,12 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 
 	relayErrCh := make(chan error, 2)
 	go func() {
-		_, copyErr := io.Copy(prevHop.Writer, reader)
+		_, copyErr := probeChainCopy(prevHop.Writer, reader)
 		closeProbeChainWriter(prevHop.Writer)
 		relayErrCh <- copyErr
 	}()
 	go func() {
-		_, copyErr := io.Copy(conn, prevReader)
+		_, copyErr := probeChainCopy(conn, prevReader)
 		relayErrCh <- copyErr
 	}()
 	relayErr := <-relayErrCh
@@ -2568,9 +2640,48 @@ func (c *probeChainStreamProxyConn) Read(payload []byte) (int, error) {
 
 func newProbeChainYamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
+	cfg.AcceptBacklog = probeChainRelayYamuxAcceptBacklog
 	cfg.EnableKeepAlive = true
 	cfg.KeepAliveInterval = 60 * time.Second
+	cfg.ConnectionWriteTimeout = probeChainRelayYamuxWriteTimeout
+	cfg.MaxStreamWindowSize = probeChainRelayYamuxMaxStreamWindowBytes
 	return cfg
+}
+
+type probeChainTunedTCPListener struct {
+	net.Listener
+}
+
+func (l *probeChainTunedTCPListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	tuneProbeChainNetConn(conn)
+	return conn, nil
+}
+
+func newProbeChainQUICConfig(maxIncomingStreams int64) *quic.Config {
+	cfg := &quic.Config{
+		KeepAlivePeriod:                10 * time.Second,
+		InitialStreamReceiveWindow:     probeChainRelayQUICInitialStreamWindow,
+		MaxStreamReceiveWindow:         probeChainRelayQUICMaxStreamWindow,
+		InitialConnectionReceiveWindow: probeChainRelayQUICInitialConnectionWindow,
+		MaxConnectionReceiveWindow:     probeChainRelayQUICMaxConnectionWindow,
+	}
+	if maxIncomingStreams > 0 {
+		cfg.MaxIncomingStreams = maxIncomingStreams
+	}
+	return cfg
+}
+
+func probeChainCopy(dst io.Writer, src io.Reader) (int64, error) {
+	buf, _ := probeChainCopyBufferPool.Get().([]byte)
+	if len(buf) == 0 {
+		buf = make([]byte, probeChainRelayIOCopyBufferBytes)
+	}
+	defer probeChainCopyBufferPool.Put(buf)
+	return io.CopyBuffer(dst, src, buf)
 }
 
 func handleProbeChainProxyConn(runtime *probeChainRuntime, conn net.Conn, reader *bufio.Reader) error {
@@ -2663,6 +2774,7 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err
 	}
+	tuneProbeChainNetConn(remoteConn)
 	defer remoteConn.Close()
 
 	if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
@@ -2679,7 +2791,7 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 		if relay != nil {
 			writer = &probeTCPDebugWriter{dst: remoteConn, relay: relay, direction: "up"}
 		}
-		_, copyErr := io.Copy(writer, stream)
+		_, copyErr := probeChainCopy(writer, stream)
 		errCh <- copyErr
 	}()
 	go func() {
@@ -2690,7 +2802,7 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 		if relay != nil {
 			writer = &probeTCPDebugWriter{dst: stream, relay: relay, direction: "down"}
 		}
-		_, copyErr := io.Copy(writer, remoteConn)
+		_, copyErr := probeChainCopy(writer, remoteConn)
 		errCh <- copyErr
 	}()
 
@@ -2721,16 +2833,17 @@ func handleProbeChainTunnelUDPStream(stream net.Conn, target string, association
 	reader := bufio.NewReader(stream)
 	errCh := make(chan error, 2)
 	go func() {
+		buf := make([]byte, 64*1024)
 		for {
-			payload, readErr := readProbeChainFramedPacket(reader)
+			n, readErr := readProbeChainFramedPacketInto(reader, buf)
 			if readErr != nil {
 				errCh <- readErr
 				return
 			}
-			if len(payload) == 0 {
+			if n == 0 {
 				continue
 			}
-			if writeErr := assoc.Write(payload); writeErr != nil {
+			if writeErr := assoc.Write(buf[:n]); writeErr != nil {
 				errCh <- writeErr
 				return
 			}
@@ -2780,6 +2893,7 @@ func handleProbeChainSocksProxy(runtime *probeChainRuntime, conn net.Conn, reade
 			_ = replyProbeChainProxyFailure(conn, request.Version)
 			return err
 		}
+		tuneProbeChainNetConn(targetConn)
 		defer targetConn.Close()
 		if err := replyProbeChainProxySuccess(conn, request.Version, targetConn.LocalAddr().String()); err != nil {
 			return err
@@ -2817,6 +2931,7 @@ func handleProbeChainHTTPProxy(runtime *probeChainRuntime, conn net.Conn, reader
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadGateway, "dial target failed")
 		return err
 	}
+	tuneProbeChainNetConn(targetConn)
 	defer targetConn.Close()
 
 	if strings.EqualFold(strings.TrimSpace(request.Method), http.MethodConnect) {
@@ -2907,12 +3022,12 @@ func normalizeProbeChainTargetAddr(raw string, defaultPort int) (string, error) 
 func relayProbeChainBidirectional(leftConn net.Conn, leftReader io.Reader, rightConn net.Conn, rightReader io.Reader) {
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(rightConn, leftReader)
+		_, _ = probeChainCopy(rightConn, leftReader)
 		closeProbeChainConnWrite(rightConn)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(leftConn, rightReader)
+		_, _ = probeChainCopy(leftConn, rightReader)
 		closeProbeChainConnWrite(leftConn)
 		done <- struct{}{}
 	}()
@@ -3276,11 +3391,11 @@ func handleProbeChainSocks5UDPAssociate(conn net.Conn, reader *bufio.Reader, ver
 }
 
 func readProbeChainFramedPacket(reader *bufio.Reader) ([]byte, error) {
-	lengthBytes := make([]byte, 2)
-	if _, err := io.ReadFull(reader, lengthBytes); err != nil {
+	var lengthBytes [2]byte
+	if _, err := io.ReadFull(reader, lengthBytes[:]); err != nil {
 		return nil, err
 	}
-	length := int(binary.BigEndian.Uint16(lengthBytes))
+	length := int(binary.BigEndian.Uint16(lengthBytes[:]))
 	if length <= 0 {
 		return nil, errors.New("invalid framed packet length")
 	}
@@ -3291,18 +3406,48 @@ func readProbeChainFramedPacket(reader *bufio.Reader) ([]byte, error) {
 	return packet, nil
 }
 
+func readProbeChainFramedPacketInto(reader *bufio.Reader, payload []byte) (int, error) {
+	var lengthBytes [2]byte
+	if _, err := io.ReadFull(reader, lengthBytes[:]); err != nil {
+		return 0, err
+	}
+	length := int(binary.BigEndian.Uint16(lengthBytes[:]))
+	if length <= 0 {
+		return 0, errors.New("invalid framed packet length")
+	}
+	if length > len(payload) {
+		if _, err := io.CopyN(io.Discard, reader, int64(length)); err != nil {
+			return 0, err
+		}
+		return 0, errors.New("framed packet payload exceeds read buffer")
+	}
+	if _, err := io.ReadFull(reader, payload[:length]); err != nil {
+		return 0, err
+	}
+	return length, nil
+}
+
 func writeProbeChainFramedPacket(writer io.Writer, payload []byte) error {
 	size := len(payload)
 	if size <= 0 || size > 65535 {
 		return errors.New("invalid framed packet payload")
 	}
-	header := []byte{0x00, 0x00}
-	binary.BigEndian.PutUint16(header, uint16(size))
-	if _, err := writer.Write(header); err != nil {
+	frame, _ := probeChainUDPFrameBufferPool.Get().([]byte)
+	if cap(frame) < 2+size {
+		frame = make([]byte, 2+size)
+	}
+	frame = frame[:2+size]
+	defer probeChainUDPFrameBufferPool.Put(frame[:cap(frame)])
+	binary.BigEndian.PutUint16(frame[:2], uint16(size))
+	copy(frame[2:], payload)
+	n, err := writer.Write(frame)
+	if err != nil {
 		return err
 	}
-	_, err := writer.Write(payload)
-	return err
+	if n != len(frame) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func parseProbeChainSocks5UDPDatagram(packet []byte) (targetAddr string, payload []byte, err error) {

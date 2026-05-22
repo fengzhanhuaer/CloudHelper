@@ -768,13 +768,83 @@ func normalizeReportInterval(sec int) int {
 type webSocketNetConn struct {
 	ws *websocket.Conn
 
-	readMu  sync.Mutex
-	writeMu sync.Mutex
-	reader  io.Reader
+	readMu sync.Mutex
+	reader io.Reader
+
+	writeCh        chan *webSocketWriteRequest
+	writeDoneCh    chan struct{}
+	writeCloseCh   chan struct{}
+	writeCloseOnce sync.Once
+}
+
+type webSocketWriteRequest struct {
+	payload []byte
+	done    chan webSocketWriteResult
+}
+
+type webSocketWriteResult struct {
+	n   int
+	err error
 }
 
 func newWebSocketNetConn(ws *websocket.Conn) net.Conn {
-	return &webSocketNetConn{ws: ws}
+	configureProbeChainWebSocketConn(ws)
+	conn := &webSocketNetConn{
+		ws:           ws,
+		writeCh:      make(chan *webSocketWriteRequest),
+		writeDoneCh:  make(chan struct{}),
+		writeCloseCh: make(chan struct{}),
+	}
+	go conn.runWriteLoop()
+	return conn
+}
+
+func configureProbeChainWebSocketConn(ws *websocket.Conn) {
+	if ws == nil {
+		return
+	}
+	ws.EnableWriteCompression(false)
+	tuneProbeChainNetConn(ws.UnderlyingConn())
+}
+
+func tuneProbeChainNetConn(conn net.Conn) {
+	base := conn
+	for depth := 0; depth < 4 && base != nil; depth++ {
+		if unwrap, ok := base.(interface{ NetConn() net.Conn }); ok {
+			next := unwrap.NetConn()
+			if next == nil || next == base {
+				break
+			}
+			base = next
+			continue
+		}
+		if unwrap, ok := base.(interface{ UnderlyingConn() net.Conn }); ok {
+			next := unwrap.UnderlyingConn()
+			if next == nil || next == base {
+				break
+			}
+			base = next
+			continue
+		}
+		break
+	}
+	tcpConn, ok := base.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tcpConn.SetNoDelay(true)
+	_ = tcpConn.SetKeepAlive(true)
+	_ = tcpConn.SetKeepAlivePeriod(probeChainRelayTCPKeepAlivePeriod)
+	_ = tcpConn.SetReadBuffer(probeChainRelayTCPSocketBufferBytes)
+	_ = tcpConn.SetWriteBuffer(probeChainRelayTCPSocketBufferBytes)
+}
+
+func tuneProbeChainUDPConn(conn *net.UDPConn) {
+	if conn == nil {
+		return
+	}
+	_ = conn.SetReadBuffer(probeChainRelayUDPSocketBufferBytes)
+	_ = conn.SetWriteBuffer(probeChainRelayUDPSocketBufferBytes)
 }
 
 func (c *webSocketNetConn) Read(p []byte) (int, error) {
@@ -806,26 +876,132 @@ func (c *webSocketNetConn) Read(p []byte) (int, error) {
 }
 
 func (c *webSocketNetConn) Write(p []byte) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	if c == nil || c.ws == nil {
+		return 0, net.ErrClosed
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	req := &webSocketWriteRequest{
+		payload: p,
+		done:    make(chan webSocketWriteResult, 1),
+	}
+	select {
+	case c.writeCh <- req:
+	case <-c.writeCloseCh:
+		return 0, net.ErrClosed
+	case <-c.writeDoneCh:
+		return 0, net.ErrClosed
+	}
+	select {
+	case result := <-req.done:
+		return result.n, result.err
+	case <-c.writeDoneCh:
+		return 0, net.ErrClosed
+	}
+}
+
+func (c *webSocketNetConn) runWriteLoop() {
+	defer close(c.writeDoneCh)
+	for {
+		select {
+		case req := <-c.writeCh:
+			if req == nil {
+				continue
+			}
+			if err := c.writeBatch(req); err != nil {
+				c.failPendingWrites(err)
+				return
+			}
+		case <-c.writeCloseCh:
+			c.failPendingWrites(net.ErrClosed)
+			return
+		}
+	}
+}
+
+func (c *webSocketNetConn) writeBatch(first *webSocketWriteRequest) error {
+	batch := []*webSocketWriteRequest{first}
+	total := len(first.payload)
+	if total < probeChainRelayWebSocketWriteBatchBytes {
+	collect:
+		for total < probeChainRelayWebSocketWriteBatchBytes {
+			select {
+			case req := <-c.writeCh:
+				if req == nil {
+					continue
+				}
+				batch = append(batch, req)
+				total += len(req.payload)
+			case <-c.writeCloseCh:
+				for _, req := range batch {
+					req.done <- webSocketWriteResult{err: net.ErrClosed}
+				}
+				return net.ErrClosed
+			default:
+				break collect
+			}
+		}
+	}
 
 	writer, err := c.ws.NextWriter(websocket.BinaryMessage)
 	if err != nil {
-		return 0, err
+		for _, req := range batch {
+			req.done <- webSocketWriteResult{err: err}
+		}
+		return err
 	}
-	n, writeErr := writer.Write(p)
+	results := make([]webSocketWriteResult, len(batch))
+	var writeErr error
+	for i, req := range batch {
+		n, err := writer.Write(req.payload)
+		results[i] = webSocketWriteResult{n: n, err: err}
+		if err != nil {
+			writeErr = err
+			for j := i + 1; j < len(batch); j++ {
+				results[j] = webSocketWriteResult{err: err}
+			}
+			break
+		}
+	}
 	closeErr := writer.Close()
-	if writeErr != nil {
-		return n, writeErr
+	resultErr := writeErr
+	if resultErr == nil {
+		resultErr = closeErr
 	}
-	if closeErr != nil {
-		return n, closeErr
+	for i, req := range batch {
+		result := results[i]
+		if result.err == nil && resultErr != nil {
+			result.err = resultErr
+		}
+		req.done <- result
 	}
-	return n, nil
+	return resultErr
+}
+
+func (c *webSocketNetConn) failPendingWrites(err error) {
+	if err == nil {
+		err = net.ErrClosed
+	}
+	for {
+		select {
+		case req := <-c.writeCh:
+			if req != nil {
+				req.done <- webSocketWriteResult{err: err}
+			}
+		default:
+			return
+		}
+	}
 }
 
 func (c *webSocketNetConn) Close() error {
-	return c.ws.Close()
+	var err error
+	c.writeCloseOnce.Do(func() {
+		close(c.writeCloseCh)
+		err = c.ws.Close()
+	})
+	return err
 }
 
 func (c *webSocketNetConn) LocalAddr() net.Addr {

@@ -220,6 +220,7 @@ func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociat
 	if err != nil {
 		return nil, err
 	}
+	tuneProbeChainUDPConn(conn)
 	assoc := &probeChainUDPAssociation{
 		key:              key,
 		target:           cleanTarget,

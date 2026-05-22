@@ -1040,11 +1040,18 @@ func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHos
 
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
 	dialer := websocket.Dialer{
-		HandshakeTimeout: openTimeout,
-		Proxy:            nil,
+		HandshakeTimeout:  openTimeout,
+		Proxy:             nil,
+		ReadBufferSize:    probeChainRelayWebSocketBufferBytes,
+		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
+		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
 			netDialer := net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-			return netDialer.DialContext(ctx, network, dialHostPort)
+			conn, err := netDialer.DialContext(ctx, network, dialHostPort)
+			if err == nil {
+				tuneProbeChainNetConn(conn)
+			}
+			return conn, err
 		},
 		TLSClientConfig: &tls.Config{
 			MinVersion:         tls.VersionTLS12,
@@ -1091,7 +1098,7 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 		InsecureSkipVerify: true,
 	}
 	logProbeChainRelayDialAttempt("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
-	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, &quic.Config{KeepAlivePeriod: 10 * time.Second})
+	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, newProbeChainQUICConfig(0))
 	if err != nil {
 		cancel()
 		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
@@ -1321,7 +1328,7 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 		defer speedConn.Close()
 		result.LatencyMS = probeDurationMilliseconds(headerAt.Sub(startedAt))
 		readStartedAt := time.Now()
-		n, err := io.Copy(io.Discard, io.LimitReader(speedConn, byteCount))
+		n, err := probeChainCopy(io.Discard, io.LimitReader(speedConn, byteCount))
 		endedAt := time.Now()
 		result.EndedAt = endedAt.UTC().Format(time.RFC3339)
 		result.Bytes = n
@@ -1386,7 +1393,7 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 		return result
 	}
 	readStartedAt := time.Now()
-	n, err := io.Copy(io.Discard, io.LimitReader(response.Body, byteCount))
+	n, err := probeChainCopy(io.Discard, io.LimitReader(response.Body, byteCount))
 	endedAt := time.Now()
 	result.EndedAt = endedAt.UTC().Format(time.RFC3339)
 	result.Bytes = n
@@ -1451,11 +1458,18 @@ func openProbeChainRelayWebSocketSpeedTestNetConn(chainID string, secret string,
 	}
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
 	dialer := websocket.Dialer{
-		HandshakeTimeout: openTimeout,
-		Proxy:            nil,
+		HandshakeTimeout:  openTimeout,
+		Proxy:             nil,
+		ReadBufferSize:    probeChainRelayWebSocketBufferBytes,
+		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
+		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
 			netDialer := net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-			return netDialer.DialContext(ctx, network, dialHostPort)
+			conn, err := netDialer.DialContext(ctx, network, dialHostPort)
+			if err == nil {
+				tuneProbeChainNetConn(conn)
+			}
+			return conn, err
 		},
 		TLSClientConfig: &tls.Config{
 			MinVersion:         tls.VersionTLS12,
@@ -1503,7 +1517,7 @@ func openProbeChainRelayHTTP3WebSocketSpeedTestNetConn(chainID string, secret st
 		InsecureSkipVerify: true,
 	}
 	logProbeChainRelayDialAttempt("speed-websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", openTimeout)
-	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, &quic.Config{KeepAlivePeriod: 10 * time.Second})
+	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, newProbeChainQUICConfig(0))
 	if err != nil {
 		cancel()
 		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
