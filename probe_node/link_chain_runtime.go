@@ -243,9 +243,9 @@ const (
 	probeChainRelayProtocolNegativeTTL         = 60 * time.Second
 	probeChainRelayProtocolProbeTimeout        = 6 * time.Second
 	probeChainRelayProtocolSwitchMinHold       = 30 * time.Second
-	probeChainRelaySpeedTestBytes              = 32 * 1024 * 1024
-	probeChainRelaySpeedTestMaxBytes           = 64 * 1024 * 1024
-	probeChainRelaySpeedTestTimeout            = 60 * time.Second
+	probeChainRelaySpeedTestBytes              = 128 * 1024 * 1024
+	probeChainRelaySpeedTestMaxBytes           = 256 * 1024 * 1024
+	probeChainRelaySpeedTestTimeout            = 120 * time.Second
 	probeChainRelaySpeedTestChunkBytes         = 256 * 1024
 	probeChainRelayIOCopyBufferBytes           = 256 * 1024
 	probeChainRelayWebSocketBufferBytes        = 256 * 1024

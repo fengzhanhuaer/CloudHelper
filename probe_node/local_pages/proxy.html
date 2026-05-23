@@ -571,6 +571,21 @@
       return formatRate(rateBps) || '-';
     }
 
+    function formatBytesText(bytes) {
+      const value = Number(bytes);
+      if (!Number.isFinite(value) || value <= 0) return '-';
+      if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)}MB`;
+      if (value >= 1024) return `${(value / 1024).toFixed(1)}KB`;
+      return `${Math.trunc(value)}B`;
+    }
+
+    function formatDurationText(ms) {
+      const value = Number(ms);
+      if (!Number.isFinite(value) || value <= 0) return '-';
+      if (value >= 1000) return `${(value / 1000).toFixed(1)}s`;
+      return `${Math.trunc(value)}ms`;
+    }
+
     function formatLinkStatusText(item) {
       const status = String(item && item.status || '').trim();
       if (status === 'reachable') return '可达';
@@ -837,19 +852,24 @@
         const data = await requestJSON('/local/api/proxy/link/speed', {
           method: 'POST',
           body: JSON.stringify({ chain_id: cleanID, protocol: cleanProtocol }),
-        }, 75000);
+        }, 135000);
         await loadProxyLinkStatus();
         const rate = formatRateText(Number(data && data.rate_bps));
         const results = Array.isArray(data && data.results) ? data.results : [];
         const okCount = results.filter((item) => item && item.ok).length;
         const summary = results.map((item) => {
           const label = formatRelayProtocolLabel(item && item.protocol);
-          if (item && item.ok) return `${label} ${formatRateText(Number(item && item.rate_bps))}`;
+          if (item && item.ok) {
+            return `${label} ${formatRateText(Number(item && item.rate_bps))}，用时${formatDurationText(item && item.duration_ms)}，读取${formatBytesText(item && item.bytes)}`;
+          }
           const err = String(item && item.error || '').trim();
           return `${label} 失败${err ? `(${err})` : ''}`;
         }).join('；');
         if (okCount > 0) {
-          setMessage(`链路 ${cleanID} ${protocolLabel} 测速完成：${rate}${summary ? `；${summary}` : ''}`, 'success');
+          const singleProtocolResult = cleanProtocol && results.length === 1 && results[0] && results[0].ok;
+          setMessage(singleProtocolResult
+            ? `链路 ${cleanID} ${summary} 测速完成`
+            : `链路 ${cleanID} ${protocolLabel} 测速完成：${rate}${summary ? `；${summary}` : ''}`, 'success');
           return;
         }
         setMessage(`链路 ${cleanID} ${protocolLabel} 测速不可达：${summary || String(data && data.status || data && data.error || 'unknown')}`, 'error');
