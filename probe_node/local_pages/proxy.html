@@ -127,6 +127,13 @@
     td.muted, .muted { color: var(--text-secondary); }
     .link-info { display: grid; gap: 5px; }
     .link-info-line { display: grid; grid-template-columns: 44px minmax(0, 1fr); column-gap: 8px; }
+    .link-detail-row td { background: rgba(13, 17, 23, 0.35); border-bottom-color: rgba(88, 166, 255, 0.26); }
+    .link-detail-panel { border: 1px solid rgba(88, 166, 255, 0.22); border-radius: 8px; padding: 10px; background: rgba(13, 17, 23, 0.42); }
+    .link-detail-title { color: var(--heading); font-weight: 700; margin-bottom: 8px; }
+    .link-detail-grid { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 10px; }
+    .link-detail-grid > div:nth-child(odd) { color: var(--text-secondary); }
+    .link-detail-section { margin-top: 10px; }
+    .link-detail-section-title { color: var(--heading); font-weight: 600; margin-bottom: 5px; }
     .pre-line { white-space: pre-line; }
     .mini-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
     .mini-actions button { padding: 6px 9px; font-size: 12px; }
@@ -193,7 +200,7 @@
           <thead>
             <tr>
               <th>链路</th>
-              <th>状态 / 质量 / 测速</th>
+              <th>状态</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -214,6 +221,8 @@
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
     let proxyLinkStatusCache = [];
+    let proxyLinkDetailChainID = '';
+    let proxyLinkDetailMonitorCache = null;
     let proxyStatusCache = { enabled: false, mode: '' };
     let proxyStatusPollingTimer = null;
     let proxyRuntimeRefreshInFlight = false;
@@ -633,6 +642,61 @@
       return parts.length ? parts.join('\n') : (selected ? `auto=${formatRelayProtocolLabel(selected)}` : '-');
     }
 
+    function formatProtocolQualityDetailLines(protocolState) {
+      if (!protocolState || typeof protocolState !== 'object') return '-';
+      const selected = normalizeRelayProtocol(protocolState.selected_protocol);
+      const qualities = Array.isArray(protocolState.protocol_qualities) ? protocolState.protocol_qualities : [];
+      const lines = [];
+      if (selected) {
+        const reason = formatProtocolSelectionReason(protocolState.selection_reason);
+        lines.push(`auto=${formatRelayProtocolLabel(selected)}${reason ? '/' + reason : ''}`);
+      }
+      const endpoint = String(protocolState.endpoint || '').trim();
+      if (endpoint) lines.push(`endpoint=${endpoint}`);
+      const updatedAt = String(protocolState.updated_at || '').trim();
+      if (updatedAt) lines.push(`updated=${updatedAt}`);
+      qualities
+        .slice()
+        .sort((a, b) => String(a && a.protocol || '').localeCompare(String(b && b.protocol || '')))
+        .forEach((item) => {
+          const protocol = normalizeRelayProtocol(item && item.protocol);
+          if (!protocol) return;
+          const metrics = [];
+          metrics.push(item && item.available === false ? '不可用' : '可用');
+          const latency = Number(item && item.latency_ms);
+          const loss = Number(item && item.loss_permille);
+          const rate = Number(item && item.rate_bps);
+          const score = Number(item && item.score);
+          const failures = Number(item && item.failure_count);
+          if (Number.isFinite(latency) && latency > 0) metrics.push(`延迟=${Math.trunc(latency)}ms`);
+          if (Number.isFinite(loss)) metrics.push(`丢包=${(loss / 10).toFixed(1)}%`);
+          if (Number.isFinite(rate) && rate > 0) metrics.push(`速率=${formatRateText(rate)}`);
+          if (Number.isFinite(score) && score > 0) metrics.push(`score=${Math.trunc(score)}`);
+          if (Number.isFinite(failures) && failures > 0) metrics.push(`失败=${Math.trunc(failures)}`);
+          const lastError = String(item && item.last_error || '').trim();
+          if (lastError) metrics.push(`错误=${lastError}`);
+          lines.push(`${formatRelayProtocolLabel(protocol)}${selected === protocol ? ' *' : ''}: ${metrics.join(' ')}`);
+        });
+      return lines.length ? lines.join('\n') : '-';
+    }
+
+    function formatListenerDetailLines(protocolState) {
+      const listeners = Array.isArray(protocolState && protocolState.listener_statuses) ? protocolState.listener_statuses : [];
+      if (listeners.length === 0) return '-';
+      return listeners.map((item) => {
+        const protocol = formatRelayProtocolLabel(item && item.protocol);
+        const status = String(item && item.status || '').trim() || '-';
+        const listen = String(item && item.listen || '').trim();
+        const updated = String(item && item.updated_at || '').trim();
+        const err = String(item && item.last_error || '').trim();
+        const parts = [`${protocol}: ${status}`];
+        if (listen) parts.push(`listen=${listen}`);
+        if (updated) parts.push(`updated=${updated}`);
+        if (err) parts.push(`错误=${err}`);
+        return parts.join(' ');
+      }).join('\n');
+    }
+
     function formatReachabilityResults(reachability) {
       if (!reachability || typeof reachability !== 'object') return '-';
       const results = Array.isArray(reachability.results) ? reachability.results : [];
@@ -652,6 +716,179 @@
       const tested = Number(reachability.tested_count);
       const head = Number.isFinite(reachable) && Number.isFinite(tested) && tested > 0 ? `本次测试 ${Math.trunc(reachable)}/${Math.trunc(tested)} 可达` : '本次测试';
       return `${head}\n${parts.join('\n')}`;
+    }
+
+    function getProtocolQualityMap(protocolState) {
+      const map = new Map();
+      const qualities = Array.isArray(protocolState && protocolState.protocol_qualities) ? protocolState.protocol_qualities : [];
+      qualities.forEach((item) => {
+        const protocol = normalizeRelayProtocol(item && item.protocol);
+        if (protocol) map.set(protocol, item);
+      });
+      return map;
+    }
+
+    function formatProxyLinkObservationLines(item, monitor) {
+      const lines = [];
+      const protocolState = item && item.protocol_state;
+      const qualityMap = getProtocolQualityMap(protocolState);
+      const ws = qualityMap.get('websocket');
+      const wsH3 = qualityMap.get('websocket-h3');
+      const selected = normalizeRelayProtocol(protocolState && protocolState.selected_protocol);
+      const selectedQuality = selected ? qualityMap.get(selected) : null;
+      let bestRateProtocol = '';
+      let bestRate = 0;
+      qualityMap.forEach((entry, protocol) => {
+        const rate = Number(entry && entry.rate_bps);
+        if (Number.isFinite(rate) && rate > bestRate) {
+          bestRate = rate;
+          bestRateProtocol = protocol;
+        }
+      });
+
+      if (wsH3 && ws) {
+        const wsH3Rate = Number(wsH3 && wsH3.rate_bps);
+        const wsRate = Number(ws && ws.rate_bps);
+        if (Number.isFinite(wsH3Rate) && wsH3Rate > 0 && Number.isFinite(wsRate) && wsRate > 0) {
+          if (wsH3Rate < wsRate * 0.7) {
+            lines.push(`协议速率差明显：WS-H3=${formatRateText(wsH3Rate)}，WS=${formatRateText(wsRate)}。优先观察 QUIC/HTTP3 路径、CF 边缘波动与 CPU 占用。`);
+          } else if (wsRate < wsH3Rate * 0.7) {
+            lines.push(`协议速率差明显：WS=${formatRateText(wsRate)}，WS-H3=${formatRateText(wsH3Rate)}。优先观察 TCP 路径、WebSocket message 聚合效果与出口 TCP。`);
+          } else {
+            lines.push(`协议速率接近：WS-H3=${formatRateText(wsH3Rate)}，WS=${formatRateText(wsRate)}。瓶颈更像是链路本身、出口目标或本机资源。`);
+          }
+        }
+      }
+
+      if (selected && bestRateProtocol && selected !== bestRateProtocol && bestRate > 0) {
+        lines.push(`auto 当前选中 ${formatRelayProtocolLabel(selected)}，但已观测最快是 ${formatRelayProtocolLabel(bestRateProtocol)}=${formatRateText(bestRate)}。要重点看选路保持时间与质量样本是否过旧。`);
+      }
+
+      const highLoss = Array.from(qualityMap.values()).find((entry) => Number(entry && entry.loss_permille) > 0);
+      if (highLoss) {
+        lines.push(`存在丢包信号：${formatRelayProtocolLabel(highLoss.protocol)} 丢包 ${(Number(highLoss.loss_permille) / 10).toFixed(1)}%。低速先看丢包，而不是先盲目加窗口。`);
+      }
+
+      const slowLatency = Array.from(qualityMap.values()).find((entry) => Number(entry && entry.latency_ms) >= 300);
+      if (slowLatency) {
+        lines.push(`链路 RTT 偏高：${formatRelayProtocolLabel(slowLatency.protocol)} 延迟 ${Math.trunc(Number(slowLatency.latency_ms))}ms。高延迟下需要更长测速样本，短测速容易低估吞吐。`);
+      }
+
+      const failureEntry = Array.from(qualityMap.values()).find((entry) => Number(entry && entry.failure_count) > 0 || String(entry && entry.last_error || '').trim());
+      if (failureEntry) {
+        const err = String(failureEntry && failureEntry.last_error || '').trim();
+        lines.push(`存在失败记录：${formatRelayProtocolLabel(failureEntry.protocol)} 失败=${Math.trunc(Number(failureEntry.failure_count) || 0)}${err ? `，最近错误=${err}` : ''}。需要先排除重试/切换带来的样本污染。`);
+      }
+
+      if (selectedQuality && Number(selectedQuality.rate_bps) > 0) {
+        lines.push(`当前观测速率以 ${formatRelayProtocolLabel(selected)} 为主：${formatRateText(Number(selectedQuality.rate_bps))}。继续优化时要对照同协议多次测速是否稳定。`);
+      } else if (Number(item && item.observed_rate_bps) > 0) {
+        lines.push(`当前链路已记录观测速率 ${formatRateText(Number(item && item.observed_rate_bps))}。建议连续测速 2-3 次，看波动范围。`);
+      }
+
+      lines.push('测速样本建议：单次读取至少 128MB，优先看用时是否已超过 10s，再判断结果是否接近稳定吞吐。');
+
+      const cpu = monitor && monitor.cpu_percent_text && monitor.cpu_percent_text !== 'unavailable' ? String(monitor.cpu_percent_text).trim() + '%' : '';
+      const goroutines = Number(monitor && monitor.goroutines);
+      const heapMB = Number(monitor && monitor.memory && monitor.memory.heap_alloc_mb);
+      const chainTCP = Number(monitor && monitor.tcp && monitor.tcp.chain);
+      const udpAssociations = Number(monitor && monitor.udp && monitor.udp.associations);
+      if (cpu || Number.isFinite(goroutines) || Number.isFinite(heapMB)) {
+        lines.push(`运行时负载：CPU=${cpu || '不可用'}，goroutines=${Number.isFinite(goroutines) ? Math.trunc(goroutines) : '-'}，heap=${Number.isFinite(heapMB) ? heapMB.toFixed(2) + 'MB' : '-' }。如果测速时这些值明显抬升，瓶颈可能在本机而不在链路。`);
+      }
+      if (Number.isFinite(chainTCP) || Number.isFinite(udpAssociations)) {
+        lines.push(`链路并发观测：chain TCP=${Number.isFinite(chainTCP) ? Math.trunc(chainTCP) : '-'}，UDP associations=${Number.isFinite(udpAssociations) ? Math.trunc(udpAssociations) : '-'}。并发越高，单链路测速越容易被其它流量稀释。`);
+      }
+
+      return lines.length ? lines.join('\n') : '-';
+    }
+
+    function formatProxyLinkMonitorLines(monitor) {
+      if (!monitor || typeof monitor !== 'object') return '-';
+      const lines = [];
+      const tcp = monitor.tcp || {};
+      const udp = monitor.udp || {};
+      const udpBridges = udp.bridges || {};
+      const memory = monitor.memory || {};
+      const cpu = monitor.cpu_percent_text && monitor.cpu_percent_text !== 'unavailable' ? String(monitor.cpu_percent_text).trim() + '%' : '不可用';
+      lines.push(`CPU=${cpu} goroutines=${Math.trunc(Number(monitor.goroutines) || 0)} heap=${Number(memory.heap_alloc_mb || 0).toFixed(2)}MB gc=${Math.trunc(Number(memory.num_gc) || 0)}`);
+      lines.push(`TCP active=${Math.trunc(Number(tcp.active) || 0)} tun=${Math.trunc(Number(tcp.tun) || 0)} chain=${Math.trunc(Number(tcp.chain) || 0)} failures=${Math.trunc(Number(tcp.failures) || 0)}`);
+      lines.push(`UDP bridges=${Math.trunc(Number(udpBridges.active) || 0)} direct=${Math.trunc(Number(udpBridges.direct) || 0)} tunnel=${Math.trunc(Number(udpBridges.tunnel) || 0)} associations=${Math.trunc(Number(udp.associations) || 0)}`);
+      const tcpItems = Array.isArray(tcp.items) ? tcp.items.slice(0, 4).map((entry) => {
+        const scope = String(entry && entry.scope || '-').trim();
+        const target = String(entry && entry.target || '-').trim();
+        const routeTarget = String(entry && entry.route_target || '-').trim();
+        const up = Number(entry && entry.bytes_up || 0);
+        const down = Number(entry && entry.bytes_down || 0);
+        return `${scope} ${target} -> ${routeTarget} up=${formatBytesText(up)} down=${formatBytesText(down)}`;
+      }).filter(Boolean) : [];
+      if (tcpItems.length > 0) lines.push(`最近活跃 TCP relay:\n${tcpItems.join('\n')}`);
+      const udpItems = Array.isArray(udpBridges.items) ? udpBridges.items.slice(0, 4).map((entry) => {
+        const target = String(entry && entry.target || '-').trim();
+        const routeTarget = String(entry && entry.route_target || '-').trim();
+        const up = Number(entry && entry.bytes_up || 0);
+        const down = Number(entry && entry.bytes_down || 0);
+        return `${target} -> ${routeTarget} up=${formatBytesText(up)} down=${formatBytesText(down)}`;
+      }).filter(Boolean) : [];
+      if (udpItems.length > 0) lines.push(`最近活跃 UDP bridge:\n${udpItems.join('\n')}`);
+      return lines.join('\n');
+    }
+
+    function formatProxyLinkDetailHTML(item) {
+      if (!item || typeof item !== 'object') return '';
+      const chainID = normalizeChainID(item && item.chain_id);
+      const chainName = String(item && item.chain_name || '').trim() || chainID || '-';
+      const route = Array.isArray(item && item.route) ? item.route.join(' → ') : '';
+      const endpoint = String(item && item.endpoint || '').trim() || [item && item.entry_host, item && item.entry_port].filter(Boolean).join(':') || '-';
+      const selectedGroups = Array.isArray(item && item.selected_groups) ? item.selected_groups.join(', ') : '';
+      const statusText = formatLinkStatusText(item);
+      const rateText = formatRateText(Number(item && item.observed_rate_bps));
+      const updatedAt = String(item && item.updated_at || '').trim();
+      const errorText = String(item && item.unavailable_error || '').trim();
+      const protocolLines = formatProtocolQualityDetailLines(item && item.protocol_state);
+      const listenerLines = formatListenerDetailLines(item && item.protocol_state);
+      const reachabilityLines = formatReachabilityResults(item && item.reachability);
+      const cfHTML = formatCFOptimizeStatusHTML(item && item.cf_optimize, item);
+      const observationLines = formatProxyLinkObservationLines(item, proxyLinkDetailMonitorCache);
+      const monitorLines = formatProxyLinkMonitorLines(proxyLinkDetailMonitorCache);
+      const row = (label, value, preLine) => `<div>${escapeHTML(label)}</div><div class="${preLine ? 'pre-line' : ''}">${preLine ? escapeHTML(value || '-') : escapeHTML(value || '-')}</div>`;
+      return `
+        <div class="link-detail-panel">
+          <div class="link-detail-title">${escapeHTML(chainName)} 内部详细状态</div>
+          <div class="link-detail-grid">
+            ${row('链路ID', chainID)}
+            ${row('入口', endpoint)}
+            ${row('配置协议', formatRelayProtocolLabel(item && item.link_layer))}
+            ${route ? row('路由', route) : ''}
+            ${selectedGroups ? row('代理组', selectedGroups) : ''}
+            ${row('当前状态', statusText)}
+            ${rateText !== '-' ? row('观测速率', rateText) : ''}
+            ${updatedAt ? row('更新时间', updatedAt) : ''}
+            ${errorText ? row('错误', errorText, true) : ''}
+          </div>
+          <div class="link-detail-section">
+            <div class="link-detail-section-title">协议质量</div>
+            <div class="pre-line">${escapeHTML(protocolLines)}</div>
+          </div>
+          <div class="link-detail-section">
+            <div class="link-detail-section-title">入口监听</div>
+            <div class="pre-line">${escapeHTML(listenerLines)}</div>
+          </div>
+          <div class="link-detail-section">
+            <div class="link-detail-section-title">最近可达性测试</div>
+            <div class="pre-line">${escapeHTML(reachabilityLines)}</div>
+          </div>
+          <div class="link-detail-section">
+            <div class="link-detail-section-title">优化观测重点</div>
+            <div class="pre-line">${escapeHTML(observationLines)}</div>
+          </div>
+          <div class="link-detail-section">
+            <div class="link-detail-section-title">运行时观测</div>
+            <div class="pre-line">${escapeHTML(monitorLines)}</div>
+          </div>
+          ${cfHTML ? `<div class="link-detail-section"><div class="link-detail-section-title">CF 优选</div><div>${cfHTML}</div></div>` : ''}
+        </div>
+      `;
     }
 
     function formatProtocolSummary(item) {
@@ -733,6 +970,7 @@
         const errorText = String(item && item.unavailable_error || '').trim();
         const cfOptimizeHTML = formatCFOptimizeStatusHTML(item && item.cf_optimize, item);
         const cfButton = isCFProxyLinkItem(item) ? `<button class="secondary" data-action="cf-ip-optimize" data-chain-id="${escapeHTML(chainID)}">CF IP优选</button>` : '';
+        const detailActive = proxyLinkDetailChainID && proxyLinkDetailChainID === chainID;
         tr.innerHTML = `
           <td><strong>${escapeHTML(chainName)}</strong><br><span class="muted">${escapeHTML(chainID || '-')}</span><br><span class="muted">入口: ${escapeHTML(endpoint)}</span><br><span class="muted">配置协议: ${escapeHTML(formatRelayProtocolLabel(item && item.link_layer))}</span>${route ? `<br><span class="muted">${escapeHTML(route)}</span>` : ''}</td>
           <td>
@@ -741,9 +979,15 @@
               <div class="link-info-line"><span class="muted">测试状态</span><span class="pre-line">${escapeHTML(protocolText)}</span></div>
             </div>
           </td>
-          <td><div class="mini-actions"><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket-h3">测速H3</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>${cfButton}</div></td>
+          <td><div class="mini-actions"><button class="secondary" data-action="detail" data-chain-id="${escapeHTML(chainID)}">${detailActive ? '刷新详情' : '详情'}</button><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket-h3">测速H3</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>${cfButton}</div></td>
         `;
         proxyLinkStatusRowsEl.appendChild(tr);
+        if (detailActive) {
+          const detailTr = document.createElement('tr');
+          detailTr.className = 'link-detail-row';
+          detailTr.innerHTML = `<td colspan="3">${formatProxyLinkDetailHTML(item)}</td>`;
+          proxyLinkStatusRowsEl.appendChild(detailTr);
+        }
       });
     }
 
@@ -811,6 +1055,29 @@
       const data = await requestJSON('/local/api/proxy/link/status', { method: 'GET' });
       proxyLinkStatusCache = Array.isArray(data && data.items) ? data.items : [];
       renderProxyLinkStatusRows(proxyLinkStatusCache);
+      return data;
+    }
+
+    async function refreshProxyLinkDetail(chainID) {
+      const cleanID = normalizeChainID(chainID);
+      if (!cleanID) return;
+      proxyLinkDetailChainID = cleanID;
+      setMessage(`刷新链路 ${cleanID} 内部详细状态...`);
+      try {
+        const [, monitor] = await Promise.all([
+          loadProxyLinkStatus(),
+          requestJSON('/local/api/proxy/monitor', { method: 'GET' }),
+        ]);
+        proxyLinkDetailMonitorCache = monitor && typeof monitor === 'object' ? monitor : null;
+        const item = proxyLinkStatusCache.find((row) => normalizeChainID(row && row.chain_id) === cleanID);
+        if (!item) {
+          setMessage(`链路 ${cleanID} 未找到`, 'error');
+          return;
+        }
+        setMessage(`链路 ${cleanID} 内部详细状态已刷新`, 'success');
+      } catch (err) {
+        setMessage(`刷新链路 ${cleanID} 内部详细状态失败：${err.message}`, 'error');
+      }
     }
 
     async function runProxyLinkLatency(chainID) {
@@ -1069,6 +1336,10 @@
       if (!btn) return;
       const chainID = btn.getAttribute('data-chain-id') || '';
       const action = btn.getAttribute('data-action') || '';
+      if (action === 'detail') {
+        refreshProxyLinkDetail(chainID);
+        return;
+      }
       if (action === 'latency') {
         runProxyLinkLatency(chainID);
         return;
