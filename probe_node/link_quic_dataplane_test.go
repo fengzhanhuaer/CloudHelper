@@ -31,10 +31,10 @@ func TestNewProbeChainQUICConfigUsesV2V1AndDatagrams(t *testing.T) {
 	if cfg.MaxIncomingStreams != 7 {
 		t.Fatalf("MaxIncomingStreams=%d want=7", cfg.MaxIncomingStreams)
 	}
-	if cfg.InitialStreamReceiveWindow < 32*1024*1024 || cfg.MaxStreamReceiveWindow < 128*1024*1024 {
+	if cfg.InitialStreamReceiveWindow < 128*1024*1024 || cfg.MaxStreamReceiveWindow < 512*1024*1024 {
 		t.Fatalf("stream receive windows are too small: initial=%d max=%d", cfg.InitialStreamReceiveWindow, cfg.MaxStreamReceiveWindow)
 	}
-	if cfg.InitialConnectionReceiveWindow < 128*1024*1024 || cfg.MaxConnectionReceiveWindow < 512*1024*1024 {
+	if cfg.InitialConnectionReceiveWindow < 512*1024*1024 || cfg.MaxConnectionReceiveWindow < 1024*1024*1024 {
 		t.Fatalf("connection receive windows are too small: initial=%d max=%d", cfg.InitialConnectionReceiveWindow, cfg.MaxConnectionReceiveWindow)
 	}
 }

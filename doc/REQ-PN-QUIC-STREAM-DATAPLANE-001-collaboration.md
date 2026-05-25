@@ -6,7 +6,7 @@
 - 需求前缀: REQ-PN-QUIC-STREAM-DATAPLANE-001
 - 当前阶段: Code首版最小闭环完成，待UDP datagram完善与Architect复核
 - 最近更新角色: Code
-- 最近更新时间: 2026-05-25T13:37:39+08:00
+- 最近更新时间: 2026-05-25T14:05:41+08:00
 - 工作依据文档: [`doc/ai-coding-collaboration.md`](doc/ai-coding-collaboration.md:1)、[`doc/REQ-PN-RELAY-DUAL-STACK-001-collaboration.md`](doc/REQ-PN-RELAY-DUAL-STACK-001-collaboration.md:1)、[`probe_node/link_relay_client_transport.go`](probe_node/link_relay_client_transport.go:1)、[`probe_node/link_chain_runtime.go`](probe_node/link_chain_runtime.go:1)、[`probe_node/local_tun_group_runtime.go`](probe_node/local_tun_group_runtime.go:1)、[`probe_node/link_chain_udp_assoc.go`](probe_node/link_chain_udp_assoc.go:1)
 - 状态: 进行中；Code已完成 QUIC 配置、控制流认证、客户端会话、服务端入口、TCP stream 最小闭环、真实 data stream 测速和回归测试；UDP datagram 业务映射仍待完善
 
@@ -407,6 +407,7 @@
 - 针对 QUIC Stream 约 7.9-8.9MB/s、WS 约 53-55MB/s 的差距，窗口/UDP buffer 放大未改善；control stream 直连测速只能作为 QUIC 连接/UDP 路径基线诊断，不作为用户侧协议吞吐口径，主测速保留真实 QUIC bidirectional data stream。
 - 当前补充事实: 用户确认测试为本机自环，且强制 QUIC v1 后速度仍接近 7-9MB/s；因此优先排除公网 UDP 路径与 QUIC v2 兼容性，下一步聚焦本机 quic-go UDP loopback、stream.Write pacing/flow-control 或接收侧读取阻塞。
 - `streamProbeChainSpeedTestBytes()` 增加服务端测速写入进度日志，每 16MB 记录累计写出、耗时、估算写出速率、write 调用次数、最大单次 write 阻塞和累计 write 阻塞，用于判断瓶颈在服务端 QUIC stream 写出还是客户端读取/接收。
+- 根据服务端日志，QUIC speed_test 的 `total_write_block_ms` 基本等于总耗时，瓶颈已定位在服务端 QUIC stream `Write()` 背压；本轮优化将 QUIC/H3 speed 写块由 1MB 降到 256KB，保留 WS 1MB 写块，并将 UDP socket buffer 上调到 64MB、QUIC stream/connection receive window 上调到 128MB/512MB 与 512MB/1GB，作为本机 loopback A/B 复测参数。
 - `isProbeChainQUICDataPlaneLayer()` 将 TUN 组 `http3` 入口切换到 QUIC Data Plane，旧 `websocket-h3` 不再作为该路径默认连接方式。
 - `proxy.html` 链路操作将非 CF 的 H3 测试入口改为 `测速QUIC`，CF 入口仍只允许 `websocket`。
 - `proxy.html` 链路详情仅在监控快照包含 `fetched_at` 时展示运行时负载，避免空快照误显示 `goroutines=0`、`heap=0.00MB`。

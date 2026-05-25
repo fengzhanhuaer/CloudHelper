@@ -250,20 +250,21 @@ const (
 	probeChainRelaySpeedTestMaxBytes           = 256 * 1024 * 1024
 	probeChainRelaySpeedTestTimeout            = 120 * time.Second
 	probeChainRelaySpeedTestChunkBytes         = 1024 * 1024
+	probeChainRelayQUICSpeedTestChunkBytes     = 256 * 1024
 	probeChainRelayIOCopyBufferBytes           = 512 * 1024
 	probeChainRelayWebSocketBufferBytes        = 256 * 1024
 	probeChainRelayWebSocketWriteBatchBytes    = 256 * 1024
 	probeChainRelayTCPSocketBufferBytes        = 4 * 1024 * 1024
-	probeChainRelayUDPSocketBufferBytes        = 16 * 1024 * 1024
+	probeChainRelayUDPSocketBufferBytes        = 64 * 1024 * 1024
 	probeChainRelayUDPFrameBufferBytes         = 2 + 65535
 	probeChainRelayTCPKeepAlivePeriod          = 30 * time.Second
 	probeChainRelayYamuxAcceptBacklog          = 1024
 	probeChainRelayYamuxMaxStreamWindowBytes   = 16 * 1024 * 1024
 	probeChainRelayYamuxWriteTimeout           = 30 * time.Second
-	probeChainRelayQUICInitialStreamWindow     = 32 * 1024 * 1024
-	probeChainRelayQUICMaxStreamWindow         = 128 * 1024 * 1024
-	probeChainRelayQUICInitialConnectionWindow = 128 * 1024 * 1024
-	probeChainRelayQUICMaxConnectionWindow     = 512 * 1024 * 1024
+	probeChainRelayQUICInitialStreamWindow     = 128 * 1024 * 1024
+	probeChainRelayQUICMaxStreamWindow         = 512 * 1024 * 1024
+	probeChainRelayQUICInitialConnectionWindow = 512 * 1024 * 1024
+	probeChainRelayQUICMaxConnectionWindow     = 1024 * 1024 * 1024
 	probeChainRelayQUICMaxIncomingStreams      = 1024
 	probeChainRelayQUICDatagramMaxPayloadBytes = 1200
 
@@ -1826,7 +1827,8 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 		return
 	}
 	cleanTransport := strings.TrimSpace(transport)
-	buf := make([]byte, probeChainRelaySpeedTestChunkBytes)
+	chunkBytes := probeChainSpeedTestChunkBytesForTransport(cleanTransport)
+	buf := make([]byte, chunkBytes)
 	for i := range buf {
 		buf[i] = byte(i % 251)
 	}
@@ -1869,7 +1871,7 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 				elapsed = time.Millisecond
 			}
 			rateBPS := int64(float64(sent) / elapsed.Seconds())
-			log.Printf("probe chain %s speed test write progress: chain=%s role=%s remote=%s sent=%d total=%d elapsed_ms=%d since_last_ms=%d rate_bps=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, byteCount, probeDurationMilliseconds(elapsed), probeDurationMilliseconds(time.Since(lastLogAt)), rateBPS, writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal))
+			log.Printf("probe chain %s speed test write progress: chain=%s role=%s remote=%s sent=%d total=%d chunk_bytes=%d elapsed_ms=%d since_last_ms=%d rate_bps=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, byteCount, chunkBytes, probeDurationMilliseconds(elapsed), probeDurationMilliseconds(time.Since(lastLogAt)), rateBPS, writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal))
 			lastLogAt = time.Now()
 			for nextLogBytes <= sent {
 				nextLogBytes += 16 * 1024 * 1024
@@ -1887,7 +1889,16 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 		elapsed = time.Millisecond
 	}
 	rateBPS := int64(float64(sent) / elapsed.Seconds())
-	log.Printf("probe chain %s speed test completed: chain=%s role=%s remote=%s bytes=%d elapsed_ms=%d rate_bps=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, probeDurationMilliseconds(elapsed), rateBPS, writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal))
+	log.Printf("probe chain %s speed test completed: chain=%s role=%s remote=%s bytes=%d chunk_bytes=%d elapsed_ms=%d rate_bps=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, chunkBytes, probeDurationMilliseconds(elapsed), rateBPS, writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal))
+}
+
+func probeChainSpeedTestChunkBytesForTransport(transport string) int {
+	switch strings.ToLower(strings.TrimSpace(transport)) {
+	case "quic-stream", "websocket-h3":
+		return probeChainRelayQUICSpeedTestChunkBytes
+	default:
+		return probeChainRelaySpeedTestChunkBytes
+	}
 }
 
 func parseProbeChainSpeedTestBytes(r *http.Request) int64 {
