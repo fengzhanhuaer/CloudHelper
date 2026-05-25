@@ -26,19 +26,23 @@
 
     <section id="register-box" class="hidden">
       <h2>注册</h2>
-      <div class="field"><label>用户名</label><input id="reg-username" autocomplete="username"></div>
-      <div class="field"><label>密码</label><input id="reg-password" type="password" autocomplete="new-password"></div>
-      <div class="field"><label>确认密码</label><input id="reg-confirm" type="password" autocomplete="new-password"></div>
-      <button id="btn-register" type="button">注册</button>
+      <form id="register-form" method="post" action="/mng/api/register" autocomplete="on">
+        <div class="field"><label for="reg-username">用户名</label><input id="reg-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"></div>
+        <div class="field"><label for="reg-password">密码</label><input id="reg-password" name="new-password" type="password" autocomplete="new-password"></div>
+        <div class="field"><label for="reg-confirm">确认密码</label><input id="reg-confirm" name="confirm-password" type="password" autocomplete="new-password"></div>
+        <button id="btn-register" type="submit">注册</button>
+      </form>
       <div class="error" id="reg-error"></div>
       <div class="ok" id="reg-ok"></div>
     </section>
 
-    <section id="login-box" class="hidden">
+    <section id="login-box">
       <h2>登录</h2>
-      <div class="field"><label>用户名</label><input id="login-username" autocomplete="username"></div>
-      <div class="field"><label>密码</label><input id="login-password" type="password" autocomplete="current-password"></div>
-      <button id="btn-login" type="button">登录</button>
+      <form id="login-form" method="post" action="/mng/api/login" autocomplete="on">
+        <div class="field"><label for="login-username">用户名</label><input id="login-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"></div>
+        <div class="field"><label for="login-password">密码</label><input id="login-password" name="password" type="password" autocomplete="current-password"></div>
+        <button id="btn-login" type="submit">登录</button>
+      </form>
       <div class="error" id="login-error"></div>
     </section>
   </div>
@@ -103,11 +107,11 @@
       location.href = '/mng/panel';
     }
 
-    document.getElementById('btn-register').addEventListener('click', () => { register().catch(e => {
+    document.getElementById('register-form').addEventListener('submit', event => { event.preventDefault(); register().catch(e => {
       document.getElementById('reg-error').textContent = e && e.message ? e.message : '注册失败';
     });});
 
-    document.getElementById('btn-login').addEventListener('click', () => { login().catch(e => {
+    document.getElementById('login-form').addEventListener('submit', event => { event.preventDefault(); login().catch(e => {
       document.getElementById('login-error').textContent = e && e.message ? e.message : '登录失败';
     });});
 
