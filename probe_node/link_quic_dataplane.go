@@ -43,6 +43,8 @@ type probeChainQUICDataPlaneControlFrame struct {
 type probeChainQUICDataPlaneClientSession struct {
 	conn       *quic.Conn
 	control    *quic.Stream
+	transport  *quic.Transport
+	packetConn *net.UDPConn
 	bridgeRole string
 	remoteAddr net.Addr
 	localAddr  net.Addr
@@ -111,11 +113,22 @@ func startProbeChainQUICDataPlaneServer(runtime *probeChainRuntime, cert probeSe
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{probeChainQUICDataPlaneALPN},
 	}
-	ln, err := quic.ListenAddr(listenAddr, tlsConf, newProbeChainQUICConfig(probeChainRelayQUICMaxIncomingStreams))
+	udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
 	if err != nil {
 		return err
 	}
+	udpConn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return err
+	}
+	tuneProbeChainUDPConn(udpConn)
+	ln, err := quic.Listen(udpConn, tlsConf, newProbeChainQUICConfig(probeChainRelayQUICMaxIncomingStreams))
+	if err != nil {
+		_ = udpConn.Close()
+		return err
+	}
 	runtime.quicDataPlaneListener = ln
+	runtime.quicDataPlanePacketConn = udpConn
 	markProbeChainRelayListenerStatus(net.JoinHostPort(runtime.cfg.listenHost, strconv.Itoa(runtime.cfg.listenPort)), "quic-stream", "listening", "")
 	go acceptProbeChainQUICDataPlaneConnections(runtime, ln)
 	return nil
@@ -258,6 +271,16 @@ func openProbeChainRelayQUICDataPlaneSession(chainID string, secret string, rela
 	}
 	startedAt := time.Now()
 	dialHostPort := net.JoinHostPort(strings.TrimSpace(relayDialHost), strconv.Itoa(port))
+	udpAddr, err := net.ResolveUDPAddr("udp", dialHostPort)
+	if err != nil {
+		return nil, err
+	}
+	packetConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return nil, err
+	}
+	tuneProbeChainUDPConn(packetConn)
+	transport := &quic.Transport{Conn: packetConn}
 	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
 	defer cancel()
 	tlsConf := &tls.Config{
@@ -267,8 +290,10 @@ func openProbeChainRelayQUICDataPlaneSession(chainID string, secret string, rela
 		InsecureSkipVerify: true,
 	}
 	logProbeChainRelayDialAttempt("quic-stream", chainID, "quic-stream", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
-	conn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, newProbeChainQUICConfig(0))
+	conn, err := transport.Dial(ctx, udpAddr, tlsConf, newProbeChainQUICConfig(0))
 	if err != nil {
+		_ = transport.Close()
+		_ = packetConn.Close()
 		wrappedErr := wrapProbeChainRelayDialError("quic-stream", relayDialHost, port, err)
 		logProbeChainRelayDialOutcome("quic-stream", chainID, "quic-stream", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
 		return nil, wrappedErr
@@ -276,6 +301,8 @@ func openProbeChainRelayQUICDataPlaneSession(chainID string, secret string, rela
 	control, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		_ = conn.CloseWithError(1, "control open failed")
+		_ = transport.Close()
+		_ = packetConn.Close()
 		return nil, err
 	}
 	nonce := randomHexToken(16)
@@ -290,17 +317,23 @@ func openProbeChainRelayQUICDataPlaneSession(chainID string, secret string, rela
 		Auth:            &auth,
 	}); err != nil {
 		_ = conn.CloseWithError(2, "control auth failed")
+		_ = transport.Close()
+		_ = packetConn.Close()
 		return nil, err
 	}
 	_ = control.SetReadDeadline(time.Now().Add(probeChainQUICDataPlaneControlTimeout))
 	var response probeChainQUICDataPlaneControlFrame
 	if err := json.NewDecoder(control).Decode(&response); err != nil {
 		_ = conn.CloseWithError(3, "control response failed")
+		_ = transport.Close()
+		_ = packetConn.Close()
 		return nil, err
 	}
 	_ = control.SetReadDeadline(time.Time{})
 	if !response.OK {
 		_ = conn.CloseWithError(4, "auth rejected")
+		_ = transport.Close()
+		_ = packetConn.Close()
 		return nil, errors.New(firstNonEmpty(strings.TrimSpace(response.Error), "quic dataplane auth rejected"))
 	}
 	if cacheOnSuccess {
@@ -312,6 +345,8 @@ func openProbeChainRelayQUICDataPlaneSession(chainID string, secret string, rela
 	return &probeChainQUICDataPlaneClientSession{
 		conn:       conn,
 		control:    control,
+		transport:  transport,
+		packetConn: packetConn,
 		bridgeRole: normalizeProbeChainBridgeRole(bridgeRole),
 		localAddr:  conn.LocalAddr(),
 		remoteAddr: conn.RemoteAddr(),
@@ -344,6 +379,12 @@ func (s *probeChainQUICDataPlaneClientSession) Close() error {
 		}
 		if s.conn != nil {
 			err = s.conn.CloseWithError(0, "closed")
+		}
+		if s.transport != nil {
+			_ = s.transport.Close()
+		}
+		if s.packetConn != nil {
+			_ = s.packetConn.Close()
 		}
 	})
 	return err

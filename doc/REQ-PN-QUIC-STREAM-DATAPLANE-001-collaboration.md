@@ -350,7 +350,7 @@
 
 | 需求编号 | 任务编号 | 实现文件 | 实现状态 | 自测状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|
-| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T001 | `probe_node/link_chain_runtime.go` | 已完成 | 通过 | `TestNewProbeChainQUICConfigUsesV2V1AndDatagrams`、`go test ./...` | QUIC 配置显式启用 v2/v1、datagram 与高吞吐窗口 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T001 | `probe_node/link_chain_runtime.go` | 已完成 | 通过 | `TestNewProbeChainQUICConfigUsesV2V1AndDatagrams`、`go test ./...` | QUIC 配置显式启用 v2/v1、datagram、高吞吐窗口与加大 UDP socket buffer |
 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T002 | `probe_node/link_chain_runtime.go`、`probe_node/link_quic_dataplane.go` | 已完成 | 通过 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip`、`go test ./...` | 服务端启动独立实验 QUIC Data Plane 入口，认证后接受 stream |
 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T003 | `probe_node/link_relay_client_transport.go`、`probe_node/link_quic_dataplane.go` | 已完成 | 通过 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip`、`go test ./...` | 客户端可建立 QUIC 会话并完成能力响应读取 |
 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T004 | `probe_node/local_tun_group_runtime.go`、`probe_node/link_quic_dataplane.go` | 已完成 | 通过 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip`、`TestProbeChainQUICDataPlaneLayerIncludesHTTP3Alias`、`go test ./...` | TUN 组运行时在 `http3` / `quic-stream` 下直接打开 QUIC bidirectional stream，不套 yamux |
@@ -364,7 +364,7 @@
 
 | 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
-| IF-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_chain_runtime.go` | QUIC listener/dialer | QUIC 配置层 | 已完成 | `TestNewProbeChainQUICConfigUsesV2V1AndDatagrams` | `Versions=[v2,v1]`、`EnableDatagrams=true` |
+| IF-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_chain_runtime.go`、`probe_node/link_quic_dataplane.go` | QUIC listener/dialer | QUIC 配置层 | 已完成 | `TestNewProbeChainQUICConfigUsesV2V1AndDatagrams` | `Versions=[v2,v1]`、`EnableDatagrams=true`、高吞吐 flow-control window、显式调优 UDP socket |
 | IF-002 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_quic_dataplane.go` | chain runtime 启动路径 | QUIC 服务端入口 | 已完成 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip` | 使用独立实验 UDP 端口 `listen_port+1`，避免与现有 H3 监听抢同一 socket |
 | IF-003 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_quic_dataplane.go`、`probe_node/link_relay_client_transport.go` | 客户端连接路径 | QUIC 客户端拨号 | 已完成 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip` | 完成 HMAC 认证、能力响应和 negotiated version/datagram 日志 |
 | IF-004 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_quic_dataplane.go`、`probe_node/local_tun_group_runtime.go` | TCP 代理路径 | TCP Stream Mapper | 已完成 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip`、`TestProbeChainQUICDataPlaneLayerIncludesHTTP3Alias` | TUN 组 `http3` / `quic-stream` 每条 TCP open 使用独立 QUIC bidirectional stream |
@@ -397,7 +397,8 @@
 - 状态: 已更新
 
 #### 2.5.1 修改接口
-- `newProbeChainQUICConfig()` 增加 `Versions=[quic.Version2, quic.Version1]` 与 `EnableDatagrams=true`。
+- `newProbeChainQUICConfig()` 增加 `Versions=[quic.Version2, quic.Version1]`、`EnableDatagrams=true` 与更大的 stream/connection receive window。
+- QUIC Data Plane 服务端与客户端改为显式创建 `net.UDPConn` 并调用 `tuneProbeChainUDPConn()`，避免使用默认 UDP socket buffer。
 - `startProbeChainQUICDataPlaneServer()` 新增服务端 QUIC Data Plane 入口。
 - `openProbeChainRelayQUICDataPlaneSession()` 新增客户端 QUIC Data Plane 会话拨号与控制流认证。
 - `openProbeChainQUICProxyStream()` 新增 TCP over QUIC bidirectional stream open。
@@ -410,7 +411,7 @@
 - 无新增配置文件；首版采用显式协议标签 `quic-stream`，QUIC Data Plane 监听端口为 `listen_port+1`。
 
 #### 2.5.3 执行报告
-- 已完成 QUIC Data Plane 首版最小闭环: QUIC v2/v1 配置、datagram 能力开启、独立 ALPN `probe-quic/1`、控制流 HMAC 认证、服务端接受数据 stream、客户端 `quic-stream` 会话、本地 TUN 组 `http3` / `quic-stream` 运行时绕过 yamux 打开独立 QUIC stream、TCP echo 集成测试、QUIC speed_test 数据窗口测速。
+- 已完成 QUIC Data Plane 首版最小闭环: QUIC v2/v1 配置、datagram 能力开启、独立 ALPN `probe-quic/1`、控制流 HMAC 认证、服务端接受数据 stream、客户端 `quic-stream` 会话、本地 TUN 组 `http3` / `quic-stream` 运行时绕过 yamux 打开独立 QUIC stream、TCP echo 集成测试、QUIC speed_test 数据窗口测速；针对 QUIC Stream 明显慢于 WS 的反馈，已上调 QUIC flow-control window、UDP socket buffer 与 speed test chunk。
 
 #### 2.5.4 影响文件
 - `probe_node/link_chain_runtime.go`

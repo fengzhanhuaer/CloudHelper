@@ -80,19 +80,20 @@ type probeChainBridgeSession struct {
 }
 
 type probeChainRuntime struct {
-	cfg                   probeChainRuntimeConfig
-	httpsServer           *http.Server
-	http3Server           *http3.Server
-	http3PacketConn       net.PacketConn
-	quicDataPlaneListener *quic.Listener
-	downstreamSessions    map[string]*probeChainBridgeSession
-	upstreamSessions      map[string]*probeChainBridgeSession
-	bridgeMu              sync.Mutex
-	bridgeSeq             uint64
-	forwardMu             sync.Mutex
-	tcpForwards           []net.Listener
-	udpForwards           []net.PacketConn
-	stopCh                chan struct{}
+	cfg                     probeChainRuntimeConfig
+	httpsServer             *http.Server
+	http3Server             *http3.Server
+	http3PacketConn         net.PacketConn
+	quicDataPlaneListener   *quic.Listener
+	quicDataPlanePacketConn net.PacketConn
+	downstreamSessions      map[string]*probeChainBridgeSession
+	upstreamSessions        map[string]*probeChainBridgeSession
+	bridgeMu                sync.Mutex
+	bridgeSeq               uint64
+	forwardMu               sync.Mutex
+	tcpForwards             []net.Listener
+	udpForwards             []net.PacketConn
+	stopCh                  chan struct{}
 }
 
 type probeChainRuntimePortForward struct {
@@ -248,21 +249,21 @@ const (
 	probeChainRelaySpeedTestBytes              = 128 * 1024 * 1024
 	probeChainRelaySpeedTestMaxBytes           = 256 * 1024 * 1024
 	probeChainRelaySpeedTestTimeout            = 120 * time.Second
-	probeChainRelaySpeedTestChunkBytes         = 256 * 1024
-	probeChainRelayIOCopyBufferBytes           = 256 * 1024
+	probeChainRelaySpeedTestChunkBytes         = 1024 * 1024
+	probeChainRelayIOCopyBufferBytes           = 512 * 1024
 	probeChainRelayWebSocketBufferBytes        = 256 * 1024
 	probeChainRelayWebSocketWriteBatchBytes    = 256 * 1024
 	probeChainRelayTCPSocketBufferBytes        = 4 * 1024 * 1024
-	probeChainRelayUDPSocketBufferBytes        = 4 * 1024 * 1024
+	probeChainRelayUDPSocketBufferBytes        = 16 * 1024 * 1024
 	probeChainRelayUDPFrameBufferBytes         = 2 + 65535
 	probeChainRelayTCPKeepAlivePeriod          = 30 * time.Second
 	probeChainRelayYamuxAcceptBacklog          = 1024
 	probeChainRelayYamuxMaxStreamWindowBytes   = 16 * 1024 * 1024
 	probeChainRelayYamuxWriteTimeout           = 30 * time.Second
-	probeChainRelayQUICInitialStreamWindow     = 8 * 1024 * 1024
-	probeChainRelayQUICMaxStreamWindow         = 16 * 1024 * 1024
-	probeChainRelayQUICInitialConnectionWindow = 32 * 1024 * 1024
-	probeChainRelayQUICMaxConnectionWindow     = 64 * 1024 * 1024
+	probeChainRelayQUICInitialStreamWindow     = 32 * 1024 * 1024
+	probeChainRelayQUICMaxStreamWindow         = 128 * 1024 * 1024
+	probeChainRelayQUICInitialConnectionWindow = 128 * 1024 * 1024
+	probeChainRelayQUICMaxConnectionWindow     = 512 * 1024 * 1024
 	probeChainRelayQUICMaxIncomingStreams      = 1024
 	probeChainRelayQUICDatagramMaxPayloadBytes = 1200
 
@@ -2083,6 +2084,9 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	}
 	if rt.quicDataPlaneListener != nil {
 		_ = rt.quicDataPlaneListener.Close()
+	}
+	if rt.quicDataPlanePacketConn != nil {
+		_ = rt.quicDataPlanePacketConn.Close()
 	}
 	if rt.http3PacketConn != nil {
 		_ = rt.http3PacketConn.Close()
