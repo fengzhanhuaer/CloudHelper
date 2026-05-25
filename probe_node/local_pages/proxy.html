@@ -800,7 +800,7 @@
         lines.push(`当前链路已记录观测速率 ${formatRateText(Number(item && item.observed_rate_bps))}。建议连续测速 2-3 次，看波动范围。`);
       }
 
-      lines.push('测速样本建议：单次读取至少 128MB，优先看用时是否已超过 10s，再判断结果是否接近稳定吞吐。');
+      lines.push('测速最长限制为 10s；若未读满 128MB，以 10s 内已读取数据计算速率。建议连续测速 2-3 次，看波动范围。');
 
       const hasMonitor = !!(monitor && typeof monitor === 'object' && String(monitor.fetched_at || '').trim());
       const cpu = hasMonitor && monitor.cpu_percent_text && monitor.cpu_percent_text !== 'unavailable' ? String(monitor.cpu_percent_text).trim() + '%' : '';
@@ -1138,7 +1138,7 @@
         const data = await requestJSON('/local/api/proxy/link/speed', {
           method: 'POST',
           body: JSON.stringify({ chain_id: cleanID, protocol: cleanProtocol }),
-        }, 135000);
+        }, 12000);
         await loadProxyLinkStatus();
         const rate = formatRateText(Number(data && data.rate_bps));
         const results = Array.isArray(data && data.results) ? data.results : [];

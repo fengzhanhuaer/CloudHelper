@@ -250,7 +250,7 @@ const (
 	probeChainRelayProtocolSwitchMinHold       = 30 * time.Second
 	probeChainRelaySpeedTestBytes              = 128 * 1024 * 1024
 	probeChainRelaySpeedTestMaxBytes           = 256 * 1024 * 1024
-	probeChainRelaySpeedTestTimeout            = 120 * time.Second
+	probeChainRelaySpeedTestTimeout            = 10 * time.Second
 	probeChainRelaySpeedTestChunkBytes         = 1024 * 1024
 	probeChainRelayQUICSpeedTestChunkBytes     = 256 * 1024
 	probeChainRelayIOCopyBufferBytes           = 512 * 1024

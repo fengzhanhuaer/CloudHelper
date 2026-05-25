@@ -650,6 +650,51 @@ func TestSnapshotProbeChainProtocolStateIncludesListenerStatusByPort(t *testing.
 	}
 }
 
+func TestConsumeProbeChainRelaySpeedTestDataAcceptsPartialDurationLimit(t *testing.T) {
+	reader := &probeChainSpeedTestTimeoutReader{
+		chunks: [][]byte{
+			[]byte("a"),
+			[]byte(strings.Repeat("b", 64)),
+		},
+	}
+	var result probeChainRelaySpeedTestResult
+
+	consumeProbeChainRelaySpeedTestData(reader, 128*1024*1024, time.Nanosecond, &result)
+
+	if !result.OK {
+		t.Fatalf("expected partial timeout result to be OK: %+v", result)
+	}
+	if result.Bytes != 65 {
+		t.Fatalf("unexpected bytes: %d", result.Bytes)
+	}
+	if result.RateBPS <= 0 {
+		t.Fatalf("expected positive rate: %+v", result)
+	}
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+}
+
+type probeChainSpeedTestTimeoutReader struct {
+	chunks [][]byte
+	index  int
+}
+
+func (r *probeChainSpeedTestTimeoutReader) Read(p []byte) (int, error) {
+	if r.index >= len(r.chunks) {
+		return 0, probeChainSpeedTestTimeoutErr{}
+	}
+	chunk := r.chunks[r.index]
+	r.index++
+	return copy(p, chunk), nil
+}
+
+type probeChainSpeedTestTimeoutErr struct{}
+
+func (probeChainSpeedTestTimeoutErr) Error() string   { return "i/o timeout" }
+func (probeChainSpeedTestTimeoutErr) Timeout() bool   { return true }
+func (probeChainSpeedTestTimeoutErr) Temporary() bool { return true }
+
 func resetProbeChainAuthIPStateForTest() {
 	probeChainAuthIPStateMap.mu.Lock()
 	probeChainAuthIPStateMap.items = make(map[string]probeChainAuthIPState)

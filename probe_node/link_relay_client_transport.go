@@ -1326,6 +1326,7 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 	if timeout <= 0 {
 		timeout = probeChainRelaySpeedTestTimeout
 	}
+	deadlineAt := startedAt.Add(timeout)
 	cleanLayer := normalizeProbeChainLinkLayer(layer)
 	if cleanLayer == "quic-stream" {
 		session, err := openProbeChainRelayQUICDataPlaneSession(chainID, secret, relayHost, relayPort, "", relayDialHost, relayHostHeader, timeout, true)
@@ -1336,7 +1337,12 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 			return result
 		}
 		defer session.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		remainingTimeout := time.Until(deadlineAt)
+		if remainingTimeout <= 0 {
+			result.Error = context.DeadlineExceeded.Error()
+			return result
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), remainingTimeout)
 		defer cancel()
 		stream, err := session.OpenStream(ctx)
 		if err != nil {
@@ -1353,7 +1359,7 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 			return result
 		}
 		_ = stream.SetWriteDeadline(time.Time{})
-		consumeProbeChainRelaySpeedTestData(stream, byteCount, &result)
+		consumeProbeChainRelaySpeedTestData(stream, byteCount, time.Until(deadlineAt), &result)
 		return result
 	}
 	if cleanLayer == "websocket" || cleanLayer == "websocket-h3" {
@@ -1366,10 +1372,15 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 		}
 		defer speedConn.Close()
 		_ = headerAt
-		consumeProbeChainRelaySpeedTestData(speedConn, byteCount, &result)
+		consumeProbeChainRelaySpeedTestData(speedConn, byteCount, time.Until(deadlineAt), &result)
 		return result
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	remainingTimeout := time.Until(deadlineAt)
+	if remainingTimeout <= 0 {
+		result.Error = context.DeadlineExceeded.Error()
+		return result
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remainingTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, relayURL, nil)
 	if err != nil {
@@ -1408,16 +1419,23 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 		return result
 	}
 	_ = headerAt
-	consumeProbeChainRelaySpeedTestData(response.Body, byteCount, &result)
+	consumeProbeChainRelaySpeedTestData(response.Body, byteCount, time.Until(deadlineAt), &result)
 	refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 	return result
 }
 
-func consumeProbeChainRelaySpeedTestData(reader io.Reader, byteCount int64, result *probeChainRelaySpeedTestResult) {
+func consumeProbeChainRelaySpeedTestData(reader io.Reader, byteCount int64, maxDuration time.Duration, result *probeChainRelaySpeedTestResult) {
 	if result == nil {
 		return
 	}
 	readStartedAt := time.Now()
+	if maxDuration <= 0 {
+		maxDuration = probeChainRelaySpeedTestTimeout
+	}
+	if deadliner, ok := reader.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = deadliner.SetReadDeadline(readStartedAt.Add(maxDuration))
+		defer deadliner.SetReadDeadline(time.Time{})
+	}
 	var first [1]byte
 	firstN, firstErr := io.ReadFull(reader, first[:])
 	firstAt := time.Now()
@@ -1434,10 +1452,18 @@ func consumeProbeChainRelaySpeedTestData(reader io.Reader, byteCount int64, resu
 	result.Bytes = int64(firstN) + n
 	result.DurationMS = probeDurationMilliseconds(endedAt.Sub(readStartedAt))
 	if firstErr != nil {
+		if isProbeChainRelaySpeedTestDurationLimitErr(firstErr, result.Bytes, readStartedAt, maxDuration) {
+			finalizeProbeChainRelaySpeedTestPartialResult(result, readStartedAt, endedAt)
+			return
+		}
 		result.Error = firstErr.Error()
 		return
 	}
 	if err != nil {
+		if isProbeChainRelaySpeedTestDurationLimitErr(err, result.Bytes, readStartedAt, maxDuration) {
+			finalizeProbeChainRelaySpeedTestPartialResult(result, readStartedAt, endedAt)
+			return
+		}
 		result.Error = err.Error()
 		return
 	}
@@ -1449,12 +1475,43 @@ func consumeProbeChainRelaySpeedTestData(reader io.Reader, byteCount int64, resu
 		result.Error = fmt.Sprintf("speed test returned incomplete data: bytes=%d want=%d", result.Bytes, byteCount)
 		return
 	}
-	elapsed := endedAt.Sub(readStartedAt)
+	finalizeProbeChainRelaySpeedTestPartialResult(result, readStartedAt, endedAt)
+}
+
+func finalizeProbeChainRelaySpeedTestPartialResult(result *probeChainRelaySpeedTestResult, startedAt time.Time, endedAt time.Time) {
+	if result == nil {
+		return
+	}
+	if result.Bytes <= 0 {
+		result.Error = "speed test returned no data"
+		return
+	}
+	elapsed := endedAt.Sub(startedAt)
 	if elapsed <= 0 {
 		elapsed = time.Millisecond
 	}
 	result.RateBPS = int64(float64(result.Bytes) / elapsed.Seconds())
 	result.OK = true
+	result.Error = ""
+}
+
+func isProbeChainRelaySpeedTestDurationLimitErr(err error, bytesRead int64, startedAt time.Time, maxDuration time.Duration) bool {
+	if err == nil || bytesRead <= 0 || maxDuration <= 0 {
+		return false
+	}
+	elapsed := time.Since(startedAt)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if !strings.Contains(text, "timeout") && !strings.Contains(text, "deadline") {
+		return false
+	}
+	return elapsed >= maxDuration || maxDuration <= time.Millisecond
 }
 
 func openProbeChainRelaySpeedTestConn(chainID string, secret string, relayHost string, relayPort int, layer string, byteCount int64, openTimeout time.Duration) (net.Conn, error) {
