@@ -29,6 +29,9 @@ var probeLocalExplicitProxyState = struct {
 }{}
 
 func startProbeLocalExplicitProxyServer() {
+	if isProbeLocalTestBinary() {
+		return
+	}
 	probeLocalExplicitProxyState.mu.Lock()
 	defer probeLocalExplicitProxyState.mu.Unlock()
 
@@ -70,6 +73,9 @@ func startProbeLocalExplicitProxyServer() {
 }
 
 func stopProbeLocalExplicitProxyServer() {
+	if isProbeLocalTestBinary() {
+		return
+	}
 	probeLocalExplicitProxyState.mu.Lock()
 	socksListener := probeLocalExplicitProxyState.socksListener
 	httpListener := probeLocalExplicitProxyState.httpListener
