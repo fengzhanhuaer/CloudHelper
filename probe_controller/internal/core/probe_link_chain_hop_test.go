@@ -186,3 +186,57 @@ func TestProjectProbeLinkEntriesForClientUsesIndependentEntryIDs(t *testing.T) {
 		t.Fatalf("original chain mutated: %+v", chain.HopConfigs[0])
 	}
 }
+
+func TestProjectProbeLinkEntriesRefreshesGeneratedNameAfterChainRename(t *testing.T) {
+	oldStore := ProbeLinkChainStore
+	t.Cleanup(func() {
+		ProbeLinkChainStore = oldStore
+	})
+
+	chain := probeLinkChainRecord{
+		ChainID:       "7",
+		Name:          "Home",
+		ChainType:     "proxy_chain",
+		UserID:        "u",
+		UserPublicKey: "pub",
+		Secret:        "secret",
+		EntryNodeID:   "1",
+		ExitNodeID:    "1",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    16030,
+		LinkLayer:     "http2",
+		EgressHost:    "127.0.0.1",
+		EgressPort:    1080,
+		HopConfigs: []probeLinkChainHopConfig{{
+			NodeNo:       1,
+			ListenPort:   16030,
+			ExternalPort: 16030,
+			RelayHost:    "origin.example.com",
+			LinkLayer:    "http2",
+		}},
+	}
+	ProbeLinkChainStore = &probeLinkChainStore{
+		data: probeLinkChainStoreData{
+			Chains: []probeLinkChainRecord{chain},
+			EntryProfiles: []probeLinkEntryProfileRecord{{
+				ChainID: "7",
+				Entries: []probeLinkEntryConfig{
+					{EntryID: "7_cf", EntryType: "cf", Host: "api.example.com", Name: "HomeChain_cf"},
+					{EntryID: "custom-entry", EntryType: "pub", Host: "origin.example.com", Name: "My Entry"},
+				},
+			}},
+		},
+	}
+
+	projected := projectProbeLinkEntriesForClient([]probeLinkChainRecord{chain})
+	names := map[string]string{}
+	for _, item := range projected {
+		names[item.ClientEntryType] = item.Name
+	}
+	if names["cf"] != "Home_cf" {
+		t.Fatalf("generated cf name=%q, want Home_cf; projected=%+v", names["cf"], projected)
+	}
+	if names["pub"] != "My Entry" {
+		t.Fatalf("custom pub name=%q, want My Entry; projected=%+v", names["pub"], projected)
+	}
+}

@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/yamux"
 )
 
 const (
@@ -3876,14 +3878,120 @@ func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, pr
 	default:
 		return 0, fmt.Errorf("unsupported relay protocol: %s", protocol)
 	}
-	result := probeChainRelaySpeedTestWithLayer(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, 1, probeChainRelayProtocolProbeTimeout)
-	if !result.OK {
-		return 0, errors.New(firstNonEmpty(strings.TrimSpace(result.Error), "latency data probe failed"))
+	return probeLocalProxyLinkPingPongProbe(endpoint, cleanProtocol)
+}
+
+func probeLocalProxyLinkPingPongProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (time.Duration, error) {
+	const payloadBytes = 64
+	conn, err := openProbeChainRelayNetConnWithLayerConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, protocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
+	if err != nil {
+		return 0, err
 	}
-	if result.DurationMS <= 0 {
+	defer conn.Close()
+	stream, err := openProbeLocalProxyLinkPingPongStream(conn, payloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	defer stream.Close()
+	payload := make([]byte, payloadBytes)
+	for i := range payload {
+		payload[i] = byte((i * 31) % 251)
+	}
+	echo := make([]byte, payloadBytes)
+	startedAt := time.Now()
+	_ = stream.SetDeadline(time.Now().Add(probeChainRelayProtocolProbeTimeout))
+	if _, err := stream.Write(payload); err != nil {
+		_ = stream.SetDeadline(time.Time{})
+		return 0, err
+	}
+	if _, err := io.ReadFull(stream, echo); err != nil {
+		_ = stream.SetDeadline(time.Time{})
+		return 0, err
+	}
+	_ = stream.SetDeadline(time.Time{})
+	if !bytes.Equal(payload, echo) {
+		return 0, errors.New("ping-pong echo mismatch")
+	}
+	elapsed := time.Since(startedAt)
+	if elapsed <= 0 {
 		return time.Millisecond, nil
 	}
-	return time.Duration(result.DurationMS) * time.Millisecond, nil
+	return elapsed, nil
+}
+
+func openProbeLocalProxyLinkPingPongStream(conn net.Conn, payloadBytes int64) (net.Conn, error) {
+	if conn == nil {
+		return nil, errors.New("relay connection is nil")
+	}
+	if quicControl, ok := conn.(*probeChainQUICDataPlaneControlNetConn); ok {
+		if quicControl.session == nil {
+			return nil, errors.New("quic dataplane session is nil")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), probeChainRelayProtocolProbeTimeout)
+		defer cancel()
+		stream, err := quicControl.session.OpenStream(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeProbeLocalProxyLinkPingPongRequest(stream, payloadBytes); err != nil {
+			_ = stream.Close()
+			return nil, err
+		}
+		return stream, nil
+	}
+	session, err := yamux.Client(conn, newProbeChainYamuxConfig())
+	if err != nil {
+		return nil, err
+	}
+	stream, err := session.Open()
+	if err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	if err := writeProbeLocalProxyLinkPingPongRequest(stream, payloadBytes); err != nil {
+		_ = stream.Close()
+		_ = session.Close()
+		return nil, err
+	}
+	return &probeLocalProxyLinkPingPongStreamConn{Conn: stream, session: session}, nil
+}
+
+type probeLocalProxyLinkPingPongStreamConn struct {
+	net.Conn
+	session *yamux.Session
+}
+
+func (c *probeLocalProxyLinkPingPongStreamConn) Close() error {
+	var firstErr error
+	if c != nil && c.Conn != nil {
+		firstErr = c.Conn.Close()
+	}
+	if c != nil && c.session != nil {
+		if err := c.session.Close(); firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func writeProbeLocalProxyLinkPingPongRequest(stream net.Conn, payloadBytes int64) error {
+	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+	if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenRequest{Type: probeChainRelayModePingPong, PingBytes: payloadBytes}); err != nil {
+		_ = stream.SetWriteDeadline(time.Time{})
+		return err
+	}
+	_ = stream.SetWriteDeadline(time.Time{})
+	_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+	var response probeChainTunnelOpenResponse
+	if err := json.NewDecoder(stream).Decode(&response); err != nil {
+		_ = stream.SetReadDeadline(time.Time{})
+		return err
+	}
+	_ = stream.SetReadDeadline(time.Time{})
+	if !response.OK {
+		return errors.New(firstNonEmpty(strings.TrimSpace(response.Error), "ping-pong open failed"))
+	}
+	return nil
 }
 
 func probeLocalProxyLinkReachabilityProtocols() []string {

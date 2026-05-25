@@ -97,7 +97,7 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 				"恢复代理规则组",
 				"/local/api/proxy/groups/backup",
 				"/local/api/proxy/groups/restore",
-				"最近测试延迟: 不可达",
+				"最近链路 RTT: 不可达",
 				"链路状态",
 				"/local/api/proxy/link/status",
 				"/local/api/proxy/link/latency",

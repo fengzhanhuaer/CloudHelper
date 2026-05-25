@@ -191,7 +191,7 @@
 
     <section id="panelProxyLinks" class="card proxy-tab-panel" data-tab-panel="links">
       <strong>链路状态</strong>
-      <p class="hint">每条代理链路一行。延迟执行链路握手探测；测速使用专用 speed_test 模式，真实读取测试数据，不进入业务 bridge。</p>
+      <p class="hint">每条代理链路一行。延迟执行真实链路数据 ping-pong；测速使用专用 speed_test 模式，真实读取测试数据，不进入业务 bridge。</p>
       <div class="actions">
         <button id="proxyLinkStatusRefreshBtn" class="secondary">刷新链路状态</button>
       </div>
@@ -490,21 +490,21 @@
         const latencyStatus = String(stateEntry && stateEntry.selected_chain_latency_status || '').trim().toLowerCase();
         const latencyError = String(stateEntry && stateEntry.selected_chain_latency_error || '').trim();
         if (latencyStatus === 'reachable' && hasLatencyMs) {
-          return `最近测试延迟: ${latencyMsDisplay}ms`;
+          return `最近链路 RTT: ${latencyMsDisplay}ms`;
         }
         if (latencyStatus === 'reachable') {
           return status ? `已连接（${status}）` : '已连接';
         }
         if (latencyError) {
-          return `最近测试延迟: 不可达（${latencyError}）`;
+          return `最近链路 RTT: 不可达（${latencyError}）`;
         }
         if (status === 'connected' || status === 'online') {
           return status === 'connected' ? '已连接' : '在线';
         }
         if (status) {
-          return `最近测试延迟: 不可达（${status}）`;
+          return `最近链路 RTT: 不可达（${status}）`;
         }
-        return '最近测试延迟: 不可达';
+        return '最近链路 RTT: 不可达';
       }
       if (!status) return '';
       return status;
@@ -631,7 +631,7 @@
           const score = Number(item && item.score);
           const failures = Number(item && item.failure_count);
           const metrics = [];
-          metrics.push(`延迟=${Number.isFinite(latency) && latency > 0 ? Math.trunc(latency) + 'ms' : '-'}`);
+          metrics.push(`链路RTT=${Number.isFinite(latency) && latency > 0 ? Math.trunc(latency) + 'ms' : '-'}`);
           metrics.push(`丢包=${Number.isFinite(loss) ? (loss / 10).toFixed(1) + '%' : '-'}`);
           metrics.push(`速率=${formatRateText(rate)}`);
           metrics.push(`score=${Number.isFinite(score) && score > 0 ? Math.trunc(score) : '-'}`);
@@ -669,7 +669,7 @@
           const rate = Number(item && item.rate_bps);
           const score = Number(item && item.score);
           const failures = Number(item && item.failure_count);
-          if (Number.isFinite(latency) && latency > 0) metrics.push(`延迟=${Math.trunc(latency)}ms`);
+          if (Number.isFinite(latency) && latency > 0) metrics.push(`链路RTT=${Math.trunc(latency)}ms`);
           if (Number.isFinite(loss)) metrics.push(`丢包=${(loss / 10).toFixed(1)}%`);
           if (Number.isFinite(rate) && rate > 0) metrics.push(`速率=${formatRateText(rate)}`);
           if (Number.isFinite(score) && score > 0) metrics.push(`score=${Math.trunc(score)}`);
@@ -785,7 +785,7 @@
 
       const slowLatency = Array.from(qualityMap.values()).find((entry) => Number(entry && entry.latency_ms) >= 300);
       if (slowLatency) {
-        lines.push(`链路 RTT 偏高：${formatRelayProtocolLabel(slowLatency.protocol)} 延迟 ${Math.trunc(Number(slowLatency.latency_ms))}ms。高延迟下需要更长测速样本，短测速容易低估吞吐。`);
+        lines.push(`链路 RTT 偏高：${formatRelayProtocolLabel(slowLatency.protocol)} 数据 ping-pong ${Math.trunc(Number(slowLatency.latency_ms))}ms。高延迟下需要更长测速样本，短测速容易低估吞吐。`);
       }
 
       const failureEntry = Array.from(qualityMap.values()).find((entry) => Number(entry && entry.failure_count) > 0 || String(entry && entry.last_error || '').trim());
@@ -890,7 +890,7 @@
             <div class="pre-line">${escapeHTML(listenerLines)}</div>
           </div>
           <div class="link-detail-section">
-            <div class="link-detail-section-title">最近可达性测试</div>
+            <div class="link-detail-section-title">最近链路数据 ping-pong</div>
             <div class="pre-line">${escapeHTML(reachabilityLines)}</div>
           </div>
           <div class="link-detail-section">
@@ -998,7 +998,7 @@
               <div class="link-info-line"><span class="muted">测试状态</span><span class="pre-line">${escapeHTML(protocolText)}</span></div>
             </div>
           </td>
-          <td><div class="mini-actions"><button class="secondary" data-action="detail" data-chain-id="${escapeHTML(chainID)}">${detailActive ? '刷新详情' : '详情'}</button><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button>${speedButtons}${cfButton}</div></td>
+          <td><div class="mini-actions"><button class="secondary" data-action="detail" data-chain-id="${escapeHTML(chainID)}">${detailActive ? '刷新详情' : '详情'}</button><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">链路RTT</button>${speedButtons}${cfButton}</div></td>
         `;
         proxyLinkStatusRowsEl.appendChild(tr);
         if (detailActive) {
@@ -1102,7 +1102,7 @@
     async function runProxyLinkLatency(chainID) {
       const cleanID = normalizeChainID(chainID);
       if (!cleanID) return;
-      setMessage(`链路 ${cleanID} 两种协议可达性测试中...`);
+      setMessage(`链路 ${cleanID} 两种协议数据 ping-pong 测试中...`);
       try {
         const data = await requestJSON('/local/api/proxy/link/latency', {
           method: 'POST',
@@ -1124,7 +1124,7 @@
         }
         setMessage(`链路 ${cleanID} 两种协议均不可达：${summary || String(data && data.error || data && data.status || 'unknown')}`, 'error');
       } catch (err) {
-        setMessage(`链路 ${cleanID} 两种协议可达性测试失败：${err.message}`, 'error');
+        setMessage(`链路 ${cleanID} 两种协议数据 ping-pong 测试失败：${err.message}`, 'error');
       }
     }
 
@@ -1167,7 +1167,7 @@
     async function runProxyLinkCFIPOptimize(chainID) {
       const cleanID = normalizeChainID(chainID);
       if (!cleanID) return;
-      setMessage(`链路 ${cleanID} CF IP 优选已提交，后台测试 WebSocket 延迟...`);
+      setMessage(`链路 ${cleanID} CF IP 优选已提交，后台测试 WebSocket 数据 ping-pong...`);
       try {
         const data = await requestJSON('/local/api/proxy/link/cf_ip_optimize', {
           method: 'POST',

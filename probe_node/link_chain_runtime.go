@@ -170,6 +170,7 @@ type probeChainTunnelOpenRequest struct {
 	SessionID     string                       `json:"session_id,omitempty"`
 	AssociationV2 *probeChainAssociationV2Meta `json:"association_v2,omitempty"`
 	SpeedBytes    int64                        `json:"speed_bytes,omitempty"`
+	PingBytes     int64                        `json:"ping_bytes,omitempty"`
 }
 
 type probeChainTunnelOpenResponse struct {
@@ -216,6 +217,7 @@ const (
 
 	probeChainRelayModeBridge    = "bridge"
 	probeChainRelayModeSpeedTest = "speed_test"
+	probeChainRelayModePingPong  = "ping_pong"
 	probeChainBridgeRoleToNext   = "to_next"
 	probeChainBridgeRoleToPrev   = "to_prev"
 
@@ -2804,6 +2806,10 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		streamProbeChainSpeedTestBytes(runtime, stream, "", byteCount, "quic-stream")
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePingPong) {
+		handleProbeChainPingPongStream(runtime, stream, req.PingBytes)
+		return
+	}
 
 	requestedSessionID := strings.TrimSpace(req.SessionID)
 	network := strings.ToLower(strings.TrimSpace(req.Network))
@@ -2846,6 +2852,34 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		remote = strings.TrimSpace(stream.RemoteAddr().String())
 	}
 	log.Printf("probe chain proxy stream failed: chain=%s role=%s remote=%s err=%v", chainID, role, remote, proxyErr)
+}
+
+func handleProbeChainPingPongStream(runtime *probeChainRuntime, stream net.Conn, byteCount int64) {
+	if stream == nil {
+		return
+	}
+	if byteCount <= 0 || byteCount > 64*1024 {
+		byteCount = 64
+	}
+	if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
+		return
+	}
+	buf := make([]byte, byteCount)
+	_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+	_, err := io.ReadFull(stream, buf)
+	_ = stream.SetReadDeadline(time.Time{})
+	if err != nil {
+		if runtime != nil {
+			log.Printf("probe chain ping-pong read failed: chain=%s role=%s bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, byteCount, err)
+		}
+		return
+	}
+	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+	_, err = stream.Write(buf)
+	_ = stream.SetWriteDeadline(time.Time{})
+	if err != nil && runtime != nil {
+		log.Printf("probe chain ping-pong write failed: chain=%s role=%s bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, byteCount, err)
+	}
 }
 
 func writeProbeChainTunnelOpenResponse(stream net.Conn, resp probeChainTunnelOpenResponse) error {

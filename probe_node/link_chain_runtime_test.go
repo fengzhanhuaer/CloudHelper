@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -35,6 +37,41 @@ func TestReadProbeChainAuthEnvelopeFromHeadersCodexStyle(t *testing.T) {
 	if env.Mode != "secret_hmac" || env.ChainID != "chain-a" || env.Nonce != "nonce-1" || env.MAC != "abc123" {
 		t.Fatalf("unexpected envelope body: %+v", env)
 	}
+}
+
+func TestProbeChainPingPongStreamEchoesPayload(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleProbeChainProxyStream(nil, server)
+	}()
+
+	if err := json.NewEncoder(client).Encode(probeChainTunnelOpenRequest{Type: probeChainRelayModePingPong, PingBytes: 4}); err != nil {
+		t.Fatalf("write ping-pong request failed: %v", err)
+	}
+	var response probeChainTunnelOpenResponse
+	if err := json.NewDecoder(client).Decode(&response); err != nil {
+		t.Fatalf("read ping-pong response failed: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("ping-pong response not ok: %+v", response)
+	}
+	payload := []byte{1, 2, 3, 4}
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write payload failed: %v", err)
+	}
+	echo := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, echo); err != nil {
+		t.Fatalf("read echo failed: %v", err)
+	}
+	if string(echo) != string(payload) {
+		t.Fatalf("echo=%v want %v", echo, payload)
+	}
+	_ = client.Close()
+	<-done
 }
 
 func TestProbeChainAuthFailureBlacklistAfterFiveAttempts(t *testing.T) {

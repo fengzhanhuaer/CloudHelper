@@ -606,7 +606,7 @@ func assignProbeLinkEntryIDsAndNames(chain probeLinkChainRecord, entries []probe
 		if nameIndex > 1 {
 			entryName = fmt.Sprintf("%s%s%d", baseName, suffix, nameIndex)
 		}
-		if strings.TrimSpace(entries[i].Name) == "" {
+		if shouldRefreshProbeLinkEntryGeneratedName(chain, entries[i], entryName, nameIndex) {
 			entries[i].Name = entryName
 		}
 		baseID := sanitizeProbeLinkEntryID(strings.TrimSpace(chain.ChainID) + suffix)
@@ -622,6 +622,36 @@ func assignProbeLinkEntryIDsAndNames(chain probeLinkChainRecord, entries []probe
 			entries[i].EntryID = sanitizeProbeLinkEntryID(entries[i].EntryID)
 		}
 	}
+}
+
+func shouldRefreshProbeLinkEntryGeneratedName(chain probeLinkChainRecord, entry probeLinkEntryConfig, defaultName string, index int) bool {
+	current := strings.TrimSpace(entry.Name)
+	if current == "" {
+		return true
+	}
+	if current == strings.TrimSpace(defaultName) {
+		return false
+	}
+	entryType := normalizeProbeLinkEntryType(entry.EntryType)
+	if entryType == "" {
+		return false
+	}
+	chainID := strings.TrimSpace(chain.ChainID)
+	if chainID == "" {
+		return false
+	}
+	expectedID := sanitizeProbeLinkEntryID(chainID + "_" + entryType)
+	if index > 1 {
+		expectedID = fmt.Sprintf("%s%d", expectedID, index)
+	}
+	if strings.TrimSpace(entry.EntryID) != "" && sanitizeProbeLinkEntryID(entry.EntryID) != expectedID {
+		return false
+	}
+	suffix := "_" + entryType
+	if index > 1 {
+		suffix = fmt.Sprintf("%s%d", suffix, index)
+	}
+	return strings.HasSuffix(current, suffix)
 }
 
 func sanitizeProbeLinkEntryID(raw string) string {
