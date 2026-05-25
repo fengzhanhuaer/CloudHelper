@@ -3868,20 +3868,59 @@ func runProbeLocalProxyLinkHandshakeProbe(endpoint probeLocalTUNChainEndpoint) (
 	return openProbeLocalTUNChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
 }
 
-func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (net.Conn, error) {
+func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (time.Duration, error) {
 	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
 	switch cleanProtocol {
-	case "websocket-h3":
-		return openProbeChainRelayNetConnWithLayerConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
+	case "quic-stream", "websocket-h3":
 	case "websocket":
-		return openProbeChainRelayNetConnWithLayerConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, probeChainBridgeRoleToNext, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
 	default:
-		return nil, fmt.Errorf("unsupported relay protocol: %s", protocol)
+		return 0, fmt.Errorf("unsupported relay protocol: %s", protocol)
 	}
+	result := probeChainRelaySpeedTestWithLayer(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, 1, probeChainRelayProtocolProbeTimeout)
+	if !result.OK {
+		return 0, errors.New(firstNonEmpty(strings.TrimSpace(result.Error), "latency data probe failed"))
+	}
+	if result.DurationMS <= 0 {
+		return time.Millisecond, nil
+	}
+	return time.Duration(result.DurationMS) * time.Millisecond, nil
 }
 
 func probeLocalProxyLinkReachabilityProtocols() []string {
-	return []string{"websocket-h3", "websocket"}
+	return []string{"quic-stream", "websocket"}
+}
+
+func probeLocalProxyLinkReachabilityProtocolsForEndpoint(item probeLinkChainServerItem, endpoint probeLocalTUNChainEndpoint) []string {
+	if isProbeLocalProxyLinkCFEntry(item) {
+		return []string{"websocket"}
+	}
+	if normalizeProbeChainLinkLayer(endpoint.LinkLayer) == "http3" {
+		return []string{"quic-stream", "websocket"}
+	}
+	candidates := probeChainRelayProtocolCandidates(endpoint.LinkLayer)
+	if len(candidates) == 0 {
+		return probeLocalProxyLinkReachabilityProtocols()
+	}
+	out := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		protocol := normalizeProbeChainLinkLayer(candidate)
+		if protocol == "" {
+			continue
+		}
+		if _, ok := seen[protocol]; ok {
+			continue
+		}
+		switch protocol {
+		case "quic-stream", "websocket", "websocket-h3":
+			seen[protocol] = struct{}{}
+			out = append(out, protocol)
+		}
+	}
+	if len(out) == 0 {
+		return probeLocalProxyLinkReachabilityProtocols()
+	}
+	return out
 }
 
 func runProbeLocalProxyLinkSpeedProbe(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
@@ -4233,7 +4272,7 @@ func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip str
 	}
 	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
 	switch cleanProtocol {
-	case "websocket", "websocket-h3":
+	case "websocket":
 	default:
 		return 0, fmt.Errorf("invalid cf probe protocol: %s", protocol)
 	}
@@ -4262,24 +4301,7 @@ func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip str
 }
 
 func probeLocalProxyLinkCFOptimizeProtocols(layer string) []string {
-	candidates := probeChainRelayProtocolCandidates(layer)
-	if len(candidates) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(candidates))
-	seen := make(map[string]struct{}, len(candidates))
-	for _, candidate := range candidates {
-		protocol := normalizeProbeChainLinkLayer(candidate)
-		if protocol == "" {
-			continue
-		}
-		if _, ok := seen[protocol]; ok {
-			continue
-		}
-		seen[protocol] = struct{}{}
-		out = append(out, protocol)
-	}
-	return out
+	return []string{"websocket"}
 }
 
 func isProbeLocalProxyLinkCFEntry(item probeLinkChainServerItem) bool {
@@ -4528,17 +4550,13 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 	type latencyProbeResult struct {
 		probeLocalProxyLinkReachabilityResult
 	}
-	protocols := probeLocalProxyLinkReachabilityProtocols()
+	protocols := probeLocalProxyLinkReachabilityProtocolsForEndpoint(item, endpoint)
 	resultsCh := make(chan latencyProbeResult, len(protocols))
 	for _, protocol := range protocols {
 		protocol := protocol
 		go func() {
-			startedAt := time.Now()
-			conn, err := probeLocalProxyLinkProtocolProbe(endpoint, protocol)
-			latencyMS := probeLocalLatencyMilliseconds(startedAt)
-			if conn != nil {
-				_ = conn.Close()
-			}
+			latency, err := probeLocalProxyLinkProtocolProbe(endpoint, protocol)
+			latencyMS := probeDurationMilliseconds(latency)
 			result := latencyProbeResult{
 				probeLocalProxyLinkReachabilityResult: probeLocalProxyLinkReachabilityResult{
 					Protocol:  protocol,
@@ -4558,7 +4576,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 	bestProtocol := ""
 	bestLatencyMS := int64(0)
 	endpointKey := probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort)
-	protocolOrder := map[string]int{"websocket-h3": 0, "websocket": 1}
+	protocolOrder := map[string]int{"quic-stream": 0, "websocket-h3": 1, "websocket": 2}
 	for range protocols {
 		result := (<-resultsCh).probeLocalProxyLinkReachabilityResult
 		results = append(results, result)
@@ -4663,7 +4681,7 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		protocol = normalizeProbeChainLinkLayer(req.Protocol)
 	}
 	if protocol != "" && !isProbeChainRelaySupportedProtocol(protocol) && protocol != "http2" && protocol != "http3" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "protocol must be websocket-h3, websocket, http2, or http3"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "protocol must be quic-stream, websocket-h3, websocket, http2, or http3"})
 		return
 	}
 	items := currentProbeLocalProxyViewChains()
@@ -4682,6 +4700,13 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 			"updated_at": time.Now().UTC().Format(time.RFC3339),
 		})
 		return
+	}
+	if isProbeLocalProxyLinkCFEntry(item) {
+		if protocol != "" && protocol != "websocket" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cf entry only supports websocket speed test"})
+			return
+		}
+		protocol = "websocket"
 	}
 	results := probeLocalProxyLinkSpeedProbe(endpoint, protocol)
 	snapshot := snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort)

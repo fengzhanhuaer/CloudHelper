@@ -80,18 +80,19 @@ type probeChainBridgeSession struct {
 }
 
 type probeChainRuntime struct {
-	cfg                probeChainRuntimeConfig
-	httpsServer        *http.Server
-	http3Server        *http3.Server
-	http3PacketConn    net.PacketConn
-	downstreamSessions map[string]*probeChainBridgeSession
-	upstreamSessions   map[string]*probeChainBridgeSession
-	bridgeMu           sync.Mutex
-	bridgeSeq          uint64
-	forwardMu          sync.Mutex
-	tcpForwards        []net.Listener
-	udpForwards        []net.PacketConn
-	stopCh             chan struct{}
+	cfg                   probeChainRuntimeConfig
+	httpsServer           *http.Server
+	http3Server           *http3.Server
+	http3PacketConn       net.PacketConn
+	quicDataPlaneListener *quic.Listener
+	downstreamSessions    map[string]*probeChainBridgeSession
+	upstreamSessions      map[string]*probeChainBridgeSession
+	bridgeMu              sync.Mutex
+	bridgeSeq             uint64
+	forwardMu             sync.Mutex
+	tcpForwards           []net.Listener
+	udpForwards           []net.PacketConn
+	stopCh                chan struct{}
 }
 
 type probeChainRuntimePortForward struct {
@@ -167,6 +168,7 @@ type probeChainTunnelOpenRequest struct {
 	Address       string                       `json:"address"`
 	SessionID     string                       `json:"session_id,omitempty"`
 	AssociationV2 *probeChainAssociationV2Meta `json:"association_v2,omitempty"`
+	SpeedBytes    int64                        `json:"speed_bytes,omitempty"`
 }
 
 type probeChainTunnelOpenResponse struct {
@@ -262,6 +264,7 @@ const (
 	probeChainRelayQUICInitialConnectionWindow = 32 * 1024 * 1024
 	probeChainRelayQUICMaxConnectionWindow     = 64 * 1024 * 1024
 	probeChainRelayQUICMaxIncomingStreams      = 1024
+	probeChainRelayQUICDatagramMaxPayloadBytes = 1200
 
 	probeChainAuthPacketType        = "github_copilot_auth_request"
 	probeChainAuthPacketVersion     = "2025-03-22"
@@ -396,6 +399,8 @@ func normalizeProbeChainLinkLayer(raw string) string {
 		return "websocket"
 	case "websocket-h3", "ws-h3", "h3-websocket", "h3-ws":
 		return "websocket-h3"
+	case "quic-stream", "quic-v2-stream", "quic", "quic-dataplane":
+		return "quic-stream"
 	default:
 		return "http"
 	}
@@ -1541,6 +1546,12 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		markProbeChainRelayListenerStatus(listenAddr, "http3", "stopped", "")
 	}(runtime, h3Server, cert.CertPath, cert.KeyPath)
 
+	markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "starting", "")
+	if err := startProbeChainQUICDataPlaneServer(runtime, cert); err != nil {
+		markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "failed", err.Error())
+		log.Printf("probe chain quic dataplane listener unavailable: chain=%s listen=%s err=%v", runtime.cfg.chainID, listenAddr, err)
+	}
+
 	return nil
 }
 
@@ -2070,6 +2081,9 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	if rt.http3Server != nil {
 		_ = rt.http3Server.Close()
 	}
+	if rt.quicDataPlaneListener != nil {
+		_ = rt.quicDataPlaneListener.Close()
+	}
 	if rt.http3PacketConn != nil {
 		_ = rt.http3PacketConn.Close()
 	}
@@ -2079,6 +2093,9 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	}
 	if rt.http3Server != nil {
 		markProbeChainRelayListenerStatus(listenAddr, "http3", "stopped", "")
+	}
+	if rt.quicDataPlaneListener != nil {
+		markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "stopped", "")
 	}
 }
 
@@ -2663,6 +2680,8 @@ func (l *probeChainTunedTCPListener) Accept() (net.Conn, error) {
 
 func newProbeChainQUICConfig(maxIncomingStreams int64) *quic.Config {
 	cfg := &quic.Config{
+		Versions:                       []quic.Version{quic.Version2, quic.Version1},
+		EnableDatagrams:                true,
 		KeepAlivePeriod:                10 * time.Second,
 		InitialStreamReceiveWindow:     probeChainRelayQUICInitialStreamWindow,
 		MaxStreamReceiveWindow:         probeChainRelayQUICMaxStreamWindow,
@@ -2715,6 +2734,18 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		return
 	}
 	_ = stream.SetReadDeadline(time.Time{})
+
+	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModeSpeedTest) {
+		byteCount := req.SpeedBytes
+		if byteCount <= 0 {
+			byteCount = probeChainRelaySpeedTestBytes
+		}
+		if byteCount > probeChainRelaySpeedTestMaxBytes {
+			byteCount = probeChainRelaySpeedTestMaxBytes
+		}
+		streamProbeChainSpeedTestBytes(runtime, stream, "", byteCount, "quic-stream")
+		return
+	}
 
 	requestedSessionID := strings.TrimSpace(req.SessionID)
 	network := strings.ToLower(strings.TrimSpace(req.Network))

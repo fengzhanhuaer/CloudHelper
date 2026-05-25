@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -304,6 +305,8 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 
 func probeChainRelayProtocolCandidates(layer string) []string {
 	switch normalizeProbeChainLinkLayer(layer) {
+	case "quic-stream":
+		return []string{"quic-stream"}
 	case "http":
 		return []string{"websocket-h3", "websocket"}
 	case "http2", "http3":
@@ -319,7 +322,7 @@ func probeChainRelayProtocolCandidates(layer string) []string {
 
 func isProbeChainRelaySupportedProtocol(protocol string) bool {
 	switch normalizeProbeChainLinkLayer(protocol) {
-	case "websocket", "websocket-h3":
+	case "websocket", "websocket-h3", "quic-stream":
 		return true
 	default:
 		return false
@@ -864,6 +867,13 @@ func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, r
 		relayHostHeader = strings.TrimSpace(strings.Trim(relayHost, "[]"))
 	}
 	layer = normalizeProbeChainLinkLayer(layer)
+	if layer == "quic-stream" {
+		session, err := openProbeChainRelayQUICDataPlaneSession(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+		if err != nil {
+			return nil, err
+		}
+		return &probeChainQUICDataPlaneControlNetConn{session: session}, nil
+	}
 	if layer == "websocket" {
 		return openProbeChainRelayWebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
 	}
@@ -1266,7 +1276,7 @@ func probeChainRelaySpeedTestAuto(chainID string, secret string, relayHost strin
 func probeChainRelaySpeedTestCandidates(layer string, protocol string) []string {
 	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
 	switch cleanProtocol {
-	case "http2", "http3", "websocket", "websocket-h3":
+	case "http2", "http3", "websocket", "websocket-h3", "quic-stream":
 		return []string{cleanProtocol}
 	}
 	return probeChainRelayProtocolCandidates(layer)
@@ -1317,6 +1327,35 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 		timeout = probeChainRelaySpeedTestTimeout
 	}
 	cleanLayer := normalizeProbeChainLinkLayer(layer)
+	if cleanLayer == "quic-stream" {
+		session, err := openProbeChainRelayQUICDataPlaneSession(chainID, secret, relayHost, relayPort, "", relayDialHost, relayHostHeader, timeout, true)
+		headerAt := time.Now()
+		result.LatencyMS = probeDurationMilliseconds(headerAt.Sub(startedAt))
+		if err != nil {
+			result.Error = err.Error()
+			return result
+		}
+		defer session.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		stream, err := session.OpenStream(ctx)
+		if err != nil {
+			result.Error = err.Error()
+			return result
+		}
+		defer stream.Close()
+		_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+		if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenRequest{
+			Type:       probeChainRelayModeSpeedTest,
+			SpeedBytes: byteCount,
+		}); err != nil {
+			result.Error = err.Error()
+			return result
+		}
+		_ = stream.SetWriteDeadline(time.Time{})
+		consumeProbeChainRelaySpeedTestData(stream, byteCount, &result)
+		return result
+	}
 	if cleanLayer == "websocket" || cleanLayer == "websocket-h3" {
 		speedConn, speedErr := openProbeChainRelaySpeedTestConn(chainID, secret, relayHost, relayPort, cleanLayer, byteCount, timeout)
 		headerAt := time.Now()
@@ -1326,31 +1365,8 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 			return result
 		}
 		defer speedConn.Close()
-		result.LatencyMS = probeDurationMilliseconds(headerAt.Sub(startedAt))
-		readStartedAt := time.Now()
-		n, err := probeChainCopy(io.Discard, io.LimitReader(speedConn, byteCount))
-		endedAt := time.Now()
-		result.EndedAt = endedAt.UTC().Format(time.RFC3339)
-		result.Bytes = n
-		result.DurationMS = probeDurationMilliseconds(endedAt.Sub(readStartedAt))
-		if err != nil {
-			result.Error = err.Error()
-			return result
-		}
-		if n <= 0 {
-			result.Error = "speed test returned no data"
-			return result
-		}
-		if n < byteCount {
-			result.Error = fmt.Sprintf("speed test returned incomplete data: bytes=%d want=%d", n, byteCount)
-			return result
-		}
-		elapsed := endedAt.Sub(readStartedAt)
-		if elapsed <= 0 {
-			elapsed = time.Millisecond
-		}
-		result.RateBPS = int64(float64(n) / elapsed.Seconds())
-		result.OK = true
+		_ = headerAt
+		consumeProbeChainRelaySpeedTestData(speedConn, byteCount, &result)
 		return result
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -1386,38 +1402,59 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 	}
 	defer response.Body.Close()
 	defer closeTransport()
-	result.LatencyMS = probeDurationMilliseconds(headerAt.Sub(startedAt))
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 		result.Error = fmt.Sprintf("speed test failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
 		return result
 	}
+	_ = headerAt
+	consumeProbeChainRelaySpeedTestData(response.Body, byteCount, &result)
+	refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+	return result
+}
+
+func consumeProbeChainRelaySpeedTestData(reader io.Reader, byteCount int64, result *probeChainRelaySpeedTestResult) {
+	if result == nil {
+		return
+	}
 	readStartedAt := time.Now()
-	n, err := probeChainCopy(io.Discard, io.LimitReader(response.Body, byteCount))
+	var first [1]byte
+	firstN, firstErr := io.ReadFull(reader, first[:])
+	firstAt := time.Now()
+	if firstN > 0 {
+		result.LatencyMS = probeDurationMilliseconds(firstAt.Sub(readStartedAt))
+	}
+	remaining := byteCount - int64(firstN)
+	if remaining < 0 {
+		remaining = 0
+	}
+	n, err := probeChainCopy(io.Discard, io.LimitReader(reader, remaining))
 	endedAt := time.Now()
 	result.EndedAt = endedAt.UTC().Format(time.RFC3339)
-	result.Bytes = n
+	result.Bytes = int64(firstN) + n
 	result.DurationMS = probeDurationMilliseconds(endedAt.Sub(readStartedAt))
+	if firstErr != nil {
+		result.Error = firstErr.Error()
+		return
+	}
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return
 	}
-	if n <= 0 {
+	if result.Bytes <= 0 {
 		result.Error = "speed test returned no data"
-		return result
+		return
 	}
-	if n < byteCount {
-		result.Error = fmt.Sprintf("speed test returned incomplete data: bytes=%d want=%d", n, byteCount)
-		return result
+	if result.Bytes < byteCount {
+		result.Error = fmt.Sprintf("speed test returned incomplete data: bytes=%d want=%d", result.Bytes, byteCount)
+		return
 	}
 	elapsed := endedAt.Sub(readStartedAt)
 	if elapsed <= 0 {
 		elapsed = time.Millisecond
 	}
-	result.RateBPS = int64(float64(n) / elapsed.Seconds())
+	result.RateBPS = int64(float64(result.Bytes) / elapsed.Seconds())
 	result.OK = true
-	refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
-	return result
 }
 
 func openProbeChainRelaySpeedTestConn(chainID string, secret string, relayHost string, relayPort int, layer string, byteCount int64, openTimeout time.Duration) (net.Conn, error) {

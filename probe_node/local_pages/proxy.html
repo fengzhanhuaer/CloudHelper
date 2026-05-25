@@ -554,6 +554,7 @@
       const value = normalizeRelayProtocol(raw);
       if (value === 'http2' || value === 'h2') return 'HTTP/2';
       if (value === 'http3' || value === 'h3') return 'HTTP/3(QUIC)';
+      if (value === 'quic-stream' || value === 'quic' || value === 'quic-dataplane') return 'QUIC Stream';
       if (value === 'websocket') return 'WS';
       if (value === 'websocket-h3' || value === 'h3-websocket' || value === 'ws-h3') return 'WS-H3';
       return value || '?';
@@ -733,6 +734,7 @@
       const protocolState = item && item.protocol_state;
       const qualityMap = getProtocolQualityMap(protocolState);
       const ws = qualityMap.get('websocket');
+      const quicStream = qualityMap.get('quic-stream');
       const wsH3 = qualityMap.get('websocket-h3');
       const selected = normalizeRelayProtocol(protocolState && protocolState.selected_protocol);
       const selectedQuality = selected ? qualityMap.get(selected) : null;
@@ -746,7 +748,19 @@
         }
       });
 
-      if (wsH3 && ws) {
+      if (quicStream && ws) {
+        const quicRate = Number(quicStream && quicStream.rate_bps);
+        const wsRate = Number(ws && ws.rate_bps);
+        if (Number.isFinite(quicRate) && quicRate > 0 && Number.isFinite(wsRate) && wsRate > 0) {
+          if (quicRate < wsRate * 0.7) {
+            lines.push(`协议速率差明显：QUIC Stream=${formatRateText(quicRate)}，WS=${formatRateText(wsRate)}。优先观察 QUIC 数据面、UDP 路径与 CPU 占用。`);
+          } else if (wsRate < quicRate * 0.7) {
+            lines.push(`协议速率差明显：WS=${formatRateText(wsRate)}，QUIC Stream=${formatRateText(quicRate)}。优先观察 TCP 路径、WebSocket message 聚合效果与出口 TCP。`);
+          } else {
+            lines.push(`协议速率接近：QUIC Stream=${formatRateText(quicRate)}，WS=${formatRateText(wsRate)}。瓶颈更像是链路本身、出口目标或本机资源。`);
+          }
+        }
+      } else if (wsH3 && ws) {
         const wsH3Rate = Number(wsH3 && wsH3.rate_bps);
         const wsRate = Number(ws && ws.rate_bps);
         if (Number.isFinite(wsH3Rate) && wsH3Rate > 0 && Number.isFinite(wsRate) && wsRate > 0) {
@@ -943,7 +957,7 @@
       if (Number.isFinite(tested) && tested > 0) {
         const total = Number.isFinite(planned) && planned > 0
           ? Math.trunc(planned)
-          : (Number.isFinite(candidates) && candidates > 0 ? Math.trunc(candidates * 2) : 0);
+          : (Number.isFinite(candidates) && candidates > 0 ? Math.trunc(candidates * (isCFProxyLinkItem(item) ? 1 : 2)) : 0);
         parts.push(`已测=${Math.trunc(tested)}${total > 0 ? '/' + total : ''}`);
       }
       const err = String(status.error || '').trim();
@@ -968,8 +982,12 @@
         const rate = Number(item && item.observed_rate_bps);
         const rateText = formatRateText(rate);
         const errorText = String(item && item.unavailable_error || '').trim();
+        const isCFLink = isCFProxyLinkItem(item);
         const cfOptimizeHTML = formatCFOptimizeStatusHTML(item && item.cf_optimize, item);
         const cfButton = isCFProxyLinkItem(item) ? `<button class="secondary" data-action="cf-ip-optimize" data-chain-id="${escapeHTML(chainID)}">CF IP优选</button>` : '';
+        const speedButtons = isCFLink
+          ? `<button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>`
+          : `<button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="quic-stream">测速QUIC</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>`;
         const detailActive = proxyLinkDetailChainID && proxyLinkDetailChainID === chainID;
         tr.innerHTML = `
           <td><strong>${escapeHTML(chainName)}</strong><br><span class="muted">${escapeHTML(chainID || '-')}</span><br><span class="muted">入口: ${escapeHTML(endpoint)}</span><br><span class="muted">配置协议: ${escapeHTML(formatRelayProtocolLabel(item && item.link_layer))}</span>${route ? `<br><span class="muted">${escapeHTML(route)}</span>` : ''}</td>
@@ -979,7 +997,7 @@
               <div class="link-info-line"><span class="muted">测试状态</span><span class="pre-line">${escapeHTML(protocolText)}</span></div>
             </div>
           </td>
-          <td><div class="mini-actions"><button class="secondary" data-action="detail" data-chain-id="${escapeHTML(chainID)}">${detailActive ? '刷新详情' : '详情'}</button><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket-h3">测速H3</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>${cfButton}</div></td>
+          <td><div class="mini-actions"><button class="secondary" data-action="detail" data-chain-id="${escapeHTML(chainID)}">${detailActive ? '刷新详情' : '详情'}</button><button class="secondary" data-action="latency" data-chain-id="${escapeHTML(chainID)}">延迟</button>${speedButtons}${cfButton}</div></td>
         `;
         proxyLinkStatusRowsEl.appendChild(tr);
         if (detailActive) {
@@ -1148,7 +1166,7 @@
     async function runProxyLinkCFIPOptimize(chainID) {
       const cleanID = normalizeChainID(chainID);
       if (!cleanID) return;
-      setMessage(`链路 ${cleanID} CF IP 优选已提交，后台测试 WebSocket over HTTP/3 / WebSocket 延迟...`);
+      setMessage(`链路 ${cleanID} CF IP 优选已提交，后台测试 WebSocket 延迟...`);
       try {
         const data = await requestJSON('/local/api/proxy/link/cf_ip_optimize', {
           method: 'POST',

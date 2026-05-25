@@ -4,11 +4,11 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PN-QUIC-STREAM-DATAPLANE-001
 - 需求前缀: REQ-PN-QUIC-STREAM-DATAPLANE-001
-- 当前阶段: Architect规划更新，待Code实施
-- 最近更新角色: Architect
-- 最近更新时间: 2026-05-23T21:10:00+08:00
+- 当前阶段: Code首版最小闭环完成，待UDP datagram完善与Architect复核
+- 最近更新角色: Code
+- 最近更新时间: 2026-05-25T10:41:31+08:00
 - 工作依据文档: [`doc/ai-coding-collaboration.md`](doc/ai-coding-collaboration.md:1)、[`doc/REQ-PN-RELAY-DUAL-STACK-001-collaboration.md`](doc/REQ-PN-RELAY-DUAL-STACK-001-collaboration.md:1)、[`probe_node/link_relay_client_transport.go`](probe_node/link_relay_client_transport.go:1)、[`probe_node/link_chain_runtime.go`](probe_node/link_chain_runtime.go:1)、[`probe_node/local_tun_group_runtime.go`](probe_node/local_tun_group_runtime.go:1)、[`probe_node/link_chain_udp_assoc.go`](probe_node/link_chain_udp_assoc.go:1)
-- 状态: 进行中；已追加 CF 入口仅使用 WebSocket、不使用 H3/QUIC 的规划约束
+- 状态: 进行中；Code已完成 QUIC 配置、控制流认证、客户端会话、服务端入口、TCP stream 最小闭环和回归测试；UDP datagram 业务映射仍待完善
 
 ## 第1章 Architect章节
 - 章节责任角色: Architect
@@ -343,88 +343,115 @@
 
 ## 第2章 Code章节
 - 章节责任角色: Code
-- 状态: 未开始
+- 状态: 首版最小闭环已完成
 
 ### 2.1 Code需求跟踪矩阵
-- 状态: 未开始
+- 状态: 部分完成
 
 | 需求编号 | 任务编号 | 实现文件 | 实现状态 | 自测状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|
-| REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | 待填写 | 未开始 | 未开始 | 无 | 待 Code 实施 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T001 | `probe_node/link_chain_runtime.go` | 已完成 | 通过 | `TestNewProbeChainQUICConfigUsesV2V1AndDatagrams`、`go test ./...` | QUIC 配置显式启用 v2/v1、datagram 与高吞吐窗口 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T002 | `probe_node/link_chain_runtime.go`、`probe_node/link_quic_dataplane.go` | 已完成 | 通过 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip`、`go test ./...` | 服务端启动独立实验 QUIC Data Plane 入口，认证后接受 stream |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T003 | `probe_node/link_relay_client_transport.go`、`probe_node/link_quic_dataplane.go` | 已完成 | 通过 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip`、`go test ./...` | 客户端可建立 QUIC 会话并完成能力响应读取 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T004 | `probe_node/local_tun_group_runtime.go`、`probe_node/link_quic_dataplane.go` | 已完成 | 通过 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip`、`TestProbeChainQUICDataPlaneLayerIncludesHTTP3Alias`、`go test ./...` | TUN 组运行时在 `http3` / `quic-stream` 下直接打开 QUIC bidirectional stream，不套 yamux |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T005 | `probe_node/link_quic_dataplane.go` | 部分完成 | 部分通过 | `go test ./...` | 已启用 QUIC datagram 能力并返回协商状态；UDP datagram association/target 业务映射待续 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T006 | `probe_node/link_relay_client_transport.go`、`probe_node/local_tun_group_runtime.go`、`probe_node/local_console.go`、`probe_node/local_pages/proxy.html` | 部分完成 | 通过 | `TestProbeLocalProxyLinkReachabilityHTTP3UsesQUICStream`、`go test ./...` | TUN 组 `http3` 已切换为 QUIC Data Plane；旧 `websocket-h3` 仅保留显式兼容路径 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T007 | `probe_node/link_chain_runtime.go`、`probe_node/link_relay_client_transport.go` | 部分完成 | 通过 | `go test ./...` | listener 状态和测速握手已接入；细粒度 stream/datagram 计数待续 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001-T008 | `probe_node/link_quic_dataplane_test.go` | 部分完成 | 通过 | `go test ./...` | 覆盖配置、控制认证、TCP stream round trip、旧路径全量回归 |
 
 ### 2.2 Code关键接口跟踪矩阵
-- 状态: 未开始
+- 状态: 部分完成
 
 | 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
-| IF-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | QUIC listener/dialer | QUIC 配置层 | 未开始 | 无 | 无 |
-| IF-002 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | chain runtime 启动路径 | QUIC 服务端入口 | 未开始 | 无 | 无 |
-| IF-003 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | 客户端连接路径 | QUIC 客户端拨号 | 未开始 | 无 | 无 |
-| IF-004 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | TCP 代理路径 | TCP Stream Mapper | 未开始 | 无 | 无 |
-| IF-005 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | UDP 代理路径 | UDP Datagram Mapper | 未开始 | 无 | 无 |
-| IF-006 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | QUIC 会话 | UDP Datagram Mapper | 未开始 | 无 | 无 |
-| IF-007 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | 状态页面/API | Observability Unit | 未开始 | 无 | 无 |
-| IF-008 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 待填写 | 测速入口 | 协议选择/测速模块 | 未开始 | 无 | 无 |
+| IF-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_chain_runtime.go` | QUIC listener/dialer | QUIC 配置层 | 已完成 | `TestNewProbeChainQUICConfigUsesV2V1AndDatagrams` | `Versions=[v2,v1]`、`EnableDatagrams=true` |
+| IF-002 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_quic_dataplane.go` | chain runtime 启动路径 | QUIC 服务端入口 | 已完成 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip` | 使用独立实验 UDP 端口 `listen_port+1`，避免与现有 H3 监听抢同一 socket |
+| IF-003 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_quic_dataplane.go`、`probe_node/link_relay_client_transport.go` | 客户端连接路径 | QUIC 客户端拨号 | 已完成 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip` | 完成 HMAC 认证、能力响应和 negotiated version/datagram 日志 |
+| IF-004 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_quic_dataplane.go`、`probe_node/local_tun_group_runtime.go` | TCP 代理路径 | TCP Stream Mapper | 已完成 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip`、`TestProbeChainQUICDataPlaneLayerIncludesHTTP3Alias` | TUN 组 `http3` / `quic-stream` 每条 TCP open 使用独立 QUIC bidirectional stream |
+| IF-005 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_quic_dataplane.go` | UDP 代理路径 | UDP Datagram Mapper | 部分完成 | `go test ./...` | datagram 能力协商已就绪，业务帧发送待续 |
+| IF-006 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_quic_dataplane.go` | QUIC 会话 | UDP Datagram Mapper | 部分完成 | `go test ./...` | `ReceiveDatagram` 消费循环与 association 投递待续 |
+| IF-007 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_chain_runtime.go`、`probe_node/link_relay_client_transport.go` | 状态页面/API | Observability Unit | 部分完成 | `go test ./...` | listener 状态和握手日志已接入，细粒度指标待续 |
+| IF-008 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | `probe_node/link_relay_client_transport.go`、`probe_node/local_console.go`、`probe_node/local_pages/proxy.html` | 测速入口 | 协议选择/测速模块 | 部分完成 | `go test ./...` | 页面链路测试改为 `测速QUIC` / `测速WS`；`quic-stream` 已打开 speed_test stream 并按数据读取窗口计算吞吐 |
 
 ### 2.3 Code测试项跟踪矩阵
-- 状态: 未开始
+- 状态: 部分完成
 
 | 测试项编号 | 需求编号 | 任务编号 | 测试目标 | 测试方法 | 结果 | 证据 | 未执行原因 | 备注 |
 |---|---|---|---|---|---|---|---|---|
-| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T001 | QUIC v2 优先、v1 回退、datagram 配置 | 单元测试 | 未开始 | 无 | Code 未开始 | 无 |
-| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-002 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T002/T003 | 客户端与服务端控制流认证和能力协商 | 单元/集成测试 | 未开始 | 无 | Code 未开始 | 无 |
-| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-003 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T004 | 一条 TCP 代理连接对应一条 QUIC stream | 集成测试 | 未开始 | 无 | Code 未开始 | 无 |
-| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-004 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T005 | UDP 使用 QUIC datagram 并支持回包 | 集成测试 | 未开始 | 无 | Code 未开始 | 无 |
-| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-005 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T005/T006 | datagram 不支持或过大包时回退 | 单元/集成测试 | 未开始 | 无 | Code 未开始 | 无 |
-| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-006 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T006/T007 | 协议选择、测速、链路详情展示 | 单元/页面测试 | 未开始 | 无 | Code 未开始 | 无 |
-| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-007 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T008 | 现有 WS/WS-H3 路径不回归 | `go test ./...` | 未开始 | 无 | Code 未开始 | 无 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-001 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T001 | QUIC v2 优先、v1 回退、datagram 配置 | 单元测试 | 通过 | `TestNewProbeChainQUICConfigUsesV2V1AndDatagrams` | 无 | 无 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-002 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T002/T003 | 客户端与服务端控制流认证和能力协商 | 集成测试 | 通过 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip` | 无 | 测试通过认证后继续验证 TCP stream |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-003 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T004 | 一条 TCP 代理连接对应一条 QUIC stream | 集成测试 | 通过 | `TestProbeChainQUICDataPlaneTCPStreamRoundTrip` | 无 | 使用真实 QUIC listener/client 与本地 TCP echo |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-004 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T005 | UDP 使用 QUIC datagram 并支持回包 | 集成测试 | 未执行 | 无 | UDP datagram 业务映射尚未完成 | 后续补齐 association/target 映射后执行 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-005 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T005/T006 | datagram 不支持或过大包时回退 | 单元/集成测试 | 未执行 | 无 | UDP datagram 回退尚未完成 | 后续补齐 `DatagramTooLargeError` 与 fallback 测试 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-006 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T006/T007 | 协议选择、测速、链路详情展示 | 单元/页面测试 | 部分通过 | `TestProbeChainQUICDataPlaneLayerIncludesHTTP3Alias`、`TestProbeLocalProxyLinkReachabilityHTTP3UsesQUICStream`、`go test ./...` | 页面细粒度指标未完成 | 当前覆盖 `http3` 切 QUIC Data Plane、listener 状态和握手测速 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-TEST-007 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | T008 | 现有 WS/WS-H3 路径不回归 | `go test ./...` | 通过 | `ok github.com/cloudhelper/probe_node` | 无 | 全量回归通过 |
 
 ### 2.4 Code缺陷跟踪矩阵
-- 状态: 未开始
+- 状态: 已更新
 
 | 缺陷编号 | 需求编号 | 测试项编号 | 缺陷描述 | 严重级别 | 修复状态 | 修复证据 | 备注 |
 |---|---|---|---|---|---|---|---|
-| 无 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 无 | 当前 Code 未开始，暂无缺陷 | 无 | 无 | 无 | 无 |
+| 无 | REQ-PN-QUIC-STREAM-DATAPLANE-001 | 无 | 当前未发现新增测试失败缺陷 | 无 | 无 | `go test ./...` | UDP datagram 未完成按遗留风险记录 |
 
 ### 2.5 Code执行证据
-- 状态: 未开始
+- 状态: 已更新
 
 #### 2.5.1 修改接口
-- 无
+- `newProbeChainQUICConfig()` 增加 `Versions=[quic.Version2, quic.Version1]` 与 `EnableDatagrams=true`。
+- `startProbeChainQUICDataPlaneServer()` 新增服务端 QUIC Data Plane 入口。
+- `openProbeChainRelayQUICDataPlaneSession()` 新增客户端 QUIC Data Plane 会话拨号与控制流认证。
+- `openProbeChainQUICProxyStream()` 新增 TCP over QUIC bidirectional stream open。
+- `probeLocalProxyLinkLatencyHandler()` 的链路延迟改为认证建连后读取 1 byte 测试数据的耗时，不把登录、鉴权或握手耗时计入 `latency_ms`。
+- `probeChainRelaySpeedTestWithLayer()` 支持 `quic-stream` 真实数据流测速；测速结果中的 `latency_ms` 为认证建连后的首字节数据耗时，`duration_ms` 与 `rate_bps` 只按数据读取窗口计算。
+- `isProbeChainQUICDataPlaneLayer()` 将 TUN 组 `http3` 入口切换到 QUIC Data Plane，旧 `websocket-h3` 不再作为该路径默认连接方式。
+- `proxy.html` 链路操作将非 CF 的 H3 测试入口改为 `测速QUIC`，CF 入口仍只允许 `websocket`。
 
 #### 2.5.2 配置文件
-- 无
+- 无新增配置文件；首版采用显式协议标签 `quic-stream`，QUIC Data Plane 监听端口为 `listen_port+1`。
 
 #### 2.5.3 执行报告
-- 当前仅完成 Architect 需求跟踪初始化，Code 未开始。
+- 已完成 QUIC Data Plane 首版最小闭环: QUIC v2/v1 配置、datagram 能力开启、独立 ALPN `probe-quic/1`、控制流 HMAC 认证、服务端接受数据 stream、客户端 `quic-stream` 会话、本地 TUN 组 `http3` / `quic-stream` 运行时绕过 yamux 打开独立 QUIC stream、TCP echo 集成测试、QUIC speed_test 数据窗口测速。
 
 #### 2.5.4 影响文件
+- `probe_node/link_chain_runtime.go`
+- `probe_node/link_relay_client_transport.go`
+- `probe_node/local_tun_group_runtime.go`
+- `probe_node/local_console.go`
+- `probe_node/local_console_test.go`
+- `probe_node/local_pages/proxy.html`
+- `probe_node/link_quic_dataplane.go`
+- `probe_node/link_quic_dataplane_test.go`
 - `doc/REQ-PN-QUIC-STREAM-DATAPLANE-001-collaboration.md`
 
 #### 2.5.5 测试命令
-- 未执行
+- `cd probe_node && go test ./...`
 
 #### 2.5.6 自测结果
-- 未执行
+- `go test ./...` 通过。
 
 #### 2.5.7 未执行测试原因
-- 本次为需求跟踪文档初始化，未修改业务源码。
+- UDP datagram association/target 映射尚未完成，因此 UDP datagram 回包、过大包和 datagram 不支持回退测试未执行。
+- 前端页面细粒度 QUIC stream/datagram 指标尚未完成，因此页面专项测试未执行。
 
 #### 2.5.8 遗留风险
-- QUIC Data Plane 尚未实现，风险见第1章。
+- QUIC Data Plane 当前使用独立实验 UDP 端口 `listen_port+1`，避免与现有 HTTP/3 server 抢同一 UDP socket；部署侧需开放相邻 UDP 端口。
+- UDP datagram 业务映射尚未完成；当前 UDP 仍需后续实现 association/target frame、接收循环、过大包处理和回退。
+- TUN 组 `http3` 已切到 QUIC Data Plane；非 TUN yamux carrier 路径仍保留旧 `websocket-h3` 兼容，避免把不兼容的 QUIC stream 控制连接误用于 yamux。
+- 观测当前覆盖 listener 状态与握手日志，尚未补齐 active streams、datagram tx/rx/drop、窗口和吞吐细粒度状态。
 
 #### 2.5.9 回滚方案
-- 删除 `doc/REQ-PN-QUIC-STREAM-DATAPLANE-001-collaboration.md` 可回滚本次文档新增。
+- 回滚本次影响文件即可移除 QUIC Data Plane 首版实现；现有 `websocket` 与 `websocket-h3` 路径未删除。
 
 #### 2.5.10 结论
-- Code 未开始，等待按第1.4节任务包实施。
+- Code 首版最小闭环已完成，允许继续推进 UDP datagram、细粒度观测和默认 auto 灰度策略。
 
 ### 2.6 Code任务反馈
-- 状态: 未开始
+- 状态: 已更新
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
-| 无 | 无 | 无 | 无 | 无 | 无 | 无 | 无 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-F001 | T002/T003 | 实现约束 | quic-go 同一 `net.PacketConn` 只能由一个 QUIC Transport/Listener 使用，现有 HTTP/3 server 已占用 `listen_port` UDP socket | 不阻塞首版 TCP 闭环，但影响“同端口复用”规划 | 首版采用独立实验 UDP 端口 `listen_port+1`；后续如需同端口，需要重构为统一 QUIC listener 并按 ALPN 分发 H3 与 Data Plane | 待Architect处理 | 待定 |
+| REQ-PN-QUIC-STREAM-DATAPLANE-001-F002 | T005 | 范围拆分 | UDP datagram association/target 映射和 fallback 仍未完成 | 阻塞 T005/T005 测试完全关闭 | 下一步单独实现 datagram frame、接收循环、过大包计数和 fallback | 待Architect处理 | 待定 |
 
 #### 2.6.1 结论
-- 无阻塞反馈。
+- 无阻塞首版 TCP 最小闭环的问题；UDP datagram 与同端口复用作为后续反馈继续跟踪。
