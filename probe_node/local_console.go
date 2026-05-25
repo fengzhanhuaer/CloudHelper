@@ -1123,6 +1123,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		logProbeWarnf("probe local proxy persist enabled state failed: %v", err)
 	}
 	reconcileProbeLocalDNSRuntime()
+	startProbeLocalExplicitProxyServer()
 	startProbeLocalProxyMonitor()
 	return m.tun, m.proxy, nil
 }
@@ -1157,6 +1158,7 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 		logProbeWarnf("probe local proxy persist direct state failed: %v", err)
 	}
 	reconcileProbeLocalDNSRuntime()
+	stopProbeLocalExplicitProxyServer()
 	stopProbeLocalProxyMonitor()
 	if errStopDataPlane != nil {
 		m.tun.LastError = strings.TrimSpace(errStopDataPlane.Error())
@@ -1219,6 +1221,7 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 			logProbeWarnf("probe local proxy persist reset state failed: %v", err)
 		}
 		reconcileProbeLocalDNSRuntime()
+		stopProbeLocalExplicitProxyServer()
 		stopProbeLocalProxyMonitor()
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 	}
@@ -1229,6 +1232,7 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 		logProbeWarnf("probe local proxy persist reset state failed: %v", err)
 	}
 	reconcileProbeLocalDNSRuntime()
+	stopProbeLocalExplicitProxyServer()
 	stopProbeLocalProxyMonitor()
 	return m.tun, nil
 }
@@ -3659,10 +3663,11 @@ func probeLocalProxyStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	status := probeLocalControl.proxyStatus()
 	payload := map[string]any{
-		"enabled":    status.Enabled,
-		"mode":       status.Mode,
-		"last_error": status.LastError,
-		"updated_at": status.UpdatedAt,
+		"enabled":        status.Enabled,
+		"mode":           status.Mode,
+		"last_error":     status.LastError,
+		"updated_at":     status.UpdatedAt,
+		"explicit_proxy": snapshotProbeLocalExplicitProxyStatus(),
 	}
 	state := currentProbeLocalProxyViewState()
 	chains := currentProbeLocalProxyViewChains()

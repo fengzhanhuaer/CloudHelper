@@ -174,6 +174,7 @@
       <div class="kv">
         <div>接管开关</div><div id="proxyEnabled">-</div>
         <div>当前模式</div><div id="proxyMode">-</div>
+        <div>本地显式代理</div><div id="proxyExplicit">-</div>
         <div>最近错误</div><div id="proxyLastError">-</div>
         <div>规则组备份</div><div id="proxyGroupBackupStatus">-</div>
       </div>
@@ -1028,6 +1029,15 @@
       setText('proxyEnabled', data.enabled ? '是' : '否');
       setText('proxyMode', data.mode);
       setText('proxyLastError', data.last_error);
+      const explicit = data && data.explicit_proxy && typeof data.explicit_proxy === 'object' ? data.explicit_proxy : {};
+      const explicitParts = [];
+      if (explicit.socks5_enabled && explicit.socks5_addr) explicitParts.push(`SOCKS5 ${explicit.socks5_addr}`);
+      if (explicit.http_enabled && explicit.http_addr) explicitParts.push(`HTTP ${explicit.http_addr}`);
+      const systemProxy = explicit.system && typeof explicit.system === 'object' ? explicit.system : {};
+      if (systemProxy.applied) explicitParts.push('系统设置已应用');
+      if (systemProxy.last_error) explicitParts.push(`系统设置错误: ${systemProxy.last_error}`);
+      if (explicit.last_error) explicitParts.push(`错误: ${explicit.last_error}`);
+      setText('proxyExplicit', explicitParts.join(' ｜ '));
       updateProxyGlobalToggleButton();
     }
 
