@@ -4,11 +4,11 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PN-RELAY-DUAL-STACK-001
 - 需求前缀: REQ-PN-RELAY-DUAL-STACK-001
-- 当前阶段: Code已完成
-- 最近更新角色: Code
-- 最近更新时间: 2026-05-19T00:00:00+08:00
+- 当前阶段: Architect规划更新，待Code同步
+- 最近更新角色: Architect
+- 最近更新时间: 2026-05-23T21:10:00+08:00
 - 工作依据文档: [`doc/ai-coding-collaboration.md`](doc/ai-coding-collaboration.md:1)、[`probe_node/link_chain_runtime.go`](probe_node/link_chain_runtime.go:1)、[`probe_node/local_tun_group_runtime.go`](probe_node/local_tun_group_runtime.go:1)
-- 状态: 第一版实现完成，待实际运行验证
+- 状态: 第一版实现完成；已追加 CF 入口仅使用 WebSocket 的规划约束
 
 ## 第1章 Architect章节
 - 章节责任角色: Architect
@@ -19,18 +19,18 @@
 
 #### 1.1.1 需求目标
 - 将 `probe_node` 探针 relay 入口纳入正式需求跟踪，支持后续围绕 `HTTP/1.1`、`HTTP/2`、`HTTP/3` 双栈/三栈接入策略开展设计与实现。
-- 保留现有直连 relay 能力，并为后续接入 Cloudflare Zero Trust 代理保留兼容路径。
+- 保留现有直连 relay 能力，并为后续接入 Cloudflare Zero Trust 代理保留 `websocket` 唯一兼容路径。
 - 约束 `HTTP/1.1` 在新方案中的职责边界，仅作为兼容或升级引导通道，不作为长期业务承载主路径。
-- 明确 `HTTP/2` 与 `HTTP/3` 均作为可用业务通道，由客户端 auto 策略基于延迟、丢包、速率、可用性与稳定性自动择优。
-- 明确客户端连接策略、服务端入口能力、私有鉴权保留策略与后续 Cloudflare 兼容边界。
+- 明确直连或自建入口可继续按可用业务通道策略择优；Cloudflare Zero Trust 入口固定只使用 `websocket`，不再尝试 `websocket-h3`、`HTTP/3` 或后续 QUIC Data Plane。
+- 明确客户端连接策略、服务端入口能力、私有鉴权保留策略与 Cloudflare WebSocket-only 兼容边界。
 - 明确主控新建链路时不再要求单独设置链路协议；存量 `link_layer` 参数默认写入 `http3` 仅为兼容保留，实际连接协议由客户端协议选择状态机与服务端入口能力共同决定。
-- 明确本方案中的 Cloudflare 接入前提为 Zero Trust 受控入口；来源地址风险重点不再是外部伪造代理头，而是统一来源标识、审计、限流与失败计数口径。
+- 明确本方案中的 Cloudflare 接入前提为 Zero Trust 受控入口；该入口只承载 `websocket`，来源地址风险重点不再是外部伪造代理头，而是统一来源标识、审计、限流与失败计数口径。
 
 #### 1.1.2 需求范围
 - 服务端入口范围: relay 公网入口默认同时开启 `http` / `http2` / `http3` 的监听模型、协议边界与能力宣告。
 - 客户端连接范围: 客户端 auto 协议选择、`http2` / `http3` 自动质量测试、择优切换与失败降级路径。
 - 鉴权范围: 保留现有私有鉴权头、认证信封、链路认证逻辑，并明确经过 Cloudflare 后的真实来源标识获取方式。
-- 云代理兼容范围: 明确直连入口与 Cloudflare Zero Trust 代理入口的并存方案，以及各自允许的链路层能力。
+- 云代理兼容范围: 明确直连入口与 Cloudflare Zero Trust 代理入口的并存方案；Cloudflare Zero Trust 代理入口只允许 `websocket`，不允许 `websocket-h3`、`HTTP/3` 或 QUIC Data Plane。
 - 状态机范围: 明确客户端协议选择状态机、最近成功协议缓存、失败负缓存、冷却时间、并发探测合并与错误分类。
 - 观测范围: 明确实际命中协议、切换原因、切换次数、最近成功协议、入口成功率与失败率的状态展示要求。
 - 文档范围: 将该需求纳入单一协作文档，后续 Architect 与 Code 统一在本文件持续维护。
@@ -47,15 +47,16 @@
 - 协作文档中必须明确 `HTTP/1.1` 是否承载业务、是否允许升级、以及升级失败时的处理策略。
 - 协作文档中必须明确 `HTTP/2` 与 `HTTP/3` 在客户端与服务端两侧的连接与降级策略。
 - 协作文档中必须明确客户端对 `HTTP/2` 与 `HTTP/3` 的自动质量测试、评分维度、切换触发条件与失败回退边界。
-- 协作文档中必须明确直连模式与 Cloudflare Zero Trust 代理模式的共存方式，以及客户端不感知代理路径、仅按入口域名执行 auto 质量择优的边界。
-- 协作文档中必须明确现有私有鉴权逻辑的保留策略、Cloudflare 接入后的真实来源获取策略与兼容约束。
+- 协作文档中必须明确直连模式与 Cloudflare Zero Trust 代理模式的共存方式；Cloudflare Zero Trust 代理模式必须固定使用 `websocket`，不得参与 H3/QUIC auto 质量择优。
+- 协作文档中必须明确现有私有鉴权逻辑的保留策略、Cloudflare 接入后的真实来源获取策略与 WebSocket-only 兼容约束。
+- 协作文档中必须明确 CF 入口连接、链路测试和测速均只测试 `websocket`，不得显示或执行 `websocket-h3`、`HTTP/3`、QUIC Data Plane 结果。
 - 协作文档中必须明确协议选择状态机的缓存、退避、并发去重与错误分类规则。
 - 协作文档中必须明确协议选择与切换的观测字段和前端展示要求。
 - 后续进入 Code 阶段前，第1.4节 `Code任务执行包` 必须给出明确文件范围、操作类型与可测试验收标准。
 
 #### 1.1.5 风险
 - 若将 `HTTP/1.1` 升级、`HTTP/2` 直连与 `HTTP/3` 切换的语义混淆，可能导致实现阶段误把“新建连接切换”理解为“同连接升级”。
-- 若服务端入口能力、代理路径与客户端自动尝试状态没有清晰分层，可能导致客户端把入口层失败、代理转换失败和 origin 协议能力混为一类。
+- 若服务端入口能力、代理路径与客户端自动尝试状态没有清晰分层，可能导致 CF 入口错误尝试 H3/QUIC，并把代理转换失败误判为链路不可用。
 - 若来源标识解析口径不统一，Cloudflare Zero Trust 接入后会影响审计、失败计数、黑名单与链路诊断的一致性。
 - 若协议选择缺少最近成功缓存、失败负缓存、冷却时间与并发探测合并，入口波动时可能造成重试风暴并推高连接数、goroutine 与 CPU 负载。
 - 若鉴权失败、业务失败、目标站点不可达被误归类为入口层失败，客户端可能错误切换协议并掩盖真实故障。
@@ -64,35 +65,35 @@
 #### 1.1.6 遗留事项
 - 是否保留 `HTTP/1.1` 真实业务兜底能力，当前未最终裁定，倾向仅保留为兼容或升级引导通道。
 - 是否通过 `Alt-Svc` 对直连 `HTTP/2` 客户端宣告 `HTTP/3`，以及客户端是否主动持久化该能力缓存，待后续细化。
-- Cloudflare Zero Trust 接入时 origin 是否固定为 `HTTPS + HTTP/2`，当前作为推荐路径；客户端不感知该部署事实，仅按入口域名执行 auto 质量择优。
+- Cloudflare Zero Trust 接入时链路层固定使用 `websocket`；不再规划 `websocket-h3`、`HTTP/3` 或 QUIC Data Plane 经过 CF 入口。
 - 协议状态缓存的默认 TTL、失败冷却时间与观测字段名称，待 Code 阶段前最终固化。
 
 #### 1.1.7 结论
-- 该需求正式纳入需求跟踪，后续按“`HTTP/2` / `HTTP/3` auto 质量择优、`HTTP/1.1` 仅兼容或升级引导、保留 Cloudflare 兼容入口”的方向继续设计。
+- 该需求正式纳入需求跟踪，后续按“直连/自建入口可择优、`HTTP/1.1` 仅兼容或升级引导、Cloudflare 入口仅使用 `websocket`”的方向继续设计。
 
 ### 1.2 总体架构
 - 状态: 已完成
 
 #### 1.2.1 架构目标
-- 建立可同时支持直连与 Cloudflare Zero Trust 代理的 relay 入口模型。
+- 建立可同时支持直连与 Cloudflare Zero Trust 代理的 relay 入口模型，其中 Cloudflare Zero Trust 入口只使用 `websocket`。
 - 将 relay 入口协议职责分层，减少 `http` / `http2` / `http3` 混用造成的语义歧义。
 - 在不推翻现有 `yamux` 复用与私有鉴权主模型的前提下，演进入口能力与客户端切换策略。
 
 #### 1.2.2 总体设计
 - 服务端入口采用双通道设计并默认同时开启: `TCP` 侧提供 `HTTP/1.1 + HTTP/2`，`UDP` 侧提供 `HTTP/3`。
 - `HTTP/2` 与 `HTTP/3` 均作为业务承载入口；`HTTP/2` 提供稳定兼容路径，`HTTP/3` 提供可选高性能路径。
-- 客户端不固定优先 `HTTP/2` 或 `HTTP/3`，由 auto 策略对入口域名的 `HTTP/2` 与 `HTTP/3` 做自动质量测试，并根据延迟、丢包、速率、可用性与稳定性选择当前更优协议。
-- 客户端不感知入口域名是否经过 Cloudflare Zero Trust；连接策略默认优先尝试最近择优协议，若无有效缓存则按受控探测流程测试 `HTTP/2` 与 `HTTP/3`，再选择评分更优者建链。
+- 直连或自建入口可由 auto 策略对可用候选协议做自动质量测试，并根据延迟、丢包、速率、可用性与稳定性选择当前更优协议。
+- Cloudflare Zero Trust 入口不参与 H3/QUIC auto 探测；客户端或链路配置一旦标记为 CF/代理入口，必须固定使用 `websocket` 建链。
 - `HTTP/2` / `HTTP/3` 自动切换仅适用于入口层质量或可用性变化；不适用于目标网站业务失败、鉴权拒绝或上游业务返回错误。
 - 本方案中的“自动”仅表示客户端协议选择状态机的自动尝试，不表示 `HTTP/2` 与 `HTTP/3` 在同一连接内进行标准协议协商或升级。
 - 协议选择状态机以 relay 入口为粒度维护状态，至少包括最近择优协议、候选协议质量指标、最近失败协议、失败原因、失败时间、下次允许探测时间、并发探测占用状态。
 - 协议选择状态机必须具备择优缓存与负缓存: 最近择优协议可作为下一次连接的优先尝试协议；最近入口层失败或质量低于阈值的协议在冷却期内不得被重复并发探测。
 - 同一 relay 入口发生并发连接请求时，若已有协议探测正在进行，后续请求应复用探测结果或等待受控结果，不得为每个业务连接单独发起完整协议探测。
 - 主控新建链路时不再把 `link_layer` 作为独立运维配置项；为兼容现有数据结构，链路参数中的 `link_layer` 默认写入 `http3`，但该字段不再代表客户端必须固定只使用 `HTTP/3`。
-- 客户端根据入口域名、连接结果、质量测试结果与自动尝试状态决定实际连接协议；auto 模式不固定 `HTTP/2` 或 `HTTP/3`，只选择当前评分更优且未处于负缓存冷却期的协议；不要求用户配置域名协议策略，也不要求客户端判断是否经过 Cloudflare Zero Trust。
+- 客户端根据入口类型、入口域名、连接结果、质量测试结果与自动尝试状态决定实际连接协议；直连或自建入口可择优，Cloudflare Zero Trust 入口固定 `websocket`。
 - `HTTP/1.1` 默认不作为长期业务主承载层，职责限定为兼容接入、升级引导或受控兜底。
-- Cloudflare Zero Trust 代理入口默认固定为 `HTTPS + HTTP/2` origin 路径，不要求 origin `HTTP/3` 透传；该约束属于服务端/部署侧边界，不进入客户端连接分支。
-- 若后续采用 `Alt-Svc` 或等价能力宣告，客户端仅按入口域名维护能力缓存、质量缓存与 auto 择优状态，不维护 Cloudflare/非 Cloudflare 的显式分支。
+- Cloudflare Zero Trust 代理入口固定使用 `websocket` 业务链路，不要求 origin `HTTP/3` 透传，也不允许客户端对 CF 入口尝试 `websocket-h3`、`HTTP/3` 或 QUIC Data Plane。
+- 若后续采用 `Alt-Svc` 或等价能力宣告，客户端不得将其应用到已标记为 Cloudflare Zero Trust 的入口。
 - 保留现有私有鉴权头、Bearer/HMAC 认证信封与链路认证逻辑；Cloudflare Zero Trust 接入后对来源地址解析单独适配，确保审计、限流与失败计数口径统一。
 - 服务端内部业务 relay、`yamux` 会话管理与 chain runtime 逻辑继续复用现有模型，入口层负责协议接入、切换与兼容边界。
 - 协议选择、协议切换与入口失败必须进入状态监视面，便于区分入口不可达、协议不可用、鉴权失败、目标业务失败与链路运行时不可用。
@@ -104,7 +105,7 @@
 | M2 | Relay Auth Envelope | 复用现有私有鉴权、头字段与认证信封校验 | 请求头、chain 配置、认证 secret | 鉴权结果、来源标识 |
 | M3 | Relay Session Bridge | 将入口请求桥接为内部 `yamux` 会话与 stream | 入口请求体/响应体、桥接角色 | `yamux` session、stream |
 | M4 | Client Protocol State Machine | 管理客户端 auto 协议选择、入口域名质量缓存、失败负缓存、并发探测合并、切换与降级 | 入口域名、质量测试结果、连接结果、服务端宣告、历史状态 | 实际连接协议、评分、回退决策、状态更新 |
-| M5 | Cloudflare Zero Trust Adapter | 约束 Cloudflare Zero Trust 代理入口允许的 origin 协议与来源解析 | Cloudflare 入口请求、代理头 | 兼容入口与真实来源标识 |
+| M5 | Cloudflare Zero Trust Adapter | 约束 Cloudflare Zero Trust 代理入口只允许 `websocket`，并处理来源解析 | Cloudflare 入口请求、代理头 | WebSocket-only 兼容入口与真实来源标识 |
 | M6 | Relay Protocol Observability | 记录并展示协议命中、延迟、丢包、速率、评分、切换、失败分类与缓存状态 | 质量测试结果、连接结果、状态机事件、入口能力 | 状态监视数据、前端展示字段 |
 
 #### 1.2.4 关键接口
@@ -126,8 +127,8 @@
 - 同一 relay 入口的并发协议探测必须合并或串行化，避免每个业务连接独立探测造成流量与 goroutine 放大。
 - 主控侧 `link_layer` 字段仅保留兼容语义，不再作为新建链路时必须人工选择的协议开关。
 - 若链路记录中的 `link_layer` 默认写为 `http3`，实现层不得将其直接解释为“客户端固定只走 `HTTP/3`”；必须继续走 auto 协议质量择优状态机。
-- Cloudflare Zero Trust 代理模式下，origin 首选 `HTTPS + HTTP/2`，不要求 origin `HTTP/3` 透传；客户端不需要识别该模式。
-- 客户端协议状态缓存必须以入口域名为粒度，不以 Cloudflare/非 Cloudflare 为粒度。
+- Cloudflare Zero Trust 代理模式下，业务链路固定使用 `websocket`，不得尝试 `websocket-h3`、`HTTP/3` 或 QUIC Data Plane。
+- 客户端协议状态缓存必须区分直连/自建入口与 Cloudflare Zero Trust 入口；CF 入口的候选协议集合只能包含 `websocket`。
 - 现有私有鉴权逻辑必须保留，Cloudflare Access 如后续引入，仅作为叠加身份层而非替换层。
 - 来源地址判断不得只依赖 `RemoteAddr`，必须为 Zero Trust 代理接入场景预留头字段解析路径，并确保日志、失败计数、黑名单使用同一来源标识。
 - 状态监视页面/API 必须展示实际命中协议、最近择优协议、各候选协议延迟、丢包、速率、评分、最近失败协议、失败原因、下次探测时间、切换次数与入口成功率/失败率。
@@ -137,11 +138,11 @@
 - 若服务端同时支持多入口但客户端自动尝试状态未按入口域名隔离，可能造成错误重试风暴。
 - 若协议状态机的缓存与冷却参数过短，入口抖动会被放大；若参数过长，真实恢复后可能恢复变慢。
 - 若入口域名质量缓存没有 TTL、切换阈值、负缓存与防抖约束，可能产生频繁协议抖动或错误协议命中。
-- 若 `HTTP/1.1` 被保留为完整业务兜底，后续 Cloudflare 与直连两条路径的调试复杂度会显著上升。
+- 若 CF 入口仍参与 H3/QUIC auto 探测，会重新引入 `extended connect`、UDP、代理转换等不可控失败，影响诊断一致性。
 - 若 `Alt-Svc` 或类似能力宣告处理不当，客户端可能长期缓存错误的 `HTTP/3` 可用性状态。
 
 #### 1.2.7 结论
-- 总体架构采用“入口双栈/三栈分层 + `HTTP/2` / `HTTP/3` auto 质量择优 + `HTTP/1.1` 兼容受限 + 协议选择状态机 + 鉴权保留 + Cloudflare Zero Trust 兼容适配”的方案。
+- 总体架构采用“直连/自建入口可择优 + Cloudflare Zero Trust 入口固定 `websocket` + `HTTP/1.1` 兼容受限 + 协议选择状态机 + 鉴权保留 + 来源标识适配”的方案。
 
 ### 1.3 单元设计
 - 状态: 进行中
@@ -164,7 +165,7 @@
 - 输出: 可用入口集合、入口能力描述。
 - 处理规则:
   - 服务端默认同时开启 `HTTP/1.1`、`HTTP/2`、`HTTP/3` 入口能力。
-  - Cloudflare Zero Trust origin 路径默认只要求 `HTTPS + HTTP/2`，不依赖 origin `HTTP/3`；该约束属于部署侧，不改变客户端自动尝试逻辑。
+  - Cloudflare Zero Trust 入口只允许 `websocket` 业务链路；该入口不启用 `websocket-h3`、`HTTP/3` 或 QUIC Data Plane 业务承载。
   - `HTTP/1.1` 仅保留兼容、升级引导或受控兜底职责，不作为默认业务主路径。
   - `HTTP/3` UDP 入口启动失败不得阻止 `HTTP/2` 主入口可用。
 - 异常规则:
@@ -179,7 +180,7 @@
 - 处理规则:
   - `HTTP/2` 是稳定兼容业务承载协议之一。
   - `HTTP/3` 是客户端到入口域名的可选能力，不表示 origin 一定收到 `HTTP/3`。
-  - `Alt-Svc` 或等价能力宣告若启用，客户端只按入口域名缓存能力，不按 Cloudflare/非 Cloudflare 建分支。
+  - `Alt-Svc` 或等价能力宣告若启用，只能用于直连或自建入口；Cloudflare Zero Trust 入口必须忽略该宣告并固定 `websocket`。
   - `HTTP/1.1` 若保留，必须限制为兼容或升级引导，不得默认承载长期 relay 业务。
 - 异常规则:
   - 未知协议、能力不匹配时，应返回明确错误并进入观测数据。
@@ -217,6 +218,7 @@
 - 输出: 实际发起的入口连接层、候选协议评分、是否需要自动切换、最终连接结果、协议状态更新。
 - 处理规则:
   - 默认使用 auto 模式，不固定优先 `HTTP/2` 或 `HTTP/3`。
+  - 若链路入口标记为 Cloudflare Zero Trust 或外部代理入口，候选协议集合必须收敛为 `websocket`，不得发起 `websocket-h3`、`HTTP/3` 或 QUIC Data Plane 探测。
   - 主控写入的 `link_layer=http3` 仅作为兼容字段保留，不表示“固定只走 `HTTP/3`”，实际协议由 auto 状态机决定。
   - auto 质量测试至少覆盖连接可用性、握手耗时/首包延迟、短时丢包/中断率、短时吞吐/速率、最近失败惩罚。
   - 若同一 relay 入口存在最近择优协议且仍在质量缓存 TTL 内，可优先尝试最近择优协议。
@@ -226,7 +228,7 @@
   - 协议切换必须有防抖与最小保持时间，避免 `HTTP/2` 与 `HTTP/3` 在临界评分附近频繁抖动。
   - auto 选择结果应记录实际命中协议、候选协议评分、选择原因、切换原因与负缓存冷却时间。
   - 目标网站业务失败、远端 open 拒绝、鉴权失败、目标不可达等非入口层错误，不触发协议切换。
-  - 客户端不判断入口域名是否经过 Cloudflare Zero Trust，也不要求用户配置域名协议策略；是否尝试 `HTTP/3` 完全由自动尝试状态机、错误分类、缓存与冷却规则决定。
+  - 客户端必须支持入口类型策略；直连或自建入口可由自动尝试状态机决定是否尝试 `HTTP/3`，Cloudflare Zero Trust 入口固定 `websocket`。
 - 异常规则:
   - 若 `HTTP/2` 与 `HTTP/3` 均不可达，则返回入口连接失败，不得无限循环重试。
   - 若任一协议探测失败，应进入该协议的负缓存冷却，不得为后续并发连接重复盲探。
@@ -250,7 +252,7 @@
 - `HTTP/1.1` 的最终职责仍需收敛，避免实现阶段扩大为完整业务兜底路径。
 
 #### 1.3.4 结论
-- 单元设计已补齐入口能力、auto 协议质量择优状态机、Zero Trust 来源标识和观测边界；进入 Code 阶段前需固化默认参数与任务包。
+- 单元设计已补齐入口能力、auto 协议质量择优状态机、Zero Trust 来源标识和 CF WebSocket-only 边界；进入 Code 阶段前需固化默认参数与任务包。
 
 ### 1.4 Code任务执行包
 - 状态: 已执行
@@ -262,12 +264,12 @@
 #### 1.4.2 任务清单
 | 任务编号 | 需求编号 | 单元编号 | 文件范围 | 操作类型 | 验收标准 |
 |---|---|---|---|---|---|
-| REQ-PN-RELAY-DUAL-STACK-001-T001 | REQ-PN-RELAY-DUAL-STACK-001 | U1/U2 | `probe_node/link_chain_runtime.go` | 改造 | 服务端入口能力区分直连与 Zero Trust origin；`HTTP/3` UDP 入口失败不影响 `HTTP/2` 主入口；`HTTP/1.1` 职责按策略受限 |
-| REQ-PN-RELAY-DUAL-STACK-001-T002 | REQ-PN-RELAY-DUAL-STACK-001 | U5 | `probe_node/link_chain_runtime.go`、必要时新增 `probe_node/link_chain_protocol_state.go` | 改造/新增 | `openProbeChainRelayNetConn()` 不再静态服从 `link_layer`；按 auto 质量评分在 `HTTP/2` 与 `HTTP/3` 中择优；质量缓存、负缓存、冷却、防抖与并发探测合并可测试 |
+| REQ-PN-RELAY-DUAL-STACK-001-T001 | REQ-PN-RELAY-DUAL-STACK-001 | U1/U2 | `probe_node/link_chain_runtime.go` | 改造 | 服务端入口能力区分直连与 Zero Trust origin；Zero Trust 入口仅允许 `websocket`；`HTTP/3` UDP 入口失败不影响直连入口；`HTTP/1.1` 职责按策略受限 |
+| REQ-PN-RELAY-DUAL-STACK-001-T002 | REQ-PN-RELAY-DUAL-STACK-001 | U5 | `probe_node/link_chain_runtime.go`、必要时新增 `probe_node/link_chain_protocol_state.go` | 改造/新增 | `openProbeChainRelayNetConn()` 不再静态服从 `link_layer`；直连/自建入口按 auto 质量评分择优；CF/Zero Trust 入口候选协议固定为 `websocket`；质量缓存、负缓存、冷却、防抖与并发探测合并可测试 |
 | REQ-PN-RELAY-DUAL-STACK-001-T003 | REQ-PN-RELAY-DUAL-STACK-001 | U5 | `probe_node/link_chain_runtime.go` | 改造 | 错误分类明确区分入口层错误、鉴权错误、目标业务错误、yamux/stream 错误；仅入口层错误允许触发协议切换 |
 | REQ-PN-RELAY-DUAL-STACK-001-T004 | REQ-PN-RELAY-DUAL-STACK-001 | U3 | `probe_node/link_chain_runtime.go` | 改造 | 直连与 Zero Trust 入口使用统一来源标识接口；审计、失败计数、黑名单使用同一来源标识；鉴权失败不触发协议切换 |
 | REQ-PN-RELAY-DUAL-STACK-001-T005 | REQ-PN-RELAY-DUAL-STACK-001 | U6 | `probe_node/local_console.go`、`probe_node/local_pages/proxy.html`、必要时新增状态 API | 改造 | 前端/API 展示实际命中协议、候选协议延迟、丢包、速率、评分、选择原因、最近失败协议、切换次数、切换原因、下次探测时间；未测试延迟不得显示为 `0ms` |
-| REQ-PN-RELAY-DUAL-STACK-001-T006 | REQ-PN-RELAY-DUAL-STACK-001 | U1/U2/U3/U5/U6 | `probe_node/*_test.go` | 测试 | 覆盖 `HTTP/2`/`HTTP/3` auto 择优、入口失败回落、质量退化切换、防抖保持、非入口失败不切换、负缓存冷却、并发探测合并、客户端不感知 Zero Trust、观测字段输出 |
+| REQ-PN-RELAY-DUAL-STACK-001-T006 | REQ-PN-RELAY-DUAL-STACK-001 | U1/U2/U3/U5/U6 | `probe_node/*_test.go` | 测试 | 覆盖直连/自建入口 auto 择优、CF/Zero Trust 入口仅 `websocket`、入口失败回落、质量退化切换、防抖保持、非入口失败不切换、负缓存冷却、并发探测合并、观测字段输出 |
 
 #### 1.4.3 源码修改规则
 - 必须使用 encoding_tools/README.md 描述的接口。
@@ -279,7 +281,7 @@
 #### 1.4.4 交付物
 - relay 双栈/三栈需求设计文档。
 - auto 协议质量择优状态机与错误分类实现。
-- 直连入口与 Cloudflare Zero Trust 入口能力隔离实现。
+- 直连/自建入口与 Cloudflare Zero Trust WebSocket-only 入口能力隔离实现。
 - 协议状态监视 API 与前端展示。
 - 单元测试与回归测试证据。
 
@@ -294,7 +296,7 @@
 
 | 需求编号 | 需求描述 | 架构章节 | 单元设计章节 | Code任务章节 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
-| REQ-PN-RELAY-DUAL-STACK-001 | relay 入口双栈/三栈、Cloudflare Zero Trust 兼容、auto 协议质量择优状态机与私有鉴权保留 | 1.2 | 1.3 | 1.4 | 进行中 | 当前完成架构与 Code 任务包初稿 |
+| REQ-PN-RELAY-DUAL-STACK-001 | relay 入口双栈/三栈、Cloudflare Zero Trust WebSocket-only 兼容、auto 协议质量择优状态机与私有鉴权保留 | 1.2 | 1.3 | 1.4 | 进行中 | 当前追加 CF 入口仅 `websocket` 规划约束 |
 
 ### 1.6 Architect关键接口跟踪矩阵
 - 状态: 进行中
@@ -347,7 +349,7 @@
 - 放行阻塞: 放行
 - 条件: 当前完成需求跟踪、架构、单元设计、Code 实现与测试证据。
 - 责任方: Architect
-- 关闭要求: 后续实际运行验证 CPU、goroutine、H2/H3 命中状态与代理链路可用性。
+- 关闭要求: 后续实际运行验证 CPU、goroutine、直连入口 H2/H3 命中状态、CF 入口仅 websocket 命中状态与代理链路可用性。
 - 整改要求: 无
 
 #### 1.7.5 结论
