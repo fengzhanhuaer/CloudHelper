@@ -1825,26 +1825,69 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 	if runtime == nil || writer == nil {
 		return
 	}
+	cleanTransport := strings.TrimSpace(transport)
 	buf := make([]byte, probeChainRelaySpeedTestChunkBytes)
 	for i := range buf {
 		buf[i] = byte(i % 251)
 	}
+	startedAt := time.Now()
+	lastLogAt := startedAt
+	sent := int64(0)
+	nextLogBytes := int64(16 * 1024 * 1024)
+	writeCalls := int64(0)
+	var blockedTotal time.Duration
+	var maxBlocked time.Duration
 	remaining := byteCount
 	for remaining > 0 {
 		n := int64(len(buf))
 		if remaining < n {
 			n = remaining
 		}
-		if _, err := writer.Write(buf[:n]); err != nil {
-			log.Printf("probe chain %s speed test interrupted: chain=%s role=%s remote=%s bytes=%d remaining=%d err=%v", strings.TrimSpace(transport), runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), byteCount, remaining, err)
+		writeStartedAt := time.Now()
+		written, err := writer.Write(buf[:n])
+		blocked := time.Since(writeStartedAt)
+		writeCalls++
+		blockedTotal += blocked
+		if blocked > maxBlocked {
+			maxBlocked = blocked
+		}
+		if written > 0 {
+			sent += int64(written)
+			remaining -= int64(written)
+		}
+		if err != nil {
+			log.Printf("probe chain %s speed test interrupted: chain=%s role=%s remote=%s bytes=%d sent=%d remaining=%d elapsed_ms=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d err=%v", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), byteCount, sent, remaining, probeDurationMilliseconds(time.Since(startedAt)), writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal), err)
 			return
 		}
-		remaining -= n
+		if written == 0 {
+			log.Printf("probe chain %s speed test stopped: chain=%s role=%s remote=%s reason=zero_write sent=%d remaining=%d elapsed_ms=%d write_calls=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, remaining, probeDurationMilliseconds(time.Since(startedAt)), writeCalls)
+			return
+		}
+		if sent >= nextLogBytes || remaining == 0 {
+			elapsed := time.Since(startedAt)
+			if elapsed <= 0 {
+				elapsed = time.Millisecond
+			}
+			rateBPS := int64(float64(sent) / elapsed.Seconds())
+			log.Printf("probe chain %s speed test write progress: chain=%s role=%s remote=%s sent=%d total=%d elapsed_ms=%d since_last_ms=%d rate_bps=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, byteCount, probeDurationMilliseconds(elapsed), probeDurationMilliseconds(time.Since(lastLogAt)), rateBPS, writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal))
+			lastLogAt = time.Now()
+			for nextLogBytes <= sent {
+				nextLogBytes += 16 * 1024 * 1024
+			}
+		}
+		if int64(written) != n {
+			log.Printf("probe chain %s speed test short write: chain=%s role=%s remote=%s requested=%d written=%d sent=%d remaining=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), n, written, sent, remaining)
+		}
 	}
 	if flusher, ok := writer.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	log.Printf("probe chain %s speed test completed: chain=%s role=%s remote=%s bytes=%d", strings.TrimSpace(transport), runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), byteCount)
+	elapsed := time.Since(startedAt)
+	if elapsed <= 0 {
+		elapsed = time.Millisecond
+	}
+	rateBPS := int64(float64(sent) / elapsed.Seconds())
+	log.Printf("probe chain %s speed test completed: chain=%s role=%s remote=%s bytes=%d elapsed_ms=%d rate_bps=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, probeDurationMilliseconds(elapsed), rateBPS, writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal))
 }
 
 func parseProbeChainSpeedTestBytes(r *http.Request) int64 {

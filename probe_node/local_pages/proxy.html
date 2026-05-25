@@ -802,11 +802,12 @@
 
       lines.push('测速样本建议：单次读取至少 128MB，优先看用时是否已超过 10s，再判断结果是否接近稳定吞吐。');
 
-      const cpu = monitor && monitor.cpu_percent_text && monitor.cpu_percent_text !== 'unavailable' ? String(monitor.cpu_percent_text).trim() + '%' : '';
-      const goroutines = Number(monitor && monitor.goroutines);
-      const heapMB = Number(monitor && monitor.memory && monitor.memory.heap_alloc_mb);
-      const chainTCP = Number(monitor && monitor.tcp && monitor.tcp.chain);
-      const udpAssociations = Number(monitor && monitor.udp && monitor.udp.associations);
+      const hasMonitor = !!(monitor && typeof monitor === 'object' && String(monitor.fetched_at || '').trim());
+      const cpu = hasMonitor && monitor.cpu_percent_text && monitor.cpu_percent_text !== 'unavailable' ? String(monitor.cpu_percent_text).trim() + '%' : '';
+      const goroutines = hasMonitor ? Number(monitor.goroutines) : NaN;
+      const heapMB = hasMonitor ? Number(monitor.memory && monitor.memory.heap_alloc_mb) : NaN;
+      const chainTCP = hasMonitor ? Number(monitor.tcp && monitor.tcp.chain) : NaN;
+      const udpAssociations = hasMonitor ? Number(monitor.udp && monitor.udp.associations) : NaN;
       if (cpu || Number.isFinite(goroutines) || Number.isFinite(heapMB)) {
         lines.push(`运行时负载：CPU=${cpu || '不可用'}，goroutines=${Number.isFinite(goroutines) ? Math.trunc(goroutines) : '-'}，heap=${Number.isFinite(heapMB) ? heapMB.toFixed(2) + 'MB' : '-' }。如果测速时这些值明显抬升，瓶颈可能在本机而不在链路。`);
       }
@@ -818,7 +819,7 @@
     }
 
     function formatProxyLinkMonitorLines(monitor) {
-      if (!monitor || typeof monitor !== 'object') return '-';
+      if (!monitor || typeof monitor !== 'object' || !String(monitor.fetched_at || '').trim()) return '-';
       const lines = [];
       const tcp = monitor.tcp || {};
       const udp = monitor.udp || {};
