@@ -32,33 +32,10 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 			role = "exit"
 		}
 
-		nextHost := strings.TrimSpace(item.EgressHost)
-		nextPort := item.EgressPort
-		nextAuthMode := "proxy"
-		nextLinkLayer := ""
-		nextDialMode := "none"
-		if i < len(route)-1 {
-			nextNodeID := route[i+1]
-			nextNodeSettings := resolveProbeLinkChainNodeSettings(item, nextNodeID)
-			resolvedHost := strings.TrimSpace(nextNodeSettings.RelayHost)
-			if resolvedHost == "" {
-				var err error
-				resolvedHost, err = resolveProbeLinkChainNodeDialHost(nextNodeID)
-				if err != nil {
-					failures = append(failures, fmt.Sprintf("node=%s resolve next host failed: %v", nodeID, err))
-					continue
-				}
-			}
-			nextHost = resolvedHost
-			if nextNodeSettings.ExternalPort > 0 {
-				nextPort = nextNodeSettings.ExternalPort
-			} else {
-				failures = append(failures, fmt.Sprintf("node=%s next hop %s has no external_port in hop_config", nodeID, nextNodeID))
-				continue
-			}
-			nextLinkLayer = nextNodeSettings.LinkLayer
-			nextDialMode = nodeSettings.DialMode
-			nextAuthMode = "secret"
+		nextHost, nextPort, nextLinkLayer, nextDialMode, nextAuthMode, nextErr := resolveProbeLinkChainDispatchNextHop(item, route, i, nodeSettings)
+		if nextErr != nil {
+			failures = append(failures, fmt.Sprintf("node=%s %v", nodeID, nextErr))
+			continue
 		}
 
 		prevHost := ""
@@ -127,6 +104,27 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 		return errors.New(strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+func resolveProbeLinkChainDispatchNextHop(item probeLinkChainRecord, route []string, index int, nodeSettings probeLinkChainNodeSettings) (host string, port int, linkLayer string, dialMode string, authMode string, err error) {
+	authMode = "proxy"
+	dialMode = "none"
+	if index < 0 || index >= len(route)-1 {
+		return "", 0, "", dialMode, authMode, nil
+	}
+	nextNodeID := route[index+1]
+	nextNodeSettings := resolveProbeLinkChainNodeSettings(item, nextNodeID)
+	resolvedHost := strings.TrimSpace(nextNodeSettings.RelayHost)
+	if resolvedHost == "" {
+		resolvedHost, err = resolveProbeLinkChainNodeDialHost(nextNodeID)
+		if err != nil {
+			return "", 0, "", dialMode, authMode, fmt.Errorf("resolve next host failed: %w", err)
+		}
+	}
+	if nextNodeSettings.ExternalPort <= 0 {
+		return "", 0, "", dialMode, authMode, fmt.Errorf("next hop %s has no external_port in hop_config", nextNodeID)
+	}
+	return resolvedHost, nextNodeSettings.ExternalPort, nextNodeSettings.LinkLayer, nodeSettings.DialMode, "secret", nil
 }
 
 func removeProbeLinkChainRecord(item probeLinkChainRecord) error {

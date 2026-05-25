@@ -252,11 +252,8 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	}
 
 	egressHost := strings.TrimSpace(input.EgressHost)
-	if egressHost == "" {
-		return probeLinkChainRecord{}, nil, fmt.Errorf("egress_host is required")
-	}
 	egressPort := input.EgressPort
-	if egressPort <= 0 || egressPort > 65535 {
+	if egressHost != "" && (egressPort <= 0 || egressPort > 65535) {
 		return probeLinkChainRecord{}, nil, fmt.Errorf("egress_port must be between 1 and 65535")
 	}
 
@@ -702,7 +699,10 @@ func normalizeProbeLinkChains(items []probeLinkChainRecord) []probeLinkChainReco
 		linkLayer := normalizeProbeLinkChainLinkLayer(item.LinkLayer)
 		egressHost := strings.TrimSpace(item.EgressHost)
 		egressPort := item.EgressPort
-		if name == "" || userID == "" || pubKey == "" || secret == "" || exitNodeID == "" || listenPort <= 0 || listenPort > 65535 || egressHost == "" || egressPort <= 0 || egressPort > 65535 {
+		if name == "" || userID == "" || pubKey == "" || secret == "" || exitNodeID == "" || listenPort <= 0 || listenPort > 65535 {
+			continue
+		}
+		if egressHost != "" && (egressPort <= 0 || egressPort > 65535) {
 			continue
 		}
 		if len([]rune(name)) > maxProbeLinkChainNameLen || len([]rune(userID)) > maxProbeLinkChainUserIDLen || len(pubKey) > maxProbeLinkChainPublicKeyLen || len(secret) > maxProbeLinkChainSecretLen {
