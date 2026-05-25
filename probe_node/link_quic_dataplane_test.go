@@ -1,16 +1,25 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,6 +144,256 @@ func TestProbeChainQUICDataPlaneTCPStreamRoundTrip(t *testing.T) {
 	if speed.DurationMS <= 0 || speed.RateBPS <= 0 {
 		t.Fatalf("quic speed should measure data window only: %+v", speed)
 	}
+}
+
+func TestProbeChainQUICDataPlaneLoopbackThroughputDiagnostic(t *testing.T) {
+	if os.Getenv("PROBE_QUIC_LOOPBACK_DIAG") != "1" {
+		t.Skip("set PROBE_QUIC_LOOPBACK_DIAG=1 to run QUIC loopback throughput diagnostic")
+	}
+	byteCount := int64(32 * 1024 * 1024)
+	if raw := strings.TrimSpace(os.Getenv("PROBE_QUIC_LOOPBACK_DIAG_BYTES")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			byteCount = parsed
+		}
+	}
+	basePort := reserveProbeChainQUICDataPlaneBasePortForTest(t)
+	cert := writeProbeChainQUICDataPlaneTestCert(t)
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:      "chain-quic-loopback-diag",
+			secret:       "secret-quic-loopback-diag",
+			role:         "entry",
+			listenHost:   "127.0.0.1",
+			listenPort:   basePort,
+			nextAuthMode: "proxy",
+		},
+		stopCh: make(chan struct{}),
+	}
+	if err := startProbeChainQUICDataPlaneServer(rt, cert); err != nil {
+		t.Fatalf("start quic dataplane: %v", err)
+	}
+	t.Cleanup(func() {
+		close(rt.stopCh)
+		rt.closeRuntimeResources()
+	})
+
+	session, err := openProbeChainRelayQUICDataPlaneSession(
+		"chain-quic-loopback-diag",
+		"secret-quic-loopback-diag",
+		"127.0.0.1",
+		basePort,
+		probeChainBridgeRoleToNext,
+		"127.0.0.1",
+		"127.0.0.1",
+		10*time.Second,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("open quic dataplane session: %v", err)
+	}
+	defer session.Close()
+
+	for _, streams := range []int{1, 2, 4} {
+		result, err := runProbeChainQUICLoopbackDiagnosticStreams(session, streams, byteCount)
+		if err != nil {
+			t.Fatalf("diagnostic streams=%d: %v", streams, err)
+		}
+		t.Logf("quic loopback diag streams=%d total_bytes=%d duration_ms=%d aggregate_rate_bps=%d aggregate_rate_mib_s=%.2f per_stream_mib_s=%.2f", streams, result.bytes, probeDurationMilliseconds(result.duration), result.rateBPS(), float64(result.rateBPS())/1024/1024, float64(result.rateBPS())/float64(streams)/1024/1024)
+	}
+}
+
+func TestProbeChainRawUDPLoopbackThroughputDiagnostic(t *testing.T) {
+	if os.Getenv("PROBE_UDP_LOOPBACK_DIAG") != "1" {
+		t.Skip("set PROBE_UDP_LOOPBACK_DIAG=1 to run raw UDP loopback throughput diagnostic")
+	}
+	byteCount := int64(32 * 1024 * 1024)
+	if raw := strings.TrimSpace(os.Getenv("PROBE_UDP_LOOPBACK_DIAG_BYTES")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			byteCount = parsed
+		}
+	}
+	packetBytes := 1200
+	if raw := strings.TrimSpace(os.Getenv("PROBE_UDP_LOOPBACK_DIAG_PACKET_BYTES")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 64 && parsed <= 1400 {
+			packetBytes = parsed
+		}
+	}
+
+	server, err := net.ListenUDP("udp", mustResolveProbeChainUDPAddrForTest(t, "127.0.0.1:0"))
+	if err != nil {
+		t.Fatalf("listen udp server: %v", err)
+	}
+	defer server.Close()
+	tuneProbeChainUDPConn(server)
+
+	client, err := net.ListenUDP("udp", mustResolveProbeChainUDPAddrForTest(t, "127.0.0.1:0"))
+	if err != nil {
+		t.Fatalf("listen udp client: %v", err)
+	}
+	defer client.Close()
+	tuneProbeChainUDPConn(client)
+
+	var serverSent int64
+	var serverDurationNS int64
+	serverErrCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, addr, err := server.ReadFromUDP(buf)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		if n < 16 || string(buf[:8]) != "UDPDIAG1" {
+			serverErrCh <- fmt.Errorf("invalid udp diag request: bytes=%d", n)
+			return
+		}
+		total := int64(binary.BigEndian.Uint64(buf[8:16]))
+		payload := make([]byte, packetBytes)
+		for i := range payload {
+			payload[i] = byte(i % 251)
+		}
+		startedAt := time.Now()
+		remaining := total
+		for remaining > 0 {
+			n := len(payload)
+			if remaining < int64(n) {
+				n = int(remaining)
+			}
+			written, err := server.WriteToUDP(payload[:n], addr)
+			if written > 0 {
+				atomic.AddInt64(&serverSent, int64(written))
+				remaining -= int64(written)
+			}
+			if err != nil {
+				serverErrCh <- err
+				return
+			}
+			if written == 0 {
+				serverErrCh <- errors.New("udp zero write")
+				return
+			}
+		}
+		atomic.StoreInt64(&serverDurationNS, int64(time.Since(startedAt)))
+		serverErrCh <- nil
+	}()
+
+	request := make([]byte, 16)
+	copy(request[:8], []byte("UDPDIAG1"))
+	binary.BigEndian.PutUint64(request[8:16], uint64(byteCount))
+	if _, err := client.WriteToUDP(request, server.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("write udp diag request: %v", err)
+	}
+
+	readBuf := make([]byte, packetBytes+64)
+	received := int64(0)
+	startedAt := time.Now()
+	deadline := time.Now().Add(10 * time.Second)
+	_ = client.SetReadDeadline(deadline)
+	for received < byteCount {
+		n, _, err := client.ReadFromUDP(readBuf)
+		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+				break
+			}
+			t.Fatalf("read udp payload: %v", err)
+		}
+		received += int64(n)
+	}
+	clientDuration := time.Since(startedAt)
+	serverErr := <-serverErrCh
+	if serverErr != nil {
+		t.Fatalf("udp diag server: %v", serverErr)
+	}
+	sent := atomic.LoadInt64(&serverSent)
+	sendDuration := time.Duration(atomic.LoadInt64(&serverDurationNS))
+	t.Logf("raw udp loopback diag requested_bytes=%d packet_bytes=%d server_sent=%d server_duration_ms=%d server_rate_mib_s=%.2f client_received=%d client_duration_ms=%d client_rate_mib_s=%.2f loss_bytes=%d", byteCount, packetBytes, sent, probeDurationMilliseconds(sendDuration), bytesPerSecondMiB(sent, sendDuration), received, probeDurationMilliseconds(clientDuration), bytesPerSecondMiB(received, clientDuration), sent-received)
+}
+
+func mustResolveProbeChainUDPAddrForTest(t *testing.T, addr string) *net.UDPAddr {
+	t.Helper()
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		t.Fatalf("resolve udp addr %s: %v", addr, err)
+	}
+	return udpAddr
+}
+
+func bytesPerSecondMiB(bytes int64, duration time.Duration) float64 {
+	if bytes <= 0 || duration <= 0 {
+		return 0
+	}
+	return float64(bytes) / duration.Seconds() / 1024 / 1024
+}
+
+type probeChainQUICLoopbackDiagnosticResult struct {
+	bytes    int64
+	duration time.Duration
+}
+
+func (r probeChainQUICLoopbackDiagnosticResult) rateBPS() int64 {
+	if r.duration <= 0 {
+		return 0
+	}
+	return int64(float64(r.bytes) / r.duration.Seconds())
+}
+
+func runProbeChainQUICLoopbackDiagnosticStreams(session *probeChainQUICDataPlaneClientSession, streamCount int, byteCount int64) (probeChainQUICLoopbackDiagnosticResult, error) {
+	if session == nil {
+		return probeChainQUICLoopbackDiagnosticResult{}, errors.New("session is nil")
+	}
+	if streamCount <= 0 {
+		return probeChainQUICLoopbackDiagnosticResult{}, errors.New("stream count must be positive")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	startedAt := time.Now()
+	var wg sync.WaitGroup
+	errCh := make(chan error, streamCount)
+	bytesCh := make(chan int64, streamCount)
+	for i := 0; i < streamCount; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			stream, err := session.OpenStream(ctx)
+			if err != nil {
+				errCh <- fmt.Errorf("open stream %d: %w", index, err)
+				return
+			}
+			defer stream.Close()
+			_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+			if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenRequest{
+				Type:       probeChainRelayModeSpeedTest,
+				SpeedBytes: byteCount,
+			}); err != nil {
+				errCh <- fmt.Errorf("write request %d: %w", index, err)
+				return
+			}
+			_ = stream.SetWriteDeadline(time.Time{})
+			n, err := probeChainCopy(io.Discard, io.LimitReader(stream, byteCount))
+			if err != nil {
+				errCh <- fmt.Errorf("read stream %d: %w", index, err)
+				return
+			}
+			if n != byteCount {
+				errCh <- fmt.Errorf("read stream %d: bytes=%d want=%d", index, n, byteCount)
+				return
+			}
+			bytesCh <- n
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	close(bytesCh)
+	for err := range errCh {
+		if err != nil {
+			return probeChainQUICLoopbackDiagnosticResult{}, err
+		}
+	}
+	totalBytes := int64(0)
+	for n := range bytesCh {
+		totalBytes += n
+	}
+	return probeChainQUICLoopbackDiagnosticResult{bytes: totalBytes, duration: time.Since(startedAt)}, nil
 }
 
 func reserveProbeChainQUICDataPlaneBasePortForTest(t *testing.T) int {

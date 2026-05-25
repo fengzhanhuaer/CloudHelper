@@ -4,11 +4,11 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PN-QUIC-STREAM-DATAPLANE-001
 - 需求前缀: REQ-PN-QUIC-STREAM-DATAPLANE-001
-- 当前阶段: Code首版最小闭环完成，待UDP datagram完善与Architect复核
+- 当前阶段: Code首版最小闭环完成；QUIC Stream性能排查已归档，待UDP datagram完善与Architect复核
 - 最近更新角色: Code
-- 最近更新时间: 2026-05-25T14:05:41+08:00
+- 最近更新时间: 2026-05-25T15:14:06+08:00
 - 工作依据文档: [`doc/ai-coding-collaboration.md`](doc/ai-coding-collaboration.md:1)、[`doc/REQ-PN-RELAY-DUAL-STACK-001-collaboration.md`](doc/REQ-PN-RELAY-DUAL-STACK-001-collaboration.md:1)、[`probe_node/link_relay_client_transport.go`](probe_node/link_relay_client_transport.go:1)、[`probe_node/link_chain_runtime.go`](probe_node/link_chain_runtime.go:1)、[`probe_node/local_tun_group_runtime.go`](probe_node/local_tun_group_runtime.go:1)、[`probe_node/link_chain_udp_assoc.go`](probe_node/link_chain_udp_assoc.go:1)
-- 状态: 进行中；Code已完成 QUIC 配置、控制流认证、客户端会话、服务端入口、TCP stream 最小闭环、真实 data stream 测速和回归测试；UDP datagram 业务映射仍待完善
+- 状态: 进行中；Code已完成 QUIC 配置、控制流认证、客户端会话、服务端入口、TCP stream 最小闭环、真实 data stream 测速和回归测试；QUIC Stream性能瓶颈归档为 Windows 本机 UDP 小包路径/包率限制；UDP datagram 业务映射仍待完善
 
 ## 第1章 Architect章节
 - 章节责任角色: Architect
@@ -408,6 +408,9 @@
 - 当前补充事实: 用户确认测试为本机自环，且强制 QUIC v1 后速度仍接近 7-9MB/s；因此优先排除公网 UDP 路径与 QUIC v2 兼容性，下一步聚焦本机 quic-go UDP loopback、stream.Write pacing/flow-control 或接收侧读取阻塞。
 - `streamProbeChainSpeedTestBytes()` 增加服务端测速写入进度日志，每 16MB 记录累计写出、耗时、估算写出速率、write 调用次数、最大单次 write 阻塞和累计 write 阻塞，用于判断瓶颈在服务端 QUIC stream 写出还是客户端读取/接收。
 - 根据服务端日志，QUIC speed_test 的 `total_write_block_ms` 基本等于总耗时，瓶颈已定位在服务端 QUIC stream `Write()` 背压；本轮优化将 QUIC/H3 speed 写块由 1MB 降到 256KB，保留 WS 1MB 写块，并将 UDP socket buffer 上调到 64MB、QUIC stream/connection receive window 上调到 128MB/512MB 与 512MB/1GB，作为本机 loopback A/B 复测参数。
+- 新增手动诊断测试 `TestProbeChainQUICDataPlaneLoopbackThroughputDiagnostic`，默认跳过，设置 `PROBE_QUIC_LOOPBACK_DIAG=1` 后在 `127.0.0.1` 上复用同一 QUIC connection 分别跑 1/2/4 条并发 speed stream；实测 32MB/stream 结果为 1 stream=8.02MiB/s、2 streams aggregate=7.99MiB/s、4 streams aggregate=7.85MiB/s，说明多 stream 无法叠加，瓶颈不在单 stream，而在整条 QUIC connection / UDP send path 或 quic-go 单连接处理上限。
+- 新增手动诊断测试 `TestProbeChainRawUDPLoopbackThroughputDiagnostic`，默认跳过，设置 `PROBE_UDP_LOOPBACK_DIAG=1` 后在 `127.0.0.1` 上测试裸 UDP 单向吞吐；实测 32MB、1200B packet 为 9.89MiB/s，1400B packet 为 10.82MiB/s，0 loss。裸 UDP 与 QUIC Stream 8MiB/s 同量级，说明瓶颈更可能在 Windows 本机 UDP 小包发送/接收路径或包率上限，而非 QUIC stream 业务封装。
+- 使用本机 Python 3.13 独立脚本复测 `127.0.0.1` loopback，不经过 Go/quic-go：UDP 1200B=8.29MiB/s、1400B=14.29MiB/s、4096B=24.47MiB/s、8192B=72.3MiB/s、16384B=101.8MiB/s；TCP 256KB chunk=421MiB/s。该对照说明小 UDP packet 包率是主要限制，QUIC 常规 1200-1400B packet 会落在该低吞吐区间。
 - `isProbeChainQUICDataPlaneLayer()` 将 TUN 组 `http3` 入口切换到 QUIC Data Plane，旧 `websocket-h3` 不再作为该路径默认连接方式。
 - `proxy.html` 链路操作将非 CF 的 H3 测试入口改为 `测速QUIC`，CF 入口仍只允许 `websocket`。
 - `proxy.html` 链路详情仅在监控快照包含 `fetched_at` 时展示运行时负载，避免空快照误显示 `goroutines=0`、`heap=0.00MB`。
