@@ -3576,9 +3576,11 @@ func probeLocalProxyExplicitEnableHandler(w http.ResponseWriter, r *http.Request
 		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
 		return
 	}
-	if err := ensureProbeLocalProxyBootstrapDirectBypass(); err != nil {
-		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
-		return
+	if shouldRestoreProbeLocalProxyFromState(state) {
+		if err := ensureProbeLocalProxyBootstrapDirectBypass(); err != nil {
+			writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
+			return
+		}
 	}
 	startProbeLocalExplicitProxyServer()
 	if err := persistProbeLocalExplicitProxyPersistentState(true); err != nil {

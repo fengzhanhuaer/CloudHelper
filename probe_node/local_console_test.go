@@ -1186,7 +1186,7 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	}
 }
 
-func TestProbeLocalProxyExplicitEnablePrewarmsBootstrapBypass(t *testing.T) {
+func TestProbeLocalProxyExplicitEnableSkipsBootstrapBypassWhenTUNDisabled(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
@@ -1208,6 +1208,53 @@ func TestProbeLocalProxyExplicitEnablePrewarmsBootstrapBypass(t *testing.T) {
 		t.Fatalf("persist proxy chain failed: %v", err)
 	}
 	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	bypassCalled := false
+	probeLocalEnsureExplicitDirectBypass = func(target string) error {
+		bypassCalled = true
+		return errors.New("direct bypass route target is not prepared")
+	}
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest() })
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/explicit/enable", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("explicit enable status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if bypassCalled {
+		t.Fatal("explicit proxy enable should not prewarm TUN direct bypass when TUN proxy is disabled")
+	}
+}
+
+func TestProbeLocalProxyExplicitEnablePrewarmsBootstrapBypassWhenTUNEnabled(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{
+		{
+			ChainID:     "chain-proxy-1",
+			ChainType:   "proxy_chain",
+			Name:        "Proxy 1",
+			Secret:      "secret",
+			EntryNodeID: "1",
+			ExitNodeID:  "2",
+			LinkLayer:   "http",
+			HopConfigs: []probeLinkChainHopServerItem{
+				{NodeNo: 1, RelayHost: "entry.example.com", ExternalPort: 11110, LinkLayer: "http"},
+				{NodeNo: 2, RelayHost: "exit.example.com", ExternalPort: 13131, LinkLayer: "http"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("persist proxy chain failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Proxy.Enabled = true
+	state.Proxy.Mode = probeLocalProxyModeTUN
 	state.Groups = []probeLocalProxyStateGroupEntry{
 		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
 	}
