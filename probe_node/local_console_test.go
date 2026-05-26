@@ -2582,12 +2582,12 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 	}
 }
 
-func TestProbeLocalProxyLinkReachabilityHTTP3UsesQUICStream(t *testing.T) {
+func TestProbeLocalProxyLinkReachabilityHTTP3UsesWebSocketH3AndWebSocket(t *testing.T) {
 	protocols := probeLocalProxyLinkReachabilityProtocolsForEndpoint(probeLinkChainServerItem{
 		ChainID: "chain-direct",
 	}, probeLocalTUNChainEndpoint{LinkLayer: "http3"})
-	if len(protocols) != 2 || protocols[0] != "quic-stream" || protocols[1] != "websocket" {
-		t.Fatalf("http3 reachability protocols=%v, want quic-stream/websocket", protocols)
+	if len(protocols) != 2 || protocols[0] != "websocket-h3" || protocols[1] != "websocket" {
+		t.Fatalf("http3 reachability protocols=%v, want websocket-h3/websocket", protocols)
 	}
 }
 

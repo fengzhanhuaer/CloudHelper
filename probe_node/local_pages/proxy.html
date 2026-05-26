@@ -1009,7 +1009,7 @@
         const cfButton = isCFProxyLinkItem(item) ? `<button class="secondary" data-action="cf-ip-optimize" data-chain-id="${escapeHTML(chainID)}">CF IP优选</button>` : '';
         const speedButtons = isCFLink
           ? `<button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>`
-          : `<button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="quic-stream">测速QUIC</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>`;
+          : `<button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket-h3">测速WS-H3</button><button class="secondary" data-action="speed" data-chain-id="${escapeHTML(chainID)}" data-protocol="websocket">测速WS</button>`;
         const detailActive = proxyLinkDetailChainID && proxyLinkDetailChainID === chainID;
         tr.innerHTML = `
           <td><strong>${escapeHTML(chainName)}</strong><br><span class="muted">${escapeHTML(chainID || '-')}</span><br><span class="muted">入口: ${escapeHTML(endpoint)}</span><br><span class="muted">配置协议: ${escapeHTML(formatRelayProtocolLabel(item && item.link_layer))}</span>${route ? `<br><span class="muted">${escapeHTML(route)}</span>` : ''}</td>

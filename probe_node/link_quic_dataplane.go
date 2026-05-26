@@ -64,7 +64,7 @@ type probeChainQUICDataPlaneControlNetConn struct {
 
 func isProbeChainQUICDataPlaneLayer(layer string) bool {
 	switch normalizeProbeChainLinkLayer(layer) {
-	case "quic-stream", "http3":
+	case "quic-stream":
 		return true
 	default:
 		return false

@@ -1550,10 +1550,12 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		markProbeChainRelayListenerStatus(listenAddr, "http3", "stopped", "")
 	}(runtime, h3Server, cert.CertPath, cert.KeyPath)
 
-	markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "starting", "")
-	if err := startProbeChainQUICDataPlaneServer(runtime, cert); err != nil {
-		markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "failed", err.Error())
-		log.Printf("probe chain quic dataplane listener unavailable: chain=%s listen=%s err=%v", runtime.cfg.chainID, listenAddr, err)
+	if isProbeChainQUICDataPlaneLayer(layer) {
+		markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "starting", "")
+		if err := startProbeChainQUICDataPlaneServer(runtime, cert); err != nil {
+			markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "failed", err.Error())
+			log.Printf("probe chain quic dataplane listener unavailable: chain=%s listen=%s err=%v", runtime.cfg.chainID, listenAddr, err)
+		}
 	}
 
 	return nil

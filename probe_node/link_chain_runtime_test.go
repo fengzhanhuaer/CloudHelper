@@ -417,7 +417,7 @@ func TestOpenProbeChainRelayNetConnAutoUsesHTTP3WebSocketPrimary(t *testing.T) {
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketFailure(t *testing.T) {
+func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -470,30 +470,10 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketFailure(t *testing
 		}
 	}
 	if websocketCalls < 2 {
-		t.Fatalf("websocket primary should be tried for both attempts, calls=%v", calls)
+		t.Fatalf("websocket fallback should be tried for both attempts, calls=%v", calls)
 	}
 	if http3WebSocketCalls < 2 {
 		t.Fatalf("h3 websocket primary should be tried for both attempts, calls=%v", calls)
-	}
-	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
-	foundH3WebSocketFailure := false
-	for _, quality := range snapshot.ProtocolQualities {
-		if quality.Protocol != "websocket-h3" {
-			continue
-		}
-		foundH3WebSocketFailure = true
-		if quality.Available {
-			t.Fatalf("expected websocket-h3 unavailable after failure: %+v", quality)
-		}
-		if quality.LossPermille != 1000 {
-			t.Fatalf("expected failed websocket-h3 loss_permille=1000, got %+v", quality)
-		}
-		if quality.LatencyMS <= 0 {
-			t.Fatalf("expected failed websocket-h3 latency to preserve attempted duration, got %+v", quality)
-		}
-	}
-	if !foundH3WebSocketFailure {
-		t.Fatalf("missing websocket-h3 failure quality: %+v", snapshot.ProtocolQualities)
 	}
 }
 

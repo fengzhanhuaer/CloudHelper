@@ -48,15 +48,15 @@ func TestNewProbeChainQUICConfigUsesV2V1AndDatagrams(t *testing.T) {
 	}
 }
 
-func TestProbeChainQUICDataPlaneLayerIncludesHTTP3Alias(t *testing.T) {
+func TestProbeChainQUICDataPlaneLayerRequiresExplicitQUICStream(t *testing.T) {
 	if !isProbeChainQUICDataPlaneLayer("quic-stream") {
 		t.Fatal("quic-stream should use QUIC data plane")
 	}
-	if !isProbeChainQUICDataPlaneLayer("http3") {
-		t.Fatal("http3 should use QUIC data plane in TUN group runtime")
+	if isProbeChainQUICDataPlaneLayer("http3") {
+		t.Fatal("http3 should use WS-H3/WS1 relay protocols, not naked QUIC data plane")
 	}
 	if isProbeChainQUICDataPlaneLayer("websocket-h3") {
-		t.Fatal("websocket-h3 should remain the legacy compatibility path")
+		t.Fatal("websocket-h3 should use HTTP/3 WebSocket, not naked QUIC data plane")
 	}
 }
 
