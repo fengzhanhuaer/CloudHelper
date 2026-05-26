@@ -313,7 +313,15 @@ func ensureProbeLocalDNSServiceStarted() {
 }
 
 func reconcileProbeLocalDNSRuntime() {
+	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(probeLocalTUNProxyEnabled())
+}
+
+func reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(tunProxyEnabled bool) {
 	if runtime.GOOS != "windows" {
+		stopProbeLocalDNSTUNListener()
+		return
+	}
+	if !tunProxyEnabled {
 		stopProbeLocalDNSTUNListener()
 		return
 	}

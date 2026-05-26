@@ -3253,6 +3253,49 @@ func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
 	}
 }
 
+func TestProbeLocalTUNInstallDoesNotStartDataPlaneWhenProxyDirect(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "22")
+
+	probeLocalInstallTUNDriver = func() error {
+		obs := newProbeLocalTUNInstallObservation()
+		obs.Final.Success = true
+		obs.Final.ReasonCode = "TUN_INSTALL_SUCCEEDED"
+		obs.Final.Reason = "driver-ready"
+		setProbeLocalTUNInstallObservation(obs)
+		return nil
+	}
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest() })
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/install", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("tun/install status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	tunObj, ok := payload["tun"].(map[string]any)
+	if !ok {
+		t.Fatalf("tun/install tun payload type=%T", payload["tun"])
+	}
+	if enabled, _ := tunObj["enabled"].(bool); enabled {
+		t.Fatalf("tun/install enabled=%v, want false without proxy enable", enabled)
+	}
+	if dataPlane, _ := tunObj["data_plane"].(bool); dataPlane {
+		t.Fatalf("tun/install data_plane=%v, want false without proxy enable", dataPlane)
+	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		t.Fatalf("load proxy state failed: %v", err)
+	}
+	if !state.TUN.Installed || state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=true enabled=false", state.TUN)
+	}
+	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
+		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
+	}
+}
+
 func TestProbeLocalTUNStartupRecoveryDetectsInstalledAdapter(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 
