@@ -2704,7 +2704,7 @@ func TestProbeLocalProxyLinkReachabilityCFUsesWebSocketOnly(t *testing.T) {
 	}
 }
 
-func TestProbeLocalProxyLinkPingPongLatencyIncludesRelayOpen(t *testing.T) {
+func TestProbeLocalProxyLinkPingPongLatencyExcludesRelayOpen(t *testing.T) {
 	probeLocalProxyLinkOpenRelayConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) (net.Conn, error) {
 		time.Sleep(25 * time.Millisecond)
 		client, server := net.Pipe()
@@ -2749,8 +2749,8 @@ func TestProbeLocalProxyLinkPingPongLatencyIncludesRelayOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ping-pong probe failed: %v", err)
 	}
-	if latency < 25*time.Millisecond {
-		t.Fatalf("latency=%s, want it to include relay open delay", latency)
+	if latency >= 25*time.Millisecond {
+		t.Fatalf("latency=%s, want data ping-pong only without relay open delay", latency)
 	}
 }
 

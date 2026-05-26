@@ -382,7 +382,11 @@ func TestOpenProbeChainRelayNetConnAutoUsesHTTP3WebSocketPrimary(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
-	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+	originalPingPong := probeChainRelayMeasurePingPongLatency
+	defer func() {
+		probeChainRelayOpenLayer = originalOpenLayer
+		probeChainRelayMeasurePingPongLatency = originalPingPong
+	}()
 
 	var mu sync.Mutex
 	calls := make([]string, 0, 3)
@@ -398,6 +402,9 @@ func TestOpenProbeChainRelayNetConnAutoUsesHTTP3WebSocketPrimary(t *testing.T) {
 			Conn:     client,
 			Latency:  50 * time.Millisecond,
 		}
+	}
+	probeChainRelayMeasurePingPongLatency = func(conn net.Conn) (time.Duration, error) {
+		return 2 * time.Millisecond, nil
 	}
 
 	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
@@ -421,7 +428,11 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testi
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
-	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+	originalPingPong := probeChainRelayMeasurePingPongLatency
+	defer func() {
+		probeChainRelayOpenLayer = originalOpenLayer
+		probeChainRelayMeasurePingPongLatency = originalPingPong
+	}()
 
 	var mu sync.Mutex
 	calls := make([]string, 0, 4)
@@ -444,6 +455,9 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testi
 			Conn:     client,
 			Latency:  10 * time.Millisecond,
 		}
+	}
+	probeChainRelayMeasurePingPongLatency = func(conn net.Conn) (time.Duration, error) {
+		return 2 * time.Millisecond, nil
 	}
 
 	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
@@ -481,7 +495,11 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketContextCanceled(t *
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
-	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+	originalPingPong := probeChainRelayMeasurePingPongLatency
+	defer func() {
+		probeChainRelayOpenLayer = originalOpenLayer
+		probeChainRelayMeasurePingPongLatency = originalPingPong
+	}()
 
 	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
 		protocol := normalizeProbeChainLinkLayer(layer)
@@ -502,6 +520,9 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketContextCanceled(t *
 			Latency:  2 * time.Millisecond,
 		}
 	}
+	probeChainRelayMeasurePingPongLatency = func(conn net.Conn) (time.Duration, error) {
+		return 2 * time.Millisecond, nil
+	}
 
 	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
 	if err != nil {
@@ -517,7 +538,11 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketExtendedConnectDisa
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
-	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+	originalPingPong := probeChainRelayMeasurePingPongLatency
+	defer func() {
+		probeChainRelayOpenLayer = originalOpenLayer
+		probeChainRelayMeasurePingPongLatency = originalPingPong
+	}()
 
 	var mu sync.Mutex
 	calls := make([]string, 0, 2)
@@ -543,6 +568,9 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketExtendedConnectDisa
 			Latency:  2 * time.Millisecond,
 		}
 	}
+	probeChainRelayMeasurePingPongLatency = func(conn net.Conn) (time.Duration, error) {
+		return 2 * time.Millisecond, nil
+	}
 
 	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
 	if err != nil {
@@ -564,7 +592,11 @@ func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) 
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
-	defer func() { probeChainRelayOpenLayer = originalOpenLayer }()
+	originalPingPong := probeChainRelayMeasurePingPongLatency
+	defer func() {
+		probeChainRelayOpenLayer = originalOpenLayer
+		probeChainRelayMeasurePingPongLatency = originalPingPong
+	}()
 
 	var mu sync.Mutex
 	calls := make([]string, 0, 2)
@@ -627,6 +659,49 @@ func TestSnapshotProbeChainProtocolStateIncludesListenerStatusByPort(t *testing.
 	}
 	if !found {
 		t.Fatalf("missing websocket-h3 failed listener status: %+v", snapshot.ListenerStatuses)
+	}
+}
+
+func TestProbeChainRelayProtocolProbeAndChooseUsesPingPongLatency(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenLayer := probeChainRelayOpenLayer
+	originalPingPong := probeChainRelayMeasurePingPongLatency
+	defer func() {
+		probeChainRelayOpenLayer = originalOpenLayer
+		probeChainRelayMeasurePingPongLatency = originalPingPong
+	}()
+
+	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		time.Sleep(25 * time.Millisecond)
+		client, server := net.Pipe()
+		t.Cleanup(func() {
+			_ = server.Close()
+		})
+		return probeChainRelayProtocolDialResult{
+			Protocol: normalizeProbeChainLinkLayer(layer),
+			Conn:     client,
+			Latency:  25 * time.Millisecond,
+		}
+	}
+	probeChainRelayMeasurePingPongLatency = func(conn net.Conn) (time.Duration, error) {
+		return 2 * time.Millisecond, nil
+	}
+
+	result, err := probeChainRelayProtocolProbeAndChoose("chain-a", "secret-a", "relay.example.com", 16030, probeChainBridgeRoleToNext, probeChainRelayProtocolEndpointKey("relay.example.com", 16030), []string{"websocket-h3"})
+	if err != nil {
+		t.Fatalf("probe failed: %v", err)
+	}
+	defer result.Conn.Close()
+	if result.Latency >= 25*time.Millisecond {
+		t.Fatalf("latency=%s, want ping-pong latency instead of relay open latency", result.Latency)
+	}
+	snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
+	if len(snapshot.ProtocolQualities) != 1 {
+		t.Fatalf("protocol qualities=%+v", snapshot.ProtocolQualities)
+	}
+	if snapshot.ProtocolQualities[0].LatencyMS >= 25 {
+		t.Fatalf("quality latency=%dms, want ping-pong latency", snapshot.ProtocolQualities[0].LatencyMS)
 	}
 }
 

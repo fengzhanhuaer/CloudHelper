@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/yamux"
 	"golang.org/x/net/dns/dnsmessage"
@@ -334,8 +336,16 @@ func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *te
 		peers = append(peers, server)
 		return client, nil
 	}
+	probeLocalProxyLinkOpenRelayConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) (net.Conn, error) {
+		if chainID != "chain-preconnect-1" {
+			t.Fatalf("chainID=%q", chainID)
+		}
+		client, server := net.Pipe()
+		go serveProbeLocalTUNPingPongProbeConn(server)
+		return client, nil
+	}
 	t.Cleanup(func() {
-		probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
+		resetProbeLocalProxyHooksForTest()
 		for _, peer := range peers {
 			_ = peer.Close()
 		}
@@ -363,6 +373,75 @@ func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *te
 	}
 	if currentProbeLocalTUNGroupRuntime("fallback") != nil {
 		t.Fatal("direct fallback group should not be preconnected")
+	}
+}
+
+func TestProbeLocalTUNGroupRuntimeLatencyUsesPingPongOnly(t *testing.T) {
+	resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	t.Cleanup(resetProbeLocalTUNGroupRuntimeRegistryForTest)
+
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{{
+		ChainID:     "chain-latency-only",
+		ChainType:   "proxy_chain",
+		Name:        "latency-only",
+		Secret:      "secret",
+		EntryNodeID: "12",
+		ExitNodeID:  "12",
+		LinkLayer:   "http3",
+		HopConfigs: []probeLinkChainHopServerItem{{
+			NodeNo:       12,
+			ListenHost:   "0.0.0.0",
+			ListenPort:   16030,
+			ExternalPort: 16030,
+			LinkLayer:    "http3",
+			RelayHost:    "127.0.0.1",
+		}},
+	}}); err != nil {
+		t.Fatalf("persist proxy chain cache failed: %v", err)
+	}
+
+	client, server := net.Pipe()
+	session, err := yamux.Client(client, newProbeChainYamuxConfig())
+	if err != nil {
+		t.Fatalf("create yamux client failed: %v", err)
+	}
+	serverSession, err := yamux.Server(server, newProbeChainYamuxConfig())
+	if err != nil {
+		t.Fatalf("create yamux server failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Close()
+		_ = serverSession.Close()
+	})
+
+	rt := &probeLocalTUNGroupRuntime{
+		Group:           "media",
+		SelectedChainID: "chain-latency-only",
+		RuntimeStatus:   "connected",
+		session:         session,
+		relayConn:       client,
+	}
+	probeLocalTUNGroupRuntimeRegistry.mu.Lock()
+	probeLocalTUNGroupRuntimeRegistry.items[normalizeProbeLocalGroupKey("media")] = rt
+	probeLocalTUNGroupRuntimeRegistry.mu.Unlock()
+
+	probeLocalProxyLinkOpenRelayConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) (net.Conn, error) {
+		time.Sleep(25 * time.Millisecond)
+		probeClient, probeServer := net.Pipe()
+		go serveProbeLocalTUNPingPongProbeConn(probeServer)
+		return probeClient, nil
+	}
+	t.Cleanup(resetProbeLocalProxyHooksForTest)
+
+	keepalive, latencyMS, _, latencyErr := resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt)
+	if keepalive != "connected" || latencyErr != "" {
+		t.Fatalf("keepalive=%q latencyErr=%q", keepalive, latencyErr)
+	}
+	if latencyMS == nil {
+		t.Fatal("latency should be reported")
+	}
+	if *latencyMS >= 25 {
+		t.Fatalf("latency=%dms, want data ping-pong only without relay open delay", *latencyMS)
 	}
 }
 
@@ -548,6 +627,38 @@ func serveProbeLocalTUNGroupRuntimeOpenOK(conn net.Conn, done <-chan struct{}) {
 	}
 	_ = json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: true})
 	<-done
+}
+
+func serveProbeLocalTUNPingPongProbeConn(conn net.Conn) {
+	defer conn.Close()
+	session, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	if err != nil {
+		return
+	}
+	defer session.Close()
+	stream, err := session.Accept()
+	if err != nil {
+		return
+	}
+	defer stream.Close()
+	var req probeChainTunnelOpenRequest
+	if err := json.NewDecoder(stream).Decode(&req); err != nil {
+		return
+	}
+	if req.Type != probeChainRelayModePingPong {
+		return
+	}
+	if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: true}); err != nil {
+		return
+	}
+	if req.PingBytes <= 0 {
+		return
+	}
+	buf := make([]byte, req.PingBytes)
+	if _, err := io.ReadFull(stream, buf); err != nil {
+		return
+	}
+	_, _ = stream.Write(buf)
 }
 
 func serveProbeLocalTUNRelayHealthProbe(conn net.Conn, done <-chan struct{}) {

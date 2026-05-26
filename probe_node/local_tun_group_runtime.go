@@ -217,7 +217,6 @@ func resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt *probeLocalTUNGroupR
 	}
 
 	if !snapshot.Connected {
-		startedAt := time.Now()
 		rt.mu.Lock()
 		err := rt.ensureConnectedLocked()
 		rt.mu.Unlock()
@@ -237,17 +236,14 @@ func resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt *probeLocalTUNGroupR
 			)
 			return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "unavailable"), nil, updatedAt, reason
 		}
-		latencyMS := probeLocalLatencyMilliseconds(startedAt)
 		logProbeInfof(
-			"probe local tun group runtime reachability ok: group=%s chain=%s entry=%s:%d layer=%s phase=connect latency_ms=%d",
+			"probe local tun group runtime keepalive connected: group=%s chain=%s entry=%s:%d layer=%s phase=connect",
 			strings.TrimSpace(snapshot.Group),
 			strings.TrimSpace(snapshot.SelectedChainID),
 			strings.TrimSpace(snapshot.EntryHost),
 			snapshot.EntryPort,
 			strings.TrimSpace(snapshot.LinkLayer),
-			latencyMS,
 		)
-		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), &latencyMS, updatedAt, ""
 	}
 
 	endpoint, err := resolveProbeLocalChainEntryEndpointByID(snapshot.SelectedChainID)
@@ -267,34 +263,69 @@ func resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency(rt *probeLocalTUNGroupR
 		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), nil, updatedAt, reason
 	}
 
-	startedAt := time.Now()
-	conn, err := probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	protocol := probeLocalTUNGroupRuntimePingPongProtocol(snapshot, endpoint)
+	latency, err := probeLocalProxyLinkProtocolProbe(endpoint, protocol)
 	if err != nil {
 		reason := strings.TrimSpace(err.Error())
 		logProbeWarnf(
-			"probe local tun group runtime reachability failed: group=%s chain=%s entry=%s:%d layer=%s phase=probe status=%s reason=%s",
+			"probe local tun group runtime reachability failed: group=%s chain=%s entry=%s:%d layer=%s protocol=%s phase=ping_pong status=%s reason=%s",
 			strings.TrimSpace(snapshot.Group),
 			strings.TrimSpace(endpoint.ChainID),
 			strings.TrimSpace(endpoint.EntryHost),
 			endpoint.EntryPort,
 			strings.TrimSpace(endpoint.LinkLayer),
+			strings.TrimSpace(protocol),
 			firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"),
 			reason,
 		)
 		return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), nil, updatedAt, reason
 	}
-	_ = conn.Close()
-	latencyMS := probeLocalLatencyMilliseconds(startedAt)
+	latencyMS := probeDurationMilliseconds(latency)
 	logProbeInfof(
-		"probe local tun group runtime reachability ok: group=%s chain=%s entry=%s:%d layer=%s phase=probe latency_ms=%d",
+		"probe local tun group runtime reachability ok: group=%s chain=%s entry=%s:%d layer=%s protocol=%s phase=ping_pong latency_ms=%d",
 		strings.TrimSpace(snapshot.Group),
 		strings.TrimSpace(endpoint.ChainID),
 		strings.TrimSpace(endpoint.EntryHost),
 		endpoint.EntryPort,
 		strings.TrimSpace(endpoint.LinkLayer),
+		strings.TrimSpace(protocol),
 		latencyMS,
 	)
 	return firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"), &latencyMS, updatedAt, ""
+}
+
+func probeLocalTUNGroupRuntimePingPongProtocol(snapshot probeLocalTUNGroupRuntimeSnapshot, endpoint probeLocalTUNChainEndpoint) string {
+	candidates := probeChainRelayProtocolCandidates(endpoint.LinkLayer)
+	if len(candidates) == 0 {
+		candidates = probeLocalProxyLinkReachabilityProtocols()
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	normalized := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		protocol := normalizeProbeChainLinkLayer(candidate)
+		if !isProbeChainRelaySupportedProtocol(protocol) {
+			continue
+		}
+		if _, ok := seen[protocol]; ok {
+			continue
+		}
+		seen[protocol] = struct{}{}
+		normalized = append(normalized, protocol)
+	}
+	selected := normalizeProbeChainLinkLayer(snapshot.ProtocolState.SelectedProtocol)
+	if _, ok := seen[selected]; ok {
+		return selected
+	}
+	endpointKey := probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort)
+	if preferred := normalizeProbeChainLinkLayer(getProbeChainRelayProtocolPreferred(endpointKey, normalized, time.Now())); preferred != "" {
+		if _, ok := seen[preferred]; ok {
+			return preferred
+		}
+	}
+	if len(normalized) > 0 {
+		return normalized[0]
+	}
+	return "websocket-h3"
 }
 
 func probeLocalLatencyMilliseconds(startedAt time.Time) int64 {

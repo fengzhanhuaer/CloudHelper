@@ -574,7 +574,6 @@ func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason
 			continue
 		}
 		attempted++
-		startedAt := time.Now()
 		rt.mu.Lock()
 		err = rt.ensureConnectedLocked()
 		snapshot := rt.snapshotLocked()
@@ -584,17 +583,20 @@ func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason
 			continue
 		}
 		connected++
-		latencyMS := probeLocalLatencyMilliseconds(startedAt)
-		latencyMSPtr := &latencyMS
+		keepalive, latencyMSPtr, latencyUpdatedAt, latencyError := probeLocalResolveGroupRuntimeLatency(rt)
+		latencyStatus := "unreachable"
+		if latencyMSPtr != nil {
+			latencyStatus = "reachable"
+		}
 		setProbeLocalProxyViewGroupRuntimeSnapshot(group, probeLocalProxyGroupRuntimeSnapshot{
 			Group:                         group,
 			SelectedChainID:               selectedChainID,
 			GroupRuntimeStatus:            firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"),
-			SelectedChainKeepalive:        "connected",
+			SelectedChainKeepalive:        firstNonEmpty(strings.TrimSpace(keepalive), "connected"),
 			SelectedChainLatencyMS:        latencyMSPtr,
-			SelectedChainLatencyStatus:    "reachable",
-			SelectedChainLatencyUpdatedAt: firstNonEmpty(strings.TrimSpace(snapshot.UpdatedAt), time.Now().UTC().Format(time.RFC3339)),
-			SelectedChainLatencyError:     "",
+			SelectedChainLatencyStatus:    latencyStatus,
+			SelectedChainLatencyUpdatedAt: firstNonEmpty(strings.TrimSpace(latencyUpdatedAt), strings.TrimSpace(snapshot.UpdatedAt), time.Now().UTC().Format(time.RFC3339)),
+			SelectedChainLatencyError:     strings.TrimSpace(latencyError),
 		})
 		logProbeInfof("probe local proxy group runtime preconnected: reason=%s group=%s chain=%s entry=%s:%d layer=%s", strings.TrimSpace(reason), group, selectedChainID, strings.TrimSpace(snapshot.EntryHost), snapshot.EntryPort, strings.TrimSpace(snapshot.LinkLayer))
 	}
@@ -4022,7 +4024,6 @@ func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, pr
 
 func probeLocalProxyLinkPingPongProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (time.Duration, error) {
 	const payloadBytes = 64
-	startedAt := time.Now()
 	conn, err := probeLocalProxyLinkOpenRelayConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, protocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
 	if err != nil {
 		return 0, err
@@ -4038,6 +4039,7 @@ func probeLocalProxyLinkPingPongProbe(endpoint probeLocalTUNChainEndpoint, proto
 		payload[i] = byte((i * 31) % 251)
 	}
 	echo := make([]byte, payloadBytes)
+	startedAt := time.Now()
 	_ = stream.SetDeadline(time.Now().Add(probeChainRelayProtocolProbeTimeout))
 	if _, err := stream.Write(payload); err != nil {
 		_ = stream.SetDeadline(time.Time{})
