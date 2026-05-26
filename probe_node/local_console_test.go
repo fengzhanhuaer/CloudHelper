@@ -1183,6 +1183,106 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyExplicitEnablePrewarmsBootstrapBypass(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{
+		{
+			ChainID:     "chain-proxy-1",
+			ChainType:   "proxy_chain",
+			Name:        "Proxy 1",
+			Secret:      "secret",
+			EntryNodeID: "1",
+			ExitNodeID:  "2",
+			LinkLayer:   "http",
+			HopConfigs: []probeLinkChainHopServerItem{
+				{NodeNo: 1, RelayHost: "entry.example.com", ExternalPort: 11110, LinkLayer: "http"},
+				{NodeNo: 2, RelayHost: "exit.example.com", ExternalPort: 13131, LinkLayer: "http"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("persist proxy chain failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-explicit-test"}, "https://controller.example.com/base")
+	bypassTargets := make([]string, 0, 4)
+	probeLocalLookupIPv4ForBypass = func(host string) ([]string, error) {
+		switch strings.TrimSpace(host) {
+		case "controller.example.com":
+			return []string{"203.0.113.10"}, nil
+		case "entry.example.com":
+			return []string{"203.0.113.11"}, nil
+		case "exit.example.com":
+			return []string{"203.0.113.13"}, nil
+		default:
+			return nil, fmt.Errorf("unexpected host lookup: %s", host)
+		}
+	}
+	probeLocalEnsureExplicitDirectBypass = func(target string) error {
+		bypassTargets = append(bypassTargets, strings.TrimSpace(target))
+		return nil
+	}
+	t.Cleanup(func() { resetProbeLocalProxyHooksForTest() })
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/explicit/enable", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("explicit enable status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	expectedBypass := map[string]struct{}{
+		"203.0.113.10:443":   {},
+		"203.0.113.11:11110": {},
+		"203.0.113.13:13131": {},
+	}
+	if len(bypassTargets) != len(expectedBypass) {
+		t.Fatalf("explicit bootstrap bypass targets=%v want=%v", bypassTargets, expectedBypass)
+	}
+	for _, item := range bypassTargets {
+		if _, ok := expectedBypass[item]; !ok {
+			t.Fatalf("unexpected explicit bootstrap bypass target=%s all=%v", item, bypassTargets)
+		}
+	}
+}
+
+func TestCleanupProbeLocalExplicitProxySystemSettingsOnStartupWhenDisabled(t *testing.T) {
+	setupProbeLocalConsoleTest(t)
+	probeLocalExplicitProxySystemState.mu.Lock()
+	probeLocalExplicitProxySystemState.applied = true
+	probeLocalExplicitProxySystemState.lastError = "stale"
+	probeLocalExplicitProxySystemState.mu.Unlock()
+
+	cleanupProbeLocalExplicitProxySystemSettingsOnStartup(probeLocalProxyStateFile{})
+
+	status := snapshotProbeLocalExplicitProxySystemSettingsStatus()
+	if status["applied"] != false {
+		t.Fatalf("explicit proxy system settings applied=%v, want false", status["applied"])
+	}
+}
+
+func TestCleanupProbeLocalExplicitProxySystemSettingsOnStartupKeepsEnabled(t *testing.T) {
+	setupProbeLocalConsoleTest(t)
+	probeLocalExplicitProxySystemState.mu.Lock()
+	probeLocalExplicitProxySystemState.applied = true
+	probeLocalExplicitProxySystemState.lastError = ""
+	probeLocalExplicitProxySystemState.mu.Unlock()
+
+	cleanupProbeLocalExplicitProxySystemSettingsOnStartup(probeLocalProxyStateFile{
+		Explicit: probeLocalExplicitProxyPersistentState{Enabled: true},
+	})
+
+	status := snapshotProbeLocalExplicitProxySystemSettingsStatus()
+	if status["applied"] != true {
+		t.Fatalf("explicit proxy system settings applied=%v, want true", status["applied"])
+	}
+}
+
 func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("TUN data plane hook success path is Windows-only")

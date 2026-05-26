@@ -727,7 +727,21 @@ func recoverProbeLocalTUNRuntimeOnStartup() error {
 	return probeLocalControl.recoverTUNOnStartup(1)
 }
 
+func startProbeLocalExplicitProxyStartupRecovery() {
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		logProbeWarnf("probe local explicit proxy startup recovery skipped: %v", err)
+		return
+	}
+	if !shouldRestoreProbeLocalExplicitProxyFromState(state) {
+		return
+	}
+	startProbeLocalExplicitProxyServer()
+	go preconnectProbeLocalTUNGroupRuntimes(state, "explicit_proxy_startup_recovery")
+}
+
 func startProbeLocalTUNStartupRecoveryAsync() {
+	startProbeLocalExplicitProxyStartupRecovery()
 	if !probeLocalControl.shouldRecoverTUNOnStartup() {
 		return
 	}
@@ -2004,6 +2018,17 @@ func shouldRestoreProbeLocalExplicitProxyFromState(state probeLocalProxyStateFil
 	return state.Explicit.Enabled
 }
 
+func cleanupProbeLocalExplicitProxySystemSettingsOnStartup(state probeLocalProxyStateFile) {
+	if shouldRestoreProbeLocalExplicitProxyFromState(state) {
+		return
+	}
+	if err := restoreProbeLocalExplicitProxySystemSettings(); err != nil {
+		logProbeWarnf("probe local explicit proxy startup cleanup failed: %v", err)
+		return
+	}
+	logProbeInfof("probe local explicit proxy startup cleanup completed: enabled=false")
+}
+
 func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
@@ -2430,6 +2455,9 @@ func ensureProbeLocalProxyDefaultsInitialized() error {
 		if err := persistProbeLocalProxyStateFile(state); err != nil {
 			logProbeErrorf("probe local proxy state update failed, service will continue: %v", err)
 		}
+		cleanupProbeLocalExplicitProxySystemSettingsOnStartup(state)
+	} else {
+		cleanupProbeLocalExplicitProxySystemSettingsOnStartup(state)
 	}
 	if _, _, err := loadProbeLocalHostMappingsWithContent(); err != nil {
 		logProbeErrorf("probe local proxy host config invalid, service will continue without static host mappings until fixed: %v", err)
@@ -3544,11 +3572,21 @@ func probeLocalProxyExplicitEnableHandler(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
+		return
+	}
+	if err := ensureProbeLocalProxyBootstrapDirectBypass(); err != nil {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
+		return
+	}
 	startProbeLocalExplicitProxyServer()
 	if err := persistProbeLocalExplicitProxyPersistentState(true); err != nil {
 		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
 		return
 	}
+	go preconnectProbeLocalTUNGroupRuntimes(state, "explicit_proxy_enable")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":             true,
 		"explicit_proxy": snapshotProbeLocalExplicitProxyStatus(),

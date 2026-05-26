@@ -134,10 +134,12 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 		return
 	}
 	defer conn.Close()
+	remoteAddr := strings.TrimSpace(conn.RemoteAddr().String())
 	_ = conn.SetDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
 	reader := bufio.NewReader(conn)
 	request, err := readProbeChainSocksRequest(reader, conn)
 	if err != nil {
+		logProbeWarnf("probe local explicit socks5 proxy request failed: remote=%s err=%v", remoteAddr, err)
 		return
 	}
 	if request.Cmd != 0x01 {
@@ -148,8 +150,10 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 			return
 		}
 		_ = replyProbeChainProxyFailure(conn, request.Version)
+		logProbeWarnf("probe local explicit socks5 proxy unsupported command: remote=%s cmd=%d target=%s", remoteAddr, request.Cmd, request.Address)
 		return
 	}
+	logProbeInfof("probe local explicit socks5 proxy connect: remote=%s target=%s", remoteAddr, request.Address)
 	targetConn, err := openProbeLocalExplicitProxyTunnelStream("tcp", request.Address)
 	if err != nil {
 		_ = replyProbeChainProxyFailure(conn, request.Version)
@@ -321,19 +325,28 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 		return
 	}
 	defer conn.Close()
+	remoteAddr := strings.TrimSpace(conn.RemoteAddr().String())
 	_ = conn.SetDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
 	reader := bufio.NewReader(conn)
 	request, err := http.ReadRequest(reader)
 	if err != nil {
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadRequest, "invalid proxy request")
+		logProbeWarnf("probe local explicit http proxy request failed: remote=%s err=%v", remoteAddr, err)
 		return
 	}
 	defer request.Body.Close()
 	targetAddr, err := resolveProbeChainHTTPProxyTarget(request)
 	if err != nil {
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadRequest, "invalid proxy target")
+		logProbeWarnf("probe local explicit http proxy target invalid: remote=%s method=%s host=%s url=%s err=%v", remoteAddr, request.Method, request.Host, func() string {
+			if request.URL == nil {
+				return ""
+			}
+			return request.URL.String()
+		}(), err)
 		return
 	}
+	logProbeInfof("probe local explicit http proxy connect: remote=%s method=%s target=%s host=%s", remoteAddr, request.Method, targetAddr, request.Host)
 	targetConn, err := openProbeLocalExplicitProxyTunnelStream("tcp", targetAddr)
 	if err != nil {
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadGateway, "open tunnel failed")
@@ -372,8 +385,19 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 func openProbeLocalExplicitProxyTunnelStream(network string, targetAddr string) (net.Conn, error) {
 	route, err := decideProbeLocalExplicitProxyRouteForTarget(targetAddr)
 	if err != nil {
+		logProbeWarnf("probe local explicit proxy route failed: network=%s target=%s err=%v", strings.TrimSpace(network), strings.TrimSpace(targetAddr), err)
 		return nil, err
 	}
+	logProbeInfof(
+		"probe local explicit proxy route selected: network=%s target=%s route_target=%s group=%s direct=%v reject=%v chain=%s",
+		strings.TrimSpace(network),
+		strings.TrimSpace(targetAddr),
+		strings.TrimSpace(route.TargetAddr),
+		strings.TrimSpace(route.Group),
+		route.Direct,
+		route.Reject,
+		strings.TrimSpace(route.SelectedChainID),
+	)
 	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
 	if cleanNetwork == "udp" {
 		udpConn, err := openProbeLocalExplicitProxyUDPConnForRoute(route, nil)
