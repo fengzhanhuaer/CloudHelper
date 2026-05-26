@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/yamux"
 )
 
 func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
@@ -2698,6 +2701,56 @@ func TestProbeLocalProxyLinkReachabilityCFUsesWebSocketOnly(t *testing.T) {
 	}, probeLocalTUNChainEndpoint{LinkLayer: "http3"})
 	if len(protocols) != 1 || protocols[0] != "websocket" {
 		t.Fatalf("cf reachability protocols=%v, want websocket only", protocols)
+	}
+}
+
+func TestProbeLocalProxyLinkPingPongLatencyIncludesRelayOpen(t *testing.T) {
+	probeLocalProxyLinkOpenRelayConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) (net.Conn, error) {
+		time.Sleep(25 * time.Millisecond)
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			session, err := yamux.Server(server, newProbeChainYamuxConfig())
+			if err != nil {
+				return
+			}
+			defer session.Close()
+			stream, err := session.Accept()
+			if err != nil {
+				return
+			}
+			defer stream.Close()
+			var req probeChainTunnelOpenRequest
+			if err := json.NewDecoder(stream).Decode(&req); err != nil {
+				return
+			}
+			if req.Type != probeChainRelayModePingPong {
+				return
+			}
+			if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: true}); err != nil {
+				return
+			}
+			buf := make([]byte, req.PingBytes)
+			if _, err := io.ReadFull(stream, buf); err != nil {
+				return
+			}
+			_, _ = stream.Write(buf)
+		}()
+		return client, nil
+	}
+	defer resetProbeLocalProxyHooksForTest()
+
+	latency, err := probeLocalProxyLinkPingPongProbe(probeLocalTUNChainEndpoint{
+		ChainID:     "chain-latency",
+		ChainSecret: "secret",
+		EntryHost:   "entry.example.com",
+		EntryPort:   16030,
+	}, "websocket-h3")
+	if err != nil {
+		t.Fatalf("ping-pong probe failed: %v", err)
+	}
+	if latency < 25*time.Millisecond {
+		t.Fatalf("latency=%s, want it to include relay open delay", latency)
 	}
 }
 

@@ -265,6 +265,7 @@ var (
 	probeLocalProxyLinkHandshakeProbe     = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkProtocolProbe      = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe         = runProbeLocalProxyLinkSpeedProbe
+	probeLocalProxyLinkOpenRelayConn      = openProbeChainRelayNetConnWithLayerConn
 	probeLocalFetchCloudflareIPv4CIDRs    = defaultProbeLocalFetchCloudflareIPv4CIDRs
 	probeLocalProxyLinkCFIPLookup         = defaultProbeLocalProxyLinkCFIPLookup
 	probeLocalProxyLinkCFIPProbe          = runProbeLocalProxyLinkCFIPProbe
@@ -4021,7 +4022,8 @@ func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, pr
 
 func probeLocalProxyLinkPingPongProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (time.Duration, error) {
 	const payloadBytes = 64
-	conn, err := openProbeChainRelayNetConnWithLayerConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, protocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
+	startedAt := time.Now()
+	conn, err := probeLocalProxyLinkOpenRelayConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, protocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
 	if err != nil {
 		return 0, err
 	}
@@ -4036,7 +4038,6 @@ func probeLocalProxyLinkPingPongProbe(endpoint probeLocalTUNChainEndpoint, proto
 		payload[i] = byte((i * 31) % 251)
 	}
 	echo := make([]byte, payloadBytes)
-	startedAt := time.Now()
 	_ = stream.SetDeadline(time.Now().Add(probeChainRelayProtocolProbeTimeout))
 	if _, err := stream.Write(payload); err != nil {
 		_ = stream.SetDeadline(time.Time{})
@@ -5601,6 +5602,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalProxyLinkHandshakeProbe = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkProtocolProbe = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe = runProbeLocalProxyLinkSpeedProbe
+	probeLocalProxyLinkOpenRelayConn = openProbeChainRelayNetConnWithLayerConn
 	probeLocalFetchCloudflareIPv4CIDRs = defaultProbeLocalFetchCloudflareIPv4CIDRs
 	probeLocalProxyLinkCFIPLookup = defaultProbeLocalProxyLinkCFIPLookup
 	probeLocalProxyLinkCFIPProbe = runProbeLocalProxyLinkCFIPProbe
