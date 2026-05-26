@@ -3438,6 +3438,38 @@ func TestProbeLocalTUNStartupRecoveryDetectsInstalledAdapter(t *testing.T) {
 	}
 }
 
+func TestProbeLocalTUNStartupRecoveryUsesProxyIntentNotTUNEnabled(t *testing.T) {
+	_ = setupProbeLocalConsoleTest(t)
+
+	state := defaultProbeLocalProxyStateFile()
+	state.TUN.Installed = true
+	state.TUN.Enabled = true
+	state.Proxy.Enabled = false
+	state.Proxy.Mode = probeLocalProxyModeDirect
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+	if probeLocalControl.shouldRecoverTUNOnStartup() {
+		t.Fatal("startup recovery should not run when proxy intent is direct, even if tun.enabled is true")
+	}
+
+	state.Proxy.Mode = ""
+	state.Proxy.Enabled = false
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist legacy-like state failed: %v", err)
+	}
+	loaded, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		t.Fatalf("load state failed: %v", err)
+	}
+	if loaded.Proxy.Enabled || loaded.Proxy.Mode != probeLocalProxyModeDirect {
+		t.Fatalf("proxy state=%+v, want direct disabled; tun.enabled must not imply proxy enabled", loaded.Proxy)
+	}
+	if probeLocalControl.shouldRecoverTUNOnStartup() {
+		t.Fatal("startup recovery should not run for tun.enabled-only legacy-like state")
+	}
+}
+
 func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, false); err != nil {

@@ -1984,12 +1984,8 @@ func normalizeProbeLocalProxyPersistentState(payload *probeLocalProxyStateFile) 
 	}
 	mode := strings.ToLower(strings.TrimSpace(payload.Proxy.Mode))
 	if mode == "" {
-		if payload.TUN.Enabled {
-			mode = probeLocalProxyModeTUN
-			payload.Proxy.Enabled = true
-		} else {
-			mode = probeLocalProxyModeDirect
-		}
+		mode = probeLocalProxyModeDirect
+		payload.Proxy.Enabled = false
 	}
 	if mode != probeLocalProxyModeTUN {
 		mode = probeLocalProxyModeDirect
