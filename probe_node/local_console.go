@@ -3536,6 +3536,10 @@ func probeLocalProxyExplicitEnableHandler(w http.ResponseWriter, r *http.Request
 	defer body.Close()
 	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&struct{}{}); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
@@ -3563,6 +3567,10 @@ func probeLocalProxyExplicitDirectHandler(w http.ResponseWriter, r *http.Request
 	defer body.Close()
 	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&struct{}{}); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
