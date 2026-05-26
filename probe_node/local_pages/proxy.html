@@ -1134,7 +1134,7 @@
     async function runProxyLinkLatency(chainID) {
       const cleanID = normalizeChainID(chainID);
       if (!cleanID) return;
-      setMessage(`链路 ${cleanID} 两种协议数据 ping-pong 测试中...`);
+      setMessage(`链路 ${cleanID} 数据 ping-pong 测试中...`);
       try {
         const data = await requestJSON('/local/api/proxy/link/latency', {
           method: 'POST',
@@ -1150,13 +1150,16 @@
           const err = String(item && item.error || '').trim();
           return `${label} 不可达${err ? `(${err})` : ''}`;
         }).join('；');
+        const testedCount = Number(data && data.tested_count);
+        const total = Number.isFinite(testedCount) && testedCount > 0 ? Math.trunc(testedCount) : results.length;
+        const reachable = Math.trunc(Number(data && data.reachable_count) || 0);
         if (data && data.ok) {
-          setMessage(`链路 ${cleanID} 两种协议测试完成，${Number(data && data.reachable_count) || 0}/2 可达。${summary}`, 'success');
+          setMessage(`链路 ${cleanID} 测试完成，${reachable}/${total || 0} 可达。${summary}`, 'success');
           return;
         }
-        setMessage(`链路 ${cleanID} 两种协议均不可达：${summary || String(data && data.error || data && data.status || 'unknown')}`, 'error');
+        setMessage(`链路 ${cleanID} 测试不可达，${reachable}/${total || 0} 可达：${summary || String(data && data.error || data && data.status || 'unknown')}`, 'error');
       } catch (err) {
-        setMessage(`链路 ${cleanID} 两种协议数据 ping-pong 测试失败：${err.message}`, 'error');
+        setMessage(`链路 ${cleanID} 数据 ping-pong 测试失败：${err.message}`, 'error');
       }
     }
 

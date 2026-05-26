@@ -2591,6 +2591,16 @@ func TestProbeLocalProxyLinkReachabilityHTTP3UsesWebSocketH3AndWebSocket(t *test
 	}
 }
 
+func TestProbeLocalProxyLinkReachabilityCFUsesWebSocketOnly(t *testing.T) {
+	protocols := probeLocalProxyLinkReachabilityProtocolsForEndpoint(probeLinkChainServerItem{
+		ChainID:         "chain-direct_cf",
+		ClientEntryType: "cf",
+	}, probeLocalTUNChainEndpoint{LinkLayer: "http3"})
+	if len(protocols) != 1 || protocols[0] != "websocket" {
+		t.Fatalf("cf reachability protocols=%v, want websocket only", protocols)
+	}
+}
+
 func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
