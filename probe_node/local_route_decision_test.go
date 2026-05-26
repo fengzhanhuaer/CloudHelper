@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -88,6 +89,41 @@ func TestResolveProbeLocalProxyRouteDecisionByDomainReject(t *testing.T) {
 	}
 	if !decision.Reject {
 		t.Fatal("reject should be true")
+	}
+}
+
+func TestOpenProbeLocalExplicitProxyTunnelStreamUsesProxyGroupRejectRule(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "blocked", Rules: []string{"domain_suffix:blocked.example"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+
+	state := defaultProbeLocalProxyStateFile()
+	state.Proxy.Enabled = true
+	state.Proxy.Mode = probeLocalProxyModeTUN
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "blocked", Action: "reject"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	conn, err := openProbeLocalExplicitProxyTunnelStream("tcp", "api.blocked.example:443")
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("expected no connection for rejected route")
+	}
+	var rejectErr *probeLocalRouteRejectError
+	if !errors.As(err, &rejectErr) {
+		t.Fatalf("expected route reject error, got %v", err)
+	}
+	if rejectErr.Group != "blocked" {
+		t.Fatalf("reject group=%q", rejectErr.Group)
 	}
 }
 

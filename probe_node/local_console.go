@@ -166,13 +166,19 @@ type probeLocalProxyPersistentState struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
+type probeLocalExplicitProxyPersistentState struct {
+	Enabled   bool   `json:"enabled"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
 type probeLocalProxyStateFile struct {
-	Version   int                              `json:"version"`
-	UpdatedAt string                           `json:"updated_at"`
-	Groups    []probeLocalProxyStateGroupEntry `json:"groups"`
-	Backup    probeLocalProxyBackupState       `json:"backup"`
-	TUN       probeLocalTUNPersistentState     `json:"tun"`
-	Proxy     probeLocalProxyPersistentState   `json:"proxy"`
+	Version   int                                    `json:"version"`
+	UpdatedAt string                                 `json:"updated_at"`
+	Groups    []probeLocalProxyStateGroupEntry       `json:"groups"`
+	Backup    probeLocalProxyBackupState             `json:"backup"`
+	TUN       probeLocalTUNPersistentState           `json:"tun"`
+	Proxy     probeLocalProxyPersistentState         `json:"proxy"`
+	Explicit  probeLocalExplicitProxyPersistentState `json:"explicit_proxy,omitempty"`
 }
 
 type probeLocalProxyGroupRuntimeSnapshot struct {
@@ -532,6 +538,9 @@ func preconnectProbeLocalTUNGroupRuntimesFromState(reason string) {
 		return
 	}
 	if !shouldRestoreProbeLocalProxyFromState(state) {
+		if shouldRestoreProbeLocalExplicitProxyFromState(state) {
+			startProbeLocalExplicitProxyServer()
+		}
 		return
 	}
 	go preconnectProbeLocalTUNGroupRuntimes(state, reason)
@@ -826,6 +835,9 @@ func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
 		logProbeInfof("probe local tun recovered after chain config sync")
 		preconnectProbeLocalTUNGroupRuntimesFromState("chain_config_sync")
 	}
+	if shouldRestoreProbeLocalExplicitProxyFromState(state) {
+		startProbeLocalExplicitProxyServer()
+	}
 }
 
 func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
@@ -902,6 +914,9 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		if installed {
 			logProbeInfof("probe local tun startup recovered installed state: proxy_restore=false")
 		}
+		if shouldRestoreProbeLocalExplicitProxyFromState(state) {
+			startProbeLocalExplicitProxyServer()
+		}
 		m.setTUNRecoveryStatus("idle", attempt, time.Time{}, "")
 		return nil
 	}
@@ -921,6 +936,9 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
 	logProbeInfof("probe local tun startup recovered enabled state")
 	preconnectProbeLocalTUNGroupRuntimes(state, "startup_recovery")
+	if shouldRestoreProbeLocalExplicitProxyFromState(state) {
+		startProbeLocalExplicitProxyServer()
+	}
 	return nil
 }
 
@@ -1123,7 +1141,6 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		logProbeWarnf("probe local proxy persist enabled state failed: %v", err)
 	}
 	reconcileProbeLocalDNSRuntime()
-	startProbeLocalExplicitProxyServer()
 	startProbeLocalProxyMonitor()
 	return m.tun, m.proxy, nil
 }
@@ -1158,7 +1175,6 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 		logProbeWarnf("probe local proxy persist direct state failed: %v", err)
 	}
 	reconcileProbeLocalDNSRuntime()
-	stopProbeLocalExplicitProxyServer()
 	stopProbeLocalProxyMonitor()
 	if errStopDataPlane != nil {
 		m.tun.LastError = strings.TrimSpace(errStopDataPlane.Error())
@@ -1221,7 +1237,6 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 			logProbeWarnf("probe local proxy persist reset state failed: %v", err)
 		}
 		reconcileProbeLocalDNSRuntime()
-		stopProbeLocalExplicitProxyServer()
 		stopProbeLocalProxyMonitor()
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 	}
@@ -1232,7 +1247,6 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 		logProbeWarnf("probe local proxy persist reset state failed: %v", err)
 	}
 	reconcileProbeLocalDNSRuntime()
-	stopProbeLocalExplicitProxyServer()
 	stopProbeLocalProxyMonitor()
 	return m.tun, nil
 }
@@ -1638,6 +1652,10 @@ func defaultProbeLocalProxyStateFile() probeLocalProxyStateFile {
 			Mode:      probeLocalProxyModeDirect,
 			UpdatedAt: now,
 		},
+		Explicit: probeLocalExplicitProxyPersistentState{
+			Enabled:   false,
+			UpdatedAt: now,
+		},
 	}
 }
 
@@ -1917,6 +1935,7 @@ func loadProbeLocalProxyStateFile() (probeLocalProxyStateFile, error) {
 		payload.TUN.UpdatedAt = payload.UpdatedAt
 	}
 	normalizeProbeLocalProxyPersistentState(&payload)
+	normalizeProbeLocalExplicitProxyPersistentState(&payload)
 	setProbeLocalProxyViewState(payload)
 	return payload, nil
 }
@@ -1940,6 +1959,7 @@ func persistProbeLocalProxyStateFile(payload probeLocalProxyStateFile) error {
 		payload.TUN.UpdatedAt = now
 	}
 	normalizeProbeLocalProxyPersistentState(&payload)
+	normalizeProbeLocalExplicitProxyPersistentState(&payload)
 	path, err := resolveProbeLocalProxyStatePath()
 	if err != nil {
 		return err
@@ -1974,8 +1994,21 @@ func normalizeProbeLocalProxyPersistentState(payload *probeLocalProxyStateFile) 
 	}
 }
 
+func normalizeProbeLocalExplicitProxyPersistentState(payload *probeLocalProxyStateFile) {
+	if payload == nil {
+		return
+	}
+	if strings.TrimSpace(payload.Explicit.UpdatedAt) == "" {
+		payload.Explicit.UpdatedAt = payload.UpdatedAt
+	}
+}
+
 func shouldRestoreProbeLocalProxyFromState(state probeLocalProxyStateFile) bool {
 	return state.Proxy.Enabled && strings.EqualFold(strings.TrimSpace(state.Proxy.Mode), probeLocalProxyModeTUN)
+}
+
+func shouldRestoreProbeLocalExplicitProxyFromState(state probeLocalProxyStateFile) bool {
+	return state.Explicit.Enabled
 }
 
 func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
@@ -2018,6 +2051,16 @@ func persistProbeLocalProxyPersistentState(enabled bool, mode string) error {
 	}
 	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
 	return nil
+}
+
+func persistProbeLocalExplicitProxyPersistentState(enabled bool) error {
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		return err
+	}
+	state.Explicit.Enabled = enabled
+	state.Explicit.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return persistProbeLocalProxyStateFile(state)
 }
 
 func resolveProbeLocalTUNPrimaryDNSBackupPath() (string, error) {
@@ -2723,6 +2766,8 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/enable", probeLocalProxyEnableHandler)
 	mux.HandleFunc("/local/api/proxy/select", probeLocalProxySelectHandler)
 	mux.HandleFunc("/local/api/proxy/direct", probeLocalProxyDirectHandler)
+	mux.HandleFunc("/local/api/proxy/explicit/enable", probeLocalProxyExplicitEnableHandler)
+	mux.HandleFunc("/local/api/proxy/explicit/direct", probeLocalProxyExplicitDirectHandler)
 	mux.HandleFunc("/local/api/proxy/reject", probeLocalProxyRejectHandler)
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
 	mux.HandleFunc("/local/api/proxy/status/refresh", probeLocalProxyStatusRefreshHandler)
@@ -3483,6 +3528,60 @@ func probeLocalProxyDirectHandler(w http.ResponseWriter, r *http.Request) {
 		"selection": map[string]any{
 			"group": group,
 		},
+	})
+}
+
+func probeLocalProxyExplicitEnableHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	startProbeLocalExplicitProxyServer()
+	if err := persistProbeLocalExplicitProxyPersistentState(true); err != nil {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"explicit_proxy": snapshotProbeLocalExplicitProxyStatus(),
+	})
+}
+
+func probeLocalProxyExplicitDirectHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	stopProbeLocalExplicitProxyServer()
+	if err := persistProbeLocalExplicitProxyPersistentState(false); err != nil {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"explicit_proxy": snapshotProbeLocalExplicitProxyStatus(),
 	})
 }
 

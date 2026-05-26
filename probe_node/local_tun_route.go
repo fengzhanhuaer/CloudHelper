@@ -39,6 +39,14 @@ func isProbeLocalProxyTunnelModeEnabled() bool {
 }
 
 func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDecision, error) {
+	return decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr, isProbeLocalProxyTunnelModeEnabled())
+}
+
+func decideProbeLocalExplicitProxyRouteForTarget(targetAddr string) (probeLocalTunnelRouteDecision, error) {
+	return decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr, true)
+}
+
+func decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr string, allowTunnel bool) (probeLocalTunnelRouteDecision, error) {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
 	if err != nil {
 		return probeLocalTunnelRouteDecision{}, err
@@ -54,7 +62,7 @@ func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDec
 		TargetAddr: net.JoinHostPort(host, port),
 		Group:      "fallback",
 	}
-	if !isProbeLocalProxyTunnelModeEnabled() {
+	if !allowTunnel {
 		return decision, nil
 	}
 

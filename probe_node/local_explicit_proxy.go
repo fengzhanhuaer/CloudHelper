@@ -167,7 +167,7 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 
 type probeLocalExplicitSOCKS5UDPAssociation struct {
 	target string
-	stream net.Conn
+	stream io.ReadWriteCloser
 	reader *bufio.Reader
 	mu     sync.Mutex
 }
@@ -370,48 +370,73 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 }
 
 func openProbeLocalExplicitProxyTunnelStream(network string, targetAddr string) (net.Conn, error) {
-	if !isProbeLocalProxyTunnelModeEnabled() {
-		return nil, errors.New("proxy is not enabled")
-	}
-	rt, err := resolveProbeLocalExplicitProxyRuntime()
+	route, err := decideProbeLocalExplicitProxyRouteForTarget(targetAddr)
 	if err != nil {
 		return nil, err
 	}
-	return rt.openStream(network, targetAddr, nil)
+	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
+	if cleanNetwork == "udp" {
+		udpConn, err := openProbeLocalExplicitProxyUDPConnForRoute(route, nil)
+		if err != nil {
+			return nil, err
+		}
+		if conn, ok := udpConn.(net.Conn); ok {
+			return conn, nil
+		}
+		_ = udpConn.Close()
+		return nil, errors.New("udp tunnel is not a net conn")
+	}
+	return dialProbeLocalRoutedTCP(route)
 }
 
-func openProbeLocalExplicitProxyUDPTunnelStream(targetAddr string, clientAddr net.Addr) (net.Conn, error) {
-	if !isProbeLocalProxyTunnelModeEnabled() {
-		return nil, errors.New("proxy is not enabled")
-	}
-	rt, err := resolveProbeLocalExplicitProxyRuntime()
+func openProbeLocalExplicitProxyUDPTunnelStream(targetAddr string, clientAddr net.Addr) (io.ReadWriteCloser, error) {
+	route, err := decideProbeLocalExplicitProxyRouteForTarget(targetAddr)
 	if err != nil {
 		return nil, err
 	}
-	association := buildProbeLocalExplicitProxyUDPAssociationMeta(rt, targetAddr, clientAddr)
-	return rt.openStream("udp", targetAddr, association)
+	return openProbeLocalExplicitProxyUDPConnForRoute(route, clientAddr)
 }
 
-func buildProbeLocalExplicitProxyUDPAssociationMeta(rt *probeLocalTUNGroupRuntime, targetAddr string, clientAddr net.Addr) *probeChainAssociationV2Meta {
+func openProbeLocalExplicitProxyUDPConnForRoute(route probeLocalTunnelRouteDecision, clientAddr net.Addr) (io.ReadWriteCloser, error) {
+	if route.Reject {
+		return nil, &probeLocalRouteRejectError{Group: route.Group}
+	}
+	if route.Direct {
+		udpAddr, err := net.ResolveUDPAddr("udp", route.TargetAddr)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := net.DialUDP("udp", nil, udpAddr)
+		if err != nil {
+			return nil, err
+		}
+		tuneProbeChainUDPConn(conn)
+		return conn, nil
+	}
+	association := buildProbeLocalExplicitProxyUDPAssociationMeta(route, clientAddr)
+	stream, err := openProbeLocalTunnelConnWithGroupRuntime("udp", route.TargetAddr, route.GroupRuntime, association)
+	if err != nil {
+		return nil, err
+	}
+	return newProbeLocalTUNTunnelUDPConn(stream), nil
+}
+
+func buildProbeLocalExplicitProxyUDPAssociationMeta(route probeLocalTunnelRouteDecision, clientAddr net.Addr) *probeChainAssociationV2Meta {
 	meta := &probeChainAssociationV2Meta{
 		Version:         2,
 		Transport:       "udp",
-		RouteTarget:     strings.TrimSpace(targetAddr),
+		RouteGroup:      strings.TrimSpace(route.Group),
+		RouteNodeID:     firstNonEmpty(strings.TrimSpace(route.TunnelNodeID), formatProbeLocalLegacyTunnelNodeID(route.SelectedChainID)),
+		RouteTarget:     strings.TrimSpace(route.TargetAddr),
 		CreatedAtUnixMS: time.Now().UnixMilli(),
 		NATMode:         "socks5_udp",
-	}
-	if rt != nil {
-		rt.mu.Lock()
-		meta.RouteGroup = strings.TrimSpace(rt.Group)
-		meta.RouteNodeID = strings.TrimSpace(rt.SelectedChainID)
-		rt.mu.Unlock()
 	}
 	if clientUDPAddr, ok := clientAddr.(*net.UDPAddr); ok && clientUDPAddr != nil {
 		meta.SourceKey = clientUDPAddr.String()
 		meta.SrcIP = clientUDPAddr.IP.String()
 		meta.SrcPort = uint16(clientUDPAddr.Port)
 	}
-	if host, portText, err := net.SplitHostPort(strings.TrimSpace(targetAddr)); err == nil {
+	if host, portText, err := net.SplitHostPort(strings.TrimSpace(route.TargetAddr)); err == nil {
 		if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
 			meta.DstIP = ip.String()
 			if ip.To4() != nil {
@@ -424,27 +449,8 @@ func buildProbeLocalExplicitProxyUDPAssociationMeta(rt *probeLocalTUNGroupRuntim
 			meta.DstPort = uint16(port)
 		}
 	}
-	meta.AssocKeyV2 = strings.Join([]string{meta.RouteGroup, meta.RouteNodeID, meta.SourceKey, strings.TrimSpace(targetAddr)}, "|")
+	meta.RouteFingerprint = strings.ToLower(strings.TrimSpace(route.TargetAddr))
+	meta.AssocKeyV2 = strings.Join([]string{meta.RouteGroup, meta.RouteNodeID, meta.SourceKey, strings.TrimSpace(route.TargetAddr)}, "|")
 	meta.FlowID = meta.AssocKeyV2
 	return meta
-}
-
-func resolveProbeLocalExplicitProxyRuntime() (*probeLocalTUNGroupRuntime, error) {
-	state := currentProbeLocalProxyViewState()
-	for _, entry := range state.Groups {
-		if !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") {
-			continue
-		}
-		group := strings.TrimSpace(entry.Group)
-		selectedChainID := firstNonEmpty(strings.TrimSpace(entry.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID))
-		if group == "" || selectedChainID == "" {
-			continue
-		}
-		rt, err := ensureProbeLocalTUNGroupRuntime(group, selectedChainID)
-		if err != nil {
-			return nil, err
-		}
-		return rt, nil
-	}
-	return nil, errors.New("no selected tunnel chain")
 }

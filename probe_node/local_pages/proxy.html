@@ -179,7 +179,8 @@
         <div>规则组备份</div><div id="proxyGroupBackupStatus">-</div>
       </div>
       <div class="actions">
-        <button id="proxyGlobalToggleBtn" class="secondary">启用代理</button>
+        <button id="proxyGlobalToggleBtn" class="secondary">启用 TUN 代理</button>
+        <button id="proxyExplicitToggleBtn" class="secondary">启用 SOCKS/HTTP</button>
         <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
         <button id="proxyGroupRefreshBtn" class="secondary">刷新代理组</button>
         <button id="proxyChainRefreshBtn" class="secondary">刷新链路</button>
@@ -249,12 +250,31 @@
       const btn = document.getElementById('proxyGlobalToggleBtn');
       if (!btn) return;
       if (isProxyGloballyEnabled()) {
-        btn.textContent = '关闭代理';
+        btn.textContent = '关闭 TUN 代理';
         btn.classList.remove('secondary');
         btn.classList.add('warn');
         return;
       }
-      btn.textContent = '启用代理';
+      btn.textContent = '启用 TUN 代理';
+      btn.classList.remove('warn');
+      btn.classList.add('secondary');
+    }
+
+    function isExplicitProxyEnabled() {
+      const explicit = proxyStatusCache.explicitProxy || {};
+      return !!(explicit.socks5_enabled || explicit.http_enabled);
+    }
+
+    function updateProxyExplicitToggleButton() {
+      const btn = document.getElementById('proxyExplicitToggleBtn');
+      if (!btn) return;
+      if (isExplicitProxyEnabled()) {
+        btn.textContent = '关闭 SOCKS/HTTP';
+        btn.classList.remove('secondary');
+        btn.classList.add('warn');
+        return;
+      }
+      btn.textContent = '启用 SOCKS/HTTP';
       btn.classList.remove('warn');
       btn.classList.add('secondary');
     }
@@ -1025,6 +1045,7 @@
       proxyStatusCache = {
         enabled: !!data.enabled,
         mode: String(data.mode || '').trim(),
+        explicitProxy: data && data.explicit_proxy && typeof data.explicit_proxy === 'object' ? data.explicit_proxy : {},
       };
       setText('proxyEnabled', data.enabled ? '是' : '否');
       setText('proxyMode', data.mode);
@@ -1039,6 +1060,7 @@
       if (explicit.last_error) explicitParts.push(`错误: ${explicit.last_error}`);
       setText('proxyExplicit', explicitParts.join(' ｜ '));
       updateProxyGlobalToggleButton();
+      updateProxyExplicitToggleButton();
     }
 
     function resolveConfiguredProxyGroups(groupsData) {
@@ -1452,25 +1474,25 @@
 
     document.getElementById('proxyGlobalToggleBtn').addEventListener('click', async () => {
       if (isProxyGloballyEnabled()) {
-        setMessage('关闭代理中...');
+        setMessage('关闭 TUN 代理中...');
         try {
           await requestJSON('/local/api/proxy/direct', {
             method: 'POST',
             body: JSON.stringify({ group: 'fallback' }),
           });
           await refreshAll();
-          setMessage('代理已关闭', 'success');
+          setMessage('TUN 代理已关闭', 'success');
         } catch (err) {
-          setMessage('关闭代理失败：' + err.message, 'error');
+          setMessage('关闭 TUN 代理失败：' + err.message, 'error');
         }
         return;
       }
       const selection = resolveGlobalToggleEnableSelection();
       if (!selection || !selection.chainID) {
-        setMessage('启用代理失败：请先配置可用链路', 'error');
+        setMessage('启用 TUN 代理失败：请先配置可用链路', 'error');
         return;
       }
-      setMessage('启用代理中...');
+      setMessage('启用 TUN 代理中...');
       try {
         await requestJSON('/local/api/proxy/enable', {
           method: 'POST',
@@ -1480,9 +1502,37 @@
           }),
         });
         await refreshAll();
-        setMessage('代理已启用', 'success');
+        setMessage('TUN 代理已启用', 'success');
       } catch (err) {
-        setMessage('启用代理失败：' + err.message, 'error');
+        setMessage('启用 TUN 代理失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyExplicitToggleBtn').addEventListener('click', async () => {
+      if (isExplicitProxyEnabled()) {
+        setMessage('关闭 SOCKS/HTTP 中...');
+        try {
+          await requestJSON('/local/api/proxy/explicit/direct', {
+            method: 'POST',
+            body: JSON.stringify({}),
+          });
+          await refreshAll();
+          setMessage('SOCKS/HTTP 已关闭', 'success');
+        } catch (err) {
+          setMessage('关闭 SOCKS/HTTP 失败：' + err.message, 'error');
+        }
+        return;
+      }
+      setMessage('启用 SOCKS/HTTP 中...');
+      try {
+        await requestJSON('/local/api/proxy/explicit/enable', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+        await refreshAll();
+        setMessage('SOCKS/HTTP 已启用', 'success');
+      } catch (err) {
+        setMessage('启用 SOCKS/HTTP 失败：' + err.message, 'error');
       }
     });
 

@@ -2,7 +2,13 @@
 
 package main
 
-import "net"
+import (
+	"bufio"
+	"io"
+	"net"
+	"sync"
+	"time"
+)
 
 type probeLocalTUNUDPBridgeMonitorStats struct {
 	Active int64                               `json:"active"`
@@ -33,6 +39,13 @@ type probeLocalTUNTCPDirectFailureCacheStats struct {
 	Active int   `json:"active"`
 	Hits   int64 `json:"hits"`
 	Stored int64 `json:"stored"`
+}
+
+type probeLocalTUNTunnelUDPConn struct {
+	stream  net.Conn
+	reader  *bufio.Reader
+	readMu  sync.Mutex
+	writeMu sync.Mutex
 }
 
 func startProbeLocalTUNPacketStack() error { return nil }
@@ -73,4 +86,49 @@ func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorS
 
 func snapshotProbeLocalTUNTCPDirectFailureCacheStats() probeLocalTUNTCPDirectFailureCacheStats {
 	return probeLocalTUNTCPDirectFailureCacheStats{}
+}
+
+func newProbeLocalTUNTunnelUDPConn(stream net.Conn) *probeLocalTUNTunnelUDPConn {
+	return &probeLocalTUNTunnelUDPConn{
+		stream: stream,
+		reader: bufio.NewReader(stream),
+	}
+}
+
+func (c *probeLocalTUNTunnelUDPConn) Read(payload []byte) (int, error) {
+	if c == nil || c.stream == nil {
+		return 0, io.ErrClosedPipe
+	}
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	return readProbeChainFramedPacketInto(c.reader, payload)
+}
+
+func (c *probeLocalTUNTunnelUDPConn) Write(payload []byte) (int, error) {
+	if c == nil || c.stream == nil {
+		return 0, io.ErrClosedPipe
+	}
+	if len(payload) == 0 {
+		return 0, nil
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := writeProbeChainFramedPacket(c.stream, payload); err != nil {
+		return 0, err
+	}
+	return len(payload), nil
+}
+
+func (c *probeLocalTUNTunnelUDPConn) Close() error {
+	if c == nil || c.stream == nil {
+		return nil
+	}
+	return c.stream.Close()
+}
+
+func (c *probeLocalTUNTunnelUDPConn) SetReadDeadline(t time.Time) error {
+	if c == nil || c.stream == nil {
+		return io.ErrClosedPipe
+	}
+	return c.stream.SetReadDeadline(t)
 }
