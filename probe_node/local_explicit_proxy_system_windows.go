@@ -168,11 +168,6 @@ func clearProbeLocalWindowsUserEnvironment() error {
 }
 
 func setProbeLocalWindowsInternetProxy(httpAddr string, socksAddr string) error {
-	key, _, err := registry.CreateKey(registry.CURRENT_USER, probeLocalWindowsInternetSettingsKey, registry.SET_VALUE)
-	if err != nil {
-		return err
-	}
-	defer key.Close()
 	servers := make([]string, 0, 3)
 	if httpAddr != "" {
 		servers = append(servers, "http="+httpAddr, "https="+httpAddr)
@@ -183,13 +178,16 @@ func setProbeLocalWindowsInternetProxy(httpAddr string, socksAddr string) error 
 	if len(servers) == 0 {
 		return errors.New("empty proxy server settings")
 	}
-	if err := key.SetDWordValue("ProxyEnable", 1); err != nil {
-		return err
-	}
-	if err := key.SetStringValue("ProxyServer", strings.Join(servers, ";")); err != nil {
-		return err
-	}
-	return key.SetStringValue("ProxyOverride", "localhost;127.*;::1;<local>")
+	serverText := strings.Join(servers, ";")
+	return forEachProbeLocalWindowsInternetProxyKey(registry.SET_VALUE, func(key registry.Key) error {
+		if err := key.SetDWordValue("ProxyEnable", 1); err != nil {
+			return err
+		}
+		if err := key.SetStringValue("ProxyServer", serverText); err != nil {
+			return err
+		}
+		return key.SetStringValue("ProxyOverride", "localhost;127.*;::1;<local>")
+	})
 }
 
 func restoreProbeLocalWindowsInternetProxy(backup probeLocalExplicitProxySystemBackup) error {
@@ -223,21 +221,89 @@ func restoreProbeLocalWindowsInternetProxy(backup probeLocalExplicitProxySystemB
 }
 
 func clearProbeLocalWindowsInternetProxy() error {
-	key, _, err := registry.CreateKey(registry.CURRENT_USER, probeLocalWindowsInternetSettingsKey, registry.SET_VALUE)
-	if err != nil {
-		return err
+	return forEachProbeLocalWindowsInternetProxyKey(registry.SET_VALUE, func(key registry.Key) error {
+		if err := key.SetDWordValue("ProxyEnable", 0); err != nil {
+			return err
+		}
+		if err := key.DeleteValue("ProxyServer"); err != nil && !errors.Is(err, registry.ErrNotExist) {
+			return err
+		}
+		if err := key.DeleteValue("ProxyOverride"); err != nil && !errors.Is(err, registry.ErrNotExist) {
+			return err
+		}
+		return nil
+	})
+}
+
+func forEachProbeLocalWindowsInternetProxyKey(access uint32, fn func(registry.Key) error) error {
+	if fn == nil {
+		return nil
 	}
-	defer key.Close()
-	if err := key.SetDWordValue("ProxyEnable", 0); err != nil {
-		return err
+	seen := map[string]struct{}{}
+	var errs []string
+	run := func(label string, root registry.Key, path string) {
+		keyID := label + `\` + path
+		if _, ok := seen[keyID]; ok {
+			return
+		}
+		seen[keyID] = struct{}{}
+		key, _, err := registry.CreateKey(root, path, access)
+		if err != nil {
+			errs = append(errs, keyID+": "+err.Error())
+			return
+		}
+		defer key.Close()
+		if err := fn(key); err != nil {
+			errs = append(errs, keyID+": "+err.Error())
+		}
 	}
-	if err := key.DeleteValue("ProxyServer"); err != nil && !errors.Is(err, registry.ErrNotExist) {
-		return err
+	run("HKCU", registry.CURRENT_USER, probeLocalWindowsInternetSettingsKey)
+	for _, sid := range probeLocalWindowsLoadedInteractiveUserSIDs() {
+		run(`HKU\`+sid, registry.USERS, sid+`\`+probeLocalWindowsInternetSettingsKey)
 	}
-	if err := key.DeleteValue("ProxyOverride"); err != nil && !errors.Is(err, registry.ErrNotExist) {
-		return err
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func probeLocalWindowsLoadedInteractiveUserSIDs() []string {
+	names, err := registry.USERS.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	seen := map[string]struct{}{}
+	for _, name := range names {
+		sid := strings.TrimSpace(name)
+		if !isProbeLocalWindowsInteractiveUserSID(sid) {
+			continue
+		}
+		if _, ok := seen[sid]; ok {
+			continue
+		}
+		seen[sid] = struct{}{}
+		out = append(out, sid)
+	}
+	return out
+}
+
+func isProbeLocalWindowsInteractiveUserSID(sid string) bool {
+	value := strings.TrimSpace(sid)
+	if value == "" || strings.Contains(value, "_") {
+		return false
+	}
+	if strings.HasSuffix(value, "_Classes") {
+		return false
+	}
+	if !strings.HasPrefix(value, "S-1-5-21-") {
+		return false
+	}
+	parts := strings.Split(value, "-")
+	if len(parts) < 8 {
+		return false
+	}
+	return true
 }
 
 func captureProbeLocalWindowsUserEnvironment() map[string]probeLocalExplicitRegistryString {
