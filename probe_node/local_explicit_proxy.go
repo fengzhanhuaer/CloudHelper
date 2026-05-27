@@ -154,6 +154,11 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 		return
 	}
 	logProbeInfof("probe local explicit socks5 proxy connect: remote=%s target=%s", remoteAddr, request.Address)
+	if err := rejectProbeLocalExplicitProxyLoopbackTarget(request.Address); err != nil {
+		_ = replyProbeChainProxyFailure(conn, request.Version)
+		logProbeWarnf("probe local explicit socks5 proxy loopback target rejected: remote=%s target=%s err=%v", remoteAddr, request.Address, err)
+		return
+	}
 	targetConn, err := openProbeLocalExplicitProxyTunnelStream("tcp", request.Address)
 	if err != nil {
 		_ = replyProbeChainProxyFailure(conn, request.Version)
@@ -236,6 +241,10 @@ func handleProbeLocalExplicitSOCKS5UDPAssociate(conn net.Conn, reader *bufio.Rea
 		}
 		targetAddr, payload, parseErr := parseProbeChainSocks5UDPDatagram(buffer[:n])
 		if parseErr != nil || len(payload) == 0 {
+			continue
+		}
+		if err := rejectProbeLocalExplicitProxyLoopbackTarget(targetAddr); err != nil {
+			logProbeWarnf("probe local explicit socks5 udp loopback target rejected: client=%s target=%s err=%v", fromAddr.String(), targetAddr, err)
 			continue
 		}
 		assoc, assocErr := getProbeLocalExplicitSOCKS5UDPAssociation(associations, assocMu, targetAddr, fromAddr, udpConn)
@@ -347,6 +356,11 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 		return
 	}
 	logProbeInfof("probe local explicit http proxy connect: remote=%s method=%s target=%s host=%s", remoteAddr, request.Method, targetAddr, request.Host)
+	if err := rejectProbeLocalExplicitProxyLoopbackTarget(targetAddr); err != nil {
+		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusForbidden, "proxy loopback target rejected")
+		logProbeWarnf("probe local explicit http proxy loopback target rejected: remote=%s target=%s err=%v", remoteAddr, targetAddr, err)
+		return
+	}
 	targetConn, err := openProbeLocalExplicitProxyTunnelStream("tcp", targetAddr)
 	if err != nil {
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadGateway, "open tunnel failed")
@@ -383,6 +397,9 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 }
 
 func openProbeLocalExplicitProxyTunnelStream(network string, targetAddr string) (net.Conn, error) {
+	if err := rejectProbeLocalExplicitProxyLoopbackTarget(targetAddr); err != nil {
+		return nil, err
+	}
 	route, err := decideProbeLocalExplicitProxyRouteForTarget(targetAddr)
 	if err != nil {
 		logProbeWarnf("probe local explicit proxy route failed: network=%s target=%s err=%v", strings.TrimSpace(network), strings.TrimSpace(targetAddr), err)
@@ -414,11 +431,73 @@ func openProbeLocalExplicitProxyTunnelStream(network string, targetAddr string) 
 }
 
 func openProbeLocalExplicitProxyUDPTunnelStream(targetAddr string, clientAddr net.Addr) (io.ReadWriteCloser, error) {
+	if err := rejectProbeLocalExplicitProxyLoopbackTarget(targetAddr); err != nil {
+		return nil, err
+	}
 	route, err := decideProbeLocalExplicitProxyRouteForTarget(targetAddr)
 	if err != nil {
 		return nil, err
 	}
 	return openProbeLocalExplicitProxyUDPConnForRoute(route, clientAddr)
+}
+
+func rejectProbeLocalExplicitProxyLoopbackTarget(targetAddr string) error {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return err
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	portText = strings.TrimSpace(portText)
+	if host == "" || portText == "" {
+		return errors.New("invalid explicit proxy target")
+	}
+	if isProbeLocalExplicitProxySelfPort(portText) {
+		if isProbeLocalExplicitProxyLocalHost(host) {
+			return fmt.Errorf("explicit proxy loopback target blocked: %s", targetAddr)
+		}
+	}
+	parsed := net.ParseIP(host)
+	if parsed == nil {
+		return nil
+	}
+	if parsed.IsUnspecified() || parsed.IsLinkLocalUnicast() || parsed.IsMulticast() {
+		return fmt.Errorf("explicit proxy local target blocked: %s", targetAddr)
+	}
+	return nil
+}
+
+func isProbeLocalExplicitProxySelfPort(portText string) bool {
+	portText = strings.TrimSpace(portText)
+	if portText == "" {
+		return false
+	}
+	for _, listenAddr := range []string{
+		probeLocalExplicitProxyHTTPListenAddr,
+		probeLocalExplicitProxySOCKSListenAddr,
+		currentProbeLocalConsoleListen(),
+		probeLocalListenAddrDefault,
+	} {
+		_, listenPort, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(listenPort) == portText {
+			return true
+		}
+	}
+	return false
+}
+
+func isProbeLocalExplicitProxyLocalHost(host string) bool {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return false
+	}
+	if strings.EqualFold(cleanHost, "localhost") {
+		return true
+	}
+	parsed := net.ParseIP(cleanHost)
+	return parsed != nil && parsed.IsLoopback()
 }
 
 func openProbeLocalExplicitProxyUDPConnForRoute(route probeLocalTunnelRouteDecision, clientAddr net.Addr) (io.ReadWriteCloser, error) {

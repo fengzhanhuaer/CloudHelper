@@ -17,10 +17,10 @@ var probeLocalExplicitProxySystemState = struct {
 }{}
 
 func applyProbeLocalExplicitProxySystemSettings(httpAddr string, socksAddr string) error {
-	if isProbeLocalTestBinary() {
-		return nil
+	var err error
+	if !isProbeLocalTestBinary() {
+		err = applyProbeLocalExplicitProxySystemSettingsPlatform(strings.TrimSpace(httpAddr), strings.TrimSpace(socksAddr))
 	}
-	err := applyProbeLocalExplicitProxySystemSettingsPlatform(strings.TrimSpace(httpAddr), strings.TrimSpace(socksAddr))
 	probeLocalExplicitProxySystemState.mu.Lock()
 	probeLocalExplicitProxySystemState.applied = err == nil
 	probeLocalExplicitProxySystemState.lastError = ""
@@ -33,10 +33,10 @@ func applyProbeLocalExplicitProxySystemSettings(httpAddr string, socksAddr strin
 }
 
 func restoreProbeLocalExplicitProxySystemSettings() error {
-	if isProbeLocalTestBinary() {
-		return nil
+	var err error
+	if !isProbeLocalTestBinary() {
+		err = restoreProbeLocalExplicitProxySystemSettingsPlatform()
 	}
-	err := restoreProbeLocalExplicitProxySystemSettingsPlatform()
 	probeLocalExplicitProxySystemState.mu.Lock()
 	if err == nil {
 		probeLocalExplicitProxySystemState.applied = false
@@ -68,5 +68,6 @@ func resolveProbeLocalExplicitProxySystemBackupPath() (string, error) {
 }
 
 func isProbeLocalTestBinary() bool {
-	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(os.Args[0])), ".test")
+	name := strings.ToLower(strings.TrimSpace(os.Args[0]))
+	return strings.HasSuffix(name, ".test") || strings.HasSuffix(name, ".test.exe")
 }
