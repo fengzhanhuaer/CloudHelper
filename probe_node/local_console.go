@@ -761,7 +761,7 @@ func (m *probeLocalControlManager) shouldRecoverTUNOnStartup() bool {
 	if err != nil {
 		return false
 	}
-	if !shouldRestoreProbeLocalProxyFromState(state) {
+	if !shouldRestoreProbeLocalTUNFromState(state) && !shouldRestoreProbeLocalProxyFromState(state) {
 		return false
 	}
 	proxyStatus := m.proxyStatus()
@@ -879,7 +879,7 @@ func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
 		logProbeWarnf("probe local tun chain-sync recovery state load failed: %v", err)
 		return
 	}
-	if !shouldRestoreProbeLocalProxyFromState(state) {
+	if !shouldRestoreProbeLocalTUNFromState(state) && !shouldRestoreProbeLocalProxyFromState(state) {
 		return
 	}
 	proxyStatus := probeLocalControl.proxyStatus()
@@ -920,11 +920,12 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		logProbeWarnf("probe local tun startup detect failed: %v", detectErr)
 	}
 	installed := detectedInstalled && detectErr == nil
+	restoreTUN := shouldRestoreProbeLocalTUNFromState(state)
 	restoreProxy := shouldRestoreProbeLocalProxyFromState(state)
 	now := time.Now().UTC().Format(time.RFC3339)
 	installErrText := ""
 
-	if restoreProxy && !installed && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
+	if (restoreTUN || restoreProxy) && !installed && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
 		logProbeWarnf("probe local tun startup recovery will run install/check: persisted_installed=%v detected_installed=%v detect_err=%v", state.TUN.Installed, detectedInstalled, detectErr)
 		if _, installErr := m.installTUN(); installErr != nil {
 			installErrText = strings.TrimSpace(installErr.Error())
@@ -973,7 +974,7 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, err)
 		return err
 	}
-	if !restoreProxy {
+	if !restoreTUN && !restoreProxy {
 		if installed {
 			logProbeInfof("probe local tun startup recovered installed state: proxy_restore=false")
 		}
@@ -983,6 +984,42 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 			}
 		}
 		m.setTUNRecoveryStatus("idle", attempt, time.Time{}, "")
+		return nil
+	}
+	if restoreTUN && !restoreProxy {
+		reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
+		if err := startProbeLocalTUNDataPlane(); err != nil {
+			wrappedErr := fmt.Errorf("recover probe local tun data plane failed: %w", err)
+			m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(wrappedErr.Error()))
+			logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, wrappedErr)
+			return wrappedErr
+		}
+		stats := probeLocalTUNDataPlaneStatsSnapshot()
+		now = time.Now().UTC().Format(time.RFC3339)
+		m.mu.Lock()
+		m.tun.Installed = installed
+		m.tun.Enabled = stats.Running
+		m.tun.DataPlane = stats.Running
+		m.tun.DataPlaneRX = stats.RXPackets
+		m.tun.DataPlaneBytes = stats.RXBytes
+		m.tun.LastError = ""
+		m.tun.UpdatedAt = now
+		m.proxy.Enabled = false
+		m.proxy.Mode = probeLocalProxyModeDirect
+		m.proxy.LastError = ""
+		m.proxy.UpdatedAt = now
+		m.mu.Unlock()
+		persistProbeLocalTUNStateBestEffort(installed, stats.Running)
+		if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
+			logProbeWarnf("probe local proxy persist direct state failed: %v", err)
+		}
+		if shouldRestoreProbeLocalExplicitProxyFromState(state) {
+			if err := startProbeLocalExplicitProxyServer(); err != nil {
+				logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
+			}
+		}
+		m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
+		logProbeInfof("probe local tun startup recovered data plane state")
 		return nil
 	}
 	if err := ensureProbeLocalProxyBootstrapDirectBypass(); err != nil {
@@ -2061,6 +2098,10 @@ func normalizeProbeLocalExplicitProxyPersistentState(payload *probeLocalProxySta
 
 func shouldRestoreProbeLocalProxyFromState(state probeLocalProxyStateFile) bool {
 	return state.Proxy.Enabled && strings.EqualFold(strings.TrimSpace(state.Proxy.Mode), probeLocalProxyModeTUN)
+}
+
+func shouldRestoreProbeLocalTUNFromState(state probeLocalProxyStateFile) bool {
+	return state.TUN.Enabled
 }
 
 func shouldRestoreProbeLocalExplicitProxyFromState(state probeLocalProxyStateFile) bool {

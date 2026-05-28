@@ -3574,7 +3574,7 @@ func TestProbeLocalTUNStartupRecoveryDetectsInstalledAdapter(t *testing.T) {
 	}
 }
 
-func TestProbeLocalTUNStartupRecoveryUsesProxyIntentNotTUNEnabled(t *testing.T) {
+func TestProbeLocalTUNStartupRecoveryUsesTUNEnabledIntentWithoutProxy(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 
 	state := defaultProbeLocalProxyStateFile()
@@ -3585,8 +3585,8 @@ func TestProbeLocalTUNStartupRecoveryUsesProxyIntentNotTUNEnabled(t *testing.T) 
 	if err := persistProbeLocalProxyStateFile(state); err != nil {
 		t.Fatalf("persist state failed: %v", err)
 	}
-	if probeLocalControl.shouldRecoverTUNOnStartup() {
-		t.Fatal("startup recovery should not run when proxy intent is direct, even if tun.enabled is true")
+	if !probeLocalControl.shouldRecoverTUNOnStartup() {
+		t.Fatal("startup recovery should run when tun.enabled is true, even if proxy intent is direct")
 	}
 
 	state.Proxy.Mode = ""
@@ -3601,8 +3601,63 @@ func TestProbeLocalTUNStartupRecoveryUsesProxyIntentNotTUNEnabled(t *testing.T) 
 	if loaded.Proxy.Enabled || loaded.Proxy.Mode != probeLocalProxyModeDirect {
 		t.Fatalf("proxy state=%+v, want direct disabled; tun.enabled must not imply proxy enabled", loaded.Proxy)
 	}
-	if probeLocalControl.shouldRecoverTUNOnStartup() {
-		t.Fatal("startup recovery should not run for tun.enabled-only legacy-like state")
+	if !probeLocalControl.shouldRecoverTUNOnStartup() {
+		t.Fatal("startup recovery should run for tun.enabled-only legacy-like state")
+	}
+}
+
+func TestProbeLocalTUNStartupRecoveryRestoresTUNDataPlaneWithoutProxyTakeover(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TUN data plane hook success path is Windows-only")
+	}
+	_ = setupProbeLocalConsoleTest(t)
+	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
+		t.Fatalf("persist tun state failed: %v", err)
+	}
+	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
+		t.Fatalf("persist proxy state failed: %v", err)
+	}
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+
+	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	takeoverCalls := 0
+	probeLocalApplyProxyTakeover = func() error {
+		takeoverCalls++
+		return nil
+	}
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
+
+	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
+		t.Fatalf("recoverProbeLocalTUNRuntimeOnStartup returned error: %v", err)
+	}
+	if takeoverCalls != 0 {
+		t.Fatalf("proxy takeover calls=%d, want 0 for tun-only recovery", takeoverCalls)
+	}
+	status := probeLocalControl.tunStatus()
+	if !status.Installed || !status.Enabled || !status.DataPlane {
+		t.Fatalf("startup recovery tun status=%+v, want installed/enabled/data_plane", status)
+	}
+	proxyStatus := probeLocalControl.proxyStatus()
+	if proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeDirect {
+		t.Fatalf("startup recovery proxy status=%+v, want direct disabled", proxyStatus)
+	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		t.Fatalf("load proxy state failed: %v", err)
+	}
+	if !state.TUN.Installed || !state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true", state.TUN)
+	}
+	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
+		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
 	}
 }
 
