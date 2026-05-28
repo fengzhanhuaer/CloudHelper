@@ -16,6 +16,7 @@ import (
 
 const (
 	probeLocalWindowsInternetSettingsKey = `Software\Microsoft\Windows\CurrentVersion\Internet Settings`
+	probeLocalWindowsProfileListKey      = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList`
 )
 
 type probeLocalExplicitProxySystemBackup struct {
@@ -257,8 +258,10 @@ func forEachProbeLocalWindowsInternetProxyKey(access uint32, fn func(registry.Ke
 			errs = append(errs, keyID+": "+err.Error())
 		}
 	}
+	sids := probeLocalWindowsInteractiveUserSIDs()
+	logProbeInfof("probe local explicit proxy windows internet settings targets: HKCU plus HKU=%s", strings.Join(sids, ","))
 	run("HKCU", registry.CURRENT_USER, probeLocalWindowsInternetSettingsKey)
-	for _, sid := range probeLocalWindowsLoadedInteractiveUserSIDs() {
+	for _, sid := range sids {
 		run(`HKU\`+sid, registry.USERS, sid+`\`+probeLocalWindowsInternetSettingsKey)
 	}
 	if len(errs) > 0 {
@@ -267,25 +270,61 @@ func forEachProbeLocalWindowsInternetProxyKey(access uint32, fn func(registry.Ke
 	return nil
 }
 
-func probeLocalWindowsLoadedInteractiveUserSIDs() []string {
-	names, err := registry.USERS.ReadSubKeyNames(-1)
-	if err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(names))
+func probeLocalWindowsInteractiveUserSIDs() []string {
+	out := []string{}
 	seen := map[string]struct{}{}
-	for _, name := range names {
-		sid := strings.TrimSpace(name)
+	appendSID := func(raw string) {
+		sid := strings.TrimSpace(raw)
 		if !isProbeLocalWindowsInteractiveUserSID(sid) {
-			continue
+			return
+		}
+		if !isProbeLocalWindowsUserHiveLoaded(sid) {
+			return
 		}
 		if _, ok := seen[sid]; ok {
-			continue
+			return
 		}
 		seen[sid] = struct{}{}
 		out = append(out, sid)
 	}
+
+	names, err := registry.USERS.ReadSubKeyNames(-1)
+	if err != nil {
+		logProbeWarnf("probe local explicit proxy enumerate HKU users failed: %v", err)
+	} else {
+		for _, name := range names {
+			appendSID(name)
+		}
+	}
+
+	profileKey, err := registry.OpenKey(registry.LOCAL_MACHINE, probeLocalWindowsProfileListKey, registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		logProbeWarnf("probe local explicit proxy enumerate profile list failed: %v", err)
+		return out
+	}
+	defer profileKey.Close()
+	profileSIDs, err := profileKey.ReadSubKeyNames(-1)
+	if err != nil {
+		logProbeWarnf("probe local explicit proxy read profile list failed: %v", err)
+		return out
+	}
+	for _, sid := range profileSIDs {
+		appendSID(sid)
+	}
 	return out
+}
+
+func isProbeLocalWindowsUserHiveLoaded(sid string) bool {
+	cleanSID := strings.TrimSpace(sid)
+	if cleanSID == "" {
+		return false
+	}
+	key, err := registry.OpenKey(registry.USERS, cleanSID, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	key.Close()
+	return true
 }
 
 func isProbeLocalWindowsInteractiveUserSID(sid string) bool {

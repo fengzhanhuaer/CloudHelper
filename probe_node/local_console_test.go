@@ -1301,6 +1301,72 @@ func TestProbeLocalProxyExplicitEnablePrewarmsBootstrapBypassWhenTUNEnabled(t *t
 	}
 }
 
+func TestProbeLocalProxyExplicitEnableWaitsForGroupPreconnect(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{{
+		ChainID:      "chain-preconnect-1",
+		RelayChainID: "chain-preconnect-1",
+		ChainType:    "proxy_chain",
+		Name:         "Proxy 1",
+		Secret:       "secret",
+		EntryNodeID:  "1",
+		ExitNodeID:   "2",
+		LinkLayer:    "http",
+		HopConfigs: []probeLinkChainHopServerItem{
+			{NodeNo: 1, RelayHost: "127.0.0.1", ExternalPort: 16030, LinkLayer: "http"},
+			{NodeNo: 2, RelayHost: "127.0.0.1", ExternalPort: 16031, LinkLayer: "http"},
+		},
+	}}); err != nil {
+		t.Fatalf("persist proxy chain failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "google", Action: "tunnel", SelectedChainID: "chain-preconnect-1", TunnelNodeID: "chain:chain-preconnect-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	var peers []net.Conn
+	var opened int32
+	probeLocalTUNOpenChainRelayNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+		atomic.AddInt32(&opened, 1)
+		client, server := net.Pipe()
+		peers = append(peers, server)
+		return client, nil
+	}
+	t.Cleanup(func() {
+		resetProbeLocalProxyHooksForTest()
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/explicit/enable", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("explicit enable status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := atomic.LoadInt32(&opened); got != 1 {
+		t.Fatalf("preconnect opened=%d want 1", got)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	preconnect, ok := payload["preconnect"].(map[string]any)
+	if !ok {
+		t.Fatalf("preconnect missing in response: %v", payload)
+	}
+	if preconnect["ready"] != true {
+		t.Fatalf("preconnect ready=%v want true", preconnect["ready"])
+	}
+	if int(preconnect["attempted"].(float64)) != 1 || int(preconnect["connected"].(float64)) != 1 {
+		t.Fatalf("unexpected preconnect payload: %v", preconnect)
+	}
+}
+
 func TestCleanupProbeLocalExplicitProxySystemSettingsOnStartupWhenDisabled(t *testing.T) {
 	setupProbeLocalConsoleTest(t)
 	probeLocalExplicitProxySystemState.mu.Lock()

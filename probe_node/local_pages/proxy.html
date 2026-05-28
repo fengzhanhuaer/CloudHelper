@@ -242,6 +242,19 @@
       el.textContent = clean;
     }
 
+    function formatPreconnectMessage(data) {
+      const preconnect = data && data.preconnect && typeof data.preconnect === 'object' ? data.preconnect : null;
+      if (!preconnect || Number(preconnect.attempted) <= 0) {
+        return 'SOCKS/HTTP 已启用';
+      }
+      const attempted = Number(preconnect.attempted) || 0;
+      const connected = Number(preconnect.connected) || 0;
+      if (preconnect.ready) {
+        return `SOCKS/HTTP 已启用，链路预热完成 ${connected}/${attempted}`;
+      }
+      return `SOCKS/HTTP 已启用，链路预热中 ${connected}/${attempted}`;
+    }
+
     function isProxyGloballyEnabled() {
       return !!proxyStatusCache.enabled && normalizeAction(proxyStatusCache.mode) === 'tunnel';
     }
@@ -1528,12 +1541,12 @@
       }
       setMessage('启用 SOCKS/HTTP 中...');
       try {
-        await requestJSON('/local/api/proxy/explicit/enable', {
+        const data = await requestJSON('/local/api/proxy/explicit/enable', {
           method: 'POST',
           body: JSON.stringify({}),
-        });
+        }, 12000);
         await refreshAll();
-        setMessage('SOCKS/HTTP 已启用', 'success');
+        setMessage(formatPreconnectMessage(data), 'success');
       } catch (err) {
         setMessage('启用 SOCKS/HTTP 失败：' + err.message, 'error');
       }

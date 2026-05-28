@@ -47,6 +47,7 @@ const (
 	probeLocalProxyHostFileName           = "proxy_host.txt"
 	probeLocalProxyChainFileName          = "proxy_chain.json"
 	probeLocalTUNPrimaryDNSBackupFileName = "tun_primary_dns_backup.json"
+	probeLocalExplicitProxyPreconnectWait = 8 * time.Second
 	probeLocalProxyBackupAPIPath          = "/api/probe/proxy_group/backup"
 	probeLocalProxyReadBodyMaxLen         = 512 * 1024
 	probeLocalProxyLinkCFOptimizeMaxIPs   = 512
@@ -550,9 +551,24 @@ func preconnectProbeLocalTUNGroupRuntimesFromState(reason string) {
 }
 
 func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason string) {
+	result := preconnectProbeLocalTUNGroupRuntimesWithResult(state, reason, true)
+	if result.Attempted > 0 {
+		logProbeInfof("probe local proxy group runtime preconnect completed: reason=%s attempted=%d connected=%d", strings.TrimSpace(reason), result.Attempted, result.Connected)
+	}
+}
+
+type probeLocalProxyPreconnectResult struct {
+	Attempted int                 `json:"attempted"`
+	Connected int                 `json:"connected"`
+	Skipped   int                 `json:"skipped,omitempty"`
+	Failed    int                 `json:"failed,omitempty"`
+	Ready     bool                `json:"ready"`
+	Groups    []map[string]string `json:"groups"`
+}
+
+func preconnectProbeLocalTUNGroupRuntimesWithResult(state probeLocalProxyStateFile, reason string, resolveLatency bool) probeLocalProxyPreconnectResult {
 	seen := map[string]struct{}{}
-	attempted := 0
-	connected := 0
+	result := probeLocalProxyPreconnectResult{Groups: []map[string]string{}}
 	for _, entry := range state.Groups {
 		group := strings.TrimSpace(entry.Group)
 		if group == "" || !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") {
@@ -572,20 +588,40 @@ func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason
 		seen[key] = struct{}{}
 		rt, err := ensureProbeLocalTUNGroupRuntime(group, selectedChainID)
 		if err != nil {
+			result.Skipped++
+			result.Groups = append(result.Groups, map[string]string{
+				"group":             group,
+				"selected_chain_id": selectedChainID,
+				"status":            "skipped",
+				"error":             strings.TrimSpace(err.Error()),
+			})
 			logProbeWarnf("probe local proxy group runtime preconnect skipped: reason=%s group=%s chain=%s err=%v", strings.TrimSpace(reason), group, selectedChainID, err)
 			continue
 		}
-		attempted++
+		result.Attempted++
 		rt.mu.Lock()
 		err = rt.ensureConnectedLocked()
 		snapshot := rt.snapshotLocked()
 		rt.mu.Unlock()
 		if err != nil {
+			result.Failed++
+			result.Groups = append(result.Groups, map[string]string{
+				"group":             group,
+				"selected_chain_id": selectedChainID,
+				"status":            firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "unavailable"),
+				"error":             strings.TrimSpace(err.Error()),
+			})
 			logProbeWarnf("probe local proxy group runtime preconnect failed: reason=%s group=%s chain=%s status=%s err=%v", strings.TrimSpace(reason), group, selectedChainID, strings.TrimSpace(snapshot.RuntimeStatus), err)
 			continue
 		}
-		connected++
-		keepalive, latencyMSPtr, latencyUpdatedAt, latencyError := probeLocalResolveGroupRuntimeLatency(rt)
+		result.Connected++
+		keepalive := "connected"
+		var latencyMSPtr *int64
+		latencyUpdatedAt := strings.TrimSpace(snapshot.UpdatedAt)
+		latencyError := ""
+		if resolveLatency {
+			keepalive, latencyMSPtr, latencyUpdatedAt, latencyError = probeLocalResolveGroupRuntimeLatency(rt)
+		}
 		latencyStatus := "unreachable"
 		if latencyMSPtr != nil {
 			latencyStatus = "reachable"
@@ -600,11 +636,15 @@ func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason
 			SelectedChainLatencyUpdatedAt: firstNonEmpty(strings.TrimSpace(latencyUpdatedAt), strings.TrimSpace(snapshot.UpdatedAt), time.Now().UTC().Format(time.RFC3339)),
 			SelectedChainLatencyError:     strings.TrimSpace(latencyError),
 		})
+		result.Groups = append(result.Groups, map[string]string{
+			"group":             group,
+			"selected_chain_id": selectedChainID,
+			"status":            firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "connected"),
+		})
 		logProbeInfof("probe local proxy group runtime preconnected: reason=%s group=%s chain=%s entry=%s:%d layer=%s", strings.TrimSpace(reason), group, selectedChainID, strings.TrimSpace(snapshot.EntryHost), snapshot.EntryPort, strings.TrimSpace(snapshot.LinkLayer))
 	}
-	if attempted > 0 {
-		logProbeInfof("probe local proxy group runtime preconnect completed: reason=%s attempted=%d connected=%d", strings.TrimSpace(reason), attempted, connected)
-	}
+	result.Ready = result.Attempted > 0 && result.Connected == result.Attempted
+	return result
 }
 
 func lookupProbeLocalIPv4ForBypass(host string) ([]string, error) {
@@ -3600,10 +3640,24 @@ func probeLocalProxyExplicitEnableHandler(w http.ResponseWriter, r *http.Request
 		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
 		return
 	}
-	go preconnectProbeLocalTUNGroupRuntimes(state, "explicit_proxy_enable")
+	preconnectDone := make(chan probeLocalProxyPreconnectResult, 1)
+	go func() {
+		result := preconnectProbeLocalTUNGroupRuntimesWithResult(state, "explicit_proxy_enable", false)
+		if result.Attempted > 0 {
+			logProbeInfof("probe local proxy group runtime preconnect completed: reason=%s attempted=%d connected=%d", "explicit_proxy_enable", result.Attempted, result.Connected)
+		}
+		preconnectDone <- result
+	}()
+	preconnectResult := probeLocalProxyPreconnectResult{Ready: true, Groups: []map[string]string{}}
+	select {
+	case preconnectResult = <-preconnectDone:
+	case <-time.After(probeLocalExplicitProxyPreconnectWait):
+		preconnectResult = probeLocalProxyPreconnectResult{Ready: false, Groups: []map[string]string{}}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":             true,
 		"explicit_proxy": snapshotProbeLocalExplicitProxyStatus(),
+		"preconnect":     preconnectResult,
 	})
 }
 
