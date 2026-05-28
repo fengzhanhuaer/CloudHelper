@@ -28,9 +28,9 @@ var probeLocalExplicitProxyState = struct {
 	updatedAt     string
 }{}
 
-func startProbeLocalExplicitProxyServer() {
+func startProbeLocalExplicitProxyServer() error {
 	if isProbeLocalTestBinary() {
-		return
+		return nil
 	}
 	probeLocalExplicitProxyState.mu.Lock()
 	defer probeLocalExplicitProxyState.mu.Unlock()
@@ -70,6 +70,13 @@ func startProbeLocalExplicitProxyServer() {
 		probeLocalExplicitProxyState.lastError += "system settings: " + strings.TrimSpace(err.Error())
 		logProbeWarnf("probe local explicit proxy system settings failed: %v", err)
 	}
+	if probeLocalExplicitProxyState.socksListener == nil && probeLocalExplicitProxyState.httpListener == nil {
+		return errors.New(firstNonEmpty(strings.TrimSpace(probeLocalExplicitProxyState.lastError), "explicit proxy listener is unavailable"))
+	}
+	if strings.TrimSpace(probeLocalExplicitProxyState.lastError) != "" {
+		return errors.New(strings.TrimSpace(probeLocalExplicitProxyState.lastError))
+	}
+	return nil
 }
 
 func stopProbeLocalExplicitProxyServer() {

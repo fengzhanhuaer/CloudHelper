@@ -540,7 +540,9 @@ func preconnectProbeLocalTUNGroupRuntimesFromState(reason string) {
 	}
 	if !shouldRestoreProbeLocalProxyFromState(state) {
 		if shouldRestoreProbeLocalExplicitProxyFromState(state) {
-			startProbeLocalExplicitProxyServer()
+			if err := startProbeLocalExplicitProxyServer(); err != nil {
+				logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
+			}
 		}
 		return
 	}
@@ -739,7 +741,9 @@ func startProbeLocalExplicitProxyStartupRecovery() {
 	if !shouldRestoreProbeLocalExplicitProxyFromState(state) {
 		return
 	}
-	startProbeLocalExplicitProxyServer()
+	if err := startProbeLocalExplicitProxyServer(); err != nil {
+		logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
+	}
 	go preconnectProbeLocalTUNGroupRuntimes(state, "explicit_proxy_startup_recovery")
 }
 
@@ -853,7 +857,9 @@ func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
 		preconnectProbeLocalTUNGroupRuntimesFromState("chain_config_sync")
 	}
 	if shouldRestoreProbeLocalExplicitProxyFromState(state) {
-		startProbeLocalExplicitProxyServer()
+		if err := startProbeLocalExplicitProxyServer(); err != nil {
+			logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
+		}
 	}
 }
 
@@ -932,7 +938,9 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 			logProbeInfof("probe local tun startup recovered installed state: proxy_restore=false")
 		}
 		if shouldRestoreProbeLocalExplicitProxyFromState(state) {
-			startProbeLocalExplicitProxyServer()
+			if err := startProbeLocalExplicitProxyServer(); err != nil {
+				logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
+			}
 		}
 		m.setTUNRecoveryStatus("idle", attempt, time.Time{}, "")
 		return nil
@@ -954,7 +962,9 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	logProbeInfof("probe local tun startup recovered enabled state")
 	preconnectProbeLocalTUNGroupRuntimes(state, "startup_recovery")
 	if shouldRestoreProbeLocalExplicitProxyFromState(state) {
-		startProbeLocalExplicitProxyServer()
+		if err := startProbeLocalExplicitProxyServer(); err != nil {
+			logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
+		}
 	}
 	return nil
 }
@@ -3582,7 +3592,10 @@ func probeLocalProxyExplicitEnableHandler(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	startProbeLocalExplicitProxyServer()
+	if err := startProbeLocalExplicitProxyServer(); err != nil {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
+		return
+	}
 	if err := persistProbeLocalExplicitProxyPersistentState(true); err != nil {
 		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
 		return
