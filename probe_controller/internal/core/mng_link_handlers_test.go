@@ -29,7 +29,7 @@ func TestMngLinkRelayStatusHandlerReturnsReportedRelayStatus(t *testing.T) {
 			ListenState: &probeRelayProtocolStateSnapshot{
 				Endpoint: "0.0.0.0:16030",
 				ListenerStatuses: []probeRelayListenerStatus{
-					{Protocol: "http2", Status: "listening", Listen: "0.0.0.0:16030"},
+					{Protocol: "websocket", Status: "listening", Listen: "0.0.0.0:16030"},
 				},
 			},
 		},

@@ -17,12 +17,12 @@ func TestResolveProbeLocalChainEntryEndpointUsesClientEntryIDWithRelayChainID(t 
 		Secret:          "secret-1",
 		EntryNodeID:     "10",
 		ExitNodeID:      "10",
-		LinkLayer:       "http3",
+		LinkLayer:       "auto",
 		HopConfigs: []probeLinkChainHopServerItem{{
 			NodeNo:       10,
 			ListenPort:   16030,
 			ExternalPort: 443,
-			LinkLayer:    "http3",
+			LinkLayer:    "auto",
 			RelayHost:    "api_copilot_example.com",
 		}},
 	}}); err != nil {
@@ -36,7 +36,7 @@ func TestResolveProbeLocalChainEntryEndpointUsesClientEntryIDWithRelayChainID(t 
 	if endpoint.ChainID != "chain-proxy-1" {
 		t.Fatalf("endpoint relay chain id=%q, want original chain id", endpoint.ChainID)
 	}
-	if endpoint.EntryHost != "api_copilot_example.com" || endpoint.EntryPort != 443 || endpoint.LinkLayer != "http3" {
+	if endpoint.EntryHost != "api_copilot_example.com" || endpoint.EntryPort != 443 || endpoint.LinkLayer != "auto" {
 		t.Fatalf("unexpected endpoint: %+v", endpoint)
 	}
 }

@@ -109,9 +109,9 @@ func TestResolveProbeChainNextPrevHopFromItemWithNonContiguousNodeIDs(t *testing
 		ExitNodeID:     "35",
 		LinkLayer:      "http",
 		HopConfigs: []probeLinkChainHopServerItem{
-			{NodeNo: 10, ListenPort: 11010, ExternalPort: 11110, DialMode: "reverse", LinkLayer: "http2", RelayHost: "entry.example"},
+			{NodeNo: 10, ListenPort: 11010, ExternalPort: 11110, DialMode: "reverse", LinkLayer: "auto", RelayHost: "entry.example"},
 			{NodeNo: 21, ListenPort: 12021, ExternalPort: 12121, DialMode: "forward", LinkLayer: "http", RelayHost: "relay.example"},
-			{NodeNo: 35, ListenPort: 13035, ExternalPort: 0, DialMode: "forward", LinkLayer: "http3", RelayHost: "exit.example"},
+			{NodeNo: 35, ListenPort: 13035, ExternalPort: 0, DialMode: "forward", LinkLayer: "auto", RelayHost: "exit.example"},
 		},
 	}
 

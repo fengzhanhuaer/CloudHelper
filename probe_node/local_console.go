@@ -3961,7 +3961,7 @@ func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLoc
 		} else if hop.ListenPort > 0 {
 			entryPort = hop.ListenPort
 		}
-		linkLayer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"))
+		linkLayer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "auto"))
 		break
 	}
 	if entryHost == "" {
@@ -3971,7 +3971,7 @@ func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLoc
 		return probeLocalTUNChainEndpoint{}, fmt.Errorf("selected chain entry port is unavailable: %s", chainID)
 	}
 	if linkLayer == "" {
-		linkLayer = "http"
+		linkLayer = "auto"
 	}
 	return probeLocalTUNChainEndpoint{
 		ChainID:     effectiveProbeLocalRelayChainID(item),

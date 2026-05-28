@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -110,20 +109,6 @@ type probeChainRelaySpeedTestResult struct {
 	Error      string `json:"error,omitempty"`
 	StartedAt  string `json:"started_at,omitempty"`
 	EndedAt    string `json:"ended_at,omitempty"`
-}
-
-type probeChainRelayNetConn struct {
-	reader       io.ReadCloser
-	writer       io.WriteCloser
-	closeFn      func() error
-	closeOnce    sync.Once
-	metricsMu    sync.Mutex
-	endpointKey  string
-	protocol     string
-	openedAt     time.Time
-	bytesRead    int64
-	bytesWritten int64
-	ioErrors     int
 }
 
 type probeChainRelayNetAddr struct {
@@ -276,14 +261,6 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 		recordProbeChainRelayProtocolFailure(endpointKey, result, result.Err)
 		candidates = candidates[1:]
 	}
-	if len(candidates) == 1 && candidates[0] == "http" {
-		result := probeChainRelayOpenLayer(chainID, secret, relayHost, relayPort, "http", bridgeRole, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
-		if result.Err != nil {
-			return nil, result.Err
-		}
-		return result.Conn, nil
-	}
-
 	now := time.Now()
 	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, now); preferred != "" {
 		log.Printf("probe chain relay auto dial preferred protocol: chain=%s endpoint=%s protocol=%s candidates=%s", strings.TrimSpace(chainID), endpointKey, preferred, probeChainRelayJoinProtocols(candidates))
@@ -531,22 +508,6 @@ func openProbeChainRelayPingPongStream(conn net.Conn, payloadBytes int64) (net.C
 	if conn == nil {
 		return nil, errors.New("relay connection is nil")
 	}
-	if quicControl, ok := conn.(*probeChainQUICDataPlaneControlNetConn); ok {
-		if quicControl.session == nil {
-			return nil, errors.New("quic dataplane session is nil")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), probeChainRelayProtocolProbeTimeout)
-		defer cancel()
-		stream, err := quicControl.session.OpenStream(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if err := writeProbeChainRelayPingPongRequest(stream, payloadBytes); err != nil {
-			_ = stream.Close()
-			return nil, err
-		}
-		return stream, nil
-	}
 	session, err := yamux.Client(conn, newProbeChainYamuxConfig())
 	if err != nil {
 		return nil, err
@@ -632,6 +593,7 @@ func isProbeChainRelayProtocolSwitchableError(err error) bool {
 		strings.Contains(text, "handshake") ||
 		strings.Contains(text, "quic") ||
 		strings.Contains(text, "extended connect") ||
+		strings.Contains(text, "websocket-h3 udp socket unavailable") ||
 		strings.Contains(text, "http3 udp socket unavailable") ||
 		strings.Contains(text, "eof")
 }
@@ -993,166 +955,6 @@ func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, r
 	return nil, fmt.Errorf("unsupported relay protocol: %s", layer)
 }
 
-func openProbeChainRelayNetConnHTTPPostLegacy(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
-	startedAt := time.Now()
-	relayDialHost = strings.TrimSpace(strings.Trim(relayDialHost, "[]"))
-	relayHostHeader = strings.TrimSpace(strings.Trim(relayHostHeader, "[]"))
-	if relayDialHost == "" {
-		return nil, errors.New("relay dial host is required")
-	}
-	if relayHostHeader == "" {
-		relayHostHeader = strings.TrimSpace(strings.Trim(relayHost, "[]"))
-	}
-	layer = normalizeProbeChainLinkLayer(layer)
-	relayURL, err := buildProbeChainRelayURL(relayDialHost, relayPort, chainID)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	bodyReader, bodyWriter := io.Pipe()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, relayURL, bodyReader)
-	if err != nil {
-		cancel()
-		_ = bodyReader.Close()
-		_ = bodyWriter.Close()
-		return nil, err
-	}
-	request.Header.Set("Content-Type", "application/octet-stream")
-	request.Header.Set(probeChainLegacyChainIDHeader, strings.TrimSpace(chainID))
-	request.Header.Set(probeChainCodexChainIDHeader, strings.TrimSpace(chainID))
-	request.Header.Set(probeChainCodexVersionHeader, probeChainAuthPacketVersion)
-	if err := applyProbeChainSecretAuthHeaders(request.Header, chainID, secret); err != nil {
-		cancel()
-		_ = bodyReader.Close()
-		_ = bodyWriter.Close()
-		return nil, err
-	}
-	request.Header.Set(probeChainCodexRelayModeHeader, probeChainRelayModeBridge)
-	request.Header.Set(probeChainCodexRelayRoleHeader, normalizeProbeChainBridgeRole(bridgeRole))
-	if strings.TrimSpace(relayHostHeader) != "" {
-		request.Host = strings.TrimSpace(relayHostHeader)
-	}
-
-	tlsServerName := resolveProbeChainClientTLSServerName(layer, relayDialHost, relayHostHeader)
-	var closeTransport func() error
-	var client *http.Client
-	switch layer {
-	case "http3":
-		transport := &http3.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS13,
-				NextProtos:         []string{"h3"},
-				ServerName:         tlsServerName,
-				InsecureSkipVerify: true,
-			},
-		}
-		client = &http.Client{Transport: transport}
-		closeTransport = func() error { return transport.Close() }
-	case "http2":
-		dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-		transport := &http.Transport{
-			Proxy:                 nil,
-			ForceAttemptHTTP2:     true,
-			DialContext:           dialer.DialContext,
-			TLSHandshakeTimeout:   probeChainPortForwardDialTimeout,
-			ResponseHeaderTimeout: probeChainPortForwardResponseReadDeadline,
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				ServerName:         tlsServerName,
-				InsecureSkipVerify: true,
-			},
-		}
-		client = &http.Client{Transport: transport}
-		closeTransport = func() error {
-			transport.CloseIdleConnections()
-			return nil
-		}
-	default:
-		dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-		transport := &http.Transport{
-			Proxy:                 nil,
-			ForceAttemptHTTP2:     false,
-			DialContext:           dialer.DialContext,
-			TLSHandshakeTimeout:   probeChainPortForwardDialTimeout,
-			ResponseHeaderTimeout: probeChainPortForwardResponseReadDeadline,
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				ServerName:         tlsServerName,
-				InsecureSkipVerify: true,
-			},
-			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
-		}
-		client = &http.Client{Transport: transport}
-		closeTransport = func() error {
-			transport.CloseIdleConnections()
-			return nil
-		}
-	}
-
-	if openTimeout <= 0 {
-		openTimeout = probeChainPortForwardDialTimeout + probeChainPortForwardResponseReadDeadline
-	}
-	logProbeChainRelayDialAttempt("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
-	var openTimedOut atomic.Bool
-	openTimer := time.AfterFunc(openTimeout, func() {
-		openTimedOut.Store(true)
-		cancel()
-	})
-	response, err := client.Do(request)
-	if err != nil {
-		openTimer.Stop()
-		cancel()
-		_ = bodyWriter.Close()
-		_ = closeTransport()
-		if openTimedOut.Load() {
-			timeoutErr := fmt.Errorf("probe relay open timeout: relay=%s:%d", relayDialHost, relayPort)
-			logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), timeoutErr)
-			return nil, timeoutErr
-		}
-		wrappedErr := wrapProbeChainRelayDialError(layer, relayDialHost, relayPort, err)
-		logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
-	}
-	if !openTimer.Stop() {
-		_ = response.Body.Close()
-		cancel()
-		_ = bodyWriter.Close()
-		_ = closeTransport()
-		timeoutErr := fmt.Errorf("probe relay open timeout: relay=%s:%d", relayDialHost, relayPort)
-		logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), timeoutErr)
-		return nil, timeoutErr
-	}
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		_ = response.Body.Close()
-		cancel()
-		_ = bodyWriter.Close()
-		_ = closeTransport()
-		statusErr := fmt.Errorf("probe relay failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
-		logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), statusErr)
-		return nil, statusErr
-	}
-	if cacheOnSuccess {
-		refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
-	}
-	logProbeChainRelayDialOutcome("http", chainID, layer, relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
-
-	return &probeChainRelayNetConn{
-		reader:      response.Body,
-		writer:      bodyWriter,
-		endpointKey: probeChainRelayProtocolEndpointKey(relayHost, relayPort),
-		protocol:    normalizeProbeChainLinkLayer(layer),
-		openedAt:    time.Now(),
-		closeFn: func() error {
-			cancel()
-			_ = bodyWriter.Close()
-			_ = response.Body.Close()
-			_ = closeTransport()
-			return nil
-		},
-	}, nil
-}
-
 func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHost string, relayPort int, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
 	startedAt := time.Now()
 	if openTimeout <= 0 {
@@ -1431,16 +1233,6 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 		}
 		log.Printf("probe chain relay speed test done: chain=%s protocol=%s relay=%s:%d ok=false latency_ms=%d bytes=%d duration_ms=%d err=%s", strings.TrimSpace(chainID), normalizeProbeChainLinkLayer(layer), strings.TrimSpace(relayHost), relayPort, result.LatencyMS, result.Bytes, result.DurationMS, strings.TrimSpace(result.Error))
 	}()
-	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(relayHost)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	relayURL, err := buildProbeChainRelayURL(relayDialHost, relayPort, chainID)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
 	if byteCount <= 0 {
 		byteCount = probeChainRelaySpeedTestBytes
 	}
@@ -1465,52 +1257,7 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 		consumeProbeChainRelaySpeedTestData(speedConn, byteCount, time.Until(deadlineAt), &result)
 		return result
 	}
-	remainingTimeout := time.Until(deadlineAt)
-	if remainingTimeout <= 0 {
-		result.Error = context.DeadlineExceeded.Error()
-		return result
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), remainingTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, relayURL, nil)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	request.Header.Set("Accept", "application/octet-stream")
-	request.Header.Set(probeChainLegacyChainIDHeader, strings.TrimSpace(chainID))
-	request.Header.Set(probeChainCodexChainIDHeader, strings.TrimSpace(chainID))
-	request.Header.Set(probeChainCodexVersionHeader, probeChainAuthPacketVersion)
-	request.Header.Set(probeChainCodexRelayModeHeader, probeChainRelayModeSpeedTest)
-	request.Header.Set(probeChainCodexSpeedBytesHeader, strconv.FormatInt(byteCount, 10))
-	if err := applyProbeChainSecretAuthHeaders(request.Header, chainID, secret); err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	if strings.TrimSpace(relayHostHeader) != "" {
-		request.Host = strings.TrimSpace(relayHostHeader)
-	}
-
-	tlsServerName := resolveProbeChainClientTLSServerName(layer, relayDialHost, relayHostHeader)
-	client, closeTransport := newProbeChainRelaySpeedTestHTTPClient(layer, tlsServerName)
-	response, err := client.Do(request)
-	headerAt := time.Now()
-	if err != nil {
-		_ = closeTransport()
-		result.LatencyMS = probeDurationMilliseconds(headerAt.Sub(startedAt))
-		result.Error = wrapProbeChainRelayDialError(layer, relayDialHost, relayPort, err).Error()
-		return result
-	}
-	defer response.Body.Close()
-	defer closeTransport()
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		result.Error = fmt.Sprintf("speed test failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
-		return result
-	}
-	_ = headerAt
-	consumeProbeChainRelaySpeedTestData(response.Body, byteCount, time.Until(deadlineAt), &result)
-	refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+	result.Error = fmt.Sprintf("unsupported speed test protocol: %s", layer)
 	return result
 }
 
@@ -1813,58 +1560,6 @@ func openProbeChainRelayHTTP3WebSocketSpeedTestNetConn(chainID string, secret st
 	}, nil
 }
 
-func newProbeChainRelaySpeedTestHTTPClient(layer string, tlsServerName string) (*http.Client, func() error) {
-	switch normalizeProbeChainLinkLayer(layer) {
-	case "http3":
-		transport := &http3.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS13,
-				NextProtos:         []string{"h3"},
-				ServerName:         tlsServerName,
-				InsecureSkipVerify: true,
-			},
-		}
-		return &http.Client{Transport: transport}, func() error { return transport.Close() }
-	case "http2":
-		dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-		transport := &http.Transport{
-			Proxy:                 nil,
-			ForceAttemptHTTP2:     true,
-			DialContext:           dialer.DialContext,
-			TLSHandshakeTimeout:   probeChainPortForwardDialTimeout,
-			ResponseHeaderTimeout: probeChainPortForwardResponseReadDeadline,
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				ServerName:         tlsServerName,
-				InsecureSkipVerify: true,
-			},
-		}
-		return &http.Client{Transport: transport}, func() error {
-			transport.CloseIdleConnections()
-			return nil
-		}
-	default:
-		dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-		transport := &http.Transport{
-			Proxy:                 nil,
-			ForceAttemptHTTP2:     false,
-			DialContext:           dialer.DialContext,
-			TLSHandshakeTimeout:   probeChainPortForwardDialTimeout,
-			ResponseHeaderTimeout: probeChainPortForwardResponseReadDeadline,
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				ServerName:         tlsServerName,
-				InsecureSkipVerify: true,
-			},
-			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
-		}
-		return &http.Client{Transport: transport}, func() error {
-			transport.CloseIdleConnections()
-			return nil
-		}
-	}
-}
-
 func probeDurationMilliseconds(elapsed time.Duration) int64 {
 	if elapsed <= 0 {
 		return 1
@@ -1880,11 +1575,11 @@ func wrapProbeChainRelayDialError(layer string, relayDialHost string, relayPort 
 	if err == nil {
 		return nil
 	}
-	if normalizeProbeChainLinkLayer(layer) != "http3" || !isProbeChainRelayUDPSocketResourceError(err) {
+	if normalizeProbeChainLinkLayer(layer) != "websocket-h3" || !isProbeChainRelayUDPSocketResourceError(err) {
 		return err
 	}
 	return fmt.Errorf(
-		"probe relay http3 udp socket unavailable: relay=%s:%d note=each_proxy_group_uses_independent_quic_connection err=%w",
+		"probe relay websocket-h3 udp socket unavailable: relay=%s:%d note=each_proxy_group_uses_independent_quic_connection err=%w",
 		strings.TrimSpace(relayDialHost),
 		relayPort,
 		err,
@@ -1910,123 +1605,6 @@ func (a probeChainRelayNetAddr) String() string {
 		return "probe-chain-relay"
 	}
 	return value
-}
-
-func (c *probeChainRelayNetConn) Read(payload []byte) (int, error) {
-	if c == nil || c.reader == nil {
-		return 0, io.EOF
-	}
-	n, err := c.reader.Read(payload)
-	c.recordIO(n, err)
-	return n, err
-}
-
-func (c *probeChainRelayNetConn) Write(payload []byte) (int, error) {
-	if c == nil || c.writer == nil {
-		return 0, io.ErrClosedPipe
-	}
-	n, err := c.writer.Write(payload)
-	c.recordWrite(n, err)
-	return n, err
-}
-
-func (c *probeChainRelayNetConn) Close() error {
-	if c == nil {
-		return nil
-	}
-	var closeErr error
-	c.closeOnce.Do(func() {
-		c.flushMetrics()
-		if c.closeFn != nil {
-			closeErr = c.closeFn()
-			return
-		}
-		if c.writer != nil {
-			_ = c.writer.Close()
-		}
-		if c.reader != nil {
-			_ = c.reader.Close()
-		}
-	})
-	return closeErr
-}
-
-func (c *probeChainRelayNetConn) recordIO(n int, err error) {
-	if c == nil {
-		return
-	}
-	c.metricsMu.Lock()
-	if n > 0 {
-		c.bytesRead += int64(n)
-	}
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		c.ioErrors++
-	}
-	c.metricsMu.Unlock()
-}
-
-func (c *probeChainRelayNetConn) recordWrite(n int, err error) {
-	if c == nil {
-		return
-	}
-	c.metricsMu.Lock()
-	if n > 0 {
-		c.bytesWritten += int64(n)
-	}
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		c.ioErrors++
-	}
-	c.metricsMu.Unlock()
-}
-
-func (c *probeChainRelayNetConn) flushMetrics() {
-	if c == nil || strings.TrimSpace(c.endpointKey) == "" || strings.TrimSpace(c.protocol) == "" {
-		return
-	}
-	c.metricsMu.Lock()
-	bytesTotal := c.bytesRead + c.bytesWritten
-	ioErrors := c.ioErrors
-	openedAt := c.openedAt
-	c.metricsMu.Unlock()
-	if openedAt.IsZero() {
-		return
-	}
-	elapsed := time.Since(openedAt)
-	if elapsed <= 0 {
-		elapsed = time.Second
-	}
-	rateBPS := int64(0)
-	if bytesTotal > 0 {
-		rateBPS = int64(float64(bytesTotal) / elapsed.Seconds())
-	}
-	lossPermille := 0
-	if ioErrors > 0 {
-		lossPermille = 1000
-	}
-	recordProbeChainRelayProtocolObservedTraffic(c.endpointKey, c.protocol, rateBPS, lossPermille)
-}
-
-func (c *probeChainRelayNetConn) LocalAddr() net.Addr {
-	return probeChainRelayNetAddr{label: "local"}
-}
-
-func (c *probeChainRelayNetConn) RemoteAddr() net.Addr {
-	return probeChainRelayNetAddr{label: "remote"}
-}
-
-func (c *probeChainRelayNetConn) SetDeadline(t time.Time) error {
-	_ = t
-	return nil
-}
-
-func (c *probeChainRelayNetConn) SetReadDeadline(t time.Time) error {
-	_ = t
-	return nil
-}
-
-func (c *probeChainRelayNetConn) SetWriteDeadline(t time.Time) error {
-	_ = t
-	return nil
 }
 
 type probeChainHTTP3StreamNetConn struct {
@@ -2253,9 +1831,6 @@ func resolveProbeChainTLSServerName(layer string, dialHost string, hostHeader st
 	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
 	cleanHostHeader := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
 
-	if normalizeProbeChainLinkLayer(layer) == "http" {
-		return cleanDialHost
-	}
 	if cleanHostHeader != "" {
 		if parsed := net.ParseIP(cleanHostHeader); parsed == nil {
 			return cleanHostHeader

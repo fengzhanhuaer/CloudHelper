@@ -791,7 +791,7 @@ func newWebSocketNetConn(ws *websocket.Conn) net.Conn {
 	configureProbeChainWebSocketConn(ws)
 	conn := &webSocketNetConn{
 		ws:           ws,
-		writeCh:      make(chan *webSocketWriteRequest),
+		writeCh:      make(chan *webSocketWriteRequest, probeChainRelayWebSocketWriteQueueDepth),
 		writeDoneCh:  make(chan struct{}),
 		writeCloseCh: make(chan struct{}),
 	}

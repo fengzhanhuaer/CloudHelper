@@ -38,9 +38,8 @@ type probeLocalTUNGroupRuntime struct {
 	UpdatedAt       string
 	LastConnectedAt string
 
-	relayConn   net.Conn
-	session     *yamux.Session
-	quicSession *probeChainQUICDataPlaneClientSession
+	relayConn net.Conn
+	session   *yamux.Session
 }
 
 type probeLocalTUNGroupRuntimeSnapshot struct {
@@ -374,7 +373,7 @@ func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocal
 			} else if hop.ListenPort > 0 {
 				entryPort = hop.ListenPort
 			}
-			linkLayer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "http"))
+			linkLayer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "auto"))
 			break
 		}
 		if entryHost == "" {
@@ -384,7 +383,7 @@ func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocal
 			return probeLocalTUNChainEndpoint{}, fmt.Errorf("selected chain entry port is unavailable: %s", chainID)
 		}
 		if linkLayer == "" {
-			linkLayer = "http"
+			linkLayer = "auto"
 		}
 		return probeLocalTUNChainEndpoint{
 			ChainID:           effectiveProbeLocalRelayChainID(item),
@@ -436,9 +435,6 @@ func (rt *probeLocalTUNGroupRuntime) snapshotLocked() probeLocalTUNGroupRuntimeS
 		return probeLocalTUNGroupRuntimeSnapshot{}
 	}
 	connected := rt.session != nil && !rt.session.IsClosed()
-	if rt.quicSession != nil && !rt.quicSession.IsClosed() {
-		connected = true
-	}
 	snapshot := probeLocalTUNGroupRuntimeSnapshot{
 		Group:           strings.TrimSpace(rt.Group),
 		SelectedChainID: strings.TrimSpace(rt.SelectedChainID),
@@ -475,10 +471,6 @@ func (rt *probeLocalTUNGroupRuntime) closeLocked() {
 	if rt.session != nil {
 		_ = rt.session.Close()
 		rt.session = nil
-	}
-	if rt.quicSession != nil {
-		_ = rt.quicSession.Close()
-		rt.quicSession = nil
 	}
 	if rt.relayConn != nil {
 		_ = rt.relayConn.Close()
@@ -529,12 +521,6 @@ func (rt *probeLocalTUNGroupRuntime) ensureConnectedLocked() error {
 		}
 		return nil
 	}
-	if rt.quicSession != nil && !rt.quicSession.IsClosed() {
-		if strings.TrimSpace(rt.RuntimeStatus) == "" {
-			rt.RuntimeStatus = "connected"
-		}
-		return nil
-	}
 	chainID := strings.TrimSpace(rt.SelectedChainID)
 	if chainID == "" {
 		return rt.markFailureLocked(errors.New("selected_chain_id is empty"), "unavailable")
@@ -579,34 +565,8 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 			rt.mu.Unlock()
 			return nil, err
 		}
-		quicSession := rt.quicSession
 		session := rt.session
 		rt.mu.Unlock()
-		if quicSession != nil && !quicSession.IsClosed() {
-			stream, err := openProbeChainQUICProxyStream(quicSession, cleanNetwork, targetAddr, associationV2)
-			if err != nil {
-				rt.mu.Lock()
-				if rt.quicSession == quicSession {
-					_ = rt.markFailureLocked(err, "degraded")
-				}
-				rt.mu.Unlock()
-				if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
-					rt.mu.Lock()
-					if rt.quicSession == quicSession {
-						rt.closeLocked()
-					}
-					rt.mu.Unlock()
-					continue
-				}
-				return nil, err
-			}
-			rt.mu.Lock()
-			rt.RuntimeStatus = "connected"
-			rt.LastError = ""
-			rt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-			rt.mu.Unlock()
-			return stream, nil
-		}
 		if session == nil {
 			return nil, errors.New("group runtime session is nil")
 		}

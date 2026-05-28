@@ -80,20 +80,18 @@ type probeChainBridgeSession struct {
 }
 
 type probeChainRuntime struct {
-	cfg                     probeChainRuntimeConfig
-	httpsServer             *http.Server
-	http3Server             *http3.Server
-	http3PacketConn         net.PacketConn
-	quicDataPlaneListener   *quic.Listener
-	quicDataPlanePacketConn net.PacketConn
-	downstreamSessions      map[string]*probeChainBridgeSession
-	upstreamSessions        map[string]*probeChainBridgeSession
-	bridgeMu                sync.Mutex
-	bridgeSeq               uint64
-	forwardMu               sync.Mutex
-	tcpForwards             []net.Listener
-	udpForwards             []net.PacketConn
-	stopCh                  chan struct{}
+	cfg                probeChainRuntimeConfig
+	httpsServer        *http.Server
+	http3Server        *http3.Server
+	http3PacketConn    net.PacketConn
+	downstreamSessions map[string]*probeChainBridgeSession
+	upstreamSessions   map[string]*probeChainBridgeSession
+	bridgeMu           sync.Mutex
+	bridgeSeq          uint64
+	forwardMu          sync.Mutex
+	tcpForwards        []net.Listener
+	udpForwards        []net.PacketConn
+	stopCh             chan struct{}
 }
 
 type probeChainRuntimePortForward struct {
@@ -252,16 +250,16 @@ const (
 	probeChainRelaySpeedTestMaxBytes           = 256 * 1024 * 1024
 	probeChainRelaySpeedTestTimeout            = 10 * time.Second
 	probeChainRelaySpeedTestChunkBytes         = 1024 * 1024
-	probeChainRelayQUICSpeedTestChunkBytes     = 256 * 1024
-	probeChainRelayIOCopyBufferBytes           = 512 * 1024
-	probeChainRelayWebSocketBufferBytes        = 256 * 1024
-	probeChainRelayWebSocketWriteBatchBytes    = 256 * 1024
-	probeChainRelayTCPSocketBufferBytes        = 4 * 1024 * 1024
+	probeChainRelayIOCopyBufferBytes           = 1024 * 1024
+	probeChainRelayWebSocketBufferBytes        = 512 * 1024
+	probeChainRelayWebSocketWriteBatchBytes    = 1024 * 1024
+	probeChainRelayWebSocketWriteQueueDepth    = 64
+	probeChainRelayTCPSocketBufferBytes        = 8 * 1024 * 1024
 	probeChainRelayUDPSocketBufferBytes        = 64 * 1024 * 1024
 	probeChainRelayUDPFrameBufferBytes         = 2 + 65535
 	probeChainRelayTCPKeepAlivePeriod          = 30 * time.Second
 	probeChainRelayYamuxAcceptBacklog          = 1024
-	probeChainRelayYamuxMaxStreamWindowBytes   = 16 * 1024 * 1024
+	probeChainRelayYamuxMaxStreamWindowBytes   = 64 * 1024 * 1024
 	probeChainRelayYamuxWriteTimeout           = 30 * time.Second
 	probeChainRelayQUICInitialStreamWindow     = 128 * 1024 * 1024
 	probeChainRelayQUICMaxStreamWindow         = 512 * 1024 * 1024
@@ -393,20 +391,14 @@ func normalizeProbeChainAuthMode(raw string) string {
 
 func normalizeProbeChainLinkLayer(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "http":
-		return "http"
-	case "http2", "h2":
-		return "http2"
-	case "http3", "h3":
-		return "http3"
+	case "", "auto", "default", "http", "http2", "h2", "http3", "h3":
+		return "auto"
 	case "websocket", "ws", "wss":
 		return "websocket"
 	case "websocket-h3", "ws-h3", "h3-websocket", "h3-ws":
 		return "websocket-h3"
-	case "quic-stream", "quic-v2-stream", "quic", "quic-dataplane":
-		return "quic-stream"
 	default:
-		return "http"
+		return "auto"
 	}
 }
 
@@ -1470,7 +1462,6 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 
 	cfg := runtime.cfg
 	listenAddr := net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort))
-	layer := normalizeProbeChainLinkLayer(cfg.linkLayer)
 	handler := buildProbeChainRuntimeRelayHandler(runtime)
 
 	cert, err := prepareProbeServerCertificate(cfg.identity, strings.TrimSpace(cfg.controllerURL))
@@ -1505,9 +1496,9 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	runtime.httpsServer = httpsServer
-	markProbeChainRelayListenerStatus(listenAddr, "http2", "starting", "")
-	go func(rt *probeChainRuntime, srv *http.Server, certFile string, keyFile string, protocol string) {
-		markProbeChainRelayListenerStatus(listenAddr, "http2", "listening", "")
+	markProbeChainRelayListenerStatus(listenAddr, "websocket", "starting", "")
+	go func(rt *probeChainRuntime, srv *http.Server, certFile string, keyFile string) {
+		markProbeChainRelayListenerStatus(listenAddr, "websocket", "listening", "")
 		serveErr := srv.ServeTLS(tcpListener, certFile, keyFile)
 		if serveErr != nil && serveErr != http.ErrServerClosed {
 			select {
@@ -1515,12 +1506,12 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 				return
 			default:
 			}
-			markProbeChainRelayListenerStatus(listenAddr, "http2", "failed", serveErr.Error())
-			log.Printf("probe chain runtime public relay exited: chain=%s layer=%s listen=%s err=%v", rt.cfg.chainID, protocol, listenAddr, serveErr)
+			markProbeChainRelayListenerStatus(listenAddr, "websocket", "failed", serveErr.Error())
+			log.Printf("probe chain runtime public relay exited: chain=%s layer=websocket listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
 			return
 		}
-		markProbeChainRelayListenerStatus(listenAddr, "http2", "stopped", "")
-	}(runtime, httpsServer, cert.CertPath, cert.KeyPath, firstNonEmpty(layer, "http2"))
+		markProbeChainRelayListenerStatus(listenAddr, "websocket", "stopped", "")
+	}(runtime, httpsServer, cert.CertPath, cert.KeyPath)
 
 	h3Server := &http3.Server{
 		Addr:    listenAddr,
@@ -1534,29 +1525,21 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 	}
 	runtime.http3Server = h3Server
 	runtime.http3PacketConn = udpPacketConn
-	markProbeChainRelayListenerStatus(listenAddr, "http3", "starting", "")
+	markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "starting", "")
 	go func(rt *probeChainRuntime, srv *http3.Server, certFile string, keyFile string) {
-		markProbeChainRelayListenerStatus(listenAddr, "http3", "listening", "")
+		markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "listening", "")
 		if serveErr := srv.Serve(udpPacketConn); serveErr != nil && serveErr != http.ErrServerClosed {
 			select {
 			case <-rt.stopCh:
 				return
 			default:
 			}
-			markProbeChainRelayListenerStatus(listenAddr, "http3", "failed", serveErr.Error())
-			log.Printf("probe chain runtime public relay exited: chain=%s layer=http3 listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
+			markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "failed", serveErr.Error())
+			log.Printf("probe chain runtime public relay exited: chain=%s layer=websocket-h3 listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
 			return
 		}
-		markProbeChainRelayListenerStatus(listenAddr, "http3", "stopped", "")
+		markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "stopped", "")
 	}(runtime, h3Server, cert.CertPath, cert.KeyPath)
-
-	if isProbeChainQUICDataPlaneLayer(layer) {
-		markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "starting", "")
-		if err := startProbeChainQUICDataPlaneServer(runtime, cert); err != nil {
-			markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "failed", err.Error())
-			log.Printf("probe chain quic dataplane listener unavailable: chain=%s listen=%s err=%v", runtime.cfg.chainID, listenAddr, err)
-		}
-	}
 
 	return nil
 }
@@ -1739,42 +1722,6 @@ func handleProbeChainBridgeRelayHTTP3WebSocket(runtime *probeChainRuntime, bridg
 	_ = session.Close()
 }
 
-func handleProbeChainSpeedTestHTTP(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {
-	if runtime == nil {
-		http.Error(w, "chain runtime not found", http.StatusNotFound)
-		return
-	}
-	byteCount := parseProbeChainSpeedTestBytes(r)
-	log.Printf("probe chain speed test request: chain=%s role=%s remote=%s proto=%s bytes=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Proto, byteCount)
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set(probeChainCodexSpeedBytesHeader, strconv.FormatInt(byteCount, 10))
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-	if flusher != nil {
-		flusher.Flush()
-	}
-	buf := make([]byte, probeChainRelaySpeedTestChunkBytes)
-	for i := range buf {
-		buf[i] = byte(i % 251)
-	}
-	remaining := byteCount
-	for remaining > 0 {
-		n := int64(len(buf))
-		if remaining < n {
-			n = remaining
-		}
-		if _, err := w.Write(buf[:n]); err != nil {
-			log.Printf("probe chain speed test interrupted: chain=%s role=%s remote=%s bytes=%d remaining=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, byteCount, remaining, err)
-			return
-		}
-		remaining -= n
-	}
-	if flusher != nil {
-		flusher.Flush()
-	}
-	log.Printf("probe chain speed test completed: chain=%s role=%s remote=%s bytes=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, byteCount)
-}
-
 func handleProbeChainSpeedTestWebSocket(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {
 	if runtime == nil {
 		http.Error(w, "chain runtime not found", http.StatusNotFound)
@@ -1898,8 +1845,8 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 
 func probeChainSpeedTestChunkBytesForTransport(transport string) int {
 	switch strings.ToLower(strings.TrimSpace(transport)) {
-	case "quic-stream", "websocket-h3":
-		return probeChainRelayQUICSpeedTestChunkBytes
+	case "websocket-h3":
+		return probeChainRelaySpeedTestChunkBytes
 	default:
 		return probeChainRelaySpeedTestChunkBytes
 	}
@@ -2012,77 +1959,6 @@ func parseProbeChainBearerToken(raw string) (string, error) {
 	return token, nil
 }
 
-func handleProbeChainBridgeRelayHTTP(runtime *probeChainRuntime, bridgeRole string, w http.ResponseWriter, r *http.Request) {
-	if runtime == nil {
-		http.Error(w, "chain runtime not found", http.StatusNotFound)
-		return
-	}
-	log.Printf("probe chain http relay request: chain=%s role=%s bridge_role=%s remote=%s host=%s proto=%s content_length=%d", runtime.cfg.chainID, runtime.cfg.role, normalizeProbeChainBridgeRole(bridgeRole), r.RemoteAddr, r.Host, r.Proto, r.ContentLength)
-
-	pipeClient, pipeRuntime := net.Pipe()
-	defer pipeClient.Close()
-	defer pipeRuntime.Close()
-
-	role := normalizeProbeChainBridgeRole(bridgeRole)
-	assignTarget := "upstream"
-	routeDirection := "forward"
-	if role == probeChainBridgeRoleToPrev {
-		assignTarget = "downstream"
-		routeDirection = "reverse"
-	}
-	sessionID := runtime.nextBridgeSessionID(assignTarget)
-
-	if controller := http.NewResponseController(w); controller != nil {
-		_ = controller.EnableFullDuplex()
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	if sessionID != "" {
-		w.Header().Set(probeChainCodexConnIDHeader, sessionID)
-	}
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-	if flusher != nil {
-		flusher.Flush()
-	}
-
-	streamWriter := &probeChainHTTPResponseStreamWriter{
-		writer:  w,
-		flusher: flusher,
-	}
-	done := make(chan error, 2)
-	go func() {
-		_, copyErr := io.Copy(pipeClient, r.Body)
-		closeProbeChainConnWrite(pipeClient)
-		done <- copyErr
-	}()
-	go func() {
-		_, copyErr := io.Copy(streamWriter, pipeClient)
-		done <- copyErr
-	}()
-
-	session, err := yamux.Server(pipeRuntime, newProbeChainYamuxConfig())
-	if err != nil {
-		log.Printf("probe chain inbound bridge session setup failed: chain=%s role=%s bridge_role=%s remote=%s session_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, bridgeRole, r.RemoteAddr, sessionID, err)
-		return
-	}
-
-	log.Printf("probe chain inbound bridge connected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr, sessionID)
-	if role == probeChainBridgeRoleToPrev {
-		runtime.setDownstreamSession(sessionID, session, role, strings.TrimSpace(r.RemoteAddr))
-		go acceptProbeChainBridgeStreams(runtime, session, sessionID, "inbound-bridge|session:"+sessionID, "reverse")
-		waitProbeChainBridgeSession(runtime.stopCh, session)
-		runtime.clearDownstreamSession(sessionID, session)
-	} else {
-		runtime.setUpstreamSession(sessionID, session, role, strings.TrimSpace(r.RemoteAddr))
-		go acceptProbeChainBridgeStreams(runtime, session, sessionID, "inbound-bridge|session:"+sessionID, "forward")
-		waitProbeChainBridgeSession(runtime.stopCh, session)
-		runtime.clearUpstreamSession(sessionID, session)
-	}
-	log.Printf("probe chain inbound bridge disconnected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr, sessionID)
-	_ = session.Close()
-	<-done
-}
-
 func (rt *probeChainRuntime) closeRuntimeResources() {
 	if rt == nil {
 		return
@@ -2140,24 +2016,15 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	if rt.http3Server != nil {
 		_ = rt.http3Server.Close()
 	}
-	if rt.quicDataPlaneListener != nil {
-		_ = rt.quicDataPlaneListener.Close()
-	}
-	if rt.quicDataPlanePacketConn != nil {
-		_ = rt.quicDataPlanePacketConn.Close()
-	}
 	if rt.http3PacketConn != nil {
 		_ = rt.http3PacketConn.Close()
 	}
 	listenAddr := net.JoinHostPort(rt.cfg.listenHost, strconv.Itoa(rt.cfg.listenPort))
 	if rt.httpsServer != nil {
-		markProbeChainRelayListenerStatus(listenAddr, "http2", "stopped", "")
+		markProbeChainRelayListenerStatus(listenAddr, "websocket", "stopped", "")
 	}
 	if rt.http3Server != nil {
-		markProbeChainRelayListenerStatus(listenAddr, "http3", "stopped", "")
-	}
-	if rt.quicDataPlaneListener != nil {
-		markProbeChainRelayListenerStatus(listenAddr, "quic-stream", "stopped", "")
+		markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "stopped", "")
 	}
 }
 
@@ -2625,7 +2492,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 }
 
 func resolveProbeChainOutboundLinkLayer(cfg probeChainRuntimeConfig) string {
-	return normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.nextLinkLayer), strings.TrimSpace(cfg.linkLayer), "http"))
+	return normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.nextLinkLayer), strings.TrimSpace(cfg.linkLayer), "auto"))
 }
 
 func openProbeChainBridgeRelayNetConn(cfg probeChainRuntimeConfig, target probeChainBridgeDialTarget) (net.Conn, error) {
@@ -2641,22 +2508,6 @@ func openProbeChainBridgeRelayNetConn(cfg probeChainRuntimeConfig, target probeC
 
 func handleProbeChainRelayHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-}
-
-type probeChainHTTPResponseStreamWriter struct {
-	writer  http.ResponseWriter
-	flusher http.Flusher
-	mu      sync.Mutex
-}
-
-func (w *probeChainHTTPResponseStreamWriter) Write(payload []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	n, err := w.writer.Write(payload)
-	if err == nil && w.flusher != nil {
-		w.flusher.Flush()
-	}
-	return n, err
 }
 
 func getProbeChainRuntime(chainID string) *probeChainRuntime {
@@ -2777,17 +2628,6 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 	}
 	_ = stream.SetReadDeadline(time.Time{})
 
-	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModeSpeedTest) {
-		byteCount := req.SpeedBytes
-		if byteCount <= 0 {
-			byteCount = probeChainRelaySpeedTestBytes
-		}
-		if byteCount > probeChainRelaySpeedTestMaxBytes {
-			byteCount = probeChainRelaySpeedTestMaxBytes
-		}
-		streamProbeChainSpeedTestBytes(runtime, stream, "", byteCount, "quic-stream")
-		return
-	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePingPong) {
 		handleProbeChainPingPongStream(runtime, stream, req.PingBytes)
 		return

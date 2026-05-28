@@ -841,7 +841,7 @@ func parseProbeLinkChainLinkLayer(raw string) (string, bool) {
 		return "websocket", true
 	case "websocket-h3", "ws-h3", "h3-websocket", "h3-ws":
 		return "websocket-h3", true
-	case "http", "http2", "h2", "http3", "h3", "quic-stream", "quic", "quic-dataplane":
+	case "http", "http2", "h2", "http3", "h3":
 		return defaultProbeLinkChainLinkLayer, true
 	default:
 		return defaultProbeLinkChainLinkLayer, true

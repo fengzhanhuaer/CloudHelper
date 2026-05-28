@@ -1053,12 +1053,12 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
       "entry_node_id":"node-10",
       "exit_node_id":"node-35",
       "cascade_node_ids":["node-21"],
-      "link_layer":"http2",
+      "link_layer":"auto",
       "secret":"secret-1",
       "hop_configs":[
-        {"node_no":10,"relay_host":"entry.example.com","external_port":11110,"listen_port":11010,"link_layer":"http2"},
-        {"node_no":21,"relay_host":"relay.example.com","external_port":12121,"listen_port":12021,"link_layer":"http2"},
-        {"node_no":35,"relay_host":"exit.example.com","external_port":13131,"listen_port":13031,"link_layer":"http2"}
+        {"node_no":10,"relay_host":"entry.example.com","external_port":11110,"listen_port":11010,"link_layer":"auto"},
+        {"node_no":21,"relay_host":"relay.example.com","external_port":12121,"listen_port":12021,"link_layer":"auto"},
+        {"node_no":35,"relay_host":"exit.example.com","external_port":13131,"listen_port":13031,"link_layer":"auto"}
       ]
     }
   ]
@@ -1544,9 +1544,9 @@ func TestProbeLocalProxySelectedChainDirectBypassPrewarmIsScoped(t *testing.T) {
 	      "secret": "secret-new",
 	      "entry_node_id": "10",
 	      "exit_node_id": "10",
-	      "link_layer": "http3",
+	      "link_layer": "auto",
 	      "hop_configs": [
-	        {"node_no": 10, "relay_host": "entry-new.example.com", "external_port": 16030, "listen_port": 16030, "link_layer": "http3"}
+	        {"node_no": 10, "relay_host": "entry-new.example.com", "external_port": 16030, "listen_port": 16030, "link_layer": "auto"}
 	      ]
 	    }
 	  ]
@@ -2798,7 +2798,7 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 func TestProbeLocalProxyLinkReachabilityUsesWebSocketH3AndWebSocket(t *testing.T) {
 	protocols := probeLocalProxyLinkReachabilityProtocolsForEndpoint(probeLinkChainServerItem{
 		ChainID: "chain-direct",
-	}, probeLocalTUNChainEndpoint{LinkLayer: "http3"})
+	}, probeLocalTUNChainEndpoint{LinkLayer: "auto"})
 	if len(protocols) != 2 || protocols[0] != "websocket-h3" || protocols[1] != "websocket" {
 		t.Fatalf("reachability protocols=%v, want websocket-h3/websocket", protocols)
 	}
@@ -2808,7 +2808,7 @@ func TestProbeLocalProxyLinkReachabilityCFUsesWebSocketOnly(t *testing.T) {
 	protocols := probeLocalProxyLinkReachabilityProtocolsForEndpoint(probeLinkChainServerItem{
 		ChainID:         "chain-direct_cf",
 		ClientEntryType: "cf",
-	}, probeLocalTUNChainEndpoint{LinkLayer: "http3"})
+	}, probeLocalTUNChainEndpoint{LinkLayer: "auto"})
 	if len(protocols) != 1 || protocols[0] != "websocket" {
 		t.Fatalf("cf reachability protocols=%v, want websocket only", protocols)
 	}

@@ -189,14 +189,14 @@ func TestVerifyProbeChainInboundAuthRejectsInvalidMACWithNeutralMessage(t *testi
 }
 
 func TestResolveProbeChainTLSServerName(t *testing.T) {
-	if got := resolveProbeChainTLSServerName("http", "203.0.113.10", "api.example.com"); got != "203.0.113.10" {
-		t.Fatalf("http sni should use dial ip, got: %s", got)
+	if got := resolveProbeChainTLSServerName("websocket", "203.0.113.10", "api.example.com"); got != "api.example.com" {
+		t.Fatalf("websocket sni should use api domain, got: %s", got)
 	}
-	if got := resolveProbeChainTLSServerName("http2", "203.0.113.10", "api.example.com"); got != "api.example.com" {
-		t.Fatalf("http2 sni should use api domain, got: %s", got)
+	if got := resolveProbeChainTLSServerName("websocket-h3", "203.0.113.10", "api.example.com"); got != "api.example.com" {
+		t.Fatalf("websocket-h3 sni should use api domain, got: %s", got)
 	}
-	if got := resolveProbeChainTLSServerName("http3", "203.0.113.10", "203.0.113.10"); got != "203.0.113.10" {
-		t.Fatalf("http3 sni should fallback to dial ip when host is ip, got: %s", got)
+	if got := resolveProbeChainTLSServerName("websocket-h3", "203.0.113.10", "203.0.113.10"); got != "203.0.113.10" {
+		t.Fatalf("websocket-h3 sni should fallback to dial ip when host is ip, got: %s", got)
 	}
 }
 
@@ -360,25 +360,25 @@ func TestNextProbeChainListenRetryBackoff(t *testing.T) {
 	}
 }
 
-func TestWrapProbeChainRelayDialErrorForHTTP3UDPSocketResource(t *testing.T) {
+func TestWrapProbeChainRelayDialErrorForWebSocketH3UDPSocketResource(t *testing.T) {
 	baseErr := errors.New("Post \"https://69.63.223.88:16030/api/node/chain/relay?chain_id=5\": listen udp :0: bind: An operation on a socket could not be performed because the system lacked sufficient buffer space or because a queue was full.")
-	err := wrapProbeChainRelayDialError("http3", "69.63.223.88", 16030, baseErr)
+	err := wrapProbeChainRelayDialError("websocket-h3", "69.63.223.88", 16030, baseErr)
 	if err == nil {
 		t.Fatalf("expected wrapped error")
 	}
 	text := err.Error()
-	if !strings.Contains(text, "http3 udp socket unavailable") || !strings.Contains(text, "each_proxy_group_uses_independent_quic_connection") {
+	if !strings.Contains(text, "websocket-h3 udp socket unavailable") || !strings.Contains(text, "each_proxy_group_uses_independent_quic_connection") {
 		t.Fatalf("unexpected wrapped error: %v", err)
 	}
 	if !errors.Is(err, baseErr) {
 		t.Fatalf("wrapped error should keep base error: %v", err)
 	}
-	if got := wrapProbeChainRelayDialError("http2", "69.63.223.88", 16030, baseErr); got != baseErr {
-		t.Fatalf("http2 error should not be wrapped: %v", got)
+	if got := wrapProbeChainRelayDialError("websocket", "69.63.223.88", 16030, baseErr); got != baseErr {
+		t.Fatalf("websocket error should not be wrapped: %v", got)
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoUsesHTTP3WebSocketPrimary(t *testing.T) {
+func TestOpenProbeChainRelayNetConnAutoUsesWebSocketH3Primary(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -407,7 +407,7 @@ func TestOpenProbeChainRelayNetConnAutoUsesHTTP3WebSocketPrimary(t *testing.T) {
 		return 2 * time.Millisecond, nil
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("openProbeChainRelayNetConn returned error: %v", err)
 	}
@@ -460,12 +460,12 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testi
 		return 2 * time.Millisecond, nil
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("first openProbeChainRelayNetConn returned error: %v", err)
 	}
 	_ = conn.Close()
-	conn, err = openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	conn, err = openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("second openProbeChainRelayNetConn returned error: %v", err)
 	}
@@ -473,12 +473,12 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testi
 
 	mu.Lock()
 	defer mu.Unlock()
-	http3WebSocketCalls := 0
+	webSocketH3Calls := 0
 	websocketCalls := 0
 	for _, call := range calls {
 		switch call {
 		case "websocket-h3":
-			http3WebSocketCalls++
+			webSocketH3Calls++
 		case "websocket":
 			websocketCalls++
 		}
@@ -486,7 +486,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testi
 	if websocketCalls < 2 {
 		t.Fatalf("websocket fallback should be tried for both attempts, calls=%v", calls)
 	}
-	if http3WebSocketCalls < 2 {
+	if webSocketH3Calls < 2 {
 		t.Fatalf("h3 websocket primary should be tried for both attempts, calls=%v", calls)
 	}
 }
@@ -524,7 +524,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketContextCanceled(t *
 		return 2 * time.Millisecond, nil
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("expected websocket fallback after websocket-h3 context canceled, got err=%v", err)
 	}
@@ -572,7 +572,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketExtendedConnectDisa
 		return 2 * time.Millisecond, nil
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("expected websocket fallback after h3 extended connect disabled, got err=%v", err)
 	}
@@ -621,7 +621,7 @@ func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) 
 		}
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "http3", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
 	if err == nil {
 		_ = conn.Close()
 		t.Fatalf("expected auth failure to stop auto switching")
@@ -631,13 +631,13 @@ func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) 
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	seenHTTP3WebSocket := false
+	seenWebSocketH3 := false
 	for _, call := range calls {
 		if call == "websocket-h3" {
-			seenHTTP3WebSocket = true
+			seenWebSocketH3 = true
 		}
 	}
-	if !seenHTTP3WebSocket || len(calls) != 1 {
+	if !seenWebSocketH3 || len(calls) != 1 {
 		t.Fatalf("expected h3 websocket auth failure to stop switching, calls=%v", calls)
 	}
 }
