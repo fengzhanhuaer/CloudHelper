@@ -28,17 +28,17 @@ func TestNormalizeProbeLinkChainHopConfigsForUpsertSupportsListenExternalPorts(t
 		t.Fatalf("expected 2 hop configs, got %d", len(items))
 	}
 	// external_port auto-filled to listen_port when not configured
-	if items[0].NodeNo != 2 || items[0].ListenPort != 16040 || items[0].ExternalPort != 26040 || items[0].LinkLayer != "http2" {
+	if items[0].NodeNo != 2 || items[0].ListenPort != 16040 || items[0].ExternalPort != 26040 || items[0].LinkLayer != "" {
 		t.Fatalf("unexpected first hop config: %+v", items[0])
 	}
-	if items[1].NodeNo != 3 || items[1].ListenPort != 16050 || items[1].ExternalPort != 16050 || items[1].LinkLayer != "http3" {
+	if items[1].NodeNo != 3 || items[1].ListenPort != 16050 || items[1].ExternalPort != 16050 || items[1].LinkLayer != "" {
 		t.Fatalf("unexpected second hop config: %+v", items[1])
 	}
 }
 
 func TestResolveProbeLinkChainNodeSettingsUsesListenPort(t *testing.T) {
 	item := probeLinkChainRecord{
-		LinkLayer: "http",
+		LinkLayer: "",
 		HopConfigs: []probeLinkChainHopConfig{
 			{
 				NodeNo:     2,
@@ -55,8 +55,8 @@ func TestResolveProbeLinkChainNodeSettingsUsesListenPort(t *testing.T) {
 	if settings.ExternalPort != 0 {
 		t.Fatalf("expected external_port=0, got %d", settings.ExternalPort)
 	}
-	if settings.LinkLayer != "http3" {
-		t.Fatalf("expected link_layer=http3, got %q", settings.LinkLayer)
+	if settings.LinkLayer != "" {
+		t.Fatalf("expected empty link_layer, got %q", settings.LinkLayer)
 	}
 }
 
@@ -141,7 +141,7 @@ func TestProjectProbeLinkEntriesForClientUsesIndependentEntryIDs(t *testing.T) {
 		ExitNodeID:    "1",
 		ListenHost:    "0.0.0.0",
 		ListenPort:    16030,
-		LinkLayer:     "http2",
+		LinkLayer:     "",
 		EgressHost:    "127.0.0.1",
 		EgressPort:    1080,
 		HopConfigs: []probeLinkChainHopConfig{{
@@ -149,7 +149,7 @@ func TestProjectProbeLinkEntriesForClientUsesIndependentEntryIDs(t *testing.T) {
 			ListenPort:   16030,
 			ExternalPort: 16030,
 			RelayHost:    "origin.example.com",
-			LinkLayer:    "http2",
+			LinkLayer:    "",
 		}},
 	}
 	ProbeLinkChainStore = &probeLinkChainStore{
@@ -204,7 +204,7 @@ func TestProjectProbeLinkEntriesRefreshesGeneratedNameAfterChainRename(t *testin
 		ExitNodeID:    "1",
 		ListenHost:    "0.0.0.0",
 		ListenPort:    16030,
-		LinkLayer:     "http2",
+		LinkLayer:     "",
 		EgressHost:    "127.0.0.1",
 		EgressPort:    1080,
 		HopConfigs: []probeLinkChainHopConfig{{
@@ -212,7 +212,7 @@ func TestProjectProbeLinkEntriesRefreshesGeneratedNameAfterChainRename(t *testin
 			ListenPort:   16030,
 			ExternalPort: 16030,
 			RelayHost:    "origin.example.com",
-			LinkLayer:    "http2",
+			LinkLayer:    "",
 		}},
 	}
 	ProbeLinkChainStore = &probeLinkChainStore{

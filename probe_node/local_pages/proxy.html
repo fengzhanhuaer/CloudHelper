@@ -586,9 +586,7 @@
 
     function formatRelayProtocolLabel(raw) {
       const value = normalizeRelayProtocol(raw);
-      if (value === 'http2' || value === 'h2') return 'HTTP/2';
-      if (value === 'http3' || value === 'h3') return 'HTTP/3(QUIC)';
-      if (value === 'quic-stream' || value === 'quic' || value === 'quic-dataplane') return 'QUIC Stream';
+      if (value === 'http2' || value === 'h2' || value === 'http3' || value === 'h3' || value === 'quic-stream' || value === 'quic' || value === 'quic-dataplane') return 'AUTO';
       if (value === 'websocket') return 'WS';
       if (value === 'websocket-h3' || value === 'h3-websocket' || value === 'ws-h3') return 'WS-H3';
       return value || '?';
@@ -768,7 +766,6 @@
       const protocolState = item && item.protocol_state;
       const qualityMap = getProtocolQualityMap(protocolState);
       const ws = qualityMap.get('websocket');
-      const quicStream = qualityMap.get('quic-stream');
       const wsH3 = qualityMap.get('websocket-h3');
       const selected = normalizeRelayProtocol(protocolState && protocolState.selected_protocol);
       const selectedQuality = selected ? qualityMap.get(selected) : null;
@@ -782,19 +779,7 @@
         }
       });
 
-      if (quicStream && ws) {
-        const quicRate = Number(quicStream && quicStream.rate_bps);
-        const wsRate = Number(ws && ws.rate_bps);
-        if (Number.isFinite(quicRate) && quicRate > 0 && Number.isFinite(wsRate) && wsRate > 0) {
-          if (quicRate < wsRate * 0.7) {
-            lines.push(`协议速率差明显：QUIC Stream=${formatRateText(quicRate)}，WS=${formatRateText(wsRate)}。优先观察 QUIC 数据面、UDP 路径与 CPU 占用。`);
-          } else if (wsRate < quicRate * 0.7) {
-            lines.push(`协议速率差明显：WS=${formatRateText(wsRate)}，QUIC Stream=${formatRateText(quicRate)}。优先观察 TCP 路径、WebSocket message 聚合效果与出口 TCP。`);
-          } else {
-            lines.push(`协议速率接近：QUIC Stream=${formatRateText(quicRate)}，WS=${formatRateText(wsRate)}。瓶颈更像是链路本身、出口目标或本机资源。`);
-          }
-        }
-      } else if (wsH3 && ws) {
+      if (wsH3 && ws) {
         const wsH3Rate = Number(wsH3 && wsH3.rate_bps);
         const wsRate = Number(ws && ws.rate_bps);
         if (Number.isFinite(wsH3Rate) && wsH3Rate > 0 && Number.isFinite(wsRate) && wsRate > 0) {

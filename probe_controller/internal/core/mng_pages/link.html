@@ -108,7 +108,7 @@
               <button id="btn-add-reset" class="btn" type="button">清空</button>
             </div>
             <div class="small muted">
-              默认值：listen_host=0.0.0.0，listen_port=16030，link_layer=http，dial_mode=forward，egress=127.0.0.1:1080。
+              默认值：listen_host=0.0.0.0，listen_port=16030，dial_mode=forward，egress=127.0.0.1:1080。
             </div>
           </div>
 
@@ -160,7 +160,6 @@
               <th>监听地址</th>
               <th>监听端口</th>
               <th>外部端口</th>
-              <th>链路协议</th>
               <th>建立方向</th>
               <th>relay_host</th>
               <th>操作</th>
@@ -258,7 +257,7 @@
     const DEFAULTS = {
       listenHost: '0.0.0.0',
       listenPort: 16030,
-      linkLayer: 'http',
+      linkLayer: '',
       dialMode: 'forward',
       egressHost: '',
       egressPort: 0,
@@ -397,9 +396,9 @@
 
     function normalizeLayer(raw) {
       const value = String(raw || '').trim().toLowerCase();
-      if (value === 'http2' || value === 'h2') return 'http2';
-      if (value === 'http3' || value === 'h3') return 'http3';
-      return 'http';
+      if (value === 'websocket' || value === 'ws' || value === 'wss') return 'websocket';
+      if (value === 'websocket-h3' || value === 'ws-h3' || value === 'h3-websocket' || value === 'h3-ws') return 'websocket-h3';
+      return '';
     }
 
     function normalizeDialMode(raw) {
@@ -667,7 +666,7 @@
         return;
       }
       body.innerHTML = rows.map((item, idx) => {
-        const protocols = Array.isArray(item.protocols) ? item.protocols.join(',') : 'http2,http3';
+        const protocols = Array.isArray(item.protocols) ? item.protocols.join(',') : 'websocket-h3,websocket';
         const checked = item.selected === true ? 'checked' : '';
         return `<tr>
           <td><input type="checkbox" data-entry-enabled="${idx}" ${checked} /></td>
@@ -716,7 +715,6 @@
         defaults: {
           listen_host: DEFAULTS.listenHost,
           listen_port: DEFAULTS.listenPort,
-          link_layer: DEFAULTS.linkLayer,
           dial_mode: DEFAULTS.dialMode,
           egress_host: DEFAULTS.egressHost,
           egress_port: DEFAULTS.egressPort,
@@ -767,13 +765,11 @@
         cascade_node_ids: [],
         listen_host: DEFAULTS.listenHost,
         listen_port: DEFAULTS.listenPort,
-        link_layer: DEFAULTS.linkLayer,
         hop_configs: [{
           node_no: Number.parseInt(nodeID, 10),
           listen_host: DEFAULTS.listenHost,
           listen_port: DEFAULTS.listenPort,
           external_port: 0,
-          link_layer: DEFAULTS.linkLayer,
           dial_mode: DEFAULTS.dialMode,
           relay_host: relayHost,
         }],
@@ -845,7 +841,7 @@
           listen_host: String(hop.listen_host || chain.listen_host || DEFAULTS.listenHost).trim() || DEFAULTS.listenHost,
           listen_port: normalizePort(hop.listen_port, normalizePort(chain.listen_port, DEFAULTS.listenPort)),
           external_port: normalizePort(hop.external_port, 0),
-          link_layer: normalizeLayer(hop.link_layer || chain.link_layer || DEFAULTS.linkLayer),
+          link_layer: DEFAULTS.linkLayer,
           dial_mode: normalizeDialMode(hop.dial_mode || DEFAULTS.dialMode),
           relay_host: relayHost,
         });
@@ -938,13 +934,6 @@
           <td><input data-hop-listen-port="${index}" class="small" type="number" min="1" max="65535" value="${hop.listen_port > 0 ? hop.listen_port : ''}" /></td>
           <td><input data-hop-external-port="${index}" class="small" type="number" min="1" max="65535" value="${hop.external_port > 0 ? hop.external_port : ''}" /></td>
           <td>
-            <select data-hop-link-layer="${index}" class="small">
-              <option value="http" ${hop.link_layer === 'http' ? 'selected' : ''}>http</option>
-              <option value="http2" ${hop.link_layer === 'http2' ? 'selected' : ''}>http2</option>
-              <option value="http3" ${hop.link_layer === 'http3' ? 'selected' : ''}>http3</option>
-            </select>
-          </td>
-          <td>
             <select data-hop-dial-mode="${index}" class="small">
               <option value="forward" ${hop.dial_mode === 'forward' ? 'selected' : ''}>forward</option>
               <option value="reverse" ${hop.dial_mode === 'reverse' ? 'selected' : ''}>reverse</option>
@@ -1000,14 +989,6 @@
           const idx = Number.parseInt(el.getAttribute('data-hop-external-port') || '-1', 10);
           if (idx < 0 || idx >= state.editForm.hops.length) return;
           state.editForm.hops[idx].external_port = normalizePort(el.value, 0);
-        });
-      });
-
-      document.querySelectorAll('[data-hop-link-layer]').forEach((el) => {
-        el.addEventListener('change', () => {
-          const idx = Number.parseInt(el.getAttribute('data-hop-link-layer') || '-1', 10);
-          if (idx < 0 || idx >= state.editForm.hops.length) return;
-          state.editForm.hops[idx].link_layer = normalizeLayer(el.value);
         });
       });
 
@@ -1073,7 +1054,6 @@
         listen_host: DEFAULTS.listenHost,
         listen_port: DEFAULTS.listenPort,
         external_port: 0,
-        link_layer: DEFAULTS.linkLayer,
         dial_mode: DEFAULTS.dialMode,
         relay_host: domains[0] || '',
       });
@@ -1086,7 +1066,7 @@
         listen_host: String(hop.listen_host || '').trim() || DEFAULTS.listenHost,
         listen_port: normalizePort(hop.listen_port, 0),
         external_port: normalizePort(hop.external_port, 0),
-        link_layer: normalizeLayer(hop.link_layer),
+        link_layer: DEFAULTS.linkLayer,
         dial_mode: normalizeDialMode(hop.dial_mode),
         relay_host: String(hop.relay_host || '').trim(),
       })).filter((hop) => Number.isFinite(hop.node_no) && hop.node_no > 0);
@@ -1126,7 +1106,7 @@
         cascade_node_ids: cascadeNodeIDs,
         listen_host: firstHop.listen_host || DEFAULTS.listenHost,
         listen_port: normalizePort(firstHop.listen_port, DEFAULTS.listenPort),
-        link_layer: normalizeLayer(firstHop.link_layer || DEFAULTS.linkLayer),
+        link_layer: DEFAULTS.linkLayer,
         hop_configs: hops,
         port_forwards: portForwards,
         egress_host: DEFAULTS.egressHost,
@@ -1174,7 +1154,7 @@
           node_no: Number.parseInt(String(item.node_no || '0'), 10),
           host: String(item.host || '').trim(),
           port: normalizePort(item.port, 0),
-          protocols: Array.isArray(item.protocols) ? item.protocols : ['http2', 'http3'],
+          protocols: Array.isArray(item.protocols) ? item.protocols : ['websocket-h3', 'websocket'],
           name: String(item.name || '').trim(),
         }));
       const result = await requestJSON('/mng/api/link/entry_profiles/upsert', {
@@ -1298,7 +1278,7 @@
       body.innerHTML = items.map((item) => {
         const node = `#${item.node_id || '-'} ${item.online ? 'online' : 'offline'}`;
         const chainName = String(item.chain_name || item.chain_id || '-');
-        const chainMeta = `${item.chain_type || '-'} / ${item.link_layer || '-'}`;
+        const chainMeta = `${item.chain_type || '-'} / auto`;
         const listen = formatEndpoint(item.listen_host, item.listen_port);
         const next = formatEndpoint(item.next_host, item.next_port);
         const prev = formatEndpoint(item.prev_host, item.prev_port);
@@ -1307,8 +1287,8 @@
           <td><div>${escapeHTML(chainName)}</div><div class="small muted">ID=${escapeHTML(item.chain_id || '-')} · ${escapeHTML(chainMeta)}</div></td>
           <td>${escapeHTML(item.role || '-')}</td>
           <td><div class="small muted">${escapeHTML(listen)}</div>${formatRelayState(item.listen_state)}</td>
-          <td><div class="small muted">${escapeHTML(next)}${item.next_link_layer ? ` · ${escapeHTML(item.next_link_layer)}` : ''}</div>${formatRelayState(item.next_state)}</td>
-          <td><div class="small muted">${escapeHTML(prev)}${item.prev_link_layer ? ` · ${escapeHTML(item.prev_link_layer)}` : ''}</div>${formatRelayState(item.prev_state)}</td>
+          <td><div class="small muted">${escapeHTML(next)}</div>${formatRelayState(item.next_state)}</td>
+          <td><div class="small muted">${escapeHTML(prev)}</div>${formatRelayState(item.prev_state)}</td>
           <td><div>${escapeHTML(item.updated_at || '-')}</div></td>
         </tr>`;
       }).join('');

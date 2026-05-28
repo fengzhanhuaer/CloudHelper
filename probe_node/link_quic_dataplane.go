@@ -63,12 +63,7 @@ type probeChainQUICDataPlaneControlNetConn struct {
 }
 
 func isProbeChainQUICDataPlaneLayer(layer string) bool {
-	switch normalizeProbeChainLinkLayer(layer) {
-	case "quic-stream":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func probeChainQUICDataPlaneListenPort(basePort int) (int, error) {

@@ -4084,7 +4084,7 @@ func runProbeLocalProxyLinkHandshakeProbe(endpoint probeLocalTUNChainEndpoint) (
 func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (time.Duration, error) {
 	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
 	switch cleanProtocol {
-	case "quic-stream", "websocket-h3", "websocket":
+	case "websocket-h3", "websocket":
 	default:
 		return 0, fmt.Errorf("unsupported relay protocol: %s", protocol)
 	}
@@ -4132,22 +4132,6 @@ func probeLocalProxyLinkPingPongProbe(endpoint probeLocalTUNChainEndpoint, proto
 func openProbeLocalProxyLinkPingPongStream(conn net.Conn, payloadBytes int64) (net.Conn, error) {
 	if conn == nil {
 		return nil, errors.New("relay connection is nil")
-	}
-	if quicControl, ok := conn.(*probeChainQUICDataPlaneControlNetConn); ok {
-		if quicControl.session == nil {
-			return nil, errors.New("quic dataplane session is nil")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), probeChainRelayProtocolProbeTimeout)
-		defer cancel()
-		stream, err := quicControl.session.OpenStream(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if err := writeProbeLocalProxyLinkPingPongRequest(stream, payloadBytes); err != nil {
-			_ = stream.Close()
-			return nil, err
-		}
-		return stream, nil
 	}
 	session, err := yamux.Client(conn, newProbeChainYamuxConfig())
 	if err != nil {
@@ -4212,9 +4196,6 @@ func probeLocalProxyLinkReachabilityProtocolsForEndpoint(item probeLinkChainServ
 	if isProbeLocalProxyLinkCFEntry(item) {
 		return []string{"websocket"}
 	}
-	if normalizeProbeChainLinkLayer(endpoint.LinkLayer) == "http3" {
-		return []string{"websocket-h3", "websocket"}
-	}
 	candidates := probeChainRelayProtocolCandidates(endpoint.LinkLayer)
 	if len(candidates) == 0 {
 		return probeLocalProxyLinkReachabilityProtocols()
@@ -4230,7 +4211,7 @@ func probeLocalProxyLinkReachabilityProtocolsForEndpoint(item probeLinkChainServ
 			continue
 		}
 		switch protocol {
-		case "quic-stream", "websocket-h3", "websocket":
+		case "websocket-h3", "websocket":
 			seen[protocol] = struct{}{}
 			out = append(out, protocol)
 		}
@@ -4894,7 +4875,7 @@ func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {
 	bestProtocol := ""
 	bestLatencyMS := int64(0)
 	endpointKey := probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort)
-	protocolOrder := map[string]int{"websocket-h3": 0, "websocket": 1, "quic-stream": 2}
+	protocolOrder := map[string]int{"websocket-h3": 0, "websocket": 1}
 	for range protocols {
 		result := (<-resultsCh).probeLocalProxyLinkReachabilityResult
 		results = append(results, result)
@@ -4998,8 +4979,8 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Protocol) != "" {
 		protocol = normalizeProbeChainLinkLayer(req.Protocol)
 	}
-	if protocol != "" && !isProbeChainRelaySupportedProtocol(protocol) && protocol != "http2" && protocol != "http3" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "protocol must be websocket-h3, websocket, quic-stream, http2, or http3"})
+	if protocol != "" && !isProbeChainRelaySupportedProtocol(protocol) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "protocol must be websocket-h3 or websocket"})
 		return
 	}
 	items := currentProbeLocalProxyViewChains()

@@ -543,27 +543,6 @@ func (rt *probeLocalTUNGroupRuntime) ensureConnectedLocked() error {
 	if err != nil {
 		return rt.markFailureLocked(err, "unavailable")
 	}
-	if isProbeChainQUICDataPlaneLayer(endpoint.LinkLayer) {
-		relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(endpoint.EntryHost)
-		if err != nil {
-			return rt.markFailureLocked(err, "unavailable")
-		}
-		quicSession, err := openProbeChainRelayQUICDataPlaneSession(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, probeChainBridgeRoleToNext, relayDialHost, relayHostHeader, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline, true)
-		if err != nil {
-			return rt.markFailureLocked(err, "unavailable")
-		}
-		rt.closeLocked()
-		rt.Endpoint = endpoint
-		rt.quicSession = quicSession
-		rt.SessionID = ""
-		rt.RuntimeStatus = "connected"
-		rt.LastError = ""
-		now := time.Now().UTC().Format(time.RFC3339)
-		rt.UpdatedAt = now
-		rt.LastConnectedAt = now
-		return nil
-	}
-
 	conn, err := probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
 	if err != nil {
 		return rt.markFailureLocked(err, "unavailable")

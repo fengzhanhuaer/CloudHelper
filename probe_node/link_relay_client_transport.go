@@ -308,12 +308,6 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 
 func probeChainRelayProtocolCandidates(layer string) []string {
 	switch normalizeProbeChainLinkLayer(layer) {
-	case "quic-stream":
-		return []string{"quic-stream"}
-	case "http":
-		return []string{"websocket-h3", "websocket"}
-	case "http2", "http3":
-		return []string{"websocket-h3", "websocket"}
 	case "websocket":
 		return []string{"websocket"}
 	case "websocket-h3":
@@ -325,7 +319,7 @@ func probeChainRelayProtocolCandidates(layer string) []string {
 
 func isProbeChainRelaySupportedProtocol(protocol string) bool {
 	switch normalizeProbeChainLinkLayer(protocol) {
-	case "websocket", "websocket-h3", "quic-stream":
+	case "websocket", "websocket-h3":
 		return true
 	default:
 		return false
@@ -981,6 +975,25 @@ func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, rela
 }
 
 func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	relayDialHost = strings.TrimSpace(strings.Trim(relayDialHost, "[]"))
+	relayHostHeader = strings.TrimSpace(strings.Trim(relayHostHeader, "[]"))
+	if relayDialHost == "" {
+		return nil, errors.New("relay dial host is required")
+	}
+	if relayHostHeader == "" {
+		relayHostHeader = strings.TrimSpace(strings.Trim(relayHost, "[]"))
+	}
+	layer = normalizeProbeChainLinkLayer(layer)
+	if layer == "websocket" {
+		return openProbeChainRelayWebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+	}
+	if layer == "websocket-h3" {
+		return openProbeChainRelayHTTP3WebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+	}
+	return nil, fmt.Errorf("unsupported relay protocol: %s", layer)
+}
+
+func openProbeChainRelayNetConnHTTPPostLegacy(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
 	startedAt := time.Now()
 	relayDialHost = strings.TrimSpace(strings.Trim(relayDialHost, "[]"))
 	relayHostHeader = strings.TrimSpace(strings.Trim(relayHostHeader, "[]"))
@@ -991,19 +1004,6 @@ func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, r
 		relayHostHeader = strings.TrimSpace(strings.Trim(relayHost, "[]"))
 	}
 	layer = normalizeProbeChainLinkLayer(layer)
-	if layer == "quic-stream" {
-		session, err := openProbeChainRelayQUICDataPlaneSession(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
-		if err != nil {
-			return nil, err
-		}
-		return &probeChainQUICDataPlaneControlNetConn{session: session}, nil
-	}
-	if layer == "websocket" {
-		return openProbeChainRelayWebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
-	}
-	if layer == "websocket-h3" {
-		return openProbeChainRelayHTTP3WebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
-	}
 	relayURL, err := buildProbeChainRelayURL(relayDialHost, relayPort, chainID)
 	if err != nil {
 		return nil, err
@@ -1400,7 +1400,7 @@ func probeChainRelaySpeedTestAuto(chainID string, secret string, relayHost strin
 func probeChainRelaySpeedTestCandidates(layer string, protocol string) []string {
 	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
 	switch cleanProtocol {
-	case "http2", "http3", "websocket", "websocket-h3", "quic-stream":
+	case "websocket", "websocket-h3":
 		return []string{cleanProtocol}
 	}
 	return probeChainRelayProtocolCandidates(layer)
@@ -1452,40 +1452,6 @@ func probeChainRelaySpeedTestWithLayer(chainID string, secret string, relayHost 
 	}
 	deadlineAt := startedAt.Add(timeout)
 	cleanLayer := normalizeProbeChainLinkLayer(layer)
-	if cleanLayer == "quic-stream" {
-		session, err := openProbeChainRelayQUICDataPlaneSession(chainID, secret, relayHost, relayPort, "", relayDialHost, relayHostHeader, timeout, true)
-		headerAt := time.Now()
-		result.LatencyMS = probeDurationMilliseconds(headerAt.Sub(startedAt))
-		if err != nil {
-			result.Error = err.Error()
-			return result
-		}
-		defer session.Close()
-		remainingTimeout := time.Until(deadlineAt)
-		if remainingTimeout <= 0 {
-			result.Error = context.DeadlineExceeded.Error()
-			return result
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), remainingTimeout)
-		defer cancel()
-		stream, err := session.OpenStream(ctx)
-		if err != nil {
-			result.Error = err.Error()
-			return result
-		}
-		defer stream.Close()
-		_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-		if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenRequest{
-			Type:       probeChainRelayModeSpeedTest,
-			SpeedBytes: byteCount,
-		}); err != nil {
-			result.Error = err.Error()
-			return result
-		}
-		_ = stream.SetWriteDeadline(time.Time{})
-		consumeProbeChainRelaySpeedTestData(stream, byteCount, time.Until(deadlineAt), &result)
-		return result
-	}
 	if cleanLayer == "websocket" || cleanLayer == "websocket-h3" {
 		speedConn, speedErr := openProbeChainRelaySpeedTestConn(chainID, secret, relayHost, relayPort, cleanLayer, byteCount, timeout)
 		headerAt := time.Now()

@@ -48,15 +48,15 @@ func TestNewProbeChainQUICConfigUsesV2V1AndDatagrams(t *testing.T) {
 	}
 }
 
-func TestProbeChainQUICDataPlaneLayerRequiresExplicitQUICStream(t *testing.T) {
-	if !isProbeChainQUICDataPlaneLayer("quic-stream") {
-		t.Fatal("quic-stream should use QUIC data plane")
+func TestProbeChainQUICDataPlaneLayerIsDisabledForRelaySelection(t *testing.T) {
+	if isProbeChainQUICDataPlaneLayer("quic-stream") {
+		t.Fatal("quic-stream should not be selected as a relay dataplane")
 	}
 	if isProbeChainQUICDataPlaneLayer("http3") {
-		t.Fatal("http3 should use WS-H3/WS1 relay protocols, not naked QUIC data plane")
+		t.Fatal("http3 should not select naked QUIC data plane")
 	}
 	if isProbeChainQUICDataPlaneLayer("websocket-h3") {
-		t.Fatal("websocket-h3 should use HTTP/3 WebSocket, not naked QUIC data plane")
+		t.Fatal("websocket-h3 should not select naked QUIC data plane")
 	}
 }
 
@@ -135,14 +135,8 @@ func TestProbeChainQUICDataPlaneTCPStreamRoundTrip(t *testing.T) {
 	}
 
 	speed := probeChainRelaySpeedTestWithLayer("chain-quic-test", "secret-quic-test", "127.0.0.1", basePort, "quic-stream", 32*1024, 5*time.Second)
-	if !speed.OK {
-		t.Fatalf("quic speed test failed: %+v", speed)
-	}
-	if speed.Bytes != 32*1024 {
-		t.Fatalf("quic speed bytes=%d want=%d result=%+v", speed.Bytes, 32*1024, speed)
-	}
-	if speed.DurationMS <= 0 || speed.RateBPS <= 0 {
-		t.Fatalf("quic speed should measure data window only: %+v", speed)
+	if speed.OK {
+		t.Fatalf("quic-stream speed test should be disabled, got: %+v", speed)
 	}
 }
 

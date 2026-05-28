@@ -20,7 +20,7 @@ const (
 	maxProbeLinkEntryProfileCount    = 500
 	maxProbeLinkEntryPerChainCount   = 16
 	defaultProbeLinkChainListenHost  = "0.0.0.0"
-	defaultProbeLinkChainLinkLayer   = "http"
+	defaultProbeLinkChainLinkLayer   = ""
 	defaultProbeLinkChainDialMode    = "forward"
 	defaultProbeLinkChainPFNetwork   = "tcp"
 	defaultProbeLinkChainPFEntrySide = "chain_entry"
@@ -239,10 +239,7 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 	if listenPort < 0 || listenPort > 65535 {
 		return probeLinkChainRecord{}, nil, fmt.Errorf("listen_port must be between 1 and 65535")
 	}
-	linkLayer, ok := parseProbeLinkChainLinkLayer(input.LinkLayer)
-	if !ok {
-		return probeLinkChainRecord{}, nil, fmt.Errorf("link_layer must be http/http2/http3")
-	}
+	linkLayer := normalizeProbeLinkChainLinkLayer(input.LinkLayer)
 	chainType, chainTypeOK := parseProbeLinkChainType(input.ChainType)
 	if !chainTypeOK {
 		return probeLinkChainRecord{}, nil, fmt.Errorf("chain_type must be port_forward/proxy_chain")
@@ -531,7 +528,7 @@ func normalizeProbeLinkEntryProtocols(values []string) []string {
 	out := make([]string, 0, 2)
 	add := func(raw string) {
 		v := normalizeProbeLinkChainLinkLayer(raw)
-		if v != "http2" && v != "http3" {
+		if v != "websocket" && v != "websocket-h3" {
 			return
 		}
 		if _, exists := seen[v]; exists {
@@ -544,7 +541,7 @@ func normalizeProbeLinkEntryProtocols(values []string) []string {
 		add(value)
 	}
 	if len(out) == 0 {
-		out = append(out, "http2", "http3")
+		out = append(out, "websocket-h3", "websocket")
 	}
 	return out
 }
@@ -825,12 +822,10 @@ func normalizeProbeLinkChainListenHost(raw string) string {
 
 func normalizeProbeLinkChainLinkLayer(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "http":
-		return "http"
-	case "http2", "h2":
-		return "http2"
-	case "http3", "h3":
-		return "http3"
+	case "websocket", "ws", "wss":
+		return "websocket"
+	case "websocket-h3", "ws-h3", "h3-websocket", "h3-ws":
+		return "websocket-h3"
 	default:
 		return defaultProbeLinkChainLinkLayer
 	}
@@ -842,14 +837,14 @@ func parseProbeLinkChainLinkLayer(raw string) (string, bool) {
 		return "", true
 	}
 	switch strings.ToLower(trimmed) {
-	case "http":
-		return "http", true
-	case "http2", "h2":
-		return "http2", true
-	case "http3", "h3":
-		return "http3", true
+	case "websocket", "ws", "wss":
+		return "websocket", true
+	case "websocket-h3", "ws-h3", "h3-websocket", "h3-ws":
+		return "websocket-h3", true
+	case "http", "http2", "h2", "http3", "h3", "quic-stream", "quic", "quic-dataplane":
+		return defaultProbeLinkChainLinkLayer, true
 	default:
-		return "", false
+		return defaultProbeLinkChainLinkLayer, true
 	}
 }
 
@@ -988,7 +983,7 @@ func normalizeProbeLinkChainHopConfigsForUpsert(values []probeLinkChainHopConfig
 		}
 		linkLayer, ok := parseProbeLinkChainLinkLayer(item.LinkLayer)
 		if !ok {
-			return nil, fmt.Errorf("hop link_layer must be http/http2/http3")
+			return nil, fmt.Errorf("hop link_layer must be websocket/websocket-h3")
 		}
 		dialMode, dialModeOK := parseProbeLinkChainDialMode(item.DialMode)
 		if !dialModeOK {
@@ -1563,7 +1558,7 @@ func buildProbeLinkEntryCandidatesFromChain(chain probeLinkChainRecord, profile 
 			NodeNo:    entryNodeNo,
 			Host:      host,
 			Port:      candidatePort,
-			Protocols: []string{"http2", "http3"},
+			Protocols: []string{"websocket-h3", "websocket"},
 			Name:      name,
 			Selected:  isSelected,
 		})
@@ -1661,7 +1656,7 @@ func buildProbeLinkEntryProjectedChain(chain probeLinkChainRecord, entry probeLi
 	if projected.Name == "" {
 		projected.Name = strings.TrimSpace(chain.Name) + "_" + projected.ClientEntryType
 	}
-	projected.LinkLayer = "http3"
+	projected.LinkLayer = defaultProbeLinkChainLinkLayer
 	route := buildProbeChainRouteNodes(chain)
 	if len(route) == 0 {
 		return projected
@@ -1674,7 +1669,7 @@ func buildProbeLinkEntryProjectedChain(chain probeLinkChainRecord, entry probeLi
 		}
 		hops[i].RelayHost = strings.TrimSpace(entry.Host)
 		hops[i].ExternalPort = entry.Port
-		hops[i].LinkLayer = "http3"
+		hops[i].LinkLayer = defaultProbeLinkChainLinkLayer
 		break
 	}
 	projected.HopConfigs = hops

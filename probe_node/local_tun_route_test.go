@@ -428,7 +428,7 @@ func TestProbeLocalTUNGroupRuntimeLatencyUsesPingPongOnly(t *testing.T) {
 	probeLocalProxyLinkOpenRelayConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) (net.Conn, error) {
 		time.Sleep(25 * time.Millisecond)
 		probeClient, probeServer := net.Pipe()
-		go serveProbeLocalTUNPingPongProbeConn(probeServer)
+		go serveProbeLocalTUNPingPongProbeRelayConn(probeServer)
 		return probeClient, nil
 	}
 	t.Cleanup(resetProbeLocalProxyHooksForTest)
@@ -641,6 +641,10 @@ func serveProbeLocalTUNPingPongProbeConn(conn net.Conn) {
 		return
 	}
 	defer stream.Close()
+	serveProbeLocalTUNPingPongProbeStream(stream)
+}
+
+func serveProbeLocalTUNPingPongProbeStream(stream net.Conn) {
 	var req probeChainTunnelOpenRequest
 	if err := json.NewDecoder(stream).Decode(&req); err != nil {
 		return
@@ -659,6 +663,21 @@ func serveProbeLocalTUNPingPongProbeConn(conn net.Conn) {
 		return
 	}
 	_, _ = stream.Write(buf)
+}
+
+func serveProbeLocalTUNPingPongProbeRelayConn(conn net.Conn) {
+	defer conn.Close()
+	relaySession, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	if err != nil {
+		return
+	}
+	defer relaySession.Close()
+	stream, err := relaySession.Accept()
+	if err != nil {
+		return
+	}
+	defer stream.Close()
+	serveProbeLocalTUNPingPongProbeStream(stream)
 }
 
 func serveProbeLocalTUNRelayHealthProbe(conn net.Conn, done <-chan struct{}) {

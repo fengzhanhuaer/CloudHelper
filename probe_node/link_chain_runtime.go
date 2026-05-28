@@ -1574,7 +1574,7 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 		http.Error(w, "chain runtime not found", http.StatusNotFound)
 		return
 	}
-	if r.Method != http.MethodPost && !websocket.IsWebSocketUpgrade(r) && !isProbeChainHTTP3WebSocketRequest(r) {
+	if !websocket.IsWebSocketUpgrade(r) && !isProbeChainHTTP3WebSocketRequest(r) {
 		log.Printf("probe chain relay request rejected: chain=%s role=%s remote=%s method=%s proto=%s host=%s reason=method_not_allowed", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Method, r.Proto, r.Host)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1614,7 +1614,7 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 			handleProbeChainSpeedTestWebSocket(runtime, w, r)
 			return
 		}
-		handleProbeChainSpeedTestHTTP(runtime, w, r)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if isProbeChainHTTP3WebSocketRequest(r) {
@@ -1625,7 +1625,7 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 		handleProbeChainBridgeRelayWebSocket(runtime, bridgeRole, w, r)
 		return
 	}
-	handleProbeChainBridgeRelayHTTP(runtime, bridgeRole, w, r)
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
 
 func isProbeChainHTTP3WebSocketRequest(r *http.Request) bool {
@@ -2640,27 +2640,7 @@ func openProbeChainBridgeRelayNetConn(cfg probeChainRuntimeConfig, target probeC
 }
 
 func handleProbeChainRelayHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	chainID := resolveProbeChainIDFromRequest(r)
-	if chainID == "" {
-		http.Error(w, "chain_id is required", http.StatusBadRequest)
-		return
-	}
-
-	runtime := getProbeChainRuntime(chainID)
-	if runtime == nil {
-		http.Error(w, "chain runtime not found", http.StatusNotFound)
-		return
-	}
-	if err := verifyProbeChainRelayRequestAuth(runtime, r, chainID); err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	bridgeRole := normalizeProbeChainBridgeRole(r.Header.Get(probeChainCodexRelayRoleHeader))
-	handleProbeChainBridgeRelayHTTP(runtime, bridgeRole, w, r)
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
 
 type probeChainHTTPResponseStreamWriter struct {
