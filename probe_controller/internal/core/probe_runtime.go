@@ -24,6 +24,9 @@ type probeRuntimeStatus struct {
 	NodeID      string                 `json:"node_id"`
 	Online      bool                   `json:"online"`
 	LastSeen    string                 `json:"last_seen"`
+	Platform    string                 `json:"platform,omitempty"`
+	OS          string                 `json:"os,omitempty"`
+	Arch        string                 `json:"arch,omitempty"`
 	IPv4        []string               `json:"ipv4,omitempty"`
 	IPv6        []string               `json:"ipv6,omitempty"`
 	IPLocations map[string]string      `json:"ip_locations,omitempty"`
@@ -109,6 +112,10 @@ func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metri
 }
 
 func updateProbeRuntimeReportWithRelay(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string, relayStatus []probeRelayStatusItem) {
+	updateProbeRuntimeReportWithPlatform(nodeID, ipv4, ipv6, metrics, version, "", "", "", relayStatus)
+}
+
+func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string, platform string, osName string, arch string, relayStatus []probeRelayStatusItem) {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
 		return
@@ -168,6 +175,9 @@ func updateProbeRuntimeReportWithRelay(nodeID string, ipv4 []string, ipv6 []stri
 		NodeID:      nodeID,
 		Online:      true,
 		LastSeen:    time.Now().UTC().Format(time.RFC3339),
+		Platform:    normalizeProbeRuntimePlatform(platform, osName),
+		OS:          normalizeProbeRuntimeOS(osName),
+		Arch:        normalizeProbeRuntimeArch(arch),
 		IPv4:        nextIPv4,
 		IPv6:        nextIPv6,
 		IPLocations: nextIPLocations,
@@ -181,6 +191,29 @@ func updateProbeRuntimeReportWithRelay(nodeID string, ipv4 []string, ipv6 []stri
 		resolveAndApplyProbeIPLocations(nodeID, pendingResolveIPs)
 	}
 	notifyCloudflareRuntimeChanged(nodeID, previousIPv4, previousIPv6, nextIPv4, nextIPv6)
+}
+
+func normalizeProbeRuntimePlatform(platform string, osName string) string {
+	p := strings.ToLower(strings.TrimSpace(platform))
+	o := strings.ToLower(strings.TrimSpace(osName))
+	switch {
+	case p == "android" || o == "android":
+		return "android"
+	case p != "":
+		return p
+	case o != "":
+		return "desktop"
+	default:
+		return ""
+	}
+}
+
+func normalizeProbeRuntimeOS(osName string) string {
+	return strings.ToLower(strings.TrimSpace(osName))
+}
+
+func normalizeProbeRuntimeArch(arch string) string {
+	return strings.ToLower(strings.TrimSpace(arch))
 }
 
 func cloneProbeRelayStatusItems(values []probeRelayStatusItem) []probeRelayStatusItem {

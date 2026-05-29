@@ -322,6 +322,10 @@ func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (re
 		return releaseAsset{}, fmt.Errorf("matching probe_node asset not found, release assets=[%s]", summarizeAssetNames(assets, 20))
 	}
 
+	if strings.EqualFold(strings.TrimSpace(platform.GOOS), "android") {
+		return pickAndroidProbeNodeAsset(probeAssets, platform)
+	}
+
 	// Keep selection aligned with GitHub Action artifact naming:
 	// cloudhelper-probe-node-<goos>-<goarch>
 	preferredPrefix := "cloudhelper-probe-node-" + strings.ToLower(strings.TrimSpace(platform.GOOS)) + "-" + strings.ToLower(strings.TrimSpace(platform.GOARCH))
@@ -392,6 +396,24 @@ func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (re
 		summarizeScoredAssets(scored, 5),
 	)
 	return top.Asset, nil
+}
+
+func pickAndroidProbeNodeAsset(probeAssets []releaseAsset, platform runtimePlatformInfo) (releaseAsset, error) {
+	preferredName := "cloudhelper-probe-node-android-" + strings.ToLower(strings.TrimSpace(platform.GOARCH)) + ".apk"
+	for _, a := range probeAssets {
+		if strings.EqualFold(strings.TrimSpace(a.Name), preferredName) {
+			log.Printf("probe upgrade android asset selected by exact name: name=%s", strings.TrimSpace(a.Name))
+			return a, nil
+		}
+	}
+	for _, a := range probeAssets {
+		n := strings.ToLower(strings.TrimSpace(a.Name))
+		if strings.HasSuffix(n, ".apk") && strings.Contains(n, "android") && assetMatchesArch(n, platform.GOARCH) {
+			log.Printf("probe upgrade android asset selected by apk match: name=%s", strings.TrimSpace(a.Name))
+			return a, nil
+		}
+	}
+	return releaseAsset{}, fmt.Errorf("matching android probe_node apk not found for goarch=%s, probe assets=[%s]", platform.GOARCH, summarizeAssetNames(probeAssets, 20))
 }
 
 func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, output string) error {

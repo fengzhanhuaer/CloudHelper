@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,9 @@ type nodeIdentity struct {
 type probeReportPayload struct {
 	Type        string                      `json:"type"`
 	NodeID      string                      `json:"node_id"`
+	Platform    string                      `json:"platform,omitempty"`
+	OS          string                      `json:"os,omitempty"`
+	Arch        string                      `json:"arch,omitempty"`
 	IPv4        []string                    `json:"ipv4,omitempty"`
 	IPv6        []string                    `json:"ipv6,omitempty"`
 	System      systemStatus                `json:"system"`
@@ -646,6 +650,9 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 	payload := probeReportPayload{
 		Type:        "report",
 		NodeID:      identity.NodeID,
+		Platform:    probeRuntimePlatform(),
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
 		IPv4:        ipv4,
 		IPv6:        ipv6,
 		System:      system,
@@ -658,6 +665,13 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		return err
 	}
 	return nil
+}
+
+func probeRuntimePlatform() string {
+	if runtime.GOOS == "android" {
+		return "android"
+	}
+	return "desktop"
 }
 
 func writeProbeStreamJSON(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, payload any) error {

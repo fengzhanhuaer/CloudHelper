@@ -31,6 +31,26 @@ func TestPickProbeNodeAssetPrefersWorkflowPrefixName(t *testing.T) {
 	}
 }
 
+func TestPickProbeNodeAssetSelectsAndroidAPK(t *testing.T) {
+	assets := []releaseAsset{
+		{Name: "cloudhelper-probe-node-linux-arm64", DownloadURL: "https://example.com/linux"},
+		{Name: "cloudhelper-probe-node-android-arm64.apk", DownloadURL: "https://example.com/android"},
+	}
+
+	platform := runtimePlatformInfo{
+		GOOS:   "android",
+		GOARCH: "arm64",
+	}
+
+	selected, err := pickProbeNodeAsset(assets, platform)
+	if err != nil {
+		t.Fatalf("pickProbeNodeAsset returned error: %v", err)
+	}
+	if selected.Name != "cloudhelper-probe-node-android-arm64.apk" {
+		t.Fatalf("expected android apk asset, got %q", selected.Name)
+	}
+}
+
 func TestPickProbeNodeAssetPrefersLinuxOnGlibc(t *testing.T) {
 	assets := []releaseAsset{
 		{Name: "cloudhelper-probe-node-alpine-amd64.tar.gz", DownloadURL: "https://example.com/alpine"},

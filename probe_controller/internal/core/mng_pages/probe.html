@@ -198,6 +198,7 @@
           <select id="edit-target-system">
             <option value="linux">linux</option>
             <option value="windows">windows</option>
+            <option value="android">android</option>
           </select>
         </div>
         <div class="form-field full">
@@ -379,7 +380,8 @@
       if (!nodeID || !secret) return '';
       const proxyBaseURL = `${baseURL}/api/probe/proxy`;
       const directConnect = node && node.direct_connect === true;
-      const targetSystem = String((node && node.target_system) || 'linux').toLowerCase() === 'windows' ? 'windows' : 'linux';
+      const rawTargetSystem = String((node && node.target_system) || 'linux').toLowerCase();
+      const targetSystem = rawTargetSystem === 'windows' ? 'windows' : (rawTargetSystem === 'android' ? 'android' : 'linux');
 
       const envVars = [
         `PROBE_NODE_ID=${quoteBashLiteral(nodeID)}`,
@@ -405,6 +407,14 @@
           'Invoke-WebRequest -UseBasicParsing -Uri $scriptUrl -OutFile $scriptPath',
           'powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath',
         ].filter(Boolean).join('; ');
+      }
+
+      if (targetSystem === 'android') {
+        return [
+          'Android APK: cloudhelper-probe-node-android-arm64.apk',
+          `Release API: ${baseURL}/api/probe/proxy/github/latest?project=fengzhanhuaer%2FCloudHelper`,
+          '在 Android 设备安装 APK 后配置 node_id / secret 与 controller 地址。'
+        ].join('\n');
       }
 
       const scriptURL = directConnect
@@ -755,7 +765,7 @@
       document.getElementById('edit-remark').value = String(node.remark || '');
       document.getElementById('edit-ddns').value = String(node.ddns || '');
       const targetSystem = String(node.target_system || 'linux').toLowerCase();
-      document.getElementById('edit-target-system').value = targetSystem === 'windows' ? 'windows' : 'linux';
+      document.getElementById('edit-target-system').value = targetSystem === 'windows' ? 'windows' : (targetSystem === 'android' ? 'android' : 'linux');
       document.getElementById('edit-direct-connect').checked = node.direct_connect === true;
       document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
       document.getElementById('edit-cost').value = String(node.cost || '');
@@ -784,8 +794,8 @@
       if (message.includes('node name already exists')) {
         return `保存失败：节点名称已存在（${raw}）`;
       }
-      if (message.includes('target system must be linux or windows')) {
-        return `保存失败：目标系统只能是 linux 或 windows（${raw}）`;
+      if (message.includes('target system must be linux, windows or android')) {
+        return `保存失败：目标系统只能是 linux、windows 或 android（${raw}）`;
       }
       if (message.includes('invalid node number')) {
         return `保存失败：节点编号无效（${raw}）`;
@@ -806,8 +816,8 @@
       if (!nodeName) {
         throw buildEditValidationError('node_name 不能为空');
       }
-      if (targetSystem !== 'linux' && targetSystem !== 'windows') {
-        throw buildEditValidationError('target_system 只能是 linux 或 windows');
+      if (targetSystem !== 'linux' && targetSystem !== 'windows' && targetSystem !== 'android') {
+        throw buildEditValidationError('target_system 只能是 linux、windows 或 android');
       }
       if (expireAt && !/^\d{4}-\d{2}-\d{2}$/.test(expireAt)) {
         throw buildEditValidationError('expire_at 格式必须是 YYYY-MM-DD');

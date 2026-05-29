@@ -13,6 +13,9 @@ import (
 type probeReportMessage struct {
 	Type        string                 `json:"type"`
 	NodeID      string                 `json:"node_id"`
+	Platform    string                 `json:"platform,omitempty"`
+	OS          string                 `json:"os,omitempty"`
+	Arch        string                 `json:"arch,omitempty"`
 	IPv4        []string               `json:"ipv4,omitempty"`
 	IPv6        []string               `json:"ipv6,omitempty"`
 	System      probeSystemMetrics     `json:"system"`
@@ -104,7 +107,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			if reportedNodeID == "" {
 				reportedNodeID = nodeID
 			}
-			updateProbeRuntimeReportWithRelay(reportedNodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.RelayStatus)
+			updateProbeRuntimeReportWithPlatform(reportedNodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.RelayStatus)
 
 			_ = probeSession.writeJSON(probeAckMessage{
 				Type:      "ack",

@@ -81,9 +81,7 @@ type probeChainBridgeSession struct {
 
 type probeChainRuntime struct {
 	cfg                probeChainRuntimeConfig
-	httpsServer        *http.Server
-	http3Server        *http3.Server
-	http3PacketConn    net.PacketConn
+	relayListenAddr    string
 	downstreamSessions map[string]*probeChainBridgeSession
 	upstreamSessions   map[string]*probeChainBridgeSession
 	bridgeMu           sync.Mutex
@@ -197,6 +195,20 @@ var probeChainRuntimeState = struct {
 	mu       sync.Mutex
 	runtimes map[string]*probeChainRuntime
 }{runtimes: make(map[string]*probeChainRuntime)}
+
+type probeChainSharedRelayServer struct {
+	listenAddr    string
+	httpsServer   *http.Server
+	http3Server   *http3.Server
+	udpPacketConn net.PacketConn
+	chainIDs      map[string]struct{}
+	refCount      int
+}
+
+var probeChainSharedRelayState = struct {
+	mu      sync.Mutex
+	servers map[string]*probeChainSharedRelayServer
+}{servers: make(map[string]*probeChainSharedRelayServer)}
 
 const (
 	probeChainRelayAPIPath       = "/api/node/chain/relay"
@@ -1462,23 +1474,75 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 
 	cfg := runtime.cfg
 	listenAddr := net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort))
-	handler := buildProbeChainRuntimeRelayHandler(runtime)
+	if err := acquireProbeChainSharedRelayServer(runtime, listenAddr); err != nil {
+		return err
+	}
+	runtime.relayListenAddr = listenAddr
+	return nil
+}
 
+func acquireProbeChainSharedRelayServer(runtime *probeChainRuntime, listenAddr string) error {
+	if runtime == nil {
+		return errors.New("runtime is nil")
+	}
+	chainID := strings.TrimSpace(runtime.cfg.chainID)
+	if chainID == "" {
+		return errors.New("chain_id is required")
+	}
+
+	probeChainSharedRelayState.mu.Lock()
+	if shared := probeChainSharedRelayState.servers[listenAddr]; shared != nil {
+		if shared.chainIDs == nil {
+			shared.chainIDs = make(map[string]struct{})
+		}
+		if _, exists := shared.chainIDs[chainID]; !exists {
+			shared.chainIDs[chainID] = struct{}{}
+			shared.refCount++
+		}
+		refCount := shared.refCount
+		probeChainSharedRelayState.mu.Unlock()
+		markProbeChainRelayListenerStatus(listenAddr, "websocket", "listening", "")
+		markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "listening", "")
+		log.Printf("probe chain shared relay reused: chain=%s listen=%s ref_count=%d", chainID, listenAddr, refCount)
+		return nil
+	}
+	probeChainSharedRelayState.mu.Unlock()
+
+	shared, err := startProbeChainSharedRelayServer(runtime, listenAddr)
+	if err != nil {
+		return err
+	}
+
+	probeChainSharedRelayState.mu.Lock()
+	if existing := probeChainSharedRelayState.servers[listenAddr]; existing != nil {
+		probeChainSharedRelayState.mu.Unlock()
+		closeProbeChainSharedRelayServer(shared)
+		return acquireProbeChainSharedRelayServer(runtime, listenAddr)
+	}
+	probeChainSharedRelayState.servers[listenAddr] = shared
+	probeChainSharedRelayState.mu.Unlock()
+	log.Printf("probe chain shared relay started: chain=%s listen=%s", chainID, listenAddr)
+	return nil
+}
+
+func startProbeChainSharedRelayServer(runtime *probeChainRuntime, listenAddr string) (*probeChainSharedRelayServer, error) {
+	cfg := runtime.cfg
+	handler := buildProbeChainSharedRelayHandler()
 	cert, err := prepareProbeServerCertificate(cfg.identity, strings.TrimSpace(cfg.controllerURL))
 	if err != nil {
-		return fmt.Errorf("prepare chain relay certificate failed: %w", err)
+		return nil, fmt.Errorf("prepare chain relay certificate failed: %w", err)
 	}
 
 	listenConfig := net.ListenConfig{KeepAlive: probeChainRelayTCPKeepAlivePeriod}
 	tcpListener, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
-		return fmt.Errorf("listen chain relay tcp failed: %w", err)
+		return nil, fmt.Errorf("listen chain relay tcp failed: %w", err)
 	}
 	tcpListener = &probeChainTunedTCPListener{Listener: tcpListener}
 	udpPacketConn, err := net.ListenPacket("udp", listenAddr)
 	if err != nil {
 		_ = tcpListener.Close()
-		return fmt.Errorf("listen chain relay udp failed: %w", err)
+		return nil, fmt.Errorf("listen chain relay udp failed: %w", err)
 	}
 	if udpConn, ok := udpPacketConn.(*net.UDPConn); ok {
 		tuneProbeChainUDPConn(udpConn)
@@ -1487,31 +1551,32 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 	if err != nil {
 		_ = tcpListener.Close()
 		_ = udpPacketConn.Close()
-		return fmt.Errorf("load chain relay certificate failed: %w", err)
+		return nil, fmt.Errorf("load chain relay certificate failed: %w", err)
 	}
 
+	shared := &probeChainSharedRelayServer{
+		listenAddr:    listenAddr,
+		chainIDs:      map[string]struct{}{strings.TrimSpace(cfg.chainID): {}},
+		refCount:      1,
+		udpPacketConn: udpPacketConn,
+	}
 	httpsServer := &http.Server{
 		Addr:              listenAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	runtime.httpsServer = httpsServer
+	shared.httpsServer = httpsServer
 	markProbeChainRelayListenerStatus(listenAddr, "websocket", "starting", "")
-	go func(rt *probeChainRuntime, srv *http.Server, certFile string, keyFile string) {
+	go func(s *probeChainSharedRelayServer, certFile string, keyFile string) {
 		markProbeChainRelayListenerStatus(listenAddr, "websocket", "listening", "")
-		serveErr := srv.ServeTLS(tcpListener, certFile, keyFile)
+		serveErr := s.httpsServer.ServeTLS(tcpListener, certFile, keyFile)
 		if serveErr != nil && serveErr != http.ErrServerClosed {
-			select {
-			case <-rt.stopCh:
-				return
-			default:
-			}
 			markProbeChainRelayListenerStatus(listenAddr, "websocket", "failed", serveErr.Error())
-			log.Printf("probe chain runtime public relay exited: chain=%s layer=websocket listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
+			log.Printf("probe chain shared relay exited: layer=websocket listen=%s err=%v", listenAddr, serveErr)
 			return
 		}
 		markProbeChainRelayListenerStatus(listenAddr, "websocket", "stopped", "")
-	}(runtime, httpsServer, cert.CertPath, cert.KeyPath)
+	}(shared, cert.CertPath, cert.KeyPath)
 
 	h3Server := &http3.Server{
 		Addr:    listenAddr,
@@ -1523,33 +1588,43 @@ func startProbeChainPublicRelayServer(runtime *probeChainRuntime) error {
 		},
 		QUICConfig: newProbeChainQUICConfig(probeChainRelayQUICMaxIncomingStreams),
 	}
-	runtime.http3Server = h3Server
-	runtime.http3PacketConn = udpPacketConn
+	shared.http3Server = h3Server
 	markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "starting", "")
-	go func(rt *probeChainRuntime, srv *http3.Server, certFile string, keyFile string) {
+	go func(s *probeChainSharedRelayServer) {
 		markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "listening", "")
-		if serveErr := srv.Serve(udpPacketConn); serveErr != nil && serveErr != http.ErrServerClosed {
-			select {
-			case <-rt.stopCh:
-				return
-			default:
-			}
+		if serveErr := s.http3Server.Serve(udpPacketConn); serveErr != nil && serveErr != http.ErrServerClosed {
 			markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "failed", serveErr.Error())
-			log.Printf("probe chain runtime public relay exited: chain=%s layer=websocket-h3 listen=%s err=%v", rt.cfg.chainID, listenAddr, serveErr)
+			log.Printf("probe chain shared relay exited: layer=websocket-h3 listen=%s err=%v", listenAddr, serveErr)
 			return
 		}
 		markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "stopped", "")
-	}(runtime, h3Server, cert.CertPath, cert.KeyPath)
+	}(shared)
 
-	return nil
+	return shared, nil
 }
 
-func buildProbeChainRuntimeRelayHandler(runtime *probeChainRuntime) http.Handler {
+func buildProbeChainSharedRelayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(probeChainRelayAPIPath, func(w http.ResponseWriter, r *http.Request) {
-		handleProbeChainRelayToRuntime(runtime, w, r)
+		handleProbeChainRelayDispatch(w, r)
 	})
 	return mux
+}
+
+func handleProbeChainRelayDispatch(w http.ResponseWriter, r *http.Request) {
+	chainID := resolveProbeChainIDFromRequest(r)
+	if strings.TrimSpace(chainID) == "" {
+		log.Printf("probe chain relay request rejected: remote=%s method=%s proto=%s host=%s reason=missing_chain_id", r.RemoteAddr, r.Method, r.Proto, r.Host)
+		http.Error(w, "chain_id is required", http.StatusBadRequest)
+		return
+	}
+	runtime := getProbeChainRuntime(chainID)
+	if runtime == nil {
+		log.Printf("probe chain relay request rejected: requested_chain=%s remote=%s method=%s proto=%s host=%s reason=runtime_not_found", strings.TrimSpace(chainID), r.RemoteAddr, r.Method, r.Proto, r.Host)
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+	handleProbeChainRelayToRuntime(runtime, w, r)
 }
 
 func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {
@@ -2008,22 +2083,69 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 			_ = pc.Close()
 		}
 	}
-	if rt.httpsServer != nil {
+	releaseProbeChainSharedRelayServer(rt)
+}
+
+func releaseProbeChainSharedRelayServer(rt *probeChainRuntime) {
+	if rt == nil {
+		return
+	}
+	listenAddr := strings.TrimSpace(rt.relayListenAddr)
+	if listenAddr == "" {
+		listenAddr = net.JoinHostPort(rt.cfg.listenHost, strconv.Itoa(rt.cfg.listenPort))
+	}
+	chainID := strings.TrimSpace(rt.cfg.chainID)
+	if listenAddr == "" || chainID == "" {
+		return
+	}
+
+	var closeTarget *probeChainSharedRelayServer
+	refCount := 0
+	probeChainSharedRelayState.mu.Lock()
+	shared := probeChainSharedRelayState.servers[listenAddr]
+	if shared != nil {
+		if _, exists := shared.chainIDs[chainID]; exists {
+			delete(shared.chainIDs, chainID)
+			if shared.refCount > 0 {
+				shared.refCount--
+			}
+		}
+		refCount = shared.refCount
+		if shared.refCount <= 0 || len(shared.chainIDs) == 0 {
+			delete(probeChainSharedRelayState.servers, listenAddr)
+			closeTarget = shared
+		}
+	}
+	probeChainSharedRelayState.mu.Unlock()
+
+	if closeTarget != nil {
+		closeProbeChainSharedRelayServer(closeTarget)
+		log.Printf("probe chain shared relay stopped: listen=%s", listenAddr)
+		return
+	}
+	if shared != nil {
+		log.Printf("probe chain shared relay released: chain=%s listen=%s ref_count=%d", chainID, listenAddr, refCount)
+	}
+}
+
+func closeProbeChainSharedRelayServer(shared *probeChainSharedRelayServer) {
+	if shared == nil {
+		return
+	}
+	listenAddr := strings.TrimSpace(shared.listenAddr)
+	if shared.httpsServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		_ = rt.httpsServer.Shutdown(ctx)
+		_ = shared.httpsServer.Shutdown(ctx)
 		cancel()
 	}
-	if rt.http3Server != nil {
-		_ = rt.http3Server.Close()
+	if shared.http3Server != nil {
+		_ = shared.http3Server.Close()
 	}
-	if rt.http3PacketConn != nil {
-		_ = rt.http3PacketConn.Close()
+	if shared.udpPacketConn != nil {
+		_ = shared.udpPacketConn.Close()
 	}
-	listenAddr := net.JoinHostPort(rt.cfg.listenHost, strconv.Itoa(rt.cfg.listenPort))
-	if rt.httpsServer != nil {
+	if listenAddr != "" {
 		markProbeChainRelayListenerStatus(listenAddr, "websocket", "stopped", "")
-	}
-	if rt.http3Server != nil {
 		markProbeChainRelayListenerStatus(listenAddr, "websocket-h3", "stopped", "")
 	}
 }

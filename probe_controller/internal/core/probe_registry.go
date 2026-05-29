@@ -442,8 +442,8 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		node.DDNS = strings.TrimSpace(node.DDNS)
 		node.CloudflareDDNSRecords = normalizeCloudflareRecords(node.CloudflareDDNSRecords)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
-		node.TargetSystem = strings.ToLower(strings.TrimSpace(node.TargetSystem))
-		if node.TargetSystem != "windows" {
+		node.TargetSystem = normalizeProbeTargetSystem(node.TargetSystem)
+		if node.TargetSystem == "" {
 			node.TargetSystem = "linux"
 		}
 		node.ServiceScheme = normalizeProbeEndpointScheme(node.ServiceScheme)
@@ -669,9 +669,9 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 		return probeNodeRecord{}, fmt.Errorf("node name is required")
 	}
 
-	system := strings.ToLower(strings.TrimSpace(req.TargetSystem))
-	if system != "linux" && system != "windows" {
-		return probeNodeRecord{}, fmt.Errorf("target system must be linux or windows")
+	system := normalizeProbeTargetSystem(req.TargetSystem)
+	if system == "" {
+		return probeNodeRecord{}, fmt.Errorf("target system must be linux, windows or android")
 	}
 
 	nodes := loadProbeNodesLocked()
@@ -941,6 +941,19 @@ func normalizeProbeEndpointScheme(raw string) string {
 		return "http"
 	}
 	return "http"
+}
+
+func normalizeProbeTargetSystem(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "windows":
+		return "windows"
+	case "android":
+		return "android"
+	case "linux", "":
+		return "linux"
+	default:
+		return ""
+	}
 }
 
 func randomProbeNodeSecret(length int) string {

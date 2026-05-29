@@ -123,11 +123,53 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: probe_node/${{ matrix.output }}
 
+  build-probe-node-android:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build Probe Node Android (arm64)
+        working-directory: probe_node_android
+        env:
+          CLOUDHELPER_VERSION: v${{ needs.prepare-release.outputs.new_version }}
+        shell: bash
+        run: gradle :app:assembleRelease
+
+      - name: Stage Probe Node Android APK
+        shell: bash
+        run: cp probe_node_android/app/build/outputs/apk/release/app-release.apk probe_node_android/cloudhelper-probe-node-android-arm64.apk
+
+      - name: Upload Probe Node Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudhelper-probe-node-android-arm64.apk
+          path: probe_node_android/cloudhelper-probe-node-android-arm64.apk
+
   create-release:
     needs:
       - prepare-release
       - build-probe-controller
       - build-probe-node
+      - build-probe-node-android
     runs-on: ubuntu-latest
     steps:
       - name: Download Probe Controller Artifact
@@ -154,6 +196,12 @@ jobs:
           name: cloudhelper-probe-node-windows-amd64.exe
           path: release-assets
 
+      - name: Download Probe Node Android Artifact (arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-probe-node-android-arm64.apk
+          path: release-assets
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -164,3 +212,4 @@ jobs:
             release-assets/cloudhelper-probe-node-linux-amd64
             release-assets/cloudhelper-probe-node-linux-arm64
             release-assets/cloudhelper-probe-node-windows-amd64.exe
+            release-assets/cloudhelper-probe-node-android-arm64.apk

@@ -66,6 +66,68 @@ func TestMngProbeNodesHandlerIncludesRuntimeVersionWithoutStatusCall(t *testing.
 	}
 }
 
+func TestMngProbeNodesHandlerIncludesAndroidRuntimePlatform(t *testing.T) {
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{
+				{NodeNo: 2, NodeName: "android-node", TargetSystem: "android"},
+			},
+			DeletedProbeNodes:   []probeNodeRecord{},
+			ProbeSecrets:        map[string]string{},
+			ProbeShellShortcuts: []probeShellShortcutRecord{},
+			DeletedProbeNodeNos: []int{},
+		},
+	}
+	defer func() {
+		ProbeStore = oldStore
+	}()
+
+	probeRuntimeStore.mu.Lock()
+	oldRuntimeData := probeRuntimeStore.data
+	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
+	probeRuntimeStore.mu.Unlock()
+	defer func() {
+		probeRuntimeStore.mu.Lock()
+		probeRuntimeStore.data = oldRuntimeData
+		probeRuntimeStore.mu.Unlock()
+	}()
+
+	updateProbeRuntimeReportWithPlatform("2", nil, nil, probeSystemMetrics{}, "v1.2.4", "android", "android", "arm64", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/mng/api/probe/nodes", nil)
+	rr := httptest.NewRecorder()
+	mngProbeNodesHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var payload struct {
+		Nodes []struct {
+			NodeNo       int    `json:"node_no"`
+			TargetSystem string `json:"target_system"`
+			Runtime      struct {
+				Platform string `json:"platform"`
+				OS       string `json:"os"`
+				Arch     string `json:"arch"`
+			} `json:"runtime"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode payload: %v body=%s", err, rr.Body.String())
+	}
+	if len(payload.Nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d payload=%s", len(payload.Nodes), rr.Body.String())
+	}
+	got := payload.Nodes[0]
+	if got.NodeNo != 2 || got.TargetSystem != "android" {
+		t.Fatalf("unexpected node identity: %+v", got)
+	}
+	if got.Runtime.Platform != "android" || got.Runtime.OS != "android" || got.Runtime.Arch != "arm64" {
+		t.Fatalf("unexpected runtime platform: %+v", got.Runtime)
+	}
+}
+
 func TestMngProbeStatusHandlerIncludesExpireAt(t *testing.T) {
 	oldStore := ProbeStore
 	ProbeStore = &probeConfigStore{

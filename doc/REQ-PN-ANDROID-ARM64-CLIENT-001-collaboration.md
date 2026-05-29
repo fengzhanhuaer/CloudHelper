@@ -342,17 +342,23 @@
 
 ## 第2章 Code章节
 - 章节责任角色: Code
-- 状态: 未开始
+- 状态: 进行中
 
 ### 2.1 Code需求跟踪矩阵
-- 状态: 未开始
+- 状态: 进行中
 
 | 需求编号 | Code任务 | 状态 | 备注 |
 |---|---|---|---|
-| REQ-PN-ANDROID-ARM64-CLIENT-001 | 待 Code 阶段填写 | 未开始 | 无 |
+| REQ-PN-ANDROID-ARM64-CLIENT-001-R1 | TASK-001 TASK-002 | 已实施 | 新增 `probe_node_android/` Android arm64 壳工程；GitHub Actions 构建并上传 `cloudhelper-probe-node-android-arm64.apk` |
+| REQ-PN-ANDROID-ARM64-CLIENT-001-R2 | TASK-003 | 已实施 | 主控支持 `target_system=android`；probe runtime 支持 `platform/os/arch` |
+| REQ-PN-ANDROID-ARM64-CLIENT-001-R3 | TASK-004 | 已实施 | probe 升级资产选择支持 Android APK；Android 客户端具备 latest 检查、APK 下载、系统安装器触发骨架 |
+| REQ-PN-ANDROID-ARM64-CLIENT-001-R4 | TASK-005 | 未开始 | 后续拆 mobilecore |
+| REQ-PN-ANDROID-ARM64-CLIENT-001-R5 | TASK-006 TASK-007 | 未开始 | 后续实现 VPN/TUN |
+| REQ-PN-ANDROID-ARM64-CLIENT-001-R6 | TASK-007 TASK-008 | 未开始 | 后续实现 Android 数据面和 controller 联通 |
+| REQ-PN-ANDROID-ARM64-CLIENT-001-R7 | TASK-009 | 未开始 | 后续完善 UI/日志 |
 
 ### 2.2 Code关键接口跟踪矩阵
-- 状态: 未开始
+- 状态: 进行中
 
 | 接口编号 | 接口名称 | 实现状态 | 备注 |
 |---|---|---|---|
@@ -362,20 +368,20 @@
 | IF-004 | `ProbeMobileCore.updateConfig(config)` | 未开始 | 无 |
 | IF-005 | `ProbeMobileCore.snapshot()` | 未开始 | 无 |
 | IF-006 | `ProbeMobileEventSink` | 未开始 | 无 |
-| IF-007 | Android Release Asset | 未开始 | 无 |
-| IF-008 | Probe Node Platform Type | 未开始 | 无 |
-| IF-009 | Android Upgrade Asset Selection | 未开始 | 无 |
+| IF-007 | Android Release Asset | 已实施 | `.github/workflows/release.yml` 新增 Android APK 构建与 Release asset |
+| IF-008 | Probe Node Platform Type | 已实施 | `probe_node` 上报 `platform/os/arch`；controller runtime 保存并返回 |
+| IF-009 | Android Upgrade Asset Selection | 已实施 | Go 升级选择支持 Android APK；Android 壳具备 APK 检查/下载/安装入口 |
 
 ### 2.3 Code测试项跟踪矩阵
-- 状态: 未开始
+- 状态: 进行中
 
 | 测试项编号 | 需求编号 | 测试项 | 状态 | 备注 |
 |---|---|---|---|---|
-| TC-001 | REQ-PN-ANDROID-ARM64-CLIENT-001 | `cd probe_node; go test ./...` | 未开始 | Code阶段执行 |
-| TC-002 | REQ-PN-ANDROID-ARM64-CLIENT-001 | Android Debug arm64 构建 | 未开始 | Code阶段执行 |
-| TC-003 | REQ-PN-ANDROID-ARM64-CLIENT-001 | GitHub Actions Android APK Release asset 验证 | 未开始 | Code阶段执行 |
-| TC-004 | REQ-PN-ANDROID-ARM64-CLIENT-001 | 主控 Android 类型 node 上报/展示验证 | 未开始 | Code阶段执行 |
-| TC-005 | REQ-PN-ANDROID-ARM64-CLIENT-001 | Android 升级资产选择与安装入口冒烟 | 未开始 | Code阶段执行 |
+| TC-001 | REQ-PN-ANDROID-ARM64-CLIENT-001 | `cd probe_node; go test ./...` | 通过 | 2026-05-28 本机执行通过 |
+| TC-002 | REQ-PN-ANDROID-ARM64-CLIENT-001 | Android Debug arm64 构建 | 未执行 | 本机未安装 `gradle`/Android SDK |
+| TC-003 | REQ-PN-ANDROID-ARM64-CLIENT-001 | GitHub Actions Android APK Release asset 验证 | 待CI | workflow 已实施，需推送后由 GitHub Actions 验证 |
+| TC-004 | REQ-PN-ANDROID-ARM64-CLIENT-001 | 主控 Android 类型 node 上报/展示验证 | 通过 | `cd probe_controller; go test ./...` 通过，含新增单测 |
+| TC-005 | REQ-PN-ANDROID-ARM64-CLIENT-001 | Android 升级资产选择与安装入口冒烟 | 部分通过 | Go APK 资产选择单测通过；Android 真机安装入口未执行，本机缺 `adb` |
 | TC-006 | REQ-PN-ANDROID-ARM64-CLIENT-001 | Android VPN 授权与服务启动冒烟 | 未开始 | 后续 Code 阶段执行 |
 | TC-007 | REQ-PN-ANDROID-ARM64-CLIENT-001 | controller 联通冒烟 | 未开始 | 后续 Code 阶段执行 |
 
@@ -387,17 +393,17 @@
 | DEF-001 | REQ-PN-ANDROID-ARM64-CLIENT-001 | 暂无 | 未开始 | 无 |
 
 ### 2.5 Code执行证据
-- 状态: 未开始
+- 状态: 进行中
 
-- 修改接口: 未开始
-- 配置文件: 未开始
-- 执行报告: 未开始
-- 影响文件: 未开始
-- 测试命令: 未开始
-- 自测结果: 未开始
-- 未执行测试原因: 未开始
-- 遗留风险: 未开始
-- 回滚方案: 未开始
+- 修改接口: `probeReportPayload` / `probeReportMessage` 增加 `platform/os/arch`；controller `probeRuntimeStatus` 增加 `platform/os/arch`；`target_system` 支持 `android`。
+- 配置文件: `.github/workflows/release.yml`、`probe_node_android/**`。
+- 执行报告: 已完成 TASK-001 到 TASK-004 的首批闭环实现。
+- 影响文件: `.github/workflows/release.yml`、`probe_node_android/**`、`probe_node/main.go`、`probe_node/upgrade.go`、`probe_controller/internal/core/**`、`probe_controller/internal/core/mng_pages/probe.html`。
+- 测试命令: `cd probe_node; go test ./...`；`cd probe_controller; go test ./...`；`git diff --check`。
+- 自测结果: Go 单测通过；`git diff --check` 无 whitespace error，仅 Git CRLF 提示。
+- 未执行测试原因: 本机无 `gradle` 和 `adb`，无法本地构建 APK 或真机/模拟器安装验证；Android 构建由 GitHub Actions 验证。
+- 遗留风险: Android APK 当前使用 debug signingConfig 产出 release 包，适合内部迭代；正式升级需确定稳定签名密钥。Android 客户端尚未接入 controller 配置、VPN/TUN 和 mobilecore。
+- 回滚方案: 回退 `.github/workflows/release.yml` Android job、`probe_node_android/`、平台字段和 Android asset 选择相关改动。
 
 ### 2.6 Code任务反馈
 - 状态: 未开始

@@ -29,6 +29,24 @@ func TestNormalizeProbeNodesNormalizesLinkFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeProbeNodesSupportsAndroidTargetSystem(t *testing.T) {
+	nodes, _ := normalizeProbeNodes([]probeNodeRecord{
+		{
+			NodeNo:       1,
+			NodeName:     "android-node",
+			NodeSecret:   "secret",
+			TargetSystem: "ANDROID",
+		},
+	})
+
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
+	if nodes[0].TargetSystem != "android" {
+		t.Fatalf("expected target_system=android, got %q", nodes[0].TargetSystem)
+	}
+}
+
 func TestNormalizeProbeEndpointSchemeSupportsTransportTypes(t *testing.T) {
 	tests := map[string]string{
 		"https":     "https",

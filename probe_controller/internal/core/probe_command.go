@@ -42,6 +42,7 @@ type probeUpgradeDispatchResult struct {
 	NodeID        string `json:"node_id"`
 	NodeNo        int    `json:"node_no"`
 	NodeName      string `json:"node_name"`
+	TargetSystem  string `json:"target_system"`
 	DirectConnect bool   `json:"direct_connect"`
 	Mode          string `json:"mode"`
 	Repo          string `json:"repo"`
@@ -599,6 +600,7 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (pro
 		NodeID:        nodeID,
 		NodeNo:        node.NodeNo,
 		NodeName:      strings.TrimSpace(node.NodeName),
+		TargetSystem:  normalizeProbeTargetSystem(node.TargetSystem),
 		DirectConnect: node.DirectConnect,
 		Mode:          mode,
 		Repo:          repo,

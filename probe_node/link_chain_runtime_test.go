@@ -3,11 +3,21 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +46,99 @@ func TestReadProbeChainAuthEnvelopeFromHeadersCodexStyle(t *testing.T) {
 	}
 	if env.Mode != "secret_hmac" || env.ChainID != "chain-a" || env.Nonce != "nonce-1" || env.MAC != "abc123" {
 		t.Fatalf("unexpected envelope body: %+v", env)
+	}
+}
+
+func TestStartProbeChainRuntimeSharesRelayPortAcrossChains(t *testing.T) {
+	resetProbeChainRuntimeStateForTest(t)
+	dataDir := t.TempDir()
+	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
+	writeProbeChainTestCertificate(t, dataDir)
+
+	listenPort := reserveProbeChainTestTCPUDPPort(t)
+	base := probeChainRuntimeConfig{
+		secret:        "secret-shared",
+		role:          "entry",
+		listenHost:    "127.0.0.1",
+		listenPort:    listenPort,
+		linkLayer:     "auto",
+		nextAuthMode:  "proxy",
+		identity:      nodeIdentity{NodeID: "node-1", Secret: "node-secret"},
+		controllerURL: "https://controller.example.com",
+	}
+
+	cfgA := base
+	cfgA.chainID = "shared-chain-a"
+	cfgB := base
+	cfgB.chainID = "shared-chain-b"
+
+	rtA, err := startProbeChainRuntime(cfgA)
+	if err != nil {
+		t.Fatalf("start first chain failed: %v", err)
+	}
+	defer stopProbeChainRuntime(rtA.cfg.chainID, "test cleanup")
+
+	rtB, err := startProbeChainRuntime(cfgB)
+	if err != nil {
+		t.Fatalf("start second chain on same port failed: %v", err)
+	}
+	defer stopProbeChainRuntime(rtB.cfg.chainID, "test cleanup")
+
+	listenAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))
+	probeChainSharedRelayState.mu.Lock()
+	shared := probeChainSharedRelayState.servers[listenAddr]
+	probeChainSharedRelayState.mu.Unlock()
+	if shared == nil {
+		t.Fatalf("expected shared relay for %s", listenAddr)
+	}
+	if shared.refCount != 2 {
+		t.Fatalf("shared refCount=%d, want 2", shared.refCount)
+	}
+
+	stopProbeChainRuntime(cfgA.chainID, "test partial stop")
+	probeChainSharedRelayState.mu.Lock()
+	shared = probeChainSharedRelayState.servers[listenAddr]
+	probeChainSharedRelayState.mu.Unlock()
+	if shared == nil || shared.refCount != 1 {
+		t.Fatalf("shared relay should remain after first chain stop: %+v", shared)
+	}
+
+	stopProbeChainRuntime(cfgB.chainID, "test final stop")
+	probeChainSharedRelayState.mu.Lock()
+	shared = probeChainSharedRelayState.servers[listenAddr]
+	probeChainSharedRelayState.mu.Unlock()
+	if shared != nil {
+		t.Fatalf("shared relay should stop after last chain, got %+v", shared)
+	}
+}
+
+func TestProbeChainRelayDispatchRoutesByChainID(t *testing.T) {
+	resetProbeChainRuntimeStateForTest(t)
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID: "dispatch-chain",
+			role:    "entry",
+			secret:  "secret-1",
+		},
+		stopCh: make(chan struct{}),
+	}
+	probeChainRuntimeState.mu.Lock()
+	probeChainRuntimeState.runtimes[rt.cfg.chainID] = rt
+	probeChainRuntimeState.mu.Unlock()
+	defer stopProbeChainRuntime(rt.cfg.chainID, "test cleanup")
+
+	req := httptest.NewRequest(http.MethodGet, probeChainRelayAPIPath+"?chain_id=missing-chain", nil)
+	rr := httptest.NewRecorder()
+	handleProbeChainRelayDispatch(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("missing chain status=%d want 404", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, probeChainRelayAPIPath+"?chain_id=dispatch-chain", nil)
+	rr = httptest.NewRecorder()
+	handleProbeChainRelayDispatch(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("existing chain should reach runtime handler and reject non websocket method, status=%d", rr.Code)
 	}
 }
 
@@ -728,6 +831,92 @@ func TestConsumeProbeChainRelaySpeedTestDataAcceptsPartialDurationLimit(t *testi
 	if result.Error != "" {
 		t.Fatalf("unexpected error: %s", result.Error)
 	}
+}
+
+func reserveProbeChainTestTCPUDPPort(t *testing.T) int {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			continue
+		}
+		port := tcpLn.Addr().(*net.TCPAddr).Port
+		udpConn, udpErr := net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		_ = tcpLn.Close()
+		if udpErr != nil {
+			continue
+		}
+		_ = udpConn.Close()
+		return port
+	}
+	t.Fatal("failed to reserve tcp/udp test port")
+	return 0
+}
+
+func writeProbeChainTestCertificate(t *testing.T, dataDir string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(now.UnixNano()),
+		Subject: pkix.Name{
+			CommonName: "localhost",
+		},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(filepath.Join(dataDir, probeTLSCertFile), certPEM, 0o600); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, probeTLSKeyFile), keyPEM, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	meta := []byte(`{"node_id":"node-1","domain":"localhost","not_before":"` + tmpl.NotBefore.UTC().Format(time.RFC3339) + `","not_after":"` + tmpl.NotAfter.UTC().Format(time.RFC3339) + `"}`)
+	if err := os.WriteFile(filepath.Join(dataDir, probeTLSMetaFile), meta, 0o600); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+}
+
+func resetProbeChainRuntimeStateForTest(t *testing.T) {
+	t.Helper()
+	stopAllProbeChainRuntimes("test reset")
+	probeChainSharedRelayState.mu.Lock()
+	sharedServers := make([]*probeChainSharedRelayServer, 0, len(probeChainSharedRelayState.servers))
+	for key, shared := range probeChainSharedRelayState.servers {
+		delete(probeChainSharedRelayState.servers, key)
+		sharedServers = append(sharedServers, shared)
+	}
+	probeChainSharedRelayState.mu.Unlock()
+	for _, shared := range sharedServers {
+		closeProbeChainSharedRelayServer(shared)
+	}
+	t.Cleanup(func() {
+		stopAllProbeChainRuntimes("test cleanup")
+		probeChainSharedRelayState.mu.Lock()
+		leftovers := make([]*probeChainSharedRelayServer, 0, len(probeChainSharedRelayState.servers))
+		for key, shared := range probeChainSharedRelayState.servers {
+			delete(probeChainSharedRelayState.servers, key)
+			leftovers = append(leftovers, shared)
+		}
+		probeChainSharedRelayState.mu.Unlock()
+		for _, shared := range leftovers {
+			closeProbeChainSharedRelayServer(shared)
+		}
+	})
 }
 
 type probeChainSpeedTestTimeoutReader struct {
