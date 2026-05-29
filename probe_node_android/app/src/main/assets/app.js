@@ -71,12 +71,14 @@ function startCore() {
   const result = window.CloudHelper.startProxy();
   setRuntimeStatus(`启动：${result}`);
   refreshSummary();
+  refreshProxyGroups();
 }
 
 function stopCore() {
   const result = window.CloudHelper.stopProxy();
   setRuntimeStatus(`停止：${result}`);
   refreshSummary();
+  refreshProxyGroups();
 }
 
 function checkUpgrade(mode) {
@@ -109,6 +111,160 @@ function refreshLinks() {
   } catch (error) {
     setText("linkStatus", `读取链路失败：${error && error.message ? error.message : error}`);
   }
+}
+
+function refreshProxyGroups() {
+  const list = byId("proxyGroupList");
+  if (!list) {
+    return;
+  }
+  setRuntimeStatus("正在读取代理组...");
+  try {
+    renderProxyGroups(window.CloudHelper.proxyStatus());
+  } catch (error) {
+    setRuntimeStatus(`读取代理组失败：${error && error.message ? error.message : error}`);
+  }
+}
+
+function renderProxyGroups(payload) {
+  const data = parseJSON(payload);
+  const list = byId("proxyGroupList");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = "";
+  if (!data.ok) {
+    setRuntimeStatus(data.error || "代理组状态不可用。");
+    return;
+  }
+  const vpn = data.running || data.status === "running" || data.http_enabled || data.socks5_enabled;
+  setRuntimeStatus(`VPN：${vpn ? "运行中" : "未运行"}；HTTP ${data.http_addr || "-"}；SOCKS5 ${data.socks5_addr || "-"}`);
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  const chains = Array.isArray(data.chains) ? data.chains : [];
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.className = "status-box";
+    empty.textContent = "暂无代理组配置，请先在设置中刷新配置。";
+    list.appendChild(empty);
+    return;
+  }
+  groups.forEach((group) => list.appendChild(renderProxyGroupItem(group, chains)));
+}
+
+function renderProxyGroupItem(group, chains) {
+  const item = document.createElement("article");
+  item.className = "proxy-group-item";
+  item.dataset.group = group.group || "fallback";
+
+  const title = document.createElement("div");
+  title.className = "link-title";
+  title.textContent = group.group || "fallback";
+
+  const meta = document.createElement("div");
+  meta.className = "link-meta";
+  meta.textContent = `当前：${formatProxyAction(group.action)}${group.selected_chain_id ? ` · ${chainNameById(chains, group.selected_chain_id)}` : ""}`;
+
+  const controls = document.createElement("div");
+  controls.className = "proxy-controls";
+
+  const action = document.createElement("select");
+  action.className = "proxy-select";
+  [
+    ["direct", "直连"],
+    ["tunnel", "链路"],
+    ["reject", "拒绝"]
+  ].forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = (group.action || "direct") === value;
+    action.appendChild(option);
+  });
+
+  const chain = document.createElement("select");
+  chain.className = "proxy-select";
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = "选择链路";
+  chain.appendChild(empty);
+  chains.forEach((entry) => {
+    const id = entry.chain_id || entry.client_entry_id || "";
+    if (!id) {
+      return;
+    }
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = entry.name || id;
+    option.selected = id === group.selected_chain_id || entry.client_entry_id === group.selected_chain_id || entry.relay_chain_id === group.selected_chain_id;
+    chain.appendChild(option);
+  });
+  chain.disabled = action.value !== "tunnel";
+  action.onchange = () => {
+    chain.disabled = action.value !== "tunnel";
+  };
+
+  const save = document.createElement("button");
+  save.className = "command";
+  save.textContent = "保存";
+  save.onclick = () => saveProxyGroup(group.group || "fallback", action.value, chain.value, item);
+
+  controls.append(action, chain, save);
+
+  const result = document.createElement("div");
+  result.className = "link-result";
+  result.textContent = "等待修改";
+
+  item.append(title, meta, controls, result);
+  return item;
+}
+
+function saveProxyGroup(group, action, selectedChainId, item) {
+  const result = item ? item.querySelector(".link-result") : null;
+  if (result) {
+    result.textContent = "正在保存...";
+    result.classList.remove("error");
+  }
+  if (action === "tunnel" && !selectedChainId) {
+    if (result) {
+      result.textContent = "请选择链路";
+      result.classList.add("error");
+    }
+    return;
+  }
+  const payload = parseJSON(window.CloudHelper.proxySetGroup(group, action, selectedChainId || ""));
+  if (!payload.ok) {
+    if (result) {
+      result.textContent = payload.error || "保存失败";
+      result.classList.add("error");
+    }
+    return;
+  }
+  if (result) {
+    result.textContent = "已保存";
+  }
+  refreshProxyGroups();
+}
+
+function formatProxyAction(action) {
+  switch ((action || "direct").toLowerCase()) {
+    case "tunnel":
+      return "链路";
+    case "reject":
+      return "拒绝";
+    default:
+      return "直连";
+  }
+}
+
+function chainNameById(chains, id) {
+  const clean = String(id || "").trim().toLowerCase();
+  const item = chains.find((entry) => {
+    return [entry.chain_id, entry.client_entry_id, entry.relay_chain_id].some((value) => String(value || "").trim().toLowerCase() === clean);
+  });
+  if (!item) {
+    return id;
+  }
+  return item.name || item.chain_id || id;
 }
 
 function runLinkLatency(chainId) {
@@ -365,6 +521,9 @@ function initPage() {
   loadConfig();
   if (page === "link") {
     refreshLinks();
+  }
+  if (page === "proxy") {
+    refreshProxyGroups();
   }
   setInterval(refreshSummarySilent, 5000);
 }

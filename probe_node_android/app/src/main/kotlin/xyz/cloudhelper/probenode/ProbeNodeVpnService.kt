@@ -46,6 +46,7 @@ class ProbeNodeVpnService : VpnService() {
         thread(name = "cloudhelper-android-vpn") {
             try {
                 MobileCoreBridge.start(this, config)
+                MobileCoreBridge.setNativeIPs(this)
                 val builder = Builder()
                     .setSession("CloudHelper Probe Node")
                     .setMtu(1500)

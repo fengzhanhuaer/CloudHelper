@@ -24,8 +24,10 @@
         <div class="actions">
           <button class="command" onclick="startCore()">启动全局 VPN</button>
           <button class="command secondary" onclick="stopCore()">停止 VPN</button>
+          <button class="command neutral" onclick="refreshProxyGroups()">刷新选链</button>
         </div>
         <div class="status-box" id="runtimeStatus"></div>
+        <div id="proxyGroupList" class="proxy-group-list"></div>
       </section>
     </main>
   </div>

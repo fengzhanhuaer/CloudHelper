@@ -2,7 +2,13 @@ package xyz.cloudhelper.probenode
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.os.Build
+import org.json.JSONArray
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.NetworkInterface
 
 object MobileCoreBridge {
     fun start(context: Context, config: ProbeNodeConfig): String {
@@ -10,6 +16,7 @@ object MobileCoreBridge {
             return "controller URL, node ID, and node secret are required"
         }
         setVersion(currentLocalVersion(context))
+        setNativeIPs(context)
         return callString(
             methodName = "start",
             parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
@@ -22,6 +29,15 @@ object MobileCoreBridge {
             methodName = "setVersion",
             parameterTypes = arrayOf(String::class.java),
             args = arrayOf(version),
+        )
+    }
+
+    fun setNativeIPs(context: Context): String {
+        val ips = collectNativeIPs(context)
+        return callString(
+            methodName = "setNativeIPs",
+            parameterTypes = arrayOf(String::class.java, String::class.java),
+            args = arrayOf(JSONArray(ips.first).toString(), JSONArray(ips.second).toString()),
         )
     }
 
@@ -84,6 +100,22 @@ object MobileCoreBridge {
         return callString("vpnStatus", emptyArray<Class<*>>(), emptyArray())
     }
 
+    fun proxyStatus(context: Context): String {
+        return callString(
+            methodName = "proxyStatus",
+            parameterTypes = arrayOf(String::class.java),
+            args = arrayOf(ProbeNodeConfig.configDir(context)),
+        )
+    }
+
+    fun proxySetGroup(context: Context, group: String, action: String, selectedChainID: String): String {
+        return callString(
+            methodName = "proxySetGroup",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java),
+            args = arrayOf(ProbeNodeConfig.configDir(context), group, action, selectedChainID),
+        )
+    }
+
     private fun callString(methodName: String, parameterTypes: Array<Class<*>>, args: Array<Any>): String {
         return try {
             val cls = Class.forName("mobilecore.Mobilecore")
@@ -113,5 +145,62 @@ object MobileCoreBridge {
             packageInfo.versionCode.toLong()
         }
         return "${packageInfo.versionName ?: "0.0.0"} ($code)"
+    }
+
+    private fun collectNativeIPs(context: Context): Pair<List<String>, List<String>> {
+        val ipv4 = linkedSetOf<String>()
+        val ipv6 = linkedSetOf<String>()
+        collectNetworkInterfaceIPs(ipv4, ipv6)
+        collectConnectivityIPs(context, ipv4, ipv6)
+        return Pair(ipv4.toList(), ipv6.toList())
+    }
+
+    private fun collectNetworkInterfaceIPs(ipv4: MutableSet<String>, ipv6: MutableSet<String>) {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val item = interfaces.nextElement()
+                if (!item.isUp || item.isLoopback) {
+                    continue
+                }
+                val addrs = item.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    addNativeIP(addrs.nextElement(), ipv4, ipv6)
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun collectConnectivityIPs(context: Context, ipv4: MutableSet<String>, ipv6: MutableSet<String>) {
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val networks = cm.allNetworks
+            networks.forEach { network ->
+                val props: LinkProperties = cm.getLinkProperties(network) ?: return@forEach
+                props.linkAddresses.forEach { address ->
+                    addNativeIP(address.address, ipv4, ipv6)
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun addNativeIP(address: java.net.InetAddress?, ipv4: MutableSet<String>, ipv6: MutableSet<String>) {
+        if (address == null || address.isLoopbackAddress || address.isAnyLocalAddress) {
+            return
+        }
+        when (address) {
+            is Inet4Address -> ipv4.add(address.hostAddress ?: return)
+            is Inet6Address -> {
+                if (address.isLinkLocalAddress) {
+                    return
+                }
+                val value = (address.hostAddress ?: return).substringBefore("%")
+                if (value.isNotBlank()) {
+                    ipv6.add(value)
+                }
+            }
+        }
     }
 }

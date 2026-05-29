@@ -32,10 +32,13 @@ const configRefreshTimeout = 20 * time.Second
 var manager = &coreManager{}
 
 type coreManager struct {
-	mu      sync.Mutex
-	cancel  chan struct{}
-	status  string
-	version string
+	mu           sync.Mutex
+	cancel       chan struct{}
+	status       string
+	version      string
+	injectedIPv4 []string
+	injectedIPv6 []string
+	injectedAt   string
 }
 
 type reportPayload struct {
@@ -195,6 +198,17 @@ func SetVersion(version string) string {
 	defer manager.mu.Unlock()
 	manager.version = strings.TrimSpace(version)
 	return currentVersionLocked()
+}
+
+func SetNativeIPs(ipv4JSON string, ipv6JSON string) string {
+	ipv4 := parseInjectedIPList(ipv4JSON, true)
+	ipv6 := parseInjectedIPList(ipv6JSON, false)
+	manager.mu.Lock()
+	manager.injectedIPv4 = ipv4
+	manager.injectedIPv6 = ipv6
+	manager.injectedAt = time.Now().UTC().Format(time.RFC3339)
+	manager.mu.Unlock()
+	return fmt.Sprintf("native ips set: ipv4=%d ipv6=%d", len(ipv4), len(ipv6))
 }
 
 func Status() string {
@@ -548,7 +562,64 @@ func collectIPs() ([]string, []string) {
 		seen6[value] = struct{}{}
 		ipv6 = append(ipv6, value)
 	}
+	injectedIPv4, injectedIPv6 := currentInjectedIPs()
+	for _, value := range injectedIPv4 {
+		if _, ok := seen4[value]; ok {
+			continue
+		}
+		seen4[value] = struct{}{}
+		ipv4 = append(ipv4, value)
+	}
+	for _, value := range injectedIPv6 {
+		if _, ok := seen6[value]; ok {
+			continue
+		}
+		seen6[value] = struct{}{}
+		ipv6 = append(ipv6, value)
+	}
 	return ipv4, ipv6
+}
+
+func currentInjectedIPs() ([]string, []string) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return append([]string{}, manager.injectedIPv4...), append([]string{}, manager.injectedIPv6...)
+}
+
+func parseInjectedIPList(raw string, wantIPv4 bool) []string {
+	values := []string{}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return values
+	}
+	if err := json.Unmarshal([]byte(trimmed), &values); err != nil {
+		values = strings.Split(trimmed, ",")
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		ip := net.ParseIP(strings.TrimSpace(strings.Trim(value, "[]")))
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			continue
+		}
+		normalized := ""
+		if wantIPv4 {
+			if ip4 := ip.To4(); ip4 != nil {
+				normalized = ip4.String()
+			}
+		} else if ip.To16() != nil && ip.To4() == nil {
+			normalized = ip.String()
+		}
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
 }
 
 func collectSystemStatus(sampler *cpuSampler) systemStatus {

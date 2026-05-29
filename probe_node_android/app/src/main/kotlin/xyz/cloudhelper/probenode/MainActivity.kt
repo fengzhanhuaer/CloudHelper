@@ -151,6 +151,16 @@ class MainActivity : Activity() {
                 emitLinkStatus(MobileCoreBridge.linkSpeed(this@MainActivity, chainId, protocol))
             }
         }
+
+        @JavascriptInterface
+        fun proxyStatus(): String {
+            return MobileCoreBridge.proxyStatus(this@MainActivity)
+        }
+
+        @JavascriptInterface
+        fun proxySetGroup(group: String, action: String, selectedChainId: String): String {
+            return MobileCoreBridge.proxySetGroup(this@MainActivity, group, action, selectedChainId)
+        }
     }
 
     private fun refreshConfigAsync(reason: String, config: ProbeNodeConfig) {

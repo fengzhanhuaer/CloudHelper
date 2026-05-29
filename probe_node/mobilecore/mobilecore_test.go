@@ -142,6 +142,33 @@ func TestSetVersion(t *testing.T) {
 	}
 }
 
+func TestSetNativeIPsParsesAndFilters(t *testing.T) {
+	manager.mu.Lock()
+	old4 := append([]string{}, manager.injectedIPv4...)
+	old6 := append([]string{}, manager.injectedIPv6...)
+	manager.injectedIPv4 = nil
+	manager.injectedIPv6 = nil
+	manager.mu.Unlock()
+	defer func() {
+		manager.mu.Lock()
+		manager.injectedIPv4 = old4
+		manager.injectedIPv6 = old6
+		manager.mu.Unlock()
+	}()
+
+	got := SetNativeIPs(`["192.168.1.10","127.0.0.1","2409:8a00::1"]`, `["2409:8a00::1","fe80::1","192.168.1.10"]`)
+	if !strings.Contains(got, "ipv4=1") || !strings.Contains(got, "ipv6=2") {
+		t.Fatalf("SetNativeIPs=%q", got)
+	}
+	ipv4, ipv6 := currentInjectedIPs()
+	if strings.Join(ipv4, ",") != "192.168.1.10" {
+		t.Fatalf("ipv4=%v", ipv4)
+	}
+	if strings.Join(ipv6, ",") != "2409:8a00::1,fe80::1" {
+		t.Fatalf("ipv6=%v", ipv6)
+	}
+}
+
 func TestParseIPAddrOutput(t *testing.T) {
 	ipv4, ipv6 := parseIPAddrOutput(strings.Join([]string{
 		"2: wlan0    inet 192.168.31.10/24 brd 192.168.31.255 scope global wlan0",
