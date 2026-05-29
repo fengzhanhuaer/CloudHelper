@@ -1,5 +1,19 @@
 # CloudHelper Probe Node Android
 
+## Controller configuration
+
+The Android MVP uses a WebView UI and a Kotlin system bridge. Probe protocol logic lives in Go `probe_node/mobilecore`.
+
+The app stores controller connection settings locally:
+
+- `Controller URL`: controller base URL, for example `https://controller.example.com`
+- `Node ID`: probe node id issued by the controller
+- `Node Secret`: probe node secret issued by the controller
+
+Open the app, fill the three fields, and tap `Save`. Tap `Start` to call Go mobilecore. The MVP connects to `/api/probe`, authenticates with the same HMAC headers as desktop probe node, opens the yamux report stream, and sends Android platform reports.
+
+GitHub Actions builds `probe_node/mobilecore` into `probe_node_android/app/libs/mobilecore.aar` with `gomobile bind` before assembling the APK. If the AAR is absent in a local shell build, the UI still opens and reports `mobilecore AAR is not packaged`.
+
 ## Release signing
 
 CI builds the Android release APK in two stages:

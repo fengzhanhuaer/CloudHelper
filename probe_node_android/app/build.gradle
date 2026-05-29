@@ -1,5 +1,6 @@
 plugins {
     id "com.android.application"
+    id "org.jetbrains.kotlin.android"
 }
 
 def versionNameValue = System.getenv("CLOUDHELPER_VERSION") ?: "0.0.0-dev"
@@ -68,4 +69,8 @@ android {
 
 dependencies {
     implementation "androidx.core:core:1.15.0"
+    implementation "androidx.webkit:webkit:1.12.1"
+    if (file("libs/mobilecore.aar").exists()) {
+        implementation files("libs/mobilecore.aar")
+    }
 }

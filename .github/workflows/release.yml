@@ -149,6 +149,26 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+
+      - name: Build Probe Node Android mobilecore AAR
+        working-directory: probe_node
+        shell: bash
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+          mkdir -p ../probe_node_android/app/libs
+          gomobile bind \
+            -target=android/arm64 \
+            -androidapi 26 \
+            -o ../probe_node_android/app/libs/mobilecore.aar \
+            ./mobilecore
+
       - name: Build Probe Node Android unsigned release (arm64)
         working-directory: probe_node_android
         env:

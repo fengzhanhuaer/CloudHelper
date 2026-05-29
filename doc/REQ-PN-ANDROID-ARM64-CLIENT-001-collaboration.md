@@ -352,7 +352,7 @@
 | REQ-PN-ANDROID-ARM64-CLIENT-001-R1 | TASK-001 TASK-002 | 已实施 | 新增 `probe_node_android/` Android arm64 壳工程；GitHub Actions 构建并上传 `cloudhelper-probe-node-android-arm64.apk` |
 | REQ-PN-ANDROID-ARM64-CLIENT-001-R2 | TASK-003 | 已实施 | 主控支持 `target_system=android`；probe runtime 支持 `platform/os/arch` |
 | REQ-PN-ANDROID-ARM64-CLIENT-001-R3 | TASK-004 | 已实施 | probe 升级资产选择支持 Android APK；Android 客户端具备 latest 检查、APK 下载、系统安装器触发骨架 |
-| REQ-PN-ANDROID-ARM64-CLIENT-001-R4 | TASK-005 | 未开始 | 后续拆 mobilecore |
+| REQ-PN-ANDROID-ARM64-CLIENT-001-R4 | TASK-005 | 部分实施 | 新增 Go `probe_node/mobilecore`，提供 Android MVP 长连接 start/stop/status；后续继续拆完整桌面 core 能力 |
 | REQ-PN-ANDROID-ARM64-CLIENT-001-R5 | TASK-006 TASK-007 | 未开始 | 后续实现 VPN/TUN |
 | REQ-PN-ANDROID-ARM64-CLIENT-001-R6 | TASK-007 TASK-008 | 未开始 | 后续实现 Android 数据面和 controller 联通 |
 | REQ-PN-ANDROID-ARM64-CLIENT-001-R7 | TASK-009 | 未开始 | 后续完善 UI/日志 |
@@ -362,8 +362,8 @@
 
 | 接口编号 | 接口名称 | 实现状态 | 备注 |
 |---|---|---|---|
-| IF-001 | `ProbeMobileCore.start(config)` | 未开始 | 无 |
-| IF-002 | `ProbeMobileCore.stop()` | 未开始 | 无 |
+| IF-001 | `ProbeMobileCore.start(config)` | 部分实施 | Go `mobilecore.Start(controllerURL,nodeID,nodeSecret)`，Android Kotlin bridge 调用 |
+| IF-002 | `ProbeMobileCore.stop()` | 部分实施 | Go `mobilecore.Stop()`，Android Kotlin bridge 调用 |
 | IF-003 | `ProbeMobileCore.attachTunFd(fd, mtu)` | 未开始 | 无 |
 | IF-004 | `ProbeMobileCore.updateConfig(config)` | 未开始 | 无 |
 | IF-005 | `ProbeMobileCore.snapshot()` | 未开始 | 无 |
@@ -397,13 +397,15 @@
 
 - 修改接口: `probeReportPayload` / `probeReportMessage` 增加 `platform/os/arch`；controller `probeRuntimeStatus` 增加 `platform/os/arch`；`target_system` 支持 `android`。
 - 配置文件: `.github/workflows/release.yml`、`probe_node_android/**`。
+- Android配置与长连接入口: `probe_node_android` 已迁移为 Kotlin + WebView，无 Java 源文件；UI 保存 Controller URL、Node ID、Node Secret 到 Android `SharedPreferences`，并通过 Kotlin bridge 调用 Go `mobilecore` start/stop/status。
+- Android长连接MVP: `probe_node/mobilecore` 复用 probe HMAC 头，连接 controller `/api/probe` WebSocket，打开 yamux stream，定时发送 Android `report`。
 - 签名安全: Android APK CI 已拆分为 unsigned build 与 `android-release-signing` protected environment 签名 job；默认 workflow 权限降为 `contents: read`，仅版本提交/Release 发布 job 提升 `contents: write`；签名密码通过临时文件传给 `apksigner`，签名后清理 runner 临时 keystore。
 - 执行报告: 已完成 TASK-001 到 TASK-004 的首批闭环实现。
 - 影响文件: `.github/workflows/release.yml`、`probe_node_android/**`、`probe_node/main.go`、`probe_node/upgrade.go`、`probe_controller/internal/core/**`、`probe_controller/internal/core/mng_pages/probe.html`。
 - 测试命令: `cd probe_node; go test ./...`；`cd probe_controller; go test ./...`；`git diff --check`。
 - 自测结果: Go 单测通过；`git diff --check` 无 whitespace error，仅 Git CRLF 提示。
 - 未执行测试原因: 本机无 `gradle` 和 `adb`，无法本地构建 APK 或真机/模拟器安装验证；Android 构建由 GitHub Actions 验证。
-- 遗留风险: Android release signing 依赖 `android-release-signing` Environment Secrets，建议开启 required reviewers；Android 客户端尚未接入 controller 配置、VPN/TUN 和 mobilecore。
+- 遗留风险: Android release signing 依赖 `android-release-signing` Environment Secrets，建议开启 required reviewers；Android 客户端当前仅完成 controller report 长连接 MVP，尚未接入 VPN/TUN、代理策略与完整桌面 probe control 命令处理。
 - 回滚方案: 回退 `.github/workflows/release.yml` Android job、`probe_node_android/`、平台字段和 Android asset 选择相关改动。
 
 ### 2.6 Code任务反馈
