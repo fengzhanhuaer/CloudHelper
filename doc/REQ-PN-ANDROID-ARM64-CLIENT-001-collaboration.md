@@ -402,7 +402,7 @@
 - 测试命令: `cd probe_node; go test ./...`；`cd probe_controller; go test ./...`；`git diff --check`。
 - 自测结果: Go 单测通过；`git diff --check` 无 whitespace error，仅 Git CRLF 提示。
 - 未执行测试原因: 本机无 `gradle` 和 `adb`，无法本地构建 APK 或真机/模拟器安装验证；Android 构建由 GitHub Actions 验证。
-- 遗留风险: Android APK 当前使用 debug signingConfig 产出 release 包，适合内部迭代；正式升级需确定稳定签名密钥。Android 客户端尚未接入 controller 配置、VPN/TUN 和 mobilecore。
+- 遗留风险: Android release signing 已支持固定 keystore secrets；若 CI 未配置签名 secrets，则仍会 fallback 到 debug signing 仅供内部迭代。Android 客户端尚未接入 controller 配置、VPN/TUN 和 mobilecore。
 - 回滚方案: 回退 `.github/workflows/release.yml` Android job、`probe_node_android/`、平台字段和 Android asset 选择相关改动。
 
 ### 2.6 Code任务反馈

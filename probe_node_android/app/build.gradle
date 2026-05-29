@@ -11,9 +11,35 @@ if (matcher.matches()) {
     normalizedVersionCode = ((parts[0] as int) * 1000000) + ((parts[1] as int) * 1000) + (parts[2] as int)
 }
 
+def releaseKeystoreFile = System.getenv("CLOUDHELPER_ANDROID_KEYSTORE_FILE") ?: ""
+def releaseKeystorePassword = System.getenv("CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD") ?: ""
+def releaseKeyAlias = System.getenv("CLOUDHELPER_ANDROID_KEY_ALIAS") ?: ""
+def releaseKeyPassword = System.getenv("CLOUDHELPER_ANDROID_KEY_PASSWORD") ?: ""
+def forceUnsignedRelease = providers.gradleProperty("cloudhelperAndroidUnsignedRelease").map { it.toBoolean() }.orElse(false).get()
+def hasReleaseSigning = releaseKeystoreFile.trim()
+        && file(releaseKeystoreFile).exists()
+        && releaseKeystorePassword.trim()
+        && releaseKeyAlias.trim()
+        && releaseKeyPassword.trim()
+
+if (!hasReleaseSigning) {
+    println "CloudHelper Android release signing: fixed keystore not configured; falling back to debug signing."
+}
+
 android {
     namespace "xyz.cloudhelper.probenode"
     compileSdk 35
+
+    signingConfigs {
+        cloudhelperRelease {
+            if (hasReleaseSigning) {
+                storeFile file(releaseKeystoreFile)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
 
     defaultConfig {
         applicationId "xyz.cloudhelper.probenode"
@@ -33,7 +59,9 @@ android {
         }
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            if (!forceUnsignedRelease) {
+                signingConfig hasReleaseSigning ? signingConfigs.cloudhelperRelease : signingConfigs.debug
+            }
         }
     }
 }

@@ -27,3 +27,4 @@ probe_node/cloudhelper-probe-node-linux-arm64
 probe_node/.gocache-linux/
 probe_node/.gocache/
 probe_controller/.gocache/
+/.secrets/
