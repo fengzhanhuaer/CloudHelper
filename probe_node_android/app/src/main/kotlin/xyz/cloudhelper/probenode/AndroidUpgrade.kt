@@ -2,7 +2,9 @@ package xyz.cloudhelper.probenode
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import org.json.JSONObject
@@ -31,13 +33,23 @@ object AndroidUpgrade {
                 if (upgradeMode == "proxy" && !config.isReady) {
                     error("controller URL, node ID, and node secret are required for proxy upgrade")
                 }
+                val currentVersion = currentAppVersion(activity)
                 sink("Checking latest Android APK via $upgradeMode...")
-                val asset = fetchLatestAndroidAsset(upgradeMode, config)
+                val release = fetchLatestAndroidRelease(upgradeMode, config)
+                if (release == null) {
+                    sink("No release metadata found.")
+                    return@thread
+                }
+                if (!isRemoteVersionNewer(currentVersion.name, currentVersion.code, release.tagName)) {
+                    sink("Already up to date. Current=${currentVersion.name} (${currentVersion.code}), latest=${release.tagName}.")
+                    return@thread
+                }
+                val asset = release.asset
                 if (asset == null) {
                     sink("No Android arm64 APK asset found.")
                     return@thread
                 }
-                sink("Downloading ${asset.name} via $upgradeMode...")
+                sink("Downloading ${asset.name} via $upgradeMode. Current=${currentVersion.name}, latest=${release.tagName}.")
                 val apk = downloadAsset(activity, asset, upgradeMode, config)
                 sink("Opening Android installer...")
                 openInstaller(activity, apk)
@@ -48,7 +60,7 @@ object AndroidUpgrade {
         }
     }
 
-    private fun fetchLatestAndroidAsset(mode: String, config: ProbeNodeConfig): Asset? {
+    private fun fetchLatestAndroidRelease(mode: String, config: ProbeNodeConfig): ReleaseInfo? {
         val requestUrl = if (mode == "proxy") {
             "${config.controllerUrl.trimEnd('/')}/api/probe/proxy/github/latest?project=${urlEncode(RELEASE_REPO)}"
         } else {
@@ -56,17 +68,18 @@ object AndroidUpgrade {
         }
         val conn = openGet(requestUrl, mode, config, "application/vnd.github+json")
         val body = readResponseText(conn, "release api")
-        val assets = JSONObject(body).optJSONArray("assets")
-            ?: return null
+        val json = JSONObject(body)
+        val tagName = json.optString("tag_name", json.optString("tagName", ""))
+        val assets = json.optJSONArray("assets") ?: return ReleaseInfo(tagName, null)
         for (i in 0 until assets.length()) {
             val item = assets.getJSONObject(i)
             val name = item.optString("name", "")
             val url = item.optString("browser_download_url", item.optString("download_url", ""))
             if (matchesAsset(name) && url.isNotBlank()) {
-                return Asset(name, url)
+                return ReleaseInfo(tagName, Asset(name, url))
             }
         }
-        return null
+        return ReleaseInfo(tagName, null)
     }
 
     private fun matchesAsset(name: String): Boolean {
@@ -116,6 +129,22 @@ object AndroidUpgrade {
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         activity.runOnUiThread { activity.startActivity(intent) }
+    }
+
+    private fun currentAppVersion(activity: Activity): AppVersion {
+        val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            activity.packageManager.getPackageInfo(activity.packageName, PackageManager.PackageInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            activity.packageManager.getPackageInfo(activity.packageName, 0)
+        }
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.versionCode.toLong()
+        }
+        return AppVersion(packageInfo.versionName ?: "0.0.0", code)
     }
 
     private fun openGet(requestUrl: String, mode: String, config: ProbeNodeConfig, accept: String): HttpURLConnection {
@@ -176,5 +205,26 @@ object AndroidUpgrade {
         return URLEncoder.encode(value, Charsets.UTF_8.name())
     }
 
+    private fun isRemoteVersionNewer(currentName: String, currentCode: Long, remoteTag: String): Boolean {
+        val remoteCode = versionCodeFromTag(remoteTag)
+        if (remoteCode <= 0) {
+            return true
+        }
+        if (currentCode <= 1L && currentName.contains("dev", ignoreCase = true)) {
+            return true
+        }
+        return remoteCode > currentCode
+    }
+
+    private fun versionCodeFromTag(tag: String): Long {
+        val match = Regex("""v?(\d+)\.(\d+)\.(\d+).*""").matchEntire(tag.trim()) ?: return 0
+        val major = match.groupValues[1].toLongOrNull() ?: return 0
+        val minor = match.groupValues[2].toLongOrNull() ?: return 0
+        val patch = match.groupValues[3].toLongOrNull() ?: return 0
+        return major * 1_000_000L + minor * 1_000L + patch
+    }
+
+    private data class AppVersion(val name: String, val code: Long)
+    private data class ReleaseInfo(val tagName: String, val asset: Asset?)
     private data class Asset(val name: String, val url: String)
 }

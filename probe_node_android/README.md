@@ -20,6 +20,8 @@ Upgrade buttons follow the desktop probe node model:
 - `Direct Upgrade`: fetches GitHub Releases directly.
 - `Proxy Upgrade`: fetches `/api/probe/proxy/github/latest` and `/api/probe/proxy/download` through the configured controller with probe HMAC headers.
 
+Before downloading, the app compares the installed APK version with the release `tag_name`. Release tags in `vX.Y.Z` form are converted to the same `versionCode` scheme used by Gradle: `major * 1000000 + minor * 1000 + patch`. Development builds such as `0.0.0-dev` are allowed to upgrade.
+
 ## Release signing
 
 CI builds the Android release APK in two stages:

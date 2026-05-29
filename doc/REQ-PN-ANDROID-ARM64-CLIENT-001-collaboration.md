@@ -398,7 +398,7 @@
 - 修改接口: `probeReportPayload` / `probeReportMessage` 增加 `platform/os/arch`；controller `probeRuntimeStatus` 增加 `platform/os/arch`；`target_system` 支持 `android`。
 - 配置文件: `.github/workflows/release.yml`、`probe_node_android/**`。
 - Android配置与长连接入口: `probe_node_android` 已迁移为 Kotlin + WebView，无 Java 源文件；UI 使用左侧项目入口、右侧项目详情的控制台布局，保存 Controller URL、Node ID、Node Secret 到 Android `SharedPreferences`，并通过 Kotlin bridge 调用 Go `mobilecore` start/stop/status。
-- Android升级入口: WebView UI 参照桌面 probe node 拆分 `Direct Upgrade` 与 `Proxy Upgrade`；direct 直连 GitHub Releases，proxy 通过主控 `/api/probe/proxy/github/latest` 与 `/api/probe/proxy/download`，并携带 probe HMAC 鉴权头。
+- Android升级入口: WebView UI 参照桌面 probe node 拆分 `Direct Upgrade` 与 `Proxy Upgrade`；direct 直连 GitHub Releases，proxy 通过主控 `/api/probe/proxy/github/latest` 与 `/api/probe/proxy/download`，并携带 probe HMAC 鉴权头；下载前读取当前 APK `versionName/versionCode` 并与 Release `tag_name` 比较，非更新版本不下载。
 - Android长连接MVP: `probe_node/mobilecore` 复用 probe HMAC 头，连接 controller `/api/probe` WebSocket，打开 yamux stream，定时发送 Android `report`。
 - 签名安全: Android APK CI 已拆分为 unsigned build 与 `android-release-signing` protected environment 签名 job；默认 workflow 权限降为 `contents: read`，仅版本提交/Release 发布 job 提升 `contents: write`；签名密码通过临时文件传给 `apksigner`，签名后清理 runner 临时 keystore。
 - 执行报告: 已完成 TASK-001 到 TASK-004 的首批闭环实现。
