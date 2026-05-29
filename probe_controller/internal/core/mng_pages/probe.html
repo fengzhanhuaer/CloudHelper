@@ -244,6 +244,17 @@
     </div>
   </div>
 
+  <div id="node-install-modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <h3 id="install-modal-title">探针安装信息</h3>
+      <pre id="install-modal-content" class="mono"></pre>
+      <div class="row" style="margin-top:12px; justify-content:flex-end;">
+        <button id="btn-install-copy" class="btn primary" type="button">复制</button>
+        <button id="btn-install-close" class="btn" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const state = {
       activeTab: 'list',
@@ -254,6 +265,7 @@
       statusTimer: null,
       shellShortcuts: [],
       editingNodeNo: 0,
+      installCommandText: '',
     };
 
     function setStatus(message, level) {
@@ -411,9 +423,19 @@
 
       if (targetSystem === 'android') {
         return [
-          'Android APK: cloudhelper-probe-node-android-arm64.apk',
-          `Release API: ${baseURL}/api/probe/proxy/github/latest?project=fengzhanhuaer%2FCloudHelper`,
-          '在 Android 设备安装 APK 后配置 node_id / secret 与 controller 地址。'
+          'Android 客户端配置',
+          '',
+          `Controller URL: ${baseURL}`,
+          `Node ID: ${nodeID}`,
+          `Node Secret: ${secret}`,
+          '',
+          'APK: cloudhelper-probe-node-android-arm64.apk',
+          `Proxy Release API: ${baseURL}/api/probe/proxy/github/latest?project=fengzhanhuaer%2FCloudHelper`,
+          '',
+          '安装 APK 后打开 Android 客户端：',
+          '1. 进入“设置”',
+          '2. 填写上面的 Controller URL / Node ID / Node Secret',
+          '3. 保存后进入“代理”点击 Start'
         ].join('\n');
       }
 
@@ -729,11 +751,34 @@
         setStatus(`探针 #${nodeNo} 缺少 node_secret，无法生成安装命令`, 'warn');
         return;
       }
+      openNodeInstallModal(node, command);
+    }
+
+    function openNodeInstallModal(node, command) {
+      const nodeNo = Number(node && node.node_no);
+      const nodeName = String((node && node.node_name) || '').trim();
+      state.installCommandText = String(command || '');
+      document.getElementById('install-modal-title').textContent = `探针安装信息：#${nodeNo}${nodeName ? ' ' + nodeName : ''}`;
+      document.getElementById('install-modal-content').textContent = state.installCommandText;
+      document.getElementById('node-install-modal').removeAttribute('hidden');
+    }
+
+    function closeNodeInstallModal() {
+      state.installCommandText = '';
+      document.getElementById('node-install-modal').setAttribute('hidden', 'hidden');
+    }
+
+    async function copyCurrentInstallInfo() {
+      const command = String(state.installCommandText || '').trim();
+      if (!command) {
+        setStatus('当前没有可复制的安装信息', 'warn');
+        return;
+      }
       try {
         await copyText(command);
-        setStatus(`已复制探针安装命令：#${nodeNo}`, 'ok');
+        setStatus('已复制探针安装信息', 'ok');
       } catch (err) {
-        setStatus(`复制安装命令失败：${err && err.message ? err.message : err}`, 'err');
+        setStatus(`复制安装信息失败：${err && err.message ? err.message : err}`, 'err');
       }
     }
 
@@ -951,6 +996,17 @@
     document.getElementById('node-edit-modal').addEventListener('click', (event) => {
       if (event.target === event.currentTarget) {
         closeEditNodeModal();
+      }
+    });
+    document.getElementById('btn-install-copy').addEventListener('click', () => {
+      copyCurrentInstallInfo().catch((err) => setStatus(`复制安装信息失败：${err.message || err}`, 'err'));
+    });
+    document.getElementById('btn-install-close').addEventListener('click', () => {
+      closeNodeInstallModal();
+    });
+    document.getElementById('node-install-modal').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) {
+        closeNodeInstallModal();
       }
     });
 
