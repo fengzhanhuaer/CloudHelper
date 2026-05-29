@@ -62,7 +62,7 @@
 
 #### 1.1.6 遗留事项
 - 确认最小 Android SDK 与目标 SDK。
-- 确认 UI 技术栈使用 Kotlin 原生页面、Compose，还是 WebView 承载轻量页面。
+- UI 技术栈已确定为 Kotlin 系统桥接 + WebView 承载轻量页面，不保留 Java 源文件。
 - 确认首阶段 Android APK 签名、升级包命名和安装权限提示策略。
 - 确认首阶段是否只做 TUN VPN 模式，还是同时提供 HTTP/SOCKS 本地代理模式。
 - 确认 Android 端 node 身份下发/配对流程是否沿用现有 controller API。
@@ -79,7 +79,7 @@
 - Go 移动核心层负责 controller 通信、链路传输、代理组策略、DNS/FakeIP 与 packet routing。
 
 #### 1.2.2 总体设计
-- Android App 层: Kotlin/Java 工程，包含 Activity、VpnService、Foreground Service、配置存储和状态展示。
+- Android App 层: Kotlin + WebView 工程，包含 Activity、VpnService、Foreground Service、配置存储和状态展示，不保留 Java 源文件。
 - Android VPN 层: 通过 `VpnService.Builder` 创建 TUN fd，配置地址、路由、DNS 与 MTU。
 - Native Bridge 层: 将 TUN fd、配置、生命周期事件传给 Go core；Go core 输出状态、日志和错误。
 - Go Mobile Core 层: 从现有 `probe_node` 拆出可复用包，例如 `probe_node/mobilecore` 或 `probe_node/internal/mobilecore`。
@@ -90,7 +90,7 @@
 |---|---|---|---|---|
 | M-001 | Android App Shell | 管理 UI、权限、前台服务、配置 | 用户操作、系统回调 | 服务启动/停止、状态展示 |
 | M-002 | Android VpnService | 创建和管理 Android VPN fd | VPN 授权、路由/DNS 配置 | TUN fd、生命周期事件 |
-| M-003 | Mobile Bridge | Java/Kotlin 与 Go 之间的桥接 | fd、配置、命令 | Go core 调用结果、状态事件 |
+| M-003 | Mobile Bridge | Kotlin 与 Go 之间的桥接 | fd、配置、命令 | Go core 调用结果、状态事件 |
 | M-004 | Probe Mobile Core | controller 通信、节点身份、链路配置同步 | controller URL、node secret | 控制面连接、链路 runtime |
 | M-005 | Android Packet Data Plane | 从 TUN fd 读取 IP 包并路由 | IP packets、组选路 | direct/tunnel/reject 转发 |
 | M-006 | Build & Packaging | 构建 arm64-v8a AAR/APK | Gradle、gomobile/NDK | APK/AAB、测试产物 |
@@ -147,7 +147,7 @@
 ##### 单元编号 U-001
 - 单元名称: Android Project Scaffold
 - 职责: 新增 Android 工程，配置 `arm64-v8a` ABI、VPN 权限、前台服务权限和基础 Activity。
-- 输入: Android Gradle Plugin、Kotlin 或 Java 选择。
+- 输入: Android Gradle Plugin、Kotlin/WebView 技术栈。
 - 输出: 可安装 Debug APK。
 - 处理规则: 工程与现有 Go 模块解耦，构建脚本明确 Android SDK/NDK 要求。
 - 异常规则: SDK/NDK 不可用时记录环境缺口，不阻塞 Go core 拆分设计。
