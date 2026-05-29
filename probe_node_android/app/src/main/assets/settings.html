@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CloudHelper Probe Node</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body data-page="settings">
+  <div class="shell">
+    <aside>
+      <h1 class="brand">CloudHelper<br>Probe Node</h1>
+      <nav>
+        <a class="nav-button" data-page="status" href="status.html">状态</a>
+        <a class="nav-button" data-page="proxy" href="proxy.html">代理</a>
+        <a class="nav-button" data-page="settings" href="settings.html">设置</a>
+      </nav>
+    </aside>
+    <main>
+      <h2 id="pageTitle" class="page-title">设置</h2>
+      <p id="pageSubtitle" class="page-subtitle"></p>
+      <section class="page">
+        <div class="field">
+          <label for="controllerUrl">Controller URL</label>
+          <input id="controllerUrl" autocomplete="off" placeholder="https://controller.example.com">
+        </div>
+        <div class="field">
+          <label for="nodeId">Node ID</label>
+          <input id="nodeId" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="nodeSecret">Node Secret</label>
+          <input id="nodeSecret" type="password" autocomplete="off">
+        </div>
+        <div class="actions">
+          <button id="saveButton" class="command" onclick="saveConfig(true)">Save</button>
+          <button class="command neutral" onclick="refreshConfig()">刷新配置</button>
+        </div>
+        <div id="saveFeedback" class="inline-feedback" aria-live="polite"></div>
+        <div class="actions">
+          <button class="command" onclick="checkUpgrade('direct')">Direct Upgrade</button>
+          <button class="command secondary" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
+        </div>
+        <div class="status-box" id="upgradeStatus"></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

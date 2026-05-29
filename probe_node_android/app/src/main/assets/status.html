@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CloudHelper Probe Node</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body data-page="status">
+  <div class="shell">
+    <aside>
+      <h1 class="brand">CloudHelper<br>Probe Node</h1>
+      <nav>
+        <a class="nav-button" data-page="status" href="status.html">状态</a>
+        <a class="nav-button" data-page="proxy" href="proxy.html">代理</a>
+        <a class="nav-button" data-page="settings" href="settings.html">设置</a>
+      </nav>
+    </aside>
+    <main>
+      <h2 id="pageTitle" class="page-title">状态</h2>
+      <p id="pageSubtitle" class="page-subtitle"></p>
+      <section class="page">
+        <div class="key-value">
+          <div>主控</div>
+          <div id="summaryController"></div>
+          <div>Node ID</div>
+          <div id="summaryNodeId"></div>
+          <div>配置</div>
+          <div id="summaryReady"></div>
+          <div>运行</div>
+          <div id="summaryRuntime"></div>
+        </div>
+        <div id="status" class="status-box"></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

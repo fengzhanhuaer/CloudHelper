@@ -1,0 +1,224 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f6f6f3;
+  color: #171717;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: #f6f6f3;
+}
+.shell {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+aside {
+  background: #1f2937;
+  color: #f8fafc;
+  padding: calc(18px + env(safe-area-inset-top, 0px)) 12px 18px;
+}
+.brand {
+  margin: 0 0 18px;
+  font-size: 17px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+nav {
+  display: grid;
+  gap: 8px;
+}
+.nav-button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 42px;
+  border-radius: 6px;
+  padding: 0 12px;
+  text-align: left;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 650;
+  color: #dbe4ef;
+  background: transparent;
+}
+.nav-button.active {
+  color: #fff;
+  background: #0f766e;
+}
+main {
+  min-width: 0;
+  padding: calc(20px + env(safe-area-inset-top, 0px)) 20px 20px;
+}
+.page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 760;
+}
+.page-subtitle {
+  margin: 6px 0 18px;
+  min-height: 22px;
+  color: #57534e;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.page {
+  max-width: 760px;
+}
+.field {
+  margin-top: 14px;
+}
+label {
+  display: block;
+  margin-bottom: 6px;
+  color: #44403c;
+  font-size: 13px;
+  font-weight: 650;
+}
+input {
+  width: 100%;
+  height: 44px;
+  border: 1px solid #c9c5bd;
+  border-radius: 6px;
+  padding: 0 12px;
+  font-size: 16px;
+  background: #fff;
+  color: #171717;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+.command {
+  min-width: 128px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 14px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  background: #0f766e;
+}
+.command.secondary {
+  background: #334155;
+}
+.command.neutral {
+  background: #57534e;
+}
+.command.saved {
+  background: #15803d;
+}
+.inline-feedback {
+  margin-top: 10px;
+  min-height: 22px;
+  color: #166534;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+.inline-feedback.error {
+  color: #b91c1c;
+}
+.status-box {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #d7d3ca;
+  border-radius: 6px;
+  background: #fff;
+  color: #292524;
+  line-height: 1.5;
+  word-break: break-word;
+  min-height: 58px;
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 20;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: #166534;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 12px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  box-shadow: 0 12px 28px rgba(23, 23, 23, 0.18);
+}
+.toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.key-value {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin-top: 14px;
+  font-size: 14px;
+}
+.key-value div:nth-child(odd) {
+  color: #57534e;
+  font-weight: 650;
+}
+.key-value div:nth-child(even) {
+  min-width: 0;
+  word-break: break-word;
+  color: #1c1917;
+}
+@media (max-width: 640px) {
+  .shell {
+    display: block;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  aside {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10;
+    padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .brand {
+    display: none;
+  }
+  nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .nav-button {
+    justify-content: center;
+    min-height: 40px;
+    padding: 0 8px;
+    text-align: center;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  main {
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(76px + env(safe-area-inset-bottom, 0px));
+  }
+  .command {
+    flex: 1 1 140px;
+  }
+  .toast {
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  }
+  .key-value {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
