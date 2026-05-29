@@ -6,12 +6,19 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/hashicorp/yamux"
 )
 
 func TestResolveWebSocketURL(t *testing.T) {
@@ -87,6 +94,159 @@ func TestRefreshConfigFilesWritesProxyAndChainCaches(t *testing.T) {
 	}
 }
 
+func TestParseLinuxMemInfo(t *testing.T) {
+	total, used, swapTotal, swapUsed := parseLinuxMemInfo(strings.NewReader(strings.Join([]string{
+		"MemTotal:        1000 kB",
+		"MemAvailable:     250 kB",
+		"SwapTotal:        400 kB",
+		"SwapFree:         100 kB",
+	}, "\n")))
+	if total != 1000*1024 || used != 750*1024 || swapTotal != 400*1024 || swapUsed != 300*1024 {
+		t.Fatalf("meminfo total=%d used=%d swapTotal=%d swapUsed=%d", total, used, swapTotal, swapUsed)
+	}
+}
+
+func TestParseCPUSnapshot(t *testing.T) {
+	got, ok := parseCPUSnapshot(strings.NewReader("cpu  10 20 30 40 50 60 70\n"))
+	if !ok {
+		t.Fatal("expected cpu snapshot")
+	}
+	if got.total != 280 || got.idle != 90 {
+		t.Fatalf("snapshot=%+v", got)
+	}
+}
+
+func TestResolveLinkEndpointUsesProjectedRelayChain(t *testing.T) {
+	item := linkChainServerItem{
+		ChainID:        "client-chain",
+		RelayChainID:   "relay-chain",
+		Name:           "Android Link",
+		Secret:         "link-secret",
+		EntryNodeID:    "node-1",
+		ExitNodeID:     "node-2",
+		LinkLayer:      "ws",
+		CascadeNodeIDs: []string{"node-9"},
+		HopConfigs: []linkChainHopItem{
+			{NodeNo: 1, RelayHost: "relay.example.com", ExternalPort: 443, ListenPort: 8443, LinkLayer: "websocket"},
+		},
+	}
+	endpoint, err := resolveLinkEndpoint(item)
+	if err != nil {
+		t.Fatalf("resolveLinkEndpoint returned error: %v", err)
+	}
+	if endpoint.ChainID != "relay-chain" || endpoint.EntryHost != "relay.example.com" || endpoint.EntryPort != 443 || endpoint.LinkLayer != "websocket" {
+		t.Fatalf("unexpected endpoint: %+v", endpoint)
+	}
+}
+
+func TestLinkStatusReadsProxyChainCache(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_chain.json"), map[string]any{
+		"items": []map[string]any{
+			{
+				"chain_id":       "client-chain",
+				"relay_chain_id": "relay-chain",
+				"name":           "Android Link",
+				"secret":         "link-secret",
+				"entry_node_id":  "1",
+				"exit_node_id":   "2",
+				"link_layer":     "websocket",
+				"hop_configs": []map[string]any{
+					{"node_no": 1, "relay_host": "127.0.0.1", "external_port": 443},
+				},
+			},
+		},
+	})
+	var payload struct {
+		OK     bool             `json:"ok"`
+		Chains []linkStatusItem `json:"chains"`
+	}
+	if err := json.Unmarshal([]byte(LinkStatus(dir)), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.OK || len(payload.Chains) != 1 {
+		t.Fatalf("unexpected status payload: %+v", payload)
+	}
+	if payload.Chains[0].Status != "configured" || payload.Chains[0].RelayChainID != "relay-chain" {
+		t.Fatalf("unexpected chain status: %+v", payload.Chains[0])
+	}
+}
+
+func TestLinkLatencyAndSpeedUseRelayProtocol(t *testing.T) {
+	const chainID = "relay-chain"
+	const secret = "link-secret"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != linkRelayAPIPath {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("chain_id") != chainID {
+			t.Fatalf("chain_id query=%q", r.URL.Query().Get("chain_id"))
+		}
+		assertLinkAuth(t, r, chainID, secret)
+		mode := r.Header.Get(linkCodexRelayModeHeader)
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade failed: %v", err)
+		}
+		conn := newWebSocketNetConn(ws)
+		switch mode {
+		case linkRelayModeBridge:
+			serveTestPingPongRelay(t, conn)
+		case linkRelayModeSpeedTest:
+			byteCount, _ := strconv.ParseInt(r.Header.Get(linkCodexSpeedBytesHeader), 10, 64)
+			if byteCount <= 0 {
+				t.Fatalf("missing speed byte count")
+			}
+			writeTestSpeedBytes(t, conn, byteCount)
+		default:
+			t.Fatalf("unexpected relay mode %q", mode)
+		}
+	}))
+	defer server.Close()
+
+	host, port := testServerHostPort(t, server)
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_chain.json"), map[string]any{
+		"items": []map[string]any{
+			{
+				"chain_id":       "client-chain",
+				"relay_chain_id": chainID,
+				"name":           "Android Link",
+				"secret":         secret,
+				"entry_node_id":  "1",
+				"exit_node_id":   "2",
+				"link_layer":     "websocket",
+				"hop_configs": []map[string]any{
+					{"node_no": 1, "relay_host": host, "external_port": port},
+				},
+			},
+		},
+	})
+
+	var latency struct {
+		OK           bool   `json:"ok"`
+		Status       string `json:"status"`
+		BestProtocol string `json:"best_protocol"`
+	}
+	if err := json.Unmarshal([]byte(LinkLatency(dir, "client-chain")), &latency); err != nil {
+		t.Fatal(err)
+	}
+	if !latency.OK || latency.Status != "reachable" || latency.BestProtocol != "websocket" {
+		t.Fatalf("unexpected latency result: %+v", latency)
+	}
+
+	_, endpoint, err := loadLinkEndpointByID(dir, "client-chain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	speed := linkRelaySpeedTestWithLayer(endpoint, "websocket", 4096, 5*time.Second)
+	if !speed.OK || speed.Bytes != 4096 || speed.RateBPS <= 0 {
+		t.Fatalf("unexpected speed result: %+v", speed)
+	}
+}
+
 func readTestFile(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -94,4 +254,93 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func writeTestJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testServerHostPort(t *testing.T, server *httptest.Server) (string, int) {
+	t.Helper()
+	host, portText, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "https://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host, port
+}
+
+func assertLinkAuth(t *testing.T, r *http.Request, chainID string, secret string) {
+	t.Helper()
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	nonce := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	if nonce == "" || nonce == auth {
+		t.Fatalf("missing bearer nonce: %q", auth)
+	}
+	want := buildLinkHMAC(secret, chainID, nonce)
+	if got := r.Header.Get(linkCodexMACHeader); got != want {
+		t.Fatalf("mac=%q want %q", got, want)
+	}
+	if r.Header.Get(linkCodexAuthModeHeader) != "secret_hmac" {
+		t.Fatalf("auth mode=%q", r.Header.Get(linkCodexAuthModeHeader))
+	}
+}
+
+func serveTestPingPongRelay(t *testing.T, conn net.Conn) {
+	t.Helper()
+	defer conn.Close()
+	session, err := yamux.Server(conn, newLinkYamuxConfig())
+	if err != nil {
+		t.Fatalf("yamux server: %v", err)
+	}
+	defer session.Close()
+	stream, err := session.Accept()
+	if err != nil {
+		t.Fatalf("yamux accept: %v", err)
+	}
+	defer stream.Close()
+	var req linkTunnelOpenRequest
+	if err := json.NewDecoder(stream).Decode(&req); err != nil {
+		t.Fatalf("decode ping request: %v", err)
+	}
+	if req.Type != linkRelayModePingPong || req.PingBytes != 64 {
+		t.Fatalf("unexpected ping request: %+v", req)
+	}
+	if err := json.NewEncoder(stream).Encode(linkTunnelOpenResponse{OK: true}); err != nil {
+		t.Fatalf("encode ping response: %v", err)
+	}
+	buf := make([]byte, req.PingBytes)
+	if _, err := io.ReadFull(stream, buf); err != nil {
+		t.Fatalf("read ping payload: %v", err)
+	}
+	if _, err := stream.Write(buf); err != nil {
+		t.Fatalf("write ping echo: %v", err)
+	}
+}
+
+func writeTestSpeedBytes(t *testing.T, conn net.Conn, byteCount int64) {
+	t.Helper()
+	defer conn.Close()
+	chunk := []byte(strings.Repeat("a", 1024))
+	remaining := byteCount
+	for remaining > 0 {
+		n := int64(len(chunk))
+		if remaining < n {
+			n = remaining
+		}
+		if _, err := conn.Write(chunk[:n]); err != nil {
+			t.Fatalf("write speed bytes: %v", err)
+		}
+		remaining -= n
+	}
 }

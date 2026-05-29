@@ -97,6 +97,14 @@ input {
   gap: 10px;
   margin-top: 16px;
 }
+.actions.compact {
+  margin-top: 12px;
+}
+.actions.compact .command {
+  min-width: 92px;
+  min-height: 38px;
+  font-size: 13px;
+}
 .command {
   min-width: 128px;
   min-height: 44px;
@@ -178,6 +186,31 @@ input {
   word-break: break-word;
   color: #1c1917;
 }
+.link-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.link-item {
+  border: 1px solid #d7d3ca;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fff;
+}
+.link-title {
+  color: #1c1917;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.link-meta {
+  margin-top: 5px;
+  color: #57534e;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
 @media (max-width: 640px) {
   .shell {
     display: block;
@@ -197,7 +230,7 @@ input {
     display: none;
   }
   nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
   }
   .nav-button {

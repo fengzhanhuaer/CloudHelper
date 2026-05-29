@@ -33,6 +33,30 @@ object MobileCoreBridge {
         )
     }
 
+    fun linkStatus(context: Context): String {
+        return callString(
+            methodName = "linkStatus",
+            parameterTypes = arrayOf(String::class.java),
+            args = arrayOf(ProbeNodeConfig.configDir(context)),
+        )
+    }
+
+    fun linkLatency(context: Context, chainID: String): String {
+        return callString(
+            methodName = "linkLatency",
+            parameterTypes = arrayOf(String::class.java, String::class.java),
+            args = arrayOf(ProbeNodeConfig.configDir(context), chainID),
+        )
+    }
+
+    fun linkSpeed(context: Context, chainID: String, protocol: String): String {
+        return callString(
+            methodName = "linkSpeed",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
+            args = arrayOf(ProbeNodeConfig.configDir(context), chainID, protocol),
+        )
+    }
+
     private fun callString(methodName: String, parameterTypes: Array<Class<*>>, args: Array<Any>): String {
         return try {
             val cls = Class.forName("mobilecore.Mobilecore")

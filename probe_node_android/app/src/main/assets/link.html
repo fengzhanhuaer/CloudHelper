@@ -6,7 +6,7 @@
   <title>CloudHelper Probe Node</title>
   <link rel="stylesheet" href="app.css">
 </head>
-<body data-page="status">
+<body data-page="link">
   <div class="shell">
     <aside>
       <h1 class="brand">CloudHelper<br>Probe Node</h1>
@@ -18,22 +18,14 @@
       </nav>
     </aside>
     <main>
-      <h2 id="pageTitle" class="page-title">状态</h2>
+      <h2 id="pageTitle" class="page-title">链路</h2>
       <p id="pageSubtitle" class="page-subtitle"></p>
       <section class="page">
-        <div class="key-value">
-          <div>主控</div>
-          <div id="summaryController"></div>
-          <div>Node ID</div>
-          <div id="summaryNodeId"></div>
-          <div>配置</div>
-          <div id="summaryReady"></div>
-          <div>运行</div>
-          <div id="summaryRuntime"></div>
-          <div>本地版本</div>
-          <div id="summaryLocalVersion"></div>
+        <div class="actions">
+          <button class="command neutral" onclick="refreshLinks()">刷新</button>
         </div>
-        <div id="status" class="status-box"></div>
+        <div class="status-box" id="linkStatus"></div>
+        <div id="linkList" class="link-list"></div>
       </section>
     </main>
   </div>

@@ -35,6 +35,15 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun emitLinkStatus(payload: String) {
+        runOnUiThread {
+            webView.evaluateJavascript(
+                "window.CloudHelperUI && window.CloudHelperUI.setLinkStatus(${JSONObject.quote(payload)});",
+                null,
+            )
+        }
+    }
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             return
@@ -56,6 +65,7 @@ class MainActivity : Activity() {
                 .put("ready", config.isReady)
                 .put("status", MobileCoreBridge.status())
                 .put("configDir", ProbeNodeConfig.configDir(this@MainActivity))
+                .put("localVersion", currentLocalVersion())
                 .toString()
         }
 
@@ -105,6 +115,25 @@ class MainActivity : Activity() {
         fun refreshConfig() {
             refreshConfigAsync("手动刷新配置", ProbeNodeConfig.load(this@MainActivity))
         }
+
+        @JavascriptInterface
+        fun linkStatus(): String {
+            return MobileCoreBridge.linkStatus(this@MainActivity)
+        }
+
+        @JavascriptInterface
+        fun linkLatency(chainId: String) {
+            thread(name = "cloudhelper-android-link-latency") {
+                emitLinkStatus(MobileCoreBridge.linkLatency(this@MainActivity, chainId))
+            }
+        }
+
+        @JavascriptInterface
+        fun linkSpeed(chainId: String, protocol: String) {
+            thread(name = "cloudhelper-android-link-speed") {
+                emitLinkStatus(MobileCoreBridge.linkSpeed(this@MainActivity, chainId, protocol))
+            }
+        }
     }
 
     private fun refreshConfigAsync(reason: String, config: ProbeNodeConfig) {
@@ -124,5 +153,21 @@ class MainActivity : Activity() {
         if (config.isReady) {
             ProbeNodeService.start(this)
         }
+    }
+
+    private fun currentLocalVersion(): String {
+        val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageInfo(packageName, 0)
+        }
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.versionCode.toLong()
+        }
+        return "${packageInfo.versionName ?: "0.0.0"} ($code)"
     }
 }

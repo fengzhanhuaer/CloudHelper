@@ -1,6 +1,7 @@
 package mobilecore
 
 import (
+	"bufio"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -42,6 +43,8 @@ type reportPayload struct {
 	Platform  string       `json:"platform,omitempty"`
 	OS        string       `json:"os,omitempty"`
 	Arch      string       `json:"arch,omitempty"`
+	IPv4      []string     `json:"ipv4,omitempty"`
+	IPv6      []string     `json:"ipv6,omitempty"`
 	System    systemStatus `json:"system"`
 	Version   string       `json:"version,omitempty"`
 	Timestamp string       `json:"timestamp"`
@@ -60,12 +63,24 @@ type systemStatus struct {
 	DiskUsedPercent   float64 `json:"disk_used_percent"`
 }
 
+type cpuSnapshot struct {
+	total uint64
+	idle  uint64
+}
+
+type cpuSampler struct {
+	hasPrev bool
+	prev    cpuSnapshot
+}
+
 type configRefreshSummary struct {
 	ProxyGroupUpdated bool
 	SelfChains        int
 	ProxyEntries      int
 	ConfigDir         string
 }
+
+var reportCPUSampler cpuSampler
 
 type proxyGroupBackupResponse struct {
 	OK            bool   `json:"ok"`
@@ -414,13 +429,16 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 }
 
 func sendReport(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nodeID string) error {
+	ipv4, ipv6 := collectIPs()
 	payload := reportPayload{
 		Type:      "report",
 		NodeID:    nodeID,
 		Platform:  "android",
 		OS:        "android",
 		Arch:      runtime.GOARCH,
-		System:    systemStatus{},
+		IPv4:      ipv4,
+		IPv6:      ipv6,
+		System:    collectSystemStatus(&reportCPUSampler),
 		Version:   "android-mvp",
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -430,6 +448,181 @@ func sendReport(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nod
 	err := encoder.Encode(payload)
 	_ = stream.SetWriteDeadline(time.Time{})
 	return err
+}
+
+func collectIPs() ([]string, []string) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, nil
+	}
+	seen4 := map[string]struct{}{}
+	seen6 := map[string]struct{}{}
+	ipv4 := make([]string, 0)
+	ipv6 := make([]string, 0)
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			default:
+				continue
+			}
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				continue
+			}
+			if ip4 := ip.To4(); ip4 != nil {
+				value := ip4.String()
+				if _, ok := seen4[value]; !ok {
+					seen4[value] = struct{}{}
+					ipv4 = append(ipv4, value)
+				}
+				continue
+			}
+			if ip.To16() != nil {
+				value := ip.String()
+				if _, ok := seen6[value]; !ok {
+					seen6[value] = struct{}{}
+					ipv6 = append(ipv6, value)
+				}
+			}
+		}
+	}
+	return ipv4, ipv6
+}
+
+func collectSystemStatus(sampler *cpuSampler) systemStatus {
+	memoryTotal, memoryUsed, swapTotal, swapUsed := readLinuxMemInfo()
+	diskTotal, diskUsed := readDiskUsageRoot()
+	return systemStatus{
+		CPUPercent:        sampler.usagePercent(),
+		MemoryTotalBytes:  memoryTotal,
+		MemoryUsedBytes:   memoryUsed,
+		MemoryUsedPercent: percentFromUsed(memoryUsed, memoryTotal),
+		SwapTotalBytes:    swapTotal,
+		SwapUsedBytes:     swapUsed,
+		SwapUsedPercent:   percentFromUsed(swapUsed, swapTotal),
+		DiskTotalBytes:    diskTotal,
+		DiskUsedBytes:     diskUsed,
+		DiskUsedPercent:   percentFromUsed(diskUsed, diskTotal),
+	}
+}
+
+func (s *cpuSampler) usagePercent() float64 {
+	if s == nil {
+		return 0
+	}
+	snapshot, ok := readCPUSnapshot()
+	if !ok {
+		return 0
+	}
+	if !s.hasPrev {
+		s.prev = snapshot
+		s.hasPrev = true
+		return 0
+	}
+	deltaTotal := snapshot.total - s.prev.total
+	deltaIdle := snapshot.idle - s.prev.idle
+	s.prev = snapshot
+	if deltaTotal == 0 || deltaIdle > deltaTotal {
+		return 0
+	}
+	used := deltaTotal - deltaIdle
+	return (float64(used) / float64(deltaTotal)) * 100
+}
+
+func readCPUSnapshot() (cpuSnapshot, bool) {
+	f, err := os.Open("/proc/stat")
+	if err != nil {
+		return cpuSnapshot{}, false
+	}
+	defer f.Close()
+	return parseCPUSnapshot(f)
+}
+
+func parseCPUSnapshot(r io.Reader) (cpuSnapshot, bool) {
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		return cpuSnapshot{}, false
+	}
+	fields := strings.Fields(strings.TrimSpace(scanner.Text()))
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return cpuSnapshot{}, false
+	}
+	values := make([]uint64, 0, len(fields)-1)
+	for _, field := range fields[1:] {
+		v, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			return cpuSnapshot{}, false
+		}
+		values = append(values, v)
+	}
+	total := uint64(0)
+	for _, v := range values {
+		total += v
+	}
+	idle := values[3]
+	if len(values) > 4 {
+		idle += values[4]
+	}
+	return cpuSnapshot{total: total, idle: idle}, true
+}
+
+func readLinuxMemInfo() (memoryTotal uint64, memoryUsed uint64, swapTotal uint64, swapUsed uint64) {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, 0, 0, 0
+	}
+	defer f.Close()
+	return parseLinuxMemInfo(f)
+}
+
+func parseLinuxMemInfo(r io.Reader) (memoryTotal uint64, memoryUsed uint64, swapTotal uint64, swapUsed uint64) {
+	values := map[string]uint64{}
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		parts := strings.SplitN(strings.TrimSpace(scanner.Text()), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		fields := strings.Fields(strings.TrimSpace(parts[1]))
+		if len(fields) == 0 {
+			continue
+		}
+		v, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			continue
+		}
+		values[key] = v * 1024
+	}
+	memoryTotal = values["MemTotal"]
+	memAvailable := values["MemAvailable"]
+	if memoryTotal >= memAvailable {
+		memoryUsed = memoryTotal - memAvailable
+	}
+	swapTotal = values["SwapTotal"]
+	swapFree := values["SwapFree"]
+	if swapTotal >= swapFree {
+		swapUsed = swapTotal - swapFree
+	}
+	return memoryTotal, memoryUsed, swapTotal, swapUsed
+}
+
+func percentFromUsed(used uint64, total uint64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return (float64(used) / float64(total)) * 100
 }
 
 func processControlMessage(raw json.RawMessage, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nodeID string) {
