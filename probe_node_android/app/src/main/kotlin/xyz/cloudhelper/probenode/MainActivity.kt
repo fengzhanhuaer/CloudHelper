@@ -64,8 +64,8 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
-        fun checkUpgrade() {
-            AndroidUpgrade.checkDownloadAndInstall(this@MainActivity) { message -> emitStatus(message) }
+        fun checkUpgrade(mode: String) {
+            AndroidUpgrade.checkDownloadAndInstall(this@MainActivity, mode, ProbeNodeConfig.load(this@MainActivity)) { message -> emitStatus(message) }
         }
     }
 }

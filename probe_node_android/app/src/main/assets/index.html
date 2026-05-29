@@ -90,7 +90,8 @@
       <button onclick="saveConfig()">Save</button>
       <button class="secondary" onclick="startCore()">Start</button>
       <button class="neutral" onclick="stopCore()">Stop</button>
-      <button class="neutral" onclick="checkUpgrade()">Upgrade</button>
+      <button class="neutral" onclick="checkUpgrade('direct')">Direct Upgrade</button>
+      <button class="neutral" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
     </div>
   </main>
 
@@ -129,9 +130,10 @@
       window.CloudHelperUI.setStatus(`Stop: ${window.CloudHelper.stop()}`);
     }
 
-    function checkUpgrade() {
-      window.CloudHelperUI.setStatus("Checking upgrade...");
-      window.CloudHelper.checkUpgrade();
+    function checkUpgrade(mode) {
+      saveConfig();
+      window.CloudHelperUI.setStatus(`Checking ${mode} upgrade...`);
+      window.CloudHelper.checkUpgrade(mode);
     }
 
     loadConfig();

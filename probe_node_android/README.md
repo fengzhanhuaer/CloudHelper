@@ -14,6 +14,11 @@ Open the app, fill the three fields, and tap `Save`. Tap `Start` to call Go mobi
 
 GitHub Actions builds `probe_node/mobilecore` into `probe_node_android/app/libs/mobilecore.aar` with `gomobile bind` before assembling the APK. If the AAR is absent in a local shell build, the UI still opens and reports `mobilecore AAR is not packaged`.
 
+Upgrade buttons follow the desktop probe node model:
+
+- `Direct Upgrade`: fetches GitHub Releases directly.
+- `Proxy Upgrade`: fetches `/api/probe/proxy/github/latest` and `/api/probe/proxy/download` through the configured controller with probe HMAC headers.
+
 ## Release signing
 
 CI builds the Android release APK in two stages:
