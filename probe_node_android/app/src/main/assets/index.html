@@ -8,33 +8,89 @@
     :root {
       color-scheme: light;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f7f7f4;
+      background: #f6f6f3;
       color: #171717;
+    }
+    * {
+      box-sizing: border-box;
     }
     body {
       margin: 0;
-      padding: 20px;
+      min-height: 100vh;
+      background: #f6f6f3;
+    }
+    .shell {
+      display: grid;
+      grid-template-columns: 168px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    aside {
+      background: #1f2937;
+      color: #f8fafc;
+      padding: 18px 12px;
+    }
+    .brand {
+      margin: 0 0 18px;
+      font-size: 17px;
+      font-weight: 750;
+      line-height: 1.25;
+    }
+    nav {
+      display: grid;
+      gap: 8px;
+    }
+    .nav-button {
+      width: 100%;
+      min-height: 42px;
+      border: 0;
+      border-radius: 6px;
+      padding: 0 12px;
+      text-align: left;
+      font-size: 14px;
+      font-weight: 650;
+      color: #dbe4ef;
+      background: transparent;
+    }
+    .nav-button.active {
+      color: #fff;
+      background: #0f766e;
     }
     main {
-      max-width: 720px;
-      margin: 0 auto;
+      min-width: 0;
+      padding: 20px;
     }
-    h1 {
-      margin: 0 0 16px;
-      font-size: 24px;
-      font-weight: 700;
+    .page-title {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 760;
+    }
+    .page-subtitle {
+      margin: 6px 0 18px;
+      min-height: 22px;
+      color: #57534e;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .panel {
+      display: none;
+      max-width: 760px;
+    }
+    .panel.active {
+      display: block;
+    }
+    .field {
+      margin-top: 14px;
     }
     label {
       display: block;
-      margin-top: 12px;
-      font-size: 13px;
+      margin-bottom: 6px;
       color: #44403c;
+      font-size: 13px;
+      font-weight: 650;
     }
     input {
-      box-sizing: border-box;
       width: 100%;
       height: 44px;
-      margin-top: 6px;
       border: 1px solid #c9c5bd;
       border-radius: 6px;
       padding: 0 12px;
@@ -42,74 +98,189 @@
       background: #fff;
       color: #171717;
     }
-    .toolbar {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
       gap: 10px;
       margin-top: 16px;
     }
-    button {
-      height: 44px;
+    .command {
+      min-width: 128px;
+      min-height: 44px;
       border: 0;
       border-radius: 6px;
+      padding: 0 14px;
       font-size: 15px;
-      font-weight: 650;
-      background: #0f766e;
+      font-weight: 700;
       color: #fff;
+      background: #0f766e;
     }
-    button.secondary {
+    .command.secondary {
       background: #334155;
     }
-    button.neutral {
+    .command.neutral {
       background: #57534e;
     }
-    #status {
-      margin: 14px 0 4px;
-      min-height: 42px;
-      line-height: 1.45;
+    .status-box {
+      margin-top: 16px;
+      padding: 12px;
+      border: 1px solid #d7d3ca;
+      border-radius: 6px;
+      background: #fff;
       color: #292524;
+      line-height: 1.5;
       word-break: break-word;
+      min-height: 58px;
+    }
+    .key-value {
+      display: grid;
+      grid-template-columns: 130px minmax(0, 1fr);
+      gap: 8px 12px;
+      margin-top: 14px;
+      font-size: 14px;
+    }
+    .key-value div:nth-child(odd) {
+      color: #57534e;
+      font-weight: 650;
+    }
+    .key-value div:nth-child(even) {
+      min-width: 0;
+      word-break: break-word;
+      color: #1c1917;
+    }
+    @media (max-width: 640px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+      aside {
+        padding: 14px 12px 10px;
+      }
+      .brand {
+        margin-bottom: 10px;
+      }
+      nav {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+      }
+      .nav-button {
+        min-height: 38px;
+        padding: 0 8px;
+        text-align: center;
+        font-size: 12px;
+      }
+      main {
+        padding: 16px;
+      }
+      .command {
+        flex: 1 1 140px;
+      }
+      .key-value {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
     }
   </style>
 </head>
 <body>
-  <main>
-    <h1>CloudHelper Probe Node</h1>
-    <div id="status"></div>
+  <div class="shell">
+    <aside>
+      <h1 class="brand">CloudHelper<br>Probe Node</h1>
+      <nav>
+        <button class="nav-button active" data-panel="status" onclick="showPanel('status')">Status</button>
+        <button class="nav-button" data-panel="config" onclick="showPanel('config')">Config</button>
+        <button class="nav-button" data-panel="runtime" onclick="showPanel('runtime')">Runtime</button>
+        <button class="nav-button" data-panel="upgrade" onclick="showPanel('upgrade')">Upgrade</button>
+      </nav>
+    </aside>
 
-    <label for="controllerUrl">Controller URL</label>
-    <input id="controllerUrl" autocomplete="off" placeholder="https://controller.example.com">
+    <main>
+      <h2 id="pageTitle" class="page-title">Status</h2>
+      <p id="pageSubtitle" class="page-subtitle"></p>
 
-    <label for="nodeId">Node ID</label>
-    <input id="nodeId" autocomplete="off">
+      <section id="panel-status" class="panel active">
+        <div class="key-value">
+          <div>Controller</div>
+          <div id="summaryController"></div>
+          <div>Node ID</div>
+          <div id="summaryNodeId"></div>
+          <div>Config</div>
+          <div id="summaryReady"></div>
+          <div>Runtime</div>
+          <div id="summaryRuntime"></div>
+        </div>
+        <div id="status" class="status-box"></div>
+      </section>
 
-    <label for="nodeSecret">Node Secret</label>
-    <input id="nodeSecret" type="password" autocomplete="off">
+      <section id="panel-config" class="panel">
+        <div class="field">
+          <label for="controllerUrl">Controller URL</label>
+          <input id="controllerUrl" autocomplete="off" placeholder="https://controller.example.com">
+        </div>
+        <div class="field">
+          <label for="nodeId">Node ID</label>
+          <input id="nodeId" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="nodeSecret">Node Secret</label>
+          <input id="nodeSecret" type="password" autocomplete="off">
+        </div>
+        <div class="actions">
+          <button class="command" onclick="saveConfig()">Save</button>
+        </div>
+      </section>
 
-    <div class="toolbar">
-      <button onclick="saveConfig()">Save</button>
-      <button class="secondary" onclick="startCore()">Start</button>
-      <button class="neutral" onclick="stopCore()">Stop</button>
-      <button class="neutral" onclick="checkUpgrade('direct')">Direct Upgrade</button>
-      <button class="neutral" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
-    </div>
-  </main>
+      <section id="panel-runtime" class="panel">
+        <div class="actions">
+          <button class="command" onclick="startCore()">Start</button>
+          <button class="command secondary" onclick="stopCore()">Stop</button>
+        </div>
+        <div class="status-box" id="runtimeStatus"></div>
+      </section>
+
+      <section id="panel-upgrade" class="panel">
+        <div class="actions">
+          <button class="command" onclick="checkUpgrade('direct')">Direct Upgrade</button>
+          <button class="command secondary" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
+        </div>
+        <div class="status-box" id="upgradeStatus"></div>
+      </section>
+    </main>
+  </div>
 
   <script>
-    const statusEl = document.getElementById("status");
+    const pages = {
+      status: ["Status", "Current Android node configuration and runtime state."],
+      config: ["Config", "Set the controller endpoint and node credentials."],
+      runtime: ["Runtime", "Start or stop the Go mobilecore controller connection."],
+      upgrade: ["Upgrade", "Install a newer Android APK directly or through controller proxy."]
+    };
+
     window.CloudHelperUI = {
       setStatus(message) {
-        statusEl.textContent = message || "";
+        setStatus(message || "");
       }
     };
 
+    function showPanel(name) {
+      document.querySelectorAll(".panel").forEach(panel => panel.classList.remove("active"));
+      document.querySelectorAll(".nav-button").forEach(button => button.classList.toggle("active", button.dataset.panel === name));
+      document.getElementById(`panel-${name}`).classList.add("active");
+      document.getElementById("pageTitle").textContent = pages[name][0];
+      document.getElementById("pageSubtitle").textContent = pages[name][1];
+      refreshSummary();
+    }
+
     function loadConfig() {
-      const raw = window.CloudHelper.loadConfig();
-      const config = JSON.parse(raw || "{}");
+      const config = readConfig();
       document.getElementById("controllerUrl").value = config.controllerUrl || "";
       document.getElementById("nodeId").value = config.nodeId || "";
       document.getElementById("nodeSecret").value = config.nodeSecret || "";
-      window.CloudHelperUI.setStatus(config.ready ? `Status: ${config.status}` : "Set controller URL, node ID, and node secret.");
+      refreshSummary(config);
+      setStatus(config.ready ? `Status: ${config.status}` : "Set controller URL, node ID, and node secret.");
+    }
+
+    function readConfig() {
+      return JSON.parse(window.CloudHelper.loadConfig() || "{}");
     }
 
     function saveConfig() {
@@ -118,28 +289,70 @@
         document.getElementById("nodeId").value,
         document.getElementById("nodeSecret").value
       );
-      window.CloudHelperUI.setStatus(`Saved. Status: ${status}`);
+      refreshSummary();
+      setStatus(`Saved. Status: ${status}`);
     }
 
     function startCore() {
       saveConfig();
-      window.CloudHelperUI.setStatus(`Start: ${window.CloudHelper.start()}`);
+      const result = window.CloudHelper.start();
+      setRuntimeStatus(`Start: ${result}`);
+      setStatus(`Start: ${result}`);
+      refreshSummary();
     }
 
     function stopCore() {
-      window.CloudHelperUI.setStatus(`Stop: ${window.CloudHelper.stop()}`);
+      const result = window.CloudHelper.stop();
+      setRuntimeStatus(`Stop: ${result}`);
+      setStatus(`Stop: ${result}`);
+      refreshSummary();
     }
 
     function checkUpgrade(mode) {
       saveConfig();
-      window.CloudHelperUI.setStatus(`Checking ${mode} upgrade...`);
+      const text = `Checking ${mode} upgrade...`;
+      setUpgradeStatus(text);
+      setStatus(text);
       window.CloudHelper.checkUpgrade(mode);
     }
 
+    function refreshSummary(config) {
+      const data = config || readConfig();
+      document.getElementById("summaryController").textContent = data.controllerUrl || "-";
+      document.getElementById("summaryNodeId").textContent = data.nodeId || "-";
+      document.getElementById("summaryReady").textContent = data.ready ? "ready" : "missing config";
+      document.getElementById("summaryRuntime").textContent = window.CloudHelper.status();
+      setRuntimeStatus(`Runtime: ${window.CloudHelper.status()}`);
+    }
+
+    function setStatus(message) {
+      document.getElementById("status").textContent = message;
+      setRuntimeStatus(`Runtime: ${window.CloudHelper.status()}`);
+      refreshSummarySilent();
+    }
+
+    function setRuntimeStatus(message) {
+      document.getElementById("runtimeStatus").textContent = message;
+    }
+
+    function setUpgradeStatus(message) {
+      document.getElementById("upgradeStatus").textContent = message;
+    }
+
+    function refreshSummarySilent() {
+      try {
+        const data = readConfig();
+        document.getElementById("summaryController").textContent = data.controllerUrl || "-";
+        document.getElementById("summaryNodeId").textContent = data.nodeId || "-";
+        document.getElementById("summaryReady").textContent = data.ready ? "ready" : "missing config";
+        document.getElementById("summaryRuntime").textContent = window.CloudHelper.status();
+      } catch (_) {
+      }
+    }
+
     loadConfig();
-    setInterval(() => {
-      window.CloudHelperUI.setStatus(`Status: ${window.CloudHelper.status()}`);
-    }, 5000);
+    showPanel("status");
+    setInterval(refreshSummarySilent, 5000);
   </script>
 </body>
 </html>

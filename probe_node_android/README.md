@@ -3,6 +3,7 @@
 ## Controller configuration
 
 The Android MVP uses a WebView UI and a Kotlin system bridge. Probe protocol logic lives in Go `probe_node/mobilecore`.
+The UI is organized as a two-pane console: project entries on the left, selected project details on the right. On narrow screens the entries collapse into a top navigation row.
 
 The app stores controller connection settings locally:
 
