@@ -1,6 +1,7 @@
 package xyz.cloudhelper.probenode
 
 import android.content.Context
+import java.io.File
 
 data class ProbeNodeConfig(
     val controllerUrl: String,
@@ -32,6 +33,10 @@ data class ProbeNodeConfig(
                 .putString(KEY_NODE_ID, nodeId.trim())
                 .putString(KEY_NODE_SECRET, nodeSecret.trim())
                 .apply()
+        }
+
+        fun configDir(context: Context): String {
+            return File(context.filesDir, "cloudhelper_config").absolutePath
         }
     }
 }

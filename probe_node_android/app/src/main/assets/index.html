@@ -121,6 +121,20 @@
     .command.neutral {
       background: #57534e;
     }
+    .command.saved {
+      background: #15803d;
+    }
+    .inline-feedback {
+      margin-top: 10px;
+      min-height: 22px;
+      color: #166534;
+      font-size: 14px;
+      font-weight: 650;
+      line-height: 1.45;
+    }
+    .inline-feedback.error {
+      color: #b91c1c;
+    }
     .status-box {
       margin-top: 16px;
       padding: 12px;
@@ -131,6 +145,29 @@
       line-height: 1.5;
       word-break: break-word;
       min-height: 58px;
+    }
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      z-index: 20;
+      max-width: min(420px, calc(100vw - 32px));
+      padding: 10px 14px;
+      border-radius: 6px;
+      background: #166534;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.35;
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(-50%, 12px);
+      transition: opacity 160ms ease, transform 160ms ease;
+      box-shadow: 0 12px 28px rgba(23, 23, 23, 0.18);
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translate(-50%, 0);
     }
     .key-value {
       display: grid;
@@ -181,6 +218,9 @@
       }
       .command {
         flex: 1 1 140px;
+      }
+      .toast {
+        bottom: calc(76px + env(safe-area-inset-bottom));
       }
       .key-value {
         grid-template-columns: 1fr;
@@ -240,8 +280,10 @@
           <input id="nodeSecret" type="password" autocomplete="off">
         </div>
         <div class="actions">
-          <button class="command" onclick="saveConfig()">Save</button>
+          <button id="saveButton" class="command" onclick="saveConfig(true)">Save</button>
+          <button class="command neutral" onclick="refreshConfig()">刷新配置</button>
         </div>
+        <div id="saveFeedback" class="inline-feedback" aria-live="polite"></div>
         <div class="actions">
           <button class="command" onclick="checkUpgrade('direct')">Direct Upgrade</button>
           <button class="command secondary" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
@@ -250,8 +292,11 @@
       </section>
     </main>
   </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script>
+    let saveFeedbackTimer = 0;
+    let toastTimer = 0;
     const pages = {
       status: ["状态", "当前 Android 节点配置与运行状态。"],
       proxy: ["代理", "启动或停止 Go mobilecore 控制面连接。"],
@@ -261,6 +306,7 @@
     window.CloudHelperUI = {
       setStatus(message) {
         setStatus(message || "");
+        setUpgradeStatus(message || "");
       }
     };
 
@@ -286,37 +332,57 @@
       return JSON.parse(window.CloudHelper.loadConfig() || "{}");
     }
 
-    function saveConfig() {
-      const status = window.CloudHelper.saveConfig(
-        document.getElementById("controllerUrl").value,
-        document.getElementById("nodeId").value,
-        document.getElementById("nodeSecret").value
-      );
-      refreshSummary();
-      setStatus(`已保存。状态：${status}`);
+    function saveConfig(showFeedback) {
+      try {
+        const status = window.CloudHelper.saveConfig(
+          document.getElementById("controllerUrl").value,
+          document.getElementById("nodeId").value,
+          document.getElementById("nodeSecret").value
+        );
+        refreshSummary();
+        setStatus(`已保存。状态：${status}`);
+        if (showFeedback) {
+          showSaveFeedback(false);
+        }
+        return true;
+      } catch (error) {
+        const message = `保存失败：${error && error.message ? error.message : error}`;
+        setStatus(message);
+        showSaveFeedback(true, message);
+        return false;
+      }
     }
 
     function startCore() {
-      saveConfig();
-      const result = window.CloudHelper.start();
+      const result = window.CloudHelper.startProxy();
       setRuntimeStatus(`启动：${result}`);
-      setStatus(`启动：${result}`);
       refreshSummary();
     }
 
     function stopCore() {
-      const result = window.CloudHelper.stop();
+      const result = window.CloudHelper.stopProxy();
       setRuntimeStatus(`停止：${result}`);
-      setStatus(`停止：${result}`);
       refreshSummary();
     }
 
     function checkUpgrade(mode) {
-      saveConfig();
+      if (!saveConfig(false)) {
+        return;
+      }
       const text = `正在检查 ${mode} 升级...`;
       setUpgradeStatus(text);
       setStatus(text);
       window.CloudHelper.checkUpgrade(mode);
+    }
+
+    function refreshConfig() {
+      if (!saveConfig(false)) {
+        return;
+      }
+      const text = "正在从主控刷新配置...";
+      setUpgradeStatus(text);
+      setStatus(text);
+      window.CloudHelper.refreshConfig();
     }
 
     function refreshSummary(config) {
@@ -340,6 +406,32 @@
 
     function setUpgradeStatus(message) {
       document.getElementById("upgradeStatus").textContent = message;
+    }
+
+    function showSaveFeedback(isError, message) {
+      const feedback = document.getElementById("saveFeedback");
+      const saveButton = document.getElementById("saveButton");
+      window.clearTimeout(saveFeedbackTimer);
+      feedback.classList.toggle("error", isError);
+      feedback.textContent = message || `已保存 ${new Date().toLocaleTimeString()}`;
+      saveButton.textContent = isError ? "Failed" : "Saved";
+      saveButton.classList.toggle("saved", !isError);
+      showToast(message || "配置已保存", isError);
+      saveFeedbackTimer = window.setTimeout(() => {
+        saveButton.textContent = "Save";
+        saveButton.classList.remove("saved");
+      }, 1800);
+    }
+
+    function showToast(message, isError) {
+      const toast = document.getElementById("toast");
+      window.clearTimeout(toastTimer);
+      toast.textContent = message;
+      toast.style.background = isError ? "#991b1b" : "#166534";
+      toast.classList.add("show");
+      toastTimer = window.setTimeout(() => {
+        toast.classList.remove("show");
+      }, 1800);
     }
 
     function refreshSummarySilent() {

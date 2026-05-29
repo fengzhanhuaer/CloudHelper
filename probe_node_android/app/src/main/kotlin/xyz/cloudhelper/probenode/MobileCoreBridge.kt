@@ -1,7 +1,9 @@
 package xyz.cloudhelper.probenode
 
+import android.content.Context
+
 object MobileCoreBridge {
-    fun start(config: ProbeNodeConfig): String {
+    fun start(context: Context, config: ProbeNodeConfig): String {
         if (!config.isReady) {
             return "controller URL, node ID, and node secret are required"
         }
@@ -18,6 +20,17 @@ object MobileCoreBridge {
 
     fun status(): String {
         return callString("status", emptyArray<Class<*>>(), emptyArray())
+    }
+
+    fun refreshConfig(context: Context, config: ProbeNodeConfig): String {
+        if (!config.isReady) {
+            return "controller URL, node ID, and node secret are required"
+        }
+        return callString(
+            methodName = "refreshConfig",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java),
+            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret, ProbeNodeConfig.configDir(context)),
+        )
     }
 
     private fun callString(methodName: String, parameterTypes: Array<Class<*>>, args: Array<Any>): String {
