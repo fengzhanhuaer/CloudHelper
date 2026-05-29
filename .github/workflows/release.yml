@@ -144,6 +144,10 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install Android NDK
+        shell: bash
+        run: sdkmanager "ndk;27.2.12479018"
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -156,14 +160,14 @@ jobs:
 
       - name: Build Probe Node Android mobilecore AAR
         working-directory: probe_node
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         shell: bash
         run: |
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          gomobile init
+          go tool -mod=mod gomobile init
           mkdir -p ../probe_node_android/app/libs
-          gomobile bind \
+          go tool -mod=mod gomobile bind \
             -target=android/arm64 \
             -androidapi 26 \
             -o ../probe_node_android/app/libs/mobilecore.aar \

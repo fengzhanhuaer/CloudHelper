@@ -71,6 +71,6 @@ dependencies {
     implementation "androidx.core:core:1.15.0"
     implementation "androidx.webkit:webkit:1.12.1"
     if (file("libs/mobilecore.aar").exists()) {
-        implementation files("libs/mobilecore.aar")
+        implementation(name: "mobilecore", ext: "aar")
     }
 }
