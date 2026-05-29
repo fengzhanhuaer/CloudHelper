@@ -62,6 +62,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26.1'
+          cache-dependency-path: probe_controller/go.sum
 
       - name: Build Probe Controller (Linux amd64)
         working-directory: probe_controller
@@ -108,6 +109,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26.1'
+          cache-dependency-path: probe_node/go.sum
 
       - name: Build Probe Node (${{ matrix.goos }} ${{ matrix.goarch }})
         working-directory: probe_node
@@ -146,7 +148,13 @@ jobs:
 
       - name: Install Android NDK
         shell: bash
-        run: sdkmanager "ndk;27.2.12479018"
+        run: |
+          NDK_PATH="$ANDROID_HOME/ndk/27.2.12479018"
+          if [ -d "$NDK_PATH" ]; then
+            echo "Using existing Android NDK at $NDK_PATH"
+          else
+            sdkmanager "ndk;27.2.12479018"
+          fi
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -157,6 +165,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26.1'
+          cache-dependency-path: probe_node/go.sum
+
+      - name: Restore gomobile tool cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/bin/gomobile
+            ~/go/bin/gobind
+            ~/go/pkg/gomobile
+          key: ${{ runner.os }}-gomobile-go1.26.1-ndk27.2.12479018-${{ hashFiles('probe_node/go.mod', 'probe_node/go.sum') }}
 
       - name: Build Probe Node Android mobilecore AAR
         working-directory: probe_node
@@ -167,10 +185,19 @@ jobs:
         run: |
           export PATH="$(go env GOPATH)/bin:$PATH"
           export GOFLAGS="-mod=mod"
+          GOMOBILE_ROOT="$(go env GOPATH)/pkg/gomobile"
           go mod download
-          go install -mod=mod golang.org/x/mobile/cmd/gomobile
-          go install -mod=mod golang.org/x/mobile/cmd/gobind
-          gomobile init
+          if ! command -v gomobile >/dev/null 2>&1; then
+            go install -mod=mod golang.org/x/mobile/cmd/gomobile
+          fi
+          if ! command -v gobind >/dev/null 2>&1; then
+            go install -mod=mod golang.org/x/mobile/cmd/gobind
+          fi
+          if [ -d "$GOMOBILE_ROOT" ]; then
+            echo "Using cached gomobile init at $GOMOBILE_ROOT"
+          else
+            gomobile init
+          fi
           mkdir -p ../probe_node_android/app/libs
           gomobile bind \
             -target=android/arm64 \
