@@ -150,26 +150,34 @@
     }
     @media (max-width: 640px) {
       .shell {
-        grid-template-columns: 1fr;
+        display: block;
+        min-height: 100vh;
       }
       aside {
-        padding: 14px 12px 10px;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 10;
+        padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
       }
       .brand {
-        margin-bottom: 10px;
+        display: none;
       }
       nav {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 6px;
       }
       .nav-button {
-        min-height: 38px;
+        min-height: 40px;
         padding: 0 8px;
         text-align: center;
         font-size: 12px;
+        white-space: nowrap;
       }
       main {
-        padding: 16px;
+        padding: 16px 16px calc(76px + env(safe-area-inset-bottom));
       }
       .command {
         flex: 1 1 140px;
@@ -186,10 +194,9 @@
     <aside>
       <h1 class="brand">CloudHelper<br>Probe Node</h1>
       <nav>
-        <button class="nav-button active" data-panel="status" onclick="showPanel('status')">Status</button>
-        <button class="nav-button" data-panel="config" onclick="showPanel('config')">Config</button>
-        <button class="nav-button" data-panel="runtime" onclick="showPanel('runtime')">Runtime</button>
-        <button class="nav-button" data-panel="upgrade" onclick="showPanel('upgrade')">Upgrade</button>
+        <button class="nav-button active" data-panel="status" onclick="showPanel('status')">状态</button>
+        <button class="nav-button" data-panel="proxy" onclick="showPanel('proxy')">代理</button>
+        <button class="nav-button" data-panel="settings" onclick="showPanel('settings')">设置</button>
       </nav>
     </aside>
 
@@ -199,19 +206,27 @@
 
       <section id="panel-status" class="panel active">
         <div class="key-value">
-          <div>Controller</div>
+          <div>主控</div>
           <div id="summaryController"></div>
           <div>Node ID</div>
           <div id="summaryNodeId"></div>
-          <div>Config</div>
+          <div>配置</div>
           <div id="summaryReady"></div>
-          <div>Runtime</div>
+          <div>运行</div>
           <div id="summaryRuntime"></div>
         </div>
         <div id="status" class="status-box"></div>
       </section>
 
-      <section id="panel-config" class="panel">
+      <section id="panel-proxy" class="panel">
+        <div class="actions">
+          <button class="command" onclick="startCore()">Start</button>
+          <button class="command secondary" onclick="stopCore()">Stop</button>
+        </div>
+        <div class="status-box" id="runtimeStatus"></div>
+      </section>
+
+      <section id="panel-settings" class="panel">
         <div class="field">
           <label for="controllerUrl">Controller URL</label>
           <input id="controllerUrl" autocomplete="off" placeholder="https://controller.example.com">
@@ -227,17 +242,6 @@
         <div class="actions">
           <button class="command" onclick="saveConfig()">Save</button>
         </div>
-      </section>
-
-      <section id="panel-runtime" class="panel">
-        <div class="actions">
-          <button class="command" onclick="startCore()">Start</button>
-          <button class="command secondary" onclick="stopCore()">Stop</button>
-        </div>
-        <div class="status-box" id="runtimeStatus"></div>
-      </section>
-
-      <section id="panel-upgrade" class="panel">
         <div class="actions">
           <button class="command" onclick="checkUpgrade('direct')">Direct Upgrade</button>
           <button class="command secondary" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
@@ -249,10 +253,9 @@
 
   <script>
     const pages = {
-      status: ["Status", "Current Android node configuration and runtime state."],
-      config: ["Config", "Set the controller endpoint and node credentials."],
-      runtime: ["Runtime", "Start or stop the Go mobilecore controller connection."],
-      upgrade: ["Upgrade", "Install a newer Android APK directly or through controller proxy."]
+      status: ["状态", "当前 Android 节点配置与运行状态。"],
+      proxy: ["代理", "启动或停止 Go mobilecore 控制面连接。"],
+      settings: ["设置", "配置主控与节点密钥，并执行直连或主控代理升级。"]
     };
 
     window.CloudHelperUI = {
@@ -276,7 +279,7 @@
       document.getElementById("nodeId").value = config.nodeId || "";
       document.getElementById("nodeSecret").value = config.nodeSecret || "";
       refreshSummary(config);
-      setStatus(config.ready ? `Status: ${config.status}` : "Set controller URL, node ID, and node secret.");
+      setStatus(config.ready ? `状态：${config.status}` : "请设置主控地址、节点 ID 和节点密钥。");
     }
 
     function readConfig() {
@@ -290,27 +293,27 @@
         document.getElementById("nodeSecret").value
       );
       refreshSummary();
-      setStatus(`Saved. Status: ${status}`);
+      setStatus(`已保存。状态：${status}`);
     }
 
     function startCore() {
       saveConfig();
       const result = window.CloudHelper.start();
-      setRuntimeStatus(`Start: ${result}`);
-      setStatus(`Start: ${result}`);
+      setRuntimeStatus(`启动：${result}`);
+      setStatus(`启动：${result}`);
       refreshSummary();
     }
 
     function stopCore() {
       const result = window.CloudHelper.stop();
-      setRuntimeStatus(`Stop: ${result}`);
-      setStatus(`Stop: ${result}`);
+      setRuntimeStatus(`停止：${result}`);
+      setStatus(`停止：${result}`);
       refreshSummary();
     }
 
     function checkUpgrade(mode) {
       saveConfig();
-      const text = `Checking ${mode} upgrade...`;
+      const text = `正在检查 ${mode} 升级...`;
       setUpgradeStatus(text);
       setStatus(text);
       window.CloudHelper.checkUpgrade(mode);
@@ -320,14 +323,14 @@
       const data = config || readConfig();
       document.getElementById("summaryController").textContent = data.controllerUrl || "-";
       document.getElementById("summaryNodeId").textContent = data.nodeId || "-";
-      document.getElementById("summaryReady").textContent = data.ready ? "ready" : "missing config";
+      document.getElementById("summaryReady").textContent = data.ready ? "已配置" : "未配置";
       document.getElementById("summaryRuntime").textContent = window.CloudHelper.status();
-      setRuntimeStatus(`Runtime: ${window.CloudHelper.status()}`);
+      setRuntimeStatus(`运行：${window.CloudHelper.status()}`);
     }
 
     function setStatus(message) {
       document.getElementById("status").textContent = message;
-      setRuntimeStatus(`Runtime: ${window.CloudHelper.status()}`);
+      setRuntimeStatus(`运行：${window.CloudHelper.status()}`);
       refreshSummarySilent();
     }
 
@@ -344,7 +347,7 @@
         const data = readConfig();
         document.getElementById("summaryController").textContent = data.controllerUrl || "-";
         document.getElementById("summaryNodeId").textContent = data.nodeId || "-";
-        document.getElementById("summaryReady").textContent = data.ready ? "ready" : "missing config";
+        document.getElementById("summaryReady").textContent = data.ready ? "已配置" : "未配置";
         document.getElementById("summaryRuntime").textContent = window.CloudHelper.status();
       } catch (_) {
       }
