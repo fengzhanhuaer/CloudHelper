@@ -211,6 +211,18 @@ input {
   line-height: 1.45;
   word-break: break-word;
 }
+.link-result {
+  margin-top: 10px;
+  min-height: 22px;
+  color: #166534;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.link-result.error {
+  color: #b91c1c;
+}
 @media (max-width: 640px) {
   .shell {
     display: block;

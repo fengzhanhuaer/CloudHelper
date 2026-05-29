@@ -113,12 +113,14 @@ function refreshLinks() {
 
 function runLinkLatency(chainId) {
   setText("linkStatus", `正在测试链路延迟：${chainId}`);
+  setLinkPanelStatus(chainId, "正在执行 relay ping-pong 延迟测试...", false);
   window.CloudHelper.linkLatency(chainId);
 }
 
 function runLinkSpeed(chainId, protocol) {
   const label = protocol ? protocol : "auto";
   setText("linkStatus", `正在测速：${chainId} (${label})`);
+  setLinkPanelStatus(chainId, `正在执行 relay speed_test 测速 (${label})...`, false);
   window.CloudHelper.linkSpeed(chainId, protocol || "");
 }
 
@@ -144,6 +146,9 @@ function renderLinkItem(chain) {
   const item = document.createElement("article");
   item.className = "link-item";
   const chainId = chain.chain_id || chain.client_entry_id || "";
+  item.dataset.chainId = chain.chain_id || "";
+  item.dataset.clientEntryId = chain.client_entry_id || "";
+  item.dataset.relayChainId = chain.relay_chain_id || "";
   const title = document.createElement("div");
   title.className = "link-title";
   title.textContent = chain.chain_name || chainId || "未命名链路";
@@ -170,13 +175,16 @@ function renderLinkItem(chain) {
   speedAuto.onclick = () => runLinkSpeed(chainId, "");
   actions.appendChild(latency);
   actions.appendChild(speedAuto);
+  const result = document.createElement("div");
+  result.className = "link-result";
+  result.textContent = chain.status === "configured" ? "等待测试" : "链路未完整配置";
   if (chain.error) {
     const error = document.createElement("div");
     error.className = "inline-feedback error";
     error.textContent = chain.error;
-    item.append(title, meta, error, actions);
+    item.append(title, meta, error, result, actions);
   } else {
-    item.append(title, meta, actions);
+    item.append(title, meta, result, actions);
   }
   return item;
 }
@@ -188,18 +196,50 @@ function renderLinkResult(payload) {
     return;
   }
   if (Array.isArray(data.results) && data.source === "active_speed_test") {
-    status.textContent = formatSpeedResult(data);
+    const text = formatSpeedResult(data);
+    status.textContent = text;
+    setLinkPanelStatus(data.chain_id, text, !data.ok);
     return;
   }
   if (Array.isArray(data.results)) {
-    status.textContent = formatLatencyResult(data);
+    const text = formatLatencyResult(data);
+    status.textContent = text;
+    setLinkPanelStatus(data.chain_id, text, !data.ok);
     return;
   }
   if (!data.ok) {
-    status.textContent = `测试失败：${data.error || data.status || "unknown"}`;
+    const text = `测试失败：${data.error || data.status || "unknown"}`;
+    status.textContent = text;
+    setLinkPanelStatus(data.chain_id, text, true);
     return;
   }
-  status.textContent = formatLatencyResult(data);
+  const text = formatLatencyResult(data);
+  status.textContent = text;
+  setLinkPanelStatus(data.chain_id, text, false);
+}
+
+function setLinkPanelStatus(chainId, message, isError) {
+  const panel = findLinkPanel(chainId);
+  if (!panel) {
+    return;
+  }
+  const result = panel.querySelector(".link-result");
+  if (!result) {
+    return;
+  }
+  result.textContent = message;
+  result.classList.toggle("error", !!isError);
+}
+
+function findLinkPanel(chainId) {
+  const clean = String(chainId || "").trim().toLowerCase();
+  if (!clean) {
+    return null;
+  }
+  return Array.from(document.querySelectorAll(".link-item")).find((item) => {
+    return [item.dataset.chainId, item.dataset.clientEntryId, item.dataset.relayChainId]
+      .some((value) => String(value || "").trim().toLowerCase() === clean);
+  }) || null;
 }
 
 function formatLatencyResult(data) {

@@ -124,11 +124,35 @@ type linkSpeedTestResult struct {
 }
 
 type linkTunnelOpenRequest struct {
-	Type       string `json:"type"`
-	Network    string `json:"network,omitempty"`
-	Address    string `json:"address,omitempty"`
-	SpeedBytes int64  `json:"speed_bytes,omitempty"`
-	PingBytes  int64  `json:"ping_bytes,omitempty"`
+	Type          string                 `json:"type"`
+	Network       string                 `json:"network,omitempty"`
+	Address       string                 `json:"address,omitempty"`
+	AssociationV2 *linkAssociationV2Meta `json:"association_v2,omitempty"`
+	SpeedBytes    int64                  `json:"speed_bytes,omitempty"`
+	PingBytes     int64                  `json:"ping_bytes,omitempty"`
+}
+
+type linkAssociationV2Meta struct {
+	Version          int    `json:"version"`
+	Transport        string `json:"transport,omitempty"`
+	RouteGroup       string `json:"route_group,omitempty"`
+	RouteNodeID      string `json:"route_node_id,omitempty"`
+	RouteTarget      string `json:"route_target,omitempty"`
+	RouteFingerprint string `json:"route_fingerprint,omitempty"`
+	NATMode          string `json:"nat_mode,omitempty"`
+	TTLProfile       string `json:"ttl_profile,omitempty"`
+	IdleTimeoutMS    int64  `json:"idle_timeout_ms,omitempty"`
+	GCIntervalMS     int64  `json:"gc_interval_ms,omitempty"`
+	CreatedAtUnixMS  int64  `json:"created_at_unix_ms,omitempty"`
+	AssocKeyV2       string `json:"assoc_key_v2,omitempty"`
+	FlowID           string `json:"flow_id,omitempty"`
+	SrcIP            string `json:"src_ip,omitempty"`
+	SrcPort          uint16 `json:"src_port,omitempty"`
+	DstIP            string `json:"dst_ip,omitempty"`
+	DstPort          uint16 `json:"dst_port,omitempty"`
+	IPFamily         int    `json:"ip_family,omitempty"`
+	SourceKey        string `json:"source_key,omitempty"`
+	SourceRefs       int64  `json:"source_refs,omitempty"`
 }
 
 type linkTunnelOpenResponse struct {

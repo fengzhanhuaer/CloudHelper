@@ -2,7 +2,9 @@ package xyz.cloudhelper.probenode
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.webkit.JavascriptInterface
@@ -24,6 +26,14 @@ class MainActivity : Activity() {
         webView.loadUrl("file:///android_asset/index.html")
         requestNotificationPermissionIfNeeded()
         startReportServiceIfConfigured()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
+            ProbeNodeVpnService.start(this)
+            emitStatus("VPN 权限已授权，正在启动全局 VPN...")
+        }
     }
 
     private fun emitStatus(message: String) {
@@ -93,12 +103,19 @@ class MainActivity : Activity() {
             if (!config.isReady) {
                 return "controller URL, node ID, and node secret are required"
             }
-            return "proxy runtime is not implemented yet; report=${MobileCoreBridge.status()}"
+            val prepareIntent = VpnService.prepare(this@MainActivity)
+            if (prepareIntent != null) {
+                startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
+                return "需要授权 Android VPN，授权后会自动启动全局 VPN"
+            }
+            ProbeNodeVpnService.start(this@MainActivity)
+            return "全局 VPN 正在启动"
         }
 
         @JavascriptInterface
         fun stopProxy(): String {
-            return "proxy runtime is not implemented yet; report=${MobileCoreBridge.status()}"
+            ProbeNodeVpnService.stop(this@MainActivity)
+            return "全局 VPN 正在停止"
         }
 
         @JavascriptInterface
@@ -169,5 +186,9 @@ class MainActivity : Activity() {
             packageInfo.versionCode.toLong()
         }
         return "${packageInfo.versionName ?: "0.0.0"} ($code)"
+    }
+
+    companion object {
+        private const val VPN_REQUEST_CODE = 2001
     }
 }

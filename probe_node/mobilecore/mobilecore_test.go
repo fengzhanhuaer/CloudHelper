@@ -1,6 +1,8 @@
 package mobilecore
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -19,6 +21,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 func TestResolveWebSocketURL(t *testing.T) {
@@ -113,6 +117,43 @@ func TestParseCPUSnapshot(t *testing.T) {
 	}
 	if got.total != 280 || got.idle != 90 {
 		t.Fatalf("snapshot=%+v", got)
+	}
+}
+
+func TestSetVersion(t *testing.T) {
+	manager.mu.Lock()
+	old := manager.version
+	manager.version = ""
+	manager.mu.Unlock()
+	defer func() {
+		manager.mu.Lock()
+		manager.version = old
+		manager.mu.Unlock()
+	}()
+
+	if got := currentVersion(); got != "android" {
+		t.Fatalf("default version=%q", got)
+	}
+	if got := SetVersion("1.2.3 (12)"); got != "1.2.3 (12)" {
+		t.Fatalf("SetVersion returned %q", got)
+	}
+	if got := currentVersion(); got != "1.2.3 (12)" {
+		t.Fatalf("currentVersion=%q", got)
+	}
+}
+
+func TestParseIPAddrOutput(t *testing.T) {
+	ipv4, ipv6 := parseIPAddrOutput(strings.Join([]string{
+		"2: wlan0    inet 192.168.31.10/24 brd 192.168.31.255 scope global wlan0",
+		"3: rmnet_data0    inet 10.22.1.5/30 scope global rmnet_data0",
+		"4: wlan0    inet6 2409:8a00::123/64 scope global dynamic",
+		"5: lo    inet 127.0.0.1/8 scope host lo",
+	}, "\n"))
+	if strings.Join(ipv4, ",") != "10.22.1.5,192.168.31.10" {
+		t.Fatalf("ipv4=%v", ipv4)
+	}
+	if strings.Join(ipv6, ",") != "2409:8a00::123" {
+		t.Fatalf("ipv6=%v", ipv6)
 	}
 }
 
@@ -244,6 +285,90 @@ func TestLinkLatencyAndSpeedUseRelayProtocol(t *testing.T) {
 	speed := linkRelaySpeedTestWithLayer(endpoint, "websocket", 4096, 5*time.Second)
 	if !speed.OK || speed.Bytes != 4096 || speed.RateBPS <= 0 {
 		t.Fatalf("unexpected speed result: %+v", speed)
+	}
+}
+
+func TestProxyFramedPacketRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	payload := []byte("udp payload")
+	if err := writeProxyFramedPacket(&buf, payload); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 64)
+	n, err := readProxyFramedPacket(bufio.NewReader(&buf), got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got[:n]) != string(payload) {
+		t.Fatalf("payload=%q", string(got[:n]))
+	}
+}
+
+func TestDecideVPNRouteForTargetUsesProxyState(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "media", "rules": []string{"domain_suffix:example.com"}},
+		},
+	})
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "media", "action": "tunnel", "selected_chain_id": "chain-1"},
+		},
+	})
+	vpnRuntime.mu.Lock()
+	old := vpnRuntime.configDir
+	vpnRuntime.configDir = dir
+	vpnRuntime.mu.Unlock()
+	defer func() {
+		vpnRuntime.mu.Lock()
+		vpnRuntime.configDir = old
+		vpnRuntime.mu.Unlock()
+	}()
+
+	route, err := decideVPNRouteForTarget("www.example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Direct || route.SelectedChainID != "chain-1" || route.Group != "media" {
+		t.Fatalf("unexpected route: %+v", route)
+	}
+}
+
+func TestVPNUDPAssociationMetadata(t *testing.T) {
+	id := stack.TransportEndpointID{
+		LocalAddress:  tcpip.AddrFrom4([4]byte{8, 8, 8, 8}),
+		LocalPort:     53,
+		RemoteAddress: tcpip.AddrFrom4([4]byte{10, 111, 0, 2}),
+		RemotePort:    53000,
+	}
+	assocKey := strings.ToLower("8.8.8.8:53") + "|" + id.RemoteAddress.String() + ":53000->" + id.LocalAddress.String() + ":53"
+	association := &linkAssociationV2Meta{
+		Version:          2,
+		Transport:        "udp",
+		RouteGroup:       "fallback",
+		RouteNodeID:      formatProxyLegacyTunnelNodeID("chain-1"),
+		RouteTarget:      "8.8.8.8:53",
+		RouteFingerprint: "8.8.8.8:53",
+		NATMode:          "default",
+		TTLProfile:       "default",
+		IdleTimeoutMS:    vpnUDPRelayTimeout.Milliseconds(),
+		GCIntervalMS:     (vpnUDPRelayTimeout / 2).Milliseconds(),
+		CreatedAtUnixMS:  1,
+		AssocKeyV2:       assocKey,
+		FlowID:           assocKey,
+		SrcIP:            id.RemoteAddress.String(),
+		SrcPort:          uint16(id.RemotePort),
+		DstIP:            id.LocalAddress.String(),
+		DstPort:          uint16(id.LocalPort),
+		IPFamily:         4,
+		SourceKey:        id.RemoteAddress.String() + ":53000",
+		SourceRefs:       1,
+	}
+	if association.RouteNodeID != "chain:chain-1" || association.AssocKeyV2 == "" || association.SrcPort != 53000 || association.DstPort != 53 {
+		t.Fatalf("unexpected association: %+v", association)
 	}
 }
 

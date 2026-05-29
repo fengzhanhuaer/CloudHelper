@@ -32,9 +32,10 @@ const configRefreshTimeout = 20 * time.Second
 var manager = &coreManager{}
 
 type coreManager struct {
-	mu     sync.Mutex
-	cancel chan struct{}
-	status string
+	mu      sync.Mutex
+	cancel  chan struct{}
+	status  string
+	version string
 }
 
 type reportPayload struct {
@@ -189,6 +190,13 @@ func Stop() string {
 	return manager.status
 }
 
+func SetVersion(version string) string {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	manager.version = strings.TrimSpace(version)
+	return currentVersionLocked()
+}
+
 func Status() string {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -196,6 +204,19 @@ func Status() string {
 		return "stopped"
 	}
 	return manager.status
+}
+
+func currentVersion() string {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return currentVersionLocked()
+}
+
+func currentVersionLocked() string {
+	if strings.TrimSpace(manager.version) != "" {
+		return strings.TrimSpace(manager.version)
+	}
+	return "android"
 }
 
 func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, configDir string) (configRefreshSummary, error) {
@@ -439,7 +460,7 @@ func sendReport(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nod
 		IPv4:      ipv4,
 		IPv6:      ipv6,
 		System:    collectSystemStatus(&reportCPUSampler),
-		Version:   "android-mvp",
+		Version:   currentVersion(),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 	writeMu.Lock()
@@ -496,6 +517,36 @@ func collectIPs() ([]string, []string) {
 				}
 			}
 		}
+	}
+	addIPv4, addIPv6 := collectCommandIPs()
+	for _, value := range addIPv4 {
+		if _, ok := seen4[value]; ok {
+			continue
+		}
+		seen4[value] = struct{}{}
+		ipv4 = append(ipv4, value)
+	}
+	for _, value := range addIPv6 {
+		if _, ok := seen6[value]; ok {
+			continue
+		}
+		seen6[value] = struct{}{}
+		ipv6 = append(ipv6, value)
+	}
+	publicIPv4, publicIPv6 := collectPublicIPs()
+	for _, value := range publicIPv4 {
+		if _, ok := seen4[value]; ok {
+			continue
+		}
+		seen4[value] = struct{}{}
+		ipv4 = append(ipv4, value)
+	}
+	for _, value := range publicIPv6 {
+		if _, ok := seen6[value]; ok {
+			continue
+		}
+		seen6[value] = struct{}{}
+		ipv6 = append(ipv6, value)
 	}
 	return ipv4, ipv6
 }
