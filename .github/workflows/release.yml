@@ -8,11 +8,13 @@ on:
       - 'version'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       new_version: ${{ steps.bump_version.outputs.new_version }}
     steps:
@@ -186,10 +188,12 @@ jobs:
           CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD }}
         shell: bash
         run: |
+          set +x
           if [ -z "$CLOUDHELPER_ANDROID_KEYSTORE_BASE64" ] || [ -z "$CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD" ]; then
             echo "Android signing secrets are incomplete. Configure CLOUDHELPER_ANDROID_KEYSTORE_BASE64 and CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD in the android-release-signing environment." >&2
             exit 1
           fi
+          umask 077
           mkdir -p "$RUNNER_TEMP/cloudhelper-android-signing"
           printf '%s' "$CLOUDHELPER_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/cloudhelper-android-signing/release.p12"
 
@@ -198,16 +202,26 @@ jobs:
           CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD }}
         shell: bash
         run: |
+          set +x
           ZIPALIGN="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/zipalign"
           APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner"
+          SIGNING_PASS_FILE="$RUNNER_TEMP/cloudhelper-android-signing/keystore.pass"
+          printf '%s' "$CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD" > "$SIGNING_PASS_FILE"
+          chmod 600 "$SIGNING_PASS_FILE"
           "$ZIPALIGN" -p -f 4 android-signing/cloudhelper-probe-node-android-arm64-unsigned.apk android-signing/cloudhelper-probe-node-android-arm64-aligned.apk
           "$APKSIGNER" sign \
             --ks "$RUNNER_TEMP/cloudhelper-android-signing/release.p12" \
             --ks-type PKCS12 \
-            --ks-pass "pass:$CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD" \
+            --ks-pass "file:$SIGNING_PASS_FILE" \
             --out android-signing/cloudhelper-probe-node-android-arm64.apk \
             android-signing/cloudhelper-probe-node-android-arm64-aligned.apk
           "$APKSIGNER" verify --verbose android-signing/cloudhelper-probe-node-android-arm64.apk
+
+      - name: Clean Android signing material
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/cloudhelper-android-signing"
 
       - name: Upload Probe Node Android signed artifact
         uses: actions/upload-artifact@v4
@@ -222,6 +236,8 @@ jobs:
       - build-probe-node
       - sign-probe-node-android
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download Probe Controller Artifact
         uses: actions/download-artifact@v4

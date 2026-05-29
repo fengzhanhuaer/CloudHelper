@@ -397,12 +397,13 @@
 
 - 修改接口: `probeReportPayload` / `probeReportMessage` 增加 `platform/os/arch`；controller `probeRuntimeStatus` 增加 `platform/os/arch`；`target_system` 支持 `android`。
 - 配置文件: `.github/workflows/release.yml`、`probe_node_android/**`。
+- 签名安全: Android APK CI 已拆分为 unsigned build 与 `android-release-signing` protected environment 签名 job；默认 workflow 权限降为 `contents: read`，仅版本提交/Release 发布 job 提升 `contents: write`；签名密码通过临时文件传给 `apksigner`，签名后清理 runner 临时 keystore。
 - 执行报告: 已完成 TASK-001 到 TASK-004 的首批闭环实现。
 - 影响文件: `.github/workflows/release.yml`、`probe_node_android/**`、`probe_node/main.go`、`probe_node/upgrade.go`、`probe_controller/internal/core/**`、`probe_controller/internal/core/mng_pages/probe.html`。
 - 测试命令: `cd probe_node; go test ./...`；`cd probe_controller; go test ./...`；`git diff --check`。
 - 自测结果: Go 单测通过；`git diff --check` 无 whitespace error，仅 Git CRLF 提示。
 - 未执行测试原因: 本机无 `gradle` 和 `adb`，无法本地构建 APK 或真机/模拟器安装验证；Android 构建由 GitHub Actions 验证。
-- 遗留风险: Android release signing 已支持固定 keystore secrets；若 CI 未配置签名 secrets，则仍会 fallback 到 debug signing 仅供内部迭代。Android 客户端尚未接入 controller 配置、VPN/TUN 和 mobilecore。
+- 遗留风险: Android release signing 依赖 `android-release-signing` Environment Secrets，建议开启 required reviewers；Android 客户端尚未接入 controller 配置、VPN/TUN 和 mobilecore。
 - 回滚方案: 回退 `.github/workflows/release.yml` Android job、`probe_node_android/`、平台字段和 Android asset 选择相关改动。
 
 ### 2.6 Code任务反馈

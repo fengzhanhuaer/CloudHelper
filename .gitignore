@@ -28,3 +28,4 @@ probe_node/.gocache-linux/
 probe_node/.gocache/
 probe_controller/.gocache/
 /.secrets/
+/.tmp_tools/
