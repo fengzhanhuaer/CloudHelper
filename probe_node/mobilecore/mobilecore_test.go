@@ -681,6 +681,52 @@ func TestAndroidVPNDNSUsesFakeIPForFallbackTunnel(t *testing.T) {
 	}
 }
 
+func TestAndroidVPNSelfCheckRoutesFakeIPThroughVPNDecision(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "fallback", "action": "tunnel", "selected_chain_id": "chain-1"},
+		},
+	})
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+	vpnRuntime.mu.Lock()
+	oldConfigDir := vpnRuntime.configDir
+	vpnRuntime.configDir = dir
+	vpnRuntime.mu.Unlock()
+	defer func() {
+		vpnRuntime.mu.Lock()
+		vpnRuntime.configDir = oldConfigDir
+		vpnRuntime.mu.Unlock()
+	}()
+
+	query := buildTestDNSQuery(t, "www.google.com", dnsmessage.TypeA)
+	response, err := resolveAndroidVPNDNSPacket(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ips := extractTestDNSARecords(t, response)
+	if len(ips) != 1 {
+		t.Fatalf("fake ips=%v", ips)
+	}
+	route, err := decideVPNRouteForTarget(net.JoinHostPort(ips[0], "443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Direct || route.Group != "fallback" || route.SelectedChainID != "chain-1" {
+		t.Fatalf("self-check fake route would be wrong: %+v", route)
+	}
+}
+
 func readTestFile(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)

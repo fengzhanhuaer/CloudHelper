@@ -11,6 +11,9 @@ if (matcher.matches()) {
     def parts = [matcher[0][1], matcher[0][2], matcher[0][3]]
     normalizedVersionCode = ((parts[0] as int) * 1000000) + ((parts[1] as int) * 1000) + (parts[2] as int)
 }
+if (normalizedVersionCode < 1) {
+    normalizedVersionCode = 1
+}
 
 def releaseKeystoreFile = System.getenv("CLOUDHELPER_ANDROID_KEYSTORE_FILE") ?: ""
 def releaseKeystorePassword = System.getenv("CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD") ?: ""
