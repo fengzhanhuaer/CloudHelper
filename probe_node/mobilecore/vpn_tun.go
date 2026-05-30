@@ -877,7 +877,7 @@ func pipeVPNConn(dst net.Conn, src net.Conn) {
 		_ = src.SetReadDeadline(deadline)
 		_ = dst.SetReadDeadline(deadline)
 	}
-	_, _ = io.Copy(dst, src)
+	_, _ = mobileRelayCopy(dst, src)
 }
 
 func relayVPNUDP(inbound *gonet.UDPConn, outbound io.ReadWriteCloser) {
@@ -885,11 +885,11 @@ func relayVPNUDP(inbound *gonet.UDPConn, outbound io.ReadWriteCloser) {
 	defer outbound.Close()
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(outbound, inbound)
+		_, _ = mobileRelayCopy(outbound, inbound)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(inbound, outbound)
+		_, _ = mobileRelayCopy(inbound, outbound)
 		done <- struct{}{}
 	}()
 	select {

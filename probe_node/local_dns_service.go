@@ -897,7 +897,7 @@ func queryProbeLocalDNSViaDoHOverProxy(endpoint string, packet []byte, decision 
 			if !strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(transportEndpoint)) {
 				return nil, fmt.Errorf("unexpected doh proxy dial target: %s", strings.TrimSpace(addr))
 			}
-			conn, err := groupRuntime.openStream("tcp", transportEndpoint, nil)
+			conn, _, err := groupRuntime.openStream("tcp", transportEndpoint, nil, "")
 			if err != nil {
 				return nil, err
 			}

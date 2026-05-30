@@ -712,6 +712,7 @@ function refreshSummary(config) {
 
 function setStatus(message) {
   setText("status", message);
+  setText("settingsStatus", message);
   setRuntimeStatus(`运行：${window.CloudHelper.status()}`);
   refreshSummarySilent();
 }
@@ -862,6 +863,30 @@ function formatCompactTime(value) {
   return date.toLocaleTimeString();
 }
 
+function setupSettingsTabs() {
+  const buttons = Array.from(document.querySelectorAll("[data-settings-tab]"));
+  if (!buttons.length) {
+    return;
+  }
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => activateSettingsTab(button.dataset.settingsTab));
+  });
+  activateSettingsTab("controller");
+}
+
+function activateSettingsTab(tab) {
+  const clean = tab === "upgrade" ? "upgrade" : "controller";
+  document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.settingsTab === clean);
+  });
+  document.querySelectorAll("[data-settings-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPanel !== clean;
+  });
+  if (clean === "upgrade") {
+    refreshUpgradeStatus();
+  }
+}
+
 function initPage() {
   const page = document.body.dataset.page || "status";
   const info = pages[page] || pages.status;
@@ -879,6 +904,9 @@ function initPage() {
   }
   if (page === "proxy") {
     refreshProxyGroups();
+  }
+  if (page === "settings") {
+    setupSettingsTabs();
   }
   setInterval(refreshSummarySilent, 5000);
 }

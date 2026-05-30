@@ -14,24 +14,42 @@ import (
 const controllerTCPDebugMaxFailures = 128
 
 type tcpDebugConnectionItem struct {
-	ID          string `json:"id"`
-	Target      string `json:"target,omitempty"`
-	RouteTarget string `json:"route_target,omitempty"`
-	NodeID      string `json:"node_id,omitempty"`
-	Group       string `json:"group,omitempty"`
-	Direct      bool   `json:"direct"`
-	Transport   string `json:"transport,omitempty"`
-	OpenedAt    string `json:"opened_at,omitempty"`
-	LastActive  string `json:"last_active,omitempty"`
-	AgeMS       int64  `json:"age_ms"`
-	IdleMS      int64  `json:"idle_ms"`
-	BytesUp     int64  `json:"bytes_up,omitempty"`
-	BytesDown   int64  `json:"bytes_down,omitempty"`
+	ID                   string `json:"id"`
+	FlowID               string `json:"flow_id,omitempty"`
+	Side                 string `json:"side,omitempty"`
+	Scope                string `json:"scope,omitempty"`
+	Target               string `json:"target,omitempty"`
+	RouteTarget          string `json:"route_target,omitempty"`
+	NodeID               string `json:"node_id,omitempty"`
+	Group                string `json:"group,omitempty"`
+	Direct               bool   `json:"direct"`
+	Transport            string `json:"transport,omitempty"`
+	OpenedAt             string `json:"opened_at,omitempty"`
+	LastActive           string `json:"last_active,omitempty"`
+	LastWriteBlockedAt   string `json:"last_write_blocked_at,omitempty"`
+	LastCongestionSide   string `json:"last_congestion_side,omitempty"`
+	AgeMS                int64  `json:"age_ms"`
+	IdleMS               int64  `json:"idle_ms"`
+	BytesUp              int64  `json:"bytes_up,omitempty"`
+	BytesDown            int64  `json:"bytes_down,omitempty"`
+	WritesUp             int64  `json:"writes_up,omitempty"`
+	WritesDown           int64  `json:"writes_down,omitempty"`
+	BlockedWritesUp      int64  `json:"blocked_writes_up,omitempty"`
+	BlockedWritesDown    int64  `json:"blocked_writes_down,omitempty"`
+	WriteBlockMSUp       int64  `json:"write_block_ms_up,omitempty"`
+	WriteBlockMSDown     int64  `json:"write_block_ms_down,omitempty"`
+	MaxWriteBlockMSUp    int64  `json:"max_write_block_ms_up,omitempty"`
+	MaxWriteBlockMSDown  int64  `json:"max_write_block_ms_down,omitempty"`
+	LastWriteBlockMSUp   int64  `json:"last_write_block_ms_up,omitempty"`
+	LastWriteBlockMSDown int64  `json:"last_write_block_ms_down,omitempty"`
 }
 
 type tcpDebugFailureItem struct {
 	Kind        string `json:"kind"`
 	Reason      string `json:"reason,omitempty"`
+	FlowID      string `json:"flow_id,omitempty"`
+	Side        string `json:"side,omitempty"`
+	Scope       string `json:"scope,omitempty"`
 	Target      string `json:"target,omitempty"`
 	RouteTarget string `json:"route_target,omitempty"`
 	NodeID      string `json:"node_id,omitempty"`

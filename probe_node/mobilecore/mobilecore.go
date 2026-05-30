@@ -29,9 +29,20 @@ import (
 const defaultReportIntervalSec = 60
 const configRefreshTimeout = 20 * time.Second
 const androidLogMaxEntries = 300
+const mobileWebSocketWriteBatchBytes = 1024 * 1024
+const mobileWebSocketWriteQueueDepth = 64
+const mobileRelayTCPSocketBufferBytes = 8 * 1024 * 1024
+const mobileRelayTCPKeepAlivePeriod = 30 * time.Second
+const mobileRelayIOCopyBufferBytes = 1024 * 1024
 
 var manager = &coreManager{}
 var androidLogStore = &androidLogBuffer{}
+
+var mobileRelayCopyBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, mobileRelayIOCopyBufferBytes)
+	},
+}
 
 type coreManager struct {
 	mu             sync.Mutex
@@ -1094,10 +1105,25 @@ func randomHexToken(size int) string {
 }
 
 type webSocketNetConn struct {
-	ws      *websocket.Conn
-	readMu  sync.Mutex
-	writeMu sync.Mutex
-	reader  netReader
+	ws *websocket.Conn
+
+	readMu sync.Mutex
+	reader netReader
+
+	writeCh        chan *webSocketWriteRequest
+	writeDoneCh    chan struct{}
+	writeCloseCh   chan struct{}
+	writeCloseOnce sync.Once
+}
+
+type webSocketWriteRequest struct {
+	payload []byte
+	done    chan webSocketWriteResult
+}
+
+type webSocketWriteResult struct {
+	n   int
+	err error
 }
 
 type netReader interface {
@@ -1105,7 +1131,44 @@ type netReader interface {
 }
 
 func newWebSocketNetConn(ws *websocket.Conn) net.Conn {
-	return &webSocketNetConn{ws: ws}
+	configureMobileWebSocketConn(ws)
+	conn := &webSocketNetConn{
+		ws:           ws,
+		writeCh:      make(chan *webSocketWriteRequest, mobileWebSocketWriteQueueDepth),
+		writeDoneCh:  make(chan struct{}),
+		writeCloseCh: make(chan struct{}),
+	}
+	go conn.runWriteLoop()
+	return conn
+}
+
+func configureMobileWebSocketConn(ws *websocket.Conn) {
+	if ws == nil {
+		return
+	}
+	ws.EnableWriteCompression(false)
+	tuneMobileRelayNetConn(ws.UnderlyingConn())
+}
+
+func tuneMobileRelayNetConn(conn net.Conn) {
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tcpConn.SetNoDelay(true)
+	_ = tcpConn.SetKeepAlive(true)
+	_ = tcpConn.SetKeepAlivePeriod(mobileRelayTCPKeepAlivePeriod)
+	_ = tcpConn.SetReadBuffer(mobileRelayTCPSocketBufferBytes)
+	_ = tcpConn.SetWriteBuffer(mobileRelayTCPSocketBufferBytes)
+}
+
+func mobileRelayCopy(dst io.Writer, src io.Reader) (int64, error) {
+	buf, _ := mobileRelayCopyBufferPool.Get().([]byte)
+	if len(buf) == 0 {
+		buf = make([]byte, mobileRelayIOCopyBufferBytes)
+	}
+	defer mobileRelayCopyBufferPool.Put(buf)
+	return io.CopyBuffer(dst, src, buf)
 }
 
 func (c *webSocketNetConn) Read(p []byte) (int, error) {
@@ -1138,21 +1201,128 @@ func (c *webSocketNetConn) Read(p []byte) (int, error) {
 }
 
 func (c *webSocketNetConn) Write(p []byte) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	if c == nil || c.ws == nil {
+		return 0, net.ErrClosed
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	req := &webSocketWriteRequest{
+		payload: p,
+		done:    make(chan webSocketWriteResult, 1),
+	}
+	select {
+	case c.writeCh <- req:
+	case <-c.writeCloseCh:
+		return 0, net.ErrClosed
+	case <-c.writeDoneCh:
+		return 0, net.ErrClosed
+	}
+	select {
+	case result := <-req.done:
+		return result.n, result.err
+	case <-c.writeDoneCh:
+		return 0, net.ErrClosed
+	}
+}
+
+func (c *webSocketNetConn) runWriteLoop() {
+	defer close(c.writeDoneCh)
+	for {
+		select {
+		case req := <-c.writeCh:
+			if req == nil {
+				continue
+			}
+			if err := c.writeBatch(req); err != nil {
+				c.failPendingWrites(err)
+				return
+			}
+		case <-c.writeCloseCh:
+			c.failPendingWrites(net.ErrClosed)
+			return
+		}
+	}
+}
+
+func (c *webSocketNetConn) writeBatch(first *webSocketWriteRequest) error {
+	batch := []*webSocketWriteRequest{first}
+	total := len(first.payload)
+	if total < mobileWebSocketWriteBatchBytes {
+	collect:
+		for total < mobileWebSocketWriteBatchBytes {
+			select {
+			case req := <-c.writeCh:
+				if req == nil {
+					continue
+				}
+				batch = append(batch, req)
+				total += len(req.payload)
+			case <-c.writeCloseCh:
+				for _, req := range batch {
+					req.done <- webSocketWriteResult{err: net.ErrClosed}
+				}
+				return net.ErrClosed
+			default:
+				break collect
+			}
+		}
+	}
 	writer, err := c.ws.NextWriter(websocket.BinaryMessage)
 	if err != nil {
-		return 0, err
+		for _, req := range batch {
+			req.done <- webSocketWriteResult{err: err}
+		}
+		return err
 	}
-	n, writeErr := writer.Write(p)
+	results := make([]webSocketWriteResult, len(batch))
+	var writeErr error
+	for i, req := range batch {
+		n, err := writer.Write(req.payload)
+		results[i] = webSocketWriteResult{n: n, err: err}
+		if err != nil {
+			writeErr = err
+			for j := i + 1; j < len(batch); j++ {
+				results[j] = webSocketWriteResult{err: err}
+			}
+			break
+		}
+	}
 	closeErr := writer.Close()
-	if writeErr != nil {
-		return n, writeErr
+	resultErr := writeErr
+	if resultErr == nil {
+		resultErr = closeErr
 	}
-	return n, closeErr
+	for i, req := range batch {
+		result := results[i]
+		if result.err == nil && resultErr != nil {
+			result.err = resultErr
+		}
+		req.done <- result
+	}
+	return resultErr
+}
+
+func (c *webSocketNetConn) failPendingWrites(err error) {
+	if err == nil {
+		err = net.ErrClosed
+	}
+	for {
+		select {
+		case req := <-c.writeCh:
+			if req != nil {
+				req.done <- webSocketWriteResult{err: err}
+			}
+		default:
+			return
+		}
+	}
 }
 
 func (c *webSocketNetConn) Close() error {
+	c.writeCloseOnce.Do(func() {
+		close(c.writeCloseCh)
+	})
 	return c.ws.Close()
 }
 

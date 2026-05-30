@@ -41,6 +41,7 @@ const (
 	linkCodexSpeedBytesHeader          = "X-Codex-Speed-Bytes"
 	linkAuthPacketVersion              = "2025-03-22"
 	linkRelayModeBridge                = "bridge"
+	linkRelayModeStream                = "stream"
 	linkRelayModeSpeedTest             = "speed_test"
 	linkRelayModePingPong              = "ping_pong"
 	linkBridgeRoleToNext               = "to_next"
@@ -50,6 +51,10 @@ const (
 	linkRelaySpeedTestMaxBytes         = 256 * 1024 * 1024
 	linkRelaySpeedTestTimeout          = 10 * time.Second
 	linkRelayWebSocketBufferBytes      = 512 * 1024
+	linkRelayQUICInitialStreamWindow   = 128 * 1024 * 1024
+	linkRelayQUICMaxStreamWindow       = 512 * 1024 * 1024
+	linkRelayQUICInitialConnWindow     = 512 * 1024 * 1024
+	linkRelayQUICMaxConnWindow         = 1024 * 1024 * 1024
 )
 
 type linkChainServerItem struct {
@@ -644,17 +649,25 @@ func writeLinkPingPongRequest(stream net.Conn, payloadBytes int64) error {
 }
 
 func openLinkRelayConn(endpoint linkEndpoint, protocol string, openTimeout time.Duration) (net.Conn, error) {
+	return openLinkRelayConnWithMode(endpoint, protocol, openTimeout, linkRelayModeBridge)
+}
+
+func openLinkRelayDataStreamConn(endpoint linkEndpoint, protocol string, openTimeout time.Duration) (net.Conn, error) {
+	return openLinkRelayConnWithMode(endpoint, protocol, openTimeout, linkRelayModeStream)
+}
+
+func openLinkRelayConnWithMode(endpoint linkEndpoint, protocol string, openTimeout time.Duration, mode string) (net.Conn, error) {
 	switch normalizeLinkLayer(protocol) {
 	case "websocket":
-		return openLinkRelayWebSocketConn(endpoint, openTimeout, nil)
+		return openLinkRelayWebSocketConn(endpoint, openTimeout, mode, nil)
 	case "websocket-h3":
-		return openLinkRelayHTTP3WebSocketConn(endpoint, openTimeout, nil)
+		return openLinkRelayHTTP3WebSocketConn(endpoint, openTimeout, mode, nil)
 	default:
 		return nil, fmt.Errorf("unsupported relay protocol: %s", protocol)
 	}
 }
 
-func openLinkRelayWebSocketConn(endpoint linkEndpoint, openTimeout time.Duration, extraHeaders http.Header) (net.Conn, error) {
+func openLinkRelayWebSocketConn(endpoint linkEndpoint, openTimeout time.Duration, mode string, extraHeaders http.Header) (net.Conn, error) {
 	relayDialHost, relayHostHeader, err := resolveLinkDialHost(endpoint.EntryHost)
 	if err != nil {
 		return nil, err
@@ -666,7 +679,7 @@ func openLinkRelayWebSocketConn(endpoint linkEndpoint, openTimeout time.Duration
 	if err != nil {
 		return nil, err
 	}
-	header, err := buildLinkRelayHeaders(endpoint.ChainID, endpoint.ChainSecret, linkRelayModeBridge, linkBridgeRoleToNext, 0)
+	header, err := buildLinkRelayHeaders(endpoint.ChainID, endpoint.ChainSecret, firstNonEmptyString(strings.TrimSpace(mode), linkRelayModeBridge), linkBridgeRoleToNext, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -704,7 +717,7 @@ func openLinkRelayWebSocketConn(endpoint linkEndpoint, openTimeout time.Duration
 	return newWebSocketNetConn(ws), nil
 }
 
-func openLinkRelayHTTP3WebSocketConn(endpoint linkEndpoint, openTimeout time.Duration, extraHeaders http.Header) (net.Conn, error) {
+func openLinkRelayHTTP3WebSocketConn(endpoint linkEndpoint, openTimeout time.Duration, mode string, extraHeaders http.Header) (net.Conn, error) {
 	relayDialHost, relayHostHeader, err := resolveLinkDialHost(endpoint.EntryHost)
 	if err != nil {
 		return nil, err
@@ -724,7 +737,7 @@ func openLinkRelayHTTP3WebSocketConn(endpoint linkEndpoint, openTimeout time.Dur
 		ServerName:         resolveLinkTLSServerName(relayDialHost, relayHostHeader),
 		InsecureSkipVerify: true,
 	}
-	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, nil)
+	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, newLinkQUICConfig())
 	if err != nil {
 		cancel()
 		return nil, wrapLinkDialError("websocket-h3", relayDialHost, endpoint.EntryPort, err)
@@ -760,7 +773,7 @@ func openLinkRelayHTTP3WebSocketConn(endpoint linkEndpoint, openTimeout time.Dur
 	request.Proto = "websocket"
 	request.ProtoMajor = 3
 	request.ProtoMinor = 0
-	request.Header, err = buildLinkRelayHeaders(endpoint.ChainID, endpoint.ChainSecret, linkRelayModeBridge, linkBridgeRoleToNext, 0)
+	request.Header, err = buildLinkRelayHeaders(endpoint.ChainID, endpoint.ChainSecret, firstNonEmptyString(strings.TrimSpace(mode), linkRelayModeBridge), linkBridgeRoleToNext, 0)
 	if err != nil {
 		cancelLinkH3Stream(stream, quicConn, cancel, "h3 websocket auth failed")
 		return nil, err
@@ -935,7 +948,7 @@ func openLinkRelayHTTP3WebSocketSpeedTestConn(endpoint linkEndpoint, byteCount i
 		ServerName:         resolveLinkTLSServerName(relayDialHost, relayHostHeader),
 		InsecureSkipVerify: true,
 	}
-	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, nil)
+	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, newLinkQUICConfig())
 	if err != nil {
 		cancel()
 		return nil, wrapLinkDialError("websocket-h3", relayDialHost, endpoint.EntryPort, err)
@@ -1199,6 +1212,18 @@ func newLinkYamuxConfig() *yamux.Config {
 	cfg.ConnectionWriteTimeout = 2 * time.Minute
 	cfg.MaxStreamWindowSize = 64 * 1024 * 1024
 	return cfg
+}
+
+func newLinkQUICConfig() *quic.Config {
+	return &quic.Config{
+		Versions:                       []quic.Version{quic.Version2, quic.Version1},
+		EnableDatagrams:                true,
+		KeepAlivePeriod:                10 * time.Second,
+		InitialStreamReceiveWindow:     linkRelayQUICInitialStreamWindow,
+		MaxStreamReceiveWindow:         linkRelayQUICMaxStreamWindow,
+		InitialConnectionReceiveWindow: linkRelayQUICInitialConnWindow,
+		MaxConnectionReceiveWindow:     linkRelayQUICMaxConnWindow,
+	}
 }
 
 func normalizeLinkBridgeRole(raw string) string {

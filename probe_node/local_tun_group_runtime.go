@@ -58,12 +58,15 @@ type probeLocalTUNGroupRuntimeSnapshot struct {
 	ProtocolState   probeChainRelayProtocolStateSnapshot `json:"protocol_state,omitempty"`
 }
 
+const probeLocalTUNGroupRuntimeControlTimeout = 15 * time.Second
+
 var probeLocalTUNGroupRuntimeRegistry = struct {
 	mu    sync.RWMutex
 	items map[string]*probeLocalTUNGroupRuntime
 }{items: make(map[string]*probeLocalTUNGroupRuntime)}
 
 var probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
+var probeLocalTUNOpenChainRelayDataStreamNetConn = openProbeLocalTUNChainRelayDataStreamNetConn
 
 // Group runtime is the aggregation boundary for proxy behavior.
 // DNS records must not persist action or selected_chain_id as their primary state.
@@ -551,24 +554,110 @@ func (rt *probeLocalTUNGroupRuntime) ensureConnectedLocked() error {
 	return nil
 }
 
-func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
+func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr string, associationV2 *probeChainAssociationV2Meta, flowID string) (net.Conn, string, error) {
 	if rt == nil {
-		return nil, errors.New("group runtime is nil")
+		return nil, "", errors.New("group runtime is nil")
 	}
 	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
 	if cleanNetwork == "" {
 		cleanNetwork = "tcp"
 	}
+	cleanFlowID := strings.TrimSpace(flowID)
+	if associationV2 != nil && strings.TrimSpace(associationV2.FlowID) != "" {
+		cleanFlowID = strings.TrimSpace(associationV2.FlowID)
+	}
+	if cleanFlowID == "" && cleanNetwork == "tcp" {
+		cleanFlowID = newProbeTCPDebugFlowID("tun", targetAddr)
+	}
 	for attempt := 0; attempt < 2; attempt++ {
 		rt.mu.Lock()
 		if err := rt.ensureConnectedLocked(); err != nil {
 			rt.mu.Unlock()
-			return nil, err
+			return nil, cleanFlowID, err
+		}
+		endpoint := rt.Endpoint
+		rt.mu.Unlock()
+		if strings.TrimSpace(endpoint.ChainID) == "" {
+			return nil, cleanFlowID, errors.New("group runtime endpoint is nil")
+		}
+		stream, err := probeLocalTUNOpenChainRelayDataStreamNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer)
+		if err != nil {
+			rt.mu.Lock()
+			_ = rt.markFailureLocked(err, "degraded")
+			rt.mu.Unlock()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+				continue
+			}
+			return nil, cleanFlowID, err
+		}
+		request := probeChainTunnelOpenRequest{
+			Type:          "open",
+			Network:       cleanNetwork,
+			Address:       strings.TrimSpace(targetAddr),
+			FlowID:        cleanFlowID,
+			AssociationV2: associationV2,
+		}
+		_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+		if err := json.NewEncoder(stream).Encode(request); err != nil {
+			_ = stream.Close()
+			rt.mu.Lock()
+			_ = rt.markFailureLocked(err, "degraded")
+			rt.mu.Unlock()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+				continue
+			}
+			return nil, cleanFlowID, err
+		}
+		_ = stream.SetWriteDeadline(time.Time{})
+		_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+		var response probeChainTunnelOpenResponse
+		if err := json.NewDecoder(stream).Decode(&response); err != nil {
+			_ = stream.Close()
+			rt.mu.Lock()
+			_ = rt.markFailureLocked(err, "degraded")
+			rt.mu.Unlock()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+				continue
+			}
+			return nil, cleanFlowID, err
+		}
+		_ = stream.SetReadDeadline(time.Time{})
+		if !response.OK {
+			_ = stream.Close()
+			openErr := errors.New(firstNonEmpty(strings.TrimSpace(response.Error), "open stream failed"))
+			rt.mu.Lock()
+			_ = rt.markFailureLocked(openErr, "degraded")
+			rt.mu.Unlock()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(openErr) {
+				continue
+			}
+			return nil, cleanFlowID, openErr
+		}
+		rt.mu.Lock()
+		rt.RuntimeStatus = "connected"
+		rt.LastError = ""
+		rt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		rt.mu.Unlock()
+		return stream, cleanFlowID, nil
+	}
+	return nil, cleanFlowID, errors.New("group runtime stream open failed")
+}
+
+func (rt *probeLocalTUNGroupRuntime) fetchRemoteTCPDebug() (probeTCPDebugResultPayload, error) {
+	if rt == nil {
+		return probeTCPDebugResultPayload{}, errors.New("group runtime is nil")
+	}
+	requestID := "remote-tcp-debug-" + randomHexToken(8)
+	for attempt := 0; attempt < 2; attempt++ {
+		rt.mu.Lock()
+		if err := rt.ensureConnectedLocked(); err != nil {
+			rt.mu.Unlock()
+			return probeTCPDebugResultPayload{}, err
 		}
 		session := rt.session
 		rt.mu.Unlock()
 		if session == nil {
-			return nil, errors.New("group runtime session is nil")
+			return probeTCPDebugResultPayload{}, errors.New("group runtime management session is nil")
 		}
 		stream, err := session.Open()
 		if err != nil {
@@ -589,67 +678,35 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 			if attempt == 0 && reconnect {
 				continue
 			}
-			return nil, err
+			return probeTCPDebugResultPayload{}, err
 		}
-		request := probeChainTunnelOpenRequest{
-			Type:          "open",
-			Network:       cleanNetwork,
-			Address:       strings.TrimSpace(targetAddr),
-			AssociationV2: associationV2,
-		}
-		_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-		if err := json.NewEncoder(stream).Encode(request); err != nil {
+		_ = stream.SetDeadline(time.Now().Add(probeLocalTUNGroupRuntimeControlTimeout))
+		req := probeChainTunnelOpenRequest{Type: "tcp_debug_get", RequestID: requestID}
+		if err := json.NewEncoder(stream).Encode(req); err != nil {
 			_ = stream.Close()
-			rt.mu.Lock()
-			_ = rt.markStreamFailureLocked(session, err)
-			rt.mu.Unlock()
 			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
 				continue
 			}
-			return nil, err
+			return probeTCPDebugResultPayload{}, err
 		}
-		_ = stream.SetWriteDeadline(time.Time{})
-		_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-		var response probeChainTunnelOpenResponse
-		if err := json.NewDecoder(stream).Decode(&response); err != nil {
+		var payload probeTCPDebugResultPayload
+		if err := json.NewDecoder(stream).Decode(&payload); err != nil {
 			_ = stream.Close()
-			rt.mu.Lock()
-			_ = rt.markStreamFailureLocked(session, err)
-			rt.mu.Unlock()
 			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
 				continue
 			}
-			return nil, err
+			return probeTCPDebugResultPayload{}, err
 		}
-		_ = stream.SetReadDeadline(time.Time{})
-		if !response.OK {
-			_ = stream.Close()
-			openErr := errors.New(firstNonEmpty(strings.TrimSpace(response.Error), "open stream failed"))
-			rt.mu.Lock()
-			reconnect := false
-			if shouldReconnectProbeLocalTUNGroupRuntimeOpenError(openErr) {
-				reconnect = shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
-			}
-			if rt.session == session && reconnect {
-				rt.closeLocked()
-				_ = rt.markFailureLocked(openErr, "disconnected")
-			} else {
-				_ = rt.markFailureLocked(openErr, "degraded")
-			}
-			rt.mu.Unlock()
-			if attempt == 0 && reconnect {
-				continue
-			}
-			return nil, openErr
+		_ = stream.Close()
+		if strings.TrimSpace(payload.RequestID) == "" {
+			payload.RequestID = requestID
 		}
-		rt.mu.Lock()
-		rt.RuntimeStatus = "connected"
-		rt.LastError = ""
-		rt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		rt.mu.Unlock()
-		return stream, nil
+		if strings.TrimSpace(payload.Scope) == "" {
+			payload.Scope = "chain_exit"
+		}
+		return payload, nil
 	}
-	return nil, errors.New("group runtime stream open failed")
+	return probeTCPDebugResultPayload{}, errors.New("remote tcp debug fetch failed")
 }
 
 func shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt *probeLocalTUNGroupRuntime, session *yamux.Session, err error) bool {

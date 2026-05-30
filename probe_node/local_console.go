@@ -2886,6 +2886,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
 	mux.HandleFunc("/local/api/proxy/status/refresh", probeLocalProxyStatusRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/monitor", probeLocalProxyMonitorHandler)
+	mux.HandleFunc("/local/api/proxy/remote/tcp_debug", probeLocalProxyRemoteTCPDebugHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
 	mux.HandleFunc("/local/api/proxy/chains/refresh", probeLocalProxyChainsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/link/status", probeLocalProxyLinkStatusHandler)
@@ -3979,6 +3980,46 @@ func probeLocalProxyMonitorHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, currentProbeLocalProxyMonitorSnapshot())
+}
+
+func probeLocalProxyRemoteTCPDebugHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	group := strings.TrimSpace(r.URL.Query().Get("group"))
+	var rt *probeLocalTUNGroupRuntime
+	if group != "" {
+		rt = currentProbeLocalTUNGroupRuntime(group)
+	} else {
+		group, rt = resolveProbeLocalSelectedGroupRuntime(currentProbeLocalProxyViewState())
+	}
+	if rt == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":    false,
+			"error": "selected group runtime is unavailable",
+			"group": group,
+		})
+		return
+	}
+	payload, err := rt.fetchRemoteTCPDebug()
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+			"group": group,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"group":   group,
+		"remote":  payload,
+		"fetched": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLocalTUNChainEndpoint, error) {
@@ -5705,6 +5746,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalStartCFIPOptimizeTask = func(fn func()) { go fn() }
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
 	probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
+	probeLocalTUNOpenChainRelayDataStreamNetConn = openProbeLocalTUNChainRelayDataStreamNetConn
 }
 
 func resetProbeLocalTUNHooksForTest() {

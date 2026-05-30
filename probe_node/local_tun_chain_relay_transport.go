@@ -9,6 +9,10 @@ func openProbeLocalTUNChainRelayNetConn(chainID string, secret string, relayHost
 	return openProbeChainRelayNetConn(chainID, secret, relayHost, relayPort, layer, bridgeRole)
 }
 
+func openProbeLocalTUNChainRelayDataStreamNetConn(chainID string, secret string, relayHost string, relayPort int, layer string) (net.Conn, error) {
+	return openProbeChainRelayDataStreamNetConn(chainID, secret, relayHost, relayPort, layer, probeChainDownstreamOpenTimeout)
+}
+
 func openProbeLocalTUNChainRelayNetConnWithResolvedHost(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
 	return openProbeChainRelayNetConnWithResolvedHost(chainID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
 }

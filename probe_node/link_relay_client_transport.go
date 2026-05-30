@@ -933,10 +933,34 @@ func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, rela
 	if err != nil {
 		return nil, err
 	}
-	return openProbeChainRelayNetConnWithResolvedHost(chainID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, true)
+	return openProbeChainRelayNetConnWithResolvedHostAndMode(chainID, secret, relayHost, relayPort, layer, bridgeRole, probeChainRelayModeBridge, relayDialHost, relayHostHeader, openTimeout, true)
 }
 
 func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	return openProbeChainRelayNetConnWithResolvedHostAndMode(chainID, secret, relayHost, relayPort, layer, bridgeRole, probeChainRelayModeBridge, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+}
+
+func openProbeChainRelayDataStreamNetConn(chainID string, secret string, relayHost string, relayPort int, layer string, openTimeout time.Duration) (net.Conn, error) {
+	return openProbeChainRelayDataStreamNetConnWithRole(chainID, secret, relayHost, relayPort, layer, probeChainBridgeRoleToNext, openTimeout)
+}
+
+func openProbeChainRelayDataStreamNetConnWithRole(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) (net.Conn, error) {
+	return openProbeChainRelayDataStreamNetConnWithRoleAndToken(chainID, secret, relayHost, relayPort, layer, bridgeRole, "", openTimeout)
+}
+
+func openProbeChainRelayDataStreamNetConnWithRoleAndToken(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) (net.Conn, error) {
+	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(relayHost)
+	if err != nil {
+		return nil, err
+	}
+	return openProbeChainRelayNetConnWithResolvedHostModeAndToken(chainID, secret, relayHost, relayPort, layer, bridgeRole, probeChainRelayModeStream, connToken, relayDialHost, relayHostHeader, openTimeout, true)
+}
+
+func openProbeChainRelayNetConnWithResolvedHostAndMode(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayMode string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	return openProbeChainRelayNetConnWithResolvedHostModeAndToken(chainID, secret, relayHost, relayPort, layer, bridgeRole, relayMode, "", relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+}
+
+func openProbeChainRelayNetConnWithResolvedHostModeAndToken(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
 	relayDialHost = strings.TrimSpace(strings.Trim(relayDialHost, "[]"))
 	relayHostHeader = strings.TrimSpace(strings.Trim(relayHostHeader, "[]"))
 	if relayDialHost == "" {
@@ -947,15 +971,15 @@ func openProbeChainRelayNetConnWithResolvedHost(chainID string, secret string, r
 	}
 	layer = normalizeProbeChainLinkLayer(layer)
 	if layer == "websocket" {
-		return openProbeChainRelayWebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+		return openProbeChainRelayWebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
 	}
 	if layer == "websocket-h3" {
-		return openProbeChainRelayHTTP3WebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+		return openProbeChainRelayHTTP3WebSocketNetConn(chainID, secret, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
 	}
 	return nil, fmt.Errorf("unsupported relay protocol: %s", layer)
 }
 
-func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHost string, relayPort int, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHost string, relayPort int, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
 	startedAt := time.Now()
 	if openTimeout <= 0 {
 		openTimeout = probeChainPortForwardDialTimeout + probeChainPortForwardResponseReadDeadline
@@ -971,8 +995,11 @@ func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHos
 	if err := applyProbeChainSecretAuthHeaders(header, chainID, secret); err != nil {
 		return nil, err
 	}
-	header.Set(probeChainCodexRelayModeHeader, probeChainRelayModeBridge)
+	header.Set(probeChainCodexRelayModeHeader, firstNonEmpty(strings.TrimSpace(relayMode), probeChainRelayModeBridge))
 	header.Set(probeChainCodexRelayRoleHeader, normalizeProbeChainBridgeRole(bridgeRole))
+	if strings.TrimSpace(connToken) != "" {
+		header.Set(probeChainCodexConnIDHeader, strings.TrimSpace(connToken))
+	}
 
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
 	dialer := websocket.Dialer{
@@ -1016,7 +1043,7 @@ func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHos
 	return newWebSocketNetConn(ws), nil
 }
 
-func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, relayHost string, relayPort int, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, relayHost string, relayPort int, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
 	startedAt := time.Now()
 	if openTimeout <= 0 {
 		openTimeout = probeChainRelayProtocolProbeTimeout
@@ -1098,8 +1125,11 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 		cancel()
 		return nil, err
 	}
-	request.Header.Set(probeChainCodexRelayModeHeader, probeChainRelayModeBridge)
+	request.Header.Set(probeChainCodexRelayModeHeader, firstNonEmpty(strings.TrimSpace(relayMode), probeChainRelayModeBridge))
 	request.Header.Set(probeChainCodexRelayRoleHeader, normalizeProbeChainBridgeRole(bridgeRole))
+	if strings.TrimSpace(connToken) != "" {
+		request.Header.Set(probeChainCodexConnIDHeader, strings.TrimSpace(connToken))
+	}
 	if strings.TrimSpace(relayHostHeader) != "" {
 		request.Host = strings.TrimSpace(relayHostHeader)
 	}

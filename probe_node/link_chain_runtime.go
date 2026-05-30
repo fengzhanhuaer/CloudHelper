@@ -86,10 +86,49 @@ type probeChainRuntime struct {
 	upstreamSessions   map[string]*probeChainBridgeSession
 	bridgeMu           sync.Mutex
 	bridgeSeq          uint64
+	reverseDataMu      sync.Mutex
+	reverseDataStreams map[string]chan *probeChainReverseDataConn
 	forwardMu          sync.Mutex
 	tcpForwards        []net.Listener
 	udpForwards        []net.PacketConn
 	stopCh             chan struct{}
+}
+
+type probeChainReverseDataConn struct {
+	net.Conn
+	once sync.Once
+	done chan struct{}
+}
+
+func newProbeChainReverseDataConn(conn net.Conn) *probeChainReverseDataConn {
+	return &probeChainReverseDataConn{Conn: conn, done: make(chan struct{})}
+}
+
+func (c *probeChainReverseDataConn) Close() error {
+	if c == nil || c.Conn == nil {
+		return nil
+	}
+	err := c.Conn.Close()
+	c.once.Do(func() { close(c.done) })
+	return err
+}
+
+type probeChainBridgeControlRequest struct {
+	Type       string `json:"type"`
+	RequestID  string `json:"request_id,omitempty"`
+	Token      string `json:"token,omitempty"`
+	BridgeRole string `json:"bridge_role,omitempty"`
+	FlowID     string `json:"flow_id,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
+}
+
+type probeChainBridgeControlResponse struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id,omitempty"`
+	OK        bool   `json:"ok"`
+	Token     string `json:"token,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 type probeChainRuntimePortForward struct {
@@ -161,8 +200,10 @@ type probeChainAssociationV2Meta struct {
 
 type probeChainTunnelOpenRequest struct {
 	Type          string                       `json:"type"`
+	RequestID     string                       `json:"request_id,omitempty"`
 	Network       string                       `json:"network"`
 	Address       string                       `json:"address"`
+	FlowID        string                       `json:"flow_id,omitempty"`
 	SessionID     string                       `json:"session_id,omitempty"`
 	AssociationV2 *probeChainAssociationV2Meta `json:"association_v2,omitempty"`
 	SpeedBytes    int64                        `json:"speed_bytes,omitempty"`
@@ -236,7 +277,12 @@ const (
 	probeChainCodexConnIDHeader     = "X-Codex-Conn-Id"
 	probeChainCodexSpeedBytesHeader = "X-Codex-Speed-Bytes"
 
+	probeChainBridgeControlPrefix        = "CHCTRL "
+	probeChainBridgeControlReverseOpen   = "reverse_data_open"
+	probeChainBridgeControlReverseResult = "reverse_data_open_result"
+
 	probeChainRelayModeBridge    = "bridge"
+	probeChainRelayModeStream    = "stream"
 	probeChainRelayModeSpeedTest = "speed_test"
 	probeChainRelayModePingPong  = "ping_pong"
 	probeChainBridgeRoleToNext   = "to_next"
@@ -716,6 +762,7 @@ func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, er
 		cfg:                cfg,
 		downstreamSessions: make(map[string]*probeChainBridgeSession),
 		upstreamSessions:   make(map[string]*probeChainBridgeSession),
+		reverseDataStreams: make(map[string]chan *probeChainReverseDataConn),
 		stopCh:             make(chan struct{}),
 	}
 
@@ -1085,13 +1132,14 @@ func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, 
 		err           error
 		failurePrompt string
 	)
+	flowID := resolveProbeChainPortForwardFlowID(requestedNetwork, targetAddr, associationV2)
 	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
-		stream, err = openProbeChainUpstreamStream(runtime, "", probeChainDownstreamOpenTimeout)
+		stream, err = openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToPrev, flowID)
 		failurePrompt = "open upstream target failed"
 	} else if runtime.cfg.nextAuthMode == "proxy" {
 		return openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
 	} else {
-		stream, err = openProbeChainDownstreamStream(runtime, "", probeChainDownstreamOpenTimeout)
+		stream, err = openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToNext, flowID)
 		failurePrompt = "open downstream target failed"
 	}
 	if err != nil {
@@ -1101,6 +1149,7 @@ func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, 
 		Type:          "open",
 		Network:       requestedNetwork,
 		Address:       strings.TrimSpace(targetAddr),
+		FlowID:        flowID,
 		AssociationV2: associationV2,
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
@@ -1126,6 +1175,126 @@ func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, 
 		return nil, errors.New(message)
 	}
 	return stream, nil
+}
+
+func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, flowID string) (net.Conn, error) {
+	if runtime == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	role := normalizeProbeChainBridgeRole(bridgeRole)
+	switch role {
+	case probeChainBridgeRoleToPrev:
+		if normalizeProbeChainDialMode(runtime.cfg.prevDialMode) == probeChainDialModeReverse {
+			return openProbeChainPortForwardIndependentDataStream(runtime, role)
+		}
+		if normalizeProbeChainDialMode(runtime.cfg.prevDialMode) == probeChainDialModeForward {
+			return openProbeChainPortForwardReverseDataStream(runtime, runtime.getUpstreamSession(), role, flowID)
+		}
+		return nil, errors.New("previous hop is not configured")
+	default:
+		if normalizeProbeChainDialMode(runtime.cfg.nextDialMode) == probeChainDialModeForward {
+			return openProbeChainPortForwardIndependentDataStream(runtime, role)
+		}
+		if normalizeProbeChainDialMode(runtime.cfg.nextDialMode) == probeChainDialModeReverse {
+			return openProbeChainPortForwardReverseDataStream(runtime, runtime.getDownstreamSession(), role, flowID)
+		}
+		return nil, errors.New("next hop is not configured")
+	}
+}
+
+func openProbeChainPortForwardReverseDataStream(runtime *probeChainRuntime, session *yamux.Session, targetRole string, flowID string) (net.Conn, error) {
+	if runtime == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	if session == nil || session.IsClosed() {
+		return nil, errors.New("reverse dial management channel is unavailable")
+	}
+	token := "revdata-" + randomHexToken(12)
+	waiter, err := runtime.registerReverseDataWaiter(token)
+	if err != nil {
+		return nil, err
+	}
+	defer runtime.unregisterReverseDataWaiter(token)
+
+	controlStream, err := session.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer controlStream.Close()
+
+	requestID := "revdata-open-" + randomHexToken(8)
+	req := probeChainBridgeControlRequest{
+		Type:       probeChainBridgeControlReverseOpen,
+		RequestID:  requestID,
+		Token:      token,
+		BridgeRole: reverseProbeChainBridgeRole(normalizeProbeChainBridgeRole(targetRole)),
+		FlowID:     strings.TrimSpace(flowID),
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+	}
+	_ = controlStream.SetDeadline(time.Now().Add(probeChainDownstreamOpenTimeout))
+	if err := writeProbeChainBridgeControlRequest(controlStream, req); err != nil {
+		return nil, err
+	}
+	var resp probeChainBridgeControlResponse
+	if err := json.NewDecoder(controlStream).Decode(&resp); err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, errors.New(firstNonEmpty(strings.TrimSpace(resp.Error), "reverse data open rejected"))
+	}
+	select {
+	case conn := <-waiter:
+		if conn == nil {
+			return nil, errors.New("reverse data stream is nil")
+		}
+		return conn, nil
+	case <-time.After(probeChainDownstreamOpenTimeout):
+		return nil, errors.New("reverse data stream accept timeout")
+	}
+}
+
+func reverseProbeChainBridgeRole(role string) string {
+	if normalizeProbeChainBridgeRole(role) == probeChainBridgeRoleToPrev {
+		return probeChainBridgeRoleToNext
+	}
+	return probeChainBridgeRoleToPrev
+}
+
+func resolveProbeChainPortForwardFlowID(network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) string {
+	if associationV2 != nil && strings.TrimSpace(associationV2.FlowID) != "" {
+		return strings.TrimSpace(associationV2.FlowID)
+	}
+	if strings.EqualFold(strings.TrimSpace(network), probeChainPortForwardNetworkTCP) || strings.EqualFold(strings.TrimSpace(network), "tcp") {
+		return newProbeTCPDebugFlowID("port_forward", targetAddr)
+	}
+	return ""
+}
+
+func openProbeChainPortForwardIndependentDataStream(runtime *probeChainRuntime, bridgeRole string) (net.Conn, error) {
+	return openProbeChainPortForwardIndependentDataStreamWithToken(runtime, bridgeRole, "")
+}
+
+func openProbeChainPortForwardIndependentDataStreamWithToken(runtime *probeChainRuntime, bridgeRole string, token string) (net.Conn, error) {
+	if runtime == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	role := normalizeProbeChainBridgeRole(bridgeRole)
+	host := ""
+	port := 0
+	layer := ""
+	if role == probeChainBridgeRoleToPrev {
+		host = strings.TrimSpace(runtime.cfg.prevHost)
+		port = runtime.cfg.prevPort
+		layer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(runtime.cfg.prevLinkLayer), strings.TrimSpace(runtime.cfg.linkLayer), "auto"))
+	} else {
+		host = strings.TrimSpace(runtime.cfg.nextHost)
+		port = runtime.cfg.nextPort
+		layer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(runtime.cfg.nextLinkLayer), strings.TrimSpace(runtime.cfg.linkLayer), "auto"))
+	}
+	if host == "" || port <= 0 {
+		return nil, fmt.Errorf("chain %s relay target is unavailable", role)
+	}
+	return openProbeChainRelayDataStreamNetConnWithRoleAndToken(runtime.cfg.chainID, runtime.cfg.secret, host, port, layer, role, strings.TrimSpace(token), probeChainDownstreamOpenTimeout)
 }
 
 func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRuntimePortForward, listener net.Listener) {
@@ -1679,6 +1848,19 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if relayMode == probeChainRelayModeStream {
+		connToken := strings.TrimSpace(r.Header.Get(probeChainCodexConnIDHeader))
+		if isProbeChainHTTP3WebSocketRequest(r) {
+			handleProbeChainStreamRelayHTTP3WebSocket(runtime, bridgeRole, connToken, w, r)
+			return
+		}
+		if websocket.IsWebSocketUpgrade(r) {
+			handleProbeChainStreamRelayWebSocket(runtime, bridgeRole, connToken, w, r)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if isProbeChainHTTP3WebSocketRequest(r) {
 		handleProbeChainBridgeRelayHTTP3WebSocket(runtime, bridgeRole, w, r)
 		return
@@ -1688,6 +1870,70 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 		return
 	}
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func handleProbeChainStreamRelayWebSocket(runtime *probeChainRuntime, bridgeRole string, connToken string, w http.ResponseWriter, r *http.Request) {
+	if runtime == nil {
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+	role := normalizeProbeChainBridgeRole(bridgeRole)
+	log.Printf("probe chain websocket stream request: chain=%s role=%s bridge_role=%s remote=%s host=%s proto=%s", runtime.cfg.chainID, runtime.cfg.role, role, r.RemoteAddr, r.Host, r.Proto)
+	upgrader := websocket.Upgrader{
+		CheckOrigin:       func(*http.Request) bool { return true },
+		ReadBufferSize:    probeChainRelayWebSocketBufferBytes,
+		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
+		EnableCompression: false,
+	}
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("probe chain websocket stream upgrade failed: chain=%s role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, err)
+		return
+	}
+	conn := newWebSocketNetConn(ws)
+	if reverseConn := runtime.acceptReverseDataStream(strings.TrimSpace(connToken), conn); reverseConn != nil {
+		<-reverseConn.done
+		return
+	}
+	if role == probeChainBridgeRoleToPrev {
+		handleProbeChainReverseConn(runtime, conn, "")
+		return
+	}
+	handleProbeChainConn(runtime, conn, "")
+}
+
+func handleProbeChainStreamRelayHTTP3WebSocket(runtime *probeChainRuntime, bridgeRole string, connToken string, w http.ResponseWriter, r *http.Request) {
+	if runtime == nil {
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+	role := normalizeProbeChainBridgeRole(bridgeRole)
+	log.Printf("probe chain h3 websocket stream request: chain=%s role=%s bridge_role=%s remote=%s host=%s proto=%s", runtime.cfg.chainID, runtime.cfg.role, role, r.RemoteAddr, r.Host, r.Proto)
+	streamer, ok := w.(http3.HTTPStreamer)
+	if !ok {
+		log.Printf("probe chain h3 websocket stream rejected: chain=%s role=%s remote=%s reason=http3_stream_unavailable", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr)
+		http.Error(w, "http3 stream unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	stream := streamer.HTTPStream()
+	conn := &probeChainHTTP3StreamNetConn{
+		stream: stream,
+		local:  probeChainRelayNetAddr{label: "probe-chain-h3-stream-local"},
+		remote: probeChainRelayNetAddr{label: strings.TrimSpace(r.RemoteAddr)},
+		closeFn: func() error {
+			return stream.Close()
+		},
+	}
+	if reverseConn := runtime.acceptReverseDataStream(strings.TrimSpace(connToken), conn); reverseConn != nil {
+		<-reverseConn.done
+		return
+	}
+	if role == probeChainBridgeRoleToPrev {
+		handleProbeChainReverseConn(runtime, conn, "")
+		return
+	}
+	handleProbeChainConn(runtime, conn, "")
 }
 
 func isProbeChainHTTP3WebSocketRequest(r *http.Request) bool {
@@ -2317,6 +2563,68 @@ func (rt *probeChainRuntime) getUpstreamSession() *yamux.Session {
 	return latest.Session
 }
 
+func (rt *probeChainRuntime) registerReverseDataWaiter(token string) (chan *probeChainReverseDataConn, error) {
+	if rt == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	cleanToken := strings.TrimSpace(token)
+	if cleanToken == "" {
+		return nil, errors.New("reverse data token is required")
+	}
+	ch := make(chan *probeChainReverseDataConn, 1)
+	rt.reverseDataMu.Lock()
+	if rt.reverseDataStreams == nil {
+		rt.reverseDataStreams = make(map[string]chan *probeChainReverseDataConn)
+	}
+	if _, exists := rt.reverseDataStreams[cleanToken]; exists {
+		rt.reverseDataMu.Unlock()
+		return nil, fmt.Errorf("reverse data token already exists: %s", cleanToken)
+	}
+	rt.reverseDataStreams[cleanToken] = ch
+	rt.reverseDataMu.Unlock()
+	return ch, nil
+}
+
+func (rt *probeChainRuntime) unregisterReverseDataWaiter(token string) {
+	if rt == nil {
+		return
+	}
+	cleanToken := strings.TrimSpace(token)
+	if cleanToken == "" {
+		return
+	}
+	rt.reverseDataMu.Lock()
+	delete(rt.reverseDataStreams, cleanToken)
+	rt.reverseDataMu.Unlock()
+}
+
+func (rt *probeChainRuntime) acceptReverseDataStream(token string, conn net.Conn) *probeChainReverseDataConn {
+	if rt == nil || conn == nil {
+		return nil
+	}
+	cleanToken := strings.TrimSpace(token)
+	if cleanToken == "" {
+		return nil
+	}
+	rt.reverseDataMu.Lock()
+	ch := rt.reverseDataStreams[cleanToken]
+	if ch != nil {
+		delete(rt.reverseDataStreams, cleanToken)
+	}
+	rt.reverseDataMu.Unlock()
+	if ch == nil {
+		return nil
+	}
+	reverseConn := newProbeChainReverseDataConn(conn)
+	select {
+	case ch <- reverseConn:
+	default:
+		_ = reverseConn.Close()
+		return nil
+	}
+	return reverseConn
+}
+
 func stopProbeChainRuntime(chainID string, reason string) bool {
 	target := strings.TrimSpace(chainID)
 	if target == "" {
@@ -2359,6 +2667,9 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 	reader := bufio.NewReader(conn)
 	if _, hintErr := readProbeChainSourceIPHint(reader); hintErr != nil {
 		log.Printf("probe chain source hint parse failed: chain=%s err=%v", runtime.cfg.chainID, hintErr)
+		return
+	}
+	if handled := handleProbeChainBridgeControlIfPresent(runtime, conn, reader); handled {
 		return
 	}
 
@@ -2405,6 +2716,9 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 	reader := bufio.NewReader(conn)
 	if _, hintErr := readProbeChainSourceIPHint(reader); hintErr != nil {
 		log.Printf("probe chain reverse source hint parse failed: chain=%s err=%v", runtime.cfg.chainID, hintErr)
+		return
+	}
+	if handled := handleProbeChainBridgeControlIfPresent(runtime, conn, reader); handled {
 		return
 	}
 
@@ -2460,6 +2774,92 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 	} else {
 		log.Printf("probe chain upstream relay closed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes)
 	}
+}
+
+func handleProbeChainBridgeControlIfPresent(runtime *probeChainRuntime, conn net.Conn, reader *bufio.Reader) bool {
+	if runtime == nil || conn == nil || reader == nil {
+		return false
+	}
+	peek, err := reader.Peek(len(probeChainBridgeControlPrefix))
+	if err != nil || string(peek) != probeChainBridgeControlPrefix {
+		return false
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		log.Printf("probe chain bridge control read failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
+		return true
+	}
+	var req probeChainBridgeControlRequest
+	raw := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), probeChainBridgeControlPrefix))
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		_ = writeProbeChainBridgeControlResponse(conn, probeChainBridgeControlResponse{
+			Type:      probeChainBridgeControlReverseResult,
+			RequestID: strings.TrimSpace(req.RequestID),
+			OK:        false,
+			Error:     "invalid bridge control request",
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
+		return true
+	}
+	handleProbeChainBridgeControl(runtime, conn, req)
+	return true
+}
+
+func handleProbeChainBridgeControl(runtime *probeChainRuntime, conn net.Conn, req probeChainBridgeControlRequest) {
+	if runtime == nil || conn == nil {
+		return
+	}
+	resp := probeChainBridgeControlResponse{
+		Type:      probeChainBridgeControlReverseResult,
+		RequestID: strings.TrimSpace(req.RequestID),
+		OK:        false,
+		Token:     strings.TrimSpace(req.Token),
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	if !strings.EqualFold(strings.TrimSpace(req.Type), probeChainBridgeControlReverseOpen) {
+		resp.Error = "unsupported bridge control request"
+		_ = writeProbeChainBridgeControlResponse(conn, resp)
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		resp.Error = "reverse data token is required"
+		_ = writeProbeChainBridgeControlResponse(conn, resp)
+		return
+	}
+	dialRole := normalizeProbeChainBridgeRole(req.BridgeRole)
+	dataConn, err := openProbeChainPortForwardIndependentDataStreamWithToken(runtime, dialRole, token)
+	if err != nil {
+		resp.Error = err.Error()
+		_ = writeProbeChainBridgeControlResponse(conn, resp)
+		return
+	}
+	resp.OK = true
+	if err := writeProbeChainBridgeControlResponse(conn, resp); err != nil {
+		_ = dataConn.Close()
+		return
+	}
+	if dialRole == probeChainBridgeRoleToNext {
+		go handleProbeChainReverseConn(runtime, dataConn, "")
+		return
+	}
+	go handleProbeChainConn(runtime, dataConn, "")
+}
+
+func writeProbeChainBridgeControlRequest(conn net.Conn, req probeChainBridgeControlRequest) error {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(conn, "%s%s\n", probeChainBridgeControlPrefix, raw)
+	return err
+}
+
+func writeProbeChainBridgeControlResponse(conn net.Conn, resp probeChainBridgeControlResponse) error {
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err := json.NewEncoder(conn).Encode(resp)
+	_ = conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func openProbeChainNextHop(runtime *probeChainRuntime, preferredSessionID string) (*probeChainNextHop, error) {
@@ -2754,6 +3154,10 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		handleProbeChainPingPongStream(runtime, stream, req.PingBytes)
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(req.Type), "tcp_debug_get") {
+		handleProbeChainTCPDebugGet(runtime, stream, req)
+		return
+	}
 
 	requestedSessionID := strings.TrimSpace(req.SessionID)
 	network := strings.ToLower(strings.TrimSpace(req.Network))
@@ -2771,10 +3175,11 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 	}
 
 	associationV2 := req.AssociationV2
+	flowID := resolveProbeChainTunnelOpenFlowID(req)
 	var proxyErr error
 	switch network {
 	case "tcp":
-		proxyErr = handleProbeChainTunnelTCPStream(stream, target)
+		proxyErr = handleProbeChainTunnelTCPStream(stream, target, flowID)
 	case "udp":
 		proxyErr = handleProbeChainTunnelUDPStream(stream, target, associationV2)
 	case "http":
@@ -2796,6 +3201,22 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		remote = strings.TrimSpace(stream.RemoteAddr().String())
 	}
 	log.Printf("probe chain proxy stream failed: chain=%s role=%s remote=%s err=%v", chainID, role, remote, proxyErr)
+}
+
+func handleProbeChainTCPDebugGet(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest) {
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = "chain-tcp-debug-" + randomHexToken(8)
+	}
+	nodeID := ""
+	if runtime != nil {
+		nodeID = strings.TrimSpace(runtime.cfg.identity.NodeID)
+	}
+	payload := globalProbeTCPDebugState.snapshotPayload(nodeID, requestID)
+	payload.Scope = "chain_exit"
+	if err := writeProbeChainTunnelJSONResponse(stream, payload); err != nil && runtime != nil {
+		log.Printf("probe chain tcp debug response failed: chain=%s role=%s request_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, requestID, err)
+	}
 }
 
 func handleProbeChainPingPongStream(runtime *probeChainRuntime, stream net.Conn, byteCount int64) {
@@ -2827,17 +3248,31 @@ func handleProbeChainPingPongStream(runtime *probeChainRuntime, stream net.Conn,
 }
 
 func writeProbeChainTunnelOpenResponse(stream net.Conn, resp probeChainTunnelOpenResponse) error {
+	return writeProbeChainTunnelJSONResponse(stream, resp)
+}
+
+func writeProbeChainTunnelJSONResponse(stream net.Conn, resp any) error {
 	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	err := json.NewEncoder(stream).Encode(resp)
 	_ = stream.SetWriteDeadline(time.Time{})
 	return err
 }
 
-func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
+func resolveProbeChainTunnelOpenFlowID(req probeChainTunnelOpenRequest) string {
+	if flowID := strings.TrimSpace(req.FlowID); flowID != "" {
+		return flowID
+	}
+	if req.AssociationV2 != nil {
+		return strings.TrimSpace(req.AssociationV2.FlowID)
+	}
+	return ""
+}
+
+func handleProbeChainTunnelTCPStream(stream net.Conn, target string, flowID string) error {
 	dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
 	remoteConn, err := dialer.Dial("tcp", target)
 	if err != nil {
-		globalProbeTCPDebugState.recordFailure("open_failed", target, err)
+		globalProbeTCPDebugState.recordFailureWithScopeAndFlow("open_failed", "chain_exit", target, flowID, "remote", err)
 		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err
 	}
@@ -2848,7 +3283,7 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 		return err
 	}
 
-	relay := globalProbeTCPDebugState.beginRelay(target)
+	relay := globalProbeTCPDebugState.beginRelayWithScopeAndFlow("chain_exit", target, flowID, "remote")
 	if relay != nil {
 		defer relay.releaseSide()
 		defer relay.releaseSide()

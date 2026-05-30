@@ -15,6 +15,7 @@ type probeLocalTunnelRouteDecision struct {
 	Group           string
 	SelectedChainID string
 	TunnelNodeID    string
+	FlowID          string
 	GroupRuntime    *probeLocalTUNGroupRuntime
 }
 
@@ -200,14 +201,19 @@ func openProbeLocalTunnelConnWithAssociation(network, targetAddr, selectedChainI
 }
 
 func openProbeLocalTunnelConnWithGroupRuntime(network, targetAddr string, groupRuntime *probeLocalTUNGroupRuntime, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
+	conn, _, err := openProbeLocalTunnelConnWithGroupRuntimeAndFlow(network, targetAddr, groupRuntime, associationV2, "")
+	return conn, err
+}
+
+func openProbeLocalTunnelConnWithGroupRuntimeAndFlow(network, targetAddr string, groupRuntime *probeLocalTUNGroupRuntime, associationV2 *probeChainAssociationV2Meta, flowID string) (net.Conn, string, error) {
 	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
 	if cleanNetwork == "" {
 		cleanNetwork = "tcp"
 	}
 	if groupRuntime == nil {
-		return nil, errors.New("group runtime is nil")
+		return nil, "", errors.New("group runtime is nil")
 	}
-	return groupRuntime.openStream(cleanNetwork, strings.TrimSpace(targetAddr), associationV2)
+	return groupRuntime.openStream(cleanNetwork, strings.TrimSpace(targetAddr), associationV2, flowID)
 }
 
 func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, error) {

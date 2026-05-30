@@ -550,10 +550,12 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 		return conn, route, nil
 	}
 	var lastErr error
+	flowID := newProbeTCPDebugFlowID("tun", targetAddr)
 	for _, target := range probeLocalTunnelRouteTargetCandidates(route) {
-		conn, openErr := openProbeLocalTunnelConnWithGroupRuntime("tcp", target, route.GroupRuntime, nil)
+		conn, openedFlowID, openErr := openProbeLocalTunnelConnWithGroupRuntimeAndFlow("tcp", target, route.GroupRuntime, nil, flowID)
 		if openErr == nil {
 			route.TargetAddr = target
+			route.FlowID = openedFlowID
 			return conn, route, nil
 		}
 		lastErr = openErr

@@ -336,71 +336,13 @@ func openAndroidProxyChainStream(selectedChainID string, network string, targetA
 	if err != nil {
 		return nil, err
 	}
-	session, err := ensureProxyChainSession(item, endpoint)
-	if err != nil {
-		return nil, err
-	}
-	for attempt := 0; attempt < 2; attempt++ {
-		stream, err := session.Open()
-		if err != nil {
-			invalidateProxyChainSession(endpoint.ChainID, session)
-			if attempt == 0 {
-				session, err = ensureProxyChainSession(item, endpoint)
-				if err == nil {
-					continue
-				}
-			}
-			return nil, err
-		}
-		request := linkTunnelOpenRequest{Type: "open", Network: network, Address: strings.TrimSpace(targetAddr)}
-		_ = stream.SetWriteDeadline(time.Now().Add(proxyResponseReadTimeout))
-		if err := json.NewEncoder(stream).Encode(request); err != nil {
-			_ = stream.Close()
-			invalidateProxyChainSession(endpoint.ChainID, session)
-			if attempt == 0 {
-				session, err = ensureProxyChainSession(item, endpoint)
-				if err == nil {
-					continue
-				}
-			}
-			return nil, err
-		}
-		_ = stream.SetWriteDeadline(time.Time{})
-		_ = stream.SetReadDeadline(time.Now().Add(proxyResponseReadTimeout))
-		var response linkTunnelOpenResponse
-		if err := json.NewDecoder(stream).Decode(&response); err != nil {
-			_ = stream.Close()
-			invalidateProxyChainSession(endpoint.ChainID, session)
-			if attempt == 0 {
-				session, err = ensureProxyChainSession(item, endpoint)
-				if err == nil {
-					continue
-				}
-			}
-			return nil, err
-		}
-		_ = stream.SetReadDeadline(time.Time{})
-		if !response.OK {
-			_ = stream.Close()
-			return nil, errors.New(firstNonEmptyString(strings.TrimSpace(response.Error), "open stream failed"))
-		}
-		return stream, nil
-	}
-	return nil, errors.New("open stream failed")
+	request := linkTunnelOpenRequest{Type: "open", Network: strings.ToLower(strings.TrimSpace(network)), Address: strings.TrimSpace(targetAddr)}
+	return openAndroidProxyIndependentStream(item, endpoint, request)
 }
 
 func openAndroidProxyChainPacketStream(selectedChainID string, network string, targetAddr string, association *linkAssociationV2Meta) (net.Conn, error) {
 	item, endpoint, err := loadLinkEndpointByID(proxyRuntimeConfigDir(), selectedChainID)
 	if err != nil {
-		return nil, err
-	}
-	session, err := ensureProxyChainSession(item, endpoint)
-	if err != nil {
-		return nil, err
-	}
-	stream, err := session.Open()
-	if err != nil {
-		invalidateProxyChainSession(endpoint.ChainID, session)
 		return nil, err
 	}
 	request := linkTunnelOpenRequest{
@@ -409,10 +351,17 @@ func openAndroidProxyChainPacketStream(selectedChainID string, network string, t
 		Address:       strings.TrimSpace(targetAddr),
 		AssociationV2: association,
 	}
+	return openAndroidProxyIndependentStream(item, endpoint, request)
+}
+
+func openAndroidProxyIndependentStream(item linkChainServerItem, endpoint linkEndpoint, request linkTunnelOpenRequest) (net.Conn, error) {
+	stream, err := openAndroidProxyLinkRelayDataStream(item, endpoint)
+	if err != nil {
+		return nil, err
+	}
 	_ = stream.SetWriteDeadline(time.Now().Add(proxyResponseReadTimeout))
 	if err := json.NewEncoder(stream).Encode(request); err != nil {
 		_ = stream.Close()
-		invalidateProxyChainSession(endpoint.ChainID, session)
 		return nil, err
 	}
 	_ = stream.SetWriteDeadline(time.Time{})
@@ -420,7 +369,6 @@ func openAndroidProxyChainPacketStream(selectedChainID string, network string, t
 	var response linkTunnelOpenResponse
 	if err := json.NewDecoder(stream).Decode(&response); err != nil {
 		_ = stream.Close()
-		invalidateProxyChainSession(endpoint.ChainID, session)
 		return nil, err
 	}
 	_ = stream.SetReadDeadline(time.Time{})
@@ -429,6 +377,26 @@ func openAndroidProxyChainPacketStream(selectedChainID string, network string, t
 		return nil, errors.New(firstNonEmptyString(strings.TrimSpace(response.Error), "open stream failed"))
 	}
 	return stream, nil
+}
+
+func openAndroidProxyLinkRelayDataStream(item linkChainServerItem, endpoint linkEndpoint) (net.Conn, error) {
+	protocols := linkReachabilityProtocolsForEndpoint(item, endpoint)
+	var lastErr error
+	for _, protocol := range protocols {
+		conn, err := openLinkRelayDataStreamConn(endpoint, protocol, proxyConnectTimeout+proxyResponseReadTimeout)
+		if err == nil {
+			if normalizeLinkLayer(endpoint.LinkLayer) == "auto" {
+				androidLogStore.add("proxy", "normal", "auto relay stream protocol selected: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol))
+			}
+			return conn, nil
+		}
+		lastErr = err
+		androidLogStore.add("proxy", "warn", "relay stream protocol failed: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol)+" err="+err.Error())
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("no supported relay stream protocol")
 }
 
 func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*yamux.Session, error) {
@@ -821,7 +789,7 @@ func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.
 		if leftReader != nil && leftReader.Buffered() > 0 {
 			_, _ = io.CopyN(right, leftReader, int64(leftReader.Buffered()))
 		}
-		_, _ = io.Copy(right, left)
+		_, _ = mobileRelayCopy(right, left)
 		closeProxyConnWrite(right)
 		done <- struct{}{}
 	}()
@@ -829,7 +797,7 @@ func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.
 		if rightReader != nil && rightReader.Buffered() > 0 {
 			_, _ = io.CopyN(left, rightReader, int64(rightReader.Buffered()))
 		}
-		_, _ = io.Copy(left, right)
+		_, _ = mobileRelayCopy(left, right)
 		closeProxyConnWrite(left)
 		done <- struct{}{}
 	}()
