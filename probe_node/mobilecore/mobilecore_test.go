@@ -317,6 +317,68 @@ func TestLinkLatencyAndSpeedUseRelayProtocol(t *testing.T) {
 	}
 }
 
+func TestAndroidProxyChainSessionAutoProtocolFallsBackToWebSocket(t *testing.T) {
+	const chainID = "relay-chain"
+	const secret = "link-secret"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != linkRelayAPIPath {
+			http.NotFound(w, r)
+			return
+		}
+		assertLinkAuth(t, r, chainID, secret)
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade failed: %v", err)
+		}
+		conn := newWebSocketNetConn(ws)
+		defer conn.Close()
+		session, err := yamux.Server(conn, newLinkYamuxConfig())
+		if err != nil {
+			t.Fatalf("yamux server: %v", err)
+		}
+		defer session.Close()
+	}))
+	defer server.Close()
+
+	host, port := testServerHostPort(t, server)
+	proxyRuntime.mu.Lock()
+	oldSessions := proxyRuntime.sessions
+	proxyRuntime.sessions = map[string]*proxyChainSession{}
+	proxyRuntime.mu.Unlock()
+	defer func() {
+		proxyRuntime.mu.Lock()
+		for _, session := range proxyRuntime.sessions {
+			closeProxyChainSession(session)
+		}
+		proxyRuntime.sessions = oldSessions
+		proxyRuntime.mu.Unlock()
+	}()
+
+	item := linkChainServerItem{
+		ChainID:      "client-chain",
+		RelayChainID: chainID,
+		Secret:       secret,
+		EntryNodeID:  "1",
+		ExitNodeID:   "2",
+		LinkLayer:    "auto",
+		HopConfigs: []linkChainHopItem{
+			{NodeNo: 1, RelayHost: host, ExternalPort: port},
+		},
+	}
+	endpoint, err := resolveLinkEndpoint(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := ensureProxyChainSession(item, endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || session.IsClosed() {
+		t.Fatalf("session not established: %v", session)
+	}
+}
+
 func TestProxyFramedPacketRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	payload := []byte("udp payload")

@@ -439,7 +439,7 @@ func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*
 		return session, nil
 	}
 	proxyRuntime.mu.Unlock()
-	conn, err := openLinkRelayConn(endpoint, normalizeLinkLayer(endpoint.LinkLayer), proxyConnectTimeout+proxyResponseReadTimeout)
+	conn, err := openAndroidProxyLinkRelayConn(item, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -455,6 +455,26 @@ func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*
 	proxyRuntime.sessions[endpoint.ChainID] = &proxyChainSession{chainID: effectiveLinkRelayChainID(item), conn: conn, session: session}
 	proxyRuntime.mu.Unlock()
 	return session, nil
+}
+
+func openAndroidProxyLinkRelayConn(item linkChainServerItem, endpoint linkEndpoint) (net.Conn, error) {
+	protocols := linkReachabilityProtocolsForEndpoint(item, endpoint)
+	var lastErr error
+	for _, protocol := range protocols {
+		conn, err := openLinkRelayConn(endpoint, protocol, proxyConnectTimeout+proxyResponseReadTimeout)
+		if err == nil {
+			if normalizeLinkLayer(endpoint.LinkLayer) == "auto" {
+				androidLogStore.add("proxy", "normal", "auto relay protocol selected: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol))
+			}
+			return conn, nil
+		}
+		lastErr = err
+		androidLogStore.add("proxy", "warn", "relay protocol failed: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol)+" err="+err.Error())
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("no supported relay protocol")
 }
 
 func invalidateProxyChainSession(chainID string, session *yamux.Session) {
