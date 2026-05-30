@@ -298,7 +298,7 @@ func TestDownloadProbeAssetResumeDirect(t *testing.T) {
 		t.Fatalf("write part file: %v", err)
 	}
 
-	if err := downloadProbeAsset(t.Context(), "direct", server.URL, "", nodeIdentity{}, output); err != nil {
+	if err := downloadProbeAsset(t.Context(), "direct", server.URL, "", nodeIdentity{}, output, nil); err != nil {
 		t.Fatalf("downloadProbeAsset returned error: %v", err)
 	}
 	got, err := os.ReadFile(output)
@@ -338,7 +338,7 @@ func TestDownloadProbeAssetProxyStreamsThroughController(t *testing.T) {
 	}
 
 	assetURL := "https://github.com/example/repo/releases/download/v1/probe-node"
-	if err := downloadProbeAsset(t.Context(), "proxy", assetURL, controller.URL, nodeIdentity{NodeID: "9", Secret: "secret-9"}, output); err != nil {
+	if err := downloadProbeAsset(t.Context(), "proxy", assetURL, controller.URL, nodeIdentity{NodeID: "9", Secret: "secret-9"}, output, nil); err != nil {
 		t.Fatalf("downloadProbeAsset returned error: %v", err)
 	}
 	if gotPath != "/api/probe/proxy/download" {

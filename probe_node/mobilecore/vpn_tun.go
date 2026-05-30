@@ -3,6 +3,7 @@ package mobilecore
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -302,6 +303,31 @@ func runAndroidVPNSelfCheck(configDir string) map[string]any {
 		return result
 	}
 	_ = conn.Close()
+	rawIPv4s, rawErr := resolveAndroidVPNDomainIPv4s("www.google.com")
+	if rawErr == nil && len(rawIPv4s) > 0 {
+		rawTarget := net.JoinHostPort(rawIPv4s[0], "443")
+		rawRoute, routeErr := decideVPNRouteForTarget(rawTarget)
+		if routeErr == nil {
+			result["ip_route"] = map[string]any{
+				"group":             rawRoute.Group,
+				"direct":            rawRoute.Direct,
+				"reject":            rawRoute.Reject,
+				"target":            rawRoute.TargetAddr,
+				"selected_chain_id": rawRoute.SelectedChainID,
+			}
+			if !rawRoute.Direct && !rawRoute.Reject && strings.TrimSpace(rawRoute.SelectedChainID) != "" {
+				ipConn, ipErr := openAndroidProxyChainStream(rawRoute.SelectedChainID, "tcp", rawRoute.TargetAddr)
+				if ipErr != nil {
+					result["status"] = "ip_chain_open_failed"
+					result["error"] = ipErr.Error()
+					result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
+					result["duration_ms"] = time.Since(startedAt).Milliseconds()
+					return result
+				}
+				_ = ipConn.Close()
+			}
+		}
+	}
 	result["ok"] = true
 	result["status"] = "tunnel_ready"
 	result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
@@ -497,11 +523,30 @@ func (n *androidVPNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	}
 	req.Complete(false)
 	inbound := gonet.NewTCPConn(&wq, ep)
-	outbound, err := openVPNOutboundTCP(targetAddr)
+	preface, dialTarget, sni := prepareVPNTCPDialTarget(inbound, targetAddr)
+	outbound, err := openVPNOutboundTCP(dialTarget)
 	if err != nil {
-		recordVPNRuntimeError("tcp_open "+targetAddr, err)
+		stage := "tcp_open " + targetAddr
+		if dialTarget != targetAddr {
+			stage += " via_sni " + dialTarget
+		}
+		recordVPNRuntimeError(stage, err)
 		_ = inbound.Close()
 		return
+	}
+	if sni != "" {
+		androidLogStore.add("vpn", "debug", "tcp sni route "+targetAddr+" -> "+dialTarget)
+	}
+	if len(preface) > 0 {
+		_ = outbound.SetWriteDeadline(time.Now().Add(proxyResponseReadTimeout))
+		_, writeErr := outbound.Write(preface)
+		_ = outbound.SetWriteDeadline(time.Time{})
+		if writeErr != nil {
+			recordVPNRuntimeError("tcp_preface "+dialTarget, writeErr)
+			_ = inbound.Close()
+			_ = outbound.Close()
+			return
+		}
 	}
 	go pipeVPNConn(outbound, inbound)
 	go pipeVPNConn(inbound, outbound)
@@ -567,6 +612,146 @@ func openVPNOutboundTCP(targetAddr string) (net.Conn, error) {
 		}
 	}
 	return nil, err
+}
+
+func prepareVPNTCPDialTarget(inbound net.Conn, targetAddr string) ([]byte, string, string) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil || strings.TrimSpace(port) != "443" {
+		return nil, targetAddr, ""
+	}
+	if ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]"))); ip == nil {
+		return nil, targetAddr, ""
+	}
+	if inbound == nil {
+		return nil, targetAddr, ""
+	}
+	_ = inbound.SetReadDeadline(time.Now().Add(1200 * time.Millisecond))
+	buf := make([]byte, 16*1024)
+	n, readErr := inbound.Read(buf)
+	_ = inbound.SetReadDeadline(time.Time{})
+	if n <= 0 {
+		return nil, targetAddr, ""
+	}
+	preface := append([]byte(nil), buf[:n]...)
+	if readErr != nil && !isTimeoutError(readErr) {
+		return preface, targetAddr, ""
+	}
+	sni := extractVPNTLSClientHelloSNI(preface)
+	if !isValidVPNTLSSNIHost(sni) {
+		return preface, targetAddr, ""
+	}
+	return preface, net.JoinHostPort(sni, port), sni
+}
+
+func extractVPNTLSClientHelloSNI(data []byte) string {
+	if len(data) < 5 || data[0] != 0x16 {
+		return ""
+	}
+	recordLen := int(binary.BigEndian.Uint16(data[3:5]))
+	if recordLen <= 0 || len(data) < 5+recordLen {
+		return ""
+	}
+	offset := 5
+	if len(data[offset:]) < 4 || data[offset] != 0x01 {
+		return ""
+	}
+	helloLen := int(data[offset+1])<<16 | int(data[offset+2])<<8 | int(data[offset+3])
+	offset += 4
+	if helloLen <= 0 || offset+helloLen > len(data) || offset+34 > len(data) {
+		return ""
+	}
+	offset += 34
+	if offset >= len(data) {
+		return ""
+	}
+	sessionLen := int(data[offset])
+	offset++
+	if offset+sessionLen+2 > len(data) {
+		return ""
+	}
+	offset += sessionLen
+	cipherLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+cipherLen+1 > len(data) {
+		return ""
+	}
+	offset += cipherLen
+	compressionLen := int(data[offset])
+	offset++
+	if offset+compressionLen+2 > len(data) {
+		return ""
+	}
+	offset += compressionLen
+	extensionsLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	extensionsEnd := offset + extensionsLen
+	if extensionsEnd > len(data) {
+		return ""
+	}
+	for offset+4 <= extensionsEnd {
+		extType := binary.BigEndian.Uint16(data[offset : offset+2])
+		extLen := int(binary.BigEndian.Uint16(data[offset+2 : offset+4]))
+		offset += 4
+		if offset+extLen > extensionsEnd {
+			return ""
+		}
+		if extType == 0 {
+			return extractVPNTLSSNIFromExtension(data[offset : offset+extLen])
+		}
+		offset += extLen
+	}
+	return ""
+}
+
+func extractVPNTLSSNIFromExtension(data []byte) string {
+	if len(data) < 2 {
+		return ""
+	}
+	listLen := int(binary.BigEndian.Uint16(data[:2]))
+	offset := 2
+	end := offset + listLen
+	if end > len(data) {
+		return ""
+	}
+	for offset+3 <= end {
+		nameType := data[offset]
+		nameLen := int(binary.BigEndian.Uint16(data[offset+1 : offset+3]))
+		offset += 3
+		if offset+nameLen > end {
+			return ""
+		}
+		if nameType == 0 {
+			return strings.ToLower(strings.TrimSpace(string(data[offset : offset+nameLen])))
+		}
+		offset += nameLen
+	}
+	return ""
+}
+
+func isValidVPNTLSSNIHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "."))
+	if host == "" || len(host) > 253 || strings.ContainsAny(host, " \t\r\n:/\\") {
+		return false
+	}
+	if net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func dialVPNRouteTCP(route vpnRouteDecision) (net.Conn, error) {

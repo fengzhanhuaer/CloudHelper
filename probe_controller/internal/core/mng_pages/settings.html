@@ -21,6 +21,10 @@
     .value { margin-top:6px; font-size:20px; font-family:Consolas,monospace; }
     .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; }
     .status { margin-top:12px; border-radius:8px; background:#0d1117; border:1px solid #30363d; padding:10px; font-size:13px; white-space:pre-wrap; }
+    .progress { height:8px; border-radius:999px; background:#30363d; overflow:hidden; margin-top:12px; }
+    .progress-fill { width:0%; height:100%; background:#2f81f7; transition:width .2s ease; }
+    .progress-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px 12px; margin-top:10px; color:#8b949e; font-size:13px; }
+    .progress-meta strong { display:block; color:#c9d1d9; font-size:14px; margin-top:3px; }
     .ok { color:#7ee787; }
     .warn { color:#f2cc60; }
     .err { color:#ff7b72; }
@@ -69,6 +73,16 @@
       </div>
 
       <div class="status" id="status-box">尚未执行操作。</div>
+      <div class="progress" aria-label="主控升级进度">
+        <div id="upgrade-progress-fill" class="progress-fill"></div>
+      </div>
+      <div class="progress-meta">
+        <div>阶段<strong id="progress-phase">-</strong></div>
+        <div>进度<strong id="progress-percent">0%</strong></div>
+        <div>下载<strong id="progress-download">-</strong></div>
+        <div>速度<strong id="progress-speed">-</strong></div>
+        <div>更新时间<strong id="progress-updated">-</strong></div>
+      </div>
     </div>
 
     <div class="panel">
@@ -101,6 +115,50 @@
     function setBusy(busy) {
       checkBtn.disabled = busy;
       upgradeBtn.disabled = busy;
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = value === undefined || value === null || value === '' ? '-' : String(value);
+    }
+
+    function clampPercent(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      return Math.max(0, Math.min(100, Math.trunc(n)));
+    }
+
+    function formatBytes(value) {
+      let n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) return '-';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let unit = 0;
+      while (n >= 1024 && unit < units.length - 1) {
+        n /= 1024;
+        unit += 1;
+      }
+      return (unit === 0 ? String(Math.trunc(n)) : n.toFixed(1)) + ' ' + units[unit];
+    }
+
+    function formatSpeed(value) {
+      const text = formatBytes(value);
+      return text === '-' ? '-' : text + '/s';
+    }
+
+    function renderUpgradeProgress(progress) {
+      const percent = clampPercent(progress && progress.percent);
+      const downloaded = Number(progress && progress.downloaded_bytes || 0);
+      const total = Number(progress && progress.total_bytes || 0);
+      const fill = document.getElementById('upgrade-progress-fill');
+      if (fill) {
+        fill.style.width = percent + '%';
+      }
+      setText('progress-phase', progress && progress.phase || '-');
+      setText('progress-percent', percent + '%');
+      setText('progress-download', total > 0 ? formatBytes(downloaded) + ' / ' + formatBytes(total) : formatBytes(downloaded));
+      setText('progress-speed', formatSpeed(progress && progress.speed_bps));
+      setText('progress-updated', progress && progress.updated_at || '-');
     }
 
     async function requestJSON(url, options) {
@@ -210,8 +268,11 @@
         if (!progress) {
           return;
         }
+        renderUpgradeProgress(progress);
         const text = '升级阶段：' + (progress.phase || '-')
           + '\n进度：' + String(progress.percent || 0) + '%'
+          + '\n下载：' + (progress.total_bytes ? (formatBytes(progress.downloaded_bytes) + ' / ' + formatBytes(progress.total_bytes)) : formatBytes(progress.downloaded_bytes))
+          + '\n速度：' + formatSpeed(progress.speed_bps)
           + '\n信息：' + (progress.message || '-');
         setStatus(text, progress.active ? 'warn' : 'ok');
       }, 1500);

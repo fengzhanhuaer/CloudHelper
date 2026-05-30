@@ -138,7 +138,7 @@ func TestDownloadReleaseAssetResume(t *testing.T) {
 	}
 
 	var progressDownloaded, progressTotal int64
-	if err := downloadReleaseAsset(t.Context(), server.URL, output, func(downloaded, total int64) {
+	if err := downloadReleaseAsset(t.Context(), server.URL, output, func(downloaded, total, speedBPS int64) {
 		progressDownloaded, progressTotal = downloaded, total
 	}); err != nil {
 		t.Fatalf("downloadReleaseAsset returned error: %v", err)

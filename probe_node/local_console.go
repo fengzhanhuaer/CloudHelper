@@ -205,14 +205,17 @@ type probeLocalProxyRuntimeContext struct {
 }
 
 type probeLocalUpgradeRuntimeState struct {
-	Status      string `json:"status"`
-	Step        string `json:"step,omitempty"`
-	Progress    int    `json:"progress"`
-	Message     string `json:"message,omitempty"`
-	Error       string `json:"error,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	ReleaseRepo string `json:"release_repo,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	Status          string `json:"status"`
+	Step            string `json:"step,omitempty"`
+	Progress        int    `json:"progress"`
+	Message         string `json:"message,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	ReleaseRepo     string `json:"release_repo,omitempty"`
+	DownloadedBytes int64  `json:"downloaded_bytes,omitempty"`
+	TotalBytes      int64  `json:"total_bytes,omitempty"`
+	SpeedBPS        int64  `json:"speed_bps,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
 }
 
 type probeLocalUpgradeCheckResult struct {

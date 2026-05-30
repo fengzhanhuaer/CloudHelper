@@ -151,6 +151,11 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
+        fun upgradeStatus(): String {
+            return AndroidUpgrade.statusJSON()
+        }
+
+        @JavascriptInterface
         fun refreshConfig() {
             AndroidLogStore.add("settings", "manual config refresh requested")
             refreshConfigAsync("手动刷新配置", ProbeNodeConfig.load(this@MainActivity))

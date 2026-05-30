@@ -1,5 +1,6 @@
 let saveFeedbackTimer = 0;
 let toastTimer = 0;
+let upgradeStatusTimer = 0;
 const proxyGroupExpanded = new Set();
 
 const pages = {
@@ -110,6 +111,7 @@ function checkUpgrade(mode) {
   setStatus(text);
   appendUILog("upgrade", text);
   window.CloudHelper.checkUpgrade(mode);
+  startUpgradeStatusPolling();
 }
 
 function refreshConfig() {
@@ -720,6 +722,78 @@ function setRuntimeStatus(message) {
 
 function setUpgradeStatus(message) {
   setText("upgradeStatus", message);
+}
+
+function startUpgradeStatusPolling() {
+  stopUpgradeStatusPolling();
+  refreshUpgradeStatus();
+  upgradeStatusTimer = window.setInterval(refreshUpgradeStatus, 1000);
+}
+
+function stopUpgradeStatusPolling() {
+  if (upgradeStatusTimer) {
+    window.clearInterval(upgradeStatusTimer);
+    upgradeStatusTimer = 0;
+  }
+}
+
+function refreshUpgradeStatus() {
+  if (!window.CloudHelper || !window.CloudHelper.upgradeStatus) {
+    return;
+  }
+  try {
+    renderUpgradeStatus(JSON.parse(window.CloudHelper.upgradeStatus() || "{}"));
+  } catch (err) {
+    setUpgradeStatus(`升级状态解析失败：${err && err.message ? err.message : err}`);
+  }
+}
+
+function renderUpgradeStatus(data) {
+  const percent = clampPercent(data && data.percent);
+  const fill = byId("upgradeProgressFill");
+  if (fill) {
+    fill.style.width = `${percent}%`;
+  }
+  setText("upgradeState", data && data.state ? data.state : "-");
+  setText("upgradePhase", data && data.phase ? data.phase : "-");
+  setText("upgradePercent", `${percent}%`);
+  const downloaded = Number(data && data.downloaded_bytes ? data.downloaded_bytes : 0);
+  const total = Number(data && data.total_bytes ? data.total_bytes : 0);
+  setText("upgradeDownload", total > 0 ? `${formatBytes(downloaded)} / ${formatBytes(total)}` : formatBytes(downloaded));
+  setText("upgradeSpeed", formatSpeed(data && data.speed_bps));
+  const current = data && data.current_version ? data.current_version : "";
+  const latest = data && data.latest_version ? data.latest_version : "";
+  setText("upgradeVersion", current && latest ? `${current} -> ${latest}` : (latest || current || "-"));
+  if (data && data.message) {
+    setUpgradeStatus(data.message);
+  }
+  const state = String(data && data.state || "").toLowerCase();
+  if (state && state !== "running") {
+    stopUpgradeStatusPolling();
+  }
+}
+
+function clampPercent(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.trunc(n)));
+}
+
+function formatBytes(value) {
+  let n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let unit = 0;
+  while (n >= 1024 && unit < units.length - 1) {
+    n /= 1024;
+    unit += 1;
+  }
+  return `${unit === 0 ? Math.trunc(n) : n.toFixed(1)} ${units[unit]}`;
+}
+
+function formatSpeed(value) {
+  const text = formatBytes(value);
+  return text === "-" ? "-" : `${text}/s`;
 }
 
 function setText(id, message) {

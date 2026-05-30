@@ -42,6 +42,17 @@
           <button class="command" onclick="checkUpgrade('direct')">Direct Upgrade</button>
           <button class="command secondary" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
         </div>
+        <div class="upgrade-progress" aria-label="升级进度">
+          <div id="upgradeProgressFill" class="upgrade-progress-fill"></div>
+        </div>
+        <div class="upgrade-grid">
+          <div>状态<strong id="upgradeState">-</strong></div>
+          <div>阶段<strong id="upgradePhase">-</strong></div>
+          <div>进度<strong id="upgradePercent">0%</strong></div>
+          <div>下载<strong id="upgradeDownload">-</strong></div>
+          <div>速度<strong id="upgradeSpeed">-</strong></div>
+          <div>版本<strong id="upgradeVersion">-</strong></div>
+        </div>
         <div class="status-box" id="upgradeStatus"></div>
       </section>
     </main>

@@ -147,6 +147,35 @@ input {
   word-break: break-word;
   min-height: 58px;
 }
+.upgrade-progress {
+  height: 8px;
+  margin-top: 14px;
+  border-radius: 999px;
+  background: #e7e5df;
+  overflow: hidden;
+}
+.upgrade-progress-fill {
+  width: 0%;
+  height: 100%;
+  background: #2563eb;
+  transition: width 180ms ease;
+}
+.upgrade-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px 12px;
+  margin-top: 10px;
+  color: #78716c;
+  font-size: 12px;
+}
+.upgrade-grid strong {
+  display: block;
+  margin-top: 3px;
+  color: #292524;
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: break-word;
+}
 .toast {
   position: fixed;
   left: 50%;

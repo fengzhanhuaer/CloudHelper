@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -840,6 +841,54 @@ func TestAndroidVPNSelfCheckRoutesFakeIPThroughVPNDecision(t *testing.T) {
 	if route.Direct || route.Group != "fallback" || route.SelectedChainID != "chain-1" {
 		t.Fatalf("self-check fake route would be wrong: %+v", route)
 	}
+}
+
+func TestExtractVPNTLSClientHelloSNI(t *testing.T) {
+	hello := buildTestTLSClientHello(t, "www.google.com")
+	if got := extractVPNTLSClientHelloSNI(hello); got != "www.google.com" {
+		t.Fatalf("sni=%q", got)
+	}
+}
+
+func TestPrepareVPNTCPDialTargetUsesSNIForIP443(t *testing.T) {
+	hello := buildTestTLSClientHello(t, "www.google.com")
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	go func() {
+		_, _ = clientConn.Write(hello)
+	}()
+	preface, target, sni := prepareVPNTCPDialTarget(serverConn, "173.194.202.138:443")
+	if sni != "www.google.com" || target != "www.google.com:443" {
+		t.Fatalf("target=%q sni=%q", target, sni)
+	}
+	if !bytes.Equal(preface, hello) {
+		t.Fatalf("preface was not preserved")
+	}
+}
+
+func buildTestTLSClientHello(t *testing.T, serverName string) []byte {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	errCh := make(chan error, 1)
+	go func() {
+		tlsConn := tls.Client(clientConn, &tls.Config{ServerName: serverName, InsecureSkipVerify: true})
+		errCh <- tlsConn.Handshake()
+	}()
+	_ = serverConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 16*1024)
+	n, err := serverConn.Read(buf)
+	if err != nil {
+		t.Fatalf("read client hello: %v", err)
+	}
+	_ = clientConn.Close()
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+	}
+	return append([]byte(nil), buf[:n]...)
 }
 
 func readTestFile(t *testing.T, path string) string {

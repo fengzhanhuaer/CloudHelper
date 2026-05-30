@@ -176,7 +176,26 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		ReleaseRepo: repo,
 	})
 	log.Printf("probe upgrade download: target=%s mode=%s", assetFile, mode)
-	if err := downloadProbeAsset(ctx, mode, asset.DownloadURL, controllerBase, identity, assetFile); err != nil {
+	if err := downloadProbeAsset(ctx, mode, asset.DownloadURL, controllerBase, identity, assetFile, func(downloaded, total, speedBPS int64) {
+		progress := 42
+		if total > 0 {
+			progress = 42 + int(float64(downloaded)/float64(total)*12.0)
+			if progress > 54 {
+				progress = 54
+			}
+		}
+		reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+			Status:          "running",
+			Step:            "download",
+			Progress:        progress,
+			Message:         formatProbeUpgradeDownloadMessage(downloaded, total, speedBPS),
+			Mode:            mode,
+			ReleaseRepo:     repo,
+			DownloadedBytes: downloaded,
+			TotalBytes:      total,
+			SpeedBPS:        speedBPS,
+		})
+	}); err != nil {
 		log.Printf("probe upgrade failed: download asset: %v", err)
 		reportProbeLocalUpgradeFailed("download", err, mode, repo, 42)
 		return
@@ -416,7 +435,7 @@ func pickAndroidProbeNodeAsset(probeAssets []releaseAsset, platform runtimePlatf
 	return releaseAsset{}, fmt.Errorf("matching android probe_node apk not found for goarch=%s, probe assets=[%s]", platform.GOARCH, summarizeAssetNames(probeAssets, 20))
 }
 
-func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, output string) error {
+func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, output string, onProgress func(downloaded, total, speedBPS int64)) error {
 	partPath := output + ".part"
 	resumeOffset := int64(0)
 	if st, err := os.Stat(partPath); err == nil && st.Mode().IsRegular() {
@@ -540,7 +559,20 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		if err != nil {
 			return 0, err
 		}
-		written, copyErr := io.Copy(f, reader)
+		written, copyErr := copyProbeUpgradeWithProgress(f, reader, func(n int64) {
+			finalSize := currentSize + n
+			if truncate {
+				finalSize = n
+			}
+			speed := int64(0)
+			elapsed := time.Since(start).Seconds()
+			if elapsed > 0 {
+				speed = int64(float64(n) / elapsed)
+			}
+			if onProgress != nil {
+				onProgress(finalSize, total, speed)
+			}
+		})
 		closeErr := f.Close()
 		if copyErr != nil {
 			if closeErr != nil {
@@ -599,6 +631,74 @@ func buildProbeUpgradeProxyDownloadURL(controllerBase string, assetURL string) (
 	query := url.Values{}
 	query.Set("url", strings.TrimSpace(assetURL))
 	return base + "/api/probe/proxy/download?" + query.Encode(), nil
+}
+
+func copyProbeUpgradeWithProgress(dst io.Writer, src io.Reader, onProgress func(written int64)) (int64, error) {
+	buf := make([]byte, 128*1024)
+	var written int64
+	lastReport := time.Now()
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[:nr])
+			if nw > 0 {
+				written += int64(nw)
+				if onProgress != nil && time.Since(lastReport) >= 500*time.Millisecond {
+					onProgress(written)
+					lastReport = time.Now()
+				}
+			}
+			if ew != nil {
+				if onProgress != nil {
+					onProgress(written)
+				}
+				return written, ew
+			}
+			if nr != nw {
+				if onProgress != nil {
+					onProgress(written)
+				}
+				return written, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				if onProgress != nil {
+					onProgress(written)
+				}
+				return written, nil
+			}
+			if onProgress != nil {
+				onProgress(written)
+			}
+			return written, er
+		}
+	}
+}
+
+func formatProbeUpgradeDownloadMessage(downloaded, total, speedBPS int64) string {
+	if total > 0 {
+		return fmt.Sprintf("下载升级包 %s / %s (%d%%)，%s/s", formatProbeUpgradeBytes(downloaded), formatProbeUpgradeBytes(total), int(float64(downloaded)*100/float64(total)), formatProbeUpgradeBytes(speedBPS))
+	}
+	return fmt.Sprintf("下载升级包 %s，%s/s", formatProbeUpgradeBytes(downloaded), formatProbeUpgradeBytes(speedBPS))
+}
+
+func formatProbeUpgradeBytes(n int64) string {
+	if n < 0 {
+		n = 0
+	}
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	value := float64(n)
+	for _, suffix := range []string{"KB", "MB", "GB"} {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f TB", value/unit)
 }
 
 func probeAuthedGet(ctx context.Context, requestURL string, identity nodeIdentity) ([]byte, error) {

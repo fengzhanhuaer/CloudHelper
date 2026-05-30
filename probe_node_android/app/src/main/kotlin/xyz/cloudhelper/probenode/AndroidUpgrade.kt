@@ -10,6 +10,7 @@ import androidx.core.content.FileProvider
 import org.json.JSONObject
 import java.io.InputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.net.URLEncoder
 import java.net.HttpURLConnection
 import java.net.URL
@@ -25,42 +26,145 @@ object AndroidUpgrade {
     private const val ASSET_NAME = "cloudhelper-probe-node-android-arm64.apk"
     private const val RELEASE_REPO = "fengzhanhuaer/CloudHelper"
     private const val DEFAULT_RELEASE_API = "https://api.github.com/repos/fengzhanhuaer/CloudHelper/releases/latest"
+    private val statusLock = Any()
+    private var status = UpgradeStatus(
+        state = "idle",
+        phase = "",
+        percent = 0,
+        message = "尚未执行升级。",
+        updatedAt = isoNow(),
+    )
 
     fun checkDownloadAndInstall(activity: Activity, mode: String, config: ProbeNodeConfig, sink: (String) -> Unit) {
         thread(name = "cloudhelper-android-upgrade") {
+            val upgradeMode = if (mode == "proxy") "proxy" else "direct"
             try {
-                val upgradeMode = if (mode == "proxy") "proxy" else "direct"
                 AndroidLogStore.add("upgrade", "upgrade flow started: mode=$upgradeMode")
+                updateStatus(state = "running", phase = "prepare", percent = 2, message = "准备 ${upgradeMode} 升级", mode = upgradeMode)
                 if (upgradeMode == "proxy" && !config.isReady) {
                     error("controller URL, node ID, and node secret are required for proxy upgrade")
                 }
                 val currentVersion = currentAppVersion(activity)
+                updateStatus(
+                    state = "running",
+                    phase = "check",
+                    percent = 8,
+                    message = "正在检查最新 Android APK",
+                    mode = upgradeMode,
+                    currentVersion = "${currentVersion.name} (${currentVersion.code})",
+                )
                 sink("Checking latest Android APK via $upgradeMode...")
                 val release = fetchLatestAndroidRelease(upgradeMode, config)
                 if (release == null) {
+                    updateStatus(state = "done", phase = "check", percent = 100, message = "未获取到发布版本信息", mode = upgradeMode)
                     sink("No release metadata found.")
                     return@thread
                 }
                 if (!isRemoteVersionNewer(currentVersion.name, currentVersion.code, release.tagName)) {
-                    sink("Already up to date. Current=${currentVersion.name} (${currentVersion.code}), latest=${release.tagName}.")
+                    val message = "Already up to date. Current=${currentVersion.name} (${currentVersion.code}), latest=${release.tagName}."
+                    updateStatus(
+                        state = "done",
+                        phase = "done",
+                        percent = 100,
+                        message = message,
+                        mode = upgradeMode,
+                        currentVersion = "${currentVersion.name} (${currentVersion.code})",
+                        latestVersion = release.tagName,
+                    )
+                    sink(message)
                     return@thread
                 }
                 val asset = release.asset
                 if (asset == null) {
+                    updateStatus(
+                        state = "failed",
+                        phase = "select_asset",
+                        percent = 16,
+                        message = "No Android arm64 APK asset found.",
+                        error = "No Android arm64 APK asset found.",
+                        mode = upgradeMode,
+                        currentVersion = "${currentVersion.name} (${currentVersion.code})",
+                        latestVersion = release.tagName,
+                    )
                     sink("No Android arm64 APK asset found.")
                     return@thread
                 }
+                updateStatus(
+                    state = "running",
+                    phase = "download",
+                    percent = 20,
+                    message = "准备下载 ${asset.name}",
+                    mode = upgradeMode,
+                    currentVersion = "${currentVersion.name} (${currentVersion.code})",
+                    latestVersion = release.tagName,
+                    assetName = asset.name,
+                )
                 sink("Downloading ${asset.name} via $upgradeMode. Current=${currentVersion.name}, latest=${release.tagName}.")
-                val apk = downloadAsset(activity, asset, upgradeMode, config)
+                val apk = downloadAsset(activity, asset, upgradeMode, config) { downloaded, total, speed ->
+                    val percent = if (total > 0) 20 + ((downloaded.toDouble() / total.toDouble()) * 65.0).toInt().coerceIn(0, 65) else 20
+                    updateStatus(
+                        state = "running",
+                        phase = "download",
+                        percent = percent,
+                        message = formatDownloadMessage(downloaded, total, speed),
+                        mode = upgradeMode,
+                        currentVersion = "${currentVersion.name} (${currentVersion.code})",
+                        latestVersion = release.tagName,
+                        assetName = asset.name,
+                        downloadedBytes = downloaded,
+                        totalBytes = total,
+                        speedBps = speed,
+                    )
+                }
+                updateStatus(
+                    state = "running",
+                    phase = "install",
+                    percent = 92,
+                    message = "正在打开 Android 安装器",
+                    mode = upgradeMode,
+                    currentVersion = "${currentVersion.name} (${currentVersion.code})",
+                    latestVersion = release.tagName,
+                    assetName = asset.name,
+                )
                 sink("Opening Android installer...")
                 openInstaller(activity, apk)
+                updateStatus(
+                    state = "done",
+                    phase = "install",
+                    percent = 100,
+                    message = "Installer opened for ${asset.name}.",
+                    mode = upgradeMode,
+                    currentVersion = "${currentVersion.name} (${currentVersion.code})",
+                    latestVersion = release.tagName,
+                    assetName = asset.name,
+                )
                 sink("Installer opened for ${asset.name}.")
                 AndroidLogStore.add("upgrade", "installer opened: asset=${asset.name}")
             } catch (e: Exception) {
                 AndroidLogStore.add("upgrade", "upgrade failed: ${e.message}", "error")
+                updateStatus(state = "failed", phase = "failed", percent = 0, message = "Upgrade failed: ${e.message}", error = e.message ?: "unknown", mode = upgradeMode)
                 sink("Upgrade failed: ${e.message}")
             }
         }
+    }
+
+    fun statusJSON(): String {
+        val current = synchronized(statusLock) { status }
+        return JSONObject()
+            .put("state", current.state)
+            .put("phase", current.phase)
+            .put("percent", current.percent)
+            .put("message", current.message)
+            .put("error", current.error)
+            .put("mode", current.mode)
+            .put("current_version", current.currentVersion)
+            .put("latest_version", current.latestVersion)
+            .put("asset_name", current.assetName)
+            .put("downloaded_bytes", current.downloadedBytes)
+            .put("total_bytes", current.totalBytes)
+            .put("speed_bps", current.speedBps)
+            .put("updated_at", current.updatedAt)
+            .toString()
     }
 
     private fun fetchLatestAndroidRelease(mode: String, config: ProbeNodeConfig): ReleaseInfo? {
@@ -91,7 +195,7 @@ object AndroidUpgrade {
             (value.contains("probe-node") && value.contains(PLATFORM) && value.contains(ARCH) && value.endsWith(".apk"))
     }
 
-    private fun downloadAsset(activity: Activity, asset: Asset, mode: String, config: ProbeNodeConfig): File {
+    private fun downloadAsset(activity: Activity, asset: Asset, mode: String, config: ProbeNodeConfig, onProgress: (Long, Long, Long) -> Unit): File {
         val dir = File(activity.cacheDir, "upgrades")
         if (!dir.exists() && !dir.mkdirs()) {
             error("failed to create upgrade cache")
@@ -107,8 +211,16 @@ object AndroidUpgrade {
         if (conn.responseCode !in 200..299) {
             error("apk download status=${conn.responseCode}: ${readErrorText(conn)}")
         }
+        val total = conn.contentLengthLong
+        val startedAt = System.nanoTime()
         responseStream(conn).use { input ->
-            part.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+            FileOutputStream(part, false).use { output ->
+                copyWithProgress(input, output) { downloaded ->
+                    val elapsedSec = (System.nanoTime() - startedAt).toDouble() / 1_000_000_000.0
+                    val speed = if (elapsedSec > 0) (downloaded.toDouble() / elapsedSec).toLong() else 0L
+                    onProgress(downloaded, total, speed)
+                }
+            }
         }
         if (apk.exists() && !apk.delete()) {
             error("failed to replace old apk")
@@ -182,6 +294,86 @@ object AndroidUpgrade {
         }
     }
 
+    private fun copyWithProgress(input: InputStream, output: FileOutputStream, onProgress: (Long) -> Unit) {
+        val buffer = ByteArray(128 * 1024)
+        var written = 0L
+        var lastReport = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) {
+                onProgress(written)
+                return
+            }
+            if (read == 0) {
+                continue
+            }
+            output.write(buffer, 0, read)
+            written += read.toLong()
+            val now = System.currentTimeMillis()
+            if (now - lastReport >= 500L) {
+                onProgress(written)
+                lastReport = now
+            }
+        }
+    }
+
+    private fun updateStatus(
+        state: String,
+        phase: String,
+        percent: Int,
+        message: String,
+        error: String = "",
+        mode: String = "",
+        currentVersion: String = "",
+        latestVersion: String = "",
+        assetName: String = "",
+        downloadedBytes: Long = 0,
+        totalBytes: Long = 0,
+        speedBps: Long = 0,
+    ) {
+        synchronized(statusLock) {
+            status = status.copy(
+                state = state,
+                phase = phase,
+                percent = percent.coerceIn(0, 100),
+                message = message,
+                error = error,
+                mode = mode.ifBlank { status.mode },
+                currentVersion = currentVersion.ifBlank { status.currentVersion },
+                latestVersion = latestVersion.ifBlank { status.latestVersion },
+                assetName = assetName.ifBlank { status.assetName },
+                downloadedBytes = downloadedBytes,
+                totalBytes = totalBytes,
+                speedBps = speedBps,
+                updatedAt = isoNow(),
+            )
+        }
+    }
+
+    private fun formatDownloadMessage(downloaded: Long, total: Long, speed: Long): String {
+        return if (total > 0) {
+            val percent = ((downloaded.toDouble() * 100.0) / total.toDouble()).toInt().coerceIn(0, 100)
+            "下载升级包 ${formatBytes(downloaded)} / ${formatBytes(total)} (${percent}%)，${formatBytes(speed)}/s"
+        } else {
+            "下载升级包 ${formatBytes(downloaded)}，${formatBytes(speed)}/s"
+        }
+    }
+
+    private fun formatBytes(value: Long): String {
+        var n = if (value < 0) 0.0 else value.toDouble()
+        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        var unit = 0
+        while (n >= 1024.0 && unit < units.size - 1) {
+            n /= 1024.0
+            unit += 1
+        }
+        return if (unit == 0) "${n.toLong()} ${units[unit]}" else String.format(Locale.ROOT, "%.1f %s", n, units[unit])
+    }
+
+    private fun isoNow(): String {
+        return java.time.Instant.now().toString()
+    }
+
     private fun applyProbeAuthHeaders(conn: HttpURLConnection, config: ProbeNodeConfig) {
         val timestamp = (System.currentTimeMillis() / 1000L).toString()
         val randomToken = randomHex(16)
@@ -230,4 +422,19 @@ object AndroidUpgrade {
     private data class AppVersion(val name: String, val code: Long)
     private data class ReleaseInfo(val tagName: String, val asset: Asset?)
     private data class Asset(val name: String, val url: String)
+    private data class UpgradeStatus(
+        val state: String,
+        val phase: String,
+        val percent: Int,
+        val message: String,
+        val error: String = "",
+        val mode: String = "",
+        val currentVersion: String = "",
+        val latestVersion: String = "",
+        val assetName: String = "",
+        val downloadedBytes: Long = 0,
+        val totalBytes: Long = 0,
+        val speedBps: Long = 0,
+        val updatedAt: String = "",
+    )
 }

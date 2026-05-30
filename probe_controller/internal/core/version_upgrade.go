@@ -51,10 +51,14 @@ type adminUpgradeResponse struct {
 }
 
 type adminUpgradeProgressResponse struct {
-	Active  bool   `json:"active"`
-	Phase   string `json:"phase"`
-	Percent int    `json:"percent"`
-	Message string `json:"message"`
+	Active          bool   `json:"active"`
+	Phase           string `json:"phase"`
+	Percent         int    `json:"percent"`
+	Message         string `json:"message"`
+	DownloadedBytes int64  `json:"downloaded_bytes,omitempty"`
+	TotalBytes      int64  `json:"total_bytes,omitempty"`
+	SpeedBPS        int64  `json:"speed_bps,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
 }
 
 var controllerUpgradeProgressState = struct {
@@ -246,8 +250,8 @@ func performControllerUpgrade(ctx context.Context) (adminUpgradeResponse, error)
 
 	assetFile := filepath.Join(tmpDir, asset.Name)
 	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "download", Percent: 20, Message: "下载升级包"})
-	if err := downloadReleaseAsset(ctx, asset.BrowserDownloadURL, assetFile, func(downloaded, total int64) {
-		setControllerDownloadProgress(downloaded, total)
+	if err := downloadReleaseAsset(ctx, asset.BrowserDownloadURL, assetFile, func(downloaded, total, speedBPS int64) {
+		setControllerDownloadProgress(downloaded, total, speedBPS)
 	}); err != nil {
 		return result, err
 	}
@@ -441,7 +445,7 @@ func pickControllerAsset(assets []githubReleaseAsset) (githubReleaseAsset, error
 	return githubReleaseAsset{}, errors.New("no matching probe_controller asset in release")
 }
 
-func downloadReleaseAsset(ctx context.Context, url, outputPath string, onProgress func(downloaded, total int64)) error {
+func downloadReleaseAsset(ctx context.Context, url, outputPath string, onProgress func(downloaded, total, speedBPS int64)) error {
 	partPath := outputPath + ".part"
 	resumeOffset := int64(0)
 	if st, err := os.Stat(partPath); err == nil && st.Mode().IsRegular() {
@@ -505,10 +509,15 @@ func downloadReleaseAsset(ctx context.Context, url, outputPath string, onProgres
 				resumeOffset = 0
 			}
 		}
-		wrappedProgress := onProgress
+		start := time.Now()
+		var wrappedProgress func(downloaded, total int64)
 		if onProgress != nil {
 			wrappedProgress = func(downloaded, total int64) {
-				onProgress(baseWritten+downloaded, total)
+				speed := int64(0)
+				if elapsed := time.Since(start).Seconds(); elapsed > 0 {
+					speed = int64(float64(downloaded) / elapsed)
+				}
+				onProgress(baseWritten+downloaded, total, speed)
 			}
 		}
 		written, copyErr := copyWithProgress(f, resp.Body, total, wrappedProgress)
@@ -567,7 +576,7 @@ func copyWithProgress(dst io.Writer, src io.Reader, total int64, onProgress func
 	}
 }
 
-func setControllerDownloadProgress(downloaded, total int64) {
+func setControllerDownloadProgress(downloaded, total, speedBPS int64) {
 	percent := 20
 	if total > 0 {
 		span := int(float64(downloaded) / float64(total) * 55.0)
@@ -581,9 +590,19 @@ func setControllerDownloadProgress(downloaded, total int64) {
 	}
 	msg := "下载升级包中"
 	if total > 0 {
-		msg = fmt.Sprintf("下载升级包中 (%d%%)", int(float64(downloaded)*100.0/float64(total)))
+		msg = fmt.Sprintf("下载升级包中 %s / %s (%d%%)，%s/s", formatControllerUpgradeBytes(downloaded), formatControllerUpgradeBytes(total), int(float64(downloaded)*100.0/float64(total)), formatControllerUpgradeBytes(speedBPS))
+	} else if downloaded > 0 {
+		msg = fmt.Sprintf("下载升级包中 %s，%s/s", formatControllerUpgradeBytes(downloaded), formatControllerUpgradeBytes(speedBPS))
 	}
-	setControllerUpgradeProgress(adminUpgradeProgressResponse{Active: true, Phase: "download", Percent: percent, Message: msg})
+	setControllerUpgradeProgress(adminUpgradeProgressResponse{
+		Active:          true,
+		Phase:           "download",
+		Percent:         percent,
+		Message:         msg,
+		DownloadedBytes: downloaded,
+		TotalBytes:      total,
+		SpeedBPS:        speedBPS,
+	})
 }
 
 func setControllerUpgradeProgress(progress adminUpgradeProgressResponse) {
@@ -593,9 +612,30 @@ func setControllerUpgradeProgress(progress adminUpgradeProgressResponse) {
 	if progress.Percent > 100 {
 		progress.Percent = 100
 	}
+	if strings.TrimSpace(progress.UpdatedAt) == "" {
+		progress.UpdatedAt = time.Now().Format(time.RFC3339)
+	}
 	controllerUpgradeProgressState.mu.Lock()
 	controllerUpgradeProgressState.data = progress
 	controllerUpgradeProgressState.mu.Unlock()
+}
+
+func formatControllerUpgradeBytes(n int64) string {
+	if n < 0 {
+		n = 0
+	}
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	value := float64(n)
+	for _, suffix := range []string{"KB", "MB", "GB"} {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f TB", value/unit)
 }
 
 func getControllerUpgradeProgress() adminUpgradeProgressResponse {
