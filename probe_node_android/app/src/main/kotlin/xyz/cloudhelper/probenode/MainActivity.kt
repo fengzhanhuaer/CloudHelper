@@ -57,6 +57,16 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun emitVpnStatus(payload: String) {
+        AndroidLogStore.add("vpn", payload, if (payload.contains("\"ok\":false") || payload.contains("failed", ignoreCase = true) || payload.contains("失败")) "error" else "info")
+        runOnUiThread {
+            webView.evaluateJavascript(
+                "window.CloudHelperUI && window.CloudHelperUI.setVPNStatus(${JSONObject.quote(payload)});",
+                null,
+            )
+        }
+    }
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             return
@@ -175,6 +185,15 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun vpnStatus(): String {
             return MobileCoreBridge.vpnStatus()
+        }
+
+        @JavascriptInterface
+        fun vpnSelfCheck(): String {
+            AndroidLogStore.add("vpn", "manual VPN self-check requested")
+            thread(name = "cloudhelper-android-vpn-self-check") {
+                emitVpnStatus(MobileCoreBridge.vpnSelfCheck(this@MainActivity))
+            }
+            return "VPN 自检已开始"
         }
 
         @JavascriptInterface

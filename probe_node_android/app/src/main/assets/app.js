@@ -1,5 +1,6 @@
 let saveFeedbackTimer = 0;
 let toastTimer = 0;
+const proxyGroupExpanded = new Set();
 
 const pages = {
   status: ["状态", "当前 Android 节点配置与运行状态。"],
@@ -16,6 +17,16 @@ window.CloudHelperUI = {
   },
   setLinkStatus(payload) {
     renderLinkResult(payload || "");
+    refreshLogsIfVisible();
+  },
+  setVPNStatus(payload) {
+    renderVPNDiagnostics(parseJSON(payload || "{}"));
+    setStatus(formatVPNSelfCheck((parseJSON(payload || "{}").self_check) || parseJSON(payload || "{}")));
+    const button = byId("vpnSelfCheckButton");
+    if (button) {
+      button.disabled = false;
+      button.textContent = "VPN 自检";
+    }
     refreshLogsIfVisible();
   }
 };
@@ -150,7 +161,7 @@ function renderProxyGroups(payload, vpnPayload) {
     return;
   }
   renderProxyRuntimeStatus(data, vpnData);
-  const groups = Array.isArray(data.groups) ? data.groups : [];
+  const groups = sortProxyGroups(Array.isArray(data.groups) ? data.groups : []);
   const chains = Array.isArray(data.chains) ? data.chains : [];
   if (!groups.length) {
     const empty = document.createElement("div");
@@ -179,15 +190,31 @@ function renderProxyRuntimeStatus(data, vpnData) {
 function renderProxyGroupItem(group, chains) {
   const item = document.createElement("article");
   item.className = "proxy-group-item";
-  item.dataset.group = group.group || "fallback";
+  const groupKey = group.group || "fallback";
+  item.dataset.group = groupKey;
+  const expanded = proxyGroupExpanded.has(proxyGroupStorageKey(groupKey));
 
-  const title = document.createElement("div");
+  const header = document.createElement("button");
+  header.className = "proxy-group-header";
+  header.type = "button";
+  header.setAttribute("aria-expanded", expanded ? "true" : "false");
+  header.onclick = () => toggleProxyGroup(groupKey);
+
+  const heading = document.createElement("span");
+  heading.className = "proxy-group-heading";
+  const title = document.createElement("span");
   title.className = "link-title";
-  title.textContent = group.group || "fallback";
+  title.textContent = groupKey;
 
-  const meta = document.createElement("div");
+  const meta = document.createElement("span");
   meta.className = "link-meta";
   meta.textContent = `当前：${formatProxyAction(group.action)}${group.selected_chain_id ? ` · ${chainNameById(chains, group.selected_chain_id)}` : ""}`;
+  heading.append(title, meta);
+
+  const toggle = document.createElement("span");
+  toggle.className = "proxy-group-toggle";
+  toggle.textContent = expanded ? "收起" : "展开";
+  header.append(heading, toggle);
 
   const result = document.createElement("div");
   result.className = "link-result";
@@ -205,8 +232,38 @@ function renderProxyGroupItem(group, chains) {
   });
   options.appendChild(renderProxyOption(item, group, "reject", "", "拒绝", "阻断命中流量"));
 
-  item.append(title, meta, options, result);
+  const body = document.createElement("div");
+  body.className = "proxy-group-body";
+  body.hidden = !expanded;
+  body.append(options, result);
+
+  item.append(header, body);
   return item;
+}
+
+function sortProxyGroups(groups) {
+  return groups.slice().sort((left, right) => {
+    const leftFallback = String(left.group || "fallback").toLowerCase() === "fallback";
+    const rightFallback = String(right.group || "fallback").toLowerCase() === "fallback";
+    if (leftFallback === rightFallback) {
+      return 0;
+    }
+    return leftFallback ? 1 : -1;
+  });
+}
+
+function toggleProxyGroup(group) {
+  const key = proxyGroupStorageKey(group);
+  if (proxyGroupExpanded.has(key)) {
+    proxyGroupExpanded.delete(key);
+  } else {
+    proxyGroupExpanded.add(key);
+  }
+  refreshProxyGroups();
+}
+
+function proxyGroupStorageKey(group) {
+  return String(group || "fallback").trim().toLowerCase() || "fallback";
 }
 
 function renderProxyOption(panel, group, action, selectedChainId, label, subLabel) {
@@ -468,7 +525,12 @@ function setupStatusTabs() {
   if (clear) {
     clear.onclick = clearLogs;
   }
+  const selfCheck = byId("vpnSelfCheckButton");
+  if (selfCheck) {
+    selfCheck.onclick = runVPNSelfCheck;
+  }
   activateStatusTab("overview");
+  refreshVPNDiagnostics();
 }
 
 function activateStatusTab(tab) {
@@ -575,6 +637,66 @@ function appendUILog(source, message) {
   }
 }
 
+function runVPNSelfCheck() {
+  const button = byId("vpnSelfCheckButton");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "检测中";
+  }
+  setStatus("正在执行 VPN 自检...");
+  try {
+    const message = window.CloudHelper.vpnSelfCheck ? window.CloudHelper.vpnSelfCheck() : "VPN 自检不可用";
+    setStatus(message || "VPN 自检已开始");
+  } catch (error) {
+    setStatus(`VPN 自检失败：${error && error.message ? error.message : error}`);
+    if (button) {
+      button.disabled = false;
+      button.textContent = "VPN 自检";
+    }
+  }
+}
+
+function refreshVPNDiagnostics() {
+  if (!byId("summaryVpn")) {
+    return;
+  }
+  try {
+    renderVPNDiagnostics(parseJSON(window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}"));
+  } catch (_) {
+  }
+}
+
+function renderVPNDiagnostics(data) {
+  const vpnRunning = !!(data.running || data.status === "running");
+  const dns = data.dns || {};
+  const selfCheck = data.self_check || {};
+  setText("summaryVpn", [
+    vpnRunning ? "运行中" : "未启动",
+    data.updated_at ? formatCompactTime(data.updated_at) : "",
+    data.last_error ? `错误：${data.last_error}` : ""
+  ].filter(Boolean).join("；") || "-");
+  setText("summaryDns", dns.enabled ? `${dns.listen || "10.111.0.2:53"}；${dns.fake_ip_cidr || "198.18.0.0/15"}` : "未接管");
+  setText("summaryDnsCache", `Fake ${Number(dns.fake_ip_count || 0)} / Hint ${Number(dns.route_hint_count || 0)}`);
+  setText("summaryVpnSelfCheck", formatVPNSelfCheck(selfCheck));
+}
+
+function formatVPNSelfCheck(data) {
+  if (!data || Object.keys(data).length === 0) {
+    return "未执行";
+  }
+  const status = data.status || (data.ok ? "ready" : "failed");
+  const route = data.route || {};
+  const routeText = route.group ? `${route.group}${route.selected_chain_id ? ` / ${route.selected_chain_id}` : ""}` : "";
+  return [
+    data.ok ? "通过" : "未通过",
+    status,
+    routeText,
+    data.error ? `错误：${data.error}` : "",
+    data.duration_ms ? `${data.duration_ms}ms` : "",
+    data.updated_at ? formatCompactTime(data.updated_at) : ""
+  ].filter(Boolean).join("；");
+}
+
 function refreshSummary(config) {
   const data = config || readConfig();
   setText("summaryController", data.controllerUrl || "-");
@@ -583,6 +705,7 @@ function refreshSummary(config) {
   setText("summaryRuntime", window.CloudHelper.status());
   setText("summaryLocalVersion", data.localVersion || "-");
   setRuntimeStatus(`运行：${window.CloudHelper.status()}`);
+  refreshVPNDiagnostics();
 }
 
 function setStatus(message) {
@@ -649,8 +772,20 @@ function refreshSummarySilent() {
     setText("summaryReady", data.ready ? "已配置" : "未配置");
     setText("summaryRuntime", window.CloudHelper.status());
     setText("summaryLocalVersion", data.localVersion || "-");
+    refreshVPNDiagnostics();
   } catch (_) {
   }
+}
+
+function formatCompactTime(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleTimeString();
 }
 
 function initPage() {

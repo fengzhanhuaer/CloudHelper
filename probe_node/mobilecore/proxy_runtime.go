@@ -499,6 +499,9 @@ func decideAndroidProxyRouteForTarget(configDir string, targetAddr string) (prox
 	state, _ := loadProxyStateFile(configDir)
 	matchGroup := "fallback"
 	if ip := net.ParseIP(host); ip != nil {
+		if hintedRoute, ok := lookupAndroidVPNDNSRouteHint(configDir, ip.String(), port); ok {
+			return hintedRoute, nil
+		}
 		for _, item := range groups.Groups {
 			if proxyIPMatchesCIDRRules(ip, item.Rules) {
 				matchGroup = strings.TrimSpace(item.Group)
@@ -902,7 +905,7 @@ func formatProxyLegacyTunnelNodeID(selectedChainID string) string {
 }
 
 func buildProxyGroupStatus(groups proxyGroupFile, state proxyStateFile) []map[string]any {
-	names := []string{"fallback"}
+	names := []string{}
 	for _, group := range groups.Groups {
 		name := strings.TrimSpace(group.Group)
 		if name == "" || strings.EqualFold(name, "fallback") {
@@ -910,6 +913,7 @@ func buildProxyGroupStatus(groups proxyGroupFile, state proxyStateFile) []map[st
 		}
 		names = append(names, name)
 	}
+	names = append(names, "fallback")
 	out := make([]map[string]any, 0, len(names))
 	for _, name := range names {
 		entry := proxyStateGroup{Group: name, Action: "direct"}

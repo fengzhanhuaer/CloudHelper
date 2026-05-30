@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
+	"golang.org/x/net/dns/dnsmessage"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
@@ -429,6 +431,29 @@ func TestProxyRouteForcesLinkEntryDirect(t *testing.T) {
 	}
 }
 
+func TestBuildLogsControlResultUsesAndroidLogBuffer(t *testing.T) {
+	oldStore := androidLogStore
+	androidLogStore = &androidLogBuffer{}
+	defer func() {
+		androidLogStore = oldStore
+	}()
+
+	AppendAppLog("vpn", "info", "vpn started")
+	AppendAppLog("proxy", "error", "proxy failed")
+
+	result := buildLogsControlResult(logsControlMessage{
+		RequestID: "log-1",
+		Lines:     10,
+		MinLevel:  "warning",
+	}, "7")
+	if !result.OK || result.Type != "logs_result" || result.RequestID != "log-1" || result.NodeID != "7" {
+		t.Fatalf("unexpected logs result header: %+v", result)
+	}
+	if len(result.Entries) != 1 || result.Entries[0].Level != "error" || !strings.Contains(result.Content, "proxy failed") {
+		t.Fatalf("unexpected filtered logs: %+v content=%q", result.Entries, result.Content)
+	}
+}
+
 func TestVPNUDPAssociationMetadata(t *testing.T) {
 	id := stack.TransportEndpointID{
 		LocalAddress:  tcpip.AddrFrom4([4]byte{8, 8, 8, 8}),
@@ -464,6 +489,144 @@ func TestVPNUDPAssociationMetadata(t *testing.T) {
 	}
 }
 
+func TestAndroidVPNDNSFakeIPPreservesDomainRoute(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "media", "rules": []string{"domain_suffix:example.com"}},
+		},
+	})
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "media", "action": "tunnel", "selected_chain_id": "chain-1"},
+			{"group": "fallback", "action": "direct"},
+		},
+	})
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+	vpnRuntime.mu.Lock()
+	oldConfigDir := vpnRuntime.configDir
+	vpnRuntime.configDir = dir
+	vpnRuntime.mu.Unlock()
+	defer func() {
+		vpnRuntime.mu.Lock()
+		vpnRuntime.configDir = oldConfigDir
+		vpnRuntime.mu.Unlock()
+	}()
+
+	query := buildTestDNSQuery(t, "video.example.com", dnsmessage.TypeA)
+	response, err := resolveAndroidVPNDNSPacket(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ips := extractTestDNSARecords(t, response)
+	if len(ips) != 1 || !strings.HasPrefix(ips[0], "198.18.") {
+		t.Fatalf("dns fake ips=%v", ips)
+	}
+	route, err := decideVPNRouteForTarget(net.JoinHostPort(ips[0], "443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Direct || route.Group != "media" || route.SelectedChainID != "chain-1" || route.TargetAddr != "video.example.com:443" {
+		t.Fatalf("fake ip route not preserved: %+v", route)
+	}
+}
+
+func TestAndroidVPNDNSRouteHintPreservesDirectDomainRule(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "direct-site", "rules": []string{"domain_suffix:example.com"}},
+		},
+	})
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "direct-site", "action": "direct"},
+			{"group": "fallback", "action": "tunnel", "selected_chain_id": "chain-1"},
+		},
+	})
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+
+	query := buildTestDNSQuery(t, "direct.example.com", dnsmessage.TypeA)
+	response := buildAndroidVPNDNSSuccess(query, []net.IP{net.ParseIP("203.0.113.10")}, dnsmessage.TypeA)
+	storeAndroidVPNDNSRouteHints("direct.example.com", response, proxyRouteDecision{Direct: true, Group: "direct-site"})
+
+	route, err := decideAndroidProxyRouteForTarget(dir, "203.0.113.10:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !route.Direct || route.Group != "direct-site" || route.SelectedChainID != "" {
+		t.Fatalf("direct route hint not preserved: %+v", route)
+	}
+}
+
+func TestAndroidVPNDNSUsesFakeIPForFallbackTunnel(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "fallback", "action": "tunnel", "selected_chain_id": "chain-1"},
+		},
+	})
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+	vpnRuntime.mu.Lock()
+	oldConfigDir := vpnRuntime.configDir
+	vpnRuntime.configDir = dir
+	vpnRuntime.mu.Unlock()
+	defer func() {
+		vpnRuntime.mu.Lock()
+		vpnRuntime.configDir = oldConfigDir
+		vpnRuntime.mu.Unlock()
+	}()
+
+	query := buildTestDNSQuery(t, "www.google.com", dnsmessage.TypeA)
+	response, err := resolveAndroidVPNDNSPacket(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ips := extractTestDNSARecords(t, response)
+	if len(ips) != 1 || !strings.HasPrefix(ips[0], "198.18.") {
+		t.Fatalf("fallback tunnel fake ips=%v", ips)
+	}
+	route, err := decideVPNRouteForTarget(net.JoinHostPort(ips[0], "443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Direct || route.Group != "fallback" || route.SelectedChainID != "chain-1" || route.TargetAddr != "www.google.com:443" {
+		t.Fatalf("fallback fake route not preserved: %+v", route)
+	}
+}
+
 func readTestFile(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -471,6 +634,64 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func buildTestDNSQuery(t *testing.T, domain string, qType dnsmessage.Type) []byte {
+	t.Helper()
+	name, err := dnsmessage.NewName(strings.TrimSuffix(domain, ".") + ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 100, RecursionDesired: true})
+	if err := builder.StartQuestions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.Question(dnsmessage.Question{Name: name, Type: qType, Class: dnsmessage.ClassINET}); err != nil {
+		t.Fatal(err)
+	}
+	message, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return message
+}
+
+func extractTestDNSARecords(t *testing.T, packet []byte) []string {
+	t.Helper()
+	parser := dnsmessage.Parser{}
+	if _, err := parser.Start(packet); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := parser.Question(); err != nil {
+			if errors.Is(err, dnsmessage.ErrSectionDone) {
+				break
+			}
+			t.Fatal(err)
+		}
+	}
+	var out []string
+	for {
+		header, err := parser.AnswerHeader()
+		if err != nil {
+			if errors.Is(err, dnsmessage.ErrSectionDone) {
+				break
+			}
+			t.Fatal(err)
+		}
+		if header.Type != dnsmessage.TypeA {
+			if err := parser.SkipAnswer(); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		answer, err := parser.AResource()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, net.IP(answer.A[:]).String())
+	}
+	return out
 }
 
 func writeTestJSON(t *testing.T, path string, value any) {

@@ -9,23 +9,27 @@ object AndroidLogStore {
     private const val MAX_ENTRIES = 300
     private val entries = ArrayDeque<LogEntry>()
 
-    @Synchronized
     fun add(source: String, message: String, level: String = "info") {
         val text = message.trim()
         if (text.isEmpty()) {
             return
         }
-        entries.addLast(
-            LogEntry(
-                time = Instant.now().toString(),
-                level = level.trim().ifEmpty { "info" },
-                source = source.trim().ifEmpty { "android" },
-                message = text.take(4096),
-            ),
-        )
-        while (entries.size > MAX_ENTRIES) {
-            entries.removeFirst()
+        val cleanLevel = level.trim().ifEmpty { "info" }
+        val cleanSource = source.trim().ifEmpty { "android" }
+        synchronized(this) {
+            entries.addLast(
+                LogEntry(
+                    time = Instant.now().toString(),
+                    level = cleanLevel,
+                    source = cleanSource,
+                    message = text.take(4096),
+                ),
+            )
+            while (entries.size > MAX_ENTRIES) {
+                entries.removeFirst()
+            }
         }
+        MobileCoreBridge.appendAppLog(cleanSource, cleanLevel, text)
     }
 
     @Synchronized

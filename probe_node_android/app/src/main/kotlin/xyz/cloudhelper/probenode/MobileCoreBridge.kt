@@ -102,11 +102,27 @@ object MobileCoreBridge {
         return callString("vpnStatus", emptyArray<Class<*>>(), emptyArray())
     }
 
+    fun vpnSelfCheck(context: Context): String {
+        return recordResult("mobilecore", callString(
+            methodName = "vpnSelfCheck",
+            parameterTypes = arrayOf(String::class.java),
+            args = arrayOf(ProbeNodeConfig.configDir(context)),
+        ))
+    }
+
     fun setControllerURL(controllerURL: String): String {
         return callString(
             methodName = "setControllerURL",
             parameterTypes = arrayOf(String::class.java),
             args = arrayOf(controllerURL),
+        )
+    }
+
+    fun appendAppLog(source: String, level: String, message: String): String {
+        return callString(
+            methodName = "appendAppLog",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
+            args = arrayOf(source, level, message),
         )
     }
 

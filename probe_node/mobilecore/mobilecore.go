@@ -28,8 +28,10 @@ import (
 
 const defaultReportIntervalSec = 60
 const configRefreshTimeout = 20 * time.Second
+const androidLogMaxEntries = 300
 
 var manager = &coreManager{}
+var androidLogStore = &androidLogBuffer{}
 
 type coreManager struct {
 	mu             sync.Mutex
@@ -136,6 +138,43 @@ type chainLinkControlResult struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type logsControlMessage struct {
+	Type         string `json:"type"`
+	RequestID    string `json:"request_id"`
+	Lines        int    `json:"lines"`
+	SinceMinutes int    `json:"since_minutes"`
+	MinLevel     string `json:"min_level,omitempty"`
+}
+
+type logsControlResult struct {
+	Type         string            `json:"type"`
+	RequestID    string            `json:"request_id"`
+	NodeID       string            `json:"node_id"`
+	OK           bool              `json:"ok"`
+	Source       string            `json:"source,omitempty"`
+	FilePath     string            `json:"file_path,omitempty"`
+	Lines        int               `json:"lines"`
+	SinceMinutes int               `json:"since_minutes"`
+	MinLevel     string            `json:"min_level,omitempty"`
+	Content      string            `json:"content,omitempty"`
+	Entries      []androidLogEntry `json:"entries,omitempty"`
+	Error        string            `json:"error,omitempty"`
+	Timestamp    string            `json:"timestamp"`
+}
+
+type androidLogEntry struct {
+	Time    string `json:"time"`
+	Level   string `json:"level"`
+	Source  string `json:"source,omitempty"`
+	Message string `json:"message"`
+	Line    string `json:"line"`
+}
+
+type androidLogBuffer struct {
+	mu      sync.Mutex
+	entries []androidLogEntry
+}
+
 func Start(controllerURL string, nodeID string, nodeSecret string) string {
 	return StartWithConfigDir(controllerURL, nodeID, nodeSecret, "")
 }
@@ -220,6 +259,11 @@ func SetControllerURL(controllerURL string) string {
 		return "controller direct target set"
 	}
 	return "controller direct target unavailable"
+}
+
+func AppendAppLog(source string, level string, message string) string {
+	androidLogStore.add(source, level, message)
+	return "app log appended"
 }
 
 func Status() string {
@@ -810,6 +854,12 @@ func processControlMessage(raw json.RawMessage, stream net.Conn, encoder *json.E
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(envelope.Type)) {
+	case "logs_get":
+		var msg logsControlMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return
+		}
+		sendLogsControlResult(stream, encoder, writeMu, buildLogsControlResult(msg, nodeID))
 	case "chain_link_control":
 		var msg chainLinkControlMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
@@ -829,12 +879,148 @@ func processControlMessage(raw json.RawMessage, stream net.Conn, encoder *json.E
 	}
 }
 
+func buildLogsControlResult(msg logsControlMessage, nodeID string) logsControlResult {
+	lines := normalizeAndroidLogLines(msg.Lines)
+	sinceMinutes := normalizeAndroidLogSinceMinutes(msg.SinceMinutes)
+	minLevel := strings.TrimSpace(msg.MinLevel)
+	content, entries := androidLogStore.tail(lines, sinceMinutes, minLevel)
+	return logsControlResult{
+		Type:         "logs_result",
+		RequestID:    strings.TrimSpace(msg.RequestID),
+		NodeID:       strings.TrimSpace(nodeID),
+		OK:           true,
+		Source:       "android",
+		FilePath:     "memory://android_app",
+		Lines:        lines,
+		SinceMinutes: sinceMinutes,
+		MinLevel:     minLevel,
+		Content:      content,
+		Entries:      entries,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func sendLogsControlResult(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, result logsControlResult) {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	_ = encoder.Encode(result)
+	_ = stream.SetWriteDeadline(time.Time{})
+}
+
 func sendChainLinkControlResult(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, result chainLinkControlResult) {
 	writeMu.Lock()
 	defer writeMu.Unlock()
 	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_ = encoder.Encode(result)
 	_ = stream.SetWriteDeadline(time.Time{})
+}
+
+func (b *androidLogBuffer) add(source string, level string, message string) {
+	if b == nil {
+		return
+	}
+	text := strings.TrimSpace(message)
+	if text == "" {
+		return
+	}
+	cleanLevel := normalizeAndroidLogLevel(level)
+	cleanSource := firstNonEmptyString(strings.TrimSpace(source), "android")
+	now := time.Now().UTC().Format(time.RFC3339)
+	line := fmt.Sprintf("%s [%s] [%s] %s", now, cleanLevel, cleanSource, text)
+	entry := androidLogEntry{
+		Time:    now,
+		Level:   cleanLevel,
+		Source:  cleanSource,
+		Message: text,
+		Line:    line,
+	}
+	b.mu.Lock()
+	b.entries = append(b.entries, entry)
+	if len(b.entries) > androidLogMaxEntries {
+		b.entries = append([]androidLogEntry(nil), b.entries[len(b.entries)-androidLogMaxEntries:]...)
+	}
+	b.mu.Unlock()
+}
+
+func (b *androidLogBuffer) tail(lines int, sinceMinutes int, minLevel string) (string, []androidLogEntry) {
+	if b == nil {
+		return "", nil
+	}
+	limit := normalizeAndroidLogLines(lines)
+	threshold := androidLogLevelRank(normalizeAndroidLogLevel(minLevel))
+	cutoffEnabled := sinceMinutes > 0
+	cutoff := time.Now().UTC().Add(-time.Duration(normalizeAndroidLogSinceMinutes(sinceMinutes)) * time.Minute)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	filtered := make([]androidLogEntry, 0, len(b.entries))
+	for _, entry := range b.entries {
+		if cutoffEnabled {
+			ts, err := time.Parse(time.RFC3339, strings.TrimSpace(entry.Time))
+			if err == nil && ts.Before(cutoff) {
+				continue
+			}
+		}
+		if androidLogLevelRank(entry.Level) < threshold {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
+	linesOut := make([]string, 0, len(filtered))
+	for _, entry := range filtered {
+		linesOut = append(linesOut, entry.Line)
+	}
+	return strings.Join(linesOut, "\n"), filtered
+}
+
+func normalizeAndroidLogLines(lines int) int {
+	if lines <= 0 {
+		return 200
+	}
+	if lines > androidLogMaxEntries {
+		return androidLogMaxEntries
+	}
+	return lines
+}
+
+func normalizeAndroidLogSinceMinutes(sinceMinutes int) int {
+	if sinceMinutes <= 0 {
+		return 0
+	}
+	if sinceMinutes > 2000 {
+		return 2000
+	}
+	return sinceMinutes
+}
+
+func normalizeAndroidLogLevel(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "realtime", "debug", "trace":
+		return "realtime"
+	case "warning", "warn":
+		return "warning"
+	case "error", "err":
+		return "error"
+	default:
+		return "normal"
+	}
+}
+
+func androidLogLevelRank(level string) int {
+	switch normalizeAndroidLogLevel(level) {
+	case "realtime":
+		return 0
+	case "warning":
+		return 2
+	case "error":
+		return 3
+	default:
+		return 1
+	}
 }
 
 func setStatus(status string) {

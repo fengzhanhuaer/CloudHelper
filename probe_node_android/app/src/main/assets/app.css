@@ -266,8 +266,37 @@ input {
 .proxy-group-item {
   border: 1px solid #d7d3ca;
   border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+}
+.proxy-group-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 58px;
+  border: 0;
   padding: 12px;
   background: #fff;
+  color: #171717;
+  text-align: left;
+}
+.proxy-group-heading {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.proxy-group-toggle {
+  min-width: 44px;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 750;
+  text-align: right;
+}
+.proxy-group-body {
+  border-top: 1px solid #eeeae3;
+  padding: 0 12px 12px;
 }
 .proxy-option-grid {
   display: grid;
@@ -328,6 +357,7 @@ input {
   word-break: break-word;
 }
 .link-title {
+  display: block;
   color: #1c1917;
   font-size: 15px;
   font-weight: 750;
@@ -335,6 +365,7 @@ input {
   word-break: break-word;
 }
 .link-meta {
+  display: block;
   margin-top: 5px;
   color: #57534e;
   font-size: 12px;

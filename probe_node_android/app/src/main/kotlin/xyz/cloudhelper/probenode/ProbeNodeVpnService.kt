@@ -62,11 +62,12 @@ class ProbeNodeVpnService : VpnService() {
                     .addAddress("fd00:111:111::2", 128)
                     .addRoute("0.0.0.0", 0)
                     .addRoute("::", 0)
-                    .addDnsServer("1.1.1.1")
-                    .addDnsServer("8.8.8.8")
+                    .addDnsServer("10.111.0.2")
                 try {
                     builder.addDisallowedApplication(packageName)
-                } catch (_: Exception) {
+                    AndroidLogStore.add("vpn", "excluded own package from VPN routing: $packageName")
+                } catch (e: Exception) {
+                    AndroidLogStore.add("vpn", "exclude own package from VPN routing failed: ${e.message ?: e.javaClass.simpleName}", "warn")
                 }
                 val descriptor = builder.establish()
                 if (descriptor == null) {
