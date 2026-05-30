@@ -1400,7 +1400,14 @@ func isTimeoutError(err error) bool {
 		return false
 	}
 	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "i/o timeout") ||
+		strings.Contains(text, "timeout") ||
+		strings.Contains(text, "deadline exceeded") ||
+		strings.Contains(text, "deadline reached")
 }
 
 func cloneVPNMap(in map[string]any) map[string]any {

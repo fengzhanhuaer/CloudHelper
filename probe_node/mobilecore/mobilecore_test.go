@@ -635,6 +635,59 @@ func TestAndroidVPNIPv6FallbackRouteUsesHintIPv4(t *testing.T) {
 	}
 }
 
+func TestAndroidVPNIPv6FallbackRouteAcceptsStringTimeout(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "google", "rules": []string{"domain_suffix:google.com"}},
+		},
+	})
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "google", "action": "tunnel", "selected_chain_id": "chain-1"},
+		},
+	})
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+	vpnRuntime.mu.Lock()
+	oldConfigDir := vpnRuntime.configDir
+	vpnRuntime.configDir = dir
+	vpnRuntime.mu.Unlock()
+	defer func() {
+		vpnRuntime.mu.Lock()
+		vpnRuntime.configDir = oldConfigDir
+		vpnRuntime.mu.Unlock()
+	}()
+
+	query := buildTestDNSQuery(t, "dl.google.com", dnsmessage.TypeAAAA)
+	response := buildAndroidVPNDNSSuccess(query, []net.IP{net.ParseIP("2001:4860:4802:36::223")}, dnsmessage.TypeAAAA)
+	storeAndroidVPNDNSRouteHints("dl.google.com", response, proxyRouteDecision{Direct: false, Group: "google", SelectedChainID: "chain-1"})
+	rememberAndroidVPNDNSRouteHintIPv4s("2001:4860:4802:36::223", []string{"142.251.188.95"})
+
+	route, ok := buildAndroidVPNIPv4FallbackRoute(vpnRouteDecision{
+		Direct:          false,
+		TargetAddr:      "[2001:4860:4802:36::223]:443",
+		Group:           "google",
+		SelectedChainID: "chain-1",
+	}, errors.New("dial tcp [2001:4860:4802:36::223]:443: i/o timeout"))
+	if !ok {
+		t.Fatal("expected ipv4 fallback route for string timeout")
+	}
+	if route.TargetAddr != "142.251.188.95:443" || route.SelectedChainID != "chain-1" {
+		t.Fatalf("unexpected fallback route: %+v", route)
+	}
+}
+
 func TestAndroidVPNDNSUsesFakeIPForFallbackTunnel(t *testing.T) {
 	dir := t.TempDir()
 	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
