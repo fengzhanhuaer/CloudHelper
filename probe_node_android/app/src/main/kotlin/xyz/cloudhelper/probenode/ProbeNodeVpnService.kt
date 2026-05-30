@@ -18,16 +18,19 @@ class ProbeNodeVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        AndroidLogStore.add("vpn", "ProbeNodeVpnService created")
         ensureNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            AndroidLogStore.add("vpn", "VPN service stop action received")
             stopVpn()
             stopSelf()
             return START_NOT_STICKY
         }
         startForeground(NOTIFICATION_ID, buildNotification("正在启动全局 VPN..."))
+        AndroidLogStore.add("vpn", "VPN service start action received")
         startVpn()
         return START_STICKY
     }
@@ -40,13 +43,18 @@ class ProbeNodeVpnService : VpnService() {
     private fun startVpn() {
         val config = ProbeNodeConfig.load(this)
         if (!config.isReady) {
+            AndroidLogStore.add("vpn", "VPN start rejected: config is not ready", "warn")
             updateNotification("未配置主控或节点密钥")
             return
         }
         thread(name = "cloudhelper-android-vpn") {
             try {
-                MobileCoreBridge.start(this, config)
-                MobileCoreBridge.setNativeIPs(this)
+                val startResult = MobileCoreBridge.start(this, config)
+                AndroidLogStore.add("vpn", "long connection while VPN starts: $startResult")
+                val ipResult = MobileCoreBridge.setNativeIPs(this)
+                AndroidLogStore.add("vpn", ipResult)
+                val proxyResult = MobileCoreBridge.proxyStart(this, config.controllerUrl)
+                AndroidLogStore.add("vpn", "local proxy while VPN starts: $proxyResult")
                 val builder = Builder()
                     .setSession("CloudHelper Probe Node")
                     .setMtu(1500)
@@ -62,6 +70,7 @@ class ProbeNodeVpnService : VpnService() {
                 }
                 val descriptor = builder.establish()
                 if (descriptor == null) {
+                    AndroidLogStore.add("vpn", "VPN establish failed: descriptor is null", "error")
                     updateNotification("VPN 建立失败：系统未返回 TUN")
                     return@thread
                 }
@@ -69,8 +78,10 @@ class ProbeNodeVpnService : VpnService() {
                 tun = descriptor
                 val fd = descriptor.detachFd()
                 val result = MobileCoreBridge.vpnStart(this, fd)
+                AndroidLogStore.add("vpn", "VPN mobilecore start result: $result")
                 updateNotification("全局 VPN：$result")
             } catch (e: Throwable) {
+                AndroidLogStore.add("vpn", "VPN start failed: ${e.message ?: e.javaClass.simpleName}", "error")
                 updateNotification("VPN 启动失败：${e.message ?: e.javaClass.simpleName}")
             }
         }
@@ -78,6 +89,9 @@ class ProbeNodeVpnService : VpnService() {
 
     private fun stopVpn() {
         val result = MobileCoreBridge.vpnStop()
+        val proxyResult = MobileCoreBridge.proxyStop()
+        AndroidLogStore.add("vpn", "VPN stop result: $result")
+        AndroidLogStore.add("vpn", "local proxy stop result: $proxyResult")
         try {
             tun?.close()
         } catch (_: Throwable) {

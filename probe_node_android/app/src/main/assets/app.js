@@ -12,9 +12,11 @@ window.CloudHelperUI = {
   setStatus(message) {
     setStatus(message || "");
     setUpgradeStatus(message || "");
+    refreshLogsIfVisible();
   },
   setLinkStatus(payload) {
     renderLinkResult(payload || "");
+    refreshLogsIfVisible();
   }
 };
 
@@ -54,6 +56,7 @@ function saveConfig(showFeedback) {
       byId("nodeSecret").value
     );
     refreshSummary();
+    appendUILog("settings", "配置已保存。");
     setStatus(`已保存。状态：${status}`);
     if (showFeedback) {
       showSaveFeedback(false);
@@ -61,6 +64,7 @@ function saveConfig(showFeedback) {
     return true;
   } catch (error) {
     const message = `保存失败：${error && error.message ? error.message : error}`;
+    appendUILog("settings", message);
     setStatus(message);
     showSaveFeedback(true, message);
     return false;
@@ -69,16 +73,21 @@ function saveConfig(showFeedback) {
 
 function startCore() {
   const result = window.CloudHelper.startProxy();
+  appendUILog("proxy", result);
   setRuntimeStatus(`启动：${result}`);
   refreshSummary();
   refreshProxyGroups();
+  window.setTimeout(refreshProxyGroups, 1200);
+  window.setTimeout(refreshProxyGroups, 3000);
 }
 
 function stopCore() {
   const result = window.CloudHelper.stopProxy();
+  appendUILog("proxy", result);
   setRuntimeStatus(`停止：${result}`);
   refreshSummary();
   refreshProxyGroups();
+  window.setTimeout(refreshProxyGroups, 1200);
 }
 
 function checkUpgrade(mode) {
@@ -88,6 +97,7 @@ function checkUpgrade(mode) {
   const text = `正在检查 ${mode} 升级...`;
   setUpgradeStatus(text);
   setStatus(text);
+  appendUILog("upgrade", text);
   window.CloudHelper.checkUpgrade(mode);
 }
 
@@ -98,6 +108,7 @@ function refreshConfig() {
   const text = "正在从主控刷新配置...";
   setUpgradeStatus(text);
   setStatus(text);
+  appendUILog("settings", text);
   window.CloudHelper.refreshConfig();
 }
 
@@ -120,14 +131,15 @@ function refreshProxyGroups() {
   }
   setRuntimeStatus("正在读取代理组...");
   try {
-    renderProxyGroups(window.CloudHelper.proxyStatus());
+    renderProxyGroups(window.CloudHelper.proxyStatus(), window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}");
   } catch (error) {
     setRuntimeStatus(`读取代理组失败：${error && error.message ? error.message : error}`);
   }
 }
 
-function renderProxyGroups(payload) {
+function renderProxyGroups(payload, vpnPayload) {
   const data = parseJSON(payload);
+  const vpnData = parseJSON(vpnPayload || "{}");
   const list = byId("proxyGroupList");
   if (!list) {
     return;
@@ -137,8 +149,7 @@ function renderProxyGroups(payload) {
     setRuntimeStatus(data.error || "代理组状态不可用。");
     return;
   }
-  const vpn = data.running || data.status === "running" || data.http_enabled || data.socks5_enabled;
-  setRuntimeStatus(`VPN：${vpn ? "运行中" : "未运行"}；HTTP ${data.http_addr || "-"}；SOCKS5 ${data.socks5_addr || "-"}`);
+  renderProxyRuntimeStatus(data, vpnData);
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const chains = Array.isArray(data.chains) ? data.chains : [];
   if (!groups.length) {
@@ -149,6 +160,20 @@ function renderProxyGroups(payload) {
     return;
   }
   groups.forEach((group) => list.appendChild(renderProxyGroupItem(group, chains)));
+}
+
+function renderProxyRuntimeStatus(data, vpnData) {
+  const vpnRunning = !!(vpnData.running || vpnData.status === "running");
+  const httpRunning = !!data.http_enabled;
+  const socksRunning = !!data.socks5_enabled;
+  const errors = [data.last_error, vpnData.last_error].filter(Boolean).join("；");
+  const text = [
+    `VPN：${vpnRunning ? "运行中" : "未启动"}`,
+    `HTTP：${httpRunning ? data.http_addr || "运行中" : "未启动"}`,
+    `SOCKS5：${socksRunning ? data.socks5_addr || "运行中" : "未启动"}`,
+    errors ? `错误：${errors}` : ""
+  ].filter(Boolean).join("；");
+  setRuntimeStatus(text);
 }
 
 function renderProxyGroupItem(group, chains) {
@@ -164,58 +189,50 @@ function renderProxyGroupItem(group, chains) {
   meta.className = "link-meta";
   meta.textContent = `当前：${formatProxyAction(group.action)}${group.selected_chain_id ? ` · ${chainNameById(chains, group.selected_chain_id)}` : ""}`;
 
-  const controls = document.createElement("div");
-  controls.className = "proxy-controls";
+  const result = document.createElement("div");
+  result.className = "link-result";
+  result.textContent = "点击选项立即生效";
 
-  const action = document.createElement("select");
-  action.className = "proxy-select";
-  [
-    ["direct", "直连"],
-    ["tunnel", "链路"],
-    ["reject", "拒绝"]
-  ].forEach(([value, label]) => {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    option.selected = (group.action || "direct") === value;
-    action.appendChild(option);
-  });
-
-  const chain = document.createElement("select");
-  chain.className = "proxy-select";
-  const empty = document.createElement("option");
-  empty.value = "";
-  empty.textContent = "选择链路";
-  chain.appendChild(empty);
+  const options = document.createElement("div");
+  options.className = "proxy-option-grid";
+  options.appendChild(renderProxyOption(item, group, "direct", "", "直连", "不走链路"));
   chains.forEach((entry) => {
     const id = entry.chain_id || entry.client_entry_id || "";
     if (!id) {
       return;
     }
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = entry.name || id;
-    option.selected = id === group.selected_chain_id || entry.client_entry_id === group.selected_chain_id || entry.relay_chain_id === group.selected_chain_id;
-    chain.appendChild(option);
+    options.appendChild(renderProxyOption(item, group, "tunnel", id, entry.name || id, entry.relay_chain_id ? `Relay ${entry.relay_chain_id}` : id));
   });
-  chain.disabled = action.value !== "tunnel";
-  action.onchange = () => {
-    chain.disabled = action.value !== "tunnel";
-  };
+  options.appendChild(renderProxyOption(item, group, "reject", "", "拒绝", "阻断命中流量"));
 
-  const save = document.createElement("button");
-  save.className = "command";
-  save.textContent = "保存";
-  save.onclick = () => saveProxyGroup(group.group || "fallback", action.value, chain.value, item);
-
-  controls.append(action, chain, save);
-
-  const result = document.createElement("div");
-  result.className = "link-result";
-  result.textContent = "等待修改";
-
-  item.append(title, meta, controls, result);
+  item.append(title, meta, options, result);
   return item;
+}
+
+function renderProxyOption(panel, group, action, selectedChainId, label, subLabel) {
+  const currentAction = (group.action || "direct").toLowerCase();
+  const currentChain = String(group.selected_chain_id || "").trim().toLowerCase();
+  const optionChain = String(selectedChainId || "").trim().toLowerCase();
+  const active = currentAction === action && (action !== "tunnel" || currentChain === optionChain);
+  const button = document.createElement("button");
+  button.className = "proxy-option";
+  button.classList.toggle("active", active);
+  button.type = "button";
+  button.onclick = () => saveProxyGroup(group.group || "fallback", action, selectedChainId || "", panel);
+
+  const mark = document.createElement("span");
+  mark.className = "proxy-radio";
+  const text = document.createElement("span");
+  text.className = "proxy-option-text";
+  const main = document.createElement("span");
+  main.className = "proxy-option-main";
+  main.textContent = label;
+  const sub = document.createElement("span");
+  sub.className = "proxy-option-sub";
+  sub.textContent = subLabel || "";
+  text.append(main, sub);
+  button.append(mark, text);
+  return button;
 }
 
 function saveProxyGroup(group, action, selectedChainId, item) {
@@ -242,6 +259,7 @@ function saveProxyGroup(group, action, selectedChainId, item) {
   if (result) {
     result.textContent = "已保存";
   }
+  appendUILog("proxy", `代理组已保存：${group} -> ${formatProxyAction(action)} ${selectedChainId || ""}`.trim());
   refreshProxyGroups();
 }
 
@@ -269,6 +287,7 @@ function chainNameById(chains, id) {
 
 function runLinkLatency(chainId) {
   setText("linkStatus", `正在测试链路延迟：${chainId}`);
+  appendUILog("link", `正在测试链路延迟：${chainId}`);
   setLinkPanelStatus(chainId, "正在执行 relay ping-pong 延迟测试...", false);
   window.CloudHelper.linkLatency(chainId);
 }
@@ -276,6 +295,7 @@ function runLinkLatency(chainId) {
 function runLinkSpeed(chainId, protocol) {
   const label = protocol ? protocol : "auto";
   setText("linkStatus", `正在测速：${chainId} (${label})`);
+  appendUILog("link", `正在测速：${chainId} (${label})`);
   setLinkPanelStatus(chainId, `正在执行 relay speed_test 测速 (${label})...`, false);
   window.CloudHelper.linkSpeed(chainId, protocol || "");
 }
@@ -432,6 +452,129 @@ function parseJSON(payload) {
   }
 }
 
+function setupStatusTabs() {
+  const buttons = Array.from(document.querySelectorAll("[data-status-tab]"));
+  if (!buttons.length) {
+    return;
+  }
+  buttons.forEach((button) => {
+    button.onclick = () => activateStatusTab(button.dataset.statusTab || "overview");
+  });
+  const refresh = byId("refreshLogsButton");
+  if (refresh) {
+    refresh.onclick = refreshLogs;
+  }
+  const clear = byId("clearLogsButton");
+  if (clear) {
+    clear.onclick = clearLogs;
+  }
+  activateStatusTab("overview");
+}
+
+function activateStatusTab(tab) {
+  const clean = tab === "logs" ? "logs" : "overview";
+  document.querySelectorAll("[data-status-tab]").forEach((button) => {
+    const active = button.dataset.statusTab === clean;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const overview = byId("statusOverviewPanel");
+  const logs = byId("statusLogsPanel");
+  if (overview) {
+    overview.hidden = clean !== "overview";
+  }
+  if (logs) {
+    logs.hidden = clean !== "logs";
+  }
+  if (clean === "logs") {
+    refreshLogs();
+  }
+}
+
+function refreshLogsIfVisible() {
+  const logs = byId("statusLogsPanel");
+  if (logs && !logs.hidden) {
+    refreshLogs();
+  }
+}
+
+function refreshLogs() {
+  const list = byId("logList");
+  if (!list) {
+    return;
+  }
+  try {
+    renderLogs(window.CloudHelper.logs());
+  } catch (error) {
+    setText("logStatus", `读取日志失败：${error && error.message ? error.message : error}`);
+  }
+}
+
+function clearLogs() {
+  try {
+    renderLogs(window.CloudHelper.clearLogs());
+  } catch (error) {
+    setText("logStatus", `清空日志失败：${error && error.message ? error.message : error}`);
+  }
+}
+
+function renderLogs(payload) {
+  const data = parseJSON(payload);
+  const list = byId("logList");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = "";
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  setText("logStatus", entries.length ? `共 ${entries.length} 条日志。` : "暂无日志。");
+  if (!data.ok) {
+    setText("logStatus", data.error || "日志不可用。");
+    return;
+  }
+  entries.slice().reverse().forEach((entry) => {
+    list.appendChild(renderLogItem(entry));
+  });
+}
+
+function renderLogItem(entry) {
+  const item = document.createElement("article");
+  item.className = "log-item";
+  const level = String(entry.level || "info").toLowerCase();
+  item.classList.toggle("error", level === "error");
+  item.classList.toggle("warn", level === "warn" || level === "warning");
+
+  const meta = document.createElement("div");
+  meta.className = "log-meta";
+  meta.textContent = [formatLogTime(entry.time), entry.level || "info", entry.source || "android"].filter(Boolean).join(" · ");
+
+  const message = document.createElement("div");
+  message.className = "log-message";
+  message.textContent = entry.message || "";
+  item.append(meta, message);
+  return item;
+}
+
+function formatLogTime(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+}
+
+function appendUILog(source, message) {
+  if (!message || !window.CloudHelper || !window.CloudHelper.logEvent) {
+    return;
+  }
+  try {
+    window.CloudHelper.logEvent(source || "ui", String(message));
+  } catch (_) {
+  }
+}
+
 function refreshSummary(config) {
   const data = config || readConfig();
   setText("summaryController", data.controllerUrl || "-");
@@ -519,6 +662,9 @@ function initPage() {
     item.classList.toggle("active", item.dataset.page === page);
   });
   loadConfig();
+  if (page === "status") {
+    setupStatusTabs();
+  }
   if (page === "link") {
     refreshLinks();
   }

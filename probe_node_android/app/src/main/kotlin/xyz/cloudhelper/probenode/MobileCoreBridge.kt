@@ -15,13 +15,14 @@ object MobileCoreBridge {
         if (!config.isReady) {
             return "controller URL, node ID, and node secret are required"
         }
+        setControllerURL(config.controllerUrl)
         setVersion(currentLocalVersion(context))
         setNativeIPs(context)
-        return callString(
+        return recordResult("mobilecore", callString(
             methodName = "start",
             parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
             args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret),
-        )
+        ))
     }
 
     fun setVersion(version: String): String {
@@ -42,7 +43,7 @@ object MobileCoreBridge {
     }
 
     fun stop(): String {
-        return callString("stop", emptyArray<Class<*>>(), emptyArray())
+        return recordResult("mobilecore", callString("stop", emptyArray<Class<*>>(), emptyArray()))
     }
 
     fun status(): String {
@@ -53,11 +54,12 @@ object MobileCoreBridge {
         if (!config.isReady) {
             return "controller URL, node ID, and node secret are required"
         }
-        return callString(
+        setControllerURL(config.controllerUrl)
+        return recordResult("mobilecore", callString(
             methodName = "refreshConfig",
             parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java),
             args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret, ProbeNodeConfig.configDir(context)),
-        )
+        ))
     }
 
     fun linkStatus(context: Context): String {
@@ -69,35 +71,58 @@ object MobileCoreBridge {
     }
 
     fun linkLatency(context: Context, chainID: String): String {
-        return callString(
+        return recordResult("mobilecore", callString(
             methodName = "linkLatency",
             parameterTypes = arrayOf(String::class.java, String::class.java),
             args = arrayOf(ProbeNodeConfig.configDir(context), chainID),
-        )
+        ))
     }
 
     fun linkSpeed(context: Context, chainID: String, protocol: String): String {
-        return callString(
+        return recordResult("mobilecore", callString(
             methodName = "linkSpeed",
             parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
             args = arrayOf(ProbeNodeConfig.configDir(context), chainID, protocol),
-        )
+        ))
     }
 
     fun vpnStart(context: Context, fd: Int): String {
-        return callString(
+        return recordResult("mobilecore", callString(
             methodName = "vpnStart",
             parameterTypes = arrayOf(Long::class.javaPrimitiveType!!, String::class.java),
             args = arrayOf(fd.toLong(), ProbeNodeConfig.configDir(context)),
-        )
+        ))
     }
 
     fun vpnStop(): String {
-        return callString("vpnStop", emptyArray<Class<*>>(), emptyArray())
+        return recordResult("mobilecore", callString("vpnStop", emptyArray<Class<*>>(), emptyArray()))
     }
 
     fun vpnStatus(): String {
         return callString("vpnStatus", emptyArray<Class<*>>(), emptyArray())
+    }
+
+    fun setControllerURL(controllerURL: String): String {
+        return callString(
+            methodName = "setControllerURL",
+            parameterTypes = arrayOf(String::class.java),
+            args = arrayOf(controllerURL),
+        )
+    }
+
+    fun proxyStart(context: Context, controllerURL: String = ""): String {
+        if (controllerURL.isNotBlank()) {
+            setControllerURL(controllerURL)
+        }
+        return recordResult("mobilecore", callString(
+            methodName = "proxyStart",
+            parameterTypes = arrayOf(String::class.java),
+            args = arrayOf(ProbeNodeConfig.configDir(context)),
+        ))
+    }
+
+    fun proxyStop(): String {
+        return recordResult("mobilecore", callString("proxyStop", emptyArray<Class<*>>(), emptyArray()))
     }
 
     fun proxyStatus(context: Context): String {
@@ -109,11 +134,16 @@ object MobileCoreBridge {
     }
 
     fun proxySetGroup(context: Context, group: String, action: String, selectedChainID: String): String {
-        return callString(
+        return recordResult("mobilecore", callString(
             methodName = "proxySetGroup",
             parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java),
             args = arrayOf(ProbeNodeConfig.configDir(context), group, action, selectedChainID),
-        )
+        ))
+    }
+
+    private fun recordResult(source: String, result: String): String {
+        AndroidLogStore.add(source, result, if (result.contains("failed", ignoreCase = true) || result.contains("失败")) "error" else "info")
+        return result
     }
 
     private fun callString(methodName: String, parameterTypes: Array<Class<*>>, args: Array<Any>): String {

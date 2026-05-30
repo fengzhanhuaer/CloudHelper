@@ -491,6 +491,10 @@ func decideAndroidProxyRouteForTarget(configDir string, targetAddr string) (prox
 		return proxyRouteDecision{}, errors.New("invalid target address")
 	}
 	decision := proxyRouteDecision{Direct: true, TargetAddr: net.JoinHostPort(host, port), Group: "fallback"}
+	if direct, reason := shouldForceDirectProxyTarget(configDir, host, port); direct {
+		decision.Group = reason
+		return decision, nil
+	}
 	groups, _ := loadProxyGroupFile(configDir)
 	state, _ := loadProxyStateFile(configDir)
 	matchGroup := "fallback"
@@ -530,6 +534,54 @@ func decideAndroidProxyRouteForTarget(configDir string, targetAddr string) (prox
 		break
 	}
 	return decision, nil
+}
+
+func shouldForceDirectProxyTarget(configDir string, host string, port string) (bool, string) {
+	controllerHost, controllerPort := currentControllerDirectTarget()
+	if targetHostPortMatches(host, port, controllerHost, controllerPort) {
+		return true, "controller"
+	}
+	chains, err := loadLinkProxyChains(configDir)
+	if err != nil {
+		return false, ""
+	}
+	for _, item := range chains {
+		endpoint, err := resolveLinkEndpoint(item)
+		if err != nil {
+			continue
+		}
+		if targetHostPortMatches(host, port, normalizeDirectTargetHost(endpoint.EntryHost), strconv.Itoa(endpoint.EntryPort)) {
+			return true, "link_entry"
+		}
+	}
+	return false, ""
+}
+
+func targetHostPortMatches(targetHost string, targetPort string, bypassHost string, bypassPort string) bool {
+	targetHost = normalizeDirectTargetHost(targetHost)
+	bypassHost = normalizeDirectTargetHost(bypassHost)
+	targetPort = strings.TrimSpace(targetPort)
+	bypassPort = strings.TrimSpace(bypassPort)
+	if targetHost == "" || bypassHost == "" || targetPort == "" || bypassPort == "" || targetPort != bypassPort {
+		return false
+	}
+	targetIP := net.ParseIP(targetHost)
+	bypassIP := net.ParseIP(bypassHost)
+	if targetIP != nil || bypassIP != nil {
+		return targetIP != nil && bypassIP != nil && targetIP.Equal(bypassIP)
+	}
+	return strings.EqualFold(targetHost, bypassHost)
+}
+
+func normalizeDirectTargetHost(host string) string {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return strings.ToLower(strings.Trim(host, "."))
 }
 
 func loadProxyGroupFile(configDir string) (proxyGroupFile, error) {

@@ -18,6 +18,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AndroidLogStore.add("ui", "MainActivity created")
         webView = WebView(this)
         webView.webViewClient = WebViewClient()
         webView.settings.javaScriptEnabled = true
@@ -37,6 +38,7 @@ class MainActivity : Activity() {
     }
 
     private fun emitStatus(message: String) {
+        AndroidLogStore.add("ui", message, if (message.contains("失败") || message.contains("failed", ignoreCase = true)) "error" else "info")
         runOnUiThread {
             webView.evaluateJavascript(
                 "window.CloudHelperUI && window.CloudHelperUI.setStatus(${JSONObject.quote(message)});",
@@ -46,6 +48,7 @@ class MainActivity : Activity() {
     }
 
     private fun emitLinkStatus(payload: String) {
+        AndroidLogStore.add("link", payload, if (payload.contains("\"ok\":false") || payload.contains("failed", ignoreCase = true) || payload.contains("失败")) "error" else "info")
         runOnUiThread {
             webView.evaluateJavascript(
                 "window.CloudHelperUI && window.CloudHelperUI.setLinkStatus(${JSONObject.quote(payload)});",
@@ -82,12 +85,14 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun saveConfig(controllerUrl: String, nodeId: String, nodeSecret: String): String {
             ProbeNodeConfig.save(this@MainActivity, controllerUrl, nodeId, nodeSecret)
+            AndroidLogStore.add("settings", "config saved: node=${nodeId.trim()}")
             startReportServiceIfConfigured()
             return MobileCoreBridge.status()
         }
 
         @JavascriptInterface
         fun start(): String {
+            AndroidLogStore.add("service", "report service start requested")
             startReportServiceIfConfigured()
             return "report service starting"
         }
@@ -101,21 +106,27 @@ class MainActivity : Activity() {
         fun startProxy(): String {
             val config = ProbeNodeConfig.load(this@MainActivity)
             if (!config.isReady) {
+                AndroidLogStore.add("vpn", "start rejected: controller URL, node ID, and node secret are required", "warn")
                 return "controller URL, node ID, and node secret are required"
             }
+            val proxyResult = MobileCoreBridge.proxyStart(this@MainActivity, config.controllerUrl)
             val prepareIntent = VpnService.prepare(this@MainActivity)
             if (prepareIntent != null) {
+                AndroidLogStore.add("vpn", "VPN permission requested; $proxyResult")
                 startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
-                return "需要授权 Android VPN，授权后会自动启动全局 VPN"
+                return "$proxyResult；需要授权 Android VPN，授权后会自动启动全局 VPN"
             }
+            AndroidLogStore.add("vpn", "VPN start requested; $proxyResult")
             ProbeNodeVpnService.start(this@MainActivity)
-            return "全局 VPN 正在启动"
+            return "$proxyResult；全局 VPN 正在启动"
         }
 
         @JavascriptInterface
         fun stopProxy(): String {
+            AndroidLogStore.add("vpn", "VPN stop requested")
             ProbeNodeVpnService.stop(this@MainActivity)
-            return "全局 VPN 正在停止"
+            val proxyResult = MobileCoreBridge.proxyStop()
+            return "$proxyResult；全局 VPN 正在停止"
         }
 
         @JavascriptInterface
@@ -125,11 +136,13 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun checkUpgrade(mode: String) {
+            AndroidLogStore.add("upgrade", "upgrade check requested: mode=${mode.trim()}")
             AndroidUpgrade.checkDownloadAndInstall(this@MainActivity, mode, ProbeNodeConfig.load(this@MainActivity)) { message -> emitStatus(message) }
         }
 
         @JavascriptInterface
         fun refreshConfig() {
+            AndroidLogStore.add("settings", "manual config refresh requested")
             refreshConfigAsync("手动刷新配置", ProbeNodeConfig.load(this@MainActivity))
         }
 
@@ -140,6 +153,7 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun linkLatency(chainId: String) {
+            AndroidLogStore.add("link", "latency test requested: chain=$chainId")
             thread(name = "cloudhelper-android-link-latency") {
                 emitLinkStatus(MobileCoreBridge.linkLatency(this@MainActivity, chainId))
             }
@@ -147,6 +161,7 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun linkSpeed(chainId: String, protocol: String) {
+            AndroidLogStore.add("link", "speed test requested: chain=$chainId protocol=${protocol.ifBlank { "auto" }}")
             thread(name = "cloudhelper-android-link-speed") {
                 emitLinkStatus(MobileCoreBridge.linkSpeed(this@MainActivity, chainId, protocol))
             }
@@ -158,8 +173,31 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
+        fun vpnStatus(): String {
+            return MobileCoreBridge.vpnStatus()
+        }
+
+        @JavascriptInterface
         fun proxySetGroup(group: String, action: String, selectedChainId: String): String {
+            AndroidLogStore.add("proxy", "proxy group selection: group=$group action=$action chain=$selectedChainId")
             return MobileCoreBridge.proxySetGroup(this@MainActivity, group, action, selectedChainId)
+        }
+
+        @JavascriptInterface
+        fun logs(): String {
+            return AndroidLogStore.exportJSON()
+        }
+
+        @JavascriptInterface
+        fun clearLogs(): String {
+            AndroidLogStore.clear()
+            AndroidLogStore.add("ui", "logs cleared")
+            return AndroidLogStore.exportJSON()
+        }
+
+        @JavascriptInterface
+        fun logEvent(source: String, message: String) {
+            AndroidLogStore.add(source, message, if (message.contains("失败") || message.contains("failed", ignoreCase = true)) "error" else "info")
         }
     }
 
@@ -178,6 +216,7 @@ class MainActivity : Activity() {
     private fun startReportServiceIfConfigured() {
         val config = ProbeNodeConfig.load(this)
         if (config.isReady) {
+            AndroidLogStore.add("service", "starting report service for configured node=${config.nodeId}")
             ProbeNodeService.start(this)
         }
     }

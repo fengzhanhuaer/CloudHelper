@@ -18,12 +18,14 @@ class ProbeNodeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        AndroidLogStore.add("service", "ProbeNodeService created")
         ensureNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             val result = MobileCoreBridge.stop()
+            AndroidLogStore.add("service", "stop requested: $result")
             updateNotification("已停止：$result")
             stopForegroundCompat()
             stopSelf()
@@ -31,6 +33,7 @@ class ProbeNodeService : Service() {
         }
 
         startForeground(NOTIFICATION_ID, buildNotification("正在启动长连接..."))
+        AndroidLogStore.add("service", "foreground report service started")
         startLongConnection()
         return START_STICKY
     }
@@ -38,6 +41,7 @@ class ProbeNodeService : Service() {
     private fun startLongConnection() {
         val config = ProbeNodeConfig.load(this)
         if (!config.isReady) {
+            AndroidLogStore.add("service", "service stopped: config is not ready", "warn")
             updateNotification("未配置主控或节点密钥")
             stopForegroundCompat()
             stopSelf()
@@ -45,8 +49,10 @@ class ProbeNodeService : Service() {
         }
         thread(name = "cloudhelper-probe-node-service") {
             val startResult = MobileCoreBridge.start(this, config)
+            AndroidLogStore.add("service", "long connection start result: $startResult")
             updateNotification("长连接：$startResult")
             val refreshResult = MobileCoreBridge.refreshConfig(this, config)
+            AndroidLogStore.add("service", "startup config refresh result: $refreshResult")
             updateNotification("长连接：${MobileCoreBridge.status()}；$refreshResult")
         }
     }

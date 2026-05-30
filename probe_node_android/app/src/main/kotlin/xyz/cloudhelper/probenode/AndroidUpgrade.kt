@@ -30,6 +30,7 @@ object AndroidUpgrade {
         thread(name = "cloudhelper-android-upgrade") {
             try {
                 val upgradeMode = if (mode == "proxy") "proxy" else "direct"
+                AndroidLogStore.add("upgrade", "upgrade flow started: mode=$upgradeMode")
                 if (upgradeMode == "proxy" && !config.isReady) {
                     error("controller URL, node ID, and node secret are required for proxy upgrade")
                 }
@@ -54,7 +55,9 @@ object AndroidUpgrade {
                 sink("Opening Android installer...")
                 openInstaller(activity, apk)
                 sink("Installer opened for ${asset.name}.")
+                AndroidLogStore.add("upgrade", "installer opened: asset=${asset.name}")
             } catch (e: Exception) {
+                AndroidLogStore.add("upgrade", "upgrade failed: ${e.message}", "error")
                 sink("Upgrade failed: ${e.message}")
             }
         }

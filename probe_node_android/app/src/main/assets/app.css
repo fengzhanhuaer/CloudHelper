@@ -186,6 +186,67 @@ input {
   word-break: break-word;
   color: #1c1917;
 }
+.sub-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.sub-tab-button {
+  min-width: 86px;
+  min-height: 38px;
+  border: 1px solid #c9c5bd;
+  border-radius: 6px;
+  padding: 0 14px;
+  background: #fff;
+  color: #292524;
+  font-size: 14px;
+  font-weight: 750;
+}
+.sub-tab-button.active {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+.tab-panel {
+  margin-top: 12px;
+}
+[hidden] {
+  display: none !important;
+}
+.log-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.log-item {
+  border: 1px solid #d7d3ca;
+  border-left: 4px solid #0f766e;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #fff;
+}
+.log-item.warn {
+  border-left-color: #b45309;
+}
+.log-item.error {
+  border-left-color: #b91c1c;
+}
+.log-meta {
+  color: #57534e;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.log-message {
+  margin-top: 5px;
+  color: #1c1917;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .link-list {
   display: grid;
   gap: 10px;
@@ -208,23 +269,63 @@ input {
   padding: 12px;
   background: #fff;
 }
-.proxy-controls {
+.proxy-option-grid {
   display: grid;
-  grid-template-columns: minmax(96px, 120px) minmax(0, 1fr) auto;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
   margin-top: 12px;
-  align-items: center;
 }
-.proxy-select {
-  width: 100%;
-  min-width: 0;
-  height: 40px;
+.proxy-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 46px;
   border: 1px solid #c9c5bd;
   border-radius: 6px;
-  padding: 0 10px;
+  padding: 8px 10px;
   background: #fff;
   color: #171717;
+  text-align: left;
+}
+.proxy-option.active {
+  border-color: #0f766e;
+  background: #ecfdf5;
+}
+.proxy-radio {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #78716c;
+  border-radius: 999px;
+  position: relative;
+}
+.proxy-option.active .proxy-radio {
+  border-color: #0f766e;
+}
+.proxy-option.active .proxy-radio::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 999px;
+  background: #0f766e;
+}
+.proxy-option-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.proxy-option-main {
+  color: #1c1917;
   font-size: 14px;
+  font-weight: 750;
+  line-height: 1.25;
+  word-break: break-word;
+}
+.proxy-option-sub {
+  color: #57534e;
+  font-size: 12px;
+  line-height: 1.25;
+  word-break: break-word;
 }
 .link-title {
   color: #1c1917;
@@ -295,7 +396,7 @@ input {
     grid-template-columns: 1fr;
     gap: 4px;
   }
-  .proxy-controls {
+  .proxy-option-grid {
     grid-template-columns: 1fr;
   }
 }

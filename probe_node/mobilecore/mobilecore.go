@@ -32,13 +32,15 @@ const configRefreshTimeout = 20 * time.Second
 var manager = &coreManager{}
 
 type coreManager struct {
-	mu           sync.Mutex
-	cancel       chan struct{}
-	status       string
-	version      string
-	injectedIPv4 []string
-	injectedIPv6 []string
-	injectedAt   string
+	mu             sync.Mutex
+	cancel         chan struct{}
+	status         string
+	version        string
+	injectedIPv4   []string
+	injectedIPv6   []string
+	injectedAt     string
+	controllerHost string
+	controllerPort string
 }
 
 type reportPayload struct {
@@ -149,6 +151,7 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 	if err != nil {
 		return err.Error()
 	}
+	setControllerDirectTarget(controllerURL)
 
 	manager.mu.Lock()
 	if manager.cancel != nil {
@@ -171,6 +174,7 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 }
 
 func RefreshConfig(controllerURL string, nodeID string, nodeSecret string, configDir string) string {
+	setControllerDirectTarget(controllerURL)
 	summary, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir)
 	if err != nil {
 		return "配置刷新失败：" + err.Error()
@@ -209,6 +213,13 @@ func SetNativeIPs(ipv4JSON string, ipv6JSON string) string {
 	manager.injectedAt = time.Now().UTC().Format(time.RFC3339)
 	manager.mu.Unlock()
 	return fmt.Sprintf("native ips set: ipv4=%d ipv6=%d", len(ipv4), len(ipv6))
+}
+
+func SetControllerURL(controllerURL string) string {
+	if setControllerDirectTarget(controllerURL) {
+		return "controller direct target set"
+	}
+	return "controller direct target unavailable"
 }
 
 func Status() string {
@@ -384,6 +395,52 @@ func normalizeControllerBaseURL(controllerURL string) (string, error) {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return strings.TrimRight(u.String(), "/"), nil
+}
+
+func setControllerDirectTarget(controllerURL string) bool {
+	host, port, ok := parseControllerHostPort(controllerURL)
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if !ok {
+		manager.controllerHost = ""
+		manager.controllerPort = ""
+		return false
+	}
+	manager.controllerHost = host
+	manager.controllerPort = port
+	return true
+}
+
+func currentControllerDirectTarget() (string, string) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return manager.controllerHost, manager.controllerPort
+}
+
+func parseControllerHostPort(controllerURL string) (string, string, bool) {
+	u, err := url.Parse(strings.TrimSpace(controllerURL))
+	if err != nil {
+		return "", "", false
+	}
+	host := normalizeDirectTargetHost(u.Hostname())
+	if host == "" {
+		return "", "", false
+	}
+	port := strings.TrimSpace(u.Port())
+	if port == "" {
+		switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
+		case "https", "wss":
+			port = "443"
+		case "http", "ws":
+			port = "80"
+		default:
+			return "", "", false
+		}
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return "", "", false
+	}
+	return host, port, true
 }
 
 func runLoop(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret string) {

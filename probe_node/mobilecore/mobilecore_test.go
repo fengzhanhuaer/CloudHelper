@@ -364,6 +364,71 @@ func TestDecideVPNRouteForTargetUsesProxyState(t *testing.T) {
 	}
 }
 
+func TestProxyRouteForcesControllerDirect(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "fallback", "action": "tunnel", "selected_chain_id": "chain-1"},
+		},
+	})
+	oldHost, oldPort := currentControllerDirectTarget()
+	defer func() {
+		manager.mu.Lock()
+		manager.controllerHost = oldHost
+		manager.controllerPort = oldPort
+		manager.mu.Unlock()
+	}()
+	SetControllerURL("https://controller.example.com/admin")
+
+	route, err := decideAndroidProxyRouteForTarget(dir, "controller.example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !route.Direct || route.Group != "controller" {
+		t.Fatalf("controller route should be forced direct: %+v", route)
+	}
+
+	route, err = decideAndroidProxyRouteForTarget(dir, "other.example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Direct || route.SelectedChainID != "chain-1" {
+		t.Fatalf("non-controller fallback should still use selected route: %+v", route)
+	}
+}
+
+func TestProxyRouteForcesLinkEntryDirect(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "fallback", "action": "tunnel", "selected_chain_id": "chain-1"},
+		},
+	})
+	writeTestJSON(t, filepath.Join(dir, "proxy_chain.json"), map[string]any{
+		"items": []map[string]any{
+			{
+				"chain_id":      "chain-1",
+				"name":          "Link Entry",
+				"entry_node_id": "1",
+				"exit_node_id":  "2",
+				"hop_configs": []map[string]any{
+					{"node_no": 1, "relay_host": "entry.example.com", "external_port": 8443},
+				},
+			},
+		},
+	})
+
+	route, err := decideAndroidProxyRouteForTarget(dir, "entry.example.com:8443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !route.Direct || route.Group != "link_entry" {
+		t.Fatalf("link entry route should be forced direct: %+v", route)
+	}
+}
+
 func TestVPNUDPAssociationMetadata(t *testing.T) {
 	id := stack.TransportEndpointID{
 		LocalAddress:  tcpip.AddrFrom4([4]byte{8, 8, 8, 8}),
