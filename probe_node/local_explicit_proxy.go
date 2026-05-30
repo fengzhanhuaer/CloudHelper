@@ -166,7 +166,7 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 		logProbeWarnf("probe local explicit socks5 proxy loopback target rejected: remote=%s target=%s err=%v", remoteAddr, request.Address, err)
 		return
 	}
-	targetConn, err := openProbeLocalExplicitProxyTunnelStream("tcp", request.Address)
+	targetConn, route, err := openProbeLocalExplicitProxyTunnelStreamWithRoute("tcp", request.Address)
 	if err != nil {
 		_ = replyProbeChainProxyFailure(conn, request.Version)
 		logProbeWarnf("probe local explicit socks5 proxy tunnel open failed: target=%s err=%v", request.Address, err)
@@ -178,7 +178,8 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	_ = targetConn.SetDeadline(time.Time{})
-	relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+	result := relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+	logProbeLocalExplicitProxyRelayResult("socks5", remoteAddr, request.Address, route, result)
 }
 
 type probeLocalExplicitSOCKS5UDPAssociation struct {
@@ -368,7 +369,7 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 		logProbeWarnf("probe local explicit http proxy loopback target rejected: remote=%s target=%s err=%v", remoteAddr, targetAddr, err)
 		return
 	}
-	targetConn, err := openProbeLocalExplicitProxyTunnelStream("tcp", targetAddr)
+	targetConn, route, err := openProbeLocalExplicitProxyTunnelStreamWithRoute("tcp", targetAddr)
 	if err != nil {
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadGateway, "open tunnel failed")
 		logProbeWarnf("probe local explicit http proxy tunnel open failed: target=%s err=%v", targetAddr, err)
@@ -381,7 +382,8 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 		}
 		_ = conn.SetDeadline(time.Time{})
 		_ = targetConn.SetDeadline(time.Time{})
-		relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+		result := relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+		logProbeLocalExplicitProxyRelayResult("http_connect", remoteAddr, targetAddr, route, result)
 		return
 	}
 	request.RequestURI = ""
@@ -400,17 +402,23 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	_ = targetConn.SetDeadline(time.Time{})
-	relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+	result := relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+	logProbeLocalExplicitProxyRelayResult("http", remoteAddr, targetAddr, route, result)
 }
 
 func openProbeLocalExplicitProxyTunnelStream(network string, targetAddr string) (net.Conn, error) {
+	conn, _, err := openProbeLocalExplicitProxyTunnelStreamWithRoute(network, targetAddr)
+	return conn, err
+}
+
+func openProbeLocalExplicitProxyTunnelStreamWithRoute(network string, targetAddr string) (net.Conn, probeLocalTunnelRouteDecision, error) {
 	if err := rejectProbeLocalExplicitProxyLoopbackTarget(targetAddr); err != nil {
-		return nil, err
+		return nil, probeLocalTunnelRouteDecision{}, err
 	}
 	route, err := decideProbeLocalExplicitProxyRouteForTarget(targetAddr)
 	if err != nil {
 		logProbeWarnf("probe local explicit proxy route failed: network=%s target=%s err=%v", strings.TrimSpace(network), strings.TrimSpace(targetAddr), err)
-		return nil, err
+		return nil, probeLocalTunnelRouteDecision{}, err
 	}
 	logProbeInfof(
 		"probe local explicit proxy route selected: network=%s target=%s route_target=%s group=%s direct=%v reject=%v chain=%s",
@@ -426,15 +434,40 @@ func openProbeLocalExplicitProxyTunnelStream(network string, targetAddr string) 
 	if cleanNetwork == "udp" {
 		udpConn, err := openProbeLocalExplicitProxyUDPConnForRoute(route, nil)
 		if err != nil {
-			return nil, err
+			return nil, route, err
 		}
 		if conn, ok := udpConn.(net.Conn); ok {
-			return conn, nil
+			return conn, route, nil
 		}
 		_ = udpConn.Close()
-		return nil, errors.New("udp tunnel is not a net conn")
+		return nil, route, errors.New("udp tunnel is not a net conn")
 	}
-	return dialProbeLocalRoutedTCP(route)
+	conn, err := dialProbeLocalRoutedTCP(route)
+	return conn, route, err
+}
+
+func logProbeLocalExplicitProxyRelayResult(protocol string, remoteAddr string, targetAddr string, route probeLocalTunnelRouteDecision, result probeChainBidirectionalRelayResult) {
+	relayErr := firstProbeChainRelayError(result)
+	format := "probe local explicit proxy relay closed: protocol=%s remote=%s target=%s route_target=%s group=%s direct=%v chain=%s duration_ms=%d up_bytes=%d down_bytes=%d up_err=%s down_err=%s"
+	args := []any{
+		strings.TrimSpace(protocol),
+		strings.TrimSpace(remoteAddr),
+		strings.TrimSpace(targetAddr),
+		strings.TrimSpace(route.TargetAddr),
+		strings.TrimSpace(route.Group),
+		route.Direct,
+		strings.TrimSpace(route.SelectedChainID),
+		result.Duration.Milliseconds(),
+		result.LeftToRight.Bytes,
+		result.RightToLeft.Bytes,
+		formatProbeChainRelayError(result.LeftToRight.Err),
+		formatProbeChainRelayError(result.RightToLeft.Err),
+	}
+	if relayErr != nil {
+		logProbeWarnf(strings.Replace(format, "relay closed", "relay failed", 1), args...)
+		return
+	}
+	logProbeInfof(format, args...)
 }
 
 func openProbeLocalExplicitProxyUDPTunnelStream(targetAddr string, clientAddr net.Addr) (io.ReadWriteCloser, error) {

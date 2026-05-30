@@ -1195,9 +1195,9 @@ func wrapLinkDialError(protocol string, host string, port int, err error) error 
 func newLinkYamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.EnableKeepAlive = true
-	cfg.KeepAliveInterval = 60 * time.Second
-	cfg.ConnectionWriteTimeout = 10 * time.Second
-	cfg.MaxStreamWindowSize = 8 * 1024 * 1024
+	cfg.KeepAliveInterval = 20 * time.Second
+	cfg.ConnectionWriteTimeout = 2 * time.Minute
+	cfg.MaxStreamWindowSize = 64 * 1024 * 1024
 	return cfg
 }
 

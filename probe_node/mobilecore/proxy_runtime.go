@@ -802,6 +802,7 @@ func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.
 			_, _ = io.CopyN(right, leftReader, int64(leftReader.Buffered()))
 		}
 		_, _ = io.Copy(right, left)
+		closeProxyConnWrite(right)
 		done <- struct{}{}
 	}()
 	go func() {
@@ -809,11 +810,26 @@ func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.
 			_, _ = io.CopyN(left, rightReader, int64(rightReader.Buffered()))
 		}
 		_, _ = io.Copy(left, right)
+		closeProxyConnWrite(left)
 		done <- struct{}{}
 	}()
 	<-done
+	<-done
 	_ = left.Close()
 	_ = right.Close()
+}
+
+func closeProxyConnWrite(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = closer.CloseWrite()
+		return
+	}
+	if stream, ok := conn.(*yamux.Stream); ok {
+		_ = stream.Close()
+	}
 }
 
 func readProxyFramedPacket(reader *bufio.Reader, payload []byte) (int, error) {

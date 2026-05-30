@@ -100,6 +100,8 @@ type androidVPNDNSFakeEntry struct {
 type androidVPNDNSRouteHintEntry struct {
 	Domain    string
 	IP        string
+	IPv4      []string
+	IPv6      []string
 	Group     string
 	ExpiresAt time.Time
 }
@@ -549,6 +551,22 @@ func openVPNOutboundTCP(targetAddr string) (net.Conn, error) {
 	if route.Reject {
 		return nil, errors.New("route rejected")
 	}
+	conn, err := dialVPNRouteTCP(route)
+	if err == nil {
+		return conn, nil
+	}
+	if fallbackRoute, ok := buildAndroidVPNIPv4FallbackRoute(route, err); ok {
+		androidLogStore.add("vpn", "warn", "tcp ipv6 fallback "+route.TargetAddr+" -> "+fallbackRoute.TargetAddr+" group="+fallbackRoute.Group)
+		if fallbackConn, fallbackErr := dialVPNRouteTCP(fallbackRoute); fallbackErr == nil {
+			return fallbackConn, nil
+		} else {
+			return nil, fmt.Errorf("%w; ipv4 fallback %s failed: %v", err, fallbackRoute.TargetAddr, fallbackErr)
+		}
+	}
+	return nil, err
+}
+
+func dialVPNRouteTCP(route vpnRouteDecision) (net.Conn, error) {
 	if route.Direct {
 		dialer := net.Dialer{Timeout: proxyConnectTimeout}
 		return dialer.Dial("tcp", route.TargetAddr)
@@ -944,6 +962,7 @@ func storeAndroidVPNDNSRouteHints(domain string, response []byte, route proxyRou
 	if len(ips) == 0 {
 		return
 	}
+	ipv4, ipv6 := splitAndroidVPNDNSResponseIPFamilies(ips)
 	now := time.Now().UTC()
 	vpnDNSState.mu.Lock()
 	defer vpnDNSState.mu.Unlock()
@@ -960,6 +979,8 @@ func storeAndroidVPNDNSRouteHints(domain string, response []byte, route proxyRou
 		vpnDNSState.routeIPHints[ipText] = androidVPNDNSRouteHintEntry{
 			Domain:    cleanDomain,
 			IP:        ipText,
+			IPv4:      append([]string(nil), ipv4...),
+			IPv6:      append([]string(nil), ipv6...),
 			Group:     strings.TrimSpace(route.Group),
 			ExpiresAt: now.Add(vpnDNSCacheTTL),
 		}
@@ -991,6 +1012,90 @@ func lookupAndroidVPNDNSRouteHint(configDir string, ipText string, port string) 
 	}
 	route.TargetAddr = net.JoinHostPort(ip.String(), firstNonEmptyString(strings.TrimSpace(port), "443"))
 	return route, true
+}
+
+func buildAndroidVPNIPv4FallbackRoute(route vpnRouteDecision, err error) (vpnRouteDecision, bool) {
+	if err == nil || !isTimeoutError(err) || route.Reject {
+		return vpnRouteDecision{}, false
+	}
+	host, port, splitErr := net.SplitHostPort(strings.TrimSpace(route.TargetAddr))
+	if splitErr != nil {
+		return vpnRouteDecision{}, false
+	}
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
+	if ip == nil || ip.To4() != nil {
+		return vpnRouteDecision{}, false
+	}
+	vpnRuntime.mu.Lock()
+	configDir := vpnRuntime.configDir
+	vpnRuntime.mu.Unlock()
+	hint, ok := lookupAndroidVPNDNSRouteHintEntry(ip.String())
+	if !ok || strings.TrimSpace(hint.Domain) == "" {
+		return vpnRouteDecision{}, false
+	}
+	ipv4s := append([]string(nil), hint.IPv4...)
+	if len(ipv4s) == 0 {
+		resolved, resolveErr := resolveAndroidVPNDomainIPv4s(hint.Domain)
+		if resolveErr != nil || len(resolved) == 0 {
+			return vpnRouteDecision{}, false
+		}
+		ipv4s = resolved
+		rememberAndroidVPNDNSRouteHintIPv4s(ip.String(), ipv4s)
+	}
+	for _, ipv4 := range ipv4s {
+		ip4 := net.ParseIP(strings.TrimSpace(ipv4)).To4()
+		if ip4 == nil {
+			continue
+		}
+		route4, routeErr := decideAndroidProxyRouteForTarget(configDir, net.JoinHostPort(hint.Domain, firstNonEmptyString(strings.TrimSpace(port), "443")))
+		if routeErr != nil || route4.Reject {
+			continue
+		}
+		return vpnRouteDecision{
+			Direct:          route4.Direct,
+			Reject:          route4.Reject,
+			TargetAddr:      net.JoinHostPort(ip4.String(), firstNonEmptyString(strings.TrimSpace(port), "443")),
+			Group:           firstNonEmptyString(strings.TrimSpace(route4.Group), strings.TrimSpace(hint.Group)),
+			SelectedChainID: route4.SelectedChainID,
+		}, true
+	}
+	return vpnRouteDecision{}, false
+}
+
+func lookupAndroidVPNDNSRouteHintEntry(ipText string) (androidVPNDNSRouteHintEntry, bool) {
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(ipText, "[]")))
+	if ip == nil {
+		return androidVPNDNSRouteHintEntry{}, false
+	}
+	now := time.Now().UTC()
+	vpnDNSState.mu.Lock()
+	defer vpnDNSState.mu.Unlock()
+	pruneAndroidVPNDNSFakeLocked(now)
+	entry, ok := vpnDNSState.routeIPHints[ip.String()]
+	if !ok || strings.TrimSpace(entry.Domain) == "" {
+		return androidVPNDNSRouteHintEntry{}, false
+	}
+	entry.IPv4 = append([]string(nil), entry.IPv4...)
+	entry.IPv6 = append([]string(nil), entry.IPv6...)
+	return entry, true
+}
+
+func rememberAndroidVPNDNSRouteHintIPv4s(ipText string, ipv4s []string) {
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(ipText, "[]")))
+	if ip == nil || len(ipv4s) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	vpnDNSState.mu.Lock()
+	defer vpnDNSState.mu.Unlock()
+	pruneAndroidVPNDNSFakeLocked(now)
+	entry, ok := vpnDNSState.routeIPHints[ip.String()]
+	if !ok {
+		return
+	}
+	entry.IPv4 = append([]string(nil), ipv4s...)
+	entry.ExpiresAt = now.Add(vpnDNSCacheTTL)
+	vpnDNSState.routeIPHints[ip.String()] = entry
 }
 
 func extractAndroidVPNDNSResponseIPs(packet []byte) []string {
@@ -1054,6 +1159,52 @@ func extractAndroidVPNDNSResponseIPs(packet []byte) []string {
 	return out
 }
 
+func splitAndroidVPNDNSResponseIPFamilies(ips []string) ([]string, []string) {
+	seen4 := map[string]struct{}{}
+	seen6 := map[string]struct{}{}
+	var ipv4 []string
+	var ipv6 []string
+	for _, value := range ips {
+		ip := net.ParseIP(strings.TrimSpace(strings.Trim(value, "[]")))
+		if ip == nil {
+			continue
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			text := ip4.String()
+			if _, ok := seen4[text]; ok {
+				continue
+			}
+			seen4[text] = struct{}{}
+			ipv4 = append(ipv4, text)
+			continue
+		}
+		text := ip.String()
+		if _, ok := seen6[text]; ok {
+			continue
+		}
+		seen6[text] = struct{}{}
+		ipv6 = append(ipv6, text)
+	}
+	return ipv4, ipv6
+}
+
+func resolveAndroidVPNDomainIPv4s(domain string) ([]string, error) {
+	query, err := buildAndroidVPNDNSQuery(domain, dnsmessage.TypeA)
+	if err != nil {
+		return nil, err
+	}
+	response, err := queryAndroidVPNDNSUpstream(query)
+	if err != nil {
+		return nil, err
+	}
+	ips := extractAndroidVPNDNSResponseIPs(response)
+	ipv4, _ := splitAndroidVPNDNSResponseIPFamilies(ips)
+	if len(ipv4) == 0 {
+		return nil, errors.New("empty ipv4 dns response")
+	}
+	return ipv4, nil
+}
+
 func buildAndroidVPNDNSQuery(domain string, qType dnsmessage.Type) ([]byte, error) {
 	cleanDomain := strings.TrimSpace(strings.Trim(domain, "."))
 	if cleanDomain == "" {
@@ -1095,6 +1246,8 @@ func snapshotAndroidVPNDNSStatus() map[string]any {
 		routeItems = append(routeItems, map[string]any{
 			"ip":         ip,
 			"domain":     entry.Domain,
+			"ipv4_count": len(entry.IPv4),
+			"ipv6_count": len(entry.IPv6),
 			"group":      entry.Group,
 			"expires_at": entry.ExpiresAt.UTC().Format(time.RFC3339),
 		})

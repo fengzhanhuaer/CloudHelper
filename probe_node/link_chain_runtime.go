@@ -191,6 +191,17 @@ type probeChainNextHop struct {
 	CloseFn func() error
 }
 
+type probeChainRelayDirectionResult struct {
+	Bytes int64
+	Err   error
+}
+
+type probeChainBidirectionalRelayResult struct {
+	LeftToRight probeChainRelayDirectionResult
+	RightToLeft probeChainRelayDirectionResult
+	Duration    time.Duration
+}
+
 var probeChainRuntimeState = struct {
 	mu       sync.Mutex
 	runtimes map[string]*probeChainRuntime
@@ -270,9 +281,10 @@ const (
 	probeChainRelayUDPSocketBufferBytes        = 64 * 1024 * 1024
 	probeChainRelayUDPFrameBufferBytes         = 2 + 65535
 	probeChainRelayTCPKeepAlivePeriod          = 30 * time.Second
+	probeChainRelayYamuxKeepAliveInterval      = 20 * time.Second
 	probeChainRelayYamuxAcceptBacklog          = 1024
 	probeChainRelayYamuxMaxStreamWindowBytes   = 64 * 1024 * 1024
-	probeChainRelayYamuxWriteTimeout           = 30 * time.Second
+	probeChainRelayYamuxWriteTimeout           = 2 * time.Minute
 	probeChainRelayQUICInitialStreamWindow     = 128 * 1024 * 1024
 	probeChainRelayQUICMaxStreamWindow         = 512 * 1024 * 1024
 	probeChainRelayQUICInitialConnectionWindow = 512 * 1024 * 1024
@@ -1148,18 +1160,10 @@ func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 			}
 			defer downstream.Close()
 
-			errCh := make(chan error, 2)
-			go func() {
-				_, copyErr := probeChainCopy(downstream, localConn)
-				closeProbeChainConnWrite(downstream)
-				errCh <- copyErr
-			}()
-			go func() {
-				_, copyErr := probeChainCopy(localConn, downstream)
-				closeProbeChainConnWrite(localConn)
-				errCh <- copyErr
-			}()
-			<-errCh
+			result := relayProbeChainBidirectional(localConn, localConn, downstream, downstream)
+			if relayErr := firstProbeChainRelayError(result); relayErr != nil {
+				log.Printf("probe chain tcp forward relay failed: chain=%s id=%s target=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, cfg.ID, targetAddr, result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
+			}
 		}(conn)
 	}
 }
@@ -2379,21 +2383,19 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 	}()
 	nextReader := bufio.NewReader(nextHop.Reader)
 
-	relayErrCh := make(chan error, 2)
-	go func() {
-		_, copyErr := probeChainCopy(nextHop.Writer, reader)
-		closeProbeChainWriter(nextHop.Writer)
-		relayErrCh <- copyErr
-	}()
-	go func() {
-		_, copyErr := probeChainCopy(conn, nextReader)
-		relayErrCh <- copyErr
-	}()
-	relayErr := <-relayErrCh
-	if relayErr != nil && !errors.Is(relayErr, io.EOF) && !errors.Is(relayErr, net.ErrClosed) {
-		log.Printf("probe chain downstream relay failed: chain=%s role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), relayErr)
+	result := relayProbeChainDuplex(
+		reader,
+		nextHop.Writer,
+		func() { closeProbeChainWriter(nextHop.Writer) },
+		nextReader,
+		conn,
+		func() { closeProbeChainConnWrite(conn) },
+	)
+	relayErr := firstProbeChainRelayError(result)
+	if relayErr != nil {
+		log.Printf("probe chain downstream relay failed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
 	} else {
-		log.Printf("probe chain downstream relay closed: chain=%s role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
+		log.Printf("probe chain downstream relay closed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes)
 	}
 }
 
@@ -2444,21 +2446,19 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 	}()
 	prevReader := bufio.NewReader(prevHop.Reader)
 
-	relayErrCh := make(chan error, 2)
-	go func() {
-		_, copyErr := probeChainCopy(prevHop.Writer, reader)
-		closeProbeChainWriter(prevHop.Writer)
-		relayErrCh <- copyErr
-	}()
-	go func() {
-		_, copyErr := probeChainCopy(conn, prevReader)
-		relayErrCh <- copyErr
-	}()
-	relayErr := <-relayErrCh
-	if relayErr != nil && !errors.Is(relayErr, io.EOF) && !errors.Is(relayErr, net.ErrClosed) {
-		log.Printf("probe chain upstream relay failed: chain=%s role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), relayErr)
+	result := relayProbeChainDuplex(
+		reader,
+		prevHop.Writer,
+		func() { closeProbeChainWriter(prevHop.Writer) },
+		prevReader,
+		conn,
+		func() { closeProbeChainConnWrite(conn) },
+	)
+	relayErr := firstProbeChainRelayError(result)
+	if relayErr != nil {
+		log.Printf("probe chain upstream relay failed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
 	} else {
-		log.Printf("probe chain upstream relay closed: chain=%s role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
+		log.Printf("probe chain upstream relay closed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes)
 	}
 }
 
@@ -2674,7 +2674,7 @@ func newProbeChainYamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.AcceptBacklog = probeChainRelayYamuxAcceptBacklog
 	cfg.EnableKeepAlive = true
-	cfg.KeepAliveInterval = 60 * time.Second
+	cfg.KeepAliveInterval = probeChainRelayYamuxKeepAliveInterval
 	cfg.ConnectionWriteTimeout = probeChainRelayYamuxWriteTimeout
 	cfg.MaxStreamWindowSize = probeChainRelayYamuxMaxStreamWindowBytes
 	return cfg
@@ -2849,32 +2849,19 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string) error {
 	}
 
 	relay := globalProbeTCPDebugState.beginRelay(target)
-	errCh := make(chan error, 2)
-	go func() {
-		if relay != nil {
-			defer relay.releaseSide()
-		}
-		writer := io.Writer(remoteConn)
-		if relay != nil {
-			writer = &probeTCPDebugWriter{dst: remoteConn, relay: relay, direction: "up"}
-		}
-		_, copyErr := probeChainCopy(writer, stream)
-		errCh <- copyErr
-	}()
-	go func() {
-		if relay != nil {
-			defer relay.releaseSide()
-		}
-		writer := io.Writer(stream)
-		if relay != nil {
-			writer = &probeTCPDebugWriter{dst: stream, relay: relay, direction: "down"}
-		}
-		_, copyErr := probeChainCopy(writer, remoteConn)
-		errCh <- copyErr
-	}()
-
-	copyErr := <-errCh
-	if copyErr == nil || errors.Is(copyErr, io.EOF) || errors.Is(copyErr, net.ErrClosed) {
+	if relay != nil {
+		defer relay.releaseSide()
+		defer relay.releaseSide()
+	}
+	upWriter := io.Writer(remoteConn)
+	downWriter := io.Writer(stream)
+	if relay != nil {
+		upWriter = &probeTCPDebugWriter{dst: remoteConn, relay: relay, direction: "up"}
+		downWriter = &probeTCPDebugWriter{dst: stream, relay: relay, direction: "down"}
+	}
+	result := relayProbeChainBidirectionalWithWriters(stream, stream, remoteConn, remoteConn, upWriter, downWriter)
+	copyErr := firstProbeChainRelayError(result)
+	if copyErr == nil {
 		return nil
 	}
 	if relay != nil {
@@ -3086,24 +3073,85 @@ func normalizeProbeChainTargetAddr(raw string, defaultPort int) (string, error) 
 	return net.JoinHostPort(host, strconv.Itoa(defaultPort)), nil
 }
 
-func relayProbeChainBidirectional(leftConn net.Conn, leftReader io.Reader, rightConn net.Conn, rightReader io.Reader) {
-	done := make(chan struct{}, 2)
+func relayProbeChainBidirectional(leftConn net.Conn, leftReader io.Reader, rightConn net.Conn, rightReader io.Reader) probeChainBidirectionalRelayResult {
+	return relayProbeChainBidirectionalWithWriters(leftConn, leftReader, rightConn, rightReader, rightConn, leftConn)
+}
+
+func relayProbeChainBidirectionalWithWriters(leftConn net.Conn, leftReader io.Reader, rightConn net.Conn, rightReader io.Reader, rightWriter io.Writer, leftWriter io.Writer) probeChainBidirectionalRelayResult {
+	return relayProbeChainDuplex(
+		leftReader,
+		rightWriter,
+		func() { closeProbeChainConnWrite(rightConn) },
+		rightReader,
+		leftWriter,
+		func() { closeProbeChainConnWrite(leftConn) },
+	)
+}
+
+func relayProbeChainDuplex(leftReader io.Reader, rightWriter io.Writer, closeRightWrite func(), rightReader io.Reader, leftWriter io.Writer, closeLeftWrite func()) probeChainBidirectionalRelayResult {
+	startedAt := time.Now()
+	type relaySideResult struct {
+		leftToRight bool
+		bytes       int64
+		err         error
+	}
+	done := make(chan relaySideResult, 2)
 	go func() {
-		_, _ = probeChainCopy(rightConn, leftReader)
-		closeProbeChainConnWrite(rightConn)
-		done <- struct{}{}
+		n, copyErr := probeChainCopy(rightWriter, leftReader)
+		if closeRightWrite != nil {
+			closeRightWrite()
+		}
+		done <- relaySideResult{leftToRight: true, bytes: n, err: copyErr}
 	}()
 	go func() {
-		_, _ = probeChainCopy(leftConn, rightReader)
-		closeProbeChainConnWrite(leftConn)
-		done <- struct{}{}
+		n, copyErr := probeChainCopy(leftWriter, rightReader)
+		if closeLeftWrite != nil {
+			closeLeftWrite()
+		}
+		done <- relaySideResult{bytes: n, err: copyErr}
 	}()
-	<-done
+
+	var result probeChainBidirectionalRelayResult
+	for i := 0; i < 2; i++ {
+		side := <-done
+		if side.leftToRight {
+			result.LeftToRight = probeChainRelayDirectionResult{Bytes: side.bytes, Err: side.err}
+		} else {
+			result.RightToLeft = probeChainRelayDirectionResult{Bytes: side.bytes, Err: side.err}
+		}
+	}
+	result.Duration = time.Since(startedAt)
+	return result
+}
+
+func firstProbeChainRelayError(result probeChainBidirectionalRelayResult) error {
+	if !isProbeChainRelayBenignError(result.LeftToRight.Err) {
+		return result.LeftToRight.Err
+	}
+	if !isProbeChainRelayBenignError(result.RightToLeft.Err) {
+		return result.RightToLeft.Err
+	}
+	return nil
+}
+
+func isProbeChainRelayBenignError(err error) bool {
+	return err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)
+}
+
+func formatProbeChainRelayError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimSpace(err.Error())
 }
 
 func closeProbeChainConnWrite(conn net.Conn) {
 	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
 		_ = closer.CloseWrite()
+		return
+	}
+	if stream, ok := conn.(*yamux.Stream); ok {
+		_ = stream.Close()
 	}
 }
 
