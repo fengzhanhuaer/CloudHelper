@@ -103,6 +103,54 @@
       white-space: pre-line;
     }
     .monitor-table td:first-child { color: var(--text-secondary); width: 190px; }
+    .link-monitor-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .link-monitor-list { display: grid; gap: 10px; }
+    .link-monitor-card {
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 8px;
+      padding: 12px;
+      background: rgba(13,17,23,.42);
+    }
+    .link-monitor-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+      flex-wrap: wrap;
+      color: var(--heading);
+      font-weight: 700;
+    }
+    .link-monitor-meta {
+      margin-top: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .link-monitor-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .link-monitor-box {
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(1,4,9,.25);
+      min-height: 86px;
+    }
+    .box-title { color: var(--text-secondary); font-size: 12px; margin-bottom: 6px; }
+    .pre-line { white-space: pre-line; word-break: break-word; font-family: Consolas, monospace; font-size: 12px; line-height: 1.55; }
+    .status-ok { color: #7ee787; }
+    .status-warn { color: #d29922; }
+    .status-bad { color: #ff938d; }
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; color: var(--text-secondary); }
     .msg.error { color: #ff938d; }
   </style>
@@ -134,6 +182,7 @@
       <div class="monitor-tabs" role="tablist">
         <button class="monitor-tab active" type="button" data-monitor-tab="summary">概要</button>
         <button class="monitor-tab" type="button" data-monitor-tab="details">监视数据</button>
+        <button class="monitor-tab" type="button" data-monitor-tab="links">链路监视</button>
       </div>
       <div id="monitor-panel-summary" class="monitor-panel active">
         <div class="monitor-grid">
@@ -166,6 +215,15 @@
           </tbody>
         </table>
       </div>
+      <div id="monitor-panel-links" class="monitor-panel">
+        <div class="link-monitor-head">
+          <div class="hint" id="link-monitor-updated">链路监视：--</div>
+          <button id="linkMonitorRefreshBtn" type="button" class="secondary">刷新链路监视</button>
+        </div>
+        <div id="link-monitor-list" class="link-monitor-list">
+          <div class="hint">暂无链路监视数据</div>
+        </div>
+      </div>
     </section>
 
     <p id="message" class="msg"></p>
@@ -175,6 +233,9 @@
     const messageEl = document.getElementById('message');
     let autoRefresh = true;
     let autoRefreshTimer = null;
+    let currentMonitorData = null;
+    let linkStatusCache = [];
+    let remoteTCPDebugCache = null;
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -232,6 +293,34 @@
       return n.toFixed(2) + ' MB';
     }
 
+    function escapeHTML(value) {
+      return String(value === undefined || value === null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function formatBytes(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n) || n <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let v = n;
+      let i = 0;
+      while (v >= 1024 && i < units.length - 1) {
+        v /= 1024;
+        i++;
+      }
+      return (i === 0 ? Math.trunc(v) : v.toFixed(2)) + ' ' + units[i];
+    }
+
+    function formatRate(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n) || n <= 0) return '-';
+      return formatBytes(n) + '/s';
+    }
+
     function formatCountMap(items) {
       if (!items || typeof items !== 'object') return '-';
       const parts = Object.keys(items).sort().map((key) => key + ':' + items[key]);
@@ -247,9 +336,13 @@
       });
       const panel = document.getElementById('monitor-panel-' + name);
       if (panel) panel.classList.add('active');
+      if (name === 'links') {
+        loadLinkMonitor();
+      }
     }
 
     function renderMonitor(data) {
+      currentMonitorData = data || {};
       const memory = data.memory || {};
       const tun = data.tun || {};
       const groups = data.group_runtimes || {};
@@ -280,6 +373,168 @@
       setText('mon-groups', 'total=' + (groups.total || 0) + ', selected=' + (groups.selected || 0) + ', connected=' + (groups.connected || 0) + ', failures=' + (groups.failure_total || 0) + ', statuses=' + formatCountMap(groups.statuses));
       setText('mon-chain', 'chain_runtimes=' + (data.chain_runtimes || 0) + ', tcp_failures=' + (data.tcp_failures || 0));
       setText('mon-dns', 'loaded=' + formatBool(dns.loaded, 'true', 'false') + ', service=' + formatBool(dns.service, 'true', 'false') + ', tun_service=' + formatBool(dns.tun_service, 'true', 'false') + ', cache=' + (dns.cache || 0) + ', fake=' + (dns.fake_ip || 0) + ', hints=' + (dns.route_hints || 0) + '/' + (dns.route_ip_hints || 0));
+      if (document.querySelector('.monitor-tab[data-monitor-tab="links"].active')) {
+        renderLinkMonitor();
+      }
+    }
+
+    function normalizeChainID(value) {
+      const text = String(value || '').trim();
+      return text.toLowerCase().startsWith('chain:') ? text.slice('chain:'.length).trim() : text;
+    }
+
+    function linkStatusClass(status) {
+      const value = String(status || '').trim();
+      if (value === 'reachable' || value === 'observed' || value === 'tested') return 'status-ok';
+      if (value === 'unreachable' || value === 'unconfigured') return 'status-bad';
+      return 'status-warn';
+    }
+
+    function formatLinkStatus(status) {
+      const value = String(status || '').trim();
+      if (value === 'reachable') return '可达';
+      if (value === 'observed') return '有观测';
+      if (value === 'tested') return '已测速';
+      if (value === 'unreachable') return '不可达';
+      if (value === 'unconfigured') return '配置不完整';
+      return value || '-';
+    }
+
+    function formatProtocol(protocol) {
+      const value = String(protocol || '').trim();
+      if (value === 'websocket-h3') return 'WS-H3';
+      if (value === 'websocket') return 'WS';
+      if (value === 'auto') return 'Auto';
+      return value || '-';
+    }
+
+    function formatProtocolState(state) {
+      if (!state || typeof state !== 'object') return '-';
+      const lines = [];
+      const selected = String(state.selected_protocol || '').trim();
+      if (selected) lines.push('选中=' + formatProtocol(selected));
+      const qualities = Array.isArray(state.protocol_qualities) ? state.protocol_qualities : [];
+      qualities.forEach((item) => {
+        const protocol = formatProtocol(item && item.protocol);
+        const latency = Number(item && item.latency_ms);
+        const loss = Number(item && item.loss_permille);
+        const rate = Number(item && item.rate_bps);
+        const failures = Number(item && item.failure_count);
+        const parts = [];
+        parts.push(item && item.available === false ? '不可用' : '可用');
+        parts.push('RTT=' + (Number.isFinite(latency) && latency > 0 ? Math.trunc(latency) + 'ms' : '-'));
+        parts.push('速率=' + formatRate(rate));
+        if (Number.isFinite(loss) && loss > 0) parts.push('丢包=' + (loss / 10).toFixed(1) + '%');
+        if (Number.isFinite(failures) && failures > 0) parts.push('失败=' + Math.trunc(failures));
+        lines.push(protocol + (selected === String(item && item.protocol || '').trim() ? ' *' : '') + ': ' + parts.join(' '));
+      });
+      return lines.length ? lines.join('\n') : '-';
+    }
+
+    function formatLocalLinkTCP(chainID, groups) {
+      const monitor = currentMonitorData || {};
+      const tcp = monitor.tcp || {};
+      const items = Array.isArray(tcp.items) ? tcp.items : [];
+      const groupSet = new Set((Array.isArray(groups) ? groups : []).map((v) => String(v || '').trim()).filter(Boolean));
+      const matched = items.filter((item) => {
+        const itemGroup = String(item && item.group || '').trim();
+        const itemNode = normalizeChainID(item && item.node_id);
+        return (groupSet.size > 0 && groupSet.has(itemGroup)) || itemNode === normalizeChainID(chainID);
+      });
+      if (matched.length === 0) {
+        return 'active=' + Math.trunc(Number(tcp.active || 0)) + ' tun=' + Math.trunc(Number(tcp.tun || 0)) + ' chain=' + Math.trunc(Number(tcp.chain || 0));
+      }
+      return matched.slice(0, 6).map(formatTCPFlowLine).join('\n');
+    }
+
+    function formatRemoteTCPDebug(remote) {
+      if (!remote || typeof remote !== 'object') return '未拉取';
+      if (remote.ok === false) return '拉取失败';
+      const active = Array.isArray(remote.active) ? remote.active : [];
+      const failures = Array.isArray(remote.failures) ? remote.failures : [];
+      const lines = [];
+      lines.push('node=' + (remote.node_id || '-') + ' active=' + active.length + ' failures=' + failures.length);
+      active.slice(0, 6).forEach((item) => lines.push(formatTCPFlowLine(item)));
+      failures.slice(0, 3).forEach((item) => lines.push('失败 ' + (item.flow_id || '-') + ' ' + (item.target || '-') + ' ' + (item.error || item.reason || '-')));
+      return lines.join('\n');
+    }
+
+    function formatTCPFlowLine(item) {
+      const flowID = String(item && item.flow_id || item && item.id || '-').trim();
+      const side = String(item && item.side || '-').trim();
+      const target = String(item && item.target || '-').trim();
+      const routeTarget = String(item && item.route_target || '-').trim();
+      const up = formatBytes(item && item.bytes_up);
+      const down = formatBytes(item && item.bytes_down);
+      const blockUp = Number(item && item.blocked_writes_up || 0);
+      const blockDown = Number(item && item.blocked_writes_down || 0);
+      const maxBlock = Math.max(Number(item && item.max_write_block_ms_up || 0), Number(item && item.max_write_block_ms_down || 0));
+      const blockText = blockUp || blockDown || maxBlock ? ' block=' + Math.trunc(blockUp) + '/' + Math.trunc(blockDown) + ' max=' + Math.trunc(maxBlock) + 'ms' : '';
+      return flowID + ' [' + side + '] ' + target + ' -> ' + routeTarget + ' up=' + up + ' down=' + down + blockText;
+    }
+
+    function renderLinkMonitor() {
+      const listEl = document.getElementById('link-monitor-list');
+      const updatedEl = document.getElementById('link-monitor-updated');
+      if (!listEl || !updatedEl) return;
+      updatedEl.textContent = '链路监视：本地 ' + ((currentMonitorData && currentMonitorData.fetched_at) || '--') + ' / 远端 ' + ((remoteTCPDebugCache && remoteTCPDebugCache.fetched) || '--');
+      const items = Array.isArray(linkStatusCache) ? linkStatusCache : [];
+      if (items.length === 0) {
+        listEl.innerHTML = '<div class="hint">暂无代理链路监视数据</div>';
+        return;
+      }
+      const remote = remoteTCPDebugCache && remoteTCPDebugCache.remote ? remoteTCPDebugCache.remote : null;
+      listEl.innerHTML = items.map((item) => {
+        const chainID = normalizeChainID(item && item.chain_id);
+        const name = String(item && item.chain_name || '').trim() || chainID || '-';
+        const groups = Array.isArray(item && item.selected_groups) ? item.selected_groups : [];
+        const endpoint = String(item && item.endpoint || '').trim() || [item && item.entry_host, item && item.entry_port].filter(Boolean).join(':') || '-';
+        const route = Array.isArray(item && item.route) ? item.route.join(' -> ') : '-';
+        const status = formatLinkStatus(item && item.status);
+        const statusClass = linkStatusClass(item && item.status);
+        const protocolLines = formatProtocolState(item && item.protocol_state);
+        const localLines = formatLocalLinkTCP(chainID, groups);
+        const remoteLines = formatRemoteTCPDebug(remote);
+        const rate = formatRate(item && item.observed_rate_bps);
+        return `
+          <div class="link-monitor-card">
+            <div class="link-monitor-title">
+              <span>${escapeHTML(name)}</span>
+              <span class="${statusClass}">${escapeHTML(status)}</span>
+            </div>
+            <div class="link-monitor-meta">
+              ID=${escapeHTML(chainID || '-')} ｜ 入口=${escapeHTML(endpoint)} ｜ 协议=${escapeHTML(formatProtocol(item && item.link_layer))} ｜ 观测速率=${escapeHTML(rate)}<br>
+              代理组=${escapeHTML(groups.length ? groups.join(', ') : '-')} ｜ 路由=${escapeHTML(route)}
+            </div>
+            <div class="link-monitor-grid">
+              <div class="link-monitor-box"><div class="box-title">协议质量</div><div class="pre-line">${escapeHTML(protocolLines)}</div></div>
+              <div class="link-monitor-box"><div class="box-title">本地连接质量</div><div class="pre-line">${escapeHTML(localLines)}</div></div>
+              <div class="link-monitor-box"><div class="box-title">远端出口质量</div><div class="pre-line">${escapeHTML(remoteLines)}</div></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function loadLinkMonitor() {
+      try {
+        const [linkData, remoteData] = await Promise.all([
+          requestJSON('/local/api/proxy/link/status', { method: 'GET' }),
+          requestJSON('/local/api/proxy/remote/tcp_debug', { method: 'GET' }).catch((err) => ({ ok: false, error: err.message })),
+        ]);
+        linkStatusCache = Array.isArray(linkData && linkData.items) ? linkData.items : [];
+        remoteTCPDebugCache = remoteData && typeof remoteData === 'object' ? remoteData : null;
+        renderLinkMonitor();
+        if (remoteData && remoteData.ok === false && remoteData.error) {
+          setMessage('远端出口质量暂不可用：' + remoteData.error, 'error');
+        }
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return;
+        }
+        setMessage('读取链路监视失败：' + err.message, 'error');
+      }
     }
 
     function formatTCPRelayItems(items) {
@@ -316,6 +571,9 @@
       try {
         const data = await requestJSON('/local/api/proxy/monitor', { method: 'GET' });
         renderMonitor(data);
+        if (document.querySelector('.monitor-tab[data-monitor-tab="links"].active')) {
+          loadLinkMonitor();
+        }
         setMessage('');
       } catch (err) {
         if (err && err.status === 401) {
@@ -344,6 +602,9 @@
     document.getElementById('monitorAutoRefreshBtn').addEventListener('click', () => {
       autoRefresh = !autoRefresh;
       syncAutoRefreshTimer();
+    });
+    document.getElementById('linkMonitorRefreshBtn').addEventListener('click', () => {
+      loadLinkMonitor();
     });
     document.querySelectorAll('.monitor-tab').forEach((btn) => {
       btn.addEventListener('click', () => switchMonitorTab(btn.dataset.monitorTab));
