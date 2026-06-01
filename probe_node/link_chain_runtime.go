@@ -281,12 +281,13 @@ const (
 	probeChainBridgeControlReverseOpen   = "reverse_data_open"
 	probeChainBridgeControlReverseResult = "reverse_data_open_result"
 
-	probeChainRelayModeBridge    = "bridge"
-	probeChainRelayModeStream    = "stream"
-	probeChainRelayModeSpeedTest = "speed_test"
-	probeChainRelayModePingPong  = "ping_pong"
-	probeChainBridgeRoleToNext   = "to_next"
-	probeChainBridgeRoleToPrev   = "to_prev"
+	probeChainRelayModeBridge     = "bridge"
+	probeChainRelayModeStream     = "stream"
+	probeChainRelayModeSpeedTest  = "speed_test"
+	probeChainRelayModeSpeedDebug = "speed_debug"
+	probeChainRelayModePingPong   = "ping_pong"
+	probeChainBridgeRoleToNext    = "to_next"
+	probeChainBridgeRoleToPrev    = "to_prev"
 
 	probeChainDialModeForward = "forward"
 	probeChainDialModeReverse = "reverse"
@@ -2090,6 +2091,18 @@ func handleProbeChainRelayToRuntime(runtime *probeChainRuntime, w http.ResponseW
 		requestTransport = "websocket"
 	}
 	log.Printf("probe chain relay request accepted: chain=%s role=%s remote=%s method=%s proto=%s host=%s mode=%s bridge_role=%s transport=%s content_length=%d", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Method, r.Proto, r.Host, firstNonEmpty(relayMode, probeChainRelayModeBridge), bridgeRole, requestTransport, r.ContentLength)
+	if relayMode == probeChainRelayModeSpeedDebug {
+		if isProbeChainHTTP3WebSocketRequest(r) {
+			handleProbeChainSpeedDebugHTTP3WebSocket(runtime, w, r)
+			return
+		}
+		if websocket.IsWebSocketUpgrade(r) {
+			handleProbeChainSpeedDebugWebSocket(runtime, w, r)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if relayMode == probeChainRelayModeSpeedTest {
 		if isProbeChainHTTP3WebSocketRequest(r) {
 			handleProbeChainSpeedTestHTTP3WebSocket(runtime, w, r)
@@ -2299,6 +2312,66 @@ func handleProbeChainBridgeRelayHTTP3WebSocket(runtime *probeChainRuntime, bridg
 	}
 	log.Printf("probe chain h3 websocket bridge disconnected: chain=%s role=%s bridge_role=%s assign_target=%s route_direction=%s remote=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, role, assignTarget, routeDirection, r.RemoteAddr, sessionID)
 	_ = session.Close()
+}
+
+func handleProbeChainSpeedDebugWebSocket(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {
+	if runtime == nil {
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+	log.Printf("probe chain websocket speed debug request: chain=%s role=%s remote=%s proto=%s", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Proto)
+	upgrader := websocket.Upgrader{
+		CheckOrigin:       func(*http.Request) bool { return true },
+		ReadBufferSize:    probeChainRelayWebSocketBufferBytes,
+		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
+		EnableCompression: false,
+	}
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("probe chain websocket speed debug upgrade failed: chain=%s role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, err)
+		return
+	}
+	conn := newWebSocketNetConn(ws)
+	defer conn.Close()
+	writeProbeChainSpeedDebugPayload(runtime, conn, "relay-speed-debug-"+randomHexToken(8))
+}
+
+func handleProbeChainSpeedDebugHTTP3WebSocket(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {
+	if runtime == nil {
+		http.Error(w, "chain runtime not found", http.StatusNotFound)
+		return
+	}
+	streamer, ok := w.(http3.HTTPStreamer)
+	if !ok {
+		log.Printf("probe chain h3 websocket speed debug rejected: chain=%s role=%s remote=%s reason=http3_stream_unavailable", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr)
+		http.Error(w, "http3 stream unavailable", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("probe chain h3 websocket speed debug request: chain=%s role=%s remote=%s proto=%s", runtime.cfg.chainID, runtime.cfg.role, r.RemoteAddr, r.Proto)
+	w.Header().Set("Content-Type", "application/json")
+	stream := streamer.HTTPStream()
+	conn := &probeChainHTTP3StreamNetConn{
+		stream: stream,
+		local:  probeChainRelayNetAddr{label: "probe-chain-h3-speed-debug-local"},
+		remote: probeChainRelayNetAddr{label: strings.TrimSpace(r.RemoteAddr)},
+		closeFn: func() error {
+			return stream.Close()
+		},
+	}
+	defer conn.Close()
+	writeProbeChainSpeedDebugPayload(runtime, conn, "relay-speed-debug-"+randomHexToken(8))
+}
+
+func writeProbeChainSpeedDebugPayload(runtime *probeChainRuntime, conn net.Conn, requestID string) {
+	nodeID := ""
+	if runtime != nil {
+		nodeID = strings.TrimSpace(runtime.cfg.identity.NodeID)
+	}
+	payload := globalProbeSpeedDebugState.snapshotPayload(nodeID, strings.TrimSpace(requestID))
+	payload.Scope = "chain_relay"
+	if err := writeProbeChainTunnelJSONResponse(conn, payload); err != nil && runtime != nil {
+		log.Printf("probe chain speed debug direct response failed: chain=%s role=%s request_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(requestID), err)
+	}
 }
 
 func handleProbeChainSpeedTestWebSocket(runtime *probeChainRuntime, w http.ResponseWriter, r *http.Request) {

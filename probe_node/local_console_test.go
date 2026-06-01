@@ -2687,6 +2687,9 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 			},
 		}
 	}
+	probeLocalProxyLinkRemoteSpeedDebugFetch = func(item probeLinkChainServerItem, endpoint probeLocalTUNChainEndpoint, protocol string) map[string]any {
+		return map[string]any{"ok": true, "source": "test", "remote": probeSpeedDebugResultPayload{OK: true}}
+	}
 	defer resetProbeLocalProxyHooksForTest()
 
 	statusResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/proxy/link/status", nil, sessionCookie)
@@ -2792,6 +2795,51 @@ func TestProbeLocalProxyLinkStatusLatencyAndSpeedEndpoints(t *testing.T) {
 	results, ok := speedPayload["results"].([]any)
 	if !ok || len(results) != 2 {
 		t.Fatalf("link speed results=%v", speedPayload["results"])
+	}
+	remoteDebug, ok := speedPayload["remote_speed_debug"].(map[string]any)
+	if !ok || remoteDebug["ok"] != true || remoteDebug["source"] != "test" {
+		t.Fatalf("link speed remote debug=%v", speedPayload["remote_speed_debug"])
+	}
+}
+
+func TestProbeLocalProxyLinkRemoteSpeedDebugFetchPrefersRelayEntry(t *testing.T) {
+	probeLocalProxyRelaySpeedDebugFetch = func(chainID string, secret string, relayHost string, relayPort int, layer string, protocol string, openTimeout time.Duration) (probeSpeedDebugResultPayload, error) {
+		if chainID != "chain-origin" || secret != "secret" || relayHost != "entry.example.com" || relayPort != 16030 {
+			return probeSpeedDebugResultPayload{}, fmt.Errorf("unexpected relay fetch target: chain=%s secret=%s relay=%s:%d", chainID, secret, relayHost, relayPort)
+		}
+		if layer != "auto" || protocol != "websocket-h3" {
+			return probeSpeedDebugResultPayload{}, fmt.Errorf("unexpected relay fetch protocol: layer=%s protocol=%s", layer, protocol)
+		}
+		return probeSpeedDebugResultPayload{
+			OK:     true,
+			NodeID: "12",
+			Recent: []probeSpeedDebugItemPayload{{
+				ChainID:   "chain-origin",
+				Transport: "websocket-h3",
+				Status:    "completed",
+				RateBPS:   1024 * 1024,
+			}},
+		}, nil
+	}
+	defer resetProbeLocalProxyHooksForTest()
+
+	result := runProbeLocalProxyLinkRemoteSpeedDebugFetch(probeLinkChainServerItem{
+		ChainID:       "chain-origin_pub",
+		RelayChainID:  "chain-origin",
+		ClientEntryID: "chain-origin_cf",
+	}, probeLocalTUNChainEndpoint{
+		ChainID:     "chain-origin",
+		ChainSecret: "secret",
+		EntryHost:   "entry.example.com",
+		EntryPort:   16030,
+		LinkLayer:   "auto",
+	}, "websocket-h3")
+	if result["ok"] != true || result["source"] != "relay_entry" {
+		t.Fatalf("remote debug result=%v", result)
+	}
+	payload, ok := result["remote"].(probeSpeedDebugResultPayload)
+	if !ok || payload.NodeID != "12" || !probeLocalProxySpeedDebugPayloadHasChain(payload, probeLinkChainServerItem{RelayChainID: "chain-origin"}) {
+		t.Fatalf("remote debug payload=%#v", result["remote"])
 	}
 }
 

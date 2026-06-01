@@ -253,32 +253,34 @@ func defaultProbeLocalDetectTUNInstalled() (bool, error) {
 }
 
 var (
-	errProbeLocalProxyUnsupported         = errors.New("probe local proxy takeover is not supported on this platform")
-	errProbeLocalTUNUnsupported           = errors.New("probe local tun install is not supported on this platform")
-	probeLocalInstallTUNDriver            = installProbeLocalTUNDriver
-	probeLocalCheckTUNReadyAfterInstall   = probeLocalNoopPostInstallTUNReadyCheck
-	probeLocalDetectTUNInstalled          = defaultProbeLocalDetectTUNInstalled
-	probeLocalResetTUNDetectInstalledHook = func() { probeLocalDetectTUNInstalled = defaultProbeLocalDetectTUNInstalled }
-	probeLocalApplyProxyTakeover          = applyProbeLocalProxyTakeover
-	probeLocalRestoreProxyDirect          = restoreProbeLocalProxyDirect
-	probeLocalApplyTUNPrimaryDNS          = applyProbeLocalTUNPrimaryDNS
-	probeLocalRestoreTUNPrimaryDNS        = restoreProbeLocalTUNPrimaryDNS
-	probeLocalUninstallTUNDriver          = uninstallProbeLocalTUNDriver
-	probeLocalEnsureExplicitDirectBypass  = ensureProbeLocalExplicitDirectBypassForTarget
-	probeLocalResolveGroupRuntimeLatency  = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
-	probeLocalProxyLinkHandshakeProbe     = runProbeLocalProxyLinkHandshakeProbe
-	probeLocalProxyLinkProtocolProbe      = runProbeLocalProxyLinkProtocolProbe
-	probeLocalProxyLinkSpeedProbe         = runProbeLocalProxyLinkSpeedProbe
-	probeLocalProxyLinkOpenRelayConn      = openProbeChainRelayNetConnWithLayerConn
-	probeLocalFetchCloudflareIPv4CIDRs    = defaultProbeLocalFetchCloudflareIPv4CIDRs
-	probeLocalProxyLinkCFIPLookup         = defaultProbeLocalProxyLinkCFIPLookup
-	probeLocalProxyLinkCFIPProbe          = runProbeLocalProxyLinkCFIPProbe
-	probeLocalStartCFIPOptimizeTask       = func(fn func()) { go fn() }
-	probeLocalRunUpgrade                  = runProbeUpgrade
-	probeLocalFetchRelease                = fetchProbeRelease
-	probeLocalRestartProcess              = restartCurrentProcess
-	probeLocalRefreshProxyChainCache      = refreshProbeProxyChainCacheFromController
-	probeLocalLookupIPv4ForBypass         = lookupProbeLocalIPv4ForBypass
+	errProbeLocalProxyUnsupported            = errors.New("probe local proxy takeover is not supported on this platform")
+	errProbeLocalTUNUnsupported              = errors.New("probe local tun install is not supported on this platform")
+	probeLocalInstallTUNDriver               = installProbeLocalTUNDriver
+	probeLocalCheckTUNReadyAfterInstall      = probeLocalNoopPostInstallTUNReadyCheck
+	probeLocalDetectTUNInstalled             = defaultProbeLocalDetectTUNInstalled
+	probeLocalResetTUNDetectInstalledHook    = func() { probeLocalDetectTUNInstalled = defaultProbeLocalDetectTUNInstalled }
+	probeLocalApplyProxyTakeover             = applyProbeLocalProxyTakeover
+	probeLocalRestoreProxyDirect             = restoreProbeLocalProxyDirect
+	probeLocalApplyTUNPrimaryDNS             = applyProbeLocalTUNPrimaryDNS
+	probeLocalRestoreTUNPrimaryDNS           = restoreProbeLocalTUNPrimaryDNS
+	probeLocalUninstallTUNDriver             = uninstallProbeLocalTUNDriver
+	probeLocalEnsureExplicitDirectBypass     = ensureProbeLocalExplicitDirectBypassForTarget
+	probeLocalResolveGroupRuntimeLatency     = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
+	probeLocalProxyLinkHandshakeProbe        = runProbeLocalProxyLinkHandshakeProbe
+	probeLocalProxyLinkProtocolProbe         = runProbeLocalProxyLinkProtocolProbe
+	probeLocalProxyLinkSpeedProbe            = runProbeLocalProxyLinkSpeedProbe
+	probeLocalProxyRelaySpeedDebugFetch      = probeChainRelayFetchSpeedDebugAuto
+	probeLocalProxyLinkRemoteSpeedDebugFetch = runProbeLocalProxyLinkRemoteSpeedDebugFetch
+	probeLocalProxyLinkOpenRelayConn         = openProbeChainRelayNetConnWithLayerConn
+	probeLocalFetchCloudflareIPv4CIDRs       = defaultProbeLocalFetchCloudflareIPv4CIDRs
+	probeLocalProxyLinkCFIPLookup            = defaultProbeLocalProxyLinkCFIPLookup
+	probeLocalProxyLinkCFIPProbe             = runProbeLocalProxyLinkCFIPProbe
+	probeLocalStartCFIPOptimizeTask          = func(fn func()) { go fn() }
+	probeLocalRunUpgrade                     = runProbeUpgrade
+	probeLocalFetchRelease                   = fetchProbeRelease
+	probeLocalRestartProcess                 = restartCurrentProcess
+	probeLocalRefreshProxyChainCache         = refreshProbeProxyChainCacheFromController
+	probeLocalLookupIPv4ForBypass            = lookupProbeLocalIPv4ForBypass
 )
 
 var probeLocalProxyStatusRefreshState = struct {
@@ -4208,7 +4210,43 @@ func probeLocalProxyGroupRuntimeForLink(item probeLinkChainServerItem) (string, 
 	return resolveProbeLocalSelectedGroupRuntime(state)
 }
 
-func fetchProbeLocalProxyLinkRemoteSpeedDebugAfterTest(item probeLinkChainServerItem) map[string]any {
+func runProbeLocalProxyLinkRemoteSpeedDebugFetch(item probeLinkChainServerItem, endpoint probeLocalTUNChainEndpoint, protocol string) map[string]any {
+	if strings.TrimSpace(endpoint.EntryHost) != "" && endpoint.EntryPort > 0 {
+		var lastPayload probeSpeedDebugResultPayload
+		var lastErr error
+		for idx, wait := range []time.Duration{0, 450 * time.Millisecond, 1200 * time.Millisecond} {
+			if wait > 0 {
+				time.Sleep(wait)
+			}
+			payload, err := probeLocalProxyRelaySpeedDebugFetch(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, protocol, 1200*time.Millisecond)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			lastPayload = payload
+			if probeLocalProxySpeedDebugPayloadHasChain(payload, item) || idx == 2 {
+				return map[string]any{
+					"ok":      true,
+					"group":   "",
+					"source":  "relay_entry",
+					"remote":  payload,
+					"fetched": time.Now().UTC().Format(time.RFC3339),
+				}
+			}
+		}
+		if strings.TrimSpace(lastPayload.Type) != "" || lastPayload.OK || len(lastPayload.Active) > 0 || len(lastPayload.Recent) > 0 {
+			return map[string]any{
+				"ok":      true,
+				"group":   "",
+				"source":  "relay_entry",
+				"remote":  lastPayload,
+				"fetched": time.Now().UTC().Format(time.RFC3339),
+			}
+		}
+		if lastErr != nil {
+			logProbeWarnf("probe local proxy direct relay speed debug fetch failed: chain=%s relay=%s:%d err=%v", strings.TrimSpace(endpoint.ChainID), strings.TrimSpace(endpoint.EntryHost), endpoint.EntryPort, lastErr)
+		}
+	}
 	group, rt := probeLocalProxyGroupRuntimeForLink(item)
 	if rt == nil {
 		return map[string]any{
@@ -4234,6 +4272,7 @@ func fetchProbeLocalProxyLinkRemoteSpeedDebugAfterTest(item probeLinkChainServer
 			return map[string]any{
 				"ok":      true,
 				"group":   group,
+				"source":  "management",
 				"remote":  payload,
 				"fetched": time.Now().UTC().Format(time.RFC3339),
 			}
@@ -4243,6 +4282,7 @@ func fetchProbeLocalProxyLinkRemoteSpeedDebugAfterTest(item probeLinkChainServer
 		return map[string]any{
 			"ok":      true,
 			"group":   group,
+			"source":  "management",
 			"remote":  lastPayload,
 			"fetched": time.Now().UTC().Format(time.RFC3339),
 		}
@@ -5276,7 +5316,7 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 	} else if len(results) == 0 {
 		status = "no_result"
 	}
-	remoteSpeedDebug := fetchProbeLocalProxyLinkRemoteSpeedDebugAfterTest(item)
+	remoteSpeedDebug := probeLocalProxyLinkRemoteSpeedDebugFetch(item, endpoint, protocol)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                 okResult,
 		"chain_id":           chainID,
@@ -5904,6 +5944,8 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalProxyLinkHandshakeProbe = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkProtocolProbe = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe = runProbeLocalProxyLinkSpeedProbe
+	probeLocalProxyRelaySpeedDebugFetch = probeChainRelayFetchSpeedDebugAuto
+	probeLocalProxyLinkRemoteSpeedDebugFetch = runProbeLocalProxyLinkRemoteSpeedDebugFetch
 	probeLocalProxyLinkOpenRelayConn = openProbeChainRelayNetConnWithLayerConn
 	probeLocalFetchCloudflareIPv4CIDRs = defaultProbeLocalFetchCloudflareIPv4CIDRs
 	probeLocalProxyLinkCFIPLookup = defaultProbeLocalProxyLinkCFIPLookup

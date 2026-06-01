@@ -720,8 +720,16 @@
       if (displayItems.length === 0) return `node=${remote.node_id || '-'} 暂无本链路写侧样本`;
       const lines = displayItems.slice(0, 4).map((item) => formatRemoteSpeedMetricLine(item));
       const fetched = String(remoteWrapper.fetched || remote.fetched_at || '').trim();
-      const head = `node=${remote.node_id || '-'}${fallback ? ' ｜ 未精确匹配本链路，显示最近写侧样本' : ''}${fetched ? ` ｜ 拉取 ${fetched}` : ''}`;
+      const source = formatRemoteSpeedSource(remoteWrapper && remoteWrapper.source);
+      const head = `node=${remote.node_id || '-'}${source ? ` ｜ ${source}` : ''}${fallback ? ' ｜ 未精确匹配本链路，显示最近写侧样本' : ''}${fetched ? ` ｜ 拉取 ${fetched}` : ''}`;
       return `${head}\n${lines.join('\n')}`;
+    }
+
+    function formatRemoteSpeedSource(source) {
+      const value = String(source || '').trim();
+      if (value === 'relay_entry') return '链路入口';
+      if (value === 'management') return '管理通道';
+      return value;
     }
 
     function formatRemoteSpeedMetricLine(item) {

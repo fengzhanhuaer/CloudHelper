@@ -1330,6 +1330,54 @@ func probeChainRelaySpeedTestAuto(chainID string, secret string, relayHost strin
 	return results
 }
 
+func probeChainRelayFetchSpeedDebugAuto(chainID string, secret string, relayHost string, relayPort int, layer string, protocol string, openTimeout time.Duration) (probeSpeedDebugResultPayload, error) {
+	candidates := probeChainRelaySpeedTestCandidates(layer, protocol)
+	if len(candidates) == 0 {
+		candidates = probeChainRelayProtocolCandidates(layer)
+	}
+	var errs []string
+	for _, candidate := range candidates {
+		payload, err := probeChainRelayFetchSpeedDebugWithLayer(chainID, secret, relayHost, relayPort, candidate, openTimeout)
+		if err == nil {
+			return payload, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s=%v", normalizeProbeChainLinkLayer(candidate), err))
+	}
+	if len(errs) == 0 {
+		return probeSpeedDebugResultPayload{}, errors.New("no relay speed debug protocol candidate")
+	}
+	return probeSpeedDebugResultPayload{}, fmt.Errorf("relay speed debug fetch failed: %s", strings.Join(errs, "; "))
+}
+
+func probeChainRelayFetchSpeedDebugWithLayer(chainID string, secret string, relayHost string, relayPort int, layer string, openTimeout time.Duration) (probeSpeedDebugResultPayload, error) {
+	cleanLayer := normalizeProbeChainLinkLayer(layer)
+	if cleanLayer != "websocket" && cleanLayer != "websocket-h3" {
+		return probeSpeedDebugResultPayload{}, fmt.Errorf("unsupported speed debug protocol: %s", layer)
+	}
+	if openTimeout <= 0 {
+		openTimeout = probeChainRelayProtocolProbeTimeout
+	}
+	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(relayHost)
+	if err != nil {
+		return probeSpeedDebugResultPayload{}, err
+	}
+	conn, err := openProbeChainRelayNetConnWithResolvedHostModeAndToken(chainID, secret, relayHost, relayPort, cleanLayer, probeChainBridgeRoleToNext, probeChainRelayModeSpeedDebug, "", relayDialHost, relayHostHeader, openTimeout, true)
+	if err != nil {
+		return probeSpeedDebugResultPayload{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(openTimeout))
+	var payload probeSpeedDebugResultPayload
+	if err := json.NewDecoder(conn).Decode(&payload); err != nil {
+		return probeSpeedDebugResultPayload{}, err
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if strings.TrimSpace(payload.Scope) == "" {
+		payload.Scope = "chain_relay"
+	}
+	return payload, nil
+}
+
 func probeChainRelaySpeedTestCandidates(layer string, protocol string) []string {
 	cleanProtocol := normalizeProbeChainLinkLayer(protocol)
 	switch cleanProtocol {
