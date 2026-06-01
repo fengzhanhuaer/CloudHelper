@@ -62,7 +62,8 @@ class ProbeNodeVpnService : VpnService() {
                     .addAddress("fd00:111:111::2", 128)
                     .addRoute("0.0.0.0", 0)
                     .addRoute("::", 0)
-                    .addDnsServer("10.111.0.2")
+                    .addDnsServer("10.111.0.1")
+                    .addDnsServer("fd00:111:111::1")
                 try {
                     builder.addDisallowedApplication(packageName)
                     AndroidLogStore.add("vpn", "excluded own package from VPN routing: $packageName")
