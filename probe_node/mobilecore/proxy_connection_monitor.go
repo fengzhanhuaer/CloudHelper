@@ -13,6 +13,7 @@ import (
 
 const (
 	androidProxyConnectionMaxFailures           = 128
+	androidProxyConnectionMaxCompleted          = 128
 	androidProxyConnectionBlockedWriteThreshold = 50 * time.Millisecond
 )
 
@@ -47,6 +48,39 @@ type androidProxyConnectionItem struct {
 	LastWriteBlockMSDown int64  `json:"last_write_block_ms_down,omitempty"`
 }
 
+type androidProxyConnectionCompleted struct {
+	ID                   string `json:"id"`
+	FlowID               string `json:"flow_id,omitempty"`
+	Side                 string `json:"side,omitempty"`
+	Scope                string `json:"scope,omitempty"`
+	Target               string `json:"target,omitempty"`
+	RouteTarget          string `json:"route_target,omitempty"`
+	ChainID              string `json:"chain_id,omitempty"`
+	Group                string `json:"group,omitempty"`
+	Direct               bool   `json:"direct"`
+	Transport            string `json:"transport,omitempty"`
+	CloseReason          string `json:"close_reason,omitempty"`
+	OpenedAt             string `json:"opened_at,omitempty"`
+	ClosedAt             string `json:"closed_at,omitempty"`
+	LastActive           string `json:"last_active,omitempty"`
+	LastWriteBlockedAt   string `json:"last_write_blocked_at,omitempty"`
+	LastCongestionSide   string `json:"last_congestion_side,omitempty"`
+	DurationMS           int64  `json:"duration_ms,omitempty"`
+	IdleMS               int64  `json:"idle_ms,omitempty"`
+	BytesUp              int64  `json:"bytes_up,omitempty"`
+	BytesDown            int64  `json:"bytes_down,omitempty"`
+	WritesUp             int64  `json:"writes_up,omitempty"`
+	WritesDown           int64  `json:"writes_down,omitempty"`
+	BlockedWritesUp      int64  `json:"blocked_writes_up,omitempty"`
+	BlockedWritesDown    int64  `json:"blocked_writes_down,omitempty"`
+	WriteBlockMSUp       int64  `json:"write_block_ms_up,omitempty"`
+	WriteBlockMSDown     int64  `json:"write_block_ms_down,omitempty"`
+	MaxWriteBlockMSUp    int64  `json:"max_write_block_ms_up,omitempty"`
+	MaxWriteBlockMSDown  int64  `json:"max_write_block_ms_down,omitempty"`
+	LastWriteBlockMSUp   int64  `json:"last_write_block_ms_up,omitempty"`
+	LastWriteBlockMSDown int64  `json:"last_write_block_ms_down,omitempty"`
+}
+
 type androidProxyConnectionFailure struct {
 	Kind        string `json:"kind"`
 	Reason      string `json:"reason,omitempty"`
@@ -64,14 +98,16 @@ type androidProxyConnectionFailure struct {
 }
 
 type androidProxyConnectionSnapshot struct {
-	Type         string                          `json:"type"`
-	OK           bool                            `json:"ok"`
-	Scope        string                          `json:"scope,omitempty"`
-	ActiveCount  int                             `json:"active_count"`
-	Active       []androidProxyConnectionItem    `json:"active"`
-	FailureCount int                             `json:"failure_count"`
-	Failures     []androidProxyConnectionFailure `json:"failures"`
-	FetchedAt    string                          `json:"fetched_at,omitempty"`
+	Type           string                            `json:"type"`
+	OK             bool                              `json:"ok"`
+	Scope          string                            `json:"scope,omitempty"`
+	ActiveCount    int                               `json:"active_count"`
+	Active         []androidProxyConnectionItem      `json:"active"`
+	Completed      []androidProxyConnectionCompleted `json:"completed"`
+	CompletedCount int                               `json:"completed_count"`
+	FailureCount   int                               `json:"failure_count"`
+	Failures       []androidProxyConnectionFailure   `json:"failures"`
+	FetchedAt      string                            `json:"fetched_at,omitempty"`
 }
 
 type androidProxyConnectionFailureEvent struct {
@@ -135,14 +171,18 @@ type androidProxyConnectionRelay struct {
 	lastBlockMSUp      atomic.Int64
 	lastBlockMSDown    atomic.Int64
 	lastCongestionSide atomic.Value
+	closeReason        atomic.Value
+	closedUnix         atomic.Int64
+	completed          atomic.Bool
 	activeSides        atomic.Int32
 }
 
 type androidProxyConnectionState struct {
-	mu       sync.Mutex
-	seq      atomic.Uint64
-	active   map[string]*androidProxyConnectionRelay
-	failures []androidProxyConnectionFailureEvent
+	mu        sync.Mutex
+	seq       atomic.Uint64
+	active    map[string]*androidProxyConnectionRelay
+	completed []androidProxyConnectionCompleted
+	failures  []androidProxyConnectionFailureEvent
 }
 
 type androidProxyConnectionWriter struct {
@@ -251,6 +291,7 @@ func (s *androidProxyConnectionState) recordRelayFailure(relay *androidProxyConn
 	if s == nil || relay == nil || err == nil || isAndroidProxyExpectedRelayError(err) {
 		return
 	}
+	relay.markCloseReason(classifyAndroidProxyConnectionError("relay_failed", err))
 	s.recordFailure("relay_failed", androidProxyConnectionOptions{
 		Scope:     relay.scope,
 		FlowID:    relay.flowID,
@@ -266,12 +307,23 @@ func (s *androidProxyConnectionState) recordRelayFailure(relay *androidProxyConn
 	}, err)
 }
 
+func classifyAndroidProxyRelayClose(err error) string {
+	if err == nil {
+		return "eof"
+	}
+	if isAndroidProxyExpectedRelayError(err) {
+		return classifyAndroidProxyConnectionError("closed", err)
+	}
+	return classifyAndroidProxyConnectionError("relay_failed", err)
+}
+
 func (s *androidProxyConnectionState) snapshot() androidProxyConnectionSnapshot {
 	payload := androidProxyConnectionSnapshot{
 		Type:      "android_proxy_connections",
 		OK:        true,
 		Scope:     "android",
 		Active:    []androidProxyConnectionItem{},
+		Completed: []androidProxyConnectionCompleted{},
 		Failures:  []androidProxyConnectionFailure{},
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -287,6 +339,7 @@ func (s *androidProxyConnectionState) snapshot() androidProxyConnectionSnapshot 
 		}
 	}
 	failures := append([]androidProxyConnectionFailureEvent(nil), s.failures...)
+	completed := append([]androidProxyConnectionCompleted(nil), s.completed...)
 	s.mu.Unlock()
 	for _, relay := range active {
 		item := androidProxyConnectionItem{
@@ -354,7 +407,12 @@ func (s *androidProxyConnectionState) snapshot() androidProxyConnectionSnapshot 
 	sort.Slice(payload.Failures, func(i, j int) bool {
 		return payload.Failures[i].LastSeen > payload.Failures[j].LastSeen
 	})
+	sort.Slice(completed, func(i, j int) bool {
+		return completed[i].ClosedAt > completed[j].ClosedAt
+	})
+	payload.Completed = completed
 	payload.ActiveCount = len(payload.Active)
+	payload.CompletedCount = len(payload.Completed)
 	payload.FailureCount = len(payload.Failures)
 	return payload
 }
@@ -407,9 +465,90 @@ func (r *androidProxyConnectionRelay) releaseSide() {
 	if r.activeSides.Add(-1) > 0 {
 		return
 	}
+	r.finish("closed")
 	r.state.mu.Lock()
 	delete(r.state.active, r.id)
 	r.state.mu.Unlock()
+}
+
+func (r *androidProxyConnectionRelay) finish(defaultReason string) {
+	if r == nil || r.state == nil || !r.completed.CompareAndSwap(false, true) {
+		return
+	}
+	now := time.Now().UTC()
+	r.closedUnix.Store(now.Unix())
+	reason := firstNonEmptyString(r.closeReasonString(), strings.TrimSpace(defaultReason), "closed")
+	item := r.completedSnapshot(now, reason)
+	r.state.mu.Lock()
+	r.state.completed = append(r.state.completed, item)
+	if len(r.state.completed) > androidProxyConnectionMaxCompleted {
+		r.state.completed = append([]androidProxyConnectionCompleted(nil), r.state.completed[len(r.state.completed)-androidProxyConnectionMaxCompleted:]...)
+	}
+	r.state.mu.Unlock()
+}
+
+func (r *androidProxyConnectionRelay) markCloseReason(reason string) {
+	if r == nil {
+		return
+	}
+	clean := strings.TrimSpace(reason)
+	if clean == "" {
+		return
+	}
+	r.closeReason.Store(clean)
+}
+
+func (r *androidProxyConnectionRelay) closeReasonString() string {
+	if r == nil {
+		return ""
+	}
+	if reason, ok := r.closeReason.Load().(string); ok {
+		return strings.TrimSpace(reason)
+	}
+	return ""
+}
+
+func (r *androidProxyConnectionRelay) completedSnapshot(now time.Time, reason string) androidProxyConnectionCompleted {
+	item := androidProxyConnectionCompleted{
+		ID:                   strings.TrimSpace(r.id),
+		FlowID:               strings.TrimSpace(r.flowID),
+		Side:                 strings.TrimSpace(r.side),
+		Scope:                strings.TrimSpace(r.scope),
+		Target:               strings.TrimSpace(r.target),
+		RouteTarget:          firstNonEmptyString(strings.TrimSpace(r.routeTarget), strings.TrimSpace(r.target)),
+		ChainID:              strings.TrimSpace(r.chainID),
+		Group:                strings.TrimSpace(r.group),
+		Direct:               r.direct,
+		Transport:            firstNonEmptyString(strings.TrimSpace(r.transport), "stream"),
+		CloseReason:          strings.TrimSpace(reason),
+		OpenedAt:             r.openedAt.UTC().Format(time.RFC3339),
+		ClosedAt:             now.Format(time.RFC3339),
+		DurationMS:           now.Sub(r.openedAt).Milliseconds(),
+		BytesUp:              r.bytesUp.Load(),
+		BytesDown:            r.bytesDown.Load(),
+		WritesUp:             r.writesUp.Load(),
+		WritesDown:           r.writesDown.Load(),
+		BlockedWritesUp:      r.blockedUp.Load(),
+		BlockedWritesDown:    r.blockedDown.Load(),
+		WriteBlockMSUp:       r.blockMSUp.Load(),
+		WriteBlockMSDown:     r.blockMSDown.Load(),
+		MaxWriteBlockMSUp:    r.maxBlockMSUp.Load(),
+		MaxWriteBlockMSDown:  r.maxBlockMSDown.Load(),
+		LastWriteBlockMSUp:   r.lastBlockMSUp.Load(),
+		LastWriteBlockMSDown: r.lastBlockMSDown.Load(),
+	}
+	if lastActive := r.lastActiveUnix.Load(); lastActive > 0 {
+		lastActiveAt := time.Unix(lastActive, 0).UTC()
+		item.LastActive = lastActiveAt.Format(time.RFC3339)
+		item.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+	}
+	if lastBlocked := r.lastBlockedUnix.Load(); lastBlocked > 0 {
+		item.LastWriteBlockedAt = time.Unix(lastBlocked, 0).UTC().Format(time.RFC3339)
+	}
+	if side, ok := r.lastCongestionSide.Load().(string); ok {
+		item.LastCongestionSide = strings.TrimSpace(side)
+	}
+	return item
 }
 
 func updateAndroidProxyConnectionMax(target *atomic.Int64, value int64) {

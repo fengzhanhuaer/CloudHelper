@@ -817,6 +817,7 @@ function renderConnections(proxyData, vpnData) {
   list.innerHTML = "";
   const connectionData = proxyData.connections || {};
   const active = Array.isArray(connectionData.active) ? connectionData.active : [];
+  const completed = Array.isArray(connectionData.completed) ? connectionData.completed : [];
   const failures = Array.isArray(connectionData.failures) ? connectionData.failures : [];
   const runtimeText = [
     vpnData.running || vpnData.status === "running" ? "VPN 运行中" : "VPN 未启动",
@@ -824,7 +825,7 @@ function renderConnections(proxyData, vpnData) {
     proxyData.socks5_enabled ? `SOCKS5 ${proxyData.socks5_addr || ""}`.trim() : "SOCKS5 未启动",
     connectionData.fetched_at ? `刷新 ${formatCompactTime(connectionData.fetched_at)}` : ""
   ].filter(Boolean).join("；");
-  setText("connectionStatus", `${runtimeText}；活动 ${active.length}；失败 ${failures.length}`);
+  setText("connectionStatus", `${runtimeText}；活动 ${active.length}；完成 ${completed.length}；失败 ${failures.length}`);
   if (!proxyData.ok) {
     const item = document.createElement("div");
     item.className = "status-box";
@@ -832,7 +833,7 @@ function renderConnections(proxyData, vpnData) {
     list.appendChild(item);
     return;
   }
-  if (!active.length && !failures.length) {
+  if (!active.length && !completed.length && !failures.length) {
     const empty = document.createElement("div");
     empty.className = "status-box";
     empty.textContent = "暂无活动代理连接。打开 VPN 或本地 HTTP/SOCKS 后，新连接会显示在这里。";
@@ -843,12 +844,15 @@ function renderConnections(proxyData, vpnData) {
   const udpActive = active.filter((item) => String(item.transport || "").toLowerCase() === "udp" || String(item.scope || "").toLowerCase() === "vpn_udp");
   appendConnectionSection(list, "TCP Relay", tcpActive, "暂无 TCP relay 连接");
   appendConnectionSection(list, "UDP Bridge", udpActive, "暂无 UDP bridge 连接");
+  if (completed.length) {
+    appendConnectionSection(list, "最近完成", completed.slice(0, 8), "暂无完成记录", false, true);
+  }
   if (failures.length) {
-    appendConnectionSection(list, "最近失败", failures.slice(0, 8), "暂无失败记录", true);
+    appendConnectionSection(list, "最近失败", failures.slice(0, 8), "暂无失败记录", true, false);
   }
 }
 
-function appendConnectionSection(list, title, items, emptyText, isFailure) {
+function appendConnectionSection(list, title, items, emptyText, isFailure, isCompleted) {
   const heading = document.createElement("div");
   heading.className = "connection-section-title";
   heading.textContent = `${title} (${items.length})`;
@@ -860,13 +864,14 @@ function appendConnectionSection(list, title, items, emptyText, isFailure) {
     list.appendChild(empty);
     return;
   }
-  items.forEach((item) => list.appendChild(renderConnectionItem(item, !!isFailure)));
+  items.forEach((item) => list.appendChild(renderConnectionItem(item, !!isFailure, !!isCompleted)));
 }
 
-function renderConnectionItem(item, isFailure) {
+function renderConnectionItem(item, isFailure, isCompleted) {
   const card = document.createElement("article");
   card.className = "connection-card";
   card.classList.toggle("error", !!isFailure);
+  card.classList.toggle("completed", !!isCompleted);
 
   const title = document.createElement("div");
   title.className = "connection-title";
@@ -874,7 +879,7 @@ function renderConnectionItem(item, isFailure) {
   name.textContent = item.flow_id || item.id || "-";
   const badge = document.createElement("span");
   badge.className = isFailure ? "connection-badge error" : "connection-badge";
-  badge.textContent = isFailure ? (item.reason || "失败") : (item.transport || "stream");
+  badge.textContent = isFailure ? (item.reason || "失败") : (isCompleted ? (item.close_reason || "closed") : (item.transport || "stream"));
   title.append(name, badge);
 
   const meta = document.createElement("div");
@@ -901,9 +906,12 @@ function renderConnectionItem(item, isFailure) {
     appendConnectionMetric(grid, "上行", formatBytes(item.bytes_up));
     appendConnectionMetric(grid, "下行", formatBytes(item.bytes_down));
     appendConnectionMetric(grid, "写次数", `${Number(item.writes_up || 0)}/${Number(item.writes_down || 0)}`);
-    appendConnectionMetric(grid, "空闲", formatDurationSeconds(item.idle_ms));
+    appendConnectionMetric(grid, isCompleted ? "持续" : "空闲", isCompleted ? formatDurationSeconds(item.duration_ms) : formatDurationSeconds(item.idle_ms));
     appendConnectionMetric(grid, "阻塞", formatConnectionBlock(item));
     appendConnectionMetric(grid, "最近阻塞", formatLastConnectionBlock(item));
+    if (isCompleted) {
+      appendConnectionMetric(grid, "结束", [item.close_reason || "-", formatCompactTime(item.closed_at)].filter(Boolean).join(" "));
+    }
   }
   card.append(title, meta, path, grid);
   return card;

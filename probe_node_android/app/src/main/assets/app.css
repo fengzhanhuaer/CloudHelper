@@ -305,6 +305,9 @@ input {
 .connection-card.error {
   border-left-color: #b91c1c;
 }
+.connection-card.completed {
+  border-left-color: #2563eb;
+}
 .connection-title {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

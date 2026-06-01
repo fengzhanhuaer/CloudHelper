@@ -969,7 +969,12 @@ func pipeVPNConn(dst net.Conn, src net.Conn, relay *androidProxyConnectionRelay,
 		writer = &androidProxyConnectionWriter{dst: dst, relay: relay, direction: direction}
 	}
 	if _, err := mobileRelayCopy(writer, src); err != nil {
+		if relay != nil {
+			relay.markCloseReason(direction + "_" + classifyAndroidProxyRelayClose(err))
+		}
 		globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+	} else if relay != nil {
+		relay.markCloseReason(direction + "_eof")
 	}
 }
 
@@ -988,7 +993,12 @@ func relayVPNUDP(inbound *gonet.UDPConn, outbound io.ReadWriteCloser, relay *and
 			writer = &androidProxyConnectionWriter{dst: outbound, relay: relay, direction: "up"}
 		}
 		if _, err := mobileRelayCopy(writer, inbound); err != nil {
+			if relay != nil {
+				relay.markCloseReason("up_" + classifyAndroidProxyRelayClose(err))
+			}
 			globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+		} else if relay != nil {
+			relay.markCloseReason("up_eof")
 		}
 		done <- struct{}{}
 	}()
@@ -1003,13 +1013,21 @@ func relayVPNUDP(inbound *gonet.UDPConn, outbound io.ReadWriteCloser, relay *and
 			writer = &androidProxyConnectionWriter{dst: inbound, relay: relay, direction: "down"}
 		}
 		if _, err := mobileRelayCopy(writer, outbound); err != nil {
+			if relay != nil {
+				relay.markCloseReason("down_" + classifyAndroidProxyRelayClose(err))
+			}
 			globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+		} else if relay != nil {
+			relay.markCloseReason("down_eof")
 		}
 		done <- struct{}{}
 	}()
 	select {
 	case <-done:
 	case <-time.After(vpnUDPRelayTimeout):
+		if relay != nil {
+			relay.markCloseReason("udp_timeout")
+		}
 	}
 }
 

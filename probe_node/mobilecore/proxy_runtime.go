@@ -850,7 +850,12 @@ func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.
 			}
 		}
 		if _, err := mobileRelayCopy(rightWriter, left); err != nil {
+			if relay != nil {
+				relay.markCloseReason("up_" + classifyAndroidProxyRelayClose(err))
+			}
 			globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+		} else if relay != nil {
+			relay.markCloseReason("up_eof")
 		}
 		closeProxyConnWrite(right)
 		done <- struct{}{}
@@ -871,7 +876,12 @@ func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.
 			}
 		}
 		if _, err := mobileRelayCopy(leftWriter, right); err != nil {
+			if relay != nil {
+				relay.markCloseReason("down_" + classifyAndroidProxyRelayClose(err))
+			}
 			globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+		} else if relay != nil {
+			relay.markCloseReason("down_eof")
 		}
 		closeProxyConnWrite(left)
 		done <- struct{}{}
