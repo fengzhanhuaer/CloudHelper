@@ -43,6 +43,7 @@ const (
 	linkRelayModeBridge                = "bridge"
 	linkRelayModeStream                = "stream"
 	linkRelayModeSpeedTest             = "speed_test"
+	linkRelayModeSpeedDebug            = "speed_debug"
 	linkRelayModePingPong              = "ping_pong"
 	linkBridgeRoleToNext               = "to_next"
 	linkRelayProtocolProbeTimeout      = 6 * time.Second
@@ -138,6 +139,44 @@ type linkSpeedTestResult struct {
 	Error            string `json:"error,omitempty"`
 	StartedAt        string `json:"started_at,omitempty"`
 	EndedAt          string `json:"ended_at,omitempty"`
+}
+
+type linkSpeedDebugItemPayload struct {
+	ID                 string `json:"id"`
+	ChainID            string `json:"chain_id,omitempty"`
+	Role               string `json:"role,omitempty"`
+	Side               string `json:"side,omitempty"`
+	Transport          string `json:"transport,omitempty"`
+	RemoteAddr         string `json:"remote_addr,omitempty"`
+	Status             string `json:"status,omitempty"`
+	Error              string `json:"error,omitempty"`
+	RequestedBytes     int64  `json:"requested_bytes,omitempty"`
+	ChunkBytes         int64  `json:"chunk_bytes,omitempty"`
+	Bytes              int64  `json:"bytes,omitempty"`
+	RemainingBytes     int64  `json:"remaining_bytes,omitempty"`
+	RateBPS            int64  `json:"rate_bps,omitempty"`
+	WriteCalls         int64  `json:"write_calls,omitempty"`
+	TotalWriteBlockMS  int64  `json:"total_write_block_ms,omitempty"`
+	MaxWriteBlockMS    int64  `json:"max_write_block_ms,omitempty"`
+	LastWriteBlockMS   int64  `json:"last_write_block_ms,omitempty"`
+	LastWriteBlockedAt string `json:"last_write_blocked_at,omitempty"`
+	StartedAt          string `json:"started_at,omitempty"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
+	EndedAt            string `json:"ended_at,omitempty"`
+	AgeMS              int64  `json:"age_ms,omitempty"`
+	DurationMS         int64  `json:"duration_ms,omitempty"`
+}
+
+type linkSpeedDebugResultPayload struct {
+	Type      string                      `json:"type"`
+	RequestID string                      `json:"request_id,omitempty"`
+	NodeID    string                      `json:"node_id,omitempty"`
+	OK        bool                        `json:"ok"`
+	Scope     string                      `json:"scope,omitempty"`
+	FetchedAt string                      `json:"fetched_at,omitempty"`
+	Active    []linkSpeedDebugItemPayload `json:"active"`
+	Recent    []linkSpeedDebugItemPayload `json:"recent"`
+	Error     string                      `json:"error,omitempty"`
 }
 
 type linkTunnelOpenRequest struct {
@@ -331,16 +370,18 @@ func LinkSpeed(configDir string, chainID string, protocol string) string {
 	} else if len(results) == 0 {
 		status = "no_result"
 	}
+	remoteSpeedDebug := fetchLinkRemoteSpeedDebugAfterTest(item, endpoint, cleanProtocol)
 	return marshalLinkJSON(map[string]any{
-		"ok":         okResult,
-		"chain_id":   strings.TrimSpace(item.ChainID),
-		"chain_name": strings.TrimSpace(item.Name),
-		"status":     status,
-		"protocol":   cleanProtocol,
-		"rate_bps":   rateBPS,
-		"source":     "active_speed_test",
-		"results":    results,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"ok":                 okResult,
+		"chain_id":           strings.TrimSpace(item.ChainID),
+		"chain_name":         strings.TrimSpace(item.Name),
+		"status":             status,
+		"protocol":           cleanProtocol,
+		"rate_bps":           rateBPS,
+		"source":             "active_speed_test",
+		"results":            results,
+		"remote_speed_debug": remoteSpeedDebug,
+		"updated_at":         time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -854,6 +895,145 @@ func linkRelaySpeedTestCandidates(layer string, protocol string) []string {
 		return []string{cleanProtocol}
 	}
 	return linkRelayProtocolCandidates(layer)
+}
+
+func fetchLinkRemoteSpeedDebugAfterTest(item linkChainServerItem, endpoint linkEndpoint, protocol string) map[string]any {
+	var lastPayload linkSpeedDebugResultPayload
+	var lastErr error
+	for idx, wait := range []time.Duration{0, 450 * time.Millisecond, 1200 * time.Millisecond} {
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+		payload, err := linkRelayFetchSpeedDebugAuto(endpoint, protocol, 1200*time.Millisecond)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		lastPayload = payload
+		if linkSpeedDebugPayloadHasChain(payload, item) || idx == 2 {
+			return map[string]any{
+				"ok":      true,
+				"source":  "relay_entry",
+				"remote":  payload,
+				"fetched": time.Now().UTC().Format(time.RFC3339),
+			}
+		}
+	}
+	if strings.TrimSpace(lastPayload.Type) != "" || lastPayload.OK || len(lastPayload.Active) > 0 || len(lastPayload.Recent) > 0 {
+		return map[string]any{
+			"ok":      true,
+			"source":  "relay_entry",
+			"remote":  lastPayload,
+			"fetched": time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	errText := "remote speed debug fetch failed"
+	if lastErr != nil {
+		errText = lastErr.Error()
+	}
+	return map[string]any{
+		"ok":      false,
+		"source":  "relay_entry",
+		"error":   errText,
+		"fetched": time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func linkRelayFetchSpeedDebugAuto(endpoint linkEndpoint, protocol string, openTimeout time.Duration) (linkSpeedDebugResultPayload, error) {
+	candidates := linkRelaySpeedTestCandidates(endpoint.LinkLayer, protocol)
+	if len(candidates) == 0 {
+		candidates = linkRelayProtocolCandidates(endpoint.LinkLayer)
+	}
+	var errs []string
+	for _, candidate := range candidates {
+		payload, err := linkRelayFetchSpeedDebugWithLayer(endpoint, candidate, openTimeout)
+		if err == nil {
+			return payload, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s=%v", normalizeLinkLayer(candidate), err))
+	}
+	if len(errs) == 0 {
+		return linkSpeedDebugResultPayload{}, errors.New("no relay speed debug protocol candidate")
+	}
+	return linkSpeedDebugResultPayload{}, fmt.Errorf("relay speed debug fetch failed: %s", strings.Join(errs, "; "))
+}
+
+func linkRelayFetchSpeedDebugWithLayer(endpoint linkEndpoint, layer string, openTimeout time.Duration) (linkSpeedDebugResultPayload, error) {
+	cleanLayer := normalizeLinkLayer(layer)
+	if cleanLayer != "websocket" && cleanLayer != "websocket-h3" {
+		return linkSpeedDebugResultPayload{}, fmt.Errorf("unsupported speed debug protocol: %s", layer)
+	}
+	if openTimeout <= 0 {
+		openTimeout = linkRelayProtocolProbeTimeout
+	}
+	conn, err := openLinkRelayConnWithMode(endpoint, cleanLayer, openTimeout, linkRelayModeSpeedDebug)
+	if err != nil {
+		return linkSpeedDebugResultPayload{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(openTimeout))
+	var payload linkSpeedDebugResultPayload
+	if err := json.NewDecoder(conn).Decode(&payload); err != nil {
+		return linkSpeedDebugResultPayload{}, err
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if strings.TrimSpace(payload.Scope) == "" {
+		payload.Scope = "chain_relay"
+	}
+	return payload, nil
+}
+
+func linkSpeedDebugPayloadHasChain(payload linkSpeedDebugResultPayload, item linkChainServerItem) bool {
+	match := make(map[string]struct{})
+	for _, id := range linkChainIDMatchVariants(item.ChainID, item.RelayChainID, item.ClientEntryID) {
+		match[id] = struct{}{}
+	}
+	if len(match) == 0 {
+		return false
+	}
+	samples := append(append([]linkSpeedDebugItemPayload{}, payload.Active...), payload.Recent...)
+	for _, sample := range samples {
+		for _, id := range linkChainIDMatchVariants(sample.ChainID) {
+			if _, ok := match[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func linkChainIDMatchVariants(values ...string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(values)*3)
+	add := func(value string) {
+		clean := strings.TrimSpace(value)
+		if clean == "" {
+			return
+		}
+		lower := strings.ToLower(clean)
+		variants := []string{clean, lower}
+		if strings.HasSuffix(lower, "_pub") && len(clean) > 4 {
+			variants = append(variants, clean[:len(clean)-4], lower[:len(lower)-4])
+		}
+		if strings.HasSuffix(lower, "-pub") && len(clean) > 4 {
+			variants = append(variants, clean[:len(clean)-4], lower[:len(lower)-4])
+		}
+		for _, variant := range variants {
+			key := strings.ToLower(strings.TrimSpace(variant))
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, key)
+		}
+	}
+	for _, value := range values {
+		add(value)
+	}
+	return out
 }
 
 func linkRelaySpeedTestWithLayer(endpoint linkEndpoint, layer string, byteCount int64, timeout time.Duration) linkSpeedTestResult {

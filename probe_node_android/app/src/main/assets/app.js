@@ -491,7 +491,8 @@ function formatSpeedResult(data) {
   const details = Array.isArray(data.results)
     ? data.results.map(formatSpeedProbeDetail).join("；")
     : "";
-  return `测速：${data.chain_name || data.chain_id} ${data.status}，${mbps} Mbps。${details}`;
+  const remote = formatRemoteSpeedDebug(data.remote_speed_debug);
+  return `测速：${data.chain_name || data.chain_id} ${data.status}，${mbps} Mbps。\n本地读侧：${details || "-"}\n远方写侧：${remote}`;
 }
 
 function formatSpeedProbeDetail(item) {
@@ -508,6 +509,60 @@ function formatSpeedProbeDetail(item) {
     `avg${formatBytes(item.avg_read_bytes || 0)}`
   ];
   return `${label}:${blocks.join("/")}`;
+}
+
+function formatRemoteSpeedDebug(wrapper) {
+  if (!wrapper || typeof wrapper !== "object") {
+    return "-";
+  }
+  if (wrapper.ok === false) {
+    return `拉取失败:${wrapper.error || "-"}`;
+  }
+  const remote = wrapper.remote && typeof wrapper.remote === "object" ? wrapper.remote : null;
+  if (!remote) {
+    return "-";
+  }
+  if (remote.ok === false) {
+    return `拉取失败:${remote.error || "-"}`;
+  }
+  const samples = []
+    .concat(Array.isArray(remote.active) ? remote.active : [])
+    .concat(Array.isArray(remote.recent) ? remote.recent : []);
+  const source = formatRemoteSpeedSource(wrapper.source);
+  const head = `node=${remote.node_id || "-"}${source ? `/${source}` : ""}`;
+  if (!samples.length) {
+    return `${head}/暂无写侧样本`;
+  }
+  return `${head} ${samples.slice(0, 3).map(formatRemoteSpeedDebugItem).join("；")}`;
+}
+
+function formatRemoteSpeedSource(source) {
+  const value = String(source || "").trim();
+  if (value === "relay_entry") return "链路入口";
+  if (value === "management") return "管理通道";
+  return value;
+}
+
+function formatRemoteSpeedDebugItem(item) {
+  if (!item) {
+    return "-";
+  }
+  const protocol = item.transport || "-";
+  const status = item.status || "-";
+  const blocks = [
+    `${protocol}:${status}`,
+    `${formatBytes(item.bytes || 0)}/${formatBytes(item.requested_bytes || 0)}`,
+    `用时${item.duration_ms || item.age_ms || 0}ms`,
+    `写${item.write_calls || 0}次`,
+    `写阻塞max${item.max_write_block_ms || 0}ms`
+  ];
+  if (item.remaining_bytes) {
+    blocks.push(`剩余${formatBytes(item.remaining_bytes)}`);
+  }
+  if (item.error) {
+    blocks.push(`错误${item.error}`);
+  }
+  return blocks.join("/");
 }
 
 function formatBytes(value) {

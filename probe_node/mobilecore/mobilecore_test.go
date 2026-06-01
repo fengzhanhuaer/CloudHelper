@@ -271,6 +271,24 @@ func TestLinkLatencyAndSpeedUseRelayProtocol(t *testing.T) {
 				t.Fatalf("missing speed byte count")
 			}
 			writeTestSpeedBytes(t, conn, byteCount)
+		case linkRelayModeSpeedDebug:
+			payload := linkSpeedDebugResultPayload{
+				Type:      "speed_debug_result",
+				NodeID:    "10",
+				OK:        true,
+				Scope:     "chain_relay",
+				FetchedAt: time.Now().UTC().Format(time.RFC3339),
+				Recent: []linkSpeedDebugItemPayload{{
+					ChainID:   chainID,
+					Transport: "websocket",
+					Status:    "completed",
+					Bytes:     4096,
+					RateBPS:   4096,
+				}},
+			}
+			if err := json.NewEncoder(conn).Encode(payload); err != nil {
+				t.Fatalf("write speed debug failed: %v", err)
+			}
 		default:
 			t.Fatalf("unexpected relay mode %q", mode)
 		}
@@ -315,6 +333,13 @@ func TestLinkLatencyAndSpeedUseRelayProtocol(t *testing.T) {
 	speed := linkRelaySpeedTestWithLayer(endpoint, "websocket", 4096, 5*time.Second)
 	if !speed.OK || speed.Bytes != 4096 || speed.RateBPS <= 0 {
 		t.Fatalf("unexpected speed result: %+v", speed)
+	}
+	debug, err := linkRelayFetchSpeedDebugWithLayer(endpoint, "websocket", 5*time.Second)
+	if err != nil {
+		t.Fatalf("speed debug failed: %v", err)
+	}
+	if !debug.OK || debug.NodeID != "10" || !linkSpeedDebugPayloadHasChain(debug, linkChainServerItem{RelayChainID: chainID}) {
+		t.Fatalf("unexpected speed debug result: %+v", debug)
 	}
 }
 
