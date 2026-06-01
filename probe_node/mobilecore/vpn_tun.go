@@ -663,7 +663,7 @@ func prepareVPNTCPDialTarget(inbound net.Conn, targetAddr string) ([]byte, strin
 	}
 	_ = inbound.SetReadDeadline(time.Now().Add(1200 * time.Millisecond))
 	buf := make([]byte, 16*1024)
-	n, readErr := inbound.Read(buf)
+	n, readErr := readVPNInitialTCPPreface(inbound, buf)
 	_ = inbound.SetReadDeadline(time.Time{})
 	if n <= 0 {
 		return nil, targetAddr, ""
@@ -677,6 +677,45 @@ func prepareVPNTCPDialTarget(inbound net.Conn, targetAddr string) ([]byte, strin
 		return preface, targetAddr, ""
 	}
 	return preface, net.JoinHostPort(sni, port), sni
+}
+
+func readVPNInitialTCPPreface(inbound net.Conn, buf []byte) (int, error) {
+	if inbound == nil || len(buf) == 0 {
+		return 0, nil
+	}
+	total := 0
+	for {
+		n, err := inbound.Read(buf[total:])
+		if n > 0 {
+			total += n
+		}
+		if err != nil {
+			return total, err
+		}
+		if !needsMoreVPNTLSClientHelloBytes(buf[:total]) {
+			return total, nil
+		}
+		if total >= len(buf) {
+			return total, nil
+		}
+	}
+}
+
+func needsMoreVPNTLSClientHelloBytes(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	if len(data) < 5 {
+		return data[0] == 0x16
+	}
+	if data[0] != 0x16 {
+		return false
+	}
+	recordLen := int(binary.BigEndian.Uint16(data[3:5]))
+	if recordLen <= 0 {
+		return false
+	}
+	return len(data) < 5+recordLen
 }
 
 func extractVPNTLSClientHelloSNI(data []byte) string {
@@ -1276,7 +1315,11 @@ func lookupAndroidVPNDNSRouteHint(configDir string, ipText string, port string) 
 		route.Reject = false
 		route.SelectedChainID = ""
 	}
-	route.TargetAddr = net.JoinHostPort(ip.String(), firstNonEmptyString(strings.TrimSpace(port), "443"))
+	if !route.Direct && !route.Reject && strings.TrimSpace(route.SelectedChainID) != "" {
+		route.TargetAddr = net.JoinHostPort(entry.Domain, firstNonEmptyString(strings.TrimSpace(port), "443"))
+	} else {
+		route.TargetAddr = net.JoinHostPort(ip.String(), firstNonEmptyString(strings.TrimSpace(port), "443"))
+	}
 	return route, true
 }
 

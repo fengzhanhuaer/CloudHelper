@@ -669,6 +669,45 @@ func TestAndroidVPNDNSRouteHintPreservesDirectDomainRule(t *testing.T) {
 	}
 }
 
+func TestAndroidVPNDNSRouteHintPreservesTunnelDomainTarget(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "google", "rules": []string{"domain_suffix:google.com"}},
+		},
+	})
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "google", "action": "tunnel", "selected_chain_id": "chain-1"},
+			{"group": "fallback", "action": "direct"},
+		},
+	})
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+
+	query := buildTestDNSQuery(t, "www.google.com", dnsmessage.TypeA)
+	response := buildAndroidVPNDNSSuccess(query, []net.IP{net.ParseIP("142.250.190.68")}, dnsmessage.TypeA)
+	storeAndroidVPNDNSRouteHints("www.google.com", response, proxyRouteDecision{Direct: false, Group: "google", SelectedChainID: "chain-1"})
+
+	route, err := decideAndroidProxyRouteForTarget(dir, "142.250.190.68:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Direct || route.Group != "google" || route.SelectedChainID != "chain-1" || route.TargetAddr != "www.google.com:443" {
+		t.Fatalf("tunnel route hint did not preserve domain target: %+v", route)
+	}
+}
+
 func TestAndroidVPNIPv6FallbackRouteUsesHintIPv4(t *testing.T) {
 	dir := t.TempDir()
 	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
@@ -889,6 +928,28 @@ func TestPrepareVPNTCPDialTargetUsesSNIForIP443(t *testing.T) {
 	}
 	if !bytes.Equal(preface, hello) {
 		t.Fatalf("preface was not preserved")
+	}
+}
+
+func TestPrepareVPNTCPDialTargetReadsSplitTLSClientHello(t *testing.T) {
+	hello := buildTestTLSClientHello(t, "www.google.com")
+	if len(hello) < 12 {
+		t.Fatalf("test hello too small: %d", len(hello))
+	}
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	go func() {
+		_, _ = clientConn.Write(hello[:7])
+		time.Sleep(20 * time.Millisecond)
+		_, _ = clientConn.Write(hello[7:])
+	}()
+	preface, target, sni := prepareVPNTCPDialTarget(serverConn, "173.194.202.138:443")
+	if sni != "www.google.com" || target != "www.google.com:443" {
+		t.Fatalf("target=%q sni=%q", target, sni)
+	}
+	if !bytes.Equal(preface, hello) {
+		t.Fatalf("split preface was not preserved: got=%d want=%d", len(preface), len(hello))
 	}
 }
 
