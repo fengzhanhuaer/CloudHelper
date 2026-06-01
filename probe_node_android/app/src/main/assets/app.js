@@ -109,6 +109,7 @@ function checkUpgrade(mode) {
     return;
   }
   const text = `正在检查 ${mode} 升级...`;
+  setUpgradeButtonsDisabled(true);
   setUpgradeStatus(text);
   setStatus(text);
   appendUILog("upgrade", text);
@@ -1166,9 +1167,19 @@ function renderUpgradeStatus(data) {
     setUpgradeStatus(data.message);
   }
   const state = String(data && data.state || "").toLowerCase();
+  setUpgradeButtonsDisabled(state === "running");
   if (state && state !== "running") {
     stopUpgradeStatusPolling();
   }
+}
+
+function setUpgradeButtonsDisabled(disabled) {
+  ["directUpgradeButton", "proxyUpgradeButton"].forEach((id) => {
+    const button = byId(id);
+    if (button) {
+      button.disabled = Boolean(disabled);
+    }
+  });
 }
 
 function clampPercent(value) {

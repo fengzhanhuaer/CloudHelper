@@ -47,8 +47,8 @@
         </div>
         <div id="settingsUpgradePanel" class="tab-panel" data-settings-panel="upgrade" hidden>
           <div class="actions">
-            <button class="command" onclick="checkUpgrade('direct')">Direct Upgrade</button>
-            <button class="command secondary" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
+            <button id="directUpgradeButton" class="command" onclick="checkUpgrade('direct')">Direct Upgrade</button>
+            <button id="proxyUpgradeButton" class="command secondary" onclick="checkUpgrade('proxy')">Proxy Upgrade</button>
           </div>
           <div class="upgrade-progress" aria-label="升级进度">
             <div id="upgradeProgressFill" class="upgrade-progress-fill"></div>

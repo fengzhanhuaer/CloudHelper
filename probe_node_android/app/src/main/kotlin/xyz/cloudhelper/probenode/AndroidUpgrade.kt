@@ -18,6 +18,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import java.util.Locale
 import java.security.SecureRandom
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 object AndroidUpgrade {
@@ -26,6 +27,9 @@ object AndroidUpgrade {
     private const val ASSET_NAME = "cloudhelper-probe-node-android-arm64.apk"
     private const val RELEASE_REPO = "fengzhanhuaer/CloudHelper"
     private const val DEFAULT_RELEASE_API = "https://api.github.com/repos/fengzhanhuaer/CloudHelper/releases/latest"
+    private const val MAX_DOWNLOAD_ATTEMPTS = 3
+    private const val DOWNLOAD_BUFFER_SIZE = 128 * 1024
+    private val upgradeRunning = AtomicBoolean(false)
     private val statusLock = Any()
     private var status = UpgradeStatus(
         state = "idle",
@@ -36,8 +40,14 @@ object AndroidUpgrade {
     )
 
     fun checkDownloadAndInstall(activity: Activity, mode: String, config: ProbeNodeConfig, sink: (String) -> Unit) {
+        val upgradeMode = if (mode == "proxy") "proxy" else "direct"
+        if (!upgradeRunning.compareAndSet(false, true)) {
+            val message = "升级任务已在运行，请等待当前任务完成。"
+            AndroidLogStore.add("upgrade", message, "warning")
+            sink(message)
+            return
+        }
         thread(name = "cloudhelper-android-upgrade") {
-            val upgradeMode = if (mode == "proxy") "proxy" else "direct"
             try {
                 AndroidLogStore.add("upgrade", "upgrade flow started: mode=$upgradeMode")
                 updateStatus(state = "running", phase = "prepare", percent = 2, message = "准备 ${upgradeMode} 升级", mode = upgradeMode)
@@ -116,6 +126,21 @@ object AndroidUpgrade {
                         speedBps = speed,
                     )
                 }
+                val verifyMessage = validateDownloadedApk(activity, apk, release.tagName)
+                updateStatus(
+                    state = "running",
+                    phase = "verify",
+                    percent = 88,
+                    message = verifyMessage,
+                    mode = upgradeMode,
+                    currentVersion = "${currentVersion.name} (${currentVersion.code})",
+                    latestVersion = release.tagName,
+                    assetName = asset.name,
+                    downloadedBytes = apk.length(),
+                    totalBytes = apk.length(),
+                    speedBps = 0,
+                )
+                sink(verifyMessage)
                 updateStatus(
                     state = "running",
                     phase = "install",
@@ -144,6 +169,8 @@ object AndroidUpgrade {
                 AndroidLogStore.add("upgrade", "upgrade failed: ${e.message}", "error")
                 updateStatus(state = "failed", phase = "failed", percent = 0, message = "Upgrade failed: ${e.message}", error = e.message ?: "unknown", mode = upgradeMode)
                 sink("Upgrade failed: ${e.message}")
+            } finally {
+                upgradeRunning.set(false)
             }
         }
     }
@@ -200,6 +227,7 @@ object AndroidUpgrade {
         if (!dir.exists() && !dir.mkdirs()) {
             error("failed to create upgrade cache")
         }
+        cleanupUpgradeCache(dir)
         val apk = File(dir, ASSET_NAME)
         val part = File(dir, "$ASSET_NAME.part")
         val requestUrl = if (mode == "proxy") {
@@ -207,28 +235,113 @@ object AndroidUpgrade {
         } else {
             asset.url
         }
-        val conn = openGet(requestUrl, mode, config, "application/octet-stream")
-        if (conn.responseCode !in 200..299) {
-            error("apk download status=${conn.responseCode}: ${readErrorText(conn)}")
-        }
-        val total = conn.contentLengthLong
-        val startedAt = System.nanoTime()
-        responseStream(conn).use { input ->
-            FileOutputStream(part, false).use { output ->
-                copyWithProgress(input, output) { downloaded ->
-                    val elapsedSec = (System.nanoTime() - startedAt).toDouble() / 1_000_000_000.0
-                    val speed = if (elapsedSec > 0) (downloaded.toDouble() / elapsedSec).toLong() else 0L
-                    onProgress(downloaded, total, speed)
+
+        var lastError: Exception? = null
+        for (attempt in 1..MAX_DOWNLOAD_ATTEMPTS) {
+            try {
+                val offset = if (part.exists()) part.length() else 0L
+                val conn = openGet(requestUrl, mode, config, "application/octet-stream", offset)
+                if (conn.responseCode == 416) {
+                    part.delete()
+                    lastError = IllegalStateException("download range rejected, restarting")
+                    continue
                 }
+                if (conn.responseCode !in 200..299) {
+                    error("apk download status=${conn.responseCode}: ${readErrorText(conn)}")
+                }
+                val append = offset > 0 && conn.responseCode == HttpURLConnection.HTTP_PARTIAL
+                if (offset > 0 && !append) {
+                    part.delete()
+                }
+                val startingBytes = if (append) offset else 0L
+                val total = resolveExpectedTotal(conn, startingBytes)
+                val startedAt = System.nanoTime()
+                var lastDownloaded = startingBytes
+                responseStream(conn).use { input ->
+                    FileOutputStream(part, append).use { output ->
+                        copyWithProgress(input, output) { written ->
+                            val downloaded = startingBytes + written
+                            lastDownloaded = downloaded
+                            val elapsedSec = (System.nanoTime() - startedAt).toDouble() / 1_000_000_000.0
+                            val speed = if (elapsedSec > 0) ((downloaded - startingBytes).toDouble() / elapsedSec).toLong() else 0L
+                            onProgress(downloaded, total, speed)
+                        }
+                    }
+                }
+                val finalBytes = part.length()
+                if (total > 0 && finalBytes < total) {
+                    lastError = IllegalStateException("download incomplete: ${formatBytes(finalBytes)} / ${formatBytes(total)}")
+                    if (lastDownloaded <= startingBytes) {
+                        break
+                    }
+                    continue
+                }
+                if (finalBytes <= 0) {
+                    error("downloaded apk is empty")
+                }
+                if (apk.exists() && !apk.delete()) {
+                    error("failed to replace old apk")
+                }
+                if (!part.renameTo(apk)) {
+                    error("failed to stage apk")
+                }
+                return apk
+            } catch (e: Exception) {
+                lastError = e
+                AndroidLogStore.add("upgrade", "download attempt $attempt failed: ${e.message}", "warning")
             }
         }
-        if (apk.exists() && !apk.delete()) {
-            error("failed to replace old apk")
+        error("apk download failed after $MAX_DOWNLOAD_ATTEMPTS attempts: ${lastError?.message ?: "unknown"}")
+    }
+
+    private fun cleanupUpgradeCache(dir: File) {
+        dir.listFiles()?.forEach { file ->
+            if (file.name != ASSET_NAME && file.name != "$ASSET_NAME.part") {
+                file.delete()
+            }
         }
-        if (!part.renameTo(apk)) {
-            error("failed to stage apk")
+    }
+
+    private fun validateDownloadedApk(activity: Activity, apk: File, remoteTag: String): String {
+        if (!apk.exists() || apk.length() <= 0) {
+            error("downloaded apk is empty")
         }
-        return apk
+        val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            activity.packageManager.getPackageArchiveInfo(apk.path, PackageManager.PackageInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            activity.packageManager.getPackageArchiveInfo(apk.path, 0)
+        } ?: error("downloaded apk cannot be parsed")
+
+        val apkPackage = packageInfo.packageName ?: ""
+        if (apkPackage != activity.packageName && apkPackage != "xyz.cloudhelper.probenode") {
+            error("apk package mismatch: $apkPackage")
+        }
+        val apkVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.versionCode.toLong()
+        }
+        val expectedCode = versionCodeFromTag(remoteTag)
+        if (expectedCode > 0 && apkVersionCode < expectedCode) {
+            error("apk version is older than release: apk=$apkVersionCode release=$expectedCode")
+        }
+        val apkVersionName = packageInfo.versionName ?: remoteTag
+        return "APK 校验通过：$apkVersionName ($apkVersionCode)，${formatBytes(apk.length())}"
+    }
+
+    private fun resolveExpectedTotal(conn: HttpURLConnection, startingBytes: Long): Long {
+        val contentRange = conn.getHeaderField("Content-Range") ?: ""
+        val slash = contentRange.lastIndexOf('/')
+        if (slash >= 0 && slash < contentRange.length - 1) {
+            val total = contentRange.substring(slash + 1).trim().toLongOrNull()
+            if (total != null && total > 0) {
+                return total
+            }
+        }
+        val length = conn.contentLengthLong
+        return if (length > 0) startingBytes + length else -1L
     }
 
     private fun openInstaller(activity: Activity, apk: File) {
@@ -262,11 +375,14 @@ object AndroidUpgrade {
         return AppVersion(packageInfo.versionName ?: "0.0.0", code)
     }
 
-    private fun openGet(requestUrl: String, mode: String, config: ProbeNodeConfig, accept: String): HttpURLConnection {
+    private fun openGet(requestUrl: String, mode: String, config: ProbeNodeConfig, accept: String, rangeStart: Long = 0L): HttpURLConnection {
         val conn = URL(requestUrl).openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.setRequestProperty("Accept", accept)
         conn.setRequestProperty("User-Agent", "cloudhelper-probe-node-android")
+        if (rangeStart > 0) {
+            conn.setRequestProperty("Range", "bytes=$rangeStart-")
+        }
         if (mode == "proxy") {
             applyProbeAuthHeaders(conn, config)
         }
@@ -295,7 +411,7 @@ object AndroidUpgrade {
     }
 
     private fun copyWithProgress(input: InputStream, output: FileOutputStream, onProgress: (Long) -> Unit) {
-        val buffer = ByteArray(128 * 1024)
+        val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
         var written = 0L
         var lastReport = 0L
         while (true) {
