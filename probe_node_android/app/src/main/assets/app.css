@@ -507,6 +507,44 @@ input {
 .link-result.error {
   color: #b91c1c;
 }
+.speed-detail {
+  display: grid;
+  gap: 8px;
+  color: #1c1917;
+  font-weight: 500;
+}
+.speed-summary {
+  color: #166534;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.35;
+}
+.speed-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+}
+.speed-metric-box {
+  min-width: 0;
+  border: 1px solid #eeeae3;
+  border-radius: 6px;
+  padding: 8px;
+  background: #fafaf8;
+}
+.speed-metric-title {
+  color: #57534e;
+  font-size: 12px;
+  font-weight: 760;
+}
+.speed-metric-body {
+  margin-top: 5px;
+  color: #1c1917;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: pre-line;
+  word-break: break-word;
+}
 @media (max-width: 640px) {
   .shell {
     display: block;

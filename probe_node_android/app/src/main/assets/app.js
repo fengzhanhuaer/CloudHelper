@@ -435,7 +435,7 @@ function renderLinkResult(payload) {
   if (Array.isArray(data.results) && data.source === "active_speed_test") {
     const text = formatSpeedResult(data);
     status.textContent = text;
-    setLinkPanelStatus(data.chain_id, text, !data.ok);
+    setLinkPanelContent(data.chain_id, renderSpeedResultDetail(data), !data.ok);
     return;
   }
   if (Array.isArray(data.results)) {
@@ -456,6 +456,10 @@ function renderLinkResult(payload) {
 }
 
 function setLinkPanelStatus(chainId, message, isError) {
+  setLinkPanelContent(chainId, message, isError);
+}
+
+function setLinkPanelContent(chainId, content, isError) {
   const panel = findLinkPanel(chainId);
   if (!panel) {
     return;
@@ -464,7 +468,12 @@ function setLinkPanelStatus(chainId, message, isError) {
   if (!result) {
     return;
   }
-  result.textContent = message;
+  result.replaceChildren();
+  if (content instanceof Node) {
+    result.appendChild(content);
+  } else {
+    result.textContent = content || "";
+  }
   result.classList.toggle("error", !!isError);
 }
 
@@ -487,53 +496,128 @@ function formatLatencyResult(data) {
 }
 
 function formatSpeedResult(data) {
-  const mbps = data.rate_bps ? ((data.rate_bps * 8) / 1000 / 1000).toFixed(2) : "0.00";
+  const rate = formatRateText(data.rate_bps);
   const details = Array.isArray(data.results)
     ? data.results.map(formatSpeedProbeDetail).join("；")
     : "";
-  const remote = formatRemoteSpeedDebug(data.remote_speed_debug);
-  return `测速：${data.chain_name || data.chain_id} ${data.status}，${mbps} Mbps。\n本地读侧：${details || "-"}\n远方写侧：${remote}`;
+  const remote = formatRemoteSpeedDebug(data.remote_speed_debug, data);
+  return `测速：${data.chain_name || data.chain_id} ${data.status}，${rate}。\n路径：relay speed_test 独立数据连接，最长 10s。\n本地读侧：${details || "-"}\n远方写侧：${remote}`;
 }
 
 function formatSpeedProbeDetail(item) {
-  const label = item && item.protocol ? item.protocol : "-";
+  const label = formatRelayProtocolLabel(item && item.protocol);
   if (!item || !item.ok) {
     return `${label}:${item && item.error ? item.error : "fail"}`;
   }
   const blocks = [
-    `${formatBytes(item.bytes)}/${item.duration_ms || 0}ms`,
-    `首包${item.first_byte_ms || item.latency_ms || "-"}ms`,
-    `握手${item.open_handshake_ms || "-"}ms`,
+    formatRateText(item.rate_bps),
+    `${formatBytes(item.bytes)}/${formatDurationText(item.duration_ms)}`,
+    `首包${formatDurationText(item.first_byte_ms || item.latency_ms)}`,
+    `握手${formatDurationText(item.open_handshake_ms)}`,
     `读${item.read_calls || 0}次`,
-    `max阻塞${item.max_read_block_ms || 0}ms`,
+    `读阻塞max ${formatDurationText(item.max_read_block_ms)}`,
     `avg${formatBytes(item.avg_read_bytes || 0)}`
   ];
-  return `${label}:${blocks.join("/")}`;
+  return `${label}:${blocks.join(" ")}`;
 }
 
-function formatRemoteSpeedDebug(wrapper) {
+function renderSpeedResultDetail(data) {
+  const root = document.createElement("div");
+  root.className = "speed-detail";
+
+  const summary = document.createElement("div");
+  summary.className = "speed-summary";
+  summary.textContent = [
+    data.ok ? "测速完成" : "测速不可达",
+    data.status || "",
+    formatRateText(data.rate_bps),
+    "relay speed_test",
+    "最长 10s"
+  ].filter(Boolean).join(" · ");
+  root.appendChild(summary);
+
+  const grid = document.createElement("div");
+  grid.className = "speed-detail-grid";
+  grid.appendChild(renderSpeedMetricBox("本地读侧", localSpeedMetricLines(data).join("\n") || "-"));
+  grid.appendChild(renderSpeedMetricBox("远方写侧", remoteSpeedMetricLines(data.remote_speed_debug, data).join("\n") || "-"));
+  root.appendChild(grid);
+  return root;
+}
+
+function renderSpeedMetricBox(title, text) {
+  const box = document.createElement("div");
+  box.className = "speed-metric-box";
+  const heading = document.createElement("div");
+  heading.className = "speed-metric-title";
+  heading.textContent = title;
+  const body = document.createElement("div");
+  body.className = "speed-metric-body";
+  body.textContent = text || "-";
+  box.append(heading, body);
+  return box;
+}
+
+function localSpeedMetricLines(data) {
+  const results = Array.isArray(data && data.results) ? data.results : [];
+  if (!results.length) {
+    return [];
+  }
+  return results.map((item) => {
+    const label = formatRelayProtocolLabel(item && item.protocol);
+    if (!item || !item.ok) {
+      const err = String(item && item.error || "").trim();
+      return `${label}: 失败${err ? ` ${err}` : ""}`;
+    }
+    return `${label}: ${[
+      formatRateText(item.rate_bps),
+      `读取 ${formatBytes(item.bytes)}/${formatBytes(item.requested_bytes)}`,
+      `用时 ${formatDurationText(item.duration_ms)}`,
+      `首包 ${formatDurationText(item.first_byte_ms || item.latency_ms)}`,
+      `握手 ${formatDurationText(item.open_handshake_ms)}`,
+      `读阻塞max ${formatDurationText(item.max_read_block_ms)}`,
+      `读 ${Math.trunc(Number(item.read_calls) || 0)}次`
+    ].join(" ｜ ")}`;
+  });
+}
+
+function formatRemoteSpeedDebug(wrapper, linkItem) {
+  const lines = remoteSpeedMetricLines(wrapper, linkItem);
+  return lines.length ? lines.join("；") : "-";
+}
+
+function remoteSpeedMetricLines(wrapper, linkItem) {
   if (!wrapper || typeof wrapper !== "object") {
-    return "-";
+    return [];
   }
   if (wrapper.ok === false) {
-    return `拉取失败:${wrapper.error || "-"}`;
+    return [`拉取失败:${wrapper.error || "-"}`];
   }
   const remote = wrapper.remote && typeof wrapper.remote === "object" ? wrapper.remote : null;
   if (!remote) {
-    return "-";
+    return [];
   }
   if (remote.ok === false) {
-    return `拉取失败:${remote.error || "-"}`;
+    return [`拉取失败:${remote.error || "-"}`];
   }
-  const samples = []
+  const allSamples = []
     .concat(Array.isArray(remote.active) ? remote.active : [])
     .concat(Array.isArray(remote.recent) ? remote.recent : []);
+  const matchIDs = new Set();
+  addChainIDMatchVariants(matchIDs, linkItem && linkItem.chain_id);
+  addChainIDMatchVariants(matchIDs, linkItem && linkItem.relay_chain_id);
+  addChainIDMatchVariants(matchIDs, linkItem && linkItem.client_entry_id);
+  const matchedSamples = matchIDs.size
+    ? allSamples.filter((item) => chainIDMatches(item && item.chain_id, matchIDs))
+    : allSamples;
+  const fallback = !matchedSamples.length && allSamples.length > 0;
+  const samples = fallback ? allSamples : matchedSamples;
   const source = formatRemoteSpeedSource(wrapper.source);
-  const head = `node=${remote.node_id || "-"}${source ? `/${source}` : ""}`;
+  const fetched = String(wrapper.fetched || remote.fetched_at || "").trim();
+  const head = `node=${remote.node_id || "-"}${source ? `/${source}` : ""}${fallback ? "/最近样本" : ""}${fetched ? `/${formatCompactTime(fetched)}` : ""}`;
   if (!samples.length) {
-    return `${head}/暂无写侧样本`;
+    return [`${head}/暂无写侧样本`];
   }
-  return `${head} ${samples.slice(0, 3).map(formatRemoteSpeedDebugItem).join("；")}`;
+  return [`${head}`].concat(samples.slice(0, 4).map(formatRemoteSpeedDebugItem));
 }
 
 function formatRemoteSpeedSource(source) {
@@ -547,14 +631,15 @@ function formatRemoteSpeedDebugItem(item) {
   if (!item) {
     return "-";
   }
-  const protocol = item.transport || "-";
+  const protocol = formatRelayProtocolLabel(item.transport || "-");
   const status = item.status || "-";
   const blocks = [
     `${protocol}:${status}`,
+    formatRateText(item.rate_bps),
     `${formatBytes(item.bytes || 0)}/${formatBytes(item.requested_bytes || 0)}`,
-    `用时${item.duration_ms || item.age_ms || 0}ms`,
+    `用时${formatDurationText(item.duration_ms || item.age_ms)}`,
     `写${item.write_calls || 0}次`,
-    `写阻塞max${item.max_write_block_ms || 0}ms`
+    `写阻塞max ${formatDurationText(item.max_write_block_ms)}`
   ];
   if (item.remaining_bytes) {
     blocks.push(`剩余${formatBytes(item.remaining_bytes)}`);
@@ -563,6 +648,63 @@ function formatRemoteSpeedDebugItem(item) {
     blocks.push(`错误${item.error}`);
   }
   return blocks.join("/");
+}
+
+function addChainIDMatchVariants(set, value) {
+  const clean = String(value || "").trim();
+  if (!clean) {
+    return;
+  }
+  const variants = [clean, clean.toLowerCase()];
+  ["_pub", "_cf"].forEach((suffix) => {
+    if (clean.toLowerCase().endsWith(suffix)) {
+      variants.push(clean.slice(0, -suffix.length));
+      variants.push(clean.slice(0, -suffix.length).toLowerCase());
+    }
+  });
+  variants.forEach((item) => {
+    if (item) {
+      set.add(item);
+    }
+  });
+}
+
+function chainIDMatches(value, matchIDs) {
+  const variants = new Set();
+  addChainIDMatchVariants(variants, value);
+  for (const item of variants) {
+    if (matchIDs.has(item) || matchIDs.has(String(item || "").toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function formatRelayProtocolLabel(protocol) {
+  const clean = String(protocol || "").trim().toLowerCase();
+  if (clean === "websocket-h3") return "WS-H3";
+  if (clean === "websocket") return "WS";
+  if (clean === "auto") return "AUTO";
+  return clean || "-";
+}
+
+function formatDurationText(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) {
+    return "-";
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}s`;
+  }
+  return `${Math.trunc(value)}ms`;
+}
+
+function formatRateText(bps) {
+  const value = Number(bps || 0);
+  if (!Number.isFinite(value) || value <= 0) {
+    return "-";
+  }
+  return `${formatBytes(value)}/s`;
 }
 
 function formatBytes(value) {
@@ -751,13 +893,17 @@ function renderConnectionItem(item, isFailure) {
   const grid = document.createElement("div");
   grid.className = "connection-grid";
   if (isFailure) {
+    appendConnectionMetric(grid, "类型", item.kind || "-");
     appendConnectionMetric(grid, "错误", item.error || item.reason || "-");
+    appendConnectionMetric(grid, "链路", item.direct ? "direct" : (item.chain_id || item.group || "-"));
     appendConnectionMetric(grid, "时间", formatCompactTime(item.last_seen) || "-");
   } else {
     appendConnectionMetric(grid, "上行", formatBytes(item.bytes_up));
     appendConnectionMetric(grid, "下行", formatBytes(item.bytes_down));
+    appendConnectionMetric(grid, "写次数", `${Number(item.writes_up || 0)}/${Number(item.writes_down || 0)}`);
     appendConnectionMetric(grid, "空闲", formatDurationSeconds(item.idle_ms));
     appendConnectionMetric(grid, "阻塞", formatConnectionBlock(item));
+    appendConnectionMetric(grid, "最近阻塞", formatLastConnectionBlock(item));
   }
   card.append(title, meta, path, grid);
   return card;
@@ -786,10 +932,23 @@ function formatConnectionBlock(item) {
   const blockedUp = Number(item.blocked_writes_up || 0);
   const blockedDown = Number(item.blocked_writes_down || 0);
   const maxBlock = Math.max(Number(item.max_write_block_ms_up || 0), Number(item.max_write_block_ms_down || 0));
+  const totalBlock = Number(item.write_block_ms_up || 0) + Number(item.write_block_ms_down || 0);
   if (!blockedUp && !blockedDown && !maxBlock) {
     return "-";
   }
-  return `${blockedUp}/${blockedDown} max ${Math.trunc(maxBlock)}ms`;
+  return `${blockedUp}/${blockedDown} max ${formatDurationText(maxBlock)} total ${formatDurationText(totalBlock)}`;
+}
+
+function formatLastConnectionBlock(item) {
+  const side = String(item.last_congestion_side || "").trim();
+  const at = formatCompactTime(item.last_write_blocked_at || "");
+  const up = Number(item.last_write_block_ms_up || 0);
+  const down = Number(item.last_write_block_ms_down || 0);
+  const last = Math.max(up, down);
+  if (!side && !at && !last) {
+    return "-";
+  }
+  return [side || "-", formatDurationText(last), at].filter(Boolean).join(" ");
 }
 
 function refreshLogs() {
