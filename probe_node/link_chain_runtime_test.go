@@ -527,6 +527,87 @@ func TestOpenProbeChainRelayNetConnAutoUsesWebSocketH3Primary(t *testing.T) {
 	}
 }
 
+func TestOpenProbeChainRelayDataStreamNetConnAutoExpandsAutoProtocol(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenDataStreamLayer := probeChainRelayOpenDataStreamLayer
+	defer func() {
+		probeChainRelayOpenDataStreamLayer = originalOpenDataStreamLayer
+	}()
+
+	var mu sync.Mutex
+	calls := make([]string, 0, 1)
+	probeChainRelayOpenDataStreamLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		protocol := normalizeProbeChainLinkLayer(layer)
+		mu.Lock()
+		calls = append(calls, protocol)
+		mu.Unlock()
+		client, server := net.Pipe()
+		_ = server.Close()
+		return probeChainRelayProtocolDialResult{
+			Protocol: protocol,
+			Conn:     client,
+			Latency:  3 * time.Millisecond,
+		}
+	}
+
+	conn, err := openProbeChainRelayDataStreamNetConnWithRoleAndToken("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext, "token-a", time.Second)
+	if err != nil {
+		t.Fatalf("openProbeChainRelayDataStreamNetConnWithRoleAndToken returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 || calls[0] != "websocket-h3" {
+		t.Fatalf("expected auto data stream to expand to websocket-h3, got calls=%v", calls)
+	}
+}
+
+func TestOpenProbeChainRelayDataStreamNetConnAutoFallsBackAfterWebSocketH3Failure(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenDataStreamLayer := probeChainRelayOpenDataStreamLayer
+	defer func() {
+		probeChainRelayOpenDataStreamLayer = originalOpenDataStreamLayer
+	}()
+
+	var mu sync.Mutex
+	calls := make([]string, 0, 2)
+	probeChainRelayOpenDataStreamLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		protocol := normalizeProbeChainLinkLayer(layer)
+		mu.Lock()
+		calls = append(calls, protocol)
+		mu.Unlock()
+		if protocol == "websocket-h3" {
+			return probeChainRelayProtocolDialResult{
+				Protocol: protocol,
+				Err:      errors.New("i/o timeout"),
+				Latency:  5 * time.Millisecond,
+			}
+		}
+		client, server := net.Pipe()
+		_ = server.Close()
+		return probeChainRelayProtocolDialResult{
+			Protocol: protocol,
+			Conn:     client,
+			Latency:  2 * time.Millisecond,
+		}
+	}
+
+	conn, err := openProbeChainRelayDataStreamNetConnWithRoleAndToken("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext, "token-a", time.Second)
+	if err != nil {
+		t.Fatalf("expected websocket fallback after websocket-h3 failure, got err=%v", err)
+	}
+	_ = conn.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 || calls[0] != "websocket-h3" || calls[1] != "websocket" {
+		t.Fatalf("expected h3 then websocket fallback, got calls=%v", calls)
+	}
+}
+
 func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()

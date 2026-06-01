@@ -172,6 +172,7 @@ var probeChainRelayListenerStateStore = struct {
 }
 
 var probeChainRelayOpenLayer = openProbeChainRelayNetConnWithLayer
+var probeChainRelayOpenDataStreamLayer = openProbeChainRelayDataStreamNetConnWithLayer
 var probeChainRelayMeasurePingPongLatency = measureProbeChainRelayPingPongLatency
 
 func probeChainRelayJoinProtocols(protocols []string) string {
@@ -961,6 +962,94 @@ func openProbeChainRelayDataStreamNetConnWithRole(chainID string, secret string,
 }
 
 func openProbeChainRelayDataStreamNetConnWithRoleAndToken(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) (net.Conn, error) {
+	if !isProbeChainRelaySupportedProtocol(layer) {
+		return openProbeChainRelayDataStreamNetConnAutoWithRoleAndToken(chainID, secret, relayHost, relayPort, layer, bridgeRole, connToken, openTimeout)
+	}
+	return openProbeChainRelayDataStreamNetConnWithLayerConn(chainID, secret, relayHost, relayPort, layer, bridgeRole, connToken, openTimeout)
+}
+
+func openProbeChainRelayDataStreamNetConnAutoWithRoleAndToken(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) (net.Conn, error) {
+	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
+	if endpointKey == "" {
+		return nil, errors.New("relay endpoint is required")
+	}
+	candidates := probeChainRelayProtocolCandidates(layer)
+	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, time.Now()); preferred != "" {
+		candidates = probeChainRelayProtocolCandidatesPrefer(candidates, preferred)
+	}
+	log.Printf(
+		"probe chain relay data stream auto dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
+		strings.TrimSpace(chainID),
+		strings.TrimSpace(relayHost),
+		normalizeProbeChainLinkLayer(layer),
+		normalizeProbeChainBridgeRole(bridgeRole),
+		endpointKey,
+		probeChainRelayJoinProtocols(candidates),
+	)
+	var lastErr error
+	for _, protocol := range candidates {
+		result := probeChainRelayOpenDataStreamLayer(chainID, secret, relayHost, relayPort, protocol, bridgeRole, connToken, openTimeout)
+		if result.Err == nil {
+			recordProbeChainRelayProtocolSuccess(endpointKey, result, "data_stream")
+			recordProbeChainRelayProtocolSelected(endpointKey, result.Protocol, "data_stream")
+			if normalizeProbeChainLinkLayer(layer) == "auto" {
+				log.Printf("probe chain relay data stream auto selected: chain=%s endpoint=%s protocol=%s", strings.TrimSpace(chainID), endpointKey, normalizeProbeChainLinkLayer(result.Protocol))
+			}
+			return result.Conn, nil
+		}
+		lastErr = result.Err
+		log.Printf("probe chain relay data stream auto failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, normalizeProbeChainLinkLayer(protocol), result.Err)
+		if !isProbeChainRelayProtocolSwitchableError(result.Err) {
+			return nil, result.Err
+		}
+		recordProbeChainRelayProtocolFailure(endpointKey, result, result.Err)
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("no supported relay data stream protocol")
+}
+
+func probeChainRelayProtocolCandidatesPrefer(candidates []string, preferred string) []string {
+	preferred = normalizeProbeChainLinkLayer(preferred)
+	if preferred == "" {
+		return candidates
+	}
+	ordered := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if normalizeProbeChainLinkLayer(candidate) == preferred {
+			ordered = append(ordered, preferred)
+			break
+		}
+	}
+	for _, candidate := range candidates {
+		clean := normalizeProbeChainLinkLayer(candidate)
+		if clean == "" || clean == preferred {
+			continue
+		}
+		ordered = append(ordered, clean)
+	}
+	if len(ordered) == 0 {
+		return candidates
+	}
+	return ordered
+}
+
+func openProbeChainRelayDataStreamNetConnWithLayer(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+	startedAt := time.Now()
+	conn, err := openProbeChainRelayDataStreamNetConnWithLayerConn(chainID, secret, relayHost, relayPort, layer, bridgeRole, connToken, openTimeout)
+	endedAt := time.Now()
+	return probeChainRelayProtocolDialResult{
+		Protocol:  normalizeProbeChainLinkLayer(layer),
+		Conn:      conn,
+		Latency:   endedAt.Sub(startedAt),
+		Err:       err,
+		StartedAt: startedAt,
+		EndedAt:   endedAt,
+	}
+}
+
+func openProbeChainRelayDataStreamNetConnWithLayerConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) (net.Conn, error) {
 	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(relayHost)
 	if err != nil {
 		return nil, err
