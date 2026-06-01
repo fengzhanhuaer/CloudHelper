@@ -36,6 +36,10 @@ jobs:
           IFS='.' read -r -a parts <<< "$VERSION"
           patch=$((parts[2] + 1))
           NEW_VERSION="${parts[0]}.${parts[1]}.$patch"
+          while git ls-remote --exit-code --tags origin "refs/tags/v$NEW_VERSION" >/dev/null 2>&1; do
+            patch=$((patch + 1))
+            NEW_VERSION="${parts[0]}.${parts[1]}.$patch"
+          done
           echo "$NEW_VERSION" > version
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
