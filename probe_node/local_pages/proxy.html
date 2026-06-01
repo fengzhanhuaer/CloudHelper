@@ -628,6 +628,25 @@
       return `${Math.trunc(value)}ms`;
     }
 
+    function formatSpeedProbeDetail(item) {
+      const label = formatRelayProtocolLabel(item && item.protocol);
+      if (!item || !item.ok) {
+        const err = String(item && item.error || '').trim();
+        return `${label} 失败${err ? `(${err})` : ''}`;
+      }
+      const parts = [
+        formatRateText(Number(item && item.rate_bps)),
+        `用时${formatDurationText(item && item.duration_ms)}`,
+        `读取${formatBytesText(item && item.bytes)}`,
+        `首包${formatDurationText(item && (item.first_byte_ms || item.latency_ms))}`,
+        `握手${formatDurationText(item && item.open_handshake_ms)}`,
+        `读${Math.trunc(Number(item && item.read_calls) || 0)}次`,
+        `读阻塞max=${formatDurationText(item && item.max_read_block_ms)}`,
+        `avg=${formatBytesText(item && item.avg_read_bytes)}`
+      ];
+      return `${label} ${parts.join(' ')}`;
+    }
+
     function formatLinkStatusText(item) {
       const status = String(item && item.status || '').trim();
       if (status === 'reachable') return '可达';
@@ -1176,14 +1195,7 @@
         const rate = formatRateText(Number(data && data.rate_bps));
         const results = Array.isArray(data && data.results) ? data.results : [];
         const okCount = results.filter((item) => item && item.ok).length;
-        const summary = results.map((item) => {
-          const label = formatRelayProtocolLabel(item && item.protocol);
-          if (item && item.ok) {
-            return `${label} ${formatRateText(Number(item && item.rate_bps))}，用时${formatDurationText(item && item.duration_ms)}，读取${formatBytesText(item && item.bytes)}`;
-          }
-          const err = String(item && item.error || '').trim();
-          return `${label} 失败${err ? `(${err})` : ''}`;
-        }).join('；');
+        const summary = results.map(formatSpeedProbeDetail).join('；');
         if (okCount > 0) {
           const singleProtocolResult = cleanProtocol && results.length === 1 && results[0] && results[0].ok;
           setMessage(singleProtocolResult

@@ -14,6 +14,7 @@ window.CloudHelperUI = {
   setStatus(message) {
     setStatus(message || "");
     setUpgradeStatus(message || "");
+    refreshConnectionsIfVisible();
     refreshLogsIfVisible();
   },
   setLinkStatus(payload) {
@@ -28,6 +29,7 @@ window.CloudHelperUI = {
       button.disabled = false;
       button.textContent = "VPN 自检";
     }
+    refreshConnectionsIfVisible();
     refreshLogsIfVisible();
   }
 };
@@ -487,9 +489,25 @@ function formatLatencyResult(data) {
 function formatSpeedResult(data) {
   const mbps = data.rate_bps ? ((data.rate_bps * 8) / 1000 / 1000).toFixed(2) : "0.00";
   const details = Array.isArray(data.results)
-    ? data.results.map((item) => `${item.protocol}:${item.ok ? `${formatBytes(item.bytes)}/${item.duration_ms}ms` : item.error || "fail"}`).join("；")
+    ? data.results.map(formatSpeedProbeDetail).join("；")
     : "";
   return `测速：${data.chain_name || data.chain_id} ${data.status}，${mbps} Mbps。${details}`;
+}
+
+function formatSpeedProbeDetail(item) {
+  const label = item && item.protocol ? item.protocol : "-";
+  if (!item || !item.ok) {
+    return `${label}:${item && item.error ? item.error : "fail"}`;
+  }
+  const blocks = [
+    `${formatBytes(item.bytes)}/${item.duration_ms || 0}ms`,
+    `首包${item.first_byte_ms || item.latency_ms || "-"}ms`,
+    `握手${item.open_handshake_ms || "-"}ms`,
+    `读${item.read_calls || 0}次`,
+    `max阻塞${item.max_read_block_ms || 0}ms`,
+    `avg${formatBytes(item.avg_read_bytes || 0)}`
+  ];
+  return `${label}:${blocks.join("/")}`;
 }
 
 function formatBytes(value) {
@@ -527,6 +545,10 @@ function setupStatusTabs() {
   if (clear) {
     clear.onclick = clearLogs;
   }
+  const refreshConnectionsButton = byId("refreshConnectionsButton");
+  if (refreshConnectionsButton) {
+    refreshConnectionsButton.onclick = refreshConnections;
+  }
   const selfCheck = byId("vpnSelfCheckButton");
   if (selfCheck) {
     selfCheck.onclick = runVPNSelfCheck;
@@ -536,22 +558,36 @@ function setupStatusTabs() {
 }
 
 function activateStatusTab(tab) {
-  const clean = tab === "logs" ? "logs" : "overview";
+  const clean = ["logs", "connections"].includes(tab) ? tab : "overview";
   document.querySelectorAll("[data-status-tab]").forEach((button) => {
     const active = button.dataset.statusTab === clean;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
   const overview = byId("statusOverviewPanel");
+  const connections = byId("statusConnectionsPanel");
   const logs = byId("statusLogsPanel");
   if (overview) {
     overview.hidden = clean !== "overview";
   }
+  if (connections) {
+    connections.hidden = clean !== "connections";
+  }
   if (logs) {
     logs.hidden = clean !== "logs";
   }
+  if (clean === "connections") {
+    refreshConnections();
+  }
   if (clean === "logs") {
     refreshLogs();
+  }
+}
+
+function refreshConnectionsIfVisible() {
+  const panel = byId("statusConnectionsPanel");
+  if (panel && !panel.hidden) {
+    refreshConnections();
   }
 }
 
@@ -560,6 +596,145 @@ function refreshLogsIfVisible() {
   if (logs && !logs.hidden) {
     refreshLogs();
   }
+}
+
+function refreshConnections() {
+  const list = byId("connectionList");
+  if (!list) {
+    return;
+  }
+  try {
+    const proxyData = parseJSON(window.CloudHelper.proxyStatus ? window.CloudHelper.proxyStatus() : "{}");
+    const vpnData = parseJSON(window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}");
+    renderConnections(proxyData, vpnData);
+  } catch (error) {
+    setText("connectionStatus", `读取连接失败：${error && error.message ? error.message : error}`);
+  }
+}
+
+function renderConnections(proxyData, vpnData) {
+  const list = byId("connectionList");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = "";
+  const connectionData = proxyData.connections || {};
+  const active = Array.isArray(connectionData.active) ? connectionData.active : [];
+  const failures = Array.isArray(connectionData.failures) ? connectionData.failures : [];
+  const runtimeText = [
+    vpnData.running || vpnData.status === "running" ? "VPN 运行中" : "VPN 未启动",
+    proxyData.http_enabled ? `HTTP ${proxyData.http_addr || ""}`.trim() : "HTTP 未启动",
+    proxyData.socks5_enabled ? `SOCKS5 ${proxyData.socks5_addr || ""}`.trim() : "SOCKS5 未启动",
+    connectionData.fetched_at ? `刷新 ${formatCompactTime(connectionData.fetched_at)}` : ""
+  ].filter(Boolean).join("；");
+  setText("connectionStatus", `${runtimeText}；活动 ${active.length}；失败 ${failures.length}`);
+  if (!proxyData.ok) {
+    const item = document.createElement("div");
+    item.className = "status-box";
+    item.textContent = proxyData.error || "代理状态不可用。";
+    list.appendChild(item);
+    return;
+  }
+  if (!active.length && !failures.length) {
+    const empty = document.createElement("div");
+    empty.className = "status-box";
+    empty.textContent = "暂无活动代理连接。打开 VPN 或本地 HTTP/SOCKS 后，新连接会显示在这里。";
+    list.appendChild(empty);
+    return;
+  }
+  const tcpActive = active.filter((item) => String(item.transport || "").toLowerCase() !== "udp" && String(item.scope || "").toLowerCase() !== "vpn_udp");
+  const udpActive = active.filter((item) => String(item.transport || "").toLowerCase() === "udp" || String(item.scope || "").toLowerCase() === "vpn_udp");
+  appendConnectionSection(list, "TCP Relay", tcpActive, "暂无 TCP relay 连接");
+  appendConnectionSection(list, "UDP Bridge", udpActive, "暂无 UDP bridge 连接");
+  if (failures.length) {
+    appendConnectionSection(list, "最近失败", failures.slice(0, 8), "暂无失败记录", true);
+  }
+}
+
+function appendConnectionSection(list, title, items, emptyText, isFailure) {
+  const heading = document.createElement("div");
+  heading.className = "connection-section-title";
+  heading.textContent = `${title} (${items.length})`;
+  list.appendChild(heading);
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "connection-empty";
+    empty.textContent = emptyText;
+    list.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => list.appendChild(renderConnectionItem(item, !!isFailure)));
+}
+
+function renderConnectionItem(item, isFailure) {
+  const card = document.createElement("article");
+  card.className = "connection-card";
+  card.classList.toggle("error", !!isFailure);
+
+  const title = document.createElement("div");
+  title.className = "connection-title";
+  const name = document.createElement("span");
+  name.textContent = item.flow_id || item.id || "-";
+  const badge = document.createElement("span");
+  badge.className = isFailure ? "connection-badge error" : "connection-badge";
+  badge.textContent = isFailure ? (item.reason || "失败") : (item.transport || "stream");
+  title.append(name, badge);
+
+  const meta = document.createElement("div");
+  meta.className = "connection-meta";
+  meta.textContent = [
+    item.scope || "-",
+    item.side || "-",
+    item.direct ? "direct" : (item.group || "tunnel"),
+    item.chain_id ? `chain ${item.chain_id}` : ""
+  ].filter(Boolean).join(" · ");
+
+  const path = document.createElement("div");
+  path.className = "connection-path";
+  path.textContent = `${item.target || "-"} -> ${item.route_target || item.target || "-"}`;
+
+  const grid = document.createElement("div");
+  grid.className = "connection-grid";
+  if (isFailure) {
+    appendConnectionMetric(grid, "错误", item.error || item.reason || "-");
+    appendConnectionMetric(grid, "时间", formatCompactTime(item.last_seen) || "-");
+  } else {
+    appendConnectionMetric(grid, "上行", formatBytes(item.bytes_up));
+    appendConnectionMetric(grid, "下行", formatBytes(item.bytes_down));
+    appendConnectionMetric(grid, "空闲", formatDurationSeconds(item.idle_ms));
+    appendConnectionMetric(grid, "阻塞", formatConnectionBlock(item));
+  }
+  card.append(title, meta, path, grid);
+  return card;
+}
+
+function appendConnectionMetric(parent, label, value) {
+  const box = document.createElement("div");
+  box.className = "connection-metric";
+  const key = document.createElement("span");
+  key.textContent = label;
+  const val = document.createElement("strong");
+  val.textContent = value || "-";
+  box.append(key, val);
+  parent.appendChild(box);
+}
+
+function formatDurationSeconds(value) {
+  const ms = Number(value || 0);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return "-";
+  }
+  return `${Math.round(ms / 1000)}s`;
+}
+
+function formatConnectionBlock(item) {
+  const blockedUp = Number(item.blocked_writes_up || 0);
+  const blockedDown = Number(item.blocked_writes_down || 0);
+  const maxBlock = Math.max(Number(item.max_write_block_ms_up || 0), Number(item.max_write_block_ms_down || 0));
+  if (!blockedUp && !blockedDown && !maxBlock) {
+    return "-";
+  }
+  return `${blockedUp}/${blockedDown} max ${Math.trunc(maxBlock)}ms`;
 }
 
 function refreshLogs() {
@@ -848,6 +1023,7 @@ function refreshSummarySilent() {
     setText("summaryRuntime", window.CloudHelper.status());
     setText("summaryLocalVersion", data.localVersion || "-");
     refreshVPNDiagnostics();
+    refreshConnectionsIfVisible();
   } catch (_) {
   }
 }

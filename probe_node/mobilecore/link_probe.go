@@ -117,21 +117,34 @@ type linkReachabilityResult struct {
 }
 
 type linkSpeedTestResult struct {
-	Protocol   string `json:"protocol"`
-	OK         bool   `json:"ok"`
-	LatencyMS  int64  `json:"latency_ms,omitempty"`
-	Bytes      int64  `json:"bytes,omitempty"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
-	RateBPS    int64  `json:"rate_bps,omitempty"`
-	Error      string `json:"error,omitempty"`
-	StartedAt  string `json:"started_at,omitempty"`
-	EndedAt    string `json:"ended_at,omitempty"`
+	Protocol         string `json:"protocol"`
+	OK               bool   `json:"ok"`
+	LatencyMS        int64  `json:"latency_ms,omitempty"`
+	Bytes            int64  `json:"bytes,omitempty"`
+	RequestedBytes   int64  `json:"requested_bytes,omitempty"`
+	DurationMS       int64  `json:"duration_ms,omitempty"`
+	RateBPS          int64  `json:"rate_bps,omitempty"`
+	ReadCalls        int64  `json:"read_calls,omitempty"`
+	ReadChunkBytes   int64  `json:"read_chunk_bytes,omitempty"`
+	AvgReadBytes     int64  `json:"avg_read_bytes,omitempty"`
+	FirstByteMS      int64  `json:"first_byte_ms,omitempty"`
+	TotalReadBlockMS int64  `json:"total_read_block_ms,omitempty"`
+	MaxReadBlockMS   int64  `json:"max_read_block_ms,omitempty"`
+	LastReadBlockMS  int64  `json:"last_read_block_ms,omitempty"`
+	OpenHandshakeMS  int64  `json:"open_handshake_ms,omitempty"`
+	LocalStartedAt   string `json:"local_started_at,omitempty"`
+	LocalFirstByteAt string `json:"local_first_byte_at,omitempty"`
+	LocalCompletedAt string `json:"local_completed_at,omitempty"`
+	Error            string `json:"error,omitempty"`
+	StartedAt        string `json:"started_at,omitempty"`
+	EndedAt          string `json:"ended_at,omitempty"`
 }
 
 type linkTunnelOpenRequest struct {
 	Type          string                 `json:"type"`
 	Network       string                 `json:"network,omitempty"`
 	Address       string                 `json:"address,omitempty"`
+	FlowID        string                 `json:"flow_id,omitempty"`
 	AssociationV2 *linkAssociationV2Meta `json:"association_v2,omitempty"`
 	SpeedBytes    int64                  `json:"speed_bytes,omitempty"`
 	PingBytes     int64                  `json:"ping_bytes,omitempty"`
@@ -846,8 +859,9 @@ func linkRelaySpeedTestCandidates(layer string, protocol string) []string {
 func linkRelaySpeedTestWithLayer(endpoint linkEndpoint, layer string, byteCount int64, timeout time.Duration) linkSpeedTestResult {
 	startedAt := time.Now()
 	result := linkSpeedTestResult{
-		Protocol:  normalizeLinkLayer(layer),
-		StartedAt: startedAt.UTC().Format(time.RFC3339),
+		Protocol:       normalizeLinkLayer(layer),
+		StartedAt:      startedAt.UTC().Format(time.RFC3339),
+		LocalStartedAt: startedAt.UTC().Format(time.RFC3339),
 	}
 	if byteCount <= 0 {
 		byteCount = linkRelaySpeedTestBytes
@@ -855,6 +869,7 @@ func linkRelaySpeedTestWithLayer(endpoint linkEndpoint, layer string, byteCount 
 	if byteCount > linkRelaySpeedTestMaxBytes {
 		byteCount = linkRelaySpeedTestMaxBytes
 	}
+	result.RequestedBytes = byteCount
 	if timeout <= 0 {
 		timeout = linkRelaySpeedTestTimeout
 	}
@@ -863,11 +878,13 @@ func linkRelaySpeedTestWithLayer(endpoint linkEndpoint, layer string, byteCount 
 	headerAt := time.Now()
 	if speedErr != nil {
 		result.LatencyMS = durationMilliseconds(headerAt.Sub(startedAt))
+		result.OpenHandshakeMS = result.LatencyMS
 		result.Error = speedErr.Error()
 		result.EndedAt = time.Now().UTC().Format(time.RFC3339)
 		return result
 	}
 	defer speedConn.Close()
+	result.OpenHandshakeMS = durationMilliseconds(headerAt.Sub(startedAt))
 	consumeLinkRelaySpeedTestData(speedConn, byteCount, time.Until(deadlineAt), &result)
 	return result
 }
@@ -1030,6 +1047,8 @@ func consumeLinkRelaySpeedTestData(reader io.Reader, byteCount int64, maxDuratio
 		return
 	}
 	readStartedAt := time.Now()
+	result.LocalStartedAt = readStartedAt.UTC().Format(time.RFC3339)
+	result.ReadChunkBytes = int64(linkRelayWebSocketBufferBytes)
 	if maxDuration <= 0 {
 		maxDuration = linkRelaySpeedTestTimeout
 	}
@@ -1042,16 +1061,26 @@ func consumeLinkRelaySpeedTestData(reader io.Reader, byteCount int64, maxDuratio
 	firstAt := time.Now()
 	if firstN > 0 {
 		result.LatencyMS = durationMilliseconds(firstAt.Sub(readStartedAt))
+		result.FirstByteMS = result.LatencyMS
+		result.LocalFirstByteAt = firstAt.UTC().Format(time.RFC3339)
+		result.ReadCalls++
+		result.TotalReadBlockMS += result.LatencyMS
+		result.LastReadBlockMS = result.LatencyMS
+		result.MaxReadBlockMS = result.LatencyMS
 	}
 	remaining := byteCount - int64(firstN)
 	if remaining < 0 {
 		remaining = 0
 	}
-	n, err := io.Copy(io.Discard, io.LimitReader(reader, remaining))
+	n, err := copyLinkRelaySpeedTestData(io.LimitReader(reader, remaining), result)
 	endedAt := time.Now()
 	result.EndedAt = endedAt.UTC().Format(time.RFC3339)
+	result.LocalCompletedAt = result.EndedAt
 	result.Bytes = int64(firstN) + n
 	result.DurationMS = durationMilliseconds(endedAt.Sub(readStartedAt))
+	if result.ReadCalls > 0 {
+		result.AvgReadBytes = result.Bytes / result.ReadCalls
+	}
 	if firstErr != nil {
 		if isLinkSpeedTestDurationLimitErr(firstErr, result.Bytes) {
 			finalizeLinkSpeedTestResult(result, readStartedAt, endedAt)
@@ -1091,6 +1120,39 @@ func finalizeLinkSpeedTestResult(result *linkSpeedTestResult, startedAt time.Tim
 	result.RateBPS = int64(float64(result.Bytes) / elapsed.Seconds())
 	result.OK = true
 	result.Error = ""
+}
+
+func copyLinkRelaySpeedTestData(reader io.Reader, result *linkSpeedTestResult) (int64, error) {
+	if reader == nil {
+		return 0, nil
+	}
+	buf := make([]byte, linkRelayWebSocketBufferBytes)
+	var total int64
+	for {
+		startedAt := time.Now()
+		n, err := reader.Read(buf)
+		elapsedMS := durationMilliseconds(time.Since(startedAt))
+		if n > 0 {
+			total += int64(n)
+			if result != nil {
+				result.ReadCalls++
+				result.TotalReadBlockMS += elapsedMS
+				result.LastReadBlockMS = elapsedMS
+				if elapsedMS > result.MaxReadBlockMS {
+					result.MaxReadBlockMS = elapsedMS
+				}
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return total, nil
+			}
+			return total, err
+		}
+		if n == 0 {
+			return total, io.ErrNoProgress
+		}
+	}
 }
 
 func isLinkSpeedTestDurationLimitErr(err error, bytesRead int64) bool {

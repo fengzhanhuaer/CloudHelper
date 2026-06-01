@@ -112,12 +112,22 @@
       flex-wrap: wrap;
     }
     .link-monitor-list { display: grid; gap: 10px; }
+    .connection-monitor-list { display: grid; gap: 10px; }
     .link-monitor-card {
       border: 1px solid rgba(255,255,255,.1);
       border-radius: 8px;
       padding: 12px;
       background: rgba(13,17,23,.42);
     }
+    .connection-monitor-card {
+      border: 1px solid rgba(255,255,255,.1);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 12px;
+      background: rgba(13,17,23,.42);
+    }
+    .connection-monitor-card.udp { border-left-color: #7ee787; }
+    .connection-monitor-card.warn { border-left-color: #d29922; }
     .link-monitor-title {
       display: flex;
       justify-content: space-between;
@@ -127,16 +137,49 @@
       color: var(--heading);
       font-weight: 700;
     }
+    .connection-monitor-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+      flex-wrap: wrap;
+      color: var(--heading);
+      font-weight: 700;
+    }
+    .connection-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border-radius: 999px;
+      padding: 0 8px;
+      background: rgba(88, 166, 255, 0.16);
+      color: #79c0ff;
+      font-size: 12px;
+      font-weight: 700;
+    }
     .link-monitor-meta {
       margin-top: 6px;
       color: var(--text-secondary);
       font-size: 12px;
       line-height: 1.6;
     }
+    .connection-monitor-meta {
+      margin-top: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
     .link-monitor-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
       gap: 10px;
+      margin-top: 10px;
+    }
+    .connection-monitor-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 8px;
       margin-top: 10px;
     }
     .link-monitor-box {
@@ -146,7 +189,16 @@
       background: rgba(1,4,9,.25);
       min-height: 86px;
     }
+    .connection-monitor-box {
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      padding: 9px;
+      background: rgba(1,4,9,.25);
+      min-height: 58px;
+    }
     .box-title { color: var(--text-secondary); font-size: 12px; margin-bottom: 6px; }
+    .box-value { color: var(--heading); font-family: Consolas, monospace; font-size: 12px; word-break: break-word; }
+    .connection-section-title { margin: 14px 0 8px; color: var(--heading); font-size: 14px; }
     .pre-line { white-space: pre-line; word-break: break-word; font-family: Consolas, monospace; font-size: 12px; line-height: 1.55; }
     .status-ok { color: #7ee787; }
     .status-warn { color: #d29922; }
@@ -182,6 +234,7 @@
       <div class="monitor-tabs" role="tablist">
         <button class="monitor-tab active" type="button" data-monitor-tab="summary">概要</button>
         <button class="monitor-tab" type="button" data-monitor-tab="details">监视数据</button>
+        <button class="monitor-tab" type="button" data-monitor-tab="connections">代理连接</button>
         <button class="monitor-tab" type="button" data-monitor-tab="links">链路监视</button>
       </div>
       <div id="monitor-panel-summary" class="monitor-panel active">
@@ -215,6 +268,15 @@
           </tbody>
         </table>
       </div>
+      <div id="monitor-panel-connections" class="monitor-panel">
+        <div class="link-monitor-head">
+          <div class="hint" id="connection-monitor-updated">代理连接：--</div>
+          <button id="connectionMonitorRefreshBtn" type="button" class="secondary">刷新代理连接</button>
+        </div>
+        <div id="connection-monitor-list" class="connection-monitor-list">
+          <div class="hint">暂无代理 TCP/UDP 连接数据</div>
+        </div>
+      </div>
       <div id="monitor-panel-links" class="monitor-panel">
         <div class="link-monitor-head">
           <div class="hint" id="link-monitor-updated">链路监视：--</div>
@@ -236,6 +298,7 @@
     let currentMonitorData = null;
     let linkStatusCache = [];
     let remoteTCPDebugCache = null;
+    let remoteSpeedDebugCache = null;
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -339,6 +402,9 @@
       if (name === 'links') {
         loadLinkMonitor();
       }
+      if (name === 'connections') {
+        renderProxyConnectionMonitor();
+      }
     }
 
     function renderMonitor(data) {
@@ -373,6 +439,9 @@
       setText('mon-groups', 'total=' + (groups.total || 0) + ', selected=' + (groups.selected || 0) + ', connected=' + (groups.connected || 0) + ', failures=' + (groups.failure_total || 0) + ', statuses=' + formatCountMap(groups.statuses));
       setText('mon-chain', 'chain_runtimes=' + (data.chain_runtimes || 0) + ', tcp_failures=' + (data.tcp_failures || 0));
       setText('mon-dns', 'loaded=' + formatBool(dns.loaded, 'true', 'false') + ', service=' + formatBool(dns.service, 'true', 'false') + ', tun_service=' + formatBool(dns.tun_service, 'true', 'false') + ', cache=' + (dns.cache || 0) + ', fake=' + (dns.fake_ip || 0) + ', hints=' + (dns.route_hints || 0) + '/' + (dns.route_ip_hints || 0));
+      if (document.querySelector('.monitor-tab[data-monitor-tab="connections"].active')) {
+        renderProxyConnectionMonitor();
+      }
       if (document.querySelector('.monitor-tab[data-monitor-tab="links"].active')) {
         renderLinkMonitor();
       }
@@ -459,6 +528,29 @@
       return lines.join('\n');
     }
 
+    function formatRemoteSpeedDebug(remote) {
+      if (!remote || typeof remote !== 'object') return '未拉取';
+      if (remote.ok === false) return '拉取失败';
+      const active = Array.isArray(remote.active) ? remote.active : [];
+      const recent = Array.isArray(remote.recent) ? remote.recent : [];
+      const lines = [];
+      lines.push('node=' + (remote.node_id || '-') + ' active=' + active.length + ' recent=' + recent.length);
+      active.slice(0, 3).forEach((item) => lines.push(formatSpeedDebugLine(item)));
+      recent.slice(0, 4).forEach((item) => lines.push(formatSpeedDebugLine(item)));
+      return lines.join('\n');
+    }
+
+    function formatSpeedDebugLine(item) {
+      const protocol = formatProtocol(item && item.transport);
+      const status = String(item && item.status || '-').trim();
+      const bytes = formatBytes(item && item.bytes);
+      const rate = formatRate(item && item.rate_bps);
+      const calls = Math.trunc(Number(item && item.write_calls || 0));
+      const maxBlock = Math.trunc(Number(item && item.max_write_block_ms || 0));
+      const duration = Math.trunc(Number(item && item.duration_ms || item && item.age_ms || 0));
+      return protocol + ' ' + status + ' bytes=' + bytes + ' rate=' + rate + ' duration=' + duration + 'ms writes=' + calls + ' max_write_block=' + maxBlock + 'ms';
+    }
+
     function formatTCPFlowLine(item) {
       const flowID = String(item && item.flow_id || item && item.id || '-').trim();
       const side = String(item && item.side || '-').trim();
@@ -473,17 +565,116 @@
       return flowID + ' [' + side + '] ' + target + ' -> ' + routeTarget + ' up=' + up + ' down=' + down + blockText;
     }
 
+    function renderProxyConnectionMonitor() {
+      const listEl = document.getElementById('connection-monitor-list');
+      const updatedEl = document.getElementById('connection-monitor-updated');
+      if (!listEl || !updatedEl) return;
+      const data = currentMonitorData || {};
+      const tcp = data.tcp || {};
+      const udp = data.udp || {};
+      const udpBridges = udp.bridges || {};
+      const tcpItems = Array.isArray(tcp.items) ? tcp.items : [];
+      const udpItems = Array.isArray(udpBridges.items) ? udpBridges.items : [];
+      updatedEl.textContent = '代理连接：TCP ' + tcpItems.length + ' / UDP ' + udpItems.length + ' / 刷新 ' + (data.fetched_at || '--');
+      if (tcpItems.length === 0 && udpItems.length === 0) {
+        listEl.innerHTML = '<div class="hint">暂无代理 TCP/UDP 活动连接</div>';
+        return;
+      }
+      const html = [];
+      html.push('<div class="connection-section-title">TCP Relay</div>');
+      if (tcpItems.length === 0) {
+        html.push('<div class="hint">暂无 TCP relay 连接</div>');
+      } else {
+        tcpItems.forEach((item) => html.push(renderTCPConnectionCard(item)));
+      }
+      html.push('<div class="connection-section-title">UDP Bridge</div>');
+      if (udpItems.length === 0) {
+        html.push('<div class="hint">暂无 UDP bridge 连接</div>');
+      } else {
+        udpItems.forEach((item) => html.push(renderUDPConnectionCard(item)));
+      }
+      listEl.innerHTML = html.join('');
+    }
+
+    function renderTCPConnectionCard(item) {
+      const flowID = String(item && item.flow_id || item && item.id || '-').trim();
+      const target = String(item && item.target || '-').trim();
+      const routeTarget = String(item && item.route_target || target).trim();
+      const group = String(item && item.group || (item && item.direct ? 'direct' : '-')).trim();
+      const maxBlock = Math.max(Number(item && item.max_write_block_ms_up || 0), Number(item && item.max_write_block_ms_down || 0));
+      const blockedUp = Number(item && item.blocked_writes_up || 0);
+      const blockedDown = Number(item && item.blocked_writes_down || 0);
+      const cardClass = maxBlock > 0 || blockedUp > 0 || blockedDown > 0 ? 'connection-monitor-card warn' : 'connection-monitor-card';
+      return `
+        <div class="${cardClass}">
+          <div class="connection-monitor-title">
+            <span>${escapeHTML(flowID)}</span>
+            <span class="connection-badge">${escapeHTML(item && item.transport || 'tcp')}</span>
+          </div>
+          <div class="connection-monitor-meta">
+            ${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>
+            scope=${escapeHTML(item && item.scope || '-')} ｜ side=${escapeHTML(item && item.side || '-')} ｜ group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')}
+          </div>
+          <div class="connection-monitor-grid">
+            ${renderConnectionMetric('上行', formatBytes(item && item.bytes_up))}
+            ${renderConnectionMetric('下行', formatBytes(item && item.bytes_down))}
+            ${renderConnectionMetric('空闲/年龄', formatDurationMS(item && item.idle_ms) + ' / ' + formatDurationMS(item && item.age_ms))}
+            ${renderConnectionMetric('写次数', Math.trunc(Number(item && item.writes_up || 0)) + ' / ' + Math.trunc(Number(item && item.writes_down || 0)))}
+            ${renderConnectionMetric('阻塞次数', Math.trunc(blockedUp) + ' / ' + Math.trunc(blockedDown))}
+            ${renderConnectionMetric('最大阻塞', maxBlock > 0 ? Math.trunc(maxBlock) + 'ms ' + (item && item.last_congestion_side || '') : '-')}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderUDPConnectionCard(item) {
+      const target = String(item && item.target || '-').trim();
+      const routeTarget = String(item && item.route_target || target).trim();
+      const group = String(item && item.group || (item && item.direct ? 'direct' : '-')).trim();
+      return `
+        <div class="connection-monitor-card udp">
+          <div class="connection-monitor-title">
+            <span>${escapeHTML(item && item.id || '-')}</span>
+            <span class="connection-badge">udp</span>
+          </div>
+          <div class="connection-monitor-meta">
+            ${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>
+            group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ direct=${escapeHTML(item && item.direct ? 'true' : 'false')}
+          </div>
+          <div class="connection-monitor-grid">
+            ${renderConnectionMetric('上行', formatBytes(item && item.bytes_up))}
+            ${renderConnectionMetric('下行', formatBytes(item && item.bytes_down))}
+            ${renderConnectionMetric('空闲/年龄', formatDurationMS(item && item.idle_ms) + ' / ' + formatDurationMS(item && item.age_ms))}
+            ${renderConnectionMetric('TTL', formatDurationMS(item && item.timeout_ms))}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderConnectionMetric(label, value) {
+      return '<div class="connection-monitor-box"><div class="box-title">' + escapeHTML(label) + '</div><div class="box-value">' + escapeHTML(value || '-') + '</div></div>';
+    }
+
+    function formatDurationMS(value) {
+      const ms = Number(value || 0);
+      if (!Number.isFinite(ms) || ms <= 0) return '-';
+      if (ms >= 3600000) return Math.round(ms / 3600000) + 'h';
+      if (ms >= 60000) return Math.round(ms / 60000) + 'm';
+      return Math.round(ms / 1000) + 's';
+    }
+
     function renderLinkMonitor() {
       const listEl = document.getElementById('link-monitor-list');
       const updatedEl = document.getElementById('link-monitor-updated');
       if (!listEl || !updatedEl) return;
-      updatedEl.textContent = '链路监视：本地 ' + ((currentMonitorData && currentMonitorData.fetched_at) || '--') + ' / 远端 ' + ((remoteTCPDebugCache && remoteTCPDebugCache.fetched) || '--');
+      updatedEl.textContent = '链路监视：本地 ' + ((currentMonitorData && currentMonitorData.fetched_at) || '--') + ' / 远端 ' + ((remoteTCPDebugCache && remoteTCPDebugCache.fetched) || '--') + ' / 远端测速 ' + ((remoteSpeedDebugCache && remoteSpeedDebugCache.fetched) || '--');
       const items = Array.isArray(linkStatusCache) ? linkStatusCache : [];
       if (items.length === 0) {
         listEl.innerHTML = '<div class="hint">暂无代理链路监视数据</div>';
         return;
       }
       const remote = remoteTCPDebugCache && remoteTCPDebugCache.remote ? remoteTCPDebugCache.remote : null;
+      const remoteSpeed = remoteSpeedDebugCache && remoteSpeedDebugCache.remote ? remoteSpeedDebugCache.remote : null;
       listEl.innerHTML = items.map((item) => {
         const chainID = normalizeChainID(item && item.chain_id);
         const name = String(item && item.chain_name || '').trim() || chainID || '-';
@@ -510,6 +701,7 @@
               <div class="link-monitor-box"><div class="box-title">协议质量</div><div class="pre-line">${escapeHTML(protocolLines)}</div></div>
               <div class="link-monitor-box"><div class="box-title">本地连接质量</div><div class="pre-line">${escapeHTML(localLines)}</div></div>
               <div class="link-monitor-box"><div class="box-title">远端出口质量</div><div class="pre-line">${escapeHTML(remoteLines)}</div></div>
+              <div class="link-monitor-box"><div class="box-title">远端测速写侧</div><div class="pre-line">${escapeHTML(formatRemoteSpeedDebug(remoteSpeed))}</div></div>
             </div>
           </div>
         `;
@@ -518,15 +710,19 @@
 
     async function loadLinkMonitor() {
       try {
-        const [linkData, remoteData] = await Promise.all([
+        const [linkData, remoteData, remoteSpeedData] = await Promise.all([
           requestJSON('/local/api/proxy/link/status', { method: 'GET' }),
           requestJSON('/local/api/proxy/remote/tcp_debug', { method: 'GET' }).catch((err) => ({ ok: false, error: err.message })),
+          requestJSON('/local/api/proxy/remote/speed_debug', { method: 'GET' }).catch((err) => ({ ok: false, error: err.message })),
         ]);
         linkStatusCache = Array.isArray(linkData && linkData.items) ? linkData.items : [];
         remoteTCPDebugCache = remoteData && typeof remoteData === 'object' ? remoteData : null;
+        remoteSpeedDebugCache = remoteSpeedData && typeof remoteSpeedData === 'object' ? remoteSpeedData : null;
         renderLinkMonitor();
         if (remoteData && remoteData.ok === false && remoteData.error) {
           setMessage('远端出口质量暂不可用：' + remoteData.error, 'error');
+        } else if (remoteSpeedData && remoteSpeedData.ok === false && remoteSpeedData.error) {
+          setMessage('远端测速写侧暂不可用：' + remoteSpeedData.error, 'error');
         }
       } catch (err) {
         if (err && err.status === 401) {
@@ -605,6 +801,9 @@
     });
     document.getElementById('linkMonitorRefreshBtn').addEventListener('click', () => {
       loadLinkMonitor();
+    });
+    document.getElementById('connectionMonitorRefreshBtn').addEventListener('click', () => {
+      loadMonitor();
     });
     document.querySelectorAll('.monitor-tab').forEach((btn) => {
       btn.addEventListener('click', () => switchMonitorTab(btn.dataset.monitorTab));

@@ -524,12 +524,20 @@ func (n *androidVPNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	req.Complete(false)
 	inbound := gonet.NewTCPConn(&wq, ep)
 	preface, dialTarget, sni := prepareVPNTCPDialTarget(inbound, targetAddr)
-	outbound, err := openVPNOutboundTCP(dialTarget)
+	flowID := newAndroidProxyFlowID("vpn_tcp", dialTarget)
+	outbound, route, err := openVPNOutboundTCPWithFlow(dialTarget, flowID)
 	if err != nil {
 		stage := "tcp_open " + targetAddr
 		if dialTarget != targetAddr {
 			stage += " via_sni " + dialTarget
 		}
+		globalAndroidProxyConnectionState.recordFailure("open_failed", androidProxyConnectionOptions{
+			Scope:  "vpn_tcp",
+			FlowID: flowID,
+			Side:   "local",
+			Target: dialTarget,
+			Route:  androidProxyConnectionRouteFromVPN(route),
+		}, err)
 		recordVPNRuntimeError(stage, err)
 		_ = inbound.Close()
 		return
@@ -548,8 +556,15 @@ func (n *androidVPNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 			return
 		}
 	}
-	go pipeVPNConn(outbound, inbound)
-	go pipeVPNConn(inbound, outbound)
+	relay := globalAndroidProxyConnectionState.begin(androidProxyConnectionOptions{
+		Scope:  "vpn_tcp",
+		FlowID: flowID,
+		Side:   "local",
+		Target: dialTarget,
+		Route:  androidProxyConnectionRouteFromVPN(route),
+	})
+	go pipeVPNConn(outbound, inbound, relay, "up")
+	go pipeVPNConn(inbound, outbound, relay, "down")
 }
 
 func (n *androidVPNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
@@ -571,13 +586,29 @@ func (n *androidVPNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 		return
 	}
 	inbound := gonet.NewUDPConn(&wq, ep)
-	outbound, err := openVPNOutboundUDPStream(id, targetAddr)
+	outbound, route, flowID, err := openVPNOutboundUDPStream(id, targetAddr)
 	if err != nil {
+		globalAndroidProxyConnectionState.recordFailure("open_failed", androidProxyConnectionOptions{
+			Scope:     "vpn_udp",
+			FlowID:    flowID,
+			Side:      "local",
+			Target:    targetAddr,
+			Route:     androidProxyConnectionRouteFromVPN(route),
+			Transport: "udp",
+		}, err)
 		recordVPNRuntimeError("udp_open "+targetAddr, err)
 		_ = inbound.Close()
 		return
 	}
-	go relayVPNUDP(inbound, outbound)
+	relay := globalAndroidProxyConnectionState.begin(androidProxyConnectionOptions{
+		Scope:     "vpn_udp",
+		FlowID:    flowID,
+		Side:      "local",
+		Target:    targetAddr,
+		Route:     androidProxyConnectionRouteFromVPN(route),
+		Transport: "udp",
+	})
+	go relayVPNUDP(inbound, outbound, relay)
 }
 
 func (n *androidVPNNetstack) handleDNSForwarder(req *udp.ForwarderRequest, targetAddr string) {
@@ -592,26 +623,31 @@ func (n *androidVPNNetstack) handleDNSForwarder(req *udp.ForwarderRequest, targe
 }
 
 func openVPNOutboundTCP(targetAddr string) (net.Conn, error) {
+	conn, _, err := openVPNOutboundTCPWithFlow(targetAddr, newAndroidProxyFlowID("vpn_tcp", targetAddr))
+	return conn, err
+}
+
+func openVPNOutboundTCPWithFlow(targetAddr string, flowID string) (net.Conn, vpnRouteDecision, error) {
 	route, err := decideVPNRouteForTarget(targetAddr)
 	if err != nil {
-		return nil, err
+		return nil, route, err
 	}
 	if route.Reject {
-		return nil, errors.New("route rejected")
+		return nil, route, errors.New("route rejected")
 	}
-	conn, err := dialVPNRouteTCP(route)
+	conn, err := dialVPNRouteTCPWithFlow(route, flowID)
 	if err == nil {
-		return conn, nil
+		return conn, route, nil
 	}
 	if fallbackRoute, ok := buildAndroidVPNIPv4FallbackRoute(route, err); ok {
 		androidLogStore.add("vpn", "warn", "tcp ipv6 fallback "+route.TargetAddr+" -> "+fallbackRoute.TargetAddr+" group="+fallbackRoute.Group)
-		if fallbackConn, fallbackErr := dialVPNRouteTCP(fallbackRoute); fallbackErr == nil {
-			return fallbackConn, nil
+		if fallbackConn, fallbackErr := dialVPNRouteTCPWithFlow(fallbackRoute, flowID); fallbackErr == nil {
+			return fallbackConn, fallbackRoute, nil
 		} else {
-			return nil, fmt.Errorf("%w; ipv4 fallback %s failed: %v", err, fallbackRoute.TargetAddr, fallbackErr)
+			return nil, fallbackRoute, fmt.Errorf("%w; ipv4 fallback %s failed: %v", err, fallbackRoute.TargetAddr, fallbackErr)
 		}
 	}
-	return nil, err
+	return nil, route, err
 }
 
 func prepareVPNTCPDialTarget(inbound net.Conn, targetAddr string) ([]byte, string, string) {
@@ -755,11 +791,15 @@ func isValidVPNTLSSNIHost(host string) bool {
 }
 
 func dialVPNRouteTCP(route vpnRouteDecision) (net.Conn, error) {
+	return dialVPNRouteTCPWithFlow(route, newAndroidProxyFlowID("vpn_tcp", route.TargetAddr))
+}
+
+func dialVPNRouteTCPWithFlow(route vpnRouteDecision, flowID string) (net.Conn, error) {
 	if route.Direct {
 		dialer := net.Dialer{Timeout: proxyConnectTimeout}
 		return dialer.Dial("tcp", route.TargetAddr)
 	}
-	return openAndroidProxyChainStream(route.SelectedChainID, "tcp", route.TargetAddr)
+	return openAndroidProxyChainStreamWithFlow(route.SelectedChainID, "tcp", route.TargetAddr, flowID)
 }
 
 func openVPNOutboundUDP(targetAddr string) (*net.UDPConn, error) {
@@ -780,20 +820,23 @@ func openVPNOutboundUDP(targetAddr string) (*net.UDPConn, error) {
 	return net.DialUDP("udp", nil, udpAddr)
 }
 
-func openVPNOutboundUDPStream(id stack.TransportEndpointID, targetAddr string) (io.ReadWriteCloser, error) {
+func openVPNOutboundUDPStream(id stack.TransportEndpointID, targetAddr string) (io.ReadWriteCloser, vpnRouteDecision, string, error) {
 	route, err := decideVPNRouteForTarget(targetAddr)
 	if err != nil {
-		return nil, err
+		return nil, route, "", err
 	}
+	flowID := newAndroidProxyFlowID("vpn_udp", targetAddr)
 	if route.Reject {
-		return nil, errors.New("route rejected")
+		return nil, route, flowID, errors.New("route rejected")
 	}
 	if route.Direct {
-		return openVPNOutboundUDP(route.TargetAddr)
+		conn, err := openVPNOutboundUDP(route.TargetAddr)
+		return conn, route, flowID, err
 	}
 	srcIP := strings.TrimSpace(id.RemoteAddress.String())
 	dstIP := strings.TrimSpace(id.LocalAddress.String())
 	assocKey := strings.ToLower(strings.TrimSpace(route.TargetAddr)) + "|" + srcIP + ":" + strconv.Itoa(int(id.RemotePort)) + "->" + dstIP + ":" + strconv.Itoa(int(id.LocalPort))
+	flowID = assocKey
 	association := &linkAssociationV2Meta{
 		Version:          2,
 		Transport:        "udp",
@@ -824,9 +867,9 @@ func openVPNOutboundUDPStream(id stack.TransportEndpointID, targetAddr string) (
 	}
 	stream, err := openAndroidProxyChainPacketStream(route.SelectedChainID, "udp", route.TargetAddr, association)
 	if err != nil {
-		return nil, err
+		return nil, route, flowID, err
 	}
-	return newVPNTunnelUDPConn(stream), nil
+	return newVPNTunnelUDPConn(stream), route, flowID, nil
 }
 
 func decideVPNRouteForTarget(targetAddr string) (vpnRouteDecision, error) {
@@ -869,7 +912,12 @@ func decideVPNRouteForTarget(targetAddr string) (vpnRouteDecision, error) {
 	}, nil
 }
 
-func pipeVPNConn(dst net.Conn, src net.Conn) {
+func pipeVPNConn(dst net.Conn, src net.Conn, relay *androidProxyConnectionRelay, direction string) {
+	defer func() {
+		if relay != nil {
+			relay.releaseSide()
+		}
+	}()
 	defer closeVPNWrite(dst)
 	defer closeVPNRead(src)
 	if vpnRelayIdle > 0 {
@@ -877,19 +925,47 @@ func pipeVPNConn(dst net.Conn, src net.Conn) {
 		_ = src.SetReadDeadline(deadline)
 		_ = dst.SetReadDeadline(deadline)
 	}
-	_, _ = mobileRelayCopy(dst, src)
+	writer := io.Writer(dst)
+	if relay != nil {
+		writer = &androidProxyConnectionWriter{dst: dst, relay: relay, direction: direction}
+	}
+	if _, err := mobileRelayCopy(writer, src); err != nil {
+		globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+	}
 }
 
-func relayVPNUDP(inbound *gonet.UDPConn, outbound io.ReadWriteCloser) {
+func relayVPNUDP(inbound *gonet.UDPConn, outbound io.ReadWriteCloser, relay *androidProxyConnectionRelay) {
 	defer inbound.Close()
 	defer outbound.Close()
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = mobileRelayCopy(outbound, inbound)
+		defer func() {
+			if relay != nil {
+				relay.releaseSide()
+			}
+		}()
+		writer := io.Writer(outbound)
+		if relay != nil {
+			writer = &androidProxyConnectionWriter{dst: outbound, relay: relay, direction: "up"}
+		}
+		if _, err := mobileRelayCopy(writer, inbound); err != nil {
+			globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+		}
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = mobileRelayCopy(inbound, outbound)
+		defer func() {
+			if relay != nil {
+				relay.releaseSide()
+			}
+		}()
+		writer := io.Writer(inbound)
+		if relay != nil {
+			writer = &androidProxyConnectionWriter{dst: inbound, relay: relay, direction: "down"}
+		}
+		if _, err := mobileRelayCopy(writer, outbound); err != nil {
+			globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+		}
 		done <- struct{}{}
 	}()
 	select {

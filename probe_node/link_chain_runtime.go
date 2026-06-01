@@ -2109,6 +2109,16 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 		buf[i] = byte(i % 251)
 	}
 	startedAt := time.Now()
+	deadlineAt := startedAt.Add(probeChainRelaySpeedTestTimeout)
+	debugItem := globalProbeSpeedDebugState.begin(probeSpeedDebugBeginOptions{
+		ChainID:        runtime.cfg.chainID,
+		Role:           runtime.cfg.role,
+		Side:           "remote",
+		Transport:      cleanTransport,
+		RemoteAddr:     strings.TrimSpace(remoteAddr),
+		RequestedBytes: byteCount,
+		ChunkBytes:     int64(chunkBytes),
+	})
 	lastLogAt := startedAt
 	sent := int64(0)
 	nextLogBytes := int64(16 * 1024 * 1024)
@@ -2117,12 +2127,25 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 	var maxBlocked time.Duration
 	remaining := byteCount
 	for remaining > 0 {
+		if !time.Now().Before(deadlineAt) {
+			log.Printf("probe chain %s speed test stopped: chain=%s role=%s remote=%s reason=duration_limit sent=%d remaining=%d elapsed_ms=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, remaining, probeDurationMilliseconds(time.Since(startedAt)), writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal))
+			if debugItem != nil {
+				globalProbeSpeedDebugState.end(debugItem, "duration_limit", nil)
+			}
+			return
+		}
 		n := int64(len(buf))
 		if remaining < n {
 			n = remaining
 		}
+		if deadliner, ok := writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			_ = deadliner.SetWriteDeadline(deadlineAt)
+		}
 		writeStartedAt := time.Now()
 		written, err := writer.Write(buf[:n])
+		if deadliner, ok := writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			_ = deadliner.SetWriteDeadline(time.Time{})
+		}
 		blocked := time.Since(writeStartedAt)
 		writeCalls++
 		blockedTotal += blocked
@@ -2133,12 +2156,21 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 			sent += int64(written)
 			remaining -= int64(written)
 		}
+		if debugItem != nil {
+			debugItem.recordWrite(written, blocked, remaining)
+		}
 		if err != nil {
 			log.Printf("probe chain %s speed test interrupted: chain=%s role=%s remote=%s bytes=%d sent=%d remaining=%d elapsed_ms=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d err=%v", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), byteCount, sent, remaining, probeDurationMilliseconds(time.Since(startedAt)), writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal), err)
+			if debugItem != nil {
+				globalProbeSpeedDebugState.end(debugItem, "failed", err)
+			}
 			return
 		}
 		if written == 0 {
 			log.Printf("probe chain %s speed test stopped: chain=%s role=%s remote=%s reason=zero_write sent=%d remaining=%d elapsed_ms=%d write_calls=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, remaining, probeDurationMilliseconds(time.Since(startedAt)), writeCalls)
+			if debugItem != nil {
+				globalProbeSpeedDebugState.end(debugItem, "zero_write", nil)
+			}
 			return
 		}
 		if sent >= nextLogBytes || remaining == 0 {
@@ -2166,6 +2198,9 @@ func streamProbeChainSpeedTestBytes(runtime *probeChainRuntime, writer io.Writer
 	}
 	rateBPS := int64(float64(sent) / elapsed.Seconds())
 	log.Printf("probe chain %s speed test completed: chain=%s role=%s remote=%s bytes=%d chunk_bytes=%d elapsed_ms=%d rate_bps=%d write_calls=%d max_write_block_ms=%d total_write_block_ms=%d", cleanTransport, runtime.cfg.chainID, runtime.cfg.role, strings.TrimSpace(remoteAddr), sent, chunkBytes, probeDurationMilliseconds(elapsed), rateBPS, writeCalls, probeDurationMilliseconds(maxBlocked), probeDurationMilliseconds(blockedTotal))
+	if debugItem != nil {
+		globalProbeSpeedDebugState.end(debugItem, "completed", nil)
+	}
 }
 
 func probeChainSpeedTestChunkBytesForTransport(transport string) int {
@@ -3158,6 +3193,10 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		handleProbeChainTCPDebugGet(runtime, stream, req)
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(req.Type), "speed_debug_get") {
+		handleProbeChainSpeedDebugGet(runtime, stream, req)
+		return
+	}
 
 	requestedSessionID := strings.TrimSpace(req.SessionID)
 	network := strings.ToLower(strings.TrimSpace(req.Network))
@@ -3216,6 +3255,22 @@ func handleProbeChainTCPDebugGet(runtime *probeChainRuntime, stream net.Conn, re
 	payload.Scope = "chain_exit"
 	if err := writeProbeChainTunnelJSONResponse(stream, payload); err != nil && runtime != nil {
 		log.Printf("probe chain tcp debug response failed: chain=%s role=%s request_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, requestID, err)
+	}
+}
+
+func handleProbeChainSpeedDebugGet(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest) {
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = "chain-speed-debug-" + randomHexToken(8)
+	}
+	nodeID := ""
+	if runtime != nil {
+		nodeID = strings.TrimSpace(runtime.cfg.identity.NodeID)
+	}
+	payload := globalProbeSpeedDebugState.snapshotPayload(nodeID, requestID)
+	payload.Scope = "chain_exit"
+	if err := writeProbeChainTunnelJSONResponse(stream, payload); err != nil && runtime != nil {
+		log.Printf("probe chain speed debug response failed: chain=%s role=%s request_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, requestID, err)
 	}
 }
 

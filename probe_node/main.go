@@ -739,6 +739,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeTCPDebugFetch(msg, identity, stream, encoder, writeMu)
 		return
 	}
+	if typeName == "speed_debug_get" {
+		go runProbeSpeedDebugFetch(msg, identity, stream, encoder, writeMu)
+		return
+	}
 	if typeName == "link_test_control" {
 		go runProbeLinkTestControl(msg, identity, stream, encoder, writeMu)
 		return

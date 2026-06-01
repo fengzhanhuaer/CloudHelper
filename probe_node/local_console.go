@@ -2887,6 +2887,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/status/refresh", probeLocalProxyStatusRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/monitor", probeLocalProxyMonitorHandler)
 	mux.HandleFunc("/local/api/proxy/remote/tcp_debug", probeLocalProxyRemoteTCPDebugHandler)
+	mux.HandleFunc("/local/api/proxy/remote/speed_debug", probeLocalProxyRemoteSpeedDebugHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
 	mux.HandleFunc("/local/api/proxy/chains/refresh", probeLocalProxyChainsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/link/status", probeLocalProxyLinkStatusHandler)
@@ -2976,6 +2977,7 @@ type probeLocalProxyLinkStatusItem struct {
 	ObservedRateBPS  int64                                  `json:"observed_rate_bps,omitempty"`
 	Reachability     *probeLocalProxyLinkReachabilityStatus `json:"reachability,omitempty"`
 	ProtocolState    probeChainRelayProtocolStateSnapshot   `json:"protocol_state,omitempty"`
+	SpeedTest        *probeLocalProxyLinkSpeedStatus        `json:"speed_test,omitempty"`
 	CFOptimize       *probeLocalProxyLinkCFOptimizeStatus   `json:"cf_optimize,omitempty"`
 	UnavailableError string                                 `json:"unavailable_error,omitempty"`
 	UpdatedAt        string                                 `json:"updated_at,omitempty"`
@@ -4022,6 +4024,46 @@ func probeLocalProxyRemoteTCPDebugHandler(w http.ResponseWriter, r *http.Request
 	})
 }
 
+func probeLocalProxyRemoteSpeedDebugHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	group := strings.TrimSpace(r.URL.Query().Get("group"))
+	var rt *probeLocalTUNGroupRuntime
+	if group != "" {
+		rt = currentProbeLocalTUNGroupRuntime(group)
+	} else {
+		group, rt = resolveProbeLocalSelectedGroupRuntime(currentProbeLocalProxyViewState())
+	}
+	if rt == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":    false,
+			"error": "selected group runtime is unavailable",
+			"group": group,
+		})
+		return
+	}
+	payload, err := rt.fetchRemoteSpeedDebug()
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+			"group": group,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"group":   group,
+		"remote":  payload,
+		"fetched": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
 func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLocalTUNChainEndpoint, error) {
 	chainID := strings.TrimSpace(item.ChainID)
 	if chainID == "" {
@@ -4154,6 +4196,7 @@ func buildProbeLocalProxyLinkStatusItems() []probeLocalProxyLinkStatusItem {
 		}
 		status.ProtocolState = snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort)
 		status.ObservedRateBPS = observedProbeLocalProxyLinkRateBPS(status.ProtocolState)
+		status.SpeedTest = snapshotProbeLocalProxyLinkSpeedStatus(chainID)
 		if status.Status == "unknown" && (strings.TrimSpace(status.ProtocolState.SelectedProtocol) != "" || len(status.ProtocolState.ProtocolQualities) > 0) {
 			status.Status = "observed"
 		}
@@ -5093,6 +5136,7 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		protocol = "websocket"
 	}
 	results := probeLocalProxyLinkSpeedProbe(endpoint, protocol)
+	recordProbeLocalProxyLinkSpeedStatus(strings.TrimSpace(item.ChainID), results)
 	snapshot := snapshotProbeLocalTUNChainRelayProtocolState(endpoint.EntryHost, endpoint.EntryPort)
 	rateBPS := int64(0)
 	status := "unreachable"

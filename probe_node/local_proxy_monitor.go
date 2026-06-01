@@ -325,23 +325,41 @@ func snapshotProbeLocalTCPDebugMonitorStats() probeLocalProxyMonitorTCPSnapshot 
 			continue
 		}
 		item := probeTCPDebugConnectionItemPayload{
-			ID:          strings.TrimSpace(relay.id),
-			Scope:       strings.TrimSpace(relay.scope),
-			Target:      strings.TrimSpace(relay.target),
-			RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.routeTarget), strings.TrimSpace(relay.target)),
-			NodeID:      strings.TrimSpace(relay.nodeID),
-			Group:       strings.TrimSpace(relay.group),
-			Direct:      relay.direct,
-			Transport:   firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.transport), "tcp"),
-			OpenedAt:    relay.openedAt.UTC().Format(time.RFC3339),
-			AgeMS:       now.Sub(relay.openedAt).Milliseconds(),
-			BytesUp:     relay.bytesUp.Load(),
-			BytesDown:   relay.bytesDown.Load(),
+			ID:                   strings.TrimSpace(relay.id),
+			FlowID:               strings.TrimSpace(relay.flowID),
+			Side:                 strings.TrimSpace(relay.side),
+			Scope:                strings.TrimSpace(relay.scope),
+			Target:               strings.TrimSpace(relay.target),
+			RouteTarget:          firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.routeTarget), strings.TrimSpace(relay.target)),
+			NodeID:               strings.TrimSpace(relay.nodeID),
+			Group:                strings.TrimSpace(relay.group),
+			Direct:               relay.direct,
+			Transport:            firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.transport), "tcp"),
+			OpenedAt:             relay.openedAt.UTC().Format(time.RFC3339),
+			AgeMS:                now.Sub(relay.openedAt).Milliseconds(),
+			BytesUp:              relay.bytesUp.Load(),
+			BytesDown:            relay.bytesDown.Load(),
+			WritesUp:             relay.writesUp.Load(),
+			WritesDown:           relay.writesDown.Load(),
+			BlockedWritesUp:      relay.blockedUp.Load(),
+			BlockedWritesDown:    relay.blockedDown.Load(),
+			WriteBlockMSUp:       relay.blockMSUp.Load(),
+			WriteBlockMSDown:     relay.blockMSDown.Load(),
+			MaxWriteBlockMSUp:    relay.maxBlockMSUp.Load(),
+			MaxWriteBlockMSDown:  relay.maxBlockMSDown.Load(),
+			LastWriteBlockMSUp:   relay.lastBlockMSUp.Load(),
+			LastWriteBlockMSDown: relay.lastBlockMSDown.Load(),
 		}
 		if lastActive := relay.lastActiveUnix.Load(); lastActive > 0 {
 			lastActiveAt := time.Unix(lastActive, 0).UTC()
 			item.LastActive = lastActiveAt.Format(time.RFC3339)
 			item.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+		}
+		if lastBlocked := relay.lastBlockedUnix.Load(); lastBlocked > 0 {
+			item.LastWriteBlockedAt = time.Unix(lastBlocked, 0).UTC().Format(time.RFC3339)
+		}
+		if side, ok := relay.lastCongestionSide.Load().(string); ok {
+			item.LastCongestionSide = strings.TrimSpace(side)
 		}
 		stats.Items = append(stats.Items, item)
 	}

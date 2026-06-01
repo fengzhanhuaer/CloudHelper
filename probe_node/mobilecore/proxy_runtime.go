@@ -173,6 +173,7 @@ func ProxyStatus(configDir string) string {
 	chains, _ := loadLinkProxyChains(configDir)
 	status["groups"] = buildProxyGroupStatus(groups, state)
 	status["chains"] = buildProxyChainStatus(chains)
+	status["connections"] = globalAndroidProxyConnectionState.snapshot()
 	status["ok"] = true
 	return marshalLinkJSON(status)
 }
@@ -251,8 +252,16 @@ func handleAndroidSOCKS5ProxyConn(conn net.Conn) {
 		_ = replySOCKS5(conn, req.Version, 0x07, "0.0.0.0:0")
 		return
 	}
-	targetConn, err := openAndroidProxyTunnelStream("tcp", req.Address)
+	flowID := newAndroidProxyFlowID("socks5", req.Address)
+	targetConn, route, err := openAndroidProxyTunnelStreamWithFlow("tcp", req.Address, flowID)
 	if err != nil {
+		globalAndroidProxyConnectionState.recordFailure("open_failed", androidProxyConnectionOptions{
+			Scope:  "socks5",
+			FlowID: flowID,
+			Side:   "local",
+			Target: req.Address,
+			Route:  androidProxyConnectionRouteFromProxy(route),
+		}, err)
 		_ = replySOCKS5(conn, req.Version, 0x05, "0.0.0.0:0")
 		return
 	}
@@ -262,7 +271,14 @@ func handleAndroidSOCKS5ProxyConn(conn net.Conn) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	_ = targetConn.SetDeadline(time.Time{})
-	relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+	relay := globalAndroidProxyConnectionState.begin(androidProxyConnectionOptions{
+		Scope:  "socks5",
+		FlowID: flowID,
+		Side:   "local",
+		Target: req.Address,
+		Route:  androidProxyConnectionRouteFromProxy(route),
+	})
+	relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
 }
 
 func handleAndroidHTTPProxyConn(conn net.Conn) {
@@ -281,8 +297,16 @@ func handleAndroidHTTPProxyConn(conn net.Conn) {
 		_ = writeHTTPProxyStatus(conn, http.StatusBadRequest, "invalid proxy target")
 		return
 	}
-	targetConn, err := openAndroidProxyTunnelStream("tcp", targetAddr)
+	flowID := newAndroidProxyFlowID("http", targetAddr)
+	targetConn, route, err := openAndroidProxyTunnelStreamWithFlow("tcp", targetAddr, flowID)
 	if err != nil {
+		globalAndroidProxyConnectionState.recordFailure("open_failed", androidProxyConnectionOptions{
+			Scope:  "http",
+			FlowID: flowID,
+			Side:   "local",
+			Target: targetAddr,
+			Route:  androidProxyConnectionRouteFromProxy(route),
+		}, err)
 		_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -291,7 +315,14 @@ func handleAndroidHTTPProxyConn(conn net.Conn) {
 		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 		_ = conn.SetDeadline(time.Time{})
 		_ = targetConn.SetDeadline(time.Time{})
-		relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+		relay := globalAndroidProxyConnectionState.begin(androidProxyConnectionOptions{
+			Scope:  "http_connect",
+			FlowID: flowID,
+			Side:   "local",
+			Target: targetAddr,
+			Route:  androidProxyConnectionRouteFromProxy(route),
+		})
+		relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
 		return
 	}
 	req.RequestURI = ""
@@ -310,33 +341,51 @@ func handleAndroidHTTPProxyConn(conn net.Conn) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	_ = targetConn.SetDeadline(time.Time{})
-	relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+	relay := globalAndroidProxyConnectionState.begin(androidProxyConnectionOptions{
+		Scope:  "http",
+		FlowID: flowID,
+		Side:   "local",
+		Target: targetAddr,
+		Route:  androidProxyConnectionRouteFromProxy(route),
+	})
+	relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
 }
 
 func openAndroidProxyTunnelStream(network string, targetAddr string) (net.Conn, error) {
+	conn, _, err := openAndroidProxyTunnelStreamWithFlow(network, targetAddr, newAndroidProxyFlowID("proxy", targetAddr))
+	return conn, err
+}
+
+func openAndroidProxyTunnelStreamWithFlow(network string, targetAddr string, flowID string) (net.Conn, proxyRouteDecision, error) {
 	if err := rejectAndroidProxyLocalTarget(targetAddr); err != nil {
-		return nil, err
+		return nil, proxyRouteDecision{TargetAddr: strings.TrimSpace(targetAddr)}, err
 	}
 	route, err := decideAndroidProxyRouteForTarget(proxyRuntimeConfigDir(), targetAddr)
 	if err != nil {
-		return nil, err
+		return nil, route, err
 	}
 	if route.Reject {
-		return nil, fmt.Errorf("route rejected by group: %s", route.Group)
+		return nil, route, fmt.Errorf("route rejected by group: %s", route.Group)
 	}
 	if route.Direct {
 		dialer := net.Dialer{Timeout: proxyConnectTimeout}
-		return dialer.Dial(strings.ToLower(strings.TrimSpace(network)), route.TargetAddr)
+		conn, err := dialer.Dial(strings.ToLower(strings.TrimSpace(network)), route.TargetAddr)
+		return conn, route, err
 	}
-	return openAndroidProxyChainStream(route.SelectedChainID, strings.ToLower(strings.TrimSpace(network)), route.TargetAddr)
+	conn, err := openAndroidProxyChainStreamWithFlow(route.SelectedChainID, strings.ToLower(strings.TrimSpace(network)), route.TargetAddr, flowID)
+	return conn, route, err
 }
 
 func openAndroidProxyChainStream(selectedChainID string, network string, targetAddr string) (net.Conn, error) {
+	return openAndroidProxyChainStreamWithFlow(selectedChainID, network, targetAddr, newAndroidProxyFlowID("chain", targetAddr))
+}
+
+func openAndroidProxyChainStreamWithFlow(selectedChainID string, network string, targetAddr string, flowID string) (net.Conn, error) {
 	item, endpoint, err := loadLinkEndpointByID(proxyRuntimeConfigDir(), selectedChainID)
 	if err != nil {
 		return nil, err
 	}
-	request := linkTunnelOpenRequest{Type: "open", Network: strings.ToLower(strings.TrimSpace(network)), Address: strings.TrimSpace(targetAddr)}
+	request := linkTunnelOpenRequest{Type: "open", Network: strings.ToLower(strings.TrimSpace(network)), Address: strings.TrimSpace(targetAddr), FlowID: strings.TrimSpace(flowID)}
 	return openAndroidProxyIndependentStream(item, endpoint, request)
 }
 
@@ -783,21 +832,47 @@ func writeHTTPProxyStatus(conn net.Conn, status int, message string) error {
 	return err
 }
 
-func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.Conn, rightReader *bufio.Reader) {
+func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.Conn, rightReader *bufio.Reader, relay *androidProxyConnectionRelay) {
 	done := make(chan struct{}, 2)
 	go func() {
-		if leftReader != nil && leftReader.Buffered() > 0 {
-			_, _ = io.CopyN(right, leftReader, int64(leftReader.Buffered()))
+		defer func() {
+			if relay != nil {
+				relay.releaseSide()
+			}
+		}()
+		rightWriter := io.Writer(right)
+		if relay != nil {
+			rightWriter = &androidProxyConnectionWriter{dst: right, relay: relay, direction: "up"}
 		}
-		_, _ = mobileRelayCopy(right, left)
+		if leftReader != nil && leftReader.Buffered() > 0 {
+			if _, err := io.CopyN(rightWriter, leftReader, int64(leftReader.Buffered())); err != nil {
+				globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+			}
+		}
+		if _, err := mobileRelayCopy(rightWriter, left); err != nil {
+			globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+		}
 		closeProxyConnWrite(right)
 		done <- struct{}{}
 	}()
 	go func() {
-		if rightReader != nil && rightReader.Buffered() > 0 {
-			_, _ = io.CopyN(left, rightReader, int64(rightReader.Buffered()))
+		defer func() {
+			if relay != nil {
+				relay.releaseSide()
+			}
+		}()
+		leftWriter := io.Writer(left)
+		if relay != nil {
+			leftWriter = &androidProxyConnectionWriter{dst: left, relay: relay, direction: "down"}
 		}
-		_, _ = mobileRelayCopy(left, right)
+		if rightReader != nil && rightReader.Buffered() > 0 {
+			if _, err := io.CopyN(leftWriter, rightReader, int64(rightReader.Buffered())); err != nil {
+				globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+			}
+		}
+		if _, err := mobileRelayCopy(leftWriter, right); err != nil {
+			globalAndroidProxyConnectionState.recordRelayFailure(relay, err)
+		}
 		closeProxyConnWrite(left)
 		done <- struct{}{}
 	}()

@@ -709,6 +709,72 @@ func (rt *probeLocalTUNGroupRuntime) fetchRemoteTCPDebug() (probeTCPDebugResultP
 	return probeTCPDebugResultPayload{}, errors.New("remote tcp debug fetch failed")
 }
 
+func (rt *probeLocalTUNGroupRuntime) fetchRemoteSpeedDebug() (probeSpeedDebugResultPayload, error) {
+	if rt == nil {
+		return probeSpeedDebugResultPayload{}, errors.New("group runtime is nil")
+	}
+	requestID := "remote-speed-debug-" + randomHexToken(8)
+	for attempt := 0; attempt < 2; attempt++ {
+		rt.mu.Lock()
+		if err := rt.ensureConnectedLocked(); err != nil {
+			rt.mu.Unlock()
+			return probeSpeedDebugResultPayload{}, err
+		}
+		session := rt.session
+		rt.mu.Unlock()
+		if session == nil {
+			return probeSpeedDebugResultPayload{}, errors.New("group runtime management session is nil")
+		}
+		stream, err := session.Open()
+		if err != nil {
+			reconnect := session.IsClosed()
+			if !reconnect && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+				reconnect = shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
+			}
+			rt.mu.Lock()
+			if rt.session == session {
+				if reconnect {
+					rt.closeLocked()
+					_ = rt.markFailureLocked(err, "disconnected")
+				} else {
+					_ = rt.markFailureLocked(err, "degraded")
+				}
+			}
+			rt.mu.Unlock()
+			if attempt == 0 && reconnect {
+				continue
+			}
+			return probeSpeedDebugResultPayload{}, err
+		}
+		_ = stream.SetDeadline(time.Now().Add(probeLocalTUNGroupRuntimeControlTimeout))
+		req := probeChainTunnelOpenRequest{Type: "speed_debug_get", RequestID: requestID}
+		if err := json.NewEncoder(stream).Encode(req); err != nil {
+			_ = stream.Close()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
+				continue
+			}
+			return probeSpeedDebugResultPayload{}, err
+		}
+		var payload probeSpeedDebugResultPayload
+		if err := json.NewDecoder(stream).Decode(&payload); err != nil {
+			_ = stream.Close()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
+				continue
+			}
+			return probeSpeedDebugResultPayload{}, err
+		}
+		_ = stream.Close()
+		if strings.TrimSpace(payload.RequestID) == "" {
+			payload.RequestID = requestID
+		}
+		if strings.TrimSpace(payload.Scope) == "" {
+			payload.Scope = "chain_exit"
+		}
+		return payload, nil
+	}
+	return probeSpeedDebugResultPayload{}, errors.New("remote speed debug fetch failed")
+}
+
 func shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt *probeLocalTUNGroupRuntime, session *yamux.Session, err error) bool {
 	if !shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
 		return false
