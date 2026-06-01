@@ -21,7 +21,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Bump Version and Tag
@@ -55,7 +55,7 @@ jobs:
       - name: Checkout Tagged Source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           ref: v${{ needs.prepare-release.outputs.new_version }}
 
       - name: Setup Go
@@ -102,7 +102,7 @@ jobs:
       - name: Checkout Tagged Source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           ref: v${{ needs.prepare-release.outputs.new_version }}
 
       - name: Setup Go
@@ -127,14 +127,15 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: probe_node/${{ matrix.output }}
 
-  build-probe-node-android-unsigned:
+  build-probe-node-android:
     needs: prepare-release
     runs-on: ubuntu-latest
+    environment: android-release-signing
     steps:
       - name: Checkout Tagged Source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           ref: v${{ needs.prepare-release.outputs.new_version }}
 
       - name: Setup JDK for Android build
@@ -145,6 +146,12 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Restore Android NDK cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          key: ${{ runner.os }}-android-ndk-27.2.12479018
 
       - name: Install Android NDK
         shell: bash
@@ -176,6 +183,12 @@ jobs:
             ~/go/pkg/gomobile
           key: ${{ runner.os }}-gomobile-go1.26.1-ndk27.2.12479018-${{ hashFiles('probe_node/go.mod', 'probe_node/go.sum') }}
 
+      - name: Restore mobilecore AAR cache
+        uses: actions/cache@v4
+        with:
+          path: probe_node_android/app/libs/mobilecore.aar
+          key: ${{ runner.os }}-mobilecore-aar-go1.26.1-ndk27.2.12479018-${{ hashFiles('probe_node/**/*.go', 'probe_node/go.mod', 'probe_node/go.sum') }}
+
       - name: Build Probe Node Android mobilecore AAR
         working-directory: probe_node
         env:
@@ -183,6 +196,11 @@ jobs:
           ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         shell: bash
         run: |
+          mkdir -p ../probe_node_android/app/libs
+          if [ -f ../probe_node_android/app/libs/mobilecore.aar ]; then
+            echo "Using cached mobilecore.aar"
+            exit 0
+          fi
           export PATH="$(go env GOPATH)/bin:$PATH"
           export GOFLAGS="-mod=mod"
           GOMOBILE_ROOT="$(go env GOPATH)/pkg/gomobile"
@@ -198,7 +216,6 @@ jobs:
           else
             gomobile init
           fi
-          mkdir -p ../probe_node_android/app/libs
           gomobile bind \
             -target=android/arm64 \
             -androidapi 26 \
@@ -215,28 +232,6 @@ jobs:
       - name: Stage Probe Node Android unsigned APK
         shell: bash
         run: cp probe_node_android/app/build/outputs/apk/release/app-release-unsigned.apk probe_node_android/cloudhelper-probe-node-android-arm64-unsigned.apk
-
-      - name: Upload Probe Node Android unsigned artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloudhelper-probe-node-android-arm64-unsigned.apk
-          path: probe_node_android/cloudhelper-probe-node-android-arm64-unsigned.apk
-
-  sign-probe-node-android:
-    needs:
-      - prepare-release
-      - build-probe-node-android-unsigned
-    runs-on: ubuntu-latest
-    environment: android-release-signing
-    steps:
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Download Probe Node Android unsigned artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: cloudhelper-probe-node-android-arm64-unsigned.apk
-          path: android-signing
 
       - name: Restore Android signing key
         env:
@@ -264,14 +259,14 @@ jobs:
           SIGNING_PASS_FILE="$RUNNER_TEMP/cloudhelper-android-signing/keystore.pass"
           printf '%s' "$CLOUDHELPER_ANDROID_KEYSTORE_PASSWORD" > "$SIGNING_PASS_FILE"
           chmod 600 "$SIGNING_PASS_FILE"
-          "$ZIPALIGN" -p -f 4 android-signing/cloudhelper-probe-node-android-arm64-unsigned.apk android-signing/cloudhelper-probe-node-android-arm64-aligned.apk
+          "$ZIPALIGN" -p -f 4 probe_node_android/cloudhelper-probe-node-android-arm64-unsigned.apk probe_node_android/cloudhelper-probe-node-android-arm64-aligned.apk
           "$APKSIGNER" sign \
             --ks "$RUNNER_TEMP/cloudhelper-android-signing/release.p12" \
             --ks-type PKCS12 \
             --ks-pass "file:$SIGNING_PASS_FILE" \
-            --out android-signing/cloudhelper-probe-node-android-arm64.apk \
-            android-signing/cloudhelper-probe-node-android-arm64-aligned.apk
-          "$APKSIGNER" verify --verbose android-signing/cloudhelper-probe-node-android-arm64.apk
+            --out probe_node_android/cloudhelper-probe-node-android-arm64.apk \
+            probe_node_android/cloudhelper-probe-node-android-arm64-aligned.apk
+          "$APKSIGNER" verify --verbose probe_node_android/cloudhelper-probe-node-android-arm64.apk
 
       - name: Clean Android signing material
         if: always()
@@ -283,14 +278,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cloudhelper-probe-node-android-arm64.apk
-          path: android-signing/cloudhelper-probe-node-android-arm64.apk
+          path: probe_node_android/cloudhelper-probe-node-android-arm64.apk
 
   create-release:
     needs:
       - prepare-release
       - build-probe-controller
       - build-probe-node
-      - sign-probe-node-android
+      - build-probe-node-android
     runs-on: ubuntu-latest
     permissions:
       contents: write
