@@ -322,6 +322,22 @@
       return text;
     }
 
+    function addChainIDMatchVariants(set, value) {
+      const clean = normalizeChainID(value);
+      if (!clean) return;
+      set.add(clean);
+      const lower = clean.toLowerCase();
+      set.add(lower);
+      if (lower.endsWith('_pub')) {
+        set.add(clean.slice(0, -4));
+        set.add(lower.slice(0, -4));
+      }
+      if (lower.endsWith('-pub')) {
+        set.add(clean.slice(0, -4));
+        set.add(lower.slice(0, -4));
+      }
+    }
+
     function normalizeAction(actionValue) {
       return String(actionValue || '').trim().toLowerCase();
     }
@@ -678,21 +694,33 @@
       return updatedAt ? `${lines.join('\n')}\n更新 ${updatedAt}` : lines.join('\n');
     }
 
-    function formatRemoteSpeedMetricLines(chainID, remoteWrapper) {
+    function formatRemoteSpeedMetricLines(linkItem, remoteWrapper) {
       if (!remoteWrapper || typeof remoteWrapper !== 'object') return '-';
       if (remoteWrapper.ok === false) return `拉取失败：${String(remoteWrapper.error || '-').trim()}`;
       const remote = remoteWrapper.remote && typeof remoteWrapper.remote === 'object' ? remoteWrapper.remote : null;
       if (!remote) return '-';
       if (remote.ok === false) return `拉取失败：${String(remote.error || '-').trim()}`;
-      const cleanID = normalizeChainID(chainID);
+      const matchIDs = new Set();
+      addChainIDMatchVariants(matchIDs, linkItem && linkItem.chain_id);
+      addChainIDMatchVariants(matchIDs, linkItem && linkItem.relay_chain_id);
+      addChainIDMatchVariants(matchIDs, linkItem && linkItem.client_entry_id);
       const active = Array.isArray(remote.active) ? remote.active : [];
       const recent = Array.isArray(remote.recent) ? remote.recent : [];
       const allItems = active.concat(recent);
-      const items = cleanID ? allItems.filter((item) => normalizeChainID(item && item.chain_id) === cleanID) : allItems;
-      if (items.length === 0) return `node=${remote.node_id || '-'} 暂无本链路写侧样本`;
-      const lines = items.slice(0, 4).map((item) => formatRemoteSpeedMetricLine(item));
+      const items = matchIDs.size > 0 ? allItems.filter((item) => {
+        const variants = new Set();
+        addChainIDMatchVariants(variants, item && item.chain_id);
+        for (const id of variants) {
+          if (matchIDs.has(id) || matchIDs.has(String(id || '').toLowerCase())) return true;
+        }
+        return false;
+      }) : allItems;
+      const fallback = items.length === 0 && allItems.length > 0;
+      const displayItems = fallback ? allItems : items;
+      if (displayItems.length === 0) return `node=${remote.node_id || '-'} 暂无本链路写侧样本`;
+      const lines = displayItems.slice(0, 4).map((item) => formatRemoteSpeedMetricLine(item));
       const fetched = String(remoteWrapper.fetched || remote.fetched_at || '').trim();
-      const head = `node=${remote.node_id || '-'}${fetched ? ` ｜ 拉取 ${fetched}` : ''}`;
+      const head = `node=${remote.node_id || '-'}${fallback ? ' ｜ 未精确匹配本链路，显示最近写侧样本' : ''}${fetched ? ` ｜ 拉取 ${fetched}` : ''}`;
       return `${head}\n${lines.join('\n')}`;
     }
 
@@ -893,7 +921,7 @@
       const cfHTML = formatCFOptimizeStatusHTML(item && item.cf_optimize, item);
       const monitorLines = formatProxyLinkMonitorLines(proxyLinkDetailMonitorCache);
       const localSpeedLines = formatLocalSpeedMetricLines(item && item.speed_test);
-      const remoteSpeedLines = formatRemoteSpeedMetricLines(chainID, proxyLinkDetailRemoteSpeedCache);
+      const remoteSpeedLines = formatRemoteSpeedMetricLines(item, proxyLinkDetailRemoteSpeedCache);
       const row = (label, value, preLine) => `<div class="link-detail-kv"><span>${escapeHTML(label)}</span><strong class="${preLine ? 'pre-line' : ''}">${escapeHTML(value || '-')}</strong></div>`;
       return `
         <div class="link-detail-panel">
@@ -1157,6 +1185,45 @@
       }
     }
 
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function remoteSpeedHasLinkSample(item, remoteWrapper) {
+      if (!item || !remoteWrapper || remoteWrapper.ok === false) return false;
+      const remote = remoteWrapper.remote && typeof remoteWrapper.remote === 'object' ? remoteWrapper.remote : null;
+      if (!remote || remote.ok === false) return false;
+      const matchIDs = new Set();
+      addChainIDMatchVariants(matchIDs, item && item.chain_id);
+      addChainIDMatchVariants(matchIDs, item && item.relay_chain_id);
+      addChainIDMatchVariants(matchIDs, item && item.client_entry_id);
+      if (matchIDs.size === 0) return false;
+      const allItems = []
+        .concat(Array.isArray(remote.active) ? remote.active : [])
+        .concat(Array.isArray(remote.recent) ? remote.recent : []);
+      return allItems.some((sample) => {
+        const variants = new Set();
+        addChainIDMatchVariants(variants, sample && sample.chain_id);
+        for (const id of variants) {
+          if (matchIDs.has(id) || matchIDs.has(String(id || '').toLowerCase())) return true;
+        }
+        return false;
+      });
+    }
+
+    async function refreshProxyLinkRemoteSpeedAfterTest(cleanID) {
+      if (!proxyLinkDetailChainID || normalizeChainID(proxyLinkDetailChainID) !== cleanID) return;
+      const detailItem = proxyLinkStatusCache.find((row) => normalizeChainID(row && row.chain_id) === cleanID);
+      if (!detailItem) return;
+      const waits = [0, 450, 1200];
+      for (const wait of waits) {
+        if (wait > 0) await sleep(wait);
+        proxyLinkDetailRemoteSpeedCache = await fetchProxyLinkRemoteSpeedForItem(detailItem);
+        renderProxyLinkStatusRows(proxyLinkStatusCache);
+        if (remoteSpeedHasLinkSample(detailItem, proxyLinkDetailRemoteSpeedCache)) return;
+      }
+    }
+
     async function runProxyLinkLatency(chainID) {
       const cleanID = normalizeChainID(chainID);
       if (!cleanID) return;
@@ -1199,12 +1266,14 @@
         const data = await requestJSON('/local/api/proxy/link/speed', {
           method: 'POST',
           body: JSON.stringify({ chain_id: cleanID, protocol: cleanProtocol }),
-        }, 12000);
+        }, 17000);
         await loadProxyLinkStatus();
         if (proxyLinkDetailChainID && normalizeChainID(proxyLinkDetailChainID) === cleanID) {
-          const detailItem = proxyLinkStatusCache.find((row) => normalizeChainID(row && row.chain_id) === cleanID);
-          proxyLinkDetailRemoteSpeedCache = detailItem ? await fetchProxyLinkRemoteSpeedForItem(detailItem) : null;
+          proxyLinkDetailRemoteSpeedCache = data && data.remote_speed_debug ? data.remote_speed_debug : null;
           renderProxyLinkStatusRows(proxyLinkStatusCache);
+          if (!remoteSpeedHasLinkSample(proxyLinkStatusCache.find((row) => normalizeChainID(row && row.chain_id) === cleanID), proxyLinkDetailRemoteSpeedCache)) {
+            await refreshProxyLinkRemoteSpeedAfterTest(cleanID);
+          }
         }
         const rate = formatRateText(Number(data && data.rate_bps));
         const results = Array.isArray(data && data.results) ? data.results : [];

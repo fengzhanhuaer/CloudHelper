@@ -4140,6 +4140,125 @@ func selectedProbeLocalProxyGroupsByChainID(state probeLocalProxyStateFile) map[
 	return out
 }
 
+func probeLocalProxyChainIDMatchVariants(values ...string) []string {
+	seen := make(map[string]struct{}, len(values)*2)
+	out := make([]string, 0, len(values)*2)
+	add := func(raw string) {
+		clean := strings.TrimSpace(raw)
+		if clean == "" {
+			return
+		}
+		if strings.HasPrefix(strings.ToLower(clean), "chain:") {
+			clean = strings.TrimSpace(clean[len("chain:"):])
+		}
+		if clean == "" {
+			return
+		}
+		variants := []string{clean, strings.ToLower(clean)}
+		lower := strings.ToLower(clean)
+		if strings.HasSuffix(lower, "_pub") || strings.HasSuffix(lower, "-pub") {
+			variants = append(variants, clean[:len(clean)-4], lower[:len(lower)-4])
+		}
+		for _, variant := range variants {
+			key := strings.ToLower(strings.TrimSpace(variant))
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, key)
+		}
+	}
+	for _, value := range values {
+		add(value)
+	}
+	return out
+}
+
+func probeLocalProxySpeedDebugPayloadHasChain(payload probeSpeedDebugResultPayload, item probeLinkChainServerItem) bool {
+	match := make(map[string]struct{})
+	for _, id := range probeLocalProxyChainIDMatchVariants(item.ChainID, item.RelayChainID, item.ClientEntryID) {
+		match[id] = struct{}{}
+	}
+	if len(match) == 0 {
+		return false
+	}
+	for _, sample := range append(append([]probeSpeedDebugItemPayload{}, payload.Active...), payload.Recent...) {
+		for _, id := range probeLocalProxyChainIDMatchVariants(sample.ChainID) {
+			if _, ok := match[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func probeLocalProxyGroupRuntimeForLink(item probeLinkChainServerItem) (string, *probeLocalTUNGroupRuntime) {
+	state := currentProbeLocalProxyViewState()
+	selectedGroups := selectedProbeLocalProxyGroupsByChainID(state)
+	for _, id := range probeLocalProxyChainIDMatchVariants(item.ChainID, item.RelayChainID, item.ClientEntryID) {
+		for _, group := range selectedGroups[id] {
+			if rt := currentProbeLocalTUNGroupRuntime(group); rt != nil {
+				return group, rt
+			}
+		}
+	}
+	return resolveProbeLocalSelectedGroupRuntime(state)
+}
+
+func fetchProbeLocalProxyLinkRemoteSpeedDebugAfterTest(item probeLinkChainServerItem) map[string]any {
+	group, rt := probeLocalProxyGroupRuntimeForLink(item)
+	if rt == nil {
+		return map[string]any{
+			"ok":      false,
+			"group":   group,
+			"error":   "selected group runtime is unavailable",
+			"fetched": time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	var lastPayload probeSpeedDebugResultPayload
+	var lastErr error
+	for idx, wait := range []time.Duration{0, 450 * time.Millisecond, 1200 * time.Millisecond} {
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+		payload, err := rt.fetchRemoteSpeedDebug()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		lastPayload = payload
+		if probeLocalProxySpeedDebugPayloadHasChain(payload, item) || idx == 2 {
+			return map[string]any{
+				"ok":      true,
+				"group":   group,
+				"remote":  payload,
+				"fetched": time.Now().UTC().Format(time.RFC3339),
+			}
+		}
+	}
+	if strings.TrimSpace(lastPayload.Type) != "" || lastPayload.OK || len(lastPayload.Active) > 0 || len(lastPayload.Recent) > 0 {
+		return map[string]any{
+			"ok":      true,
+			"group":   group,
+			"remote":  lastPayload,
+			"fetched": time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	errText := "remote speed debug fetch failed"
+	if lastErr != nil {
+		errText = lastErr.Error()
+	}
+	return map[string]any{
+		"ok":      false,
+		"group":   group,
+		"error":   errText,
+		"fetched": time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
 func observedProbeLocalProxyLinkRateBPS(snapshot probeChainRelayProtocolStateSnapshot) int64 {
 	var best int64
 	for _, quality := range snapshot.ProtocolQualities {
@@ -5157,17 +5276,19 @@ func probeLocalProxyLinkSpeedHandler(w http.ResponseWriter, r *http.Request) {
 	} else if len(results) == 0 {
 		status = "no_result"
 	}
+	remoteSpeedDebug := fetchProbeLocalProxyLinkRemoteSpeedDebugAfterTest(item)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":             okResult,
-		"chain_id":       chainID,
-		"chain_name":     strings.TrimSpace(item.Name),
-		"status":         status,
-		"protocol":       protocol,
-		"rate_bps":       rateBPS,
-		"source":         "active_speed_test",
-		"results":        results,
-		"protocol_state": snapshot,
-		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+		"ok":                 okResult,
+		"chain_id":           chainID,
+		"chain_name":         strings.TrimSpace(item.Name),
+		"status":             status,
+		"protocol":           protocol,
+		"rate_bps":           rateBPS,
+		"source":             "active_speed_test",
+		"results":            results,
+		"protocol_state":     snapshot,
+		"remote_speed_debug": remoteSpeedDebug,
+		"updated_at":         time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
