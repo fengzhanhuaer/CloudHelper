@@ -595,7 +595,7 @@
           if (item && item.available === false) metrics.push('不可用');
           parts.push(`${protocolLabel}${metrics.length ? `(${metrics.join('/')})` : ''}`);
         });
-      const head = selected ? `auto=${formatRelayProtocolLabel(selected)}` : 'auto';
+      const head = selected ? `默认=${formatRelayProtocolLabel(selected)}` : '默认';
       const tail = parts.length ? ` ${parts.join(' ')}` : '';
       const listenerText = listeners.length
         ? ` 入口${listeners.map((item) => `${formatRelayProtocolLabel(item && item.protocol)}:${String(item && item.status || '').trim() || '-'}`).join('/')}`
@@ -609,7 +609,7 @@
 
     function formatRelayProtocolLabel(raw) {
       const value = normalizeRelayProtocol(raw);
-      if (value === 'auto' || value === 'http' || value === 'http2' || value === 'h2' || value === 'http3' || value === 'h3') return 'AUTO';
+      if (!value || value === 'auto' || value === 'default' || value === 'http' || value === 'http2' || value === 'h2' || value === 'http3' || value === 'h3') return '默认';
       if (value === 'websocket') return 'WS';
       if (value === 'websocket-h3' || value === 'h3-websocket' || value === 'ws-h3') return 'WS-H3';
       return value || '?';
@@ -618,6 +618,7 @@
     function formatProtocolSelectionReason(raw) {
       const value = String(raw || '').trim().toLowerCase();
       if (!value) return '';
+      if (value === 'auto_quality') return 'quality';
       if (value === 'websocket_primary') return 'ws_primary';
       if (value === 'speed_test') return 'speed';
       if (value === 'latency_test') return 'latency';
@@ -794,7 +795,7 @@
           return `${protocolLabel}${selected === protocol ? ' *' : ''}: ${metrics.join(' ')}`;
         })
         .filter(Boolean);
-      return parts.length ? parts.join('\n') : (selected ? `auto=${formatRelayProtocolLabel(selected)}` : '-');
+      return parts.length ? parts.join('\n') : (selected ? `默认=${formatRelayProtocolLabel(selected)}` : '-');
     }
 
     function formatProtocolQualityDetailLines(protocolState) {
@@ -804,7 +805,7 @@
       const lines = [];
       if (selected) {
         const reason = formatProtocolSelectionReason(protocolState.selection_reason);
-        lines.push(`auto=${formatRelayProtocolLabel(selected)}${reason ? '/' + reason : ''}`);
+        lines.push(`默认=${formatRelayProtocolLabel(selected)}${reason ? '/' + reason : ''}`);
       }
       const qualityParts = qualities
         .slice()

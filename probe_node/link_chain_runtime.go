@@ -485,13 +485,13 @@ func normalizeProbeChainAuthMode(raw string) string {
 func normalizeProbeChainLinkLayer(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "auto", "default", "http", "http2", "h2", "http3", "h3":
-		return "auto"
+		return ""
 	case "websocket", "ws", "wss":
 		return "websocket"
 	case "websocket-h3", "ws-h3", "h3-websocket", "h3-ws":
 		return "websocket-h3"
 	default:
-		return "auto"
+		return ""
 	}
 }
 
@@ -1319,11 +1319,11 @@ func openProbeChainPortForwardIndependentDataStreamWithToken(runtime *probeChain
 	if role == probeChainBridgeRoleToPrev {
 		host = strings.TrimSpace(runtime.cfg.prevHost)
 		port = runtime.cfg.prevPort
-		layer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(runtime.cfg.prevLinkLayer), strings.TrimSpace(runtime.cfg.linkLayer), "auto"))
+		layer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(runtime.cfg.prevLinkLayer), strings.TrimSpace(runtime.cfg.linkLayer)))
 	} else {
 		host = strings.TrimSpace(runtime.cfg.nextHost)
 		port = runtime.cfg.nextPort
-		layer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(runtime.cfg.nextLinkLayer), strings.TrimSpace(runtime.cfg.linkLayer), "auto"))
+		layer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(runtime.cfg.nextLinkLayer), strings.TrimSpace(runtime.cfg.linkLayer)))
 	}
 	if host == "" || port <= 0 {
 		return nil, fmt.Errorf("chain %s relay target is unavailable", role)
@@ -3376,7 +3376,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 }
 
 func resolveProbeChainOutboundLinkLayer(cfg probeChainRuntimeConfig) string {
-	return normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.nextLinkLayer), strings.TrimSpace(cfg.linkLayer), "auto"))
+	return normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.nextLinkLayer), strings.TrimSpace(cfg.linkLayer)))
 }
 
 func openProbeChainBridgeRelayNetConn(cfg probeChainRuntimeConfig, target probeChainBridgeDialTarget) (net.Conn, error) {

@@ -9,7 +9,7 @@ import (
 
 func openProbeLocalTUNChainRelayNetConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
 	conn, err := openProbeChainRelayNetConn(chainID, secret, relayHost, relayPort, layer, bridgeRole)
-	if err == nil || !isProbeLocalTUNUnsupportedAutoRelayErr(layer, err) {
+	if err == nil || !isProbeLocalTUNUnsupportedDefaultRelayErr(layer, err) {
 		return conn, err
 	}
 	var lastErr error = err
@@ -32,7 +32,7 @@ func openProbeLocalTUNChainRelayNetConn(chainID string, secret string, relayHost
 
 func openProbeLocalTUNChainRelayDataStreamNetConn(chainID string, secret string, relayHost string, relayPort int, layer string) (net.Conn, error) {
 	conn, err := openProbeChainRelayDataStreamNetConn(chainID, secret, relayHost, relayPort, layer, probeChainDownstreamOpenTimeout)
-	if err == nil || !isProbeLocalTUNUnsupportedAutoRelayErr(layer, err) {
+	if err == nil || !isProbeLocalTUNUnsupportedDefaultRelayErr(layer, err) {
 		return conn, err
 	}
 	var lastErr error = err
@@ -62,13 +62,13 @@ func snapshotProbeLocalTUNChainRelayProtocolState(relayHost string, relayPort in
 }
 
 func probeLocalTUNChainRelaySpeedTest(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
-	return probeChainRelaySpeedTestAuto(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, protocol, probeChainRelaySpeedTestBytes)
+	return probeChainRelaySpeedTestDefault(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, protocol, probeChainRelaySpeedTestBytes)
 }
 
-func isProbeLocalTUNUnsupportedAutoRelayErr(layer string, err error) bool {
-	if err == nil || normalizeProbeChainLinkLayer(layer) != "auto" {
+func isProbeLocalTUNUnsupportedDefaultRelayErr(layer string, err error) bool {
+	if err == nil || normalizeProbeChainLinkLayer(layer) != "" {
 		return false
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(text, "unsupported relay protocol") && strings.Contains(text, "auto") && !errors.Is(err, net.ErrClosed)
+	return strings.Contains(text, "unsupported relay protocol") && !errors.Is(err, net.ErrClosed)
 }

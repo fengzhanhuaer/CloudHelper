@@ -343,7 +343,7 @@ func TestLinkLatencyAndSpeedUseRelayProtocol(t *testing.T) {
 	}
 }
 
-func TestAndroidProxyChainSessionAutoProtocolFallsBackToWebSocket(t *testing.T) {
+func TestAndroidProxyChainSessionDefaultProtocolFallsBackToWebSocket(t *testing.T) {
 	const chainID = "relay-chain"
 	const secret = "link-secret"
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -387,7 +387,7 @@ func TestAndroidProxyChainSessionAutoProtocolFallsBackToWebSocket(t *testing.T) 
 		Secret:       secret,
 		EntryNodeID:  "1",
 		ExitNodeID:   "2",
-		LinkLayer:    "auto",
+		LinkLayer:    "",
 		HopConfigs: []linkChainHopItem{
 			{NodeNo: 1, RelayHost: host, ExternalPort: port},
 		},

@@ -355,7 +355,7 @@ function runLinkLatency(chainId) {
 }
 
 function runLinkSpeed(chainId, protocol) {
-  const label = protocol ? protocol : "auto";
+  const label = protocol ? protocol : "默认";
   setText("linkStatus", `正在测速：${chainId} (${label})`);
   appendUILog("link", `正在测速：${chainId} (${label})`);
   setLinkPanelStatus(chainId, `正在执行 relay speed_test 测速 (${label})...`, false);
@@ -406,13 +406,13 @@ function renderLinkItem(chain) {
   latency.textContent = "延迟";
   latency.disabled = !chainId || chain.status !== "configured";
   latency.onclick = () => runLinkLatency(chainId);
-  const speedAuto = document.createElement("button");
-  speedAuto.className = "command secondary";
-  speedAuto.textContent = "测速";
-  speedAuto.disabled = !chainId || chain.status !== "configured";
-  speedAuto.onclick = () => runLinkSpeed(chainId, "");
+  const speedDefault = document.createElement("button");
+  speedDefault.className = "command secondary";
+  speedDefault.textContent = "测速";
+  speedDefault.disabled = !chainId || chain.status !== "configured";
+  speedDefault.onclick = () => runLinkSpeed(chainId, "");
   actions.appendChild(latency);
-  actions.appendChild(speedAuto);
+  actions.appendChild(speedDefault);
   const result = document.createElement("div");
   result.className = "link-result";
   result.textContent = chain.status === "configured" ? "等待测试" : "链路未完整配置";
@@ -685,7 +685,7 @@ function formatRelayProtocolLabel(protocol) {
   const clean = String(protocol || "").trim().toLowerCase();
   if (clean === "websocket-h3") return "WS-H3";
   if (clean === "websocket") return "WS";
-  if (clean === "auto") return "AUTO";
+  if (!clean || clean === "auto" || clean === "default" || clean === "http" || clean === "http2" || clean === "h2" || clean === "http3" || clean === "h3") return "默认";
   return clean || "-";
 }
 

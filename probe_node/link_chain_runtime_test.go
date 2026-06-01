@@ -61,7 +61,7 @@ func TestStartProbeChainRuntimeSharesRelayPortAcrossChains(t *testing.T) {
 		role:          "entry",
 		listenHost:    "127.0.0.1",
 		listenPort:    listenPort,
-		linkLayer:     "auto",
+		linkLayer:     "",
 		nextAuthMode:  "proxy",
 		identity:      nodeIdentity{NodeID: "node-1", Secret: "node-secret"},
 		controllerURL: "https://controller.example.com",
@@ -481,7 +481,7 @@ func TestWrapProbeChainRelayDialErrorForWebSocketH3UDPSocketResource(t *testing.
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoUsesWebSocketH3Primary(t *testing.T) {
+func TestOpenProbeChainRelayNetConnDefaultUsesWebSocketH3Primary(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -510,7 +510,7 @@ func TestOpenProbeChainRelayNetConnAutoUsesWebSocketH3Primary(t *testing.T) {
 		return 2 * time.Millisecond, nil
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("openProbeChainRelayNetConn returned error: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestOpenProbeChainRelayNetConnAutoUsesWebSocketH3Primary(t *testing.T) {
 	}
 }
 
-func TestOpenProbeChainRelayDataStreamNetConnAutoExpandsAutoProtocol(t *testing.T) {
+func TestOpenProbeChainRelayDataStreamNetConnDefaultExpandsProtocols(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenDataStreamLayer := probeChainRelayOpenDataStreamLayer
@@ -551,7 +551,7 @@ func TestOpenProbeChainRelayDataStreamNetConnAutoExpandsAutoProtocol(t *testing.
 		}
 	}
 
-	conn, err := openProbeChainRelayDataStreamNetConnWithRoleAndToken("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext, "token-a", time.Second)
+	conn, err := openProbeChainRelayDataStreamNetConnWithRoleAndToken("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext, "token-a", time.Second)
 	if err != nil {
 		t.Fatalf("openProbeChainRelayDataStreamNetConnWithRoleAndToken returned error: %v", err)
 	}
@@ -560,11 +560,11 @@ func TestOpenProbeChainRelayDataStreamNetConnAutoExpandsAutoProtocol(t *testing.
 	mu.Lock()
 	defer mu.Unlock()
 	if len(calls) != 1 || calls[0] != "websocket-h3" {
-		t.Fatalf("expected auto data stream to expand to websocket-h3, got calls=%v", calls)
+		t.Fatalf("expected default data stream to expand to websocket-h3, got calls=%v", calls)
 	}
 }
 
-func TestOpenProbeChainRelayDataStreamNetConnAutoFallsBackAfterWebSocketH3Failure(t *testing.T) {
+func TestOpenProbeChainRelayDataStreamNetConnDefaultFallsBackAfterWebSocketH3Failure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenDataStreamLayer := probeChainRelayOpenDataStreamLayer
@@ -595,7 +595,7 @@ func TestOpenProbeChainRelayDataStreamNetConnAutoFallsBackAfterWebSocketH3Failur
 		}
 	}
 
-	conn, err := openProbeChainRelayDataStreamNetConnWithRoleAndToken("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext, "token-a", time.Second)
+	conn, err := openProbeChainRelayDataStreamNetConnWithRoleAndToken("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext, "token-a", time.Second)
 	if err != nil {
 		t.Fatalf("expected websocket fallback after websocket-h3 failure, got err=%v", err)
 	}
@@ -608,7 +608,7 @@ func TestOpenProbeChainRelayDataStreamNetConnAutoFallsBackAfterWebSocketH3Failur
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testing.T) {
+func TestOpenProbeChainRelayNetConnDefaultFallsBackAfterWebSocketH3Failure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -644,12 +644,12 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testi
 		return 2 * time.Millisecond, nil
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("first openProbeChainRelayNetConn returned error: %v", err)
 	}
 	_ = conn.Close()
-	conn, err = openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
+	conn, err = openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("second openProbeChainRelayNetConn returned error: %v", err)
 	}
@@ -675,7 +675,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackAfterWebSocketH3Failure(t *testi
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketContextCanceled(t *testing.T) {
+func TestOpenProbeChainRelayNetConnDefaultFallsBackOnH3WebSocketContextCanceled(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -708,7 +708,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketContextCanceled(t *
 		return 2 * time.Millisecond, nil
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("expected websocket fallback after websocket-h3 context canceled, got err=%v", err)
 	}
@@ -718,7 +718,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketContextCanceled(t *
 	_ = conn.Close()
 }
 
-func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketExtendedConnectDisabled(t *testing.T) {
+func TestOpenProbeChainRelayNetConnDefaultFallsBackOnH3WebSocketExtendedConnectDisabled(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -756,7 +756,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketExtendedConnectDisa
 		return 2 * time.Millisecond, nil
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext)
 	if err != nil {
 		t.Fatalf("expected websocket fallback after h3 extended connect disabled, got err=%v", err)
 	}
@@ -772,7 +772,7 @@ func TestOpenProbeChainRelayNetConnAutoFallsBackOnH3WebSocketExtendedConnectDisa
 	}
 }
 
-func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) {
+func TestOpenProbeChainRelayNetConnDefaultDoesNotSwitchOnAuthFailure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
 	originalOpenLayer := probeChainRelayOpenLayer
@@ -805,10 +805,10 @@ func TestOpenProbeChainRelayNetConnAutoDoesNotSwitchOnAuthFailure(t *testing.T) 
 		}
 	}
 
-	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "auto", probeChainBridgeRoleToNext)
+	conn, err := openProbeChainRelayNetConn("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext)
 	if err == nil {
 		_ = conn.Close()
-		t.Fatalf("expected auth failure to stop auto switching")
+		t.Fatalf("expected auth failure to stop protocol switching")
 	}
 	if !strings.Contains(err.Error(), "status=401") {
 		t.Fatalf("unexpected error: %v", err)

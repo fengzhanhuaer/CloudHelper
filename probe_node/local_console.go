@@ -269,7 +269,7 @@ var (
 	probeLocalProxyLinkHandshakeProbe        = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkProtocolProbe         = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe            = runProbeLocalProxyLinkSpeedProbe
-	probeLocalProxyRelaySpeedDebugFetch      = probeChainRelayFetchSpeedDebugAuto
+	probeLocalProxyRelaySpeedDebugFetch      = probeChainRelayFetchSpeedDebugDefault
 	probeLocalProxyLinkRemoteSpeedDebugFetch = runProbeLocalProxyLinkRemoteSpeedDebugFetch
 	probeLocalProxyLinkOpenRelayConn         = openProbeChainRelayNetConnWithLayerConn
 	probeLocalFetchCloudflareIPv4CIDRs       = defaultProbeLocalFetchCloudflareIPv4CIDRs
@@ -4090,7 +4090,7 @@ func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLoc
 		} else if hop.ListenPort > 0 {
 			entryPort = hop.ListenPort
 		}
-		linkLayer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "auto"))
+		linkLayer = normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer)))
 		break
 	}
 	if entryHost == "" {
@@ -4098,9 +4098,6 @@ func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLoc
 	}
 	if entryPort <= 0 {
 		return probeLocalTUNChainEndpoint{}, fmt.Errorf("selected chain entry port is unavailable: %s", chainID)
-	}
-	if linkLayer == "" {
-		linkLayer = "auto"
 	}
 	return probeLocalTUNChainEndpoint{
 		ChainID:     effectiveProbeLocalRelayChainID(item),
@@ -5944,7 +5941,7 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalProxyLinkHandshakeProbe = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkProtocolProbe = runProbeLocalProxyLinkProtocolProbe
 	probeLocalProxyLinkSpeedProbe = runProbeLocalProxyLinkSpeedProbe
-	probeLocalProxyRelaySpeedDebugFetch = probeChainRelayFetchSpeedDebugAuto
+	probeLocalProxyRelaySpeedDebugFetch = probeChainRelayFetchSpeedDebugDefault
 	probeLocalProxyLinkRemoteSpeedDebugFetch = runProbeLocalProxyLinkRemoteSpeedDebugFetch
 	probeLocalProxyLinkOpenRelayConn = openProbeChainRelayNetConnWithLayerConn
 	probeLocalFetchCloudflareIPv4CIDRs = defaultProbeLocalFetchCloudflareIPv4CIDRs

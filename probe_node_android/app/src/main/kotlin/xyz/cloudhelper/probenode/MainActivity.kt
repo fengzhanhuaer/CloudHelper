@@ -176,7 +176,7 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun linkSpeed(chainId: String, protocol: String) {
-            AndroidLogStore.add("link", "speed test requested: chain=$chainId protocol=${protocol.ifBlank { "auto" }}")
+            AndroidLogStore.add("link", "speed test requested: chain=$chainId protocol=${protocol.ifBlank { "default" }}")
             thread(name = "cloudhelper-android-link-speed") {
                 emitLinkStatus(MobileCoreBridge.linkSpeed(this@MainActivity, chainId, protocol))
             }

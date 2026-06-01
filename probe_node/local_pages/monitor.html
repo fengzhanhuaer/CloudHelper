@@ -473,7 +473,7 @@
       const value = String(protocol || '').trim();
       if (value === 'websocket-h3') return 'WS-H3';
       if (value === 'websocket') return 'WS';
-      if (value === 'auto') return 'Auto';
+      if (value === 'auto' || value === 'default') return 'Default';
       return value || '-';
     }
 

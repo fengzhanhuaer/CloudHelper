@@ -109,9 +109,9 @@ func TestResolveProbeChainNextPrevHopFromItemWithNonContiguousNodeIDs(t *testing
 		ExitNodeID:     "35",
 		LinkLayer:      "http",
 		HopConfigs: []probeLinkChainHopServerItem{
-			{NodeNo: 10, ListenPort: 11010, ExternalPort: 11110, DialMode: "reverse", LinkLayer: "auto", RelayHost: "entry.example"},
+			{NodeNo: 10, ListenPort: 11010, ExternalPort: 11110, DialMode: "reverse", LinkLayer: "", RelayHost: "entry.example"},
 			{NodeNo: 21, ListenPort: 12021, ExternalPort: 12121, DialMode: "forward", LinkLayer: "http", RelayHost: "relay.example"},
-			{NodeNo: 35, ListenPort: 13035, ExternalPort: 0, DialMode: "forward", LinkLayer: "auto", RelayHost: "exit.example"},
+			{NodeNo: 35, ListenPort: 13035, ExternalPort: 0, DialMode: "forward", LinkLayer: "", RelayHost: "exit.example"},
 		},
 	}
 
@@ -119,7 +119,7 @@ func TestResolveProbeChainNextPrevHopFromItemWithNonContiguousNodeIDs(t *testing
 	if nextHost != "relay.example" || nextPort != 12121 {
 		t.Fatalf("unexpected next hop: host=%q port=%d", nextHost, nextPort)
 	}
-	if nextLayer != "http" {
+	if nextLayer != "" {
 		t.Fatalf("unexpected next layer: %q", nextLayer)
 	}
 	if nextDialMode != probeChainDialModeReverse {
@@ -138,7 +138,7 @@ func TestResolveProbeChainNextPrevHopFromItemWithNonContiguousNodeIDs(t *testing
 	if prevHost != "relay.example" || prevPort != 12121 {
 		t.Fatalf("unexpected prev hop for exit: host=%q port=%d", prevHost, prevPort)
 	}
-	if prevLayer != "http" {
+	if prevLayer != "" {
 		t.Fatalf("unexpected prev layer for exit: %q", prevLayer)
 	}
 	if prevDialMode != probeChainDialModeForward {

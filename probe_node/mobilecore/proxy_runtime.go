@@ -434,8 +434,8 @@ func openAndroidProxyLinkRelayDataStream(item linkChainServerItem, endpoint link
 	for _, protocol := range protocols {
 		conn, err := openLinkRelayDataStreamConn(endpoint, protocol, proxyConnectTimeout+proxyResponseReadTimeout)
 		if err == nil {
-			if normalizeLinkLayer(endpoint.LinkLayer) == "auto" {
-				androidLogStore.add("proxy", "normal", "auto relay stream protocol selected: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol))
+			if normalizeLinkLayer(endpoint.LinkLayer) == "" {
+				androidLogStore.add("proxy", "normal", "relay stream protocol selected: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol))
 			}
 			return conn, nil
 		}
@@ -480,8 +480,8 @@ func openAndroidProxyLinkRelayConn(item linkChainServerItem, endpoint linkEndpoi
 	for _, protocol := range protocols {
 		conn, err := openLinkRelayConn(endpoint, protocol, proxyConnectTimeout+proxyResponseReadTimeout)
 		if err == nil {
-			if normalizeLinkLayer(endpoint.LinkLayer) == "auto" {
-				androidLogStore.add("proxy", "normal", "auto relay protocol selected: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol))
+			if normalizeLinkLayer(endpoint.LinkLayer) == "" {
+				androidLogStore.add("proxy", "normal", "relay protocol selected: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol))
 			}
 			return conn, nil
 		}

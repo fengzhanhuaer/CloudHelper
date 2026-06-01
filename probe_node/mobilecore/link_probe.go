@@ -353,7 +353,7 @@ func LinkSpeed(configDir string, chainID string, protocol string) string {
 	if isLinkCFEntry(item) {
 		cleanProtocol = "websocket"
 	}
-	results := linkRelaySpeedTestAuto(endpoint, cleanProtocol, linkRelaySpeedTestBytes)
+	results := linkRelaySpeedTestDefault(endpoint, cleanProtocol, linkRelaySpeedTestBytes)
 	rateBPS := int64(0)
 	okResult := false
 	for _, result := range results {
@@ -460,7 +460,7 @@ func resolveLinkEndpoint(item linkChainServerItem) (linkEndpoint, error) {
 		} else if hop.ListenPort > 0 {
 			entryPort = hop.ListenPort
 		}
-		linkLayer = normalizeLinkLayer(firstNonEmptyString(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "auto"))
+		linkLayer = normalizeLinkLayer(firstNonEmptyString(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer)))
 		break
 	}
 	if entryHost == "" {
@@ -468,9 +468,6 @@ func resolveLinkEndpoint(item linkChainServerItem) (linkEndpoint, error) {
 	}
 	if entryPort <= 0 {
 		return linkEndpoint{}, fmt.Errorf("selected chain entry port is unavailable: %s", chainID)
-	}
-	if linkLayer == "" {
-		linkLayer = "auto"
 	}
 	return linkEndpoint{
 		ChainID:     effectiveLinkRelayChainID(item),
@@ -537,13 +534,13 @@ func effectiveLinkRelayChainID(item linkChainServerItem) string {
 func normalizeLinkLayer(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "auto", "default", "http", "http2", "h2", "http3", "h3":
-		return "auto"
+		return ""
 	case "websocket", "ws", "wss":
 		return "websocket"
 	case "websocket-h3", "ws-h3", "h3-websocket", "h3-ws":
 		return "websocket-h3"
 	default:
-		return "auto"
+		return ""
 	}
 }
 
@@ -873,7 +870,7 @@ func openLinkRelayHTTP3WebSocketConn(endpoint linkEndpoint, openTimeout time.Dur
 	}, nil
 }
 
-func linkRelaySpeedTestAuto(endpoint linkEndpoint, protocol string, byteCount int64) []linkSpeedTestResult {
+func linkRelaySpeedTestDefault(endpoint linkEndpoint, protocol string, byteCount int64) []linkSpeedTestResult {
 	candidates := linkRelaySpeedTestCandidates(endpoint.LinkLayer, protocol)
 	if byteCount <= 0 {
 		byteCount = linkRelaySpeedTestBytes
@@ -904,7 +901,7 @@ func fetchLinkRemoteSpeedDebugAfterTest(item linkChainServerItem, endpoint linkE
 		if wait > 0 {
 			time.Sleep(wait)
 		}
-		payload, err := linkRelayFetchSpeedDebugAuto(endpoint, protocol, 1200*time.Millisecond)
+		payload, err := linkRelayFetchSpeedDebugDefault(endpoint, protocol, 1200*time.Millisecond)
 		if err != nil {
 			lastErr = err
 			continue
@@ -939,7 +936,7 @@ func fetchLinkRemoteSpeedDebugAfterTest(item linkChainServerItem, endpoint linkE
 	}
 }
 
-func linkRelayFetchSpeedDebugAuto(endpoint linkEndpoint, protocol string, openTimeout time.Duration) (linkSpeedDebugResultPayload, error) {
+func linkRelayFetchSpeedDebugDefault(endpoint linkEndpoint, protocol string, openTimeout time.Duration) (linkSpeedDebugResultPayload, error) {
 	candidates := linkRelaySpeedTestCandidates(endpoint.LinkLayer, protocol)
 	if len(candidates) == 0 {
 		candidates = linkRelayProtocolCandidates(endpoint.LinkLayer)

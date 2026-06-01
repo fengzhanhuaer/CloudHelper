@@ -387,13 +387,13 @@ func TestProbeLocalTUNGroupRuntimeLatencyUsesPingPongOnly(t *testing.T) {
 		Secret:      "secret",
 		EntryNodeID: "12",
 		ExitNodeID:  "12",
-		LinkLayer:   "auto",
+		LinkLayer:   "",
 		HopConfigs: []probeLinkChainHopServerItem{{
 			NodeNo:       12,
 			ListenHost:   "0.0.0.0",
 			ListenPort:   16030,
 			ExternalPort: 16030,
-			LinkLayer:    "auto",
+			LinkLayer:    "",
 			RelayHost:    "127.0.0.1",
 		}},
 	}}); err != nil {

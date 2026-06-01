@@ -1278,7 +1278,7 @@
       body.innerHTML = items.map((item) => {
         const node = `#${item.node_id || '-'} ${item.online ? 'online' : 'offline'}`;
         const chainName = String(item.chain_name || item.chain_id || '-');
-        const chainMeta = `${item.chain_type || '-'} / auto`;
+        const chainMeta = `${item.chain_type || '-'} / 默认协议`;
         const listen = formatEndpoint(item.listen_host, item.listen_port);
         const next = formatEndpoint(item.next_host, item.next_port);
         const prev = formatEndpoint(item.prev_host, item.prev_port);

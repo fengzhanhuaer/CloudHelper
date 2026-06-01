@@ -373,7 +373,7 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 		Role:            role,
 		ListenHost:      listenHost,
 		ListenPort:      hop.ListenPort,
-		LinkLayer:       firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer), "auto"),
+		LinkLayer:       normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(hop.LinkLayer), strings.TrimSpace(item.LinkLayer))),
 		NextLinkLayer:   strings.TrimSpace(nextLinkLayer),
 		NextDialMode:    strings.TrimSpace(nextDialMode),
 		NextHost:        nextHost,
@@ -549,7 +549,7 @@ func resolveProbeChainNextHopFromItem(item probeLinkChainServerItem, nodeID, rol
 		if externalPort <= 0 {
 			externalPort = nextHop.ListenPort
 		}
-		return relayHost, externalPort, firstNonEmpty(strings.TrimSpace(nextHop.LinkLayer), strings.TrimSpace(item.LinkLayer), "auto"), dialMode, "secret"
+		return relayHost, externalPort, normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(nextHop.LinkLayer), strings.TrimSpace(item.LinkLayer))), dialMode, "secret"
 	}
 	return "", 0, "", probeChainDialModeNone, "none"
 }
@@ -573,7 +573,7 @@ func resolveProbeChainPrevHopFromItem(item probeLinkChainServerItem, nodeID, rol
 		if externalPort <= 0 {
 			externalPort = prevHop.ListenPort
 		}
-		return strings.TrimSpace(prevHop.RelayHost), externalPort, firstNonEmpty(strings.TrimSpace(prevHop.LinkLayer), strings.TrimSpace(item.LinkLayer), "auto"), normalizeProbeChainDialMode(strings.TrimSpace(prevHop.DialMode))
+		return strings.TrimSpace(prevHop.RelayHost), externalPort, normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(prevHop.LinkLayer), strings.TrimSpace(item.LinkLayer))), normalizeProbeChainDialMode(strings.TrimSpace(prevHop.DialMode))
 	}
 	return "", 0, "", probeChainDialModeNone
 }

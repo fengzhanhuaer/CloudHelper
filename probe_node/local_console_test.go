@@ -1053,12 +1053,12 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
       "entry_node_id":"node-10",
       "exit_node_id":"node-35",
       "cascade_node_ids":["node-21"],
-      "link_layer":"auto",
+      "link_layer":"",
       "secret":"secret-1",
       "hop_configs":[
-        {"node_no":10,"relay_host":"entry.example.com","external_port":11110,"listen_port":11010,"link_layer":"auto"},
-        {"node_no":21,"relay_host":"relay.example.com","external_port":12121,"listen_port":12021,"link_layer":"auto"},
-        {"node_no":35,"relay_host":"exit.example.com","external_port":13131,"listen_port":13031,"link_layer":"auto"}
+        {"node_no":10,"relay_host":"entry.example.com","external_port":11110,"listen_port":11010,"link_layer":""},
+        {"node_no":21,"relay_host":"relay.example.com","external_port":12121,"listen_port":12021,"link_layer":""},
+        {"node_no":35,"relay_host":"exit.example.com","external_port":13131,"listen_port":13031,"link_layer":""}
       ]
     }
   ]
@@ -1544,9 +1544,9 @@ func TestProbeLocalProxySelectedChainDirectBypassPrewarmIsScoped(t *testing.T) {
 	      "secret": "secret-new",
 	      "entry_node_id": "10",
 	      "exit_node_id": "10",
-	      "link_layer": "auto",
+	      "link_layer": "",
 	      "hop_configs": [
-	        {"node_no": 10, "relay_host": "entry-new.example.com", "external_port": 16030, "listen_port": 16030, "link_layer": "auto"}
+	        {"node_no": 10, "relay_host": "entry-new.example.com", "external_port": 16030, "listen_port": 16030, "link_layer": ""}
 	      ]
 	    }
 	  ]
@@ -2807,7 +2807,7 @@ func TestProbeLocalProxyLinkRemoteSpeedDebugFetchPrefersRelayEntry(t *testing.T)
 		if chainID != "chain-origin" || secret != "secret" || relayHost != "entry.example.com" || relayPort != 16030 {
 			return probeSpeedDebugResultPayload{}, fmt.Errorf("unexpected relay fetch target: chain=%s secret=%s relay=%s:%d", chainID, secret, relayHost, relayPort)
 		}
-		if layer != "auto" || protocol != "websocket-h3" {
+		if layer != "" || protocol != "websocket-h3" {
 			return probeSpeedDebugResultPayload{}, fmt.Errorf("unexpected relay fetch protocol: layer=%s protocol=%s", layer, protocol)
 		}
 		return probeSpeedDebugResultPayload{
@@ -2832,7 +2832,7 @@ func TestProbeLocalProxyLinkRemoteSpeedDebugFetchPrefersRelayEntry(t *testing.T)
 		ChainSecret: "secret",
 		EntryHost:   "entry.example.com",
 		EntryPort:   16030,
-		LinkLayer:   "auto",
+		LinkLayer:   "",
 	}, "websocket-h3")
 	if result["ok"] != true || result["source"] != "relay_entry" {
 		t.Fatalf("remote debug result=%v", result)
@@ -2846,7 +2846,7 @@ func TestProbeLocalProxyLinkRemoteSpeedDebugFetchPrefersRelayEntry(t *testing.T)
 func TestProbeLocalProxyLinkReachabilityUsesWebSocketH3AndWebSocket(t *testing.T) {
 	protocols := probeLocalProxyLinkReachabilityProtocolsForEndpoint(probeLinkChainServerItem{
 		ChainID: "chain-direct",
-	}, probeLocalTUNChainEndpoint{LinkLayer: "auto"})
+	}, probeLocalTUNChainEndpoint{LinkLayer: ""})
 	if len(protocols) != 2 || protocols[0] != "websocket-h3" || protocols[1] != "websocket" {
 		t.Fatalf("reachability protocols=%v, want websocket-h3/websocket", protocols)
 	}
@@ -2856,7 +2856,7 @@ func TestProbeLocalProxyLinkReachabilityCFUsesWebSocketOnly(t *testing.T) {
 	protocols := probeLocalProxyLinkReachabilityProtocolsForEndpoint(probeLinkChainServerItem{
 		ChainID:         "chain-direct_cf",
 		ClientEntryType: "cf",
-	}, probeLocalTUNChainEndpoint{LinkLayer: "auto"})
+	}, probeLocalTUNChainEndpoint{LinkLayer: ""})
 	if len(protocols) != 1 || protocols[0] != "websocket" {
 		t.Fatalf("cf reachability protocols=%v, want websocket only", protocols)
 	}

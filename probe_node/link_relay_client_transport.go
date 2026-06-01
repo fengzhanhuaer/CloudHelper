@@ -237,17 +237,17 @@ func logProbeChainRelayDialOutcome(stage string, chainID string, protocol string
 }
 
 func openProbeChainRelayNetConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
-	return openProbeChainRelayNetConnAuto(chainID, secret, relayHost, relayPort, layer, bridgeRole)
+	return openProbeChainRelayNetConnDefault(chainID, secret, relayHost, relayPort, layer, bridgeRole)
 }
 
-func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+func openProbeChainRelayNetConnDefault(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
 	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
 	if endpointKey == "" {
 		return nil, errors.New("relay endpoint is required")
 	}
 	candidates := probeChainRelayProtocolCandidates(layer)
 	log.Printf(
-		"probe chain relay auto dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
+		"probe chain relay protocol dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
 		strings.TrimSpace(chainID),
 		strings.TrimSpace(relayHost),
 		normalizeProbeChainLinkLayer(layer),
@@ -267,7 +267,7 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 			recordProbeChainRelayProtocolSelected(endpointKey, protocol, "websocket_primary")
 			return result.Conn, nil
 		}
-		log.Printf("probe chain relay auto dial websocket primary failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, protocol, result.Err)
+		log.Printf("probe chain relay protocol dial primary failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, protocol, result.Err)
 		if !isProbeChainRelayProtocolSwitchableError(result.Err) || len(candidates) == 1 {
 			return nil, result.Err
 		}
@@ -276,13 +276,13 @@ func openProbeChainRelayNetConnAuto(chainID string, secret string, relayHost str
 	}
 	now := time.Now()
 	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, now); preferred != "" {
-		log.Printf("probe chain relay auto dial preferred protocol: chain=%s endpoint=%s protocol=%s candidates=%s", strings.TrimSpace(chainID), endpointKey, preferred, probeChainRelayJoinProtocols(candidates))
+		log.Printf("probe chain relay protocol dial preferred: chain=%s endpoint=%s protocol=%s candidates=%s", strings.TrimSpace(chainID), endpointKey, preferred, probeChainRelayJoinProtocols(candidates))
 		result := probeChainRelayOpenLayer(chainID, secret, relayHost, relayPort, preferred, bridgeRole, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
 		if result.Err == nil {
 			recordProbeChainRelayProtocolSuccess(endpointKey, result, "cached_preferred")
 			return result.Conn, nil
 		}
-		log.Printf("probe chain relay auto dial preferred failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, preferred, result.Err)
+		log.Printf("probe chain relay protocol dial preferred failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, preferred, result.Err)
 		if !isProbeChainRelayProtocolSwitchableError(result.Err) {
 			return nil, result.Err
 		}
@@ -433,7 +433,7 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 			continue
 		}
 		log.Printf("probe chain relay protocol probe result: chain=%s endpoint=%s protocol=%s ok=true latency_ms=%d", strings.TrimSpace(chainID), endpointKey, result.Protocol, probeDurationMilliseconds(result.Latency))
-		recordProbeChainRelayProtocolSuccess(endpointKey, result, "auto_quality")
+		recordProbeChainRelayProtocolSuccess(endpointKey, result, "quality")
 	}
 	if nonSwitchableErr != nil {
 		for _, result := range results {
@@ -463,8 +463,8 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 			}
 		}
 		best := results[bestIndex]
-		log.Printf("probe chain relay protocol selected: chain=%s endpoint=%s protocol=%s reason=auto_quality latency_ms=%d", strings.TrimSpace(chainID), endpointKey, best.Protocol, probeDurationMilliseconds(best.Latency))
-		recordProbeChainRelayProtocolSelected(endpointKey, best.Protocol, "auto_quality")
+		log.Printf("probe chain relay protocol selected: chain=%s endpoint=%s protocol=%s reason=quality latency_ms=%d", strings.TrimSpace(chainID), endpointKey, best.Protocol, probeDurationMilliseconds(best.Latency))
+		recordProbeChainRelayProtocolSelected(endpointKey, best.Protocol, "quality")
 		return best, nil
 	}
 
@@ -478,7 +478,7 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 		errs = append(errs, "no protocol result")
 	}
 	log.Printf("probe chain relay protocol probe failed: chain=%s endpoint=%s errs=%s", strings.TrimSpace(chainID), endpointKey, strings.Join(errs, "; "))
-	return probeChainRelayProtocolDialResult{}, fmt.Errorf("probe relay protocol auto failed: relay=%s %s", endpointKey, strings.Join(errs, "; "))
+	return probeChainRelayProtocolDialResult{}, fmt.Errorf("probe relay protocol selection failed: relay=%s %s", endpointKey, strings.Join(errs, "; "))
 }
 
 func measureProbeChainRelayPingPongLatency(conn net.Conn) (time.Duration, error) {
@@ -707,7 +707,7 @@ func recordProbeChainRelayProtocolSelected(endpointKey string, protocol string, 
 		}
 	}
 	state.SelectedProtocol = protocol
-	state.SelectionReason = firstNonEmpty(strings.TrimSpace(reason), "auto_quality")
+	state.SelectionReason = firstNonEmpty(strings.TrimSpace(reason), "quality")
 	state.SelectedAt = now
 	state.UpdatedAt = now
 }
@@ -963,12 +963,12 @@ func openProbeChainRelayDataStreamNetConnWithRole(chainID string, secret string,
 
 func openProbeChainRelayDataStreamNetConnWithRoleAndToken(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) (net.Conn, error) {
 	if !isProbeChainRelaySupportedProtocol(layer) {
-		return openProbeChainRelayDataStreamNetConnAutoWithRoleAndToken(chainID, secret, relayHost, relayPort, layer, bridgeRole, connToken, openTimeout)
+		return openProbeChainRelayDataStreamNetConnDefaultWithRoleAndToken(chainID, secret, relayHost, relayPort, layer, bridgeRole, connToken, openTimeout)
 	}
 	return openProbeChainRelayDataStreamNetConnWithLayerConn(chainID, secret, relayHost, relayPort, layer, bridgeRole, connToken, openTimeout)
 }
 
-func openProbeChainRelayDataStreamNetConnAutoWithRoleAndToken(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) (net.Conn, error) {
+func openProbeChainRelayDataStreamNetConnDefaultWithRoleAndToken(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) (net.Conn, error) {
 	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
 	if endpointKey == "" {
 		return nil, errors.New("relay endpoint is required")
@@ -978,7 +978,7 @@ func openProbeChainRelayDataStreamNetConnAutoWithRoleAndToken(chainID string, se
 		candidates = probeChainRelayProtocolCandidatesPrefer(candidates, preferred)
 	}
 	log.Printf(
-		"probe chain relay data stream auto dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
+		"probe chain relay data stream protocol dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
 		strings.TrimSpace(chainID),
 		strings.TrimSpace(relayHost),
 		normalizeProbeChainLinkLayer(layer),
@@ -992,13 +992,13 @@ func openProbeChainRelayDataStreamNetConnAutoWithRoleAndToken(chainID string, se
 		if result.Err == nil {
 			recordProbeChainRelayProtocolSuccess(endpointKey, result, "data_stream")
 			recordProbeChainRelayProtocolSelected(endpointKey, result.Protocol, "data_stream")
-			if normalizeProbeChainLinkLayer(layer) == "auto" {
-				log.Printf("probe chain relay data stream auto selected: chain=%s endpoint=%s protocol=%s", strings.TrimSpace(chainID), endpointKey, normalizeProbeChainLinkLayer(result.Protocol))
+			if normalizeProbeChainLinkLayer(layer) == "" {
+				log.Printf("probe chain relay data stream protocol selected: chain=%s endpoint=%s protocol=%s", strings.TrimSpace(chainID), endpointKey, normalizeProbeChainLinkLayer(result.Protocol))
 			}
 			return result.Conn, nil
 		}
 		lastErr = result.Err
-		log.Printf("probe chain relay data stream auto failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, normalizeProbeChainLinkLayer(protocol), result.Err)
+		log.Printf("probe chain relay data stream protocol failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, normalizeProbeChainLinkLayer(protocol), result.Err)
 		if !isProbeChainRelayProtocolSwitchableError(result.Err) {
 			return nil, result.Err
 		}
@@ -1284,7 +1284,7 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 	}, nil
 }
 
-func probeChainRelaySpeedTestAuto(chainID string, secret string, relayHost string, relayPort int, layer string, protocol string, byteCount int64) []probeChainRelaySpeedTestResult {
+func probeChainRelaySpeedTestDefault(chainID string, secret string, relayHost string, relayPort int, layer string, protocol string, byteCount int64) []probeChainRelaySpeedTestResult {
 	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
 	candidates := probeChainRelaySpeedTestCandidates(layer, protocol)
 	if byteCount <= 0 {
@@ -1330,7 +1330,7 @@ func probeChainRelaySpeedTestAuto(chainID string, secret string, relayHost strin
 	return results
 }
 
-func probeChainRelayFetchSpeedDebugAuto(chainID string, secret string, relayHost string, relayPort int, layer string, protocol string, openTimeout time.Duration) (probeSpeedDebugResultPayload, error) {
+func probeChainRelayFetchSpeedDebugDefault(chainID string, secret string, relayHost string, relayPort int, layer string, protocol string, openTimeout time.Duration) (probeSpeedDebugResultPayload, error) {
 	candidates := probeChainRelaySpeedTestCandidates(layer, protocol)
 	if len(candidates) == 0 {
 		candidates = probeChainRelayProtocolCandidates(layer)
