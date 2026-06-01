@@ -311,6 +311,9 @@ const (
 	probeChainPortForwardListenRetryTimeout    = 5 * time.Second
 	probeChainPortForwardListenRetryInterval   = 100 * time.Millisecond
 	probeChainPortForwardListenRetryMaxBackoff = 800 * time.Millisecond
+	probeChainPortForwardPreconnectIdleTTL     = 60 * time.Second
+	probeChainPortForwardPreconnectRetryMin    = 500 * time.Millisecond
+	probeChainPortForwardPreconnectRetryMax    = 10 * time.Second
 	probeChainRelayProtocolQualityTTL          = 10 * time.Minute
 	probeChainRelayProtocolNegativeTTL         = 60 * time.Second
 	probeChainRelayProtocolProbeTimeout        = 6 * time.Second
@@ -357,6 +360,25 @@ var probeChainCopyBufferPool = sync.Pool{
 	New: func() any {
 		return make([]byte, probeChainRelayIOCopyBufferBytes)
 	},
+}
+
+type probeChainPortForwardPreconnectPool struct {
+	runtime    *probeChainRuntime
+	cfg        probeChainRuntimePortForward
+	network    string
+	targetAddr string
+	capacity   int
+	ready      chan *probeChainPortForwardPreconnectedConn
+	refillCh   chan struct{}
+	stopCh     chan struct{}
+	closeOnce  sync.Once
+}
+
+type probeChainPortForwardPreconnectedConn struct {
+	conn      net.Conn
+	openedAt  time.Time
+	flowID    string
+	expiresAt time.Time
 }
 
 var probeChainUDPFrameBufferPool = sync.Pool{
@@ -1113,7 +1135,15 @@ func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide strin
 	return openProbeChainPortForwardStreamWithAssociation(runtime, entrySide, network, targetAddr, nil)
 }
 
+func openProbeChainPortForwardStreamWithFlow(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, flowID string) (net.Conn, error) {
+	return openProbeChainPortForwardStreamWithFlowAndAssociation(runtime, entrySide, network, targetAddr, flowID, nil)
+}
+
 func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
+	return openProbeChainPortForwardStreamWithFlowAndAssociation(runtime, entrySide, network, targetAddr, "", associationV2)
+}
+
+func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, flowID string, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
@@ -1132,14 +1162,17 @@ func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, 
 		err           error
 		failurePrompt string
 	)
-	flowID := resolveProbeChainPortForwardFlowID(requestedNetwork, targetAddr, associationV2)
+	cleanFlowID := strings.TrimSpace(flowID)
+	if cleanFlowID == "" {
+		cleanFlowID = resolveProbeChainPortForwardFlowID(requestedNetwork, targetAddr, associationV2)
+	}
 	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
-		stream, err = openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToPrev, flowID)
+		stream, err = openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToPrev, cleanFlowID)
 		failurePrompt = "open upstream target failed"
 	} else if runtime.cfg.nextAuthMode == "proxy" {
 		return openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
 	} else {
-		stream, err = openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToNext, flowID)
+		stream, err = openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToNext, cleanFlowID)
 		failurePrompt = "open downstream target failed"
 	}
 	if err != nil {
@@ -1149,7 +1182,7 @@ func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, 
 		Type:          "open",
 		Network:       requestedNetwork,
 		Address:       strings.TrimSpace(targetAddr),
-		FlowID:        flowID,
+		FlowID:        cleanFlowID,
 		AssociationV2: associationV2,
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
@@ -1297,6 +1330,205 @@ func openProbeChainPortForwardIndependentDataStreamWithToken(runtime *probeChain
 	return openProbeChainRelayDataStreamNetConnWithRoleAndToken(runtime.cfg.chainID, runtime.cfg.secret, host, port, layer, role, strings.TrimSpace(token), probeChainDownstreamOpenTimeout)
 }
 
+func newProbeChainPortForwardPreconnectPool(runtime *probeChainRuntime, cfg probeChainRuntimePortForward, network string, targetAddr string) *probeChainPortForwardPreconnectPool {
+	if !shouldUseProbeChainPortForwardPreconnect(runtime, cfg) {
+		return nil
+	}
+	pool := &probeChainPortForwardPreconnectPool{
+		runtime:    runtime,
+		cfg:        cfg,
+		network:    strings.ToLower(strings.TrimSpace(network)),
+		targetAddr: strings.TrimSpace(targetAddr),
+		capacity:   1,
+		ready:      make(chan *probeChainPortForwardPreconnectedConn, 1),
+		refillCh:   make(chan struct{}, 1),
+		stopCh:     make(chan struct{}),
+	}
+	go pool.run()
+	pool.requestRefill()
+	return pool
+}
+
+func shouldUseProbeChainPortForwardPreconnect(runtime *probeChainRuntime, cfg probeChainRuntimePortForward) bool {
+	if runtime == nil {
+		return false
+	}
+	if normalizeProbeChainRole(runtime.cfg.role) == "entry_exit" {
+		return false
+	}
+	if normalizeProbeChainPortForwardEntrySide(cfg.EntrySide) != probeChainPortForwardEntryChainExit && runtime.cfg.nextAuthMode == "proxy" {
+		return false
+	}
+	return true
+}
+
+func (p *probeChainPortForwardPreconnectPool) requestRefill() {
+	if p == nil {
+		return
+	}
+	select {
+	case p.refillCh <- struct{}{}:
+	default:
+	}
+}
+
+func (p *probeChainPortForwardPreconnectPool) run() {
+	if p == nil {
+		return
+	}
+	ticker := time.NewTicker(probeChainPortForwardPreconnectIdleTTL / 2)
+	defer ticker.Stop()
+	backoff := probeChainPortForwardPreconnectRetryMin
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-ticker.C:
+			p.dropExpired()
+		case <-p.refillCh:
+		}
+		for len(p.ready) < p.capacity {
+			conn, err := p.open()
+			if err != nil {
+				log.Printf("probe chain port forward preconnect failed: chain=%s id=%s network=%s target=%s err=%v", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr, err)
+				select {
+				case <-p.stopCh:
+					return
+				case <-time.After(backoff):
+				}
+				backoff *= 2
+				if backoff <= 0 || backoff > probeChainPortForwardPreconnectRetryMax {
+					backoff = probeChainPortForwardPreconnectRetryMax
+				}
+				break
+			}
+			backoff = probeChainPortForwardPreconnectRetryMin
+			select {
+			case p.ready <- conn:
+				log.Printf("probe chain port forward preconnected: chain=%s id=%s network=%s target=%s flow_id=%s", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr, conn.flowID)
+			default:
+				_ = conn.conn.Close()
+			}
+		}
+	}
+}
+
+func (p *probeChainPortForwardPreconnectPool) dropExpired() {
+	if p == nil {
+		return
+	}
+	kept := make([]*probeChainPortForwardPreconnectedConn, 0, p.capacity)
+	for {
+		select {
+		case item := <-p.ready:
+			if item == nil || item.conn == nil {
+				continue
+			}
+			if !item.expiresAt.IsZero() && time.Now().After(item.expiresAt) {
+				_ = item.conn.Close()
+				continue
+			}
+			kept = append(kept, item)
+		default:
+			for _, item := range kept {
+				select {
+				case p.ready <- item:
+				default:
+					_ = item.conn.Close()
+				}
+			}
+			p.requestRefill()
+			return
+		}
+	}
+}
+
+func (p *probeChainPortForwardPreconnectPool) open() (*probeChainPortForwardPreconnectedConn, error) {
+	if p == nil {
+		return nil, errors.New("preconnect pool is nil")
+	}
+	network := strings.ToLower(strings.TrimSpace(p.network))
+	if network == "" {
+		network = probeChainPortForwardNetworkTCP
+	}
+	flowID := newProbeTCPDebugFlowID("port_forward_preconnect", p.targetAddr)
+	var (
+		conn net.Conn
+		err  error
+	)
+	if network == probeChainPortForwardNetworkUDP {
+		key := "preconnect:" + strings.TrimSpace(p.cfg.ID) + ":" + strings.ToLower(randomHexToken(6))
+		associationV2 := &probeChainAssociationV2Meta{
+			Version:         2,
+			AssocKeyV2:      key,
+			FlowID:          flowID,
+			Transport:       "udp",
+			RouteTarget:     strings.TrimSpace(p.targetAddr),
+			NATMode:         probeChainUDPAssociationNATModeDefault,
+			TTLProfile:      probeChainUDPAssociationTTLProfileDefault,
+			IdleTimeoutMS:   probeChainPortForwardSessionIdleTTL.Milliseconds(),
+			GCIntervalMS:    probeChainPortForwardSessionGCInterval.Milliseconds(),
+			CreatedAtUnixMS: time.Now().UnixMilli(),
+		}
+		conn, err = openProbeChainPortForwardStreamWithFlowAndAssociation(p.runtime, p.cfg.EntrySide, network, p.targetAddr, flowID, associationV2)
+	} else {
+		conn, err = openProbeChainPortForwardStreamWithFlow(p.runtime, p.cfg.EntrySide, probeChainPortForwardNetworkTCP, p.targetAddr, flowID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	return &probeChainPortForwardPreconnectedConn{
+		conn:      conn,
+		openedAt:  now,
+		flowID:    flowID,
+		expiresAt: now.Add(probeChainPortForwardPreconnectIdleTTL),
+	}, nil
+}
+
+func (p *probeChainPortForwardPreconnectPool) acquire() (*probeChainPortForwardPreconnectedConn, bool) {
+	if p == nil {
+		return nil, false
+	}
+	for {
+		select {
+		case item := <-p.ready:
+			if item == nil || item.conn == nil {
+				continue
+			}
+			if !item.expiresAt.IsZero() && time.Now().After(item.expiresAt) {
+				_ = item.conn.Close()
+				p.requestRefill()
+				continue
+			}
+			p.requestRefill()
+			return item, true
+		default:
+			p.requestRefill()
+			return nil, false
+		}
+	}
+}
+
+func (p *probeChainPortForwardPreconnectPool) close() {
+	if p == nil {
+		return
+	}
+	p.closeOnce.Do(func() {
+		close(p.stopCh)
+		for {
+			select {
+			case item := <-p.ready:
+				if item != nil && item.conn != nil {
+					_ = item.conn.Close()
+				}
+			default:
+				return
+			}
+		}
+	})
+}
+
 func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRuntimePortForward, listener net.Listener) {
 	if runtime == nil || listener == nil {
 		return
@@ -1305,6 +1537,10 @@ func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 	if err != nil {
 		log.Printf("probe chain tcp forward disabled: chain=%s id=%s err=%v", runtime.cfg.chainID, cfg.ID, err)
 		return
+	}
+	preconnect := newProbeChainPortForwardPreconnectPool(runtime, cfg, probeChainPortForwardNetworkTCP, targetAddr)
+	if preconnect != nil {
+		defer preconnect.close()
 	}
 	for {
 		conn, acceptErr := listener.Accept()
@@ -1322,7 +1558,14 @@ func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 		}
 		go func(localConn net.Conn) {
 			defer localConn.Close()
-			downstream, openErr := openProbeChainPortForwardStream(runtime, cfg.EntrySide, probeChainPortForwardNetworkTCP, targetAddr)
+			var downstream net.Conn
+			var openErr error
+			if preconnected, ok := preconnect.acquire(); ok {
+				downstream = preconnected.conn
+				log.Printf("probe chain tcp forward using preconnected stream: chain=%s id=%s target=%s flow_id=%s age_ms=%d", runtime.cfg.chainID, cfg.ID, targetAddr, preconnected.flowID, time.Since(preconnected.openedAt).Milliseconds())
+			} else {
+				downstream, openErr = openProbeChainPortForwardStream(runtime, cfg.EntrySide, probeChainPortForwardNetworkTCP, targetAddr)
+			}
 			if openErr != nil {
 				log.Printf("probe chain tcp forward open failed: chain=%s id=%s target=%s err=%v", runtime.cfg.chainID, cfg.ID, targetAddr, openErr)
 				return
@@ -1345,6 +1588,10 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 	if err != nil {
 		log.Printf("probe chain udp forward disabled: chain=%s id=%s err=%v", runtime.cfg.chainID, cfg.ID, err)
 		return
+	}
+	preconnect := newProbeChainPortForwardPreconnectPool(runtime, cfg, probeChainPortForwardNetworkUDP, targetAddr)
+	if preconnect != nil {
+		defer preconnect.close()
 	}
 
 	type udpForwardSession struct {
@@ -1430,9 +1677,16 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 			GCIntervalMS:    probeChainPortForwardSessionGCInterval.Milliseconds(),
 			CreatedAtUnixMS: time.Now().UnixMilli(),
 		}
-		stream, openErr := openProbeChainPortForwardStreamWithAssociation(runtime, cfg.EntrySide, probeChainPortForwardNetworkUDP, targetAddr, associationV2)
-		if openErr != nil {
-			return nil, openErr
+		var stream net.Conn
+		if preconnected, ok := preconnect.acquire(); ok {
+			stream = preconnected.conn
+			log.Printf("probe chain udp forward using preconnected stream: chain=%s id=%s target=%s flow_id=%s age_ms=%d client=%s", runtime.cfg.chainID, cfg.ID, targetAddr, preconnected.flowID, time.Since(preconnected.openedAt).Milliseconds(), key)
+		} else {
+			var openErr error
+			stream, openErr = openProbeChainPortForwardStreamWithAssociation(runtime, cfg.EntrySide, probeChainPortForwardNetworkUDP, targetAddr, associationV2)
+			if openErr != nil {
+				return nil, openErr
+			}
 		}
 		session := &udpForwardSession{
 			clientAddr: addr,
