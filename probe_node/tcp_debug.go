@@ -13,24 +13,31 @@ import (
 )
 
 const probeTCPDebugMaxFailures = 128
+const probeTCPDebugMaxCompleted = 128
 const probeTCPDebugBlockedWriteThreshold = 50 * time.Millisecond
 
 type probeTCPDebugConnectionItemPayload struct {
 	ID                   string `json:"id"`
+	Status               string `json:"status,omitempty"`
 	FlowID               string `json:"flow_id,omitempty"`
 	Side                 string `json:"side,omitempty"`
 	Scope                string `json:"scope,omitempty"`
 	Target               string `json:"target,omitempty"`
 	RouteTarget          string `json:"route_target,omitempty"`
+	Domain               string `json:"domain,omitempty"`
+	DomainSource         string `json:"domain_source,omitempty"`
 	NodeID               string `json:"node_id,omitempty"`
 	Group                string `json:"group,omitempty"`
 	Direct               bool   `json:"direct"`
 	Transport            string `json:"transport,omitempty"`
 	OpenedAt             string `json:"opened_at,omitempty"`
+	ClosedAt             string `json:"closed_at,omitempty"`
 	LastActive           string `json:"last_active,omitempty"`
 	LastWriteBlockedAt   string `json:"last_write_blocked_at,omitempty"`
 	LastCongestionSide   string `json:"last_congestion_side,omitempty"`
+	CloseReason          string `json:"close_reason,omitempty"`
 	AgeMS                int64  `json:"age_ms"`
+	DurationMS           int64  `json:"duration_ms,omitempty"`
 	IdleMS               int64  `json:"idle_ms"`
 	BytesUp              int64  `json:"bytes_up,omitempty"`
 	BytesDown            int64  `json:"bytes_down,omitempty"`
@@ -47,50 +54,56 @@ type probeTCPDebugConnectionItemPayload struct {
 }
 
 type probeTCPDebugFailureItemPayload struct {
-	Kind        string `json:"kind"`
-	Reason      string `json:"reason,omitempty"`
-	FlowID      string `json:"flow_id,omitempty"`
-	Side        string `json:"side,omitempty"`
-	Scope       string `json:"scope,omitempty"`
-	Target      string `json:"target,omitempty"`
-	RouteTarget string `json:"route_target,omitempty"`
-	NodeID      string `json:"node_id,omitempty"`
-	Group       string `json:"group,omitempty"`
-	Direct      bool   `json:"direct"`
-	Transport   string `json:"transport,omitempty"`
-	Error       string `json:"error,omitempty"`
-	LastSeen    string `json:"last_seen,omitempty"`
+	Kind         string `json:"kind"`
+	Reason       string `json:"reason,omitempty"`
+	FlowID       string `json:"flow_id,omitempty"`
+	Side         string `json:"side,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	Target       string `json:"target,omitempty"`
+	RouteTarget  string `json:"route_target,omitempty"`
+	Domain       string `json:"domain,omitempty"`
+	DomainSource string `json:"domain_source,omitempty"`
+	NodeID       string `json:"node_id,omitempty"`
+	Group        string `json:"group,omitempty"`
+	Direct       bool   `json:"direct"`
+	Transport    string `json:"transport,omitempty"`
+	Error        string `json:"error,omitempty"`
+	LastSeen     string `json:"last_seen,omitempty"`
 }
 
 type probeTCPDebugResultPayload struct {
-	Type         string                               `json:"type"`
-	RequestID    string                               `json:"request_id"`
-	NodeID       string                               `json:"node_id"`
-	OK           bool                                 `json:"ok"`
-	Scope        string                               `json:"scope,omitempty"`
-	ActiveCount  int                                  `json:"active_count"`
-	Active       []probeTCPDebugConnectionItemPayload `json:"active"`
-	FailureCount int                                  `json:"failure_count"`
-	Failures     []probeTCPDebugFailureItemPayload    `json:"failures"`
-	FetchedAt    string                               `json:"fetched_at,omitempty"`
-	Error        string                               `json:"error,omitempty"`
-	Timestamp    string                               `json:"timestamp,omitempty"`
+	Type           string                               `json:"type"`
+	RequestID      string                               `json:"request_id"`
+	NodeID         string                               `json:"node_id"`
+	OK             bool                                 `json:"ok"`
+	Scope          string                               `json:"scope,omitempty"`
+	ActiveCount    int                                  `json:"active_count"`
+	Active         []probeTCPDebugConnectionItemPayload `json:"active"`
+	CompletedCount int                                  `json:"completed_count"`
+	Completed      []probeTCPDebugConnectionItemPayload `json:"completed"`
+	FailureCount   int                                  `json:"failure_count"`
+	Failures       []probeTCPDebugFailureItemPayload    `json:"failures"`
+	FetchedAt      string                               `json:"fetched_at,omitempty"`
+	Error          string                               `json:"error,omitempty"`
+	Timestamp      string                               `json:"timestamp,omitempty"`
 }
 
 type probeTCPDebugFailureEvent struct {
-	Kind        string
-	Reason      string
-	Scope       string
-	FlowID      string
-	Side        string
-	Target      string
-	RouteTarget string
-	NodeID      string
-	Group       string
-	Direct      bool
-	Transport   string
-	Error       string
-	At          time.Time
+	Kind         string
+	Reason       string
+	Scope        string
+	FlowID       string
+	Side         string
+	Target       string
+	RouteTarget  string
+	Domain       string
+	DomainSource string
+	NodeID       string
+	Group        string
+	Direct       bool
+	Transport    string
+	Error        string
+	At           time.Time
 }
 
 type probeTCPDebugRelay struct {
@@ -135,10 +148,11 @@ type probeTCPDebugRelayOptions struct {
 }
 
 type probeTCPDebugState struct {
-	mu       sync.Mutex
-	seq      atomic.Uint64
-	active   map[string]*probeTCPDebugRelay
-	failures []probeTCPDebugFailureEvent
+	mu        sync.Mutex
+	seq       atomic.Uint64
+	active    map[string]*probeTCPDebugRelay
+	completed []probeTCPDebugConnectionItemPayload
+	failures  []probeTCPDebugFailureEvent
 }
 
 type probeTCPDebugWriter struct {
@@ -303,8 +317,18 @@ func (r *probeTCPDebugRelay) releaseSide() {
 	if r.activeSides.Add(-1) > 0 {
 		return
 	}
+	closedAt := time.Now().UTC()
+	item := buildProbeTCPDebugConnectionPayload(r, closedAt)
+	item.Status = "closed"
+	item.ClosedAt = closedAt.Format(time.RFC3339)
+	item.CloseReason = "closed"
+	item.DurationMS = closedAt.Sub(r.openedAt).Milliseconds()
 	r.state.mu.Lock()
 	delete(r.state.active, r.id)
+	r.state.completed = append(r.state.completed, item)
+	if len(r.state.completed) > probeTCPDebugMaxCompleted {
+		r.state.completed = append([]probeTCPDebugConnectionItemPayload(nil), r.state.completed[len(r.state.completed)-probeTCPDebugMaxCompleted:]...)
+	}
 	r.state.mu.Unlock()
 }
 
@@ -332,20 +356,23 @@ func (s *probeTCPDebugState) recordFailureWithOptions(kind string, opts probeTCP
 	} else if strings.TrimSpace(opts.Route.Group) != "" || strings.TrimSpace(opts.Route.TunnelNodeID) != "" {
 		transport = "tunnel"
 	}
+	domain, domainSource := resolveProbeTCPDebugDomain(firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Target), strings.TrimSpace(opts.Route.TargetAddr)), firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Route.TargetAddr), strings.TrimSpace(opts.Target)))
 	event := probeTCPDebugFailureEvent{
-		Kind:        strings.TrimSpace(kind),
-		Reason:      classifyProbeTCPDebugError(kind, err),
-		Scope:       firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Scope), "unknown"),
-		FlowID:      strings.TrimSpace(opts.FlowID),
-		Side:        strings.TrimSpace(opts.Side),
-		Target:      strings.TrimSpace(opts.Target),
-		RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Route.TargetAddr), strings.TrimSpace(opts.Target)),
-		NodeID:      strings.TrimSpace(opts.Route.TunnelNodeID),
-		Group:       strings.TrimSpace(opts.Route.Group),
-		Direct:      opts.Route.Direct,
-		Transport:   transport,
-		Error:       strings.TrimSpace(err.Error()),
-		At:          time.Now().UTC(),
+		Kind:         strings.TrimSpace(kind),
+		Reason:       classifyProbeTCPDebugError(kind, err),
+		Scope:        firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Scope), "unknown"),
+		FlowID:       strings.TrimSpace(opts.FlowID),
+		Side:         strings.TrimSpace(opts.Side),
+		Target:       strings.TrimSpace(opts.Target),
+		RouteTarget:  firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Route.TargetAddr), strings.TrimSpace(opts.Target)),
+		Domain:       domain,
+		DomainSource: domainSource,
+		NodeID:       strings.TrimSpace(opts.Route.TunnelNodeID),
+		Group:        strings.TrimSpace(opts.Route.Group),
+		Direct:       opts.Route.Direct,
+		Transport:    transport,
+		Error:        strings.TrimSpace(err.Error()),
+		At:           time.Now().UTC(),
 	}
 	s.mu.Lock()
 	s.failures = append(s.failures, event)
@@ -384,6 +411,7 @@ func (s *probeTCPDebugState) snapshotPayload(nodeID string, requestID string) pr
 		OK:        true,
 		Scope:     "probe",
 		Active:    []probeTCPDebugConnectionItemPayload{},
+		Completed: []probeTCPDebugConnectionItemPayload{},
 		Failures:  []probeTCPDebugFailureItemPayload{},
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -399,48 +427,12 @@ func (s *probeTCPDebugState) snapshotPayload(nodeID string, requestID string) pr
 			activeItems = append(activeItems, relay)
 		}
 	}
+	completedItems := append([]probeTCPDebugConnectionItemPayload(nil), s.completed...)
 	failureItems := append([]probeTCPDebugFailureEvent(nil), s.failures...)
 	s.mu.Unlock()
 
 	for _, relay := range activeItems {
-		item := probeTCPDebugConnectionItemPayload{
-			ID:                   strings.TrimSpace(relay.id),
-			FlowID:               strings.TrimSpace(relay.flowID),
-			Side:                 strings.TrimSpace(relay.side),
-			Scope:                strings.TrimSpace(relay.scope),
-			Target:               strings.TrimSpace(relay.target),
-			RouteTarget:          firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.routeTarget), strings.TrimSpace(relay.target)),
-			NodeID:               strings.TrimSpace(relay.nodeID),
-			Group:                strings.TrimSpace(relay.group),
-			Direct:               relay.direct,
-			Transport:            firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.transport), "tcp"),
-			OpenedAt:             relay.openedAt.UTC().Format(time.RFC3339),
-			AgeMS:                now.Sub(relay.openedAt).Milliseconds(),
-			BytesUp:              relay.bytesUp.Load(),
-			BytesDown:            relay.bytesDown.Load(),
-			WritesUp:             relay.writesUp.Load(),
-			WritesDown:           relay.writesDown.Load(),
-			BlockedWritesUp:      relay.blockedUp.Load(),
-			BlockedWritesDown:    relay.blockedDown.Load(),
-			WriteBlockMSUp:       relay.blockMSUp.Load(),
-			WriteBlockMSDown:     relay.blockMSDown.Load(),
-			MaxWriteBlockMSUp:    relay.maxBlockMSUp.Load(),
-			MaxWriteBlockMSDown:  relay.maxBlockMSDown.Load(),
-			LastWriteBlockMSUp:   relay.lastBlockMSUp.Load(),
-			LastWriteBlockMSDown: relay.lastBlockMSDown.Load(),
-		}
-		if lastActive := relay.lastActiveUnix.Load(); lastActive > 0 {
-			lastActiveAt := time.Unix(lastActive, 0).UTC()
-			item.LastActive = lastActiveAt.Format(time.RFC3339)
-			item.IdleMS = now.Sub(lastActiveAt).Milliseconds()
-		}
-		if lastBlocked := relay.lastBlockedUnix.Load(); lastBlocked > 0 {
-			item.LastWriteBlockedAt = time.Unix(lastBlocked, 0).UTC().Format(time.RFC3339)
-		}
-		if side, ok := relay.lastCongestionSide.Load().(string); ok {
-			item.LastCongestionSide = strings.TrimSpace(side)
-		}
-		payload.Active = append(payload.Active, item)
+		payload.Active = append(payload.Active, buildProbeTCPDebugConnectionPayload(relay, now))
 	}
 	sort.Slice(payload.Active, func(i, j int) bool {
 		if payload.Active[i].Target == payload.Active[j].Target {
@@ -448,30 +440,87 @@ func (s *probeTCPDebugState) snapshotPayload(nodeID string, requestID string) pr
 		}
 		return payload.Active[i].Target < payload.Active[j].Target
 	})
+	payload.Completed = completedItems
+	sort.Slice(payload.Completed, func(i, j int) bool {
+		return payload.Completed[i].ClosedAt > payload.Completed[j].ClosedAt
+	})
 
 	for _, event := range failureItems {
 		payload.Failures = append(payload.Failures, probeTCPDebugFailureItemPayload{
-			Kind:        strings.TrimSpace(event.Kind),
-			Reason:      strings.TrimSpace(event.Reason),
-			FlowID:      strings.TrimSpace(event.FlowID),
-			Side:        strings.TrimSpace(event.Side),
-			Scope:       strings.TrimSpace(event.Scope),
-			Target:      strings.TrimSpace(event.Target),
-			RouteTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(event.RouteTarget), strings.TrimSpace(event.Target)),
-			NodeID:      strings.TrimSpace(event.NodeID),
-			Group:       strings.TrimSpace(event.Group),
-			Direct:      event.Direct,
-			Transport:   firstNonEmptyProbeTCPDebugString(strings.TrimSpace(event.Transport), "tcp"),
-			Error:       strings.TrimSpace(event.Error),
-			LastSeen:    event.At.UTC().Format(time.RFC3339),
+			Kind:         strings.TrimSpace(event.Kind),
+			Reason:       strings.TrimSpace(event.Reason),
+			FlowID:       strings.TrimSpace(event.FlowID),
+			Side:         strings.TrimSpace(event.Side),
+			Scope:        strings.TrimSpace(event.Scope),
+			Target:       strings.TrimSpace(event.Target),
+			RouteTarget:  firstNonEmptyProbeTCPDebugString(strings.TrimSpace(event.RouteTarget), strings.TrimSpace(event.Target)),
+			Domain:       strings.TrimSpace(event.Domain),
+			DomainSource: strings.TrimSpace(event.DomainSource),
+			NodeID:       strings.TrimSpace(event.NodeID),
+			Group:        strings.TrimSpace(event.Group),
+			Direct:       event.Direct,
+			Transport:    firstNonEmptyProbeTCPDebugString(strings.TrimSpace(event.Transport), "tcp"),
+			Error:        strings.TrimSpace(event.Error),
+			LastSeen:     event.At.UTC().Format(time.RFC3339),
 		})
 	}
 	sort.Slice(payload.Failures, func(i, j int) bool {
 		return payload.Failures[i].LastSeen > payload.Failures[j].LastSeen
 	})
 	payload.ActiveCount = len(payload.Active)
+	payload.CompletedCount = len(payload.Completed)
 	payload.FailureCount = len(payload.Failures)
 	return payload
+}
+
+func buildProbeTCPDebugConnectionPayload(relay *probeTCPDebugRelay, now time.Time) probeTCPDebugConnectionItemPayload {
+	if relay == nil {
+		return probeTCPDebugConnectionItemPayload{}
+	}
+	target := strings.TrimSpace(relay.target)
+	routeTarget := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.routeTarget), target)
+	domain, domainSource := resolveProbeTCPDebugDomain(target, routeTarget)
+	item := probeTCPDebugConnectionItemPayload{
+		ID:                   strings.TrimSpace(relay.id),
+		Status:               "active",
+		FlowID:               strings.TrimSpace(relay.flowID),
+		Side:                 strings.TrimSpace(relay.side),
+		Scope:                strings.TrimSpace(relay.scope),
+		Target:               target,
+		RouteTarget:          routeTarget,
+		Domain:               domain,
+		DomainSource:         domainSource,
+		NodeID:               strings.TrimSpace(relay.nodeID),
+		Group:                strings.TrimSpace(relay.group),
+		Direct:               relay.direct,
+		Transport:            firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.transport), "tcp"),
+		OpenedAt:             relay.openedAt.UTC().Format(time.RFC3339),
+		AgeMS:                now.Sub(relay.openedAt).Milliseconds(),
+		BytesUp:              relay.bytesUp.Load(),
+		BytesDown:            relay.bytesDown.Load(),
+		WritesUp:             relay.writesUp.Load(),
+		WritesDown:           relay.writesDown.Load(),
+		BlockedWritesUp:      relay.blockedUp.Load(),
+		BlockedWritesDown:    relay.blockedDown.Load(),
+		WriteBlockMSUp:       relay.blockMSUp.Load(),
+		WriteBlockMSDown:     relay.blockMSDown.Load(),
+		MaxWriteBlockMSUp:    relay.maxBlockMSUp.Load(),
+		MaxWriteBlockMSDown:  relay.maxBlockMSDown.Load(),
+		LastWriteBlockMSUp:   relay.lastBlockMSUp.Load(),
+		LastWriteBlockMSDown: relay.lastBlockMSDown.Load(),
+	}
+	if lastActive := relay.lastActiveUnix.Load(); lastActive > 0 {
+		lastActiveAt := time.Unix(lastActive, 0).UTC()
+		item.LastActive = lastActiveAt.Format(time.RFC3339)
+		item.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+	}
+	if lastBlocked := relay.lastBlockedUnix.Load(); lastBlocked > 0 {
+		item.LastWriteBlockedAt = time.Unix(lastBlocked, 0).UTC().Format(time.RFC3339)
+	}
+	if side, ok := relay.lastCongestionSide.Load().(string); ok {
+		item.LastCongestionSide = strings.TrimSpace(side)
+	}
+	return item
 }
 
 func normalizeProbeTCPDebugDirection(direction string) string {
@@ -499,6 +548,59 @@ func firstNonEmptyProbeTCPDebugString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func resolveProbeTCPDebugDomain(target string, routeTarget string) (string, string) {
+	for _, candidate := range []string{strings.TrimSpace(target), strings.TrimSpace(routeTarget)} {
+		host := probeTCPDebugTargetHost(candidate)
+		if host == "" {
+			continue
+		}
+		if net.ParseIP(host) == nil {
+			return strings.ToLower(strings.TrimSpace(strings.Trim(host, "."))), "target"
+		}
+	}
+	for _, candidate := range []string{strings.TrimSpace(target), strings.TrimSpace(routeTarget)} {
+		host := probeTCPDebugTargetHost(candidate)
+		ip := net.ParseIP(host)
+		if ip == nil {
+			continue
+		}
+		ipText := ip.String()
+		if fakeEntry, ok := lookupProbeLocalDNSFakeIPEntry(ipText); ok && strings.TrimSpace(fakeEntry.Domain) != "" {
+			return strings.ToLower(strings.TrimSpace(fakeEntry.Domain)), "fake-ip"
+		}
+		if hint, ok := lookupProbeLocalDNSRouteHintEntryByIP(ipText); ok && strings.TrimSpace(hint.Domain) != "" {
+			return strings.ToLower(strings.TrimSpace(hint.Domain)), "dns-hint"
+		}
+	}
+	return "", ""
+}
+
+func probeTCPDebugTargetHost(value string) string {
+	clean := strings.TrimSpace(value)
+	if clean == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(clean)
+	if err == nil {
+		return strings.TrimSpace(strings.Trim(host, "[]"))
+	}
+	clean = strings.TrimSpace(strings.Trim(clean, "[]"))
+	if strings.Count(clean, ":") > 1 {
+		if ip := net.ParseIP(clean); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
+	if strings.Contains(clean, ":") {
+		parts := strings.Split(clean, ":")
+		if len(parts) == 2 {
+			return strings.TrimSpace(parts[0])
+		}
+		return ""
+	}
+	return clean
 }
 
 func newProbeTCPDebugFlowID(scope string, target string) string {

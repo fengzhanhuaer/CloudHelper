@@ -51,6 +51,7 @@ type probeLocalProxyMonitorTUNSnapshot struct {
 
 type probeLocalProxyMonitorTCPSnapshot struct {
 	Active             int                                     `json:"active"`
+	Completed          int                                     `json:"completed"`
 	TUN                int                                     `json:"tun"`
 	Chain              int                                     `json:"chain"`
 	Other              int                                     `json:"other"`
@@ -58,6 +59,7 @@ type probeLocalProxyMonitorTCPSnapshot struct {
 	DirectFailureCache probeLocalTUNTCPDirectFailureCacheStats `json:"direct_failure_cache"`
 	Scopes             map[string]int                          `json:"scopes"`
 	Items              []probeTCPDebugConnectionItemPayload    `json:"items,omitempty"`
+	CompletedItems     []probeTCPDebugConnectionItemPayload    `json:"completed_items,omitempty"`
 }
 
 type probeLocalProxyMonitorUDPSnapshot struct {
@@ -114,6 +116,9 @@ func (s probeLocalProxyMonitorSnapshot) clone() probeLocalProxyMonitorSnapshot {
 	}
 	if s.TCP.Items != nil {
 		s.TCP.Items = append([]probeTCPDebugConnectionItemPayload(nil), s.TCP.Items...)
+	}
+	if s.TCP.CompletedItems != nil {
+		s.TCP.CompletedItems = append([]probeTCPDebugConnectionItemPayload(nil), s.TCP.CompletedItems...)
 	}
 	return s
 }
@@ -303,11 +308,20 @@ func snapshotProbeLocalTCPDebugMonitorStats() probeLocalProxyMonitorTCPSnapshot 
 		return stats
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
 	stats.Active = len(state.active)
+	stats.Completed = len(state.completed)
 	stats.Failures = len(state.failures)
+	activeItems := make([]*probeTCPDebugRelay, 0, len(state.active))
 	now := time.Now().UTC()
 	for _, relay := range state.active {
+		if relay != nil {
+			activeItems = append(activeItems, relay)
+		}
+	}
+	completedItems := append([]probeTCPDebugConnectionItemPayload(nil), state.completed...)
+	state.mu.Unlock()
+
+	for _, relay := range activeItems {
 		scope := "other"
 		if relay != nil && strings.TrimSpace(relay.scope) != "" {
 			scope = strings.TrimSpace(relay.scope)
@@ -324,44 +338,7 @@ func snapshotProbeLocalTCPDebugMonitorStats() probeLocalProxyMonitorTCPSnapshot 
 		if relay == nil {
 			continue
 		}
-		item := probeTCPDebugConnectionItemPayload{
-			ID:                   strings.TrimSpace(relay.id),
-			FlowID:               strings.TrimSpace(relay.flowID),
-			Side:                 strings.TrimSpace(relay.side),
-			Scope:                strings.TrimSpace(relay.scope),
-			Target:               strings.TrimSpace(relay.target),
-			RouteTarget:          firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.routeTarget), strings.TrimSpace(relay.target)),
-			NodeID:               strings.TrimSpace(relay.nodeID),
-			Group:                strings.TrimSpace(relay.group),
-			Direct:               relay.direct,
-			Transport:            firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.transport), "tcp"),
-			OpenedAt:             relay.openedAt.UTC().Format(time.RFC3339),
-			AgeMS:                now.Sub(relay.openedAt).Milliseconds(),
-			BytesUp:              relay.bytesUp.Load(),
-			BytesDown:            relay.bytesDown.Load(),
-			WritesUp:             relay.writesUp.Load(),
-			WritesDown:           relay.writesDown.Load(),
-			BlockedWritesUp:      relay.blockedUp.Load(),
-			BlockedWritesDown:    relay.blockedDown.Load(),
-			WriteBlockMSUp:       relay.blockMSUp.Load(),
-			WriteBlockMSDown:     relay.blockMSDown.Load(),
-			MaxWriteBlockMSUp:    relay.maxBlockMSUp.Load(),
-			MaxWriteBlockMSDown:  relay.maxBlockMSDown.Load(),
-			LastWriteBlockMSUp:   relay.lastBlockMSUp.Load(),
-			LastWriteBlockMSDown: relay.lastBlockMSDown.Load(),
-		}
-		if lastActive := relay.lastActiveUnix.Load(); lastActive > 0 {
-			lastActiveAt := time.Unix(lastActive, 0).UTC()
-			item.LastActive = lastActiveAt.Format(time.RFC3339)
-			item.IdleMS = now.Sub(lastActiveAt).Milliseconds()
-		}
-		if lastBlocked := relay.lastBlockedUnix.Load(); lastBlocked > 0 {
-			item.LastWriteBlockedAt = time.Unix(lastBlocked, 0).UTC().Format(time.RFC3339)
-		}
-		if side, ok := relay.lastCongestionSide.Load().(string); ok {
-			item.LastCongestionSide = strings.TrimSpace(side)
-		}
-		stats.Items = append(stats.Items, item)
+		stats.Items = append(stats.Items, buildProbeTCPDebugConnectionPayload(relay, now))
 	}
 	sort.Slice(stats.Items, func(i, j int) bool {
 		if stats.Items[i].IdleMS == stats.Items[j].IdleMS {
@@ -374,6 +351,13 @@ func snapshotProbeLocalTCPDebugMonitorStats() probeLocalProxyMonitorTCPSnapshot 
 	})
 	if len(stats.Items) > 16 {
 		stats.Items = append([]probeTCPDebugConnectionItemPayload(nil), stats.Items[:16]...)
+	}
+	stats.CompletedItems = completedItems
+	sort.Slice(stats.CompletedItems, func(i, j int) bool {
+		return stats.CompletedItems[i].ClosedAt > stats.CompletedItems[j].ClosedAt
+	})
+	if len(stats.CompletedItems) > 32 {
+		stats.CompletedItems = append([]probeTCPDebugConnectionItemPayload(nil), stats.CompletedItems[:32]...)
 	}
 	return stats
 }

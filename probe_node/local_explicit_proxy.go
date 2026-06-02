@@ -169,6 +169,7 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 	targetConn, route, err := openProbeLocalExplicitProxyTunnelStreamWithRoute("tcp", request.Address)
 	if err != nil {
 		_ = replyProbeChainProxyFailure(conn, request.Version)
+		globalProbeTCPDebugState.recordFailureWithOptions("open_failed", probeTCPDebugRelayOptions{Scope: "explicit", Target: request.Address, Route: route, Side: "socks5"}, err)
 		logProbeWarnf("probe local explicit socks5 proxy tunnel open failed: target=%s err=%v", request.Address, err)
 		return
 	}
@@ -178,7 +179,8 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	_ = targetConn.SetDeadline(time.Time{})
-	result := relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+	relay := beginProbeLocalExplicitProxyTCPDebug("socks5", request.Address, route)
+	result := relayProbeLocalExplicitProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
 	logProbeLocalExplicitProxyRelayResult("socks5", remoteAddr, request.Address, route, result)
 }
 
@@ -372,6 +374,7 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 	targetConn, route, err := openProbeLocalExplicitProxyTunnelStreamWithRoute("tcp", targetAddr)
 	if err != nil {
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadGateway, "open tunnel failed")
+		globalProbeTCPDebugState.recordFailureWithOptions("open_failed", probeTCPDebugRelayOptions{Scope: "explicit", Target: targetAddr, Route: route, Side: strings.ToLower(strings.TrimSpace(request.Method))}, err)
 		logProbeWarnf("probe local explicit http proxy tunnel open failed: target=%s err=%v", targetAddr, err)
 		return
 	}
@@ -382,7 +385,8 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 		}
 		_ = conn.SetDeadline(time.Time{})
 		_ = targetConn.SetDeadline(time.Time{})
-		result := relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+		relay := beginProbeLocalExplicitProxyTCPDebug("http_connect", targetAddr, route)
+		result := relayProbeLocalExplicitProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
 		logProbeLocalExplicitProxyRelayResult("http_connect", remoteAddr, targetAddr, route, result)
 		return
 	}
@@ -396,13 +400,20 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 		}
 	}
 	request.Header.Del("Proxy-Connection")
-	if err := request.Write(targetConn); err != nil {
+	relay := beginProbeLocalExplicitProxyTCPDebug("http", targetAddr, route)
+	targetWriter := io.Writer(targetConn)
+	if relay != nil {
+		targetWriter = &probeTCPDebugWriter{dst: targetConn, relay: relay, direction: "up"}
+	}
+	if err := request.Write(targetWriter); err != nil {
+		releaseProbeLocalExplicitProxyTCPDebugRelay(relay)
+		globalProbeTCPDebugState.recordRelayFailure(relay, err)
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadGateway, "forward request failed")
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
 	_ = targetConn.SetDeadline(time.Time{})
-	result := relayProbeChainBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn))
+	result := relayProbeLocalExplicitProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
 	logProbeLocalExplicitProxyRelayResult("http", remoteAddr, targetAddr, route, result)
 }
 
@@ -468,6 +479,35 @@ func logProbeLocalExplicitProxyRelayResult(protocol string, remoteAddr string, t
 		return
 	}
 	logProbeInfof(format, args...)
+}
+
+func beginProbeLocalExplicitProxyTCPDebug(protocol string, targetAddr string, route probeLocalTunnelRouteDecision) *probeTCPDebugRelay {
+	flowID := newProbeTCPDebugFlowID("explicit", targetAddr)
+	return globalProbeTCPDebugState.beginRelayWithOptions(probeTCPDebugRelayOptions{
+		Scope:  "explicit",
+		FlowID: flowID,
+		Side:   strings.TrimSpace(protocol),
+		Target: targetAddr,
+		Route:  route,
+	})
+}
+
+func relayProbeLocalExplicitProxyBidirectional(leftConn net.Conn, leftReader io.Reader, rightConn net.Conn, rightReader io.Reader, relay *probeTCPDebugRelay) probeChainBidirectionalRelayResult {
+	if relay == nil {
+		return relayProbeChainBidirectional(leftConn, leftReader, rightConn, rightReader)
+	}
+	defer releaseProbeLocalExplicitProxyTCPDebugRelay(relay)
+	rightWriter := &probeTCPDebugWriter{dst: rightConn, relay: relay, direction: "up"}
+	leftWriter := &probeTCPDebugWriter{dst: leftConn, relay: relay, direction: "down"}
+	return relayProbeChainBidirectionalWithWriters(leftConn, leftReader, rightConn, rightReader, rightWriter, leftWriter)
+}
+
+func releaseProbeLocalExplicitProxyTCPDebugRelay(relay *probeTCPDebugRelay) {
+	if relay == nil {
+		return
+	}
+	relay.releaseSide()
+	relay.releaseSide()
 }
 
 func openProbeLocalExplicitProxyUDPTunnelStream(targetAddr string, clientAddr net.Addr) (io.ReadWriteCloser, error) {

@@ -140,6 +140,24 @@
     .link-detail-speed-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
     .link-detail-speed-box { border: 1px solid rgba(255,255,255,0.1); border-radius: 7px; padding: 8px; background: rgba(13, 17, 23, 0.28); }
     .link-detail-speed-box-title { color: var(--text-secondary); font-size: 12px; margin-bottom: 5px; }
+    .connection-list { display: grid; gap: 10px; margin-top: 12px; }
+    .connection-section-title { color: var(--heading); font-weight: 700; margin: 10px 0 4px; }
+    .connection-card {
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(13, 17, 23, 0.45);
+    }
+    .connection-card.closed { border-left-color: rgba(139,148,158,.95); opacity: .92; }
+    .connection-card.warn { border-left-color: #d29922; }
+    .connection-title { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--heading); font-weight: 700; }
+    .connection-domain { margin-top: 6px; color: var(--heading); font-weight: 700; overflow-wrap: anywhere; }
+    .connection-meta { margin-top: 5px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+    .connection-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 8px; }
+    .connection-box { border: 1px solid rgba(255,255,255,.08); border-radius: 7px; padding: 8px; background: rgba(1,4,9,.22); }
+    .connection-box-label { color: var(--text-secondary); font-size: 12px; margin-bottom: 5px; }
+    .connection-box-value { color: var(--heading); font-family: Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
     .pre-line { white-space: pre-line; }
     .mini-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
     .mini-actions button { padding: 6px 9px; font-size: 12px; }
@@ -173,6 +191,7 @@
     <div class="tabs">
       <button class="tab-btn active" data-tab="groups">代理组</button>
       <button class="tab-btn" data-tab="links">链路状态</button>
+      <button class="tab-btn" data-tab="connections">连接状态</button>
     </div>
 
     <section id="panelProxy" class="card proxy-tab-panel active" data-tab-panel="groups">
@@ -219,6 +238,17 @@
       </div>
     </section>
 
+    <section id="panelProxyConnections" class="card proxy-tab-panel" data-tab-panel="connections">
+      <strong>连接状态</strong>
+      <p id="proxyConnectionSummary" class="hint">-</p>
+      <div class="actions">
+        <button id="proxyConnectionRefreshBtn" class="secondary">刷新连接状态</button>
+      </div>
+      <div id="proxyConnectionRows" class="connection-list">
+        <div class="hint">暂无代理连接记录</div>
+      </div>
+    </section>
+
     <p id="message" class="msg"></p>
   </main>
 
@@ -226,6 +256,8 @@
     const messageEl = document.getElementById('message');
     const proxyRuleGroupsEl = document.getElementById('proxyRuleGroups');
     const proxyLinkStatusRowsEl = document.getElementById('proxyLinkStatusRows');
+    const proxyConnectionRowsEl = document.getElementById('proxyConnectionRows');
+    const proxyConnectionSummaryEl = document.getElementById('proxyConnectionSummary');
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
     let proxyLinkStatusCache = [];
@@ -652,6 +684,100 @@
       return `${Math.trunc(value)}ms`;
     }
 
+    function renderConnectionMetric(label, value) {
+      return `<div class="connection-box"><div class="connection-box-label">${escapeHTML(label)}</div><div class="connection-box-value">${escapeHTML(value || '-')}</div></div>`;
+    }
+
+    function renderProxyTCPConnectionCard(item) {
+      const target = String(item && item.target || '-').trim();
+      const routeTarget = String(item && item.route_target || target).trim();
+      const domain = String(item && item.domain || '').trim();
+      const flowID = String(item && item.flow_id || item && item.id || '-').trim();
+      const group = String(item && item.group || (item && item.direct ? 'direct' : '-')).trim();
+      const closed = String(item && item.status || '').trim() === 'closed' || !!(item && item.closed_at);
+      const maxBlock = Math.max(Number(item && item.max_write_block_ms_up || 0), Number(item && item.max_write_block_ms_down || 0));
+      const blockedUp = Number(item && item.blocked_writes_up || 0);
+      const blockedDown = Number(item && item.blocked_writes_down || 0);
+      const className = closed ? 'connection-card closed' : (maxBlock > 0 || blockedUp > 0 || blockedDown > 0 ? 'connection-card warn' : 'connection-card');
+      const transport = String(item && item.transport || 'tcp').trim();
+      const domainSource = String(item && item.domain_source || '-').trim();
+      return `
+        <div class="${className}">
+          <div class="connection-title">
+            <span>${escapeHTML(flowID)}</span>
+            <span>${escapeHTML(transport)}${closed ? ' / closed' : ''}</span>
+          </div>
+          <div class="connection-domain">${escapeHTML(domain || target)}</div>
+          <div class="connection-meta">
+            ${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>
+            scope=${escapeHTML(item && item.scope || '-')} ｜ side=${escapeHTML(item && item.side || '-')} ｜ group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ domain_source=${escapeHTML(domainSource)}
+          </div>
+          <div class="connection-grid">
+            ${renderConnectionMetric('上行', formatBytesText(item && item.bytes_up))}
+            ${renderConnectionMetric('下行', formatBytesText(item && item.bytes_down))}
+            ${renderConnectionMetric('空闲/年龄', `${formatDurationText(item && item.idle_ms)} / ${formatDurationText(item && item.age_ms)}`)}
+            ${closed ? renderConnectionMetric('持续/断开', `${formatDurationText(item && item.duration_ms)} / ${item && item.closed_at || '-'}`) : ''}
+            ${renderConnectionMetric('阻塞次数', `${Math.trunc(blockedUp)} / ${Math.trunc(blockedDown)}`)}
+            ${renderConnectionMetric('最大阻塞', maxBlock > 0 ? `${Math.trunc(maxBlock)}ms ${item && item.last_congestion_side || ''}` : '-')}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderProxyUDPConnectionCard(item) {
+      const target = String(item && item.target || '-').trim();
+      const routeTarget = String(item && item.route_target || target).trim();
+      const group = String(item && item.group || (item && item.direct ? 'direct' : '-')).trim();
+      return `
+        <div class="connection-card">
+          <div class="connection-title">
+            <span>${escapeHTML(item && item.id || target)}</span>
+            <span>udp</span>
+          </div>
+          <div class="connection-domain">${escapeHTML(target)}</div>
+          <div class="connection-meta">${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')}</div>
+          <div class="connection-grid">
+            ${renderConnectionMetric('上行', formatBytesText(item && item.bytes_up))}
+            ${renderConnectionMetric('下行', formatBytesText(item && item.bytes_down))}
+            ${renderConnectionMetric('空闲/年龄', `${formatDurationText(item && item.idle_ms)} / ${formatDurationText(item && item.age_ms)}`)}
+            ${renderConnectionMetric('TTL', formatDurationText(item && item.timeout_ms))}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderProxyConnectionStatus(data) {
+      const monitor = data && typeof data === 'object' ? data : {};
+      const tcp = monitor.tcp || {};
+      const udp = monitor.udp || {};
+      const bridges = udp.bridges || {};
+      const active = Array.isArray(tcp.items) ? tcp.items : [];
+      const completed = Array.isArray(tcp.completed_items) ? tcp.completed_items : [];
+      const udpItems = Array.isArray(bridges.items) ? bridges.items : [];
+      if (proxyConnectionSummaryEl) {
+        proxyConnectionSummaryEl.textContent = `活跃 TCP ${active.length} / 最近断开 ${completed.length} / UDP ${udpItems.length} / 刷新 ${monitor.fetched_at || '--'}`;
+      }
+      if (!proxyConnectionRowsEl) return;
+      if (active.length === 0 && completed.length === 0 && udpItems.length === 0) {
+        proxyConnectionRowsEl.innerHTML = '<div class="hint">暂无代理连接记录</div>';
+        return;
+      }
+      const html = [];
+      html.push('<div class="connection-section-title">活跃 TCP</div>');
+      html.push(active.length ? active.map(renderProxyTCPConnectionCard).join('') : '<div class="hint">暂无活跃 TCP 连接</div>');
+      html.push('<div class="connection-section-title">最近断开 TCP</div>');
+      html.push(completed.length ? completed.map(renderProxyTCPConnectionCard).join('') : '<div class="hint">暂无最近断开 TCP 连接</div>');
+      html.push('<div class="connection-section-title">UDP Bridge</div>');
+      html.push(udpItems.length ? udpItems.map(renderProxyUDPConnectionCard).join('') : '<div class="hint">暂无 UDP bridge 连接</div>');
+      proxyConnectionRowsEl.innerHTML = html.join('');
+    }
+
+    async function loadProxyConnectionStatus() {
+      const data = await requestJSON('/local/api/proxy/monitor', { method: 'GET' });
+      renderProxyConnectionStatus(data);
+      return data;
+    }
+
     function formatSpeedProbeDetail(item) {
       const label = formatRelayProtocolLabel(item && item.protocol);
       if (!item || !item.ok) {
@@ -891,17 +1017,27 @@
       const memory = monitor.memory || {};
       const cpu = monitor.cpu_percent_text && monitor.cpu_percent_text !== 'unavailable' ? String(monitor.cpu_percent_text).trim() + '%' : '不可用';
       lines.push(`CPU=${cpu} goroutines=${Math.trunc(Number(monitor.goroutines) || 0)} heap=${Number(memory.heap_alloc_mb || 0).toFixed(2)}MB gc=${Math.trunc(Number(memory.num_gc) || 0)}`);
-      lines.push(`TCP active=${Math.trunc(Number(tcp.active) || 0)} tun=${Math.trunc(Number(tcp.tun) || 0)} chain=${Math.trunc(Number(tcp.chain) || 0)} failures=${Math.trunc(Number(tcp.failures) || 0)}`);
+      lines.push(`TCP active=${Math.trunc(Number(tcp.active) || 0)} completed=${Math.trunc(Number(tcp.completed) || 0)} tun=${Math.trunc(Number(tcp.tun) || 0)} chain=${Math.trunc(Number(tcp.chain) || 0)} failures=${Math.trunc(Number(tcp.failures) || 0)}`);
       lines.push(`UDP bridges=${Math.trunc(Number(udpBridges.active) || 0)} direct=${Math.trunc(Number(udpBridges.direct) || 0)} tunnel=${Math.trunc(Number(udpBridges.tunnel) || 0)} associations=${Math.trunc(Number(udp.associations) || 0)}`);
       const tcpItems = Array.isArray(tcp.items) ? tcp.items.slice(0, 4).map((entry) => {
         const scope = String(entry && entry.scope || '-').trim();
+        const domain = String(entry && entry.domain || '').trim();
         const target = String(entry && entry.target || '-').trim();
         const routeTarget = String(entry && entry.route_target || '-').trim();
         const up = Number(entry && entry.bytes_up || 0);
         const down = Number(entry && entry.bytes_down || 0);
-        return `${scope} ${target} -> ${routeTarget} up=${formatBytesText(up)} down=${formatBytesText(down)}`;
+        return `${scope} ${domain || target} (${target} -> ${routeTarget}) up=${formatBytesText(up)} down=${formatBytesText(down)}`;
       }).filter(Boolean) : [];
       if (tcpItems.length > 0) lines.push(`最近活跃 TCP relay:\n${tcpItems.join('\n')}`);
+      const completedItems = Array.isArray(tcp.completed_items) ? tcp.completed_items.slice(0, 4).map((entry) => {
+        const scope = String(entry && entry.scope || '-').trim();
+        const domain = String(entry && entry.domain || '').trim();
+        const target = String(entry && entry.target || '-').trim();
+        const group = String(entry && entry.group || (entry && entry.direct ? 'direct' : '-')).trim();
+        const closedAt = String(entry && entry.closed_at || '').trim();
+        return `${scope} ${domain || target} group=${group} closed=${closedAt || '-'}`;
+      }).filter(Boolean) : [];
+      if (completedItems.length > 0) lines.push(`最近断开 TCP:\n${completedItems.join('\n')}`);
       const udpItems = Array.isArray(udpBridges.items) ? udpBridges.items.slice(0, 4).map((entry) => {
         const target = String(entry && entry.target || '-').trim();
         const routeTarget = String(entry && entry.route_target || '-').trim();
@@ -1450,6 +1586,10 @@
         loadProxyLinkStatus().catch(() => {
         });
       }
+      if (document.querySelector('.tab-btn[data-tab="connections"].active')) {
+        loadProxyConnectionStatus().catch(() => {
+        });
+      }
       if (isProxyGloballyEnabled()) {
         triggerProxyRuntimeRefresh({ silent: true });
       }
@@ -1466,6 +1606,9 @@
       if (clean === 'links') {
         loadProxyLinkStatus().catch((err) => setMessage('读取链路状态失败：' + err.message, 'error'));
       }
+      if (clean === 'connections') {
+        loadProxyConnectionStatus().catch((err) => setMessage('读取连接状态失败：' + err.message, 'error'));
+      }
     }
 
     document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -1479,6 +1622,16 @@
         setMessage('链路状态已刷新', 'success');
       } catch (err) {
         setMessage('刷新链路状态失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyConnectionRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新连接状态...');
+      try {
+        await loadProxyConnectionStatus();
+        setMessage('连接状态已刷新', 'success');
+      } catch (err) {
+        setMessage('刷新连接状态失败：' + err.message, 'error');
       }
     });
 
@@ -1548,6 +1701,9 @@
         await loadProxySelections();
         if (document.querySelector('.tab-btn[data-tab="links"].active')) {
           await loadProxyLinkStatus();
+        }
+        if (document.querySelector('.tab-btn[data-tab="connections"].active')) {
+          await loadProxyConnectionStatus();
         }
         setMessage('链路已刷新', 'success');
       } catch (err) {
