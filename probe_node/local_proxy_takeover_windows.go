@@ -101,6 +101,11 @@ func applyProbeLocalProxyTakeover() error {
 			createdRoutes = append(createdRoutes, routeDef)
 		}
 	}
+	if cleaned, cleanupErr := cleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(routeTarget); cleanupErr != nil {
+		logProbeWarnf("probe local proxy takeover stale tunnel bypass cleanup failed: %v", cleanupErr)
+	} else if cleaned > 0 {
+		logProbeInfof("probe local proxy takeover stale tunnel bypass cleanup removed routes=%d", cleaned)
+	}
 
 	probeLocalWindowsTakeoverState.mu.Lock()
 	probeLocalWindowsTakeoverState.enabled = true
@@ -214,6 +219,84 @@ func probeLocalWindowsTakeoverRouteDefs(routeTarget probeLocalWindowsRouteTarget
 		})
 	}
 	return dedupeProbeLocalWindowsRouteDefs(routeDefs)
+}
+
+func cleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(routeTarget probeLocalWindowsRouteTarget) (int, error) {
+	tunnelNetworks := parseProbeLocalTunnelIPv4Networks(probeLocalTunnelCIDRRules())
+	if len(tunnelNetworks) == 0 {
+		return 0, nil
+	}
+	bypassTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
+	if !ok {
+		resolved, err := probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
+		if err != nil {
+			return 0, err
+		}
+		bypassTarget = resolved
+	}
+	if bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
+		return 0, nil
+	}
+	entries, err := probeLocalListWindowsRouteEntries()
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	var allErr error
+	for _, entry := range entries {
+		if entry.PrefixLength != 32 || entry.IfIndex != bypassTarget.InterfaceIndex || entry.Metric != uint32(probeLocalWindowsRouteMetric) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(entry.NextHop), strings.TrimSpace(bypassTarget.NextHop)) {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
+		if ip == nil || !probeLocalIPInAnyNetwork(ip, tunnelNetworks) {
+			continue
+		}
+		routeDef := probeLocalWindowsRouteDef{
+			Prefix:  ip.String(),
+			Mask:    "255.255.255.255",
+			Gateway: bypassTarget.NextHop,
+			IfIndex: bypassTarget.InterfaceIndex,
+		}
+		if delErr := deleteProbeLocalWindowsRoute(routeDef); delErr != nil {
+			allErr = errors.Join(allErr, delErr)
+			continue
+		}
+		removed++
+	}
+	return removed, allErr
+}
+
+func parseProbeLocalTunnelIPv4Networks(cidrs []string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	seen := map[string]struct{}{}
+	for _, cidr := range cidrs {
+		ip, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err != nil || ip == nil || ip.To4() == nil || network == nil || network.IP.To4() == nil {
+			continue
+		}
+		key := network.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, network)
+	}
+	return out
+}
+
+func probeLocalIPInAnyNetwork(ip net.IP, networks []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	for _, network := range networks {
+		if network != nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func probeLocalWindowsLocalBypassRouteDefs(routeTarget probeLocalWindowsDirectBypassRouteTarget) []probeLocalWindowsRouteDef {

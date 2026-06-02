@@ -77,6 +77,7 @@ func TestDeleteProbeLocalWindowsSplitRouteIgnoresMissing(t *testing.T) {
 func resetProbeLocalWindowsNativeRouteHooksForTest() {
 	probeLocalCreateWindowsRouteEntry = ensureProbeLocalWindowsRouteNative
 	probeLocalDeleteWindowsRouteEntry = deleteProbeLocalWindowsRouteNative
+	probeLocalListWindowsRouteEntries = listProbeLocalWindowsIPv4RouteEntries
 	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
 	probeLocalSnapshotWindowsIPv4Routes = snapshotProbeLocalWindowsIPv4Routes
 	probeLocalSetWindowsInterfaceDNS = setProbeLocalWindowsInterfaceDNS
@@ -308,6 +309,60 @@ func TestApplyProbeLocalProxyTakeoverSuccessWithFakeIPRouteOnly(t *testing.T) {
 	probeLocalWindowsTakeoverState.mu.Unlock()
 	if !enabled || gateway != "198.18.0.1" || ifIndex != 9 || len(routeDefs) != 3 {
 		t.Fatalf("unexpected takeover state: enabled=%v gateway=%q ifIndex=%d routeDefs=%+v", enabled, gateway, ifIndex, routeDefs)
+	}
+}
+
+func TestCleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalWindowsTakeoverStateForTest()
+	t.Cleanup(func() {
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"cidr:149.154.160.0/20"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "telegram", Action: "tunnel", SelectedChainID: "5_pub", TunnelNodeID: "chain:5_pub"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+		if excludedIfIndex != 22 {
+			t.Fatalf("excluded ifIndex=%d", excludedIfIndex)
+		}
+		return probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}, nil
+	}
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "149.154.175.54", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 13, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "149.154.167.222", PrefixLength: 32, NextHop: "192.168.51.254", IfIndex: 13, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "8.8.8.8", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 13, Metric: uint32(probeLocalWindowsRouteMetric)},
+		}, nil
+	}
+	deleted := make([]probeLocalWindowsRouteDef, 0, 1)
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	removed, err := cleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(probeLocalWindowsRouteTarget{InterfaceIndex: 22})
+	if err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if removed != 1 || len(deleted) != 1 {
+		t.Fatalf("removed=%d deleted=%+v", removed, deleted)
+	}
+	if deleted[0].Prefix != "149.154.175.54" || deleted[0].Mask != "255.255.255.255" || deleted[0].Gateway != "192.168.51.1" || deleted[0].IfIndex != 13 {
+		t.Fatalf("unexpected deleted route=%+v", deleted[0])
 	}
 }
 

@@ -43,9 +43,6 @@ func resolveProbeLocalProxyRouteDecisionByIP(ipText string) probeLocalDNSRouteDe
 	if ip == nil {
 		return decision
 	}
-	if hintedDecision, ok := lookupProbeLocalDNSRouteHintByIP(ip.String()); ok {
-		return hintedDecision
-	}
 	groupFile, err := loadProbeLocalProxyGroupFile()
 	if err != nil {
 		return decision
@@ -69,7 +66,28 @@ func resolveProbeLocalProxyRouteDecisionByIP(ipText string) probeLocalDNSRouteDe
 	decision.Group = matchGroup
 
 	applyProbeLocalProxyStateDecision(&decision, stateFile.Groups, matchGroup)
+	if hintedDecision, ok := lookupProbeLocalDNSRouteHintByIP(ip.String()); ok {
+		if !shouldProbeLocalIPCIDRDecisionOverrideDNSHint(decision, hintedDecision) {
+			return hintedDecision
+		}
+	}
 	return decision
+}
+
+func shouldProbeLocalIPCIDRDecisionOverrideDNSHint(cidrDecision probeLocalDNSRouteDecision, hintedDecision probeLocalDNSRouteDecision) bool {
+	if strings.EqualFold(strings.TrimSpace(cidrDecision.Group), "fallback") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(hintedDecision.Group), "fallback") {
+		return false
+	}
+	if hintedDecision.Reject {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(hintedDecision.Action), "direct") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(cidrDecision.Action), "tunnel") || cidrDecision.Reject
 }
 
 func probeLocalTunnelCIDRRules() []string {

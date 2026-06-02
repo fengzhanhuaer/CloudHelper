@@ -50,6 +50,7 @@ var (
 
 	probeLocalCreateWindowsRouteEntry          = ensureProbeLocalWindowsRouteNative
 	probeLocalDeleteWindowsRouteEntry          = deleteProbeLocalWindowsRouteNative
+	probeLocalListWindowsRouteEntries          = listProbeLocalWindowsIPv4RouteEntries
 	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
 	probeLocalSnapshotWindowsIPv4Routes        = snapshotProbeLocalWindowsIPv4Routes
 	probeLocalSetWindowsInterfaceDNS           = setProbeLocalWindowsInterfaceDNS
@@ -123,6 +124,14 @@ type probeLocalMIBIPForwardRow2 struct {
 type probeLocalMIBIPForwardTable2Header struct {
 	NumEntries uint32
 	Pad        uint32
+}
+
+type probeLocalWindowsRouteEntry struct {
+	Prefix       string
+	PrefixLength int
+	NextHop      string
+	IfIndex      int
+	Metric       uint32
 }
 
 type probeLocalDNSInterfaceSettings struct {
@@ -628,6 +637,38 @@ func deleteProbeLocalWindowsRouteNative(routeDef probeLocalWindowsRouteDef) erro
 		return nil
 	}
 	return probeLocalWindowsNetapiCallErr("DeleteIpForwardEntry2", ret, callErr)
+}
+
+func listProbeLocalWindowsIPv4RouteEntries() ([]probeLocalWindowsRouteEntry, error) {
+	var tablePtr uintptr
+	ret, _, callErr := probeLocalProcGetIpForwardTable2Net.Call(uintptr(windows.AF_INET), uintptr(unsafe.Pointer(&tablePtr)))
+	if ret != 0 {
+		return nil, probeLocalWindowsNetapiCallErr("GetIpForwardTable2", ret, callErr)
+	}
+	if tablePtr == 0 {
+		return nil, errors.New("GetIpForwardTable2 returned empty table")
+	}
+	defer probeLocalProcFreeMibTableNet.Call(tablePtr)
+
+	header := (*probeLocalMIBIPForwardTable2Header)(unsafe.Pointer(tablePtr))
+	rowsBase := tablePtr + unsafe.Sizeof(probeLocalMIBIPForwardTable2Header{})
+	rows := unsafe.Slice((*probeLocalMIBIPForwardRow2)(unsafe.Pointer(rowsBase)), int(header.NumEntries))
+	entries := make([]probeLocalWindowsRouteEntry, 0, len(rows))
+	for _, row := range rows {
+		prefix := decodeProbeLocalSockaddrInetIPv4(row.DestinationPrefix.Prefix)
+		if prefix == "" {
+			continue
+		}
+		nextHop := decodeProbeLocalSockaddrInetIPv4(row.NextHop)
+		entries = append(entries, probeLocalWindowsRouteEntry{
+			Prefix:       prefix,
+			PrefixLength: int(row.DestinationPrefix.PrefixLength),
+			NextHop:      nextHop,
+			IfIndex:      int(row.InterfaceIndex),
+			Metric:       row.Metric,
+		})
+	}
+	return entries, nil
 }
 
 func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {

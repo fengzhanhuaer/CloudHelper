@@ -204,6 +204,43 @@ func TestResolveProbeLocalProxyRouteDecisionByIPPrefersDNSDirectHint(t *testing.
 	}
 }
 
+func TestResolveProbeLocalProxyRouteDecisionByIPCIDROverridesFallbackDNSHint(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"cidr:149.154.160.0/20"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "fallback", Action: "direct"},
+		{Group: "telegram", Action: "tunnel", SelectedChainID: "5_pub", TunnelNodeID: "chain:5_pub"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	fallbackDecision := resolveProbeLocalProxyRouteDecisionByDomain("unmatched.example")
+	if fallbackDecision.Group != "fallback" || fallbackDecision.Action != "direct" {
+		t.Fatalf("fallback decision=%+v", fallbackDecision)
+	}
+	storeProbeLocalDNSRouteHints("unmatched.example", []string{"149.154.175.54"}, fallbackDecision)
+
+	decision := resolveProbeLocalProxyRouteDecisionByIP("149.154.175.54")
+	if decision.Group != "telegram" || decision.Action != "tunnel" {
+		t.Fatalf("decision should prefer tunnel cidr over fallback hint, got %+v", decision)
+	}
+	if decision.SelectedChainID != "5_pub" {
+		t.Fatalf("selected_chain_id=%q", decision.SelectedChainID)
+	}
+}
+
 func TestResolveProbeLocalProxyRouteDecisionByIPLoadsPersistedDNSRouteHint(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()
