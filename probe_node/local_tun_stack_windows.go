@@ -524,6 +524,22 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 	if err != nil {
 		return nil, probeLocalTunnelRouteDecision{}, err
 	}
+	conn, openedRoute, openErr := openProbeLocalTUNOutboundTCPWithRoute(targetAddr, route)
+	if openErr == nil {
+		return conn, openedRoute, nil
+	}
+	if fallbackRoute, ok := buildProbeLocalTUNIPv4FallbackRoute(route, openErr); ok {
+		logProbeWarnf("probe local tun tcp ipv6 fallback: target=%s fallback=%s group=%s node=%s err=%v", route.TargetAddr, fallbackRoute.TargetAddr, fallbackRoute.Group, fallbackRoute.TunnelNodeID, openErr)
+		fallbackConn, fallbackOpenedRoute, fallbackErr := openProbeLocalTUNOutboundTCPWithRoute(targetAddr, fallbackRoute)
+		if fallbackErr == nil {
+			return fallbackConn, fallbackOpenedRoute, nil
+		}
+		return nil, fallbackOpenedRoute, fmt.Errorf("%w; ipv4 fallback %s failed: %v", openErr, fallbackRoute.TargetAddr, fallbackErr)
+	}
+	return nil, openedRoute, openErr
+}
+
+func openProbeLocalTUNOutboundTCPWithRoute(flowTargetAddr string, route probeLocalTunnelRouteDecision) (net.Conn, probeLocalTunnelRouteDecision, error) {
 	if route.Reject {
 		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
@@ -550,7 +566,7 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 		return conn, route, nil
 	}
 	var lastErr error
-	flowID := newProbeTCPDebugFlowID("tun", targetAddr)
+	flowID := newProbeTCPDebugFlowID("tun", flowTargetAddr)
 	for _, target := range probeLocalTunnelRouteTargetCandidates(route) {
 		conn, openedFlowID, openErr := openProbeLocalTunnelConnWithGroupRuntimeAndFlow("tcp", target, route.GroupRuntime, nil, flowID)
 		if openErr == nil {
@@ -564,6 +580,83 @@ func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnel
 		return nil, route, lastErr
 	}
 	return nil, route, errors.New("tunnel route has no target candidates")
+}
+
+func buildProbeLocalTUNIPv4FallbackRoute(route probeLocalTunnelRouteDecision, err error) (probeLocalTunnelRouteDecision, bool) {
+	if err == nil || !isProbeLocalTUNTimeoutError(err) || route.Reject {
+		return probeLocalTunnelRouteDecision{}, false
+	}
+	host, port, splitErr := net.SplitHostPort(strings.TrimSpace(route.TargetAddr))
+	if splitErr != nil {
+		return probeLocalTunnelRouteDecision{}, false
+	}
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
+	if ip == nil || ip.To4() != nil {
+		return probeLocalTunnelRouteDecision{}, false
+	}
+	hint, ok := lookupProbeLocalDNSRouteHintEntryByIP(ip.String())
+	if !ok || strings.TrimSpace(hint.Domain) == "" {
+		return probeLocalTunnelRouteDecision{}, false
+	}
+	decision := resolveProbeLocalProxyRouteDecisionByDomain(hint.Domain)
+	if strings.TrimSpace(hint.Group) != "" && !strings.EqualFold(strings.TrimSpace(hint.Group), strings.TrimSpace(decision.Group)) {
+		decision.Group = strings.TrimSpace(hint.Group)
+		decision.Action = "direct"
+		decision.SelectedChainID = ""
+		decision.TunnelNodeID = ""
+	}
+	ipv4s := resolveProbeLocalDNSRealIPsForRouteDomain(hint.Domain, decision)
+	if len(ipv4s) == 0 {
+		return probeLocalTunnelRouteDecision{}, false
+	}
+	for _, rawIP := range ipv4s {
+		ip4 := net.ParseIP(strings.TrimSpace(rawIP)).To4()
+		if ip4 == nil {
+			continue
+		}
+		fallback := probeLocalTunnelRouteDecision{
+			Direct:     true,
+			Reject:     false,
+			TargetAddr: net.JoinHostPort(ip4.String(), firstNonEmpty(strings.TrimSpace(port), "443")),
+			Group:      firstNonEmpty(strings.TrimSpace(decision.Group), strings.TrimSpace(hint.Group), "fallback"),
+		}
+		switch strings.ToLower(strings.TrimSpace(decision.Action)) {
+		case "reject":
+			fallback.Direct = false
+			fallback.Reject = true
+		case "tunnel":
+			fallback.Direct = false
+			fallback.SelectedChainID = firstNonEmpty(strings.TrimSpace(decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(decision.TunnelNodeID))
+			if fallback.SelectedChainID == "" {
+				continue
+			}
+			fallback.TunnelNodeID = formatProbeLocalLegacyTunnelNodeID(fallback.SelectedChainID)
+			groupRuntime, runtimeErr := ensureProbeLocalTUNGroupRuntime(fallback.Group, fallback.SelectedChainID)
+			if runtimeErr != nil {
+				continue
+			}
+			fallback.GroupRuntime = groupRuntime
+		default:
+			fallback.Direct = true
+		}
+		return fallback, true
+	}
+	return probeLocalTunnelRouteDecision{}, false
+}
+
+func isProbeLocalTUNTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "i/o timeout") ||
+		strings.Contains(text, "timeout") ||
+		strings.Contains(text, "deadline exceeded") ||
+		strings.Contains(text, "deadline reached")
 }
 
 func probeLocalTUNRouteOutboundPath(route probeLocalTunnelRouteDecision) string {

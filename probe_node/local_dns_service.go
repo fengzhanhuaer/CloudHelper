@@ -2017,16 +2017,7 @@ func storeProbeLocalDNSRouteHints(domain string, ips []string, decision probeLoc
 }
 
 func lookupProbeLocalDNSRouteHintByIP(ipText string) (probeLocalDNSRouteDecision, bool) {
-	ip := net.ParseIP(strings.TrimSpace(strings.Trim(ipText, "[]")))
-	if ip == nil {
-		return probeLocalDNSRouteDecision{}, false
-	}
-	ensureProbeLocalDNSCacheLoaded()
-	now := probeLocalDNSNow().UTC()
-	probeLocalDNSState.mu.Lock()
-	defer probeLocalDNSState.mu.Unlock()
-	pruneProbeLocalDNSFakeEntriesLocked(now)
-	entry, ok := probeLocalDNSState.routeIPHints[ip.String()]
+	entry, ok := lookupProbeLocalDNSRouteHintEntryByIP(ipText)
 	if !ok {
 		return probeLocalDNSRouteDecision{}, false
 	}
@@ -2036,6 +2027,23 @@ func lookupProbeLocalDNSRouteHintByIP(ipText string) (probeLocalDNSRouteDecision
 		decision.Action = "direct"
 	}
 	return decision, true
+}
+
+func lookupProbeLocalDNSRouteHintEntryByIP(ipText string) (probeLocalDNSRouteHintEntry, bool) {
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(ipText, "[]")))
+	if ip == nil {
+		return probeLocalDNSRouteHintEntry{}, false
+	}
+	ensureProbeLocalDNSCacheLoaded()
+	now := probeLocalDNSNow().UTC()
+	probeLocalDNSState.mu.Lock()
+	defer probeLocalDNSState.mu.Unlock()
+	pruneProbeLocalDNSFakeEntriesLocked(now)
+	entry, ok := probeLocalDNSState.routeIPHints[ip.String()]
+	if !ok {
+		return probeLocalDNSRouteHintEntry{}, false
+	}
+	return entry, true
 }
 
 func queryProbeLocalDNSFakeIPEntries() []probeLocalDNSFakeIPEntry {

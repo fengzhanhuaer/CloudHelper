@@ -460,6 +460,50 @@ func TestShouldInstallProbeLocalFallbackDirectBypassAndFail(t *testing.T) {
 	}
 }
 
+func TestBuildProbeLocalTUNIPv4FallbackRouteFromDNSHint(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"domain_suffix:telegram.org"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "telegram", Action: "direct"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	decision := resolveProbeLocalProxyRouteDecisionByDomain("api.telegram.org")
+	storeProbeLocalDNSRouteHints("api.telegram.org", []string{"2001:67c:4e8:f004::9", "149.154.167.220"}, decision)
+	storeProbeLocalDNSCacheRecords("api.telegram.org", []string{"149.154.167.220"})
+
+	route := probeLocalTunnelRouteDecision{
+		Direct:     true,
+		TargetAddr: "[2001:67c:4e8:f004::9]:443",
+		Group:      "telegram",
+	}
+	fallback, ok := buildProbeLocalTUNIPv4FallbackRoute(route, errors.New("dial tcp [2001:67c:4e8:f004::9]:443: i/o timeout"))
+	if !ok {
+		t.Fatal("expected ipv4 fallback route")
+	}
+	if !fallback.Direct || fallback.Reject {
+		t.Fatalf("fallback flags=%+v", fallback)
+	}
+	if fallback.TargetAddr != "149.154.167.220:443" {
+		t.Fatalf("fallback target=%q", fallback.TargetAddr)
+	}
+	if fallback.Group != "telegram" {
+		t.Fatalf("fallback group=%q", fallback.Group)
+	}
+}
+
 func TestOpenProbeLocalTUNOutboundUDPDirectEnsuresBypass(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDirectBypassStateForTest()
