@@ -24,6 +24,38 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
+// dialProbeChainBoundQUIC 用绑定到物理出口接口的 UDP socket 建立 QUIC 连接，
+// 替代 quic.DialAddr（后者自建 socket、无法注入 IP_UNICAST_IF 接口绑定）。
+// QUIC 连接结束后异步关闭底层 UDP socket，避免 fd 泄漏。
+func dialProbeChainBoundQUIC(ctx context.Context, dialHostPort string, tlsConf *tls.Config, quicConf *quic.Config) (*quic.Conn, error) {
+	remoteAddr, err := net.ResolveUDPAddr(probeLocalEgressDialNetwork("udp", dialHostPort), dialHostPort)
+	if err != nil {
+		return nil, err
+	}
+	listenNetwork := "udp"
+	if remoteAddr.IP != nil {
+		if remoteAddr.IP.To4() != nil {
+			listenNetwork = "udp4"
+		} else {
+			listenNetwork = "udp6"
+		}
+	}
+	packetConn, err := probeLocalEgressListenConfig().ListenPacket(ctx, listenNetwork, ":0")
+	if err != nil {
+		return nil, err
+	}
+	quicConn, err := quic.Dial(ctx, packetConn, remoteAddr, tlsConf, quicConf)
+	if err != nil {
+		_ = packetConn.Close()
+		return nil, err
+	}
+	go func() {
+		<-quicConn.Context().Done()
+		_ = packetConn.Close()
+	}()
+	return quicConn, nil
+}
+
 type probeChainRelayResolveCacheEntry struct {
 	DialHost   string
 	HostHeader string
@@ -1110,8 +1142,8 @@ func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHos
 		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
 		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			netDialer := net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-			conn, err := netDialer.DialContext(ctx, network, dialHostPort)
+			netDialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeChainPortForwardDialTimeout})
+			conn, err := netDialer.DialContext(ctx, probeLocalEgressDialNetwork(network, dialHostPort), dialHostPort)
 			if err == nil {
 				tuneProbeChainNetConn(conn)
 			}
@@ -1162,7 +1194,7 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 		InsecureSkipVerify: true,
 	}
 	logProbeChainRelayDialAttempt("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
-	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, newProbeChainQUICConfig(0))
+	quicConn, err := dialProbeChainBoundQUIC(ctx, dialHostPort, tlsConf, newProbeChainQUICConfig(0))
 	if err != nil {
 		cancel()
 		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
@@ -1622,8 +1654,8 @@ func openProbeChainRelayWebSocketSpeedTestNetConn(chainID string, secret string,
 		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
 		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			netDialer := net.Dialer{Timeout: probeChainPortForwardDialTimeout}
-			conn, err := netDialer.DialContext(ctx, network, dialHostPort)
+			netDialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeChainPortForwardDialTimeout})
+			conn, err := netDialer.DialContext(ctx, probeLocalEgressDialNetwork(network, dialHostPort), dialHostPort)
 			if err == nil {
 				tuneProbeChainNetConn(conn)
 			}
@@ -1675,7 +1707,7 @@ func openProbeChainRelayHTTP3WebSocketSpeedTestNetConn(chainID string, secret st
 		InsecureSkipVerify: true,
 	}
 	logProbeChainRelayDialAttempt("speed-websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", openTimeout)
-	quicConn, err := quic.DialAddr(ctx, dialHostPort, tlsConf, newProbeChainQUICConfig(0))
+	quicConn, err := dialProbeChainBoundQUIC(ctx, dialHostPort, tlsConf, newProbeChainQUICConfig(0))
 	if err != nil {
 		cancel()
 		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)

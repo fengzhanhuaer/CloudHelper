@@ -232,111 +232,7 @@ func TestParseProbeLocalTUNPacketTargetRejectUnsupportedVersion(t *testing.T) {
 	}
 }
 
-func TestEnsureProbeLocalDirectBypassForTargetRefCountAndRelease(t *testing.T) {
-	resetProbeLocalDirectBypassStateForTest()
-	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
-
-	acquireCalls := 0
-	releaseCalls := 0
-	probeLocalAcquireDirectBypassRoute = func(host string) (func(), error) {
-		acquireCalls++
-		if host != "1.2.3.4" {
-			t.Fatalf("host=%q", host)
-		}
-		return func() {}, nil
-	}
-	probeLocalReleaseDirectBypassRoute = func(host string) {
-		releaseCalls++
-		if host != "1.2.3.4" {
-			t.Fatalf("host=%q", host)
-		}
-	}
-
-	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
-		t.Fatalf("ensure bypass #1 failed: %v", err)
-	}
-	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:8443"); err != nil {
-		t.Fatalf("ensure bypass #2 failed: %v", err)
-	}
-	if acquireCalls != 1 {
-		t.Fatalf("acquireCalls=%d", acquireCalls)
-	}
-
-	releaseProbeLocalDirectBypassForHost("1.2.3.4")
-	if releaseCalls != 0 {
-		t.Fatalf("releaseCalls=%d", releaseCalls)
-	}
-	releaseProbeLocalDirectBypassForHost("1.2.3.4")
-	if releaseCalls != 1 {
-		t.Fatalf("releaseCalls=%d", releaseCalls)
-	}
-}
-
-func TestProbeLocalTUNSimplePacketStackCloseReleasesBypass(t *testing.T) {
-	resetProbeLocalDirectBypassStateForTest()
-	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
-
-	releaseCalls := 0
-	probeLocalAcquireDirectBypassRoute = func(host string) (func(), error) { return func() {}, nil }
-	probeLocalReleaseDirectBypassRoute = func(host string) {
-		releaseCalls++
-		if host != "1.2.3.4" {
-			t.Fatalf("host=%q", host)
-		}
-	}
-
-	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
-		t.Fatalf("ensure bypass failed: %v", err)
-	}
-	stack := &probeLocalTUNSimplePacketStack{}
-	if err := stack.Close(); err != nil {
-		t.Fatalf("close failed: %v", err)
-	}
-	if releaseCalls != 1 {
-		t.Fatalf("releaseCalls=%d", releaseCalls)
-	}
-}
-
-func TestReleaseProbeLocalManagedDirectBypassRoutesPreservesBootstrapBypass(t *testing.T) {
-	resetProbeLocalDirectBypassStateForTest()
-	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
-
-	acquireCalls := 0
-	releaseCalls := 0
-	probeLocalAcquireDirectBypassRoute = func(host string) (func(), error) {
-		acquireCalls++
-		if host != "1.2.3.4" {
-			t.Fatalf("host=%q", host)
-		}
-		return func() {}, nil
-	}
-	probeLocalReleaseDirectBypassRoute = func(host string) {
-		releaseCalls++
-		if host != "1.2.3.4" {
-			t.Fatalf("host=%q", host)
-		}
-	}
-
-	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
-		t.Fatalf("ensure bootstrap bypass failed: %v", err)
-	}
-	if err := ensureProbeLocalDirectBypassForRoutedTarget("1.2.3.4:8443"); err != nil {
-		t.Fatalf("ensure managed bypass failed: %v", err)
-	}
-	if acquireCalls != 1 {
-		t.Fatalf("acquireCalls=%d", acquireCalls)
-	}
-	releaseProbeLocalManagedDirectBypassRoutes()
-	if releaseCalls != 0 {
-		t.Fatalf("managed release should preserve bootstrap bypass, releaseCalls=%d", releaseCalls)
-	}
-	releaseProbeLocalDirectBypassForHost("1.2.3.4")
-	if releaseCalls != 1 {
-		t.Fatalf("releaseCalls=%d", releaseCalls)
-	}
-}
-
-func TestOpenProbeLocalTUNOutboundTCPDirectEnsuresBypass(t *testing.T) {
+func TestOpenProbeLocalTUNOutboundTCPDirectConnects(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDirectBypassStateForTest()
 	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
@@ -354,16 +250,6 @@ func TestOpenProbeLocalTUNOutboundTCPDirectEnsuresBypass(t *testing.T) {
 		probeLocalControl.mu.Unlock()
 	})
 
-	acquired := make([]string, 0, 1)
-	released := make([]string, 0, 1)
-	probeLocalAcquireDirectBypassRoute = func(host string) (func(), error) {
-		acquired = append(acquired, host)
-		return func() {}, nil
-	}
-	probeLocalReleaseDirectBypassRoute = func(host string) {
-		released = append(released, host)
-	}
-
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen failed: %v", err)
@@ -378,6 +264,7 @@ func TestOpenProbeLocalTUNOutboundTCPDirectEnsuresBypass(t *testing.T) {
 		close(accepted)
 	}()
 
+	// 出口接口未准备（测试环境无 TUN），绑定 Control 退化为 no-op，direct 拨号应仍能直连成功。
 	conn, route, err := openProbeLocalTUNOutboundTCP(ln.Addr().String())
 	if err != nil {
 		t.Fatalf("open direct tcp failed: %v", err)
@@ -385,27 +272,11 @@ func TestOpenProbeLocalTUNOutboundTCPDirectEnsuresBypass(t *testing.T) {
 	if !route.Direct {
 		t.Fatalf("route=%+v", route)
 	}
-	if len(acquired) != 1 || acquired[0] != "127.0.0.1" {
-		t.Fatalf("acquired=%v", acquired)
-	}
 	if acceptedConn := <-accepted; acceptedConn != nil {
 		_ = acceptedConn.Close()
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatalf("close direct tcp failed: %v", err)
-	}
-	if len(released) != 0 {
-		t.Fatalf("released after tcp close=%v, want none", released)
-	}
-	if err := ensureProbeLocalDirectBypassForRoutedTarget(ln.Addr().String()); err != nil {
-		t.Fatalf("ensure repeated direct tcp bypass failed: %v", err)
-	}
-	if len(acquired) != 1 {
-		t.Fatalf("repeated direct tcp acquired=%v", acquired)
-	}
-	releaseProbeLocalManagedDirectBypassRoutes()
-	if len(released) != 1 || released[0] != "127.0.0.1" {
-		t.Fatalf("released=%v", released)
 	}
 }
 
@@ -433,30 +304,6 @@ func TestProbeLocalTUNTCPDirectFailureCache(t *testing.T) {
 	clearProbeLocalTUNTCPDirectFailure(target)
 	if got := lookupProbeLocalTUNTCPDirectFailure(target); got != nil {
 		t.Fatalf("lookup after clear=%v", got)
-	}
-}
-
-func TestShouldInstallProbeLocalFallbackDirectBypassAndFail(t *testing.T) {
-	if !shouldInstallProbeLocalFallbackDirectBypassAndFail(probeLocalTunnelRouteDecision{
-		Direct:     true,
-		Group:      "fallback",
-		TargetAddr: "162.159.61.4:443",
-	}) {
-		t.Fatal("public fallback direct route should install bypass and fail current flow")
-	}
-	if shouldInstallProbeLocalFallbackDirectBypassAndFail(probeLocalTunnelRouteDecision{
-		Direct:     true,
-		Group:      "fallback",
-		TargetAddr: "10.0.0.8:443",
-	}) {
-		t.Fatal("private fallback direct route should not install public bypass")
-	}
-	if shouldInstallProbeLocalFallbackDirectBypassAndFail(probeLocalTunnelRouteDecision{
-		Direct:     false,
-		Group:      "media",
-		TargetAddr: "203.0.113.10:443",
-	}) {
-		t.Fatal("tunnel route should not install fallback bypass")
 	}
 }
 
@@ -504,7 +351,7 @@ func TestBuildProbeLocalTUNIPv4FallbackRouteFromDNSHint(t *testing.T) {
 	}
 }
 
-func TestOpenProbeLocalTUNOutboundUDPDirectEnsuresBypass(t *testing.T) {
+func TestOpenProbeLocalTUNOutboundUDPDirectConnects(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDirectBypassStateForTest()
 	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
@@ -522,16 +369,6 @@ func TestOpenProbeLocalTUNOutboundUDPDirectEnsuresBypass(t *testing.T) {
 		probeLocalControl.mu.Unlock()
 	})
 
-	acquired := make([]string, 0, 1)
-	released := make([]string, 0, 1)
-	probeLocalAcquireDirectBypassRoute = func(host string) (func(), error) {
-		acquired = append(acquired, host)
-		return func() {}, nil
-	}
-	probeLocalReleaseDirectBypassRoute = func(host string) {
-		released = append(released, host)
-	}
-
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("listen udp failed: %v", err)
@@ -544,6 +381,7 @@ func TestOpenProbeLocalTUNOutboundUDPDirectEnsuresBypass(t *testing.T) {
 		RemotePort:    53000,
 	}
 
+	// 出口接口未准备（测试环境无 TUN），绑定 Control 退化为 no-op，direct UDP 拨号应仍能成功。
 	outbound, route, err := openProbeLocalTUNOutboundUDP(id, udpConn.LocalAddr().String())
 	if err != nil {
 		t.Fatalf("open direct udp failed: %v", err)
@@ -551,18 +389,8 @@ func TestOpenProbeLocalTUNOutboundUDPDirectEnsuresBypass(t *testing.T) {
 	if !route.Direct {
 		t.Fatalf("route=%+v", route)
 	}
-	if len(acquired) != 1 || acquired[0] != "127.0.0.1" {
-		t.Fatalf("acquired=%v", acquired)
-	}
 	if err := outbound.Close(); err != nil {
 		t.Fatalf("close direct udp failed: %v", err)
-	}
-	if len(released) != 0 {
-		t.Fatalf("released after udp close=%v, want none", released)
-	}
-	releaseProbeLocalManagedDirectBypassRoutes()
-	if len(released) != 1 || released[0] != "127.0.0.1" {
-		t.Fatalf("released=%v", released)
 	}
 }
 
@@ -747,171 +575,6 @@ func TestShouldFallbackProbeLocalUDPBind(t *testing.T) {
 		if got := shouldFallbackProbeLocalUDPBind(tc.err); got != tc.want {
 			t.Fatalf("case=%d got=%v want=%v err=%v", i, got, tc.want, tc.err)
 		}
-	}
-}
-
-func TestEnsureProbeLocalDirectBypassForTargetUsesPrimaryEgressRoute(t *testing.T) {
-	resetProbeLocalDirectBypassStateForTest()
-	useProbeLocalWindowsCommandBackedRouteHooksForTest()
-	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
-	oldRun := probeLocalWindowsRunCommand
-	t.Cleanup(func() {
-		probeLocalWindowsRunCommand = oldRun
-		resetProbeLocalWindowsNativeRouteHooksForTest()
-	})
-	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
-	t.Setenv("PROBE_LOCAL_TUN_IF_LUID", "")
-	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
-
-	detected := false
-	added := false
-	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
-		joined := name + " " + strings.Join(args, " ")
-		switch name {
-		case "powershell":
-			detected = true
-			if !strings.Contains(joined, "$exclude=9") {
-				t.Fatalf("powershell command did not exclude tun ifindex: %s", joined)
-			}
-			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
-		case "route":
-			added = true
-			if strings.Contains(joined, "198.18.0.1") || strings.Contains(joined, " IF 9") {
-				t.Fatalf("route add unexpectedly used tun route target: %s", joined)
-			}
-			if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
-				t.Fatalf("route add used unexpected egress target: %s", joined)
-			}
-			return "", nil
-		default:
-			return "", nil
-		}
-	}
-
-	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
-		t.Fatalf("ensure bypass failed: %v", err)
-	}
-	if !detected {
-		t.Fatal("expected primary egress route detection")
-	}
-	if !added {
-		t.Fatal("expected route add command")
-	}
-}
-
-func TestReleaseProbeLocalTUNDirectBypassRouteUsesStoredPrimaryEgressRoute(t *testing.T) {
-	resetProbeLocalDirectBypassStateForTest()
-	useProbeLocalWindowsCommandBackedRouteHooksForTest()
-	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
-	oldRun := probeLocalWindowsRunCommand
-	t.Cleanup(func() {
-		probeLocalWindowsRunCommand = oldRun
-		resetProbeLocalWindowsNativeRouteHooksForTest()
-	})
-	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
-	t.Setenv("PROBE_LOCAL_TUN_IF_LUID", "")
-	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
-
-	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
-		joined := name + " " + strings.Join(args, " ")
-		switch name {
-		case "powershell":
-			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
-		case "route":
-			if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
-				t.Fatalf("unexpected route create target: %s", joined)
-			}
-			return "", nil
-		default:
-			return "", nil
-		}
-	}
-	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
-		t.Fatalf("ensure bypass failed: %v", err)
-	}
-
-	detectedOnRelease := false
-	deleted := false
-	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
-		joined := name + " " + strings.Join(args, " ")
-		switch name {
-		case "powershell":
-			detectedOnRelease = true
-			return `{"interface_index":13,"next_hop":"192.168.1.254"}`, nil
-		case "route":
-			deleted = true
-			if !strings.Contains(joined, "DELETE 1.2.3.4") {
-				t.Fatalf("unexpected route delete command: %s", joined)
-			}
-			if strings.Contains(joined, "192.168.1.254") || strings.Contains(joined, " IF 13") {
-				t.Fatalf("route delete should use stored egress target: %s", joined)
-			}
-			if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
-				t.Fatalf("route delete used unexpected stored target: %s", joined)
-			}
-			return "", nil
-		default:
-			return "", nil
-		}
-	}
-
-	releaseProbeLocalDirectBypassForHost("1.2.3.4")
-	if detectedOnRelease {
-		t.Fatal("release should not redetect primary egress route")
-	}
-	if !deleted {
-		t.Fatal("expected route delete command")
-	}
-}
-
-func TestReleaseProbeLocalAllDirectBypassRoutesUsesStoredPrimaryEgressRoute(t *testing.T) {
-	resetProbeLocalDirectBypassStateForTest()
-	useProbeLocalWindowsCommandBackedRouteHooksForTest()
-	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
-	oldRun := probeLocalWindowsRunCommand
-	t.Cleanup(func() {
-		probeLocalWindowsRunCommand = oldRun
-		resetProbeLocalWindowsNativeRouteHooksForTest()
-	})
-	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
-	t.Setenv("PROBE_LOCAL_TUN_IF_LUID", "")
-	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
-
-	createCalls := 0
-	deleteCalls := 0
-	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
-		joined := name + " " + strings.Join(args, " ")
-		switch name {
-		case "powershell":
-			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
-		case "route":
-			if strings.Contains(joined, "DELETE") {
-				deleteCalls++
-				if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
-					t.Fatalf("route delete used unexpected stored target: %s", joined)
-				}
-				return "", nil
-			}
-			createCalls++
-			return "", nil
-		default:
-			return "", nil
-		}
-	}
-
-	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
-		t.Fatalf("ensure bypass #1 failed: %v", err)
-	}
-	if err := ensureProbeLocalDirectBypassForTarget("5.6.7.8:443"); err != nil {
-		t.Fatalf("ensure bypass #2 failed: %v", err)
-	}
-	if createCalls != 2 {
-		t.Fatalf("createCalls=%d", createCalls)
-	}
-
-	releaseProbeLocalAllDirectBypassRoutes()
-	if deleteCalls != 2 {
-		t.Fatalf("deleteCalls=%d", deleteCalls)
 	}
 }
 

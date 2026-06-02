@@ -446,52 +446,6 @@ func TestProbeLocalDNSClearAPI(t *testing.T) {
 	}
 }
 
-func TestEnsureProbeLocalDNSFallbackBypassRoutesFromCacheOnlyFallback(t *testing.T) {
-	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	resetProbeLocalDNSServiceForTest()
-	t.Cleanup(resetProbeLocalDNSServiceForTest)
-	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
-		t.Fatalf("ensure defaults failed: %v", err)
-	}
-	groups := defaultProbeLocalProxyGroupFile()
-	groups.Groups = []probeLocalProxyGroupEntry{
-		{Group: "media", Rules: []string{"domain_suffix:proxied.example"}},
-	}
-	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
-		t.Fatalf("persist groups failed: %v", err)
-	}
-	state := defaultProbeLocalProxyStateFile()
-	state.Groups = []probeLocalProxyStateGroupEntry{
-		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
-	}
-	if err := persistProbeLocalProxyStateFile(state); err != nil {
-		t.Fatalf("persist state failed: %v", err)
-	}
-
-	storeProbeLocalDNSCacheRecords("fallback.example", []string{"162.159.61.4", "10.0.0.8"})
-	storeProbeLocalDNSCacheRecords("api.proxied.example", []string{"203.0.113.10"})
-
-	var targets []string
-	probeLocalDNSFallbackDirectBypassForTarget = func(target string) error {
-		targets = append(targets, target)
-		return nil
-	}
-	t.Cleanup(func() {
-		probeLocalDNSFallbackDirectBypassForTarget = ensureProbeLocalFallbackDirectBypassForTarget
-	})
-
-	installed, err := ensureProbeLocalDNSFallbackBypassRoutesFromCache()
-	if err != nil {
-		t.Fatalf("prewarm failed: %v", err)
-	}
-	if installed != 1 {
-		t.Fatalf("installed=%d targets=%v", installed, targets)
-	}
-	if len(targets) != 1 || targets[0] != "162.159.61.4:443" {
-		t.Fatalf("targets=%v", targets)
-	}
-}
-
 func TestEnsureProbeLocalProxyDefaultsInitializedKeepsServiceRunningOnInvalidGroupConfig(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	path, err := resolveProbeLocalProxyGroupPath()
@@ -563,48 +517,6 @@ func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 				t.Fatalf("target=%q want=%q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestEnsureProbeLocalDNSUpstreamDirectBypass(t *testing.T) {
-	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
-		{DNS: "dns.alidns.com", IP: "223.5.5.5"},
-		{DNS: "dns.google", IP: "8.8.4.4"},
-	}); err != nil {
-		t.Fatalf("persist host mappings failed: %v", err)
-	}
-	oldEnsure := probeLocalDNSEnsureDirectBypassForTarget
-	oldBootstrap := probeLocalDNSBootstrapLookupIPv4
-	t.Cleanup(func() {
-		probeLocalDNSEnsureDirectBypassForTarget = oldEnsure
-		probeLocalDNSBootstrapLookupIPv4 = oldBootstrap
-		resetProbeLocalDNSServiceForTest()
-	})
-	probeLocalDNSBootstrapLookupIPv4 = func(string) ([]string, error) {
-		return nil, errors.New("unexpected bootstrap lookup")
-	}
-	calls := make([]string, 0, 4)
-	probeLocalDNSEnsureDirectBypassForTarget = func(target string) error {
-		calls = append(calls, strings.TrimSpace(target))
-		return nil
-	}
-
-	ensureProbeLocalDNSUpstreamDirectBypass("dns", "119.29.29.29")
-	ensureProbeLocalDNSUpstreamDirectBypass("dns", "dns.alidns.com")
-	ensureProbeLocalDNSUpstreamDirectBypass("dot", "1.1.1.1:853")
-	ensureProbeLocalDNSUpstreamDirectBypass("doh", "https://1.1.1.1/dns-query")
-	ensureProbeLocalDNSUpstreamDirectBypass("doh", "https://dns.google/dns-query")
-
-	want := []string{
-		"119.29.29.29:53",
-		"223.5.5.5:53",
-		"1.1.1.1:853",
-		"1.1.1.1:443",
-		"8.8.4.4:443",
-	}
-	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("bypass calls=\n%v\nwant=\n%v", calls, want)
 	}
 }
 
@@ -1083,25 +995,6 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	probeLocalControl.mu.Unlock()
 
 	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-enable-test"}, "https://controller.example.com/base")
-	bypassTargets := make([]string, 0, 8)
-	probeLocalLookupIPv4ForBypass = func(host string) ([]string, error) {
-		switch strings.TrimSpace(host) {
-		case "controller.example.com":
-			return []string{"203.0.113.10"}, nil
-		case "entry.example.com":
-			return []string{"203.0.113.11"}, nil
-		case "relay.example.com":
-			return []string{"203.0.113.12"}, nil
-		case "exit.example.com":
-			return []string{"203.0.113.13"}, nil
-		default:
-			return nil, fmt.Errorf("unexpected host lookup: %s", host)
-		}
-	}
-	probeLocalEnsureExplicitDirectBypass = func(target string) error {
-		bypassTargets = append(bypassTargets, strings.TrimSpace(target))
-		return nil
-	}
 	probeLocalApplyProxyTakeover = func() error { return nil }
 	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
 	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
@@ -1166,135 +1059,6 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("state groups missing media entry: %v", groups)
-	}
-	expectedBypass := map[string]struct{}{
-		"203.0.113.10:443":   {},
-		"203.0.113.11:11110": {},
-		"203.0.113.12:12121": {},
-		"203.0.113.13:13131": {},
-	}
-	if len(bypassTargets) != len(expectedBypass) {
-		t.Fatalf("bootstrap direct bypass targets=%v want=%v", bypassTargets, expectedBypass)
-	}
-	for _, item := range bypassTargets {
-		if _, ok := expectedBypass[item]; !ok {
-			t.Fatalf("unexpected bootstrap bypass target=%s all=%v", item, bypassTargets)
-		}
-	}
-}
-
-func TestProbeLocalProxyExplicitEnableSkipsBootstrapBypassWhenTUNDisabled(t *testing.T) {
-	mux := setupProbeLocalConsoleTest(t)
-	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
-
-	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{
-		{
-			ChainID:     "chain-proxy-1",
-			ChainType:   "proxy_chain",
-			Name:        "Proxy 1",
-			Secret:      "secret",
-			EntryNodeID: "1",
-			ExitNodeID:  "2",
-			LinkLayer:   "http",
-			HopConfigs: []probeLinkChainHopServerItem{
-				{NodeNo: 1, RelayHost: "entry.example.com", ExternalPort: 11110, LinkLayer: "http"},
-				{NodeNo: 2, RelayHost: "exit.example.com", ExternalPort: 13131, LinkLayer: "http"},
-			},
-		},
-	}); err != nil {
-		t.Fatalf("persist proxy chain failed: %v", err)
-	}
-	state := defaultProbeLocalProxyStateFile()
-	state.Groups = []probeLocalProxyStateGroupEntry{
-		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
-	}
-	if err := persistProbeLocalProxyStateFile(state); err != nil {
-		t.Fatalf("persist state failed: %v", err)
-	}
-
-	bypassCalled := false
-	probeLocalEnsureExplicitDirectBypass = func(target string) error {
-		bypassCalled = true
-		return errors.New("direct bypass route target is not prepared")
-	}
-	t.Cleanup(func() { resetProbeLocalProxyHooksForTest() })
-
-	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/explicit/enable", map[string]any{}, sessionCookie)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("explicit enable status=%d body=%s", resp.Code, resp.Body.String())
-	}
-	if bypassCalled {
-		t.Fatal("explicit proxy enable should not prewarm TUN direct bypass when TUN proxy is disabled")
-	}
-}
-
-func TestProbeLocalProxyExplicitEnablePrewarmsBootstrapBypassWhenTUNEnabled(t *testing.T) {
-	mux := setupProbeLocalConsoleTest(t)
-	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
-
-	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{
-		{
-			ChainID:     "chain-proxy-1",
-			ChainType:   "proxy_chain",
-			Name:        "Proxy 1",
-			Secret:      "secret",
-			EntryNodeID: "1",
-			ExitNodeID:  "2",
-			LinkLayer:   "http",
-			HopConfigs: []probeLinkChainHopServerItem{
-				{NodeNo: 1, RelayHost: "entry.example.com", ExternalPort: 11110, LinkLayer: "http"},
-				{NodeNo: 2, RelayHost: "exit.example.com", ExternalPort: 13131, LinkLayer: "http"},
-			},
-		},
-	}); err != nil {
-		t.Fatalf("persist proxy chain failed: %v", err)
-	}
-	state := defaultProbeLocalProxyStateFile()
-	state.Proxy.Enabled = true
-	state.Proxy.Mode = probeLocalProxyModeTUN
-	state.Groups = []probeLocalProxyStateGroupEntry{
-		{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
-	}
-	if err := persistProbeLocalProxyStateFile(state); err != nil {
-		t.Fatalf("persist state failed: %v", err)
-	}
-
-	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-explicit-test"}, "https://controller.example.com/base")
-	bypassTargets := make([]string, 0, 4)
-	probeLocalLookupIPv4ForBypass = func(host string) ([]string, error) {
-		switch strings.TrimSpace(host) {
-		case "controller.example.com":
-			return []string{"203.0.113.10"}, nil
-		case "entry.example.com":
-			return []string{"203.0.113.11"}, nil
-		case "exit.example.com":
-			return []string{"203.0.113.13"}, nil
-		default:
-			return nil, fmt.Errorf("unexpected host lookup: %s", host)
-		}
-	}
-	probeLocalEnsureExplicitDirectBypass = func(target string) error {
-		bypassTargets = append(bypassTargets, strings.TrimSpace(target))
-		return nil
-	}
-	t.Cleanup(func() { resetProbeLocalProxyHooksForTest() })
-
-	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/explicit/enable", map[string]any{}, sessionCookie)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("explicit enable status=%d body=%s", resp.Code, resp.Body.String())
-	}
-	expectedBypass := map[string]struct{}{
-		"203.0.113.10:443":   {},
-		"203.0.113.11:11110": {},
-		"203.0.113.13:13131": {},
-	}
-	if len(bypassTargets) != len(expectedBypass) {
-		t.Fatalf("explicit bootstrap bypass targets=%v want=%v", bypassTargets, expectedBypass)
-	}
-	for _, item := range bypassTargets {
-		if _, ok := expectedBypass[item]; !ok {
-			t.Fatalf("unexpected explicit bootstrap bypass target=%s all=%v", item, bypassTargets)
-		}
 	}
 }
 
@@ -1508,70 +1272,6 @@ func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t 
 	}
 	if !found {
 		t.Fatalf("state groups missing media entry: %v", groups)
-	}
-}
-
-func TestProbeLocalProxySelectedChainDirectBypassPrewarmIsScoped(t *testing.T) {
-	setupProbeLocalConsoleTest(t)
-
-	if err := persistProbeLocalProxyStateFile(probeLocalProxyStateFile{
-		Version:   1,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Groups: []probeLocalProxyStateGroupEntry{
-			{Group: "default", Action: "tunnel", SelectedChainID: "chain-old", TunnelNodeID: "chain:chain-old", RuntimeStatus: "online"},
-		},
-	}); err != nil {
-		t.Fatalf("persist state failed: %v", err)
-	}
-	if shouldEnsure, err := shouldEnsureProbeLocalProxySelectedChainDirectBypass("chain-old"); err != nil || shouldEnsure {
-		t.Fatalf("existing chain should not need bypass: should=%v err=%v", shouldEnsure, err)
-	}
-	if shouldEnsure, err := shouldEnsureProbeLocalProxySelectedChainDirectBypass("chain-new"); err != nil || !shouldEnsure {
-		t.Fatalf("new chain should need bypass: should=%v err=%v", shouldEnsure, err)
-	}
-
-	proxyChainPath, err := resolveProbeLocalProxyChainPath()
-	if err != nil {
-		t.Fatalf("resolve proxy_chain path failed: %v", err)
-	}
-	proxyChainPayload := `{
-	  "updated_at": "2026-05-15T00:00:00Z",
-	  "items": [
-	    {
-	      "chain_id": "chain-new",
-	      "chain_type": "proxy_chain",
-	      "name": "New Chain",
-	      "secret": "secret-new",
-	      "entry_node_id": "10",
-	      "exit_node_id": "10",
-	      "link_layer": "",
-	      "hop_configs": [
-	        {"node_no": 10, "relay_host": "entry-new.example.com", "external_port": 16030, "listen_port": 16030, "link_layer": ""}
-	      ]
-	    }
-	  ]
-	}`
-	if err := os.WriteFile(proxyChainPath, []byte(proxyChainPayload), 0o644); err != nil {
-		t.Fatalf("write proxy_chain file failed: %v", err)
-	}
-
-	bypassTargets := make([]string, 0, 1)
-	probeLocalLookupIPv4ForBypass = func(host string) ([]string, error) {
-		if strings.TrimSpace(host) != "entry-new.example.com" {
-			return nil, fmt.Errorf("unexpected host lookup: %s", host)
-		}
-		return []string{"203.0.113.30"}, nil
-	}
-	probeLocalEnsureExplicitDirectBypass = func(target string) error {
-		bypassTargets = append(bypassTargets, strings.TrimSpace(target))
-		return nil
-	}
-
-	if err := ensureProbeLocalProxySelectedChainDirectBypass("chain-new"); err != nil {
-		t.Fatalf("ensure selected chain bypass failed: %v", err)
-	}
-	if len(bypassTargets) != 1 || bypassTargets[0] != "203.0.113.30:16030" {
-		t.Fatalf("bypass targets=%v", bypassTargets)
 	}
 }
 

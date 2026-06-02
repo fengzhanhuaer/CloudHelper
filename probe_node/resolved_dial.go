@@ -55,7 +55,6 @@ func resolveProbeLocalURLDialTarget(rawURL string) (probeResolvedURLDialTarget, 
 
 	if parsedIP := net.ParseIP(host); parsedIP != nil {
 		target.DialEndpoint = net.JoinHostPort(parsedIP.String(), strconv.Itoa(portNum))
-		ensureProbeLocalDNSResolvedDirectBypassTarget(target.DialEndpoint)
 		return target, nil
 	}
 
@@ -68,7 +67,6 @@ func resolveProbeLocalURLDialTarget(rawURL string) (probeResolvedURLDialTarget, 
 	}
 	target.DialEndpoint = net.JoinHostPort(strings.TrimSpace(ips[0]), strconv.Itoa(portNum))
 	target.ServerName = host
-	ensureProbeLocalDNSResolvedDirectBypassTarget(target.DialEndpoint)
 	return target, nil
 }
 
@@ -82,12 +80,12 @@ func normalizeProbeResolvedDialTimeout(timeout time.Duration) time.Duration {
 func newProbeResolvedDialContext(target probeResolvedURLDialTarget, timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
 	dialTimeout := normalizeProbeResolvedDialTimeout(timeout)
 	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
-		dialer := &net.Dialer{
+		dialer := applyProbeLocalEgressDialer(&net.Dialer{
 			Timeout:   dialTimeout,
 			KeepAlive: 30 * time.Second,
-		}
+		})
 		if strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(target.OriginalEndpoint)) {
-			return dialer.DialContext(ctx, network, target.DialEndpoint)
+			return dialer.DialContext(ctx, probeLocalEgressDialNetwork(network, target.DialEndpoint), target.DialEndpoint)
 		}
 		return dialer.DialContext(ctx, network, addr)
 	}

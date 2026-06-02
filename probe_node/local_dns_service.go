@@ -190,12 +190,8 @@ var (
 		_, hosts, err := loadProbeLocalHostMappingsWithContent()
 		return hosts, err
 	}
-	probeLocalDNSBootstrapLookupIPv4         func(string) ([]string, error)
-	probeLocalDNSEnsureDirectBypassForTarget = func(string) error {
-		return nil
-	}
-	probeLocalDNSFallbackDirectBypassForTarget = ensureProbeLocalFallbackDirectBypassForTarget
-	probeLocalDNSHandlerSemaphore              = make(chan struct{}, probeLocalDNSHandlerLimit)
+	probeLocalDNSBootstrapLookupIPv4 func(string) ([]string, error)
+	probeLocalDNSHandlerSemaphore    = make(chan struct{}, probeLocalDNSHandlerLimit)
 )
 
 func init() {
@@ -790,15 +786,7 @@ func resolveProbeLocalDNSUpstreamBypassTarget(kind string, address string) (stri
 	}
 }
 
-func ensureProbeLocalDNSUpstreamDirectBypass(kind string, address string) {
-	target, ok := resolveProbeLocalDNSUpstreamBypassTarget(kind, address)
-	if !ok {
-		return
-	}
-	if err := probeLocalDNSEnsureDirectBypassForTarget(target); err != nil {
-		logProbeWarnf("probe local dns upstream direct bypass failed: kind=%s target=%s err=%v", strings.TrimSpace(kind), target, err)
-	}
-}
+func ensureProbeLocalDNSUpstreamDirectBypass(string, string) {}
 
 type probeLocalDNSProxyDialConn struct {
 	net.Conn
@@ -828,7 +816,6 @@ func queryProbeLocalDNSViaDoH(endpoint string, packet []byte, decision probeLoca
 	if err != nil {
 		return nil, err
 	}
-	ensureProbeLocalDNSResolvedDirectBypassTarget(dialTarget)
 	ctx, cancel := context.WithTimeout(context.Background(), probeLocalDNSUpstreamTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, cleanEndpoint, bytes.NewReader(packet))
@@ -843,9 +830,9 @@ func queryProbeLocalDNSViaDoH(endpoint string, packet []byte, decision probeLoca
 			ServerName: serverName,
 		},
 		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			dialer := &net.Dialer{Timeout: probeLocalDNSUpstreamTimeout}
+			dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalDNSUpstreamTimeout})
 			if strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(transportEndpoint)) {
-				return dialer.DialContext(ctx, network, dialTarget)
+				return dialer.DialContext(ctx, probeLocalEgressDialNetwork(network, dialTarget), dialTarget)
 			}
 			return dialer.DialContext(ctx, network, addr)
 		},
@@ -947,13 +934,12 @@ func queryProbeLocalDNSViaDoT(address string, packet []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	ensureProbeLocalDNSResolvedDirectBypassTarget(dialTarget)
-	dialer := &net.Dialer{Timeout: probeLocalDNSUpstreamTimeout}
+	dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalDNSUpstreamTimeout})
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if strings.TrimSpace(serverName) != "" {
 		tlsConfig.ServerName = serverName
 	}
-	conn, err := tls.DialWithDialer(dialer, "tcp", dialTarget, tlsConfig)
+	conn, err := tls.DialWithDialer(dialer, probeLocalEgressDialNetwork("tcp", dialTarget), dialTarget, tlsConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -987,8 +973,8 @@ func queryProbeLocalDNSViaPlain(address string, packet []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	ensureProbeLocalDNSResolvedDirectBypassTarget(dialTarget)
-	conn, err := net.DialTimeout("udp", dialTarget, probeLocalDNSUpstreamTimeout)
+	dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalDNSUpstreamTimeout})
+	conn, err := dialer.Dial(probeLocalEgressDialNetwork("udp", dialTarget), dialTarget)
 	if err != nil {
 		return nil, err
 	}
@@ -1288,12 +1274,6 @@ func resolveProbeLocalDNSProxyGroupRuntime(decision probeLocalDNSRouteDecision) 
 		return nil, errors.New("proxy dns route missing selected_chain_id")
 	}
 	return ensureProbeLocalTUNGroupRuntime(group, chainID)
-}
-
-func ensureProbeLocalDNSResolvedDirectBypassTarget(target string) {
-	if err := probeLocalDNSEnsureDirectBypassForTarget(strings.TrimSpace(target)); err != nil {
-		logProbeWarnf("probe local dns upstream direct bypass failed: target=%s err=%v", strings.TrimSpace(target), err)
-	}
 }
 
 func resolveProbeLocalDNSUpstreamHostIPv4(host string) (string, error) {
@@ -2170,46 +2150,6 @@ func queryProbeLocalDNSCacheRecords() []probeLocalDNSCacheRecord {
 	return records
 }
 
-func ensureProbeLocalDNSFallbackBypassRoutesFromCache() (int, error) {
-	ensureProbeLocalDNSCacheLoaded()
-	now := probeLocalDNSNow().UTC()
-	probeLocalDNSState.mu.Lock()
-	pruneProbeLocalDNSUnifiedRecordsLocked(now)
-	records := make([]probeLocalDNSUnifiedRecord, 0, len(probeLocalDNSState.cache))
-	for _, entry := range probeLocalDNSState.cache {
-		entry.RealIPs = append([]string(nil), entry.RealIPs...)
-		records = append(records, entry)
-	}
-	probeLocalDNSState.mu.Unlock()
-
-	seen := make(map[string]struct{}, len(records))
-	installed := 0
-	var allErr error
-	for _, entry := range records {
-		decision := resolveProbeLocalProxyRouteDecisionByDomain(entry.Domain)
-		if !isProbeLocalDNSFallbackDirectDecision(decision) {
-			continue
-		}
-		for _, rawIP := range entry.RealIPs {
-			ip := net.ParseIP(strings.TrimSpace(strings.Trim(rawIP, "[]")))
-			if ip == nil || ip.To4() == nil || isProbeLocalTUNLocalOrDiscoveryIP(ip) {
-				continue
-			}
-			ipText := ip.String()
-			if _, ok := seen[ipText]; ok {
-				continue
-			}
-			seen[ipText] = struct{}{}
-			if err := probeLocalDNSFallbackDirectBypassForTarget(net.JoinHostPort(ipText, "443")); err != nil {
-				allErr = errors.Join(allErr, err)
-				continue
-			}
-			installed++
-		}
-	}
-	return installed, allErr
-}
-
 func isProbeLocalDNSFallbackDirectDecision(decision probeLocalDNSRouteDecision) bool {
 	return strings.EqualFold(strings.TrimSpace(decision.Group), "fallback") &&
 		!decision.Reject &&
@@ -2461,7 +2401,6 @@ func resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh() {
 	}
 	probeLocalDNSState.mu.Unlock()
 	flushProbeLocalDNSCacheToDisk()
-	releaseProbeLocalManagedDirectBypassRoutes()
 }
 
 func updateProbeLocalDNSStatusError(err error) {
@@ -2555,5 +2494,4 @@ func resetProbeLocalDNSHooksForTest() {
 	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
 		return bootstrapProbeLocalDNSResolveIPv4s(domain)
 	}
-	probeLocalDNSFallbackDirectBypassForTarget = ensureProbeLocalFallbackDirectBypassForTarget
 }

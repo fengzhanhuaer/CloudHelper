@@ -51,11 +51,6 @@ type probeLocalTUNTunnelUDPConn struct {
 func startProbeLocalTUNPacketStack() error { return nil }
 func stopProbeLocalTUNPacketStack() error  { return nil }
 
-func ensureProbeLocalExplicitDirectBypassForTarget(string) error { return nil }
-func ensureProbeLocalFallbackDirectBypassForTarget(string) error { return nil }
-func releaseProbeLocalAllDirectBypassRoutes()                    {}
-func releaseProbeLocalManagedDirectBypassRoutes()                {}
-
 func isProbeLocalTUNLocalOrDiscoveryIP(ip net.IP) bool {
 	if ip == nil {
 		return false

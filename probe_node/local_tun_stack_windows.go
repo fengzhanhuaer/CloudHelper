@@ -179,43 +179,9 @@ type probeLocalTUNUDPManagedOutbound struct {
 	closeOnce     sync.Once
 }
 
-var (
-	probeLocalAcquireDirectBypassRoute = acquireProbeLocalTUNDirectBypassRoute
-	probeLocalReleaseDirectBypassRoute = releaseProbeLocalTUNDirectBypassRoute
-)
-
-var errProbeLocalTUNFallbackBypassInstalled = errors.New("fallback direct bypass installed; close current tun flow and let application reconnect via system route")
-
-func init() {
-	probeLocalDNSEnsureDirectBypassForTarget = ensureProbeLocalDirectBypassForTarget
-}
-
-func ensureProbeLocalExplicitDirectBypassForTarget(targetAddr string) error {
-	return ensureProbeLocalDirectBypassForTarget(targetAddr)
-}
-
-func ensureProbeLocalFallbackDirectBypassForTarget(targetAddr string) error {
-	return ensureProbeLocalDirectBypassForRoutedTarget(targetAddr)
-}
-
 type probeLocalWindowsDirectBypassRouteTarget struct {
 	InterfaceIndex int    `json:"interface_index"`
 	NextHop        string `json:"next_hop"`
-}
-
-var probeLocalDirectBypassState = struct {
-	mu          sync.Mutex
-	ref         map[string]int
-	hosts       map[string]string
-	targets     map[string]map[string]struct{}
-	routes      map[string]probeLocalWindowsDirectBypassRouteTarget
-	managedRefs map[string]int
-}{
-	ref:         map[string]int{},
-	hosts:       map[string]string{},
-	targets:     map[string]map[string]struct{}{},
-	routes:      map[string]probeLocalWindowsDirectBypassRouteTarget{},
-	managedRefs: map[string]int{},
 }
 
 var probeLocalDirectBypassRouteTargetState = struct {
@@ -439,7 +405,6 @@ func (n *probeLocalTUNNetstack) Close() error {
 		if n.stack != nil {
 			n.stack.Destroy()
 		}
-		releaseProbeLocalAllDirectBypassRoutes()
 	})
 	return nil
 }
@@ -478,9 +443,6 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	outbound, route, openErr := openProbeLocalTUNOutboundTCP(targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
-		if errors.Is(openErr, errProbeLocalTUNFallbackBypassInstalled) {
-			return
-		}
 		if shouldReportProbeLocalTUNTCPFailure("open_failed", targetAddr, route, openErr) {
 			globalProbeTCPDebugState.recordFailureWithRoute("open_failed", targetAddr, route, openErr)
 			logProbeWarnf("probe local tun tcp outbound open failed: inbound=tun outbound=%s target=%s route=%s group=%s node=%s err=%v", probeLocalTUNRouteOutboundPath(route), targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, openErr)
@@ -544,19 +506,12 @@ func openProbeLocalTUNOutboundTCPWithRoute(flowTargetAddr string, route probeLoc
 		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if route.Direct {
-		if shouldInstallProbeLocalFallbackDirectBypassAndFail(route) {
-			if bypassErr := ensureProbeLocalFallbackDirectBypassForTarget(route.TargetAddr); bypassErr != nil {
-				return nil, route, bypassErr
-			}
-			return nil, route, errProbeLocalTUNFallbackBypassInstalled
-		}
 		if cachedErr := lookupProbeLocalTUNTCPDirectFailure(route.TargetAddr); cachedErr != nil {
 			return nil, route, cachedErr
 		}
-		if bypassErr := ensureProbeLocalDirectBypassForRoutedTarget(route.TargetAddr); bypassErr != nil {
-			return nil, route, bypassErr
-		}
-		conn, dialErr := net.DialTimeout("tcp", strings.TrimSpace(route.TargetAddr), probeLocalTUNTCPDialTimeout)
+		dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalTUNTCPDialTimeout})
+		dialNetwork := probeLocalEgressDialNetwork("tcp", route.TargetAddr)
+		conn, dialErr := dialer.Dial(dialNetwork, strings.TrimSpace(route.TargetAddr))
 		if dialErr != nil {
 			rememberProbeLocalTUNTCPDirectFailure(route.TargetAddr, dialErr)
 			return nil, route, dialErr
@@ -778,12 +733,6 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	if route.Reject {
 		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
-	if shouldInstallProbeLocalFallbackDirectBypassAndFail(route) {
-		if bypassErr := ensureProbeLocalFallbackDirectBypassForTarget(route.TargetAddr); bypassErr != nil {
-			return nil, route, bypassErr
-		}
-		return nil, route, errProbeLocalTUNFallbackBypassInstalled
-	}
 
 	srcIP := strings.TrimSpace(id.RemoteAddress.String())
 	dstIP := strings.TrimSpace(id.LocalAddress.String())
@@ -793,32 +742,32 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	}
 
 	if route.Direct {
-		if bypassErr := ensureProbeLocalDirectBypassForRoutedTarget(route.TargetAddr); bypassErr != nil {
-			releaseSource()
-			return nil, route, bypassErr
-		}
-		udpAddr, resolveErr := net.ResolveUDPAddr("udp", route.TargetAddr)
-		if resolveErr != nil {
-			releaseSource()
-			return nil, route, resolveErr
-		}
-
 		var localAddr *net.UDPAddr
 		if parsed := net.ParseIP(strings.TrimSpace(strings.Trim(srcIP, "[]"))); parsed != nil {
 			localAddr = &net.UDPAddr{IP: parsed, Port: int(uint16(id.RemotePort))}
 		}
-		conn, dialErr := net.DialUDP("udp", localAddr, udpAddr)
+		dialNetwork := probeLocalEgressDialNetwork("udp", route.TargetAddr)
+		dialUDP := func(la *net.UDPAddr) (net.Conn, error) {
+			dialer := applyProbeLocalEgressDialer(&net.Dialer{})
+			if la != nil {
+				dialer.LocalAddr = la
+			}
+			return dialer.Dial(dialNetwork, strings.TrimSpace(route.TargetAddr))
+		}
+		conn, dialErr := dialUDP(localAddr)
 		natMode := probeChainUDPAssociationNATModeDefault
 		if dialErr != nil && localAddr != nil && shouldFallbackProbeLocalUDPBind(dialErr) {
 			logProbeWarnf("probe local tun udp bind conflict, fallback to ephemeral local addr: src=%s:%d target=%s err=%v", srcIP, uint16(id.RemotePort), route.TargetAddr, dialErr)
-			conn, dialErr = net.DialUDP("udp", nil, udpAddr)
+			conn, dialErr = dialUDP(nil)
 			natMode = probeLocalTUNUDPNATModeFallbackEphemeral
 		}
 		if dialErr != nil {
 			releaseSource()
 			return nil, route, dialErr
 		}
-		tuneProbeChainUDPConn(conn)
+		if udpConn, ok := conn.(*net.UDPConn); ok {
+			tuneProbeChainUDPConn(udpConn)
+		}
 		_ = natMode
 		return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: conn, releaseSource: releaseSource}, route, nil
 	}
@@ -1204,21 +1153,6 @@ func shouldDropProbeLocalTUNTCPFlow(targetAddr string) bool {
 	return isProbeLocalTUNLocalOrDiscoveryIP(ip)
 }
 
-func shouldInstallProbeLocalFallbackDirectBypassAndFail(route probeLocalTunnelRouteDecision) bool {
-	if !isProbeLocalFallbackDirectRoute(route) {
-		return false
-	}
-	host, _, err := net.SplitHostPort(strings.TrimSpace(route.TargetAddr))
-	if err != nil {
-		return false
-	}
-	ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
-	if ip == nil || ip.To4() == nil {
-		return false
-	}
-	return !isProbeLocalTUNLocalOrDiscoveryIP(ip)
-}
-
 func isProbeLocalFallbackDirectRoute(route probeLocalTunnelRouteDecision) bool {
 	return route.Direct && !route.Reject && strings.EqualFold(strings.TrimSpace(route.Group), "fallback")
 }
@@ -1382,39 +1316,6 @@ func isProbeLocalTUNLocalOrDiscoveryIP(ip net.IP) bool {
 		}
 	}
 	return ip.IsPrivate()
-}
-
-func ensureProbeLocalDirectBypassForRoutedTarget(targetAddr string) error {
-	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
-	if err != nil {
-		return err
-	}
-	host = strings.TrimSpace(strings.Trim(host, "[]"))
-	ip := net.ParseIP(host)
-	if ip == nil || ip.To4() == nil {
-		return nil
-	}
-	ipText := ip.String()
-	probeLocalDirectBypassState.mu.Lock()
-	if probeLocalDirectBypassState.managedRefs == nil {
-		probeLocalDirectBypassState.managedRefs = map[string]int{}
-	}
-	if probeLocalDirectBypassState.managedRefs[ipText] > 0 {
-		probeLocalDirectBypassState.mu.Unlock()
-		return nil
-	}
-	probeLocalDirectBypassState.mu.Unlock()
-
-	if err := ensureProbeLocalDirectBypassForTarget(net.JoinHostPort(ipText, port)); err != nil {
-		return err
-	}
-	probeLocalDirectBypassState.mu.Lock()
-	if probeLocalDirectBypassState.managedRefs == nil {
-		probeLocalDirectBypassState.managedRefs = map[string]int{}
-	}
-	probeLocalDirectBypassState.managedRefs[ipText] = 1
-	probeLocalDirectBypassState.mu.Unlock()
-	return nil
 }
 
 func acquireProbeLocalTUNUDPSource(srcIP string, srcPort uint16) (string, int64, func()) {
@@ -1626,7 +1527,6 @@ func (s *probeLocalTUNSimplePacketStack) Close() error {
 	}
 	s.closeOnce.Do(func() {
 		s.closed = true
-		releaseProbeLocalAllDirectBypassRoutes()
 	})
 	return nil
 }
@@ -1692,65 +1592,6 @@ func parseProbeLocalTUNIPv6Target(packet []byte) (network string, targetAddr str
 	return network, net.JoinHostPort(dstIP, strconv.Itoa(int(dstPort))), nil
 }
 
-func ensureProbeLocalDirectBypassForTarget(targetAddr string) error {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
-	if err != nil {
-		return err
-	}
-	host = strings.TrimSpace(strings.Trim(host, "[]"))
-	ip := net.ParseIP(host)
-	if ip == nil || ip.To4() == nil {
-		return nil
-	}
-	ipText := ip.String()
-
-	probeLocalDirectBypassState.mu.Lock()
-	if probeLocalDirectBypassState.ref == nil {
-		probeLocalDirectBypassState.ref = map[string]int{}
-	}
-	if probeLocalDirectBypassState.hosts == nil {
-		probeLocalDirectBypassState.hosts = map[string]string{}
-	}
-	if probeLocalDirectBypassState.targets == nil {
-		probeLocalDirectBypassState.targets = map[string]map[string]struct{}{}
-	}
-	if probeLocalDirectBypassState.routes == nil {
-		probeLocalDirectBypassState.routes = map[string]probeLocalWindowsDirectBypassRouteTarget{}
-	}
-	if probeLocalDirectBypassState.managedRefs == nil {
-		probeLocalDirectBypassState.managedRefs = map[string]int{}
-	}
-	probeLocalDirectBypassState.ref[ipText]++
-	probeLocalDirectBypassState.hosts[ipText] = ipText
-	if _, ok := probeLocalDirectBypassState.targets[ipText]; !ok {
-		probeLocalDirectBypassState.targets[ipText] = map[string]struct{}{}
-	}
-	probeLocalDirectBypassState.targets[ipText][strings.TrimSpace(targetAddr)] = struct{}{}
-	needCreate := probeLocalDirectBypassState.ref[ipText] == 1
-	probeLocalDirectBypassState.mu.Unlock()
-
-	if !needCreate {
-		return nil
-	}
-	release, acqErr := probeLocalAcquireDirectBypassRoute(ipText)
-	if acqErr != nil {
-		probeLocalDirectBypassState.mu.Lock()
-		probeLocalDirectBypassState.ref[ipText]--
-		if probeLocalDirectBypassState.ref[ipText] <= 0 {
-			delete(probeLocalDirectBypassState.ref, ipText)
-			delete(probeLocalDirectBypassState.hosts, ipText)
-			delete(probeLocalDirectBypassState.targets, ipText)
-			delete(probeLocalDirectBypassState.routes, ipText)
-		}
-		probeLocalDirectBypassState.mu.Unlock()
-		return acqErr
-	}
-	if release != nil {
-		release()
-	}
-	return nil
-}
-
 func resolveProbeLocalWindowsDirectBypassRouteTarget() (probeLocalWindowsDirectBypassRouteTarget, error) {
 	routeTarget, err := resolveProbeLocalWindowsRouteTarget()
 	if err != nil {
@@ -1759,122 +1600,7 @@ func resolveProbeLocalWindowsDirectBypassRouteTarget() (probeLocalWindowsDirectB
 	return probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
 }
 
-func acquireProbeLocalTUNDirectBypassRoute(host string) (func(), error) {
-	ip := strings.TrimSpace(host)
-	if parsed := net.ParseIP(ip); parsed == nil || parsed.To4() == nil {
-		return nil, fmt.Errorf("invalid bypass host: %s", host)
-	}
-	routeTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
-	if !ok {
-		if err := prepareProbeLocalWindowsDirectBypassRouteTarget(); err != nil {
-			return nil, errors.New("direct bypass route target is not prepared")
-		}
-		routeTarget, ok = currentProbeLocalWindowsDirectBypassRouteTarget()
-		if !ok {
-			return nil, errors.New("direct bypass route target is not prepared")
-		}
-	}
-	routeDef := probeLocalWindowsRouteDef{Prefix: ip, Mask: "255.255.255.255", Gateway: routeTarget.NextHop, IfIndex: routeTarget.InterfaceIndex}
-	if _, err := probeLocalCreateWindowsRouteEntry(routeDef); err != nil {
-		return nil, err
-	}
-	probeLocalDirectBypassState.mu.Lock()
-	if probeLocalDirectBypassState.routes == nil {
-		probeLocalDirectBypassState.routes = map[string]probeLocalWindowsDirectBypassRouteTarget{}
-	}
-	probeLocalDirectBypassState.routes[ip] = routeTarget
-	probeLocalDirectBypassState.mu.Unlock()
-	return func() {}, nil
-}
-
-func releaseProbeLocalTUNDirectBypassRoute(host string) {
-	ip := strings.TrimSpace(host)
-	if parsed := net.ParseIP(ip); parsed == nil || parsed.To4() == nil {
-		return
-	}
-	probeLocalDirectBypassState.mu.Lock()
-	routeTarget, ok := probeLocalDirectBypassState.routes[ip]
-	if ok {
-		delete(probeLocalDirectBypassState.routes, ip)
-	}
-	probeLocalDirectBypassState.mu.Unlock()
-	if !ok {
-		return
-	}
-	routeDef := probeLocalWindowsRouteDef{Prefix: ip, Mask: "255.255.255.255", Gateway: routeTarget.NextHop, IfIndex: routeTarget.InterfaceIndex}
-	if delErr := probeLocalDeleteWindowsRouteEntry(routeDef); delErr != nil {
-		logProbeWarnf("probe local bypass route delete failed: host=%s err=%v", ip, delErr)
-	}
-}
-
-func releaseProbeLocalDirectBypassForHost(host string) {
-	ip := strings.TrimSpace(host)
-	if parsed := net.ParseIP(ip); parsed == nil || parsed.To4() == nil {
-		return
-	}
-	probeLocalDirectBypassState.mu.Lock()
-	if probeLocalDirectBypassState.ref == nil {
-		probeLocalDirectBypassState.ref = map[string]int{}
-	}
-	count := probeLocalDirectBypassState.ref[ip]
-	if count <= 1 {
-		delete(probeLocalDirectBypassState.ref, ip)
-		delete(probeLocalDirectBypassState.hosts, ip)
-		delete(probeLocalDirectBypassState.targets, ip)
-		delete(probeLocalDirectBypassState.managedRefs, ip)
-		probeLocalDirectBypassState.mu.Unlock()
-		probeLocalReleaseDirectBypassRoute(ip)
-		return
-	}
-	probeLocalDirectBypassState.ref[ip] = count - 1
-	probeLocalDirectBypassState.mu.Unlock()
-}
-
-func releaseProbeLocalAllDirectBypassRoutes() {
-	probeLocalDirectBypassState.mu.Lock()
-	hosts := make([]string, 0, len(probeLocalDirectBypassState.hosts))
-	for host := range probeLocalDirectBypassState.hosts {
-		hosts = append(hosts, host)
-	}
-	probeLocalDirectBypassState.mu.Unlock()
-	for _, host := range hosts {
-		probeLocalReleaseDirectBypassRoute(host)
-	}
-	probeLocalDirectBypassState.mu.Lock()
-	probeLocalDirectBypassState.ref = map[string]int{}
-	probeLocalDirectBypassState.hosts = map[string]string{}
-	probeLocalDirectBypassState.targets = map[string]map[string]struct{}{}
-	probeLocalDirectBypassState.routes = map[string]probeLocalWindowsDirectBypassRouteTarget{}
-	probeLocalDirectBypassState.managedRefs = map[string]int{}
-	probeLocalDirectBypassState.mu.Unlock()
-}
-
-func releaseProbeLocalManagedDirectBypassRoutes() {
-	probeLocalDirectBypassState.mu.Lock()
-	refs := make(map[string]int, len(probeLocalDirectBypassState.managedRefs))
-	for ip, count := range probeLocalDirectBypassState.managedRefs {
-		if count > 0 {
-			refs[ip] = count
-		}
-	}
-	probeLocalDirectBypassState.managedRefs = map[string]int{}
-	probeLocalDirectBypassState.mu.Unlock()
-
-	for ip, count := range refs {
-		for i := 0; i < count; i++ {
-			releaseProbeLocalDirectBypassForHost(ip)
-		}
-	}
-}
-
 func resetProbeLocalDirectBypassStateForTest() {
-	probeLocalDirectBypassState.mu.Lock()
-	probeLocalDirectBypassState.ref = map[string]int{}
-	probeLocalDirectBypassState.hosts = map[string]string{}
-	probeLocalDirectBypassState.targets = map[string]map[string]struct{}{}
-	probeLocalDirectBypassState.routes = map[string]probeLocalWindowsDirectBypassRouteTarget{}
-	probeLocalDirectBypassState.managedRefs = map[string]int{}
-	probeLocalDirectBypassState.mu.Unlock()
 	clearProbeLocalWindowsDirectBypassRouteTarget()
 
 	probeLocalTUNUDPSourceState.mu.Lock()
@@ -1884,7 +1610,4 @@ func resetProbeLocalDirectBypassStateForTest() {
 	probeLocalTUNTCPFailureLogState.mu.Lock()
 	probeLocalTUNTCPFailureLogState.items = map[string]probeLocalTUNTCPFailureLogEntry{}
 	probeLocalTUNTCPFailureLogState.mu.Unlock()
-
-	probeLocalAcquireDirectBypassRoute = acquireProbeLocalTUNDirectBypassRoute
-	probeLocalReleaseDirectBypassRoute = releaseProbeLocalTUNDirectBypassRoute
 }

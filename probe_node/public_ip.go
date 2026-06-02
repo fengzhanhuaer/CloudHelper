@@ -186,10 +186,10 @@ func fetchPublicIP(endpoint string, network string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), publicIPRequestTimeout)
 	defer cancel()
 
-	dialer := &net.Dialer{
+	dialer := applyProbeLocalEgressDialer(&net.Dialer{
 		Timeout:   publicIPRequestTimeout,
 		KeepAlive: 15 * time.Second,
-	}
+	})
 	transport := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		DialContext:         forceNetworkDialContext(dialer, network),

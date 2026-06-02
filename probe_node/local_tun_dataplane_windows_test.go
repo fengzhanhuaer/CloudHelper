@@ -107,7 +107,6 @@ func TestProbeLocalTUNDataPlaneStartPreparesDirectBypassRouteTargetOnce(t *testi
 	})
 
 	prepareCalls := 0
-	routeCalls := 0
 	createCalls := 0
 	closeAdapterCalls := 0
 	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
@@ -119,12 +118,6 @@ func TestProbeLocalTUNDataPlaneStartPreparesDirectBypassRouteTargetOnce(t *testi
 				t.Fatalf("prepare command did not exclude tun ifindex: %s", joined)
 			}
 			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
-		case "route":
-			routeCalls++
-			if !strings.Contains(joined, "192.168.1.1") || !strings.Contains(joined, " IF 12") {
-				t.Fatalf("route command used unexpected target: %s", joined)
-			}
-			return "", nil
 		default:
 			return "", nil
 		}
@@ -153,12 +146,6 @@ func TestProbeLocalTUNDataPlaneStartPreparesDirectBypassRouteTargetOnce(t *testi
 	}
 	if createCalls != 1 {
 		t.Fatalf("createCalls=%d want 1", createCalls)
-	}
-	if err := ensureProbeLocalDirectBypassForTarget("1.2.3.4:443"); err != nil {
-		t.Fatalf("ensure bypass failed: %v", err)
-	}
-	if routeCalls != 1 {
-		t.Fatalf("routeCalls=%d want 1", routeCalls)
 	}
 	if err := stopProbeLocalTUNDataPlane(); err != nil {
 		t.Fatalf("stopProbeLocalTUNDataPlane returned error: %v", err)

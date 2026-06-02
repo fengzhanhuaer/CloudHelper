@@ -221,7 +221,8 @@ func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, err
 		return nil, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if route.Direct {
-		conn, err := net.DialTimeout("tcp", strings.TrimSpace(route.TargetAddr), 10*time.Second)
+		dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: 10 * time.Second})
+		conn, err := dialer.Dial(probeLocalEgressDialNetwork("tcp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
 		if err != nil {
 			return nil, err
 		}

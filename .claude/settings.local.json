@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(go build *)"
+      "Bash(go build *)",
+      "Bash(go env *)",
+      "Bash(grep -rn \"IP_UNICAST_IF\\\\|IPV6_UNICAST_IF\\\\|func SetsockoptInt\\\\|IPPROTO_IPV6 \" \"$\\(go env GOMODCACHE\\)/golang.org/x/sys@v0.35.0/windows/\")"
     ]
   }
 }

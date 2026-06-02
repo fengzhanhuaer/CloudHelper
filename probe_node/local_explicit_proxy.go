@@ -585,15 +585,14 @@ func openProbeLocalExplicitProxyUDPConnForRoute(route probeLocalTunnelRouteDecis
 		return nil, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if route.Direct {
-		udpAddr, err := net.ResolveUDPAddr("udp", route.TargetAddr)
+		dialer := applyProbeLocalEgressDialer(&net.Dialer{})
+		conn, err := dialer.Dial(probeLocalEgressDialNetwork("udp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
 		if err != nil {
 			return nil, err
 		}
-		conn, err := net.DialUDP("udp", nil, udpAddr)
-		if err != nil {
-			return nil, err
+		if udpConn, ok := conn.(*net.UDPConn); ok {
+			tuneProbeChainUDPConn(udpConn)
 		}
-		tuneProbeChainUDPConn(conn)
 		return conn, nil
 	}
 	association := buildProbeLocalExplicitProxyUDPAssociationMeta(route, clientAddr)

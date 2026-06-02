@@ -264,7 +264,6 @@ var (
 	probeLocalApplyTUNPrimaryDNS             = applyProbeLocalTUNPrimaryDNS
 	probeLocalRestoreTUNPrimaryDNS           = restoreProbeLocalTUNPrimaryDNS
 	probeLocalUninstallTUNDriver             = uninstallProbeLocalTUNDriver
-	probeLocalEnsureExplicitDirectBypass     = ensureProbeLocalExplicitDirectBypassForTarget
 	probeLocalResolveGroupRuntimeLatency     = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalProxyLinkHandshakeProbe        = runProbeLocalProxyLinkHandshakeProbe
 	probeLocalProxyLinkProtocolProbe         = runProbeLocalProxyLinkProtocolProbe
@@ -458,84 +457,6 @@ func resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs 
 		}
 	}
 	return targets, nil
-}
-
-func ensureProbeLocalProxyBootstrapDirectBypass(extraSelectedChainIDs ...string) error {
-	targets, err := resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs...)
-	if err != nil {
-		return err
-	}
-	expandedTargets, err := expandProbeLocalBootstrapBypassTargets(targets)
-	if err != nil {
-		return err
-	}
-	for _, target := range expandedTargets {
-		if err := probeLocalEnsureExplicitDirectBypass(target); err != nil {
-			return fmt.Errorf("ensure bootstrap direct bypass failed: target=%s err=%w", strings.TrimSpace(target), err)
-		}
-	}
-	return nil
-}
-
-func shouldEnsureProbeLocalProxySelectedChainDirectBypass(selectedChainID string) (bool, error) {
-	chainID, err := normalizeProbeLocalSelectedChainID(selectedChainID)
-	if err != nil {
-		return false, err
-	}
-	if chainID == "" {
-		return false, nil
-	}
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range state.Groups {
-		if !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") {
-			continue
-		}
-		existingChainID := firstNonEmpty(
-			strings.TrimSpace(entry.SelectedChainID),
-			mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID),
-		)
-		if strings.EqualFold(strings.TrimSpace(existingChainID), chainID) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-func ensureProbeLocalProxySelectedChainDirectBypass(selectedChainID string) error {
-	chainID, err := normalizeProbeLocalSelectedChainID(selectedChainID)
-	if err != nil {
-		return err
-	}
-	if chainID == "" {
-		return nil
-	}
-	items, err := loadProbeLocalProxyChainItems()
-	if err != nil {
-		return err
-	}
-	for _, item := range items {
-		if !matchesProbeLocalProxyChainSelection(item, chainID) {
-			continue
-		}
-		targets, err := resolveProbeLocalExplicitBypassTargetsForChain(item)
-		if err != nil {
-			return err
-		}
-		expandedTargets, err := expandProbeLocalBootstrapBypassTargets(targets)
-		if err != nil {
-			return err
-		}
-		for _, target := range expandedTargets {
-			if err := probeLocalEnsureExplicitDirectBypass(target); err != nil {
-				return fmt.Errorf("ensure selected chain direct bypass failed: target=%s err=%w", strings.TrimSpace(target), err)
-			}
-		}
-		return nil
-	}
-	return fmt.Errorf("selected chain not found for bypass prewarm: %s", chainID)
 }
 
 func preconnectProbeLocalTUNGroupRuntimesFromState(reason string) {
@@ -1027,12 +948,6 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		logProbeInfof("probe local tun startup recovered data plane state")
 		return nil
 	}
-	if err := ensureProbeLocalProxyBootstrapDirectBypass(); err != nil {
-		wrappedErr := fmt.Errorf("recover probe local tun bootstrap bypass failed: %w", err)
-		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(wrappedErr.Error()))
-		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, wrappedErr)
-		return wrappedErr
-	}
 
 	if _, _, err := m.enableProxy(); err != nil {
 		wrappedErr := fmt.Errorf("recover probe local tun enabled state failed: %w", err)
@@ -1232,11 +1147,6 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 	m.tun.DataPlane = stats.Running
 	m.tun.DataPlaneRX = stats.RXPackets
 	m.tun.DataPlaneBytes = stats.RXBytes
-	if installed, err := ensureProbeLocalDNSFallbackBypassRoutesFromCache(); err != nil {
-		logProbeWarnf("probe local fallback dns bypass prewarm partially failed: installed=%d err=%v", installed, err)
-	} else if installed > 0 {
-		logProbeInfof("probe local fallback dns bypass prewarmed: installed=%d", installed)
-	}
 
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, m.tun.DataPlane)
 	if err := persistProbeLocalProxyPersistentState(true, probeLocalProxyModeTUN); err != nil {
@@ -3507,10 +3417,6 @@ func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	selectedChainID := mustProbeLocalSelectedChainIDFromLegacy(tunnelNodeID)
-	if err := ensureProbeLocalProxyBootstrapDirectBypass(selectedChainID); err != nil {
-		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
-		return
-	}
 	tunState, proxyState, err := probeLocalControl.enableProxy()
 	if err != nil {
 		writeProbeLocalError(w, err)
@@ -3568,19 +3474,6 @@ func probeLocalProxySelectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	selectedChainID := mustProbeLocalSelectedChainIDFromLegacy(tunnelNodeID)
-	if selectedChainID != "" && isProbeLocalProxyTunnelModeEnabled() {
-		shouldEnsure, ensureErr := shouldEnsureProbeLocalProxySelectedChainDirectBypass(selectedChainID)
-		if ensureErr != nil {
-			writeProbeLocalError(w, ensureErr)
-			return
-		}
-		if shouldEnsure {
-			if ensureErr := ensureProbeLocalProxySelectedChainDirectBypass(selectedChainID); ensureErr != nil {
-				writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(ensureErr.Error())})
-				return
-			}
-		}
-	}
 	if selectedChainID != "" {
 		syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
 	}
@@ -3675,12 +3568,6 @@ func probeLocalProxyExplicitEnableHandler(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
 		return
-	}
-	if shouldRestoreProbeLocalProxyFromState(state) {
-		if err := ensureProbeLocalProxyBootstrapDirectBypass(); err != nil {
-			writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
-			return
-		}
 	}
 	if err := startProbeLocalExplicitProxyServer(); err != nil {
 		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: strings.TrimSpace(err.Error())})
@@ -5937,7 +5824,6 @@ func resetProbeLocalControlStateForTest() {
 func resetProbeLocalProxyHooksForTest() {
 	probeLocalApplyProxyTakeover = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect = restoreProbeLocalProxyDirect
-	probeLocalEnsureExplicitDirectBypass = ensureProbeLocalExplicitDirectBypassForTarget
 	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass
 	probeLocalResolveGroupRuntimeLatency = resolveProbeLocalTUNGroupRuntimeKeepaliveAndLatency
 	probeLocalProxyLinkHandshakeProbe = runProbeLocalProxyLinkHandshakeProbe

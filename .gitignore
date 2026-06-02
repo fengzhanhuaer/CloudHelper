@@ -34,3 +34,4 @@ probe_node_android/.idea/
 probe_node_android/local.properties
 probe_node_android/build/
 probe_node_android/app/build/
+.claude/
