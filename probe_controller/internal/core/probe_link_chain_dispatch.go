@@ -21,6 +21,10 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 	}
 
 	var failures []string
+	adminPriv, adminPrivErr := loadAdminPrivateKeyForSigning()
+	if adminPrivErr != nil {
+		return fmt.Errorf("probe chain auth ticket signing unavailable: %w", adminPrivErr)
+	}
 	for i, nodeID := range route {
 		nodeSettings := resolveProbeLinkChainNodeSettings(item, nodeID)
 		role := "relay"
@@ -65,6 +69,12 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 			prevDialMode = prevNodeSettings.DialMode
 		}
 
+		authTicket, ticketErr := buildProbeLinkChainAuthTicket(item, adminPriv)
+		if ticketErr != nil {
+			failures = append(failures, fmt.Sprintf("node=%s auth ticket failed: %v", nodeID, ticketErr))
+			continue
+		}
+
 		_, err := dispatchProbeChainLinkControl(nodeID, probeChainLinkControlCommand{
 			Action:        "apply",
 			ChainID:       strings.TrimSpace(item.ChainID),
@@ -73,6 +83,7 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 			UserID:        strings.TrimSpace(item.UserID),
 			UserPublicKey: strings.TrimSpace(item.UserPublicKey),
 			LinkSecret:    strings.TrimSpace(item.Secret),
+			AuthTicket:    strings.TrimSpace(authTicket),
 			Role:          role,
 			ListenHost:    nodeSettings.ListenHost,
 			ListenPort: func() int {
@@ -91,7 +102,7 @@ func applyProbeLinkChainRecord(item probeLinkChainRecord, controllerBaseURL stri
 			PrevLinkLayer:     strings.TrimSpace(prevLinkLayer),
 			PrevDialMode:      strings.TrimSpace(prevDialMode),
 			PortForwards:      buildProbeChainPortForwardCommands(item.PortForwards),
-			RequireUserAuth:   i == 0,
+			RequireUserAuth:   true,
 			NextAuthMode:      nextAuthMode,
 			ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
 		})

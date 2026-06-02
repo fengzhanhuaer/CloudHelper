@@ -70,6 +70,7 @@ type probeLinkChainServerItem struct {
 	UserID          string                            `json:"user_id"`
 	UserPublicKey   string                            `json:"user_public_key"`
 	Secret          string                            `json:"secret"`
+	AuthTicket      string                            `json:"auth_ticket,omitempty"`
 	EntryNodeID     string                            `json:"entry_node_id"`
 	ExitNodeID      string                            `json:"exit_node_id"`
 	CascadeNodeIDs  []string                          `json:"cascade_node_ids"`
@@ -194,7 +195,9 @@ func loadProbeChainTopologyCacheItems() ([]probeLinkChainServerItem, error) {
 	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
 		return nil, err
 	}
-	return sanitizeProbeChainServerItemsForCache(payload.Items), nil
+	items := sanitizeProbeChainServerItemsForCache(payload.Items)
+	rememberProbeChainAuthTicketsForItems(items)
+	return items, nil
 }
 
 func fetchProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
@@ -210,6 +213,8 @@ func fetchProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, id
 	result.PortForwardChains = sanitizeProbeChainServerItemsForCache(result.PortForwardChains)
 	result.ProxyChains = sanitizeProbeChainServerItemsForCache(result.ProxyChains)
 	result.GlobalProxyForwardChains = sanitizeProbeChainServerItemsForCache(result.GlobalProxyForwardChains)
+	rememberProbeChainAuthTicketsForItems(result.SelfChains)
+	rememberProbeChainAuthTicketsForItems(result.GlobalProxyForwardChains)
 	return result, nil
 }
 
@@ -234,7 +239,11 @@ func refreshProbeProxyChainCacheFromController(ctx context.Context, identity nod
 	if err := persistProbeProxyChainCache(config.GlobalProxyForwardChains); err != nil {
 		return nil, err
 	}
-	return loadProbeLocalProxyChainItems()
+	items, err := loadProbeLocalProxyChainItems()
+	if err == nil {
+		rememberProbeChainAuthTicketsForItems(items)
+	}
+	return items, err
 }
 
 func requestProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
@@ -329,6 +338,7 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 	if chainID == "" {
 		return
 	}
+	rememberProbeChainAuthTicket(effectiveProbeLinkRelayChainID(item), item.AuthTicket)
 
 	nodeID := strings.TrimSpace(identity.NodeID)
 	role := resolveProbeNodeChainRole(item, nodeID)
@@ -370,6 +380,7 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 		UserID:          strings.TrimSpace(item.UserID),
 		UserPublicKey:   strings.TrimSpace(item.UserPublicKey),
 		LinkSecret:      strings.TrimSpace(item.Secret),
+		AuthTicket:      strings.TrimSpace(item.AuthTicket),
 		Role:            role,
 		ListenHost:      listenHost,
 		ListenPort:      hop.ListenPort,
@@ -383,7 +394,7 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 		PrevLinkLayer:   strings.TrimSpace(prevLinkLayer),
 		PrevDialMode:    strings.TrimSpace(prevDialMode),
 		PortForwards:    buildProbeChainPortForwardMessages(item.PortForwards),
-		RequireUserAuth: strings.TrimSpace(item.UserPublicKey) != "",
+		RequireUserAuth: true,
 		NextAuthMode:    nextAuthMode,
 	}
 
@@ -403,6 +414,19 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 	if _, err := startProbeChainRuntime(cfg); err != nil {
 		log.Printf("warning: probe chain sync start failed: chain=%s err=%v", chainID, err)
 	}
+}
+
+func rememberProbeChainAuthTicketsForItems(items []probeLinkChainServerItem) {
+	for _, item := range items {
+		rememberProbeChainAuthTicket(effectiveProbeLinkRelayChainID(item), item.AuthTicket)
+	}
+}
+
+func effectiveProbeLinkRelayChainID(item probeLinkChainServerItem) string {
+	if relayID := strings.TrimSpace(item.RelayChainID); relayID != "" {
+		return relayID
+	}
+	return strings.TrimSpace(item.ChainID)
 }
 
 func normalizeProbeChainNodeID(raw string) string {
@@ -646,6 +670,7 @@ func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) 
 		c.prevLinkLayer == cfg.prevLinkLayer &&
 		c.prevDialMode == cfg.prevDialMode &&
 		c.nextAuthMode == cfg.nextAuthMode &&
+		strings.TrimSpace(c.authTicket) == strings.TrimSpace(cfg.authTicket) &&
 		isSameProbeChainPortForwards(c.portForwards, cfg.portForwards) &&
 		c.secret == cfg.secret &&
 		c.rawPublicKey == cfg.rawPublicKey
@@ -738,6 +763,7 @@ func sanitizeProbeChainServerItemsForCache(items []probeLinkChainServerItem) []p
 		next.UserID = strings.TrimSpace(item.UserID)
 		next.UserPublicKey = strings.TrimSpace(item.UserPublicKey)
 		next.Secret = strings.TrimSpace(item.Secret)
+		next.AuthTicket = strings.TrimSpace(item.AuthTicket)
 		next.EntryNodeID = strings.TrimSpace(item.EntryNodeID)
 		next.ExitNodeID = strings.TrimSpace(item.ExitNodeID)
 		next.LinkLayer = strings.TrimSpace(item.LinkLayer)

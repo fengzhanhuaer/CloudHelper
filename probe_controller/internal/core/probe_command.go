@@ -107,6 +107,7 @@ type probeChainLinkControlCommand struct {
 	UserID            string                         `json:"user_id,omitempty"`
 	UserPublicKey     string                         `json:"user_public_key,omitempty"`
 	LinkSecret        string                         `json:"link_secret,omitempty"`
+	AuthTicket        string                         `json:"auth_ticket,omitempty"`
 	Role              string                         `json:"role,omitempty"`
 	ListenHost        string                         `json:"listen_host,omitempty"`
 	ListenPort        int                            `json:"listen_port,omitempty"`

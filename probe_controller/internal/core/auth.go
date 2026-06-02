@@ -578,6 +578,28 @@ func writeAdminPrivateKeyFile(priv ed25519.PrivateKey) error {
 	return os.WriteFile(privatePath, pemBytes, 0o600)
 }
 
+func loadAdminPrivateKeyForSigning() (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(filepath.Join(dataDir, adminPrivateKeyFile))
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, errors.New("failed to decode admin private key pem")
+	}
+	keyAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	priv, ok := keyAny.(ed25519.PrivateKey)
+	if !ok || len(priv) != ed25519.PrivateKeySize {
+		return nil, errors.New("admin private key is not ed25519")
+	}
+	out := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+	copy(out, priv)
+	return out, nil
+}
+
 func writeAdminCertificateFile(pub ed25519.PublicKey, caCert *x509.Certificate, caKey crypto.Signer, username, role, certType string) error {
 	serial, err := randomSerialNumber()
 	if err != nil {

@@ -21,6 +21,7 @@ type probeLocalTUNChainEndpoint struct {
 	EntryPort         int
 	LinkLayer         string
 	ChainSecret       string
+	AuthTicket        string
 	Unavailable       bool
 	UnavailableReason string
 }
@@ -393,6 +394,7 @@ func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocal
 			EntryPort:         entryPort,
 			LinkLayer:         linkLayer,
 			ChainSecret:       strings.TrimSpace(item.Secret),
+			AuthTicket:        strings.TrimSpace(item.AuthTicket),
 			Unavailable:       false,
 			UnavailableReason: "",
 		}, nil

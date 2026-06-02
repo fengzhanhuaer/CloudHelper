@@ -35,6 +35,7 @@ const (
 	linkCodexChainIDHeader             = "X-Codex-Chain-Id"
 	linkCodexAuthModeHeader            = "X-Codex-Auth-Mode"
 	linkCodexMACHeader                 = "X-Codex-Mac"
+	linkCodexAuthTicketHeader          = "X-Codex-User-Auth-Ticket"
 	linkCodexVersionHeader             = "X-Codex-Api-Version"
 	linkCodexRelayModeHeader           = "X-Codex-Relay-Mode"
 	linkCodexRelayRoleHeader           = "X-Codex-Relay-Role"
@@ -66,6 +67,7 @@ type linkChainServerItem struct {
 	ChainType       string             `json:"chain_type"`
 	Name            string             `json:"name"`
 	Secret          string             `json:"secret"`
+	AuthTicket      string             `json:"auth_ticket,omitempty"`
 	EntryNodeID     string             `json:"entry_node_id"`
 	ExitNodeID      string             `json:"exit_node_id"`
 	CascadeNodeIDs  []string           `json:"cascade_node_ids"`
@@ -94,6 +96,7 @@ type linkEndpoint struct {
 	EntryPort   int    `json:"entry_port,omitempty"`
 	LinkLayer   string `json:"link_layer,omitempty"`
 	ChainSecret string `json:"-"`
+	AuthTicket  string `json:"-"`
 }
 
 type linkStatusItem struct {
@@ -477,6 +480,7 @@ func resolveLinkEndpoint(item linkChainServerItem) (linkEndpoint, error) {
 		EntryPort:   entryPort,
 		LinkLayer:   linkLayer,
 		ChainSecret: strings.TrimSpace(item.Secret),
+		AuthTicket:  strings.TrimSpace(item.AuthTicket),
 	}, nil
 }
 
@@ -730,7 +734,7 @@ func openLinkRelayWebSocketConn(endpoint linkEndpoint, openTimeout time.Duration
 	if err != nil {
 		return nil, err
 	}
-	header, err := buildLinkRelayHeaders(endpoint.ChainID, endpoint.ChainSecret, firstNonEmptyString(strings.TrimSpace(mode), linkRelayModeBridge), linkBridgeRoleToNext, 0)
+	header, err := buildLinkRelayHeaders(endpoint, firstNonEmptyString(strings.TrimSpace(mode), linkRelayModeBridge), linkBridgeRoleToNext, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -824,7 +828,7 @@ func openLinkRelayHTTP3WebSocketConn(endpoint linkEndpoint, openTimeout time.Dur
 	request.Proto = "websocket"
 	request.ProtoMajor = 3
 	request.ProtoMinor = 0
-	request.Header, err = buildLinkRelayHeaders(endpoint.ChainID, endpoint.ChainSecret, firstNonEmptyString(strings.TrimSpace(mode), linkRelayModeBridge), linkBridgeRoleToNext, 0)
+	request.Header, err = buildLinkRelayHeaders(endpoint, firstNonEmptyString(strings.TrimSpace(mode), linkRelayModeBridge), linkBridgeRoleToNext, 0)
 	if err != nil {
 		cancelLinkH3Stream(stream, quicConn, cancel, "h3 websocket auth failed")
 		return nil, err
@@ -1089,7 +1093,7 @@ func openLinkRelayWebSocketSpeedTestConn(endpoint linkEndpoint, byteCount int64,
 	if err != nil {
 		return nil, err
 	}
-	header, err := buildLinkRelayHeaders(endpoint.ChainID, endpoint.ChainSecret, linkRelayModeSpeedTest, "", byteCount)
+	header, err := buildLinkRelayHeaders(endpoint, linkRelayModeSpeedTest, "", byteCount)
 	if err != nil {
 		return nil, err
 	}
@@ -1178,7 +1182,7 @@ func openLinkRelayHTTP3WebSocketSpeedTestConn(endpoint linkEndpoint, byteCount i
 	request.Proto = "websocket"
 	request.ProtoMajor = 3
 	request.ProtoMinor = 0
-	request.Header, err = buildLinkRelayHeaders(endpoint.ChainID, endpoint.ChainSecret, linkRelayModeSpeedTest, "", byteCount)
+	request.Header, err = buildLinkRelayHeaders(endpoint, linkRelayModeSpeedTest, "", byteCount)
 	if err != nil {
 		cancelLinkH3Stream(stream, quicConn, cancel, "h3 speed websocket auth failed")
 		return nil, err
@@ -1344,19 +1348,24 @@ func isLinkSpeedTestDurationLimitErr(err error, bytesRead int64) bool {
 	return strings.Contains(text, "timeout") || strings.Contains(text, "deadline") || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
-func buildLinkRelayHeaders(chainID string, secret string, mode string, role string, speedBytes int64) (http.Header, error) {
+func buildLinkRelayHeaders(endpoint linkEndpoint, mode string, role string, speedBytes int64) (http.Header, error) {
+	chainID := strings.TrimSpace(endpoint.ChainID)
 	header := http.Header{}
-	header.Set(linkLegacyChainIDHeader, strings.TrimSpace(chainID))
-	header.Set(linkCodexChainIDHeader, strings.TrimSpace(chainID))
+	header.Set(linkLegacyChainIDHeader, chainID)
+	header.Set(linkCodexChainIDHeader, chainID)
 	header.Set(linkCodexVersionHeader, linkAuthPacketVersion)
 	header.Set(linkCodexRelayModeHeader, strings.TrimSpace(mode))
+	header.Set("X-Codex-Auth-Timestamp", time.Now().UTC().Format(time.RFC3339Nano))
 	if strings.TrimSpace(role) != "" {
 		header.Set(linkCodexRelayRoleHeader, normalizeLinkBridgeRole(role))
 	}
 	if speedBytes > 0 {
 		header.Set(linkCodexSpeedBytesHeader, strconv.FormatInt(speedBytes, 10))
 	}
-	if err := applyLinkSecretAuthHeaders(header, chainID, secret); err != nil {
+	if ticket := strings.TrimSpace(endpoint.AuthTicket); ticket != "" {
+		header.Set(linkCodexAuthTicketHeader, ticket)
+	}
+	if err := applyLinkSecretAuthHeaders(header, chainID, endpoint.ChainSecret); err != nil {
 		return nil, err
 	}
 	return header, nil
@@ -1374,6 +1383,7 @@ func applyLinkSecretAuthHeaders(headers http.Header, chainID string, secret stri
 	nonce := randomHexToken(16)
 	headers.Set("Authorization", "Bearer "+nonce)
 	headers.Set(linkCodexAuthModeHeader, "secret_hmac")
+	headers.Set("X-Codex-Auth-Timestamp", time.Now().UTC().Format(time.RFC3339Nano))
 	headers.Set(linkCodexMACHeader, buildLinkHMAC(cleanSecret, cleanChainID, nonce))
 	return nil
 }

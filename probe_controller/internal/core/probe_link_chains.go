@@ -1,6 +1,9 @@
 package core
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -64,6 +67,7 @@ type probeLinkChainRecord struct {
 	UserID            string                            `json:"user_id"`
 	UserPublicKey     string                            `json:"user_public_key"`
 	Secret            string                            `json:"secret"`
+	AuthTicket        string                            `json:"auth_ticket,omitempty"`
 	EntryNodeID       string                            `json:"entry_node_id"`
 	ExitNodeID        string                            `json:"exit_node_id"`
 	CascadeNodeIDs    []string                          `json:"cascade_node_ids"`
@@ -104,6 +108,17 @@ type probeLinkEntryCandidate struct {
 	Protocols []string `json:"protocols"`
 	Name      string   `json:"name,omitempty"`
 	Selected  bool     `json:"selected"`
+}
+
+const probeLinkChainAuthTicketVersion = "chain-auth-v1"
+
+type probeLinkChainAuthTicketPayload struct {
+	Version       string `json:"v"`
+	ChainID       string `json:"chain_id"`
+	ClientEntryID string `json:"client_entry_id,omitempty"`
+	UserID        string `json:"user_id"`
+	UserPublicKey string `json:"user_public_key"`
+	IssuedAt      string `json:"issued_at"`
 }
 
 type probeLinkChainConfigResponse struct {
@@ -1343,6 +1358,63 @@ func fillChainRelayHosts(items []probeLinkChainRecord) []probeLinkChainRecord {
 	return out
 }
 
+func attachProbeLinkChainAuthTickets(items []probeLinkChainRecord) ([]probeLinkChainRecord, error) {
+	if len(items) == 0 {
+		return []probeLinkChainRecord{}, nil
+	}
+	priv, err := loadAdminPrivateKeyForSigning()
+	if err != nil {
+		return nil, fmt.Errorf("probe chain auth ticket signing unavailable: %w", err)
+	}
+	out := make([]probeLinkChainRecord, 0, len(items))
+	for _, item := range items {
+		next := item
+		ticket, ticketErr := buildProbeLinkChainAuthTicket(next, priv)
+		if ticketErr != nil {
+			return nil, fmt.Errorf("probe chain auth ticket skipped: chain=%s err=%w", strings.TrimSpace(next.ChainID), ticketErr)
+		}
+		next.AuthTicket = ticket
+		out = append(out, next)
+	}
+	return out, nil
+}
+
+func buildProbeLinkChainAuthTicket(item probeLinkChainRecord, priv ed25519.PrivateKey) (string, error) {
+	chainID := strings.TrimSpace(item.ChainID)
+	if relayID := strings.TrimSpace(item.RelayChainID); relayID != "" {
+		chainID = relayID
+	}
+	if chainID == "" {
+		return "", fmt.Errorf("chain_id is required")
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("admin private key is invalid")
+	}
+	userPublicKey := strings.TrimSpace(item.UserPublicKey)
+	if userPublicKey == "" {
+		return "", fmt.Errorf("user_public_key is required")
+	}
+	clientEntryID := strings.TrimSpace(item.ClientEntryID)
+	if clientEntryID == "" {
+		clientEntryID = strings.TrimSpace(item.ChainID)
+	}
+	payload := probeLinkChainAuthTicketPayload{
+		Version:       probeLinkChainAuthTicketVersion,
+		ChainID:       chainID,
+		ClientEntryID: clientEntryID,
+		UserID:        strings.TrimSpace(item.UserID),
+		UserPublicKey: userPublicKey,
+		IssuedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sig := ed25519.Sign(priv, payloadBytes)
+	enc := base64.RawURLEncoding
+	return enc.EncodeToString(payloadBytes) + "." + enc.EncodeToString(sig), nil
+}
+
 // buildNodeRelayHostMap returns a map from nodeID to one selectable relay domain.
 // It now uses all known node domains (Cloudflare/DDNS/service host) instead of
 // fixed business-class records only.
@@ -1730,7 +1802,11 @@ func ProbeLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
 
 	available := filterAvailableProbeLinkChains(all)
 	related := filterProbeLinkChainsByNodeID(available, nodeID)
-	enriched := fillChainRelayHosts(related)
+	enriched, ticketErr := attachProbeLinkChainAuthTickets(fillChainRelayHosts(related))
+	if ticketErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": ticketErr.Error()})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"chains": enriched})
 }
@@ -1762,8 +1838,16 @@ func ProbeLinkChainConfigHandler(w http.ResponseWriter, r *http.Request) {
 	ProbeLinkChainStore.mu.RUnlock()
 
 	available := fillChainRelayHosts(filterAvailableProbeLinkChains(all))
-	selfChains := filterProbeLinkChainsByNodeID(available, nodeID)
-	clientEntryChains := projectProbeLinkEntriesForClient(filterProbeLinkChainsByType(available, "proxy_chain"))
+	selfChains, ticketErr := attachProbeLinkChainAuthTickets(filterProbeLinkChainsByNodeID(available, nodeID))
+	if ticketErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": ticketErr.Error()})
+		return
+	}
+	clientEntryChains, ticketErr := attachProbeLinkChainAuthTickets(projectProbeLinkEntriesForClient(filterProbeLinkChainsByType(available, "proxy_chain")))
+	if ticketErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": ticketErr.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, probeLinkChainConfigResponse{
 		NodeID:                   nodeID,
 		Chains:                   selfChains,

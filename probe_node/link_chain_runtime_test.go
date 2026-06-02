@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -255,7 +257,9 @@ func TestVerifyProbeChainInboundAuthRejectsUnsupportedMode(t *testing.T) {
 	}
 }
 
-func TestVerifyProbeChainInboundAuthAcceptsSecretHMAC(t *testing.T) {
+func TestVerifyProbeChainInboundAuthRejectsMissingUserAuthTicket(t *testing.T) {
+	resetProbeChainAuthReplayStoreForTest()
+	defer resetProbeChainAuthReplayStoreForTest()
 	cfg := probeChainRuntimeConfig{
 		chainID: "chain-a",
 		secret:  "secret-1",
@@ -265,6 +269,97 @@ func TestVerifyProbeChainInboundAuthAcceptsSecretHMAC(t *testing.T) {
 		Mode:    "secret_hmac",
 		Nonce:   "nonce-a",
 		MAC:     buildProbeChainHMAC("secret-1", "chain-a", "nonce-a"),
+	}
+	if err := verifyProbeChainInboundAuth(cfg, env); err != nil {
+		if strings.Contains(err.Error(), "ticket") {
+			return
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Fatalf("expected missing ticket error")
+}
+
+func TestVerifyProbeChainInboundAuthRejectsReplayNonce(t *testing.T) {
+	resetProbeChainAuthReplayStoreForTest()
+	defer resetProbeChainAuthReplayStoreForTest()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
+	ticket := buildProbeChainUserAuthTicketForTest(t, priv, "chain-a", rawPublicKey)
+	cfg := probeChainRuntimeConfig{
+		chainID:         "chain-a",
+		secret:          "secret-1",
+		rawPublicKey:    rawPublicKey,
+		userPublicKey:   pub,
+		requireUserAuth: true,
+	}
+	env := probeChainAuthEnvelope{
+		ChainID:    "chain-a",
+		Mode:       "secret_hmac",
+		Nonce:      "nonce-replay",
+		MAC:        buildProbeChainHMAC("secret-1", "chain-a", "nonce-replay"),
+		AuthTicket: ticket,
+	}
+	if err := verifyProbeChainInboundAuth(cfg, env); err != nil {
+		t.Fatalf("first verify failed: %v", err)
+	}
+	err = verifyProbeChainInboundAuth(cfg, env)
+	if err == nil || !strings.Contains(err.Error(), "replay") {
+		t.Fatalf("expected replay error, got: %v", err)
+	}
+}
+
+func TestVerifyProbeChainInboundAuthRequiresUserAuthTicket(t *testing.T) {
+	resetProbeChainAuthReplayStoreForTest()
+	defer resetProbeChainAuthReplayStoreForTest()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
+	cfg := probeChainRuntimeConfig{
+		chainID:         "chain-a",
+		secret:          "secret-1",
+		requireUserAuth: true,
+		rawPublicKey:    rawPublicKey,
+		userPublicKey:   pub,
+	}
+	env := probeChainAuthEnvelope{
+		ChainID: "chain-a",
+		Mode:    "secret_hmac",
+		Nonce:   "nonce-ticket-missing",
+		MAC:     buildProbeChainHMAC("secret-1", "chain-a", "nonce-ticket-missing"),
+	}
+	err = verifyProbeChainInboundAuth(cfg, env)
+	if err == nil || !strings.Contains(err.Error(), "ticket") {
+		t.Fatalf("expected ticket error, got: %v", err)
+	}
+}
+
+func TestVerifyProbeChainInboundAuthAcceptsSignedUserAuthTicket(t *testing.T) {
+	resetProbeChainAuthReplayStoreForTest()
+	defer resetProbeChainAuthReplayStoreForTest()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
+	ticket := buildProbeChainUserAuthTicketForTest(t, priv, "chain-a", rawPublicKey)
+	cfg := probeChainRuntimeConfig{
+		chainID:         "chain-a",
+		secret:          "secret-1",
+		requireUserAuth: true,
+		rawPublicKey:    rawPublicKey,
+		userPublicKey:   pub,
+	}
+	env := probeChainAuthEnvelope{
+		ChainID:    "chain-a",
+		Mode:       "secret_hmac",
+		Nonce:      "nonce-ticket-valid",
+		MAC:        buildProbeChainHMAC("secret-1", "chain-a", "nonce-ticket-valid"),
+		AuthTicket: ticket,
 	}
 	if err := verifyProbeChainInboundAuth(cfg, env); err != nil {
 		t.Fatalf("verifyProbeChainInboundAuth failed: %v", err)
@@ -301,6 +396,29 @@ func TestResolveProbeChainTLSServerName(t *testing.T) {
 	if got := resolveProbeChainTLSServerName("websocket-h3", "203.0.113.10", "203.0.113.10"); got != "203.0.113.10" {
 		t.Fatalf("websocket-h3 sni should fallback to dial ip when host is ip, got: %s", got)
 	}
+}
+
+func buildProbeChainUserAuthTicketForTest(t *testing.T, priv ed25519.PrivateKey, chainID string, rawPublicKey string) string {
+	t.Helper()
+	payload := probeChainUserAuthTicketPayload{
+		Version:       "chain-auth-v1",
+		ChainID:       strings.TrimSpace(chainID),
+		UserPublicKey: strings.TrimSpace(rawPublicKey),
+		IssuedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal ticket payload: %v", err)
+	}
+	sig := ed25519.Sign(priv, payloadBytes)
+	enc := base64.RawURLEncoding
+	return enc.EncodeToString(payloadBytes) + "." + enc.EncodeToString(sig)
+}
+
+func resetProbeChainAuthReplayStoreForTest() {
+	probeChainAuthReplayStore.mu.Lock()
+	probeChainAuthReplayStore.items = make(map[string]time.Time)
+	probeChainAuthReplayStore.mu.Unlock()
 }
 
 func TestResolveProbeChainDialIPHostUsesFreshCache(t *testing.T) {

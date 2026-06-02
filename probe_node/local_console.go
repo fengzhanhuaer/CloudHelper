@@ -2609,6 +2609,7 @@ func loadProbeLocalProxyChainItems() ([]probeLinkChainServerItem, error) {
 		}
 	}
 	setProbeLocalProxyViewChains(out)
+	rememberProbeChainAuthTicketsForItems(out)
 	return out, nil
 }
 
@@ -4107,6 +4108,7 @@ func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLoc
 		EntryPort:   entryPort,
 		LinkLayer:   linkLayer,
 		ChainSecret: strings.TrimSpace(item.Secret),
+		AuthTicket:  strings.TrimSpace(item.AuthTicket),
 	}, nil
 }
 

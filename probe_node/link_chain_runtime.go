@@ -52,6 +52,7 @@ type probeChainRuntimeConfig struct {
 	userPublicKey   ed25519.PublicKey
 	rawPublicKey    string
 	secret          string
+	authTicket      string
 	role            string
 	listenHost      string
 	listenPort      int
@@ -154,14 +155,17 @@ type probeChainAuthEnvelope struct {
 	Nonce      string                     `json:"nonce,omitempty"`
 	Signature  string                     `json:"signature,omitempty"`
 	MAC        string                     `json:"mac,omitempty"`
+	AuthTicket string                     `json:"auth_ticket,omitempty"`
 }
 
 type probeChainAuthPayloadBody struct {
-	Mode      string `json:"mode,omitempty"`
-	ChainID   string `json:"chain_id,omitempty"`
-	Nonce     string `json:"nonce,omitempty"`
-	Signature string `json:"signature,omitempty"`
-	MAC       string `json:"mac,omitempty"`
+	Mode       string `json:"mode,omitempty"`
+	ChainID    string `json:"chain_id,omitempty"`
+	Nonce      string `json:"nonce,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
+	Signature  string `json:"signature,omitempty"`
+	MAC        string `json:"mac,omitempty"`
+	AuthTicket string `json:"auth_ticket,omitempty"`
 }
 
 type probeChainAuthIPState struct {
@@ -271,6 +275,8 @@ const (
 	probeChainCodexChainIDHeader    = "X-Codex-Chain-Id"
 	probeChainCodexAuthModeHeader   = "X-Codex-Auth-Mode"
 	probeChainCodexMACHeader        = "X-Codex-Mac"
+	probeChainCodexAuthTicketHeader = "X-Codex-User-Auth-Ticket"
+	probeChainCodexAuthTimeHeader   = "X-Codex-Auth-Timestamp"
 	probeChainCodexVersionHeader    = "X-Codex-Api-Version"
 	probeChainCodexRelayModeHeader  = "X-Codex-Relay-Mode"
 	probeChainCodexRelayRoleHeader  = "X-Codex-Relay-Role"
@@ -348,6 +354,7 @@ const (
 	probeChainAuthBlacklistTTL      = 5 * time.Hour
 	probeChainAuthFailureMinDelayMs = 200
 	probeChainAuthFailureMaxDelayMs = 400
+	probeChainAuthReplayTTL         = 10 * time.Minute
 )
 
 var probeChainAuthIPStateMap = struct {
@@ -355,6 +362,20 @@ var probeChainAuthIPStateMap = struct {
 	items map[string]probeChainAuthIPState
 }{
 	items: make(map[string]probeChainAuthIPState),
+}
+
+var probeChainAuthTicketStore = struct {
+	mu    sync.RWMutex
+	items map[string]string
+}{
+	items: make(map[string]string),
+}
+
+var probeChainAuthReplayStore = struct {
+	mu    sync.Mutex
+	items map[string]time.Time
+}{
+	items: make(map[string]time.Time),
 }
 
 var probeChainCopyBufferPool = sync.Pool{
@@ -706,6 +727,7 @@ func buildProbeChainRuntimeConfigFromControl(cmd probeControlMessage) (probeChai
 		userID:          strings.TrimSpace(cmd.UserID),
 		rawPublicKey:    strings.TrimSpace(cmd.UserPublicKey),
 		secret:          secret,
+		authTicket:      strings.TrimSpace(cmd.AuthTicket),
 		role:            role,
 		listenHost:      listenHost,
 		listenPort:      listenPort,
@@ -2616,10 +2638,12 @@ func readProbeChainAuthEnvelopeFromHeaders(headers http.Header, chainID string) 
 	env := probeChainAuthEnvelope{
 		Type:       probeChainAuthPacketType,
 		APIVersion: strings.TrimSpace(headers.Get(probeChainCodexVersionHeader)),
+		Timestamp:  strings.TrimSpace(headers.Get(probeChainCodexAuthTimeHeader)),
 		Mode:       strings.ToLower(strings.TrimSpace(headers.Get(probeChainCodexAuthModeHeader))),
 		ChainID:    strings.TrimSpace(chainID),
 		Nonce:      strings.TrimSpace(nonce),
 		MAC:        strings.TrimSpace(headers.Get(probeChainCodexMACHeader)),
+		AuthTicket: strings.TrimSpace(headers.Get(probeChainCodexAuthTicketHeader)),
 	}
 	if env.APIVersion == "" {
 		env.APIVersion = probeChainAuthPacketVersion
@@ -4490,6 +4514,9 @@ func readProbeChainAuthEnvelope(reader *bufio.Reader) (probeChainAuthEnvelope, e
 		if strings.TrimSpace(env.MAC) == "" {
 			env.MAC = env.Auth.MAC
 		}
+		if strings.TrimSpace(env.AuthTicket) == "" {
+			env.AuthTicket = env.Auth.AuthTicket
+		}
 	}
 	env.Type = strings.TrimSpace(env.Type)
 	env.APIVersion = strings.TrimSpace(env.APIVersion)
@@ -4500,6 +4527,7 @@ func readProbeChainAuthEnvelope(reader *bufio.Reader) (probeChainAuthEnvelope, e
 	env.Nonce = strings.TrimSpace(env.Nonce)
 	env.Signature = strings.TrimSpace(env.Signature)
 	env.MAC = strings.TrimSpace(env.MAC)
+	env.AuthTicket = strings.TrimSpace(env.AuthTicket)
 	return env, nil
 }
 
@@ -4559,14 +4587,134 @@ func verifyProbeChainInboundAuth(cfg probeChainRuntimeConfig, env probeChainAuth
 	if !hmac.Equal([]byte(strings.ToLower(env.MAC)), []byte(strings.ToLower(expected))) {
 		return fmt.Errorf("authentication failed")
 	}
+	if err := verifyProbeChainUserAuthTicket(cfg, env.AuthTicket); err != nil {
+		return err
+	}
+	if err := recordProbeChainAuthNonce(cfg.chainID, env.Nonce); err != nil {
+		return err
+	}
+	return nil
+}
+
+func recordProbeChainAuthNonce(chainID string, nonce string) error {
+	id := strings.TrimSpace(chainID)
+	n := strings.TrimSpace(nonce)
+	if id == "" || n == "" {
+		return fmt.Errorf("nonce is required")
+	}
+	key := id + "\n" + n
+	now := time.Now()
+	probeChainAuthReplayStore.mu.Lock()
+	defer probeChainAuthReplayStore.mu.Unlock()
+	for itemKey, expiresAt := range probeChainAuthReplayStore.items {
+		if !expiresAt.After(now) {
+			delete(probeChainAuthReplayStore.items, itemKey)
+		}
+	}
+	if expiresAt, exists := probeChainAuthReplayStore.items[key]; exists && expiresAt.After(now) {
+		return fmt.Errorf("auth nonce replay detected")
+	}
+	probeChainAuthReplayStore.items[key] = now.Add(probeChainAuthReplayTTL)
+	return nil
+}
+
+func rememberProbeChainAuthTicket(chainID string, authTicket string) {
+	id := strings.TrimSpace(chainID)
+	ticket := strings.TrimSpace(authTicket)
+	if id == "" || ticket == "" {
+		return
+	}
+	probeChainAuthTicketStore.mu.Lock()
+	probeChainAuthTicketStore.items[id] = ticket
+	probeChainAuthTicketStore.mu.Unlock()
+}
+
+func lookupProbeChainAuthTicket(chainID string) string {
+	id := strings.TrimSpace(chainID)
+	if id == "" {
+		return ""
+	}
+	probeChainAuthTicketStore.mu.RLock()
+	ticket := strings.TrimSpace(probeChainAuthTicketStore.items[id])
+	probeChainAuthTicketStore.mu.RUnlock()
+	return ticket
+}
+
+func applyProbeChainAuthTicketHeader(headers http.Header, chainID string) {
+	if headers == nil {
+		return
+	}
+	if ticket := lookupProbeChainAuthTicket(chainID); ticket != "" {
+		headers.Set(probeChainCodexAuthTicketHeader, ticket)
+	}
+}
+
+type probeChainUserAuthTicketPayload struct {
+	Version       string `json:"v"`
+	ChainID       string `json:"chain_id"`
+	ClientEntryID string `json:"client_entry_id,omitempty"`
+	UserID        string `json:"user_id"`
+	UserPublicKey string `json:"user_public_key"`
+	IssuedAt      string `json:"issued_at"`
+}
+
+func verifyProbeChainUserAuthTicket(cfg probeChainRuntimeConfig, rawTicket string) error {
+	ticket := strings.TrimSpace(rawTicket)
+	if ticket == "" {
+		return fmt.Errorf("user auth ticket is required")
+	}
+	if len(cfg.userPublicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("user public key is not configured")
+	}
+	parts := strings.Split(ticket, ".")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid user auth ticket")
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid user auth ticket payload")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid user auth ticket signature")
+	}
+	if len(signature) != ed25519.SignatureSize || !ed25519.Verify(cfg.userPublicKey, payloadBytes, signature) {
+		return fmt.Errorf("user auth ticket verification failed")
+	}
+	var payload probeChainUserAuthTicketPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return fmt.Errorf("invalid user auth ticket payload json")
+	}
+	if strings.TrimSpace(payload.Version) != "chain-auth-v1" {
+		return fmt.Errorf("unsupported user auth ticket version")
+	}
+	if strings.TrimSpace(payload.ChainID) != strings.TrimSpace(cfg.chainID) {
+		return fmt.Errorf("user auth ticket chain mismatch")
+	}
+	if strings.TrimSpace(payload.UserPublicKey) != strings.TrimSpace(cfg.rawPublicKey) {
+		return fmt.Errorf("user auth ticket public key mismatch")
+	}
 	return nil
 }
 func sendProbeChainSecretAuth(nextWriter io.Writer, nextReader *bufio.Reader, chainID string, secret string) error {
+	return sendProbeChainSecretAuthWithTicket(nextWriter, nextReader, chainID, secret, "")
+}
+
+func sendProbeChainSecretAuthWithTicket(nextWriter io.Writer, nextReader *bufio.Reader, chainID string, secret string, authTicket string) error {
 	nonce, err := readProbeChainNonceChallenge(nextReader)
 	if err != nil {
 		return err
 	}
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
 	env := newProbeChainAuthEnvelope("secret_hmac", chainID, nonce, "", buildProbeChainHMAC(secret, chainID, nonce))
+	env.Timestamp = timestamp
+	if env.Auth != nil {
+		env.Auth.Timestamp = timestamp
+	}
+	env.AuthTicket = strings.TrimSpace(authTicket)
+	if env.Auth != nil {
+		env.Auth.AuthTicket = env.AuthTicket
+	}
 	encoded, err := json.Marshal(env)
 	if err != nil {
 		return err

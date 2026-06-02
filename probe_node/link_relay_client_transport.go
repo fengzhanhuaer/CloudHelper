@@ -1922,7 +1922,9 @@ func applyProbeChainSecretAuthHeaders(headers http.Header, chainID string, secre
 	nonce := randomHexToken(16)
 	headers.Set("Authorization", "Bearer "+nonce)
 	headers.Set(probeChainCodexAuthModeHeader, "secret_hmac")
+	headers.Set(probeChainCodexAuthTimeHeader, time.Now().UTC().Format(time.RFC3339Nano))
 	headers.Set(probeChainCodexMACHeader, buildProbeChainHMAC(cleanSecret, cleanChainID, nonce))
+	applyProbeChainAuthTicketHeader(headers, cleanChainID)
 	return nil
 }
 

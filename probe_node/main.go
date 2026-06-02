@@ -107,6 +107,7 @@ type probeControlMessage struct {
 	UserID            string                         `json:"user_id"`
 	UserPublicKey     string                         `json:"user_public_key"`
 	LinkSecret        string                         `json:"link_secret"`
+	AuthTicket        string                         `json:"auth_ticket"`
 	Role              string                         `json:"role"`
 	ListenHost        string                         `json:"listen_host"`
 	ListenPort        int                            `json:"listen_port"`
