@@ -485,19 +485,34 @@ func probeLocalSnapshotWindowsPnPDevices(flags uint32) ([]probeLocalWindowsPnPDe
 
 		instanceID, err := probeLocalGetWindowsDeviceInstanceID(handle, &devInfo)
 		if err != nil {
+			if isProbeLocalWindowsIgnorablePnPSnapshotErr(err) {
+				continue
+			}
 			return nil, err
 		}
 		friendlyName, err := probeLocalGetWindowsDeviceRegistryPropertyString(handle, &devInfo, probeLocalSPDRPFriendlyName)
 		if err != nil {
-			return nil, err
+			if isProbeLocalWindowsIgnorablePnPSnapshotErr(err) {
+				friendlyName = ""
+			} else {
+				return nil, err
+			}
 		}
 		deviceDesc, err := probeLocalGetWindowsDeviceRegistryPropertyString(handle, &devInfo, probeLocalSPDRPDevDesc)
 		if err != nil {
-			return nil, err
+			if isProbeLocalWindowsIgnorablePnPSnapshotErr(err) {
+				deviceDesc = ""
+			} else {
+				return nil, err
+			}
 		}
 		className, err := probeLocalGetWindowsDeviceRegistryPropertyString(handle, &devInfo, probeLocalSPDRPClass)
 		if err != nil {
-			return nil, err
+			if isProbeLocalWindowsIgnorablePnPSnapshotErr(err) {
+				className = ""
+			} else {
+				return nil, err
+			}
 		}
 		statusText, problemText := probeLocalGetWindowsDevNodeState(devInfo.DevInst)
 		if strings.TrimSpace(friendlyName) == "" {
@@ -524,7 +539,8 @@ func probeLocalOpenWindowsDeviceInfoSet(flags uint32) (uintptr, error) {
 
 func probeLocalGetWindowsDeviceInstanceID(handle uintptr, devInfo *probeLocalSPDevinfoData) (string, error) {
 	bufLen := uint32(256)
-	for attempt := 0; attempt < 3; attempt++ {
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
 		buf := make([]uint16, bufLen)
 		var required uint32
 		ret, _, callErr := probeLocalProcSetupDiGetDeviceInstanceIDW.Call(
@@ -537,18 +553,27 @@ func probeLocalGetWindowsDeviceInstanceID(handle uintptr, devInfo *probeLocalSPD
 		if ret != 0 {
 			return strings.TrimSpace(windows.UTF16ToString(buf)), nil
 		}
-		if errors.Is(callErr, syscall.ERROR_INSUFFICIENT_BUFFER) && required > bufLen {
-			bufLen = required + 1
+		lastErr = probeLocalWindowsSetupAPICallErr("SetupDiGetDeviceInstanceIdW", callErr)
+		if isProbeLocalWindowsBufferTooSmallErr(callErr) {
+			if required > bufLen {
+				bufLen = required + 1
+			} else {
+				bufLen *= 2
+			}
+			if bufLen > 32768 {
+				break
+			}
 			continue
 		}
-		return "", probeLocalWindowsSetupAPICallErr("SetupDiGetDeviceInstanceIdW", callErr)
+		return "", lastErr
 	}
-	return "", errors.New("SetupDiGetDeviceInstanceIdW failed after retries")
+	return "", fmt.Errorf("SetupDiGetDeviceInstanceIdW failed after retries: %w", firstProbeLocalTUNErr(lastErr, errors.New("buffer too small")))
 }
 
 func probeLocalGetWindowsDeviceRegistryPropertyString(handle uintptr, devInfo *probeLocalSPDevinfoData, property uint32) (string, error) {
 	bufLen := uint32(256)
-	for attempt := 0; attempt < 3; attempt++ {
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
 		buf := make([]uint16, bufLen)
 		var regDataType uint32
 		var required uint32
@@ -567,13 +592,34 @@ func probeLocalGetWindowsDeviceRegistryPropertyString(handle uintptr, devInfo *p
 		if errors.Is(callErr, windows.ERROR_INVALID_DATA) || errors.Is(callErr, syscall.ERROR_NOT_FOUND) {
 			return "", nil
 		}
-		if errors.Is(callErr, syscall.ERROR_INSUFFICIENT_BUFFER) && required > uint32(len(buf)*2) {
-			bufLen = required/2 + 2
+		lastErr = probeLocalWindowsSetupAPICallErr("SetupDiGetDeviceRegistryPropertyW", callErr)
+		if isProbeLocalWindowsBufferTooSmallErr(callErr) {
+			if required > uint32(len(buf)*2) {
+				bufLen = required/2 + 2
+			} else {
+				bufLen *= 2
+			}
+			if bufLen > 32768 {
+				break
+			}
 			continue
 		}
-		return "", probeLocalWindowsSetupAPICallErr("SetupDiGetDeviceRegistryPropertyW", callErr)
+		return "", lastErr
 	}
-	return "", errors.New("SetupDiGetDeviceRegistryPropertyW failed after retries")
+	return "", fmt.Errorf("SetupDiGetDeviceRegistryPropertyW failed after retries: %w", firstProbeLocalTUNErr(lastErr, errors.New("buffer too small")))
+}
+
+func isProbeLocalWindowsBufferTooSmallErr(err error) bool {
+	return errors.Is(err, syscall.ERROR_INSUFFICIENT_BUFFER) ||
+		errors.Is(err, syscall.Errno(206))
+}
+
+func isProbeLocalWindowsIgnorablePnPSnapshotErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "file name is too long") ||
+		strings.Contains(strings.ToLower(err.Error()), "filename") && strings.Contains(strings.ToLower(err.Error()), "too long")
 }
 
 func probeLocalGetWindowsDevNodeState(devInst uint32) (string, string) {

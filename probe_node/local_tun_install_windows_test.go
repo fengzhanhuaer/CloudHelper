@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -31,6 +32,15 @@ func TestProbeLocalWintunAdapterMatches(t *testing.T) {
 	}
 	if probeLocalWintunAdapterMatches("other", "other") {
 		t.Fatal("unexpected adapter match")
+	}
+}
+
+func TestProbeLocalWindowsBufferTooSmallErrIncludesFilenameTooLong(t *testing.T) {
+	if !isProbeLocalWindowsBufferTooSmallErr(syscall.Errno(206)) {
+		t.Fatal("ERROR_FILENAME_EXCED_RANGE should be treated as buffer-too-small")
+	}
+	if !isProbeLocalWindowsIgnorablePnPSnapshotErr(errors.New("SetupDiGetDeviceInstanceIdW failed: The file name is too long.")) {
+		t.Fatal("filename-too-long pnp snapshot error should be ignorable")
 	}
 }
 
