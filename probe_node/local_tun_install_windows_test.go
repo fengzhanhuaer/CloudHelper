@@ -36,6 +36,9 @@ func TestProbeLocalWintunAdapterMatches(t *testing.T) {
 }
 
 func TestProbeLocalWindowsBufferTooSmallErrIncludesFilenameTooLong(t *testing.T) {
+	if !isProbeLocalWindowsBufferTooSmallErr(syscall.Errno(probeLocalWindowsErrorBufferOverflow)) {
+		t.Fatal("ERROR_BUFFER_OVERFLOW should be treated as buffer-too-small")
+	}
 	if !isProbeLocalWindowsBufferTooSmallErr(syscall.Errno(206)) {
 		t.Fatal("ERROR_FILENAME_EXCED_RANGE should be treated as buffer-too-small")
 	}

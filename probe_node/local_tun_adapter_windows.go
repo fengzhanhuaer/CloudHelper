@@ -15,7 +15,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const probeLocalWindowsErrorInsufficientBuffer = 122
+const (
+	probeLocalWindowsErrorBufferOverflow       = 111
+	probeLocalWindowsErrorInsufficientBuffer   = 122
+	probeLocalWindowsErrorFilenameExceedsRange = 206
+)
 
 const (
 	probeLocalSetupDIGCFPresent      = 0x00000002
@@ -132,14 +136,20 @@ func inspectProbeLocalWintunVisibility() (probeLocalWintunVisibilityEvidence, er
 			evidence.MatchedPnPInstanceID = strings.TrimSpace(device.InstanceID)
 		}
 	}
+	if adapterErr != nil && isProbeLocalWindowsIgnorableEnumerationErr(adapterErr) {
+		adapterErr = nil
+	}
+	if pnpErr != nil && isProbeLocalWindowsIgnorableEnumerationErr(pnpErr) {
+		pnpErr = nil
+	}
 	if adapterErr != nil && pnpErr != nil {
-		return evidence, errors.Join(adapterErr, pnpErr)
+		return evidence, errors.Join(fmt.Errorf("net adapter enumeration failed: %w", adapterErr), fmt.Errorf("pnp enumeration failed: %w", pnpErr))
 	}
 	if adapterErr != nil {
-		return evidence, adapterErr
+		return evidence, fmt.Errorf("net adapter enumeration failed: %w", adapterErr)
 	}
 	if pnpErr != nil {
-		return evidence, pnpErr
+		return evidence, fmt.Errorf("pnp enumeration failed: %w", pnpErr)
 	}
 	return evidence, nil
 }
@@ -211,20 +221,27 @@ func probeLocalWintunAdapterMatchesWithGUID(name, description, adapterGUID strin
 func listProbeLocalWindowsNetAdapters() ([]probeLocalWindowsNetAdapter, error) {
 	flags := uint32(windows.GAA_FLAG_INCLUDE_PREFIX)
 	var size uint32 = 15 * 1024
-	buf := make([]byte, size)
-	for i := 0; i < 3; i++ {
+	var lastErr error
+	for i := 0; i < 8; i++ {
+		buf := make([]byte, size)
 		first := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0]))
 		errCode := windows.GetAdaptersAddresses(windows.AF_UNSPEC, flags, 0, first, &size)
 		if errCode == nil {
 			return parseProbeLocalWindowsNetAdapters(first), nil
 		}
-		if errors.Is(errCode, syscall.Errno(probeLocalWindowsErrorInsufficientBuffer)) {
-			buf = make([]byte, size)
+		lastErr = errCode
+		if isProbeLocalWindowsBufferTooSmallErr(errCode) {
+			if size < uint32(len(buf))*2 {
+				size = uint32(len(buf)) * 2
+			}
+			if size > 1024*1024 {
+				break
+			}
 			continue
 		}
 		return nil, errCode
 	}
-	return nil, errors.New("GetAdaptersAddresses failed after retries")
+	return nil, fmt.Errorf("GetAdaptersAddresses failed after retries: %w", firstProbeLocalTUNErr(lastErr, errors.New("buffer too small")))
 }
 
 func parseProbeLocalWindowsNetAdapters(first *windows.IpAdapterAddresses) []probeLocalWindowsNetAdapter {
@@ -611,12 +628,21 @@ func probeLocalGetWindowsDeviceRegistryPropertyString(handle uintptr, devInfo *p
 
 func isProbeLocalWindowsBufferTooSmallErr(err error) bool {
 	return errors.Is(err, syscall.ERROR_INSUFFICIENT_BUFFER) ||
-		errors.Is(err, syscall.Errno(206))
+		errors.Is(err, syscall.Errno(probeLocalWindowsErrorBufferOverflow)) ||
+		errors.Is(err, syscall.Errno(probeLocalWindowsErrorInsufficientBuffer)) ||
+		errors.Is(err, syscall.Errno(probeLocalWindowsErrorFilenameExceedsRange))
 }
 
 func isProbeLocalWindowsIgnorablePnPSnapshotErr(err error) bool {
+	return isProbeLocalWindowsIgnorableEnumerationErr(err)
+}
+
+func isProbeLocalWindowsIgnorableEnumerationErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	if isProbeLocalWindowsBufferTooSmallErr(err) {
+		return true
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "file name is too long") ||
 		strings.Contains(strings.ToLower(err.Error()), "filename") && strings.Contains(strings.ToLower(err.Error()), "too long")
