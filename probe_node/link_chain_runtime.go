@@ -802,6 +802,10 @@ func parseProbeChainUserPublicKey(raw string) (ed25519.PublicKey, error) {
 
 func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, error) {
 	_ = stopProbeChainRuntime(cfg.chainID, "restart before apply")
+	if err := ensureProbeChainRuntimeAuthTicket(&cfg); err != nil {
+		return nil, err
+	}
+	rememberProbeChainAuthTicket(cfg.chainID, cfg.authTicket)
 
 	rt := &probeChainRuntime{
 		cfg:                cfg,
@@ -839,6 +843,55 @@ func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, er
 		cfg.prevDialMode,
 	)
 	return rt, nil
+}
+
+func ensureProbeChainRuntimeAuthTicket(cfg *probeChainRuntimeConfig) error {
+	if cfg == nil || !cfg.requireUserAuth {
+		return nil
+	}
+	if strings.TrimSpace(cfg.authTicket) != "" {
+		return nil
+	}
+	if ticket := lookupProbeChainAuthTicket(cfg.chainID); ticket != "" {
+		cfg.authTicket = ticket
+		return nil
+	}
+	baseURL := strings.TrimSpace(cfg.controllerURL)
+	if baseURL == "" || strings.TrimSpace(cfg.identity.NodeID) == "" || strings.TrimSpace(cfg.identity.Secret) == "" {
+		return fmt.Errorf("auth_ticket is required when require_user_auth=true")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
+	config, err := fetchProbeLinkChainConfig(ctx, baseURL, cfg.identity)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("active auth_ticket refresh failed: %w", err)
+	}
+	if item, ok := findProbeChainAuthTicketItem(cfg.chainID, config.SelfChains, config.GlobalProxyForwardChains); ok {
+		cfg.authTicket = strings.TrimSpace(item.AuthTicket)
+		if strings.TrimSpace(cfg.authTicket) != "" {
+			rememberProbeChainAuthTicket(cfg.chainID, cfg.authTicket)
+			log.Printf("probe chain auth ticket refreshed: chain=%s", strings.TrimSpace(cfg.chainID))
+			return nil
+		}
+	}
+	return fmt.Errorf("auth_ticket is required when require_user_auth=true")
+}
+
+func findProbeChainAuthTicketItem(chainID string, groups ...[]probeLinkChainServerItem) (probeLinkChainServerItem, bool) {
+	target := strings.TrimSpace(chainID)
+	if target == "" {
+		return probeLinkChainServerItem{}, false
+	}
+	for _, items := range groups {
+		for _, item := range items {
+			if strings.EqualFold(strings.TrimSpace(item.ChainID), target) ||
+				strings.EqualFold(strings.TrimSpace(item.RelayChainID), target) ||
+				strings.EqualFold(effectiveProbeLinkRelayChainID(item), target) {
+				return item, true
+			}
+		}
+	}
+	return probeLinkChainServerItem{}, false
 }
 
 type probeChainBridgeDialTarget struct {
@@ -4624,9 +4677,16 @@ func rememberProbeChainAuthTicket(chainID string, authTicket string) {
 	if id == "" || ticket == "" {
 		return
 	}
+	snapshot := map[string]string{}
 	probeChainAuthTicketStore.mu.Lock()
 	probeChainAuthTicketStore.items[id] = ticket
+	for key, value := range probeChainAuthTicketStore.items {
+		snapshot[key] = value
+	}
 	probeChainAuthTicketStore.mu.Unlock()
+	if err := persistProbeChainAuthTicketSnapshot(snapshot); err != nil {
+		log.Printf("warning: persist probe chain auth ticket cache failed: %v", err)
+	}
 }
 
 func lookupProbeChainAuthTicket(chainID string) string {
@@ -4637,6 +4697,25 @@ func lookupProbeChainAuthTicket(chainID string) string {
 	probeChainAuthTicketStore.mu.RLock()
 	ticket := strings.TrimSpace(probeChainAuthTicketStore.items[id])
 	probeChainAuthTicketStore.mu.RUnlock()
+	if ticket != "" {
+		return ticket
+	}
+	items, err := loadProbeChainAuthTicketSnapshot()
+	if err != nil {
+		log.Printf("warning: load probe chain auth ticket cache failed: %v", err)
+		return ""
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	probeChainAuthTicketStore.mu.Lock()
+	for key, value := range items {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			probeChainAuthTicketStore.items[key] = value
+		}
+	}
+	ticket = strings.TrimSpace(probeChainAuthTicketStore.items[id])
+	probeChainAuthTicketStore.mu.Unlock()
 	return ticket
 }
 

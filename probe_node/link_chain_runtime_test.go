@@ -366,6 +366,20 @@ func TestVerifyProbeChainInboundAuthAcceptsSignedUserAuthTicket(t *testing.T) {
 	}
 }
 
+func TestProbeChainAuthTicketStorePersistsToFile(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
+	resetProbeChainAuthTicketStoreForTest()
+	defer resetProbeChainAuthTicketStoreForTest()
+
+	rememberProbeChainAuthTicket("chain-a", "ticket-a")
+
+	resetProbeChainAuthTicketStoreForTest()
+	if got := lookupProbeChainAuthTicket("chain-a"); got != "ticket-a" {
+		t.Fatalf("ticket=%q want ticket-a", got)
+	}
+}
+
 func TestVerifyProbeChainInboundAuthRejectsInvalidMACWithNeutralMessage(t *testing.T) {
 	cfg := probeChainRuntimeConfig{
 		chainID: "chain-a",
@@ -419,6 +433,12 @@ func resetProbeChainAuthReplayStoreForTest() {
 	probeChainAuthReplayStore.mu.Lock()
 	probeChainAuthReplayStore.items = make(map[string]time.Time)
 	probeChainAuthReplayStore.mu.Unlock()
+}
+
+func resetProbeChainAuthTicketStoreForTest() {
+	probeChainAuthTicketStore.mu.Lock()
+	probeChainAuthTicketStore.items = make(map[string]string)
+	probeChainAuthTicketStore.mu.Unlock()
 }
 
 func TestResolveProbeChainDialIPHostUsesFreshCache(t *testing.T) {
