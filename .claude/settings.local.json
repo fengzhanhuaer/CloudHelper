@@ -18,7 +18,12 @@
       "Bash(echo \"EXIT=$?\")",
       "Bash(gofmt -l probe_node/local_console_proxy.go probe_node/local_console.go probe_node/main.go probe_node/local_console_proxy_test.go probe_controller/internal/core/mng_probe_console.go probe_controller/internal/core/mng_probe_console_test.go probe_controller/internal/core/probe_ws.go probe_controller/internal/core/server.go probe_controller/internal/core/mng_pages/probe.html)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(gofmt -w link_relay_h3_pool.go)",
+      "Bash(gofmt -l link_relay_h3_pool.go link_relay_client_transport.go)",
+      "Bash(go vet *)",
+      "Bash(git -C d:/Code/CloudHelper diff --stat probe_node/link_relay_client_transport.go)",
+      "Bash(git -C d:/Code/CloudHelper status --short)"
     ]
   }
 }
