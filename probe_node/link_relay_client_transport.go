@@ -1185,63 +1185,70 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
-	tlsConf := &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{http3.NextProtoH3},
-		ServerName:         resolveProbeChainClientTLSServerName("websocket-h3", relayDialHost, relayHostHeader),
-		InsecureSkipVerify: true,
-	}
+
+	// Reuse a pooled QUIC connection: HTTP/3 natively multiplexes request streams,
+	// so many CONNECT data streams ride one QUIC connection and avoid a fresh
+	// QUIC+TLS handshake (the dominant relay-server CPU cost) per stream.
 	logProbeChainRelayDialAttempt("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
-	quicConn, err := dialProbeChainBoundQUIC(ctx, dialHostPort, tlsConf, newProbeChainQUICConfig(0))
+	pooled, reused, err := acquireProbeChainHTTP3PooledConn(chainID, relayHost, relayPort, relayDialHost, relayHostHeader, openTimeout)
 	if err != nil {
-		cancel()
 		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
 		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
 		return nil, wrappedErr
 	}
 
-	transport := &http3.Transport{}
-	clientConn := transport.NewClientConn(quicConn)
-	select {
-	case <-clientConn.ReceivedSettings():
-		settings := clientConn.Settings()
-		enableExtendedConnect := settings != nil && settings.EnableExtendedConnect
-		log.Printf("probe chain relay h3 websocket settings: chain=%s relay=%s:%d dial_host=%s host_header=%s extended_connect=%t", strings.TrimSpace(chainID), strings.TrimSpace(relayHost), relayPort, strings.TrimSpace(relayDialHost), strings.TrimSpace(relayHostHeader), enableExtendedConnect)
-	case <-ctx.Done():
-		_ = quicConn.CloseWithError(0, "h3 websocket settings timeout")
-		cancel()
-		timeoutErr := fmt.Errorf("probe relay h3 websocket open timeout: relay=%s:%d", relayDialHost, relayPort)
-		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), timeoutErr)
-		return nil, timeoutErr
-	case <-clientConn.Context().Done():
-		cancel()
-		stateErr := fmt.Errorf("probe relay h3 websocket failed: %w", context.Cause(clientConn.Context()))
-		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), stateErr)
-		return nil, stateErr
+	conn, err := openProbeChainHTTP3WebSocketStreamOnConn(pooled, chainID, secret, relayURL, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout)
+	if err != nil {
+		// On a stream-level failure the shared QUIC conn may be dead; drop it from
+		// the pool so the next attempt redials, and on a freshly-created conn that
+		// never served a stream, retrying once with a brand-new conn avoids a stuck
+		// half-open endpoint.
+		releaseProbeChainHTTP3PooledConn(pooled, true)
+		if reused {
+			retryPooled, _, retryErr := acquireProbeChainHTTP3PooledConn(chainID, relayHost, relayPort, relayDialHost, relayHostHeader, openTimeout)
+			if retryErr == nil {
+				if retryConn, retryStreamErr := openProbeChainHTTP3WebSocketStreamOnConn(retryPooled, chainID, secret, relayURL, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout); retryStreamErr == nil {
+					if cacheOnSuccess {
+						refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+					}
+					logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
+					return retryConn, nil
+				}
+				releaseProbeChainHTTP3PooledConn(retryPooled, true)
+			}
+		}
+		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
-	if settings := clientConn.Settings(); settings == nil || !settings.EnableExtendedConnect {
-		_ = quicConn.CloseWithError(0, "h3 websocket extended connect disabled")
-		cancel()
-		extendedErr := errors.New("probe relay h3 websocket failed: server did not enable extended connect")
-		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), extendedErr)
-		return nil, extendedErr
+
+	_ = dialHostPort
+	if cacheOnSuccess {
+		refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 	}
+	logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
+	return conn, nil
+}
+
+// openProbeChainHTTP3WebSocketStreamOnConn opens one extended-CONNECT websocket
+// request stream on an already-established (pooled) HTTP/3 connection.
+func openProbeChainHTTP3WebSocketStreamOnConn(pooled *probeChainHTTP3PooledConn, chainID string, secret string, relayURL string, relayHost string, relayPort int, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration) (net.Conn, error) {
+	if pooled == nil || pooled.clientConn == nil {
+		return nil, errors.New("h3 pooled connection is nil")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
+	clientConn := pooled.clientConn
 
 	stream, err := clientConn.OpenRequestStream(ctx)
 	if err != nil {
-		_ = quicConn.CloseWithError(0, "h3 websocket stream open failed")
 		cancel()
-		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
-		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
+		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, relayURL, nil)
 	if err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "h3 websocket request build failed")
 		cancel()
 		return nil, err
 	}
@@ -1254,7 +1261,6 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 	if err := applyProbeChainSecretAuthHeaders(request.Header, chainID, secret); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "h3 websocket auth failed")
 		cancel()
 		return nil, err
 	}
@@ -1269,49 +1275,42 @@ func openProbeChainRelayHTTP3WebSocketNetConn(chainID string, secret string, rel
 	if err := stream.SendRequestHeader(request); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "h3 websocket header send failed")
 		cancel()
-		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
-		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
+		return nil, err
 	}
 	response, err := stream.ReadResponse()
 	if err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "h3 websocket response failed")
 		cancel()
-		wrappedErr := wrapProbeChainRelayDialError("websocket-h3", relayDialHost, relayPort, err)
-		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
+		return nil, err
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 		_ = response.Body.Close()
-		_ = quicConn.CloseWithError(0, "h3 websocket status failed")
+		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		cancel()
-		statusErr := fmt.Errorf("probe relay h3 websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
-		logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), statusErr)
-		return nil, statusErr
+		return nil, fmt.Errorf("probe relay h3 websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
-	if cacheOnSuccess {
-		refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
-	}
-	logProbeChainRelayDialOutcome("websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
+
+	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
+	pooled.addStream()
 	cancelOnce := sync.Once{}
 	return &probeChainHTTP3StreamNetConn{
 		stream: stream,
 		local:  probeChainRelayNetAddr{label: "probe-chain-h3-websocket-local"},
 		remote: probeChainRelayNetAddr{label: dialHostPort},
 		closeFn: func() error {
-			var closeErr error
+			// Close only this request stream; the shared QUIC connection lives on in
+			// the pool for other streams. The pool decides when to retire the conn.
 			cancelOnce.Do(func() {
 				cancel()
 				stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 				stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-				closeErr = quicConn.CloseWithError(0, "h3 websocket closed")
+				pooled.removeStream()
 			})
-			return closeErr
+			return nil
 		},
 	}, nil
 }
