@@ -61,6 +61,8 @@ func TestResolveProbeLocalListenAddrPriority(t *testing.T) {
 }
 
 func TestResolveProbeLocalListenAddrIgnoresProbeNodeListen(t *testing.T) {
+	// Keep these hermetic from any ambient probe_local_auth.json listen config.
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	t.Run("default local listen does not depend on probe node listen", func(t *testing.T) {
 		t.Setenv("PROBE_NODE_LISTEN", ":26030")
 		t.Setenv("PROBE_LOCAL_LISTEN", "")

@@ -30,6 +30,8 @@ import (
 
 const (
 	probeLocalListenAddrDefault = "127.0.0.1:16032"
+	probeLocalListenDefaultHost = "127.0.0.1"
+	probeLocalListenDefaultPort = 16032
 
 	probeLocalAuthStoreFile      = "probe_local_auth.json"
 	probeLocalSessionCookieName  = "probe_local_session"
@@ -62,6 +64,12 @@ type probeLocalAuthState struct {
 	PasswordHash string `json:"password_hash,omitempty"`
 	PasswordSalt string `json:"password_salt,omitempty"`
 	UpdatedAt    string `json:"updated_at,omitempty"`
+	// ListenIP / ListenPort configure the local console (本地界面) listen address.
+	// They are read at startup; defaults are written into probe_local_auth.json so
+	// they can be edited manually. ListenIP may be a non-loopback address (e.g.
+	// 0.0.0.0 or a LAN IP) to expose the local UI on the network.
+	ListenIP   string `json:"listen_ip,omitempty"`
+	ListenPort int    `json:"listen_port,omitempty"`
 }
 
 type probeLocalSessionState struct {
@@ -1380,6 +1388,93 @@ func persistProbeLocalAuthState(state probeLocalAuthState) error {
 	return os.WriteFile(path, payload, 0o600)
 }
 
+// loadProbeLocalAuthStateRaw reads the full persisted state WITHOUT the registration
+// gating applied by loadProbeLocalAuthState, so non-auth settings (the local console
+// listen config) survive even before the user registers. existed reports whether the
+// file was present.
+func loadProbeLocalAuthStateRaw() (state probeLocalAuthState, existed bool, err error) {
+	path, err := resolveProbeLocalAuthStorePath()
+	if err != nil {
+		return probeLocalAuthState{}, false, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return probeLocalAuthState{}, false, nil
+		}
+		return probeLocalAuthState{}, false, err
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return probeLocalAuthState{}, true, err
+	}
+	return state, true, nil
+}
+
+// resolveProbeLocalConfiguredListenAddr returns the local console listen address
+// configured in probe_local_auth.json, or "" when none is set. A missing IP or port
+// falls back to the loopback host / default port for that part.
+func resolveProbeLocalConfiguredListenAddr() string {
+	state, _, err := loadProbeLocalAuthStateRaw()
+	if err != nil {
+		return ""
+	}
+	ip := strings.TrimSpace(state.ListenIP)
+	port := state.ListenPort
+	if ip == "" && (port <= 0 || port > 65535) {
+		return ""
+	}
+	if ip == "" {
+		ip = probeLocalListenDefaultHost
+	}
+	if port <= 0 || port > 65535 {
+		port = probeLocalListenDefaultPort
+	}
+	return net.JoinHostPort(ip, strconv.Itoa(port))
+}
+
+// ensureProbeLocalListenConfigDefaults writes default listen_ip/listen_port into
+// probe_local_auth.json when absent, preserving any existing auth fields, so the
+// settings exist in the file for manual editing.
+func ensureProbeLocalListenConfigDefaults() {
+	state, existed, err := loadProbeLocalAuthStateRaw()
+	if err != nil {
+		logProbeWarnf("probe local listen config read failed, leaving file untouched: err=%v", err)
+		return
+	}
+	changed := false
+	if strings.TrimSpace(state.ListenIP) == "" {
+		state.ListenIP = probeLocalListenDefaultHost
+		changed = true
+	}
+	if state.ListenPort <= 0 || state.ListenPort > 65535 {
+		state.ListenPort = probeLocalListenDefaultPort
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if err := persistProbeLocalAuthState(state); err != nil {
+		logProbeWarnf("probe local listen config write failed: err=%v", err)
+		return
+	}
+	if !existed {
+		logProbeInfof("probe local listen config initialized: %s", net.JoinHostPort(state.ListenIP, strconv.Itoa(state.ListenPort)))
+	}
+}
+
+// isProbeLocalLoopbackHost reports whether host is a loopback address. An empty host
+// (bind-all) and any non-loopback IP are treated as exposed (returns false).
+func isProbeLocalLoopbackHost(host string) bool {
+	h := strings.TrimSpace(host)
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 func normalizeProbeLocalUsername(raw string) string {
 	return strings.TrimSpace(raw)
 }
@@ -1433,6 +1528,11 @@ func (m *probeLocalAuthManager) register(username, password, confirmPassword str
 		PasswordSalt: salt,
 		PasswordHash: hashProbeLocalPassword(password, salt),
 		UpdatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	// Preserve the local console listen config that lives in the same file.
+	if raw, _, rawErr := loadProbeLocalAuthStateRaw(); rawErr == nil {
+		next.ListenIP = strings.TrimSpace(raw.ListenIP)
+		next.ListenPort = raw.ListenPort
 	}
 	if err := persistProbeLocalAuthState(next); err != nil {
 		return err
@@ -2655,7 +2755,12 @@ func normalizeProbeLocalListenAddr(raw string) string {
 }
 
 func resolveProbeLocalListenAddr(explicit string) string {
-	candidate := firstNonEmpty(strings.TrimSpace(explicit), strings.TrimSpace(os.Getenv("PROBE_LOCAL_LISTEN")), probeLocalListenAddrDefault)
+	candidate := firstNonEmpty(
+		strings.TrimSpace(explicit),
+		strings.TrimSpace(os.Getenv("PROBE_LOCAL_LISTEN")),
+		strings.TrimSpace(resolveProbeLocalConfiguredListenAddr()),
+		probeLocalListenAddrDefault,
+	)
 	normalized := normalizeProbeLocalListenAddr(candidate)
 	if normalized != "" {
 		return normalized
@@ -2707,6 +2812,9 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 		return errors.New("nil local console handler")
 	}
 	addr := resolveProbeLocalListenAddr(explicitListen)
+	if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil && !isProbeLocalLoopbackHost(host) {
+		logProbeWarnf("probe local console binding to a non-loopback address (%s): the local UI will be reachable from the network — make sure a strong local password is set", addr)
+	}
 
 	probeLocalConsoleState.mu.Lock()
 	if probeLocalConsoleState.server != nil {

@@ -4,7 +4,18 @@
       "Bash(go build *)",
       "Bash(go env *)",
       "Bash(grep -rn \"IP_UNICAST_IF\\\\|IPV6_UNICAST_IF\\\\|func SetsockoptInt\\\\|IPPROTO_IPV6 \" \"$\\(go env GOMODCACHE\\)/golang.org/x/sys@v0.35.0/windows/\")",
-      "Bash(go test *)"
+      "Bash(go test *)",
+      "Bash(gofmt -d link_chain_runtime.go)",
+      "Bash(gofmt -l .)",
+      "Bash(gofmt -l local_console.go main.go local_console_listen_test.go local_console_listen_config_test.go link_chain_runtime.go)",
+      "Bash(gofmt -d local_console_listen_test.go)",
+      "Bash(awk 'BEGIN{ORS=\"\\\\r\\\\n\"} {sub\\(/\\\\r$/,\"\"\\); print}' local_console_listen_test.go)",
+      "Bash(mv _tmp_crlf local_console_listen_test.go)",
+      "Bash(gofmt -l local_console_listen_test.go local_console_listen_config_test.go)",
+      "Bash(grep -vE '^[+-]package|^[+-]import|^[+-]$')",
+      "Bash(gofmt -l local_console_listen_test.go)",
+      "Bash(gofmt -l local_console.go main.go link_chain_runtime.go local_console_listen_test.go local_console_listen_config_test.go)",
+      "Bash(echo \"EXIT=$?\")"
     ]
   }
 }

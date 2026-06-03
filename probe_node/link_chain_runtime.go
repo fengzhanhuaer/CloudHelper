@@ -385,15 +385,16 @@ var probeChainCopyBufferPool = sync.Pool{
 }
 
 type probeChainPortForwardPreconnectPool struct {
-	runtime    *probeChainRuntime
-	cfg        probeChainRuntimePortForward
-	network    string
-	targetAddr string
-	capacity   int
-	ready      chan *probeChainPortForwardPreconnectedConn
-	refillCh   chan struct{}
-	stopCh     chan struct{}
-	closeOnce  sync.Once
+	runtime           *probeChainRuntime
+	cfg               probeChainRuntimePortForward
+	network           string
+	targetAddr        string
+	capacity          int
+	ready             chan *probeChainPortForwardPreconnectedConn
+	refillCh          chan struct{}
+	stopCh            chan struct{}
+	closeOnce         sync.Once
+	targetUnreachable bool // run() loop only: whether the last refill failed at the target-dial phase
 }
 
 type probeChainPortForwardPreconnectedConn struct {
@@ -401,6 +402,33 @@ type probeChainPortForwardPreconnectedConn struct {
 	openedAt  time.Time
 	flowID    string
 	expiresAt time.Time
+}
+
+// probeChainPreconnectPhase distinguishes a relay/link failure (a real transport
+// problem) from a target-dial failure (the target is unreachable, link is fine).
+type probeChainPreconnectPhase string
+
+const (
+	probeChainPreconnectPhaseTransport probeChainPreconnectPhase = "transport"
+	probeChainPreconnectPhaseTarget    probeChainPreconnectPhase = "target"
+
+	// When the relay link is healthy but the target is unreachable, prewarming is
+	// pointless (no connection could succeed anyway), so we retry slowly and quietly
+	// instead of hammering a dead target and spamming logs.
+	probeChainPortForwardPreconnectTargetRetryInterval = 30 * time.Second
+)
+
+type probeChainPreconnectError struct {
+	phase probeChainPreconnectPhase
+	err   error
+}
+
+func (e *probeChainPreconnectError) Error() string { return e.err.Error() }
+func (e *probeChainPreconnectError) Unwrap() error { return e.err }
+
+func isProbeChainPreconnectTargetError(err error) bool {
+	var pcErr *probeChainPreconnectError
+	return errors.As(err, &pcErr) && pcErr.phase == probeChainPreconnectPhaseTarget
 }
 
 var probeChainUDPFrameBufferPool = sync.Pool{
@@ -1233,26 +1261,56 @@ func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRu
 		return openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
 	}
 
-	var (
-		stream        net.Conn
-		err           error
-		failurePrompt string
-	)
 	cleanFlowID := strings.TrimSpace(flowID)
 	if cleanFlowID == "" {
 		cleanFlowID = resolveProbeChainPortForwardFlowID(requestedNetwork, targetAddr, associationV2)
 	}
+	failurePrompt := ""
 	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
-		stream, err = openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToPrev, cleanFlowID)
 		failurePrompt = "open upstream target failed"
 	} else if runtime.cfg.nextAuthMode == "proxy" {
 		return openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
 	} else {
-		stream, err = openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToNext, cleanFlowID)
 		failurePrompt = "open downstream target failed"
 	}
+
+	// Phase 1: build the relay substream toward the exit (the "prepared link" phase).
+	stream, err := openProbeChainPortForwardRelaySubstream(runtime, normalizedEntrySide, cleanFlowID)
 	if err != nil {
 		return nil, err
+	}
+	// Phase 2: ask the exit to dial the target (the "business" phase).
+	if err := finishProbeChainPortForwardOpen(stream, requestedNetwork, targetAddr, cleanFlowID, associationV2, failurePrompt); err != nil {
+		_ = stream.Close()
+		return nil, err
+	}
+	return stream, nil
+}
+
+// openProbeChainPortForwardRelaySubstream opens only the relay data substream toward
+// the exit, without sending the target open request. It is valid only for relay roles
+// (entry_exit and proxy-next are short-circuited to a local target by the caller).
+func openProbeChainPortForwardRelaySubstream(runtime *probeChainRuntime, normalizedEntrySide string, flowID string) (net.Conn, error) {
+	if runtime == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
+		return openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToPrev, strings.TrimSpace(flowID))
+	}
+	return openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToNext, strings.TrimSpace(flowID))
+}
+
+// finishProbeChainPortForwardOpen sends the tunnel open request over an already
+// established relay substream and waits for the exit to dial the target. On error the
+// caller owns closing the stream.
+func finishProbeChainPortForwardOpen(stream net.Conn, network string, targetAddr string, flowID string, associationV2 *probeChainAssociationV2Meta, failurePrompt string) error {
+	requestedNetwork := strings.ToLower(strings.TrimSpace(network))
+	if requestedNetwork == "" {
+		requestedNetwork = probeChainPortForwardNetworkTCP
+	}
+	cleanFlowID := strings.TrimSpace(flowID)
+	if cleanFlowID == "" {
+		cleanFlowID = resolveProbeChainPortForwardFlowID(requestedNetwork, targetAddr, associationV2)
 	}
 	request := probeChainTunnelOpenRequest{
 		Type:          "open",
@@ -1263,27 +1321,27 @@ func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRu
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
 	if err := json.NewEncoder(stream).Encode(request); err != nil {
-		_ = stream.Close()
-		return nil, err
+		return err
 	}
 	_ = stream.SetWriteDeadline(time.Time{})
 
 	_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
 	var response probeChainTunnelOpenResponse
 	if err := json.NewDecoder(stream).Decode(&response); err != nil {
-		_ = stream.Close()
-		return nil, err
+		return err
 	}
 	_ = stream.SetReadDeadline(time.Time{})
 	if !response.OK {
-		_ = stream.Close()
 		message := strings.TrimSpace(response.Error)
 		if message == "" {
-			message = failurePrompt
+			message = strings.TrimSpace(failurePrompt)
 		}
-		return nil, errors.New(message)
+		if message == "" {
+			message = "open target failed"
+		}
+		return errors.New(message)
 	}
-	return stream, nil
+	return nil
 }
 
 func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, flowID string) (net.Conn, error) {
@@ -1466,7 +1524,25 @@ func (p *probeChainPortForwardPreconnectPool) run() {
 		for len(p.ready) < p.capacity {
 			conn, err := p.open()
 			if err != nil {
-				log.Printf("probe chain port forward preconnect failed: chain=%s id=%s network=%s target=%s err=%v", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr, err)
+				if isProbeChainPreconnectTargetError(err) {
+					// The relay link is healthy; only the target is unreachable. Prewarming
+					// is pointless here (no connection could succeed), so we stay quiet and
+					// retry slowly. Real connections are still served on demand the moment
+					// the target recovers. Log once per down-streak, not every retry.
+					if !p.targetUnreachable {
+						p.targetUnreachable = true
+						logProbeInfof("probe chain port forward preconnect deferred: relay link healthy, target unreachable, serving on demand: chain=%s id=%s network=%s target=%s err=%v", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr, err)
+					}
+					select {
+					case <-p.stopCh:
+						return
+					case <-time.After(probeChainPortForwardPreconnectTargetRetryInterval):
+					}
+					break
+				}
+
+				// Transport/relay failure: this is a real link problem worth surfacing.
+				logProbeWarnf("probe chain port forward preconnect link failed: chain=%s id=%s network=%s target=%s err=%v", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr, err)
 				select {
 				case <-p.stopCh:
 					return
@@ -1477,6 +1553,10 @@ func (p *probeChainPortForwardPreconnectPool) run() {
 					backoff = probeChainPortForwardPreconnectRetryMax
 				}
 				break
+			}
+			if p.targetUnreachable {
+				p.targetUnreachable = false
+				logProbeInfof("probe chain port forward preconnect recovered: chain=%s id=%s network=%s target=%s", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr)
 			}
 			backoff = probeChainPortForwardPreconnectRetryMin
 			select {
@@ -1524,17 +1604,15 @@ func (p *probeChainPortForwardPreconnectPool) open() (*probeChainPortForwardPrec
 		return nil, errors.New("preconnect pool is nil")
 	}
 	network := strings.ToLower(strings.TrimSpace(p.network))
-	if network == "" {
+	if network != probeChainPortForwardNetworkUDP {
 		network = probeChainPortForwardNetworkTCP
 	}
 	flowID := newProbeTCPDebugFlowID("port_forward_preconnect", p.targetAddr)
-	var (
-		conn net.Conn
-		err  error
-	)
+
+	var associationV2 *probeChainAssociationV2Meta
 	if network == probeChainPortForwardNetworkUDP {
 		key := "preconnect:" + strings.TrimSpace(p.cfg.ID) + ":" + strings.ToLower(randomHexToken(6))
-		associationV2 := &probeChainAssociationV2Meta{
+		associationV2 = &probeChainAssociationV2Meta{
 			Version:         2,
 			AssocKeyV2:      key,
 			FlowID:          flowID,
@@ -1546,16 +1624,25 @@ func (p *probeChainPortForwardPreconnectPool) open() (*probeChainPortForwardPrec
 			GCIntervalMS:    probeChainPortForwardSessionGCInterval.Milliseconds(),
 			CreatedAtUnixMS: time.Now().UnixMilli(),
 		}
-		conn, err = openProbeChainPortForwardStreamWithFlowAndAssociation(p.runtime, p.cfg.EntrySide, network, p.targetAddr, flowID, associationV2)
-	} else {
-		conn, err = openProbeChainPortForwardStreamWithFlow(p.runtime, p.cfg.EntrySide, probeChainPortForwardNetworkTCP, p.targetAddr, flowID)
 	}
+
+	normalizedEntrySide := normalizeProbeChainPortForwardEntrySide(p.cfg.EntrySide)
+
+	// Phase 1: prepare the relay substream (the link). A failure here is a real transport problem.
+	stream, err := openProbeChainPortForwardRelaySubstream(p.runtime, normalizedEntrySide, flowID)
 	if err != nil {
-		return nil, err
+		return nil, &probeChainPreconnectError{phase: probeChainPreconnectPhaseTransport, err: err}
 	}
+	// Phase 2: ask the exit to dial the target. A failure here means the target is
+	// unreachable (business), not that the forwarding link is broken.
+	if err := finishProbeChainPortForwardOpen(stream, network, p.targetAddr, flowID, associationV2, ""); err != nil {
+		_ = stream.Close()
+		return nil, &probeChainPreconnectError{phase: probeChainPreconnectPhaseTarget, err: err}
+	}
+
 	now := time.Now()
 	return &probeChainPortForwardPreconnectedConn{
-		conn:      conn,
+		conn:      stream,
 		openedAt:  now,
 		flowID:    flowID,
 		expiresAt: now.Add(probeChainPortForwardPreconnectIdleTTL),

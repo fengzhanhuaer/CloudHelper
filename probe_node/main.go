@@ -273,6 +273,7 @@ func runProbeNode(options probeLaunchOptions) error {
 
 	nodeMux := buildProbeNodeHTTPMux(identity)
 	localMux := buildProbeLocalConsoleMux()
+	ensureProbeLocalListenConfigDefaults()
 	if err := startProbeLocalConsoleServer(localMux, strings.TrimSpace(options.LocalListenAddr)); err != nil {
 		return fmt.Errorf("failed to start local console: %w", err)
 	}
