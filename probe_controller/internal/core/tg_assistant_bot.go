@@ -395,19 +395,30 @@ func handleTGAssistantBotUpdate(ctx context.Context, item tgAssistantBotPollAcco
 	if msg == nil {
 		return
 	}
-	text := strings.TrimSpace(msg.Text)
-	if text != "/ping" {
-		return
-	}
 	if msg.Chat.ID != item.AllowedChatID {
 		return
 	}
-
-	if _, _, err := sendTGAssistantBotTextMessage(ctx, item.BotAPIKey, msg.Chat.ID, "/pong"); err != nil {
-		appendTGAssistantHistory(action, item.AccountID, false, fmt.Sprintf("chat_id=%d err=%s", msg.Chat.ID, err.Error()))
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
 		return
 	}
-	appendTGAssistantHistory(action, item.AccountID, true, fmt.Sprintf("chat_id=%d text=/pong", msg.Chat.ID))
+
+	// /ping stays available for every bound account.
+	if text == "/ping" || text == "ping" {
+		sendTGAssistantBotReply(ctx, item, action, "/pong")
+		return
+	}
+
+	// Probe ops commands are restricted to the global notify account's bot.
+	settings := getTGAssistantNotifySettings()
+	if settings.NotifyAccountID == "" || item.AccountID != settings.NotifyAccountID {
+		return
+	}
+	reply, handled := handleTGAssistantBotCommand(text)
+	if !handled || strings.TrimSpace(reply) == "" {
+		return
+	}
+	sendTGAssistantBotReply(ctx, item, "bot.command", reply)
 }
 
 func getTGAssistantBotAPIKey(req tgAssistantAccountIDRequest) (tgAssistantBotAPIKey, error) {
@@ -538,6 +549,14 @@ func setTGAssistantBotAPIKey(req tgAssistantBotAPIKeyRequest) (tgAssistantBotAPI
 		return tgAssistantBotAPIKey{}, err
 	}
 	appendTGAssistantHistory("bot.api.set", accountID, true, fmt.Sprintf("mode=%s", finalMode))
+
+	// Publish the bot command menu; the global notify account gets the full ops menu.
+	go func(key, accID string) {
+		full := getTGAssistantNotifySettings().NotifyAccountID == accID
+		cmdCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_ = registerTGAssistantBotCommands(cmdCtx, key, full)
+	}(finalKey, accountID)
 
 	responsePath := ""
 	if webhookPath != "" {

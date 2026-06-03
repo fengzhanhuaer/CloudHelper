@@ -115,6 +115,20 @@
       padding: 0 14px;
       cursor: pointer;
     }
+    .notify-grid {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin: 8px 0;
+    }
+    .notify-grid label { display:flex; flex-direction:column; gap:4px; font-size:13px; }
+    .notify-grid label.notify-check { flex-direction:row; align-items:center; gap:6px; }
+    .notify-grid select, .notify-grid input[type="number"] { min-height:30px; }
+    .notify-overview { margin-top:8px; display:grid; gap:6px; }
+    .notify-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; }
+    .notify-badge.ok { background: rgba(46, 160, 67, 0.25); color:#7ee787; }
+    .notify-badge.off { background: rgba(248, 81, 73, 0.22); color:#ff7b72; }
     .subtab-btn.active {
       border-color: rgba(153, 204, 255, 0.82);
       background: rgba(70, 122, 204, 0.68);
@@ -308,6 +322,10 @@
 
       <div id="identity-card" class="identity-card"></div>
     </div>
+
+    <div class="content-block">
+      <div id="notify-card" class="identity-card"></div>
+    </div>
   </div>
 
   <div id="modal-root"></div>
@@ -343,6 +361,11 @@
         mode: 'polling',
         webhook_path: '',
         webhook_enabled: false,
+      },
+
+      notify: {
+        overview: null,
+        loading: false,
       },
 
       modal: {
@@ -541,6 +564,125 @@
 
       qs('identity-card').innerHTML = html;
       bindDynamicMainEvents();
+    }
+
+    function renderNotifyCard() {
+      const host = qs('notify-card');
+      if (!host) return;
+      const ov = state.notify.overview;
+      const settings = (ov && ov.settings) || {
+        notify_account_id: '', enable_offline: false, enable_renewal: false,
+        offline_debounce_sec: 60, renewal_check_hour: 9, renewal_thresholds: [7, 3, 1],
+      };
+      const authed = getLoggedInAccounts();
+      let options = '<option value="">未选择</option>';
+      authed.forEach((item) => {
+        const sel = item.id === settings.notify_account_id ? ' selected' : '';
+        options += `<option value="${escapeHTML(item.id)}"${sel}>${escapeHTML(item.label || item.id)}</option>`;
+      });
+      const thresholds = Array.isArray(settings.renewal_thresholds) ? settings.renewal_thresholds.join(' / ') : '7 / 3 / 1';
+      const disabled = state.notify.loading ? 'disabled' : '';
+      const badge = (ok, text) => `<span class="notify-badge ${ok ? 'ok' : 'off'}">${escapeHTML(text)}</span>`;
+
+      let overviewHTML = '';
+      if (ov) {
+        overviewHTML += '<div class="notify-overview">';
+        overviewHTML += `<div>当前通知机器人：${ov.account_label ? escapeHTML(ov.account_label) : '<span class="muted">未选择</span>'}</div>`;
+        overviewHTML += `<div>${badge(!!ov.account_authorized, ov.account_authorized ? '账号已授权' : '账号未授权')} ${badge(!!ov.bot_configured, ov.bot_configured ? 'BOT已配置' : 'BOT未配置')} ${badge(!!ov.ready, ov.ready ? '可推送' : '不可推送')}</div>`;
+        if (ov.last_push) {
+          const lp = ov.last_push;
+          overviewHTML += `<div class="muted">最近推送：${escapeHTML(lp.action || '')} · ${lp.success ? '成功' : '失败'} · ${escapeHTML(lp.time || '')}</div>`;
+        }
+        overviewHTML += '</div>';
+      }
+
+      host.innerHTML = `
+        <div class="title-row"><h2>主控通知</h2></div>
+        <p class="muted">选择一个已登录且已配置 BOT 的账号作为主控通知机器人。掉线通知与续费提醒会推送到该账号的 TG 私聊；该账号的 BOT 同时支持 /status 查看状态、/upgrade &lt;编号&gt; 升级、/upgrade_all 全部升级。配置步骤：① 找 @BotFather 创建 BOT 取得 api key → ② 在「TG BOT」子页保存 api key（polling 模式无需公网）→ ③ 在此选为通知账号并开启开关。</p>
+        <div class="notify-grid">
+          <label>通知账号
+            <select id="notify-account-select" ${disabled}>${options}</select>
+          </label>
+          <label class="notify-check"><input id="notify-enable-offline" type="checkbox" ${settings.enable_offline ? 'checked' : ''} ${disabled}> 掉线通知</label>
+          <label class="notify-check"><input id="notify-enable-renewal" type="checkbox" ${settings.enable_renewal ? 'checked' : ''} ${disabled}> 续费提醒</label>
+          <label>掉线防抖(秒)
+            <input id="notify-debounce" type="number" min="1" max="3600" value="${escapeHTML(String(settings.offline_debounce_sec || 60))}" ${disabled}>
+          </label>
+          <label>每日检查(点)
+            <input id="notify-check-hour" type="number" min="1" max="23" value="${escapeHTML(String(settings.renewal_check_hour))}" ${disabled}>
+          </label>
+          <div class="muted">续费提醒阈值：到期前 ${escapeHTML(thresholds)} 天</div>
+        </div>
+        <div class="content-actions">
+          <button class="btn primary" data-action="notify-save" ${disabled}>保存通知设置</button>
+          <button class="btn" data-action="notify-test" ${disabled}>测试推送</button>
+        </div>
+        ${overviewHTML}
+      `;
+      bindNotifyEvents();
+    }
+
+    function bindNotifyEvents() {
+      document.querySelectorAll('[data-action="notify-save"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleSaveNotify().catch((err) => setStatus(`保存通知设置失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="notify-test"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleTestNotify().catch((err) => setStatus(`测试推送失败：${err.message || err}`, 'err')));
+      });
+    }
+
+    async function loadNotify(options = {}) {
+      try {
+        const ov = await requestJSON('/mng/api/tg/notify/get');
+        state.notify.overview = ov || null;
+        renderNotifyCard();
+      } catch (error) {
+        if (options.silent !== true) {
+          setStatus(`加载通知设置失败：${error.message || error}`, 'err');
+        }
+      }
+    }
+
+    async function handleSaveNotify() {
+      const accountID = String((qs('notify-account-select') || {}).value || '').trim();
+      const enableOffline = !!(qs('notify-enable-offline') && qs('notify-enable-offline').checked);
+      const enableRenewal = !!(qs('notify-enable-renewal') && qs('notify-enable-renewal').checked);
+      const debounce = parseInt((qs('notify-debounce') || {}).value, 10);
+      const checkHour = parseInt((qs('notify-check-hour') || {}).value, 10);
+      state.notify.loading = true;
+      renderNotifyCard();
+      try {
+        const payload = {
+          notify_account_id: accountID,
+          enable_offline: enableOffline,
+          enable_renewal: enableRenewal,
+          offline_debounce_sec: Number.isFinite(debounce) ? debounce : 0,
+          renewal_check_hour: Number.isFinite(checkHour) ? checkHour : -1,
+        };
+        const ov = await requestJSON('/mng/api/tg/notify/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        state.notify.overview = ov || null;
+        setStatus('已保存主控通知设置', 'ok');
+      } finally {
+        state.notify.loading = false;
+        renderNotifyCard();
+      }
+    }
+
+    async function handleTestNotify() {
+      state.notify.loading = true;
+      renderNotifyCard();
+      try {
+        await requestJSON('/mng/api/tg/notify/test', { method: 'POST' });
+        setStatus('测试推送已发送', 'ok');
+        await loadNotify({ silent: true });
+      } finally {
+        state.notify.loading = false;
+        renderNotifyCard();
+      }
     }
 
     function renderBasicInfoBlock(account) {
@@ -1196,6 +1338,7 @@
         syncSelectedAccounts();
         renderMain();
         renderModal();
+        loadNotify({ silent: true });
         if (!silent) {
           if (!state.api.configured) {
             setStatus('请先设置 API，再添加/登录账号', 'warn');
@@ -1975,6 +2118,7 @@
       bindStaticEvents();
       renderStatus();
       renderMain();
+      renderNotifyCard();
       renderModal();
 
       const ok = await ensureSession().catch(() => false);

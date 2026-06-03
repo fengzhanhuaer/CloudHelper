@@ -425,6 +425,46 @@ func mngTGSchedulePendingHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngTGNotifyGetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, getTGAssistantNotifyOverview())
+}
+
+func mngTGNotifySetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req tgAssistantNotifySettingsRequest
+	if err := decodeMngJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	if _, err := setTGAssistantNotifySettings(req); err != nil {
+		writeMngTGError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, getTGAssistantNotifyOverview())
+}
+
+func mngTGNotifyTestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	result, err := testTGAssistantNotifyPush()
+	if err != nil {
+		writeMngTGError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"result": result,
+	})
+}
+
 func writeMngTGError(w http.ResponseWriter, err error) {
 	if err == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unknown error"})

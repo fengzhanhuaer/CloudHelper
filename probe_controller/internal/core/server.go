@@ -22,6 +22,7 @@ func Run() {
 	initControllerScheduler()
 	initTGAssistantScheduleEngine()
 	initTGAssistantBotEngine()
+	initTGAssistantRenewalEngine()
 	initCloudflareZeroTrustSyncEngine()
 	if err := cleanupControllerStaleExecutables(); err != nil {
 		logControllerWarnf("failed to cleanup stale controller executable files: %v", err)
@@ -117,6 +118,9 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/api/tg/schedule/send_now", mngAuthRequiredMiddleware(mngTGScheduleSendNowHandler))
 	mux.HandleFunc("/mng/api/tg/schedule/history", mngAuthRequiredMiddleware(mngTGScheduleHistoryHandler))
 	mux.HandleFunc("/mng/api/tg/schedule/pending", mngAuthRequiredMiddleware(mngTGSchedulePendingHandler))
+	mux.HandleFunc("/mng/api/tg/notify/get", mngAuthRequiredMiddleware(mngTGNotifyGetHandler))
+	mux.HandleFunc("/mng/api/tg/notify/set", mngAuthRequiredMiddleware(mngTGNotifySetHandler))
+	mux.HandleFunc("/mng/api/tg/notify/test", mngAuthRequiredMiddleware(mngTGNotifyTestHandler))
 	mux.HandleFunc("/mng/api/link/users", mngAuthRequiredMiddleware(mngLinkUsersHandler))
 	mux.HandleFunc("/mng/api/link/user/public_key", mngAuthRequiredMiddleware(mngLinkUserPublicKeyHandler))
 	mux.HandleFunc("/mng/api/link/chains", mngAuthRequiredMiddleware(mngLinkChainsHandler))

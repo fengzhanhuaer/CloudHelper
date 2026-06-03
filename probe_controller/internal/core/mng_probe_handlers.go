@@ -286,6 +286,7 @@ func mngProbeUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setTGAssistantLastControllerBaseURL(controllerBaseURLFromRequest(r))
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -303,6 +304,7 @@ func mngProbeUpgradeAllHandler(w http.ResponseWriter, r *http.Request) {
 	items := make([]probeUpgradeDispatchResult, 0, len(nodes))
 	failures := make([]string, 0)
 	controllerBaseURL := controllerBaseURLFromRequest(r)
+	setTGAssistantLastControllerBaseURL(controllerBaseURL)
 	for _, node := range nodes {
 		result, err := dispatchUpgradeToProbe(node, controllerBaseURL)
 		if err != nil {

@@ -97,14 +97,21 @@ func setProbeRuntimeOnline(nodeID string, online bool) {
 		return
 	}
 	probeRuntimeStore.mu.Lock()
-	defer probeRuntimeStore.mu.Unlock()
-	current := probeRuntimeStore.data[nodeID]
+	current, existed := probeRuntimeStore.data[nodeID]
+	prevOnline := current.Online
 	current.NodeID = nodeID
 	current.Online = online
 	if online {
 		current.LastSeen = time.Now().UTC().Format(time.RFC3339)
 	}
 	probeRuntimeStore.data[nodeID] = current
+	probeRuntimeStore.mu.Unlock()
+
+	// Notify only on a real edge for an already-seen node so controller restarts
+	// (which re-register every node) do not spam online notifications.
+	if existed && prevOnline != online {
+		onProbeRuntimeTransition(nodeID, online)
+	}
 }
 
 func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string) {

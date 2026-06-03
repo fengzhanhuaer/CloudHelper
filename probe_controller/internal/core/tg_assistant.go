@@ -151,7 +151,37 @@ type tgAssistantStoreData struct {
 	APIID    int                        `json:"api_id"`
 	APIHash  string                     `json:"api_hash"`
 	Accounts []tgAssistantAccountRecord `json:"accounts"`
+	Notify   tgAssistantNotifySettings  `json:"notify"`
 }
+
+// tgAssistantNotifySettings holds the global "主控通知机器人" configuration.
+// Only the selected account's bot pushes probe offline/renewal notifications and
+// handles ops commands. Notifications are delivered to that account's own private
+// chat (chat_id == SelfUserID).
+type tgAssistantNotifySettings struct {
+	NotifyAccountID       string `json:"notify_account_id"`
+	EnableOffline         bool   `json:"enable_offline"`
+	EnableRenewal         bool   `json:"enable_renewal"`
+	OfflineDebounceSec    int    `json:"offline_debounce_sec"`
+	RenewalThresholds     []int  `json:"renewal_thresholds"`
+	RenewalCheckHour      int    `json:"renewal_check_hour"`
+	LastControllerBaseURL string `json:"last_controller_base_url,omitempty"`
+}
+
+type tgAssistantNotifySettingsRequest struct {
+	NotifyAccountID    string `json:"notify_account_id"`
+	EnableOffline      bool   `json:"enable_offline"`
+	EnableRenewal      bool   `json:"enable_renewal"`
+	OfflineDebounceSec int    `json:"offline_debounce_sec"`
+	RenewalCheckHour   int    `json:"renewal_check_hour"`
+}
+
+const (
+	tgAssistantNotifyDefaultDebounceSec = 60
+	tgAssistantNotifyDefaultCheckHour   = 9
+)
+
+var tgAssistantNotifyDefaultThresholds = []int{7, 3, 1}
 
 var tgState = tgAssistantState{
 	challenges: map[string]tgAssistantLoginChallenge{},
@@ -268,6 +298,7 @@ func initTGAssistantStore() {
 			TGAssistantStore.data.Accounts = normalizeTGAssistantAccountRecords(raw.Accounts)
 			TGAssistantStore.data.APIID = raw.APIID
 			TGAssistantStore.data.APIHash = raw.APIHash
+			TGAssistantStore.data.Notify = normalizeTGAssistantNotifySettings(raw.Notify)
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := TGAssistantStore.Save(); saveErr != nil {
@@ -1766,6 +1797,152 @@ func loadTGAssistantAPIKeyLocked() (int, string) {
 
 func isTGAssistantAPIKeyConfigured(apiID int, apiHash string) bool {
 	return apiID > 0 && strings.TrimSpace(apiHash) != ""
+}
+
+func normalizeTGAssistantNotifySettings(raw tgAssistantNotifySettings) tgAssistantNotifySettings {
+	out := tgAssistantNotifySettings{
+		NotifyAccountID:       strings.TrimSpace(raw.NotifyAccountID),
+		EnableOffline:         raw.EnableOffline,
+		EnableRenewal:         raw.EnableRenewal,
+		OfflineDebounceSec:    raw.OfflineDebounceSec,
+		RenewalCheckHour:      raw.RenewalCheckHour,
+		LastControllerBaseURL: strings.TrimSpace(raw.LastControllerBaseURL),
+	}
+	if out.OfflineDebounceSec <= 0 {
+		out.OfflineDebounceSec = tgAssistantNotifyDefaultDebounceSec
+	}
+	if out.OfflineDebounceSec > 3600 {
+		out.OfflineDebounceSec = 3600
+	}
+	if out.RenewalCheckHour <= 0 || out.RenewalCheckHour > 23 {
+		out.RenewalCheckHour = tgAssistantNotifyDefaultCheckHour
+	}
+	out.RenewalThresholds = normalizeTGAssistantRenewalThresholds(raw.RenewalThresholds)
+	return out
+}
+
+func normalizeTGAssistantRenewalThresholds(values []int) []int {
+	seen := map[int]struct{}{}
+	out := make([]int, 0, len(values))
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		out = append(out, tgAssistantNotifyDefaultThresholds...)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(out)))
+	return out
+}
+
+func getTGAssistantNotifySettings() tgAssistantNotifySettings {
+	if TGAssistantStore == nil {
+		return normalizeTGAssistantNotifySettings(tgAssistantNotifySettings{})
+	}
+	TGAssistantStore.mu.RLock()
+	raw := TGAssistantStore.data.Notify
+	TGAssistantStore.mu.RUnlock()
+	return normalizeTGAssistantNotifySettings(raw)
+}
+
+func setTGAssistantNotifySettings(req tgAssistantNotifySettingsRequest) (tgAssistantNotifySettings, error) {
+	if TGAssistantStore == nil {
+		return tgAssistantNotifySettings{}, errors.New("tg assistant datastore is not initialized")
+	}
+
+	notifyAccountID := strings.TrimSpace(req.NotifyAccountID)
+	previousAccountID := ""
+
+	TGAssistantStore.mu.Lock()
+	if notifyAccountID != "" {
+		records := loadTGAssistantAccountsLocked()
+		if indexTGAssistantAccountByID(records, notifyAccountID) < 0 {
+			TGAssistantStore.mu.Unlock()
+			return tgAssistantNotifySettings{}, errors.New("notify account not found")
+		}
+	}
+	current := normalizeTGAssistantNotifySettings(TGAssistantStore.data.Notify)
+	previousAccountID = current.NotifyAccountID
+	current.NotifyAccountID = notifyAccountID
+	current.EnableOffline = req.EnableOffline
+	current.EnableRenewal = req.EnableRenewal
+	if req.OfflineDebounceSec > 0 {
+		current.OfflineDebounceSec = req.OfflineDebounceSec
+	}
+	if req.RenewalCheckHour >= 0 && req.RenewalCheckHour <= 23 {
+		current.RenewalCheckHour = req.RenewalCheckHour
+	}
+	current = normalizeTGAssistantNotifySettings(current)
+	TGAssistantStore.data.Notify = current
+	TGAssistantStore.mu.Unlock()
+
+	if err := TGAssistantStore.Save(); err != nil {
+		return tgAssistantNotifySettings{}, err
+	}
+	appendTGAssistantHistory("notify.settings.set", current.NotifyAccountID, true, fmt.Sprintf("offline=%t renewal=%t debounce=%d hour=%d", current.EnableOffline, current.EnableRenewal, current.OfflineDebounceSec, current.RenewalCheckHour))
+
+	if current.NotifyAccountID != "" && current.NotifyAccountID != previousAccountID {
+		registerTGAssistantNotifyBotCommands(current.NotifyAccountID)
+	}
+	return current, nil
+}
+
+func setTGAssistantLastControllerBaseURL(rawURL string) {
+	if TGAssistantStore == nil {
+		return
+	}
+	url := strings.TrimSpace(rawURL)
+	if url == "" || isLoopbackControllerBaseURL(url) {
+		return
+	}
+	TGAssistantStore.mu.Lock()
+	if strings.TrimSpace(TGAssistantStore.data.Notify.LastControllerBaseURL) == url {
+		TGAssistantStore.mu.Unlock()
+		return
+	}
+	TGAssistantStore.data.Notify.LastControllerBaseURL = url
+	TGAssistantStore.mu.Unlock()
+	_ = TGAssistantStore.Save()
+}
+
+func isLoopbackControllerBaseURL(rawURL string) bool {
+	lower := strings.ToLower(strings.TrimSpace(rawURL))
+	return strings.Contains(lower, "127.0.0.1") || strings.Contains(lower, "localhost") || strings.Contains(lower, "[::1]")
+}
+
+// resolveNotifyBot returns the bot api key and target chat for the configured
+// global notify account. ok is false when no account is selected, the account
+// is missing/unauthorized, or its bot api key is not configured.
+func resolveNotifyBot() (botAPIKey string, chatID int64, accountID string, ok bool) {
+	if TGAssistantStore == nil {
+		return "", 0, "", false
+	}
+	settings := getTGAssistantNotifySettings()
+	accountID = settings.NotifyAccountID
+	if accountID == "" {
+		return "", 0, "", false
+	}
+	TGAssistantStore.mu.RLock()
+	records := loadTGAssistantAccountsLocked()
+	index := indexTGAssistantAccountByID(records, accountID)
+	if index < 0 {
+		TGAssistantStore.mu.RUnlock()
+		return "", 0, "", false
+	}
+	record := records[index]
+	TGAssistantStore.mu.RUnlock()
+
+	botAPIKey = strings.TrimSpace(record.BotAPIKey)
+	if botAPIKey == "" || !record.Authorized || record.SelfUserID == 0 {
+		return "", 0, accountID, false
+	}
+	return botAPIKey, record.SelfUserID, accountID, true
 }
 
 func normalizeTGAssistantAccountRecords(records []tgAssistantAccountRecord) []tgAssistantAccountRecord {
