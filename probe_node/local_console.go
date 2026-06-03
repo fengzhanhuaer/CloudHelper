@@ -1624,6 +1624,12 @@ func extractProbeLocalSessionToken(r *http.Request) (string, error) {
 }
 
 func currentProbeLocalSessionFromRequest(r *http.Request) (probeLocalSessionState, string, error) {
+	// In-process requests proxied from the (already authenticated) controller are
+	// marked trusted via request context and bypass the local login. External HTTP
+	// requests cannot set this context value, so this is not forgeable over the wire.
+	if isProbeLocalConsoleTrusted(r.Context()) {
+		return probeLocalSessionState{Username: "controller", ExpiresAt: time.Now().Add(probeLocalSessionTTL)}, "controller-trusted", nil
+	}
 	mgr, err := ensureProbeLocalAuthManager()
 	if err != nil {
 		return probeLocalSessionState{}, "", err

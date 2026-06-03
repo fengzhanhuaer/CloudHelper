@@ -134,6 +134,10 @@ type probeControlMessage struct {
 	Lines             int                            `json:"lines"`
 	SinceMinutes      int                            `json:"since_minutes"`
 	MinLevel          string                         `json:"min_level"`
+	ConsoleMethod     string                         `json:"console_method,omitempty"`
+	ConsolePath       string                         `json:"console_path,omitempty"`
+	ConsoleHeaders    map[string][]string            `json:"console_headers,omitempty"`
+	ConsoleBody       string                         `json:"console_body,omitempty"`
 	Timestamp         string                         `json:"timestamp"`
 }
 
@@ -759,6 +763,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 	}
 	if typeName == "chain_link_control" {
 		go runProbeChainLinkControl(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "local_console_proxy" {
+		go runProbeLocalConsoleProxy(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName != "upgrade" {

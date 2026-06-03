@@ -138,6 +138,8 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/link", mngAuthRequiredMiddleware(mngLinkPageHandler))
 	mux.HandleFunc("/mng/cloudflare", mngAuthRequiredMiddleware(mngCloudflarePageHandler))
 	mux.HandleFunc("/mng/tg", mngAuthRequiredMiddleware(mngTGPageHandler))
+	mux.HandleFunc("/mng/probe-console", mngAuthRequiredMiddleware(mngProbeConsoleEntryHandler))
+	mux.HandleFunc("/local/", mngProbeConsoleProxyHandler)
 	mux.HandleFunc("/dashboard/favicon.svg", faviconSVGHandler)
 	mux.HandleFunc("/dashboard/favicon.ico", faviconICOHandler)
 	mux.HandleFunc("/favicon.svg", faviconSVGHandler)

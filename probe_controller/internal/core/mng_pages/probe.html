@@ -501,6 +501,7 @@
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
               <button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>
+              <button class="btn" type="button" data-action="node-console" data-node-no="${item.node_no}">控制台</button>
               <button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>
               <button class="btn warn" type="button" data-action="node-delete" data-node-no="${item.node_no}">删除</button>
             </td>
@@ -1062,6 +1063,13 @@
         const nodeNo = Number(button.getAttribute('data-node-no'));
         if (Number.isFinite(nodeNo) && nodeNo > 0) {
           void upgradeNode(nodeNo).catch((err) => setStatus(`升级失败：${err.message || err}`, 'err'));
+        }
+        return;
+      }
+      if (action === 'node-console') {
+        const nodeNo = Number(button.getAttribute('data-node-no'));
+        if (Number.isFinite(nodeNo) && nodeNo > 0) {
+          window.open(`/mng/probe-console?node=${nodeNo}`, '_blank');
         }
         return;
       }

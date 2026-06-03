@@ -177,6 +177,15 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeChainLinkControlResult(msg)
+		case "local_console_proxy_result":
+			var msg probeLocalConsoleProxyResultMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
+			if strings.TrimSpace(msg.NodeID) == "" {
+				msg.NodeID = nodeID
+			}
+			consumeProbeLocalConsoleProxyResult(msg)
 		case "controller_rpc_request":
 			var req probeControllerRPCRequest
 			if err := json.Unmarshal(raw, &req); err != nil {
