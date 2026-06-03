@@ -15,7 +15,10 @@
       "Bash(grep -vE '^[+-]package|^[+-]import|^[+-]$')",
       "Bash(gofmt -l local_console_listen_test.go)",
       "Bash(gofmt -l local_console.go main.go link_chain_runtime.go local_console_listen_test.go local_console_listen_config_test.go)",
-      "Bash(echo \"EXIT=$?\")"
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(gofmt -l probe_node/local_console_proxy.go probe_node/local_console.go probe_node/main.go probe_node/local_console_proxy_test.go probe_controller/internal/core/mng_probe_console.go probe_controller/internal/core/mng_probe_console_test.go probe_controller/internal/core/probe_ws.go probe_controller/internal/core/server.go probe_controller/internal/core/mng_pages/probe.html)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

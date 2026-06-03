@@ -135,8 +135,9 @@ func consumeProbeLocalConsoleProxyResult(result probeLocalConsoleProxyResultMess
 // ---------------------------------------------------------------------------
 
 const (
-	mngProbeConsoleCookieName = "mng_probe_console"
-	mngProbeConsoleTokenTTL   = 2 * time.Hour
+	mngProbeConsoleCookieName     = "mng_probe_console"
+	mngProbeConsoleNodeCookieName = "mng_probe_console_node"
+	mngProbeConsoleTokenTTL       = 2 * time.Hour
 )
 
 type mngProbeConsoleToken struct {
@@ -172,16 +173,22 @@ func resolveMngProbeConsoleToken(token string) (string, bool) {
 	if token == "" {
 		return "", false
 	}
+	now := time.Now()
 	mngProbeConsoleTokens.mu.Lock()
 	defer mngProbeConsoleTokens.mu.Unlock()
 	rec, ok := mngProbeConsoleTokens.data[token]
 	if !ok {
 		return "", false
 	}
-	if time.Now().After(rec.ExpiresAt) {
+	if now.After(rec.ExpiresAt) {
 		delete(mngProbeConsoleTokens.data, token)
 		return "", false
 	}
+	// Sliding expiration: an actively-used console (the pages poll every few
+	// seconds) keeps renewing and never expires mid-session; only an idle console
+	// lapses after the TTL.
+	rec.ExpiresAt = now.Add(mngProbeConsoleTokenTTL)
+	mngProbeConsoleTokens.data[token] = rec
 	return rec.NodeID, true
 }
 
@@ -206,14 +213,25 @@ func mngProbeConsoleEntryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create console session", http.StatusInternalServerError)
 		return
 	}
+	secure := isHTTPSRequest(r)
+	// Session cookies (no Expires): the server-side token slides with activity, and
+	// the node cookie lets an idle-expired tab transparently re-mint on next
+	// navigation (the entry remains mng-authenticated).
 	http.SetCookie(w, &http.Cookie{
 		Name:     mngProbeConsoleCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   isHTTPSRequest(r),
-		Expires:  time.Now().Add(mngProbeConsoleTokenTTL),
+		Secure:   secure,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     mngProbeConsoleNodeCookieName,
+		Value:    nodeID,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
 	})
 	http.Redirect(w, r, "/local/panel", http.StatusFound)
 }
@@ -282,9 +300,17 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func mngProbeConsoleProxyDenied(w http.ResponseWriter, r *http.Request) {
-	// Top-level navigations bounce back to the management panel; API/asset calls
+	// Top-level navigations recover gracefully: if we still remember the node, send
+	// the browser through the mng-authenticated entry to transparently re-mint a
+	// token (or to the mng login if the admin session also lapsed). API/asset calls
 	// get a plain 401 so the page's own fetch logic can react.
 	if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+		if nodeCookie, err := r.Cookie(mngProbeConsoleNodeCookieName); err == nil {
+			if node := normalizeProbeNodeID(nodeCookie.Value); node != "" {
+				http.Redirect(w, r, "/mng/probe-console?node="+node, http.StatusFound)
+				return
+			}
+		}
 		http.Redirect(w, r, "/mng/probe", http.StatusFound)
 		return
 	}
