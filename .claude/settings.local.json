@@ -23,7 +23,13 @@
       "Bash(gofmt -l link_relay_h3_pool.go link_relay_client_transport.go)",
       "Bash(go vet *)",
       "Bash(git -C d:/Code/CloudHelper diff --stat probe_node/link_relay_client_transport.go)",
-      "Bash(git -C d:/Code/CloudHelper status --short)"
+      "Bash(git -C d:/Code/CloudHelper status --short)",
+      "Bash(gofmt -w internal/core/tg_notify.go)",
+      "Bash(gofmt -l internal/core/tg_notify.go)",
+      "Bash(gofmt -w internal/core/tg_notify_flap_test.go)",
+      "Bash(gofmt -l local_tun_stack_windows.go)",
+      "Bash(awk 'NR>=1367 && NR<=1410{print NR\": \"$0}' local_tun_stack_windows.go)",
+      "Bash(echo \"TEST_EXIT=$?\")"
     ]
   }
 }
