@@ -742,25 +742,17 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	}
 
 	if route.Direct {
-		var localAddr *net.UDPAddr
-		if parsed := net.ParseIP(strings.TrimSpace(strings.Trim(srcIP, "[]"))); parsed != nil {
-			localAddr = &net.UDPAddr{IP: parsed, Port: int(uint16(id.RemotePort))}
-		}
+		// Direct/bypass UDP must egress the physical interface with a routable
+		// source address. Do NOT bind LocalAddr to the app's source IP: under a
+		// full-tunnel TUN that is the TUN-side (non-routable) address, so the
+		// upstream server would reply to an unreachable source (observed as
+		// down=0), which then triggers a QUIC retransmit storm and bridge churn,
+		// driving CPU up over time. The egress interface binding (IP_UNICAST_IF in
+		// applyProbeLocalEgressDialer) selects the correct physical source. This
+		// mirrors the TCP direct path, which never binds LocalAddr.
 		dialNetwork := probeLocalEgressDialNetwork("udp", route.TargetAddr)
-		dialUDP := func(la *net.UDPAddr) (net.Conn, error) {
-			dialer := applyProbeLocalEgressDialer(&net.Dialer{})
-			if la != nil {
-				dialer.LocalAddr = la
-			}
-			return dialer.Dial(dialNetwork, strings.TrimSpace(route.TargetAddr))
-		}
-		conn, dialErr := dialUDP(localAddr)
-		natMode := probeChainUDPAssociationNATModeDefault
-		if dialErr != nil && localAddr != nil && shouldFallbackProbeLocalUDPBind(dialErr) {
-			logProbeWarnf("probe local tun udp bind conflict, fallback to ephemeral local addr: src=%s:%d target=%s err=%v", srcIP, uint16(id.RemotePort), route.TargetAddr, dialErr)
-			conn, dialErr = dialUDP(nil)
-			natMode = probeLocalTUNUDPNATModeFallbackEphemeral
-		}
+		dialer := applyProbeLocalEgressDialer(&net.Dialer{})
+		conn, dialErr := dialer.Dial(dialNetwork, strings.TrimSpace(route.TargetAddr))
 		if dialErr != nil {
 			releaseSource()
 			return nil, route, dialErr
@@ -768,7 +760,6 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 		if udpConn, ok := conn.(*net.UDPConn); ok {
 			tuneProbeChainUDPConn(udpConn)
 		}
-		_ = natMode
 		return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: conn, releaseSource: releaseSource}, route, nil
 	}
 
