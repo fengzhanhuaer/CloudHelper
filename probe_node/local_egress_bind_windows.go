@@ -18,7 +18,7 @@ const (
 )
 
 func init() {
-	probeLocalEgressDialControl = probeLocalBindEgressInterfaceControl
+	probeLocalEgressDialControl = nil
 }
 
 // probeLocalBindEgressInterfaceControl 在拨号 socket 上设置 IP_UNICAST_IF / IPV6_UNICAST_IF，
@@ -36,7 +36,7 @@ func probeLocalBindEgressInterfaceControl(network, address string, c syscall.Raw
 	}
 	idx := uint32(target.InterfaceIndex)
 	v4Index := int(bits.ReverseBytes32(idx)) // big-endian for IPv4
-	v6Index := int(idx)                       // host order for IPv6
+	v6Index := int(idx)                      // host order for IPv6
 
 	var setErr error
 	ctrlErr := c.Control(func(fd uintptr) {

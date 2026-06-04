@@ -307,6 +307,59 @@ func probeLocalWindowsLocalBypassRouteDefs(routeTarget probeLocalWindowsDirectBy
 	}
 }
 
+func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return err
+	}
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return errors.New("empty bypass target host")
+	}
+	var ips []string
+	if ip := net.ParseIP(cleanHost); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			ips = []string{ip4.String()}
+		}
+	} else {
+		ips, err = lookupProbeLocalIPv4ForBypass(cleanHost)
+		if err != nil {
+			return err
+		}
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("bypass target has no ipv4 address: %s", cleanHost)
+	}
+	bypassTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
+	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
+		routeTarget, routeErr := resolveProbeLocalWindowsRouteTarget()
+		if routeErr != nil {
+			return routeErr
+		}
+		bypassTarget, err = probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
+		if err != nil {
+			return err
+		}
+	}
+	var allErr error
+	for _, ipText := range ips {
+		ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+		if ip4 == nil {
+			continue
+		}
+		_, routeErr := ensureProbeLocalWindowsRoute(probeLocalWindowsRouteDef{
+			Prefix:  ip4.String(),
+			Mask:    "255.255.255.255",
+			Gateway: strings.TrimSpace(bypassTarget.NextHop),
+			IfIndex: bypassTarget.InterfaceIndex,
+		})
+		if routeErr != nil {
+			allErr = errors.Join(allErr, routeErr)
+		}
+	}
+	return allErr
+}
+
 func ensureProbeLocalWindowsSplitRoute(prefix, mask, gateway string, ifIndex int) (bool, error) {
 	return ensureProbeLocalWindowsRoute(probeLocalWindowsRouteDef{Prefix: prefix, Mask: mask, Gateway: gateway, IfIndex: ifIndex})
 }

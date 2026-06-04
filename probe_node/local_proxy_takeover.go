@@ -15,6 +15,10 @@ func restoreProbeLocalProxyDirect() error {
 	return nil
 }
 
+func ensureProbeLocalExplicitDirectBypass(string) error {
+	return nil
+}
+
 func currentProbeLocalTUNDNSListenHost() string {
 	return ""
 }

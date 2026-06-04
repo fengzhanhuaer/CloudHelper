@@ -3513,6 +3513,68 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 	}
 }
 
+func TestProbeLocalTUNStartupRecoveryRetriesWhenPreconnectFails(t *testing.T) {
+	_ = setupProbeLocalConsoleTest(t)
+	if err := persistProbeLocalTUNPersistentState(true, false); err != nil {
+		t.Fatalf("persist tun state failed: %v", err)
+	}
+	if err := persistProbeLocalProxyPersistentState(true, probeLocalProxyModeTUN); err != nil {
+		t.Fatalf("persist proxy state failed: %v", err)
+	}
+	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{{
+		ChainID:     "chain-preconnect-1",
+		ChainType:   "proxy_chain",
+		Name:        "preconnect",
+		Secret:      "secret",
+		EntryNodeID: "12",
+		ExitNodeID:  "12",
+		LinkLayer:   "http",
+		HopConfigs: []probeLinkChainHopServerItem{{
+			NodeNo:       12,
+			ListenHost:   "0.0.0.0",
+			ListenPort:   16030,
+			ExternalPort: 16030,
+			LinkLayer:    "http",
+			RelayHost:    "127.0.0.1",
+		}},
+	}}); err != nil {
+		t.Fatalf("persist proxy chain cache failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.TUN.Installed = true
+	state.Proxy.Enabled = true
+	state.Proxy.Mode = probeLocalProxyModeTUN
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "google", Action: "tunnel", SelectedChainID: "chain-preconnect-1", TunnelNodeID: "chain:chain-preconnect-1"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	probeLocalApplyProxyTakeover = func() error { return nil }
+	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
+	probeLocalTUNOpenChainRelayNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+		return nil, errors.New("boot egress not ready")
+	}
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
+
+	err := recoverProbeLocalTUNRuntimeOnStartup()
+	if err == nil {
+		t.Fatal("expected startup recovery error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "preconnect not ready") {
+		t.Fatalf("startup recovery error=%q", err.Error())
+	}
+	state, loadErr := loadProbeLocalProxyStateFile()
+	if loadErr != nil {
+		t.Fatalf("load proxy state failed: %v", loadErr)
+	}
+	if !state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeTUN {
+		t.Fatalf("persisted proxy state=%+v, want enabled tunnel intent retained", state.Proxy)
+	}
+}
+
 func TestProbeLocalTUNStartupRecoveryFailureKeepsPersistedEnabledIntent(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, false); err != nil {

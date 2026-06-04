@@ -32,6 +32,9 @@ func dialProbeChainBoundQUIC(ctx context.Context, dialHostPort string, tlsConf *
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureProbeLocalExplicitDirectBypass(dialHostPort); err != nil {
+		log.Printf("probe chain relay quic direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
+	}
 	listenNetwork := "udp"
 	if remoteAddr.IP != nil {
 		if remoteAddr.IP.To4() != nil {
@@ -1142,6 +1145,9 @@ func openProbeChainRelayWebSocketNetConn(chainID string, secret string, relayHos
 		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
 		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+			if err := ensureProbeLocalExplicitDirectBypass(dialHostPort); err != nil {
+				log.Printf("probe chain relay websocket direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
+			}
 			netDialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeChainPortForwardDialTimeout})
 			conn, err := netDialer.DialContext(ctx, probeLocalEgressDialNetwork(network, dialHostPort), dialHostPort)
 			if err == nil {
@@ -1653,6 +1659,9 @@ func openProbeChainRelayWebSocketSpeedTestNetConn(chainID string, secret string,
 		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
 		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+			if err := ensureProbeLocalExplicitDirectBypass(dialHostPort); err != nil {
+				log.Printf("probe chain relay speed websocket direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
+			}
 			netDialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeChainPortForwardDialTimeout})
 			conn, err := netDialer.DialContext(ctx, probeLocalEgressDialNetwork(network, dialHostPort), dialHostPort)
 			if err == nil {

@@ -786,7 +786,15 @@ func resolveProbeLocalDNSUpstreamBypassTarget(kind string, address string) (stri
 	}
 }
 
-func ensureProbeLocalDNSUpstreamDirectBypass(string, string) {}
+func ensureProbeLocalDNSUpstreamDirectBypass(kind string, address string) {
+	target, ok := resolveProbeLocalDNSUpstreamBypassTarget(kind, address)
+	if !ok {
+		return
+	}
+	if err := ensureProbeLocalExplicitDirectBypass(target); err != nil {
+		logProbeWarnf("probe local dns upstream direct bypass failed: kind=%s target=%s err=%v", strings.TrimSpace(kind), target, err)
+	}
+}
 
 type probeLocalDNSProxyDialConn struct {
 	net.Conn
@@ -830,6 +838,7 @@ func queryProbeLocalDNSViaDoH(endpoint string, packet []byte, decision probeLoca
 			ServerName: serverName,
 		},
 		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+			ensureProbeLocalDNSUpstreamDirectBypass("doh", cleanEndpoint)
 			dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalDNSUpstreamTimeout})
 			if strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(transportEndpoint)) {
 				return dialer.DialContext(ctx, probeLocalEgressDialNetwork(network, dialTarget), dialTarget)
@@ -934,6 +943,7 @@ func queryProbeLocalDNSViaDoT(address string, packet []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	ensureProbeLocalDNSUpstreamDirectBypass("dot", cleanAddress)
 	dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalDNSUpstreamTimeout})
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if strings.TrimSpace(serverName) != "" {
@@ -973,6 +983,7 @@ func queryProbeLocalDNSViaPlain(address string, packet []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	ensureProbeLocalDNSUpstreamDirectBypass("dns", cleanAddress)
 	dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalDNSUpstreamTimeout})
 	conn, err := dialer.Dial(probeLocalEgressDialNetwork("udp", dialTarget), dialTarget)
 	if err != nil {

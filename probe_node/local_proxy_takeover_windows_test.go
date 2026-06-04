@@ -366,6 +366,34 @@ func TestCleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(t *testing.T) {
 	}
 }
 
+func TestEnsureProbeLocalExplicitDirectBypassWritesHostRoute(t *testing.T) {
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeLocalDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+	probeLocalDirectBypassRouteTargetState.mu.Lock()
+	probeLocalDirectBypassRouteTargetState.routeTarget = probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
+	probeLocalDirectBypassRouteTargetState.ready = true
+	probeLocalDirectBypassRouteTargetState.mu.Unlock()
+
+	var created []probeLocalWindowsRouteDef
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		created = append(created, routeDef)
+		return true, nil
+	}
+
+	if err := ensureProbeLocalExplicitDirectBypass("203.0.113.7:16030"); err != nil {
+		t.Fatalf("ensure direct bypass failed: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created routes=%+v", created)
+	}
+	if created[0].Prefix != "203.0.113.7" || created[0].Mask != "255.255.255.255" || created[0].Gateway != "192.168.51.1" || created[0].IfIndex != 13 {
+		t.Fatalf("unexpected route=%+v", created[0])
+	}
+}
+
 func TestRestoreProbeLocalProxyDirectDeletesFakeIPRouteOnly(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldRun := probeLocalWindowsRunCommand

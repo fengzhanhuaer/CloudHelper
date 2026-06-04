@@ -963,9 +963,19 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, wrappedErr)
 		return wrappedErr
 	}
+	preconnectResult := preconnectProbeLocalTUNGroupRuntimesWithResult(state, "startup_recovery", true)
+	if preconnectResult.Attempted > 0 {
+		logProbeInfof("probe local proxy group runtime preconnect completed: reason=%s attempted=%d connected=%d", "startup_recovery", preconnectResult.Attempted, preconnectResult.Connected)
+	}
+	if preconnectResult.Attempted > 0 && !preconnectResult.Ready {
+		errText := fmt.Sprintf("startup recovery proxy preconnect not ready: attempted=%d connected=%d failed=%d skipped=%d", preconnectResult.Attempted, preconnectResult.Connected, preconnectResult.Failed, preconnectResult.Skipped)
+		err := errors.New(errText)
+		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, errText)
+		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, err)
+		return err
+	}
 	m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
 	logProbeInfof("probe local tun startup recovered enabled state")
-	preconnectProbeLocalTUNGroupRuntimes(state, "startup_recovery")
 	if shouldRestoreProbeLocalExplicitProxyFromState(state) {
 		if err := startProbeLocalExplicitProxyServer(); err != nil {
 			logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)

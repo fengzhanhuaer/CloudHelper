@@ -29,28 +29,22 @@ func TestProbeLocalEgressDialNetwork(t *testing.T) {
 	}
 }
 
-func TestApplyProbeLocalEgressDialerNilControlIsNoop(t *testing.T) {
-	// 当出口绑定钩子未安装（非 Windows 或未启用）时，dialer.Control 应保持为 nil。
+func TestApplyProbeLocalEgressDialerDoesNotBindInterface(t *testing.T) {
+	// Egress bypass is route-based; the dialer must not install a per-socket
+	// interface binding hook.
 	old := probeLocalEgressDialControl
 	t.Cleanup(func() { probeLocalEgressDialControl = old })
 
-	probeLocalEgressDialControl = nil
 	d := applyProbeLocalEgressDialer(&net.Dialer{})
 	if d.Control != nil {
-		t.Fatal("dialer Control should stay nil when egress hook is unset")
+		t.Fatal("dialer Control should stay nil")
 	}
 
-	called := false
 	probeLocalEgressDialControl = func(string, string, syscall.RawConn) error {
-		called = true
 		return nil
 	}
 	d2 := applyProbeLocalEgressDialer(&net.Dialer{})
-	if d2.Control == nil {
-		t.Fatal("dialer Control should be set when egress hook is installed")
-	}
-	_ = d2.Control("tcp4", "1.2.3.4:443", nil)
-	if !called {
-		t.Fatal("installed egress control should be invoked")
+	if d2.Control != nil {
+		t.Fatal("dialer Control should stay nil even when legacy hook is set")
 	}
 }

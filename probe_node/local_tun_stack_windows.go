@@ -521,6 +521,9 @@ func openProbeLocalTUNOutboundTCPWithRoute(flowTargetAddr string, route probeLoc
 		if cachedErr := lookupProbeLocalTUNTCPDirectFailure(route.TargetAddr); cachedErr != nil {
 			return nil, route, cachedErr
 		}
+		if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
+			logProbeWarnf("probe local tun tcp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
+		}
 		dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalTUNTCPDialTimeout})
 		dialNetwork := probeLocalEgressDialNetwork("tcp", route.TargetAddr)
 		conn, dialErr := dialer.Dial(dialNetwork, strings.TrimSpace(route.TargetAddr))
@@ -797,14 +800,12 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	}
 
 	if route.Direct {
-		// Direct/bypass UDP must egress the physical interface with a routable
-		// source address. Do NOT bind LocalAddr to the app's source IP: under a
-		// full-tunnel TUN that is the TUN-side (non-routable) address, so the
-		// upstream server would reply to an unreachable source (observed as
-		// down=0), which then triggers a QUIC retransmit storm and bridge churn,
-		// driving CPU up over time. The egress interface binding (IP_UNICAST_IF in
-		// applyProbeLocalEgressDialer) selects the correct physical source. This
-		// mirrors the TCP direct path, which never binds LocalAddr.
+		if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
+			logProbeWarnf("probe local tun udp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
+		}
+		// Direct/bypass UDP must egress through a routable physical path. We rely
+		// on explicit /32 bypass routes instead of binding LocalAddr to the app's
+		// TUN-side source address, which would make upstream replies unreachable.
 		dialNetwork := probeLocalEgressDialNetwork("udp", route.TargetAddr)
 		dialer := applyProbeLocalEgressDialer(&net.Dialer{})
 		conn, dialErr := dialer.Dial(dialNetwork, strings.TrimSpace(route.TargetAddr))

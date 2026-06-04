@@ -585,6 +585,9 @@ func openProbeLocalExplicitProxyUDPConnForRoute(route probeLocalTunnelRouteDecis
 		return nil, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if route.Direct {
+		if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
+			logProbeWarnf("probe local explicit proxy udp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
+		}
 		dialer := applyProbeLocalEgressDialer(&net.Dialer{})
 		conn, err := dialer.Dial(probeLocalEgressDialNetwork("udp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
 		if err != nil {

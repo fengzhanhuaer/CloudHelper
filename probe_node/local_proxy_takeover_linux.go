@@ -122,6 +122,10 @@ func restoreProbeLocalProxyDirect() error {
 	return nil
 }
 
+func ensureProbeLocalExplicitDirectBypass(string) error {
+	return nil
+}
+
 func resolveProbeLocalLinuxRouteTarget() (string, string, error) {
 	dev := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_DEV"))
 	if dev == "" {
