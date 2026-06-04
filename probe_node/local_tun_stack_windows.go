@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +49,7 @@ const (
 	probeLocalTUNUDPAssociationTimeout     = 30 * time.Second
 	probeLocalTUNUDPQUICAssociationTimeout = 60 * time.Second
 	probeLocalTUNUDPShortAssociationTTL    = 10 * time.Second
+	probeLocalTUNUDPDNSHijackIdleTimeout   = 10 * time.Second
 	probeLocalTUNUDPNoResponseTunnelTTL    = 15 * time.Second
 	probeLocalTUNUDPNoResponseDirectTTL    = 5 * time.Second
 	probeLocalTUNUDPAssociationGCInterval  = 15 * time.Second
@@ -452,6 +454,10 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	req.Complete(false)
 
 	inbound := gonet.NewTCPConn(&wq, ep)
+	if shouldHijackProbeLocalTUNTCPDNSFlow(targetAddr) {
+		startProbeLocalTUNTCPDNSHijack(inbound, targetAddr)
+		return
+	}
 	outbound, route, openErr := openProbeLocalTUNOutboundTCP(targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
@@ -465,6 +471,70 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	relay := globalProbeTCPDebugState.beginRelayWithRoute(targetAddr, route)
 	go n.pipeAndCloseTCP(outbound, inbound, relay, "up")
 	go n.pipeAndCloseTCP(inbound, outbound, relay, "down")
+}
+
+func shouldHijackProbeLocalTUNTCPDNSFlow(targetAddr string) bool {
+	return shouldHijackProbeLocalTUNDNSFlow(targetAddr)
+}
+
+func startProbeLocalTUNTCPDNSHijack(conn net.Conn, targetAddr string) {
+	if conn == nil {
+		return
+	}
+	go serveProbeLocalTUNTCPDNSHijack(conn, targetAddr)
+}
+
+func serveProbeLocalTUNTCPDNSHijack(conn net.Conn, targetAddr string) {
+	if conn == nil {
+		return
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	for {
+		_ = conn.SetDeadline(time.Now().Add(probeLocalTUNUDPDNSHijackIdleTimeout))
+		lengthBuf := make([]byte, 2)
+		if _, err := io.ReadFull(reader, lengthBuf); err != nil {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+				if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+					logProbeWarnf("probe local tun tcp dns hijack read length failed: target=%s err=%v", targetAddr, err)
+				}
+			}
+			return
+		}
+		packetLen := int(binary.BigEndian.Uint16(lengthBuf))
+		if packetLen <= 0 || packetLen > probeLocalTUNUDPReadBufferSize {
+			logProbeWarnf("probe local tun tcp dns hijack invalid packet length: target=%s length=%d", targetAddr, packetLen)
+			return
+		}
+		packet := make([]byte, packetLen)
+		if _, err := io.ReadFull(reader, packet); err != nil {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+				if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+					logProbeWarnf("probe local tun tcp dns hijack read packet failed: target=%s err=%v", targetAddr, err)
+				}
+			}
+			return
+		}
+		result, err := resolveProbeLocalDNSApplicationResponse(packet)
+		if err != nil {
+			updateProbeLocalDNSStatusError(err)
+			logProbeWarnf("probe local tun tcp dns hijack resolve failed: target=%s err=%v", targetAddr, err)
+		}
+		response := result.Response
+		if len(response) == 0 {
+			response = buildProbeLocalDNSServfail(packet)
+		}
+		if len(response) == 0 || len(response) > 65535 {
+			return
+		}
+		binary.BigEndian.PutUint16(lengthBuf, uint16(len(response)))
+		if _, err := conn.Write(append(lengthBuf, response...)); err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				logProbeWarnf("probe local tun tcp dns hijack write failed: target=%s err=%v", targetAddr, err)
+			}
+			return
+		}
+	}
 }
 
 func (n *probeLocalTUNNetstack) pipeAndCloseTCP(dst net.Conn, src net.Conn, relay *probeTCPDebugRelay, direction string) {
@@ -763,6 +833,10 @@ func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 		return
 	}
 	inbound := gonet.NewUDPConn(&wq, ep)
+	if shouldHijackProbeLocalTUNUDPDNSFlow(targetAddr) {
+		startProbeLocalTUNUDPDNSHijack(inbound, targetAddr)
+		return
+	}
 
 	outbound, route, openErr := openProbeLocalTUNOutboundUDP(id, targetAddr)
 	if openErr != nil {
@@ -782,6 +856,57 @@ func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 		route:    route,
 	}
 	bridge.start()
+}
+
+func shouldHijackProbeLocalTUNUDPDNSFlow(targetAddr string) bool {
+	return shouldHijackProbeLocalTUNDNSFlow(targetAddr)
+}
+
+func shouldHijackProbeLocalTUNDNSFlow(targetAddr string) bool {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil || strings.TrimSpace(port) != "53" {
+		return false
+	}
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
+	if ip == nil {
+		return false
+	}
+	return !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast() && !ip.Equal(net.IPv4bcast)
+}
+
+func startProbeLocalTUNUDPDNSHijack(conn net.PacketConn, targetAddr string) {
+	if conn == nil {
+		return
+	}
+	go serveProbeLocalTUNUDPDNSHijack(conn, targetAddr)
+}
+
+func serveProbeLocalTUNUDPDNSHijack(conn net.PacketConn, targetAddr string) {
+	if conn == nil {
+		return
+	}
+	defer conn.Close()
+	buf := make([]byte, probeLocalTUNUDPReadBufferSize)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(probeLocalTUNUDPDNSHijackIdleTimeout))
+		n, remoteAddr, err := conn.ReadFrom(buf)
+		if n > 0 && remoteAddr != nil {
+			packet := append([]byte(nil), buf[:n]...)
+			handleProbeLocalDNSPacket(conn, remoteAddr, packet)
+		}
+		if n == 0 && err == nil {
+			time.Sleep(probeLocalTUNUDPZeroReadBackoff)
+			continue
+		}
+		if err != nil {
+			if !isProbeLocalDNSClosedErr(err) && !errors.Is(err, net.ErrClosed) {
+				if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+					logProbeWarnf("probe local tun dns hijack read failed: target=%s err=%v", targetAddr, err)
+				}
+			}
+			return
+		}
+	}
 }
 
 func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr string) (io.ReadWriteCloser, probeLocalTunnelRouteDecision, error) {

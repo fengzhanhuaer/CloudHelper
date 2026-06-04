@@ -147,6 +147,11 @@ func TestProbeLocalWindowsFakeIPRoutePrefixAndMask(t *testing.T) {
 
 func TestProbeLocalWindowsTakeoverRouteDefsIncludeTunnelCIDRRules(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	oldSystemDNS := probeLocalDNSSystemServers
+	probeLocalDNSSystemServers = func() []string { return nil }
+	t.Cleanup(func() {
+		probeLocalDNSSystemServers = oldSystemDNS
+	})
 
 	groups := defaultProbeLocalProxyGroupFile()
 	groups.Groups = []probeLocalProxyGroupEntry{
@@ -185,9 +190,45 @@ func TestProbeLocalWindowsTakeoverRouteDefsIncludeTunnelCIDRRules(t *testing.T) 
 	}
 }
 
+func TestProbeLocalWindowsTakeoverRouteDefsIncludeSystemDNSCaptureRoutes(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	t.Setenv("PROBE_LOCAL_TUN_DNS_HOST", "198.18.0.2")
+	oldSystemDNS := probeLocalDNSSystemServers
+	probeLocalDNSSystemServers = func() []string {
+		return []string{"192.168.1.1", "8.8.8.8", "192.168.1.1", "198.18.0.2", "127.0.0.1", "bad"}
+	}
+	t.Cleanup(func() {
+		probeLocalDNSSystemServers = oldSystemDNS
+	})
+
+	routeTarget := probeLocalWindowsRouteTarget{Gateway: "198.18.0.1", InterfaceLUID: 19, InterfaceIndex: 9}
+	routeDefs := probeLocalWindowsTakeoverRouteDefs(routeTarget)
+	for _, prefix := range []string{"192.168.1.1", "8.8.8.8"} {
+		var matched bool
+		for _, routeDef := range routeDefs {
+			if routeDef.Prefix == prefix && routeDef.Mask == probeLocalWindowsHostRouteMask && routeDef.Gateway == "198.18.0.1" && routeDef.InterfaceLUID == 19 && routeDef.IfIndex == 9 {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("missing dns capture route prefix=%s routeDefs=%+v", prefix, routeDefs)
+		}
+	}
+	for _, blocked := range []string{"198.18.0.2", "127.0.0.1"} {
+		for _, routeDef := range routeDefs {
+			if routeDef.Prefix == blocked && routeDef.Mask == probeLocalWindowsHostRouteMask {
+				t.Fatalf("unexpected blocked dns capture route=%+v", routeDef)
+			}
+		}
+	}
+}
+
 func TestApplyProbeLocalProxyTakeoverRollbackOnFakeIPRouteFailure(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldRun := probeLocalWindowsRunCommand
+	oldSystemDNS := probeLocalDNSSystemServers
+	probeLocalDNSSystemServers = func() []string { return nil }
 	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
@@ -210,6 +251,7 @@ func TestApplyProbeLocalProxyTakeoverRollbackOnFakeIPRouteFailure(t *testing.T) 
 	}
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		probeLocalDNSSystemServers = oldSystemDNS
 		resetProbeLocalWindowsTakeoverStateForTest()
 		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
@@ -235,6 +277,7 @@ func resetProbeLocalWindowsTakeoverStateForTest() {
 	probeLocalWindowsTakeoverState.enabled = false
 	probeLocalWindowsTakeoverState.routePrintOutput = ""
 	probeLocalWindowsTakeoverState.tunGateway = ""
+	probeLocalWindowsTakeoverState.tunInterfaceLUID = 0
 	probeLocalWindowsTakeoverState.tunIfIndex = 0
 	probeLocalWindowsTakeoverState.bypassGateway = ""
 	probeLocalWindowsTakeoverState.bypassInterfaceIdx = 0
@@ -257,9 +300,12 @@ func hasWindowsRouteCommand(calls []string, verb string, prefix string) bool {
 func TestApplyProbeLocalProxyTakeoverSuccessWithFakeIPRouteOnly(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	oldRun := probeLocalWindowsRunCommand
+	oldSystemDNS := probeLocalDNSSystemServers
+	probeLocalDNSSystemServers = func() []string { return []string{"192.168.1.1", "8.8.8.8"} }
 	useProbeLocalWindowsCommandBackedRouteHooksForTest()
 	t.Cleanup(func() {
 		probeLocalWindowsRunCommand = oldRun
+		probeLocalDNSSystemServers = oldSystemDNS
 		resetProbeLocalWindowsTakeoverStateForTest()
 		resetProbeLocalWindowsNativeRouteHooksForTest()
 	})
@@ -292,6 +338,9 @@ func TestApplyProbeLocalProxyTakeoverSuccessWithFakeIPRouteOnly(t *testing.T) {
 	if !hasWindowsRouteCommand(calls, "ADD", "198.18.0.0") {
 		t.Fatalf("expected fake ip route add call, calls=%v", calls)
 	}
+	if !hasWindowsRouteCommand(calls, "ADD", "192.168.1.1") || !hasWindowsRouteCommand(calls, "ADD", "8.8.8.8") {
+		t.Fatalf("expected dns capture route add calls=%v", calls)
+	}
 	for _, prefix := range []string{"10.0.0.0", "172.16.0.0", "192.168.0.0"} {
 		if hasWindowsRouteCommand(calls, "ADD", prefix) {
 			t.Fatalf("unexpected legacy route add prefix=%s calls=%v", prefix, calls)
@@ -307,7 +356,7 @@ func TestApplyProbeLocalProxyTakeoverSuccessWithFakeIPRouteOnly(t *testing.T) {
 	ifIndex := probeLocalWindowsTakeoverState.tunIfIndex
 	routeDefs := append([]probeLocalWindowsRouteDef(nil), probeLocalWindowsTakeoverState.routeDefs...)
 	probeLocalWindowsTakeoverState.mu.Unlock()
-	if !enabled || gateway != "198.18.0.1" || ifIndex != 9 || len(routeDefs) != 3 {
+	if !enabled || gateway != "198.18.0.1" || ifIndex != 9 || len(routeDefs) != 5 {
 		t.Fatalf("unexpected takeover state: enabled=%v gateway=%q ifIndex=%d routeDefs=%+v", enabled, gateway, ifIndex, routeDefs)
 	}
 }
@@ -361,7 +410,7 @@ func TestCleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(t *testing.T) {
 	if removed != 1 || len(deleted) != 1 {
 		t.Fatalf("removed=%d deleted=%+v", removed, deleted)
 	}
-	if deleted[0].Prefix != "149.154.175.54" || deleted[0].Mask != "255.255.255.255" || deleted[0].Gateway != "192.168.51.1" || deleted[0].IfIndex != 13 {
+	if deleted[0].Prefix != "149.154.175.54" || deleted[0].Mask != probeLocalWindowsHostRouteMask || deleted[0].Gateway != "192.168.51.1" || deleted[0].IfIndex != 13 {
 		t.Fatalf("unexpected deleted route=%+v", deleted[0])
 	}
 }
@@ -389,8 +438,49 @@ func TestEnsureProbeLocalExplicitDirectBypassWritesHostRoute(t *testing.T) {
 	if len(created) != 1 {
 		t.Fatalf("created routes=%+v", created)
 	}
-	if created[0].Prefix != "203.0.113.7" || created[0].Mask != "255.255.255.255" || created[0].Gateway != "192.168.51.1" || created[0].IfIndex != 13 {
+	if created[0].Prefix != "203.0.113.7" || created[0].Mask != probeLocalWindowsHostRouteMask || created[0].Gateway != "192.168.51.1" || created[0].IfIndex != 13 {
 		t.Fatalf("unexpected route=%+v", created[0])
+	}
+}
+
+func TestEnsureProbeLocalExplicitDirectBypassSkipsDNSCaptureTarget(t *testing.T) {
+	resetProbeLocalWindowsTakeoverStateForTest()
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+	probeLocalWindowsTakeoverState.mu.Lock()
+	probeLocalWindowsTakeoverState.enabled = true
+	probeLocalWindowsTakeoverState.tunGateway = "198.18.0.1"
+	probeLocalWindowsTakeoverState.tunIfIndex = 9
+	probeLocalWindowsTakeoverState.routeDefs = []probeLocalWindowsRouteDef{
+		{Prefix: "192.168.1.1", Mask: probeLocalWindowsHostRouteMask, Gateway: "198.18.0.1", IfIndex: 9},
+	}
+	probeLocalWindowsTakeoverState.mu.Unlock()
+	probeLocalDirectBypassRouteTargetState.mu.Lock()
+	probeLocalDirectBypassRouteTargetState.routeTarget = probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
+	probeLocalDirectBypassRouteTargetState.ready = true
+	probeLocalDirectBypassRouteTargetState.mu.Unlock()
+
+	var created []probeLocalWindowsRouteDef
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		created = append(created, routeDef)
+		return true, nil
+	}
+
+	if err := ensureProbeLocalExplicitDirectBypass("192.168.1.1:53"); err != nil {
+		t.Fatalf("ensure direct bypass failed: %v", err)
+	}
+	if len(created) != 0 {
+		t.Fatalf("dns capture target should not create direct bypass routes=%+v", created)
+	}
+	if err := ensureProbeLocalExplicitDirectBypass("192.168.1.1:443"); err != nil {
+		t.Fatalf("ensure non-dns direct bypass failed: %v", err)
+	}
+	if len(created) != 1 || created[0].Prefix != "192.168.1.1" || created[0].Gateway != "192.168.51.1" {
+		t.Fatalf("expected non-dns direct bypass route, got=%+v", created)
 	}
 }
 
@@ -412,6 +502,7 @@ func TestRestoreProbeLocalProxyDirectDeletesFakeIPRouteOnly(t *testing.T) {
 		{Prefix: probeLocalWindowsRouteSplitPrefixA, Mask: probeLocalWindowsRouteSplitMaskA, Gateway: "198.18.0.1", IfIndex: 9},
 		{Prefix: probeLocalWindowsRouteSplitPrefixB, Mask: probeLocalWindowsRouteSplitMaskB, Gateway: "198.18.0.1", IfIndex: 9},
 		{Prefix: "198.18.0.0", Mask: "255.254.0.0", Gateway: "198.18.0.1", IfIndex: 9},
+		{Prefix: "192.168.1.1", Mask: probeLocalWindowsHostRouteMask, Gateway: "198.18.0.1", IfIndex: 9},
 	}
 	probeLocalWindowsTakeoverState.mu.Unlock()
 
@@ -440,6 +531,9 @@ func TestRestoreProbeLocalProxyDirectDeletesFakeIPRouteOnly(t *testing.T) {
 	}
 	if !hasWindowsRouteCommand(calls, "DELETE", "198.18.0.0") {
 		t.Fatalf("expected fake ip route delete calls=%v", calls)
+	}
+	if !hasWindowsRouteCommand(calls, "DELETE", "192.168.1.1") {
+		t.Fatalf("expected dns capture route delete calls=%v", calls)
 	}
 	if dnsCalls != 0 {
 		t.Fatalf("restore proxy should not modify interface dns, dnsCalls=%d", dnsCalls)

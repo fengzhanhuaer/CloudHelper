@@ -8,10 +8,12 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
@@ -30,6 +32,206 @@ type deadlineProbeLocalTUNUDPReadWriteCloser struct {
 func (c *deadlineProbeLocalTUNUDPReadWriteCloser) SetReadDeadline(t time.Time) error {
 	c.deadline = t
 	return nil
+}
+
+type timeoutProbeLocalTUNPacketConnError struct{}
+
+func (timeoutProbeLocalTUNPacketConnError) Error() string   { return "timeout" }
+func (timeoutProbeLocalTUNPacketConnError) Timeout() bool   { return true }
+func (timeoutProbeLocalTUNPacketConnError) Temporary() bool { return true }
+
+type fakeProbeLocalTUNPacketConn struct {
+	mu       sync.Mutex
+	packet   []byte
+	read     bool
+	closed   bool
+	writes   [][]byte
+	remote   net.Addr
+	deadline time.Time
+}
+
+func (c *fakeProbeLocalTUNPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0, nil, net.ErrClosed
+	}
+	if c.read {
+		return 0, nil, timeoutProbeLocalTUNPacketConnError{}
+	}
+	c.read = true
+	return copy(p, c.packet), c.remote, nil
+}
+
+func (c *fakeProbeLocalTUNPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writes = append(c.writes, append([]byte(nil), p...))
+	return len(p), nil
+}
+
+func (c *fakeProbeLocalTUNPacketConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (c *fakeProbeLocalTUNPacketConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.ParseIP("198.18.0.1"), Port: 53}
+}
+
+func (c *fakeProbeLocalTUNPacketConn) SetDeadline(t time.Time) error {
+	c.deadline = t
+	return nil
+}
+
+func (c *fakeProbeLocalTUNPacketConn) SetReadDeadline(t time.Time) error {
+	c.deadline = t
+	return nil
+}
+
+func (c *fakeProbeLocalTUNPacketConn) SetWriteDeadline(t time.Time) error {
+	c.deadline = t
+	return nil
+}
+
+func TestShouldHijackProbeLocalTUNUDPDNSFlow(t *testing.T) {
+	tests := []struct {
+		target string
+		want   bool
+	}{
+		{target: "192.168.1.1:53", want: true},
+		{target: "8.8.8.8:53", want: true},
+		{target: "[2001:4860:4860::8888]:53", want: true},
+		{target: "192.168.1.1:443", want: false},
+		{target: "224.0.0.251:53", want: false},
+		{target: "127.0.0.1:53", want: false},
+		{target: "resolver.example:53", want: false},
+	}
+	for _, tt := range tests {
+		if got := shouldHijackProbeLocalTUNUDPDNSFlow(tt.target); got != tt.want {
+			t.Fatalf("shouldHijackProbeLocalTUNUDPDNSFlow(%q)=%v want=%v", tt.target, got, tt.want)
+		}
+	}
+}
+
+func TestShouldHijackProbeLocalTUNTCPDNSFlow(t *testing.T) {
+	if !shouldHijackProbeLocalTUNTCPDNSFlow("192.168.1.1:53") {
+		t.Fatal("tcp dns target should be hijacked")
+	}
+	if shouldHijackProbeLocalTUNTCPDNSFlow("192.168.1.1:853") {
+		t.Fatal("dot target should not be hijacked as plain dns")
+	}
+}
+
+func TestServeProbeLocalTUNUDPDNSHijackResolvesViaLocalDNS(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	storeProbeLocalDNSCacheRecords("cached.example", []string{"203.0.113.44"})
+	query, err := buildProbeLocalDNSQueryA("cached.example")
+	if err != nil {
+		t.Fatalf("build dns query failed: %v", err)
+	}
+	conn := &fakeProbeLocalTUNPacketConn{
+		packet: query,
+		remote: &net.UDPAddr{
+			IP:   net.ParseIP("198.18.0.2"),
+			Port: 53124,
+		},
+	}
+
+	serveProbeLocalTUNUDPDNSHijack(conn, "192.168.1.1:53")
+	if len(conn.writes) != 1 {
+		t.Fatalf("writes=%d want 1", len(conn.writes))
+	}
+	ips := extractProbeLocalTestDNSARecords(t, conn.writes[0])
+	if len(ips) != 1 || ips[0] != "203.0.113.44" {
+		t.Fatalf("dns response ips=%v", ips)
+	}
+}
+
+func TestServeProbeLocalTUNTCPDNSHijackResolvesViaLocalDNS(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	storeProbeLocalDNSCacheRecords("tcp.cached.example", []string{"203.0.113.45"})
+	query, err := buildProbeLocalDNSQueryA("tcp.cached.example")
+	if err != nil {
+		t.Fatalf("build dns query failed: %v", err)
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveProbeLocalTUNTCPDNSHijack(server, "192.168.1.1:53")
+	}()
+
+	if err := client.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set client deadline failed: %v", err)
+	}
+	lengthBuf := make([]byte, 2)
+	binary.BigEndian.PutUint16(lengthBuf, uint16(len(query)))
+	if _, err := client.Write(append(lengthBuf, query...)); err != nil {
+		t.Fatalf("write tcp dns query failed: %v", err)
+	}
+	if _, err := io.ReadFull(client, lengthBuf); err != nil {
+		t.Fatalf("read tcp dns response length failed: %v", err)
+	}
+	responseLen := int(binary.BigEndian.Uint16(lengthBuf))
+	if responseLen <= 0 {
+		t.Fatalf("invalid tcp dns response length=%d", responseLen)
+	}
+	response := make([]byte, responseLen)
+	if _, err := io.ReadFull(client, response); err != nil {
+		t.Fatalf("read tcp dns response failed: %v", err)
+	}
+	ips := extractProbeLocalTestDNSARecords(t, response)
+	if len(ips) != 1 || ips[0] != "203.0.113.45" {
+		t.Fatalf("dns response ips=%v", ips)
+	}
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tcp dns hijack server did not exit")
+	}
+}
+
+func extractProbeLocalTestDNSARecords(t *testing.T, packet []byte) []string {
+	t.Helper()
+	parser := dnsmessage.Parser{}
+	if _, err := parser.Start(packet); err != nil {
+		t.Fatalf("parse dns response failed: %v", err)
+	}
+	if err := parser.SkipAllQuestions(); err != nil {
+		t.Fatalf("skip dns questions failed: %v", err)
+	}
+	var ips []string
+	for {
+		header, err := parser.AnswerHeader()
+		if errors.Is(err, dnsmessage.ErrSectionDone) {
+			return ips
+		}
+		if err != nil {
+			t.Fatalf("parse dns answer header failed: %v", err)
+		}
+		if header.Type != dnsmessage.TypeA {
+			if err := parser.SkipAnswer(); err != nil {
+				t.Fatalf("skip dns answer failed: %v", err)
+			}
+			continue
+		}
+		answer, err := parser.AResource()
+		if err != nil {
+			t.Fatalf("parse dns a answer failed: %v", err)
+		}
+		ips = append(ips, net.IP(answer.A[:]).String())
+	}
 }
 
 func TestParseProbeLocalTUNIPv4TargetTCP(t *testing.T) {

@@ -20,6 +20,7 @@ const (
 	probeLocalWindowsRouteSplitMaskA   = "128.0.0.0"
 	probeLocalWindowsRouteSplitPrefixB = "128.0.0.0"
 	probeLocalWindowsRouteSplitMaskB   = "128.0.0.0"
+	probeLocalWindowsHostRouteMask     = "255.255.255.255"
 	probeLocalWindowsRouteMetric       = 3
 )
 
@@ -205,6 +206,7 @@ func probeLocalWindowsTakeoverRouteDefs(routeTarget probeLocalWindowsRouteTarget
 		{Prefix: probeLocalWindowsRouteSplitPrefixB, Mask: probeLocalWindowsRouteSplitMaskB, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
 		{Prefix: prefix, Mask: mask, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
 	}
+	routeDefs = append(routeDefs, probeLocalWindowsDNSCaptureRouteDefs(routeTarget)...)
 	for _, cidr := range probeLocalTunnelCIDRRules() {
 		cidrPrefix, cidrMask := probeLocalWindowsCIDRRoutePrefixAndMask(cidr)
 		if cidrPrefix == "" || cidrMask == "" {
@@ -219,6 +221,42 @@ func probeLocalWindowsTakeoverRouteDefs(routeTarget probeLocalWindowsRouteTarget
 		})
 	}
 	return dedupeProbeLocalWindowsRouteDefs(routeDefs)
+}
+
+func probeLocalWindowsDNSCaptureRouteDefs(routeTarget probeLocalWindowsRouteTarget) []probeLocalWindowsRouteDef {
+	if strings.TrimSpace(routeTarget.Gateway) == "" || routeTarget.InterfaceIndex <= 0 {
+		return nil
+	}
+	dnsServers := filterProbeLocalTUNPrimaryDNSServers(probeLocalDNSSystemServers())
+	if len(dnsServers) == 0 {
+		return nil
+	}
+	routeDefs := make([]probeLocalWindowsRouteDef, 0, len(dnsServers))
+	for _, server := range dnsServers {
+		ip4 := net.ParseIP(strings.TrimSpace(server)).To4()
+		if !isProbeLocalWindowsDNSCaptureIP(ip4, routeTarget.Gateway) {
+			continue
+		}
+		routeDefs = append(routeDefs, probeLocalWindowsRouteDef{
+			Prefix:        ip4.String(),
+			Mask:          probeLocalWindowsHostRouteMask,
+			Gateway:       routeTarget.Gateway,
+			InterfaceLUID: routeTarget.InterfaceLUID,
+			IfIndex:       routeTarget.InterfaceIndex,
+		})
+	}
+	return dedupeProbeLocalWindowsRouteDefs(routeDefs)
+}
+
+func isProbeLocalWindowsDNSCaptureIP(ip net.IP, tunGateway string) bool {
+	ip4 := ip.To4()
+	if ip4 == nil || ip4.IsUnspecified() || ip4.IsLoopback() || ip4.IsMulticast() || ip4.Equal(net.IPv4bcast) {
+		return false
+	}
+	if gateway := net.ParseIP(strings.TrimSpace(tunGateway)); gateway != nil && ip4.Equal(gateway.To4()) {
+		return false
+	}
+	return true
 }
 
 func cleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(routeTarget probeLocalWindowsRouteTarget) (int, error) {
@@ -330,6 +368,9 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 	if len(ips) == 0 {
 		return fmt.Errorf("bypass target has no ipv4 address: %s", cleanHost)
 	}
+	if isProbeLocalWindowsDNSCaptureTarget(targetAddr) {
+		return nil
+	}
 	bypassTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
 	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
 		routeTarget, routeErr := resolveProbeLocalWindowsRouteTarget()
@@ -349,7 +390,7 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 		}
 		_, routeErr := ensureProbeLocalWindowsRoute(probeLocalWindowsRouteDef{
 			Prefix:  ip4.String(),
-			Mask:    "255.255.255.255",
+			Mask:    probeLocalWindowsHostRouteMask,
 			Gateway: strings.TrimSpace(bypassTarget.NextHop),
 			IfIndex: bypassTarget.InterfaceIndex,
 		})
@@ -358,6 +399,34 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 		}
 	}
 	return allErr
+}
+
+func isProbeLocalWindowsDNSCaptureTarget(targetAddr string) bool {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil || strings.TrimSpace(port) != "53" {
+		return false
+	}
+	ip4 := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]"))).To4()
+	if ip4 == nil {
+		return false
+	}
+	probeLocalWindowsTakeoverState.mu.Lock()
+	defer probeLocalWindowsTakeoverState.mu.Unlock()
+	if !probeLocalWindowsTakeoverState.enabled {
+		return false
+	}
+	for _, routeDef := range probeLocalWindowsTakeoverState.routeDefs {
+		if strings.TrimSpace(routeDef.Mask) != probeLocalWindowsHostRouteMask {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(routeDef.Gateway), strings.TrimSpace(probeLocalWindowsTakeoverState.tunGateway)) {
+			continue
+		}
+		if routeIP := net.ParseIP(strings.TrimSpace(routeDef.Prefix)).To4(); routeIP != nil && routeIP.Equal(ip4) {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureProbeLocalWindowsSplitRoute(prefix, mask, gateway string, ifIndex int) (bool, error) {
