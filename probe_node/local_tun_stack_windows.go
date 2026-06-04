@@ -41,6 +41,8 @@ const (
 	probeLocalTUNTCPOpenConcurrencyLimit   = 256
 	probeLocalTUNTCPFailureLogInterval     = 5 * time.Second
 	probeLocalTUNTCPFailureLogCacheMax     = 512
+	probeLocalTUNUDPFailureLogInterval     = 5 * time.Second
+	probeLocalTUNUDPFailureLogCacheMax     = 512
 	probeLocalTUNTCPForwarderWindow        = 4 * 1024 * 1024
 	probeLocalTUNTCPForwarderInFlight      = 2048
 	probeLocalTUNUDPAssociationTimeout     = 30 * time.Second
@@ -105,6 +107,11 @@ type probeLocalTUNTCPDirectFailureCacheStats struct {
 }
 
 type probeLocalTUNTCPFailureLogEntry struct {
+	nextAt     time.Time
+	suppressed int64
+}
+
+type probeLocalTUNUDPFailureLogEntry struct {
 	nextAt     time.Time
 	suppressed int64
 }
@@ -203,6 +210,11 @@ var probeLocalTUNTCPFailureLogState = struct {
 	mu    sync.Mutex
 	items map[string]probeLocalTUNTCPFailureLogEntry
 }{items: map[string]probeLocalTUNTCPFailureLogEntry{}}
+
+var probeLocalTUNUDPFailureLogState = struct {
+	mu    sync.Mutex
+	items map[string]probeLocalTUNUDPFailureLogEntry
+}{items: map[string]probeLocalTUNUDPFailureLogEntry{}}
 
 func prepareProbeLocalWindowsDirectBypassRouteTarget() error {
 	routeTarget, err := resolveProbeLocalWindowsDirectBypassRouteTarget()
@@ -685,6 +697,48 @@ func shouldReportProbeLocalTUNTCPFailure(kind string, targetAddr string, route p
 	return true
 }
 
+func shouldReportProbeLocalTUNUDPFailure(kind string, targetAddr string, route probeLocalTunnelRouteDecision, err error) bool {
+	key := strings.Join([]string{
+		strings.TrimSpace(kind),
+		strings.TrimSpace(probeLocalTUNRouteOutboundPath(route)),
+		strings.TrimSpace(route.Group),
+		strings.TrimSpace(route.TunnelNodeID),
+		strings.TrimSpace(targetAddr),
+		strings.TrimSpace(route.TargetAddr),
+		classifyProbeLocalTUNError(kind, err),
+	}, "|")
+	if strings.TrimSpace(key) == "" {
+		return true
+	}
+	now := time.Now()
+	probeLocalTUNUDPFailureLogState.mu.Lock()
+	defer probeLocalTUNUDPFailureLogState.mu.Unlock()
+	if probeLocalTUNUDPFailureLogState.items == nil {
+		probeLocalTUNUDPFailureLogState.items = map[string]probeLocalTUNUDPFailureLogEntry{}
+	}
+	entry, ok := probeLocalTUNUDPFailureLogState.items[key]
+	if ok && now.Before(entry.nextAt) {
+		entry.suppressed++
+		probeLocalTUNUDPFailureLogState.items[key] = entry
+		return false
+	}
+	if len(probeLocalTUNUDPFailureLogState.items) >= probeLocalTUNUDPFailureLogCacheMax {
+		for itemKey, item := range probeLocalTUNUDPFailureLogState.items {
+			if now.After(item.nextAt) {
+				delete(probeLocalTUNUDPFailureLogState.items, itemKey)
+			}
+		}
+	}
+	if len(probeLocalTUNUDPFailureLogState.items) >= probeLocalTUNUDPFailureLogCacheMax {
+		for itemKey := range probeLocalTUNUDPFailureLogState.items {
+			delete(probeLocalTUNUDPFailureLogState.items, itemKey)
+			break
+		}
+	}
+	probeLocalTUNUDPFailureLogState.items[key] = probeLocalTUNUDPFailureLogEntry{nextAt: now.Add(probeLocalTUNUDPFailureLogInterval)}
+	return true
+}
+
 func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	if req == nil {
 		return
@@ -710,8 +764,10 @@ func (n *probeLocalTUNNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
 	outbound, route, openErr := openProbeLocalTUNOutboundUDP(id, targetAddr)
 	if openErr != nil {
 		_ = inbound.Close()
-		reason := classifyProbeLocalTUNError("open_failed", openErr)
-		logProbeWarnf("probe local tun udp open failed: target=%s route=%s group=%s node=%s reason=%s err=%v", targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, reason, openErr)
+		if shouldReportProbeLocalTUNUDPFailure("open_failed", targetAddr, route, openErr) {
+			reason := classifyProbeLocalTUNError("open_failed", openErr)
+			logProbeWarnf("probe local tun udp open failed: target=%s route=%s group=%s node=%s reason=%s err=%v", targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, reason, openErr)
+		}
 		return
 	}
 
@@ -735,7 +791,6 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	}
 
 	srcIP := strings.TrimSpace(id.RemoteAddress.String())
-	dstIP := strings.TrimSpace(id.LocalAddress.String())
 	sourceKey, sourceRefs, releaseSource := acquireProbeLocalTUNUDPSource(srcIP, uint16(id.RemotePort))
 	if releaseSource == nil {
 		releaseSource = func() {}
@@ -754,8 +809,17 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 		dialer := applyProbeLocalEgressDialer(&net.Dialer{})
 		conn, dialErr := dialer.Dial(dialNetwork, strings.TrimSpace(route.TargetAddr))
 		if dialErr != nil {
-			releaseSource()
-			return nil, route, dialErr
+			if !shouldFallbackProbeLocalUDPBind(dialErr) || route.GroupRuntime == nil {
+				releaseSource()
+				return nil, route, dialErr
+			}
+			association := buildProbeLocalTUNUDPAssociation(id, targetAddr, route, sourceKey, sourceRefs, probeLocalTUNUDPNATModeFallbackEphemeral)
+			stream, openErr := openProbeLocalTunnelConnWithGroupRuntime("udp", route.TargetAddr, route.GroupRuntime, association)
+			if openErr != nil {
+				releaseSource()
+				return nil, route, openErr
+			}
+			return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: newProbeLocalTUNTunnelUDPConn(stream), releaseSource: releaseSource}, route, nil
 		}
 		if udpConn, ok := conn.(*net.UDPConn); ok {
 			tuneProbeChainUDPConn(udpConn)
@@ -763,6 +827,18 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 		return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: conn, releaseSource: releaseSource}, route, nil
 	}
 
+	association := buildProbeLocalTUNUDPAssociation(id, targetAddr, route, sourceKey, sourceRefs, probeChainUDPAssociationNATModeDefault)
+	stream, openErr := openProbeLocalTunnelConnWithGroupRuntime("udp", route.TargetAddr, route.GroupRuntime, association)
+	if openErr != nil {
+		releaseSource()
+		return nil, route, openErr
+	}
+	return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: newProbeLocalTUNTunnelUDPConn(stream), releaseSource: releaseSource}, route, nil
+}
+
+func buildProbeLocalTUNUDPAssociation(id stack.TransportEndpointID, targetAddr string, route probeLocalTunnelRouteDecision, sourceKey string, sourceRefs int64, natMode string) *probeChainAssociationV2Meta {
+	srcIP := strings.TrimSpace(id.RemoteAddress.String())
+	dstIP := strings.TrimSpace(id.LocalAddress.String())
 	association := &probeChainAssociationV2Meta{
 		Version:          2,
 		Transport:        "udp",
@@ -770,7 +846,7 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 		RouteNodeID:      firstNonEmpty(strings.TrimSpace(route.TunnelNodeID), formatProbeLocalLegacyTunnelNodeID(route.SelectedChainID)),
 		RouteTarget:      strings.TrimSpace(route.TargetAddr),
 		RouteFingerprint: strings.ToLower(strings.TrimSpace(route.TargetAddr)),
-		NATMode:          probeChainUDPAssociationNATModeDefault,
+		NATMode:          firstNonEmpty(strings.TrimSpace(natMode), probeChainUDPAssociationNATModeDefault),
 		TTLProfile:       resolveProbeLocalTUNUDPTTLProfile(route.TargetAddr),
 		IdleTimeoutMS:    resolveProbeLocalTUNUDPBridgeTimeout(route.TargetAddr, route).Milliseconds(),
 		GCIntervalMS:     probeChainUDPAssociationEffectiveGCInterval(resolveProbeLocalTUNUDPBridgeTimeout(route.TargetAddr, route)).Milliseconds(),
@@ -792,13 +868,7 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	assocKey := strings.ToLower(strings.TrimSpace(targetAddr)) + "|" + srcIP + ":" + strconv.Itoa(int(id.RemotePort)) + "->" + dstIP + ":" + strconv.Itoa(int(id.LocalPort))
 	association.AssocKeyV2 = assocKey
 	association.FlowID = assocKey
-
-	stream, openErr := openProbeLocalTunnelConnWithGroupRuntime("udp", route.TargetAddr, route.GroupRuntime, association)
-	if openErr != nil {
-		releaseSource()
-		return nil, route, openErr
-	}
-	return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: newProbeLocalTUNTunnelUDPConn(stream), releaseSource: releaseSource}, route, nil
+	return association
 }
 
 func (b *probeLocalTUNUDPBridge) start() {
@@ -1056,6 +1126,17 @@ func (c *probeLocalTUNUDPManagedOutbound) Close() error {
 		}
 	})
 	return err
+}
+
+func (c *probeLocalTUNUDPManagedOutbound) SetReadDeadline(t time.Time) error {
+	if c == nil || c.ReadWriteCloser == nil {
+		return io.ErrClosedPipe
+	}
+	deadliner, ok := c.ReadWriteCloser.(probeLocalTUNReadDeadliner)
+	if !ok {
+		return nil
+	}
+	return deadliner.SetReadDeadline(t)
 }
 
 func resolveProbeLocalTUNUDPAssociationTimeout(targetAddr string) time.Duration {
@@ -1370,11 +1451,17 @@ func shouldFallbackProbeLocalUDPBind(err error) bool {
 	}
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
-		if errno == syscall.EADDRINUSE || errno == syscall.EADDRNOTAVAIL || errno == syscall.Errno(10048) || errno == syscall.Errno(10049) {
+		if errno == syscall.EADDRINUSE || errno == syscall.EADDRNOTAVAIL || errno == syscall.Errno(10013) || errno == syscall.Errno(10048) || errno == syscall.Errno(10049) {
 			return true
 		}
 	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "access a socket in a way forbidden by its access permissions") {
+		return true
+	}
+	if strings.Contains(msg, "permission denied") || strings.Contains(msg, "wsaeacces") {
+		return true
+	}
 	if strings.Contains(msg, "only one usage of each socket address") {
 		return true
 	}
@@ -1601,4 +1688,7 @@ func resetProbeLocalDirectBypassStateForTest() {
 	probeLocalTUNTCPFailureLogState.mu.Lock()
 	probeLocalTUNTCPFailureLogState.items = map[string]probeLocalTUNTCPFailureLogEntry{}
 	probeLocalTUNTCPFailureLogState.mu.Unlock()
+	probeLocalTUNUDPFailureLogState.mu.Lock()
+	probeLocalTUNUDPFailureLogState.items = map[string]probeLocalTUNUDPFailureLogEntry{}
+	probeLocalTUNUDPFailureLogState.mu.Unlock()
 }

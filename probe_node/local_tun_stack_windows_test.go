@@ -22,6 +22,16 @@ func (nopProbeLocalTUNUDPReadWriteCloser) Read([]byte) (int, error)    { return 
 func (nopProbeLocalTUNUDPReadWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopProbeLocalTUNUDPReadWriteCloser) Close() error                { return nil }
 
+type deadlineProbeLocalTUNUDPReadWriteCloser struct {
+	nopProbeLocalTUNUDPReadWriteCloser
+	deadline time.Time
+}
+
+func (c *deadlineProbeLocalTUNUDPReadWriteCloser) SetReadDeadline(t time.Time) error {
+	c.deadline = t
+	return nil
+}
+
 func TestParseProbeLocalTUNIPv4TargetTCP(t *testing.T) {
 	packet := make([]byte, 40)
 	packet[0] = 0x45
@@ -459,6 +469,18 @@ func TestProbeLocalTUNUDPManagedOutboundReleaseSourceOnce(t *testing.T) {
 	}
 }
 
+func TestProbeLocalTUNUDPManagedOutboundForwardsReadDeadline(t *testing.T) {
+	inner := &deadlineProbeLocalTUNUDPReadWriteCloser{}
+	outbound := &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: inner}
+	deadline := time.Now().Add(time.Second)
+	if err := outbound.SetReadDeadline(deadline); err != nil {
+		t.Fatalf("set deadline failed: %v", err)
+	}
+	if !inner.deadline.Equal(deadline) {
+		t.Fatalf("deadline=%s want=%s", inner.deadline, deadline)
+	}
+}
+
 func TestProbeLocalTUNUDPBridgeNoResponseTimeout(t *testing.T) {
 	bridge := &probeLocalTUNUDPBridge{
 		route:   probeLocalTunnelRouteDecision{Direct: false, Group: "media"},
@@ -565,8 +587,11 @@ func TestShouldFallbackProbeLocalUDPBind(t *testing.T) {
 		want bool
 	}{
 		{err: nil, want: false},
+		{err: syscall.Errno(10013), want: true},
 		{err: syscall.Errno(10048), want: true},
 		{err: syscall.Errno(10049), want: true},
+		{err: errors.New("bind: An attempt was made to access a socket in a way forbidden by its access permissions."), want: true},
+		{err: errors.New("wsaeacces"), want: true},
 		{err: errors.New("address already in use"), want: true},
 		{err: errors.New("requested address is not valid in its context"), want: true},
 		{err: errors.New("random network error"), want: false},
@@ -575,6 +600,51 @@ func TestShouldFallbackProbeLocalUDPBind(t *testing.T) {
 		if got := shouldFallbackProbeLocalUDPBind(tc.err); got != tc.want {
 			t.Fatalf("case=%d got=%v want=%v err=%v", i, got, tc.want, tc.err)
 		}
+	}
+}
+
+func TestShouldReportProbeLocalTUNUDPFailureSuppressesRepeats(t *testing.T) {
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(resetProbeLocalDirectBypassStateForTest)
+
+	route := probeLocalTunnelRouteDecision{
+		Direct:     true,
+		TargetAddr: "198.41.192.167:7844",
+		Group:      "fallback",
+	}
+	err := errors.New("bind: An attempt was made to access a socket in a way forbidden by its access permissions.")
+	if !shouldReportProbeLocalTUNUDPFailure("open_failed", "198.41.192.167:7844", route, err) {
+		t.Fatal("first udp failure should be reported")
+	}
+	if shouldReportProbeLocalTUNUDPFailure("open_failed", "198.41.192.167:7844", route, err) {
+		t.Fatal("repeat udp failure should be suppressed")
+	}
+	if !shouldReportProbeLocalTUNUDPFailure("open_failed", "198.41.192.7:7844", route, err) {
+		t.Fatal("different target should be reported")
+	}
+}
+
+func TestBuildProbeLocalTUNUDPAssociationFallbackNATMode(t *testing.T) {
+	id := stack.TransportEndpointID{
+		LocalAddress:  tcpip.AddrFrom4([4]byte{198, 41, 192, 167}),
+		LocalPort:     7844,
+		RemoteAddress: tcpip.AddrFrom4([4]byte{198, 18, 0, 2}),
+		RemotePort:    52849,
+	}
+	route := probeLocalTunnelRouteDecision{
+		TargetAddr:      "198.41.192.167:7844",
+		Group:           "fallback",
+		SelectedChainID: "5",
+	}
+	assoc := buildProbeLocalTUNUDPAssociation(id, "198.41.192.167:7844", route, "198.18.0.2:52849", 1, probeLocalTUNUDPNATModeFallbackEphemeral)
+	if assoc.NATMode != probeLocalTUNUDPNATModeFallbackEphemeral {
+		t.Fatalf("NATMode=%q", assoc.NATMode)
+	}
+	if assoc.SourceKey != "198.18.0.2:52849" || assoc.SourceRefs != 1 {
+		t.Fatalf("source key/refs=%q/%d", assoc.SourceKey, assoc.SourceRefs)
+	}
+	if assoc.AssocKeyV2 != "198.41.192.167:7844|198.18.0.2:52849->198.41.192.167:7844" {
+		t.Fatalf("assoc key=%q", assoc.AssocKeyV2)
 	}
 }
 
