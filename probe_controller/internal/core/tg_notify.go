@@ -17,11 +17,14 @@ var tgNotifySendFunc = sendTGAssistantBotTextMessage
 
 // tgNotifyOfflineState tracks a per-node generation counter used to debounce
 // offline notifications: a pending offline job only fires if no newer transition
-// (online recovery or another offline event) happened in the meantime.
+// (online recovery or another offline event) happened in the meantime. lastSent
+// records the last state we actually notified ("online"/"offline") so we never send
+// a second "上线" without an intervening "掉线" (flap suppression).
 var tgNotifyOfflineState = struct {
-	mu  sync.Mutex
-	gen map[string]int64
-}{gen: map[string]int64{}}
+	mu       sync.Mutex
+	gen      map[string]int64
+	lastSent map[string]string
+}{gen: map[string]int64{}, lastSent: map[string]string{}}
 
 type tgAssistantNotifyView struct {
 	Settings          tgAssistantNotifySettings `json:"settings"`
@@ -59,10 +62,46 @@ func tgNotifyCurrentGeneration(nodeID string) int64 {
 	return tgNotifyOfflineState.gen[nodeID]
 }
 
+// tgNotifyMarkSentIfChanged records that we just notified `state` for nodeID and
+// reports whether that differs from the last notified state. It returns false when
+// the same state was already notified, so callers can suppress duplicate
+// notifications (e.g. repeated "上线" while a node flaps).
+func tgNotifyMarkSentIfChanged(nodeID, state string) bool {
+	tgNotifyOfflineState.mu.Lock()
+	defer tgNotifyOfflineState.mu.Unlock()
+	if tgNotifyOfflineState.lastSent[nodeID] == state {
+		return false
+	}
+	tgNotifyOfflineState.lastSent[nodeID] = state
+	return true
+}
+
+func tgNotifyLastSent(nodeID string) string {
+	tgNotifyOfflineState.mu.Lock()
+	defer tgNotifyOfflineState.mu.Unlock()
+	return tgNotifyOfflineState.lastSent[nodeID]
+}
+
+// isProbeNotifyAndroidNode reports whether the node is an Android probe. Android
+// devices sleep and reconnect constantly, so their online/offline churn is noise
+// and must not be notified.
+func isProbeNotifyAndroidNode(nodeID string) bool {
+	if node, ok := getProbeNodeByID(nodeID); ok {
+		if normalizeProbeTargetSystem(node.TargetSystem) == "android" {
+			return true
+		}
+	}
+	if rt, ok := getProbeRuntime(nodeID); ok && strings.EqualFold(strings.TrimSpace(rt.Platform), "android") {
+		return true
+	}
+	return false
+}
+
 // onProbeRuntimeTransition is invoked from setProbeRuntimeOnline when a probe node
 // crosses an online<->offline edge (only for already-seen nodes, so controller
-// cold-starts do not spam). Online events push immediately; offline events are
-// debounced to swallow brief flaps.
+// cold-starts do not spam). Offline events are debounced to swallow brief flaps;
+// online events are gated so a reconnect only notifies if we previously reported
+// the node offline. Android probes are skipped entirely (their churn is noise).
 func onProbeRuntimeTransition(nodeID string, online bool) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
@@ -77,10 +116,20 @@ func onProbeRuntimeTransition(nodeID string, online bool) {
 		cancelGlobalTask(jobKey)
 		return
 	}
+	if isProbeNotifyAndroidNode(nodeID) {
+		tgNotifyBumpGeneration(nodeID)
+		cancelGlobalTask(jobKey)
+		return
+	}
 
 	gen := tgNotifyBumpGeneration(nodeID)
 	if online {
 		cancelGlobalTask(jobKey)
+		// Only announce recovery if we actually told the user it was offline;
+		// otherwise a flapping node would spam "上线".
+		if tgNotifyLastSent(nodeID) != "offline" {
+			return
+		}
 		go sendProbeStatusNotification(nodeID, true)
 		return
 	}
@@ -98,6 +147,15 @@ func onProbeRuntimeTransition(nodeID string, online bool) {
 }
 
 func sendProbeStatusNotification(nodeID string, online bool) {
+	state := "offline"
+	if online {
+		state = "online"
+	}
+	// Collapse duplicates: never two "上线" (or two "掉线") in a row for one node.
+	if !tgNotifyMarkSentIfChanged(nodeID, state) {
+		return
+	}
+
 	botAPIKey, chatID, accountID, ok := resolveNotifyBot()
 	if !ok {
 		return
