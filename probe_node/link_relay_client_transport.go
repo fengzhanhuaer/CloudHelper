@@ -226,18 +226,6 @@ func probeChainRelayJoinProtocols(protocols []string) string {
 }
 
 func logProbeChainRelayDialAttempt(stage string, chainID string, protocol string, relayHost string, relayPort int, dialHost string, hostHeader string, bridgeRole string, openTimeout time.Duration) {
-	log.Printf(
-		"probe chain relay dial attempt: stage=%s chain=%s protocol=%s relay=%s:%d dial_host=%s host_header=%s bridge_role=%s timeout=%s",
-		strings.TrimSpace(stage),
-		strings.TrimSpace(chainID),
-		normalizeProbeChainLinkLayer(protocol),
-		strings.TrimSpace(relayHost),
-		relayPort,
-		strings.TrimSpace(dialHost),
-		strings.TrimSpace(hostHeader),
-		normalizeProbeChainBridgeRole(bridgeRole),
-		openTimeout,
-	)
 }
 
 func logProbeChainRelayDialOutcome(stage string, chainID string, protocol string, relayHost string, relayPort int, dialHost string, hostHeader string, bridgeRole string, elapsed time.Duration, err error) {
@@ -257,18 +245,6 @@ func logProbeChainRelayDialOutcome(stage string, chainID string, protocol string
 		)
 		return
 	}
-	log.Printf(
-		"probe chain relay dial connected: stage=%s chain=%s protocol=%s relay=%s:%d dial_host=%s host_header=%s bridge_role=%s latency_ms=%d",
-		strings.TrimSpace(stage),
-		strings.TrimSpace(chainID),
-		normalizeProbeChainLinkLayer(protocol),
-		strings.TrimSpace(relayHost),
-		relayPort,
-		strings.TrimSpace(dialHost),
-		strings.TrimSpace(hostHeader),
-		normalizeProbeChainBridgeRole(bridgeRole),
-		probeDurationMilliseconds(elapsed),
-	)
 }
 
 func openProbeChainRelayNetConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
@@ -1012,24 +988,12 @@ func openProbeChainRelayDataStreamNetConnDefaultWithRoleAndToken(chainID string,
 	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, time.Now()); preferred != "" {
 		candidates = probeChainRelayProtocolCandidatesPrefer(candidates, preferred)
 	}
-	log.Printf(
-		"probe chain relay data stream protocol dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
-		strings.TrimSpace(chainID),
-		strings.TrimSpace(relayHost),
-		normalizeProbeChainLinkLayer(layer),
-		normalizeProbeChainBridgeRole(bridgeRole),
-		endpointKey,
-		probeChainRelayJoinProtocols(candidates),
-	)
 	var lastErr error
 	for _, protocol := range candidates {
 		result := probeChainRelayOpenDataStreamLayer(chainID, secret, relayHost, relayPort, protocol, bridgeRole, connToken, openTimeout)
 		if result.Err == nil {
 			recordProbeChainRelayProtocolSuccess(endpointKey, result, "data_stream")
 			recordProbeChainRelayProtocolSelected(endpointKey, result.Protocol, "data_stream")
-			if normalizeProbeChainLinkLayer(layer) == "" {
-				log.Printf("probe chain relay data stream protocol selected: chain=%s endpoint=%s protocol=%s", strings.TrimSpace(chainID), endpointKey, normalizeProbeChainLinkLayer(result.Protocol))
-			}
 			return result.Conn, nil
 		}
 		lastErr = result.Err
