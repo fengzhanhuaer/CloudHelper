@@ -920,62 +920,29 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		m.setTUNRecoveryStatus("idle", attempt, time.Time{}, "")
 		return nil
 	}
-	if restoreTUN && !restoreProxy {
-		reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-		if err := startProbeLocalTUNDataPlane(); err != nil {
-			wrappedErr := fmt.Errorf("recover probe local tun data plane failed: %w", err)
-			m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(wrappedErr.Error()))
-			logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, wrappedErr)
-			return wrappedErr
-		}
-		stats := probeLocalTUNDataPlaneStatsSnapshot()
-		now = time.Now().UTC().Format(time.RFC3339)
-		m.mu.Lock()
-		m.tun.Installed = installed
-		m.tun.Enabled = stats.Running
-		m.tun.DataPlane = stats.Running
-		m.tun.DataPlaneRX = stats.RXPackets
-		m.tun.DataPlaneBytes = stats.RXBytes
-		m.tun.LastError = ""
-		m.tun.UpdatedAt = now
-		m.proxy.Enabled = false
-		m.proxy.Mode = probeLocalProxyModeDirect
-		m.proxy.LastError = ""
-		m.proxy.UpdatedAt = now
-		m.mu.Unlock()
-		persistProbeLocalTUNStateBestEffort(installed, stats.Running)
-		if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-			logProbeWarnf("probe local proxy persist direct state failed: %v", err)
-		}
-		if shouldRestoreProbeLocalExplicitProxyFromState(state) {
-			if err := startProbeLocalExplicitProxyServer(); err != nil {
-				logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
-			}
-		}
-		m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
-		logProbeInfof("probe local tun startup recovered data plane state")
-		return nil
-	}
 
-	if _, _, err := m.enableProxy(); err != nil {
-		wrappedErr := fmt.Errorf("recover probe local tun enabled state failed: %w", err)
-		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(wrappedErr.Error()))
-		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, wrappedErr)
-		return wrappedErr
+	now = time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	m.tun.Installed = installed
+	m.tun.Enabled = false
+	m.tun.DataPlane = false
+	m.tun.DataPlaneRX = 0
+	m.tun.DataPlaneBytes = 0
+	m.tun.LastError = ""
+	m.tun.UpdatedAt = now
+	m.proxy.Enabled = false
+	m.proxy.Mode = probeLocalProxyModeDirect
+	m.proxy.LastError = ""
+	m.proxy.UpdatedAt = now
+	m.mu.Unlock()
+	persistProbeLocalTUNStateBestEffort(installed, false)
+	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
+		logProbeWarnf("probe local proxy persist direct state failed: %v", err)
 	}
-	preconnectResult := preconnectProbeLocalTUNGroupRuntimesWithResult(state, "startup_recovery", true)
-	if preconnectResult.Attempted > 0 {
-		logProbeInfof("probe local proxy group runtime preconnect completed: reason=%s attempted=%d connected=%d", "startup_recovery", preconnectResult.Attempted, preconnectResult.Connected)
-	}
-	if preconnectResult.Attempted > 0 && !preconnectResult.Ready {
-		errText := fmt.Sprintf("startup recovery proxy preconnect not ready: attempted=%d connected=%d failed=%d skipped=%d", preconnectResult.Attempted, preconnectResult.Connected, preconnectResult.Failed, preconnectResult.Skipped)
-		err := errors.New(errText)
-		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, errText)
-		logProbeWarnf("probe local tun startup recovery attempt failed: attempt=%d err=%v", attempt, err)
-		return err
-	}
+	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
+	stopProbeLocalProxyMonitor()
 	m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
-	logProbeInfof("probe local tun startup recovered enabled state")
+	logProbeInfof("probe local tun startup recovered adapter only: persisted_tun_enabled=%v persisted_proxy_enabled=%v", restoreTUN, restoreProxy)
 	if shouldRestoreProbeLocalExplicitProxyFromState(state) {
 		if err := startProbeLocalExplicitProxyServer(); err != nil {
 			logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
