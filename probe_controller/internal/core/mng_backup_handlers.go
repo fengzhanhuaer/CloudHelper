@@ -202,10 +202,9 @@ func normalizeSubmittedGoogleOAuthCredentials(clientID *string, clientSecret *st
 	if clientID == nil || clientSecret == nil {
 		return
 	}
-	*clientSecret = resolveSubmittedGoogleClientSecret(*clientSecret)
 	if parsedID, parsedSecret, ok := parseGoogleOAuthCredentialJSON(*clientID); ok {
 		*clientID = parsedID
-		if strings.TrimSpace(*clientSecret) == "" || strings.TrimSpace(*clientSecret) == secretConfiguredLabel("x") {
+		if strings.TrimSpace(parsedSecret) != "" {
 			*clientSecret = parsedSecret
 		}
 		return
@@ -213,7 +212,9 @@ func normalizeSubmittedGoogleOAuthCredentials(clientID *string, clientSecret *st
 	if parsedID, parsedSecret, ok := parseGoogleOAuthCredentialJSON(*clientSecret); ok {
 		*clientID = parsedID
 		*clientSecret = parsedSecret
+		return
 	}
+	*clientSecret = resolveSubmittedGoogleClientSecret(*clientSecret)
 }
 
 func parseGoogleOAuthCredentialJSON(raw string) (string, string, bool) {

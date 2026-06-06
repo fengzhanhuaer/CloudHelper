@@ -81,6 +81,27 @@ func TestNormalizeSubmittedGoogleOAuthCredentialsUsesSavedSecret(t *testing.T) {
 	}
 }
 
+func TestNormalizeSubmittedGoogleOAuthCredentialsJSONOverridesSavedSecret(t *testing.T) {
+	oldStore := Store
+	storePath := filepath.Join(t.TempDir(), "store.json")
+	Store = NewDataStoreForTest(storePath)
+	Store.Data[backupGoogleClientSecretStoreField] = "old-secret"
+	defer func() {
+		Store = oldStore
+	}()
+
+	clientID := `{"installed":{"client_id":"new-client.apps.googleusercontent.com","client_secret":"new-secret"}}`
+	clientSecret := "(已保存)"
+	normalizeSubmittedGoogleOAuthCredentials(&clientID, &clientSecret)
+
+	if clientID != "new-client.apps.googleusercontent.com" {
+		t.Fatalf("client_id=%q", clientID)
+	}
+	if clientSecret != "new-secret" {
+		t.Fatalf("client_secret=%q, want new-secret", clientSecret)
+	}
+}
+
 func TestGoogleTokenExchangeRetryWithoutSecretPolicy(t *testing.T) {
 	missingSecretBody := []byte(`{"error":"invalid_client","error_description":"Missing required parameter: client_secret"}`)
 	if googleTokenExchangeShouldRetryWithoutSecret(400, missingSecretBody, "secret") {
