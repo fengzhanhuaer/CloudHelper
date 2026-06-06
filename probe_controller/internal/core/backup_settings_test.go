@@ -1,9 +1,12 @@
 package core
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
+	"time"
 )
 
 func TestNormalizeBackupSourceDirsForStoreDedupesAndAbsolutizes(t *testing.T) {
@@ -111,5 +114,52 @@ func TestGoogleTokenExchangeRetryWithoutSecretPolicy(t *testing.T) {
 	notAllowedBody := []byte(`{"error":"invalid_client","error_description":"client_secret is not allowed for this client"}`)
 	if !googleTokenExchangeShouldRetryWithoutSecret(400, notAllowedBody, "secret") {
 		t.Fatalf("not allowed client_secret should retry without secret")
+	}
+}
+
+func TestSelectGoogleDriveBackupArchivesToDeleteUsesLocalTimeBuckets(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.Local)
+	archives := []googleDriveBackupArchive{}
+	add := func(prefix string, base time.Time, count int) {
+		for i := 0; i < count; i++ {
+			id := fmt.Sprintf("%s-%c", prefix, 'a'+i)
+			archives = append(archives, googleDriveBackupArchive{
+				ID:      id,
+				Name:    backupArchivePrefix + id + ".zip",
+				ModTime: base.Add(time.Duration(-i) * time.Minute),
+			})
+		}
+	}
+
+	add("today", now.Add(-1*time.Hour), 4)
+	add("yesterday", now.AddDate(0, 0, -1), 4)
+	add("lastweek", now.AddDate(0, 0, -7), 4)
+	add("lastmonth", now.AddDate(0, -1, 0), 4)
+	add("lastyear", now.AddDate(-1, 0, 0), 4)
+	add("outside", now.AddDate(-2, 0, 0), 2)
+
+	gotArchives := selectGoogleDriveBackupArchivesToDelete(archives, now)
+	got := make([]string, 0, len(gotArchives))
+	for _, archive := range gotArchives {
+		got = append(got, archive.ID)
+	}
+	sort.Strings(got)
+
+	want := []string{
+		"lastmonth-d",
+		"lastweek-d",
+		"lastyear-d",
+		"outside-a",
+		"outside-b",
+		"today-d",
+		"yesterday-d",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("delete count=%d want=%d got=%v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("delete ids=%v want=%v", got, want)
+		}
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -397,7 +398,10 @@ func uploadGoogleDriveBackupArchive(archivePath string, settings backupSettings)
 	if err != nil {
 		return err
 	}
-	return uploadGoogleDriveFileResumable(token.AccessToken, folderID, archivePath)
+	if err := uploadGoogleDriveFileResumable(token.AccessToken, folderID, archivePath); err != nil {
+		return err
+	}
+	return pruneGoogleDriveBackupArchives(token.AccessToken, folderID, backupArchivePrefix, time.Now())
 }
 
 func testGoogleDriveBackup(settings backupSettings) error {
@@ -555,6 +559,141 @@ func uploadGoogleDriveFileResumable(accessToken string, parentID string, localPa
 		return fmt.Errorf("google drive upload failed: %s", strings.TrimSpace(string(uploadBody)))
 	}
 	return nil
+}
+
+type googleDriveBackupArchive struct {
+	ID      string
+	Name    string
+	ModTime time.Time
+}
+
+func pruneGoogleDriveBackupArchives(accessToken string, parentID string, prefix string, now time.Time) error {
+	archives, err := listGoogleDriveBackupArchives(accessToken, parentID, prefix)
+	if err != nil {
+		return err
+	}
+	for _, archive := range selectGoogleDriveBackupArchivesToDelete(archives, now) {
+		if err := deleteGoogleDriveFile(accessToken, archive.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func listGoogleDriveBackupArchives(accessToken string, parentID string, prefix string) ([]googleDriveBackupArchive, error) {
+	parentID = strings.TrimSpace(parentID)
+	prefix = strings.TrimSpace(prefix)
+	if parentID == "" {
+		return nil, fmt.Errorf("google drive backup parent id is empty")
+	}
+	if prefix == "" {
+		return nil, fmt.Errorf("google drive backup prefix is empty")
+	}
+
+	archives := []googleDriveBackupArchive{}
+	pageToken := ""
+	for {
+		q := fmt.Sprintf("'%s' in parents and trashed=false and name contains '%s'", escapeGoogleDriveQueryString(parentID), escapeGoogleDriveQueryString(prefix))
+		params := url.Values{}
+		params.Set("q", q)
+		params.Set("spaces", "drive")
+		params.Set("pageSize", "1000")
+		params.Set("fields", "nextPageToken,files(id,name,modifiedTime)")
+		if pageToken != "" {
+			params.Set("pageToken", pageToken)
+		}
+
+		body, err := googleDriveJSONRequest(accessToken, http.MethodGet, googleDriveFilesURL+"?"+params.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			NextPageToken string `json:"nextPageToken"`
+			Files         []struct {
+				ID           string `json:"id"`
+				Name         string `json:"name"`
+				ModifiedTime string `json:"modifiedTime"`
+			} `json:"files"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, err
+		}
+		for _, file := range payload.Files {
+			name := strings.TrimSpace(file.Name)
+			if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(strings.ToLower(name), ".zip") {
+				continue
+			}
+			modTime, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(file.ModifiedTime))
+			if err != nil {
+				continue
+			}
+			id := strings.TrimSpace(file.ID)
+			if id == "" {
+				continue
+			}
+			archives = append(archives, googleDriveBackupArchive{ID: id, Name: name, ModTime: modTime})
+		}
+
+		pageToken = strings.TrimSpace(payload.NextPageToken)
+		if pageToken == "" {
+			break
+		}
+	}
+	return archives, nil
+}
+
+func selectGoogleDriveBackupArchivesToDelete(archives []googleDriveBackupArchive, now time.Time) []googleDriveBackupArchive {
+	if len(archives) == 0 {
+		return nil
+	}
+
+	sorted := append([]googleDriveBackupArchive{}, archives...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].ModTime.After(sorted[j].ModTime)
+	})
+
+	keep := make(map[string]struct{})
+	buckets := map[string][]googleDriveBackupArchive{
+		"today":      {},
+		"yesterday":  {},
+		"last_week":  {},
+		"last_month": {},
+		"last_year":  {},
+	}
+	now = now.Local()
+	for _, archive := range sorted {
+		if bucket := backupTimeBucket(archive.ModTime, now); bucket != "" {
+			buckets[bucket] = append(buckets[bucket], archive)
+		}
+	}
+
+	for _, key := range []string{"today", "yesterday", "last_week", "last_month", "last_year"} {
+		bucketArchives := buckets[key]
+		if len(bucketArchives) > backupKeepPerTimeCategory {
+			bucketArchives = bucketArchives[:backupKeepPerTimeCategory]
+		}
+		for _, archive := range bucketArchives {
+			keep[archive.ID] = struct{}{}
+		}
+	}
+
+	toDelete := []googleDriveBackupArchive{}
+	for _, archive := range sorted {
+		if _, ok := keep[archive.ID]; ok {
+			continue
+		}
+		toDelete = append(toDelete, archive)
+	}
+	return toDelete
+}
+
+func deleteGoogleDriveFile(accessToken string, fileID string) error {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return fmt.Errorf("google drive file id is empty")
+	}
+	_, err := googleDriveJSONRequest(accessToken, http.MethodDelete, googleDriveFilesURL+"/"+url.PathEscape(fileID), nil)
+	return err
 }
 
 func googleDriveJSONRequest(accessToken string, method string, reqURL string, payload any) ([]byte, error) {
