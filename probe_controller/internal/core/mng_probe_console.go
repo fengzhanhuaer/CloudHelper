@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strings"
@@ -141,8 +142,9 @@ const (
 )
 
 type mngProbeConsoleToken struct {
-	NodeID    string
-	ExpiresAt time.Time
+	NodeID      string
+	DisplayName string
+	ExpiresAt   time.Time
 }
 
 var mngProbeConsoleTokens = struct {
@@ -150,7 +152,7 @@ var mngProbeConsoleTokens = struct {
 	data map[string]mngProbeConsoleToken
 }{data: map[string]mngProbeConsoleToken{}}
 
-func mintMngProbeConsoleToken(nodeID string) string {
+func mintMngProbeConsoleToken(nodeID string, displayName ...string) string {
 	buf := make([]byte, 24)
 	if _, err := rand.Read(buf); err != nil {
 		return ""
@@ -163,33 +165,45 @@ func mintMngProbeConsoleToken(nodeID string) string {
 			delete(mngProbeConsoleTokens.data, key)
 		}
 	}
-	mngProbeConsoleTokens.data[token] = mngProbeConsoleToken{NodeID: nodeID, ExpiresAt: now.Add(mngProbeConsoleTokenTTL)}
+	mngProbeConsoleTokens.data[token] = mngProbeConsoleToken{
+		NodeID:      nodeID,
+		DisplayName: strings.TrimSpace(firstString(displayName...)),
+		ExpiresAt:   now.Add(mngProbeConsoleTokenTTL),
+	}
 	mngProbeConsoleTokens.mu.Unlock()
 	return token
 }
 
 func resolveMngProbeConsoleToken(token string) (string, bool) {
+	rec, ok := resolveMngProbeConsoleTokenRecord(token)
+	if !ok {
+		return "", false
+	}
+	return rec.NodeID, true
+}
+
+func resolveMngProbeConsoleTokenRecord(token string) (mngProbeConsoleToken, bool) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return "", false
+		return mngProbeConsoleToken{}, false
 	}
 	now := time.Now()
 	mngProbeConsoleTokens.mu.Lock()
 	defer mngProbeConsoleTokens.mu.Unlock()
 	rec, ok := mngProbeConsoleTokens.data[token]
 	if !ok {
-		return "", false
+		return mngProbeConsoleToken{}, false
 	}
 	if now.After(rec.ExpiresAt) {
 		delete(mngProbeConsoleTokens.data, token)
-		return "", false
+		return mngProbeConsoleToken{}, false
 	}
 	// Sliding expiration: an actively-used console (the pages poll every few
 	// seconds) keeps renewing and never expires mid-session; only an idle console
 	// lapses after the TTL.
 	rec.ExpiresAt = now.Add(mngProbeConsoleTokenTTL)
 	mngProbeConsoleTokens.data[token] = rec
-	return rec.NodeID, true
+	return rec, true
 }
 
 // mngProbeConsoleEntryHandler is mng-authenticated. It binds a console token to the
@@ -204,11 +218,12 @@ func mngProbeConsoleEntryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "node query parameter is required", http.StatusBadRequest)
 		return
 	}
-	if _, ok := getProbeNodeByID(nodeID); !ok {
+	node, ok := getProbeNodeByID(nodeID)
+	if !ok {
 		http.Error(w, "probe node not found", http.StatusNotFound)
 		return
 	}
-	token := mintMngProbeConsoleToken(nodeID)
+	token := mintMngProbeConsoleToken(nodeID, probeNodeConsoleDisplayName(nodeID, node))
 	if token == "" {
 		http.Error(w, "failed to create console session", http.StatusInternalServerError)
 		return
@@ -245,11 +260,12 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 		mngProbeConsoleProxyDenied(w, r)
 		return
 	}
-	nodeID, ok := resolveMngProbeConsoleToken(cookie.Value)
+	tokenRecord, ok := resolveMngProbeConsoleTokenRecord(cookie.Value)
 	if !ok {
 		mngProbeConsoleProxyDenied(w, r)
 		return
 	}
+	nodeID := tokenRecord.NodeID
 
 	path := r.URL.Path
 	if r.URL.RawQuery != "" {
@@ -282,6 +298,7 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 			decoded = b
 		}
 	}
+	decoded = applyMngProbeConsoleTitle(decoded, tokenRecord.DisplayName, result.Headers)
 	for key, values := range result.Headers {
 		canonical := http.CanonicalHeaderKey(key)
 		if mngProbeConsoleSkipResponseHeader(canonical) {
@@ -297,6 +314,71 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(decoded)
+}
+
+func probeNodeConsoleDisplayName(nodeID string, node probeNodeRecord) string {
+	if name := strings.TrimSpace(node.NodeName); name != "" {
+		return name
+	}
+	if node.NodeNo > 0 {
+		return fmt.Sprintf("探针 #%d", node.NodeNo)
+	}
+	if id := normalizeProbeNodeID(nodeID); id != "" {
+		return "探针 " + id
+	}
+	return ""
+}
+
+func firstString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func applyMngProbeConsoleTitle(body []byte, displayName string, headers map[string][]string) []byte {
+	name := strings.TrimSpace(displayName)
+	if name == "" || len(body) == 0 || !mngProbeConsoleLooksLikeHTML(headers) {
+		return body
+	}
+
+	page := string(body)
+	lower := strings.ToLower(page)
+	titleStart := strings.Index(lower, "<title>")
+	titleEnd := strings.Index(lower, "</title>")
+	if titleStart >= 0 && titleEnd > titleStart {
+		contentStart := titleStart + len("<title>")
+		prefix := page[:contentStart]
+		current := strings.TrimSpace(page[contentStart:titleEnd])
+		suffix := page[titleEnd:]
+		if strings.Contains(current, name) {
+			return body
+		}
+		return []byte(prefix + html.EscapeString(name) + " - " + current + suffix)
+	}
+
+	headEnd := strings.Index(lower, "</head>")
+	if headEnd < 0 {
+		return body
+	}
+	title := "<title>" + html.EscapeString(name) + " - Probe Node 控制台</title>\n  "
+	return []byte(page[:headEnd] + title + page[headEnd:])
+}
+
+func mngProbeConsoleLooksLikeHTML(headers map[string][]string) bool {
+	for key, values := range headers {
+		if !strings.EqualFold(strings.TrimSpace(key), "Content-Type") {
+			continue
+		}
+		for _, value := range values {
+			if strings.Contains(strings.ToLower(value), "text/html") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mngProbeConsoleProxyDenied(w http.ResponseWriter, r *http.Request) {

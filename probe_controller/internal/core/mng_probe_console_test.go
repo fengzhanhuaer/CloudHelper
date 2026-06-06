@@ -3,18 +3,23 @@ package core
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestMngProbeConsoleTokenRoundTrip(t *testing.T) {
-	token := mintMngProbeConsoleToken("3")
+	token := mintMngProbeConsoleToken("3", "alpha-node")
 	if token == "" {
 		t.Fatal("expected non-empty token")
 	}
 	node, ok := resolveMngProbeConsoleToken(token)
 	if !ok || node != "3" {
 		t.Fatalf("resolve failed: node=%q ok=%v", node, ok)
+	}
+	rec, ok := resolveMngProbeConsoleTokenRecord(token)
+	if !ok || rec.DisplayName != "alpha-node" {
+		t.Fatalf("expected display name to round-trip, rec=%+v ok=%v", rec, ok)
 	}
 	if _, ok := resolveMngProbeConsoleToken("does-not-exist"); ok {
 		t.Fatal("unexpected resolve for unknown token")
@@ -90,5 +95,23 @@ func TestMngProbeConsoleHeaderFilters(t *testing.T) {
 	}
 	if mngProbeConsoleSkipResponseHeader("Content-Type") {
 		t.Fatal("Content-Type must be returned to the browser")
+	}
+}
+
+func TestApplyMngProbeConsoleTitle(t *testing.T) {
+	body := []byte("<!doctype html><html><head><title>Probe Node 本地控制台</title></head><body></body></html>")
+	headers := map[string][]string{"Content-Type": {"text/html; charset=utf-8"}}
+	got := string(applyMngProbeConsoleTitle(body, "alpha-node", headers))
+	if want := "<title>alpha-node - Probe Node 本地控制台</title>"; !strings.Contains(got, want) {
+		t.Fatalf("expected injected title %q, got %q", want, got)
+	}
+}
+
+func TestApplyMngProbeConsoleTitleSkipsNonHTML(t *testing.T) {
+	body := []byte(`{"ok":true}`)
+	headers := map[string][]string{"Content-Type": {"application/json"}}
+	got := string(applyMngProbeConsoleTitle(body, "alpha-node", headers))
+	if got != string(body) {
+		t.Fatalf("expected non-html body unchanged, got %q", got)
 	}
 }

@@ -1069,7 +1069,11 @@
       if (action === 'node-console') {
         const nodeNo = Number(button.getAttribute('data-node-no'));
         if (Number.isFinite(nodeNo) && nodeNo > 0) {
-          window.open(`/mng/probe-console?node=${nodeNo}`, '_blank');
+          const node = state.nodes.find((item) => Number(item.node_no) === nodeNo);
+          const title = node && node.node_name ? String(node.node_name).trim() : '';
+          const params = new URLSearchParams({ node: String(nodeNo) });
+          if (title) params.set('title', title);
+          window.open(`/mng/probe-console?${params.toString()}`, '_blank');
         }
         return;
       }
