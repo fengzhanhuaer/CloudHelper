@@ -670,7 +670,6 @@ func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) 
 		c.prevLinkLayer == cfg.prevLinkLayer &&
 		c.prevDialMode == cfg.prevDialMode &&
 		c.nextAuthMode == cfg.nextAuthMode &&
-		strings.TrimSpace(c.authTicket) == strings.TrimSpace(cfg.authTicket) &&
 		isSameProbeChainPortForwards(c.portForwards, cfg.portForwards) &&
 		c.secret == cfg.secret &&
 		c.rawPublicKey == cfg.rawPublicKey

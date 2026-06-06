@@ -144,6 +144,53 @@ func TestProbeChainRelayDispatchRoutesByChainID(t *testing.T) {
 	}
 }
 
+func TestIsSameProbeChainRuntimeConfigIgnoresAuthTicketRotation(t *testing.T) {
+	resetProbeChainRuntimeStateForTest(t)
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:       "ticket-rotation-chain",
+			chainType:     "proxy_chain",
+			role:          "entry",
+			listenHost:    "127.0.0.1",
+			listenPort:    17030,
+			linkLayer:     "websocket-h3",
+			nextLinkLayer: "websocket-h3",
+			nextDialMode:  "forward",
+			nextHost:      "relay.example.com",
+			nextPort:      12113,
+			nextAuthMode:  "secret",
+			authTicket:    "ticket-issued-at-1",
+			secret:        "secret-1",
+			rawPublicKey:  "public-key-1",
+			portForwards: []probeChainRuntimePortForward{{
+				ID:         "pf-1",
+				EntrySide:  "chain_entry",
+				ListenHost: "127.0.0.1",
+				ListenPort: 12112,
+				TargetHost: "192.168.50.222",
+				TargetPort: 3389,
+				Network:    "tcp",
+				Enabled:    true,
+			}},
+		},
+		stopCh: make(chan struct{}),
+	}
+	probeChainRuntimeState.mu.Lock()
+	probeChainRuntimeState.runtimes[rt.cfg.chainID] = rt
+	probeChainRuntimeState.mu.Unlock()
+
+	next := rt.cfg
+	next.authTicket = "ticket-issued-at-2"
+	if !isSameProbeChainRuntimeConfig(rt.cfg.chainID, next) {
+		t.Fatalf("auth ticket rotation should not force chain runtime restart")
+	}
+
+	next.secret = "secret-2"
+	if isSameProbeChainRuntimeConfig(rt.cfg.chainID, next) {
+		t.Fatalf("secret change should still force chain runtime restart")
+	}
+}
+
 func TestProbeChainPingPongStreamEchoesPayload(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
