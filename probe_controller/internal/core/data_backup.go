@@ -2,13 +2,11 @@ package core
 
 import (
 	"archive/zip"
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,6 +17,16 @@ import (
 type backupArchive struct {
 	path    string
 	modTime time.Time
+}
+
+type controllerBackupRuntimeStatus struct {
+	Running        bool   `json:"running"`
+	LastSource     string `json:"last_source"`
+	LastStatus     string `json:"last_status"`
+	LastError      string `json:"last_error"`
+	LastStartedAt  string `json:"last_started_at"`
+	LastFinishedAt string `json:"last_finished_at"`
+	LastArchive    string `json:"last_archive"`
 }
 
 const (
@@ -32,6 +40,9 @@ var (
 	backupAsyncMu      sync.Mutex
 	backupAsyncRunning bool
 	backupAsyncPending bool
+
+	controllerBackupStatusMu sync.Mutex
+	controllerBackupStatus   = controllerBackupRuntimeStatus{LastStatus: "idle"}
 )
 
 func triggerAutoBackupControllerDataAsync(source string) {
@@ -54,8 +65,12 @@ func runAutoBackupControllerDataAsync(source string) {
 	}
 
 	for {
+		markControllerBackupStarted(currentSource)
 		if err := autoBackupControllerData(); err != nil {
+			markControllerBackupFinished(err)
 			log.Printf("warning: async controller backup failed (%s): %v", currentSource, err)
+		} else {
+			markControllerBackupFinished(nil)
 		}
 
 		backupAsyncMu.Lock()
@@ -70,23 +85,67 @@ func runAutoBackupControllerDataAsync(source string) {
 	}
 }
 
+func markControllerBackupStarted(source string) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	controllerBackupStatusMu.Lock()
+	controllerBackupStatus.Running = true
+	controllerBackupStatus.LastSource = strings.TrimSpace(source)
+	controllerBackupStatus.LastStatus = "running"
+	controllerBackupStatus.LastError = ""
+	controllerBackupStatus.LastStartedAt = now
+	controllerBackupStatus.LastFinishedAt = ""
+	controllerBackupStatusMu.Unlock()
+}
+
+func markControllerBackupFinished(err error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	controllerBackupStatusMu.Lock()
+	controllerBackupStatus.Running = false
+	controllerBackupStatus.LastFinishedAt = now
+	if err != nil {
+		controllerBackupStatus.LastStatus = "failed"
+		controllerBackupStatus.LastError = strings.TrimSpace(err.Error())
+	} else {
+		controllerBackupStatus.LastStatus = "ok"
+		controllerBackupStatus.LastError = ""
+	}
+	controllerBackupStatusMu.Unlock()
+}
+
+func setControllerBackupLastArchive(path string) {
+	controllerBackupStatusMu.Lock()
+	controllerBackupStatus.LastArchive = strings.TrimSpace(path)
+	controllerBackupStatusMu.Unlock()
+}
+
+func getControllerBackupRuntimeStatus() controllerBackupRuntimeStatus {
+	controllerBackupStatusMu.Lock()
+	defer controllerBackupStatusMu.Unlock()
+	return controllerBackupStatus
+}
+
 func autoBackupControllerData() error {
 	dataPath, err := filepath.Abs(dataDir)
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(dataPath)
+	settings := getBackupSettings()
+	sourceDirs, err := resolveBackupSourceDirs(settings)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
 		return err
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("controller data path is not directory: %s", dataPath)
+	if len(sourceDirs) == 0 {
+		return nil
 	}
-
-	backupDir := filepath.Join(filepath.Dir(dataPath), backupDirName)
+	backupDir, err := resolveBackupLocalDir(settings, dataPath)
+	if err != nil {
+		return err
+	}
+	for _, sourceDir := range sourceDirs {
+		if err := validateBackupSourceDir(sourceDir, backupDir); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return err
 	}
@@ -94,129 +153,72 @@ func autoBackupControllerData() error {
 	now := time.Now()
 	versionTag := backupSafeVersionTag(currentControllerVersion())
 	archivePath := filepath.Join(backupDir, backupArchivePrefix+versionTag+"-"+now.Format(backupArchiveDateTimeFmt)+".zip")
-	if err := zipDirectory(dataPath, archivePath); err != nil {
+	if err := zipBackupSources(sourceDirs, archivePath); err != nil {
 		_ = os.Remove(archivePath)
 		return err
 	}
+	setControllerBackupLastArchive(archivePath)
 
 	if err := pruneBackupArchives(backupDir, backupArchivePrefix, now); err != nil {
 		return err
 	}
 
-	settings := getBackupSettings()
-	if err := syncControllerDataToRclone(dataPath, backupDir, settings); err != nil {
+	if err := uploadControllerBackupArchiveToGoogleDrive(archivePath, settings); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func syncControllerDataToRclone(dataPath, backupDir string, settings backupSettings) error {
+func uploadControllerBackupArchiveToGoogleDrive(archivePath string, settings backupSettings) error {
 	if !settings.Enabled {
 		return nil
 	}
-	remoteBase := strings.TrimRight(strings.TrimSpace(settings.RcloneRemote), "/")
-	if remoteBase == "" {
-		return fmt.Errorf("backup is enabled but rclone remote is empty")
+	if strings.TrimSpace(archivePath) == "" {
+		return fmt.Errorf("backup archive path is empty")
 	}
-
-	if err := runRcloneSync(backupDir, remoteBase+"/backup"); err != nil {
-		return fmt.Errorf("rclone sync backup failed: %w", err)
-	}
-	if err := runRcloneSync(dataPath, remoteBase+"/data"); err != nil {
-		return fmt.Errorf("rclone sync data failed: %w", err)
-	}
-	return nil
-}
-
-func runRcloneSync(localPath, remotePath string) error {
-	cmd, err := newRcloneCommand("sync", localPath, remotePath)
+	info, err := os.Stat(archivePath)
 	if err != nil {
 		return err
-	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(output))
-		if msg == "" {
-			return err
-		}
-		return fmt.Errorf("%w: %s", err, msg)
-	}
-	return nil
-}
-
-func testBackupRcloneRemote(remoteBase string) error {
-	remote := strings.TrimRight(strings.TrimSpace(remoteBase), "/")
-	if remote == "" {
-		return fmt.Errorf("rclone remote is required")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	cmd, err := newRcloneCommandContext(ctx, "lsd", remote)
-	if err != nil {
-		return err
-	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("rclone test timeout")
-		}
-		msg := strings.TrimSpace(string(output))
-		if msg == "" {
-			return err
-		}
-		return fmt.Errorf("%w: %s", err, msg)
-	}
-	return nil
-}
-
-func newRcloneCommand(args ...string) (*exec.Cmd, error) {
-	cmd := exec.Command("rclone", args...)
-	if err := applyRcloneConfigEnv(cmd); err != nil {
-		return nil, err
-	}
-	return cmd, nil
-}
-
-func newRcloneCommandContext(ctx context.Context, args ...string) (*exec.Cmd, error) {
-	cmd := exec.CommandContext(ctx, "rclone", args...)
-	if err := applyRcloneConfigEnv(cmd); err != nil {
-		return nil, err
-	}
-	return cmd, nil
-}
-
-func applyRcloneConfigEnv(cmd *exec.Cmd) error {
-	if cmd == nil {
-		return fmt.Errorf("nil rclone command")
-	}
-	configPath, err := resolveRcloneConfigPath()
-	if err != nil {
-		return fmt.Errorf("failed to load rclone config %s: %w", filepath.Join(dataDir, "rclone.conf"), err)
-	}
-	if strings.TrimSpace(configPath) == "" {
-		return fmt.Errorf("rclone config path is empty")
-	}
-	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+configPath)
-	return nil
-}
-
-func resolveRcloneConfigPath() (string, error) {
-	dataPath, err := filepath.Abs(dataDir)
-	if err != nil {
-		return "", err
-	}
-	configPath := filepath.Join(dataPath, "rclone.conf")
-	info, err := os.Stat(configPath)
-	if err != nil {
-		return "", err
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("rclone config path is a directory: %s", configPath)
+		return fmt.Errorf("backup archive path is a directory: %s", archivePath)
 	}
-	return configPath, nil
+	return uploadGoogleDriveBackupArchive(archivePath, settings)
+}
+
+func validateBackupSourceDir(sourceDir string, backupDir string) error {
+	sourceDir = strings.TrimSpace(sourceDir)
+	if sourceDir == "" {
+		return fmt.Errorf("backup source directory is empty")
+	}
+	sourceAbs, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(sourceAbs)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("backup source path is not directory: %s", sourceAbs)
+	}
+	backupAbs, err := filepath.Abs(backupDir)
+	if err != nil {
+		return err
+	}
+	if pathInsideOrEqual(backupAbs, sourceAbs) || pathInsideOrEqual(sourceAbs, backupAbs) {
+		return fmt.Errorf("backup source directory must not overlap backup local directory: %s", sourceAbs)
+	}
+	return nil
+}
+
+func backupSourceRemoteLabel(sourceDir string, idx int) string {
+	base := backupSafeVersionTag(filepath.Base(strings.TrimSpace(sourceDir)))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "source"
+	}
+	return fmt.Sprintf("%03d-%s", idx+1, base)
 }
 
 func pruneBackupArchives(backupDir, prefix string, now time.Time) error {
@@ -348,6 +350,49 @@ func backupSafeVersionTag(version string) string {
 	return out
 }
 
+func zipBackupSources(sourceDirs []string, targetZip string) error {
+	if len(sourceDirs) == 0 {
+		return fmt.Errorf("backup source directories are required")
+	}
+	if len(sourceDirs) == 1 {
+		return zipDirectory(sourceDirs[0], targetZip)
+	}
+
+	out, err := os.Create(targetZip)
+	if err != nil {
+		return err
+	}
+
+	zw := zip.NewWriter(out)
+	seenNames := map[string]int{}
+	var walkErr error
+	for idx, sourceDir := range sourceDirs {
+		label := backupSourceRemoteLabel(sourceDir, idx)
+		if count := seenNames[label]; count > 0 {
+			label = fmt.Sprintf("%s-%d", label, count+1)
+		}
+		seenNames[label]++
+		if err := addDirectoryToZip(zw, sourceDir, label); err != nil {
+			walkErr = err
+			break
+		}
+	}
+
+	closeZipErr := zw.Close()
+	closeFileErr := out.Close()
+
+	if walkErr != nil {
+		return walkErr
+	}
+	if closeZipErr != nil {
+		return closeZipErr
+	}
+	if closeFileErr != nil {
+		return closeFileErr
+	}
+	return nil
+}
+
 func zipDirectory(sourceDir, targetZip string) error {
 	out, err := os.Create(targetZip)
 	if err != nil {
@@ -430,6 +475,71 @@ func zipDirectory(sourceDir, targetZip string) error {
 		return closeFileErr
 	}
 	return nil
+}
+
+func addDirectoryToZip(zw *zip.Writer, sourceDir string, rootLabel string) error {
+	return filepath.WalkDir(sourceDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		rel, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			header := &zip.FileHeader{Name: filepath.ToSlash(strings.Trim(rootLabel, "/")) + "/", Method: zip.Deflate}
+			_, err := zw.CreateHeader(header)
+			return err
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		nameLower := strings.ToLower(info.Name())
+		if info.IsDir() && nameLower == ".cache" {
+			return filepath.SkipDir
+		}
+		if !info.IsDir() {
+			ext := strings.ToLower(filepath.Ext(info.Name()))
+			if ext == ".log" || ext == ".tmp" || ext == ".cache" {
+				return nil
+			}
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(filepath.Join(rootLabel, rel))
+
+		if info.IsDir() {
+			header.Name += "/"
+			_, err := zw.CreateHeader(header)
+			return err
+		}
+
+		header.Method = zip.Deflate
+		writer, err := zw.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+
+		if _, err := io.Copy(writer, in); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func sameDay(a, b time.Time) bool {

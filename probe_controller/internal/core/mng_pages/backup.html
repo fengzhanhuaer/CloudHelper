@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CloudHelper Google Drive 备份</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { max-width:1080px; margin:4vh auto; padding:20px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    h1 { margin:0; font-size:24px; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
+    .btn { padding:9px 14px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .btn.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
+    .btn.warn { background:#8b2d2d; border-color:#b54b4b; color:#fff; }
+    .panel { border:1px solid #30363d; background:#161b22; border-radius:12px; padding:16px; margin-top:14px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+    .item { border:1px solid #30363d; border-radius:10px; background:#0d1117; padding:12px; min-height:72px; box-sizing:border-box; }
+    .label { color:#8b949e; font-size:12px; text-transform:uppercase; }
+    .value { margin-top:6px; font-size:17px; font-family:Consolas,monospace; word-break:break-word; white-space:pre-wrap; }
+    .row { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:10px; }
+    .form-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; align-items:end; }
+    .field { display:flex; flex-direction:column; gap:6px; }
+    .field.full { grid-column:1 / -1; }
+    .field label { color:#8b949e; font-size:12px; }
+    input, textarea { box-sizing:border-box; width:100%; padding:9px 10px; border-radius:8px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; }
+    textarea { min-height:86px; resize:vertical; font-family:Consolas,monospace; }
+    .checkbox { display:flex; align-items:center; gap:8px; min-height:38px; }
+    .checkbox input { width:auto; }
+    .status { margin-top:12px; border-radius:8px; background:#0d1117; border:1px solid #30363d; padding:10px; font-size:13px; white-space:pre-wrap; }
+    .ok { color:#7ee787; }
+    .warn { color:#f2cc60; }
+    .err { color:#ff7b72; }
+    .muted { color:#8b949e; font-size:13px; }
+    .mono { font-family:Consolas,monospace; }
+    a { color:#58a6ff; }
+    @media (max-width: 760px) {
+      .form-grid { grid-template-columns:1fr; }
+      .field.full { grid-column:auto; }
+      .topbar { align-items:flex-start; flex-direction:column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>/mng/backup Google Drive 备份</h1>
+        <p class="sub">主控会把多个本地目录打包为 zip，并通过 Google Drive API 上传到指定目录。</p>
+      </div>
+      <div>
+        <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
+        <button id="btn-logout" class="btn" type="button">退出登录</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="item">
+        <div class="label">备份状态</div>
+        <div class="value" id="runtime-status">--</div>
+      </div>
+      <div class="item">
+        <div class="label">Google Drive</div>
+        <div class="value" id="google-status">--</div>
+      </div>
+      <div class="item">
+        <div class="label">Drive 目录</div>
+        <div class="value" id="folder-status">--</div>
+      </div>
+      <div class="item">
+        <div class="label">Token 过期</div>
+        <div class="value" id="token-expiry">--</div>
+      </div>
+    </div>
+
+    <div id="status-box" class="status">初始化中...</div>
+
+    <div class="panel">
+      <h2>Google Drive 配置</h2>
+      <div class="form-grid">
+        <div class="field">
+          <label for="google-client-id">OAuth Client ID</label>
+          <input id="google-client-id" placeholder="Google OAuth client id" />
+        </div>
+        <div class="field">
+          <label for="google-client-secret">OAuth Client Secret</label>
+          <input id="google-client-secret" placeholder="留空则保留已保存 secret" />
+        </div>
+        <div class="field">
+          <label for="google-folder">Drive 目录</label>
+          <input id="google-folder" placeholder="CloudHelper/controller" />
+        </div>
+        <div class="checkbox">
+          <input id="backup-enabled" type="checkbox" />
+          <label for="backup-enabled">启用自动上传</label>
+        </div>
+      </div>
+      <div class="row">
+        <button id="btn-save-settings" class="btn primary" type="button">保存配置</button>
+        <button id="btn-google-auth" class="btn" type="button">开始授权</button>
+        <button id="btn-test-remote" class="btn" type="button">测试 Drive</button>
+        <button id="btn-disconnect" class="btn warn" type="button">断开授权</button>
+      </div>
+      <div id="auth-box" class="status" style="display:none;"></div>
+    </div>
+
+    <div class="panel">
+      <h2>备份内容</h2>
+      <div class="form-grid">
+        <div class="field">
+          <label for="backup-local-dir">本地归档目录</label>
+          <input id="backup-local-dir" placeholder="留空使用默认 backup 目录" />
+        </div>
+        <div class="field">
+          <label for="backup-source-dirs">数据源目录（每行一个）</label>
+          <textarea id="backup-source-dirs" placeholder="留空使用主控 data 目录"></textarea>
+        </div>
+      </div>
+      <div class="row">
+        <button id="btn-run-backup" class="btn primary" type="button">立即备份</button>
+        <button id="btn-refresh" class="btn" type="button">刷新状态</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>路径</h2>
+      <div class="grid">
+        <div class="item">
+          <div class="label">data</div>
+          <div class="value mono" id="data-path">--</div>
+        </div>
+        <div class="item">
+          <div class="label">数据源</div>
+          <div class="value mono" id="source-paths">--</div>
+        </div>
+        <div class="item">
+          <div class="label">backup</div>
+          <div class="value mono" id="backup-path">--</div>
+        </div>
+        <div class="item">
+          <div class="label">最近归档</div>
+          <div class="value mono" id="last-archive">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const statusBox = document.getElementById('status-box');
+    const authBox = document.getElementById('auth-box');
+    let pollTimer = null;
+    let authPollTimer = null;
+
+    function setStatus(text, level) {
+      statusBox.textContent = String(text || '');
+      statusBox.className = 'status';
+      if (level) statusBox.classList.add(level);
+    }
+
+    function setAuth(text, level) {
+      authBox.style.display = text ? 'block' : 'none';
+      authBox.textContent = String(text || '');
+      authBox.className = 'status';
+      if (level) authBox.classList.add(level);
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = value === undefined || value === null || value === '' ? '--' : String(value);
+    }
+
+    async function requestJSON(url, options = {}) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (res.status === 401) {
+        location.href = '/mng';
+        return null;
+      }
+      let data = {};
+      try { data = await res.json(); } catch (_) {}
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      return data;
+    }
+
+    async function ensureSession() {
+      const res = await fetch('/mng/api/session', { credentials: 'same-origin' });
+      const data = await res.json();
+      if (!res.ok || !data.authenticated) {
+        location.href = '/mng';
+        return false;
+      }
+      return true;
+    }
+
+    function renderRuntime(runtime) {
+      const rt = runtime || {};
+      const status = rt.running ? 'running' : (rt.last_status || 'idle');
+      setText('runtime-status', status);
+      setText('last-archive', rt.last_archive || '--');
+      const lines = [
+        `状态：${status}`,
+        rt.last_source ? `来源：${rt.last_source}` : '',
+        rt.last_started_at ? `开始：${rt.last_started_at}` : '',
+        rt.last_finished_at ? `结束：${rt.last_finished_at}` : '',
+        rt.last_error ? `错误：${rt.last_error}` : '',
+      ].filter(Boolean);
+      setStatus(lines.join('\n') || '备份状态已刷新', rt.last_error ? 'err' : (rt.running ? 'warn' : 'ok'));
+    }
+
+    async function loadStatus(silent = false) {
+      const data = await requestJSON('/mng/api/backup/status');
+      if (!data) return;
+
+      const settings = data.settings || {};
+      const paths = data.paths || {};
+      document.getElementById('backup-enabled').checked = settings.enabled === true;
+      document.getElementById('google-client-id').value = settings.google_client_id || '';
+      document.getElementById('google-client-secret').value = settings.google_client_secret || '';
+      document.getElementById('google-folder').value = settings.google_folder || 'CloudHelper/controller';
+      document.getElementById('backup-local-dir').value = settings.local_dir || '';
+      const sourceDirs = Array.isArray(settings.source_dirs) ? settings.source_dirs : [];
+      document.getElementById('backup-source-dirs').value = sourceDirs.join('\n');
+
+      setText('google-status', settings.google_authorized ? '已授权' : '未授权');
+      setText('folder-status', settings.google_folder || 'CloudHelper/controller');
+      setText('token-expiry', settings.google_token_expires_at || '--');
+      setText('data-path', paths.data_dir || '--');
+      setText('source-paths', sourceDirs.length ? sourceDirs.join('\n') : paths.data_dir || '--');
+      setText('backup-path', paths.backup_dir || '--');
+
+      renderRuntime(data.runtime);
+      if (!silent && settings.source_error) {
+        setStatus(`数据源配置异常：${settings.source_error}`, 'warn');
+      }
+      if (data.runtime && data.runtime.running && !pollTimer) {
+        pollTimer = setInterval(() => loadStatus(true).catch(() => {}), 2000);
+      }
+      if ((!data.runtime || !data.runtime.running) && pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function collectSettings() {
+      return {
+        enabled: document.getElementById('backup-enabled').checked === true,
+        local_dir: document.getElementById('backup-local-dir').value.trim(),
+        source_dirs: document.getElementById('backup-source-dirs').value
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean),
+        google_client_id: document.getElementById('google-client-id').value.trim(),
+        google_client_secret: document.getElementById('google-client-secret').value.trim(),
+        google_folder: document.getElementById('google-folder').value.trim(),
+      };
+    }
+
+    async function saveSettings() {
+      await requestJSON('/mng/api/backup/settings', {
+        method: 'POST',
+        body: JSON.stringify(collectSettings()),
+      });
+      await loadStatus(true);
+      setStatus('备份配置已保存', 'ok');
+    }
+
+    async function startGoogleAuth() {
+      const payload = collectSettings();
+      await requestJSON('/mng/api/backup/settings', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, enabled: false }),
+      });
+      await loadStatus(true);
+      const data = await requestJSON('/mng/api/backup/google/auth/start', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (!data) return;
+      const url = data.verification_url_complete || data.verification_url || '';
+      const link = url ? `\n登录地址：${url}` : '';
+      setAuth(`授权码：${data.user_code || '-'}${link}\n授权完成后本页会自动检测。`, 'warn');
+      if (url) window.open(url, '_blank');
+      if (authPollTimer) clearInterval(authPollTimer);
+      const interval = Math.max(3, Number(data.interval_sec || 5));
+      authPollTimer = setInterval(() => {
+        pollGoogleAuth(data.session_id).catch((err) => setAuth(`授权检测失败：${err.message || err}`, 'err'));
+      }, interval * 1000);
+    }
+
+    async function pollGoogleAuth(sessionID) {
+      const data = await requestJSON('/mng/api/backup/google/auth/poll', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionID }),
+      });
+      if (!data) return;
+      if (data.authorized) {
+        if (authPollTimer) clearInterval(authPollTimer);
+        authPollTimer = null;
+        setAuth('Google Drive 授权完成', 'ok');
+        await loadStatus(true);
+      } else {
+        setAuth('等待 Google 授权完成...', 'warn');
+      }
+    }
+
+    async function testRemote() {
+      setStatus('正在测试 Google Drive...', 'warn');
+      await requestJSON('/mng/api/backup/test', { method: 'POST', body: '{}' });
+      setStatus('Google Drive 测试通过', 'ok');
+    }
+
+    async function disconnectGoogle() {
+      await requestJSON('/mng/api/backup/google/disconnect', { method: 'POST', body: '{}' });
+      await loadStatus(true);
+      setStatus('Google Drive 授权已断开，自动上传已关闭', 'ok');
+    }
+
+    async function runBackup() {
+      setStatus('已提交立即备份请求...', 'warn');
+      await requestJSON('/mng/api/backup/run', { method: 'POST', body: '{}' });
+      await loadStatus(true);
+      if (!pollTimer) {
+        pollTimer = setInterval(() => loadStatus(true).catch(() => {}), 2000);
+      }
+    }
+
+    async function logout() {
+      await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.href = '/mng';
+    }
+
+    document.getElementById('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
+    document.getElementById('btn-logout').addEventListener('click', () => { logout().catch(() => { location.href = '/mng'; }); });
+    document.getElementById('btn-refresh').addEventListener('click', () => { loadStatus().catch((err) => setStatus(`刷新失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-save-settings').addEventListener('click', () => { saveSettings().catch((err) => setStatus(`保存失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-google-auth').addEventListener('click', () => { startGoogleAuth().catch((err) => setAuth(`授权启动失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-test-remote').addEventListener('click', () => { testRemote().catch((err) => setStatus(`测试失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-disconnect').addEventListener('click', () => { disconnectGoogle().catch((err) => setStatus(`断开授权失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-run-backup').addEventListener('click', () => { runBackup().catch((err) => setStatus(`备份提交失败：${err.message || err}`, 'err')); });
+
+    ensureSession().then((ok) => {
+      if (!ok) return;
+      loadStatus().catch((err) => setStatus(`初始化失败：${err.message || err}`, 'err'));
+    });
+  </script>
+</body>
+</html>

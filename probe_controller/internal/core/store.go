@@ -54,6 +54,14 @@ func initStore() {
 }
 
 func (s *DataStore) Save() error {
+	return s.save(true)
+}
+
+func (s *DataStore) SaveWithoutAutoBackup() error {
+	return s.save(false)
+}
+
+func (s *DataStore) save(triggerBackup bool) error {
 	s.mu.RLock()
 	content, err := json.MarshalIndent(s.Data, "", "  ")
 	s.mu.RUnlock()
@@ -63,7 +71,9 @@ func (s *DataStore) Save() error {
 	if err := os.WriteFile(s.path, content, 0o644); err != nil {
 		return err
 	}
-	triggerAutoBackupControllerDataAsync("main_store_save")
+	if triggerBackup {
+		triggerAutoBackupControllerDataAsync("main_store_save")
+	}
 	return nil
 }
 
