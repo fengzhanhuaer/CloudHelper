@@ -238,6 +238,13 @@
             <label for="edit-direct-connect">直连</label>
           </div>
         </div>
+        <div class="form-field full">
+          <label>local_console_enabled</label>
+          <div class="checkbox-row">
+            <input id="edit-local-console-enabled" type="checkbox" />
+            <label for="edit-local-console-enabled">启用探针本机本地控制台</label>
+          </div>
+        </div>
       </div>
       <div class="row" style="margin-top:12px; justify-content:flex-end;">
         <button id="btn-edit-node-cancel" class="btn" type="button">取消</button>
@@ -495,7 +502,7 @@
           return `<tr>
             <td>${item.node_no}</td>
             <td>${item.node_name}</td>
-            <td>${item.target_system || '-'}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'}</span></td>
+            <td>${item.target_system || '-'}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
             <td>${item.remark || '-'}<br><span class="muted">${item.ddns || '-'}</span></td>
             <td>${version}<br><span class="muted">${formatTime(item.updated_at)}</span></td>
             <td>
@@ -826,6 +833,7 @@
       const targetSystem = String(node.target_system || 'linux').toLowerCase();
       document.getElementById('edit-target-system').value = targetSystem === 'windows' ? 'windows' : (targetSystem === 'android' ? 'android' : 'linux');
       document.getElementById('edit-direct-connect').checked = node.direct_connect === true;
+      document.getElementById('edit-local-console-enabled').checked = node.local_console_enabled === true;
       document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
       document.getElementById('edit-cost').value = String(node.cost || '');
       document.getElementById('edit-expire-at').value = String(node.expire_at || '');
@@ -888,6 +896,7 @@
         ddns: String(document.getElementById('edit-ddns').value || '').trim(),
         target_system: targetSystem,
         direct_connect: document.getElementById('edit-direct-connect').checked === true,
+        local_console_enabled: document.getElementById('edit-local-console-enabled').checked === true,
         payment_cycle: String(document.getElementById('edit-payment-cycle').value || '').trim(),
         cost: String(document.getElementById('edit-cost').value || '').trim(),
         expire_at: expireAt,

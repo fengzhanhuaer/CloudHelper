@@ -82,6 +82,23 @@ func TestResolveProbeLocalListenAddrIgnoresProbeNodeListen(t *testing.T) {
 	})
 }
 
+func TestParseProbeBoolEnv(t *testing.T) {
+	t.Setenv("PROBE_LOCAL_CONSOLE_ENABLED", "enabled")
+	if !parseProbeBoolEnv("PROBE_LOCAL_CONSOLE_ENABLED", false) {
+		t.Fatalf("expected enabled env value to parse true")
+	}
+
+	t.Setenv("PROBE_LOCAL_CONSOLE_ENABLED", "off")
+	if parseProbeBoolEnv("PROBE_LOCAL_CONSOLE_ENABLED", true) {
+		t.Fatalf("expected off env value to parse false")
+	}
+
+	t.Setenv("PROBE_LOCAL_CONSOLE_ENABLED", "maybe")
+	if !parseProbeBoolEnv("PROBE_LOCAL_CONSOLE_ENABLED", true) {
+		t.Fatalf("expected invalid env value to use fallback")
+	}
+}
+
 func reserveProbeLocalListenAddrForTest(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -196,5 +213,32 @@ func TestStartProbeLocalConsoleServerNilHandler(t *testing.T) {
 	cleanupProbeLocalConsoleServerForTest(t)
 	if err := startProbeLocalConsoleServer(nil, "127.0.0.1:16033"); err == nil {
 		t.Fatalf("startProbeLocalConsoleServer should reject nil handler")
+	}
+}
+
+func TestApplyProbeLocalConsoleListenerEnabledStartsAndStops(t *testing.T) {
+	cleanupProbeLocalConsoleServerForTest(t)
+	addr := reserveProbeLocalListenAddrForTest(t)
+
+	if err := applyProbeLocalConsoleListenerEnabled(true, addr, "test enable"); err != nil {
+		t.Fatalf("apply enable failed: %v", err)
+	}
+	t.Cleanup(func() { cleanupProbeLocalConsoleServerForTest(t) })
+	if got := currentProbeLocalConsoleListen(); got != addr {
+		t.Fatalf("current listen after enable=%q want=%q", got, addr)
+	}
+
+	if err := applyProbeLocalConsoleListenerEnabled(false, "", "test disable"); err != nil {
+		t.Fatalf("apply disable failed: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got := currentProbeLocalConsoleListen(); got == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("current listen should be empty after disable, got=%q", currentProbeLocalConsoleListen())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

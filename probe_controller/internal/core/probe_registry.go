@@ -30,6 +30,7 @@ type probeNodeRecord struct {
 	NodeSecret            string                 `json:"node_secret"`
 	TargetSystem          string                 `json:"target_system"`
 	DirectConnect         bool                   `json:"direct_connect"`
+	LocalConsoleEnabled   bool                   `json:"local_console_enabled"`
 	ServiceScheme         string                 `json:"service_scheme"`
 	ServiceHost           string                 `json:"service_host"`
 	PaymentCycle          string                 `json:"payment_cycle"`
@@ -57,17 +58,18 @@ type probeNodeCreateRequest struct {
 }
 
 type probeNodeUpdateRequest struct {
-	NodeNo        int    `json:"node_no"`
-	NodeName      string `json:"node_name"`
-	Remark        string `json:"remark"`
-	DDNS          string `json:"ddns"`
-	TargetSystem  string `json:"target_system"`
-	DirectConnect bool   `json:"direct_connect"`
-	PaymentCycle  string `json:"payment_cycle"`
-	Cost          string `json:"cost"`
-	ExpireAt      string `json:"expire_at"`
-	VendorName    string `json:"vendor_name"`
-	VendorURL     string `json:"vendor_url"`
+	NodeNo              int    `json:"node_no"`
+	NodeName            string `json:"node_name"`
+	Remark              string `json:"remark"`
+	DDNS                string `json:"ddns"`
+	TargetSystem        string `json:"target_system"`
+	DirectConnect       bool   `json:"direct_connect"`
+	LocalConsoleEnabled bool   `json:"local_console_enabled"`
+	PaymentCycle        string `json:"payment_cycle"`
+	Cost                string `json:"cost"`
+	ExpireAt            string `json:"expire_at"`
+	VendorName          string `json:"vendor_name"`
+	VendorURL           string `json:"vendor_url"`
 }
 
 type probeNodeLinkUpdateRequest struct {
@@ -702,6 +704,7 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	nodes[found].DDNS = strings.TrimSpace(req.DDNS)
 	nodes[found].TargetSystem = system
 	nodes[found].DirectConnect = req.DirectConnect
+	nodes[found].LocalConsoleEnabled = req.LocalConsoleEnabled
 	nodes[found].PaymentCycle = strings.TrimSpace(req.PaymentCycle)
 	nodes[found].Cost = strings.TrimSpace(req.Cost)
 	nodes[found].ExpireAt = strings.TrimSpace(req.ExpireAt)

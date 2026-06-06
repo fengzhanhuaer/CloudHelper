@@ -84,6 +84,9 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 
 	probeSession := registerProbeSession(nodeID, stream)
 	defer unregisterProbeSession(nodeID, probeSession)
+	if node, ok := getProbeNodeByID(nodeID); ok {
+		_, _ = dispatchProbeLocalConsoleControl(node)
+	}
 
 	decoder := json.NewDecoder(stream)
 	for {

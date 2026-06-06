@@ -231,16 +231,16 @@ func pollGoogleDriveDeviceAuth(sessionID string) (bool, string, error) {
 }
 
 func exchangeGoogleDriveDeviceCode(session googleDriveAuthSession) (googleDriveToken, bool, error) {
-	form := url.Values{}
-	form.Set("client_id", session.ClientID)
-	if strings.TrimSpace(session.ClientSecret) != "" {
-		form.Set("client_secret", session.ClientSecret)
-	}
-	form.Set("device_code", session.DeviceCode)
-	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+	form := googleDeviceCodeTokenForm(session, true)
 	resp, body, err := postGoogleOAuthForm(form)
 	if err != nil {
 		return googleDriveToken{}, false, err
+	}
+	if googleTokenExchangeShouldRetryWithoutSecret(resp.StatusCode, body, session.ClientSecret) {
+		resp, body, err = postGoogleOAuthForm(googleDeviceCodeTokenForm(session, false))
+		if err != nil {
+			return googleDriveToken{}, false, err
+		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var payload googleTokenResponse
@@ -258,6 +258,30 @@ func exchangeGoogleDriveDeviceCode(session googleDriveAuthSession) (googleDriveT
 		}
 	}
 	return parseGoogleTokenResponse(body, ""), false, nil
+}
+
+func googleDeviceCodeTokenForm(session googleDriveAuthSession, includeSecret bool) url.Values {
+	form := url.Values{}
+	form.Set("client_id", session.ClientID)
+	if includeSecret && strings.TrimSpace(session.ClientSecret) != "" {
+		form.Set("client_secret", session.ClientSecret)
+	}
+	form.Set("device_code", session.DeviceCode)
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+	return form
+}
+
+func googleTokenExchangeShouldRetryWithoutSecret(statusCode int, body []byte, clientSecret string) bool {
+	if strings.TrimSpace(clientSecret) == "" || statusCode < 400 {
+		return false
+	}
+	var payload googleTokenResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	errCode := strings.TrimSpace(payload.Error)
+	errDesc := strings.ToLower(strings.TrimSpace(payload.ErrorDesc))
+	return errCode == "invalid_client" || strings.Contains(errDesc, "client_secret")
 }
 
 func refreshGoogleDriveAccessToken(settings backupSettings) (googleDriveToken, error) {

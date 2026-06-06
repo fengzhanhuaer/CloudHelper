@@ -2831,6 +2831,14 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 	return nil
 }
 
+func applyProbeLocalConsoleListenerEnabled(enabled bool, explicitListen string, reason string) error {
+	if !enabled {
+		stopProbeLocalConsoleServer(reason)
+		return nil
+	}
+	return startProbeLocalConsoleServer(buildProbeLocalConsoleMux(), explicitListen)
+}
+
 func stopProbeLocalConsoleServer(reason string) {
 	probeLocalConsoleState.mu.Lock()
 	server := probeLocalConsoleState.server

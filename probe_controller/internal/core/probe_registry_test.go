@@ -47,6 +47,70 @@ func TestNormalizeProbeNodesSupportsAndroidTargetSystem(t *testing.T) {
 	}
 }
 
+func TestNormalizeProbeNodesKeepsLocalConsoleDefaultDisabled(t *testing.T) {
+	nodes, _ := normalizeProbeNodes([]probeNodeRecord{
+		{
+			NodeNo:       1,
+			NodeName:     "node-a",
+			NodeSecret:   "secret",
+			TargetSystem: "linux",
+		},
+		{
+			NodeNo:              2,
+			NodeName:            "node-b",
+			NodeSecret:          "secret",
+			TargetSystem:        "linux",
+			LocalConsoleEnabled: true,
+		},
+	})
+
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(nodes))
+	}
+	if nodes[0].LocalConsoleEnabled {
+		t.Fatalf("expected local console disabled by default")
+	}
+	if !nodes[1].LocalConsoleEnabled {
+		t.Fatalf("expected local console enabled value to be preserved")
+	}
+}
+
+func TestUpdateProbeNodeLockedStoresLocalConsoleEnabled(t *testing.T) {
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{
+				{NodeNo: 1, NodeName: "node-a", NodeSecret: "secret", TargetSystem: "linux"},
+			},
+			ProbeSecrets:        map[string]string{"1": "secret"},
+			DeletedProbeNodes:   []probeNodeRecord{},
+			DeletedProbeNodeNos: []int{},
+		},
+	}
+	defer func() {
+		ProbeStore = oldStore
+	}()
+
+	ProbeStore.mu.Lock()
+	node, err := updateProbeNodeLocked(probeNodeUpdateRequest{
+		NodeNo:              1,
+		NodeName:            "node-a",
+		TargetSystem:        "linux",
+		DirectConnect:       true,
+		LocalConsoleEnabled: true,
+	})
+	ProbeStore.mu.Unlock()
+	if err != nil {
+		t.Fatalf("updateProbeNodeLocked returned error: %v", err)
+	}
+	if !node.LocalConsoleEnabled {
+		t.Fatalf("expected returned node local console enabled")
+	}
+	if !ProbeStore.data.ProbeNodes[0].LocalConsoleEnabled {
+		t.Fatalf("expected stored node local console enabled")
+	}
+}
+
 func TestNormalizeProbeEndpointSchemeSupportsTransportTypes(t *testing.T) {
 	tests := map[string]string{
 		"https":     "https",

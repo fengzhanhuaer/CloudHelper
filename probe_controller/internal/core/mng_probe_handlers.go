@@ -122,7 +122,13 @@ func mngProbeNodeUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"node": node})
+	response := map[string]interface{}{"node": node}
+	if dispatched, dispatchErr := dispatchProbeLocalConsoleControl(node); dispatchErr != nil {
+		response["local_console_dispatch_error"] = dispatchErr.Error()
+	} else {
+		response["local_console_dispatched"] = dispatched
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func mngProbeNodeDeleteHandler(w http.ResponseWriter, r *http.Request) {

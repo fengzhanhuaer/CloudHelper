@@ -152,6 +152,7 @@
     const authBox = document.getElementById('auth-box');
     let pollTimer = null;
     let authPollTimer = null;
+    let currentAuthPrompt = '';
 
     function setStatus(text, level) {
       statusBox.textContent = String(text || '');
@@ -286,12 +287,16 @@
       if (!data) return;
       const url = data.verification_url_complete || data.verification_url || '';
       const link = url ? `\n登录地址：${url}` : '';
-      setAuth(`授权码：${data.user_code || '-'}${link}\n授权完成后本页会自动检测。`, 'warn');
+      currentAuthPrompt = `授权码：${data.user_code || '-'}${link}\n授权完成后本页会自动检测。`;
+      setAuth(currentAuthPrompt, 'warn');
       if (url) window.open(url, '_blank');
       if (authPollTimer) clearInterval(authPollTimer);
       const interval = Math.max(3, Number(data.interval_sec || 5));
       authPollTimer = setInterval(() => {
-        pollGoogleAuth(data.session_id).catch((err) => setAuth(`授权检测失败：${err.message || err}`, 'err'));
+        pollGoogleAuth(data.session_id).catch((err) => {
+          const prefix = currentAuthPrompt ? currentAuthPrompt + '\n' : '';
+          setAuth(`${prefix}授权检测失败：${err.message || err}`, 'err');
+        });
       }, interval * 1000);
     }
 
@@ -301,13 +306,20 @@
         body: JSON.stringify({ session_id: sessionID }),
       });
       if (!data) return;
+      if (data.error) {
+        const prefix = currentAuthPrompt ? currentAuthPrompt + '\n' : '';
+        setAuth(`${prefix}授权检测失败：${data.error}`, 'err');
+        return;
+      }
       if (data.authorized) {
         if (authPollTimer) clearInterval(authPollTimer);
         authPollTimer = null;
+        currentAuthPrompt = '';
         setAuth('Google Drive 授权完成', 'ok');
         await loadStatus(true);
       } else {
-        setAuth('等待 Google 授权完成...', 'warn');
+        const prefix = currentAuthPrompt ? currentAuthPrompt + '\n' : '';
+        setAuth(`${prefix}状态：等待 Google 授权完成...`, 'warn');
       }
     }
 

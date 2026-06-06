@@ -58,6 +58,12 @@ type probeUpgradeCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeLocalConsoleControlCommand struct {
+	Type         string `json:"type"`
+	LocalConsole bool   `json:"local_console"`
+	Timestamp    string `json:"timestamp"`
+}
+
 type probeLogEntry struct {
 	Time    string `json:"time"`
 	Level   string `json:"level"`
@@ -608,6 +614,27 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (pro
 		Message:       fmt.Sprintf("upgrade command dispatched (%s)", modeLabel),
 		Timestamp:     timestamp,
 	}, nil
+}
+
+func dispatchProbeLocalConsoleControl(node probeNodeRecord) (bool, error) {
+	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+	if nodeID == "" {
+		return false, fmt.Errorf("node_id is required")
+	}
+	session, ok := getProbeSession(nodeID)
+	if !ok {
+		return false, nil
+	}
+	cmd := probeLocalConsoleControlCommand{
+		Type:         "local_console_control",
+		LocalConsole: node.LocalConsoleEnabled,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(nodeID, session)
+		return true, err
+	}
+	return true, nil
 }
 
 func fetchProbeLogsFromNode(nodeID string, lines int, sinceMinutes int, minLevel string) (probeLogsResultMessage, error) {

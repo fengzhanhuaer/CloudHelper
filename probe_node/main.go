@@ -138,6 +138,7 @@ type probeControlMessage struct {
 	ConsolePath       string                         `json:"console_path,omitempty"`
 	ConsoleHeaders    map[string][]string            `json:"console_headers,omitempty"`
 	ConsoleBody       string                         `json:"console_body,omitempty"`
+	LocalConsole      bool                           `json:"local_console,omitempty"`
 	Timestamp         string                         `json:"timestamp"`
 }
 
@@ -149,6 +150,7 @@ type probeLaunchOptions struct {
 	ControllerURL            string
 	ControllerWS             string
 	ServiceName              string
+	LocalConsoleEnabled      bool
 	UpgradeVerify            bool
 	UpgradeVerifyDurationSec int
 	LocalTUNInstall          bool
@@ -252,11 +254,27 @@ func parseProbeLaunchOptions() probeLaunchOptions {
 	flag.StringVar(&options.ControllerURL, "controller-url", "", "controller base url, e.g. https://127.0.0.1:15030 (fallback: PROBE_CONTROLLER_URL)")
 	flag.StringVar(&options.ControllerWS, "controller-ws", "", "controller websocket url, e.g. wss://127.0.0.1:15030/api/probe (fallback: PROBE_CONTROLLER_WS)")
 	flag.StringVar(&options.ServiceName, "service-name", "", "windows service name")
+	flag.BoolVar(&options.LocalConsoleEnabled, "local-console", parseProbeBoolEnv("PROBE_LOCAL_CONSOLE_ENABLED", false), "enable probe local console listener (fallback: PROBE_LOCAL_CONSOLE_ENABLED; default: false)")
 	flag.BoolVar(&options.UpgradeVerify, "upgrade-verify", false, "internal: run upgrade verification mode")
 	flag.IntVar(&options.UpgradeVerifyDurationSec, "upgrade-verify-duration", defaultUpgradeVerifyDurationSec, "internal: upgrade verification duration in seconds")
 	flag.BoolVar(&options.LocalTUNInstall, "local-tun-install", false, "internal: run local tun install mode")
 	flag.Parse()
 	return options
+}
+
+func parseProbeBoolEnv(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "y", "on", "enable", "enabled":
+		return true
+	case "0", "false", "no", "n", "off", "disable", "disabled":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func runProbeNode(options probeLaunchOptions) error {
@@ -276,10 +294,13 @@ func runProbeNode(options probeLaunchOptions) error {
 	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, nil)
 
 	nodeMux := buildProbeNodeHTTPMux(identity)
-	localMux := buildProbeLocalConsoleMux()
 	ensureProbeLocalListenConfigDefaults()
-	if err := startProbeLocalConsoleServer(localMux, strings.TrimSpace(options.LocalListenAddr)); err != nil {
-		return fmt.Errorf("failed to start local console: %w", err)
+	if options.LocalConsoleEnabled {
+		if err := applyProbeLocalConsoleListenerEnabled(true, strings.TrimSpace(options.LocalListenAddr), "startup"); err != nil {
+			return fmt.Errorf("failed to start local console: %w", err)
+		}
+	} else {
+		logProbeInfof("probe local console listener disabled by default; controller proxy remains available")
 	}
 
 	if wsURL := resolveProbeEndpoints(strings.TrimSpace(options.ControllerWS), strings.TrimSpace(options.ControllerURL)); wsURL != "" {
@@ -769,10 +790,22 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeLocalConsoleProxy(msg, identity, stream, encoder, writeMu)
 		return
 	}
+	if typeName == "local_console_control" {
+		go runProbeLocalConsoleControl(msg)
+		return
+	}
 	if typeName != "upgrade" {
 		return
 	}
 	go runProbeUpgrade(msg, identity)
+}
+
+func runProbeLocalConsoleControl(msg probeControlMessage) {
+	if err := applyProbeLocalConsoleListenerEnabled(msg.LocalConsole, "", "controller control"); err != nil {
+		logProbeWarnf("probe local console control failed: enabled=%t err=%v", msg.LocalConsole, err)
+		return
+	}
+	logProbeInfof("probe local console control applied: enabled=%t", msg.LocalConsole)
 }
 
 func currentReportIntervalDuration() time.Duration {

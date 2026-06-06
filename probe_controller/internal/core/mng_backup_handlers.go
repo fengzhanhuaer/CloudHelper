@@ -163,7 +163,7 @@ func mngBackupGoogleAuthPollHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	authorized, status, err := pollGoogleDriveDeviceAuth(req.SessionID)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "status": status})
+		writeJSON(w, http.StatusOK, map[string]any{"authorized": false, "status": firstNonEmptyBackupString(status, "error"), "error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
