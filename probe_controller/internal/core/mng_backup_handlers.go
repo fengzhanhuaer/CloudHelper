@@ -80,7 +80,7 @@ func mngBackupSettingsHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
-	req.GoogleClientSecret = resolveSubmittedGoogleClientSecret(req.GoogleClientSecret)
+	normalizeSubmittedGoogleOAuthCredentials(&req.GoogleClientID, &req.GoogleClientSecret)
 	settings, err := setBackupSettings(req.Enabled, req.LocalDir, req.SourceDirs, req.GoogleClientID, req.GoogleClientSecret, req.GoogleFolder)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -135,10 +135,10 @@ func mngBackupGoogleAuthStartHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
-	req.GoogleClientSecret = resolveSubmittedGoogleClientSecret(req.GoogleClientSecret)
+	normalizeSubmittedGoogleOAuthCredentials(&req.GoogleClientID, &req.GoogleClientSecret)
 	session, err := startGoogleDriveDeviceAuth(req.GoogleClientID, req.GoogleClientSecret)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -196,6 +196,49 @@ func resolveSubmittedGoogleClientSecret(secret string) string {
 		return getBackupSettings().GoogleClientSecret
 	}
 	return secret
+}
+
+func normalizeSubmittedGoogleOAuthCredentials(clientID *string, clientSecret *string) {
+	if clientID == nil || clientSecret == nil {
+		return
+	}
+	*clientSecret = resolveSubmittedGoogleClientSecret(*clientSecret)
+	if parsedID, parsedSecret, ok := parseGoogleOAuthCredentialJSON(*clientID); ok {
+		*clientID = parsedID
+		if strings.TrimSpace(*clientSecret) == "" || strings.TrimSpace(*clientSecret) == secretConfiguredLabel("x") {
+			*clientSecret = parsedSecret
+		}
+		return
+	}
+	if parsedID, parsedSecret, ok := parseGoogleOAuthCredentialJSON(*clientSecret); ok {
+		*clientID = parsedID
+		*clientSecret = parsedSecret
+	}
+}
+
+func parseGoogleOAuthCredentialJSON(raw string) (string, string, bool) {
+	text := strings.TrimSpace(raw)
+	if !strings.HasPrefix(text, "{") {
+		return "", "", false
+	}
+	var payload map[string]map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		return "", "", false
+	}
+	for _, key := range []string{"installed", "web"} {
+		section, ok := payload[key]
+		if !ok {
+			continue
+		}
+		clientID, _ := section["client_id"].(string)
+		clientSecret, _ := section["client_secret"].(string)
+		clientID = strings.TrimSpace(clientID)
+		clientSecret = strings.TrimSpace(clientSecret)
+		if clientID != "" {
+			return clientID, clientSecret, true
+		}
+	}
+	return "", "", false
 }
 
 func googleTokenExpiryString(token googleDriveToken) string {
