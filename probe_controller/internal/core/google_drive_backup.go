@@ -137,8 +137,12 @@ func normalizeGoogleDriveFolderPath(raw string) string {
 
 func startGoogleDriveDeviceAuth(clientID string, clientSecret string) (googleDriveAuthSession, error) {
 	clientID = strings.TrimSpace(clientID)
+	clientSecret = strings.TrimSpace(clientSecret)
 	if clientID == "" {
 		return googleDriveAuthSession{}, fmt.Errorf("google client id is required")
+	}
+	if clientSecret == "" {
+		return googleDriveAuthSession{}, fmt.Errorf("google client secret is required for device authorization; paste the OAuth JSON or fill OAuth Client Secret")
 	}
 	form := url.Values{}
 	form.Set("client_id", clientID)
@@ -251,9 +255,13 @@ func exchangeGoogleDriveDeviceCode(session googleDriveAuthSession) (googleDriveT
 		case "expired_token":
 			return googleDriveToken{}, false, fmt.Errorf("google authorization expired")
 		case "access_denied":
-			return googleDriveToken{}, false, fmt.Errorf("google authorization denied")
+			return googleDriveToken{}, false, fmt.Errorf("google authorization denied; if the OAuth app is in Testing, add this Google account under Google Auth Platform > Audience > Test users")
 		default:
 			msg := firstNonEmptyBackupString(payload.ErrorDesc, strings.TrimSpace(string(body)))
+			lowerMsg := strings.ToLower(msg)
+			if strings.Contains(lowerMsg, "missing required parameter") && strings.Contains(lowerMsg, "client_secret") {
+				return googleDriveToken{}, false, fmt.Errorf("google token exchange failed: client_secret is missing; paste the OAuth JSON again or fill OAuth Client Secret")
+			}
 			return googleDriveToken{}, false, fmt.Errorf("google token exchange failed: %s", msg)
 		}
 	}
@@ -281,7 +289,13 @@ func googleTokenExchangeShouldRetryWithoutSecret(statusCode int, body []byte, cl
 	}
 	errCode := strings.TrimSpace(payload.Error)
 	errDesc := strings.ToLower(strings.TrimSpace(payload.ErrorDesc))
-	return errCode == "invalid_client" || strings.Contains(errDesc, "client_secret")
+	if errCode != "invalid_client" {
+		return false
+	}
+	return strings.Contains(errDesc, "client_secret") &&
+		(strings.Contains(errDesc, "not allowed") ||
+			strings.Contains(errDesc, "must not") ||
+			strings.Contains(errDesc, "should not"))
 }
 
 func refreshGoogleDriveAccessToken(settings backupSettings) (googleDriveToken, error) {
