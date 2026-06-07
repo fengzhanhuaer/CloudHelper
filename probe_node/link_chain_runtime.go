@@ -289,6 +289,7 @@ const (
 
 	probeChainRelayModeBridge     = "bridge"
 	probeChainRelayModeStream     = "stream"
+	probeChainRelayModePrepare    = "prepare"
 	probeChainRelayModeSpeedTest  = "speed_test"
 	probeChainRelayModeSpeedDebug = "speed_debug"
 	probeChainRelayModePingPong   = "ping_pong"
@@ -385,16 +386,15 @@ var probeChainCopyBufferPool = sync.Pool{
 }
 
 type probeChainPortForwardPreconnectPool struct {
-	runtime           *probeChainRuntime
-	cfg               probeChainRuntimePortForward
-	network           string
-	targetAddr        string
-	capacity          int
-	ready             chan *probeChainPortForwardPreconnectedConn
-	refillCh          chan struct{}
-	stopCh            chan struct{}
-	closeOnce         sync.Once
-	targetUnreachable bool // run() loop only: whether the last refill failed at the target-dial phase
+	runtime    *probeChainRuntime
+	cfg        probeChainRuntimePortForward
+	network    string
+	targetAddr string
+	capacity   int
+	ready      chan *probeChainPortForwardPreconnectedConn
+	refillCh   chan struct{}
+	stopCh     chan struct{}
+	closeOnce  sync.Once
 }
 
 type probeChainPortForwardPreconnectedConn struct {
@@ -410,12 +410,6 @@ type probeChainPreconnectPhase string
 
 const (
 	probeChainPreconnectPhaseTransport probeChainPreconnectPhase = "transport"
-	probeChainPreconnectPhaseTarget    probeChainPreconnectPhase = "target"
-
-	// When the relay link is healthy but the target is unreachable, prewarming is
-	// pointless (no connection could succeed anyway), so we retry slowly and quietly
-	// instead of hammering a dead target and spamming logs.
-	probeChainPortForwardPreconnectTargetRetryInterval = 30 * time.Second
 )
 
 type probeChainPreconnectError struct {
@@ -425,11 +419,6 @@ type probeChainPreconnectError struct {
 
 func (e *probeChainPreconnectError) Error() string { return e.err.Error() }
 func (e *probeChainPreconnectError) Unwrap() error { return e.err }
-
-func isProbeChainPreconnectTargetError(err error) bool {
-	var pcErr *probeChainPreconnectError
-	return errors.As(err, &pcErr) && pcErr.phase == probeChainPreconnectPhaseTarget
-}
 
 var probeChainUDPFrameBufferPool = sync.Pool{
 	New: func() any {
@@ -1344,6 +1333,38 @@ func finishProbeChainPortForwardOpen(stream net.Conn, network string, targetAddr
 	return nil
 }
 
+func finishProbeChainPortForwardPrepare(stream net.Conn, network string, flowID string) error {
+	requestedNetwork := strings.ToLower(strings.TrimSpace(network))
+	if requestedNetwork == "" {
+		requestedNetwork = probeChainPortForwardNetworkTCP
+	}
+	request := probeChainTunnelOpenRequest{
+		Type:    probeChainRelayModePrepare,
+		Network: requestedNetwork,
+		FlowID:  strings.TrimSpace(flowID),
+	}
+	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+	if err := json.NewEncoder(stream).Encode(request); err != nil {
+		return err
+	}
+	_ = stream.SetWriteDeadline(time.Time{})
+
+	_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+	var response probeChainTunnelOpenResponse
+	if err := json.NewDecoder(stream).Decode(&response); err != nil {
+		return err
+	}
+	_ = stream.SetReadDeadline(time.Time{})
+	if !response.OK {
+		message := strings.TrimSpace(response.Error)
+		if message == "" {
+			message = "prepare stream failed"
+		}
+		return errors.New(message)
+	}
+	return nil
+}
+
 func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, flowID string) (net.Conn, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
@@ -1524,24 +1545,6 @@ func (p *probeChainPortForwardPreconnectPool) run() {
 		for len(p.ready) < p.capacity {
 			conn, err := p.open()
 			if err != nil {
-				if isProbeChainPreconnectTargetError(err) {
-					// The relay link is healthy; only the target is unreachable. Prewarming
-					// is pointless here (no connection could succeed), so we stay quiet and
-					// retry slowly. Real connections are still served on demand the moment
-					// the target recovers. Log once per down-streak, not every retry.
-					if !p.targetUnreachable {
-						p.targetUnreachable = true
-						logProbeInfof("probe chain port forward preconnect deferred: relay link healthy, target unreachable, serving on demand: chain=%s id=%s network=%s target=%s err=%v", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr, err)
-					}
-					select {
-					case <-p.stopCh:
-						return
-					case <-time.After(probeChainPortForwardPreconnectTargetRetryInterval):
-					}
-					break
-				}
-
-				// Transport/relay failure: this is a real link problem worth surfacing.
 				logProbeWarnf("probe chain port forward preconnect link failed: chain=%s id=%s network=%s target=%s err=%v", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr, err)
 				select {
 				case <-p.stopCh:
@@ -1554,14 +1557,9 @@ func (p *probeChainPortForwardPreconnectPool) run() {
 				}
 				break
 			}
-			if p.targetUnreachable {
-				p.targetUnreachable = false
-				logProbeInfof("probe chain port forward preconnect recovered: chain=%s id=%s network=%s target=%s", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr)
-			}
 			backoff = probeChainPortForwardPreconnectRetryMin
 			select {
 			case p.ready <- conn:
-				log.Printf("probe chain port forward preconnected: chain=%s id=%s network=%s target=%s flow_id=%s", p.runtime.cfg.chainID, p.cfg.ID, p.network, p.targetAddr, conn.flowID)
 			default:
 				_ = conn.conn.Close()
 			}
@@ -1609,35 +1607,18 @@ func (p *probeChainPortForwardPreconnectPool) open() (*probeChainPortForwardPrec
 	}
 	flowID := newProbeTCPDebugFlowID("port_forward_preconnect", p.targetAddr)
 
-	var associationV2 *probeChainAssociationV2Meta
-	if network == probeChainPortForwardNetworkUDP {
-		key := "preconnect:" + strings.TrimSpace(p.cfg.ID) + ":" + strings.ToLower(randomHexToken(6))
-		associationV2 = &probeChainAssociationV2Meta{
-			Version:         2,
-			AssocKeyV2:      key,
-			FlowID:          flowID,
-			Transport:       "udp",
-			RouteTarget:     strings.TrimSpace(p.targetAddr),
-			NATMode:         probeChainUDPAssociationNATModeDefault,
-			TTLProfile:      probeChainUDPAssociationTTLProfileDefault,
-			IdleTimeoutMS:   probeChainPortForwardSessionIdleTTL.Milliseconds(),
-			GCIntervalMS:    probeChainPortForwardSessionGCInterval.Milliseconds(),
-			CreatedAtUnixMS: time.Now().UnixMilli(),
-		}
-	}
-
 	normalizedEntrySide := normalizeProbeChainPortForwardEntrySide(p.cfg.EntrySide)
 
-	// Phase 1: prepare the relay substream (the link). A failure here is a real transport problem.
+	// Prepare only the relay substream. The actual target open request is sent
+	// when a client flow arrives, so background preconnect never requires the
+	// destination port to be online.
 	stream, err := openProbeChainPortForwardRelaySubstream(p.runtime, normalizedEntrySide, flowID)
 	if err != nil {
 		return nil, &probeChainPreconnectError{phase: probeChainPreconnectPhaseTransport, err: err}
 	}
-	// Phase 2: ask the exit to dial the target. A failure here means the target is
-	// unreachable (business), not that the forwarding link is broken.
-	if err := finishProbeChainPortForwardOpen(stream, network, p.targetAddr, flowID, associationV2, ""); err != nil {
+	if err := finishProbeChainPortForwardPrepare(stream, network, flowID); err != nil {
 		_ = stream.Close()
-		return nil, &probeChainPreconnectError{phase: probeChainPreconnectPhaseTarget, err: err}
+		return nil, &probeChainPreconnectError{phase: probeChainPreconnectPhaseTransport, err: err}
 	}
 
 	now := time.Now()
@@ -1649,7 +1630,7 @@ func (p *probeChainPortForwardPreconnectPool) open() (*probeChainPortForwardPrec
 	}, nil
 }
 
-func (p *probeChainPortForwardPreconnectPool) acquire() (*probeChainPortForwardPreconnectedConn, bool) {
+func (p *probeChainPortForwardPreconnectPool) acquirePrepared(network string, targetAddr string, flowID string, associationV2 *probeChainAssociationV2Meta, failurePrompt string) (*probeChainPortForwardPreconnectedConn, bool) {
 	if p == nil {
 		return nil, false
 	}
@@ -1664,6 +1645,16 @@ func (p *probeChainPortForwardPreconnectPool) acquire() (*probeChainPortForwardP
 				p.requestRefill()
 				continue
 			}
+			cleanFlowID := strings.TrimSpace(flowID)
+			if cleanFlowID == "" {
+				cleanFlowID = item.flowID
+			}
+			if err := finishProbeChainPortForwardOpen(item.conn, network, targetAddr, cleanFlowID, associationV2, failurePrompt); err != nil {
+				_ = item.conn.Close()
+				p.requestRefill()
+				return nil, false
+			}
+			item.flowID = cleanFlowID
 			p.requestRefill()
 			return item, true
 		default:
@@ -1723,7 +1714,7 @@ func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 			defer localConn.Close()
 			var downstream net.Conn
 			var openErr error
-			if preconnected, ok := preconnect.acquire(); ok {
+			if preconnected, ok := preconnect.acquirePrepared(probeChainPortForwardNetworkTCP, targetAddr, "", nil, "open upstream target failed"); ok {
 				downstream = preconnected.conn
 				log.Printf("probe chain tcp forward using preconnected stream: chain=%s id=%s target=%s flow_id=%s age_ms=%d", runtime.cfg.chainID, cfg.ID, targetAddr, preconnected.flowID, time.Since(preconnected.openedAt).Milliseconds())
 			} else {
@@ -1841,7 +1832,7 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 			CreatedAtUnixMS: time.Now().UnixMilli(),
 		}
 		var stream net.Conn
-		if preconnected, ok := preconnect.acquire(); ok {
+		if preconnected, ok := preconnect.acquirePrepared(probeChainPortForwardNetworkUDP, targetAddr, strings.TrimSpace(key), associationV2, "open upstream target failed"); ok {
 			stream = preconnected.conn
 			log.Printf("probe chain udp forward using preconnected stream: chain=%s id=%s target=%s flow_id=%s age_ms=%d client=%s", runtime.cfg.chainID, cfg.ID, targetAddr, preconnected.flowID, time.Since(preconnected.openedAt).Milliseconds(), key)
 		} else {
@@ -3679,6 +3670,27 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePingPong) {
 		handleProbeChainPingPongStream(runtime, stream, req.PingBytes)
 		return
+	}
+	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePrepare) {
+		if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
+			return
+		}
+		_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardPreconnectIdleTTL + probeChainPortForwardResponseReadDeadline))
+		req = probeChainTunnelOpenRequest{}
+		if err := json.NewDecoder(stream).Decode(&req); err != nil {
+			var netErr net.Error
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && (!errors.As(err, &netErr) || !netErr.Timeout()) {
+				chainID := ""
+				role := ""
+				if runtime != nil {
+					chainID = strings.TrimSpace(runtime.cfg.chainID)
+					role = strings.TrimSpace(runtime.cfg.role)
+				}
+				log.Printf("probe chain proxy prepared stream closed before open: chain=%s role=%s err=%v", chainID, role, err)
+			}
+			return
+		}
+		_ = stream.SetReadDeadline(time.Time{})
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), "tcp_debug_get") {
 		handleProbeChainTCPDebugGet(runtime, stream, req)

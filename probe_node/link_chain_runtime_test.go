@@ -226,6 +226,58 @@ func TestProbeChainPingPongStreamEchoesPayload(t *testing.T) {
 	<-done
 }
 
+func TestProbeChainPreparedStreamDefersTargetOpenUntilRealRequest(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen target failed: %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			accepted <- conn
+		}
+		close(accepted)
+	}()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleProbeChainProxyStream(nil, server)
+	}()
+
+	if err := finishProbeChainPortForwardPrepare(client, probeChainPortForwardNetworkTCP, "flow-prepare"); err != nil {
+		t.Fatalf("prepare failed: %v", err)
+	}
+	select {
+	case conn := <-accepted:
+		if conn != nil {
+			_ = conn.Close()
+		}
+		t.Fatal("target should not be opened by prepare")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := finishProbeChainPortForwardOpen(client, probeChainPortForwardNetworkTCP, ln.Addr().String(), "flow-real", nil, "open target failed"); err != nil {
+		t.Fatalf("real open failed: %v", err)
+	}
+	select {
+	case conn := <-accepted:
+		if conn == nil {
+			t.Fatal("target accept channel closed without connection")
+		}
+		_ = conn.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("target was not opened after real request")
+	}
+	_ = client.Close()
+	<-done
+}
+
 func TestProbeChainAuthFailureBlacklistAfterFiveAttempts(t *testing.T) {
 	resetProbeChainAuthIPStateForTest()
 	defer resetProbeChainAuthIPStateForTest()

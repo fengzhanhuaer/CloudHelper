@@ -1209,12 +1209,14 @@ func openProbeChainHTTP3WebSocketStreamOnConn(pooled *probeChainHTTP3PooledConn,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
 	clientConn := pooled.clientConn
+	streamTimeout := probeChainHTTP3StreamOpenTimeout(openTimeout)
 
 	stream, err := clientConn.OpenRequestStream(ctx)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
+	_ = stream.SetDeadline(time.Now().Add(streamTimeout))
 	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, relayURL, nil)
 	if err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
@@ -1263,6 +1265,7 @@ func openProbeChainHTTP3WebSocketStreamOnConn(pooled *probeChainHTTP3PooledConn,
 		cancel()
 		return nil, fmt.Errorf("probe relay h3 websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
+	_ = stream.SetDeadline(time.Time{})
 
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
 	pooled.addStream()
@@ -1283,6 +1286,16 @@ func openProbeChainHTTP3WebSocketStreamOnConn(pooled *probeChainHTTP3PooledConn,
 			return nil
 		},
 	}, nil
+}
+
+func probeChainHTTP3StreamOpenTimeout(openTimeout time.Duration) time.Duration {
+	if openTimeout <= 0 {
+		return probeChainRelayProtocolProbeTimeout
+	}
+	if openTimeout > probeChainRelayProtocolProbeTimeout {
+		return probeChainRelayProtocolProbeTimeout
+	}
+	return openTimeout
 }
 
 func probeChainRelaySpeedTestDefault(chainID string, secret string, relayHost string, relayPort int, layer string, protocol string, byteCount int64) []probeChainRelaySpeedTestResult {
@@ -1717,6 +1730,7 @@ func openProbeChainRelayHTTP3WebSocketSpeedTestNetConn(chainID string, secret st
 		logProbeChainRelayDialOutcome("speed-websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), wrappedErr)
 		return nil, wrappedErr
 	}
+	_ = stream.SetDeadline(time.Now().Add(probeChainHTTP3StreamOpenTimeout(openTimeout)))
 	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, relayURL, nil)
 	if err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
@@ -1771,6 +1785,7 @@ func openProbeChainRelayHTTP3WebSocketSpeedTestNetConn(chainID string, secret st
 		logProbeChainRelayDialOutcome("speed-websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), statusErr)
 		return nil, statusErr
 	}
+	_ = stream.SetDeadline(time.Time{})
 	refreshProbeChainRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 	logProbeChainRelayDialOutcome("speed-websocket-h3", chainID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), nil)
 	cancelOnce := sync.Once{}
