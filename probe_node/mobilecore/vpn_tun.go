@@ -1278,7 +1278,7 @@ func queryAndroidVPNDNSUpstream(packet []byte) ([]byte, error) {
 
 func storeAndroidVPNDNSRouteHints(domain string, response []byte, route proxyRouteDecision) {
 	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
-	if cleanDomain == "" || strings.EqualFold(strings.TrimSpace(route.Group), "fallback") {
+	if cleanDomain == "" {
 		return
 	}
 	ips := extractAndroidVPNDNSResponseIPs(response)
@@ -1326,12 +1326,6 @@ func lookupAndroidVPNDNSRouteHint(configDir string, ipText string, port string) 
 	route, err := decideAndroidProxyRouteForTarget(configDir, net.JoinHostPort(entry.Domain, firstNonEmptyString(strings.TrimSpace(port), "443")))
 	if err != nil {
 		return proxyRouteDecision{}, false
-	}
-	if strings.TrimSpace(entry.Group) != "" && !strings.EqualFold(strings.TrimSpace(entry.Group), strings.TrimSpace(route.Group)) {
-		route.Group = strings.TrimSpace(entry.Group)
-		route.Direct = true
-		route.Reject = false
-		route.SelectedChainID = ""
 	}
 	if !route.Direct && !route.Reject && strings.TrimSpace(route.SelectedChainID) != "" {
 		route.TargetAddr = net.JoinHostPort(entry.Domain, firstNonEmptyString(strings.TrimSpace(port), "443"))

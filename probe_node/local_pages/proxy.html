@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Probe Node 代理状态</title>
+  <title>Probe Node VNet 状态</title>
   <style>
     :root {
       --bg-color: #0d1117;
@@ -175,12 +175,12 @@
   <main>
     <div class="topbar">
       <div>
-        <h1>代理状态</h1>
-        <p class="hint">代理状态、组选链与开关控制。</p>
+        <h1>VNet 状态</h1>
+        <p class="hint">VNet 状态、线路组选链与开关控制。</p>
       </div>
       <div class="nav">
         <a href="/local/panel">首页</a>
-        <a href="/local/proxy" class="active">代理状态</a>
+        <a href="/local/proxy" class="active">VNet 状态</a>
         <a href="/local/dns">DNS 状态</a>
         <a href="/local/monitor">状态监视</a>
         <a href="/local/logs">运行日志</a>
@@ -189,36 +189,36 @@
     </div>
 
     <div class="tabs">
-      <button class="tab-btn active" data-tab="groups">代理组</button>
+      <button class="tab-btn active" data-tab="groups">线路组</button>
       <button class="tab-btn" data-tab="links">链路状态</button>
       <button class="tab-btn" data-tab="connections">连接状态</button>
     </div>
 
     <section id="panelProxy" class="card proxy-tab-panel active" data-tab-panel="groups">
-      <strong>代理状态</strong>
+      <strong>VNet 状态</strong>
       <div class="kv">
         <div>接管开关</div><div id="proxyEnabled">-</div>
         <div>当前模式</div><div id="proxyMode">-</div>
-        <div>本地显式代理</div><div id="proxyExplicit">-</div>
+        <div>本地网络通道</div><div id="proxyExplicit">-</div>
         <div>最近错误</div><div id="proxyLastError">-</div>
         <div>规则组备份</div><div id="proxyGroupBackupStatus">-</div>
       </div>
       <div class="actions">
-        <button id="proxyGlobalToggleBtn" class="secondary">启用 TUN 代理</button>
-        <button id="proxyExplicitToggleBtn" class="secondary">启用 SOCKS/HTTP</button>
-        <button id="proxyRefreshBtn" class="secondary">刷新代理状态</button>
-        <button id="proxyGroupRefreshBtn" class="secondary">刷新代理组</button>
+        <button id="proxyGlobalToggleBtn" class="secondary">启用 VNet</button>
+        <button id="proxyExplicitToggleBtn" class="secondary">启用本地通道</button>
+        <button id="proxyRefreshBtn" class="secondary">刷新 VNet 状态</button>
+        <button id="proxyGroupRefreshBtn" class="secondary">刷新线路组</button>
         <button id="proxyChainRefreshBtn" class="secondary">刷新链路</button>
-        <button id="proxyGroupBackupBtn" class="secondary">备份代理规则组</button>
-        <button id="proxyGroupRestoreBtn" class="secondary">恢复代理规则组</button>
+        <button id="proxyGroupBackupBtn" class="secondary">备份线路规则组</button>
+        <button id="proxyGroupRestoreBtn" class="secondary">恢复线路规则组</button>
       </div>
       <div id="proxyRuleGroups" class="rule-group-list"></div>
-      <p class="hint">参照 manager：按“每个代理组”展示可选策略（直连 + 拒绝 + 可用链路），刷新代理组会清空本地 DNS / Fake IP 缓存。</p>
+      <p class="hint">参照 manager：按“每个线路组”展示可选策略（直连 + 拒绝 + 可用链路），刷新线路组会清空本地 DNS / Fake IP 缓存。</p>
     </section>
 
     <section id="panelProxyLinks" class="card proxy-tab-panel" data-tab-panel="links">
       <strong>链路状态</strong>
-      <p class="hint">每条代理链路一行。延迟执行真实链路数据 ping-pong；测速使用专用 speed_test 模式，真实读取测试数据，不进入业务 bridge。</p>
+      <p class="hint">每条 VNet 链路一行。延迟执行真实链路数据 ping-pong；测速使用专用 speed_test 模式，真实读取测试数据，不进入业务 bridge。</p>
       <div class="actions">
         <button id="proxyLinkStatusRefreshBtn" class="secondary">刷新链路状态</button>
       </div>
@@ -245,7 +245,7 @@
         <button id="proxyConnectionRefreshBtn" class="secondary">刷新连接状态</button>
       </div>
       <div id="proxyConnectionRows" class="connection-list">
-        <div class="hint">暂无代理连接记录</div>
+        <div class="hint">暂无 VNet 连接记录</div>
       </div>
     </section>
 
@@ -284,14 +284,14 @@
     function formatPreconnectMessage(data) {
       const preconnect = data && data.preconnect && typeof data.preconnect === 'object' ? data.preconnect : null;
       if (!preconnect || Number(preconnect.attempted) <= 0) {
-        return 'SOCKS/HTTP 已启用';
+        return '本地网络通道已启用';
       }
       const attempted = Number(preconnect.attempted) || 0;
       const connected = Number(preconnect.connected) || 0;
       if (preconnect.ready) {
-        return `SOCKS/HTTP 已启用，链路预热完成 ${connected}/${attempted}`;
+        return `本地网络通道已启用，链路预热完成 ${connected}/${attempted}`;
       }
-      return `SOCKS/HTTP 已启用，链路预热中 ${connected}/${attempted}`;
+      return `本地网络通道已启用，链路预热中 ${connected}/${attempted}`;
     }
 
     function isProxyGloballyEnabled() {
@@ -302,12 +302,12 @@
       const btn = document.getElementById('proxyGlobalToggleBtn');
       if (!btn) return;
       if (isProxyGloballyEnabled()) {
-        btn.textContent = '关闭 TUN 代理';
+        btn.textContent = '关闭 VNet';
         btn.classList.remove('secondary');
         btn.classList.add('warn');
         return;
       }
-      btn.textContent = '启用 TUN 代理';
+      btn.textContent = '启用 VNet';
       btn.classList.remove('warn');
       btn.classList.add('secondary');
     }
@@ -321,12 +321,12 @@
       const btn = document.getElementById('proxyExplicitToggleBtn');
       if (!btn) return;
       if (isExplicitProxyEnabled()) {
-        btn.textContent = '关闭 SOCKS/HTTP';
+        btn.textContent = '关闭本地通道';
         btn.classList.remove('secondary');
         btn.classList.add('warn');
         return;
       }
-      btn.textContent = '启用 SOCKS/HTTP';
+      btn.textContent = '启用本地通道';
       btn.classList.remove('warn');
       btn.classList.add('secondary');
     }
@@ -759,7 +759,7 @@
       }
       if (!proxyConnectionRowsEl) return;
       if (active.length === 0 && completed.length === 0 && udpItems.length === 0) {
-        proxyConnectionRowsEl.innerHTML = '<div class="hint">暂无代理连接记录</div>';
+        proxyConnectionRowsEl.innerHTML = '<div class="hint">暂无 VNet 连接记录</div>';
         return;
       }
       const html = [];
@@ -1076,7 +1076,7 @@
             ${row('入口', endpoint)}
             ${row('配置协议', formatRelayProtocolLabel(item && item.link_layer))}
             ${route ? row('路由', route) : ''}
-            ${selectedGroups ? row('代理组', selectedGroups) : ''}
+            ${selectedGroups ? row('线路组', selectedGroups) : ''}
             ${row('当前状态', statusText)}
             ${rateText !== '-' ? row('观测速率', rateText) : ''}
             ${updatedAt ? row('更新时间', updatedAt) : ''}
@@ -1404,7 +1404,7 @@
     async function runProxyLinkSpeed(chainID, protocol) {
       const cleanID = normalizeChainID(chainID);
       const cleanProtocol = String(protocol || '').trim().toLowerCase();
-      const protocolLabel = cleanProtocol ? formatRelayProtocolLabel(cleanProtocol) : '代理连接链路';
+      const protocolLabel = cleanProtocol ? formatRelayProtocolLabel(cleanProtocol) : 'VNet 连接链路';
       if (!cleanID) return;
       setMessage(`链路 ${cleanID} ${protocolLabel} 真实测速中...`);
       try {
@@ -1522,7 +1522,7 @@
         const data = await requestJSON('/local/api/proxy/status/refresh', { method: 'POST', body: '{}' }, 5000);
         if (!options.silent) {
           const refresh = data && data.refresh ? data.refresh : {};
-          setMessage(refresh.already_running ? '代理状态刷新已在后台运行，先展示缓存数据' : '代理状态刷新已提交，先展示缓存数据', 'success');
+          setMessage(refresh.already_running ? 'VNet 状态刷新已在后台运行，先展示缓存数据' : 'VNet 状态刷新已提交，先展示缓存数据', 'success');
         }
         setTimeout(() => {
           loadProxySelections().catch(() => {
@@ -1530,7 +1530,7 @@
         }, 1200);
       } catch (err) {
         if (!options.silent) {
-          setMessage('提交代理状态刷新失败：' + err.message, 'error');
+          setMessage('提交 VNet 状态刷新失败：' + err.message, 'error');
         }
       } finally {
         proxyRuntimeRefreshInFlight = false;
@@ -1679,18 +1679,18 @@
         ]);
         triggerProxyRuntimeRefresh({ silent: false });
       } catch (err) {
-        setMessage('读取代理状态失败：' + err.message, 'error');
+        setMessage('读取 VNet 状态失败：' + err.message, 'error');
       }
     });
 
     document.getElementById('proxyGroupRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新本地代理组并清空 DNS / Fake IP 缓存...');
+      setMessage('刷新本地线路组并清空 DNS / Fake IP 缓存...');
       try {
         await requestJSON('/local/api/proxy/groups/refresh', { method: 'POST', body: '{}' });
         await loadProxyGroupsOnly();
-        setMessage('代理组已刷新，DNS / Fake IP 缓存已清空', 'success');
+        setMessage('线路组已刷新，DNS / Fake IP 缓存已清空', 'success');
       } catch (err) {
-        setMessage('刷新代理组失败：' + err.message, 'error');
+        setMessage('刷新线路组失败：' + err.message, 'error');
       }
     });
 
@@ -1712,48 +1712,48 @@
     });
 
     document.getElementById('proxyGroupBackupBtn').addEventListener('click', async () => {
-      setMessage('备份代理规则组到主控...');
+      setMessage('备份线路规则组到主控...');
       try {
         await requestJSON('/local/api/proxy/groups/backup', { method: 'POST', body: '{}' }, 30000);
         await loadProxySelections();
-        setMessage('代理规则组已备份到主控', 'success');
+        setMessage('线路规则组已备份到主控', 'success');
       } catch (err) {
-        setMessage('备份代理规则组失败：' + err.message, 'error');
+        setMessage('备份线路规则组失败：' + err.message, 'error');
       }
     });
 
     document.getElementById('proxyGroupRestoreBtn').addEventListener('click', async () => {
-      setMessage('从主控恢复代理规则组...');
+      setMessage('从主控恢复线路规则组...');
       try {
         await requestJSON('/local/api/proxy/groups/restore', { method: 'POST', body: '{}' }, 30000);
         await loadProxySelections();
-        setMessage('代理规则组已从主控恢复', 'success');
+        setMessage('线路规则组已从主控恢复', 'success');
       } catch (err) {
-        setMessage('恢复代理规则组失败：' + err.message, 'error');
+        setMessage('恢复线路规则组失败：' + err.message, 'error');
       }
     });
 
     document.getElementById('proxyGlobalToggleBtn').addEventListener('click', async () => {
       if (isProxyGloballyEnabled()) {
-        setMessage('关闭 TUN 代理中...');
+        setMessage('关闭 VNet 中...');
         try {
           await requestJSON('/local/api/proxy/direct', {
             method: 'POST',
             body: JSON.stringify({ group: 'fallback' }),
           });
           await refreshAll();
-          setMessage('TUN 代理已关闭', 'success');
+          setMessage('VNet 已关闭', 'success');
         } catch (err) {
-          setMessage('关闭 TUN 代理失败：' + err.message, 'error');
+          setMessage('关闭 VNet 失败：' + err.message, 'error');
         }
         return;
       }
       const selection = resolveGlobalToggleEnableSelection();
       if (!selection || !selection.chainID) {
-        setMessage('启用 TUN 代理失败：请先配置可用链路', 'error');
+        setMessage('启用 VNet 失败：请先配置可用链路', 'error');
         return;
       }
-      setMessage('启用 TUN 代理中...');
+      setMessage('启用 VNet 中...');
       try {
         await requestJSON('/local/api/proxy/enable', {
           method: 'POST',
@@ -1763,28 +1763,28 @@
           }),
         });
         await refreshAll();
-        setMessage('TUN 代理已启用', 'success');
+        setMessage('VNet 已启用', 'success');
       } catch (err) {
-        setMessage('启用 TUN 代理失败：' + err.message, 'error');
+        setMessage('启用 VNet 失败：' + err.message, 'error');
       }
     });
 
     document.getElementById('proxyExplicitToggleBtn').addEventListener('click', async () => {
       if (isExplicitProxyEnabled()) {
-        setMessage('关闭 SOCKS/HTTP 中...');
+        setMessage('关闭本地网络通道中...');
         try {
           await requestJSON('/local/api/proxy/explicit/direct', {
             method: 'POST',
             body: JSON.stringify({}),
           });
           await refreshAll();
-          setMessage('SOCKS/HTTP 已关闭', 'success');
+          setMessage('本地网络通道已关闭', 'success');
         } catch (err) {
-          setMessage('关闭 SOCKS/HTTP 失败：' + err.message, 'error');
+          setMessage('关闭本地网络通道失败：' + err.message, 'error');
         }
         return;
       }
-      setMessage('启用 SOCKS/HTTP 中...');
+      setMessage('启用本地网络通道中...');
       try {
         const data = await requestJSON('/local/api/proxy/explicit/enable', {
           method: 'POST',
@@ -1793,7 +1793,7 @@
         await refreshAll();
         setMessage(formatPreconnectMessage(data), 'success');
       } catch (err) {
-        setMessage('启用 SOCKS/HTTP 失败：' + err.message, 'error');
+        setMessage('启用本地网络通道失败：' + err.message, 'error');
       }
     });
 

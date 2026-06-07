@@ -1980,7 +1980,7 @@ func storeProbeLocalDNSRouteHintLocked(domain string, group string, now time.Tim
 
 func storeProbeLocalDNSRouteHints(domain string, ips []string, decision probeLocalDNSRouteDecision) {
 	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
-	if cleanDomain == "" || len(ips) == 0 || strings.EqualFold(strings.TrimSpace(decision.Group), "fallback") {
+	if cleanDomain == "" || len(ips) == 0 {
 		return
 	}
 	ensureProbeLocalDNSCacheLoaded()
@@ -2013,10 +2013,6 @@ func lookupProbeLocalDNSRouteHintByIP(ipText string) (probeLocalDNSRouteDecision
 		return probeLocalDNSRouteDecision{}, false
 	}
 	decision := resolveProbeLocalProxyRouteDecisionByDomain(entry.Domain)
-	if strings.TrimSpace(entry.Group) != "" && !strings.EqualFold(strings.TrimSpace(entry.Group), strings.TrimSpace(decision.Group)) {
-		decision.Group = strings.TrimSpace(entry.Group)
-		decision.Action = "direct"
-	}
 	return decision, true
 }
 

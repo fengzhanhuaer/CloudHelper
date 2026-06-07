@@ -241,6 +241,40 @@ func TestResolveProbeLocalProxyRouteDecisionByIPCIDROverridesFallbackDNSHint(t *
 	}
 }
 
+func TestResolveProbeLocalProxyRouteDecisionByIPUsesCurrentRulesAfterConfigRefresh(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	fallbackDecision := probeLocalDNSRouteDecision{Group: "fallback", Action: "direct"}
+	storeProbeLocalDNSRouteHints("www.google.com", []string{"142.250.190.68"}, fallbackDecision)
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "google", Rules: []string{"domain_suffix:google.com"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "fallback", Action: "direct"},
+		{Group: "google", Action: "tunnel", SelectedChainID: "5_pub", TunnelNodeID: "chain:5_pub"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	decision := resolveProbeLocalProxyRouteDecisionByIP("142.250.190.68")
+	if decision.Group != "google" || decision.Action != "tunnel" {
+		t.Fatalf("stale fallback hint should use current google tunnel rules, got %+v", decision)
+	}
+	if decision.SelectedChainID != "5_pub" || decision.TunnelNodeID != "chain:5_pub" {
+		t.Fatalf("unexpected selected chain from current rules: %+v", decision)
+	}
+}
+
 func TestResolveProbeLocalProxyRouteDecisionByIPLoadsPersistedDNSRouteHint(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()

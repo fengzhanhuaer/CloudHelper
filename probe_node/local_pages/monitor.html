@@ -223,11 +223,11 @@
     <div class="topbar">
       <div>
         <h1>状态监视</h1>
-        <p class="hint">代理启用后的 CPU、内存等快照。</p>
+        <p class="hint">VNet 启用后的 CPU、内存等快照。</p>
       </div>
       <div class="nav">
         <a href="/local/panel">首页</a>
-        <a href="/local/proxy">代理状态</a>
+        <a href="/local/proxy">VNet 状态</a>
         <a href="/local/dns">DNS 状态</a>
         <a href="/local/monitor" class="active">状态监视</a>
         <a href="/local/logs">运行日志</a>
@@ -245,12 +245,12 @@
       <div class="monitor-tabs" role="tablist">
         <button class="monitor-tab active" type="button" data-monitor-tab="summary">概要</button>
         <button class="monitor-tab" type="button" data-monitor-tab="details">监视数据</button>
-        <button class="monitor-tab" type="button" data-monitor-tab="connections">代理连接</button>
+        <button class="monitor-tab" type="button" data-monitor-tab="connections">VNet 连接</button>
         <button class="monitor-tab" type="button" data-monitor-tab="links">链路监视</button>
       </div>
       <div id="monitor-panel-summary" class="monitor-panel active">
         <div class="monitor-grid">
-          <div class="metric"><div class="metric-label">代理模式</div><div class="metric-value" id="mon-mode">--</div></div>
+          <div class="metric"><div class="metric-label">VNet 模式</div><div class="metric-value" id="mon-mode">--</div></div>
           <div class="metric"><div class="metric-label">CPU</div><div class="metric-value" id="mon-cpu">--</div></div>
           <div class="metric"><div class="metric-label">Goroutine</div><div class="metric-value" id="mon-goroutines">--</div></div>
           <div class="metric"><div class="metric-label">TCP Relay</div><div class="metric-value" id="mon-conns">--</div></div>
@@ -273,7 +273,7 @@
             <tr><td>TCP relay 明细</td><td id="mon-tcp-relays">--</td></tr>
             <tr><td>UDP bridge / association</td><td id="mon-udp-detail">--</td></tr>
             <tr><td>UDP bridge 明细</td><td id="mon-udp-bridges">--</td></tr>
-            <tr><td>代理组 runtime</td><td id="mon-groups">--</td></tr>
+            <tr><td>线路组 runtime</td><td id="mon-groups">--</td></tr>
             <tr><td>链路 runtime</td><td id="mon-chain">--</td></tr>
             <tr><td>DNS / FakeIP</td><td id="mon-dns">--</td></tr>
           </tbody>
@@ -281,11 +281,11 @@
       </div>
       <div id="monitor-panel-connections" class="monitor-panel">
         <div class="link-monitor-head">
-          <div class="hint" id="connection-monitor-updated">代理连接：--</div>
-          <button id="connectionMonitorRefreshBtn" type="button" class="secondary">刷新代理连接</button>
+          <div class="hint" id="connection-monitor-updated">VNet 连接：--</div>
+          <button id="connectionMonitorRefreshBtn" type="button" class="secondary">刷新 VNet 连接</button>
         </div>
         <div id="connection-monitor-list" class="connection-monitor-list">
-          <div class="hint">暂无代理 TCP/UDP 连接数据</div>
+          <div class="hint">暂无 VNet TCP/UDP 连接数据</div>
         </div>
       </div>
       <div id="monitor-panel-links" class="monitor-panel">
@@ -587,9 +587,9 @@
       const tcpItems = Array.isArray(tcp.items) ? tcp.items : [];
       const tcpCompleted = Array.isArray(tcp.completed_items) ? tcp.completed_items : [];
       const udpItems = Array.isArray(udpBridges.items) ? udpBridges.items : [];
-      updatedEl.textContent = '代理连接：活跃 TCP ' + tcpItems.length + ' / 最近断开 ' + tcpCompleted.length + ' / UDP ' + udpItems.length + ' / 刷新 ' + (data.fetched_at || '--');
+      updatedEl.textContent = 'VNet 连接：活跃 TCP ' + tcpItems.length + ' / 最近断开 ' + tcpCompleted.length + ' / UDP ' + udpItems.length + ' / 刷新 ' + (data.fetched_at || '--');
       if (tcpItems.length === 0 && tcpCompleted.length === 0 && udpItems.length === 0) {
-        listEl.innerHTML = '<div class="hint">暂无代理 TCP/UDP 连接记录</div>';
+        listEl.innerHTML = '<div class="hint">暂无 VNet TCP/UDP 连接记录</div>';
         return;
       }
       const html = [];
@@ -694,7 +694,7 @@
       updatedEl.textContent = '链路监视：本地 ' + ((currentMonitorData && currentMonitorData.fetched_at) || '--') + ' / 远端 ' + ((remoteTCPDebugCache && remoteTCPDebugCache.fetched) || '--') + ' / 远端测速 ' + ((remoteSpeedDebugCache && remoteSpeedDebugCache.fetched) || '--');
       const items = Array.isArray(linkStatusCache) ? linkStatusCache : [];
       if (items.length === 0) {
-        listEl.innerHTML = '<div class="hint">暂无代理链路监视数据</div>';
+        listEl.innerHTML = '<div class="hint">暂无 VNet 链路监视数据</div>';
         return;
       }
       const remote = remoteTCPDebugCache && remoteTCPDebugCache.remote ? remoteTCPDebugCache.remote : null;
@@ -719,7 +719,7 @@
             </div>
             <div class="link-monitor-meta">
               ID=${escapeHTML(chainID || '-')} ｜ 入口=${escapeHTML(endpoint)} ｜ 协议=${escapeHTML(formatProtocol(item && item.link_layer))} ｜ 观测速率=${escapeHTML(rate)}<br>
-              代理组=${escapeHTML(groups.length ? groups.join(', ') : '-')} ｜ 路由=${escapeHTML(route)}
+              线路组=${escapeHTML(groups.length ? groups.join(', ') : '-')} ｜ 路由=${escapeHTML(route)}
             </div>
             <div class="link-monitor-grid">
               <div class="link-monitor-box"><div class="box-title">协议质量</div><div class="pre-line">${escapeHTML(protocolLines)}</div></div>

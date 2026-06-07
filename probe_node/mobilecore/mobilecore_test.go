@@ -708,6 +708,45 @@ func TestAndroidVPNDNSRouteHintPreservesTunnelDomainTarget(t *testing.T) {
 	}
 }
 
+func TestAndroidVPNDNSRouteHintUsesCurrentRulesAfterConfigRefresh(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "google", "rules": []string{"domain_suffix:google.com"}},
+		},
+	})
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "google", "action": "tunnel", "selected_chain_id": "chain-1"},
+			{"group": "fallback", "action": "direct"},
+		},
+	})
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+
+	query := buildTestDNSQuery(t, "www.google.com", dnsmessage.TypeA)
+	response := buildAndroidVPNDNSSuccess(query, []net.IP{net.ParseIP("142.250.190.68")}, dnsmessage.TypeA)
+	storeAndroidVPNDNSRouteHints("www.google.com", response, proxyRouteDecision{Direct: true, Group: "fallback"})
+
+	route, err := decideAndroidProxyRouteForTarget(dir, "142.250.190.68:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Direct || route.Group != "google" || route.SelectedChainID != "chain-1" || route.TargetAddr != "www.google.com:443" {
+		t.Fatalf("stale direct hint should use current google tunnel rules: %+v", route)
+	}
+}
+
 func TestAndroidVPNIPv6FallbackRouteUsesHintIPv4(t *testing.T) {
 	dir := t.TempDir()
 	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{

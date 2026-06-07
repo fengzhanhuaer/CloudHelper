@@ -6,8 +6,8 @@ const proxyGroupExpanded = new Set();
 const pages = {
   status: ["状态", "当前 Android 节点配置与运行状态。"],
   link: ["链路", "查看链路入口，并执行真实 relay 延迟与测速测试。"],
-  proxy: ["代理", "启动或停止 Android 代理运行时。"],
-  settings: ["设置", "配置主控与节点密钥，并执行直连或主控代理升级。"]
+  proxy: ["VNet", "启动或停止 Android VNet 运行时。"],
+  settings: ["设置", "配置主控与节点密钥，并执行直连或 VNet 升级。"]
 };
 
 window.CloudHelperUI = {
@@ -27,7 +27,7 @@ window.CloudHelperUI = {
     const button = byId("vpnSelfCheckButton");
     if (button) {
       button.disabled = false;
-      button.textContent = "VPN 自检";
+      button.textContent = "VNet 自检";
     }
     refreshConnectionsIfVisible();
     refreshLogsIfVisible();
@@ -108,7 +108,8 @@ function checkUpgrade(mode) {
   if (!saveConfig(false)) {
     return;
   }
-  const text = `正在检查 ${mode} 升级...`;
+  const modeLabel = mode === "proxy" ? "VNet" : "Direct";
+  const text = `正在检查 ${modeLabel} 升级...`;
   setUpgradeButtonsDisabled(true);
   setUpgradeStatus(text);
   setStatus(text);
@@ -145,11 +146,11 @@ function refreshProxyGroups() {
   if (!list) {
     return;
   }
-  setRuntimeStatus("正在读取代理组...");
+  setRuntimeStatus("正在读取线路组...");
   try {
     renderProxyGroups(window.CloudHelper.proxyStatus(), window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}");
   } catch (error) {
-    setRuntimeStatus(`读取代理组失败：${error && error.message ? error.message : error}`);
+    setRuntimeStatus(`读取线路组失败：${error && error.message ? error.message : error}`);
   }
 }
 
@@ -162,7 +163,7 @@ function renderProxyGroups(payload, vpnPayload) {
   }
   list.innerHTML = "";
   if (!data.ok) {
-    setRuntimeStatus(data.error || "代理组状态不可用。");
+    setRuntimeStatus(data.error || "线路组状态不可用。");
     return;
   }
   renderProxyRuntimeStatus(data, vpnData);
@@ -171,7 +172,7 @@ function renderProxyGroups(payload, vpnPayload) {
   if (!groups.length) {
     const empty = document.createElement("div");
     empty.className = "status-box";
-    empty.textContent = "暂无代理组配置，请先在设置中刷新配置。";
+    empty.textContent = "暂无线路组配置，请先在设置中刷新配置。";
     list.appendChild(empty);
     return;
   }
@@ -184,7 +185,7 @@ function renderProxyRuntimeStatus(data, vpnData) {
   const socksRunning = !!data.socks5_enabled;
   const errors = [data.last_error, vpnData.last_error].filter(Boolean).join("；");
   const text = [
-    `VPN：${vpnRunning ? "运行中" : "未启动"}`,
+    `VNet：${vpnRunning ? "运行中" : "未启动"}`,
     `HTTP：${httpRunning ? data.http_addr || "运行中" : "未启动"}`,
     `SOCKS5：${socksRunning ? data.socks5_addr || "运行中" : "未启动"}`,
     errors ? `错误：${errors}` : ""
@@ -321,7 +322,7 @@ function saveProxyGroup(group, action, selectedChainId, item) {
   if (result) {
     result.textContent = "已保存";
   }
-  appendUILog("proxy", `代理组已保存：${group} -> ${formatProxyAction(action)} ${selectedChainId || ""}`.trim());
+  appendUILog("proxy", `线路组已保存：${group} -> ${formatProxyAction(action)} ${selectedChainId || ""}`.trim());
   refreshProxyGroups();
 }
 
@@ -821,7 +822,7 @@ function renderConnections(proxyData, vpnData) {
   const completed = Array.isArray(connectionData.completed) ? connectionData.completed : [];
   const failures = Array.isArray(connectionData.failures) ? connectionData.failures : [];
   const runtimeText = [
-    vpnData.running || vpnData.status === "running" ? "VPN 运行中" : "VPN 未启动",
+    vpnData.running || vpnData.status === "running" ? "VNet 运行中" : "VNet 未启动",
     proxyData.http_enabled ? `HTTP ${proxyData.http_addr || ""}`.trim() : "HTTP 未启动",
     proxyData.socks5_enabled ? `SOCKS5 ${proxyData.socks5_addr || ""}`.trim() : "SOCKS5 未启动",
     connectionData.fetched_at ? `刷新 ${formatCompactTime(connectionData.fetched_at)}` : ""
@@ -830,14 +831,14 @@ function renderConnections(proxyData, vpnData) {
   if (!proxyData.ok) {
     const item = document.createElement("div");
     item.className = "status-box";
-    item.textContent = proxyData.error || "代理状态不可用。";
+    item.textContent = proxyData.error || "VNet 状态不可用。";
     list.appendChild(item);
     return;
   }
   if (!active.length && !completed.length && !failures.length) {
     const empty = document.createElement("div");
     empty.className = "status-box";
-    empty.textContent = "暂无活动代理连接。打开 VPN 或本地 HTTP/SOCKS 后，新连接会显示在这里。";
+    empty.textContent = "暂无活动 VNet 连接。打开 VNet 或本地 HTTP/SOCKS 通道后，新连接会显示在这里。";
     list.appendChild(empty);
     return;
   }
@@ -1043,15 +1044,15 @@ function runVPNSelfCheck() {
     button.disabled = true;
     button.textContent = "检测中";
   }
-  setStatus("正在执行 VPN 自检...");
+  setStatus("正在执行 VNet 自检...");
   try {
-    const message = window.CloudHelper.vpnSelfCheck ? window.CloudHelper.vpnSelfCheck() : "VPN 自检不可用";
-    setStatus(message || "VPN 自检已开始");
+    const message = window.CloudHelper.vpnSelfCheck ? window.CloudHelper.vpnSelfCheck() : "VNet 自检不可用";
+    setStatus(message || "VNet 自检已开始");
   } catch (error) {
-    setStatus(`VPN 自检失败：${error && error.message ? error.message : error}`);
+    setStatus(`VNet 自检失败：${error && error.message ? error.message : error}`);
     if (button) {
       button.disabled = false;
-      button.textContent = "VPN 自检";
+      button.textContent = "VNet 自检";
     }
   }
 }
