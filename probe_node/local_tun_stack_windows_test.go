@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bytes"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -199,6 +201,100 @@ func TestServeProbeLocalTUNTCPDNSHijackResolvesViaLocalDNS(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("tcp dns hijack server did not exit")
+	}
+}
+
+func TestExtractProbeLocalTUNTLSClientHelloSNI(t *testing.T) {
+	hello := buildProbeLocalTestTLSClientHello(t, "www.google.com")
+	if got := extractProbeLocalTUNTLSClientHelloSNI(hello); got != "www.google.com" {
+		t.Fatalf("sni=%q", got)
+	}
+}
+
+func TestPrepareProbeLocalTUNTCPDialTargetUsesSNIForFallbackIP443(t *testing.T) {
+	hello := buildProbeLocalTestTLSClientHello(t, "www.google.com")
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	go func() {
+		_, _ = clientConn.Write(hello)
+	}()
+
+	preface, target, sni := prepareProbeLocalTUNTCPDialTarget(serverConn, "173.194.202.138:443", probeLocalTunnelRouteDecision{
+		Direct:     true,
+		TargetAddr: "173.194.202.138:443",
+		Group:      "fallback",
+	})
+	if sni != "www.google.com" || target != "www.google.com:443" {
+		t.Fatalf("target=%q sni=%q", target, sni)
+	}
+	if !bytes.Equal(preface, hello) {
+		t.Fatal("preface was not preserved")
+	}
+}
+
+func TestPrepareProbeLocalTUNTCPDialTargetReadsSplitTLSClientHello(t *testing.T) {
+	hello := buildProbeLocalTestTLSClientHello(t, "www.google.com")
+	if len(hello) < 12 {
+		t.Fatalf("test hello too small: %d", len(hello))
+	}
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	go func() {
+		_, _ = clientConn.Write(hello[:7])
+		time.Sleep(20 * time.Millisecond)
+		_, _ = clientConn.Write(hello[7:])
+	}()
+
+	preface, target, sni := prepareProbeLocalTUNTCPDialTarget(serverConn, "173.194.202.138:443", probeLocalTunnelRouteDecision{
+		Direct:     true,
+		TargetAddr: "173.194.202.138:443",
+		Group:      "fallback",
+	})
+	if sni != "www.google.com" || target != "www.google.com:443" {
+		t.Fatalf("target=%q sni=%q", target, sni)
+	}
+	if !bytes.Equal(preface, hello) {
+		t.Fatal("split preface was not preserved")
+	}
+}
+
+func TestPrepareProbeLocalTUNTCPDialTargetSkipsNonFallbackRoute(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	preface, target, sni := prepareProbeLocalTUNTCPDialTarget(serverConn, "91.108.4.10:443", probeLocalTunnelRouteDecision{
+		Direct:          false,
+		TargetAddr:      "91.108.4.10:443",
+		Group:           "telegram",
+		SelectedChainID: "chain-proxy-1",
+		TunnelNodeID:    "chain:chain-proxy-1",
+	})
+	if len(preface) != 0 || target != "91.108.4.10:443" || sni != "" {
+		t.Fatalf("preface=%d target=%q sni=%q", len(preface), target, sni)
+	}
+}
+
+func TestPrepareProbeLocalTUNTCPDialTargetSkipsDNSHint(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	decision := probeLocalDNSRouteDecision{Group: "media", Action: "tunnel", SelectedChainID: "chain-proxy-1"}
+	storeProbeLocalDNSRouteHints("www.google.com", []string{"173.194.202.138"}, decision)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	preface, target, sni := prepareProbeLocalTUNTCPDialTarget(serverConn, "173.194.202.138:443", probeLocalTunnelRouteDecision{
+		Direct:     true,
+		TargetAddr: "173.194.202.138:443",
+		Group:      "fallback",
+	})
+	if len(preface) != 0 || target != "173.194.202.138:443" || sni != "" {
+		t.Fatalf("preface=%d target=%q sni=%q", len(preface), target, sni)
 	}
 }
 
@@ -681,6 +777,29 @@ func TestProbeLocalTUNUDPManagedOutboundForwardsReadDeadline(t *testing.T) {
 	if !inner.deadline.Equal(deadline) {
 		t.Fatalf("deadline=%s want=%s", inner.deadline, deadline)
 	}
+}
+
+func buildProbeLocalTestTLSClientHello(t *testing.T, serverName string) []byte {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	errCh := make(chan error, 1)
+	go func() {
+		tlsConn := tls.Client(clientConn, &tls.Config{ServerName: serverName, InsecureSkipVerify: true})
+		errCh <- tlsConn.Handshake()
+	}()
+	_ = serverConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 16*1024)
+	n, err := serverConn.Read(buf)
+	if err != nil {
+		t.Fatalf("read client hello: %v", err)
+	}
+	_ = clientConn.Close()
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+	}
+	return append([]byte(nil), buf[:n]...)
 }
 
 func TestProbeLocalTUNUDPBridgeNoResponseTimeout(t *testing.T) {

@@ -39,6 +39,7 @@ const (
 	probeLocalTUNTCPDirectFailureCacheTTL  = 30 * time.Second
 	probeLocalTUNTCPDirectFailureCacheMax  = 512
 	probeLocalTUNTCPRelayIdleTimeout       = 5 * time.Minute
+	probeLocalTUNTCPPrefaceReadTimeout     = 1200 * time.Millisecond
 	probeLocalTUNTCPOpenConcurrencyLimit   = 256
 	probeLocalTUNTCPFailureLogInterval     = 5 * time.Second
 	probeLocalTUNTCPFailureLogCacheMax     = 512
@@ -458,7 +459,20 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		startProbeLocalTUNTCPDNSHijack(inbound, targetAddr)
 		return
 	}
-	outbound, route, openErr := openProbeLocalTUNOutboundTCP(targetAddr)
+	route, routeErr := decideProbeLocalRouteForTarget(targetAddr)
+	preface, dialTarget, sni := prepareProbeLocalTUNTCPDialTarget(inbound, targetAddr, route)
+	if sni != "" {
+		var sniRouteErr error
+		route, sniRouteErr = decideProbeLocalRouteForTarget(dialTarget)
+		routeErr = sniRouteErr
+	}
+	var outbound net.Conn
+	var openErr error
+	if routeErr != nil {
+		openErr = routeErr
+	} else {
+		outbound, route, openErr = openProbeLocalTUNOutboundTCPWithPreparedRoute(targetAddr, route)
+	}
 	if openErr != nil {
 		_ = inbound.Close()
 		if shouldReportProbeLocalTUNTCPFailure("open_failed", targetAddr, route, openErr) {
@@ -466,6 +480,23 @@ func (n *probeLocalTUNNetstack) handleTCPForwarder(req *tcp.ForwarderRequest) {
 			logProbeWarnf("probe local tun tcp outbound open failed: inbound=tun outbound=%s target=%s route=%s group=%s node=%s err=%v", probeLocalTUNRouteOutboundPath(route), targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, openErr)
 		}
 		return
+	}
+	if sni != "" {
+		logProbeRealtimef("probe local tun tcp sni route: target=%s sni=%s route=%s group=%s node=%s", targetAddr, sni, route.TargetAddr, route.Group, route.TunnelNodeID)
+	}
+	if len(preface) > 0 {
+		_ = outbound.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
+		_, writeErr := outbound.Write(preface)
+		_ = outbound.SetWriteDeadline(time.Time{})
+		if writeErr != nil {
+			_ = inbound.Close()
+			_ = outbound.Close()
+			if shouldReportProbeLocalTUNTCPFailure("preface_write_failed", targetAddr, route, writeErr) {
+				globalProbeTCPDebugState.recordFailureWithRoute("preface_write_failed", targetAddr, route, writeErr)
+				logProbeWarnf("probe local tun tcp preface write failed: target=%s route=%s group=%s node=%s err=%v", targetAddr, route.TargetAddr, route.Group, route.TunnelNodeID, writeErr)
+			}
+			return
+		}
 	}
 
 	relay := globalProbeTCPDebugState.beginRelayWithRoute(targetAddr, route)
@@ -537,6 +568,206 @@ func serveProbeLocalTUNTCPDNSHijack(conn net.Conn, targetAddr string) {
 	}
 }
 
+func prepareProbeLocalTUNTCPDialTarget(inbound net.Conn, targetAddr string, route probeLocalTunnelRouteDecision) ([]byte, string, string) {
+	if !shouldSniffProbeLocalTUNTCPRouteSNI(targetAddr, route) {
+		return nil, targetAddr, ""
+	}
+	if inbound == nil {
+		return nil, targetAddr, ""
+	}
+	_ = inbound.SetReadDeadline(time.Now().Add(probeLocalTUNTCPPrefaceReadTimeout))
+	buf := make([]byte, 16*1024)
+	n, readErr := readProbeLocalTUNInitialTCPPreface(inbound, buf)
+	_ = inbound.SetReadDeadline(time.Time{})
+	if n <= 0 {
+		return nil, targetAddr, ""
+	}
+	preface := append([]byte(nil), buf[:n]...)
+	if readErr != nil && !isProbeLocalTUNTimeoutError(readErr) {
+		return preface, targetAddr, ""
+	}
+	sni := extractProbeLocalTUNTLSClientHelloSNI(preface)
+	if !isValidProbeLocalTUNTLSSNIHost(sni) {
+		return preface, targetAddr, ""
+	}
+	_, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return preface, targetAddr, ""
+	}
+	return preface, net.JoinHostPort(sni, strings.TrimSpace(port)), sni
+}
+
+func shouldSniffProbeLocalTUNTCPRouteSNI(targetAddr string, route probeLocalTunnelRouteDecision) bool {
+	if !strings.EqualFold(strings.TrimSpace(route.Group), "fallback") {
+		return false
+	}
+	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil || strings.TrimSpace(port) != "443" {
+		return false
+	}
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
+	if ip == nil {
+		return false
+	}
+	if _, ok := lookupProbeLocalDNSFakeIPEntry(ip.String()); ok {
+		return false
+	}
+	if _, ok := lookupProbeLocalDNSRouteHintEntryByIP(ip.String()); ok {
+		return false
+	}
+	return true
+}
+
+func readProbeLocalTUNInitialTCPPreface(inbound net.Conn, buf []byte) (int, error) {
+	if inbound == nil || len(buf) == 0 {
+		return 0, nil
+	}
+	total := 0
+	for {
+		n, err := inbound.Read(buf[total:])
+		if n > 0 {
+			total += n
+		}
+		if err != nil {
+			return total, err
+		}
+		if !needsMoreProbeLocalTUNTLSClientHelloBytes(buf[:total]) {
+			return total, nil
+		}
+		if total >= len(buf) {
+			return total, nil
+		}
+	}
+}
+
+func needsMoreProbeLocalTUNTLSClientHelloBytes(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	if len(data) < 5 {
+		return data[0] == 0x16
+	}
+	if data[0] != 0x16 {
+		return false
+	}
+	recordLen := int(binary.BigEndian.Uint16(data[3:5]))
+	if recordLen <= 0 {
+		return false
+	}
+	return len(data) < 5+recordLen
+}
+
+func extractProbeLocalTUNTLSClientHelloSNI(data []byte) string {
+	if len(data) < 5 || data[0] != 0x16 {
+		return ""
+	}
+	recordLen := int(binary.BigEndian.Uint16(data[3:5]))
+	if recordLen <= 0 || len(data) < 5+recordLen {
+		return ""
+	}
+	offset := 5
+	if len(data[offset:]) < 4 || data[offset] != 0x01 {
+		return ""
+	}
+	helloLen := int(data[offset+1])<<16 | int(data[offset+2])<<8 | int(data[offset+3])
+	offset += 4
+	if helloLen <= 0 || offset+helloLen > len(data) || offset+34 > len(data) {
+		return ""
+	}
+	offset += 34
+	if offset >= len(data) {
+		return ""
+	}
+	sessionLen := int(data[offset])
+	offset++
+	if offset+sessionLen+2 > len(data) {
+		return ""
+	}
+	offset += sessionLen
+	cipherLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+cipherLen+1 > len(data) {
+		return ""
+	}
+	offset += cipherLen
+	compressionLen := int(data[offset])
+	offset++
+	if offset+compressionLen+2 > len(data) {
+		return ""
+	}
+	offset += compressionLen
+	extensionsLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	extensionsEnd := offset + extensionsLen
+	if extensionsEnd > len(data) {
+		return ""
+	}
+	for offset+4 <= extensionsEnd {
+		extType := binary.BigEndian.Uint16(data[offset : offset+2])
+		extLen := int(binary.BigEndian.Uint16(data[offset+2 : offset+4]))
+		offset += 4
+		if offset+extLen > extensionsEnd {
+			return ""
+		}
+		if extType == 0 {
+			return extractProbeLocalTUNTLSSNIFromExtension(data[offset : offset+extLen])
+		}
+		offset += extLen
+	}
+	return ""
+}
+
+func extractProbeLocalTUNTLSSNIFromExtension(data []byte) string {
+	if len(data) < 2 {
+		return ""
+	}
+	listLen := int(binary.BigEndian.Uint16(data[:2]))
+	offset := 2
+	end := offset + listLen
+	if end > len(data) {
+		return ""
+	}
+	for offset+3 <= end {
+		nameType := data[offset]
+		nameLen := int(binary.BigEndian.Uint16(data[offset+1 : offset+3]))
+		offset += 3
+		if offset+nameLen > end {
+			return ""
+		}
+		if nameType == 0 {
+			return strings.ToLower(strings.TrimSpace(string(data[offset : offset+nameLen])))
+		}
+		offset += nameLen
+	}
+	return ""
+}
+
+func isValidProbeLocalTUNTLSSNIHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "."))
+	if host == "" || len(host) > 253 || strings.ContainsAny(host, " \t\r\n:/\\") {
+		return false
+	}
+	if net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
 func (n *probeLocalTUNNetstack) pipeAndCloseTCP(dst net.Conn, src net.Conn, relay *probeTCPDebugRelay, direction string) {
 	defer closeProbeLocalConnWrite(dst)
 	defer closeProbeLocalConnRead(src)
@@ -566,8 +797,12 @@ func (n *probeLocalTUNNetstack) pipeAndCloseTCP(dst net.Conn, src net.Conn, rela
 func openProbeLocalTUNOutboundTCP(targetAddr string) (net.Conn, probeLocalTunnelRouteDecision, error) {
 	route, err := decideProbeLocalRouteForTarget(targetAddr)
 	if err != nil {
-		return nil, probeLocalTunnelRouteDecision{}, err
+		return nil, route, err
 	}
+	return openProbeLocalTUNOutboundTCPWithPreparedRoute(targetAddr, route)
+}
+
+func openProbeLocalTUNOutboundTCPWithPreparedRoute(targetAddr string, route probeLocalTunnelRouteDecision) (net.Conn, probeLocalTunnelRouteDecision, error) {
 	conn, openedRoute, openErr := openProbeLocalTUNOutboundTCPWithRoute(targetAddr, route)
 	if openErr == nil {
 		return conn, openedRoute, nil
