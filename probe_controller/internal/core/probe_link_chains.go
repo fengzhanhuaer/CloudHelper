@@ -104,6 +104,7 @@ type probeLinkEntryCandidate struct {
 	EntryType string   `json:"entry_type"`
 	NodeNo    int      `json:"node_no"`
 	Host      string   `json:"host"`
+	IPs       []string `json:"ips,omitempty"`
 	Port      int      `json:"port"`
 	Protocols []string `json:"protocols"`
 	Name      string   `json:"name,omitempty"`
@@ -1611,6 +1612,12 @@ func buildProbeLinkEntryCandidatesFromChain(chain probeLinkChainRecord, profile 
 	}
 
 	out := make([]probeLinkEntryCandidate, 0)
+	var entryNode probeNodeRecord
+	entryNodeFound := false
+	if node, ok := getProbeNodeByID(entryNodeID); ok {
+		entryNode = node
+		entryNodeFound = true
+	}
 	add := func(entryType string, host string) {
 		entryType = normalizeProbeLinkEntryType(entryType)
 		host = normalizeProbeLinkChainDialHost(host)
@@ -1637,6 +1644,7 @@ func buildProbeLinkEntryCandidatesFromChain(chain probeLinkChainRecord, profile 
 			EntryType: entryType,
 			NodeNo:    entryNodeNo,
 			Host:      host,
+			IPs:       probeLinkEntryCandidateIPs(entryNode, entryNodeFound, host),
 			Port:      candidatePort,
 			Protocols: []string{"websocket-h3", "websocket"},
 			Name:      name,
@@ -1644,10 +1652,10 @@ func buildProbeLinkEntryCandidatesFromChain(chain probeLinkChainRecord, profile 
 		})
 	}
 
-	if node, ok := getProbeNodeByID(entryNodeID); ok {
-		add("lan", node.ServiceHost)
-		add("pub", node.DDNS)
-		for _, rec := range node.CloudflareDDNSRecords {
+	if entryNodeFound {
+		add("lan", entryNode.ServiceHost)
+		add("pub", entryNode.DDNS)
+		for _, rec := range entryNode.CloudflareDDNSRecords {
 			recordName := strings.TrimSpace(rec.RecordName)
 			if recordName == "" {
 				continue
@@ -1655,7 +1663,7 @@ func buildProbeLinkEntryCandidatesFromChain(chain probeLinkChainRecord, profile 
 			add("pub", recordName)
 		}
 		if zone := currentCloudflareZoneName(); zone != "" {
-			add("cf", buildCloudflareCopilotCandidateDomain(node.NodeNo, zone))
+			add("cf", buildCloudflareCopilotCandidateDomain(entryNode.NodeNo, zone))
 		}
 	}
 	for _, hop := range chain.HopConfigs {
@@ -1673,6 +1681,38 @@ func buildProbeLinkEntryCandidatesFromChain(chain probeLinkChainRecord, profile 
 		}
 		return out[i].Host < out[j].Host
 	})
+	return out
+}
+
+func probeLinkEntryCandidateIPs(node probeNodeRecord, nodeFound bool, host string) []string {
+	if !nodeFound {
+		return []string{}
+	}
+	target := strings.ToLower(normalizeProbeLinkChainDialHost(host))
+	if target == "" {
+		return []string{}
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(node.CloudflareDDNSRecords))
+	add := func(raw string) {
+		ip := strings.TrimSpace(raw)
+		if ip == "" {
+			return
+		}
+		if _, exists := seen[ip]; exists {
+			return
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+	}
+	for _, rec := range node.CloudflareDDNSRecords {
+		recordName := strings.ToLower(normalizeProbeLinkChainDialHost(rec.RecordName))
+		if recordName != target {
+			continue
+		}
+		add(rec.ContentIP)
+	}
+	sort.Strings(out)
 	return out
 }
 

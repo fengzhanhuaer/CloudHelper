@@ -643,96 +643,91 @@ func sendReport(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nod
 }
 
 func collectIPs() ([]string, []string) {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil, nil
-	}
 	seen4 := map[string]struct{}{}
 	seen6 := map[string]struct{}{}
 	ipv4 := make([]string, 0)
 	ipv6 := make([]string, 0)
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
+
+	addIP := func(ip net.IP) {
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			return
 		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
+		if ip4 := ip.To4(); ip4 != nil {
+			value := ip4.String()
+			if _, ok := seen4[value]; !ok {
+				seen4[value] = struct{}{}
+				ipv4 = append(ipv4, value)
+			}
+			return
 		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			default:
-				continue
-			}
-			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
-				continue
-			}
-			if ip4 := ip.To4(); ip4 != nil {
-				value := ip4.String()
-				if _, ok := seen4[value]; !ok {
-					seen4[value] = struct{}{}
-					ipv4 = append(ipv4, value)
-				}
-				continue
-			}
-			if ip.To16() != nil {
-				value := ip.String()
-				if _, ok := seen6[value]; !ok {
-					seen6[value] = struct{}{}
-					ipv6 = append(ipv6, value)
-				}
+		if ip.To16() != nil {
+			value := ip.String()
+			if _, ok := seen6[value]; !ok {
+				seen6[value] = struct{}{}
+				ipv6 = append(ipv6, value)
 			}
 		}
 	}
-	addIPv4, addIPv6 := collectCommandIPs()
-	for _, value := range addIPv4 {
-		if _, ok := seen4[value]; ok {
-			continue
+	addIPv4 := func(value string) {
+		ip := net.ParseIP(strings.TrimSpace(value)).To4()
+		if ip == nil {
+			return
 		}
-		seen4[value] = struct{}{}
-		ipv4 = append(ipv4, value)
+		addIP(ip)
 	}
-	for _, value := range addIPv6 {
-		if _, ok := seen6[value]; ok {
-			continue
+	addIPv6 := func(value string) {
+		ip := net.ParseIP(strings.TrimSpace(value))
+		if ip == nil || ip.To4() != nil {
+			return
 		}
-		seen6[value] = struct{}{}
-		ipv6 = append(ipv6, value)
+		addIP(ip)
+	}
+
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ip net.IP
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				default:
+					continue
+				}
+				addIP(ip)
+			}
+		}
+	}
+
+	commandIPv4, commandIPv6 := collectCommandIPs()
+	for _, value := range commandIPv4 {
+		addIPv4(value)
+	}
+	for _, value := range commandIPv6 {
+		addIPv6(value)
 	}
 	publicIPv4, publicIPv6 := collectPublicIPs()
 	for _, value := range publicIPv4 {
-		if _, ok := seen4[value]; ok {
-			continue
-		}
-		seen4[value] = struct{}{}
-		ipv4 = append(ipv4, value)
+		addIPv4(value)
 	}
 	for _, value := range publicIPv6 {
-		if _, ok := seen6[value]; ok {
-			continue
-		}
-		seen6[value] = struct{}{}
-		ipv6 = append(ipv6, value)
+		addIPv6(value)
 	}
 	injectedIPv4, injectedIPv6 := currentInjectedIPs()
 	for _, value := range injectedIPv4 {
-		if _, ok := seen4[value]; ok {
-			continue
-		}
-		seen4[value] = struct{}{}
-		ipv4 = append(ipv4, value)
+		addIPv4(value)
 	}
 	for _, value := range injectedIPv6 {
-		if _, ok := seen6[value]; ok {
-			continue
-		}
-		seen6[value] = struct{}{}
-		ipv6 = append(ipv6, value)
+		addIPv6(value)
 	}
 	return ipv4, ipv6
 }

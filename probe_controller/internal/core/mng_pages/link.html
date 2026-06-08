@@ -55,6 +55,16 @@
       color:#8b949e;
       margin-right:6px;
     }
+    .ip-list { margin-top:4px; display:flex; flex-wrap:wrap; gap:4px; }
+    .ip-tag {
+      display:inline-block;
+      border:1px solid #30363d;
+      border-radius:6px;
+      padding:2px 6px;
+      font-size:12px;
+      color:#7ee787;
+      background:#0d1117;
+    }
   </style>
 </head>
 <body>
@@ -673,7 +683,7 @@
           <td>${escapeHTML(item.name || '-')}</td>
           <td><span class="inline-tag">${escapeHTML(item.entry_type || '-')}</span></td>
           <td>#${escapeHTML(item.node_no || '-')}</td>
-          <td class="mono">${escapeHTML(item.host || '-')}</td>
+          <td class="mono">${formatEntryHost(item)}</td>
           <td>${escapeHTML(item.port || '-')}</td>
           <td>${escapeHTML(protocols)}</td>
         </tr>`;
@@ -685,6 +695,16 @@
           state.entryCandidates[idx].selected = el.checked;
         });
       });
+    }
+
+    function formatEntryHost(item) {
+      const host = escapeHTML(item && item.host ? item.host : '-');
+      const ips = Array.isArray(item && item.ips) ? item.ips.map((ip) => String(ip || '').trim()).filter(Boolean) : [];
+      if (!ips.length) {
+        return host;
+      }
+      const ipTags = ips.map((ip) => `<span class="ip-tag">${escapeHTML(ip)}</span>`).join('');
+      return `<div>${host}</div><div class="ip-list">${ipTags}</div>`;
     }
 
     function renderPFChainSelect() {

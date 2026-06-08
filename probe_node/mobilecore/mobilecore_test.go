@@ -515,6 +515,43 @@ func TestSetNativeIPsParsesAndFilters(t *testing.T) {
 	}
 }
 
+func TestCollectIPsIncludesInjectedNativeIPs(t *testing.T) {
+	t.Setenv("PROBE_PUBLIC_IP_SNIFF", "0")
+	manager.mu.Lock()
+	old4 := append([]string{}, manager.injectedIPv4...)
+	old6 := append([]string{}, manager.injectedIPv6...)
+	manager.injectedIPv4 = nil
+	manager.injectedIPv6 = nil
+	manager.mu.Unlock()
+	defer func() {
+		manager.mu.Lock()
+		manager.injectedIPv4 = old4
+		manager.injectedIPv6 = old6
+		manager.mu.Unlock()
+	}()
+
+	got := SetNativeIPs(`["198.51.100.44"]`, `["2001:db8::44"]`)
+	if !strings.Contains(got, "ipv4=1") || !strings.Contains(got, "ipv6=1") {
+		t.Fatalf("SetNativeIPs=%q", got)
+	}
+	ipv4, ipv6 := collectIPs()
+	if !containsString(ipv4, "198.51.100.44") {
+		t.Fatalf("collectIPs ipv4=%v, want injected IPv4", ipv4)
+	}
+	if !containsString(ipv6, "2001:db8::44") {
+		t.Fatalf("collectIPs ipv6=%v, want injected IPv6", ipv6)
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParseIPAddrOutput(t *testing.T) {
 	ipv4, ipv6 := parseIPAddrOutput(strings.Join([]string{
 		"2: wlan0    inet 192.168.31.10/24 brd 192.168.31.255 scope global wlan0",
