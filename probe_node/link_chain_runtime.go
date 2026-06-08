@@ -374,6 +374,8 @@ var probeChainAuthTicketStore = struct {
 	items: make(map[string]string),
 }
 
+var probeChainAuthTicketNow = time.Now
+
 var probeChainAuthReplayStore = struct {
 	mu    sync.Mutex
 	items map[string]time.Time
@@ -4879,8 +4881,26 @@ func verifyProbeChainUserAuthTicket(cfg probeChainRuntimeConfig, rawTicket strin
 	if strings.TrimSpace(payload.UserPublicKey) != strings.TrimSpace(cfg.rawPublicKey) {
 		return fmt.Errorf("user auth ticket public key mismatch")
 	}
+	if err := verifyProbeChainAuthTicketIssuedAt(payload.IssuedAt, probeChainAuthTicketNow()); err != nil {
+		return err
+	}
 	return nil
 }
+
+func verifyProbeChainAuthTicketIssuedAt(raw string, now time.Time) error {
+	issuedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid user auth ticket issued_at")
+	}
+	if issuedAt.After(now.UTC().Add(5 * time.Minute)) {
+		return fmt.Errorf("user auth ticket issued_at is in the future")
+	}
+	if !now.UTC().Before(issuedAt.UTC().AddDate(0, 2, 0)) {
+		return fmt.Errorf("user auth ticket expired")
+	}
+	return nil
+}
+
 func sendProbeChainSecretAuth(nextWriter io.Writer, nextReader *bufio.Reader, chainID string, secret string) error {
 	return sendProbeChainSecretAuthWithTicket(nextWriter, nextReader, chainID, secret, "")
 }

@@ -553,12 +553,19 @@ func TestVerifyProbeChainInboundAuthRequiresUserAuthTicket(t *testing.T) {
 func TestVerifyProbeChainInboundAuthAcceptsSignedUserAuthTicket(t *testing.T) {
 	resetProbeChainAuthReplayStoreForTest()
 	defer resetProbeChainAuthReplayStoreForTest()
+	oldNow := probeChainAuthTicketNow
+	probeChainAuthTicketNow = func() time.Time {
+		return time.Date(2026, time.June, 8, 0, 0, 0, 0, time.UTC)
+	}
+	defer func() {
+		probeChainAuthTicketNow = oldNow
+	}()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
 	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
-	ticket := buildProbeChainUserAuthTicketForTest(t, priv, "chain-a", rawPublicKey)
+	ticket := buildProbeChainUserAuthTicketForTest(t, priv, "chain-a", rawPublicKey, time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC))
 	cfg := probeChainRuntimeConfig{
 		chainID:         "chain-a",
 		secret:          "secret-1",
@@ -575,6 +582,42 @@ func TestVerifyProbeChainInboundAuthAcceptsSignedUserAuthTicket(t *testing.T) {
 	}
 	if err := verifyProbeChainInboundAuth(cfg, env); err != nil {
 		t.Fatalf("verifyProbeChainInboundAuth failed: %v", err)
+	}
+}
+
+func TestVerifyProbeChainInboundAuthRejectsExpiredUserAuthTicket(t *testing.T) {
+	resetProbeChainAuthReplayStoreForTest()
+	defer resetProbeChainAuthReplayStoreForTest()
+	oldNow := probeChainAuthTicketNow
+	probeChainAuthTicketNow = func() time.Time {
+		return time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	}
+	defer func() {
+		probeChainAuthTicketNow = oldNow
+	}()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
+	ticket := buildProbeChainUserAuthTicketForTest(t, priv, "chain-a", rawPublicKey, time.Date(2026, time.May, 31, 23, 59, 0, 0, time.UTC))
+	cfg := probeChainRuntimeConfig{
+		chainID:         "chain-a",
+		secret:          "secret-1",
+		requireUserAuth: true,
+		rawPublicKey:    rawPublicKey,
+		userPublicKey:   pub,
+	}
+	env := probeChainAuthEnvelope{
+		ChainID:    "chain-a",
+		Mode:       "secret_hmac",
+		Nonce:      "nonce-ticket-expired",
+		MAC:        buildProbeChainHMAC("secret-1", "chain-a", "nonce-ticket-expired"),
+		AuthTicket: ticket,
+	}
+	err = verifyProbeChainInboundAuth(cfg, env)
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected expired ticket error, got: %v", err)
 	}
 }
 
@@ -624,13 +667,17 @@ func TestResolveProbeChainTLSServerName(t *testing.T) {
 	}
 }
 
-func buildProbeChainUserAuthTicketForTest(t *testing.T, priv ed25519.PrivateKey, chainID string, rawPublicKey string) string {
+func buildProbeChainUserAuthTicketForTest(t *testing.T, priv ed25519.PrivateKey, chainID string, rawPublicKey string, issuedAt ...time.Time) string {
 	t.Helper()
+	ts := time.Now().UTC()
+	if len(issuedAt) > 0 {
+		ts = issuedAt[0].UTC()
+	}
 	payload := probeChainUserAuthTicketPayload{
 		Version:       "chain-auth-v1",
 		ChainID:       strings.TrimSpace(chainID),
 		UserPublicKey: strings.TrimSpace(rawPublicKey),
-		IssuedAt:      time.Now().UTC().Format(time.RFC3339),
+		IssuedAt:      ts.Format(time.RFC3339),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

@@ -284,6 +284,13 @@ func TestMobileChainDialHostPolicy(t *testing.T) {
 }
 
 func TestMobileChainUserAuthTicketVerification(t *testing.T) {
+	oldNow := mobileChainAuthTicketNow
+	mobileChainAuthTicketNow = func() time.Time {
+		return time.Date(2026, time.June, 8, 0, 0, 0, 0, time.UTC)
+	}
+	defer func() {
+		mobileChainAuthTicketNow = oldNow
+	}()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
@@ -305,7 +312,7 @@ func TestMobileChainUserAuthTicketVerification(t *testing.T) {
 		Version:       "chain-auth-v1",
 		ChainID:       cfg.ChainID,
 		UserPublicKey: rawPub,
-		IssuedAt:      time.Now().UTC().Format(time.RFC3339),
+		IssuedAt:      time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -318,6 +325,12 @@ func TestMobileChainUserAuthTicketVerification(t *testing.T) {
 	}
 	if err := verifyMobileChainUserAuthTicket(cfg, "bad.ticket"); err == nil {
 		t.Fatal("bad ticket unexpectedly accepted")
+	}
+	mobileChainAuthTicketNow = func() time.Time {
+		return time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	}
+	if err := verifyMobileChainUserAuthTicket(cfg, ticket); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected expired ticket error, got: %v", err)
 	}
 }
 

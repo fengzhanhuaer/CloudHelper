@@ -97,6 +97,8 @@ const (
 	mobileChainQUICMaxConnWindow       = 1024 * 1024 * 1024
 )
 
+var mobileChainAuthTicketNow = time.Now
+
 type mobileNodeIdentity struct {
 	NodeID string
 	Secret string
@@ -1657,6 +1659,23 @@ func verifyMobileChainUserAuthTicket(cfg mobileChainRuntimeConfig, rawTicket str
 	}
 	if strings.TrimSpace(payload.UserPublicKey) != strings.TrimSpace(cfg.RawPublicKey) {
 		return errors.New("user auth ticket public key mismatch")
+	}
+	if err := verifyMobileChainAuthTicketIssuedAt(payload.IssuedAt, mobileChainAuthTicketNow()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifyMobileChainAuthTicketIssuedAt(raw string, now time.Time) error {
+	issuedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return errors.New("invalid user auth ticket issued_at")
+	}
+	if issuedAt.After(now.UTC().Add(5 * time.Minute)) {
+		return errors.New("user auth ticket issued_at is in the future")
+	}
+	if !now.UTC().Before(issuedAt.UTC().AddDate(0, 2, 0)) {
+		return errors.New("user auth ticket expired")
 	}
 	return nil
 }
