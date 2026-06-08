@@ -417,10 +417,16 @@ func loadLinkProxyChains(configDir string) ([]linkChainServerItem, error) {
 		return nil, fmt.Errorf("read %s: %w", linkProxyChainFileName, err)
 	}
 	var cache struct {
-		Items []linkChainServerItem `json:"items"`
+		Items *[]linkChainServerItem `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &cache); err == nil && cache.Items != nil {
-		return cache.Items, nil
+		return *cache.Items, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err == nil {
+		if _, ok := object["items"]; ok {
+			return []linkChainServerItem{}, nil
+		}
 	}
 	var items []linkChainServerItem
 	if err := json.Unmarshal(raw, &items); err != nil {

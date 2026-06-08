@@ -543,6 +543,23 @@ func TestCollectIPsIncludesInjectedNativeIPs(t *testing.T) {
 	}
 }
 
+func TestLoadMobileChainServerItemsFromCacheAcceptsNullItems(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "probe_link_chain_config.json")
+	writeTestJSON(t, cachePath, map[string]any{
+		"updated_at": "2026-06-08T04:00:18Z",
+		"items":      nil,
+	})
+
+	items, err := loadMobileChainServerItemsFromCache(cachePath)
+	if err != nil {
+		t.Fatalf("load cache with null items returned error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items=%v, want empty", items)
+	}
+}
+
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {
