@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -209,4 +210,87 @@ func TestProbeProxyDownloadHandlerPassesRange(t *testing.T) {
 	if got := resp.Header.Get("Content-Range"); got != "bytes 10-14/15" {
 		t.Fatalf("unexpected content-range: %q", got)
 	}
+}
+
+func TestProbeProxyInstallScriptHandlerServesEmbeddedScriptOverHTTP(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/probe-node/install-script?node_id=1&secret=test-secret&target=linux", nil)
+	w := httptest.NewRecorder()
+
+	if ProbeStore == nil {
+		ProbeStore = &probeConfigStore{data: probeConfigData{ProbeSecrets: map[string]string{}}}
+	}
+	ProbeStore.mu.Lock()
+	oldNodes := append([]probeNodeRecord(nil), ProbeStore.data.ProbeNodes...)
+	oldSecrets := make(map[string]string, len(ProbeStore.data.ProbeSecrets))
+	for key, value := range ProbeStore.data.ProbeSecrets {
+		oldSecrets[key] = value
+	}
+	ProbeStore.data.ProbeNodes = []probeNodeRecord{{NodeNo: 1, NodeName: "node-1", NodeSecret: "test-secret"}}
+	ProbeStore.data.ProbeSecrets = map[string]string{"1": "test-secret"}
+	ProbeStore.mu.Unlock()
+	defer func() {
+		ProbeStore.mu.Lock()
+		ProbeStore.data.ProbeNodes = oldNodes
+		ProbeStore.data.ProbeSecrets = oldSecrets
+		ProbeStore.mu.Unlock()
+	}()
+
+	ProbeProxyInstallScriptHandler(w, req)
+	resp := w.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "cloudhelper-probe-node") {
+		t.Fatalf("embedded install script body missing marker")
+	}
+}
+
+func TestProbeProxyDownloadHandlerAllowsHTTPAfterProbeAuth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/download?node_id=1&secret=test-secret", nil)
+	w := httptest.NewRecorder()
+	withProbeStoreSecretForTest(t, "1", "test-secret")
+
+	ProbeProxyDownloadHandler(w, req)
+	resp := w.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d", resp.StatusCode)
+	}
+}
+
+func TestProbeProxyGitHubLatestHandlerAllowsHTTPAfterProbeAuth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/github/latest?node_id=1&secret=test-secret&repo=bad", nil)
+	w := httptest.NewRecorder()
+	withProbeStoreSecretForTest(t, "1", "test-secret")
+
+	ProbeProxyGitHubLatestHandler(w, req)
+	resp := w.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d", resp.StatusCode)
+	}
+}
+
+func withProbeStoreSecretForTest(t *testing.T, nodeID string, secret string) {
+	t.Helper()
+	if ProbeStore == nil {
+		ProbeStore = &probeConfigStore{data: probeConfigData{ProbeSecrets: map[string]string{}}}
+	}
+	ProbeStore.mu.Lock()
+	oldNodes := append([]probeNodeRecord(nil), ProbeStore.data.ProbeNodes...)
+	oldSecrets := make(map[string]string, len(ProbeStore.data.ProbeSecrets))
+	for key, value := range ProbeStore.data.ProbeSecrets {
+		oldSecrets[key] = value
+	}
+	ProbeStore.data.ProbeNodes = []probeNodeRecord{{NodeNo: 1, NodeName: "node-1", NodeSecret: secret}}
+	ProbeStore.data.ProbeSecrets = map[string]string{nodeID: secret}
+	ProbeStore.mu.Unlock()
+	t.Cleanup(func() {
+		ProbeStore.mu.Lock()
+		ProbeStore.data.ProbeNodes = oldNodes
+		ProbeStore.data.ProbeSecrets = oldSecrets
+		ProbeStore.mu.Unlock()
+	})
 }

@@ -390,10 +390,6 @@ func ProbeProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !isHTTPSRequest(r) {
-		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
-		return
-	}
 	if _, err := authenticateProbeRequestOrQuerySecret(r); err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
@@ -430,10 +426,6 @@ func ProbeProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
 func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !isHTTPSRequest(r) {
-		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
 		return
 	}
 	if _, err := authenticateProbeRequestOrQuerySecret(r); err != nil {
@@ -509,10 +501,6 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !isHTTPSRequest(r) {
-		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
 		return
 	}
 
