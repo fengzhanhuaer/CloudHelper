@@ -8,8 +8,8 @@ CloudHelper 是一个探针主控与节点项目，当前版本：`0.0.7`。
 - `probe_controller`：探针主控服务（Go）
 - `probe_node`：探针节点服务（Go）
 - `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd）
-- `scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（支持 systemd / 非 systemd）
-- `scripts/install_probe_node_service_windows.ps1`：Windows 探针节点安装脚本（WinSW 服务）
+- `probe_controller/internal/core/install_scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（由主控探针页分发，支持 systemd / 非 systemd）
+- `probe_controller/internal/core/install_scripts/install_probe_node_service_windows.ps1`：Windows 探针节点安装脚本（由主控探针页分发，WinSW 服务）
 - `scripts/restart_probe_node_service_windows.ps1`：Windows 探针节点服务一键重启脚本
 - `doc/`：项目文档
 
@@ -35,9 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scri
 
 ## Linux 一键安装（探针节点）
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh | sudo bash
-```
+在主控后台的“探针”页面为对应节点点击“安装”，复制生成的 Linux 安装命令执行。
 
 安装完成后会：
 - 从 GitHub Releases 拉取最新 `probe_node` 可执行程序
@@ -46,15 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scri
 
 可选：
 
-```bash
-# 强制使用 systemd
-curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh \
-| sudo RUNTIME_MODE=systemd bash
-
-# 强制使用非 systemd（manual）
-curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh \
-| sudo RUNTIME_MODE=manual MANUAL_ENABLE_BOOT=true bash
-```
+复制命令后可在命令前追加环境变量，例如 `RUNTIME_MODE=systemd` 或 `RUNTIME_MODE=manual MANUAL_ENABLE_BOOT=true`。
 
 ## 一键升级（探针节点）
 
@@ -62,11 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scri
 
 ## Windows 一键安装（探针节点）
 
-使用管理员权限 PowerShell 执行：
-
-```powershell
-iwr -UseBasicParsing "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1" | iex
-```
+在主控后台的“探针”页面为对应节点点击“安装”，复制生成的 Windows PowerShell 命令，并使用管理员权限执行。
 
 默认安装根目录是 `C:\Tools`，实际运行目录统一为 `C:\Tools\probe_node`，并注册 `probe_node` Windows 服务（自动启动）。
 

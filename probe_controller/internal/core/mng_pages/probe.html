@@ -426,9 +426,7 @@
 
       const query = new URLSearchParams({ node_id: nodeID, secret });
       if (targetSystem === 'windows') {
-        const scriptURL = directConnect
-          ? 'https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1'
-          : `${baseURL}/api/probe/proxy/probe-node/install-script?${query.toString()}&target=windows`;
+        const scriptURL = `${baseURL}/api/probe/proxy/probe-node/install-script?${query.toString()}&target=windows`;
         return [
           `$env:PROBE_NODE_ID=${quotePowerShellLiteral(nodeID)}`,
           `$env:PROBE_NODE_SECRET=${quotePowerShellLiteral(secret)}`,
@@ -459,9 +457,7 @@
         ].join('\n');
       }
 
-      const scriptURL = directConnect
-        ? 'https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh'
-        : `${baseURL}/api/probe/proxy/probe-node/install-script?${query.toString()}&target=linux`;
+      const scriptURL = `${baseURL}/api/probe/proxy/probe-node/install-script?${query.toString()}&target=linux`;
       return buildLinuxInstallCommand(scriptURL, envVars, '/tmp/cloudhelper-probe-node-install.sh');
     }
 

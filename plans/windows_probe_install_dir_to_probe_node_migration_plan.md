@@ -21,7 +21,7 @@
 
 ### 2.1 Windows 安装脚本现状
 
-关键文件：`scripts/install_probe_node_service_windows.ps1`
+关键文件：`probe_controller/internal/core/install_scripts/install_probe_node_service_windows.ps1`
 
 当前行为：
 
@@ -74,7 +74,7 @@ INSTALL_DIR/
 
 ## 4. 安装脚本改造设计
 
-文件：`scripts/install_probe_node_service_windows.ps1`
+文件：`probe_controller/internal/core/install_scripts/install_probe_node_service_windows.ps1`
 
 ### 4.1 新增路径变量
 
@@ -113,7 +113,7 @@ INSTALL_DIR/
 
 ## 5. 旧安装迁移策略设计
 
-文件：`scripts/install_probe_node_service_windows.ps1`
+文件：`probe_controller/internal/core/install_scripts/install_probe_node_service_windows.ps1`
 
 新增迁移步骤，发生在下载完成后、服务安装前。
 
@@ -245,7 +245,7 @@ I --> J[结束]
 
 ## 10. 可执行任务清单
 
-1. 改造 `scripts/install_probe_node_service_windows.ps1` 路径与服务落点到 `runtimeDir`
+1. 改造 `probe_controller/internal/core/install_scripts/install_probe_node_service_windows.ps1` 路径与服务落点到 `runtimeDir`
 2. 在脚本中实现旧安装迁移函数与幂等策略
 3. 增强服务卸载重装流程，兼容旧 WinSW 路径
 4. 补充日志，明确迁移动作与结果

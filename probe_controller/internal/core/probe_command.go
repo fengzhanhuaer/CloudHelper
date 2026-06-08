@@ -21,11 +21,6 @@ import (
 	"time"
 )
 
-const (
-	probeNodeInstallScriptLinuxURL   = "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service.sh"
-	probeNodeInstallScriptWindowsURL = "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_node_service_windows.ps1"
-)
-
 type probeSession struct {
 	nodeID string
 	stream net.Conn
@@ -538,39 +533,20 @@ func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
-	scriptURL := probeNodeInstallScriptLinuxURL
+	script := probeNodeInstallScriptLinux
 	contentType := "text/x-shellscript; charset=utf-8"
 	if target == "windows" {
-		scriptURL = probeNodeInstallScriptWindowsURL
+		script = probeNodeInstallScriptWindows
 		contentType = "text/plain; charset=utf-8"
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, scriptURL, nil)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	proxyReq.Header.Set("User-Agent", "cloudhelper-probe-install-script-proxy")
-	proxyReq.Header.Set("Accept", "text/plain")
-
-	resp, err := http.DefaultClient.Do(proxyReq)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("proxy install script failed: %v", err)})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("upstream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))})
+	if strings.TrimSpace(script) == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "probe install script is not embedded"})
 		return
 	}
 
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = io.WriteString(w, script)
 }
 
 func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (probeUpgradeDispatchResult, error) {
