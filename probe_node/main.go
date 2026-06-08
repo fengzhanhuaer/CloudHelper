@@ -103,6 +103,8 @@ type probeControlMessage struct {
 	Protocol          string                         `json:"protocol"`
 	ChainID           string                         `json:"chain_id"`
 	ChainType         string                         `json:"chain_type"`
+	ClientEntryID     string                         `json:"client_entry_id,omitempty"`
+	ClientEntryType   string                         `json:"client_entry_type,omitempty"`
 	Name              string                         `json:"name"`
 	UserID            string                         `json:"user_id"`
 	UserPublicKey     string                         `json:"user_public_key"`

@@ -66,6 +66,8 @@ type linkChainServerItem struct {
 	ClientEntryType string             `json:"client_entry_type"`
 	ChainType       string             `json:"chain_type"`
 	Name            string             `json:"name"`
+	UserID          string             `json:"user_id"`
+	UserPublicKey   string             `json:"user_public_key"`
 	Secret          string             `json:"secret"`
 	AuthTicket      string             `json:"auth_ticket,omitempty"`
 	EntryNodeID     string             `json:"entry_node_id"`
@@ -89,14 +91,15 @@ type linkChainHopItem struct {
 }
 
 type linkEndpoint struct {
-	ChainID     string `json:"chain_id"`
-	ChainName   string `json:"chain_name,omitempty"`
-	EntryNodeID string `json:"entry_node_id,omitempty"`
-	EntryHost   string `json:"entry_host,omitempty"`
-	EntryPort   int    `json:"entry_port,omitempty"`
-	LinkLayer   string `json:"link_layer,omitempty"`
-	ChainSecret string `json:"-"`
-	AuthTicket  string `json:"-"`
+	ChainID             string `json:"chain_id"`
+	ChainName           string `json:"chain_name,omitempty"`
+	EntryNodeID         string `json:"entry_node_id,omitempty"`
+	EntryHost           string `json:"entry_host,omitempty"`
+	EntryPort           int    `json:"entry_port,omitempty"`
+	LinkLayer           string `json:"link_layer,omitempty"`
+	ChainSecret         string `json:"-"`
+	AuthTicket          string `json:"-"`
+	PreserveRelayDomain bool   `json:"-"`
 }
 
 type linkStatusItem struct {
@@ -473,14 +476,15 @@ func resolveLinkEndpoint(item linkChainServerItem) (linkEndpoint, error) {
 		return linkEndpoint{}, fmt.Errorf("selected chain entry port is unavailable: %s", chainID)
 	}
 	return linkEndpoint{
-		ChainID:     effectiveLinkRelayChainID(item),
-		ChainName:   strings.TrimSpace(item.Name),
-		EntryNodeID: entryNodeID,
-		EntryHost:   entryHost,
-		EntryPort:   entryPort,
-		LinkLayer:   linkLayer,
-		ChainSecret: strings.TrimSpace(item.Secret),
-		AuthTicket:  strings.TrimSpace(item.AuthTicket),
+		ChainID:             effectiveLinkRelayChainID(item),
+		ChainName:           strings.TrimSpace(item.Name),
+		EntryNodeID:         entryNodeID,
+		EntryHost:           entryHost,
+		EntryPort:           entryPort,
+		LinkLayer:           linkLayer,
+		ChainSecret:         strings.TrimSpace(item.Secret),
+		AuthTicket:          strings.TrimSpace(item.AuthTicket),
+		PreserveRelayDomain: isLinkCFEntry(item),
 	}, nil
 }
 
@@ -723,7 +727,7 @@ func openLinkRelayConnWithMode(endpoint linkEndpoint, protocol string, openTimeo
 }
 
 func openLinkRelayWebSocketConn(endpoint linkEndpoint, openTimeout time.Duration, mode string, extraHeaders http.Header) (net.Conn, error) {
-	relayDialHost, relayHostHeader, err := resolveLinkDialHost(endpoint.EntryHost)
+	relayDialHost, relayHostHeader, err := resolveLinkDialHostWithPolicy(endpoint.EntryHost, endpoint.PreserveRelayDomain)
 	if err != nil {
 		return nil, err
 	}
@@ -773,7 +777,7 @@ func openLinkRelayWebSocketConn(endpoint linkEndpoint, openTimeout time.Duration
 }
 
 func openLinkRelayHTTP3WebSocketConn(endpoint linkEndpoint, openTimeout time.Duration, mode string, extraHeaders http.Header) (net.Conn, error) {
-	relayDialHost, relayHostHeader, err := resolveLinkDialHost(endpoint.EntryHost)
+	relayDialHost, relayHostHeader, err := resolveLinkDialHostWithPolicy(endpoint.EntryHost, endpoint.PreserveRelayDomain)
 	if err != nil {
 		return nil, err
 	}
@@ -1082,7 +1086,7 @@ func openLinkRelaySpeedTestConn(endpoint linkEndpoint, layer string, byteCount i
 }
 
 func openLinkRelayWebSocketSpeedTestConn(endpoint linkEndpoint, byteCount int64, openTimeout time.Duration) (net.Conn, error) {
-	relayDialHost, relayHostHeader, err := resolveLinkDialHost(endpoint.EntryHost)
+	relayDialHost, relayHostHeader, err := resolveLinkDialHostWithPolicy(endpoint.EntryHost, endpoint.PreserveRelayDomain)
 	if err != nil {
 		return nil, err
 	}
@@ -1127,7 +1131,7 @@ func openLinkRelayWebSocketSpeedTestConn(endpoint linkEndpoint, byteCount int64,
 }
 
 func openLinkRelayHTTP3WebSocketSpeedTestConn(endpoint linkEndpoint, byteCount int64, openTimeout time.Duration) (net.Conn, error) {
-	relayDialHost, relayHostHeader, err := resolveLinkDialHost(endpoint.EntryHost)
+	relayDialHost, relayHostHeader, err := resolveLinkDialHostWithPolicy(endpoint.EntryHost, endpoint.PreserveRelayDomain)
 	if err != nil {
 		return nil, err
 	}
@@ -1424,27 +1428,64 @@ func buildLinkRelayURLWithScheme(scheme string, host string, port int, chainID s
 }
 
 func resolveLinkDialHost(rawHost string) (dialHost string, hostHeader string, err error) {
+	return resolveLinkDialHostWithPolicy(rawHost, false)
+}
+
+func resolveLinkDialHostWithPolicy(rawHost string, preserveDomain bool) (dialHost string, hostHeader string, err error) {
 	cleanHost := strings.TrimSpace(strings.Trim(rawHost, "[]"))
 	if cleanHost == "" {
 		return "", "", errors.New("empty relay host")
 	}
 	if parsed := net.ParseIP(cleanHost); parsed != nil {
-		return parsed.String(), cleanHost, nil
+		ipText := parsed.String()
+		return ipText, ipText, nil
 	}
-	return cleanHost, cleanHost, nil
+	if preserveDomain {
+		return cleanHost, cleanHost, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", cleanHost)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve relay host failed: %w", err)
+	}
+	ip := selectLinkPreferredDialIP(ips)
+	if ip == nil {
+		return "", "", errors.New("resolve relay host failed: no ip")
+	}
+	ipText := ip.String()
+	return ipText, ipText, nil
 }
 
 func resolveLinkTLSServerName(dialHost string, hostHeader string) string {
-	for _, candidate := range []string{hostHeader, dialHost} {
+	for _, candidate := range []string{dialHost, hostHeader} {
 		clean := strings.TrimSpace(strings.Trim(candidate, "[]"))
 		if clean == "" {
 			continue
 		}
-		if ip := net.ParseIP(clean); ip == nil {
-			return clean
-		}
+		return clean
 	}
 	return ""
+}
+
+func selectLinkPreferredDialIP(ips []net.IP) net.IP {
+	for _, candidate := range ips {
+		if candidate == nil {
+			continue
+		}
+		if v4 := candidate.To4(); v4 != nil {
+			return v4
+		}
+	}
+	for _, candidate := range ips {
+		if candidate == nil {
+			continue
+		}
+		if v6 := candidate.To16(); v6 != nil {
+			return v6
+		}
+	}
+	return nil
 }
 
 func wrapLinkDialError(protocol string, host string, port int, err error) error {

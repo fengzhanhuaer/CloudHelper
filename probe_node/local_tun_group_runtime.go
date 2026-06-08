@@ -14,16 +14,17 @@ import (
 )
 
 type probeLocalTUNChainEndpoint struct {
-	ChainID           string
-	ChainName         string
-	EntryNodeID       string
-	EntryHost         string
-	EntryPort         int
-	LinkLayer         string
-	ChainSecret       string
-	AuthTicket        string
-	Unavailable       bool
-	UnavailableReason string
+	ChainID             string
+	ChainName           string
+	EntryNodeID         string
+	EntryHost           string
+	EntryPort           int
+	LinkLayer           string
+	ChainSecret         string
+	AuthTicket          string
+	PreserveRelayDomain bool
+	Unavailable         bool
+	UnavailableReason   string
 }
 
 type probeLocalTUNGroupRuntime struct {
@@ -387,16 +388,17 @@ func resolveProbeLocalChainEntryEndpointByID(selectedChainID string) (probeLocal
 			return probeLocalTUNChainEndpoint{}, fmt.Errorf("selected chain entry port is unavailable: %s", chainID)
 		}
 		return probeLocalTUNChainEndpoint{
-			ChainID:           effectiveProbeLocalRelayChainID(item),
-			ChainName:         strings.TrimSpace(item.Name),
-			EntryNodeID:       entryNodeID,
-			EntryHost:         entryHost,
-			EntryPort:         entryPort,
-			LinkLayer:         linkLayer,
-			ChainSecret:       strings.TrimSpace(item.Secret),
-			AuthTicket:        strings.TrimSpace(item.AuthTicket),
-			Unavailable:       false,
-			UnavailableReason: "",
+			ChainID:             effectiveProbeLocalRelayChainID(item),
+			ChainName:           strings.TrimSpace(item.Name),
+			EntryNodeID:         entryNodeID,
+			EntryHost:           entryHost,
+			EntryPort:           entryPort,
+			LinkLayer:           linkLayer,
+			ChainSecret:         strings.TrimSpace(item.Secret),
+			AuthTicket:          strings.TrimSpace(item.AuthTicket),
+			PreserveRelayDomain: isProbeLocalProxyLinkCFEntry(item),
+			Unavailable:         false,
+			UnavailableReason:   "",
 		}, nil
 	}
 	return probeLocalTUNChainEndpoint{}, &probeLocalHTTPError{Status: 400, Message: fmt.Sprintf("selected_chain_id %q not found in proxy chains", strings.TrimSpace(selectedChainID))}
@@ -531,7 +533,7 @@ func (rt *probeLocalTUNGroupRuntime) ensureConnectedLocked() error {
 	if err != nil {
 		return rt.markFailureLocked(err, "unavailable")
 	}
-	conn, err := probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	conn, err := openProbeLocalTUNChainRelayNetConnForEndpoint(endpoint, probeChainBridgeRoleToNext)
 	if err != nil {
 		return rt.markFailureLocked(err, "unavailable")
 	}
@@ -579,7 +581,7 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		if strings.TrimSpace(endpoint.ChainID) == "" {
 			return nil, cleanFlowID, errors.New("group runtime endpoint is nil")
 		}
-		stream, err := probeLocalTUNOpenChainRelayDataStreamNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer)
+		stream, err := rt.openRelayStream(endpoint)
 		if err != nil {
 			rt.mu.Lock()
 			_ = rt.markFailureLocked(err, "degraded")
@@ -640,6 +642,32 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		return stream, cleanFlowID, nil
 	}
 	return nil, cleanFlowID, errors.New("group runtime stream open failed")
+}
+
+func (rt *probeLocalTUNGroupRuntime) openRelayStream(endpoint probeLocalTUNChainEndpoint) (net.Conn, error) {
+	if rt == nil {
+		return nil, errors.New("group runtime is nil")
+	}
+	if shouldUseProbeLocalTUNGroupRuntimeBridgeStream(endpoint) {
+		rt.mu.Lock()
+		session := rt.session
+		rt.mu.Unlock()
+		if session == nil || session.IsClosed() {
+			return nil, errors.New("group runtime bridge session is unavailable")
+		}
+		return session.Open()
+	}
+	return probeLocalTUNOpenChainRelayDataStreamNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer)
+}
+
+func shouldUseProbeLocalTUNGroupRuntimeBridgeStream(endpoint probeLocalTUNChainEndpoint) bool {
+	for _, candidate := range probeChainRelayProtocolCandidates(endpoint.LinkLayer) {
+		clean := normalizeProbeChainLinkLayer(candidate)
+		if clean == "websocket" || clean == "websocket-h3" {
+			return true
+		}
+	}
+	return false
 }
 
 func (rt *probeLocalTUNGroupRuntime) fetchRemoteTCPDebug() (probeTCPDebugResultPayload, error) {
@@ -798,7 +826,7 @@ func shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt *probeLocalTUNGrou
 	if err != nil {
 		return true
 	}
-	probeConn, err := probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	probeConn, err := openProbeLocalTUNChainRelayNetConnForEndpoint(endpoint, probeChainBridgeRoleToNext)
 	if err != nil {
 		return true
 	}
@@ -817,6 +845,7 @@ func shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err error) bool {
 	if strings.Contains(text, "/api/node/chain/relay") ||
 		strings.Contains(text, "probe relay") ||
 		strings.Contains(text, "yamux") ||
+		strings.Contains(text, "bridge session is unavailable") ||
 		strings.Contains(text, "context canceled") ||
 		strings.Contains(text, "use of closed network connection") ||
 		strings.Contains(text, "closed pipe") ||

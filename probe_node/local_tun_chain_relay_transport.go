@@ -30,6 +30,36 @@ func openProbeLocalTUNChainRelayNetConn(chainID string, secret string, relayHost
 	return nil, lastErr
 }
 
+func openProbeLocalTUNChainRelayNetConnForEndpoint(endpoint probeLocalTUNChainEndpoint, bridgeRole string) (net.Conn, error) {
+	if !endpoint.PreserveRelayDomain {
+		return probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, bridgeRole)
+	}
+	conn, err := openProbeChainRelayNetConnWithLayerConnAndDomainPolicy(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, bridgeRole, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline, true)
+	if err == nil || !isProbeLocalTUNUnsupportedDefaultRelayErr(endpoint.LinkLayer, err) {
+		return conn, err
+	}
+	var lastErr error = err
+	for _, protocol := range probeChainRelayProtocolCandidates(endpoint.LinkLayer) {
+		cleanProtocol := normalizeProbeChainLinkLayer(protocol)
+		if !isProbeChainRelaySupportedProtocol(cleanProtocol) {
+			continue
+		}
+		result := probeChainRelayProtocolDialResult{Protocol: cleanProtocol}
+		result.StartedAt = time.Now()
+		result.Conn, result.Err = openProbeChainRelayNetConnWithLayerConnAndDomainPolicy(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, cleanProtocol, bridgeRole, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline, true)
+		result.EndedAt = time.Now()
+		result.Latency = result.EndedAt.Sub(result.StartedAt)
+		if result.Err == nil {
+			return result.Conn, nil
+		}
+		lastErr = result.Err
+		if !isProbeChainRelayProtocolSwitchableError(result.Err) {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
 func openProbeLocalTUNChainRelayDataStreamNetConn(chainID string, secret string, relayHost string, relayPort int, layer string) (net.Conn, error) {
 	conn, err := openProbeChainRelayDataStreamNetConn(chainID, secret, relayHost, relayPort, layer, probeChainDownstreamOpenTimeout)
 	if err == nil || !isProbeLocalTUNUnsupportedDefaultRelayErr(layer, err) {

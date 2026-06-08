@@ -19,9 +19,9 @@ object MobileCoreBridge {
         setVersion(currentLocalVersion(context))
         setNativeIPs(context)
         return recordResult("mobilecore", callString(
-            methodName = "start",
-            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
-            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret),
+            methodName = "startWithConfigDir",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java),
+            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret, ProbeNodeConfig.configDir(context)),
         ))
     }
 

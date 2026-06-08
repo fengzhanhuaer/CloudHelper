@@ -121,6 +121,8 @@ type probeLinkChainAuthTicketPayload struct {
 	IssuedAt      string `json:"issued_at"`
 }
 
+var probeLinkChainAuthTicketNow = time.Now
+
 type probeLinkChainConfigResponse struct {
 	NodeID                   string                 `json:"node_id"`
 	Chains                   []probeLinkChainRecord `json:"chains"`
@@ -1404,7 +1406,7 @@ func buildProbeLinkChainAuthTicket(item probeLinkChainRecord, priv ed25519.Priva
 		ClientEntryID: clientEntryID,
 		UserID:        strings.TrimSpace(item.UserID),
 		UserPublicKey: userPublicKey,
-		IssuedAt:      time.Now().UTC().Format(time.RFC3339),
+		IssuedAt:      probeLinkChainMonthlyAuthTicketIssuedAt(probeLinkChainAuthTicketNow()),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -1413,6 +1415,12 @@ func buildProbeLinkChainAuthTicket(item probeLinkChainRecord, priv ed25519.Priva
 	sig := ed25519.Sign(priv, payloadBytes)
 	enc := base64.RawURLEncoding
 	return enc.EncodeToString(payloadBytes) + "." + enc.EncodeToString(sig), nil
+}
+
+func probeLinkChainMonthlyAuthTicketIssuedAt(now time.Time) string {
+	utc := now.UTC()
+	year, month, _ := utc.Date()
+	return time.Date(year, month, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
 }
 
 // buildNodeRelayHostMap returns a map from nodeID to one selectable relay domain.

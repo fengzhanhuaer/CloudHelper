@@ -3,6 +3,7 @@ package mobilecore
 import (
 	"bufio"
 	"bytes"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +47,334 @@ func TestSignConnect(t *testing.T) {
 	want := hex.EncodeToString(mac.Sum(nil))
 	if got != want {
 		t.Fatalf("signature=%q want %q", got, want)
+	}
+}
+
+func TestResolveLinkDialHostUsesIPForDirectAndDomainForCF(t *testing.T) {
+	dialHost, hostHeader, err := resolveLinkDialHost("localhost")
+	if err != nil {
+		t.Fatalf("resolveLinkDialHost returned error: %v", err)
+	}
+	if net.ParseIP(dialHost) == nil || hostHeader != dialHost {
+		t.Fatalf("direct relay should use ip for dial and host: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+
+	dialHost, hostHeader, err = resolveLinkDialHostWithPolicy("relay.example.com", true)
+	if err != nil {
+		t.Fatalf("resolveLinkDialHostWithPolicy returned error: %v", err)
+	}
+	if dialHost != "relay.example.com" || hostHeader != "relay.example.com" {
+		t.Fatalf("cf relay should preserve domain: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+}
+
+func TestMobileChainControlRestartAndStop(t *testing.T) {
+	listenAddr := reserveMobileChainTestAddr(t)
+	host, portText, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	encoder := json.NewEncoder(server)
+	writeMu := &sync.Mutex{}
+	decoder := json.NewDecoder(client)
+
+	cmd := chainLinkControlMessage{
+		RequestID:    "apply-1",
+		Action:       "start",
+		ChainID:      "android-chain-control",
+		Role:         "entry",
+		ListenHost:   host,
+		ListenPort:   port,
+		LinkSecret:   "secret-control",
+		NextAuthMode: "proxy",
+	}
+	t.Cleanup(func() { stopMobileChainRuntime(cmd.ChainID, "test cleanup") })
+	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, encoder, writeMu)
+	var result chainLinkControlResult
+	if err := decoder.Decode(&result); err != nil {
+		t.Fatalf("decode start result: %v", err)
+	}
+	if !result.OK || result.Action != "apply" {
+		t.Fatalf("start result=%+v", result)
+	}
+	if getMobileChainRuntime(cmd.ChainID) == nil {
+		t.Fatal("runtime was not started")
+	}
+
+	cmd.RequestID = "restart-1"
+	cmd.Action = "restart"
+	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, encoder, writeMu)
+	if err := decoder.Decode(&result); err != nil {
+		t.Fatalf("decode restart result: %v", err)
+	}
+	if !result.OK || result.Action != "restart" {
+		t.Fatalf("restart result=%+v", result)
+	}
+
+	cmd.RequestID = "stop-1"
+	cmd.Action = "stop"
+	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, encoder, writeMu)
+	if err := decoder.Decode(&result); err != nil {
+		t.Fatalf("decode stop result: %v", err)
+	}
+	if !result.OK || result.Action != "remove" {
+		t.Fatalf("stop result=%+v", result)
+	}
+	if getMobileChainRuntime(cmd.ChainID) != nil {
+		t.Fatal("runtime was not stopped")
+	}
+}
+
+func TestMobileChainRelayAcceptsMismatchedHostWithValidAuth(t *testing.T) {
+	rt := &mobileChainRuntime{cfg: mobileChainRuntimeConfig{ChainID: "android-chain-host", Secret: "secret-host"}}
+	req := httptest.NewRequest(http.MethodGet, "https://wrong.host.invalid"+mobileChainRelayPath+"?chain_id="+rt.cfg.ChainID, nil)
+	req.Host = "wrong.host.invalid"
+	nonce := "nonce-host"
+	req.Header.Set("Authorization", "Bearer "+nonce)
+	req.Header.Set(mobileChainHeaderChainID, rt.cfg.ChainID)
+	req.Header.Set(mobileChainHeaderMAC, mobileChainHMAC(rt.cfg.Secret, rt.cfg.ChainID, nonce))
+	req.Header.Set(mobileChainHeaderAuthMode, "secret_hmac")
+	if err := verifyMobileChainRelayRequestAuth(rt, req); err != nil {
+		t.Fatalf("valid auth should not depend on Host: %v", err)
+	}
+}
+
+func TestMobileChainRelayWebSocketPingPongEndToEnd(t *testing.T) {
+	listenAddr := reserveMobileChainTestAddr(t)
+	host, portText, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := mobileChainRuntimeConfig{
+		ChainID:      "android-chain-e2e",
+		Secret:       "secret-e2e",
+		Role:         mobileChainRoleEntry,
+		ListenHost:   host,
+		ListenPort:   port,
+		NextAuthMode: "proxy",
+	}
+	rt, err := startMobileChainRuntime(cfg)
+	if err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	t.Cleanup(func() { stopMobileChainRuntime(rt.cfg.ChainID, "test cleanup") })
+
+	endpoint := linkEndpoint{
+		ChainID:             cfg.ChainID,
+		EntryHost:           host,
+		EntryPort:           port,
+		ChainSecret:         cfg.Secret,
+		PreserveRelayDomain: false,
+	}
+	conn, err := openLinkRelayConn(endpoint, "websocket", 5*time.Second)
+	if err != nil {
+		t.Fatalf("open relay conn: %v", err)
+	}
+	defer conn.Close()
+	stream, err := openLinkPingPongStream(conn, 32)
+	if err != nil {
+		t.Fatalf("open ping stream: %v", err)
+	}
+	defer stream.Close()
+	payload := []byte("android-chain-relay-e2e-ping-123")
+	if _, err := stream.Write(payload); err != nil {
+		t.Fatalf("write ping: %v", err)
+	}
+	echo := make([]byte, len(payload))
+	if _, err := io.ReadFull(stream, echo); err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+	if !bytes.Equal(payload, echo) {
+		t.Fatalf("echo=%q want %q", string(echo), string(payload))
+	}
+}
+
+func TestMobileChainPortForwardStreamUsesExistingYamuxOnly(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	serverSession, err := yamux.Server(serverConn, newMobileChainYamuxConfig())
+	if err != nil {
+		t.Fatalf("server yamux: %v", err)
+	}
+	defer serverSession.Close()
+	clientSession, err := yamux.Client(clientConn, newMobileChainYamuxConfig())
+	if err != nil {
+		t.Fatalf("client yamux: %v", err)
+	}
+	defer clientSession.Close()
+
+	rt := &mobileChainRuntime{
+		cfg:                mobileChainRuntimeConfig{ChainID: "android-chain-yamux", Role: "entry"},
+		downstreamSessions: map[string]*mobileChainBridgeSession{"s1": {ID: "s1", Session: clientSession}},
+		upstreamSessions:   map[string]*mobileChainBridgeSession{},
+		stopCh:             make(chan struct{}),
+	}
+	defer close(rt.stopCh)
+
+	reqCh := make(chan mobileChainTunnelOpenRequest, 1)
+	go func() {
+		stream, acceptErr := serverSession.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer stream.Close()
+		var req mobileChainTunnelOpenRequest
+		_ = json.NewDecoder(stream).Decode(&req)
+		reqCh <- req
+		_ = json.NewEncoder(stream).Encode(mobileChainTunnelOpenResponse{OK: true})
+	}()
+
+	stream, err := openMobileChainPortForwardStream(rt, mobileChainEntrySideEntry, mobileChainNetworkTCP, "127.0.0.1:3389", "flow-test")
+	if err != nil {
+		t.Fatalf("open port forward stream: %v", err)
+	}
+	defer stream.Close()
+	select {
+	case req := <-reqCh:
+		if req.Network != mobileChainNetworkTCP || req.Address != "127.0.0.1:3389" || req.FlowID != "flow-test" {
+			t.Fatalf("unexpected request: %+v", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("yamux stream was not opened")
+	}
+}
+
+func TestMobileChainPortForwardStreamFailsWithoutBridge(t *testing.T) {
+	oldTimeout := mobileChainOpenBridgeStreamTimeout
+	mobileChainOpenBridgeStreamTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { mobileChainOpenBridgeStreamTimeout = oldTimeout })
+	rt := &mobileChainRuntime{
+		cfg:                mobileChainRuntimeConfig{ChainID: "android-chain-no-bridge", Role: "entry"},
+		downstreamSessions: map[string]*mobileChainBridgeSession{},
+		upstreamSessions:   map[string]*mobileChainBridgeSession{},
+		stopCh:             make(chan struct{}),
+	}
+	defer close(rt.stopCh)
+	_, err := openMobileChainPortForwardStream(rt, mobileChainEntrySideEntry, mobileChainNetworkTCP, "127.0.0.1:3389", "")
+	if err == nil || !strings.Contains(err.Error(), "downstream bridge is unavailable") {
+		t.Fatalf("err=%v, want downstream bridge unavailable", err)
+	}
+}
+
+func TestMobileChainDialHostPolicy(t *testing.T) {
+	dialHost, hostHeader, err := resolveMobileChainDialHost("localhost", false)
+	if err != nil {
+		t.Fatalf("resolve direct: %v", err)
+	}
+	if net.ParseIP(dialHost) == nil || hostHeader != dialHost {
+		t.Fatalf("direct should use ip for dial and host: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+	dialHost, hostHeader, err = resolveMobileChainDialHost("relay.example.com", true)
+	if err != nil {
+		t.Fatalf("resolve cf: %v", err)
+	}
+	if dialHost != "relay.example.com" || hostHeader != "relay.example.com" {
+		t.Fatalf("cf should preserve domain: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+}
+
+func TestMobileChainUserAuthTicketVerification(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	rawPub := base64.StdEncoding.EncodeToString(pub)
+	cfg, err := buildMobileChainRuntimeConfig(chainLinkControlMessage{
+		ChainID:         "android-chain-user-auth",
+		Role:            "entry",
+		ListenPort:      12345,
+		LinkSecret:      "secret-user-auth",
+		NextAuthMode:    "proxy",
+		RequireUserAuth: true,
+		UserPublicKey:   rawPub,
+	})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	payload := mobileChainUserAuthTicketPayload{
+		Version:       "chain-auth-v1",
+		ChainID:       cfg.ChainID,
+		UserPublicKey: rawPub,
+		IssuedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal ticket: %v", err)
+	}
+	sig := ed25519.Sign(priv, payloadBytes)
+	ticket := base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + base64.RawURLEncoding.EncodeToString(sig)
+	if err := verifyMobileChainUserAuthTicket(cfg, ticket); err != nil {
+		t.Fatalf("verify ticket: %v", err)
+	}
+	if err := verifyMobileChainUserAuthTicket(cfg, "bad.ticket"); err == nil {
+		t.Fatal("bad ticket unexpectedly accepted")
+	}
+}
+
+func TestApplyMobileChainRuntimesFromConfigDirRestoresSelfAndPortForwardChains(t *testing.T) {
+	dir := t.TempDir()
+	listenA := reserveMobileChainTestAddr(t)
+	hostA, portAText, _ := net.SplitHostPort(listenA)
+	portA, _ := strconv.Atoi(portAText)
+	listenB := reserveMobileChainTestAddr(t)
+	hostB, portBText, _ := net.SplitHostPort(listenB)
+	portB, _ := strconv.Atoi(portBText)
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	itemA := linkChainServerItem{
+		ChainID:       "android-restore-self",
+		Name:          "restore-self",
+		UserPublicKey: base64.StdEncoding.EncodeToString(pub),
+		Secret:        "secret-restore-self",
+		EntryNodeID:   "7",
+		ExitNodeID:    "7",
+		HopConfigs: []linkChainHopItem{{
+			NodeNo:     7,
+			ListenHost: hostA,
+			ListenPort: portA,
+		}},
+	}
+	itemB := linkChainServerItem{
+		ChainID:       "android-restore-pf",
+		Name:          "restore-pf",
+		UserPublicKey: base64.StdEncoding.EncodeToString(pub),
+		Secret:        "secret-restore-pf",
+		EntryNodeID:   "7",
+		ExitNodeID:    "7",
+		HopConfigs: []linkChainHopItem{{
+			NodeNo:     7,
+			ListenHost: hostB,
+			ListenPort: portB,
+		}},
+		PortForwards: []json.RawMessage{json.RawMessage(`{"id":"pf-1","entry_side":"chain_entry","listen_host":"127.0.0.1","listen_port":1,"target_host":"127.0.0.1","target_port":9,"network":"tcp","enabled":false}`)},
+	}
+	writeTestJSON(t, filepath.Join(dir, "probe_link_chain_config.json"), chainCacheFile{Items: mustMarshalRawItems(t, itemA)})
+	writeTestJSON(t, filepath.Join(dir, "probe_link_port_forward_chain_config.json"), chainCacheFile{Items: mustMarshalRawItems(t, itemB)})
+	t.Cleanup(func() {
+		stopMobileChainRuntime(itemA.ChainID, "test cleanup")
+		stopMobileChainRuntime(itemB.ChainID, "test cleanup")
+	})
+	applied, err := applyMobileChainRuntimesFromConfigDir(dir, mobileNodeIdentity{NodeID: "7", Secret: "node-secret"})
+	if err != nil {
+		t.Fatalf("apply from config: %v", err)
+	}
+	if applied != 2 {
+		t.Fatalf("applied=%d want 2", applied)
+	}
+	if getMobileChainRuntime(itemA.ChainID) == nil || getMobileChainRuntime(itemB.ChainID) == nil {
+		t.Fatal("expected both runtimes to be restored")
 	}
 }
 
@@ -402,6 +732,88 @@ func TestAndroidProxyChainSessionDefaultProtocolFallsBackToWebSocket(t *testing.
 	}
 	if session == nil || session.IsClosed() {
 		t.Fatalf("session not established: %v", session)
+	}
+}
+
+func TestOpenAndroidProxyIndependentStreamUsesBridgeSession(t *testing.T) {
+	proxyRuntime.mu.Lock()
+	oldSessions := proxyRuntime.sessions
+	proxyRuntime.sessions = map[string]*proxyChainSession{}
+	proxyRuntime.mu.Unlock()
+	defer func() {
+		proxyRuntime.mu.Lock()
+		for _, session := range proxyRuntime.sessions {
+			closeProxyChainSession(session)
+		}
+		proxyRuntime.sessions = oldSessions
+		proxyRuntime.mu.Unlock()
+	}()
+
+	clientConn, serverConn := net.Pipe()
+	serverSession, err := yamux.Server(serverConn, newLinkYamuxConfig())
+	if err != nil {
+		t.Fatalf("yamux server failed: %v", err)
+	}
+	defer serverSession.Close()
+	clientSession, err := yamux.Client(clientConn, newLinkYamuxConfig())
+	if err != nil {
+		t.Fatalf("yamux client failed: %v", err)
+	}
+
+	endpoint := linkEndpoint{
+		ChainID:     "chain-bridge",
+		EntryHost:   "invalid.invalid",
+		EntryPort:   1,
+		LinkLayer:   "websocket-h3",
+		ChainSecret: "secret-a",
+	}
+	proxyRuntime.mu.Lock()
+	proxyRuntime.sessions[endpoint.ChainID] = &proxyChainSession{chainID: endpoint.ChainID, conn: clientConn, session: clientSession}
+	proxyRuntime.mu.Unlock()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer stream.Close()
+		var req linkTunnelOpenRequest
+		if err := json.NewDecoder(stream).Decode(&req); err != nil {
+			serverErr <- err
+			return
+		}
+		if req.Type != "open" || req.Network != "tcp" || req.Address != "example.com:443" || req.FlowID != "flow-a" {
+			serverErr <- errors.New("unexpected open request")
+			return
+		}
+		if err := json.NewEncoder(stream).Encode(linkTunnelOpenResponse{OK: true}); err != nil {
+			serverErr <- err
+			return
+		}
+		_, _ = io.Copy(io.Discard, stream)
+		serverErr <- nil
+	}()
+
+	stream, err := openAndroidProxyIndependentStream(linkChainServerItem{ChainID: endpoint.ChainID}, endpoint, linkTunnelOpenRequest{
+		Type:    "open",
+		Network: "tcp",
+		Address: "example.com:443",
+		FlowID:  "flow-a",
+	})
+	if err != nil {
+		t.Fatalf("open independent stream failed: %v", err)
+	}
+	_ = stream.Close()
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("server side failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for bridge stream")
 	}
 }
 
@@ -1100,6 +1512,19 @@ func writeTestJSON(t *testing.T, path string, value any) {
 	}
 }
 
+func mustMarshalRawItems(t *testing.T, values ...any) []json.RawMessage {
+	t.Helper()
+	out := make([]json.RawMessage, 0, len(values))
+	for _, value := range values {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, json.RawMessage(raw))
+	}
+	return out
+}
+
 func testServerHostPort(t *testing.T, server *httptest.Server) (string, int) {
 	t.Helper()
 	host, portText, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "https://"))
@@ -1111,6 +1536,28 @@ func testServerHostPort(t *testing.T, server *httptest.Server) (string, int) {
 		t.Fatal(err)
 	}
 	return host, port
+}
+
+func reserveMobileChainTestAddr(t *testing.T) string {
+	t.Helper()
+	for attempt := 0; attempt < 20; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := ln.Addr().String()
+		udp, udpErr := net.ListenPacket("udp", addr)
+		if udpErr == nil {
+			_ = udp.Close()
+			if err := ln.Close(); err != nil {
+				t.Fatal(err)
+			}
+			return addr
+		}
+		_ = ln.Close()
+	}
+	t.Fatal("failed to reserve tcp+udp test address")
+	return ""
 }
 
 func assertLinkAuth(t *testing.T, r *http.Request, chainID string, secret string) {

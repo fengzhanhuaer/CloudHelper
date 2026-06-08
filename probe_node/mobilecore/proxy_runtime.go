@@ -404,28 +404,45 @@ func openAndroidProxyChainPacketStream(selectedChainID string, network string, t
 }
 
 func openAndroidProxyIndependentStream(item linkChainServerItem, endpoint linkEndpoint, request linkTunnelOpenRequest) (net.Conn, error) {
-	stream, err := openAndroidProxyLinkRelayDataStream(item, endpoint)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		session, err := ensureProxyChainSession(item, endpoint)
+		if err != nil {
+			return nil, err
+		}
+		stream, err := session.Open()
+		if err != nil {
+			lastErr = err
+			invalidateProxyChainSession(endpoint.ChainID, session)
+			continue
+		}
+		_ = stream.SetWriteDeadline(time.Now().Add(proxyResponseReadTimeout))
+		if err := json.NewEncoder(stream).Encode(request); err != nil {
+			_ = stream.Close()
+			lastErr = err
+			invalidateProxyChainSession(endpoint.ChainID, session)
+			continue
+		}
+		_ = stream.SetWriteDeadline(time.Time{})
+		_ = stream.SetReadDeadline(time.Now().Add(proxyResponseReadTimeout))
+		var response linkTunnelOpenResponse
+		if err := json.NewDecoder(stream).Decode(&response); err != nil {
+			_ = stream.Close()
+			lastErr = err
+			invalidateProxyChainSession(endpoint.ChainID, session)
+			continue
+		}
+		_ = stream.SetReadDeadline(time.Time{})
+		if !response.OK {
+			_ = stream.Close()
+			return nil, errors.New(firstNonEmptyString(strings.TrimSpace(response.Error), "open stream failed"))
+		}
+		return stream, nil
 	}
-	_ = stream.SetWriteDeadline(time.Now().Add(proxyResponseReadTimeout))
-	if err := json.NewEncoder(stream).Encode(request); err != nil {
-		_ = stream.Close()
-		return nil, err
+	if lastErr != nil {
+		return nil, lastErr
 	}
-	_ = stream.SetWriteDeadline(time.Time{})
-	_ = stream.SetReadDeadline(time.Now().Add(proxyResponseReadTimeout))
-	var response linkTunnelOpenResponse
-	if err := json.NewDecoder(stream).Decode(&response); err != nil {
-		_ = stream.Close()
-		return nil, err
-	}
-	_ = stream.SetReadDeadline(time.Time{})
-	if !response.OK {
-		_ = stream.Close()
-		return nil, errors.New(firstNonEmptyString(strings.TrimSpace(response.Error), "open stream failed"))
-	}
-	return stream, nil
+	return nil, errors.New("open proxy bridge stream failed")
 }
 
 func openAndroidProxyLinkRelayDataStream(item linkChainServerItem, endpoint linkEndpoint) (net.Conn, error) {

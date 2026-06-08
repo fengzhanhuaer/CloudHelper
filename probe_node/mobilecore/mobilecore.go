@@ -129,11 +129,35 @@ type controlEnvelope struct {
 }
 
 type chainLinkControlMessage struct {
-	Type      string `json:"type"`
-	RequestID string `json:"request_id"`
-	Action    string `json:"action"`
-	ChainID   string `json:"chain_id"`
-	Role      string `json:"role"`
+	Type              string                         `json:"type"`
+	RequestID         string                         `json:"request_id"`
+	Action            string                         `json:"action"`
+	ChainID           string                         `json:"chain_id"`
+	ChainType         string                         `json:"chain_type"`
+	ClientEntryID     string                         `json:"client_entry_id,omitempty"`
+	ClientEntryType   string                         `json:"client_entry_type,omitempty"`
+	Name              string                         `json:"name"`
+	UserID            string                         `json:"user_id"`
+	UserPublicKey     string                         `json:"user_public_key"`
+	LinkSecret        string                         `json:"link_secret"`
+	AuthTicket        string                         `json:"auth_ticket"`
+	Role              string                         `json:"role"`
+	ListenHost        string                         `json:"listen_host"`
+	ListenPort        int                            `json:"listen_port"`
+	InternalPort      int                            `json:"internal_port"`
+	LinkLayer         string                         `json:"link_layer"`
+	NextLinkLayer     string                         `json:"next_link_layer"`
+	NextDialMode      string                         `json:"next_dial_mode"`
+	NextHost          string                         `json:"next_host"`
+	NextPort          int                            `json:"next_port"`
+	PrevHost          string                         `json:"prev_host"`
+	PrevPort          int                            `json:"prev_port"`
+	PrevLinkLayer     string                         `json:"prev_link_layer"`
+	PrevDialMode      string                         `json:"prev_dial_mode"`
+	PortForwards      []mobileChainPortForwardConfig `json:"port_forwards"`
+	RequireUserAuth   bool                           `json:"require_user_auth"`
+	NextAuthMode      string                         `json:"next_auth_mode"`
+	ControllerBaseURL string                         `json:"controller_base_url"`
 }
 
 type chainLinkControlResult struct {
@@ -217,6 +241,15 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 		go func() {
 			if _, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir); err != nil {
 				setStatus("config refresh failed: " + err.Error())
+				if applied, restoreErr := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); restoreErr == nil && applied > 0 {
+					androidLogStore.add("chain", "normal", fmt.Sprintf("restored android chain runtimes from cache: count=%d", applied))
+				}
+				return
+			}
+			if applied, err := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); err != nil {
+				androidLogStore.add("chain", "warn", "apply android chain runtimes failed: "+err.Error())
+			} else if applied > 0 {
+				androidLogStore.add("chain", "normal", fmt.Sprintf("applied android chain runtimes from config: count=%d", applied))
 			}
 		}()
 	}
@@ -228,6 +261,11 @@ func RefreshConfig(controllerURL string, nodeID string, nodeSecret string, confi
 	summary, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir)
 	if err != nil {
 		return "配置刷新失败：" + err.Error()
+	}
+	if applied, err := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); err != nil {
+		androidLogStore.add("chain", "warn", "apply android chain runtimes failed: "+err.Error())
+	} else if applied > 0 {
+		androidLogStore.add("chain", "normal", fmt.Sprintf("applied android chain runtimes from config: count=%d", applied))
 	}
 	proxyGroupText := "未更新"
 	if summary.ProxyGroupUpdated {
@@ -243,6 +281,7 @@ func Stop() string {
 		close(manager.cancel)
 		manager.cancel = nil
 	}
+	stopAllMobileChainRuntimes("mobilecore stop")
 	manager.status = "stopped"
 	return manager.status
 }
@@ -333,6 +372,12 @@ func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, 
 	if err := writeJSONFile(filepath.Join(configDir, "probe_link_chain_config.json"), chainCacheFile{
 		UpdatedAt: updatedAt,
 		Items:     append([]json.RawMessage(nil), config.SelfChains...),
+	}); err != nil {
+		return summary, err
+	}
+	if err := writeJSONFile(filepath.Join(configDir, "probe_link_port_forward_chain_config.json"), chainCacheFile{
+		UpdatedAt: updatedAt,
+		Items:     append([]json.RawMessage(nil), config.PortForwardChains...),
 	}); err != nil {
 		return summary, err
 	}
@@ -555,7 +600,7 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 				readErrCh <- err
 				return
 			}
-			processControlMessage(raw, stream, encoder, writeMu, nodeID)
+			processControlMessage(raw, stream, encoder, writeMu, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret})
 		}
 	}()
 
@@ -859,7 +904,7 @@ func percentFromUsed(used uint64, total uint64) float64 {
 	return (float64(used) / float64(total)) * 100
 }
 
-func processControlMessage(raw json.RawMessage, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nodeID string) {
+func processControlMessage(raw json.RawMessage, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, identity mobileNodeIdentity) {
 	var envelope controlEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return
@@ -870,23 +915,13 @@ func processControlMessage(raw json.RawMessage, stream net.Conn, encoder *json.E
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			return
 		}
-		sendLogsControlResult(stream, encoder, writeMu, buildLogsControlResult(msg, nodeID))
+		sendLogsControlResult(stream, encoder, writeMu, buildLogsControlResult(msg, identity.NodeID))
 	case "chain_link_control":
 		var msg chainLinkControlMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			return
 		}
-		sendChainLinkControlResult(stream, encoder, writeMu, chainLinkControlResult{
-			Type:      "chain_link_control_result",
-			RequestID: strings.TrimSpace(msg.RequestID),
-			NodeID:    strings.TrimSpace(nodeID),
-			OK:        false,
-			Action:    strings.TrimSpace(msg.Action),
-			ChainID:   strings.TrimSpace(msg.ChainID),
-			Role:      strings.TrimSpace(msg.Role),
-			Error:     "android mobilecore link service runtime is not packaged yet; refresh config first and rebuild with shared chain runtime",
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
+		runMobileChainLinkControl(msg, identity, stream, encoder, writeMu)
 	}
 }
 

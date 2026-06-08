@@ -4087,14 +4087,15 @@ func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLoc
 		return probeLocalTUNChainEndpoint{}, fmt.Errorf("selected chain entry port is unavailable: %s", chainID)
 	}
 	return probeLocalTUNChainEndpoint{
-		ChainID:     effectiveProbeLocalRelayChainID(item),
-		ChainName:   strings.TrimSpace(item.Name),
-		EntryNodeID: entryNodeID,
-		EntryHost:   entryHost,
-		EntryPort:   entryPort,
-		LinkLayer:   linkLayer,
-		ChainSecret: strings.TrimSpace(item.Secret),
-		AuthTicket:  strings.TrimSpace(item.AuthTicket),
+		ChainID:             effectiveProbeLocalRelayChainID(item),
+		ChainName:           strings.TrimSpace(item.Name),
+		EntryNodeID:         entryNodeID,
+		EntryHost:           entryHost,
+		EntryPort:           entryPort,
+		LinkLayer:           linkLayer,
+		ChainSecret:         strings.TrimSpace(item.Secret),
+		AuthTicket:          strings.TrimSpace(item.AuthTicket),
+		PreserveRelayDomain: isProbeLocalProxyLinkCFEntry(item),
 	}, nil
 }
 
@@ -4350,7 +4351,7 @@ func buildProbeLocalProxyLinkStatusItems() []probeLocalProxyLinkStatusItem {
 }
 
 func runProbeLocalProxyLinkHandshakeProbe(endpoint probeLocalTUNChainEndpoint) (net.Conn, error) {
-	return openProbeLocalTUNChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, probeChainBridgeRoleToNext)
+	return openProbeLocalTUNChainRelayNetConnForEndpoint(endpoint, probeChainBridgeRoleToNext)
 }
 
 func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (time.Duration, error) {
@@ -4365,7 +4366,13 @@ func runProbeLocalProxyLinkProtocolProbe(endpoint probeLocalTUNChainEndpoint, pr
 
 func probeLocalProxyLinkPingPongProbe(endpoint probeLocalTUNChainEndpoint, protocol string) (time.Duration, error) {
 	const payloadBytes = 64
-	conn, err := probeLocalProxyLinkOpenRelayConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, protocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
+	var conn net.Conn
+	var err error
+	if endpoint.PreserveRelayDomain {
+		conn, err = openProbeChainRelayNetConnWithLayerConnAndDomainPolicy(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, protocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout, true)
+	} else {
+		conn, err = probeLocalProxyLinkOpenRelayConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, protocol, probeChainBridgeRoleToNext, probeChainRelayProtocolProbeTimeout)
+	}
 	if err != nil {
 		return 0, err
 	}

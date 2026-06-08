@@ -45,31 +45,33 @@ type probeChainLinkControlResultPayload struct {
 }
 
 type probeChainRuntimeConfig struct {
-	chainID         string
-	chainType       string
-	name            string
-	userID          string
-	userPublicKey   ed25519.PublicKey
-	rawPublicKey    string
-	secret          string
-	authTicket      string
-	role            string
-	listenHost      string
-	listenPort      int
-	linkLayer       string
-	nextLinkLayer   string
-	nextDialMode    string
-	nextHost        string
-	nextPort        int
-	prevHost        string
-	prevPort        int
-	prevLinkLayer   string
-	prevDialMode    string
-	requireUserAuth bool
-	nextAuthMode    string
-	portForwards    []probeChainRuntimePortForward
-	identity        nodeIdentity
-	controllerURL   string
+	chainID                 string
+	chainType               string
+	name                    string
+	userID                  string
+	userPublicKey           ed25519.PublicKey
+	rawPublicKey            string
+	secret                  string
+	authTicket              string
+	role                    string
+	listenHost              string
+	listenPort              int
+	linkLayer               string
+	nextLinkLayer           string
+	nextDialMode            string
+	nextHost                string
+	nextPort                int
+	nextPreserveRelayDomain bool
+	prevHost                string
+	prevPort                int
+	prevPreserveRelayDomain bool
+	prevLinkLayer           string
+	prevDialMode            string
+	requireUserAuth         bool
+	nextAuthMode            string
+	portForwards            []probeChainRuntimePortForward
+	identity                nodeIdentity
+	controllerURL           string
 }
 
 type probeChainBridgeSession struct {
@@ -738,28 +740,30 @@ func buildProbeChainRuntimeConfigFromControl(cmd probeControlMessage) (probeChai
 	}
 
 	cfg := probeChainRuntimeConfig{
-		chainID:         chainID,
-		chainType:       strings.TrimSpace(cmd.ChainType),
-		name:            strings.TrimSpace(cmd.Name),
-		userID:          strings.TrimSpace(cmd.UserID),
-		rawPublicKey:    strings.TrimSpace(cmd.UserPublicKey),
-		secret:          secret,
-		authTicket:      strings.TrimSpace(cmd.AuthTicket),
-		role:            role,
-		listenHost:      listenHost,
-		listenPort:      listenPort,
-		linkLayer:       linkLayer,
-		nextLinkLayer:   nextLinkLayer,
-		nextDialMode:    nextDialMode,
-		nextHost:        nextHost,
-		nextPort:        nextPort,
-		prevHost:        prevHost,
-		prevPort:        prevPort,
-		prevLinkLayer:   prevLinkLayer,
-		prevDialMode:    prevDialMode,
-		portForwards:    portForwards,
-		requireUserAuth: requireUserAuth,
-		nextAuthMode:    nextAuthMode,
+		chainID:                 chainID,
+		chainType:               strings.TrimSpace(cmd.ChainType),
+		name:                    strings.TrimSpace(cmd.Name),
+		userID:                  strings.TrimSpace(cmd.UserID),
+		rawPublicKey:            strings.TrimSpace(cmd.UserPublicKey),
+		secret:                  secret,
+		authTicket:              strings.TrimSpace(cmd.AuthTicket),
+		role:                    role,
+		listenHost:              listenHost,
+		listenPort:              listenPort,
+		linkLayer:               linkLayer,
+		nextLinkLayer:           nextLinkLayer,
+		nextDialMode:            nextDialMode,
+		nextHost:                nextHost,
+		nextPort:                nextPort,
+		nextPreserveRelayDomain: isProbeChainControlCFEntry(cmd),
+		prevHost:                prevHost,
+		prevPort:                prevPort,
+		prevPreserveRelayDomain: isProbeChainControlCFEntry(cmd),
+		prevLinkLayer:           prevLinkLayer,
+		prevDialMode:            prevDialMode,
+		portForwards:            portForwards,
+		requireUserAuth:         requireUserAuth,
+		nextAuthMode:            nextAuthMode,
 	}
 
 	if requireUserAuth {
@@ -777,6 +781,21 @@ func buildProbeChainRuntimeConfigFromControl(cmd probeControlMessage) (probeChai
 	}
 
 	return cfg, nil
+}
+
+func isProbeChainControlCFEntry(cmd probeControlMessage) bool {
+	for _, value := range []string{
+		cmd.ClientEntryType,
+		cmd.ClientEntryID,
+		cmd.ChainID,
+		cmd.Name,
+	} {
+		clean := strings.ToLower(strings.TrimSpace(value))
+		if clean == "cf" || strings.HasSuffix(clean, "_cf") {
+			return true
+		}
+	}
+	return false
 }
 
 func parseProbeChainUserPublicKey(raw string) (ed25519.PublicKey, error) {
@@ -912,14 +931,15 @@ func findProbeChainAuthTicketItem(chainID string, groups ...[]probeLinkChainServ
 }
 
 type probeChainBridgeDialTarget struct {
-	Host             string
-	Port             int
-	LinkLayer        string
-	RoleHeader       string
-	AssignDownstream bool
-	AssignUpstream   bool
-	AcceptStreams    bool
-	Tag              string
+	Host                string
+	Port                int
+	LinkLayer           string
+	RoleHeader          string
+	PreserveRelayDomain bool
+	AssignDownstream    bool
+	AssignUpstream      bool
+	AcceptStreams       bool
+	Tag                 string
 }
 
 func startProbeChainBridgeWorkers(runtime *probeChainRuntime) {
@@ -931,13 +951,14 @@ func startProbeChainBridgeWorkers(runtime *probeChainRuntime) {
 		switch normalizeProbeChainDialMode(cfg.nextDialMode) {
 		case probeChainDialModeForward:
 			target := probeChainBridgeDialTarget{
-				Host:             strings.TrimSpace(cfg.nextHost),
-				Port:             cfg.nextPort,
-				LinkLayer:        resolveProbeChainOutboundLinkLayer(cfg),
-				RoleHeader:       probeChainBridgeRoleToNext,
-				AssignDownstream: true,
-				AcceptStreams:    false,
-				Tag:              "downstream-forward",
+				Host:                strings.TrimSpace(cfg.nextHost),
+				Port:                cfg.nextPort,
+				LinkLayer:           resolveProbeChainOutboundLinkLayer(cfg),
+				RoleHeader:          probeChainBridgeRoleToNext,
+				PreserveRelayDomain: cfg.nextPreserveRelayDomain,
+				AssignDownstream:    true,
+				AcceptStreams:       false,
+				Tag:                 "downstream-forward",
 			}
 			go runProbeChainBridgeDialLoop(runtime, target)
 		case probeChainDialModeReverse:
@@ -947,14 +968,15 @@ func startProbeChainBridgeWorkers(runtime *probeChainRuntime) {
 
 	if normalizeProbeChainDialMode(cfg.prevDialMode) == probeChainDialModeReverse {
 		target := probeChainBridgeDialTarget{
-			Host:             strings.TrimSpace(cfg.prevHost),
-			Port:             cfg.prevPort,
-			LinkLayer:        normalizeProbeChainLinkLayer(cfg.prevLinkLayer),
-			RoleHeader:       probeChainBridgeRoleToPrev,
-			AssignDownstream: false,
-			AssignUpstream:   true,
-			AcceptStreams:    true,
-			Tag:              "upstream-reverse",
+			Host:                strings.TrimSpace(cfg.prevHost),
+			Port:                cfg.prevPort,
+			LinkLayer:           normalizeProbeChainLinkLayer(cfg.prevLinkLayer),
+			RoleHeader:          probeChainBridgeRoleToPrev,
+			PreserveRelayDomain: cfg.prevPreserveRelayDomain,
+			AssignDownstream:    false,
+			AssignUpstream:      true,
+			AcceptStreams:       true,
+			Tag:                 "upstream-reverse",
 		}
 		if target.Host != "" && target.Port > 0 {
 			go runProbeChainBridgeDialLoop(runtime, target)
@@ -1372,21 +1394,9 @@ func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, b
 	role := normalizeProbeChainBridgeRole(bridgeRole)
 	switch role {
 	case probeChainBridgeRoleToPrev:
-		if normalizeProbeChainDialMode(runtime.cfg.prevDialMode) == probeChainDialModeReverse {
-			return openProbeChainPortForwardIndependentDataStream(runtime, role)
-		}
-		if normalizeProbeChainDialMode(runtime.cfg.prevDialMode) == probeChainDialModeForward {
-			return openProbeChainPortForwardReverseDataStream(runtime, runtime.getUpstreamSession(), role, flowID)
-		}
-		return nil, errors.New("previous hop is not configured")
+		return openProbeChainUpstreamStream(runtime, "", probeChainDownstreamOpenTimeout)
 	default:
-		if normalizeProbeChainDialMode(runtime.cfg.nextDialMode) == probeChainDialModeForward {
-			return openProbeChainPortForwardIndependentDataStream(runtime, role)
-		}
-		if normalizeProbeChainDialMode(runtime.cfg.nextDialMode) == probeChainDialModeReverse {
-			return openProbeChainPortForwardReverseDataStream(runtime, runtime.getDownstreamSession(), role, flowID)
-		}
-		return nil, errors.New("next hop is not configured")
+		return openProbeChainDownstreamStream(runtime, "", probeChainDownstreamOpenTimeout)
 	}
 }
 
@@ -3344,23 +3354,8 @@ func handleProbeChainBridgeControl(runtime *probeChainRuntime, conn net.Conn, re
 		_ = writeProbeChainBridgeControlResponse(conn, resp)
 		return
 	}
-	dialRole := normalizeProbeChainBridgeRole(req.BridgeRole)
-	dataConn, err := openProbeChainPortForwardIndependentDataStreamWithToken(runtime, dialRole, token)
-	if err != nil {
-		resp.Error = err.Error()
-		_ = writeProbeChainBridgeControlResponse(conn, resp)
-		return
-	}
-	resp.OK = true
-	if err := writeProbeChainBridgeControlResponse(conn, resp); err != nil {
-		_ = dataConn.Close()
-		return
-	}
-	if dialRole == probeChainBridgeRoleToNext {
-		go handleProbeChainReverseConn(runtime, dataConn, "")
-		return
-	}
-	go handleProbeChainConn(runtime, dataConn, "")
+	resp.Error = "reverse data stream is disabled; use bridge yamux stream"
+	_ = writeProbeChainBridgeControlResponse(conn, resp)
 }
 
 func writeProbeChainBridgeControlRequest(conn net.Conn, req probeChainBridgeControlRequest) error {
@@ -3535,6 +3530,18 @@ func resolveProbeChainOutboundLinkLayer(cfg probeChainRuntimeConfig) string {
 }
 
 func openProbeChainBridgeRelayNetConn(cfg probeChainRuntimeConfig, target probeChainBridgeDialTarget) (net.Conn, error) {
+	if target.PreserveRelayDomain {
+		return openProbeChainRelayNetConnWithLayerConnAndDomainPolicy(
+			cfg.chainID,
+			cfg.secret,
+			target.Host,
+			target.Port,
+			target.LinkLayer,
+			target.RoleHeader,
+			probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline,
+			true,
+		)
+	}
 	return openProbeChainRelayNetConn(
 		cfg.chainID,
 		cfg.secret,

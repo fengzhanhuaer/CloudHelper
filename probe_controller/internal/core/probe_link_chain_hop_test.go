@@ -1,8 +1,13 @@
 package core
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeProbeLinkChainHopConfigsForUpsertSupportsListenExternalPorts(t *testing.T) {
@@ -239,4 +244,71 @@ func TestProjectProbeLinkEntriesRefreshesGeneratedNameAfterChainRename(t *testin
 	if names["pub"] != "My Entry" {
 		t.Fatalf("custom pub name=%q, want My Entry; projected=%+v", names["pub"], projected)
 	}
+}
+
+func TestProbeLinkChainAuthTicketRotatesMonthly(t *testing.T) {
+	oldNow := probeLinkChainAuthTicketNow
+	t.Cleanup(func() {
+		probeLinkChainAuthTicketNow = oldNow
+	})
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	item := probeLinkChainRecord{
+		ChainID:       "chain-1",
+		UserID:        "user-1",
+		UserPublicKey: "pub-1",
+	}
+
+	probeLinkChainAuthTicketNow = func() time.Time {
+		return time.Date(2026, time.June, 8, 12, 30, 0, 0, time.FixedZone("TST", 8*3600))
+	}
+	first, err := buildProbeLinkChainAuthTicket(item, priv)
+	if err != nil {
+		t.Fatalf("build first ticket: %v", err)
+	}
+	probeLinkChainAuthTicketNow = func() time.Time {
+		return time.Date(2026, time.June, 29, 23, 59, 0, 0, time.UTC)
+	}
+	second, err := buildProbeLinkChainAuthTicket(item, priv)
+	if err != nil {
+		t.Fatalf("build second ticket: %v", err)
+	}
+	if second != first {
+		t.Fatalf("ticket changed within same month")
+	}
+
+	payload := decodeProbeLinkChainAuthTicketPayloadForTest(t, first)
+	if payload.IssuedAt != "2026-06-01T00:00:00Z" {
+		t.Fatalf("issued_at=%q, want monthly anchor", payload.IssuedAt)
+	}
+
+	probeLinkChainAuthTicketNow = func() time.Time {
+		return time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC)
+	}
+	nextMonth, err := buildProbeLinkChainAuthTicket(item, priv)
+	if err != nil {
+		t.Fatalf("build next month ticket: %v", err)
+	}
+	if nextMonth == first {
+		t.Fatalf("ticket did not change across month boundary")
+	}
+}
+
+func decodeProbeLinkChainAuthTicketPayloadForTest(t *testing.T, ticket string) probeLinkChainAuthTicketPayload {
+	t.Helper()
+	parts := strings.Split(ticket, ".")
+	if len(parts) != 2 {
+		t.Fatalf("invalid ticket parts: %q", ticket)
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var payload probeLinkChainAuthTicketPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	return payload
 }

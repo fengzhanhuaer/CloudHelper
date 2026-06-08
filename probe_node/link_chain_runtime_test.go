@@ -24,6 +24,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/yamux"
 )
 
 func TestReadProbeChainAuthEnvelopeFromHeadersCodexStyle(t *testing.T) {
@@ -191,6 +193,41 @@ func TestIsSameProbeChainRuntimeConfigIgnoresAuthTicketRotation(t *testing.T) {
 	}
 }
 
+func TestBuildProbeChainRuntimeConfigMarksCFRelayDomainPreserved(t *testing.T) {
+	cfg, err := buildProbeChainRuntimeConfigFromControl(probeControlMessage{
+		ChainID:         "chain-a",
+		ClientEntryType: "cf",
+		Role:            "entry",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      16030,
+		NextHost:        "api.example.com",
+		NextPort:        16031,
+		LinkSecret:      "secret-a",
+	})
+	if err != nil {
+		t.Fatalf("build config failed: %v", err)
+	}
+	if !cfg.nextPreserveRelayDomain || !cfg.prevPreserveRelayDomain {
+		t.Fatalf("cf config should preserve relay domain: next=%t prev=%t", cfg.nextPreserveRelayDomain, cfg.prevPreserveRelayDomain)
+	}
+
+	cfg, err = buildProbeChainRuntimeConfigFromControl(probeControlMessage{
+		ChainID:    "chain-a",
+		Role:       "entry",
+		ListenHost: "127.0.0.1",
+		ListenPort: 16030,
+		NextHost:   "node.example.com",
+		NextPort:   16031,
+		LinkSecret: "secret-a",
+	})
+	if err != nil {
+		t.Fatalf("build direct config failed: %v", err)
+	}
+	if cfg.nextPreserveRelayDomain || cfg.prevPreserveRelayDomain {
+		t.Fatalf("direct config should not preserve relay domain: next=%t prev=%t", cfg.nextPreserveRelayDomain, cfg.prevPreserveRelayDomain)
+	}
+}
+
 func TestProbeChainPingPongStreamEchoesPayload(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
@@ -276,6 +313,82 @@ func TestProbeChainPreparedStreamDefersTargetOpenUntilRealRequest(t *testing.T) 
 	}
 	_ = client.Close()
 	<-done
+}
+
+func TestProbeChainPortForwardRelaySubstreamUsesBridgeYamux(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		entrySide string
+		setup     func(*probeChainRuntime, *yamux.Session)
+	}{
+		{
+			name:      "to_next",
+			entrySide: probeChainPortForwardEntryChainEntry,
+			setup: func(rt *probeChainRuntime, session *yamux.Session) {
+				rt.setDownstreamSession("downstream-test", session, probeChainBridgeRoleToNext, "pipe")
+			},
+		},
+		{
+			name:      "to_prev",
+			entrySide: probeChainPortForwardEntryChainExit,
+			setup: func(rt *probeChainRuntime, session *yamux.Session) {
+				rt.setUpstreamSession("upstream-test", session, probeChainBridgeRoleToPrev, "pipe")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			serverSession, err := yamux.Server(serverConn, newProbeChainYamuxConfig())
+			if err != nil {
+				t.Fatalf("yamux server failed: %v", err)
+			}
+			defer serverSession.Close()
+			clientSession, err := yamux.Client(clientConn, newProbeChainYamuxConfig())
+			if err != nil {
+				t.Fatalf("yamux client failed: %v", err)
+			}
+			defer clientSession.Close()
+
+			accepted := make(chan net.Conn, 1)
+			acceptErr := make(chan error, 1)
+			go func() {
+				stream, err := serverSession.Accept()
+				if err != nil {
+					acceptErr <- err
+					return
+				}
+				accepted <- stream
+			}()
+
+			rt := &probeChainRuntime{
+				cfg: probeChainRuntimeConfig{
+					chainID:      "chain-a",
+					role:         "relay",
+					nextDialMode: probeChainDialModeForward,
+					prevDialMode: probeChainDialModeReverse,
+					nextHost:     "",
+					prevHost:     "",
+				},
+				stopCh: make(chan struct{}),
+			}
+			tc.setup(rt, clientSession)
+
+			stream, err := openProbeChainPortForwardRelaySubstream(rt, tc.entrySide, "flow-a")
+			if err != nil {
+				t.Fatalf("open relay substream failed: %v", err)
+			}
+			_ = stream.Close()
+
+			select {
+			case serverStream := <-accepted:
+				_ = serverStream.Close()
+			case err := <-acceptErr:
+				t.Fatalf("server accept failed: %v", err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for bridge yamux stream")
+			}
+		})
+	}
 }
 
 func TestProbeChainAuthFailureBlacklistAfterFiveAttempts(t *testing.T) {
@@ -562,7 +675,7 @@ func TestResolveProbeChainDialIPHostUsesFreshCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveProbeChainDialIPHost returned error: %v", err)
 	}
-	if dialHost != "203.0.113.7" || hostHeader != "relay.example.com" {
+	if dialHost != "203.0.113.7" || hostHeader != "203.0.113.7" {
 		t.Fatalf("unexpected cache result: dialHost=%s hostHeader=%s", dialHost, hostHeader)
 	}
 }
@@ -589,7 +702,7 @@ func TestResolveProbeChainDialIPHostLookupDoesNotPersistWithoutConnectSuccess(t 
 	if err != nil {
 		t.Fatalf("resolveProbeChainDialIPHost returned error: %v", err)
 	}
-	if dialHost != "203.0.113.13" || hostHeader != "relay.example.com" {
+	if dialHost != "203.0.113.13" || hostHeader != "203.0.113.13" {
 		t.Fatalf("unexpected lookup result: dialHost=%s hostHeader=%s", dialHost, hostHeader)
 	}
 	if lookupCalls != 1 {
@@ -624,8 +737,18 @@ func TestResolveProbeChainDialIPHostFallsBackToStaleCacheOnLookupTimeout(t *test
 	if err != nil {
 		t.Fatalf("resolveProbeChainDialIPHost returned error: %v", err)
 	}
-	if dialHost != "203.0.113.9" || hostHeader != "relay.example.com" {
+	if dialHost != "203.0.113.9" || hostHeader != "203.0.113.9" {
 		t.Fatalf("unexpected stale cache result: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+}
+
+func TestResolveProbeChainDialIPHostWithPolicyPreservesCFDomain(t *testing.T) {
+	dialHost, hostHeader, err := resolveProbeChainDialIPHostWithPolicy("relay.example.com", true)
+	if err != nil {
+		t.Fatalf("resolveProbeChainDialIPHostWithPolicy returned error: %v", err)
+	}
+	if dialHost != "relay.example.com" || hostHeader != "relay.example.com" {
+		t.Fatalf("unexpected preserve-domain result: dialHost=%s hostHeader=%s", dialHost, hostHeader)
 	}
 }
 
@@ -904,11 +1027,11 @@ func TestOpenProbeChainRelayNetConnDefaultFallsBackAfterWebSocketH3Failure(t *te
 			websocketCalls++
 		}
 	}
-	if websocketCalls < 2 {
-		t.Fatalf("websocket fallback should be tried for both attempts, calls=%v", calls)
+	if websocketCalls != 2 {
+		t.Fatalf("websocket should serve both attempts after fallback is cached, calls=%v", calls)
 	}
-	if webSocketH3Calls < 2 {
-		t.Fatalf("h3 websocket primary should be tried for both attempts, calls=%v", calls)
+	if webSocketH3Calls != 1 {
+		t.Fatalf("h3 websocket should be skipped while its negative cache is active, calls=%v", calls)
 	}
 }
 

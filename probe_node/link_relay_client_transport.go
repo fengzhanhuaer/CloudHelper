@@ -257,6 +257,12 @@ func openProbeChainRelayNetConnDefault(chainID string, secret string, relayHost 
 		return nil, errors.New("relay endpoint is required")
 	}
 	candidates := probeChainRelayProtocolCandidates(layer)
+	now := time.Now()
+	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, now); preferred != "" {
+		candidates = probeChainRelayProtocolCandidatesPrefer(candidates, preferred)
+	} else {
+		candidates = probeChainRelayProtocolCandidatesAllowed(endpointKey, candidates, now)
+	}
 	log.Printf(
 		"probe chain relay protocol dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
 		strings.TrimSpace(chainID),
@@ -284,20 +290,6 @@ func openProbeChainRelayNetConnDefault(chainID string, secret string, relayHost 
 		}
 		recordProbeChainRelayProtocolFailure(endpointKey, result, result.Err)
 		candidates = candidates[1:]
-	}
-	now := time.Now()
-	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, now); preferred != "" {
-		log.Printf("probe chain relay protocol dial preferred: chain=%s endpoint=%s protocol=%s candidates=%s", strings.TrimSpace(chainID), endpointKey, preferred, probeChainRelayJoinProtocols(candidates))
-		result := probeChainRelayOpenLayer(chainID, secret, relayHost, relayPort, preferred, bridgeRole, probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline)
-		if result.Err == nil {
-			recordProbeChainRelayProtocolSuccess(endpointKey, result, "cached_preferred")
-			return result.Conn, nil
-		}
-		log.Printf("probe chain relay protocol dial preferred failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, preferred, result.Err)
-		if !isProbeChainRelayProtocolSwitchableError(result.Err) {
-			return nil, result.Err
-		}
-		recordProbeChainRelayProtocolFailure(endpointKey, result, result.Err)
 	}
 
 	result, err := probeChainRelayProtocolProbeAndChoose(chainID, secret, relayHost, relayPort, bridgeRole, endpointKey, candidates)
@@ -383,6 +375,26 @@ func probeChainRelayProtocolCandidateAllowedLocked(state *probeChainRelayProtoco
 	}
 	quality := state.Qualities[candidate]
 	return quality.NegativeUntil.IsZero() || !now.Before(quality.NegativeUntil)
+}
+
+func probeChainRelayProtocolCandidatesAllowed(endpointKey string, candidates []string, now time.Time) []string {
+	probeChainRelayProtocolStateStore.mu.Lock()
+	state := probeChainRelayProtocolStateStore.items[endpointKey]
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		clean := normalizeProbeChainLinkLayer(candidate)
+		if clean == "" {
+			continue
+		}
+		if probeChainRelayProtocolCandidateAllowedLocked(state, clean, candidates, now) {
+			out = append(out, clean)
+		}
+	}
+	probeChainRelayProtocolStateStore.mu.Unlock()
+	if len(out) == 0 {
+		return candidates
+	}
+	return out
 }
 
 func probeChainRelayProtocolInCandidates(protocol string, candidates []string) bool {
@@ -954,6 +966,14 @@ func openProbeChainRelayNetConnWithLayer(chainID string, secret string, relayHos
 
 func openProbeChainRelayNetConnWithLayerConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) (net.Conn, error) {
 	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(relayHost)
+	if err != nil {
+		return nil, err
+	}
+	return openProbeChainRelayNetConnWithResolvedHostAndMode(chainID, secret, relayHost, relayPort, layer, bridgeRole, probeChainRelayModeBridge, relayDialHost, relayHostHeader, openTimeout, true)
+}
+
+func openProbeChainRelayNetConnWithLayerConnAndDomainPolicy(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration, preserveDomain bool) (net.Conn, error) {
+	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHostWithPolicy(relayHost, preserveDomain)
 	if err != nil {
 		return nil, err
 	}
@@ -1986,15 +2006,24 @@ func buildProbeChainRelayWebSocketURL(host string, port int, chainID string) (st
 }
 
 func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader string, err error) {
+	return resolveProbeChainDialIPHostWithPolicy(rawHost, false)
+}
+
+func resolveProbeChainDialIPHostWithPolicy(rawHost string, preserveDomain bool) (dialHost string, hostHeader string, err error) {
 	cleanHost := strings.TrimSpace(strings.Trim(rawHost, "[]"))
 	if cleanHost == "" {
 		return "", "", fmt.Errorf("empty relay host")
 	}
 	if parsed := net.ParseIP(cleanHost); parsed != nil {
-		return parsed.String(), cleanHost, nil
+		ipText := parsed.String()
+		return ipText, ipText, nil
+	}
+	if preserveDomain {
+		return cleanHost, cleanHost, nil
 	}
 	if cachedDialHost, cachedHostHeader, ok := loadProbeChainRelayResolveCache(cleanHost, false); ok {
-		return cachedDialHost, cachedHostHeader, nil
+		_ = cachedHostHeader
+		return cachedDialHost, cachedDialHost, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2002,7 +2031,8 @@ func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader st
 	ips, resolveErr := probeChainRelayLookupIP(ctx, "ip", cleanHost)
 	if resolveErr != nil {
 		if cachedDialHost, cachedHostHeader, ok := loadProbeChainRelayResolveCache(cleanHost, true); ok {
-			return cachedDialHost, cachedHostHeader, nil
+			_ = cachedHostHeader
+			return cachedDialHost, cachedDialHost, nil
 		}
 		return "", "", fmt.Errorf("resolve relay host failed: %w", resolveErr)
 	}
@@ -2011,7 +2041,7 @@ func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader st
 		return "", "", fmt.Errorf("resolve relay host failed: no ip")
 	}
 	dialHost = ip.String()
-	hostHeader = cleanHost
+	hostHeader = dialHost
 	return dialHost, hostHeader, nil
 }
 
