@@ -17,6 +17,7 @@ type probeLinkChainStore struct {
 
 type probeLinkChainStoreData struct {
 	Chains        []probeLinkChainRecord        `json:"chains"`
+	DeletedChains []probeLinkChainRecord        `json:"deleted_chains,omitempty"`
 	NextChainID   int64                         `json:"next_chain_id,omitempty"`
 	EntryProfiles []probeLinkEntryProfileRecord `json:"entry_profiles,omitempty"`
 }
@@ -29,6 +30,7 @@ func initProbeLinkChainStore() {
 		path: storePath,
 		data: probeLinkChainStoreData{
 			Chains:        []probeLinkChainRecord{},
+			DeletedChains: []probeLinkChainRecord{},
 			NextChainID:   1,
 			EntryProfiles: []probeLinkEntryProfileRecord{},
 		},
@@ -45,8 +47,10 @@ func initProbeLinkChainStore() {
 				log.Fatalf("failed to parse probe link chain store: %v", unmarshalErr)
 			}
 			normalizedChains := normalizeProbeLinkChains(raw.Chains)
+			normalizedDeletedChains := normalizeProbeLinkChains(raw.DeletedChains)
 			ProbeLinkChainStore.data.Chains = normalizedChains
-			ProbeLinkChainStore.data.NextChainID = normalizeProbeLinkChainNextID(raw.NextChainID, normalizedChains)
+			ProbeLinkChainStore.data.DeletedChains = normalizedDeletedChains
+			ProbeLinkChainStore.data.NextChainID = normalizeProbeLinkChainNextID(raw.NextChainID, append(normalizedChains, normalizedDeletedChains...))
 			ProbeLinkChainStore.data.EntryProfiles = normalizeProbeLinkEntryProfiles(raw.EntryProfiles, normalizedChains)
 		}
 	} else if os.IsNotExist(err) {

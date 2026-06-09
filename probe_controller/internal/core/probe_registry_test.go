@@ -2,6 +2,7 @@ package core
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -108,6 +109,30 @@ func TestUpdateProbeNodeLockedStoresLocalConsoleEnabled(t *testing.T) {
 	}
 	if !ProbeStore.data.ProbeNodes[0].LocalConsoleEnabled {
 		t.Fatalf("expected stored node local console enabled")
+	}
+}
+
+func TestCreateProbeNodeLockedRejectsDeletedNodeName(t *testing.T) {
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes:   []probeNodeRecord{},
+			ProbeSecrets: map[string]string{},
+			DeletedProbeNodes: []probeNodeRecord{
+				{NodeNo: 1, NodeName: "node-a", NodeSecret: "secret", TargetSystem: "linux"},
+			},
+			DeletedProbeNodeNos: []int{1},
+		},
+	}
+	defer func() {
+		ProbeStore = oldStore
+	}()
+
+	ProbeStore.mu.Lock()
+	_, err := createProbeNodeLocked(" NODE-A ")
+	ProbeStore.mu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "deleted probe list") {
+		t.Fatalf("expected deleted node name error, got %v", err)
 	}
 }
 

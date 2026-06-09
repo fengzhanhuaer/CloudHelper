@@ -146,6 +146,19 @@ func loadProbeLinkChainsLocked() []probeLinkChainRecord {
 	return normalizeProbeLinkChains(out)
 }
 
+func loadDeletedProbeLinkChainsLocked() []probeLinkChainRecord {
+	if ProbeLinkChainStore == nil {
+		return []probeLinkChainRecord{}
+	}
+	raw := ProbeLinkChainStore.data.DeletedChains
+	if len(raw) == 0 {
+		return []probeLinkChainRecord{}
+	}
+	out := make([]probeLinkChainRecord, 0, len(raw))
+	out = append(out, raw...)
+	return normalizeProbeLinkChains(out)
+}
+
 func findProbeLinkChainByIDLocked(chainID string) (probeLinkChainRecord, bool) {
 	target := strings.TrimSpace(chainID)
 	if target == "" {
@@ -195,19 +208,21 @@ func normalizeProbeLinkChainNextID(storedNextID int64, items []probeLinkChainRec
 
 func allocateNextProbeLinkChainIDLocked(items []probeLinkChainRecord) string {
 	nextID := int64(1)
+	allItems := append([]probeLinkChainRecord{}, items...)
+	allItems = append(allItems, loadDeletedProbeLinkChainsLocked()...)
 	if ProbeLinkChainStore != nil {
 		ProbeLinkChainStore.data.NextChainID = normalizeProbeLinkChainNextID(
 			ProbeLinkChainStore.data.NextChainID,
-			items,
+			allItems,
 		)
 		nextID = ProbeLinkChainStore.data.NextChainID
 	}
 	if nextID <= 0 {
-		nextID = normalizeProbeLinkChainNextID(1, items)
+		nextID = normalizeProbeLinkChainNextID(1, allItems)
 	}
 
-	used := make(map[string]struct{}, len(items))
-	for _, item := range items {
+	used := make(map[string]struct{}, len(allItems))
+	for _, item := range allItems {
 		key := strings.TrimSpace(item.ChainID)
 		if key == "" {
 			continue
@@ -333,6 +348,19 @@ func upsertProbeLinkChainLocked(input probeLinkChainRecord) (probeLinkChainRecor
 			break
 		}
 	}
+	for i := range items {
+		if i == found {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(items[i].Name), name) {
+			return probeLinkChainRecord{}, nil, fmt.Errorf("chain name already exists")
+		}
+	}
+	for _, item := range loadDeletedProbeLinkChainsLocked() {
+		if strings.EqualFold(strings.TrimSpace(item.Name), name) {
+			return probeLinkChainRecord{}, nil, fmt.Errorf("chain name already exists in deleted chain list")
+		}
+	}
 
 	if found < 0 && chainID == "" {
 		chainID = allocateNextProbeLinkChainIDLocked(items)
@@ -411,7 +439,18 @@ func removeProbeLinkChainLocked(chainID string) (probeLinkChainRecord, []probeLi
 		return probeLinkChainRecord{}, nil, fmt.Errorf("chain not found")
 	}
 	normalized := normalizeProbeLinkChains(next)
+	removed.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	deleted := loadDeletedProbeLinkChainsLocked()
+	nextDeleted := make([]probeLinkChainRecord, 0, len(deleted)+1)
+	for _, item := range deleted {
+		if strings.TrimSpace(item.ChainID) == target {
+			continue
+		}
+		nextDeleted = append(nextDeleted, item)
+	}
+	nextDeleted = append(nextDeleted, removed)
 	ProbeLinkChainStore.data.Chains = normalized
+	ProbeLinkChainStore.data.DeletedChains = normalizeProbeLinkChains(nextDeleted)
 	ProbeLinkChainStore.data.EntryProfiles = removeProbeLinkEntryProfileLocked(target, ProbeLinkChainStore.data.EntryProfiles, normalized)
 	return removed, normalized, nil
 }

@@ -65,6 +65,52 @@ func TestResolveProbeLinkChainNodeSettingsUsesListenPort(t *testing.T) {
 	}
 }
 
+func TestUpsertProbeLinkChainLockedRejectsDeletedChainName(t *testing.T) {
+	oldStore := ProbeLinkChainStore
+	t.Cleanup(func() {
+		ProbeLinkChainStore = oldStore
+	})
+
+	ProbeLinkChainStore = &probeLinkChainStore{
+		data: probeLinkChainStoreData{
+			Chains: []probeLinkChainRecord{},
+			DeletedChains: []probeLinkChainRecord{{
+				ChainID:       "1",
+				Name:          "office",
+				ChainType:     "proxy_chain",
+				UserID:        "u",
+				UserPublicKey: "pub",
+				Secret:        "secret",
+				EntryNodeID:   "1",
+				ExitNodeID:    "1",
+				ListenHost:    "0.0.0.0",
+				ListenPort:    16030,
+			}},
+			NextChainID: 2,
+		},
+	}
+
+	_, _, err := upsertProbeLinkChainLocked(probeLinkChainRecord{
+		Name:          " OFFICE ",
+		ChainType:     "proxy_chain",
+		UserID:        "u",
+		UserPublicKey: "pub",
+		Secret:        "secret",
+		EntryNodeID:   "1",
+		ExitNodeID:    "1",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    16031,
+		HopConfigs: []probeLinkChainHopConfig{{
+			NodeNo:       1,
+			ListenPort:   16031,
+			ExternalPort: 16031,
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "deleted chain list") {
+		t.Fatalf("expected deleted chain name error, got %v", err)
+	}
+}
+
 func TestIsProbeLinkChainNodeInRoute(t *testing.T) {
 	chain := probeLinkChainRecord{
 		EntryNodeID:    "1",
