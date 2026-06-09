@@ -183,6 +183,17 @@ func syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID string) {
 	}
 }
 
+func syncProbeLocalTUNGroupRuntimeSelectionAsync(group, selectedChainID string) {
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logProbeWarnf("probe local tun group runtime selection sync panic: group=%s chain=%s err=%v", strings.TrimSpace(group), strings.TrimSpace(selectedChainID), recovered)
+			}
+		}()
+		syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
+	}()
+}
+
 func resolveProbeLocalSelectedGroupRuntime(state probeLocalProxyStateFile) (string, *probeLocalTUNGroupRuntime) {
 	for _, entry := range state.Groups {
 		cleanGroup := strings.TrimSpace(entry.Group)

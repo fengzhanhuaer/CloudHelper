@@ -1275,6 +1275,68 @@ func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t 
 	}
 }
 
+func TestProbeLocalProxySelectDoesNotBlockOnBusyGroupRuntimeSnapshot(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	proxyChainPath, err := resolveProbeLocalProxyChainPath()
+	if err != nil {
+		t.Fatalf("resolve proxy_chain path failed: %v", err)
+	}
+	proxyChainPayload := `{
+  "updated_at": "2026-06-09T00:00:00Z",
+  "items": [
+    {"chain_id":"chain-busy","chain_type":"proxy_chain","name":"Busy"}
+  ]
+}`
+	if err := os.WriteFile(proxyChainPath, []byte(proxyChainPayload), 0o644); err != nil {
+		t.Fatalf("write proxy_chain file failed: %v", err)
+	}
+	saveGroupsResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/groups/save", map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "通用", "rules": []string{"domain_suffix:example.com"}},
+		},
+	}, sessionCookie)
+	if saveGroupsResp.Code != http.StatusOK {
+		t.Fatalf("groups save status=%d body=%s", saveGroupsResp.Code, saveGroupsResp.Body.String())
+	}
+
+	rt, err := ensureProbeLocalTUNGroupRuntime("通用", "chain-busy")
+	if err != nil {
+		t.Fatalf("ensure group runtime: %v", err)
+	}
+	rt.mu.Lock()
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			rt.mu.Unlock()
+		}
+		time.Sleep(25 * time.Millisecond)
+		resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	}()
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/select", map[string]any{
+			"group":             "通用",
+			"selected_chain_id": "chain-busy",
+		}, sessionCookie)
+	}()
+
+	select {
+	case resp := <-done:
+		if resp.Code != http.StatusOK {
+			t.Fatalf("proxy/select status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("proxy/select blocked on busy group runtime snapshot")
+	}
+
+	rt.mu.Unlock()
+	unlocked = true
+}
+
 func TestProbeLocalProxyEnableRejectsUnknownGroup(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

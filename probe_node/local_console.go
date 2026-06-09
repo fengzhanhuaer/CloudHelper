@@ -3522,18 +3522,20 @@ func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if selectedChainID != "" {
-		syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
+		syncProbeLocalTUNGroupRuntimeSelectionAsync(group, selectedChainID)
 	}
 	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "tunnel", tunnelNodeID, "online"); updateErr != nil {
 		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
 	}
-	refreshProbeLocalProxyGroupRuntimeSnapshotForEntry(probeLocalProxyStateGroupEntry{
+	selectionEntry := probeLocalProxyStateGroupEntry{
 		Group:           group,
 		Action:          "tunnel",
 		SelectedChainID: selectedChainID,
 		TunnelNodeID:    tunnelNodeID,
 		RuntimeStatus:   "online",
-	})
+	}
+	setProbeLocalProxyGroupRuntimeSelectionSnapshot(selectionEntry)
+	refreshProbeLocalProxyGroupRuntimeSnapshotForEntryAsync(selectionEntry)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"tun":   tunState,
@@ -3574,18 +3576,20 @@ func probeLocalProxySelectHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	selectedChainID := mustProbeLocalSelectedChainIDFromLegacy(tunnelNodeID)
 	if selectedChainID != "" {
-		syncProbeLocalTUNGroupRuntimeSelection(group, selectedChainID)
+		syncProbeLocalTUNGroupRuntimeSelectionAsync(group, selectedChainID)
 	}
 	if updateErr := upsertProbeLocalRuntimeStateGroup(group, "tunnel", tunnelNodeID, "online"); updateErr != nil {
 		logProbeWarnf("probe local runtime state update failed: %v", updateErr)
 	}
-	refreshProbeLocalProxyGroupRuntimeSnapshotForEntry(probeLocalProxyStateGroupEntry{
+	selectionEntry := probeLocalProxyStateGroupEntry{
 		Group:           group,
 		Action:          "tunnel",
 		SelectedChainID: selectedChainID,
 		TunnelNodeID:    tunnelNodeID,
 		RuntimeStatus:   "online",
-	})
+	}
+	setProbeLocalProxyGroupRuntimeSelectionSnapshot(selectionEntry)
+	refreshProbeLocalProxyGroupRuntimeSnapshotForEntryAsync(selectionEntry)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"tun":   probeLocalControl.tunStatus(),
@@ -3839,6 +3843,33 @@ func refreshProbeLocalProxyGroupRuntimeSnapshotForEntry(entry probeLocalProxySta
 		setProbeLocalProxyViewGroupRuntimeSnapshot(snapshot.Group, snapshot)
 	}
 	return snapshot
+}
+
+func refreshProbeLocalProxyGroupRuntimeSnapshotForEntryAsync(entry probeLocalProxyStateGroupEntry) {
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logProbeWarnf("probe local proxy group runtime snapshot refresh panic: group=%s err=%v", strings.TrimSpace(entry.Group), recovered)
+			}
+		}()
+		refreshProbeLocalProxyGroupRuntimeSnapshotForEntry(entry)
+	}()
+}
+
+func setProbeLocalProxyGroupRuntimeSelectionSnapshot(entry probeLocalProxyStateGroupEntry) {
+	group := strings.TrimSpace(entry.Group)
+	if group == "" {
+		return
+	}
+	selectedChainID := firstNonEmpty(
+		strings.TrimSpace(entry.SelectedChainID),
+		mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID),
+	)
+	setProbeLocalProxyViewGroupRuntimeSnapshot(group, probeLocalProxyGroupRuntimeSnapshot{
+		Group:              group,
+		SelectedChainID:    selectedChainID,
+		GroupRuntimeStatus: strings.TrimSpace(entry.RuntimeStatus),
+	})
 }
 
 func refreshProbeLocalProxyGroupRuntimeSnapshotsForState(state probeLocalProxyStateFile) map[string]probeLocalProxyGroupRuntimeSnapshot {
