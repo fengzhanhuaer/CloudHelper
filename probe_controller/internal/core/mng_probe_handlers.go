@@ -303,8 +303,9 @@ func mngProbeNetworkMonitorResultsHandler(w http.ResponseWriter, r *http.Request
 	limit := normalizeAdminLogLines(r.URL.Query().Get("limit"))
 	ProbeStore.mu.RLock()
 	results := loadProbeNetworkMonitorResultsLocked(limit)
+	taskNames := probeNetworkMonitorTaskNamesByIDLocked()
 	ProbeStore.mu.RUnlock()
-	writeJSON(w, http.StatusOK, map[string]interface{}{"items": results})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": attachProbeNetworkMonitorResultTaskNames(results, taskNames)})
 }
 
 func mngProbeNetworkMonitorTaskUpsertHandler(w http.ResponseWriter, r *http.Request) {

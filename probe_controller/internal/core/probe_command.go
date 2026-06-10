@@ -922,12 +922,10 @@ func consumeProbeNetworkMonitorResult(result probeNetworkMonitorResultMessage) {
 		ProbeStore.mu.RLock()
 		nodeNo, nodeName := nodeNameByNodeIDLocked(normalizedNodeID)
 		taskID := strings.TrimSpace(result.TaskID)
-		taskName := probeNetworkMonitorTaskNameByIDLocked(taskID)
 		ProbeStore.mu.RUnlock()
 
 		if _, err := appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
 			TaskID:     taskID,
-			TaskName:   taskName,
 			NodeID:     normalizedNodeID,
 			NodeNo:     nodeNo,
 			NodeName:   nodeName,

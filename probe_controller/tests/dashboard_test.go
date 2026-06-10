@@ -111,7 +111,9 @@ func TestDashboardProbesExposeMachineUptime(t *testing.T) {
 func TestDashboardNetworkRouteNoAuthRequired(t *testing.T) {
 	restorePath := core.SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "network_monitor_results"))
 	t.Cleanup(restorePath)
-	if err := core.AppendProbeNetworkMonitorResultForTest("1", "2026-01-01T00:00:00Z", 23.5, 1.5); err != nil {
+	restoreTasks := core.SetProbeNetworkMonitorTasksForTest(map[string]string{"task-1": "外网测试"})
+	t.Cleanup(restoreTasks)
+	if err := core.AppendProbeNetworkMonitorResultForTest("1", "task-1", "2026-01-01T00:00:00Z", 23.5, 1.5); err != nil {
 		t.Fatalf("AppendProbeNetworkMonitorResultForTest failed: %v", err)
 	}
 	mux := core.NewMux()
@@ -143,6 +145,9 @@ func TestDashboardNetworkRouteNoAuthRequired(t *testing.T) {
 	}
 	if payload.Items[0].NodeNo != 1 {
 		t.Fatalf("node_no=%d want 1", payload.Items[0].NodeNo)
+	}
+	if payload.Items[0].Series[0].TaskName != "外网测试" {
+		t.Fatalf("task_name=%q want 外网测试", payload.Items[0].Series[0].TaskName)
 	}
 	if payload.Items[0].Series[0].Points[0].LatencyAvgMS != 23.5 || payload.Items[0].Series[0].Points[0].LossPercent != 1.5 {
 		t.Fatalf("point=%+v", payload.Items[0].Series[0].Points[0])

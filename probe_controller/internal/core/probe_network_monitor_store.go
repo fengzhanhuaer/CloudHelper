@@ -42,7 +42,6 @@ type probeNetworkMonitorTaskRecord struct {
 type probeNetworkMonitorResultRecord struct {
 	ID         string                            `json:"id"`
 	TaskID     string                            `json:"task_id"`
-	TaskName   string                            `json:"task_name,omitempty"`
 	NodeID     string                            `json:"node_id"`
 	NodeNo     int                               `json:"node_no"`
 	NodeName   string                            `json:"node_name,omitempty"`
@@ -154,7 +153,6 @@ func appendProbeNetworkMonitorResult(record probeNetworkMonitorResultRecord) (pr
 	now := time.Now().UTC().Format(time.RFC3339)
 	record.ID = firstNonEmptyNetworkMonitor(strings.TrimSpace(record.ID), newProbeNetworkMonitorResultID())
 	record.TaskID = strings.TrimSpace(record.TaskID)
-	record.TaskName = normalizeOptionalProbeNetworkMonitorTaskName(record.TaskName)
 	record.NodeID = normalizeProbeNodeID(record.NodeID)
 	record.NodeName = strings.TrimSpace(record.NodeName)
 	record.Error = strings.TrimSpace(record.Error)
@@ -434,7 +432,6 @@ func normalizeProbeNetworkMonitorResults(raw []probeNetworkMonitorResultRecord) 
 	for _, item := range raw {
 		item.ID = strings.TrimSpace(item.ID)
 		item.TaskID = strings.TrimSpace(item.TaskID)
-		item.TaskName = normalizeOptionalProbeNetworkMonitorTaskName(item.TaskName)
 		item.NodeID = normalizeProbeNodeID(item.NodeID)
 		item.NodeName = strings.TrimSpace(item.NodeName)
 		item.Error = strings.TrimSpace(item.Error)
@@ -499,29 +496,45 @@ func normalizeProbeNetworkMonitorTaskName(raw string) string {
 	return name
 }
 
-func normalizeOptionalProbeNetworkMonitorTaskName(raw string) string {
-	name := strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
-	if name == "" {
-		return ""
+func probeNetworkMonitorTaskNamesByIDLocked() map[string]string {
+	out := make(map[string]string)
+	for _, task := range normalizeProbeNetworkMonitorTasks(ProbeStore.data.NetworkMonitorTasks) {
+		taskID := strings.TrimSpace(task.ID)
+		if taskID == "" {
+			continue
+		}
+		out[taskID] = normalizeProbeNetworkMonitorTaskName(task.Name)
 	}
-	runes := []rune(name)
-	if len(runes) > 80 {
-		return string(runes[:80])
-	}
-	return name
+	return out
 }
 
-func probeNetworkMonitorTaskNameByIDLocked(taskID string) string {
-	cleanID := strings.TrimSpace(taskID)
-	if cleanID == "" {
-		return ""
-	}
-	for _, task := range normalizeProbeNetworkMonitorTasks(ProbeStore.data.NetworkMonitorTasks) {
-		if strings.TrimSpace(task.ID) == cleanID {
-			return normalizeProbeNetworkMonitorTaskName(task.Name)
+func attachProbeNetworkMonitorResultTaskNames(results []probeNetworkMonitorResultRecord, taskNames map[string]string) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(results))
+	for _, item := range results {
+		taskID := strings.TrimSpace(item.TaskID)
+		taskName := strings.TrimSpace(taskNames[taskID])
+		if taskName == "" {
+			taskName = taskID
 		}
+		out = append(out, map[string]interface{}{
+			"id":          strings.TrimSpace(item.ID),
+			"task_id":     taskID,
+			"task_name":   taskName,
+			"node_id":     strings.TrimSpace(item.NodeID),
+			"node_no":     item.NodeNo,
+			"node_name":   strings.TrimSpace(item.NodeName),
+			"ok":          item.OK,
+			"count":       item.Count,
+			"timeout_ms":  item.TimeoutMS,
+			"cycle_sec":   item.CycleSec,
+			"results":     item.Results,
+			"error":       strings.TrimSpace(item.Error),
+			"started_at":  strings.TrimSpace(item.StartedAt),
+			"finished_at": strings.TrimSpace(item.FinishedAt),
+			"timestamp":   strings.TrimSpace(item.Timestamp),
+		})
 	}
-	return ""
+	return out
 }
 
 func newProbeNetworkMonitorResultID() string {
@@ -606,9 +619,28 @@ func SetProbeNetworkMonitorResultStorePathForTest(path string) func() {
 	return func() { probeNetworkMonitorResultStore.dir = oldDir }
 }
 
-func AppendProbeNetworkMonitorResultForTest(nodeID string, timestamp string, latencyAvgMS float64, lossPercent float64) error {
+func SetProbeNetworkMonitorTasksForTest(taskNames map[string]string) func() {
+	oldStore := ProbeStore
+	tasks := make([]probeNetworkMonitorTaskRecord, 0, len(taskNames))
+	for taskID, taskName := range taskNames {
+		tasks = append(tasks, probeNetworkMonitorTaskRecord{
+			ID:      strings.TrimSpace(taskID),
+			Name:    strings.TrimSpace(taskName),
+			NodeIDs: []string{"1"},
+			Targets: []string{"1.1.1.1"},
+			Enabled: true,
+		})
+	}
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		NetworkMonitorTasks: tasks,
+	}}
+	return func() { ProbeStore = oldStore }
+}
+
+func AppendProbeNetworkMonitorResultForTest(nodeID string, taskID string, timestamp string, latencyAvgMS float64, lossPercent float64) error {
 	_, err := appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
 		NodeID:    nodeID,
+		TaskID:    taskID,
 		NodeNo:    0,
 		OK:        true,
 		Timestamp: timestamp,

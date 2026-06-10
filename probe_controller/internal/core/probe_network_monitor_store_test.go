@@ -67,7 +67,6 @@ func TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles(t *testing.T) {
 
 	_, err := appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
 		TaskID:    "task-1",
-		TaskName:  "外网测试",
 		NodeID:    "1",
 		NodeNo:    1,
 		NodeName:  "probe-a",
@@ -79,7 +78,6 @@ func TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles(t *testing.T) {
 	}
 	_, err = appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
 		TaskID:    "task-2",
-		TaskName:  "内网测试",
 		NodeID:    "2",
 		NodeNo:    2,
 		NodeName:  "probe-b",
@@ -95,7 +93,7 @@ func TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("result count=%d want 1", len(results))
 	}
-	if results[0].TaskID != "task-2" || results[0].TaskName != "内网测试" || results[0].Error != "timeout" {
+	if results[0].TaskID != "task-2" || results[0].Error != "timeout" {
 		t.Fatalf("latest result=%+v", results[0])
 	}
 	nodeOneResults := loadProbeNetworkMonitorResultsForNode("1")

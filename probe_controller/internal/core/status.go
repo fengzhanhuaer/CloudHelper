@@ -176,6 +176,7 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 		name string
 	}
 	metaMap := map[string]nodeMeta{}
+	taskNameMap := map[string]string{}
 	if ProbeStore != nil {
 		ProbeStore.mu.RLock()
 		for _, node := range loadProbeNodesLocked() {
@@ -184,6 +185,13 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 				no:   node.NodeNo,
 				name: strings.TrimSpace(node.NodeName),
 			}
+		}
+		for _, task := range loadProbeNetworkMonitorTasksLocked() {
+			taskID := strings.TrimSpace(task.ID)
+			if taskID == "" {
+				continue
+			}
+			taskNameMap[taskID] = normalizeProbeNetworkMonitorTaskName(task.Name)
 		}
 		ProbeStore.mu.RUnlock()
 	}
@@ -245,7 +253,7 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 			if acc.item.NodeName == "" && nodeName != "" {
 				acc.item.NodeName = nodeName
 			}
-			taskID, taskName := dashboardNetworkTaskIdentity(result)
+			taskID, taskName := dashboardNetworkTaskIdentity(result, taskNameMap)
 			series, ok := acc.series[taskID]
 			if !ok {
 				series = &dashboardPublicNetworkSeries{
@@ -314,11 +322,14 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 	return out
 }
 
-func dashboardNetworkTaskIdentity(result probeNetworkMonitorResultRecord) (string, string) {
+func dashboardNetworkTaskIdentity(result probeNetworkMonitorResultRecord, taskNameMap map[string]string) (string, string) {
 	taskID := strings.TrimSpace(result.TaskID)
-	taskName := normalizeOptionalProbeNetworkMonitorTaskName(result.TaskName)
 	if taskID == "" {
 		taskID = "default"
+	}
+	taskName := ""
+	if taskNameMap != nil {
+		taskName = strings.TrimSpace(taskNameMap[taskID])
 	}
 	if taskName == "" {
 		if taskID != "default" {
