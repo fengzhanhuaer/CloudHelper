@@ -588,16 +588,16 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 			return nil, cleanFlowID, err
 		}
 		endpoint := rt.Endpoint
+		session := rt.session
+		group := strings.TrimSpace(rt.Group)
 		rt.mu.Unlock()
 		if strings.TrimSpace(endpoint.ChainID) == "" {
 			return nil, cleanFlowID, errors.New("group runtime endpoint is nil")
 		}
 		stream, err := rt.openRelayStream(endpoint)
 		if err != nil {
-			rt.mu.Lock()
-			_ = rt.markFailureLocked(err, "degraded")
-			rt.mu.Unlock()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+			reconnect := rt.markOpenStreamFailure(session, err, true)
+			if attempt == 0 && reconnect {
 				continue
 			}
 			return nil, cleanFlowID, err
@@ -612,10 +612,8 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
 		if err := json.NewEncoder(stream).Encode(request); err != nil {
 			_ = stream.Close()
-			rt.mu.Lock()
-			_ = rt.markFailureLocked(err, "degraded")
-			rt.mu.Unlock()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+			reconnect := rt.markOpenStreamFailure(session, err, true)
+			if attempt == 0 && reconnect {
 				continue
 			}
 			return nil, cleanFlowID, err
@@ -625,10 +623,8 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		var response probeChainTunnelOpenResponse
 		if err := json.NewDecoder(stream).Decode(&response); err != nil {
 			_ = stream.Close()
-			rt.mu.Lock()
-			_ = rt.markFailureLocked(err, "degraded")
-			rt.mu.Unlock()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+			reconnect := rt.markOpenStreamFailure(session, err, true)
+			if attempt == 0 && reconnect {
 				continue
 			}
 			return nil, cleanFlowID, err
@@ -637,10 +633,8 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		if !response.OK {
 			_ = stream.Close()
 			openErr := errors.New(firstNonEmpty(strings.TrimSpace(response.Error), "open stream failed"))
-			rt.mu.Lock()
-			_ = rt.markFailureLocked(openErr, "degraded")
-			rt.mu.Unlock()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(openErr) {
+			reconnect := rt.markOpenStreamFailure(session, openErr, false)
+			if attempt == 0 && reconnect {
 				continue
 			}
 			return nil, cleanFlowID, openErr
@@ -650,6 +644,9 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		rt.LastError = ""
 		rt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		rt.mu.Unlock()
+		if attempt > 0 {
+			logProbeInfof("probe local tun group runtime stream open recovered after reconnect: group=%s chain=%s network=%s target=%s flow=%s", group, strings.TrimSpace(endpoint.ChainID), cleanNetwork, strings.TrimSpace(targetAddr), cleanFlowID)
+		}
 		return stream, cleanFlowID, nil
 	}
 	return nil, cleanFlowID, errors.New("group runtime stream open failed")
@@ -811,6 +808,41 @@ func (rt *probeLocalTUNGroupRuntime) fetchRemoteSpeedDebug() (probeSpeedDebugRes
 		return payload, nil
 	}
 	return probeSpeedDebugResultPayload{}, errors.New("remote speed debug fetch failed")
+}
+
+func (rt *probeLocalTUNGroupRuntime) markOpenStreamFailure(session *yamux.Session, err error, forceReconnect bool) bool {
+	reconnect := false
+	logReconnect := false
+	logGroup := ""
+	logChain := ""
+	logStatus := ""
+	if shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+		rt.mu.Lock()
+		reconnect = forceReconnect || shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
+		if rt.session == session {
+			if reconnect {
+				logReconnect = true
+				logGroup = strings.TrimSpace(rt.Group)
+				logChain = strings.TrimSpace(rt.SelectedChainID)
+				logStatus = strings.TrimSpace(rt.RuntimeStatus)
+				rt.closeLocked()
+				_ = rt.markFailureLocked(err, "disconnected")
+			} else {
+				_ = rt.markFailureLocked(err, "degraded")
+			}
+		}
+		rt.mu.Unlock()
+		if logReconnect {
+			logProbeWarnf("probe local tun group runtime stream open forcing reconnect: group=%s chain=%s previous_status=%s force=%v err=%v", logGroup, logChain, logStatus, forceReconnect, err)
+		}
+		return reconnect
+	}
+	rt.mu.Lock()
+	if rt.session == session {
+		_ = rt.markFailureLocked(err, "degraded")
+	}
+	rt.mu.Unlock()
+	return false
 }
 
 func shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt *probeLocalTUNGroupRuntime, session *yamux.Session, err error) bool {

@@ -228,6 +228,7 @@ func prepareProbeLocalWindowsDirectBypassRouteTarget() error {
 	probeLocalDirectBypassRouteTargetState.routeTarget = routeTarget
 	probeLocalDirectBypassRouteTargetState.ready = true
 	probeLocalDirectBypassRouteTargetState.mu.Unlock()
+	logProbeInfof("probe local tun direct bypass route target prepared: if_index=%d next_hop=%s", routeTarget.InterfaceIndex, strings.TrimSpace(routeTarget.NextHop))
 	return nil
 }
 

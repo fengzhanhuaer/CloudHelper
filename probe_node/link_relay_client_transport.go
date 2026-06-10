@@ -24,8 +24,8 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
-// dialProbeChainBoundQUIC 用绑定到物理出口接口的 UDP socket 建立 QUIC 连接，
-// 替代 quic.DialAddr（后者自建 socket、无法注入 IP_UNICAST_IF 接口绑定）。
+// dialProbeChainBoundQUIC 用 route-based bypass 准备好的 UDP socket 建立 QUIC 连接，
+// 替代 quic.DialAddr（后者自建 socket、无法提前确保直连 host route）。
 // QUIC 连接结束后异步关闭底层 UDP socket，避免 fd 泄漏。
 func dialProbeChainBoundQUIC(ctx context.Context, dialHostPort string, tlsConf *tls.Config, quicConf *quic.Config) (*quic.Conn, error) {
 	remoteAddr, err := net.ResolveUDPAddr(probeLocalEgressDialNetwork("udp", dialHostPort), dialHostPort)

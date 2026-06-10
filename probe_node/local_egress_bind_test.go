@@ -2,7 +2,6 @@ package main
 
 import (
 	"net"
-	"syscall"
 	"testing"
 )
 
@@ -32,19 +31,8 @@ func TestProbeLocalEgressDialNetwork(t *testing.T) {
 func TestApplyProbeLocalEgressDialerDoesNotBindInterface(t *testing.T) {
 	// Egress bypass is route-based; the dialer must not install a per-socket
 	// interface binding hook.
-	old := probeLocalEgressDialControl
-	t.Cleanup(func() { probeLocalEgressDialControl = old })
-
 	d := applyProbeLocalEgressDialer(&net.Dialer{})
 	if d.Control != nil {
 		t.Fatal("dialer Control should stay nil")
-	}
-
-	probeLocalEgressDialControl = func(string, string, syscall.RawConn) error {
-		return nil
-	}
-	d2 := applyProbeLocalEgressDialer(&net.Dialer{})
-	if d2.Control != nil {
-		t.Fatal("dialer Control should stay nil even when legacy hook is set")
 	}
 }

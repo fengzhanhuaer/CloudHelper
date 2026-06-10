@@ -443,6 +443,58 @@ func TestEnsureProbeLocalExplicitDirectBypassWritesHostRoute(t *testing.T) {
 	}
 }
 
+func TestEnsureProbeLocalExplicitDirectBypassRequiresPreparedTargetDuringTUN(t *testing.T) {
+	resetProbeLocalWindowsTakeoverStateForTest()
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+	probeLocalWindowsTakeoverState.mu.Lock()
+	probeLocalWindowsTakeoverState.enabled = true
+	probeLocalWindowsTakeoverState.tunIfIndex = 9
+	probeLocalWindowsTakeoverState.mu.Unlock()
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+		t.Fatalf("should not re-detect egress route during active tun takeover; excluded=%d", excludedIfIndex)
+		return probeLocalWindowsDirectBypassRouteTarget{}, nil
+	}
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		t.Fatalf("should not create route without prepared bypass target: %+v", routeDef)
+		return false, nil
+	}
+
+	if err := ensureProbeLocalExplicitDirectBypass("203.0.113.7:16030"); err == nil {
+		t.Fatal("expected missing prepared bypass target to fail during tun takeover")
+	}
+}
+
+func TestEnsureProbeLocalExplicitDirectBypassRejectsTUNInterfaceTarget(t *testing.T) {
+	resetProbeLocalWindowsTakeoverStateForTest()
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+	probeLocalWindowsTakeoverState.mu.Lock()
+	probeLocalWindowsTakeoverState.enabled = true
+	probeLocalWindowsTakeoverState.tunIfIndex = 9
+	probeLocalWindowsTakeoverState.mu.Unlock()
+	probeLocalDirectBypassRouteTargetState.mu.Lock()
+	probeLocalDirectBypassRouteTargetState.routeTarget = probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 9, NextHop: "198.18.0.1"}
+	probeLocalDirectBypassRouteTargetState.ready = true
+	probeLocalDirectBypassRouteTargetState.mu.Unlock()
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		t.Fatalf("should not create direct bypass route pointing to tun: %+v", routeDef)
+		return false, nil
+	}
+
+	if err := ensureProbeLocalExplicitDirectBypass("203.0.113.7:16030"); err == nil {
+		t.Fatal("expected tun interface bypass target to fail")
+	}
+}
+
 func TestEnsureProbeLocalExplicitDirectBypassSkipsDNSCaptureTarget(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	resetProbeLocalDirectBypassStateForTest()

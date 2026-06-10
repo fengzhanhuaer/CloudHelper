@@ -373,6 +373,10 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 	}
 	bypassTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
 	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
+		if tunIfIndex, takeoverEnabled := currentProbeLocalWindowsTakeoverIfIndex(); takeoverEnabled {
+			logProbeWarnf("probe local direct bypass target missing during tun takeover: target=%s ips=%s tun_if_index=%d", strings.TrimSpace(targetAddr), strings.Join(ips, ","), tunIfIndex)
+			return fmt.Errorf("direct bypass route target is not prepared while tun takeover is active: tun_if_index=%d", tunIfIndex)
+		}
 		routeTarget, routeErr := resolveProbeLocalWindowsRouteTarget()
 		if routeErr != nil {
 			return routeErr
@@ -381,6 +385,11 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 		if err != nil {
 			return err
 		}
+		logProbeInfof("probe local direct bypass route target resolved on demand: excluded_if_index=%d if_index=%d next_hop=%s", routeTarget.InterfaceIndex, bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
+	}
+	if tunIfIndex, takeoverEnabled := currentProbeLocalWindowsTakeoverIfIndex(); takeoverEnabled && tunIfIndex > 0 && bypassTarget.InterfaceIndex == tunIfIndex {
+		logProbeWarnf("probe local direct bypass target rejected because it points to tun: target=%s ips=%s if_index=%d next_hop=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","), bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
+		return fmt.Errorf("direct bypass route target points to tun interface: if_index=%d", bypassTarget.InterfaceIndex)
 	}
 	var allErr error
 	for _, ipText := range ips {
@@ -388,17 +397,27 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 		if ip4 == nil {
 			continue
 		}
-		_, routeErr := ensureProbeLocalWindowsRoute(probeLocalWindowsRouteDef{
+		routeDef := probeLocalWindowsRouteDef{
 			Prefix:  ip4.String(),
 			Mask:    probeLocalWindowsHostRouteMask,
 			Gateway: strings.TrimSpace(bypassTarget.NextHop),
 			IfIndex: bypassTarget.InterfaceIndex,
-		})
+		}
+		created, routeErr := ensureProbeLocalWindowsRoute(routeDef)
 		if routeErr != nil {
+			logProbeWarnf("probe local direct bypass host route failed: target=%s ip=%s gateway=%s if_index=%d err=%v", strings.TrimSpace(targetAddr), routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, routeErr)
 			allErr = errors.Join(allErr, routeErr)
+		} else if created {
+			logProbeInfof("probe local direct bypass host route created: target=%s ip=%s gateway=%s if_index=%d", strings.TrimSpace(targetAddr), routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex)
 		}
 	}
 	return allErr
+}
+
+func currentProbeLocalWindowsTakeoverIfIndex() (int, bool) {
+	probeLocalWindowsTakeoverState.mu.Lock()
+	defer probeLocalWindowsTakeoverState.mu.Unlock()
+	return probeLocalWindowsTakeoverState.tunIfIndex, probeLocalWindowsTakeoverState.enabled
 }
 
 func isProbeLocalWindowsDNSCaptureTarget(targetAddr string) bool {

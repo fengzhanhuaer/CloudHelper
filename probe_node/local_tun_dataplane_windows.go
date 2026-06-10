@@ -20,7 +20,6 @@ const (
 	probeLocalTUNSessionRingCapacity    = 0x400000
 	probeLocalTUNReadWaitTimeoutMillis  = 250
 	probeLocalTUNReadLoopSleepOnNoEvent = 50 * time.Millisecond
-	probeLocalTUNEgressRefreshInterval  = 30 * time.Second
 )
 
 var (
@@ -39,50 +38,6 @@ var probeLocalTUNDataPlaneState = struct {
 	dataPlane     probeLocalTUNDataPlane
 	packetStack   probeLocalTUNPacketStack
 }{}
-
-// probeLocalTUNEgressRefreshState 控制运行期重新解析物理出口接口索引的后台 ticker，
-// 使 WiFi↔有线切换后 IP_UNICAST_IF 绑定能跟随新的出口网卡。
-var probeLocalTUNEgressRefreshState = struct {
-	mu   sync.Mutex
-	stop chan struct{}
-}{}
-
-// startProbeLocalTUNEgressRefresh 启动出口接口索引刷新 ticker（幂等）。
-func startProbeLocalTUNEgressRefresh() {
-	probeLocalTUNEgressRefreshState.mu.Lock()
-	defer probeLocalTUNEgressRefreshState.mu.Unlock()
-	if probeLocalTUNEgressRefreshState.stop != nil {
-		return
-	}
-	stop := make(chan struct{})
-	probeLocalTUNEgressRefreshState.stop = stop
-	go func() {
-		ticker := time.NewTicker(probeLocalTUNEgressRefreshInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				// prepare 在解析失败时保留旧值（仅成功才覆盖），故瞬时失败不会清空绑定索引。
-				if err := prepareProbeLocalWindowsDirectBypassRouteTarget(); err != nil {
-					logProbeWarnf("probe local tun egress route refresh failed: %v", err)
-				}
-			}
-		}
-	}()
-}
-
-// stopProbeLocalTUNEgressRefresh 停止刷新 ticker（幂等）。
-func stopProbeLocalTUNEgressRefresh() {
-	probeLocalTUNEgressRefreshState.mu.Lock()
-	stop := probeLocalTUNEgressRefreshState.stop
-	probeLocalTUNEgressRefreshState.stop = nil
-	probeLocalTUNEgressRefreshState.mu.Unlock()
-	if stop != nil {
-		close(stop)
-	}
-}
 
 func startProbeLocalTUNDataPlane() error {
 	probeLocalTUNDataPlaneState.mu.Lock()
@@ -148,7 +103,6 @@ func startProbeLocalTUNDataPlane() error {
 		return err
 	}
 
-	startProbeLocalTUNEgressRefresh()
 	stats := dataPlane.Stats()
 	logProbeInfof("probe local tun data plane started: running=%v rx_packets=%d rx_bytes=%d", stats.Running, stats.RXPackets, stats.RXBytes)
 	return nil
@@ -165,7 +119,6 @@ func stopProbeLocalTUNDataPlane() error {
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
 	defer clearProbeLocalWindowsDirectBypassRouteTarget()
-	stopProbeLocalTUNEgressRefresh()
 	errStack := stopProbeLocalTUNPacketStack()
 	var allErr error
 	if dataPlane != nil {
