@@ -313,6 +313,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	restoreProbeChainRuntimesFromTopologyCache(identity, controllerBaseURL)
 	startProbeLinkChainsSyncLoop(identity, controllerBaseURL)
 	startProbeServiceRuntimeLoop(nodeMux, identity, controllerBaseURL)
+	startProbeSyncScheduler(identity)
 
 	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
 	startProbeLocalTUNStartupRecoveryAsync()

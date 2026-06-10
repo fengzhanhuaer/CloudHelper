@@ -232,7 +232,7 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 		t.Fatalf("system/upgrade/status without session status=%d", upgradeStatusResp.Code)
 	}
 
-	protectedPagePaths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system"}
+	protectedPagePaths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system", "/local/sync"}
 	for _, path := range protectedPagePaths {
 		pageResp := doProbeLocalRequest(t, mux, http.MethodGet, path, nil)
 		if pageResp.Code != http.StatusFound {

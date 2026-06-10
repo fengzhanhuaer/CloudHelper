@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>通用同步 - Probe Node</title>
+  <style>
+    :root { color-scheme: dark; --bg: #0d1117; --panel-bg: rgba(22, 27, 34, 0.78); --border: #30363d; --text: #c9d1d9; --muted: #8b949e; --accent: #58a6ff; --ok: #7ee787; --danger: #ff938d; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 20px; }
+    .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+    h1 { margin: 0; font-size: 24px; color: #fff; }
+    .sub { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    nav { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 18px; }
+    nav a { color: var(--text); text-decoration: none; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: #161b22; font-size: 13px; }
+    nav a.active { border-color: var(--accent); color: #fff; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); gap: 14px; align-items: start; }
+    .card { border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); padding: 16px; box-sizing: border-box; }
+    .section-title { margin: 0 0 12px; color: #fff; font-size: 16px; }
+    .row { display: grid; gap: 6px; margin-bottom: 12px; }
+    label { font-size: 12px; color: var(--muted); }
+    input, textarea, select { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: #0d1117; color: var(--text); padding: 10px; font: inherit; }
+    textarea { min-height: 108px; resize: vertical; line-height: 1.45; }
+    .inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .inline input[type="checkbox"] { width: auto; }
+    .btn { border: 1px solid var(--border); border-radius: 8px; background: #21262d; color: var(--text); padding: 9px 12px; cursor: pointer; }
+    .btn.primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
+    .btn.danger { border-color: #8e2b28; color: #ffdcd7; }
+    .btn:disabled { opacity: .58; cursor: not-allowed; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .kv { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; font-size: 13px; padding: 7px 0; border-bottom: 1px solid rgba(48,54,61,.7); }
+    .kv:last-child { border-bottom: 0; }
+    .key { color: var(--muted); }
+    .value { overflow-wrap: anywhere; }
+    .ok { color: var(--ok); }
+    .danger-text { color: var(--danger); }
+    .msg { min-height: 20px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+    .msg.error { color: var(--danger); }
+    .auth-box { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: none; }
+    .code { font-family: Consolas, monospace; font-size: 20px; color: #fff; }
+    @media (max-width: 860px) {
+      .grid { grid-template-columns: 1fr; }
+      .topbar { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>通用同步</h1>
+        <p class="sub">将本机选定目录或文件打包同步至 Google 云盘，远端目录按 probe_node_id 区分。</p>
+      </div>
+      <button id="btn-logout" class="btn" type="button">退出登录</button>
+    </div>
+    <nav>
+      <a href="/local/panel">首页</a>
+      <a href="/local/proxy">VNet 状态</a>
+      <a href="/local/dns">DNS 状态</a>
+      <a href="/local/monitor">状态监视</a>
+      <a href="/local/logs">运行日志</a>
+      <a href="/local/system">系统设置</a>
+      <a href="/local/sync" class="active">通用同步</a>
+    </nav>
+
+    <div class="grid">
+      <section class="card">
+        <h2 class="section-title">同步设置</h2>
+        <div class="row inline">
+          <label class="inline"><input id="enabled" type="checkbox" />启用自动同步</label>
+        </div>
+        <div class="row">
+          <label for="sourcePaths">目录或文件路径</label>
+          <textarea id="sourcePaths" placeholder="每行一个路径，例如 C:\Users\me\Documents"></textarea>
+        </div>
+        <div class="row">
+          <label for="localTempDir">本地临时 ZIP 目录</label>
+          <input id="localTempDir" type="text" placeholder="留空使用系统临时目录" />
+        </div>
+        <div class="row">
+          <label for="schedule">同步周期</label>
+          <select id="schedule">
+            <option value="daily">每日</option>
+            <option value="weekly">每周</option>
+            <option value="monthly">每月</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="googleFolder">Google 云盘目录</label>
+          <input id="googleFolder" type="text" placeholder="CloudHelper/probe_node" />
+        </div>
+        <div class="row">
+          <label for="clientID">OAuth Client ID 或 OAuth JSON</label>
+          <textarea id="clientID" placeholder="可粘贴 Google OAuth 客户端 JSON"></textarea>
+        </div>
+        <div class="row">
+          <label for="clientSecret">OAuth Client Secret</label>
+          <input id="clientSecret" type="password" autocomplete="off" />
+        </div>
+        <div class="actions">
+          <button id="btn-save" class="btn primary" type="button">保存设置</button>
+          <button id="btn-auth" class="btn" type="button">Google 授权</button>
+          <button id="btn-test" class="btn" type="button">测试连接</button>
+          <button id="btn-run" class="btn" type="button">立即同步</button>
+          <button id="btn-disconnect" class="btn danger" type="button">断开授权</button>
+        </div>
+        <div id="authBox" class="auth-box">
+          <div class="key">用户代码</div>
+          <div id="userCode" class="code">--</div>
+          <div class="row" style="margin-top:10px;">
+            <label for="verifyURL">验证地址</label>
+            <input id="verifyURL" type="text" readonly />
+          </div>
+          <div class="actions">
+            <button id="btn-poll" class="btn primary" type="button">我已完成授权</button>
+          </div>
+        </div>
+        <p id="message" class="msg"></p>
+      </section>
+
+      <aside class="card">
+        <h2 class="section-title">状态</h2>
+        <div class="kv"><div class="key">节点目录</div><div id="remoteFolder" class="value">--</div></div>
+        <div class="kv"><div class="key">临时目录</div><div id="tempDirStatus" class="value">--</div></div>
+        <div class="kv"><div class="key">Google 授权</div><div id="authorized" class="value">--</div></div>
+        <div class="kv"><div class="key">运行状态</div><div id="running" class="value">--</div></div>
+        <div class="kv"><div class="key">上次结果</div><div id="lastStatus" class="value">--</div></div>
+        <div class="kv"><div class="key">上次成功</div><div id="lastSuccess" class="value">--</div></div>
+        <div class="kv"><div class="key">最近归档</div><div id="lastArchive" class="value">--</div></div>
+        <div class="kv"><div class="key">错误</div><div id="lastError" class="value danger-text">--</div></div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const state = { authSessionID: '' };
+    const messageEl = document.getElementById('message');
+
+    function setMessage(text, type) {
+      messageEl.textContent = text || '';
+      messageEl.className = 'msg' + (type ? ' ' + type : '');
+    }
+
+    async function requestJSON(url, options, timeoutMs) {
+      const controller = timeoutMs ? new AbortController() : null;
+      let timer = null;
+      if (controller) {
+        timer = setTimeout(() => controller.abort(), timeoutMs);
+      }
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller ? controller.signal : undefined,
+        ...options,
+      });
+      if (timer) clearTimeout(timer);
+      let data = {};
+      try { data = await res.json(); } catch (_) { data = {}; }
+      if (!res.ok) {
+        const err = new Error(data && data.error ? data.error : ('HTTP ' + res.status));
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    }
+
+    function formPayload() {
+      const lines = document.getElementById('sourcePaths').value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+      return {
+        enabled: document.getElementById('enabled').checked,
+        source_paths: lines,
+        local_temp_dir: document.getElementById('localTempDir').value,
+        schedule: document.getElementById('schedule').value,
+        google_folder: document.getElementById('googleFolder').value,
+        google_client_id: document.getElementById('clientID').value,
+        google_client_secret: document.getElementById('clientSecret').value,
+      };
+    }
+
+    function fillSettings(settings, paths) {
+      document.getElementById('enabled').checked = !!settings.enabled;
+      document.getElementById('sourcePaths').value = (settings.source_paths || []).join('\n');
+      document.getElementById('localTempDir').value = settings.local_temp_dir || '';
+      document.getElementById('schedule').value = settings.schedule || 'daily';
+      document.getElementById('googleFolder').value = settings.google_folder || '';
+      document.getElementById('clientID').value = settings.google_client_id || '';
+      document.getElementById('clientSecret').value = settings.google_client_secret || '';
+      document.getElementById('remoteFolder').textContent = paths.remote_folder || '--';
+      document.getElementById('tempDirStatus').textContent = settings.local_temp_dir || '系统临时目录';
+      document.getElementById('authorized').textContent = settings.google_authorized ? '已授权' : '未授权';
+      document.getElementById('authorized').className = 'value ' + (settings.google_authorized ? 'ok' : 'danger-text');
+      document.getElementById('lastSuccess').textContent = settings.last_success_at || '--';
+    }
+
+    function fillRuntime(runtime, settings) {
+      document.getElementById('running').textContent = runtime.running ? '运行中' : '空闲';
+      document.getElementById('running').className = 'value ' + (runtime.running ? 'ok' : '');
+      document.getElementById('lastStatus').textContent = runtime.last_status || settings.last_status || 'idle';
+      document.getElementById('lastArchive').textContent = runtime.last_archive_name || settings.last_archive_name || '--';
+      document.getElementById('lastError').textContent = runtime.last_error || settings.last_error || '--';
+    }
+
+    async function loadStatus() {
+      try {
+        const data = await requestJSON('/local/api/sync/status', { method: 'GET' });
+        fillSettings(data.settings || {}, data.paths || {});
+        fillRuntime(data.runtime || {}, data.settings || {});
+      } catch (err) {
+        if (err.status === 401) {
+          window.location.href = '/local/login';
+          return;
+        }
+        setMessage('读取状态失败：' + err.message, 'error');
+      }
+    }
+
+    async function ensureSession() {
+      try {
+        const data = await requestJSON('/local/api/auth/session', { method: 'GET' });
+        if (!data.authenticated) window.location.href = '/local/login';
+      } catch (_) {
+        window.location.href = '/local/login';
+      }
+    }
+
+    async function saveSettings() {
+      setMessage('正在保存...');
+      const data = await requestJSON('/local/api/sync/settings', { method: 'POST', body: JSON.stringify(formPayload()) });
+      fillSettings(data.settings || {}, data.paths || {});
+      setMessage('已保存');
+    }
+
+    async function startAuth() {
+      setMessage('正在创建 Google 授权会话...');
+      const payload = formPayload();
+      const data = await requestJSON('/local/api/sync/google/auth/start', { method: 'POST', body: JSON.stringify(payload) }, 30000);
+      state.authSessionID = data.session_id || '';
+      document.getElementById('userCode').textContent = data.user_code || '--';
+      document.getElementById('verifyURL').value = data.verification_url_complete || data.verification_url || '';
+      document.getElementById('authBox').style.display = 'block';
+      setMessage('请打开验证地址并输入用户代码，完成后点击确认。');
+    }
+
+    async function pollAuth() {
+      if (!state.authSessionID) {
+        setMessage('请先创建授权会话', 'error');
+        return;
+      }
+      const data = await requestJSON('/local/api/sync/google/auth/poll', { method: 'POST', body: JSON.stringify({ session_id: state.authSessionID }) }, 30000);
+      if (data.authorized) {
+        document.getElementById('authBox').style.display = 'none';
+        state.authSessionID = '';
+        setMessage('Google 云盘已授权');
+        await loadStatus();
+        return;
+      }
+      setMessage(data.error ? ('授权未完成：' + data.error) : '授权仍在等待中');
+    }
+
+    async function runNow() {
+      setMessage('已提交同步任务...');
+      const data = await requestJSON('/local/api/sync/run', { method: 'POST', body: '{}' });
+      fillRuntime(data.runtime || {}, {});
+      setMessage(data.accepted ? '同步任务已开始' : '已有同步任务正在运行');
+    }
+
+    async function testConnection() {
+      setMessage('正在测试连接...');
+      await requestJSON('/local/api/sync/test', { method: 'POST', body: '{}' }, 30000);
+      setMessage('Google 云盘连接正常');
+    }
+
+    async function disconnect() {
+      await requestJSON('/local/api/sync/google/disconnect', { method: 'POST', body: '{}' });
+      setMessage('已断开 Google 授权，自动同步已关闭');
+      await loadStatus();
+    }
+
+    async function logout() {
+      try { await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' }); } catch (_) {}
+      window.location.href = '/local/login';
+    }
+
+    document.getElementById('btn-save').addEventListener('click', () => saveSettings().catch((err) => setMessage('保存失败：' + err.message, 'error')));
+    document.getElementById('btn-auth').addEventListener('click', () => startAuth().catch((err) => setMessage('授权失败：' + err.message, 'error')));
+    document.getElementById('btn-poll').addEventListener('click', () => pollAuth().catch((err) => setMessage('检查授权失败：' + err.message, 'error')));
+    document.getElementById('btn-run').addEventListener('click', () => runNow().catch((err) => setMessage('同步失败：' + err.message, 'error')));
+    document.getElementById('btn-test').addEventListener('click', () => testConnection().catch((err) => setMessage('测试失败：' + err.message, 'error')));
+    document.getElementById('btn-disconnect').addEventListener('click', () => disconnect().catch((err) => setMessage('断开失败：' + err.message, 'error')));
+    document.getElementById('btn-logout').addEventListener('click', () => logout());
+
+    ensureSession().then(loadStatus);
+    setInterval(loadStatus, 5000);
+  </script>
+</body>
+</html>

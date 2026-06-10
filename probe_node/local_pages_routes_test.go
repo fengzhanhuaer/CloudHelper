@@ -64,6 +64,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tile-monitor\"") || !strings.Contains(body, "href=\"/local/monitor\"") {
 		t.Fatalf("panel should contain proxy monitor tile")
 	}
+	if !strings.Contains(body, "id=\"tile-sync\"") || !strings.Contains(body, "href=\"/local/sync\"") {
+		t.Fatalf("panel should contain sync tile")
+	}
 	if strings.Contains(body, "id=\"monitor-panel-details\"") || strings.Contains(body, "/local/api/proxy/monitor") {
 		t.Fatalf("panel should not inline monitor page details")
 	}
@@ -87,14 +90,14 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 		{
 			path: "/local/proxy",
 			contains: []string{
-				"<title>Probe Node 代理状态</title>",
+				"<title>Probe Node VNet 状态</title>",
 				"id=\"panelProxy\"",
 				"id=\"proxyRuleGroups\"",
 				"/local/api/proxy/select",
-				"刷新代理组",
+				"刷新线路组",
 				"刷新链路",
-				"备份代理规则组",
-				"恢复代理规则组",
+				"备份线路规则组",
+				"恢复线路规则组",
 				"/local/api/proxy/groups/backup",
 				"/local/api/proxy/groups/restore",
 				"最近链路 RTT: 不可达",
@@ -158,6 +161,24 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 			},
 			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelLogs\""},
 		},
+		{
+			path: "/local/sync",
+			contains: []string{
+				"<title>通用同步 - Probe Node</title>",
+				"通用同步",
+				"id=\"sourcePaths\"",
+				"id=\"localTempDir\"",
+				"id=\"schedule\"",
+				"/local/api/sync/status",
+				"/local/api/sync/settings",
+				"/local/api/sync/run",
+				"/local/api/sync/google/auth/start",
+				"每日",
+				"每周",
+				"每月",
+			},
+			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
+		},
 	}
 
 	for _, tc := range cases {
@@ -186,7 +207,7 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 
 func TestProbeLocalPanelMethodNotAllowed(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
-	paths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system"}
+	paths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system", "/local/sync"}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
 			resp := doProbeLocalRequest(t, mux, http.MethodPost, path, map[string]any{})

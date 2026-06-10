@@ -2878,6 +2878,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/logs", probeLocalLogsPageHandler)
 	mux.HandleFunc("/local/monitor", probeLocalMonitorPageHandler)
 	mux.HandleFunc("/local/system", probeLocalSystemPageHandler)
+	mux.HandleFunc("/local/sync", probeLocalSyncPageHandler)
 	mux.HandleFunc("/local/api/auth/bootstrap", probeLocalAuthBootstrapHandler)
 	mux.HandleFunc("/local/api/auth/register", probeLocalAuthRegisterHandler)
 	mux.HandleFunc("/local/api/auth/login", probeLocalAuthLoginHandler)
@@ -2925,6 +2926,13 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
 	mux.HandleFunc("/local/api/proxy/groups/restore", probeLocalProxyGroupsRestoreHandler)
+	mux.HandleFunc("/local/api/sync/status", probeLocalSyncStatusHandler)
+	mux.HandleFunc("/local/api/sync/settings", probeLocalSyncSettingsHandler)
+	mux.HandleFunc("/local/api/sync/test", probeLocalSyncTestHandler)
+	mux.HandleFunc("/local/api/sync/run", probeLocalSyncRunHandler)
+	mux.HandleFunc("/local/api/sync/google/auth/start", probeLocalSyncGoogleAuthStartHandler)
+	mux.HandleFunc("/local/api/sync/google/auth/poll", probeLocalSyncGoogleAuthPollHandler)
+	mux.HandleFunc("/local/api/sync/google/disconnect", probeLocalSyncGoogleDisconnectHandler)
 }
 
 type probeLocalRegisterRequest struct {
@@ -3048,6 +3056,20 @@ type probeLocalProxyHostsSaveRequest struct {
 	Content string `json:"content"`
 }
 
+type probeLocalSyncSettingsRequest struct {
+	Enabled            bool     `json:"enabled"`
+	SourcePaths        []string `json:"source_paths"`
+	LocalTempDir       string   `json:"local_temp_dir"`
+	Schedule           string   `json:"schedule"`
+	GoogleClientID     string   `json:"google_client_id"`
+	GoogleClientSecret string   `json:"google_client_secret"`
+	GoogleFolder       string   `json:"google_folder"`
+}
+
+type probeLocalSyncGoogleAuthPollRequest struct {
+	SessionID string `json:"session_id"`
+}
+
 func probeLocalRootHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -3099,6 +3121,10 @@ func probeLocalMonitorPageHandler(w http.ResponseWriter, r *http.Request) {
 
 func probeLocalSystemPageHandler(w http.ResponseWriter, r *http.Request) {
 	serveProbeLocalHTMLPage(w, r, "/local/system", probeLocalSystemPageHTML)
+}
+
+func probeLocalSyncPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/sync", probeLocalSyncPageHTML)
 }
 
 func serveProbeLocalHTMLPage(w http.ResponseWriter, r *http.Request, expectedPath string, pageHTML string) {
@@ -5922,6 +5948,187 @@ func probeLocalProxyGroupsRestoreHandler(w http.ResponseWriter, r *http.Request)
 	now := time.Now().UTC().Format(time.RFC3339)
 	_ = setProbeLocalBackupRestoreStatus("ok", "", now)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restored_at": now, "backup_updated_at": backupUpdatedAt})
+}
+
+func probeLocalSyncStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	settings, err := loadProbeSyncSettings()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, probeLocalSyncStatusPayload(settings))
+}
+
+func probeLocalSyncSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, 1<<20)
+	defer body.Close()
+	var req probeLocalSyncSettingsRequest
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	settings, err := updateProbeSyncSettings(req.Enabled, req.SourcePaths, req.LocalTempDir, req.Schedule, req.GoogleClientID, req.GoogleClientSecret, req.GoogleFolder)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, probeLocalSyncStatusPayload(settings))
+}
+
+func probeLocalSyncTestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	settings, err := loadProbeSyncSettings()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	token, err := ensureProbeSyncGoogleAccessToken(settings)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if _, err := ensureProbeSyncGoogleDriveFolderPath(token.AccessToken, probeSyncRemoteFolderPath(settings.GoogleFolder, currentProbeSyncNodeID())); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func probeLocalSyncRunHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	identity := nodeIdentity{NodeID: currentProbeSyncNodeID()}
+	accepted := triggerProbeSyncAsync(identity, "local_manual")
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": accepted,
+		"runtime":  getProbeSyncRuntimeStatus(),
+	})
+}
+
+func probeLocalSyncGoogleAuthStartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, 1<<20)
+	defer body.Close()
+	var req probeLocalSyncSettingsRequest
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	current, _ := loadProbeSyncSettings()
+	normalizeProbeSyncSubmittedGoogleOAuthCredentials(&req.GoogleClientID, &req.GoogleClientSecret, current.GoogleClientSecret)
+	session, err := startProbeSyncGoogleDeviceAuth(req.GoogleClientID, req.GoogleClientSecret)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.GoogleClientID) != "" || strings.TrimSpace(req.GoogleClientSecret) != "" {
+		current.GoogleClientID = strings.TrimSpace(req.GoogleClientID)
+		current.GoogleClientSecret = strings.TrimSpace(req.GoogleClientSecret)
+		_ = persistProbeSyncSettings(current)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id":                session.ID,
+		"user_code":                 session.UserCode,
+		"verification_url":          session.VerifyURL,
+		"verification_url_complete": session.CompleteURL,
+		"expires_at":                session.ExpiresAt.UTC().Format(time.RFC3339),
+		"interval_sec":              session.IntervalSec,
+	})
+}
+
+func probeLocalSyncGoogleAuthPollHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, 64*1024)
+	defer body.Close()
+	var req probeLocalSyncGoogleAuthPollRequest
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	authorized, status, err := pollProbeSyncGoogleDeviceAuth(req.SessionID)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"authorized": false, "status": firstNonEmpty(status, "error"), "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"authorized": authorized, "status": status})
+}
+
+func probeLocalSyncGoogleDisconnectHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if err := clearProbeSyncGoogleToken(); err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func probeLocalSyncStatusPayload(settings probeSyncSettings) map[string]any {
+	nodeID := currentProbeSyncNodeID()
+	return map[string]any{
+		"settings": map[string]any{
+			"enabled":                 settings.Enabled,
+			"source_paths":            settings.SourcePaths,
+			"local_temp_dir":          settings.LocalTempDir,
+			"schedule":                normalizeProbeSyncSchedule(settings.Schedule),
+			"google_client_id":        settings.GoogleClientID,
+			"google_client_secret":    probeSyncSecretConfiguredLabel(settings.GoogleClientSecret),
+			"google_folder":           settings.GoogleFolder,
+			"google_authorized":       settings.GoogleToken.hasRefreshToken(),
+			"google_token_expires_at": probeSyncGoogleTokenExpiryString(settings.GoogleToken),
+			"last_attempt_at":         settings.LastAttemptAt,
+			"last_success_at":         settings.LastSuccessAt,
+			"last_error":              settings.LastError,
+			"last_archive_name":       settings.LastArchiveName,
+		},
+		"runtime": getProbeSyncRuntimeStatus(),
+		"paths": map[string]any{
+			"node_id":       nodeID,
+			"remote_folder": probeSyncRemoteFolderPath(settings.GoogleFolder, nodeID),
+		},
+	}
 }
 
 func probeLocalAuthDataFilePath() (string, error) {
