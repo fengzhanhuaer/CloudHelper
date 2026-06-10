@@ -85,11 +85,17 @@ type dashboardPublicNetworkPoint struct {
 	OK           bool    `json:"ok"`
 }
 
-type dashboardPublicNetworkProbeItem struct {
-	NodeNo   int                           `json:"node_no"`
-	NodeName string                        `json:"node_name"`
-	Scale    string                        `json:"scale"`
+type dashboardPublicNetworkSeries struct {
+	TaskID   string                        `json:"task_id"`
+	TaskName string                        `json:"task_name"`
 	Points   []dashboardPublicNetworkPoint `json:"points"`
+}
+
+type dashboardPublicNetworkProbeItem struct {
+	NodeNo   int                            `json:"node_no"`
+	NodeName string                         `json:"node_name"`
+	Scale    string                         `json:"scale"`
+	Series   []dashboardPublicNetworkSeries `json:"series"`
 }
 
 func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
@@ -182,7 +188,11 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 		ProbeStore.mu.RUnlock()
 	}
 
-	byNode := map[string]*dashboardPublicNetworkProbeItem{}
+	type nodeAccumulator struct {
+		item   *dashboardPublicNetworkProbeItem
+		series map[string]*dashboardPublicNetworkSeries
+	}
+	byNode := map[string]*nodeAccumulator{}
 	for _, nodeID := range listProbeNetworkMonitorResultNodeIDs() {
 		meta, ok := metaMap[nodeID]
 		nodeNo := 0
@@ -216,17 +226,39 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 			if nodeName == "" {
 				nodeName = strings.TrimSpace(result.NodeName)
 			}
-			item, ok := byNode[nodeID]
+			acc, ok := byNode[nodeID]
 			if !ok {
-				item = &dashboardPublicNetworkProbeItem{
-					NodeNo:   nodeNo,
-					NodeName: nodeName,
-					Scale:    scale,
+				acc = &nodeAccumulator{
+					item: &dashboardPublicNetworkProbeItem{
+						NodeNo:   nodeNo,
+						NodeName: nodeName,
+						Scale:    scale,
+						Series:   []dashboardPublicNetworkSeries{},
+					},
+					series: map[string]*dashboardPublicNetworkSeries{},
+				}
+				byNode[nodeID] = acc
+			}
+			if acc.item.NodeNo <= 0 && nodeNo > 0 {
+				acc.item.NodeNo = nodeNo
+			}
+			if acc.item.NodeName == "" && nodeName != "" {
+				acc.item.NodeName = nodeName
+			}
+			taskID, taskName := dashboardNetworkTaskIdentity(result)
+			series, ok := acc.series[taskID]
+			if !ok {
+				series = &dashboardPublicNetworkSeries{
+					TaskID:   taskID,
+					TaskName: taskName,
 					Points:   []dashboardPublicNetworkPoint{},
 				}
-				byNode[nodeID] = item
+				acc.series[taskID] = series
 			}
-			item.Points = append(item.Points, dashboardPublicNetworkPoint{
+			if series.TaskName == "" && taskName != "" {
+				series.TaskName = taskName
+			}
+			series.Points = append(series.Points, dashboardPublicNetworkPoint{
 				Timestamp:    timestamp,
 				LatencyAvgMS: math.Max(0, latencyAvgMS),
 				LossPercent:  math.Max(0, lossPercent),
@@ -236,15 +268,32 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 	}
 
 	out := make([]dashboardPublicNetworkProbeItem, 0, len(byNode))
-	for _, item := range byNode {
-		sort.SliceStable(item.Points, func(i, j int) bool {
-			return item.Points[i].Timestamp < item.Points[j].Timestamp
-		})
-		item.Points = bucketDashboardNetworkPoints(item.Points, scale)
-		if len(item.Points) > maxDashboardNetworkPointsPerProbe {
-			item.Points = downsampleDashboardNetworkPoints(item.Points, maxDashboardNetworkPointsPerProbe)
+	for _, acc := range byNode {
+		seriesList := make([]dashboardPublicNetworkSeries, 0, len(acc.series))
+		for _, series := range acc.series {
+			sort.SliceStable(series.Points, func(i, j int) bool {
+				return series.Points[i].Timestamp < series.Points[j].Timestamp
+			})
+			series.Points = bucketDashboardNetworkPoints(series.Points, scale)
+			if len(series.Points) > maxDashboardNetworkPointsPerProbe {
+				series.Points = downsampleDashboardNetworkPoints(series.Points, maxDashboardNetworkPointsPerProbe)
+			}
+			if len(series.Points) == 0 {
+				continue
+			}
+			seriesList = append(seriesList, *series)
 		}
-		out = append(out, *item)
+		sort.Slice(seriesList, func(i, j int) bool {
+			if seriesList[i].TaskName != seriesList[j].TaskName {
+				return seriesList[i].TaskName < seriesList[j].TaskName
+			}
+			return seriesList[i].TaskID < seriesList[j].TaskID
+		})
+		if len(seriesList) == 0 {
+			continue
+		}
+		acc.item.Series = seriesList
+		out = append(out, *acc.item)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		leftNo := out[i].NodeNo
@@ -263,6 +312,22 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 		return i < j
 	})
 	return out
+}
+
+func dashboardNetworkTaskIdentity(result probeNetworkMonitorResultRecord) (string, string) {
+	taskID := strings.TrimSpace(result.TaskID)
+	taskName := normalizeOptionalProbeNetworkMonitorTaskName(result.TaskName)
+	if taskID == "" {
+		taskID = "default"
+	}
+	if taskName == "" {
+		if taskID != "default" {
+			taskName = taskID
+		} else {
+			taskName = "未命名任务"
+		}
+	}
+	return taskID, taskName
 }
 
 func normalizeDashboardNetworkScale(raw string) string {

@@ -227,7 +227,7 @@
         }
         .network-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            grid-template-columns: 1fr;
             gap: 12px;
         }
         .network-card {
@@ -254,16 +254,17 @@
             font-family: 'Courier New', Courier, monospace;
         }
         .chart-wrap {
-            height: 180px;
+            height: 260px;
             width: 100%;
         }
         .chart-wrap canvas {
             width: 100%;
-            height: 180px;
+            height: 260px;
             display: block;
         }
         .legend {
             display: flex;
+            flex-wrap: wrap;
             gap: 14px;
             color: var(--text-secondary);
             font-size: 12px;
@@ -283,6 +284,24 @@
         }
         .legend-loss::before {
             background: #f85149;
+        }
+        .task-legend::before {
+            background: var(--task-color);
+        }
+        .refresh-button {
+            appearance: none;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(0, 0, 0, 0.18);
+            color: var(--text-primary);
+            padding: 7px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .network-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
     </style>
 </head>
@@ -319,10 +338,13 @@
             <div id="network-status" class="tab-panel">
                 <div class="panel-toolbar">
                     <div class="probe-panel-title">Network Test Metrics (Public, Desensitized)</div>
-                    <div class="scale-controls" aria-label="网络曲线时间刻度">
-                        <button class="scale-button active" type="button" data-scale="minute">分钟</button>
-                        <button class="scale-button" type="button" data-scale="hour">小时</button>
-                        <button class="scale-button" type="button" data-scale="day">天</button>
+                    <div class="network-actions">
+                        <div class="scale-controls" aria-label="网络曲线时间刻度">
+                            <button class="scale-button active" type="button" data-scale="minute">分钟</button>
+                            <button class="scale-button" type="button" data-scale="hour">小时</button>
+                            <button class="scale-button" type="button" data-scale="day">天</button>
+                        </div>
+                        <button id="network-refresh" class="refresh-button" type="button">刷新</button>
                     </div>
                 </div>
                 <div id="network-grid" class="network-grid">
@@ -336,7 +358,11 @@
         const startedAtEl = document.getElementById('started-at');
         const probeGridEl = document.getElementById('probe-grid');
         const networkGridEl = document.getElementById('network-grid');
+        const networkRefreshEl = document.getElementById('network-refresh');
         let currentNetworkScale = 'minute';
+        let networkLoaded = false;
+        let lastNetworkItems = [];
+        const taskColors = ['#58a6ff', '#f85149', '#2ea043', '#d29922', '#bc8cff', '#39c5cf', '#ff7b72', '#a5d6ff', '#7ee787', '#ffa657'];
 
         function formatUptime(seconds) {
             seconds = Number(seconds);
@@ -476,6 +502,7 @@
 
         function renderNetwork(items) {
             const sorted = sortedByNodeNo(items);
+            lastNetworkItems = sorted;
             if (sorted.length === 0) {
                 networkGridEl.innerHTML = '<div class="network-card">No network data</div>';
                 return;
@@ -485,12 +512,16 @@
                 const name = (item.node_name && String(item.node_name).trim())
                     ? String(item.node_name).trim()
                     : ('probe #' + String(nodeNo > 0 ? nodeNo : index + 1));
-                const points = Array.isArray(item.points) ? item.points : [];
+                const series = normalizeNetworkSeries(item.series);
                 const canvasID = 'network-chart-' + index;
-                const latest = points.length > 0 ? points[points.length - 1] : null;
-                const latestText = latest
-                    ? ('延迟 ' + Number(latest.latency_avg_ms || 0).toFixed(1) + 'ms / 丢包 ' + Number(latest.loss_percent || 0).toFixed(1) + '%')
+                const latest = latestNetworkPoint(series);
+                const latestText = latest && latest.point
+                    ? (latest.name + ' 延迟 ' + Number(latest.point.latency_avg_ms || 0).toFixed(1) + 'ms / 丢包 ' + Number(latest.point.loss_percent || 0).toFixed(1) + '%')
                     : 'No points';
+                const legend = series.map((entry, seriesIndex) => {
+                    const color = taskColors[seriesIndex % taskColors.length];
+                    return '<span class="task-legend" style="--task-color:' + color + '">' + escapeHTML(entry.task_name || entry.task_id || '未命名任务') + '</span>';
+                }).join('');
                 return '<div class="network-card">'
                     + '<div class="network-head">'
                     + '<div>'
@@ -500,21 +531,44 @@
                     + '<div class="network-meta">' + escapeHTML(latestText) + '</div>'
                     + '</div>'
                     + '<div class="chart-wrap"><canvas id="' + canvasID + '" width="640" height="260"></canvas></div>'
-                    + '<div class="legend"><span class="legend-latency">latency avg</span><span class="legend-loss">loss</span></div>'
+                    + '<div class="legend">' + legend + '</div>'
                     + '</div>';
             }).join('');
             sorted.forEach((item, index) => {
                 const canvas = document.getElementById('network-chart-' + index);
-                drawNetworkChart(canvas, Array.isArray(item.points) ? item.points : []);
+                drawNetworkChart(canvas, normalizeNetworkSeries(item.series));
             });
         }
 
-        function drawNetworkChart(canvas, points) {
+        function normalizeNetworkSeries(series) {
+            if (!Array.isArray(series)) return [];
+            return series.map((entry) => ({
+                task_id: String((entry && entry.task_id) || ''),
+                task_name: String((entry && entry.task_name) || (entry && entry.task_id) || '未命名任务'),
+                points: Array.isArray(entry && entry.points) ? entry.points : []
+            })).filter((entry) => entry.points.length > 0);
+        }
+
+        function latestNetworkPoint(series) {
+            let latest = null;
+            series.forEach((entry) => {
+                const point = entry.points[entry.points.length - 1];
+                if (!point) return;
+                const ts = Date.parse(point.timestamp);
+                if (!Number.isFinite(ts)) return;
+                if (!latest || ts > latest.ts) {
+                    latest = { ts, name: entry.task_name, point };
+                }
+            });
+            return latest;
+        }
+
+        function drawNetworkChart(canvas, series) {
             if (!canvas) return;
             const rect = canvas.getBoundingClientRect();
             const ratio = window.devicePixelRatio || 1;
             const width = Math.max(320, Math.floor(rect.width * ratio));
-            const height = Math.max(180, Math.floor(rect.height * ratio));
+            const height = Math.max(260, Math.floor(rect.height * ratio));
             if (canvas.width !== width || canvas.height !== height) {
                 canvas.width = width;
                 canvas.height = height;
@@ -539,42 +593,58 @@
 
             ctx.fillStyle = 'rgba(201,209,217,0.78)';
             ctx.font = (11 * ratio) + 'px Courier New';
-            if (!points.length) {
+            if (!series.length) {
                 ctx.fillText('No network data', padL, padT + 24 * ratio);
                 return;
             }
 
-            const latencyMax = Math.max(10, ...points.map((p) => Number(p.latency_avg_ms) || 0));
-            const lossMax = Math.max(10, ...points.map((p) => Number(p.loss_percent) || 0));
-            const xOf = (i) => padL + (points.length === 1 ? plotW : plotW * i / (points.length - 1));
+            const allPoints = series.flatMap((entry) => entry.points);
+            const minTime = Math.min(...allPoints.map((p) => Date.parse(p.timestamp)).filter(Number.isFinite));
+            const maxTime = Math.max(...allPoints.map((p) => Date.parse(p.timestamp)).filter(Number.isFinite));
+            const latencyMax = Math.max(10, ...allPoints.map((p) => Number(p.latency_avg_ms) || 0));
+            const lossMax = Math.max(10, ...allPoints.map((p) => Number(p.loss_percent) || 0));
+            const xOfTime = (raw) => {
+                const ts = Date.parse(raw);
+                if (!Number.isFinite(ts) || !Number.isFinite(minTime) || !Number.isFinite(maxTime) || minTime === maxTime) return padL + plotW;
+                return padL + ((ts - minTime) / (maxTime - minTime)) * plotW;
+            };
             const latencyY = (v) => padT + plotH - (Math.max(0, Number(v) || 0) / latencyMax) * plotH;
             const lossY = (v) => padT + plotH - (Math.max(0, Number(v) || 0) / lossMax) * plotH;
 
-            drawLine(ctx, points, xOf, latencyY, 'latency_avg_ms', '#58a6ff', ratio);
-            drawLine(ctx, points, xOf, lossY, 'loss_percent', '#f85149', ratio);
+            series.forEach((entry, index) => {
+                const color = taskColors[index % taskColors.length];
+                drawLine(ctx, entry.points, xOfTime, latencyY, 'latency_avg_ms', color, ratio, false);
+                drawLine(ctx, entry.points, xOfTime, lossY, 'loss_percent', color, ratio, true);
+            });
 
             ctx.fillStyle = '#58a6ff';
             ctx.fillText(Math.round(latencyMax) + 'ms', 4 * ratio, padT + 10 * ratio);
             ctx.fillStyle = '#f85149';
             ctx.fillText(Math.round(lossMax) + '%', width - padR + 6 * ratio, padT + 10 * ratio);
             ctx.fillStyle = 'rgba(201,209,217,0.62)';
-            ctx.fillText(formatTimeLabel(points[0].timestamp, currentNetworkScale), padL, height - 8 * ratio);
+            ctx.fillText(formatTimeLabel(new Date(minTime).toISOString(), currentNetworkScale), padL, height - 8 * ratio);
             ctx.textAlign = 'right';
-            ctx.fillText(formatTimeLabel(points[points.length - 1].timestamp, currentNetworkScale), width - padR, height - 8 * ratio);
+            ctx.fillText(formatTimeLabel(new Date(maxTime).toISOString(), currentNetworkScale), width - padR, height - 8 * ratio);
             ctx.textAlign = 'left';
         }
 
-        function drawLine(ctx, points, xOf, yOf, field, color, ratio) {
+        function drawLine(ctx, points, xOf, yOf, field, color, ratio, dashed) {
             ctx.strokeStyle = color;
             ctx.lineWidth = 2 * ratio;
+            ctx.setLineDash(dashed ? [5 * ratio, 4 * ratio] : []);
             ctx.beginPath();
+            let started = false;
             points.forEach((point, index) => {
-                const x = xOf(index);
+                const x = xOf(point.timestamp);
                 const y = yOf(point[field]);
-                if (index === 0) ctx.moveTo(x, y);
+                if (!started) {
+                    ctx.moveTo(x, y);
+                    started = true;
+                }
                 else ctx.lineTo(x, y);
             });
             ctx.stroke();
+            ctx.setLineDash([]);
         }
 
         function formatTimeLabel(raw, scale) {
@@ -594,6 +664,7 @@
                 const res = await fetch('/dashboard/network?scale=' + encodeURIComponent(currentNetworkScale));
                 if (!res.ok) throw new Error('Not OK');
                 const data = await res.json();
+                networkLoaded = true;
                 renderNetwork(data.items || []);
             } catch (_) {
                 // keep old view
@@ -605,7 +676,7 @@
                 const tab = button.getAttribute('data-tab');
                 document.querySelectorAll('.tab-button').forEach((item) => item.classList.toggle('active', item === button));
                 document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === tab));
-                if (tab === 'network-status') checkNetwork();
+                if (tab === 'network-status' && !networkLoaded) checkNetwork();
             });
         });
 
@@ -617,13 +688,15 @@
             });
         });
 
+        if (networkRefreshEl) {
+            networkRefreshEl.addEventListener('click', () => checkNetwork());
+        }
+
         checkStatus();
         checkProbes();
-        checkNetwork();
         setInterval(checkStatus, 2000);
         setInterval(checkProbes, 5000);
-        setInterval(checkNetwork, 60000);
-        window.addEventListener('resize', () => checkNetwork());
+        window.addEventListener('resize', () => renderNetwork(lastNetworkItems));
     </script>
 </body>
 </html>

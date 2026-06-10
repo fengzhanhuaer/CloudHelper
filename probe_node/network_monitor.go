@@ -204,6 +204,9 @@ func probeNetworkMonitorTarget(target string, count int, timeoutMS int) probeNet
 			if len(errorsOut) < 2 {
 				errorsOut = append(errorsOut, err.Error())
 			}
+			if isProbeNetworkMonitorPingPermissionError(err.Error()) {
+				break
+			}
 			continue
 		}
 		latencies = append(latencies, latencyMS)
@@ -256,9 +259,31 @@ func runProbeNetworkMonitorPing(target string, timeoutMS int) (float64, error) {
 		if trimmed == "" {
 			trimmed = err.Error()
 		}
-		return 0, fmt.Errorf("%s", trimmed)
+		if isProbeNetworkMonitorPingPermissionError(trimmed) {
+			return 0, fmt.Errorf("ping permission denied: grant cap_net_raw to ping/probe process or run probe with NET_RAW/root permission")
+		}
+		return 0, fmt.Errorf("%s", compactProbeNetworkMonitorError(trimmed))
 	}
 	return 0, fmt.Errorf("ping latency not found")
+}
+
+func isProbeNetworkMonitorPingPermissionError(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(lower, "operation not permitted") ||
+		strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "cap_net_raw") ||
+		strings.Contains(lower, "are you root")
+}
+
+func compactProbeNetworkMonitorError(text string) string {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 {
+		return ""
+	}
+	if len(fields) > 40 {
+		fields = fields[:40]
+	}
+	return strings.Join(fields, " ")
 }
 
 func probeNetworkMonitorPingCommand(target string, timeoutMS int) (string, []string) {
