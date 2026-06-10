@@ -33,6 +33,25 @@ type mngProbeShellShortcutDeleteRequest struct {
 	Name string `json:"name"`
 }
 
+type mngProbeNetworkMonitorTaskUpsertRequest struct {
+	ID        string   `json:"id"`
+	NodeIDs   []string `json:"node_ids"`
+	Targets   []string `json:"targets"`
+	Count     int      `json:"count"`
+	TimeoutMS int      `json:"timeout_ms"`
+	CycleSec  int      `json:"cycle_sec"`
+	Enabled   bool     `json:"enabled"`
+}
+
+type mngProbeNetworkMonitorTaskEnabledRequest struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
+}
+
+type mngProbeNetworkMonitorTaskDeleteRequest struct {
+	ID string `json:"id"`
+}
+
 func mngProbePageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/mng/probe" {
 		http.NotFound(w, r)
@@ -262,6 +281,117 @@ func mngProbeLogsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngProbeNetworkMonitorTasksHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ProbeStore.mu.RLock()
+	tasks := loadProbeNetworkMonitorTasksLocked()
+	ProbeStore.mu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": tasks})
+}
+
+func mngProbeNetworkMonitorResultsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	limit := normalizeAdminLogLines(r.URL.Query().Get("limit"))
+	ProbeStore.mu.RLock()
+	results := loadProbeNetworkMonitorResultsLocked(limit)
+	ProbeStore.mu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": results})
+}
+
+func mngProbeNetworkMonitorTaskUpsertHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req mngProbeNetworkMonitorTaskUpsertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	ProbeStore.mu.Lock()
+	allNodeIDs := networkMonitorAllTaskNodeIDsLocked()
+	task, err := upsertProbeNetworkMonitorTaskLocked(req)
+	ProbeStore.mu.Unlock()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := ProbeStore.Save(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist network monitor task"})
+		return
+	}
+
+	dispatchProbeNetworkMonitorTaskUpdates(append(allNodeIDs, task.NodeIDs...))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"task": task})
+}
+
+func mngProbeNetworkMonitorTaskEnabledHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req mngProbeNetworkMonitorTaskEnabledRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	ProbeStore.mu.Lock()
+	task, err := setProbeNetworkMonitorTaskEnabledLocked(req.ID, req.Enabled)
+	ProbeStore.mu.Unlock()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := ProbeStore.Save(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist network monitor task"})
+		return
+	}
+
+	dispatchProbeNetworkMonitorTaskUpdates(task.NodeIDs)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"task": task})
+}
+
+func mngProbeNetworkMonitorTaskDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req mngProbeNetworkMonitorTaskDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	ProbeStore.mu.Lock()
+	allNodeIDs := networkMonitorAllTaskNodeIDsLocked()
+	err := deleteProbeNetworkMonitorTaskLocked(req.ID)
+	ProbeStore.mu.Unlock()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := ProbeStore.Save(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist network monitor task"})
+		return
+	}
+
+	dispatchProbeNetworkMonitorTaskUpdates(allNodeIDs)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
 func mngProbeUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -473,6 +603,20 @@ func mngProbeShellShortcutsGetHandler(w http.ResponseWriter, r *http.Request) {
 	items := loadProbeShellShortcutsLocked()
 	ProbeStore.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+}
+
+func normalizeMngProbeNetworkMonitorNodeIDs(raw []string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		id := normalizeProbeNodeID(item)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func mngProbeShellShortcutsUpsertHandler(w http.ResponseWriter, r *http.Request) {

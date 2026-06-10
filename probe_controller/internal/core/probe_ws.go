@@ -153,6 +153,15 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeLinkTestControlResult(msg)
+		case "network_monitor_result":
+			var msg probeNetworkMonitorResultMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
+			if strings.TrimSpace(msg.NodeID) == "" {
+				msg.NodeID = nodeID
+			}
+			consumeProbeNetworkMonitorResult(msg)
 		case "shell_exec_result":
 			var msg probeShellExecResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {

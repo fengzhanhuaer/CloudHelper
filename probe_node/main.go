@@ -97,51 +97,55 @@ type probeChainPortForwardMessage struct {
 }
 
 type probeControlMessage struct {
-	Type              string                         `json:"type"`
-	Mode              string                         `json:"mode"`
-	Action            string                         `json:"action"`
-	Protocol          string                         `json:"protocol"`
-	ChainID           string                         `json:"chain_id"`
-	ChainType         string                         `json:"chain_type"`
-	ClientEntryID     string                         `json:"client_entry_id,omitempty"`
-	ClientEntryType   string                         `json:"client_entry_type,omitempty"`
-	Name              string                         `json:"name"`
-	UserID            string                         `json:"user_id"`
-	UserPublicKey     string                         `json:"user_public_key"`
-	LinkSecret        string                         `json:"link_secret"`
-	AuthTicket        string                         `json:"auth_ticket"`
-	Role              string                         `json:"role"`
-	ListenHost        string                         `json:"listen_host"`
-	ListenPort        int                            `json:"listen_port"`
-	LinkLayer         string                         `json:"link_layer"`
-	NextLinkLayer     string                         `json:"next_link_layer"`
-	NextDialMode      string                         `json:"next_dial_mode"`
-	InternalPort      int                            `json:"internal_port"`
-	NextHost          string                         `json:"next_host"`
-	NextPort          int                            `json:"next_port"`
-	PrevHost          string                         `json:"prev_host"`
-	PrevPort          int                            `json:"prev_port"`
-	PrevLinkLayer     string                         `json:"prev_link_layer"`
-	PrevDialMode      string                         `json:"prev_dial_mode"`
-	PortForwards      []probeChainPortForwardMessage `json:"port_forwards"`
-	RequireUserAuth   bool                           `json:"require_user_auth"`
-	NextAuthMode      string                         `json:"next_auth_mode"`
-	SessionID         string                         `json:"session_id"`
-	Command           string                         `json:"command"`
-	TimeoutSec        int                            `json:"timeout_sec"`
-	ReleaseRepo       string                         `json:"release_repo"`
-	ControllerBaseURL string                         `json:"controller_base_url"`
-	IntervalSec       int                            `json:"interval_sec"`
-	RequestID         string                         `json:"request_id"`
-	Lines             int                            `json:"lines"`
-	SinceMinutes      int                            `json:"since_minutes"`
-	MinLevel          string                         `json:"min_level"`
-	ConsoleMethod     string                         `json:"console_method,omitempty"`
-	ConsolePath       string                         `json:"console_path,omitempty"`
-	ConsoleHeaders    map[string][]string            `json:"console_headers,omitempty"`
-	ConsoleBody       string                         `json:"console_body,omitempty"`
-	LocalConsole      bool                           `json:"local_console,omitempty"`
-	Timestamp         string                         `json:"timestamp"`
+	Type                string                           `json:"type"`
+	Mode                string                           `json:"mode"`
+	Action              string                           `json:"action"`
+	Protocol            string                           `json:"protocol"`
+	ChainID             string                           `json:"chain_id"`
+	ChainType           string                           `json:"chain_type"`
+	ClientEntryID       string                           `json:"client_entry_id,omitempty"`
+	ClientEntryType     string                           `json:"client_entry_type,omitempty"`
+	Name                string                           `json:"name"`
+	UserID              string                           `json:"user_id"`
+	UserPublicKey       string                           `json:"user_public_key"`
+	LinkSecret          string                           `json:"link_secret"`
+	AuthTicket          string                           `json:"auth_ticket"`
+	Role                string                           `json:"role"`
+	ListenHost          string                           `json:"listen_host"`
+	ListenPort          int                              `json:"listen_port"`
+	LinkLayer           string                           `json:"link_layer"`
+	NextLinkLayer       string                           `json:"next_link_layer"`
+	NextDialMode        string                           `json:"next_dial_mode"`
+	InternalPort        int                              `json:"internal_port"`
+	NextHost            string                           `json:"next_host"`
+	NextPort            int                              `json:"next_port"`
+	PrevHost            string                           `json:"prev_host"`
+	PrevPort            int                              `json:"prev_port"`
+	PrevLinkLayer       string                           `json:"prev_link_layer"`
+	PrevDialMode        string                           `json:"prev_dial_mode"`
+	PortForwards        []probeChainPortForwardMessage   `json:"port_forwards"`
+	RequireUserAuth     bool                             `json:"require_user_auth"`
+	NextAuthMode        string                           `json:"next_auth_mode"`
+	SessionID           string                           `json:"session_id"`
+	Command             string                           `json:"command"`
+	TimeoutSec          int                              `json:"timeout_sec"`
+	ReleaseRepo         string                           `json:"release_repo"`
+	ControllerBaseURL   string                           `json:"controller_base_url"`
+	IntervalSec         int                              `json:"interval_sec"`
+	RequestID           string                           `json:"request_id"`
+	Lines               int                              `json:"lines"`
+	SinceMinutes        int                              `json:"since_minutes"`
+	MinLevel            string                           `json:"min_level"`
+	Targets             []string                         `json:"targets,omitempty"`
+	Count               int                              `json:"count,omitempty"`
+	TimeoutMS           int                              `json:"timeout_ms,omitempty"`
+	NetworkMonitorTasks []probeNetworkMonitorTaskPayload `json:"tasks,omitempty"`
+	ConsoleMethod       string                           `json:"console_method,omitempty"`
+	ConsolePath         string                           `json:"console_path,omitempty"`
+	ConsoleHeaders      map[string][]string              `json:"console_headers,omitempty"`
+	ConsoleBody         string                           `json:"console_body,omitempty"`
+	LocalConsole        bool                             `json:"local_console,omitempty"`
+	Timestamp           string                           `json:"timestamp"`
 }
 
 type probeLaunchOptions struct {
@@ -775,6 +779,14 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 	}
 	if typeName == "link_test_control" {
 		go runProbeLinkTestControl(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "network_monitor_test" {
+		go runProbeNetworkMonitorTest(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "network_monitor_tasks" {
+		go applyProbeNetworkMonitorTasks(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName == "shell_exec" {

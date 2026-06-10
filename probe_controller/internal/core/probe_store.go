@@ -24,6 +24,8 @@ type probeConfigData struct {
 	ProbeShellShortcuts    []probeShellShortcutRecord             `json:"probe_shell_shortcuts"`
 	DeletedProbeNodeNos    []int                                  `json:"deleted_probe_node_nos,omitempty"`
 	ProbeProxyGroupBackups map[string]probeProxyGroupBackupRecord `json:"probe_proxy_group_backups,omitempty"`
+	NetworkMonitorTasks    []probeNetworkMonitorTaskRecord        `json:"network_monitor_tasks,omitempty"`
+	NetworkMonitorResults  []probeNetworkMonitorResultRecord      `json:"network_monitor_results,omitempty"`
 }
 
 var ProbeStore *probeConfigStore
@@ -39,6 +41,8 @@ func initProbeStore() {
 			ProbeShellShortcuts:    []probeShellShortcutRecord{},
 			DeletedProbeNodeNos:    []int{},
 			ProbeProxyGroupBackups: map[string]probeProxyGroupBackupRecord{},
+			NetworkMonitorTasks:    []probeNetworkMonitorTaskRecord{},
+			NetworkMonitorResults:  []probeNetworkMonitorResultRecord{},
 		},
 	}
 
@@ -59,6 +63,8 @@ func initProbeStore() {
 			ProbeStore.data.ProbeShellShortcuts = shortcuts
 			ProbeStore.data.DeletedProbeNodeNos = deletedNos
 			ProbeStore.data.ProbeProxyGroupBackups = normalizeProbeProxyGroupBackups(raw.ProbeProxyGroupBackups)
+			ProbeStore.data.NetworkMonitorTasks = normalizeProbeNetworkMonitorTasks(raw.NetworkMonitorTasks)
+			ProbeStore.data.NetworkMonitorResults = normalizeProbeNetworkMonitorResults(raw.NetworkMonitorResults)
 		}
 	} else if os.IsNotExist(err) {
 		nodes, deletedNodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(loadLegacyProbeNodesFromMainStore(), nil, loadLegacyProbeSecretsFromMainStore(), nil, nil)
@@ -68,6 +74,8 @@ func initProbeStore() {
 		ProbeStore.data.ProbeShellShortcuts = shortcuts
 		ProbeStore.data.DeletedProbeNodeNos = deletedNos
 		ProbeStore.data.ProbeProxyGroupBackups = map[string]probeProxyGroupBackupRecord{}
+		ProbeStore.data.NetworkMonitorTasks = []probeNetworkMonitorTaskRecord{}
+		ProbeStore.data.NetworkMonitorResults = []probeNetworkMonitorResultRecord{}
 		if saveErr := ProbeStore.Save(); saveErr != nil {
 			log.Fatalf("failed to initialize probe config file: %v", saveErr)
 		}

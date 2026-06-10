@@ -75,6 +75,16 @@ type probeLogsCommand struct {
 	Timestamp    string `json:"timestamp"`
 }
 
+type probeNetworkMonitorCommand struct {
+	Type      string                          `json:"type"`
+	RequestID string                          `json:"request_id,omitempty"`
+	Tasks     []probeNetworkMonitorTaskRecord `json:"tasks,omitempty"`
+	Targets   []string                        `json:"targets,omitempty"`
+	Count     int                             `json:"count,omitempty"`
+	TimeoutMS int                             `json:"timeout_ms,omitempty"`
+	Timestamp string                          `json:"timestamp"`
+}
+
 type probeLinkTestControlCommand struct {
 	Type              string `json:"type"`
 	RequestID         string `json:"request_id"`
@@ -176,6 +186,34 @@ type probeLinkTestControlResultMessage struct {
 	Timestamp    string `json:"timestamp,omitempty"`
 }
 
+type probeNetworkMonitorTargetResult struct {
+	Target       string  `json:"target"`
+	IPFamily     string  `json:"ip_family"`
+	Sent         int     `json:"sent"`
+	Received     int     `json:"received"`
+	LossPercent  float64 `json:"loss_percent"`
+	LatencyMinMS float64 `json:"latency_min_ms,omitempty"`
+	LatencyAvgMS float64 `json:"latency_avg_ms,omitempty"`
+	LatencyMaxMS float64 `json:"latency_max_ms,omitempty"`
+	Error        string  `json:"error,omitempty"`
+}
+
+type probeNetworkMonitorResultMessage struct {
+	Type       string                            `json:"type"`
+	RequestID  string                            `json:"request_id"`
+	TaskID     string                            `json:"task_id,omitempty"`
+	NodeID     string                            `json:"node_id"`
+	OK         bool                              `json:"ok"`
+	Count      int                               `json:"count,omitempty"`
+	TimeoutMS  int                               `json:"timeout_ms,omitempty"`
+	CycleSec   int                               `json:"cycle_sec,omitempty"`
+	Results    []probeNetworkMonitorTargetResult `json:"results,omitempty"`
+	Error      string                            `json:"error,omitempty"`
+	StartedAt  string                            `json:"started_at,omitempty"`
+	FinishedAt string                            `json:"finished_at,omitempty"`
+	Timestamp  string                            `json:"timestamp,omitempty"`
+}
+
 type probeChainLinkControlResultMessage struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
@@ -246,6 +284,13 @@ var probeLinkTestWaiters = struct {
 	data map[string]chan probeLinkTestControlResultMessage
 }{data: make(map[string]chan probeLinkTestControlResultMessage)}
 
+var probeNetworkMonitorRequestSeq atomic.Uint64
+
+var probeNetworkMonitorWaiters = struct {
+	mu   sync.Mutex
+	data map[string]chan probeNetworkMonitorResultMessage
+}{data: make(map[string]chan probeNetworkMonitorResultMessage)}
+
 var probeChainRequestSeq atomic.Uint64
 
 var probeChainWaiters = struct {
@@ -279,6 +324,7 @@ func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
 			"interval_sec": currentProbeReportIntervalSec(),
 			"server_utc":   time.Now().UTC().Format(time.RFC3339),
 		})
+		dispatchProbeNetworkMonitorTasksForNode(nodeID)
 	}()
 	return s
 }
@@ -799,6 +845,156 @@ func consumeProbeLinkTestControlResult(result probeLinkTestControlResultMessage)
 	}
 }
 
+func dispatchProbeNetworkMonitor(nodeID string, targets []string, count int, timeoutMS int) (probeNetworkMonitorResultMessage, error) {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return probeNetworkMonitorResultMessage{}, fmt.Errorf("node_id is required")
+	}
+	normalizedTargets, err := normalizeProbeNetworkMonitorTargets(targets)
+	if err != nil {
+		return probeNetworkMonitorResultMessage{}, err
+	}
+	safeCount := normalizeProbeNetworkMonitorCount(count)
+	safeTimeoutMS := normalizeProbeNetworkMonitorTimeoutMS(timeoutMS)
+
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return probeNetworkMonitorResultMessage{}, fmt.Errorf("probe is offline")
+	}
+
+	requestID := newProbeNetworkMonitorRequestID(normalizedID)
+	waiter := make(chan probeNetworkMonitorResultMessage, 1)
+
+	probeNetworkMonitorWaiters.mu.Lock()
+	probeNetworkMonitorWaiters.data[requestID] = waiter
+	probeNetworkMonitorWaiters.mu.Unlock()
+	defer func() {
+		probeNetworkMonitorWaiters.mu.Lock()
+		delete(probeNetworkMonitorWaiters.data, requestID)
+		probeNetworkMonitorWaiters.mu.Unlock()
+	}()
+
+	cmd := probeNetworkMonitorCommand{
+		Type:      "network_monitor_test",
+		RequestID: requestID,
+		Targets:   normalizedTargets,
+		Count:     safeCount,
+		TimeoutMS: safeTimeoutMS,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return probeNetworkMonitorResultMessage{}, err
+	}
+
+	waitTimeout := time.Duration((safeTimeoutMS*safeCount*len(normalizedTargets))/1000+12) * time.Second
+	if waitTimeout < 20*time.Second {
+		waitTimeout = 20 * time.Second
+	}
+	if waitTimeout > 2*time.Minute {
+		waitTimeout = 2 * time.Minute
+	}
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-waiter:
+		if strings.TrimSpace(result.NodeID) == "" {
+			result.NodeID = normalizedID
+		}
+		if !result.OK {
+			errMsg := strings.TrimSpace(result.Error)
+			if errMsg == "" {
+				errMsg = "probe network monitor failed"
+			}
+			return result, errors.New(errMsg)
+		}
+		return result, nil
+	case <-timer.C:
+		return probeNetworkMonitorResultMessage{}, fmt.Errorf("probe network monitor timeout")
+	}
+}
+
+func consumeProbeNetworkMonitorResult(result probeNetworkMonitorResultMessage) {
+	requestID := strings.TrimSpace(result.RequestID)
+	normalizedNodeID := normalizeProbeNodeID(result.NodeID)
+	if normalizedNodeID != "" && ProbeStore != nil {
+		ProbeStore.mu.Lock()
+		nodeNo, nodeName := nodeNameByNodeIDLocked(normalizedNodeID)
+		appendProbeNetworkMonitorResultLocked(probeNetworkMonitorResultRecord{
+			TaskID:     strings.TrimSpace(result.TaskID),
+			NodeID:     normalizedNodeID,
+			NodeNo:     nodeNo,
+			NodeName:   nodeName,
+			OK:         result.OK,
+			Count:      result.Count,
+			TimeoutMS:  result.TimeoutMS,
+			CycleSec:   result.CycleSec,
+			Results:    result.Results,
+			Error:      strings.TrimSpace(result.Error),
+			StartedAt:  strings.TrimSpace(result.StartedAt),
+			FinishedAt: strings.TrimSpace(result.FinishedAt),
+			Timestamp:  strings.TrimSpace(result.Timestamp),
+		})
+		ProbeStore.mu.Unlock()
+		if err := ProbeStore.Save(); err != nil {
+			logControllerWarnf("failed to persist network monitor result: %v", err)
+		}
+	}
+	if requestID != "" {
+		probeNetworkMonitorWaiters.mu.Lock()
+		waiter, ok := probeNetworkMonitorWaiters.data[requestID]
+		if ok {
+			delete(probeNetworkMonitorWaiters.data, requestID)
+		}
+		probeNetworkMonitorWaiters.mu.Unlock()
+		if !ok {
+			return
+		}
+		select {
+		case waiter <- result:
+		default:
+		}
+	}
+}
+
+func dispatchProbeNetworkMonitorTasks(nodeID string, tasks []probeNetworkMonitorTaskRecord) error {
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return fmt.Errorf("node_id is required")
+	}
+	session, ok := getProbeSession(normalizedID)
+	if !ok {
+		return fmt.Errorf("probe is offline")
+	}
+	cmd := probeNetworkMonitorCommand{
+		Type:      "network_monitor_tasks",
+		Tasks:     tasks,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := session.writeJSON(cmd); err != nil {
+		unregisterProbeSession(normalizedID, session)
+		return err
+	}
+	return nil
+}
+
+func dispatchProbeNetworkMonitorTasksForNode(nodeID string) {
+	if ProbeStore == nil {
+		return
+	}
+	normalizedID := normalizeProbeNodeID(nodeID)
+	if normalizedID == "" {
+		return
+	}
+	ProbeStore.mu.RLock()
+	tasks := probeNetworkMonitorTasksForNodeLocked(normalizedID)
+	ProbeStore.mu.RUnlock()
+	if err := dispatchProbeNetworkMonitorTasks(normalizedID, tasks); err != nil {
+		logControllerWarnf("failed to dispatch network monitor tasks: node=%s err=%v", normalizedID, err)
+	}
+}
+
 func dispatchProbeChainLinkControl(nodeID string, command probeChainLinkControlCommand) (probeChainLinkControlResultMessage, error) {
 	normalizedID := normalizeProbeNodeID(nodeID)
 	if normalizedID == "" {
@@ -1096,6 +1292,11 @@ func newProbeLogRequestID(nodeID string) string {
 func newProbeLinkTestRequestID(nodeID string) string {
 	seq := probeLinkTestRequestSeq.Add(1)
 	return fmt.Sprintf("probe-link-test-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
+}
+
+func newProbeNetworkMonitorRequestID(nodeID string) string {
+	seq := probeNetworkMonitorRequestSeq.Add(1)
+	return fmt.Sprintf("probe-network-monitor-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
 }
 
 func newProbeChainRequestID(nodeID string) string {

@@ -19,6 +19,9 @@
     .status.ok { color:#7ee787; }
     .status.warn { color:#f2cc60; }
     .status.err { color:#ff7b72; }
+    .text-ok { color:#7ee787; }
+    .text-warn { color:#f2cc60; }
+    .text-err { color:#ff7b72; }
     .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
     .tab { padding:8px 12px; border-radius:999px; border:1px solid #30363d; background:#161b22; color:#c9d1d9; cursor:pointer; }
     .tab.active { border-color:#58a6ff; color:#58a6ff; }
@@ -56,6 +59,13 @@
     .checkbox-row { display:flex; align-items:center; gap:8px; min-height:36px; }
     .status-time-lines { display:flex; flex-direction:column; gap:2px; }
     .status-time-lines .label { color:#8b949e; margin-right:6px; }
+    .monitor-targets { min-height:78px; }
+    .probe-check-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; margin:8px 0 12px; }
+    .probe-check-item { display:flex; align-items:center; justify-content:space-between; gap:8px; border:1px solid #30363d; border-radius:8px; padding:8px; background:#0d1117; }
+    .probe-check-item label { display:flex; align-items:center; gap:8px; min-width:0; }
+    .probe-check-item .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .compact-input { width:90px; }
+    .result-summary { margin:8px 0; color:#8b949e; font-size:13px; }
   </style>
 </head>
 <body>
@@ -63,7 +73,7 @@
     <div class="topbar">
       <div>
         <h1>/mng/probe 探针管理</h1>
-        <p class="sub">子页签：探针列表（增删改升级）、探针状态、探针日志、探针 Shell。</p>
+        <p class="sub">子页签：探针列表（增删改升级）、探针状态、网络监视、探针日志、探针 Shell。</p>
       </div>
       <div>
         <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
@@ -76,6 +86,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="list" type="button">探针列表</button>
       <button class="tab" data-tab="status" type="button">探针状态</button>
+      <button class="tab" data-tab="network" type="button">网络监视</button>
       <button class="tab" data-tab="logs" type="button">探针日志</button>
       <button class="tab" data-tab="shell" type="button">探针 Shell</button>
     </div>
@@ -137,6 +148,57 @@
             </tr>
           </thead>
           <tbody id="status-list-body"></tbody>
+        </table>
+      </section>
+
+      <section id="section-network" class="section">
+        <div class="row">
+          <textarea id="network-targets" class="monitor-targets" placeholder="目标 IPv4 / IPv6，每行一个；也可用逗号或空格分隔"></textarea>
+        </div>
+        <div class="row">
+          <label class="muted" for="network-count">测试次数</label>
+          <input id="network-count" class="compact-input" type="number" min="1" max="10" value="4" />
+          <label class="muted" for="network-timeout">超时 ms</label>
+          <input id="network-timeout" class="compact-input" type="number" min="300" max="5000" value="1000" />
+          <label class="muted" for="network-cycle">探测周期 s</label>
+          <input id="network-cycle" class="compact-input" type="number" min="5" max="3600" value="60" />
+          <button id="btn-network-select-online" class="btn" type="button">选择在线探针</button>
+          <button id="btn-network-select-all" class="btn" type="button">全选探针</button>
+          <button id="btn-network-clear" class="btn" type="button">清空选择</button>
+          <button id="btn-network-run" class="btn primary" type="button">保存并下发任务</button>
+          <button id="btn-network-cycle" class="btn" type="button">刷新上报结果</button>
+        </div>
+        <div class="muted">探针</div>
+        <div id="network-probe-checks" class="probe-check-grid"></div>
+        <div id="network-summary" class="result-summary">任务保存后由探针按周期自主执行并上报。</div>
+        <h3>探测任务</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>任务</th>
+              <th>探针</th>
+              <th>目标</th>
+              <th>参数</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="network-task-body"></tbody>
+        </table>
+        <h3>上报结果</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>探针</th>
+              <th>目标</th>
+              <th>类型</th>
+              <th>发包/收包</th>
+              <th>丢包</th>
+              <th>延迟</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="network-result-body"></tbody>
         </table>
       </section>
 
@@ -275,6 +337,9 @@
       shellShortcuts: [],
       editingNodeNo: 0,
       installCommandText: '',
+      networkRunning: false,
+      networkTasks: [],
+      networkResults: [],
     };
 
     function setStatus(message, level) {
@@ -482,6 +547,41 @@
       document.getElementById('shell-node-id').innerHTML = options || '<option value="">(无节点)</option>';
     }
 
+    function nodeRuntimeOnline(nodeNo) {
+      const status = state.statusItems.find((entry) => Number(entry.node_no) === Number(nodeNo));
+      const rt = status && status.runtime ? status.runtime : {};
+      return rt.online === true;
+    }
+
+    function currentNetworkSelectedNodeIDs() {
+      return Array.from(document.querySelectorAll('input[data-network-node-id]:checked'))
+        .map((input) => String(input.getAttribute('data-network-node-id') || '').trim())
+        .filter(Boolean);
+    }
+
+    function renderNetworkProbeChecks() {
+      const box = document.getElementById('network-probe-checks');
+      if (!box) return;
+      const selected = new Set(currentNetworkSelectedNodeIDs());
+      if (!state.nodes.length) {
+        box.innerHTML = '<div class="muted">暂无探针</div>';
+        return;
+      }
+      box.innerHTML = state.nodes.map((node) => {
+        const nodeID = String(node.node_no || '').trim();
+        const online = nodeRuntimeOnline(node.node_no);
+        const checked = selected.has(nodeID) ? 'checked' : '';
+        const disabled = state.networkRunning ? 'disabled' : '';
+        return `<div class="probe-check-item">
+          <label title="${node.node_name || ''}">
+            <input type="checkbox" data-network-node-id="${nodeID}" ${checked} ${disabled} />
+            <span class="name">#${node.node_no} ${node.node_name || '-'}</span>
+          </label>
+          <span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : '离线'}</span>
+        </div>`;
+      }).join('');
+    }
+
     function renderNodes() {
       const body = document.getElementById('node-list-body');
       if (!state.nodes.length) {
@@ -528,6 +628,7 @@
       }
 
       renderNodeSelect();
+      renderNetworkProbeChecks();
     }
 
     function renderStatus() {
@@ -573,6 +674,7 @@
           </td>
         </tr>`;
       }).join('');
+      renderNetworkProbeChecks();
     }
 
     function renderShortcuts() {
@@ -622,6 +724,200 @@
       document.getElementById('logs-meta').textContent = `节点 ${payload.node_name || payload.node_id || '-'} | 来源 ${payload.source || '-'} | 路径 ${payload.file_path || '-'} | 拉取时间 ${formatTime(payload.fetched)}`;
       document.getElementById('logs-output').textContent = String(payload.content || '');
       setStatus('日志读取完成', 'ok');
+    }
+
+    function parseNetworkTargets() {
+      const raw = String(document.getElementById('network-targets').value || '');
+      const items = raw.split(/[\s,;，；]+/).map((item) => item.trim()).filter(Boolean);
+      const seen = new Set();
+      const out = [];
+      for (const item of items) {
+        if (seen.has(item)) continue;
+        seen.add(item);
+        out.push(item);
+      }
+      return out;
+    }
+
+    function clampNumber(value, fallback, min, max) {
+      let n = Number.parseInt(String(value || ''), 10);
+      if (!Number.isFinite(n)) n = fallback;
+      if (n < min) n = min;
+      if (n > max) n = max;
+      return n;
+    }
+
+    function setNetworkRunning(running) {
+      state.networkRunning = running === true;
+      const runBtn = document.getElementById('btn-network-run');
+      if (runBtn) {
+        runBtn.disabled = state.networkRunning;
+        runBtn.textContent = state.networkRunning ? '测试中...' : '开始测试';
+      }
+      const cycleBtn = document.getElementById('btn-network-cycle');
+      if (cycleBtn) {
+        cycleBtn.disabled = state.networkRunning;
+      }
+      ['btn-network-select-online', 'btn-network-select-all', 'btn-network-clear'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = state.networkRunning;
+      });
+      renderNetworkProbeChecks();
+    }
+
+    function selectNetworkNodes(mode) {
+      const box = document.getElementById('network-probe-checks');
+      if (!box) return;
+      box.querySelectorAll('input[data-network-node-id]').forEach((input) => {
+        const nodeID = String(input.getAttribute('data-network-node-id') || '');
+        const nodeNo = Number(nodeID);
+        input.checked = mode === 'all' || (mode === 'online' && nodeRuntimeOnline(nodeNo));
+        if (mode === 'none') input.checked = false;
+      });
+    }
+
+    function formatLatencyResult(item) {
+      if (!item || Number(item.received) <= 0) return '-';
+      const avg = Number(item.latency_avg_ms);
+      const min = Number(item.latency_min_ms);
+      const max = Number(item.latency_max_ms);
+      const avgText = Number.isFinite(avg) ? `${avg.toFixed(2)} ms` : '-';
+      const rangeText = Number.isFinite(min) && Number.isFinite(max) ? `(${min.toFixed(2)} / ${max.toFixed(2)})` : '';
+      return `${avgText} ${rangeText}`.trim();
+    }
+
+    function renderNetworkResults() {
+      const body = document.getElementById('network-result-body');
+      const summary = document.getElementById('network-summary');
+      const items = Array.isArray(state.networkResults) ? state.networkResults : [];
+      if (summary) {
+        summary.textContent = `任务 ${state.networkTasks.length} 个，已加载上报结果 ${items.length} 条。`;
+      }
+      if (!body) return;
+      if (!items.length) {
+        body.innerHTML = '<tr><td colspan="7" class="muted">暂无上报结果</td></tr>';
+        return;
+      }
+      const rows = [];
+      for (const report of items) {
+        const nodeLabel = `#${report.node_no || report.node_id || '-'} ${report.node_name || ''}`.trim();
+        const results = Array.isArray(report.results) ? report.results : [];
+        if (results.length === 0) {
+          rows.push(`<tr>
+            <td>${nodeLabel}</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+            <td class="text-err">${report.error || '上报失败'}<br><span class="muted">${formatTime(report.timestamp)}</span></td>
+          </tr>`);
+          continue;
+        }
+        for (const result of results) {
+          const loss = Number(result.loss_percent);
+          const lossText = Number.isFinite(loss) ? `${loss.toFixed(2)}%` : '-';
+          const ok = !result.error && Number(result.received) > 0;
+          rows.push(`<tr>
+            <td>${nodeLabel}</td>
+            <td class="mono">${result.target || '-'}</td>
+            <td>${result.ip_family || '-'}</td>
+            <td>${result.sent || 0} / ${result.received || 0}</td>
+            <td>${lossText}</td>
+            <td>${formatLatencyResult(result)}</td>
+            <td class="${ok ? 'text-ok' : 'text-warn'}">${ok ? 'ok' : (result.error || '全部丢包')}<br><span class="muted">${formatTime(report.timestamp)}</span></td>
+          </tr>`);
+        }
+      }
+      body.innerHTML = rows.join('');
+    }
+
+    function renderNetworkTasks() {
+      const body = document.getElementById('network-task-body');
+      if (!body) return;
+      const tasks = Array.isArray(state.networkTasks) ? state.networkTasks : [];
+      if (!tasks.length) {
+        body.innerHTML = '<tr><td colspan="6" class="muted">暂无探测任务</td></tr>';
+        return;
+      }
+      body.innerHTML = tasks.map((task) => {
+        const nodeText = Array.isArray(task.node_ids) ? task.node_ids.join(', ') : '-';
+        const targetText = Array.isArray(task.targets) ? task.targets.join('<br>') : '-';
+        return `<tr>
+          <td class="mono">${task.id || '-'}</td>
+          <td>${nodeText}</td>
+          <td class="mono">${targetText}</td>
+          <td>次数 ${task.count || '-'} / 超时 ${task.timeout_ms || '-'}ms / 周期 ${task.cycle_sec || '-'}s</td>
+          <td><span class="pill ${task.enabled ? 'online' : 'offline'}">${task.enabled ? '启用' : '停用'}</span></td>
+          <td>
+            <button class="btn" type="button" data-action="network-toggle" data-task-id="${encodeURIComponent(task.id || '')}" data-enabled="${task.enabled ? '0' : '1'}">${task.enabled ? '停用' : '启用'}</button>
+            <button class="btn warn" type="button" data-action="network-delete" data-task-id="${encodeURIComponent(task.id || '')}">删除</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function refreshNetworkMonitor(silent) {
+      const tasksPayload = await requestJSON('/mng/api/probe/network-monitor/tasks');
+      const resultsPayload = await requestJSON('/mng/api/probe/network-monitor/results?limit=200');
+      state.networkTasks = Array.isArray(tasksPayload.items) ? tasksPayload.items : [];
+      state.networkResults = Array.isArray(resultsPayload.items) ? resultsPayload.items : [];
+      renderNetworkTasks();
+      renderNetworkResults();
+      if (!silent) setStatus('网络监视任务和上报结果已刷新', 'ok');
+    }
+
+    async function saveNetworkMonitorTask() {
+      if (state.networkRunning) return;
+      const nodeIDs = currentNetworkSelectedNodeIDs();
+      const targets = parseNetworkTargets();
+      const count = clampNumber(document.getElementById('network-count').value, 4, 1, 10);
+      const timeoutMS = clampNumber(document.getElementById('network-timeout').value, 1000, 300, 5000);
+      const cycleSec = clampNumber(document.getElementById('network-cycle').value, 60, 5, 86400);
+      document.getElementById('network-count').value = String(count);
+      document.getElementById('network-timeout').value = String(timeoutMS);
+      document.getElementById('network-cycle').value = String(cycleSec);
+      if (!targets.length) {
+        setStatus('请配置至少一个目标 IPv4 或 IPv6', 'warn');
+        return;
+      }
+      if (!nodeIDs.length) {
+        setStatus('请至少勾选一个探针', 'warn');
+        return;
+      }
+      setNetworkRunning(true);
+      try {
+        await requestJSON('/mng/api/probe/network-monitor/task/upsert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ node_ids: nodeIDs, targets, count, timeout_ms: timeoutMS, cycle_sec: cycleSec, enabled: true }),
+        });
+        await refreshNetworkMonitor(true);
+        setStatus('网络监视任务已保存并下发给探针', 'ok');
+      } finally {
+        setNetworkRunning(false);
+      }
+    }
+
+    async function setNetworkTaskEnabled(taskID, enabled) {
+      await requestJSON('/mng/api/probe/network-monitor/task/enabled', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: taskID, enabled }),
+      });
+      await refreshNetworkMonitor(true);
+      setStatus(enabled ? '网络监视任务已启用并下发' : '网络监视任务已停用并下发', 'ok');
+    }
+
+    async function deleteNetworkTask(taskID) {
+      if (!confirm(`确认删除网络监视任务：${taskID} ?`)) return;
+      await requestJSON('/mng/api/probe/network-monitor/task/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: taskID }),
+      });
+      await refreshNetworkMonitor(true);
+      setStatus('网络监视任务已删除并下发', 'ok');
     }
 
     async function startShellSession() {
@@ -979,6 +1275,10 @@
           void refreshStatus(true);
         }, 2000);
       }
+      if (tab === 'network') {
+        void refreshStatus(true);
+        void refreshNetworkMonitor(true);
+      }
       if (tab === 'shell') {
         void loadShellShortcuts();
       }
@@ -1000,6 +1300,11 @@
     document.getElementById('btn-refresh-nodes').addEventListener('click', () => { refreshNodes(false).catch((err) => setStatus(`刷新失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-upgrade-all').addEventListener('click', () => { upgradeAllNodes().catch((err) => setStatus(`一键升级失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-refresh-status').addEventListener('click', () => { refreshStatus(false).catch((err) => setStatus(`状态刷新失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-network-select-online').addEventListener('click', () => { selectNetworkNodes('online'); });
+    document.getElementById('btn-network-select-all').addEventListener('click', () => { selectNetworkNodes('all'); });
+    document.getElementById('btn-network-clear').addEventListener('click', () => { selectNetworkNodes('none'); });
+    document.getElementById('btn-network-run').addEventListener('click', () => { saveNetworkMonitorTask().catch((err) => setStatus(`网络监视任务保存失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-network-cycle').addEventListener('click', () => { refreshNetworkMonitor(false).catch((err) => setStatus(`网络监视刷新失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-load-logs').addEventListener('click', () => { loadLogs().catch((err) => setStatus(`日志读取失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shell-start').addEventListener('click', () => { startShellSession().catch((err) => setStatus(`会话启动失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shell-stop').addEventListener('click', () => { stopShellSession().catch((err) => setStatus(`会话停止失败：${err.message || err}`, 'err')); });
@@ -1097,6 +1402,21 @@
       if (action === 'shortcut-delete') {
         const encoded = String(button.getAttribute('data-name') || '');
         void deleteShortcut(decodeURIComponent(encoded)).catch((err) => setStatus(`快捷命令删除失败：${err.message || err}`, 'err'));
+        return;
+      }
+      if (action === 'network-toggle') {
+        const taskID = decodeURIComponent(String(button.getAttribute('data-task-id') || ''));
+        const enabled = String(button.getAttribute('data-enabled') || '') === '1';
+        if (taskID) {
+          void setNetworkTaskEnabled(taskID, enabled).catch((err) => setStatus(`网络监视任务更新失败：${err.message || err}`, 'err'));
+        }
+        return;
+      }
+      if (action === 'network-delete') {
+        const taskID = decodeURIComponent(String(button.getAttribute('data-task-id') || ''));
+        if (taskID) {
+          void deleteNetworkTask(taskID).catch((err) => setStatus(`网络监视任务删除失败：${err.message || err}`, 'err'));
+        }
       }
     });
 
