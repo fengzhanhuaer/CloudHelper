@@ -1,22 +1,34 @@
 package core
 
 import (
+	"encoding/gob"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
 	maxProbeNetworkMonitorTasks        = 200
-	maxProbeNetworkMonitorResults      = 2000
-	defaultProbeNetworkMonitorCycleSec = 60
+	maxProbeNetworkMonitorResults      = 50000
+	defaultProbeNetworkMonitorCycleSec = 600
 )
+
+var probeNetworkMonitorResultStore = struct {
+	mu  sync.Mutex
+	dir string
+}{
+	dir: filepath.Join(".", "temp", "network_monitor_results"),
+}
 
 type probeNetworkMonitorTaskRecord struct {
 	ID        string   `json:"id"`
+	Name      string   `json:"name,omitempty"`
 	NodeIDs   []string `json:"node_ids"`
 	Targets   []string `json:"targets"`
 	Count     int      `json:"count"`
@@ -30,6 +42,7 @@ type probeNetworkMonitorTaskRecord struct {
 type probeNetworkMonitorResultRecord struct {
 	ID         string                            `json:"id"`
 	TaskID     string                            `json:"task_id"`
+	TaskName   string                            `json:"task_name,omitempty"`
 	NodeID     string                            `json:"node_id"`
 	NodeNo     int                               `json:"node_no"`
 	NodeName   string                            `json:"node_name,omitempty"`
@@ -61,9 +74,11 @@ func upsertProbeNetworkMonitorTaskLocked(req mngProbeNetworkMonitorTaskUpsertReq
 	if taskID == "" {
 		taskID = newProbeNetworkMonitorTaskID()
 	}
+	taskName := normalizeProbeNetworkMonitorTaskName(req.Name)
 
 	task := probeNetworkMonitorTaskRecord{
 		ID:        taskID,
+		Name:      taskName,
 		NodeIDs:   nodeIDs,
 		Targets:   targets,
 		Count:     normalizeProbeNetworkMonitorCount(req.Count),
@@ -135,21 +150,34 @@ func deleteProbeNetworkMonitorTaskLocked(taskID string) error {
 	return nil
 }
 
-func appendProbeNetworkMonitorResultLocked(record probeNetworkMonitorResultRecord) probeNetworkMonitorResultRecord {
+func appendProbeNetworkMonitorResult(record probeNetworkMonitorResultRecord) (probeNetworkMonitorResultRecord, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	record.ID = firstNonEmptyNetworkMonitor(strings.TrimSpace(record.ID), newProbeNetworkMonitorResultID())
 	record.TaskID = strings.TrimSpace(record.TaskID)
+	record.TaskName = normalizeOptionalProbeNetworkMonitorTaskName(record.TaskName)
 	record.NodeID = normalizeProbeNodeID(record.NodeID)
 	record.NodeName = strings.TrimSpace(record.NodeName)
 	record.Error = strings.TrimSpace(record.Error)
 	record.Timestamp = firstNonEmptyNetworkMonitor(strings.TrimSpace(record.Timestamp), now)
-	items := normalizeProbeNetworkMonitorResults(ProbeStore.data.NetworkMonitorResults)
+	if record.NodeID == "" {
+		return record, fmt.Errorf("node id is required")
+	}
+
+	probeNetworkMonitorResultStore.mu.Lock()
+	defer probeNetworkMonitorResultStore.mu.Unlock()
+
+	items, err := loadProbeNetworkMonitorResultsForNodeFromDiskLocked(record.NodeID)
+	if err != nil {
+		return record, err
+	}
 	items = append(items, record)
 	if len(items) > maxProbeNetworkMonitorResults {
 		items = items[len(items)-maxProbeNetworkMonitorResults:]
 	}
-	ProbeStore.data.NetworkMonitorResults = items
-	return record
+	if err := saveProbeNetworkMonitorResultsForNodeToDiskLocked(record.NodeID, items); err != nil {
+		return record, err
+	}
+	return record, nil
 }
 
 func loadProbeNetworkMonitorTasksLocked() []probeNetworkMonitorTaskRecord {
@@ -157,7 +185,13 @@ func loadProbeNetworkMonitorTasksLocked() []probeNetworkMonitorTaskRecord {
 }
 
 func loadProbeNetworkMonitorResultsLocked(limit int) []probeNetworkMonitorResultRecord {
-	items := normalizeProbeNetworkMonitorResults(ProbeStore.data.NetworkMonitorResults)
+	probeNetworkMonitorResultStore.mu.Lock()
+	items, err := loadProbeNetworkMonitorResultsAllFromDiskLocked()
+	probeNetworkMonitorResultStore.mu.Unlock()
+	if err != nil {
+		logControllerWarnf("failed to load network monitor results: %v", err)
+		items = []probeNetworkMonitorResultRecord{}
+	}
 	if limit <= 0 {
 		limit = 200
 	}
@@ -172,6 +206,147 @@ func loadProbeNetworkMonitorResultsLocked(limit int) []probeNetworkMonitorResult
 		return strings.TrimSpace(out[i].Timestamp) > strings.TrimSpace(out[j].Timestamp)
 	})
 	return out
+}
+
+func loadProbeNetworkMonitorResultsAll() []probeNetworkMonitorResultRecord {
+	probeNetworkMonitorResultStore.mu.Lock()
+	items, err := loadProbeNetworkMonitorResultsAllFromDiskLocked()
+	probeNetworkMonitorResultStore.mu.Unlock()
+	if err != nil {
+		logControllerWarnf("failed to load network monitor results: %v", err)
+		return []probeNetworkMonitorResultRecord{}
+	}
+	return items
+}
+
+func loadProbeNetworkMonitorResultsForNode(nodeID string) []probeNetworkMonitorResultRecord {
+	cleanID := normalizeProbeNodeID(nodeID)
+	if cleanID == "" {
+		return []probeNetworkMonitorResultRecord{}
+	}
+	probeNetworkMonitorResultStore.mu.Lock()
+	items, err := loadProbeNetworkMonitorResultsForNodeFromDiskLocked(cleanID)
+	probeNetworkMonitorResultStore.mu.Unlock()
+	if err != nil {
+		logControllerWarnf("failed to load network monitor results: node=%s err=%v", cleanID, err)
+		return []probeNetworkMonitorResultRecord{}
+	}
+	return items
+}
+
+func listProbeNetworkMonitorResultNodeIDs() []string {
+	probeNetworkMonitorResultStore.mu.Lock()
+	nodeIDs, err := listProbeNetworkMonitorResultNodeIDsLocked()
+	probeNetworkMonitorResultStore.mu.Unlock()
+	if err != nil {
+		logControllerWarnf("failed to list network monitor result nodes: %v", err)
+		return []string{}
+	}
+	return nodeIDs
+}
+
+func loadProbeNetworkMonitorResultsAllFromDiskLocked() ([]probeNetworkMonitorResultRecord, error) {
+	nodeIDs, err := listProbeNetworkMonitorResultNodeIDsLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]probeNetworkMonitorResultRecord, 0)
+	for _, nodeID := range nodeIDs {
+		items, err := loadProbeNetworkMonitorResultsForNodeFromDiskLocked(nodeID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+	}
+	return normalizeProbeNetworkMonitorResults(out), nil
+}
+
+func listProbeNetworkMonitorResultNodeIDsLocked() ([]string, error) {
+	entries, err := os.ReadDir(probeNetworkMonitorResultStore.dir)
+	if os.IsNotExist(err) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "node_") || !strings.HasSuffix(name, ".gob") {
+			continue
+		}
+		nodeID := normalizeProbeNodeID(strings.TrimSuffix(strings.TrimPrefix(name, "node_"), ".gob"))
+		if nodeID == "" || seen[nodeID] {
+			continue
+		}
+		seen[nodeID] = true
+		out = append(out, nodeID)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func loadProbeNetworkMonitorResultsForNodeFromDiskLocked(nodeID string) ([]probeNetworkMonitorResultRecord, error) {
+	path, err := probeNetworkMonitorResultPathForNode(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	content, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return []probeNetworkMonitorResultRecord{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer content.Close()
+
+	var items []probeNetworkMonitorResultRecord
+	if err := gob.NewDecoder(content).Decode(&items); err != nil {
+		return nil, err
+	}
+	return normalizeProbeNetworkMonitorResultsForNode(items, nodeID), nil
+}
+
+func saveProbeNetworkMonitorResultsForNodeToDiskLocked(nodeID string, items []probeNetworkMonitorResultRecord) error {
+	items = normalizeProbeNetworkMonitorResultsForNode(items, nodeID)
+	if len(items) > maxProbeNetworkMonitorResults {
+		items = items[len(items)-maxProbeNetworkMonitorResults:]
+	}
+	if err := os.MkdirAll(probeNetworkMonitorResultStore.dir, 0o755); err != nil {
+		return err
+	}
+	path, err := probeNetworkMonitorResultPathForNode(nodeID)
+	if err != nil {
+		return err
+	}
+	tmpPath := path + ".tmp"
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	encodeErr := gob.NewEncoder(file).Encode(items)
+	closeErr := file.Close()
+	if encodeErr != nil {
+		_ = os.Remove(tmpPath)
+		return encodeErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return closeErr
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func probeNetworkMonitorResultPathForNode(nodeID string) (string, error) {
+	cleanID := normalizeProbeNodeID(nodeID)
+	if cleanID == "" {
+		return "", fmt.Errorf("node id is required")
+	}
+	return filepath.Join(probeNetworkMonitorResultStore.dir, "node_"+cleanID+".gob"), nil
 }
 
 func probeNetworkMonitorTasksForNodeLocked(nodeID string) []probeNetworkMonitorTaskRecord {
@@ -240,6 +415,7 @@ func normalizeProbeNetworkMonitorTasks(raw []probeNetworkMonitorTaskRecord) []pr
 			continue
 		}
 		item.ID = id
+		item.Name = normalizeProbeNetworkMonitorTaskName(item.Name)
 		item.NodeIDs = nodeIDs
 		item.Targets = targets
 		item.Count = normalizeProbeNetworkMonitorCount(item.Count)
@@ -258,6 +434,7 @@ func normalizeProbeNetworkMonitorResults(raw []probeNetworkMonitorResultRecord) 
 	for _, item := range raw {
 		item.ID = strings.TrimSpace(item.ID)
 		item.TaskID = strings.TrimSpace(item.TaskID)
+		item.TaskName = normalizeOptionalProbeNetworkMonitorTaskName(item.TaskName)
 		item.NodeID = normalizeProbeNodeID(item.NodeID)
 		item.NodeName = strings.TrimSpace(item.NodeName)
 		item.Error = strings.TrimSpace(item.Error)
@@ -273,12 +450,32 @@ func normalizeProbeNetworkMonitorResults(raw []probeNetworkMonitorResultRecord) 
 	return out
 }
 
+func normalizeProbeNetworkMonitorResultsForNode(raw []probeNetworkMonitorResultRecord, nodeID string) []probeNetworkMonitorResultRecord {
+	cleanID := normalizeProbeNodeID(nodeID)
+	if cleanID == "" {
+		return []probeNetworkMonitorResultRecord{}
+	}
+	items := normalizeProbeNetworkMonitorResults(raw)
+	out := make([]probeNetworkMonitorResultRecord, 0, len(items))
+	for _, item := range items {
+		if normalizeProbeNodeID(item.NodeID) != cleanID {
+			continue
+		}
+		item.NodeID = cleanID
+		out = append(out, item)
+	}
+	if len(out) > maxProbeNetworkMonitorResults {
+		out = out[len(out)-maxProbeNetworkMonitorResults:]
+	}
+	return out
+}
+
 func normalizeProbeNetworkMonitorCycleSec(raw int) int {
 	if raw <= 0 {
 		return defaultProbeNetworkMonitorCycleSec
 	}
-	if raw < 5 {
-		return 5
+	if raw < 60 {
+		return 60
 	}
 	if raw > 86400 {
 		return 86400
@@ -288,6 +485,43 @@ func normalizeProbeNetworkMonitorCycleSec(raw int) int {
 
 func newProbeNetworkMonitorTaskID() string {
 	return fmt.Sprintf("netmon-%d", time.Now().UnixNano())
+}
+
+func normalizeProbeNetworkMonitorTaskName(raw string) string {
+	name := strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
+	if name == "" {
+		return "网络测试任务"
+	}
+	runes := []rune(name)
+	if len(runes) > 80 {
+		return string(runes[:80])
+	}
+	return name
+}
+
+func normalizeOptionalProbeNetworkMonitorTaskName(raw string) string {
+	name := strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
+	if name == "" {
+		return ""
+	}
+	runes := []rune(name)
+	if len(runes) > 80 {
+		return string(runes[:80])
+	}
+	return name
+}
+
+func probeNetworkMonitorTaskNameByIDLocked(taskID string) string {
+	cleanID := strings.TrimSpace(taskID)
+	if cleanID == "" {
+		return ""
+	}
+	for _, task := range normalizeProbeNetworkMonitorTasks(ProbeStore.data.NetworkMonitorTasks) {
+		if strings.TrimSpace(task.ID) == cleanID {
+			return normalizeProbeNetworkMonitorTaskName(task.Name)
+		}
+	}
+	return ""
 }
 
 func newProbeNetworkMonitorResultID() string {
@@ -364,4 +598,30 @@ func firstNonEmptyNetworkMonitor(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func SetProbeNetworkMonitorResultStorePathForTest(path string) func() {
+	oldDir := probeNetworkMonitorResultStore.dir
+	probeNetworkMonitorResultStore.dir = path
+	return func() { probeNetworkMonitorResultStore.dir = oldDir }
+}
+
+func AppendProbeNetworkMonitorResultForTest(nodeID string, timestamp string, latencyAvgMS float64, lossPercent float64) error {
+	_, err := appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
+		NodeID:    nodeID,
+		NodeNo:    0,
+		OK:        true,
+		Timestamp: timestamp,
+		Results: []probeNetworkMonitorTargetResult{
+			{
+				Target:       "0.0.0.0",
+				IPFamily:     "test",
+				Sent:         1,
+				Received:     1,
+				LossPercent:  lossPercent,
+				LatencyAvgMS: latencyAvgMS,
+			},
+		},
+	})
+	return err
 }

@@ -17,13 +17,13 @@
         }
         body {
             margin: 0;
-            padding: 0;
+            padding: 28px 0;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             background-color: var(--bg-color);
             color: var(--text-primary);
             display: flex;
             justify-content: center;
-            align-items: center;
+            align-items: flex-start;
             min-height: 100vh;
             background-image: radial-gradient(circle at 50% 0%, #1f2937 0%, transparent 70%);
         }
@@ -94,12 +94,76 @@
             font-family: 'Courier New', Courier, monospace;
             color: #fff;
         }
+        .info-subvalue {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .tab-button {
+            appearance: none;
+            border: 1px solid transparent;
+            border-bottom: none;
+            background: transparent;
+            color: var(--text-secondary);
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .tab-button.active {
+            color: #fff;
+            border-color: rgba(88, 166, 255, 0.35);
+            background: rgba(88, 166, 255, 0.12);
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
         .probe-panel-title {
             font-size: 14px;
             color: var(--text-secondary);
             text-transform: uppercase;
             letter-spacing: 1px;
             margin-bottom: 10px;
+        }
+        .panel-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        .scale-controls {
+            display: inline-flex;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            overflow: hidden;
+            background: rgba(0, 0, 0, 0.18);
+        }
+        .scale-button {
+            appearance: none;
+            border: none;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            background: transparent;
+            color: var(--text-secondary);
+            padding: 7px 12px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .scale-button:last-child {
+            border-right: none;
+        }
+        .scale-button.active {
+            background: rgba(88, 166, 255, 0.16);
+            color: #fff;
         }
         .probe-grid {
             display: grid;
@@ -146,17 +210,79 @@
         }
         .probe-metrics {
             display: grid;
-            grid-template-columns: repeat(2, minmax(120px, 1fr));
+            grid-template-columns: repeat(2, minmax(150px, 1fr));
             gap: 4px 12px;
             font-size: 12px;
             color: var(--text-primary);
             font-family: 'Courier New', Courier, monospace;
+        }
+        .metric-wide {
+            grid-column: 1 / -1;
         }
         .probe-last-seen {
             margin-top: 6px;
             color: var(--text-secondary);
             font-size: 12px;
             font-family: 'Courier New', Courier, monospace;
+        }
+        .network-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 12px;
+        }
+        .network-card {
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 12px;
+        }
+        .network-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+            align-items: baseline;
+        }
+        .network-title {
+            font-size: 14px;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .network-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .chart-wrap {
+            height: 180px;
+            width: 100%;
+        }
+        .chart-wrap canvas {
+            width: 100%;
+            height: 180px;
+            display: block;
+        }
+        .legend {
+            display: flex;
+            gap: 14px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin-top: 8px;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .legend span::before {
+            content: "";
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            margin-right: 6px;
+            border-radius: 2px;
+        }
+        .legend-latency::before {
+            background: #58a6ff;
+        }
+        .legend-loss::before {
+            background: #f85149;
         }
     </style>
 </head>
@@ -173,27 +299,92 @@
                 </div>
                 CloudHelper Probe Controller
             </h1>
-            <div class="info-grid">
-                <div class="info-card">
-                    <div class="info-label">Uptime</div>
-                    <div class="info-value" id="uptime">--:--:--</div>
+            <div class="tabs" role="tablist">
+                <button class="tab-button active" type="button" data-tab="probe-status">探针状态</button>
+                <button class="tab-button" type="button" data-tab="network-status">网络状态</button>
+            </div>
+            <div id="probe-status" class="tab-panel active">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <div class="info-label">Controller Uptime</div>
+                        <div class="info-value" id="uptime">--:--:--</div>
+                        <div class="info-subvalue" id="started-at">Started: -</div>
+                    </div>
+                </div>
+                <div class="probe-panel-title">Probe Runtime Metrics (Public, Desensitized)</div>
+                <div id="probe-grid" class="probe-grid">
+                    <div class="probe-item">No probe data</div>
                 </div>
             </div>
-            <div class="probe-panel-title">Probe Runtime Metrics (Public, Desensitized)</div>
-            <div id="probe-grid" class="probe-grid">
-                <div class="probe-item">No probe data</div>
+            <div id="network-status" class="tab-panel">
+                <div class="panel-toolbar">
+                    <div class="probe-panel-title">Network Test Metrics (Public, Desensitized)</div>
+                    <div class="scale-controls" aria-label="网络曲线时间刻度">
+                        <button class="scale-button active" type="button" data-scale="minute">分钟</button>
+                        <button class="scale-button" type="button" data-scale="hour">小时</button>
+                        <button class="scale-button" type="button" data-scale="day">天</button>
+                    </div>
+                </div>
+                <div id="network-grid" class="network-grid">
+                    <div class="network-card">No network data</div>
+                </div>
             </div>
         </div>
     </div>
     <script>
         const uptimeEl = document.getElementById('uptime');
+        const startedAtEl = document.getElementById('started-at');
         const probeGridEl = document.getElementById('probe-grid');
+        const networkGridEl = document.getElementById('network-grid');
+        let currentNetworkScale = 'minute';
 
         function formatUptime(seconds) {
+            seconds = Number(seconds);
+            if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
             const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
             const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
             const s = Math.floor(seconds % 60).toString().padStart(2, '0');
             return h + ':' + m + ':' + s;
+        }
+
+        function formatDateTime(raw) {
+            const date = new Date(raw);
+            if (!Number.isFinite(date.getTime())) return '-';
+            return date.toLocaleString();
+        }
+
+        function formatMachineUptime(seconds) {
+            seconds = Number(seconds);
+            if (!Number.isFinite(seconds) || seconds <= 0) return '-';
+            return formatUptime(seconds);
+        }
+
+        function formatBytes(bytes) {
+            bytes = Number(bytes);
+            if (!Number.isFinite(bytes) || bytes <= 0) return '-';
+            const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+            let value = bytes;
+            let index = 0;
+            while (value >= 1024 && index < units.length - 1) {
+                value = value / 1024;
+                index += 1;
+            }
+            const digits = value >= 100 ? 0 : (value >= 10 ? 1 : 2);
+            return value.toFixed(digits) + ' ' + units[index];
+        }
+
+        function metricWithAbsolute(percent, used, total) {
+            return pct(percent) + ' / ' + formatBytes(used) + ' / ' + formatBytes(total);
+        }
+
+        function escapeHTML(value) {
+            return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            })[ch]);
         }
 
         async function checkStatus() {
@@ -202,6 +393,7 @@
                 if (!res.ok) throw new Error('Not OK');
                 const data = await res.json();
                 uptimeEl.innerText = formatUptime(data.uptime);
+                startedAtEl.innerText = 'Started: ' + formatDateTime(data.started_at);
             } catch (_) {
                 // keep last known uptime
             }
@@ -249,21 +441,24 @@
                     ? String(item.node_name).trim()
                     : ('probe #' + String(nodeNo > 0 ? nodeNo : index + 1));
                 const lastSeen = item.last_seen ? String(item.last_seen) : '-';
+                const machineUptime = formatMachineUptime(item.machine_uptime_seconds);
+                const bootTime = formatDateTime(item.machine_boot_time);
                 return '<div class="probe-item">'
                     + '<div class="probe-item-head">'
                     + '<div>'
-                    + '<div class="probe-node-name">' + name + '</div>'
+                    + '<div class="probe-node-name">' + escapeHTML(name) + '</div>'
                     + '<div class="probe-node-no">序号: ' + (nodeNo > 0 ? nodeNo : '-') + '</div>'
                     + '</div>'
                     + '<div class="probe-online ' + onlineClass + '">' + onlineText + '</div>'
                     + '</div>'
                     + '<div class="probe-metrics">'
                     + '<div>CPU: ' + pct(sys.cpu_percent) + '</div>'
-                    + '<div>RAM: ' + pct(sys.memory_used_percent) + '</div>'
-                    + '<div>SWAP: ' + pct(sys.swap_used_percent) + '</div>'
-                    + '<div>DISK: ' + pct(sys.disk_used_percent) + '</div>'
+                    + '<div class="metric-wide">RAM: ' + metricWithAbsolute(sys.memory_used_percent, sys.memory_used_bytes, sys.memory_total_bytes) + '</div>'
+                    + '<div class="metric-wide">SWAP: ' + metricWithAbsolute(sys.swap_used_percent, sys.swap_used_bytes, sys.swap_total_bytes) + '</div>'
+                    + '<div class="metric-wide">DISK: ' + metricWithAbsolute(sys.disk_used_percent, sys.disk_used_bytes, sys.disk_total_bytes) + '</div>'
+                    + '<div class="metric-wide">机器运行: ' + machineUptime + ' / 开机: ' + bootTime + '</div>'
                     + '</div>'
-                    + '<div class="probe-last-seen">Last Seen: ' + lastSeen + '</div>'
+                    + '<div class="probe-last-seen">Last Seen: ' + escapeHTML(lastSeen) + '</div>'
                     + '</div>';
             }).join('');
         }
@@ -279,10 +474,156 @@
             }
         }
 
+        function renderNetwork(items) {
+            const sorted = sortedByNodeNo(items);
+            if (sorted.length === 0) {
+                networkGridEl.innerHTML = '<div class="network-card">No network data</div>';
+                return;
+            }
+            networkGridEl.innerHTML = sorted.map((item, index) => {
+                const nodeNo = nodeNoOf(item);
+                const name = (item.node_name && String(item.node_name).trim())
+                    ? String(item.node_name).trim()
+                    : ('probe #' + String(nodeNo > 0 ? nodeNo : index + 1));
+                const points = Array.isArray(item.points) ? item.points : [];
+                const canvasID = 'network-chart-' + index;
+                const latest = points.length > 0 ? points[points.length - 1] : null;
+                const latestText = latest
+                    ? ('延迟 ' + Number(latest.latency_avg_ms || 0).toFixed(1) + 'ms / 丢包 ' + Number(latest.loss_percent || 0).toFixed(1) + '%')
+                    : 'No points';
+                return '<div class="network-card">'
+                    + '<div class="network-head">'
+                    + '<div>'
+                    + '<div class="network-title">' + escapeHTML(name) + '</div>'
+                    + '<div class="network-meta">序号: ' + (nodeNo > 0 ? nodeNo : '-') + '</div>'
+                    + '</div>'
+                    + '<div class="network-meta">' + escapeHTML(latestText) + '</div>'
+                    + '</div>'
+                    + '<div class="chart-wrap"><canvas id="' + canvasID + '" width="640" height="260"></canvas></div>'
+                    + '<div class="legend"><span class="legend-latency">latency avg</span><span class="legend-loss">loss</span></div>'
+                    + '</div>';
+            }).join('');
+            sorted.forEach((item, index) => {
+                const canvas = document.getElementById('network-chart-' + index);
+                drawNetworkChart(canvas, Array.isArray(item.points) ? item.points : []);
+            });
+        }
+
+        function drawNetworkChart(canvas, points) {
+            if (!canvas) return;
+            const rect = canvas.getBoundingClientRect();
+            const ratio = window.devicePixelRatio || 1;
+            const width = Math.max(320, Math.floor(rect.width * ratio));
+            const height = Math.max(180, Math.floor(rect.height * ratio));
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, width, height);
+            const padL = 42 * ratio;
+            const padR = 36 * ratio;
+            const padT = 18 * ratio;
+            const padB = 30 * ratio;
+            const plotW = Math.max(1, width - padL - padR);
+            const plotH = Math.max(1, height - padT - padB);
+            ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+            ctx.lineWidth = 1 * ratio;
+            ctx.beginPath();
+            for (let i = 0; i <= 4; i += 1) {
+                const y = padT + (plotH * i / 4);
+                ctx.moveTo(padL, y);
+                ctx.lineTo(width - padR, y);
+            }
+            ctx.stroke();
+
+            ctx.fillStyle = 'rgba(201,209,217,0.78)';
+            ctx.font = (11 * ratio) + 'px Courier New';
+            if (!points.length) {
+                ctx.fillText('No network data', padL, padT + 24 * ratio);
+                return;
+            }
+
+            const latencyMax = Math.max(10, ...points.map((p) => Number(p.latency_avg_ms) || 0));
+            const lossMax = Math.max(10, ...points.map((p) => Number(p.loss_percent) || 0));
+            const xOf = (i) => padL + (points.length === 1 ? plotW : plotW * i / (points.length - 1));
+            const latencyY = (v) => padT + plotH - (Math.max(0, Number(v) || 0) / latencyMax) * plotH;
+            const lossY = (v) => padT + plotH - (Math.max(0, Number(v) || 0) / lossMax) * plotH;
+
+            drawLine(ctx, points, xOf, latencyY, 'latency_avg_ms', '#58a6ff', ratio);
+            drawLine(ctx, points, xOf, lossY, 'loss_percent', '#f85149', ratio);
+
+            ctx.fillStyle = '#58a6ff';
+            ctx.fillText(Math.round(latencyMax) + 'ms', 4 * ratio, padT + 10 * ratio);
+            ctx.fillStyle = '#f85149';
+            ctx.fillText(Math.round(lossMax) + '%', width - padR + 6 * ratio, padT + 10 * ratio);
+            ctx.fillStyle = 'rgba(201,209,217,0.62)';
+            ctx.fillText(formatTimeLabel(points[0].timestamp, currentNetworkScale), padL, height - 8 * ratio);
+            ctx.textAlign = 'right';
+            ctx.fillText(formatTimeLabel(points[points.length - 1].timestamp, currentNetworkScale), width - padR, height - 8 * ratio);
+            ctx.textAlign = 'left';
+        }
+
+        function drawLine(ctx, points, xOf, yOf, field, color, ratio) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2 * ratio;
+            ctx.beginPath();
+            points.forEach((point, index) => {
+                const x = xOf(index);
+                const y = yOf(point[field]);
+                if (index === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+        }
+
+        function formatTimeLabel(raw, scale) {
+            const date = new Date(raw);
+            if (!Number.isFinite(date.getTime())) return '-';
+            if (scale === 'day') {
+                return date.toLocaleDateString([], { month: '2-digit', day: '2-digit' });
+            }
+            if (scale === 'hour') {
+                return date.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit' });
+            }
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+
+        async function checkNetwork() {
+            try {
+                const res = await fetch('/dashboard/network?scale=' + encodeURIComponent(currentNetworkScale));
+                if (!res.ok) throw new Error('Not OK');
+                const data = await res.json();
+                renderNetwork(data.items || []);
+            } catch (_) {
+                // keep old view
+            }
+        }
+
+        document.querySelectorAll('.tab-button').forEach((button) => {
+            button.addEventListener('click', () => {
+                const tab = button.getAttribute('data-tab');
+                document.querySelectorAll('.tab-button').forEach((item) => item.classList.toggle('active', item === button));
+                document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === tab));
+                if (tab === 'network-status') checkNetwork();
+            });
+        });
+
+        document.querySelectorAll('.scale-button').forEach((button) => {
+            button.addEventListener('click', () => {
+                currentNetworkScale = button.getAttribute('data-scale') || 'minute';
+                document.querySelectorAll('.scale-button').forEach((item) => item.classList.toggle('active', item === button));
+                checkNetwork();
+            });
+        });
+
         checkStatus();
         checkProbes();
+        checkNetwork();
         setInterval(checkStatus, 2000);
         setInterval(checkProbes, 5000);
+        setInterval(checkNetwork, 60000);
+        window.addEventListener('resize', () => checkNetwork());
     </script>
 </body>
 </html>

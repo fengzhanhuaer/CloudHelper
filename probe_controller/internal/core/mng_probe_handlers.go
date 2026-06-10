@@ -35,6 +35,7 @@ type mngProbeShellShortcutDeleteRequest struct {
 
 type mngProbeNetworkMonitorTaskUpsertRequest struct {
 	ID        string   `json:"id"`
+	Name      string   `json:"name"`
 	NodeIDs   []string `json:"node_ids"`
 	Targets   []string `json:"targets"`
 	Count     int      `json:"count"`

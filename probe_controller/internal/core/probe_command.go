@@ -919,10 +919,15 @@ func consumeProbeNetworkMonitorResult(result probeNetworkMonitorResultMessage) {
 	requestID := strings.TrimSpace(result.RequestID)
 	normalizedNodeID := normalizeProbeNodeID(result.NodeID)
 	if normalizedNodeID != "" && ProbeStore != nil {
-		ProbeStore.mu.Lock()
+		ProbeStore.mu.RLock()
 		nodeNo, nodeName := nodeNameByNodeIDLocked(normalizedNodeID)
-		appendProbeNetworkMonitorResultLocked(probeNetworkMonitorResultRecord{
-			TaskID:     strings.TrimSpace(result.TaskID),
+		taskID := strings.TrimSpace(result.TaskID)
+		taskName := probeNetworkMonitorTaskNameByIDLocked(taskID)
+		ProbeStore.mu.RUnlock()
+
+		if _, err := appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
+			TaskID:     taskID,
+			TaskName:   taskName,
 			NodeID:     normalizedNodeID,
 			NodeNo:     nodeNo,
 			NodeName:   nodeName,
@@ -935,9 +940,7 @@ func consumeProbeNetworkMonitorResult(result probeNetworkMonitorResultMessage) {
 			StartedAt:  strings.TrimSpace(result.StartedAt),
 			FinishedAt: strings.TrimSpace(result.FinishedAt),
 			Timestamp:  strings.TrimSpace(result.Timestamp),
-		})
-		ProbeStore.mu.Unlock()
-		if err := ProbeStore.Save(); err != nil {
+		}); err != nil {
 			logControllerWarnf("failed to persist network monitor result: %v", err)
 		}
 	}

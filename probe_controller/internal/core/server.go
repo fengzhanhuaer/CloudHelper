@@ -60,6 +60,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/ws/tunnel/cloudserver", NetworkAssistantTunnelWSHandler)
 	mux.HandleFunc("/dashboard/status", dashboardStatusHandler)
 	mux.HandleFunc("/dashboard/probes", dashboardProbesHandler)
+	mux.HandleFunc("/dashboard/network", dashboardNetworkHandler)
 	mux.HandleFunc("/dashboard", dashboardHandler)
 	mux.HandleFunc("/mng/api/bootstrap", mngBootstrapHandler)
 	mux.HandleFunc("/mng/api/register", mngRegisterHandler)

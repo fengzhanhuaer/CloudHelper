@@ -21,18 +21,19 @@ type probeSystemMetrics struct {
 }
 
 type probeRuntimeStatus struct {
-	NodeID      string                 `json:"node_id"`
-	Online      bool                   `json:"online"`
-	LastSeen    string                 `json:"last_seen"`
-	Platform    string                 `json:"platform,omitempty"`
-	OS          string                 `json:"os,omitempty"`
-	Arch        string                 `json:"arch,omitempty"`
-	IPv4        []string               `json:"ipv4,omitempty"`
-	IPv6        []string               `json:"ipv6,omitempty"`
-	IPLocations map[string]string      `json:"ip_locations,omitempty"`
-	Version     string                 `json:"version,omitempty"`
-	System      probeSystemMetrics     `json:"system"`
-	RelayStatus []probeRelayStatusItem `json:"relay_status,omitempty"`
+	NodeID               string                 `json:"node_id"`
+	Online               bool                   `json:"online"`
+	LastSeen             string                 `json:"last_seen"`
+	Platform             string                 `json:"platform,omitempty"`
+	OS                   string                 `json:"os,omitempty"`
+	Arch                 string                 `json:"arch,omitempty"`
+	IPv4                 []string               `json:"ipv4,omitempty"`
+	IPv6                 []string               `json:"ipv6,omitempty"`
+	IPLocations          map[string]string      `json:"ip_locations,omitempty"`
+	Version              string                 `json:"version,omitempty"`
+	System               probeSystemMetrics     `json:"system"`
+	MachineUptimeSeconds int64                  `json:"machine_uptime_seconds,omitempty"`
+	RelayStatus          []probeRelayStatusItem `json:"relay_status,omitempty"`
 }
 
 type probeRelayProtocolQuality struct {
@@ -119,10 +120,10 @@ func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metri
 }
 
 func updateProbeRuntimeReportWithRelay(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string, relayStatus []probeRelayStatusItem) {
-	updateProbeRuntimeReportWithPlatform(nodeID, ipv4, ipv6, metrics, version, "", "", "", relayStatus)
+	updateProbeRuntimeReportWithPlatform(nodeID, ipv4, ipv6, metrics, version, "", "", "", 0, relayStatus)
 }
 
-func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string, platform string, osName string, arch string, relayStatus []probeRelayStatusItem) {
+func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string, platform string, osName string, arch string, machineUptimeSeconds int64, relayStatus []probeRelayStatusItem) {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
 		return
@@ -179,18 +180,19 @@ func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []s
 		}
 	}
 	probeRuntimeStore.data[nodeID] = probeRuntimeStatus{
-		NodeID:      nodeID,
-		Online:      true,
-		LastSeen:    time.Now().UTC().Format(time.RFC3339),
-		Platform:    normalizeProbeRuntimePlatform(platform, osName),
-		OS:          normalizeProbeRuntimeOS(osName),
-		Arch:        normalizeProbeRuntimeArch(arch),
-		IPv4:        nextIPv4,
-		IPv6:        nextIPv6,
-		IPLocations: nextIPLocations,
-		Version:     strings.TrimSpace(version),
-		System:      metrics,
-		RelayStatus: cloneProbeRelayStatusItems(relayStatus),
+		NodeID:               nodeID,
+		Online:               true,
+		LastSeen:             time.Now().UTC().Format(time.RFC3339),
+		Platform:             normalizeProbeRuntimePlatform(platform, osName),
+		OS:                   normalizeProbeRuntimeOS(osName),
+		Arch:                 normalizeProbeRuntimeArch(arch),
+		IPv4:                 nextIPv4,
+		IPv6:                 nextIPv6,
+		IPLocations:          nextIPLocations,
+		Version:              strings.TrimSpace(version),
+		System:               metrics,
+		MachineUptimeSeconds: normalizeProbeMachineUptimeSeconds(machineUptimeSeconds),
+		RelayStatus:          cloneProbeRelayStatusItems(relayStatus),
 	}
 	probeRuntimeStore.mu.Unlock()
 
@@ -198,6 +200,23 @@ func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []s
 		resolveAndApplyProbeIPLocations(nodeID, pendingResolveIPs)
 	}
 	notifyCloudflareRuntimeChanged(nodeID, previousIPv4, previousIPv6, nextIPv4, nextIPv6)
+}
+
+func normalizeProbeMachineUptimeSeconds(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func ResetProbeRuntimeStoreForTest() {
+	probeRuntimeStore.mu.Lock()
+	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
+	probeRuntimeStore.mu.Unlock()
+}
+
+func UpdateProbeRuntimeReportForTest(nodeID string, machineUptimeSeconds int64) {
+	updateProbeRuntimeReportWithPlatform(nodeID, nil, nil, probeSystemMetrics{}, "", "", "", "", machineUptimeSeconds, nil)
 }
 
 func normalizeProbeRuntimePlatform(platform string, osName string) string {

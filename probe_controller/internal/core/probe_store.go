@@ -25,7 +25,6 @@ type probeConfigData struct {
 	DeletedProbeNodeNos    []int                                  `json:"deleted_probe_node_nos,omitempty"`
 	ProbeProxyGroupBackups map[string]probeProxyGroupBackupRecord `json:"probe_proxy_group_backups,omitempty"`
 	NetworkMonitorTasks    []probeNetworkMonitorTaskRecord        `json:"network_monitor_tasks,omitempty"`
-	NetworkMonitorResults  []probeNetworkMonitorResultRecord      `json:"network_monitor_results,omitempty"`
 }
 
 var ProbeStore *probeConfigStore
@@ -42,16 +41,22 @@ func initProbeStore() {
 			DeletedProbeNodeNos:    []int{},
 			ProbeProxyGroupBackups: map[string]probeProxyGroupBackupRecord{},
 			NetworkMonitorTasks:    []probeNetworkMonitorTaskRecord{},
-			NetworkMonitorResults:  []probeNetworkMonitorResultRecord{},
 		},
 	}
 
+	saveAfterLoad := false
 	if _, err := os.Stat(storePath); err == nil {
 		content, readErr := os.ReadFile(storePath)
 		if readErr != nil {
 			log.Fatalf("failed to read probe config file: %v", readErr)
 		}
 		if len(strings.TrimSpace(string(content))) > 0 {
+			var fields map[string]json.RawMessage
+			if fieldsErr := json.Unmarshal(content, &fields); fieldsErr == nil {
+				if _, ok := fields["network_monitor_results"]; ok {
+					saveAfterLoad = true
+				}
+			}
 			var raw probeConfigData
 			if unmarshalErr := json.Unmarshal(content, &raw); unmarshalErr != nil {
 				log.Fatalf("failed to parse probe config file: %v", unmarshalErr)
@@ -64,7 +69,6 @@ func initProbeStore() {
 			ProbeStore.data.DeletedProbeNodeNos = deletedNos
 			ProbeStore.data.ProbeProxyGroupBackups = normalizeProbeProxyGroupBackups(raw.ProbeProxyGroupBackups)
 			ProbeStore.data.NetworkMonitorTasks = normalizeProbeNetworkMonitorTasks(raw.NetworkMonitorTasks)
-			ProbeStore.data.NetworkMonitorResults = normalizeProbeNetworkMonitorResults(raw.NetworkMonitorResults)
 		}
 	} else if os.IsNotExist(err) {
 		nodes, deletedNodes, secrets, shortcuts, deletedNos := normalizeProbeConfig(loadLegacyProbeNodesFromMainStore(), nil, loadLegacyProbeSecretsFromMainStore(), nil, nil)
@@ -75,7 +79,6 @@ func initProbeStore() {
 		ProbeStore.data.DeletedProbeNodeNos = deletedNos
 		ProbeStore.data.ProbeProxyGroupBackups = map[string]probeProxyGroupBackupRecord{}
 		ProbeStore.data.NetworkMonitorTasks = []probeNetworkMonitorTaskRecord{}
-		ProbeStore.data.NetworkMonitorResults = []probeNetworkMonitorResultRecord{}
 		if saveErr := ProbeStore.Save(); saveErr != nil {
 			log.Fatalf("failed to initialize probe config file: %v", saveErr)
 		}
@@ -83,6 +86,11 @@ func initProbeStore() {
 		log.Fatalf("failed to check probe config file: %v", err)
 	}
 
+	if saveAfterLoad {
+		if saveErr := ProbeStore.Save(); saveErr != nil {
+			log.Fatalf("failed to cleanup legacy network monitor results in probe config file: %v", saveErr)
+		}
+	}
 	cleanupLegacyProbeDataFromMainStore()
 	log.Println("Probe datastore initialized at", storePath)
 }

@@ -30,6 +30,7 @@ type probeNetworkMonitorTargetResult struct {
 
 type probeNetworkMonitorTaskPayload struct {
 	ID        string   `json:"id"`
+	Name      string   `json:"name,omitempty"`
 	NodeIDs   []string `json:"node_ids,omitempty"`
 	Targets   []string `json:"targets"`
 	Count     int      `json:"count"`
@@ -357,6 +358,7 @@ func normalizeProbeNetworkMonitorTasks(raw []probeNetworkMonitorTaskPayload) []p
 			continue
 		}
 		item.ID = id
+		item.Name = strings.Join(strings.Fields(strings.TrimSpace(item.Name)), " ")
 		item.Targets = targets
 		item.Count = normalizeProbeNetworkMonitorCount(item.Count)
 		item.TimeoutMS = normalizeProbeNetworkMonitorTimeoutMS(item.TimeoutMS)

@@ -48,17 +48,18 @@ type nodeIdentity struct {
 }
 
 type probeReportPayload struct {
-	Type        string                      `json:"type"`
-	NodeID      string                      `json:"node_id"`
-	Platform    string                      `json:"platform,omitempty"`
-	OS          string                      `json:"os,omitempty"`
-	Arch        string                      `json:"arch,omitempty"`
-	IPv4        []string                    `json:"ipv4,omitempty"`
-	IPv6        []string                    `json:"ipv6,omitempty"`
-	System      systemStatus                `json:"system"`
-	Version     string                      `json:"version,omitempty"`
-	RelayStatus []probeChainRelayReportItem `json:"relay_status,omitempty"`
-	Timestamp   string                      `json:"timestamp"`
+	Type                 string                      `json:"type"`
+	NodeID               string                      `json:"node_id"`
+	Platform             string                      `json:"platform,omitempty"`
+	OS                   string                      `json:"os,omitempty"`
+	Arch                 string                      `json:"arch,omitempty"`
+	IPv4                 []string                    `json:"ipv4,omitempty"`
+	IPv6                 []string                    `json:"ipv6,omitempty"`
+	System               systemStatus                `json:"system"`
+	MachineUptimeSeconds int64                       `json:"machine_uptime_seconds,omitempty"`
+	Version              string                      `json:"version,omitempty"`
+	RelayStatus          []probeChainRelayReportItem `json:"relay_status,omitempty"`
+	Timestamp            string                      `json:"timestamp"`
 }
 
 type systemStatus struct {
@@ -682,17 +683,18 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 	ipv4, ipv6 := collectIPs()
 	system := collectSystemStatus(sampler)
 	payload := probeReportPayload{
-		Type:        "report",
-		NodeID:      identity.NodeID,
-		Platform:    probeRuntimePlatform(),
-		OS:          runtime.GOOS,
-		Arch:        runtime.GOARCH,
-		IPv4:        ipv4,
-		IPv6:        ipv6,
-		System:      system,
-		Version:     BuildVersion,
-		RelayStatus: snapshotProbeChainRelayReports(),
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		Type:                 "report",
+		NodeID:               identity.NodeID,
+		Platform:             probeRuntimePlatform(),
+		OS:                   runtime.GOOS,
+		Arch:                 runtime.GOARCH,
+		IPv4:                 ipv4,
+		IPv6:                 ipv6,
+		System:               system,
+		MachineUptimeSeconds: readMachineUptimeSeconds(),
+		Version:              BuildVersion,
+		RelayStatus:          snapshotProbeChainRelayReports(),
+		Timestamp:            time.Now().UTC().Format(time.RFC3339),
 	}
 
 	if err := writeProbeStreamJSON(stream, encoder, writeMu, payload); err != nil {

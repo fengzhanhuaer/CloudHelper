@@ -73,7 +73,7 @@
     <div class="topbar">
       <div>
         <h1>/mng/probe 探针管理</h1>
-        <p class="sub">子页签：探针列表（增删改升级）、探针状态、网络监视、探针日志、探针 Shell。</p>
+        <p class="sub">子页签：探针列表（增删改升级）、探针状态、网络测试、探针日志、探针 Shell。</p>
       </div>
       <div>
         <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
@@ -86,7 +86,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="list" type="button">探针列表</button>
       <button class="tab" data-tab="status" type="button">探针状态</button>
-      <button class="tab" data-tab="network" type="button">网络监视</button>
+      <button class="tab" data-tab="network" type="button">网络测试</button>
       <button class="tab" data-tab="logs" type="button">探针日志</button>
       <button class="tab" data-tab="shell" type="button">探针 Shell</button>
     </div>
@@ -153,6 +153,10 @@
 
       <section id="section-network" class="section">
         <div class="row">
+          <input id="network-task-name" placeholder="测试任务名称" />
+          <span id="network-editing-hint" class="muted"></span>
+        </div>
+        <div class="row">
           <textarea id="network-targets" class="monitor-targets" placeholder="目标 IPv4 / IPv6，每行一个；也可用逗号或空格分隔"></textarea>
         </div>
         <div class="row">
@@ -160,18 +164,19 @@
           <input id="network-count" class="compact-input" type="number" min="1" max="10" value="4" />
           <label class="muted" for="network-timeout">超时 ms</label>
           <input id="network-timeout" class="compact-input" type="number" min="300" max="5000" value="1000" />
-          <label class="muted" for="network-cycle">探测周期 s</label>
-          <input id="network-cycle" class="compact-input" type="number" min="5" max="3600" value="60" />
+          <label class="muted" for="network-cycle">测试周期 min</label>
+          <input id="network-cycle" class="compact-input" type="number" min="1" max="1440" value="10" />
           <button id="btn-network-select-online" class="btn" type="button">选择在线探针</button>
           <button id="btn-network-select-all" class="btn" type="button">全选探针</button>
           <button id="btn-network-clear" class="btn" type="button">清空选择</button>
           <button id="btn-network-run" class="btn primary" type="button">保存并下发任务</button>
+          <button id="btn-network-cancel-edit" class="btn" type="button" hidden>取消编辑</button>
           <button id="btn-network-cycle" class="btn" type="button">刷新上报结果</button>
         </div>
         <div class="muted">探针</div>
         <div id="network-probe-checks" class="probe-check-grid"></div>
         <div id="network-summary" class="result-summary">任务保存后由探针按周期自主执行并上报。</div>
-        <h3>探测任务</h3>
+        <h3>测试任务</h3>
         <table>
           <thead>
             <tr>
@@ -189,6 +194,7 @@
         <table>
           <thead>
             <tr>
+              <th>任务</th>
               <th>探针</th>
               <th>目标</th>
               <th>类型</th>
@@ -338,6 +344,7 @@
       editingNodeNo: 0,
       installCommandText: '',
       networkRunning: false,
+      editingNetworkTaskID: '',
       networkTasks: [],
       networkResults: [],
     };
@@ -361,6 +368,16 @@
         throw new Error(msg);
       }
       return payload;
+    }
+
+    function escapeHTML(value) {
+      return String(value || '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      })[ch]);
     }
 
     async function ensureSession() {
@@ -752,7 +769,7 @@
       const runBtn = document.getElementById('btn-network-run');
       if (runBtn) {
         runBtn.disabled = state.networkRunning;
-        runBtn.textContent = state.networkRunning ? '测试中...' : '开始测试';
+        runBtn.textContent = state.networkRunning ? '保存中...' : (state.editingNetworkTaskID ? '保存修改并下发' : '保存并下发任务');
       }
       const cycleBtn = document.getElementById('btn-network-cycle');
       if (cycleBtn) {
@@ -762,7 +779,30 @@
         const el = document.getElementById(id);
         if (el) el.disabled = state.networkRunning;
       });
+      const cancelBtn = document.getElementById('btn-network-cancel-edit');
+      if (cancelBtn) cancelBtn.disabled = state.networkRunning;
       renderNetworkProbeChecks();
+    }
+
+    function updateNetworkEditUI() {
+      const hint = document.getElementById('network-editing-hint');
+      const runBtn = document.getElementById('btn-network-run');
+      const cancelBtn = document.getElementById('btn-network-cancel-edit');
+      const editing = String(state.editingNetworkTaskID || '').trim();
+      if (hint) hint.textContent = editing ? `正在编辑：${editing}` : '';
+      if (runBtn && !state.networkRunning) runBtn.textContent = editing ? '保存修改并下发' : '保存并下发任务';
+      if (cancelBtn) cancelBtn.hidden = !editing;
+    }
+
+    function resetNetworkTaskForm() {
+      state.editingNetworkTaskID = '';
+      document.getElementById('network-task-name').value = '';
+      document.getElementById('network-targets').value = '';
+      document.getElementById('network-count').value = '4';
+      document.getElementById('network-timeout').value = '1000';
+      document.getElementById('network-cycle').value = '10';
+      selectNetworkNodes('none');
+      updateNetworkEditUI();
     }
 
     function selectNetworkNodes(mode) {
@@ -789,21 +829,28 @@
     function renderNetworkResults() {
       const body = document.getElementById('network-result-body');
       const summary = document.getElementById('network-summary');
-      const items = Array.isArray(state.networkResults) ? state.networkResults : [];
+      const items = Array.isArray(state.networkResults) ? state.networkResults.slice(0, 100) : [];
       if (summary) {
-        summary.textContent = `任务 ${state.networkTasks.length} 个，已加载上报结果 ${items.length} 条。`;
+        summary.textContent = `任务 ${state.networkTasks.length} 个，最近上报结果 ${items.length} 条。`;
       }
       if (!body) return;
       if (!items.length) {
-        body.innerHTML = '<tr><td colspan="7" class="muted">暂无上报结果</td></tr>';
+        body.innerHTML = '<tr><td colspan="8" class="muted">暂无上报结果</td></tr>';
         return;
       }
+      const taskNameByID = new Map((Array.isArray(state.networkTasks) ? state.networkTasks : []).map((task) => {
+        return [String(task.id || '').trim(), String(task.name || '').trim()];
+      }));
       const rows = [];
       for (const report of items) {
         const nodeLabel = `#${report.node_no || report.node_id || '-'} ${report.node_name || ''}`.trim();
+        const taskID = String(report.task_id || '').trim();
+        const taskName = String(report.task_name || '').trim() || taskNameByID.get(taskID) || taskID || '-';
+        const taskLabel = `${escapeHTML(taskName)}<br><span class="muted mono">${escapeHTML(taskID || '-')}</span>`;
         const results = Array.isArray(report.results) ? report.results : [];
         if (results.length === 0) {
           rows.push(`<tr>
+            <td>${taskLabel}</td>
             <td>${nodeLabel}</td>
             <td>-</td>
             <td>-</td>
@@ -819,8 +866,9 @@
           const lossText = Number.isFinite(loss) ? `${loss.toFixed(2)}%` : '-';
           const ok = !result.error && Number(result.received) > 0;
           rows.push(`<tr>
+            <td>${taskLabel}</td>
             <td>${nodeLabel}</td>
-            <td class="mono">${result.target || '-'}</td>
+            <td class="mono">${escapeHTML(result.target || '-')}</td>
             <td>${result.ip_family || '-'}</td>
             <td>${result.sent || 0} / ${result.received || 0}</td>
             <td>${lossText}</td>
@@ -837,19 +885,22 @@
       if (!body) return;
       const tasks = Array.isArray(state.networkTasks) ? state.networkTasks : [];
       if (!tasks.length) {
-        body.innerHTML = '<tr><td colspan="6" class="muted">暂无探测任务</td></tr>';
+        body.innerHTML = '<tr><td colspan="6" class="muted">暂无测试任务</td></tr>';
         return;
       }
       body.innerHTML = tasks.map((task) => {
         const nodeText = Array.isArray(task.node_ids) ? task.node_ids.join(', ') : '-';
-        const targetText = Array.isArray(task.targets) ? task.targets.join('<br>') : '-';
+        const targetText = Array.isArray(task.targets) ? task.targets.map(escapeHTML).join('<br>') : '-';
+        const taskName = String(task.name || '').trim() || task.id || '-';
+        const cycleMin = Math.max(1, Math.round(Number(task.cycle_sec || 0) / 60));
         return `<tr>
-          <td class="mono">${task.id || '-'}</td>
+          <td>${escapeHTML(taskName)}<br><span class="muted mono">${escapeHTML(task.id || '-')}</span></td>
           <td>${nodeText}</td>
           <td class="mono">${targetText}</td>
-          <td>次数 ${task.count || '-'} / 超时 ${task.timeout_ms || '-'}ms / 周期 ${task.cycle_sec || '-'}s</td>
+          <td>次数 ${task.count || '-'} / 超时 ${task.timeout_ms || '-'}ms / 周期 ${cycleMin}min</td>
           <td><span class="pill ${task.enabled ? 'online' : 'offline'}">${task.enabled ? '启用' : '停用'}</span></td>
           <td>
+            <button class="btn" type="button" data-action="network-edit" data-task-id="${encodeURIComponent(task.id || '')}">编辑</button>
             <button class="btn" type="button" data-action="network-toggle" data-task-id="${encodeURIComponent(task.id || '')}" data-enabled="${task.enabled ? '0' : '1'}">${task.enabled ? '停用' : '启用'}</button>
             <button class="btn warn" type="button" data-action="network-delete" data-task-id="${encodeURIComponent(task.id || '')}">删除</button>
           </td>
@@ -859,24 +910,27 @@
 
     async function refreshNetworkMonitor(silent) {
       const tasksPayload = await requestJSON('/mng/api/probe/network-monitor/tasks');
-      const resultsPayload = await requestJSON('/mng/api/probe/network-monitor/results?limit=200');
+      const resultsPayload = await requestJSON('/mng/api/probe/network-monitor/results?limit=100');
       state.networkTasks = Array.isArray(tasksPayload.items) ? tasksPayload.items : [];
       state.networkResults = Array.isArray(resultsPayload.items) ? resultsPayload.items : [];
       renderNetworkTasks();
       renderNetworkResults();
-      if (!silent) setStatus('网络监视任务和上报结果已刷新', 'ok');
+      if (!silent) setStatus('网络测试任务和上报结果已刷新', 'ok');
     }
 
     async function saveNetworkMonitorTask() {
       if (state.networkRunning) return;
+      const taskID = String(state.editingNetworkTaskID || '').trim();
+      const name = String(document.getElementById('network-task-name').value || '').trim();
       const nodeIDs = currentNetworkSelectedNodeIDs();
       const targets = parseNetworkTargets();
       const count = clampNumber(document.getElementById('network-count').value, 4, 1, 10);
       const timeoutMS = clampNumber(document.getElementById('network-timeout').value, 1000, 300, 5000);
-      const cycleSec = clampNumber(document.getElementById('network-cycle').value, 60, 5, 86400);
+      const cycleMin = clampNumber(document.getElementById('network-cycle').value, 10, 1, 1440);
+      const cycleSec = cycleMin * 60;
       document.getElementById('network-count').value = String(count);
       document.getElementById('network-timeout').value = String(timeoutMS);
-      document.getElementById('network-cycle').value = String(cycleSec);
+      document.getElementById('network-cycle').value = String(cycleMin);
       if (!targets.length) {
         setStatus('请配置至少一个目标 IPv4 或 IPv6', 'warn');
         return;
@@ -890,13 +944,36 @@
         await requestJSON('/mng/api/probe/network-monitor/task/upsert', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ node_ids: nodeIDs, targets, count, timeout_ms: timeoutMS, cycle_sec: cycleSec, enabled: true }),
+          body: JSON.stringify({ id: taskID, name, node_ids: nodeIDs, targets, count, timeout_ms: timeoutMS, cycle_sec: cycleSec, enabled: true }),
         });
         await refreshNetworkMonitor(true);
-        setStatus('网络监视任务已保存并下发给探针', 'ok');
+        resetNetworkTaskForm();
+        setStatus('网络测试任务已保存并下发给探针', 'ok');
       } finally {
         setNetworkRunning(false);
       }
+    }
+
+    function editNetworkTask(taskID) {
+      const cleanID = String(taskID || '').trim();
+      const task = state.networkTasks.find((item) => String(item.id || '').trim() === cleanID);
+      if (!task) {
+        setStatus(`未找到网络测试任务：${cleanID}`, 'warn');
+        return;
+      }
+      state.editingNetworkTaskID = cleanID;
+      document.getElementById('network-task-name').value = String(task.name || '').trim();
+      document.getElementById('network-targets').value = Array.isArray(task.targets) ? task.targets.join('\n') : '';
+      document.getElementById('network-count').value = String(task.count || 4);
+      document.getElementById('network-timeout').value = String(task.timeout_ms || 1000);
+      document.getElementById('network-cycle').value = String(Math.max(1, Math.round(Number(task.cycle_sec || 600) / 60)));
+      renderNetworkProbeChecks();
+      const selected = new Set(Array.isArray(task.node_ids) ? task.node_ids.map((id) => String(id || '').trim()) : []);
+      document.querySelectorAll('input[data-network-node-id]').forEach((input) => {
+        input.checked = selected.has(String(input.getAttribute('data-network-node-id') || '').trim());
+      });
+      updateNetworkEditUI();
+      setStatus(`已载入网络测试任务：${task.name || task.id || cleanID}`, 'ok');
     }
 
     async function setNetworkTaskEnabled(taskID, enabled) {
@@ -906,18 +983,19 @@
         body: JSON.stringify({ id: taskID, enabled }),
       });
       await refreshNetworkMonitor(true);
-      setStatus(enabled ? '网络监视任务已启用并下发' : '网络监视任务已停用并下发', 'ok');
+      setStatus(enabled ? '网络测试任务已启用并下发' : '网络测试任务已停用并下发', 'ok');
     }
 
     async function deleteNetworkTask(taskID) {
-      if (!confirm(`确认删除网络监视任务：${taskID} ?`)) return;
+      if (!confirm(`确认删除网络测试任务：${taskID} ?`)) return;
       await requestJSON('/mng/api/probe/network-monitor/task/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: taskID }),
       });
       await refreshNetworkMonitor(true);
-      setStatus('网络监视任务已删除并下发', 'ok');
+      if (state.editingNetworkTaskID === taskID) resetNetworkTaskForm();
+      setStatus('网络测试任务已删除并下发', 'ok');
     }
 
     async function startShellSession() {
@@ -1303,8 +1381,9 @@
     document.getElementById('btn-network-select-online').addEventListener('click', () => { selectNetworkNodes('online'); });
     document.getElementById('btn-network-select-all').addEventListener('click', () => { selectNetworkNodes('all'); });
     document.getElementById('btn-network-clear').addEventListener('click', () => { selectNetworkNodes('none'); });
-    document.getElementById('btn-network-run').addEventListener('click', () => { saveNetworkMonitorTask().catch((err) => setStatus(`网络监视任务保存失败：${err.message || err}`, 'err')); });
-    document.getElementById('btn-network-cycle').addEventListener('click', () => { refreshNetworkMonitor(false).catch((err) => setStatus(`网络监视刷新失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-network-run').addEventListener('click', () => { saveNetworkMonitorTask().catch((err) => setStatus(`网络测试任务保存失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-network-cancel-edit').addEventListener('click', () => { resetNetworkTaskForm(); setStatus('已取消编辑网络测试任务', 'ok'); });
+    document.getElementById('btn-network-cycle').addEventListener('click', () => { refreshNetworkMonitor(false).catch((err) => setStatus(`网络测试刷新失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-load-logs').addEventListener('click', () => { loadLogs().catch((err) => setStatus(`日志读取失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shell-start').addEventListener('click', () => { startShellSession().catch((err) => setStatus(`会话启动失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shell-stop').addEventListener('click', () => { stopShellSession().catch((err) => setStatus(`会话停止失败：${err.message || err}`, 'err')); });
@@ -1404,18 +1483,23 @@
         void deleteShortcut(decodeURIComponent(encoded)).catch((err) => setStatus(`快捷命令删除失败：${err.message || err}`, 'err'));
         return;
       }
+      if (action === 'network-edit') {
+        const taskID = decodeURIComponent(String(button.getAttribute('data-task-id') || ''));
+        if (taskID) editNetworkTask(taskID);
+        return;
+      }
       if (action === 'network-toggle') {
         const taskID = decodeURIComponent(String(button.getAttribute('data-task-id') || ''));
         const enabled = String(button.getAttribute('data-enabled') || '') === '1';
         if (taskID) {
-          void setNetworkTaskEnabled(taskID, enabled).catch((err) => setStatus(`网络监视任务更新失败：${err.message || err}`, 'err'));
+          void setNetworkTaskEnabled(taskID, enabled).catch((err) => setStatus(`网络测试任务更新失败：${err.message || err}`, 'err'));
         }
         return;
       }
       if (action === 'network-delete') {
         const taskID = decodeURIComponent(String(button.getAttribute('data-task-id') || ''));
         if (taskID) {
-          void deleteNetworkTask(taskID).catch((err) => setStatus(`网络监视任务删除失败：${err.message || err}`, 'err'));
+          void deleteNetworkTask(taskID).catch((err) => setStatus(`网络测试任务删除失败：${err.message || err}`, 'err'));
         }
       }
     });

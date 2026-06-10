@@ -93,7 +93,7 @@ func TestMngProbeNodesHandlerIncludesAndroidRuntimePlatform(t *testing.T) {
 		probeRuntimeStore.mu.Unlock()
 	}()
 
-	updateProbeRuntimeReportWithPlatform("2", nil, nil, probeSystemMetrics{}, "v1.2.4", "android", "android", "arm64", nil)
+	updateProbeRuntimeReportWithPlatform("2", nil, nil, probeSystemMetrics{}, "v1.2.4", "android", "android", "arm64", 0, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/mng/api/probe/nodes", nil)
 	rr := httptest.NewRecorder()
