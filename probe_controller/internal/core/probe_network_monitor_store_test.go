@@ -105,3 +105,38 @@ func TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles(t *testing.T) {
 		t.Fatalf("node two results=%+v", nodeTwoResults)
 	}
 }
+
+func TestProbeNetworkMonitorLatestResultsByNodeTask(t *testing.T) {
+	restorePath := SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "network_monitor_results"))
+	t.Cleanup(restorePath)
+
+	records := []probeNetworkMonitorResultRecord{
+		{TaskID: "task-a", NodeID: "1", NodeNo: 1, NodeName: "probe-a", Timestamp: "2026-01-01T00:00:00Z", Error: "old"},
+		{TaskID: "task-a", NodeID: "1", NodeNo: 1, NodeName: "probe-a", Timestamp: "2026-01-01T00:02:00Z"},
+		{TaskID: "task-b", NodeID: "1", NodeNo: 1, NodeName: "probe-a", Timestamp: "2026-01-01T00:01:00Z"},
+		{TaskID: "task-a", NodeID: "2", NodeNo: 2, NodeName: "probe-b", Timestamp: "2026-01-01T00:03:00Z"},
+	}
+	for _, record := range records {
+		if _, err := appendProbeNetworkMonitorResult(record); err != nil {
+			t.Fatalf("append result failed: %v", err)
+		}
+	}
+
+	results := loadProbeNetworkMonitorLatestResultsByNodeTask()
+	if len(results) != 3 {
+		t.Fatalf("latest result count=%d want 3: %+v", len(results), results)
+	}
+	seen := map[string]probeNetworkMonitorResultRecord{}
+	for _, result := range results {
+		seen[result.NodeID+"|"+result.TaskID] = result
+	}
+	if got := seen["1|task-a"]; got.Timestamp != "2026-01-01T00:02:00Z" || got.Error != "" {
+		t.Fatalf("node 1 task-a latest=%+v", got)
+	}
+	if got := seen["1|task-b"]; got.Timestamp != "2026-01-01T00:01:00Z" {
+		t.Fatalf("node 1 task-b latest=%+v", got)
+	}
+	if got := seen["2|task-a"]; got.Timestamp != "2026-01-01T00:03:00Z" {
+		t.Fatalf("node 2 task-a latest=%+v", got)
+	}
+}

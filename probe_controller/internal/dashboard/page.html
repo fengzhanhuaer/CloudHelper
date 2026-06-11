@@ -194,6 +194,19 @@
             color: var(--text-secondary);
             font-family: 'Courier New', Courier, monospace;
         }
+        .probe-vendor {
+            margin-top: 3px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .probe-vendor a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .probe-vendor a:hover {
+            text-decoration: underline;
+        }
         .probe-online {
             font-size: 12px;
             padding: 2px 8px;
@@ -441,6 +454,28 @@
             })[ch]);
         }
 
+        function normalizeExternalURL(raw) {
+            const text = String(raw || '').trim();
+            if (!text) return '';
+            try {
+                const parsed = new URL(text);
+                const protocol = String(parsed.protocol || '').toLowerCase();
+                if (protocol !== 'http:' && protocol !== 'https:') return '';
+                return parsed.href;
+            } catch (_) {
+                return '';
+            }
+        }
+
+        function formatVendorLink(name, rawURL) {
+            const cleanName = String(name || '').trim();
+            if (!cleanName) return '';
+            const safeName = escapeHTML(cleanName);
+            const url = normalizeExternalURL(rawURL);
+            if (!url) return safeName;
+            return '<a href="' + escapeHTML(url) + '" target="_blank" rel="noopener noreferrer" title="' + escapeHTML(url) + '">' + safeName + '</a>';
+        }
+
         async function checkStatus() {
             try {
                 const res = await fetch('/dashboard/status');
@@ -497,11 +532,14 @@
                 const lastSeen = item.last_seen ? String(item.last_seen) : '-';
                 const machineUptime = formatMachineUptime(item.machine_uptime_seconds);
                 const bootTime = formatDateTime(item.machine_boot_time);
+                const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
+                const vendorLine = vendor ? '<div class="probe-vendor">厂家: ' + vendor + '</div>' : '';
                 return '<div class="probe-item">'
                     + '<div class="probe-item-head">'
                     + '<div>'
                     + '<div class="probe-node-name">' + escapeHTML(name) + '</div>'
                     + '<div class="probe-node-no">序号: ' + (nodeNo > 0 ? nodeNo : '-') + '</div>'
+                    + vendorLine
                     + '</div>'
                     + '<div class="probe-online ' + onlineClass + '">' + onlineText + '</div>'
                     + '</div>'

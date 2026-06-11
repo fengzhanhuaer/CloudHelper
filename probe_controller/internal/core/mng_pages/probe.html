@@ -48,6 +48,8 @@
     .ip-list { display:flex; flex-direction:column; gap:4px; margin:4px 0 6px; }
     .ip-copy-btn { display:block; width:100%; text-align:left; padding:4px 6px; border-radius:6px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; cursor:pointer; }
     .ip-copy-btn:hover { border-color:#58a6ff; color:#58a6ff; }
+    .vendor-link { color:#58a6ff; text-decoration:none; }
+    .vendor-link:hover { text-decoration:underline; }
     .modal-backdrop { position:fixed; inset:0; background:rgba(1,4,9,.72); display:flex; align-items:center; justify-content:center; padding:16px; z-index:1000; }
     .modal-backdrop[hidden] { display:none; }
     .modal { width:min(760px, 100%); max-height:90vh; overflow:auto; border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
@@ -107,7 +109,7 @@
               <th>#</th>
               <th>名称</th>
               <th>系统/连接</th>
-              <th>备注/DDNS</th>
+              <th>备注/DDNS/厂家</th>
               <th>版本/更新时间</th>
               <th>操作</th>
             </tr>
@@ -380,6 +382,28 @@
       })[ch]);
     }
 
+    function normalizeExternalURL(raw) {
+      const text = String(raw || '').trim();
+      if (!text) return '';
+      try {
+        const parsed = new URL(text);
+        const protocol = String(parsed.protocol || '').toLowerCase();
+        if (protocol !== 'http:' && protocol !== 'https:') return '';
+        return parsed.href;
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function formatVendorLink(name, rawURL) {
+      const cleanName = String(name || '').trim();
+      if (!cleanName) return '-';
+      const safeName = escapeHTML(cleanName);
+      const url = normalizeExternalURL(rawURL);
+      if (!url) return safeName;
+      return `<a class="vendor-link" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHTML(url)}">${safeName}</a>`;
+    }
+
     async function ensureSession() {
       const payload = await requestJSON('/mng/api/session');
       if (!payload.authenticated) {
@@ -612,12 +636,15 @@
           const runtime = status && status.runtime ? status.runtime : {};
           const fallbackRuntime = item && item.runtime ? item.runtime : {};
           const version = (runtime && runtime.version) || (fallbackRuntime && fallbackRuntime.version) || '-';
+          const remark = escapeHTML(item.remark || '-');
+          const ddns = escapeHTML(item.ddns || '-');
+          const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
           return `<tr>
-            <td>${item.node_no}</td>
-            <td>${item.node_name}</td>
-            <td>${item.target_system || '-'}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
-            <td>${item.remark || '-'}<br><span class="muted">${item.ddns || '-'}</span></td>
-            <td>${version}<br><span class="muted">${formatTime(item.updated_at)}</span></td>
+            <td>${escapeHTML(item.node_no)}</td>
+            <td>${escapeHTML(item.node_name || '-')}</td>
+            <td>${escapeHTML(item.target_system || '-')}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
+            <td>${remark}<br><span class="muted">${ddns}</span><br><span class="muted">厂家：${vendor}</span></td>
+            <td>${escapeHTML(version)}<br><span class="muted">${escapeHTML(formatTime(item.updated_at))}</span></td>
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
               <button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>
@@ -826,12 +853,54 @@
       return `${avgText} ${rangeText}`.trim();
     }
 
+    function networkResultTimeMs(report) {
+      const text = String((report && report.timestamp) || (report && report.finished_at) || (report && report.started_at) || '').trim();
+      if (!text) return 0;
+      const ms = new Date(text).getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    }
+
+    function networkResultProbeTaskKey(report) {
+      const nodeNo = Number(report && report.node_no);
+      let probeKey = '';
+      if (Number.isFinite(nodeNo) && nodeNo > 0) probeKey = `no:${Math.trunc(nodeNo)}`;
+      const nodeID = String((report && report.node_id) || '').trim();
+      if (!probeKey && nodeID) probeKey = `id:${nodeID}`;
+      const nodeName = String((report && report.node_name) || '').trim();
+      if (!probeKey && nodeName) probeKey = `name:${nodeName}`;
+      const taskID = String((report && report.task_id) || '').trim();
+      const taskName = String((report && report.task_name) || '').trim();
+      const taskKey = taskID ? `task:${taskID}` : (taskName ? `task-name:${taskName}` : 'task:-');
+      return probeKey ? `${probeKey}|${taskKey}` : '';
+    }
+
+    function latestNetworkResultsByProbeTask(items) {
+      const latest = new Map();
+      for (let index = 0; index < items.length; index += 1) {
+        const report = items[index] || {};
+        const key = networkResultProbeTaskKey(report) || `row:${index}`;
+        const current = latest.get(key);
+        const candidateMs = networkResultTimeMs(report);
+        const currentMs = current ? networkResultTimeMs(current.report) : -1;
+        if (!current || candidateMs > currentMs || (candidateMs === currentMs && index < current.index)) {
+          latest.set(key, { report, index });
+        }
+      }
+      return Array.from(latest.values())
+        .sort((a, b) => {
+          const delta = networkResultTimeMs(b.report) - networkResultTimeMs(a.report);
+          return delta !== 0 ? delta : a.index - b.index;
+        })
+        .map((entry) => entry.report);
+    }
+
     function renderNetworkResults() {
       const body = document.getElementById('network-result-body');
       const summary = document.getElementById('network-summary');
-      const items = Array.isArray(state.networkResults) ? state.networkResults.slice(0, 100) : [];
+      const rawItems = Array.isArray(state.networkResults) ? state.networkResults : [];
+      const items = latestNetworkResultsByProbeTask(rawItems);
       if (summary) {
-        summary.textContent = `任务 ${state.networkTasks.length} 个，最近上报结果 ${items.length} 条。`;
+        summary.textContent = `任务 ${state.networkTasks.length} 个，最新探针任务结果 ${items.length} 条。`;
       }
       if (!body) return;
       if (!items.length) {
@@ -910,7 +979,7 @@
 
     async function refreshNetworkMonitor(silent) {
       const tasksPayload = await requestJSON('/mng/api/probe/network-monitor/tasks');
-      const resultsPayload = await requestJSON('/mng/api/probe/network-monitor/results?limit=100');
+      const resultsPayload = await requestJSON('/mng/api/probe/network-monitor/results?latest=1');
       state.networkTasks = Array.isArray(tasksPayload.items) ? tasksPayload.items : [];
       state.networkResults = Array.isArray(resultsPayload.items) ? resultsPayload.items : [];
       renderNetworkTasks();

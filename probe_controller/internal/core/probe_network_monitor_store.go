@@ -206,6 +206,76 @@ func loadProbeNetworkMonitorResultsLocked(limit int) []probeNetworkMonitorResult
 	return out
 }
 
+func loadProbeNetworkMonitorLatestResultsByNodeTask() []probeNetworkMonitorResultRecord {
+	probeNetworkMonitorResultStore.mu.Lock()
+	nodeIDs, err := listProbeNetworkMonitorResultNodeIDsLocked()
+	if err != nil {
+		probeNetworkMonitorResultStore.mu.Unlock()
+		logControllerWarnf("failed to list network monitor result nodes: %v", err)
+		return []probeNetworkMonitorResultRecord{}
+	}
+	latest := map[string]probeNetworkMonitorResultRecord{}
+	for _, nodeID := range nodeIDs {
+		items, loadErr := loadProbeNetworkMonitorResultsForNodeFromDiskLocked(nodeID)
+		if loadErr != nil {
+			probeNetworkMonitorResultStore.mu.Unlock()
+			logControllerWarnf("failed to load network monitor results: node=%s err=%v", nodeID, loadErr)
+			return []probeNetworkMonitorResultRecord{}
+		}
+		for _, item := range items {
+			taskID := strings.TrimSpace(item.TaskID)
+			if taskID == "" {
+				taskID = strings.TrimSpace(item.ID)
+			}
+			key := normalizeProbeNodeID(item.NodeID) + "|" + taskID
+			if strings.TrimSpace(key) == "|" {
+				continue
+			}
+			current, ok := latest[key]
+			if !ok || probeNetworkMonitorResultTimestamp(item).After(probeNetworkMonitorResultTimestamp(current)) {
+				latest[key] = item
+			}
+		}
+	}
+	probeNetworkMonitorResultStore.mu.Unlock()
+
+	out := make([]probeNetworkMonitorResultRecord, 0, len(latest))
+	for _, item := range latest {
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left := probeNetworkMonitorResultTimestamp(out[i])
+		right := probeNetworkMonitorResultTimestamp(out[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		if out[i].NodeNo != out[j].NodeNo {
+			return out[i].NodeNo < out[j].NodeNo
+		}
+		if out[i].NodeID != out[j].NodeID {
+			return out[i].NodeID < out[j].NodeID
+		}
+		return out[i].TaskID < out[j].TaskID
+	})
+	return out
+}
+
+func probeNetworkMonitorResultTimestamp(item probeNetworkMonitorResultRecord) time.Time {
+	for _, raw := range []string{item.Timestamp, item.FinishedAt, item.StartedAt} {
+		text := strings.TrimSpace(raw)
+		if text == "" {
+			continue
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, text); err == nil {
+			return parsed
+		}
+		if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
+}
+
 func loadProbeNetworkMonitorResultsAll() []probeNetworkMonitorResultRecord {
 	probeNetworkMonitorResultStore.mu.Lock()
 	items, err := loadProbeNetworkMonitorResultsAllFromDiskLocked()

@@ -71,6 +71,8 @@ func dashboardNetworkHandler(w http.ResponseWriter, r *http.Request) {
 type dashboardPublicProbeItem struct {
 	NodeNo               int                `json:"node_no"`
 	NodeName             string             `json:"node_name"`
+	VendorName           string             `json:"vendor_name,omitempty"`
+	VendorURL            string             `json:"vendor_url,omitempty"`
 	Online               bool               `json:"online"`
 	LastSeen             string             `json:"last_seen"`
 	MachineUptimeSeconds int64              `json:"machine_uptime_seconds,omitempty"`
@@ -102,8 +104,10 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 	// Security note: /dashboard/* is public. Do not expose node_id/ip/version here.
 	runtimes := listProbeRuntimes()
 	type nodeMeta struct {
-		no   int
-		name string
+		no        int
+		name      string
+		vendor    string
+		vendorURL string
 	}
 	metaMap := map[string]nodeMeta{}
 	if ProbeStore != nil {
@@ -111,8 +115,10 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 		for _, node := range loadProbeNodesLocked() {
 			normalizedID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 			metaMap[normalizedID] = nodeMeta{
-				no:   node.NodeNo,
-				name: strings.TrimSpace(node.NodeName),
+				no:        node.NodeNo,
+				name:      strings.TrimSpace(node.NodeName),
+				vendor:    strings.TrimSpace(node.VendorName),
+				vendorURL: strings.TrimSpace(node.VendorURL),
 			}
 		}
 		ProbeStore.mu.RUnlock()
@@ -141,6 +147,8 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 		out = append(out, dashboardPublicProbeItem{
 			NodeNo:               nodeNo,
 			NodeName:             nodeName,
+			VendorName:           meta.vendor,
+			VendorURL:            meta.vendorURL,
 			Online:               rt.Online,
 			LastSeen:             strings.TrimSpace(rt.LastSeen),
 			MachineUptimeSeconds: machineUptimeSeconds,

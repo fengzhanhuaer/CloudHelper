@@ -300,9 +300,14 @@ func mngProbeNetworkMonitorResultsHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	limit := normalizeAdminLogLines(r.URL.Query().Get("limit"))
 	ProbeStore.mu.RLock()
-	results := loadProbeNetworkMonitorResultsLocked(limit)
+	var results []probeNetworkMonitorResultRecord
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("latest")), "1") || strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("latest")), "true") {
+		results = loadProbeNetworkMonitorLatestResultsByNodeTask()
+	} else {
+		limit := normalizeAdminLogLines(r.URL.Query().Get("limit"))
+		results = loadProbeNetworkMonitorResultsLocked(limit)
+	}
 	taskNames := probeNetworkMonitorTaskNamesByIDLocked()
 	ProbeStore.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": attachProbeNetworkMonitorResultTaskNames(results, taskNames)})
