@@ -26,6 +26,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -322,6 +323,8 @@ func newProbeLocalTUNNetstack() (*probeLocalTUNNetstack, error) {
 			ipv6.NewProtocol,
 		},
 		TransportProtocols: []stack.TransportProtocolFactory{
+			icmp.NewProtocol4,
+			icmp.NewProtocol6,
 			tcp.NewProtocol,
 			udp.NewProtocol,
 		},
@@ -337,10 +340,25 @@ func newProbeLocalTUNNetstack() (*probeLocalTUNNetstack, error) {
 	if err := probeLocalTCPIPErrToError(gStack.SetSpoofing(probeLocalTUNNetstackNICID, true)); err != nil {
 		return nil, err
 	}
+	if err := probeLocalTCPIPErrToError(gStack.AddProtocolAddress(probeLocalTUNNetstackNICID, tcpip.ProtocolAddress{
+		Protocol: ipv4.ProtocolNumber,
+		AddressWithPrefix: tcpip.AddressWithPrefix{
+			Address:   tcpip.AddrFrom4Slice(net.ParseIP(probeLocalTUNRouteGatewayIPv4).To4()),
+			PrefixLen: 32,
+		},
+	}, stack.AddressProperties{})); err != nil {
+		return nil, err
+	}
 	gStack.SetRouteTable([]tcpip.Route{
 		{Destination: header.IPv4EmptySubnet, NIC: probeLocalTUNNetstackNICID},
 		{Destination: header.IPv6EmptySubnet, NIC: probeLocalTUNNetstackNICID},
 	})
+	if _, err := gStack.SetNICForwarding(probeLocalTUNNetstackNICID, ipv4.ProtocolNumber, true); err != nil {
+		return nil, probeLocalTCPIPErrToError(err)
+	}
+	if _, err := gStack.SetNICForwarding(probeLocalTUNNetstackNICID, ipv6.ProtocolNumber, true); err != nil {
+		return nil, probeLocalTCPIPErrToError(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &probeLocalTUNNetstack{
@@ -1926,6 +1944,66 @@ func probeLocalTUNProtocolFromPacket(packet []byte) (tcpip.NetworkProtocolNumber
 	}
 }
 
+func handleProbeLocalTUNICMPDirectBypass(packet []byte) bool {
+	dstIP, ok := parseProbeLocalTUNIPv4ICMPEchoDestination(packet)
+	if !ok || dstIP == nil {
+		return false
+	}
+	if shouldSkipProbeLocalTUNDirectBypassIP(dstIP) {
+		return false
+	}
+	targetAddr := net.JoinHostPort(dstIP.String(), "0")
+	route, err := decideProbeLocalRouteForTarget(targetAddr)
+	if err != nil || route.Reject || !route.Direct {
+		return false
+	}
+	if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
+		logProbeWarnf("probe local tun icmp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
+		return false
+	}
+	logProbeInfof("probe local tun icmp direct bypass route prepared: target=%s", route.TargetAddr)
+	return true
+}
+
+func parseProbeLocalTUNIPv4ICMPEchoDestination(packet []byte) (net.IP, bool) {
+	if len(packet) < header.IPv4MinimumSize {
+		return nil, false
+	}
+	if packet[0]>>4 != 4 {
+		return nil, false
+	}
+	ihl := int(packet[0]&0x0F) * 4
+	if ihl < header.IPv4MinimumSize || len(packet) < ihl+header.ICMPv4MinimumSize {
+		return nil, false
+	}
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen > 0 && totalLen < ihl+header.ICMPv4MinimumSize {
+		return nil, false
+	}
+	if packet[9] != byte(header.ICMPv4ProtocolNumber) {
+		return nil, false
+	}
+	icmpPacket := packet[ihl:]
+	if totalLen > 0 && totalLen <= len(packet) {
+		icmpPacket = packet[ihl:totalLen]
+	}
+	if len(icmpPacket) < header.ICMPv4MinimumSize || header.ICMPv4(icmpPacket).Type() != header.ICMPv4Echo {
+		return nil, false
+	}
+	return net.IPv4(packet[16], packet[17], packet[18], packet[19]), true
+}
+
+func shouldSkipProbeLocalTUNDirectBypassIP(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil || ip4.IsUnspecified() || ip4.IsLoopback() || ip4.IsMulticast() || ip4.Equal(net.IPv4bcast) {
+		return true
+	}
+	if ip4[0] == 198 && (ip4[1]&0xFE) == 18 {
+		return true
+	}
+	return false
+}
+
 func (s *probeLocalTUNSimplePacketStack) Write(packet []byte) (int, error) {
 	if s == nil {
 		return 0, errors.New("packet stack is nil")
@@ -1991,24 +2069,41 @@ func parseProbeLocalTUNIPv4Target(packet []byte) (network string, targetAddr str
 		return "", "", errors.New("ipv4 header too short")
 	}
 	ihl := int(packet[0]&0x0F) * 4
-	if ihl < 20 || len(packet) < ihl+4 {
+	if ihl < 20 {
 		return "", "", errors.New("invalid ipv4 header length")
 	}
 	proto := packet[9]
 	dstIP := net.IPv4(packet[16], packet[17], packet[18], packet[19]).String()
-	dstPort := uint16(packet[ihl+2])<<8 | uint16(packet[ihl+3])
-	if dstPort == 0 {
-		return "", "", errors.New("missing destination port")
-	}
 	switch proto {
 	case 6:
+		if len(packet) < ihl+4 {
+			return "", "", errors.New("tcp header too short")
+		}
+		dstPort := uint16(packet[ihl+2])<<8 | uint16(packet[ihl+3])
+		if dstPort == 0 {
+			return "", "", errors.New("missing destination port")
+		}
 		network = "tcp"
+		return network, net.JoinHostPort(dstIP, strconv.Itoa(int(dstPort))), nil
 	case 17:
+		if len(packet) < ihl+4 {
+			return "", "", errors.New("udp header too short")
+		}
+		dstPort := uint16(packet[ihl+2])<<8 | uint16(packet[ihl+3])
+		if dstPort == 0 {
+			return "", "", errors.New("missing destination port")
+		}
 		network = "udp"
+		return network, net.JoinHostPort(dstIP, strconv.Itoa(int(dstPort))), nil
+	case byte(header.ICMPv4ProtocolNumber):
+		if len(packet) < ihl+header.ICMPv4MinimumSize {
+			return "", "", errors.New("icmpv4 header too short")
+		}
+		network = "icmp"
+		return network, net.JoinHostPort(dstIP, "0"), nil
 	default:
 		return "", "", fmt.Errorf("unsupported ipv4 transport protocol: %d", proto)
 	}
-	return network, net.JoinHostPort(dstIP, strconv.Itoa(int(dstPort))), nil
 }
 
 func parseProbeLocalTUNIPv6Target(packet []byte) (network string, targetAddr string, err error) {

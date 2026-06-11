@@ -169,6 +169,9 @@ func writeProbeLocalTUNInboundPacketToStack(packet []byte) error {
 }
 
 func handleProbeLocalTUNInboundPacket(packet []byte) {
+	if handleProbeLocalTUNICMPDirectBypass(packet) {
+		return
+	}
 	if err := writeProbeLocalTUNInboundPacketToStack(packet); err != nil {
 		logProbeWarnf("probe local tun packet stack write failed: %v", err)
 	}

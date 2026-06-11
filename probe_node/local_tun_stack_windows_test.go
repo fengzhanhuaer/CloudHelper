@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/net/dns/dnsmessage"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
@@ -41,6 +42,26 @@ type timeoutProbeLocalTUNPacketConnError struct{}
 func (timeoutProbeLocalTUNPacketConnError) Error() string   { return "timeout" }
 func (timeoutProbeLocalTUNPacketConnError) Timeout() bool   { return true }
 func (timeoutProbeLocalTUNPacketConnError) Temporary() bool { return true }
+
+type fakeProbeLocalTUNPacketStack struct {
+	mu     sync.Mutex
+	writes [][]byte
+}
+
+func (s *fakeProbeLocalTUNPacketStack) Write(packet []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writes = append(s.writes, append([]byte(nil), packet...))
+	return len(packet), nil
+}
+
+func (s *fakeProbeLocalTUNPacketStack) Close() error { return nil }
+
+func (s *fakeProbeLocalTUNPacketStack) writeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.writes)
+}
 
 type fakeProbeLocalTUNPacketConn struct {
 	mu       sync.Mutex
@@ -330,6 +351,34 @@ func extractProbeLocalTestDNSARecords(t *testing.T, packet []byte) []string {
 	}
 }
 
+func buildProbeLocalTestIPv4ICMPEchoPacket(t *testing.T, src string, dst string) []byte {
+	t.Helper()
+	srcIP := net.ParseIP(src).To4()
+	dstIP := net.ParseIP(dst).To4()
+	if srcIP == nil || dstIP == nil {
+		t.Fatalf("invalid test ips src=%q dst=%q", src, dst)
+	}
+	packet := make([]byte, header.IPv4MinimumSize+header.ICMPv4MinimumSize+4)
+	ip := header.IPv4(packet[:header.IPv4MinimumSize])
+	ip.Encode(&header.IPv4Fields{
+		TotalLength: uint16(len(packet)),
+		TTL:         64,
+		Protocol:    uint8(header.ICMPv4ProtocolNumber),
+		SrcAddr:     tcpip.AddrFrom4Slice(srcIP),
+		DstAddr:     tcpip.AddrFrom4Slice(dstIP),
+	})
+	ip.SetChecksum(^ip.CalculateChecksum())
+
+	icmp := header.ICMPv4(packet[header.IPv4MinimumSize:])
+	icmp.SetType(header.ICMPv4Echo)
+	icmp.SetCode(0)
+	icmp.SetIdent(0x1234)
+	icmp.SetSequence(1)
+	copy(packet[header.IPv4MinimumSize+header.ICMPv4MinimumSize:], []byte{1, 2, 3, 4})
+	icmp.SetChecksum(header.ICMPv4Checksum(icmp, 0))
+	return packet
+}
+
 func TestParseProbeLocalTUNIPv4TargetTCP(t *testing.T) {
 	packet := make([]byte, 40)
 	packet[0] = 0x45
@@ -368,6 +417,21 @@ func TestParseProbeLocalTUNIPv4TargetUDP(t *testing.T) {
 	}
 }
 
+func TestParseProbeLocalTUNIPv4TargetICMP(t *testing.T) {
+	packet := buildProbeLocalTestIPv4ICMPEchoPacket(t, "198.18.0.2", "203.0.113.7")
+
+	network, target, err := parseProbeLocalTUNPacketTarget(packet)
+	if err != nil {
+		t.Fatalf("parse target failed: %v", err)
+	}
+	if network != "icmp" {
+		t.Fatalf("network=%q", network)
+	}
+	if target != "203.0.113.7:0" {
+		t.Fatalf("target=%q", target)
+	}
+}
+
 func TestParseProbeLocalTUNIPv6TargetTCP(t *testing.T) {
 	packet := make([]byte, 60)
 	packet[0] = 0x60
@@ -385,6 +449,83 @@ func TestParseProbeLocalTUNIPv6TargetTCP(t *testing.T) {
 	}
 	if !strings.Contains(target, "2001:db8::1") || !strings.HasSuffix(target, ":443") {
 		t.Fatalf("target=%q", target)
+	}
+}
+
+func TestHandleProbeLocalTUNInboundPacketICMPDirectBypassCreatesHostRoute(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDirectBypassStateForTest()
+	probeLocalTUNDataPlaneState.mu.Lock()
+	oldStack := probeLocalTUNDataPlaneState.packetStack
+	stack := &fakeProbeLocalTUNPacketStack{}
+	probeLocalTUNDataPlaneState.packetStack = stack
+	probeLocalTUNDataPlaneState.mu.Unlock()
+	t.Cleanup(func() {
+		probeLocalTUNDataPlaneState.mu.Lock()
+		probeLocalTUNDataPlaneState.packetStack = oldStack
+		probeLocalTUNDataPlaneState.mu.Unlock()
+		resetProbeLocalDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+		t.Fatalf("ensure defaults failed: %v", err)
+	}
+	probeLocalControl.mu.Lock()
+	oldProxy := probeLocalControl.proxy
+	probeLocalControl.proxy.Enabled = true
+	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.mu.Unlock()
+	t.Cleanup(func() {
+		probeLocalControl.mu.Lock()
+		probeLocalControl.proxy = oldProxy
+		probeLocalControl.mu.Unlock()
+	})
+
+	probeLocalDirectBypassRouteTargetState.mu.Lock()
+	probeLocalDirectBypassRouteTargetState.routeTarget = probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
+	probeLocalDirectBypassRouteTargetState.ready = true
+	probeLocalDirectBypassRouteTargetState.mu.Unlock()
+
+	var created []probeLocalWindowsRouteDef
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		created = append(created, routeDef)
+		return true, nil
+	}
+
+	handleProbeLocalTUNInboundPacket(buildProbeLocalTestIPv4ICMPEchoPacket(t, "198.18.0.2", "203.0.113.7"))
+	if len(created) != 1 {
+		t.Fatalf("created routes=%+v", created)
+	}
+	if created[0].Prefix != "203.0.113.7" || created[0].Mask != probeLocalWindowsHostRouteMask || created[0].Gateway != "192.168.51.1" || created[0].IfIndex != 13 {
+		t.Fatalf("unexpected route=%+v", created[0])
+	}
+	if got := stack.writeCount(); got != 0 {
+		t.Fatalf("packet stack writes=%d, want 0 after direct bypass", got)
+	}
+}
+
+func TestHandleProbeLocalTUNInboundPacketICMPSkipsInternalTUNRange(t *testing.T) {
+	resetProbeLocalDirectBypassStateForTest()
+	probeLocalTUNDataPlaneState.mu.Lock()
+	oldStack := probeLocalTUNDataPlaneState.packetStack
+	stack := &fakeProbeLocalTUNPacketStack{}
+	probeLocalTUNDataPlaneState.packetStack = stack
+	probeLocalTUNDataPlaneState.mu.Unlock()
+	t.Cleanup(func() {
+		probeLocalTUNDataPlaneState.mu.Lock()
+		probeLocalTUNDataPlaneState.packetStack = oldStack
+		probeLocalTUNDataPlaneState.mu.Unlock()
+		resetProbeLocalDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		t.Fatalf("should not create direct bypass route for internal tun range: %+v", routeDef)
+		return false, nil
+	}
+
+	handleProbeLocalTUNInboundPacket(buildProbeLocalTestIPv4ICMPEchoPacket(t, "198.18.0.2", "198.18.0.1"))
+	if got := stack.writeCount(); got != 1 {
+		t.Fatalf("packet stack writes=%d, want 1 for internal tun target", got)
 	}
 }
 
