@@ -3334,8 +3334,8 @@ func TestProbeLocalTUNInstallDoesNotStartDataPlaneWhenProxyDirect(t *testing.T) 
 	if !ok {
 		t.Fatalf("tun/install tun payload type=%T", payload["tun"])
 	}
-	if enabled, _ := tunObj["enabled"].(bool); enabled {
-		t.Fatalf("tun/install enabled=%v, want false without proxy enable", enabled)
+	if enabled, _ := tunObj["enabled"].(bool); !enabled {
+		t.Fatalf("tun/install enabled=%v, want true for adapter switch", enabled)
 	}
 	if dataPlane, _ := tunObj["data_plane"].(bool); dataPlane {
 		t.Fatalf("tun/install data_plane=%v, want false without proxy enable", dataPlane)
@@ -3344,8 +3344,61 @@ func TestProbeLocalTUNInstallDoesNotStartDataPlaneWhenProxyDirect(t *testing.T) 
 	if err != nil {
 		t.Fatalf("load proxy state failed: %v", err)
 	}
-	if !state.TUN.Installed || state.TUN.Enabled {
-		t.Fatalf("persisted tun state=%+v, want installed=true enabled=false", state.TUN)
+	if !state.TUN.Installed || !state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true", state.TUN)
+	}
+	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
+		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
+	}
+}
+
+func TestProbeLocalProxyDirectKeepsInstalledTUNEnabled(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeLocalInstallTUNDriver = func() error {
+		obs := newProbeLocalTUNInstallObservation()
+		obs.Final.Success = true
+		obs.Final.ReasonCode = "TUN_INSTALL_SUCCEEDED"
+		obs.Final.Reason = "driver-ready"
+		setProbeLocalTUNInstallObservation(obs)
+		return nil
+	}
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
+	probeLocalApplyProxyTakeover = func() error { return nil }
+	probeLocalRestoreProxyDirect = func() error { return nil }
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
+
+	installResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/install", map[string]any{}, sessionCookie)
+	if installResp.Code != http.StatusOK {
+		t.Fatalf("tun/install status=%d body=%s", installResp.Code, installResp.Body.String())
+	}
+	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{}, sessionCookie)
+	if enableResp.Code != http.StatusOK {
+		t.Fatalf("proxy/enable status=%d body=%s", enableResp.Code, enableResp.Body.String())
+	}
+	directResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/direct", map[string]any{}, sessionCookie)
+	if directResp.Code != http.StatusOK {
+		t.Fatalf("proxy/direct status=%d body=%s", directResp.Code, directResp.Body.String())
+	}
+
+	directPayload := decodeProbeLocalJSON(t, directResp)
+	tunObj, ok := directPayload["tun"].(map[string]any)
+	if !ok {
+		t.Fatalf("proxy/direct tun payload type=%T", directPayload["tun"])
+	}
+	if enabled, _ := tunObj["enabled"].(bool); !enabled {
+		t.Fatalf("proxy/direct tun.enabled=%v, want true after closing VNet", enabled)
+	}
+	if dataPlane, _ := tunObj["data_plane"].(bool); dataPlane {
+		t.Fatalf("proxy/direct tun.data_plane=%v, want false after closing VNet", dataPlane)
+	}
+	state, err := loadProbeLocalProxyStateFile()
+	if err != nil {
+		t.Fatalf("load proxy state failed: %v", err)
+	}
+	if !state.TUN.Installed || !state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true after closing VNet", state.TUN)
 	}
 	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
 		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
@@ -3431,6 +3484,8 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
 
 	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	probeLocalInstallTUNDriver = func() error { return nil }
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
 	takeoverCalls := 0
 	probeLocalApplyProxyTakeover = func() error {
 		takeoverCalls++
@@ -3457,8 +3512,8 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 		t.Fatalf("data plane calls=%d, want 0 for startup adapter-only recovery", dataPlaneCalls)
 	}
 	status := probeLocalControl.tunStatus()
-	if !status.Installed || status.Enabled || status.DataPlane {
-		t.Fatalf("startup recovery tun status=%+v, want installed only", status)
+	if !status.Installed || !status.Enabled || status.DataPlane {
+		t.Fatalf("startup recovery tun status=%+v, want installed enabled without data plane", status)
 	}
 	proxyStatus := probeLocalControl.proxyStatus()
 	if proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeDirect {
@@ -3468,8 +3523,8 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 	if err != nil {
 		t.Fatalf("load proxy state failed: %v", err)
 	}
-	if !state.TUN.Installed || state.TUN.Enabled {
-		t.Fatalf("persisted tun state=%+v, want installed=true enabled=false", state.TUN)
+	if !state.TUN.Installed || !state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true", state.TUN)
 	}
 	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
 		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
@@ -3546,6 +3601,8 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 	}
 
 	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	probeLocalInstallTUNDriver = func() error { return nil }
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
 	takeoverCalls := 0
 	probeLocalApplyProxyTakeover = func() error {
 		takeoverCalls++
@@ -3619,6 +3676,8 @@ func TestProbeLocalTUNStartupRecoverySkipsProxyPreconnect(t *testing.T) {
 	}
 
 	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	probeLocalInstallTUNDriver = func() error { return nil }
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
 	probeLocalApplyProxyTakeover = func() error { return nil }
 	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
 	probeLocalTUNOpenChainRelayNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
@@ -3690,6 +3749,8 @@ func TestProbeLocalTUNChainSyncRecoveryRetriesPersistedEnabledState(t *testing.T
 	}
 
 	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	probeLocalInstallTUNDriver = func() error { return nil }
+	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
 	takeoverCalls := 0
 	probeLocalApplyProxyTakeover = func() error {
 		takeoverCalls++

@@ -7,8 +7,8 @@ ASSET_NAME="${ASSET_NAME:-}"
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/cloudhelper/probe_node}"
 SERVICE_NAME="${SERVICE_NAME:-probe_node}"
-SERVICE_USER="${SERVICE_USER:-cloudhelper}"
-SERVICE_GROUP="${SERVICE_GROUP:-cloudhelper}"
+SERVICE_USER="${SERVICE_USER:-root}"
+SERVICE_GROUP="${SERVICE_GROUP:-root}"
 RUNTIME_MODE="auto"
 MANUAL_ENABLE_BOOT="${MANUAL_ENABLE_BOOT:-true}" # true | false
 
