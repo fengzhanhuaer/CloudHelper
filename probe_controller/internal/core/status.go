@@ -113,6 +113,9 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 	if ProbeStore != nil {
 		ProbeStore.mu.RLock()
 		for _, node := range loadProbeNodesLocked() {
+			if !isDashboardVisibleProbeNode(node) {
+				continue
+			}
 			normalizedID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 			metaMap[normalizedID] = nodeMeta{
 				no:        node.NodeNo,
@@ -128,12 +131,13 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 	for _, rt := range runtimes {
 		normalizedID := normalizeProbeNodeID(rt.NodeID)
 		meta, ok := metaMap[normalizedID]
+		if !ok {
+			continue
+		}
 		nodeNo := 0
 		nodeName := ""
-		if ok {
-			nodeNo = meta.no
-			nodeName = meta.name
-		}
+		nodeNo = meta.no
+		nodeName = meta.name
 		if nodeNo <= 0 {
 			if n, err := strconv.Atoi(normalizedID); err == nil && n > 0 {
 				nodeNo = n
@@ -188,6 +192,9 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 	if ProbeStore != nil {
 		ProbeStore.mu.RLock()
 		for _, node := range loadProbeNodesLocked() {
+			if !isDashboardVisibleProbeNode(node) {
+				continue
+			}
 			normalizedID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 			metaMap[normalizedID] = nodeMeta{
 				no:   node.NodeNo,
@@ -211,15 +218,16 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 	byNode := map[string]*nodeAccumulator{}
 	for _, nodeID := range listProbeNetworkMonitorResultNodeIDs() {
 		meta, ok := metaMap[nodeID]
+		if !ok {
+			continue
+		}
 		nodeNo := 0
 		nodeName := ""
-		if ok {
-			if meta.no > 0 {
-				nodeNo = meta.no
-			}
-			if meta.name != "" {
-				nodeName = meta.name
-			}
+		if meta.no > 0 {
+			nodeNo = meta.no
+		}
+		if meta.name != "" {
+			nodeName = meta.name
 		}
 		if nodeNo <= 0 {
 			if n, err := strconv.Atoi(nodeID); err == nil && n > 0 {
@@ -328,6 +336,13 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 		return i < j
 	})
 	return out
+}
+
+func isDashboardVisibleProbeNode(node probeNodeRecord) bool {
+	if node.NodeNo <= 0 {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(node.TargetSystem), "android")
 }
 
 func dashboardNetworkTaskIdentity(result probeNetworkMonitorResultRecord, taskNameMap map[string]string) (string, string) {

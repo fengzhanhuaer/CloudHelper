@@ -707,6 +707,75 @@ func SetProbeNetworkMonitorTasksForTest(taskNames map[string]string) func() {
 	return func() { ProbeStore = oldStore }
 }
 
+func SetProbeNodesAndNetworkMonitorTasksForTest(nodes map[int]string, taskNames map[string]string) func() {
+	testNodes := make([]ProbeNodeForTest, 0, len(nodes))
+	for nodeNo, nodeName := range nodes {
+		testNodes = append(testNodes, ProbeNodeForTest{
+			NodeNo:       nodeNo,
+			NodeName:     nodeName,
+			TargetSystem: "linux",
+		})
+	}
+	return SetProbeNodeRecordsAndNetworkMonitorTasksForTest(testNodes, taskNames)
+}
+
+type ProbeNodeForTest struct {
+	NodeNo       int
+	NodeName     string
+	TargetSystem string
+	Deleted      bool
+}
+
+func SetProbeNodeRecordsAndNetworkMonitorTasksForTest(nodes []ProbeNodeForTest, taskNames map[string]string) func() {
+	oldStore := ProbeStore
+	probeNodes := make([]probeNodeRecord, 0, len(nodes))
+	deletedProbeNodes := make([]probeNodeRecord, 0)
+	deletedProbeNodeNos := make([]int, 0)
+	for _, node := range nodes {
+		targetSystem := strings.TrimSpace(node.TargetSystem)
+		if targetSystem == "" {
+			targetSystem = "linux"
+		}
+		record := probeNodeRecord{
+			NodeNo:       node.NodeNo,
+			NodeName:     strings.TrimSpace(node.NodeName),
+			TargetSystem: targetSystem,
+		}
+		if node.Deleted {
+			deletedProbeNodes = append(deletedProbeNodes, record)
+			if node.NodeNo > 0 {
+				deletedProbeNodeNos = append(deletedProbeNodeNos, node.NodeNo)
+			}
+			continue
+		}
+		probeNodes = append(probeNodes, record)
+	}
+	sort.Slice(probeNodes, func(i, j int) bool {
+		return probeNodes[i].NodeNo < probeNodes[j].NodeNo
+	})
+	sort.Slice(deletedProbeNodes, func(i, j int) bool {
+		return deletedProbeNodes[i].NodeNo < deletedProbeNodes[j].NodeNo
+	})
+	sort.Ints(deletedProbeNodeNos)
+	tasks := make([]probeNetworkMonitorTaskRecord, 0, len(taskNames))
+	for taskID, taskName := range taskNames {
+		tasks = append(tasks, probeNetworkMonitorTaskRecord{
+			ID:      strings.TrimSpace(taskID),
+			Name:    strings.TrimSpace(taskName),
+			NodeIDs: []string{"1"},
+			Targets: []string{"1.1.1.1"},
+			Enabled: true,
+		})
+	}
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes:          probeNodes,
+		DeletedProbeNodes:   deletedProbeNodes,
+		DeletedProbeNodeNos: deletedProbeNodeNos,
+		NetworkMonitorTasks: tasks,
+	}}
+	return func() { ProbeStore = oldStore }
+}
+
 func AppendProbeNetworkMonitorResultForTest(nodeID string, taskID string, timestamp string, latencyAvgMS float64, lossPercent float64) error {
 	_, err := appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
 		NodeID:    nodeID,

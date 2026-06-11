@@ -82,6 +82,8 @@ func TestFaviconRoutesNoAuthRequired(t *testing.T) {
 func TestDashboardProbesExposeMachineUptime(t *testing.T) {
 	core.ResetProbeRuntimeStoreForTest()
 	t.Cleanup(core.ResetProbeRuntimeStoreForTest)
+	restoreStore := core.SetProbeNodesAndNetworkMonitorTasksForTest(map[int]string{1: "probe-a"}, nil)
+	t.Cleanup(restoreStore)
 	core.UpdateProbeRuntimeReportForTest("1", 3661)
 	mux := core.NewMux()
 
@@ -108,10 +110,44 @@ func TestDashboardProbesExposeMachineUptime(t *testing.T) {
 	}
 }
 
+func TestDashboardProbesHideDeletedAndAndroidClients(t *testing.T) {
+	core.ResetProbeRuntimeStoreForTest()
+	t.Cleanup(core.ResetProbeRuntimeStoreForTest)
+	restoreStore := core.SetProbeNodeRecordsAndNetworkMonitorTasksForTest([]core.ProbeNodeForTest{
+		{NodeNo: 1, NodeName: "probe-a", TargetSystem: "linux"},
+		{NodeNo: 2, NodeName: "android-client", TargetSystem: "android"},
+		{NodeNo: 3, NodeName: "deleted-probe", TargetSystem: "linux", Deleted: true},
+	}, nil)
+	t.Cleanup(restoreStore)
+	core.UpdateProbeRuntimeReportForTest("1", 100)
+	core.UpdateProbeRuntimeReportForTest("2", 200)
+	core.UpdateProbeRuntimeReportForTest("3", 300)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/probes", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected GET /dashboard/probes 200, got %d", rr.Code)
+	}
+	var payload struct {
+		Items []struct {
+			NodeNo int `json:"node_no"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to parse /dashboard/probes response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].NodeNo != 1 {
+		t.Fatalf("expected only linux active probe 1, got %+v", payload.Items)
+	}
+}
+
 func TestDashboardNetworkRouteNoAuthRequired(t *testing.T) {
 	restorePath := core.SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "network_monitor_results"))
 	t.Cleanup(restorePath)
-	restoreTasks := core.SetProbeNetworkMonitorTasksForTest(map[string]string{"task-1": "外网测试"})
+	restoreTasks := core.SetProbeNodesAndNetworkMonitorTasksForTest(map[int]string{1: "probe-a"}, map[string]string{"task-1": "外网测试"})
 	t.Cleanup(restoreTasks)
 	if err := core.AppendProbeNetworkMonitorResultForTest("1", "task-1", "2026-01-01T00:00:00Z", 23.5, 1.5); err != nil {
 		t.Fatalf("AppendProbeNetworkMonitorResultForTest failed: %v", err)
@@ -151,6 +187,42 @@ func TestDashboardNetworkRouteNoAuthRequired(t *testing.T) {
 	}
 	if payload.Items[0].Series[0].Points[0].LatencyAvgMS != 23.5 || payload.Items[0].Series[0].Points[0].LossPercent != 1.5 {
 		t.Fatalf("point=%+v", payload.Items[0].Series[0].Points[0])
+	}
+}
+
+func TestDashboardNetworkHideDeletedAndAndroidClients(t *testing.T) {
+	restorePath := core.SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "network_monitor_results"))
+	t.Cleanup(restorePath)
+	restoreStore := core.SetProbeNodeRecordsAndNetworkMonitorTasksForTest([]core.ProbeNodeForTest{
+		{NodeNo: 1, NodeName: "probe-a", TargetSystem: "linux"},
+		{NodeNo: 2, NodeName: "android-client", TargetSystem: "android"},
+		{NodeNo: 3, NodeName: "deleted-probe", TargetSystem: "linux", Deleted: true},
+	}, map[string]string{"task-1": "外网测试"})
+	t.Cleanup(restoreStore)
+	for _, nodeID := range []string{"1", "2", "3"} {
+		if err := core.AppendProbeNetworkMonitorResultForTest(nodeID, "task-1", "2026-01-01T00:00:00Z", 23.5, 1.5); err != nil {
+			t.Fatalf("AppendProbeNetworkMonitorResultForTest node %s failed: %v", nodeID, err)
+		}
+	}
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/network", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected GET /dashboard/network 200, got %d", rr.Code)
+	}
+	var payload struct {
+		Items []struct {
+			NodeNo int `json:"node_no"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to parse /dashboard/network response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].NodeNo != 1 {
+		t.Fatalf("expected only linux active probe 1, got %+v", payload.Items)
 	}
 }
 
