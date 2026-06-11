@@ -241,7 +241,7 @@
             justify-content: space-between;
             gap: 12px;
             margin-bottom: 8px;
-            align-items: baseline;
+            align-items: flex-start;
         }
         .network-title {
             font-size: 14px;
@@ -252,6 +252,34 @@
             font-size: 12px;
             color: var(--text-secondary);
             font-family: 'Courier New', Courier, monospace;
+            text-align: right;
+        }
+        .network-summary {
+            display: grid;
+            gap: 3px;
+            min-width: 220px;
+            max-width: 50%;
+        }
+        .network-summary-row {
+            display: grid;
+            grid-template-columns: minmax(72px, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+            color: var(--text-secondary);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+        .network-summary-name {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--task-color, var(--text-secondary));
+        }
+        .network-summary-value {
+            white-space: nowrap;
+            text-align: right;
         }
         .chart-wrap {
             height: 260px;
@@ -514,10 +542,15 @@
                     : ('probe #' + String(nodeNo > 0 ? nodeNo : index + 1));
                 const series = normalizeNetworkSeries(item.series);
                 const canvasID = 'network-chart-' + index;
-                const latest = latestNetworkPoint(series);
-                const latestText = latest && latest.point
-                    ? (latest.name + ' 延迟 ' + Number(latest.point.latency_avg_ms || 0).toFixed(1) + 'ms / 丢包 ' + Number(latest.point.loss_percent || 0).toFixed(1) + '%')
-                    : 'No points';
+                const summary = networkSeriesSummaries(series);
+                const latestHTML = summary.length
+                    ? summary.map((entry) => {
+                        return '<div class="network-summary-row" style="--task-color:' + entry.color + '">'
+                            + '<span class="network-summary-name" title="' + escapeHTML(entry.name) + '">' + escapeHTML(entry.name) + '</span>'
+                            + '<span class="network-summary-value">' + entry.latency + 'ms / ' + entry.loss + '%</span>'
+                            + '</div>';
+                    }).join('')
+                    : '<div class="network-meta">No points</div>';
                 const legend = series.map((entry, seriesIndex) => {
                     const color = taskColors[seriesIndex % taskColors.length];
                     return '<span class="task-legend" style="--task-color:' + color + '">' + escapeHTML(entry.task_name || entry.task_id || '未命名任务') + '</span>';
@@ -528,7 +561,7 @@
                     + '<div class="network-title">' + escapeHTML(name) + '</div>'
                     + '<div class="network-meta">序号: ' + (nodeNo > 0 ? nodeNo : '-') + '</div>'
                     + '</div>'
-                    + '<div class="network-meta">' + escapeHTML(latestText) + '</div>'
+                    + '<div class="network-summary">' + latestHTML + '</div>'
                     + '</div>'
                     + '<div class="chart-wrap"><canvas id="' + canvasID + '" width="640" height="260"></canvas></div>'
                     + '<div class="legend">' + legend + '</div>'
@@ -549,18 +582,22 @@
             })).filter((entry) => entry.points.length > 0);
         }
 
-        function latestNetworkPoint(series) {
-            let latest = null;
-            series.forEach((entry) => {
-                const point = entry.points[entry.points.length - 1];
-                if (!point) return;
-                const ts = Date.parse(point.timestamp);
-                if (!Number.isFinite(ts)) return;
-                if (!latest || ts > latest.ts) {
-                    latest = { ts, name: entry.task_name, point };
-                }
-            });
-            return latest;
+        function networkSeriesSummaries(series) {
+            return series.map((entry, index) => {
+                let latest = null;
+                entry.points.forEach((point) => {
+                    const ts = Date.parse(point.timestamp);
+                    if (!Number.isFinite(ts)) return;
+                    if (!latest || ts > latest.ts) latest = { ts, point };
+                });
+                if (!latest || !latest.point) return null;
+                return {
+                    name: entry.task_name || entry.task_id || '未命名任务',
+                    color: taskColors[index % taskColors.length],
+                    latency: Number(latest.point.latency_avg_ms || 0).toFixed(1),
+                    loss: Number(latest.point.loss_percent || 0).toFixed(1)
+                };
+            }).filter(Boolean);
         }
 
         function drawNetworkChart(canvas, series) {
@@ -575,21 +612,12 @@
             }
             const ctx = canvas.getContext('2d');
             ctx.clearRect(0, 0, width, height);
-            const padL = 42 * ratio;
-            const padR = 36 * ratio;
+            const padL = 54 * ratio;
+            const padR = 48 * ratio;
             const padT = 18 * ratio;
-            const padB = 30 * ratio;
+            const padB = 34 * ratio;
             const plotW = Math.max(1, width - padL - padR);
             const plotH = Math.max(1, height - padT - padB);
-            ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-            ctx.lineWidth = 1 * ratio;
-            ctx.beginPath();
-            for (let i = 0; i <= 4; i += 1) {
-                const y = padT + (plotH * i / 4);
-                ctx.moveTo(padL, y);
-                ctx.lineTo(width - padR, y);
-            }
-            ctx.stroke();
 
             ctx.fillStyle = 'rgba(201,209,217,0.78)';
             ctx.font = (11 * ratio) + 'px Courier New';
@@ -603,6 +631,7 @@
             const maxTime = Math.max(...allPoints.map((p) => Date.parse(p.timestamp)).filter(Number.isFinite));
             const latencyMax = Math.max(10, ...allPoints.map((p) => Number(p.latency_avg_ms) || 0));
             const lossMax = Math.max(10, ...allPoints.map((p) => Number(p.loss_percent) || 0));
+            drawChartAxes(ctx, ratio, width, height, padL, padR, padT, padB, plotW, plotH, latencyMax, lossMax, minTime, maxTime);
             const xOfTime = (raw) => {
                 const ts = Date.parse(raw);
                 if (!Number.isFinite(ts) || !Number.isFinite(minTime) || !Number.isFinite(maxTime) || minTime === maxTime) return padL + plotW;
@@ -617,21 +646,64 @@
                 drawLine(ctx, entry.points, xOfTime, lossY, 'loss_percent', color, ratio, true);
             });
 
-            ctx.fillStyle = '#58a6ff';
-            ctx.fillText(Math.round(latencyMax) + 'ms', 4 * ratio, padT + 10 * ratio);
-            ctx.fillStyle = '#f85149';
-            ctx.fillText(Math.round(lossMax) + '%', width - padR + 6 * ratio, padT + 10 * ratio);
+        }
+
+        function drawChartAxes(ctx, ratio, width, height, padL, padR, padT, padB, plotW, plotH, latencyMax, lossMax, minTime, maxTime) {
+            ctx.save();
+            ctx.lineWidth = 0.6 * ratio;
+            ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+            ctx.fillStyle = 'rgba(201,209,217,0.58)';
+            ctx.font = (10 * ratio) + 'px Courier New';
+            ctx.textBaseline = 'middle';
+
+            for (let i = 0; i <= 4; i += 1) {
+                const y = padT + (plotH * i / 4);
+                const valueRatio = 1 - i / 4;
+                ctx.beginPath();
+                ctx.moveTo(padL, y);
+                ctx.lineTo(width - padR, y);
+                ctx.stroke();
+                ctx.textAlign = 'right';
+                ctx.fillStyle = 'rgba(88,166,255,0.72)';
+                ctx.fillText(Math.round(latencyMax * valueRatio) + 'ms', padL - 8 * ratio, y);
+                ctx.textAlign = 'left';
+                ctx.fillStyle = 'rgba(248,81,73,0.72)';
+                ctx.fillText(Math.round(lossMax * valueRatio) + '%', width - padR + 8 * ratio, y);
+            }
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+            ctx.beginPath();
+            ctx.moveTo(padL, padT);
+            ctx.lineTo(padL, height - padB);
+            ctx.lineTo(width - padR, height - padB);
+            ctx.lineTo(width - padR, padT);
+            ctx.stroke();
+
+            ctx.textBaseline = 'top';
             ctx.fillStyle = 'rgba(201,209,217,0.62)';
-            ctx.fillText(formatTimeLabel(new Date(minTime).toISOString(), currentNetworkScale), padL, height - 8 * ratio);
-            ctx.textAlign = 'right';
-            ctx.fillText(formatTimeLabel(new Date(maxTime).toISOString(), currentNetworkScale), width - padR, height - 8 * ratio);
-            ctx.textAlign = 'left';
+            const tickCount = (Number.isFinite(minTime) && Number.isFinite(maxTime) && maxTime > minTime)
+                ? Math.min(9, Math.max(4, Math.floor((plotW / ratio) / 110) + 1))
+                : 1;
+            for (let index = 0; index < tickCount; index += 1) {
+                const position = tickCount === 1 ? 1 : index / (tickCount - 1);
+                const ts = minTime + (maxTime - minTime) * position;
+                if (!Number.isFinite(ts)) continue;
+                const x = padL + plotW * position;
+                ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+                ctx.beginPath();
+                ctx.moveTo(x, padT);
+                ctx.lineTo(x, height - padB);
+                ctx.stroke();
+                ctx.textAlign = index === 0 ? 'left' : index === tickCount - 1 ? 'right' : 'center';
+                ctx.fillText(formatTimeLabel(new Date(ts).toISOString(), currentNetworkScale), x, height - padB + 8 * ratio);
+            }
+            ctx.restore();
         }
 
         function drawLine(ctx, points, xOf, yOf, field, color, ratio, dashed) {
             ctx.strokeStyle = color;
-            ctx.lineWidth = 2 * ratio;
-            ctx.setLineDash(dashed ? [5 * ratio, 4 * ratio] : []);
+            ctx.lineWidth = dashed ? 1.2 * ratio : 1.8 * ratio;
+            ctx.setLineDash(dashed ? [4 * ratio, 4 * ratio] : []);
             ctx.beginPath();
             let started = false;
             points.forEach((point, index) => {
