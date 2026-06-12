@@ -86,6 +86,14 @@
     </div>
 
     <div class="panel">
+      <p class="muted">一键备份会下载一个自包含迁移脚本，只打包主控用户数据目录，自动跳过备份目录、缓存、日志、临时文件与运行状态。将脚本放到新 Linux 机器上以 root 执行，即可安装主控、还原数据并启动服务。</p>
+      <div class="actions">
+        <button id="btn-download-migration" class="btn primary" type="button">一键备份迁移脚本</button>
+      </div>
+      <div class="status" id="migration-status">尚未下载迁移脚本。</div>
+    </div>
+
+    <div class="panel">
       <p class="muted">CIDR 黑名单用于拒绝 `/api/auth/nonce` 与 `/api/auth/login` 来源。可在这里查看、修改与删除。</p>
       <div class="actions">
         <button id="btn-refresh-blacklist" class="btn" type="button">刷新黑名单</button>
@@ -102,6 +110,7 @@
     const blacklistList = document.getElementById('blacklist-list');
     const blacklistEmpty = document.getElementById('blacklist-empty');
     const refreshBlacklistBtn = document.getElementById('btn-refresh-blacklist');
+    const migrationStatus = document.getElementById('migration-status');
     let progressTimer = null;
 
     function setStatus(text, level) {
@@ -109,6 +118,14 @@
       statusBox.className = 'status';
       if (level) {
         statusBox.classList.add(level);
+      }
+    }
+
+    function setMigrationStatus(text, level) {
+      migrationStatus.textContent = text;
+      migrationStatus.className = 'status';
+      if (level) {
+        migrationStatus.classList.add(level);
       }
     }
 
@@ -285,6 +302,12 @@
       location.href = '/mng';
     }
 
+    function downloadControllerMigrationScript() {
+      setMigrationStatus('正在生成并下载自包含迁移脚本...', 'warn');
+      window.location.href = '/mng/api/system/migration/download';
+      setMigrationStatus('迁移脚本下载已开始。', 'ok');
+    }
+
     function renderBlacklist(items) {
       const cidrs = Array.isArray(items) ? items : [];
       blacklistList.innerHTML = '';
@@ -362,6 +385,7 @@
     checkBtn.addEventListener('click', () => { checkUpdate().catch(err => setStatus('检查更新失败：' + (err && err.message ? err.message : 'unknown'), 'err')); });
     upgradeBtn.addEventListener('click', () => { triggerUpgrade().catch(err => { setBusy(false); setStatus('升级失败：' + (err && err.message ? err.message : 'unknown'), 'err'); }); });
     refreshBlacklistBtn.addEventListener('click', () => { loadBlacklist().then(() => setStatus('黑名单已刷新', 'ok')).catch(err => setStatus('刷新黑名单失败：' + (err && err.message ? err.message : 'unknown'), 'err')); });
+    document.getElementById('btn-download-migration').addEventListener('click', downloadControllerMigrationScript);
 
     ensureSession().then(ok => {
       if (!ok) return;

@@ -75,6 +75,8 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/api/system/blacklist/update", mngAuthRequiredMiddleware(mngSystemBlacklistUpdateHandler))
 	mux.HandleFunc("/mng/api/system/blacklist/delete", mngAuthRequiredMiddleware(mngSystemBlacklistDeleteHandler))
 	mux.HandleFunc("/mng/api/system/reconnect/check", mngSystemReconnectCheckHandler)
+	mux.HandleFunc("/mng/api/system/migration/download", mngAuthRequiredMiddleware(mngControllerMigrationDownloadHandler))
+	mux.HandleFunc("/api/controller/migration/script", serveControllerMigrationScript)
 	mux.HandleFunc("/mng/api/backup/status", mngAuthRequiredMiddleware(mngBackupStatusHandler))
 	mux.HandleFunc("/mng/api/backup/settings", mngAuthRequiredMiddleware(mngBackupSettingsHandler))
 	mux.HandleFunc("/mng/api/backup/test", mngAuthRequiredMiddleware(mngBackupTestHandler))

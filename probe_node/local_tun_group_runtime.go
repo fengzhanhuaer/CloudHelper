@@ -68,7 +68,6 @@ var probeLocalTUNGroupRuntimeRegistry = struct {
 }{items: make(map[string]*probeLocalTUNGroupRuntime)}
 
 var probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
-var probeLocalTUNOpenChainRelayDataStreamNetConn = openProbeLocalTUNChainRelayDataStreamNetConn
 
 // Group runtime is the aggregation boundary for proxy behavior.
 // DNS records must not persist action or selected_chain_id as their primary state.
@@ -656,26 +655,13 @@ func (rt *probeLocalTUNGroupRuntime) openRelayStream(endpoint probeLocalTUNChain
 	if rt == nil {
 		return nil, errors.New("group runtime is nil")
 	}
-	if shouldUseProbeLocalTUNGroupRuntimeBridgeStream(endpoint) {
-		rt.mu.Lock()
-		session := rt.session
-		rt.mu.Unlock()
-		if session == nil || session.IsClosed() {
-			return nil, errors.New("group runtime bridge session is unavailable")
-		}
-		return session.Open()
+	rt.mu.Lock()
+	session := rt.session
+	rt.mu.Unlock()
+	if session == nil || session.IsClosed() {
+		return nil, errors.New("group runtime bridge session is unavailable")
 	}
-	return probeLocalTUNOpenChainRelayDataStreamNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer)
-}
-
-func shouldUseProbeLocalTUNGroupRuntimeBridgeStream(endpoint probeLocalTUNChainEndpoint) bool {
-	for _, candidate := range probeChainRelayProtocolCandidates(endpoint.LinkLayer) {
-		clean := normalizeProbeChainLinkLayer(candidate)
-		if clean == "websocket" || clean == "websocket-h3" {
-			return true
-		}
-	}
-	return false
+	return session.Open()
 }
 
 func (rt *probeLocalTUNGroupRuntime) fetchRemoteTCPDebug() (probeTCPDebugResultPayload, error) {
@@ -808,6 +794,72 @@ func (rt *probeLocalTUNGroupRuntime) fetchRemoteSpeedDebug() (probeSpeedDebugRes
 		return payload, nil
 	}
 	return probeSpeedDebugResultPayload{}, errors.New("remote speed debug fetch failed")
+}
+
+func (rt *probeLocalTUNGroupRuntime) fetchRemoteSubstreams() (probeSubstreamMonitorPayload, error) {
+	if rt == nil {
+		return probeSubstreamMonitorPayload{}, errors.New("group runtime is nil")
+	}
+	requestID := "remote-substreams-" + randomHexToken(8)
+	for attempt := 0; attempt < 2; attempt++ {
+		rt.mu.Lock()
+		if err := rt.ensureConnectedLocked(); err != nil {
+			rt.mu.Unlock()
+			return probeSubstreamMonitorPayload{}, err
+		}
+		session := rt.session
+		rt.mu.Unlock()
+		if session == nil {
+			return probeSubstreamMonitorPayload{}, errors.New("group runtime management session is nil")
+		}
+		stream, err := session.Open()
+		if err != nil {
+			reconnect := session.IsClosed()
+			if !reconnect && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
+				reconnect = shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
+			}
+			rt.mu.Lock()
+			if rt.session == session {
+				if reconnect {
+					rt.closeLocked()
+					_ = rt.markFailureLocked(err, "disconnected")
+				} else {
+					_ = rt.markFailureLocked(err, "degraded")
+				}
+			}
+			rt.mu.Unlock()
+			if attempt == 0 && reconnect {
+				continue
+			}
+			return probeSubstreamMonitorPayload{}, err
+		}
+		_ = stream.SetDeadline(time.Now().Add(probeLocalTUNGroupRuntimeControlTimeout))
+		req := probeChainTunnelOpenRequest{Type: "substreams_get", RequestID: requestID}
+		if err := json.NewEncoder(stream).Encode(req); err != nil {
+			_ = stream.Close()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
+				continue
+			}
+			return probeSubstreamMonitorPayload{}, err
+		}
+		var payload probeSubstreamMonitorPayload
+		if err := json.NewDecoder(stream).Decode(&payload); err != nil {
+			_ = stream.Close()
+			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
+				continue
+			}
+			return probeSubstreamMonitorPayload{}, err
+		}
+		_ = stream.Close()
+		if strings.TrimSpace(payload.RequestID) == "" {
+			payload.RequestID = requestID
+		}
+		if strings.TrimSpace(payload.Scope) == "" {
+			payload.Scope = "chain_exit"
+		}
+		return payload, nil
+	}
+	return probeSubstreamMonitorPayload{}, errors.New("remote substream monitor fetch failed")
 }
 
 func (rt *probeLocalTUNGroupRuntime) markOpenStreamFailure(session *yamux.Session, err error, forceReconnect bool) bool {

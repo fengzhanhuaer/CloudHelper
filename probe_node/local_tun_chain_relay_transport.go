@@ -60,29 +60,6 @@ func openProbeLocalTUNChainRelayNetConnForEndpoint(endpoint probeLocalTUNChainEn
 	return nil, lastErr
 }
 
-func openProbeLocalTUNChainRelayDataStreamNetConn(chainID string, secret string, relayHost string, relayPort int, layer string) (net.Conn, error) {
-	conn, err := openProbeChainRelayDataStreamNetConn(chainID, secret, relayHost, relayPort, layer, probeChainDownstreamOpenTimeout)
-	if err == nil || !isProbeLocalTUNUnsupportedDefaultRelayErr(layer, err) {
-		return conn, err
-	}
-	var lastErr error = err
-	for _, protocol := range probeChainRelayProtocolCandidates(layer) {
-		cleanProtocol := normalizeProbeChainLinkLayer(protocol)
-		if !isProbeChainRelaySupportedProtocol(cleanProtocol) {
-			continue
-		}
-		conn, openErr := openProbeChainRelayDataStreamNetConnWithRole(chainID, secret, relayHost, relayPort, cleanProtocol, probeChainBridgeRoleToNext, probeChainDownstreamOpenTimeout)
-		if openErr == nil {
-			return conn, nil
-		}
-		lastErr = openErr
-		if !isProbeChainRelayProtocolSwitchableError(openErr) {
-			break
-		}
-	}
-	return nil, lastErr
-}
-
 func openProbeLocalTUNChainRelayNetConnWithResolvedHost(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
 	return openProbeChainRelayNetConnWithResolvedHost(chainID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
 }

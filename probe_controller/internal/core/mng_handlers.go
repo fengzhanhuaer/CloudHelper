@@ -94,6 +94,19 @@ func mngControllerLogsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildControllerRuntimeLogsResponse(lineLimit, sinceMinutes, minLevel))
 }
 
+func mngControllerMigrationDownloadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pkg, err := createControllerMigrationPackage()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	http.Redirect(w, r, "/api/controller/migration/script?token="+pkg.Token, http.StatusFound)
+}
+
 func mngBootstrapHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

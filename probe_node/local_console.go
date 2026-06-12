@@ -2892,6 +2892,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
 	mux.HandleFunc("/local/api/proxy/status/refresh", probeLocalProxyStatusRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/monitor", probeLocalProxyMonitorHandler)
+	mux.HandleFunc("/local/api/proxy/substreams", probeLocalProxySubstreamsHandler)
 	mux.HandleFunc("/local/api/proxy/remote/tcp_debug", probeLocalProxyRemoteTCPDebugHandler)
 	mux.HandleFunc("/local/api/proxy/remote/speed_debug", probeLocalProxyRemoteSpeedDebugHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
@@ -4021,6 +4022,44 @@ func probeLocalProxyMonitorHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, currentProbeLocalProxyMonitorSnapshot())
+}
+
+func probeLocalProxySubstreamsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	requestID := "local-substreams-" + randomHexToken(8)
+	payload := map[string]any{
+		"ok":           true,
+		"local":        snapshotProbeSubstreamMonitorPayload("", requestID, "local"),
+		"fetched":      time.Now().UTC().Format(time.RFC3339),
+		"remote":       nil,
+		"group":        "",
+		"remote_error": "",
+	}
+	group := strings.TrimSpace(r.URL.Query().Get("group"))
+	var rt *probeLocalTUNGroupRuntime
+	if group != "" {
+		rt = currentProbeLocalTUNGroupRuntime(group)
+	} else {
+		group, rt = resolveProbeLocalSelectedGroupRuntime(currentProbeLocalProxyViewState())
+	}
+	payload["group"] = group
+	if rt != nil {
+		remote, err := rt.fetchRemoteSubstreams()
+		if err != nil {
+			payload["remote_error"] = strings.TrimSpace(err.Error())
+		} else {
+			payload["remote"] = remote
+		}
+	} else if group != "" {
+		payload["remote_error"] = "selected group runtime is unavailable"
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func probeLocalProxyRemoteTCPDebugHandler(w http.ResponseWriter, r *http.Request) {
@@ -6175,7 +6214,6 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalStartCFIPOptimizeTask = func(fn func()) { go fn() }
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
 	probeLocalTUNOpenChainRelayNetConn = openProbeLocalTUNChainRelayNetConn
-	probeLocalTUNOpenChainRelayDataStreamNetConn = openProbeLocalTUNChainRelayDataStreamNetConn
 }
 
 func resetProbeLocalTUNHooksForTest() {

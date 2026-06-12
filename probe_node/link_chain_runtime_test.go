@@ -965,87 +965,6 @@ func TestOpenProbeChainRelayNetConnDefaultUsesWebSocketH3Primary(t *testing.T) {
 	}
 }
 
-func TestOpenProbeChainRelayDataStreamNetConnDefaultExpandsProtocols(t *testing.T) {
-	resetProbeChainRelayProtocolStateForTest()
-	defer resetProbeChainRelayProtocolStateForTest()
-	originalOpenDataStreamLayer := probeChainRelayOpenDataStreamLayer
-	defer func() {
-		probeChainRelayOpenDataStreamLayer = originalOpenDataStreamLayer
-	}()
-
-	var mu sync.Mutex
-	calls := make([]string, 0, 1)
-	probeChainRelayOpenDataStreamLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
-		protocol := normalizeProbeChainLinkLayer(layer)
-		mu.Lock()
-		calls = append(calls, protocol)
-		mu.Unlock()
-		client, server := net.Pipe()
-		_ = server.Close()
-		return probeChainRelayProtocolDialResult{
-			Protocol: protocol,
-			Conn:     client,
-			Latency:  3 * time.Millisecond,
-		}
-	}
-
-	conn, err := openProbeChainRelayDataStreamNetConnWithRoleAndToken("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext, "token-a", time.Second)
-	if err != nil {
-		t.Fatalf("openProbeChainRelayDataStreamNetConnWithRoleAndToken returned error: %v", err)
-	}
-	_ = conn.Close()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(calls) != 1 || calls[0] != "websocket-h3" {
-		t.Fatalf("expected default data stream to expand to websocket-h3, got calls=%v", calls)
-	}
-}
-
-func TestOpenProbeChainRelayDataStreamNetConnDefaultFallsBackAfterWebSocketH3Failure(t *testing.T) {
-	resetProbeChainRelayProtocolStateForTest()
-	defer resetProbeChainRelayProtocolStateForTest()
-	originalOpenDataStreamLayer := probeChainRelayOpenDataStreamLayer
-	defer func() {
-		probeChainRelayOpenDataStreamLayer = originalOpenDataStreamLayer
-	}()
-
-	var mu sync.Mutex
-	calls := make([]string, 0, 2)
-	probeChainRelayOpenDataStreamLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, connToken string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
-		protocol := normalizeProbeChainLinkLayer(layer)
-		mu.Lock()
-		calls = append(calls, protocol)
-		mu.Unlock()
-		if protocol == "websocket-h3" {
-			return probeChainRelayProtocolDialResult{
-				Protocol: protocol,
-				Err:      errors.New("i/o timeout"),
-				Latency:  5 * time.Millisecond,
-			}
-		}
-		client, server := net.Pipe()
-		_ = server.Close()
-		return probeChainRelayProtocolDialResult{
-			Protocol: protocol,
-			Conn:     client,
-			Latency:  2 * time.Millisecond,
-		}
-	}
-
-	conn, err := openProbeChainRelayDataStreamNetConnWithRoleAndToken("chain-a", "secret-a", "relay.example.com", 16030, "", probeChainBridgeRoleToNext, "token-a", time.Second)
-	if err != nil {
-		t.Fatalf("expected websocket fallback after websocket-h3 failure, got err=%v", err)
-	}
-	_ = conn.Close()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(calls) != 2 || calls[0] != "websocket-h3" || calls[1] != "websocket" {
-		t.Fatalf("expected h3 then websocket fallback, got calls=%v", calls)
-	}
-}
-
 func TestOpenProbeChainRelayNetConnDefaultFallsBackAfterWebSocketH3Failure(t *testing.T) {
 	resetProbeChainRelayProtocolStateForTest()
 	defer resetProbeChainRelayProtocolStateForTest()
@@ -1327,6 +1246,105 @@ func TestProbeChainRelayProtocolProbeAndChooseUsesPingPongLatency(t *testing.T) 
 	}
 }
 
+func TestSnapshotProbeChainRelayReportsSchedulesExpiredProtocolRefresh(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenLayer := probeChainRelayOpenLayer
+	originalPingPong := probeChainRelayMeasurePingPongLatency
+	originalHook := probeChainRelayProtocolRefreshStartedForTest
+	defer func() {
+		probeChainRelayOpenLayer = originalOpenLayer
+		probeChainRelayMeasurePingPongLatency = originalPingPong
+		probeChainRelayProtocolRefreshStartedForTest = originalHook
+	}()
+
+	started := make(chan string, 2)
+	probeChainRelayProtocolRefreshStartedForTest = func(endpoint string) {
+		started <- endpoint
+	}
+	var mu sync.Mutex
+	calls := 0
+	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		client, server := net.Pipe()
+		t.Cleanup(func() {
+			_ = server.Close()
+		})
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		return probeChainRelayProtocolDialResult{
+			Protocol: normalizeProbeChainLinkLayer(layer),
+			Conn:     client,
+			Latency:  50 * time.Millisecond,
+		}
+	}
+	probeChainRelayMeasurePingPongLatency = func(conn net.Conn) (time.Duration, error) {
+		return 3 * time.Millisecond, nil
+	}
+
+	probeChainRuntimeState.mu.Lock()
+	originalRuntimes := probeChainRuntimeState.runtimes
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+		"chain-a": {
+			cfg: probeChainRuntimeConfig{
+				chainID:       "chain-a",
+				secret:        "secret-a",
+				role:          "entry",
+				linkLayer:     "websocket-h3",
+				nextHost:      "relay.example.com",
+				nextPort:      16030,
+				nextLinkLayer: "websocket-h3",
+			},
+		},
+	}
+	probeChainRuntimeState.mu.Unlock()
+	defer func() {
+		probeChainRuntimeState.mu.Lock()
+		probeChainRuntimeState.runtimes = originalRuntimes
+		probeChainRuntimeState.mu.Unlock()
+	}()
+
+	reports := snapshotProbeChainRelayReports()
+	if len(reports) != 1 {
+		t.Fatalf("reports=%+v", reports)
+	}
+	endpointKey := probeChainRelayProtocolEndpointKey("relay.example.com", 16030)
+	select {
+	case endpoint := <-started:
+		if endpoint != endpointKey {
+			t.Fatalf("refresh endpoint=%q want %q", endpoint, endpointKey)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected report snapshot to schedule protocol refresh")
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		snapshot := snapshotProbeChainProtocolState("relay.example.com", 16030)
+		if len(snapshot.ProtocolQualities) == 1 && snapshot.ProtocolQualities[0].LatencyMS == 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("quality was not refreshed: %+v", snapshot)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	snapshotProbeChainRelayReports()
+	select {
+	case endpoint := <-started:
+		t.Fatalf("unexpected fresh-quality refresh for endpoint %s", endpoint)
+	case <-time.After(50 * time.Millisecond):
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("refresh calls=%d want 1", calls)
+	}
+}
+
 func TestConsumeProbeChainRelaySpeedTestDataAcceptsPartialDurationLimit(t *testing.T) {
 	reader := &probeChainSpeedTestTimeoutReader{
 		chunks: [][]byte{
@@ -1471,4 +1489,7 @@ func resetProbeChainRelayProtocolStateForTest() {
 	probeChainRelayListenerStateStore.mu.Lock()
 	probeChainRelayListenerStateStore.items = make(map[string]map[string]probeChainRelayListenerStatus)
 	probeChainRelayListenerStateStore.mu.Unlock()
+	probeChainRelayProtocolRefreshState.mu.Lock()
+	probeChainRelayProtocolRefreshState.inflight = make(map[string]struct{})
+	probeChainRelayProtocolRefreshState.mu.Unlock()
 }

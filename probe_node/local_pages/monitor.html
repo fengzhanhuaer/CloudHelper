@@ -113,6 +113,18 @@
     }
     .link-monitor-list { display: grid; gap: 10px; }
     .connection-monitor-list { display: grid; gap: 10px; }
+    .substream-table-wrap { overflow-x: auto; margin-top: 10px; }
+    .substream-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 1080px; }
+    .substream-table th,
+    .substream-table td {
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .substream-table th { color: var(--text-secondary); font-weight: 600; }
+    .substream-table td { color: var(--text-primary); }
+    .substream-table code { font-family: Consolas, monospace; color: var(--heading); }
     .link-monitor-card {
       border: 1px solid rgba(255,255,255,.1);
       border-radius: 8px;
@@ -246,6 +258,7 @@
         <button class="monitor-tab active" type="button" data-monitor-tab="summary">概要</button>
         <button class="monitor-tab" type="button" data-monitor-tab="details">监视数据</button>
         <button class="monitor-tab" type="button" data-monitor-tab="connections">VNet 连接</button>
+        <button class="monitor-tab" type="button" data-monitor-tab="substreams">子流监视</button>
         <button class="monitor-tab" type="button" data-monitor-tab="links">链路监视</button>
       </div>
       <div id="monitor-panel-summary" class="monitor-panel active">
@@ -288,6 +301,15 @@
           <div class="hint">暂无 VNet TCP/UDP 连接数据</div>
         </div>
       </div>
+      <div id="monitor-panel-substreams" class="monitor-panel">
+        <div class="link-monitor-head">
+          <div class="hint" id="substream-monitor-updated">子流监视：--</div>
+          <button id="substreamMonitorRefreshBtn" type="button" class="secondary">刷新子流监视</button>
+        </div>
+        <div id="substream-monitor-list" class="substream-table-wrap">
+          <div class="hint">暂无 TUN / 端口转发子流数据</div>
+        </div>
+      </div>
       <div id="monitor-panel-links" class="monitor-panel">
         <div class="link-monitor-head">
           <div class="hint" id="link-monitor-updated">链路监视：--</div>
@@ -310,6 +332,7 @@
     let linkStatusCache = [];
     let remoteTCPDebugCache = null;
     let remoteSpeedDebugCache = null;
+    let substreamMonitorCache = null;
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -413,6 +436,9 @@
       if (name === 'links') {
         loadLinkMonitor();
       }
+      if (name === 'substreams') {
+        loadSubstreamMonitor();
+      }
       if (name === 'connections') {
         renderProxyConnectionMonitor();
       }
@@ -455,6 +481,9 @@
       }
       if (document.querySelector('.monitor-tab[data-monitor-tab="links"].active')) {
         renderLinkMonitor();
+      }
+      if (document.querySelector('.monitor-tab[data-monitor-tab="substreams"].active')) {
+        renderSubstreamMonitor();
       }
     }
 
@@ -679,6 +708,118 @@
       return '<div class="connection-monitor-box"><div class="box-title">' + escapeHTML(label) + '</div><div class="box-value">' + escapeHTML(value || '-') + '</div></div>';
     }
 
+    function collectSubstreamRows(payload, sideLabel) {
+      if (!payload || typeof payload !== 'object') return [];
+      const rows = [];
+      const active = Array.isArray(payload.active) ? payload.active : [];
+      const completed = Array.isArray(payload.completed) ? payload.completed : [];
+      active.forEach((item) => rows.push({ side: sideLabel, item }));
+      completed.slice(0, 20).forEach((item) => rows.push({ side: sideLabel, item }));
+      return rows;
+    }
+
+    function renderSubstreamMonitor() {
+      const listEl = document.getElementById('substream-monitor-list');
+      const updatedEl = document.getElementById('substream-monitor-updated');
+      if (!listEl || !updatedEl) return;
+      const data = substreamMonitorCache || {};
+      const local = data.local || {};
+      const remote = data.remote || null;
+      const rows = collectSubstreamRows(local, '本地').concat(collectSubstreamRows(remote, '对端'));
+      const remoteError = String(data.remote_error || '').trim();
+      updatedEl.textContent = '子流监视：本地 ' + (local.fetched_at || '--') + ' / 对端 ' + (remote && remote.fetched_at ? remote.fetched_at : (remoteError ? '不可用' : '--')) + ' / group ' + (data.group || '-');
+      if (rows.length === 0) {
+        listEl.innerHTML = '<div class="hint">' + escapeHTML(remoteError ? '暂无子流数据；对端状态：' + remoteError : '暂无 TUN / 端口转发子流数据') + '</div>';
+        return;
+      }
+      const body = rows.map(({ side, item }) => renderSubstreamRow(side, item)).join('');
+      listEl.innerHTML = `
+        <table class="substream-table">
+          <thead>
+            <tr>
+              <th>位置</th>
+              <th>类型/状态</th>
+              <th>Flow</th>
+              <th>目标</th>
+              <th>流量</th>
+              <th>缓冲/阻塞</th>
+              <th>异常</th>
+              <th>时间</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+        ${remoteError ? '<p class="hint status-warn">对端状态获取失败：' + escapeHTML(remoteError) + '</p>' : ''}
+      `;
+    }
+
+    function renderSubstreamRow(sideLabel, item) {
+      const kind = formatSubstreamKind(item && item.kind);
+      const status = String(item && item.status || '-').trim();
+      const flowID = String(item && item.flow_id || item && item.id || '-').trim();
+      const target = String(item && item.target || '-').trim();
+      const routeTarget = String(item && item.route_target || target).trim();
+      const buffer = item && item.buffer || {};
+      const maxBlockUp = Number(buffer.max_write_block_ms_up || item && item.max_write_block_ms_up || 0);
+      const maxBlockDown = Number(buffer.max_write_block_ms_down || item && item.max_write_block_ms_down || 0);
+      const blockedUp = Number(buffer.blocked_writes_up || item && item.blocked_writes_up || 0);
+      const blockedDown = Number(buffer.blocked_writes_down || item && item.blocked_writes_down || 0);
+      const bufferStatus = String(buffer.status || 'clear').trim();
+      const statusClass = status === 'active' && bufferStatus !== 'blocked' ? 'status-ok' : (bufferStatus === 'blocked' ? 'status-warn' : 'status-bad');
+      const errorText = String(item && (item.close_reason || item.error || '') || '').trim() || '-';
+      const domain = String(item && item.domain || '').trim();
+      const targetHost = String(item && item.target_host || '').trim();
+      const targetIP = String(item && item.target_ip || '').trim();
+      const routeHost = String(item && item.route_host || '').trim();
+      const routeIP = String(item && item.route_ip || '').trim();
+      const identityLines = [];
+      if (domain) identityLines.push('域名=' + domain + (item && item.domain_source ? ' (' + item.domain_source + ')' : ''));
+      if (targetIP) identityLines.push('目标IP=' + targetIP);
+      else if (targetHost && targetHost !== domain) identityLines.push('目标Host=' + targetHost);
+      if (routeIP && routeIP !== targetIP) identityLines.push('路由IP=' + routeIP);
+      else if (routeHost && routeHost !== targetHost && routeHost !== domain) identityLines.push('路由Host=' + routeHost);
+      const identityText = identityLines.length ? identityLines.join('\n') : (domain || target);
+      return `
+        <tr>
+          <td>${escapeHTML(sideLabel)}</td>
+          <td><span class="${statusClass}">${escapeHTML(kind)} / ${escapeHTML(status)}</span><br><span class="hint">${escapeHTML(item && item.side || '-')} ${escapeHTML(item && item.scope || '')}</span></td>
+          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">${escapeHTML(item && item.id || '-')}</span></td>
+          <td><span class="pre-line">${escapeHTML(identityText)}</span><br><span class="hint">${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>group=${escapeHTML(item && item.group || '-')} node=${escapeHTML(item && item.node_id || '-')}</span></td>
+          <td>上行 ${escapeHTML(formatBytes(item && item.bytes_up))}<br>下行 ${escapeHTML(formatBytes(item && item.bytes_down))}<br><span class="hint">写 ${Math.trunc(Number(item && item.writes_up || 0))}/${Math.trunc(Number(item && item.writes_down || 0))}</span></td>
+          <td>${escapeHTML(bufferStatus)}<br><span class="hint">阻塞 ${Math.trunc(blockedUp)}/${Math.trunc(blockedDown)}<br>最大 ${Math.trunc(maxBlockUp)}/${Math.trunc(maxBlockDown)}ms<br>窗口 ${escapeHTML(formatBytes(buffer.yamux_window_bytes || 0))} 最近 ${escapeHTML(item && item.last_congestion_side || '-')}</span></td>
+          <td>${escapeHTML(errorText)}</td>
+          <td>空闲 ${escapeHTML(formatDurationMS(item && item.idle_ms))}<br>年龄 ${escapeHTML(formatDurationMS(item && item.age_ms))}<br><span class="hint">${escapeHTML(item && item.last_active || item && item.closed_at || '-')}</span></td>
+        </tr>
+      `;
+    }
+
+    function formatSubstreamKind(value) {
+      const kind = String(value || '').trim();
+      if (kind === 'tun') return 'TUN';
+      if (kind === 'port_forward') return '端口转发';
+      if (kind === 'peer_exit') return '对端出口';
+      return kind || '-';
+    }
+
+    async function loadSubstreamMonitor() {
+      try {
+        const data = await requestJSON('/local/api/proxy/substreams', { method: 'GET' });
+        substreamMonitorCache = data && typeof data === 'object' ? data : null;
+        renderSubstreamMonitor();
+        if (data && data.remote_error) {
+          setMessage('对端子流状态暂不可用：' + data.remote_error, 'error');
+        } else {
+          setMessage('');
+        }
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return;
+        }
+        setMessage('读取子流监视失败：' + err.message, 'error');
+      }
+    }
+
     function formatDurationMS(value) {
       const ms = Number(value || 0);
       if (!Number.isFinite(ms) || ms <= 0) return '-';
@@ -794,6 +935,9 @@
         if (document.querySelector('.monitor-tab[data-monitor-tab="links"].active')) {
           loadLinkMonitor();
         }
+        if (document.querySelector('.monitor-tab[data-monitor-tab="substreams"].active')) {
+          loadSubstreamMonitor();
+        }
         setMessage('');
       } catch (err) {
         if (err && err.status === 401) {
@@ -828,6 +972,9 @@
     });
     document.getElementById('connectionMonitorRefreshBtn').addEventListener('click', () => {
       loadMonitor();
+    });
+    document.getElementById('substreamMonitorRefreshBtn').addEventListener('click', () => {
+      loadSubstreamMonitor();
     });
     document.querySelectorAll('.monitor-tab').forEach((btn) => {
       btn.addEventListener('click', () => switchMonitorTab(btn.dataset.monitorTab));

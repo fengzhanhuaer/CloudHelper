@@ -26,17 +26,6 @@ func TestProbeLocalTUNGroupRuntimeOpenStreamUsesBridgeSessionForDefaultLayer(t *
 
 func testProbeLocalTUNGroupRuntimeOpenStreamUsesBridgeSession(t *testing.T, linkLayer string) {
 	t.Helper()
-	originalOpenDataStream := probeLocalTUNOpenChainRelayDataStreamNetConn
-	defer func() {
-		probeLocalTUNOpenChainRelayDataStreamNetConn = originalOpenDataStream
-	}()
-
-	var dataStreamCalls int32
-	probeLocalTUNOpenChainRelayDataStreamNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string) (net.Conn, error) {
-		atomic.AddInt32(&dataStreamCalls, 1)
-		return nil, errors.New("unexpected data stream dial")
-	}
-
 	clientConn, serverConn := net.Pipe()
 	serverReady := make(chan *yamux.Session, 1)
 	serverErr := make(chan error, 1)
@@ -110,25 +99,11 @@ func testProbeLocalTUNGroupRuntimeOpenStreamUsesBridgeSession(t *testing.T, link
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for server side")
 	}
-	if got := atomic.LoadInt32(&dataStreamCalls); got != 0 {
-		t.Fatalf("data stream dial calls=%d want 0", got)
-	}
 }
 
 func TestProbeLocalTUNGroupRuntimeOpenStreamDoesNotFallbackWithoutBridgeSession(t *testing.T) {
 	for _, linkLayer := range []string{"", "websocket", "websocket-h3"} {
 		t.Run(firstNonEmpty(linkLayer, "default"), func(t *testing.T) {
-			originalOpenDataStream := probeLocalTUNOpenChainRelayDataStreamNetConn
-			defer func() {
-				probeLocalTUNOpenChainRelayDataStreamNetConn = originalOpenDataStream
-			}()
-
-			var dataStreamCalls int32
-			probeLocalTUNOpenChainRelayDataStreamNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string) (net.Conn, error) {
-				atomic.AddInt32(&dataStreamCalls, 1)
-				return nil, errors.New("unexpected data stream dial")
-			}
-
 			rt := &probeLocalTUNGroupRuntime{
 				Group:           "test",
 				SelectedChainID: "chain-a",
@@ -146,9 +121,6 @@ func TestProbeLocalTUNGroupRuntimeOpenStreamDoesNotFallbackWithoutBridgeSession(
 			if err == nil {
 				_ = stream.Close()
 				t.Fatal("expected bridge session error")
-			}
-			if got := atomic.LoadInt32(&dataStreamCalls); got != 0 {
-				t.Fatalf("data stream dial calls=%d want 0", got)
 			}
 		})
 	}
@@ -240,31 +212,6 @@ func TestProbeLocalTUNGroupRuntimeOpenStreamReconnectsAfterBridgeResponseFailure
 	snapshot := rt.snapshot()
 	if !snapshot.Connected || snapshot.RuntimeStatus != "connected" {
 		t.Fatalf("runtime snapshot=%+v", snapshot)
-	}
-}
-
-func TestShouldUseProbeLocalTUNGroupRuntimeBridgeStreamForCachedWebSocketH3(t *testing.T) {
-	resetProbeChainRelayProtocolStateForTest()
-	defer resetProbeChainRelayProtocolStateForTest()
-
-	endpoint := probeLocalTUNChainEndpoint{
-		ChainID:     "chain-a",
-		EntryHost:   "relay.example.com",
-		EntryPort:   16030,
-		LinkLayer:   "",
-		ChainSecret: "secret-a",
-	}
-	recordProbeChainRelayProtocolSuccess(
-		probeChainRelayProtocolEndpointKey(endpoint.EntryHost, endpoint.EntryPort),
-		probeChainRelayProtocolDialResult{
-			Protocol: "websocket-h3",
-			Latency:  2 * time.Millisecond,
-		},
-		"test",
-	)
-
-	if !shouldUseProbeLocalTUNGroupRuntimeBridgeStream(endpoint) {
-		t.Fatal("expected cached websocket-h3 to use bridge yamux stream")
 	}
 }
 
