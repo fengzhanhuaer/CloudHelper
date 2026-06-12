@@ -2198,6 +2198,7 @@ func startProbeChainSharedRelayServer(runtime *probeChainRuntime, listenAddr str
 
 func buildProbeChainSharedRelayHandler() http.Handler {
 	mux := http.NewServeMux()
+	registerProbeOpenAIStyleCamouflageRoutes(mux)
 	mux.HandleFunc(probeChainRelayAPIPath, func(w http.ResponseWriter, r *http.Request) {
 		handleProbeChainRelayDispatch(w, r)
 	})

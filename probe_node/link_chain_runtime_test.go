@@ -146,6 +146,37 @@ func TestProbeChainRelayDispatchRoutesByChainID(t *testing.T) {
 	}
 }
 
+func TestProbeChainSharedRelayHandlerCamouflagesPublicPaths(t *testing.T) {
+	handler := buildProbeChainSharedRelayHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("root status=%d want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "OpenAI-compatible API endpoint") {
+		t.Fatalf("root response missing camouflage payload: %s", rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("responses status=%d want 401 body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_api_key") {
+		t.Fatalf("responses response missing OpenAI-style error: %s", rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, probeChainRelayAPIPath, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("relay path status=%d want 400 body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestIsSameProbeChainRuntimeConfigIgnoresAuthTicketRotation(t *testing.T) {
 	resetProbeChainRuntimeStateForTest(t)
 	rt := &probeChainRuntime{
