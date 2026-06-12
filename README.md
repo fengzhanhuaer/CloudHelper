@@ -7,7 +7,8 @@ CloudHelper 是一个探针主控与节点项目，当前版本：`0.0.7`。
 
 - `probe_controller`：探针主控服务（Go）
 - `probe_node`：探针节点服务（Go）
-- `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd）
+- `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd，公网安装入口）
+- `probe_controller/internal/core/install_scripts/install_probe_controller_service.sh`：主控安装脚本的内置副本（用于系统设置里生成自包含迁移脚本）
 - `probe_controller/internal/core/install_scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（由主控探针页分发，支持 systemd / 非 systemd）
 - `probe_controller/internal/core/install_scripts/install_probe_node_service_windows.ps1`：Windows 探针节点安装脚本（由主控探针页分发，WinSW 服务）
 - `scripts/restart_probe_node_service_windows.ps1`：Windows 探针节点服务一键重启脚本
@@ -21,7 +22,7 @@ CloudHelper 是一个探针主控与节点项目，当前版本：`0.0.7`。
 ## Linux 一键安装（主控）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_controller_service.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/mapledev/scripts/install_probe_controller_service.sh | sudo bash
 ```
 
 安装完成后会：

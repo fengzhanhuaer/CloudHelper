@@ -257,7 +257,7 @@ func pruneControllerMigrationPackagesLocked(now time.Time) {
 }
 
 func controllerMigrationScriptHeader() string {
-	return `#!/usr/bin/env bash
+	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/cloudhelper/probe_controller}"
@@ -281,8 +281,10 @@ trap 'rm -rf -- "${tmp_dir}"' EXIT
 install_script="${tmp_dir}/install_probe_controller_service.sh"
 archive="${tmp_dir}/controller-data.zip"
 
-log "downloading controller installer"
-curl -fsSL "https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/main/scripts/install_probe_controller_service.sh" -o "${install_script}"
+log "extracting embedded controller installer"
+cat >"${install_script}" <<'__CLOUDHELPER_CONTROLLER_INSTALLER__'
+%s
+__CLOUDHELPER_CONTROLLER_INSTALLER__
 chmod +x "${install_script}"
 
 log "installing controller service"
@@ -294,7 +296,7 @@ sed -n '/^__CLOUDHELPER_CONTROLLER_DATA_ARCHIVE_BELOW__$/,$p' "$0" | tail -n +2 
 log "stopping ${SERVICE_NAME}"
 systemctl stop "${SERVICE_NAME}" || true
 
-backup_dir="${DATA_DIR}.before-migration.$(date +%Y%m%d%H%M%S)"
+backup_dir="${DATA_DIR}.before-migration.$(date +%%Y%%m%%d%%H%%M%%S)"
 if [[ -d "${DATA_DIR}" ]]; then
   log "preserving existing data at ${backup_dir}"
   mv "${DATA_DIR}" "${backup_dir}"
@@ -311,7 +313,7 @@ log "status: systemctl status ${SERVICE_NAME} --no-pager"
 exit 0
 
 __CLOUDHELPER_CONTROLLER_DATA_ARCHIVE_BELOW__
-`
+`, probeControllerInstallScriptLinux)
 }
 
 func serveControllerMigrationScript(w http.ResponseWriter, r *http.Request) {
