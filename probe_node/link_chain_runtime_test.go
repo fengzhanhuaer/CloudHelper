@@ -1345,6 +1345,76 @@ func TestSnapshotProbeChainRelayReportsSchedulesExpiredProtocolRefresh(t *testin
 	}
 }
 
+func TestProtocolReportRefreshOnlyProbesActiveDialDirections(t *testing.T) {
+	resetProbeChainRelayProtocolStateForTest()
+	defer resetProbeChainRelayProtocolStateForTest()
+	originalOpenLayer := probeChainRelayOpenLayer
+	originalPingPong := probeChainRelayMeasurePingPongLatency
+	originalHook := probeChainRelayProtocolRefreshStartedForTest
+	defer func() {
+		probeChainRelayOpenLayer = originalOpenLayer
+		probeChainRelayMeasurePingPongLatency = originalPingPong
+		probeChainRelayProtocolRefreshStartedForTest = originalHook
+	}()
+
+	started := make(chan string, 4)
+	probeChainRelayProtocolRefreshStartedForTest = func(endpoint string) {
+		started <- endpoint
+	}
+	probeChainRelayOpenLayer = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeChainRelayProtocolDialResult {
+		client, server := net.Pipe()
+		t.Cleanup(func() {
+			_ = server.Close()
+		})
+		return probeChainRelayProtocolDialResult{
+			Protocol: normalizeProbeChainLinkLayer(layer),
+			Conn:     client,
+			Latency:  time.Millisecond,
+		}
+	}
+	probeChainRelayMeasurePingPongLatency = func(conn net.Conn) (time.Duration, error) {
+		return time.Millisecond, nil
+	}
+
+	scheduleProbeChainRelayProtocolRefreshForReports([]probeChainRuntimeConfig{
+		{
+			chainID:       "chain-forward-exit",
+			secret:        "secret-a",
+			role:          "exit",
+			linkLayer:     "websocket-h3",
+			prevHost:      "entry.example.com",
+			prevPort:      16030,
+			prevLinkLayer: "websocket-h3",
+			prevDialMode:  probeChainDialModeForward,
+		},
+		{
+			chainID:       "chain-reverse-exit",
+			secret:        "secret-b",
+			role:          "exit",
+			linkLayer:     "websocket-h3",
+			prevHost:      "reverse-entry.example.com",
+			prevPort:      16031,
+			prevLinkLayer: "websocket-h3",
+			prevDialMode:  probeChainDialModeReverse,
+		},
+	})
+
+	reverseEndpoint := probeChainRelayProtocolEndpointKey("reverse-entry.example.com", 16031)
+	select {
+	case endpoint := <-started:
+		if endpoint != reverseEndpoint {
+			t.Fatalf("refresh endpoint=%q want %q", endpoint, reverseEndpoint)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected reverse prev hop refresh")
+	}
+	select {
+	case endpoint := <-started:
+		t.Fatalf("unexpected extra refresh endpoint=%q", endpoint)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestConsumeProbeChainRelaySpeedTestDataAcceptsPartialDurationLimit(t *testing.T) {
 	reader := &probeChainSpeedTestTimeoutReader{
 		chunks: [][]byte{

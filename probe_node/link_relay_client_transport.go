@@ -525,12 +525,12 @@ func scheduleProbeChainRelayProtocolRefreshForReports(configs []probeChainRuntim
 	now := time.Now()
 	targets := make([]probeChainRelayProtocolRefreshTarget, 0, len(configs)*2)
 	for _, cfg := range configs {
-		if cfg.nextPort > 0 && strings.TrimSpace(cfg.nextHost) != "" {
+		if normalizeProbeChainDialMode(cfg.nextDialMode) == probeChainDialModeForward && cfg.nextPort > 0 && strings.TrimSpace(cfg.nextHost) != "" {
 			if target, ok := makeProbeChainRelayProtocolRefreshTarget(cfg, strings.TrimSpace(cfg.nextHost), cfg.nextPort, normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.nextLinkLayer), strings.TrimSpace(cfg.linkLayer))), probeChainBridgeRoleToNext, now); ok {
 				targets = append(targets, target)
 			}
 		}
-		if cfg.prevPort > 0 && strings.TrimSpace(cfg.prevHost) != "" {
+		if normalizeProbeChainDialMode(cfg.prevDialMode) == probeChainDialModeReverse && cfg.prevPort > 0 && strings.TrimSpace(cfg.prevHost) != "" {
 			if target, ok := makeProbeChainRelayProtocolRefreshTarget(cfg, strings.TrimSpace(cfg.prevHost), cfg.prevPort, normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.prevLinkLayer), strings.TrimSpace(cfg.linkLayer))), probeChainBridgeRoleToPrev, now); ok {
 				targets = append(targets, target)
 			}
