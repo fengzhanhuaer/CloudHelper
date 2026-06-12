@@ -212,6 +212,37 @@ func TestProbeProxyDownloadHandlerPassesRange(t *testing.T) {
 	}
 }
 
+func TestProbeProxyDownloadHandlerAcceptsURLHeader(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/asset" {
+			t.Fatalf("unexpected upstream path: %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = io.WriteString(w, "probe-binary")
+	}))
+	defer upstream.Close()
+
+	oldClient := http.DefaultClient
+	http.DefaultClient = upstream.Client()
+	defer func() { http.DefaultClient = oldClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/download?node_id=1&secret=test-secret", nil)
+	req.Header.Set("X-CloudHelper-Download-URL", upstream.URL+"/asset?token=a&name=b")
+	w := httptest.NewRecorder()
+	withProbeStoreSecretForTest(t, "1", "test-secret")
+
+	ProbeProxyDownloadHandler(w, req)
+	resp := w.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "probe-binary" {
+		t.Fatalf("unexpected body: %q", string(body))
+	}
+}
+
 func TestProbeProxyInstallScriptHandlerServesEmbeddedScriptOverHTTP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/probe-node/install-script?node_id=1&secret=test-secret&target=linux", nil)
 	w := httptest.NewRecorder()

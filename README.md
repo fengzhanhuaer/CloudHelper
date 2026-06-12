@@ -51,6 +51,63 @@ curl -fsSL https://raw.githubusercontent.com/fengzhanhuaer/CloudHelper/mapledev/
 
 重复执行同一条探针节点安装命令即可升级。脚本会自动备份旧二进制并重启进程/服务。
 
+## Docker 运行（探针节点）
+
+发布流程会同步推送 x86 镜像：
+
+```bash
+ghcr.io/fengzhanhuaer/cloudhelper-probe-node:latest
+ghcr.io/fengzhanhuaer/cloudhelper-probe-node:v0.0.7
+```
+
+使用 Compose 启动：
+
+```bash
+cd docker/probe_node
+vi compose.yaml
+docker compose up -d
+```
+
+如需开放探针本地控制台：
+
+```bash
+cd docker/probe_node
+vi compose.yaml
+docker compose up -d
+```
+
+其中 `PROBE_NODE_ID`、`PROBE_NODE_SECRET`、`PROBE_CONTROLLER_URL` 在 `docker/probe_node/compose.yaml` 的 `environment` 中直接设置。
+
+Docker Compose 默认使用 host 网络，链路中继或本地代理端口由主控配置决定，容器会直接使用宿主机网络栈监听对应端口。如需在 Linux 容器内使用 TUN/VNet 能力，在 `docker/probe_node/compose.yaml` 的服务下追加：
+
+```yaml
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+```
+
+默认数据文件会保存在 `docker/probe_node/compose.yaml` 所在目录下：
+- `docker/probe_node/data/`：探针身份、链路缓存、同步配置等持久数据
+- `docker/probe_node/logs/`：探针运行日志
+
+Compose 会将 `docker/probe_node/` 目录整体挂载到容器的 `/opt/cloudhelper/probe_node/`。Docker 镜像只作为启动壳，不包含探针二进制；容器首次启动时若同目录下的 `probe_node` 不存在，会优先通过主控 `/api/probe/proxy/download` 拉取 `cloudhelper-probe-node-linux-amd64`，下载地址通过请求头传给主控以避免 URL 编码问题。主控代理不可用时再回退 GitHub Release 直连，并保存到该目录。后续可独立替换或通过探针自身升级该文件，不需要重打 Docker 镜像。
+
+升级与重启约定：
+- 正常启动：若 `probe_node/probe_node` 已存在且可执行，启动壳只拉起该文件，不会覆盖。
+- 首次安装：若 `probe_node/probe_node` 不存在，启动壳会下载并安装。
+- 探针自身升级：升级逻辑会替换 `probe_node/probe_node`，并在容器内原地重启新进程。
+- 手动替换二进制：替换 `probe_node/probe_node` 后执行 `docker compose restart`。
+- 重新安装：删除 `probe_node/probe_node` 后 `docker compose up -d`，或临时设置 `PROBE_NODE_FORCE_INSTALL=true`。
+- 不建议长期保持 `PROBE_NODE_FORCE_INSTALL=true`，否则每次容器重启都会重新下载，可能覆盖探针自身升级后的版本。
+
+可选变量：
+- `RELEASE_TAG`：默认 `latest`，可指定 `v0.0.7`
+- `PROBE_NODE_DOWNLOAD_URL`：指定自定义探针二进制下载地址
+- `PROBE_PROXY_BASE_URL`：指定主控代理基础路径，默认由 `PROBE_CONTROLLER_URL` 推导为 `<controller>/api/probe/proxy`
+- `PROBE_NODE_AUTO_INSTALL=false`：关闭缺失时自动安装，缺少二进制会直接退出
+- `PROBE_NODE_FORCE_INSTALL=true`：启动时强制重新下载探针二进制
+
 ## Windows 一键安装（探针节点）
 
 在主控后台的“探针”页面为对应节点点击“安装”，复制生成的 Windows PowerShell 命令，并使用管理员权限执行。

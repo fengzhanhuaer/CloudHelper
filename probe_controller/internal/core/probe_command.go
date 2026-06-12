@@ -481,6 +481,9 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 
 	rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
 	if rawURL == "" {
+		rawURL = strings.TrimSpace(r.Header.Get("X-CloudHelper-Download-URL"))
+	}
+	if rawURL == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url query parameter is required"})
 		return
 	}
