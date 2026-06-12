@@ -219,6 +219,10 @@ func UpdateProbeRuntimeReportForTest(nodeID string, machineUptimeSeconds int64) 
 	updateProbeRuntimeReportWithPlatform(nodeID, nil, nil, probeSystemMetrics{}, "", "", "", "", machineUptimeSeconds, nil)
 }
 
+func UpdateProbeRuntimeReportWithIPsForTest(nodeID string, ipv4 []string, ipv6 []string) {
+	updateProbeRuntimeReportWithPlatform(nodeID, ipv4, ipv6, probeSystemMetrics{}, "", "", "", "", 0, nil)
+}
+
 func normalizeProbeRuntimePlatform(platform string, osName string) string {
 	p := strings.ToLower(strings.TrimSpace(platform))
 	o := strings.ToLower(strings.TrimSpace(osName))

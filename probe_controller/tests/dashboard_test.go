@@ -110,6 +110,38 @@ func TestDashboardProbesExposeMachineUptime(t *testing.T) {
 	}
 }
 
+func TestDashboardProbesExposeRuntimeLocations(t *testing.T) {
+	core.ResetProbeRuntimeStoreForTest()
+	t.Cleanup(core.ResetProbeRuntimeStoreForTest)
+	restoreStore := core.SetProbeNodesAndNetworkMonitorTasksForTest(map[int]string{1: "probe-a"}, nil)
+	t.Cleanup(restoreStore)
+	core.UpdateProbeRuntimeReportWithIPsForTest("1", []string{"10.0.0.8", "192.168.1.9"}, nil)
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/probes", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected GET /dashboard/probes 200, got %d", rr.Code)
+	}
+	var payload struct {
+		Items []struct {
+			NodeNo    int      `json:"node_no"`
+			Locations []string `json:"locations"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to parse /dashboard/probes response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].NodeNo != 1 {
+		t.Fatalf("unexpected probe items: %+v", payload.Items)
+	}
+	if len(payload.Items[0].Locations) != 1 || payload.Items[0].Locations[0] != "内网" {
+		t.Fatalf("locations=%v, want [内网]", payload.Items[0].Locations)
+	}
+}
+
 func TestDashboardProbesHideDeletedAndAndroidClients(t *testing.T) {
 	core.ResetProbeRuntimeStoreForTest()
 	t.Cleanup(core.ResetProbeRuntimeStoreForTest)
@@ -187,6 +219,50 @@ func TestDashboardNetworkRouteNoAuthRequired(t *testing.T) {
 	}
 	if payload.Items[0].Series[0].Points[0].LatencyAvgMS != 23.5 || payload.Items[0].Series[0].Points[0].LossPercent != 1.5 {
 		t.Fatalf("point=%+v", payload.Items[0].Series[0].Points[0])
+	}
+}
+
+func TestDashboardNetworkExposesLocationsAndVendor(t *testing.T) {
+	core.ResetProbeRuntimeStoreForTest()
+	t.Cleanup(core.ResetProbeRuntimeStoreForTest)
+	restorePath := core.SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "network_monitor_results"))
+	t.Cleanup(restorePath)
+	restoreStore := core.SetProbeNodeRecordsAndNetworkMonitorTasksForTest([]core.ProbeNodeForTest{
+		{NodeNo: 1, NodeName: "probe-a", TargetSystem: "linux", VendorName: "Acme", VendorURL: "https://vendor.example.com"},
+	}, map[string]string{"task-1": "外网测试"})
+	t.Cleanup(restoreStore)
+	core.UpdateProbeRuntimeReportWithIPsForTest("1", []string{"10.0.0.8"}, nil)
+	if err := core.AppendProbeNetworkMonitorResultForTest("1", "task-1", "2026-01-01T00:00:00Z", 23.5, 1.5); err != nil {
+		t.Fatalf("AppendProbeNetworkMonitorResultForTest failed: %v", err)
+	}
+	mux := core.NewMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/network", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected GET /dashboard/network 200, got %d", rr.Code)
+	}
+	var payload struct {
+		Items []struct {
+			NodeNo     int      `json:"node_no"`
+			VendorName string   `json:"vendor_name"`
+			VendorURL  string   `json:"vendor_url"`
+			Locations  []string `json:"locations"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to parse /dashboard/network response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].NodeNo != 1 {
+		t.Fatalf("unexpected network items: %+v", payload.Items)
+	}
+	if payload.Items[0].VendorName != "Acme" || payload.Items[0].VendorURL != "https://vendor.example.com" {
+		t.Fatalf("vendor=%q/%q", payload.Items[0].VendorName, payload.Items[0].VendorURL)
+	}
+	if len(payload.Items[0].Locations) != 1 || payload.Items[0].Locations[0] != "内网" {
+		t.Fatalf("locations=%v, want [内网]", payload.Items[0].Locations)
 	}
 }
 

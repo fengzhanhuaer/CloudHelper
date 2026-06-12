@@ -723,6 +723,8 @@ type ProbeNodeForTest struct {
 	NodeNo       int
 	NodeName     string
 	TargetSystem string
+	VendorName   string
+	VendorURL    string
 	Deleted      bool
 }
 
@@ -740,6 +742,8 @@ func SetProbeNodeRecordsAndNetworkMonitorTasksForTest(nodes []ProbeNodeForTest, 
 			NodeNo:       node.NodeNo,
 			NodeName:     strings.TrimSpace(node.NodeName),
 			TargetSystem: targetSystem,
+			VendorName:   strings.TrimSpace(node.VendorName),
+			VendorURL:    strings.TrimSpace(node.VendorURL),
 		}
 		if node.Deleted {
 			deletedProbeNodes = append(deletedProbeNodes, record)

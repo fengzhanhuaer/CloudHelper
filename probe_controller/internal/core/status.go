@@ -184,6 +184,24 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 	return out
 }
 
+func dashboardProbeRuntimeLocations(rt probeRuntimeStatus) []string {
+	values := make([]string, 0, len(rt.IPLocations))
+	seen := map[string]struct{}{}
+	for _, ip := range append(append([]string{}, rt.IPv4...), rt.IPv6...) {
+		label := strings.TrimSpace(rt.IPLocations[strings.TrimSpace(ip)])
+		if label == "" || label == "未知" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		values = append(values, label)
+	}
+	sort.Strings(values)
+	return values
+}
+
 func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeItem {
 	const maxDashboardNetworkPointsPerProbe = 720
 	scale = normalizeDashboardNetworkScale(scale)

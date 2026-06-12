@@ -206,6 +206,12 @@
         .probe-vendor a:hover {
             text-decoration: underline;
         }
+        .probe-location {
+            margin-top: 3px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: 'Courier New', Courier, monospace;
+        }
         .probe-online {
             font-size: 12px;
             padding: 2px 8px;
@@ -475,6 +481,13 @@
             return '<a href="' + escapeHTML(url) + '" target="_blank" rel="noopener noreferrer" title="' + escapeHTML(url) + '">' + safeName + '</a>';
         }
 
+        function formatLocations(locations) {
+            const list = Array.isArray(locations)
+                ? locations.map((item) => String(item || '').trim()).filter(Boolean)
+                : [];
+            return list.length ? list.join(' / ') : '';
+        }
+
         async function checkStatus() {
             try {
                 const res = await fetch('/dashboard/status');
@@ -533,12 +546,15 @@
                 const bootTime = formatDateTime(item.machine_boot_time);
                 const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
                 const vendorLine = vendor ? '<div class="probe-vendor">厂家: ' + vendor + '</div>' : '';
+                const locationText = formatLocations(item.locations);
+                const locationLine = locationText ? '<div class="probe-location">归属地: ' + escapeHTML(locationText) + '</div>' : '';
                 return '<div class="probe-item">'
                     + '<div class="probe-item-head">'
                     + '<div>'
                     + '<div class="probe-node-name">' + escapeHTML(name) + '</div>'
                     + '<div class="probe-node-no">序号: ' + (nodeNo > 0 ? nodeNo : '-') + '</div>'
                     + vendorLine
+                    + locationLine
                     + '</div>'
                     + '<div class="probe-online ' + onlineClass + '">' + onlineText + '</div>'
                     + '</div>'
@@ -579,6 +595,10 @@
                     : ('probe #' + String(nodeNo > 0 ? nodeNo : index + 1));
                 const series = normalizeNetworkSeries(item.series);
                 const canvasID = 'network-chart-' + index;
+                const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
+                const vendorLine = vendor ? '<div class="network-meta">厂家: ' + vendor + '</div>' : '';
+                const locationText = formatLocations(item.locations);
+                const locationLine = locationText ? '<div class="network-meta">归属地: ' + escapeHTML(locationText) + '</div>' : '';
                 const summary = networkSeriesSummaries(series);
                 const latestHTML = summary.length
                     ? summary.map((entry) => {
@@ -597,6 +617,8 @@
                     + '<div>'
                     + '<div class="network-title">' + escapeHTML(name) + '</div>'
                     + '<div class="network-meta">序号: ' + (nodeNo > 0 ? nodeNo : '-') + '</div>'
+                    + vendorLine
+                    + locationLine
                     + '</div>'
                     + '<div class="network-summary">' + latestHTML + '</div>'
                     + '</div>'
