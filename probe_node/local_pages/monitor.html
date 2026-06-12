@@ -718,6 +718,32 @@
       return rows;
     }
 
+    function collectSubstreamPairs(local, remote) {
+      const pairs = [];
+      const byKey = new Map();
+      const add = (side, item) => {
+        if (!item || typeof item !== 'object') return;
+        const flowID = String(item.flow_id || '').trim();
+        const id = String(item.id || '').trim();
+        const baseKey = flowID ? 'flow:' + flowID : side + ':' + id;
+        let key = baseKey;
+        let pair = byKey.get(key);
+        if (pair && pair[side]) {
+          key = baseKey + ':' + id + ':' + pairs.length;
+          pair = null;
+        }
+        if (!pair) {
+          pair = { key, local: null, remote: null };
+          byKey.set(key, pair);
+          pairs.push(pair);
+        }
+        pair[side] = item;
+      };
+      collectSubstreamRows(local, '本地').forEach(({ item }) => add('local', item));
+      collectSubstreamRows(remote, '对端').forEach(({ item }) => add('remote', item));
+      return pairs;
+    }
+
     function renderSubstreamMonitor() {
       const listEl = document.getElementById('substream-monitor-list');
       const updatedEl = document.getElementById('substream-monitor-updated');
@@ -725,21 +751,21 @@
       const data = substreamMonitorCache || {};
       const local = data.local || {};
       const remote = data.remote || null;
-      const rows = collectSubstreamRows(local, '本地').concat(collectSubstreamRows(remote, '对端'));
+      const rows = collectSubstreamPairs(local, remote);
       const remoteError = String(data.remote_error || '').trim();
       updatedEl.textContent = '子流监视：本地 ' + (local.fetched_at || '--') + ' / 对端 ' + (remote && remote.fetched_at ? remote.fetched_at : (remoteError ? '不可用' : '--')) + ' / group ' + (data.group || '-');
       if (rows.length === 0) {
         listEl.innerHTML = '<div class="hint">' + escapeHTML(remoteError ? '暂无子流数据；对端状态：' + remoteError : '暂无 TUN / 端口转发子流数据') + '</div>';
         return;
       }
-      const body = rows.map(({ side, item }) => renderSubstreamRow(side, item)).join('');
+      const body = rows.map(renderSubstreamPairRow).join('');
       listEl.innerHTML = `
         <table class="substream-table">
           <thead>
             <tr>
-              <th>位置</th>
-              <th>类型/状态</th>
               <th>Flow</th>
+              <th>本地入口</th>
+              <th>对端出口</th>
               <th>目标</th>
               <th>流量</th>
               <th>缓冲/阻塞</th>
@@ -753,20 +779,66 @@
       `;
     }
 
-    function renderSubstreamRow(sideLabel, item) {
+    function renderSubstreamPairRow(pair) {
+      const local = pair && pair.local;
+      const remote = pair && pair.remote;
+      const primary = local || remote || {};
+      const flowID = String(primary && (primary.flow_id || primary.id) || '-').trim();
+      return `
+        <tr>
+          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">本地 ${escapeHTML(local && local.id || '-')}<br>对端 ${escapeHTML(remote && remote.id || '-')}</span></td>
+          ${renderSubstreamEndpointCell('本地', local)}
+          ${renderSubstreamEndpointCell('对端', remote)}
+          <td><span class="pre-line">${escapeHTML(renderSubstreamTargetText(local, remote))}</span></td>
+          <td><span class="pre-line">${escapeHTML(renderSubstreamTrafficText(local, remote))}</span></td>
+          <td><span class="pre-line">${escapeHTML(renderSubstreamBufferText(local, remote))}</span></td>
+          <td><span class="pre-line">${escapeHTML(renderSubstreamErrorText(local, remote))}</span></td>
+          <td><span class="pre-line">${escapeHTML(renderSubstreamTimeText(local, remote))}</span></td>
+        </tr>
+      `;
+    }
+
+    function renderSubstreamEndpointCell(sideLabel, item) {
+      if (!item) {
+        return '<td><span class="status-warn">' + escapeHTML(sideLabel + '缺失') + '</span><br><span class="hint">未采集到配对子流</span></td>';
+      }
       const kind = formatSubstreamKind(item && item.kind);
       const status = String(item && item.status || '-').trim();
+      const buffer = item && item.buffer || {};
+      const bufferStatus = String(buffer.status || 'clear').trim();
+      const statusClass = status === 'active' && bufferStatus !== 'blocked' ? 'status-ok' : (bufferStatus === 'blocked' ? 'status-warn' : 'status-bad');
+      return '<td><span class="' + statusClass + '">' + escapeHTML(kind) + ' / ' + escapeHTML(status) + '</span><br><span class="hint">' + escapeHTML(item && item.side || '-') + ' ' + escapeHTML(item && item.scope || '') + '<br>group=' + escapeHTML(item && item.group || '-') + ' node=' + escapeHTML(item && item.node_id || '-') + '</span></td>';
+    }
+
+    function renderSubstreamTargetText(local, remote) {
+      return renderSubstreamSideText('本地', local, renderSubstreamTargetLine).concat(renderSubstreamSideText('对端', remote, renderSubstreamTargetLine)).join('\n');
+    }
+
+    function renderSubstreamTrafficText(local, remote) {
+      return renderSubstreamSideText('本地', local, (item) => '上行 ' + formatBytes(item && item.bytes_up) + ' / 下行 ' + formatBytes(item && item.bytes_down) + ' / 写 ' + Math.trunc(Number(item && item.writes_up || 0)) + '/' + Math.trunc(Number(item && item.writes_down || 0))).concat(renderSubstreamSideText('对端', remote, (item) => '上行 ' + formatBytes(item && item.bytes_up) + ' / 下行 ' + formatBytes(item && item.bytes_down) + ' / 写 ' + Math.trunc(Number(item && item.writes_up || 0)) + '/' + Math.trunc(Number(item && item.writes_down || 0)))).join('\n');
+    }
+
+    function renderSubstreamBufferText(local, remote) {
+      return renderSubstreamSideText('本地', local, renderSubstreamBufferLine).concat(renderSubstreamSideText('对端', remote, renderSubstreamBufferLine)).join('\n');
+    }
+
+    function renderSubstreamErrorText(local, remote) {
+      return renderSubstreamSideText('本地', local, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-').concat(renderSubstreamSideText('对端', remote, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-')).join('\n');
+    }
+
+    function renderSubstreamTimeText(local, remote) {
+      return renderSubstreamSideText('本地', local, (item) => '空闲 ' + formatDurationMS(item && item.idle_ms) + ' / 年龄 ' + formatDurationMS(item && item.age_ms) + ' / ' + (item && (item.last_active || item.closed_at) || '-')).concat(renderSubstreamSideText('对端', remote, (item) => '空闲 ' + formatDurationMS(item && item.idle_ms) + ' / 年龄 ' + formatDurationMS(item && item.age_ms) + ' / ' + (item && (item.last_active || item.closed_at) || '-'))).join('\n');
+    }
+
+    function renderSubstreamSideText(label, item, formatter) {
+      if (!item) return [label + ': 缺失'];
+      return [label + ': ' + formatter(item)];
+    }
+
+    function renderSubstreamTargetLine(item) {
       const flowID = String(item && item.flow_id || item && item.id || '-').trim();
       const target = String(item && item.target || '-').trim();
       const routeTarget = String(item && item.route_target || target).trim();
-      const buffer = item && item.buffer || {};
-      const maxBlockUp = Number(buffer.max_write_block_ms_up || item && item.max_write_block_ms_up || 0);
-      const maxBlockDown = Number(buffer.max_write_block_ms_down || item && item.max_write_block_ms_down || 0);
-      const blockedUp = Number(buffer.blocked_writes_up || item && item.blocked_writes_up || 0);
-      const blockedDown = Number(buffer.blocked_writes_down || item && item.blocked_writes_down || 0);
-      const bufferStatus = String(buffer.status || 'clear').trim();
-      const statusClass = status === 'active' && bufferStatus !== 'blocked' ? 'status-ok' : (bufferStatus === 'blocked' ? 'status-warn' : 'status-bad');
-      const errorText = String(item && (item.close_reason || item.error || '') || '').trim() || '-';
       const domain = String(item && item.domain || '').trim();
       const targetHost = String(item && item.target_host || '').trim();
       const targetIP = String(item && item.target_ip || '').trim();
@@ -779,23 +851,23 @@
       if (routeIP && routeIP !== targetIP) identityLines.push('路由IP=' + routeIP);
       else if (routeHost && routeHost !== targetHost && routeHost !== domain) identityLines.push('路由Host=' + routeHost);
       const identityText = identityLines.length ? identityLines.join('\n') : (domain || target);
-      return `
-        <tr>
-          <td>${escapeHTML(sideLabel)}</td>
-          <td><span class="${statusClass}">${escapeHTML(kind)} / ${escapeHTML(status)}</span><br><span class="hint">${escapeHTML(item && item.side || '-')} ${escapeHTML(item && item.scope || '')}</span></td>
-          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">${escapeHTML(item && item.id || '-')}</span></td>
-          <td><span class="pre-line">${escapeHTML(identityText)}</span><br><span class="hint">${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>group=${escapeHTML(item && item.group || '-')} node=${escapeHTML(item && item.node_id || '-')}</span></td>
-          <td>上行 ${escapeHTML(formatBytes(item && item.bytes_up))}<br>下行 ${escapeHTML(formatBytes(item && item.bytes_down))}<br><span class="hint">写 ${Math.trunc(Number(item && item.writes_up || 0))}/${Math.trunc(Number(item && item.writes_down || 0))}</span></td>
-          <td>${escapeHTML(bufferStatus)}<br><span class="hint">阻塞 ${Math.trunc(blockedUp)}/${Math.trunc(blockedDown)}<br>最大 ${Math.trunc(maxBlockUp)}/${Math.trunc(maxBlockDown)}ms<br>窗口 ${escapeHTML(formatBytes(buffer.yamux_window_bytes || 0))} 最近 ${escapeHTML(item && item.last_congestion_side || '-')}</span></td>
-          <td>${escapeHTML(errorText)}</td>
-          <td>空闲 ${escapeHTML(formatDurationMS(item && item.idle_ms))}<br>年龄 ${escapeHTML(formatDurationMS(item && item.age_ms))}<br><span class="hint">${escapeHTML(item && item.last_active || item && item.closed_at || '-')}</span></td>
-        </tr>
-      `;
+      return flowID + ' ' + identityText + ' | ' + target + ' -> ' + routeTarget;
+    }
+
+    function renderSubstreamBufferLine(item) {
+      const buffer = item && item.buffer || {};
+      const maxBlockUp = Number(buffer.max_write_block_ms_up || item && item.max_write_block_ms_up || 0);
+      const maxBlockDown = Number(buffer.max_write_block_ms_down || item && item.max_write_block_ms_down || 0);
+      const blockedUp = Number(buffer.blocked_writes_up || item && item.blocked_writes_up || 0);
+      const blockedDown = Number(buffer.blocked_writes_down || item && item.blocked_writes_down || 0);
+      const bufferStatus = String(buffer.status || 'clear').trim();
+      return bufferStatus + ' / 阻塞 ' + Math.trunc(blockedUp) + '/' + Math.trunc(blockedDown) + ' / 最大 ' + Math.trunc(maxBlockUp) + '/' + Math.trunc(maxBlockDown) + 'ms / 窗口 ' + formatBytes(buffer.yamux_window_bytes || 0) + ' / 最近 ' + String(item && item.last_congestion_side || '-').trim();
     }
 
     function formatSubstreamKind(value) {
       const kind = String(value || '').trim();
       if (kind === 'tun') return 'TUN';
+      if (kind === 'explicit_proxy') return '本地代理';
       if (kind === 'port_forward') return '端口转发';
       if (kind === 'peer_exit') return '对端出口';
       return kind || '-';

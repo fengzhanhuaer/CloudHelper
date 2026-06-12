@@ -113,7 +113,7 @@ func snapshotProbeSubstreamMonitorPayload(nodeID string, requestID string, scope
 }
 
 func buildProbeSubstreamMonitorItem(item probeTCPDebugConnectionItemPayload) (probeSubstreamMonitorItem, bool) {
-	kind := probeSubstreamKindFromScope(item.Scope)
+	kind := probeSubstreamKindFromTCPDebugItem(item)
 	if kind == "" {
 		return probeSubstreamMonitorItem{}, false
 	}
@@ -196,6 +196,8 @@ func probeSubstreamKindFromScope(scope string) string {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case "tun":
 		return "tun"
+	case "explicit":
+		return "explicit_proxy"
 	case "port_forward":
 		return "port_forward"
 	case "chain_exit":
@@ -203,4 +205,11 @@ func probeSubstreamKindFromScope(scope string) string {
 	default:
 		return ""
 	}
+}
+
+func probeSubstreamKindFromTCPDebugItem(item probeTCPDebugConnectionItemPayload) string {
+	if item.Direct {
+		return ""
+	}
+	return probeSubstreamKindFromScope(item.Scope)
 }
