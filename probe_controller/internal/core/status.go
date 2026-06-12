@@ -73,6 +73,7 @@ type dashboardPublicProbeItem struct {
 	NodeName             string             `json:"node_name"`
 	VendorName           string             `json:"vendor_name,omitempty"`
 	VendorURL            string             `json:"vendor_url,omitempty"`
+	Locations            []string           `json:"locations,omitempty"`
 	Online               bool               `json:"online"`
 	LastSeen             string             `json:"last_seen"`
 	MachineUptimeSeconds int64              `json:"machine_uptime_seconds,omitempty"`
@@ -94,10 +95,13 @@ type dashboardPublicNetworkSeries struct {
 }
 
 type dashboardPublicNetworkProbeItem struct {
-	NodeNo   int                            `json:"node_no"`
-	NodeName string                         `json:"node_name"`
-	Scale    string                         `json:"scale"`
-	Series   []dashboardPublicNetworkSeries `json:"series"`
+	NodeNo     int                            `json:"node_no"`
+	NodeName   string                         `json:"node_name"`
+	VendorName string                         `json:"vendor_name,omitempty"`
+	VendorURL  string                         `json:"vendor_url,omitempty"`
+	Locations  []string                       `json:"locations,omitempty"`
+	Scale      string                         `json:"scale"`
+	Series     []dashboardPublicNetworkSeries `json:"series"`
 }
 
 func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
@@ -153,6 +157,7 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 			NodeName:             nodeName,
 			VendorName:           meta.vendor,
 			VendorURL:            meta.vendorURL,
+			Locations:            dashboardProbeRuntimeLocations(rt),
 			Online:               rt.Online,
 			LastSeen:             strings.TrimSpace(rt.LastSeen),
 			MachineUptimeSeconds: machineUptimeSeconds,
@@ -184,8 +189,10 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 	scale = normalizeDashboardNetworkScale(scale)
 
 	type nodeMeta struct {
-		no   int
-		name string
+		no        int
+		name      string
+		vendor    string
+		vendorURL string
 	}
 	metaMap := map[string]nodeMeta{}
 	taskNameMap := map[string]string{}
@@ -197,8 +204,10 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 			}
 			normalizedID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 			metaMap[normalizedID] = nodeMeta{
-				no:   node.NodeNo,
-				name: strings.TrimSpace(node.NodeName),
+				no:        node.NodeNo,
+				name:      strings.TrimSpace(node.NodeName),
+				vendor:    strings.TrimSpace(node.VendorName),
+				vendorURL: strings.TrimSpace(node.VendorURL),
 			}
 		}
 		for _, task := range loadProbeNetworkMonitorTasksLocked() {
@@ -234,6 +243,7 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 				nodeNo = n
 			}
 		}
+		rt, _ := getProbeRuntime(nodeID)
 		results := loadProbeNetworkMonitorResultsForNode(nodeID)
 		for _, result := range results {
 			timestamp := strings.TrimSpace(firstNonEmptyNetworkMonitor(result.FinishedAt, result.Timestamp, result.StartedAt))
@@ -254,10 +264,13 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 			if !ok {
 				acc = &nodeAccumulator{
 					item: &dashboardPublicNetworkProbeItem{
-						NodeNo:   nodeNo,
-						NodeName: nodeName,
-						Scale:    scale,
-						Series:   []dashboardPublicNetworkSeries{},
+						NodeNo:     nodeNo,
+						NodeName:   nodeName,
+						VendorName: meta.vendor,
+						VendorURL:  meta.vendorURL,
+						Locations:  dashboardProbeRuntimeLocations(rt),
+						Scale:      scale,
+						Series:     []dashboardPublicNetworkSeries{},
 					},
 					series: map[string]*dashboardPublicNetworkSeries{},
 				}
@@ -268,6 +281,9 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 			}
 			if acc.item.NodeName == "" && nodeName != "" {
 				acc.item.NodeName = nodeName
+			}
+			if len(acc.item.Locations) == 0 {
+				acc.item.Locations = dashboardProbeRuntimeLocations(rt)
 			}
 			taskID, taskName := dashboardNetworkTaskIdentity(result, taskNameMap)
 			series, ok := acc.series[taskID]
