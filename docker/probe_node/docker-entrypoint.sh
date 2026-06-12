@@ -22,6 +22,56 @@ controller_url="${PROBE_CONTROLLER_URL:-}"
 proxy_base_url="${PROBE_PROXY_BASE_URL:-}"
 node_id="${PROBE_NODE_ID:-}"
 node_secret="${PROBE_NODE_SECRET:-}"
+install_command="${PROBE_NODE_INSTALL_COMMAND:-}"
+
+extract_install_var() {
+  var_name="$1"
+  command_text="$2"
+  value="$(printf '%s\n' "${command_text}" | sed -n "s/.*${var_name}='\([^']*\)'.*/\1/p" | tail -n 1)"
+  if [ -n "${value}" ]; then
+    printf '%s\n' "${value}"
+    return
+  fi
+  value="$(printf '%s\n' "${command_text}" | sed -n "s/.*${var_name}=\"\([^\"]*\)\".*/\1/p" | tail -n 1)"
+  if [ -n "${value}" ]; then
+    printf '%s\n' "${value}"
+    return
+  fi
+  printf '%s\n' "${command_text}" | sed -n "s/.*${var_name}=\([^ ;]*\).*/\1/p" | tail -n 1
+}
+
+derive_controller_from_script_url() {
+  script_url="$1"
+  case "${script_url}" in
+    */api/probe/proxy/probe-node/install-script*)
+      printf '%s\n' "${script_url%%/api/probe/proxy/probe-node/install-script*}"
+      ;;
+  esac
+}
+
+if [ -n "${install_command}" ]; then
+  parsed_node_id="$(extract_install_var "PROBE_NODE_ID" "${install_command}")"
+  parsed_node_secret="$(extract_install_var "PROBE_NODE_SECRET" "${install_command}")"
+  parsed_controller_url="$(extract_install_var "PROBE_CONTROLLER_URL" "${install_command}")"
+  parsed_proxy_base_url="$(extract_install_var "PROBE_PROXY_BASE_URL" "${install_command}")"
+  parsed_script_url="$(extract_install_var "SCRIPT_URL" "${install_command}")"
+
+  [ -n "${node_id}" ] || node_id="${parsed_node_id}"
+  [ -n "${node_secret}" ] || node_secret="${parsed_node_secret}"
+  [ -n "${controller_url}" ] || controller_url="${parsed_controller_url}"
+  [ -n "${proxy_base_url}" ] || proxy_base_url="${parsed_proxy_base_url}"
+  if [ -z "${controller_url}" ] && [ -n "${parsed_script_url}" ]; then
+    controller_url="$(derive_controller_from_script_url "${parsed_script_url}")"
+  fi
+  if [ -z "${proxy_base_url}" ] && [ -n "${controller_url}" ]; then
+    proxy_base_url="${controller_url%/}/api/probe/proxy"
+  fi
+fi
+
+[ -z "${node_id}" ] || export PROBE_NODE_ID="${node_id}"
+[ -z "${node_secret}" ] || export PROBE_NODE_SECRET="${node_secret}"
+[ -z "${controller_url}" ] || export PROBE_CONTROLLER_URL="${controller_url}"
+[ -z "${proxy_base_url}" ] || export PROBE_PROXY_BASE_URL="${proxy_base_url}"
 
 case "${download_url}" in
   "")

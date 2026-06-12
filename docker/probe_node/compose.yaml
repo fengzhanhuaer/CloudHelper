@@ -5,15 +5,9 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
-      PROBE_NODE_ID: "your-node-id"
+      PROBE_NODE_ID: "1"
       PROBE_NODE_SECRET: "your-node-secret"
       PROBE_CONTROLLER_URL: "https://controller.example.com"
-      PROBE_LOCAL_CONSOLE_ENABLED: "false"
-      PROBE_LOCAL_LISTEN: "0.0.0.0:16032"
-      RELEASE_TAG: "latest"
-      PROBE_NODE_DOWNLOAD_URL: ""
-      PROBE_PROXY_BASE_URL: ""
-      PROBE_NODE_AUTO_INSTALL: "true"
-      PROBE_NODE_FORCE_INSTALL: "false"
+      PROBE_PROXY_BASE_URL: "https://controller.example.com/api/probe/proxy"
     volumes:
       - ./:/opt/cloudhelper/probe_node

@@ -673,7 +673,7 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 
 	system := normalizeProbeTargetSystem(req.TargetSystem)
 	if system == "" {
-		return probeNodeRecord{}, fmt.Errorf("target system must be linux, windows or android")
+		return probeNodeRecord{}, fmt.Errorf("target system must be linux, windows, android or docker")
 	}
 
 	nodes := loadProbeNodesLocked()
@@ -952,6 +952,8 @@ func normalizeProbeTargetSystem(raw string) string {
 		return "windows"
 	case "android":
 		return "android"
+	case "docker":
+		return "docker"
 	case "linux", "":
 		return "linux"
 	default:

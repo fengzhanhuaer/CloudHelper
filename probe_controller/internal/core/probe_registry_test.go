@@ -48,6 +48,24 @@ func TestNormalizeProbeNodesSupportsAndroidTargetSystem(t *testing.T) {
 	}
 }
 
+func TestNormalizeProbeNodesSupportsDockerTargetSystem(t *testing.T) {
+	nodes, _ := normalizeProbeNodes([]probeNodeRecord{
+		{
+			NodeNo:       1,
+			NodeName:     "docker-node",
+			NodeSecret:   "secret",
+			TargetSystem: "DOCKER",
+		},
+	})
+
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
+	if nodes[0].TargetSystem != "docker" {
+		t.Fatalf("expected target_system=docker, got %q", nodes[0].TargetSystem)
+	}
+}
+
 func TestNormalizeProbeNodesKeepsLocalConsoleDefaultDisabled(t *testing.T) {
 	nodes, _ := normalizeProbeNodes([]probeNodeRecord{
 		{

@@ -271,6 +271,7 @@
             <option value="linux">linux</option>
             <option value="windows">windows</option>
             <option value="android">android</option>
+            <option value="docker">docker</option>
           </select>
         </div>
         <div class="form-field full">
@@ -508,6 +509,24 @@
       ].join('; ');
     }
 
+    function buildDockerComposeInstallInfo(nodeID, secret, baseURL, proxyBaseURL, directConnect) {
+      return [
+        'services:',
+        '  cloudhelper-probe-node:',
+        '    image: ghcr.io/fengzhanhuaer/cloudhelper-probe-node:latest',
+        '    container_name: cloudhelper-probe-node',
+        '    restart: unless-stopped',
+        '    network_mode: host',
+        '    environment:',
+        `      PROBE_NODE_ID: ${quoteBashLiteral(nodeID)}`,
+        `      PROBE_NODE_SECRET: ${quoteBashLiteral(secret)}`,
+        `      PROBE_CONTROLLER_URL: ${quoteBashLiteral(baseURL)}`,
+        directConnect ? '' : `      PROBE_PROXY_BASE_URL: ${quoteBashLiteral(proxyBaseURL)}`,
+        '    volumes:',
+        '      - ./:/opt/cloudhelper/probe_node',
+      ].filter(Boolean).join('\n');
+    }
+
     function buildProbeInstallCommand(node, controllerBaseURL) {
       const baseURL = normalizeControllerBaseURL(controllerBaseURL);
       const nodeNo = Number(node && node.node_no);
@@ -519,7 +538,9 @@
       const proxyBaseURL = `${baseURL}/api/probe/proxy`;
       const directConnect = node && node.direct_connect === true;
       const rawTargetSystem = String((node && node.target_system) || 'linux').toLowerCase();
-      const targetSystem = rawTargetSystem === 'windows' ? 'windows' : (rawTargetSystem === 'android' ? 'android' : 'linux');
+      const targetSystem = rawTargetSystem === 'windows'
+        ? 'windows'
+        : (rawTargetSystem === 'android' ? 'android' : (rawTargetSystem === 'docker' ? 'docker' : 'linux'));
 
       const envVars = [
         `PROBE_NODE_ID=${quoteBashLiteral(nodeID)}`,
@@ -564,7 +585,11 @@
       }
 
       const scriptURL = `${baseURL}/api/probe/proxy/probe-node/install-script?${query.toString()}&target=linux`;
-      return buildLinuxInstallCommand(scriptURL, envVars, '/tmp/cloudhelper-probe-node-install.sh');
+      const linuxInstallCommand = buildLinuxInstallCommand(scriptURL, envVars, '/tmp/cloudhelper-probe-node-install.sh');
+      if (targetSystem === 'docker') {
+        return buildDockerComposeInstallInfo(nodeID, secret, baseURL, proxyBaseURL, directConnect);
+      }
+      return linuxInstallCommand;
     }
 
     function renderIPLines(family, list) {
@@ -1270,7 +1295,9 @@
       document.getElementById('edit-remark').value = String(node.remark || '');
       document.getElementById('edit-ddns').value = String(node.ddns || '');
       const targetSystem = String(node.target_system || 'linux').toLowerCase();
-      document.getElementById('edit-target-system').value = targetSystem === 'windows' ? 'windows' : (targetSystem === 'android' ? 'android' : 'linux');
+      document.getElementById('edit-target-system').value = targetSystem === 'windows'
+        ? 'windows'
+        : (targetSystem === 'android' ? 'android' : (targetSystem === 'docker' ? 'docker' : 'linux'));
       document.getElementById('edit-direct-connect').checked = node.direct_connect === true;
       document.getElementById('edit-local-console-enabled').checked = node.local_console_enabled === true;
       document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
@@ -1300,8 +1327,8 @@
       if (message.includes('node name already exists')) {
         return `保存失败：节点名称已存在（${raw}）`;
       }
-      if (message.includes('target system must be linux, windows or android')) {
-        return `保存失败：目标系统只能是 linux、windows 或 android（${raw}）`;
+      if (message.includes('target system must be linux, windows, android or docker')) {
+        return `保存失败：目标系统只能是 linux、windows、android 或 docker（${raw}）`;
       }
       if (message.includes('invalid node number')) {
         return `保存失败：节点编号无效（${raw}）`;
@@ -1322,8 +1349,8 @@
       if (!nodeName) {
         throw buildEditValidationError('node_name 不能为空');
       }
-      if (targetSystem !== 'linux' && targetSystem !== 'windows' && targetSystem !== 'android') {
-        throw buildEditValidationError('target_system 只能是 linux、windows 或 android');
+      if (targetSystem !== 'linux' && targetSystem !== 'windows' && targetSystem !== 'android' && targetSystem !== 'docker') {
+        throw buildEditValidationError('target_system 只能是 linux、windows、android 或 docker');
       }
       if (expireAt && !/^\d{4}-\d{2}-\d{2}$/.test(expireAt)) {
         throw buildEditValidationError('expire_at 格式必须是 YYYY-MM-DD');

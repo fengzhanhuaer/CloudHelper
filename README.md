@@ -68,15 +68,7 @@ vi compose.yaml
 docker compose up -d
 ```
 
-如需开放探针本地控制台：
-
-```bash
-cd docker/probe_node
-vi compose.yaml
-docker compose up -d
-```
-
-其中 `PROBE_NODE_ID`、`PROBE_NODE_SECRET`、`PROBE_CONTROLLER_URL` 在 `docker/probe_node/compose.yaml` 的 `environment` 中直接设置。
+将探针的 `target_system` 设置为 `docker` 后，主控“探针”页面的安装信息会直接生成完整 `compose.yaml`，其中会分别写入 `PROBE_NODE_ID`、`PROBE_NODE_SECRET`、`PROBE_CONTROLLER_URL` 和 `PROBE_PROXY_BASE_URL`。
 
 Docker Compose 默认使用 host 网络，链路中继或本地代理端口由主控配置决定，容器会直接使用宿主机网络栈监听对应端口。如需在 Linux 容器内使用 TUN/VNet 能力，在 `docker/probe_node/compose.yaml` 的服务下追加：
 
@@ -107,6 +99,7 @@ Compose 会将 `docker/probe_node/` 目录整体挂载到容器的 `/opt/cloudhe
 - `PROBE_PROXY_BASE_URL`：指定主控代理基础路径，默认由 `PROBE_CONTROLLER_URL` 推导为 `<controller>/api/probe/proxy`
 - `PROBE_NODE_AUTO_INSTALL=false`：关闭缺失时自动安装，缺少二进制会直接退出
 - `PROBE_NODE_FORCE_INSTALL=true`：启动时强制重新下载探针二进制
+- `PROBE_LOCAL_CONSOLE_ENABLED=true`、`PROBE_LOCAL_LISTEN=0.0.0.0:16032`：需要开放本地控制台时再追加
 
 ## Windows 一键安装（探针节点）
 
