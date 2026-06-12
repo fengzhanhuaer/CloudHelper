@@ -166,27 +166,35 @@
         }
         .probe-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 14px;
         }
         .probe-item {
             border: 1px solid rgba(255, 255, 255, 0.08);
             background: rgba(0, 0, 0, 0.2);
             border-radius: 10px;
-            padding: 10px 12px;
-            min-height: 116px;
+            padding: 12px;
+            min-height: 186px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
         }
         .probe-item-head {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 6px;
+            align-items: flex-start;
             gap: 8px;
+        }
+        .probe-node-meta {
+            min-width: 0;
         }
         .probe-node-name {
             font-size: 14px;
             color: #ffffff;
             font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .probe-node-no {
             font-size: 12px;
@@ -211,8 +219,10 @@
             font-size: 12px;
             color: var(--text-secondary);
             font-family: 'Courier New', Courier, monospace;
+            line-height: 1.35;
         }
         .probe-online {
+            flex: 0 0 auto;
             font-size: 12px;
             padding: 2px 8px;
             border-radius: 999px;
@@ -228,20 +238,87 @@
         }
         .probe-metrics {
             display: grid;
-            grid-template-columns: repeat(2, minmax(150px, 1fr));
-            gap: 4px 12px;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
             font-size: 12px;
             color: var(--text-primary);
             font-family: 'Courier New', Courier, monospace;
         }
-        .metric-wide {
-            grid-column: 1 / -1;
+        .metric-gauge {
+            min-width: 0;
+            display: grid;
+            justify-items: center;
+            gap: 4px;
+        }
+        .metric-ring {
+            --metric-angle: 0deg;
+            --metric-color: #2ea043;
+            width: 74px;
+            height: 74px;
+            border-radius: 50%;
+            display: grid;
+            place-items: center;
+            background:
+                radial-gradient(circle at center, rgba(13, 17, 23, 0.96) 0 56%, transparent 57%),
+                conic-gradient(var(--metric-color) var(--metric-angle), rgba(255, 255, 255, 0.1) 0);
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+        }
+        .metric-center {
+            width: 54px;
+            height: 54px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            color: #fff;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1.15;
+            overflow: hidden;
+            word-break: break-word;
+        }
+        .metric-label {
+            color: var(--text-primary);
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .metric-caption {
+            max-width: 100%;
+            color: var(--text-secondary);
+            font-size: 11px;
+            line-height: 1.2;
+            text-align: center;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .probe-uptime {
+            color: var(--text-primary);
+            font-size: 12px;
+            font-family: 'Courier New', Courier, monospace;
         }
         .probe-last-seen {
-            margin-top: 6px;
             color: var(--text-secondary);
             font-size: 12px;
             font-family: 'Courier New', Courier, monospace;
+        }
+        @media (max-width: 560px) {
+            body {
+                padding: 16px 0;
+            }
+            .container {
+                width: calc(100vw - 20px);
+            }
+            .glass-panel {
+                padding: 16px;
+            }
+            .probe-grid {
+                grid-template-columns: 1fr;
+            }
+            .probe-metrics {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
         .network-grid {
             display: grid;
@@ -261,18 +338,27 @@
             margin-bottom: 8px;
             align-items: flex-start;
         }
+        .network-node-meta {
+            min-width: 0;
+            flex: 1 1 auto;
+        }
         .network-title {
             font-size: 14px;
             color: #fff;
             font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .network-meta {
             font-size: 12px;
             color: var(--text-secondary);
             font-family: 'Courier New', Courier, monospace;
-            text-align: right;
+            text-align: left;
+            line-height: 1.35;
         }
         .network-summary {
+            flex: 0 1 360px;
             display: grid;
             gap: 3px;
             min-width: 220px;
@@ -348,6 +434,16 @@
             display: flex;
             align-items: center;
             gap: 8px;
+        }
+        @media (max-width: 720px) {
+            .network-head {
+                flex-direction: column;
+            }
+            .network-summary {
+                width: 100%;
+                max-width: none;
+                min-width: 0;
+            }
         }
     </style>
 </head>
@@ -445,8 +541,50 @@
             return value.toFixed(digits) + ' ' + units[index];
         }
 
-        function metricWithAbsolute(percent, used, total) {
-            return pct(percent) + ' / ' + formatBytes(used) + ' / ' + formatBytes(total);
+        function formatUsedBytes(bytes) {
+            bytes = Number(bytes);
+            if (!Number.isFinite(bytes) || bytes < 0) return '-';
+            if (bytes === 0) return '0 B';
+            return formatBytes(bytes);
+        }
+
+        function normalizedPercent(value) {
+            value = Number(value);
+            if (!Number.isFinite(value)) return 0;
+            return Math.max(0, Math.min(100, value));
+        }
+
+        function mixColor(from, to, ratio) {
+            ratio = Math.max(0, Math.min(1, Number(ratio) || 0));
+            const r = Math.round(from[0] + (to[0] - from[0]) * ratio);
+            const g = Math.round(from[1] + (to[1] - from[1]) * ratio);
+            const b = Math.round(from[2] + (to[2] - from[2]) * ratio);
+            return 'rgb(' + r + ', ' + g + ', ' + b + ')';
+        }
+
+        function usageColor(percent) {
+            percent = normalizedPercent(percent);
+            if (percent <= 60) {
+                return mixColor([46, 160, 67], [210, 153, 34], percent / 60);
+            }
+            return mixColor([210, 153, 34], [248, 81, 73], (percent - 60) / 40);
+        }
+
+        function metricGauge(label, percent, used, total) {
+            const value = normalizedPercent(percent);
+            const usedText = used == null ? pct(percent) : formatUsedBytes(used);
+            const totalText = total == null ? '' : formatBytes(total);
+            const caption = pct(percent) + (totalText && totalText !== '-' ? ' / 总 ' + totalText : '');
+            const title = label + ': ' + pct(percent)
+                + (used == null ? '' : ' / ' + usedText)
+                + (totalText && totalText !== '-' ? ' / ' + totalText : '');
+            return '<div class="metric-gauge" title="' + escapeHTML(title) + '">'
+                + '<div class="metric-ring" style="--metric-angle:' + (value * 3.6).toFixed(1) + 'deg;--metric-color:' + usageColor(value) + ';">'
+                + '<div class="metric-center">' + escapeHTML(usedText) + '</div>'
+                + '</div>'
+                + '<div class="metric-label">' + escapeHTML(label) + '</div>'
+                + '<div class="metric-caption">' + escapeHTML(caption) + '</div>'
+                + '</div>';
         }
 
         function escapeHTML(value) {
@@ -550,7 +688,7 @@
                 const locationLine = locationText ? '<div class="probe-location">归属地: ' + escapeHTML(locationText) + '</div>' : '';
                 return '<div class="probe-item">'
                     + '<div class="probe-item-head">'
-                    + '<div>'
+                    + '<div class="probe-node-meta">'
                     + '<div class="probe-node-name">' + escapeHTML(name) + '</div>'
                     + '<div class="probe-node-no">序号: ' + (nodeNo > 0 ? nodeNo : '-') + '</div>'
                     + vendorLine
@@ -559,12 +697,12 @@
                     + '<div class="probe-online ' + onlineClass + '">' + onlineText + '</div>'
                     + '</div>'
                     + '<div class="probe-metrics">'
-                    + '<div>CPU: ' + pct(sys.cpu_percent) + '</div>'
-                    + '<div class="metric-wide">RAM: ' + metricWithAbsolute(sys.memory_used_percent, sys.memory_used_bytes, sys.memory_total_bytes) + '</div>'
-                    + '<div class="metric-wide">SWAP: ' + metricWithAbsolute(sys.swap_used_percent, sys.swap_used_bytes, sys.swap_total_bytes) + '</div>'
-                    + '<div class="metric-wide">DISK: ' + metricWithAbsolute(sys.disk_used_percent, sys.disk_used_bytes, sys.disk_total_bytes) + '</div>'
-                    + '<div class="metric-wide">机器运行: ' + machineUptime + ' / 开机: ' + bootTime + '</div>'
+                    + metricGauge('CPU', sys.cpu_percent, null, null)
+                    + metricGauge('RAM', sys.memory_used_percent, sys.memory_used_bytes, sys.memory_total_bytes)
+                    + metricGauge('SWAP', sys.swap_used_percent, sys.swap_used_bytes, sys.swap_total_bytes)
+                    + metricGauge('DISK', sys.disk_used_percent, sys.disk_used_bytes, sys.disk_total_bytes)
                     + '</div>'
+                    + '<div class="probe-uptime">机器运行: ' + machineUptime + ' / 开机: ' + bootTime + '</div>'
                     + '<div class="probe-last-seen">Last Seen: ' + escapeHTML(lastSeen) + '</div>'
                     + '</div>';
             }).join('');
@@ -614,7 +752,7 @@
                 }).join('');
                 return '<div class="network-card">'
                     + '<div class="network-head">'
-                    + '<div>'
+                    + '<div class="network-node-meta">'
                     + '<div class="network-title">' + escapeHTML(name) + '</div>'
                     + '<div class="network-meta">序号: ' + (nodeNo > 0 ? nodeNo : '-') + '</div>'
                     + vendorLine
