@@ -2738,6 +2738,56 @@ func TestProbeLocalProxyLinkCFIPOptimizeShowsBestIPWithoutMutatingResolveCache(t
 	}
 }
 
+func TestRunProbeLocalProxyLinkCFIPProbeMeasuresPingPongAfterConnect(t *testing.T) {
+	originalOpen := probeLocalProxyLinkCFOpenRelayConn
+	originalPingPong := probeLocalProxyLinkCFPingPongProbe
+	defer func() {
+		probeLocalProxyLinkCFOpenRelayConn = originalOpen
+		probeLocalProxyLinkCFPingPongProbe = originalPingPong
+	}()
+
+	endpoint := probeLocalTUNChainEndpoint{
+		ChainID:     "chain-origin",
+		EntryHost:   "api_copilot_example.com",
+		EntryPort:   443,
+		ChainSecret: "secret-origin",
+	}
+	var opened bool
+	probeLocalProxyLinkCFOpenRelayConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+		opened = true
+		if chainID != "chain-origin" || secret != "secret-origin" || relayHost != "api_copilot_example.com" || relayPort != 443 {
+			t.Fatalf("unexpected relay endpoint: chain=%s secret=%s host=%s port=%d", chainID, secret, relayHost, relayPort)
+		}
+		if layer != "websocket" || bridgeRole != probeChainBridgeRoleToNext {
+			t.Fatalf("unexpected protocol/role: layer=%s role=%s", layer, bridgeRole)
+		}
+		if relayDialHost != "203.0.113.12" || relayHostHeader != "api_copilot_example.com" {
+			t.Fatalf("unexpected dial host/header: dial=%s header=%s", relayDialHost, relayHostHeader)
+		}
+		if openTimeout != probeLocalProxyLinkCFOptimizeTimeout || cacheOnSuccess {
+			t.Fatalf("unexpected timeout/cache: timeout=%s cache=%v", openTimeout, cacheOnSuccess)
+		}
+		time.Sleep(80 * time.Millisecond)
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}
+	probeLocalProxyLinkCFPingPongProbe = func(conn net.Conn) (time.Duration, error) {
+		if !opened {
+			t.Fatal("ping-pong probe ran before relay connection opened")
+		}
+		return 17 * time.Millisecond, nil
+	}
+
+	latency, err := runProbeLocalProxyLinkCFIPProbe(endpoint, "203.0.113.12", "websocket")
+	if err != nil {
+		t.Fatalf("cf ip probe failed: %v", err)
+	}
+	if latency != 17*time.Millisecond {
+		t.Fatalf("latency=%s, want ping-pong latency only", latency)
+	}
+}
+
 func TestProbeLocalProxyLinkCFIPOptimizeUsesWebSocketOnly(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

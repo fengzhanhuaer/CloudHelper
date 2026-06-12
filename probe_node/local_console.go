@@ -281,6 +281,8 @@ var (
 	probeLocalProxyLinkOpenRelayConn         = openProbeChainRelayNetConnWithLayerConn
 	probeLocalFetchCloudflareIPv4CIDRs       = defaultProbeLocalFetchCloudflareIPv4CIDRs
 	probeLocalProxyLinkCFIPLookup            = defaultProbeLocalProxyLinkCFIPLookup
+	probeLocalProxyLinkCFOpenRelayConn       = openProbeLocalTUNChainRelayNetConnWithResolvedHost
+	probeLocalProxyLinkCFPingPongProbe       = probeChainRelayMeasurePingPongLatency
 	probeLocalProxyLinkCFIPProbe             = runProbeLocalProxyLinkCFIPProbe
 	probeLocalStartCFIPOptimizeTask          = func(fn func()) { go fn() }
 	probeLocalRunUpgrade                     = runProbeUpgrade
@@ -4944,8 +4946,7 @@ func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip str
 		return 0, fmt.Errorf("invalid cf probe protocol: %s", protocol)
 	}
 	log.Printf("probe local cf optimize probe start: chain=%s entry=%s:%d candidate_ip=%s protocol=%s timeout=%s", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, probeLocalProxyLinkCFOptimizeTimeout)
-	startedAt := time.Now()
-	conn, err := openProbeLocalTUNChainRelayNetConnWithResolvedHost(
+	conn, err := probeLocalProxyLinkCFOpenRelayConn(
 		endpoint.ChainID,
 		endpoint.ChainSecret,
 		endpoint.EntryHost,
@@ -4957,13 +4958,17 @@ func runProbeLocalProxyLinkCFIPProbe(endpoint probeLocalTUNChainEndpoint, ip str
 		probeLocalProxyLinkCFOptimizeTimeout,
 		false,
 	)
-	latency := time.Since(startedAt)
 	if err != nil {
-		log.Printf("probe local cf optimize probe failed: chain=%s entry=%s:%d candidate_ip=%s protocol=%s latency_ms=%d err=%v", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, probeDurationMilliseconds(latency), err)
-		return latency, err
+		log.Printf("probe local cf optimize probe failed: chain=%s entry=%s:%d candidate_ip=%s protocol=%s err=%v", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, err)
+		return 0, err
 	}
-	_ = conn.Close()
-	log.Printf("probe local cf optimize probe connected: chain=%s entry=%s:%d candidate_ip=%s protocol=%s latency_ms=%d", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, probeDurationMilliseconds(latency))
+	defer conn.Close()
+	latency, err := probeLocalProxyLinkCFPingPongProbe(conn)
+	if err != nil {
+		log.Printf("probe local cf optimize ping-pong failed: chain=%s entry=%s:%d candidate_ip=%s protocol=%s err=%v", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, err)
+		return 0, err
+	}
+	log.Printf("probe local cf optimize probe connected: chain=%s entry=%s:%d candidate_ip=%s protocol=%s ping_pong_latency_ms=%d", endpoint.ChainID, endpoint.EntryHost, endpoint.EntryPort, cleanIP, cleanProtocol, probeDurationMilliseconds(latency))
 	return latency, nil
 }
 
@@ -6210,6 +6215,8 @@ func resetProbeLocalProxyHooksForTest() {
 	probeLocalProxyLinkOpenRelayConn = openProbeChainRelayNetConnWithLayerConn
 	probeLocalFetchCloudflareIPv4CIDRs = defaultProbeLocalFetchCloudflareIPv4CIDRs
 	probeLocalProxyLinkCFIPLookup = defaultProbeLocalProxyLinkCFIPLookup
+	probeLocalProxyLinkCFOpenRelayConn = openProbeLocalTUNChainRelayNetConnWithResolvedHost
+	probeLocalProxyLinkCFPingPongProbe = probeChainRelayMeasurePingPongLatency
 	probeLocalProxyLinkCFIPProbe = runProbeLocalProxyLinkCFIPProbe
 	probeLocalStartCFIPOptimizeTask = func(fn func()) { go fn() }
 	probeLocalRefreshProxyChainCache = refreshProbeProxyChainCacheFromController
