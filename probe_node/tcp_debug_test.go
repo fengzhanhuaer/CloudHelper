@@ -42,3 +42,30 @@ func TestProbeTCPDebugCompletedConnectionKeepsDomain(t *testing.T) {
 		t.Fatalf("bytes_up=%d, want 128", item.BytesUp)
 	}
 }
+
+func TestProbeTCPDebugRouteTargetOverride(t *testing.T) {
+	state := newProbeTCPDebugState()
+	relay := state.beginRelayWithOptions(probeTCPDebugRelayOptions{
+		Scope:       "port_forward",
+		Side:        "local",
+		Target:      "127.0.0.1:3389",
+		RouteTarget: "192.168.50.222:3389",
+		FlowID:      "flow-1",
+		Transport:   "yamux",
+	})
+	if relay == nil {
+		t.Fatal("relay is nil")
+	}
+
+	payload := state.snapshotPayload("node-1", "req-1")
+	if payload.ActiveCount != 1 {
+		t.Fatalf("active_count=%d, want 1", payload.ActiveCount)
+	}
+	item := payload.Active[0]
+	if item.Target != "127.0.0.1:3389" {
+		t.Fatalf("target=%q, want listen endpoint", item.Target)
+	}
+	if item.RouteTarget != "192.168.50.222:3389" {
+		t.Fatalf("route_target=%q, want remote target", item.RouteTarget)
+	}
+}

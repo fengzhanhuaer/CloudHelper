@@ -45,6 +45,7 @@ type probeChainUDPAssociation struct {
 
 	refs           atomic.Int32
 	lastActiveUnix atomic.Int64
+	streamMonitor  atomic.Value
 	closeOnce      sync.Once
 }
 
@@ -260,6 +261,23 @@ func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociat
 	p.items[key] = assoc
 	p.mu.Unlock()
 	return assoc, nil
+}
+
+func (p *probeChainUDPAssociationPool) AttachStreamMonitor(key string, monitor probeChainYamuxStreamMonitor) {
+	if p == nil {
+		return
+	}
+	cleanKey := strings.TrimSpace(key)
+	if cleanKey == "" {
+		return
+	}
+	p.mu.Lock()
+	assoc := p.items[cleanKey]
+	p.mu.Unlock()
+	if assoc == nil {
+		return
+	}
+	assoc.streamMonitor.Store(monitor)
 }
 
 func (p *probeChainUDPAssociationPool) collectIdle() {

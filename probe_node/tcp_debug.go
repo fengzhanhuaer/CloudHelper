@@ -17,40 +17,46 @@ const probeTCPDebugMaxCompleted = 128
 const probeTCPDebugBlockedWriteThreshold = 50 * time.Millisecond
 
 type probeTCPDebugConnectionItemPayload struct {
-	ID                   string `json:"id"`
-	Status               string `json:"status,omitempty"`
-	FlowID               string `json:"flow_id,omitempty"`
-	Side                 string `json:"side,omitempty"`
-	Scope                string `json:"scope,omitempty"`
-	Target               string `json:"target,omitempty"`
-	RouteTarget          string `json:"route_target,omitempty"`
-	Domain               string `json:"domain,omitempty"`
-	DomainSource         string `json:"domain_source,omitempty"`
-	NodeID               string `json:"node_id,omitempty"`
-	Group                string `json:"group,omitempty"`
-	Direct               bool   `json:"direct"`
-	Transport            string `json:"transport,omitempty"`
-	OpenedAt             string `json:"opened_at,omitempty"`
-	ClosedAt             string `json:"closed_at,omitempty"`
-	LastActive           string `json:"last_active,omitempty"`
-	LastWriteBlockedAt   string `json:"last_write_blocked_at,omitempty"`
-	LastCongestionSide   string `json:"last_congestion_side,omitempty"`
-	CloseReason          string `json:"close_reason,omitempty"`
-	AgeMS                int64  `json:"age_ms"`
-	DurationMS           int64  `json:"duration_ms,omitempty"`
-	IdleMS               int64  `json:"idle_ms"`
-	BytesUp              int64  `json:"bytes_up,omitempty"`
-	BytesDown            int64  `json:"bytes_down,omitempty"`
-	WritesUp             int64  `json:"writes_up,omitempty"`
-	WritesDown           int64  `json:"writes_down,omitempty"`
-	BlockedWritesUp      int64  `json:"blocked_writes_up,omitempty"`
-	BlockedWritesDown    int64  `json:"blocked_writes_down,omitempty"`
-	WriteBlockMSUp       int64  `json:"write_block_ms_up,omitempty"`
-	WriteBlockMSDown     int64  `json:"write_block_ms_down,omitempty"`
-	MaxWriteBlockMSUp    int64  `json:"max_write_block_ms_up,omitempty"`
-	MaxWriteBlockMSDown  int64  `json:"max_write_block_ms_down,omitempty"`
-	LastWriteBlockMSUp   int64  `json:"last_write_block_ms_up,omitempty"`
-	LastWriteBlockMSDown int64  `json:"last_write_block_ms_down,omitempty"`
+	ID                    string `json:"id"`
+	Status                string `json:"status,omitempty"`
+	FlowID                string `json:"flow_id,omitempty"`
+	Side                  string `json:"side,omitempty"`
+	Scope                 string `json:"scope,omitempty"`
+	Target                string `json:"target,omitempty"`
+	RouteTarget           string `json:"route_target,omitempty"`
+	Domain                string `json:"domain,omitempty"`
+	DomainSource          string `json:"domain_source,omitempty"`
+	NodeID                string `json:"node_id,omitempty"`
+	Group                 string `json:"group,omitempty"`
+	Direct                bool   `json:"direct"`
+	Transport             string `json:"transport,omitempty"`
+	SessionID             string `json:"session_id,omitempty"`
+	SessionRole           string `json:"session_role,omitempty"`
+	SessionStreamsOpen    int    `json:"session_streams_open,omitempty"`
+	SessionStreamsAfter   int    `json:"session_streams_after,omitempty"`
+	SessionStreamsCurrent int    `json:"session_streams_current,omitempty"`
+	OpenedAt              string `json:"opened_at,omitempty"`
+	ClosedAt              string `json:"closed_at,omitempty"`
+	LastActive            string `json:"last_active,omitempty"`
+	LastWriteBlockedAt    string `json:"last_write_blocked_at,omitempty"`
+	LastCongestionSide    string `json:"last_congestion_side,omitempty"`
+	CloseReason           string `json:"close_reason,omitempty"`
+	OpenLatencyMS         int64  `json:"open_latency_ms,omitempty"`
+	AgeMS                 int64  `json:"age_ms"`
+	DurationMS            int64  `json:"duration_ms,omitempty"`
+	IdleMS                int64  `json:"idle_ms"`
+	BytesUp               int64  `json:"bytes_up,omitempty"`
+	BytesDown             int64  `json:"bytes_down,omitempty"`
+	WritesUp              int64  `json:"writes_up,omitempty"`
+	WritesDown            int64  `json:"writes_down,omitempty"`
+	BlockedWritesUp       int64  `json:"blocked_writes_up,omitempty"`
+	BlockedWritesDown     int64  `json:"blocked_writes_down,omitempty"`
+	WriteBlockMSUp        int64  `json:"write_block_ms_up,omitempty"`
+	WriteBlockMSDown      int64  `json:"write_block_ms_down,omitempty"`
+	MaxWriteBlockMSUp     int64  `json:"max_write_block_ms_up,omitempty"`
+	MaxWriteBlockMSDown   int64  `json:"max_write_block_ms_down,omitempty"`
+	LastWriteBlockMSUp    int64  `json:"last_write_block_ms_up,omitempty"`
+	LastWriteBlockMSDown  int64  `json:"last_write_block_ms_down,omitempty"`
 }
 
 type probeTCPDebugFailureItemPayload struct {
@@ -107,19 +113,25 @@ type probeTCPDebugFailureEvent struct {
 }
 
 type probeTCPDebugRelay struct {
-	id          string
-	flowID      string
-	side        string
-	scope       string
-	target      string
-	routeTarget string
-	nodeID      string
-	group       string
-	direct      bool
-	transport   string
-	openedAt    time.Time
-	state       *probeTCPDebugState
+	id                  string
+	flowID              string
+	side                string
+	scope               string
+	target              string
+	routeTarget         string
+	nodeID              string
+	group               string
+	direct              bool
+	transport           string
+	sessionID           string
+	sessionRole         string
+	session             interface{ NumStreams() int }
+	sessionStreamsOpen  int
+	sessionStreamsAfter int
+	openedAt            time.Time
+	state               *probeTCPDebugState
 
+	openLatencyMS      atomic.Int64
 	lastActiveUnix     atomic.Int64
 	lastBlockedUnix    atomic.Int64
 	bytesUp            atomic.Int64
@@ -139,12 +151,18 @@ type probeTCPDebugRelay struct {
 }
 
 type probeTCPDebugRelayOptions struct {
-	Scope     string
-	FlowID    string
-	Side      string
-	Target    string
-	Route     probeLocalTunnelRouteDecision
-	Transport string
+	Scope               string
+	FlowID              string
+	Side                string
+	Target              string
+	RouteTarget         string
+	Route               probeLocalTunnelRouteDecision
+	Transport           string
+	SessionID           string
+	SessionRole         string
+	Session             interface{ NumStreams() int }
+	SessionStreamsOpen  int
+	SessionStreamsAfter int
 }
 
 type probeTCPDebugState struct {
@@ -228,19 +246,28 @@ func (s *probeTCPDebugState) beginRelayWithOptions(opts probeTCPDebugRelayOption
 	} else if strings.TrimSpace(opts.Route.Group) != "" || strings.TrimSpace(opts.Route.TunnelNodeID) != "" {
 		transport = "tunnel"
 	}
+	routeTarget := strings.TrimSpace(opts.RouteTarget)
+	if routeTarget == "" {
+		routeTarget = strings.TrimSpace(opts.Route.TargetAddr)
+	}
 	relay := &probeTCPDebugRelay{
-		id:          id,
-		flowID:      strings.TrimSpace(opts.FlowID),
-		side:        strings.TrimSpace(opts.Side),
-		scope:       firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Scope), "unknown"),
-		target:      strings.TrimSpace(opts.Target),
-		routeTarget: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Route.TargetAddr), strings.TrimSpace(opts.Target)),
-		nodeID:      strings.TrimSpace(opts.Route.TunnelNodeID),
-		group:       strings.TrimSpace(opts.Route.Group),
-		direct:      opts.Route.Direct,
-		transport:   transport,
-		openedAt:    now,
-		state:       s,
+		id:                  id,
+		flowID:              strings.TrimSpace(opts.FlowID),
+		side:                strings.TrimSpace(opts.Side),
+		scope:               firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Scope), "unknown"),
+		target:              strings.TrimSpace(opts.Target),
+		routeTarget:         firstNonEmptyProbeTCPDebugString(routeTarget, strings.TrimSpace(opts.Target)),
+		nodeID:              strings.TrimSpace(opts.Route.TunnelNodeID),
+		group:               strings.TrimSpace(opts.Route.Group),
+		direct:              opts.Route.Direct,
+		transport:           transport,
+		sessionID:           strings.TrimSpace(opts.SessionID),
+		sessionRole:         strings.TrimSpace(opts.SessionRole),
+		session:             opts.Session,
+		sessionStreamsOpen:  opts.SessionStreamsOpen,
+		sessionStreamsAfter: opts.SessionStreamsAfter,
+		openedAt:            now,
+		state:               s,
 	}
 	relay.lastActiveUnix.Store(now.Unix())
 	relay.activeSides.Store(2)
@@ -251,6 +278,13 @@ func (s *probeTCPDebugState) beginRelayWithOptions(opts probeTCPDebugRelayOption
 	s.active[id] = relay
 	s.mu.Unlock()
 	return relay
+}
+
+func (r *probeTCPDebugRelay) setOpenLatency(elapsed time.Duration) {
+	if r == nil || elapsed <= 0 {
+		return
+	}
+	r.openLatencyMS.Store(probeDurationMilliseconds(elapsed))
 }
 
 func (r *probeTCPDebugRelay) touch(direction string, n int) {
@@ -356,7 +390,11 @@ func (s *probeTCPDebugState) recordFailureWithOptions(kind string, opts probeTCP
 	} else if strings.TrimSpace(opts.Route.Group) != "" || strings.TrimSpace(opts.Route.TunnelNodeID) != "" {
 		transport = "tunnel"
 	}
-	domain, domainSource := resolveProbeTCPDebugDomain(firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Target), strings.TrimSpace(opts.Route.TargetAddr)), firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Route.TargetAddr), strings.TrimSpace(opts.Target)))
+	routeTarget := strings.TrimSpace(opts.RouteTarget)
+	if routeTarget == "" {
+		routeTarget = strings.TrimSpace(opts.Route.TargetAddr)
+	}
+	domain, domainSource := resolveProbeTCPDebugDomain(firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Target), routeTarget), firstNonEmptyProbeTCPDebugString(routeTarget, strings.TrimSpace(opts.Target)))
 	event := probeTCPDebugFailureEvent{
 		Kind:         strings.TrimSpace(kind),
 		Reason:       classifyProbeTCPDebugError(kind, err),
@@ -364,7 +402,7 @@ func (s *probeTCPDebugState) recordFailureWithOptions(kind string, opts probeTCP
 		FlowID:       strings.TrimSpace(opts.FlowID),
 		Side:         strings.TrimSpace(opts.Side),
 		Target:       strings.TrimSpace(opts.Target),
-		RouteTarget:  firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Route.TargetAddr), strings.TrimSpace(opts.Target)),
+		RouteTarget:  firstNonEmptyProbeTCPDebugString(routeTarget, strings.TrimSpace(opts.Target)),
 		Domain:       domain,
 		DomainSource: domainSource,
 		NodeID:       strings.TrimSpace(opts.Route.TunnelNodeID),
@@ -494,7 +532,12 @@ func buildProbeTCPDebugConnectionPayload(relay *probeTCPDebugRelay, now time.Tim
 		Group:                strings.TrimSpace(relay.group),
 		Direct:               relay.direct,
 		Transport:            firstNonEmptyProbeTCPDebugString(strings.TrimSpace(relay.transport), "tcp"),
+		SessionID:            strings.TrimSpace(relay.sessionID),
+		SessionRole:          strings.TrimSpace(relay.sessionRole),
+		SessionStreamsOpen:   relay.sessionStreamsOpen,
+		SessionStreamsAfter:  relay.sessionStreamsAfter,
 		OpenedAt:             relay.openedAt.UTC().Format(time.RFC3339),
+		OpenLatencyMS:        relay.openLatencyMS.Load(),
 		AgeMS:                now.Sub(relay.openedAt).Milliseconds(),
 		BytesUp:              relay.bytesUp.Load(),
 		BytesDown:            relay.bytesDown.Load(),
@@ -519,6 +562,9 @@ func buildProbeTCPDebugConnectionPayload(relay *probeTCPDebugRelay, now time.Tim
 	}
 	if side, ok := relay.lastCongestionSide.Load().(string); ok {
 		item.LastCongestionSide = strings.TrimSpace(side)
+	}
+	if relay.session != nil {
+		item.SessionStreamsCurrent = relay.session.NumStreams()
 	}
 	return item
 }

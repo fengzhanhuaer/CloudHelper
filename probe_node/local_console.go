@@ -4061,6 +4061,14 @@ func probeLocalProxySubstreamsHandler(w http.ResponseWriter, r *http.Request) {
 	} else if group != "" {
 		payload["remote_error"] = "selected group runtime is unavailable"
 	}
+	if snapshot, ok := currentProbeLocalProxyViewGroupRuntimeSnapshot(group); ok {
+		if snapshot.SelectedChainLatencyMS != nil {
+			payload["link_latency_ms"] = *snapshot.SelectedChainLatencyMS
+		}
+		payload["link_latency_status"] = strings.TrimSpace(snapshot.SelectedChainLatencyStatus)
+		payload["link_latency_updated_at"] = strings.TrimSpace(snapshot.SelectedChainLatencyUpdatedAt)
+		payload["link_latency_error"] = strings.TrimSpace(snapshot.SelectedChainLatencyError)
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 

@@ -11,27 +11,33 @@ import (
 )
 
 type probeUDPAssociationDebugItemPayload struct {
-	Key              string `json:"key"`
-	AssocKeyV2       string `json:"assoc_key_v2,omitempty"`
-	FlowID           string `json:"flow_id,omitempty"`
-	SourceKey        string `json:"source_key,omitempty"`
-	SourceRefs       int64  `json:"source_refs,omitempty"`
-	Target           string `json:"target,omitempty"`
-	RouteTarget      string `json:"route_target,omitempty"`
-	RouteFingerprint string `json:"route_fingerprint,omitempty"`
-	NodeID           string `json:"node_id,omitempty"`
-	Group            string `json:"group,omitempty"`
-	NATMode          string `json:"nat_mode,omitempty"`
-	TTLProfile       string `json:"ttl_profile,omitempty"`
-	IdleTimeoutMS    int64  `json:"idle_timeout_ms,omitempty"`
-	GCIntervalMS     int64  `json:"gc_interval_ms,omitempty"`
-	CreatedAtUnixMS  int64  `json:"created_at_unix_ms,omitempty"`
-	Direct           bool   `json:"direct"`
-	Transport        string `json:"transport,omitempty"`
-	Refs             int32  `json:"refs,omitempty"`
-	Active           bool   `json:"active"`
-	LastActive       string `json:"last_active,omitempty"`
-	IdleMS           int64  `json:"idle_ms"`
+	Key                   string `json:"key"`
+	AssocKeyV2            string `json:"assoc_key_v2,omitempty"`
+	FlowID                string `json:"flow_id,omitempty"`
+	SourceKey             string `json:"source_key,omitempty"`
+	SourceRefs            int64  `json:"source_refs,omitempty"`
+	Target                string `json:"target,omitempty"`
+	RouteTarget           string `json:"route_target,omitempty"`
+	RouteFingerprint      string `json:"route_fingerprint,omitempty"`
+	NodeID                string `json:"node_id,omitempty"`
+	Group                 string `json:"group,omitempty"`
+	NATMode               string `json:"nat_mode,omitempty"`
+	TTLProfile            string `json:"ttl_profile,omitempty"`
+	IdleTimeoutMS         int64  `json:"idle_timeout_ms,omitempty"`
+	GCIntervalMS          int64  `json:"gc_interval_ms,omitempty"`
+	CreatedAtUnixMS       int64  `json:"created_at_unix_ms,omitempty"`
+	Direct                bool   `json:"direct"`
+	Transport             string `json:"transport,omitempty"`
+	SessionID             string `json:"session_id,omitempty"`
+	SessionRole           string `json:"session_role,omitempty"`
+	SessionStreamsOpen    int    `json:"session_streams_open,omitempty"`
+	SessionStreamsAfter   int    `json:"session_streams_after,omitempty"`
+	SessionStreamsCurrent int    `json:"session_streams_current,omitempty"`
+	OpenLatencyMS         int64  `json:"open_latency_ms,omitempty"`
+	Refs                  int32  `json:"refs,omitempty"`
+	Active                bool   `json:"active"`
+	LastActive            string `json:"last_active,omitempty"`
+	IdleMS                int64  `json:"idle_ms"`
 }
 
 type probeUDPAssociationsResultPayload struct {
@@ -99,6 +105,18 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 			Transport:        "udp",
 			Refs:             assoc.refs.Load(),
 			Active:           assoc.conn != nil,
+		}
+		if rawMonitor := assoc.streamMonitor.Load(); rawMonitor != nil {
+			if monitor, ok := rawMonitor.(probeChainYamuxStreamMonitor); ok {
+				item.SessionID = strings.TrimSpace(monitor.SessionID)
+				item.SessionRole = strings.TrimSpace(monitor.SessionRole)
+				item.SessionStreamsOpen = monitor.SessionStreamsOpen
+				item.SessionStreamsAfter = monitor.SessionStreamsAfter
+				item.OpenLatencyMS = probeDurationMilliseconds(monitor.OpenLatency)
+				if monitor.Session != nil {
+					item.SessionStreamsCurrent = monitor.Session.NumStreams()
+				}
+			}
 		}
 		if lastActive := assoc.lastActiveUnix.Load(); lastActive > 0 {
 			lastActiveAt := time.Unix(lastActive, 0).UTC()

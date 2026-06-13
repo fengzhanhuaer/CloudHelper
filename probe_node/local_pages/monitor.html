@@ -295,7 +295,20 @@
       <div id="monitor-panel-connections" class="monitor-panel">
         <div class="link-monitor-head">
           <div class="hint" id="connection-monitor-updated">VNet 连接：--</div>
-          <button id="connectionMonitorRefreshBtn" type="button" class="secondary">刷新 VNet 连接</button>
+          <div class="actions">
+            <label class="hint" for="connectionMonitorGroupSelect">组</label>
+            <select id="connectionMonitorGroupSelect">
+              <option value="all">全部组</option>
+            </select>
+            <label class="hint" for="connectionMonitorTypeSelect">类型</label>
+            <select id="connectionMonitorTypeSelect">
+              <option value="all">全部</option>
+              <option value="tcp-active">活跃 TCP</option>
+              <option value="tcp-completed">最近断开 TCP</option>
+              <option value="udp">UDP Bridge</option>
+            </select>
+            <button id="connectionMonitorRefreshBtn" type="button" class="secondary">刷新 VNet 连接</button>
+          </div>
         </div>
         <div id="connection-monitor-list" class="connection-monitor-list">
           <div class="hint">暂无 VNet TCP/UDP 连接数据</div>
@@ -333,6 +346,8 @@
     let remoteTCPDebugCache = null;
     let remoteSpeedDebugCache = null;
     let substreamMonitorCache = null;
+    let connectionMonitorGroup = 'all';
+    let connectionMonitorType = 'all';
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -613,34 +628,112 @@
       const tcp = data.tcp || {};
       const udp = data.udp || {};
       const udpBridges = udp.bridges || {};
-      const tcpItems = Array.isArray(tcp.items) ? tcp.items : [];
-      const tcpCompleted = Array.isArray(tcp.completed_items) ? tcp.completed_items : [];
-      const udpItems = Array.isArray(udpBridges.items) ? udpBridges.items : [];
-      updatedEl.textContent = 'VNet 连接：活跃 TCP ' + tcpItems.length + ' / 最近断开 ' + tcpCompleted.length + ' / UDP ' + udpItems.length + ' / 刷新 ' + (data.fetched_at || '--');
-      if (tcpItems.length === 0 && tcpCompleted.length === 0 && udpItems.length === 0) {
-        listEl.innerHTML = '<div class="hint">暂无 VNet TCP/UDP 连接记录</div>';
+      const allTCPItems = Array.isArray(tcp.items) ? tcp.items : [];
+      const allTCPCompleted = Array.isArray(tcp.completed_items) ? tcp.completed_items : [];
+      const allUDPItems = Array.isArray(udpBridges.items) ? udpBridges.items : [];
+      const groupOptions = collectConnectionMonitorGroups(allTCPItems, allTCPCompleted, allUDPItems);
+      connectionMonitorGroup = normalizeConnectionMonitorGroup(connectionMonitorGroup, groupOptions);
+      connectionMonitorType = normalizeConnectionMonitorType(connectionMonitorType);
+      syncConnectionMonitorFilters(groupOptions);
+      const tcpItems = filterConnectionItemsByGroup(allTCPItems, connectionMonitorGroup);
+      const tcpCompleted = filterConnectionItemsByGroup(allTCPCompleted, connectionMonitorGroup);
+      const udpItems = filterConnectionItemsByGroup(allUDPItems, connectionMonitorGroup);
+      updatedEl.textContent = 'VNet 连接：组 ' + formatConnectionMonitorGroup(connectionMonitorGroup) + ' / 类型 ' + formatConnectionMonitorType(connectionMonitorType) + ' / 活跃 TCP ' + tcpItems.length + ' / 最近断开 ' + tcpCompleted.length + ' / UDP ' + udpItems.length + ' / 刷新 ' + (data.fetched_at || '--');
+      if (!hasConnectionMonitorItems(connectionMonitorType, tcpItems, tcpCompleted, udpItems)) {
+        listEl.innerHTML = '<div class="hint">暂无 ' + escapeHTML(formatConnectionMonitorGroup(connectionMonitorGroup)) + ' / ' + escapeHTML(formatConnectionMonitorType(connectionMonitorType)) + ' 连接记录</div>';
         return;
       }
       const html = [];
-      html.push('<div class="connection-section-title">活跃 TCP</div>');
-      if (tcpItems.length === 0) {
-        html.push('<div class="hint">暂无活跃 TCP 连接</div>');
-      } else {
-        tcpItems.forEach((item) => html.push(renderTCPConnectionCard(item)));
+      if (connectionMonitorType === 'all' || connectionMonitorType === 'tcp-active') {
+        html.push('<div class="connection-section-title">活跃 TCP</div>');
+        if (tcpItems.length === 0) {
+          html.push('<div class="hint">暂无活跃 TCP 连接</div>');
+        } else {
+          tcpItems.forEach((item) => html.push(renderTCPConnectionCard(item)));
+        }
       }
-      html.push('<div class="connection-section-title">最近断开 TCP</div>');
-      if (tcpCompleted.length === 0) {
-        html.push('<div class="hint">暂无最近断开 TCP 连接</div>');
-      } else {
-        tcpCompleted.forEach((item) => html.push(renderTCPConnectionCard(item)));
+      if (connectionMonitorType === 'all' || connectionMonitorType === 'tcp-completed') {
+        html.push('<div class="connection-section-title">最近断开 TCP</div>');
+        if (tcpCompleted.length === 0) {
+          html.push('<div class="hint">暂无最近断开 TCP 连接</div>');
+        } else {
+          tcpCompleted.forEach((item) => html.push(renderTCPConnectionCard(item)));
+        }
       }
-      html.push('<div class="connection-section-title">UDP Bridge</div>');
-      if (udpItems.length === 0) {
-        html.push('<div class="hint">暂无 UDP bridge 连接</div>');
-      } else {
-        udpItems.forEach((item) => html.push(renderUDPConnectionCard(item)));
+      if (connectionMonitorType === 'all' || connectionMonitorType === 'udp') {
+        html.push('<div class="connection-section-title">UDP Bridge</div>');
+        if (udpItems.length === 0) {
+          html.push('<div class="hint">暂无 UDP bridge 连接</div>');
+        } else {
+          udpItems.forEach((item) => html.push(renderUDPConnectionCard(item)));
+        }
       }
       listEl.innerHTML = html.join('');
+    }
+
+    function connectionItemGroup(item) {
+      return String(item && (item.group || (item.direct ? 'direct' : '')) || '').trim() || '-';
+    }
+
+    function collectConnectionMonitorGroups(...lists) {
+      const groups = new Set();
+      lists.forEach((items) => {
+        (Array.isArray(items) ? items : []).forEach((item) => groups.add(connectionItemGroup(item)));
+      });
+      return Array.from(groups).sort((a, b) => a.localeCompare(b));
+    }
+
+    function normalizeConnectionMonitorGroup(value, groups) {
+      const text = String(value || '').trim();
+      if (text === 'all') return 'all';
+      return Array.isArray(groups) && groups.includes(text) ? text : 'all';
+    }
+
+    function formatConnectionMonitorGroup(value) {
+      const text = String(value || '').trim();
+      return text === 'all' || text === '' ? '全部组' : text;
+    }
+
+    function normalizeConnectionMonitorType(value) {
+      const text = String(value || '').trim();
+      if (text === 'tcp-active' || text === 'tcp-completed' || text === 'udp') return text;
+      return 'all';
+    }
+
+    function formatConnectionMonitorType(value) {
+      const text = normalizeConnectionMonitorType(value);
+      if (text === 'tcp-active') return '活跃 TCP';
+      if (text === 'tcp-completed') return '最近断开 TCP';
+      if (text === 'udp') return 'UDP Bridge';
+      return '全部';
+    }
+
+    function filterConnectionItemsByGroup(items, group) {
+      const selectedGroup = String(group || '').trim();
+      if (selectedGroup === '' || selectedGroup === 'all') return items;
+      return items.filter((item) => connectionItemGroup(item) === selectedGroup);
+    }
+
+    function hasConnectionMonitorItems(type, tcpItems, tcpCompleted, udpItems) {
+      const selectedType = normalizeConnectionMonitorType(type);
+      if (selectedType === 'tcp-active') return tcpItems.length > 0;
+      if (selectedType === 'tcp-completed') return tcpCompleted.length > 0;
+      if (selectedType === 'udp') return udpItems.length > 0;
+      return tcpItems.length > 0 || tcpCompleted.length > 0 || udpItems.length > 0;
+    }
+
+    function syncConnectionMonitorFilters(groups) {
+      const groupSelect = document.getElementById('connectionMonitorGroupSelect');
+      const typeSelect = document.getElementById('connectionMonitorTypeSelect');
+      if (groupSelect) {
+        const currentValue = groupSelect.value;
+        const options = ['<option value="all">全部组</option>'].concat((Array.isArray(groups) ? groups : []).map((group) => '<option value="' + escapeHTML(group) + '">' + escapeHTML(group) + '</option>'));
+        groupSelect.innerHTML = options.join('');
+        groupSelect.value = normalizeConnectionMonitorGroup(connectionMonitorGroup || currentValue, groups);
+      }
+      if (typeSelect) {
+        typeSelect.value = normalizeConnectionMonitorType(connectionMonitorType);
+      }
     }
 
     function renderTCPConnectionCard(item) {
@@ -684,6 +777,9 @@
       const target = String(item && item.target || '-').trim();
       const routeTarget = String(item && item.route_target || target).trim();
       const group = String(item && item.group || (item && item.direct ? 'direct' : '-')).trim();
+      const sessionLine = renderSubstreamSessionLine(item);
+      const openLatency = Number(item && item.open_latency_ms);
+      const openLatencyText = Number.isFinite(openLatency) && openLatency > 0 ? Math.trunc(openLatency) + 'ms' : '-';
       return `
         <div class="connection-monitor-card udp">
           <div class="connection-monitor-title">
@@ -692,12 +788,14 @@
           </div>
           <div class="connection-monitor-meta">
             ${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>
-            group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ direct=${escapeHTML(item && item.direct ? 'true' : 'false')}
+            group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ direct=${escapeHTML(item && item.direct ? 'true' : 'false')}<br>
+            ${escapeHTML(sessionLine)}
           </div>
           <div class="connection-monitor-grid">
             ${renderConnectionMetric('上行', formatBytes(item && item.bytes_up))}
             ${renderConnectionMetric('下行', formatBytes(item && item.bytes_down))}
             ${renderConnectionMetric('空闲/年龄', formatDurationMS(item && item.idle_ms) + ' / ' + formatDurationMS(item && item.age_ms))}
+            ${renderConnectionMetric('打开耗时', openLatencyText)}
             ${renderConnectionMetric('TTL', formatDurationMS(item && item.timeout_ms))}
           </div>
         </div>
@@ -708,40 +806,49 @@
       return '<div class="connection-monitor-box"><div class="box-title">' + escapeHTML(label) + '</div><div class="box-value">' + escapeHTML(value || '-') + '</div></div>';
     }
 
-    function collectSubstreamRows(payload, sideLabel) {
+    function collectSubstreamRows(payload, sourceLabel) {
       if (!payload || typeof payload !== 'object') return [];
       const rows = [];
       const active = Array.isArray(payload.active) ? payload.active : [];
       const completed = Array.isArray(payload.completed) ? payload.completed : [];
-      active.forEach((item) => rows.push({ side: sideLabel, item }));
-      completed.slice(0, 20).forEach((item) => rows.push({ side: sideLabel, item }));
+      active.forEach((item) => rows.push({ source: sourceLabel, item }));
+      completed.slice(0, 20).forEach((item) => rows.push({ source: sourceLabel, item }));
       return rows;
     }
 
     function collectSubstreamPairs(local, remote) {
       const pairs = [];
       const byKey = new Map();
-      const add = (side, item) => {
+      const add = (source, item) => {
         if (!item || typeof item !== 'object') return;
+        const role = resolveSubstreamEndpointRole(item, source);
         const flowID = String(item.flow_id || '').trim();
         const id = String(item.id || '').trim();
-        const baseKey = flowID ? 'flow:' + flowID : side + ':' + id;
+        const baseKey = flowID ? 'flow:' + flowID : role + ':' + id;
         let key = baseKey;
         let pair = byKey.get(key);
-        if (pair && pair[side]) {
+        if (pair && pair[role]) {
           key = baseKey + ':' + id + ':' + pairs.length;
           pair = null;
         }
         if (!pair) {
-          pair = { key, local: null, remote: null };
+          pair = { key, entry: null, exit: null };
           byKey.set(key, pair);
           pairs.push(pair);
         }
-        pair[side] = item;
+        pair[role] = item;
       };
       collectSubstreamRows(local, '本地').forEach(({ item }) => add('local', item));
       collectSubstreamRows(remote, '对端').forEach(({ item }) => add('remote', item));
       return pairs;
+    }
+
+    function resolveSubstreamEndpointRole(item, source) {
+      const scope = String(item && item.scope || '').trim();
+      const side = String(item && item.side || '').trim();
+      if (scope === 'chain_exit' || side === 'remote') return 'exit';
+      if (scope === 'port_forward' || scope === 'tun' || scope === 'explicit' || side === 'local') return 'entry';
+      return source === 'remote' ? 'exit' : 'entry';
     }
 
     function renderSubstreamMonitor() {
@@ -753,7 +860,9 @@
       const remote = data.remote || null;
       const rows = collectSubstreamPairs(local, remote);
       const remoteError = String(data.remote_error || '').trim();
-      updatedEl.textContent = '子流监视：本地 ' + (local.fetched_at || '--') + ' / 对端 ' + (remote && remote.fetched_at ? remote.fetched_at : (remoteError ? '不可用' : '--')) + ' / group ' + (data.group || '-');
+      const linkLatency = Number(data.link_latency_ms);
+      const linkLatencyText = Number.isFinite(linkLatency) && linkLatency > 0 ? Math.trunc(linkLatency) + 'ms' : (String(data.link_latency_status || '').trim() || '-');
+      updatedEl.textContent = '子流监视：本机采集 ' + (local.fetched_at || '--') + ' / 远端采集 ' + (remote && remote.fetched_at ? remote.fetched_at : (remoteError ? '不可用' : '--')) + ' / group ' + (data.group || '-') + ' / 链路RTT ' + linkLatencyText;
       if (rows.length === 0) {
         listEl.innerHTML = '<div class="hint">' + escapeHTML(remoteError ? '暂无子流数据；对端状态：' + remoteError : '暂无 TUN / 端口转发子流数据') + '</div>';
         return;
@@ -764,11 +873,11 @@
           <thead>
             <tr>
               <th>Flow</th>
-              <th>本地入口</th>
-              <th>对端出口</th>
+              <th>入口侧</th>
+              <th>出口侧</th>
               <th>目标</th>
-              <th>流量</th>
-              <th>缓冲/阻塞</th>
+              <th>两端收发</th>
+              <th>缓冲/堆积</th>
               <th>异常</th>
               <th>时间</th>
             </tr>
@@ -780,20 +889,20 @@
     }
 
     function renderSubstreamPairRow(pair) {
-      const local = pair && pair.local;
-      const remote = pair && pair.remote;
-      const primary = local || remote || {};
+      const entry = pair && pair.entry;
+      const exit = pair && pair.exit;
+      const primary = entry || exit || {};
       const flowID = String(primary && (primary.flow_id || primary.id) || '-').trim();
       return `
         <tr>
-          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">本地 ${escapeHTML(local && local.id || '-')}<br>对端 ${escapeHTML(remote && remote.id || '-')}</span></td>
-          ${renderSubstreamEndpointCell('本地', local)}
-          ${renderSubstreamEndpointCell('对端', remote)}
-          <td><span class="pre-line">${escapeHTML(renderSubstreamTargetText(local, remote))}</span></td>
-          <td><span class="pre-line">${escapeHTML(renderSubstreamTrafficText(local, remote))}</span></td>
-          <td><span class="pre-line">${escapeHTML(renderSubstreamBufferText(local, remote))}</span></td>
-          <td><span class="pre-line">${escapeHTML(renderSubstreamErrorText(local, remote))}</span></td>
-          <td><span class="pre-line">${escapeHTML(renderSubstreamTimeText(local, remote))}</span></td>
+          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">入口 ${escapeHTML(entry && entry.id || '-')}<br>出口 ${escapeHTML(exit && exit.id || '-')}</span></td>
+          ${renderSubstreamEndpointCell('入口侧', entry)}
+          ${renderSubstreamEndpointCell('出口侧', exit)}
+          <td><span class="pre-line">${escapeHTML(renderSubstreamTargetText(entry, exit))}</span></td>
+          <td><span class="pre-line">${escapeHTML(renderSubstreamTrafficText(entry, exit))}</span></td>
+          <td><span class="pre-line">${escapeHTML(renderSubstreamBufferText(entry, exit))}</span></td>
+          <td><span class="pre-line">${escapeHTML(renderSubstreamErrorText(entry, exit))}</span></td>
+          <td><span class="pre-line">${escapeHTML(renderSubstreamTimeText(entry, exit))}</span></td>
         </tr>
       `;
     }
@@ -810,24 +919,24 @@
       return '<td><span class="' + statusClass + '">' + escapeHTML(kind) + ' / ' + escapeHTML(status) + '</span><br><span class="hint">' + escapeHTML(item && item.side || '-') + ' ' + escapeHTML(item && item.scope || '') + '<br>group=' + escapeHTML(item && item.group || '-') + ' node=' + escapeHTML(item && item.node_id || '-') + '</span></td>';
     }
 
-    function renderSubstreamTargetText(local, remote) {
-      return renderSubstreamSideText('本地', local, renderSubstreamTargetLine).concat(renderSubstreamSideText('对端', remote, renderSubstreamTargetLine)).join('\n');
+    function renderSubstreamTargetText(entry, exit) {
+      return renderSubstreamSideText('入口侧', entry, renderSubstreamTargetLine).concat(renderSubstreamSideText('出口侧', exit, renderSubstreamTargetLine)).join('\n');
     }
 
-    function renderSubstreamTrafficText(local, remote) {
-      return renderSubstreamSideText('本地', local, (item) => '上行 ' + formatBytes(item && item.bytes_up) + ' / 下行 ' + formatBytes(item && item.bytes_down) + ' / 写 ' + Math.trunc(Number(item && item.writes_up || 0)) + '/' + Math.trunc(Number(item && item.writes_down || 0))).concat(renderSubstreamSideText('对端', remote, (item) => '上行 ' + formatBytes(item && item.bytes_up) + ' / 下行 ' + formatBytes(item && item.bytes_down) + ' / 写 ' + Math.trunc(Number(item && item.writes_up || 0)) + '/' + Math.trunc(Number(item && item.writes_down || 0)))).join('\n');
+    function renderSubstreamTrafficText(entry, exit) {
+      return renderSubstreamSideText('入口侧', entry, renderSubstreamTrafficLine).concat(renderSubstreamSideText('出口侧', exit, renderSubstreamTrafficLine)).join('\n');
     }
 
-    function renderSubstreamBufferText(local, remote) {
-      return renderSubstreamSideText('本地', local, renderSubstreamBufferLine).concat(renderSubstreamSideText('对端', remote, renderSubstreamBufferLine)).join('\n');
+    function renderSubstreamBufferText(entry, exit) {
+      return renderSubstreamSideText('入口侧', entry, renderSubstreamBufferLine).concat(renderSubstreamSideText('出口侧', exit, renderSubstreamBufferLine)).join('\n');
     }
 
-    function renderSubstreamErrorText(local, remote) {
-      return renderSubstreamSideText('本地', local, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-').concat(renderSubstreamSideText('对端', remote, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-')).join('\n');
+    function renderSubstreamErrorText(entry, exit) {
+      return renderSubstreamSideText('入口侧', entry, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-').concat(renderSubstreamSideText('出口侧', exit, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-')).join('\n');
     }
 
-    function renderSubstreamTimeText(local, remote) {
-      return renderSubstreamSideText('本地', local, (item) => '空闲 ' + formatDurationMS(item && item.idle_ms) + ' / 年龄 ' + formatDurationMS(item && item.age_ms) + ' / ' + (item && (item.last_active || item.closed_at) || '-')).concat(renderSubstreamSideText('对端', remote, (item) => '空闲 ' + formatDurationMS(item && item.idle_ms) + ' / 年龄 ' + formatDurationMS(item && item.age_ms) + ' / ' + (item && (item.last_active || item.closed_at) || '-'))).join('\n');
+    function renderSubstreamTimeText(entry, exit) {
+      return renderSubstreamSideText('入口侧', entry, renderSubstreamTimeLine).concat(renderSubstreamSideText('出口侧', exit, renderSubstreamTimeLine)).join('\n');
     }
 
     function renderSubstreamSideText(label, item, formatter) {
@@ -851,17 +960,54 @@
       if (routeIP && routeIP !== targetIP) identityLines.push('路由IP=' + routeIP);
       else if (routeHost && routeHost !== targetHost && routeHost !== domain) identityLines.push('路由Host=' + routeHost);
       const identityText = identityLines.length ? identityLines.join('\n') : (domain || target);
+      const kind = String(item && item.kind || '').trim();
+      if (kind === 'port_forward') {
+        return flowID + ' ' + identityText + ' | 监听入口=' + target + '\n出口目标=' + routeTarget;
+      }
+      if (kind === 'peer_exit') {
+        return flowID + ' ' + identityText + ' | 出口拨号=' + target;
+      }
       return flowID + ' ' + identityText + ' | ' + target + ' -> ' + routeTarget;
+    }
+
+    function renderSubstreamTrafficLine(item) {
+      const up = formatBytes(item && item.bytes_up);
+      const down = formatBytes(item && item.bytes_down);
+      const writesUp = Math.trunc(Number(item && item.writes_up || 0));
+      const writesDown = Math.trunc(Number(item && item.writes_down || 0));
+      return '发出 ' + up + ' / 收到 ' + down + ' / 写次数 ' + writesUp + '/' + writesDown;
     }
 
     function renderSubstreamBufferLine(item) {
       const buffer = item && item.buffer || {};
       const maxBlockUp = Number(buffer.max_write_block_ms_up || item && item.max_write_block_ms_up || 0);
       const maxBlockDown = Number(buffer.max_write_block_ms_down || item && item.max_write_block_ms_down || 0);
+      const totalBlockUp = Number(buffer.write_block_ms_up || item && item.write_block_ms_up || 0);
+      const totalBlockDown = Number(buffer.write_block_ms_down || item && item.write_block_ms_down || 0);
+      const lastBlockUp = Number(buffer.last_write_block_ms_up || item && item.last_write_block_ms_up || 0);
+      const lastBlockDown = Number(buffer.last_write_block_ms_down || item && item.last_write_block_ms_down || 0);
       const blockedUp = Number(buffer.blocked_writes_up || item && item.blocked_writes_up || 0);
       const blockedDown = Number(buffer.blocked_writes_down || item && item.blocked_writes_down || 0);
       const bufferStatus = String(buffer.status || 'clear').trim();
-      return bufferStatus + ' / 阻塞 ' + Math.trunc(blockedUp) + '/' + Math.trunc(blockedDown) + ' / 最大 ' + Math.trunc(maxBlockUp) + '/' + Math.trunc(maxBlockDown) + 'ms / 窗口 ' + formatBytes(buffer.yamux_window_bytes || 0) + ' / 最近 ' + String(item && item.last_congestion_side || '-').trim();
+      const sessionText = renderSubstreamSessionLine(item);
+      return bufferStatus + ' / 阻塞次数 ' + Math.trunc(blockedUp) + '/' + Math.trunc(blockedDown) + ' / 累计 ' + Math.trunc(totalBlockUp) + '/' + Math.trunc(totalBlockDown) + 'ms / 最近 ' + Math.trunc(lastBlockUp) + '/' + Math.trunc(lastBlockDown) + 'ms / 最大 ' + Math.trunc(maxBlockUp) + '/' + Math.trunc(maxBlockDown) + 'ms / 窗口 ' + formatBytes(buffer.yamux_window_bytes || 0) + ' / 堵塞方向 ' + String(item && item.last_congestion_side || '-').trim() + '\n' + sessionText;
+    }
+
+    function renderSubstreamSessionLine(item) {
+      const sessionID = String(item && item.session_id || '-').trim();
+      const sessionRole = String(item && item.session_role || '-').trim();
+      const streamsOpen = Number(item && item.session_streams_open || 0);
+      const streamsAfter = Number(item && item.session_streams_after || 0);
+      const streamsCurrent = Number(item && item.session_streams_current || 0);
+      const openText = Number.isFinite(streamsOpen) && Number.isFinite(streamsAfter) && (streamsOpen > 0 || streamsAfter > 0) ? Math.trunc(streamsOpen) + '->' + Math.trunc(streamsAfter) : '-';
+      const currentText = Number.isFinite(streamsCurrent) && streamsCurrent > 0 ? Math.trunc(streamsCurrent) : '-';
+      return 'yamux session=' + sessionID + ' role=' + sessionRole + ' 流数 open ' + openText + ' / 当前 ' + currentText;
+    }
+
+    function renderSubstreamTimeLine(item) {
+      const openLatency = Number(item && item.open_latency_ms);
+      const openLatencyText = Number.isFinite(openLatency) && openLatency > 0 ? Math.trunc(openLatency) + 'ms' : '-';
+      return '空闲 ' + formatDurationMS(item && item.idle_ms) + ' / 年龄 ' + formatDurationMS(item && item.age_ms) + ' / 打开耗时 ' + openLatencyText + ' / ' + (item && (item.last_active || item.closed_at) || '-');
     }
 
     function formatSubstreamKind(value) {
@@ -1044,6 +1190,21 @@
     });
     document.getElementById('connectionMonitorRefreshBtn').addEventListener('click', () => {
       loadMonitor();
+    });
+    document.getElementById('connectionMonitorGroupSelect').addEventListener('change', (event) => {
+      const data = currentMonitorData || {};
+      const tcp = data.tcp || {};
+      const udp = data.udp || {};
+      const udpBridges = udp.bridges || {};
+      const tcpItems = Array.isArray(tcp.items) ? tcp.items : [];
+      const tcpCompleted = Array.isArray(tcp.completed_items) ? tcp.completed_items : [];
+      const udpItems = Array.isArray(udpBridges.items) ? udpBridges.items : [];
+      connectionMonitorGroup = normalizeConnectionMonitorGroup(event.target.value, collectConnectionMonitorGroups(tcpItems, tcpCompleted, udpItems));
+      renderProxyConnectionMonitor();
+    });
+    document.getElementById('connectionMonitorTypeSelect').addEventListener('change', (event) => {
+      connectionMonitorType = normalizeConnectionMonitorType(event.target.value);
+      renderProxyConnectionMonitor();
     });
     document.getElementById('substreamMonitorRefreshBtn').addEventListener('click', () => {
       loadSubstreamMonitor();

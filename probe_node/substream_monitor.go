@@ -25,45 +25,51 @@ type probeSubstreamMonitorPayload struct {
 }
 
 type probeSubstreamMonitorItem struct {
-	ID                   string                          `json:"id"`
-	Status               string                          `json:"status,omitempty"`
-	Kind                 string                          `json:"kind,omitempty"`
-	Side                 string                          `json:"side,omitempty"`
-	Scope                string                          `json:"scope,omitempty"`
-	FlowID               string                          `json:"flow_id,omitempty"`
-	Target               string                          `json:"target,omitempty"`
-	RouteTarget          string                          `json:"route_target,omitempty"`
-	Domain               string                          `json:"domain,omitempty"`
-	DomainSource         string                          `json:"domain_source,omitempty"`
-	TargetHost           string                          `json:"target_host,omitempty"`
-	TargetIP             string                          `json:"target_ip,omitempty"`
-	RouteHost            string                          `json:"route_host,omitempty"`
-	RouteIP              string                          `json:"route_ip,omitempty"`
-	NodeID               string                          `json:"node_id,omitempty"`
-	Group                string                          `json:"group,omitempty"`
-	Transport            string                          `json:"transport,omitempty"`
-	OpenedAt             string                          `json:"opened_at,omitempty"`
-	ClosedAt             string                          `json:"closed_at,omitempty"`
-	LastActive           string                          `json:"last_active,omitempty"`
-	LastWriteBlockedAt   string                          `json:"last_write_blocked_at,omitempty"`
-	CloseReason          string                          `json:"close_reason,omitempty"`
-	AgeMS                int64                           `json:"age_ms"`
-	DurationMS           int64                           `json:"duration_ms,omitempty"`
-	IdleMS               int64                           `json:"idle_ms"`
-	BytesUp              int64                           `json:"bytes_up,omitempty"`
-	BytesDown            int64                           `json:"bytes_down,omitempty"`
-	WritesUp             int64                           `json:"writes_up,omitempty"`
-	WritesDown           int64                           `json:"writes_down,omitempty"`
-	BlockedWritesUp      int64                           `json:"blocked_writes_up,omitempty"`
-	BlockedWritesDown    int64                           `json:"blocked_writes_down,omitempty"`
-	WriteBlockMSUp       int64                           `json:"write_block_ms_up,omitempty"`
-	WriteBlockMSDown     int64                           `json:"write_block_ms_down,omitempty"`
-	MaxWriteBlockMSUp    int64                           `json:"max_write_block_ms_up,omitempty"`
-	MaxWriteBlockMSDown  int64                           `json:"max_write_block_ms_down,omitempty"`
-	LastWriteBlockMSUp   int64                           `json:"last_write_block_ms_up,omitempty"`
-	LastWriteBlockMSDown int64                           `json:"last_write_block_ms_down,omitempty"`
-	LastCongestionSide   string                          `json:"last_congestion_side,omitempty"`
-	Buffer               probeSubstreamBufferMonitorItem `json:"buffer"`
+	ID                    string                          `json:"id"`
+	Status                string                          `json:"status,omitempty"`
+	Kind                  string                          `json:"kind,omitempty"`
+	Side                  string                          `json:"side,omitempty"`
+	Scope                 string                          `json:"scope,omitempty"`
+	FlowID                string                          `json:"flow_id,omitempty"`
+	Target                string                          `json:"target,omitempty"`
+	RouteTarget           string                          `json:"route_target,omitempty"`
+	Domain                string                          `json:"domain,omitempty"`
+	DomainSource          string                          `json:"domain_source,omitempty"`
+	TargetHost            string                          `json:"target_host,omitempty"`
+	TargetIP              string                          `json:"target_ip,omitempty"`
+	RouteHost             string                          `json:"route_host,omitempty"`
+	RouteIP               string                          `json:"route_ip,omitempty"`
+	NodeID                string                          `json:"node_id,omitempty"`
+	Group                 string                          `json:"group,omitempty"`
+	Transport             string                          `json:"transport,omitempty"`
+	SessionID             string                          `json:"session_id,omitempty"`
+	SessionRole           string                          `json:"session_role,omitempty"`
+	SessionStreamsOpen    int                             `json:"session_streams_open,omitempty"`
+	SessionStreamsAfter   int                             `json:"session_streams_after,omitempty"`
+	SessionStreamsCurrent int                             `json:"session_streams_current,omitempty"`
+	OpenedAt              string                          `json:"opened_at,omitempty"`
+	ClosedAt              string                          `json:"closed_at,omitempty"`
+	LastActive            string                          `json:"last_active,omitempty"`
+	LastWriteBlockedAt    string                          `json:"last_write_blocked_at,omitempty"`
+	CloseReason           string                          `json:"close_reason,omitempty"`
+	OpenLatencyMS         int64                           `json:"open_latency_ms,omitempty"`
+	AgeMS                 int64                           `json:"age_ms"`
+	DurationMS            int64                           `json:"duration_ms,omitempty"`
+	IdleMS                int64                           `json:"idle_ms"`
+	BytesUp               int64                           `json:"bytes_up,omitempty"`
+	BytesDown             int64                           `json:"bytes_down,omitempty"`
+	WritesUp              int64                           `json:"writes_up,omitempty"`
+	WritesDown            int64                           `json:"writes_down,omitempty"`
+	BlockedWritesUp       int64                           `json:"blocked_writes_up,omitempty"`
+	BlockedWritesDown     int64                           `json:"blocked_writes_down,omitempty"`
+	WriteBlockMSUp        int64                           `json:"write_block_ms_up,omitempty"`
+	WriteBlockMSDown      int64                           `json:"write_block_ms_down,omitempty"`
+	MaxWriteBlockMSUp     int64                           `json:"max_write_block_ms_up,omitempty"`
+	MaxWriteBlockMSDown   int64                           `json:"max_write_block_ms_down,omitempty"`
+	LastWriteBlockMSUp    int64                           `json:"last_write_block_ms_up,omitempty"`
+	LastWriteBlockMSDown  int64                           `json:"last_write_block_ms_down,omitempty"`
+	LastCongestionSide    string                          `json:"last_congestion_side,omitempty"`
+	Buffer                probeSubstreamBufferMonitorItem `json:"buffer"`
 }
 
 type probeSubstreamBufferMonitorItem struct {
@@ -139,45 +145,51 @@ func buildProbeSubstreamMonitorItem(item probeTCPDebugConnectionItemPayload) (pr
 	targetHost, targetIP := splitProbeSubstreamHostAndIP(target)
 	routeHost, routeIP := splitProbeSubstreamHostAndIP(routeTarget)
 	return probeSubstreamMonitorItem{
-		ID:                   strings.TrimSpace(item.ID),
-		Status:               firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Status), "active"),
-		Kind:                 kind,
-		Side:                 strings.TrimSpace(item.Side),
-		Scope:                strings.TrimSpace(item.Scope),
-		FlowID:               strings.TrimSpace(item.FlowID),
-		Target:               target,
-		RouteTarget:          routeTarget,
-		Domain:               strings.TrimSpace(item.Domain),
-		DomainSource:         strings.TrimSpace(item.DomainSource),
-		TargetHost:           targetHost,
-		TargetIP:             targetIP,
-		RouteHost:            routeHost,
-		RouteIP:              routeIP,
-		NodeID:               strings.TrimSpace(item.NodeID),
-		Group:                strings.TrimSpace(item.Group),
-		Transport:            firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Transport), "yamux"),
-		OpenedAt:             strings.TrimSpace(item.OpenedAt),
-		ClosedAt:             strings.TrimSpace(item.ClosedAt),
-		LastActive:           strings.TrimSpace(item.LastActive),
-		LastWriteBlockedAt:   strings.TrimSpace(item.LastWriteBlockedAt),
-		CloseReason:          strings.TrimSpace(item.CloseReason),
-		AgeMS:                item.AgeMS,
-		DurationMS:           item.DurationMS,
-		IdleMS:               item.IdleMS,
-		BytesUp:              item.BytesUp,
-		BytesDown:            item.BytesDown,
-		WritesUp:             item.WritesUp,
-		WritesDown:           item.WritesDown,
-		BlockedWritesUp:      item.BlockedWritesUp,
-		BlockedWritesDown:    item.BlockedWritesDown,
-		WriteBlockMSUp:       item.WriteBlockMSUp,
-		WriteBlockMSDown:     item.WriteBlockMSDown,
-		MaxWriteBlockMSUp:    item.MaxWriteBlockMSUp,
-		MaxWriteBlockMSDown:  item.MaxWriteBlockMSDown,
-		LastWriteBlockMSUp:   item.LastWriteBlockMSUp,
-		LastWriteBlockMSDown: item.LastWriteBlockMSDown,
-		LastCongestionSide:   strings.TrimSpace(item.LastCongestionSide),
-		Buffer:               buffer,
+		ID:                    strings.TrimSpace(item.ID),
+		Status:                firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Status), "active"),
+		Kind:                  kind,
+		Side:                  strings.TrimSpace(item.Side),
+		Scope:                 strings.TrimSpace(item.Scope),
+		FlowID:                strings.TrimSpace(item.FlowID),
+		Target:                target,
+		RouteTarget:           routeTarget,
+		Domain:                strings.TrimSpace(item.Domain),
+		DomainSource:          strings.TrimSpace(item.DomainSource),
+		TargetHost:            targetHost,
+		TargetIP:              targetIP,
+		RouteHost:             routeHost,
+		RouteIP:               routeIP,
+		NodeID:                strings.TrimSpace(item.NodeID),
+		Group:                 strings.TrimSpace(item.Group),
+		Transport:             firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Transport), "yamux"),
+		SessionID:             strings.TrimSpace(item.SessionID),
+		SessionRole:           strings.TrimSpace(item.SessionRole),
+		SessionStreamsOpen:    item.SessionStreamsOpen,
+		SessionStreamsAfter:   item.SessionStreamsAfter,
+		SessionStreamsCurrent: item.SessionStreamsCurrent,
+		OpenedAt:              strings.TrimSpace(item.OpenedAt),
+		ClosedAt:              strings.TrimSpace(item.ClosedAt),
+		LastActive:            strings.TrimSpace(item.LastActive),
+		LastWriteBlockedAt:    strings.TrimSpace(item.LastWriteBlockedAt),
+		CloseReason:           strings.TrimSpace(item.CloseReason),
+		OpenLatencyMS:         item.OpenLatencyMS,
+		AgeMS:                 item.AgeMS,
+		DurationMS:            item.DurationMS,
+		IdleMS:                item.IdleMS,
+		BytesUp:               item.BytesUp,
+		BytesDown:             item.BytesDown,
+		WritesUp:              item.WritesUp,
+		WritesDown:            item.WritesDown,
+		BlockedWritesUp:       item.BlockedWritesUp,
+		BlockedWritesDown:     item.BlockedWritesDown,
+		WriteBlockMSUp:        item.WriteBlockMSUp,
+		WriteBlockMSDown:      item.WriteBlockMSDown,
+		MaxWriteBlockMSUp:     item.MaxWriteBlockMSUp,
+		MaxWriteBlockMSDown:   item.MaxWriteBlockMSDown,
+		LastWriteBlockMSUp:    item.LastWriteBlockMSUp,
+		LastWriteBlockMSDown:  item.LastWriteBlockMSDown,
+		LastCongestionSide:    strings.TrimSpace(item.LastCongestionSide),
+		Buffer:                buffer,
 	}, true
 }
 

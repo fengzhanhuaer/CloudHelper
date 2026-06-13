@@ -404,7 +404,7 @@ func TestProbeChainPortForwardRelaySubstreamUsesBridgeYamux(t *testing.T) {
 			}
 			tc.setup(rt, clientSession)
 
-			stream, err := openProbeChainPortForwardRelaySubstream(rt, tc.entrySide, "flow-a")
+			stream, _, err := openProbeChainPortForwardRelaySubstream(rt, tc.entrySide, "flow-a")
 			if err != nil {
 				t.Fatalf("open relay substream failed: %v", err)
 			}
