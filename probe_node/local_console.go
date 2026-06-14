@@ -2874,6 +2874,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/monitor", probeLocalMonitorPageHandler)
 	mux.HandleFunc("/local/system", probeLocalSystemPageHandler)
 	mux.HandleFunc("/local/sync", probeLocalSyncPageHandler)
+	mux.HandleFunc("/local/shell", probeLocalShellPageHandler)
 	mux.HandleFunc("/local/api/auth/bootstrap", probeLocalAuthBootstrapHandler)
 	mux.HandleFunc("/local/api/auth/register", probeLocalAuthRegisterHandler)
 	mux.HandleFunc("/local/api/auth/login", probeLocalAuthLoginHandler)
@@ -2920,6 +2921,8 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
+	mux.HandleFunc("/local/api/shell/exec", probeLocalShellExecHandler)
+	mux.HandleFunc("/local/api/shell/stream", probeLocalShellStreamHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
 	mux.HandleFunc("/local/api/proxy/groups/restore", probeLocalProxyGroupsRestoreHandler)
 	mux.HandleFunc("/local/api/sync/status", probeLocalSyncStatusHandler)
@@ -3066,6 +3069,11 @@ type probeLocalSyncGoogleAuthPollRequest struct {
 	SessionID string `json:"session_id"`
 }
 
+type probeLocalShellExecRequest struct {
+	Command    string `json:"command"`
+	TimeoutSec int    `json:"timeout_sec"`
+}
+
 func probeLocalRootHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -3121,6 +3129,10 @@ func probeLocalSystemPageHandler(w http.ResponseWriter, r *http.Request) {
 
 func probeLocalSyncPageHandler(w http.ResponseWriter, r *http.Request) {
 	serveProbeLocalHTMLPage(w, r, "/local/sync", probeLocalSyncPageHTML)
+}
+
+func probeLocalShellPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/shell", probeLocalShellPageHTML)
 }
 
 func serveProbeLocalHTMLPage(w http.ResponseWriter, r *http.Request, expectedPath string, pageHTML string) {
@@ -5943,6 +5955,201 @@ func probeLocalSystemRestartHandler(w http.ResponseWriter, r *http.Request) {
 			logProbeErrorf("probe local restart failed: %v", err)
 		}
 	}()
+}
+
+func probeLocalShellExecHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, 64*1024)
+	defer body.Close()
+	var req probeLocalShellExecRequest
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	commandText := strings.TrimSpace(req.Command)
+	if commandText == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "command is required"})
+		return
+	}
+	timeoutSec := normalizeProbeShellTimeoutSec(req.TimeoutSec)
+	startedAt := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	command := buildProbeShellCommand(ctx, commandText)
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	command.Stdout = &stdoutBuf
+	command.Stderr = &stderrBuf
+	runErr := command.Run()
+
+	finishedAt := time.Now()
+	exitCode := 0
+	if command.ProcessState != nil {
+		exitCode = command.ProcessState.ExitCode()
+	} else if runErr != nil {
+		exitCode = -1
+	}
+	result := map[string]any{
+		"ok":          runErr == nil,
+		"command":     commandText,
+		"exit_code":   exitCode,
+		"stdout":      truncateProbeShellOutput(stdoutBuf.String(), maxProbeShellOutputBytes),
+		"stderr":      truncateProbeShellOutput(stderrBuf.String(), maxProbeShellOutputBytes),
+		"started_at":  startedAt.UTC().Format(time.RFC3339),
+		"finished_at": finishedAt.UTC().Format(time.RFC3339),
+		"duration_ms": finishedAt.Sub(startedAt).Milliseconds(),
+	}
+	if runErr != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			result["error"] = fmt.Sprintf("command timeout after %ds", timeoutSec)
+		} else {
+			result["error"] = runErr.Error()
+		}
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func probeLocalShellStreamHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, 64*1024)
+	defer body.Close()
+	var req probeLocalShellExecRequest
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	commandText := strings.TrimSpace(req.Command)
+	if commandText == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "command is required"})
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming is unavailable"})
+		return
+	}
+
+	timeoutSec := normalizeProbeShellTimeoutSec(req.TimeoutSec)
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+	command := buildProbeShellCommand(ctx, commandText)
+	stdoutPipe, err := command.StdoutPipe()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "open stdout failed: " + err.Error()})
+		return
+	}
+	stderrPipe, err := command.StderrPipe()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "open stderr failed: " + err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	encoder := json.NewEncoder(w)
+	var writeMu sync.Mutex
+	sendProbeLocalShellStreamEvent := func(event map[string]any) {
+		writeMu.Lock()
+		_ = encoder.Encode(event)
+		flusher.Flush()
+		writeMu.Unlock()
+	}
+
+	startedAt := time.Now()
+	sendProbeLocalShellStreamEvent(map[string]any{
+		"type":       "start",
+		"ok":         true,
+		"command":    commandText,
+		"started_at": startedAt.UTC().Format(time.RFC3339),
+		"timeout":    timeoutSec,
+	})
+	if err := command.Start(); err != nil {
+		sendProbeLocalShellStreamEvent(map[string]any{"type": "done", "ok": false, "error": "start command failed: " + err.Error(), "exit_code": -1})
+		return
+	}
+
+	var readers sync.WaitGroup
+	readStream := func(name string, reader io.Reader) {
+		defer readers.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := reader.Read(buf)
+			if n > 0 {
+				sendProbeLocalShellStreamEvent(map[string]any{
+					"type":   "chunk",
+					"stream": name,
+					"data":   string(buf[:n]),
+				})
+			}
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					sendProbeLocalShellStreamEvent(map[string]any{
+						"type":   "chunk",
+						"stream": "stderr",
+						"data":   name + " read failed: " + readErr.Error() + "\n",
+					})
+				}
+				return
+			}
+		}
+	}
+	readers.Add(2)
+	go readStream("stdout", stdoutPipe)
+	go readStream("stderr", stderrPipe)
+
+	waitErr := command.Wait()
+	readers.Wait()
+	finishedAt := time.Now()
+	exitCode := 0
+	if command.ProcessState != nil {
+		exitCode = command.ProcessState.ExitCode()
+	} else if waitErr != nil {
+		exitCode = -1
+	}
+	done := map[string]any{
+		"type":        "done",
+		"ok":          waitErr == nil,
+		"exit_code":   exitCode,
+		"started_at":  startedAt.UTC().Format(time.RFC3339),
+		"finished_at": finishedAt.UTC().Format(time.RFC3339),
+		"duration_ms": finishedAt.Sub(startedAt).Milliseconds(),
+	}
+	if waitErr != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			done["error"] = fmt.Sprintf("command timeout after %ds", timeoutSec)
+		} else if errors.Is(ctx.Err(), context.Canceled) {
+			done["error"] = "command canceled"
+		} else {
+			done["error"] = waitErr.Error()
+		}
+	}
+	sendProbeLocalShellStreamEvent(done)
 }
 
 func prepareProbeLocalProcessRestart() {

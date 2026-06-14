@@ -26,4 +26,7 @@ var (
 
 	//go:embed local_pages/sync.html
 	probeLocalSyncPageHTML string
+
+	//go:embed local_pages/shell.html
+	probeLocalShellPageHTML string
 )

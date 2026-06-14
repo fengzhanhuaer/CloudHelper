@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Probe Node Shell</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      min-height: 100vh;
+    }
+    .wrap { width: calc(100vw - 32px); max-width: 980px; margin: 32px auto; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+    h1 { margin: 0; font-size: 22px; color: #fff; }
+    .sub { color: #8b949e; margin: 4px 0 0; font-size: 13px; }
+    .btn, button {
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #c9d1d9;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .btn:hover, button:hover { border-color: #58a6ff; }
+    .btn.primary, button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+    button.danger { background: #8e1519; border-color: #da3633; color: #fff; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .panel {
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      background: #161b22;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    label { display: block; color: #8b949e; font-size: 12px; margin-bottom: 6px; }
+    textarea, input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 10px;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 13px;
+    }
+    textarea { min-height: 108px; resize: vertical; }
+    .row { display: grid; grid-template-columns: minmax(0, 1fr) 128px; gap: 12px; align-items: end; margin-top: 12px; }
+    .actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+    .status { min-height: 20px; color: #8b949e; font-size: 13px; margin: 8px 0 0; }
+    .status.error { color: #ff938d; }
+    .status.ok { color: #7ee787; }
+    .meta { color: #8b949e; font-size: 12px; margin-top: 8px; }
+    .output-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 8px; }
+    .output-title { font-size: 14px; font-weight: 600; color: #fff; }
+    pre {
+      margin: 0;
+      min-height: 220px;
+      max-height: 560px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #010409;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    @media (max-width: 680px) {
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>Shell</h1>
+        <p class="sub" id="shell-subtitle">本机命令执行，Windows 节点使用 PowerShell</p>
+      </div>
+      <a class="btn" href="/local/panel">返回面板</a>
+    </div>
+
+    <div class="panel" id="panelShell">
+      <label for="command">命令</label>
+      <textarea id="command" spellcheck="false">Get-NetRoute -AddressFamily IPv4 | Sort-Object InterfaceMetric,RouteMetric | Format-Table ifIndex,DestinationPrefix,NextHop,RouteMetric,InterfaceMetric,InterfaceAlias -Auto</textarea>
+      <div class="row">
+        <div>
+          <label for="timeoutSec">超时秒数</label>
+          <input id="timeoutSec" type="number" min="1" max="300" value="30" />
+        </div>
+        <button id="runBtn" class="primary" type="button">执行</button>
+      </div>
+      <div class="actions">
+        <button id="stopBtn" class="danger" type="button" disabled>中止</button>
+        <button type="button" data-command="Resolve-DnsName api.codex.mtk.002339.xyz">DNS</button>
+        <button type="button" data-command="Test-NetConnection api.codex.mtk.002339.xyz -Port 12021 -InformationLevel Detailed">端口测试</button>
+        <button type="button" data-command="Get-NetAdapter | Sort-Object ifIndex | Format-Table ifIndex,Name,Status,InterfaceDescription -Auto">网卡</button>
+        <button type="button" data-command="Get-ChildItem Env:PROBE_LOCAL_TUN_*">TUN 环境</button>
+      </div>
+      <p id="status" class="status"></p>
+      <div id="meta" class="meta"></div>
+    </div>
+
+    <div class="panel">
+      <div class="output-head">
+        <div class="output-title">输出</div>
+        <button id="clearBtn" type="button">清空</button>
+      </div>
+      <pre id="output"></pre>
+    </div>
+  </div>
+
+  <script>
+    const commandEl = document.getElementById('command');
+    const timeoutEl = document.getElementById('timeoutSec');
+    const statusEl = document.getElementById('status');
+    const metaEl = document.getElementById('meta');
+    const outputEl = document.getElementById('output');
+    const runBtn = document.getElementById('runBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    let activeController = null;
+    let activeStartedAt = 0;
+    let controllerProxyMode = false;
+    const proxyModeReady = fetch(window.location.href, { method: 'GET', credentials: 'same-origin' }).then((res) => {
+      controllerProxyMode = res.headers.get('X-Probe-Console-Proxy') === 'controller';
+      if (controllerProxyMode) {
+        document.getElementById('shell-subtitle').textContent = '本机命令执行，主控代理模式下返回完整结果';
+      }
+    }).catch(() => {});
+
+    function setStatus(text, type) {
+      statusEl.textContent = text || '';
+      statusEl.className = 'status' + (type ? ' ' + type : '');
+    }
+
+    function formatResult(data) {
+      const parts = [];
+      if (data.stdout) parts.push(data.stdout);
+      if (data.stderr) parts.push(data.stderr);
+      if (data.error) parts.push('ERROR: ' + data.error);
+      return parts.join(parts.length > 1 ? '\n' : '') || '(no output)';
+    }
+
+    function appendOutput(text) {
+      outputEl.textContent += text;
+      outputEl.scrollTop = outputEl.scrollHeight;
+    }
+
+    async function requestJSON(url, options) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      let data = {};
+      try { data = await res.json(); } catch (_) { data = {}; }
+      if (!res.ok) {
+        const msg = data && data.error ? data.error : ('HTTP ' + res.status);
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    }
+
+    async function runCommandFallback(command, timeoutSec, started) {
+      if (controllerProxyMode) {
+        timeoutSec = Math.min(timeoutSec, 20);
+      }
+      const data = await requestJSON('/local/api/shell/exec', {
+        method: 'POST',
+        body: JSON.stringify({ command, timeout_sec: timeoutSec }),
+      });
+      outputEl.textContent = formatResult(data);
+      const exitText = typeof data.exit_code === 'number' ? ('exit=' + data.exit_code + ', ') : '';
+      setStatus(exitText + '耗时 ' + (data.duration_ms || 0) + ' ms', data.ok ? 'ok' : 'error');
+      metaEl.textContent = '开始 ' + started.toLocaleString();
+    }
+
+    async function runCommand() {
+      const command = commandEl.value.trim();
+      if (!command) {
+        setStatus('请输入命令', 'error');
+        return;
+      }
+      const timeoutSec = Math.max(1, Math.min(300, Number(timeoutEl.value) || 30));
+      if (activeController) {
+        activeController.abort();
+      }
+      activeController = new AbortController();
+      activeStartedAt = Date.now();
+      runBtn.disabled = true;
+      stopBtn.disabled = false;
+      outputEl.textContent = '';
+      setStatus('启动中...');
+      const started = new Date();
+      metaEl.textContent = '开始 ' + started.toLocaleString();
+      try {
+        await proxyModeReady;
+        if (controllerProxyMode) {
+          setStatus('代理模式执行中...');
+          await runCommandFallback(command, timeoutSec, started);
+          return;
+        }
+        const res = await fetch('/local/api/shell/stream', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command, timeout_sec: timeoutSec }),
+          signal: activeController.signal,
+        });
+        if (res.status === 401) {
+          window.location.href = '/local/login';
+          return;
+        }
+        if (!res.ok || !res.body) {
+          await runCommandFallback(command, timeoutSec, started);
+          return;
+        }
+        setStatus('运行中...');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let pending = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+          const lines = pending.split('\n');
+          pending = lines.pop() || '';
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line) continue;
+            let event;
+            try {
+              event = JSON.parse(line);
+            } catch (_) {
+              appendOutput(rawLine + '\n');
+              continue;
+            }
+            if (event.type === 'start') {
+              setStatus('运行中...');
+              continue;
+            }
+            if (event.type === 'chunk') {
+              appendOutput(event.data || '');
+              continue;
+            }
+            if (event.type === 'done') {
+              const exitText = typeof event.exit_code === 'number' ? ('exit=' + event.exit_code + ', ') : '';
+              setStatus(exitText + '耗时 ' + (event.duration_ms || 0) + ' ms' + (event.error ? '，' + event.error : ''), event.ok ? 'ok' : 'error');
+            }
+          }
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          setStatus('已中止', 'error');
+          metaEl.textContent = '运行 ' + Math.max(0, Math.round((Date.now() - activeStartedAt) / 1000)) + ' 秒后中止';
+          return;
+        }
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return;
+        }
+        outputEl.textContent = 'ERROR: ' + err.message;
+        setStatus('执行失败，开始时间 ' + started.toLocaleString(), 'error');
+      } finally {
+        runBtn.disabled = false;
+        stopBtn.disabled = true;
+        activeController = null;
+      }
+    }
+
+    document.querySelectorAll('[data-command]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        commandEl.value = btn.getAttribute('data-command') || '';
+        commandEl.focus();
+      });
+    });
+    runBtn.addEventListener('click', () => { runCommand().catch(() => {}); });
+    stopBtn.addEventListener('click', () => {
+      if (activeController) activeController.abort();
+    });
+    document.getElementById('clearBtn').addEventListener('click', () => { outputEl.textContent = ''; });
+    commandEl.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        runCommand().catch(() => {});
+      }
+    });
+  </script>
+</body>
+</html>

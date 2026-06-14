@@ -67,6 +67,9 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tile-sync\"") || !strings.Contains(body, "href=\"/local/sync\"") {
 		t.Fatalf("panel should contain sync tile")
 	}
+	if !strings.Contains(body, "id=\"tile-shell\"") || !strings.Contains(body, "href=\"/local/shell\"") {
+		t.Fatalf("panel should contain shell tile")
+	}
 	if strings.Contains(body, "id=\"monitor-panel-details\"") || strings.Contains(body, "/local/api/proxy/monitor") {
 		t.Fatalf("panel should not inline monitor page details")
 	}
@@ -179,6 +182,21 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 			},
 			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
 		},
+		{
+			path: "/local/shell",
+			contains: []string{
+				"<title>Probe Node Shell</title>",
+				"id=\"panelShell\"",
+				"id=\"command\"",
+				"id=\"runBtn\"",
+				"id=\"stopBtn\"",
+				"/local/api/shell/stream",
+				"X-Probe-Console-Proxy",
+				"controllerProxyMode",
+				"PowerShell",
+			},
+			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
+		},
 	}
 
 	for _, tc := range cases {
@@ -207,7 +225,7 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 
 func TestProbeLocalPanelMethodNotAllowed(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
-	paths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system", "/local/sync"}
+	paths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system", "/local/sync", "/local/shell"}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
 			resp := doProbeLocalRequest(t, mux, http.MethodPost, path, map[string]any{})

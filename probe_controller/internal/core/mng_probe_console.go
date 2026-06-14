@@ -308,6 +308,7 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(canonical, value)
 		}
 	}
+	w.Header().Set("X-Probe-Console-Proxy", "controller")
 	status := result.StatusCode
 	if status == 0 {
 		status = http.StatusOK

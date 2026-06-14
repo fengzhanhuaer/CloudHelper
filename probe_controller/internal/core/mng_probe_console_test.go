@@ -1,9 +1,13 @@
 package core
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -95,6 +99,68 @@ func TestMngProbeConsoleHeaderFilters(t *testing.T) {
 	}
 	if mngProbeConsoleSkipResponseHeader("Content-Type") {
 		t.Fatal("Content-Type must be returned to the browser")
+	}
+}
+
+func TestMngProbeConsoleProxyMarksControllerProxyResponse(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	nodeID := "proxy-node"
+	session := &probeSession{nodeID: nodeID, stream: clientConn, enc: json.NewEncoder(clientConn)}
+	probeSessions.mu.Lock()
+	probeSessions.data[nodeID] = session
+	probeSessions.mu.Unlock()
+	defer func() {
+		probeSessions.mu.Lock()
+		delete(probeSessions.data, nodeID)
+		probeSessions.mu.Unlock()
+	}()
+
+	go func() {
+		decoder := json.NewDecoder(clientConn)
+		for {
+			var result probeLocalConsoleProxyResultMessage
+			if err := decoder.Decode(&result); err != nil {
+				return
+			}
+			consumeProbeLocalConsoleProxyResult(result)
+		}
+	}()
+
+	var nodeWriteMu sync.Mutex
+	go func() {
+		decoder := json.NewDecoder(serverConn)
+		encoder := json.NewEncoder(serverConn)
+		var cmd probeLocalConsoleProxyCommand
+		if err := decoder.Decode(&cmd); err != nil {
+			return
+		}
+		nodeWriteMu.Lock()
+		_ = encoder.Encode(probeLocalConsoleProxyResultMessage{
+			Type:       "local_console_proxy_result",
+			RequestID:  cmd.RequestID,
+			NodeID:     nodeID,
+			OK:         true,
+			StatusCode: http.StatusOK,
+			Headers:    map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
+			Body:       base64.StdEncoding.EncodeToString([]byte("<!doctype html><title>Probe Node Shell</title>")),
+		})
+		nodeWriteMu.Unlock()
+	}()
+
+	token := mintMngProbeConsoleToken(nodeID, "proxy-node")
+	req := httptest.NewRequest(http.MethodGet, "/local/shell", nil)
+	req.AddCookie(&http.Cookie{Name: mngProbeConsoleCookieName, Value: token})
+	rec := httptest.NewRecorder()
+
+	mngProbeConsoleProxyHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Probe-Console-Proxy"); got != "controller" {
+		t.Fatalf("expected controller proxy marker, got %q", got)
 	}
 }
 
