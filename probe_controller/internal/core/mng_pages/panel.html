@@ -12,12 +12,12 @@
     h1 { margin:0; font-size:24px; }
     .sub { color:#8b949e; margin:4px 0 0; font-size:13px; }
     .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
-    .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
-    .tile { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:16px; min-height:126px; box-sizing:border-box; }
+    .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(168px, 184px)); gap:12px; justify-content:start; }
+    .tile { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:16px; aspect-ratio:1 / 1; box-sizing:border-box; display:flex; flex-direction:column; overflow:hidden; }
     .tile-title { font-size:15px; font-weight:600; margin-bottom:8px; }
-    .tile-value { font-size:24px; font-family:Consolas,monospace; }
-    .tile-sub { margin-top:8px; color:#8b949e; font-size:12px; }
-    .tile-link { display:block; text-decoration:none; color:#c9d1d9; transition:all .15s ease; }
+    .tile-value { font-size:24px; font-family:Consolas,monospace; overflow-wrap:anywhere; }
+    .tile-sub { margin-top:8px; color:#8b949e; font-size:12px; line-height:1.45; overflow:hidden; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; }
+    .tile-link { text-decoration:none; color:#c9d1d9; transition:all .15s ease; }
     .tile-link:hover { border-color:#58a6ff; transform:translateY(-1px); box-shadow:0 4px 16px rgba(31,111,235,.2); }
     .ok { color:#7ee787; }
   </style>
