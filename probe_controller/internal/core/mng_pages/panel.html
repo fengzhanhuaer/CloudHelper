@@ -7,7 +7,7 @@
   <style>
     :root { color-scheme: dark; }
     body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
-    .wrap { width:calc(100vw - 32px); margin:5vh auto; padding:20px; box-sizing:border-box; }
+    .wrap { width:calc(100vw - 32px); max-width:812px; margin:5vh auto; padding:20px; box-sizing:border-box; }
     .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
     h1 { margin:0; font-size:24px; }
     .sub { color:#8b949e; margin:4px 0 0; font-size:13px; }
@@ -20,6 +20,11 @@
     .tile-link { text-decoration:none; color:#c9d1d9; transition:all .15s ease; }
     .tile-link:hover { border-color:#58a6ff; transform:translateY(-1px); box-shadow:0 4px 16px rgba(31,111,235,.2); }
     .ok { color:#7ee787; }
+    @media (max-width: 520px) {
+      .wrap { padding:16px; }
+      .topbar { align-items:flex-start; flex-direction:column; }
+      .tiles { grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); }
+    }
   </style>
 </head>
 <body>
