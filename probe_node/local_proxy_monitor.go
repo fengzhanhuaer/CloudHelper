@@ -63,8 +63,9 @@ type probeLocalProxyMonitorTCPSnapshot struct {
 }
 
 type probeLocalProxyMonitorUDPSnapshot struct {
-	Bridges      probeLocalTUNUDPBridgeMonitorStats `json:"bridges"`
-	Associations int                                `json:"associations"`
+	Bridges          probeLocalTUNUDPBridgeMonitorStats    `json:"bridges"`
+	Associations     int                                   `json:"associations"`
+	AssociationItems []probeUDPAssociationDebugItemPayload `json:"association_items,omitempty"`
 }
 
 type probeLocalProxyMonitorSnapshot struct {
@@ -119,6 +120,9 @@ func (s probeLocalProxyMonitorSnapshot) clone() probeLocalProxyMonitorSnapshot {
 	}
 	if s.TCP.CompletedItems != nil {
 		s.TCP.CompletedItems = append([]probeTCPDebugConnectionItemPayload(nil), s.TCP.CompletedItems...)
+	}
+	if s.UDP.AssociationItems != nil {
+		s.UDP.AssociationItems = append([]probeUDPAssociationDebugItemPayload(nil), s.UDP.AssociationItems...)
 	}
 	return s
 }
@@ -222,7 +226,8 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 	groupStats := snapshotProbeLocalTUNGroupRuntimeMonitorStats()
 	dnsStats := snapshotProbeLocalDNSMonitorStats()
 	tcpStats := snapshotProbeLocalTCPDebugMonitorStats()
-	udpAssociations := snapshotProbeUDPAssociationMonitorCount()
+	udpAssociationItems := snapshotProbeUDPAssociations()
+	udpAssociations := len(udpAssociationItems)
 	udpBridgeStats := snapshotProbeLocalTUNUDPBridgeMonitorStats()
 	chainRuntimes := snapshotProbeChainRuntimeMonitorCount()
 
@@ -247,7 +252,7 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 		TCPFailures:     tcpStats.Failures,
 		UDPAssociations: udpAssociations,
 		TCP:             tcpStats,
-		UDP:             probeLocalProxyMonitorUDPSnapshot{Bridges: udpBridgeStats, Associations: udpAssociations},
+		UDP:             probeLocalProxyMonitorUDPSnapshot{Bridges: udpBridgeStats, Associations: udpAssociations, AssociationItems: udpAssociationItems},
 		ChainRuntimes:   chainRuntimes,
 		DNS:             dnsStats,
 	}

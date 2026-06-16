@@ -593,10 +593,7 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 	}
 	defer wsConn.Close()
 
-	cfg := yamux.DefaultConfig()
-	cfg.EnableKeepAlive = true
-	cfg.KeepAliveInterval = 20 * time.Second
-	session, err := yamux.Client(newWebSocketNetConn(wsConn), cfg)
+	session, err := yamux.Client(newWebSocketNetConn(wsConn), yamux.DefaultConfig())
 	if err != nil {
 		return err
 	}
@@ -609,6 +606,7 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 	defer stream.Close()
 	encoder := json.NewEncoder(stream)
 	decoder := json.NewDecoder(stream)
+
 	writeMu := &sync.Mutex{}
 	attachProbeReporterRPCChannel(stream, encoder, writeMu)
 	defer detachProbeReporterRPCChannel()
@@ -669,10 +667,12 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		Timestamp:            time.Now().UTC().Format(time.RFC3339),
 	}
 
-	if err := writeProbeStreamJSON(stream, encoder, writeMu, payload); err != nil {
-		return err
-	}
-	return nil
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err := encoder.Encode(payload)
+	_ = stream.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func probeRuntimePlatform() string {
@@ -680,50 +680,6 @@ func probeRuntimePlatform() string {
 		return "android"
 	}
 	return "desktop"
-}
-
-func writeProbeStreamJSON(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, payload any) error {
-	if writeMu != nil {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-	}
-	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := encoder.Encode(payload)
-	_ = stream.SetWriteDeadline(time.Time{})
-	return err
-}
-
-func signProbeConnect(secret, nodeID, timestamp, randomToken string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(strings.TrimSpace(nodeID)))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(strings.TrimSpace(timestamp)))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(strings.TrimSpace(randomToken)))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-func buildProbeAuthHeaders(identity nodeIdentity) map[string]string {
-	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	randomToken := randomHexToken(16)
-	signature := signProbeConnect(identity.Secret, identity.NodeID, timestamp, randomToken)
-	return map[string]string{
-		"X-Probe-Node-Id":   strings.TrimSpace(identity.NodeID),
-		"X-Probe-Timestamp": timestamp,
-		"X-Probe-Rand":      randomToken,
-		"X-Probe-Signature": signature,
-	}
-}
-
-func randomHexToken(size int) string {
-	if size <= 0 {
-		size = 8
-	}
-	b := make([]byte, size)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b)
 }
 
 func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
@@ -787,6 +743,50 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		return
 	}
 	go runProbeUpgrade(msg, identity)
+}
+
+func writeProbeStreamJSON(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, payload any) error {
+	if writeMu != nil {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+	}
+	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err := encoder.Encode(payload)
+	_ = stream.SetWriteDeadline(time.Time{})
+	return err
+}
+
+func signProbeConnect(secret, nodeID, timestamp, randomToken string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(strings.TrimSpace(nodeID)))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.TrimSpace(timestamp)))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.TrimSpace(randomToken)))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func buildProbeAuthHeaders(identity nodeIdentity) map[string]string {
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	randomToken := randomHexToken(16)
+	signature := signProbeConnect(identity.Secret, identity.NodeID, timestamp, randomToken)
+	return map[string]string{
+		"X-Probe-Node-Id":   strings.TrimSpace(identity.NodeID),
+		"X-Probe-Timestamp": timestamp,
+		"X-Probe-Rand":      randomToken,
+		"X-Probe-Signature": signature,
+	}
+}
+
+func randomHexToken(size int) string {
+	if size <= 0 {
+		size = 8
+	}
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 func runProbeLocalConsoleControl(msg probeControlMessage) {

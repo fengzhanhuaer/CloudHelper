@@ -57,9 +57,9 @@ type tunnelInboundMessage struct {
 }
 
 const (
-	tunnelControllerExceptionRateLimitWindow   = 3 * time.Second
-	tunnelControllerExceptionRateLimitBurst    = 6
-	tunnelControllerExceptionRateLimitMaxKeys  = 2048
+	tunnelControllerExceptionRateLimitWindow    = 3 * time.Second
+	tunnelControllerExceptionRateLimitBurst     = 6
+	tunnelControllerExceptionRateLimitMaxKeys   = 2048
 	tunnelControllerExceptionRateLimitKeyMaxLen = 160
 )
 
@@ -317,7 +317,10 @@ func handleUDPTunnelStream(stream net.Conn, target string, associationV2 *tunnel
 		for {
 			n, readErr := assoc.Read(buf)
 			if n > 0 {
-				if writeErr := writeFramedPacket(stream, buf[:n]); writeErr != nil {
+				writeStartedAt := time.Now()
+				writeErr := writeFramedPacket(stream, buf[:n])
+				assoc.RecordFrameWrite("down", n, time.Since(writeStartedAt))
+				if writeErr != nil {
 					errCh <- writeErr
 					return
 				}

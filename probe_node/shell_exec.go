@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"encoding/json"
 )
 
 const (

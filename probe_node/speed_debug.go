@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"net"
 	"sort"
@@ -9,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"encoding/json"
 )
 
 const probeSpeedDebugMaxRecent = 64

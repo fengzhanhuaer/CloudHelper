@@ -34,6 +34,20 @@ type probeUDPAssociationDebugItemPayload struct {
 	SessionStreamsAfter   int    `json:"session_streams_after,omitempty"`
 	SessionStreamsCurrent int    `json:"session_streams_current,omitempty"`
 	OpenLatencyMS         int64  `json:"open_latency_ms,omitempty"`
+	LastWriteBlockedAt    string `json:"last_write_blocked_at,omitempty"`
+	LastCongestionSide    string `json:"last_congestion_side,omitempty"`
+	BytesUp               int64  `json:"bytes_up,omitempty"`
+	BytesDown             int64  `json:"bytes_down,omitempty"`
+	WritesUp              int64  `json:"writes_up,omitempty"`
+	WritesDown            int64  `json:"writes_down,omitempty"`
+	BlockedWritesUp       int64  `json:"blocked_writes_up,omitempty"`
+	BlockedWritesDown     int64  `json:"blocked_writes_down,omitempty"`
+	WriteBlockMSUp        int64  `json:"write_block_ms_up,omitempty"`
+	WriteBlockMSDown      int64  `json:"write_block_ms_down,omitempty"`
+	MaxWriteBlockMSUp     int64  `json:"max_write_block_ms_up,omitempty"`
+	MaxWriteBlockMSDown   int64  `json:"max_write_block_ms_down,omitempty"`
+	LastWriteBlockMSUp    int64  `json:"last_write_block_ms_up,omitempty"`
+	LastWriteBlockMSDown  int64  `json:"last_write_block_ms_down,omitempty"`
 	Refs                  int32  `json:"refs,omitempty"`
 	Active                bool   `json:"active"`
 	LastActive            string `json:"last_active,omitempty"`
@@ -87,24 +101,36 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 			continue
 		}
 		item := probeUDPAssociationDebugItemPayload{
-			Key:              strings.TrimSpace(key),
-			AssocKeyV2:       strings.TrimSpace(assoc.assocKeyV2),
-			FlowID:           strings.TrimSpace(assoc.flowID),
-			SourceKey:        strings.TrimSpace(assoc.sourceKey),
-			SourceRefs:       assoc.sourceRefs,
-			Target:           strings.TrimSpace(assoc.target),
-			RouteTarget:      strings.TrimSpace(assoc.routeTarget),
-			RouteFingerprint: strings.TrimSpace(assoc.routeFingerprint),
-			NodeID:           strings.TrimSpace(assoc.routeNodeID),
-			Group:            strings.TrimSpace(assoc.routeGroup),
-			NATMode:          strings.TrimSpace(assoc.natMode),
-			TTLProfile:       strings.TrimSpace(assoc.ttlProfile),
-			IdleTimeoutMS:    assoc.idleTimeout.Milliseconds(),
-			GCIntervalMS:     assoc.gcInterval.Milliseconds(),
-			CreatedAtUnixMS:  assoc.createdAtUnixMS,
-			Transport:        "udp",
-			Refs:             assoc.refs.Load(),
-			Active:           assoc.conn != nil,
+			Key:                  strings.TrimSpace(key),
+			AssocKeyV2:           strings.TrimSpace(assoc.assocKeyV2),
+			FlowID:               strings.TrimSpace(assoc.flowID),
+			SourceKey:            strings.TrimSpace(assoc.sourceKey),
+			SourceRefs:           assoc.sourceRefs,
+			Target:               strings.TrimSpace(assoc.target),
+			RouteTarget:          strings.TrimSpace(assoc.routeTarget),
+			RouteFingerprint:     strings.TrimSpace(assoc.routeFingerprint),
+			NodeID:               strings.TrimSpace(assoc.routeNodeID),
+			Group:                strings.TrimSpace(assoc.routeGroup),
+			NATMode:              strings.TrimSpace(assoc.natMode),
+			TTLProfile:           strings.TrimSpace(assoc.ttlProfile),
+			IdleTimeoutMS:        assoc.idleTimeout.Milliseconds(),
+			GCIntervalMS:         assoc.gcInterval.Milliseconds(),
+			CreatedAtUnixMS:      assoc.createdAtUnixMS,
+			Transport:            "udp",
+			BytesUp:              assoc.bytesUp.Load(),
+			BytesDown:            assoc.bytesDown.Load(),
+			WritesUp:             assoc.writesUp.Load(),
+			WritesDown:           assoc.writesDown.Load(),
+			BlockedWritesUp:      assoc.blockedUp.Load(),
+			BlockedWritesDown:    assoc.blockedDown.Load(),
+			WriteBlockMSUp:       assoc.blockMSUp.Load(),
+			WriteBlockMSDown:     assoc.blockMSDown.Load(),
+			MaxWriteBlockMSUp:    assoc.maxBlockMSUp.Load(),
+			MaxWriteBlockMSDown:  assoc.maxBlockMSDown.Load(),
+			LastWriteBlockMSUp:   assoc.lastBlockMSUp.Load(),
+			LastWriteBlockMSDown: assoc.lastBlockMSDown.Load(),
+			Refs:                 assoc.refs.Load(),
+			Active:               assoc.conn != nil,
 		}
 		if rawMonitor := assoc.streamMonitor.Load(); rawMonitor != nil {
 			if monitor, ok := rawMonitor.(probeChainYamuxStreamMonitor); ok {
@@ -122,6 +148,12 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 			lastActiveAt := time.Unix(lastActive, 0).UTC()
 			item.LastActive = lastActiveAt.Format(time.RFC3339)
 			item.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+		}
+		if lastBlocked := assoc.lastBlockedUnix.Load(); lastBlocked > 0 {
+			item.LastWriteBlockedAt = time.Unix(lastBlocked, 0).UTC().Format(time.RFC3339)
+		}
+		if side, ok := assoc.lastCongestionSide.Load().(string); ok {
+			item.LastCongestionSide = strings.TrimSpace(side)
 		}
 		items = append(items, item)
 	}

@@ -43,10 +43,24 @@ type probeChainUDPAssociation struct {
 	conn             *net.UDPConn
 	pool             *probeChainUDPAssociationPool
 
-	refs           atomic.Int32
-	lastActiveUnix atomic.Int64
-	streamMonitor  atomic.Value
-	closeOnce      sync.Once
+	refs               atomic.Int32
+	lastActiveUnix     atomic.Int64
+	lastBlockedUnix    atomic.Int64
+	bytesUp            atomic.Int64
+	bytesDown          atomic.Int64
+	writesUp           atomic.Int64
+	writesDown         atomic.Int64
+	blockedUp          atomic.Int64
+	blockedDown        atomic.Int64
+	blockMSUp          atomic.Int64
+	blockMSDown        atomic.Int64
+	maxBlockMSUp       atomic.Int64
+	maxBlockMSDown     atomic.Int64
+	lastBlockMSUp      atomic.Int64
+	lastBlockMSDown    atomic.Int64
+	lastCongestionSide atomic.Value
+	streamMonitor      atomic.Value
+	closeOnce          sync.Once
 }
 
 type probeChainUDPAssociationPool struct {
@@ -329,8 +343,10 @@ func (a *probeChainUDPAssociation) Write(payload []byte) error {
 		return nil
 	}
 	a.Touch()
-	_, err := a.conn.Write(payload)
-	if err == nil {
+	startedAt := time.Now()
+	n, err := a.conn.Write(payload)
+	a.recordWrite("up", n, time.Since(startedAt), true)
+	if n > 0 {
 		a.Touch()
 	}
 	return err
@@ -342,9 +358,52 @@ func (a *probeChainUDPAssociation) Read(buffer []byte) (int, error) {
 	}
 	n, err := a.conn.Read(buffer)
 	if n > 0 {
+		a.bytesDown.Add(int64(n))
 		a.Touch()
 	}
 	return n, err
+}
+
+func (a *probeChainUDPAssociation) RecordFrameWrite(direction string, n int, elapsed time.Duration) {
+	if a == nil {
+		return
+	}
+	a.recordWrite(direction, n, elapsed, false)
+}
+
+func (a *probeChainUDPAssociation) recordWrite(direction string, n int, elapsed time.Duration, countBytes bool) {
+	if a == nil {
+		return
+	}
+	side := normalizeProbeTCPDebugDirection(direction)
+	elapsedMS := elapsed.Milliseconds()
+	if side == "down" {
+		a.writesDown.Add(1)
+		if countBytes && n > 0 {
+			a.bytesDown.Add(int64(n))
+		}
+		if elapsed >= probeTCPDebugBlockedWriteThreshold {
+			a.blockedDown.Add(1)
+			a.blockMSDown.Add(elapsedMS)
+			a.lastBlockMSDown.Store(elapsedMS)
+			updateProbeTCPDebugMax(&a.maxBlockMSDown, elapsedMS)
+			a.lastBlockedUnix.Store(time.Now().UTC().Unix())
+			a.lastCongestionSide.Store("down")
+		}
+		return
+	}
+	a.writesUp.Add(1)
+	if countBytes && n > 0 {
+		a.bytesUp.Add(int64(n))
+	}
+	if elapsed >= probeTCPDebugBlockedWriteThreshold {
+		a.blockedUp.Add(1)
+		a.blockMSUp.Add(elapsedMS)
+		a.lastBlockMSUp.Store(elapsedMS)
+		updateProbeTCPDebugMax(&a.maxBlockMSUp, elapsedMS)
+		a.lastBlockedUnix.Store(time.Now().UTC().Unix())
+		a.lastCongestionSide.Store("up")
+	}
 }
 
 func (a *probeChainUDPAssociation) Release() {

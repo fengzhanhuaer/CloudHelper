@@ -107,6 +107,16 @@ func TestMngProbeConsoleProxyMarksControllerProxyResponse(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
+	oldRuntimeData := probeRuntimeStore.data
+	probeRuntimeStore.mu.Lock()
+	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
+	probeRuntimeStore.mu.Unlock()
+	t.Cleanup(func() {
+		probeRuntimeStore.mu.Lock()
+		probeRuntimeStore.data = oldRuntimeData
+		probeRuntimeStore.mu.Unlock()
+	})
+
 	nodeID := "proxy-node"
 	session := &probeSession{nodeID: nodeID, stream: clientConn, enc: json.NewEncoder(clientConn)}
 	probeSessions.mu.Lock()
@@ -118,6 +128,7 @@ func TestMngProbeConsoleProxyMarksControllerProxyResponse(t *testing.T) {
 		probeSessions.mu.Unlock()
 	}()
 
+	var nodeWriteMu sync.Mutex
 	go func() {
 		decoder := json.NewDecoder(clientConn)
 		for {
@@ -129,16 +140,14 @@ func TestMngProbeConsoleProxyMarksControllerProxyResponse(t *testing.T) {
 		}
 	}()
 
-	var nodeWriteMu sync.Mutex
 	go func() {
 		decoder := json.NewDecoder(serverConn)
-		encoder := json.NewEncoder(serverConn)
 		var cmd probeLocalConsoleProxyCommand
 		if err := decoder.Decode(&cmd); err != nil {
 			return
 		}
 		nodeWriteMu.Lock()
-		_ = encoder.Encode(probeLocalConsoleProxyResultMessage{
+		_ = json.NewEncoder(serverConn).Encode(probeLocalConsoleProxyResultMessage{
 			Type:       "local_console_proxy_result",
 			RequestID:  cmd.RequestID,
 			NodeID:     nodeID,

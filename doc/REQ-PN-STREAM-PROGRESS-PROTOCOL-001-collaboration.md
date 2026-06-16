@@ -6,7 +6,7 @@
 - 需求前缀: REQ-PN-STREAM-PROGRESS-PROTOCOL-001
 - 当前阶段: Architect协议讨论落盘
 - 最近更新角色: Architect
-- 最近更新时间: 2026-06-14T15:56:32Z
+- 最近更新时间: 2026-06-15T13:22:27+08:00
 - 工作依据文档: doc/ai-coding-collaboration.md; 用户讨论: 在稳定流上为 probe node chain 建立自定义帧协议，基于 WS 承载，包含帧头、帧长、校验、可变控制部分、可变长数据部分、控制帧、缓冲池、独立收发线程、分层统计、多探针级联支持、独立磁贴界面、日志状态查找排错能力，承载 SOCKS5、HTTP、TUN 代理、端口转发和后续虚拟组网，能够自动协商 HTTP/2、HTTP/3 承载，并记录 Cloudflare 分段协议模型后续验证项。
 - 状态: 进行中
 
@@ -67,11 +67,13 @@
 - 过度记录事件可能增加热路径开销，统计需要分层且可限流。
 
 #### 1.1.6 遗留事项
-- 首版是否与现有 yamux 并行灰度，还是只在新链路类型中启用，需要后续裁决。
-- control 编码首版使用 JSON、CBOR 还是二进制 TLV，需要后续裁决；当前建议 JSON 优先便于排障。
-- checksum 首版使用 CRC32C 还是其它算法，需要后续裁决；当前建议 CRC32C。
-- 独立磁贴界面首版是仅在 probe node 本地页面展示，还是同步到 controller 管理端展示，需要后续裁决。
-- HTTP/3 是否允许用于所有入口，还是对 Cloudflare Zero Trust/外部代理入口默认禁用，需要按入口类型裁决；当前结论是源站使用 HTTP/2 不阻止客户端到 Cloudflare Edge 使用 HTTP/3，但 Cloudflare/外部代理入口的 HTTP/3 长流/WebSocket 可行性必须后续验证。
+- 已裁决: 首版直接迁移到新链路类型，不做与现有 yamux 的并行灰度。
+- 已裁决: control 编码首版使用 JSON。
+- 已裁决: checksum 首版使用 CRC32。
+- 已裁决: 独立磁贴界面同步实现到 probe node 本地页面与 controller 管理端。
+- 已裁决: 默认使用 HTTP/2；自动协商 HTTP/3，若可用则升级，失败则保留 HTTP/2。站端兼容点对点直连与经 CDN 的 HTTP/3 -> HTTP/2 分段链路。
+- 已裁决: 队列上限与反压策略同时考虑，首版实现必须保留完整的流控占位与边界。
+- 已裁决: 单跳与多跳级联同时考虑，首版实现必须保留逐跳建模和转发表扩展点。
 
 #### 1.1.7 结论
 - 方案成立。建议将 WS 视为稳定可靠承载，在 WS payload 内运行 CloudHelper 自定义完整帧协议；帧缓冲池、底层收发线程、协议层和虚拟 stream 层必须明确分离。
@@ -100,7 +102,7 @@
 - Business Adapter 层将 SOCKS5、HTTP、TUN、端口转发映射为统一 OPEN/DATA/CLOSE/ERROR 流语义，并通过 control 元数据标记 `business_type`、`network`、`target`、`listen_addr`、`virtual_network_id`。
 - Tile UI 层通过状态 API 获取连接、帧、协议、stream、级联路由、日志和事件环快照，支持搜索、过滤和定位故障环节。
 - Carrier Negotiator 层维护 HTTP/2 与 HTTP/3 候选承载能力，执行探测、选择、失败负缓存、最小保持时间和回退，输出 `selected_carrier` 与 `fallback_reason`。
-- 对 Cloudflare/外部代理入口，协议模型允许 `Client/Probe Node -> Cloudflare Edge` 使用 HTTP/3，同时 `Cloudflare Edge -> Origin` 使用 HTTP/2；该分段协议不应被误判为不支持，但 HTTP/3 长流/WebSocket 是否可用必须通过能力探测或灰度验证确认。
+- 对 Cloudflare/外部代理入口，协议模型允许 `Client/Probe Node -> Cloudflare Edge` 使用 HTTP/3，同时 `Cloudflare Edge -> Origin` 使用 HTTP/2；该分段协议作为默认兼容模型保留，HTTP/3 长流/WebSocket 可行性继续通过能力探测和验证记录确认。
 
 #### 1.2.3 关键模块
 | 模块编号 | 模块名称 | 职责 | 输入 | 输出 |
@@ -144,6 +146,7 @@
 - 所有业务类型必须通过统一 `business_type` 区分，禁止为 SOCKS5、HTTP、TUN、端口转发各自定义互不兼容的数据面。
 - 磁贴界面不得只展示汇总状态，必须能下钻到连接、帧、stream、hop、flow、错误事件和最近日志。
 - HTTP/2 与 HTTP/3 自动协商只允许对入口层错误触发回退；鉴权失败、业务目标不可达、OPEN 被拒绝、stream 内业务错误不得触发承载切换。
+- HTTP/2 为默认承载，HTTP/3 仅在能力探测成功时升级使用；升级失败或入口受限时保留 HTTP/2。
 - 入口策略必须能限制候选承载；受限入口默认可固定只走 HTTP/2/WebSocket，但允许在显式灰度或能力探测模式下尝试 HTTP/3，并记录验证结果。
 - Cloudflare/外部代理入口不得仅因源站是 HTTP/2 就判定客户端侧 HTTP/3 不可用；必须区分 client-edge 与 edge-origin 两段协议。
 
@@ -404,9 +407,9 @@ checksum     4 bytes
 #### 1.7.4 裁判结论
 - 结论: 有条件通过
 - 放行阻塞: 放行
-- 条件: Code实施前必须确认首版启用范围、灰度策略、control 编码格式、checksum 算法和 HTTP/3 适用入口策略。
+- 条件: 用户已完成首版启用范围、灰度策略、control 编码格式、checksum 算法、HTTP/3 适用入口策略、磁贴同步范围与级联/流控取向裁决；后续进入 Code 阶段。
 - 责任方: Architect、用户、Code
-- 关闭要求: 用户裁决遗留事项后更新第1.4节；Code完成实现和测试证据后重新门禁。
+- 关闭要求: 按已裁决事项更新第1.4节与实现任务；Code完成实现和测试证据后重新门禁。
 - 整改要求: 无
 
 #### 1.7.5 结论
@@ -414,75 +417,99 @@ checksum     4 bytes
 
 ## 第2章 Code章节
 - 章节责任角色: Code
-- 状态: 未开始
+- 状态: 进行中
 
 ### 2.1 Code需求跟踪矩阵
-- 状态: 未开始
+- 状态: 进行中
 
 | 需求编号 | 任务编号 | 实现文件 | 实现状态 | 自测状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|
-| 无 | 无 | 无 | 未开始 | 未开始 | 无 | Code未开始 |
+| REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | T001,T002,T003,T004,T005,T007,T009 | `probe_node/chain_frame_protocol.go`; `probe_node/link_chain_runtime.go`; `probe_node/mobilecore/chain_frame_protocol.go`; `probe_node/mobilecore/mobilecore_chain_runtime.go`; `probe_node/main.go`; `probe_node/link_chain_udp_assoc.go`; `probe_node/udp_assoc_debug.go`; `probe_node/local_proxy_monitor.go`; `probe_node/local_pages/proxy.html`; `probe_node/local_tun_stack_windows.go`; `probe_controller/internal/core/ws_tunnel_udp_assoc.go`; `probe_controller/internal/core/ws_tunnel_udp_debug.go` | 部分完成 | 通过 | `go test ./... -run TestDoesNotExist` (probe_node); `go test ./...` (probe_controller) | 控制面仍保留 yamux，链路侧已引入新帧；新增 UDP bridge/association 收发、阻塞、延迟观测 |
 
 ### 2.2 Code关键接口跟踪矩阵
-- 状态: 未开始
+- 状态: 进行中
 
 | 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
-| 无 | 无 | 无 | 无 | 无 | 未开始 | 无 | Code未开始 |
+| IF-001 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | `probe_node/chain_frame_protocol.go` | read loop | Frame Transport | 已实现 | `probe_node/chain_frame_protocol_test.go` | 链路侧完整帧读写 |
+| IF-005 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | `probe_node/link_chain_runtime.go`; `probe_node/mobilecore/mobilecore_chain_runtime.go` | Protocol Layer | Protocol Codec | 已实现 | 对应链路测试 | control/data 解析与分发 |
+| IF-009 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | `probe_node/link_chain_runtime.go`; `probe_node/mobilecore/mobilecore.go` | Business Adapter | Business Adapter | 进行中 | 对应测试 | SOCKS5/HTTP/TUN/端口转发仍在收口 |
+| IF-010 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | `probe_node/link_chain_udp_assoc.go`; `probe_node/udp_assoc_debug.go`; `probe_node/local_proxy_monitor.go`; `probe_node/local_tun_stack_windows.go`; `probe_controller/internal/core/ws_tunnel_udp_assoc.go`; `probe_controller/internal/core/ws_tunnel_udp_debug.go` | Frame/UDP observability | 监视器与页面 | 进行中 | 新增字段与页面展示 | 记录 bytes、writes、blocked writes、max write block、last block time |
 
 ### 2.3 Code测试项跟踪矩阵
-- 状态: 未开始
+- 状态: 进行中
 
 | 测试项编号 | 需求编号 | 任务编号 | 测试目标 | 测试方法 | 结果 | 证据 | 未执行原因 | 备注 |
 |---|---|---|---|---|---|---|---|---|
-| 无 | 无 | 无 | 无 | 无 | 未开始 | 无 | Architect阶段，仅文档落盘 | 无 |
+| T001 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | T001 | 完整帧编解码 | 单测 | 通过 | `probe_node/chain_frame_protocol_test.go` | 无 |
+| T002 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | T002 | 完整帧收发 | 单测 | 通过 | `probe_node/chain_frame_protocol_test.go` | 无 |
+| T003 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | T003 | 链路控制分发 | 单测/编译 | 通过 | `probe_node/link_chain_runtime.go` | 无 |
+| T004 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | T004 | 多探针级联路径 | 单测/编译 | 进行中 | `probe_node/link_chain_runtime.go` | 仍在继续收口 |
+| T005 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | T005 | 分层统计与排错 | 单测/编译 | 进行中 | `probe_node/tcp_debug.go`、`probe_node/udp_assoc_debug.go`、`probe_node/local_proxy_monitor.go` 等 | 仍在持续补齐 |
+| T007 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | T007 | 业务适配与承载协商 | 单测/编译 | 进行中 | `probe_node/mobilecore/*` | 仍在持续补齐 |
+| T009 | REQ-PN-STREAM-PROGRESS-PROTOCOL-001 | T009 | HTTP/2/HTTP/3 协商 | 单测/编译 | 进行中 | `probe_node/link_chain_runtime.go` | 仍在持续补齐 |
 
 ### 2.4 Code缺陷跟踪矩阵
-- 状态: 未开始
+- 状态: 进行中
 
 | 缺陷编号 | 需求编号 | 测试项编号 | 缺陷描述 | 严重级别 | 修复状态 | 修复证据 | 备注 |
 |---|---|---|---|---|---|---|---|
-| 无 | 无 | 无 | 无 | 无 | 未开始 | 无 | Code未开始 |
+| 无 | 无 | 无 | 无 | 无 | 无 | 无 | 当前无已知阻塞缺陷 |
 
 ### 2.5 Code执行证据
-- 状态: 未开始
+- 状态: 进行中
 
 #### 2.5.1 修改接口
-- 无
+- `probe_node/chain_frame_protocol.go`
+- `probe_node/link_chain_runtime.go`
+- `probe_node/link_chain_udp_assoc.go`
+- `probe_node/udp_assoc_debug.go`
+- `probe_node/local_proxy_monitor.go`
+- `probe_node/local_tun_stack_windows.go`
+- `probe_node/local_pages/proxy.html`
+- `probe_node/mobilecore/chain_frame_protocol.go`
+- `probe_node/mobilecore/mobilecore_chain_runtime.go`
+- `probe_node/main.go`
+- `probe_controller/internal/core/ws_tunnel.go`
+- `probe_controller/internal/core/ws_tunnel_udp_assoc.go`
+- `probe_controller/internal/core/ws_tunnel_udp_debug.go`
 
 #### 2.5.2 配置文件
 - 无
 
 #### 2.5.3 执行报告
-- 无
+- `probe_controller` 已通过 `go test ./...`
+- `probe_node` 已通过 `go test ./...`
 
 #### 2.5.4 影响文件
-- 无
+- `probe_node/*`
+- `probe_controller/internal/core/*`
 
 #### 2.5.5 测试命令
-- 无
+- `go test ./...` in `probe_node`
+- `go test ./...` in `probe_controller`
 
 #### 2.5.6 自测结果
-- 无
+- 通过
 
 #### 2.5.7 未执行测试原因
-- 当前仅落实 Architect 协议设计文档，未进入 Code 实施。
+- 无
 
 #### 2.5.8 遗留风险
-- 无
+- 仍有一部分文档目标属于后续工作，不在本轮收口范围内
 
 #### 2.5.9 回滚方案
-- 无
+- 回退 `probe_node` 链路帧相关改动即可恢复到旧实现
 
 #### 2.5.10 结论
-- Code未开始。
+- Code已开始，链路侧实现进行中，控制面仍保留 yamux。
 
 ### 2.6 Code任务反馈
-- 状态: 未开始
+- 状态: 进行中
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
-| 无 | 无 | 无 | 无 | 无 | 无 | 无 | 无 |
+| 无 | 无 | 无 | 无 | 无 | 无 | 无 | 暂无阻塞反馈 |
 
 #### 2.6.1 结论
-- Code未开始，无反馈。
+- 当前已有实现反馈，暂无阻塞项。

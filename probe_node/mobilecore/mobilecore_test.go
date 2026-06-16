@@ -81,9 +81,7 @@ func TestMobileChainControlRestartAndStop(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
-	encoder := json.NewEncoder(server)
 	writeMu := &sync.Mutex{}
-	decoder := json.NewDecoder(client)
 
 	cmd := chainLinkControlMessage{
 		RequestID:    "apply-1",
@@ -96,9 +94,17 @@ func TestMobileChainControlRestartAndStop(t *testing.T) {
 		NextAuthMode: "proxy",
 	}
 	t.Cleanup(func() { stopMobileChainRuntime(cmd.ChainID, "test cleanup") })
-	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, encoder, writeMu)
+	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, writeMu)
 	var result chainLinkControlResult
-	if err := decoder.Decode(&result); err != nil {
+	frame, err := readMobileChainFrame(client)
+	if err != nil {
+		t.Fatalf("read start frame: %v", err)
+	}
+	payload := frame.Control
+	if len(payload) == 0 {
+		payload = frame.Data
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
 		t.Fatalf("decode start result: %v", err)
 	}
 	if !result.OK || result.Action != "apply" {
@@ -110,8 +116,16 @@ func TestMobileChainControlRestartAndStop(t *testing.T) {
 
 	cmd.RequestID = "restart-1"
 	cmd.Action = "restart"
-	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, encoder, writeMu)
-	if err := decoder.Decode(&result); err != nil {
+	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, writeMu)
+	frame, err = readMobileChainFrame(client)
+	if err != nil {
+		t.Fatalf("read restart frame: %v", err)
+	}
+	payload = frame.Control
+	if len(payload) == 0 {
+		payload = frame.Data
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
 		t.Fatalf("decode restart result: %v", err)
 	}
 	if !result.OK || result.Action != "restart" {
@@ -120,8 +134,16 @@ func TestMobileChainControlRestartAndStop(t *testing.T) {
 
 	cmd.RequestID = "stop-1"
 	cmd.Action = "stop"
-	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, encoder, writeMu)
-	if err := decoder.Decode(&result); err != nil {
+	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, writeMu)
+	frame, err = readMobileChainFrame(client)
+	if err != nil {
+		t.Fatalf("read stop frame: %v", err)
+	}
+	payload = frame.Control
+	if len(payload) == 0 {
+		payload = frame.Data
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
 		t.Fatalf("decode stop result: %v", err)
 	}
 	if !result.OK || result.Action != "remove" {

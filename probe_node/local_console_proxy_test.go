@@ -43,18 +43,20 @@ func TestRunProbeLocalConsoleProxyServesPanel(t *testing.T) {
 	defer serverConn.Close()
 
 	var mu sync.Mutex
-	enc := json.NewEncoder(serverConn)
+	encoder := json.NewEncoder(serverConn)
 	msg := probeControlMessage{
 		Type:          "local_console_proxy",
 		RequestID:     "req-1",
 		ConsoleMethod: http.MethodGet,
 		ConsolePath:   "/local/panel",
 	}
-	go runProbeLocalConsoleProxy(msg, nodeIdentity{NodeID: "1"}, serverConn, enc, &mu)
+	go runProbeLocalConsoleProxy(msg, nodeIdentity{NodeID: "1"}, serverConn, encoder, &mu)
 
 	_ = clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var res probeLocalConsoleProxyResult
-	if err := json.NewDecoder(clientConn).Decode(&res); err != nil {
+	decoder := json.NewDecoder(clientConn)
+	err := decoder.Decode(&res)
+	if err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
 	if !res.OK || res.StatusCode != http.StatusOK {

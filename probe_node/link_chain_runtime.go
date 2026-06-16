@@ -295,7 +295,6 @@ const (
 	probeChainRelayWebSocketWriteQueueDepth    = 64
 	probeChainRelayTCPSocketBufferBytes        = 8 * 1024 * 1024
 	probeChainRelayUDPSocketBufferBytes        = 64 * 1024 * 1024
-	probeChainRelayUDPFrameBufferBytes         = 2 + 65535
 	probeChainRelayTCPKeepAlivePeriod          = 30 * time.Second
 	probeChainRelayYamuxKeepAliveInterval      = 20 * time.Second
 	probeChainRelayYamuxAcceptBacklog          = 1024
@@ -391,9 +390,9 @@ type probeChainPreconnectError struct {
 func (e *probeChainPreconnectError) Error() string { return e.err.Error() }
 func (e *probeChainPreconnectError) Unwrap() error { return e.err }
 
-var probeChainUDPFrameBufferPool = sync.Pool{
+var probeChainFrameBufferPool = sync.Pool{
 	New: func() any {
-		return make([]byte, probeChainRelayUDPFrameBufferBytes)
+		return make([]byte, probeChainFrameMaxBytes)
 	},
 }
 
@@ -3696,7 +3695,10 @@ func handleProbeChainTunnelUDPStream(stream net.Conn, target string, association
 		for {
 			n, readErr := assoc.Read(buf)
 			if n > 0 {
-				if writeErr := writeProbeChainFramedPacket(stream, buf[:n]); writeErr != nil {
+				writeStartedAt := time.Now()
+				writeErr := writeProbeChainFramedPacket(stream, buf[:n])
+				assoc.RecordFrameWrite("down", n, time.Since(writeStartedAt))
+				if writeErr != nil {
 					errCh <- writeErr
 					return
 				}
@@ -4293,63 +4295,49 @@ func handleProbeChainSocks5UDPAssociate(conn net.Conn, reader *bufio.Reader, ver
 }
 
 func readProbeChainFramedPacket(reader *bufio.Reader) ([]byte, error) {
-	var lengthBytes [2]byte
-	if _, err := io.ReadFull(reader, lengthBytes[:]); err != nil {
+	frame, err := readProbeChainFrame(reader)
+	if err != nil {
 		return nil, err
 	}
-	length := int(binary.BigEndian.Uint16(lengthBytes[:]))
-	if length <= 0 {
-		return nil, errors.New("invalid framed packet length")
+	if frame.Kind != probeChainFrameKindData {
+		return nil, errors.New("invalid framed packet kind")
 	}
-	packet := make([]byte, length)
-	if _, err := io.ReadFull(reader, packet); err != nil {
-		return nil, err
+	if len(frame.Control) != 0 {
+		return nil, errors.New("invalid framed packet control")
 	}
-	return packet, nil
+	if len(frame.Data) == 0 {
+		return nil, nil
+	}
+	return frame.Data, nil
 }
 
 func readProbeChainFramedPacketInto(reader *bufio.Reader, payload []byte) (int, error) {
-	var lengthBytes [2]byte
-	if _, err := io.ReadFull(reader, lengthBytes[:]); err != nil {
+	packet, err := readProbeChainFramedPacket(reader)
+	if err != nil {
 		return 0, err
 	}
-	length := int(binary.BigEndian.Uint16(lengthBytes[:]))
-	if length <= 0 {
-		return 0, errors.New("invalid framed packet length")
+	if len(packet) == 0 {
+		return 0, nil
 	}
-	if length > len(payload) {
-		if _, err := io.CopyN(io.Discard, reader, int64(length)); err != nil {
-			return 0, err
-		}
+	if len(packet) > len(payload) {
 		return 0, errors.New("framed packet payload exceeds read buffer")
 	}
-	if _, err := io.ReadFull(reader, payload[:length]); err != nil {
-		return 0, err
-	}
-	return length, nil
+	copy(payload, packet)
+	return len(packet), nil
 }
 
 func writeProbeChainFramedPacket(writer io.Writer, payload []byte) error {
 	size := len(payload)
-	if size <= 0 || size > 65535 {
+	if size <= 0 || size > probeChainFrameMaxDataBytes {
 		return errors.New("invalid framed packet payload")
 	}
-	frame, _ := probeChainUDPFrameBufferPool.Get().([]byte)
-	if cap(frame) < 2+size {
-		frame = make([]byte, 2+size)
-	}
-	frame = frame[:2+size]
-	defer probeChainUDPFrameBufferPool.Put(frame[:cap(frame)])
-	binary.BigEndian.PutUint16(frame[:2], uint16(size))
-	copy(frame[2:], payload)
-	n, err := writer.Write(frame)
+	frame, _ := probeChainFrameBufferPool.Get().([]byte)
+	defer probeChainFrameBufferPool.Put(frame[:cap(frame)])
+	encoded, err := encodeProbeChainFrame(probeChainFrame{Kind: probeChainFrameKindData, Data: payload}, frame)
 	if err != nil {
 		return err
 	}
-	if n != len(frame) {
-		return io.ErrShortWrite
-	}
-	return nil
+	return writeAll(writer, encoded)
 }
 
 func parseProbeChainSocks5UDPDatagram(packet []byte) (targetAddr string, payload []byte, err error) {

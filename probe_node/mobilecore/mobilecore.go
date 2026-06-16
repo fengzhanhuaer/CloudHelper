@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,7 +24,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
 )
 
 const defaultReportIntervalSec = 60
@@ -572,35 +572,38 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 	}
 	defer wsConn.Close()
 
-	session, err := yamux.Client(newWebSocketNetConn(wsConn), yamux.DefaultConfig())
-	if err != nil {
-		return err
-	}
-	defer session.Close()
+	conn := newWebSocketNetConn(wsConn)
+	defer conn.Close()
 
-	stream, err := session.Open()
-	if err != nil {
-		return err
-	}
-	defer stream.Close()
-
-	encoder := json.NewEncoder(stream)
-	decoder := json.NewDecoder(stream)
 	writeMu := &sync.Mutex{}
 	setStatus("connected")
-	if err := sendReport(stream, encoder, writeMu, nodeID); err != nil {
+	if err := sendReport(conn, writeMu, nodeID); err != nil {
 		return err
 	}
 
 	readErrCh := make(chan error, 1)
 	go func() {
 		for {
-			var raw json.RawMessage
-			if err := decoder.Decode(&raw); err != nil {
+			frame, err := readMobileChainFrame(conn)
+			if err != nil {
 				readErrCh <- err
 				return
 			}
-			processControlMessage(raw, stream, encoder, writeMu, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret})
+			if frame.Kind == mobileChainFrameKindPing {
+				_ = writeMobileStreamFrame(conn, writeMu, mobileChainFrame{Kind: mobileChainFrameKindPong, Seq: frame.Seq})
+				continue
+			}
+			if frame.Kind != mobileChainFrameKindControl && frame.Kind != mobileChainFrameKindProgress && frame.Kind != mobileChainFrameKindData {
+				continue
+			}
+			raw := frame.Control
+			if len(raw) == 0 {
+				raw = frame.Data
+			}
+			if len(raw) == 0 {
+				continue
+			}
+			processControlMessage(raw, conn, writeMu, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret})
 		}
 	}()
 
@@ -613,14 +616,14 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 		case err := <-readErrCh:
 			return err
 		case <-ticker.C:
-			if err := sendReport(stream, encoder, writeMu, nodeID); err != nil {
+			if err := sendReport(conn, writeMu, nodeID); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func sendReport(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nodeID string) error {
+func sendReport(stream net.Conn, writeMu *sync.Mutex, nodeID string) error {
 	ipv4, ipv6 := collectIPs()
 	payload := reportPayload{
 		Type:      "report",
@@ -634,12 +637,7 @@ func sendReport(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nod
 		Version:   currentVersion(),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
-	writeMu.Lock()
-	defer writeMu.Unlock()
-	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := encoder.Encode(payload)
-	_ = stream.SetWriteDeadline(time.Time{})
-	return err
+	return writeMobileStreamJSON(stream, writeMu, payload)
 }
 
 func collectIPs() ([]string, []string) {
@@ -899,7 +897,7 @@ func percentFromUsed(used uint64, total uint64) float64 {
 	return (float64(used) / float64(total)) * 100
 }
 
-func processControlMessage(raw json.RawMessage, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, identity mobileNodeIdentity) {
+func processControlMessage(raw json.RawMessage, stream net.Conn, writeMu *sync.Mutex, identity mobileNodeIdentity) {
 	var envelope controlEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return
@@ -910,13 +908,13 @@ func processControlMessage(raw json.RawMessage, stream net.Conn, encoder *json.E
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			return
 		}
-		sendLogsControlResult(stream, encoder, writeMu, buildLogsControlResult(msg, identity.NodeID))
+		sendLogsControlResult(stream, writeMu, buildLogsControlResult(msg, identity.NodeID))
 	case "chain_link_control":
 		var msg chainLinkControlMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			return
 		}
-		runMobileChainLinkControl(msg, identity, stream, encoder, writeMu)
+		runMobileChainLinkControl(msg, identity, stream, writeMu)
 	}
 }
 
@@ -941,20 +939,44 @@ func buildLogsControlResult(msg logsControlMessage, nodeID string) logsControlRe
 	}
 }
 
-func sendLogsControlResult(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, result logsControlResult) {
-	writeMu.Lock()
-	defer writeMu.Unlock()
-	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	_ = encoder.Encode(result)
-	_ = stream.SetWriteDeadline(time.Time{})
+func sendLogsControlResult(stream net.Conn, writeMu *sync.Mutex, result logsControlResult) {
+	if err := writeMobileStreamJSON(stream, writeMu, result); err != nil {
+		log.Printf("logs result send failed: request_id=%s err=%v", strings.TrimSpace(result.RequestID), err)
+	}
 }
 
-func sendChainLinkControlResult(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, result chainLinkControlResult) {
-	writeMu.Lock()
-	defer writeMu.Unlock()
+func sendChainLinkControlResult(stream net.Conn, writeMu *sync.Mutex, result chainLinkControlResult) {
+	if err := writeMobileStreamJSON(stream, writeMu, result); err != nil {
+		log.Printf("chain link result send failed: request_id=%s err=%v", strings.TrimSpace(result.RequestID), err)
+	}
+}
+
+func writeMobileStreamJSON(stream net.Conn, writeMu *sync.Mutex, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	frameKind := mobileChainFrameKindControl
+	frame := mobileChainFrame{Kind: frameKind}
+	if len(data) > mobileChainFrameMaxControlBytes {
+		frameKind = mobileChainFrameKindData
+		frame.Kind = frameKind
+		frame.Data = data
+		return writeMobileStreamFrame(stream, writeMu, frame)
+	}
+	frame.Control = data
+	return writeMobileStreamFrame(stream, writeMu, frame)
+}
+
+func writeMobileStreamFrame(stream net.Conn, writeMu *sync.Mutex, frame mobileChainFrame) error {
+	if writeMu != nil {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+	}
 	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	_ = encoder.Encode(result)
+	err := writeMobileChainFrame(stream, frame)
 	_ = stream.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (b *androidLogBuffer) add(source string, level string, message string) {

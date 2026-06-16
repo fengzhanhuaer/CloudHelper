@@ -68,6 +68,30 @@
     }
     .proxy-tab-panel { display: none; }
     .proxy-tab-panel.active { display: block; }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: end;
+      margin: 10px 0 12px;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 160px;
+      flex: 1 1 160px;
+    }
+    .field label { font-size: 12px; color: #8b949e; }
+    .field select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      background: #0d1117;
+      color: #c9d1d9;
+    }
     button {
       padding: 8px 12px;
       border: 1px solid transparent;
@@ -166,6 +190,7 @@
     .status-ok { color: #7ee787; }
     .status-bad { color: #ff938d; }
     .status-warn { color: #f2cc60; }
+    .summary-line { margin: 8px 0 4px; color: #8b949e; font-size: 13px; }
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; }
     .msg.error { color: #ff938d; }
     .msg.success { color: #7ee787; }
@@ -219,9 +244,20 @@
     <section id="panelProxyLinks" class="card proxy-tab-panel" data-tab-panel="links">
       <strong>链路状态</strong>
       <p class="hint">每条 VNet 链路一行。延迟执行真实链路数据 ping-pong；测速使用专用 speed_test 模式，真实读取测试数据，不进入业务 bridge。</p>
+      <div class="toolbar">
+        <div class="field">
+          <label for="proxyLinkGroupFilter">组</label>
+          <select id="proxyLinkGroupFilter"></select>
+        </div>
+        <div class="field">
+          <label for="proxyLinkTypeFilter">类型</label>
+          <select id="proxyLinkTypeFilter"></select>
+        </div>
+      </div>
       <div class="actions">
         <button id="proxyLinkStatusRefreshBtn" class="secondary">刷新链路状态</button>
       </div>
+      <div id="proxyLinkStatusSummary" class="summary-line"></div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -241,6 +277,16 @@
     <section id="panelProxyConnections" class="card proxy-tab-panel" data-tab-panel="connections">
       <strong>连接状态</strong>
       <p id="proxyConnectionSummary" class="hint">-</p>
+      <div class="toolbar">
+        <div class="field">
+          <label for="proxyConnectionGroupFilter">组</label>
+          <select id="proxyConnectionGroupFilter"></select>
+        </div>
+        <div class="field">
+          <label for="proxyConnectionTypeFilter">类型</label>
+          <select id="proxyConnectionTypeFilter"></select>
+        </div>
+      </div>
       <div class="actions">
         <button id="proxyConnectionRefreshBtn" class="secondary">刷新连接状态</button>
       </div>
@@ -258,6 +304,11 @@
     const proxyLinkStatusRowsEl = document.getElementById('proxyLinkStatusRows');
     const proxyConnectionRowsEl = document.getElementById('proxyConnectionRows');
     const proxyConnectionSummaryEl = document.getElementById('proxyConnectionSummary');
+    const proxyLinkGroupFilterEl = document.getElementById('proxyLinkGroupFilter');
+    const proxyLinkTypeFilterEl = document.getElementById('proxyLinkTypeFilter');
+    const proxyConnectionGroupFilterEl = document.getElementById('proxyConnectionGroupFilter');
+    const proxyConnectionTypeFilterEl = document.getElementById('proxyConnectionTypeFilter');
+    const proxyLinkStatusSummaryEl = document.getElementById('proxyLinkStatusSummary');
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
     let proxyLinkStatusCache = [];
@@ -267,6 +318,10 @@
     let proxyStatusCache = { enabled: false, mode: '' };
     let proxyStatusPollingTimer = null;
     let proxyRuntimeRefreshInFlight = false;
+    let proxyLinkGroupFilter = 'all';
+    let proxyLinkTypeFilter = 'all';
+    let proxyConnectionGroupFilter = 'all';
+    let proxyConnectionTypeFilter = 'all';
     const PROXY_STATUS_POLL_INTERVAL_MS = 60000;
 
     function setMessage(text, type) {
@@ -684,6 +739,109 @@
       return `${Math.trunc(value)}ms`;
     }
 
+    function buildSelectOptions(selectEl, items, value) {
+      if (!selectEl) return;
+      selectEl.innerHTML = '';
+      items.forEach((item) => {
+        const option = document.createElement('option');
+        option.value = item.value;
+        option.textContent = item.label;
+        if (item.value === value) option.selected = true;
+        selectEl.appendChild(option);
+      });
+    }
+
+    function normalizeFilterValue(value) {
+      return String(value || '').trim().toLowerCase();
+    }
+
+    function getLinkGroupValue(item) {
+      return normalizeFilterValue(item && (item.group || item.group_name || item.selected_groups && item.selected_groups[0] || ''));
+    }
+
+    function getLinkTypeValue(item) {
+      return normalizeFilterValue(item && (item.client_entry_type || item.chain_type || item.scope || item.transport || ''));
+    }
+
+    function getConnectionGroupValue(item) {
+      return normalizeFilterValue(item && (item.group || item.route_group || ''));
+    }
+
+    function getConnectionTypeValue(item) {
+      if (item && item.assoc_key_v2) return 'udp-association';
+      const transport = normalizeFilterValue(item && item.transport);
+      if (transport === 'udp') return 'udp-bridge';
+      return normalizeFilterValue(item && (item.transport || item.scope || item.side || ''));
+    }
+
+    function renderLinkStatusSummary(items) {
+      const rows = Array.isArray(items) ? items : [];
+      const groups = new Set();
+      const types = new Set();
+      rows.forEach((item) => {
+        const group = getLinkGroupValue(item);
+        const type = getLinkTypeValue(item);
+        if (group) groups.add(group);
+        if (type) types.add(type);
+      });
+      if (proxyLinkStatusSummaryEl) {
+        proxyLinkStatusSummaryEl.textContent = `链路 ${rows.length} 条 ｜ 组 ${groups.size} ｜ 类型 ${types.size}`;
+      }
+    }
+
+    function syncProxyFilterControls() {
+      if (proxyLinkGroupFilterEl) {
+        proxyLinkGroupFilterEl.value = proxyLinkGroupFilter;
+      }
+      if (proxyLinkTypeFilterEl) {
+        proxyLinkTypeFilterEl.value = proxyLinkTypeFilter;
+      }
+      if (proxyConnectionGroupFilterEl) {
+        proxyConnectionGroupFilterEl.value = proxyConnectionGroupFilter;
+      }
+      if (proxyConnectionTypeFilterEl) {
+        proxyConnectionTypeFilterEl.value = proxyConnectionTypeFilter;
+      }
+    }
+
+    function refreshProxyFilterOptions() {
+      const linkGroups = new Map([['all', '全部组']]);
+      const linkTypes = new Map([['all', '全部类型']]);
+      proxyLinkStatusCache.forEach((item) => {
+        const group = getLinkGroupValue(item);
+        const type = getLinkTypeValue(item);
+        if (group) linkGroups.set(group, group);
+        if (type) linkTypes.set(type, type);
+      });
+      const connectionGroups = new Map([['all', '全部组']]);
+      const connectionTypes = new Map([['all', '全部类型']]);
+      const connectionItems = getProxyConnectionItemsFromCache();
+      connectionItems.forEach((item) => {
+        const group = getConnectionGroupValue(item);
+        const type = getConnectionTypeValue(item);
+        if (group) connectionGroups.set(group, group);
+        if (type) connectionTypes.set(type, type);
+      });
+      buildSelectOptions(proxyLinkGroupFilterEl, Array.from(linkGroups, ([value, label]) => ({ value, label })), proxyLinkGroupFilter);
+      buildSelectOptions(proxyLinkTypeFilterEl, Array.from(linkTypes, ([value, label]) => ({ value, label })), proxyLinkTypeFilter);
+      buildSelectOptions(proxyConnectionGroupFilterEl, Array.from(connectionGroups, ([value, label]) => ({ value, label })), proxyConnectionGroupFilter);
+      buildSelectOptions(proxyConnectionTypeFilterEl, Array.from(connectionTypes, ([value, label]) => ({ value, label })), proxyConnectionTypeFilter);
+      syncProxyFilterControls();
+    }
+
+    function getProxyConnectionItemsFromCache() {
+      const monitor = proxyConnectionRowsEl && proxyConnectionRowsEl.__proxyMonitorCache ? proxyConnectionRowsEl.__proxyMonitorCache : null;
+      const tcp = monitor && monitor.tcp ? monitor.tcp : {};
+      const udp = monitor && monitor.udp ? monitor.udp : {};
+      const bridges = udp && udp.bridges ? udp.bridges : {};
+      const associations = udp && Array.isArray(udp.association_items) ? udp.association_items : [];
+      return []
+        .concat(Array.isArray(tcp.items) ? tcp.items : [])
+        .concat(Array.isArray(tcp.completed_items) ? tcp.completed_items : [])
+        .concat(Array.isArray(bridges.items) ? bridges.items : [])
+        .concat(associations);
+    }
+
     function renderConnectionMetric(label, value) {
       return `<div class="connection-box"><div class="connection-box-label">${escapeHTML(label)}</div><div class="connection-box-value">${escapeHTML(value || '-')}</div></div>`;
     }
@@ -728,19 +886,28 @@
       const target = String(item && item.target || '-').trim();
       const routeTarget = String(item && item.route_target || target).trim();
       const group = String(item && item.group || (item && item.direct ? 'direct' : '-')).trim();
+      const maxBlock = Math.max(Number(item && item.max_write_block_ms_up || 0), Number(item && item.max_write_block_ms_down || 0));
+      const blockedUp = Number(item && item.blocked_writes_up || 0);
+      const blockedDown = Number(item && item.blocked_writes_down || 0);
+      const className = maxBlock > 0 || blockedUp > 0 || blockedDown > 0 ? 'connection-card warn' : 'connection-card';
+      const title = String(item && (item.assoc_key_v2 || item.flow_id || item.id) || target).trim();
+      const kind = item && item.assoc_key_v2 ? 'udp-association' : 'udp-bridge';
       return `
-        <div class="connection-card">
+        <div class="${className}">
           <div class="connection-title">
-            <span>${escapeHTML(item && item.id || target)}</span>
-            <span>udp</span>
+            <span>${escapeHTML(title)}</span>
+            <span>${kind}</span>
           </div>
           <div class="connection-domain">${escapeHTML(target)}</div>
-          <div class="connection-meta">${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')}</div>
+          <div class="connection-meta">${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ refs=${escapeHTML(item && item.refs || '-')}</div>
           <div class="connection-grid">
             ${renderConnectionMetric('上行', formatBytesText(item && item.bytes_up))}
             ${renderConnectionMetric('下行', formatBytesText(item && item.bytes_down))}
             ${renderConnectionMetric('空闲/年龄', `${formatDurationText(item && item.idle_ms)} / ${formatDurationText(item && item.age_ms)}`)}
-            ${renderConnectionMetric('TTL', formatDurationText(item && item.timeout_ms))}
+            ${renderConnectionMetric('TTL/打开', `${formatDurationText(item && (item.timeout_ms || item.idle_timeout_ms))} / ${formatDurationText(item && item.open_latency_ms)}`)}
+            ${renderConnectionMetric('写次数', `${Math.trunc(Number(item && item.writes_up || 0))} / ${Math.trunc(Number(item && item.writes_down || 0))}`)}
+            ${renderConnectionMetric('阻塞次数', `${Math.trunc(blockedUp)} / ${Math.trunc(blockedDown)}`)}
+            ${renderConnectionMetric('最大阻塞', maxBlock > 0 ? `${Math.trunc(maxBlock)}ms ${item && item.last_congestion_side || ''}` : '-')}
           </div>
         </div>
       `;
@@ -748,27 +915,47 @@
 
     function renderProxyConnectionStatus(data) {
       const monitor = data && typeof data === 'object' ? data : {};
+      if (proxyConnectionRowsEl) {
+        proxyConnectionRowsEl.__proxyMonitorCache = monitor;
+      }
       const tcp = monitor.tcp || {};
       const udp = monitor.udp || {};
       const bridges = udp.bridges || {};
       const active = Array.isArray(tcp.items) ? tcp.items : [];
       const completed = Array.isArray(tcp.completed_items) ? tcp.completed_items : [];
       const udpItems = Array.isArray(bridges.items) ? bridges.items : [];
+      const udpAssociations = Array.isArray(udp.association_items) ? udp.association_items : [];
       if (proxyConnectionSummaryEl) {
-        proxyConnectionSummaryEl.textContent = `活跃 TCP ${active.length} / 最近断开 ${completed.length} / UDP ${udpItems.length} / 刷新 ${monitor.fetched_at || '--'}`;
+        proxyConnectionSummaryEl.textContent = `活跃 TCP ${active.length} / 最近断开 ${completed.length} / UDP bridge ${udpItems.length} / UDP assoc ${udpAssociations.length} / 刷新 ${monitor.fetched_at || '--'}`;
       }
       if (!proxyConnectionRowsEl) return;
-      if (active.length === 0 && completed.length === 0 && udpItems.length === 0) {
+      refreshProxyFilterOptions();
+      const tcpFilter = proxyConnectionTypeFilter;
+      const groupFilter = proxyConnectionGroupFilter;
+      const filterConnectionItem = (item) => {
+        const group = getConnectionGroupValue(item);
+        const type = getConnectionTypeValue(item);
+        if (groupFilter !== 'all' && group !== groupFilter) return false;
+        if (tcpFilter !== 'all' && type !== tcpFilter) return false;
+        return true;
+      };
+      const activeFiltered = active.filter(filterConnectionItem);
+      const completedFiltered = completed.filter(filterConnectionItem);
+      const udpFiltered = udpItems.filter(filterConnectionItem);
+      const udpAssocFiltered = udpAssociations.filter(filterConnectionItem);
+      if (active.length === 0 && completed.length === 0 && udpItems.length === 0 && udpAssociations.length === 0) {
         proxyConnectionRowsEl.innerHTML = '<div class="hint">暂无 VNet 连接记录</div>';
         return;
       }
       const html = [];
       html.push('<div class="connection-section-title">活跃 TCP</div>');
-      html.push(active.length ? active.map(renderProxyTCPConnectionCard).join('') : '<div class="hint">暂无活跃 TCP 连接</div>');
+      html.push(activeFiltered.length ? activeFiltered.map(renderProxyTCPConnectionCard).join('') : '<div class="hint">暂无匹配的活跃 TCP 连接</div>');
       html.push('<div class="connection-section-title">最近断开 TCP</div>');
-      html.push(completed.length ? completed.map(renderProxyTCPConnectionCard).join('') : '<div class="hint">暂无最近断开 TCP 连接</div>');
+      html.push(completedFiltered.length ? completedFiltered.map(renderProxyTCPConnectionCard).join('') : '<div class="hint">暂无匹配的最近断开 TCP 连接</div>');
       html.push('<div class="connection-section-title">UDP Bridge</div>');
-      html.push(udpItems.length ? udpItems.map(renderProxyUDPConnectionCard).join('') : '<div class="hint">暂无 UDP bridge 连接</div>');
+      html.push(udpFiltered.length ? udpFiltered.map(renderProxyUDPConnectionCard).join('') : '<div class="hint">暂无匹配的 UDP bridge 连接</div>');
+      html.push('<div class="connection-section-title">UDP Association</div>');
+      html.push(udpAssocFiltered.length ? udpAssocFiltered.map(renderProxyUDPConnectionCard).join('') : '<div class="hint">暂无匹配的 UDP association 连接</div>');
       proxyConnectionRowsEl.innerHTML = html.join('');
     }
 
@@ -1014,6 +1201,7 @@
       const tcp = monitor.tcp || {};
       const udp = monitor.udp || {};
       const udpBridges = udp.bridges || {};
+      const udpAssociations = Array.isArray(udp.association_items) ? udp.association_items : [];
       const memory = monitor.memory || {};
       const cpu = monitor.cpu_percent_text && monitor.cpu_percent_text !== 'unavailable' ? String(monitor.cpu_percent_text).trim() + '%' : '不可用';
       lines.push(`CPU=${cpu} goroutines=${Math.trunc(Number(monitor.goroutines) || 0)} heap=${Number(memory.heap_alloc_mb || 0).toFixed(2)}MB gc=${Math.trunc(Number(memory.num_gc) || 0)}`);
@@ -1046,6 +1234,15 @@
         return `${target} -> ${routeTarget} up=${formatBytesText(up)} down=${formatBytesText(down)}`;
       }).filter(Boolean) : [];
       if (udpItems.length > 0) lines.push(`最近活跃 UDP bridge:\n${udpItems.join('\n')}`);
+      const assocItems = udpAssociations.slice(0, 4).map((entry) => {
+        const target = String(entry && entry.target || '-').trim();
+        const routeTarget = String(entry && entry.route_target || '-').trim();
+        const up = Number(entry && entry.bytes_up || 0);
+        const down = Number(entry && entry.bytes_down || 0);
+        const maxBlock = Math.max(Number(entry && entry.max_write_block_ms_up || 0), Number(entry && entry.max_write_block_ms_down || 0));
+        return `${target} -> ${routeTarget} refs=${Math.trunc(Number(entry && entry.refs || 0))} up=${formatBytesText(up)} down=${formatBytesText(down)} max_block=${maxBlock ? Math.trunc(maxBlock) + 'ms' : '-'}`;
+      }).filter(Boolean);
+      if (assocItems.length > 0) lines.push(`最近活跃 UDP association:\n${assocItems.join('\n')}`);
       return lines.join('\n');
     }
 
@@ -1176,11 +1373,20 @@
     function renderProxyLinkStatusRows(items) {
       proxyLinkStatusRowsEl.innerHTML = '';
       const rows = Array.isArray(items) ? items : [];
-      if (rows.length === 0) {
-        proxyLinkStatusRowsEl.innerHTML = '<tr><td colspan="3" class="muted">暂无链路状态</td></tr>';
+      renderLinkStatusSummary(rows);
+      refreshProxyFilterOptions();
+      const filtered = rows.filter((item) => {
+        const group = getLinkGroupValue(item);
+        const type = getLinkTypeValue(item);
+        if (proxyLinkGroupFilter !== 'all' && group !== proxyLinkGroupFilter) return false;
+        if (proxyLinkTypeFilter !== 'all' && type !== proxyLinkTypeFilter) return false;
+        return true;
+      });
+      if (filtered.length === 0) {
+        proxyLinkStatusRowsEl.innerHTML = '<tr><td colspan="3" class="muted">暂无匹配链路状态</td></tr>';
         return;
       }
-      rows.forEach((item) => {
+      filtered.forEach((item) => {
         const tr = document.createElement('tr');
         const chainID = normalizeChainID(item && item.chain_id);
         const chainName = String(item && item.chain_name || '').trim() || chainID || '-';
@@ -1634,6 +1840,31 @@
         setMessage('刷新连接状态失败：' + err.message, 'error');
       }
     });
+
+    if (proxyLinkGroupFilterEl) {
+      proxyLinkGroupFilterEl.addEventListener('change', () => {
+        proxyLinkGroupFilter = String(proxyLinkGroupFilterEl.value || 'all');
+        renderProxyLinkStatusRows(proxyLinkStatusCache);
+      });
+    }
+    if (proxyLinkTypeFilterEl) {
+      proxyLinkTypeFilterEl.addEventListener('change', () => {
+        proxyLinkTypeFilter = String(proxyLinkTypeFilterEl.value || 'all');
+        renderProxyLinkStatusRows(proxyLinkStatusCache);
+      });
+    }
+    if (proxyConnectionGroupFilterEl) {
+      proxyConnectionGroupFilterEl.addEventListener('change', () => {
+        proxyConnectionGroupFilter = String(proxyConnectionGroupFilterEl.value || 'all');
+        loadProxyConnectionStatus().catch((err) => setMessage('读取连接状态失败：' + err.message, 'error'));
+      });
+    }
+    if (proxyConnectionTypeFilterEl) {
+      proxyConnectionTypeFilterEl.addEventListener('change', () => {
+        proxyConnectionTypeFilter = String(proxyConnectionTypeFilterEl.value || 'all');
+        loadProxyConnectionStatus().catch((err) => setMessage('读取连接状态失败：' + err.message, 'error'));
+      });
+    }
 
     proxyLinkStatusRowsEl.addEventListener('click', (event) => {
       const copyTarget = event.target && event.target.closest ? event.target.closest('[data-copy-cf-ip]') : null;

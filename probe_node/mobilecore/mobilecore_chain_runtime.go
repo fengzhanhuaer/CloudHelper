@@ -12,7 +12,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -275,7 +274,7 @@ var mobileChainCopyBufferPool = sync.Pool{New: func() any { return make([]byte, 
 
 var mobileChainOpenBridgeStreamTimeout = mobileChainOpenTimeout
 
-func runMobileChainLinkControl(cmd chainLinkControlMessage, identity mobileNodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
+func runMobileChainLinkControl(cmd chainLinkControlMessage, identity mobileNodeIdentity, stream net.Conn, writeMu *sync.Mutex) {
 	action := normalizeMobileChainAction(cmd.Action)
 	if action == "" {
 		action = "apply"
@@ -295,14 +294,14 @@ func runMobileChainLinkControl(cmd chainLinkControlMessage, identity mobileNodeI
 		cfg, err := buildMobileChainRuntimeConfig(cmd)
 		if err != nil {
 			result.Error = err.Error()
-			sendChainLinkControlResult(stream, encoder, writeMu, result)
+			sendChainLinkControlResult(stream, writeMu, result)
 			return
 		}
 		cfg.Identity = identity
 		rt, err := startMobileChainRuntime(cfg)
 		if err != nil {
 			result.Error = err.Error()
-			sendChainLinkControlResult(stream, encoder, writeMu, result)
+			sendChainLinkControlResult(stream, writeMu, result)
 			return
 		}
 		result.OK = true
@@ -318,7 +317,7 @@ func runMobileChainLinkControl(cmd chainLinkControlMessage, identity mobileNodeI
 	default:
 		result.Error = "unsupported action"
 	}
-	sendChainLinkControlResult(stream, encoder, writeMu, result)
+	sendChainLinkControlResult(stream, writeMu, result)
 }
 
 func buildMobileChainRuntimeConfig(cmd chainLinkControlMessage) (mobileChainRuntimeConfig, error) {
@@ -1871,32 +1870,37 @@ func readMobileChainFramedPacket(reader *bufio.Reader) ([]byte, error) {
 }
 
 func readMobileChainFramedPacketInto(reader *bufio.Reader, payload []byte) (int, error) {
-	var header [2]byte
-	if _, err := io.ReadFull(reader, header[:]); err != nil {
+	frame, err := readMobileChainFrame(reader)
+	if err != nil {
 		return 0, err
 	}
-	size := int(binary.BigEndian.Uint16(header[:]))
-	if size <= 0 {
+	if frame.Kind != mobileChainFrameKindData {
+		return 0, fmt.Errorf("invalid framed packet kind")
+	}
+	if len(frame.Control) != 0 {
+		return 0, fmt.Errorf("invalid framed packet control")
+	}
+	if len(frame.Data) == 0 {
 		return 0, nil
 	}
-	if size > len(payload) {
-		return 0, fmt.Errorf("udp frame too large: %d", size)
+	if len(frame.Data) > len(payload) {
+		return 0, fmt.Errorf("udp frame too large: %d", len(frame.Data))
 	}
-	_, err := io.ReadFull(reader, payload[:size])
-	return size, err
+	copy(payload, frame.Data)
+	return len(frame.Data), nil
 }
 
 func writeMobileChainFramedPacket(writer io.Writer, payload []byte) error {
 	if len(payload) > mobileChainFrameMaxPayload {
 		return fmt.Errorf("udp frame too large: %d", len(payload))
 	}
-	var header [2]byte
-	binary.BigEndian.PutUint16(header[:], uint16(len(payload)))
-	if _, err := writer.Write(header[:]); err != nil {
+	frame, _ := mobileChainFrameBufferPool.Get().([]byte)
+	defer mobileChainFrameBufferPool.Put(frame[:cap(frame)])
+	encoded, err := encodeMobileChainFrame(mobileChainFrame{Kind: mobileChainFrameKindData, Data: payload}, frame)
+	if err != nil {
 		return err
 	}
-	_, err := writer.Write(payload)
-	return err
+	return writeAll(writer, encoded)
 }
 
 func readMobileChainSourceIPHint(reader *bufio.Reader) (string, error) {

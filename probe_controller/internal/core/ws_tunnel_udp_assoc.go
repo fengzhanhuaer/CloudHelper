@@ -10,13 +10,14 @@ import (
 )
 
 const (
-	tunnelUDPAssociationIdleTTL       = 90 * time.Second
-	tunnelUDPAssociationGCInterval    = 15 * time.Second
-	tunnelUDPAssociationReadBufSize   = 64 * 1024
-	tunnelUDPAssociationMinIdleTTL    = 30 * time.Second
-	tunnelUDPAssociationMaxIdleTTL    = 15 * time.Minute
-	tunnelUDPAssociationMinGCInterval = 10 * time.Second
-	tunnelUDPAssociationMaxGCInterval = 2 * time.Minute
+	tunnelUDPAssociationIdleTTL               = 90 * time.Second
+	tunnelUDPAssociationGCInterval            = 15 * time.Second
+	tunnelUDPAssociationReadBufSize           = 64 * 1024
+	tunnelUDPAssociationMinIdleTTL            = 30 * time.Second
+	tunnelUDPAssociationMaxIdleTTL            = 15 * time.Minute
+	tunnelUDPAssociationMinGCInterval         = 10 * time.Second
+	tunnelUDPAssociationMaxGCInterval         = 2 * time.Minute
+	tunnelUDPAssociationBlockedWriteThreshold = 50 * time.Millisecond
 
 	tunnelUDPAssociationTTLProfileDNSFast    = "profile_dns_fast"
 	tunnelUDPAssociationTTLProfileDefault    = "profile_udp_default"
@@ -44,9 +45,23 @@ type tunnelUDPAssociation struct {
 	conn             *net.UDPConn
 	pool             *tunnelUDPAssociationPool
 
-	refs           atomic.Int32
-	lastActiveUnix atomic.Int64
-	closeOnce      sync.Once
+	refs               atomic.Int32
+	lastActiveUnix     atomic.Int64
+	lastBlockedUnix    atomic.Int64
+	bytesUp            atomic.Int64
+	bytesDown          atomic.Int64
+	writesUp           atomic.Int64
+	writesDown         atomic.Int64
+	blockedUp          atomic.Int64
+	blockedDown        atomic.Int64
+	blockMSUp          atomic.Int64
+	blockMSDown        atomic.Int64
+	maxBlockMSUp       atomic.Int64
+	maxBlockMSDown     atomic.Int64
+	lastBlockMSUp      atomic.Int64
+	lastBlockMSDown    atomic.Int64
+	lastCongestionSide atomic.Value
+	closeOnce          sync.Once
 }
 
 type tunnelUDPAssociationPool struct {
@@ -303,8 +318,10 @@ func (a *tunnelUDPAssociation) Write(payload []byte) error {
 		return nil
 	}
 	a.Touch()
-	_, err := a.conn.Write(payload)
-	if err == nil {
+	startedAt := time.Now()
+	n, err := a.conn.Write(payload)
+	a.recordWrite("up", n, time.Since(startedAt), true)
+	if n > 0 {
 		a.Touch()
 	}
 	return err
@@ -316,9 +333,70 @@ func (a *tunnelUDPAssociation) Read(buffer []byte) (int, error) {
 	}
 	n, err := a.conn.Read(buffer)
 	if n > 0 {
+		a.bytesDown.Add(int64(n))
 		a.Touch()
 	}
 	return n, err
+}
+
+func (a *tunnelUDPAssociation) RecordFrameWrite(direction string, n int, elapsed time.Duration) {
+	if a == nil {
+		return
+	}
+	a.recordWrite(direction, n, elapsed, false)
+}
+
+func (a *tunnelUDPAssociation) recordWrite(direction string, n int, elapsed time.Duration, countBytes bool) {
+	if a == nil {
+		return
+	}
+	side := strings.ToLower(strings.TrimSpace(direction))
+	if side != "down" {
+		side = "up"
+	}
+	elapsedMS := elapsed.Milliseconds()
+	if side == "down" {
+		a.writesDown.Add(1)
+		if countBytes && n > 0 {
+			a.bytesDown.Add(int64(n))
+		}
+		if elapsed >= tunnelUDPAssociationBlockedWriteThreshold {
+			a.blockedDown.Add(1)
+			a.blockMSDown.Add(elapsedMS)
+			a.lastBlockMSDown.Store(elapsedMS)
+			updateTunnelUDPAssociationMax(&a.maxBlockMSDown, elapsedMS)
+			a.lastBlockedUnix.Store(time.Now().UTC().Unix())
+			a.lastCongestionSide.Store("down")
+		}
+		return
+	}
+	a.writesUp.Add(1)
+	if countBytes && n > 0 {
+		a.bytesUp.Add(int64(n))
+	}
+	if elapsed >= tunnelUDPAssociationBlockedWriteThreshold {
+		a.blockedUp.Add(1)
+		a.blockMSUp.Add(elapsedMS)
+		a.lastBlockMSUp.Store(elapsedMS)
+		updateTunnelUDPAssociationMax(&a.maxBlockMSUp, elapsedMS)
+		a.lastBlockedUnix.Store(time.Now().UTC().Unix())
+		a.lastCongestionSide.Store("up")
+	}
+}
+
+func updateTunnelUDPAssociationMax(target *atomic.Int64, value int64) {
+	if target == nil || value <= 0 {
+		return
+	}
+	for {
+		current := target.Load()
+		if value <= current {
+			return
+		}
+		if target.CompareAndSwap(current, value) {
+			return
+		}
+	}
 }
 
 func (a *tunnelUDPAssociation) Release() {

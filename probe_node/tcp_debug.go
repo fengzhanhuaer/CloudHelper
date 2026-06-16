@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"net"
 	"sort"
@@ -10,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"encoding/json"
 )
 
 const probeTCPDebugMaxFailures = 128

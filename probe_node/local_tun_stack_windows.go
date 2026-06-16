@@ -158,19 +158,31 @@ type probeLocalTUNUDPBridgeMonitorStats struct {
 }
 
 type probeLocalTUNUDPBridgeMonitorItem struct {
-	ID          string `json:"id"`
-	Target      string `json:"target,omitempty"`
-	RouteTarget string `json:"route_target,omitempty"`
-	Group       string `json:"group,omitempty"`
-	NodeID      string `json:"node_id,omitempty"`
-	Direct      bool   `json:"direct"`
-	TimeoutMS   int64  `json:"timeout_ms"`
-	OpenedAt    string `json:"opened_at,omitempty"`
-	LastActive  string `json:"last_active,omitempty"`
-	AgeMS       int64  `json:"age_ms"`
-	IdleMS      int64  `json:"idle_ms"`
-	BytesUp     int64  `json:"bytes_up,omitempty"`
-	BytesDown   int64  `json:"bytes_down,omitempty"`
+	ID                   string `json:"id"`
+	Target               string `json:"target,omitempty"`
+	RouteTarget          string `json:"route_target,omitempty"`
+	Group                string `json:"group,omitempty"`
+	NodeID               string `json:"node_id,omitempty"`
+	Direct               bool   `json:"direct"`
+	TimeoutMS            int64  `json:"timeout_ms"`
+	OpenedAt             string `json:"opened_at,omitempty"`
+	LastActive           string `json:"last_active,omitempty"`
+	AgeMS                int64  `json:"age_ms"`
+	IdleMS               int64  `json:"idle_ms"`
+	BytesUp              int64  `json:"bytes_up,omitempty"`
+	BytesDown            int64  `json:"bytes_down,omitempty"`
+	WritesUp             int64  `json:"writes_up,omitempty"`
+	WritesDown           int64  `json:"writes_down,omitempty"`
+	BlockedWritesUp      int64  `json:"blocked_writes_up,omitempty"`
+	BlockedWritesDown    int64  `json:"blocked_writes_down,omitempty"`
+	WriteBlockMSUp       int64  `json:"write_block_ms_up,omitempty"`
+	WriteBlockMSDown     int64  `json:"write_block_ms_down,omitempty"`
+	MaxWriteBlockMSUp    int64  `json:"max_write_block_ms_up,omitempty"`
+	MaxWriteBlockMSDown  int64  `json:"max_write_block_ms_down,omitempty"`
+	LastWriteBlockMSUp   int64  `json:"last_write_block_ms_up,omitempty"`
+	LastWriteBlockMSDown int64  `json:"last_write_block_ms_down,omitempty"`
+	LastWriteBlockedAt   string `json:"last_write_blocked_at,omitempty"`
+	LastCongestionSide   string `json:"last_congestion_side,omitempty"`
 }
 
 type probeLocalTUNTunnelUDPConn struct {
@@ -272,9 +284,21 @@ type probeLocalTUNUDPBridgeMonitorItemState struct {
 	openedAt time.Time
 	timeout  time.Duration
 
-	lastActiveUnix atomic.Int64
-	bytesUp        atomic.Int64
-	bytesDown      atomic.Int64
+	lastActiveUnix     atomic.Int64
+	lastBlockedUnix    atomic.Int64
+	bytesUp            atomic.Int64
+	bytesDown          atomic.Int64
+	writesUp           atomic.Int64
+	writesDown         atomic.Int64
+	blockedUp          atomic.Int64
+	blockedDown        atomic.Int64
+	blockMSUp          atomic.Int64
+	blockMSDown        atomic.Int64
+	maxBlockMSUp       atomic.Int64
+	maxBlockMSDown     atomic.Int64
+	lastBlockMSUp      atomic.Int64
+	lastBlockMSDown    atomic.Int64
+	lastCongestionSide atomic.Value
 }
 
 func startProbeLocalTUNPacketStack() error {
@@ -1269,7 +1293,10 @@ func (b *probeLocalTUNUDPBridge) forwardInboundToOutbound() {
 		n, err := b.inbound.Read(buf)
 		if n > 0 {
 			touchProbeLocalTUNUDPBridgeMonitorItem(b.monitor, "up", n)
-			if _, writeErr := b.outbound.Write(buf[:n]); writeErr != nil {
+			writeStartedAt := time.Now()
+			_, writeErr := b.outbound.Write(buf[:n])
+			recordProbeLocalTUNUDPBridgeWrite(b.monitor, "up", time.Since(writeStartedAt))
+			if writeErr != nil {
 				b.close()
 				return
 			}
@@ -1297,7 +1324,10 @@ func (b *probeLocalTUNUDPBridge) forwardOutboundToInbound() {
 		n, err := b.outbound.Read(buf)
 		if n > 0 {
 			touchProbeLocalTUNUDPBridgeMonitorItem(b.monitor, "down", n)
-			if _, writeErr := b.inbound.Write(buf[:n]); writeErr != nil {
+			writeStartedAt := time.Now()
+			_, writeErr := b.inbound.Write(buf[:n])
+			recordProbeLocalTUNUDPBridgeWrite(b.monitor, "down", time.Since(writeStartedAt))
+			if writeErr != nil {
 				b.close()
 				return
 			}
@@ -1364,22 +1394,38 @@ func snapshotProbeLocalTUNUDPBridgeMonitorStats() probeLocalTUNUDPBridgeMonitorS
 	probeLocalTUNUDPBridgeMonitorState.mu.Unlock()
 	for _, item := range items {
 		view := probeLocalTUNUDPBridgeMonitorItem{
-			ID:          strings.TrimSpace(item.id),
-			Target:      strings.TrimSpace(item.target),
-			RouteTarget: firstNonEmpty(strings.TrimSpace(item.route.TargetAddr), strings.TrimSpace(item.target)),
-			Group:       strings.TrimSpace(item.route.Group),
-			NodeID:      strings.TrimSpace(item.route.TunnelNodeID),
-			Direct:      item.route.Direct,
-			TimeoutMS:   item.timeout.Milliseconds(),
-			OpenedAt:    item.openedAt.UTC().Format(time.RFC3339),
-			AgeMS:       now.Sub(item.openedAt).Milliseconds(),
-			BytesUp:     item.bytesUp.Load(),
-			BytesDown:   item.bytesDown.Load(),
+			ID:                   strings.TrimSpace(item.id),
+			Target:               strings.TrimSpace(item.target),
+			RouteTarget:          firstNonEmpty(strings.TrimSpace(item.route.TargetAddr), strings.TrimSpace(item.target)),
+			Group:                strings.TrimSpace(item.route.Group),
+			NodeID:               strings.TrimSpace(item.route.TunnelNodeID),
+			Direct:               item.route.Direct,
+			TimeoutMS:            item.timeout.Milliseconds(),
+			OpenedAt:             item.openedAt.UTC().Format(time.RFC3339),
+			AgeMS:                now.Sub(item.openedAt).Milliseconds(),
+			BytesUp:              item.bytesUp.Load(),
+			BytesDown:            item.bytesDown.Load(),
+			WritesUp:             item.writesUp.Load(),
+			WritesDown:           item.writesDown.Load(),
+			BlockedWritesUp:      item.blockedUp.Load(),
+			BlockedWritesDown:    item.blockedDown.Load(),
+			WriteBlockMSUp:       item.blockMSUp.Load(),
+			WriteBlockMSDown:     item.blockMSDown.Load(),
+			MaxWriteBlockMSUp:    item.maxBlockMSUp.Load(),
+			MaxWriteBlockMSDown:  item.maxBlockMSDown.Load(),
+			LastWriteBlockMSUp:   item.lastBlockMSUp.Load(),
+			LastWriteBlockMSDown: item.lastBlockMSDown.Load(),
 		}
 		if lastActive := item.lastActiveUnix.Load(); lastActive > 0 {
 			lastActiveAt := time.Unix(lastActive, 0).UTC()
 			view.LastActive = lastActiveAt.Format(time.RFC3339)
 			view.IdleMS = now.Sub(lastActiveAt).Milliseconds()
+		}
+		if lastBlocked := item.lastBlockedUnix.Load(); lastBlocked > 0 {
+			view.LastWriteBlockedAt = time.Unix(lastBlocked, 0).UTC().Format(time.RFC3339)
+		}
+		if side, ok := item.lastCongestionSide.Load().(string); ok {
+			view.LastCongestionSide = strings.TrimSpace(side)
 		}
 		if view.Direct {
 			stats.Direct++
@@ -1430,6 +1476,35 @@ func touchProbeLocalTUNUDPBridgeMonitorItem(item *probeLocalTUNUDPBridgeMonitorI
 		return
 	}
 	item.bytesUp.Add(int64(n))
+}
+
+func recordProbeLocalTUNUDPBridgeWrite(item *probeLocalTUNUDPBridgeMonitorItemState, direction string, elapsed time.Duration) {
+	if item == nil {
+		return
+	}
+	side := normalizeProbeTCPDebugDirection(direction)
+	elapsedMS := elapsed.Milliseconds()
+	if side == "down" {
+		item.writesDown.Add(1)
+		if elapsed >= probeTCPDebugBlockedWriteThreshold {
+			item.blockedDown.Add(1)
+			item.blockMSDown.Add(elapsedMS)
+			item.lastBlockMSDown.Store(elapsedMS)
+			updateProbeTCPDebugMax(&item.maxBlockMSDown, elapsedMS)
+			item.lastBlockedUnix.Store(time.Now().UTC().Unix())
+			item.lastCongestionSide.Store("down")
+		}
+		return
+	}
+	item.writesUp.Add(1)
+	if elapsed >= probeTCPDebugBlockedWriteThreshold {
+		item.blockedUp.Add(1)
+		item.blockMSUp.Add(elapsedMS)
+		item.lastBlockMSUp.Store(elapsedMS)
+		updateProbeTCPDebugMax(&item.maxBlockMSUp, elapsedMS)
+		item.lastBlockedUnix.Store(time.Now().UTC().Unix())
+		item.lastCongestionSide.Store("up")
+	}
 }
 
 func endProbeLocalTUNUDPBridgeMonitorItem(item *probeLocalTUNUDPBridgeMonitorItemState) {
