@@ -168,6 +168,7 @@ type probeChainAssociationV2Meta struct {
 type probeChainTunnelOpenRequest struct {
 	Type          string                       `json:"type"`
 	RequestID     string                       `json:"request_id,omitempty"`
+	Scope         string                       `json:"scope,omitempty"`
 	Network       string                       `json:"network"`
 	Address       string                       `json:"address"`
 	FlowID        string                       `json:"flow_id,omitempty"`

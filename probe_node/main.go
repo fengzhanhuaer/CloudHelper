@@ -137,6 +137,7 @@ type probeControlMessage struct {
 	Lines               int                              `json:"lines"`
 	SinceMinutes        int                              `json:"since_minutes"`
 	MinLevel            string                           `json:"min_level"`
+	Scope               string                           `json:"scope,omitempty"`
 	Targets             []string                         `json:"targets,omitempty"`
 	Count               int                              `json:"count,omitempty"`
 	TimeoutMS           int                              `json:"timeout_ms,omitempty"`
@@ -719,6 +720,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go applyProbeNetworkMonitorTasks(msg, identity, stream, encoder, writeMu)
 		return
 	}
+	if typeName == "peer_status_get" {
+		go runProbePeerStatusFetch(msg, identity, stream, encoder, writeMu)
+		return
+	}
 	if typeName == "shell_exec" {
 		go runProbeShellExec(msg, identity, stream, encoder, writeMu)
 		return
@@ -743,6 +748,21 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		return
 	}
 	go runProbeUpgrade(msg, identity)
+}
+
+func runProbePeerStatusFetch(msg probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
+	requestID := strings.TrimSpace(msg.RequestID)
+	if requestID == "" {
+		return
+	}
+	scope := strings.TrimSpace(msg.Scope)
+	if scope == "" {
+		scope = "chain_exit"
+	}
+	payload := snapshotProbePeerStatusSidePayload(strings.TrimSpace(identity.NodeID), requestID, scope, snapshotProbeChainProtocolState("", 0))
+	if writeErr := writeProbeStreamJSON(stream, encoder, writeMu, payload); writeErr != nil {
+		log.Printf("probe peer status response send failed: request_id=%s err=%v", requestID, writeErr)
+	}
 }
 
 func writeProbeStreamJSON(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, payload any) error {

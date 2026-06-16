@@ -343,9 +343,7 @@
     let autoRefreshTimer = null;
     let currentMonitorData = null;
     let linkStatusCache = [];
-    let remoteTCPDebugCache = null;
-    let remoteSpeedDebugCache = null;
-    let substreamMonitorCache = null;
+    let peerStatusMonitorCache = null;
     let connectionMonitorGroup = 'all';
     let connectionMonitorType = 'all';
 
@@ -461,6 +459,7 @@
 
     function renderMonitor(data) {
       currentMonitorData = data || {};
+      peerStatusMonitorCache = data.peer_status || null;
       const memory = data.memory || {};
       const tun = data.tun || {};
       const groups = data.group_runtimes || {};
@@ -571,41 +570,6 @@
       return matched.slice(0, 6).map(formatTCPFlowLine).join('\n');
     }
 
-    function formatRemoteTCPDebug(remote) {
-      if (!remote || typeof remote !== 'object') return '未拉取';
-      if (remote.ok === false) return '拉取失败';
-      const active = Array.isArray(remote.active) ? remote.active : [];
-      const failures = Array.isArray(remote.failures) ? remote.failures : [];
-      const lines = [];
-      lines.push('node=' + (remote.node_id || '-') + ' active=' + active.length + ' failures=' + failures.length);
-      active.slice(0, 6).forEach((item) => lines.push(formatTCPFlowLine(item)));
-      failures.slice(0, 3).forEach((item) => lines.push('失败 ' + (item.flow_id || '-') + ' ' + (item.target || '-') + ' ' + (item.error || item.reason || '-')));
-      return lines.join('\n');
-    }
-
-    function formatRemoteSpeedDebug(remote) {
-      if (!remote || typeof remote !== 'object') return '未拉取';
-      if (remote.ok === false) return '拉取失败';
-      const active = Array.isArray(remote.active) ? remote.active : [];
-      const recent = Array.isArray(remote.recent) ? remote.recent : [];
-      const lines = [];
-      lines.push('node=' + (remote.node_id || '-') + ' active=' + active.length + ' recent=' + recent.length);
-      active.slice(0, 3).forEach((item) => lines.push(formatSpeedDebugLine(item)));
-      recent.slice(0, 4).forEach((item) => lines.push(formatSpeedDebugLine(item)));
-      return lines.join('\n');
-    }
-
-    function formatSpeedDebugLine(item) {
-      const protocol = formatProtocol(item && item.transport);
-      const status = String(item && item.status || '-').trim();
-      const bytes = formatBytes(item && item.bytes);
-      const rate = formatRate(item && item.rate_bps);
-      const calls = Math.trunc(Number(item && item.write_calls || 0));
-      const maxBlock = Math.trunc(Number(item && item.max_write_block_ms || 0));
-      const duration = Math.trunc(Number(item && item.duration_ms || item && item.age_ms || 0));
-      return protocol + ' ' + status + ' bytes=' + bytes + ' rate=' + rate + ' duration=' + duration + 'ms writes=' + calls + ' max_write_block=' + maxBlock + 'ms';
-    }
-
     function formatTCPFlowLine(item) {
       const flowID = String(item && item.flow_id || item && item.id || '-').trim();
       const side = String(item && item.side || '-').trim();
@@ -618,6 +582,57 @@
       const maxBlock = Math.max(Number(item && item.max_write_block_ms_up || 0), Number(item && item.max_write_block_ms_down || 0));
       const blockText = blockUp || blockDown || maxBlock ? ' block=' + Math.trunc(blockUp) + '/' + Math.trunc(blockDown) + ' max=' + Math.trunc(maxBlock) + 'ms' : '';
       return flowID + ' [' + side + '] ' + target + ' -> ' + routeTarget + ' up=' + up + ' down=' + down + blockText;
+    }
+
+    function formatPeerStatusSideLine(label, payload) {
+      if (!payload || typeof payload !== 'object') return label + ': -';
+      const lines = [];
+      lines.push(label + ': ' + (payload.node_id || '-'));
+      lines.push('scope=' + (payload.scope || '-'));
+      if (payload.protocol_state && typeof payload.protocol_state === 'object') {
+        lines.push('protocol=' + formatProtocolState(payload.protocol_state));
+      }
+      if (payload.tcp && typeof payload.tcp === 'object') {
+        lines.push('tcp active=' + (payload.tcp.active_count || 0) + ' completed=' + (payload.tcp.completed_count || 0) + ' failures=' + (payload.tcp.failure_count || 0));
+      }
+      if (payload.speed && typeof payload.speed === 'object') {
+        lines.push('speed active=' + (payload.speed.active_count || 0) + ' recent=' + (payload.speed.recent_count || 0));
+      }
+      if (payload.substreams && typeof payload.substreams === 'object') {
+        lines.push('substreams active=' + (payload.substreams.active_count || 0) + ' completed=' + (payload.substreams.completed_count || 0));
+      }
+      return lines.join('\n');
+    }
+
+    function formatPeerStatusLinkGroup(peerData, chainID, groups) {
+      const list = Array.isArray(peerData && peerData.groups) ? peerData.groups : [];
+      const groupNames = new Set((Array.isArray(groups) ? groups : []).map((value) => String(value || '').trim()).filter(Boolean));
+      const chain = String(chainID || '').trim();
+      return list.find((item) => {
+        const name = String(item && item.group || '').trim();
+        if (chain && name === chain) return true;
+        return groupNames.has(name);
+      }) || null;
+    }
+
+    function formatPeerStatusLinkLines(peerData, chainID, groups) {
+      const group = formatPeerStatusLinkGroup(peerData, chainID, groups);
+      if (!group) return '-';
+      return [
+        'group=' + (group.group || '-'),
+        formatPeerStatusSideLine('entry', group.entry),
+        formatPeerStatusSideLine('exit', group.exit),
+      ].join('\n');
+    }
+
+    function formatPeerStatusLinkSummary(peerData, chainID, groups) {
+      const group = formatPeerStatusLinkGroup(peerData, chainID, groups);
+      if (!group) return '-';
+      const parts = [];
+      if (group.fetched_at) parts.push('fetched=' + group.fetched_at);
+      if (group.link && typeof group.link === 'object' && group.link.endpoint) parts.push('link=' + group.link.endpoint);
+      if (group.error) parts.push('error=' + group.error);
+      return parts.join('\n') || '-';
     }
 
     function renderProxyConnectionMonitor() {
@@ -855,23 +870,20 @@
       const listEl = document.getElementById('substream-monitor-list');
       const updatedEl = document.getElementById('substream-monitor-updated');
       if (!listEl || !updatedEl) return;
-      const data = substreamMonitorCache || {};
-      const local = data.local || {};
-      const remote = data.remote || null;
-      const rows = collectSubstreamPairs(local, remote);
-      const remoteError = String(data.remote_error || '').trim();
-      const linkLatency = Number(data.link_latency_ms);
-      const linkLatencyText = Number.isFinite(linkLatency) && linkLatency > 0 ? Math.trunc(linkLatency) + 'ms' : (String(data.link_latency_status || '').trim() || '-');
-      updatedEl.textContent = '子流监视：本机采集 ' + (local.fetched_at || '--') + ' / 远端采集 ' + (remote && remote.fetched_at ? remote.fetched_at : (remoteError ? '不可用' : '--')) + ' / group ' + (data.group || '-') + ' / 链路RTT ' + linkLatencyText;
+      const data = peerStatusMonitorCache || {};
+      const groups = Array.isArray(data.groups) ? data.groups : [];
+      const rows = groups.flatMap((group) => collectSubstreamPairs(group && group.entry, group && group.exit).map((pair) => ({ group: group.group || '-', pair })));
+      updatedEl.textContent = '子流监视：peer_status ' + (data.fetched_at || '--') + ' / groups ' + groups.length;
       if (rows.length === 0) {
-        listEl.innerHTML = '<div class="hint">' + escapeHTML(remoteError ? '暂无子流数据；对端状态：' + remoteError : '暂无 TUN / 端口转发子流数据') + '</div>';
+        listEl.innerHTML = '<div class="hint">暂无 peer_status 子流数据</div>';
         return;
       }
-      const body = rows.map(renderSubstreamPairRow).join('');
+      const body = rows.map(renderPeerStatusSubstreamRow).join('');
       listEl.innerHTML = `
         <table class="substream-table">
           <thead>
             <tr>
+              <th>组</th>
               <th>Flow</th>
               <th>入口侧</th>
               <th>出口侧</th>
@@ -884,17 +896,18 @@
           </thead>
           <tbody>${body}</tbody>
         </table>
-        ${remoteError ? '<p class="hint status-warn">对端状态获取失败：' + escapeHTML(remoteError) + '</p>' : ''}
       `;
     }
 
-    function renderSubstreamPairRow(pair) {
+    function renderPeerStatusSubstreamRow(row) {
+      const pair = row && row.pair;
       const entry = pair && pair.entry;
       const exit = pair && pair.exit;
       const primary = entry || exit || {};
       const flowID = String(primary && (primary.flow_id || primary.id) || '-').trim();
       return `
         <tr>
+          <td><span class="hint">${escapeHTML(row && row.group || '-')}</span></td>
           <td><code>${escapeHTML(flowID)}</code><br><span class="hint">入口 ${escapeHTML(entry && entry.id || '-')}<br>出口 ${escapeHTML(exit && exit.id || '-')}</span></td>
           ${renderSubstreamEndpointCell('入口侧', entry)}
           ${renderSubstreamEndpointCell('出口侧', exit)}
@@ -1021,14 +1034,9 @@
 
     async function loadSubstreamMonitor() {
       try {
-        const data = await requestJSON('/local/api/proxy/substreams', { method: 'GET' });
-        substreamMonitorCache = data && typeof data === 'object' ? data : null;
+        await loadMonitor();
         renderSubstreamMonitor();
-        if (data && data.remote_error) {
-          setMessage('对端子流状态暂不可用：' + data.remote_error, 'error');
-        } else {
-          setMessage('');
-        }
+        setMessage('');
       } catch (err) {
         if (err && err.status === 401) {
           window.location.href = '/local/login';
@@ -1050,14 +1058,13 @@
       const listEl = document.getElementById('link-monitor-list');
       const updatedEl = document.getElementById('link-monitor-updated');
       if (!listEl || !updatedEl) return;
-      updatedEl.textContent = '链路监视：本地 ' + ((currentMonitorData && currentMonitorData.fetched_at) || '--') + ' / 远端 ' + ((remoteTCPDebugCache && remoteTCPDebugCache.fetched) || '--') + ' / 远端测速 ' + ((remoteSpeedDebugCache && remoteSpeedDebugCache.fetched) || '--');
+      updatedEl.textContent = '链路监视：本地 ' + ((currentMonitorData && currentMonitorData.fetched_at) || '--') + ' / peer_status ' + ((peerStatusMonitorCache && peerStatusMonitorCache.fetched_at) || '--');
       const items = Array.isArray(linkStatusCache) ? linkStatusCache : [];
       if (items.length === 0) {
         listEl.innerHTML = '<div class="hint">暂无 VNet 链路监视数据</div>';
         return;
       }
-      const remote = remoteTCPDebugCache && remoteTCPDebugCache.remote ? remoteTCPDebugCache.remote : null;
-      const remoteSpeed = remoteSpeedDebugCache && remoteSpeedDebugCache.remote ? remoteSpeedDebugCache.remote : null;
+      const peerData = peerStatusMonitorCache || {};
       listEl.innerHTML = items.map((item) => {
         const chainID = normalizeChainID(item && item.chain_id);
         const name = String(item && item.chain_name || '').trim() || chainID || '-';
@@ -1068,7 +1075,7 @@
         const statusClass = linkStatusClass(item && item.status);
         const protocolLines = formatProtocolState(item && item.protocol_state);
         const localLines = formatLocalLinkTCP(chainID, groups);
-        const remoteLines = formatRemoteTCPDebug(remote);
+        const peerLines = formatPeerStatusLinkLines(peerData, chainID, groups);
         const rate = formatRate(item && item.observed_rate_bps);
         return `
           <div class="link-monitor-card">
@@ -1083,8 +1090,8 @@
             <div class="link-monitor-grid">
               <div class="link-monitor-box"><div class="box-title">协议质量</div><div class="pre-line">${escapeHTML(protocolLines)}</div></div>
               <div class="link-monitor-box"><div class="box-title">本地连接质量</div><div class="pre-line">${escapeHTML(localLines)}</div></div>
-              <div class="link-monitor-box"><div class="box-title">远端出口质量</div><div class="pre-line">${escapeHTML(remoteLines)}</div></div>
-              <div class="link-monitor-box"><div class="box-title">远端测速写侧</div><div class="pre-line">${escapeHTML(formatRemoteSpeedDebug(remoteSpeed))}</div></div>
+              <div class="link-monitor-box"><div class="box-title">peer_status</div><div class="pre-line">${escapeHTML(peerLines)}</div></div>
+              <div class="link-monitor-box"><div class="box-title">对端链路</div><div class="pre-line">${escapeHTML(formatPeerStatusLinkSummary(peerData, chainID, groups))}</div></div>
             </div>
           </div>
         `;
@@ -1093,20 +1100,9 @@
 
     async function loadLinkMonitor() {
       try {
-        const [linkData, remoteData, remoteSpeedData] = await Promise.all([
-          requestJSON('/local/api/proxy/link/status', { method: 'GET' }),
-          requestJSON('/local/api/proxy/remote/tcp_debug', { method: 'GET' }).catch((err) => ({ ok: false, error: err.message })),
-          requestJSON('/local/api/proxy/remote/speed_debug', { method: 'GET' }).catch((err) => ({ ok: false, error: err.message })),
-        ]);
+        const linkData = await requestJSON('/local/api/proxy/link/status', { method: 'GET' });
         linkStatusCache = Array.isArray(linkData && linkData.items) ? linkData.items : [];
-        remoteTCPDebugCache = remoteData && typeof remoteData === 'object' ? remoteData : null;
-        remoteSpeedDebugCache = remoteSpeedData && typeof remoteSpeedData === 'object' ? remoteSpeedData : null;
         renderLinkMonitor();
-        if (remoteData && remoteData.ok === false && remoteData.error) {
-          setMessage('远端出口质量暂不可用：' + remoteData.error, 'error');
-        } else if (remoteSpeedData && remoteSpeedData.ok === false && remoteSpeedData.error) {
-          setMessage('远端测速写侧暂不可用：' + remoteSpeedData.error, 'error');
-        }
       } catch (err) {
         if (err && err.status === 401) {
           window.location.href = '/local/login';
@@ -1148,13 +1144,19 @@
 
     async function loadMonitor() {
       try {
-        const data = await requestJSON('/local/api/proxy/monitor', { method: 'GET' });
+        const [data, peerStatus] = await Promise.all([
+          requestJSON('/local/api/proxy/monitor', { method: 'GET' }),
+          requestJSON('/local/api/proxy/peer_status', { method: 'GET' }).catch(() => null),
+        ]);
+        if (peerStatus && typeof peerStatus === 'object') {
+          peerStatusMonitorCache = peerStatus;
+        }
         renderMonitor(data);
         if (document.querySelector('.monitor-tab[data-monitor-tab="links"].active')) {
           loadLinkMonitor();
         }
         if (document.querySelector('.monitor-tab[data-monitor-tab="substreams"].active')) {
-          loadSubstreamMonitor();
+          renderSubstreamMonitor();
         }
         setMessage('');
       } catch (err) {

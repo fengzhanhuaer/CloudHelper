@@ -2895,12 +2895,14 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/status", probeLocalProxyStatusHandler)
 	mux.HandleFunc("/local/api/proxy/status/refresh", probeLocalProxyStatusRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/monitor", probeLocalProxyMonitorHandler)
+	mux.HandleFunc("/local/api/proxy/peer_status", probeLocalPeerStatusMonitorHandler)
 	mux.HandleFunc("/local/api/proxy/substreams", probeLocalProxySubstreamsHandler)
 	mux.HandleFunc("/local/api/proxy/remote/tcp_debug", probeLocalProxyRemoteTCPDebugHandler)
 	mux.HandleFunc("/local/api/proxy/remote/speed_debug", probeLocalProxyRemoteSpeedDebugHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
 	mux.HandleFunc("/local/api/proxy/chains/refresh", probeLocalProxyChainsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/link/status", probeLocalProxyLinkStatusHandler)
+	mux.HandleFunc("/local/api/proxy/frame_tile", probeLocalProxyFrameTileHandler)
 	mux.HandleFunc("/local/api/proxy/link/latency", probeLocalProxyLinkLatencyHandler)
 	mux.HandleFunc("/local/api/proxy/link/speed", probeLocalProxyLinkSpeedHandler)
 	mux.HandleFunc("/local/api/proxy/link/cf_ip_optimize", probeLocalProxyLinkCFIPOptimizeHandler)
@@ -4036,6 +4038,17 @@ func probeLocalProxyMonitorHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, currentProbeLocalProxyMonitorSnapshot())
+}
+
+func probeLocalPeerStatusMonitorHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, currentProbeLocalPeerStatusMonitorSnapshot())
 }
 
 func probeLocalProxySubstreamsHandler(w http.ResponseWriter, r *http.Request) {
@@ -5194,6 +5207,68 @@ func probeLocalProxyLinkStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"items":      buildProbeLocalProxyLinkStatusItems(),
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func probeLocalProxyFrameTileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
+	businessType := strings.TrimSpace(r.URL.Query().Get("business_type"))
+	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	errText := strings.TrimSpace(r.URL.Query().Get("error"))
+	lines := normalizeProbeLogLines(parseProbeLocalDiagnosticLines(r.URL.Query().Get("lines")))
+	_, entries := probeLogStore.Tail(lines, 0, "")
+	if keyword != "" {
+		entries = filterProbeLocalLogEntriesByKeyword(entries, keyword)
+	}
+	logs := make([]probeLogViewEntry, 0, len(entries))
+	for _, entry := range entries {
+		if businessType != "" && !strings.Contains(strings.ToLower(entry.Line), strings.ToLower(businessType)) && !strings.Contains(strings.ToLower(entry.Message), strings.ToLower(businessType)) {
+			continue
+		}
+		if nodeID != "" && !strings.Contains(strings.ToLower(entry.Line), strings.ToLower(nodeID)) && !strings.Contains(strings.ToLower(entry.Message), strings.ToLower(nodeID)) {
+			continue
+		}
+		if target != "" && !strings.Contains(strings.ToLower(entry.Line), strings.ToLower(target)) && !strings.Contains(strings.ToLower(entry.Message), strings.ToLower(target)) {
+			continue
+		}
+		if errText != "" && !strings.Contains(strings.ToLower(entry.Line), strings.ToLower(errText)) && !strings.Contains(strings.ToLower(entry.Message), strings.ToLower(errText)) {
+			continue
+		}
+		logs = append(logs, entry)
+	}
+	payload := map[string]any{
+		"ok": true,
+		"snapshot": map[string]any{
+			"status":      probeLocalControl.proxyStatus(),
+			"monitor":     currentProbeLocalProxyMonitorSnapshot(),
+			"link_status": buildProbeLocalProxyLinkStatusItems(),
+			"logs":        logs,
+			"updated_at":  time.Now().UTC().Format(time.RFC3339),
+		},
+		"filters": map[string]any{
+			"keyword":       keyword,
+			"business_type": businessType,
+			"node_id":       nodeID,
+			"target":        target,
+			"error":         errText,
+			"lines":         lines,
+		},
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func parseProbeLocalDiagnosticLines(raw string) int {
+	if parsed, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && parsed > 0 {
+		return parsed
+	}
+	return 120
 }
 
 func probeLocalProxyLinkLatencyHandler(w http.ResponseWriter, r *http.Request) {

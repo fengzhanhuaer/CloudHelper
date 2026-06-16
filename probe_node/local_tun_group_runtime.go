@@ -665,152 +665,45 @@ func (rt *probeLocalTUNGroupRuntime) openRelayStream(endpoint probeLocalTUNChain
 }
 
 func (rt *probeLocalTUNGroupRuntime) fetchRemoteTCPDebug() (probeTCPDebugResultPayload, error) {
-	if rt == nil {
-		return probeTCPDebugResultPayload{}, errors.New("group runtime is nil")
+	side, err := rt.fetchRemotePeerStatus("tcp_debug_get", "chain_exit")
+	if err != nil {
+		return probeTCPDebugResultPayload{}, err
 	}
-	requestID := "remote-tcp-debug-" + randomHexToken(8)
-	for attempt := 0; attempt < 2; attempt++ {
-		rt.mu.Lock()
-		if err := rt.ensureConnectedLocked(); err != nil {
-			rt.mu.Unlock()
-			return probeTCPDebugResultPayload{}, err
-		}
-		session := rt.session
-		rt.mu.Unlock()
-		if session == nil {
-			return probeTCPDebugResultPayload{}, errors.New("group runtime management session is nil")
-		}
-		stream, err := session.Open()
-		if err != nil {
-			reconnect := session.IsClosed()
-			if !reconnect && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
-				reconnect = shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
-			}
-			rt.mu.Lock()
-			if rt.session == session {
-				if reconnect {
-					rt.closeLocked()
-					_ = rt.markFailureLocked(err, "disconnected")
-				} else {
-					_ = rt.markFailureLocked(err, "degraded")
-				}
-			}
-			rt.mu.Unlock()
-			if attempt == 0 && reconnect {
-				continue
-			}
-			return probeTCPDebugResultPayload{}, err
-		}
-		_ = stream.SetDeadline(time.Now().Add(probeLocalTUNGroupRuntimeControlTimeout))
-		req := probeChainTunnelOpenRequest{Type: "tcp_debug_get", RequestID: requestID}
-		if err := json.NewEncoder(stream).Encode(req); err != nil {
-			_ = stream.Close()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
-				continue
-			}
-			return probeTCPDebugResultPayload{}, err
-		}
-		var payload probeTCPDebugResultPayload
-		if err := json.NewDecoder(stream).Decode(&payload); err != nil {
-			_ = stream.Close()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
-				continue
-			}
-			return probeTCPDebugResultPayload{}, err
-		}
-		_ = stream.Close()
-		if strings.TrimSpace(payload.RequestID) == "" {
-			payload.RequestID = requestID
-		}
-		if strings.TrimSpace(payload.Scope) == "" {
-			payload.Scope = "chain_exit"
-		}
-		return payload, nil
-	}
-	return probeTCPDebugResultPayload{}, errors.New("remote tcp debug fetch failed")
+	return side.TCP, nil
 }
 
 func (rt *probeLocalTUNGroupRuntime) fetchRemoteSpeedDebug() (probeSpeedDebugResultPayload, error) {
-	if rt == nil {
-		return probeSpeedDebugResultPayload{}, errors.New("group runtime is nil")
+	side, err := rt.fetchRemotePeerStatus("speed_debug_get", "chain_exit")
+	if err != nil {
+		return probeSpeedDebugResultPayload{}, err
 	}
-	requestID := "remote-speed-debug-" + randomHexToken(8)
-	for attempt := 0; attempt < 2; attempt++ {
-		rt.mu.Lock()
-		if err := rt.ensureConnectedLocked(); err != nil {
-			rt.mu.Unlock()
-			return probeSpeedDebugResultPayload{}, err
-		}
-		session := rt.session
-		rt.mu.Unlock()
-		if session == nil {
-			return probeSpeedDebugResultPayload{}, errors.New("group runtime management session is nil")
-		}
-		stream, err := session.Open()
-		if err != nil {
-			reconnect := session.IsClosed()
-			if !reconnect && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
-				reconnect = shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
-			}
-			rt.mu.Lock()
-			if rt.session == session {
-				if reconnect {
-					rt.closeLocked()
-					_ = rt.markFailureLocked(err, "disconnected")
-				} else {
-					_ = rt.markFailureLocked(err, "degraded")
-				}
-			}
-			rt.mu.Unlock()
-			if attempt == 0 && reconnect {
-				continue
-			}
-			return probeSpeedDebugResultPayload{}, err
-		}
-		_ = stream.SetDeadline(time.Now().Add(probeLocalTUNGroupRuntimeControlTimeout))
-		req := probeChainTunnelOpenRequest{Type: "speed_debug_get", RequestID: requestID}
-		if err := json.NewEncoder(stream).Encode(req); err != nil {
-			_ = stream.Close()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
-				continue
-			}
-			return probeSpeedDebugResultPayload{}, err
-		}
-		var payload probeSpeedDebugResultPayload
-		if err := json.NewDecoder(stream).Decode(&payload); err != nil {
-			_ = stream.Close()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
-				continue
-			}
-			return probeSpeedDebugResultPayload{}, err
-		}
-		_ = stream.Close()
-		if strings.TrimSpace(payload.RequestID) == "" {
-			payload.RequestID = requestID
-		}
-		if strings.TrimSpace(payload.Scope) == "" {
-			payload.Scope = "chain_exit"
-		}
-		return payload, nil
-	}
-	return probeSpeedDebugResultPayload{}, errors.New("remote speed debug fetch failed")
+	return side.Speed, nil
 }
 
 func (rt *probeLocalTUNGroupRuntime) fetchRemoteSubstreams() (probeSubstreamMonitorPayload, error) {
-	if rt == nil {
-		return probeSubstreamMonitorPayload{}, errors.New("group runtime is nil")
+	side, err := rt.fetchRemotePeerStatus("substreams_get", "chain_exit")
+	if err != nil {
+		return probeSubstreamMonitorPayload{}, err
 	}
-	requestID := "remote-substreams-" + randomHexToken(8)
+	return side.Substreams, nil
+}
+
+func (rt *probeLocalTUNGroupRuntime) fetchRemotePeerStatus(requestType string, scope string) (probePeerStatusSidePayload, error) {
+	if rt == nil {
+		return probePeerStatusSidePayload{}, errors.New("group runtime is nil")
+	}
+	requestID := "remote-peer-status-" + randomHexToken(8)
 	for attempt := 0; attempt < 2; attempt++ {
 		rt.mu.Lock()
 		if err := rt.ensureConnectedLocked(); err != nil {
 			rt.mu.Unlock()
-			return probeSubstreamMonitorPayload{}, err
+			return probePeerStatusSidePayload{}, err
 		}
 		session := rt.session
+		endpoint := rt.Endpoint
 		rt.mu.Unlock()
 		if session == nil {
-			return probeSubstreamMonitorPayload{}, errors.New("group runtime management session is nil")
+			return probePeerStatusSidePayload{}, errors.New("group runtime management session is nil")
 		}
 		stream, err := session.Open()
 		if err != nil {
@@ -831,35 +724,44 @@ func (rt *probeLocalTUNGroupRuntime) fetchRemoteSubstreams() (probeSubstreamMoni
 			if attempt == 0 && reconnect {
 				continue
 			}
-			return probeSubstreamMonitorPayload{}, err
+			return probePeerStatusSidePayload{}, err
 		}
 		_ = stream.SetDeadline(time.Now().Add(probeLocalTUNGroupRuntimeControlTimeout))
-		req := probeChainTunnelOpenRequest{Type: "substreams_get", RequestID: requestID}
+		req := probeChainTunnelOpenRequest{Type: "peer_status_get", RequestID: requestID, Scope: scope}
 		if err := json.NewEncoder(stream).Encode(req); err != nil {
 			_ = stream.Close()
 			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
 				continue
 			}
-			return probeSubstreamMonitorPayload{}, err
+			return probePeerStatusSidePayload{}, err
 		}
-		var payload probeSubstreamMonitorPayload
+		var payload probePeerStatusSidePayload
 		if err := json.NewDecoder(stream).Decode(&payload); err != nil {
 			_ = stream.Close()
 			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
 				continue
 			}
-			return probeSubstreamMonitorPayload{}, err
+			return probePeerStatusSidePayload{}, err
 		}
 		_ = stream.Close()
 		if strings.TrimSpace(payload.RequestID) == "" {
 			payload.RequestID = requestID
 		}
 		if strings.TrimSpace(payload.Scope) == "" {
-			payload.Scope = "chain_exit"
+			payload.Scope = firstNonEmpty(strings.TrimSpace(scope), "chain_exit")
+		}
+		if strings.TrimSpace(payload.NodeID) == "" {
+			payload.NodeID = strings.TrimSpace(endpoint.ChainID)
+		}
+		if strings.TrimSpace(payload.Type) == "" {
+			payload.Type = "peer_status_result"
+		}
+		if strings.TrimSpace(payload.Timestamp) == "" {
+			payload.Timestamp = time.Now().UTC().Format(time.RFC3339)
 		}
 		return payload, nil
 	}
-	return probeSubstreamMonitorPayload{}, errors.New("remote substream monitor fetch failed")
+	return probePeerStatusSidePayload{}, errors.New("remote peer status fetch failed")
 }
 
 func (rt *probeLocalTUNGroupRuntime) markOpenStreamFailure(session *yamux.Session, err error, forceReconnect bool) bool {

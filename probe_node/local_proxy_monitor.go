@@ -90,6 +90,21 @@ type probeLocalProxyMonitorSnapshot struct {
 	UDP             probeLocalProxyMonitorUDPSnapshot     `json:"udp"`
 	ChainRuntimes   int                                   `json:"chain_runtimes"`
 	DNS             probeLocalDNSMonitorStats             `json:"dns"`
+	PeerStatus      probeLocalPeerStatusMonitorSnapshot    `json:"peer_status,omitempty"`
+}
+
+type probePeerStatusGroupSnapshot struct {
+	Group       string                           `json:"group,omitempty"`
+	Entry       probePeerStatusSidePayload       `json:"entry,omitempty"`
+	Exit        probePeerStatusSidePayload       `json:"exit,omitempty"`
+	Link        probeChainRelayProtocolStateSnapshot `json:"link,omitempty"`
+	FetchedAt   string                           `json:"fetched_at,omitempty"`
+	Error       string                           `json:"error,omitempty"`
+}
+
+type probeLocalPeerStatusMonitorSnapshot struct {
+	FetchedAt string                      `json:"fetched_at,omitempty"`
+	Groups    []probePeerStatusGroupSnapshot `json:"groups,omitempty"`
 }
 
 func (s probeLocalProxyMonitorSnapshot) clone() probeLocalProxyMonitorSnapshot {
@@ -123,6 +138,9 @@ func (s probeLocalProxyMonitorSnapshot) clone() probeLocalProxyMonitorSnapshot {
 	}
 	if s.UDP.AssociationItems != nil {
 		s.UDP.AssociationItems = append([]probeUDPAssociationDebugItemPayload(nil), s.UDP.AssociationItems...)
+	}
+	if s.PeerStatus.Groups != nil {
+		s.PeerStatus.Groups = append([]probePeerStatusGroupSnapshot(nil), s.PeerStatus.Groups...)
 	}
 	return s
 }
@@ -230,6 +248,7 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 	udpAssociations := len(udpAssociationItems)
 	udpBridgeStats := snapshotProbeLocalTUNUDPBridgeMonitorStats()
 	chainRuntimes := snapshotProbeChainRuntimeMonitorCount()
+	peerStatus := currentProbeLocalPeerStatusMonitorSnapshot()
 
 	cpuPercent := probeLocalProxyMonitorCPUPercent(previousCPU, currentCPU)
 	cpuTotalMS := probeLocalProxyMonitorCPUTotalMS(currentCPU)
@@ -255,6 +274,7 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 		UDP:             probeLocalProxyMonitorUDPSnapshot{Bridges: udpBridgeStats, Associations: udpAssociations, AssociationItems: udpAssociationItems},
 		ChainRuntimes:   chainRuntimes,
 		DNS:             dnsStats,
+		PeerStatus:      peerStatus,
 	}
 	probeLocalProxyMonitorState.mu.Lock()
 	probeLocalProxyMonitorState.latest = snapshot.clone()
@@ -287,6 +307,59 @@ func snapshotProbeLocalTUNGroupRuntimeMonitorStats() probeLocalTUNGroupRuntimeMo
 		stats.Statuses[status]++
 	}
 	return stats
+}
+
+func currentProbeLocalPeerStatusMonitorSnapshot() probeLocalPeerStatusMonitorSnapshot {
+	groups := currentProbeLocalProxyViewState().Groups
+	if len(groups) == 0 {
+		return probeLocalPeerStatusMonitorSnapshot{FetchedAt: time.Now().UTC().Format(time.RFC3339), Groups: []probePeerStatusGroupSnapshot{}}
+	}
+	chains := currentProbeLocalProxyViewChains()
+	out := make([]probePeerStatusGroupSnapshot, 0, len(groups))
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, groupEntry := range groups {
+		group := strings.TrimSpace(groupEntry.Group)
+		if group == "" {
+			continue
+		}
+		rt := currentProbeLocalTUNGroupRuntime(group)
+		if rt == nil {
+			out = append(out, probePeerStatusGroupSnapshot{Group: group, FetchedAt: now, Error: "group runtime is unavailable"})
+			continue
+		}
+		side, err := rt.fetchRemotePeerStatus("peer_status_get", "chain_exit")
+		snapshot := probePeerStatusGroupSnapshot{Group: group, FetchedAt: now}
+		if err != nil {
+			snapshot.Error = strings.TrimSpace(err.Error())
+		} else {
+			snapshot.Entry = side
+			snapshot.Exit = side
+		}
+		if selected := firstNonEmpty(strings.TrimSpace(groupEntry.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(groupEntry.TunnelNodeID)); selected != "" {
+			for _, item := range chains {
+				if !matchesProbeLocalProxyChainSelection(item, selected) {
+					continue
+				}
+				if len(item.HopConfigs) == 0 {
+					break
+				}
+				entryHost := strings.TrimSpace(item.HopConfigs[0].RelayHost)
+				entryPort := item.HopConfigs[0].ExternalPort
+				if entryPort <= 0 {
+					entryPort = item.HopConfigs[0].ListenPort
+				}
+				if entryHost != "" && entryPort > 0 {
+					snapshot.Link = snapshotProbeLocalTUNChainRelayProtocolState(entryHost, entryPort)
+				}
+				break
+			}
+		}
+		out = append(out, snapshot)
+	}
+	return probeLocalPeerStatusMonitorSnapshot{
+		FetchedAt: now,
+		Groups:    out,
+	}
 }
 
 func snapshotProbeLocalDNSMonitorStats() probeLocalDNSMonitorStats {

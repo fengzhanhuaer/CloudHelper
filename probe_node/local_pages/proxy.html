@@ -165,6 +165,19 @@
     .link-detail-speed-box { border: 1px solid rgba(255,255,255,0.1); border-radius: 7px; padding: 8px; background: rgba(13, 17, 23, 0.28); }
     .link-detail-speed-box-title { color: var(--text-secondary); font-size: 12px; margin-bottom: 5px; }
     .connection-list { display: grid; gap: 10px; margin-top: 12px; }
+    .diagnostic-grid { display: grid; gap: 12px; margin-top: 12px; }
+    .diagnostic-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .diagnostic-toolbar .field { min-width: 170px; }
+    .diagnostic-results { display: grid; gap: 10px; margin-top: 12px; }
+    .diagnostic-card {
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(13, 17, 23, 0.42);
+    }
+    .diagnostic-card-title { color: var(--heading); font-weight: 700; margin-bottom: 6px; }
+    .diagnostic-card-line { color: var(--text-primary); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+    .diagnostic-card-line .muted { color: var(--text-secondary); }
     .connection-section-title { color: var(--heading); font-weight: 700; margin: 10px 0 4px; }
     .connection-card {
       border: 1px solid var(--border-soft);
@@ -217,6 +230,7 @@
       <button class="tab-btn active" data-tab="groups">线路组</button>
       <button class="tab-btn" data-tab="links">链路状态</button>
       <button class="tab-btn" data-tab="connections">连接状态</button>
+      <button class="tab-btn" data-tab="diagnostics">排错磁贴</button>
     </div>
 
     <section id="panelProxy" class="card proxy-tab-panel active" data-tab-panel="groups">
@@ -295,6 +309,54 @@
       </div>
     </section>
 
+    <section id="panelProxyDiagnostics" class="card proxy-tab-panel" data-tab-panel="diagnostics">
+      <strong>排错磁贴</strong>
+      <p class="hint">按 flow_id、stream_id、conn_id、node_id、target、错误码与业务类型快速检索本地日志与链路信息。</p>
+      <div class="diagnostic-grid">
+        <div class="toolbar">
+          <div class="field">
+            <label for="proxyDiagKeyword">关键词</label>
+            <input id="proxyDiagKeyword" type="text" placeholder="flow_id / stream_id / target / error" />
+          </div>
+          <div class="field">
+            <label for="proxyDiagBusinessType">业务类型</label>
+            <select id="proxyDiagBusinessType"></select>
+          </div>
+          <div class="field">
+            <label for="proxyDiagNode">节点</label>
+            <input id="proxyDiagNode" type="text" placeholder="node_id" />
+          </div>
+        </div>
+        <div class="toolbar">
+          <div class="field">
+            <label for="proxyDiagTarget">目标</label>
+            <input id="proxyDiagTarget" type="text" placeholder="target / route_target" />
+          </div>
+          <div class="field">
+            <label for="proxyDiagError">错误码/错误</label>
+            <input id="proxyDiagError" type="text" placeholder="error / code" />
+          </div>
+          <div class="field">
+            <label for="proxyDiagLines">日志行数</label>
+            <input id="proxyDiagLines" type="number" min="20" step="10" value="120" />
+          </div>
+        </div>
+        <div class="diagnostic-toolbar">
+          <button id="proxyDiagRefreshBtn" class="secondary">刷新诊断</button>
+          <button id="proxyDiagUseLinkBtn" class="secondary">带入当前链路</button>
+          <button id="proxyDiagClearBtn" class="secondary">清空条件</button>
+        </div>
+        <div class="summary-line" id="proxyDiagSummary">-</div>
+        <div id="proxyDiagResults" class="diagnostic-results">
+          <div class="hint">暂无诊断结果</div>
+        </div>
+        <div class="card" style="padding:12px;">
+          <strong>最近日志</strong>
+          <div id="proxyDiagLogs" class="pre-line" style="margin-top:8px; white-space:pre-line;">-</div>
+        </div>
+      </div>
+    </section>
+
     <p id="message" class="msg"></p>
   </main>
 
@@ -309,9 +371,19 @@
     const proxyConnectionGroupFilterEl = document.getElementById('proxyConnectionGroupFilter');
     const proxyConnectionTypeFilterEl = document.getElementById('proxyConnectionTypeFilter');
     const proxyLinkStatusSummaryEl = document.getElementById('proxyLinkStatusSummary');
+    const proxyDiagKeywordEl = document.getElementById('proxyDiagKeyword');
+    const proxyDiagBusinessTypeEl = document.getElementById('proxyDiagBusinessType');
+    const proxyDiagNodeEl = document.getElementById('proxyDiagNode');
+    const proxyDiagTargetEl = document.getElementById('proxyDiagTarget');
+    const proxyDiagErrorEl = document.getElementById('proxyDiagError');
+    const proxyDiagLinesEl = document.getElementById('proxyDiagLines');
+    const proxyDiagSummaryEl = document.getElementById('proxyDiagSummary');
+    const proxyDiagResultsEl = document.getElementById('proxyDiagResults');
+    const proxyDiagLogsEl = document.getElementById('proxyDiagLogs');
     let proxyStateGroupsCache = [];
     let proxyChainItemsCache = [];
     let proxyLinkStatusCache = [];
+    let proxyDiagLogEntriesCache = [];
     let proxyLinkDetailChainID = '';
     let proxyLinkDetailMonitorCache = null;
     let proxyLinkDetailRemoteSpeedCache = null;
@@ -722,6 +794,133 @@
 
     function formatRateText(rateBps) {
       return formatRate(rateBps) || '-';
+    }
+
+    function buildDiagnosticQueryParams() {
+      const params = new URLSearchParams();
+      const keyword = String(proxyDiagKeywordEl && proxyDiagKeywordEl.value || '').trim();
+      const businessType = String(proxyDiagBusinessTypeEl && proxyDiagBusinessTypeEl.value || '').trim();
+      const node = String(proxyDiagNodeEl && proxyDiagNodeEl.value || '').trim();
+      const target = String(proxyDiagTargetEl && proxyDiagTargetEl.value || '').trim();
+      const error = String(proxyDiagErrorEl && proxyDiagErrorEl.value || '').trim();
+      const lines = String(proxyDiagLinesEl && proxyDiagLinesEl.value || '').trim();
+      if (keyword) params.set('keyword', keyword);
+      if (businessType) params.set('business_type', businessType);
+      if (node) params.set('node_id', node);
+      if (target) params.set('target', target);
+      if (error) params.set('error', error);
+      if (lines) params.set('lines', lines);
+      return params;
+    }
+
+    function normalizeDiagnosticText(value) {
+      return String(value || '').trim().toLowerCase();
+    }
+
+    function matchesDiagnosticItem(item, q) {
+      if (!q) return true;
+      const haystack = [
+        item && item.flow_id,
+        item && item.stream_id,
+        item && item.conn_id,
+        item && item.node_id,
+        item && item.business_type,
+        item && item.target,
+        item && item.route_target,
+        item && item.error,
+        item && item.reason,
+        item && item.code,
+        item && item.hop_id,
+        item && item.session_id,
+      ].map(normalizeDiagnosticText).join(' | ');
+      return haystack.includes(q);
+    }
+
+    function filteredDiagnosticCount(items) {
+      const q = normalizeDiagnosticText(proxyDiagKeywordEl && proxyDiagKeywordEl.value || '');
+      return Array.isArray(items) ? items.filter((item) => matchesDiagnosticItem(item, q)).length : 0;
+    }
+
+    function syncDiagnosticBusinessTypeOptions() {
+      if (!proxyDiagBusinessTypeEl) return;
+      buildSelectOptions(proxyDiagBusinessTypeEl, [
+        { value: '', label: '全部类型' },
+        { value: 'socks5', label: 'socks5' },
+        { value: 'http_proxy', label: 'http_proxy' },
+        { value: 'tun_tcp', label: 'tun_tcp' },
+        { value: 'tun_udp', label: 'tun_udp' },
+        { value: 'port_forward_tcp', label: 'port_forward_tcp' },
+        { value: 'port_forward_udp', label: 'port_forward_udp' },
+        { value: 'virtual_network', label: 'virtual_network' },
+      ], String(proxyDiagBusinessTypeEl.value || ''));
+    }
+
+    function renderDiagnosticCards(items) {
+      if (!proxyDiagResultsEl) return;
+      const rows = Array.isArray(items) ? items : [];
+      const q = normalizeDiagnosticText(proxyDiagKeywordEl && proxyDiagKeywordEl.value || '');
+      const node = normalizeDiagnosticText(proxyDiagNodeEl && proxyDiagNodeEl.value || '');
+      const target = normalizeDiagnosticText(proxyDiagTargetEl && proxyDiagTargetEl.value || '');
+      const error = normalizeDiagnosticText(proxyDiagErrorEl && proxyDiagErrorEl.value || '');
+      const businessType = normalizeDiagnosticText(proxyDiagBusinessTypeEl && proxyDiagBusinessTypeEl.value || '');
+      const filtered = rows.filter((item) => {
+        if (!matchesDiagnosticItem(item, q)) return false;
+        if (node && !normalizeDiagnosticText(item && item.node_id).includes(node)) return false;
+        if (target && !(normalizeDiagnosticText(item && item.target).includes(target) || normalizeDiagnosticText(item && item.route_target).includes(target) || normalizeDiagnosticText(item && item.domain).includes(target))) return false;
+        if (error && !(normalizeDiagnosticText(item && item.error).includes(error) || normalizeDiagnosticText(item && item.reason).includes(error) || normalizeDiagnosticText(item && item.code).includes(error))) return false;
+        if (businessType && normalizeDiagnosticText(item && item.business_type) !== businessType) return false;
+        return true;
+      });
+      if (filtered.length === 0) {
+        proxyDiagResultsEl.innerHTML = '<div class="hint">暂无匹配结果</div>';
+        return;
+      }
+      proxyDiagResultsEl.innerHTML = filtered.slice(0, 12).map((item) => {
+        const title = [
+          item && item.flow_id,
+          item && item.stream_id,
+          item && item.conn_id,
+        ].map((value) => String(value || '').trim()).filter(Boolean).join(' / ') || String(item && item.target || '-').trim();
+        const line1 = `node=${String(item && item.node_id || '-').trim()} ｜ business=${String(item && item.business_type || '-').trim()} ｜ hop=${String(item && item.hop_id || '-').trim()}`;
+        const line2 = `target=${String(item && item.target || '-').trim()} ｜ route=${String(item && item.route_target || '-').trim()} ｜ error=${String(item && item.error || item && item.reason || item && item.code || '-').trim()}`;
+        return `<div class="diagnostic-card"><div class="diagnostic-card-title">${escapeHTML(title)}</div><div class="diagnostic-card-line">${escapeHTML(line1)}</div><div class="diagnostic-card-line">${escapeHTML(line2)}</div></div>`;
+      }).join('');
+    }
+
+    async function loadProxyDiagnostics() {
+      const params = buildDiagnosticQueryParams();
+      const path = params.toString() ? `/local/api/proxy/frame_tile?${params.toString()}` : '/local/api/proxy/frame_tile';
+      const data = await requestJSON(path, { method: 'GET' });
+      const snapshot = data && data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : {};
+      proxyDiagLogEntriesCache = Array.isArray(snapshot.logs) ? snapshot.logs : [];
+      if (proxyDiagLogsEl) {
+        proxyDiagLogsEl.textContent = proxyDiagLogEntriesCache.length
+          ? proxyDiagLogEntriesCache.map((entry) => String(entry && entry.line || '').trim()).filter(Boolean).join('\n')
+          : '-';
+      }
+      const combined = []
+        .concat(Array.isArray(snapshot.link_status) ? snapshot.link_status : [])
+        .concat(getProxyConnectionItemsFromCache())
+        .concat(proxyDiagLogEntriesCache.map((entry) => ({
+          flow_id: entry && entry.flow_id || '',
+          stream_id: entry && entry.stream_id || '',
+          conn_id: entry && entry.conn_id || '',
+          node_id: entry && entry.node_id || '',
+          business_type: entry && entry.business_type || '',
+          target: entry && entry.target || '',
+          route_target: entry && entry.route_target || '',
+          hop_id: entry && entry.hop_id || '',
+          error: entry && entry.error || '',
+          reason: entry && entry.reason || '',
+          code: entry && entry.code || '',
+        })));
+      renderDiagnosticCards(combined);
+      if (proxyDiagSummaryEl) {
+        const status = snapshot.status && typeof snapshot.status === 'object' ? snapshot.status : {};
+        const monitor = snapshot.monitor && typeof snapshot.monitor === 'object' ? snapshot.monitor : {};
+        proxyDiagSummaryEl.textContent = `状态 ${String(status.mode || '-')}/` + `${status.enabled ? 'on' : 'off'} ｜ 链路 ${Array.isArray(snapshot.link_status) ? snapshot.link_status.length : 0} ｜ 连接 ${Array.isArray(getProxyConnectionItemsFromCache()) ? getProxyConnectionItemsFromCache().length : 0} ｜ 日志 ${proxyDiagLogEntriesCache.length} ｜ 命中 ${filteredDiagnosticCount(combined)} ｜ 监视 ${String(monitor.fetched_at || '-')}`;
+      }
+      return data;
     }
 
     function formatBytesText(bytes) {
@@ -1796,6 +1995,10 @@
         loadProxyConnectionStatus().catch(() => {
         });
       }
+      if (document.querySelector('.tab-btn[data-tab="diagnostics"].active')) {
+        loadProxyDiagnostics().catch(() => {
+        });
+      }
       if (isProxyGloballyEnabled()) {
         triggerProxyRuntimeRefresh({ silent: true });
       }
@@ -1814,6 +2017,9 @@
       }
       if (clean === 'connections') {
         loadProxyConnectionStatus().catch((err) => setMessage('读取连接状态失败：' + err.message, 'error'));
+      }
+      if (clean === 'diagnostics') {
+        loadProxyDiagnostics().catch((err) => setMessage('读取诊断磁贴失败：' + err.message, 'error'));
       }
     }
 
@@ -1840,6 +2046,61 @@
         setMessage('刷新连接状态失败：' + err.message, 'error');
       }
     });
+
+    document.getElementById('proxyDiagUseLinkBtn').addEventListener('click', async () => {
+      const item = proxyLinkStatusCache.find((row) => normalizeChainID(row && row.chain_id) === normalizeChainID(proxyLinkDetailChainID)) || proxyLinkStatusCache[0] || null;
+      if (!item) {
+        setMessage('没有可带入的链路', 'error');
+        return;
+      }
+      if (proxyDiagKeywordEl) proxyDiagKeywordEl.value = String(item.flow_id || item.chain_id || item.target || '').trim();
+      if (proxyDiagTargetEl) proxyDiagTargetEl.value = String(item.target || item.entry_host || item.endpoint || '').trim();
+      if (proxyDiagNodeEl) proxyDiagNodeEl.value = String(item.node_id || item.entry_node_id || '').trim();
+      if (proxyDiagErrorEl) proxyDiagErrorEl.value = String(item.unavailable_error || '').trim();
+      syncDiagnosticBusinessTypeOptions();
+      await loadProxyDiagnostics();
+      setMessage('已带入当前链路并刷新诊断', 'success');
+    });
+
+    document.getElementById('proxyDiagRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新诊断磁贴...');
+      try {
+        await loadProxyDiagnostics();
+        setMessage('诊断磁贴已刷新', 'success');
+      } catch (err) {
+        setMessage('读取诊断磁贴失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('proxyDiagClearBtn').addEventListener('click', async () => {
+      if (proxyDiagKeywordEl) proxyDiagKeywordEl.value = '';
+      if (proxyDiagNodeEl) proxyDiagNodeEl.value = '';
+      if (proxyDiagTargetEl) proxyDiagTargetEl.value = '';
+      if (proxyDiagErrorEl) proxyDiagErrorEl.value = '';
+      if (proxyDiagBusinessTypeEl) proxyDiagBusinessTypeEl.value = '';
+      await loadProxyDiagnostics();
+      setMessage('诊断条件已清空', 'success');
+    });
+
+    [proxyDiagKeywordEl, proxyDiagNodeEl, proxyDiagTargetEl, proxyDiagErrorEl, proxyDiagLinesEl].forEach((el) => {
+      if (!el) return;
+      el.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter') return;
+        loadProxyDiagnostics().catch((err) => setMessage('刷新诊断失败：' + err.message, 'error'));
+      });
+      el.addEventListener('change', () => {
+        if (document.querySelector('.tab-btn[data-tab="diagnostics"].active')) {
+          loadProxyDiagnostics().catch(() => {
+          });
+        }
+      });
+    });
+
+    if (proxyDiagBusinessTypeEl) {
+      proxyDiagBusinessTypeEl.addEventListener('change', () => {
+        loadProxyDiagnostics().catch((err) => setMessage('刷新诊断失败：' + err.message, 'error'));
+      });
+    }
 
     if (proxyLinkGroupFilterEl) {
       proxyLinkGroupFilterEl.addEventListener('change', () => {
@@ -2029,6 +2290,7 @@
     });
 
     startProxyStatusPolling();
+    syncDiagnosticBusinessTypeOptions();
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
     window.addEventListener('beforeunload', () => stopProxyStatusPolling());
   </script>

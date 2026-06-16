@@ -128,6 +128,28 @@ type controlEnvelope struct {
 	Type string `json:"type"`
 }
 
+type peerStatusControlMessage struct {
+	Type          string `json:"type"`
+	RequestID     string `json:"request_id,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+}
+
+type peerStatusControlResult struct {
+	Type        string                         `json:"type"`
+	RequestID   string                         `json:"request_id,omitempty"`
+	NodeID      string                         `json:"node_id,omitempty"`
+	OK          bool                           `json:"ok"`
+	Scope       string                         `json:"scope,omitempty"`
+	Status      map[string]any                 `json:"status,omitempty"`
+	Connections androidProxyConnectionSnapshot  `json:"connections,omitempty"`
+	DNS         map[string]any                 `json:"dns,omitempty"`
+	Logs        []androidLogEntry              `json:"logs,omitempty"`
+	Chain       map[string]any                 `json:"chain,omitempty"`
+	FetchedAt   string                         `json:"fetched_at,omitempty"`
+	Error       string                         `json:"error,omitempty"`
+	Timestamp   string                         `json:"timestamp,omitempty"`
+}
+
 type chainLinkControlMessage struct {
 	Type              string                         `json:"type"`
 	RequestID         string                         `json:"request_id"`
@@ -909,6 +931,12 @@ func processControlMessage(raw json.RawMessage, stream net.Conn, writeMu *sync.M
 			return
 		}
 		sendLogsControlResult(stream, writeMu, buildLogsControlResult(msg, identity.NodeID))
+	case "peer_status_get":
+		var msg peerStatusControlMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return
+		}
+		sendPeerStatusControlResult(stream, writeMu, buildPeerStatusControlResult(msg, identity))
 	case "chain_link_control":
 		var msg chainLinkControlMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
@@ -948,6 +976,87 @@ func sendLogsControlResult(stream net.Conn, writeMu *sync.Mutex, result logsCont
 func sendChainLinkControlResult(stream net.Conn, writeMu *sync.Mutex, result chainLinkControlResult) {
 	if err := writeMobileStreamJSON(stream, writeMu, result); err != nil {
 		log.Printf("chain link result send failed: request_id=%s err=%v", strings.TrimSpace(result.RequestID), err)
+	}
+}
+
+func buildPeerStatusControlResult(msg peerStatusControlMessage, identity mobileNodeIdentity) peerStatusControlResult {
+	requestID := strings.TrimSpace(msg.RequestID)
+	scope := strings.TrimSpace(msg.Scope)
+	if scope == "" {
+		scope = "android"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	result := peerStatusControlResult{
+		Type:       "peer_status_result",
+		RequestID:  requestID,
+		NodeID:     strings.TrimSpace(identity.NodeID),
+		OK:         true,
+		Scope:      scope,
+		Status:     map[string]any{},
+		Connections: globalAndroidProxyConnectionState.snapshot(),
+		DNS:        snapshotAndroidVPNDNSStatus(),
+		Logs:       androidLogStore.snapshot(120),
+		Chain:      buildMobilePeerChainSnapshot(),
+		FetchedAt:  now,
+		Timestamp:  now,
+	}
+	if result.Status == nil {
+		result.Status = map[string]any{}
+	}
+	return result
+}
+
+func buildMobilePeerChainSnapshot() map[string]any {
+	snapshot := map[string]any{
+		"runtimes": map[string]any{},
+	}
+	mobileChainRuntimeState.mu.Lock()
+	runtimes := make([]*mobileChainRuntime, 0, len(mobileChainRuntimeState.runtimes))
+	for _, rt := range mobileChainRuntimeState.runtimes {
+		if rt != nil {
+			runtimes = append(runtimes, rt)
+		}
+	}
+	mobileChainRuntimeState.mu.Unlock()
+	items := make([]map[string]any, 0, len(runtimes))
+	for _, rt := range runtimes {
+		item := map[string]any{
+			"chain_id":        strings.TrimSpace(rt.cfg.ChainID),
+			"role":            strings.TrimSpace(rt.cfg.Role),
+			"listen_addr":     strings.TrimSpace(rt.relayListenAddr),
+			"link_layer":      strings.TrimSpace(rt.cfg.LinkLayer),
+			"next_link_layer": strings.TrimSpace(rt.cfg.NextLinkLayer),
+			"next_host":       strings.TrimSpace(rt.cfg.NextHost),
+			"next_port":       rt.cfg.NextPort,
+			"prev_host":       strings.TrimSpace(rt.cfg.PrevHost),
+			"prev_port":       rt.cfg.PrevPort,
+			"downstream":      len(rt.downstreamSessions),
+			"upstream":        len(rt.upstreamSessions),
+			"updated_at":      time.Now().UTC().Format(time.RFC3339),
+		}
+		items = append(items, item)
+	}
+	snapshot["runtimes"] = items
+	return snapshot
+}
+
+func (b *androidLogBuffer) snapshot(lines int) []androidLogEntry {
+	if b == nil {
+		return nil
+	}
+	limit := normalizeAndroidLogLines(lines)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := append([]androidLogEntry(nil), b.entries...)
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out
+}
+
+func sendPeerStatusControlResult(stream net.Conn, writeMu *sync.Mutex, result peerStatusControlResult) {
+	if err := writeMobileStreamJSON(stream, writeMu, result); err != nil {
+		log.Printf("peer status result send failed: request_id=%s err=%v", strings.TrimSpace(result.RequestID), err)
 	}
 }
 
