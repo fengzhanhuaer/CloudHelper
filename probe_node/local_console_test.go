@@ -444,6 +444,9 @@ func TestProbeLocalDNSClearAPI(t *testing.T) {
 	if got := probeLocalDNSRouteHintCount(); got != 0 {
 		t.Fatalf("route hints after clear=%d", got)
 	}
+	if _, _, ok := loadProbeChainRelayResolveCache("api.example.com", false); ok {
+		t.Fatalf("relay resolve cache should be cleared with dns cache")
+	}
 }
 
 func TestEnsureProbeLocalProxyDefaultsInitializedKeepsServiceRunningOnInvalidGroupConfig(t *testing.T) {

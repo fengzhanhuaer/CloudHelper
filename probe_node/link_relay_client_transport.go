@@ -2163,6 +2163,12 @@ func resetProbeChainRelayResolveCacheForTest() {
 	probeChainRelayResolveCache.mu.Unlock()
 }
 
+func clearProbeChainRelayResolveCache() {
+	probeChainRelayResolveCache.mu.Lock()
+	probeChainRelayResolveCache.items = make(map[string]probeChainRelayResolveCacheEntry)
+	probeChainRelayResolveCache.mu.Unlock()
+}
+
 func resolveProbeChainTLSServerName(layer string, dialHost string, hostHeader string) string {
 	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
 	cleanHostHeader := strings.TrimSpace(strings.Trim(hostHeader, "[]"))

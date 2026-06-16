@@ -2133,6 +2133,7 @@ func clearProbeLocalDNSUnifiedCache() {
 	probeLocalDNSState.fakeCursor = 0
 	probeLocalDNSState.cacheDirty = true
 	probeLocalDNSState.mu.Unlock()
+	clearProbeChainRelayResolveCache()
 	flushProbeLocalDNSCacheToDisk()
 }
 
