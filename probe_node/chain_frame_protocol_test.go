@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestProbeChainFrameRoundTrip(t *testing.T) {
@@ -69,4 +70,29 @@ func TestProbeChainFrameRejectsOversizeControl(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected oversize control to fail")
 	}
+}
+
+func TestProbeChainFrameSessionPingPongStats(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	clientSession, err := newProbeChainFrameClient(clientConn)
+	if err != nil {
+		t.Fatalf("client frame session: %v", err)
+	}
+	defer clientSession.Close()
+	serverSession, err := newProbeChainFrameServer(serverConn)
+	if err != nil {
+		t.Fatalf("server frame session: %v", err)
+	}
+	defer serverSession.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		clientStats := clientSession.PingStats()
+		serverStats := serverSession.PingStats()
+		if clientStats.PongsReceived > 0 && clientStats.RTT > 0 && serverStats.PongsReceived > 0 && serverStats.RTT > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("ping-pong stats not updated: client=%+v server=%+v", clientSession.PingStats(), serverSession.PingStats())
 }

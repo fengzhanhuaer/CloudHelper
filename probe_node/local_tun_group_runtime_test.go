@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/yamux"
 )
 
 func TestProbeLocalTUNGroupRuntimeOpenStreamUsesBridgeSessionForWebSocket(t *testing.T) {
@@ -27,10 +25,10 @@ func TestProbeLocalTUNGroupRuntimeOpenStreamUsesBridgeSessionForDefaultLayer(t *
 func testProbeLocalTUNGroupRuntimeOpenStreamUsesBridgeSession(t *testing.T, linkLayer string) {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
-	serverReady := make(chan *yamux.Session, 1)
+	serverReady := make(chan *probeChainFrameSession, 1)
 	serverErr := make(chan error, 1)
 	go func() {
-		session, err := yamux.Server(serverConn, newProbeChainYamuxConfig())
+		session, err := newProbeChainFrameServer(serverConn)
 		if err != nil {
 			serverErr <- err
 			return
@@ -60,9 +58,9 @@ func testProbeLocalTUNGroupRuntimeOpenStreamUsesBridgeSession(t *testing.T, link
 		serverErr <- nil
 	}()
 
-	clientSession, err := yamux.Client(clientConn, newProbeChainYamuxConfig())
+	clientSession, err := newProbeChainFrameClient(clientConn)
 	if err != nil {
-		t.Fatalf("yamux client failed: %v", err)
+		t.Fatalf("frame client failed: %v", err)
 	}
 	serverSession := <-serverReady
 	defer serverSession.Close()
@@ -152,13 +150,13 @@ func TestProbeLocalTUNGroupRuntimeOpenStreamReconnectsAfterBridgeResponseFailure
 	}
 
 	staleClientConn, staleServerConn := net.Pipe()
-	staleServerSession, err := yamux.Server(staleServerConn, newProbeChainYamuxConfig())
+	staleServerSession, err := newProbeChainFrameServer(staleServerConn)
 	if err != nil {
-		t.Fatalf("create stale yamux server failed: %v", err)
+		t.Fatalf("create stale frame server failed: %v", err)
 	}
-	staleClientSession, err := yamux.Client(staleClientConn, newProbeChainYamuxConfig())
+	staleClientSession, err := newProbeChainFrameClient(staleClientConn)
 	if err != nil {
-		t.Fatalf("create stale yamux client failed: %v", err)
+		t.Fatalf("create stale frame client failed: %v", err)
 	}
 	staleDone := make(chan struct{})
 	go serveProbeLocalTUNGroupRuntimeOpenCloseBeforeResponse(staleServerSession, staleDone)
@@ -217,7 +215,7 @@ func TestProbeLocalTUNGroupRuntimeOpenStreamReconnectsAfterBridgeResponseFailure
 
 func serveProbeLocalTUNGroupRuntimeRetryOpenOK(conn net.Conn, done <-chan struct{}) {
 	defer conn.Close()
-	session, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameServer(conn)
 	if err != nil {
 		return
 	}
@@ -235,7 +233,7 @@ func serveProbeLocalTUNGroupRuntimeRetryOpenOK(conn net.Conn, done <-chan struct
 	<-done
 }
 
-func serveProbeLocalTUNGroupRuntimeOpenCloseBeforeResponse(session *yamux.Session, done chan<- struct{}) {
+func serveProbeLocalTUNGroupRuntimeOpenCloseBeforeResponse(session *probeChainFrameSession, done chan<- struct{}) {
 	defer close(done)
 	if session == nil {
 		return

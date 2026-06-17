@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -668,7 +667,7 @@ func openProbeChainRelayPingPongStream(conn net.Conn, payloadBytes int64) (net.C
 	if conn == nil {
 		return nil, errors.New("relay connection is nil")
 	}
-	session, err := yamux.Client(conn, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameClient(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -687,7 +686,7 @@ func openProbeChainRelayPingPongStream(conn net.Conn, payloadBytes int64) (net.C
 
 type probeChainRelayPingPongStreamConn struct {
 	net.Conn
-	session *yamux.Session
+	session *probeChainFrameSession
 }
 
 func (c *probeChainRelayPingPongStreamConn) Close() error {

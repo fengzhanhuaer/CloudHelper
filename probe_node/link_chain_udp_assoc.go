@@ -277,7 +277,7 @@ func (p *probeChainUDPAssociationPool) Acquire(associationV2 *probeChainAssociat
 	return assoc, nil
 }
 
-func (p *probeChainUDPAssociationPool) AttachStreamMonitor(key string, monitor probeChainYamuxStreamMonitor) {
+func (p *probeChainUDPAssociationPool) AttachStreamMonitor(key string, monitor probeChainFrameStreamMonitor) {
 	if p == nil {
 		return
 	}

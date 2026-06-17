@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -76,10 +75,30 @@ type probeChainRuntimeConfig struct {
 
 type probeChainBridgeSession struct {
 	ID          string
-	Session     *yamux.Session
+	Session     *probeChainFrameSession
 	BridgeRole  string
 	RemoteAddr  string
 	ConnectedAt time.Time
+}
+
+type probeChainBridgeSessionSnapshot struct {
+	ChainID        string `json:"chain_id,omitempty"`
+	RuntimeRole    string `json:"runtime_role,omitempty"`
+	Direction      string `json:"direction,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	BridgeRole     string `json:"bridge_role,omitempty"`
+	RemoteAddr     string `json:"remote_addr,omitempty"`
+	ConnectedAt    string `json:"connected_at,omitempty"`
+	ConnectedMS    int64  `json:"connected_ms,omitempty"`
+	StreamsCurrent int    `json:"streams_current,omitempty"`
+	RTTMS          int64  `json:"rtt_ms,omitempty"`
+	LastPingAt     string `json:"last_ping_at,omitempty"`
+	LastPongAt     string `json:"last_pong_at,omitempty"`
+	PingsSent      int64  `json:"pings_sent,omitempty"`
+	PongsReceived  int64  `json:"pongs_received,omitempty"`
+	PingTimeouts   int64  `json:"ping_timeouts,omitempty"`
+	PendingPings   int    `json:"pending_pings,omitempty"`
+	Closed         bool   `json:"closed,omitempty"`
 }
 
 type probeChainRuntime struct {
@@ -198,7 +217,7 @@ type probeChainNextHop struct {
 	Writer  io.WriteCloser
 	Reader  io.ReadCloser
 	CloseFn func() error
-	Monitor probeChainYamuxStreamMonitor
+	Monitor probeChainFrameStreamMonitor
 }
 
 type probeChainRelayDirectionResult struct {
@@ -297,10 +316,6 @@ const (
 	probeChainRelayTCPSocketBufferBytes        = 8 * 1024 * 1024
 	probeChainRelayUDPSocketBufferBytes        = 64 * 1024 * 1024
 	probeChainRelayTCPKeepAlivePeriod          = 30 * time.Second
-	probeChainRelayYamuxKeepAliveInterval      = 20 * time.Second
-	probeChainRelayYamuxAcceptBacklog          = 1024
-	probeChainRelayYamuxMaxStreamWindowBytes   = 64 * 1024 * 1024
-	probeChainRelayYamuxWriteTimeout           = 2 * time.Minute
 	probeChainRelayQUICInitialStreamWindow     = 128 * 1024 * 1024
 	probeChainRelayQUICMaxStreamWindow         = 512 * 1024 * 1024
 	probeChainRelayQUICInitialConnectionWindow = 512 * 1024 * 1024
@@ -362,17 +377,18 @@ type probeChainPortForwardPreconnectedConn struct {
 	conn      net.Conn
 	openedAt  time.Time
 	flowID    string
-	monitor   probeChainYamuxStreamMonitor
+	monitor   probeChainFrameStreamMonitor
 	expiresAt time.Time
 }
 
-type probeChainYamuxStreamMonitor struct {
-	Session             *yamux.Session
+type probeChainFrameStreamMonitor struct {
+	Session             *probeChainFrameSession
 	SessionID           string
 	SessionRole         string
 	SessionStreamsOpen  int
 	SessionStreamsAfter int
 	OpenLatency         time.Duration
+	PingStats           probeChainFramePingStats
 }
 
 // probeChainPreconnectPhase distinguishes a relay/link failure (a real transport
@@ -1225,21 +1241,21 @@ func openProbeChainPortForwardLocalTarget(network string, targetAddr string) (ne
 	return conn, nil
 }
 
-func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide string, network string, targetAddr string) (net.Conn, probeChainYamuxStreamMonitor, error) {
+func openProbeChainPortForwardStream(runtime *probeChainRuntime, entrySide string, network string, targetAddr string) (net.Conn, probeChainFrameStreamMonitor, error) {
 	return openProbeChainPortForwardStreamWithAssociation(runtime, entrySide, network, targetAddr, nil)
 }
 
-func openProbeChainPortForwardStreamWithFlow(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, flowID string) (net.Conn, probeChainYamuxStreamMonitor, error) {
+func openProbeChainPortForwardStreamWithFlow(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, flowID string) (net.Conn, probeChainFrameStreamMonitor, error) {
 	return openProbeChainPortForwardStreamWithFlowAndAssociation(runtime, entrySide, network, targetAddr, flowID, nil)
 }
 
-func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) (net.Conn, probeChainYamuxStreamMonitor, error) {
+func openProbeChainPortForwardStreamWithAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) (net.Conn, probeChainFrameStreamMonitor, error) {
 	return openProbeChainPortForwardStreamWithFlowAndAssociation(runtime, entrySide, network, targetAddr, "", associationV2)
 }
 
-func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, flowID string, associationV2 *probeChainAssociationV2Meta) (net.Conn, probeChainYamuxStreamMonitor, error) {
+func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRuntime, entrySide string, network string, targetAddr string, flowID string, associationV2 *probeChainAssociationV2Meta) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
-		return nil, probeChainYamuxStreamMonitor{}, errors.New("runtime is nil")
+		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
 	requestedNetwork := strings.ToLower(strings.TrimSpace(network))
 	if requestedNetwork == "" {
@@ -1249,7 +1265,7 @@ func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRu
 	role := normalizeProbeChainRole(runtime.cfg.role)
 	if role == "entry_exit" {
 		conn, err := openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
-		return conn, probeChainYamuxStreamMonitor{}, err
+		return conn, probeChainFrameStreamMonitor{}, err
 	}
 
 	cleanFlowID := strings.TrimSpace(flowID)
@@ -1261,7 +1277,7 @@ func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRu
 		failurePrompt = "open upstream target failed"
 	} else if runtime.cfg.nextAuthMode == "proxy" {
 		conn, err := openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
-		return conn, probeChainYamuxStreamMonitor{}, err
+		return conn, probeChainFrameStreamMonitor{}, err
 	} else {
 		failurePrompt = "open downstream target failed"
 	}
@@ -1269,12 +1285,12 @@ func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRu
 	// Phase 1: build the relay substream toward the exit (the "prepared link" phase).
 	stream, monitor, err := openProbeChainPortForwardRelaySubstream(runtime, normalizedEntrySide, cleanFlowID)
 	if err != nil {
-		return nil, probeChainYamuxStreamMonitor{}, err
+		return nil, probeChainFrameStreamMonitor{}, err
 	}
 	// Phase 2: ask the exit to dial the target (the "business" phase).
 	if err := finishProbeChainPortForwardOpen(stream, requestedNetwork, targetAddr, cleanFlowID, associationV2, failurePrompt); err != nil {
 		_ = stream.Close()
-		return nil, probeChainYamuxStreamMonitor{}, err
+		return nil, probeChainFrameStreamMonitor{}, err
 	}
 	return stream, monitor, nil
 }
@@ -1282,9 +1298,9 @@ func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRu
 // openProbeChainPortForwardRelaySubstream opens only the relay data substream toward
 // the exit, without sending the target open request. It is valid only for relay roles
 // (entry_exit and proxy-next are short-circuited to a local target by the caller).
-func openProbeChainPortForwardRelaySubstream(runtime *probeChainRuntime, normalizedEntrySide string, flowID string) (net.Conn, probeChainYamuxStreamMonitor, error) {
+func openProbeChainPortForwardRelaySubstream(runtime *probeChainRuntime, normalizedEntrySide string, flowID string) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
-		return nil, probeChainYamuxStreamMonitor{}, errors.New("runtime is nil")
+		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
 	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
 		return openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToPrev, strings.TrimSpace(flowID))
@@ -1368,9 +1384,9 @@ func finishProbeChainPortForwardPrepare(stream net.Conn, network string, flowID 
 	return nil
 }
 
-func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, flowID string) (net.Conn, probeChainYamuxStreamMonitor, error) {
+func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, flowID string) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
-		return nil, probeChainYamuxStreamMonitor{}, errors.New("runtime is nil")
+		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
 	role := normalizeProbeChainBridgeRole(bridgeRole)
 	switch role {
@@ -1621,7 +1637,7 @@ func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 			defer localConn.Close()
 			var downstream net.Conn
 			var openErr error
-			var streamMonitor probeChainYamuxStreamMonitor
+			var streamMonitor probeChainFrameStreamMonitor
 			flowID := newProbeTCPDebugFlowID("port_forward", targetAddr)
 			openStartedAt := time.Now()
 			if preconnected, ok := preconnect.acquirePrepared(probeChainPortForwardNetworkTCP, targetAddr, flowID, nil, "open upstream target failed"); ok {
@@ -1647,7 +1663,7 @@ func runProbeChainTCPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 				Side:                "local",
 				Target:              firstNonEmptyProbeTCPDebugString(buildProbeChainPortForwardListenTarget(cfg), targetAddr),
 				RouteTarget:         targetAddr,
-				Transport:           "yamux",
+				Transport:           "frame",
 				SessionID:           streamMonitor.SessionID,
 				SessionRole:         streamMonitor.SessionRole,
 				Session:             streamMonitor.Session,
@@ -1694,7 +1710,7 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 		clientAddr net.Addr
 		stream     net.Conn
 		reader     *bufio.Reader
-		monitor    probeChainYamuxStreamMonitor
+		monitor    probeChainFrameStreamMonitor
 		lastSeen   time.Time
 	}
 
@@ -1775,7 +1791,7 @@ func runProbeChainUDPPortForward(runtime *probeChainRuntime, cfg probeChainRunti
 			CreatedAtUnixMS: time.Now().UnixMilli(),
 		}
 		var stream net.Conn
-		var streamMonitor probeChainYamuxStreamMonitor
+		var streamMonitor probeChainFrameStreamMonitor
 		if preconnected, ok := preconnect.acquirePrepared(probeChainPortForwardNetworkUDP, targetAddr, strings.TrimSpace(key), associationV2, "open upstream target failed"); ok {
 			stream = preconnected.conn
 			streamMonitor = preconnected.monitor
@@ -1890,7 +1906,7 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 			continue
 		}
 
-		session, err := yamux.Client(conn, newProbeChainYamuxConfig())
+		session, err := newProbeChainFrameClient(conn)
 		if err != nil {
 			_ = conn.Close()
 			log.Printf("probe chain bridge session setup failed: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t err=%v", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams, err)
@@ -1954,7 +1970,7 @@ func nextProbeChainBridgeBackoff(current time.Duration) time.Duration {
 	return next
 }
 
-func waitProbeChainBridgeSession(stopCh <-chan struct{}, session *yamux.Session) {
+func waitProbeChainBridgeSession(stopCh <-chan struct{}, session *probeChainFrameSession) {
 	if session == nil {
 		return
 	}
@@ -1973,7 +1989,7 @@ func waitProbeChainBridgeSession(stopCh <-chan struct{}, session *yamux.Session)
 	}
 }
 
-func acceptProbeChainBridgeStreams(runtime *probeChainRuntime, session *yamux.Session, sessionID string, tag string, routeDirection string) {
+func acceptProbeChainBridgeStreams(runtime *probeChainRuntime, session *probeChainFrameSession, sessionID string, tag string, routeDirection string) {
 	if runtime == nil || session == nil {
 		return
 	}
@@ -2262,7 +2278,7 @@ func handleProbeChainBridgeRelayWebSocket(runtime *probeChainRuntime, bridgeRole
 		routeDirection = "reverse"
 	}
 	sessionID := runtime.nextBridgeSessionID(assignTarget)
-	session, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameServer(conn)
 	if err != nil {
 		log.Printf("probe chain websocket bridge session setup failed: chain=%s role=%s bridge_role=%s remote=%s session_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, role, r.RemoteAddr, sessionID, err)
 		return
@@ -2316,7 +2332,7 @@ func handleProbeChainBridgeRelayHTTP3WebSocket(runtime *probeChainRuntime, bridg
 		routeDirection = "reverse"
 	}
 	sessionID := runtime.nextBridgeSessionID(assignTarget)
-	session, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameServer(conn)
 	if err != nil {
 		log.Printf("probe chain h3 websocket bridge session setup failed: chain=%s role=%s bridge_role=%s remote=%s session_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, role, r.RemoteAddr, sessionID, err)
 		return
@@ -2694,7 +2710,7 @@ func (rt *probeChainRuntime) closeRuntimeResources() {
 	rt.tcpForwards = nil
 	rt.udpForwards = nil
 	rt.forwardMu.Unlock()
-	closedSessions := make(map[*yamux.Session]struct{})
+	closedSessions := make(map[*probeChainFrameSession]struct{})
 	closeBridgeSession := func(item *probeChainBridgeSession) {
 		if item == nil || item.Session == nil {
 			return
@@ -2803,7 +2819,7 @@ func (rt *probeChainRuntime) nextBridgeSessionID(prefix string) string {
 	return fmt.Sprintf("%s-%06d", cleanPrefix, seq)
 }
 
-func (rt *probeChainRuntime) setDownstreamSession(sessionID string, session *yamux.Session, bridgeRole string, remoteAddr string) {
+func (rt *probeChainRuntime) setDownstreamSession(sessionID string, session *probeChainFrameSession, bridgeRole string, remoteAddr string) {
 	if rt == nil || session == nil {
 		return
 	}
@@ -2828,7 +2844,7 @@ func (rt *probeChainRuntime) setDownstreamSession(sessionID string, session *yam
 	log.Printf("probe chain downstream session assigned: chain=%s role=%s session_id=%s active=%d remote=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, active, item.RemoteAddr)
 }
 
-func (rt *probeChainRuntime) clearDownstreamSession(sessionID string, target *yamux.Session) {
+func (rt *probeChainRuntime) clearDownstreamSession(sessionID string, target *probeChainFrameSession) {
 	if rt == nil || target == nil {
 		return
 	}
@@ -2856,7 +2872,7 @@ func (rt *probeChainRuntime) clearDownstreamSession(sessionID string, target *ya
 	log.Printf("probe chain downstream session cleared: chain=%s role=%s session_id=%s target=%p cleared=%t remaining=%d", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, target, cleared, remaining)
 }
 
-func (rt *probeChainRuntime) getDownstreamSession() *yamux.Session {
+func (rt *probeChainRuntime) getDownstreamSession() *probeChainFrameSession {
 	if rt == nil {
 		return nil
 	}
@@ -2877,7 +2893,7 @@ func (rt *probeChainRuntime) getDownstreamSession() *yamux.Session {
 	return latest.Session
 }
 
-func (rt *probeChainRuntime) setUpstreamSession(sessionID string, session *yamux.Session, bridgeRole string, remoteAddr string) {
+func (rt *probeChainRuntime) setUpstreamSession(sessionID string, session *probeChainFrameSession, bridgeRole string, remoteAddr string) {
 	if rt == nil || session == nil {
 		return
 	}
@@ -2902,7 +2918,7 @@ func (rt *probeChainRuntime) setUpstreamSession(sessionID string, session *yamux
 	log.Printf("probe chain upstream session assigned: chain=%s role=%s session_id=%s active=%d remote=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, active, item.RemoteAddr)
 }
 
-func (rt *probeChainRuntime) clearUpstreamSession(sessionID string, target *yamux.Session) {
+func (rt *probeChainRuntime) clearUpstreamSession(sessionID string, target *probeChainFrameSession) {
 	if rt == nil || target == nil {
 		return
 	}
@@ -2930,7 +2946,7 @@ func (rt *probeChainRuntime) clearUpstreamSession(sessionID string, target *yamu
 	log.Printf("probe chain upstream session cleared: chain=%s role=%s session_id=%s target=%p cleared=%t remaining=%d", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, target, cleared, remaining)
 }
 
-func (rt *probeChainRuntime) getUpstreamSession() *yamux.Session {
+func (rt *probeChainRuntime) getUpstreamSession() *probeChainFrameSession {
 	if rt == nil {
 		return nil
 	}
@@ -2951,7 +2967,7 @@ func (rt *probeChainRuntime) getUpstreamSession() *yamux.Session {
 	return latest.Session
 }
 
-func (rt *probeChainRuntime) describeBridgeSession(session *yamux.Session, fallbackRole string) (string, string) {
+func (rt *probeChainRuntime) describeBridgeSession(session *probeChainFrameSession, fallbackRole string) (string, string) {
 	if rt == nil || session == nil {
 		return "", strings.TrimSpace(fallbackRole)
 	}
@@ -2968,6 +2984,73 @@ func (rt *probeChainRuntime) describeBridgeSession(session *yamux.Session, fallb
 		}
 	}
 	return "", strings.TrimSpace(fallbackRole)
+}
+
+func (rt *probeChainRuntime) snapshotBridgeSessions() []probeChainBridgeSessionSnapshot {
+	if rt == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	rt.bridgeMu.Lock()
+	items := make([]probeChainBridgeSessionSnapshot, 0, len(rt.downstreamSessions)+len(rt.upstreamSessions))
+	appendItems := func(direction string, sessions map[string]*probeChainBridgeSession) {
+		for _, item := range sessions {
+			if item == nil {
+				continue
+			}
+			snapshot := probeChainBridgeSessionSnapshot{
+				ChainID:     strings.TrimSpace(rt.cfg.chainID),
+				RuntimeRole: strings.TrimSpace(rt.cfg.role),
+				Direction:   strings.TrimSpace(direction),
+				SessionID:   strings.TrimSpace(item.ID),
+				BridgeRole:  strings.TrimSpace(item.BridgeRole),
+				RemoteAddr:  strings.TrimSpace(item.RemoteAddr),
+			}
+			if !item.ConnectedAt.IsZero() {
+				snapshot.ConnectedAt = item.ConnectedAt.UTC().Format(time.RFC3339)
+				snapshot.ConnectedMS = now.Sub(item.ConnectedAt).Milliseconds()
+			}
+			if item.Session != nil {
+				snapshot.Closed = item.Session.IsClosed()
+				snapshot.StreamsCurrent = item.Session.NumStreams()
+				ping := item.Session.PingStats()
+				snapshot.RTTMS = probeDurationMilliseconds(ping.RTT)
+				snapshot.PingsSent = ping.PingsSent
+				snapshot.PongsReceived = ping.PongsReceived
+				snapshot.PingTimeouts = ping.Timeouts
+				snapshot.PendingPings = ping.Pending
+				if !ping.LastPingAt.IsZero() {
+					snapshot.LastPingAt = ping.LastPingAt.Format(time.RFC3339)
+				}
+				if !ping.LastPongAt.IsZero() {
+					snapshot.LastPongAt = ping.LastPongAt.Format(time.RFC3339)
+				}
+			} else {
+				snapshot.Closed = true
+			}
+			items = append(items, snapshot)
+		}
+	}
+	appendItems("downstream", rt.downstreamSessions)
+	appendItems("upstream", rt.upstreamSessions)
+	rt.bridgeMu.Unlock()
+	return items
+}
+
+func snapshotProbeChainBridgeSessions() []probeChainBridgeSessionSnapshot {
+	probeChainRuntimeState.mu.Lock()
+	runtimes := make([]*probeChainRuntime, 0, len(probeChainRuntimeState.runtimes))
+	for _, rt := range probeChainRuntimeState.runtimes {
+		if rt != nil {
+			runtimes = append(runtimes, rt)
+		}
+	}
+	probeChainRuntimeState.mu.Unlock()
+	items := make([]probeChainBridgeSessionSnapshot, 0)
+	for _, rt := range runtimes {
+		items = append(items, rt.snapshotBridgeSessions()...)
+	}
+	return items
 }
 
 func stopProbeChainRuntime(chainID string, reason string) bool {
@@ -3154,7 +3237,7 @@ func openProbeChainPrevHop(runtime *probeChainRuntime, preferredSessionID string
 	}, nil
 }
 
-func (rt *probeChainRuntime) getDownstreamSessionByID(sessionID string) *yamux.Session {
+func (rt *probeChainRuntime) getDownstreamSessionByID(sessionID string) *probeChainFrameSession {
 	if rt == nil {
 		return nil
 	}
@@ -3171,7 +3254,7 @@ func (rt *probeChainRuntime) getDownstreamSessionByID(sessionID string) *yamux.S
 	return item.Session
 }
 
-func (rt *probeChainRuntime) getUpstreamSessionByID(sessionID string) *yamux.Session {
+func (rt *probeChainRuntime) getUpstreamSessionByID(sessionID string) *probeChainFrameSession {
 	if rt == nil {
 		return nil
 	}
@@ -3188,9 +3271,9 @@ func (rt *probeChainRuntime) getUpstreamSessionByID(sessionID string) *yamux.Ses
 	return item.Session
 }
 
-func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration) (net.Conn, probeChainYamuxStreamMonitor, error) {
+func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
-		return nil, probeChainYamuxStreamMonitor{}, errors.New("runtime is nil")
+		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
 	if timeout <= 0 {
 		timeout = 15 * time.Second
@@ -3205,13 +3288,14 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 			stream, openErr := session.Open()
 			openLatency := time.Since(startedAt)
 			if openErr == nil {
-				return stream, probeChainYamuxStreamMonitor{
+				return stream, probeChainFrameStreamMonitor{
 					Session:             session,
 					SessionID:           sessionID,
 					SessionRole:         sessionRole,
 					SessionStreamsOpen:  streamsOpen,
 					SessionStreamsAfter: session.NumStreams(),
 					OpenLatency:         openLatency,
+					PingStats:           session.PingStats(),
 				}, nil
 			}
 			if session.IsClosed() {
@@ -3223,19 +3307,19 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 		}
 		select {
 		case <-runtime.stopCh:
-			return nil, probeChainYamuxStreamMonitor{}, errors.New("runtime stopped")
+			return nil, probeChainFrameStreamMonitor{}, errors.New("runtime stopped")
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
 	if strings.TrimSpace(preferredSessionID) != "" {
-		return nil, probeChainYamuxStreamMonitor{}, fmt.Errorf("downstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
+		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("downstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
 	}
-	return nil, probeChainYamuxStreamMonitor{}, fmt.Errorf("downstream bridge is unavailable")
+	return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("downstream bridge is unavailable")
 }
 
-func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration) (net.Conn, probeChainYamuxStreamMonitor, error) {
+func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
-		return nil, probeChainYamuxStreamMonitor{}, errors.New("runtime is nil")
+		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
 	if timeout <= 0 {
 		timeout = 15 * time.Second
@@ -3256,13 +3340,14 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 				openLatency := time.Since(startedAt)
 				if openErr == nil {
 					log.Printf("probe chain upstream stream opened: chain=%s role=%s attempt=%d session=%p", runtime.cfg.chainID, runtime.cfg.role, attempt, session)
-					return stream, probeChainYamuxStreamMonitor{
+					return stream, probeChainFrameStreamMonitor{
 						Session:             session,
 						SessionID:           sessionID,
 						SessionRole:         sessionRole,
 						SessionStreamsOpen:  streamsOpen,
 						SessionStreamsAfter: session.NumStreams(),
 						OpenLatency:         openLatency,
+						PingStats:           session.PingStats(),
 					}, nil
 				}
 				log.Printf("probe chain upstream stream open failed: chain=%s role=%s attempt=%d session=%p err=%v", runtime.cfg.chainID, runtime.cfg.role, attempt, session, openErr)
@@ -3279,15 +3364,15 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 		}
 		select {
 		case <-runtime.stopCh:
-			return nil, probeChainYamuxStreamMonitor{}, errors.New("runtime stopped")
+			return nil, probeChainFrameStreamMonitor{}, errors.New("runtime stopped")
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
 	log.Printf("probe chain upstream stream unavailable: chain=%s role=%s attempts=%d timeout=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, attempt, timeout, strings.TrimSpace(preferredSessionID))
 	if strings.TrimSpace(preferredSessionID) != "" {
-		return nil, probeChainYamuxStreamMonitor{}, fmt.Errorf("upstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
+		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("upstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
 	}
-	return nil, probeChainYamuxStreamMonitor{}, fmt.Errorf("upstream bridge is unavailable")
+	return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("upstream bridge is unavailable")
 }
 
 func resolveProbeChainOutboundLinkLayer(cfg probeChainRuntimeConfig) string {
@@ -3357,16 +3442,6 @@ func (c *probeChainStreamProxyConn) Read(payload []byte) (int, error) {
 		return c.Conn.Read(payload)
 	}
 	return c.reader.Read(payload)
-}
-
-func newProbeChainYamuxConfig() *yamux.Config {
-	cfg := yamux.DefaultConfig()
-	cfg.AcceptBacklog = probeChainRelayYamuxAcceptBacklog
-	cfg.EnableKeepAlive = true
-	cfg.KeepAliveInterval = probeChainRelayYamuxKeepAliveInterval
-	cfg.ConnectionWriteTimeout = probeChainRelayYamuxWriteTimeout
-	cfg.MaxStreamWindowSize = probeChainRelayYamuxMaxStreamWindowBytes
-	return cfg
 }
 
 type probeChainTunedTCPListener struct {
@@ -3940,7 +4015,7 @@ func closeProbeChainConnWrite(conn net.Conn) {
 		_ = closer.CloseWrite()
 		return
 	}
-	if stream, ok := conn.(*yamux.Stream); ok {
+	if stream, ok := conn.(*probeChainFrameStream); ok {
 		_ = stream.Close()
 	}
 }

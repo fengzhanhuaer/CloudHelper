@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -158,7 +157,7 @@ type mobileChainRuntime struct {
 
 type mobileChainBridgeSession struct {
 	ID      string
-	Session *yamux.Session
+	Session *mobileChainFrameSession
 }
 
 type mobileChainSharedRelayServer struct {
@@ -828,7 +827,7 @@ func handleMobileChainBridgeRelayH3(rt *mobileChainRuntime, role string, w http.
 
 func handleMobileChainBridgeRelayConn(rt *mobileChainRuntime, role string, conn net.Conn) {
 	sessionID := rt.nextBridgeSessionID("inbound")
-	session, err := yamux.Server(conn, newMobileChainYamuxConfig())
+	session, err := newMobileChainFrameServer(conn)
 	if err != nil {
 		return
 	}
@@ -955,7 +954,7 @@ func runMobileChainBridgeDialLoop(rt *mobileChainRuntime, target mobileChainBrid
 			backoff = nextMobileChainBackoff(backoff)
 			continue
 		}
-		session, err := yamux.Client(conn, newMobileChainYamuxConfig())
+		session, err := newMobileChainFrameClient(conn)
 		if err != nil {
 			_ = conn.Close()
 			sleepMobileChainBackoff(rt.stopCh, backoff)
@@ -991,7 +990,7 @@ func runMobileChainBridgeDialLoop(rt *mobileChainRuntime, target mobileChainBrid
 	}
 }
 
-func acceptMobileChainBridgeStreams(rt *mobileChainRuntime, session *yamux.Session, sessionID string, direction string) {
+func acceptMobileChainBridgeStreams(rt *mobileChainRuntime, session *mobileChainFrameSession, sessionID string, direction string) {
 	for {
 		stream, err := session.Accept()
 		if err != nil {
@@ -1491,7 +1490,7 @@ func openMobileChainUpstreamStream(rt *mobileChainRuntime, sessionID string, tim
 func openMobileChainSessionStream(rt *mobileChainRuntime, downstream bool, sessionID string, timeout time.Duration) (net.Conn, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		var session *yamux.Session
+		var session *mobileChainFrameSession
 		if downstream {
 			session = rt.getDownstreamSession(sessionID)
 		} else {
@@ -1523,19 +1522,19 @@ func (rt *mobileChainRuntime) nextBridgeSessionID(prefix string) string {
 	return strings.TrimSpace(prefix) + "-" + strconv.FormatUint(seq, 10) + "-" + strings.ToLower(randomHexToken(4))
 }
 
-func (rt *mobileChainRuntime) setDownstreamSession(id string, session *yamux.Session) {
+func (rt *mobileChainRuntime) setDownstreamSession(id string, session *mobileChainFrameSession) {
 	rt.bridgeMu.Lock()
 	rt.downstreamSessions[id] = &mobileChainBridgeSession{ID: id, Session: session}
 	rt.bridgeMu.Unlock()
 }
 
-func (rt *mobileChainRuntime) setUpstreamSession(id string, session *yamux.Session) {
+func (rt *mobileChainRuntime) setUpstreamSession(id string, session *mobileChainFrameSession) {
 	rt.bridgeMu.Lock()
 	rt.upstreamSessions[id] = &mobileChainBridgeSession{ID: id, Session: session}
 	rt.bridgeMu.Unlock()
 }
 
-func (rt *mobileChainRuntime) clearDownstreamSession(id string, session *yamux.Session) {
+func (rt *mobileChainRuntime) clearDownstreamSession(id string, session *mobileChainFrameSession) {
 	rt.bridgeMu.Lock()
 	for key, item := range rt.downstreamSessions {
 		if (strings.TrimSpace(id) == "" || key == id) && item != nil && item.Session == session {
@@ -1545,7 +1544,7 @@ func (rt *mobileChainRuntime) clearDownstreamSession(id string, session *yamux.S
 	rt.bridgeMu.Unlock()
 }
 
-func (rt *mobileChainRuntime) clearUpstreamSession(id string, session *yamux.Session) {
+func (rt *mobileChainRuntime) clearUpstreamSession(id string, session *mobileChainFrameSession) {
 	rt.bridgeMu.Lock()
 	for key, item := range rt.upstreamSessions {
 		if (strings.TrimSpace(id) == "" || key == id) && item != nil && item.Session == session {
@@ -1555,15 +1554,15 @@ func (rt *mobileChainRuntime) clearUpstreamSession(id string, session *yamux.Ses
 	rt.bridgeMu.Unlock()
 }
 
-func (rt *mobileChainRuntime) getDownstreamSession(id string) *yamux.Session {
+func (rt *mobileChainRuntime) getDownstreamSession(id string) *mobileChainFrameSession {
 	return rt.getSession(rt.downstreamSessions, id)
 }
 
-func (rt *mobileChainRuntime) getUpstreamSession(id string) *yamux.Session {
+func (rt *mobileChainRuntime) getUpstreamSession(id string) *mobileChainFrameSession {
 	return rt.getSession(rt.upstreamSessions, id)
 }
 
-func (rt *mobileChainRuntime) getSession(items map[string]*mobileChainBridgeSession, id string) *yamux.Session {
+func (rt *mobileChainRuntime) getSession(items map[string]*mobileChainBridgeSession, id string) *mobileChainFrameSession {
 	rt.bridgeMu.Lock()
 	defer rt.bridgeMu.Unlock()
 	if strings.TrimSpace(id) != "" {
@@ -1759,7 +1758,7 @@ func handleMobileChainBridgeControlIfPresent(conn net.Conn, reader *bufio.Reader
 		Type:      "reverse_data_open_result",
 		RequestID: strings.TrimSpace(req.RequestID),
 		OK:        false,
-		Error:     "reverse data stream is disabled; use bridge yamux stream",
+		Error:     "reverse data stream is disabled; use bridge frame stream",
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 	return true
@@ -1855,7 +1854,7 @@ func closeMobileChainWrite(conn net.Conn) {
 		_ = closer.CloseWrite()
 		return
 	}
-	if _, ok := conn.(*yamux.Stream); ok {
+	if _, ok := conn.(*mobileChainFrameStream); ok {
 		_ = conn.Close()
 	}
 }
@@ -2302,7 +2301,7 @@ func nextMobileChainBackoff(current time.Duration) time.Duration {
 	return next
 }
 
-func waitMobileChainBridgeSession(stopCh <-chan struct{}, session *yamux.Session) {
+func waitMobileChainBridgeSession(stopCh <-chan struct{}, session *mobileChainFrameSession) {
 	ticker := time.NewTicker(600 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -2316,16 +2315,6 @@ func waitMobileChainBridgeSession(stopCh <-chan struct{}, session *yamux.Session
 		case <-ticker.C:
 		}
 	}
-}
-
-func newMobileChainYamuxConfig() *yamux.Config {
-	cfg := yamux.DefaultConfig()
-	cfg.AcceptBacklog = 1024
-	cfg.EnableKeepAlive = true
-	cfg.KeepAliveInterval = 10 * time.Second
-	cfg.ConnectionWriteTimeout = 10 * time.Second
-	cfg.MaxStreamWindowSize = 16 * 1024 * 1024
-	return cfg
 }
 
 func newMobileChainQUICConfig() *quic.Config {

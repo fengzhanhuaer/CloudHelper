@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -658,7 +657,7 @@ func linkPingPongProbe(endpoint linkEndpoint, protocol string) (time.Duration, e
 }
 
 func openLinkPingPongStream(conn net.Conn, payloadBytes int64) (net.Conn, error) {
-	session, err := yamux.Client(conn, newLinkYamuxConfig())
+	session, err := newMobileChainFrameClient(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -677,7 +676,7 @@ func openLinkPingPongStream(conn net.Conn, payloadBytes int64) (net.Conn, error)
 
 type linkPingPongStreamConn struct {
 	net.Conn
-	session *yamux.Session
+	session *mobileChainFrameSession
 }
 
 func (c *linkPingPongStreamConn) Close() error {
@@ -1499,15 +1498,6 @@ func wrapLinkDialError(protocol string, host string, port int, err error) error 
 		return nil
 	}
 	return fmt.Errorf("probe relay %s dial failed: relay=%s:%d: %w", normalizeLinkLayer(protocol), strings.TrimSpace(host), port, err)
-}
-
-func newLinkYamuxConfig() *yamux.Config {
-	cfg := yamux.DefaultConfig()
-	cfg.EnableKeepAlive = true
-	cfg.KeepAliveInterval = 20 * time.Second
-	cfg.ConnectionWriteTimeout = 2 * time.Minute
-	cfg.MaxStreamWindowSize = 64 * 1024 * 1024
-	return cfg
 }
 
 func newLinkQUICConfig() *quic.Config {

@@ -18,7 +18,7 @@ type probeSubstreamMonitorPayload struct {
 	Active           []probeSubstreamMonitorItem       `json:"active"`
 	Completed        []probeSubstreamMonitorItem       `json:"completed"`
 	Failures         []probeTCPDebugFailureItemPayload `json:"failures"`
-	YamuxWindowBytes int                               `json:"yamux_window_bytes"`
+	FrameWindowBytes int                               `json:"frame_window_bytes"`
 	FetchedAt        string                            `json:"fetched_at,omitempty"`
 	Error            string                            `json:"error,omitempty"`
 	Timestamp        string                            `json:"timestamp,omitempty"`
@@ -47,6 +47,12 @@ type probeSubstreamMonitorItem struct {
 	SessionStreamsOpen    int                             `json:"session_streams_open,omitempty"`
 	SessionStreamsAfter   int                             `json:"session_streams_after,omitempty"`
 	SessionStreamsCurrent int                             `json:"session_streams_current,omitempty"`
+	SessionRTTMS          int64                           `json:"session_rtt_ms,omitempty"`
+	SessionLastPingAt     string                          `json:"session_last_ping_at,omitempty"`
+	SessionLastPongAt     string                          `json:"session_last_pong_at,omitempty"`
+	SessionPingsSent      int64                           `json:"session_pings_sent,omitempty"`
+	SessionPongsReceived  int64                           `json:"session_pongs_received,omitempty"`
+	SessionPingTimeouts   int64                           `json:"session_ping_timeouts,omitempty"`
 	OpenedAt              string                          `json:"opened_at,omitempty"`
 	ClosedAt              string                          `json:"closed_at,omitempty"`
 	LastActive            string                          `json:"last_active,omitempty"`
@@ -74,7 +80,7 @@ type probeSubstreamMonitorItem struct {
 
 type probeSubstreamBufferMonitorItem struct {
 	Status               string `json:"status"`
-	YamuxWindowBytes     int    `json:"yamux_window_bytes"`
+	FrameWindowBytes     int    `json:"frame_window_bytes"`
 	BlockedWritesUp      int64  `json:"blocked_writes_up,omitempty"`
 	BlockedWritesDown    int64  `json:"blocked_writes_down,omitempty"`
 	WriteBlockMSUp       int64  `json:"write_block_ms_up,omitempty"`
@@ -98,7 +104,7 @@ func snapshotProbeSubstreamMonitorPayload(nodeID string, requestID string, scope
 		Active:           []probeSubstreamMonitorItem{},
 		Completed:        []probeSubstreamMonitorItem{},
 		Failures:         tcp.Failures,
-		YamuxWindowBytes: probeChainRelayYamuxMaxStreamWindowBytes,
+		FrameWindowBytes: probeChainFrameMaxDataBytes * probeChainFrameSessionInboundBuffer,
 		FetchedAt:        time.Now().UTC().Format(time.RFC3339),
 		Timestamp:        time.Now().UTC().Format(time.RFC3339),
 	}
@@ -125,7 +131,7 @@ func buildProbeSubstreamMonitorItem(item probeTCPDebugConnectionItemPayload) (pr
 	}
 	buffer := probeSubstreamBufferMonitorItem{
 		Status:               "clear",
-		YamuxWindowBytes:     probeChainRelayYamuxMaxStreamWindowBytes,
+		FrameWindowBytes:     probeChainFrameMaxDataBytes * probeChainFrameSessionInboundBuffer,
 		BlockedWritesUp:      item.BlockedWritesUp,
 		BlockedWritesDown:    item.BlockedWritesDown,
 		WriteBlockMSUp:       item.WriteBlockMSUp,
@@ -161,12 +167,18 @@ func buildProbeSubstreamMonitorItem(item probeTCPDebugConnectionItemPayload) (pr
 		RouteIP:               routeIP,
 		NodeID:                strings.TrimSpace(item.NodeID),
 		Group:                 strings.TrimSpace(item.Group),
-		Transport:             firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Transport), "yamux"),
+		Transport:             firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Transport), "frame"),
 		SessionID:             strings.TrimSpace(item.SessionID),
 		SessionRole:           strings.TrimSpace(item.SessionRole),
 		SessionStreamsOpen:    item.SessionStreamsOpen,
 		SessionStreamsAfter:   item.SessionStreamsAfter,
 		SessionStreamsCurrent: item.SessionStreamsCurrent,
+		SessionRTTMS:          item.SessionRTTMS,
+		SessionLastPingAt:     strings.TrimSpace(item.SessionLastPingAt),
+		SessionLastPongAt:     strings.TrimSpace(item.SessionLastPongAt),
+		SessionPingsSent:      item.SessionPingsSent,
+		SessionPongsReceived:  item.SessionPongsReceived,
+		SessionPingTimeouts:   item.SessionPingTimeouts,
 		OpenedAt:              strings.TrimSpace(item.OpenedAt),
 		ClosedAt:              strings.TrimSpace(item.ClosedAt),
 		LastActive:            strings.TrimSpace(item.LastActive),

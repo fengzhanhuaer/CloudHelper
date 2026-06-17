@@ -15,8 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/hashicorp/yamux"
 )
 
 const (
@@ -45,7 +43,7 @@ type androidProxyRuntime struct {
 type proxyChainSession struct {
 	chainID string
 	conn    net.Conn
-	session *yamux.Session
+	session *mobileChainFrameSession
 }
 
 type proxyGroupFile struct {
@@ -465,7 +463,7 @@ func openAndroidProxyLinkRelayDataStream(item linkChainServerItem, endpoint link
 	return nil, errors.New("no supported relay stream protocol")
 }
 
-func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*yamux.Session, error) {
+func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*mobileChainFrameSession, error) {
 	proxyRuntime.mu.Lock()
 	if existing := proxyRuntime.sessions[endpoint.ChainID]; existing != nil && existing.session != nil && !existing.session.IsClosed() {
 		session := existing.session
@@ -477,7 +475,7 @@ func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*
 	if err != nil {
 		return nil, err
 	}
-	session, err := yamux.Client(conn, newLinkYamuxConfig())
+	session, err := newMobileChainFrameClient(conn)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -511,7 +509,7 @@ func openAndroidProxyLinkRelayConn(item linkChainServerItem, endpoint linkEndpoi
 	return nil, errors.New("no supported relay protocol")
 }
 
-func invalidateProxyChainSession(chainID string, session *yamux.Session) {
+func invalidateProxyChainSession(chainID string, session *mobileChainFrameSession) {
 	proxyRuntime.mu.Lock()
 	existing := proxyRuntime.sessions[strings.TrimSpace(chainID)]
 	if existing != nil && existing.session == session {
@@ -917,7 +915,7 @@ func closeProxyConnWrite(conn net.Conn) {
 		_ = closer.CloseWrite()
 		return
 	}
-	if stream, ok := conn.(*yamux.Stream); ok {
+	if stream, ok := conn.(*mobileChainFrameStream); ok {
 		_ = stream.Close()
 	}
 }

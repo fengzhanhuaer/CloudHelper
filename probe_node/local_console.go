@@ -24,8 +24,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/hashicorp/yamux"
 )
 
 const (
@@ -2896,9 +2894,6 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/proxy/status/refresh", probeLocalProxyStatusRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/monitor", probeLocalProxyMonitorHandler)
 	mux.HandleFunc("/local/api/proxy/peer_status", probeLocalPeerStatusMonitorHandler)
-	mux.HandleFunc("/local/api/proxy/substreams", probeLocalProxySubstreamsHandler)
-	mux.HandleFunc("/local/api/proxy/remote/tcp_debug", probeLocalProxyRemoteTCPDebugHandler)
-	mux.HandleFunc("/local/api/proxy/remote/speed_debug", probeLocalProxyRemoteSpeedDebugHandler)
 	mux.HandleFunc("/local/api/proxy/chains", probeLocalProxyChainsHandler)
 	mux.HandleFunc("/local/api/proxy/chains/refresh", probeLocalProxyChainsRefreshHandler)
 	mux.HandleFunc("/local/api/proxy/link/status", probeLocalProxyLinkStatusHandler)
@@ -4051,132 +4046,6 @@ func probeLocalPeerStatusMonitorHandler(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, currentProbeLocalPeerStatusMonitorSnapshot())
 }
 
-func probeLocalProxySubstreamsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if _, ok := requireProbeLocalSession(w, r); !ok {
-		return
-	}
-	requestID := "local-substreams-" + randomHexToken(8)
-	payload := map[string]any{
-		"ok":           true,
-		"local":        snapshotProbeSubstreamMonitorPayload("", requestID, "local"),
-		"fetched":      time.Now().UTC().Format(time.RFC3339),
-		"remote":       nil,
-		"group":        "",
-		"remote_error": "",
-	}
-	group := strings.TrimSpace(r.URL.Query().Get("group"))
-	var rt *probeLocalTUNGroupRuntime
-	if group != "" {
-		rt = currentProbeLocalTUNGroupRuntime(group)
-	} else {
-		group, rt = resolveProbeLocalSelectedGroupRuntime(currentProbeLocalProxyViewState())
-	}
-	payload["group"] = group
-	if rt != nil {
-		remote, err := rt.fetchRemoteSubstreams()
-		if err != nil {
-			payload["remote_error"] = strings.TrimSpace(err.Error())
-		} else {
-			payload["remote"] = remote
-		}
-	} else if group != "" {
-		payload["remote_error"] = "selected group runtime is unavailable"
-	}
-	if snapshot, ok := currentProbeLocalProxyViewGroupRuntimeSnapshot(group); ok {
-		if snapshot.SelectedChainLatencyMS != nil {
-			payload["link_latency_ms"] = *snapshot.SelectedChainLatencyMS
-		}
-		payload["link_latency_status"] = strings.TrimSpace(snapshot.SelectedChainLatencyStatus)
-		payload["link_latency_updated_at"] = strings.TrimSpace(snapshot.SelectedChainLatencyUpdatedAt)
-		payload["link_latency_error"] = strings.TrimSpace(snapshot.SelectedChainLatencyError)
-	}
-	writeJSON(w, http.StatusOK, payload)
-}
-
-func probeLocalProxyRemoteTCPDebugHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if _, ok := requireProbeLocalSession(w, r); !ok {
-		return
-	}
-	group := strings.TrimSpace(r.URL.Query().Get("group"))
-	var rt *probeLocalTUNGroupRuntime
-	if group != "" {
-		rt = currentProbeLocalTUNGroupRuntime(group)
-	} else {
-		group, rt = resolveProbeLocalSelectedGroupRuntime(currentProbeLocalProxyViewState())
-	}
-	if rt == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"ok":    false,
-			"error": "selected group runtime is unavailable",
-			"group": group,
-		})
-		return
-	}
-	payload, err := rt.fetchRemoteTCPDebug()
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"ok":    false,
-			"error": err.Error(),
-			"group": group,
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"group":   group,
-		"remote":  payload,
-		"fetched": time.Now().UTC().Format(time.RFC3339),
-	})
-}
-
-func probeLocalProxyRemoteSpeedDebugHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if _, ok := requireProbeLocalSession(w, r); !ok {
-		return
-	}
-	group := strings.TrimSpace(r.URL.Query().Get("group"))
-	var rt *probeLocalTUNGroupRuntime
-	if group != "" {
-		rt = currentProbeLocalTUNGroupRuntime(group)
-	} else {
-		group, rt = resolveProbeLocalSelectedGroupRuntime(currentProbeLocalProxyViewState())
-	}
-	if rt == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"ok":    false,
-			"error": "selected group runtime is unavailable",
-			"group": group,
-		})
-		return
-	}
-	payload, err := rt.fetchRemoteSpeedDebug()
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"ok":    false,
-			"error": err.Error(),
-			"group": group,
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"group":   group,
-		"remote":  payload,
-		"fetched": time.Now().UTC().Format(time.RFC3339),
-	})
-}
-
 func resolveProbeLocalProxyLinkEndpoint(item probeLinkChainServerItem) (probeLocalTUNChainEndpoint, error) {
 	chainID := strings.TrimSpace(item.ChainID)
 	if chainID == "" {
@@ -4536,7 +4405,7 @@ func openProbeLocalProxyLinkPingPongStream(conn net.Conn, payloadBytes int64) (n
 	if conn == nil {
 		return nil, errors.New("relay connection is nil")
 	}
-	session, err := yamux.Client(conn, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameClient(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -4555,7 +4424,7 @@ func openProbeLocalProxyLinkPingPongStream(conn net.Conn, payloadBytes int64) (n
 
 type probeLocalProxyLinkPingPongStreamConn struct {
 	net.Conn
-	session *yamux.Session
+	session *probeChainFrameSession
 }
 
 func (c *probeLocalProxyLinkPingPongStreamConn) Close() error {

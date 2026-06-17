@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/yamux"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -401,13 +400,13 @@ func TestProbeLocalTUNGroupRuntimeLatencyUsesPingPongOnly(t *testing.T) {
 	}
 
 	client, server := net.Pipe()
-	session, err := yamux.Client(client, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameClient(client)
 	if err != nil {
-		t.Fatalf("create yamux client failed: %v", err)
+		t.Fatalf("create frame client failed: %v", err)
 	}
-	serverSession, err := yamux.Server(server, newProbeChainYamuxConfig())
+	serverSession, err := newProbeChainFrameServer(server)
 	if err != nil {
-		t.Fatalf("create yamux server failed: %v", err)
+		t.Fatalf("create frame server failed: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = session.Close()
@@ -459,13 +458,13 @@ func TestProbeLocalTUNGroupRuntimeReconnectsWhenOpenFailureAndRelayProbeUnavaila
 	probeLocalTUNGroupRuntimeRegistry.mu.Unlock()
 
 	client1, server1 := net.Pipe()
-	staleServer, err := yamux.Server(server1, newProbeChainYamuxConfig())
+	staleServer, err := newProbeChainFrameServer(server1)
 	if err != nil {
-		t.Fatalf("create stale yamux server failed: %v", err)
+		t.Fatalf("create stale frame server failed: %v", err)
 	}
-	staleClient, err := yamux.Client(client1, newProbeChainYamuxConfig())
+	staleClient, err := newProbeChainFrameClient(client1)
 	if err != nil {
-		t.Fatalf("create stale yamux client failed: %v", err)
+		t.Fatalf("create stale frame client failed: %v", err)
 	}
 	rt.session = staleClient
 	rt.relayConn = client1
@@ -528,13 +527,13 @@ func TestProbeLocalTUNGroupRuntimeKeepsSessionWhenOpenFailureButRelayProbeSuccee
 	probeLocalTUNGroupRuntimeRegistry.mu.Unlock()
 
 	client1, server1 := net.Pipe()
-	staleServer, err := yamux.Server(server1, newProbeChainYamuxConfig())
+	staleServer, err := newProbeChainFrameServer(server1)
 	if err != nil {
-		t.Fatalf("create stale yamux server failed: %v", err)
+		t.Fatalf("create stale frame server failed: %v", err)
 	}
-	staleClient, err := yamux.Client(client1, newProbeChainYamuxConfig())
+	staleClient, err := newProbeChainFrameClient(client1)
 	if err != nil {
-		t.Fatalf("create stale yamux client failed: %v", err)
+		t.Fatalf("create stale frame client failed: %v", err)
 	}
 	rt.session = staleClient
 	rt.relayConn = client1
@@ -592,7 +591,7 @@ func TestProbeLocalTUNGroupRuntimeKeepsSessionWhenOpenFailureButRelayProbeSuccee
 	}
 }
 
-func serveProbeLocalTUNGroupRuntimeOpenError(session *yamux.Session, errText string) {
+func serveProbeLocalTUNGroupRuntimeOpenError(session *probeChainFrameSession, errText string) {
 	if session == nil {
 		return
 	}
@@ -611,7 +610,7 @@ func serveProbeLocalTUNGroupRuntimeOpenError(session *yamux.Session, errText str
 
 func serveProbeLocalTUNGroupRuntimeOpenOK(conn net.Conn, done <-chan struct{}) {
 	defer conn.Close()
-	session, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameServer(conn)
 	if err != nil {
 		return
 	}
@@ -631,7 +630,7 @@ func serveProbeLocalTUNGroupRuntimeOpenOK(conn net.Conn, done <-chan struct{}) {
 
 func serveProbeLocalTUNPingPongProbeConn(conn net.Conn) {
 	defer conn.Close()
-	session, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameServer(conn)
 	if err != nil {
 		return
 	}
@@ -667,7 +666,7 @@ func serveProbeLocalTUNPingPongProbeStream(stream net.Conn) {
 
 func serveProbeLocalTUNPingPongProbeRelayConn(conn net.Conn) {
 	defer conn.Close()
-	relaySession, err := yamux.Server(conn, newProbeChainYamuxConfig())
+	relaySession, err := newProbeChainFrameServer(conn)
 	if err != nil {
 		return
 	}

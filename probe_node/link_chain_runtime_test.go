@@ -24,8 +24,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/yamux"
 )
 
 func TestReadProbeChainAuthEnvelopeFromHeadersCodexStyle(t *testing.T) {
@@ -346,37 +344,37 @@ func TestProbeChainPreparedStreamDefersTargetOpenUntilRealRequest(t *testing.T) 
 	<-done
 }
 
-func TestProbeChainPortForwardRelaySubstreamUsesBridgeYamux(t *testing.T) {
+func TestProbeChainPortForwardRelaySubstreamUsesBridgeFrame(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		entrySide string
-		setup     func(*probeChainRuntime, *yamux.Session)
+		setup     func(*probeChainRuntime, *probeChainFrameSession)
 	}{
 		{
 			name:      "to_next",
 			entrySide: probeChainPortForwardEntryChainEntry,
-			setup: func(rt *probeChainRuntime, session *yamux.Session) {
+			setup: func(rt *probeChainRuntime, session *probeChainFrameSession) {
 				rt.setDownstreamSession("downstream-test", session, probeChainBridgeRoleToNext, "pipe")
 			},
 		},
 		{
 			name:      "to_prev",
 			entrySide: probeChainPortForwardEntryChainExit,
-			setup: func(rt *probeChainRuntime, session *yamux.Session) {
+			setup: func(rt *probeChainRuntime, session *probeChainFrameSession) {
 				rt.setUpstreamSession("upstream-test", session, probeChainBridgeRoleToPrev, "pipe")
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
-			serverSession, err := yamux.Server(serverConn, newProbeChainYamuxConfig())
+			serverSession, err := newProbeChainFrameServer(serverConn)
 			if err != nil {
-				t.Fatalf("yamux server failed: %v", err)
+				t.Fatalf("frame server failed: %v", err)
 			}
 			defer serverSession.Close()
-			clientSession, err := yamux.Client(clientConn, newProbeChainYamuxConfig())
+			clientSession, err := newProbeChainFrameClient(clientConn)
 			if err != nil {
-				t.Fatalf("yamux client failed: %v", err)
+				t.Fatalf("frame client failed: %v", err)
 			}
 			defer clientSession.Close()
 
@@ -416,7 +414,7 @@ func TestProbeChainPortForwardRelaySubstreamUsesBridgeYamux(t *testing.T) {
 			case err := <-acceptErr:
 				t.Fatalf("server accept failed: %v", err)
 			case <-time.After(2 * time.Second):
-				t.Fatal("timed out waiting for bridge yamux stream")
+				t.Fatal("timed out waiting for bridge frame stream")
 			}
 		})
 	}

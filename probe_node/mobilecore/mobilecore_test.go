@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
 	"golang.org/x/net/dns/dnsmessage"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -222,21 +221,21 @@ func TestMobileChainRelayWebSocketPingPongEndToEnd(t *testing.T) {
 	}
 }
 
-func TestMobileChainPortForwardStreamUsesExistingYamuxOnly(t *testing.T) {
+func TestMobileChainPortForwardStreamUsesExistingFrameOnly(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	serverSession, err := yamux.Server(serverConn, newMobileChainYamuxConfig())
+	serverSession, err := newMobileChainFrameServer(serverConn)
 	if err != nil {
-		t.Fatalf("server yamux: %v", err)
+		t.Fatalf("server frame: %v", err)
 	}
 	defer serverSession.Close()
-	clientSession, err := yamux.Client(clientConn, newMobileChainYamuxConfig())
+	clientSession, err := newMobileChainFrameClient(clientConn)
 	if err != nil {
-		t.Fatalf("client yamux: %v", err)
+		t.Fatalf("client frame: %v", err)
 	}
 	defer clientSession.Close()
 
 	rt := &mobileChainRuntime{
-		cfg:                mobileChainRuntimeConfig{ChainID: "android-chain-yamux", Role: "entry"},
+		cfg:                mobileChainRuntimeConfig{ChainID: "android-chain-frame", Role: "entry"},
 		downstreamSessions: map[string]*mobileChainBridgeSession{"s1": {ID: "s1", Session: clientSession}},
 		upstreamSessions:   map[string]*mobileChainBridgeSession{},
 		stopCh:             make(chan struct{}),
@@ -267,7 +266,7 @@ func TestMobileChainPortForwardStreamUsesExistingYamuxOnly(t *testing.T) {
 			t.Fatalf("unexpected request: %+v", req)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("yamux stream was not opened")
+		t.Fatal("frame stream was not opened")
 	}
 }
 
@@ -778,9 +777,9 @@ func TestAndroidProxyChainSessionDefaultProtocolFallsBackToWebSocket(t *testing.
 		}
 		conn := newWebSocketNetConn(ws)
 		defer conn.Close()
-		session, err := yamux.Server(conn, newLinkYamuxConfig())
+		session, err := newMobileChainFrameServer(conn)
 		if err != nil {
-			t.Fatalf("yamux server: %v", err)
+			t.Fatalf("frame server: %v", err)
 		}
 		defer session.Close()
 	}))
@@ -839,14 +838,14 @@ func TestOpenAndroidProxyIndependentStreamUsesBridgeSession(t *testing.T) {
 	}()
 
 	clientConn, serverConn := net.Pipe()
-	serverSession, err := yamux.Server(serverConn, newLinkYamuxConfig())
+	serverSession, err := newMobileChainFrameServer(serverConn)
 	if err != nil {
-		t.Fatalf("yamux server failed: %v", err)
+		t.Fatalf("frame server failed: %v", err)
 	}
 	defer serverSession.Close()
-	clientSession, err := yamux.Client(clientConn, newLinkYamuxConfig())
+	clientSession, err := newMobileChainFrameClient(clientConn)
 	if err != nil {
-		t.Fatalf("yamux client failed: %v", err)
+		t.Fatalf("frame client failed: %v", err)
 	}
 
 	endpoint := linkEndpoint{
@@ -1668,14 +1667,14 @@ func assertLinkAuth(t *testing.T, r *http.Request, chainID string, secret string
 func serveTestPingPongRelay(t *testing.T, conn net.Conn) {
 	t.Helper()
 	defer conn.Close()
-	session, err := yamux.Server(conn, newLinkYamuxConfig())
+	session, err := newMobileChainFrameServer(conn)
 	if err != nil {
-		t.Fatalf("yamux server: %v", err)
+		t.Fatalf("frame server: %v", err)
 	}
 	defer session.Close()
 	stream, err := session.Accept()
 	if err != nil {
-		t.Fatalf("yamux accept: %v", err)
+		t.Fatalf("frame accept: %v", err)
 	}
 	defer stream.Close()
 	var req linkTunnelOpenRequest

@@ -1003,7 +1003,7 @@
       const blockedDown = Number(buffer.blocked_writes_down || item && item.blocked_writes_down || 0);
       const bufferStatus = String(buffer.status || 'clear').trim();
       const sessionText = renderSubstreamSessionLine(item);
-      return bufferStatus + ' / 阻塞次数 ' + Math.trunc(blockedUp) + '/' + Math.trunc(blockedDown) + ' / 累计 ' + Math.trunc(totalBlockUp) + '/' + Math.trunc(totalBlockDown) + 'ms / 最近 ' + Math.trunc(lastBlockUp) + '/' + Math.trunc(lastBlockDown) + 'ms / 最大 ' + Math.trunc(maxBlockUp) + '/' + Math.trunc(maxBlockDown) + 'ms / 窗口 ' + formatBytes(buffer.yamux_window_bytes || 0) + ' / 堵塞方向 ' + String(item && item.last_congestion_side || '-').trim() + '\n' + sessionText;
+      return bufferStatus + ' / 阻塞次数 ' + Math.trunc(blockedUp) + '/' + Math.trunc(blockedDown) + ' / 累计 ' + Math.trunc(totalBlockUp) + '/' + Math.trunc(totalBlockDown) + 'ms / 最近 ' + Math.trunc(lastBlockUp) + '/' + Math.trunc(lastBlockDown) + 'ms / 最大 ' + Math.trunc(maxBlockUp) + '/' + Math.trunc(maxBlockDown) + 'ms / 窗口 ' + formatBytes(buffer.frame_window_bytes || 0) + ' / 堵塞方向 ' + String(item && item.last_congestion_side || '-').trim() + '\n' + sessionText;
     }
 
     function renderSubstreamSessionLine(item) {
@@ -1012,9 +1012,15 @@
       const streamsOpen = Number(item && item.session_streams_open || 0);
       const streamsAfter = Number(item && item.session_streams_after || 0);
       const streamsCurrent = Number(item && item.session_streams_current || 0);
+      const rtt = Number(item && item.session_rtt_ms || 0);
+      const pings = Math.trunc(Number(item && item.session_pings_sent || 0));
+      const pongs = Math.trunc(Number(item && item.session_pongs_received || 0));
+      const timeouts = Math.trunc(Number(item && item.session_ping_timeouts || 0));
+      const lastPong = String(item && item.session_last_pong_at || '-').trim();
       const openText = Number.isFinite(streamsOpen) && Number.isFinite(streamsAfter) && (streamsOpen > 0 || streamsAfter > 0) ? Math.trunc(streamsOpen) + '->' + Math.trunc(streamsAfter) : '-';
       const currentText = Number.isFinite(streamsCurrent) && streamsCurrent > 0 ? Math.trunc(streamsCurrent) : '-';
-      return 'yamux session=' + sessionID + ' role=' + sessionRole + ' 流数 open ' + openText + ' / 当前 ' + currentText;
+      const rttText = Number.isFinite(rtt) && rtt > 0 ? Math.trunc(rtt) + 'ms' : '-';
+      return 'frame session=' + sessionID + ' role=' + sessionRole + ' 流数 open ' + openText + ' / 当前 ' + currentText + ' / RTT ' + rttText + ' / ping-pong ' + pongs + '/' + pings + ' / 超时 ' + timeouts + ' / 最近pong ' + lastPong;
     }
 
     function renderSubstreamTimeLine(item) {

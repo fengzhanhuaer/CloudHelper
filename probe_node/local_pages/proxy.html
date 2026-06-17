@@ -1727,9 +1727,21 @@
     async function fetchProxyLinkRemoteSpeedForItem(item) {
       const groups = Array.isArray(item && item.selected_groups) ? item.selected_groups : [];
       const group = String(groups[0] || '').trim();
-      const url = group ? `/local/api/proxy/remote/speed_debug?group=${encodeURIComponent(group)}` : '/local/api/proxy/remote/speed_debug';
+      const url = group ? `/local/api/proxy/peer_status?group=${encodeURIComponent(group)}` : '/local/api/proxy/peer_status';
       try {
-        return await requestJSON(url, { method: 'GET' });
+        const payload = await requestJSON(url, { method: 'GET' });
+        const groupsPayload = payload && payload.groups && typeof payload.groups === 'object' ? payload.groups : {};
+        const selectedGroup = group || String(payload && payload.selected_group || '').trim();
+        const groupPayload = groupsPayload[selectedGroup] || (Array.isArray(payload && payload.groups) ? payload.groups[0] : null);
+        const remote = groupPayload && groupPayload.remote && typeof groupPayload.remote === 'object' ? groupPayload.remote : null;
+        return {
+          ok: !!(payload && payload.ok !== false && remote && remote.speed),
+          group: selectedGroup,
+          remote: remote && remote.speed ? remote.speed : null,
+          fetched: String(payload && payload.fetched || payload && payload.timestamp || '').trim(),
+          source: 'peer_status',
+          error: remote && remote.speed ? '' : 'peer status speed snapshot is unavailable',
+        };
       } catch (err) {
         return { ok: false, error: err.message };
       }

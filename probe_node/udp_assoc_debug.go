@@ -33,6 +33,12 @@ type probeUDPAssociationDebugItemPayload struct {
 	SessionStreamsOpen    int    `json:"session_streams_open,omitempty"`
 	SessionStreamsAfter   int    `json:"session_streams_after,omitempty"`
 	SessionStreamsCurrent int    `json:"session_streams_current,omitempty"`
+	SessionRTTMS          int64  `json:"session_rtt_ms,omitempty"`
+	SessionLastPingAt     string `json:"session_last_ping_at,omitempty"`
+	SessionLastPongAt     string `json:"session_last_pong_at,omitempty"`
+	SessionPingsSent      int64  `json:"session_pings_sent,omitempty"`
+	SessionPongsReceived  int64  `json:"session_pongs_received,omitempty"`
+	SessionPingTimeouts   int64  `json:"session_ping_timeouts,omitempty"`
 	OpenLatencyMS         int64  `json:"open_latency_ms,omitempty"`
 	LastWriteBlockedAt    string `json:"last_write_blocked_at,omitempty"`
 	LastCongestionSide    string `json:"last_congestion_side,omitempty"`
@@ -133,7 +139,7 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 			Active:               assoc.conn != nil,
 		}
 		if rawMonitor := assoc.streamMonitor.Load(); rawMonitor != nil {
-			if monitor, ok := rawMonitor.(probeChainYamuxStreamMonitor); ok {
+			if monitor, ok := rawMonitor.(probeChainFrameStreamMonitor); ok {
 				item.SessionID = strings.TrimSpace(monitor.SessionID)
 				item.SessionRole = strings.TrimSpace(monitor.SessionRole)
 				item.SessionStreamsOpen = monitor.SessionStreamsOpen
@@ -141,6 +147,17 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 				item.OpenLatencyMS = probeDurationMilliseconds(monitor.OpenLatency)
 				if monitor.Session != nil {
 					item.SessionStreamsCurrent = monitor.Session.NumStreams()
+					ping := monitor.Session.PingStats()
+					item.SessionRTTMS = probeDurationMilliseconds(ping.RTT)
+					item.SessionPingsSent = ping.PingsSent
+					item.SessionPongsReceived = ping.PongsReceived
+					item.SessionPingTimeouts = ping.Timeouts
+					if !ping.LastPingAt.IsZero() {
+						item.SessionLastPingAt = ping.LastPingAt.Format(time.RFC3339)
+					}
+					if !ping.LastPongAt.IsZero() {
+						item.SessionLastPongAt = ping.LastPongAt.Format(time.RFC3339)
+					}
 				}
 			}
 		}

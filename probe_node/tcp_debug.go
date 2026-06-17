@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net"
 	"sort"
@@ -9,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"encoding/json"
 )
 
 const probeTCPDebugMaxFailures = 128
@@ -35,6 +35,12 @@ type probeTCPDebugConnectionItemPayload struct {
 	SessionStreamsOpen    int    `json:"session_streams_open,omitempty"`
 	SessionStreamsAfter   int    `json:"session_streams_after,omitempty"`
 	SessionStreamsCurrent int    `json:"session_streams_current,omitempty"`
+	SessionRTTMS          int64  `json:"session_rtt_ms,omitempty"`
+	SessionLastPingAt     string `json:"session_last_ping_at,omitempty"`
+	SessionLastPongAt     string `json:"session_last_pong_at,omitempty"`
+	SessionPingsSent      int64  `json:"session_pings_sent,omitempty"`
+	SessionPongsReceived  int64  `json:"session_pongs_received,omitempty"`
+	SessionPingTimeouts   int64  `json:"session_ping_timeouts,omitempty"`
 	OpenedAt              string `json:"opened_at,omitempty"`
 	ClosedAt              string `json:"closed_at,omitempty"`
 	LastActive            string `json:"last_active,omitempty"`
@@ -113,19 +119,22 @@ type probeTCPDebugFailureEvent struct {
 }
 
 type probeTCPDebugRelay struct {
-	id                  string
-	flowID              string
-	side                string
-	scope               string
-	target              string
-	routeTarget         string
-	nodeID              string
-	group               string
-	direct              bool
-	transport           string
-	sessionID           string
-	sessionRole         string
-	session             interface{ NumStreams() int }
+	id          string
+	flowID      string
+	side        string
+	scope       string
+	target      string
+	routeTarget string
+	nodeID      string
+	group       string
+	direct      bool
+	transport   string
+	sessionID   string
+	sessionRole string
+	session     interface {
+		NumStreams() int
+		PingStats() probeChainFramePingStats
+	}
 	sessionStreamsOpen  int
 	sessionStreamsAfter int
 	openedAt            time.Time
@@ -151,16 +160,19 @@ type probeTCPDebugRelay struct {
 }
 
 type probeTCPDebugRelayOptions struct {
-	Scope               string
-	FlowID              string
-	Side                string
-	Target              string
-	RouteTarget         string
-	Route               probeLocalTunnelRouteDecision
-	Transport           string
-	SessionID           string
-	SessionRole         string
-	Session             interface{ NumStreams() int }
+	Scope       string
+	FlowID      string
+	Side        string
+	Target      string
+	RouteTarget string
+	Route       probeLocalTunnelRouteDecision
+	Transport   string
+	SessionID   string
+	SessionRole string
+	Session     interface {
+		NumStreams() int
+		PingStats() probeChainFramePingStats
+	}
 	SessionStreamsOpen  int
 	SessionStreamsAfter int
 }
@@ -565,6 +577,17 @@ func buildProbeTCPDebugConnectionPayload(relay *probeTCPDebugRelay, now time.Tim
 	}
 	if relay.session != nil {
 		item.SessionStreamsCurrent = relay.session.NumStreams()
+		ping := relay.session.PingStats()
+		item.SessionRTTMS = probeDurationMilliseconds(ping.RTT)
+		item.SessionPingsSent = ping.PingsSent
+		item.SessionPongsReceived = ping.PongsReceived
+		item.SessionPingTimeouts = ping.Timeouts
+		if !ping.LastPingAt.IsZero() {
+			item.SessionLastPingAt = ping.LastPingAt.Format(time.RFC3339)
+		}
+		if !ping.LastPongAt.IsZero() {
+			item.SessionLastPongAt = ping.LastPongAt.Format(time.RFC3339)
+		}
 	}
 	return item
 }

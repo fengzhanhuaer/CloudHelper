@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/hashicorp/yamux"
 )
 
 type probeLocalTUNChainEndpoint struct {
@@ -41,7 +39,7 @@ type probeLocalTUNGroupRuntime struct {
 	LastConnectedAt string
 
 	relayConn net.Conn
-	session   *yamux.Session
+	session   *probeChainFrameSession
 }
 
 type probeLocalTUNGroupRuntimeSnapshot struct {
@@ -511,7 +509,7 @@ func (rt *probeLocalTUNGroupRuntime) markFailureLocked(err error, status string)
 	return failureErr
 }
 
-func (rt *probeLocalTUNGroupRuntime) markStreamFailureLocked(session *yamux.Session, err error) error {
+func (rt *probeLocalTUNGroupRuntime) markStreamFailureLocked(session *probeChainFrameSession, err error) error {
 	if rt == nil {
 		if err != nil {
 			return err
@@ -547,7 +545,7 @@ func (rt *probeLocalTUNGroupRuntime) ensureConnectedLocked() error {
 	if err != nil {
 		return rt.markFailureLocked(err, "unavailable")
 	}
-	session, err := yamux.Client(conn, newProbeChainYamuxConfig())
+	session, err := newProbeChainFrameClient(conn)
 	if err != nil {
 		_ = conn.Close()
 		return rt.markFailureLocked(err, "unavailable")
@@ -764,7 +762,7 @@ func (rt *probeLocalTUNGroupRuntime) fetchRemotePeerStatus(requestType string, s
 	return probePeerStatusSidePayload{}, errors.New("remote peer status fetch failed")
 }
 
-func (rt *probeLocalTUNGroupRuntime) markOpenStreamFailure(session *yamux.Session, err error, forceReconnect bool) bool {
+func (rt *probeLocalTUNGroupRuntime) markOpenStreamFailure(session *probeChainFrameSession, err error, forceReconnect bool) bool {
 	reconnect := false
 	logReconnect := false
 	logGroup := ""
@@ -799,7 +797,7 @@ func (rt *probeLocalTUNGroupRuntime) markOpenStreamFailure(session *yamux.Sessio
 	return false
 }
 
-func shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt *probeLocalTUNGroupRuntime, session *yamux.Session, err error) bool {
+func shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt *probeLocalTUNGroupRuntime, session *probeChainFrameSession, err error) bool {
 	if !shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
 		return false
 	}
@@ -808,7 +806,7 @@ func shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt *probeLocalTUNGro
 	return shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt, session)
 }
 
-func shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt *probeLocalTUNGroupRuntime, session *yamux.Session) bool {
+func shouldReconnectProbeLocalTUNGroupRuntimeSessionLocked(rt *probeLocalTUNGroupRuntime, session *probeChainFrameSession) bool {
 	if rt == nil || session == nil || rt.session != session {
 		return false
 	}
@@ -841,7 +839,7 @@ func shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err error) bool {
 	}
 	if strings.Contains(text, "/api/node/chain/relay") ||
 		strings.Contains(text, "probe relay") ||
-		strings.Contains(text, "yamux") ||
+		strings.Contains(text, "frame session") ||
 		strings.Contains(text, "bridge session is unavailable") ||
 		strings.Contains(text, "context canceled") ||
 		strings.Contains(text, "use of closed network connection") ||

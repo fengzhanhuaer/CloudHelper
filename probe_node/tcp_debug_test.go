@@ -51,7 +51,7 @@ func TestProbeTCPDebugRouteTargetOverride(t *testing.T) {
 		Target:      "127.0.0.1:3389",
 		RouteTarget: "192.168.50.222:3389",
 		FlowID:      "flow-1",
-		Transport:   "yamux",
+		Transport:   "frame",
 	})
 	if relay == nil {
 		t.Fatal("relay is nil")
