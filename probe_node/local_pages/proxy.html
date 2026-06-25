@@ -230,7 +230,7 @@
     <div class="tabs">
       <button class="tab-btn active" data-tab="groups">线路组</button>
       <button class="tab-btn" data-tab="links">链路状态</button>
-      <button class="tab-btn" data-tab="connections">连接与排错</button>
+      <button class="tab-btn" data-tab="connections">连接诊断</button>
     </div>
 
     <section id="panelProxy" class="card proxy-tab-panel active" data-tab-panel="groups">
@@ -289,7 +289,7 @@
     </section>
 
     <section id="panelProxyConnections" class="card proxy-tab-panel" data-tab-panel="connections">
-      <strong>连接与排错</strong>
+      <strong>连接诊断</strong>
       <p id="proxyConnectionSummary" class="hint">-</p>
       <div class="toolbar">
         <div class="field">
@@ -300,57 +300,49 @@
           <label for="proxyConnectionTypeFilter">类型</label>
           <select id="proxyConnectionTypeFilter"></select>
         </div>
+        <div class="field">
+          <label for="proxyDiagKeyword">关键词</label>
+          <input id="proxyDiagKeyword" type="text" placeholder="flow_id / stream_id / target / error" />
+        </div>
+        <div class="field">
+          <label for="proxyDiagBusinessType">业务类型</label>
+          <select id="proxyDiagBusinessType"></select>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="field">
+          <label for="proxyDiagNode">节点</label>
+          <input id="proxyDiagNode" type="text" placeholder="node_id" />
+        </div>
+        <div class="field">
+          <label for="proxyDiagTarget">目标</label>
+          <input id="proxyDiagTarget" type="text" placeholder="target / route_target" />
+        </div>
+        <div class="field">
+          <label for="proxyDiagError">错误码/错误</label>
+          <input id="proxyDiagError" type="text" placeholder="error / code" />
+        </div>
+        <div class="field">
+          <label for="proxyDiagLines">日志行数</label>
+          <input id="proxyDiagLines" type="number" min="20" step="10" value="120" />
+        </div>
       </div>
       <div class="actions">
-        <button id="proxyConnectionRefreshBtn" class="secondary">刷新连接与排错</button>
+        <button id="proxyConnectionRefreshBtn" class="secondary">刷新连接诊断</button>
+        <button id="proxyDiagUseLinkBtn" class="secondary">带入当前链路</button>
+        <button id="proxyDiagClearBtn" class="secondary">清空线索条件</button>
       </div>
+      <div class="summary-line" id="proxyDiagSummary">-</div>
       <div id="proxyConnectionRows" class="connection-list">
         <div class="hint">暂无 VNet 连接记录</div>
       </div>
-      <div class="connection-section-title">排错磁贴</div>
-      <p class="hint">按 flow_id、stream_id、conn_id、node_id、target、错误码与业务类型快速检索连接、子流、链路与本地日志。</p>
-      <div class="diagnostic-grid">
-        <div class="toolbar">
-          <div class="field">
-            <label for="proxyDiagKeyword">关键词</label>
-            <input id="proxyDiagKeyword" type="text" placeholder="flow_id / stream_id / target / error" />
-          </div>
-          <div class="field">
-            <label for="proxyDiagBusinessType">业务类型</label>
-            <select id="proxyDiagBusinessType"></select>
-          </div>
-          <div class="field">
-            <label for="proxyDiagNode">节点</label>
-            <input id="proxyDiagNode" type="text" placeholder="node_id" />
-          </div>
-        </div>
-        <div class="toolbar">
-          <div class="field">
-            <label for="proxyDiagTarget">目标</label>
-            <input id="proxyDiagTarget" type="text" placeholder="target / route_target" />
-          </div>
-          <div class="field">
-            <label for="proxyDiagError">错误码/错误</label>
-            <input id="proxyDiagError" type="text" placeholder="error / code" />
-          </div>
-          <div class="field">
-            <label for="proxyDiagLines">日志行数</label>
-            <input id="proxyDiagLines" type="number" min="20" step="10" value="120" />
-          </div>
-        </div>
-        <div class="diagnostic-toolbar">
-          <button id="proxyDiagRefreshBtn" class="secondary">刷新诊断</button>
-          <button id="proxyDiagUseLinkBtn" class="secondary">带入当前链路</button>
-          <button id="proxyDiagClearBtn" class="secondary">清空条件</button>
-        </div>
-        <div class="summary-line" id="proxyDiagSummary">-</div>
-        <div id="proxyDiagResults" class="diagnostic-results">
-          <div class="hint">暂无诊断结果</div>
-        </div>
-        <div class="diagnostic-log-panel">
-          <strong>最近日志</strong>
-          <div id="proxyDiagLogs" class="pre-line" style="margin-top:8px; white-space:pre-line;">-</div>
-        </div>
+      <div class="connection-section-title">关联线索</div>
+      <div id="proxyDiagResults" class="diagnostic-results">
+        <div class="hint">暂无诊断结果</div>
+      </div>
+      <div class="diagnostic-log-panel">
+        <strong>最近日志</strong>
+        <div id="proxyDiagLogs" class="pre-line" style="margin-top:8px; white-space:pre-line;">-</div>
       </div>
     </section>
 
@@ -1610,6 +1602,26 @@
       `;
     }
 
+    function matchesConnectionDiagnosticFilters(item) {
+      const diag = diagnosticItemFromConnection(item);
+      const q = normalizeDiagnosticText(proxyDiagKeywordEl && proxyDiagKeywordEl.value || '');
+      const node = normalizeDiagnosticText(proxyDiagNodeEl && proxyDiagNodeEl.value || '');
+      const target = normalizeDiagnosticText(proxyDiagTargetEl && proxyDiagTargetEl.value || '');
+      const error = normalizeDiagnosticText(proxyDiagErrorEl && proxyDiagErrorEl.value || '');
+      const businessType = normalizeDiagnosticText(proxyDiagBusinessTypeEl && proxyDiagBusinessTypeEl.value || '');
+      if (!matchesDiagnosticItem(diag, q)) return false;
+      if (node && !normalizeDiagnosticText(diag && diag.node_id).includes(node)) return false;
+      if (target && !(normalizeDiagnosticText(diag && diag.target).includes(target) || normalizeDiagnosticText(diag && diag.route_target).includes(target) || normalizeDiagnosticText(diag && diag.domain).includes(target))) return false;
+      if (error && !(normalizeDiagnosticText(diag && diag.error).includes(error) || normalizeDiagnosticText(diag && diag.abnormal_reason).includes(error) || normalizeDiagnosticText(diag && diag.reason).includes(error) || normalizeDiagnosticText(diag && diag.code).includes(error))) return false;
+      if (businessType && normalizeDiagnosticText(diag && diag.business_type) !== businessType && normalizeDiagnosticText(getConnectionTypeValue(item)) !== businessType) return false;
+      return true;
+    }
+
+    function rerenderProxyConnectionStatusFromCache() {
+      const monitor = proxyConnectionRowsEl && proxyConnectionRowsEl.__proxyMonitorCache ? proxyConnectionRowsEl.__proxyMonitorCache : null;
+      if (monitor) renderProxyConnectionStatus(monitor);
+    }
+
     function renderProxyConnectionStatus(data) {
       const monitor = data && typeof data === 'object' ? data : {};
       if (proxyConnectionRowsEl) {
@@ -1634,6 +1646,7 @@
         const type = getConnectionTypeValue(item);
         if (groupFilter !== 'all' && group !== groupFilter) return false;
         if (tcpFilter !== 'all' && type !== tcpFilter) return false;
+        if (!matchesConnectionDiagnosticFilters(item)) return false;
         return true;
       };
       const activeFiltered = active.filter(filterConnectionItem);
@@ -2525,7 +2538,7 @@
       }
       if (clean === 'connections') {
         loadProxyConnectionStatus().catch((err) => setMessage('读取连接状态失败：' + err.message, 'error'));
-        loadProxyDiagnostics().catch((err) => setMessage('读取诊断磁贴失败：' + err.message, 'error'));
+        loadProxyDiagnostics().catch((err) => setMessage('读取关联线索失败：' + err.message, 'error'));
       }
     }
 
@@ -2544,15 +2557,15 @@
     });
 
     document.getElementById('proxyConnectionRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新连接与排错...');
+      setMessage('刷新连接诊断...');
       try {
         await Promise.all([
           loadProxyConnectionStatus(),
           loadProxyDiagnostics(),
         ]);
-        setMessage('连接与排错已刷新', 'success');
+        setMessage('连接诊断已刷新', 'success');
       } catch (err) {
-        setMessage('刷新连接与排错失败：' + err.message, 'error');
+        setMessage('刷新连接诊断失败：' + err.message, 'error');
       }
     });
 
@@ -2567,18 +2580,9 @@
       if (proxyDiagNodeEl) proxyDiagNodeEl.value = String(item.node_id || item.entry_node_id || '').trim();
       if (proxyDiagErrorEl) proxyDiagErrorEl.value = String(item.unavailable_error || '').trim();
       syncDiagnosticBusinessTypeOptions();
+      rerenderProxyConnectionStatusFromCache();
       await loadProxyDiagnostics();
-      setMessage('已带入当前链路并刷新诊断', 'success');
-    });
-
-    document.getElementById('proxyDiagRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新诊断磁贴...');
-      try {
-        await loadProxyDiagnostics();
-        setMessage('诊断磁贴已刷新', 'success');
-      } catch (err) {
-        setMessage('读取诊断磁贴失败：' + err.message, 'error');
-      }
+      setMessage('已带入当前链路并刷新关联线索', 'success');
     });
 
     document.getElementById('proxyDiagClearBtn').addEventListener('click', async () => {
@@ -2587,18 +2591,21 @@
       if (proxyDiagTargetEl) proxyDiagTargetEl.value = '';
       if (proxyDiagErrorEl) proxyDiagErrorEl.value = '';
       if (proxyDiagBusinessTypeEl) proxyDiagBusinessTypeEl.value = '';
+      rerenderProxyConnectionStatusFromCache();
       await loadProxyDiagnostics();
-      setMessage('诊断条件已清空', 'success');
+      setMessage('线索条件已清空', 'success');
     });
 
     [proxyDiagKeywordEl, proxyDiagNodeEl, proxyDiagTargetEl, proxyDiagErrorEl, proxyDiagLinesEl].forEach((el) => {
       if (!el) return;
       el.addEventListener('keydown', (ev) => {
         if (ev.key !== 'Enter') return;
-        loadProxyDiagnostics().catch((err) => setMessage('刷新诊断失败：' + err.message, 'error'));
+        rerenderProxyConnectionStatusFromCache();
+        loadProxyDiagnostics().catch((err) => setMessage('刷新关联线索失败：' + err.message, 'error'));
       });
       el.addEventListener('change', () => {
         if (document.querySelector('.tab-btn[data-tab="connections"].active')) {
+          rerenderProxyConnectionStatusFromCache();
           loadProxyDiagnostics().catch(() => {
           });
         }
@@ -2607,7 +2614,8 @@
 
     if (proxyDiagBusinessTypeEl) {
       proxyDiagBusinessTypeEl.addEventListener('change', () => {
-        loadProxyDiagnostics().catch((err) => setMessage('刷新诊断失败：' + err.message, 'error'));
+        rerenderProxyConnectionStatusFromCache();
+        loadProxyDiagnostics().catch((err) => setMessage('刷新关联线索失败：' + err.message, 'error'));
       });
     }
 
