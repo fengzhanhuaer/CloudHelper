@@ -178,6 +178,7 @@
     .diagnostic-card-title { color: var(--heading); font-weight: 700; margin-bottom: 6px; }
     .diagnostic-card-line { color: var(--text-primary); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
     .diagnostic-card-line .muted { color: var(--text-secondary); }
+    .diagnostic-log-panel { border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 12px; background: rgba(1,4,9,.16); }
     .connection-section-title { color: var(--heading); font-weight: 700; margin: 10px 0 4px; }
     .connection-card {
       border: 1px solid var(--border-soft);
@@ -229,8 +230,7 @@
     <div class="tabs">
       <button class="tab-btn active" data-tab="groups">线路组</button>
       <button class="tab-btn" data-tab="links">链路状态</button>
-      <button class="tab-btn" data-tab="connections">连接状态</button>
-      <button class="tab-btn" data-tab="diagnostics">排错磁贴</button>
+      <button class="tab-btn" data-tab="connections">连接与排错</button>
     </div>
 
     <section id="panelProxy" class="card proxy-tab-panel active" data-tab-panel="groups">
@@ -289,7 +289,7 @@
     </section>
 
     <section id="panelProxyConnections" class="card proxy-tab-panel" data-tab-panel="connections">
-      <strong>连接状态</strong>
+      <strong>连接与排错</strong>
       <p id="proxyConnectionSummary" class="hint">-</p>
       <div class="toolbar">
         <div class="field">
@@ -302,16 +302,13 @@
         </div>
       </div>
       <div class="actions">
-        <button id="proxyConnectionRefreshBtn" class="secondary">刷新连接状态</button>
+        <button id="proxyConnectionRefreshBtn" class="secondary">刷新连接与排错</button>
       </div>
       <div id="proxyConnectionRows" class="connection-list">
         <div class="hint">暂无 VNet 连接记录</div>
       </div>
-    </section>
-
-    <section id="panelProxyDiagnostics" class="card proxy-tab-panel" data-tab-panel="diagnostics">
-      <strong>排错磁贴</strong>
-      <p class="hint">按 flow_id、stream_id、conn_id、node_id、target、错误码与业务类型快速检索本地日志与链路信息。</p>
+      <div class="connection-section-title">排错磁贴</div>
+      <p class="hint">按 flow_id、stream_id、conn_id、node_id、target、错误码与业务类型快速检索连接、子流、链路与本地日志。</p>
       <div class="diagnostic-grid">
         <div class="toolbar">
           <div class="field">
@@ -350,7 +347,7 @@
         <div id="proxyDiagResults" class="diagnostic-results">
           <div class="hint">暂无诊断结果</div>
         </div>
-        <div class="card" style="padding:12px;">
+        <div class="diagnostic-log-panel">
           <strong>最近日志</strong>
           <div id="proxyDiagLogs" class="pre-line" style="margin-top:8px; white-space:pre-line;">-</div>
         </div>
@@ -828,11 +825,17 @@
         item && item.target,
         item && item.route_target,
         item && item.error,
+        item && item.abnormal_reason,
         item && item.reason,
         item && item.code,
+        item && item.status_code,
+        item && item.http_status,
         item && item.hop_id,
         item && item.session_id,
         item && item.status,
+        item && item.peer_status,
+        item && item.protocol,
+        item && item.transport,
         item && item.updated_at,
         item && item.message,
         item && item.line,
@@ -891,7 +894,10 @@
       fields.hop_id = fields.hop_id || fields.hop || fields.id || '';
       fields.flow_id = fields.flow_id || fields.flow || '';
       fields.route_target = fields.route_target || fields.route || '';
+      fields.status = fields.status || fields.peer_status || fields.state || '';
+      fields.status_code = fields.status_code || fields.http_status || fields.code || '';
       fields.error = fields.error || fields.err || fields.reason || fields.code || '';
+      fields.abnormal_reason = fields.abnormal_reason || fields.error || fields.reason || fields.err || fields.close_reason || '';
       return fields;
     }
 
@@ -907,6 +913,7 @@
     }
 
     function diagnosticItemFromLink(item) {
+      const protocolState = item && item.protocol_state && typeof item.protocol_state === 'object' ? item.protocol_state : {};
       return {
         source_kind: 'link',
         flow_id: diagnosticValue(item, ['chain_id']),
@@ -916,12 +923,19 @@
         target: diagnosticValue(item, ['endpoint', 'entry_host']),
         route_target: diagnosticValue(item, ['route']),
         error: diagnosticValue(item, ['unavailable_error']),
-        reason: diagnosticValue(item, ['status']),
+        abnormal_reason: diagnosticValue(item, ['unavailable_error', 'selected_chain_latency_error', 'last_error', 'error']) || formatDiagnosticReachabilityError(item && item.reachability),
+        status: diagnosticValue(item, ['status']),
+        status_code: diagnosticValue(item, ['status_code', 'http_status']),
+        reachability: formatDiagnosticReachability(item && item.reachability),
+        protocol: diagnosticValue(protocolState, ['selected_protocol']) || diagnosticValue(item, ['link_layer']),
+        latency_ms: formatDiagnosticReachabilityLatency(item && item.reachability),
+        rate_bps: diagnosticValue(item, ['observed_rate_bps']),
         updated_at: diagnosticValue(item, ['updated_at']),
       };
     }
 
     function diagnosticItemFromConnection(item) {
+      const buffer = item && item.buffer && typeof item.buffer === 'object' ? item.buffer : {};
       return {
         source_kind: 'connection',
         flow_id: diagnosticValue(item, ['flow_id', 'assoc_key_v2', 'id']),
@@ -933,8 +947,84 @@
         target: diagnosticValue(item, ['target']),
         route_target: diagnosticValue(item, ['route_target']),
         error: diagnosticValue(item, ['error', 'close_reason', 'reason', 'code']),
+        abnormal_reason: diagnosticValue(item, ['error', 'close_reason', 'reason', 'last_error', 'unavailable_error', 'code']),
+        domain: diagnosticValue(item, ['domain']),
+        status: diagnosticValue(item, ['peer_status', 'status']),
+        status_code: diagnosticValue(item, ['status_code', 'http_status']),
+        peer_status: diagnosticValue(item, ['peer_status']),
+        transport: diagnosticValue(item, ['transport']),
+        side: diagnosticValue(item, ['side']),
+        scope: diagnosticValue(item, ['scope']),
+        open_latency_ms: diagnosticValue(item, ['open_latency_ms']),
+        session_rtt_ms: diagnosticValue(item, ['session_rtt_ms']),
+        duration_ms: diagnosticValue(item, ['duration_ms']),
+        age_ms: diagnosticValue(item, ['age_ms']),
+        idle_ms: diagnosticValue(item, ['idle_ms']),
+        read_calls: diagnosticValue(item, ['read_calls']),
+        write_calls: diagnosticValue(item, ['write_calls']),
+        bytes_up: diagnosticValue(item, ['bytes_up']),
+        bytes_down: diagnosticValue(item, ['bytes_down']),
+        writes_up: diagnosticValue(item, ['writes_up']),
+        writes_down: diagnosticValue(item, ['writes_down']),
+        blocked_writes_up: diagnosticValue(item, ['blocked_writes_up']),
+        blocked_writes_down: diagnosticValue(item, ['blocked_writes_down']),
+        write_block_ms_up: diagnosticValue(item, ['write_block_ms_up']),
+        write_block_ms_down: diagnosticValue(item, ['write_block_ms_down']),
+        max_write_block_ms_up: diagnosticValue(item, ['max_write_block_ms_up']),
+        max_write_block_ms_down: diagnosticValue(item, ['max_write_block_ms_down']),
+        last_write_block_ms_up: diagnosticValue(item, ['last_write_block_ms_up']),
+        last_write_block_ms_down: diagnosticValue(item, ['last_write_block_ms_down']),
+        last_write_blocked_at: diagnosticValue(item, ['last_write_blocked_at']),
+        buffer_status: diagnosticValue(buffer, ['status']) || diagnosticValue(item, ['buffer_status']),
+        frame_window_bytes: diagnosticValue(buffer, ['frame_window_bytes']) || diagnosticValue(item, ['frame_window_bytes']),
+        session_streams_open: diagnosticValue(item, ['session_streams_open']),
+        session_streams_after: diagnosticValue(item, ['session_streams_after']),
+        session_streams_current: diagnosticValue(item, ['session_streams_current']),
+      };
+    }
+
+    function diagnosticItemFromSubstream(item) {
+      const buffer = item && item.buffer && typeof item.buffer === 'object' ? item.buffer : {};
+      return {
+        source_kind: 'substream',
+        flow_id: diagnosticValue(item, ['flow_id', 'id']),
+        stream_id: diagnosticValue(item, ['session_id']),
+        conn_id: diagnosticValue(item, ['id']),
+        node_id: diagnosticValue(item, ['node_id']),
+        business_type: diagnosticValue(item, ['kind', 'scope', 'transport']),
+        hop_id: diagnosticValue(item, ['group']),
+        target: diagnosticValue(item, ['target']),
+        route_target: diagnosticValue(item, ['route_target']),
+        error: diagnosticValue(item, ['close_reason', 'error', 'reason', 'code']),
+        abnormal_reason: diagnosticValue(item, ['close_reason', 'error', 'reason', 'last_error', 'code']),
         domain: diagnosticValue(item, ['domain']),
         status: diagnosticValue(item, ['status']),
+        transport: diagnosticValue(item, ['transport']),
+        side: diagnosticValue(item, ['side']),
+        scope: diagnosticValue(item, ['scope']),
+        open_latency_ms: diagnosticValue(item, ['open_latency_ms']),
+        session_rtt_ms: diagnosticValue(item, ['session_rtt_ms']),
+        duration_ms: diagnosticValue(item, ['duration_ms']),
+        age_ms: diagnosticValue(item, ['age_ms']),
+        idle_ms: diagnosticValue(item, ['idle_ms']),
+        bytes_up: diagnosticValue(item, ['bytes_up']),
+        bytes_down: diagnosticValue(item, ['bytes_down']),
+        writes_up: diagnosticValue(item, ['writes_up']),
+        writes_down: diagnosticValue(item, ['writes_down']),
+        blocked_writes_up: diagnosticValue(item, ['blocked_writes_up']) || diagnosticValue(buffer, ['blocked_writes_up']),
+        blocked_writes_down: diagnosticValue(item, ['blocked_writes_down']) || diagnosticValue(buffer, ['blocked_writes_down']),
+        write_block_ms_up: diagnosticValue(item, ['write_block_ms_up']) || diagnosticValue(buffer, ['write_block_ms_up']),
+        write_block_ms_down: diagnosticValue(item, ['write_block_ms_down']) || diagnosticValue(buffer, ['write_block_ms_down']),
+        max_write_block_ms_up: diagnosticValue(item, ['max_write_block_ms_up']) || diagnosticValue(buffer, ['max_write_block_ms_up']),
+        max_write_block_ms_down: diagnosticValue(item, ['max_write_block_ms_down']) || diagnosticValue(buffer, ['max_write_block_ms_down']),
+        last_write_block_ms_up: diagnosticValue(item, ['last_write_block_ms_up']) || diagnosticValue(buffer, ['last_write_block_ms_up']),
+        last_write_block_ms_down: diagnosticValue(item, ['last_write_block_ms_down']) || diagnosticValue(buffer, ['last_write_block_ms_down']),
+        last_write_blocked_at: diagnosticValue(item, ['last_write_blocked_at']) || diagnosticValue(buffer, ['last_write_blocked_at']),
+        buffer_status: diagnosticValue(buffer, ['status']),
+        frame_window_bytes: diagnosticValue(buffer, ['frame_window_bytes']) || diagnosticValue(item, ['frame_window_bytes']),
+        session_streams_open: diagnosticValue(item, ['session_streams_open']),
+        session_streams_after: diagnosticValue(item, ['session_streams_after']),
+        session_streams_current: diagnosticValue(item, ['session_streams_current']),
       };
     }
 
@@ -952,8 +1042,24 @@
         route_target: fields.route_target || '',
         hop_id: fields.hop_id || '',
         error: fields.error || '',
+        abnormal_reason: fields.abnormal_reason || '',
         reason: fields.reason || '',
         code: fields.code || '',
+        status: fields.status || '',
+        status_code: fields.status_code || '',
+        protocol: fields.protocol || fields.link_layer || '',
+        transport: fields.transport || '',
+        latency_ms: fields.latency_ms || fields.rtt_ms || '',
+        session_rtt_ms: fields.session_rtt_ms || '',
+        duration_ms: fields.duration_ms || fields.age_ms || '',
+        read_calls: fields.read_calls || '',
+        write_calls: fields.write_calls || '',
+        writes_up: fields.writes_up || '',
+        writes_down: fields.writes_down || '',
+        blocked_writes_up: fields.blocked_writes_up || '',
+        blocked_writes_down: fields.blocked_writes_down || '',
+        max_write_block_ms_up: fields.max_write_block_ms_up || fields.max_write_block_ms || '',
+        max_write_block_ms_down: fields.max_write_block_ms_down || fields.max_write_block_ms || '',
         level: entry && entry.level || '',
         time: entry && entry.time || '',
         message: entry && entry.message || '',
@@ -961,10 +1067,160 @@
       };
     }
 
+    function formatDiagnosticReachability(reachability) {
+      if (!reachability || typeof reachability !== 'object') return '';
+      const reachable = Number(reachability.reachable_count);
+      const tested = Number(reachability.tested_count);
+      const best = String(reachability.best_protocol || '').trim();
+      const parts = [];
+      if (Number.isFinite(reachable) && Number.isFinite(tested) && tested > 0) {
+        parts.push(Math.trunc(reachable) + '/' + Math.trunc(tested));
+      }
+      if (best) parts.push(best);
+      return parts.join(' ');
+    }
+
+    function formatDiagnosticReachabilityLatency(reachability) {
+      if (!reachability || typeof reachability !== 'object') return '';
+      const results = Array.isArray(reachability.results) ? reachability.results : [];
+      const bestProtocol = normalizeRelayProtocol(reachability.best_protocol);
+      let selected = null;
+      results.forEach((result) => {
+        if (!result || !result.ok) return;
+        const latency = Number(result.latency_ms);
+        if (!Number.isFinite(latency) || latency <= 0) return;
+        const protocol = normalizeRelayProtocol(result.protocol);
+        if (bestProtocol && protocol === bestProtocol) {
+          selected = latency;
+          return;
+        }
+        if (selected === null || latency < selected) selected = latency;
+      });
+      return selected === null ? '' : String(Math.trunc(selected));
+    }
+
+    function formatDiagnosticReachabilityError(reachability) {
+      if (!reachability || typeof reachability !== 'object') return '';
+      const results = Array.isArray(reachability.results) ? reachability.results : [];
+      const failed = results
+        .filter((result) => result && result.ok === false)
+        .map((result) => {
+          const protocol = formatRelayProtocolLabel(result && result.protocol);
+          const reason = diagnosticValue(result, ['error', 'reason', 'code', 'status']);
+          return [protocol, reason].filter(Boolean).join(':');
+        })
+        .filter(Boolean);
+      if (failed.length > 0) return failed.slice(0, 3).join('; ');
+      const reachable = Number(reachability.reachable_count);
+      const tested = Number(reachability.tested_count);
+      if (Number.isFinite(tested) && tested > 0 && Number.isFinite(reachable) && reachable <= 0) {
+        return 'all tested relay protocols are unreachable';
+      }
+      return '';
+    }
+
+    function isDiagnosticAbnormalStatus(status) {
+      const value = String(status || '').trim().toLowerCase();
+      return value === 'unreachable' || value === 'unconfigured' || value === 'closed' ||
+        value === 'failed' || value === 'failure' || value === 'error' || value === 'timeout';
+    }
+
+    function formatDiagnosticStatusLine(item) {
+      const parts = [];
+      const status = String(item && (item.peer_status || item.status || '') || '').trim();
+      const statusCode = String(item && (item.status_code || item.http_status || '') || '').trim();
+      const reachability = String(item && item.reachability || '').trim();
+      let abnormalReason = String(item && (item.abnormal_reason || item.error || item.reason || '') || '').trim();
+      if (!abnormalReason && isDiagnosticAbnormalStatus(status)) abnormalReason = status;
+      if (status) parts.push('peer_status=' + status);
+      parts.push('status_code=' + (statusCode || '-'));
+      if (reachability) parts.push('reachability=' + reachability);
+      parts.push('reason=' + (abnormalReason || '-'));
+      return parts.join(' ｜ ');
+    }
+
+    function formatDiagnosticExtraStatusLine(item) {
+      const parts = [];
+      const protocol = String(item && item.protocol || '').trim();
+      const transport = String(item && item.transport || '').trim();
+      const side = String(item && item.side || '').trim();
+      const scope = String(item && item.scope || '').trim();
+      const latency = Number(item && (item.latency_ms || item.open_latency_ms));
+      const rate = Number(item && item.rate_bps);
+      const bytesUp = Number(item && item.bytes_up);
+      const bytesDown = Number(item && item.bytes_down);
+      const duration = Number(item && item.duration_ms);
+      const age = Number(item && item.age_ms);
+      const idle = Number(item && item.idle_ms);
+      if (protocol) parts.push('protocol=' + formatRelayProtocolLabel(protocol));
+      if (transport) parts.push('transport=' + transport);
+      if (side || scope) parts.push('side=' + (side || '-') + '/' + (scope || '-'));
+      if (Number.isFinite(latency) && latency > 0) parts.push('latency=' + Math.trunc(latency) + 'ms');
+      if (Number.isFinite(rate) && rate > 0) parts.push('rate=' + formatRateText(rate));
+      if ((Number.isFinite(bytesUp) && bytesUp > 0) || (Number.isFinite(bytesDown) && bytesDown > 0)) {
+        parts.push('traffic=' + formatBytesText(bytesUp) + '/' + formatBytesText(bytesDown));
+      }
+      if (Number.isFinite(duration) && duration > 0) parts.push('duration=' + formatDurationText(duration));
+      else if (Number.isFinite(age) && age > 0) parts.push('age=' + formatDurationText(age));
+      if (Number.isFinite(idle) && idle > 0) parts.push('idle=' + formatDurationText(idle));
+      return parts.join(' ｜ ');
+    }
+
+    function formatDiagnosticIOLine(item) {
+      const parts = [];
+      const writesUp = Number(item && item.writes_up);
+      const writesDown = Number(item && item.writes_down);
+      const readCalls = Number(item && item.read_calls);
+      const writeCalls = Number(item && item.write_calls);
+      const blockedUp = Number(item && item.blocked_writes_up);
+      const blockedDown = Number(item && item.blocked_writes_down);
+      const writeBlockUp = Number(item && item.write_block_ms_up);
+      const writeBlockDown = Number(item && item.write_block_ms_down);
+      const maxBlockUp = Number(item && item.max_write_block_ms_up);
+      const maxBlockDown = Number(item && item.max_write_block_ms_down);
+      const lastBlockUp = Number(item && item.last_write_block_ms_up);
+      const lastBlockDown = Number(item && item.last_write_block_ms_down);
+      const sessionRTT = Number(item && item.session_rtt_ms);
+      const streamsOpen = Number(item && item.session_streams_open);
+      const streamsAfter = Number(item && item.session_streams_after);
+      const streamsCurrent = Number(item && item.session_streams_current);
+      const frameWindowBytes = Number(item && item.frame_window_bytes);
+      const bufferStatus = String(item && item.buffer_status || '').trim();
+      const lastBlockedAt = String(item && item.last_write_blocked_at || '').trim();
+      if ((Number.isFinite(readCalls) && readCalls > 0) || (Number.isFinite(writeCalls) && writeCalls > 0)) {
+        parts.push('rw_calls=' + Math.trunc(Number.isFinite(readCalls) ? readCalls : 0) + '/' + Math.trunc(Number.isFinite(writeCalls) ? writeCalls : 0));
+      }
+      if ((Number.isFinite(writesUp) && writesUp > 0) || (Number.isFinite(writesDown) && writesDown > 0)) {
+        parts.push('writes=' + Math.trunc(Number.isFinite(writesUp) ? writesUp : 0) + '/' + Math.trunc(Number.isFinite(writesDown) ? writesDown : 0));
+      }
+      if ((Number.isFinite(blockedUp) && blockedUp > 0) || (Number.isFinite(blockedDown) && blockedDown > 0)) {
+        parts.push('blocked=' + Math.trunc(Number.isFinite(blockedUp) ? blockedUp : 0) + '/' + Math.trunc(Number.isFinite(blockedDown) ? blockedDown : 0));
+      }
+      if ((Number.isFinite(writeBlockUp) && writeBlockUp > 0) || (Number.isFinite(writeBlockDown) && writeBlockDown > 0)) {
+        parts.push('block_ms=' + Math.trunc(Number.isFinite(writeBlockUp) ? writeBlockUp : 0) + '/' + Math.trunc(Number.isFinite(writeBlockDown) ? writeBlockDown : 0));
+      }
+      if ((Number.isFinite(maxBlockUp) && maxBlockUp > 0) || (Number.isFinite(maxBlockDown) && maxBlockDown > 0)) {
+        parts.push('max_block=' + Math.trunc(Number.isFinite(maxBlockUp) ? maxBlockUp : 0) + '/' + Math.trunc(Number.isFinite(maxBlockDown) ? maxBlockDown : 0) + 'ms');
+      }
+      if ((Number.isFinite(lastBlockUp) && lastBlockUp > 0) || (Number.isFinite(lastBlockDown) && lastBlockDown > 0)) {
+        parts.push('last_block=' + Math.trunc(Number.isFinite(lastBlockUp) ? lastBlockUp : 0) + '/' + Math.trunc(Number.isFinite(lastBlockDown) ? lastBlockDown : 0) + 'ms');
+      }
+      if (Number.isFinite(sessionRTT) && sessionRTT > 0) parts.push('session_rtt=' + Math.trunc(sessionRTT) + 'ms');
+      if (Number.isFinite(streamsOpen) || Number.isFinite(streamsAfter) || Number.isFinite(streamsCurrent)) {
+        parts.push('streams=' + (Number.isFinite(streamsOpen) ? Math.trunc(streamsOpen) : '-') + '/' + (Number.isFinite(streamsAfter) ? Math.trunc(streamsAfter) : '-') + '/' + (Number.isFinite(streamsCurrent) ? Math.trunc(streamsCurrent) : '-'));
+      }
+      if (bufferStatus || (Number.isFinite(frameWindowBytes) && frameWindowBytes > 0)) {
+        parts.push('buffer=' + (bufferStatus || '-') + '/' + (Number.isFinite(frameWindowBytes) && frameWindowBytes > 0 ? formatBytesText(frameWindowBytes) : '-'));
+      }
+      if (lastBlockedAt) parts.push('last_blocked=' + lastBlockedAt);
+      return parts.join(' ｜ ');
+    }
+
     function diagnosticSourceLabel(item) {
       const source = String(item && item.source_kind || '').trim();
       if (source === 'link') return '链路';
       if (source === 'connection') return '连接';
+      if (source === 'substream') return '子流';
       if (source === 'log') return '日志';
       return '诊断';
     }
@@ -981,7 +1237,7 @@
         if (!matchesDiagnosticItem(item, q)) return false;
         if (node && !normalizeDiagnosticText(item && item.node_id).includes(node)) return false;
         if (target && !(normalizeDiagnosticText(item && item.target).includes(target) || normalizeDiagnosticText(item && item.route_target).includes(target) || normalizeDiagnosticText(item && item.domain).includes(target))) return false;
-        if (error && !(normalizeDiagnosticText(item && item.error).includes(error) || normalizeDiagnosticText(item && item.reason).includes(error) || normalizeDiagnosticText(item && item.code).includes(error))) return false;
+        if (error && !(normalizeDiagnosticText(item && item.error).includes(error) || normalizeDiagnosticText(item && item.abnormal_reason).includes(error) || normalizeDiagnosticText(item && item.reason).includes(error) || normalizeDiagnosticText(item && item.code).includes(error))) return false;
         if (businessType && normalizeDiagnosticText(item && item.business_type) !== businessType) return false;
         return true;
       });
@@ -998,10 +1254,14 @@
         const logTitle = String(item && (item.message || item.line) || '').trim();
         const title = identity || String(item && item.target || '').trim() || logTitle || '-';
         const line1 = `${diagnosticSourceLabel(item)} ｜ node=${String(item && item.node_id || '-').trim()} ｜ business=${String(item && item.business_type || '-').trim()} ｜ hop=${String(item && item.hop_id || '-').trim()}`;
-        const line2 = `target=${String(item && item.target || '-').trim()} ｜ route=${String(item && item.route_target || '-').trim()} ｜ error=${String(item && item.error || item && item.reason || item && item.code || '-').trim()}`;
+        const line2 = `target=${String(item && item.target || '-').trim()} ｜ route=${String(item && item.route_target || '-').trim()} ｜ ${formatDiagnosticStatusLine(item)}`;
+        const extraStatus = formatDiagnosticExtraStatusLine(item);
+        const statusLine = extraStatus ? `<div class="diagnostic-card-line">${escapeHTML(extraStatus)}</div>` : '';
+        const ioStatus = formatDiagnosticIOLine(item);
+        const ioLine = ioStatus ? `<div class="diagnostic-card-line">${escapeHTML(ioStatus)}</div>` : '';
         const detail = String(item && (item.line || item.message || item.updated_at || item.status) || '').trim();
         const detailLine = detail && detail !== title ? `<div class="diagnostic-card-line"><span class="muted">${escapeHTML(detail)}</span></div>` : '';
-        return `<div class="diagnostic-card"><div class="diagnostic-card-title">${escapeHTML(title)}</div><div class="diagnostic-card-line">${escapeHTML(line1)}</div><div class="diagnostic-card-line">${escapeHTML(line2)}</div>${detailLine}</div>`;
+        return `<div class="diagnostic-card"><div class="diagnostic-card-title">${escapeHTML(title)}</div><div class="diagnostic-card-line">${escapeHTML(line1)}</div><div class="diagnostic-card-line">${escapeHTML(line2)}</div>${statusLine}${ioLine}${detailLine}</div>`;
       }).join('');
     }
 
@@ -1013,6 +1273,7 @@
       proxyDiagLogEntriesCache = Array.isArray(snapshot.logs) ? snapshot.logs : [];
       const monitor = snapshot.monitor && typeof snapshot.monitor === 'object' ? snapshot.monitor : {};
       const connectionItems = getProxyConnectionItemsFromMonitor(monitor);
+      const substreamItems = getProxySubstreamItemsFromMonitor(monitor);
       if (proxyDiagLogsEl) {
         proxyDiagLogsEl.textContent = proxyDiagLogEntriesCache.length
           ? proxyDiagLogEntriesCache.map((entry) => String(entry && entry.line || '').trim()).filter(Boolean).join('\n')
@@ -1021,11 +1282,12 @@
       const combined = []
         .concat((Array.isArray(snapshot.link_status) ? snapshot.link_status : []).map(diagnosticItemFromLink))
         .concat(connectionItems.map(diagnosticItemFromConnection))
+        .concat(substreamItems.map(diagnosticItemFromSubstream))
         .concat(proxyDiagLogEntriesCache.map(diagnosticItemFromLog));
       renderDiagnosticCards(combined);
       if (proxyDiagSummaryEl) {
         const status = snapshot.status && typeof snapshot.status === 'object' ? snapshot.status : {};
-        proxyDiagSummaryEl.textContent = `状态 ${String(status.mode || '-')}/` + `${status.enabled ? 'on' : 'off'} ｜ 链路 ${Array.isArray(snapshot.link_status) ? snapshot.link_status.length : 0} ｜ 连接 ${connectionItems.length} ｜ 日志 ${proxyDiagLogEntriesCache.length} ｜ 命中 ${filteredDiagnosticCount(combined)} ｜ 监视 ${String(monitor.fetched_at || '-')}`;
+        proxyDiagSummaryEl.textContent = `状态 ${String(status.mode || '-')}/` + `${status.enabled ? 'on' : 'off'} ｜ 链路 ${Array.isArray(snapshot.link_status) ? snapshot.link_status.length : 0} ｜ 连接 ${connectionItems.length} ｜ 子流 ${substreamItems.length} ｜ 日志 ${proxyDiagLogEntriesCache.length} ｜ 命中 ${filteredDiagnosticCount(combined)} ｜ 监视 ${String(monitor.fetched_at || '-')}`;
       }
       return data;
     }
@@ -1152,8 +1414,111 @@
         .concat(associations);
     }
 
+    function getProxySubstreamItemsFromMonitor(monitor) {
+      const substreams = monitor && monitor.substreams && typeof monitor.substreams === 'object' ? monitor.substreams : {};
+      const active = Array.isArray(substreams.active) ? substreams.active : [];
+      const completed = Array.isArray(substreams.completed) ? substreams.completed : [];
+      return active.concat(completed);
+    }
+
     function renderConnectionMetric(label, value) {
       return `<div class="connection-box"><div class="connection-box-label">${escapeHTML(label)}</div><div class="connection-box-value">${escapeHTML(value || '-')}</div></div>`;
+    }
+
+    function numberOrNull(value) {
+      if (value === undefined || value === null) return null;
+      const text = String(value).trim();
+      if (!text || text === '-') return null;
+      const num = Number(text);
+      return Number.isFinite(num) ? num : null;
+    }
+
+    function formatConnectionCountPair(up, down) {
+      const upNum = numberOrNull(up);
+      const downNum = numberOrNull(down);
+      if (upNum === null && downNum === null) return '-';
+      return `${upNum === null ? '-' : Math.trunc(upNum)} / ${downNum === null ? '-' : Math.trunc(downNum)}`;
+    }
+
+    function formatConnectionMsPair(up, down) {
+      const upNum = numberOrNull(up);
+      const downNum = numberOrNull(down);
+      if ((upNum === null || upNum <= 0) && (downNum === null || downNum <= 0)) return '-';
+      return `${upNum === null ? '-' : Math.trunc(upNum) + 'ms'} / ${downNum === null ? '-' : Math.trunc(downNum) + 'ms'}`;
+    }
+
+    function formatConnectionLatencyMetric(diag) {
+      const parts = [];
+      const open = numberOrNull(diag && diag.open_latency_ms);
+      const rtt = numberOrNull(diag && diag.session_rtt_ms);
+      const latency = numberOrNull(diag && diag.latency_ms);
+      if (open !== null && open > 0) parts.push('open=' + Math.trunc(open) + 'ms');
+      if (rtt !== null && rtt > 0) parts.push('rtt=' + Math.trunc(rtt) + 'ms');
+      if (latency !== null && latency > 0) parts.push('latency=' + Math.trunc(latency) + 'ms');
+      return parts.join(' / ') || '-';
+    }
+
+    function formatConnectionRWMetric(diag) {
+      const parts = [];
+      const calls = formatConnectionCountPair(diag && diag.read_calls, diag && diag.write_calls);
+      const writes = formatConnectionCountPair(diag && diag.writes_up, diag && diag.writes_down);
+      if (calls !== '-') parts.push('calls r/w=' + calls);
+      if (writes !== '-') parts.push('writes up/down=' + writes);
+      return parts.join(' ｜ ') || '-';
+    }
+
+    function formatConnectionBlockMetric(diag) {
+      const parts = [];
+      const blocked = formatConnectionCountPair(diag && diag.blocked_writes_up, diag && diag.blocked_writes_down);
+      const maxBlock = formatConnectionMsPair(diag && diag.max_write_block_ms_up, diag && diag.max_write_block_ms_down);
+      const lastBlock = formatConnectionMsPair(diag && diag.last_write_block_ms_up, diag && diag.last_write_block_ms_down);
+      if (blocked !== '-') parts.push('blocked=' + blocked);
+      if (maxBlock !== '-') parts.push('max=' + maxBlock);
+      if (lastBlock !== '-') parts.push('last=' + lastBlock);
+      return parts.join(' ｜ ') || '-';
+    }
+
+    function formatConnectionBufferMetric(diag) {
+      const status = String(diag && diag.buffer_status || '').trim();
+      const windowBytes = numberOrNull(diag && diag.frame_window_bytes);
+      const streams = formatConnectionCountPair(diag && diag.session_streams_open, diag && diag.session_streams_current);
+      const parts = [];
+      if (status) parts.push('buffer=' + status);
+      if (windowBytes !== null && windowBytes > 0) parts.push('window=' + formatBytesText(windowBytes));
+      if (streams !== '-') parts.push('streams open/current=' + streams);
+      return parts.join(' ｜ ') || '-';
+    }
+
+    function isConnectionStatusCodeAbnormal(statusCode) {
+      const value = String(statusCode || '').trim();
+      if (!value) return false;
+      const num = Number(value);
+      return Number.isFinite(num) ? num >= 400 : value.toLowerCase() !== 'ok';
+    }
+
+    function isConnectionReasonAbnormal(reason) {
+      const value = String(reason || '').trim();
+      if (!value || value === '-' || value.toLowerCase() === 'ok' || value.toLowerCase() === 'none') return false;
+      const num = Number(value);
+      return Number.isFinite(num) ? num >= 400 : true;
+    }
+
+    function hasConnectionWarning(diag) {
+      const reason = String(diag && (diag.abnormal_reason || diag.error || diag.reason || '') || '').trim();
+      return isConnectionReasonAbnormal(reason) ||
+        isDiagnosticAbnormalStatus(diag && (diag.peer_status || diag.status)) ||
+        isConnectionStatusCodeAbnormal(diag && diag.status_code);
+    }
+
+    function renderConnectionDiagnosticMetrics(item) {
+      const diag = diagnosticItemFromConnection(item);
+      return [
+        renderConnectionMetric('状态/原因', formatDiagnosticStatusLine(diag)),
+        renderConnectionMetric('延迟/RTT', formatConnectionLatencyMetric(diag)),
+        renderConnectionMetric('读写次数', formatConnectionRWMetric(diag)),
+        renderConnectionMetric('阻塞详情', formatConnectionBlockMetric(diag)),
+        renderConnectionMetric('缓冲/窗口', formatConnectionBufferMetric(diag)),
+      ].join('');
     }
 
     function formatConnectionTargetPath(item, target, routeTarget) {
@@ -1182,9 +1547,11 @@
       const maxBlock = Math.max(Number(item && item.max_write_block_ms_up || 0), Number(item && item.max_write_block_ms_down || 0));
       const blockedUp = Number(item && item.blocked_writes_up || 0);
       const blockedDown = Number(item && item.blocked_writes_down || 0);
-      const className = closed ? 'connection-card closed' : (maxBlock > 0 || blockedUp > 0 || blockedDown > 0 ? 'connection-card warn' : 'connection-card');
       const transport = String(item && item.transport || 'tcp').trim();
       const domainSource = String(item && item.domain_source || '-').trim();
+      const diag = diagnosticItemFromConnection(item);
+      const hasWarning = maxBlock > 0 || blockedUp > 0 || blockedDown > 0 || hasConnectionWarning(diag);
+      const className = closed ? 'connection-card closed' : (hasWarning ? 'connection-card warn' : 'connection-card');
       return `
         <div class="${className}">
           <div class="connection-title">
@@ -1203,6 +1570,7 @@
             ${closed ? renderConnectionMetric('持续/断开', `${formatDurationText(item && item.duration_ms)} / ${item && item.closed_at || '-'}`) : ''}
             ${renderConnectionMetric('阻塞次数', `${Math.trunc(blockedUp)} / ${Math.trunc(blockedDown)}`)}
             ${renderConnectionMetric('最大阻塞', maxBlock > 0 ? `${Math.trunc(maxBlock)}ms ${item && item.last_congestion_side || ''}` : '-')}
+            ${renderConnectionDiagnosticMetrics(item)}
           </div>
         </div>
       `;
@@ -1215,9 +1583,11 @@
       const maxBlock = Math.max(Number(item && item.max_write_block_ms_up || 0), Number(item && item.max_write_block_ms_down || 0));
       const blockedUp = Number(item && item.blocked_writes_up || 0);
       const blockedDown = Number(item && item.blocked_writes_down || 0);
-      const className = maxBlock > 0 || blockedUp > 0 || blockedDown > 0 ? 'connection-card warn' : 'connection-card';
       const title = String(item && (item.assoc_key_v2 || item.flow_id || item.id) || target).trim();
       const kind = item && item.assoc_key_v2 ? 'udp-association' : 'udp-bridge';
+      const diag = diagnosticItemFromConnection(item);
+      const hasWarning = maxBlock > 0 || blockedUp > 0 || blockedDown > 0 || hasConnectionWarning(diag);
+      const className = hasWarning ? 'connection-card warn' : 'connection-card';
       return `
         <div class="${className}">
           <div class="connection-title">
@@ -1234,6 +1604,7 @@
             ${renderConnectionMetric('写次数', `${Math.trunc(Number(item && item.writes_up || 0))} / ${Math.trunc(Number(item && item.writes_down || 0))}`)}
             ${renderConnectionMetric('阻塞次数', `${Math.trunc(blockedUp)} / ${Math.trunc(blockedDown)}`)}
             ${renderConnectionMetric('最大阻塞', maxBlock > 0 ? `${Math.trunc(maxBlock)}ms ${item && item.last_congestion_side || ''}` : '-')}
+            ${renderConnectionDiagnosticMetrics(item)}
           </div>
         </div>
       `;
@@ -2133,8 +2504,6 @@
       if (document.querySelector('.tab-btn[data-tab="connections"].active')) {
         loadProxyConnectionStatus().catch(() => {
         });
-      }
-      if (document.querySelector('.tab-btn[data-tab="diagnostics"].active')) {
         loadProxyDiagnostics().catch(() => {
         });
       }
@@ -2156,8 +2525,6 @@
       }
       if (clean === 'connections') {
         loadProxyConnectionStatus().catch((err) => setMessage('读取连接状态失败：' + err.message, 'error'));
-      }
-      if (clean === 'diagnostics') {
         loadProxyDiagnostics().catch((err) => setMessage('读取诊断磁贴失败：' + err.message, 'error'));
       }
     }
@@ -2177,12 +2544,15 @@
     });
 
     document.getElementById('proxyConnectionRefreshBtn').addEventListener('click', async () => {
-      setMessage('刷新连接状态...');
+      setMessage('刷新连接与排错...');
       try {
-        await loadProxyConnectionStatus();
-        setMessage('连接状态已刷新', 'success');
+        await Promise.all([
+          loadProxyConnectionStatus(),
+          loadProxyDiagnostics(),
+        ]);
+        setMessage('连接与排错已刷新', 'success');
       } catch (err) {
-        setMessage('刷新连接状态失败：' + err.message, 'error');
+        setMessage('刷新连接与排错失败：' + err.message, 'error');
       }
     });
 
@@ -2228,7 +2598,7 @@
         loadProxyDiagnostics().catch((err) => setMessage('刷新诊断失败：' + err.message, 'error'));
       });
       el.addEventListener('change', () => {
-        if (document.querySelector('.tab-btn[data-tab="diagnostics"].active')) {
+        if (document.querySelector('.tab-btn[data-tab="connections"].active')) {
           loadProxyDiagnostics().catch(() => {
           });
         }
@@ -2335,6 +2705,7 @@
         }
         if (document.querySelector('.tab-btn[data-tab="connections"].active')) {
           await loadProxyConnectionStatus();
+          await loadProxyDiagnostics();
         }
         setMessage('链路已刷新', 'success');
       } catch (err) {
