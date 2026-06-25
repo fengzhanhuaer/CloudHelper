@@ -1708,7 +1708,9 @@ func serveTestPingPongRelay(t *testing.T, conn net.Conn) {
 		t.Fatalf("read ping payload: %v", err)
 	}
 	if _, err := stream.Write(buf); err != nil {
-		t.Fatalf("write ping echo: %v", err)
+		if !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "closed network connection") {
+			t.Fatalf("write ping echo: %v", err)
+		}
 	}
 }
 

@@ -383,7 +383,16 @@ func openAndroidProxyChainStreamWithFlow(selectedChainID string, network string,
 	if err != nil {
 		return nil, err
 	}
-	request := linkTunnelOpenRequest{Type: "open", Network: strings.ToLower(strings.TrimSpace(network)), Address: strings.TrimSpace(targetAddr), FlowID: strings.TrimSpace(flowID), Priority: resolveLinkTunnelPriority(network, nil)}
+	request := linkTunnelOpenRequest{
+		Type:             "open",
+		Network:          strings.ToLower(strings.TrimSpace(network)),
+		Address:          strings.TrimSpace(targetAddr),
+		FlowID:           strings.TrimSpace(flowID),
+		AppProtocol:      resolveLinkTunnelAppProtocol(network, targetAddr, nil),
+		Priority:         resolveLinkTunnelPriority(network, targetAddr, nil),
+		ResumePolicy:     resolveLinkTunnelResumePolicy(network, nil),
+		LatencySensitive: isLinkTunnelLatencySensitive(network, targetAddr, nil),
+	}
 	return openAndroidProxyIndependentStream(item, endpoint, request)
 }
 
@@ -393,16 +402,19 @@ func openAndroidProxyChainPacketStream(selectedChainID string, network string, t
 		return nil, err
 	}
 	request := linkTunnelOpenRequest{
-		Type:          "open",
-		Network:       strings.ToLower(strings.TrimSpace(network)),
-		Address:       strings.TrimSpace(targetAddr),
-		Priority:      resolveLinkTunnelPriority(network, association),
-		AssociationV2: association,
+		Type:             "open",
+		Network:          strings.ToLower(strings.TrimSpace(network)),
+		Address:          strings.TrimSpace(targetAddr),
+		AppProtocol:      resolveLinkTunnelAppProtocol(network, targetAddr, association),
+		Priority:         resolveLinkTunnelPriority(network, targetAddr, association),
+		ResumePolicy:     resolveLinkTunnelResumePolicy(network, association),
+		LatencySensitive: isLinkTunnelLatencySensitive(network, targetAddr, association),
+		AssociationV2:    association,
 	}
 	return openAndroidProxyIndependentStream(item, endpoint, request)
 }
 
-func resolveLinkTunnelPriority(network string, association *linkAssociationV2Meta) string {
+func resolveLinkTunnelPriority(network string, targetAddr string, association *linkAssociationV2Meta) string {
 	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), "udp") {
 		return "realtime"
 	}
@@ -410,8 +422,68 @@ func resolveLinkTunnelPriority(network string, association *linkAssociationV2Met
 	case "udp":
 		return "realtime"
 	default:
+		if isLinkRealtimeTCPPort(targetAddr) {
+			return "realtime"
+		}
 		return "normal"
 	}
+}
+
+func resolveLinkTunnelAppProtocol(network string, targetAddr string, association *linkAssociationV2Meta) string {
+	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), "udp") {
+		return "udp-association"
+	}
+	if strings.EqualFold(strings.TrimSpace(network), "udp") {
+		return "udp-association"
+	}
+	switch port := linkTunnelTargetPort(targetAddr); {
+	case port == 3389:
+		return "rdp"
+	case port >= 5900 && port <= 5999:
+		return "vnc"
+	case port == 4000:
+		return "nomachine"
+	case port == 22:
+		return "ssh"
+	default:
+		return ""
+	}
+}
+
+func resolveLinkTunnelResumePolicy(network string, association *linkAssociationV2Meta) string {
+	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), "udp") {
+		return "rebind"
+	}
+	if strings.EqualFold(strings.TrimSpace(network), "udp") {
+		return "rebind"
+	}
+	return "replay_required"
+}
+
+func isLinkTunnelLatencySensitive(network string, targetAddr string, association *linkAssociationV2Meta) bool {
+	return resolveLinkTunnelPriority(network, targetAddr, association) == "realtime"
+}
+
+func isLinkRealtimeTCPPort(targetAddr string) bool {
+	switch linkTunnelTargetPort(targetAddr) {
+	case 22, 3389, 4000:
+		return true
+	default:
+		port := linkTunnelTargetPort(targetAddr)
+		return port >= 5900 && port <= 5999
+	}
+}
+
+func linkTunnelTargetPort(targetAddr string) int {
+	_, portText, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portText))
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 func openAndroidProxyIndependentStream(item linkChainServerItem, endpoint linkEndpoint, request linkTunnelOpenRequest) (net.Conn, error) {

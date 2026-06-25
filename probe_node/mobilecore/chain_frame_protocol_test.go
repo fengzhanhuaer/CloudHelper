@@ -61,3 +61,34 @@ func TestMobileChainFramedPacketRoundTrip(t *testing.T) {
 		t.Fatalf("payload mismatch: got %q want %q", buf[:n], want)
 	}
 }
+
+func TestMobileChainFrameStreamAdaptiveChunkUsesUpperLayerHints(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	clientSession, err := newMobileChainFrameClient(clientConn)
+	if err != nil {
+		t.Fatalf("client frame session: %v", err)
+	}
+	defer clientSession.Close()
+	serverSession, err := newMobileChainFrameServer(serverConn)
+	if err != nil {
+		t.Fatalf("server frame session: %v", err)
+	}
+	defer serverSession.Close()
+
+	stream := newMobileChainFrameStream(clientSession, 1)
+	stream.setOpenRequest(linkTunnelOpenRequest{Type: "open", AppProtocol: "rdp", LatencySensitive: true})
+	if got := stream.Priority(); got != "realtime" {
+		t.Fatalf("rdp priority=%q, want realtime", got)
+	}
+	if got := stream.frameDataChunkBytes(17); got != 17 {
+		t.Fatalf("small realtime write chunk=%d, want exact available bytes", got)
+	}
+	if got := stream.frameDataChunkBytes(32 * 1024); got != mobileChainFrameRealtimeDataBytes {
+		t.Fatalf("rdp chunk=%d, want %d", got, mobileChainFrameRealtimeDataBytes)
+	}
+
+	stream.setMobileOpenRequest(mobileChainTunnelOpenRequest{Type: "open", Priority: "bulk"})
+	if got := stream.frameDataChunkBytes(128 * 1024); got != mobileChainFrameBulkDataBytes {
+		t.Fatalf("bulk chunk=%d, want %d", got, mobileChainFrameBulkDataBytes)
+	}
+}

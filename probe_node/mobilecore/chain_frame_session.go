@@ -23,6 +23,9 @@ const (
 	mobileChainFramePingInterval         = 10 * time.Second
 	mobileChainFramePingTimeout          = 5 * time.Second
 	mobileChainFrameOpenResultTimeout    = 30 * time.Second
+	mobileChainFramePreferredDataBytes   = 16 * 1024
+	mobileChainFrameRealtimeDataBytes    = 4 * 1024
+	mobileChainFrameBulkDataBytes        = 64 * 1024
 )
 
 type mobileChainFrameSession struct {
@@ -527,6 +530,7 @@ type mobileChainFrameStream struct {
 	openRequestAvailable       bool
 	mobileOpenRequest          mobileChainTunnelOpenRequest
 	mobileOpenRequestAvailable bool
+	priority                   string
 	openResultCh               chan mobileChainFrameOpenResult
 	openUpdateCh               chan linkTunnelOpenRequest
 	mobileOpenUpdateCh         chan mobileChainTunnelOpenRequest
@@ -591,35 +595,44 @@ func (s *mobileChainFrameStream) Read(payload []byte) (int, error) {
 }
 
 func (s *mobileChainFrameStream) Write(payload []byte) (int, error) {
-	if s == nil {
+	if s == nil || s.session == nil {
 		return 0, io.ErrClosedPipe
 	}
 	if len(payload) == 0 {
 		return 0, nil
 	}
-	timer, timerCh := mobileChainDeadlineTimer(s.writeDeadline.Load())
-	done := make(chan error, 1)
-	data := append([]byte(nil), payload...)
-	go func() {
-		done <- s.session.writeFrame(mobileChainFrame{Kind: mobileChainFrameKindData, StreamID: s.id, Data: data})
-	}()
-	select {
-	case err := <-done:
-		if timer != nil {
-			timer.Stop()
+	written := 0
+	for written < len(payload) {
+		chunkBytes := s.frameDataChunkBytes(len(payload) - written)
+		end := written + chunkBytes
+		if end > len(payload) {
+			end = len(payload)
 		}
-		if err != nil {
-			return 0, err
+		timer, timerCh := mobileChainDeadlineTimer(s.writeDeadline.Load())
+		done := make(chan error, 1)
+		data := append([]byte(nil), payload[written:end]...)
+		go func() {
+			done <- s.session.writeFrame(mobileChainFrame{Kind: mobileChainFrameKindData, StreamID: s.id, Data: data})
+		}()
+		select {
+		case err := <-done:
+			if timer != nil {
+				timer.Stop()
+			}
+			if err != nil {
+				return written, err
+			}
+			written = end
+		case <-timerCh:
+			return written, mobileChainTimeoutError{}
+		case <-s.localDone:
+			if timer != nil {
+				timer.Stop()
+			}
+			return written, io.ErrClosedPipe
 		}
-		return len(payload), nil
-	case <-timerCh:
-		return 0, mobileChainTimeoutError{}
-	case <-s.localDone:
-		if timer != nil {
-			timer.Stop()
-		}
-		return 0, io.ErrClosedPipe
 	}
+	return written, nil
 }
 
 func (s *mobileChainFrameStream) Close() error {
@@ -681,6 +694,7 @@ func (s *mobileChainFrameStream) setOpenRequest(req linkTunnelOpenRequest) {
 	s.openMu.Lock()
 	s.openRequest = req
 	s.openRequestAvailable = true
+	s.priority = resolveMobileChainFrameLinkPriority(req)
 	s.openMu.Unlock()
 }
 
@@ -700,6 +714,7 @@ func (s *mobileChainFrameStream) setMobileOpenRequest(req mobileChainTunnelOpenR
 	s.openMu.Lock()
 	s.mobileOpenRequest = req
 	s.mobileOpenRequestAvailable = true
+	s.priority = resolveMobileChainFrameMobilePriority(req)
 	s.openMu.Unlock()
 }
 
@@ -710,6 +725,41 @@ func (s *mobileChainFrameStream) MobileOpenRequest() (mobileChainTunnelOpenReque
 	s.openMu.RLock()
 	defer s.openMu.RUnlock()
 	return s.mobileOpenRequest, s.mobileOpenRequestAvailable
+}
+
+func (s *mobileChainFrameStream) frameDataChunkBytes(available int) int {
+	if s == nil {
+		return mobileChainFrameRealtimeDataBytes
+	}
+	chunk := mobileChainFramePreferredDataBytes
+	switch s.Priority() {
+	case "realtime":
+		chunk = mobileChainFrameRealtimeDataBytes
+	case "bulk":
+		chunk = mobileChainFrameBulkDataBytes
+	default:
+		if available <= mobileChainFrameRealtimeDataBytes {
+			chunk = mobileChainFrameRealtimeDataBytes
+		} else if available >= mobileChainFrameBulkDataBytes {
+			chunk = mobileChainFrameBulkDataBytes
+		}
+	}
+	if chunk > mobileChainFrameMaxDataBytes {
+		chunk = mobileChainFrameMaxDataBytes
+	}
+	if available > 0 && chunk > available {
+		return available
+	}
+	return chunk
+}
+
+func (s *mobileChainFrameStream) Priority() string {
+	if s == nil {
+		return "normal"
+	}
+	s.openMu.RLock()
+	defer s.openMu.RUnlock()
+	return normalizeMobileChainFramePriority(s.priority)
 }
 
 func (s *mobileChainFrameStream) RespondOpen(resp linkTunnelOpenResponse) error {
@@ -906,6 +956,45 @@ func (s *mobileChainFrameStream) SetWriteDeadline(t time.Time) error {
 		s.writeDeadline.Store(t)
 	}
 	return nil
+}
+
+func normalizeMobileChainFramePriority(priority string) string {
+	switch strings.ToLower(strings.TrimSpace(priority)) {
+	case "realtime", "interactive", "latency":
+		return "realtime"
+	case "bulk", "throughput":
+		return "bulk"
+	default:
+		return "normal"
+	}
+}
+
+func resolveMobileChainFrameLinkPriority(req linkTunnelOpenRequest) string {
+	if req.LatencySensitive {
+		return "realtime"
+	}
+	switch strings.ToLower(strings.TrimSpace(req.AppProtocol)) {
+	case "rdp", "vnc", "nomachine", "ssh", "udp-association", "interactive":
+		return "realtime"
+	}
+	if strings.EqualFold(strings.TrimSpace(req.ResumePolicy), "rebind") {
+		return "realtime"
+	}
+	return normalizeMobileChainFramePriority(req.Priority)
+}
+
+func resolveMobileChainFrameMobilePriority(req mobileChainTunnelOpenRequest) string {
+	if req.LatencySensitive {
+		return "realtime"
+	}
+	switch strings.ToLower(strings.TrimSpace(req.AppProtocol)) {
+	case "rdp", "vnc", "nomachine", "ssh", "udp-association", "interactive":
+		return "realtime"
+	}
+	if strings.EqualFold(strings.TrimSpace(req.ResumePolicy), "rebind") {
+		return "realtime"
+	}
+	return normalizeMobileChainFramePriority(req.Priority)
 }
 
 func mobileChainDeadlineTimer(raw any) (*time.Timer, <-chan time.Time) {

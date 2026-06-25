@@ -185,18 +185,21 @@ type linkSpeedDebugResultPayload struct {
 }
 
 type linkTunnelOpenRequest struct {
-	Type          string                 `json:"type"`
-	Network       string                 `json:"network,omitempty"`
-	Address       string                 `json:"address,omitempty"`
-	FlowID        string                 `json:"flow_id,omitempty"`
-	ResumeToken   string                 `json:"resume_token,omitempty"`
-	ResumeEpoch   uint64                 `json:"resume_epoch,omitempty"`
-	ReadOffset    uint64                 `json:"read_offset,omitempty"`
-	WriteOffset   uint64                 `json:"write_offset,omitempty"`
-	Priority      string                 `json:"priority,omitempty"`
-	AssociationV2 *linkAssociationV2Meta `json:"association_v2,omitempty"`
-	SpeedBytes    int64                  `json:"speed_bytes,omitempty"`
-	PingBytes     int64                  `json:"ping_bytes,omitempty"`
+	Type             string                 `json:"type"`
+	Network          string                 `json:"network,omitempty"`
+	Address          string                 `json:"address,omitempty"`
+	FlowID           string                 `json:"flow_id,omitempty"`
+	ResumeToken      string                 `json:"resume_token,omitempty"`
+	ResumeEpoch      uint64                 `json:"resume_epoch,omitempty"`
+	ReadOffset       uint64                 `json:"read_offset,omitempty"`
+	WriteOffset      uint64                 `json:"write_offset,omitempty"`
+	AppProtocol      string                 `json:"app_protocol,omitempty"`
+	Priority         string                 `json:"priority,omitempty"`
+	ResumePolicy     string                 `json:"resume_policy,omitempty"`
+	LatencySensitive bool                   `json:"latency_sensitive,omitempty"`
+	AssociationV2    *linkAssociationV2Meta `json:"association_v2,omitempty"`
+	SpeedBytes       int64                  `json:"speed_bytes,omitempty"`
+	PingBytes        int64                  `json:"ping_bytes,omitempty"`
 }
 
 type linkAssociationV2Meta struct {

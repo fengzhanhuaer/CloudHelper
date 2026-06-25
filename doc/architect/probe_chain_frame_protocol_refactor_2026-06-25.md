@@ -130,6 +130,9 @@ the first JSON object in the byte stream:
   "read_offset": 1048576,
   "write_offset": 983040,
   "session_id": "downstream-forward-1",
+  "app_protocol": "rdp",
+  "resume_policy": "replay_required",
+  "latency_sensitive": true,
   "association_v2": {},
   "source_ip": "203.0.113.10",
   "priority": "realtime"
@@ -144,6 +147,54 @@ Prepared stream flow:
 3. Caller later sends `open_update` with `type = "open"` and target metadata.
 4. Exit returns `open_update_result`.
 5. Payload starts only after a successful update result.
+
+### Upper-Layer Protocol Contract
+
+The frame protocol must expose upper-layer intent in control metadata while
+keeping application payload transparent. Proxy, port-forward, ping-pong,
+debug/status, remote desktop, SSH, and UDP association payloads are not parsed
+by the frame layer after `open_result` succeeds.
+
+Open metadata should carry the upper-layer contract:
+
+- `app_protocol`: optional application hint such as `rdp`, `vnc`, `ssh`,
+  `nomachine`, `udp-association`, `http-proxy`, or `generic-tcp`.
+- `priority`: scheduling class. Remote desktop, SSH, ping-pong, and UDP
+  association traffic should use `realtime`; large file or bulk transfer flows
+  should use `bulk`; default is `normal`.
+- `latency_sensitive`: explicit boolean used by schedulers when the protocol is
+  known to be interactive.
+- `resume_policy`: `rebind` for datagram/association style flows,
+  `replay_required` for byte streams that need ACK/replay state, or `none` for
+  flows that should fail immediately on carrier loss.
+- `flow_id`: stable logical-flow identity for monitoring and future resume.
+
+Initial automatic classification:
+
+- UDP and UDP association traffic: `app_protocol = udp-association`,
+  `priority = realtime`, `resume_policy = rebind`.
+- TCP `:3389`: `app_protocol = rdp`, `priority = realtime`.
+- TCP `:5900-5999`: `app_protocol = vnc`, `priority = realtime`.
+- TCP `:4000`: `app_protocol = nomachine`, `priority = realtime`.
+- TCP `:22`: `app_protocol = ssh`, `priority = realtime`.
+- Other TCP: transparent `generic-tcp` behavior with `priority = normal` unless
+  the caller supplies a stronger hint.
+
+This is intentionally not a TCP clone. Upper-layer protocol metadata drives
+frame scheduling, chunk size, close handling, monitoring, and future rebuild
+policy. The data plane still remains byte- or datagram-transparent.
+
+Frame schedulers must consume these hints immediately:
+
+- `latency_sensitive=true` forces realtime scheduling even when `priority` is
+  omitted.
+- Known interactive `app_protocol` values force realtime scheduling.
+- `resume_policy=rebind` is treated as realtime because association rebinding is
+  usually tied to interactive UDP traffic.
+- Realtime scheduling uses smaller maximum data chunks, but it still sends the
+  bytes already available immediately and never waits to fill that chunk.
+- Bulk scheduling may use larger chunks only for bytes already present in the
+  current write.
 
 ### Rebuildable Logical Flows
 
@@ -173,6 +224,25 @@ Rebuild policy:
 Initial implementation adds the control fields and keeps `flow_id` stable
 across opens. Full byte-exact TCP resume is a later phase because it needs ACK,
 sequence, and replay-window enforcement.
+
+### Upstream and Downstream Consistency
+
+Every hop in a probe chain must follow the same frame-control open path. A
+mixed path is invalid: if one side sends `open` metadata in a control frame but
+the next hop still waits for `CHSRCIP` or in-stream JSON before responding, the
+caller will wait for `open_result` until timeout.
+
+Bridge accept handlers must dispatch frame streams directly from control
+metadata:
+
+- Do not read source hints from frame-stream data before routing the stream.
+- Do not decode tunnel open JSON from the data stream.
+- Forward the original `open` / `open_update` metadata when opening the next
+  upstream or downstream stream.
+- Return target dial success/failure with `open_result` or
+  `open_update_result`.
+- After a successful result, the data stream carries only proxy, port-forward,
+  ping-pong, or debug payload.
 
 ### Close Semantics
 

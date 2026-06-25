@@ -126,4 +126,12 @@ func TestProbeChainFrameStreamAdaptiveChunkDoesNotWaitForFullFrame(t *testing.T)
 	if got := stream.frameDataChunkBytes(1024); got != 1024 {
 		t.Fatalf("small bulk write chunk=%d, want exact available bytes", got)
 	}
+
+	stream.setOpenRequest(probeChainTunnelOpenRequest{Type: "open", AppProtocol: "rdp", LatencySensitive: true})
+	if got := stream.Priority(); got != "realtime" {
+		t.Fatalf("rdp priority=%q, want realtime", got)
+	}
+	if got := stream.frameDataChunkBytes(32 * 1024); got != probeChainFrameRealtimeDataBytes {
+		t.Fatalf("rdp chunk=%d, want %d", got, probeChainFrameRealtimeDataBytes)
+	}
 }

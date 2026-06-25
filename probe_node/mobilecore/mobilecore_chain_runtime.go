@@ -183,17 +183,20 @@ type mobileChainBridgeDialTarget struct {
 }
 
 type mobileChainTunnelOpenRequest struct {
-	Type          string                          `json:"type"`
-	Network       string                          `json:"network,omitempty"`
-	Address       string                          `json:"address,omitempty"`
-	FlowID        string                          `json:"flow_id,omitempty"`
-	ResumeToken   string                          `json:"resume_token,omitempty"`
-	ResumeEpoch   uint64                          `json:"resume_epoch,omitempty"`
-	ReadOffset    uint64                          `json:"read_offset,omitempty"`
-	WriteOffset   uint64                          `json:"write_offset,omitempty"`
-	Priority      string                          `json:"priority,omitempty"`
-	AssociationV2 *mobileChainAssociationV2Config `json:"association_v2,omitempty"`
-	PingBytes     int64                           `json:"ping_bytes,omitempty"`
+	Type             string                          `json:"type"`
+	Network          string                          `json:"network,omitempty"`
+	Address          string                          `json:"address,omitempty"`
+	FlowID           string                          `json:"flow_id,omitempty"`
+	ResumeToken      string                          `json:"resume_token,omitempty"`
+	ResumeEpoch      uint64                          `json:"resume_epoch,omitempty"`
+	ReadOffset       uint64                          `json:"read_offset,omitempty"`
+	WriteOffset      uint64                          `json:"write_offset,omitempty"`
+	AppProtocol      string                          `json:"app_protocol,omitempty"`
+	Priority         string                          `json:"priority,omitempty"`
+	ResumePolicy     string                          `json:"resume_policy,omitempty"`
+	LatencySensitive bool                            `json:"latency_sensitive,omitempty"`
+	AssociationV2    *mobileChainAssociationV2Config `json:"association_v2,omitempty"`
+	PingBytes        int64                           `json:"ping_bytes,omitempty"`
 }
 
 type mobileChainAssociationV2Config struct {
@@ -1162,16 +1165,19 @@ func mobileChainOpenRequestFromStream(stream *mobileChainFrameStream) mobileChai
 
 func mobileChainRequestFromLinkRequest(req linkTunnelOpenRequest) mobileChainTunnelOpenRequest {
 	return mobileChainTunnelOpenRequest{
-		Type:        req.Type,
-		Network:     req.Network,
-		Address:     req.Address,
-		FlowID:      req.FlowID,
-		ResumeToken: req.ResumeToken,
-		ResumeEpoch: req.ResumeEpoch,
-		ReadOffset:  req.ReadOffset,
-		WriteOffset: req.WriteOffset,
-		Priority:    req.Priority,
-		PingBytes:   req.PingBytes,
+		Type:             req.Type,
+		Network:          req.Network,
+		Address:          req.Address,
+		FlowID:           req.FlowID,
+		ResumeToken:      req.ResumeToken,
+		ResumeEpoch:      req.ResumeEpoch,
+		ReadOffset:       req.ReadOffset,
+		WriteOffset:      req.WriteOffset,
+		AppProtocol:      req.AppProtocol,
+		Priority:         req.Priority,
+		ResumePolicy:     req.ResumePolicy,
+		LatencySensitive: req.LatencySensitive,
+		PingBytes:        req.PingBytes,
 	}
 }
 
@@ -1182,7 +1188,67 @@ func mobileChainPriorityForRequest(req mobileChainTunnelOpenRequest) string {
 	if strings.EqualFold(strings.TrimSpace(req.Network), mobileChainNetworkUDP) {
 		return "realtime"
 	}
+	if isMobileChainRealtimeTCPPort(req.Address) {
+		return "realtime"
+	}
 	return "normal"
+}
+
+func mobileChainAppProtocolForRequest(network string, targetAddr string, association *mobileChainAssociationV2Config) string {
+	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), mobileChainNetworkUDP) {
+		return "udp-association"
+	}
+	if strings.EqualFold(strings.TrimSpace(network), mobileChainNetworkUDP) {
+		return "udp-association"
+	}
+	switch port := mobileChainTargetPort(targetAddr); {
+	case port == 3389:
+		return "rdp"
+	case port >= 5900 && port <= 5999:
+		return "vnc"
+	case port == 4000:
+		return "nomachine"
+	case port == 22:
+		return "ssh"
+	default:
+		return ""
+	}
+}
+
+func mobileChainResumePolicyForRequest(network string, association *mobileChainAssociationV2Config) string {
+	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), mobileChainNetworkUDP) {
+		return "rebind"
+	}
+	if strings.EqualFold(strings.TrimSpace(network), mobileChainNetworkUDP) {
+		return "rebind"
+	}
+	return "replay_required"
+}
+
+func mobileChainLatencySensitiveForRequest(network string, targetAddr string, association *mobileChainAssociationV2Config) bool {
+	return mobileChainPriorityForRequest(mobileChainTunnelOpenRequest{Network: network, Address: targetAddr, AssociationV2: association}) == "realtime"
+}
+
+func isMobileChainRealtimeTCPPort(targetAddr string) bool {
+	switch mobileChainTargetPort(targetAddr) {
+	case 22, 3389, 4000:
+		return true
+	default:
+		port := mobileChainTargetPort(targetAddr)
+		return port >= 5900 && port <= 5999
+	}
+}
+
+func mobileChainTargetPort(targetAddr string) int {
+	_, portText, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portText))
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 func handleMobileChainPingPong(stream net.Conn, byteCount int64, responder func(mobileChainTunnelOpenResponse) error) error {
@@ -1410,7 +1476,15 @@ func runMobileChainUDPPortForward(rt *mobileChainRuntime, cfg mobileChainPortFor
 }
 
 func openMobileChainPortForwardStream(rt *mobileChainRuntime, entrySide string, network string, targetAddr string, flowID string) (net.Conn, error) {
-	req := mobileChainTunnelOpenRequest{Type: "open", Network: strings.ToLower(strings.TrimSpace(network)), Address: strings.TrimSpace(targetAddr), FlowID: strings.TrimSpace(flowID)}
+	req := mobileChainTunnelOpenRequest{
+		Type:             "open",
+		Network:          strings.ToLower(strings.TrimSpace(network)),
+		Address:          strings.TrimSpace(targetAddr),
+		FlowID:           strings.TrimSpace(flowID),
+		AppProtocol:      mobileChainAppProtocolForRequest(strings.ToLower(strings.TrimSpace(network)), targetAddr, nil),
+		ResumePolicy:     mobileChainResumePolicyForRequest(strings.ToLower(strings.TrimSpace(network)), nil),
+		LatencySensitive: mobileChainLatencySensitiveForRequest(strings.ToLower(strings.TrimSpace(network)), targetAddr, nil),
+	}
 	if strings.EqualFold(network, mobileChainNetworkUDP) {
 		req.Priority = "realtime"
 		req.AssociationV2 = &mobileChainAssociationV2Config{
@@ -1425,8 +1499,11 @@ func openMobileChainPortForwardStream(rt *mobileChainRuntime, entrySide string, 
 			AssocKeyV2:      strings.TrimSpace(flowID),
 			FlowID:          strings.TrimSpace(flowID),
 		}
+		req.AppProtocol = mobileChainAppProtocolForRequest(req.Network, targetAddr, req.AssociationV2)
+		req.ResumePolicy = mobileChainResumePolicyForRequest(req.Network, req.AssociationV2)
+		req.LatencySensitive = mobileChainLatencySensitiveForRequest(req.Network, targetAddr, req.AssociationV2)
 	} else {
-		req.Priority = "normal"
+		req.Priority = mobileChainPriorityForRequest(req)
 	}
 	if normalizeMobileChainPortForwardEntrySide(entrySide) == mobileChainEntrySideExit {
 		return openMobileChainUpstreamStream(rt, "", mobileChainOpenBridgeStreamTimeout, req)
@@ -1884,10 +1961,6 @@ func mobileChainConnFromH3(w http.ResponseWriter, r *http.Request, label string)
 			return stream.Close()
 		},
 	}, true
-}
-
-func writeMobileChainOpenResponse(stream net.Conn, resp mobileChainTunnelOpenResponse) error {
-	return writeMobileChainJSONWithDeadline(stream, resp)
 }
 
 func writeMobileChainJSONWithDeadline(stream net.Conn, value any) error {

@@ -832,7 +832,7 @@ func (s *probeChainFrameStream) setOpenRequest(req probeChainTunnelOpenRequest) 
 	s.openMu.Lock()
 	s.openRequest = req
 	s.openRequestAvailable = true
-	s.priority = normalizeProbeChainFrameStreamPriority(req.Priority)
+	s.priority = resolveProbeChainFrameStreamPriority(req)
 	s.openMu.Unlock()
 }
 
@@ -1002,7 +1002,7 @@ func (s *probeChainFrameStream) deliverOpenUpdate(req probeChainTunnelOpenReques
 		return
 	}
 	s.openMu.Lock()
-	s.priority = normalizeProbeChainFrameStreamPriority(req.Priority)
+	s.priority = resolveProbeChainFrameStreamPriority(req)
 	s.openMu.Unlock()
 	select {
 	case s.openUpdateCh <- req:
@@ -1065,6 +1065,21 @@ func normalizeProbeChainFrameStreamPriority(priority string) string {
 	default:
 		return "normal"
 	}
+}
+
+func resolveProbeChainFrameStreamPriority(req probeChainTunnelOpenRequest) string {
+	if req.LatencySensitive {
+		return "realtime"
+	}
+	switch strings.ToLower(strings.TrimSpace(req.AppProtocol)) {
+	case "rdp", "vnc", "nomachine", "ssh", "udp-association", "interactive":
+		return "realtime"
+	}
+	switch strings.ToLower(strings.TrimSpace(req.ResumePolicy)) {
+	case "rebind":
+		return "realtime"
+	}
+	return normalizeProbeChainFrameStreamPriority(req.Priority)
 }
 
 func deadlineTimer(raw any) (*time.Timer, <-chan time.Time) {

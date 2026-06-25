@@ -185,21 +185,24 @@ type probeChainAssociationV2Meta struct {
 }
 
 type probeChainTunnelOpenRequest struct {
-	Type          string                       `json:"type"`
-	RequestID     string                       `json:"request_id,omitempty"`
-	Scope         string                       `json:"scope,omitempty"`
-	Network       string                       `json:"network"`
-	Address       string                       `json:"address"`
-	FlowID        string                       `json:"flow_id,omitempty"`
-	ResumeToken   string                       `json:"resume_token,omitempty"`
-	ResumeEpoch   uint64                       `json:"resume_epoch,omitempty"`
-	ReadOffset    uint64                       `json:"read_offset,omitempty"`
-	WriteOffset   uint64                       `json:"write_offset,omitempty"`
-	SessionID     string                       `json:"session_id,omitempty"`
-	Priority      string                       `json:"priority,omitempty"`
-	AssociationV2 *probeChainAssociationV2Meta `json:"association_v2,omitempty"`
-	SpeedBytes    int64                        `json:"speed_bytes,omitempty"`
-	PingBytes     int64                        `json:"ping_bytes,omitempty"`
+	Type             string                       `json:"type"`
+	RequestID        string                       `json:"request_id,omitempty"`
+	Scope            string                       `json:"scope,omitempty"`
+	Network          string                       `json:"network"`
+	Address          string                       `json:"address"`
+	FlowID           string                       `json:"flow_id,omitempty"`
+	ResumeToken      string                       `json:"resume_token,omitempty"`
+	ResumeEpoch      uint64                       `json:"resume_epoch,omitempty"`
+	ReadOffset       uint64                       `json:"read_offset,omitempty"`
+	WriteOffset      uint64                       `json:"write_offset,omitempty"`
+	SessionID        string                       `json:"session_id,omitempty"`
+	AppProtocol      string                       `json:"app_protocol,omitempty"`
+	Priority         string                       `json:"priority,omitempty"`
+	ResumePolicy     string                       `json:"resume_policy,omitempty"`
+	LatencySensitive bool                         `json:"latency_sensitive,omitempty"`
+	AssociationV2    *probeChainAssociationV2Meta `json:"association_v2,omitempty"`
+	SpeedBytes       int64                        `json:"speed_bytes,omitempty"`
+	PingBytes        int64                        `json:"ping_bytes,omitempty"`
 }
 
 type probeChainTunnelOpenResponse struct {
@@ -1349,16 +1352,19 @@ func buildProbeChainTunnelOpenRequest(openType string, network string, targetAdd
 		cleanType = "open"
 	}
 	return probeChainTunnelOpenRequest{
-		Type:          cleanType,
-		Network:       requestedNetwork,
-		Address:       strings.TrimSpace(targetAddr),
-		FlowID:        cleanFlowID,
-		Priority:      resolveProbeChainTunnelPriority(requestedNetwork, associationV2),
-		AssociationV2: associationV2,
+		Type:             cleanType,
+		Network:          requestedNetwork,
+		Address:          strings.TrimSpace(targetAddr),
+		FlowID:           cleanFlowID,
+		AppProtocol:      resolveProbeChainTunnelAppProtocol(requestedNetwork, targetAddr, associationV2),
+		Priority:         resolveProbeChainTunnelPriority(requestedNetwork, targetAddr, associationV2),
+		ResumePolicy:     resolveProbeChainTunnelResumePolicy(requestedNetwork, associationV2),
+		LatencySensitive: isProbeChainTunnelLatencySensitive(requestedNetwork, targetAddr, associationV2),
+		AssociationV2:    associationV2,
 	}
 }
 
-func resolveProbeChainTunnelPriority(network string, associationV2 *probeChainAssociationV2Meta) string {
+func resolveProbeChainTunnelPriority(network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) string {
 	if associationV2 != nil && strings.EqualFold(strings.TrimSpace(associationV2.Transport), probeChainPortForwardNetworkUDP) {
 		return "realtime"
 	}
@@ -1366,8 +1372,69 @@ func resolveProbeChainTunnelPriority(network string, associationV2 *probeChainAs
 	case probeChainPortForwardNetworkUDP:
 		return "realtime"
 	default:
+		if isProbeChainRealtimeTCPPort(targetAddr) {
+			return "realtime"
+		}
 		return "normal"
 	}
+}
+
+func resolveProbeChainTunnelAppProtocol(network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) string {
+	if associationV2 != nil && strings.EqualFold(strings.TrimSpace(associationV2.Transport), probeChainPortForwardNetworkUDP) {
+		return "udp-association"
+	}
+	if strings.EqualFold(strings.TrimSpace(network), probeChainPortForwardNetworkUDP) {
+		return "udp-association"
+	}
+	port := probeChainTargetPort(targetAddr)
+	switch {
+	case port == 3389:
+		return "rdp"
+	case port >= 5900 && port <= 5999:
+		return "vnc"
+	case port == 4000:
+		return "nomachine"
+	case port == 22:
+		return "ssh"
+	default:
+		return ""
+	}
+}
+
+func resolveProbeChainTunnelResumePolicy(network string, associationV2 *probeChainAssociationV2Meta) string {
+	if associationV2 != nil && strings.EqualFold(strings.TrimSpace(associationV2.Transport), probeChainPortForwardNetworkUDP) {
+		return "rebind"
+	}
+	if strings.EqualFold(strings.TrimSpace(network), probeChainPortForwardNetworkUDP) {
+		return "rebind"
+	}
+	return "replay_required"
+}
+
+func isProbeChainTunnelLatencySensitive(network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) bool {
+	return resolveProbeChainTunnelPriority(network, targetAddr, associationV2) == "realtime"
+}
+
+func isProbeChainRealtimeTCPPort(targetAddr string) bool {
+	switch probeChainTargetPort(targetAddr) {
+	case 22, 3389, 4000:
+		return true
+	default:
+		port := probeChainTargetPort(targetAddr)
+		return port >= 5900 && port <= 5999
+	}
+}
+
+func probeChainTargetPort(targetAddr string) int {
+	_, portText, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portText))
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
@@ -3072,6 +3139,37 @@ func stopAllProbeChainRuntimes(reason string) int {
 func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSessionID string) {
 	defer conn.Close()
 
+	if _, ok := conn.(*probeChainFrameStream); ok {
+		_ = conn.SetDeadline(time.Time{})
+		if runtime.cfg.nextAuthMode == "proxy" {
+			handleProbeChainProxyStream(runtime, conn)
+			return
+		}
+		openReq := probeChainOpenRequestFromConn(conn)
+		nextHop, err := openProbeChainNextHop(runtime, preferredSessionID, openReq)
+		if err != nil {
+			log.Printf("probe chain open downstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
+			return
+		}
+		defer func() {
+			if nextHop != nil && nextHop.CloseFn != nil {
+				_ = nextHop.CloseFn()
+			}
+		}()
+		result := relayProbeChainDuplex(
+			conn,
+			nextHop.Writer,
+			func() { closeProbeChainWriter(nextHop.Writer) },
+			nextHop.Reader,
+			conn,
+			func() { closeProbeChainConnWrite(conn) },
+		)
+		if relayErr := firstProbeChainRelayError(result); relayErr != nil {
+			log.Printf("probe chain downstream frame relay failed: chain=%s role=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
+		}
+		return
+	}
+
 	reader := bufio.NewReader(conn)
 	if _, hintErr := readProbeChainSourceIPHint(reader); hintErr != nil {
 		log.Printf("probe chain source hint parse failed: chain=%s err=%v", runtime.cfg.chainID, hintErr)
@@ -3118,6 +3216,38 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 
 func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, preferredSessionID string) {
 	defer conn.Close()
+
+	if _, ok := conn.(*probeChainFrameStream); ok {
+		_ = conn.SetDeadline(time.Time{})
+		role := normalizeProbeChainRole(runtime.cfg.role)
+		if role == "entry" || role == "entry_exit" {
+			handleProbeChainProxyStream(runtime, conn)
+			return
+		}
+		openReq := probeChainOpenRequestFromConn(conn)
+		prevHop, err := openProbeChainPrevHop(runtime, preferredSessionID, openReq)
+		if err != nil {
+			log.Printf("probe chain open upstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
+			return
+		}
+		defer func() {
+			if prevHop != nil && prevHop.CloseFn != nil {
+				_ = prevHop.CloseFn()
+			}
+		}()
+		result := relayProbeChainDuplex(
+			conn,
+			prevHop.Writer,
+			func() { closeProbeChainWriter(prevHop.Writer) },
+			prevHop.Reader,
+			conn,
+			func() { closeProbeChainConnWrite(conn) },
+		)
+		if relayErr := firstProbeChainRelayError(result); relayErr != nil {
+			log.Printf("probe chain upstream frame relay failed: chain=%s role=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
+		}
+		return
+	}
 
 	reader := bufio.NewReader(conn)
 	if _, hintErr := readProbeChainSourceIPHint(reader); hintErr != nil {
@@ -3713,10 +3843,6 @@ func handleProbeChainSubstreamsGet(runtime *probeChainRuntime, stream net.Conn, 
 	}
 }
 
-func writeProbeChainTunnelOpenResponse(stream net.Conn, resp probeChainTunnelOpenResponse) error {
-	return writeProbeChainTunnelJSONResponse(stream, resp)
-}
-
 func writeProbeChainTunnelJSONResponse(stream net.Conn, resp any) error {
 	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	err := json.NewEncoder(stream).Encode(resp)
@@ -3745,7 +3871,7 @@ func probeChainOpenRequestFromConn(conn net.Conn) probeChainTunnelOpenRequest {
 		frameReq.Network = probeChainPortForwardNetworkTCP
 	}
 	if strings.TrimSpace(frameReq.Priority) == "" {
-		frameReq.Priority = resolveProbeChainTunnelPriority(frameReq.Network, frameReq.AssociationV2)
+		frameReq.Priority = resolveProbeChainTunnelPriority(frameReq.Network, frameReq.Address, frameReq.AssociationV2)
 	}
 	return frameReq
 }

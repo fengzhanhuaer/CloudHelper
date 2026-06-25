@@ -592,12 +592,15 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 			return nil, cleanFlowID, errors.New("group runtime endpoint is nil")
 		}
 		request := probeChainTunnelOpenRequest{
-			Type:          "open",
-			Network:       cleanNetwork,
-			Address:       strings.TrimSpace(targetAddr),
-			FlowID:        cleanFlowID,
-			Priority:      resolveProbeChainTunnelPriority(cleanNetwork, associationV2),
-			AssociationV2: associationV2,
+			Type:             "open",
+			Network:          cleanNetwork,
+			Address:          strings.TrimSpace(targetAddr),
+			FlowID:           cleanFlowID,
+			AppProtocol:      resolveProbeChainTunnelAppProtocol(cleanNetwork, targetAddr, associationV2),
+			Priority:         resolveProbeChainTunnelPriority(cleanNetwork, targetAddr, associationV2),
+			ResumePolicy:     resolveProbeChainTunnelResumePolicy(cleanNetwork, associationV2),
+			LatencySensitive: isProbeChainTunnelLatencySensitive(cleanNetwork, targetAddr, associationV2),
+			AssociationV2:    associationV2,
 		}
 		stream, err := rt.openRelayStream(endpoint, request)
 		if err != nil {
