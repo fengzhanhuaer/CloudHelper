@@ -3547,6 +3547,10 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 		handleProbeChainSpeedDebugGet(runtime, stream, req)
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(req.Type), "peer_status_get") {
+		handleProbeChainPeerStatusGet(runtime, stream, req)
+		return
+	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), "substreams_get") {
 		handleProbeChainSubstreamsGet(runtime, stream, req)
 		return
@@ -3625,6 +3629,27 @@ func handleProbeChainSpeedDebugGet(runtime *probeChainRuntime, stream net.Conn, 
 	payload.Scope = "chain_exit"
 	if err := writeProbeChainTunnelJSONResponse(stream, payload); err != nil && runtime != nil {
 		log.Printf("probe chain speed debug response failed: chain=%s role=%s request_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, requestID, err)
+	}
+}
+
+func handleProbeChainPeerStatusGet(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest) {
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = "chain-peer-status-" + randomHexToken(8)
+	}
+	scope := strings.TrimSpace(req.Scope)
+	if scope == "" {
+		scope = "chain_exit"
+	}
+	nodeID := ""
+	protocolState := probeChainRelayProtocolStateSnapshot{}
+	if runtime != nil {
+		nodeID = strings.TrimSpace(runtime.cfg.identity.NodeID)
+		protocolState = snapshotProbeChainProtocolState(runtime.cfg.listenHost, runtime.cfg.listenPort)
+	}
+	payload := snapshotProbePeerStatusSidePayload(nodeID, requestID, scope, protocolState)
+	if err := writeProbeChainTunnelJSONResponse(stream, payload); err != nil && runtime != nil {
+		log.Printf("probe chain peer status response failed: chain=%s role=%s request_id=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, requestID, err)
 	}
 }
 

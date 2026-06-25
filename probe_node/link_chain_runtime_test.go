@@ -51,6 +51,43 @@ func TestReadProbeChainAuthEnvelopeFromHeadersCodexStyle(t *testing.T) {
 	}
 }
 
+func TestProbeChainProxyStreamHandlesPeerStatusGet(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{
+		chainID:    "chain-peer-status",
+		role:       "exit",
+		listenHost: "127.0.0.1",
+		listenPort: 16030,
+		identity:   nodeIdentity{NodeID: "node-peer-status"},
+	}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleProbeChainProxyStream(rt, server)
+	}()
+
+	req := probeChainTunnelOpenRequest{Type: "peer_status_get", RequestID: "peer-status-1", Scope: "chain_exit"}
+	if err := json.NewEncoder(client).Encode(req); err != nil {
+		t.Fatalf("encode peer status request: %v", err)
+	}
+	var payload probePeerStatusSidePayload
+	if err := json.NewDecoder(client).Decode(&payload); err != nil {
+		t.Fatalf("decode peer status response: %v", err)
+	}
+	if payload.Type != "peer_status_result" || !payload.OK {
+		t.Fatalf("unexpected peer status payload: type=%q ok=%t err=%q", payload.Type, payload.OK, payload.Error)
+	}
+	if payload.RequestID != "peer-status-1" || payload.NodeID != "node-peer-status" || payload.Scope != "chain_exit" {
+		t.Fatalf("unexpected identity fields: request=%q node=%q scope=%q", payload.RequestID, payload.NodeID, payload.Scope)
+	}
+	if payload.Substreams.Type != "substreams_result" {
+		t.Fatalf("substreams type=%q, want substreams_result", payload.Substreams.Type)
+	}
+	_ = client.Close()
+	<-done
+}
+
 func TestStartProbeChainRuntimeSharesRelayPortAcrossChains(t *testing.T) {
 	resetProbeChainRuntimeStateForTest(t)
 	dataDir := t.TempDir()
