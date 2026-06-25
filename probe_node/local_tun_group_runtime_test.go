@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,6 +122,74 @@ func TestProbeLocalTUNGroupRuntimeOpenStreamDoesNotFallbackWithoutBridgeSession(
 				t.Fatal("expected bridge session error")
 			}
 		})
+	}
+}
+
+func TestProbeLocalTUNGroupRuntimeFetchRemotePeerStatusRejectsOpenResponse(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	serverReady := make(chan *probeChainFrameSession, 1)
+	serverErr := make(chan error, 1)
+	go func() {
+		session, err := newProbeChainFrameServer(serverConn)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		serverReady <- session
+		stream, err := session.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer stream.Close()
+		var req probeChainTunnelOpenRequest
+		if err := json.NewDecoder(stream).Decode(&req); err != nil {
+			serverErr <- err
+			return
+		}
+		if req.Type != "peer_status_get" {
+			serverErr <- errors.New("unexpected peer status request")
+			return
+		}
+		if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: false, Error: "missing address"}); err != nil {
+			serverErr <- err
+			return
+		}
+		serverErr <- nil
+	}()
+
+	clientSession, err := newProbeChainFrameClient(clientConn)
+	if err != nil {
+		t.Fatalf("frame client failed: %v", err)
+	}
+	serverSession := <-serverReady
+	defer serverSession.Close()
+	defer clientSession.Close()
+	defer clientConn.Close()
+
+	rt := &probeLocalTUNGroupRuntime{
+		Group:           "test",
+		SelectedChainID: "chain-a",
+		RuntimeStatus:   "connected",
+		Endpoint: probeLocalTUNChainEndpoint{
+			ChainID:   "chain-a",
+			EntryHost: "relay.example.com",
+			EntryPort: 16030,
+		},
+		session: clientSession,
+	}
+
+	_, err = rt.fetchRemotePeerStatus("peer_status_get", "chain_exit")
+	if err == nil || !strings.Contains(err.Error(), "missing address") {
+		t.Fatalf("fetchRemotePeerStatus err=%v, want missing address", err)
+	}
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("server side failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server side")
 	}
 }
 

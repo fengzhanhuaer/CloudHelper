@@ -742,6 +742,13 @@ func (rt *probeLocalTUNGroupRuntime) fetchRemotePeerStatus(requestType string, s
 			return probePeerStatusSidePayload{}, err
 		}
 		_ = stream.Close()
+		if !payload.OK {
+			message := strings.TrimSpace(payload.Error)
+			if message == "" {
+				message = "remote peer status failed"
+			}
+			return probePeerStatusSidePayload{}, errors.New(message)
+		}
 		if strings.TrimSpace(payload.RequestID) == "" {
 			payload.RequestID = requestID
 		}
