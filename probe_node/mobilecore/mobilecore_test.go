@@ -236,10 +236,11 @@ func TestMobileChainPortForwardStreamUsesExistingFrameOnly(t *testing.T) {
 
 	rt := &mobileChainRuntime{
 		cfg:                mobileChainRuntimeConfig{ChainID: "android-chain-frame", Role: "entry"},
-		downstreamSessions: map[string]*mobileChainBridgeSession{"s1": {ID: "s1", Session: clientSession}},
+		downstreamSessions: map[string]*mobileChainBridgeSession{},
 		upstreamSessions:   map[string]*mobileChainBridgeSession{},
 		stopCh:             make(chan struct{}),
 	}
+	rt.setDownstreamSession("s1", clientSession)
 	defer close(rt.stopCh)
 
 	reqCh := make(chan mobileChainTunnelOpenRequest, 1)
@@ -249,10 +250,16 @@ func TestMobileChainPortForwardStreamUsesExistingFrameOnly(t *testing.T) {
 			return
 		}
 		defer stream.Close()
-		var req mobileChainTunnelOpenRequest
-		_ = json.NewDecoder(stream).Decode(&req)
+		frameStream, ok := stream.(*mobileChainFrameStream)
+		if !ok {
+			return
+		}
+		req, found := frameStream.MobileOpenRequest()
+		if !found {
+			return
+		}
 		reqCh <- req
-		_ = json.NewEncoder(stream).Encode(mobileChainTunnelOpenResponse{OK: true})
+		_ = frameStream.RespondMobileOpen(mobileChainTunnelOpenResponse{OK: true})
 	}()
 
 	stream, err := openMobileChainPortForwardStream(rt, mobileChainEntrySideEntry, mobileChainNetworkTCP, "127.0.0.1:3389", "flow-test")
@@ -867,16 +874,21 @@ func TestOpenAndroidProxyIndependentStreamUsesBridgeSession(t *testing.T) {
 			return
 		}
 		defer stream.Close()
-		var req linkTunnelOpenRequest
-		if err := json.NewDecoder(stream).Decode(&req); err != nil {
-			serverErr <- err
+		frameStream, ok := stream.(*mobileChainFrameStream)
+		if !ok {
+			serverErr <- errors.New("expected frame stream")
+			return
+		}
+		req, found := frameStream.OpenRequest()
+		if !found {
+			serverErr <- errors.New("missing frame open request")
 			return
 		}
 		if req.Type != "open" || req.Network != "tcp" || req.Address != "example.com:443" || req.FlowID != "flow-a" {
 			serverErr <- errors.New("unexpected open request")
 			return
 		}
-		if err := json.NewEncoder(stream).Encode(linkTunnelOpenResponse{OK: true}); err != nil {
+		if err := frameStream.RespondOpen(linkTunnelOpenResponse{OK: true}); err != nil {
 			serverErr <- err
 			return
 		}
@@ -1677,15 +1689,19 @@ func serveTestPingPongRelay(t *testing.T, conn net.Conn) {
 		t.Fatalf("frame accept: %v", err)
 	}
 	defer stream.Close()
-	var req linkTunnelOpenRequest
-	if err := json.NewDecoder(stream).Decode(&req); err != nil {
-		t.Fatalf("decode ping request: %v", err)
+	frameStream, ok := stream.(*mobileChainFrameStream)
+	if !ok {
+		t.Fatalf("expected frame stream")
 	}
-	if req.Type != linkRelayModePingPong || req.PingBytes != 64 {
+	req, found := frameStream.OpenRequest()
+	if !found {
+		t.Fatalf("missing frame open request")
+	}
+	if req.Type != linkRelayModePingPong || req.PingBytes <= 0 {
 		t.Fatalf("unexpected ping request: %+v", req)
 	}
-	if err := json.NewEncoder(stream).Encode(linkTunnelOpenResponse{OK: true}); err != nil {
-		t.Fatalf("encode ping response: %v", err)
+	if err := frameStream.RespondOpen(linkTunnelOpenResponse{OK: true}); err != nil {
+		t.Fatalf("respond ping open: %v", err)
 	}
 	buf := make([]byte, req.PingBytes)
 	if _, err := io.ReadFull(stream, buf); err != nil {

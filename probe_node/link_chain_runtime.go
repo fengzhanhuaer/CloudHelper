@@ -191,15 +191,25 @@ type probeChainTunnelOpenRequest struct {
 	Network       string                       `json:"network"`
 	Address       string                       `json:"address"`
 	FlowID        string                       `json:"flow_id,omitempty"`
+	ResumeToken   string                       `json:"resume_token,omitempty"`
+	ResumeEpoch   uint64                       `json:"resume_epoch,omitempty"`
+	ReadOffset    uint64                       `json:"read_offset,omitempty"`
+	WriteOffset   uint64                       `json:"write_offset,omitempty"`
 	SessionID     string                       `json:"session_id,omitempty"`
+	Priority      string                       `json:"priority,omitempty"`
 	AssociationV2 *probeChainAssociationV2Meta `json:"association_v2,omitempty"`
 	SpeedBytes    int64                        `json:"speed_bytes,omitempty"`
 	PingBytes     int64                        `json:"ping_bytes,omitempty"`
 }
 
 type probeChainTunnelOpenResponse struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	OK          bool   `json:"ok"`
+	Error       string `json:"error,omitempty"`
+	FlowID      string `json:"flow_id,omitempty"`
+	ResumeToken string `json:"resume_token,omitempty"`
+	ResumeEpoch uint64 `json:"resume_epoch,omitempty"`
+	ReadOffset  uint64 `json:"read_offset,omitempty"`
+	WriteOffset uint64 `json:"write_offset,omitempty"`
 }
 
 type probeChainTunnelDNSResolveResponse struct {
@@ -1272,75 +1282,40 @@ func openProbeChainPortForwardStreamWithFlowAndAssociation(runtime *probeChainRu
 	if cleanFlowID == "" {
 		cleanFlowID = resolveProbeChainPortForwardFlowID(requestedNetwork, targetAddr, associationV2)
 	}
-	failurePrompt := ""
-	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
-		failurePrompt = "open upstream target failed"
-	} else if runtime.cfg.nextAuthMode == "proxy" {
+	if normalizedEntrySide != probeChainPortForwardEntryChainExit && runtime.cfg.nextAuthMode == "proxy" {
 		conn, err := openProbeChainPortForwardLocalTarget(requestedNetwork, targetAddr)
 		return conn, probeChainFrameStreamMonitor{}, err
-	} else {
-		failurePrompt = "open downstream target failed"
 	}
 
-	// Phase 1: build the relay substream toward the exit (the "prepared link" phase).
-	stream, monitor, err := openProbeChainPortForwardRelaySubstream(runtime, normalizedEntrySide, cleanFlowID)
+	request := buildProbeChainTunnelOpenRequest("open", requestedNetwork, targetAddr, cleanFlowID, associationV2)
+	stream, monitor, err := openProbeChainPortForwardRelaySubstream(runtime, normalizedEntrySide, request)
 	if err != nil {
-		return nil, probeChainFrameStreamMonitor{}, err
-	}
-	// Phase 2: ask the exit to dial the target (the "business" phase).
-	if err := finishProbeChainPortForwardOpen(stream, requestedNetwork, targetAddr, cleanFlowID, associationV2, failurePrompt); err != nil {
-		_ = stream.Close()
 		return nil, probeChainFrameStreamMonitor{}, err
 	}
 	return stream, monitor, nil
 }
 
-// openProbeChainPortForwardRelaySubstream opens only the relay data substream toward
-// the exit, without sending the target open request. It is valid only for relay roles
-// (entry_exit and proxy-next are short-circuited to a local target by the caller).
-func openProbeChainPortForwardRelaySubstream(runtime *probeChainRuntime, normalizedEntrySide string, flowID string) (net.Conn, probeChainFrameStreamMonitor, error) {
+func openProbeChainPortForwardRelaySubstream(runtime *probeChainRuntime, normalizedEntrySide string, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
 		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
 	if normalizedEntrySide == probeChainPortForwardEntryChainExit {
-		return openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToPrev, strings.TrimSpace(flowID))
+		return openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToPrev, request)
 	}
-	return openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToNext, strings.TrimSpace(flowID))
+	return openProbeChainPortForwardDataStreamByDialMode(runtime, probeChainBridgeRoleToNext, request)
 }
 
 // finishProbeChainPortForwardOpen sends the tunnel open request over an already
 // established relay substream and waits for the exit to dial the target. On error the
 // caller owns closing the stream.
 func finishProbeChainPortForwardOpen(stream net.Conn, network string, targetAddr string, flowID string, associationV2 *probeChainAssociationV2Meta, failurePrompt string) error {
-	requestedNetwork := strings.ToLower(strings.TrimSpace(network))
-	if requestedNetwork == "" {
-		requestedNetwork = probeChainPortForwardNetworkTCP
+	request := buildProbeChainTunnelOpenRequest("open", network, targetAddr, flowID, associationV2)
+	frameStream, ok := stream.(*probeChainFrameStream)
+	if !ok {
+		return errors.New("probe chain stream does not support frame open update")
 	}
-	cleanFlowID := strings.TrimSpace(flowID)
-	if cleanFlowID == "" {
-		cleanFlowID = resolveProbeChainPortForwardFlowID(requestedNetwork, targetAddr, associationV2)
-	}
-	request := probeChainTunnelOpenRequest{
-		Type:          "open",
-		Network:       requestedNetwork,
-		Address:       strings.TrimSpace(targetAddr),
-		FlowID:        cleanFlowID,
-		AssociationV2: associationV2,
-	}
-	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-	if err := json.NewEncoder(stream).Encode(request); err != nil {
-		return err
-	}
-	_ = stream.SetWriteDeadline(time.Time{})
-
-	_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-	var response probeChainTunnelOpenResponse
-	if err := json.NewDecoder(stream).Decode(&response); err != nil {
-		return err
-	}
-	_ = stream.SetReadDeadline(time.Time{})
-	if !response.OK {
-		message := strings.TrimSpace(response.Error)
+	if err := frameStream.SendOpenUpdate(request, probeChainPortForwardResponseReadDeadline); err != nil {
+		message := strings.TrimSpace(err.Error())
 		if message == "" {
 			message = strings.TrimSpace(failurePrompt)
 		}
@@ -1353,47 +1328,58 @@ func finishProbeChainPortForwardOpen(stream net.Conn, network string, targetAddr
 }
 
 func finishProbeChainPortForwardPrepare(stream net.Conn, network string, flowID string) error {
+	// Prepared streams are acknowledged by the frame-level open_result.
+	if _, ok := stream.(*probeChainFrameStream); ok {
+		return nil
+	}
+	return errors.New("probe chain stream does not support frame prepare")
+}
+
+func buildProbeChainTunnelOpenRequest(openType string, network string, targetAddr string, flowID string, associationV2 *probeChainAssociationV2Meta) probeChainTunnelOpenRequest {
 	requestedNetwork := strings.ToLower(strings.TrimSpace(network))
 	if requestedNetwork == "" {
 		requestedNetwork = probeChainPortForwardNetworkTCP
 	}
-	request := probeChainTunnelOpenRequest{
-		Type:    probeChainRelayModePrepare,
-		Network: requestedNetwork,
-		FlowID:  strings.TrimSpace(flowID),
+	cleanFlowID := strings.TrimSpace(flowID)
+	if cleanFlowID == "" {
+		cleanFlowID = resolveProbeChainPortForwardFlowID(requestedNetwork, targetAddr, associationV2)
 	}
-	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-	if err := json.NewEncoder(stream).Encode(request); err != nil {
-		return err
+	cleanType := strings.TrimSpace(openType)
+	if cleanType == "" {
+		cleanType = "open"
 	}
-	_ = stream.SetWriteDeadline(time.Time{})
-
-	_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-	var response probeChainTunnelOpenResponse
-	if err := json.NewDecoder(stream).Decode(&response); err != nil {
-		return err
+	return probeChainTunnelOpenRequest{
+		Type:          cleanType,
+		Network:       requestedNetwork,
+		Address:       strings.TrimSpace(targetAddr),
+		FlowID:        cleanFlowID,
+		Priority:      resolveProbeChainTunnelPriority(requestedNetwork, associationV2),
+		AssociationV2: associationV2,
 	}
-	_ = stream.SetReadDeadline(time.Time{})
-	if !response.OK {
-		message := strings.TrimSpace(response.Error)
-		if message == "" {
-			message = "prepare stream failed"
-		}
-		return errors.New(message)
-	}
-	return nil
 }
 
-func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, flowID string) (net.Conn, probeChainFrameStreamMonitor, error) {
+func resolveProbeChainTunnelPriority(network string, associationV2 *probeChainAssociationV2Meta) string {
+	if associationV2 != nil && strings.EqualFold(strings.TrimSpace(associationV2.Transport), probeChainPortForwardNetworkUDP) {
+		return "realtime"
+	}
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case probeChainPortForwardNetworkUDP:
+		return "realtime"
+	default:
+		return "normal"
+	}
+}
+
+func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
 		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
 	role := normalizeProbeChainBridgeRole(bridgeRole)
 	switch role {
 	case probeChainBridgeRoleToPrev:
-		return openProbeChainUpstreamStream(runtime, "", probeChainDownstreamOpenTimeout)
+		return openProbeChainUpstreamStream(runtime, "", probeChainDownstreamOpenTimeout, request)
 	default:
-		return openProbeChainDownstreamStream(runtime, "", probeChainDownstreamOpenTimeout)
+		return openProbeChainDownstreamStream(runtime, "", probeChainDownstreamOpenTimeout, request)
 	}
 }
 
@@ -1531,15 +1517,9 @@ func (p *probeChainPortForwardPreconnectPool) open() (*probeChainPortForwardPrec
 
 	normalizedEntrySide := normalizeProbeChainPortForwardEntrySide(p.cfg.EntrySide)
 
-	// Prepare only the relay substream. The actual target open request is sent
-	// when a client flow arrives, so background preconnect never requires the
-	// destination port to be online.
-	stream, monitor, err := openProbeChainPortForwardRelaySubstream(p.runtime, normalizedEntrySide, flowID)
+	request := buildProbeChainTunnelOpenRequest(probeChainRelayModePrepare, network, "", flowID, nil)
+	stream, monitor, err := openProbeChainPortForwardRelaySubstream(p.runtime, normalizedEntrySide, request)
 	if err != nil {
-		return nil, &probeChainPreconnectError{phase: probeChainPreconnectPhaseTransport, err: err}
-	}
-	if err := finishProbeChainPortForwardPrepare(stream, network, flowID); err != nil {
-		_ = stream.Close()
 		return nil, &probeChainPreconnectError{phase: probeChainPreconnectPhaseTransport, err: err}
 	}
 
@@ -3106,7 +3086,8 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 		return
 	}
 
-	nextHop, err := openProbeChainNextHop(runtime, preferredSessionID)
+	openReq := probeChainOpenRequestFromConn(conn)
+	nextHop, err := openProbeChainNextHop(runtime, preferredSessionID, openReq)
 	if err != nil {
 		log.Printf("probe chain open downstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
 		return
@@ -3162,7 +3143,8 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 	}
 	log.Printf("probe chain reverse conn opening prev hop: chain=%s role=%s remote=%s upstream_session=%s upstream_closed=%t", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), upstreamState, upstreamClosed)
 
-	prevHop, err := openProbeChainPrevHop(runtime, preferredSessionID)
+	openReq := probeChainOpenRequestFromConn(conn)
+	prevHop, err := openProbeChainPrevHop(runtime, preferredSessionID, openReq)
 	if err != nil {
 		latestUpstream := runtime.getUpstreamSession()
 		latestState := "nil"
@@ -3198,14 +3180,14 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 	}
 }
 
-func openProbeChainNextHop(runtime *probeChainRuntime, preferredSessionID string) (*probeChainNextHop, error) {
+func openProbeChainNextHop(runtime *probeChainRuntime, preferredSessionID string, request probeChainTunnelOpenRequest) (*probeChainNextHop, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
 	if runtime.cfg.nextAuthMode == "proxy" {
 		return nil, errors.New("next hop is proxy mode")
 	}
-	stream, monitor, err := openProbeChainDownstreamStream(runtime, strings.TrimSpace(preferredSessionID), probeChainDownstreamOpenTimeout)
+	stream, monitor, err := openProbeChainDownstreamStream(runtime, strings.TrimSpace(preferredSessionID), probeChainDownstreamOpenTimeout, request)
 	if err != nil {
 		return nil, err
 	}
@@ -3219,11 +3201,11 @@ func openProbeChainNextHop(runtime *probeChainRuntime, preferredSessionID string
 	}, nil
 }
 
-func openProbeChainPrevHop(runtime *probeChainRuntime, preferredSessionID string) (*probeChainNextHop, error) {
+func openProbeChainPrevHop(runtime *probeChainRuntime, preferredSessionID string, request probeChainTunnelOpenRequest) (*probeChainNextHop, error) {
 	if runtime == nil {
 		return nil, errors.New("runtime is nil")
 	}
-	stream, monitor, err := openProbeChainUpstreamStream(runtime, strings.TrimSpace(preferredSessionID), probeChainDownstreamOpenTimeout)
+	stream, monitor, err := openProbeChainUpstreamStream(runtime, strings.TrimSpace(preferredSessionID), probeChainDownstreamOpenTimeout, request)
 	if err != nil {
 		return nil, err
 	}
@@ -3271,7 +3253,7 @@ func (rt *probeChainRuntime) getUpstreamSessionByID(sessionID string) *probeChai
 	return item.Session
 }
 
-func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration) (net.Conn, probeChainFrameStreamMonitor, error) {
+func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
 		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
@@ -3285,7 +3267,7 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 			sessionID, sessionRole := runtime.describeBridgeSession(session, "downstream")
 			streamsOpen := session.NumStreams()
 			startedAt := time.Now()
-			stream, openErr := session.Open()
+			stream, openErr := session.OpenWithRequest(request, timeout)
 			openLatency := time.Since(startedAt)
 			if openErr == nil {
 				return stream, probeChainFrameStreamMonitor{
@@ -3317,7 +3299,7 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 	return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("downstream bridge is unavailable")
 }
 
-func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration) (net.Conn, probeChainFrameStreamMonitor, error) {
+func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
 		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
@@ -3336,7 +3318,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 				sessionID, sessionRole := runtime.describeBridgeSession(session, "upstream")
 				streamsOpen := session.NumStreams()
 				startedAt := time.Now()
-				stream, openErr := session.Open()
+				stream, openErr := session.OpenWithRequest(request, timeout)
 				openLatency := time.Since(startedAt)
 				if openErr == nil {
 					log.Printf("probe chain upstream stream opened: chain=%s role=%s attempt=%d session=%p", runtime.cfg.chainID, runtime.cfg.role, attempt, session)
@@ -3500,58 +3482,90 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 	}
 	defer stream.Close()
 
-	_ = stream.SetReadDeadline(time.Now().Add(20 * time.Second))
 	var req probeChainTunnelOpenRequest
-	if err := json.NewDecoder(stream).Decode(&req); err != nil {
-		chainID := ""
-		role := ""
-		if runtime != nil {
-			chainID = strings.TrimSpace(runtime.cfg.chainID)
-			role = strings.TrimSpace(runtime.cfg.role)
-		}
-		log.Printf("probe chain proxy open request decode failed: chain=%s role=%s err=%v", chainID, role, err)
-		return
-	}
-	_ = stream.SetReadDeadline(time.Time{})
-
-	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePingPong) {
-		handleProbeChainPingPongStream(runtime, stream, req.PingBytes)
-		return
-	}
-	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePrepare) {
-		if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
+	var responder func(probeChainTunnelOpenResponse) error
+	frameStream, ok := stream.(*probeChainFrameStream)
+	if ok {
+		var found bool
+		req, found = frameStream.OpenRequest()
+		if !found {
+			logProbeChainProxyOpenDecodeFailure(runtime, errors.New("missing frame open request"))
 			return
 		}
-		_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardPreconnectIdleTTL + probeChainPortForwardResponseReadDeadline))
-		req = probeChainTunnelOpenRequest{}
-		if err := json.NewDecoder(stream).Decode(&req); err != nil {
-			var netErr net.Error
-			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && (!errors.As(err, &netErr) || !netErr.Timeout()) {
+		responder = frameStream.RespondOpen
+	} else {
+		logProbeChainProxyOpenDecodeFailure(runtime, errors.New("non-frame probe chain stream is unsupported"))
+		return
+	}
+
+	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePrepare) {
+		if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
+			return
+		}
+		updateReq, err := frameStream.WaitOpenUpdate(probeChainPortForwardPreconnectIdleTTL + probeChainPortForwardResponseReadDeadline)
+		if err != nil {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				chainID := ""
 				role := ""
 				if runtime != nil {
 					chainID = strings.TrimSpace(runtime.cfg.chainID)
 					role = strings.TrimSpace(runtime.cfg.role)
 				}
-				log.Printf("probe chain proxy prepared stream closed before open: chain=%s role=%s err=%v", chainID, role, err)
+				log.Printf("probe chain proxy prepared stream closed before open_update: chain=%s role=%s err=%v", chainID, role, err)
 			}
 			return
 		}
-		_ = stream.SetReadDeadline(time.Time{})
+		req = updateReq
+		responder = frameStream.RespondOpenUpdate
+	}
+
+	handleProbeChainProxyOpenRequest(runtime, stream, req, responder)
+}
+
+func logProbeChainProxyOpenDecodeFailure(runtime *probeChainRuntime, err error) {
+	chainID := ""
+	role := ""
+	if runtime != nil {
+		chainID = strings.TrimSpace(runtime.cfg.chainID)
+		role = strings.TrimSpace(runtime.cfg.role)
+	}
+	log.Printf("probe chain proxy open request decode failed: chain=%s role=%s err=%v", chainID, role, err)
+}
+
+func handleProbeChainProxyOpenRequest(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest, responder func(probeChainTunnelOpenResponse) error) {
+	if responder == nil {
+		logProbeChainProxyOpenDecodeFailure(runtime, errors.New("missing frame open responder"))
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePingPong) {
+		handleProbeChainPingPongStream(runtime, stream, req.PingBytes, responder)
+		return
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), "tcp_debug_get") {
+		if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
+			return
+		}
 		handleProbeChainTCPDebugGet(runtime, stream, req)
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), "speed_debug_get") {
+		if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
+			return
+		}
 		handleProbeChainSpeedDebugGet(runtime, stream, req)
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), "peer_status_get") {
+		if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
+			return
+		}
 		handleProbeChainPeerStatusGet(runtime, stream, req)
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), "substreams_get") {
+		if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
+			return
+		}
 		handleProbeChainSubstreamsGet(runtime, stream, req)
 		return
 	}
@@ -3563,11 +3577,11 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 	}
 	target := strings.TrimSpace(req.Address)
 	if target == "" {
-		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: "missing address"})
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: "missing address"})
 		return
 	}
 
-	if requestedSessionID != "" {
+	if requestedSessionID != "" && runtime != nil {
 		log.Printf("probe chain proxy open request: chain=%s role=%s network=%s target=%s session_id=%s", strings.TrimSpace(runtime.cfg.chainID), strings.TrimSpace(runtime.cfg.role), network, target, requestedSessionID)
 	}
 
@@ -3576,13 +3590,13 @@ func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
 	var proxyErr error
 	switch network {
 	case "tcp":
-		proxyErr = handleProbeChainTunnelTCPStream(stream, target, flowID)
+		proxyErr = handleProbeChainTunnelTCPStream(stream, target, flowID, responder)
 	case "udp":
-		proxyErr = handleProbeChainTunnelUDPStream(stream, target, associationV2)
+		proxyErr = handleProbeChainTunnelUDPStream(stream, target, associationV2, responder)
 	case "http":
-		proxyErr = handleProbeChainTunnelHTTPProxyStream(runtime, stream)
+		proxyErr = handleProbeChainTunnelHTTPProxyStream(runtime, stream, responder)
 	default:
-		proxyErr = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: "unsupported network"})
+		proxyErr = responder(probeChainTunnelOpenResponse{OK: false, Error: "unsupported network"})
 	}
 	if proxyErr == nil || errors.Is(proxyErr, io.EOF) || errors.Is(proxyErr, net.ErrClosed) {
 		return
@@ -3653,14 +3667,17 @@ func handleProbeChainPeerStatusGet(runtime *probeChainRuntime, stream net.Conn, 
 	}
 }
 
-func handleProbeChainPingPongStream(runtime *probeChainRuntime, stream net.Conn, byteCount int64) {
+func handleProbeChainPingPongStream(runtime *probeChainRuntime, stream net.Conn, byteCount int64, responder func(probeChainTunnelOpenResponse) error) {
 	if stream == nil {
 		return
 	}
 	if byteCount <= 0 || byteCount > 64*1024 {
 		byteCount = 64
 	}
-	if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
+	if responder == nil {
+		return
+	}
+	if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
 		return
 	}
 	buf := make([]byte, byteCount)
@@ -3707,6 +3724,32 @@ func writeProbeChainTunnelJSONResponse(stream net.Conn, resp any) error {
 	return err
 }
 
+func probeChainOpenRequestFromConn(conn net.Conn) probeChainTunnelOpenRequest {
+	req := probeChainTunnelOpenRequest{
+		Type:     "open",
+		Network:  probeChainPortForwardNetworkTCP,
+		Priority: "normal",
+	}
+	frameStream, ok := conn.(*probeChainFrameStream)
+	if !ok {
+		return req
+	}
+	frameReq, found := frameStream.OpenRequest()
+	if !found {
+		return req
+	}
+	if strings.TrimSpace(frameReq.Type) == "" {
+		frameReq.Type = "open"
+	}
+	if strings.TrimSpace(frameReq.Network) == "" {
+		frameReq.Network = probeChainPortForwardNetworkTCP
+	}
+	if strings.TrimSpace(frameReq.Priority) == "" {
+		frameReq.Priority = resolveProbeChainTunnelPriority(frameReq.Network, frameReq.AssociationV2)
+	}
+	return frameReq
+}
+
 func resolveProbeChainTunnelOpenFlowID(req probeChainTunnelOpenRequest) string {
 	if flowID := strings.TrimSpace(req.FlowID); flowID != "" {
 		return flowID
@@ -3717,20 +3760,23 @@ func resolveProbeChainTunnelOpenFlowID(req probeChainTunnelOpenRequest) string {
 	return ""
 }
 
-func handleProbeChainTunnelTCPStream(stream net.Conn, target string, flowID string) error {
+func handleProbeChainTunnelTCPStream(stream net.Conn, target string, flowID string, responder func(probeChainTunnelOpenResponse) error) error {
+	if responder == nil {
+		return errors.New("missing frame open responder")
+	}
 	dialer := &net.Dialer{Timeout: probeChainPortForwardDialTimeout}
 	dialStartedAt := time.Now()
 	remoteConn, err := dialer.Dial("tcp", target)
 	openLatency := time.Since(dialStartedAt)
 	if err != nil {
 		globalProbeTCPDebugState.recordFailureWithScopeAndFlow("open_failed", "chain_exit", target, flowID, "remote", err)
-		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err
 	}
 	tuneProbeChainNetConn(remoteConn)
 	defer remoteConn.Close()
 
-	if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
+	if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
 		return err
 	}
 
@@ -3759,15 +3805,18 @@ func handleProbeChainTunnelTCPStream(stream net.Conn, target string, flowID stri
 	return copyErr
 }
 
-func handleProbeChainTunnelUDPStream(stream net.Conn, target string, associationV2 *probeChainAssociationV2Meta) error {
+func handleProbeChainTunnelUDPStream(stream net.Conn, target string, associationV2 *probeChainAssociationV2Meta, responder func(probeChainTunnelOpenResponse) error) error {
+	if responder == nil {
+		return errors.New("missing frame open responder")
+	}
 	assoc, err := globalProbeChainUDPAssociationPool.Acquire(associationV2, target)
 	if err != nil {
-		_ = writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err
 	}
 	defer assoc.Release()
 
-	if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
+	if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
 		return err
 	}
 
@@ -3818,8 +3867,11 @@ func handleProbeChainTunnelUDPStream(stream net.Conn, target string, association
 	return copyErr
 }
 
-func handleProbeChainTunnelHTTPProxyStream(runtime *probeChainRuntime, stream net.Conn) error {
-	if err := writeProbeChainTunnelOpenResponse(stream, probeChainTunnelOpenResponse{OK: true}); err != nil {
+func handleProbeChainTunnelHTTPProxyStream(runtime *probeChainRuntime, stream net.Conn, responder func(probeChainTunnelOpenResponse) error) error {
+	if responder == nil {
+		return errors.New("missing frame open responder")
+	}
+	if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
 		return err
 	}
 	return handleProbeChainHTTPProxy(runtime, stream, bufio.NewReader(stream))

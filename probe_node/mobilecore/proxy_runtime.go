@@ -383,7 +383,7 @@ func openAndroidProxyChainStreamWithFlow(selectedChainID string, network string,
 	if err != nil {
 		return nil, err
 	}
-	request := linkTunnelOpenRequest{Type: "open", Network: strings.ToLower(strings.TrimSpace(network)), Address: strings.TrimSpace(targetAddr), FlowID: strings.TrimSpace(flowID)}
+	request := linkTunnelOpenRequest{Type: "open", Network: strings.ToLower(strings.TrimSpace(network)), Address: strings.TrimSpace(targetAddr), FlowID: strings.TrimSpace(flowID), Priority: resolveLinkTunnelPriority(network, nil)}
 	return openAndroidProxyIndependentStream(item, endpoint, request)
 }
 
@@ -396,9 +396,22 @@ func openAndroidProxyChainPacketStream(selectedChainID string, network string, t
 		Type:          "open",
 		Network:       strings.ToLower(strings.TrimSpace(network)),
 		Address:       strings.TrimSpace(targetAddr),
+		Priority:      resolveLinkTunnelPriority(network, association),
 		AssociationV2: association,
 	}
 	return openAndroidProxyIndependentStream(item, endpoint, request)
+}
+
+func resolveLinkTunnelPriority(network string, association *linkAssociationV2Meta) string {
+	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), "udp") {
+		return "realtime"
+	}
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "udp":
+		return "realtime"
+	default:
+		return "normal"
+	}
 }
 
 func openAndroidProxyIndependentStream(item linkChainServerItem, endpoint linkEndpoint, request linkTunnelOpenRequest) (net.Conn, error) {
@@ -408,32 +421,11 @@ func openAndroidProxyIndependentStream(item linkChainServerItem, endpoint linkEn
 		if err != nil {
 			return nil, err
 		}
-		stream, err := session.Open()
+		stream, err := session.OpenWithRequest(request, proxyResponseReadTimeout)
 		if err != nil {
 			lastErr = err
 			invalidateProxyChainSession(endpoint.ChainID, session)
 			continue
-		}
-		_ = stream.SetWriteDeadline(time.Now().Add(proxyResponseReadTimeout))
-		if err := json.NewEncoder(stream).Encode(request); err != nil {
-			_ = stream.Close()
-			lastErr = err
-			invalidateProxyChainSession(endpoint.ChainID, session)
-			continue
-		}
-		_ = stream.SetWriteDeadline(time.Time{})
-		_ = stream.SetReadDeadline(time.Now().Add(proxyResponseReadTimeout))
-		var response linkTunnelOpenResponse
-		if err := json.NewDecoder(stream).Decode(&response); err != nil {
-			_ = stream.Close()
-			lastErr = err
-			invalidateProxyChainSession(endpoint.ChainID, session)
-			continue
-		}
-		_ = stream.SetReadDeadline(time.Time{})
-		if !response.OK {
-			_ = stream.Close()
-			return nil, errors.New(firstNonEmptyString(strings.TrimSpace(response.Error), "open stream failed"))
 		}
 		return stream, nil
 	}

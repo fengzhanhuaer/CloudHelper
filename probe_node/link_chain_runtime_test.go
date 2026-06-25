@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -51,9 +52,28 @@ func TestReadProbeChainAuthEnvelopeFromHeadersCodexStyle(t *testing.T) {
 	}
 }
 
+func newProbeChainFrameSessionPairForTest(t *testing.T) (*probeChainFrameSession, *probeChainFrameSession) {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	clientSession, err := newProbeChainFrameClient(clientConn)
+	if err != nil {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+		t.Fatalf("frame client failed: %v", err)
+	}
+	serverSession, err := newProbeChainFrameServer(serverConn)
+	if err != nil {
+		_ = clientSession.Close()
+		_ = serverConn.Close()
+		t.Fatalf("frame server failed: %v", err)
+	}
+	return clientSession, serverSession
+}
+
 func TestProbeChainProxyStreamHandlesPeerStatusGet(t *testing.T) {
-	server, client := net.Pipe()
-	defer client.Close()
+	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
+	defer clientSession.Close()
+	defer serverSession.Close()
 	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{
 		chainID:    "chain-peer-status",
 		role:       "exit",
@@ -64,13 +84,19 @@ func TestProbeChainProxyStreamHandlesPeerStatusGet(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleProbeChainProxyStream(rt, server)
+		stream, err := serverSession.Accept()
+		if err != nil {
+			return
+		}
+		handleProbeChainProxyStream(rt, stream)
 	}()
 
-	req := probeChainTunnelOpenRequest{Type: "peer_status_get", RequestID: "peer-status-1", Scope: "chain_exit"}
-	if err := json.NewEncoder(client).Encode(req); err != nil {
-		t.Fatalf("encode peer status request: %v", err)
+	req := probeChainTunnelOpenRequest{Type: "peer_status_get", RequestID: "peer-status-1", Scope: "chain_exit", Priority: "realtime"}
+	client, err := clientSession.OpenWithRequest(req, probeChainPortForwardResponseReadDeadline)
+	if err != nil {
+		t.Fatalf("open peer status stream: %v", err)
 	}
+	defer client.Close()
 	var payload probePeerStatusSidePayload
 	if err := json.NewDecoder(client).Decode(&payload); err != nil {
 		t.Fatalf("decode peer status response: %v", err)
@@ -295,25 +321,26 @@ func TestBuildProbeChainRuntimeConfigMarksCFRelayDomainPreserved(t *testing.T) {
 }
 
 func TestProbeChainPingPongStreamEchoesPayload(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
+	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
+	defer clientSession.Close()
+	defer serverSession.Close()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleProbeChainProxyStream(nil, server)
+		stream, err := serverSession.Accept()
+		if err != nil {
+			return
+		}
+		handleProbeChainProxyStream(nil, stream)
 	}()
 
-	if err := json.NewEncoder(client).Encode(probeChainTunnelOpenRequest{Type: probeChainRelayModePingPong, PingBytes: 4}); err != nil {
-		t.Fatalf("write ping-pong request failed: %v", err)
+	req := probeChainTunnelOpenRequest{Type: probeChainRelayModePingPong, PingBytes: 4, Priority: "realtime"}
+	client, err := clientSession.OpenWithRequest(req, probeChainPortForwardResponseReadDeadline)
+	if err != nil {
+		t.Fatalf("open ping-pong stream: %v", err)
 	}
-	var response probeChainTunnelOpenResponse
-	if err := json.NewDecoder(client).Decode(&response); err != nil {
-		t.Fatalf("read ping-pong response failed: %v", err)
-	}
-	if !response.OK {
-		t.Fatalf("ping-pong response not ok: %+v", response)
-	}
+	defer client.Close()
 	payload := []byte{1, 2, 3, 4}
 	if _, err := client.Write(payload); err != nil {
 		t.Fatalf("write payload failed: %v", err)
@@ -345,17 +372,25 @@ func TestProbeChainPreparedStreamDefersTargetOpenUntilRealRequest(t *testing.T) 
 		close(accepted)
 	}()
 
-	client, server := net.Pipe()
-	defer client.Close()
+	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
+	defer clientSession.Close()
+	defer serverSession.Close()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleProbeChainProxyStream(nil, server)
+		stream, err := serverSession.Accept()
+		if err != nil {
+			return
+		}
+		handleProbeChainProxyStream(nil, stream)
 	}()
 
-	if err := finishProbeChainPortForwardPrepare(client, probeChainPortForwardNetworkTCP, "flow-prepare"); err != nil {
-		t.Fatalf("prepare failed: %v", err)
+	prepareReq := buildProbeChainTunnelOpenRequest(probeChainRelayModePrepare, probeChainPortForwardNetworkTCP, "", "flow-prepare", nil)
+	client, err := clientSession.OpenWithRequest(prepareReq, probeChainPortForwardResponseReadDeadline)
+	if err != nil {
+		t.Fatalf("open prepared stream failed: %v", err)
 	}
+	defer client.Close()
 	select {
 	case conn := <-accepted:
 		if conn != nil {
@@ -423,6 +458,16 @@ func TestProbeChainPortForwardRelaySubstreamUsesBridgeFrame(t *testing.T) {
 					acceptErr <- err
 					return
 				}
+				if frameStream, ok := stream.(*probeChainFrameStream); ok {
+					if req, found := frameStream.OpenRequest(); !found || req.FlowID != "flow-a" {
+						acceptErr <- fmt.Errorf("unexpected open request: found=%t req=%+v", found, req)
+						return
+					}
+					if err := frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true}); err != nil {
+						acceptErr <- err
+						return
+					}
+				}
 				accepted <- stream
 			}()
 
@@ -439,7 +484,8 @@ func TestProbeChainPortForwardRelaySubstreamUsesBridgeFrame(t *testing.T) {
 			}
 			tc.setup(rt, clientSession)
 
-			stream, _, err := openProbeChainPortForwardRelaySubstream(rt, tc.entrySide, "flow-a")
+			request := buildProbeChainTunnelOpenRequest("open", probeChainPortForwardNetworkTCP, "example.com:443", "flow-a", nil)
+			stream, _, err := openProbeChainPortForwardRelaySubstream(rt, tc.entrySide, request)
 			if err != nil {
 				t.Fatalf("open relay substream failed: %v", err)
 			}

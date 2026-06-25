@@ -5,19 +5,24 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 const (
-	mobileChainFrameControlOpen  = "open"
-	mobileChainFrameControlClose = "close"
-	mobileChainFrameControlError = "error"
+	mobileChainFrameControlOpen             = "open"
+	mobileChainFrameControlOpenResult       = "open_result"
+	mobileChainFrameControlOpenUpdate       = "open_update"
+	mobileChainFrameControlOpenUpdateResult = "open_update_result"
+	mobileChainFrameControlClose            = "close"
+	mobileChainFrameControlError            = "error"
 
 	mobileChainFrameSessionInboundBuffer = 64
 	mobileChainFramePingInterval         = 10 * time.Second
 	mobileChainFramePingTimeout          = 5 * time.Second
+	mobileChainFrameOpenResultTimeout    = 30 * time.Second
 )
 
 type mobileChainFrameSession struct {
@@ -49,8 +54,16 @@ type mobileChainFrameWriteRequest struct {
 }
 
 type mobileChainFrameSessionControl struct {
-	Type  string `json:"type"`
-	Error string `json:"error,omitempty"`
+	Type    string                        `json:"type"`
+	OK      bool                          `json:"ok,omitempty"`
+	Error   string                        `json:"error,omitempty"`
+	Request *linkTunnelOpenRequest        `json:"request,omitempty"`
+	Mobile  *mobileChainTunnelOpenRequest `json:"mobile,omitempty"`
+}
+
+type mobileChainFrameOpenResult struct {
+	OK    bool
+	Error string
 }
 
 type mobileChainFramePingStats struct {
@@ -109,6 +122,18 @@ func newMobileChainFrameSession(conn net.Conn, initiator bool) (*mobileChainFram
 }
 
 func (s *mobileChainFrameSession) Open() (net.Conn, error) {
+	return s.openWithRequest(nil, nil, false, 0)
+}
+
+func (s *mobileChainFrameSession) OpenWithRequest(req linkTunnelOpenRequest, timeout time.Duration) (net.Conn, error) {
+	return s.openWithRequest(&req, nil, true, timeout)
+}
+
+func (s *mobileChainFrameSession) OpenWithMobileRequest(req mobileChainTunnelOpenRequest, timeout time.Duration) (net.Conn, error) {
+	return s.openWithRequest(nil, &req, true, timeout)
+}
+
+func (s *mobileChainFrameSession) openWithRequest(req *linkTunnelOpenRequest, mobileReq *mobileChainTunnelOpenRequest, waitResult bool, timeout time.Duration) (net.Conn, error) {
 	if s == nil {
 		return nil, errors.New("frame session is nil")
 	}
@@ -118,10 +143,30 @@ func (s *mobileChainFrameSession) Open() (net.Conn, error) {
 	streamID := s.nextStreamID.Add(2) - 2
 	stream := newMobileChainFrameStream(s, streamID)
 	s.registerStream(stream)
-	if err := s.writeControl(streamID, mobileChainFrameControlOpen, ""); err != nil {
+	control := mobileChainFrameSessionControl{Type: mobileChainFrameControlOpen}
+	if req != nil {
+		request := *req
+		stream.setOpenRequest(request)
+		control.Request = &request
+	}
+	if mobileReq != nil {
+		request := *mobileReq
+		stream.setMobileOpenRequest(request)
+		control.Mobile = &request
+	}
+	if err := s.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: streamID}, control); err != nil {
 		s.removeStream(streamID, stream)
 		_ = stream.closeLocal()
 		return nil, err
+	}
+	if waitResult {
+		if timeout <= 0 {
+			timeout = mobileChainFrameOpenResultTimeout
+		}
+		if err := stream.waitOpenResult(timeout); err != nil {
+			_ = stream.closeLocal()
+			return nil, err
+		}
 	}
 	return stream, nil
 }
@@ -371,11 +416,34 @@ func (s *mobileChainFrameSession) handleControlFrame(frame mobileChainFrame) {
 	switch control.Type {
 	case mobileChainFrameControlOpen:
 		stream := newMobileChainFrameStream(s, frame.StreamID)
+		if control.Request != nil {
+			stream.setOpenRequest(*control.Request)
+		}
+		if control.Mobile != nil {
+			stream.setMobileOpenRequest(*control.Mobile)
+		}
 		s.registerStream(stream)
 		select {
 		case s.acceptCh <- stream:
 		case <-s.closeCh:
 			_ = stream.closeRemote(io.ErrClosedPipe)
+		}
+	case mobileChainFrameControlOpenResult:
+		if stream := s.getStream(frame.StreamID); stream != nil {
+			stream.deliverOpenResult(mobileChainFrameOpenResult{OK: control.OK, Error: control.Error})
+		}
+	case mobileChainFrameControlOpenUpdate:
+		if stream := s.getStream(frame.StreamID); stream != nil {
+			if control.Request != nil {
+				stream.deliverOpenUpdate(*control.Request)
+			}
+			if control.Mobile != nil {
+				stream.deliverMobileOpenUpdate(*control.Mobile)
+			}
+		}
+	case mobileChainFrameControlOpenUpdateResult:
+		if stream := s.getStream(frame.StreamID); stream != nil {
+			stream.deliverOpenUpdateResult(mobileChainFrameOpenResult{OK: control.OK, Error: control.Error})
 		}
 	case mobileChainFrameControlClose:
 		if stream := s.getStream(frame.StreamID); stream != nil {
@@ -393,11 +461,17 @@ func (s *mobileChainFrameSession) handleControlFrame(frame mobileChainFrame) {
 }
 
 func (s *mobileChainFrameSession) writeControl(streamID uint64, controlType string, errText string) error {
-	payload, err := marshalMobileChainFrameControl(mobileChainFrameSessionControl{Type: controlType, Error: errText})
+	return s.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: streamID}, mobileChainFrameSessionControl{Type: controlType, Error: errText})
+}
+
+func (s *mobileChainFrameSession) writeControlFrame(frame mobileChainFrame, control mobileChainFrameSessionControl) error {
+	payload, err := marshalMobileChainFrameControl(control)
 	if err != nil {
 		return err
 	}
-	return s.writeFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: streamID, Control: payload})
+	frame.Kind = mobileChainFrameKindControl
+	frame.Control = payload
+	return s.writeFrame(frame)
 }
 
 func (s *mobileChainFrameSession) writeFrame(frame mobileChainFrame) error {
@@ -447,15 +521,29 @@ type mobileChainFrameStream struct {
 
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
+
+	openMu                     sync.RWMutex
+	openRequest                linkTunnelOpenRequest
+	openRequestAvailable       bool
+	mobileOpenRequest          mobileChainTunnelOpenRequest
+	mobileOpenRequestAvailable bool
+	openResultCh               chan mobileChainFrameOpenResult
+	openUpdateCh               chan linkTunnelOpenRequest
+	mobileOpenUpdateCh         chan mobileChainTunnelOpenRequest
+	openUpdateResultCh         chan mobileChainFrameOpenResult
 }
 
 func newMobileChainFrameStream(session *mobileChainFrameSession, streamID uint64) *mobileChainFrameStream {
 	return &mobileChainFrameStream{
-		session:    session,
-		id:         streamID,
-		readCh:     make(chan []byte, mobileChainFrameSessionInboundBuffer),
-		localDone:  make(chan struct{}),
-		remoteDone: make(chan struct{}),
+		session:            session,
+		id:                 streamID,
+		readCh:             make(chan []byte, mobileChainFrameSessionInboundBuffer),
+		localDone:          make(chan struct{}),
+		remoteDone:         make(chan struct{}),
+		openResultCh:       make(chan mobileChainFrameOpenResult, 1),
+		openUpdateCh:       make(chan linkTunnelOpenRequest, 1),
+		mobileOpenUpdateCh: make(chan mobileChainTunnelOpenRequest, 1),
+		openUpdateResultCh: make(chan mobileChainFrameOpenResult, 1),
 	}
 }
 
@@ -583,6 +671,206 @@ func (s *mobileChainFrameStream) deliverData(payload []byte) {
 	case s.readCh <- data:
 	case <-s.localDone:
 	case <-s.remoteDone:
+	}
+}
+
+func (s *mobileChainFrameStream) setOpenRequest(req linkTunnelOpenRequest) {
+	if s == nil {
+		return
+	}
+	s.openMu.Lock()
+	s.openRequest = req
+	s.openRequestAvailable = true
+	s.openMu.Unlock()
+}
+
+func (s *mobileChainFrameStream) OpenRequest() (linkTunnelOpenRequest, bool) {
+	if s == nil {
+		return linkTunnelOpenRequest{}, false
+	}
+	s.openMu.RLock()
+	defer s.openMu.RUnlock()
+	return s.openRequest, s.openRequestAvailable
+}
+
+func (s *mobileChainFrameStream) setMobileOpenRequest(req mobileChainTunnelOpenRequest) {
+	if s == nil {
+		return
+	}
+	s.openMu.Lock()
+	s.mobileOpenRequest = req
+	s.mobileOpenRequestAvailable = true
+	s.openMu.Unlock()
+}
+
+func (s *mobileChainFrameStream) MobileOpenRequest() (mobileChainTunnelOpenRequest, bool) {
+	if s == nil {
+		return mobileChainTunnelOpenRequest{}, false
+	}
+	s.openMu.RLock()
+	defer s.openMu.RUnlock()
+	return s.mobileOpenRequest, s.mobileOpenRequestAvailable
+}
+
+func (s *mobileChainFrameStream) RespondOpen(resp linkTunnelOpenResponse) error {
+	if s == nil || s.session == nil {
+		return io.ErrClosedPipe
+	}
+	return s.session.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: s.id}, mobileChainFrameSessionControl{
+		Type:  mobileChainFrameControlOpenResult,
+		OK:    resp.OK,
+		Error: strings.TrimSpace(resp.Error),
+	})
+}
+
+func (s *mobileChainFrameStream) RespondMobileOpen(resp mobileChainTunnelOpenResponse) error {
+	if s == nil || s.session == nil {
+		return io.ErrClosedPipe
+	}
+	return s.session.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: s.id}, mobileChainFrameSessionControl{
+		Type:  mobileChainFrameControlOpenResult,
+		OK:    resp.OK,
+		Error: strings.TrimSpace(resp.Error),
+	})
+}
+
+func (s *mobileChainFrameStream) waitOpenResult(timeout time.Duration) error {
+	if s == nil {
+		return io.ErrClosedPipe
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-s.openResultCh:
+		if result.OK {
+			return nil
+		}
+		if strings.TrimSpace(result.Error) == "" {
+			return errors.New("remote open rejected")
+		}
+		return errors.New(strings.TrimSpace(result.Error))
+	case <-timer.C:
+		return mobileChainTimeoutError{}
+	case <-s.localDone:
+		return io.ErrClosedPipe
+	case <-s.remoteDone:
+		if s.remoteErr != nil {
+			return s.remoteErr
+		}
+		return io.ErrClosedPipe
+	}
+}
+
+func (s *mobileChainFrameStream) deliverOpenResult(result mobileChainFrameOpenResult) {
+	if s == nil {
+		return
+	}
+	select {
+	case s.openResultCh <- result:
+	default:
+	}
+}
+
+func (s *mobileChainFrameStream) SendOpenUpdate(req linkTunnelOpenRequest, timeout time.Duration) error {
+	if s == nil || s.session == nil {
+		return io.ErrClosedPipe
+	}
+	if timeout <= 0 {
+		timeout = mobileChainFrameOpenResultTimeout
+	}
+	request := req
+	if err := s.session.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: s.id}, mobileChainFrameSessionControl{
+		Type:    mobileChainFrameControlOpenUpdate,
+		Request: &request,
+	}); err != nil {
+		return err
+	}
+	return s.waitOpenUpdateResult(timeout)
+}
+
+func (s *mobileChainFrameStream) WaitOpenUpdate(timeout time.Duration) (linkTunnelOpenRequest, error) {
+	if s == nil {
+		return linkTunnelOpenRequest{}, io.ErrClosedPipe
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case req := <-s.openUpdateCh:
+		return req, nil
+	case <-timer.C:
+		return linkTunnelOpenRequest{}, mobileChainTimeoutError{}
+	case <-s.localDone:
+		return linkTunnelOpenRequest{}, io.ErrClosedPipe
+	case <-s.remoteDone:
+		if s.remoteErr != nil {
+			return linkTunnelOpenRequest{}, s.remoteErr
+		}
+		return linkTunnelOpenRequest{}, io.ErrClosedPipe
+	}
+}
+
+func (s *mobileChainFrameStream) RespondOpenUpdate(resp linkTunnelOpenResponse) error {
+	if s == nil || s.session == nil {
+		return io.ErrClosedPipe
+	}
+	return s.session.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: s.id}, mobileChainFrameSessionControl{
+		Type:  mobileChainFrameControlOpenUpdateResult,
+		OK:    resp.OK,
+		Error: strings.TrimSpace(resp.Error),
+	})
+}
+
+func (s *mobileChainFrameStream) deliverOpenUpdate(req linkTunnelOpenRequest) {
+	if s == nil {
+		return
+	}
+	select {
+	case s.openUpdateCh <- req:
+	default:
+	}
+}
+
+func (s *mobileChainFrameStream) deliverMobileOpenUpdate(req mobileChainTunnelOpenRequest) {
+	if s == nil {
+		return
+	}
+	select {
+	case s.mobileOpenUpdateCh <- req:
+	default:
+	}
+}
+
+func (s *mobileChainFrameStream) deliverOpenUpdateResult(result mobileChainFrameOpenResult) {
+	if s == nil {
+		return
+	}
+	select {
+	case s.openUpdateResultCh <- result:
+	default:
+	}
+}
+
+func (s *mobileChainFrameStream) waitOpenUpdateResult(timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-s.openUpdateResultCh:
+		if result.OK {
+			return nil
+		}
+		if strings.TrimSpace(result.Error) == "" {
+			return errors.New("remote open update rejected")
+		}
+		return errors.New(strings.TrimSpace(result.Error))
+	case <-timer.C:
+		return mobileChainTimeoutError{}
+	case <-s.localDone:
+		return io.ErrClosedPipe
+	case <-s.remoteDone:
+		if s.remoteErr != nil {
+			return s.remoteErr
+		}
+		return io.ErrClosedPipe
 	}
 }
 

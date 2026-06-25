@@ -189,6 +189,11 @@ type linkTunnelOpenRequest struct {
 	Network       string                 `json:"network,omitempty"`
 	Address       string                 `json:"address,omitempty"`
 	FlowID        string                 `json:"flow_id,omitempty"`
+	ResumeToken   string                 `json:"resume_token,omitempty"`
+	ResumeEpoch   uint64                 `json:"resume_epoch,omitempty"`
+	ReadOffset    uint64                 `json:"read_offset,omitempty"`
+	WriteOffset   uint64                 `json:"write_offset,omitempty"`
+	Priority      string                 `json:"priority,omitempty"`
 	AssociationV2 *linkAssociationV2Meta `json:"association_v2,omitempty"`
 	SpeedBytes    int64                  `json:"speed_bytes,omitempty"`
 	PingBytes     int64                  `json:"ping_bytes,omitempty"`
@@ -218,8 +223,13 @@ type linkAssociationV2Meta struct {
 }
 
 type linkTunnelOpenResponse struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	OK          bool   `json:"ok"`
+	Error       string `json:"error,omitempty"`
+	FlowID      string `json:"flow_id,omitempty"`
+	ResumeToken string `json:"resume_token,omitempty"`
+	ResumeEpoch uint64 `json:"resume_epoch,omitempty"`
+	ReadOffset  uint64 `json:"read_offset,omitempty"`
+	WriteOffset uint64 `json:"write_offset,omitempty"`
 }
 
 // LinkStatus returns the Android-visible proxy chain endpoint inventory from proxy_chain.json.
@@ -661,13 +671,9 @@ func openLinkPingPongStream(conn net.Conn, payloadBytes int64) (net.Conn, error)
 	if err != nil {
 		return nil, err
 	}
-	stream, err := session.Open()
+	req := linkTunnelOpenRequest{Type: linkRelayModePingPong, PingBytes: payloadBytes, Priority: "realtime"}
+	stream, err := session.OpenWithRequest(req, linkPortForwardResponseReadTimeout)
 	if err != nil {
-		_ = session.Close()
-		return nil, err
-	}
-	if err := writeLinkPingPongRequest(stream, payloadBytes); err != nil {
-		_ = stream.Close()
 		_ = session.Close()
 		return nil, err
 	}
@@ -690,26 +696,6 @@ func (c *linkPingPongStreamConn) Close() error {
 		}
 	}
 	return firstErr
-}
-
-func writeLinkPingPongRequest(stream net.Conn, payloadBytes int64) error {
-	_ = stream.SetWriteDeadline(time.Now().Add(linkPortForwardResponseReadTimeout))
-	if err := json.NewEncoder(stream).Encode(linkTunnelOpenRequest{Type: linkRelayModePingPong, PingBytes: payloadBytes}); err != nil {
-		_ = stream.SetWriteDeadline(time.Time{})
-		return err
-	}
-	_ = stream.SetWriteDeadline(time.Time{})
-	_ = stream.SetReadDeadline(time.Now().Add(linkPortForwardResponseReadTimeout))
-	var response linkTunnelOpenResponse
-	if err := json.NewDecoder(stream).Decode(&response); err != nil {
-		_ = stream.SetReadDeadline(time.Time{})
-		return err
-	}
-	_ = stream.SetReadDeadline(time.Time{})
-	if !response.OK {
-		return errors.New(firstNonEmptyString(strings.TrimSpace(response.Error), "ping-pong open failed"))
-	}
-	return nil
 }
 
 func openLinkRelayConn(endpoint linkEndpoint, protocol string, openTimeout time.Duration) (net.Conn, error) {

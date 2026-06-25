@@ -644,14 +644,18 @@ func serveProbeLocalTUNPingPongProbeConn(conn net.Conn) {
 }
 
 func serveProbeLocalTUNPingPongProbeStream(stream net.Conn) {
-	var req probeChainTunnelOpenRequest
-	if err := json.NewDecoder(stream).Decode(&req); err != nil {
+	frameStream, ok := stream.(*probeChainFrameStream)
+	if !ok {
+		return
+	}
+	req, found := frameStream.OpenRequest()
+	if !found {
 		return
 	}
 	if req.Type != probeChainRelayModePingPong {
 		return
 	}
-	if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: true}); err != nil {
+	if err := frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true}); err != nil {
 		return
 	}
 	if req.PingBytes <= 0 {

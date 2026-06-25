@@ -591,50 +591,21 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 		if strings.TrimSpace(endpoint.ChainID) == "" {
 			return nil, cleanFlowID, errors.New("group runtime endpoint is nil")
 		}
-		stream, err := rt.openRelayStream(endpoint)
+		request := probeChainTunnelOpenRequest{
+			Type:          "open",
+			Network:       cleanNetwork,
+			Address:       strings.TrimSpace(targetAddr),
+			FlowID:        cleanFlowID,
+			Priority:      resolveProbeChainTunnelPriority(cleanNetwork, associationV2),
+			AssociationV2: associationV2,
+		}
+		stream, err := rt.openRelayStream(endpoint, request)
 		if err != nil {
 			reconnect := rt.markOpenStreamFailure(session, err, true)
 			if attempt == 0 && reconnect {
 				continue
 			}
 			return nil, cleanFlowID, err
-		}
-		request := probeChainTunnelOpenRequest{
-			Type:          "open",
-			Network:       cleanNetwork,
-			Address:       strings.TrimSpace(targetAddr),
-			FlowID:        cleanFlowID,
-			AssociationV2: associationV2,
-		}
-		_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-		if err := json.NewEncoder(stream).Encode(request); err != nil {
-			_ = stream.Close()
-			reconnect := rt.markOpenStreamFailure(session, err, true)
-			if attempt == 0 && reconnect {
-				continue
-			}
-			return nil, cleanFlowID, err
-		}
-		_ = stream.SetWriteDeadline(time.Time{})
-		_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-		var response probeChainTunnelOpenResponse
-		if err := json.NewDecoder(stream).Decode(&response); err != nil {
-			_ = stream.Close()
-			reconnect := rt.markOpenStreamFailure(session, err, true)
-			if attempt == 0 && reconnect {
-				continue
-			}
-			return nil, cleanFlowID, err
-		}
-		_ = stream.SetReadDeadline(time.Time{})
-		if !response.OK {
-			_ = stream.Close()
-			openErr := errors.New(firstNonEmpty(strings.TrimSpace(response.Error), "open stream failed"))
-			reconnect := rt.markOpenStreamFailure(session, openErr, false)
-			if attempt == 0 && reconnect {
-				continue
-			}
-			return nil, cleanFlowID, openErr
 		}
 		rt.mu.Lock()
 		rt.RuntimeStatus = "connected"
@@ -649,7 +620,7 @@ func (rt *probeLocalTUNGroupRuntime) openStream(network string, targetAddr strin
 	return nil, cleanFlowID, errors.New("group runtime stream open failed")
 }
 
-func (rt *probeLocalTUNGroupRuntime) openRelayStream(endpoint probeLocalTUNChainEndpoint) (net.Conn, error) {
+func (rt *probeLocalTUNGroupRuntime) openRelayStream(endpoint probeLocalTUNChainEndpoint, request probeChainTunnelOpenRequest) (net.Conn, error) {
 	if rt == nil {
 		return nil, errors.New("group runtime is nil")
 	}
@@ -659,7 +630,7 @@ func (rt *probeLocalTUNGroupRuntime) openRelayStream(endpoint probeLocalTUNChain
 	if session == nil || session.IsClosed() {
 		return nil, errors.New("group runtime bridge session is unavailable")
 	}
-	return session.Open()
+	return session.OpenWithRequest(request, probeChainPortForwardResponseReadDeadline)
 }
 
 func (rt *probeLocalTUNGroupRuntime) fetchRemoteTCPDebug() (probeTCPDebugResultPayload, error) {
@@ -703,7 +674,8 @@ func (rt *probeLocalTUNGroupRuntime) fetchRemotePeerStatus(requestType string, s
 		if session == nil {
 			return probePeerStatusSidePayload{}, errors.New("group runtime management session is nil")
 		}
-		stream, err := session.Open()
+		req := probeChainTunnelOpenRequest{Type: requestType, RequestID: requestID, Scope: scope, Priority: "realtime"}
+		stream, err := session.OpenWithRequest(req, probeChainPortForwardResponseReadDeadline)
 		if err != nil {
 			reconnect := session.IsClosed()
 			if !reconnect && shouldReconnectProbeLocalTUNGroupRuntimeOpenError(err) {
@@ -725,14 +697,6 @@ func (rt *probeLocalTUNGroupRuntime) fetchRemotePeerStatus(requestType string, s
 			return probePeerStatusSidePayload{}, err
 		}
 		_ = stream.SetDeadline(time.Now().Add(probeLocalTUNGroupRuntimeControlTimeout))
-		req := probeChainTunnelOpenRequest{Type: "peer_status_get", RequestID: requestID, Scope: scope}
-		if err := json.NewEncoder(stream).Encode(req); err != nil {
-			_ = stream.Close()
-			if attempt == 0 && shouldReconnectProbeLocalTUNGroupRuntimeAfterIOFailure(rt, session, err) {
-				continue
-			}
-			return probePeerStatusSidePayload{}, err
-		}
 		var payload probePeerStatusSidePayload
 		if err := json.NewDecoder(stream).Decode(&payload); err != nil {
 			_ = stream.Close()

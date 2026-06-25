@@ -96,3 +96,34 @@ func TestProbeChainFrameSessionPingPongStats(t *testing.T) {
 	}
 	t.Fatalf("ping-pong stats not updated: client=%+v server=%+v", clientSession.PingStats(), serverSession.PingStats())
 }
+
+func TestProbeChainFrameStreamAdaptiveChunkDoesNotWaitForFullFrame(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	clientSession, err := newProbeChainFrameClient(clientConn)
+	if err != nil {
+		t.Fatalf("client frame session: %v", err)
+	}
+	defer clientSession.Close()
+	serverSession, err := newProbeChainFrameServer(serverConn)
+	if err != nil {
+		t.Fatalf("server frame session: %v", err)
+	}
+	defer serverSession.Close()
+
+	stream := newProbeChainFrameStream(clientSession, 1)
+	stream.setOpenRequest(probeChainTunnelOpenRequest{Type: "open", Priority: "realtime"})
+	if got := stream.frameDataChunkBytes(17); got != 17 {
+		t.Fatalf("small realtime write chunk=%d, want exact available bytes", got)
+	}
+	if got := stream.frameDataChunkBytes(8 * 1024); got != probeChainFrameRealtimeDataBytes {
+		t.Fatalf("realtime chunk=%d, want %d", got, probeChainFrameRealtimeDataBytes)
+	}
+
+	stream.setOpenRequest(probeChainTunnelOpenRequest{Type: "open", Priority: "bulk"})
+	if got := stream.frameDataChunkBytes(128 * 1024); got != probeChainFrameBulkDataBytes {
+		t.Fatalf("bulk chunk=%d, want %d", got, probeChainFrameBulkDataBytes)
+	}
+	if got := stream.frameDataChunkBytes(1024); got != 1024 {
+		t.Fatalf("small bulk write chunk=%d, want exact available bytes", got)
+	}
+}

@@ -4409,13 +4409,9 @@ func openProbeLocalProxyLinkPingPongStream(conn net.Conn, payloadBytes int64) (n
 	if err != nil {
 		return nil, err
 	}
-	stream, err := session.Open()
+	req := probeChainTunnelOpenRequest{Type: probeChainRelayModePingPong, PingBytes: payloadBytes, Priority: "realtime"}
+	stream, err := session.OpenWithRequest(req, probeChainPortForwardResponseReadDeadline)
 	if err != nil {
-		_ = session.Close()
-		return nil, err
-	}
-	if err := writeProbeLocalProxyLinkPingPongRequest(stream, payloadBytes); err != nil {
-		_ = stream.Close()
 		_ = session.Close()
 		return nil, err
 	}
@@ -4438,26 +4434,6 @@ func (c *probeLocalProxyLinkPingPongStreamConn) Close() error {
 		}
 	}
 	return firstErr
-}
-
-func writeProbeLocalProxyLinkPingPongRequest(stream net.Conn, payloadBytes int64) error {
-	_ = stream.SetWriteDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-	if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenRequest{Type: probeChainRelayModePingPong, PingBytes: payloadBytes}); err != nil {
-		_ = stream.SetWriteDeadline(time.Time{})
-		return err
-	}
-	_ = stream.SetWriteDeadline(time.Time{})
-	_ = stream.SetReadDeadline(time.Now().Add(probeChainPortForwardResponseReadDeadline))
-	var response probeChainTunnelOpenResponse
-	if err := json.NewDecoder(stream).Decode(&response); err != nil {
-		_ = stream.SetReadDeadline(time.Time{})
-		return err
-	}
-	_ = stream.SetReadDeadline(time.Time{})
-	if !response.OK {
-		return errors.New(firstNonEmpty(strings.TrimSpace(response.Error), "ping-pong open failed"))
-	}
-	return nil
 }
 
 func probeLocalProxyLinkReachabilityProtocols() []string {

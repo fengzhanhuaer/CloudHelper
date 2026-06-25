@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -42,16 +41,21 @@ func testProbeLocalTUNGroupRuntimeOpenStreamUsesBridgeSession(t *testing.T, link
 		}
 		defer stream.Close()
 
-		var req probeChainTunnelOpenRequest
-		if err := json.NewDecoder(stream).Decode(&req); err != nil {
-			serverErr <- err
+		frameStream, ok := stream.(*probeChainFrameStream)
+		if !ok {
+			serverErr <- errors.New("expected frame stream")
+			return
+		}
+		req, found := frameStream.OpenRequest()
+		if !found {
+			serverErr <- errors.New("missing frame open request")
 			return
 		}
 		if req.Type != "open" || req.Network != "tcp" || req.Address != "example.com:443" || req.FlowID != "flow-a" {
 			serverErr <- errors.New("unexpected open request")
 			return
 		}
-		if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: true}); err != nil {
+		if err := frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true}); err != nil {
 			serverErr <- err
 			return
 		}
@@ -142,16 +146,21 @@ func TestProbeLocalTUNGroupRuntimeFetchRemotePeerStatusRejectsOpenResponse(t *te
 			return
 		}
 		defer stream.Close()
-		var req probeChainTunnelOpenRequest
-		if err := json.NewDecoder(stream).Decode(&req); err != nil {
-			serverErr <- err
+		frameStream, ok := stream.(*probeChainFrameStream)
+		if !ok {
+			serverErr <- errors.New("expected frame stream")
+			return
+		}
+		req, found := frameStream.OpenRequest()
+		if !found {
+			serverErr <- errors.New("missing frame open request")
 			return
 		}
 		if req.Type != "peer_status_get" {
 			serverErr <- errors.New("unexpected peer status request")
 			return
 		}
-		if err := json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: false, Error: "missing address"}); err != nil {
+		if err := frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: false, Error: "missing address"}); err != nil {
 			serverErr <- err
 			return
 		}
@@ -294,11 +303,14 @@ func serveProbeLocalTUNGroupRuntimeRetryOpenOK(conn net.Conn, done <-chan struct
 		return
 	}
 	defer stream.Close()
-	var req probeChainTunnelOpenRequest
-	if err := json.NewDecoder(stream).Decode(&req); err != nil {
+	frameStream, ok := stream.(*probeChainFrameStream)
+	if !ok {
 		return
 	}
-	_ = json.NewEncoder(stream).Encode(probeChainTunnelOpenResponse{OK: true})
+	if _, found := frameStream.OpenRequest(); !found {
+		return
+	}
+	_ = frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true})
 	<-done
 }
 
@@ -313,6 +325,9 @@ func serveProbeLocalTUNGroupRuntimeOpenCloseBeforeResponse(session *probeChainFr
 		return
 	}
 	defer stream.Close()
-	var req probeChainTunnelOpenRequest
-	_ = json.NewDecoder(stream).Decode(&req)
+	frameStream, ok := stream.(*probeChainFrameStream)
+	if !ok {
+		return
+	}
+	_, _ = frameStream.OpenRequest()
 }
