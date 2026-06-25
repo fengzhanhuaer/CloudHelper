@@ -826,6 +826,8 @@
         item && item.session_id,
         item && item.status,
         item && item.peer_status,
+        item && item.peer_group,
+        item && item.peer_side,
         item && item.protocol,
         item && item.transport,
         item && item.updated_at,
@@ -838,6 +840,16 @@
     function filteredDiagnosticCount(items) {
       const q = normalizeDiagnosticText(proxyDiagKeywordEl && proxyDiagKeywordEl.value || '');
       return Array.isArray(items) ? items.filter((item) => matchesDiagnosticItem(item, q)).length : 0;
+    }
+
+    function hasDiagnosticFilters() {
+      return !!(
+        normalizeDiagnosticText(proxyDiagKeywordEl && proxyDiagKeywordEl.value || '') ||
+        normalizeDiagnosticText(proxyDiagNodeEl && proxyDiagNodeEl.value || '') ||
+        normalizeDiagnosticText(proxyDiagTargetEl && proxyDiagTargetEl.value || '') ||
+        normalizeDiagnosticText(proxyDiagErrorEl && proxyDiagErrorEl.value || '') ||
+        normalizeDiagnosticText(proxyDiagBusinessTypeEl && proxyDiagBusinessTypeEl.value || '')
+      );
     }
 
     function syncDiagnosticBusinessTypeOptions() {
@@ -1020,6 +1032,132 @@
       };
     }
 
+    function decoratePeerDiagnosticItem(item, group, sideName, sourceKind, payload) {
+      const out = Object.assign({}, item || {});
+      out.source_kind = sourceKind || out.source_kind || 'peer_status';
+      out.peer_group = String(group || '').trim();
+      out.peer_side = String(sideName || '').trim();
+      out.node_id = out.node_id || diagnosticValue(payload, ['node_id']);
+      out.hop_id = out.hop_id || out.peer_group;
+      out.side = out.side || out.peer_side;
+      out.scope = out.scope || diagnosticValue(payload, ['scope']);
+      out.peer_status = out.peer_status || (payload && payload.ok === false ? 'error' : (payload && payload.ok ? 'ok' : 'unknown'));
+      out.status = out.status || out.peer_status;
+      out.abnormal_reason = out.abnormal_reason || diagnosticValue(payload, ['error']);
+      out.updated_at = out.updated_at || diagnosticValue(payload, ['fetched_at', 'timestamp']);
+      return out;
+    }
+
+    function diagnosticItemFromPeerStatusSide(group, sideName, payload, groupError) {
+      const protocolState = payload && payload.protocol_state && typeof payload.protocol_state === 'object' ? payload.protocol_state : {};
+      const tcp = payload && payload.tcp && typeof payload.tcp === 'object' ? payload.tcp : {};
+      const substreams = payload && payload.substreams && typeof payload.substreams === 'object' ? payload.substreams : {};
+      const error = String(groupError || diagnosticValue(payload, ['error']) || '').trim();
+      const ok = payload && payload.ok === true && !error;
+      return {
+        source_kind: 'peer_status',
+        flow_id: String(group || '').trim(),
+        node_id: diagnosticValue(payload, ['node_id']),
+        business_type: 'peer_status',
+        hop_id: String(group || '').trim(),
+        target: diagnosticValue(protocolState, ['endpoint']),
+        route_target: diagnosticValue(protocolState, ['selected_protocol']),
+        error,
+        abnormal_reason: error,
+        status: ok ? 'ok' : (error ? 'error' : 'unknown'),
+        peer_status: ok ? 'ok' : (error ? 'error' : 'unknown'),
+        protocol: diagnosticValue(protocolState, ['selected_protocol']),
+        side: String(sideName || '').trim(),
+        scope: diagnosticValue(payload, ['scope']),
+        peer_group: String(group || '').trim(),
+        peer_side: String(sideName || '').trim(),
+        session_streams_open: diagnosticValue(substreams, ['active_count']),
+        session_streams_after: diagnosticValue(substreams, ['completed_count']),
+        session_streams_current: diagnosticValue(tcp, ['active_count']),
+        updated_at: diagnosticValue(payload, ['fetched_at', 'timestamp']),
+      };
+    }
+
+    function diagnosticItemFromPeerFailure(item, group, sideName, payload) {
+      const out = {
+        source_kind: 'peer_connection',
+        flow_id: diagnosticValue(item, ['flow_id']),
+        node_id: diagnosticValue(item, ['node_id']) || diagnosticValue(payload, ['node_id']),
+        business_type: diagnosticValue(item, ['kind', 'scope', 'transport']) || 'tcp_failure',
+        hop_id: diagnosticValue(item, ['group']) || String(group || '').trim(),
+        target: diagnosticValue(item, ['target']),
+        route_target: diagnosticValue(item, ['route_target']),
+        error: diagnosticValue(item, ['error', 'reason', 'kind']),
+        abnormal_reason: diagnosticValue(item, ['error', 'reason', 'kind']),
+        domain: diagnosticValue(item, ['domain']),
+        status: 'failed',
+        peer_status: 'failed',
+        transport: diagnosticValue(item, ['transport']),
+        side: diagnosticValue(item, ['side']) || String(sideName || '').trim(),
+        scope: diagnosticValue(item, ['scope']) || diagnosticValue(payload, ['scope']),
+        updated_at: diagnosticValue(item, ['last_seen']) || diagnosticValue(payload, ['fetched_at', 'timestamp']),
+      };
+      return decoratePeerDiagnosticItem(out, group, sideName, 'peer_connection', payload);
+    }
+
+    function peerStatusPayloadFingerprint(payload) {
+      if (!payload || typeof payload !== 'object') return '';
+      return [
+        diagnosticValue(payload, ['node_id']),
+        diagnosticValue(payload, ['scope']),
+        diagnosticValue(payload, ['fetched_at', 'timestamp']),
+        diagnosticValue(payload, ['error']),
+        diagnosticValue(payload && payload.tcp, ['active_count']),
+        diagnosticValue(payload && payload.tcp, ['completed_count']),
+        diagnosticValue(payload && payload.tcp, ['failure_count']),
+        diagnosticValue(payload && payload.substreams, ['active_count']),
+        diagnosticValue(payload && payload.substreams, ['completed_count']),
+        diagnosticValue(payload && payload.substreams, ['failure_count']),
+      ].map((value) => String(value || '').trim()).join('|');
+    }
+
+    function getPeerDiagnosticItemsFromMonitor(monitor) {
+      const peerStatus = monitor && monitor.peer_status && typeof monitor.peer_status === 'object' ? monitor.peer_status : {};
+      const groups = Array.isArray(peerStatus.groups) ? peerStatus.groups : [];
+      const out = [];
+      groups.forEach((groupItem) => {
+        const group = String(groupItem && groupItem.group || '').trim();
+        const groupError = String(groupItem && groupItem.error || '').trim();
+        const seenSides = new Set();
+        ['entry', 'exit'].forEach((sideName) => {
+          const payload = groupItem && groupItem[sideName] && typeof groupItem[sideName] === 'object' ? groupItem[sideName] : null;
+          if (!payload && !groupError) return;
+          const scope = String(payload && payload.scope || '').trim();
+          const displaySide = scope === 'chain_exit' ? 'exit' : sideName;
+          const fingerprint = displaySide + '|' + peerStatusPayloadFingerprint(payload) + '|' + groupError;
+          if (seenSides.has(fingerprint)) return;
+          seenSides.add(fingerprint);
+          out.push(diagnosticItemFromPeerStatusSide(group, displaySide, payload || {}, groupError));
+          const tcp = payload && payload.tcp && typeof payload.tcp === 'object' ? payload.tcp : {};
+          const substreams = payload && payload.substreams && typeof payload.substreams === 'object' ? payload.substreams : {};
+          (Array.isArray(tcp.active) ? tcp.active : []).forEach((item) => {
+            out.push(decoratePeerDiagnosticItem(diagnosticItemFromConnection(item), group, displaySide, 'peer_connection', payload));
+          });
+          (Array.isArray(tcp.completed) ? tcp.completed : []).forEach((item) => {
+            out.push(decoratePeerDiagnosticItem(diagnosticItemFromConnection(item), group, displaySide, 'peer_connection', payload));
+          });
+          (Array.isArray(tcp.failures) ? tcp.failures : []).forEach((item) => {
+            out.push(diagnosticItemFromPeerFailure(item, group, displaySide, payload));
+          });
+          (Array.isArray(substreams.active) ? substreams.active : []).forEach((item) => {
+            out.push(decoratePeerDiagnosticItem(diagnosticItemFromSubstream(item), group, displaySide, 'peer_substream', payload));
+          });
+          (Array.isArray(substreams.completed) ? substreams.completed : []).forEach((item) => {
+            out.push(decoratePeerDiagnosticItem(diagnosticItemFromSubstream(item), group, displaySide, 'peer_substream', payload));
+          });
+          (Array.isArray(substreams.failures) ? substreams.failures : []).forEach((item) => {
+            out.push(diagnosticItemFromPeerFailure(item, group, displaySide, payload));
+          });
+        });
+      });
+      return out;
+    }
+
     function diagnosticItemFromLog(entry) {
       const fields = parseDiagnosticLogFields(entry);
       const line = String(entry && entry.line || entry && entry.message || '').trim();
@@ -1117,6 +1255,28 @@
         value === 'failed' || value === 'failure' || value === 'error' || value === 'timeout';
     }
 
+    function isDiagnosticLogSignal(item) {
+      if (String(item && item.source_kind || '') !== 'log') return true;
+      const level = normalizeDiagnosticText(item && item.level);
+      const line = normalizeDiagnosticText((item && item.line) || (item && item.message));
+      if (level && level !== 'normal' && level !== 'info') return true;
+      if (item && (item.flow_id || item.stream_id || item.conn_id || item.target || item.node_id || item.error || item.abnormal_reason || item.status_code)) return true;
+      return /error|failed|failure|timeout|refused|reset|unreachable|blocked|panic|warn/.test(line);
+    }
+
+    function diagnosticItemPriority(item) {
+      const source = String(item && item.source_kind || '').trim();
+      const abnormal = !!String(item && (item.abnormal_reason || item.error || item.reason || '') || '').trim() ||
+        isDiagnosticAbnormalStatus(item && (item.peer_status || item.status));
+      const base = source === 'connection' ? 0 :
+        source === 'peer_connection' ? 0.5 :
+        source === 'substream' ? 1 :
+        source === 'peer_substream' ? 1.5 :
+        source === 'peer_status' ? 2 :
+        source === 'link' ? 3 : 4;
+      return base + (abnormal ? -0.5 : 0);
+    }
+
     function formatDiagnosticStatusLine(item) {
       const parts = [];
       const status = String(item && (item.peer_status || item.status || '') || '').trim();
@@ -1124,10 +1284,10 @@
       const reachability = String(item && item.reachability || '').trim();
       let abnormalReason = String(item && (item.abnormal_reason || item.error || item.reason || '') || '').trim();
       if (!abnormalReason && isDiagnosticAbnormalStatus(status)) abnormalReason = status;
-      if (status) parts.push('peer_status=' + status);
-      parts.push('status_code=' + (statusCode || '-'));
+      if (status && status !== 'unknown') parts.push('peer_status=' + status);
+      if (statusCode) parts.push('status_code=' + statusCode);
       if (reachability) parts.push('reachability=' + reachability);
-      parts.push('reason=' + (abnormalReason || '-'));
+      if (abnormalReason) parts.push('reason=' + abnormalReason);
       return parts.join(' ｜ ');
     }
 
@@ -1213,8 +1373,26 @@
       if (source === 'link') return '链路';
       if (source === 'connection') return '连接';
       if (source === 'substream') return '子流';
+      if (source === 'peer_status') return '对端状态';
+      if (source === 'peer_connection') return '对端连接';
+      if (source === 'peer_substream') return '对端子流';
       if (source === 'log') return '日志';
       return '诊断';
+    }
+
+    function matchesDiagnosticBusinessType(item, businessType) {
+      const selected = normalizeDiagnosticText(businessType);
+      if (!selected) return true;
+      const actual = normalizeDiagnosticText(item && item.business_type);
+      const transport = normalizeDiagnosticText(item && item.transport);
+      const scope = normalizeDiagnosticText(item && item.scope);
+      if (actual === selected || scope === selected || transport === selected) return true;
+      if (actual && selected.startsWith(actual + '_')) return true;
+      if (scope && selected.startsWith(scope + '_')) return true;
+      if (actual && transport && `${actual}_${transport}` === selected) return true;
+      if (scope && transport && `${scope}_${transport}` === selected) return true;
+      if ((actual === 'peer_exit' || scope === 'chain_exit' || String(item && item.source_kind || '').startsWith('peer_')) && selected.startsWith('port_forward')) return true;
+      return false;
     }
 
     function renderDiagnosticCards(items) {
@@ -1225,14 +1403,16 @@
       const target = normalizeDiagnosticText(proxyDiagTargetEl && proxyDiagTargetEl.value || '');
       const error = normalizeDiagnosticText(proxyDiagErrorEl && proxyDiagErrorEl.value || '');
       const businessType = normalizeDiagnosticText(proxyDiagBusinessTypeEl && proxyDiagBusinessTypeEl.value || '');
+      const filterActive = hasDiagnosticFilters();
       const filtered = rows.filter((item) => {
         if (!matchesDiagnosticItem(item, q)) return false;
         if (node && !normalizeDiagnosticText(item && item.node_id).includes(node)) return false;
         if (target && !(normalizeDiagnosticText(item && item.target).includes(target) || normalizeDiagnosticText(item && item.route_target).includes(target) || normalizeDiagnosticText(item && item.domain).includes(target))) return false;
         if (error && !(normalizeDiagnosticText(item && item.error).includes(error) || normalizeDiagnosticText(item && item.abnormal_reason).includes(error) || normalizeDiagnosticText(item && item.reason).includes(error) || normalizeDiagnosticText(item && item.code).includes(error))) return false;
-        if (businessType && normalizeDiagnosticText(item && item.business_type) !== businessType) return false;
+        if (!matchesDiagnosticBusinessType(item, businessType)) return false;
+        if (!filterActive && !isDiagnosticLogSignal(item)) return false;
         return true;
-      });
+      }).sort((a, b) => diagnosticItemPriority(a) - diagnosticItemPriority(b));
       if (filtered.length === 0) {
         proxyDiagResultsEl.innerHTML = '<div class="hint">暂无匹配结果</div>';
         return;
@@ -1245,8 +1425,15 @@
         ].map((value) => String(value || '').trim()).filter(Boolean).join(' / ');
         const logTitle = String(item && (item.message || item.line) || '').trim();
         const title = identity || String(item && item.target || '').trim() || logTitle || '-';
-        const line1 = `${diagnosticSourceLabel(item)} ｜ node=${String(item && item.node_id || '-').trim()} ｜ business=${String(item && item.business_type || '-').trim()} ｜ hop=${String(item && item.hop_id || '-').trim()}`;
-        const line2 = `target=${String(item && item.target || '-').trim()} ｜ route=${String(item && item.route_target || '-').trim()} ｜ ${formatDiagnosticStatusLine(item)}`;
+        const peerText = item && (item.peer_group || item.peer_side) ? ` ｜ peer=${String(item && item.peer_group || '-').trim()}/${String(item && item.peer_side || '-').trim()}` : '';
+        const line1 = `${diagnosticSourceLabel(item)}${peerText} ｜ node=${String(item && item.node_id || '-').trim()} ｜ business=${String(item && item.business_type || '-').trim()} ｜ hop=${String(item && item.hop_id || '-').trim()}`;
+        const statusText = formatDiagnosticStatusLine(item);
+        const line2Parts = [
+          `target=${String(item && item.target || '-').trim()}`,
+          `route=${String(item && item.route_target || '-').trim()}`,
+          statusText,
+        ].filter(Boolean);
+        const line2 = line2Parts.join(' ｜ ');
         const extraStatus = formatDiagnosticExtraStatusLine(item);
         const statusLine = extraStatus ? `<div class="diagnostic-card-line">${escapeHTML(extraStatus)}</div>` : '';
         const ioStatus = formatDiagnosticIOLine(item);
@@ -1266,6 +1453,7 @@
       const monitor = snapshot.monitor && typeof snapshot.monitor === 'object' ? snapshot.monitor : {};
       const connectionItems = getProxyConnectionItemsFromMonitor(monitor);
       const substreamItems = getProxySubstreamItemsFromMonitor(monitor);
+      const peerItems = getPeerDiagnosticItemsFromMonitor(monitor);
       if (proxyDiagLogsEl) {
         proxyDiagLogsEl.textContent = proxyDiagLogEntriesCache.length
           ? proxyDiagLogEntriesCache.map((entry) => String(entry && entry.line || '').trim()).filter(Boolean).join('\n')
@@ -1275,11 +1463,12 @@
         .concat((Array.isArray(snapshot.link_status) ? snapshot.link_status : []).map(diagnosticItemFromLink))
         .concat(connectionItems.map(diagnosticItemFromConnection))
         .concat(substreamItems.map(diagnosticItemFromSubstream))
+        .concat(peerItems)
         .concat(proxyDiagLogEntriesCache.map(diagnosticItemFromLog));
       renderDiagnosticCards(combined);
       if (proxyDiagSummaryEl) {
         const status = snapshot.status && typeof snapshot.status === 'object' ? snapshot.status : {};
-        proxyDiagSummaryEl.textContent = `状态 ${String(status.mode || '-')}/` + `${status.enabled ? 'on' : 'off'} ｜ 链路 ${Array.isArray(snapshot.link_status) ? snapshot.link_status.length : 0} ｜ 连接 ${connectionItems.length} ｜ 子流 ${substreamItems.length} ｜ 日志 ${proxyDiagLogEntriesCache.length} ｜ 命中 ${filteredDiagnosticCount(combined)} ｜ 监视 ${String(monitor.fetched_at || '-')}`;
+        proxyDiagSummaryEl.textContent = `状态 ${String(status.mode || '-')}/` + `${status.enabled ? 'on' : 'off'} ｜ 链路 ${Array.isArray(snapshot.link_status) ? snapshot.link_status.length : 0} ｜ 连接 ${connectionItems.length} ｜ 子流 ${substreamItems.length} ｜ 对端 ${peerItems.length} ｜ 日志 ${proxyDiagLogEntriesCache.length} ｜ 命中 ${filteredDiagnosticCount(combined)} ｜ 监视 ${String(monitor.fetched_at || '-')}`;
       }
       return data;
     }
