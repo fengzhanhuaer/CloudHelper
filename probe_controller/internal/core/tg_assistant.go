@@ -269,6 +269,29 @@ type tgAssistantScheduleSendNowResult struct {
 	TGMessage string `json:"tg_message,omitempty"`
 }
 
+type tgAssistantSessionMessagesRequest struct {
+	AccountID string `json:"account_id"`
+	Target    string `json:"target"`
+	Limit     int    `json:"limit"`
+	OffsetID  int    `json:"offset_id"`
+}
+
+type tgAssistantSessionSendRequest struct {
+	AccountID string `json:"account_id"`
+	Target    string `json:"target"`
+	Message   string `json:"message"`
+}
+
+type tgAssistantSessionMessage struct {
+	ID         int    `json:"id"`
+	Date       string `json:"date"`
+	Text       string `json:"text"`
+	Out        bool   `json:"out"`
+	SenderID   string `json:"sender_id,omitempty"`
+	SenderName string `json:"sender_name,omitempty"`
+	Service    bool   `json:"service,omitempty"`
+}
+
 func initTGAssistantStore() {
 	tempDir := tgAssistantTempDirPath()
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
@@ -1067,6 +1090,131 @@ func sendNowTGAssistantSchedule(req tgAssistantScheduleSendNowRequest) (tgAssist
 	return executeTGAssistantScheduleSendTask(context.Background(), accountID, taskID, "schedule.send_now", 0)
 }
 
+func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tgAssistantSessionMessage, error) {
+	accountID := strings.TrimSpace(req.AccountID)
+	target := strings.TrimSpace(req.Target)
+	if accountID == "" {
+		return nil, errors.New("account_id is required")
+	}
+	if target == "" {
+		return nil, errors.New("target is required")
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 40
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	apiID, apiHash, account, err := loadTGAssistantClientConfig(accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	messages := []tgAssistantSessionMessage{}
+	err = runTGAssistantClient(apiID, apiHash, account, func(ctx context.Context, client *telegram.Client) error {
+		status, err := client.Auth().Status(ctx)
+		if err != nil {
+			return err
+		}
+		if !status.Authorized {
+			return errors.New("account is not authorized")
+		}
+
+		peer, err := resolveTGAssistantInputPeer(ctx, client, target)
+		if err != nil {
+			return err
+		}
+		resp, err := client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+			Peer:       peer,
+			OffsetID:   req.OffsetID,
+			OffsetDate: 0,
+			AddOffset:  0,
+			Limit:      limit,
+			MaxID:      0,
+			MinID:      0,
+			Hash:       0,
+		})
+		if err != nil {
+			return err
+		}
+		messages = buildTGAssistantSessionMessageViews(resp, account)
+		return nil
+	})
+	if err != nil {
+		appendTGAssistantHistory("session.messages", accountID, false, err.Error())
+		return nil, err
+	}
+	appendTGAssistantHistory("session.messages", accountID, true, fmt.Sprintf("target=%s count=%d", target, len(messages)))
+	return messages, nil
+}
+
+func sendTGAssistantSessionMessage(req tgAssistantSessionSendRequest) (tgAssistantSessionMessage, error) {
+	accountID := strings.TrimSpace(req.AccountID)
+	target := strings.TrimSpace(req.Target)
+	message := strings.TrimSpace(req.Message)
+	if accountID == "" {
+		return tgAssistantSessionMessage{}, errors.New("account_id is required")
+	}
+	if target == "" {
+		return tgAssistantSessionMessage{}, errors.New("target is required")
+	}
+	if message == "" {
+		return tgAssistantSessionMessage{}, errors.New("message is required")
+	}
+	if len([]rune(message)) > 4000 {
+		return tgAssistantSessionMessage{}, errors.New("message is too long")
+	}
+
+	apiID, apiHash, account, err := loadTGAssistantClientConfig(accountID)
+	if err != nil {
+		return tgAssistantSessionMessage{}, err
+	}
+
+	now := time.Now()
+	result := tgAssistantSessionMessage{
+		Date:       now.UTC().Format(time.RFC3339),
+		Text:       message,
+		Out:        true,
+		SenderID:   fmt.Sprintf("user:%d", account.SelfUserID),
+		SenderName: firstNonEmptyString(account.SelfDisplayName, account.SelfUsername, account.Label, account.Phone),
+	}
+	err = runTGAssistantClient(apiID, apiHash, account, func(ctx context.Context, client *telegram.Client) error {
+		status, err := client.Auth().Status(ctx)
+		if err != nil {
+			return err
+		}
+		if !status.Authorized {
+			return errors.New("account is not authorized")
+		}
+
+		peer, err := resolveTGAssistantInputPeer(ctx, client, target)
+		if err != nil {
+			return err
+		}
+		updates, err := client.API().MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+			Peer:     peer,
+			Message:  message,
+			RandomID: newTGAssistantMessageRandomID(),
+		})
+		if err != nil {
+			return err
+		}
+		result.ID = extractTGAssistantSentMessageID(updates)
+		if echoed := summarizeTGAssistantSendUpdates(updates); strings.TrimSpace(echoed) != "" {
+			result.Text = echoed
+		}
+		return nil
+	})
+	if err != nil {
+		appendTGAssistantHistory("session.send", accountID, false, fmt.Sprintf("target=%s err=%s", target, err.Error()))
+		return tgAssistantSessionMessage{}, err
+	}
+	appendTGAssistantHistory("session.send", accountID, true, fmt.Sprintf("target=%s message_id=%d", target, result.ID))
+	return result, nil
+}
+
 func listTGAssistantScheduleTaskHistory(req tgAssistantScheduleHistoryRequest) ([]tgAssistantTaskHistoryRecord, error) {
 	if TGAssistantStore == nil {
 		return nil, errors.New("tg assistant datastore is not initialized")
@@ -1230,6 +1378,236 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 	appendTGAssistantHistory(action, normalizedAccountID, true, historyMsg)
 	appendTGAssistantTaskHistory(action, normalizedAccountID, normalizedTaskID, true, historyMsg)
 	return result, nil
+}
+
+func loadTGAssistantClientConfig(accountID string) (int, string, tgAssistantAccountRecord, error) {
+	if TGAssistantStore == nil {
+		return 0, "", tgAssistantAccountRecord{}, errors.New("tg assistant datastore is not initialized")
+	}
+	normalizedAccountID := strings.TrimSpace(accountID)
+	if normalizedAccountID == "" {
+		return 0, "", tgAssistantAccountRecord{}, errors.New("account_id is required")
+	}
+
+	TGAssistantStore.mu.RLock()
+	records := loadTGAssistantAccountsLocked()
+	apiID, apiHash := loadTGAssistantAPIKeyLocked()
+	index := indexTGAssistantAccountByID(records, normalizedAccountID)
+	if index < 0 {
+		TGAssistantStore.mu.RUnlock()
+		return 0, "", tgAssistantAccountRecord{}, errors.New("account not found")
+	}
+	account := records[index]
+	TGAssistantStore.mu.RUnlock()
+
+	if !isTGAssistantAPIKeyConfigured(apiID, apiHash) {
+		return 0, "", tgAssistantAccountRecord{}, errors.New("shared tg api key is not configured")
+	}
+	if !account.Authorized {
+		return 0, "", tgAssistantAccountRecord{}, errors.New("account is not authorized")
+	}
+	return apiID, apiHash, account, nil
+}
+
+type tgAssistantPeerInfo struct {
+	ID       string
+	Name     string
+	Username string
+	Type     string
+}
+
+func buildTGAssistantSessionMessageViews(resp tg.MessagesMessagesClass, account tgAssistantAccountRecord) []tgAssistantSessionMessage {
+	users, chats := extractTGAssistantUsersChatsFromHistory(resp)
+	peerInfo := buildTGAssistantPeerInfoMap(users, chats)
+	selfInfo := tgAssistantPeerInfo{
+		ID:       fmt.Sprintf("user:%d", account.SelfUserID),
+		Name:     firstNonEmptyString(account.SelfDisplayName, account.SelfUsername, account.Label, account.Phone, "我"),
+		Username: strings.TrimSpace(account.SelfUsername),
+		Type:     "user",
+	}
+
+	views := make([]tgAssistantSessionMessage, 0, len(extractTGAssistantMessagesFromHistory(resp)))
+	for _, raw := range extractTGAssistantMessagesFromHistory(resp) {
+		switch msg := raw.(type) {
+		case *tg.Message:
+			if msg == nil {
+				continue
+			}
+			sender := selfInfo
+			if !msg.Out {
+				if from, ok := msg.GetFromID(); ok {
+					sender = lookupTGAssistantPeerInfo(peerInfo, from)
+				} else {
+					sender = lookupTGAssistantPeerInfo(peerInfo, msg.GetPeerID())
+				}
+			}
+			text := summarizeTGAssistantSessionText(msg)
+			if strings.TrimSpace(text) == "" {
+				text = "[空消息]"
+			}
+			views = append(views, tgAssistantSessionMessage{
+				ID:         msg.ID,
+				Date:       formatTGAssistantUnixTime(msg.Date),
+				Text:       text,
+				Out:        msg.Out,
+				SenderID:   sender.ID,
+				SenderName: sender.Name,
+			})
+		case *tg.MessageService:
+			if msg == nil {
+				continue
+			}
+			sender := selfInfo
+			if !msg.Out {
+				if from, ok := msg.GetFromID(); ok {
+					sender = lookupTGAssistantPeerInfo(peerInfo, from)
+				} else {
+					sender = lookupTGAssistantPeerInfo(peerInfo, msg.GetPeerID())
+				}
+			}
+			views = append(views, tgAssistantSessionMessage{
+				ID:         msg.ID,
+				Date:       formatTGAssistantUnixTime(msg.Date),
+				Text:       summarizeTGAssistantServiceMessage(msg),
+				Out:        msg.Out,
+				SenderID:   sender.ID,
+				SenderName: sender.Name,
+				Service:    true,
+			})
+		}
+	}
+
+	sort.SliceStable(views, func(i, j int) bool {
+		if views[i].ID == views[j].ID {
+			return views[i].Date < views[j].Date
+		}
+		return views[i].ID < views[j].ID
+	})
+	return views
+}
+
+func extractTGAssistantUsersChatsFromHistory(resp tg.MessagesMessagesClass) ([]tg.UserClass, []tg.ChatClass) {
+	switch value := resp.(type) {
+	case *tg.MessagesMessages:
+		return value.Users, value.Chats
+	case *tg.MessagesMessagesSlice:
+		return value.Users, value.Chats
+	case *tg.MessagesChannelMessages:
+		return value.Users, value.Chats
+	default:
+		return nil, nil
+	}
+}
+
+func buildTGAssistantPeerInfoMap(users []tg.UserClass, chats []tg.ChatClass) map[string]tgAssistantPeerInfo {
+	result := map[string]tgAssistantPeerInfo{}
+	for _, raw := range users {
+		switch item := raw.(type) {
+		case *tg.User:
+			name := strings.TrimSpace(strings.TrimSpace(item.FirstName) + " " + strings.TrimSpace(item.LastName))
+			name = firstNonEmptyString(name, item.Username, normalizeTGPhone(item.Phone), fmt.Sprintf("User %d", item.ID))
+			result[fmt.Sprintf("user:%d", item.ID)] = tgAssistantPeerInfo{
+				ID:       fmt.Sprintf("user:%d", item.ID),
+				Name:     name,
+				Username: strings.TrimSpace(item.Username),
+				Type:     "user",
+			}
+		case *tg.UserEmpty:
+			result[fmt.Sprintf("user:%d", item.ID)] = tgAssistantPeerInfo{
+				ID:   fmt.Sprintf("user:%d", item.ID),
+				Name: fmt.Sprintf("User %d", item.ID),
+				Type: "user",
+			}
+		}
+	}
+	for _, raw := range chats {
+		switch item := raw.(type) {
+		case *tg.Chat:
+			result[fmt.Sprintf("chat:%d", item.ID)] = tgAssistantPeerInfo{ID: fmt.Sprintf("chat:%d", item.ID), Name: firstNonEmptyString(item.Title, fmt.Sprintf("Chat %d", item.ID)), Type: "chat"}
+		case *tg.ChatForbidden:
+			result[fmt.Sprintf("chat:%d", item.ID)] = tgAssistantPeerInfo{ID: fmt.Sprintf("chat:%d", item.ID), Name: firstNonEmptyString(item.Title, fmt.Sprintf("Chat %d", item.ID)), Type: "chat"}
+		case *tg.Channel:
+			result[fmt.Sprintf("channel:%d", item.ID)] = tgAssistantPeerInfo{ID: fmt.Sprintf("channel:%d", item.ID), Name: firstNonEmptyString(item.Title, fmt.Sprintf("Channel %d", item.ID)), Username: strings.TrimSpace(item.Username), Type: "channel"}
+		case *tg.ChannelForbidden:
+			result[fmt.Sprintf("channel:%d", item.ID)] = tgAssistantPeerInfo{ID: fmt.Sprintf("channel:%d", item.ID), Name: firstNonEmptyString(item.Title, fmt.Sprintf("Channel %d", item.ID)), Type: "channel"}
+		}
+	}
+	return result
+}
+
+func lookupTGAssistantPeerInfo(peers map[string]tgAssistantPeerInfo, peer tg.PeerClass) tgAssistantPeerInfo {
+	key := formatTGAssistantPeerID(peer)
+	if key != "" {
+		if info, ok := peers[key]; ok {
+			return info
+		}
+	}
+	return tgAssistantPeerInfo{ID: key, Name: firstNonEmptyString(key, "未知发送者")}
+}
+
+func formatTGAssistantPeerID(peer tg.PeerClass) string {
+	switch value := peer.(type) {
+	case *tg.PeerUser:
+		return fmt.Sprintf("user:%d", value.UserID)
+	case *tg.PeerChat:
+		return fmt.Sprintf("chat:%d", value.ChatID)
+	case *tg.PeerChannel:
+		return fmt.Sprintf("channel:%d", value.ChannelID)
+	default:
+		return ""
+	}
+}
+
+func summarizeTGAssistantSessionText(msg *tg.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if text := strings.TrimSpace(msg.Message); text != "" {
+		return text
+	}
+	if msg.Media != nil {
+		return formatTGAssistantMediaPlaceholder(msg.Media)
+	}
+	return ""
+}
+
+func formatTGAssistantMediaPlaceholder(media tg.MessageMediaClass) string {
+	switch media.(type) {
+	case nil, *tg.MessageMediaEmpty:
+		return ""
+	case *tg.MessageMediaPhoto:
+		return "[图片]"
+	case *tg.MessageMediaDocument:
+		return "[文件/媒体]"
+	case *tg.MessageMediaContact:
+		return "[联系人]"
+	case *tg.MessageMediaGeo, *tg.MessageMediaGeoLive, *tg.MessageMediaVenue:
+		return "[位置]"
+	case *tg.MessageMediaPoll:
+		return "[投票]"
+	case *tg.MessageMediaDice:
+		return "[骰子]"
+	case *tg.MessageMediaWebPage:
+		return "[网页预览]"
+	default:
+		return "[媒体消息]"
+	}
+}
+
+func summarizeTGAssistantServiceMessage(msg *tg.MessageService) string {
+	if msg == nil {
+		return "[服务消息]"
+	}
+	return "[服务消息]"
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func waitTGAssistantSendResponseMessage(

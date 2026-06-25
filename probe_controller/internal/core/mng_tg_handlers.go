@@ -265,6 +265,46 @@ func mngTGTargetsRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngTGSessionMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req tgAssistantSessionMessagesRequest
+	if err := decodeMngJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	messages, err := listTGAssistantSessionMessages(req)
+	if err != nil {
+		writeMngTGError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"messages": messages,
+	})
+}
+
+func mngTGSessionSendHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req tgAssistantSessionSendRequest
+	if err := decodeMngJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	message, err := sendTGAssistantSessionMessage(req)
+	if err != nil {
+		writeMngTGError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": message,
+	})
+}
+
 func mngTGScheduleListHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
