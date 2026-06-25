@@ -832,6 +832,10 @@
         item && item.code,
         item && item.hop_id,
         item && item.session_id,
+        item && item.status,
+        item && item.updated_at,
+        item && item.message,
+        item && item.line,
       ].map(normalizeDiagnosticText).join(' | ');
       return haystack.includes(q);
     }
@@ -855,6 +859,116 @@
       ], String(proxyDiagBusinessTypeEl.value || ''));
     }
 
+    function diagnosticValue(item, keys) {
+      for (const key of keys) {
+        const value = item && item[key];
+        if (Array.isArray(value)) {
+          const text = value.map((part) => String(part || '').trim()).filter(Boolean).join(' -> ');
+          if (text) return text;
+          continue;
+        }
+        const text = String(value === undefined || value === null ? '' : value).trim();
+        if (text) return text;
+      }
+      return '';
+    }
+
+    function parseDiagnosticLogFields(entry) {
+      const line = String(entry && (entry.line || entry.message) || '').trim();
+      const fields = {};
+      const re = /(?:^|\s)([A-Za-z_][A-Za-z0-9_-]*)=("[^"]*"|'[^']*'|[^\s]+)/g;
+      let match;
+      while ((match = re.exec(line)) !== null) {
+        const key = String(match[1] || '').trim().toLowerCase().replace(/-/g, '_');
+        let value = String(match[2] || '').trim();
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1);
+        }
+        if (key && value && fields[key] === undefined) fields[key] = value;
+      }
+      fields.node_id = fields.node_id || fields.node || '';
+      fields.business_type = fields.business_type || fields.business || inferDiagnosticBusinessType(line);
+      fields.hop_id = fields.hop_id || fields.hop || fields.id || '';
+      fields.flow_id = fields.flow_id || fields.flow || '';
+      fields.route_target = fields.route_target || fields.route || '';
+      fields.error = fields.error || fields.err || fields.reason || fields.code || '';
+      return fields;
+    }
+
+    function inferDiagnosticBusinessType(text) {
+      const value = normalizeDiagnosticText(text);
+      if (value.includes('port forward') || value.includes('port_forward')) return 'port_forward';
+      if (value.includes('explicit proxy') || value.includes('http proxy') || value.includes('socks')) return 'explicit_proxy';
+      if (value.includes('tun ')) return 'tun';
+      if (value.includes('udp')) return 'udp';
+      if (value.includes('tcp')) return 'tcp';
+      if (value.includes('cf optimize') || value.includes('latency') || value.includes('speed')) return 'link_probe';
+      return '';
+    }
+
+    function diagnosticItemFromLink(item) {
+      return {
+        source_kind: 'link',
+        flow_id: diagnosticValue(item, ['chain_id']),
+        node_id: diagnosticValue(item, ['entry_node_id']),
+        business_type: diagnosticValue(item, ['chain_type']),
+        hop_id: diagnosticValue(item, ['client_entry_id', 'relay_chain_id']),
+        target: diagnosticValue(item, ['endpoint', 'entry_host']),
+        route_target: diagnosticValue(item, ['route']),
+        error: diagnosticValue(item, ['unavailable_error']),
+        reason: diagnosticValue(item, ['status']),
+        updated_at: diagnosticValue(item, ['updated_at']),
+      };
+    }
+
+    function diagnosticItemFromConnection(item) {
+      return {
+        source_kind: 'connection',
+        flow_id: diagnosticValue(item, ['flow_id', 'assoc_key_v2', 'id']),
+        stream_id: diagnosticValue(item, ['stream_id', 'session_id']),
+        conn_id: diagnosticValue(item, ['conn_id', 'id']),
+        node_id: diagnosticValue(item, ['node_id']),
+        business_type: diagnosticValue(item, ['business_type', 'kind', 'scope', 'transport']),
+        hop_id: diagnosticValue(item, ['hop_id', 'group']),
+        target: diagnosticValue(item, ['target']),
+        route_target: diagnosticValue(item, ['route_target']),
+        error: diagnosticValue(item, ['error', 'close_reason', 'reason', 'code']),
+        domain: diagnosticValue(item, ['domain']),
+        status: diagnosticValue(item, ['status']),
+      };
+    }
+
+    function diagnosticItemFromLog(entry) {
+      const fields = parseDiagnosticLogFields(entry);
+      const line = String(entry && entry.line || entry && entry.message || '').trim();
+      return {
+        source_kind: 'log',
+        flow_id: fields.flow_id || '',
+        stream_id: fields.stream_id || '',
+        conn_id: fields.conn_id || '',
+        node_id: fields.node_id || '',
+        business_type: fields.business_type || '',
+        target: fields.target || '',
+        route_target: fields.route_target || '',
+        hop_id: fields.hop_id || '',
+        error: fields.error || '',
+        reason: fields.reason || '',
+        code: fields.code || '',
+        level: entry && entry.level || '',
+        time: entry && entry.time || '',
+        message: entry && entry.message || '',
+        line,
+      };
+    }
+
+    function diagnosticSourceLabel(item) {
+      const source = String(item && item.source_kind || '').trim();
+      if (source === 'link') return '链路';
+      if (source === 'connection') return '连接';
+      if (source === 'log') return '日志';
+      return '诊断';
+    }
+
     function renderDiagnosticCards(items) {
       if (!proxyDiagResultsEl) return;
       const rows = Array.isArray(items) ? items : [];
@@ -876,14 +990,18 @@
         return;
       }
       proxyDiagResultsEl.innerHTML = filtered.slice(0, 12).map((item) => {
-        const title = [
+        const identity = [
           item && item.flow_id,
           item && item.stream_id,
           item && item.conn_id,
-        ].map((value) => String(value || '').trim()).filter(Boolean).join(' / ') || String(item && item.target || '-').trim();
-        const line1 = `node=${String(item && item.node_id || '-').trim()} ｜ business=${String(item && item.business_type || '-').trim()} ｜ hop=${String(item && item.hop_id || '-').trim()}`;
+        ].map((value) => String(value || '').trim()).filter(Boolean).join(' / ');
+        const logTitle = String(item && (item.message || item.line) || '').trim();
+        const title = identity || String(item && item.target || '').trim() || logTitle || '-';
+        const line1 = `${diagnosticSourceLabel(item)} ｜ node=${String(item && item.node_id || '-').trim()} ｜ business=${String(item && item.business_type || '-').trim()} ｜ hop=${String(item && item.hop_id || '-').trim()}`;
         const line2 = `target=${String(item && item.target || '-').trim()} ｜ route=${String(item && item.route_target || '-').trim()} ｜ error=${String(item && item.error || item && item.reason || item && item.code || '-').trim()}`;
-        return `<div class="diagnostic-card"><div class="diagnostic-card-title">${escapeHTML(title)}</div><div class="diagnostic-card-line">${escapeHTML(line1)}</div><div class="diagnostic-card-line">${escapeHTML(line2)}</div></div>`;
+        const detail = String(item && (item.line || item.message || item.updated_at || item.status) || '').trim();
+        const detailLine = detail && detail !== title ? `<div class="diagnostic-card-line"><span class="muted">${escapeHTML(detail)}</span></div>` : '';
+        return `<div class="diagnostic-card"><div class="diagnostic-card-title">${escapeHTML(title)}</div><div class="diagnostic-card-line">${escapeHTML(line1)}</div><div class="diagnostic-card-line">${escapeHTML(line2)}</div>${detailLine}</div>`;
       }).join('');
     }
 
@@ -893,32 +1011,21 @@
       const data = await requestJSON(path, { method: 'GET' });
       const snapshot = data && data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : {};
       proxyDiagLogEntriesCache = Array.isArray(snapshot.logs) ? snapshot.logs : [];
+      const monitor = snapshot.monitor && typeof snapshot.monitor === 'object' ? snapshot.monitor : {};
+      const connectionItems = getProxyConnectionItemsFromMonitor(monitor);
       if (proxyDiagLogsEl) {
         proxyDiagLogsEl.textContent = proxyDiagLogEntriesCache.length
           ? proxyDiagLogEntriesCache.map((entry) => String(entry && entry.line || '').trim()).filter(Boolean).join('\n')
           : '-';
       }
       const combined = []
-        .concat(Array.isArray(snapshot.link_status) ? snapshot.link_status : [])
-        .concat(getProxyConnectionItemsFromCache())
-        .concat(proxyDiagLogEntriesCache.map((entry) => ({
-          flow_id: entry && entry.flow_id || '',
-          stream_id: entry && entry.stream_id || '',
-          conn_id: entry && entry.conn_id || '',
-          node_id: entry && entry.node_id || '',
-          business_type: entry && entry.business_type || '',
-          target: entry && entry.target || '',
-          route_target: entry && entry.route_target || '',
-          hop_id: entry && entry.hop_id || '',
-          error: entry && entry.error || '',
-          reason: entry && entry.reason || '',
-          code: entry && entry.code || '',
-        })));
+        .concat((Array.isArray(snapshot.link_status) ? snapshot.link_status : []).map(diagnosticItemFromLink))
+        .concat(connectionItems.map(diagnosticItemFromConnection))
+        .concat(proxyDiagLogEntriesCache.map(diagnosticItemFromLog));
       renderDiagnosticCards(combined);
       if (proxyDiagSummaryEl) {
         const status = snapshot.status && typeof snapshot.status === 'object' ? snapshot.status : {};
-        const monitor = snapshot.monitor && typeof snapshot.monitor === 'object' ? snapshot.monitor : {};
-        proxyDiagSummaryEl.textContent = `状态 ${String(status.mode || '-')}/` + `${status.enabled ? 'on' : 'off'} ｜ 链路 ${Array.isArray(snapshot.link_status) ? snapshot.link_status.length : 0} ｜ 连接 ${Array.isArray(getProxyConnectionItemsFromCache()) ? getProxyConnectionItemsFromCache().length : 0} ｜ 日志 ${proxyDiagLogEntriesCache.length} ｜ 命中 ${filteredDiagnosticCount(combined)} ｜ 监视 ${String(monitor.fetched_at || '-')}`;
+        proxyDiagSummaryEl.textContent = `状态 ${String(status.mode || '-')}/` + `${status.enabled ? 'on' : 'off'} ｜ 链路 ${Array.isArray(snapshot.link_status) ? snapshot.link_status.length : 0} ｜ 连接 ${connectionItems.length} ｜ 日志 ${proxyDiagLogEntriesCache.length} ｜ 命中 ${filteredDiagnosticCount(combined)} ｜ 监视 ${String(monitor.fetched_at || '-')}`;
       }
       return data;
     }
@@ -1030,6 +1137,10 @@
 
     function getProxyConnectionItemsFromCache() {
       const monitor = proxyConnectionRowsEl && proxyConnectionRowsEl.__proxyMonitorCache ? proxyConnectionRowsEl.__proxyMonitorCache : null;
+      return getProxyConnectionItemsFromMonitor(monitor);
+    }
+
+    function getProxyConnectionItemsFromMonitor(monitor) {
       const tcp = monitor && monitor.tcp ? monitor.tcp : {};
       const udp = monitor && monitor.udp ? monitor.udp : {};
       const bridges = udp && udp.bridges ? udp.bridges : {};
@@ -1043,6 +1154,22 @@
 
     function renderConnectionMetric(label, value) {
       return `<div class="connection-box"><div class="connection-box-label">${escapeHTML(label)}</div><div class="connection-box-value">${escapeHTML(value || '-')}</div></div>`;
+    }
+
+    function formatConnectionTargetPath(item, target, routeTarget) {
+      const cleanTarget = String(target || '').trim() || '-';
+      const cleanRoute = String(routeTarget || '').trim();
+      const scope = String(item && item.scope || '').trim();
+      const side = String(item && item.side || '').trim();
+      if (scope === 'chain_exit' || side === 'remote') {
+        return '出口拨号 ' + cleanTarget;
+      }
+      if (scope === 'port_forward') {
+        if (cleanRoute && cleanRoute !== cleanTarget) return '监听入口 ' + cleanTarget + ' -> 出口目标 ' + cleanRoute;
+        return '监听入口 ' + cleanTarget;
+      }
+      if (!cleanRoute || cleanRoute === cleanTarget) return cleanTarget;
+      return cleanTarget + ' -> ' + cleanRoute;
     }
 
     function renderProxyTCPConnectionCard(item) {
@@ -1066,7 +1193,7 @@
           </div>
           <div class="connection-domain">${escapeHTML(domain || target)}</div>
           <div class="connection-meta">
-            ${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>
+            ${escapeHTML(formatConnectionTargetPath(item, target, routeTarget))}<br>
             scope=${escapeHTML(item && item.scope || '-')} ｜ side=${escapeHTML(item && item.side || '-')} ｜ group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ domain_source=${escapeHTML(domainSource)}
           </div>
           <div class="connection-grid">
@@ -1098,7 +1225,7 @@
             <span>${kind}</span>
           </div>
           <div class="connection-domain">${escapeHTML(target)}</div>
-          <div class="connection-meta">${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ refs=${escapeHTML(item && item.refs || '-')}</div>
+          <div class="connection-meta">${escapeHTML(formatConnectionTargetPath(item, target, routeTarget))}<br>group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ refs=${escapeHTML(item && item.refs || '-')}</div>
           <div class="connection-grid">
             ${renderConnectionMetric('上行', formatBytesText(item && item.bytes_up))}
             ${renderConnectionMetric('下行', formatBytesText(item && item.bytes_down))}
@@ -1413,7 +1540,7 @@
         const routeTarget = String(entry && entry.route_target || '-').trim();
         const up = Number(entry && entry.bytes_up || 0);
         const down = Number(entry && entry.bytes_down || 0);
-        return `${scope} ${domain || target} (${target} -> ${routeTarget}) up=${formatBytesText(up)} down=${formatBytesText(down)}`;
+        return `${scope} ${domain || target} (${formatConnectionTargetPath(entry, target, routeTarget)}) up=${formatBytesText(up)} down=${formatBytesText(down)}`;
       }).filter(Boolean) : [];
       if (tcpItems.length > 0) lines.push(`最近活跃 TCP relay:\n${tcpItems.join('\n')}`);
       const completedItems = Array.isArray(tcp.completed_items) ? tcp.completed_items.slice(0, 4).map((entry) => {
@@ -1430,7 +1557,7 @@
         const routeTarget = String(entry && entry.route_target || '-').trim();
         const up = Number(entry && entry.bytes_up || 0);
         const down = Number(entry && entry.bytes_down || 0);
-        return `${target} -> ${routeTarget} up=${formatBytesText(up)} down=${formatBytesText(down)}`;
+        return `${formatConnectionTargetPath(entry, target, routeTarget)} up=${formatBytesText(up)} down=${formatBytesText(down)}`;
       }).filter(Boolean) : [];
       if (udpItems.length > 0) lines.push(`最近活跃 UDP bridge:\n${udpItems.join('\n')}`);
       const assocItems = udpAssociations.slice(0, 4).map((entry) => {
@@ -1439,7 +1566,7 @@
         const up = Number(entry && entry.bytes_up || 0);
         const down = Number(entry && entry.bytes_down || 0);
         const maxBlock = Math.max(Number(entry && entry.max_write_block_ms_up || 0), Number(entry && entry.max_write_block_ms_down || 0));
-        return `${target} -> ${routeTarget} refs=${Math.trunc(Number(entry && entry.refs || 0))} up=${formatBytesText(up)} down=${formatBytesText(down)} max_block=${maxBlock ? Math.trunc(maxBlock) + 'ms' : '-'}`;
+        return `${formatConnectionTargetPath(entry, target, routeTarget)} refs=${Math.trunc(Number(entry && entry.refs || 0))} up=${formatBytesText(up)} down=${formatBytesText(down)} max_block=${maxBlock ? Math.trunc(maxBlock) + 'ms' : '-'}`;
       }).filter(Boolean);
       if (assocItems.length > 0) lines.push(`最近活跃 UDP association:\n${assocItems.join('\n')}`);
       return lines.join('\n');

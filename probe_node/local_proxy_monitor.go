@@ -88,22 +88,23 @@ type probeLocalProxyMonitorSnapshot struct {
 	UDPAssociations int                                   `json:"udp_associations"`
 	TCP             probeLocalProxyMonitorTCPSnapshot     `json:"tcp"`
 	UDP             probeLocalProxyMonitorUDPSnapshot     `json:"udp"`
+	Substreams      probeSubstreamMonitorPayload          `json:"substreams,omitempty"`
 	ChainRuntimes   int                                   `json:"chain_runtimes"`
 	DNS             probeLocalDNSMonitorStats             `json:"dns"`
-	PeerStatus      probeLocalPeerStatusMonitorSnapshot    `json:"peer_status,omitempty"`
+	PeerStatus      probeLocalPeerStatusMonitorSnapshot   `json:"peer_status,omitempty"`
 }
 
 type probePeerStatusGroupSnapshot struct {
-	Group       string                           `json:"group,omitempty"`
-	Entry       probePeerStatusSidePayload       `json:"entry,omitempty"`
-	Exit        probePeerStatusSidePayload       `json:"exit,omitempty"`
-	Link        probeChainRelayProtocolStateSnapshot `json:"link,omitempty"`
-	FetchedAt   string                           `json:"fetched_at,omitempty"`
-	Error       string                           `json:"error,omitempty"`
+	Group     string                               `json:"group,omitempty"`
+	Entry     probePeerStatusSidePayload           `json:"entry,omitempty"`
+	Exit      probePeerStatusSidePayload           `json:"exit,omitempty"`
+	Link      probeChainRelayProtocolStateSnapshot `json:"link,omitempty"`
+	FetchedAt string                               `json:"fetched_at,omitempty"`
+	Error     string                               `json:"error,omitempty"`
 }
 
 type probeLocalPeerStatusMonitorSnapshot struct {
-	FetchedAt string                      `json:"fetched_at,omitempty"`
+	FetchedAt string                         `json:"fetched_at,omitempty"`
 	Groups    []probePeerStatusGroupSnapshot `json:"groups,omitempty"`
 }
 
@@ -138,6 +139,15 @@ func (s probeLocalProxyMonitorSnapshot) clone() probeLocalProxyMonitorSnapshot {
 	}
 	if s.UDP.AssociationItems != nil {
 		s.UDP.AssociationItems = append([]probeUDPAssociationDebugItemPayload(nil), s.UDP.AssociationItems...)
+	}
+	if s.Substreams.Active != nil {
+		s.Substreams.Active = append([]probeSubstreamMonitorItem(nil), s.Substreams.Active...)
+	}
+	if s.Substreams.Completed != nil {
+		s.Substreams.Completed = append([]probeSubstreamMonitorItem(nil), s.Substreams.Completed...)
+	}
+	if s.Substreams.Failures != nil {
+		s.Substreams.Failures = append([]probeTCPDebugFailureItemPayload(nil), s.Substreams.Failures...)
 	}
 	if s.PeerStatus.Groups != nil {
 		s.PeerStatus.Groups = append([]probePeerStatusGroupSnapshot(nil), s.PeerStatus.Groups...)
@@ -248,6 +258,7 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 	udpAssociations := len(udpAssociationItems)
 	udpBridgeStats := snapshotProbeLocalTUNUDPBridgeMonitorStats()
 	chainRuntimes := snapshotProbeChainRuntimeMonitorCount()
+	substreams := snapshotProbeSubstreamMonitorPayload("", "local-monitor-"+randomHexToken(8), "local")
 	peerStatus := currentProbeLocalPeerStatusMonitorSnapshot()
 
 	cpuPercent := probeLocalProxyMonitorCPUPercent(previousCPU, currentCPU)
@@ -272,6 +283,7 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 		UDPAssociations: udpAssociations,
 		TCP:             tcpStats,
 		UDP:             probeLocalProxyMonitorUDPSnapshot{Bridges: udpBridgeStats, Associations: udpAssociations, AssociationItems: udpAssociationItems},
+		Substreams:      substreams,
 		ChainRuntimes:   chainRuntimes,
 		DNS:             dnsStats,
 		PeerStatus:      peerStatus,

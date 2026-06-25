@@ -581,7 +581,7 @@
       const blockDown = Number(item && item.blocked_writes_down || 0);
       const maxBlock = Math.max(Number(item && item.max_write_block_ms_up || 0), Number(item && item.max_write_block_ms_down || 0));
       const blockText = blockUp || blockDown || maxBlock ? ' block=' + Math.trunc(blockUp) + '/' + Math.trunc(blockDown) + ' max=' + Math.trunc(maxBlock) + 'ms' : '';
-      return flowID + ' [' + side + '] ' + target + ' -> ' + routeTarget + ' up=' + up + ' down=' + down + blockText;
+      return flowID + ' [' + side + '] ' + formatConnectionTargetPath(item, target, routeTarget) + ' up=' + up + ' down=' + down + blockText;
     }
 
     function formatPeerStatusSideLine(label, payload) {
@@ -772,7 +772,7 @@
           </div>
           <div class="connection-domain">${escapeHTML(domain || target)}</div>
           <div class="connection-monitor-meta">
-            ${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>
+            ${escapeHTML(formatConnectionTargetPath(item, target, routeTarget))}<br>
             scope=${escapeHTML(item && item.scope || '-')} ｜ side=${escapeHTML(item && item.side || '-')} ｜ group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ domain_source=${escapeHTML(domainSource || '-')}
           </div>
           <div class="connection-monitor-grid">
@@ -802,7 +802,7 @@
             <span class="connection-badge">udp</span>
           </div>
           <div class="connection-monitor-meta">
-            ${escapeHTML(target)} -> ${escapeHTML(routeTarget)}<br>
+            ${escapeHTML(formatConnectionTargetPath(item, target, routeTarget))}<br>
             group=${escapeHTML(group)} ｜ node=${escapeHTML(item && item.node_id || '-')} ｜ direct=${escapeHTML(item && item.direct ? 'true' : 'false')}<br>
             ${escapeHTML(sessionLine)}
           </div>
@@ -815,6 +815,22 @@
           </div>
         </div>
       `;
+    }
+
+    function formatConnectionTargetPath(item, target, routeTarget) {
+      const cleanTarget = String(target || '').trim() || '-';
+      const cleanRoute = String(routeTarget || '').trim();
+      const scope = String(item && item.scope || '').trim();
+      const side = String(item && item.side || '').trim();
+      if (scope === 'chain_exit' || side === 'remote') {
+        return '出口拨号 ' + cleanTarget;
+      }
+      if (scope === 'port_forward') {
+        if (cleanRoute && cleanRoute !== cleanTarget) return '监听入口 ' + cleanTarget + ' -> 出口目标 ' + cleanRoute;
+        return '监听入口 ' + cleanTarget;
+      }
+      if (!cleanRoute || cleanRoute === cleanTarget) return cleanTarget;
+      return cleanTarget + ' -> ' + cleanRoute;
     }
 
     function renderConnectionMetric(label, value) {
@@ -858,6 +874,11 @@
       return pairs;
     }
 
+    function hasSubstreamRows(payload) {
+      if (!payload || typeof payload !== 'object') return false;
+      return (Array.isArray(payload.active) && payload.active.length > 0) || (Array.isArray(payload.completed) && payload.completed.length > 0);
+    }
+
     function resolveSubstreamEndpointRole(item, source) {
       const scope = String(item && item.scope || '').trim();
       const side = String(item && item.side || '').trim();
@@ -870,12 +891,20 @@
       const listEl = document.getElementById('substream-monitor-list');
       const updatedEl = document.getElementById('substream-monitor-updated');
       if (!listEl || !updatedEl) return;
+      const localData = currentMonitorData || {};
+      const localSubstreams = localData.substreams && typeof localData.substreams === 'object' ? localData.substreams : null;
       const data = peerStatusMonitorCache || {};
       const groups = Array.isArray(data.groups) ? data.groups : [];
-      const rows = groups.flatMap((group) => collectSubstreamPairs(group && group.entry, group && group.exit).map((pair) => ({ group: group.group || '-', pair })));
-      updatedEl.textContent = '子流监视：peer_status ' + (data.fetched_at || '--') + ' / groups ' + groups.length;
+      const rows = [];
+      if (hasSubstreamRows(localSubstreams)) {
+        collectSubstreamPairs(localSubstreams, null).forEach((pair) => rows.push({ group: '本地', pair }));
+      }
+      groups.forEach((group) => {
+        collectSubstreamPairs(group && group.entry, group && group.exit).forEach((pair) => rows.push({ group: group.group || '-', pair }));
+      });
+      updatedEl.textContent = '子流监视：本地 ' + (localData.fetched_at || '--') + ' / peer_status ' + (data.fetched_at || '--') + ' / groups ' + groups.length;
       if (rows.length === 0) {
-        listEl.innerHTML = '<div class="hint">暂无 peer_status 子流数据</div>';
+        listEl.innerHTML = '<div class="hint">暂无子流数据</div>';
         return;
       }
       const body = rows.map(renderPeerStatusSubstreamRow).join('');
@@ -975,12 +1004,12 @@
       const identityText = identityLines.length ? identityLines.join('\n') : (domain || target);
       const kind = String(item && item.kind || '').trim();
       if (kind === 'port_forward') {
-        return flowID + ' ' + identityText + ' | 监听入口=' + target + '\n出口目标=' + routeTarget;
+        return flowID + ' ' + identityText + ' | ' + formatConnectionTargetPath(item, target, routeTarget);
       }
       if (kind === 'peer_exit') {
         return flowID + ' ' + identityText + ' | 出口拨号=' + target;
       }
-      return flowID + ' ' + identityText + ' | ' + target + ' -> ' + routeTarget;
+      return flowID + ' ' + identityText + ' | ' + formatConnectionTargetPath(item, target, routeTarget);
     }
 
     function renderSubstreamTrafficLine(item) {
@@ -1129,7 +1158,7 @@
         const age = Math.max(0, Math.round(Number(item.age_ms || 0) / 1000));
         const up = Number(item.bytes_up || 0);
         const down = Number(item.bytes_down || 0);
-        return scope + ' ' + target + ' -> ' + routeTarget + ' group=' + group + ' idle=' + idle + 's age=' + age + 's up=' + up + ' down=' + down;
+        return scope + ' ' + formatConnectionTargetPath(item, target, routeTarget) + ' group=' + group + ' idle=' + idle + 's age=' + age + 's up=' + up + ' down=' + down;
       }).join('\n');
     }
 
@@ -1144,7 +1173,7 @@
         const ttl = Math.max(0, Math.round(Number(item.timeout_ms || 0) / 1000));
         const up = Number(item.bytes_up || 0);
         const down = Number(item.bytes_down || 0);
-        return target + ' -> ' + routeTarget + ' group=' + group + ' ttl=' + ttl + 's idle=' + idle + 's age=' + age + 's up=' + up + ' down=' + down;
+        return formatConnectionTargetPath(item, target, routeTarget) + ' group=' + group + ' ttl=' + ttl + 's idle=' + idle + 's age=' + age + 's up=' + up + ' down=' + down;
       }).join('\n');
     }
 

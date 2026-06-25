@@ -298,6 +298,11 @@ func TestProbeLocalProxyFlowWithSession(t *testing.T) {
 	if _, ok := monitorPayload["udp"].(map[string]any); !ok {
 		t.Fatalf("proxy/monitor udp type=%T", monitorPayload["udp"])
 	}
+	if substreams, ok := monitorPayload["substreams"].(map[string]any); !ok {
+		t.Fatalf("proxy/monitor substreams type=%T", monitorPayload["substreams"])
+	} else if substreams["type"] != "substreams_result" {
+		t.Fatalf("proxy/monitor substreams type=%v", substreams["type"])
+	}
 
 	enableResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{}, sessionCookie)
 	if enableResp.Code != http.StatusConflict {
