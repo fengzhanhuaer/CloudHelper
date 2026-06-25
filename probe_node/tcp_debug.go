@@ -19,6 +19,7 @@ const probeTCPDebugBlockedWriteThreshold = 50 * time.Millisecond
 type probeTCPDebugConnectionItemPayload struct {
 	ID                    string `json:"id"`
 	Status                string `json:"status,omitempty"`
+	TrackingID            string `json:"tracking_id,omitempty"`
 	FlowID                string `json:"flow_id,omitempty"`
 	Side                  string `json:"side,omitempty"`
 	Scope                 string `json:"scope,omitempty"`
@@ -68,6 +69,7 @@ type probeTCPDebugConnectionItemPayload struct {
 type probeTCPDebugFailureItemPayload struct {
 	Kind         string `json:"kind"`
 	Reason       string `json:"reason,omitempty"`
+	TrackingID   string `json:"tracking_id,omitempty"`
 	FlowID       string `json:"flow_id,omitempty"`
 	Side         string `json:"side,omitempty"`
 	Scope        string `json:"scope,omitempty"`
@@ -103,6 +105,7 @@ type probeTCPDebugResultPayload struct {
 type probeTCPDebugFailureEvent struct {
 	Kind         string
 	Reason       string
+	TrackingID   string
 	Scope        string
 	FlowID       string
 	Side         string
@@ -120,6 +123,7 @@ type probeTCPDebugFailureEvent struct {
 
 type probeTCPDebugRelay struct {
 	id          string
+	trackingID  string
 	flowID      string
 	side        string
 	scope       string
@@ -161,6 +165,7 @@ type probeTCPDebugRelay struct {
 
 type probeTCPDebugRelayOptions struct {
 	Scope       string
+	TrackingID  string
 	FlowID      string
 	Side        string
 	Target      string
@@ -262,9 +267,15 @@ func (s *probeTCPDebugState) beginRelayWithOptions(opts probeTCPDebugRelayOption
 	if routeTarget == "" {
 		routeTarget = strings.TrimSpace(opts.Route.TargetAddr)
 	}
+	flowID := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.FlowID), strings.TrimSpace(opts.Route.FlowID))
+	trackingID := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.TrackingID), flowID)
+	if trackingID == "" {
+		trackingID = newProbeTCPDebugFlowID(firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Scope), "tcp"), firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Target), routeTarget))
+	}
 	relay := &probeTCPDebugRelay{
 		id:                  id,
-		flowID:              strings.TrimSpace(opts.FlowID),
+		trackingID:          trackingID,
+		flowID:              flowID,
 		side:                strings.TrimSpace(opts.Side),
 		scope:               firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Scope), "unknown"),
 		target:              strings.TrimSpace(opts.Target),
@@ -406,12 +417,18 @@ func (s *probeTCPDebugState) recordFailureWithOptions(kind string, opts probeTCP
 	if routeTarget == "" {
 		routeTarget = strings.TrimSpace(opts.Route.TargetAddr)
 	}
+	flowID := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.FlowID), strings.TrimSpace(opts.Route.FlowID))
+	trackingID := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.TrackingID), flowID)
+	if trackingID == "" {
+		trackingID = newProbeTCPDebugFlowID(firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Scope), "tcp"), firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Target), routeTarget))
+	}
 	domain, domainSource := resolveProbeTCPDebugDomain(firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Target), routeTarget), firstNonEmptyProbeTCPDebugString(routeTarget, strings.TrimSpace(opts.Target)))
 	event := probeTCPDebugFailureEvent{
 		Kind:         strings.TrimSpace(kind),
 		Reason:       classifyProbeTCPDebugError(kind, err),
+		TrackingID:   trackingID,
 		Scope:        firstNonEmptyProbeTCPDebugString(strings.TrimSpace(opts.Scope), "unknown"),
-		FlowID:       strings.TrimSpace(opts.FlowID),
+		FlowID:       flowID,
 		Side:         strings.TrimSpace(opts.Side),
 		Target:       strings.TrimSpace(opts.Target),
 		RouteTarget:  firstNonEmptyProbeTCPDebugString(routeTarget, strings.TrimSpace(opts.Target)),
@@ -444,12 +461,13 @@ func (s *probeTCPDebugState) recordRelayFailure(relay *probeTCPDebugRelay, err e
 		Direct:       relay.direct,
 	}
 	s.recordFailureWithOptions("relay_failed", probeTCPDebugRelayOptions{
-		Scope:     relay.scope,
-		FlowID:    relay.flowID,
-		Side:      relay.side,
-		Target:    relay.target,
-		Route:     route,
-		Transport: relay.transport,
+		Scope:      relay.scope,
+		TrackingID: relay.trackingID,
+		FlowID:     relay.flowID,
+		Side:       relay.side,
+		Target:     relay.target,
+		Route:      route,
+		Transport:  relay.transport,
 	}, err)
 }
 
@@ -499,6 +517,7 @@ func (s *probeTCPDebugState) snapshotPayload(nodeID string, requestID string) pr
 		payload.Failures = append(payload.Failures, probeTCPDebugFailureItemPayload{
 			Kind:         strings.TrimSpace(event.Kind),
 			Reason:       strings.TrimSpace(event.Reason),
+			TrackingID:   strings.TrimSpace(event.TrackingID),
 			FlowID:       strings.TrimSpace(event.FlowID),
 			Side:         strings.TrimSpace(event.Side),
 			Scope:        strings.TrimSpace(event.Scope),
@@ -533,6 +552,7 @@ func buildProbeTCPDebugConnectionPayload(relay *probeTCPDebugRelay, now time.Tim
 	item := probeTCPDebugConnectionItemPayload{
 		ID:                   strings.TrimSpace(relay.id),
 		Status:               "active",
+		TrackingID:           strings.TrimSpace(relay.trackingID),
 		FlowID:               strings.TrimSpace(relay.flowID),
 		Side:                 strings.TrimSpace(relay.side),
 		Scope:                strings.TrimSpace(relay.scope),

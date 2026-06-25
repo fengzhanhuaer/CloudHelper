@@ -216,9 +216,9 @@ func openProbeLocalTunnelConnWithGroupRuntimeAndFlow(network, targetAddr string,
 	return groupRuntime.openStream(cleanNetwork, strings.TrimSpace(targetAddr), associationV2, flowID)
 }
 
-func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, error) {
+func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, probeLocalTunnelRouteDecision, error) {
 	if route.Reject {
-		return nil, &probeLocalRouteRejectError{Group: route.Group}
+		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if route.Direct {
 		if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
@@ -227,10 +227,19 @@ func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, err
 		dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: 10 * time.Second})
 		conn, err := dialer.Dial(probeLocalEgressDialNetwork("tcp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
 		if err != nil {
-			return nil, err
+			return nil, route, err
 		}
 		tuneProbeChainNetConn(conn)
-		return conn, nil
+		return conn, route, nil
 	}
-	return openProbeLocalTunnelConnWithGroupRuntime("tcp", route.TargetAddr, route.GroupRuntime, nil)
+	flowID := strings.TrimSpace(route.FlowID)
+	if flowID == "" {
+		flowID = newProbeTCPDebugFlowID("explicit", route.TargetAddr)
+	}
+	conn, openedFlowID, err := openProbeLocalTunnelConnWithGroupRuntimeAndFlow("tcp", route.TargetAddr, route.GroupRuntime, nil, flowID)
+	if err != nil {
+		return nil, route, err
+	}
+	route.FlowID = firstNonEmptyProbeTCPDebugString(strings.TrimSpace(openedFlowID), flowID)
+	return conn, route, nil
 }

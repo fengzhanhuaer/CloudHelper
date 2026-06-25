@@ -65,7 +65,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.1'
+          go-version: '1.26.4'
           cache-dependency-path: probe_controller/go.sum
 
       - name: Build Probe Controller (Linux amd64)
@@ -112,7 +112,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.1'
+          go-version: '1.26.4'
           cache-dependency-path: probe_node/go.sum
 
       - name: Build Probe Node (${{ matrix.goos }} ${{ matrix.goarch }})
@@ -220,7 +220,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.1'
+          go-version: '1.26.4'
           cache-dependency-path: probe_node/go.sum
 
       - name: Restore gomobile tool cache
@@ -230,13 +230,13 @@ jobs:
             ~/go/bin/gomobile
             ~/go/bin/gobind
             ~/go/pkg/gomobile
-          key: ${{ runner.os }}-gomobile-go1.26.1-ndk27.2.12479018-${{ hashFiles('probe_node/go.mod', 'probe_node/go.sum') }}
+          key: ${{ runner.os }}-gomobile-go1.26.4-ndk27.2.12479018-${{ hashFiles('probe_node/go.mod', 'probe_node/go.sum') }}
 
       - name: Restore mobilecore AAR cache
         uses: actions/cache@v4
         with:
           path: probe_node_android/app/libs/mobilecore.aar
-          key: ${{ runner.os }}-mobilecore-aar-go1.26.1-ndk27.2.12479018-${{ hashFiles('probe_node/**/*.go', 'probe_node/go.mod', 'probe_node/go.sum') }}
+          key: ${{ runner.os }}-mobilecore-aar-go1.26.4-ndk27.2.12479018-${{ hashFiles('probe_node/**/*.go', 'probe_node/go.mod', 'probe_node/go.sum') }}
 
       - name: Build Probe Node Android mobilecore AAR
         working-directory: probe_node

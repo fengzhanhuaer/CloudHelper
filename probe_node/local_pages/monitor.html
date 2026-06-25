@@ -851,6 +851,23 @@
       return collectSubstreamPairsFromRows(collectSubstreamRows(local, '本地').concat(collectSubstreamRows(remote, '对端')));
     }
 
+    function collectBackendSubstreamPairs(payload) {
+      const pairs = Array.isArray(payload && payload.pairs) ? payload.pairs : [];
+      return pairs
+        .filter((pair) => pair && typeof pair === 'object' && (pair.entry || pair.exit))
+        .map((pair) => ({
+          group: String(pair.group || (pair.entry && pair.entry.group) || (pair.exit && pair.exit.group) || '-').trim() || '-',
+          pair: {
+            key: String(pair.key || pair.tracking_id || pair.flow_id || '').trim(),
+            entry: pair.entry || null,
+            exit: pair.exit || null,
+            status: String(pair.status || '').trim(),
+            tracking_id: String(pair.tracking_id || '').trim(),
+            flow_id: String(pair.flow_id || '').trim(),
+          },
+        }));
+    }
+
     function collectSubstreamPairsFromRows(rows) {
       const pairs = [];
       const byKey = new Map();
@@ -906,19 +923,22 @@
       const localSubstreams = localData.substreams && typeof localData.substreams === 'object' ? localData.substreams : null;
       const data = peerStatusMonitorCache || {};
       const groups = Array.isArray(data.groups) ? data.groups : [];
-      const substreamRows = [];
-      if (hasSubstreamRows(localSubstreams)) {
-        collectSubstreamRows(localSubstreams, '本地').forEach(({ item, source }) => substreamRows.push({ source, item, group: String(item && item.group || '').trim() || '本地' }));
+      let rows = collectBackendSubstreamPairs(localSubstreams);
+      if (rows.length === 0) {
+        const substreamRows = [];
+        if (hasSubstreamRows(localSubstreams)) {
+          collectSubstreamRows(localSubstreams, '本地').forEach(({ item, source }) => substreamRows.push({ source, item, group: String(item && item.group || '').trim() || '本地' }));
+        }
+        groups.forEach((group) => {
+          const groupName = String(group && group.group || '').trim() || '-';
+          const entrySubstreams = group && group.entry && group.entry.substreams && typeof group.entry.substreams === 'object' ? group.entry.substreams : null;
+          const exitSubstreams = group && group.exit && group.exit.substreams && typeof group.exit.substreams === 'object' ? group.exit.substreams : null;
+          collectSubstreamRows(entrySubstreams, '对端').forEach(({ item, source }) => substreamRows.push({ source, item, group: groupName }));
+          collectSubstreamRows(exitSubstreams, '对端').forEach(({ item, source }) => substreamRows.push({ source, item, group: groupName }));
+        });
+        rows = collectSubstreamPairsFromRows(substreamRows).map((pair) => ({ group: pair.group || '-', pair }));
       }
-      groups.forEach((group) => {
-        const groupName = String(group && group.group || '').trim() || '-';
-        const entrySubstreams = group && group.entry && group.entry.substreams && typeof group.entry.substreams === 'object' ? group.entry.substreams : null;
-        const exitSubstreams = group && group.exit && group.exit.substreams && typeof group.exit.substreams === 'object' ? group.exit.substreams : null;
-        collectSubstreamRows(entrySubstreams, '对端').forEach(({ item, source }) => substreamRows.push({ source, item, group: groupName }));
-        collectSubstreamRows(exitSubstreams, '对端').forEach(({ item, source }) => substreamRows.push({ source, item, group: groupName }));
-      });
-      const rows = collectSubstreamPairsFromRows(substreamRows).map((pair) => ({ group: pair.group || '-', pair }));
-      updatedEl.textContent = '子流监视：本地 ' + (localData.fetched_at || '--') + ' / peer_status ' + (data.fetched_at || '--') + ' / groups ' + groups.length;
+      updatedEl.textContent = '子流监视：本地 ' + (localData.fetched_at || '--') + ' / peer_status ' + (data.fetched_at || '--') + ' / groups ' + groups.length + ' / pairs ' + rows.length;
       if (rows.length === 0) {
         listEl.innerHTML = '<div class="hint">暂无子流数据</div>';
         return;
@@ -949,11 +969,12 @@
       const entry = pair && pair.entry;
       const exit = pair && pair.exit;
       const primary = entry || exit || {};
-      const flowID = String(primary && (primary.flow_id || primary.id) || '-').trim();
+      const flowID = String((pair && (pair.tracking_id || pair.flow_id)) || (primary && (primary.tracking_id || primary.flow_id || primary.id)) || '-').trim();
+      const pairStatus = String(pair && pair.status || '').trim();
       return `
         <tr>
           <td><span class="hint">${escapeHTML(row && row.group || '-')}</span></td>
-          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">入口 ${escapeHTML(entry && entry.id || '-')}<br>出口 ${escapeHTML(exit && exit.id || '-')}</span></td>
+          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">入口 ${escapeHTML(entry && entry.id || '-')}<br>出口 ${escapeHTML(exit && exit.id || '-')}${pairStatus ? '<br>' + escapeHTML(pairStatus) : ''}</span></td>
           ${renderSubstreamEndpointCell('入口侧', entry)}
           ${renderSubstreamEndpointCell('出口侧', exit)}
           <td><span class="pre-line">${escapeHTML(renderSubstreamTargetText(entry, exit))}</span></td>
@@ -1199,10 +1220,10 @@
           requestJSON('/local/api/proxy/monitor', { method: 'GET' }),
           requestJSON('/local/api/proxy/peer_status', { method: 'GET' }).catch(() => null),
         ]);
+        renderMonitor(data);
         if (peerStatus && typeof peerStatus === 'object') {
           peerStatusMonitorCache = peerStatus;
         }
-        renderMonitor(data);
         if (document.querySelector('.monitor-tab[data-monitor-tab="links"].active')) {
           loadLinkMonitor();
         }

@@ -69,3 +69,23 @@ func TestProbeTCPDebugRouteTargetOverride(t *testing.T) {
 		t.Fatalf("route_target=%q, want remote target", item.RouteTarget)
 	}
 }
+
+func TestProbeTCPDebugAutoCreatesTrackingID(t *testing.T) {
+	state := newProbeTCPDebugState()
+	relay := state.beginRelayWithOptions(probeTCPDebugRelayOptions{
+		Scope:  "explicit",
+		Side:   "socks5",
+		Target: "example.com:443",
+	})
+	if relay == nil {
+		t.Fatal("relay is nil")
+	}
+
+	payload := state.snapshotPayload("node-1", "req-1")
+	if payload.ActiveCount != 1 {
+		t.Fatalf("active_count=%d, want 1", payload.ActiveCount)
+	}
+	if payload.Active[0].TrackingID == "" {
+		t.Fatal("tracking_id is empty")
+	}
+}

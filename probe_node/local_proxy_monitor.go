@@ -149,6 +149,9 @@ func (s probeLocalProxyMonitorSnapshot) clone() probeLocalProxyMonitorSnapshot {
 	if s.Substreams.Failures != nil {
 		s.Substreams.Failures = append([]probeTCPDebugFailureItemPayload(nil), s.Substreams.Failures...)
 	}
+	if s.Substreams.Pairs != nil {
+		s.Substreams.Pairs = cloneProbeSubstreamMonitorPairs(s.Substreams.Pairs)
+	}
 	if s.PeerStatus.Groups != nil {
 		s.PeerStatus.Groups = append([]probePeerStatusGroupSnapshot(nil), s.PeerStatus.Groups...)
 	}
@@ -260,6 +263,8 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 	chainRuntimes := snapshotProbeChainRuntimeMonitorCount()
 	substreams := snapshotProbeSubstreamMonitorPayload("", "local-monitor-"+randomHexToken(8), "local")
 	peerStatus := currentProbeLocalPeerStatusMonitorSnapshot()
+	substreams.Pairs = mergeProbeSubstreamMonitorPairs(substreams, peerStatus)
+	substreams.PairCount = len(substreams.Pairs)
 
 	cpuPercent := probeLocalProxyMonitorCPUPercent(previousCPU, currentCPU)
 	cpuTotalMS := probeLocalProxyMonitorCPUTotalMS(currentCPU)

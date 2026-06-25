@@ -15,8 +15,10 @@ type probeSubstreamMonitorPayload struct {
 	ActiveCount      int                               `json:"active_count"`
 	CompletedCount   int                               `json:"completed_count"`
 	FailureCount     int                               `json:"failure_count"`
+	PairCount        int                               `json:"pair_count"`
 	Active           []probeSubstreamMonitorItem       `json:"active"`
 	Completed        []probeSubstreamMonitorItem       `json:"completed"`
+	Pairs            []probeSubstreamMonitorPair       `json:"pairs"`
 	Failures         []probeTCPDebugFailureItemPayload `json:"failures"`
 	FrameWindowBytes int                               `json:"frame_window_bytes"`
 	FetchedAt        string                            `json:"fetched_at,omitempty"`
@@ -27,6 +29,7 @@ type probeSubstreamMonitorPayload struct {
 type probeSubstreamMonitorItem struct {
 	ID                    string                          `json:"id"`
 	Status                string                          `json:"status,omitempty"`
+	TrackingID            string                          `json:"tracking_id,omitempty"`
 	Kind                  string                          `json:"kind,omitempty"`
 	Side                  string                          `json:"side,omitempty"`
 	Scope                 string                          `json:"scope,omitempty"`
@@ -78,6 +81,16 @@ type probeSubstreamMonitorItem struct {
 	Buffer                probeSubstreamBufferMonitorItem `json:"buffer"`
 }
 
+type probeSubstreamMonitorPair struct {
+	Key        string                     `json:"key"`
+	Status     string                     `json:"status"`
+	TrackingID string                     `json:"tracking_id,omitempty"`
+	FlowID     string                     `json:"flow_id,omitempty"`
+	Group      string                     `json:"group,omitempty"`
+	Entry      *probeSubstreamMonitorItem `json:"entry,omitempty"`
+	Exit       *probeSubstreamMonitorItem `json:"exit,omitempty"`
+}
+
 type probeSubstreamBufferMonitorItem struct {
 	Status               string `json:"status"`
 	FrameWindowBytes     int    `json:"frame_window_bytes"`
@@ -103,6 +116,7 @@ func snapshotProbeSubstreamMonitorPayload(nodeID string, requestID string, scope
 		Scope:            firstNonEmptyProbeTCPDebugString(strings.TrimSpace(scope), "local"),
 		Active:           []probeSubstreamMonitorItem{},
 		Completed:        []probeSubstreamMonitorItem{},
+		Pairs:            []probeSubstreamMonitorPair{},
 		Failures:         tcp.Failures,
 		FrameWindowBytes: probeChainFrameMaxDataBytes * probeChainFrameSessionInboundBuffer,
 		FetchedAt:        time.Now().UTC().Format(time.RFC3339),
@@ -121,6 +135,8 @@ func snapshotProbeSubstreamMonitorPayload(nodeID string, requestID string, scope
 	payload.ActiveCount = len(payload.Active)
 	payload.CompletedCount = len(payload.Completed)
 	payload.FailureCount = len(payload.Failures)
+	payload.Pairs = buildProbeSubstreamMonitorPairsFromRows(collectProbeSubstreamMonitorRows(payload, "local", ""))
+	payload.PairCount = len(payload.Pairs)
 	return payload
 }
 
@@ -153,6 +169,7 @@ func buildProbeSubstreamMonitorItem(item probeTCPDebugConnectionItemPayload) (pr
 	return probeSubstreamMonitorItem{
 		ID:                    strings.TrimSpace(item.ID),
 		Status:                firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Status), "active"),
+		TrackingID:            firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.TrackingID), strings.TrimSpace(item.FlowID)),
 		Kind:                  kind,
 		Side:                  strings.TrimSpace(item.Side),
 		Scope:                 strings.TrimSpace(item.Scope),
@@ -203,6 +220,171 @@ func buildProbeSubstreamMonitorItem(item probeTCPDebugConnectionItemPayload) (pr
 		LastCongestionSide:    strings.TrimSpace(item.LastCongestionSide),
 		Buffer:                buffer,
 	}, true
+}
+
+type probeSubstreamMonitorPairRow struct {
+	source string
+	group  string
+	item   probeSubstreamMonitorItem
+}
+
+func mergeProbeSubstreamMonitorPairs(local probeSubstreamMonitorPayload, peer probeLocalPeerStatusMonitorSnapshot) []probeSubstreamMonitorPair {
+	rows := collectProbeSubstreamMonitorRows(local, "local", "")
+	for _, group := range peer.Groups {
+		groupName := strings.TrimSpace(group.Group)
+		rows = append(rows, collectProbeSubstreamMonitorRows(group.Entry.Substreams, "entry", groupName)...)
+		rows = append(rows, collectProbeSubstreamMonitorRows(group.Exit.Substreams, "exit", groupName)...)
+	}
+	return buildProbeSubstreamMonitorPairsFromRows(rows)
+}
+
+func collectProbeSubstreamMonitorRows(payload probeSubstreamMonitorPayload, source string, group string) []probeSubstreamMonitorPairRow {
+	rows := make([]probeSubstreamMonitorPairRow, 0, len(payload.Active)+len(payload.Completed))
+	for _, item := range payload.Active {
+		rows = append(rows, probeSubstreamMonitorPairRow{source: strings.TrimSpace(source), group: strings.TrimSpace(group), item: item})
+	}
+	for _, item := range payload.Completed {
+		rows = append(rows, probeSubstreamMonitorPairRow{source: strings.TrimSpace(source), group: strings.TrimSpace(group), item: item})
+	}
+	return rows
+}
+
+func buildProbeSubstreamMonitorPairsFromRows(rows []probeSubstreamMonitorPairRow) []probeSubstreamMonitorPair {
+	pairs := []probeSubstreamMonitorPair{}
+	byKey := map[string]int{}
+	for _, row := range rows {
+		item := row.item
+		role := resolveProbeSubstreamEndpointRole(item, row.source)
+		key := probeSubstreamMonitorPairKey(item, role)
+		if key == "" {
+			continue
+		}
+		pairIndex, ok := byKey[key]
+		if ok && probeSubstreamMonitorPairHasRole(pairs[pairIndex], role) && !isSameProbeSubstreamEndpoint(probeSubstreamMonitorPairEndpoint(pairs[pairIndex], role), item) {
+			key = key + ":" + strings.TrimSpace(item.ID) + ":" + probeSubstreamMonitorPairTargetToken(item)
+			pairIndex, ok = byKey[key]
+		}
+		if !ok {
+			pair := probeSubstreamMonitorPair{
+				Key:        key,
+				Status:     "missing_exit",
+				TrackingID: firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.TrackingID), strings.TrimSpace(item.FlowID)),
+				FlowID:     strings.TrimSpace(item.FlowID),
+			}
+			pairs = append(pairs, pair)
+			pairIndex = len(pairs) - 1
+			byKey[key] = pairIndex
+		}
+		if pairs[pairIndex].TrackingID == "" {
+			pairs[pairIndex].TrackingID = firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.TrackingID), strings.TrimSpace(item.FlowID))
+		}
+		if pairs[pairIndex].FlowID == "" {
+			pairs[pairIndex].FlowID = strings.TrimSpace(item.FlowID)
+		}
+		group := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(row.group), strings.TrimSpace(item.Group))
+		if group != "" && (pairs[pairIndex].Group == "" || pairs[pairIndex].Group == "local") {
+			pairs[pairIndex].Group = group
+		}
+		itemCopy := item
+		if role == "exit" {
+			pairs[pairIndex].Exit = &itemCopy
+		} else {
+			pairs[pairIndex].Entry = &itemCopy
+		}
+		pairs[pairIndex].Status = probeSubstreamMonitorPairStatus(pairs[pairIndex])
+	}
+	return pairs
+}
+
+func probeSubstreamMonitorPairKey(item probeSubstreamMonitorItem, role string) string {
+	if trackingID := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.TrackingID), strings.TrimSpace(item.FlowID)); trackingID != "" {
+		return "track:" + trackingID
+	}
+	if id := strings.TrimSpace(item.ID); id != "" {
+		return strings.TrimSpace(role) + ":" + id
+	}
+	if target := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Target), strings.TrimSpace(item.RouteTarget)); target != "" {
+		return strings.TrimSpace(role) + ":target:" + target
+	}
+	return ""
+}
+
+func probeSubstreamMonitorPairTargetToken(item probeSubstreamMonitorItem) string {
+	token := firstNonEmptyProbeTCPDebugString(strings.TrimSpace(item.Target), strings.TrimSpace(item.RouteTarget), strings.TrimSpace(item.FlowID), strings.TrimSpace(item.TrackingID))
+	token = strings.NewReplacer(":", "_", "/", "_", "\\", "_", " ", "_").Replace(token)
+	if token == "" {
+		return "unknown"
+	}
+	return token
+}
+
+func probeSubstreamMonitorPairEndpoint(pair probeSubstreamMonitorPair, role string) *probeSubstreamMonitorItem {
+	if role == "exit" {
+		return pair.Exit
+	}
+	return pair.Entry
+}
+
+func probeSubstreamMonitorPairHasRole(pair probeSubstreamMonitorPair, role string) bool {
+	return probeSubstreamMonitorPairEndpoint(pair, role) != nil
+}
+
+func probeSubstreamMonitorPairStatus(pair probeSubstreamMonitorPair) string {
+	if pair.Entry != nil && pair.Exit != nil {
+		return "complete"
+	}
+	if pair.Entry == nil {
+		return "missing_entry"
+	}
+	return "missing_exit"
+}
+
+func isSameProbeSubstreamEndpoint(left *probeSubstreamMonitorItem, right probeSubstreamMonitorItem) bool {
+	if left == nil {
+		return false
+	}
+	return strings.TrimSpace(left.ID) == strings.TrimSpace(right.ID) &&
+		strings.TrimSpace(left.TrackingID) == strings.TrimSpace(right.TrackingID) &&
+		strings.TrimSpace(left.FlowID) == strings.TrimSpace(right.FlowID) &&
+		strings.TrimSpace(left.Status) == strings.TrimSpace(right.Status) &&
+		strings.TrimSpace(left.Scope) == strings.TrimSpace(right.Scope) &&
+		strings.TrimSpace(left.Side) == strings.TrimSpace(right.Side) &&
+		strings.TrimSpace(left.Target) == strings.TrimSpace(right.Target) &&
+		strings.TrimSpace(left.RouteTarget) == strings.TrimSpace(right.RouteTarget)
+}
+
+func resolveProbeSubstreamEndpointRole(item probeSubstreamMonitorItem, source string) string {
+	scope := strings.ToLower(strings.TrimSpace(item.Scope))
+	side := strings.ToLower(strings.TrimSpace(item.Side))
+	if scope == "chain_exit" || side == "remote" {
+		return "exit"
+	}
+	if scope == "port_forward" || scope == "tun" || scope == "explicit" || side == "local" {
+		return "entry"
+	}
+	if strings.Contains(strings.ToLower(strings.TrimSpace(source)), "exit") {
+		return "exit"
+	}
+	return "entry"
+}
+
+func cloneProbeSubstreamMonitorPairs(pairs []probeSubstreamMonitorPair) []probeSubstreamMonitorPair {
+	if pairs == nil {
+		return nil
+	}
+	out := make([]probeSubstreamMonitorPair, len(pairs))
+	for i, pair := range pairs {
+		out[i] = pair
+		if pair.Entry != nil {
+			entry := *pair.Entry
+			out[i].Entry = &entry
+		}
+		if pair.Exit != nil {
+			exit := *pair.Exit
+			out[i].Exit = &exit
+		}
+	}
+	return out
 }
 
 func splitProbeSubstreamHostAndIP(addr string) (string, string) {

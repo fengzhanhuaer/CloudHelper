@@ -169,7 +169,7 @@ func handleProbeLocalExplicitSOCKSProxyConn(conn net.Conn) {
 	targetConn, route, err := openProbeLocalExplicitProxyTunnelStreamWithRoute("tcp", request.Address)
 	if err != nil {
 		_ = replyProbeChainProxyFailure(conn, request.Version)
-		globalProbeTCPDebugState.recordFailureWithOptions("open_failed", probeTCPDebugRelayOptions{Scope: "explicit", Target: request.Address, Route: route, Side: "socks5"}, err)
+		globalProbeTCPDebugState.recordFailureWithOptions("open_failed", probeTCPDebugRelayOptions{Scope: "explicit", Target: request.Address, Route: route, FlowID: route.FlowID, Side: "socks5"}, err)
 		logProbeWarnf("probe local explicit socks5 proxy tunnel open failed: target=%s err=%v", request.Address, err)
 		return
 	}
@@ -374,7 +374,7 @@ func handleProbeLocalExplicitHTTPProxyConn(conn net.Conn) {
 	targetConn, route, err := openProbeLocalExplicitProxyTunnelStreamWithRoute("tcp", targetAddr)
 	if err != nil {
 		_ = writeProbeChainHTTPProxyStatus(conn, http.StatusBadGateway, "open tunnel failed")
-		globalProbeTCPDebugState.recordFailureWithOptions("open_failed", probeTCPDebugRelayOptions{Scope: "explicit", Target: targetAddr, Route: route, Side: strings.ToLower(strings.TrimSpace(request.Method))}, err)
+		globalProbeTCPDebugState.recordFailureWithOptions("open_failed", probeTCPDebugRelayOptions{Scope: "explicit", Target: targetAddr, Route: route, FlowID: route.FlowID, Side: strings.ToLower(strings.TrimSpace(request.Method))}, err)
 		logProbeWarnf("probe local explicit http proxy tunnel open failed: target=%s err=%v", targetAddr, err)
 		return
 	}
@@ -453,8 +453,11 @@ func openProbeLocalExplicitProxyTunnelStreamWithRoute(network string, targetAddr
 		_ = udpConn.Close()
 		return nil, route, errors.New("udp tunnel is not a net conn")
 	}
-	conn, err := dialProbeLocalRoutedTCP(route)
-	return conn, route, err
+	if !route.Direct && strings.TrimSpace(route.FlowID) == "" {
+		route.FlowID = newProbeTCPDebugFlowID("explicit", targetAddr)
+	}
+	conn, openedRoute, err := dialProbeLocalRoutedTCP(route)
+	return conn, openedRoute, err
 }
 
 func logProbeLocalExplicitProxyRelayResult(protocol string, remoteAddr string, targetAddr string, route probeLocalTunnelRouteDecision, result probeChainBidirectionalRelayResult) {
@@ -482,13 +485,17 @@ func logProbeLocalExplicitProxyRelayResult(protocol string, remoteAddr string, t
 }
 
 func beginProbeLocalExplicitProxyTCPDebug(protocol string, targetAddr string, route probeLocalTunnelRouteDecision) *probeTCPDebugRelay {
-	flowID := newProbeTCPDebugFlowID("explicit", targetAddr)
+	flowID := strings.TrimSpace(route.FlowID)
+	if flowID == "" {
+		flowID = newProbeTCPDebugFlowID("explicit", targetAddr)
+	}
 	return globalProbeTCPDebugState.beginRelayWithOptions(probeTCPDebugRelayOptions{
-		Scope:  "explicit",
-		FlowID: flowID,
-		Side:   strings.TrimSpace(protocol),
-		Target: targetAddr,
-		Route:  route,
+		Scope:      "explicit",
+		TrackingID: flowID,
+		FlowID:     flowID,
+		Side:       strings.TrimSpace(protocol),
+		Target:     targetAddr,
+		Route:      route,
 	})
 }
 
