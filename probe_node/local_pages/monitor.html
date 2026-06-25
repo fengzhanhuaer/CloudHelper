@@ -848,9 +848,13 @@
     }
 
     function collectSubstreamPairs(local, remote) {
+      return collectSubstreamPairsFromRows(collectSubstreamRows(local, '本地').concat(collectSubstreamRows(remote, '对端')));
+    }
+
+    function collectSubstreamPairsFromRows(rows) {
       const pairs = [];
       const byKey = new Map();
-      const add = (source, item) => {
+      const add = (source, item, group) => {
         if (!item || typeof item !== 'object') return;
         const role = resolveSubstreamEndpointRole(item, source);
         const flowID = String(item.flow_id || '').trim();
@@ -859,19 +863,26 @@
         let key = baseKey;
         let pair = byKey.get(key);
         if (pair && pair[role]) {
+          if (isSameSubstreamEndpoint(pair[role], item)) return;
           key = baseKey + ':' + id + ':' + pairs.length;
           pair = null;
         }
         if (!pair) {
-          pair = { key, entry: null, exit: null };
+          pair = { key, entry: null, exit: null, group: '' };
           byKey.set(key, pair);
           pairs.push(pair);
         }
+        const groupText = String(group || item.group || '').trim();
+        if (groupText && (!pair.group || pair.group === '本地')) pair.group = groupText;
         pair[role] = item;
       };
-      collectSubstreamRows(local, '本地').forEach(({ item }) => add('local', item));
-      collectSubstreamRows(remote, '对端').forEach(({ item }) => add('remote', item));
+      (Array.isArray(rows) ? rows : []).forEach(({ source, item, group }) => add(source, item, group));
       return pairs;
+    }
+
+    function isSameSubstreamEndpoint(left, right) {
+      if (!left || !right) return false;
+      return ['id', 'flow_id', 'status', 'scope', 'side', 'target', 'route_target'].every((key) => String(left && left[key] || '').trim() === String(right && right[key] || '').trim());
     }
 
     function hasSubstreamRows(payload) {
@@ -895,13 +906,16 @@
       const localSubstreams = localData.substreams && typeof localData.substreams === 'object' ? localData.substreams : null;
       const data = peerStatusMonitorCache || {};
       const groups = Array.isArray(data.groups) ? data.groups : [];
-      const rows = [];
+      const substreamRows = [];
       if (hasSubstreamRows(localSubstreams)) {
-        collectSubstreamPairs(localSubstreams, null).forEach((pair) => rows.push({ group: '本地', pair }));
+        collectSubstreamRows(localSubstreams, '本地').forEach(({ item, source }) => substreamRows.push({ source, item, group: String(item && item.group || '').trim() || '本地' }));
       }
       groups.forEach((group) => {
-        collectSubstreamPairs(group && group.entry, group && group.exit).forEach((pair) => rows.push({ group: group.group || '-', pair }));
+        const groupName = String(group && group.group || '').trim() || '-';
+        collectSubstreamRows(group && group.entry, '对端').forEach(({ item, source }) => substreamRows.push({ source, item, group: groupName }));
+        collectSubstreamRows(group && group.exit, '对端').forEach(({ item, source }) => substreamRows.push({ source, item, group: groupName }));
       });
+      const rows = collectSubstreamPairsFromRows(substreamRows).map((pair) => ({ group: pair.group || '-', pair }));
       updatedEl.textContent = '子流监视：本地 ' + (localData.fetched_at || '--') + ' / peer_status ' + (data.fetched_at || '--') + ' / groups ' + groups.length;
       if (rows.length === 0) {
         listEl.innerHTML = '<div class="hint">暂无子流数据</div>';
