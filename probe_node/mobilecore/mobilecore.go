@@ -181,22 +181,6 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 	manager.mu.Unlock()
 
 	go runLoop(cancel, wsURL, nodeID, nodeSecret)
-	if strings.TrimSpace(configDir) != "" {
-		go func() {
-			if _, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir); err != nil {
-				setStatus("config refresh failed: " + err.Error())
-				if applied, restoreErr := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); restoreErr == nil && applied > 0 {
-					androidLogStore.add("chain", "normal", fmt.Sprintf("restored android chain runtimes from cache: count=%d", applied))
-				}
-				return
-			}
-			if applied, err := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); err != nil {
-				androidLogStore.add("chain", "warn", "apply android chain runtimes failed: "+err.Error())
-			} else if applied > 0 {
-				androidLogStore.add("chain", "normal", fmt.Sprintf("applied android chain runtimes from config: count=%d", applied))
-			}
-		}()
-	}
 	return "starting"
 }
 
@@ -204,6 +188,10 @@ func RefreshConfig(controllerURL string, nodeID string, nodeSecret string, confi
 	setControllerDirectTarget(controllerURL)
 	summary, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir)
 	if err != nil {
+		if applied, restoreErr := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); restoreErr == nil && applied > 0 {
+			androidLogStore.add("chain", "normal", fmt.Sprintf("restored android chain runtimes from cache: count=%d", applied))
+			return fmt.Sprintf("配置刷新失败：%s；已从缓存恢复本机链路=%d", err.Error(), applied)
+		}
 		return "配置刷新失败：" + err.Error()
 	}
 	if applied, err := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); err != nil {

@@ -265,6 +265,8 @@ var mobileChainRuntimeState = struct {
 	runtimes map[string]*mobileChainRuntime
 }{runtimes: map[string]*mobileChainRuntime{}}
 
+var mobileChainRuntimeLifecycleMu sync.Mutex
+
 var mobileChainSharedRelayState = struct {
 	mu      sync.Mutex
 	servers map[string]*mobileChainSharedRelayServer
@@ -298,7 +300,9 @@ func runMobileChainLinkControl(cmd chainLinkControlMessage, identity mobileNodeI
 			return
 		}
 		cfg.Identity = identity
+		mobileChainRuntimeLifecycleMu.Lock()
 		rt, err := startMobileChainRuntime(cfg)
+		mobileChainRuntimeLifecycleMu.Unlock()
 		if err != nil {
 			result.Error = err.Error()
 			sendChainLinkControlResult(stream, writeMu, result)
@@ -309,11 +313,13 @@ func runMobileChainLinkControl(cmd chainLinkControlMessage, identity mobileNodeI
 		result.Message = "android chain runtime started: listen=" + net.JoinHostPort(rt.cfg.ListenHost, strconv.Itoa(rt.cfg.ListenPort))
 	case "remove":
 		result.OK = true
+		mobileChainRuntimeLifecycleMu.Lock()
 		if stopMobileChainRuntime(cmd.ChainID, "remote remove command") {
 			result.Message = "android chain runtime removed"
 		} else {
 			result.Message = "android chain runtime not found"
 		}
+		mobileChainRuntimeLifecycleMu.Unlock()
 	default:
 		result.Error = "unsupported action"
 	}
@@ -459,6 +465,9 @@ func stopAllMobileChainRuntimes(reason string) int {
 }
 
 func applyMobileChainRuntimesFromConfigDir(configDir string, identity mobileNodeIdentity) (int, error) {
+	mobileChainRuntimeLifecycleMu.Lock()
+	defer mobileChainRuntimeLifecycleMu.Unlock()
+
 	dir := strings.TrimSpace(configDir)
 	if dir == "" {
 		return 0, errors.New("config dir is required")

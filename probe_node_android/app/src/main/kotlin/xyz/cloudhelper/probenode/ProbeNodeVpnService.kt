@@ -80,10 +80,10 @@ class ProbeNodeVpnService : VpnService() {
                     AndroidLogStore.add("vpn", "previous VPN data plane stop before restart: $stopResult")
                     vpnEstablished = false
                 }
-                updateRuntimeState(running = false, starting = true, phase = "connect_controller", message = "正在连接主控...")
-                updateNotification("正在连接主控...")
-                val startResult = MobileCoreBridge.start(this@ProbeNodeVpnService, config)
-                AndroidLogStore.add("vpn", "long connection while VPN starts: $startResult")
+                updateRuntimeState(running = false, starting = true, phase = "prepare_runtime", message = "正在准备本地运行环境...")
+                updateNotification("正在准备本地运行环境...")
+                val prepareResult = MobileCoreBridge.prepareRuntime(this@ProbeNodeVpnService, config)
+                AndroidLogStore.add("vpn", "runtime prepared while VPN starts: $prepareResult")
                 updateRuntimeState(running = false, starting = true, phase = "prepare_network", message = "正在准备本地网络...")
                 updateNotification("正在准备本地网络...")
                 val ipResult = MobileCoreBridge.setNativeIPs(this@ProbeNodeVpnService)

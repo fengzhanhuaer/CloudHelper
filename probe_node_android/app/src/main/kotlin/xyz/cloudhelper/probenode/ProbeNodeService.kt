@@ -14,6 +14,8 @@ import androidx.core.content.ContextCompat
 import kotlin.concurrent.thread
 
 class ProbeNodeService : Service() {
+    @Volatile private var startInFlight = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -39,6 +41,10 @@ class ProbeNodeService : Service() {
     }
 
     private fun startLongConnection() {
+        if (startInFlight) {
+            AndroidLogStore.add("service", "long connection start ignored: startup already running")
+            return
+        }
         val config = ProbeNodeConfig.load(this)
         if (!config.isReady) {
             AndroidLogStore.add("service", "service stopped: config is not ready", "warn")
@@ -47,13 +53,18 @@ class ProbeNodeService : Service() {
             stopSelf()
             return
         }
+        startInFlight = true
         thread(name = "cloudhelper-probe-node-service") {
-            val startResult = MobileCoreBridge.start(this, config)
-            AndroidLogStore.add("service", "long connection start result: $startResult")
-            updateNotification("长连接：$startResult")
-            val refreshResult = MobileCoreBridge.refreshConfig(this, config)
-            AndroidLogStore.add("service", "startup config refresh result: $refreshResult")
-            updateNotification("长连接：${MobileCoreBridge.status()}；$refreshResult")
+            try {
+                val startResult = MobileCoreBridge.start(this, config)
+                AndroidLogStore.add("service", "long connection start result: $startResult")
+                updateNotification("长连接：$startResult")
+                val refreshResult = MobileCoreBridge.refreshConfig(this, config)
+                AndroidLogStore.add("service", "startup config refresh result: $refreshResult")
+                updateNotification("长连接：${MobileCoreBridge.status()}；$refreshResult")
+            } finally {
+                startInFlight = false
+            }
         }
     }
 

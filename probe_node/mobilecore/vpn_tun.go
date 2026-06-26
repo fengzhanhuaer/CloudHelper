@@ -443,7 +443,7 @@ func VpnStatus() string {
 	status := firstNonEmptyString(vpnRuntime.status, "stopped")
 	lastError := vpnRuntime.lastError
 	updatedAt := vpnRuntime.updatedAt
-	defer vpnRuntime.mu.Unlock()
+	vpnRuntime.mu.Unlock()
 	dnsStatus := snapshotAndroidVPNDNSStatus()
 	return marshalLinkJSON(map[string]any{
 		"ok":         true,
