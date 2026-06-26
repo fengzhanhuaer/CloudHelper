@@ -72,6 +72,8 @@ class MainActivity : Activity() {
         if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
             ProbeNodeVpnService.start(this)
             emitStatus("VPN 权限已授权，正在启动全局 VPN...")
+            refreshCachedStatusAsync()
+            refreshCachedProxyStatusAsync()
         }
     }
 
@@ -219,37 +221,26 @@ class MainActivity : Activity() {
                 AndroidLogStore.add("vpn", "start rejected: controller URL, node ID, and node secret are required", "warn")
                 return "controller URL, node ID, and node secret are required"
             }
-            thread(name = "cloudhelper-android-proxy-start") {
-                val proxyResult = MobileCoreBridge.proxyStart(this@MainActivity, config.controllerUrl)
-                runOnUiThread {
-                    val prepareIntent = VpnService.prepare(this@MainActivity)
-                    if (prepareIntent != null) {
-                        AndroidLogStore.add("vpn", "VPN permission requested; $proxyResult")
-                        startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
-                        emitStatus("$proxyResult；需要授权 Android VPN，授权后会自动启动全局 VPN")
-                    } else {
-                        AndroidLogStore.add("vpn", "VPN start requested; $proxyResult")
-                        ProbeNodeVpnService.start(this@MainActivity)
-                        emitStatus("$proxyResult；全局 VPN 正在启动")
-                    }
-                    refreshCachedStatusAsync()
-                    refreshCachedProxyStatusAsync()
-                }
+            val prepareIntent = VpnService.prepare(this@MainActivity)
+            if (prepareIntent != null) {
+                AndroidLogStore.add("vpn", "VPN permission requested")
+                startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
+                return "需要授权 Android VPN，授权后会自动启动全局 VPN"
             }
-            return "VNet 启动已提交，正在后台准备..."
+            AndroidLogStore.add("vpn", "VPN service start requested")
+            ProbeNodeVpnService.start(this@MainActivity)
+            refreshCachedStatusAsync()
+            refreshCachedProxyStatusAsync()
+            return "全局 VPN 正在启动..."
         }
 
         @JavascriptInterface
         fun stopProxy(): String {
             AndroidLogStore.add("vpn", "VPN stop requested")
-            thread(name = "cloudhelper-android-proxy-stop") {
-                ProbeNodeVpnService.stop(this@MainActivity)
-                val proxyResult = MobileCoreBridge.proxyStop()
-                emitStatus("$proxyResult；全局 VPN 正在停止")
-                refreshCachedStatusAsync()
-                refreshCachedProxyStatusAsync()
-            }
-            return "VNet 停止已提交，正在后台停止..."
+            ProbeNodeVpnService.stop(this@MainActivity)
+            refreshCachedStatusAsync()
+            refreshCachedProxyStatusAsync()
+            return "全局 VPN 正在停止..."
         }
 
         @JavascriptInterface
