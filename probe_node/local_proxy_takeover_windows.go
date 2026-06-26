@@ -374,18 +374,24 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 	bypassTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
 	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
 		if tunIfIndex, takeoverEnabled := currentProbeLocalWindowsTakeoverIfIndex(); takeoverEnabled {
-			logProbeWarnf("probe local direct bypass target missing during tun takeover: target=%s ips=%s tun_if_index=%d", strings.TrimSpace(targetAddr), strings.Join(ips, ","), tunIfIndex)
-			return fmt.Errorf("direct bypass route target is not prepared while tun takeover is active: tun_if_index=%d", tunIfIndex)
+			bypassTarget, err = probeLocalResolveWindowsPrimaryEgressRoute(tunIfIndex)
+			if err != nil {
+				logProbeWarnf("probe local direct bypass target recover failed during tun takeover: target=%s ips=%s tun_if_index=%d err=%v", strings.TrimSpace(targetAddr), strings.Join(ips, ","), tunIfIndex, err)
+				return fmt.Errorf("recover direct bypass route target during tun takeover: %w", err)
+			}
+			setProbeLocalWindowsDirectBypassRouteTarget(bypassTarget)
+			logProbeInfof("probe local direct bypass route target recovered during tun takeover: target=%s excluded_if_index=%d if_index=%d next_hop=%s", strings.TrimSpace(targetAddr), tunIfIndex, bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
+		} else {
+			routeTarget, routeErr := resolveProbeLocalWindowsRouteTarget()
+			if routeErr != nil {
+				return routeErr
+			}
+			bypassTarget, err = probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
+			if err != nil {
+				return err
+			}
+			logProbeInfof("probe local direct bypass route target resolved on demand: excluded_if_index=%d if_index=%d next_hop=%s", routeTarget.InterfaceIndex, bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
 		}
-		routeTarget, routeErr := resolveProbeLocalWindowsRouteTarget()
-		if routeErr != nil {
-			return routeErr
-		}
-		bypassTarget, err = probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
-		if err != nil {
-			return err
-		}
-		logProbeInfof("probe local direct bypass route target resolved on demand: excluded_if_index=%d if_index=%d next_hop=%s", routeTarget.InterfaceIndex, bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
 	}
 	if tunIfIndex, takeoverEnabled := currentProbeLocalWindowsTakeoverIfIndex(); takeoverEnabled && tunIfIndex > 0 && bypassTarget.InterfaceIndex == tunIfIndex {
 		logProbeWarnf("probe local direct bypass target rejected because it points to tun: target=%s ips=%s if_index=%d next_hop=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","), bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))

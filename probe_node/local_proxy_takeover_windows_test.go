@@ -443,7 +443,7 @@ func TestEnsureProbeLocalExplicitDirectBypassWritesHostRoute(t *testing.T) {
 	}
 }
 
-func TestEnsureProbeLocalExplicitDirectBypassRequiresPreparedTargetDuringTUN(t *testing.T) {
+func TestEnsureProbeLocalExplicitDirectBypassRecoversPreparedTargetDuringTUN(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	resetProbeLocalDirectBypassStateForTest()
 	t.Cleanup(func() {
@@ -455,17 +455,35 @@ func TestEnsureProbeLocalExplicitDirectBypassRequiresPreparedTargetDuringTUN(t *
 	probeLocalWindowsTakeoverState.enabled = true
 	probeLocalWindowsTakeoverState.tunIfIndex = 9
 	probeLocalWindowsTakeoverState.mu.Unlock()
+	resolveCalls := 0
 	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
-		t.Fatalf("should not re-detect egress route during active tun takeover; excluded=%d", excludedIfIndex)
-		return probeLocalWindowsDirectBypassRouteTarget{}, nil
+		resolveCalls++
+		if excludedIfIndex != 9 {
+			t.Fatalf("excludedIfIndex=%d want 9", excludedIfIndex)
+		}
+		return probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}, nil
 	}
+	var created []probeLocalWindowsRouteDef
 	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
-		t.Fatalf("should not create route without prepared bypass target: %+v", routeDef)
-		return false, nil
+		created = append(created, routeDef)
+		return true, nil
 	}
 
-	if err := ensureProbeLocalExplicitDirectBypass("203.0.113.7:16030"); err == nil {
-		t.Fatal("expected missing prepared bypass target to fail during tun takeover")
+	if err := ensureProbeLocalExplicitDirectBypass("203.0.113.7:16030"); err != nil {
+		t.Fatalf("ensure direct bypass failed: %v", err)
+	}
+	if resolveCalls != 1 {
+		t.Fatalf("resolveCalls=%d want 1", resolveCalls)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created routes=%+v", created)
+	}
+	if created[0].Prefix != "203.0.113.7" || created[0].Gateway != "192.168.51.1" || created[0].IfIndex != 13 {
+		t.Fatalf("unexpected route=%+v", created[0])
+	}
+	target, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
+	if !ok || target.InterfaceIndex != 13 || target.NextHop != "192.168.51.1" {
+		t.Fatalf("recovered target ok=%v target=%+v", ok, target)
 	}
 }
 
