@@ -834,6 +834,105 @@ func TestAndroidProxyChainSessionDefaultProtocolFallsBackToWebSocket(t *testing.
 	}
 }
 
+func TestAndroidProxyChainSessionConcurrentEnsureReusesSingleSession(t *testing.T) {
+	const chainID = "relay-chain-concurrent"
+	const secret = "link-secret"
+	var countMu sync.Mutex
+	upgradeCount := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != linkRelayAPIPath {
+			http.NotFound(w, r)
+			return
+		}
+		assertLinkAuth(t, r, chainID, secret)
+		countMu.Lock()
+		upgradeCount++
+		countMu.Unlock()
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade failed: %v", err)
+		}
+		conn := newWebSocketNetConn(ws)
+		defer conn.Close()
+		session, err := newMobileChainFrameServer(conn)
+		if err != nil {
+			t.Fatalf("frame server: %v", err)
+		}
+		defer session.Close()
+		<-session.closeCh
+	}))
+	defer server.Close()
+
+	host, port := testServerHostPort(t, server)
+	proxyRuntime.mu.Lock()
+	oldSessions := proxyRuntime.sessions
+	proxyRuntime.sessions = map[string]*proxyChainSession{}
+	proxyRuntime.mu.Unlock()
+	defer func() {
+		proxyRuntime.mu.Lock()
+		for _, session := range proxyRuntime.sessions {
+			closeProxyChainSession(session)
+		}
+		proxyRuntime.sessions = oldSessions
+		proxyRuntime.mu.Unlock()
+	}()
+
+	item := linkChainServerItem{
+		ChainID:      "client-chain-concurrent",
+		RelayChainID: chainID,
+		Secret:       secret,
+		EntryNodeID:  "1",
+		ExitNodeID:   "2",
+		LinkLayer:    "websocket",
+		HopConfigs: []linkChainHopItem{
+			{NodeNo: 1, RelayHost: host, ExternalPort: port},
+		},
+	}
+	endpoint, err := resolveLinkEndpoint(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	errCh := make(chan error, workers)
+	sessionCh := make(chan *mobileChainFrameSession, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			<-start
+			session, err := ensureProxyChainSession(item, endpoint)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			sessionCh <- session
+			errCh <- nil
+		}()
+	}
+	close(start)
+	for i := 0; i < workers; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("ensure session failed: %v", err)
+		}
+	}
+	first := <-sessionCh
+	if first == nil || first.IsClosed() {
+		t.Fatalf("first session not usable: %v", first)
+	}
+	for i := 1; i < workers; i++ {
+		if got := <-sessionCh; got != first {
+			t.Fatal("concurrent ensure created more than one client session")
+		}
+	}
+	countMu.Lock()
+	gotUpgrades := upgradeCount
+	countMu.Unlock()
+	if gotUpgrades != 1 {
+		t.Fatalf("upgrade count=%d want 1", gotUpgrades)
+	}
+}
+
 func TestOpenAndroidProxyIndependentStreamUsesBridgeSession(t *testing.T) {
 	proxyRuntime.mu.Lock()
 	oldSessions := proxyRuntime.sessions

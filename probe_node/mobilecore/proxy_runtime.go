@@ -30,6 +30,7 @@ var proxyRuntime = &androidProxyRuntime{sessions: map[string]*proxyChainSession{
 
 type androidProxyRuntime struct {
 	mu            sync.Mutex
+	sessionMu     sync.Mutex
 	configDir     string
 	httpListener  net.Listener
 	socksListener net.Listener
@@ -530,6 +531,9 @@ func openAndroidProxyLinkRelayDataStream(item linkChainServerItem, endpoint link
 }
 
 func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*mobileChainFrameSession, error) {
+	proxyRuntime.sessionMu.Lock()
+	defer proxyRuntime.sessionMu.Unlock()
+
 	proxyRuntime.mu.Lock()
 	if existing := proxyRuntime.sessions[endpoint.ChainID]; existing != nil && existing.session != nil && !existing.session.IsClosed() {
 		session := existing.session
@@ -547,8 +551,13 @@ func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*
 		_ = conn.Close()
 		return nil, err
 	}
-	ready := session.WaitReady(500 * time.Millisecond)
+	ready := session.WaitReady(proxyResponseReadTimeout)
 	androidLogStore.add("proxy", "debug", "frame session ready: chain="+strings.TrimSpace(endpoint.ChainID)+" ready="+strconv.FormatBool(ready))
+	if !ready {
+		_ = session.Close()
+		_ = conn.Close()
+		return nil, errors.New("frame session negotiation timeout")
+	}
 	androidLogStore.add("proxy", "normal", "created frame session: chain="+strings.TrimSpace(endpoint.ChainID))
 	proxyRuntime.mu.Lock()
 	if old := proxyRuntime.sessions[endpoint.ChainID]; old != nil {
