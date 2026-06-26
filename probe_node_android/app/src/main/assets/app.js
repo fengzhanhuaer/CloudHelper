@@ -39,8 +39,31 @@ function byId(id) {
   return document.getElementById(id);
 }
 
+function hasCloudHelper(method) {
+  return !!(window.CloudHelper && typeof window.CloudHelper[method] === "function");
+}
+
+function callCloudHelperString(method, fallback, ...args) {
+  if (!hasCloudHelper(method)) {
+    return fallback || "";
+  }
+  try {
+    const result = window.CloudHelper[method](...args);
+    return result == null ? (fallback || "") : String(result);
+  } catch (error) {
+    return fallback || `CloudHelper.${method} failed: ${error && error.message ? error.message : error}`;
+  }
+}
+
 function readConfig() {
-  return JSON.parse(window.CloudHelper.loadConfig() || "{}");
+  if (!hasCloudHelper("loadConfig")) {
+    return {
+      ready: false,
+      status: "Android bridge 未就绪",
+      localVersion: "-"
+    };
+  }
+  return JSON.parse(callCloudHelperString("loadConfig", "{}") || "{}");
 }
 
 function loadConfig() {
@@ -1101,19 +1124,20 @@ function formatVPNSelfCheck(data) {
 
 function refreshSummary(config) {
   const data = config || readConfig();
+  const runtime = callCloudHelperString("status", "Android bridge 未就绪");
   setText("summaryController", data.controllerUrl || "-");
   setText("summaryNodeId", data.nodeId || "-");
   setText("summaryReady", data.ready ? "已配置" : "未配置");
-  setText("summaryRuntime", window.CloudHelper.status());
+  setText("summaryRuntime", runtime);
   setText("summaryLocalVersion", data.localVersion || "-");
-  setRuntimeStatus(`运行：${window.CloudHelper.status()}`);
+  setRuntimeStatus(`运行：${runtime}`);
   refreshVPNDiagnostics();
 }
 
 function setStatus(message) {
   setText("status", message);
   setText("settingsStatus", message);
-  setRuntimeStatus(`运行：${window.CloudHelper.status()}`);
+  setRuntimeStatus(`运行：${callCloudHelperString("status", "Android bridge 未就绪")}`);
   refreshSummarySilent();
 }
 
@@ -1252,10 +1276,11 @@ function showToast(message, isError) {
 function refreshSummarySilent() {
   try {
     const data = readConfig();
+    const runtime = callCloudHelperString("status", "Android bridge 未就绪");
     setText("summaryController", data.controllerUrl || "-");
     setText("summaryNodeId", data.nodeId || "-");
     setText("summaryReady", data.ready ? "已配置" : "未配置");
-    setText("summaryRuntime", window.CloudHelper.status());
+    setText("summaryRuntime", runtime);
     setText("summaryLocalVersion", data.localVersion || "-");
     refreshVPNDiagnostics();
     refreshConnectionsIfVisible();
@@ -1322,7 +1347,13 @@ function initPage() {
   setInterval(refreshSummarySilent, 5000);
 }
 
-document.addEventListener("DOMContentLoaded", initPage);
+document.addEventListener("DOMContentLoaded", () => {
+  try {
+    initPage();
+  } catch (error) {
+    handleBootFailure(error);
+  }
+});
 
 window.addEventListener("error", (event) => {
   handleBootFailure(event && event.error ? event.error : event && event.message ? event.message : "页面加载失败");

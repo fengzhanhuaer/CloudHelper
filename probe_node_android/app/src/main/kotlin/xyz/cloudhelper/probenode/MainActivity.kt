@@ -2,6 +2,7 @@ package xyz.cloudhelper.probenode
 
 import android.Manifest
 import android.app.Activity
+import android.content.pm.ApplicationInfo
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.VpnService
@@ -45,7 +46,7 @@ class MainActivity : Activity() {
         }
         webView.addJavascriptInterface(AppBridge(), "CloudHelper")
         setContentView(webView)
-        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         webView.loadUrl("file:///android_asset/status.html")
         requestNotificationPermissionIfNeeded()
         startReportServiceIfConfigured()
