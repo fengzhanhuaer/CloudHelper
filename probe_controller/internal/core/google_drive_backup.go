@@ -28,6 +28,12 @@ const (
 	googleOAuthTokenURL      = "https://oauth2.googleapis.com/token"
 	googleDriveFilesURL      = "https://www.googleapis.com/drive/v3/files"
 	googleDriveUploadURL     = "https://www.googleapis.com/upload/drive/v3/files"
+
+	googleDriveAccessTokenRefreshSkew  = 10 * time.Minute
+	googleDriveAuthRenewalInterval     = 30 * time.Minute
+	googleDriveAuthRenewalInitialDelay = 2 * time.Minute
+	googleDriveAuthRenewalJobKey       = "backup.google.auth.renewal"
+	googleDriveAuthRenewalJobTimeout   = 45 * time.Second
 )
 
 type googleDriveToken struct {
@@ -42,7 +48,7 @@ func (t googleDriveToken) HasRefreshToken() bool {
 }
 
 func (t googleDriveToken) HasUsableAccessToken() bool {
-	return strings.TrimSpace(t.AccessToken) != "" && time.Now().Before(t.Expiry.Add(-1*time.Minute))
+	return strings.TrimSpace(t.AccessToken) != "" && time.Now().Before(t.Expiry.Add(-googleDriveAccessTokenRefreshSkew))
 }
 
 type googleDeviceCodeResponse struct {
@@ -81,6 +87,15 @@ var googleDriveAuthSessions = struct {
 	mu   sync.Mutex
 	data map[string]googleDriveAuthSession
 }{data: map[string]googleDriveAuthSession{}}
+
+var googleDriveRefreshAccessTokenOverride func(backupSettings) (googleDriveToken, error)
+
+func callGoogleDriveRefreshAccessToken(settings backupSettings) (googleDriveToken, error) {
+	if googleDriveRefreshAccessTokenOverride != nil {
+		return googleDriveRefreshAccessTokenOverride(settings)
+	}
+	return refreshGoogleDriveAccessToken(settings)
+}
 
 func parseGoogleDriveTokenFromStore(raw any) googleDriveToken {
 	if raw == nil {
@@ -389,6 +404,42 @@ func clearGoogleDriveToken() error {
 	return Store.SaveWithoutAutoBackup()
 }
 
+func initGoogleDriveBackupAuthRenewalEngine() {
+	scheduleGoogleDriveBackupAuthRenewal(time.Now().Add(googleDriveAuthRenewalInitialDelay))
+}
+
+func scheduleGoogleDriveBackupAuthRenewal(runAt time.Time) {
+	scheduleGlobalTask(googleDriveAuthRenewalJobKey, runAt, googleDriveAuthRenewalJobTimeout, func(ctx context.Context) {
+		runGoogleDriveBackupAuthRenewal(ctx)
+	})
+}
+
+func runGoogleDriveBackupAuthRenewal(ctx context.Context) {
+	defer scheduleGoogleDriveBackupAuthRenewal(time.Now().Add(googleDriveAuthRenewalInterval))
+	renewGoogleDriveBackupAuthOnce(ctx)
+}
+
+func renewGoogleDriveBackupAuthOnce(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	settings := getBackupSettings()
+	if !settings.Enabled || !settings.GoogleToken.HasRefreshToken() {
+		return
+	}
+	if settings.GoogleToken.HasUsableAccessToken() {
+		return
+	}
+	if _, err := callGoogleDriveRefreshAccessToken(settings); err != nil {
+		markControllerBackupAuthRenewalFailed(err)
+		logControllerWarnf("google drive backup auth renewal failed: %v", err)
+		return
+	}
+	markControllerBackupAuthRenewalOK()
+}
+
 func uploadGoogleDriveBackupArchive(archivePath string, settings backupSettings) error {
 	token, err := ensureGoogleDriveAccessToken(settings)
 	if err != nil {
@@ -417,7 +468,7 @@ func ensureGoogleDriveAccessToken(settings backupSettings) (googleDriveToken, er
 	if settings.GoogleToken.HasUsableAccessToken() {
 		return settings.GoogleToken, nil
 	}
-	return refreshGoogleDriveAccessToken(settings)
+	return callGoogleDriveRefreshAccessToken(settings)
 }
 
 func ensureGoogleDriveFolderPath(accessToken string, folderPath string) (string, error) {

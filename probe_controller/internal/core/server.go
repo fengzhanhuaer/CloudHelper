@@ -24,6 +24,7 @@ func Run() {
 	initTGAssistantBotEngine()
 	initTGAssistantRenewalEngine()
 	initCloudflareZeroTrustSyncEngine()
+	initGoogleDriveBackupAuthRenewalEngine()
 	if err := cleanupControllerStaleExecutables(); err != nil {
 		logControllerWarnf("failed to cleanup stale controller executable files: %v", err)
 	}

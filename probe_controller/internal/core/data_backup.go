@@ -118,6 +118,29 @@ func setControllerBackupLastArchive(path string) {
 	controllerBackupStatusMu.Unlock()
 }
 
+func markControllerBackupAuthRenewalOK() {
+	controllerBackupStatusMu.Lock()
+	if !controllerBackupStatus.Running {
+		controllerBackupStatus.LastStatus = "google_auth_ok"
+	}
+	controllerBackupStatus.LastError = ""
+	controllerBackupStatus.LastFinishedAt = time.Now().UTC().Format(time.RFC3339)
+	controllerBackupStatusMu.Unlock()
+}
+
+func markControllerBackupAuthRenewalFailed(err error) {
+	if err == nil {
+		return
+	}
+	controllerBackupStatusMu.Lock()
+	if !controllerBackupStatus.Running {
+		controllerBackupStatus.LastStatus = "google_auth_failed"
+	}
+	controllerBackupStatus.LastError = strings.TrimSpace(err.Error())
+	controllerBackupStatus.LastFinishedAt = time.Now().UTC().Format(time.RFC3339)
+	controllerBackupStatusMu.Unlock()
+}
+
 func getControllerBackupRuntimeStatus() controllerBackupRuntimeStatus {
 	controllerBackupStatusMu.Lock()
 	defer controllerBackupStatusMu.Unlock()
