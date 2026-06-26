@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"net"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestMobileChainFrameRoundTrip(t *testing.T) {
@@ -91,4 +93,77 @@ func TestMobileChainFrameStreamAdaptiveChunkUsesUpperLayerHints(t *testing.T) {
 	if got := stream.frameDataChunkBytes(128 * 1024); got != mobileChainFrameBulkDataBytes {
 		t.Fatalf("bulk chunk=%d, want %d", got, mobileChainFrameBulkDataBytes)
 	}
+}
+
+func TestMobileChainFrameSessionNegotiatesConfigAndFinReset(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	clientSession, err := newMobileChainFrameClient(clientConn)
+	if err != nil {
+		t.Fatalf("client frame session: %v", err)
+	}
+	defer clientSession.Close()
+	serverSession, err := newMobileChainFrameServer(serverConn)
+	if err != nil {
+		t.Fatalf("server frame session: %v", err)
+	}
+	defer serverSession.Close()
+
+	waitMobileChainFrameConfig(t, clientSession)
+	waitMobileChainFrameConfig(t, serverSession)
+
+	accepted := make(chan *mobileChainFrameStream, 2)
+	go func() {
+		for i := 0; i < 2; i++ {
+			stream, acceptErr := serverSession.Accept()
+			if acceptErr != nil {
+				return
+			}
+			frameStream, ok := stream.(*mobileChainFrameStream)
+			if !ok {
+				return
+			}
+			_ = frameStream.RespondMobileOpen(mobileChainTunnelOpenResponse{OK: true})
+			accepted <- frameStream
+		}
+	}()
+
+	first, err := clientSession.OpenWithMobileRequest(mobileChainTunnelOpenRequest{Type: "open", Network: "tcp", Address: "127.0.0.1:3389"}, time.Second)
+	if err != nil {
+		t.Fatalf("open first stream: %v", err)
+	}
+	if err := first.(*mobileChainFrameStream).CloseWrite(); err != nil {
+		t.Fatalf("close write: %v", err)
+	}
+	serverFirst := <-accepted
+	_ = serverFirst.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := serverFirst.Read(make([]byte, 1)); err == nil {
+		t.Fatal("server read after fin succeeded, want EOF")
+	}
+
+	second, err := clientSession.OpenWithMobileRequest(mobileChainTunnelOpenRequest{Type: "open", Network: "tcp", Address: "127.0.0.1:3390"}, time.Second)
+	if err != nil {
+		t.Fatalf("open second stream: %v", err)
+	}
+	if err := second.(*mobileChainFrameStream).Reset("boom"); err != nil {
+		t.Fatalf("reset stream: %v", err)
+	}
+	serverSecond := <-accepted
+	_ = serverSecond.SetReadDeadline(time.Now().Add(time.Second))
+	_, err = serverSecond.Read(make([]byte, 1))
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("server read after reset err=%v, want boom", err)
+	}
+}
+
+func waitMobileChainFrameConfig(t *testing.T, session *mobileChainFrameSession) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		cfg := session.NegotiatedConfig()
+		if len(cfg.Features) > 0 && cfg.MaxFrameData > 0 && cfg.RealtimeFrameData > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("frame config was not negotiated: %+v", session.NegotiatedConfig())
 }

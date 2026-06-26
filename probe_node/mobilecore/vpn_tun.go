@@ -397,16 +397,20 @@ func VpnStart(fd int64, configDir string) string {
 	proxyRuntime.mu.Lock()
 	proxyRuntime.configDir = strings.TrimSpace(configDir)
 	proxyRuntime.mu.Unlock()
+	go cleanupPreviousAndroidVPNDataPlane(oldStack, oldTun)
+	go ensureAndroidVPNDNSCacheLoaded(strings.TrimSpace(configDir))
+	go runVPNStartupSelfCheck(strings.TrimSpace(configDir))
+	androidLogStore.add("vpn", "info", "vpn data plane running")
+	return "vpn running"
+}
+
+func cleanupPreviousAndroidVPNDataPlane(oldStack *androidVPNNetstack, oldTun *os.File) {
 	if oldTun != nil {
 		_ = oldTun.Close()
 	}
 	if oldStack != nil {
 		_ = oldStack.Close()
 	}
-	ensureAndroidVPNDNSCacheLoaded(strings.TrimSpace(configDir))
-	go runVPNStartupSelfCheck(strings.TrimSpace(configDir))
-	androidLogStore.add("vpn", "info", "vpn data plane running")
-	return "vpn running"
 }
 
 func VpnStop() string {

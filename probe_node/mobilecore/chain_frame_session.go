@@ -18,6 +18,11 @@ const (
 	mobileChainFrameControlOpenUpdateResult = "open_update_result"
 	mobileChainFrameControlClose            = "close"
 	mobileChainFrameControlError            = "error"
+	mobileChainFrameControlHello            = "hello"
+	mobileChainFrameControlHelloAck         = "hello_ack"
+	mobileChainFrameControlFin              = "fin"
+	mobileChainFrameControlReset            = "rst"
+	mobileChainFrameControlWindowUpdate     = "window_update"
 
 	mobileChainFrameSessionInboundBuffer = 64
 	mobileChainFramePingInterval         = 10 * time.Second
@@ -29,11 +34,15 @@ const (
 )
 
 type mobileChainFrameSession struct {
-	conn net.Conn
+	conn      net.Conn
+	local     mobileChainFrameSessionAddr
+	remote    mobileChainFrameSessionAddr
+	initiator bool
 
-	writeCh chan mobileChainFrameWriteRequest
-	closeCh chan struct{}
-	closed  atomic.Bool
+	controlWriteCh chan mobileChainFrameWriteRequest
+	dataWriteCh    chan mobileChainFrameWriteRequest
+	closeCh        chan struct{}
+	closed         atomic.Bool
 
 	nextStreamID atomic.Uint64
 	streamsMu    sync.Mutex
@@ -49,6 +58,11 @@ type mobileChainFrameSession struct {
 	lastRTTNS      atomic.Int64
 	lastPingUnixNS atomic.Int64
 	lastPongUnixNS atomic.Int64
+
+	configMu        sync.RWMutex
+	localConfig     mobileChainFrameSessionConfig
+	remoteConfig    mobileChainFrameSessionConfig
+	effectiveConfig mobileChainFrameSessionConfig
 }
 
 type mobileChainFrameWriteRequest struct {
@@ -57,11 +71,28 @@ type mobileChainFrameWriteRequest struct {
 }
 
 type mobileChainFrameSessionControl struct {
-	Type    string                        `json:"type"`
-	OK      bool                          `json:"ok,omitempty"`
-	Error   string                        `json:"error,omitempty"`
-	Request *linkTunnelOpenRequest        `json:"request,omitempty"`
-	Mobile  *mobileChainTunnelOpenRequest `json:"mobile,omitempty"`
+	Type    string                         `json:"type"`
+	OK      bool                           `json:"ok,omitempty"`
+	Error   string                         `json:"error,omitempty"`
+	Request *linkTunnelOpenRequest         `json:"request,omitempty"`
+	Mobile  *mobileChainTunnelOpenRequest  `json:"mobile,omitempty"`
+	Config  *mobileChainFrameSessionConfig `json:"config,omitempty"`
+}
+
+type mobileChainFrameSessionConfig struct {
+	Version              int      `json:"version"`
+	Features             []string `json:"features,omitempty"`
+	MaxFrameData         int      `json:"max_frame_data"`
+	MinFrameData         int      `json:"min_frame_data"`
+	PreferredFrameData   int      `json:"preferred_frame_data"`
+	BulkFrameData        int      `json:"bulk_frame_data"`
+	MaxControlBytes      int      `json:"max_control_bytes"`
+	MaxConcurrentStreams int      `json:"max_concurrent_streams"`
+	InitialStreamWindow  int      `json:"initial_stream_window"`
+	InitialSessionWindow int      `json:"initial_session_window"`
+	IdleTimeoutMS        int64    `json:"idle_timeout_ms"`
+	PingIntervalMS       int64    `json:"ping_interval_ms"`
+	RealtimeFrameData    int      `json:"realtime_preferred_frame_data"`
 }
 
 type mobileChainFrameOpenResult struct {
@@ -109,18 +140,28 @@ func newMobileChainFrameSession(conn net.Conn, initiator bool) (*mobileChainFram
 	if !initiator {
 		start = 2
 	}
+	localConfig := defaultMobileChainFrameSessionConfig()
 	s := &mobileChainFrameSession{
-		conn:         conn,
-		writeCh:      make(chan mobileChainFrameWriteRequest, mobileChainFrameSessionInboundBuffer),
-		closeCh:      make(chan struct{}),
-		streams:      make(map[uint64]*mobileChainFrameStream),
-		acceptCh:     make(chan *mobileChainFrameStream, mobileChainFrameSessionInboundBuffer),
-		pendingPings: make(map[uint64]time.Time),
+		conn:            conn,
+		local:           mobileChainFrameSessionAddr{label: conn.LocalAddr().String()},
+		remote:          mobileChainFrameSessionAddr{label: conn.RemoteAddr().String()},
+		initiator:       initiator,
+		controlWriteCh:  make(chan mobileChainFrameWriteRequest, mobileChainFrameSessionInboundBuffer),
+		dataWriteCh:     make(chan mobileChainFrameWriteRequest, mobileChainFrameSessionInboundBuffer),
+		closeCh:         make(chan struct{}),
+		streams:         make(map[uint64]*mobileChainFrameStream),
+		acceptCh:        make(chan *mobileChainFrameStream, mobileChainFrameSessionInboundBuffer),
+		pendingPings:    make(map[uint64]time.Time),
+		localConfig:     localConfig,
+		effectiveConfig: localConfig,
 	}
 	s.nextStreamID.Store(start)
 	go s.writeLoop()
 	go s.readLoop()
 	go s.pingLoop()
+	go func() {
+		_ = s.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl}, mobileChainFrameSessionControl{Type: mobileChainFrameControlHello, Config: &localConfig})
+	}()
 	return s, nil
 }
 
@@ -251,6 +292,15 @@ func (s *mobileChainFrameSession) PingStats() mobileChainFramePingStats {
 	return stats
 }
 
+func (s *mobileChainFrameSession) NegotiatedConfig() mobileChainFrameSessionConfig {
+	if s == nil {
+		return defaultMobileChainFrameSessionConfig()
+	}
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return s.effectiveConfig
+}
+
 func (s *mobileChainFrameSession) registerStream(stream *mobileChainFrameStream) {
 	if s == nil || stream == nil {
 		return
@@ -318,17 +368,61 @@ func (s *mobileChainFrameSession) writeLoop() {
 		select {
 		case <-s.closeCh:
 			return
-		case req := <-s.writeCh:
-			err := writeMobileChainFrame(s.conn, req.frame)
-			select {
-			case req.errCh <- err:
-			default:
+		case req := <-s.controlWriteCh:
+			if !s.writeOne(req) {
+				return
 			}
-			if err != nil {
-				_ = s.Close()
+			continue
+		default:
+		}
+		select {
+		case <-s.closeCh:
+			return
+		case req := <-s.controlWriteCh:
+			if !s.writeOne(req) {
+				return
+			}
+		case req := <-s.dataWriteCh:
+			if !s.writeOne(req) {
 				return
 			}
 		}
+	}
+}
+
+func (s *mobileChainFrameSession) writeOne(req mobileChainFrameWriteRequest) bool {
+	err := writeMobileChainFrame(s.conn, req.frame)
+	select {
+	case req.errCh <- err:
+	default:
+	}
+	if err != nil {
+		_ = s.Close()
+		return false
+	}
+	return true
+}
+
+func (s *mobileChainFrameSession) enqueueWriteFrame(frame mobileChainFrame, errCh chan error) error {
+	req := mobileChainFrameWriteRequest{frame: frame, errCh: errCh}
+	targetCh := s.dataWriteCh
+	if frame.Kind != mobileChainFrameKindData {
+		targetCh = s.controlWriteCh
+	}
+	select {
+	case targetCh <- req:
+		return nil
+	case <-s.closeCh:
+		return net.ErrClosed
+	}
+}
+
+func (s *mobileChainFrameSession) finishWriteFrame(errCh chan error) error {
+	select {
+	case err := <-errCh:
+		return err
+	case <-s.closeCh:
+		return net.ErrClosed
 	}
 }
 
@@ -417,6 +511,10 @@ func (s *mobileChainFrameSession) handleControlFrame(frame mobileChainFrame) {
 		_ = json.Unmarshal(frame.Control, &control)
 	}
 	switch control.Type {
+	case mobileChainFrameControlHello:
+		s.handleHelloControl(control)
+	case mobileChainFrameControlHelloAck:
+		s.handleHelloControl(control)
 	case mobileChainFrameControlOpen:
 		stream := newMobileChainFrameStream(s, frame.StreamID)
 		if control.Request != nil {
@@ -448,11 +546,15 @@ func (s *mobileChainFrameSession) handleControlFrame(frame mobileChainFrame) {
 		if stream := s.getStream(frame.StreamID); stream != nil {
 			stream.deliverOpenUpdateResult(mobileChainFrameOpenResult{OK: control.OK, Error: control.Error})
 		}
+	case mobileChainFrameControlFin:
+		if stream := s.getStream(frame.StreamID); stream != nil {
+			_ = stream.closeRemote(io.EOF)
+		}
 	case mobileChainFrameControlClose:
 		if stream := s.getStream(frame.StreamID); stream != nil {
 			_ = stream.closeRemote(io.EOF)
 		}
-	case mobileChainFrameControlError:
+	case mobileChainFrameControlError, mobileChainFrameControlReset:
 		if stream := s.getStream(frame.StreamID); stream != nil {
 			errText := control.Error
 			if errText == "" {
@@ -477,6 +579,30 @@ func (s *mobileChainFrameSession) writeControlFrame(frame mobileChainFrame, cont
 	return s.writeFrame(frame)
 }
 
+func (s *mobileChainFrameSession) writeControlFrameAsync(frame mobileChainFrame, control mobileChainFrameSessionControl) {
+	payload, err := marshalMobileChainFrameControl(control)
+	if err != nil {
+		return
+	}
+	frame.Kind = mobileChainFrameKindControl
+	frame.Control = payload
+	s.writeFrameAsync(frame)
+}
+
+func (s *mobileChainFrameSession) handleHelloControl(control mobileChainFrameSessionControl) {
+	if s == nil || control.Config == nil {
+		return
+	}
+	s.configMu.Lock()
+	s.remoteConfig = normalizeMobileChainFrameSessionConfig(*control.Config)
+	s.effectiveConfig = mergeMobileChainFrameSessionConfig(s.localConfig, s.remoteConfig)
+	effective := s.effectiveConfig
+	s.configMu.Unlock()
+	if control.Type == mobileChainFrameControlHello {
+		s.writeControlFrameAsync(mobileChainFrame{Kind: mobileChainFrameKindControl}, mobileChainFrameSessionControl{Type: mobileChainFrameControlHelloAck, Config: &effective})
+	}
+}
+
 func (s *mobileChainFrameSession) writeFrame(frame mobileChainFrame) error {
 	if s == nil {
 		return errors.New("frame session is nil")
@@ -485,17 +611,10 @@ func (s *mobileChainFrameSession) writeFrame(frame mobileChainFrame) error {
 		return net.ErrClosed
 	}
 	errCh := make(chan error, 1)
-	select {
-	case s.writeCh <- mobileChainFrameWriteRequest{frame: frame, errCh: errCh}:
-	case <-s.closeCh:
-		return net.ErrClosed
-	}
-	select {
-	case err := <-errCh:
+	if err := s.enqueueWriteFrame(frame, errCh); err != nil {
 		return err
-	case <-s.closeCh:
-		return net.ErrClosed
 	}
+	return s.finishWriteFrame(errCh)
 }
 
 func (s *mobileChainFrameSession) writeFrameAsync(frame mobileChainFrame) {
@@ -503,10 +622,7 @@ func (s *mobileChainFrameSession) writeFrameAsync(frame mobileChainFrame) {
 		return
 	}
 	errCh := make(chan error, 1)
-	select {
-	case s.writeCh <- mobileChainFrameWriteRequest{frame: frame, errCh: errCh}:
-	case <-s.closeCh:
-	}
+	_ = s.enqueueWriteFrame(frame, errCh)
 }
 
 type mobileChainFrameStream struct {
@@ -646,7 +762,7 @@ func (s *mobileChainFrameStream) CloseWrite() error {
 	if s == nil {
 		return nil
 	}
-	return s.session.writeFrame(mobileChainFrame{Kind: mobileChainFrameKindClose, StreamID: s.id})
+	return s.session.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: s.id}, mobileChainFrameSessionControl{Type: mobileChainFrameControlFin})
 }
 
 func (s *mobileChainFrameStream) closeLocal() error {
@@ -654,11 +770,21 @@ func (s *mobileChainFrameStream) closeLocal() error {
 	s.closeOnce.Do(func() {
 		close(s.localDone)
 		if s.session != nil {
-			err = s.session.writeFrame(mobileChainFrame{Kind: mobileChainFrameKindClose, StreamID: s.id})
+			err = s.session.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: s.id}, mobileChainFrameSessionControl{Type: mobileChainFrameControlClose})
 			s.session.removeStream(s.id, s)
 		}
 	})
 	return err
+}
+
+func (s *mobileChainFrameStream) Reset(errText string) error {
+	if s == nil {
+		return nil
+	}
+	if strings.TrimSpace(errText) == "" {
+		errText = "stream reset"
+	}
+	return s.session.writeControlFrame(mobileChainFrame{Kind: mobileChainFrameKindControl, StreamID: s.id}, mobileChainFrameSessionControl{Type: mobileChainFrameControlReset, Error: errText})
 }
 
 func (s *mobileChainFrameStream) closeRemote(err error) error {
@@ -728,25 +854,24 @@ func (s *mobileChainFrameStream) MobileOpenRequest() (mobileChainTunnelOpenReque
 }
 
 func (s *mobileChainFrameStream) frameDataChunkBytes(available int) int {
-	if s == nil {
+	if s == nil || s.session == nil {
 		return mobileChainFrameRealtimeDataBytes
 	}
-	chunk := mobileChainFramePreferredDataBytes
+	cfg := s.session.NegotiatedConfig()
+	chunk := cfg.PreferredFrameData
 	switch s.Priority() {
 	case "realtime":
-		chunk = mobileChainFrameRealtimeDataBytes
+		chunk = cfg.RealtimeFrameData
 	case "bulk":
-		chunk = mobileChainFrameBulkDataBytes
+		chunk = cfg.BulkFrameData
 	default:
-		if available <= mobileChainFrameRealtimeDataBytes {
-			chunk = mobileChainFrameRealtimeDataBytes
-		} else if available >= mobileChainFrameBulkDataBytes {
-			chunk = mobileChainFrameBulkDataBytes
+		if available <= cfg.RealtimeFrameData {
+			chunk = cfg.RealtimeFrameData
+		} else if available >= cfg.BulkFrameData {
+			chunk = cfg.BulkFrameData
 		}
 	}
-	if chunk > mobileChainFrameMaxDataBytes {
-		chunk = mobileChainFrameMaxDataBytes
-	}
+	chunk = clampMobileChainFrameDataBytes(chunk, cfg.PreferredFrameData, cfg.MaxFrameData)
 	if available > 0 && chunk > available {
 		return available
 	}
@@ -925,17 +1050,17 @@ func (s *mobileChainFrameStream) waitOpenUpdateResult(timeout time.Duration) err
 }
 
 func (s *mobileChainFrameStream) LocalAddr() net.Addr {
-	if s == nil || s.session == nil || s.session.conn == nil {
+	if s == nil || s.session == nil {
 		return mobileChainFrameSessionAddr{}
 	}
-	return mobileChainFrameSessionAddr{label: s.session.conn.LocalAddr().String()}
+	return s.session.local
 }
 
 func (s *mobileChainFrameStream) RemoteAddr() net.Addr {
-	if s == nil || s.session == nil || s.session.conn == nil {
+	if s == nil || s.session == nil {
 		return mobileChainFrameSessionAddr{}
 	}
-	return mobileChainFrameSessionAddr{label: s.session.conn.RemoteAddr().String()}
+	return s.session.remote
 }
 
 func (s *mobileChainFrameStream) SetDeadline(t time.Time) error {
@@ -1016,3 +1141,185 @@ type mobileChainTimeoutError struct{}
 func (mobileChainTimeoutError) Error() string   { return "i/o timeout" }
 func (mobileChainTimeoutError) Timeout() bool   { return true }
 func (mobileChainTimeoutError) Temporary() bool { return true }
+
+func defaultMobileChainFrameSessionConfig() mobileChainFrameSessionConfig {
+	return mobileChainFrameSessionConfig{
+		Version:              mobileChainFrameVersion,
+		Features:             []string{"open_result", "open_update", "fin", "rst", "window_update"},
+		MaxFrameData:         mobileChainFrameMaxDataBytes,
+		MinFrameData:         mobileChainFrameRealtimeDataBytes,
+		PreferredFrameData:   mobileChainFramePreferredDataBytes,
+		BulkFrameData:        mobileChainFrameBulkDataBytes,
+		MaxControlBytes:      mobileChainFrameMaxControlBytes,
+		MaxConcurrentStreams: mobileChainFrameSessionInboundBuffer,
+		InitialStreamWindow:  mobileChainFrameMaxDataBytes * mobileChainFrameSessionInboundBuffer,
+		InitialSessionWindow: mobileChainFrameMaxDataBytes * mobileChainFrameSessionInboundBuffer,
+		IdleTimeoutMS:        int64((mobileChainFramePingInterval + mobileChainFramePingTimeout).Milliseconds()),
+		PingIntervalMS:       int64(mobileChainFramePingInterval.Milliseconds()),
+		RealtimeFrameData:    mobileChainFrameRealtimeDataBytes,
+	}
+}
+
+func normalizeMobileChainFrameSessionConfig(cfg mobileChainFrameSessionConfig) mobileChainFrameSessionConfig {
+	if cfg.Version <= 0 {
+		cfg.Version = mobileChainFrameVersion
+	}
+	if cfg.MaxFrameData <= 0 || cfg.MaxFrameData > mobileChainFrameMaxDataBytes {
+		cfg.MaxFrameData = mobileChainFrameMaxDataBytes
+	}
+	if cfg.MinFrameData <= 0 || cfg.MinFrameData > cfg.MaxFrameData {
+		cfg.MinFrameData = mobileChainFrameRealtimeDataBytes
+		if cfg.MinFrameData > cfg.MaxFrameData {
+			cfg.MinFrameData = cfg.MaxFrameData
+		}
+	}
+	if cfg.PreferredFrameData <= 0 || cfg.PreferredFrameData > cfg.MaxFrameData {
+		cfg.PreferredFrameData = cfg.MaxFrameData
+	}
+	if cfg.PreferredFrameData < cfg.MinFrameData {
+		cfg.PreferredFrameData = cfg.MinFrameData
+	}
+	if cfg.BulkFrameData <= 0 || cfg.BulkFrameData > cfg.MaxFrameData {
+		cfg.BulkFrameData = cfg.MaxFrameData
+	}
+	if cfg.BulkFrameData < cfg.PreferredFrameData {
+		cfg.BulkFrameData = cfg.PreferredFrameData
+	}
+	if cfg.RealtimeFrameData <= 0 || cfg.RealtimeFrameData > cfg.PreferredFrameData {
+		cfg.RealtimeFrameData = mobileChainFrameRealtimeDataBytes
+		if cfg.RealtimeFrameData > cfg.PreferredFrameData {
+			cfg.RealtimeFrameData = cfg.PreferredFrameData
+		}
+	}
+	if cfg.RealtimeFrameData > cfg.MinFrameData {
+		cfg.RealtimeFrameData = cfg.MinFrameData
+	}
+	if cfg.MaxControlBytes <= 0 || cfg.MaxControlBytes > mobileChainFrameMaxControlBytes {
+		cfg.MaxControlBytes = mobileChainFrameMaxControlBytes
+	}
+	if cfg.MaxConcurrentStreams <= 0 {
+		cfg.MaxConcurrentStreams = mobileChainFrameSessionInboundBuffer
+	}
+	if cfg.InitialStreamWindow <= 0 {
+		cfg.InitialStreamWindow = cfg.MaxFrameData * mobileChainFrameSessionInboundBuffer
+	}
+	if cfg.InitialSessionWindow <= 0 {
+		cfg.InitialSessionWindow = cfg.InitialStreamWindow
+	}
+	if cfg.IdleTimeoutMS <= 0 {
+		cfg.IdleTimeoutMS = int64((mobileChainFramePingInterval + mobileChainFramePingTimeout).Milliseconds())
+	}
+	if cfg.PingIntervalMS <= 0 {
+		cfg.PingIntervalMS = int64(mobileChainFramePingInterval.Milliseconds())
+	}
+	return cfg
+}
+
+func mergeMobileChainFrameSessionConfig(local mobileChainFrameSessionConfig, remote mobileChainFrameSessionConfig) mobileChainFrameSessionConfig {
+	local = normalizeMobileChainFrameSessionConfig(local)
+	remote = normalizeMobileChainFrameSessionConfig(remote)
+	out := local
+	if remote.Version < out.Version {
+		out.Version = remote.Version
+	}
+	out.Features = intersectMobileChainFrameFeatures(local.Features, remote.Features)
+	out.MaxFrameData = minPositiveMobileInt(local.MaxFrameData, remote.MaxFrameData)
+	out.MinFrameData = minPositiveMobileInt(local.MinFrameData, remote.MinFrameData)
+	out.PreferredFrameData = minPositiveMobileInt(local.PreferredFrameData, remote.PreferredFrameData)
+	if out.PreferredFrameData > out.MaxFrameData {
+		out.PreferredFrameData = out.MaxFrameData
+	}
+	out.BulkFrameData = minPositiveMobileInt(local.BulkFrameData, remote.BulkFrameData)
+	if out.BulkFrameData > out.MaxFrameData {
+		out.BulkFrameData = out.MaxFrameData
+	}
+	out.RealtimeFrameData = minPositiveMobileInt(local.RealtimeFrameData, remote.RealtimeFrameData)
+	if out.RealtimeFrameData > out.PreferredFrameData {
+		out.RealtimeFrameData = out.PreferredFrameData
+	}
+	out.MaxControlBytes = minPositiveMobileInt(local.MaxControlBytes, remote.MaxControlBytes)
+	out.MaxConcurrentStreams = minPositiveMobileInt(local.MaxConcurrentStreams, remote.MaxConcurrentStreams)
+	out.InitialStreamWindow = minPositiveMobileInt(local.InitialStreamWindow, remote.InitialStreamWindow)
+	out.InitialSessionWindow = minPositiveMobileInt(local.InitialSessionWindow, remote.InitialSessionWindow)
+	out.IdleTimeoutMS = minPositiveMobileInt64(local.IdleTimeoutMS, remote.IdleTimeoutMS)
+	out.PingIntervalMS = minPositiveMobileInt64(local.PingIntervalMS, remote.PingIntervalMS)
+	return normalizeMobileChainFrameSessionConfig(out)
+}
+
+func intersectMobileChainFrameFeatures(left []string, right []string) []string {
+	if len(left) == 0 || len(right) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(right))
+	for _, item := range right {
+		clean := strings.TrimSpace(item)
+		if clean != "" {
+			seen[clean] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(left))
+	added := map[string]struct{}{}
+	for _, item := range left {
+		clean := strings.TrimSpace(item)
+		if clean == "" {
+			continue
+		}
+		if _, ok := seen[clean]; !ok {
+			continue
+		}
+		if _, ok := added[clean]; ok {
+			continue
+		}
+		added[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+func minPositiveMobileInt(left int, right int) int {
+	if left <= 0 {
+		return right
+	}
+	if right <= 0 {
+		return left
+	}
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func minPositiveMobileInt64(left int64, right int64) int64 {
+	if left <= 0 {
+		return right
+	}
+	if right <= 0 {
+		return left
+	}
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func clampMobileChainFrameDataBytes(value int, fallback int, maxFrameData int) int {
+	if fallback <= 0 {
+		fallback = mobileChainFramePreferredDataBytes
+	}
+	if value <= 0 {
+		value = fallback
+	}
+	if maxFrameData <= 0 || maxFrameData > mobileChainFrameMaxDataBytes {
+		maxFrameData = mobileChainFrameMaxDataBytes
+	}
+	if value > maxFrameData {
+		value = maxFrameData
+	}
+	if value > mobileChainFrameMaxDataBytes {
+		value = mobileChainFrameMaxDataBytes
+	}
+	if value <= 0 {
+		value = mobileChainFrameRealtimeDataBytes
+	}
+	return value
+}
