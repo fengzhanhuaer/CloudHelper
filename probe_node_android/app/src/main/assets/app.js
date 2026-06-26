@@ -1302,7 +1302,6 @@ function refreshSummarySilent() {
     setText("summaryRuntime", runtime);
     setText("summaryLocalVersion", data.localVersion || "-");
     refreshVPNDiagnostics();
-    refreshConnectionsIfVisible();
   } catch (_) {
   }
 }
