@@ -1,6 +1,7 @@
 let saveFeedbackTimer = 0;
 let toastTimer = 0;
 let upgradeStatusTimer = 0;
+let bootErrorLogged = false;
 const proxyGroupExpanded = new Set();
 
 const pages = {
@@ -1322,3 +1323,32 @@ function initPage() {
 }
 
 document.addEventListener("DOMContentLoaded", initPage);
+
+window.addEventListener("error", (event) => {
+  handleBootFailure(event && event.error ? event.error : event && event.message ? event.message : "页面加载失败");
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  handleBootFailure(event && event.reason ? event.reason : "页面加载失败");
+});
+
+function handleBootFailure(error) {
+  const message = error && error.message ? error.message : String(error || "页面加载失败");
+  if (!bootErrorLogged) {
+    bootErrorLogged = true;
+  }
+  const status = byId("status") || byId("runtimeStatus") || byId("settingsStatus") || byId("linkStatus");
+  if (status) {
+    status.textContent = `启动失败：${message}`;
+  }
+  const root = document.body;
+  if (root) {
+    root.dataset.bootError = "1";
+  }
+  try {
+    if (window.CloudHelper && window.CloudHelper.loadConfig) {
+      appendUILog("ui", `启动失败：${message}`);
+    }
+  } catch (_) {
+  }
+}

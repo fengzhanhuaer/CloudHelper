@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -21,10 +23,30 @@ class MainActivity : Activity() {
         AndroidLogStore.add("ui", "MainActivity created")
         webView = WebView(this)
         webView.webViewClient = WebViewClient()
-        webView.settings.javaScriptEnabled = true
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                AndroidLogStore.add(
+                    "ui",
+                    "console ${consoleMessage.messageLevel()}: ${consoleMessage.message()} @${consoleMessage.sourceId()}:${consoleMessage.lineNumber()}",
+                    if (consoleMessage.messageLevel() == ConsoleMessage.MessageLevel.ERROR) "error" else "info",
+                )
+                return true
+            }
+        }
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            @Suppress("DEPRECATION")
+            allowFileAccessFromFileURLs = true
+            @Suppress("DEPRECATION")
+            allowUniversalAccessFromFileURLs = true
+        }
         webView.addJavascriptInterface(AppBridge(), "CloudHelper")
         setContentView(webView)
-        webView.loadUrl("file:///android_asset/index.html")
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        webView.loadUrl("file:///android_asset/status.html")
         requestNotificationPermissionIfNeeded()
         startReportServiceIfConfigured()
     }
