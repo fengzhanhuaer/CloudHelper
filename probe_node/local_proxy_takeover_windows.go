@@ -260,7 +260,7 @@ func isProbeLocalWindowsDNSCaptureIP(ip net.IP, tunGateway string) bool {
 }
 
 func cleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(routeTarget probeLocalWindowsRouteTarget) (int, error) {
-	tunnelNetworks := parseProbeLocalTunnelIPv4Networks(probeLocalTunnelCIDRRules())
+	tunnelNetworks := parseProbeLocalTunnelIPv4Networks(append([]string{currentProbeLocalDNSFakeIPCIDR()}, probeLocalTunnelCIDRRules()...))
 	if len(tunnelNetworks) == 0 {
 		return 0, nil
 	}
@@ -371,6 +371,10 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 	if isProbeLocalWindowsDNSCaptureTarget(targetAddr) {
 		return nil
 	}
+	if probeLocalWindowsDirectBypassIPsContainProtectedRange(ips) {
+		logProbeWarnf("probe local direct bypass skipped for protected tun target: target=%s ips=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","))
+		return nil
+	}
 	bypassTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
 	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
 		if tunIfIndex, takeoverEnabled := currentProbeLocalWindowsTakeoverIfIndex(); takeoverEnabled {
@@ -418,6 +422,26 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 		}
 	}
 	return allErr
+}
+
+func probeLocalWindowsDirectBypassIPsContainProtectedRange(ips []string) bool {
+	if len(ips) == 0 {
+		return false
+	}
+	networks := parseProbeLocalTunnelIPv4Networks(append([]string{currentProbeLocalDNSFakeIPCIDR()}, probeLocalTunnelCIDRRules()...))
+	if len(networks) == 0 {
+		return false
+	}
+	for _, ipText := range ips {
+		ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+		if ip4 == nil {
+			continue
+		}
+		if probeLocalIPInAnyNetwork(ip4, networks) {
+			return true
+		}
+	}
+	return false
 }
 
 func currentProbeLocalWindowsTakeoverIfIndex() (int, bool) {

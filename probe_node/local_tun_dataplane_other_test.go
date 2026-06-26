@@ -33,3 +33,5 @@ var (
 		return nil, nil
 	}
 )
+
+func stubProbeLocalConsoleTUNRouteTargetForTest(_ interface{ Helper() }) {}

@@ -832,11 +832,14 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 		restoreDNSCalls++
 		return nil
 	}
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
 	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
 	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	dataPlaneCalls := 0
 	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		dataPlaneCalls++
 		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
 	}
 	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNHooksForTest() })
@@ -860,8 +863,14 @@ func TestProbeLocalProxyEnableAndDirectSuccessWithHooks(t *testing.T) {
 	if !ok {
 		t.Fatalf("proxy/enable tun payload type=%T", enablePayload["tun"])
 	}
-	if tunEnabled, _ := tunObj["enabled"].(bool); tunEnabled {
-		t.Fatalf("proxy/enable tun.enabled should be false when data plane is not running")
+	if tunEnabled, _ := tunObj["enabled"].(bool); !tunEnabled {
+		t.Fatalf("proxy/enable tun.enabled should be true")
+	}
+	if dataPlane, _ := tunObj["data_plane"].(bool); !dataPlane {
+		t.Fatalf("proxy/enable tun.data_plane should be true")
+	}
+	if dataPlaneCalls != 1 {
+		t.Fatalf("data plane calls=%d, want 1", dataPlaneCalls)
 	}
 	if applyDNSCalls != 0 {
 		t.Fatalf("apply dns calls=%d, want 0", applyDNSCalls)
@@ -1005,6 +1014,7 @@ func TestProbeLocalProxyEnableSelectionWritesRuntimeState(t *testing.T) {
 	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-enable-test"}, "https://controller.example.com/base")
 	probeLocalApplyProxyTakeover = func() error { return nil }
 	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
 	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
@@ -1208,6 +1218,7 @@ func TestProbeLocalProxySelectSelectionWritesRuntimeStateWithoutEnablingProxy(t 
 		t.Fatalf("proxy takeover should not be called for /proxy/select")
 		return nil
 	}
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
 	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
@@ -3550,6 +3561,7 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 		return nil
 	}
 	dataPlaneCalls := 0
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
 	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
@@ -3590,6 +3602,9 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 }
 
 func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TUN data plane hook path is Windows-only")
+	}
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, false); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
@@ -3619,6 +3634,18 @@ func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) 
 		takeoverCalls++
 		return nil
 	}
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	dataPlaneCalls := 0
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		dataPlaneCalls++
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
 
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
@@ -3630,26 +3657,32 @@ func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) 
 	if installCalls != 1 {
 		t.Fatalf("install calls=%d, want 1", installCalls)
 	}
-	if takeoverCalls != 0 {
-		t.Fatalf("takeover calls=%d, want 0 for startup adapter-only recovery", takeoverCalls)
+	if takeoverCalls != 1 {
+		t.Fatalf("takeover calls=%d, want 1 for persisted proxy recovery", takeoverCalls)
+	}
+	if dataPlaneCalls != 1 {
+		t.Fatalf("data plane calls=%d, want 1 for persisted proxy recovery", dataPlaneCalls)
 	}
 	status := probeLocalControl.tunStatus()
-	if !status.Installed || status.Enabled || status.DataPlane {
-		t.Fatalf("startup recovery tun status=%+v, want installed only", status)
+	if !status.Installed || !status.Enabled || !status.DataPlane {
+		t.Fatalf("startup recovery tun status=%+v, want installed enabled with data plane", status)
 	}
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
 		t.Fatalf("load proxy state failed: %v", err)
 	}
-	if !state.TUN.Installed || state.TUN.Enabled {
-		t.Fatalf("persisted tun state=%+v, want installed=true enabled=false without data plane", state.TUN)
+	if !state.TUN.Installed || !state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true with data plane", state.TUN)
 	}
-	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
+	if !state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeTUN {
+		t.Fatalf("persisted proxy state=%+v, want tunnel enabled", state.Proxy)
 	}
 }
 
 func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TUN data plane hook path is Windows-only")
+	}
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, false); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
@@ -3667,35 +3700,53 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 		return nil
 	}
 	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	dataPlaneCalls := 0
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		dataPlaneCalls++
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
 
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
 		t.Fatalf("recoverProbeLocalTUNRuntimeOnStartup returned error: %v", err)
 	}
-	if takeoverCalls != 0 {
-		t.Fatalf("takeover calls=%d, want 0 for startup adapter-only recovery", takeoverCalls)
+	if takeoverCalls != 1 {
+		t.Fatalf("takeover calls=%d, want 1 for persisted proxy recovery", takeoverCalls)
+	}
+	if dataPlaneCalls != 1 {
+		t.Fatalf("data plane calls=%d, want 1 for persisted proxy recovery", dataPlaneCalls)
 	}
 	status := probeLocalControl.tunStatus()
-	if !status.Installed || status.Enabled || status.DataPlane {
-		t.Fatalf("startup recovery tun status=%+v, want installed only", status)
+	if !status.Installed || !status.Enabled || !status.DataPlane {
+		t.Fatalf("startup recovery tun status=%+v, want installed enabled with data plane", status)
 	}
 	proxyStatus := probeLocalControl.proxyStatus()
-	if proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("startup recovery proxy status=%+v, want direct disabled", proxyStatus)
+	if !proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeTUN {
+		t.Fatalf("startup recovery proxy status=%+v, want tunnel enabled", proxyStatus)
 	}
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
 		t.Fatalf("load proxy state failed: %v", err)
 	}
-	if !state.TUN.Installed || state.TUN.Enabled {
-		t.Fatalf("persisted tun state=%+v, want installed=true enabled=false without data plane", state.TUN)
+	if !state.TUN.Installed || !state.TUN.Enabled {
+		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true with data plane", state.TUN)
 	}
-	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
+	if !state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeTUN {
+		t.Fatalf("persisted proxy state=%+v, want tunnel enabled", state.Proxy)
 	}
 }
 
 func TestProbeLocalTUNStartupRecoverySkipsProxyPreconnect(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TUN data plane hook path is Windows-only")
+	}
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, false); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
@@ -3738,6 +3789,16 @@ func TestProbeLocalTUNStartupRecoverySkipsProxyPreconnect(t *testing.T) {
 	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
 	probeLocalApplyProxyTakeover = func() error { return nil }
 	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
 	probeLocalTUNOpenChainRelayNetConn = func(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
 		return nil, errors.New("boot egress not ready")
 	}
@@ -3750,8 +3811,8 @@ func TestProbeLocalTUNStartupRecoverySkipsProxyPreconnect(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load proxy state failed: %v", loadErr)
 	}
-	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
+	if !state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeTUN {
+		t.Fatalf("persisted proxy state=%+v, want tunnel enabled", state.Proxy)
 	}
 }
 
@@ -3798,6 +3859,9 @@ func TestProbeLocalTUNStartupRecoveryFailureKeepsPersistedEnabledIntent(t *testi
 }
 
 func TestProbeLocalTUNChainSyncRecoveryRetriesPersistedEnabledState(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("TUN data plane hook path is Windows-only")
+	}
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, false); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
@@ -3815,24 +3879,39 @@ func TestProbeLocalTUNChainSyncRecoveryRetriesPersistedEnabledState(t *testing.T
 		return nil
 	}
 	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	dataPlaneCalls := 0
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		dataPlaneCalls++
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
 
 	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
-	if takeoverCalls != 0 {
-		t.Fatalf("takeover calls=%d, want 0 for chain-sync adapter-only recovery", takeoverCalls)
+	if takeoverCalls != 1 {
+		t.Fatalf("takeover calls=%d, want 1 for chain-sync proxy recovery", takeoverCalls)
+	}
+	if dataPlaneCalls != 1 {
+		t.Fatalf("data plane calls=%d, want 1 for chain-sync proxy recovery", dataPlaneCalls)
 	}
 	status := probeLocalControl.tunStatus()
-	if !status.Installed || status.Enabled || status.DataPlane {
-		t.Fatalf("chain-sync recovery tun status=%+v, want installed only", status)
+	if !status.Installed || !status.Enabled || !status.DataPlane {
+		t.Fatalf("chain-sync recovery tun status=%+v, want installed enabled with data plane", status)
 	}
 	proxyStatus := probeLocalControl.proxyStatus()
-	if proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("chain-sync recovery proxy status=%+v, want direct disabled", proxyStatus)
+	if !proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeTUN {
+		t.Fatalf("chain-sync recovery proxy status=%+v, want tunnel enabled", proxyStatus)
 	}
 
 	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
-	if takeoverCalls != 0 {
-		t.Fatalf("takeover calls after second recovery=%d, want 0", takeoverCalls)
+	if takeoverCalls != 1 {
+		t.Fatalf("takeover calls after second recovery=%d, want unchanged", takeoverCalls)
 	}
 }
 

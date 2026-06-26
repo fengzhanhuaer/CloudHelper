@@ -35,6 +35,8 @@ var probeLocalTUNDataPlaneState = struct {
 	mu            sync.Mutex
 	libraryPath   string
 	adapterHandle uintptr
+	interfaceLUID uint64
+	ifIndex       int
 	dataPlane     probeLocalTUNDataPlane
 	packetStack   probeLocalTUNPacketStack
 }{}
@@ -42,23 +44,23 @@ var probeLocalTUNDataPlaneState = struct {
 func startProbeLocalTUNDataPlane() error {
 	probeLocalTUNDataPlaneState.mu.Lock()
 	if probeLocalTUNDataPlaneState.dataPlane != nil {
-		stats := probeLocalTUNDataPlaneState.dataPlane.Stats()
-		if !stats.Running {
-			probeLocalTUNDataPlaneState.mu.Unlock()
-			logProbeWarnf("probe local tun data plane is stale; restarting session")
-			if err := stopProbeLocalTUNDataPlane(); err != nil {
-				logProbeWarnf("probe local tun stale data plane stop failed before restart: %v", err)
-			}
-			return startProbeLocalTUNDataPlane()
-		}
+		dataPlane := probeLocalTUNDataPlaneState.dataPlane
+		interfaceLUID := probeLocalTUNDataPlaneState.interfaceLUID
+		ifIndex := probeLocalTUNDataPlaneState.ifIndex
 		probeLocalTUNDataPlaneState.mu.Unlock()
-		return nil
+		stats := dataPlane.Stats()
+		healthy := stats.Running && probeLocalTUNDataPlaneRouteTargetHealthy(interfaceLUID, ifIndex)
+		if healthy {
+			return nil
+		}
+		logProbeWarnf("probe local tun data plane is stale; restarting session: running=%v if_luid=%d if_index=%d", stats.Running, interfaceLUID, ifIndex)
+		if err := stopProbeLocalTUNDataPlane(); err != nil {
+			logProbeWarnf("probe local tun stale data plane stop failed before restart: %v", err)
+		}
+		return startProbeLocalTUNDataPlane()
 	}
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
-	if err := prepareProbeLocalWindowsDirectBypassRouteTarget(); err != nil {
-		return fmt.Errorf("prepare direct bypass route target: %w", err)
-	}
 	if err := probeLocalEnsureWintunLibraryForDataPlane(); err != nil {
 		clearProbeLocalWindowsDirectBypassRouteTarget()
 		return fmt.Errorf("prepare wintun library: %w", err)
@@ -71,6 +73,17 @@ func startProbeLocalTUNDataPlane() error {
 	if err != nil {
 		clearProbeLocalWindowsDirectBypassRouteTarget()
 		return fmt.Errorf("create/open wintun adapter: %w", err)
+	}
+	routeTarget, err := prepareProbeLocalTUNDataPlaneRouteTarget(libraryPath, handle)
+	if err != nil {
+		_ = probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle)
+		clearProbeLocalWindowsDirectBypassRouteTarget()
+		return err
+	}
+	if err := prepareProbeLocalWindowsDirectBypassRouteTarget(); err != nil {
+		_ = probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle)
+		clearProbeLocalWindowsDirectBypassRouteTarget()
+		return fmt.Errorf("prepare direct bypass route target: %w", err)
 	}
 	dataPlane, err := probeLocalNewTUNDataPlaneRunner(libraryPath, handle, func(packet []byte) {
 		handler := probeLocalTUNInboundPacketHandler
@@ -95,6 +108,8 @@ func startProbeLocalTUNDataPlane() error {
 	}
 	probeLocalTUNDataPlaneState.libraryPath = strings.TrimSpace(libraryPath)
 	probeLocalTUNDataPlaneState.adapterHandle = handle
+	probeLocalTUNDataPlaneState.interfaceLUID = routeTarget.InterfaceLUID
+	probeLocalTUNDataPlaneState.ifIndex = routeTarget.InterfaceIndex
 	probeLocalTUNDataPlaneState.dataPlane = dataPlane
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
@@ -104,6 +119,8 @@ func startProbeLocalTUNDataPlane() error {
 			probeLocalTUNDataPlaneState.dataPlane = nil
 			probeLocalTUNDataPlaneState.adapterHandle = 0
 			probeLocalTUNDataPlaneState.libraryPath = ""
+			probeLocalTUNDataPlaneState.interfaceLUID = 0
+			probeLocalTUNDataPlaneState.ifIndex = 0
 		}
 		probeLocalTUNDataPlaneState.mu.Unlock()
 		_ = dataPlane.Close()
@@ -113,8 +130,29 @@ func startProbeLocalTUNDataPlane() error {
 	}
 
 	stats := dataPlane.Stats()
-	logProbeInfof("probe local tun data plane started: running=%v rx_packets=%d rx_bytes=%d", stats.Running, stats.RXPackets, stats.RXBytes)
+	logProbeInfof("probe local tun data plane started: running=%v rx_packets=%d rx_bytes=%d if_index=%d if_luid=%d gateway=%s", stats.Running, stats.RXPackets, stats.RXBytes, routeTarget.InterfaceIndex, routeTarget.InterfaceLUID, strings.TrimSpace(routeTarget.Gateway))
 	return nil
+}
+
+func prepareProbeLocalTUNDataPlaneRouteTarget(libraryPath string, handle uintptr) (probeLocalWindowsRouteTarget, error) {
+	luid, err := probeLocalGetWintunAdapterLUIDFromHandle(libraryPath, handle)
+	if err != nil {
+		return probeLocalWindowsRouteTarget{}, fmt.Errorf("resolve tun adapter luid from handle: %w", err)
+	}
+	if err := ensureProbeLocalWindowsRouteTargetByInterfaceLUID(luid); err != nil {
+		return probeLocalWindowsRouteTarget{}, fmt.Errorf("prepare tun adapter route target: %w", err)
+	}
+	routeTarget, err := resolveProbeLocalWindowsRouteTarget()
+	if err != nil {
+		return probeLocalWindowsRouteTarget{}, fmt.Errorf("resolve prepared tun route target: %w", err)
+	}
+	if routeTarget.InterfaceLUID == 0 || routeTarget.InterfaceIndex <= 0 {
+		return probeLocalWindowsRouteTarget{}, fmt.Errorf("prepared tun route target is incomplete: if_luid=%d if_index=%d", routeTarget.InterfaceLUID, routeTarget.InterfaceIndex)
+	}
+	if routeTarget.InterfaceLUID != luid {
+		logProbeWarnf("probe local tun route target luid changed after prepare: handle_luid=%d env_luid=%d if_index=%d", luid, routeTarget.InterfaceLUID, routeTarget.InterfaceIndex)
+	}
+	return routeTarget, nil
 }
 
 func stopProbeLocalTUNDataPlane() error {
@@ -124,6 +162,8 @@ func stopProbeLocalTUNDataPlane() error {
 	dataPlane := probeLocalTUNDataPlaneState.dataPlane
 	probeLocalTUNDataPlaneState.libraryPath = ""
 	probeLocalTUNDataPlaneState.adapterHandle = 0
+	probeLocalTUNDataPlaneState.interfaceLUID = 0
+	probeLocalTUNDataPlaneState.ifIndex = 0
 	probeLocalTUNDataPlaneState.dataPlane = nil
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
@@ -142,6 +182,24 @@ func stopProbeLocalTUNDataPlane() error {
 	}
 	allErr = errors.Join(allErr, errStack)
 	return allErr
+}
+
+func probeLocalTUNDataPlaneRouteTargetHealthy(interfaceLUID uint64, ifIndex int) bool {
+	if interfaceLUID > 0 {
+		if err := ensureProbeLocalWindowsRouteTargetByInterfaceLUID(interfaceLUID); err == nil {
+			return true
+		} else {
+			logProbeWarnf("probe local tun data plane route target health check by luid failed: if_luid=%d if_index=%d err=%v", interfaceLUID, ifIndex, err)
+		}
+	}
+	if ifIndex > 0 {
+		if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(ifIndex); err == nil {
+			return true
+		} else {
+			logProbeWarnf("probe local tun data plane route target health check by ifindex failed: if_luid=%d if_index=%d err=%v", interfaceLUID, ifIndex, err)
+		}
+	}
+	return false
 }
 
 func probeLocalTUNDataPlaneStatsSnapshot() probeLocalTUNDataPlaneStats {

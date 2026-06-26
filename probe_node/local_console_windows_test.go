@@ -25,6 +25,7 @@ func TestProbeLocalProxyEnableStartsDataPlaneBeforeTakeover(t *testing.T) {
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
 	t.Setenv("PROBE_LOCAL_TUN_DNS_HOST", "198.18.0.2")
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
 
 	events := make([]string, 0, 2)
 	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
@@ -56,5 +57,40 @@ func TestProbeLocalProxyEnableStartsDataPlaneBeforeTakeover(t *testing.T) {
 	}
 	if strings.Join(events, ",") != "data_plane,takeover" {
 		t.Fatalf("events=%v, want data_plane before takeover", events)
+	}
+}
+
+func stubProbeLocalConsoleTUNRouteTargetForTest(t *testing.T) {
+	t.Helper()
+	const (
+		luid    uint64 = 101
+		ifIndex        = 9
+	)
+	probeLocalGetWintunAdapterLUIDFromHandle = func(_ string, _ uintptr) (uint64, error) {
+		return luid, nil
+	}
+	probeLocalEnsureWindowsInterfaceIPv4ByLUID = func(gotLUID uint64, ip string, prefix int) error {
+		if gotLUID != luid {
+			t.Fatalf("tun route target luid=%d want %d", gotLUID, luid)
+		}
+		if strings.TrimSpace(ip) != probeLocalTUNInterfaceIPv4 {
+			t.Fatalf("tun route target ip=%s want %s", ip, probeLocalTUNInterfaceIPv4)
+		}
+		if prefix != probeLocalTUNRouteIPv4PrefixLen {
+			t.Fatalf("tun route target prefix=%d want %d", prefix, probeLocalTUNRouteIPv4PrefixLen)
+		}
+		return nil
+	}
+	probeLocalConvertInterfaceLUIDToIndex = func(gotLUID uint64) (int, error) {
+		if gotLUID != luid {
+			t.Fatalf("convert luid=%d want %d", gotLUID, luid)
+		}
+		return ifIndex, nil
+	}
+	probeLocalFindWindowsAdapterByIfIndex = func(gotIfIndex int) (windowsAdapterInfo, error) {
+		if gotIfIndex != ifIndex {
+			t.Fatalf("find adapter ifIndex=%d want %d", gotIfIndex, ifIndex)
+		}
+		return windowsAdapterInfo{InterfaceIndex: ifIndex, InterfaceLUID: luid}, nil
 	}
 }

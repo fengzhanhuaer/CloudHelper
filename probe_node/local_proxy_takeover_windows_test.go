@@ -415,6 +415,44 @@ func TestCleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(t *testing.T) {
 	}
 }
 
+func TestCleanupProbeLocalWindowsStaleFakeIPDirectBypassRoutes(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalWindowsTakeoverStateForTest()
+	t.Cleanup(func() {
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+		if excludedIfIndex != 22 {
+			t.Fatalf("excluded ifIndex=%d", excludedIfIndex)
+		}
+		return probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}, nil
+	}
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "198.18.0.3", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 13, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "198.20.0.3", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 13, Metric: uint32(probeLocalWindowsRouteMetric)},
+		}, nil
+	}
+	deleted := make([]probeLocalWindowsRouteDef, 0, 1)
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	removed, err := cleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(probeLocalWindowsRouteTarget{InterfaceIndex: 22})
+	if err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if removed != 1 || len(deleted) != 1 {
+		t.Fatalf("removed=%d deleted=%+v", removed, deleted)
+	}
+	if deleted[0].Prefix != "198.18.0.3" || deleted[0].Mask != probeLocalWindowsHostRouteMask || deleted[0].Gateway != "192.168.51.1" || deleted[0].IfIndex != 13 {
+		t.Fatalf("unexpected deleted route=%+v", deleted[0])
+	}
+}
+
 func TestEnsureProbeLocalExplicitDirectBypassWritesHostRoute(t *testing.T) {
 	resetProbeLocalDirectBypassStateForTest()
 	t.Cleanup(func() {
@@ -440,6 +478,28 @@ func TestEnsureProbeLocalExplicitDirectBypassWritesHostRoute(t *testing.T) {
 	}
 	if created[0].Prefix != "203.0.113.7" || created[0].Mask != probeLocalWindowsHostRouteMask || created[0].Gateway != "192.168.51.1" || created[0].IfIndex != 13 {
 		t.Fatalf("unexpected route=%+v", created[0])
+	}
+}
+
+func TestEnsureProbeLocalExplicitDirectBypassSkipsFakeIPTarget(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeLocalDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+	probeLocalDirectBypassRouteTargetState.mu.Lock()
+	probeLocalDirectBypassRouteTargetState.routeTarget = probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
+	probeLocalDirectBypassRouteTargetState.ready = true
+	probeLocalDirectBypassRouteTargetState.mu.Unlock()
+
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		t.Fatalf("should not create direct bypass route for fake ip: %+v", routeDef)
+		return false, nil
+	}
+
+	if err := ensureProbeLocalExplicitDirectBypass("198.18.0.3:443"); err != nil {
+		t.Fatalf("ensure fake ip direct bypass should be skipped without error: %v", err)
 	}
 }
 

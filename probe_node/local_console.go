@@ -936,6 +936,22 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	m.proxy.UpdatedAt = now
 	m.mu.Unlock()
 	persistProbeLocalTUNStateBestEffort(installed, restoreTUN)
+	if restoreProxy {
+		if _, _, enableErr := m.enableProxy(); enableErr != nil {
+			errText := strings.TrimSpace(enableErr.Error())
+			m.setTUNRecoveryStatus("failed", attempt, time.Time{}, errText)
+			logProbeWarnf("probe local tun startup proxy recovery failed: attempt=%d err=%v", attempt, enableErr)
+			return enableErr
+		}
+		m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
+		logProbeInfof("probe local tun startup recovered proxy: persisted_tun_enabled=%v persisted_proxy_enabled=%v", restoreTUN, restoreProxy)
+		if shouldRestoreProbeLocalExplicitProxyFromState(state) {
+			if err := startProbeLocalExplicitProxyServer(); err != nil {
+				logProbeWarnf("probe local explicit proxy startup recovery failed: %v", err)
+			}
+		}
+		return nil
+	}
 	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
 		logProbeWarnf("probe local proxy persist direct state failed: %v", err)
 	}
@@ -960,6 +976,40 @@ func (m *probeLocalControlManager) proxyStatus() probeLocalProxyRuntimeState {
 func probeLocalTUNProxyEnabled() bool {
 	status := probeLocalControl.proxyStatus()
 	return status.Enabled && strings.EqualFold(strings.TrimSpace(status.Mode), probeLocalProxyModeTUN)
+}
+
+func startProbeLocalTUNProxyRuntime() error {
+	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
+	needsDataPlane := runtime.GOOS == "windows" || strings.TrimSpace(currentProbeLocalTUNDNSListenHost()) != ""
+	if needsDataPlane {
+		if err := startProbeLocalTUNDataPlane(); err != nil {
+			return err
+		}
+	}
+	if err := probeLocalApplyProxyTakeover(); err != nil {
+		if needsDataPlane {
+			if stopErr := stopProbeLocalTUNDataPlane(); stopErr != nil {
+				logProbeWarnf("probe local tun data plane stop after takeover failure failed: %v", stopErr)
+			}
+		}
+		return err
+	}
+	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(true)
+	startProbeLocalProxyMonitor()
+	return nil
+}
+
+func stopProbeLocalTUNProxyRuntime() error {
+	var allErr error
+	if err := probeLocalRestoreProxyDirect(); err != nil {
+		allErr = errors.Join(allErr, err)
+	}
+	if err := stopProbeLocalTUNDataPlane(); err != nil {
+		allErr = errors.Join(allErr, err)
+	}
+	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
+	stopProbeLocalProxyMonitor()
+	return allErr
 }
 
 func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, error) {
@@ -1089,29 +1139,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusConflict, Message: m.proxy.LastError}
 	}
 
-	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-	needsDataPlane := strings.TrimSpace(currentProbeLocalTUNDNSListenHost()) != ""
-	if needsDataPlane {
-		if err := startProbeLocalTUNDataPlane(); err != nil {
-			m.tun.DataPlane = false
-			m.tun.DataPlaneRX = 0
-			m.tun.DataPlaneBytes = 0
-			m.tun.LastError = strings.TrimSpace(err.Error())
-			m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-			m.proxy.Enabled = false
-			m.proxy.Mode = probeLocalProxyModeDirect
-			m.proxy.LastError = m.tun.LastError
-			m.proxy.UpdatedAt = m.tun.UpdatedAt
-			return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
-		}
-	}
-
-	if err := probeLocalApplyProxyTakeover(); err != nil {
-		if needsDataPlane {
-			if stopErr := stopProbeLocalTUNDataPlane(); stopErr != nil {
-				logProbeWarnf("probe local tun data plane stop after takeover failure failed: %v", stopErr)
-			}
-		}
+	if err := startProbeLocalTUNProxyRuntime(); err != nil {
 		m.proxy.LastError = strings.TrimSpace(err.Error())
 		m.proxy.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		m.tun.DataPlane = false
@@ -1127,6 +1155,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.tun.LastError = ""
+	m.tun.Enabled = true
 	m.tun.UpdatedAt = now
 	m.proxy.Enabled = true
 	m.proxy.Mode = probeLocalProxyModeTUN
@@ -1141,8 +1170,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 	if err := persistProbeLocalProxyPersistentState(true, probeLocalProxyModeTUN); err != nil {
 		logProbeWarnf("probe local proxy persist enabled state failed: %v", err)
 	}
-	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(true)
-	startProbeLocalProxyMonitor()
+	persistProbeLocalTUNStateBestEffort(m.tun.Installed, true)
 	return m.tun, m.proxy, nil
 }
 
@@ -1150,7 +1178,7 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := probeLocalRestoreProxyDirect(); err != nil {
+	if err := stopProbeLocalTUNProxyRuntime(); err != nil {
 		m.proxy.LastError = strings.TrimSpace(err.Error())
 		m.proxy.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		status := http.StatusInternalServerError
@@ -1161,7 +1189,6 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	errStopDataPlane := stopProbeLocalTUNDataPlane()
 	m.tun.DataPlane = false
 	m.tun.DataPlaneRX = 0
 	m.tun.DataPlaneBytes = 0
@@ -1172,13 +1199,6 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	m.proxy.UpdatedAt = now
 	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
 		logProbeWarnf("probe local proxy persist direct state failed: %v", err)
-	}
-	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-	stopProbeLocalProxyMonitor()
-	if errStopDataPlane != nil {
-		m.tun.LastError = strings.TrimSpace(errStopDataPlane.Error())
-		m.proxy.LastError = m.tun.LastError
-		return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 	}
 	return m.tun, m.proxy, nil
 }
@@ -1196,10 +1216,7 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 	defer m.mu.Unlock()
 
 	var allErr error
-	if err := probeLocalRestoreProxyDirect(); err != nil {
-		allErr = errors.Join(allErr, err)
-	}
-	if err := stopProbeLocalTUNDataPlane(); err != nil {
+	if err := stopProbeLocalTUNProxyRuntime(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
 	if uninstall {
@@ -1235,8 +1252,6 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 		if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
 			logProbeWarnf("probe local proxy persist reset state failed: %v", err)
 		}
-		reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-		stopProbeLocalProxyMonitor()
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 	}
 	m.tun.LastError = ""
@@ -1245,8 +1260,6 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
 		logProbeWarnf("probe local proxy persist reset state failed: %v", err)
 	}
-	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-	stopProbeLocalProxyMonitor()
 	return m.tun, nil
 }
 
