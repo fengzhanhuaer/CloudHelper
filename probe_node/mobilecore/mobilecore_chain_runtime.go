@@ -1,5 +1,8 @@
 package mobilecore
 
+// This file owns probe-to-probe chain relays and custom framed transport.
+// It is separate from the controller reporter session in mobilecore_reporter.go.
+
 import (
 	"bufio"
 	"context"
