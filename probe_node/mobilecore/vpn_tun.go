@@ -364,6 +364,7 @@ func persistAndroidVPNDNSCacheForState(configDir string, state *androidVPNDNSSta
 
 // VpnStart attaches a VpnService TUN fd to the mobilecore data plane.
 func VpnStart(fd int64, configDir string) string {
+	androidLogStore.add("vpn", "info", "vpn start attach requested")
 	if fd < 0 {
 		return "vpn start failed: invalid tun fd"
 	}
@@ -375,11 +376,13 @@ func VpnStart(fd int64, configDir string) string {
 	if tun == nil {
 		return "vpn start failed: open tun fd failed"
 	}
+	androidLogStore.add("vpn", "info", "vpn tun fd opened")
 	netstack, err := newAndroidVPNNetstack(tun)
 	if err != nil {
 		_ = tun.Close()
 		return "vpn start failed: " + err.Error()
 	}
+	androidLogStore.add("vpn", "info", "vpn netstack created")
 	vpnRuntime.mu.Lock()
 	oldStack := vpnRuntime.stack
 	oldTun := vpnRuntime.tun
@@ -394,14 +397,15 @@ func VpnStart(fd int64, configDir string) string {
 	proxyRuntime.mu.Lock()
 	proxyRuntime.configDir = strings.TrimSpace(configDir)
 	proxyRuntime.mu.Unlock()
-	if oldStack != nil {
-		_ = oldStack.Close()
-	}
 	if oldTun != nil {
 		_ = oldTun.Close()
 	}
+	if oldStack != nil {
+		_ = oldStack.Close()
+	}
 	ensureAndroidVPNDNSCacheLoaded(strings.TrimSpace(configDir))
 	go runVPNStartupSelfCheck(strings.TrimSpace(configDir))
+	androidLogStore.add("vpn", "info", "vpn data plane running")
 	return "vpn running"
 }
 

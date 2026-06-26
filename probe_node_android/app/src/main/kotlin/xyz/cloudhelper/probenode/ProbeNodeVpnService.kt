@@ -17,6 +17,8 @@ import kotlin.concurrent.thread
 class ProbeNodeVpnService : VpnService() {
     private var tun: ParcelFileDescriptor? = null
     @Volatile private var starting = false
+    @Volatile private var vpnEstablished = false
+    @Volatile private var startGeneration = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -31,7 +33,7 @@ class ProbeNodeVpnService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (tun != null) {
+        if (vpnEstablished) {
             updateRuntimeState(running = true, starting = false, phase = "connected", message = "全局 VPN 已连接")
             startForeground(NOTIFICATION_ID, buildNotification("全局 VPN 已连接"))
             AndroidLogStore.add("vpn", "VPN service start ignored: already connected")
@@ -63,20 +65,24 @@ class ProbeNodeVpnService : VpnService() {
             updateNotification("未配置主控或节点密钥")
             return
         }
+        val generation = nextStartGeneration()
         starting = true
         thread(name = "cloudhelper-android-vpn") {
             try {
+                if (!isStartGenerationCurrent(generation)) {
+                    return@thread
+                }
                 updateRuntimeState(running = false, starting = true, phase = "connect_controller", message = "正在连接主控...")
                 updateNotification("正在连接主控...")
-                val startResult = MobileCoreBridge.start(this, config)
+                val startResult = MobileCoreBridge.start(this@ProbeNodeVpnService, config)
                 AndroidLogStore.add("vpn", "long connection while VPN starts: $startResult")
                 updateRuntimeState(running = false, starting = true, phase = "prepare_network", message = "正在准备本地网络...")
                 updateNotification("正在准备本地网络...")
-                val ipResult = MobileCoreBridge.setNativeIPs(this)
+                val ipResult = MobileCoreBridge.setNativeIPs(this@ProbeNodeVpnService)
                 AndroidLogStore.add("vpn", ipResult)
                 updateRuntimeState(running = false, starting = true, phase = "start_proxy", message = "正在启动本地代理...")
                 updateNotification("正在启动本地代理...")
-                val proxyResult = MobileCoreBridge.proxyStart(this, config.controllerUrl)
+                val proxyResult = MobileCoreBridge.proxyStart(this@ProbeNodeVpnService, config.controllerUrl)
                 AndroidLogStore.add("vpn", "local proxy while VPN starts: $proxyResult")
                 updateRuntimeState(running = false, starting = true, phase = "establish_vpn", message = "正在建立 Android VPN...")
                 updateNotification("正在建立 Android VPN...")
@@ -102,39 +108,102 @@ class ProbeNodeVpnService : VpnService() {
                     updateNotification("VPN 建立失败：系统未返回 TUN")
                     return@thread
                 }
-                tun?.close()
+                closePendingDescriptor()
                 tun = descriptor
+                vpnEstablished = true
                 updateRuntimeState(running = true, starting = true, phase = "start_data_plane", message = "全局 VPN 已建立，正在启动数据面...")
                 updateNotification("全局 VPN 已建立，正在启动数据面...")
                 val fd = descriptor.detachFd()
-                val result = MobileCoreBridge.vpnStart(this, fd)
-                AndroidLogStore.add("vpn", "VPN mobilecore start result: $result")
-                updateRuntimeState(running = true, starting = false, phase = "running", message = "全局 VPN：$result")
-                updateNotification("全局 VPN：$result")
+                tun = null
+                AndroidLogStore.add("vpn", "VPN tun fd detached for mobilecore data plane: fd=$fd")
+                val nativeThread = thread(name = "cloudhelper-android-vpn-native-start") {
+                    try {
+                        val result = MobileCoreBridge.vpnStart(this@ProbeNodeVpnService, fd)
+                        if (!isStartGenerationCurrent(generation)) {
+                            AndroidLogStore.add("vpn", "VPN mobilecore start result ignored for stale generation: $result")
+                            return@thread
+                        }
+                        AndroidLogStore.add("vpn", "VPN mobilecore start result: $result")
+                        if (result.contains("failed", ignoreCase = true) || result.contains("失败")) {
+                            vpnEstablished = false
+                            updateRuntimeState(running = false, starting = false, phase = "data_plane_failed", message = "VPN 数据面启动失败：$result", error = result)
+                            updateNotification("VPN 数据面启动失败：$result")
+                            return@thread
+                        }
+                        updateRuntimeState(running = true, starting = false, phase = "running", message = "全局 VPN：$result")
+                        updateNotification("全局 VPN：$result")
+                    } catch (e: Throwable) {
+                        if (!isStartGenerationCurrent(generation)) {
+                            AndroidLogStore.add("vpn", "VPN mobilecore start failure ignored for stale generation: ${e.message ?: e.javaClass.simpleName}", "warn")
+                            return@thread
+                        }
+                        vpnEstablished = false
+                        AndroidLogStore.add("vpn", "VPN mobilecore start failed: ${e.message ?: e.javaClass.simpleName}", "error")
+                        updateRuntimeState(running = false, starting = false, phase = "data_plane_failed", message = "VPN 数据面启动失败：${e.message ?: e.javaClass.simpleName}", error = e.message ?: e.javaClass.simpleName)
+                        updateNotification("VPN 数据面启动失败：${e.message ?: e.javaClass.simpleName}")
+                    }
+                }
+                nativeThread.join(DATA_PLANE_START_CONFIRM_TIMEOUT_MS)
+                if (nativeThread.isAlive) {
+                    if (!isStartGenerationCurrent(generation)) {
+                        return@thread
+                    }
+                    AndroidLogStore.add("vpn", "VPN mobilecore start is still running after ${DATA_PLANE_START_CONFIRM_TIMEOUT_MS}ms", "warn")
+                    updateRuntimeState(running = true, starting = false, phase = "data_plane_pending", message = "全局 VPN 已建立，数据面启动确认超时，正在后台继续确认...")
+                    updateNotification("全局 VPN 已建立，数据面仍在确认...")
+                    return@thread
+                }
             } catch (e: Throwable) {
+                if (!isStartGenerationCurrent(generation)) {
+                    AndroidLogStore.add("vpn", "VPN start failure ignored for stale generation: ${e.message ?: e.javaClass.simpleName}", "warn")
+                    return@thread
+                }
                 AndroidLogStore.add("vpn", "VPN start failed: ${e.message ?: e.javaClass.simpleName}", "error")
-                updateRuntimeState(running = tun != null, starting = false, phase = "failed", message = "VPN 启动失败：${e.message ?: e.javaClass.simpleName}", error = e.message ?: e.javaClass.simpleName)
+                updateRuntimeState(running = vpnEstablished, starting = false, phase = "failed", message = "VPN 启动失败：${e.message ?: e.javaClass.simpleName}", error = e.message ?: e.javaClass.simpleName)
                 updateNotification("VPN 启动失败：${e.message ?: e.javaClass.simpleName}")
             } finally {
-                starting = false
+                if (isStartGenerationCurrent(generation)) {
+                    starting = false
+                }
             }
         }
     }
 
     private fun stopVpn() {
+        invalidateStartGeneration()
         starting = false
+        vpnEstablished = false
         val result = MobileCoreBridge.vpnStop()
         val proxyResult = MobileCoreBridge.proxyStop()
         AndroidLogStore.add("vpn", "VPN stop result: $result")
         AndroidLogStore.add("vpn", "local proxy stop result: $proxyResult")
-        try {
-            tun?.close()
-        } catch (_: Throwable) {
-        }
+        closePendingDescriptor()
         tun = null
         updateRuntimeState(running = false, starting = false, phase = "stopped", message = result)
         updateNotification(result)
         stopForegroundCompat()
+    }
+
+    private fun closePendingDescriptor() {
+        try {
+            tun?.close()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun nextStartGeneration(): Int = synchronized(this) {
+        startGeneration += 1
+        startGeneration
+    }
+
+    private fun invalidateStartGeneration() {
+        synchronized(this) {
+            startGeneration += 1
+        }
+    }
+
+    private fun isStartGenerationCurrent(generation: Int): Boolean {
+        return startGeneration == generation
     }
 
     private fun ensureNotificationChannel() {
@@ -193,6 +262,7 @@ class ProbeNodeVpnService : VpnService() {
         private const val ACTION_STOP = "xyz.cloudhelper.probenode.action.VPN_STOP"
         private const val CHANNEL_ID = "probe_node_vpn"
         private const val NOTIFICATION_ID = 1002
+        private const val DATA_PLANE_START_CONFIRM_TIMEOUT_MS = 5000L
         @Volatile private var runtimeRunning: Boolean = false
         @Volatile private var runtimeStarting: Boolean = false
         @Volatile private var runtimePhase: String = "stopped"
