@@ -18,6 +18,7 @@ class ProbeNodeVpnService : VpnService() {
     private var tun: ParcelFileDescriptor? = null
     @Volatile private var starting = false
     @Volatile private var vpnEstablished = false
+    @Volatile private var dataPlaneRunning = false
     @Volatile private var startGeneration = 0
 
     override fun onCreate() {
@@ -33,7 +34,7 @@ class ProbeNodeVpnService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (vpnEstablished) {
+        if (dataPlaneRunning) {
             updateRuntimeState(running = true, starting = false, phase = "connected", message = "全局 VPN 已连接")
             startForeground(NOTIFICATION_ID, buildNotification("全局 VPN 已连接"))
             AndroidLogStore.add("vpn", "VPN service start ignored: already connected")
@@ -71,6 +72,13 @@ class ProbeNodeVpnService : VpnService() {
             try {
                 if (!isStartGenerationCurrent(generation)) {
                     return@thread
+                }
+                dataPlaneRunning = false
+                if (vpnEstablished) {
+                    AndroidLogStore.add("vpn", "restarting VPN data plane from non-running established state", "warn")
+                    val stopResult = MobileCoreBridge.vpnStop()
+                    AndroidLogStore.add("vpn", "previous VPN data plane stop before restart: $stopResult")
+                    vpnEstablished = false
                 }
                 updateRuntimeState(running = false, starting = true, phase = "connect_controller", message = "正在连接主控...")
                 updateNotification("正在连接主控...")
@@ -126,10 +134,12 @@ class ProbeNodeVpnService : VpnService() {
                         AndroidLogStore.add("vpn", "VPN mobilecore start result: $result")
                         if (result.contains("failed", ignoreCase = true) || result.contains("失败")) {
                             vpnEstablished = false
+                            dataPlaneRunning = false
                             updateRuntimeState(running = false, starting = false, phase = "data_plane_failed", message = "VPN 数据面启动失败：$result", error = result)
                             updateNotification("VPN 数据面启动失败：$result")
                             return@thread
                         }
+                        dataPlaneRunning = true
                         updateRuntimeState(running = true, starting = false, phase = "running", message = "全局 VPN：$result")
                         updateNotification("全局 VPN：$result")
                     } catch (e: Throwable) {
@@ -138,6 +148,7 @@ class ProbeNodeVpnService : VpnService() {
                             return@thread
                         }
                         vpnEstablished = false
+                        dataPlaneRunning = false
                         AndroidLogStore.add("vpn", "VPN mobilecore start failed: ${e.message ?: e.javaClass.simpleName}", "error")
                         updateRuntimeState(running = false, starting = false, phase = "data_plane_failed", message = "VPN 数据面启动失败：${e.message ?: e.javaClass.simpleName}", error = e.message ?: e.javaClass.simpleName)
                         updateNotification("VPN 数据面启动失败：${e.message ?: e.javaClass.simpleName}")
@@ -146,6 +157,13 @@ class ProbeNodeVpnService : VpnService() {
                 nativeThread.join(DATA_PLANE_START_CONFIRM_TIMEOUT_MS)
                 if (nativeThread.isAlive) {
                     if (!isStartGenerationCurrent(generation)) {
+                        return@thread
+                    }
+                    if (isCoreVpnRunning()) {
+                        dataPlaneRunning = true
+                        AndroidLogStore.add("vpn", "VPN mobilecore start still running but core status is running", "warn")
+                        updateRuntimeState(running = true, starting = false, phase = "running", message = "全局 VPN：vpn running")
+                        updateNotification("全局 VPN：vpn running")
                         return@thread
                     }
                     AndroidLogStore.add("vpn", "VPN mobilecore start is still running after ${DATA_PLANE_START_CONFIRM_TIMEOUT_MS}ms", "warn")
@@ -173,6 +191,7 @@ class ProbeNodeVpnService : VpnService() {
         invalidateStartGeneration()
         starting = false
         vpnEstablished = false
+        dataPlaneRunning = false
         val result = MobileCoreBridge.vpnStop()
         val proxyResult = MobileCoreBridge.proxyStop()
         AndroidLogStore.add("vpn", "VPN stop result: $result")
@@ -204,6 +223,15 @@ class ProbeNodeVpnService : VpnService() {
 
     private fun isStartGenerationCurrent(generation: Int): Boolean {
         return startGeneration == generation
+    }
+
+    private fun isCoreVpnRunning(): Boolean {
+        return try {
+            val status = JSONObject(MobileCoreBridge.vpnStatus())
+            status.optBoolean("running", false) || status.optString("status").equals("running", ignoreCase = true)
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private fun ensureNotificationChannel() {
@@ -265,6 +293,7 @@ class ProbeNodeVpnService : VpnService() {
         private const val DATA_PLANE_START_CONFIRM_TIMEOUT_MS = 5000L
         @Volatile private var runtimeRunning: Boolean = false
         @Volatile private var runtimeStarting: Boolean = false
+        @Volatile private var runtimeDataPlaneRunning: Boolean = false
         @Volatile private var runtimePhase: String = "stopped"
         @Volatile private var runtimeMessage: String = "未启动"
         @Volatile private var runtimeError: String = ""
@@ -288,6 +317,7 @@ class ProbeNodeVpnService : VpnService() {
             }
             json.put("android_running", runtimeRunning)
             json.put("android_starting", runtimeStarting)
+            json.put("android_data_plane_running", runtimeDataPlaneRunning)
             json.put("android_phase", runtimePhase)
             json.put("android_message", runtimeMessage)
             if (runtimeError.isNotBlank()) {
@@ -307,6 +337,7 @@ class ProbeNodeVpnService : VpnService() {
         fun updateRuntimeState(running: Boolean, starting: Boolean, phase: String, message: String, error: String = "") {
             runtimeRunning = running
             runtimeStarting = starting
+            runtimeDataPlaneRunning = running && !starting && (phase == "running" || phase == "connected")
             runtimePhase = phase
             runtimeMessage = message
             runtimeError = error

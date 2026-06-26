@@ -298,7 +298,12 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun vpnStatus(): String {
             refreshCachedStatusAsync()
-            return ProbeNodeVpnService.mergedStatusJSON(cachedVpnStatus)
+            return try {
+                cachedVpnStatus = ProbeNodeVpnService.mergedStatusJSON(MobileCoreBridge.vpnStatus())
+                cachedVpnStatus
+            } catch (_: Throwable) {
+                ProbeNodeVpnService.mergedStatusJSON(cachedVpnStatus)
+            }
         }
 
         @JavascriptInterface

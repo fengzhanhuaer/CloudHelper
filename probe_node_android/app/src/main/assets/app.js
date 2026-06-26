@@ -220,11 +220,17 @@ function renderProxyRuntimeStatus(data, vpnData) {
 }
 
 function isVPNRunning(data) {
-  return !!(data && (data.running || data.android_running || data.status === "running"));
+  if (!data) {
+    return false;
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "android_data_plane_running")) {
+    return !!data.android_data_plane_running;
+  }
+  return !!(data.running || data.status === "running");
 }
 
 function isVPNStarting(data) {
-  return !!(data && (data.android_starting || data.status === "starting"));
+  return !!(data && (data.android_starting || data.status === "starting" || data.android_phase === "data_plane_pending" || data.android_phase === "start_data_plane"));
 }
 
 function renderProxyGroupItem(group, chains) {

@@ -496,9 +496,11 @@ func openAndroidProxyIndependentStream(item linkChainServerItem, endpoint linkEn
 		stream, err := session.OpenWithRequest(request, proxyResponseReadTimeout)
 		if err != nil {
 			lastErr = err
+			androidLogStore.add("proxy", "warn", "open frame stream failed: chain="+strings.TrimSpace(endpoint.ChainID)+" target="+strings.TrimSpace(request.Address)+" attempt="+strconv.Itoa(attempt+1)+" err="+err.Error())
 			invalidateProxyChainSession(endpoint.ChainID, session)
 			continue
 		}
+		androidLogStore.add("proxy", "debug", "open frame stream ok: chain="+strings.TrimSpace(endpoint.ChainID)+" target="+strings.TrimSpace(request.Address)+" priority="+strings.TrimSpace(request.Priority))
 		return stream, nil
 	}
 	if lastErr != nil {
@@ -532,6 +534,7 @@ func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*
 	if existing := proxyRuntime.sessions[endpoint.ChainID]; existing != nil && existing.session != nil && !existing.session.IsClosed() {
 		session := existing.session
 		proxyRuntime.mu.Unlock()
+		androidLogStore.add("proxy", "debug", "reuse frame session: chain="+strings.TrimSpace(endpoint.ChainID))
 		return session, nil
 	}
 	proxyRuntime.mu.Unlock()
@@ -544,6 +547,9 @@ func ensureProxyChainSession(item linkChainServerItem, endpoint linkEndpoint) (*
 		_ = conn.Close()
 		return nil, err
 	}
+	ready := session.WaitReady(500 * time.Millisecond)
+	androidLogStore.add("proxy", "debug", "frame session ready: chain="+strings.TrimSpace(endpoint.ChainID)+" ready="+strconv.FormatBool(ready))
+	androidLogStore.add("proxy", "normal", "created frame session: chain="+strings.TrimSpace(endpoint.ChainID))
 	proxyRuntime.mu.Lock()
 	if old := proxyRuntime.sessions[endpoint.ChainID]; old != nil {
 		closeProxyChainSession(old)

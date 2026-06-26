@@ -47,8 +47,10 @@ const (
 )
 
 var (
-	vpnIPv4Address = tcpip.AddrFrom4([4]byte{10, 111, 0, 2})
-	vpnIPv6Address = tcpip.AddrFrom16([16]byte{0xfd, 0x00, 0x01, 0x11, 0x01, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2})
+	vpnIPv4GatewayAddress = tcpip.AddrFrom4([4]byte{10, 111, 0, 1})
+	vpnIPv4Address        = tcpip.AddrFrom4([4]byte{10, 111, 0, 2})
+	vpnIPv6GatewayAddress = tcpip.AddrFrom16([16]byte{0xfd, 0x00, 0x01, 0x11, 0x01, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})
+	vpnIPv6Address        = tcpip.AddrFrom16([16]byte{0xfd, 0x00, 0x01, 0x11, 0x01, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2})
 )
 
 var vpnRuntime = &androidVPNRuntime{}
@@ -627,23 +629,19 @@ func newAndroidVPNNetstack(tun *os.File) (*androidVPNNetstack, error) {
 		gStack.Destroy()
 		return nil, err
 	}
-	if err := tcpipErrToError(gStack.AddProtocolAddress(vpnNICID, tcpip.ProtocolAddress{
-		Protocol: ipv4.ProtocolNumber,
-		AddressWithPrefix: tcpip.AddressWithPrefix{
-			Address:   vpnIPv4Address,
-			PrefixLen: 32,
-		},
-	}, stack.AddressProperties{})); err != nil {
+	if err := addAndroidVPNProtocolAddress(gStack, ipv4.ProtocolNumber, vpnIPv4GatewayAddress, 32); err != nil {
 		gStack.Destroy()
 		return nil, err
 	}
-	if err := tcpipErrToError(gStack.AddProtocolAddress(vpnNICID, tcpip.ProtocolAddress{
-		Protocol: ipv6.ProtocolNumber,
-		AddressWithPrefix: tcpip.AddressWithPrefix{
-			Address:   vpnIPv6Address,
-			PrefixLen: 128,
-		},
-	}, stack.AddressProperties{})); err != nil {
+	if err := addAndroidVPNProtocolAddress(gStack, ipv4.ProtocolNumber, vpnIPv4Address, 32); err != nil {
+		gStack.Destroy()
+		return nil, err
+	}
+	if err := addAndroidVPNProtocolAddress(gStack, ipv6.ProtocolNumber, vpnIPv6GatewayAddress, 128); err != nil {
+		gStack.Destroy()
+		return nil, err
+	}
+	if err := addAndroidVPNProtocolAddress(gStack, ipv6.ProtocolNumber, vpnIPv6Address, 128); err != nil {
 		gStack.Destroy()
 		return nil, err
 	}
@@ -666,6 +664,16 @@ func newAndroidVPNNetstack(tun *os.File) (*androidVPNNetstack, error) {
 	go runner.inputLoop(ctx)
 	go runner.outputLoop(ctx)
 	return runner, nil
+}
+
+func addAndroidVPNProtocolAddress(gStack *stack.Stack, protocol tcpip.NetworkProtocolNumber, address tcpip.Address, prefixLen int) error {
+	return tcpipErrToError(gStack.AddProtocolAddress(vpnNICID, tcpip.ProtocolAddress{
+		Protocol: protocol,
+		AddressWithPrefix: tcpip.AddressWithPrefix{
+			Address:   address,
+			PrefixLen: prefixLen,
+		},
+	}, stack.AddressProperties{}))
 }
 
 func (n *androidVPNNetstack) inputLoop(ctx context.Context) {
@@ -1848,7 +1856,7 @@ func snapshotAndroidVPNDNSStatus() map[string]any {
 	}
 	return map[string]any{
 		"enabled":          true,
-		"listen":           "10.111.0.2:53",
+		"listen":           "10.111.0.1:53",
 		"fake_ip_cidr":     "198.18.0.0/15",
 		"fake_ip_count":    len(vpnDNSState.fakeIPToEntry),
 		"route_hint_count": len(vpnDNSState.routeIPHints),

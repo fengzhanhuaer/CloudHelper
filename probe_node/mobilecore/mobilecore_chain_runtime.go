@@ -959,6 +959,8 @@ func runMobileChainBridgeDialLoop(rt *mobileChainRuntime, target mobileChainBrid
 			backoff = nextMobileChainBackoff(backoff)
 			continue
 		}
+		ready := session.WaitReady(500 * time.Millisecond)
+		androidLogStore.add("chain", "debug", "android chain bridge frame session ready: chain="+rt.cfg.ChainID+" tag="+target.Tag+" ready="+strconv.FormatBool(ready))
 		sessionID := rt.nextBridgeSessionID(target.Tag)
 		backoff = mobileChainBridgeRetryMin
 		if target.AssignDownstream {

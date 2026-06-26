@@ -233,6 +233,9 @@ func TestMobileChainPortForwardStreamUsesExistingFrameOnly(t *testing.T) {
 		t.Fatalf("client frame: %v", err)
 	}
 	defer clientSession.Close()
+	if !clientSession.WaitReady(2*time.Second) || !serverSession.WaitReady(2*time.Second) {
+		t.Fatal("frame session negotiation timed out")
+	}
 
 	rt := &mobileChainRuntime{
 		cfg:                mobileChainRuntimeConfig{ChainID: "android-chain-frame", Role: "entry"},
@@ -789,6 +792,7 @@ func TestAndroidProxyChainSessionDefaultProtocolFallsBackToWebSocket(t *testing.
 			t.Fatalf("frame server: %v", err)
 		}
 		defer session.Close()
+		<-session.closeCh
 	}))
 	defer server.Close()
 

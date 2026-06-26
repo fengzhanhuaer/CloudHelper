@@ -63,6 +63,8 @@ type mobileChainFrameSession struct {
 	localConfig     mobileChainFrameSessionConfig
 	remoteConfig    mobileChainFrameSessionConfig
 	effectiveConfig mobileChainFrameSessionConfig
+	readyCh         chan struct{}
+	readyOnce       sync.Once
 }
 
 type mobileChainFrameWriteRequest struct {
@@ -154,6 +156,7 @@ func newMobileChainFrameSession(conn net.Conn, initiator bool) (*mobileChainFram
 		pendingPings:    make(map[uint64]time.Time),
 		localConfig:     localConfig,
 		effectiveConfig: localConfig,
+		readyCh:         make(chan struct{}),
 	}
 	s.nextStreamID.Store(start)
 	go s.writeLoop()
@@ -299,6 +302,25 @@ func (s *mobileChainFrameSession) NegotiatedConfig() mobileChainFrameSessionConf
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return s.effectiveConfig
+}
+
+func (s *mobileChainFrameSession) WaitReady(timeout time.Duration) bool {
+	if s == nil {
+		return false
+	}
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-s.readyCh:
+		return true
+	case <-s.closeCh:
+		return false
+	case <-timer.C:
+		return false
+	}
 }
 
 func (s *mobileChainFrameSession) registerStream(stream *mobileChainFrameStream) {
@@ -601,6 +623,9 @@ func (s *mobileChainFrameSession) handleHelloControl(control mobileChainFrameSes
 	if control.Type == mobileChainFrameControlHello {
 		s.writeControlFrameAsync(mobileChainFrame{Kind: mobileChainFrameKindControl}, mobileChainFrameSessionControl{Type: mobileChainFrameControlHelloAck, Config: &effective})
 	}
+	s.readyOnce.Do(func() {
+		close(s.readyCh)
+	})
 }
 
 func (s *mobileChainFrameSession) writeFrame(frame mobileChainFrame) error {
