@@ -120,7 +120,7 @@ class MainActivity : Activity() {
         thread(name = "cloudhelper-android-status-refresh") {
             try {
                 cachedStatus = MobileCoreBridge.status()
-                cachedVpnStatus = MobileCoreBridge.vpnStatus()
+                cachedVpnStatus = ProbeNodeVpnService.mergedStatusJSON(MobileCoreBridge.vpnStatus())
                 evaluatePageScript(
                     """
                     if (window.setText) {
@@ -130,6 +130,7 @@ class MainActivity : Activity() {
                     }
                     if (window.setRuntimeStatus) setRuntimeStatus('运行：' + ${JSONObject.quote(cachedStatus)});
                     if (window.renderVPNDiagnostics && window.parseJSON) renderVPNDiagnostics(parseJSON(${JSONObject.quote(cachedVpnStatus)}));
+                    if (document.body && document.body.dataset.page === 'proxy' && window.renderProxyRuntimeStatus && window.parseJSON) renderProxyRuntimeStatus(parseJSON(${JSONObject.quote(cachedProxyStatus)}), parseJSON(${JSONObject.quote(cachedVpnStatus)}));
                     """.trimIndent(),
                 )
             } finally {

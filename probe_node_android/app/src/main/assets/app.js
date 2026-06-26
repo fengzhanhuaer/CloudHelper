@@ -187,7 +187,7 @@ function renderProxyGroups(payload, vpnPayload) {
   }
   list.innerHTML = "";
   if (!data.ok) {
-    setRuntimeStatus(data.error || "线路组状态不可用。");
+    renderProxyRuntimeStatus(data, vpnData);
     return;
   }
   renderProxyRuntimeStatus(data, vpnData);
@@ -204,17 +204,27 @@ function renderProxyGroups(payload, vpnPayload) {
 }
 
 function renderProxyRuntimeStatus(data, vpnData) {
-  const vpnRunning = !!(vpnData.running || vpnData.status === "running");
+  const vpnRunning = isVPNRunning(vpnData);
+  const vpnStarting = isVPNStarting(vpnData);
   const httpRunning = !!data.http_enabled;
   const socksRunning = !!data.socks5_enabled;
-  const errors = [data.last_error, vpnData.last_error].filter(Boolean).join("；");
+  const errors = [data.error, data.last_error, vpnData.last_error, vpnData.android_error].filter(Boolean).join("；");
   const text = [
-    `VNet：${vpnRunning ? "运行中" : "未启动"}`,
+    `VNet：${vpnRunning ? "运行中" : (vpnStarting ? "启动中" : "未启动")}`,
+    vpnData.android_message || "",
     `HTTP：${httpRunning ? data.http_addr || "运行中" : "未启动"}`,
     `SOCKS5：${socksRunning ? data.socks5_addr || "运行中" : "未启动"}`,
     errors ? `错误：${errors}` : ""
   ].filter(Boolean).join("；");
   setRuntimeStatus(text);
+}
+
+function isVPNRunning(data) {
+  return !!(data && (data.running || data.android_running || data.status === "running"));
+}
+
+function isVPNStarting(data) {
+  return !!(data && (data.android_starting || data.status === "starting"));
 }
 
 function renderProxyGroupItem(group, chains) {
@@ -846,7 +856,7 @@ function renderConnections(proxyData, vpnData) {
   const completed = Array.isArray(connectionData.completed) ? connectionData.completed : [];
   const failures = Array.isArray(connectionData.failures) ? connectionData.failures : [];
   const runtimeText = [
-    vpnData.running || vpnData.status === "running" ? "VNet 运行中" : "VNet 未启动",
+    isVPNRunning(vpnData) ? "VNet 运行中" : (isVPNStarting(vpnData) ? "VNet 启动中" : "VNet 未启动"),
     proxyData.http_enabled ? `HTTP ${proxyData.http_addr || ""}`.trim() : "HTTP 未启动",
     proxyData.socks5_enabled ? `SOCKS5 ${proxyData.socks5_addr || ""}`.trim() : "SOCKS5 未启动",
     connectionData.fetched_at ? `刷新 ${formatCompactTime(connectionData.fetched_at)}` : ""
@@ -1092,13 +1102,16 @@ function refreshVPNDiagnostics() {
 }
 
 function renderVPNDiagnostics(data) {
-  const vpnRunning = !!(data.running || data.status === "running");
+  const vpnRunning = isVPNRunning(data);
+  const vpnStarting = isVPNStarting(data);
   const dns = data.dns || {};
   const selfCheck = data.self_check || {};
   setText("summaryVpn", [
-    vpnRunning ? "运行中" : "未启动",
+    vpnRunning ? "运行中" : (vpnStarting ? "启动中" : "未启动"),
+    data.android_message || "",
     data.updated_at ? formatCompactTime(data.updated_at) : "",
-    data.last_error ? `错误：${data.last_error}` : ""
+    data.last_error ? `错误：${data.last_error}` : "",
+    data.android_error ? `Android：${data.android_error}` : ""
   ].filter(Boolean).join("；") || "-");
   setText("summaryDns", dns.enabled ? `${dns.listen || "10.111.0.2:53"}；${dns.fake_ip_cidr || "198.18.0.0/15"}` : "未接管");
   setText("summaryDnsCache", `Fake ${Number(dns.fake_ip_count || 0)} / Hint ${Number(dns.route_hint_count || 0)}`);
@@ -1307,7 +1320,7 @@ function setupSettingsTabs() {
   buttons.forEach((button) => {
     button.addEventListener("click", () => activateSettingsTab(button.dataset.settingsTab));
   });
-  activateSettingsTab("controller");
+  activateSettingsTab("upgrade");
 }
 
 function activateSettingsTab(tab) {
