@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/hashicorp/yamux"
 )
 
 const defaultReportIntervalSec = 60
@@ -67,6 +68,12 @@ type reportPayload struct {
 	System    systemStatus `json:"system"`
 	Version   string       `json:"version,omitempty"`
 	Timestamp string       `json:"timestamp"`
+}
+
+type probeAckMessage struct {
+	Type      string `json:"type"`
+	Message   string `json:"message,omitempty"`
+	ServerUTC string `json:"server_utc,omitempty"`
 }
 
 type systemStatus struct {
@@ -129,9 +136,9 @@ type controlEnvelope struct {
 }
 
 type peerStatusControlMessage struct {
-	Type          string `json:"type"`
-	RequestID     string `json:"request_id,omitempty"`
-	Scope         string `json:"scope,omitempty"`
+	Type      string `json:"type"`
+	RequestID string `json:"request_id,omitempty"`
+	Scope     string `json:"scope,omitempty"`
 }
 
 type peerStatusControlResult struct {
@@ -141,7 +148,7 @@ type peerStatusControlResult struct {
 	OK          bool                           `json:"ok"`
 	Scope       string                         `json:"scope,omitempty"`
 	Status      map[string]any                 `json:"status,omitempty"`
-	Connections androidProxyConnectionSnapshot  `json:"connections,omitempty"`
+	Connections androidProxyConnectionSnapshot `json:"connections,omitempty"`
 	DNS         map[string]any                 `json:"dns,omitempty"`
 	Logs        []androidLogEntry              `json:"logs,omitempty"`
 	Chain       map[string]any                 `json:"chain,omitempty"`
@@ -594,40 +601,81 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 	}
 	defer wsConn.Close()
 
-	conn := newWebSocketNetConn(wsConn)
-	defer conn.Close()
-
-	writeMu := &sync.Mutex{}
-	setStatus("connected")
-	if err := sendReport(conn, writeMu, nodeID); err != nil {
+	session, err := yamux.Client(newWebSocketNetConn(wsConn), yamux.DefaultConfig())
+	if err != nil {
 		return err
 	}
+	defer session.Close()
 
+	stream, err := session.Open()
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	encoder := json.NewEncoder(stream)
+	decoder := json.NewDecoder(stream)
+
+	writeMu := &sync.Mutex{}
+	ackCh := make(chan error, 1)
 	readErrCh := make(chan error, 1)
 	go func() {
+		acked := false
 		for {
-			frame, err := readMobileChainFrame(conn)
-			if err != nil {
+			var raw json.RawMessage
+			if err := decoder.Decode(&raw); err != nil {
 				readErrCh <- err
 				return
 			}
-			if frame.Kind == mobileChainFrameKindPing {
-				_ = writeMobileStreamFrame(conn, writeMu, mobileChainFrame{Kind: mobileChainFrameKindPong, Seq: frame.Seq})
+			if !acked {
+				var ack probeAckMessage
+				if err := json.Unmarshal(raw, &ack); err == nil && strings.EqualFold(strings.TrimSpace(ack.Type), "ack") {
+					acked = true
+					ackCh <- nil
+					continue
+				}
+			}
+			var envelope controlEnvelope
+			if err := json.Unmarshal(raw, &envelope); err != nil {
 				continue
 			}
-			if frame.Kind != mobileChainFrameKindControl && frame.Kind != mobileChainFrameKindProgress && frame.Kind != mobileChainFrameKindData {
-				continue
+			switch strings.ToLower(strings.TrimSpace(envelope.Type)) {
+			case "logs_get":
+				var msg logsControlMessage
+				if err := json.Unmarshal(raw, &msg); err != nil {
+					continue
+				}
+				sendLogsControlResult(stream, writeMu, buildLogsControlResult(msg, nodeID))
+			case "peer_status_get":
+				var msg peerStatusControlMessage
+				if err := json.Unmarshal(raw, &msg); err != nil {
+					continue
+				}
+				sendPeerStatusControlResult(stream, writeMu, buildPeerStatusControlResult(msg, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}))
+			case "chain_link_control":
+				var msg chainLinkControlMessage
+				if err := json.Unmarshal(raw, &msg); err != nil {
+					continue
+				}
+				runMobileChainLinkControl(msg, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}, stream, writeMu)
 			}
-			raw := frame.Control
-			if len(raw) == 0 {
-				raw = frame.Data
-			}
-			if len(raw) == 0 {
-				continue
-			}
-			processControlMessage(raw, conn, writeMu, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret})
 		}
 	}()
+	if err := sendReport(stream, encoder, writeMu, nodeID); err != nil {
+		return err
+	}
+	select {
+	case err := <-ackCh:
+		if err != nil {
+			return err
+		}
+	case err := <-readErrCh:
+		return err
+	case <-time.After(10 * time.Second):
+		return errors.New("probe report ack timeout")
+	case <-cancel:
+		return nil
+	}
+	setStatus("connected")
 
 	ticker := time.NewTicker(defaultReportIntervalSec * time.Second)
 	defer ticker.Stop()
@@ -638,14 +686,14 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 		case err := <-readErrCh:
 			return err
 		case <-ticker.C:
-			if err := sendReport(conn, writeMu, nodeID); err != nil {
+			if err := sendReport(stream, encoder, writeMu, nodeID); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func sendReport(stream net.Conn, writeMu *sync.Mutex, nodeID string) error {
+func sendReport(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nodeID string) error {
 	ipv4, ipv6 := collectIPs()
 	payload := reportPayload{
 		Type:      "report",
@@ -659,7 +707,14 @@ func sendReport(stream net.Conn, writeMu *sync.Mutex, nodeID string) error {
 		Version:   currentVersion(),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
-	return writeMobileStreamJSON(stream, writeMu, payload)
+	if writeMu != nil {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+	}
+	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err := encoder.Encode(payload)
+	_ = stream.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func collectIPs() ([]string, []string) {
@@ -987,18 +1042,18 @@ func buildPeerStatusControlResult(msg peerStatusControlMessage, identity mobileN
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	result := peerStatusControlResult{
-		Type:       "peer_status_result",
-		RequestID:  requestID,
-		NodeID:     strings.TrimSpace(identity.NodeID),
-		OK:         true,
-		Scope:      scope,
-		Status:     map[string]any{},
+		Type:        "peer_status_result",
+		RequestID:   requestID,
+		NodeID:      strings.TrimSpace(identity.NodeID),
+		OK:          true,
+		Scope:       scope,
+		Status:      map[string]any{},
 		Connections: globalAndroidProxyConnectionState.snapshot(),
-		DNS:        snapshotAndroidVPNDNSStatus(),
-		Logs:       androidLogStore.snapshot(120),
-		Chain:      buildMobilePeerChainSnapshot(),
-		FetchedAt:  now,
-		Timestamp:  now,
+		DNS:         snapshotAndroidVPNDNSStatus(),
+		Logs:        androidLogStore.snapshot(120),
+		Chain:       buildMobilePeerChainSnapshot(),
+		FetchedAt:   now,
+		Timestamp:   now,
 	}
 	if result.Status == nil {
 		result.Status = map[string]any{}
