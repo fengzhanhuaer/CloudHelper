@@ -155,6 +155,75 @@ func TestProbeLocalTUNDataPlaneStartPreparesDirectBypassRouteTargetOnce(t *testi
 	}
 }
 
+func TestProbeLocalTUNDataPlaneStartRestartsStaleRunner(t *testing.T) {
+	resetProbeLocalTUNDataPlaneHooksForTest()
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
+	t.Cleanup(resetProbeLocalTUNDataPlaneHooksForTest)
+	oldRun := probeLocalWindowsRunCommand
+	t.Cleanup(func() {
+		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	stale := &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: false, RXPackets: 2, RXBytes: 20}}
+	fresh := &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true, RXPackets: 3, RXBytes: 30}}
+	createCalls := 0
+	closeAdapterCalls := 0
+	runners := []*fakeProbeLocalTUNDataPlane{stale, fresh}
+	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		if name == "powershell" {
+			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
+		}
+		return "", nil
+	}
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) {
+		createCalls++
+		return uintptr(10 + createCalls), nil
+	}
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error {
+		closeAdapterCalls++
+		return nil
+	}
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		if len(runners) == 0 {
+			t.Fatal("unexpected extra runner creation")
+		}
+		runner := runners[0]
+		runners = runners[1:]
+		return runner, nil
+	}
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+
+	if err := startProbeLocalTUNDataPlane(); err != nil {
+		t.Fatalf("first startProbeLocalTUNDataPlane returned error: %v", err)
+	}
+	if err := startProbeLocalTUNDataPlane(); err != nil {
+		t.Fatalf("second startProbeLocalTUNDataPlane returned error: %v", err)
+	}
+	if createCalls != 2 {
+		t.Fatalf("create calls=%d, want 2", createCalls)
+	}
+	if stale.closeCalls != 1 {
+		t.Fatalf("stale close calls=%d, want 1", stale.closeCalls)
+	}
+	stats := probeLocalTUNDataPlaneStatsSnapshot()
+	if !stats.Running || stats.RXPackets != 3 {
+		t.Fatalf("stats=%+v, want fresh running runner", stats)
+	}
+	if err := stopProbeLocalTUNDataPlane(); err != nil {
+		t.Fatalf("stopProbeLocalTUNDataPlane returned error: %v", err)
+	}
+	if fresh.closeCalls != 1 {
+		t.Fatalf("fresh close calls=%d, want 1", fresh.closeCalls)
+	}
+	if closeAdapterCalls != 2 {
+		t.Fatalf("close adapter calls=%d, want 2", closeAdapterCalls)
+	}
+}
+
 func TestProbeLocalTUNDataPlaneStartRunnerFailureClosesAdapter(t *testing.T) {
 	resetProbeLocalTUNDataPlaneHooksForTest()
 	useProbeLocalWindowsCommandBackedRouteHooksForTest()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -191,6 +192,99 @@ func TestProbeLocalTUNGroupRuntimeFetchRemotePeerStatusRejectsOpenResponse(t *te
 	_, err = rt.fetchRemotePeerStatus("peer_status_get", "chain_exit")
 	if err == nil || !strings.Contains(err.Error(), "missing address") {
 		t.Fatalf("fetchRemotePeerStatus err=%v, want missing address", err)
+	}
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("server side failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server side")
+	}
+}
+
+func TestProbeLocalTUNGroupRuntimeFetchRemoteSpeedDebugDecodesDirectPayload(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	serverReady := make(chan *probeChainFrameSession, 1)
+	serverErr := make(chan error, 1)
+	go func() {
+		session, err := newProbeChainFrameServer(serverConn)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		serverReady <- session
+		stream, err := session.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer stream.Close()
+		frameStream, ok := stream.(*probeChainFrameStream)
+		if !ok {
+			serverErr <- errors.New("expected frame stream")
+			return
+		}
+		req, found := frameStream.OpenRequest()
+		if !found {
+			serverErr <- errors.New("missing frame open request")
+			return
+		}
+		if req.Type != "speed_debug_get" {
+			serverErr <- errors.New("unexpected speed debug request")
+			return
+		}
+		if err := frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true}); err != nil {
+			serverErr <- err
+			return
+		}
+		payload := probeSpeedDebugResultPayload{
+			Type:      "speed_debug_result",
+			OK:        true,
+			NodeID:    "remote-node",
+			RequestID: req.RequestID,
+			Scope:     "chain_exit",
+			Recent: []probeSpeedDebugItemPayload{{
+				ChainID: "chain-a",
+				Status:  "completed",
+				Bytes:   1024,
+			}},
+		}
+		payload.RecentCount = len(payload.Recent)
+		if err := json.NewEncoder(stream).Encode(payload); err != nil {
+			serverErr <- err
+			return
+		}
+		serverErr <- nil
+	}()
+
+	clientSession, err := newProbeChainFrameClient(clientConn)
+	if err != nil {
+		t.Fatalf("frame client failed: %v", err)
+	}
+	serverSession := <-serverReady
+	defer serverSession.Close()
+	defer clientSession.Close()
+	defer clientConn.Close()
+
+	rt := &probeLocalTUNGroupRuntime{
+		Group:           "test",
+		SelectedChainID: "chain-a",
+		RuntimeStatus:   "connected",
+		Endpoint: probeLocalTUNChainEndpoint{
+			ChainID:   "chain-a",
+			EntryHost: "relay.example.com",
+			EntryPort: 16030,
+		},
+		session: clientSession,
+	}
+
+	payload, err := rt.fetchRemoteSpeedDebug()
+	if err != nil {
+		t.Fatalf("fetchRemoteSpeedDebug failed: %v", err)
+	}
+	if payload.Type != "speed_debug_result" || !payload.OK || payload.NodeID != "remote-node" || len(payload.Recent) != 1 {
+		t.Fatalf("unexpected speed debug payload: %+v", payload)
 	}
 	select {
 	case err := <-serverErr:

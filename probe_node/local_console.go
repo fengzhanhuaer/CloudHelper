@@ -1089,20 +1089,10 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusConflict, Message: m.proxy.LastError}
 	}
 
-	if err := probeLocalApplyProxyTakeover(); err != nil {
-		m.proxy.LastError = strings.TrimSpace(err.Error())
-		m.proxy.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		status := http.StatusInternalServerError
-		if errors.Is(err, errProbeLocalProxyUnsupported) {
-			status = http.StatusNotImplemented
-		}
-		return m.tun, m.proxy, &probeLocalHTTPError{Status: status, Message: m.proxy.LastError}
-	}
-
 	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-	if strings.TrimSpace(currentProbeLocalTUNDNSListenHost()) != "" {
+	needsDataPlane := strings.TrimSpace(currentProbeLocalTUNDNSListenHost()) != ""
+	if needsDataPlane {
 		if err := startProbeLocalTUNDataPlane(); err != nil {
-			_ = probeLocalRestoreProxyDirect()
 			m.tun.DataPlane = false
 			m.tun.DataPlaneRX = 0
 			m.tun.DataPlaneBytes = 0
@@ -1114,6 +1104,25 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 			m.proxy.UpdatedAt = m.tun.UpdatedAt
 			return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 		}
+	}
+
+	if err := probeLocalApplyProxyTakeover(); err != nil {
+		if needsDataPlane {
+			if stopErr := stopProbeLocalTUNDataPlane(); stopErr != nil {
+				logProbeWarnf("probe local tun data plane stop after takeover failure failed: %v", stopErr)
+			}
+		}
+		m.proxy.LastError = strings.TrimSpace(err.Error())
+		m.proxy.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		m.tun.DataPlane = false
+		m.tun.DataPlaneRX = 0
+		m.tun.DataPlaneBytes = 0
+		m.tun.UpdatedAt = m.proxy.UpdatedAt
+		status := http.StatusInternalServerError
+		if errors.Is(err, errProbeLocalProxyUnsupported) {
+			status = http.StatusNotImplemented
+		}
+		return m.tun, m.proxy, &probeLocalHTTPError{Status: status, Message: m.proxy.LastError}
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)

@@ -288,7 +288,7 @@
       </div>
     </section>
 
-    <section id="panelProxyConnections" class="card proxy-tab-panel" data-tab-panel="connections">
+    <section id="panelProxyDiagnostics" class="card proxy-tab-panel" data-tab-panel="connections">
       <strong>连接诊断</strong>
       <p id="proxyConnectionSummary" class="hint">-</p>
       <div class="toolbar">
@@ -328,7 +328,7 @@
         </div>
       </div>
       <div class="actions">
-        <button id="proxyConnectionRefreshBtn" class="secondary">刷新连接诊断</button>
+        <button id="proxyDiagRefreshBtn" class="secondary">刷新连接诊断</button>
         <button id="proxyDiagUseLinkBtn" class="secondary">带入当前链路</button>
         <button id="proxyDiagClearBtn" class="secondary">清空线索条件</button>
       </div>
@@ -336,7 +336,7 @@
       <div id="proxyConnectionRows" class="connection-list">
         <div class="hint">暂无 VNet 连接记录</div>
       </div>
-      <div class="connection-section-title">关联线索</div>
+      <div class="connection-section-title">排错磁贴 / 关联线索</div>
       <div id="proxyDiagResults" class="diagnostic-results">
         <div class="hint">暂无诊断结果</div>
       </div>
@@ -1707,12 +1707,12 @@
       const cleanRoute = String(routeTarget || '').trim();
       const scope = String(item && item.scope || '').trim();
       const side = String(item && item.side || '').trim();
-      if (scope === 'chain_exit' || side === 'remote') {
-        return '出口拨号 ' + cleanTarget;
-      }
       if (scope === 'port_forward') {
-        if (cleanRoute && cleanRoute !== cleanTarget) return '监听入口 ' + cleanTarget + ' -> 出口目标 ' + cleanRoute;
-        return '监听入口 ' + cleanTarget;
+        if (cleanRoute && cleanRoute !== cleanTarget) return '本地监听 ' + cleanTarget + ' -> 远方目标 ' + cleanRoute;
+        return '本地监听 ' + cleanTarget;
+      }
+      if (scope === 'chain_exit' || side === 'remote') {
+        return '远方拨号 ' + cleanTarget;
       }
       if (!cleanRoute || cleanRoute === cleanTarget) return cleanTarget;
       return cleanTarget + ' -> ' + cleanRoute;
@@ -2745,7 +2745,7 @@
       }
     });
 
-    document.getElementById('proxyConnectionRefreshBtn').addEventListener('click', async () => {
+    document.getElementById('proxyDiagRefreshBtn').addEventListener('click', async () => {
       setMessage('刷新连接诊断...');
       try {
         await Promise.all([

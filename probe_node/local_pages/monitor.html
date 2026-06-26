@@ -822,12 +822,12 @@
       const cleanRoute = String(routeTarget || '').trim();
       const scope = String(item && item.scope || '').trim();
       const side = String(item && item.side || '').trim();
-      if (scope === 'chain_exit' || side === 'remote') {
-        return '出口拨号 ' + cleanTarget;
-      }
       if (scope === 'port_forward') {
-        if (cleanRoute && cleanRoute !== cleanTarget) return '监听入口 ' + cleanTarget + ' -> 出口目标 ' + cleanRoute;
-        return '监听入口 ' + cleanTarget;
+        if (cleanRoute && cleanRoute !== cleanTarget) return '本地监听 ' + cleanTarget + ' -> 远方目标 ' + cleanRoute;
+        return '本地监听 ' + cleanTarget;
+      }
+      if (scope === 'chain_exit' || side === 'remote') {
+        return '远方拨号 ' + cleanTarget;
       }
       if (!cleanRoute || cleanRoute === cleanTarget) return cleanTarget;
       return cleanTarget + ' -> ' + cleanRoute;
@@ -910,9 +910,10 @@
     function resolveSubstreamEndpointRole(item, source) {
       const scope = String(item && item.scope || '').trim();
       const side = String(item && item.side || '').trim();
-      if (scope === 'chain_exit' || side === 'remote') return 'exit';
       if (scope === 'port_forward' || scope === 'tun' || scope === 'explicit' || side === 'local') return 'entry';
-      return source === 'remote' ? 'exit' : 'entry';
+      if (scope === 'chain_exit' || side === 'remote') return 'exit';
+      const sourceText = String(source || '').trim().toLowerCase();
+      return sourceText === 'remote' || sourceText.includes('exit') || sourceText.includes('远方') || sourceText.includes('对端') ? 'exit' : 'entry';
     }
 
     function renderSubstreamMonitor() {
@@ -950,10 +951,10 @@
             <tr>
               <th>组</th>
               <th>Flow</th>
-              <th>入口侧</th>
-              <th>出口侧</th>
+              <th>本地侧</th>
+              <th>远方侧</th>
               <th>目标</th>
-              <th>两端收发</th>
+              <th>本地/远方收发</th>
               <th>缓冲/堆积</th>
               <th>异常</th>
               <th>时间</th>
@@ -974,9 +975,9 @@
       return `
         <tr>
           <td><span class="hint">${escapeHTML(row && row.group || '-')}</span></td>
-          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">入口 ${escapeHTML(entry && entry.id || '-')}<br>出口 ${escapeHTML(exit && exit.id || '-')}${pairStatus ? '<br>' + escapeHTML(pairStatus) : ''}</span></td>
-          ${renderSubstreamEndpointCell('入口侧', entry)}
-          ${renderSubstreamEndpointCell('出口侧', exit)}
+          <td><code>${escapeHTML(flowID)}</code><br><span class="hint">本地 ${escapeHTML(entry && entry.id || '-')}<br>远方 ${escapeHTML(exit && exit.id || '-')}${pairStatus ? '<br>' + escapeHTML(formatSubstreamPairStatus(pairStatus)) : ''}</span></td>
+          ${renderSubstreamEndpointCell('本地侧', entry)}
+          ${renderSubstreamEndpointCell('远方侧', exit)}
           <td><span class="pre-line">${escapeHTML(renderSubstreamTargetText(entry, exit))}</span></td>
           <td><span class="pre-line">${escapeHTML(renderSubstreamTrafficText(entry, exit))}</span></td>
           <td><span class="pre-line">${escapeHTML(renderSubstreamBufferText(entry, exit))}</span></td>
@@ -999,23 +1000,23 @@
     }
 
     function renderSubstreamTargetText(entry, exit) {
-      return renderSubstreamSideText('入口侧', entry, renderSubstreamTargetLine).concat(renderSubstreamSideText('出口侧', exit, renderSubstreamTargetLine)).join('\n');
+      return renderSubstreamSideText('本地侧', entry, renderSubstreamTargetLine).concat(renderSubstreamSideText('远方侧', exit, renderSubstreamTargetLine)).join('\n');
     }
 
     function renderSubstreamTrafficText(entry, exit) {
-      return renderSubstreamSideText('入口侧', entry, renderSubstreamTrafficLine).concat(renderSubstreamSideText('出口侧', exit, renderSubstreamTrafficLine)).join('\n');
+      return renderSubstreamSideText('本地侧', entry, renderSubstreamTrafficLine).concat(renderSubstreamSideText('远方侧', exit, renderSubstreamTrafficLine)).join('\n');
     }
 
     function renderSubstreamBufferText(entry, exit) {
-      return renderSubstreamSideText('入口侧', entry, renderSubstreamBufferLine).concat(renderSubstreamSideText('出口侧', exit, renderSubstreamBufferLine)).join('\n');
+      return renderSubstreamSideText('本地侧', entry, renderSubstreamBufferLine).concat(renderSubstreamSideText('远方侧', exit, renderSubstreamBufferLine)).join('\n');
     }
 
     function renderSubstreamErrorText(entry, exit) {
-      return renderSubstreamSideText('入口侧', entry, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-').concat(renderSubstreamSideText('出口侧', exit, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-')).join('\n');
+      return renderSubstreamSideText('本地侧', entry, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-').concat(renderSubstreamSideText('远方侧', exit, (item) => String(item && (item.close_reason || item.error || '') || '').trim() || '-')).join('\n');
     }
 
     function renderSubstreamTimeText(entry, exit) {
-      return renderSubstreamSideText('入口侧', entry, renderSubstreamTimeLine).concat(renderSubstreamSideText('出口侧', exit, renderSubstreamTimeLine)).join('\n');
+      return renderSubstreamSideText('本地侧', entry, renderSubstreamTimeLine).concat(renderSubstreamSideText('远方侧', exit, renderSubstreamTimeLine)).join('\n');
     }
 
     function renderSubstreamSideText(label, item, formatter) {
@@ -1044,7 +1045,7 @@
         return flowID + ' ' + identityText + ' | ' + formatConnectionTargetPath(item, target, routeTarget);
       }
       if (kind === 'peer_exit') {
-        return flowID + ' ' + identityText + ' | 出口拨号=' + target;
+        return flowID + ' ' + identityText + ' | 远方拨号=' + target;
       }
       return flowID + ' ' + identityText + ' | ' + formatConnectionTargetPath(item, target, routeTarget);
     }
@@ -1100,8 +1101,16 @@
       if (kind === 'tun') return 'TUN';
       if (kind === 'explicit_proxy') return '本地代理';
       if (kind === 'port_forward') return '端口转发';
-      if (kind === 'peer_exit') return '对端出口';
+      if (kind === 'peer_exit') return '远方拨号';
       return kind || '-';
+    }
+
+    function formatSubstreamPairStatus(value) {
+      const status = String(value || '').trim();
+      if (status === 'missing_entry') return '本地侧缺失';
+      if (status === 'missing_exit') return '远方侧缺失';
+      if (status === 'complete') return '完整';
+      return status;
     }
 
     async function loadSubstreamMonitor() {
@@ -1156,7 +1165,7 @@
               <span class="${statusClass}">${escapeHTML(status)}</span>
             </div>
             <div class="link-monitor-meta">
-              ID=${escapeHTML(chainID || '-')} ｜ 入口=${escapeHTML(endpoint)} ｜ 协议=${escapeHTML(formatProtocol(item && item.link_layer))} ｜ 观测速率=${escapeHTML(rate)}<br>
+              ID=${escapeHTML(chainID || '-')} ｜ 本地=${escapeHTML(endpoint)} ｜ 协议=${escapeHTML(formatProtocol(item && item.link_layer))} ｜ 观测速率=${escapeHTML(rate)}<br>
               线路组=${escapeHTML(groups.length ? groups.join(', ') : '-')} ｜ 路由=${escapeHTML(route)}
             </div>
             <div class="link-monitor-grid">

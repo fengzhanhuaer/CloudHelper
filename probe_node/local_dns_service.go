@@ -1900,9 +1900,7 @@ func upsertProbeLocalDNSUnifiedRecordFakeIPLocked(domain, fakeIP, group string, 
 	record.Domain = cleanDomain
 	record.Group = strings.TrimSpace(group)
 	record.FakeIP = strings.TrimSpace(fakeIP)
-	if record.ExpiresAt.IsZero() || now.After(record.ExpiresAt) {
-		record.ExpiresAt = now.Add(probeLocalDNSCacheTTL)
-	}
+	record.ExpiresAt = now.Add(probeLocalDNSCacheTTL)
 	record.UpdatedAt = now
 	probeLocalDNSState.cache[cleanDomain] = record
 	probeLocalDNSState.cacheDirty = true
@@ -2131,10 +2129,16 @@ func clearProbeLocalDNSUnifiedCache() {
 	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
 	probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
 	probeLocalDNSState.fakeCursor = 0
-	probeLocalDNSState.cacheDirty = true
+	probeLocalDNSState.cacheDirty = false
 	probeLocalDNSState.mu.Unlock()
 	clearProbeChainRelayResolveCache()
-	flushProbeLocalDNSCacheToDisk()
+	if err := removeProbeLocalDNSCacheFromDisk(); err != nil {
+		logProbeWarnf("probe local dns cache remove failed: %v", err)
+		probeLocalDNSState.mu.Lock()
+		probeLocalDNSState.cacheDirty = true
+		probeLocalDNSState.mu.Unlock()
+		flushProbeLocalDNSCacheToDisk()
+	}
 }
 
 func queryProbeLocalDNSCacheRecords() []probeLocalDNSCacheRecord {
@@ -2386,6 +2390,21 @@ func persistProbeLocalDNSCacheRecordsToDisk(records []probeLocalDNSPersistRecord
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func removeProbeLocalDNSCacheFromDisk() error {
+	path, err := resolveProbeLocalDNSCachePath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	tmpPath := path + ".tmp"
+	if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func currentProbeLocalDNSStatus() probeLocalDNSStatus {

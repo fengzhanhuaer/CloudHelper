@@ -1089,6 +1089,42 @@ func TestVPNUDPAssociationMetadata(t *testing.T) {
 	}
 }
 
+func TestMobileChainRequestFromLinkRequestPreservesUDPAssociation(t *testing.T) {
+	linkReq := linkTunnelOpenRequest{
+		Type:             "open",
+		Network:          "udp",
+		Address:          "8.8.8.8:53",
+		FlowID:           "flow-udp-1",
+		AppProtocol:      "udp-association",
+		Priority:         "realtime",
+		ResumePolicy:     "rebind",
+		LatencySensitive: true,
+		AssociationV2: &linkAssociationV2Meta{
+			Version:         2,
+			Transport:       "udp",
+			RouteTarget:     "8.8.8.8:53",
+			NATMode:         "endpoint_independent",
+			TTLProfile:      "default",
+			IdleTimeoutMS:   30000,
+			GCIntervalMS:    15000,
+			CreatedAtUnixMS: 1234,
+			AssocKeyV2:      "client-a->8.8.8.8:53",
+			FlowID:          "flow-udp-1",
+		},
+	}
+
+	mobileReq := mobileChainRequestFromLinkRequest(linkReq)
+	if mobileReq.AssociationV2 == nil {
+		t.Fatal("association_v2 was not preserved")
+	}
+	if mobileReq.AppProtocol != "udp-association" || mobileReq.Priority != "realtime" || mobileReq.ResumePolicy != "rebind" || !mobileReq.LatencySensitive {
+		t.Fatalf("unexpected frame policy metadata: %+v", mobileReq)
+	}
+	if mobileReq.AssociationV2.Transport != "udp" || mobileReq.AssociationV2.RouteTarget != "8.8.8.8:53" || mobileReq.AssociationV2.AssocKeyV2 == "" || mobileReq.AssociationV2.FlowID != "flow-udp-1" {
+		t.Fatalf("unexpected association metadata: %+v", mobileReq.AssociationV2)
+	}
+}
+
 func TestAndroidVPNDNSFakeIPPreservesDomainRoute(t *testing.T) {
 	dir := t.TempDir()
 	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
@@ -1139,6 +1175,114 @@ func TestAndroidVPNDNSFakeIPPreservesDomainRoute(t *testing.T) {
 	}
 	if route.Direct || route.Group != "media" || route.SelectedChainID != "chain-1" || route.TargetAddr != "video.example.com:443" {
 		t.Fatalf("fake ip route not preserved: %+v", route)
+	}
+}
+
+func TestAndroidVPNDNSFakeIPPersistsAndReloads(t *testing.T) {
+	dir := t.TempDir()
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+	vpnRuntime.mu.Lock()
+	oldConfigDir := vpnRuntime.configDir
+	vpnRuntime.configDir = dir
+	vpnRuntime.mu.Unlock()
+	defer func() {
+		vpnRuntime.mu.Lock()
+		vpnRuntime.configDir = oldConfigDir
+		vpnRuntime.mu.Unlock()
+	}()
+
+	route := proxyRouteDecision{Direct: false, Group: "media", SelectedChainID: "chain-1"}
+	fakeIP, ok := allocateAndroidVPNDNSFakeIP("video.example.com", route)
+	if !ok || !strings.HasPrefix(fakeIP, "198.18.") {
+		t.Fatalf("allocate fake ip=%q ok=%v", fakeIP, ok)
+	}
+	if _, err := os.Stat(filepath.Join(dir, vpnDNSCacheFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fake ip allocation should wait for debounced persist, stat err=%v", err)
+	}
+	persistAndroidVPNDNSCache(dir)
+	if _, err := os.Stat(filepath.Join(dir, vpnDNSCacheFileName)); err != nil {
+		t.Fatalf("expected android dns cache file: %v", err)
+	}
+
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	rewritten, entry, ok := rewriteAndroidVPNFakeIPTarget(net.JoinHostPort(fakeIP, "443"))
+	if !ok || rewritten != "video.example.com:443" || entry.SelectedChainID != "chain-1" {
+		t.Fatalf("reloaded fake route ok=%v rewritten=%q entry=%+v", ok, rewritten, entry)
+	}
+	reusedIP, ok := allocateAndroidVPNDNSFakeIP("video.example.com", route)
+	if !ok || reusedIP != fakeIP {
+		t.Fatalf("reused fake ip=%q ok=%v want=%q", reusedIP, ok, fakeIP)
+	}
+}
+
+func TestAndroidVPNDNSRouteHintPersistsAndReloads(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "proxy_group.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "direct-site", "rules": []string{"domain_suffix:example.com"}},
+		},
+	})
+	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
+		"version": 1,
+		"groups": []map[string]any{
+			{"group": "direct-site", "action": "direct"},
+		},
+	})
+	oldDNSState := vpnDNSState
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	defer func() {
+		vpnDNSState = oldDNSState
+	}()
+	vpnRuntime.mu.Lock()
+	oldConfigDir := vpnRuntime.configDir
+	vpnRuntime.configDir = dir
+	vpnRuntime.mu.Unlock()
+	defer func() {
+		vpnRuntime.mu.Lock()
+		vpnRuntime.configDir = oldConfigDir
+		vpnRuntime.mu.Unlock()
+	}()
+
+	query := buildTestDNSQuery(t, "direct.example.com", dnsmessage.TypeA)
+	response := buildAndroidVPNDNSSuccess(query, []net.IP{net.ParseIP("203.0.113.10")}, dnsmessage.TypeA)
+	storeAndroidVPNDNSRouteHints("direct.example.com", response, proxyRouteDecision{Direct: true, Group: "direct-site"})
+	if _, err := os.Stat(filepath.Join(dir, vpnDNSCacheFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("route hint should wait for debounced persist, stat err=%v", err)
+	}
+	persistAndroidVPNDNSCache(dir)
+	if _, err := os.Stat(filepath.Join(dir, vpnDNSCacheFileName)); err != nil {
+		t.Fatalf("expected android dns cache file: %v", err)
+	}
+
+	vpnDNSState = &androidVPNDNSState{
+		nextFakeOffset: 2,
+		fakeDomainToIP: map[string]string{},
+		fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
+		routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	}
+	route, ok := lookupAndroidVPNDNSRouteHint(dir, "203.0.113.10", "443")
+	if !ok || !route.Direct || route.Group != "direct-site" || route.TargetAddr != "203.0.113.10:443" {
+		t.Fatalf("reloaded route hint ok=%v route=%+v", ok, route)
 	}
 }
 

@@ -42,6 +42,15 @@ var probeLocalTUNDataPlaneState = struct {
 func startProbeLocalTUNDataPlane() error {
 	probeLocalTUNDataPlaneState.mu.Lock()
 	if probeLocalTUNDataPlaneState.dataPlane != nil {
+		stats := probeLocalTUNDataPlaneState.dataPlane.Stats()
+		if !stats.Running {
+			probeLocalTUNDataPlaneState.mu.Unlock()
+			logProbeWarnf("probe local tun data plane is stale; restarting session")
+			if err := stopProbeLocalTUNDataPlane(); err != nil {
+				logProbeWarnf("probe local tun stale data plane stop failed before restart: %v", err)
+			}
+			return startProbeLocalTUNDataPlane()
+		}
 		probeLocalTUNDataPlaneState.mu.Unlock()
 		return nil
 	}

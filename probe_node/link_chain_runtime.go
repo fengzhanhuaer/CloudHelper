@@ -221,11 +221,6 @@ type probeChainTunnelDNSResolveResponse struct {
 	Error string   `json:"error,omitempty"`
 }
 
-type probeChainStreamProxyConn struct {
-	net.Conn
-	reader *bufio.Reader
-}
-
 type probeChainNextHop struct {
 	Writer  io.WriteCloser
 	Reader  io.ReadCloser
@@ -264,9 +259,8 @@ var probeChainSharedRelayState = struct {
 }{servers: make(map[string]*probeChainSharedRelayServer)}
 
 const (
-	probeChainRelayAPIPath       = "/api/node/chain/relay"
-	probeChainSourceIPHintPrefix = "CHSRCIP "
-	probeChainAuthNoncePrefix    = "CHNONCE "
+	probeChainRelayAPIPath    = "/api/node/chain/relay"
+	probeChainAuthNoncePrefix = "CHNONCE "
 
 	probeChainLegacyChainIDHeader   = "X-CH-Chain-ID"
 	probeChainCodexChainIDHeader    = "X-Codex-Chain-Id"
@@ -3170,48 +3164,7 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 		return
 	}
 
-	reader := bufio.NewReader(conn)
-	if _, hintErr := readProbeChainSourceIPHint(reader); hintErr != nil {
-		log.Printf("probe chain source hint parse failed: chain=%s err=%v", runtime.cfg.chainID, hintErr)
-		return
-	}
-
-	_ = conn.SetDeadline(time.Time{})
-	if runtime.cfg.nextAuthMode == "proxy" {
-		if err := handleProbeChainProxyConn(runtime, conn, reader); err != nil {
-			log.Printf("probe chain proxy failed: chain=%s role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), err)
-		}
-		return
-	}
-
-	openReq := probeChainOpenRequestFromConn(conn)
-	nextHop, err := openProbeChainNextHop(runtime, preferredSessionID, openReq)
-	if err != nil {
-		log.Printf("probe chain open downstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
-		return
-	}
-	log.Printf("probe chain downstream stream connected: chain=%s role=%s remote=%s session_id=%s session_role=%s streams=%d->%d open_ms=%d", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), nextHop.Monitor.SessionID, nextHop.Monitor.SessionRole, nextHop.Monitor.SessionStreamsOpen, nextHop.Monitor.SessionStreamsAfter, probeDurationMilliseconds(nextHop.Monitor.OpenLatency))
-	defer func() {
-		if nextHop != nil && nextHop.CloseFn != nil {
-			_ = nextHop.CloseFn()
-		}
-	}()
-	nextReader := bufio.NewReader(nextHop.Reader)
-
-	result := relayProbeChainDuplex(
-		reader,
-		nextHop.Writer,
-		func() { closeProbeChainWriter(nextHop.Writer) },
-		nextReader,
-		conn,
-		func() { closeProbeChainConnWrite(conn) },
-	)
-	relayErr := firstProbeChainRelayError(result)
-	if relayErr != nil {
-		log.Printf("probe chain downstream relay failed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
-	} else {
-		log.Printf("probe chain downstream relay closed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes)
-	}
+	log.Printf("probe chain rejected non-frame downstream stream: chain=%s role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
 }
 
 func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, preferredSessionID string) {
@@ -3249,65 +3202,7 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 		return
 	}
 
-	reader := bufio.NewReader(conn)
-	if _, hintErr := readProbeChainSourceIPHint(reader); hintErr != nil {
-		log.Printf("probe chain reverse source hint parse failed: chain=%s err=%v", runtime.cfg.chainID, hintErr)
-		return
-	}
-
-	_ = conn.SetDeadline(time.Time{})
-	role := normalizeProbeChainRole(runtime.cfg.role)
-	if role == "entry" || role == "entry_exit" {
-		if err := handleProbeChainProxyConn(runtime, conn, reader); err != nil {
-			log.Printf("probe chain reverse proxy failed: chain=%s role=%s remote=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), err)
-		}
-		return
-	}
-
-	currentUpstream := runtime.getUpstreamSession()
-	upstreamState := "nil"
-	upstreamClosed := false
-	if currentUpstream != nil {
-		upstreamState = fmt.Sprintf("%p", currentUpstream)
-		upstreamClosed = currentUpstream.IsClosed()
-	}
-	log.Printf("probe chain reverse conn opening prev hop: chain=%s role=%s remote=%s upstream_session=%s upstream_closed=%t", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), upstreamState, upstreamClosed)
-
-	openReq := probeChainOpenRequestFromConn(conn)
-	prevHop, err := openProbeChainPrevHop(runtime, preferredSessionID, openReq)
-	if err != nil {
-		latestUpstream := runtime.getUpstreamSession()
-		latestState := "nil"
-		latestClosed := false
-		if latestUpstream != nil {
-			latestState = fmt.Sprintf("%p", latestUpstream)
-			latestClosed = latestUpstream.IsClosed()
-		}
-		log.Printf("probe chain open upstream stream failed: chain=%s role=%s remote=%s upstream_session=%s upstream_closed=%t err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), latestState, latestClosed, err)
-		return
-	}
-	log.Printf("probe chain upstream stream connected: chain=%s role=%s remote=%s session_id=%s session_role=%s streams=%d->%d open_ms=%d", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), prevHop.Monitor.SessionID, prevHop.Monitor.SessionRole, prevHop.Monitor.SessionStreamsOpen, prevHop.Monitor.SessionStreamsAfter, probeDurationMilliseconds(prevHop.Monitor.OpenLatency))
-	defer func() {
-		if prevHop != nil && prevHop.CloseFn != nil {
-			_ = prevHop.CloseFn()
-		}
-	}()
-	prevReader := bufio.NewReader(prevHop.Reader)
-
-	result := relayProbeChainDuplex(
-		reader,
-		prevHop.Writer,
-		func() { closeProbeChainWriter(prevHop.Writer) },
-		prevReader,
-		conn,
-		func() { closeProbeChainConnWrite(conn) },
-	)
-	relayErr := firstProbeChainRelayError(result)
-	if relayErr != nil {
-		log.Printf("probe chain upstream relay failed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
-	} else {
-		log.Printf("probe chain upstream relay closed: chain=%s role=%s remote=%s duration_ms=%d up_bytes=%d down_bytes=%d", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String(), result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes)
-	}
+	log.Printf("probe chain rejected non-frame upstream stream: chain=%s role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
 }
 
 func openProbeChainNextHop(runtime *probeChainRuntime, preferredSessionID string, request probeChainTunnelOpenRequest) (*probeChainNextHop, error) {
@@ -3546,16 +3441,6 @@ func resolveProbeChainLoopbackHost(raw string) string {
 	return host
 }
 
-func (c *probeChainStreamProxyConn) Read(payload []byte) (int, error) {
-	if c == nil || c.reader == nil {
-		if c == nil || c.Conn == nil {
-			return 0, io.EOF
-		}
-		return c.Conn.Read(payload)
-	}
-	return c.reader.Read(payload)
-}
-
 type probeChainTunedTCPListener struct {
 	net.Listener
 }
@@ -3592,18 +3477,6 @@ func probeChainCopy(dst io.Writer, src io.Reader) (int64, error) {
 	}
 	defer probeChainCopyBufferPool.Put(buf)
 	return io.CopyBuffer(dst, src, buf)
-}
-
-func handleProbeChainProxyConn(runtime *probeChainRuntime, conn net.Conn, reader *bufio.Reader) error {
-	baseConn := net.Conn(conn)
-	if reader != nil {
-		baseConn = &probeChainStreamProxyConn{
-			Conn:   conn,
-			reader: reader,
-		}
-	}
-	handleProbeChainProxyStream(runtime, baseConn)
-	return nil
 }
 
 func handleProbeChainProxyStream(runtime *probeChainRuntime, stream net.Conn) {
@@ -5022,31 +4895,6 @@ func buildProbeChainHMAC(secret string, chainID string, nonce string) string {
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(strings.TrimSpace(nonce)))
 	return hex.EncodeToString(mac.Sum(nil))
-}
-
-func readProbeChainSourceIPHint(reader *bufio.Reader) (string, error) {
-	peek, err := reader.Peek(len(probeChainSourceIPHintPrefix))
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return "", nil
-		}
-		return "", err
-	}
-	if string(peek) != probeChainSourceIPHintPrefix {
-		return "", nil
-	}
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	rawIP := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), probeChainSourceIPHintPrefix))
-	if rawIP == "" {
-		return "", nil
-	}
-	if parsed := net.ParseIP(rawIP); parsed != nil {
-		return parsed.String(), nil
-	}
-	return "", fmt.Errorf("invalid source ip hint")
 }
 
 func resolveProbeChainSourceIPFromRequest(r *http.Request) string {

@@ -356,11 +356,11 @@ func isSameProbeSubstreamEndpoint(left *probeSubstreamMonitorItem, right probeSu
 func resolveProbeSubstreamEndpointRole(item probeSubstreamMonitorItem, source string) string {
 	scope := strings.ToLower(strings.TrimSpace(item.Scope))
 	side := strings.ToLower(strings.TrimSpace(item.Side))
-	if scope == "chain_exit" || side == "remote" {
-		return "exit"
-	}
 	if scope == "port_forward" || scope == "tun" || scope == "explicit" || side == "local" {
 		return "entry"
+	}
+	if scope == "chain_exit" || side == "remote" {
+		return "exit"
 	}
 	if strings.Contains(strings.ToLower(strings.TrimSpace(source)), "exit") {
 		return "exit"

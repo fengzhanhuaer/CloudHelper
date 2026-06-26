@@ -86,8 +86,6 @@ const (
 	mobileChainCopyBufferBytes        = 1024 * 1024
 	mobileChainFrameMaxPayload        = 64 * 1024
 	mobileChainWSBufferBytes          = 512 * 1024
-	mobileChainSourceIPHintPrefix     = "CHSRCIP "
-	mobileChainBridgeControlPrefix    = "CHBRIDGE "
 
 	mobileChainQUICInitialStreamWindow = 128 * 1024 * 1024
 	mobileChainQUICMaxStreamWindow     = 512 * 1024 * 1024
@@ -220,19 +218,6 @@ type mobileChainTunnelOpenResponse struct {
 	ResumeEpoch uint64 `json:"resume_epoch,omitempty"`
 	ReadOffset  uint64 `json:"read_offset,omitempty"`
 	WriteOffset uint64 `json:"write_offset,omitempty"`
-}
-
-type mobileChainBridgeControlRequest struct {
-	Type      string `json:"type"`
-	RequestID string `json:"request_id,omitempty"`
-}
-
-type mobileChainBridgeControlResponse struct {
-	Type      string `json:"type"`
-	RequestID string `json:"request_id,omitempty"`
-	OK        bool   `json:"ok"`
-	Error     string `json:"error,omitempty"`
-	Timestamp string `json:"timestamp,omitempty"`
 }
 
 type mobileChainNetAddr struct{ label string }
@@ -1021,7 +1006,7 @@ func handleMobileChainConn(rt *mobileChainRuntime, conn net.Conn, preferredSessi
 	defer conn.Close()
 	if frameStream, ok := conn.(*mobileChainFrameStream); ok {
 		if rt.cfg.NextAuthMode == "proxy" {
-			_ = handleMobileChainProxyStream(conn, nil)
+			_ = handleMobileChainProxyStream(conn)
 			return
 		}
 		req := mobileChainOpenRequestFromStream(frameStream)
@@ -1033,23 +1018,7 @@ func handleMobileChainConn(rt *mobileChainRuntime, conn net.Conn, preferredSessi
 		relayMobileChainBidirectional(conn, next)
 		return
 	}
-	reader := bufio.NewReader(conn)
-	if _, err := readMobileChainSourceIPHint(reader); err != nil {
-		return
-	}
-	if handleMobileChainBridgeControlIfPresent(conn, reader) {
-		return
-	}
-	if rt.cfg.NextAuthMode == "proxy" {
-		_ = handleMobileChainProxyStream(conn, reader)
-		return
-	}
-	next, err := openMobileChainDownstreamStream(rt, preferredSessionID, mobileChainOpenTimeout, mobileChainTunnelOpenRequest{Type: "open", Network: mobileChainNetworkTCP, Priority: "normal"})
-	if err != nil {
-		return
-	}
-	defer next.Close()
-	relayMobileChainDuplex(reader, next, bufio.NewReader(next), conn)
+	androidLogStore.add("chain", "warning", "rejected non-frame downstream stream: chain="+rt.cfg.ChainID)
 }
 
 func handleMobileChainReverseConn(rt *mobileChainRuntime, conn net.Conn, preferredSessionID string) {
@@ -1057,7 +1026,7 @@ func handleMobileChainReverseConn(rt *mobileChainRuntime, conn net.Conn, preferr
 	if frameStream, ok := conn.(*mobileChainFrameStream); ok {
 		role := normalizeMobileChainRole(rt.cfg.Role)
 		if role == mobileChainRoleEntry || role == mobileChainRoleEntryExit {
-			_ = handleMobileChainProxyStream(conn, nil)
+			_ = handleMobileChainProxyStream(conn)
 			return
 		}
 		req := mobileChainOpenRequestFromStream(frameStream)
@@ -1069,27 +1038,10 @@ func handleMobileChainReverseConn(rt *mobileChainRuntime, conn net.Conn, preferr
 		relayMobileChainBidirectional(conn, prev)
 		return
 	}
-	reader := bufio.NewReader(conn)
-	if _, err := readMobileChainSourceIPHint(reader); err != nil {
-		return
-	}
-	if handleMobileChainBridgeControlIfPresent(conn, reader) {
-		return
-	}
-	role := normalizeMobileChainRole(rt.cfg.Role)
-	if role == mobileChainRoleEntry || role == mobileChainRoleEntryExit {
-		_ = handleMobileChainProxyStream(conn, reader)
-		return
-	}
-	prev, err := openMobileChainUpstreamStream(rt, preferredSessionID, mobileChainOpenTimeout, mobileChainTunnelOpenRequest{Type: "open", Network: mobileChainNetworkTCP, Priority: "normal"})
-	if err != nil {
-		return
-	}
-	defer prev.Close()
-	relayMobileChainDuplex(reader, prev, bufio.NewReader(prev), conn)
+	androidLogStore.add("chain", "warning", "rejected non-frame upstream stream: chain="+rt.cfg.ChainID)
 }
 
-func handleMobileChainProxyStream(stream net.Conn, reader *bufio.Reader) error {
+func handleMobileChainProxyStream(stream net.Conn) error {
 	var req mobileChainTunnelOpenRequest
 	var responder func(mobileChainTunnelOpenResponse) error
 	frameStream, ok := stream.(*mobileChainFrameStream)
@@ -1177,7 +1129,26 @@ func mobileChainRequestFromLinkRequest(req linkTunnelOpenRequest) mobileChainTun
 		Priority:         req.Priority,
 		ResumePolicy:     req.ResumePolicy,
 		LatencySensitive: req.LatencySensitive,
+		AssociationV2:    mobileChainAssociationFromLinkAssociation(req.AssociationV2),
 		PingBytes:        req.PingBytes,
+	}
+}
+
+func mobileChainAssociationFromLinkAssociation(meta *linkAssociationV2Meta) *mobileChainAssociationV2Config {
+	if meta == nil {
+		return nil
+	}
+	return &mobileChainAssociationV2Config{
+		Version:         meta.Version,
+		Transport:       strings.TrimSpace(meta.Transport),
+		RouteTarget:     strings.TrimSpace(meta.RouteTarget),
+		NATMode:         strings.TrimSpace(meta.NATMode),
+		TTLProfile:      strings.TrimSpace(meta.TTLProfile),
+		IdleTimeoutMS:   meta.IdleTimeoutMS,
+		GCIntervalMS:    meta.GCIntervalMS,
+		CreatedAtUnixMS: meta.CreatedAtUnixMS,
+		AssocKeyV2:      strings.TrimSpace(meta.AssocKeyV2),
+		FlowID:          strings.TrimSpace(meta.FlowID),
 	}
 }
 
@@ -1911,25 +1882,6 @@ func mobileChainHMAC(secret string, chainID string, nonce string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func handleMobileChainBridgeControlIfPresent(conn net.Conn, reader *bufio.Reader) bool {
-	peek, err := reader.Peek(len(mobileChainBridgeControlPrefix))
-	if err != nil || string(peek) != mobileChainBridgeControlPrefix {
-		return false
-	}
-	line, _ := reader.ReadString('\n')
-	var req mobileChainBridgeControlRequest
-	raw := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), mobileChainBridgeControlPrefix))
-	_ = json.Unmarshal([]byte(raw), &req)
-	_ = writeMobileChainJSONWithDeadline(conn, mobileChainBridgeControlResponse{
-		Type:      "reverse_data_open_result",
-		RequestID: strings.TrimSpace(req.RequestID),
-		OK:        false,
-		Error:     "reverse data stream is disabled; use bridge frame stream",
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	})
-	return true
-}
-
 func resolveMobileChainIDFromRequest(r *http.Request) string {
 	for _, key := range []string{mobileChainHeaderChainID, mobileChainHeaderLegacyChainID} {
 		if value := strings.TrimSpace(r.Header.Get(key)); value != "" {
@@ -1961,13 +1913,6 @@ func mobileChainConnFromH3(w http.ResponseWriter, r *http.Request, label string)
 			return stream.Close()
 		},
 	}, true
-}
-
-func writeMobileChainJSONWithDeadline(stream net.Conn, value any) error {
-	_ = stream.SetWriteDeadline(time.Now().Add(mobileChainResponseTimeout))
-	err := json.NewEncoder(stream).Encode(value)
-	_ = stream.SetWriteDeadline(time.Time{})
-	return err
 }
 
 func relayMobileChainBidirectional(left net.Conn, right net.Conn) {
@@ -2062,31 +2007,6 @@ func writeMobileChainFramedPacket(writer io.Writer, payload []byte) error {
 		return err
 	}
 	return writeAll(writer, encoded)
-}
-
-func readMobileChainSourceIPHint(reader *bufio.Reader) (string, error) {
-	peek, err := reader.Peek(len(mobileChainSourceIPHintPrefix))
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return "", nil
-		}
-		return "", err
-	}
-	if string(peek) != mobileChainSourceIPHintPrefix {
-		return "", nil
-	}
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	ip := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), mobileChainSourceIPHintPrefix))
-	if ip == "" {
-		return "", nil
-	}
-	if parsed := net.ParseIP(ip); parsed != nil {
-		return parsed.String(), nil
-	}
-	return "", errors.New("invalid source ip hint")
 }
 
 func resolveMobileChainDialHost(rawHost string, preserveDomain bool) (string, string, error) {

@@ -95,6 +95,51 @@ func TestMergeProbeSubstreamMonitorPairsCombinesEntryAndExit(t *testing.T) {
 	}
 }
 
+func TestMergeProbeSubstreamMonitorPairsTreatsPortForwardAsEntryByScope(t *testing.T) {
+	rows := []probeSubstreamMonitorPairRow{
+		{
+			source: "exit",
+			item: probeSubstreamMonitorItem{
+				ID:         "pf-remote-side",
+				Status:     "active",
+				TrackingID: "track-pf-1",
+				FlowID:     "flow-pf-1",
+				Kind:       "port_forward",
+				Scope:      "port_forward",
+				Side:       "remote",
+				Target:     "127.0.0.1:17824",
+			},
+		},
+		{
+			source: "exit",
+			item: probeSubstreamMonitorItem{
+				ID:         "exit-1",
+				Status:     "active",
+				TrackingID: "track-pf-1",
+				FlowID:     "flow-pf-1",
+				Kind:       "peer_exit",
+				Scope:      "chain_exit",
+				Side:       "remote",
+				Target:     "127.0.0.1:3389",
+			},
+		},
+	}
+
+	pairs := buildProbeSubstreamMonitorPairsFromRows(rows)
+	if len(pairs) != 1 {
+		t.Fatalf("pairs=%d, want 1", len(pairs))
+	}
+	if pairs[0].Status != "complete" {
+		t.Fatalf("status=%q, want complete", pairs[0].Status)
+	}
+	if pairs[0].Entry == nil || pairs[0].Entry.ID != "pf-remote-side" {
+		t.Fatalf("entry=%+v, want pf-remote-side", pairs[0].Entry)
+	}
+	if pairs[0].Exit == nil || pairs[0].Exit.ID != "exit-1" {
+		t.Fatalf("exit=%+v, want exit-1", pairs[0].Exit)
+	}
+}
+
 func TestBeginProbeLocalExplicitProxyTCPDebugReusesRouteFlowID(t *testing.T) {
 	state := globalProbeTCPDebugState
 	globalProbeTCPDebugState = newProbeTCPDebugState()
