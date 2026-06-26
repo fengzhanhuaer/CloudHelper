@@ -4,10 +4,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.util.ArrayDeque
+import java.util.concurrent.Executors
 
 object AndroidLogStore {
     private const val MAX_ENTRIES = 300
     private val entries = ArrayDeque<LogEntry>()
+    private val nativeLogExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "cloudhelper-android-native-log").apply { isDaemon = true }
+    }
 
     fun add(source: String, message: String, level: String = "info") {
         val text = message.trim()
@@ -29,7 +33,9 @@ object AndroidLogStore {
                 entries.removeFirst()
             }
         }
-        MobileCoreBridge.appendAppLog(cleanSource, cleanLevel, text)
+        nativeLogExecutor.execute {
+            MobileCoreBridge.appendAppLog(cleanSource, cleanLevel, text)
+        }
     }
 
     @Synchronized

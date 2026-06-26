@@ -14,10 +14,24 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
     private lateinit var webView: WebView
+    @Volatile private var cachedStatus: String = "正在读取运行状态..."
+    @Volatile private var cachedVpnStatus: String = "{}"
+    @Volatile private var cachedProxyStatus: String = JSONObject()
+        .put("ok", false)
+        .put("error", "正在读取 VNet 状态...")
+        .toString()
+    @Volatile private var cachedLinkStatus: String = JSONObject()
+        .put("ok", false)
+        .put("error", "正在读取链路配置...")
+        .toString()
+    private val statusRefreshRunning = AtomicBoolean(false)
+    private val proxyRefreshRunning = AtomicBoolean(false)
+    private val linkRefreshRunning = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,6 +64,7 @@ class MainActivity : Activity() {
         webView.loadUrl("file:///android_asset/status.html")
         requestNotificationPermissionIfNeeded()
         startReportServiceIfConfigured()
+        refreshCachedStatusAsync()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -90,6 +105,67 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun evaluatePageScript(script: String) {
+        runOnUiThread {
+            webView.evaluateJavascript(script, null)
+        }
+    }
+
+    private fun refreshCachedStatusAsync() {
+        if (!statusRefreshRunning.compareAndSet(false, true)) {
+            return
+        }
+        thread(name = "cloudhelper-android-status-refresh") {
+            try {
+                cachedStatus = MobileCoreBridge.status()
+                cachedVpnStatus = MobileCoreBridge.vpnStatus()
+                evaluatePageScript(
+                    """
+                    if (window.setText) {
+                      setText('summaryRuntime', ${JSONObject.quote(cachedStatus)});
+                      setText('status', ${JSONObject.quote(cachedStatus)});
+                      setText('settingsStatus', ${JSONObject.quote(cachedStatus)});
+                    }
+                    if (window.setRuntimeStatus) setRuntimeStatus('运行：' + ${JSONObject.quote(cachedStatus)});
+                    if (window.renderVPNDiagnostics && window.parseJSON) renderVPNDiagnostics(parseJSON(${JSONObject.quote(cachedVpnStatus)}));
+                    """.trimIndent(),
+                )
+            } finally {
+                statusRefreshRunning.set(false)
+            }
+        }
+    }
+
+    private fun refreshCachedProxyStatusAsync() {
+        if (!proxyRefreshRunning.compareAndSet(false, true)) {
+            return
+        }
+        thread(name = "cloudhelper-android-proxy-status-refresh") {
+            try {
+                cachedProxyStatus = MobileCoreBridge.proxyStatus(this@MainActivity)
+                evaluatePageScript(
+                    "if (document.body && document.body.dataset.page === 'proxy' && window.renderProxyGroups) window.renderProxyGroups(${JSONObject.quote(cachedProxyStatus)}, ${JSONObject.quote(cachedVpnStatus)});",
+                )
+            } finally {
+                proxyRefreshRunning.set(false)
+            }
+        }
+    }
+
+    private fun refreshCachedLinkStatusAsync() {
+        if (!linkRefreshRunning.compareAndSet(false, true)) {
+            return
+        }
+        thread(name = "cloudhelper-android-link-status-refresh") {
+            try {
+                cachedLinkStatus = MobileCoreBridge.linkStatus(this@MainActivity)
+                evaluatePageScript("if (document.body && document.body.dataset.page === 'link' && window.renderLinkStatus) window.renderLinkStatus(${JSONObject.quote(cachedLinkStatus)});")
+            } finally {
+                linkRefreshRunning.set(false)
+            }
+        }
+    }
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             return
@@ -109,7 +185,7 @@ class MainActivity : Activity() {
                 .put("nodeId", config.nodeId)
                 .put("nodeSecret", config.nodeSecret)
                 .put("ready", config.isReady)
-                .put("status", MobileCoreBridge.status())
+                .put("status", cachedStatus)
                 .put("configDir", ProbeNodeConfig.configDir(this@MainActivity))
                 .put("localVersion", currentLocalVersion())
                 .toString()
@@ -120,7 +196,8 @@ class MainActivity : Activity() {
             ProbeNodeConfig.save(this@MainActivity, controllerUrl, nodeId, nodeSecret)
             AndroidLogStore.add("settings", "config saved: node=${nodeId.trim()}")
             startReportServiceIfConfigured()
-            return MobileCoreBridge.status()
+            refreshCachedStatusAsync()
+            return cachedStatus
         }
 
         @JavascriptInterface
@@ -142,29 +219,43 @@ class MainActivity : Activity() {
                 AndroidLogStore.add("vpn", "start rejected: controller URL, node ID, and node secret are required", "warn")
                 return "controller URL, node ID, and node secret are required"
             }
-            val proxyResult = MobileCoreBridge.proxyStart(this@MainActivity, config.controllerUrl)
-            val prepareIntent = VpnService.prepare(this@MainActivity)
-            if (prepareIntent != null) {
-                AndroidLogStore.add("vpn", "VPN permission requested; $proxyResult")
-                startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
-                return "$proxyResult；需要授权 Android VPN，授权后会自动启动全局 VPN"
+            thread(name = "cloudhelper-android-proxy-start") {
+                val proxyResult = MobileCoreBridge.proxyStart(this@MainActivity, config.controllerUrl)
+                runOnUiThread {
+                    val prepareIntent = VpnService.prepare(this@MainActivity)
+                    if (prepareIntent != null) {
+                        AndroidLogStore.add("vpn", "VPN permission requested; $proxyResult")
+                        startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
+                        emitStatus("$proxyResult；需要授权 Android VPN，授权后会自动启动全局 VPN")
+                    } else {
+                        AndroidLogStore.add("vpn", "VPN start requested; $proxyResult")
+                        ProbeNodeVpnService.start(this@MainActivity)
+                        emitStatus("$proxyResult；全局 VPN 正在启动")
+                    }
+                    refreshCachedStatusAsync()
+                    refreshCachedProxyStatusAsync()
+                }
             }
-            AndroidLogStore.add("vpn", "VPN start requested; $proxyResult")
-            ProbeNodeVpnService.start(this@MainActivity)
-            return "$proxyResult；全局 VPN 正在启动"
+            return "VNet 启动已提交，正在后台准备..."
         }
 
         @JavascriptInterface
         fun stopProxy(): String {
             AndroidLogStore.add("vpn", "VPN stop requested")
-            ProbeNodeVpnService.stop(this@MainActivity)
-            val proxyResult = MobileCoreBridge.proxyStop()
-            return "$proxyResult；全局 VPN 正在停止"
+            thread(name = "cloudhelper-android-proxy-stop") {
+                ProbeNodeVpnService.stop(this@MainActivity)
+                val proxyResult = MobileCoreBridge.proxyStop()
+                emitStatus("$proxyResult；全局 VPN 正在停止")
+                refreshCachedStatusAsync()
+                refreshCachedProxyStatusAsync()
+            }
+            return "VNet 停止已提交，正在后台停止..."
         }
 
         @JavascriptInterface
         fun status(): String {
-            return MobileCoreBridge.status()
+            refreshCachedStatusAsync()
+            return cachedStatus
         }
 
         @JavascriptInterface
@@ -186,7 +277,8 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun linkStatus(): String {
-            return MobileCoreBridge.linkStatus(this@MainActivity)
+            refreshCachedLinkStatusAsync()
+            return cachedLinkStatus
         }
 
         @JavascriptInterface
@@ -207,12 +299,14 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun proxyStatus(): String {
-            return MobileCoreBridge.proxyStatus(this@MainActivity)
+            refreshCachedProxyStatusAsync()
+            return cachedProxyStatus
         }
 
         @JavascriptInterface
         fun vpnStatus(): String {
-            return MobileCoreBridge.vpnStatus()
+            refreshCachedStatusAsync()
+            return cachedVpnStatus
         }
 
         @JavascriptInterface
@@ -227,7 +321,16 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun proxySetGroup(group: String, action: String, selectedChainId: String): String {
             AndroidLogStore.add("proxy", "proxy group selection: group=$group action=$action chain=$selectedChainId")
-            return MobileCoreBridge.proxySetGroup(this@MainActivity, group, action, selectedChainId)
+            thread(name = "cloudhelper-android-proxy-group") {
+                val result = MobileCoreBridge.proxySetGroup(this@MainActivity, group, action, selectedChainId)
+                AndroidLogStore.add("proxy", result, if (result.contains("failed", ignoreCase = true) || result.contains("失败")) "error" else "info")
+                refreshCachedProxyStatusAsync()
+            }
+            return JSONObject()
+                .put("ok", true)
+                .put("status", "saving")
+                .put("message", "线路组保存已提交")
+                .toString()
         }
 
         @JavascriptInterface
