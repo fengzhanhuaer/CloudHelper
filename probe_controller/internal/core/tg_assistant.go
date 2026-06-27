@@ -35,7 +35,7 @@ const (
 	tgAssistantHistoryFile      = "history.jsonl"
 	tgAssistantTaskHistoryMax   = 360
 	tgAssistantArchivedFolderID = 1
-	tgAssistantMainFolderID     = 0
+	tgAssistantAllFoldersID     = -1
 	tgAssistantDialogPageLimit  = 100
 	tgAssistantDialogMaxPages   = 200
 	tgAssistantLoginCodeTTL     = 10 * time.Minute
@@ -2305,7 +2305,7 @@ func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTa
 			return errors.New("account is not authorized")
 		}
 
-		dialogs, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantMainFolderID)
+		dialogs, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantAllFoldersID)
 		if err != nil {
 			return err
 		}
@@ -2998,7 +2998,9 @@ func fetchTGAssistantDialogs(ctx context.Context, api *tg.Client, folderID int) 
 			Limit:      tgAssistantDialogPageLimit,
 			Hash:       0,
 		}
-		req.SetFolderID(folderID)
+		if folderID >= 0 {
+			req.SetFolderID(folderID)
+		}
 		resp, err := api.MessagesGetDialogs(ctx, req)
 		if err != nil {
 			return nil, nil, nil, err
@@ -3122,7 +3124,7 @@ func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, t
 		return nil, err
 	}
 
-	_, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantMainFolderID)
+	_, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantAllFoldersID)
 	if err != nil {
 		return nil, err
 	}
