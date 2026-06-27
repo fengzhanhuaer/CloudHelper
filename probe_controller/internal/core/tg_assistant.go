@@ -2295,6 +2295,7 @@ func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTa
 		return nil, errors.New("shared tg api key is not configured")
 	}
 
+	previousTargets, _ := loadTGAssistantTargetsFromFile(accountID)
 	targets := make([]tgAssistantTarget, 0, 64)
 	err := runTGAssistantClient(apiID, apiHash, record, func(ctx context.Context, client *telegram.Client) error {
 		status, err := client.Auth().Status(ctx)
@@ -2318,6 +2319,10 @@ func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTa
 	}
 
 	targets = filterTGAssistantTargets(targets)
+	if len(targets) == 0 && len(previousTargets) > 0 {
+		appendTGAssistantHistory("targets.refresh", accountID, false, "empty refresh result; kept previous targets")
+		return previousTargets, nil
+	}
 	if err := saveTGAssistantTargetsToFile(accountID, targets); err != nil {
 		appendTGAssistantHistory("targets.refresh", accountID, false, err.Error())
 		return nil, err
@@ -3382,6 +3387,9 @@ func filterTGAssistantTargets(targets []tgAssistantTarget) []tgAssistantTarget {
 			continue
 		}
 		filtered = append(filtered, item)
+	}
+	if len(filtered) == 0 && len(targets) > 0 {
+		return targets
 	}
 	return filtered
 }

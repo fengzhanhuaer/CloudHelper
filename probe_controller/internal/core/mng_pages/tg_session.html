@@ -735,13 +735,20 @@
       const normalizedAccountID = String(accountID || '').trim();
       if (!normalizedAccountID) return;
       const silent = options.silent === true;
-      if (!silent) setStatus('正在刷新会话对象列表...');
+      if (!silent) setStatus('正在加载会话对象列表...');
       try {
-        const payload = await requestJSON('/mng/api/tg/targets/refresh', {
+        let payload = await requestJSON('/mng/api/tg/targets/list', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ account_id: normalizedAccountID }),
         });
+        if (!Array.isArray(payload.targets) || payload.targets.length === 0) {
+          payload = await requestJSON('/mng/api/tg/targets/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: normalizedAccountID }),
+          });
+        }
         state.targetList = Array.isArray(payload.targets) ? payload.targets : [];
         if (!state.targetList.some((item) => item.id === state.selectedSessionTarget)) {
           state.selectedSessionTarget = state.targetList.length > 0 ? state.targetList[0].id : '';
@@ -751,9 +758,9 @@
         if (state.selectedSessionTarget && state.sessionMessages.length === 0) {
           loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
         }
-        if (!silent) setStatus(`已刷新会话对象（${state.targetList.length} 个）`, 'ok');
+        if (!silent) setStatus(`已加载会话对象（${state.targetList.length} 个）`, 'ok');
       } catch (error) {
-        if (!silent) setStatus(`刷新会话对象失败：${error.message || error}`, 'err');
+        if (!silent) setStatus(`加载会话对象失败：${error.message || error}`, 'err');
       }
     }
 

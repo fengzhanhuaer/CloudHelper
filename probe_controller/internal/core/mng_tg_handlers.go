@@ -1,8 +1,12 @@
 package core
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+
+	"github.com/gotd/td/tgerr"
 )
 
 func mngTGPageHandler(w http.ResponseWriter, r *http.Request) {
@@ -547,15 +551,50 @@ func writeMngTGError(w http.ResponseWriter, err error) {
 	if msg == "" {
 		msg = "unknown error"
 	}
+	if rpcMsg := formatMngTGRPCError(err); rpcMsg != "" {
+		msg = rpcMsg
+	}
 	lower := strings.ToLower(msg)
 	status := http.StatusBadRequest
 	switch {
+	case strings.Contains(lower, "flood_wait"), strings.Contains(lower, "peer_flood"):
+		status = http.StatusTooManyRequests
 	case strings.Contains(lower, "not initialized"):
 		status = http.StatusInternalServerError
 	case strings.Contains(lower, "not found"):
 		status = http.StatusNotFound
+	case strings.Contains(lower, "forbidden"), strings.Contains(lower, "banned"), strings.Contains(lower, "write"):
+		status = http.StatusForbidden
 	case strings.Contains(lower, "request failed"), strings.Contains(lower, "status="), strings.Contains(lower, "timeout"):
 		status = http.StatusBadGateway
 	}
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func formatMngTGRPCError(err error) string {
+	var rpcErr *tgerr.Error
+	if !errors.As(err, &rpcErr) || rpcErr == nil {
+		return ""
+	}
+	switch rpcErr.Type {
+	case "FLOOD_WAIT":
+		if rpcErr.Argument > 0 {
+			return "Telegram 限流 FLOOD_WAIT，需要等待 " + strconv.Itoa(rpcErr.Argument) + " 秒后再试"
+		}
+		return "Telegram 限流 FLOOD_WAIT，请稍后再试"
+	case "PEER_FLOOD":
+		return "Telegram 返回 PEER_FLOOD，账号疑似触发风控，建议暂停主动发送一段时间"
+	case "USER_BANNED_IN_CHANNEL":
+		return "Telegram 返回 USER_BANNED_IN_CHANNEL，账号在该频道/群组中受限"
+	case "CHAT_WRITE_FORBIDDEN":
+		return "Telegram 返回 CHAT_WRITE_FORBIDDEN，当前会话不允许此账号发送消息"
+	case "USER_IS_BLOCKED":
+		return "Telegram 返回 USER_IS_BLOCKED，对方已屏蔽当前账号"
+	case "INPUT_USER_DEACTIVATED":
+		return "Telegram 返回 INPUT_USER_DEACTIVATED，对方账号已注销"
+	}
+	if strings.TrimSpace(rpcErr.Type) != "" {
+		return "Telegram RPC 错误 " + strings.TrimSpace(rpcErr.Type) + ": " + strings.TrimSpace(rpcErr.Message)
+	}
+	return ""
 }

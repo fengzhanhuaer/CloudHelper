@@ -102,3 +102,14 @@ func TestLoadTGAssistantTargetsFiltersArchivedFlag(t *testing.T) {
 		t.Fatalf("targets[0]=%q, want user:1", targets[0].ID)
 	}
 }
+
+func TestFilterTGAssistantTargetsKeepsAllWhenArchiveFlagWouldHideEverything(t *testing.T) {
+	targets := []tgAssistantTarget{
+		{ID: "user:1", Name: "one", Type: "user", Archived: true},
+		{ID: "chat:2", Name: "two", Type: "chat", Archived: true},
+	}
+	filtered := filterTGAssistantTargets(targets)
+	if len(filtered) != len(targets) {
+		t.Fatalf("filtered=%d, want %d", len(filtered), len(targets))
+	}
+}
