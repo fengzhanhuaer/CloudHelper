@@ -462,6 +462,17 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 		t.Fatalf("expected /mng/tg html to include bot section")
 	}
 
+	tgSessionReq := httptest.NewRequest(http.MethodGet, "/mng/tg/session", nil)
+	tgSessionReq.AddCookie(cookie)
+	tgSessionRR := httptest.NewRecorder()
+	mux.ServeHTTP(tgSessionRR, tgSessionReq)
+	if tgSessionRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/tg/session with session to return 200, got %d body=%s", tgSessionRR.Code, tgSessionRR.Body.String())
+	}
+	if !strings.Contains(tgSessionRR.Body.String(), "独立窗口展示当前 TG 账号的会话") {
+		t.Fatalf("expected /mng/tg/session html to include standalone session page")
+	}
+
 	tgAPIReq := httptest.NewRequest(http.MethodGet, "/mng/api/tg/api/get", nil)
 	tgAPIReq.AddCookie(cookie)
 	tgAPIRR := httptest.NewRecorder()

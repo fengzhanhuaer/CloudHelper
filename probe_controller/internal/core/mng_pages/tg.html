@@ -536,10 +536,11 @@
   <div class="wrap">
     <div class="topbar">
       <div>
-        <h1>/mng/tg</h1>
-        <p class="sub">参照 manager 侧统一交互：账号登录、任务管理、TG Bot 全流程。</p>
+        <h1 id="page-title">/mng/tg</h1>
+        <p id="page-subtitle" class="sub">参照 manager 侧统一交互：账号登录、任务管理、TG Bot 全流程。</p>
       </div>
       <div class="content-actions">
+        <button id="btn-open-sessions" class="btn primary" type="button">TG会话</button>
         <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
         <button id="btn-logout" class="btn" type="button">退出登录</button>
       </div>
@@ -549,7 +550,6 @@
 
     <div class="top-tab-list" role="tablist" aria-label="TG 管理面板">
       <button class="top-tab-btn active" data-panel-tab="assistant" type="button" role="tab" aria-selected="true">TG助手</button>
-      <button class="top-tab-btn" data-panel-tab="sessions" type="button" role="tab" aria-selected="false">TG会话</button>
       <button class="top-tab-btn" data-panel-tab="notify" type="button" role="tab" aria-selected="false">主控通知</button>
     </div>
 
@@ -565,10 +565,6 @@
       <p class="muted">共享 API Key（API ID / API Hash）、账号与登录、任务管理、Bot 管理。</p>
 
       <div id="identity-card" class="identity-card"></div>
-    </div>
-
-    <div class="content-block tg-panel" data-panel-content="sessions" role="tabpanel">
-      <div id="tg-session-card" class="identity-card"></div>
     </div>
 
     <div class="content-block tg-panel" data-panel-content="notify" role="tabpanel">
@@ -679,7 +675,7 @@
 
     function renderPanelTabs() {
       const requested = String(state.activePanelTab || '').trim();
-      const active = requested === 'notify' || requested === 'sessions' ? requested : 'assistant';
+      const active = requested === 'notify' ? requested : 'assistant';
       state.activePanelTab = active;
       document.querySelectorAll('[data-panel-tab]').forEach((btn) => {
         const matched = btn.getAttribute('data-panel-tab') === active;
@@ -690,6 +686,14 @@
         panel.classList.toggle('active', panel.getAttribute('data-panel-content') === active);
       });
       renderTGSessionPanel();
+    }
+
+    function openTGSessionWindow() {
+      const url = `${window.location.origin}/mng/tg/session`;
+      const opened = window.open(url, 'cloudhelper_tg_sessions', 'noopener,noreferrer,width=1280,height=860');
+      if (!opened) {
+        setStatus('浏览器拦截了 TG 会话窗口，请允许弹窗后重试。', 'warn');
+      }
     }
 
     function escapeHTML(value) {
@@ -1529,7 +1533,12 @@
     }
 
     function bindStaticEvents() {
-      qs('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
+      qs('btn-back').addEventListener('click', () => {
+        location.href = '/mng/panel';
+      });
+      qs('btn-open-sessions').addEventListener('click', () => {
+        openTGSessionWindow();
+      });
       qs('btn-logout').addEventListener('click', () => logout().catch(() => { location.href = '/mng'; }));
       document.querySelectorAll('[data-panel-tab]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -1555,6 +1564,23 @@
       qs('btn-api-settings').addEventListener('click', () => {
         openAPIKeyModal();
       });
+    }
+
+    function consumeSessionWindowTargetSelection() {
+      let targetID = '';
+      try {
+        targetID = String(window.sessionStorage.getItem('cloudhelper_tg_schedule_target') || '').trim();
+        window.sessionStorage.removeItem('cloudhelper_tg_schedule_target');
+      } catch (error) {}
+      if (!targetID || !getActiveLoggedInAccount()) return false;
+      state.draft.scheduleTarget = targetID;
+      state.activePanelTab = 'assistant';
+      state.activeSubTab = 'scheduled-send';
+      buildFilteredTargetList();
+      renderPanelTabs();
+      renderMain();
+      setStatus(`已选择发送对象：${renderTargetLabel(targetID)}`, 'ok');
+      return true;
     }
 
     function bindDynamicMainEvents() {
@@ -2790,7 +2816,8 @@
           loadBotAPIKey(active.id, { silent: true }),
         ]);
       }
-      setStatus('TG 页面初始化完成', 'ok');
+      const consumedTarget = consumeSessionWindowTargetSelection();
+      if (!consumedTarget) setStatus('TG 页面初始化完成', 'ok');
       renderMain();
       renderModal();
     }

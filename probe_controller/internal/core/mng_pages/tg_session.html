@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CloudHelper TG 会话</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      background: radial-gradient(circle at top, #1a2436 0%, #0d1117 45%, #090c12 100%);
+      color: #dceaff;
+      min-height: 100vh;
+    }
+    .wrap {
+      width: 100vw;
+      min-height: 100vh;
+      margin: 0;
+      border: 1px solid rgba(150, 185, 240, 0.2);
+      background: rgba(10, 16, 26, 0.78);
+      padding: 16px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: 24px; }
+    .sub { margin: 6px 0 0; color: #9fc2ff; font-size: 13px; }
+    .btn {
+      min-width: 108px;
+      border: 1px solid rgba(130, 176, 246, 0.36);
+      background: rgba(35, 52, 78, 0.75);
+      color: #fff;
+      border-radius: 8px;
+      height: 34px;
+      padding: 0 12px;
+      cursor: pointer;
+    }
+    .btn.primary {
+      border-color: rgba(126, 200, 255, 0.66);
+      background: linear-gradient(180deg, rgba(77, 138, 220, 0.88) 0%, rgba(55, 107, 186, 0.92) 100%);
+    }
+    .btn:disabled { opacity: .58; cursor: not-allowed; }
+    .btn:hover:enabled { filter: brightness(1.06); }
+    .status {
+      border: 1px solid rgba(126, 200, 255, 0.3);
+      background: rgba(8, 14, 23, 0.62);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      min-height: 38px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 12px;
+    }
+    .status.ok { border-color: rgba(112, 221, 159, 0.46); color: #9ff7c0; }
+    .status.err { border-color: rgba(255, 145, 145, 0.52); color: #ffadad; }
+    .status.warn { border-color: rgba(255, 196, 122, 0.52); color: #ffd38f; }
+    .content-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .content-block {
+      border: 1px solid rgba(150, 185, 240, 0.2);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 14px;
+    }
+    .identity-card {
+      border: 1px solid rgba(150, 185, 240, 0.2);
+      border-radius: 12px;
+      background: rgba(7, 11, 18, 0.42);
+      padding: 14px;
+      min-height: 68vh;
+    }
+    .title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .title-row h2 { margin: 0; font-size: 22px; }
+    .tg-account-basic-row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 0;
+      border-top: 1px solid rgba(150, 185, 240, 0.12);
+    }
+    .tg-account-basic-label { color: #8eaed6; font-size: 13px; }
+    .tg-account-basic-value { color: #eef6ff; word-break: break-word; }
+    .tg-account-summary-line {
+      border: 1px solid rgba(150, 185, 240, 0.14);
+      border-radius: 10px;
+      padding: 12px;
+      color: #a9c7f3;
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .tg-session-toolbar {
+      display: grid;
+      gap: 8px;
+    }
+    .tg-session-toolbar label {
+      display: grid;
+      gap: 6px;
+      color: #9fc2ff;
+      font-size: 12px;
+    }
+    .input,
+    .tg-session-toolbar input,
+    .tg-session-toolbar select {
+      width: 100%;
+      border: 1px solid rgba(150, 185, 240, 0.24);
+      border-radius: 8px;
+      background: rgba(6, 10, 17, 0.72);
+      color: #eef6ff;
+      min-height: 34px;
+      padding: 8px 10px;
+      outline: none;
+    }
+    .tg-session-summary {
+      color: #9fc2ff;
+      font-size: 13px;
+      margin: 10px 0 12px;
+    }
+    .tg-chat-shell {
+      display: grid;
+      grid-template-columns: minmax(260px, 340px) 1fr;
+      border: 1px solid rgba(150, 185, 240, 0.16);
+      border-radius: 12px;
+      overflow: hidden;
+      min-height: 68vh;
+      background: rgba(5, 9, 15, 0.5);
+    }
+    .tg-chat-sidebar {
+      border-right: 1px solid rgba(150, 185, 240, 0.14);
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .tg-chat-sidebar-head,
+    .tg-chat-main-head,
+    .tg-chat-composer {
+      padding: 12px;
+      border-bottom: 1px solid rgba(150, 185, 240, 0.14);
+    }
+    .tg-chat-main-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 64px;
+    }
+    .tg-chat-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #eef6ff;
+      word-break: break-word;
+    }
+    .tg-chat-subtitle {
+      margin-top: 4px;
+      color: #8eaed6;
+      font-size: 12px;
+      word-break: break-word;
+    }
+    .tg-chat-list {
+      flex: 1;
+      overflow: auto;
+      max-height: calc(100vh - 268px);
+      padding: 6px;
+    }
+    .tg-chat-item {
+      width: 100%;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #dceaff;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 10px;
+      align-items: center;
+      text-align: left;
+      cursor: pointer;
+    }
+    .tg-chat-item:hover { background: rgba(150, 185, 240, 0.08); }
+    .tg-chat-item.active { background: rgba(77, 138, 220, 0.24); }
+    .tg-chat-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: rgba(77, 138, 220, 0.42);
+      color: #fff;
+      font-weight: 700;
+    }
+    .tg-chat-item-title,
+    .tg-chat-item-sub {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tg-chat-item-title { font-size: 14px; font-weight: 650; }
+    .tg-chat-item-sub { margin-top: 3px; color: #8eaed6; font-size: 12px; }
+    .tg-chat-main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 68vh;
+    }
+    .tg-chat-messages {
+      overflow: auto;
+      padding: 16px;
+      max-height: calc(100vh - 258px);
+      min-height: 44vh;
+    }
+    .tg-chat-empty {
+      color: #8eaed6;
+      padding: 16px;
+      text-align: center;
+    }
+    .tg-message-row {
+      display: flex;
+      justify-content: flex-start;
+      margin: 10px 0;
+    }
+    .tg-message-row.out { justify-content: flex-end; }
+    .tg-message-row.service { justify-content: center; }
+    .tg-message-bubble {
+      max-width: 72%;
+      border: 1px solid rgba(150, 185, 240, 0.16);
+      border-radius: 12px;
+      background: rgba(28, 43, 66, 0.82);
+      padding: 10px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.45;
+    }
+    .tg-message-row.out .tg-message-bubble {
+      background: rgba(54, 111, 183, 0.82);
+      border-color: rgba(126, 200, 255, 0.32);
+    }
+    .tg-message-row.service .tg-message-bubble {
+      max-width: 82%;
+      background: rgba(255, 255, 255, 0.06);
+      color: #a9c7f3;
+      text-align: center;
+    }
+    .tg-message-sender {
+      color: #9fc2ff;
+      font-size: 12px;
+      margin-bottom: 4px;
+      font-weight: 650;
+    }
+    .tg-message-meta {
+      color: rgba(220, 234, 255, 0.62);
+      font-size: 11px;
+      margin-top: 6px;
+      text-align: right;
+    }
+    .tg-chat-composer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      border-bottom: 0;
+      border-top: 1px solid rgba(150, 185, 240, 0.14);
+    }
+    .tg-chat-composer textarea {
+      min-height: 48px;
+      max-height: 160px;
+      resize: vertical;
+    }
+    @media (max-width: 760px) {
+      .wrap { padding: 12px; }
+      .tg-account-basic-row { grid-template-columns: 1fr; }
+      .tg-chat-shell { grid-template-columns: 1fr; }
+      .tg-chat-sidebar {
+        border-right: 0;
+        border-bottom: 1px solid rgba(150, 185, 240, 0.14);
+      }
+      .tg-chat-list { max-height: 34vh; }
+      .tg-chat-main { min-height: 58vh; }
+      .tg-chat-main-head { align-items: flex-start; }
+      .tg-message-bubble { max-width: 92%; }
+      .tg-chat-composer { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>TG会话</h1>
+        <p class="sub">独立窗口展示当前 TG 账号的会话、消息与发送入口。</p>
+      </div>
+      <div class="content-actions">
+        <button id="btn-back" class="btn" type="button">返回TG助手</button>
+        <button id="btn-logout" class="btn" type="button">退出登录</button>
+      </div>
+    </div>
+    <div id="status-box" class="status">初始化中...</div>
+    <div class="content-block">
+      <div id="tg-session-card" class="identity-card"></div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      loading: false,
+      targetRefreshing: false,
+      sessionLoading: false,
+      sessionSending: false,
+      status: '初始化中...',
+      statusLevel: '',
+      accounts: [],
+      selectedAccountID: '',
+      activeLoggedInAccountID: '',
+      targetList: [],
+      selectedSessionTarget: '',
+      sessionMessages: [],
+      draft: {
+        sessionSearch: '',
+        sessionType: 'all',
+        sessionMessage: '',
+      },
+    };
+
+    function qs(id) {
+      return document.getElementById(id);
+    }
+
+    function setStatus(message, level) {
+      state.status = String(message || '');
+      state.statusLevel = String(level || '');
+      renderStatus();
+    }
+
+    function renderStatus() {
+      const box = qs('status-box');
+      box.textContent = state.status;
+      box.className = 'status';
+      if (state.statusLevel) box.classList.add(state.statusLevel);
+    }
+
+    function escapeHTML(value) {
+      return String(value || '').replace(/[&<>"\x27]/g, (ch) => {
+        if (ch === '&') return '&' + 'amp;';
+        if (ch === '<') return '&' + 'lt;';
+        if (ch === '>') return '&' + 'gt;';
+        if (ch === '"') return '&' + 'quot;';
+        return '&' + '#39;';
+      });
+    }
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, { credentials: 'same-origin', ...options });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) {}
+      if (!response.ok) {
+        const msg = payload && payload.error ? payload.error : `HTTP ${response.status}`;
+        throw new Error(msg);
+      }
+      return payload;
+    }
+
+    function getLoggedInAccounts() {
+      return state.accounts.filter((item) => item && item.authorized);
+    }
+
+    function getActiveLoggedInAccount() {
+      return getLoggedInAccounts().find((item) => item.id === state.activeLoggedInAccountID) || null;
+    }
+
+    function syncSelectedAccounts() {
+      if (state.accounts.length === 0) {
+        state.selectedAccountID = '';
+        state.activeLoggedInAccountID = '';
+        return;
+      }
+      if (!state.accounts.some((item) => item.id === state.selectedAccountID)) {
+        state.selectedAccountID = state.accounts[0].id;
+      }
+      const loggedIn = getLoggedInAccounts();
+      if (loggedIn.length === 0) {
+        state.activeLoggedInAccountID = '';
+        return;
+      }
+      if (!loggedIn.some((item) => item.id === state.activeLoggedInAccountID)) {
+        state.activeLoggedInAccountID = loggedIn[0].id;
+      }
+    }
+
+    function formatDateTime(raw) {
+      const value = String(raw || '').trim();
+      if (!value) return '-';
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return value;
+      return dt.toLocaleString();
+    }
+
+    function formatTGSessionType(type) {
+      const value = String(type || '').trim();
+      if (value === 'user') return '私聊';
+      if (value === 'chat') return '群组';
+      if (value === 'channel') return '频道';
+      return value || '-';
+    }
+
+    function formatSessionSubtitle(item) {
+      if (!item) return '';
+      const bits = [formatTGSessionType(item.type), item.id || ''];
+      if (item.username) bits.push('@' + item.username);
+      return bits.filter(Boolean).join(' · ');
+    }
+
+    function renderTargetLabel(targetID) {
+      const id = String(targetID || '').trim();
+      if (!id) return '-';
+      const hit = state.targetList.find((item) => item.id === id);
+      if (!hit) return id;
+      if (hit.username && String(hit.username).trim()) return `${hit.name} (@${hit.username})`;
+      return hit.name;
+    }
+
+    function getFilteredSessionTargets() {
+      const keyword = String(state.draft.sessionSearch || '').trim().toLowerCase();
+      const type = String(state.draft.sessionType || 'all').trim();
+      let list = Array.isArray(state.targetList) ? state.targetList.slice() : [];
+      if (type !== 'all') {
+        list = list.filter((item) => String(item && item.type || '').trim() === type);
+      }
+      if (keyword) {
+        list = list.filter((item) => {
+          const id = String(item && item.id || '').toLowerCase();
+          const name = String(item && item.name || '').toLowerCase();
+          const username = String(item && item.username || '').toLowerCase();
+          const kind = String(item && item.type || '').toLowerCase();
+          return id.includes(keyword) || name.includes(keyword) || username.includes(keyword) || kind.includes(keyword);
+        });
+      }
+      return list;
+    }
+
+    function getSelectedSessionTarget() {
+      const id = String(state.selectedSessionTarget || '').trim();
+      if (!id) return null;
+      return (Array.isArray(state.targetList) ? state.targetList : []).find((item) => item && item.id === id) || null;
+    }
+
+    function renderSessionMessages() {
+      if (state.sessionLoading && state.sessionMessages.length === 0) {
+        return '<div class="tg-chat-empty">消息加载中...</div>';
+      }
+      if (!state.selectedSessionTarget) {
+        return '<div class="tg-chat-empty">请选择一个会话</div>';
+      }
+      if (state.sessionMessages.length === 0) {
+        return '<div class="tg-chat-empty">暂无消息</div>';
+      }
+      return state.sessionMessages.map((msg) => {
+        const out = !!(msg && msg.out);
+        const service = !!(msg && msg.service);
+        const rowClass = 'tg-message-row' + (out ? ' out' : '') + (service ? ' service' : '');
+        const sender = !out && !service && msg.sender_name ? `<div class="tg-message-sender">${escapeHTML(msg.sender_name)}</div>` : '';
+        return `
+          <div class="${rowClass}">
+            <div class="tg-message-bubble">
+              ${sender}
+              <div>${escapeHTML(msg && msg.text || '')}</div>
+              <div class="tg-message-meta">${escapeHTML(formatDateTime(msg && msg.date || ''))}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function scrollSessionMessagesToBottom() {
+      const box = qs('tg-chat-messages');
+      if (!box) return;
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function renderTGSessionPanel() {
+      const host = qs('tg-session-card');
+      if (!host) return;
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        host.innerHTML = `
+          <div class="title-row">
+            <h2>TG会话</h2>
+            <div class="content-actions">
+              <button class="btn" data-action="reload-accounts" type="button" ${state.loading ? 'disabled' : ''}>刷新账号</button>
+            </div>
+          </div>
+          <div class="tg-account-summary-line">请先在「TG助手」中登录并选择一个账号。</div>
+        `;
+        bindTGSessionEvents();
+        return;
+      }
+      const filtered = getFilteredSessionTargets();
+      if (!state.selectedSessionTarget && filtered.length > 0) {
+        state.selectedSessionTarget = filtered[0].id || '';
+      }
+      const typeCounts = { user: 0, chat: 0, channel: 0 };
+      (Array.isArray(state.targetList) ? state.targetList : []).forEach((item) => {
+        const type = String(item && item.type || '').trim();
+        if (typeCounts[type] !== undefined) typeCounts[type] += 1;
+      });
+      const selected = getSelectedSessionTarget();
+      let sessionItems = '';
+      if (filtered.length === 0) {
+        sessionItems = '<div class="tg-chat-empty">暂无匹配会话</div>';
+      } else {
+        sessionItems = filtered.map((item) => {
+          const username = String(item && item.username || '').trim();
+          const itemID = String(item && item.id || '').trim();
+          const title = String(item && item.name || itemID || '-').trim();
+          const initial = title ? title.slice(0, 1).toUpperCase() : '#';
+          const activeClass = itemID === state.selectedSessionTarget ? ' active' : '';
+          return `
+            <button class="tg-chat-item${activeClass}" data-action="open-session-target" data-target-id="${escapeHTML(itemID)}" type="button">
+              <div class="tg-chat-avatar">${escapeHTML(initial)}</div>
+              <div>
+                <div class="tg-chat-item-title">${escapeHTML(title)}</div>
+                <div class="tg-chat-item-sub">${escapeHTML(formatTGSessionType(item && item.type))}${username ? ` · @${escapeHTML(username)}` : ''}</div>
+              </div>
+            </button>
+          `;
+        }).join('');
+      }
+      const messages = renderSessionMessages();
+      const selectedTitle = selected ? String(selected.name || selected.id || '-') : '请选择会话';
+      const selectedSubtitle = selected ? formatSessionSubtitle(selected) : '刷新或选择左侧会话';
+      host.innerHTML = `
+        <div class="title-row">
+          <h2>TG会话</h2>
+          <div class="content-actions">
+            <button class="btn" data-action="reload-accounts" type="button" ${state.loading ? 'disabled' : ''}>刷新账号</button>
+            <button class="btn" data-action="refresh-session-targets" type="button" ${state.loading || state.targetRefreshing ? 'disabled' : ''}>${state.targetRefreshing ? '刷新中...' : '刷新TG会话'}</button>
+          </div>
+        </div>
+        <div class="tg-account-basic-row"><div class="tg-account-basic-label">当前账号</div><div class="tg-account-basic-value">${escapeHTML(active.label)} (${escapeHTML(active.phone)})</div></div>
+        <div class="tg-session-summary">全部 ${state.targetList.length} ｜ 私聊 ${typeCounts.user} ｜ 群组 ${typeCounts.chat} ｜ 频道 ${typeCounts.channel} ｜ 当前显示 ${filtered.length}</div>
+        <div class="tg-chat-shell">
+          <aside class="tg-chat-sidebar">
+            <div class="tg-chat-sidebar-head">
+              <div class="tg-session-toolbar" style="margin-bottom:0">
+                <label>搜索
+                  <input id="tg-session-search" class="input" value="${escapeHTML(state.draft.sessionSearch)}" placeholder="名称 / username / id / 类型">
+                </label>
+                <label>类型
+                  <select id="tg-session-type" class="input">
+                    <option value="all" ${state.draft.sessionType === 'all' ? 'selected' : ''}>全部</option>
+                    <option value="user" ${state.draft.sessionType === 'user' ? 'selected' : ''}>私聊</option>
+                    <option value="chat" ${state.draft.sessionType === 'chat' ? 'selected' : ''}>群组</option>
+                    <option value="channel" ${state.draft.sessionType === 'channel' ? 'selected' : ''}>频道</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="tg-chat-sidebar-head" style="border-bottom:0;padding-top:0">
+              <button class="btn" data-action="load-session-messages" type="button" ${!selected || state.sessionLoading ? 'disabled' : ''}>${state.sessionLoading ? '加载中...' : '刷新消息'}</button>
+            </div>
+            <div class="tg-chat-list">${sessionItems}</div>
+          </aside>
+          <section class="tg-chat-main">
+            <div class="tg-chat-main-head">
+              <div>
+                <div class="tg-chat-title">${escapeHTML(selectedTitle)}</div>
+                <div class="tg-chat-subtitle">${escapeHTML(selectedSubtitle)}</div>
+              </div>
+              <div class="content-actions">
+                <button class="btn" data-action="load-older-session-messages" type="button" ${!selected || state.sessionLoading || state.sessionMessages.length === 0 ? 'disabled' : ''}>更早</button>
+                <button class="btn" data-action="use-session-target" data-target-id="${escapeHTML(state.selectedSessionTarget || '')}" type="button" ${!selected ? 'disabled' : ''}>设为定时对象</button>
+              </div>
+            </div>
+            <div id="tg-chat-messages" class="tg-chat-messages">${messages}</div>
+            <div class="tg-chat-composer">
+              <textarea id="tg-session-message" class="input" placeholder="输入消息" ${!selected || state.sessionSending ? 'disabled' : ''}>${escapeHTML(state.draft.sessionMessage)}</textarea>
+              <button class="btn primary" data-action="send-session-message" type="button" ${!selected || state.sessionSending || !String(state.draft.sessionMessage || '').trim() ? 'disabled' : ''}>${state.sessionSending ? '发送中...' : '发送'}</button>
+            </div>
+          </section>
+        </div>
+      `;
+      bindTGSessionEvents();
+      scrollSessionMessagesToBottom();
+    }
+
+    function bindTGSessionEvents() {
+      document.querySelectorAll('[data-action="reload-accounts"]').forEach((btn) => {
+        btn.addEventListener('click', () => loadAccounts().catch((err) => setStatus(`刷新账号失败：${err.message || err}`, 'err')));
+      });
+      const search = qs('tg-session-search');
+      if (search) {
+        const applySearch = () => {
+          state.draft.sessionSearch = String(search.value || '');
+          renderTGSessionPanel();
+        };
+        search.addEventListener('change', applySearch);
+        search.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') applySearch();
+        });
+      }
+      const type = qs('tg-session-type');
+      if (type) {
+        type.addEventListener('change', () => {
+          state.draft.sessionType = String(type.value || 'all');
+          renderTGSessionPanel();
+        });
+      }
+      document.querySelectorAll('[data-action="refresh-session-targets"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleRefreshTargets().catch((err) => setStatus(`刷新TG会话失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="open-session-target"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const targetID = String(btn.getAttribute('data-target-id') || '').trim();
+          if (!targetID || targetID === state.selectedSessionTarget) return;
+          state.selectedSessionTarget = targetID;
+          state.sessionMessages = [];
+          renderTGSessionPanel();
+          loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
+        });
+      });
+      document.querySelectorAll('[data-action="load-session-messages"]').forEach((btn) => {
+        btn.addEventListener('click', () => loadSessionMessages().catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="load-older-session-messages"]').forEach((btn) => {
+        btn.addEventListener('click', () => loadOlderSessionMessages().catch((err) => setStatus(`加载更早消息失败：${err.message || err}`, 'err')));
+      });
+      const composer = qs('tg-session-message');
+      if (composer) {
+        composer.addEventListener('input', () => {
+          state.draft.sessionMessage = composer.value;
+          const sendBtn = document.querySelector('[data-action="send-session-message"]');
+          if (sendBtn) sendBtn.disabled = !state.selectedSessionTarget || state.sessionSending || !String(state.draft.sessionMessage || '').trim();
+        });
+        composer.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            sendSessionMessage().catch((err) => setStatus(`发送消息失败：${err.message || err}`, 'err'));
+          }
+        });
+      }
+      document.querySelectorAll('[data-action="send-session-message"]').forEach((btn) => {
+        btn.addEventListener('click', () => sendSessionMessage().catch((err) => setStatus(`发送消息失败：${err.message || err}`, 'err')));
+      });
+      document.querySelectorAll('[data-action="use-session-target"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const targetID = String(btn.getAttribute('data-target-id') || '').trim();
+          if (!targetID) return;
+          try {
+            window.sessionStorage.setItem('cloudhelper_tg_schedule_target', targetID);
+          } catch (error) {}
+          location.href = '/mng/tg';
+        });
+      });
+    }
+
+    async function ensureSession() {
+      const payload = await requestJSON('/mng/api/session');
+      if (!payload.authenticated) {
+        location.href = '/mng';
+        return false;
+      }
+      return true;
+    }
+
+    async function loadAccounts(options = {}) {
+      const silent = options.silent === true;
+      if (!silent) {
+        state.loading = true;
+        setStatus('正在加载 TG 账号列表...');
+        renderTGSessionPanel();
+      }
+      try {
+        const payload = await requestJSON('/mng/api/tg/accounts/list');
+        state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+        syncSelectedAccounts();
+        renderTGSessionPanel();
+        const active = getActiveLoggedInAccount();
+        if (active && state.targetList.length === 0) {
+          await loadTargets(active.id, { silent: true });
+        }
+        if (!silent) {
+          setStatus(state.accounts.length > 0 ? `已加载 TG 账号（${state.accounts.length} 个）` : '暂无 TG 账号，请先添加', 'ok');
+        }
+      } catch (error) {
+        if (!silent) setStatus(`加载 TG 账号失败：${error.message || error}`, 'err');
+      } finally {
+        if (!silent) {
+          state.loading = false;
+          renderTGSessionPanel();
+        }
+      }
+    }
+
+    async function loadTargets(accountID, options = {}) {
+      const normalizedAccountID = String(accountID || '').trim();
+      if (!normalizedAccountID) return;
+      const silent = options.silent === true;
+      if (!silent) setStatus('正在加载会话对象列表...');
+      try {
+        const payload = await requestJSON('/mng/api/tg/targets/list', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: normalizedAccountID }),
+        });
+        state.targetList = Array.isArray(payload.targets) ? payload.targets : [];
+        if (!state.targetList.some((item) => item.id === state.selectedSessionTarget)) {
+          state.selectedSessionTarget = state.targetList.length > 0 ? state.targetList[0].id : '';
+          state.sessionMessages = [];
+        }
+        renderTGSessionPanel();
+        if (state.selectedSessionTarget && state.sessionMessages.length === 0) {
+          loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
+        }
+        if (!silent) setStatus(`已加载会话对象（${state.targetList.length} 个）`, 'ok');
+      } catch (error) {
+        if (!silent) setStatus(`加载会话对象失败：${error.message || error}`, 'err');
+      }
+    }
+
+    async function handleRefreshTargets() {
+      const active = getActiveLoggedInAccount();
+      if (!active || state.targetRefreshing) return;
+      state.targetRefreshing = true;
+      renderTGSessionPanel();
+      setStatus(`正在从服务器刷新会话对象：${active.label}...`);
+      try {
+        const payload = await requestJSON('/mng/api/tg/targets/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: active.id }),
+        });
+        state.targetList = Array.isArray(payload.targets) ? payload.targets : [];
+        if (!state.targetList.some((item) => item.id === state.selectedSessionTarget)) {
+          state.selectedSessionTarget = state.targetList.length > 0 ? state.targetList[0].id : '';
+          state.sessionMessages = [];
+        }
+        renderTGSessionPanel();
+        if (state.selectedSessionTarget) {
+          loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
+        }
+        setStatus(`已刷新会话对象（${state.targetList.length} 个）`, 'ok');
+      } finally {
+        state.targetRefreshing = false;
+        renderTGSessionPanel();
+      }
+    }
+
+    async function loadSessionMessages(options = {}) {
+      const active = getActiveLoggedInAccount();
+      const targetID = String(state.selectedSessionTarget || '').trim();
+      if (!active || !targetID) return;
+      const accountID = active.id;
+      const silent = options.silent === true;
+      state.sessionLoading = true;
+      renderTGSessionPanel();
+      if (!silent) setStatus('正在加载会话消息...');
+      try {
+        const payload = await requestJSON('/mng/api/tg/session/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: accountID, target: targetID, limit: 50 }),
+        });
+        const current = getActiveLoggedInAccount();
+        if (!current || current.id !== accountID || state.selectedSessionTarget !== targetID) return;
+        state.sessionMessages = Array.isArray(payload.messages) ? payload.messages : [];
+        renderTGSessionPanel();
+        if (!silent) setStatus(`已加载会话消息（${state.sessionMessages.length} 条）`, 'ok');
+      } finally {
+        state.sessionLoading = false;
+        renderTGSessionPanel();
+      }
+    }
+
+    async function loadOlderSessionMessages() {
+      const active = getActiveLoggedInAccount();
+      const targetID = String(state.selectedSessionTarget || '').trim();
+      if (!active || !targetID || state.sessionMessages.length === 0) return;
+      const oldestID = state.sessionMessages.reduce((min, item) => {
+        const id = Number(item && item.id || 0);
+        if (!id) return min;
+        return min === 0 || id < min ? id : min;
+      }, 0);
+      if (!oldestID) return;
+      const accountID = active.id;
+      state.sessionLoading = true;
+      renderTGSessionPanel();
+      setStatus('正在加载更早消息...');
+      try {
+        const payload = await requestJSON('/mng/api/tg/session/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: accountID, target: targetID, limit: 50, offset_id: oldestID }),
+        });
+        const current = getActiveLoggedInAccount();
+        if (!current || current.id !== accountID || state.selectedSessionTarget !== targetID) return;
+        const older = Array.isArray(payload.messages) ? payload.messages : [];
+        const seen = new Set(state.sessionMessages.map((item) => Number(item && item.id || 0)));
+        state.sessionMessages = older.filter((item) => !seen.has(Number(item && item.id || 0))).concat(state.sessionMessages);
+        renderTGSessionPanel();
+        setStatus(`已加载更早消息（新增 ${older.length} 条）`, 'ok');
+      } finally {
+        state.sessionLoading = false;
+        renderTGSessionPanel();
+      }
+    }
+
+    async function sendSessionMessage() {
+      const active = getActiveLoggedInAccount();
+      const targetID = String(state.selectedSessionTarget || '').trim();
+      const message = String(state.draft.sessionMessage || '').trim();
+      if (!active || !targetID || !message || state.sessionSending) return;
+      const accountID = active.id;
+      state.sessionSending = true;
+      renderTGSessionPanel();
+      try {
+        const payload = await requestJSON('/mng/api/tg/session/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: accountID, target: targetID, message }),
+        });
+        const current = getActiveLoggedInAccount();
+        if (!current || current.id !== accountID || state.selectedSessionTarget !== targetID) return;
+        if (payload.message) state.sessionMessages = state.sessionMessages.concat([payload.message]);
+        state.draft.sessionMessage = '';
+        renderTGSessionPanel();
+        setStatus('消息已发送', 'ok');
+      } finally {
+        state.sessionSending = false;
+        renderTGSessionPanel();
+      }
+    }
+
+    async function logout() {
+      await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.href = '/mng';
+    }
+
+    function bindStaticEvents() {
+      qs('btn-back').addEventListener('click', () => { location.href = '/mng/tg'; });
+      qs('btn-logout').addEventListener('click', () => logout().catch(() => { location.href = '/mng'; }));
+    }
+
+    async function bootstrap() {
+      bindStaticEvents();
+      renderStatus();
+      renderTGSessionPanel();
+      const ok = await ensureSession().catch(() => false);
+      if (!ok) {
+        location.href = '/mng';
+        return;
+      }
+      await loadAccounts({ silent: true });
+      setStatus('TG 会话窗口初始化完成', 'ok');
+      renderTGSessionPanel();
+    }
+
+    bootstrap().catch((err) => {
+      setStatus(`初始化失败：${err && err.message ? err.message : err}`, 'err');
+    });
+  </script>
+</body>
+</html>

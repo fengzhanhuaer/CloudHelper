@@ -156,6 +156,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/probe", mngAuthRequiredMiddleware(mngProbePageHandler))
 	mux.HandleFunc("/mng/link", mngAuthRequiredMiddleware(mngLinkPageHandler))
 	mux.HandleFunc("/mng/cloudflare", mngAuthRequiredMiddleware(mngCloudflarePageHandler))
+	mux.HandleFunc("/mng/tg/session", mngAuthRequiredMiddleware(mngTGSessionPageHandler))
 	mux.HandleFunc("/mng/tg", mngAuthRequiredMiddleware(mngTGPageHandler))
 	mux.HandleFunc("/mng/probe-console", mngAuthRequiredMiddleware(mngProbeConsoleEntryHandler))
 	mux.HandleFunc("/local/", mngProbeConsoleProxyHandler)

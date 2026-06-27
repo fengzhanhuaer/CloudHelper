@@ -18,6 +18,19 @@ func mngTGPageHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(mngTGPageHTML))
 }
 
+func mngTGSessionPageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/mng/tg/session" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(mngTGSessionPageHTML))
+}
+
 func mngTGAPIGetHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
