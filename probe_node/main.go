@@ -245,11 +245,12 @@ func initProbeNodeRuntimeLogger() func() {
 		logProbeWarnf("probe runtime log open failed: path=%s err=%v", logPath, err)
 		return func() {}
 	}
-	initProbeLoggerWithExtraMirrors(f)
+	runtimeLogWriter := newProbeRotatingLogFileWriter(logPath, f, probeLogMaxBytes)
+	initProbeLoggerWithExtraMirrors(runtimeLogWriter)
 	logProbeInfof("probe runtime log path: %s", logPath)
 	logProbeInfof("probe runtime logger initialized: version=%s pid=%d", BuildVersion, os.Getpid())
 	return func() {
-		_ = f.Close()
+		_ = runtimeLogWriter.Close()
 	}
 }
 

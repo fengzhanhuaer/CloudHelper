@@ -35,6 +35,9 @@ const (
 	tgAssistantHistoryFile      = "history.jsonl"
 	tgAssistantTaskHistoryMax   = 360
 	tgAssistantArchivedFolderID = 1
+	tgAssistantMainFolderID     = 0
+	tgAssistantDialogPageLimit  = 100
+	tgAssistantDialogMaxPages   = 200
 	tgAssistantLoginCodeTTL     = 10 * time.Minute
 	tgTaskTypeScheduledSend     = "scheduled_send"
 )
@@ -2299,18 +2302,7 @@ func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTa
 			return errors.New("account is not authorized")
 		}
 
-		resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-			OffsetDate: 0,
-			OffsetID:   0,
-			OffsetPeer: &tg.InputPeerEmpty{},
-			Limit:      100,
-			Hash:       0,
-		})
-		if err != nil {
-			return err
-		}
-
-		dialogs, chats, users, err := parseTGDialogsResponse(resp)
+		dialogs, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantMainFolderID)
 		if err != nil {
 			return err
 		}
@@ -2966,16 +2958,159 @@ func loadTGAssistantTaskHistory(taskID string) ([]tgAssistantTaskHistoryRecord, 
 }
 
 func parseTGDialogsResponse(resp tg.MessagesDialogsClass) ([]tg.DialogClass, []tg.ChatClass, []tg.UserClass, error) {
+	dialogs, chats, users, _, err := parseTGDialogsResponseWithMessages(resp)
+	return dialogs, chats, users, err
+}
+
+func parseTGDialogsResponseWithMessages(resp tg.MessagesDialogsClass) ([]tg.DialogClass, []tg.ChatClass, []tg.UserClass, []tg.MessageClass, error) {
 	switch value := resp.(type) {
 	case *tg.MessagesDialogs:
-		return value.Dialogs, value.Chats, value.Users, nil
+		return value.Dialogs, value.Chats, value.Users, value.Messages, nil
 	case *tg.MessagesDialogsSlice:
-		return value.Dialogs, value.Chats, value.Users, nil
+		return value.Dialogs, value.Chats, value.Users, value.Messages, nil
 	case *tg.MessagesDialogsNotModified:
-		return []tg.DialogClass{}, []tg.ChatClass{}, []tg.UserClass{}, nil
+		return []tg.DialogClass{}, []tg.ChatClass{}, []tg.UserClass{}, []tg.MessageClass{}, nil
 	default:
-		return nil, nil, nil, fmt.Errorf("unexpected dialogs response: %T", resp)
+		return nil, nil, nil, nil, fmt.Errorf("unexpected dialogs response: %T", resp)
 	}
+}
+
+func fetchTGAssistantDialogs(ctx context.Context, api *tg.Client, folderID int) ([]tg.DialogClass, []tg.ChatClass, []tg.UserClass, error) {
+	if api == nil {
+		return nil, nil, nil, errors.New("tg api client is nil")
+	}
+	allDialogs := make([]tg.DialogClass, 0, tgAssistantDialogPageLimit)
+	allChats := make([]tg.ChatClass, 0, tgAssistantDialogPageLimit)
+	allUsers := make([]tg.UserClass, 0, tgAssistantDialogPageLimit)
+	offsetPeer := tg.InputPeerClass(&tg.InputPeerEmpty{})
+	offsetID := 0
+	offsetDate := 0
+	seenOffsets := map[string]struct{}{}
+
+	for page := 0; page < tgAssistantDialogMaxPages; page++ {
+		req := &tg.MessagesGetDialogsRequest{
+			OffsetDate: offsetDate,
+			OffsetID:   offsetID,
+			OffsetPeer: offsetPeer,
+			Limit:      tgAssistantDialogPageLimit,
+			Hash:       0,
+		}
+		req.SetFolderID(folderID)
+		resp, err := api.MessagesGetDialogs(ctx, req)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		dialogs, chats, users, messages, err := parseTGDialogsResponseWithMessages(resp)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if len(dialogs) == 0 {
+			break
+		}
+
+		allDialogs = append(allDialogs, dialogs...)
+		allChats = append(allChats, chats...)
+		allUsers = append(allUsers, users...)
+		if len(dialogs) < tgAssistantDialogPageLimit {
+			break
+		}
+
+		nextPeer, nextOffsetID, nextOffsetDate, ok := nextTGAssistantDialogOffset(dialogs, chats, users, messages)
+		if !ok || nextOffsetID <= 0 {
+			break
+		}
+		offsetKey := fmt.Sprintf("%T:%d:%d", nextPeer, nextOffsetID, nextOffsetDate)
+		if _, exists := seenOffsets[offsetKey]; exists {
+			break
+		}
+		seenOffsets[offsetKey] = struct{}{}
+		offsetPeer = nextPeer
+		offsetID = nextOffsetID
+		offsetDate = nextOffsetDate
+	}
+
+	return allDialogs, allChats, allUsers, nil
+}
+
+func nextTGAssistantDialogOffset(dialogs []tg.DialogClass, chats []tg.ChatClass, users []tg.UserClass, messages []tg.MessageClass) (tg.InputPeerClass, int, int, bool) {
+	if len(dialogs) == 0 {
+		return nil, 0, 0, false
+	}
+	var lastDialog *tg.Dialog
+	for idx := len(dialogs) - 1; idx >= 0; idx-- {
+		if dialog, ok := dialogs[idx].(*tg.Dialog); ok && dialog != nil {
+			lastDialog = dialog
+			break
+		}
+	}
+	if lastDialog == nil {
+		return nil, 0, 0, false
+	}
+	offsetPeer, ok := tgAssistantInputPeerFromPeer(lastDialog.Peer, chats, users)
+	if !ok {
+		return nil, 0, 0, false
+	}
+	offsetDate := 0
+	topMessageID := lastDialog.TopMessage
+	if topMessageID > 0 {
+		for _, raw := range messages {
+			if raw == nil || raw.GetID() != topMessageID {
+				continue
+			}
+			offsetDate = tgAssistantMessageDate(raw)
+			break
+		}
+	}
+	return offsetPeer, topMessageID, offsetDate, true
+}
+
+func tgAssistantMessageDate(raw tg.MessageClass) int {
+	switch item := raw.(type) {
+	case *tg.Message:
+		return item.Date
+	case *tg.MessageService:
+		return item.Date
+	default:
+		return 0
+	}
+}
+
+func tgAssistantInputPeerFromPeer(peer tg.PeerClass, chats []tg.ChatClass, users []tg.UserClass) (tg.InputPeerClass, bool) {
+	switch value := peer.(type) {
+	case *tg.PeerUser:
+		for _, raw := range users {
+			switch item := raw.(type) {
+			case *tg.User:
+				if item.ID == value.UserID {
+					return item.AsInputPeer(), true
+				}
+			}
+		}
+	case *tg.PeerChat:
+		for _, raw := range chats {
+			switch item := raw.(type) {
+			case *tg.Chat:
+				if item.ID == value.ChatID {
+					return item.AsInputPeer(), true
+				}
+			}
+		}
+	case *tg.PeerChannel:
+		for _, raw := range chats {
+			switch item := raw.(type) {
+			case *tg.Channel:
+				if item.ID == value.ChannelID {
+					return item.AsInputPeer(), true
+				}
+			case *tg.ChannelForbidden:
+				if item.ID == value.ChannelID {
+					return &tg.InputPeerChannel{ChannelID: item.ID, AccessHash: item.AccessHash}, true
+				}
+			}
+		}
+	}
+	return nil, false
 }
 
 func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, target string) (tg.InputPeerClass, error) {
@@ -2984,18 +3119,7 @@ func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, t
 		return nil, err
 	}
 
-	resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-		OffsetDate: 0,
-		OffsetID:   0,
-		OffsetPeer: &tg.InputPeerEmpty{},
-		Limit:      100,
-		Hash:       0,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	_, chats, users, err := parseTGDialogsResponse(resp)
+	_, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantMainFolderID)
 	if err != nil {
 		return nil, err
 	}

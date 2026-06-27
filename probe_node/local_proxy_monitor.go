@@ -239,7 +239,11 @@ func currentProbeLocalProxyMonitorSnapshot() probeLocalProxyMonitorSnapshot {
 		startedAt = time.Now().UTC()
 		probeLocalProxyMonitorState.startedAt = startedAt
 	}
+	latest := probeLocalProxyMonitorState.latest
 	probeLocalProxyMonitorState.mu.Unlock()
+	if latest.FetchedAt != "" {
+		return latest.clone()
+	}
 	return updateProbeLocalProxyMonitorSnapshot("request", startedAt)
 }
 
