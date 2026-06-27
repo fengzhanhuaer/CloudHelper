@@ -1400,6 +1400,9 @@ func sendTGAssistantSessionMessage(req tgAssistantSessionSendRequest) (tgAssista
 			return err
 		}
 		result.ID = extractTGAssistantSentMessageID(updates)
+		if result.ID <= 0 {
+			result.ID = newTGAssistantLocalMessageID()
+		}
 		if echoed := summarizeTGAssistantSendUpdates(updates); strings.TrimSpace(echoed) != "" {
 			result.Text = echoed
 		}
@@ -3437,6 +3440,14 @@ func newTGAssistantMessageRandomID() int64 {
 		return 1
 	}
 	return fallback
+}
+
+func newTGAssistantLocalMessageID() int {
+	value := int(time.Now().UnixMilli())
+	if value <= 0 {
+		return 1
+	}
+	return value
 }
 
 func newTGAssistantAccountID() string {
