@@ -101,7 +101,28 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
     {"node_id":"2","ip":"198.18.0.4"}
   ],
   "topology_rules": [
-    {"from_node_id":"1","to_node_id":"2","direction":"bidirectional","enabled":true}
+    {
+      "id":"rule-a",
+      "from_node_id":"1",
+      "to_node_id":"2",
+      "direction":"bidirectional",
+      "from_service_domain":"edge-a.example.com",
+      "from_service_port":443,
+      "to_service_domain":"edge-b.internal.lan",
+      "to_service_port":443,
+      "enabled":true
+    },
+    {
+      "id":"rule-b",
+      "from_node_id":"1",
+      "to_node_id":"2",
+      "direction":"bidirectional",
+      "from_service_domain":"edge-a-alt.example.com",
+      "from_service_port":443,
+      "to_service_domain":"edge-b-alt.internal.lan",
+      "to_service_port":443,
+      "enabled":true
+    }
   ]
 }`)
 	saveReq := httptest.NewRequest(http.MethodPost, "/mng/api/link/virtual_router", bytes.NewReader(body))
@@ -126,8 +147,15 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	if len(payload.Item.ProbeIPs) != 2 {
 		t.Fatalf("probe ips=%+v, want 2", payload.Item.ProbeIPs)
 	}
-	if len(payload.Item.TopologyRules) != 1 || payload.Item.TopologyRules[0].Direction != probeVirtualRouterDirectionTwoWay {
+	if len(payload.Item.TopologyRules) != 2 || payload.Item.TopologyRules[0].Direction != probeVirtualRouterDirectionTwoWay {
 		t.Fatalf("topology rules=%+v", payload.Item.TopologyRules)
+	}
+	first := payload.Item.TopologyRules[0]
+	if first.FromServiceDomain != "edge-a.example.com" || first.FromServicePort != 443 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 443 {
+		t.Fatalf("service config not persisted: %+v", first)
+	}
+	if payload.Item.TopologyRules[1].FromServicePort != 443 || payload.Item.TopologyRules[1].ToServicePort != 443 {
+		t.Fatalf("service port reuse should be allowed: %+v", payload.Item.TopologyRules)
 	}
 }
 
@@ -137,6 +165,28 @@ func TestMngLinkVirtualRouterHandlerRejectsProbeIPOutsideReservedPool(t *testing
 	ProbeLinkChainStore = &probeLinkChainStore{path: filepath.Join(t.TempDir(), "probe_link_chains.json")}
 
 	body := []byte(`{"probe_ips":[{"node_id":"1","ip":"198.18.4.1"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/mng/api/link/virtual_router", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	mngLinkVirtualRouterHandler(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want 400", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
+	oldStore := ProbeLinkChainStore
+	t.Cleanup(func() { ProbeLinkChainStore = oldStore })
+	ProbeLinkChainStore = &probeLinkChainStore{path: filepath.Join(t.TempDir(), "probe_link_chains.json")}
+
+	body := []byte(`{
+  "probe_ips":[
+    {"node_id":"1","ip":"198.18.0.3"},
+    {"node_id":"2","ip":"198.18.0.4"}
+  ],
+  "topology_rules":[
+    {"from_node_id":"1","to_node_id":"2","direction":"bidirectional","from_service_port":65536,"enabled":true}
+  ]
+}`)
 	req := httptest.NewRequest(http.MethodPost, "/mng/api/link/virtual_router", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 	mngLinkVirtualRouterHandler(rr, req)

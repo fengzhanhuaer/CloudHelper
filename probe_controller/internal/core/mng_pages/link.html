@@ -65,6 +65,50 @@
       color:#7ee787;
       background:#0d1117;
     }
+    .domain-cell { display:flex; align-items:center; gap:6px; min-width:210px; }
+    .domain-value {
+      min-width:120px;
+      max-width:220px;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .modal-backdrop {
+      position:fixed;
+      inset:0;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:18px;
+      background:rgba(1,4,9,.72);
+      z-index:50;
+      box-sizing:border-box;
+    }
+    .modal-backdrop.active { display:flex; }
+    .modal {
+      width:min(760px, 100%);
+      max-height:82vh;
+      overflow:auto;
+      border:1px solid #30363d;
+      border-radius:12px;
+      background:#161b22;
+      padding:14px;
+      box-shadow:0 18px 60px rgba(0,0,0,.38);
+    }
+    .modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+    .modal-title { font-weight:700; color:#f0f6fc; }
+    .domain-options { display:grid; grid-template-columns:1fr; gap:8px; margin:10px 0; }
+    .domain-option {
+      width:100%;
+      text-align:left;
+      border:1px solid #30363d;
+      border-radius:8px;
+      background:#0d1117;
+      color:#c9d1d9;
+      padding:8px 10px;
+      cursor:pointer;
+    }
+    .domain-option:hover { border-color:#58a6ff; }
   </style>
 </head>
 <body>
@@ -234,7 +278,6 @@
                 <tr>
                   <th>探针</th>
                   <th>静态 IP</th>
-                  <th>备注</th>
                 </tr>
               </thead>
               <tbody id="vr-ip-body"></tbody>
@@ -248,7 +291,11 @@
                   <th>启用</th>
                   <th>名称</th>
                   <th>探针 A</th>
+                  <th>A 域名</th>
+                  <th>A 端口</th>
                   <th>探针 B</th>
+                  <th>B 域名</th>
+                  <th>B 端口</th>
                   <th>方向</th>
                   <th>操作</th>
                 </tr>
@@ -315,6 +362,23 @@
     </div>
   </div>
 
+  <div id="vr-domain-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">选择域名</div>
+        <button id="btn-vr-domain-close" class="btn" type="button">关闭</button>
+      </div>
+      <div id="vr-domain-current" class="small muted mono">-</div>
+      <div id="vr-domain-options" class="domain-options"></div>
+      <div class="row">
+        <label for="vr-domain-manual">手动域名</label>
+        <input id="vr-domain-manual" class="wide" placeholder="internal.example.lan" />
+        <button id="btn-vr-domain-apply" class="btn primary" type="button">使用</button>
+        <button id="btn-vr-domain-clear" class="btn" type="button">清空</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const DEFAULTS = {
       listenHost: '0.0.0.0',
@@ -345,6 +409,8 @@
         topology_rules: [],
       },
       virtualRouterNodeIDs: [],
+      cloudflareDDNSRecords: [],
+      domainPicker: null,
       nodeDomainsByID: {},
       nodeDomainsLoading: {},
       editForm: {
@@ -532,6 +598,108 @@
       return pending;
     }
 
+    async function loadCloudflareDDNSRecords(silent) {
+      const payload = await requestJSON('/mng/api/cloudflare/ddns/records');
+      state.cloudflareDDNSRecords = Array.isArray(payload.records) ? payload.records : [];
+      if (!silent) setStatus(`Cloudflare DDNS 域名已刷新：${state.cloudflareDDNSRecords.length} 条`, 'ok');
+    }
+
+    function cloudflareDomainCandidates(nodeID) {
+      const normalized = normalizeNodeID(nodeID);
+      const all = Array.isArray(state.cloudflareDDNSRecords) ? state.cloudflareDDNSRecords : [];
+      const seen = new Set();
+      const rows = [];
+      all.forEach((item) => {
+        const name = String(item && item.record_name || '').trim();
+        if (!name || seen.has(name)) return;
+        const itemNodeID = normalizeNodeID(item && (item.node_id || item.node_no));
+        if (normalized && itemNodeID !== normalized) return;
+        seen.add(name);
+        rows.push({
+          name,
+          node_id: itemNodeID,
+          node_name: String(item && item.node_name || '').trim(),
+          record_type: String(item && item.record_type || '').trim(),
+          record_class: String(item && item.record_class || '').trim(),
+          content_ip: String(item && item.content_ip || '').trim(),
+        });
+      });
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      return rows;
+    }
+
+    function virtualRouterDomainButton(rule, idx, side) {
+      const domainKey = side === 'from' ? 'from_service_domain' : 'to_service_domain';
+      const nodeKey = side === 'from' ? 'from_node_id' : 'to_node_id';
+      const value = String(rule && rule[domainKey] || '').trim();
+      const nodeText = nodeLabel(rule && rule[nodeKey]);
+      return `
+        <div class="domain-cell">
+          <span class="domain-value mono" title="${escapeHTML(value || nodeText)}">${escapeHTML(value || '-')}</span>
+          <button class="btn" data-vr-domain-pick="${idx}" data-vr-domain-side="${escapeHTML(side)}" type="button">选择</button>
+        </div>
+      `;
+    }
+
+    function closeVirtualRouterDomainPicker() {
+      state.domainPicker = null;
+      const modal = document.getElementById('vr-domain-modal');
+      modal.classList.remove('active');
+      modal.setAttribute('aria-hidden', 'true');
+    }
+
+    function setVirtualRouterRuleDomain(value) {
+      const picker = state.domainPicker || {};
+      const idx = Number.parseInt(String(picker.index || '-1'), 10);
+      const side = String(picker.side || '');
+      const rules = state.virtualRouter.topology_rules || [];
+      if (idx < 0 || idx >= rules.length) return;
+      if (side !== 'from' && side !== 'to') return;
+      const key = side === 'from' ? 'from_service_domain' : 'to_service_domain';
+      rules[idx][key] = String(value || '').trim();
+      closeVirtualRouterDomainPicker();
+      renderVirtualRouter();
+    }
+
+    function renderVirtualRouterDomainPicker() {
+      const picker = state.domainPicker || {};
+      const idx = Number.parseInt(String(picker.index || '-1'), 10);
+      const side = String(picker.side || '');
+      const rules = state.virtualRouter.topology_rules || [];
+      const rule = idx >= 0 && idx < rules.length ? rules[idx] : null;
+      if (!rule) return;
+      const nodeID = side === 'from' ? rule.from_node_id : rule.to_node_id;
+      const domain = side === 'from' ? rule.from_service_domain : rule.to_service_domain;
+      document.getElementById('vr-domain-current').textContent = `${nodeLabel(nodeID)} / ${String(domain || '-').trim()}`;
+      document.getElementById('vr-domain-manual').value = String(domain || '').trim();
+      const options = cloudflareDomainCandidates(nodeID);
+      const optionBox = document.getElementById('vr-domain-options');
+      if (!options.length) {
+        optionBox.innerHTML = '<div class="muted small">暂无匹配 DDNS 域名</div>';
+      } else {
+        optionBox.innerHTML = options.map((item) => `
+          <button class="domain-option" data-vr-domain-value="${escapeHTML(item.name)}" type="button">
+            <div class="mono">${escapeHTML(item.name)}</div>
+            <div class="small muted">${escapeHTML([item.record_class, item.record_type, item.content_ip].filter(Boolean).join(' / ') || '-')}</div>
+          </button>
+        `).join('');
+      }
+      optionBox.querySelectorAll('[data-vr-domain-value]').forEach((el) => {
+        el.addEventListener('click', () => setVirtualRouterRuleDomain(el.getAttribute('data-vr-domain-value') || ''));
+      });
+    }
+
+    async function openVirtualRouterDomainPicker(index, side) {
+      if (side !== 'from' && side !== 'to') return;
+      state.domainPicker = { index, side };
+      await loadCloudflareDDNSRecords(true).catch(() => {});
+      renderVirtualRouterDomainPicker();
+      const modal = document.getElementById('vr-domain-modal');
+      modal.classList.add('active');
+      modal.setAttribute('aria-hidden', 'false');
+      document.getElementById('vr-domain-manual').focus();
+    }
+
     async function refreshSelectedPublicKey() {
       const userID = String(state.selectedUser || '').trim();
       if (!userID) {
@@ -652,7 +820,10 @@
             loadEntryProfile(true).catch((err) => setStatus(`刷新链路入口失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'topology') {
-            loadVirtualRouter(true).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
+            Promise.all([
+              loadCloudflareDDNSRecords(true).catch(() => {}),
+              loadVirtualRouter(true),
+            ]).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'view') {
             loadRelayStatus(true).catch((err) => setStatus(`刷新链路状态失败：${err.message || err}`, 'err'));
@@ -1286,13 +1457,12 @@
       const ips = Array.isArray(cfg.probe_ips) ? cfg.probe_ips : [];
       const ipBody = document.getElementById('vr-ip-body');
       if (!ips.length) {
-        ipBody.innerHTML = '<tr><td colspan="3" class="muted">暂无探针静态 IP，刷新后会按已知探针自动生成。</td></tr>';
+        ipBody.innerHTML = '<tr><td colspan="2" class="muted">暂无探针静态 IP，刷新后会按已知探针自动生成。</td></tr>';
       } else {
         ipBody.innerHTML = ips.map((item, idx) => `
           <tr>
             <td>${escapeHTML(nodeLabel(item.node_id))}<div class="small muted mono">${escapeHTML(item.node_id || '')}</div></td>
             <td><input data-vr-ip="${idx}" class="mono" value="${escapeHTML(item.ip || '')}" /></td>
-            <td><input data-vr-ip-note="${idx}" value="${escapeHTML(item.note || '')}" /></td>
           </tr>
         `).join('');
       }
@@ -1300,14 +1470,18 @@
       const rules = Array.isArray(cfg.topology_rules) ? cfg.topology_rules : [];
       const ruleBody = document.getElementById('vr-rule-body');
       if (!rules.length) {
-        ruleBody.innerHTML = '<tr><td colspan="6" class="muted">暂无拓扑规则。</td></tr>';
+        ruleBody.innerHTML = '<tr><td colspan="10" class="muted">暂无拓扑规则。</td></tr>';
       } else {
         ruleBody.innerHTML = rules.map((rule, idx) => `
           <tr>
             <td><input data-vr-rule-enabled="${idx}" type="checkbox" ${rule.enabled === false ? '' : 'checked'} /></td>
             <td><input data-vr-rule-name="${idx}" value="${escapeHTML(rule.name || '')}" placeholder="${escapeHTML(rule.id || '')}" /></td>
             <td><select data-vr-rule-from="${idx}">${virtualRouterNodeOptions(rule.from_node_id)}</select></td>
+            <td>${virtualRouterDomainButton(rule, idx, 'from')}</td>
+            <td><input data-vr-rule-from-port="${idx}" class="mono" type="number" min="1" max="65535" value="${rule.from_service_port ? escapeHTML(rule.from_service_port) : ''}" /></td>
             <td><select data-vr-rule-to="${idx}">${virtualRouterNodeOptions(rule.to_node_id)}</select></td>
+            <td>${virtualRouterDomainButton(rule, idx, 'to')}</td>
+            <td><input data-vr-rule-to-port="${idx}" class="mono" type="number" min="1" max="65535" value="${rule.to_service_port ? escapeHTML(rule.to_service_port) : ''}" /></td>
             <td>
               <select data-vr-rule-direction="${idx}">
                 <option value="bidirectional" ${rule.direction === 'bidirectional' ? 'selected' : ''}>双向</option>
@@ -1331,14 +1505,6 @@
           const ips = state.virtualRouter.probe_ips || [];
           if (idx < 0 || idx >= ips.length) return;
           ips[idx].ip = String(el.value || '').trim();
-        });
-      });
-      document.querySelectorAll('[data-vr-ip-note]').forEach((el) => {
-        el.addEventListener('input', () => {
-          const idx = Number.parseInt(el.getAttribute('data-vr-ip-note') || '-1', 10);
-          const ips = state.virtualRouter.probe_ips || [];
-          if (idx < 0 || idx >= ips.length) return;
-          ips[idx].note = String(el.value || '').trim();
         });
       });
       document.querySelectorAll('[data-vr-rule-enabled]').forEach((el) => {
@@ -1365,12 +1531,30 @@
           rules[idx].from_node_id = normalizeNodeID(el.value);
         });
       });
+      document.querySelectorAll('[data-vr-rule-from-port]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-from-port') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          const port = Number.parseInt(el.value || '0', 10);
+          rules[idx].from_service_port = Number.isFinite(port) && port > 0 ? port : 0;
+        });
+      });
       document.querySelectorAll('[data-vr-rule-to]').forEach((el) => {
         el.addEventListener('change', () => {
           const idx = Number.parseInt(el.getAttribute('data-vr-rule-to') || '-1', 10);
           const rules = state.virtualRouter.topology_rules || [];
           if (idx < 0 || idx >= rules.length) return;
           rules[idx].to_node_id = normalizeNodeID(el.value);
+        });
+      });
+      document.querySelectorAll('[data-vr-rule-to-port]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-to-port') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          const port = Number.parseInt(el.value || '0', 10);
+          rules[idx].to_service_port = Number.isFinite(port) && port > 0 ? port : 0;
         });
       });
       document.querySelectorAll('[data-vr-rule-direction]').forEach((el) => {
@@ -1389,6 +1573,13 @@
           if (idx < 0 || idx >= rules.length) return;
           rules.splice(idx, 1);
           renderVirtualRouter();
+        });
+      });
+      document.querySelectorAll('[data-vr-domain-pick]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-domain-pick') || '-1', 10);
+          const side = String(el.getAttribute('data-vr-domain-side') || '').trim();
+          openVirtualRouterDomainPicker(idx, side).catch((err) => setStatus(`载入 DDNS 域名失败：${err.message || err}`, 'err'));
         });
       });
     }
@@ -1410,6 +1601,10 @@
         from_node_id: ids[0],
         to_node_id: ids[1],
         direction: 'bidirectional',
+        from_service_domain: '',
+        from_service_port: 0,
+        to_service_domain: '',
+        to_service_port: 0,
         enabled: true,
       });
       renderVirtualRouter();
@@ -1719,11 +1914,26 @@
       });
 
       document.getElementById('btn-vr-refresh').addEventListener('click', () => {
-        loadVirtualRouter(false).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
+        Promise.all([
+          loadCloudflareDDNSRecords(true).catch(() => {}),
+          loadVirtualRouter(false),
+        ]).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-vr-add-rule').addEventListener('click', addVirtualRouterRule);
       document.getElementById('btn-vr-save').addEventListener('click', () => {
         saveVirtualRouter().catch((err) => setStatus(`保存拓扑规则失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-vr-domain-close').addEventListener('click', closeVirtualRouterDomainPicker);
+      document.getElementById('btn-vr-domain-apply').addEventListener('click', () => {
+        setVirtualRouterRuleDomain(document.getElementById('vr-domain-manual').value);
+      });
+      document.getElementById('btn-vr-domain-clear').addEventListener('click', () => {
+        setVirtualRouterRuleDomain('');
+      });
+      document.getElementById('vr-domain-modal').addEventListener('click', (event) => {
+        if (event.target && event.target.id === 'vr-domain-modal') {
+          closeVirtualRouterDomainPicker();
+        }
       });
 
       document.getElementById('pf-chain-select').addEventListener('change', (e) => {
@@ -1751,6 +1961,7 @@
       await loadNodes();
       await loadChains(true);
       await loadEntryProfile(true);
+      await loadCloudflareDDNSRecords(true).catch(() => {});
       await loadVirtualRouter(true);
       renderRelayStatus();
 

@@ -35,6 +35,8 @@
 - 第一阶段先不改动原有 TUN 代理功能，仅调整当前 TUN FakeIP 地址池前 1024 个 IP 的保留用途。
 - 第一阶段在主控探针链路中新增独立拓扑规则配置页面。
 - 第一阶段实现基于探针静态局域网 IP 与主控拓扑规则的局域网互联功能。
+- 每条拓扑规则可以独立配置两端探针的服务域名与服务端口；端口允许在多条规则中复用，域名候选来自 Cloudflare DDNS 模块，同时允许填写内网域名。
+- 拓扑规则服务域名与端口只存储在虚拟路由器配置中，不读取、不回写、不混用旧探针侧链路域名、入口或 `relay_host` 配置。
 
 #### 1.1.2 需求范围
 - RQ-DVRT-001: 探针作为分布式虚拟路由器入口参与统一网络。
@@ -54,6 +56,7 @@
 - RQ-DVRT-015: 第一阶段先不改动原有 TUN 代理功能，仅调整当前 TUN FakeIP 地址池前 1024 个 IP 的保留用途。
 - RQ-DVRT-016: 第一阶段在主控探针链路中新增独立拓扑规则配置页面，用于维护探针间连接关系与方向。
 - RQ-DVRT-017: 第一阶段实现基于探针静态局域网 IP 与主控拓扑规则的局域网互联功能。
+- RQ-DVRT-018: 每条拓扑规则可以独立配置 A/B 两端服务域名与服务端口，端口允许复用；域名从 Cloudflare DDNS 模块选择或手动填写内网域名，配置独立保存在虚拟路由器拓扑规则内，不混用旧探针侧配置。
 
 #### 1.1.3 非范围
 - 当前阶段不设计技术实现方案。
@@ -64,7 +67,7 @@
 - 第一阶段不实施 `proxy_group` 全局化。
 - 第一阶段不实施端口转发统一管理。
 - 第一阶段不实施代理组绑定探针出口。
-- 第一阶段不实施探针出口监听域名与端口配置。
+- 第一阶段不实施旧探针侧出口监听域名与端口配置迁移或复用；仅允许在虚拟路由器拓扑规则内新增独立服务域名与端口字段。
 
 #### 1.1.4 验收标准
 - 已在协作文档中记录用户提出的全部核心需求。
@@ -117,10 +120,12 @@
 #### 1.2.2 总体设计
 - 主控侧在现有 `probe_link_chains.json` 存储中增加虚拟路由器配置区，包含探针静态 IP 记录与拓扑规则记录。
 - 主控管理页面 `/mng/link` 增加独立“拓扑规则”配置视图，用于维护两个探针之间的连接方向、启用状态和备注。
+- 拓扑规则配置视图支持为 A/B 两端分别维护服务域名和服务端口；域名弹窗从 Cloudflare DDNS 模块读取候选，手动输入用于内网域名。
 - 主控探针同步接口 `/api/probe/link/config/grouped` 兼容扩展返回虚拟路由器配置，旧探针忽略新增字段。
 - probe_node 同步到虚拟路由器配置后，保存本地缓存，并为本探针建立静态局域网 IP 与可达拓扑视图。
 - 局域网互联流量在第一阶段复用现有链路 runtime 与自定义帧子流，不改动 `proxy_group`、端口转发统一管理和既有代理决策。
 - 前 1024 个探针静态 IP 池与普通 FakeIP 分配边界通过分配函数约束实现。
+- 拓扑规则服务域名与服务端口只作为虚拟路由器规则字段保存和下发，不复用旧探针侧 `relay_host`、链路入口或节点域名配置。
 
 #### 1.2.3 关键模块
 | 模块编号 | 模块名称 | 职责 | 输入 | 输出 |
@@ -135,16 +140,17 @@
 | 接口编号 | 接口名称 | 调用方 | 提供方 | 说明 |
 |---|---|---|---|---|
 | IF-DVRT-01 | GET `/mng/api/link/virtual_router` | 管理页面 | probe_controller | 获取虚拟路由器配置 |
-| IF-DVRT-02 | POST `/mng/api/link/virtual_router` | 管理页面 | probe_controller | 保存探针静态 IP 与拓扑规则 |
+| IF-DVRT-02 | POST `/mng/api/link/virtual_router` | 管理页面 | probe_controller | 保存探针静态 IP、拓扑规则以及规则级服务域名/端口 |
 | IF-DVRT-03 | GET `/api/probe/link/config/grouped` | probe_node | probe_controller | 兼容扩展返回虚拟路由器配置 |
 | IF-DVRT-04 | 本地虚拟路由器配置缓存 | probe_node | 本地文件 | 保存主控下发的虚拟路由器配置 |
 
 #### 1.2.5 关键约束
 - 第一阶段禁止改变现有 TUN 代理功能既有行为。
-- 第一阶段禁止实施 `proxy_group` 全局化、端口转发统一管理、代理组绑定探针出口和探针出口监听域名端口配置。
+- 第一阶段禁止实施 `proxy_group` 全局化、端口转发统一管理、代理组绑定探针出口和旧探针侧出口监听域名端口配置迁移或复用。
 - 探针静态局域网 IP 必须来自当前 TUN FakeIP 地址池前 1024 个 IP。
 - 普通 FakeIP 分配必须跳过前 1024 个探针静态局域网 IP 池。
 - 主控下发接口必须兼容旧探针，新增字段不得破坏既有链路同步。
+- 拓扑规则级服务端口允许复用；服务域名可以为空、来自 Cloudflare DDNS 候选或手动填写内网域名。
 
 #### 1.2.6 风险
 - 局域网互联复用自定义帧子流时，需要避免与既有端口转发和代理链路子流语义冲突。
@@ -171,10 +177,10 @@
 #### 1.3.2 单元设计
 ##### U-DVRT-01
 - 单元名称: 虚拟路由器配置模型
-- 职责: 定义主控侧持久化结构，包含探针静态 IP 列表、拓扑规则列表、更新时间。
+- 职责: 定义主控侧持久化结构，包含探针静态 IP 列表、拓扑规则列表、规则级服务域名/端口、更新时间。
 - 输入: 管理端提交 JSON。
 - 输出: 规范化后的配置。
-- 处理规则: 节点 ID 归一化；IP 必须位于前 1024 探针静态 IP 池；拓扑规则必须包含两个不同探针与方向。
+- 处理规则: 节点 ID 归一化；IP 必须位于前 1024 探针静态 IP 池；拓扑规则必须包含两个不同探针与方向；规则级服务端口为空或位于 1-65535，端口不做唯一性约束。
 - 异常规则: IP 不在地址池、节点重复、方向非法、规则数量超限时拒绝保存。
 
 ##### U-DVRT-02
@@ -190,7 +196,7 @@
 - 职责: 在主控探针链路页面中提供独立拓扑规则配置视图。
 - 输入: 管理员编辑操作。
 - 输出: API 保存请求。
-- 处理规则: 支持新增、删除、启用、禁用、选择两个探针、选择单向或双向。
+- 处理规则: 支持新增、删除、启用、禁用、选择两个探针、选择单向或双向；支持在规则内为 A/B 两端选择 Cloudflare DDNS 域名或手动填写内网域名，并配置服务端口。
 - 异常规则: 前端阻止明显非法输入，后端仍执行最终校验。
 
 ##### U-DVRT-04
@@ -238,15 +244,15 @@
 
 #### 1.4.1 执行边界
 - 允许修改: `probe_controller/internal/core/probe_link_chain_store.go`、`probe_controller/internal/core/probe_link_chains.go`、`probe_controller/internal/core/mng_link_handlers.go`、`probe_controller/internal/core/mng_link_actions.go`、`probe_controller/internal/core/server.go`、`probe_controller/internal/core/mng_pages/link.html`、`probe_controller/internal/core/*link*_test.go`、`probe_node/probe_link_chains_sync.go`、`probe_node/local_dns_service.go`、`probe_node/local_dns_service_test.go`、`probe_node/local_tun_stack_windows.go`、`probe_node/local_tun_stack_windows_test.go`、新增第一阶段虚拟路由器相关 Go 文件与测试文件。
-- 禁止修改: 既有 `proxy_group` 全局化实现、端口转发统一管理实现、代理组绑定探针出口实现、探针出口监听域名端口实现、无关页面与无关业务。
+- 禁止修改: 既有 `proxy_group` 全局化实现、端口转发统一管理实现、代理组绑定探针出口实现、旧探针侧出口监听域名端口实现、无关页面与无关业务。
 
 #### 1.4.2 任务清单
 | 任务编号 | 需求编号 | 单元编号 | 文件范围 | 操作类型 | 验收标准 |
 |---|---|---|---|---|---|
 | T-DVRT-01 | RQ-DVRT-008,RQ-DVRT-015 | U-DVRT-06 | `probe_node/local_dns_service.go`, `probe_node/local_dns_service_test.go` | 修改 | 普通 FakeIP 分配跳过前 1024 个探针静态 IP 池，测试覆盖默认 CIDR |
-| T-DVRT-02 | RQ-DVRT-011,RQ-DVRT-012,RQ-DVRT-016 | U-DVRT-01,U-DVRT-02 | `probe_controller/internal/core/probe_link_chain_store.go`, `probe_controller/internal/core/probe_link_chains.go`, `probe_controller/internal/core/mng_link_handlers.go`, `probe_controller/internal/core/mng_link_actions.go`, `probe_controller/internal/core/server.go`, 新增测试 | 新增/修改 | 管理接口可查询和保存拓扑规则，后端校验节点、方向、静态 IP 池 |
-| T-DVRT-03 | RQ-DVRT-016 | U-DVRT-03 | `probe_controller/internal/core/mng_pages/link.html` | 修改 | 主控探针链路页面出现独立拓扑规则配置视图，可调用新增 API |
-| T-DVRT-04 | RQ-DVRT-004,RQ-DVRT-011,RQ-DVRT-013,RQ-DVRT-017 | U-DVRT-04,U-DVRT-05 | `probe_controller/internal/core/probe_link_chains.go`, `probe_node/probe_link_chains_sync.go`, 新增测试 | 新增/修改 | grouped 响应兼容扩展下发虚拟路由器配置，probe_node 可缓存配置 |
+| T-DVRT-02 | RQ-DVRT-011,RQ-DVRT-012,RQ-DVRT-016,RQ-DVRT-018 | U-DVRT-01,U-DVRT-02 | `probe_controller/internal/core/probe_link_chain_store.go`, `probe_controller/internal/core/probe_link_chains.go`, `probe_controller/internal/core/mng_link_handlers.go`, `probe_controller/internal/core/mng_link_actions.go`, `probe_controller/internal/core/server.go`, 新增测试 | 新增/修改 | 管理接口可查询和保存拓扑规则，后端校验节点、方向、静态 IP 池、规则级服务端口 |
+| T-DVRT-03 | RQ-DVRT-016,RQ-DVRT-018 | U-DVRT-03 | `probe_controller/internal/core/mng_pages/link.html` | 修改 | 主控探针链路页面出现独立拓扑规则配置视图，可配置规则级服务域名/端口，域名从 Cloudflare DDNS 弹窗选择或手动填写 |
+| T-DVRT-04 | RQ-DVRT-004,RQ-DVRT-011,RQ-DVRT-013,RQ-DVRT-017,RQ-DVRT-018 | U-DVRT-04,U-DVRT-05 | `probe_controller/internal/core/probe_link_chains.go`, `probe_node/probe_link_chains_sync.go`, 新增测试 | 新增/修改 | grouped 响应兼容扩展下发虚拟路由器配置，probe_node 可缓存配置与规则级服务域名/端口 |
 | T-DVRT-05 | RQ-DVRT-006,RQ-DVRT-013,RQ-DVRT-017 | U-DVRT-07 | `probe_node/local_tun_stack_windows.go`, 新增虚拟路由器运行态文件与测试 | 新增/修改 | 第一阶段 LAN 互联运行态具备目标可达判断与 frame 子流入口，不改变既有 TUN 代理测试结果 |
 | T-DVRT-06 | 全部第一阶段需求 | 全部第一阶段单元 | 协作文档与测试 | 修改/验证 | 更新 Code 证据，执行相关 Go 测试 |
 
@@ -290,10 +296,11 @@
 | RQ-DVRT-011 | 探针间物理连接的拓扑结构在主控侧设置 | 1.1,1.2 | 1.3 | T-DVRT-02,T-DVRT-03,T-DVRT-04 | 进行中 | 第一阶段覆盖 |
 | RQ-DVRT-012 | 每条拓扑规则描述两个探针之间的连接关系，并明确单向或双向 | 1.1,1.2 | 1.3 | T-DVRT-02,T-DVRT-03 | 进行中 | 第一阶段覆盖 |
 | RQ-DVRT-013 | 非直连探针存在共同连接节点时支持通过共同节点转发 | 1.1,1.2 | 1.3 | T-DVRT-04,T-DVRT-05 | 进行中 | 第一阶段基础覆盖 |
-| RQ-DVRT-014 | 每个探针出口可单独配置监听域名与端口，支持 Cloudflare 代理和直连形态 | 1.1 | 无 | 无 | 阻塞 | 非第一阶段范围 |
+| RQ-DVRT-014 | 每个探针出口可单独配置监听域名与端口，支持 Cloudflare 代理和直连形态 | 1.1 | 无 | 无 | 阻塞 | 旧探针侧出口配置非第一阶段范围 |
 | RQ-DVRT-015 | 第一阶段不改动原有 TUN 代理功能，仅调整前 1024 个 FakeIP 的保留用途 | 1.1,1.2 | 1.3 | T-DVRT-01,T-DVRT-05 | 进行中 | 第一阶段约束 |
 | RQ-DVRT-016 | 第一阶段在主控探针链路中新增独立拓扑规则配置页面 | 1.1,1.2 | 1.3 | T-DVRT-02,T-DVRT-03 | 进行中 | 第一阶段覆盖 |
 | RQ-DVRT-017 | 第一阶段实现基于探针静态局域网 IP 与主控拓扑规则的局域网互联功能 | 1.1,1.2 | 1.3 | T-DVRT-04,T-DVRT-05 | 进行中 | 第一阶段覆盖 |
+| RQ-DVRT-018 | 每条拓扑规则独立配置 A/B 两端服务域名与服务端口，不混用旧探针侧配置 | 1.1,1.2 | 1.3 | T-DVRT-02,T-DVRT-03,T-DVRT-04 | 进行中 | 第一阶段覆盖 |
 
 ### 1.6 Architect关键接口跟踪矩阵
 - 状态: 进行中
@@ -301,7 +308,7 @@
 | 接口编号 | 需求编号 | 接口名称 | 调用方 | 提供方 | 输入 | 输出 | 状态 | 备注 |
 |---|---|---|---|---|---|---|---|---|
 | IF-DVRT-01 | RQ-DVRT-011,RQ-DVRT-012,RQ-DVRT-016 | GET `/mng/api/link/virtual_router` | 管理页面 | probe_controller | 管理会话 | 虚拟路由器配置 | 进行中 | 第一阶段新增 |
-| IF-DVRT-02 | RQ-DVRT-004,RQ-DVRT-011,RQ-DVRT-012,RQ-DVRT-016 | POST `/mng/api/link/virtual_router` | 管理页面 | probe_controller | 静态 IP 与拓扑规则 JSON | 保存结果 | 进行中 | 第一阶段新增 |
+| IF-DVRT-02 | RQ-DVRT-004,RQ-DVRT-011,RQ-DVRT-012,RQ-DVRT-016,RQ-DVRT-018 | POST `/mng/api/link/virtual_router` | 管理页面 | probe_controller | 静态 IP、拓扑规则、规则级服务域名/端口 JSON | 保存结果 | 进行中 | 第一阶段新增 |
 | IF-DVRT-03 | RQ-DVRT-004,RQ-DVRT-011,RQ-DVRT-013,RQ-DVRT-017 | GET `/api/probe/link/config/grouped` | probe_node | probe_controller | node_id、secret | 链路配置与虚拟路由器配置 | 进行中 | 兼容扩展 |
 | IF-DVRT-04 | RQ-DVRT-004,RQ-DVRT-017 | 本地虚拟路由器配置缓存 | probe_node | 本地文件 | 主控下发配置 | 缓存文件 | 进行中 | 第一阶段新增 |
 

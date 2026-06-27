@@ -72,14 +72,18 @@ type probeVirtualRouterProbeIP struct {
 }
 
 type probeVirtualRouterTopologyRule struct {
-	ID         string `json:"id,omitempty"`
-	Name       string `json:"name,omitempty"`
-	FromNodeID string `json:"from_node_id"`
-	ToNodeID   string `json:"to_node_id"`
-	Direction  string `json:"direction"`
-	Enabled    bool   `json:"enabled"`
-	Note       string `json:"note,omitempty"`
-	UpdatedAt  string `json:"updated_at,omitempty"`
+	ID                string `json:"id,omitempty"`
+	Name              string `json:"name,omitempty"`
+	FromNodeID        string `json:"from_node_id"`
+	ToNodeID          string `json:"to_node_id"`
+	Direction         string `json:"direction"`
+	FromServiceDomain string `json:"from_service_domain,omitempty"`
+	FromServicePort   int    `json:"from_service_port,omitempty"`
+	ToServiceDomain   string `json:"to_service_domain,omitempty"`
+	ToServicePort     int    `json:"to_service_port,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	Note              string `json:"note,omitempty"`
+	UpdatedAt         string `json:"updated_at,omitempty"`
 }
 
 type probeVirtualRouterCacheFile struct {

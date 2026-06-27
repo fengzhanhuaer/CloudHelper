@@ -57,7 +57,28 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 			{NodeID: "node-1", IP: "198.18.0.1"},
 		},
 		TopologyRules: []probeVirtualRouterTopologyRule{
-			{FromNodeID: "node-1", ToNodeID: "node-2", Direction: "both", Enabled: true},
+			{
+				ID:                "rule-a",
+				FromNodeID:        "node-1",
+				ToNodeID:          "node-2",
+				Direction:         "both",
+				FromServiceDomain: "edge-a.example.com",
+				FromServicePort:   443,
+				ToServiceDomain:   "edge-b.internal.lan",
+				ToServicePort:     443,
+				Enabled:           true,
+			},
+			{
+				ID:                "rule-b",
+				FromNodeID:        "node-1",
+				ToNodeID:          "node-2",
+				Direction:         "both",
+				FromServiceDomain: "edge-a-alt.example.com",
+				FromServicePort:   443,
+				ToServiceDomain:   "edge-b-alt.internal.lan",
+				ToServicePort:     443,
+				Enabled:           true,
+			},
 		},
 	}
 	if err := persistProbeVirtualRouterCache(config); err != nil {
@@ -77,8 +98,14 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	if len(loaded.ProbeIPs) != 1 || loaded.ProbeIPs[0].NodeID != "1" {
 		t.Fatalf("loaded probe ips=%+v", loaded.ProbeIPs)
 	}
-	if len(loaded.TopologyRules) != 1 || loaded.TopologyRules[0].Direction != probeVirtualRouterDirectionTwoWay {
+	if len(loaded.TopologyRules) != 2 || loaded.TopologyRules[0].Direction != probeVirtualRouterDirectionTwoWay {
 		t.Fatalf("loaded topology=%+v", loaded.TopologyRules)
+	}
+	if loaded.TopologyRules[0].FromServiceDomain != "edge-a.example.com" || loaded.TopologyRules[0].FromServicePort != 443 || loaded.TopologyRules[0].ToServiceDomain != "edge-b.internal.lan" || loaded.TopologyRules[0].ToServicePort != 443 {
+		t.Fatalf("loaded service config=%+v", loaded.TopologyRules[0])
+	}
+	if loaded.TopologyRules[1].FromServicePort != 443 || loaded.TopologyRules[1].ToServicePort != 443 {
+		t.Fatalf("service port reuse should be preserved: %+v", loaded.TopologyRules)
 	}
 }
 

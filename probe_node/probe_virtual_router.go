@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -95,27 +96,42 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 	}
 	out := make([]probeVirtualRouterTopologyRule, 0, len(items))
 	seen := map[string]struct{}{}
-	for _, item := range items {
+	for index, item := range items {
 		fromNodeID := normalizeProbeChainNodeID(item.FromNodeID)
 		toNodeID := normalizeProbeChainNodeID(item.ToNodeID)
 		direction := normalizeProbeVirtualRouterDirection(item.Direction)
 		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID || direction == "" {
 			continue
 		}
-		key := fromNodeID + "|" + toNodeID + "|" + direction
+		fromServiceDomain := strings.TrimSpace(item.FromServiceDomain)
+		fromServicePort := normalizeProbeVirtualRouterServicePort(item.FromServicePort)
+		toServiceDomain := strings.TrimSpace(item.ToServiceDomain)
+		toServicePort := normalizeProbeVirtualRouterServicePort(item.ToServicePort)
+		ruleID := strings.TrimSpace(item.ID)
+		if ruleID == "" {
+			ruleID = fmt.Sprintf("vr-%s-%s-%s-%d", fromNodeID, toNodeID, direction, index+1)
+		}
+		key := ruleID
+		if key == "" {
+			key = fmt.Sprintf("%s|%s|%s|%s|%d|%s|%d", fromNodeID, toNodeID, direction, fromServiceDomain, fromServicePort, toServiceDomain, toServicePort)
+		}
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
 		out = append(out, probeVirtualRouterTopologyRule{
-			ID:         strings.TrimSpace(item.ID),
-			Name:       strings.TrimSpace(item.Name),
-			FromNodeID: fromNodeID,
-			ToNodeID:   toNodeID,
-			Direction:  direction,
-			Enabled:    item.Enabled,
-			Note:       strings.TrimSpace(item.Note),
-			UpdatedAt:  strings.TrimSpace(item.UpdatedAt),
+			ID:                ruleID,
+			Name:              strings.TrimSpace(item.Name),
+			FromNodeID:        fromNodeID,
+			ToNodeID:          toNodeID,
+			Direction:         direction,
+			FromServiceDomain: fromServiceDomain,
+			FromServicePort:   fromServicePort,
+			ToServiceDomain:   toServiceDomain,
+			ToServicePort:     toServicePort,
+			Enabled:           item.Enabled,
+			Note:              strings.TrimSpace(item.Note),
+			UpdatedAt:         strings.TrimSpace(item.UpdatedAt),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -128,6 +144,13 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 		return out[i].Direction < out[j].Direction
 	})
 	return out
+}
+
+func normalizeProbeVirtualRouterServicePort(port int) int {
+	if port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
 }
 
 func normalizeProbeVirtualRouterDirection(raw string) string {

@@ -37,14 +37,18 @@ type probeVirtualRouterProbeIP struct {
 }
 
 type probeVirtualRouterTopologyRule struct {
-	ID         string `json:"id,omitempty"`
-	Name       string `json:"name,omitempty"`
-	FromNodeID string `json:"from_node_id"`
-	ToNodeID   string `json:"to_node_id"`
-	Direction  string `json:"direction"`
-	Enabled    bool   `json:"enabled"`
-	Note       string `json:"note,omitempty"`
-	UpdatedAt  string `json:"updated_at,omitempty"`
+	ID                string `json:"id,omitempty"`
+	Name              string `json:"name,omitempty"`
+	FromNodeID        string `json:"from_node_id"`
+	ToNodeID          string `json:"to_node_id"`
+	Direction         string `json:"direction"`
+	FromServiceDomain string `json:"from_service_domain,omitempty"`
+	FromServicePort   int    `json:"from_service_port,omitempty"`
+	ToServiceDomain   string `json:"to_service_domain,omitempty"`
+	ToServicePort     int    `json:"to_service_port,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	Note              string `json:"note,omitempty"`
+	UpdatedAt         string `json:"updated_at,omitempty"`
 }
 
 func defaultProbeVirtualRouterConfig() probeVirtualRouterConfig {
@@ -204,6 +208,12 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 		if normalizeProbeVirtualRouterDirection(item.Direction) == "" {
 			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].direction is invalid", index)
 		}
+		if item.FromServicePort < 0 || item.FromServicePort > 65535 {
+			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].from_service_port must be empty or between 1 and 65535", index)
+		}
+		if item.ToServicePort < 0 || item.ToServicePort > 65535 {
+			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].to_service_port must be empty or between 1 and 65535", index)
+		}
 	}
 	config := normalizeProbeVirtualRouterConfig(input)
 	config.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -261,35 +271,46 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 	now := time.Now().UTC().Format(time.RFC3339)
 	out := make([]probeVirtualRouterTopologyRule, 0, len(items))
 	seen := map[string]struct{}{}
-	for _, item := range items {
+	for index, item := range items {
 		fromNodeID := normalizeProbeNodeID(item.FromNodeID)
 		toNodeID := normalizeProbeNodeID(item.ToNodeID)
 		direction := normalizeProbeVirtualRouterDirection(item.Direction)
 		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID || direction == "" {
 			continue
 		}
-		key := fromNodeID + "|" + toNodeID + "|" + direction
+		fromServiceDomain := strings.TrimSpace(item.FromServiceDomain)
+		fromServicePort := normalizeProbeVirtualRouterServicePort(item.FromServicePort)
+		toServiceDomain := strings.TrimSpace(item.ToServiceDomain)
+		toServicePort := normalizeProbeVirtualRouterServicePort(item.ToServicePort)
+		ruleID := strings.TrimSpace(item.ID)
+		if ruleID == "" {
+			ruleID = fmt.Sprintf("vr-%s-%s-%s-%d", fromNodeID, toNodeID, direction, index+1)
+		}
+		key := ruleID
+		if key == "" {
+			key = fmt.Sprintf("%s|%s|%s|%s|%d|%s|%d", fromNodeID, toNodeID, direction, fromServiceDomain, fromServicePort, toServiceDomain, toServicePort)
+		}
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
-		ruleID := strings.TrimSpace(item.ID)
-		if ruleID == "" {
-			ruleID = fmt.Sprintf("vr-%s-%s-%s", fromNodeID, toNodeID, direction)
-		}
 		updatedAt := strings.TrimSpace(item.UpdatedAt)
 		if updatedAt == "" {
 			updatedAt = now
 		}
 		out = append(out, probeVirtualRouterTopologyRule{
-			ID:         ruleID,
-			Name:       strings.TrimSpace(item.Name),
-			FromNodeID: fromNodeID,
-			ToNodeID:   toNodeID,
-			Direction:  direction,
-			Enabled:    item.Enabled,
-			Note:       strings.TrimSpace(item.Note),
-			UpdatedAt:  updatedAt,
+			ID:                ruleID,
+			Name:              strings.TrimSpace(item.Name),
+			FromNodeID:        fromNodeID,
+			ToNodeID:          toNodeID,
+			Direction:         direction,
+			FromServiceDomain: fromServiceDomain,
+			FromServicePort:   fromServicePort,
+			ToServiceDomain:   toServiceDomain,
+			ToServicePort:     toServicePort,
+			Enabled:           item.Enabled,
+			Note:              strings.TrimSpace(item.Note),
+			UpdatedAt:         updatedAt,
 		})
 		if len(out) >= probeVirtualRouterMaxTopologyRules {
 			break
@@ -305,6 +326,13 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		return out[i].Direction < out[j].Direction
 	})
 	return out
+}
+
+func normalizeProbeVirtualRouterServicePort(port int) int {
+	if port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
 }
 
 func normalizeProbeVirtualRouterDirection(raw string) string {
