@@ -40,6 +40,7 @@ func applyProbeVirtualRouterRuntimesForNode(identity nodeIdentity, controllerBas
 			continue
 		}
 		if isSameProbeChainRuntimeConfig(cfg.chainID, cfg) {
+			updateRunningProbeChainRuntimeAuthTicket(cfg.chainID, cfg.authTicket)
 			continue
 		}
 		if _, err := startProbeChainRuntime(cfg); err != nil {
@@ -139,11 +140,27 @@ func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopology
 	if dialerNodeID == "" {
 		return probeChainRuntimeConfig{}, false
 	}
+	secret := strings.TrimSpace(rule.Secret)
+	authTicket := strings.TrimSpace(rule.AuthTicket)
+	rawPublicKey := strings.TrimSpace(rule.UserPublicKey)
+	if secret == "" || authTicket == "" || rawPublicKey == "" {
+		log.Printf("warning: probe virtual router rule skipped: chain=%s missing link auth fields", chainID)
+		return probeChainRuntimeConfig{}, false
+	}
+	userPublicKey, err := parseProbeChainUserPublicKey(rawPublicKey)
+	if err != nil {
+		log.Printf("warning: probe virtual router rule skipped: chain=%s invalid user_public_key: %v", chainID, err)
+		return probeChainRuntimeConfig{}, false
+	}
 	cfg := probeChainRuntimeConfig{
 		chainID:         chainID,
 		chainType:       "virtual_router",
 		name:            "Virtual Router " + firstNonEmpty(strings.TrimSpace(rule.Name), strings.TrimSpace(rule.ID), fromNodeID+"-"+toNodeID),
-		secret:          probeVirtualRouterRuntimeSecret(chainID, rule),
+		userID:          strings.TrimSpace(rule.UserID),
+		rawPublicKey:    rawPublicKey,
+		userPublicKey:   userPublicKey,
+		secret:          secret,
+		authTicket:      authTicket,
 		role:            "relay",
 		listenHost:      "0.0.0.0",
 		listenPort:      localPort,
@@ -151,7 +168,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopology
 		nextAuthMode:    "proxy",
 		nextDialMode:    probeChainDialModeNone,
 		prevDialMode:    probeChainDialModeNone,
-		requireUserAuth: false,
+		requireUserAuth: true,
 		identity:        identity,
 		controllerURL:   resolveProbeControllerBaseURL(strings.TrimSpace(controllerBaseURL), ""),
 	}
@@ -186,17 +203,6 @@ func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) strin
 		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.ToServicePort)),
 	}, "|")))
 	return probeVirtualRouterRuntimeChainIDPrefix + hex.EncodeToString(sum[:])[:24]
-}
-
-func probeVirtualRouterRuntimeSecret(chainID string, rule probeVirtualRouterTopologyRule) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{
-		"secret",
-		strings.TrimSpace(chainID),
-		strings.TrimSpace(rule.ID),
-		normalizeProbeChainNodeID(rule.FromNodeID),
-		normalizeProbeChainNodeID(rule.ToNodeID),
-	}, "|")))
-	return "vr-" + hex.EncodeToString(sum[:])
 }
 
 func probeVirtualRouterRuleDialerNodeID(rule probeVirtualRouterTopologyRule) string {

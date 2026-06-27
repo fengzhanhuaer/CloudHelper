@@ -19,6 +19,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,6 +158,18 @@ type probeChainAuthPayloadBody struct {
 type probeChainAuthIPState struct {
 	FailedAttempts int
 	BlacklistedTil time.Time
+	Manual         bool
+}
+
+type probeChainAuthBlacklistEntry struct {
+	IP        string `json:"ip"`
+	Until     string `json:"until,omitempty"`
+	Manual    bool   `json:"manual,omitempty"`
+	ExpiresIn string `json:"expires_in,omitempty"`
+}
+
+type probeChainAuthBlacklistFile struct {
+	IPs []string `json:"ips"`
 }
 
 type probeChainSocksRequest struct {
@@ -896,7 +911,7 @@ func ensureProbeChainRuntimeAuthTicket(cfg *probeChainRuntimeConfig) error {
 	if err != nil {
 		return fmt.Errorf("active auth_ticket refresh failed: %w", err)
 	}
-	if item, ok := findProbeChainAuthTicketItem(cfg.chainID, config.SelfChains, config.GlobalProxyForwardChains); ok {
+	if item, ok := findProbeChainAuthTicketItem(cfg.chainID, config.SelfChains, config.GlobalProxyForwardChains, probeVirtualRouterAuthTicketItems(config.VirtualRouter)); ok {
 		cfg.authTicket = strings.TrimSpace(item.AuthTicket)
 		if strings.TrimSpace(cfg.authTicket) != "" {
 			rememberProbeChainAuthTicket(cfg.chainID, cfg.authTicket)
@@ -2669,27 +2684,46 @@ func verifyProbeChainRelayRequestAuth(runtime *probeChainRuntime, r *http.Reques
 		return errors.New("runtime is nil")
 	}
 	sourceIP := resolveProbeChainSourceIPFromRequest(r)
-	if blocked, until := isProbeChainAuthIPBlacklisted(sourceIP); blocked {
+	useBlacklist := shouldUseProbeChainAuthIPBlacklist(chainID)
+	if isProbeChainAuthIPManuallyBlacklisted(sourceIP) {
 		delayProbeChainAuthFailure()
-		log.Printf("probe chain auth rejected (ip blacklisted): chain=%s ip=%s until=%s", strings.TrimSpace(chainID), sourceIP, until.UTC().Format(time.RFC3339))
+		log.Printf("probe chain auth rejected (ip blacklisted): chain=%s ip=%s until=manual", strings.TrimSpace(chainID), sourceIP)
 		return errors.New("source ip is blacklisted")
+	}
+	if useBlacklist {
+		if blocked, until := isProbeChainAuthIPBlacklisted(sourceIP); blocked {
+			delayProbeChainAuthFailure()
+			log.Printf("probe chain auth rejected (ip blacklisted): chain=%s ip=%s until=%s", strings.TrimSpace(chainID), sourceIP, until.UTC().Format(time.RFC3339))
+			return errors.New("source ip is blacklisted")
+		}
 	}
 
 	env, err := readProbeChainAuthEnvelopeFromHeaders(r.Header, chainID)
 	if err != nil {
-		failures, blacklisted, until := recordProbeChainAuthFailure(sourceIP)
 		delayProbeChainAuthFailure()
-		logProbeChainAuthFailure(strings.TrimSpace(chainID), sourceIP, failures, blacklisted, until, err)
+		recordOrLogProbeChainAuthFailure(strings.TrimSpace(chainID), sourceIP, useBlacklist, err)
 		return err
 	}
 	if err := verifyProbeChainInboundAuth(runtime.cfg, env); err != nil {
-		failures, blacklisted, until := recordProbeChainAuthFailure(sourceIP)
 		delayProbeChainAuthFailure()
-		logProbeChainAuthFailure(strings.TrimSpace(chainID), sourceIP, failures, blacklisted, until, err)
+		recordOrLogProbeChainAuthFailure(strings.TrimSpace(chainID), sourceIP, useBlacklist, err)
 		return err
 	}
 	resetProbeChainAuthFailure(sourceIP)
 	return nil
+}
+
+func shouldUseProbeChainAuthIPBlacklist(chainID string) bool {
+	return !isProbeVirtualRouterRuntimeChainID(chainID)
+}
+
+func recordOrLogProbeChainAuthFailure(chainID string, sourceIP string, useBlacklist bool, err error) {
+	if useBlacklist {
+		failures, blacklisted, until := recordProbeChainAuthFailure(sourceIP)
+		logProbeChainAuthFailure(chainID, sourceIP, failures, blacklisted, until, err)
+		return
+	}
+	logProbeChainAuthFailureWithoutBlacklist(chainID, sourceIP, err)
 }
 
 func readProbeChainAuthEnvelopeFromHeaders(headers http.Header, chainID string) (probeChainAuthEnvelope, error) {
@@ -4871,13 +4905,17 @@ func sendProbeChainSecretAuthWithTicket(nextWriter io.Writer, nextReader *bufio.
 	if err != nil {
 		return err
 	}
+	ticket := strings.TrimSpace(authTicket)
+	if ticket == "" {
+		ticket = lookupProbeChainAuthTicket(chainID)
+	}
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
 	env := newProbeChainAuthEnvelope("secret_hmac", chainID, nonce, "", buildProbeChainHMAC(secret, chainID, nonce))
 	env.Timestamp = timestamp
 	if env.Auth != nil {
 		env.Auth.Timestamp = timestamp
 	}
-	env.AuthTicket = strings.TrimSpace(authTicket)
+	env.AuthTicket = ticket
 	if env.Auth != nil {
 		env.Auth.AuthTicket = env.AuthTicket
 	}
@@ -5016,6 +5054,10 @@ func isProbeChainAuthIPBlacklisted(ip string) (bool, time.Time) {
 		probeChainAuthIPStateMap.mu.Unlock()
 		return false, time.Time{}
 	}
+	if state.Manual {
+		probeChainAuthIPStateMap.mu.Unlock()
+		return true, time.Time{}
+	}
 	if !state.BlacklistedTil.IsZero() && now.Before(state.BlacklistedTil) {
 		until := state.BlacklistedTil
 		probeChainAuthIPStateMap.mu.Unlock()
@@ -5028,6 +5070,17 @@ func isProbeChainAuthIPBlacklisted(ip string) (bool, time.Time) {
 	return false, time.Time{}
 }
 
+func isProbeChainAuthIPManuallyBlacklisted(ip string) bool {
+	target := strings.TrimSpace(ip)
+	if target == "" {
+		return false
+	}
+	probeChainAuthIPStateMap.mu.Lock()
+	state, ok := probeChainAuthIPStateMap.items[target]
+	probeChainAuthIPStateMap.mu.Unlock()
+	return ok && state.Manual
+}
+
 func recordProbeChainAuthFailure(ip string) (failures int, blacklisted bool, until time.Time) {
 	target := strings.TrimSpace(ip)
 	if target == "" {
@@ -5036,6 +5089,10 @@ func recordProbeChainAuthFailure(ip string) (failures int, blacklisted bool, unt
 	now := time.Now()
 	probeChainAuthIPStateMap.mu.Lock()
 	state := probeChainAuthIPStateMap.items[target]
+	if state.Manual {
+		probeChainAuthIPStateMap.mu.Unlock()
+		return probeChainAuthFailureThreshold, true, time.Time{}
+	}
 	if !state.BlacklistedTil.IsZero() && !now.Before(state.BlacklistedTil) {
 		state.BlacklistedTil = time.Time{}
 		state.FailedAttempts = 0
@@ -5060,8 +5117,154 @@ func resetProbeChainAuthFailure(ip string) {
 		return
 	}
 	probeChainAuthIPStateMap.mu.Lock()
-	delete(probeChainAuthIPStateMap.items, target)
+	state, ok := probeChainAuthIPStateMap.items[target]
+	if ok && state.Manual {
+		state.FailedAttempts = 0
+		probeChainAuthIPStateMap.items[target] = state
+	} else {
+		delete(probeChainAuthIPStateMap.items, target)
+	}
 	probeChainAuthIPStateMap.mu.Unlock()
+}
+
+func clearProbeChainAuthIPBlacklist(ip string) {
+	resetProbeChainAuthFailure(ip)
+}
+
+func resolveProbeChainAuthBlacklistPath() (string, error) {
+	dataPath, err := resolveDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataPath, "probe_chain_auth_blacklist.json"), nil
+}
+
+func loadProbeChainAuthBlacklistFromDisk() error {
+	path, err := resolveProbeChainAuthBlacklistPath()
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return persistProbeChainAuthBlacklistManualIPs(nil)
+		}
+		return err
+	}
+	var payload probeChainAuthBlacklistFile
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return err
+		}
+	}
+	return setProbeChainAuthBlacklistManualIPs(payload.IPs, false)
+}
+
+func persistProbeChainAuthBlacklistManualIPs(ips []string) error {
+	path, err := resolveProbeChainAuthBlacklistPath()
+	if err != nil {
+		return err
+	}
+	payload := probeChainAuthBlacklistFile{IPs: normalizeProbeChainAuthBlacklistIPs(ips)}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
+}
+
+func setProbeChainAuthBlacklistManualIPs(ips []string, persist bool) error {
+	normalized := normalizeProbeChainAuthBlacklistIPs(ips)
+	probeChainAuthIPStateMap.mu.Lock()
+	next := make(map[string]probeChainAuthIPState, len(normalized))
+	for _, ip := range normalized {
+		next[ip] = probeChainAuthIPState{Manual: true}
+	}
+	probeChainAuthIPStateMap.items = next
+	probeChainAuthIPStateMap.mu.Unlock()
+	if persist {
+		return persistProbeChainAuthBlacklistManualIPs(normalized)
+	}
+	return nil
+}
+
+func normalizeProbeChainAuthBlacklistIPs(ips []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(ips))
+	for _, raw := range ips {
+		ip := strings.TrimSpace(raw)
+		if parsed := net.ParseIP(ip); parsed != nil {
+			ip = parsed.String()
+		}
+		if ip == "" || net.ParseIP(ip) == nil {
+			continue
+		}
+		if _, exists := seen[ip]; exists {
+			continue
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func parseProbeChainAuthBlacklistContent(content string) ([]string, error) {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	ips := make([]string, 0, len(lines))
+	for index, line := range lines {
+		text := strings.TrimSpace(line)
+		if text == "" || strings.HasPrefix(text, "#") {
+			continue
+		}
+		if fields := strings.Fields(text); len(fields) > 0 {
+			text = fields[0]
+		}
+		parsed := net.ParseIP(text)
+		if parsed == nil {
+			return nil, fmt.Errorf("line %d has invalid ip: %s", index+1, text)
+		}
+		ips = append(ips, parsed.String())
+	}
+	return normalizeProbeChainAuthBlacklistIPs(ips), nil
+}
+
+func listProbeChainAuthBlacklistEntries() []probeChainAuthBlacklistEntry {
+	now := time.Now()
+	probeChainAuthIPStateMap.mu.Lock()
+	defer probeChainAuthIPStateMap.mu.Unlock()
+	items := make([]probeChainAuthBlacklistEntry, 0, len(probeChainAuthIPStateMap.items))
+	for ip, state := range probeChainAuthIPStateMap.items {
+		if state.Manual {
+			items = append(items, probeChainAuthBlacklistEntry{IP: ip, Manual: true})
+			continue
+		}
+		if state.BlacklistedTil.IsZero() {
+			continue
+		}
+		if !now.Before(state.BlacklistedTil) {
+			delete(probeChainAuthIPStateMap.items, ip)
+			continue
+		}
+		items = append(items, probeChainAuthBlacklistEntry{
+			IP:        ip,
+			Until:     state.BlacklistedTil.UTC().Format(time.RFC3339),
+			ExpiresIn: time.Until(state.BlacklistedTil).Round(time.Second).String(),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].IP < items[j].IP
+	})
+	return items
+}
+
+func probeChainAuthBlacklistContent() string {
+	entries := listProbeChainAuthBlacklistEntries()
+	lines := make([]string, 0, len(entries))
+	for _, item := range entries {
+		lines = append(lines, item.IP)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func logProbeChainAuthFailure(chainID string, ip string, failures int, blacklisted bool, until time.Time, err error) {
@@ -5071,10 +5274,23 @@ func logProbeChainAuthFailure(chainID string, ip string, failures int, blacklist
 		targetIP = "unknown"
 	}
 	if blacklisted {
-		log.Printf("probe chain auth failed: chain=%s ip=%s failures=%d blacklist_until=%s reason=%s", chainID, targetIP, failures, until.UTC().Format(time.RFC3339), reason)
+		untilText := "manual"
+		if !until.IsZero() {
+			untilText = until.UTC().Format(time.RFC3339)
+		}
+		log.Printf("probe chain auth failed: chain=%s ip=%s failures=%d blacklist_until=%s reason=%s", chainID, targetIP, failures, untilText, reason)
 		return
 	}
 	log.Printf("probe chain auth failed: chain=%s ip=%s failures=%d reason=%s", chainID, targetIP, failures, reason)
+}
+
+func logProbeChainAuthFailureWithoutBlacklist(chainID string, ip string, err error) {
+	reason := sanitizeProbeChainAuthErr(fmt.Sprint(err))
+	targetIP := strings.TrimSpace(ip)
+	if targetIP == "" {
+		targetIP = "unknown"
+	}
+	log.Printf("probe chain auth failed: chain=%s ip=%s blacklist=disabled reason=%s", chainID, targetIP, reason)
 }
 
 func sanitizeProbeChainAuthErr(raw string) string {

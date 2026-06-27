@@ -1883,6 +1883,7 @@ func ProbeLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "chain store not initialized"})
 		return
 	}
+	ensureProbeVirtualRouterStoredAuthFields()
 
 	ProbeLinkChainStore.mu.RLock()
 	all := loadProbeLinkChainsLocked()

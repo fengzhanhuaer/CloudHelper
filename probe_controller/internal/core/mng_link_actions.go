@@ -50,10 +50,11 @@ func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
 	if ProbeLinkChainStore == nil {
 		return nil, fmt.Errorf("probe link chain store is not initialized")
 	}
+	ensureProbeVirtualRouterStoredAuthFields()
 	ProbeLinkChainStore.mu.RLock()
 	config := normalizeProbeVirtualRouterConfig(ProbeLinkChainStore.data.VirtualRouter)
 	ProbeLinkChainStore.mu.RUnlock()
-	config = ensureProbeVirtualRouterProbeIPsForKnownNodes(config)
+	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(config)))
 	return map[string]interface{}{
 		"item":       config,
 		"node_ids":   listProbeVirtualRouterKnownNodeIDs(),
@@ -74,6 +75,7 @@ func upsertMngProbeVirtualRouterConfig(payload json.RawMessage, controllerBaseUR
 	if err != nil {
 		return nil, err
 	}
+	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(config))
 	ProbeLinkChainStore.mu.Lock()
 	ProbeLinkChainStore.data.VirtualRouter = config
 	ProbeLinkChainStore.mu.Unlock()

@@ -157,6 +157,10 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 			FromServicePort:   fromServicePort,
 			ToServiceDomain:   toServiceDomain,
 			ToServicePort:     toServicePort,
+			UserID:            strings.TrimSpace(item.UserID),
+			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
+			Secret:            strings.TrimSpace(item.Secret),
+			AuthTicket:        strings.TrimSpace(item.AuthTicket),
 			Enabled:           item.Enabled,
 			Note:              strings.TrimSpace(item.Note),
 			UpdatedAt:         strings.TrimSpace(item.UpdatedAt),
@@ -232,7 +236,9 @@ func loadProbeVirtualRouterCache() (probeVirtualRouterConfig, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return probeVirtualRouterConfig{}, err
 	}
-	return sanitizeProbeVirtualRouterConfigForCache(payload.Item), nil
+	config := sanitizeProbeVirtualRouterConfigForCache(payload.Item)
+	rememberProbeVirtualRouterAuthTickets(config)
+	return config, nil
 }
 
 func resolveProbeVirtualRouterCachePath() (string, error) {

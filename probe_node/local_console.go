@@ -246,6 +246,11 @@ type probeLocalUpgradeCheckResult struct {
 	CheckedAt      string `json:"checked_at"`
 }
 
+type probeLocalChainAuthBlacklistSaveRequest struct {
+	Content string   `json:"content"`
+	IPs     []string `json:"ips,omitempty"`
+}
+
 func probeLocalNoopPostInstallTUNReadyCheck() error {
 	return nil
 }
@@ -2980,6 +2985,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
+	mux.HandleFunc("/local/api/system/chain_auth_blacklist", probeLocalSystemChainAuthBlacklistHandler)
 	mux.HandleFunc("/local/api/shell/exec", probeLocalShellExecHandler)
 	mux.HandleFunc("/local/api/shell/stream", probeLocalShellStreamHandler)
 	mux.HandleFunc("/local/api/proxy/groups/backup", probeLocalProxyGroupsBackupHandler)
@@ -5916,6 +5922,56 @@ func probeLocalSystemUpgradeStatusHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, currentProbeLocalUpgradeState())
+}
+
+func probeLocalSystemChainAuthBlacklistHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"items":   listProbeChainAuthBlacklistEntries(),
+			"content": probeChainAuthBlacklistContent(),
+		})
+	case http.MethodPost:
+		body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+		defer body.Close()
+		decoder := json.NewDecoder(body)
+		decoder.DisallowUnknownFields()
+		var req probeLocalChainAuthBlacklistSaveRequest
+		if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		ips := req.IPs
+		if len(ips) == 0 {
+			parsed, err := parseProbeChainAuthBlacklistContent(req.Content)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			ips = parsed
+		} else {
+			ips = normalizeProbeChainAuthBlacklistIPs(ips)
+		}
+		if err := setProbeChainAuthBlacklistManualIPs(ips, true); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"items":   listProbeChainAuthBlacklistEntries(),
+			"content": probeChainAuthBlacklistContent(),
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func probeLocalSystemRestartHandler(w http.ResponseWriter, r *http.Request) {

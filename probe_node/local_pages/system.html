@@ -97,7 +97,7 @@
       font-size: 14px;
     }
     .kv > div:nth-child(odd) { color: var(--text-secondary); }
-    input, select {
+    input, select, textarea {
       width: 100%;
       box-sizing: border-box;
       padding: 8px;
@@ -105,6 +105,12 @@
       border-radius: 6px;
       background: rgba(13, 17, 23, 0.55);
       color: var(--text-primary);
+    }
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      line-height: 1.5;
     }
     .upgrade-progress {
       margin-top: 10px;
@@ -218,6 +224,18 @@
       <div class="upgrade-progress" aria-label="升级进度">
         <div id="upgradeProgressFill" class="upgrade-progress-fill"></div>
       </div>
+
+      <h2>链路认证黑名单</h2>
+      <p class="hint">Probe Node 本地链路认证黑名单。每行一个源 IP；保存后会替换当前运行期黑名单并写入本地 data/probe_chain_auth_blacklist.json。</p>
+      <div class="kv" style="grid-template-columns: 170px minmax(0, 1fr);">
+        <div>当前数量</div><div id="chainAuthBlacklistCount">0</div>
+        <div>黑名单</div>
+        <div><textarea id="chainAuthBlacklistContent" spellcheck="false" placeholder="例如：&#10;123.232.8.66"></textarea></div>
+      </div>
+      <div class="actions">
+        <button id="chainAuthBlacklistSaveBtn">保存黑名单</button>
+        <button id="chainAuthBlacklistRefreshBtn" class="secondary">刷新黑名单</button>
+      </div>
     </section>
 
     <p id="message" class="msg"></p>
@@ -230,6 +248,7 @@
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
+    const chainAuthBlacklistContentEl = document.getElementById('chainAuthBlacklistContent');
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -490,6 +509,31 @@
       return data || {};
     }
 
+    function renderChainAuthBlacklist(data) {
+      const content = String(data && data.content || '').trim();
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      if (chainAuthBlacklistContentEl) {
+        chainAuthBlacklistContentEl.value = content;
+      }
+      setText('chainAuthBlacklistCount', String(items.length));
+    }
+
+    async function loadChainAuthBlacklist() {
+      const data = await requestJSON('/local/api/system/chain_auth_blacklist', { method: 'GET' });
+      renderChainAuthBlacklist(data || {});
+      return data || {};
+    }
+
+    async function saveChainAuthBlacklist() {
+      const content = chainAuthBlacklistContentEl ? chainAuthBlacklistContentEl.value : '';
+      const data = await requestJSON('/local/api/system/chain_auth_blacklist', {
+        method: 'POST',
+        body: JSON.stringify({ content }),
+      });
+      renderChainAuthBlacklist(data || {});
+      setMessage('链路认证黑名单已保存', 'success');
+    }
+
     function renderUpgradeCheck(data) {
       const currentVersion = String(data && data.current_version || '').trim();
       const latestVersion = String(data && data.latest_version || '').trim();
@@ -518,6 +562,7 @@
       await loadTunStatus();
       await loadTunEgress();
       await loadUpgradeStatus();
+      await loadChainAuthBlacklist();
     }
 
     async function triggerSystemUpgrade(mode) {
@@ -587,6 +632,25 @@
         setMessage('已提交重启，服务将短暂断开后恢复', 'success');
       } catch (err) {
         setMessage('重启服务失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('chainAuthBlacklistSaveBtn').addEventListener('click', async () => {
+      setMessage('保存链路认证黑名单...');
+      try {
+        await saveChainAuthBlacklist();
+      } catch (err) {
+        setMessage('保存链路认证黑名单失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('chainAuthBlacklistRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新链路认证黑名单...');
+      try {
+        await loadChainAuthBlacklist();
+        setMessage('链路认证黑名单已刷新', 'success');
+      } catch (err) {
+        setMessage('刷新链路认证黑名单失败：' + err.message, 'error');
       }
     });
 

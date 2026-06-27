@@ -277,6 +277,9 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	if first.FromServiceDomain != "edge-a.example.com" || first.FromServicePort != 443 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 443 {
 		t.Fatalf("service config not persisted: %+v", first)
 	}
+	if strings.TrimSpace(first.Secret) == "" {
+		t.Fatalf("virtual router rule secret should be generated")
+	}
 	if payload.Item.TopologyRules[1].FromServicePort != 443 || payload.Item.TopologyRules[1].ToServicePort != 443 {
 		t.Fatalf("service port reuse should be allowed: %+v", payload.Item.TopologyRules)
 	}

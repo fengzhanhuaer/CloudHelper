@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"net"
 	"os"
@@ -119,6 +123,115 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func withProbeVirtualRouterRuleAuthForTest(t *testing.T, rule probeVirtualRouterTopologyRule) probeVirtualRouterTopologyRule {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
+	rule.Secret = "shared-link-secret"
+	rule.UserID = "admin"
+	rule.UserPublicKey = rawPublicKey
+	rule.AuthTicket = buildProbeChainUserAuthTicketForTest(t, priv, probeVirtualRouterRuntimeChainID(rule), rawPublicKey)
+	return rule
+}
+
+func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T) {
+	rule := probeVirtualRouterTopologyRule{
+		ID:              "rule-auth",
+		FromNodeID:      "1",
+		ToNodeID:        "2",
+		Direction:       "bidirectional",
+		ToServiceDomain: "node-2.example.com",
+		ToServicePort:   12040,
+		FromServicePort: 12040,
+		Enabled:         true,
+	}
+	if _, ok := buildProbeVirtualRouterRuntimeConfigForRule(rule, nodeIdentity{NodeID: "1"}, ""); ok {
+		t.Fatalf("runtime config should require link auth fields")
+	}
+
+	rule = withProbeVirtualRouterRuleAuthForTest(t, rule)
+	cfg, ok := buildProbeVirtualRouterRuntimeConfigForRule(rule, nodeIdentity{NodeID: "1"}, "")
+	if !ok {
+		t.Fatalf("runtime config should be built with link auth fields")
+	}
+	if !cfg.requireUserAuth {
+		t.Fatalf("virtual router should require user auth")
+	}
+	if cfg.secret != "shared-link-secret" || cfg.authTicket == "" || len(cfg.userPublicKey) != ed25519.PublicKeySize {
+		t.Fatalf("runtime auth fields not applied: secret=%q ticket=%t pub=%d", cfg.secret, cfg.authTicket != "", len(cfg.userPublicKey))
+	}
+}
+
+func TestRememberProbeVirtualRouterAuthTickets(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeChainAuthTicketStoreForTest()
+	defer resetProbeChainAuthTicketStoreForTest()
+
+	rule := withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
+		ID:              "rule-ticket-cache",
+		FromNodeID:      "1",
+		ToNodeID:        "2",
+		Direction:       probeVirtualRouterDirectionTwoWay,
+		FromServicePort: 12040,
+		ToServicePort:   12041,
+		Enabled:         true,
+	})
+	config := probeVirtualRouterConfig{
+		Enabled:       true,
+		TopologyRules: []probeVirtualRouterTopologyRule{rule},
+	}
+
+	rememberProbeVirtualRouterAuthTickets(config)
+
+	chainID := probeVirtualRouterRuntimeChainID(rule)
+	if got := lookupProbeChainAuthTicket(chainID); got != rule.AuthTicket {
+		t.Fatalf("cached virtual router ticket=%q want %q", got, rule.AuthTicket)
+	}
+}
+
+func TestEnsureProbeChainRuntimeAuthTicketUsesVirtualRouterConfig(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeChainAuthTicketStoreForTest()
+	defer resetProbeChainAuthTicketStoreForTest()
+	origRequestConfig := probeRequestLinkChainConfig
+	defer func() { probeRequestLinkChainConfig = origRequestConfig }()
+
+	rule := withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
+		ID:              "rule-ticket-refresh",
+		FromNodeID:      "1",
+		ToNodeID:        "2",
+		Direction:       probeVirtualRouterDirectionTwoWay,
+		FromServicePort: 12040,
+		ToServicePort:   12041,
+		Enabled:         true,
+	})
+	chainID := probeVirtualRouterRuntimeChainID(rule)
+	probeRequestLinkChainConfig = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
+		return probeLinkChainConfigFetchResult{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:       true,
+				TopologyRules: []probeVirtualRouterTopologyRule{rule},
+			},
+		}, nil
+	}
+
+	cfg := probeChainRuntimeConfig{
+		chainID:         chainID,
+		requireUserAuth: true,
+		controllerURL:   "http://controller.example.invalid",
+		identity:        nodeIdentity{NodeID: "1", Secret: "node-secret"},
+	}
+	if err := ensureProbeChainRuntimeAuthTicket(&cfg); err != nil {
+		t.Fatalf("ensure auth ticket failed: %v", err)
+	}
+	if cfg.authTicket != rule.AuthTicket {
+		t.Fatalf("refreshed virtual router ticket=%q want %q", cfg.authTicket, rule.AuthTicket)
+	}
+}
+
 func TestProbeVirtualRouterCurrentLocalPathToIP(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
@@ -155,7 +268,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
 		TopologyRules: []probeVirtualRouterTopologyRule{
-			{
+			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
 				ID:                "edge-a-b",
 				FromNodeID:        "1",
 				ToNodeID:          "2",
@@ -165,7 +278,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 				ToServiceDomain:   "b.internal",
 				ToServicePort:     12040,
 				Enabled:           true,
-			},
+			}),
 		},
 	}
 	left := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "1", Secret: "node-1"}, "")
@@ -191,7 +304,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigSingleDomainDialer(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
 		TopologyRules: []probeVirtualRouterTopologyRule{
-			{
+			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
 				ID:                "edge-a-only",
 				FromNodeID:        "1",
 				ToNodeID:          "2",
@@ -200,7 +313,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigSingleDomainDialer(t *testing.T) {
 				FromServicePort:   12040,
 				ToServicePort:     12040,
 				Enabled:           true,
-			},
+			}),
 		},
 	}
 	left := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "1", Secret: "node-1"}, "")

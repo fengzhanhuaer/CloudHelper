@@ -297,6 +297,9 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
 		return fmt.Errorf("failed to initialize local proxy default files: %w", err)
 	}
+	if err := loadProbeChainAuthBlacklistFromDisk(); err != nil {
+		logProbeWarnf("probe chain auth blacklist restore failed: %v", err)
+	}
 	ensureProbeLocalDNSServiceStarted()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)

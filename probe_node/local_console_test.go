@@ -2016,6 +2016,57 @@ func TestProbeLocalSystemUpgradeRejectsInvalidMode(t *testing.T) {
 	}
 }
 
+func TestProbeLocalSystemChainAuthBlacklistSaveAndGet(t *testing.T) {
+	resetProbeChainAuthIPStateForTest()
+	defer resetProbeChainAuthIPStateForTest()
+
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	saveResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/chain_auth_blacklist", map[string]any{
+		"content": "203.0.113.10\n\n# comment\n203.0.113.11 extra",
+	}, sessionCookie)
+	if saveResp.Code != http.StatusOK {
+		t.Fatalf("chain_auth_blacklist save status=%d body=%s", saveResp.Code, saveResp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, saveResp)
+	if content, _ := payload["content"].(string); content != "203.0.113.10\n203.0.113.11" {
+		t.Fatalf("chain_auth_blacklist content=%q", content)
+	}
+	if blocked, _ := isProbeChainAuthIPBlacklisted("203.0.113.10"); !blocked {
+		t.Fatalf("expected saved ip to be blacklisted")
+	}
+
+	path, err := resolveProbeChainAuthBlacklistPath()
+	if err != nil {
+		t.Fatalf("resolve blacklist path: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read blacklist file: %v", err)
+	}
+	if !strings.Contains(string(raw), "203.0.113.11") {
+		t.Fatalf("blacklist file missing saved ip: %s", string(raw))
+	}
+
+	getResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/system/chain_auth_blacklist", nil, sessionCookie)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("chain_auth_blacklist get status=%d body=%s", getResp.Code, getResp.Body.String())
+	}
+	getPayload := decodeProbeLocalJSON(t, getResp)
+	items, ok := getPayload["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("chain_auth_blacklist items=%T %v", getPayload["items"], getPayload["items"])
+	}
+
+	invalidResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/chain_auth_blacklist", map[string]any{
+		"content": "not-an-ip",
+	}, sessionCookie)
+	if invalidResp.Code != http.StatusBadRequest {
+		t.Fatalf("invalid blacklist status=%d body=%s", invalidResp.Code, invalidResp.Body.String())
+	}
+}
+
 func TestProbeLocalProxyDirectReturnsNotImplementedOnUnsupported(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

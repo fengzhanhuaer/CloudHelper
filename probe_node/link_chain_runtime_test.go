@@ -538,6 +538,49 @@ func TestProbeChainAuthFailureBlacklistAfterFiveAttempts(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterAuthFailureDoesNotBlacklistSourceIP(t *testing.T) {
+	resetProbeChainAuthIPStateForTest()
+	defer resetProbeChainAuthIPStateForTest()
+
+	runtime := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID: "vrouter-test",
+			secret:  "secret",
+		},
+	}
+	for i := 0; i < probeChainAuthFailureThreshold+2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/node/chain/relay?chain_id=vrouter-test", nil)
+		req.RemoteAddr = "203.0.113.20:12345"
+		if err := verifyProbeChainRelayRequestAuth(runtime, req, "vrouter-test"); err == nil {
+			t.Fatalf("expected auth failure")
+		}
+	}
+	if blocked, until := isProbeChainAuthIPBlacklisted("203.0.113.20"); blocked {
+		t.Fatalf("virtual router auth failure should not blacklist source ip, until=%s", until.Format(time.RFC3339))
+	}
+}
+
+func TestProbeVirtualRouterManualBlacklistRejectsSourceIP(t *testing.T) {
+	resetProbeChainAuthIPStateForTest()
+	defer resetProbeChainAuthIPStateForTest()
+
+	if err := setProbeChainAuthBlacklistManualIPs([]string{"203.0.113.30"}, false); err != nil {
+		t.Fatalf("set manual blacklist: %v", err)
+	}
+	runtime := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID: "vrouter-test",
+			secret:  "secret",
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/node/chain/relay?chain_id=vrouter-test", nil)
+	req.RemoteAddr = "203.0.113.30:12345"
+	err := verifyProbeChainRelayRequestAuth(runtime, req, "vrouter-test")
+	if err == nil || !strings.Contains(err.Error(), "blacklisted") {
+		t.Fatalf("expected manual blacklist rejection, got %v", err)
+	}
+}
+
 func TestProbeChainAuthFailureDelayRange(t *testing.T) {
 	for i := 0; i < 64; i++ {
 		delay := probeChainAuthFailureDelay()

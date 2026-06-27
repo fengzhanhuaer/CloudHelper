@@ -82,6 +82,10 @@ type probeVirtualRouterTopologyRule struct {
 	FromServicePort   int    `json:"from_service_port,omitempty"`
 	ToServiceDomain   string `json:"to_service_domain,omitempty"`
 	ToServicePort     int    `json:"to_service_port,omitempty"`
+	UserID            string `json:"user_id,omitempty"`
+	UserPublicKey     string `json:"user_public_key,omitempty"`
+	Secret            string `json:"secret,omitempty"`
+	AuthTicket        string `json:"auth_ticket,omitempty"`
 	Enabled           bool   `json:"enabled"`
 	Note              string `json:"note,omitempty"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
@@ -267,6 +271,7 @@ func fetchProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, id
 	result.GlobalProxyForwardChains = sanitizeProbeChainServerItemsForCache(result.GlobalProxyForwardChains)
 	rememberProbeChainAuthTicketsForItems(result.SelfChains)
 	rememberProbeChainAuthTicketsForItems(result.GlobalProxyForwardChains)
+	rememberProbeVirtualRouterAuthTickets(result.VirtualRouter)
 	return result, nil
 }
 
@@ -475,6 +480,7 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 
 	// Skip restart if config has not changed (compare fields that affect behaviour).
 	if isSameProbeChainRuntimeConfig(chainID, cfg) {
+		updateRunningProbeChainRuntimeAuthTicket(chainID, cfg.authTicket)
 		return
 	}
 
@@ -487,6 +493,61 @@ func rememberProbeChainAuthTicketsForItems(items []probeLinkChainServerItem) {
 	for _, item := range items {
 		rememberProbeChainAuthTicket(effectiveProbeLinkRelayChainID(item), item.AuthTicket)
 	}
+}
+
+func rememberProbeVirtualRouterAuthTickets(config probeVirtualRouterConfig) {
+	for _, item := range probeVirtualRouterAuthTicketItems(config) {
+		rememberProbeChainAuthTicket(effectiveProbeLinkRelayChainID(item), item.AuthTicket)
+	}
+}
+
+func probeVirtualRouterAuthTicketItems(config probeVirtualRouterConfig) []probeLinkChainServerItem {
+	config = sanitizeProbeVirtualRouterConfigForCache(config)
+	if !config.Enabled || len(config.TopologyRules) == 0 {
+		return []probeLinkChainServerItem{}
+	}
+	out := make([]probeLinkChainServerItem, 0, len(config.TopologyRules))
+	seen := map[string]struct{}{}
+	for _, rule := range config.TopologyRules {
+		if !rule.Enabled {
+			continue
+		}
+		chainID := strings.TrimSpace(probeVirtualRouterRuntimeChainID(rule))
+		if chainID == "" {
+			continue
+		}
+		if _, exists := seen[chainID]; exists {
+			continue
+		}
+		seen[chainID] = struct{}{}
+		out = append(out, probeLinkChainServerItem{
+			ChainID:       chainID,
+			ClientEntryID: strings.TrimSpace(rule.ID),
+			ChainType:     "virtual_router",
+			Name:          strings.TrimSpace(rule.Name),
+			UserID:        strings.TrimSpace(rule.UserID),
+			UserPublicKey: strings.TrimSpace(rule.UserPublicKey),
+			Secret:        strings.TrimSpace(rule.Secret),
+			AuthTicket:    strings.TrimSpace(rule.AuthTicket),
+			EntryNodeID:   normalizeProbeChainNodeID(rule.FromNodeID),
+			ExitNodeID:    normalizeProbeChainNodeID(rule.ToNodeID),
+		})
+	}
+	return out
+}
+
+func updateRunningProbeChainRuntimeAuthTicket(chainID string, authTicket string) {
+	id := strings.TrimSpace(chainID)
+	ticket := strings.TrimSpace(authTicket)
+	if id == "" || ticket == "" {
+		return
+	}
+	rememberProbeChainAuthTicket(id, ticket)
+	probeChainRuntimeState.mu.Lock()
+	if rt, ok := probeChainRuntimeState.runtimes[id]; ok && rt != nil {
+		rt.cfg.authTicket = ticket
+	}
+	probeChainRuntimeState.mu.Unlock()
 }
 
 func effectiveProbeLinkRelayChainID(item probeLinkChainServerItem) string {
