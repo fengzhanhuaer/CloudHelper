@@ -20,7 +20,7 @@
     .status { border:1px solid #30363d; background:#161b22; border-radius:8px; padding:10px 12px; min-height:38px; margin-bottom:12px; font-size:13px; white-space:pre-wrap; }
     .status.ok { border-color:#238636; color:#7ee787; }
     .status.err { border-color:#da3633; color:#ff7b72; }
-    .workspace { display:grid; grid-template-columns:minmax(0, 1fr) 320px; gap:12px; align-items:stretch; }
+    .workspace { display:grid; grid-template-columns:320px minmax(0, 1fr); gap:12px; align-items:stretch; }
     .editor-shell, .file-shell { border:1px solid #30363d; border-radius:10px; background:#161b22; padding:12px; min-width:0; }
     .pane-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
     .file-title { font-size:16px; font-weight:600; overflow-wrap:anywhere; }
@@ -87,20 +87,6 @@
     <div id="status-box" class="status">初始化中...</div>
 
     <div class="workspace">
-      <section class="editor-shell">
-        <div class="pane-head">
-          <div>
-            <div id="file-title" class="file-title">未选择文件</div>
-            <div class="meta">
-              <span id="length">0 字</span>
-              <span id="updated-at">尚未保存</span>
-            </div>
-          </div>
-          <button id="btn-save" class="btn primary" type="button">保存</button>
-        </div>
-        <textarea id="notepad-content" spellcheck="false" placeholder="选择右侧文件后编辑..."></textarea>
-      </section>
-
       <aside class="file-shell">
         <div class="side-title">
           <h2>文件夹</h2>
@@ -114,6 +100,20 @@
         </div>
         <div id="file-tabs" class="file-tabs"></div>
       </aside>
+
+      <section class="editor-shell">
+        <div class="pane-head">
+          <div>
+            <div id="file-title" class="file-title">未选择文件</div>
+            <div class="meta">
+              <span id="length">0 字</span>
+              <span id="updated-at">尚未保存</span>
+            </div>
+          </div>
+          <button id="btn-save" class="btn primary" type="button">保存</button>
+        </div>
+        <textarea id="notepad-content" spellcheck="false" placeholder="选择左侧文件后编辑..."></textarea>
+      </section>
     </div>
   </div>
 

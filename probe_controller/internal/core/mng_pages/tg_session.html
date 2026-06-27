@@ -223,7 +223,7 @@
     }
     .tg-chat-messages {
       overflow: auto;
-      padding: 16px;
+      padding: 8px 10px;
       max-height: calc(100vh - 258px);
       min-height: 44vh;
     }
@@ -235,26 +235,31 @@
     .tg-message-row {
       display: flex;
       justify-content: flex-start;
-      margin: 10px 0;
+      width: 100%;
+      margin: 6px 0;
     }
     .tg-message-row.out { justify-content: flex-end; }
     .tg-message-row.service { justify-content: center; }
     .tg-message-bubble {
-      max-width: 72%;
+      width: 100%;
+      max-width: none;
+      flex: 1 1 auto;
       border: 1px solid rgba(150, 185, 240, 0.16);
       border-radius: 12px;
       background: rgba(28, 43, 66, 0.82);
-      padding: 10px 12px;
+      padding: 6px 10px;
       white-space: pre-wrap;
       word-break: break-word;
-      line-height: 1.45;
+      line-height: 1.32;
     }
     .tg-message-row.out .tg-message-bubble {
+      flex: 0 1 88%;
       background: rgba(54, 111, 183, 0.82);
       border-color: rgba(126, 200, 255, 0.32);
     }
     .tg-message-row.service .tg-message-bubble {
-      max-width: 82%;
+      flex: 0 1 96%;
+      max-width: none;
       background: rgba(255, 255, 255, 0.06);
       color: #a9c7f3;
       text-align: center;
@@ -262,13 +267,13 @@
     .tg-message-sender {
       color: #9fc2ff;
       font-size: 12px;
-      margin-bottom: 4px;
+      margin-bottom: 2px;
       font-weight: 650;
     }
     .tg-message-meta {
       color: rgba(220, 234, 255, 0.62);
       font-size: 11px;
-      margin-top: 6px;
+      margin-top: 3px;
       text-align: right;
     }
     .tg-chat-composer {
@@ -294,7 +299,9 @@
       .tg-chat-list { max-height: 34vh; }
       .tg-chat-main { min-height: 58vh; }
       .tg-chat-main-head { align-items: flex-start; }
-      .tg-message-bubble { max-width: 92%; }
+      .tg-message-row { margin: 5px 0; }
+      .tg-message-row.out .tg-message-bubble { flex-basis: 92%; }
+      .tg-message-row.service .tg-message-bubble { flex-basis: 100%; }
       .tg-chat-composer { grid-template-columns: 1fr; }
     }
   </style>
@@ -327,12 +334,15 @@
       targetList: [],
       selectedSessionTarget: '',
       sessionMessages: [],
+      sessionWS: null,
       draft: {
         sessionSearch: '',
         sessionType: 'all',
         sessionMessage: '',
       },
     };
+    const SESSION_REFRESH_INTERVAL_MS = 4000;
+    let sessionRefreshTimer = null;
 
     function qs(id) {
       return document.getElementById(id);
@@ -417,6 +427,14 @@
       }
     }
 
+    function closeSessionWS() {
+      const ws = state.sessionWS;
+      state.sessionWS = null;
+      if (ws) {
+        try { ws.close(); } catch (_) {}
+      }
+    }
+
     function formatDateTime(raw) {
       const value = String(raw || '').trim();
       if (!value) return '-';
@@ -438,6 +456,30 @@
       const bits = [formatTGSessionType(item.type), item.id || ''];
       if (item.username) bits.push('@' + item.username);
       return bits.filter(Boolean).join(' · ');
+    }
+
+    function sessionMessagesFingerprint(messages) {
+      return (Array.isArray(messages) ? messages : []).map((msg) => {
+        const id = Number(msg && msg.id || 0);
+        const date = String(msg && msg.date || '');
+        const out = msg && msg.out ? '1' : '0';
+        const service = msg && msg.service ? '1' : '0';
+        const text = String(msg && msg.text || '');
+        const mediaType = String(msg && msg.media_type || '');
+        const mediaPath = String(msg && msg.media_path || '');
+        return [id, date, out, service, text, mediaType, mediaPath].join(':');
+      }).join('|');
+    }
+
+    function getSessionWSURL(accountID, targetID) {
+      const url = new URL(window.location.href);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      url.pathname = '/mng/api/tg/session/ws';
+      url.search = new URLSearchParams({
+        account_id: accountID,
+        target: targetID,
+      }).toString();
+      return url.toString();
     }
 
     function getFilteredSessionTargets() {
@@ -498,9 +540,13 @@
       box.scrollTop = box.scrollHeight;
     }
 
-    function renderTGSessionPanel() {
+    function renderTGSessionPanel(options = {}) {
       const host = qs('tg-session-card');
       if (!host) return;
+      const preserveScroll = options.preserveScroll === true;
+      const previousBox = preserveScroll ? qs('tg-chat-messages') : null;
+      const previousScrollTop = previousBox ? previousBox.scrollTop : 0;
+      const wasNearBottom = previousBox ? (previousBox.scrollHeight - previousBox.scrollTop - previousBox.clientHeight) <= 24 : true;
       const active = getActiveLoggedInAccount();
       if (!active) {
         const emptyMessage = state.requestedAccountID
@@ -585,7 +631,14 @@
         </div>
       `;
       bindTGSessionEvents();
-      scrollSessionMessagesToBottom();
+      if (preserveScroll && previousBox) {
+        const box = qs('tg-chat-messages');
+        if (box) {
+          box.scrollTop = wasNearBottom ? box.scrollHeight : previousScrollTop;
+        }
+      } else {
+        scrollSessionMessagesToBottom();
+      }
     }
 
     function bindTGSessionEvents() {
@@ -611,10 +664,12 @@
         btn.addEventListener('click', () => {
           const targetID = String(btn.getAttribute('data-target-id') || '').trim();
           if (!targetID || targetID === state.selectedSessionTarget) return;
+          closeSessionWS();
           state.selectedSessionTarget = targetID;
           state.sessionMessages = [];
           renderTGSessionPanel();
           loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
+          connectSessionWS();
         });
       });
       const composer = qs('tg-session-message');
@@ -706,9 +761,14 @@
       if (!active || !targetID) return;
       const accountID = active.id;
       const silent = options.silent === true;
-      state.sessionLoading = true;
-      renderTGSessionPanel();
-      if (!silent) setStatus('正在加载会话消息...');
+      const background = options.background === true;
+      const preserveScroll = options.preserveScroll === true;
+      const beforeFingerprint = sessionMessagesFingerprint(state.sessionMessages);
+      if (!background) {
+        state.sessionLoading = true;
+        renderTGSessionPanel();
+        if (!silent) setStatus('正在加载会话消息...');
+      }
       try {
         const payload = await requestJSON('/mng/api/tg/session/messages', {
           method: 'POST',
@@ -717,12 +777,20 @@
         });
         const current = getActiveLoggedInAccount();
         if (!current || current.id !== accountID || state.selectedSessionTarget !== targetID) return;
-        state.sessionMessages = Array.isArray(payload.messages) ? payload.messages : [];
-        renderTGSessionPanel();
-        if (!silent) setStatus(`已加载会话消息（${state.sessionMessages.length} 条）`, 'ok');
+        const nextMessages = Array.isArray(payload.messages) ? payload.messages : [];
+        const nextFingerprint = sessionMessagesFingerprint(nextMessages);
+        if (nextFingerprint !== beforeFingerprint) {
+          state.sessionMessages = nextMessages;
+          renderTGSessionPanel(background ? { preserveScroll } : {});
+        } else if (!background) {
+          renderTGSessionPanel();
+        }
+        if (!silent && !background) setStatus(`已加载会话消息（${state.sessionMessages.length} 条）`, 'ok');
       } finally {
-        state.sessionLoading = false;
-        renderTGSessionPanel();
+        if (!background) {
+          state.sessionLoading = false;
+          renderTGSessionPanel();
+        }
       }
     }
 
@@ -752,6 +820,72 @@
       }
     }
 
+    function startSessionAutoRefresh() {
+      if (sessionRefreshTimer) return;
+      const refresh = () => {
+        if (document.hidden) return;
+        const active = getActiveLoggedInAccount();
+        const targetID = String(state.selectedSessionTarget || '').trim();
+        if (!active || !targetID || state.sessionLoading || state.sessionSending) return;
+        loadSessionMessages({ silent: true, background: true, preserveScroll: true }).catch(() => {});
+      };
+      sessionRefreshTimer = window.setInterval(refresh, SESSION_REFRESH_INTERVAL_MS);
+      document.addEventListener('visibilitychange', refresh);
+      window.addEventListener('beforeunload', () => {
+        if (sessionRefreshTimer) {
+          window.clearInterval(sessionRefreshTimer);
+          sessionRefreshTimer = null;
+        }
+      });
+    }
+
+    function connectSessionWS() {
+      const active = getActiveLoggedInAccount();
+      const targetID = String(state.selectedSessionTarget || '').trim();
+      if (!active || !targetID || !window.WebSocket) return false;
+      if (state.sessionWS && state.sessionWS.readyState === WebSocket.OPEN) {
+        return true;
+      }
+      try {
+        const ws = new WebSocket(getSessionWSURL(active.id, targetID));
+        state.sessionWS = ws;
+        ws.onopen = () => {
+          setStatus('TG 会话实时连接已建立', 'ok');
+        };
+        ws.onmessage = (event) => {
+          let payload = null;
+          try {
+            payload = JSON.parse(event.data);
+          } catch (_) {
+            return;
+          }
+          if (!payload || payload.account_id !== active.id || payload.target !== targetID) return;
+          if (payload.type === 'session.snapshot' && Array.isArray(payload.messages)) {
+            const nextFingerprint = sessionMessagesFingerprint(payload.messages);
+            if (nextFingerprint !== sessionMessagesFingerprint(state.sessionMessages)) {
+              state.sessionMessages = payload.messages;
+              renderTGSessionPanel({ preserveScroll: true });
+            }
+          } else if (payload.type === 'session.error') {
+            setStatus(`实时连接已断开：${payload.error || 'unknown error'}`, 'warn');
+          }
+        };
+        ws.onerror = () => {
+          setStatus('TG 会话实时连接异常，已尝试回退', 'warn');
+        };
+        ws.onclose = () => {
+          if (state.sessionWS === ws) state.sessionWS = null;
+          window.setTimeout(() => {
+            if (document.hidden) return;
+            connectSessionWS();
+          }, 1200);
+        };
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
     async function bootstrap() {
       state.requestedAccountID = getRequestedAccountID();
       renderStatus();
@@ -762,6 +896,8 @@
         return;
       }
       await loadAccounts({ silent: true });
+      startSessionAutoRefresh();
+      connectSessionWS();
       setStatus('TG 会话窗口初始化完成', 'ok');
       renderTGSessionPanel();
     }

@@ -297,6 +297,9 @@ type tgAssistantSessionMessage struct {
 	SenderID   string `json:"sender_id,omitempty"`
 	SenderName string `json:"sender_name,omitempty"`
 	Service    bool   `json:"service,omitempty"`
+	MediaType  string `json:"media_type,omitempty"`
+	MediaPath  string `json:"media_path,omitempty"`
+	MediaSize  int64  `json:"media_size,omitempty"`
 }
 
 func initTGAssistantStore() {
@@ -1269,12 +1272,28 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 		limit = 100
 	}
 
+	storedMessages, err := listStoredTGAssistantSessionMessages(accountID, target, limit)
+	if err != nil {
+		log.Printf("tg stored history load failed: %v", err)
+		storedMessages = []tgAssistantSessionMessage{}
+	}
+	if len(storedMessages) >= limit {
+		return storedMessages, nil
+	}
+	offsetID := req.OffsetID
+	if offsetID <= 0 && len(storedMessages) > 0 {
+		offsetID = storedMessages[len(storedMessages)-1].ID
+	}
+
 	apiID, apiHash, account, err := loadTGAssistantClientConfig(accountID)
 	if err != nil {
+		if len(storedMessages) > 0 {
+			return storedMessages, nil
+		}
 		return nil, err
 	}
 
-	messages := []tgAssistantSessionMessage{}
+	messages := append([]tgAssistantSessionMessage(nil), storedMessages...)
 	err = runTGAssistantClient(apiID, apiHash, account, func(ctx context.Context, client *telegram.Client) error {
 		status, err := client.Auth().Status(ctx)
 		if err != nil {
@@ -1290,7 +1309,7 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 		}
 		resp, err := client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 			Peer:       peer,
-			OffsetID:   req.OffsetID,
+			OffsetID:   offsetID,
 			OffsetDate: 0,
 			AddOffset:  0,
 			Limit:      limit,
@@ -1301,12 +1320,24 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 		if err != nil {
 			return err
 		}
-		messages = buildTGAssistantSessionMessageViews(resp, account)
+		remoteMessages := buildTGAssistantSessionMessageViews(resp, account)
+		enriched, err := downloadTGAssistantSessionVideos(ctx, client, accountID, target, resp, remoteMessages)
+		remoteMessages = enriched
+		if err != nil {
+			log.Printf("tg video download failed: %v", err)
+		}
+		messages = mergeTGAssistantSessionMessages(messages, remoteMessages, limit)
 		return nil
 	})
 	if err != nil {
 		appendTGAssistantHistory("session.messages", accountID, false, err.Error())
+		if len(messages) > 0 {
+			return messages, nil
+		}
 		return nil, err
+	}
+	if err := storeTGAssistantSessionMessages(accountID, target, messages); err != nil {
+		log.Printf("tg message store failed: %v", err)
 	}
 	appendTGAssistantHistory("session.messages", accountID, true, fmt.Sprintf("target=%s count=%d", target, len(messages)))
 	return messages, nil
@@ -1373,8 +1404,49 @@ func sendTGAssistantSessionMessage(req tgAssistantSessionSendRequest) (tgAssista
 		appendTGAssistantHistory("session.send", accountID, false, fmt.Sprintf("target=%s err=%s", target, err.Error()))
 		return tgAssistantSessionMessage{}, err
 	}
+	if err := storeTGAssistantSessionMessages(accountID, target, []tgAssistantSessionMessage{result}); err != nil {
+		log.Printf("tg message store failed: %v", err)
+	}
 	appendTGAssistantHistory("session.send", accountID, true, fmt.Sprintf("target=%s message_id=%d", target, result.ID))
 	return result, nil
+}
+
+func mergeTGAssistantSessionMessages(base, incoming []tgAssistantSessionMessage, limit int) []tgAssistantSessionMessage {
+	merged := make([]tgAssistantSessionMessage, 0, len(base)+len(incoming))
+	seen := map[int]struct{}{}
+	for _, item := range base {
+		if item.ID <= 0 {
+			continue
+		}
+		merged = append(merged, item)
+		seen[item.ID] = struct{}{}
+	}
+	for _, item := range incoming {
+		if item.ID <= 0 {
+			continue
+		}
+		if _, ok := seen[item.ID]; ok {
+			for idx := range merged {
+				if merged[idx].ID == item.ID {
+					merged[idx] = item
+					break
+				}
+			}
+			continue
+		}
+		merged = append(merged, item)
+		seen[item.ID] = struct{}{}
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].ID == merged[j].ID {
+			return merged[i].Date < merged[j].Date
+		}
+		return merged[i].ID < merged[j].ID
+	})
+	if limit > 0 && len(merged) > limit {
+		merged = merged[len(merged)-limit:]
+	}
+	return merged
 }
 
 func listTGAssistantScheduleTaskHistory(req tgAssistantScheduleHistoryRequest) ([]tgAssistantTaskHistoryRecord, error) {
@@ -1607,6 +1679,7 @@ func buildTGAssistantSessionMessageViews(resp tg.MessagesMessagesClass, account 
 			if strings.TrimSpace(text) == "" {
 				text = "[空消息]"
 			}
+			mediaType, mediaSize := detectTGAssistantMessageMedia(msg.Media)
 			views = append(views, tgAssistantSessionMessage{
 				ID:         msg.ID,
 				Date:       formatTGAssistantUnixTime(msg.Date),
@@ -1614,6 +1687,8 @@ func buildTGAssistantSessionMessageViews(resp tg.MessagesMessagesClass, account 
 				Out:        msg.Out,
 				SenderID:   sender.ID,
 				SenderName: sender.Name,
+				MediaType:  mediaType,
+				MediaSize:  mediaSize,
 			})
 		case *tg.MessageService:
 			if msg == nil {
@@ -1740,6 +1815,9 @@ func formatTGAssistantMediaPlaceholder(media tg.MessageMediaClass) string {
 	case *tg.MessageMediaPhoto:
 		return "[图片]"
 	case *tg.MessageMediaDocument:
+		if mediaType, _ := detectTGAssistantMessageMedia(media); mediaType == "video" {
+			return "[视频]"
+		}
 		return "[文件/媒体]"
 	case *tg.MessageMediaContact:
 		return "[联系人]"
@@ -1754,6 +1832,112 @@ func formatTGAssistantMediaPlaceholder(media tg.MessageMediaClass) string {
 	default:
 		return "[媒体消息]"
 	}
+}
+
+func detectTGAssistantMessageMedia(media tg.MessageMediaClass) (string, int64) {
+	switch value := media.(type) {
+	case nil, *tg.MessageMediaEmpty:
+		return "", 0
+	case *tg.MessageMediaPhoto:
+		return "photo", 0
+	case *tg.MessageMediaDocument:
+		document, ok := extractTGAssistantVideoDocument(value)
+		if ok {
+			return "video", document.Size
+		}
+		if _, ok := value.Document.(*tg.Document); !ok {
+			return "document", 0
+		}
+		document = value.Document.(*tg.Document)
+		return "document", document.Size
+	default:
+		return "", 0
+	}
+}
+
+func extractTGAssistantVideoDocument(media tg.MessageMediaClass) (*tg.Document, bool) {
+	documentMedia, ok := media.(*tg.MessageMediaDocument)
+	if !ok || documentMedia == nil {
+		return nil, false
+	}
+	document, ok := documentMedia.Document.(*tg.Document)
+	if !ok || document == nil {
+		return nil, false
+	}
+	for _, attr := range document.Attributes {
+		if _, ok := attr.(*tg.DocumentAttributeVideo); ok {
+			return document, true
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(document.MimeType)), "video/") {
+		return document, true
+	}
+	return nil, false
+}
+
+func downloadTGAssistantSessionVideos(ctx context.Context, client *telegram.Client, accountID, target string, resp tg.MessagesMessagesClass, views []tgAssistantSessionMessage) ([]tgAssistantSessionMessage, error) {
+	if len(views) == 0 {
+		return views, nil
+	}
+	byID := map[int]int{}
+	for idx, item := range views {
+		byID[item.ID] = idx
+	}
+	next := append([]tgAssistantSessionMessage(nil), views...)
+	for _, raw := range extractTGAssistantMessagesFromHistory(resp) {
+		msg, ok := raw.(*tg.Message)
+		if !ok || msg == nil {
+			continue
+		}
+		idx, ok := byID[msg.ID]
+		if !ok {
+			continue
+		}
+		document, ok := extractTGAssistantVideoDocument(msg.Media)
+		if !ok {
+			continue
+		}
+		path, err := ensureTGAssistantVideoFile(ctx, client, accountID, target, msg.ID, document)
+		if err != nil {
+			return next, err
+		}
+		next[idx].MediaType = "video"
+		next[idx].MediaPath = path
+		next[idx].MediaSize = document.Size
+	}
+	return next, nil
+}
+
+func ensureTGAssistantVideoFile(ctx context.Context, client *telegram.Client, accountID, target string, messageID int, document *tg.Document) (string, error) {
+	if document == nil {
+		return "", errors.New("video document is nil")
+	}
+	path := tgAssistantVideoFilePath(accountID, target, messageID, document.ID, document.MimeType)
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		return path, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp)
+	location := &tg.InputDocumentFileLocation{
+		ID:            document.ID,
+		AccessHash:    document.AccessHash,
+		FileReference: document.FileReference,
+		ThumbSize:     "",
+	}
+	if _, err := client.Download(location).ToPath(ctx, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return path, nil
 }
 
 func summarizeTGAssistantServiceMessage(msg *tg.MessageService) string {

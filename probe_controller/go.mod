@@ -5,13 +5,20 @@ go 1.26.4
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/yamux v0.1.2
+	modernc.org/sqlite v1.53.0
 )
 
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gotd/log v0.1.0 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
+	modernc.org/libc v1.73.4 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
 )
 
 require (
