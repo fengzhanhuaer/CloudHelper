@@ -130,6 +130,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/api/tg/targets/list", mngAuthRequiredMiddleware(mngTGTargetsListHandler))
 	mux.HandleFunc("/mng/api/tg/targets/refresh", mngAuthRequiredMiddleware(mngTGTargetsRefreshHandler))
 	mux.HandleFunc("/mng/api/tg/session/messages", mngAuthRequiredMiddleware(mngTGSessionMessagesHandler))
+	mux.HandleFunc("/mng/api/tg/session/media", mngAuthRequiredMiddleware(mngTGSessionMediaHandler))
 	mux.HandleFunc("/mng/api/tg/session/ws", mngAuthRequiredMiddleware(mngTGSessionWSHandler))
 	mux.HandleFunc("/mng/api/tg/session/send", mngAuthRequiredMiddleware(mngTGSessionSendHandler))
 	mux.HandleFunc("/mng/api/tg/schedule/list", mngAuthRequiredMiddleware(mngTGScheduleListHandler))

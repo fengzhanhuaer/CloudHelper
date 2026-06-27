@@ -309,6 +309,7 @@ type tgAssistantSessionMessage struct {
 	Service    bool   `json:"service,omitempty"`
 	MediaType  string `json:"media_type,omitempty"`
 	MediaPath  string `json:"media_path,omitempty"`
+	MediaURL   string `json:"media_url,omitempty"`
 	MediaSize  int64  `json:"media_size,omitempty"`
 }
 
@@ -1337,7 +1338,7 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 			return err
 		}
 		remoteMessages := buildTGAssistantSessionMessageViews(resp, account)
-		enriched, err := downloadTGAssistantSessionVideos(ctx, client, accountID, target, resp, remoteMessages)
+		enriched, err := downloadTGAssistantSessionMedia(ctx, client, accountID, target, resp, remoteMessages)
 		remoteMessages = enriched
 		if err != nil {
 			log.Printf("tg video download failed: %v", err)
@@ -1834,6 +1835,14 @@ func detectTGAssistantMessageMedia(media tg.MessageMediaClass) (string, int64) {
 	case *tg.MessageMediaPhoto:
 		return "photo", 0
 	case *tg.MessageMediaDocument:
+		if document, ok := value.Document.(*tg.Document); ok && document != nil {
+			if isTGAssistantStickerDocument(document) {
+				return "sticker", document.Size
+			}
+			if isTGAssistantCustomEmojiDocument(document) {
+				return "custom_emoji", document.Size
+			}
+		}
 		document, ok := extractTGAssistantVideoDocument(value)
 		if ok {
 			return "video", document.Size
@@ -1846,6 +1855,30 @@ func detectTGAssistantMessageMedia(media tg.MessageMediaClass) (string, int64) {
 	default:
 		return "", 0
 	}
+}
+
+func isTGAssistantStickerDocument(document *tg.Document) bool {
+	if document == nil {
+		return false
+	}
+	for _, attr := range document.Attributes {
+		if _, ok := attr.(*tg.DocumentAttributeSticker); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isTGAssistantCustomEmojiDocument(document *tg.Document) bool {
+	if document == nil {
+		return false
+	}
+	for _, attr := range document.Attributes {
+		if _, ok := attr.(*tg.DocumentAttributeCustomEmoji); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func extractTGAssistantVideoDocument(media tg.MessageMediaClass) (*tg.Document, bool) {
@@ -1868,7 +1901,7 @@ func extractTGAssistantVideoDocument(media tg.MessageMediaClass) (*tg.Document, 
 	return nil, false
 }
 
-func downloadTGAssistantSessionVideos(ctx context.Context, client *telegram.Client, accountID, target string, resp tg.MessagesMessagesClass, views []tgAssistantSessionMessage) ([]tgAssistantSessionMessage, error) {
+func downloadTGAssistantSessionMedia(ctx context.Context, client *telegram.Client, accountID, target string, resp tg.MessagesMessagesClass, views []tgAssistantSessionMessage) ([]tgAssistantSessionMessage, error) {
 	if len(views) == 0 {
 		return views, nil
 	}
@@ -1886,26 +1919,48 @@ func downloadTGAssistantSessionVideos(ctx context.Context, client *telegram.Clie
 		if !ok {
 			continue
 		}
-		document, ok := extractTGAssistantVideoDocument(msg.Media)
+		document, mediaType, ok := extractTGAssistantMediaDocument(msg.Media)
 		if !ok {
 			continue
 		}
-		path, err := ensureTGAssistantVideoFile(ctx, client, accountID, target, msg.ID, document)
+		path, err := ensureTGAssistantMediaFile(ctx, client, accountID, target, msg.ID, document, mediaType)
 		if err != nil {
 			return next, err
 		}
-		next[idx].MediaType = "video"
+		next[idx].MediaType = mediaType
 		next[idx].MediaPath = path
+		next[idx].MediaURL = tgAssistantMediaFileURL(accountID, target, msg.ID, document.ID, document.MimeType, mediaType)
 		next[idx].MediaSize = document.Size
 	}
 	return next, nil
 }
 
-func ensureTGAssistantVideoFile(ctx context.Context, client *telegram.Client, accountID, target string, messageID int, document *tg.Document) (string, error) {
-	if document == nil {
-		return "", errors.New("video document is nil")
+func extractTGAssistantMediaDocument(media tg.MessageMediaClass) (*tg.Document, string, bool) {
+	documentMedia, ok := media.(*tg.MessageMediaDocument)
+	if !ok || documentMedia == nil {
+		return nil, "", false
 	}
-	path := tgAssistantVideoFilePath(accountID, target, messageID, document.ID, document.MimeType)
+	document, ok := documentMedia.Document.(*tg.Document)
+	if !ok || document == nil {
+		return nil, "", false
+	}
+	switch {
+	case isTGAssistantStickerDocument(document):
+		return document, "sticker", true
+	case isTGAssistantCustomEmojiDocument(document):
+		return document, "custom_emoji", true
+	case func() bool { _, ok := extractTGAssistantVideoDocument(documentMedia); return ok }():
+		return document, "video", true
+	default:
+		return document, "document", true
+	}
+}
+
+func ensureTGAssistantMediaFile(ctx context.Context, client *telegram.Client, accountID, target string, messageID int, document *tg.Document, mediaType string) (string, error) {
+	if document == nil {
+		return "", errors.New("media document is nil")
+	}
+	path := tgAssistantMediaFilePath(accountID, target, messageID, document.ID, document.MimeType, mediaType)
 	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
 		return path, nil
 	} else if err != nil && !os.IsNotExist(err) {

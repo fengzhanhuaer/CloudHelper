@@ -270,6 +270,22 @@
     .tg-message-text {
       white-space: pre-wrap;
       width: 100%;
+      overflow-wrap: anywhere;
+    }
+    .tg-message-text a {
+      color: #8ec5ff;
+      text-decoration: underline;
+    }
+    .tg-message-media-wrap {
+      display: inline-block;
+      margin-top: 8px;
+      max-width: min(320px, 100%);
+    }
+    .tg-message-media {
+      display: block;
+      max-width: 100%;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.18);
     }
     .tg-message-meta {
       color: rgba(220, 234, 255, 0.62);
@@ -541,6 +557,51 @@
       return (Array.isArray(bucket.targetList) ? bucket.targetList : []).find((item) => item && item.id === id) || null;
     }
 
+    function promoteTGSessionTarget(session, targetID) {
+      const bucket = session || getCurrentSessionState();
+      const id = String(targetID || '').trim();
+      if (!id || !Array.isArray(bucket.targetList) || bucket.targetList.length === 0) return;
+      const index = bucket.targetList.findIndex((item) => item && item.id === id);
+      if (index <= 0) return;
+      const next = bucket.targetList.slice();
+      const [item] = next.splice(index, 1);
+      next.unshift(item);
+      bucket.targetList = next;
+    }
+
+    function renderTGMessageMedia(msg) {
+      if (!msg) return '';
+      const mediaType = String(msg.media_type || '').trim();
+      const mediaURL = String(msg.media_url || '').trim();
+      if (!mediaType || !mediaURL) return '';
+      const label = mediaType === 'sticker' ? '贴纸' : mediaType === 'custom_emoji' ? '自定义表情' : mediaType === 'video' ? '视频' : mediaType === 'photo' ? '图片' : '文件';
+      if (mediaType === 'video') {
+        return `<a class="tg-message-media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noreferrer"><video class="tg-message-media" src="${escapeHTML(mediaURL)}" controls preload="metadata"></video></a>`;
+      }
+      return `<a class="tg-message-media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noreferrer"><img class="tg-message-media" src="${escapeHTML(mediaURL)}" alt="${escapeHTML(label)}"></a>`;
+    }
+
+    function renderMessageText(text) {
+      const source = String(text || '');
+      const parts = [];
+      const pattern = /(https?:\/\/[^\s<>"']+)/gi;
+      let lastIndex = 0;
+      let match = null;
+      while ((match = pattern.exec(source)) !== null) {
+        const index = match.index;
+        if (index > lastIndex) {
+          parts.push(escapeHTML(source.slice(lastIndex, index)));
+        }
+        const url = match[0];
+        parts.push(`<a href="${escapeHTML(url)}" target="_blank" rel="noreferrer">${escapeHTML(url)}</a>`);
+        lastIndex = index + url.length;
+      }
+      if (lastIndex < source.length) {
+        parts.push(escapeHTML(source.slice(lastIndex)));
+      }
+      return parts.join('');
+    }
+
     function renderSessionMessages(session) {
       const bucket = session || getCurrentSessionState();
       if (bucket.sessionLoading && bucket.sessionMessages.length === 0) {
@@ -561,7 +622,8 @@
           <div class="${rowClass}">
             <div class="tg-message-bubble">
               ${sender}
-              <div class="tg-message-text">${escapeHTML(msg && msg.text || '')}</div>
+              <div class="tg-message-text">${renderMessageText(msg && msg.text || '')}</div>
+              ${renderTGMessageMedia(msg)}
               <div class="tg-message-meta">${escapeHTML(formatDateTime(msg && msg.date || ''))}</div>
             </div>
           </div>
@@ -913,6 +975,8 @@
             if (currentSession.selectedSessionTarget !== targetID) return;
             if (nextFingerprint !== sessionMessagesFingerprint(currentSession.sessionMessages)) {
               currentSession.sessionMessages = payload.messages;
+              promoteTGSessionTarget(currentSession, targetID);
+              syncCurrentSessionMirror(active.id);
               renderTGSessionPanel({ preserveScroll: true });
             }
           } else if (payload.type === 'session.error') {

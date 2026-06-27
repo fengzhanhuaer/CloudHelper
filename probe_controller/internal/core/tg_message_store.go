@@ -3,6 +3,7 @@ package core
 import (
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,13 +37,32 @@ func tgAssistantVideoDirPath() string {
 }
 
 func tgAssistantVideoFilePath(accountID, target string, messageID int, documentID int64, mimeType string) string {
+	return tgAssistantMediaFilePath(accountID, target, messageID, documentID, mimeType, "video")
+}
+
+func tgAssistantMediaFilePath(accountID, target string, messageID int, documentID int64, mimeType, mediaType string) string {
 	account := safeTGAssistantMessagePathSegment(accountID)
 	peer := safeTGAssistantMessagePathSegment(target)
+	kind := safeTGAssistantMessagePathSegment(mediaType)
+	if kind == "unknown" {
+		kind = "media"
+	}
 	ext := tgAssistantVideoFileExtension(mimeType)
 	return filepath.Join(tgAssistantVideoDirPath(), account, peer, strings.TrimSpace(strings.Join([]string{
 		strings.TrimSpace(strconv.Itoa(messageID)),
 		strings.TrimSpace(strconv.FormatInt(documentID, 10)),
-	}, "_"))+ext)
+	}, "_"))+"_"+kind+ext)
+}
+
+func tgAssistantMediaFileURL(accountID, target string, messageID int, documentID int64, mimeType, mediaType string) string {
+	values := url.Values{}
+	values.Set("account_id", accountID)
+	values.Set("target", target)
+	values.Set("message_id", strconv.Itoa(messageID))
+	values.Set("document_id", strconv.FormatInt(documentID, 10))
+	values.Set("media_type", mediaType)
+	values.Set("mime_type", mimeType)
+	return "/mng/api/tg/session/media?" + values.Encode()
 }
 
 func safeTGAssistantMessagePathSegment(value string) string {
@@ -461,6 +481,50 @@ func clearTGAssistantRemovedMediaPaths(db *sql.DB, paths []string) error {
 		}
 	}
 	return nil
+}
+
+func loadTGAssistantSessionMediaPath(accountID, target string, messageID int, documentID string) (string, error) {
+	accountID = strings.TrimSpace(accountID)
+	target = strings.TrimSpace(target)
+	documentID = strings.TrimSpace(documentID)
+	if accountID == "" || target == "" || messageID <= 0 || documentID == "" {
+		return "", errors.New("invalid media key")
+	}
+
+	tgAssistantMessageDBMu.Lock()
+	defer tgAssistantMessageDBMu.Unlock()
+
+	db, err := openTGAssistantMessageDB()
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+
+	var path string
+	err = db.QueryRow(`
+SELECT media_path
+FROM tg_messages
+WHERE account_id = ? AND target = ? AND message_id = ?
+LIMIT 1
+`, accountID, target, messageID).Scan(&path)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errors.New("media not found")
+		}
+		return "", err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errors.New("media not found")
+	}
+	if !pathInsideOrEqual(path, tgAssistantVideoDirPath()) {
+		return "", errors.New("media path is out of range")
+	}
+	base := filepath.Base(path)
+	if !strings.Contains(base, documentID) {
+		return "", errors.New("media document mismatch")
+	}
+	return path, nil
 }
 
 func removeTGAssistantMediaFiles(paths []string) {

@@ -342,6 +342,31 @@ func mngTGSessionSendHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngTGSessionMediaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	messageID, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("message_id")))
+	documentID := strings.TrimSpace(r.URL.Query().Get("document_id"))
+	if accountID == "" || target == "" || messageID <= 0 || documentID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "account_id, target, message_id and document_id are required"})
+		return
+	}
+	if _, _, err := currentMngSessionFromRequest(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired mng session"})
+		return
+	}
+	path, err := loadTGAssistantSessionMediaPath(accountID, target, messageID, documentID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
 func mngTGScheduleListHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
