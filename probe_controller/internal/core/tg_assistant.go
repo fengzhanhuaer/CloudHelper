@@ -1305,7 +1305,7 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 			return err
 		}
 		if !status.Authorized {
-			return errors.New("account is not authorized")
+			return errors.New("tg session is not authorized for requested account")
 		}
 
 		peer, err := resolveTGAssistantInputPeer(ctx, client, target)
@@ -1384,7 +1384,7 @@ func sendTGAssistantSessionMessage(req tgAssistantSessionSendRequest) (tgAssista
 			return err
 		}
 		if !status.Authorized {
-			return errors.New("account is not authorized")
+			return errors.New("tg session is not authorized for requested account")
 		}
 
 		peer, err := resolveTGAssistantInputPeer(ctx, client, target)
@@ -1569,7 +1569,7 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 			return err
 		}
 		if !status.Authorized {
-			return errors.New("account is not authorized")
+			return errors.New("tg session is not authorized for requested account")
 		}
 
 		peer, err := resolveTGAssistantInputPeer(inner, client, task.Target)
@@ -2303,7 +2303,7 @@ func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTa
 			return err
 		}
 		if !status.Authorized {
-			return errors.New("account is not authorized")
+			return errors.New("tg session is not authorized for requested account")
 		}
 
 		dialogs, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantAllFoldersID)

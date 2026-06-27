@@ -606,6 +606,7 @@
       selectedSessionTarget: '',
       sessionMessages: [],
       sessionWS: null,
+      accountSessions: {},
       pendingTaskItems: [],
       scheduleHistoryItems: [],
       scheduleHistoryTaskID: '',
@@ -700,7 +701,9 @@
     }
 
     function closeSessionWS() {
-      const ws = state.sessionWS;
+      const session = getCurrentSessionState();
+      const ws = session.sessionWS || state.sessionWS;
+      session.sessionWS = null;
       state.sessionWS = null;
       if (ws) {
         try { ws.close(); } catch (_) {}
@@ -714,7 +717,8 @@
         return;
       }
       const url = `${window.location.origin}/mng/tg/session?account_id=${encodeURIComponent(active.id)}`;
-      const opened = window.open(url, 'cloudhelper_tg_sessions', 'noopener,noreferrer,width=1280,height=860');
+      const windowName = `cloudhelper_tg_sessions_${String(active.id || '').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      const opened = window.open(url, windowName, 'noopener,noreferrer,width=1280,height=860');
       if (!opened) {
         setStatus('浏览器拦截了 TG 会话窗口，请允许弹窗后重试。', 'warn');
       }
@@ -751,6 +755,52 @@
 
     function getActiveLoggedInAccount() {
       return getLoggedInAccounts().find((item) => item.id === state.activeLoggedInAccountID) || null;
+    }
+
+    function createAccountSessionState() {
+      return {
+        sessionLoading: false,
+        sessionSending: false,
+        targetList: [],
+        selectedSessionTarget: '',
+        sessionMessages: [],
+        sessionWS: null,
+        draft: {
+          sessionSearch: '',
+          sessionType: 'all',
+          sessionMessage: '',
+        },
+      };
+    }
+
+    function getAccountSessionState(accountID) {
+      const key = String(accountID || '').trim() || '__none__';
+      if (!state.accountSessions[key]) {
+        state.accountSessions[key] = createAccountSessionState();
+      }
+      return state.accountSessions[key];
+    }
+
+    function getCurrentSessionState() {
+      const active = getActiveLoggedInAccount();
+      return getAccountSessionState(active && active.id);
+    }
+
+    function syncCurrentSessionMirror(accountID) {
+      const normalizedAccountID = String(accountID || state.activeLoggedInAccountID || '').trim();
+      if (normalizedAccountID && normalizedAccountID !== state.activeLoggedInAccountID) {
+        return;
+      }
+      const session = getAccountSessionState(normalizedAccountID);
+      state.targetList = session.targetList;
+      state.selectedSessionTarget = session.selectedSessionTarget;
+      state.sessionMessages = session.sessionMessages;
+      state.sessionWS = session.sessionWS;
+      state.sessionLoading = session.sessionLoading;
+      state.sessionSending = session.sessionSending;
+      state.draft.sessionSearch = session.draft.sessionSearch;
+      state.draft.sessionType = session.draft.sessionType;
+      state.draft.sessionMessage = session.draft.sessionMessage;
     }
 
     function normalizePhone(raw) {
@@ -956,10 +1006,11 @@
       return url.toString();
     }
 
-    function getFilteredSessionTargets() {
-      const keyword = String(state.draft.sessionSearch || '').trim().toLowerCase();
-      const type = String(state.draft.sessionType || 'all').trim();
-      let list = Array.isArray(state.targetList) ? state.targetList.slice() : [];
+    function getFilteredSessionTargets(session) {
+      const bucket = session || getCurrentSessionState();
+      const keyword = String(bucket.draft.sessionSearch || '').trim().toLowerCase();
+      const type = String(bucket.draft.sessionType || 'all').trim();
+      let list = Array.isArray(bucket.targetList) ? bucket.targetList.slice() : [];
       if (type !== 'all') {
         list = list.filter((item) => String(item && item.type || '').trim() === type);
       }
@@ -990,16 +1041,19 @@
         `;
         return;
       }
-      const filtered = getFilteredSessionTargets();
-      if (!state.selectedSessionTarget && filtered.length > 0) {
-        state.selectedSessionTarget = filtered[0].id || '';
+      const session = getAccountSessionState(active.id);
+      syncCurrentSessionMirror(active.id);
+      const filtered = getFilteredSessionTargets(session);
+      if (!session.selectedSessionTarget && filtered.length > 0) {
+        session.selectedSessionTarget = filtered[0].id || '';
+        syncCurrentSessionMirror(active.id);
       }
       const typeCounts = { user: 0, chat: 0, channel: 0 };
-      (Array.isArray(state.targetList) ? state.targetList : []).forEach((item) => {
+      (Array.isArray(session.targetList) ? session.targetList : []).forEach((item) => {
         const type = String(item && item.type || '').trim();
         if (typeCounts[type] !== undefined) typeCounts[type] += 1;
       });
-      const selected = getSelectedSessionTarget();
+      const selected = getSelectedSessionTarget(session);
       let sessionItems = '';
       if (filtered.length === 0) {
         sessionItems = '<div class="tg-chat-empty">暂无匹配会话</div>';
@@ -1009,7 +1063,7 @@
           const itemID = String(item && item.id || '').trim();
           const title = String(item && item.name || itemID || '-').trim();
           const initial = title ? title.slice(0, 1).toUpperCase() : '#';
-          const activeClass = itemID === state.selectedSessionTarget ? ' active' : '';
+          const activeClass = itemID === session.selectedSessionTarget ? ' active' : '';
           return `
             <button class="tg-chat-item${activeClass}" data-action="open-session-target" data-target-id="${escapeHTML(itemID)}" type="button">
               <div class="tg-chat-avatar">${escapeHTML(initial)}</div>
@@ -1021,7 +1075,7 @@
           `;
         }).join('');
       }
-      const messages = renderSessionMessages();
+      const messages = renderSessionMessages(session);
       const selectedTitle = selected ? String(selected.name || selected.id || '-') : '请选择会话';
       const selectedSubtitle = selected ? formatSessionSubtitle(selected) : '刷新或选择左侧会话';
       host.innerHTML = `
@@ -1032,26 +1086,26 @@
           </div>
         </div>
         <div class="tg-account-basic-row"><div class="tg-account-basic-label">当前账号</div><div class="tg-account-basic-value">${escapeHTML(active.label)} (${escapeHTML(active.phone)})</div></div>
-        <div class="tg-session-summary">全部 ${state.targetList.length} ｜ 私聊 ${typeCounts.user} ｜ 群组 ${typeCounts.chat} ｜ 频道 ${typeCounts.channel} ｜ 当前显示 ${filtered.length}</div>
+        <div class="tg-session-summary">全部 ${session.targetList.length} ｜ 私聊 ${typeCounts.user} ｜ 群组 ${typeCounts.chat} ｜ 频道 ${typeCounts.channel} ｜ 当前显示 ${filtered.length}</div>
         <div class="tg-chat-shell">
           <aside class="tg-chat-sidebar">
             <div class="tg-chat-sidebar-head">
               <div class="tg-session-toolbar" style="margin-bottom:0">
                 <label>搜索
-                  <input id="tg-session-search" class="input" value="${escapeHTML(state.draft.sessionSearch)}" placeholder="名称 / username / id / 类型">
+                  <input id="tg-session-search" class="input" value="${escapeHTML(session.draft.sessionSearch)}" placeholder="名称 / username / id / 类型">
                 </label>
                 <label>类型
                   <select id="tg-session-type" class="input">
-                    <option value="all" ${state.draft.sessionType === 'all' ? 'selected' : ''}>全部</option>
-                    <option value="user" ${state.draft.sessionType === 'user' ? 'selected' : ''}>私聊</option>
-                    <option value="chat" ${state.draft.sessionType === 'chat' ? 'selected' : ''}>群组</option>
-                    <option value="channel" ${state.draft.sessionType === 'channel' ? 'selected' : ''}>频道</option>
+                    <option value="all" ${session.draft.sessionType === 'all' ? 'selected' : ''}>全部</option>
+                    <option value="user" ${session.draft.sessionType === 'user' ? 'selected' : ''}>私聊</option>
+                    <option value="chat" ${session.draft.sessionType === 'chat' ? 'selected' : ''}>群组</option>
+                    <option value="channel" ${session.draft.sessionType === 'channel' ? 'selected' : ''}>频道</option>
                   </select>
                 </label>
               </div>
             </div>
             <div class="tg-chat-sidebar-head" style="border-bottom:0;padding-top:0">
-              <button class="btn" data-action="load-session-messages" type="button" ${!selected || state.sessionLoading ? 'disabled' : ''}>${state.sessionLoading ? '加载中...' : '刷新消息'}</button>
+              <button class="btn" data-action="load-session-messages" type="button" ${!selected || session.sessionLoading ? 'disabled' : ''}>${session.sessionLoading ? '加载中...' : '刷新消息'}</button>
             </div>
             <div class="tg-chat-list">${sessionItems}</div>
           </aside>
@@ -1062,14 +1116,14 @@
                 <div class="tg-chat-subtitle">${escapeHTML(selectedSubtitle)}</div>
               </div>
               <div class="content-actions">
-                <button class="btn" data-action="load-older-session-messages" type="button" ${!selected || state.sessionLoading || state.sessionMessages.length === 0 ? 'disabled' : ''}>更早</button>
-                <button class="btn" data-action="use-session-target" data-target-id="${escapeHTML(state.selectedSessionTarget || '')}" type="button" ${!selected ? 'disabled' : ''}>设为定时对象</button>
+                <button class="btn" data-action="load-older-session-messages" type="button" ${!selected || session.sessionLoading || session.sessionMessages.length === 0 ? 'disabled' : ''}>更早</button>
+                <button class="btn" data-action="use-session-target" data-target-id="${escapeHTML(session.selectedSessionTarget || '')}" type="button" ${!selected ? 'disabled' : ''}>设为定时对象</button>
               </div>
             </div>
             <div id="tg-chat-messages" class="tg-chat-messages">${messages}</div>
             <div class="tg-chat-composer">
-              <textarea id="tg-session-message" class="input" placeholder="输入消息" ${!selected || state.sessionSending ? 'disabled' : ''}>${escapeHTML(state.draft.sessionMessage)}</textarea>
-              <button class="btn primary" data-action="send-session-message" type="button" ${!selected || state.sessionSending || !String(state.draft.sessionMessage || '').trim() ? 'disabled' : ''}>${state.sessionSending ? '发送中...' : '发送'}</button>
+              <textarea id="tg-session-message" class="input" placeholder="输入消息" ${!selected || session.sessionSending ? 'disabled' : ''}>${escapeHTML(session.draft.sessionMessage)}</textarea>
+              <button class="btn primary" data-action="send-session-message" type="button" ${!selected || session.sessionSending || !String(session.draft.sessionMessage || '').trim() ? 'disabled' : ''}>${session.sessionSending ? '发送中...' : '发送'}</button>
             </div>
           </section>
         </div>
@@ -1085,10 +1139,11 @@
       }
     }
 
-    function getSelectedSessionTarget() {
-      const id = String(state.selectedSessionTarget || '').trim();
+    function getSelectedSessionTarget(session) {
+      const bucket = session || getCurrentSessionState();
+      const id = String(bucket.selectedSessionTarget || '').trim();
       if (!id) return null;
-      return (Array.isArray(state.targetList) ? state.targetList : []).find((item) => item && item.id === id) || null;
+      return (Array.isArray(bucket.targetList) ? bucket.targetList : []).find((item) => item && item.id === id) || null;
     }
 
     function formatSessionSubtitle(item) {
@@ -1098,17 +1153,18 @@
       return bits.filter(Boolean).join(' · ');
     }
 
-    function renderSessionMessages() {
-      if (state.sessionLoading && state.sessionMessages.length === 0) {
+    function renderSessionMessages(session) {
+      const bucket = session || getCurrentSessionState();
+      if (bucket.sessionLoading && bucket.sessionMessages.length === 0) {
         return '<div class="tg-chat-empty">消息加载中...</div>';
       }
-      if (!state.selectedSessionTarget) {
+      if (!bucket.selectedSessionTarget) {
         return '<div class="tg-chat-empty">请选择一个会话</div>';
       }
-      if (state.sessionMessages.length === 0) {
+      if (bucket.sessionMessages.length === 0) {
         return '<div class="tg-chat-empty">暂无消息</div>';
       }
-      return state.sessionMessages.map((msg) => {
+      return bucket.sessionMessages.map((msg) => {
         const out = !!(msg && msg.out);
         const service = !!(msg && msg.service);
         const rowClass = 'tg-message-row' + (out ? ' out' : '') + (service ? ' service' : '');
@@ -1141,10 +1197,13 @@
     }
 
     function bindTGSessionEvents() {
+      const active = getActiveLoggedInAccount();
+      const session = active ? getAccountSessionState(active.id) : getCurrentSessionState();
       const search = qs('tg-session-search');
       if (search) {
         const applySearch = () => {
-          state.draft.sessionSearch = String(search.value || '');
+          session.draft.sessionSearch = String(search.value || '');
+          syncCurrentSessionMirror(active && active.id);
           renderTGSessionPanel();
         };
         search.addEventListener('change', applySearch);
@@ -1155,7 +1214,8 @@
       const type = qs('tg-session-type');
       if (type) {
         type.addEventListener('change', () => {
-          state.draft.sessionType = String(type.value || 'all');
+          session.draft.sessionType = String(type.value || 'all');
+          syncCurrentSessionMirror(active && active.id);
           renderTGSessionPanel();
         });
       }
@@ -1165,10 +1225,11 @@
       document.querySelectorAll('[data-action="open-session-target"]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const targetID = String(btn.getAttribute('data-target-id') || '').trim();
-          if (!targetID || targetID === state.selectedSessionTarget) return;
+          if (!targetID || targetID === session.selectedSessionTarget) return;
           closeSessionWS();
-          state.selectedSessionTarget = targetID;
-          state.sessionMessages = [];
+          session.selectedSessionTarget = targetID;
+          session.sessionMessages = [];
+          syncCurrentSessionMirror(active && active.id);
           renderTGSessionPanel();
           loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
           connectSessionWS();
@@ -1183,10 +1244,11 @@
       const composer = qs('tg-session-message');
       if (composer) {
         composer.addEventListener('input', () => {
-          state.draft.sessionMessage = composer.value;
+          session.draft.sessionMessage = composer.value;
+          syncCurrentSessionMirror(active && active.id);
           const sendBtn = document.querySelector('[data-action="send-session-message"]');
           if (sendBtn) {
-            sendBtn.disabled = !state.selectedSessionTarget || state.sessionSending || !String(state.draft.sessionMessage || '').trim();
+            sendBtn.disabled = !session.selectedSessionTarget || session.sessionSending || !String(session.draft.sessionMessage || '').trim();
           }
         });
         composer.addEventListener('keydown', (event) => {
@@ -1633,9 +1695,10 @@
           renderPanelTabs();
           if (state.activePanelTab === 'sessions') {
             const active = getActiveLoggedInAccount();
-            if (active && state.targetList.length === 0) {
+            const session = active ? getAccountSessionState(active.id) : null;
+            if (active && session && session.targetList.length === 0) {
               loadTargets(active.id, { silent: true }).catch((err) => setStatus(`加载TG会话失败：${err.message || err}`, 'err'));
-            } else if (active && state.selectedSessionTarget && state.sessionMessages.length === 0) {
+            } else if (active && session && session.selectedSessionTarget && session.sessionMessages.length === 0) {
               loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
             }
           }
@@ -1680,12 +1743,12 @@
           closeSessionWS();
           state.activeLoggedInAccountID = accountID;
           state.activeSubTab = 'basic-info';
-          state.targetList = [];
+          const session = getAccountSessionState(accountID);
+          syncCurrentSessionMirror(accountID);
           state.filteredTargetList = [];
-          state.draft.scheduleTarget = '';
-          state.selectedSessionTarget = '';
-          state.sessionMessages = [];
-          state.draft.sessionMessage = '';
+          if (!session.targetList.some((item) => item.id === state.draft.scheduleTarget)) {
+            state.draft.scheduleTarget = '';
+          }
           renderMain();
           renderTGSessionPanel();
           if (accountID) {
@@ -2108,6 +2171,7 @@
       const normalizedAccountID = String(accountID || '').trim();
       if (!normalizedAccountID) return;
       const silent = options.silent === true;
+      const session = getAccountSessionState(normalizedAccountID);
       if (!silent) {
         setStatus('正在加载发送对象列表...');
       }
@@ -2117,20 +2181,23 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ account_id: normalizedAccountID }),
         });
-        state.targetList = Array.isArray(payload.targets) ? payload.targets : [];
-        if (!state.targetList.some((item) => item.id === state.draft.scheduleTarget)) {
+        session.targetList = Array.isArray(payload.targets) ? payload.targets : [];
+        if (state.activeLoggedInAccountID === normalizedAccountID) {
+          syncCurrentSessionMirror(normalizedAccountID);
+        }
+        if (!session.targetList.some((item) => item.id === state.draft.scheduleTarget)) {
           state.draft.scheduleTarget = '';
         }
-        syncSelectedSessionTarget();
+        syncSelectedSessionTarget(normalizedAccountID);
         buildFilteredTargetList();
         renderMain();
         renderTGSessionPanel();
         renderModal();
-        if (state.activePanelTab === 'sessions' && state.selectedSessionTarget) {
+        if (state.activePanelTab === 'sessions' && state.activeLoggedInAccountID === normalizedAccountID && session.selectedSessionTarget) {
           loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
         }
         if (!silent) {
-          setStatus(`已加载发送对象（${state.targetList.length} 个）`, 'ok');
+          setStatus(`已加载发送对象（${session.targetList.length} 个）`, 'ok');
         }
       } catch (error) {
         if (!silent) {
@@ -2155,17 +2222,19 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ account_id: active.id }),
         });
-        state.targetList = Array.isArray(payload.targets) ? payload.targets : [];
-        if (!state.targetList.some((item) => item.id === state.draft.scheduleTarget)) {
+        const session = getAccountSessionState(active.id);
+        session.targetList = Array.isArray(payload.targets) ? payload.targets : [];
+        syncCurrentSessionMirror(active.id);
+        if (!session.targetList.some((item) => item.id === state.draft.scheduleTarget)) {
           state.draft.scheduleTarget = '';
         }
-        syncSelectedSessionTarget();
+        syncSelectedSessionTarget(active.id);
         buildFilteredTargetList();
         renderTGSessionPanel();
-        if (state.selectedSessionTarget) {
+        if (session.selectedSessionTarget) {
           loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
         }
-        setStatus(`已刷新发送对象（${state.targetList.length} 个）`, 'ok');
+        setStatus(`已刷新发送对象（${session.targetList.length} 个）`, 'ok');
       } finally {
         state.targetRefreshing = false;
         renderMain();
@@ -2174,26 +2243,31 @@
       }
     }
 
-    function syncSelectedSessionTarget() {
-      const list = Array.isArray(state.targetList) ? state.targetList : [];
-      if (list.some((item) => item && item.id === state.selectedSessionTarget)) {
+    function syncSelectedSessionTarget(accountID) {
+      const session = accountID ? getAccountSessionState(accountID) : getCurrentSessionState();
+      const list = Array.isArray(session.targetList) ? session.targetList : [];
+      if (list.some((item) => item && item.id === session.selectedSessionTarget)) {
+        syncCurrentSessionMirror(accountID);
         return;
       }
-      state.selectedSessionTarget = list.length > 0 ? String(list[0].id || '') : '';
-      state.sessionMessages = [];
+      session.selectedSessionTarget = list.length > 0 ? String(list[0].id || '') : '';
+      session.sessionMessages = [];
+      syncCurrentSessionMirror(accountID);
     }
 
     async function loadSessionMessages(options = {}) {
       const account = getActiveLoggedInAccount();
-      const targetID = String(state.selectedSessionTarget || '').trim();
+      const session = account ? getAccountSessionState(account.id) : getCurrentSessionState();
+      const targetID = String(session.selectedSessionTarget || '').trim();
       if (!account || !targetID) return;
       const silent = options.silent === true;
       const background = options.background === true;
       const preserveScroll = options.preserveScroll === true;
       const accountID = account.id;
-      const beforeFingerprint = sessionMessagesFingerprint(state.sessionMessages);
+      const beforeFingerprint = sessionMessagesFingerprint(session.sessionMessages);
       if (!background) {
-        state.sessionLoading = true;
+        session.sessionLoading = true;
+        syncCurrentSessionMirror(accountID);
         renderTGSessionPanel();
         if (!silent) {
           setStatus('正在加载会话消息...');
@@ -2205,23 +2279,27 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ account_id: accountID, target: targetID, limit: 50 }),
         });
-        if (!getActiveLoggedInAccount() || getActiveLoggedInAccount().id !== accountID || state.selectedSessionTarget !== targetID) {
+        const currentAccount = getActiveLoggedInAccount();
+        const currentSession = getAccountSessionState(accountID);
+        if (!currentAccount || currentAccount.id !== accountID || currentSession.selectedSessionTarget !== targetID) {
           return;
         }
         const nextMessages = Array.isArray(payload.messages) ? payload.messages : [];
         const nextFingerprint = sessionMessagesFingerprint(nextMessages);
         if (nextFingerprint !== beforeFingerprint) {
-          state.sessionMessages = nextMessages;
+          currentSession.sessionMessages = nextMessages;
+          syncCurrentSessionMirror(accountID);
           renderTGSessionPanel(background ? { preserveScroll } : {});
         } else if (!background) {
           renderTGSessionPanel();
         }
         if (!silent && !background) {
-          setStatus(`已加载会话消息（${state.sessionMessages.length} 条）`, 'ok');
+          setStatus(`已加载会话消息（${currentSession.sessionMessages.length} 条）`, 'ok');
         }
       } finally {
         if (!background) {
-          state.sessionLoading = false;
+          session.sessionLoading = false;
+          syncCurrentSessionMirror(accountID);
           renderTGSessionPanel();
         }
       }
@@ -2229,15 +2307,17 @@
 
     async function loadOlderSessionMessages() {
       const account = getActiveLoggedInAccount();
-      const targetID = String(state.selectedSessionTarget || '').trim();
-      if (!account || !targetID || state.sessionMessages.length === 0) return;
-      const oldestID = state.sessionMessages.reduce((min, item) => {
+      const session = account ? getAccountSessionState(account.id) : getCurrentSessionState();
+      const targetID = String(session.selectedSessionTarget || '').trim();
+      if (!account || !targetID || session.sessionMessages.length === 0) return;
+      const oldestID = session.sessionMessages.reduce((min, item) => {
         const id = Number(item && item.id || 0);
         return id > 0 && (min <= 0 || id < min) ? id : min;
       }, 0);
       if (oldestID <= 0) return;
       const accountID = account.id;
-      state.sessionLoading = true;
+      session.sessionLoading = true;
+      syncCurrentSessionMirror(accountID);
       renderTGSessionPanel();
       setStatus('正在加载更早消息...');
       try {
@@ -2246,27 +2326,33 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ account_id: accountID, target: targetID, limit: 50, offset_id: oldestID }),
         });
-        if (!getActiveLoggedInAccount() || getActiveLoggedInAccount().id !== accountID || state.selectedSessionTarget !== targetID) {
+        const currentAccount = getActiveLoggedInAccount();
+        const currentSession = getAccountSessionState(accountID);
+        if (!currentAccount || currentAccount.id !== accountID || currentSession.selectedSessionTarget !== targetID) {
           return;
         }
         const older = Array.isArray(payload.messages) ? payload.messages : [];
-        const seen = new Set(state.sessionMessages.map((item) => Number(item && item.id || 0)));
-        state.sessionMessages = older.filter((item) => !seen.has(Number(item && item.id || 0))).concat(state.sessionMessages);
+        const seen = new Set(currentSession.sessionMessages.map((item) => Number(item && item.id || 0)));
+        currentSession.sessionMessages = older.filter((item) => !seen.has(Number(item && item.id || 0))).concat(currentSession.sessionMessages);
+        syncCurrentSessionMirror(accountID);
         renderTGSessionPanel();
         setStatus(`已加载更早消息（新增 ${older.length} 条）`, 'ok');
       } finally {
-        state.sessionLoading = false;
+        session.sessionLoading = false;
+        syncCurrentSessionMirror(accountID);
         renderTGSessionPanel();
       }
     }
 
     async function sendSessionMessage() {
       const account = getActiveLoggedInAccount();
-      const targetID = String(state.selectedSessionTarget || '').trim();
-      const message = String(state.draft.sessionMessage || '').trim();
-      if (!account || !targetID || !message || state.sessionSending) return;
+      const session = account ? getAccountSessionState(account.id) : getCurrentSessionState();
+      const targetID = String(session.selectedSessionTarget || '').trim();
+      const message = String(session.draft.sessionMessage || '').trim();
+      if (!account || !targetID || !message || session.sessionSending) return;
       const accountID = account.id;
-      state.sessionSending = true;
+      session.sessionSending = true;
+      syncCurrentSessionMirror(accountID);
       renderTGSessionPanel();
       try {
         const payload = await requestJSON('/mng/api/tg/session/send', {
@@ -2274,17 +2360,21 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ account_id: accountID, target: targetID, message }),
         });
-        if (!getActiveLoggedInAccount() || getActiveLoggedInAccount().id !== accountID || state.selectedSessionTarget !== targetID) {
+        const currentAccount = getActiveLoggedInAccount();
+        const currentSession = getAccountSessionState(accountID);
+        if (!currentAccount || currentAccount.id !== accountID || currentSession.selectedSessionTarget !== targetID) {
           return;
         }
         if (payload.message) {
-          state.sessionMessages = state.sessionMessages.concat([payload.message]);
+          currentSession.sessionMessages = currentSession.sessionMessages.concat([payload.message]);
         }
-        state.draft.sessionMessage = '';
+        currentSession.draft.sessionMessage = '';
+        syncCurrentSessionMirror(accountID);
         renderTGSessionPanel();
         setStatus('消息已发送', 'ok');
       } finally {
-        state.sessionSending = false;
+        session.sessionSending = false;
+        syncCurrentSessionMirror(accountID);
         renderTGSessionPanel();
       }
     }
@@ -2294,8 +2384,9 @@
       const refresh = () => {
         if (document.hidden) return;
         const active = getActiveLoggedInAccount();
-        const targetID = String(state.selectedSessionTarget || '').trim();
-        if (!active || !targetID || state.sessionLoading || state.sessionSending) return;
+        const session = active ? getAccountSessionState(active.id) : getCurrentSessionState();
+        const targetID = String(session.selectedSessionTarget || '').trim();
+        if (!active || !targetID || session.sessionLoading || session.sessionSending) return;
         loadSessionMessages({ silent: true, background: true, preserveScroll: true }).catch(() => {});
       };
       sessionRefreshTimer = window.setInterval(refresh, SESSION_REFRESH_INTERVAL_MS);
@@ -2310,14 +2401,16 @@
 
     function connectSessionWS() {
       const active = getActiveLoggedInAccount();
-      const targetID = String(state.selectedSessionTarget || '').trim();
+      const session = active ? getAccountSessionState(active.id) : getCurrentSessionState();
+      const targetID = String(session.selectedSessionTarget || '').trim();
       if (!active || !targetID || !window.WebSocket) return false;
-      if (state.sessionWS && state.sessionWS.readyState === WebSocket.OPEN) {
+      if (session.sessionWS && session.sessionWS.readyState === WebSocket.OPEN) {
         return true;
       }
       try {
         const ws = new WebSocket(getSessionWSURL(active.id, targetID));
-        state.sessionWS = ws;
+        session.sessionWS = ws;
+        syncCurrentSessionMirror(active.id);
         ws.onopen = () => {
           setStatus('TG 会话实时连接已建立', 'ok');
         };
@@ -2331,8 +2424,11 @@
           if (!payload || payload.account_id !== active.id || payload.target !== targetID) return;
           if (payload.type === 'session.snapshot' && Array.isArray(payload.messages)) {
             const nextFingerprint = sessionMessagesFingerprint(payload.messages);
-            if (nextFingerprint !== sessionMessagesFingerprint(state.sessionMessages)) {
-              state.sessionMessages = payload.messages;
+            const currentSession = getAccountSessionState(active.id);
+            if (currentSession.selectedSessionTarget !== targetID) return;
+            if (nextFingerprint !== sessionMessagesFingerprint(currentSession.sessionMessages)) {
+              currentSession.sessionMessages = payload.messages;
+              syncCurrentSessionMirror(active.id);
               renderTGSessionPanel({ preserveScroll: true });
             }
           } else if (payload.type === 'session.error') {
@@ -2343,7 +2439,10 @@
           setStatus('TG 会话实时连接异常，已尝试回退', 'warn');
         };
         ws.onclose = () => {
-          if (state.sessionWS === ws) state.sessionWS = null;
+          if (session.sessionWS === ws) {
+            session.sessionWS = null;
+            syncCurrentSessionMirror(active.id);
+          }
           window.setTimeout(() => {
             if (document.hidden) return;
             connectSessionWS();
