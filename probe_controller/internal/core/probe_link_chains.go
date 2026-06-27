@@ -125,12 +125,13 @@ type probeLinkChainAuthTicketPayload struct {
 var probeLinkChainAuthTicketNow = time.Now
 
 type probeLinkChainConfigResponse struct {
-	NodeID                   string                 `json:"node_id"`
-	Chains                   []probeLinkChainRecord `json:"chains"`
-	SelfChains               []probeLinkChainRecord `json:"self_chains"`
-	PortForwardChains        []probeLinkChainRecord `json:"port_forward_chains"`
-	ProxyChains              []probeLinkChainRecord `json:"proxy_chains"`
-	GlobalProxyForwardChains []probeLinkChainRecord `json:"global_proxy_forward_chains"`
+	NodeID                   string                   `json:"node_id"`
+	Chains                   []probeLinkChainRecord   `json:"chains"`
+	SelfChains               []probeLinkChainRecord   `json:"self_chains"`
+	PortForwardChains        []probeLinkChainRecord   `json:"port_forward_chains"`
+	ProxyChains              []probeLinkChainRecord   `json:"proxy_chains"`
+	GlobalProxyForwardChains []probeLinkChainRecord   `json:"global_proxy_forward_chains"`
+	VirtualRouter            probeVirtualRouterConfig `json:"virtual_router,omitempty"`
 }
 
 func loadProbeLinkChainsLocked() []probeLinkChainRecord {
@@ -1922,6 +1923,7 @@ func ProbeLinkChainConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 	ProbeLinkChainStore.mu.RLock()
 	all := loadProbeLinkChainsLocked()
+	virtualRouter := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
 	ProbeLinkChainStore.mu.RUnlock()
 
 	available := fillChainRelayHosts(filterAvailableProbeLinkChains(all))
@@ -1942,6 +1944,7 @@ func ProbeLinkChainConfigHandler(w http.ResponseWriter, r *http.Request) {
 		PortForwardChains:        filterProbeLinkChainsByType(selfChains, "port_forward"),
 		ProxyChains:              filterProbeLinkChainsByType(selfChains, "proxy_chain"),
 		GlobalProxyForwardChains: clientEntryChains,
+		VirtualRouter:            virtualRouter,
 	})
 }
 

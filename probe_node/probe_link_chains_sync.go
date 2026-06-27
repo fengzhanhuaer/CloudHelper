@@ -25,6 +25,7 @@ const (
 	probeLinkChainsSyncFetchTimeout    = 15 * time.Second
 	probeChainTopologyCacheFileName    = "probe_link_chain_config.json"
 	probeProxyChainsCacheFileName      = "proxy_chain.json"
+	probeVirtualRouterCacheFileName    = "virtual_router.json"
 )
 
 // probeLinkChainsResponse mirrors the JSON returned by ProbeLinkChainsHandler.
@@ -39,6 +40,7 @@ type probeLinkChainConfigResponse struct {
 	PortForwardChains        []probeLinkChainServerItem `json:"port_forward_chains"`
 	ProxyChains              []probeLinkChainServerItem `json:"proxy_chains"`
 	GlobalProxyForwardChains []probeLinkChainServerItem `json:"global_proxy_forward_chains"`
+	VirtualRouter            probeVirtualRouterConfig   `json:"virtual_router,omitempty"`
 }
 
 type probeLinkChainConfigFetchResult struct {
@@ -46,12 +48,43 @@ type probeLinkChainConfigFetchResult struct {
 	PortForwardChains        []probeLinkChainServerItem
 	ProxyChains              []probeLinkChainServerItem
 	GlobalProxyForwardChains []probeLinkChainServerItem
+	VirtualRouter            probeVirtualRouterConfig
 }
 
 // probeChainTopologyCacheFile stores full chain topology fetched from controller.
 type probeChainTopologyCacheFile struct {
 	UpdatedAt string                     `json:"updated_at"`
 	Items     []probeLinkChainServerItem `json:"items"`
+}
+
+type probeVirtualRouterConfig struct {
+	Enabled       bool                             `json:"enabled"`
+	FakeIPCIDR    string                           `json:"fake_ip_cidr,omitempty"`
+	ProbeIPs      []probeVirtualRouterProbeIP      `json:"probe_ips,omitempty"`
+	TopologyRules []probeVirtualRouterTopologyRule `json:"topology_rules,omitempty"`
+	UpdatedAt     string                           `json:"updated_at,omitempty"`
+}
+
+type probeVirtualRouterProbeIP struct {
+	NodeID string `json:"node_id"`
+	IP     string `json:"ip"`
+	Note   string `json:"note,omitempty"`
+}
+
+type probeVirtualRouterTopologyRule struct {
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	FromNodeID string `json:"from_node_id"`
+	ToNodeID   string `json:"to_node_id"`
+	Direction  string `json:"direction"`
+	Enabled    bool   `json:"enabled"`
+	Note       string `json:"note,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
+type probeVirtualRouterCacheFile struct {
+	UpdatedAt string                   `json:"updated_at"`
+	Item      probeVirtualRouterConfig `json:"item"`
 }
 
 var (
@@ -153,6 +186,10 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	if err := persistProbeProxyChainCache(config.GlobalProxyForwardChains); err != nil {
 		log.Printf("warning: persist probe proxy chain cache failed: %v", err)
 	}
+	if err := persistProbeVirtualRouterCache(config.VirtualRouter); err != nil {
+		log.Printf("warning: persist probe virtual router cache failed: %v", err)
+	}
+	applyProbeVirtualRouterConfigForNode(config.VirtualRouter, identity.NodeID)
 	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
 	preconnectProbeLocalTUNGroupRuntimesFromState("chain_sync")
 
@@ -160,6 +197,11 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 }
 
 func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controllerBaseURL string) {
+	if config, err := loadProbeVirtualRouterCache(); err == nil {
+		applyProbeVirtualRouterConfigForNode(config, identity.NodeID)
+	} else {
+		log.Printf("warning: load probe virtual router cache failed: %v", err)
+	}
 	items, err := loadProbeChainTopologyCacheItems()
 	if err != nil {
 		log.Printf("warning: load probe chain topology cache failed: %v", err)
@@ -296,6 +338,7 @@ func requestProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, 
 		PortForwardChains:        payload.PortForwardChains,
 		ProxyChains:              payload.ProxyChains,
 		GlobalProxyForwardChains: payload.GlobalProxyForwardChains,
+		VirtualRouter:            sanitizeProbeVirtualRouterConfigForCache(payload.VirtualRouter),
 	}, nil
 }
 
@@ -357,6 +400,7 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 	// Determine the next hop (relay_host:external_port) based on role.
 	nextHost, nextPort, nextLinkLayer, nextDialMode, nextAuthMode := resolveProbeChainNextHopFromItem(item, nodeID, role)
 	prevHost, prevPort, prevLinkLayer, prevDialMode := resolveProbeChainPrevHopFromItem(item, nodeID, role)
+	nextNodeID, prevNodeID := resolveProbeChainAdjacentNodeIDsFromItem(item, nodeID)
 
 	// Require next_host+port unless this is the exit node (next_auth_mode=proxy).
 	if nextAuthMode != "proxy" && (strings.TrimSpace(nextHost) == "" || nextPort <= 0) {
@@ -405,6 +449,8 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 	}
 	cfg.identity = identity
 	cfg.controllerURL = resolveProbeControllerBaseURL(strings.TrimSpace(controllerBaseURL), "")
+	cfg.nextNodeID = nextNodeID
+	cfg.prevNodeID = prevNodeID
 
 	// Skip restart if config has not changed (compare fields that affect behaviour).
 	if isSameProbeChainRuntimeConfig(chainID, cfg) {
@@ -602,6 +648,24 @@ func resolveProbeChainPrevHopFromItem(item probeLinkChainServerItem, nodeID, rol
 	return "", 0, "", probeChainDialModeNone
 }
 
+func resolveProbeChainAdjacentNodeIDsFromItem(item probeLinkChainServerItem, nodeID string) (nextNodeID string, prevNodeID string) {
+	route := buildChainRoute(item)
+	targetNodeID := normalizeProbeChainNodeID(nodeID)
+	for i, id := range route {
+		if normalizeProbeChainNodeID(id) != targetNodeID {
+			continue
+		}
+		if i+1 < len(route) {
+			nextNodeID = normalizeProbeChainNodeID(route[i+1])
+		}
+		if i > 0 {
+			prevNodeID = normalizeProbeChainNodeID(route[i-1])
+		}
+		return nextNodeID, prevNodeID
+	}
+	return "", ""
+}
+
 // buildChainRoute returns the ordered node ID list: [entry, cascade..., exit].
 func buildChainRoute(item probeLinkChainServerItem) []string {
 	route := make([]string, 0, 2+len(item.CascadeNodeIDs))
@@ -663,12 +727,14 @@ func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) 
 		c.linkLayer == cfg.linkLayer &&
 		c.nextLinkLayer == cfg.nextLinkLayer &&
 		c.nextDialMode == cfg.nextDialMode &&
+		c.nextNodeID == cfg.nextNodeID &&
 		c.nextHost == cfg.nextHost &&
 		c.nextPort == cfg.nextPort &&
 		c.prevHost == cfg.prevHost &&
 		c.prevPort == cfg.prevPort &&
 		c.prevLinkLayer == cfg.prevLinkLayer &&
 		c.prevDialMode == cfg.prevDialMode &&
+		c.prevNodeID == cfg.prevNodeID &&
 		c.nextAuthMode == cfg.nextAuthMode &&
 		isSameProbeChainPortForwards(c.portForwards, cfg.portForwards) &&
 		c.secret == cfg.secret &&

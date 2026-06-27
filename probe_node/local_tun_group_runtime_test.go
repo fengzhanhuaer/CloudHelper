@@ -131,6 +131,18 @@ func TestProbeLocalTUNGroupRuntimeOpenStreamDoesNotFallbackWithoutBridgeSession(
 }
 
 func TestProbeLocalTUNGroupRuntimeFetchRemotePeerStatusRejectsOpenResponse(t *testing.T) {
+	setProbeLocalProxyViewChains(nil)
+	probeChainRuntimeState.mu.Lock()
+	oldRuntimes := probeChainRuntimeState.runtimes
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{}
+	probeChainRuntimeState.mu.Unlock()
+	t.Cleanup(func() {
+		setProbeLocalProxyViewChains(nil)
+		probeChainRuntimeState.mu.Lock()
+		probeChainRuntimeState.runtimes = oldRuntimes
+		probeChainRuntimeState.mu.Unlock()
+	})
+
 	clientConn, serverConn := net.Pipe()
 	serverReady := make(chan *probeChainFrameSession, 1)
 	serverErr := make(chan error, 1)

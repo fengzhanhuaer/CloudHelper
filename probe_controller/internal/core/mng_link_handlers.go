@@ -59,6 +59,24 @@ func mngLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
 	writeMngLinkResult(w, result, err)
 }
 
+func mngLinkVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		result, err := getMngProbeVirtualRouterConfig()
+		writeMngLinkResult(w, result, err)
+	case http.MethodPost:
+		payload, err := readMngRawJSONPayload(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+			return
+		}
+		result, err := upsertMngProbeVirtualRouterConfig(payload)
+		writeMngLinkResult(w, result, err)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func mngLinkNodeDomainsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -238,8 +256,12 @@ func writeMngLinkError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
 	case strings.Contains(lower, "invalid payload"),
+		strings.Contains(lower, " invalid"),
+		strings.Contains(lower, " is invalid"),
 		strings.Contains(lower, " is required"),
 		strings.Contains(lower, " must be"),
+		strings.Contains(lower, " duplicated"),
+		strings.Contains(lower, "endpoints must be different"),
 		strings.Contains(lower, "exceeded limit"):
 		status = http.StatusBadRequest
 	case strings.Contains(lower, "not found"):

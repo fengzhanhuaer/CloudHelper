@@ -25,17 +25,18 @@ import (
 )
 
 const (
-	probeLocalDNSListenHost           = "127.0.0.1"
-	probeLocalDNSPrimaryPort          = 53
-	probeLocalDNSFallbackPort         = 5353
-	probeLocalDNSReadBufferSize       = 4096
-	probeLocalDNSHandlerLimit         = 64
-	probeLocalDNSUpstreamTimeout      = 5 * time.Second
-	probeLocalDNSDoHReadLimit         = 64 * 1024
-	probeLocalDNSCacheTTL             = 15 * 24 * time.Hour
-	probeLocalDNSCachePersistInterval = 5 * time.Second
-	probeLocalDNSCacheDBFileName      = "dns_cache.db"
-	probeLocalFakeIPDefaultCIDR       = "198.18.0.0/15"
+	probeLocalDNSListenHost                    = "127.0.0.1"
+	probeLocalDNSPrimaryPort                   = 53
+	probeLocalDNSFallbackPort                  = 5353
+	probeLocalDNSReadBufferSize                = 4096
+	probeLocalDNSHandlerLimit                  = 64
+	probeLocalDNSUpstreamTimeout               = 5 * time.Second
+	probeLocalDNSDoHReadLimit                  = 64 * 1024
+	probeLocalDNSCacheTTL                      = 15 * 24 * time.Hour
+	probeLocalDNSCachePersistInterval          = 5 * time.Second
+	probeLocalDNSCacheDBFileName               = "dns_cache.db"
+	probeLocalFakeIPDefaultCIDR                = "198.18.0.0/15"
+	probeLocalVirtualRouterProbeIPReserveCount = 1024
 )
 
 type probeLocalDNSStatus struct {
@@ -1936,6 +1937,9 @@ func nextProbeLocalDNSFakeIPLocked(now time.Time) string {
 	}
 	for i := uint32(0); i < size; i++ {
 		probeLocalDNSState.fakeCursor = (probeLocalDNSState.fakeCursor % size) + 1
+		if probeLocalDNSFakeCursorReservedForVirtualRouter(probeLocalDNSState.fakeCursor) {
+			continue
+		}
 		candidate := baseU32 + probeLocalDNSState.fakeCursor
 		candidateBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(candidateBytes, candidate)
@@ -1964,6 +1968,10 @@ func nextProbeLocalDNSFakeIPLocked(now time.Time) string {
 		return candidateIP
 	}
 	return ""
+}
+
+func probeLocalDNSFakeCursorReservedForVirtualRouter(cursor uint32) bool {
+	return cursor > 0 && cursor <= uint32(probeLocalVirtualRouterProbeIPReserveCount)
 }
 
 func storeProbeLocalDNSRouteHintLocked(domain string, group string, now time.Time) {

@@ -236,6 +236,9 @@ func writeProbeLocalTUNInboundPacketToStack(packet []byte) error {
 }
 
 func handleProbeLocalTUNInboundPacket(packet []byte) {
+	if handleProbeVirtualRouterTUNPacket(packet) {
+		return
+	}
 	if handleProbeLocalTUNICMPDirectBypass(packet) {
 		return
 	}

@@ -46,6 +46,46 @@ func listMngProbeLinkChains() (map[string]interface{}, error) {
 	}, nil
 }
 
+func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
+	if ProbeLinkChainStore == nil {
+		return nil, fmt.Errorf("probe link chain store is not initialized")
+	}
+	ProbeLinkChainStore.mu.RLock()
+	config := normalizeProbeVirtualRouterConfig(ProbeLinkChainStore.data.VirtualRouter)
+	ProbeLinkChainStore.mu.RUnlock()
+	config = ensureProbeVirtualRouterProbeIPsForKnownNodes(config)
+	return map[string]interface{}{
+		"item":       config,
+		"node_ids":   listProbeVirtualRouterKnownNodeIDs(),
+		"pool_size":  probeVirtualRouterProbeIPPoolSize,
+		"directions": []string{probeVirtualRouterDirectionTwoWay, probeVirtualRouterDirectionForward, probeVirtualRouterDirectionBackward},
+	}, nil
+}
+
+func upsertMngProbeVirtualRouterConfig(payload json.RawMessage) (map[string]interface{}, error) {
+	if ProbeLinkChainStore == nil {
+		return nil, fmt.Errorf("probe link chain store is not initialized")
+	}
+	var req probeVirtualRouterConfig
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("invalid payload")
+	}
+	config, err := validateAndNormalizeProbeVirtualRouterConfig(req)
+	if err != nil {
+		return nil, err
+	}
+	ProbeLinkChainStore.mu.Lock()
+	ProbeLinkChainStore.data.VirtualRouter = config
+	ProbeLinkChainStore.mu.Unlock()
+	if err := ProbeLinkChainStore.Save(); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"ok":   true,
+		"item": config,
+	}, nil
+}
+
 func listMngProbeLinkEntryProfiles(chainID string) (map[string]interface{}, error) {
 	if ProbeLinkChainStore == nil {
 		return nil, fmt.Errorf("probe link chain store is not initialized")

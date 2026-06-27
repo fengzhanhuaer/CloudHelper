@@ -86,6 +86,7 @@
       <button class="tab active" data-tab="add" type="button">链路添加</button>
       <button class="tab" data-tab="edit" type="button">链路编辑</button>
       <button class="tab" data-tab="entry" type="button">链路入口</button>
+      <button class="tab" data-tab="topology" type="button">拓扑规则</button>
       <button class="tab" data-tab="pf" type="button">端口转发</button>
       <button class="tab" data-tab="view" type="button">链路查看</button>
     </div>
@@ -207,6 +208,57 @@
         </table>
       </section>
 
+      <section id="section-topology" class="section">
+        <div class="row">
+          <button id="btn-vr-refresh" class="btn" type="button">刷新拓扑</button>
+          <button id="btn-vr-add-rule" class="btn" type="button">添加规则</button>
+          <button id="btn-vr-save" class="btn primary" type="button">保存拓扑</button>
+          <span id="vr-summary" class="small muted">未加载</span>
+        </div>
+        <div class="box" style="margin-bottom:12px;">
+          <div class="row">
+            <label for="vr-enabled">启用</label>
+            <select id="vr-enabled" class="small">
+              <option value="true">启用</option>
+              <option value="false">禁用</option>
+            </select>
+            <label for="vr-cidr">FakeIP CIDR</label>
+            <input id="vr-cidr" class="wide mono" value="198.18.0.0/15" />
+          </div>
+        </div>
+        <div class="stack">
+          <div class="box">
+            <div class="muted">探针静态 IP</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>探针</th>
+                  <th>静态 IP</th>
+                  <th>备注</th>
+                </tr>
+              </thead>
+              <tbody id="vr-ip-body"></tbody>
+            </table>
+          </div>
+          <div class="box">
+            <div class="muted">拓扑规则</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>启用</th>
+                  <th>名称</th>
+                  <th>探针 A</th>
+                  <th>探针 B</th>
+                  <th>方向</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="vr-rule-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section id="section-pf" class="section">
         <div class="row">
           <label for="pf-chain-select">端口转发链路</label>
@@ -286,6 +338,13 @@
       selectedEntryChainID: '',
       entryProfile: null,
       entryCandidates: [],
+      virtualRouter: {
+        enabled: true,
+        fake_ip_cidr: '198.18.0.0/15',
+        probe_ips: [],
+        topology_rules: [],
+      },
+      virtualRouterNodeIDs: [],
       nodeDomainsByID: {},
       nodeDomainsLoading: {},
       editForm: {
@@ -564,6 +623,19 @@
       if (!silent) setStatus(`链路状态已刷新：${state.relayStatus.length} 条`, 'ok');
     }
 
+    async function loadVirtualRouter(silent) {
+      const payload = await requestJSON('/mng/api/link/virtual_router');
+      state.virtualRouter = payload.item || {
+        enabled: true,
+        fake_ip_cidr: '198.18.0.0/15',
+        probe_ips: [],
+        topology_rules: [],
+      };
+      state.virtualRouterNodeIDs = Array.isArray(payload.node_ids) ? payload.node_ids.map((v) => String(v || '').trim()).filter(Boolean) : [];
+      renderVirtualRouter();
+      if (!silent) setStatus('拓扑规则已刷新', 'ok');
+    }
+
     function bindTabs() {
       const tabs = Array.from(document.querySelectorAll('.tab'));
       tabs.forEach((button) => {
@@ -578,6 +650,9 @@
           }
           if (state.activeTab === 'entry') {
             loadEntryProfile(true).catch((err) => setStatus(`刷新链路入口失败：${err.message || err}`, 'err'));
+          }
+          if (state.activeTab === 'topology') {
+            loadVirtualRouter(true).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'view') {
             loadRelayStatus(true).catch((err) => setStatus(`刷新链路状态失败：${err.message || err}`, 'err'));
@@ -1188,6 +1263,171 @@
       setStatus(`链路入口配置已保存：${entries.length} 个入口`, 'ok');
     }
 
+    function nodeLabel(nodeID) {
+      const clean = normalizeNodeID(nodeID);
+      const node = state.nodes.find((item) => String(item.node_no || '') === clean);
+      return node ? `#${node.node_no} ${node.node_name || ''}`.trim() : `#${clean}`;
+    }
+
+    function virtualRouterNodeOptions(selected) {
+      const ids = state.virtualRouterNodeIDs.length
+        ? state.virtualRouterNodeIDs
+        : state.nodes.map((item) => String(item.node_no || '')).filter(Boolean);
+      return ids.map((id) => `<option value="${escapeHTML(id)}" ${String(selected || '') === String(id) ? 'selected' : ''}>${escapeHTML(nodeLabel(id))}</option>`).join('');
+    }
+
+    function renderVirtualRouter() {
+      const cfg = state.virtualRouter || {};
+      const enabledSelect = document.getElementById('vr-enabled');
+      const cidrInput = document.getElementById('vr-cidr');
+      if (enabledSelect) enabledSelect.value = cfg.enabled === false ? 'false' : 'true';
+      if (cidrInput) cidrInput.value = String(cfg.fake_ip_cidr || '198.18.0.0/15');
+
+      const ips = Array.isArray(cfg.probe_ips) ? cfg.probe_ips : [];
+      const ipBody = document.getElementById('vr-ip-body');
+      if (!ips.length) {
+        ipBody.innerHTML = '<tr><td colspan="3" class="muted">暂无探针静态 IP，刷新后会按已知探针自动生成。</td></tr>';
+      } else {
+        ipBody.innerHTML = ips.map((item, idx) => `
+          <tr>
+            <td>${escapeHTML(nodeLabel(item.node_id))}<div class="small muted mono">${escapeHTML(item.node_id || '')}</div></td>
+            <td><input data-vr-ip="${idx}" class="mono" value="${escapeHTML(item.ip || '')}" /></td>
+            <td><input data-vr-ip-note="${idx}" value="${escapeHTML(item.note || '')}" /></td>
+          </tr>
+        `).join('');
+      }
+
+      const rules = Array.isArray(cfg.topology_rules) ? cfg.topology_rules : [];
+      const ruleBody = document.getElementById('vr-rule-body');
+      if (!rules.length) {
+        ruleBody.innerHTML = '<tr><td colspan="6" class="muted">暂无拓扑规则。</td></tr>';
+      } else {
+        ruleBody.innerHTML = rules.map((rule, idx) => `
+          <tr>
+            <td><input data-vr-rule-enabled="${idx}" type="checkbox" ${rule.enabled === false ? '' : 'checked'} /></td>
+            <td><input data-vr-rule-name="${idx}" value="${escapeHTML(rule.name || '')}" placeholder="${escapeHTML(rule.id || '')}" /></td>
+            <td><select data-vr-rule-from="${idx}">${virtualRouterNodeOptions(rule.from_node_id)}</select></td>
+            <td><select data-vr-rule-to="${idx}">${virtualRouterNodeOptions(rule.to_node_id)}</select></td>
+            <td>
+              <select data-vr-rule-direction="${idx}">
+                <option value="bidirectional" ${rule.direction === 'bidirectional' ? 'selected' : ''}>双向</option>
+                <option value="forward" ${rule.direction === 'forward' ? 'selected' : ''}>A -> B</option>
+                <option value="backward" ${rule.direction === 'backward' ? 'selected' : ''}>B -> A</option>
+              </select>
+            </td>
+            <td><button class="btn" data-vr-rule-remove="${idx}" type="button">删除</button></td>
+          </tr>
+        `).join('');
+      }
+      bindVirtualRouterEvents();
+      const summary = document.getElementById('vr-summary');
+      summary.textContent = `探针 IP ${ips.length} 个，拓扑规则 ${rules.length} 条`;
+    }
+
+    function bindVirtualRouterEvents() {
+      document.querySelectorAll('[data-vr-ip]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-ip') || '-1', 10);
+          const ips = state.virtualRouter.probe_ips || [];
+          if (idx < 0 || idx >= ips.length) return;
+          ips[idx].ip = String(el.value || '').trim();
+        });
+      });
+      document.querySelectorAll('[data-vr-ip-note]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-ip-note') || '-1', 10);
+          const ips = state.virtualRouter.probe_ips || [];
+          if (idx < 0 || idx >= ips.length) return;
+          ips[idx].note = String(el.value || '').trim();
+        });
+      });
+      document.querySelectorAll('[data-vr-rule-enabled]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-enabled') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          rules[idx].enabled = !!el.checked;
+        });
+      });
+      document.querySelectorAll('[data-vr-rule-name]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-name') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          rules[idx].name = String(el.value || '').trim();
+        });
+      });
+      document.querySelectorAll('[data-vr-rule-from]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-from') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          rules[idx].from_node_id = normalizeNodeID(el.value);
+        });
+      });
+      document.querySelectorAll('[data-vr-rule-to]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-to') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          rules[idx].to_node_id = normalizeNodeID(el.value);
+        });
+      });
+      document.querySelectorAll('[data-vr-rule-direction]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-direction') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          const value = String(el.value || '').trim();
+          rules[idx].direction = value === 'forward' || value === 'backward' ? value : 'bidirectional';
+        });
+      });
+      document.querySelectorAll('[data-vr-rule-remove]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-remove') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          rules.splice(idx, 1);
+          renderVirtualRouter();
+        });
+      });
+    }
+
+    function addVirtualRouterRule() {
+      const ids = state.virtualRouterNodeIDs.length
+        ? state.virtualRouterNodeIDs
+        : state.nodes.map((item) => String(item.node_no || '')).filter(Boolean);
+      if (ids.length < 2) {
+        setStatus('至少需要两个探针才能添加拓扑规则', 'warn');
+        return;
+      }
+      if (!Array.isArray(state.virtualRouter.topology_rules)) {
+        state.virtualRouter.topology_rules = [];
+      }
+      state.virtualRouter.topology_rules.push({
+        id: `vr-${Date.now()}`,
+        name: '',
+        from_node_id: ids[0],
+        to_node_id: ids[1],
+        direction: 'bidirectional',
+        enabled: true,
+      });
+      renderVirtualRouter();
+    }
+
+    async function saveVirtualRouter() {
+      state.virtualRouter.enabled = document.getElementById('vr-enabled').value !== 'false';
+      state.virtualRouter.fake_ip_cidr = String(document.getElementById('vr-cidr').value || '').trim() || '198.18.0.0/15';
+      const result = await requestJSON('/mng/api/link/virtual_router', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state.virtualRouter),
+      });
+      state.virtualRouter = result.item || state.virtualRouter;
+      renderVirtualRouter();
+      setStatus('拓扑规则已保存', 'ok');
+    }
+
     async function deleteCurrentChain() {
       const chainID = String(state.selectedChainID || '').trim();
       if (!chainID) {
@@ -1478,6 +1718,14 @@
         saveEntryProfile().catch((err) => setStatus(`保存链路入口失败：${err.message || err}`, 'err'));
       });
 
+      document.getElementById('btn-vr-refresh').addEventListener('click', () => {
+        loadVirtualRouter(false).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-vr-add-rule').addEventListener('click', addVirtualRouterRule);
+      document.getElementById('btn-vr-save').addEventListener('click', () => {
+        saveVirtualRouter().catch((err) => setStatus(`保存拓扑规则失败：${err.message || err}`, 'err'));
+      });
+
       document.getElementById('pf-chain-select').addEventListener('change', (e) => {
         selectChainForEdit(String(e.target.value || '')).catch((err) => setStatus(`切换链路失败：${err.message || err}`, 'err'));
       });
@@ -1503,6 +1751,7 @@
       await loadNodes();
       await loadChains(true);
       await loadEntryProfile(true);
+      await loadVirtualRouter(true);
       renderRelayStatus();
 
       if (state.nodes.length) {

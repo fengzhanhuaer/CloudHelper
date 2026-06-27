@@ -44,6 +44,21 @@ func TestProbeLocalDNSFakeIPPersistsOnFlushAndReloads(t *testing.T) {
 	}
 }
 
+func TestProbeLocalDNSFakeIPSkipsVirtualRouterProbeReserve(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	decision := probeLocalDNSRouteDecision{Group: "media", Action: "tunnel", SelectedChainID: "chain-1", TunnelNodeID: "chain:chain-1"}
+	fakeIP, ok := allocateProbeLocalDNSFakeIP("api.example.com", decision)
+	if !ok {
+		t.Fatalf("allocate fake ip failed")
+	}
+	if fakeIP != "198.18.4.1" {
+		t.Fatalf("fake ip=%q, want first ordinary fake ip after reserved 1024 probe IPs", fakeIP)
+	}
+}
+
 func TestClearProbeLocalDNSUnifiedCacheRemovesPersistedCacheFile(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()

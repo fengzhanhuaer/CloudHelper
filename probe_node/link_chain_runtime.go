@@ -58,6 +58,7 @@ type probeChainRuntimeConfig struct {
 	linkLayer               string
 	nextLinkLayer           string
 	nextDialMode            string
+	nextNodeID              string
 	nextHost                string
 	nextPort                int
 	nextPreserveRelayDomain bool
@@ -66,6 +67,7 @@ type probeChainRuntimeConfig struct {
 	prevPreserveRelayDomain bool
 	prevLinkLayer           string
 	prevDialMode            string
+	prevNodeID              string
 	requireUserAuth         bool
 	nextAuthMode            string
 	portForwards            []probeChainRuntimePortForward
@@ -3135,6 +3137,9 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 
 	if _, ok := conn.(*probeChainFrameStream); ok {
 		_ = conn.SetDeadline(time.Time{})
+		if handleProbeChainVirtualRouterStreamIfNeeded(runtime, conn) {
+			return
+		}
 		if runtime.cfg.nextAuthMode == "proxy" {
 			handleProbeChainProxyStream(runtime, conn)
 			return
@@ -3172,6 +3177,9 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 
 	if _, ok := conn.(*probeChainFrameStream); ok {
 		_ = conn.SetDeadline(time.Time{})
+		if handleProbeChainVirtualRouterStreamIfNeeded(runtime, conn) {
+			return
+		}
 		role := normalizeProbeChainRole(runtime.cfg.role)
 		if role == "entry" || role == "entry_exit" {
 			handleProbeChainProxyStream(runtime, conn)
@@ -3242,6 +3250,27 @@ func openProbeChainPrevHop(runtime *probeChainRuntime, preferredSessionID string
 			return stream.Close()
 		},
 	}, nil
+}
+
+func handleProbeChainVirtualRouterStreamIfNeeded(runtime *probeChainRuntime, conn net.Conn) bool {
+	frameStream, ok := conn.(*probeChainFrameStream)
+	if !ok {
+		return false
+	}
+	req, found := frameStream.OpenRequest()
+	if !found || !strings.EqualFold(strings.TrimSpace(req.Type), probeVirtualRouterTunnelOpenType) {
+		return false
+	}
+	if err := handleProbeVirtualRouterFrameStream(runtime, conn, req, frameStream.RespondOpen); err != nil {
+		chainID := ""
+		role := ""
+		if runtime != nil {
+			chainID = strings.TrimSpace(runtime.cfg.chainID)
+			role = strings.TrimSpace(runtime.cfg.role)
+		}
+		log.Printf("probe virtual router frame stream failed: chain=%s role=%s err=%v", chainID, role, err)
+	}
+	return true
 }
 
 func (rt *probeChainRuntime) getDownstreamSessionByID(sessionID string) *probeChainFrameSession {
@@ -3542,6 +3571,12 @@ func handleProbeChainProxyOpenRequest(runtime *probeChainRuntime, stream net.Con
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePingPong) {
 		handleProbeChainPingPongStream(runtime, stream, req.PingBytes, responder)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(req.Type), probeVirtualRouterTunnelOpenType) {
+		if err := handleProbeVirtualRouterFrameStream(runtime, stream, req, responder); err != nil {
+			log.Printf("probe virtual router proxy stream failed: err=%v", err)
+		}
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), "tcp_debug_get") {
