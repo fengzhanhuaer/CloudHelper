@@ -216,7 +216,12 @@ jobs:
             echo "sdkmanager not found under $ANDROID_HOME/cmdline-tools" >&2
             exit 1
           fi
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          accept_licenses() {
+            set +o pipefail
+            yes | "$SDKMANAGER" --licenses >/dev/null
+            set -o pipefail
+          }
+          accept_licenses || true
           packages=(
             "platform-tools"
             "platforms;android-35"
@@ -228,7 +233,7 @@ jobs:
             echo "Using existing Android NDK at $ANDROID_HOME/ndk/27.2.12479018"
           fi
           install_packages() {
-            yes | "$SDKMANAGER" --install "${packages[@]}"
+            "$SDKMANAGER" --install "${packages[@]}"
           }
           if ! install_packages; then
             echo "Android SDK install failed once; clearing partial downloads and retrying" >&2
