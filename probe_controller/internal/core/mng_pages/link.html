@@ -83,42 +83,6 @@
     .endpoint-row input, .endpoint-row select { min-width:0; width:100%; box-sizing:border-box; }
     .endpoint-row .domain-cell { min-width:0; }
     .endpoint-row .domain-value { min-width:0; max-width:none; }
-    .modal-backdrop {
-      position:fixed;
-      inset:0;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      padding:18px;
-      background:rgba(1,4,9,.72);
-      z-index:50;
-      box-sizing:border-box;
-    }
-    .modal-backdrop.active { display:flex; }
-    .modal {
-      width:min(760px, 100%);
-      max-height:82vh;
-      overflow:auto;
-      border:1px solid #30363d;
-      border-radius:12px;
-      background:#161b22;
-      padding:14px;
-      box-shadow:0 18px 60px rgba(0,0,0,.38);
-    }
-    .modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
-    .modal-title { font-weight:700; color:#f0f6fc; }
-    .domain-options { display:grid; grid-template-columns:1fr; gap:8px; margin:10px 0; }
-    .domain-option {
-      width:100%;
-      text-align:left;
-      border:1px solid #30363d;
-      border-radius:8px;
-      background:#0d1117;
-      color:#c9d1d9;
-      padding:8px 10px;
-      cursor:pointer;
-    }
-    .domain-option:hover { border-color:#58a6ff; }
   </style>
 </head>
 <body>
@@ -389,23 +353,6 @@
     </div>
   </div>
 
-  <div id="vr-domain-modal" class="modal-backdrop" aria-hidden="true">
-    <div class="modal">
-      <div class="modal-head">
-        <div class="modal-title">选择域名</div>
-        <button id="btn-vr-domain-close" class="btn" type="button">关闭</button>
-      </div>
-      <div id="vr-domain-current" class="small muted mono">-</div>
-      <div id="vr-domain-options" class="domain-options"></div>
-      <div class="row">
-        <label for="vr-domain-manual">手动域名</label>
-        <input id="vr-domain-manual" class="wide" placeholder="internal.example.lan" />
-        <button id="btn-vr-domain-apply" class="btn primary" type="button">使用</button>
-        <button id="btn-vr-domain-clear" class="btn" type="button">清空</button>
-      </div>
-    </div>
-  </div>
-
   <script>
     const DEFAULTS = {
       listenHost: '0.0.0.0',
@@ -439,7 +386,6 @@
       },
       virtualRouterNodeIDs: [],
       cloudflareDDNSRecords: [],
-      domainPicker: null,
       nodeDomainsByID: {},
       nodeDomainsLoading: {},
       editForm: {
@@ -693,65 +639,6 @@
           </select>
         </div>
       `;
-    }
-
-    function closeVirtualRouterDomainPicker() {
-      state.domainPicker = null;
-      const modal = document.getElementById('vr-domain-modal');
-      modal.classList.remove('active');
-      modal.setAttribute('aria-hidden', 'true');
-    }
-
-    function setVirtualRouterRuleDomain(value) {
-      const picker = state.domainPicker || {};
-      const idx = Number.parseInt(String(picker.index || '-1'), 10);
-      const side = String(picker.side || '');
-      const rules = state.virtualRouter.topology_rules || [];
-      if (idx < 0 || idx >= rules.length) return;
-      if (side !== 'from' && side !== 'to') return;
-      const key = side === 'from' ? 'from_service_domain' : 'to_service_domain';
-      rules[idx][key] = String(value || '').trim();
-      closeVirtualRouterDomainPicker();
-      renderVirtualRouter();
-    }
-
-    function renderVirtualRouterDomainPicker() {
-      const picker = state.domainPicker || {};
-      const idx = Number.parseInt(String(picker.index || '-1'), 10);
-      const side = String(picker.side || '');
-      const rules = state.virtualRouter.topology_rules || [];
-      const rule = idx >= 0 && idx < rules.length ? rules[idx] : null;
-      if (!rule) return;
-      const nodeID = side === 'from' ? rule.from_node_id : rule.to_node_id;
-      const domain = side === 'from' ? rule.from_service_domain : rule.to_service_domain;
-      document.getElementById('vr-domain-current').textContent = `${nodeLabel(nodeID)} / ${String(domain || '-').trim()}`;
-      document.getElementById('vr-domain-manual').value = String(domain || '').trim();
-      const options = cloudflareDomainCandidates(nodeID);
-      const optionBox = document.getElementById('vr-domain-options');
-      if (!options.length) {
-        optionBox.innerHTML = '<div class="muted small">暂无匹配 DDNS 域名</div>';
-      } else {
-        optionBox.innerHTML = options.map((item) => `
-          <button class="domain-option" data-vr-domain-value="${escapeHTML(item.name)}" type="button">
-            <div class="mono">${escapeHTML(item.name)}</div>
-            <div class="small muted">${escapeHTML([item.record_class, item.record_type, item.content_ip].filter(Boolean).join(' / ') || '-')}</div>
-          </button>
-        `).join('');
-      }
-      optionBox.querySelectorAll('[data-vr-domain-value]').forEach((el) => {
-        el.addEventListener('click', () => setVirtualRouterRuleDomain(el.getAttribute('data-vr-domain-value') || ''));
-      });
-    }
-
-    async function openVirtualRouterDomainPicker(index, side) {
-      if (side !== 'from' && side !== 'to') return;
-      state.domainPicker = { index, side };
-      await loadCloudflareDDNSRecords(true).catch(() => {});
-      renderVirtualRouterDomainPicker();
-      const modal = document.getElementById('vr-domain-modal');
-      modal.classList.add('active');
-      modal.setAttribute('aria-hidden', 'false');
-      document.getElementById('vr-domain-manual').focus();
     }
 
     async function refreshSelectedPublicKey() {
@@ -1688,7 +1575,15 @@
       });
       state.virtualRouter = result.item || state.virtualRouter;
       renderVirtualRouter();
-      setStatus('拓扑规则已保存', 'ok');
+      const sync = result.sync || {};
+      const dispatched = Number(sync.dispatched || 0);
+      const offline = Number(sync.offline || 0);
+      const failed = Number(sync.failed || 0);
+      const total = Number(sync.total || 0);
+      const syncText = total > 0
+        ? `，已通知在线探针 ${dispatched}/${total}，离线 ${offline}，失败 ${failed}`
+        : '';
+      setStatus(`拓扑规则已保存${syncText}`, failed > 0 ? 'warn' : 'ok');
     }
 
     async function deleteCurrentChain() {
@@ -2059,18 +1954,6 @@
       });
       document.getElementById('btn-vr-status-refresh').addEventListener('click', () => {
         loadVirtualRouterStatus(false).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
-      });
-      document.getElementById('btn-vr-domain-close').addEventListener('click', closeVirtualRouterDomainPicker);
-      document.getElementById('btn-vr-domain-apply').addEventListener('click', () => {
-        setVirtualRouterRuleDomain(document.getElementById('vr-domain-manual').value);
-      });
-      document.getElementById('btn-vr-domain-clear').addEventListener('click', () => {
-        setVirtualRouterRuleDomain('');
-      });
-      document.getElementById('vr-domain-modal').addEventListener('click', (event) => {
-        if (event.target && event.target.id === 'vr-domain-modal') {
-          closeVirtualRouterDomainPicker();
-        }
       });
 
       document.getElementById('pf-chain-select').addEventListener('change', (e) => {

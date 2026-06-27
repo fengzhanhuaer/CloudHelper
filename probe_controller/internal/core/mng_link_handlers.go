@@ -72,7 +72,7 @@ func mngLinkVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 			return
 		}
-		result, err := upsertMngProbeVirtualRouterConfig(payload)
+		result, err := upsertMngProbeVirtualRouterConfig(payload, controllerBaseURLFromRequest(r))
 		writeMngLinkResult(w, result, err)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

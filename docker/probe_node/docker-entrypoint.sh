@@ -23,6 +23,8 @@ proxy_base_url="${PROBE_PROXY_BASE_URL:-}"
 node_id="${PROBE_NODE_ID:-}"
 node_secret="${PROBE_NODE_SECRET:-}"
 install_command="${PROBE_NODE_INSTALL_COMMAND:-}"
+wget_timeout="${PROBE_NODE_WGET_TIMEOUT:-60}"
+wget_tries="${PROBE_NODE_WGET_TRIES:-8}"
 
 extract_install_var() {
   var_name="$1"
@@ -120,14 +122,14 @@ if [ "${need_install}" = "true" ]; then
   proxy_url=""
   if proxy_url="$(build_controller_proxy_url)"; then
     log "installing probe binary via controller proxy"
-    if ! wget -q --header "X-CloudHelper-Download-URL: ${download_url}" -O "${tmp_path}" "${proxy_url}"; then
+    if ! wget -q -T "${wget_timeout}" -t "${wget_tries}" --header "X-CloudHelper-Download-URL: ${download_url}" -O "${tmp_path}" "${proxy_url}"; then
       log "controller proxy download failed, falling back to upstream release"
       rm -f "${tmp_path}"
     fi
   fi
   if [ ! -s "${tmp_path}" ]; then
     log "installing probe binary from upstream release: ${download_url}"
-    if ! wget -q -O "${tmp_path}" "${download_url}"; then
+    if ! wget -q -T "${wget_timeout}" -t "${wget_tries}" -O "${tmp_path}" "${download_url}"; then
       rm -f "${tmp_path}"
       die "failed to download probe binary"
     fi

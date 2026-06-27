@@ -59,6 +59,20 @@ type probeLocalConsoleControlCommand struct {
 	Timestamp    string `json:"timestamp"`
 }
 
+type probeLinkConfigSyncCommand struct {
+	Type              string `json:"type"`
+	ControllerBaseURL string `json:"controller_base_url"`
+	Timestamp         string `json:"timestamp"`
+}
+
+type probeLinkConfigSyncDispatchResult struct {
+	Total      int      `json:"total"`
+	Dispatched int      `json:"dispatched"`
+	Offline    int      `json:"offline"`
+	Failed     int      `json:"failed"`
+	Failures   []string `json:"failures,omitempty"`
+}
+
 type probeLogEntry struct {
 	Time    string `json:"time"`
 	Level   string `json:"level"`
@@ -360,6 +374,49 @@ func (s *probeSession) writeJSON(v interface{}) error {
 	err := s.enc.Encode(v)
 	_ = s.stream.SetWriteDeadline(time.Time{})
 	return err
+}
+
+func dispatchProbeLinkConfigSyncToKnownNodes(controllerBaseURL string) probeLinkConfigSyncDispatchResult {
+	return dispatchProbeLinkConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
+}
+
+func dispatchProbeLinkConfigSyncToNodes(nodeIDs []string, controllerBaseURL string) probeLinkConfigSyncDispatchResult {
+	result := probeLinkConfigSyncDispatchResult{
+		Total: len(nodeIDs),
+	}
+	if len(nodeIDs) == 0 {
+		return result
+	}
+	command := probeLinkConfigSyncCommand{
+		Type:              "link_config_sync",
+		ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
+		Timestamp:         time.Now().UTC().Format(time.RFC3339),
+	}
+	seen := map[string]struct{}{}
+	for _, rawNodeID := range nodeIDs {
+		nodeID := normalizeProbeNodeID(rawNodeID)
+		if nodeID == "" {
+			continue
+		}
+		if _, exists := seen[nodeID]; exists {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		session, ok := getProbeSession(nodeID)
+		if !ok {
+			result.Offline++
+			continue
+		}
+		if err := session.writeJSON(command); err != nil {
+			unregisterProbeSession(nodeID, session)
+			result.Failed++
+			result.Failures = append(result.Failures, fmt.Sprintf("%s: %v", nodeID, err))
+			continue
+		}
+		result.Dispatched++
+	}
+	result.Total = len(seen)
+	return result
 }
 
 func AdminUpgradeProbeNodeHandler(w http.ResponseWriter, r *http.Request) {

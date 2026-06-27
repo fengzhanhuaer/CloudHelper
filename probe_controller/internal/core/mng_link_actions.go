@@ -62,7 +62,7 @@ func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
 	}, nil
 }
 
-func upsertMngProbeVirtualRouterConfig(payload json.RawMessage) (map[string]interface{}, error) {
+func upsertMngProbeVirtualRouterConfig(payload json.RawMessage, controllerBaseURL string) (map[string]interface{}, error) {
 	if ProbeLinkChainStore == nil {
 		return nil, fmt.Errorf("probe link chain store is not initialized")
 	}
@@ -80,9 +80,11 @@ func upsertMngProbeVirtualRouterConfig(payload json.RawMessage) (map[string]inte
 	if err := ProbeLinkChainStore.Save(); err != nil {
 		return nil, err
 	}
+	syncResult := dispatchProbeLinkConfigSyncToKnownNodes(controllerBaseURL)
 	return map[string]interface{}{
 		"ok":   true,
 		"item": config,
+		"sync": syncResult,
 	}, nil
 }
 

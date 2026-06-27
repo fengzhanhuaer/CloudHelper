@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -58,7 +60,12 @@ const (
 	probeUpgradeWorkspaceDirName      = ".cloudhelper-upgrade"
 	probeUpgradeWorkspacePrefix       = "cloudhelper-probe-node-upgrade-"
 	probeUpgradeWorkspaceStaleTTL     = 24 * time.Hour
+	probeUpgradeOperationTimeout      = 30 * time.Minute
+	probeUpgradeDownloadIdleTimeout   = time.Minute
+	probeUpgradeDownloadMaxRetries    = 8
 )
+
+var errProbeUpgradeDownloadIdleTimeout = errors.New("download idle timeout")
 
 func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	probeUpgradeState.mu.Lock()
@@ -105,7 +112,7 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		controllerBase,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), probeUpgradeOperationTimeout)
 	defer cancel()
 
 	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
@@ -167,16 +174,17 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 	defer cleanupProbeUpgradeWorkspace(tmpDir)
 
 	assetFile := filepath.Join(tmpDir, filepath.Base(asset.Name))
+	downloadMode := mode
 	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
 		Status:      "running",
 		Step:        "download",
 		Progress:    42,
 		Message:     "下载升级包",
-		Mode:        mode,
+		Mode:        downloadMode,
 		ReleaseRepo: repo,
 	})
 	log.Printf("probe upgrade download: target=%s mode=%s", assetFile, mode)
-	if err := downloadProbeAsset(ctx, mode, asset.DownloadURL, controllerBase, identity, assetFile, func(downloaded, total, speedBPS int64) {
+	reportDownloadProgress := func(downloaded, total, speedBPS int64) {
 		progress := 42
 		if total > 0 {
 			progress = 42 + int(float64(downloaded)/float64(total)*12.0)
@@ -189,15 +197,35 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 			Step:            "download",
 			Progress:        progress,
 			Message:         formatProbeUpgradeDownloadMessage(downloaded, total, speedBPS),
-			Mode:            mode,
+			Mode:            downloadMode,
 			ReleaseRepo:     repo,
 			DownloadedBytes: downloaded,
 			TotalBytes:      total,
 			SpeedBPS:        speedBPS,
 		})
-	}); err != nil {
+	}
+	if err := downloadProbeAsset(ctx, downloadMode, asset.DownloadURL, controllerBase, identity, assetFile, reportDownloadProgress); err != nil {
+		if shouldFallbackProbeUpgradeDownloadToProxy(downloadMode, controllerBase, err) {
+			log.Printf("probe upgrade direct download failed, fallback to controller proxy: err=%v", err)
+			reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
+				Status:      "running",
+				Step:        "download",
+				Progress:    42,
+				Message:     "直连下载中断，切换主控代理继续下载",
+				Mode:        "proxy",
+				ReleaseRepo: repo,
+			})
+			downloadMode = "proxy"
+			if proxyErr := downloadProbeAsset(ctx, downloadMode, asset.DownloadURL, controllerBase, identity, assetFile, reportDownloadProgress); proxyErr != nil {
+				err = fmt.Errorf("direct download failed: %w; proxy fallback failed: %v", err, proxyErr)
+			} else {
+				err = nil
+			}
+		}
+	}
+	if err != nil {
 		log.Printf("probe upgrade failed: download asset: %v", err)
-		reportProbeLocalUpgradeFailed("download", err, mode, repo, 42)
+		reportProbeLocalUpgradeFailed("download", err, downloadMode, repo, 42)
 		return
 	}
 	if st, err := os.Stat(assetFile); err == nil {
@@ -463,6 +491,8 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 
 	downloadOnce := func(offset int64) (int64, error) {
 		start := time.Now()
+		reqCtx, cancelRequest := context.WithCancel(ctx)
+		defer cancelRequest()
 		var (
 			reader     io.ReadCloser
 			statusCode int
@@ -474,7 +504,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 				return 0, err
 			}
 			log.Printf("probe upgrade asset download via controller proxy: %s offset=%d", safeURLForLog(requestURL), offset)
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, requestURL, nil)
 			if err != nil {
 				return 0, err
 			}
@@ -486,7 +516,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			if offset > 0 {
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 			}
-			client, closeClient, err := newProbeResolvedHTTPClientForURL(requestURL, probeResolvedDialDefaultTimeout)
+			client, closeClient, err := newProbeUpgradeResolvedDownloadHTTPClientForURL(requestURL)
 			if err != nil {
 				return 0, err
 			}
@@ -517,7 +547,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			}
 		} else {
 			log.Printf("probe upgrade asset download direct: %s offset=%d", safeURLForLog(assetURL), offset)
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, assetURL, nil)
 			if err != nil {
 				return 0, err
 			}
@@ -526,11 +556,14 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			if offset > 0 {
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 			}
-			resp, err := http.DefaultClient.Do(req)
+			client, closeClient := newProbeUpgradeDirectDownloadHTTPClient()
+			resp, err := client.Do(req)
 			if err != nil {
+				closeClient()
 				log.Printf("warning: probe upgrade direct download request failed: elapsed=%s offset=%d err=%v", time.Since(start).String(), offset, err)
 				return 0, err
 			}
+			defer closeClient()
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 				resp.Body.Close()
@@ -559,20 +592,26 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		if err != nil {
 			return 0, err
 		}
-		written, copyErr := copyProbeUpgradeWithProgress(f, reader, func(n int64) {
-			finalSize := currentSize + n
-			if truncate {
-				finalSize = n
-			}
-			speed := int64(0)
-			elapsed := time.Since(start).Seconds()
-			if elapsed > 0 {
-				speed = int64(float64(n) / elapsed)
-			}
-			if onProgress != nil {
-				onProgress(finalSize, total, speed)
-			}
-		})
+		written, copyErr := copyProbeUpgradeWithProgressAndIdleTimeout(
+			f,
+			reader,
+			probeUpgradeDownloadIdleTimeout,
+			cancelRequest,
+			func(n int64) {
+				finalSize := currentSize + n
+				if truncate {
+					finalSize = n
+				}
+				speed := int64(0)
+				elapsed := time.Since(start).Seconds()
+				if elapsed > 0 {
+					speed = int64(float64(n) / elapsed)
+				}
+				if onProgress != nil {
+					onProgress(finalSize, total, speed)
+				}
+			},
+		)
 		closeErr := f.Close()
 		if copyErr != nil {
 			if closeErr != nil {
@@ -601,13 +640,13 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 	for {
 		nextOffset, err := downloadOnce(resumeOffset)
 		if err != nil {
-			if retryCount < 3 && isProbeTransientHTTPError(err) && ctx.Err() == nil {
+			if retryCount < probeUpgradeDownloadMaxRetries && isProbeTransientHTTPError(err) && ctx.Err() == nil {
 				retryCount++
 				if st, statErr := os.Stat(partPath); statErr == nil && st.Mode().IsRegular() {
 					resumeOffset = st.Size()
 				}
 				log.Printf("probe upgrade download transient error, retry=%d offset=%d err=%v", retryCount, resumeOffset, err)
-				time.Sleep(time.Duration(retryCount) * time.Second)
+				time.Sleep(probeUpgradeDownloadRetryDelay(retryCount))
 				continue
 			}
 			return err
@@ -633,13 +672,89 @@ func buildProbeUpgradeProxyDownloadURL(controllerBase string, assetURL string) (
 	return base + "/api/probe/proxy/download?" + query.Encode(), nil
 }
 
+func shouldFallbackProbeUpgradeDownloadToProxy(mode, controllerBase string, err error) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), "direct") &&
+		strings.TrimSpace(controllerBase) != "" &&
+		isProbeTransientHTTPError(err)
+}
+
+func newProbeUpgradeDirectDownloadHTTPClient() (*http.Client, func()) {
+	if base, ok := http.DefaultTransport.(*http.Transport); ok && base != nil {
+		transport := base.Clone()
+		transport.ResponseHeaderTimeout = probeUpgradeDownloadIdleTimeout
+		transport.TLSHandshakeTimeout = probeUpgradeDownloadIdleTimeout
+		return &http.Client{Transport: transport}, func() { transport.CloseIdleConnections() }
+	}
+	return &http.Client{}, func() {}
+}
+
+func newProbeUpgradeResolvedDownloadHTTPClientForURL(rawURL string) (*http.Client, func(), error) {
+	target, err := resolveProbeLocalURLDialTarget(rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           newProbeResolvedDialContext(target, probeUpgradeDownloadIdleTimeout),
+		TLSHandshakeTimeout:   probeUpgradeDownloadIdleTimeout,
+		ResponseHeaderTimeout: probeUpgradeDownloadIdleTimeout,
+	}
+	if target.TLSEnabled {
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: strings.TrimSpace(target.ServerName),
+		}
+	}
+	client := &http.Client{Transport: transport}
+	return client, func() { transport.CloseIdleConnections() }, nil
+}
+
+func probeUpgradeDownloadRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return time.Second
+	}
+	delay := time.Duration(attempt*2) * time.Second
+	if delay > 15*time.Second {
+		return 15 * time.Second
+	}
+	return delay
+}
+
 func copyProbeUpgradeWithProgress(dst io.Writer, src io.Reader, onProgress func(written int64)) (int64, error) {
+	return copyProbeUpgradeWithProgressAndIdleTimeout(dst, src, 0, nil, onProgress)
+}
+
+func copyProbeUpgradeWithProgressAndIdleTimeout(dst io.Writer, src io.Reader, idleTimeout time.Duration, onIdleTimeout func(), onProgress func(written int64)) (int64, error) {
 	buf := make([]byte, 128*1024)
 	var written int64
 	lastReport := time.Now()
+	var idleExpired atomic.Bool
+	var idleTimer *time.Timer
+	if idleTimeout > 0 {
+		idleTimer = time.AfterFunc(idleTimeout, func() {
+			idleExpired.Store(true)
+			if onIdleTimeout != nil {
+				onIdleTimeout()
+			}
+		})
+		defer idleTimer.Stop()
+	}
+	resetIdleTimer := func() {
+		if idleTimer == nil {
+			return
+		}
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		idleTimer.Reset(idleTimeout)
+	}
 	for {
 		nr, er := src.Read(buf)
 		if nr > 0 {
+			resetIdleTimer()
 			nw, ew := dst.Write(buf[:nr])
 			if nw > 0 {
 				written += int64(nw)
@@ -670,6 +785,9 @@ func copyProbeUpgradeWithProgress(dst io.Writer, src io.Reader, onProgress func(
 			}
 			if onProgress != nil {
 				onProgress(written)
+			}
+			if idleExpired.Load() {
+				return written, fmt.Errorf("%w: no traffic for %s", errProbeUpgradeDownloadIdleTimeout, idleTimeout)
 			}
 			return written, er
 		}

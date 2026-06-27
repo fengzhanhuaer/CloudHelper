@@ -737,6 +737,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeChainLinkControl(msg, identity, stream, encoder, writeMu)
 		return
 	}
+	if typeName == "link_config_sync" {
+		go runProbeLinkConfigSyncControl(msg, identity)
+		return
+	}
 	if typeName == "local_console_proxy" {
 		go runProbeLocalConsoleProxy(msg, identity, stream, encoder, writeMu)
 		return
@@ -816,6 +820,20 @@ func runProbeLocalConsoleControl(msg probeControlMessage) {
 		return
 	}
 	logProbeInfof("probe local console control applied: enabled=%t", msg.LocalConsole)
+}
+
+func runProbeLinkConfigSyncControl(msg probeControlMessage, identity nodeIdentity) {
+	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(msg.ControllerBaseURL), "")
+	if strings.TrimSpace(controllerBaseURL) == "" {
+		runtimeContext := currentProbeLocalProxyRuntimeContext()
+		controllerBaseURL = strings.TrimSpace(runtimeContext.ControllerBaseURL)
+	}
+	if strings.TrimSpace(controllerBaseURL) == "" {
+		logProbeWarnf("probe link config sync skipped: controller base url is empty")
+		return
+	}
+	logProbeInfof("probe link config sync requested by controller")
+	syncProbeChainRuntimes(identity, controllerBaseURL)
 }
 
 func currentReportIntervalDuration() time.Duration {
