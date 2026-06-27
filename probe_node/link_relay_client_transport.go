@@ -113,6 +113,7 @@ type probeChainRelayReportItem struct {
 	ListenState   *probeChainRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
 	NextState     *probeChainRelayProtocolStateSnapshot `json:"next_state,omitempty"`
 	PrevState     *probeChainRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
+	VirtualRouter *probeVirtualRouterRuntimeStats       `json:"virtual_router,omitempty"`
 	UpdatedAt     string                                `json:"updated_at,omitempty"`
 }
 
@@ -1036,6 +1037,11 @@ func snapshotProbeChainRelayReports() []probeChainRelayReportItem {
 		if cfg.prevPort > 0 && strings.TrimSpace(cfg.prevHost) != "" {
 			if snapshot := snapshotProbeChainProtocolState(cfg.prevHost, cfg.prevPort); probeChainRelaySnapshotHasData(snapshot) {
 				item.PrevState = &snapshot
+			}
+		}
+		if isProbeVirtualRouterRuntimeChainID(cfg.chainID) {
+			if stats := snapshotProbeVirtualRouterRuntimeStats(cfg.chainID); stats != nil {
+				item.VirtualRouter = stats
 			}
 		}
 		out = append(out, item)

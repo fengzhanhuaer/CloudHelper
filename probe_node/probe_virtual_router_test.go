@@ -79,6 +79,13 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 				ToServicePort:     443,
 				Enabled:           true,
 			},
+			{
+				ID:         "rule-default-port",
+				FromNodeID: "node-2",
+				ToNodeID:   "node-3",
+				Direction:  "both",
+				Enabled:    true,
+			},
 		},
 	}
 	if err := persistProbeVirtualRouterCache(config); err != nil {
@@ -98,7 +105,7 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	if len(loaded.ProbeIPs) != 1 || loaded.ProbeIPs[0].NodeID != "1" {
 		t.Fatalf("loaded probe ips=%+v", loaded.ProbeIPs)
 	}
-	if len(loaded.TopologyRules) != 2 || loaded.TopologyRules[0].Direction != probeVirtualRouterDirectionTwoWay {
+	if len(loaded.TopologyRules) != 3 || loaded.TopologyRules[0].Direction != probeVirtualRouterDirectionTwoWay {
 		t.Fatalf("loaded topology=%+v", loaded.TopologyRules)
 	}
 	if loaded.TopologyRules[0].FromServiceDomain != "edge-a.example.com" || loaded.TopologyRules[0].FromServicePort != 443 || loaded.TopologyRules[0].ToServiceDomain != "edge-b.internal.lan" || loaded.TopologyRules[0].ToServicePort != 443 {
@@ -106,6 +113,9 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	}
 	if loaded.TopologyRules[1].FromServicePort != 443 || loaded.TopologyRules[1].ToServicePort != 443 {
 		t.Fatalf("service port reuse should be preserved: %+v", loaded.TopologyRules)
+	}
+	if loaded.TopologyRules[2].FromServicePort != probeVirtualRouterDefaultServicePort || loaded.TopologyRules[2].ToServicePort != probeVirtualRouterDefaultServicePort {
+		t.Fatalf("default service ports=%d/%d, want %d", loaded.TopologyRules[2].FromServicePort, loaded.TopologyRules[2].ToServicePort, probeVirtualRouterDefaultServicePort)
 	}
 }
 
@@ -138,6 +148,102 @@ func TestProbeVirtualRouterCurrentLocalPathToIP(t *testing.T) {
 	}
 	if got := currentProbeVirtualRouterPathToIP("198.18.0.3"); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
 		t.Fatalf("path to ip=%v, want [1 2 3]", got)
+	}
+}
+
+func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{
+				ID:                "edge-a-b",
+				FromNodeID:        "1",
+				ToNodeID:          "2",
+				Direction:         "bidirectional",
+				FromServiceDomain: "a.internal",
+				FromServicePort:   12040,
+				ToServiceDomain:   "b.internal",
+				ToServicePort:     12040,
+				Enabled:           true,
+			},
+		},
+	}
+	left := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "1", Secret: "node-1"}, "")
+	right := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "2", Secret: "node-2"}, "")
+	if len(left) != 1 || len(right) != 1 {
+		t.Fatalf("runtime configs left=%d right=%d", len(left), len(right))
+	}
+	if left[0].chainID != right[0].chainID || !isProbeVirtualRouterRuntimeChainID(left[0].chainID) {
+		t.Fatalf("unexpected chain ids left=%q right=%q", left[0].chainID, right[0].chainID)
+	}
+	if left[0].nextNodeID != "2" || left[0].nextHost != "b.internal" || left[0].nextPort != 12040 || left[0].nextAuthMode != "secret" {
+		t.Fatalf("left runtime should dial node 2: %+v", left[0])
+	}
+	if right[0].prevNodeID != "1" || right[0].nextAuthMode != "proxy" {
+		t.Fatalf("right runtime should wait for node 1: %+v", right[0])
+	}
+	if left[0].listenPort != 12040 || right[0].listenPort != 12040 {
+		t.Fatalf("listen ports left=%d right=%d", left[0].listenPort, right[0].listenPort)
+	}
+}
+
+func TestBuildProbeVirtualRouterRuntimeConfigSingleDomainDialer(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{
+				ID:                "edge-a-only",
+				FromNodeID:        "1",
+				ToNodeID:          "2",
+				Direction:         "bidirectional",
+				FromServiceDomain: "a.internal",
+				FromServicePort:   12040,
+				ToServicePort:     12040,
+				Enabled:           true,
+			},
+		},
+	}
+	left := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "1", Secret: "node-1"}, "")
+	right := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "2", Secret: "node-2"}, "")
+	if len(left) != 1 || len(right) != 1 {
+		t.Fatalf("runtime configs left=%d right=%d", len(left), len(right))
+	}
+	if left[0].prevNodeID != "2" || left[0].nextAuthMode != "proxy" {
+		t.Fatalf("node 1 should wait for node 2: %+v", left[0])
+	}
+	if right[0].nextNodeID != "1" || right[0].nextHost != "a.internal" || right[0].nextPort != 12040 {
+		t.Fatalf("node 2 should dial node 1: %+v", right[0])
+	}
+}
+
+func TestCollectProbeLinkChainRuntimeIDsToStopKeepsVirtualRouterRuntime(t *testing.T) {
+	probeChainRuntimeState.mu.Lock()
+	oldRuntimes := probeChainRuntimeState.runtimes
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+		"ordinary": {
+			cfg:                probeChainRuntimeConfig{chainID: "ordinary"},
+			downstreamSessions: make(map[string]*probeChainBridgeSession),
+			upstreamSessions:   make(map[string]*probeChainBridgeSession),
+			stopCh:             make(chan struct{}),
+		},
+		"vrouter-abc": {
+			cfg:                probeChainRuntimeConfig{chainID: "vrouter-abc"},
+			downstreamSessions: make(map[string]*probeChainBridgeSession),
+			upstreamSessions:   make(map[string]*probeChainBridgeSession),
+			stopCh:             make(chan struct{}),
+		},
+	}
+	t.Cleanup(func() {
+		probeChainRuntimeState.mu.Lock()
+		probeChainRuntimeState.runtimes = oldRuntimes
+		probeChainRuntimeState.mu.Unlock()
+	})
+
+	toStop := collectProbeLinkChainRuntimeIDsToStopLocked(map[string]struct{}{})
+	probeChainRuntimeState.mu.Unlock()
+
+	if !reflect.DeepEqual(toStop, []string{"ordinary"}) {
+		t.Fatalf("toStop=%v, want [ordinary]", toStop)
 	}
 }
 

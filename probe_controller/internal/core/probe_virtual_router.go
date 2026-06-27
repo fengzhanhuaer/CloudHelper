@@ -1,7 +1,9 @@
 package core
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"sort"
@@ -11,15 +13,17 @@ import (
 )
 
 const (
-	probeVirtualRouterDefaultCIDR       = "198.18.0.0/15"
-	probeVirtualRouterProbeIPPoolSize   = 1024
-	probeVirtualRouterMaxProbeIPCount   = 1024
-	probeVirtualRouterMaxTopologyRules  = 2048
-	probeVirtualRouterDirectionTwoWay   = "bidirectional"
-	probeVirtualRouterDirectionForward  = "forward"
-	probeVirtualRouterDirectionBackward = "backward"
-	probeVirtualRouterReservedGatewayIP = "198.18.0.1"
-	probeVirtualRouterReservedTUNIP     = "198.18.0.2"
+	probeVirtualRouterDefaultCIDR        = "198.18.0.0/15"
+	probeVirtualRouterProbeIPPoolSize    = 1024
+	probeVirtualRouterMaxProbeIPCount    = 1024
+	probeVirtualRouterMaxTopologyRules   = 2048
+	probeVirtualRouterDefaultServicePort = 12040
+	probeVirtualRouterDirectionTwoWay    = "bidirectional"
+	probeVirtualRouterDirectionForward   = "forward"
+	probeVirtualRouterDirectionBackward  = "backward"
+	probeVirtualRouterReservedGatewayIP  = "198.18.0.1"
+	probeVirtualRouterReservedTUNIP      = "198.18.0.2"
+	probeVirtualRouterRuntimeChainPrefix = "vrouter-"
 )
 
 type probeVirtualRouterConfig struct {
@@ -49,6 +53,24 @@ type probeVirtualRouterTopologyRule struct {
 	Enabled           bool   `json:"enabled"`
 	Note              string `json:"note,omitempty"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
+}
+
+type probeVirtualRouterRuntimeStats struct {
+	PacketsForwarded  int64  `json:"packets_forwarded,omitempty"`
+	BytesForwarded    int64  `json:"bytes_forwarded,omitempty"`
+	PacketsReceived   int64  `json:"packets_received,omitempty"`
+	BytesReceived     int64  `json:"bytes_received,omitempty"`
+	PacketsDelivered  int64  `json:"packets_delivered,omitempty"`
+	BytesDelivered    int64  `json:"bytes_delivered,omitempty"`
+	StreamOpenCount   int64  `json:"stream_open_count,omitempty"`
+	LastOpenLatencyMS int64  `json:"last_open_latency_ms,omitempty"`
+	LastOpenError     string `json:"last_open_error,omitempty"`
+	LastOpenAt        string `json:"last_open_at,omitempty"`
+	PingCount         int64  `json:"ping_count,omitempty"`
+	LastPingLatencyMS int64  `json:"last_ping_latency_ms,omitempty"`
+	LastPingError     string `json:"last_ping_error,omitempty"`
+	LastPingAt        string `json:"last_ping_at,omitempty"`
+	LastPacketAt      string `json:"last_packet_at,omitempty"`
 }
 
 func defaultProbeVirtualRouterConfig() probeVirtualRouterConfig {
@@ -209,10 +231,10 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].direction is invalid", index)
 		}
 		if item.FromServicePort < 0 || item.FromServicePort > 65535 {
-			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].from_service_port must be empty or between 1 and 65535", index)
+			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].from_service_port must be empty(default %d) or between 1 and 65535", index, probeVirtualRouterDefaultServicePort)
 		}
 		if item.ToServicePort < 0 || item.ToServicePort > 65535 {
-			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].to_service_port must be empty or between 1 and 65535", index)
+			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].to_service_port must be empty(default %d) or between 1 and 65535", index, probeVirtualRouterDefaultServicePort)
 		}
 	}
 	config := normalizeProbeVirtualRouterConfig(input)
@@ -330,9 +352,24 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 
 func normalizeProbeVirtualRouterServicePort(port int) int {
 	if port <= 0 || port > 65535 {
-		return 0
+		return probeVirtualRouterDefaultServicePort
 	}
 	return port
+}
+
+func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		"chain",
+		strings.TrimSpace(rule.ID),
+		normalizeProbeNodeID(rule.FromNodeID),
+		normalizeProbeNodeID(rule.ToNodeID),
+		normalizeProbeVirtualRouterDirection(rule.Direction),
+		strings.TrimSpace(rule.FromServiceDomain),
+		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.FromServicePort)),
+		strings.TrimSpace(rule.ToServiceDomain),
+		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.ToServicePort)),
+	}, "|")))
+	return probeVirtualRouterRuntimeChainPrefix + hex.EncodeToString(sum[:])[:24]
 }
 
 func normalizeProbeVirtualRouterDirection(raw string) string {

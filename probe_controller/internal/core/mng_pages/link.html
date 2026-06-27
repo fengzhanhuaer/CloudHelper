@@ -55,6 +55,10 @@
       color:#8b949e;
       margin-right:6px;
     }
+    .route-state { display:inline-block; font-size:12px; border-radius:999px; padding:2px 8px; border:1px solid #30363d; }
+    .route-state.ok { color:#7ee787; border-color:#238636; }
+    .route-state.warn { color:#f2cc60; border-color:#9e6a03; }
+    .route-state.err { color:#ff7b72; border-color:#da3633; }
     .ip-list { margin-top:4px; display:flex; flex-wrap:wrap; gap:4px; }
     .ip-tag {
       display:inline-block;
@@ -73,6 +77,12 @@
       text-overflow:ellipsis;
       white-space:nowrap;
     }
+    .endpoint-stack { display:grid; gap:6px; min-width:260px; }
+    .endpoint-row { display:grid; grid-template-columns:44px minmax(0, 1fr); align-items:center; gap:6px; }
+    .endpoint-row .label { color:#8b949e; font-size:12px; }
+    .endpoint-row input, .endpoint-row select { min-width:0; width:100%; box-sizing:border-box; }
+    .endpoint-row .domain-cell { min-width:0; }
+    .endpoint-row .domain-value { min-width:0; max-width:none; }
     .modal-backdrop {
       position:fixed;
       inset:0;
@@ -131,6 +141,7 @@
       <button class="tab" data-tab="edit" type="button">链路编辑</button>
       <button class="tab" data-tab="entry" type="button">链路入口</button>
       <button class="tab" data-tab="topology" type="button">拓扑规则</button>
+      <button class="tab" data-tab="route" type="button">路由状态</button>
       <button class="tab" data-tab="pf" type="button">端口转发</button>
       <button class="tab" data-tab="view" type="button">链路查看</button>
     </div>
@@ -289,13 +300,8 @@
               <thead>
                 <tr>
                   <th>启用</th>
-                  <th>名称</th>
-                  <th>探针 A</th>
-                  <th>A 域名</th>
-                  <th>A 端口</th>
-                  <th>探针 B</th>
-                  <th>B 域名</th>
-                  <th>B 端口</th>
+                  <th>A 端</th>
+                  <th>B 端</th>
                   <th>方向</th>
                   <th>操作</th>
                 </tr>
@@ -304,6 +310,27 @@
             </table>
           </div>
         </div>
+      </section>
+
+      <section id="section-route" class="section">
+        <div class="row">
+          <button id="btn-vr-status-refresh" class="btn" type="button">刷新路由状态</button>
+          <span id="vr-status-summary" class="small muted">暂无状态</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>运行态</th>
+              <th>状态</th>
+              <th>探针 A</th>
+              <th>探针 B</th>
+              <th>统计</th>
+              <th>虚拟 Ping</th>
+              <th>最近活动</th>
+            </tr>
+          </thead>
+          <tbody id="vr-status-body"></tbody>
+        </table>
       </section>
 
       <section id="section-pf" class="section">
@@ -388,6 +415,7 @@
       egressHost: '',
       egressPort: 0,
       portForwardListenHost: '0.0.0.0',
+      virtualRouterServicePort: 12040,
     };
 
     const state = {
@@ -398,6 +426,7 @@
       nodes: [],
       chains: [],
       relayStatus: [],
+      virtualRouterStatus: [],
       selectedChainID: '',
       selectedEntryChainID: '',
       entryProfile: null,
@@ -465,6 +494,15 @@
       if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB/s`;
       if (n >= 1024) return `${(n / 1024).toFixed(1)} KB/s`;
       return `${Math.round(n)} B/s`;
+    }
+
+    function formatBytes(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n) || n <= 0) return '0 B';
+      if (n >= 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+      if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+      if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${Math.round(n)} B`;
     }
 
     function formatProtocolQuality(quality) {
@@ -601,6 +639,9 @@
     async function loadCloudflareDDNSRecords(silent) {
       const payload = await requestJSON('/mng/api/cloudflare/ddns/records');
       state.cloudflareDDNSRecords = Array.isArray(payload.records) ? payload.records : [];
+      if (state.activeTab === 'topology') {
+        renderVirtualRouter();
+      }
       if (!silent) setStatus(`Cloudflare DDNS 域名已刷新：${state.cloudflareDDNSRecords.length} 条`, 'ok');
     }
 
@@ -628,15 +669,28 @@
       return rows;
     }
 
-    function virtualRouterDomainButton(rule, idx, side) {
+    function virtualRouterDomainSelect(rule, idx, side) {
       const domainKey = side === 'from' ? 'from_service_domain' : 'to_service_domain';
       const nodeKey = side === 'from' ? 'from_node_id' : 'to_node_id';
       const value = String(rule && rule[domainKey] || '').trim();
-      const nodeText = nodeLabel(rule && rule[nodeKey]);
+      const options = cloudflareDomainCandidates(rule && rule[nodeKey]);
+      const hasCurrent = value && options.some((item) => item.name === value);
+      const rows = [
+        `<option value="" ${value ? '' : 'selected'}>不使用域名</option>`,
+      ];
+      if (value && !hasCurrent) {
+        rows.push(`<option value="${escapeHTML(value)}" selected>${escapeHTML(value)} (当前)</option>`);
+      }
+      options.forEach((item) => {
+        const ip = String(item.content_ip || '').trim();
+        const label = ip ? `${item.name} (${ip})` : `${item.name} (-)`;
+        rows.push(`<option value="${escapeHTML(item.name)}" ${item.name === value ? 'selected' : ''}>${escapeHTML(label)}</option>`);
+      });
       return `
         <div class="domain-cell">
-          <span class="domain-value mono" title="${escapeHTML(value || nodeText)}">${escapeHTML(value || '-')}</span>
-          <button class="btn" data-vr-domain-pick="${idx}" data-vr-domain-side="${escapeHTML(side)}" type="button">选择</button>
+          <select data-vr-domain-select="${idx}" data-vr-domain-side="${escapeHTML(side)}" title="${escapeHTML(value || '')}">
+            ${rows.join('')}
+          </select>
         </div>
       `;
     }
@@ -804,6 +858,13 @@
       if (!silent) setStatus('拓扑规则已刷新', 'ok');
     }
 
+    async function loadVirtualRouterStatus(silent) {
+      const payload = await requestJSON('/mng/api/link/virtual_router/status');
+      state.virtualRouterStatus = Array.isArray(payload.items) ? payload.items : [];
+      renderVirtualRouterStatus();
+      if (!silent) setStatus(`路由状态已刷新：${state.virtualRouterStatus.length} 条`, 'ok');
+    }
+
     function bindTabs() {
       const tabs = Array.from(document.querySelectorAll('.tab'));
       tabs.forEach((button) => {
@@ -824,6 +885,9 @@
               loadCloudflareDDNSRecords(true).catch(() => {}),
               loadVirtualRouter(true),
             ]).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
+          }
+          if (state.activeTab === 'route') {
+            loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'view') {
             loadRelayStatus(true).catch((err) => setStatus(`刷新链路状态失败：${err.message || err}`, 'err'));
@@ -1470,18 +1534,25 @@
       const rules = Array.isArray(cfg.topology_rules) ? cfg.topology_rules : [];
       const ruleBody = document.getElementById('vr-rule-body');
       if (!rules.length) {
-        ruleBody.innerHTML = '<tr><td colspan="10" class="muted">暂无拓扑规则。</td></tr>';
+        ruleBody.innerHTML = '<tr><td colspan="5" class="muted">暂无拓扑规则。</td></tr>';
       } else {
         ruleBody.innerHTML = rules.map((rule, idx) => `
           <tr>
             <td><input data-vr-rule-enabled="${idx}" type="checkbox" ${rule.enabled === false ? '' : 'checked'} /></td>
-            <td><input data-vr-rule-name="${idx}" value="${escapeHTML(rule.name || '')}" placeholder="${escapeHTML(rule.id || '')}" /></td>
-            <td><select data-vr-rule-from="${idx}">${virtualRouterNodeOptions(rule.from_node_id)}</select></td>
-            <td>${virtualRouterDomainButton(rule, idx, 'from')}</td>
-            <td><input data-vr-rule-from-port="${idx}" class="mono" type="number" min="1" max="65535" value="${rule.from_service_port ? escapeHTML(rule.from_service_port) : ''}" /></td>
-            <td><select data-vr-rule-to="${idx}">${virtualRouterNodeOptions(rule.to_node_id)}</select></td>
-            <td>${virtualRouterDomainButton(rule, idx, 'to')}</td>
-            <td><input data-vr-rule-to-port="${idx}" class="mono" type="number" min="1" max="65535" value="${rule.to_service_port ? escapeHTML(rule.to_service_port) : ''}" /></td>
+            <td>
+              <div class="endpoint-stack">
+                <div class="endpoint-row"><span class="label">探针</span><select data-vr-rule-from="${idx}">${virtualRouterNodeOptions(rule.from_node_id)}</select></div>
+                <div class="endpoint-row"><span class="label">域名</span>${virtualRouterDomainSelect(rule, idx, 'from')}</div>
+                <div class="endpoint-row"><span class="label">端口</span><input data-vr-rule-from-port="${idx}" class="mono" type="number" min="1" max="65535" value="${escapeHTML(rule.from_service_port || DEFAULTS.virtualRouterServicePort)}" /></div>
+              </div>
+            </td>
+            <td>
+              <div class="endpoint-stack">
+                <div class="endpoint-row"><span class="label">探针</span><select data-vr-rule-to="${idx}">${virtualRouterNodeOptions(rule.to_node_id)}</select></div>
+                <div class="endpoint-row"><span class="label">域名</span>${virtualRouterDomainSelect(rule, idx, 'to')}</div>
+                <div class="endpoint-row"><span class="label">端口</span><input data-vr-rule-to-port="${idx}" class="mono" type="number" min="1" max="65535" value="${escapeHTML(rule.to_service_port || DEFAULTS.virtualRouterServicePort)}" /></div>
+              </div>
+            </td>
             <td>
               <select data-vr-rule-direction="${idx}">
                 <option value="bidirectional" ${rule.direction === 'bidirectional' ? 'selected' : ''}>双向</option>
@@ -1515,14 +1586,6 @@
           rules[idx].enabled = !!el.checked;
         });
       });
-      document.querySelectorAll('[data-vr-rule-name]').forEach((el) => {
-        el.addEventListener('input', () => {
-          const idx = Number.parseInt(el.getAttribute('data-vr-rule-name') || '-1', 10);
-          const rules = state.virtualRouter.topology_rules || [];
-          if (idx < 0 || idx >= rules.length) return;
-          rules[idx].name = String(el.value || '').trim();
-        });
-      });
       document.querySelectorAll('[data-vr-rule-from]').forEach((el) => {
         el.addEventListener('change', () => {
           const idx = Number.parseInt(el.getAttribute('data-vr-rule-from') || '-1', 10);
@@ -1537,7 +1600,7 @@
           const rules = state.virtualRouter.topology_rules || [];
           if (idx < 0 || idx >= rules.length) return;
           const port = Number.parseInt(el.value || '0', 10);
-          rules[idx].from_service_port = Number.isFinite(port) && port > 0 ? port : 0;
+          rules[idx].from_service_port = Number.isFinite(port) && port > 0 ? port : DEFAULTS.virtualRouterServicePort;
         });
       });
       document.querySelectorAll('[data-vr-rule-to]').forEach((el) => {
@@ -1554,7 +1617,7 @@
           const rules = state.virtualRouter.topology_rules || [];
           if (idx < 0 || idx >= rules.length) return;
           const port = Number.parseInt(el.value || '0', 10);
-          rules[idx].to_service_port = Number.isFinite(port) && port > 0 ? port : 0;
+          rules[idx].to_service_port = Number.isFinite(port) && port > 0 ? port : DEFAULTS.virtualRouterServicePort;
         });
       });
       document.querySelectorAll('[data-vr-rule-direction]').forEach((el) => {
@@ -1575,11 +1638,16 @@
           renderVirtualRouter();
         });
       });
-      document.querySelectorAll('[data-vr-domain-pick]').forEach((el) => {
-        el.addEventListener('click', () => {
-          const idx = Number.parseInt(el.getAttribute('data-vr-domain-pick') || '-1', 10);
+      document.querySelectorAll('[data-vr-domain-select]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-domain-select') || '-1', 10);
           const side = String(el.getAttribute('data-vr-domain-side') || '').trim();
-          openVirtualRouterDomainPicker(idx, side).catch((err) => setStatus(`载入 DDNS 域名失败：${err.message || err}`, 'err'));
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx < 0 || idx >= rules.length) return;
+          if (side !== 'from' && side !== 'to') return;
+          const key = side === 'from' ? 'from_service_domain' : 'to_service_domain';
+          rules[idx][key] = String(el.value || '').trim();
+          renderVirtualRouter();
         });
       });
     }
@@ -1602,9 +1670,9 @@
         to_node_id: ids[1],
         direction: 'bidirectional',
         from_service_domain: '',
-        from_service_port: 0,
+        from_service_port: DEFAULTS.virtualRouterServicePort,
         to_service_domain: '',
-        to_service_port: 0,
+        to_service_port: DEFAULTS.virtualRouterServicePort,
         enabled: true,
       });
       renderVirtualRouter();
@@ -1745,6 +1813,72 @@
           <td><div class="small muted">${escapeHTML(next)}</div>${formatRelayState(item.next_state)}</td>
           <td><div class="small muted">${escapeHTML(prev)}</div>${formatRelayState(item.prev_state)}</td>
           <td><div>${escapeHTML(item.updated_at || '-')}</div></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function routeStatusLabel(status) {
+      const value = String(status || '').trim();
+      if (value === 'ready') return '就绪';
+      if (value === 'connected') return '已连接';
+      if (value === 'listening') return '监听中';
+      if (value === 'configured') return '已配置';
+      if (value === 'missing_runtime') return '未上报运行态';
+      if (value === 'offline') return '探针离线';
+      if (value === 'failed') return '失败';
+      if (value === 'disabled') return '已禁用';
+      if (value === 'partial') return '部分就绪';
+      return value || '-';
+    }
+
+    function routeStatusClass(status) {
+      const value = String(status || '').trim();
+      if (value === 'ready' || value === 'connected' || value === 'listening') return 'route-state ok';
+      if (value === 'failed' || value === 'offline' || value === 'missing_runtime') return 'route-state err';
+      return 'route-state warn';
+    }
+
+    function renderRouteSide(side) {
+      const item = side || {};
+      const lines = [];
+      if (item.listen) lines.push(`listen ${item.listen}`);
+      if (item.next) lines.push(`next ${item.next}`);
+      if (item.prev) lines.push(`prev ${item.prev}`);
+      const stats = item.virtual_router || {};
+      const packets = Number(stats.packets_forwarded || 0) + Number(stats.packets_received || 0) + Number(stats.packets_delivered || 0);
+      const bytes = Number(stats.bytes_forwarded || 0) + Number(stats.bytes_received || 0) + Number(stats.bytes_delivered || 0);
+      return `
+        <div><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span></div>
+        <div class="small muted">${escapeHTML(lines.join(' / ') || '-')}</div>
+        <div class="small muted">包 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
+        <div class="small muted">${escapeHTML(item.last_seen || '-')}</div>
+      `;
+    }
+
+    function renderVirtualRouterStatus() {
+      const body = document.getElementById('vr-status-body');
+      const summary = document.getElementById('vr-status-summary');
+      const items = Array.isArray(state.virtualRouterStatus) ? state.virtualRouterStatus : [];
+      const ready = items.filter((item) => String(item.status || '') === 'ready').length;
+      summary.textContent = items.length ? `规则 ${items.length} 条，就绪 ${ready} 条` : '暂无状态';
+      if (!items.length) {
+        body.innerHTML = '<tr><td colspan="7" class="muted">暂无路由状态。需要先配置拓扑规则，并等待探针完成一次状态上报。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((item) => {
+        const fromName = `${nodeLabel(item.from_node_id)}${item.from_ip ? ` / ${item.from_ip}` : ''}`;
+        const toName = `${nodeLabel(item.to_node_id)}${item.to_ip ? ` / ${item.to_ip}` : ''}`;
+        const latency = Number(item.last_latency_ms || 0);
+        const latencyText = Number.isFinite(latency) && latency > 0 ? `${Math.trunc(latency)}ms` : '-';
+        const err = item.last_error ? `<div class="small muted">${escapeHTML(item.last_error)}</div>` : '';
+        return `<tr>
+          <td><div class="small muted mono">${escapeHTML(item.chain_id || '-')}</div><div class="small muted">${escapeHTML(item.direction || '-')}</div></td>
+          <td><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span>${err}</td>
+          <td><div>${escapeHTML(fromName)}</div>${renderRouteSide(item.from)}</td>
+          <td><div>${escapeHTML(toName)}</div>${renderRouteSide(item.to)}</td>
+          <td><div>包 ${escapeHTML(item.packets || 0)}</div><div class="small muted">${escapeHTML(formatBytes(item.bytes || 0))}</div></td>
+          <td>${escapeHTML(latencyText)}</td>
+          <td><div>${escapeHTML(item.last_packet_at || '-')}</div><div class="small muted">${escapeHTML(item.updated_at || '-')}</div></td>
         </tr>`;
       }).join('');
     }
@@ -1923,6 +2057,9 @@
       document.getElementById('btn-vr-save').addEventListener('click', () => {
         saveVirtualRouter().catch((err) => setStatus(`保存拓扑规则失败：${err.message || err}`, 'err'));
       });
+      document.getElementById('btn-vr-status-refresh').addEventListener('click', () => {
+        loadVirtualRouterStatus(false).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
+      });
       document.getElementById('btn-vr-domain-close').addEventListener('click', closeVirtualRouterDomainPicker);
       document.getElementById('btn-vr-domain-apply').addEventListener('click', () => {
         setVirtualRouterRuleDomain(document.getElementById('vr-domain-manual').value);
@@ -1963,6 +2100,7 @@
       await loadEntryProfile(true);
       await loadCloudflareDDNSRecords(true).catch(() => {});
       await loadVirtualRouter(true);
+      await loadVirtualRouterStatus(true).catch(() => {});
       renderRelayStatus();
 
       if (state.nodes.length) {

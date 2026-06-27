@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -198,10 +199,13 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	preconnectProbeLocalTUNGroupRuntimesFromState("chain_sync")
 
 	applyProbeLinkChainServerItems(identity, controllerBaseURL, config.SelfChains)
+	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, config.VirtualRouter)
 }
 
 func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controllerBaseURL string) {
+	var virtualRouterConfig probeVirtualRouterConfig
 	if config, err := loadProbeVirtualRouterCache(); err == nil {
+		virtualRouterConfig = config
 		applyProbeVirtualRouterConfigForNode(config, identity.NodeID)
 	} else {
 		log.Printf("warning: load probe virtual router cache failed: %v", err)
@@ -213,11 +217,13 @@ func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controlle
 	}
 	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, items)
 	if len(items) == 0 {
+		applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, virtualRouterConfig)
 		return
 	}
 	for _, item := range items {
 		applyProbeLinkChainServerItem(identity, controllerBaseURL, item)
 	}
+	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, virtualRouterConfig)
 	log.Printf("restored probe chain runtimes from topology cache: count=%d", len(items))
 }
 
@@ -357,14 +363,11 @@ func applyProbeLinkChainServerItems(identity nodeIdentity, controllerBaseURL str
 		}
 	}
 
-	// Stop runtimes that are no longer present on the server.
+	// Stop ordinary runtimes that are no longer present on the server.
+	// Virtual-router runtimes are generated from the virtual-router topology and
+	// are reconciled separately.
 	probeChainRuntimeState.mu.Lock()
-	var toStop []string
-	for id := range probeChainRuntimeState.runtimes {
-		if _, ok := serverChainIDs[id]; !ok {
-			toStop = append(toStop, id)
-		}
-	}
+	toStop := collectProbeLinkChainRuntimeIDsToStopLocked(serverChainIDs)
 	probeChainRuntimeState.mu.Unlock()
 
 	for _, id := range toStop {
@@ -375,6 +378,20 @@ func applyProbeLinkChainServerItems(identity nodeIdentity, controllerBaseURL str
 	for _, item := range items {
 		applyProbeLinkChainServerItem(identity, controllerBaseURL, item)
 	}
+}
+
+func collectProbeLinkChainRuntimeIDsToStopLocked(serverChainIDs map[string]struct{}) []string {
+	toStop := make([]string, 0)
+	for id := range probeChainRuntimeState.runtimes {
+		if isProbeVirtualRouterRuntimeChainID(id) {
+			continue
+		}
+		if _, ok := serverChainIDs[id]; !ok {
+			toStop = append(toStop, id)
+		}
+	}
+	sort.Strings(toStop)
+	return toStop
 }
 
 // applyProbeLinkChainServerItem converts one server chain record into a

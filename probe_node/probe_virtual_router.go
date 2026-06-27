@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,13 +18,17 @@ import (
 )
 
 const (
-	probeVirtualRouterDirectionTwoWay   = "bidirectional"
-	probeVirtualRouterDirectionForward  = "forward"
-	probeVirtualRouterDirectionBackward = "backward"
-	probeVirtualRouterTunnelOpenType    = "virtual_router_lan_packet"
-	probeVirtualRouterTunnelScope       = "virtual_router"
-	probeVirtualRouterNetworkIPv4       = "ip4"
-	probeVirtualRouterStreamIdleTTL     = 45 * time.Second
+	probeVirtualRouterDirectionTwoWay    = "bidirectional"
+	probeVirtualRouterDirectionForward   = "forward"
+	probeVirtualRouterDirectionBackward  = "backward"
+	probeVirtualRouterDefaultServicePort = 12040
+	probeVirtualRouterTunnelOpenType     = "virtual_router_lan_packet"
+	probeVirtualRouterTunnelScope        = "virtual_router"
+	probeVirtualRouterNetworkIPv4        = "ip4"
+	probeVirtualRouterStreamIdleTTL      = 45 * time.Second
+	probeVirtualRouterPingPongInterval   = 30 * time.Second
+	probeVirtualRouterPingPongTimeout    = 5 * time.Second
+	probeVirtualRouterPingPongBytes      = 64
 )
 
 var probeVirtualRouterState = struct {
@@ -36,6 +41,29 @@ var probeVirtualRouterStreamState = struct {
 	mu      sync.Mutex
 	streams map[string]*probeVirtualRouterPacketStream
 }{streams: make(map[string]*probeVirtualRouterPacketStream)}
+
+var probeVirtualRouterRuntimeStatsState = struct {
+	mu    sync.Mutex
+	items map[string]*probeVirtualRouterRuntimeStats
+}{items: make(map[string]*probeVirtualRouterRuntimeStats)}
+
+type probeVirtualRouterRuntimeStats struct {
+	PacketsForwarded  int64  `json:"packets_forwarded,omitempty"`
+	BytesForwarded    int64  `json:"bytes_forwarded,omitempty"`
+	PacketsReceived   int64  `json:"packets_received,omitempty"`
+	BytesReceived     int64  `json:"bytes_received,omitempty"`
+	PacketsDelivered  int64  `json:"packets_delivered,omitempty"`
+	BytesDelivered    int64  `json:"bytes_delivered,omitempty"`
+	StreamOpenCount   int64  `json:"stream_open_count,omitempty"`
+	LastOpenLatencyMS int64  `json:"last_open_latency_ms,omitempty"`
+	LastOpenError     string `json:"last_open_error,omitempty"`
+	LastOpenAt        string `json:"last_open_at,omitempty"`
+	PingCount         int64  `json:"ping_count,omitempty"`
+	LastPingLatencyMS int64  `json:"last_ping_latency_ms,omitempty"`
+	LastPingError     string `json:"last_ping_error,omitempty"`
+	LastPingAt        string `json:"last_ping_at,omitempty"`
+	LastPacketAt      string `json:"last_packet_at,omitempty"`
+}
 
 type probeVirtualRouterPacketStream struct {
 	key      string
@@ -148,7 +176,7 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 
 func normalizeProbeVirtualRouterServicePort(port int) int {
 	if port <= 0 || port > 65535 {
-		return 0
+		return probeVirtualRouterDefaultServicePort
 	}
 	return port
 }
@@ -424,6 +452,85 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	return true
 }
 
+func startProbeVirtualRouterPingPongWorker(rt *probeChainRuntime) {
+	if rt == nil || !isProbeVirtualRouterRuntimeChainID(rt.cfg.chainID) {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case <-rt.stopCh:
+				return
+			case <-timer.C:
+				probeVirtualRouterPingPongRuntime(rt)
+				timer.Reset(probeVirtualRouterPingPongInterval)
+			}
+		}
+	}()
+}
+
+func probeVirtualRouterPingPongRuntime(rt *probeChainRuntime) {
+	if rt == nil {
+		return
+	}
+	probed := false
+	if normalizeProbeChainNodeID(rt.cfg.nextNodeID) != "" && rt.cfg.nextAuthMode != "proxy" {
+		probed = true
+		probeVirtualRouterPingPongDirection(rt, probeChainBridgeRoleToNext)
+	}
+	if normalizeProbeChainNodeID(rt.cfg.prevNodeID) != "" {
+		probed = true
+		probeVirtualRouterPingPongDirection(rt, probeChainBridgeRoleToPrev)
+	}
+	if !probed {
+		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, errors.New("no adjacent virtual router session configured"))
+	}
+}
+
+func probeVirtualRouterPingPongDirection(rt *probeChainRuntime, direction string) {
+	if rt == nil {
+		return
+	}
+	req := probeChainTunnelOpenRequest{
+		Type:      probeChainRelayModePingPong,
+		PingBytes: probeVirtualRouterPingPongBytes,
+		Priority:  "realtime",
+		RequestID: newProbeTCPDebugFlowID("vrouter_ping", rt.cfg.chainID),
+	}
+	conn, _, err := openProbeChainPortForwardDataStreamByDialMode(rt, direction, req)
+	if err != nil {
+		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, err)
+		return
+	}
+	defer conn.Close()
+
+	payload := make([]byte, probeVirtualRouterPingPongBytes)
+	for i := range payload {
+		payload[i] = byte((i*29 + 7) % 251)
+	}
+	echo := make([]byte, len(payload))
+	startedAt := time.Now()
+	_ = conn.SetDeadline(time.Now().Add(probeVirtualRouterPingPongTimeout))
+	if _, err := conn.Write(payload); err != nil {
+		_ = conn.SetDeadline(time.Time{})
+		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, err)
+		return
+	}
+	if _, err := io.ReadFull(conn, echo); err != nil {
+		_ = conn.SetDeadline(time.Time{})
+		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, err)
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+	if !bytes.Equal(payload, echo) {
+		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, errors.New("virtual router ping-pong echo mismatch"))
+		return
+	}
+	recordProbeVirtualRouterRuntimePingSuccess(rt.cfg.chainID, time.Since(startedAt))
+}
+
 func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest, responder func(probeChainTunnelOpenResponse) error) error {
 	if responder == nil {
 		return errors.New("missing frame open responder")
@@ -448,6 +555,7 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 		if dstIP == "" {
 			return errors.New("virtual router packet destination is invalid")
 		}
+		recordProbeVirtualRouterRuntimePacketReceived(runtime, len(packet))
 		path := probeVirtualRouterPathFromRequest(req)
 		if len(path) == 0 {
 			path = currentProbeVirtualRouterPathToIP(dstIP)
@@ -457,6 +565,7 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 			if err := writeProbeLocalTUNPacket(packet); err != nil {
 				return err
 			}
+			recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
 			continue
 		}
 		if len(path) < 2 {
@@ -487,8 +596,10 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	}
 	if err := writeProbeChainFramedPacket(stream, packet); err != nil {
 		dropProbeVirtualRouterPacketStream(stream)
+		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 		return err
 	}
+	recordProbeVirtualRouterRuntimePacketForwarded(rt, len(packet))
 	return nil
 }
 
@@ -505,10 +616,13 @@ func openProbeVirtualRouterPacketStream(rt *probeChainRuntime, direction string,
 		return stream, nil
 	}
 	req := buildProbeVirtualRouterTunnelOpenRequest(dstIP, path)
+	startedAt := time.Now()
 	conn, _, err := openProbeChainPortForwardDataStreamByDialMode(rt, direction, req)
 	if err != nil {
+		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 		return nil, err
 	}
+	recordProbeVirtualRouterRuntimeOpenSuccess(rt.cfg.chainID, time.Since(startedAt))
 	item := &probeVirtualRouterPacketStream{
 		key:      key,
 		stream:   conn,
@@ -594,6 +708,127 @@ func probeVirtualRouterPacketStreamKey(rt *probeChainRuntime, direction string, 
 	}, "|")
 }
 
+func probeVirtualRouterRuntimeStatsForUpdateLocked(chainID string) *probeVirtualRouterRuntimeStats {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return nil
+	}
+	item := probeVirtualRouterRuntimeStatsState.items[chainID]
+	if item == nil {
+		item = &probeVirtualRouterRuntimeStats{}
+		probeVirtualRouterRuntimeStatsState.items[chainID] = item
+	}
+	return item
+}
+
+func recordProbeVirtualRouterRuntimePacketForwarded(rt *probeChainRuntime, packetBytes int) {
+	if rt == nil {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(rt.cfg.chainID)
+	if item != nil {
+		item.PacketsForwarded++
+		item.BytesForwarded += int64(packetBytes)
+		item.LastPacketAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterRuntimePacketReceived(rt *probeChainRuntime, packetBytes int) {
+	if rt == nil {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(rt.cfg.chainID)
+	if item != nil {
+		item.PacketsReceived++
+		item.BytesReceived += int64(packetBytes)
+		item.LastPacketAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterRuntimePacketDelivered(rt *probeChainRuntime, packetBytes int) {
+	if rt == nil {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(rt.cfg.chainID)
+	if item != nil {
+		item.PacketsDelivered++
+		item.BytesDelivered += int64(packetBytes)
+		item.LastPacketAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterRuntimeOpenSuccess(chainID string, latency time.Duration) {
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.StreamOpenCount++
+		item.LastOpenLatencyMS = probeDurationMilliseconds(latency)
+		item.LastOpenError = ""
+		item.LastOpenAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterRuntimeOpenError(chainID string, err error) {
+	if err == nil {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.LastOpenError = strings.TrimSpace(err.Error())
+		item.LastOpenAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterRuntimePingSuccess(chainID string, latency time.Duration) {
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.PingCount++
+		item.LastPingLatencyMS = probeDurationMilliseconds(latency)
+		item.LastPingError = ""
+		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterRuntimePingError(chainID string, err error) {
+	if err == nil {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.LastPingError = strings.TrimSpace(err.Error())
+		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func snapshotProbeVirtualRouterRuntimeStats(chainID string) *probeVirtualRouterRuntimeStats {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return nil
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsState.items[chainID]
+	if item == nil {
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+		return nil
+	}
+	out := *item
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	return &out
+}
+
 func probeVirtualRouterRuntimeForAdjacentNode(nodeID string) (*probeChainRuntime, string) {
 	target := normalizeProbeChainNodeID(nodeID)
 	if target == "" {
@@ -601,8 +836,18 @@ func probeVirtualRouterRuntimeForAdjacentNode(nodeID string) (*probeChainRuntime
 	}
 	probeChainRuntimeState.mu.Lock()
 	defer probeChainRuntimeState.mu.Unlock()
+	if rt, direction := findProbeVirtualRouterRuntimeForAdjacentNodeLocked(target, true); rt != nil {
+		return rt, direction
+	}
+	return findProbeVirtualRouterRuntimeForAdjacentNodeLocked(target, false)
+}
+
+func findProbeVirtualRouterRuntimeForAdjacentNodeLocked(target string, virtualOnly bool) (*probeChainRuntime, string) {
 	for _, rt := range probeChainRuntimeState.runtimes {
 		if rt == nil {
+			continue
+		}
+		if virtualOnly != isProbeVirtualRouterRuntimeChainID(rt.cfg.chainID) {
 			continue
 		}
 		if normalizeProbeChainNodeID(rt.cfg.nextNodeID) == target && rt.cfg.nextAuthMode != "proxy" {

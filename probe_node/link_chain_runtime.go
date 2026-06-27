@@ -855,6 +855,7 @@ func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, er
 	probeChainRuntimeState.mu.Unlock()
 	startProbeChainBridgeWorkers(rt)
 	startProbeChainPortForwardWorkers(rt)
+	startProbeVirtualRouterPingPongWorker(rt)
 
 	nextTarget := "proxy"
 	if cfg.nextAuthMode != "proxy" {

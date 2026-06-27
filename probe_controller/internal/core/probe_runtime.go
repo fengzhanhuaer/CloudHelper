@@ -84,6 +84,7 @@ type probeRelayStatusItem struct {
 	ListenState   *probeRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
 	NextState     *probeRelayProtocolStateSnapshot `json:"next_state,omitempty"`
 	PrevState     *probeRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
+	VirtualRouter *probeVirtualRouterRuntimeStats  `json:"virtual_router,omitempty"`
 	UpdatedAt     string                           `json:"updated_at,omitempty"`
 }
 

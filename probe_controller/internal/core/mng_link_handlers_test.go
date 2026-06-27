@@ -65,6 +65,129 @@ func TestMngLinkRelayStatusHandlerReturnsReportedRelayStatus(t *testing.T) {
 	}
 }
 
+func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T) {
+	oldStore := ProbeLinkChainStore
+	oldProbeStore := ProbeStore
+	probeRuntimeStore.mu.Lock()
+	oldRuntimeData := probeRuntimeStore.data
+	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
+	probeRuntimeStore.mu.Unlock()
+	t.Cleanup(func() {
+		ProbeLinkChainStore = oldStore
+		ProbeStore = oldProbeStore
+		probeRuntimeStore.mu.Lock()
+		probeRuntimeStore.data = oldRuntimeData
+		probeRuntimeStore.mu.Unlock()
+	})
+
+	tmpDir := t.TempDir()
+	rule := probeVirtualRouterTopologyRule{
+		ID:              "rule-ab",
+		Name:            "A-B",
+		FromNodeID:      "1",
+		ToNodeID:        "2",
+		Direction:       probeVirtualRouterDirectionTwoWay,
+		FromServicePort: 12040,
+		ToServicePort:   12040,
+		Enabled:         true,
+	}
+	ProbeLinkChainStore = &probeLinkChainStore{
+		path: filepath.Join(tmpDir, "probe_link_chains.json"),
+		data: probeLinkChainStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				ProbeIPs: []probeVirtualRouterProbeIP{
+					{NodeID: "1", IP: "198.18.0.3"},
+					{NodeID: "2", IP: "198.18.0.4"},
+				},
+				TopologyRules: []probeVirtualRouterTopologyRule{rule},
+			},
+		},
+	}
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{
+				{NodeNo: 1, NodeName: "node-1"},
+				{NodeNo: 2, NodeName: "node-2"},
+			},
+		},
+	}
+	chainID := probeVirtualRouterRuntimeChainID(rule)
+	updateProbeRuntimeReportWithRelay("1", nil, nil, probeSystemMetrics{}, "v1", []probeRelayStatusItem{
+		{
+			ChainID:    chainID,
+			ChainType:  "virtual_router",
+			Role:       "relay",
+			ListenHost: "0.0.0.0",
+			ListenPort: 12040,
+			NextHost:   "node-2.local",
+			NextPort:   12040,
+			ListenState: &probeRelayProtocolStateSnapshot{
+				Endpoint: "0.0.0.0:12040",
+				ListenerStatuses: []probeRelayListenerStatus{
+					{Protocol: "websocket", Status: "listening", Listen: "0.0.0.0:12040"},
+				},
+			},
+			NextState: &probeRelayProtocolStateSnapshot{Endpoint: "node-2.local:12040", SelectedProtocol: "websocket"},
+			VirtualRouter: &probeVirtualRouterRuntimeStats{
+				PacketsForwarded:  2,
+				BytesForwarded:    200,
+				PingCount:         1,
+				LastPingLatencyMS: 12,
+				LastPingAt:        "2026-06-27T00:00:01Z",
+				LastPacketAt:      "2026-06-27T00:00:01Z",
+			},
+		},
+	})
+	updateProbeRuntimeReportWithRelay("2", nil, nil, probeSystemMetrics{}, "v1", []probeRelayStatusItem{
+		{
+			ChainID:    chainID,
+			ChainType:  "virtual_router",
+			Role:       "relay",
+			ListenHost: "0.0.0.0",
+			ListenPort: 12040,
+			ListenState: &probeRelayProtocolStateSnapshot{
+				Endpoint: "0.0.0.0:12040",
+				ListenerStatuses: []probeRelayListenerStatus{
+					{Protocol: "websocket", Status: "listening", Listen: "0.0.0.0:12040"},
+				},
+			},
+			VirtualRouter: &probeVirtualRouterRuntimeStats{
+				PacketsReceived: 3,
+				BytesReceived:   300,
+				LastPacketAt:    "2026-06-27T00:00:02Z",
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/mng/api/link/virtual_router/status", nil)
+	rr := httptest.NewRecorder()
+	mngLinkVirtualRouterStatusHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Items []mngVirtualRouterRouteStatusView `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload failed: %v", err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("items=%d body=%s", len(payload.Items), rr.Body.String())
+	}
+	item := payload.Items[0]
+	if item.Status != "ready" || item.ChainID != chainID {
+		t.Fatalf("unexpected route status: %+v", item)
+	}
+	if item.Packets != 5 || item.Bytes != 500 || item.LastLatencyMS != 12 || item.LastPacketAt != "2026-06-27T00:00:02Z" {
+		t.Fatalf("unexpected route stats: %+v", item)
+	}
+	if item.From.Status != "connected" || item.To.Status != "listening" {
+		t.Fatalf("unexpected side status: from=%+v to=%+v", item.From, item.To)
+	}
+}
+
 func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	oldStore := ProbeLinkChainStore
 	oldProbeStore := ProbeStore

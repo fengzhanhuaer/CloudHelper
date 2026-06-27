@@ -30,6 +30,9 @@ func TestBuildProbeVirtualRouterConfigForNodeFiltersDisabledRules(t *testing.T) 
 	if config.TopologyRules[0].FromNodeID != "1" || config.TopologyRules[0].ToNodeID != "2" {
 		t.Fatalf("unexpected topology rule=%+v", config.TopologyRules[0])
 	}
+	if config.TopologyRules[0].FromServicePort != probeVirtualRouterDefaultServicePort || config.TopologyRules[0].ToServicePort != probeVirtualRouterDefaultServicePort {
+		t.Fatalf("default service ports=%d/%d, want %d", config.TopologyRules[0].FromServicePort, config.TopologyRules[0].ToServicePort, probeVirtualRouterDefaultServicePort)
+	}
 }
 
 func TestProbeVirtualRouterIPForNodeUsesFirst1024FakeIPs(t *testing.T) {
