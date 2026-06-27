@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CloudHelper 记事本</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { width:calc(100vw - 32px); max-width:1280px; margin:4vh auto; padding:18px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+    h1 { margin:0; font-size:24px; }
+    .sub { color:#8b949e; margin:4px 0 0; font-size:13px; }
+    .btn { min-width:92px; height:34px; padding:0 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .btn.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
+    .btn.small { min-width:auto; height:30px; font-size:12px; }
+    .btn:disabled { opacity:.58; cursor:not-allowed; }
+    .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .status { border:1px solid #30363d; background:#161b22; border-radius:8px; padding:10px 12px; min-height:38px; margin-bottom:12px; font-size:13px; white-space:pre-wrap; }
+    .status.ok { border-color:#238636; color:#7ee787; }
+    .status.err { border-color:#da3633; color:#ff7b72; }
+    .workspace { display:grid; grid-template-columns:minmax(0, 1fr) 320px; gap:12px; align-items:stretch; }
+    .editor-shell, .file-shell { border:1px solid #30363d; border-radius:10px; background:#161b22; padding:12px; min-width:0; }
+    .pane-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+    .file-title { font-size:16px; font-weight:600; overflow-wrap:anywhere; }
+    .meta { display:flex; gap:12px; color:#8b949e; font-size:12px; flex-wrap:wrap; }
+    textarea {
+      width:100%;
+      min-height:66vh;
+      resize:vertical;
+      border:1px solid #30363d;
+      border-radius:8px;
+      background:#0d1117;
+      color:#e6edf3;
+      padding:12px;
+      font:14px/1.55 Consolas, "SFMono-Regular", Menlo, monospace;
+      outline:none;
+    }
+    textarea:focus { border-color:#58a6ff; }
+    .side-title { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+    .side-title h2 { font-size:15px; margin:0; }
+    .folder-tabs, .file-tabs { display:flex; flex-direction:column; gap:8px; }
+    .folder-tabs { max-height:220px; overflow:auto; padding-right:2px; margin-bottom:12px; }
+    .file-tabs { max-height:52vh; overflow:auto; padding-right:2px; }
+    .tab {
+      width:100%;
+      min-height:38px;
+      border:1px solid #30363d;
+      border-radius:8px;
+      background:#0d1117;
+      color:#c9d1d9;
+      text-align:left;
+      padding:8px 10px;
+      cursor:pointer;
+    }
+    .tab:hover { border-color:#58a6ff; }
+    .tab.active { border-color:#2f81f7; background:#10233f; color:#e6edf3; }
+    .tab-name { display:block; font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+    .tab-sub { display:block; margin-top:4px; color:#8b949e; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .section-label { margin:12px 0 8px; color:#8b949e; font-size:12px; }
+    .empty { color:#8b949e; border:1px dashed #30363d; border-radius:8px; padding:14px; font-size:13px; }
+    @media (max-width:820px) {
+      .workspace { grid-template-columns:1fr; }
+      .file-shell { order:-1; }
+      textarea { min-height:58vh; }
+    }
+    @media (max-width:520px) {
+      .wrap { width:100vw; margin:0; padding:12px; }
+      .topbar { align-items:flex-start; }
+      .btn { min-width:84px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>记事本</h1>
+        <p class="sub">虚拟文件夹与文件保存在主控数据中。</p>
+      </div>
+      <div class="actions">
+        <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
+      </div>
+    </div>
+
+    <div id="status-box" class="status">初始化中...</div>
+
+    <div class="workspace">
+      <section class="editor-shell">
+        <div class="pane-head">
+          <div>
+            <div id="file-title" class="file-title">未选择文件</div>
+            <div class="meta">
+              <span id="length">0 字</span>
+              <span id="updated-at">尚未保存</span>
+            </div>
+          </div>
+          <button id="btn-save" class="btn primary" type="button">保存</button>
+        </div>
+        <textarea id="notepad-content" spellcheck="false" placeholder="选择右侧文件后编辑..."></textarea>
+      </section>
+
+      <aside class="file-shell">
+        <div class="side-title">
+          <h2>文件夹</h2>
+          <button id="btn-new-folder" class="btn small" type="button">新建文件夹</button>
+        </div>
+        <div id="folder-tabs" class="folder-tabs"></div>
+
+        <div class="side-title">
+          <h2>文件</h2>
+          <button id="btn-new-file" class="btn small" type="button">新建文件</button>
+        </div>
+        <div id="file-tabs" class="file-tabs"></div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      loading:false,
+      dirty:false,
+      workspace:{ folders:[], files:[], selected_file_id:'' },
+      selectedFolderID:'',
+      selectedFileID:'',
+    };
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(message, level) {
+      const box = qs('status-box');
+      box.textContent = message || '';
+      box.className = 'status';
+      if (level) box.classList.add(level);
+    }
+
+    function formatDateTime(raw) {
+      const text = String(raw || '').trim();
+      if (!text) return '尚未保存';
+      const dt = new Date(text);
+      if (Number.isNaN(dt.getTime())) return text;
+      return '保存于 ' + dt.toLocaleString();
+    }
+
+    function selectedFile() {
+      return (state.workspace.files || []).find((file) => file.id === state.selectedFileID) || null;
+    }
+
+    function selectedFolder() {
+      return (state.workspace.folders || []).find((folder) => folder.id === state.selectedFolderID) || null;
+    }
+
+    function filesForSelectedFolder() {
+      return (state.workspace.files || []).filter((file) => file.folder_id === state.selectedFolderID);
+    }
+
+    function updateMeta() {
+      const file = selectedFile();
+      const value = qs('notepad-content').value || '';
+      qs('length').textContent = Array.from(value).length + ' 字';
+      qs('updated-at').textContent = state.dirty ? '有未保存修改' : formatDateTime(file && file.updated_at);
+      qs('file-title').textContent = file ? ((selectedFolder() ? selectedFolder().name + ' / ' : '') + file.name) : '未选择文件';
+      qs('btn-save').disabled = !file || state.loading;
+      qs('notepad-content').disabled = !file;
+    }
+
+    async function requestJSON(url, options) {
+      const res = await fetch(url, { credentials:'same-origin', ...(options || {}) });
+      if (res.status === 401) {
+        location.href = '/mng';
+        return null;
+      }
+      let data = {};
+      try { data = await res.json(); } catch (_) {}
+      if (!res.ok) {
+        throw new Error((data && data.error) || ('HTTP ' + res.status));
+      }
+      return data;
+    }
+
+    function applyWorkspace(data, keepFolder) {
+      state.workspace = {
+        folders: Array.isArray(data && data.folders) ? data.folders : [],
+        files: Array.isArray(data && data.files) ? data.files : [],
+        selected_file_id: (data && data.selected_file_id) || '',
+      };
+      state.selectedFileID = state.workspace.selected_file_id || (state.workspace.files[0] && state.workspace.files[0].id) || '';
+      const file = selectedFile();
+      const folderExists = state.workspace.folders.some((folder) => folder.id === state.selectedFolderID);
+      if (keepFolder && folderExists) {
+        state.selectedFolderID = state.selectedFolderID;
+      } else {
+        state.selectedFolderID = (file && file.folder_id) || (state.workspace.folders[0] && state.workspace.folders[0].id) || '';
+      }
+      renderFolders();
+      renderFiles();
+      loadSelectedFileIntoEditor();
+    }
+
+    function renderFolders() {
+      const box = qs('folder-tabs');
+      box.innerHTML = '';
+      if (!state.workspace.folders.length) {
+        box.innerHTML = '<div class="empty">暂无文件夹</div>';
+        return;
+      }
+      state.workspace.folders.forEach((folder) => {
+        const count = state.workspace.files.filter((file) => file.folder_id === folder.id).length;
+        const btn = document.createElement('button');
+        btn.className = 'tab' + (folder.id === state.selectedFolderID ? ' active' : '');
+        btn.type = 'button';
+        btn.innerHTML = '<span class="tab-name"></span><span class="tab-sub"></span>';
+        btn.querySelector('.tab-name').textContent = folder.name;
+        btn.querySelector('.tab-sub').textContent = count + ' 个文件';
+        btn.addEventListener('click', () => selectFolder(folder.id));
+        box.appendChild(btn);
+      });
+    }
+
+    function renderFiles() {
+      const box = qs('file-tabs');
+      box.innerHTML = '';
+      const files = filesForSelectedFolder();
+      if (!files.length) {
+        box.innerHTML = '<div class="empty">此文件夹暂无文件</div>';
+        return;
+      }
+      files.forEach((file) => {
+        const btn = document.createElement('button');
+        btn.className = 'tab' + (file.id === state.selectedFileID ? ' active' : '');
+        btn.type = 'button';
+        btn.innerHTML = '<span class="tab-name"></span><span class="tab-sub"></span>';
+        btn.querySelector('.tab-name').textContent = file.name;
+        btn.querySelector('.tab-sub').textContent = (file.length || 0) + ' 字 · ' + formatDateTime(file.updated_at);
+        btn.addEventListener('click', () => selectFile(file.id));
+        box.appendChild(btn);
+      });
+    }
+
+    function loadSelectedFileIntoEditor() {
+      const file = selectedFile();
+      qs('notepad-content').value = file ? (file.content || '') : '';
+      state.dirty = false;
+      updateMeta();
+    }
+
+    function confirmDiscard() {
+      return !state.dirty || window.confirm('当前文件有未保存修改，是否放弃这些修改？');
+    }
+
+    function selectFolder(folderID) {
+      if (folderID === state.selectedFolderID) return;
+      if (!confirmDiscard()) return;
+      state.selectedFolderID = folderID;
+      const firstFile = filesForSelectedFolder()[0];
+      state.selectedFileID = firstFile ? firstFile.id : '';
+      renderFolders();
+      renderFiles();
+      loadSelectedFileIntoEditor();
+      if (state.selectedFileID) {
+        persistSelectedFile(state.selectedFileID).catch(() => {});
+      }
+    }
+
+    function selectFile(fileID) {
+      if (fileID === state.selectedFileID) return;
+      if (!confirmDiscard()) return;
+      state.selectedFileID = fileID;
+      const file = selectedFile();
+      if (file) state.selectedFolderID = file.folder_id;
+      renderFolders();
+      renderFiles();
+      loadSelectedFileIntoEditor();
+      persistSelectedFile(fileID).catch((err) => setStatus('选择文件失败：' + (err.message || err), 'err'));
+    }
+
+    async function persistSelectedFile(fileID) {
+      const data = await requestJSON('/mng/api/notepad', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json' },
+        body:JSON.stringify({ action:'select_file', file_id:fileID }),
+      });
+      if (data) {
+        state.workspace.selected_file_id = data.selected_file_id || fileID;
+      }
+    }
+
+    async function loadNotepad() {
+      setStatus('正在加载...');
+      const data = await requestJSON('/mng/api/notepad');
+      if (!data) return;
+      applyWorkspace(data);
+      setStatus('已加载', 'ok');
+    }
+
+    async function saveNotepad() {
+      const file = selectedFile();
+      if (!file || state.loading) return;
+      state.loading = true;
+      updateMeta();
+      setStatus('正在保存...');
+      try {
+        const data = await requestJSON('/mng/api/notepad', {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          body:JSON.stringify({ action:'save_file', file_id:file.id, content:qs('notepad-content').value || '' }),
+        });
+        if (!data) return;
+        applyWorkspace(data, true);
+        setStatus('已保存', 'ok');
+      } catch (err) {
+        setStatus('保存失败：' + (err.message || err), 'err');
+      } finally {
+        state.loading = false;
+        updateMeta();
+      }
+    }
+
+    async function createFolder() {
+      if (!confirmDiscard()) return;
+      const name = window.prompt('文件夹名称', '新文件夹');
+      if (name === null) return;
+      setStatus('正在新建文件夹...');
+      try {
+        const oldIDs = new Set(state.workspace.folders.map((folder) => folder.id));
+        const data = await requestJSON('/mng/api/notepad', {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          body:JSON.stringify({ action:'create_folder', name }),
+        });
+        if (!data) return;
+        applyWorkspace(data);
+        const folder = state.workspace.folders.find((item) => !oldIDs.has(item.id)) || state.workspace.folders[state.workspace.folders.length - 1];
+        if (folder) {
+          state.selectedFolderID = folder.id;
+          state.selectedFileID = '';
+          renderFolders();
+          renderFiles();
+          loadSelectedFileIntoEditor();
+        }
+        setStatus('文件夹已新建', 'ok');
+      } catch (err) {
+        setStatus('新建文件夹失败：' + (err.message || err), 'err');
+      }
+    }
+
+    async function createFile() {
+      if (!confirmDiscard()) return;
+      const folderID = state.selectedFolderID || (state.workspace.folders[0] && state.workspace.folders[0].id) || '';
+      const name = window.prompt('文件名称', '未命名');
+      if (name === null) return;
+      setStatus('正在新建文件...');
+      try {
+        const data = await requestJSON('/mng/api/notepad', {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          body:JSON.stringify({ action:'create_file', folder_id:folderID, name }),
+        });
+        if (!data) return;
+        applyWorkspace(data);
+        setStatus('文件已新建', 'ok');
+      } catch (err) {
+        setStatus('新建文件失败：' + (err.message || err), 'err');
+      }
+    }
+
+    qs('btn-back').addEventListener('click', () => { location.href = '/mng/panel'; });
+    qs('btn-save').addEventListener('click', () => { saveNotepad(); });
+    qs('btn-new-folder').addEventListener('click', () => { createFolder(); });
+    qs('btn-new-file').addEventListener('click', () => { createFile(); });
+    qs('notepad-content').addEventListener('input', () => {
+      state.dirty = true;
+      updateMeta();
+    });
+    qs('notepad-content').addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        saveNotepad();
+      }
+    });
+    window.addEventListener('beforeunload', (event) => {
+      if (!state.dirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    });
+
+    loadNotepad().catch((err) => setStatus('加载失败：' + (err.message || err), 'err'));
+  </script>
+</body>
+</html>

@@ -15,6 +15,9 @@ var (
 	//go:embed mng_pages/backup.html
 	mngBackupPageHTML string
 
+	//go:embed mng_pages/notepad.html
+	mngNotepadPageHTML string
+
 	//go:embed mng_pages/probe.html
 	mngProbePageHTML string
 
