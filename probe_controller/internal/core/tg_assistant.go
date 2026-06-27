@@ -26,25 +26,30 @@ import (
 )
 
 const (
-	tgAssistantTempDir          = "./temp/tg"
-	tgAssistantLegacyTempDir    = "./tg"
-	tgAssistantStoreFile        = "tg.json"
-	tgAssistantSessionDirName   = "tg_sessions"
-	tgAssistantTargetsDirName   = "targets"
-	tgAssistantTaskHistoryDir   = "task_history"
-	tgAssistantHistoryFile      = "history.jsonl"
-	tgAssistantTaskHistoryMax   = 360
-	tgAssistantArchivedFolderID = 1
-	tgAssistantAllFoldersID     = -1
-	tgAssistantDialogPageLimit  = 100
-	tgAssistantDialogMaxPages   = 200
-	tgAssistantLoginCodeTTL     = 10 * time.Minute
-	tgTaskTypeScheduledSend     = "scheduled_send"
+	tgAssistantTempDir           = "./temp/tg"
+	tgAssistantLegacyTempDir     = "./tg"
+	tgAssistantStoreFile         = "tg.json"
+	tgAssistantSessionDirName    = "tg_sessions"
+	tgAssistantTargetsDirName    = "targets"
+	tgAssistantTaskHistoryDir    = "task_history"
+	tgAssistantHistoryFile       = "history.jsonl"
+	tgAssistantTaskHistoryMax    = 360
+	tgAssistantArchivedFolderID  = 1
+	tgAssistantAllFoldersID      = -1
+	tgAssistantDialogPageLimit   = 100
+	tgAssistantDialogMaxPages    = 200
+	tgAssistantLoginCodeTTL      = 10 * time.Minute
+	tgAssistantSessionPullMinGap = 30 * time.Second
+	tgTaskTypeScheduledSend      = "scheduled_send"
 )
 
 var (
 	errTGAssistantPasswordRequired = errors.New("password is required for 2FA account")
 	tgAssistantTaskHistoryMu       sync.Mutex
+	tgAssistantSessionPullMu       sync.Mutex
+	tgAssistantSessionPullTimes    = map[string]time.Time{}
+	tgAssistantInputPeerCacheMu    sync.Mutex
+	tgAssistantInputPeerCache      = map[string]tg.InputPeerClass{}
 )
 
 type tgAssistantAccountRecord struct {
@@ -1282,12 +1287,18 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 		log.Printf("tg stored history load failed: %v", err)
 		storedMessages = []tgAssistantSessionMessage{}
 	}
+	if req.OffsetID <= 0 && len(storedMessages) > 0 {
+		return storedMessages, nil
+	}
 	if len(storedMessages) >= limit {
 		return storedMessages, nil
 	}
 	offsetID := req.OffsetID
 	if offsetID <= 0 && len(storedMessages) > 0 {
 		offsetID = storedMessages[len(storedMessages)-1].ID
+	}
+	if req.OffsetID <= 0 && !claimTGAssistantSessionRemotePull(accountID, target, len(storedMessages) > 0) {
+		return storedMessages, nil
 	}
 
 	apiID, apiHash, account, err := loadTGAssistantClientConfig(accountID)
@@ -1308,7 +1319,7 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 			return errors.New("tg session is not authorized for requested account")
 		}
 
-		peer, err := resolveTGAssistantInputPeer(ctx, client, target)
+		peer, err := resolveTGAssistantInputPeer(ctx, client, accountID, target)
 		if err != nil {
 			return err
 		}
@@ -1348,6 +1359,21 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 	return messages, nil
 }
 
+func claimTGAssistantSessionRemotePull(accountID, target string, hasStoredMessages bool) bool {
+	key := strings.TrimSpace(accountID) + "\x00" + strings.TrimSpace(target)
+	if key == "\x00" {
+		return false
+	}
+	now := time.Now()
+	tgAssistantSessionPullMu.Lock()
+	defer tgAssistantSessionPullMu.Unlock()
+	if last, ok := tgAssistantSessionPullTimes[key]; ok && now.Sub(last) < tgAssistantSessionPullMinGap {
+		return !hasStoredMessages && last.IsZero()
+	}
+	tgAssistantSessionPullTimes[key] = now
+	return true
+}
+
 func sendTGAssistantSessionMessage(req tgAssistantSessionSendRequest) (tgAssistantSessionMessage, error) {
 	accountID := strings.TrimSpace(req.AccountID)
 	target := strings.TrimSpace(req.Target)
@@ -1365,55 +1391,14 @@ func sendTGAssistantSessionMessage(req tgAssistantSessionSendRequest) (tgAssista
 		return tgAssistantSessionMessage{}, errors.New("message is too long")
 	}
 
-	apiID, apiHash, account, err := loadTGAssistantClientConfig(accountID)
-	if err != nil {
-		return tgAssistantSessionMessage{}, err
-	}
-
-	now := time.Now()
-	result := tgAssistantSessionMessage{
-		Date:       now.UTC().Format(time.RFC3339),
-		Text:       message,
-		Out:        true,
-		SenderID:   fmt.Sprintf("user:%d", account.SelfUserID),
-		SenderName: firstNonEmptyString(account.SelfDisplayName, account.SelfUsername, account.Label, account.Phone),
-	}
-	err = runTGAssistantClient(apiID, apiHash, account, func(ctx context.Context, client *telegram.Client) error {
-		status, err := client.Auth().Status(ctx)
-		if err != nil {
-			return err
-		}
-		if !status.Authorized {
-			return errors.New("tg session is not authorized for requested account")
-		}
-
-		peer, err := resolveTGAssistantInputPeer(ctx, client, target)
-		if err != nil {
-			return err
-		}
-		updates, err := client.API().MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
-			Peer:     peer,
-			Message:  message,
-			RandomID: newTGAssistantMessageRandomID(),
-		})
-		if err != nil {
-			return err
-		}
-		result.ID = extractTGAssistantSentMessageID(updates)
-		if result.ID <= 0 {
-			result.ID = newTGAssistantLocalMessageID()
-		}
-		if echoed := summarizeTGAssistantSendUpdates(updates); strings.TrimSpace(echoed) != "" {
-			result.Text = echoed
-		}
-		return nil
+	result, err := sendTGAssistantSessionPushMessage(tgAssistantSessionSendRequest{
+		AccountID: accountID,
+		Target:    target,
+		Message:   message,
 	})
 	if err != nil {
 		appendTGAssistantHistory("session.send", accountID, false, fmt.Sprintf("target=%s err=%s", target, err.Error()))
 		return tgAssistantSessionMessage{}, err
-	}
-	if err := storeTGAssistantSessionMessages(accountID, target, []tgAssistantSessionMessage{result}); err != nil {
-		log.Printf("tg message store failed: %v", err)
 	}
 	appendTGAssistantHistory("session.send", accountID, true, fmt.Sprintf("target=%s message_id=%d", target, result.ID))
 	return result, nil
@@ -1572,7 +1557,7 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 			return errors.New("tg session is not authorized for requested account")
 		}
 
-		peer, err := resolveTGAssistantInputPeer(inner, client, task.Target)
+		peer, err := resolveTGAssistantInputPeer(inner, client, accountID, task.Target)
 		if err != nil {
 			return err
 		}
@@ -3123,10 +3108,13 @@ func tgAssistantInputPeerFromPeer(peer tg.PeerClass, chats []tg.ChatClass, users
 	return nil, false
 }
 
-func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, target string) (tg.InputPeerClass, error) {
+func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, accountID, target string) (tg.InputPeerClass, error) {
 	targetType, targetID, err := parseTGAssistantTarget(target)
 	if err != nil {
 		return nil, err
+	}
+	if peer := getCachedTGAssistantInputPeer(accountID, target); peer != nil {
+		return peer, nil
 	}
 
 	_, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantAllFoldersID)
@@ -3140,7 +3128,9 @@ func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, t
 			switch item := raw.(type) {
 			case *tg.User:
 				if item.ID == targetID {
-					return item.AsInputPeer(), nil
+					peer := item.AsInputPeer()
+					cacheTGAssistantInputPeer(accountID, target, peer)
+					return peer, nil
 				}
 			case *tg.UserEmpty:
 				if item.ID == targetID {
@@ -3154,7 +3144,9 @@ func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, t
 			switch item := raw.(type) {
 			case *tg.Chat:
 				if item.ID == targetID {
-					return item.AsInputPeer(), nil
+					peer := item.AsInputPeer()
+					cacheTGAssistantInputPeer(accountID, target, peer)
+					return peer, nil
 				}
 			case *tg.ChatForbidden:
 				if item.ID == targetID {
@@ -3168,14 +3160,18 @@ func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, t
 			switch item := raw.(type) {
 			case *tg.Channel:
 				if item.ID == targetID {
-					return item.AsInputPeer(), nil
+					peer := item.AsInputPeer()
+					cacheTGAssistantInputPeer(accountID, target, peer)
+					return peer, nil
 				}
 			case *tg.ChannelForbidden:
 				if item.ID == targetID {
-					return &tg.InputPeerChannel{
+					peer := &tg.InputPeerChannel{
 						ChannelID:  item.ID,
 						AccessHash: item.AccessHash,
-					}, nil
+					}
+					cacheTGAssistantInputPeer(accountID, target, peer)
+					return peer, nil
 				}
 			}
 		}
@@ -3183,6 +3179,33 @@ func resolveTGAssistantInputPeer(ctx context.Context, client *telegram.Client, t
 	default:
 		return nil, fmt.Errorf("unsupported target type: %s", targetType)
 	}
+}
+
+func getCachedTGAssistantInputPeer(accountID, target string) tg.InputPeerClass {
+	key := tgAssistantInputPeerCacheKey(accountID, target)
+	if key == "\x00" {
+		return nil
+	}
+	tgAssistantInputPeerCacheMu.Lock()
+	defer tgAssistantInputPeerCacheMu.Unlock()
+	return tgAssistantInputPeerCache[key]
+}
+
+func cacheTGAssistantInputPeer(accountID, target string, peer tg.InputPeerClass) {
+	if peer == nil {
+		return
+	}
+	key := tgAssistantInputPeerCacheKey(accountID, target)
+	if key == "\x00" {
+		return
+	}
+	tgAssistantInputPeerCacheMu.Lock()
+	tgAssistantInputPeerCache[key] = peer
+	tgAssistantInputPeerCacheMu.Unlock()
+}
+
+func tgAssistantInputPeerCacheKey(accountID, target string) string {
+	return strings.TrimSpace(accountID) + "\x00" + strings.TrimSpace(target)
 }
 
 func parseTGAssistantTarget(rawTarget string) (string, int64, error) {

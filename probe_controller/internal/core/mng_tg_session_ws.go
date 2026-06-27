@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	mngTGSessionWSTickerInterval    = 2 * time.Second
 	mngTGSessionWSHeartbeatInterval = 30 * time.Second
 )
 
@@ -89,6 +88,9 @@ func mngTGSessionWSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lastFingerprint := sessionMessagesFingerprint(messages)
+	ensureTGAssistantSessionPushRunner(accountID)
+	pushEvents, unsubscribe := subscribeTGAssistantSessionPush(accountID, target)
+	defer unsubscribe()
 	if err := send(mngTGSessionWSPayload{
 		Type:      "session.snapshot",
 		AccountID: accountID,
@@ -99,8 +101,6 @@ func mngTGSessionWSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ticker := time.NewTicker(mngTGSessionWSTickerInterval)
-	defer ticker.Stop()
 	heartbeat := time.NewTicker(mngTGSessionWSHeartbeatInterval)
 	defer heartbeat.Stop()
 
@@ -108,13 +108,8 @@ func mngTGSessionWSHandler(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-done:
 			return
-		case <-ticker.C:
-			messages, err := listTGAssistantSessionMessages(req)
-			if err != nil {
-				sendError("%v", err)
-				return
-			}
-			fingerprint := sessionMessagesFingerprint(messages)
+		case event := <-pushEvents:
+			fingerprint := sessionMessagesFingerprint(event.Messages)
 			if fingerprint == lastFingerprint {
 				continue
 			}
@@ -123,7 +118,7 @@ func mngTGSessionWSHandler(w http.ResponseWriter, r *http.Request) {
 				Type:      "session.snapshot",
 				AccountID: accountID,
 				Target:    target,
-				Messages:  messages,
+				Messages:  event.Messages,
 				UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 			}); err != nil {
 				return

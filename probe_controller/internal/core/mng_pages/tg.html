@@ -2383,11 +2383,7 @@
       if (sessionRefreshTimer) return;
       const refresh = () => {
         if (document.hidden) return;
-        const active = getActiveLoggedInAccount();
-        const session = active ? getAccountSessionState(active.id) : getCurrentSessionState();
-        const targetID = String(session.selectedSessionTarget || '').trim();
-        if (!active || !targetID || session.sessionLoading || session.sessionSending) return;
-        loadSessionMessages({ silent: true, background: true, preserveScroll: true }).catch(() => {});
+        connectSessionWS();
       };
       sessionRefreshTimer = window.setInterval(refresh, SESSION_REFRESH_INTERVAL_MS);
       document.addEventListener('visibilitychange', refresh);
