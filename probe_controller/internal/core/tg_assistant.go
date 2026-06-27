@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -78,6 +79,7 @@ type tgAssistantAccount struct {
 	SelfUsername    string                `json:"self_username"`
 	SelfDisplayName string                `json:"self_display_name"`
 	SelfPhone       string                `json:"self_phone"`
+	SessionToken    string                `json:"session_token,omitempty"`
 	Schedules       []tgAssistantSchedule `json:"schedules"`
 }
 
@@ -202,6 +204,11 @@ type tgAssistantSignInRequest struct {
 	AccountID string `json:"account_id"`
 	Code      string `json:"code"`
 	Password  string `json:"password"`
+}
+
+type tgAssistantSessionTokenLoginRequest struct {
+	Label        string `json:"label"`
+	SessionToken string `json:"session_token"`
 }
 
 type tgAssistantAPIKeyRequest struct {
@@ -715,6 +722,161 @@ func completeTGAssistantLogin(req tgAssistantSignInRequest) (tgAssistantAccount,
 	appendTGAssistantHistory("account.sign_in", accountID, true, "authorized")
 
 	return buildTGAssistantAccountView(record, apiID), nil
+}
+
+func loginTGAssistantAccountBySessionToken(req tgAssistantSessionTokenLoginRequest) (tgAssistantAccount, error) {
+	if TGAssistantStore == nil {
+		return tgAssistantAccount{}, errors.New("tg assistant datastore is not initialized")
+	}
+
+	sessionBytes, err := decodeTGAssistantSessionToken(req.SessionToken)
+	if err != nil {
+		return tgAssistantAccount{}, err
+	}
+
+	TGAssistantStore.mu.RLock()
+	records := loadTGAssistantAccountsLocked()
+	apiID, apiHash := loadTGAssistantAPIKeyLocked()
+	TGAssistantStore.mu.RUnlock()
+	if !isTGAssistantAPIKeyConfigured(apiID, apiHash) {
+		return tgAssistantAccount{}, errors.New("shared tg api key is not configured")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	record := tgAssistantAccountRecord{
+		ID:          newTGAssistantAccountID(),
+		Label:       strings.TrimSpace(req.Label),
+		Phone:       "session",
+		BotMode:     tgAssistantBotModePolling,
+		Authorized:  false,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		LastLoginAt: now,
+	}
+	if record.Label == "" {
+		record.Label = "Session Token"
+	}
+
+	sessionPath := tgAssistantSessionPath(record.ID)
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
+		return tgAssistantAccount{}, fmt.Errorf("failed to prepare tg session directory: %w", err)
+	}
+	if err := os.WriteFile(sessionPath, sessionBytes, 0o600); err != nil {
+		return tgAssistantAccount{}, fmt.Errorf("failed to write tg session token: %w", err)
+	}
+
+	var status *tgauth.Status
+	runErr := runTGAssistantClient(apiID, apiHash, record, func(ctx context.Context, client *telegram.Client) error {
+		authStatus, err := client.Auth().Status(ctx)
+		if err != nil {
+			return err
+		}
+		if !authStatus.Authorized {
+			return errors.New("session token is not authorized")
+		}
+		status = authStatus
+		return nil
+	})
+	if runErr != nil {
+		_ = os.Remove(sessionPath)
+		appendTGAssistantHistory("account.token_login", "", false, runErr.Error())
+		return tgAssistantAccount{}, runErr
+	}
+
+	record.Authorized = true
+	record.LastError = "authorized"
+	applyTGAssistantIdentityFromStatus(&record, status)
+	if phone := normalizeTGPhone(record.SelfPhone); phone != "" {
+		record.Phone = phone
+	} else if record.SelfUserID > 0 {
+		record.Phone = strconv.FormatInt(record.SelfUserID, 10)
+	}
+	if strings.TrimSpace(req.Label) == "" {
+		record.Label = firstNonEmptyString(record.SelfDisplayName, record.SelfUsername, record.Phone, record.Label)
+	}
+
+	existingIndex := -1
+	for i, item := range records {
+		if record.SelfUserID > 0 && item.SelfUserID == record.SelfUserID {
+			existingIndex = i
+			break
+		}
+		if strings.TrimSpace(record.Phone) != "" && normalizeTGPhone(item.Phone) == normalizeTGPhone(record.Phone) {
+			existingIndex = i
+			break
+		}
+	}
+
+	if existingIndex >= 0 {
+		existing := records[existingIndex]
+		existingSessionPath := tgAssistantSessionPath(existing.ID)
+		if err := os.MkdirAll(filepath.Dir(existingSessionPath), 0o755); err != nil {
+			_ = os.Remove(sessionPath)
+			return tgAssistantAccount{}, fmt.Errorf("failed to prepare existing tg session directory: %w", err)
+		}
+		if err := os.WriteFile(existingSessionPath, sessionBytes, 0o600); err != nil {
+			_ = os.Remove(sessionPath)
+			return tgAssistantAccount{}, fmt.Errorf("failed to update existing tg session token: %w", err)
+		}
+		_ = os.Remove(sessionPath)
+		existing.Authorized = true
+		existing.LastError = "authorized"
+		existing.UpdatedAt = now
+		existing.LastLoginAt = now
+		existing.SelfUserID = record.SelfUserID
+		existing.SelfUsername = record.SelfUsername
+		existing.SelfDisplayName = record.SelfDisplayName
+		existing.SelfPhone = record.SelfPhone
+		if strings.TrimSpace(record.Phone) != "" {
+			existing.Phone = record.Phone
+		}
+		if strings.TrimSpace(req.Label) != "" {
+			existing.Label = strings.TrimSpace(req.Label)
+		}
+		records[existingIndex] = existing
+		record = existing
+	} else {
+		records = append(records, record)
+	}
+
+	TGAssistantStore.mu.Lock()
+	TGAssistantStore.data.Accounts = normalizeTGAssistantAccountRecords(records)
+	TGAssistantStore.mu.Unlock()
+	if err := TGAssistantStore.Save(); err != nil {
+		return tgAssistantAccount{}, err
+	}
+	appendTGAssistantHistory("account.token_login", record.ID, true, "authorized")
+	return buildTGAssistantAccountView(record, apiID), nil
+}
+
+func decodeTGAssistantSessionToken(raw string) ([]byte, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, errors.New("session_token is required")
+	}
+	if len(value) > 1024*1024 {
+		return nil, errors.New("session_token is too large")
+	}
+	decoders := []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	}
+	var lastErr error
+	for _, decoder := range decoders {
+		content, err := decoder.DecodeString(value)
+		if err == nil && len(content) > 0 {
+			return content, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("session_token must be valid base64: %w", lastErr)
+	}
+	return nil, errors.New("session_token is empty")
 }
 
 func logoutTGAssistantAccount(req tgAssistantAccountIDRequest) (tgAssistantAccount, error) {
@@ -1996,9 +2158,6 @@ func runTGAssistantClientWithContext(parent context.Context, apiID int, apiHash 
 	if strings.TrimSpace(apiHash) == "" {
 		return errors.New("api_hash is required")
 	}
-	if strings.TrimSpace(record.Phone) == "" {
-		return errors.New("phone is required")
-	}
 
 	sessionPath := tgAssistantSessionPath(record.ID)
 	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
@@ -2148,12 +2307,25 @@ func buildTGAssistantAccountView(record tgAssistantAccountRecord, sharedAPIID in
 		SelfUsername:    record.SelfUsername,
 		SelfDisplayName: record.SelfDisplayName,
 		SelfPhone:       record.SelfPhone,
+		SessionToken:    loadTGAssistantSessionToken(record.ID),
 		Schedules:       buildTGAssistantScheduleViews(record.Schedules),
 	}
 
 	_, pending := getTGAssistantLoginChallenge(record.ID)
 	view.PendingCode = pending
 	return view
+}
+
+func loadTGAssistantSessionToken(accountID string) string {
+	normalizedAccountID := strings.TrimSpace(accountID)
+	if normalizedAccountID == "" {
+		return ""
+	}
+	content, err := os.ReadFile(tgAssistantSessionPath(normalizedAccountID))
+	if err != nil || len(content) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(content)
 }
 
 func loadTGAssistantAccountsLocked() []tgAssistantAccountRecord {

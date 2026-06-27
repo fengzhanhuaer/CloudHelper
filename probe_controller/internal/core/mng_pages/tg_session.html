@@ -306,10 +306,6 @@
         <h1>TG会话</h1>
         <p class="sub">独立窗口展示当前 TG 账号的会话、消息与发送入口。</p>
       </div>
-      <div class="content-actions">
-        <button id="btn-back" class="btn" type="button">返回TG助手</button>
-        <button id="btn-logout" class="btn" type="button">退出登录</button>
-      </div>
     </div>
     <div id="status-box" class="status">初始化中...</div>
     <div class="content-block">
@@ -320,7 +316,6 @@
   <script>
     const state = {
       loading: false,
-      targetRefreshing: false,
       sessionLoading: false,
       sessionSending: false,
       status: '初始化中...',
@@ -328,6 +323,7 @@
       accounts: [],
       selectedAccountID: '',
       activeLoggedInAccountID: '',
+      requestedAccountID: '',
       targetList: [],
       selectedSessionTarget: '',
       sessionMessages: [],
@@ -384,6 +380,14 @@
       return getLoggedInAccounts().find((item) => item.id === state.activeLoggedInAccountID) || null;
     }
 
+    function getRequestedAccountID() {
+      try {
+        return String(new URLSearchParams(window.location.search).get('account_id') || '').trim();
+      } catch (error) {
+        return '';
+      }
+    }
+
     function syncSelectedAccounts() {
       if (state.accounts.length === 0) {
         state.selectedAccountID = '';
@@ -396,6 +400,16 @@
       const loggedIn = getLoggedInAccounts();
       if (loggedIn.length === 0) {
         state.activeLoggedInAccountID = '';
+        return;
+      }
+      if (state.requestedAccountID) {
+        if (loggedIn.some((item) => item.id === state.requestedAccountID)) {
+          state.activeLoggedInAccountID = state.requestedAccountID;
+          state.selectedAccountID = state.requestedAccountID;
+        } else {
+          state.activeLoggedInAccountID = '';
+          state.selectedAccountID = state.requestedAccountID;
+        }
         return;
       }
       if (!loggedIn.some((item) => item.id === state.activeLoggedInAccountID)) {
@@ -424,15 +438,6 @@
       const bits = [formatTGSessionType(item.type), item.id || ''];
       if (item.username) bits.push('@' + item.username);
       return bits.filter(Boolean).join(' · ');
-    }
-
-    function renderTargetLabel(targetID) {
-      const id = String(targetID || '').trim();
-      if (!id) return '-';
-      const hit = state.targetList.find((item) => item.id === id);
-      if (!hit) return id;
-      if (hit.username && String(hit.username).trim()) return `${hit.name} (@${hit.username})`;
-      return hit.name;
     }
 
     function getFilteredSessionTargets() {
@@ -498,14 +503,11 @@
       if (!host) return;
       const active = getActiveLoggedInAccount();
       if (!active) {
+        const emptyMessage = state.requestedAccountID
+          ? '当前选中的 TG 账号未登录或不存在，请在「TG助手」重新选择账号。'
+          : '请先在「TG助手」中登录并选择一个账号。';
         host.innerHTML = `
-          <div class="title-row">
-            <h2>TG会话</h2>
-            <div class="content-actions">
-              <button class="btn" data-action="reload-accounts" type="button" ${state.loading ? 'disabled' : ''}>刷新账号</button>
-            </div>
-          </div>
-          <div class="tg-account-summary-line">请先在「TG助手」中登录并选择一个账号。</div>
+          <div class="tg-account-summary-line">${escapeHTML(emptyMessage)}</div>
         `;
         bindTGSessionEvents();
         return;
@@ -543,20 +545,14 @@
       }
       const messages = renderSessionMessages();
       const selectedTitle = selected ? String(selected.name || selected.id || '-') : '请选择会话';
-      const selectedSubtitle = selected ? formatSessionSubtitle(selected) : '刷新或选择左侧会话';
+      const selectedSubtitle = selected ? formatSessionSubtitle(selected) : '选择左侧会话';
       host.innerHTML = `
-        <div class="title-row">
-          <h2>TG会话</h2>
-          <div class="content-actions">
-            <button class="btn" data-action="reload-accounts" type="button" ${state.loading ? 'disabled' : ''}>刷新账号</button>
-            <button class="btn" data-action="refresh-session-targets" type="button" ${state.loading || state.targetRefreshing ? 'disabled' : ''}>${state.targetRefreshing ? '刷新中...' : '刷新TG会话'}</button>
-          </div>
-        </div>
-        <div class="tg-account-basic-row"><div class="tg-account-basic-label">当前账号</div><div class="tg-account-basic-value">${escapeHTML(active.label)} (${escapeHTML(active.phone)})</div></div>
-        <div class="tg-session-summary">全部 ${state.targetList.length} ｜ 私聊 ${typeCounts.user} ｜ 群组 ${typeCounts.chat} ｜ 频道 ${typeCounts.channel} ｜ 当前显示 ${filtered.length}</div>
         <div class="tg-chat-shell">
           <aside class="tg-chat-sidebar">
             <div class="tg-chat-sidebar-head">
+              <div class="tg-chat-title">会话列表</div>
+              <div class="tg-chat-subtitle">${escapeHTML(active.label)} (${escapeHTML(active.phone)})</div>
+              <div class="tg-session-summary">全部 ${state.targetList.length} ｜ 私聊 ${typeCounts.user} ｜ 群组 ${typeCounts.chat} ｜ 频道 ${typeCounts.channel} ｜ 当前显示 ${filtered.length}</div>
               <div class="tg-session-toolbar" style="margin-bottom:0">
                 <label>搜索
                   <input id="tg-session-search" class="input" value="${escapeHTML(state.draft.sessionSearch)}" placeholder="名称 / username / id / 类型">
@@ -571,9 +567,6 @@
                 </label>
               </div>
             </div>
-            <div class="tg-chat-sidebar-head" style="border-bottom:0;padding-top:0">
-              <button class="btn" data-action="load-session-messages" type="button" ${!selected || state.sessionLoading ? 'disabled' : ''}>${state.sessionLoading ? '加载中...' : '刷新消息'}</button>
-            </div>
             <div class="tg-chat-list">${sessionItems}</div>
           </aside>
           <section class="tg-chat-main">
@@ -581,10 +574,6 @@
               <div>
                 <div class="tg-chat-title">${escapeHTML(selectedTitle)}</div>
                 <div class="tg-chat-subtitle">${escapeHTML(selectedSubtitle)}</div>
-              </div>
-              <div class="content-actions">
-                <button class="btn" data-action="load-older-session-messages" type="button" ${!selected || state.sessionLoading || state.sessionMessages.length === 0 ? 'disabled' : ''}>更早</button>
-                <button class="btn" data-action="use-session-target" data-target-id="${escapeHTML(state.selectedSessionTarget || '')}" type="button" ${!selected ? 'disabled' : ''}>设为定时对象</button>
               </div>
             </div>
             <div id="tg-chat-messages" class="tg-chat-messages">${messages}</div>
@@ -600,9 +589,6 @@
     }
 
     function bindTGSessionEvents() {
-      document.querySelectorAll('[data-action="reload-accounts"]').forEach((btn) => {
-        btn.addEventListener('click', () => loadAccounts().catch((err) => setStatus(`刷新账号失败：${err.message || err}`, 'err')));
-      });
       const search = qs('tg-session-search');
       if (search) {
         const applySearch = () => {
@@ -621,9 +607,6 @@
           renderTGSessionPanel();
         });
       }
-      document.querySelectorAll('[data-action="refresh-session-targets"]').forEach((btn) => {
-        btn.addEventListener('click', () => handleRefreshTargets().catch((err) => setStatus(`刷新TG会话失败：${err.message || err}`, 'err')));
-      });
       document.querySelectorAll('[data-action="open-session-target"]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const targetID = String(btn.getAttribute('data-target-id') || '').trim();
@@ -633,12 +616,6 @@
           renderTGSessionPanel();
           loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
         });
-      });
-      document.querySelectorAll('[data-action="load-session-messages"]').forEach((btn) => {
-        btn.addEventListener('click', () => loadSessionMessages().catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err')));
-      });
-      document.querySelectorAll('[data-action="load-older-session-messages"]').forEach((btn) => {
-        btn.addEventListener('click', () => loadOlderSessionMessages().catch((err) => setStatus(`加载更早消息失败：${err.message || err}`, 'err')));
       });
       const composer = qs('tg-session-message');
       if (composer) {
@@ -656,16 +633,6 @@
       }
       document.querySelectorAll('[data-action="send-session-message"]').forEach((btn) => {
         btn.addEventListener('click', () => sendSessionMessage().catch((err) => setStatus(`发送消息失败：${err.message || err}`, 'err')));
-      });
-      document.querySelectorAll('[data-action="use-session-target"]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const targetID = String(btn.getAttribute('data-target-id') || '').trim();
-          if (!targetID) return;
-          try {
-            window.sessionStorage.setItem('cloudhelper_tg_schedule_target', targetID);
-          } catch (error) {}
-          location.href = '/mng/tg';
-        });
       });
     }
 
@@ -733,34 +700,6 @@
       }
     }
 
-    async function handleRefreshTargets() {
-      const active = getActiveLoggedInAccount();
-      if (!active || state.targetRefreshing) return;
-      state.targetRefreshing = true;
-      renderTGSessionPanel();
-      setStatus(`正在从服务器刷新会话对象：${active.label}...`);
-      try {
-        const payload = await requestJSON('/mng/api/tg/targets/refresh', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ account_id: active.id }),
-        });
-        state.targetList = Array.isArray(payload.targets) ? payload.targets : [];
-        if (!state.targetList.some((item) => item.id === state.selectedSessionTarget)) {
-          state.selectedSessionTarget = state.targetList.length > 0 ? state.targetList[0].id : '';
-          state.sessionMessages = [];
-        }
-        renderTGSessionPanel();
-        if (state.selectedSessionTarget) {
-          loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
-        }
-        setStatus(`已刷新会话对象（${state.targetList.length} 个）`, 'ok');
-      } finally {
-        state.targetRefreshing = false;
-        renderTGSessionPanel();
-      }
-    }
-
     async function loadSessionMessages(options = {}) {
       const active = getActiveLoggedInAccount();
       const targetID = String(state.selectedSessionTarget || '').trim();
@@ -781,39 +720,6 @@
         state.sessionMessages = Array.isArray(payload.messages) ? payload.messages : [];
         renderTGSessionPanel();
         if (!silent) setStatus(`已加载会话消息（${state.sessionMessages.length} 条）`, 'ok');
-      } finally {
-        state.sessionLoading = false;
-        renderTGSessionPanel();
-      }
-    }
-
-    async function loadOlderSessionMessages() {
-      const active = getActiveLoggedInAccount();
-      const targetID = String(state.selectedSessionTarget || '').trim();
-      if (!active || !targetID || state.sessionMessages.length === 0) return;
-      const oldestID = state.sessionMessages.reduce((min, item) => {
-        const id = Number(item && item.id || 0);
-        if (!id) return min;
-        return min === 0 || id < min ? id : min;
-      }, 0);
-      if (!oldestID) return;
-      const accountID = active.id;
-      state.sessionLoading = true;
-      renderTGSessionPanel();
-      setStatus('正在加载更早消息...');
-      try {
-        const payload = await requestJSON('/mng/api/tg/session/messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ account_id: accountID, target: targetID, limit: 50, offset_id: oldestID }),
-        });
-        const current = getActiveLoggedInAccount();
-        if (!current || current.id !== accountID || state.selectedSessionTarget !== targetID) return;
-        const older = Array.isArray(payload.messages) ? payload.messages : [];
-        const seen = new Set(state.sessionMessages.map((item) => Number(item && item.id || 0)));
-        state.sessionMessages = older.filter((item) => !seen.has(Number(item && item.id || 0))).concat(state.sessionMessages);
-        renderTGSessionPanel();
-        setStatus(`已加载更早消息（新增 ${older.length} 条）`, 'ok');
       } finally {
         state.sessionLoading = false;
         renderTGSessionPanel();
@@ -846,18 +752,8 @@
       }
     }
 
-    async function logout() {
-      await fetch('/mng/api/logout', { method: 'POST', credentials: 'same-origin' });
-      location.href = '/mng';
-    }
-
-    function bindStaticEvents() {
-      qs('btn-back').addEventListener('click', () => { location.href = '/mng/tg'; });
-      qs('btn-logout').addEventListener('click', () => logout().catch(() => { location.href = '/mng'; }));
-    }
-
     async function bootstrap() {
-      bindStaticEvents();
+      state.requestedAccountID = getRequestedAccountID();
       renderStatus();
       renderTGSessionPanel();
       const ok = await ensureSession().catch(() => false);

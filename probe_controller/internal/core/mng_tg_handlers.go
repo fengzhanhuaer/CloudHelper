@@ -162,6 +162,26 @@ func mngTGAccountSignInHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngTGAccountTokenLoginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req tgAssistantSessionTokenLoginRequest
+	if err := decodeMngJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	account, err := loginTGAssistantAccountBySessionToken(req)
+	if err != nil {
+		writeMngTGError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"account": account,
+	})
+}
+
 func mngTGAccountLogoutHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

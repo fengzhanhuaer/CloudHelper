@@ -482,6 +482,13 @@
       border-color: rgba(154, 210, 255, 0.92);
     }
     textarea.input { min-height: 100px; resize: vertical; }
+    .tg-session-token {
+      min-height: 92px;
+      font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-all;
+    }
 
     .tg-schedule-field {
       margin-bottom: 10px;
@@ -540,7 +547,10 @@
         <p id="page-subtitle" class="sub">参照 manager 侧统一交互：账号登录、任务管理、TG Bot 全流程。</p>
       </div>
       <div class="content-actions">
-        <button id="btn-open-sessions" class="btn primary" type="button">TG会话</button>
+        <button id="btn-account-manage" class="btn" type="button">账号管理</button>
+        <button id="btn-login-account" class="btn" type="button">登录账号</button>
+        <button id="btn-token-login" class="btn" type="button">Token登录</button>
+        <button id="btn-api-settings" class="btn" type="button">设置API</button>
         <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
         <button id="btn-logout" class="btn" type="button">退出登录</button>
       </div>
@@ -556,11 +566,6 @@
     <div class="content-block tg-panel active" data-panel-content="assistant" role="tabpanel">
       <div class="title-row">
         <h2>TG助手</h2>
-        <div class="content-actions">
-          <button id="btn-account-manage" class="btn" type="button">账号管理</button>
-          <button id="btn-login-account" class="btn" type="button">登录账号</button>
-          <button id="btn-api-settings" class="btn" type="button">设置API</button>
-        </div>
       </div>
       <p class="muted">共享 API Key（API ID / API Hash）、账号与登录、任务管理、Bot 管理。</p>
 
@@ -620,6 +625,7 @@
       modal: {
         apiKey: false,
         addAccount: false,
+        tokenLogin: false,
         manageAccount: false,
         scheduleTask: false,
         scheduleHistory: false,
@@ -635,6 +641,8 @@
         addAccountPhone: '',
         loginCode: '',
         loginPassword: '',
+        tokenLoginLabel: '',
+        tokenLoginSessionToken: '',
 
         scheduleEditingTaskID: '',
         scheduleEnabled: false,
@@ -689,7 +697,12 @@
     }
 
     function openTGSessionWindow() {
-      const url = `${window.location.origin}/mng/tg/session`;
+      const active = getActiveLoggedInAccount();
+      if (!active) {
+        setStatus('请先选择一个已登录账号', 'warn');
+        return;
+      }
+      const url = `${window.location.origin}/mng/tg/session?account_id=${encodeURIComponent(active.id)}`;
       const opened = window.open(url, 'cloudhelper_tg_sessions', 'noopener,noreferrer,width=1280,height=860');
       if (!opened) {
         setStatus('浏览器拦截了 TG 会话窗口，请允许弹窗后重试。', 'warn');
@@ -787,7 +800,7 @@
       if (key === 'scheduleTask' && state.scheduleLoading) return;
       if (key === 'scheduleHistory' && state.scheduleHistoryLoading) return;
       if (key === 'botAPIKey' && state.botLoading) return;
-      if ((key === 'addAccount' || key === 'manageAccount' || key === 'apiKey') && state.loading) return;
+      if ((key === 'addAccount' || key === 'tokenLogin' || key === 'manageAccount' || key === 'apiKey') && state.loading) return;
       state.modal[key] = false;
       renderModal();
     }
@@ -800,6 +813,7 @@
       const headerButtonsDisabled = state.loading;
       qs('btn-account-manage').disabled = headerButtonsDisabled;
       qs('btn-login-account').disabled = headerButtonsDisabled || !state.api.configured;
+      qs('btn-token-login').disabled = headerButtonsDisabled || !state.api.configured;
       qs('btn-api-settings').disabled = headerButtonsDisabled;
 
       let html = '';
@@ -817,6 +831,7 @@
 
         html += '<div class="subtab-list">';
         html += `<button class="subtab-btn${state.activeSubTab === 'basic-info' ? ' active' : ''}" data-action="switch-subtab" data-subtab="basic-info" type="button">基础信息</button>`;
+        html += '<button class="subtab-btn" data-action="open-sessions" type="button">TG会话</button>';
         html += `<button class="subtab-btn${state.activeSubTab === 'scheduled-send' ? ' active' : ''}" data-action="switch-subtab" data-subtab="scheduled-send" type="button">定时发送</button>`;
         html += `<button class="subtab-btn${state.activeSubTab === 'tg-bot' ? ' active' : ''}" data-action="switch-subtab" data-subtab="tg-bot" type="button">TG BOT</button>`;
         html += '</div>';
@@ -1213,6 +1228,7 @@
           <div class="tg-account-basic-row"><div class="tg-account-basic-label">显示名</div><div class="tg-account-basic-value">${escapeHTML(account.self_display_name || '-')}</div></div>
           <div class="tg-account-basic-row"><div class="tg-account-basic-label">用户名</div><div class="tg-account-basic-value">${escapeHTML(account.self_username || '-')}</div></div>
           <div class="tg-account-basic-row"><div class="tg-account-basic-label">最近登录</div><div class="tg-account-basic-value">${escapeHTML(formatDateTime(account.last_login_at || ''))}</div></div>
+          <div class="tg-account-basic-row"><div class="tg-account-basic-label">Session Token</div><div class="tg-account-basic-value"><textarea class="input tg-session-token" readonly>${escapeHTML(account.session_token || '-')}</textarea><div class="muted">base64 编码的 gotd session 文件内容，请勿泄露。</div></div></div>
         </div>
       `;
     }
@@ -1319,6 +1335,9 @@
       }
       if (state.modal.addAccount) {
         html += renderAddAccountModal(selectedAccount);
+      }
+      if (state.modal.tokenLogin) {
+        html += renderTokenLoginModal();
       }
       if (state.modal.manageAccount) {
         html += renderManageAccountModal(selectedAccount);
@@ -1436,6 +1455,29 @@
       `;
     }
 
+    function renderTokenLoginModal() {
+      return `
+        <div class="probe-settings-modal-mask" data-action="close-modal" data-modal="tokenLogin">
+          <div class="probe-settings-modal" data-stop="1">
+            <h3 style="margin-top:0">Token登录</h3>
+            <div class="row">
+              <label>账号备注</label>
+              <input id="token-login-label" class="input" value="${escapeHTML(state.draft.tokenLoginLabel)}" placeholder="留空则使用账号显示名" ${state.loading ? 'disabled' : ''}>
+            </div>
+            <div class="tg-schedule-field">
+              <label class="tg-account-basic-label" for="token-login-session-token">Session Token</label>
+              <textarea id="token-login-session-token" class="input tg-session-token" placeholder="粘贴基础信息中展示的 base64 session token" ${state.loading ? 'disabled' : ''}>${escapeHTML(state.draft.tokenLoginSessionToken)}</textarea>
+              <div class="muted">Token 将写入当前主控的 TG session 存储，并通过 Telegram 校验授权状态。</div>
+            </div>
+            <div class="content-actions">
+              <button class="btn primary" data-action="token-login" type="button" ${state.loading || !state.api.configured ? 'disabled' : ''}>登录</button>
+              <button class="btn" data-action="close-modal" data-modal="tokenLogin" type="button" ${state.loading ? 'disabled' : ''}>取消</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     function renderManageAccountModal(selectedAccount) {
       return `
         <div class="probe-settings-modal-mask" data-action="close-modal" data-modal="manageAccount">
@@ -1536,9 +1578,6 @@
       qs('btn-back').addEventListener('click', () => {
         location.href = '/mng/panel';
       });
-      qs('btn-open-sessions').addEventListener('click', () => {
-        openTGSessionWindow();
-      });
       qs('btn-logout').addEventListener('click', () => logout().catch(() => { location.href = '/mng'; }));
       document.querySelectorAll('[data-panel-tab]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -1560,6 +1599,9 @@
       });
       qs('btn-login-account').addEventListener('click', () => {
         openAddAccountModal();
+      });
+      qs('btn-token-login').addEventListener('click', () => {
+        openTokenLoginModal();
       });
       qs('btn-api-settings').addEventListener('click', () => {
         openAPIKeyModal();
@@ -1611,6 +1653,12 @@
           const tab = String(btn.getAttribute('data-subtab') || 'basic-info');
           state.activeSubTab = tab;
           renderMain();
+        });
+      });
+
+      document.querySelectorAll('[data-action="open-sessions"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          openTGSessionWindow();
         });
       });
 
@@ -1745,6 +1793,18 @@
           state.draft.loginPassword = loginPassword.value;
         });
       }
+      const tokenLabel = qs('token-login-label');
+      if (tokenLabel) {
+        tokenLabel.addEventListener('input', () => {
+          state.draft.tokenLoginLabel = tokenLabel.value;
+        });
+      }
+      const tokenSession = qs('token-login-session-token');
+      if (tokenSession) {
+        tokenSession.addEventListener('input', () => {
+          state.draft.tokenLoginSessionToken = tokenSession.value;
+        });
+      }
 
       const manageSelect = qs('manage-account-select');
       if (manageSelect) {
@@ -1825,6 +1885,9 @@
       document.querySelectorAll('[data-action="complete-sign-in"]').forEach((btn) => {
         btn.addEventListener('click', () => handleSignIn().catch((err) => setStatus(`完成登录失败：${err.message || err}`, 'err')));
       });
+      document.querySelectorAll('[data-action="token-login"]').forEach((btn) => {
+        btn.addEventListener('click', () => handleTokenLogin().catch((err) => setStatus(`Token登录失败：${err.message || err}`, 'err')));
+      });
       document.querySelectorAll('[data-action="refresh-accounts"]').forEach((btn) => {
         btn.addEventListener('click', () => handleRefreshAccounts().catch((err) => setStatus(`刷新账号失败：${err.message || err}`, 'err')));
       });
@@ -1859,6 +1922,12 @@
       state.draft.loginCode = '';
       state.draft.loginPassword = '';
       openModal('addAccount');
+    }
+
+    function openTokenLoginModal() {
+      state.draft.tokenLoginLabel = '';
+      state.draft.tokenLoginSessionToken = '';
+      openModal('tokenLogin');
     }
 
     function handleSelectAccountForLogin(value) {
@@ -2376,6 +2445,47 @@
         setStatus(`登录成功：${selectedAccount.label}`, 'ok');
       } catch (error) {
         setStatus(`完成登录失败：${error.message || error}`, 'err');
+      } finally {
+        state.loading = false;
+        renderMain();
+        renderModal();
+      }
+    }
+
+    async function handleTokenLogin() {
+      if (!state.api.configured) {
+        setStatus('请先设置 API', 'warn');
+        return;
+      }
+      const label = String(state.draft.tokenLoginLabel || '').trim();
+      const sessionToken = String(state.draft.tokenLoginSessionToken || '').trim();
+      if (!sessionToken) {
+        setStatus('请粘贴 Session Token', 'warn');
+        return;
+      }
+
+      state.loading = true;
+      renderMain();
+      renderModal();
+      setStatus('正在使用 Session Token 登录...');
+      try {
+        const payload = await requestJSON('/mng/api/tg/account/token_login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label, session_token: sessionToken }),
+        });
+        const account = payload.account || null;
+        await loadAccounts({ silent: true });
+        if (account && account.id) {
+          state.selectedAccountID = String(account.id);
+          state.activeLoggedInAccountID = String(account.id);
+        }
+        state.modal.tokenLogin = false;
+        state.draft.tokenLoginLabel = '';
+        state.draft.tokenLoginSessionToken = '';
+        setStatus(`Token登录成功：${account && account.label ? account.label : 'TG账号'}`, 'ok');
+      } catch (error) {
+        setStatus(`Token登录失败：${error.message || error}`, 'err');
       } finally {
         state.loading = false;
         renderMain();
