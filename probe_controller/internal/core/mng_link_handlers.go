@@ -140,42 +140,46 @@ func mngLinkEntryProfilesUpsertHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type mngLinkRelayStatusView struct {
-	NodeID        string                           `json:"node_id"`
-	Online        bool                             `json:"online"`
-	LastSeen      string                           `json:"last_seen,omitempty"`
-	ChainID       string                           `json:"chain_id"`
-	ChainName     string                           `json:"chain_name,omitempty"`
-	ChainType     string                           `json:"chain_type,omitempty"`
-	Role          string                           `json:"role,omitempty"`
-	ListenHost    string                           `json:"listen_host,omitempty"`
-	ListenPort    int                              `json:"listen_port,omitempty"`
-	LinkLayer     string                           `json:"link_layer,omitempty"`
-	NextHost      string                           `json:"next_host,omitempty"`
-	NextPort      int                              `json:"next_port,omitempty"`
-	NextLinkLayer string                           `json:"next_link_layer,omitempty"`
-	PrevHost      string                           `json:"prev_host,omitempty"`
-	PrevPort      int                              `json:"prev_port,omitempty"`
-	PrevLinkLayer string                           `json:"prev_link_layer,omitempty"`
-	ListenState   *probeRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
-	NextState     *probeRelayProtocolStateSnapshot `json:"next_state,omitempty"`
-	PrevState     *probeRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
-	VirtualRouter *probeVirtualRouterRuntimeStats  `json:"virtual_router,omitempty"`
-	UpdatedAt     string                           `json:"updated_at,omitempty"`
+	NodeID         string                            `json:"node_id"`
+	Online         bool                              `json:"online"`
+	LastSeen       string                            `json:"last_seen,omitempty"`
+	ChainID        string                            `json:"chain_id"`
+	ChainName      string                            `json:"chain_name,omitempty"`
+	ChainType      string                            `json:"chain_type,omitempty"`
+	Role           string                            `json:"role,omitempty"`
+	ListenHost     string                            `json:"listen_host,omitempty"`
+	ListenPort     int                               `json:"listen_port,omitempty"`
+	LinkLayer      string                            `json:"link_layer,omitempty"`
+	NextHost       string                            `json:"next_host,omitempty"`
+	NextPort       int                               `json:"next_port,omitempty"`
+	NextLinkLayer  string                            `json:"next_link_layer,omitempty"`
+	PrevHost       string                            `json:"prev_host,omitempty"`
+	PrevPort       int                               `json:"prev_port,omitempty"`
+	PrevLinkLayer  string                            `json:"prev_link_layer,omitempty"`
+	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
+	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
+	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
+	VirtualRouter  *probeVirtualRouterRuntimeStats   `json:"virtual_router,omitempty"`
+	BridgeStatus   *probeChainBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
+	BridgeSessions []probeChainBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
+	UpdatedAt      string                            `json:"updated_at,omitempty"`
 }
 
 type mngVirtualRouterRouteSideStatus struct {
-	NodeID        string                           `json:"node_id"`
-	Online        bool                             `json:"online"`
-	LastSeen      string                           `json:"last_seen,omitempty"`
-	RuntimeFound  bool                             `json:"runtime_found"`
-	Status        string                           `json:"status"`
-	Listen        string                           `json:"listen,omitempty"`
-	Next          string                           `json:"next,omitempty"`
-	Prev          string                           `json:"prev,omitempty"`
-	ListenState   *probeRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
-	NextState     *probeRelayProtocolStateSnapshot `json:"next_state,omitempty"`
-	PrevState     *probeRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
-	VirtualRouter *probeVirtualRouterRuntimeStats  `json:"virtual_router,omitempty"`
+	NodeID         string                            `json:"node_id"`
+	Online         bool                              `json:"online"`
+	LastSeen       string                            `json:"last_seen,omitempty"`
+	RuntimeFound   bool                              `json:"runtime_found"`
+	Status         string                            `json:"status"`
+	Listen         string                            `json:"listen,omitempty"`
+	Next           string                            `json:"next,omitempty"`
+	Prev           string                            `json:"prev,omitempty"`
+	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
+	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
+	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
+	VirtualRouter  *probeVirtualRouterRuntimeStats   `json:"virtual_router,omitempty"`
+	BridgeStatus   *probeChainBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
+	BridgeSessions []probeChainBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
 }
 
 type mngVirtualRouterRouteStatusView struct {
@@ -209,27 +213,29 @@ func listMngLinkRelayStatus() []mngLinkRelayStatusView {
 				continue
 			}
 			items = append(items, mngLinkRelayStatusView{
-				NodeID:        strings.TrimSpace(runtime.NodeID),
-				Online:        runtime.Online,
-				LastSeen:      strings.TrimSpace(runtime.LastSeen),
-				ChainID:       chainID,
-				ChainName:     strings.TrimSpace(status.ChainName),
-				ChainType:     strings.TrimSpace(status.ChainType),
-				Role:          strings.TrimSpace(status.Role),
-				ListenHost:    strings.TrimSpace(status.ListenHost),
-				ListenPort:    status.ListenPort,
-				LinkLayer:     strings.TrimSpace(status.LinkLayer),
-				NextHost:      strings.TrimSpace(status.NextHost),
-				NextPort:      status.NextPort,
-				NextLinkLayer: strings.TrimSpace(status.NextLinkLayer),
-				PrevHost:      strings.TrimSpace(status.PrevHost),
-				PrevPort:      status.PrevPort,
-				PrevLinkLayer: strings.TrimSpace(status.PrevLinkLayer),
-				ListenState:   status.ListenState,
-				NextState:     status.NextState,
-				PrevState:     status.PrevState,
-				VirtualRouter: status.VirtualRouter,
-				UpdatedAt:     strings.TrimSpace(status.UpdatedAt),
+				NodeID:         strings.TrimSpace(runtime.NodeID),
+				Online:         runtime.Online,
+				LastSeen:       strings.TrimSpace(runtime.LastSeen),
+				ChainID:        chainID,
+				ChainName:      strings.TrimSpace(status.ChainName),
+				ChainType:      strings.TrimSpace(status.ChainType),
+				Role:           strings.TrimSpace(status.Role),
+				ListenHost:     strings.TrimSpace(status.ListenHost),
+				ListenPort:     status.ListenPort,
+				LinkLayer:      strings.TrimSpace(status.LinkLayer),
+				NextHost:       strings.TrimSpace(status.NextHost),
+				NextPort:       status.NextPort,
+				NextLinkLayer:  strings.TrimSpace(status.NextLinkLayer),
+				PrevHost:       strings.TrimSpace(status.PrevHost),
+				PrevPort:       status.PrevPort,
+				PrevLinkLayer:  strings.TrimSpace(status.PrevLinkLayer),
+				ListenState:    status.ListenState,
+				NextState:      status.NextState,
+				PrevState:      status.PrevState,
+				VirtualRouter:  status.VirtualRouter,
+				BridgeStatus:   status.BridgeStatus,
+				BridgeSessions: status.BridgeSessions,
+				UpdatedAt:      strings.TrimSpace(status.UpdatedAt),
 			})
 		}
 	}
@@ -268,27 +274,29 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 				continue
 			}
 			statusByNodeChain[nodeID+"|"+chainID] = mngLinkRelayStatusView{
-				NodeID:        nodeID,
-				Online:        runtime.Online,
-				LastSeen:      strings.TrimSpace(runtime.LastSeen),
-				ChainID:       chainID,
-				ChainName:     strings.TrimSpace(status.ChainName),
-				ChainType:     strings.TrimSpace(status.ChainType),
-				Role:          strings.TrimSpace(status.Role),
-				ListenHost:    strings.TrimSpace(status.ListenHost),
-				ListenPort:    status.ListenPort,
-				LinkLayer:     strings.TrimSpace(status.LinkLayer),
-				NextHost:      strings.TrimSpace(status.NextHost),
-				NextPort:      status.NextPort,
-				NextLinkLayer: strings.TrimSpace(status.NextLinkLayer),
-				PrevHost:      strings.TrimSpace(status.PrevHost),
-				PrevPort:      status.PrevPort,
-				PrevLinkLayer: strings.TrimSpace(status.PrevLinkLayer),
-				ListenState:   status.ListenState,
-				NextState:     status.NextState,
-				PrevState:     status.PrevState,
-				VirtualRouter: status.VirtualRouter,
-				UpdatedAt:     strings.TrimSpace(status.UpdatedAt),
+				NodeID:         nodeID,
+				Online:         runtime.Online,
+				LastSeen:       strings.TrimSpace(runtime.LastSeen),
+				ChainID:        chainID,
+				ChainName:      strings.TrimSpace(status.ChainName),
+				ChainType:      strings.TrimSpace(status.ChainType),
+				Role:           strings.TrimSpace(status.Role),
+				ListenHost:     strings.TrimSpace(status.ListenHost),
+				ListenPort:     status.ListenPort,
+				LinkLayer:      strings.TrimSpace(status.LinkLayer),
+				NextHost:       strings.TrimSpace(status.NextHost),
+				NextPort:       status.NextPort,
+				NextLinkLayer:  strings.TrimSpace(status.NextLinkLayer),
+				PrevHost:       strings.TrimSpace(status.PrevHost),
+				PrevPort:       status.PrevPort,
+				PrevLinkLayer:  strings.TrimSpace(status.PrevLinkLayer),
+				ListenState:    status.ListenState,
+				NextState:      status.NextState,
+				PrevState:      status.PrevState,
+				VirtualRouter:  status.VirtualRouter,
+				BridgeStatus:   status.BridgeStatus,
+				BridgeSessions: status.BridgeSessions,
+				UpdatedAt:      strings.TrimSpace(status.UpdatedAt),
 			}
 		}
 	}
@@ -367,6 +375,8 @@ func buildMngVirtualRouterRouteSideStatus(nodeID string, chainID string, runtime
 	side.NextState = status.NextState
 	side.PrevState = status.PrevState
 	side.VirtualRouter = status.VirtualRouter
+	side.BridgeStatus = status.BridgeStatus
+	side.BridgeSessions = status.BridgeSessions
 	side.Status = "configured"
 	if !side.Online {
 		side.Status = "offline"

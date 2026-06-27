@@ -106,6 +106,13 @@ type probeChainBridgeSessionSnapshot struct {
 	Closed         bool   `json:"closed,omitempty"`
 }
 
+type probeChainBridgeRuntimeStatus struct {
+	DownstreamActive int                               `json:"downstream_active"`
+	UpstreamActive   int                               `json:"upstream_active"`
+	Sessions         []probeChainBridgeSessionSnapshot `json:"sessions,omitempty"`
+	UpdatedAt        string                            `json:"updated_at,omitempty"`
+}
+
 type probeChainRuntime struct {
 	cfg                probeChainRuntimeConfig
 	relayListenAddr    string
@@ -3113,6 +3120,26 @@ func (rt *probeChainRuntime) snapshotBridgeSessions() []probeChainBridgeSessionS
 	appendItems("upstream", rt.upstreamSessions)
 	rt.bridgeMu.Unlock()
 	return items
+}
+
+func (rt *probeChainRuntime) snapshotBridgeStatus() probeChainBridgeRuntimeStatus {
+	sessions := rt.snapshotBridgeSessions()
+	status := probeChainBridgeRuntimeStatus{
+		Sessions:  sessions,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	for _, item := range sessions {
+		if item.Closed {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(item.Direction)) {
+		case "downstream":
+			status.DownstreamActive++
+		case "upstream":
+			status.UpstreamActive++
+		}
+	}
+	return status
 }
 
 func snapshotProbeChainBridgeSessions() []probeChainBridgeSessionSnapshot {

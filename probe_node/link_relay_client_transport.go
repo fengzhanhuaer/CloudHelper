@@ -97,24 +97,26 @@ type probeChainRelayProtocolStateSnapshot struct {
 }
 
 type probeChainRelayReportItem struct {
-	ChainID       string                                `json:"chain_id"`
-	ChainName     string                                `json:"chain_name,omitempty"`
-	ChainType     string                                `json:"chain_type,omitempty"`
-	Role          string                                `json:"role,omitempty"`
-	ListenHost    string                                `json:"listen_host,omitempty"`
-	ListenPort    int                                   `json:"listen_port,omitempty"`
-	LinkLayer     string                                `json:"link_layer,omitempty"`
-	NextHost      string                                `json:"next_host,omitempty"`
-	NextPort      int                                   `json:"next_port,omitempty"`
-	NextLinkLayer string                                `json:"next_link_layer,omitempty"`
-	PrevHost      string                                `json:"prev_host,omitempty"`
-	PrevPort      int                                   `json:"prev_port,omitempty"`
-	PrevLinkLayer string                                `json:"prev_link_layer,omitempty"`
-	ListenState   *probeChainRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
-	NextState     *probeChainRelayProtocolStateSnapshot `json:"next_state,omitempty"`
-	PrevState     *probeChainRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
-	VirtualRouter *probeVirtualRouterRuntimeStats       `json:"virtual_router,omitempty"`
-	UpdatedAt     string                                `json:"updated_at,omitempty"`
+	ChainID        string                                `json:"chain_id"`
+	ChainName      string                                `json:"chain_name,omitempty"`
+	ChainType      string                                `json:"chain_type,omitempty"`
+	Role           string                                `json:"role,omitempty"`
+	ListenHost     string                                `json:"listen_host,omitempty"`
+	ListenPort     int                                   `json:"listen_port,omitempty"`
+	LinkLayer      string                                `json:"link_layer,omitempty"`
+	NextHost       string                                `json:"next_host,omitempty"`
+	NextPort       int                                   `json:"next_port,omitempty"`
+	NextLinkLayer  string                                `json:"next_link_layer,omitempty"`
+	PrevHost       string                                `json:"prev_host,omitempty"`
+	PrevPort       int                                   `json:"prev_port,omitempty"`
+	PrevLinkLayer  string                                `json:"prev_link_layer,omitempty"`
+	ListenState    *probeChainRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
+	NextState      *probeChainRelayProtocolStateSnapshot `json:"next_state,omitempty"`
+	PrevState      *probeChainRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
+	VirtualRouter  *probeVirtualRouterRuntimeStats       `json:"virtual_router,omitempty"`
+	BridgeStatus   *probeChainBridgeRuntimeStatus        `json:"bridge_status,omitempty"`
+	BridgeSessions []probeChainBridgeSessionSnapshot     `json:"bridge_sessions,omitempty"`
+	UpdatedAt      string                                `json:"updated_at,omitempty"`
 }
 
 type probeChainRelayProtocolState struct {
@@ -989,27 +991,36 @@ func snapshotProbeChainProtocolState(relayHost string, relayPort int) probeChain
 }
 
 func snapshotProbeChainRelayReports() []probeChainRelayReportItem {
+	type runtimeReportSource struct {
+		cfg probeChainRuntimeConfig
+		rt  *probeChainRuntime
+	}
 	probeChainRuntimeState.mu.Lock()
-	configs := make([]probeChainRuntimeConfig, 0, len(probeChainRuntimeState.runtimes))
+	sources := make([]runtimeReportSource, 0, len(probeChainRuntimeState.runtimes))
 	for _, runtime := range probeChainRuntimeState.runtimes {
 		if runtime == nil {
 			continue
 		}
-		configs = append(configs, runtime.cfg)
+		sources = append(sources, runtimeReportSource{cfg: runtime.cfg, rt: runtime})
 	}
 	probeChainRuntimeState.mu.Unlock()
 
-	if len(configs) == 0 {
+	if len(sources) == 0 {
 		return nil
 	}
+	configs := make([]probeChainRuntimeConfig, 0, len(sources))
+	for _, source := range sources {
+		configs = append(configs, source.cfg)
+	}
 	scheduleProbeChainRelayProtocolRefreshForReports(configs)
-	sort.Slice(configs, func(i, j int) bool {
-		return strings.TrimSpace(configs[i].chainID) < strings.TrimSpace(configs[j].chainID)
+	sort.Slice(sources, func(i, j int) bool {
+		return strings.TrimSpace(sources[i].cfg.chainID) < strings.TrimSpace(sources[j].cfg.chainID)
 	})
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	out := make([]probeChainRelayReportItem, 0, len(configs))
-	for _, cfg := range configs {
+	out := make([]probeChainRelayReportItem, 0, len(sources))
+	for _, source := range sources {
+		cfg := source.cfg
 		item := probeChainRelayReportItem{
 			ChainID:       strings.TrimSpace(cfg.chainID),
 			ChainName:     strings.TrimSpace(cfg.name),
@@ -1043,6 +1054,11 @@ func snapshotProbeChainRelayReports() []probeChainRelayReportItem {
 			if stats := snapshotProbeVirtualRouterRuntimeStats(cfg.chainID); stats != nil {
 				item.VirtualRouter = stats
 			}
+		}
+		if source.rt != nil {
+			bridgeStatus := source.rt.snapshotBridgeStatus()
+			item.BridgeStatus = &bridgeStatus
+			item.BridgeSessions = bridgeStatus.Sessions
 		}
 		out = append(out, item)
 	}

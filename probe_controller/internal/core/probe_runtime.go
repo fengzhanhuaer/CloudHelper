@@ -68,24 +68,53 @@ type probeRelayProtocolStateSnapshot struct {
 }
 
 type probeRelayStatusItem struct {
-	ChainID       string                           `json:"chain_id"`
-	ChainName     string                           `json:"chain_name,omitempty"`
-	ChainType     string                           `json:"chain_type,omitempty"`
-	Role          string                           `json:"role,omitempty"`
-	ListenHost    string                           `json:"listen_host,omitempty"`
-	ListenPort    int                              `json:"listen_port,omitempty"`
-	LinkLayer     string                           `json:"link_layer,omitempty"`
-	NextHost      string                           `json:"next_host,omitempty"`
-	NextPort      int                              `json:"next_port,omitempty"`
-	NextLinkLayer string                           `json:"next_link_layer,omitempty"`
-	PrevHost      string                           `json:"prev_host,omitempty"`
-	PrevPort      int                              `json:"prev_port,omitempty"`
-	PrevLinkLayer string                           `json:"prev_link_layer,omitempty"`
-	ListenState   *probeRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
-	NextState     *probeRelayProtocolStateSnapshot `json:"next_state,omitempty"`
-	PrevState     *probeRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
-	VirtualRouter *probeVirtualRouterRuntimeStats  `json:"virtual_router,omitempty"`
-	UpdatedAt     string                           `json:"updated_at,omitempty"`
+	ChainID        string                            `json:"chain_id"`
+	ChainName      string                            `json:"chain_name,omitempty"`
+	ChainType      string                            `json:"chain_type,omitempty"`
+	Role           string                            `json:"role,omitempty"`
+	ListenHost     string                            `json:"listen_host,omitempty"`
+	ListenPort     int                               `json:"listen_port,omitempty"`
+	LinkLayer      string                            `json:"link_layer,omitempty"`
+	NextHost       string                            `json:"next_host,omitempty"`
+	NextPort       int                               `json:"next_port,omitempty"`
+	NextLinkLayer  string                            `json:"next_link_layer,omitempty"`
+	PrevHost       string                            `json:"prev_host,omitempty"`
+	PrevPort       int                               `json:"prev_port,omitempty"`
+	PrevLinkLayer  string                            `json:"prev_link_layer,omitempty"`
+	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
+	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
+	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
+	VirtualRouter  *probeVirtualRouterRuntimeStats   `json:"virtual_router,omitempty"`
+	BridgeStatus   *probeChainBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
+	BridgeSessions []probeChainBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
+	UpdatedAt      string                            `json:"updated_at,omitempty"`
+}
+
+type probeChainBridgeRuntimeStatus struct {
+	DownstreamActive int                               `json:"downstream_active"`
+	UpstreamActive   int                               `json:"upstream_active"`
+	Sessions         []probeChainBridgeSessionSnapshot `json:"sessions,omitempty"`
+	UpdatedAt        string                            `json:"updated_at,omitempty"`
+}
+
+type probeChainBridgeSessionSnapshot struct {
+	ChainID        string `json:"chain_id,omitempty"`
+	RuntimeRole    string `json:"runtime_role,omitempty"`
+	Direction      string `json:"direction,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	BridgeRole     string `json:"bridge_role,omitempty"`
+	RemoteAddr     string `json:"remote_addr,omitempty"`
+	ConnectedAt    string `json:"connected_at,omitempty"`
+	ConnectedMS    int64  `json:"connected_ms,omitempty"`
+	StreamsCurrent int    `json:"streams_current,omitempty"`
+	RTTMS          int64  `json:"rtt_ms,omitempty"`
+	LastPingAt     string `json:"last_ping_at,omitempty"`
+	LastPongAt     string `json:"last_pong_at,omitempty"`
+	PingsSent      int64  `json:"pings_sent,omitempty"`
+	PongsReceived  int64  `json:"pongs_received,omitempty"`
+	PingTimeouts   int64  `json:"ping_timeouts,omitempty"`
+	PendingPings   int    `json:"pending_pings,omitempty"`
+	Closed         bool   `json:"closed,omitempty"`
 }
 
 var probeRuntimeStore = struct {

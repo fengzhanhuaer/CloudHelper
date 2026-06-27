@@ -59,6 +59,7 @@
     .route-state.ok { color:#7ee787; border-color:#238636; }
     .route-state.warn { color:#f2cc60; border-color:#9e6a03; }
     .route-state.err { color:#ff7b72; border-color:#da3633; }
+    .route-error { color:#ff7b72; }
     .ip-list { margin-top:4px; display:flex; flex-wrap:wrap; gap:4px; }
     .ip-tag {
       display:inline-block;
@@ -1733,6 +1734,91 @@
       return 'route-state warn';
     }
 
+    function collectRouteSideStateErrors(snapshot, label) {
+      const errors = [];
+      if (!snapshot) return errors;
+      const listeners = Array.isArray(snapshot.listener_statuses) ? snapshot.listener_statuses : [];
+      listeners.forEach((entry) => {
+        const protocol = String((entry && entry.protocol) || '').trim() || '-';
+        const status = String((entry && entry.status) || '').trim();
+        const lastError = String((entry && entry.last_error) || '').trim();
+        if (status.toLowerCase() === 'failed') {
+          errors.push(`${label} ${protocol} 监听失败${lastError ? `：${lastError}` : ''}`);
+        } else if (lastError) {
+          errors.push(`${label} ${protocol}：${lastError}`);
+        }
+      });
+      const qualities = Array.isArray(snapshot.protocol_qualities) ? snapshot.protocol_qualities : [];
+      qualities.forEach((entry) => {
+        const protocol = String((entry && entry.protocol) || '').trim() || '-';
+        const available = entry && entry.available === true;
+        const lastError = String((entry && entry.last_error) || '').trim();
+        if (!available && lastError) {
+          errors.push(`${label} ${protocol} 不可用：${lastError}`);
+        }
+      });
+      return errors;
+    }
+
+    function collectRouteSideErrors(item) {
+      const errors = [];
+      const stats = (item && item.virtual_router) || {};
+      const pingError = String(stats.last_ping_error || '').trim();
+      const openError = String(stats.last_open_error || '').trim();
+      if (pingError) errors.push(`虚拟 ping 失败：${pingError}`);
+      if (openError) errors.push(`打开子流失败：${openError}`);
+      collectRouteSideStateErrors(item && item.listen_state, 'listen').forEach((err) => errors.push(err));
+      collectRouteSideStateErrors(item && item.next_state, 'next').forEach((err) => errors.push(err));
+      collectRouteSideStateErrors(item && item.prev_state, 'prev').forEach((err) => errors.push(err));
+      return errors;
+    }
+
+    function summarizeBridgeSessions(item) {
+      const hasBridgeStatus = !!(item && item.bridge_status);
+      const bridgeStatus = (item && item.bridge_status) || {};
+      const sessions = Array.isArray(bridgeStatus.sessions)
+        ? bridgeStatus.sessions
+        : (Array.isArray(item && item.bridge_sessions) ? item.bridge_sessions : []);
+      const active = sessions.filter((entry) => !(entry && entry.closed));
+      const counts = {
+        downstream: Number(bridgeStatus.downstream_active),
+        upstream: Number(bridgeStatus.upstream_active),
+      };
+      if (!Number.isFinite(counts.downstream) || counts.downstream < 0 || !hasBridgeStatus) counts.downstream = 0;
+      if (!Number.isFinite(counts.upstream) || counts.upstream < 0 || !hasBridgeStatus) counts.upstream = 0;
+      if (!hasBridgeStatus) {
+        active.forEach((entry) => {
+          const direction = String((entry && entry.direction) || '').trim().toLowerCase();
+          if (direction === 'upstream') counts.upstream += 1;
+          else if (direction === 'downstream') counts.downstream += 1;
+        });
+      }
+      return { sessions, active, counts, updatedAt: String(bridgeStatus.updated_at || '').trim() };
+    }
+
+    function renderBridgeSessions(item, errors) {
+      const summary = summarizeBridgeSessions(item);
+      const updatedAt = summary.updatedAt ? ` · ${summary.updatedAt}` : '';
+      const lines = [`桥接 downstream ${summary.counts.downstream} / upstream ${summary.counts.upstream}${updatedAt}`];
+      const errorText = (errors || []).join('\n').toLowerCase();
+      const hints = [];
+      if (errorText.includes('upstream bridge') && summary.counts.upstream === 0) hints.push('upstream bridge 会话=0');
+      if (errorText.includes('downstream bridge') && summary.counts.downstream === 0) hints.push('downstream bridge 会话=0');
+      const detail = summary.active.slice(0, 2).map((entry) => {
+        const direction = String((entry && entry.direction) || '').trim() || '-';
+        const remote = String((entry && entry.remote_addr) || '').trim() || '-';
+        const streams = Number(entry && entry.streams_current);
+        const rtt = Number(entry && entry.rtt_ms);
+        const streamText = Number.isFinite(streams) ? streams : '-';
+        const rttText = Number.isFinite(rtt) && rtt > 0 ? `${Math.trunc(rtt)}ms` : '-';
+        return `${direction} ${remote} streams=${streamText} rtt=${rttText}`;
+      });
+      const base = `<div class="small muted">${escapeHTML(lines.join(' / '))}</div>`;
+      const hint = hints.map((item) => `<div class="small route-error">${escapeHTML(item)}</div>`).join('');
+      const detailHTML = detail.map((item) => `<div class="small muted">${escapeHTML(item)}</div>`).join('');
+      return `${base}${hint}${detailHTML}`;
+    }
+
     function renderRouteSide(side) {
       const item = side || {};
       const lines = [];
@@ -1742,9 +1828,14 @@
       const stats = item.virtual_router || {};
       const packets = Number(stats.packets_forwarded || 0) + Number(stats.packets_received || 0) + Number(stats.packets_delivered || 0);
       const bytes = Number(stats.bytes_forwarded || 0) + Number(stats.bytes_received || 0) + Number(stats.bytes_delivered || 0);
+      const errors = collectRouteSideErrors(item);
+      const errorLines = errors.slice(0, 4).map((err) => `<div class="small route-error">${escapeHTML(err)}</div>`).join('');
+      const moreErrors = errors.length > 4 ? `<div class="small route-error">还有 ${escapeHTML(errors.length - 4)} 条错误</div>` : '';
       return `
         <div><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span></div>
         <div class="small muted">${escapeHTML(lines.join(' / ') || '-')}</div>
+        ${errorLines}${moreErrors}
+        ${renderBridgeSessions(item, errors)}
         <div class="small muted">包 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
         <div class="small muted">${escapeHTML(item.last_seen || '-')}</div>
       `;
