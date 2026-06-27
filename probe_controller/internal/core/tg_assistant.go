@@ -26,16 +26,17 @@ import (
 )
 
 const (
-	tgAssistantTempDir        = "./temp/tg"
-	tgAssistantLegacyTempDir  = "./tg"
-	tgAssistantStoreFile      = "tg.json"
-	tgAssistantSessionDirName = "tg_sessions"
-	tgAssistantTargetsDirName = "targets"
-	tgAssistantTaskHistoryDir = "task_history"
-	tgAssistantHistoryFile    = "history.jsonl"
-	tgAssistantTaskHistoryMax = 360
-	tgAssistantLoginCodeTTL   = 10 * time.Minute
-	tgTaskTypeScheduledSend   = "scheduled_send"
+	tgAssistantTempDir          = "./temp/tg"
+	tgAssistantLegacyTempDir    = "./tg"
+	tgAssistantStoreFile        = "tg.json"
+	tgAssistantSessionDirName   = "tg_sessions"
+	tgAssistantTargetsDirName   = "targets"
+	tgAssistantTaskHistoryDir   = "task_history"
+	tgAssistantHistoryFile      = "history.jsonl"
+	tgAssistantTaskHistoryMax   = 360
+	tgAssistantArchivedFolderID = 1
+	tgAssistantLoginCodeTTL     = 10 * time.Minute
+	tgTaskTypeScheduledSend     = "scheduled_send"
 )
 
 var (
@@ -131,6 +132,7 @@ type tgAssistantTarget struct {
 	Name     string `json:"name"`
 	Username string `json:"username,omitempty"`
 	Type     string `json:"type,omitempty"`
+	Archived bool   `json:"archived,omitempty"`
 }
 
 type tgAssistantLoginChallenge struct {
@@ -2259,7 +2261,7 @@ func listTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTarge
 	if err != nil {
 		return nil, err
 	}
-	return targets, nil
+	return filterTGAssistantTargets(targets), nil
 }
 
 func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTarget, error) {
@@ -2320,6 +2322,7 @@ func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTa
 		return nil, err
 	}
 
+	targets = filterTGAssistantTargets(targets)
 	if err := saveTGAssistantTargetsToFile(accountID, targets); err != nil {
 		appendTGAssistantHistory("targets.refresh", accountID, false, err.Error())
 		return nil, err
@@ -3159,24 +3162,31 @@ func buildTGAssistantTargets(dialogs []tg.DialogClass, chats []tg.ChatClass, use
 		if !ok || dialog == nil {
 			continue
 		}
+		archived := false
+		if folderID, ok := dialog.GetFolderID(); ok && folderID == tgAssistantArchivedFolderID {
+			archived = true
+		}
 		switch peer := dialog.Peer.(type) {
 		case *tg.PeerUser:
 			if item, ok := userMap[peer.UserID]; ok {
+				item.Archived = archived
 				appendTarget(item)
 			} else {
-				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("user:%d", peer.UserID), Name: fmt.Sprintf("User %d", peer.UserID), Type: "user"})
+				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("user:%d", peer.UserID), Name: fmt.Sprintf("User %d", peer.UserID), Type: "user", Archived: archived})
 			}
 		case *tg.PeerChat:
 			if item, ok := chatMap[peer.ChatID]; ok {
+				item.Archived = archived
 				appendTarget(item)
 			} else {
-				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("chat:%d", peer.ChatID), Name: fmt.Sprintf("Chat %d", peer.ChatID), Type: "chat"})
+				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("chat:%d", peer.ChatID), Name: fmt.Sprintf("Chat %d", peer.ChatID), Type: "chat", Archived: archived})
 			}
 		case *tg.PeerChannel:
 			if item, ok := channelMap[peer.ChannelID]; ok {
+				item.Archived = archived
 				appendTarget(item)
 			} else {
-				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("channel:%d", peer.ChannelID), Name: fmt.Sprintf("Channel %d", peer.ChannelID), Type: "channel"})
+				appendTarget(tgAssistantTarget{ID: fmt.Sprintf("channel:%d", peer.ChannelID), Name: fmt.Sprintf("Channel %d", peer.ChannelID), Type: "channel", Archived: archived})
 			}
 		}
 	}
@@ -3215,7 +3225,7 @@ func loadTGAssistantTargetsFromFile(accountID string) ([]tgAssistantTarget, erro
 		}
 		normalized = append(normalized, item)
 	}
-	return normalized, nil
+	return filterTGAssistantTargets(normalized), nil
 }
 
 func saveTGAssistantTargetsToFile(accountID string, targets []tgAssistantTarget) error {
@@ -3231,6 +3241,20 @@ func saveTGAssistantTargetsToFile(accountID string, targets []tgAssistantTarget)
 		return fmt.Errorf("write targets file failed: %w", err)
 	}
 	return nil
+}
+
+func filterTGAssistantTargets(targets []tgAssistantTarget) []tgAssistantTarget {
+	if len(targets) == 0 {
+		return []tgAssistantTarget{}
+	}
+	filtered := make([]tgAssistantTarget, 0, len(targets))
+	for _, item := range targets {
+		if item.Archived {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }
 
 func normalizeTGPhone(raw string) string {

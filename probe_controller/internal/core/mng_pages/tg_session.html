@@ -22,14 +22,7 @@
       background: rgba(10, 16, 26, 0.78);
       padding: 16px;
     }
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 12px;
-      flex-wrap: wrap;
-    }
+    .topbar { display: none; }
     h1 { margin: 0; font-size: 24px; }
     .sub { margin: 6px 0 0; color: #9fc2ff; font-size: 13px; }
     .btn {
@@ -49,6 +42,7 @@
     .btn:disabled { opacity: .58; cursor: not-allowed; }
     .btn:hover:enabled { filter: brightness(1.06); }
     .status {
+      display: none;
       border: 1px solid rgba(126, 200, 255, 0.3);
       background: rgba(8, 14, 23, 0.62);
       border-radius: 10px;
@@ -241,14 +235,17 @@
     .tg-message-row.out { justify-content: flex-end; }
     .tg-message-row.service { justify-content: center; }
     .tg-message-bubble {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
       width: 100%;
       max-width: none;
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       border: 1px solid rgba(150, 185, 240, 0.16);
       border-radius: 12px;
       background: rgba(28, 43, 66, 0.82);
-      padding: 6px 10px;
-      white-space: pre-wrap;
+      padding: 8px 10px 6px;
       word-break: break-word;
       line-height: 1.32;
     }
@@ -259,22 +256,27 @@
     }
     .tg-message-row.service .tg-message-bubble {
       flex: 0 1 96%;
-      max-width: none;
       background: rgba(255, 255, 255, 0.06);
       color: #a9c7f3;
       text-align: center;
+      align-items: center;
     }
     .tg-message-sender {
       color: #9fc2ff;
       font-size: 12px;
-      margin-bottom: 2px;
+      margin: 0;
       font-weight: 650;
+    }
+    .tg-message-text {
+      white-space: pre-wrap;
+      width: 100%;
     }
     .tg-message-meta {
       color: rgba(220, 234, 255, 0.62);
       font-size: 11px;
-      margin-top: 3px;
+      margin-top: 0;
       text-align: right;
+      align-self: flex-end;
     }
     .tg-chat-composer {
       display: grid;
@@ -526,7 +528,7 @@
           <div class="${rowClass}">
             <div class="tg-message-bubble">
               ${sender}
-              <div>${escapeHTML(msg && msg.text || '')}</div>
+              <div class="tg-message-text">${escapeHTML(msg && msg.text || '')}</div>
               <div class="tg-message-meta">${escapeHTML(formatDateTime(msg && msg.date || ''))}</div>
             </div>
           </div>
@@ -849,9 +851,7 @@
       try {
         const ws = new WebSocket(getSessionWSURL(active.id, targetID));
         state.sessionWS = ws;
-        ws.onopen = () => {
-          setStatus('TG 会话实时连接已建立', 'ok');
-        };
+        ws.onopen = () => {};
         ws.onmessage = (event) => {
           let payload = null;
           try {
