@@ -77,6 +77,12 @@ func applyProbeLocalProxyTakeover() error {
 	}
 	probeLocalWindowsTakeoverState.mu.Unlock()
 
+	if cleaned, cleanupErr := cleanupProbeLocalWindowsStaleTakeoverRoutes(routeTarget); cleanupErr != nil {
+		logProbeWarnf("probe local proxy takeover stale managed route cleanup failed: %v", cleanupErr)
+	} else if cleaned > 0 {
+		logProbeInfof("probe local proxy takeover stale managed route cleanup removed routes=%d", cleaned)
+	}
+
 	out, err := probeLocalSnapshotWindowsIPv4Routes()
 	if err != nil {
 		return fmt.Errorf("inspect windows route table failed: %w", err)
@@ -128,6 +134,76 @@ func applyProbeLocalProxyTakeover() error {
 		len(strings.TrimSpace(out)),
 	)
 	return nil
+}
+
+func cleanupProbeLocalWindowsStaleTakeoverRoutes(routeTarget probeLocalWindowsRouteTarget) (int, error) {
+	gateway := strings.TrimSpace(routeTarget.Gateway)
+	if gateway == "" {
+		gateway = probeLocalTUNRouteGatewayIPv4
+	}
+	if strings.TrimSpace(gateway) == "" {
+		return 0, nil
+	}
+	entries, err := probeLocalListWindowsRouteEntries()
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	var allErr error
+	for _, entry := range entries {
+		if !isProbeLocalWindowsManagedTakeoverRouteEntry(entry, gateway) {
+			continue
+		}
+		mask, maskErr := probeLocalIPv4MaskFromPrefix(entry.PrefixLength)
+		if maskErr != nil {
+			allErr = errors.Join(allErr, maskErr)
+			continue
+		}
+		routeDef := probeLocalWindowsRouteDef{
+			Prefix:  strings.TrimSpace(entry.Prefix),
+			Mask:    mask,
+			Gateway: strings.TrimSpace(entry.NextHop),
+			IfIndex: entry.IfIndex,
+		}
+		if delErr := deleteProbeLocalWindowsRoute(routeDef); delErr != nil {
+			allErr = errors.Join(allErr, delErr)
+			continue
+		}
+		removed++
+	}
+	return removed, allErr
+}
+
+func isProbeLocalWindowsManagedTakeoverRouteEntry(entry probeLocalWindowsRouteEntry, gateway string) bool {
+	if entry.IfIndex <= 0 || entry.Metric != uint32(probeLocalWindowsRouteMetric) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(entry.NextHop), strings.TrimSpace(gateway)) {
+		return false
+	}
+	prefixIP := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
+	if prefixIP == nil {
+		return false
+	}
+	if entry.PrefixLength == 1 {
+		return prefixIP.Equal(net.IPv4(0, 0, 0, 0)) || prefixIP.Equal(net.IPv4(128, 0, 0, 0))
+	}
+	if entry.PrefixLength == 32 {
+		return true
+	}
+	for _, network := range parseProbeLocalTunnelIPv4Networks(append([]string{currentProbeLocalDNSFakeIPCIDR()}, probeLocalTunnelCIDRRules()...)) {
+		if network == nil {
+			continue
+		}
+		ones, bits := network.Mask.Size()
+		if bits != 32 || ones != entry.PrefixLength {
+			continue
+		}
+		if network.IP.To4().Equal(prefixIP) {
+			return true
+		}
+	}
+	return false
 }
 
 func restoreProbeLocalProxyDirect() error {

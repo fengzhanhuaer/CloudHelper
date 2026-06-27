@@ -178,12 +178,22 @@ type probeLocalExplicitProxyPersistentState struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
+type probeLocalTUNEgressPersistentState struct {
+	Mode           string `json:"mode,omitempty"`
+	CandidateID    string `json:"candidate_id,omitempty"`
+	InterfaceIndex int    `json:"interface_index,omitempty"`
+	NextHop        string `json:"next_hop,omitempty"`
+	Label          string `json:"label,omitempty"`
+	UpdatedAt      string `json:"updated_at,omitempty"`
+}
+
 type probeLocalProxyStateFile struct {
 	Version   int                                    `json:"version"`
 	UpdatedAt string                                 `json:"updated_at"`
 	Groups    []probeLocalProxyStateGroupEntry       `json:"groups"`
 	Backup    probeLocalProxyBackupState             `json:"backup"`
 	TUN       probeLocalTUNPersistentState           `json:"tun"`
+	TUNEgress probeLocalTUNEgressPersistentState     `json:"tun_egress,omitempty"`
 	Proxy     probeLocalProxyPersistentState         `json:"proxy"`
 	Explicit  probeLocalExplicitProxyPersistentState `json:"explicit_proxy,omitempty"`
 }
@@ -848,6 +858,7 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(err.Error()))
 		return err
 	}
+	applyProbeLocalTUNEgressPersistentState(state)
 
 	detectedInstalled, detectErr := probeLocalDetectTUNInstalled()
 	if detectErr != nil && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
@@ -995,6 +1006,7 @@ func startProbeLocalTUNProxyRuntime() error {
 		return err
 	}
 	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(true)
+	flushProbeLocalSystemDNSCacheAfterChange("tun_proxy_enabled")
 	startProbeLocalProxyMonitor()
 	return nil
 }
@@ -1757,6 +1769,10 @@ func defaultProbeLocalProxyStateFile() probeLocalProxyStateFile {
 			Enabled:   false,
 			UpdatedAt: now,
 		},
+		TUNEgress: probeLocalTUNEgressPersistentState{
+			Mode:      "auto",
+			UpdatedAt: now,
+		},
 		Proxy: probeLocalProxyPersistentState{
 			Enabled:   false,
 			Mode:      probeLocalProxyModeDirect,
@@ -2044,6 +2060,7 @@ func loadProbeLocalProxyStateFile() (probeLocalProxyStateFile, error) {
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = payload.UpdatedAt
 	}
+	normalizeProbeLocalTUNEgressPersistentState(&payload)
 	normalizeProbeLocalProxyPersistentState(&payload)
 	normalizeProbeLocalExplicitProxyPersistentState(&payload)
 	setProbeLocalProxyViewState(payload)
@@ -2068,6 +2085,7 @@ func persistProbeLocalProxyStateFile(payload probeLocalProxyStateFile) error {
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = now
 	}
+	normalizeProbeLocalTUNEgressPersistentState(&payload)
 	normalizeProbeLocalProxyPersistentState(&payload)
 	normalizeProbeLocalExplicitProxyPersistentState(&payload)
 	path, err := resolveProbeLocalProxyStatePath()
@@ -2097,6 +2115,27 @@ func normalizeProbeLocalProxyPersistentState(payload *probeLocalProxyStateFile) 
 	payload.Proxy.Mode = mode
 	if strings.TrimSpace(payload.Proxy.UpdatedAt) == "" {
 		payload.Proxy.UpdatedAt = payload.UpdatedAt
+	}
+}
+
+func normalizeProbeLocalTUNEgressPersistentState(payload *probeLocalProxyStateFile) {
+	if payload == nil {
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(payload.TUNEgress.Mode))
+	if mode != "manual" {
+		mode = "auto"
+		payload.TUNEgress.CandidateID = ""
+		payload.TUNEgress.InterfaceIndex = 0
+		payload.TUNEgress.NextHop = ""
+		payload.TUNEgress.Label = ""
+	}
+	payload.TUNEgress.Mode = mode
+	payload.TUNEgress.CandidateID = strings.TrimSpace(payload.TUNEgress.CandidateID)
+	payload.TUNEgress.NextHop = strings.TrimSpace(payload.TUNEgress.NextHop)
+	payload.TUNEgress.Label = strings.TrimSpace(payload.TUNEgress.Label)
+	if strings.TrimSpace(payload.TUNEgress.UpdatedAt) == "" {
+		payload.TUNEgress.UpdatedAt = payload.UpdatedAt
 	}
 }
 
@@ -2902,6 +2941,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/auth/session", probeLocalAuthSessionHandler)
 
 	mux.HandleFunc("/local/api/tun/status", probeLocalTUNStatusHandler)
+	mux.HandleFunc("/local/api/tun/egress", probeLocalTUNEgressHandler)
 	mux.HandleFunc("/local/api/tun/install", probeLocalTUNInstallHandler)
 	mux.HandleFunc("/local/api/tun/reset", probeLocalTUNResetHandler)
 	mux.HandleFunc("/local/api/tun/uninstall", probeLocalTUNUninstallHandler)

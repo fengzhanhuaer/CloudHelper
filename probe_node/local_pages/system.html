@@ -55,6 +55,21 @@
       box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
     }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: end;
+      margin: 10px 0 12px;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 240px;
+      flex: 1 1 240px;
+    }
+    .field label { font-size: 12px; color: var(--text-secondary); }
     button {
       padding: 8px 12px;
       border: 1px solid transparent;
@@ -82,7 +97,7 @@
       font-size: 14px;
     }
     .kv > div:nth-child(odd) { color: var(--text-secondary); }
-    input {
+    input, select {
       width: 100%;
       box-sizing: border-box;
       padding: 8px;
@@ -150,6 +165,26 @@
         <button id="tunUninstallBtn" class="warn">卸载 TUN</button>
         <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
       </div>
+      <h2>主网卡出口</h2>
+      <div class="kv">
+        <div>选择模式</div><div id="tunEgressMode">-</div>
+        <div>当前目标</div><div id="tunEgressSelected">-</div>
+        <div>手动目标</div><div id="tunEgressManualSelected">-</div>
+        <div>候选数量</div><div id="tunEgressCandidateCount">-</div>
+        <div>状态</div><div id="tunEgressStatus">-</div>
+      </div>
+      <div class="toolbar" style="margin-top: 10px;">
+        <div class="field">
+          <label for="tunEgressSelect">出口网卡</label>
+          <select id="tunEgressSelect"></select>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="tunEgressApplyBtn">应用手动选择</button>
+        <button id="tunEgressAutoBtn" class="secondary">自动选择</button>
+        <button id="tunEgressRefreshBtn" class="secondary">刷新候选</button>
+      </div>
+      <p class="hint">手动选择会覆盖自动出口判定；恢复自动后，系统重新按默认路由挑选。</p>
       <h2>系统升级</h2>
       <div class="kv" style="grid-template-columns: 170px minmax(0, 1fr); align-items: center;">
         <div>发布仓库</div>
@@ -194,6 +229,7 @@
     let tunStatusPollingTimer = null;
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
+    const tunEgressSelectEl = document.getElementById('tunEgressSelect');
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -291,6 +327,71 @@
         : {};
       setText('tunInstallFinalReasonCode', finalObs.reason_code);
       setText('tunInstallFinalReason', finalObs.reason);
+    }
+
+    function formatTunEgressOption(option) {
+      const item = option || {};
+      const parts = [];
+      const name = String(item.name || '').trim();
+      const desc = String(item.description || '').trim();
+      const hop = String(item.next_hop || '').trim();
+      const ifIndex = Number(item.interface_index || 0);
+      if (name) parts.push(name);
+      if (hop) parts.push(hop);
+      if (ifIndex > 0) parts.push(`ifIndex=${ifIndex}`);
+      if (desc && desc !== name) parts.push(desc);
+      return parts.length > 0 ? parts.join(' ｜ ') : (String(item.candidate_id || '').trim() || '-');
+    }
+
+    function renderTunEgressStatus(data) {
+      const status = data || {};
+      const candidates = Array.isArray(status.candidates) ? status.candidates : [];
+      const selected = status.selected && typeof status.selected === 'object' ? status.selected : null;
+      const manualSelected = status.manual_selected && typeof status.manual_selected === 'object' ? status.manual_selected : null;
+      const supported = !!status.supported;
+      setText('tunEgressMode', String(status.mode || (supported ? 'auto' : 'unsupported')).trim() || '-');
+      setText('tunEgressSelected', selected ? formatTunEgressOption(selected) : '-');
+      setText('tunEgressManualSelected', manualSelected ? formatTunEgressOption(manualSelected) : '-');
+      setText('tunEgressCandidateCount', String(candidates.length));
+      const egressStatus = status.manual_error
+        ? String(status.manual_error).trim()
+        : (status.manual_valid ? '手动选择已启用' : (supported ? '自动选择中' : '当前平台不支持'));
+      setText('tunEgressStatus', egressStatus || '-');
+
+      if (tunEgressSelectEl) {
+        tunEgressSelectEl.innerHTML = '';
+        const autoOption = document.createElement('option');
+        autoOption.value = '';
+        autoOption.textContent = supported ? '自动选择' : '不支持';
+        tunEgressSelectEl.appendChild(autoOption);
+        candidates.forEach((item) => {
+          const opt = document.createElement('option');
+          opt.value = String(item && item.candidate_id || '').trim();
+          opt.textContent = formatTunEgressOption(item);
+          tunEgressSelectEl.appendChild(opt);
+        });
+        const desiredID = status.manual_valid && manualSelected
+          ? String(manualSelected.candidate_id || '').trim()
+          : (selected ? String(selected.candidate_id || '').trim() : '');
+        tunEgressSelectEl.value = desiredID;
+        tunEgressSelectEl.disabled = !supported || candidates.length === 0;
+      }
+
+      const applyBtn = document.getElementById('tunEgressApplyBtn');
+      const autoBtn = document.getElementById('tunEgressAutoBtn');
+      const refreshBtn = document.getElementById('tunEgressRefreshBtn');
+      if (applyBtn) applyBtn.disabled = !supported || candidates.length === 0;
+      if (autoBtn) autoBtn.disabled = !supported;
+      if (refreshBtn) refreshBtn.disabled = !supported;
+    }
+
+    async function loadTunEgress() {
+      try {
+        const data = await requestJSON('/local/api/tun/egress', { method: 'GET' });
+        renderTunEgressStatus(data || {});
+      } catch (err) {
+        renderTunEgressStatus({ supported: false, mode: 'unsupported', candidates: [] });
+      }
     }
 
     function startTunStatusPolling() {
@@ -415,6 +516,7 @@
       const ok = await ensureSession();
       if (!ok) return;
       await loadTunStatus();
+      await loadTunEgress();
       await loadUpgradeStatus();
     }
 
@@ -541,9 +643,53 @@
       setMessage('刷新 TUN 状态...');
       try {
         await loadTunStatus();
+        await loadTunEgress();
         setMessage('TUN 状态已刷新', 'success');
       } catch (err) {
         setMessage('读取 TUN 状态失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('tunEgressApplyBtn').addEventListener('click', async () => {
+      const candidateID = String(tunEgressSelectEl && tunEgressSelectEl.value || '').trim();
+      if (!candidateID) {
+        setMessage('请选择出口网卡后再应用', 'error');
+        return;
+      }
+      setMessage('应用手动出口选择...');
+      try {
+        await requestJSON('/local/api/tun/egress', {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'manual', candidate_id: candidateID }),
+        });
+        await loadTunEgress();
+        setMessage('已应用手动出口选择', 'success');
+      } catch (err) {
+        setMessage('应用出口选择失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('tunEgressAutoBtn').addEventListener('click', async () => {
+      setMessage('恢复自动出口选择...');
+      try {
+        await requestJSON('/local/api/tun/egress', {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'auto' }),
+        });
+        await loadTunEgress();
+        setMessage('已恢复自动出口选择', 'success');
+      } catch (err) {
+        setMessage('恢复自动出口失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('tunEgressRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新出口候选...');
+      try {
+        await loadTunEgress();
+        setMessage('出口候选已刷新', 'success');
+      } catch (err) {
+        setMessage('刷新出口候选失败：' + err.message, 'error');
       }
     });
 

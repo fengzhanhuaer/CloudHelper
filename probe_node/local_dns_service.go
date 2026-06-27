@@ -186,6 +186,7 @@ var (
 	probeLocalDNSListenPacket     = net.ListenPacket
 	probeLocalDNSNow              = time.Now
 	probeLocalDNSSystemServers    = currentProbeLocalSystemDNSServers
+	probeLocalFlushSystemDNSCache = flushProbeLocalSystemDNSCache
 	probeLocalDNSLoadHostMappings = func() ([]probeLocalHostMapping, error) {
 		_, hosts, err := loadProbeLocalHostMappingsWithContent()
 		return hosts, err
@@ -2139,6 +2140,7 @@ func clearProbeLocalDNSUnifiedCache() {
 		probeLocalDNSState.mu.Unlock()
 		flushProbeLocalDNSCacheToDisk()
 	}
+	flushProbeLocalSystemDNSCacheAfterChange("dns_clear")
 }
 
 func queryProbeLocalDNSCacheRecords() []probeLocalDNSCacheRecord {
@@ -2514,6 +2516,7 @@ func resetProbeLocalDNSHooksForTest() {
 	probeLocalDNSListenPacket = net.ListenPacket
 	probeLocalDNSNow = time.Now
 	probeLocalDNSSystemServers = currentProbeLocalSystemDNSServers
+	probeLocalFlushSystemDNSCache = flushProbeLocalSystemDNSCache
 	probeLocalDNSLoadHostMappings = func() ([]probeLocalHostMapping, error) {
 		_, hosts, err := loadProbeLocalHostMappingsWithContent()
 		return hosts, err

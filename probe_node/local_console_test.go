@@ -27,6 +27,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	resetProbeLocalDNSServiceForTest()
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
 	setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+	probeLocalFlushSystemDNSCache = func() error { return nil }
 	t.Cleanup(func() {
 		resetProbeLocalAuthManagerForTest()
 		resetProbeLocalControlStateForTest()
@@ -432,9 +433,17 @@ func TestProbeLocalDNSClearAPI(t *testing.T) {
 	}
 	storeProbeLocalDNSRouteHints("api.example.com", []string{"203.0.113.20"}, decision)
 
+	flushCalls := 0
+	probeLocalFlushSystemDNSCache = func() error {
+		flushCalls++
+		return nil
+	}
 	clearResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/dns/clear", map[string]any{}, sessionCookie)
 	if clearResp.Code != http.StatusOK {
 		t.Fatalf("dns/clear status=%d body=%s", clearResp.Code, clearResp.Body.String())
+	}
+	if flushCalls != 1 {
+		t.Fatalf("system dns flush calls=%d, want 1", flushCalls)
 	}
 	payload := decodeProbeLocalJSON(t, clearResp)
 	if ok, _ := payload["ok"].(bool); !ok {
@@ -806,6 +815,34 @@ func TestProbeLocalProxyEnableReturnsNotImplementedOnUnsupported(t *testing.T) {
 	errText, _ := payload["error"].(string)
 	if !strings.Contains(strings.ToLower(errText), "not supported") {
 		t.Fatalf("proxy/enable unsupported error=%q", errText)
+	}
+}
+
+func TestStartProbeLocalTUNProxyRuntimeFlushesSystemDNSCache(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows TUN startup needs data plane hooks")
+	}
+	resetProbeLocalControlStateForTest()
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(func() {
+		stopProbeLocalProxyMonitor()
+		resetProbeLocalControlStateForTest()
+		resetProbeLocalDNSServiceForTest()
+		resetProbeLocalProxyHooksForTest()
+	})
+
+	probeLocalApplyProxyTakeover = func() error { return nil }
+	flushCalls := 0
+	probeLocalFlushSystemDNSCache = func() error {
+		flushCalls++
+		return nil
+	}
+
+	if err := startProbeLocalTUNProxyRuntime(); err != nil {
+		t.Fatalf("start tun proxy runtime failed: %v", err)
+	}
+	if flushCalls != 1 {
+		t.Fatalf("system dns flush calls=%d, want 1", flushCalls)
 	}
 }
 

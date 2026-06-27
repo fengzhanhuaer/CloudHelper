@@ -112,6 +112,9 @@ func useProbeLocalWindowsCommandBackedRouteHooksForTest() {
 		}
 		return nil
 	}
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return nil, nil
+	}
 
 	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
 		script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $exclude=%d; $route=Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $exclude -and $_.NextHop } | Sort-Object @{Expression='RouteMetric';Ascending=$true}, @{Expression='InterfaceMetric';Ascending=$true} | Select-Object -First 1 @{Name='interface_index';Expression={[int]$_.InterfaceIndex}}, @{Name='next_hop';Expression={[string]$_.NextHop}}; if (-not $route) { throw 'usable ipv4 default route not found' }; $route | ConvertTo-Json -Compress`, excludedIfIndex)
@@ -450,6 +453,70 @@ func TestCleanupProbeLocalWindowsStaleFakeIPDirectBypassRoutes(t *testing.T) {
 	}
 	if deleted[0].Prefix != "198.18.0.3" || deleted[0].Mask != probeLocalWindowsHostRouteMask || deleted[0].Gateway != "192.168.51.1" || deleted[0].IfIndex != 13 {
 		t.Fatalf("unexpected deleted route=%+v", deleted[0])
+	}
+}
+
+func TestCleanupProbeLocalWindowsStaleTakeoverRoutes(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalWindowsTakeoverStateForTest()
+	t.Cleanup(func() {
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	groups := defaultProbeLocalProxyGroupFile()
+	groups.Groups = []probeLocalProxyGroupEntry{
+		{Group: "telegram", Rules: []string{"cidr:149.154.160.0/20"}},
+	}
+	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
+		t.Fatalf("persist groups failed: %v", err)
+	}
+	state := defaultProbeLocalProxyStateFile()
+	state.Groups = []probeLocalProxyStateGroupEntry{
+		{Group: "telegram", Action: "tunnel", SelectedChainID: "5_pub", TunnelNodeID: "chain:5_pub"},
+	}
+	if err := persistProbeLocalProxyStateFile(state); err != nil {
+		t.Fatalf("persist state failed: %v", err)
+	}
+
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "0.0.0.0", PrefixLength: 1, NextHop: "198.18.0.1", IfIndex: 7, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "128.0.0.0", PrefixLength: 1, NextHop: "198.18.0.1", IfIndex: 7, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "198.18.0.0", PrefixLength: 15, NextHop: "198.18.0.1", IfIndex: 7, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "149.154.160.0", PrefixLength: 20, NextHop: "198.18.0.1", IfIndex: 7, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "8.8.8.8", PrefixLength: 32, NextHop: "198.18.0.1", IfIndex: 7, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "203.0.113.8", PrefixLength: 32, NextHop: "192.168.1.1", IfIndex: 12, Metric: uint32(probeLocalWindowsRouteMetric)},
+			{Prefix: "198.18.0.0", PrefixLength: 15, NextHop: "198.18.0.1", IfIndex: 7, Metric: 40},
+		}, nil
+	}
+	deleted := make([]probeLocalWindowsRouteDef, 0, 5)
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	removed, err := cleanupProbeLocalWindowsStaleTakeoverRoutes(probeLocalWindowsRouteTarget{Gateway: "198.18.0.1", InterfaceIndex: 9})
+	if err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if removed != 5 || len(deleted) != 5 {
+		t.Fatalf("removed=%d deleted=%+v", removed, deleted)
+	}
+	wantMasks := map[string]string{
+		"0.0.0.0":       "128.0.0.0",
+		"128.0.0.0":     "128.0.0.0",
+		"198.18.0.0":    "255.254.0.0",
+		"149.154.160.0": "255.255.240.0",
+		"8.8.8.8":       probeLocalWindowsHostRouteMask,
+	}
+	for _, routeDef := range deleted {
+		if routeDef.Gateway != "198.18.0.1" || routeDef.IfIndex != 7 {
+			t.Fatalf("unexpected route target=%+v", routeDef)
+		}
+		if wantMasks[routeDef.Prefix] != routeDef.Mask {
+			t.Fatalf("unexpected mask for route=%+v want=%s", routeDef, wantMasks[routeDef.Prefix])
+		}
 	}
 }
 

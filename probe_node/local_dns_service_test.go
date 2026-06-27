@@ -63,8 +63,16 @@ func TestClearProbeLocalDNSUnifiedCacheRemovesPersistedCacheFile(t *testing.T) {
 		t.Fatalf("expected persisted cache before clear: %v", err)
 	}
 
+	flushCalls := 0
+	probeLocalFlushSystemDNSCache = func() error {
+		flushCalls++
+		return nil
+	}
 	clearProbeLocalDNSUnifiedCache()
 
+	if flushCalls != 1 {
+		t.Fatalf("system dns flush calls=%d, want 1", flushCalls)
+	}
 	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cache file after clear err=%v, want not exist", err)
 	}
