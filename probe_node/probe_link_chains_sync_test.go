@@ -235,3 +235,45 @@ func TestFetchProbeLinkChainsReturnsSelfChainsFromGroupedEndpoint(t *testing.T) 
 		t.Fatalf("unexpected items: %+v", items)
 	}
 }
+
+func TestApplyProbeLinkChainServerItemsSkipsLegacyWhenPaused(t *testing.T) {
+	probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
+	t.Cleanup(func() {
+		probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
+		stopProbeChainRuntime("vrouter-test", "test cleanup")
+		stopProbeChainRuntime("legacy-chain", "test cleanup")
+	})
+
+	legacy := &probeChainRuntime{
+		cfg:    probeChainRuntimeConfig{chainID: "legacy-chain", chainType: "proxy_chain"},
+		stopCh: make(chan struct{}),
+	}
+	vrouter := &probeChainRuntime{
+		cfg:    probeChainRuntimeConfig{chainID: "vrouter-test", chainType: "virtual_router"},
+		stopCh: make(chan struct{}),
+	}
+	probeChainRuntimeState.mu.Lock()
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+		legacy.cfg.chainID:  legacy,
+		vrouter.cfg.chainID: vrouter,
+	}
+	probeChainRuntimeState.mu.Unlock()
+
+	applyProbeLinkChainServerItems(nodeIdentity{NodeID: "19"}, "https://controller.example.com", []probeLinkChainServerItem{{
+		ChainID:     "legacy-chain",
+		ChainType:   "proxy_chain",
+		EntryNodeID: "19",
+		ExitNodeID:  "20",
+		HopConfigs: []probeLinkChainHopServerItem{{
+			NodeNo:     19,
+			ListenPort: 12019,
+		}},
+	}})
+
+	if rt := getProbeChainRuntime("legacy-chain"); rt != nil {
+		t.Fatalf("legacy runtime should be stopped while feature paused")
+	}
+	if rt := getProbeChainRuntime("vrouter-test"); rt == nil {
+		t.Fatalf("vRouter runtime must not be stopped with legacy chains")
+	}
+}

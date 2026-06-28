@@ -1032,6 +1032,41 @@ func TestProbeVirtualRouterIPv4Destination(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterDropsNonUnicastTUNDestinationsBeforeRouting(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "16")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	for _, dst := range []string{
+		"198.19.255.255",
+		"224.0.0.251",
+		"224.0.0.252",
+		"239.255.255.250",
+		"255.255.255.255",
+	} {
+		packet := buildProbeVirtualRouterTestUDPPacket(t, "198.18.0.18", dst, 5353, 5353)
+		if !probeVirtualRouterShouldDropNonUnicastDestination(dst) {
+			t.Fatalf("dst=%s should be treated as non-unicast/discovery", dst)
+		}
+		if handleProbeVirtualRouterTUNPacket(packet) {
+			t.Fatalf("dst=%s should be dropped before vRouter routing", dst)
+		}
+	}
+
+	if probeVirtualRouterShouldDropNonUnicastDestination("198.18.0.21") {
+		t.Fatalf("unicast vRouter peer should not be dropped")
+	}
+}
+
 func TestBuildProbeVirtualRouterICMPEchoReply(t *testing.T) {
 	request := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.18", "198.18.0.21")
 	reply, dstIP, ok := buildProbeVirtualRouterICMPEchoReply(request, "198.18.0.21")
@@ -1297,6 +1332,28 @@ func buildProbeVirtualRouterTestTCPPacket(t *testing.T, src string, dst string, 
 	packet[32] = 0x50
 	packet[33] = 0x02
 	binary.BigEndian.PutUint16(packet[34:36], 65535)
+	binary.BigEndian.PutUint16(packet[10:12], probeVirtualRouterChecksum(packet[:20]))
+	return packet
+}
+
+func buildProbeVirtualRouterTestUDPPacket(t *testing.T, src string, dst string, srcPort uint16, dstPort uint16) []byte {
+	t.Helper()
+	srcIP := net.ParseIP(src).To4()
+	dstIP := net.ParseIP(dst).To4()
+	if srcIP == nil || dstIP == nil {
+		t.Fatalf("invalid test ip src=%q dst=%q", src, dst)
+	}
+	packet := make([]byte, 28)
+	packet[0] = 0x45
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	binary.BigEndian.PutUint16(packet[4:6], 0x1234)
+	packet[8] = 64
+	packet[9] = 17
+	copy(packet[12:16], srcIP)
+	copy(packet[16:20], dstIP)
+	binary.BigEndian.PutUint16(packet[20:22], srcPort)
+	binary.BigEndian.PutUint16(packet[22:24], dstPort)
+	binary.BigEndian.PutUint16(packet[24:26], 8)
 	binary.BigEndian.PutUint16(packet[10:12], probeVirtualRouterChecksum(packet[:20]))
 	return packet
 }

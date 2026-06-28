@@ -161,6 +161,30 @@ func TestProbeChainVirtualRouterRejectsLegacyStreams(t *testing.T) {
 	}
 }
 
+func TestProbeChainRuntimeRejectsLegacyChainWhenFeaturePaused(t *testing.T) {
+	probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
+	t.Cleanup(func() {
+		_ = stopProbeChainRuntime("legacy-paused", "test cleanup")
+		probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
+	})
+
+	_, err := startProbeChainRuntime(probeChainRuntimeConfig{
+		chainID:      "legacy-paused",
+		chainType:    "proxy_chain",
+		role:         "entry",
+		secret:       "secret",
+		listenHost:   "127.0.0.1",
+		listenPort:   reserveProbeChainTestTCPUDPPort(t),
+		nextAuthMode: "proxy",
+	})
+	if err == nil || !strings.Contains(err.Error(), "legacy probe chain runtime is paused") {
+		t.Fatalf("legacy chain should be rejected while feature paused, err=%v", err)
+	}
+	if rt := getProbeChainRuntime("legacy-paused"); rt != nil {
+		t.Fatalf("legacy paused runtime should not be registered: %+v", rt.cfg)
+	}
+}
+
 func TestProbeChainRuntimeAllowsMultipleBridgeSessionsForNonVirtualRouter(t *testing.T) {
 	downClient, downServer := newProbeChainFrameSessionPairForTest(t)
 	defer downClient.Close()
@@ -1784,6 +1808,7 @@ func writeProbeChainTestCertificate(t *testing.T, dataDir string) {
 
 func resetProbeChainRuntimeStateForTest(t *testing.T) {
 	t.Helper()
+	probeChainLegacyRuntimeFeatureEnabled = func() bool { return true }
 	stopAllProbeChainRuntimes("test reset")
 	probeChainSharedRelayState.mu.Lock()
 	sharedServers := make([]*probeChainSharedRelayServer, 0, len(probeChainSharedRelayState.servers))
@@ -1797,6 +1822,7 @@ func resetProbeChainRuntimeStateForTest(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		stopAllProbeChainRuntimes("test cleanup")
+		probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
 		probeChainSharedRelayState.mu.Lock()
 		leftovers := make([]*probeChainSharedRelayServer, 0, len(probeChainSharedRelayState.servers))
 		for key, shared := range probeChainSharedRelayState.servers {

@@ -450,6 +450,16 @@ var probeChainFrameBufferPool = sync.Pool{
 	},
 }
 
+var probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
+
+func probeChainLegacyRuntimeFeatureActive() bool {
+	return probeChainLegacyRuntimeFeatureEnabled != nil && probeChainLegacyRuntimeFeatureEnabled()
+}
+
+func probeChainRuntimeConfigIsVirtualRouter(cfg probeChainRuntimeConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.chainType), "virtual_router") || isProbeVirtualRouterRuntimeChainID(cfg.chainID)
+}
+
 func runProbeChainLinkControl(cmd probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
 	requestID := strings.TrimSpace(cmd.RequestID)
 	action := normalizeProbeChainAction(cmd.Action)
@@ -859,6 +869,10 @@ func parseProbeChainUserPublicKey(raw string) (ed25519.PublicKey, error) {
 }
 
 func startProbeChainRuntime(cfg probeChainRuntimeConfig) (*probeChainRuntime, error) {
+	if !probeChainRuntimeConfigIsVirtualRouter(cfg) && !probeChainLegacyRuntimeFeatureActive() {
+		_ = stopProbeChainRuntime(cfg.chainID, "legacy probe chain runtime paused")
+		return nil, fmt.Errorf("legacy probe chain runtime is paused: chain=%s", strings.TrimSpace(cfg.chainID))
+	}
 	_ = stopProbeChainRuntime(cfg.chainID, "restart before apply")
 	if err := ensureProbeChainRuntimeAuthTicket(&cfg); err != nil {
 		return nil, err

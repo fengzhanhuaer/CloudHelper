@@ -74,6 +74,8 @@ var probeVirtualRouterPathRTTState = struct {
 	items map[string]probeVirtualRouterPathRTTRecord
 }{items: make(map[string]probeVirtualRouterPathRTTRecord)}
 
+var errProbeVirtualRouterAdjacentRTTUnavailable = errors.New("adjacent virtual router ping-pong latency is unavailable")
+
 var probeVirtualRouterRuntimeStatsState = struct {
 	mu    sync.Mutex
 	items map[string]*probeVirtualRouterRuntimeStats
@@ -1289,6 +1291,9 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if dstIP == "" {
 		return false
 	}
+	if probeVirtualRouterShouldDropNonUnicastDestination(dstIP) {
+		return false
+	}
 	path := currentProbeVirtualRouterPathForPacket(packet, dstIP)
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		log.Printf("probe virtual router icmp tun rx: kind=%s src=%s dst=%s id=%d seq=%d local_node=%s path=%s bytes=%d", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), len(packet))
@@ -1313,6 +1318,19 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		return true
 	}
 	return true
+}
+
+func probeVirtualRouterShouldDropNonUnicastDestination(dstIP string) bool {
+	ip := net.ParseIP(strings.TrimSpace(dstIP)).To4()
+	if ip == nil {
+		return false
+	}
+	if ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+		return true
+	}
+	// vRouter uses 198.18.0.0/15 for virtual addresses; 198.19.255.255 is the
+	// subnet broadcast and must not enter point-to-point route selection.
+	return ip[0] == 198 && ip[1] == 19 && ip[2] == 255 && ip[3] == 255
 }
 
 func startProbeVirtualRouterPingPongWorker(rt *probeChainRuntime) {
@@ -1416,9 +1434,7 @@ func probeVirtualRouterQueryPathRTT(path []string) (time.Duration, error) {
 	}
 	localHopLatencyMS, ok := currentProbeVirtualRouterAdjacentLatencyMS(localNodeID, nextNodeID)
 	if !ok {
-		err := errors.New("adjacent virtual router ping-pong latency is unavailable")
-		recordProbeVirtualRouterPathRTTError(path, err)
-		return 0, err
+		return 0, errProbeVirtualRouterAdjacentRTTUnavailable
 	}
 	if len(path) == 2 {
 		latency := time.Duration(localHopLatencyMS) * time.Millisecond
@@ -1471,6 +1487,9 @@ func probeVirtualRouterQueryAllPathRTTs() int {
 		go func() {
 			defer wg.Done()
 			if _, err := probeVirtualRouterQueryPathRTT(pathCopy); err != nil {
+				if errors.Is(err, errProbeVirtualRouterAdjacentRTTUnavailable) {
+					return
+				}
 				log.Printf("probe virtual router path rtt query failed: path=%s err=%v", strings.Join(pathCopy, ">"), err)
 			}
 		}()

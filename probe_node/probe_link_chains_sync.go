@@ -217,16 +217,16 @@ func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controlle
 	items, err := loadProbeChainTopologyCacheItems()
 	if err != nil {
 		log.Printf("warning: load probe chain topology cache failed: %v", err)
+		applyProbeLinkChainServerItems(identity, controllerBaseURL, nil)
 		return
 	}
 	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, items)
 	if len(items) == 0 {
+		applyProbeLinkChainServerItems(identity, controllerBaseURL, nil)
 		applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, virtualRouterConfig)
 		return
 	}
-	for _, item := range items {
-		applyProbeLinkChainServerItem(identity, controllerBaseURL, item)
-	}
+	applyProbeLinkChainServerItems(identity, controllerBaseURL, items)
 	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, virtualRouterConfig)
 	log.Printf("restored probe chain runtimes from topology cache: count=%d", len(items))
 }
@@ -368,6 +368,19 @@ func applyProbeLinkChainServerItems(identity nodeIdentity, controllerBaseURL str
 		}
 	}
 
+	if !probeChainLegacyRuntimeFeatureActive() {
+		probeChainRuntimeState.mu.Lock()
+		toStop := collectProbeLinkChainLegacyRuntimeIDsLocked()
+		probeChainRuntimeState.mu.Unlock()
+		for _, id := range toStop {
+			stopProbeChainRuntime(id, "legacy probe chain runtime paused")
+		}
+		if len(items) > 0 {
+			log.Printf("probe chain sync skipped legacy runtimes: reason=feature_paused count=%d", len(items))
+		}
+		return
+	}
+
 	// Stop ordinary runtimes that are no longer present on the server.
 	// Virtual-router runtimes are generated from the virtual-router topology and
 	// are reconciled separately.
@@ -383,6 +396,18 @@ func applyProbeLinkChainServerItems(identity nodeIdentity, controllerBaseURL str
 	for _, item := range items {
 		applyProbeLinkChainServerItem(identity, controllerBaseURL, item)
 	}
+}
+
+func collectProbeLinkChainLegacyRuntimeIDsLocked() []string {
+	toStop := make([]string, 0)
+	for id := range probeChainRuntimeState.runtimes {
+		if isProbeVirtualRouterRuntimeChainID(id) {
+			continue
+		}
+		toStop = append(toStop, id)
+	}
+	sort.Strings(toStop)
+	return toStop
 }
 
 func collectProbeLinkChainRuntimeIDsToStopLocked(serverChainIDs map[string]struct{}) []string {
@@ -405,6 +430,11 @@ func collectProbeLinkChainRuntimeIDsToStopLocked(serverChainIDs map[string]struc
 func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL string, item probeLinkChainServerItem) {
 	chainID := strings.TrimSpace(item.ChainID)
 	if chainID == "" {
+		return
+	}
+	if !probeChainLegacyRuntimeFeatureActive() {
+		stopProbeChainRuntime(chainID, "legacy probe chain runtime paused")
+		log.Printf("probe chain sync skip legacy chain: chain=%s reason=feature_paused", chainID)
 		return
 	}
 	rememberProbeChainAuthTicket(effectiveProbeLinkRelayChainID(item), item.AuthTicket)
