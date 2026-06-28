@@ -2028,8 +2028,6 @@
       if (item.next) lines.push(`next ${item.next}`);
       if (item.prev) lines.push(`prev ${item.prev}`);
       const stats = item.virtual_router || {};
-      const packets = Number(stats.packets_forwarded || 0) + Number(stats.packets_received || 0) + Number(stats.packets_delivered || 0);
-      const bytes = Number(stats.bytes_forwarded || 0) + Number(stats.bytes_received || 0) + Number(stats.bytes_delivered || 0);
       const packetsForwarded = Number(stats.packets_forwarded || 0);
       const bytesForwarded = Number(stats.bytes_forwarded || 0);
       const packetsReceived = Number(stats.packets_received || 0);
@@ -2053,8 +2051,7 @@
         ${renderVirtualProbeCapability(item)}
         ${renderLastVirtualPingContext(stats)}
         ${renderBridgeSessions(item, errors)}
-        <div class="small muted">IP合计 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
-        <div class="small muted">IP fwd ${escapeHTML(packetsForwarded)} / ${escapeHTML(formatBytes(bytesForwarded))} · rx ${escapeHTML(packetsReceived)} / ${escapeHTML(formatBytes(bytesReceived))} · local ${escapeHTML(packetsDelivered)} / ${escapeHTML(formatBytes(bytesDelivered))}</div>
+        <div class="small muted">IP处理 rx入口 ${escapeHTML(packetsReceived)} / ${escapeHTML(formatBytes(bytesReceived))} · fwd转发 ${escapeHTML(packetsForwarded)} / ${escapeHTML(formatBytes(bytesForwarded))} · local投递 ${escapeHTML(packetsDelivered)} / ${escapeHTML(formatBytes(bytesDelivered))}</div>
         <div class="small muted">vRouter帧 tx ${escapeHTML(framesSent)} / ${escapeHTML(formatBytes(frameBytesSent))} · rx ${escapeHTML(framesReceived)} / ${escapeHTML(formatBytes(frameBytesReceived))}</div>
         ${renderRawStatsDetails('vRouter runtime 原始统计', stats)}
         ${renderBridgeRawStatsDetails(item)}
@@ -2083,7 +2080,7 @@
           <td><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span>${err}</td>
           <td><div>${escapeHTML(fromName)}</div>${renderRouteSide(item.from, item)}</td>
           <td><div>${escapeHTML(toName)}</div>${renderRouteSide(item.to, item)}</td>
-          <td><div>IP合计 ${escapeHTML(item.packets || 0)} / ${escapeHTML(formatBytes(item.bytes || 0))}</div><div class="small muted">规则行汇总=本规则两端 runtime 相加；节点 TUN 见上方；非节点总计、非物理连接总计</div><div class="small muted">IP fwd ${escapeHTML(item.packets_forwarded || 0)} / ${escapeHTML(formatBytes(item.bytes_forwarded || 0))}</div><div class="small muted">IP rx ${escapeHTML(item.packets_received || 0)} / ${escapeHTML(formatBytes(item.bytes_received || 0))}</div><div class="small muted">IP local ${escapeHTML(item.packets_delivered || 0)} / ${escapeHTML(formatBytes(item.bytes_delivered || 0))}</div><div class="small muted">vRouter帧 tx ${escapeHTML(item.frames_sent || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_sent || 0))}</div><div class="small muted">vRouter帧 rx ${escapeHTML(item.frames_received || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_received || 0))}</div>${renderRawStatsDetails('路由汇总原始统计', item)}</td>
+          <td><div>IP处理事件</div><div class="small muted">规则行汇总=本规则两端 runtime 相加；rx 是入口，fwd/local 是处理结果，不能相加当作包总数</div><div class="small muted">IP rx入口 ${escapeHTML(item.packets_received || 0)} / ${escapeHTML(formatBytes(item.bytes_received || 0))}</div><div class="small muted">IP fwd转发 ${escapeHTML(item.packets_forwarded || 0)} / ${escapeHTML(formatBytes(item.bytes_forwarded || 0))}</div><div class="small muted">IP local投递 ${escapeHTML(item.packets_delivered || 0)} / ${escapeHTML(formatBytes(item.bytes_delivered || 0))}</div><div class="small muted">vRouter帧 tx ${escapeHTML(item.frames_sent || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_sent || 0))}</div><div class="small muted">vRouter帧 rx ${escapeHTML(item.frames_received || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_received || 0))}</div>${renderRawStatsDetails('路由汇总原始统计', item)}</td>
           <td>${escapeHTML(latencyText)}</td>
           <td><div>${escapeHTML(item.last_packet_at || '-')}</div><div class="small muted">frame ${escapeHTML(item.last_frame_at || '-')}</div><div class="small muted">${escapeHTML(item.updated_at || '-')}</div></td>
         </tr>`;

@@ -367,6 +367,8 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 			To:         to,
 		}
 		view.Status = summarizeMngVirtualRouterRouteStatus(rule.Enabled, from, to)
+		// Compatibility fields: these are lifecycle event sums, not unique IP
+		// packet totals. The UI renders the explicit lifecycle counters instead.
 		view.Packets, view.Bytes = sumMngVirtualRouterRouteTraffic(from.VirtualRouter, to.VirtualRouter)
 		view.PacketsForwarded, view.BytesForwarded, view.PacketsReceived, view.BytesReceived, view.PacketsDelivered, view.BytesDelivered = sumMngVirtualRouterRoutePacketLifecycle(from.VirtualRouter, to.VirtualRouter)
 		view.FramesSent, view.FrameBytesSent, view.FramesReceived, view.FrameBytesReceived = sumMngVirtualRouterRouteFrames(from.VirtualRouter, to.VirtualRouter)
