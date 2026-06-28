@@ -1993,7 +1993,7 @@
         const dst = String(item.last_virtual_ping_dest_ip || '').trim();
         const seq = item.last_virtual_ping_sequence ? ` seq=${item.last_virtual_ping_sequence}` : '';
         const path = String(item.last_virtual_ping_path || '').trim();
-        parts.push(`<div class="small muted">最近虚拟 IP ping ${escapeHTML(src || '-')} → ${escapeHTML(dst || '-')} ${escapeHTML(virtualLatency ? `${virtualLatency}ms` : '-')} @ ${escapeHTML(virtualAt || '-')}${escapeHTML(seq)}${path ? ` / path ${escapeHTML(path)}` : ''}</div>`);
+        parts.push(`<div class="small muted">最近 ICMP 帧 ping ${escapeHTML(src || '-')} → ${escapeHTML(dst || '-')} ${escapeHTML(virtualLatency ? `${virtualLatency}ms` : '-')} @ ${escapeHTML(virtualAt || '-')}${escapeHTML(seq)}${path ? ` / path ${escapeHTML(path)}` : ''}</div>`);
       }
       return parts.join('');
     }
