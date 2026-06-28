@@ -280,6 +280,7 @@
       <section id="section-route" class="section">
         <div class="row">
           <button id="btn-vr-status-refresh" class="btn" type="button">刷新路由状态</button>
+          <button id="btn-vr-latency-probe" class="btn primary" type="button">立即延迟探测</button>
           <span id="vr-status-summary" class="small muted">暂无状态</span>
         </div>
         <table>
@@ -751,6 +752,24 @@
       state.virtualRouterStatus = Array.isArray(payload.items) ? payload.items : [];
       renderVirtualRouterStatus();
       if (!silent) setStatus(`路由状态已刷新：${state.virtualRouterStatus.length} 条`, 'ok');
+    }
+
+    async function triggerVirtualRouterLatencyProbe() {
+      const result = await requestJSON('/mng/api/link/virtual_router/latency_probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const total = Number(result.total || 0);
+      const dispatched = Number(result.dispatched || 0);
+      const offline = Number(result.offline || 0);
+      const failed = Number(result.failed || 0);
+      const level = failed > 0 ? 'warn' : 'ok';
+      setStatus(`延迟探测已下发：${dispatched}/${total}，离线 ${offline}，失败 ${failed}`, level);
+      await loadVirtualRouterStatus(true).catch(() => {});
+      window.setTimeout(() => {
+        loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
+      }, 1000);
     }
 
     function bindTabs() {
@@ -1765,8 +1784,8 @@
       const stats = (item && item.virtual_router) || {};
       const pingError = String(stats.last_ping_error || '').trim();
       const openError = String(stats.last_open_error || '').trim();
-      if (pingError) errors.push(`虚拟 ping 失败：${pingError}`);
-      if (openError) errors.push(`打开子流失败：${openError}`);
+      if (pingError && !isRouteSideVirtualErrorStale(item, stats.last_ping_at)) errors.push(`虚拟 ping 失败：${pingError}`);
+      if (openError && !isRouteSideVirtualErrorStale(item, stats.last_open_at)) errors.push(`打开子流失败：${openError}`);
       collectRouteSideStateErrors(item && item.listen_state, 'listen').forEach((err) => errors.push(err));
       collectRouteSideStateErrors(item && item.next_state, 'next').forEach((err) => errors.push(err));
       collectRouteSideStateErrors(item && item.prev_state, 'prev').forEach((err) => errors.push(err));
@@ -1794,6 +1813,16 @@
         });
       }
       return { sessions, active, counts, updatedAt: String(bridgeStatus.updated_at || '').trim() };
+    }
+
+    function isRouteSideVirtualErrorStale(item, errorAt) {
+      const errorTime = Date.parse(String(errorAt || '').trim());
+      if (!Number.isFinite(errorTime)) return false;
+      const summary = summarizeBridgeSessions(item);
+      return summary.active.some((entry) => {
+        const connectedTime = Date.parse(String((entry && entry.connected_at) || '').trim());
+        return Number.isFinite(connectedTime) && connectedTime > errorTime;
+      });
     }
 
     function renderBridgeSessions(item, errors) {
@@ -1849,6 +1878,19 @@
       return `<div class="small muted">虚拟探测 next ${escapeHTML(next)} / prev ${escapeHTML(prev)}</div>`;
     }
 
+    function renderLastVirtualPingContext(stats) {
+      const item = stats || {};
+      const direction = String(item.last_ping_direction || '').trim();
+      const pingAt = String(item.last_ping_at || '').trim();
+      if (!direction && !pingAt) return '';
+      const downstream = Number(item.last_ping_bridge_downstream || 0);
+      const upstream = Number(item.last_ping_bridge_upstream || 0);
+      const remote = String(item.last_ping_bridge_remote || '').trim();
+      const connectedAt = String(item.last_ping_bridge_connected_at || '').trim();
+      const session = remote ? `${remote}${connectedAt ? ` since ${connectedAt}` : ''}` : '-';
+      return `<div class="small muted">最近虚拟 ping ${escapeHTML(direction || '-')} @ ${escapeHTML(pingAt || '-')} / 当时桥接 downstream ${escapeHTML(downstream)} upstream ${escapeHTML(upstream)} / session ${escapeHTML(session)}</div>`;
+    }
+
     function routePeerLabel(nodeID, route) {
       const id = String(nodeID || '').trim();
       if (!id) return '-';
@@ -1884,6 +1926,7 @@
         ${renderTopologyAdjacency(item, route)}
         ${renderActiveDialCapability(item)}
         ${renderVirtualProbeCapability(item)}
+        ${renderLastVirtualPingContext(stats)}
         ${renderBridgeSessions(item, errors)}
         <div class="small muted">包 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
         <div class="small muted">${escapeHTML(item.last_seen || '-')}</div>
@@ -2094,6 +2137,9 @@
       });
       document.getElementById('btn-vr-status-refresh').addEventListener('click', () => {
         loadVirtualRouterStatus(false).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-vr-latency-probe').addEventListener('click', () => {
+        triggerVirtualRouterLatencyProbe().catch((err) => setStatus(`延迟探测下发失败：${err.message || err}`, 'err'));
       });
 
       document.getElementById('pf-chain-select').addEventListener('change', (e) => {

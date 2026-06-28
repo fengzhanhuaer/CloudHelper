@@ -61,21 +61,27 @@ type probeVirtualRouterTopologyRule struct {
 }
 
 type probeVirtualRouterRuntimeStats struct {
-	PacketsForwarded  int64  `json:"packets_forwarded,omitempty"`
-	BytesForwarded    int64  `json:"bytes_forwarded,omitempty"`
-	PacketsReceived   int64  `json:"packets_received,omitempty"`
-	BytesReceived     int64  `json:"bytes_received,omitempty"`
-	PacketsDelivered  int64  `json:"packets_delivered,omitempty"`
-	BytesDelivered    int64  `json:"bytes_delivered,omitempty"`
-	StreamOpenCount   int64  `json:"stream_open_count,omitempty"`
-	LastOpenLatencyMS int64  `json:"last_open_latency_ms,omitempty"`
-	LastOpenError     string `json:"last_open_error,omitempty"`
-	LastOpenAt        string `json:"last_open_at,omitempty"`
-	PingCount         int64  `json:"ping_count,omitempty"`
-	LastPingLatencyMS int64  `json:"last_ping_latency_ms,omitempty"`
-	LastPingError     string `json:"last_ping_error,omitempty"`
-	LastPingAt        string `json:"last_ping_at,omitempty"`
-	LastPacketAt      string `json:"last_packet_at,omitempty"`
+	PacketsForwarded          int64  `json:"packets_forwarded,omitempty"`
+	BytesForwarded            int64  `json:"bytes_forwarded,omitempty"`
+	PacketsReceived           int64  `json:"packets_received,omitempty"`
+	BytesReceived             int64  `json:"bytes_received,omitempty"`
+	PacketsDelivered          int64  `json:"packets_delivered,omitempty"`
+	BytesDelivered            int64  `json:"bytes_delivered,omitempty"`
+	StreamOpenCount           int64  `json:"stream_open_count,omitempty"`
+	LastOpenLatencyMS         int64  `json:"last_open_latency_ms,omitempty"`
+	LastOpenError             string `json:"last_open_error,omitempty"`
+	LastOpenAt                string `json:"last_open_at,omitempty"`
+	PingCount                 int64  `json:"ping_count,omitempty"`
+	LastPingLatencyMS         int64  `json:"last_ping_latency_ms,omitempty"`
+	LastPingError             string `json:"last_ping_error,omitempty"`
+	LastPingAt                string `json:"last_ping_at,omitempty"`
+	LastPingDirection         string `json:"last_ping_direction,omitempty"`
+	LastPingBridgeDownstream  int    `json:"last_ping_bridge_downstream,omitempty"`
+	LastPingBridgeUpstream    int    `json:"last_ping_bridge_upstream,omitempty"`
+	LastPingBridgeSessionID   string `json:"last_ping_bridge_session_id,omitempty"`
+	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
+	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
+	LastPacketAt              string `json:"last_packet_at,omitempty"`
 }
 
 func defaultProbeVirtualRouterConfig() probeVirtualRouterConfig {

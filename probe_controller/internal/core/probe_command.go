@@ -65,6 +65,11 @@ type probeLinkConfigSyncCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeVirtualRouterLatencyProbeCommand struct {
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+}
+
 type probeLinkConfigSyncDispatchResult struct {
 	Total      int      `json:"total"`
 	Dispatched int      `json:"dispatched"`
@@ -378,6 +383,48 @@ func (s *probeSession) writeJSON(v interface{}) error {
 
 func dispatchProbeLinkConfigSyncToKnownNodes(controllerBaseURL string) probeLinkConfigSyncDispatchResult {
 	return dispatchProbeLinkConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
+}
+
+func dispatchProbeVirtualRouterLatencyProbeToKnownNodes() probeLinkConfigSyncDispatchResult {
+	return dispatchProbeVirtualRouterLatencyProbeToNodes(listProbeVirtualRouterKnownNodeIDs())
+}
+
+func dispatchProbeVirtualRouterLatencyProbeToNodes(nodeIDs []string) probeLinkConfigSyncDispatchResult {
+	result := probeLinkConfigSyncDispatchResult{
+		Total: len(nodeIDs),
+	}
+	if len(nodeIDs) == 0 {
+		return result
+	}
+	command := probeVirtualRouterLatencyProbeCommand{
+		Type:      "virtual_router_latency_probe",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	seen := map[string]struct{}{}
+	for _, rawNodeID := range nodeIDs {
+		nodeID := normalizeProbeNodeID(rawNodeID)
+		if nodeID == "" {
+			continue
+		}
+		if _, exists := seen[nodeID]; exists {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		session, ok := getProbeSession(nodeID)
+		if !ok {
+			result.Offline++
+			continue
+		}
+		if err := session.writeJSON(command); err != nil {
+			unregisterProbeSession(nodeID, session)
+			result.Failed++
+			result.Failures = append(result.Failures, fmt.Sprintf("%s: %v", nodeID, err))
+			continue
+		}
+		result.Dispatched++
+	}
+	result.Total = len(seen)
+	return result
 }
 
 func dispatchProbeLinkConfigSyncToNodes(nodeIDs []string, controllerBaseURL string) probeLinkConfigSyncDispatchResult {

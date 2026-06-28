@@ -356,6 +356,46 @@ func TestProbeChainPingPongStreamEchoesPayload(t *testing.T) {
 	<-done
 }
 
+func TestProbeChainForwardConnHandlesPingPongLocally(t *testing.T) {
+	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
+	defer clientSession.Close()
+	defer serverSession.Close()
+
+	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{
+		chainID: "chain-ping-adjacent",
+		role:    "entry",
+	}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stream, err := serverSession.Accept()
+		if err != nil {
+			return
+		}
+		handleProbeChainConn(rt, stream, "")
+	}()
+
+	req := probeChainTunnelOpenRequest{Type: probeChainRelayModePingPong, PingBytes: 4, Priority: "realtime"}
+	client, err := clientSession.OpenWithRequest(req, probeChainPortForwardResponseReadDeadline)
+	if err != nil {
+		t.Fatalf("open adjacent ping-pong stream: %v", err)
+	}
+	defer client.Close()
+	payload := []byte{9, 8, 7, 6}
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write payload failed: %v", err)
+	}
+	echo := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, echo); err != nil {
+		t.Fatalf("read echo failed: %v", err)
+	}
+	if string(echo) != string(payload) {
+		t.Fatalf("echo=%v want %v", echo, payload)
+	}
+	_ = client.Close()
+	<-done
+}
+
 func TestProbeChainPreparedStreamDefersTargetOpenUntilRealRequest(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

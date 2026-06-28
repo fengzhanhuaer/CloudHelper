@@ -48,21 +48,27 @@ var probeVirtualRouterRuntimeStatsState = struct {
 }{items: make(map[string]*probeVirtualRouterRuntimeStats)}
 
 type probeVirtualRouterRuntimeStats struct {
-	PacketsForwarded  int64  `json:"packets_forwarded,omitempty"`
-	BytesForwarded    int64  `json:"bytes_forwarded,omitempty"`
-	PacketsReceived   int64  `json:"packets_received,omitempty"`
-	BytesReceived     int64  `json:"bytes_received,omitempty"`
-	PacketsDelivered  int64  `json:"packets_delivered,omitempty"`
-	BytesDelivered    int64  `json:"bytes_delivered,omitempty"`
-	StreamOpenCount   int64  `json:"stream_open_count,omitempty"`
-	LastOpenLatencyMS int64  `json:"last_open_latency_ms,omitempty"`
-	LastOpenError     string `json:"last_open_error,omitempty"`
-	LastOpenAt        string `json:"last_open_at,omitempty"`
-	PingCount         int64  `json:"ping_count,omitempty"`
-	LastPingLatencyMS int64  `json:"last_ping_latency_ms,omitempty"`
-	LastPingError     string `json:"last_ping_error,omitempty"`
-	LastPingAt        string `json:"last_ping_at,omitempty"`
-	LastPacketAt      string `json:"last_packet_at,omitempty"`
+	PacketsForwarded          int64  `json:"packets_forwarded,omitempty"`
+	BytesForwarded            int64  `json:"bytes_forwarded,omitempty"`
+	PacketsReceived           int64  `json:"packets_received,omitempty"`
+	BytesReceived             int64  `json:"bytes_received,omitempty"`
+	PacketsDelivered          int64  `json:"packets_delivered,omitempty"`
+	BytesDelivered            int64  `json:"bytes_delivered,omitempty"`
+	StreamOpenCount           int64  `json:"stream_open_count,omitempty"`
+	LastOpenLatencyMS         int64  `json:"last_open_latency_ms,omitempty"`
+	LastOpenError             string `json:"last_open_error,omitempty"`
+	LastOpenAt                string `json:"last_open_at,omitempty"`
+	PingCount                 int64  `json:"ping_count,omitempty"`
+	LastPingLatencyMS         int64  `json:"last_ping_latency_ms,omitempty"`
+	LastPingError             string `json:"last_ping_error,omitempty"`
+	LastPingAt                string `json:"last_ping_at,omitempty"`
+	LastPingDirection         string `json:"last_ping_direction,omitempty"`
+	LastPingBridgeDownstream  int    `json:"last_ping_bridge_downstream,omitempty"`
+	LastPingBridgeUpstream    int    `json:"last_ping_bridge_upstream,omitempty"`
+	LastPingBridgeSessionID   string `json:"last_ping_bridge_session_id,omitempty"`
+	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
+	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
+	LastPacketAt              string `json:"last_packet_at,omitempty"`
 }
 
 type probeVirtualRouterPacketStream struct {
@@ -495,6 +501,29 @@ func probeVirtualRouterPingPongRuntime(rt *probeChainRuntime) {
 	}
 }
 
+func probeVirtualRouterPingPongAllRuntimes() int {
+	probeChainRuntimeState.mu.Lock()
+	runtimes := make([]*probeChainRuntime, 0, len(probeChainRuntimeState.runtimes))
+	for _, rt := range probeChainRuntimeState.runtimes {
+		if rt == nil || !isProbeVirtualRouterRuntimeChainID(rt.cfg.chainID) {
+			continue
+		}
+		runtimes = append(runtimes, rt)
+	}
+	probeChainRuntimeState.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, rt := range runtimes {
+		wg.Add(1)
+		go func(runtime *probeChainRuntime) {
+			defer wg.Done()
+			probeVirtualRouterPingPongRuntime(runtime)
+		}(rt)
+	}
+	wg.Wait()
+	return len(runtimes)
+}
+
 func shouldProbeVirtualRouterPrevDirection(rt *probeChainRuntime) bool {
 	if rt == nil {
 		return false
@@ -517,7 +546,7 @@ func probeVirtualRouterPingPongDirection(rt *probeChainRuntime, direction string
 	}
 	conn, _, err := openProbeChainPortForwardDataStreamByDialMode(rt, direction, req)
 	if err != nil {
-		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, err)
+		recordProbeVirtualRouterRuntimePingError(rt, direction, err)
 		return
 	}
 	defer conn.Close()
@@ -531,20 +560,20 @@ func probeVirtualRouterPingPongDirection(rt *probeChainRuntime, direction string
 	_ = conn.SetDeadline(time.Now().Add(probeVirtualRouterPingPongTimeout))
 	if _, err := conn.Write(payload); err != nil {
 		_ = conn.SetDeadline(time.Time{})
-		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, err)
+		recordProbeVirtualRouterRuntimePingError(rt, direction, err)
 		return
 	}
 	if _, err := io.ReadFull(conn, echo); err != nil {
 		_ = conn.SetDeadline(time.Time{})
-		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, err)
+		recordProbeVirtualRouterRuntimePingError(rt, direction, err)
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
 	if !bytes.Equal(payload, echo) {
-		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, errors.New("virtual router ping-pong echo mismatch"))
+		recordProbeVirtualRouterRuntimePingError(rt, direction, errors.New("virtual router ping-pong echo mismatch"))
 		return
 	}
-	recordProbeVirtualRouterRuntimePingSuccess(rt.cfg.chainID, time.Since(startedAt))
+	recordProbeVirtualRouterRuntimePingSuccess(rt, direction, time.Since(startedAt))
 }
 
 func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest, responder func(probeChainTunnelOpenResponse) error) error {
@@ -804,7 +833,8 @@ func recordProbeVirtualRouterRuntimeOpenError(chainID string, err error) {
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 }
 
-func recordProbeVirtualRouterRuntimePingSuccess(chainID string, latency time.Duration) {
+func recordProbeVirtualRouterRuntimePingSuccess(rt *probeChainRuntime, direction string, latency time.Duration) {
+	chainID, bridgeStatus, bridgeSession := snapshotProbeVirtualRouterPingContext(rt, direction)
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
@@ -812,21 +842,57 @@ func recordProbeVirtualRouterRuntimePingSuccess(chainID string, latency time.Dur
 		item.LastPingLatencyMS = probeDurationMilliseconds(latency)
 		item.LastPingError = ""
 		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
+		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 }
 
-func recordProbeVirtualRouterRuntimePingError(chainID string, err error) {
-	if err == nil {
+func recordProbeVirtualRouterRuntimePingError(rt *probeChainRuntime, direction string, err error) {
+	if rt == nil || err == nil {
 		return
 	}
+	chainID, bridgeStatus, bridgeSession := snapshotProbeVirtualRouterPingContext(rt, direction)
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
 		item.LastPingError = strings.TrimSpace(err.Error())
 		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
+		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func snapshotProbeVirtualRouterPingContext(rt *probeChainRuntime, direction string) (string, probeChainBridgeRuntimeStatus, probeChainBridgeSessionSnapshot) {
+	if rt == nil {
+		return "", probeChainBridgeRuntimeStatus{}, probeChainBridgeSessionSnapshot{}
+	}
+	bridgeStatus := rt.snapshotBridgeStatus()
+	bridgeDirection := "downstream"
+	if normalizeProbeChainBridgeRole(direction) == probeChainBridgeRoleToPrev {
+		bridgeDirection = "upstream"
+	}
+	var selected probeChainBridgeSessionSnapshot
+	for _, session := range bridgeStatus.Sessions {
+		if session.Closed || !strings.EqualFold(strings.TrimSpace(session.Direction), bridgeDirection) {
+			continue
+		}
+		if selected.ConnectedAt == "" || session.ConnectedAt > selected.ConnectedAt {
+			selected = session
+		}
+	}
+	return strings.TrimSpace(rt.cfg.chainID), bridgeStatus, selected
+}
+
+func applyProbeVirtualRouterPingContext(item *probeVirtualRouterRuntimeStats, direction string, bridgeStatus probeChainBridgeRuntimeStatus, bridgeSession probeChainBridgeSessionSnapshot) {
+	if item == nil {
+		return
+	}
+	item.LastPingDirection = normalizeProbeChainBridgeRole(direction)
+	item.LastPingBridgeDownstream = bridgeStatus.DownstreamActive
+	item.LastPingBridgeUpstream = bridgeStatus.UpstreamActive
+	item.LastPingBridgeSessionID = strings.TrimSpace(bridgeSession.SessionID)
+	item.LastPingBridgeRemote = strings.TrimSpace(bridgeSession.RemoteAddr)
+	item.LastPingBridgeConnectedAt = strings.TrimSpace(bridgeSession.ConnectedAt)
 }
 
 func clearProbeVirtualRouterRuntimePingError(chainID string) {

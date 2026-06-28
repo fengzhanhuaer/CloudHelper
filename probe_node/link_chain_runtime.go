@@ -3199,6 +3199,9 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 
 	if _, ok := conn.(*probeChainFrameStream); ok {
 		_ = conn.SetDeadline(time.Time{})
+		if handleProbeChainPingPongStreamIfNeeded(runtime, conn) {
+			return
+		}
 		if handleProbeChainVirtualRouterStreamIfNeeded(runtime, conn) {
 			return
 		}
@@ -3239,6 +3242,9 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 
 	if _, ok := conn.(*probeChainFrameStream); ok {
 		_ = conn.SetDeadline(time.Time{})
+		if handleProbeChainPingPongStreamIfNeeded(runtime, conn) {
+			return
+		}
 		if handleProbeChainVirtualRouterStreamIfNeeded(runtime, conn) {
 			return
 		}
@@ -3314,6 +3320,19 @@ func openProbeChainPrevHop(runtime *probeChainRuntime, preferredSessionID string
 	}, nil
 }
 
+func handleProbeChainPingPongStreamIfNeeded(runtime *probeChainRuntime, conn net.Conn) bool {
+	frameStream, ok := conn.(*probeChainFrameStream)
+	if !ok {
+		return false
+	}
+	req, found := frameStream.OpenRequest()
+	if !found || !strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePingPong) {
+		return false
+	}
+	handleProbeChainPingPongStream(runtime, conn, req.PingBytes, frameStream.RespondOpen)
+	return true
+}
+
 func handleProbeChainVirtualRouterStreamIfNeeded(runtime *probeChainRuntime, conn net.Conn) bool {
 	frameStream, ok := conn.(*probeChainFrameStream)
 	if !ok {
@@ -3377,9 +3396,12 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 		timeout = 15 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
+	sawSession := false
+	var lastOpenErr error
 	for {
 		session := runtime.getDownstreamSessionByID(preferredSessionID)
 		if session != nil && !session.IsClosed() {
+			sawSession = true
 			sessionID, sessionRole := runtime.describeBridgeSession(session, "downstream")
 			streamsOpen := session.NumStreams()
 			startedAt := time.Now()
@@ -3396,6 +3418,7 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 					PingStats:           session.PingStats(),
 				}, nil
 			}
+			lastOpenErr = openErr
 			if session.IsClosed() {
 				runtime.clearDownstreamSession("", session)
 			}
@@ -3408,6 +3431,9 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 			return nil, probeChainFrameStreamMonitor{}, errors.New("runtime stopped")
 		case <-time.After(300 * time.Millisecond):
 		}
+	}
+	if sawSession && lastOpenErr != nil {
+		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("downstream bridge stream open failed: %w", lastOpenErr)
 	}
 	if strings.TrimSpace(preferredSessionID) != "" {
 		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("downstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
@@ -3424,10 +3450,13 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 	}
 	deadline := time.Now().Add(timeout)
 	attempt := 0
+	sawSession := false
+	var lastOpenErr error
 	for {
 		attempt++
 		session := runtime.getUpstreamSessionByID(preferredSessionID)
 		if session != nil {
+			sawSession = true
 			closed := session.IsClosed()
 			log.Printf("probe chain upstream stream attempt: chain=%s role=%s attempt=%d session=%p closed=%t", runtime.cfg.chainID, runtime.cfg.role, attempt, session, closed)
 			if !closed {
@@ -3448,6 +3477,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 						PingStats:           session.PingStats(),
 					}, nil
 				}
+				lastOpenErr = openErr
 				log.Printf("probe chain upstream stream open failed: chain=%s role=%s attempt=%d session=%p err=%v", runtime.cfg.chainID, runtime.cfg.role, attempt, session, openErr)
 				if session.IsClosed() {
 					log.Printf("probe chain upstream session became closed while opening stream: chain=%s role=%s attempt=%d session=%p", runtime.cfg.chainID, runtime.cfg.role, attempt, session)
@@ -3467,6 +3497,9 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 		}
 	}
 	log.Printf("probe chain upstream stream unavailable: chain=%s role=%s attempts=%d timeout=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, attempt, timeout, strings.TrimSpace(preferredSessionID))
+	if sawSession && lastOpenErr != nil {
+		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("upstream bridge stream open failed: %w", lastOpenErr)
+	}
 	if strings.TrimSpace(preferredSessionID) != "" {
 		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("upstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
 	}

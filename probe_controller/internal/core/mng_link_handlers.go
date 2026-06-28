@@ -89,6 +89,15 @@ func mngLinkVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngLinkVirtualRouterLatencyProbeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	result := dispatchProbeVirtualRouterLatencyProbeToKnownNodes()
+	writeJSON(w, http.StatusOK, result)
+}
+
 func mngLinkNodeDomainsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -349,7 +358,7 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 		view.Status = summarizeMngVirtualRouterRouteStatus(rule.Enabled, from, to)
 		view.Packets, view.Bytes = sumMngVirtualRouterRouteTraffic(from.VirtualRouter, to.VirtualRouter)
 		view.LastLatencyMS = lastMngVirtualRouterRouteLatency(from.VirtualRouter, to.VirtualRouter)
-		view.LastError = firstNonEmptyString(mngVirtualRouterStatsError(from.VirtualRouter), mngVirtualRouterStatsError(to.VirtualRouter))
+		view.LastError = firstNonEmptyString(mngVirtualRouterSideStatsError(from), mngVirtualRouterSideStatsError(to))
 		view.LastPacketAt = maxRFC3339String(mngVirtualRouterStatsPacketAt(from.VirtualRouter), mngVirtualRouterStatsPacketAt(to.VirtualRouter))
 		view.UpdatedAt = maxRFC3339String(from.LastSeen, to.LastSeen)
 		items = append(items, view)
@@ -400,7 +409,7 @@ func buildMngVirtualRouterRouteSideStatus(nodeID string, chainID string, runtime
 	side.Status = "configured"
 	if !side.Online {
 		side.Status = "offline"
-	} else if mngRelayStateHasFailure(status.ListenState) || mngRelayStateHasFailure(status.NextState) || mngRelayStateHasFailure(status.PrevState) || mngVirtualRouterStatsError(status.VirtualRouter) != "" {
+	} else if mngRelayStateHasFailure(status.ListenState) || mngRelayStateHasFailure(status.NextState) || mngRelayStateHasFailure(status.PrevState) || mngVirtualRouterSideStatsError(side) != "" {
 		side.Status = "failed"
 	} else if mngRelayStateHasSelectedProtocol(status.NextState) || mngRelayStateHasSelectedProtocol(status.PrevState) {
 		side.Status = "connected"
@@ -500,6 +509,52 @@ func mngVirtualRouterStatsError(item *probeVirtualRouterRuntimeStats) string {
 		return ""
 	}
 	return firstNonEmptyString(strings.TrimSpace(item.LastPingError), strings.TrimSpace(item.LastOpenError))
+}
+
+func mngVirtualRouterSideStatsError(side mngVirtualRouterRouteSideStatus) string {
+	stats := side.VirtualRouter
+	if stats == nil {
+		return ""
+	}
+	if errText := strings.TrimSpace(stats.LastPingError); errText != "" && !isMngVirtualRouterSideErrorStale(side, stats.LastPingAt) {
+		return errText
+	}
+	if errText := strings.TrimSpace(stats.LastOpenError); errText != "" && !isMngVirtualRouterSideErrorStale(side, stats.LastOpenAt) {
+		return errText
+	}
+	return ""
+}
+
+func isMngVirtualRouterSideErrorStale(side mngVirtualRouterRouteSideStatus, errorAt string) bool {
+	errorAt = strings.TrimSpace(errorAt)
+	if errorAt == "" {
+		return false
+	}
+	errTime, err := time.Parse(time.RFC3339, errorAt)
+	if err != nil {
+		return false
+	}
+	for _, session := range mngVirtualRouterSideBridgeSessions(side) {
+		if session.Closed {
+			continue
+		}
+		connectedAt := strings.TrimSpace(session.ConnectedAt)
+		if connectedAt == "" {
+			continue
+		}
+		connectedTime, err := time.Parse(time.RFC3339, connectedAt)
+		if err == nil && connectedTime.After(errTime) {
+			return true
+		}
+	}
+	return false
+}
+
+func mngVirtualRouterSideBridgeSessions(side mngVirtualRouterRouteSideStatus) []probeChainBridgeSessionSnapshot {
+	if side.BridgeStatus != nil {
+		return side.BridgeStatus.Sessions
+	}
+	return side.BridgeSessions
 }
 
 func mngVirtualRouterStatsPacketAt(item *probeVirtualRouterRuntimeStats) string {

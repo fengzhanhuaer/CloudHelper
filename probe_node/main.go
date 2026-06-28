@@ -744,6 +744,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeLinkConfigSyncControl(msg, identity)
 		return
 	}
+	if typeName == "virtual_router_latency_probe" {
+		go runProbeVirtualRouterLatencyProbeControl(identity, stream, encoder, writeMu)
+		return
+	}
 	if typeName == "local_console_proxy" {
 		go runProbeLocalConsoleProxy(msg, identity, stream, encoder, writeMu)
 		return
@@ -837,6 +841,17 @@ func runProbeLinkConfigSyncControl(msg probeControlMessage, identity nodeIdentit
 	}
 	logProbeInfof("probe link config sync requested by controller")
 	syncProbeChainRuntimes(identity, controllerBaseURL)
+}
+
+func runProbeVirtualRouterLatencyProbeControl(identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
+	count := probeVirtualRouterPingPongAllRuntimes()
+	logProbeInfof("probe virtual router latency probe completed: runtimes=%d", count)
+	if stream == nil || encoder == nil {
+		return
+	}
+	if err := sendProbeReport(stream, encoder, identity, &cpuSampler{}, writeMu); err != nil {
+		logProbeWarnf("probe virtual router latency report failed: err=%v", err)
+	}
 }
 
 func currentReportIntervalDuration() time.Duration {

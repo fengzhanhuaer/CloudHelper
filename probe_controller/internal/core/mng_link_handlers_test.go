@@ -65,6 +65,32 @@ func TestMngLinkRelayStatusHandlerReturnsReportedRelayStatus(t *testing.T) {
 	}
 }
 
+func TestMngVirtualRouterSideStatsErrorIgnoresStaleErrorAfterBridgeReconnect(t *testing.T) {
+	side := mngVirtualRouterRouteSideStatus{
+		VirtualRouter: &probeVirtualRouterRuntimeStats{
+			LastPingError: "upstream bridge is unavailable",
+			LastPingAt:    "2026-06-28T00:12:00Z",
+		},
+		BridgeStatus: &probeChainBridgeRuntimeStatus{
+			UpstreamActive: 1,
+			Sessions: []probeChainBridgeSessionSnapshot{
+				{
+					Direction:   "upstream",
+					ConnectedAt: "2026-06-28T00:13:23Z",
+				},
+			},
+		},
+	}
+	if got := mngVirtualRouterSideStatsError(side); got != "" {
+		t.Fatalf("stale error=%q, want empty", got)
+	}
+
+	side.VirtualRouter.LastPingAt = "2026-06-28T00:14:00Z"
+	if got := mngVirtualRouterSideStatsError(side); got != "upstream bridge is unavailable" {
+		t.Fatalf("current error=%q, want upstream bridge is unavailable", got)
+	}
+}
+
 func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T) {
 	oldStore := ProbeLinkChainStore
 	oldProbeStore := ProbeStore
