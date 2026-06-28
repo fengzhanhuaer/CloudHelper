@@ -300,6 +300,35 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	}
 }
 
+func TestBuildProbeVirtualRouterRuntimeConfigForwardPassiveSideDoesNotProbePrev(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
+				ID:              "edge-a-b-forward",
+				FromNodeID:      "1",
+				ToNodeID:        "2",
+				Direction:       probeVirtualRouterDirectionForward,
+				FromServicePort: 12040,
+				ToServiceDomain: "b.internal",
+				ToServicePort:   12040,
+				Enabled:         true,
+			}),
+		},
+	}
+	left := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "1", Secret: "node-1"}, "")
+	right := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "2", Secret: "node-2"}, "")
+	if len(left) != 1 || len(right) != 1 {
+		t.Fatalf("runtime configs left=%d right=%d", len(left), len(right))
+	}
+	if left[0].nextNodeID != "2" || left[0].nextHost != "b.internal" || left[0].nextAuthMode != "secret" {
+		t.Fatalf("forward source should dial destination: %+v", left[0])
+	}
+	if right[0].prevNodeID != "1" || right[0].nextNodeID != "" || right[0].nextAuthMode != "proxy" || right[0].prevDialMode != probeChainDialModeNone {
+		t.Fatalf("forward destination should know source topology but remain passive: %+v", right[0])
+	}
+}
+
 func TestBuildProbeVirtualRouterRuntimeConfigSingleDomainDialer(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

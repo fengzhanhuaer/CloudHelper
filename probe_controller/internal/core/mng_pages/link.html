@@ -1819,7 +1819,53 @@
       return `${base}${hint}${detailHTML}`;
     }
 
-    function renderRouteSide(side) {
+    function canActiveDial(mode) {
+      const value = String(mode || '').trim().toLowerCase();
+      return value === 'forward' || value === 'reverse';
+    }
+
+    function renderActiveDialCapability(item) {
+      const nextMode = String((item && item.next_dial_mode) || '').trim();
+      const prevMode = String((item && item.prev_dial_mode) || '').trim();
+      const next = canActiveDial(nextMode) ? `可 (${nextMode})` : '否';
+      const prev = canActiveDial(prevMode) ? `可 (${prevMode})` : '否';
+      return `<div class="small muted">物理主动建联 next ${escapeHTML(next)} / prev ${escapeHTML(prev)}</div>`;
+    }
+
+    function canVirtualProbeNext(item) {
+      return !!(item && item.next_node_id && canActiveDial(item.next_dial_mode));
+    }
+
+    function canVirtualProbePrev(item) {
+      if (!(item && item.prev_node_id)) return false;
+      if (canActiveDial(item.prev_dial_mode)) return true;
+      const summary = summarizeBridgeSessions(item);
+      return summary.counts.upstream > 0;
+    }
+
+    function renderVirtualProbeCapability(item) {
+      const next = canVirtualProbeNext(item) ? '可' : (item && item.next_node_id ? '等待物理会话' : '-');
+      const prev = canVirtualProbePrev(item) ? '可' : (item && item.prev_node_id ? '等待物理会话' : '-');
+      return `<div class="small muted">虚拟探测 next ${escapeHTML(next)} / prev ${escapeHTML(prev)}</div>`;
+    }
+
+    function routePeerLabel(nodeID, route) {
+      const id = String(nodeID || '').trim();
+      if (!id) return '-';
+      let ip = '';
+      if (route && String(route.from_node_id || '') === id) ip = String(route.from_ip || '').trim();
+      if (route && String(route.to_node_id || '') === id) ip = String(route.to_ip || '').trim();
+      return `${nodeLabel(id)}${ip ? ` / ${ip}` : ''}`;
+    }
+
+    function renderTopologyAdjacency(item, route) {
+      const nextNodeID = String((item && item.next_node_id) || '').trim();
+      const prevNodeID = String((item && item.prev_node_id) || '').trim();
+      if (!nextNodeID && !prevNodeID) return '<div class="small muted">拓扑 next - / prev -</div>';
+      return `<div class="small muted">拓扑 next ${escapeHTML(routePeerLabel(nextNodeID, route))} / prev ${escapeHTML(routePeerLabel(prevNodeID, route))}</div>`;
+    }
+
+    function renderRouteSide(side, route) {
       const item = side || {};
       const lines = [];
       if (item.listen) lines.push(`listen ${item.listen}`);
@@ -1835,6 +1881,9 @@
         <div><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span></div>
         <div class="small muted">${escapeHTML(lines.join(' / ') || '-')}</div>
         ${errorLines}${moreErrors}
+        ${renderTopologyAdjacency(item, route)}
+        ${renderActiveDialCapability(item)}
+        ${renderVirtualProbeCapability(item)}
         ${renderBridgeSessions(item, errors)}
         <div class="small muted">包 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
         <div class="small muted">${escapeHTML(item.last_seen || '-')}</div>
@@ -1860,8 +1909,8 @@
         return `<tr>
           <td><div class="small muted mono">${escapeHTML(item.chain_id || '-')}</div><div class="small muted">${escapeHTML(item.direction || '-')}</div></td>
           <td><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span>${err}</td>
-          <td><div>${escapeHTML(fromName)}</div>${renderRouteSide(item.from)}</td>
-          <td><div>${escapeHTML(toName)}</div>${renderRouteSide(item.to)}</td>
+          <td><div>${escapeHTML(fromName)}</div>${renderRouteSide(item.from, item)}</td>
+          <td><div>${escapeHTML(toName)}</div>${renderRouteSide(item.to, item)}</td>
           <td><div>包 ${escapeHTML(item.packets || 0)}</div><div class="small muted">${escapeHTML(formatBytes(item.bytes || 0))}</div></td>
           <td>${escapeHTML(latencyText)}</td>
           <td><div>${escapeHTML(item.last_packet_at || '-')}</div><div class="small muted">${escapeHTML(item.updated_at || '-')}</div></td>

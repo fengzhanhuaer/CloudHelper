@@ -152,10 +152,14 @@ type mngLinkRelayStatusView struct {
 	LinkLayer      string                            `json:"link_layer,omitempty"`
 	NextHost       string                            `json:"next_host,omitempty"`
 	NextPort       int                               `json:"next_port,omitempty"`
+	NextNodeID     string                            `json:"next_node_id,omitempty"`
 	NextLinkLayer  string                            `json:"next_link_layer,omitempty"`
+	NextDialMode   string                            `json:"next_dial_mode,omitempty"`
 	PrevHost       string                            `json:"prev_host,omitempty"`
 	PrevPort       int                               `json:"prev_port,omitempty"`
+	PrevNodeID     string                            `json:"prev_node_id,omitempty"`
 	PrevLinkLayer  string                            `json:"prev_link_layer,omitempty"`
+	PrevDialMode   string                            `json:"prev_dial_mode,omitempty"`
 	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
 	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
 	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
@@ -174,6 +178,10 @@ type mngVirtualRouterRouteSideStatus struct {
 	Listen         string                            `json:"listen,omitempty"`
 	Next           string                            `json:"next,omitempty"`
 	Prev           string                            `json:"prev,omitempty"`
+	NextNodeID     string                            `json:"next_node_id,omitempty"`
+	PrevNodeID     string                            `json:"prev_node_id,omitempty"`
+	NextDialMode   string                            `json:"next_dial_mode,omitempty"`
+	PrevDialMode   string                            `json:"prev_dial_mode,omitempty"`
 	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
 	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
 	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
@@ -225,10 +233,14 @@ func listMngLinkRelayStatus() []mngLinkRelayStatusView {
 				LinkLayer:      strings.TrimSpace(status.LinkLayer),
 				NextHost:       strings.TrimSpace(status.NextHost),
 				NextPort:       status.NextPort,
+				NextNodeID:     strings.TrimSpace(status.NextNodeID),
 				NextLinkLayer:  strings.TrimSpace(status.NextLinkLayer),
+				NextDialMode:   strings.TrimSpace(status.NextDialMode),
 				PrevHost:       strings.TrimSpace(status.PrevHost),
 				PrevPort:       status.PrevPort,
+				PrevNodeID:     strings.TrimSpace(status.PrevNodeID),
 				PrevLinkLayer:  strings.TrimSpace(status.PrevLinkLayer),
+				PrevDialMode:   strings.TrimSpace(status.PrevDialMode),
 				ListenState:    status.ListenState,
 				NextState:      status.NextState,
 				PrevState:      status.PrevState,
@@ -286,10 +298,14 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 				LinkLayer:      strings.TrimSpace(status.LinkLayer),
 				NextHost:       strings.TrimSpace(status.NextHost),
 				NextPort:       status.NextPort,
+				NextNodeID:     strings.TrimSpace(status.NextNodeID),
 				NextLinkLayer:  strings.TrimSpace(status.NextLinkLayer),
+				NextDialMode:   strings.TrimSpace(status.NextDialMode),
 				PrevHost:       strings.TrimSpace(status.PrevHost),
 				PrevPort:       status.PrevPort,
+				PrevNodeID:     strings.TrimSpace(status.PrevNodeID),
 				PrevLinkLayer:  strings.TrimSpace(status.PrevLinkLayer),
+				PrevDialMode:   strings.TrimSpace(status.PrevDialMode),
 				ListenState:    status.ListenState,
 				NextState:      status.NextState,
 				PrevState:      status.PrevState,
@@ -371,6 +387,10 @@ func buildMngVirtualRouterRouteSideStatus(nodeID string, chainID string, runtime
 	side.Listen = formatMngVirtualRouterEndpoint(status.ListenHost, status.ListenPort)
 	side.Next = formatMngVirtualRouterEndpoint(status.NextHost, status.NextPort)
 	side.Prev = formatMngVirtualRouterEndpoint(status.PrevHost, status.PrevPort)
+	side.NextNodeID = strings.TrimSpace(status.NextNodeID)
+	side.PrevNodeID = strings.TrimSpace(status.PrevNodeID)
+	side.NextDialMode = strings.TrimSpace(status.NextDialMode)
+	side.PrevDialMode = strings.TrimSpace(status.PrevDialMode)
 	side.ListenState = status.ListenState
 	side.NextState = status.NextState
 	side.PrevState = status.PrevState

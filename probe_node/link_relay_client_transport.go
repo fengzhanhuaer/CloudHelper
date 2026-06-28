@@ -106,10 +106,14 @@ type probeChainRelayReportItem struct {
 	LinkLayer      string                                `json:"link_layer,omitempty"`
 	NextHost       string                                `json:"next_host,omitempty"`
 	NextPort       int                                   `json:"next_port,omitempty"`
+	NextNodeID     string                                `json:"next_node_id,omitempty"`
 	NextLinkLayer  string                                `json:"next_link_layer,omitempty"`
+	NextDialMode   string                                `json:"next_dial_mode,omitempty"`
 	PrevHost       string                                `json:"prev_host,omitempty"`
 	PrevPort       int                                   `json:"prev_port,omitempty"`
+	PrevNodeID     string                                `json:"prev_node_id,omitempty"`
 	PrevLinkLayer  string                                `json:"prev_link_layer,omitempty"`
+	PrevDialMode   string                                `json:"prev_dial_mode,omitempty"`
 	ListenState    *probeChainRelayProtocolStateSnapshot `json:"listen_state,omitempty"`
 	NextState      *probeChainRelayProtocolStateSnapshot `json:"next_state,omitempty"`
 	PrevState      *probeChainRelayProtocolStateSnapshot `json:"prev_state,omitempty"`
@@ -1031,10 +1035,14 @@ func snapshotProbeChainRelayReports() []probeChainRelayReportItem {
 			LinkLayer:     normalizeProbeChainLinkLayer(cfg.linkLayer),
 			NextHost:      strings.TrimSpace(cfg.nextHost),
 			NextPort:      cfg.nextPort,
+			NextNodeID:    normalizeProbeChainNodeID(cfg.nextNodeID),
 			NextLinkLayer: normalizeProbeChainLinkLayer(cfg.nextLinkLayer),
+			NextDialMode:  normalizeProbeChainDialMode(cfg.nextDialMode),
 			PrevHost:      strings.TrimSpace(cfg.prevHost),
 			PrevPort:      cfg.prevPort,
+			PrevNodeID:    normalizeProbeChainNodeID(cfg.prevNodeID),
 			PrevLinkLayer: normalizeProbeChainLinkLayer(cfg.prevLinkLayer),
+			PrevDialMode:  normalizeProbeChainDialMode(cfg.prevDialMode),
 			UpdatedAt:     now,
 		}
 		if snapshot := snapshotProbeChainProtocolState(cfg.listenHost, cfg.listenPort); probeChainRelaySnapshotHasData(snapshot) {

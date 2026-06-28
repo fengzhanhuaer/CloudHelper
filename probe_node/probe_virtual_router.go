@@ -482,17 +482,27 @@ func probeVirtualRouterPingPongRuntime(rt *probeChainRuntime) {
 		return
 	}
 	probed := false
-	if normalizeProbeChainNodeID(rt.cfg.nextNodeID) != "" && rt.cfg.nextAuthMode != "proxy" {
+	if normalizeProbeChainNodeID(rt.cfg.nextNodeID) != "" && normalizeProbeChainDialMode(rt.cfg.nextDialMode) == probeChainDialModeForward {
 		probed = true
 		probeVirtualRouterPingPongDirection(rt, probeChainBridgeRoleToNext)
 	}
-	if normalizeProbeChainNodeID(rt.cfg.prevNodeID) != "" {
+	if normalizeProbeChainNodeID(rt.cfg.prevNodeID) != "" && shouldProbeVirtualRouterPrevDirection(rt) {
 		probed = true
 		probeVirtualRouterPingPongDirection(rt, probeChainBridgeRoleToPrev)
 	}
 	if !probed {
-		recordProbeVirtualRouterRuntimePingError(rt.cfg.chainID, errors.New("no adjacent virtual router session configured"))
+		clearProbeVirtualRouterRuntimePingError(rt.cfg.chainID)
 	}
+}
+
+func shouldProbeVirtualRouterPrevDirection(rt *probeChainRuntime) bool {
+	if rt == nil {
+		return false
+	}
+	if normalizeProbeChainDialMode(rt.cfg.prevDialMode) == probeChainDialModeReverse {
+		return true
+	}
+	return rt.getUpstreamSession() != nil
 }
 
 func probeVirtualRouterPingPongDirection(rt *probeChainRuntime, direction string) {
@@ -815,6 +825,15 @@ func recordProbeVirtualRouterRuntimePingError(chainID string, err error) {
 	if item != nil {
 		item.LastPingError = strings.TrimSpace(err.Error())
 		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func clearProbeVirtualRouterRuntimePingError(chainID string) {
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.LastPingError = ""
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 }

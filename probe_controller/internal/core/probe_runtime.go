@@ -77,10 +77,14 @@ type probeRelayStatusItem struct {
 	LinkLayer      string                            `json:"link_layer,omitempty"`
 	NextHost       string                            `json:"next_host,omitempty"`
 	NextPort       int                               `json:"next_port,omitempty"`
+	NextNodeID     string                            `json:"next_node_id,omitempty"`
 	NextLinkLayer  string                            `json:"next_link_layer,omitempty"`
+	NextDialMode   string                            `json:"next_dial_mode,omitempty"`
 	PrevHost       string                            `json:"prev_host,omitempty"`
 	PrevPort       int                               `json:"prev_port,omitempty"`
+	PrevNodeID     string                            `json:"prev_node_id,omitempty"`
 	PrevLinkLayer  string                            `json:"prev_link_layer,omitempty"`
+	PrevDialMode   string                            `json:"prev_dial_mode,omitempty"`
 	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
 	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
 	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
@@ -293,9 +297,13 @@ func cloneProbeRelayStatusItems(values []probeRelayStatusItem) []probeRelayStatu
 		item.ListenHost = strings.TrimSpace(item.ListenHost)
 		item.LinkLayer = strings.TrimSpace(item.LinkLayer)
 		item.NextHost = strings.TrimSpace(item.NextHost)
+		item.NextNodeID = strings.TrimSpace(item.NextNodeID)
 		item.NextLinkLayer = strings.TrimSpace(item.NextLinkLayer)
+		item.NextDialMode = strings.TrimSpace(item.NextDialMode)
 		item.PrevHost = strings.TrimSpace(item.PrevHost)
+		item.PrevNodeID = strings.TrimSpace(item.PrevNodeID)
 		item.PrevLinkLayer = strings.TrimSpace(item.PrevLinkLayer)
+		item.PrevDialMode = strings.TrimSpace(item.PrevDialMode)
 		item.UpdatedAt = strings.TrimSpace(item.UpdatedAt)
 		out = append(out, item)
 	}
