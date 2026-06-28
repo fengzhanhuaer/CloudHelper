@@ -23,6 +23,8 @@ const (
 	probeChainFrameControlFin              = "fin"
 	probeChainFrameControlReset            = "rst"
 	probeChainFrameControlWindowUpdate     = "window_update"
+	probeChainFrameControlRTTQuery         = "rtt_query"
+	probeChainFrameControlRTTResult        = "rtt_result"
 
 	probeChainFrameSessionInboundBuffer = 64
 	probeChainFramePingInterval         = 10 * time.Second
@@ -59,6 +61,10 @@ type probeChainFrameSession struct {
 	lastPingUnixNS atomic.Int64
 	lastPongUnixNS atomic.Int64
 
+	rttQuerySeq     atomic.Uint64
+	rttQueryMu      sync.Mutex
+	pendingRTTQuery map[uint64]chan probeChainFrameRTTQueryResult
+
 	framesSent          atomic.Int64
 	frameBytesSent      atomic.Int64
 	framesReceived      atomic.Int64
@@ -78,11 +84,13 @@ type probeChainFrameWriteRequest struct {
 }
 
 type probeChainFrameSessionControl struct {
-	Type    string                        `json:"type"`
-	OK      bool                          `json:"ok,omitempty"`
-	Error   string                        `json:"error,omitempty"`
-	Request *probeChainTunnelOpenRequest  `json:"request,omitempty"`
-	Config  *probeChainFrameSessionConfig `json:"config,omitempty"`
+	Type      string                         `json:"type"`
+	OK        bool                           `json:"ok,omitempty"`
+	Error     string                         `json:"error,omitempty"`
+	RequestID uint64                         `json:"request_id,omitempty"`
+	Request   *probeChainTunnelOpenRequest   `json:"request,omitempty"`
+	Config    *probeChainFrameSessionConfig  `json:"config,omitempty"`
+	RTT       *probeChainFrameRTTQueryResult `json:"rtt,omitempty"`
 }
 
 type probeChainFrameSessionConfig struct {
@@ -116,6 +124,25 @@ type probeChainFramePingStats struct {
 	Pending          int
 	LastPingUnixNano int64
 	LastPongUnixNano int64
+}
+
+type probeChainFrameRTTQueryResult struct {
+	RTTMS                 int64  `json:"rtt_ms,omitempty"`
+	LastPingUnixNano      int64  `json:"last_ping_unix_nano,omitempty"`
+	LastPongUnixNano      int64  `json:"last_pong_unix_nano,omitempty"`
+	PingsSent             int64  `json:"pings_sent,omitempty"`
+	PongsReceived         int64  `json:"pongs_received,omitempty"`
+	Timeouts              int64  `json:"timeouts,omitempty"`
+	Pending               int    `json:"pending,omitempty"`
+	FramesSent            int64  `json:"frames_sent,omitempty"`
+	FrameBytesSent        int64  `json:"frame_bytes_sent,omitempty"`
+	FramesReceived        int64  `json:"frames_received,omitempty"`
+	FrameBytesReceived    int64  `json:"frame_bytes_received,omitempty"`
+	LastFrameSentUnixNano int64  `json:"last_frame_sent_unix_nano,omitempty"`
+	LastFrameRecvUnixNano int64  `json:"last_frame_recv_unix_nano,omitempty"`
+	Responder             string `json:"responder,omitempty"`
+	ResponderRemote       string `json:"responder_remote,omitempty"`
+	CollectedAtUnixNano   int64  `json:"collected_at_unix_nano,omitempty"`
 }
 
 type probeChainFrameIOStats struct {
@@ -169,6 +196,7 @@ func newProbeChainFrameSession(conn net.Conn, initiator bool) (*probeChainFrameS
 		streams:         make(map[uint64]*probeChainFrameStream),
 		acceptCh:        make(chan *probeChainFrameStream, probeChainFrameSessionInboundBuffer),
 		pendingPings:    make(map[uint64]time.Time),
+		pendingRTTQuery: make(map[uint64]chan probeChainFrameRTTQueryResult),
 		localConfig:     localConfig,
 		effectiveConfig: localConfig,
 	}
@@ -257,6 +285,16 @@ func (s *probeChainFrameSession) Close() error {
 	for _, stream := range streams {
 		_ = stream.closeRemote(io.ErrClosedPipe)
 	}
+	s.rttQueryMu.Lock()
+	pendingRTT := make([]chan probeChainFrameRTTQueryResult, 0, len(s.pendingRTTQuery))
+	for requestID, ch := range s.pendingRTTQuery {
+		delete(s.pendingRTTQuery, requestID)
+		pendingRTT = append(pendingRTT, ch)
+	}
+	s.rttQueryMu.Unlock()
+	for _, ch := range pendingRTT {
+		close(ch)
+	}
 	close(s.acceptCh)
 	return nil
 }
@@ -321,6 +359,42 @@ func (s *probeChainFrameSession) IOStats() probeChainFrameIOStats {
 		stats.LastFrameReceivedAt = time.Unix(0, lastRecvUnixNS).UTC()
 	}
 	return stats
+}
+
+func (s *probeChainFrameSession) QueryRemoteRTT(timeout time.Duration) (probeChainFrameRTTQueryResult, error) {
+	if s == nil {
+		return probeChainFrameRTTQueryResult{}, errors.New("frame session is nil")
+	}
+	if s.IsClosed() {
+		return probeChainFrameRTTQueryResult{}, net.ErrClosed
+	}
+	if timeout <= 0 {
+		timeout = probeChainFramePingTimeout
+	}
+	requestID := s.rttQuerySeq.Add(1)
+	resultCh := make(chan probeChainFrameRTTQueryResult, 1)
+	s.rttQueryMu.Lock()
+	s.pendingRTTQuery[requestID] = resultCh
+	s.rttQueryMu.Unlock()
+	if err := s.writeControlFrame(probeChainFrame{Kind: probeChainFrameKindControl}, probeChainFrameSessionControl{Type: probeChainFrameControlRTTQuery, RequestID: requestID}); err != nil {
+		s.removePendingRTTQuery(requestID)
+		return probeChainFrameRTTQueryResult{}, err
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result, ok := <-resultCh:
+		if !ok {
+			return probeChainFrameRTTQueryResult{}, net.ErrClosed
+		}
+		return result, nil
+	case <-timer.C:
+		s.removePendingRTTQuery(requestID)
+		return probeChainFrameRTTQueryResult{}, errors.New("frame rtt query timeout")
+	case <-s.closeCh:
+		s.removePendingRTTQuery(requestID)
+		return probeChainFrameRTTQueryResult{}, net.ErrClosed
+	}
 }
 
 func (s *probeChainFrameSession) NegotiatedConfig() probeChainFrameSessionConfig {
@@ -595,6 +669,10 @@ func (s *probeChainFrameSession) handleControlFrame(frame probeChainFrame) {
 		if stream := s.getStream(frame.StreamID); stream != nil {
 			stream.deliverOpenUpdateResult(probeChainFrameOpenResult{OK: control.OK, Error: control.Error})
 		}
+	case probeChainFrameControlRTTQuery:
+		s.respondRTTQuery(control.RequestID)
+	case probeChainFrameControlRTTResult:
+		s.deliverRTTQueryResult(control)
 	case probeChainFrameControlFin:
 		if stream := s.getStream(frame.StreamID); stream != nil {
 			_ = stream.closeRemote(io.EOF)
@@ -612,6 +690,73 @@ func (s *probeChainFrameSession) handleControlFrame(frame probeChainFrame) {
 			_ = stream.closeRemote(errors.New(errText))
 		}
 	}
+}
+
+func (s *probeChainFrameSession) respondRTTQuery(requestID uint64) {
+	if s == nil || requestID == 0 {
+		return
+	}
+	result := s.buildRTTQueryResult()
+	s.writeControlFrameAsync(probeChainFrame{Kind: probeChainFrameKindControl}, probeChainFrameSessionControl{
+		Type:      probeChainFrameControlRTTResult,
+		OK:        true,
+		RequestID: requestID,
+		RTT:       &result,
+	})
+}
+
+func (s *probeChainFrameSession) buildRTTQueryResult() probeChainFrameRTTQueryResult {
+	ping := s.PingStats()
+	ioStats := s.IOStats()
+	return probeChainFrameRTTQueryResult{
+		RTTMS:                 probeDurationMilliseconds(ping.RTT),
+		LastPingUnixNano:      ping.LastPingUnixNano,
+		LastPongUnixNano:      ping.LastPongUnixNano,
+		PingsSent:             ping.PingsSent,
+		PongsReceived:         ping.PongsReceived,
+		Timeouts:              ping.Timeouts,
+		Pending:               ping.Pending,
+		FramesSent:            ioStats.FramesSent,
+		FrameBytesSent:        ioStats.FrameBytesSent,
+		FramesReceived:        ioStats.FramesReceived,
+		FrameBytesReceived:    ioStats.FrameBytesReceived,
+		LastFrameSentUnixNano: ioStats.LastFrameSentUnixNano,
+		LastFrameRecvUnixNano: ioStats.LastFrameReceivedUnixNano,
+		Responder:             s.local.String(),
+		ResponderRemote:       s.remote.String(),
+		CollectedAtUnixNano:   time.Now().UTC().UnixNano(),
+	}
+}
+
+func (s *probeChainFrameSession) deliverRTTQueryResult(control probeChainFrameSessionControl) {
+	if s == nil || control.RequestID == 0 {
+		return
+	}
+	result := probeChainFrameRTTQueryResult{}
+	if control.RTT != nil {
+		result = *control.RTT
+	}
+	ch := s.removePendingRTTQuery(control.RequestID)
+	if ch == nil {
+		return
+	}
+	if !control.OK {
+		close(ch)
+		return
+	}
+	ch <- result
+	close(ch)
+}
+
+func (s *probeChainFrameSession) removePendingRTTQuery(requestID uint64) chan probeChainFrameRTTQueryResult {
+	if s == nil || requestID == 0 {
+		return nil
+	}
+	s.rttQueryMu.Lock()
+	ch := s.pendingRTTQuery[requestID]
+	delete(s.pendingRTTQuery, requestID)
+	s.rttQueryMu.Unlock()
+	return ch
 }
 
 func (s *probeChainFrameSession) writeControl(streamID uint64, controlType string, errText string) error {

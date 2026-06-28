@@ -3585,10 +3585,10 @@ func handleProbeChainVirtualRouterStreamIfNeeded(runtime *probeChainRuntime, con
 		return false
 	}
 	req, found := frameStream.OpenRequest()
-	if !found || !strings.EqualFold(strings.TrimSpace(req.Type), probeVirtualRouterTunnelOpenType) {
+	if !found || !isProbeVirtualRouterStreamOpenType(req.Type) {
 		return false
 	}
-	if err := handleProbeVirtualRouterFrameStream(runtime, conn, req, frameStream.RespondOpen); err != nil {
+	if err := handleProbeVirtualRouterOpenStream(runtime, conn, req, frameStream.RespondOpen); err != nil {
 		chainID := ""
 		role := ""
 		if runtime != nil {
@@ -3908,8 +3908,8 @@ func handleProbeChainProxyOpenRequest(runtime *probeChainRuntime, stream net.Con
 		handleProbeChainPingPongStream(runtime, stream, req.PingBytes, responder)
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(req.Type), probeVirtualRouterTunnelOpenType) {
-		if err := handleProbeVirtualRouterFrameStream(runtime, stream, req, responder); err != nil {
+	if isProbeVirtualRouterStreamOpenType(req.Type) {
+		if err := handleProbeVirtualRouterOpenStream(runtime, stream, req, responder); err != nil {
 			log.Printf("probe virtual router proxy stream failed: err=%v", err)
 		}
 		return

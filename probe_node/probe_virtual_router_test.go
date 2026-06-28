@@ -150,6 +150,10 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterState.neighbors = nil
 	probeVirtualRouterState.rulesByID = nil
 	probeVirtualRouterState.mu.Unlock()
+	clearProbeVirtualRouterRouteCache("test reset")
+	probeVirtualRouterPathRTTState.mu.Lock()
+	probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
+	probeVirtualRouterPathRTTState.mu.Unlock()
 }
 
 func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T) {
@@ -651,6 +655,106 @@ func TestCurrentProbeVirtualRouterPathPrefersLowestRTTAmongEqualHopPaths(t *test
 	}
 }
 
+func TestCurrentProbeVirtualRouterPathUsesRemoteRTTFallback(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{FromNodeID: "2", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "1")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	probeChainRuntimeState.mu.Lock()
+	oldRuntimes := probeChainRuntimeState.runtimes
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+		"vrouter-1-2": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-2", nextNodeID: "2", nextAuthMode: "secret"}},
+		"vrouter-1-3": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-3", nextNodeID: "3", nextAuthMode: "secret"}},
+	}
+	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	oldStats := probeVirtualRouterRuntimeStatsState.items
+	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
+		"vrouter-1-2": {LastRemoteRTTMS: 80},
+		"vrouter-1-3": {LastRemoteRTTMS: 20},
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeChainRuntimeState.mu.Lock()
+		probeChainRuntimeState.runtimes = oldRuntimes
+		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		probeVirtualRouterRuntimeStatsState.items = oldStats
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	})
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
+		t.Fatalf("path=%v, want [1 3 4]", got)
+	}
+}
+
+func TestCurrentProbeVirtualRouterPathUsesPathPingPongSumForRouteSelection(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{FromNodeID: "2", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "1")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	recordProbeVirtualRouterPathRTTSuccess([]string{"1", "2", "4"}, 80*time.Millisecond, "4")
+	recordProbeVirtualRouterPathRTTSuccess([]string{"1", "3", "4"}, 20*time.Millisecond, "4")
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
+		t.Fatalf("path=%v, want [1 3 4]", got)
+	}
+}
+
+func TestRelayProbeVirtualRouterPathRTTSumAddsLocalPingPongLatency(t *testing.T) {
+	leftClient, leftRelay := net.Pipe()
+	rightRelay, rightTarget := net.Pipe()
+	defer leftClient.Close()
+	defer leftRelay.Close()
+	defer rightRelay.Close()
+	defer rightTarget.Close()
+
+	targetDone := make(chan error, 1)
+	go func() {
+		targetDone <- serveProbeVirtualRouterPathRTTSumTarget(rightTarget, "4")
+	}()
+	relayDone := make(chan error, 1)
+	go func() {
+		relayDone <- relayProbeVirtualRouterPathRTTSum(leftRelay, rightRelay, 17)
+	}()
+
+	response, err := queryProbeVirtualRouterPathRTTSum(leftClient)
+	if err != nil {
+		t.Fatalf("query path rtt sum failed: %v", err)
+	}
+	if !response.OK || response.LatencyMS != 17 || response.Responder != "4" {
+		t.Fatalf("response=%+v, want ok latency=17 responder=4", response)
+	}
+	_ = leftClient.Close()
+	_ = rightTarget.Close()
+	select {
+	case <-relayDone:
+	case <-time.After(time.Second):
+		t.Fatalf("relay did not stop")
+	}
+	select {
+	case <-targetDone:
+	case <-time.After(time.Second):
+		t.Fatalf("target did not stop")
+	}
+}
+
 func TestCurrentProbeVirtualRouterPathKeepsShortestHopBeforeRTT(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
@@ -688,6 +792,60 @@ func TestCurrentProbeVirtualRouterPathKeepsShortestHopBeforeRTT(t *testing.T) {
 
 	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "4"}) {
 		t.Fatalf("path=%v, want [1 4]", got)
+	}
+}
+
+func TestCurrentProbeVirtualRouterPathUsesRouteCacheUntilInvalidated(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{FromNodeID: "2", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "1")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	probeChainRuntimeState.mu.Lock()
+	oldRuntimes := probeChainRuntimeState.runtimes
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+		"vrouter-1-2": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-2", nextNodeID: "2", nextAuthMode: "secret"}},
+		"vrouter-1-3": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-3", nextNodeID: "3", nextAuthMode: "secret"}},
+	}
+	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	oldStats := probeVirtualRouterRuntimeStatsState.items
+	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
+		"vrouter-1-2": {LastPingLatencyMS: 50},
+		"vrouter-1-3": {LastPingLatencyMS: 10},
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeChainRuntimeState.mu.Lock()
+		probeChainRuntimeState.runtimes = oldRuntimes
+		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		probeVirtualRouterRuntimeStatsState.items = oldStats
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	})
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
+		t.Fatalf("initial path=%v, want [1 3 4]", got)
+	}
+
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	probeVirtualRouterRuntimeStatsState.items["vrouter-1-2"].LastPingLatencyMS = 1
+	probeVirtualRouterRuntimeStatsState.items["vrouter-1-3"].LastPingLatencyMS = 100
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
+		t.Fatalf("cached path=%v, want [1 3 4]", got)
+	}
+
+	clearProbeVirtualRouterRouteCache("test")
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "2", "4"}) {
+		t.Fatalf("path after cache clear=%v, want [1 2 4]", got)
 	}
 }
 

@@ -97,6 +97,42 @@ func TestProbeChainFrameSessionPingPongStats(t *testing.T) {
 	t.Fatalf("ping-pong stats not updated: client=%+v server=%+v", clientSession.PingStats(), serverSession.PingStats())
 }
 
+func TestProbeChainFrameSessionRTTQueryReturnsRemoteStats(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	clientSession, err := newProbeChainFrameClient(clientConn)
+	if err != nil {
+		t.Fatalf("client frame session: %v", err)
+	}
+	defer clientSession.Close()
+	serverSession, err := newProbeChainFrameServer(serverConn)
+	if err != nil {
+		t.Fatalf("server frame session: %v", err)
+	}
+	defer serverSession.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if serverSession.PingStats().PongsReceived > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	result, err := clientSession.QueryRemoteRTT(time.Second)
+	if err != nil {
+		t.Fatalf("query remote rtt: %v", err)
+	}
+	if result.PingsSent == 0 {
+		t.Fatalf("remote rtt result missing ping stats: %+v", result)
+	}
+	if result.Responder == "" || result.ResponderRemote == "" {
+		t.Fatalf("remote rtt result missing responder addrs: %+v", result)
+	}
+	if result.CollectedAtUnixNano == 0 {
+		t.Fatalf("remote rtt result missing collection time: %+v", result)
+	}
+}
+
 func TestProbeChainFrameSessionIOStatsAreDirectional(t *testing.T) {
 	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
 	defer clientSession.Close()

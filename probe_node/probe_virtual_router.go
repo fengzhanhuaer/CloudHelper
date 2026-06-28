@@ -22,6 +22,7 @@ const (
 	probeVirtualRouterDirectionForward         = "forward"
 	probeVirtualRouterDefaultServicePort       = 12040
 	probeVirtualRouterTunnelOpenType           = "virtual_router_lan_packet"
+	probeVirtualRouterRTTQueryOpenType         = "virtual_router_rtt_query"
 	probeVirtualRouterTunnelScope              = "virtual_router"
 	probeVirtualRouterNetworkIPv4              = "ip4"
 	probeVirtualRouterStreamIdleTTL            = 45 * time.Second
@@ -53,6 +54,16 @@ var probeVirtualRouterStreamState = struct {
 	mu      sync.Mutex
 	streams map[string]*probeVirtualRouterPacketStream
 }{streams: make(map[string]*probeVirtualRouterPacketStream)}
+
+var probeVirtualRouterRouteCacheState = struct {
+	mu     sync.RWMutex
+	routes map[string][]string
+}{routes: make(map[string][]string)}
+
+var probeVirtualRouterPathRTTState = struct {
+	mu    sync.RWMutex
+	items map[string]probeVirtualRouterPathRTTRecord
+}{items: make(map[string]probeVirtualRouterPathRTTRecord)}
 
 var probeVirtualRouterRuntimeStatsState = struct {
 	mu    sync.Mutex
@@ -94,6 +105,11 @@ type probeVirtualRouterRuntimeStats struct {
 	LastPingBridgeSessionID   string `json:"last_ping_bridge_session_id,omitempty"`
 	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
 	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
+	LastRemoteRTTMS           int64  `json:"last_remote_rtt_ms,omitempty"`
+	LastRemoteRTTAt           string `json:"last_remote_rtt_at,omitempty"`
+	LastRemoteRTTError        string `json:"last_remote_rtt_error,omitempty"`
+	LastRemoteRTTResponder    string `json:"last_remote_rtt_responder,omitempty"`
+	LastRemotePongsReceived   int64  `json:"last_remote_pongs_received,omitempty"`
 	LastPacketAt              string `json:"last_packet_at,omitempty"`
 	LastFrameAt               string `json:"last_frame_at,omitempty"`
 	LastFrameSourceIP         string `json:"last_frame_source_ip,omitempty"`
@@ -132,6 +148,25 @@ type probeVirtualRouterPacketStream struct {
 	openedAt time.Time
 	lastUsed time.Time
 	mu       sync.Mutex
+}
+
+type probeVirtualRouterPathRTTRecord struct {
+	RTTMS      int64
+	LastAt     time.Time
+	LastError  string
+	TargetNode string
+	Responder  string
+}
+
+type probeVirtualRouterPathRTTQueryRequest struct {
+	RequestID string `json:"request_id,omitempty"`
+}
+
+type probeVirtualRouterPathRTTQueryResponse struct {
+	OK        bool   `json:"ok"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Responder string `json:"responder,omitempty"`
 }
 
 func sanitizeProbeVirtualRouterConfigForCache(input probeVirtualRouterConfig) probeVirtualRouterConfig {
@@ -349,6 +384,7 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	probeVirtualRouterState.rulesByID = index.rulesByID
 	probeVirtualRouterState.localIP = index.nodeToIP[effectiveNodeID]
 	probeVirtualRouterState.mu.Unlock()
+	clearProbeVirtualRouterRouteCache("config updated")
 	closeProbeVirtualRouterPacketStreams("config updated")
 	ensureProbeVirtualRouterLocalInterfaceIP()
 	scheduleProbeVirtualRouterPacketStreamPrewarm("config_updated")
@@ -720,6 +756,9 @@ func probeVirtualRouterPathLess(left []string, right []string, useRTT bool) bool
 }
 
 func probeVirtualRouterPathRTTScore(path []string) (int64, int) {
+	if latencyMS, ok := currentProbeVirtualRouterPathLatencyMS(path); ok {
+		return latencyMS, 0
+	}
 	var total int64
 	missing := 0
 	for i := 0; i+1 < len(path); i++ {
@@ -731,6 +770,81 @@ func probeVirtualRouterPathRTTScore(path []string) (int64, int) {
 		total += latencyMS
 	}
 	return total, missing
+}
+
+func currentProbeVirtualRouterPathLatencyMS(path []string) (int64, bool) {
+	key := probeVirtualRouterPathKey(path)
+	if key == "" {
+		return 0, false
+	}
+	probeVirtualRouterPathRTTState.mu.RLock()
+	item, ok := probeVirtualRouterPathRTTState.items[key]
+	probeVirtualRouterPathRTTState.mu.RUnlock()
+	if !ok || item.RTTMS <= 0 || strings.TrimSpace(item.LastError) != "" {
+		return 0, false
+	}
+	return item.RTTMS, true
+}
+
+func recordProbeVirtualRouterPathRTTSuccess(path []string, latency time.Duration, responder string) {
+	key := probeVirtualRouterPathKey(path)
+	if key == "" {
+		return
+	}
+	target := ""
+	if len(path) > 0 {
+		target = normalizeProbeChainNodeID(path[len(path)-1])
+	}
+	probeVirtualRouterPathRTTState.mu.Lock()
+	if probeVirtualRouterPathRTTState.items == nil {
+		probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
+	}
+	probeVirtualRouterPathRTTState.items[key] = probeVirtualRouterPathRTTRecord{
+		RTTMS:      probeDurationMilliseconds(latency),
+		LastAt:     time.Now().UTC(),
+		TargetNode: target,
+		Responder:  strings.TrimSpace(responder),
+	}
+	probeVirtualRouterPathRTTState.mu.Unlock()
+	clearProbeVirtualRouterRouteCache("path rtt query success")
+}
+
+func recordProbeVirtualRouterPathRTTError(path []string, err error) {
+	if err == nil {
+		return
+	}
+	key := probeVirtualRouterPathKey(path)
+	if key == "" {
+		return
+	}
+	target := ""
+	if len(path) > 0 {
+		target = normalizeProbeChainNodeID(path[len(path)-1])
+	}
+	probeVirtualRouterPathRTTState.mu.Lock()
+	if probeVirtualRouterPathRTTState.items == nil {
+		probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
+	}
+	item := probeVirtualRouterPathRTTState.items[key]
+	item.LastAt = time.Now().UTC()
+	item.LastError = strings.TrimSpace(err.Error())
+	item.TargetNode = target
+	probeVirtualRouterPathRTTState.items[key] = item
+	probeVirtualRouterPathRTTState.mu.Unlock()
+	clearProbeVirtualRouterRouteCache("path rtt query error")
+}
+
+func probeVirtualRouterPathKey(path []string) string {
+	clean := make([]string, 0, len(path))
+	for _, item := range path {
+		if nodeID := normalizeProbeChainNodeID(item); nodeID != "" {
+			clean = append(clean, nodeID)
+		}
+	}
+	if len(clean) < 2 {
+		return ""
+	}
+	return strings.Join(clean, ">")
 }
 
 func currentProbeVirtualRouterAdjacentLatencyMS(fromNodeID string, toNodeID string) (int64, bool) {
@@ -754,10 +868,16 @@ func currentProbeVirtualRouterAdjacentLatencyMS(fromNodeID string, toNodeID stri
 		return 0, false
 	}
 	stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.chainID)
-	if stats == nil || stats.LastPingLatencyMS <= 0 || strings.TrimSpace(stats.LastPingError) != "" {
+	if stats == nil {
 		return 0, false
 	}
-	return stats.LastPingLatencyMS, true
+	if stats.LastPingLatencyMS > 0 && strings.TrimSpace(stats.LastPingError) == "" {
+		return stats.LastPingLatencyMS, true
+	}
+	if stats.LastRemoteRTTMS > 0 && strings.TrimSpace(stats.LastRemoteRTTError) == "" {
+		return stats.LastRemoteRTTMS, true
+	}
+	return 0, false
 }
 
 func compareProbeVirtualRouterPathLexicographic(left []string, right []string) int {
@@ -820,10 +940,71 @@ func currentProbeVirtualRouterNodeIDForIP(ip string) string {
 }
 
 func currentProbeVirtualRouterPathBetweenNodes(fromNodeID string, toNodeID string) []string {
+	from := normalizeProbeChainNodeID(fromNodeID)
+	to := normalizeProbeChainNodeID(toNodeID)
+	if from == "" || to == "" {
+		return nil
+	}
+	if from == to {
+		return []string{from}
+	}
+	if path := cachedProbeVirtualRouterRoutePath(from, to); len(path) > 0 {
+		return path
+	}
 	probeVirtualRouterState.mu.RLock()
 	neighbors := probeVirtualRouterCloneNeighborsLocked()
 	probeVirtualRouterState.mu.RUnlock()
-	return probeVirtualRouterPathFromNeighbors(neighbors, fromNodeID, toNodeID)
+	path := probeVirtualRouterPathFromNeighbors(neighbors, from, to)
+	if len(path) > 0 {
+		storeProbeVirtualRouterRoutePath(from, to, path)
+	}
+	return path
+}
+
+func probeVirtualRouterRouteCacheKey(fromNodeID string, toNodeID string) string {
+	from := normalizeProbeChainNodeID(fromNodeID)
+	to := normalizeProbeChainNodeID(toNodeID)
+	if from == "" || to == "" {
+		return ""
+	}
+	return from + ">" + to
+}
+
+func cachedProbeVirtualRouterRoutePath(fromNodeID string, toNodeID string) []string {
+	key := probeVirtualRouterRouteCacheKey(fromNodeID, toNodeID)
+	if key == "" {
+		return nil
+	}
+	probeVirtualRouterRouteCacheState.mu.RLock()
+	path := append([]string(nil), probeVirtualRouterRouteCacheState.routes[key]...)
+	probeVirtualRouterRouteCacheState.mu.RUnlock()
+	return path
+}
+
+func storeProbeVirtualRouterRoutePath(fromNodeID string, toNodeID string, path []string) {
+	key := probeVirtualRouterRouteCacheKey(fromNodeID, toNodeID)
+	if key == "" || len(path) == 0 {
+		return
+	}
+	probeVirtualRouterRouteCacheState.mu.Lock()
+	if probeVirtualRouterRouteCacheState.routes == nil {
+		probeVirtualRouterRouteCacheState.routes = make(map[string][]string)
+	}
+	probeVirtualRouterRouteCacheState.routes[key] = append([]string(nil), path...)
+	probeVirtualRouterRouteCacheState.mu.Unlock()
+}
+
+func clearProbeVirtualRouterRouteCache(reason string) {
+	probeVirtualRouterRouteCacheState.mu.Lock()
+	if len(probeVirtualRouterRouteCacheState.routes) == 0 {
+		probeVirtualRouterRouteCacheState.mu.Unlock()
+		return
+	}
+	probeVirtualRouterRouteCacheState.routes = make(map[string][]string)
+	probeVirtualRouterRouteCacheState.mu.Unlock()
+	if strings.TrimSpace(reason) != "" {
+		log.Printf("probe virtual router route cache cleared: reason=%s", strings.TrimSpace(reason))
+	}
 }
 
 func currentProbeVirtualRouterPathToIP(ip string) []string {
@@ -898,6 +1079,37 @@ func buildProbeVirtualRouterTunnelOpenRequest(dstIP string, path []string) probe
 	}
 }
 
+func buildProbeVirtualRouterRTTQueryOpenRequest(path []string) probeChainTunnelOpenRequest {
+	cleanPath := make([]string, 0, len(path))
+	for _, item := range path {
+		if nodeID := normalizeProbeChainNodeID(item); nodeID != "" {
+			cleanPath = append(cleanPath, nodeID)
+		}
+	}
+	targetNodeID := ""
+	if len(cleanPath) > 0 {
+		targetNodeID = cleanPath[len(cleanPath)-1]
+	}
+	flowID := newProbeTCPDebugFlowID("vrouter_rtt", strings.Join(cleanPath, ">"))
+	return probeChainTunnelOpenRequest{
+		Type:      probeVirtualRouterRTTQueryOpenType,
+		Scope:     probeVirtualRouterTunnelScope,
+		Network:   "rtt",
+		Address:   targetNodeID,
+		FlowID:    flowID,
+		Priority:  "realtime",
+		RequestID: flowID,
+		PingBytes: probeVirtualRouterPingPongBytes,
+		AssociationV2: &probeChainAssociationV2Meta{
+			Version:     2,
+			FlowID:      flowID,
+			Transport:   "rtt",
+			RouteNodeID: targetNodeID,
+			RouteTarget: strings.Join(cleanPath, ">"),
+		},
+	}
+}
+
 func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	dstIP := probeVirtualRouterIPv4Destination(packet)
 	if dstIP == "" {
@@ -961,6 +1173,7 @@ func probeVirtualRouterPingPongRuntime(rt *probeChainRuntime) {
 	if !probed {
 		clearProbeVirtualRouterRuntimePingError(rt.cfg.chainID)
 	}
+	probeVirtualRouterQueryAdjacentRTTRuntime(rt)
 }
 
 func probeVirtualRouterPingPongAllRuntimes() int {
@@ -983,7 +1196,145 @@ func probeVirtualRouterPingPongAllRuntimes() int {
 		}(rt)
 	}
 	wg.Wait()
+	probeVirtualRouterQueryAllPathRTTs()
 	return len(runtimes)
+}
+
+func probeVirtualRouterQueryAdjacentRTTRuntime(rt *probeChainRuntime) {
+	if rt == nil {
+		return
+	}
+	sessionItem := rt.latestPhysicalBridgeSession()
+	if sessionItem == nil || sessionItem.Session == nil || sessionItem.Session.IsClosed() {
+		recordProbeVirtualRouterRuntimeRemoteRTTError(rt.cfg.chainID, errors.New("physical bridge session is unavailable"))
+		return
+	}
+	result, err := sessionItem.Session.QueryRemoteRTT(probeVirtualRouterPingPongTimeout)
+	if err != nil {
+		recordProbeVirtualRouterRuntimeRemoteRTTError(rt.cfg.chainID, err)
+		return
+	}
+	recordProbeVirtualRouterRuntimeRemoteRTTSuccess(rt.cfg.chainID, result)
+}
+
+func probeVirtualRouterQueryPathRTT(path []string) (time.Duration, error) {
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if localNodeID == "" {
+		return 0, errors.New("local virtual router node id is empty")
+	}
+	if len(path) < 2 || normalizeProbeChainNodeID(path[0]) != localNodeID {
+		return 0, errors.New("virtual router rtt query path must start at local node")
+	}
+	nextNodeID := probeVirtualRouterNextHopInPath(path, localNodeID)
+	if nextNodeID == "" {
+		return 0, errors.New("next virtual router rtt hop is unavailable")
+	}
+	localHopLatencyMS, ok := currentProbeVirtualRouterAdjacentLatencyMS(localNodeID, nextNodeID)
+	if !ok {
+		err := errors.New("adjacent virtual router ping-pong latency is unavailable")
+		recordProbeVirtualRouterPathRTTError(path, err)
+		return 0, err
+	}
+	if len(path) == 2 {
+		latency := time.Duration(localHopLatencyMS) * time.Millisecond
+		recordProbeVirtualRouterPathRTTSuccess(path, latency, nextNodeID)
+		return latency, nil
+	}
+	rt, direction := probeVirtualRouterRuntimeForAdjacentNode(nextNodeID)
+	if rt == nil {
+		return 0, errors.New("adjacent virtual router rtt runtime is unavailable")
+	}
+	stream, err := openProbeVirtualRouterRTTQueryStream(rt, direction, path)
+	if err != nil {
+		recordProbeVirtualRouterPathRTTError(path, err)
+		return 0, err
+	}
+	response, err := queryProbeVirtualRouterPathRTTSum(stream)
+	if err != nil {
+		dropProbeVirtualRouterPacketStream(stream)
+		recordProbeVirtualRouterPathRTTError(path, err)
+		return 0, err
+	}
+	if !response.OK {
+		err = errors.New(strings.TrimSpace(response.Error))
+		if err.Error() == "" {
+			err = errors.New("virtual router rtt query failed")
+		}
+		dropProbeVirtualRouterPacketStream(stream)
+		recordProbeVirtualRouterPathRTTError(path, err)
+		return 0, err
+	}
+	latency := time.Duration(localHopLatencyMS+response.LatencyMS) * time.Millisecond
+	recordProbeVirtualRouterPathRTTSuccess(path, latency, response.Responder)
+	return latency, nil
+}
+
+func openProbeVirtualRouterRTTQueryStream(rt *probeChainRuntime, direction string, path []string) (net.Conn, error) {
+	if rt == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	key := probeVirtualRouterRTTQueryStreamKey(rt, direction, path)
+	if key == "" {
+		return nil, errors.New("rtt query stream key is empty")
+	}
+	now := time.Now()
+	if stream := reusableProbeVirtualRouterPacketStream(key, now); stream != nil {
+		return stream, nil
+	}
+	req := buildProbeVirtualRouterRTTQueryOpenRequest(path)
+	stream, _, err := openProbeVirtualRouterPhysicalBridgeStream(rt, req)
+	if err != nil {
+		return nil, err
+	}
+	item := &probeVirtualRouterPacketStream{
+		key:      key,
+		stream:   stream,
+		openedAt: now,
+		lastUsed: now,
+	}
+	probeVirtualRouterStreamState.mu.Lock()
+	if old := probeVirtualRouterStreamState.streams[key]; old != nil {
+		_ = old.stream.Close()
+	}
+	probeVirtualRouterStreamState.streams[key] = item
+	probeVirtualRouterStreamState.mu.Unlock()
+	return item, nil
+}
+
+func probeVirtualRouterQueryAllPathRTTs() int {
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if localNodeID == "" {
+		return 0
+	}
+	probeVirtualRouterState.mu.RLock()
+	neighbors := probeVirtualRouterCloneNeighborsLocked()
+	nodeToIP := probeVirtualRouterCloneNodeToIPLocked()
+	probeVirtualRouterState.mu.RUnlock()
+	nodeIDs := make([]string, 0, len(nodeToIP))
+	for nodeID := range nodeToIP {
+		clean := normalizeProbeChainNodeID(nodeID)
+		if clean != "" && clean != localNodeID {
+			nodeIDs = append(nodeIDs, clean)
+		}
+	}
+	sort.Strings(nodeIDs)
+	var paths [][]string
+	for _, nodeID := range nodeIDs {
+		paths = append(paths, probeVirtualRouterShortestPathsFromNeighbors(neighbors, localNodeID, nodeID)...)
+	}
+	var wg sync.WaitGroup
+	for _, path := range paths {
+		pathCopy := append([]string(nil), path...)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := probeVirtualRouterQueryPathRTT(pathCopy); err != nil {
+				log.Printf("probe virtual router path rtt query failed: path=%s err=%v", strings.Join(pathCopy, ">"), err)
+			}
+		}()
+	}
+	wg.Wait()
+	return len(paths)
 }
 
 func shouldProbeVirtualRouterPrevDirection(rt *probeChainRuntime) bool {
@@ -1036,6 +1387,18 @@ func probeVirtualRouterPingPongDirection(rt *probeChainRuntime, direction string
 		return
 	}
 	recordProbeVirtualRouterRuntimePingSuccess(rt, direction, time.Since(startedAt))
+}
+
+func isProbeVirtualRouterStreamOpenType(openType string) bool {
+	clean := strings.TrimSpace(openType)
+	return strings.EqualFold(clean, probeVirtualRouterTunnelOpenType) || strings.EqualFold(clean, probeVirtualRouterRTTQueryOpenType)
+}
+
+func handleProbeVirtualRouterOpenStream(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest, responder func(probeChainTunnelOpenResponse) error) error {
+	if strings.EqualFold(strings.TrimSpace(req.Type), probeVirtualRouterRTTQueryOpenType) {
+		return handleProbeVirtualRouterRTTQueryStream(runtime, stream, req, responder)
+	}
+	return handleProbeVirtualRouterFrameStream(runtime, stream, req, responder)
 }
 
 func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest, responder func(probeChainTunnelOpenResponse) error) error {
@@ -1121,6 +1484,185 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 			return err
 		}
 	}
+}
+
+func handleProbeVirtualRouterRTTQueryStream(runtime *probeChainRuntime, stream net.Conn, req probeChainTunnelOpenRequest, responder func(probeChainTunnelOpenResponse) error) error {
+	if responder == nil {
+		return errors.New("missing rtt query open responder")
+	}
+	if stream == nil {
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: "stream is nil"})
+		return errors.New("stream is nil")
+	}
+	path := probeVirtualRouterPathFromRequest(req)
+	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+	if localNodeID == "" && len(path) > 0 {
+		localNodeID = normalizeProbeChainNodeID(path[0])
+	}
+	if localNodeID == "" || len(path) < 2 {
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: "virtual router rtt path is incomplete"})
+		return errors.New("virtual router rtt path is incomplete")
+	}
+	targetNodeID := normalizeProbeChainNodeID(path[len(path)-1])
+	if targetNodeID == "" {
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: "virtual router rtt target is empty"})
+		return errors.New("virtual router rtt target is empty")
+	}
+	if localNodeID == targetNodeID {
+		if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
+			return err
+		}
+		return serveProbeVirtualRouterPathRTTSumTarget(stream, localNodeID)
+	}
+	nextNodeID := probeVirtualRouterNextHopInPath(path, localNodeID)
+	if nextNodeID == "" {
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: "next virtual router rtt hop is unavailable"})
+		return errors.New("next virtual router rtt hop is unavailable")
+	}
+	localHopLatencyMS, ok := currentProbeVirtualRouterAdjacentLatencyMS(localNodeID, nextNodeID)
+	if !ok {
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: "adjacent virtual router ping-pong latency is unavailable"})
+		return errors.New("adjacent virtual router ping-pong latency is unavailable")
+	}
+	rt, direction := probeVirtualRouterRuntimeForAdjacentNode(nextNodeID)
+	if rt == nil {
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: "adjacent virtual router rtt runtime is unavailable"})
+		return errors.New("adjacent virtual router rtt runtime is unavailable")
+	}
+	nextStream, err := openProbeVirtualRouterRTTQueryStream(rt, direction, path)
+	if err != nil {
+		_ = responder(probeChainTunnelOpenResponse{OK: false, Error: err.Error()})
+		return err
+	}
+	if err := responder(probeChainTunnelOpenResponse{OK: true}); err != nil {
+		return err
+	}
+	return relayProbeVirtualRouterPathRTTSum(stream, nextStream, localHopLatencyMS)
+}
+
+func serveProbeVirtualRouterPathRTTSumTarget(stream net.Conn, localNodeID string) error {
+	for {
+		_, err := readProbeVirtualRouterRTTQueryRequest(stream)
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		response := probeVirtualRouterPathRTTQueryResponse{
+			OK:        true,
+			LatencyMS: 0,
+			Responder: normalizeProbeChainNodeID(localNodeID),
+		}
+		if err := writeProbeVirtualRouterRTTQueryResponse(stream, response); err != nil {
+			return err
+		}
+	}
+}
+
+func relayProbeVirtualRouterPathRTTSum(left net.Conn, right net.Conn, localHopLatencyMS int64) error {
+	for {
+		_, err := readProbeVirtualRouterRTTQueryRequest(left)
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		response, err := queryProbeVirtualRouterPathRTTSum(right)
+		if err != nil {
+			dropProbeVirtualRouterPacketStream(right)
+			return err
+		}
+		if response.OK {
+			response.LatencyMS += localHopLatencyMS
+		}
+		if err := writeProbeVirtualRouterRTTQueryResponse(left, response); err != nil {
+			return err
+		}
+	}
+}
+
+func queryProbeVirtualRouterPathRTTSum(stream net.Conn) (probeVirtualRouterPathRTTQueryResponse, error) {
+	request := probeVirtualRouterPathRTTQueryRequest{RequestID: newProbeTCPDebugFlowID("vrouter_rtt_sum", "")}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return probeVirtualRouterPathRTTQueryResponse{}, err
+	}
+	if wrapped, ok := stream.(*probeVirtualRouterPacketStream); ok {
+		wrapped.mu.Lock()
+		defer wrapped.mu.Unlock()
+		if err := writeProbeVirtualRouterRTTQueryPayload(wrapped.stream, payload); err != nil {
+			return probeVirtualRouterPathRTTQueryResponse{}, err
+		}
+		response, err := readProbeVirtualRouterRTTQueryResponse(wrapped.stream)
+		if err == nil {
+			wrapped.lastUsed = time.Now()
+		}
+		return response, err
+	}
+	if err := writeProbeVirtualRouterRTTQueryPayload(stream, payload); err != nil {
+		return probeVirtualRouterPathRTTQueryResponse{}, err
+	}
+	return readProbeVirtualRouterRTTQueryResponse(stream)
+}
+
+func readProbeVirtualRouterRTTQueryRequest(stream net.Conn) (probeVirtualRouterPathRTTQueryRequest, error) {
+	payload, err := readProbeVirtualRouterRTTQueryPayload(stream)
+	if err != nil {
+		return probeVirtualRouterPathRTTQueryRequest{}, err
+	}
+	request := probeVirtualRouterPathRTTQueryRequest{}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return probeVirtualRouterPathRTTQueryRequest{}, err
+	}
+	return request, nil
+}
+
+func writeProbeVirtualRouterRTTQueryResponse(stream net.Conn, response probeVirtualRouterPathRTTQueryResponse) error {
+	payload, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	return writeProbeVirtualRouterRTTQueryPayload(stream, payload)
+}
+
+func readProbeVirtualRouterRTTQueryResponse(stream net.Conn) (probeVirtualRouterPathRTTQueryResponse, error) {
+	payload, err := readProbeVirtualRouterRTTQueryPayload(stream)
+	if err != nil {
+		return probeVirtualRouterPathRTTQueryResponse{}, err
+	}
+	response := probeVirtualRouterPathRTTQueryResponse{}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return probeVirtualRouterPathRTTQueryResponse{}, err
+	}
+	return response, nil
+}
+
+func writeProbeVirtualRouterRTTQueryPayload(stream net.Conn, payload []byte) error {
+	_ = stream.SetDeadline(time.Now().Add(probeVirtualRouterPingPongTimeout))
+	err := writeProbeChainFramedPacket(stream, payload)
+	_ = stream.SetDeadline(time.Time{})
+	return err
+}
+
+func readProbeVirtualRouterRTTQueryPayload(stream net.Conn) ([]byte, error) {
+	_ = stream.SetDeadline(time.Now().Add(probeVirtualRouterPingPongTimeout))
+	frame, err := readProbeChainFrame(stream)
+	_ = stream.SetDeadline(time.Time{})
+	if err != nil {
+		return nil, err
+	}
+	if frame.Kind != probeChainFrameKindData {
+		return nil, errors.New("invalid virtual router rtt frame kind")
+	}
+	if len(frame.Control) != 0 {
+		return nil, errors.New("invalid virtual router rtt frame control")
+	}
+	if len(frame.Data) == 0 {
+		return nil, errors.New("empty virtual router rtt frame data")
+	}
+	return frame.Data, nil
 }
 
 func writeProbeVirtualRouterLocalTUNPacket(packet []byte) error {
@@ -1398,6 +1940,27 @@ func probeVirtualRouterPacketStreamKey(rt *probeChainRuntime, direction string, 
 	}, "|")
 }
 
+func probeVirtualRouterRTTQueryStreamKey(rt *probeChainRuntime, direction string, path []string) string {
+	if rt == nil {
+		return ""
+	}
+	cleanPath := make([]string, 0, len(path))
+	for _, item := range path {
+		if nodeID := normalizeProbeChainNodeID(item); nodeID != "" {
+			cleanPath = append(cleanPath, nodeID)
+		}
+	}
+	if len(cleanPath) < 2 {
+		return ""
+	}
+	return strings.Join([]string{
+		"rtt",
+		strings.TrimSpace(rt.cfg.chainID),
+		strings.TrimSpace(direction),
+		strings.Join(cleanPath, ">"),
+	}, "|")
+}
+
 func probeVirtualRouterRuntimeStatsForUpdateLocked(chainID string) *probeVirtualRouterRuntimeStats {
 	chainID = strings.TrimSpace(chainID)
 	if chainID == "" {
@@ -1553,6 +2116,7 @@ func recordProbeVirtualRouterRuntimePingSuccess(rt *probeChainRuntime, direction
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	clearProbeVirtualRouterRouteCache("bridge ping success")
 	scheduleProbeVirtualRouterPacketStreamPrewarm("bridge_ping_success")
 }
 
@@ -1569,6 +2133,43 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeChainRuntime, direction s
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	clearProbeVirtualRouterRouteCache("bridge ping error")
+}
+
+func recordProbeVirtualRouterRuntimeRemoteRTTSuccess(chainID string, result probeChainFrameRTTQueryResult) {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.LastRemoteRTTMS = result.RTTMS
+		item.LastRemoteRTTAt = time.Now().UTC().Format(time.RFC3339)
+		item.LastRemoteRTTError = ""
+		item.LastRemoteRTTResponder = strings.TrimSpace(result.Responder)
+		item.LastRemotePongsReceived = result.PongsReceived
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	clearProbeVirtualRouterRouteCache("remote rtt query success")
+}
+
+func recordProbeVirtualRouterRuntimeRemoteRTTError(chainID string, err error) {
+	if err == nil {
+		return
+	}
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.LastRemoteRTTError = strings.TrimSpace(err.Error())
+		item.LastRemoteRTTAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	clearProbeVirtualRouterRouteCache("remote rtt query error")
 }
 
 func normalizeProbeVirtualRouterBridgeError(value string) string {
