@@ -698,6 +698,17 @@ func TestBuildProbeVirtualRouterICMPEchoReply(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterParseTCPUDPLogInfo(t *testing.T) {
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.0.21", 49152, 8080)
+	info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet)
+	if !ok {
+		t.Fatalf("tcp packet not parsed")
+	}
+	if info.Protocol != "tcp" || info.SourceIP != "198.18.0.18" || info.DestinationIP != "198.18.0.21" || info.SourcePort != 49152 || info.DestinationPort != 8080 {
+		t.Fatalf("unexpected tcp info: %+v", info)
+	}
+}
+
 func TestProbeVirtualRouterRuntimeForAdjacentNode(t *testing.T) {
 	probeChainRuntimeState.mu.Lock()
 	oldRuntimes := probeChainRuntimeState.runtimes
@@ -846,5 +857,29 @@ func buildProbeVirtualRouterTestICMPEchoRequest(t *testing.T, src string, dst st
 	binary.BigEndian.PutUint16(packet[26:28], 1)
 	copy(packet[28:], []byte{1, 2, 3, 4})
 	binary.BigEndian.PutUint16(packet[22:24], probeVirtualRouterChecksum(packet[20:]))
+	return packet
+}
+
+func buildProbeVirtualRouterTestTCPPacket(t *testing.T, src string, dst string, srcPort uint16, dstPort uint16) []byte {
+	t.Helper()
+	srcIP := net.ParseIP(src).To4()
+	dstIP := net.ParseIP(dst).To4()
+	if srcIP == nil || dstIP == nil {
+		t.Fatalf("invalid test ip src=%q dst=%q", src, dst)
+	}
+	packet := make([]byte, 40)
+	packet[0] = 0x45
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	binary.BigEndian.PutUint16(packet[4:6], 0x1234)
+	packet[8] = 64
+	packet[9] = 6
+	copy(packet[12:16], srcIP)
+	copy(packet[16:20], dstIP)
+	binary.BigEndian.PutUint16(packet[20:22], srcPort)
+	binary.BigEndian.PutUint16(packet[22:24], dstPort)
+	packet[32] = 0x50
+	packet[33] = 0x02
+	binary.BigEndian.PutUint16(packet[34:36], 65535)
+	binary.BigEndian.PutUint16(packet[10:12], probeVirtualRouterChecksum(packet[:20]))
 	return packet
 }
