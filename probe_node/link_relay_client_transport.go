@@ -322,6 +322,78 @@ func openProbeChainRelayNetConnDefault(chainID string, secret string, relayHost 
 	return result.Conn, nil
 }
 
+func openProbeVirtualRouterBridgeRelayNetConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+	return openProbeVirtualRouterBridgeRelayNetConnDefault(chainID, secret, relayHost, relayPort, layer, bridgeRole, true)
+}
+
+func openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicy(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration, preserveDomain bool) (net.Conn, error) {
+	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHostWithPolicy(relayHost, preserveDomain)
+	if err != nil {
+		return nil, err
+	}
+	return openProbeVirtualRouterBridgeRelayNetConnWithResolvedHost(chainID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, true)
+}
+
+func openProbeVirtualRouterBridgeRelayNetConnDefault(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, cacheOnSuccess bool) (net.Conn, error) {
+	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHost(relayHost)
+	if err != nil {
+		return nil, err
+	}
+	openTimeout := probeChainPortForwardDialTimeout + probeChainPortForwardResponseReadDeadline
+	return openProbeVirtualRouterBridgeRelayNetConnWithResolvedHost(chainID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+}
+
+func openProbeVirtualRouterBridgeRelayNetConnWithResolvedHost(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
+	if endpointKey == "" {
+		return nil, errors.New("relay endpoint is required")
+	}
+	candidates := probeChainRelayProtocolCandidates(layer)
+	now := time.Now()
+	if preferred := getProbeChainRelayProtocolPreferred(endpointKey, candidates, now); preferred != "" {
+		candidates = probeChainRelayProtocolCandidatesPrefer(candidates, preferred)
+	} else {
+		candidates = probeChainRelayProtocolCandidatesAllowed(endpointKey, candidates, now)
+	}
+	log.Printf(
+		"probe virtual router relay protocol dial start: chain=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
+		strings.TrimSpace(chainID),
+		strings.TrimSpace(relayHost),
+		normalizeProbeChainLinkLayer(layer),
+		normalizeProbeChainBridgeRole(bridgeRole),
+		endpointKey,
+		probeChainRelayJoinProtocols(candidates),
+	)
+	var lastErr error
+	for _, protocol := range candidates {
+		cleanProtocol := normalizeProbeChainLinkLayer(protocol)
+		if cleanProtocol == "" {
+			continue
+		}
+		result := probeChainRelayProtocolDialResult{Protocol: cleanProtocol, StartedAt: time.Now()}
+		conn, err := openProbeChainRelayNetConnWithResolvedHostModeAndToken(chainID, secret, relayHost, relayPort, cleanProtocol, bridgeRole, probeChainRelayModeBridge, "", relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+		result.Latency = time.Since(result.StartedAt)
+		if err == nil {
+			result.Conn = conn
+			recordProbeChainRelayProtocolSuccess(endpointKey, result, "vrouter_direct")
+			recordProbeChainRelayProtocolSelected(endpointKey, cleanProtocol, "vrouter_direct")
+			log.Printf("probe virtual router relay protocol selected: chain=%s endpoint=%s protocol=%s reason=direct latency_ms=%d", strings.TrimSpace(chainID), endpointKey, cleanProtocol, probeDurationMilliseconds(result.Latency))
+			return conn, nil
+		}
+		result.Err = err
+		lastErr = err
+		log.Printf("probe virtual router relay protocol dial failed: chain=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(chainID), endpointKey, cleanProtocol, err)
+		recordProbeChainRelayProtocolFailure(endpointKey, result, err)
+		if !isProbeChainRelayProtocolSwitchableError(err) {
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no relay protocol candidate")
+	}
+	return nil, lastErr
+}
+
 func probeChainRelayProtocolCandidates(layer string) []string {
 	switch normalizeProbeChainLinkLayer(layer) {
 	case "websocket":
@@ -531,6 +603,9 @@ func scheduleProbeChainRelayProtocolRefreshForReports(configs []probeChainRuntim
 	now := time.Now()
 	targets := make([]probeChainRelayProtocolRefreshTarget, 0, len(configs)*2)
 	for _, cfg := range configs {
+		if strings.EqualFold(strings.TrimSpace(cfg.chainType), "virtual_router") || isProbeVirtualRouterRuntimeChainID(cfg.chainID) {
+			continue
+		}
 		if normalizeProbeChainDialMode(cfg.nextDialMode) == probeChainDialModeForward && cfg.nextPort > 0 && strings.TrimSpace(cfg.nextHost) != "" {
 			if target, ok := makeProbeChainRelayProtocolRefreshTarget(cfg, strings.TrimSpace(cfg.nextHost), cfg.nextPort, normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.nextLinkLayer), strings.TrimSpace(cfg.linkLayer))), probeChainBridgeRoleToNext, now); ok {
 				targets = append(targets, target)

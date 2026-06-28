@@ -3700,6 +3700,28 @@ func resolveProbeChainOutboundLinkLayer(cfg probeChainRuntimeConfig) string {
 }
 
 func openProbeChainBridgeRelayNetConn(cfg probeChainRuntimeConfig, target probeChainBridgeDialTarget) (net.Conn, error) {
+	if strings.EqualFold(strings.TrimSpace(cfg.chainType), "virtual_router") || isProbeVirtualRouterRuntimeChainID(cfg.chainID) {
+		if target.PreserveRelayDomain {
+			return openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicy(
+				cfg.chainID,
+				cfg.secret,
+				target.Host,
+				target.Port,
+				target.LinkLayer,
+				target.RoleHeader,
+				probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline,
+				true,
+			)
+		}
+		return openProbeVirtualRouterBridgeRelayNetConn(
+			cfg.chainID,
+			cfg.secret,
+			target.Host,
+			target.Port,
+			target.LinkLayer,
+			target.RoleHeader,
+		)
+	}
 	if target.PreserveRelayDomain {
 		return openProbeChainRelayNetConnWithLayerConnAndDomainPolicy(
 			cfg.chainID,
