@@ -392,11 +392,12 @@ func currentProbeVirtualRouterLocalNodeID() string {
 }
 
 func currentProbeVirtualRouterLocalNodeIDForRuntime(runtime *probeChainRuntime) string {
-	nodeID := currentProbeVirtualRouterLocalNodeID()
-	if nodeID == "" && runtime != nil {
-		nodeID = normalizeProbeChainNodeID(runtime.cfg.identity.NodeID)
+	if runtime != nil {
+		if nodeID := normalizeProbeChainNodeID(runtime.cfg.identity.NodeID); nodeID != "" {
+			return nodeID
+		}
 	}
-	return nodeID
+	return currentProbeVirtualRouterLocalNodeID()
 }
 
 func currentProbeVirtualRouterLocalIP() string {
@@ -412,15 +413,13 @@ func currentProbeVirtualRouterLocalIP() string {
 }
 
 func currentProbeVirtualRouterLocalIPForRuntime(runtime *probeChainRuntime) string {
-	localIP := currentProbeVirtualRouterLocalIP()
-	if localIP != "" {
-		return localIP
-	}
 	nodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
-	if nodeID == "" {
-		return ""
+	if nodeID != "" {
+		if ip := currentProbeVirtualRouterIPForNode(nodeID); ip != "" {
+			return ip
+		}
 	}
-	return currentProbeVirtualRouterIPForNode(nodeID)
+	return currentProbeVirtualRouterLocalIP()
 }
 
 func ensureProbeVirtualRouterLocalInterfaceIP() {

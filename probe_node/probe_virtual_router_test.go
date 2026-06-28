@@ -633,6 +633,29 @@ func TestProbeVirtualRouterPacketTargetsLocalIPUsesStoredVirtualIP(t *testing.T)
 	}
 }
 
+func TestProbeVirtualRouterPacketTargetsLocalIPPrefersRuntimeIdentity(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "19")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{identity: nodeIdentity{NodeID: "16"}}}
+	if !probeVirtualRouterPacketTargetsLocalIP(rt, "198.18.0.18") {
+		t.Fatalf("packet to runtime node 16 ip should target local runtime")
+	}
+	if probeVirtualRouterPacketTargetsLocalIP(rt, "198.18.0.21") {
+		t.Fatalf("packet to node 19 ip must not be treated as local runtime node 16")
+	}
+}
+
 func TestProbeVirtualRouterReversePath(t *testing.T) {
 	if got := probeVirtualRouterReversePath([]string{"node-16", "node-19"}); !reflect.DeepEqual(got, []string{"19", "16"}) {
 		t.Fatalf("reverse path=%v, want [19 16]", got)
