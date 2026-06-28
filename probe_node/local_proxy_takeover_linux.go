@@ -34,20 +34,11 @@ var (
 )
 
 func applyProbeLocalProxyTakeover() error {
-	info, err := probeLocalLinuxStat("/dev/net/tun")
-	if err != nil {
-		return fmt.Errorf("check /dev/net/tun failed: %w", err)
-	}
-	if info.IsDir() {
-		return errors.New("/dev/net/tun is not a character device")
-	}
-	if _, err := probeLocalLinuxLookPath("ip"); err != nil {
-		return fmt.Errorf("ip command not found: %w", err)
-	}
-	dev, gateway, err := resolveProbeLocalLinuxRouteTarget()
+	dev, err := ensureProbeLocalLinuxTUNDeviceReady()
 	if err != nil {
 		return err
 	}
+	gateway := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY"))
 
 	probeLocalLinuxTakeoverState.mu.Lock()
 	if probeLocalLinuxTakeoverState.enabled {
@@ -127,9 +118,9 @@ func ensureProbeLocalExplicitDirectBypass(string) error {
 }
 
 func resolveProbeLocalLinuxRouteTarget() (string, string, error) {
-	dev := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_DEV"))
-	if dev == "" {
-		return "", "", errors.New("missing PROBE_LOCAL_TUN_DEV")
+	dev, err := resolveProbeLocalLinuxTUNDeviceName()
+	if err != nil {
+		return "", "", err
 	}
 	gateway := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY"))
 	return dev, gateway, nil
@@ -182,6 +173,18 @@ func isProbeLocalLinuxRouteMissingErr(err error) bool {
 	return strings.Contains(text, "no such process") || strings.Contains(text, "no such file or directory")
 }
 
+func isProbeLocalLinuxDeviceMissingErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "does not exist") ||
+		strings.Contains(text, "cannot find device") ||
+		strings.Contains(text, "device not found") ||
+		strings.Contains(text, "no such device") ||
+		strings.Contains(text, "no such file or directory")
+}
+
 func currentProbeLocalTUNDNSListenHost() string {
 	return ""
 }
@@ -199,5 +202,20 @@ func restoreProbeLocalTUNPrimaryDNS() error {
 }
 
 func uninstallProbeLocalTUNDriver() error {
-	return errProbeLocalTUNUnsupported
+	dev, err := resolveProbeLocalLinuxTUNDeviceName()
+	if err != nil {
+		return err
+	}
+	if dev != probeLocalLinuxDefaultTUNDeviceName {
+		logProbeInfof("probe local linux tun uninstall skipped custom device: dev=%s", dev)
+		return nil
+	}
+	if _, err := probeLocalLinuxLookPath("ip"); err != nil {
+		return fmt.Errorf("ip command not found: %w", err)
+	}
+	_, err = probeLocalLinuxRunCommand(5*time.Second, "ip", "link", "del", "dev", dev)
+	if err != nil && !isProbeLocalLinuxDeviceMissingErr(err) {
+		return fmt.Errorf("delete linux tun device failed: dev=%s: %w", dev, err)
+	}
+	return nil
 }

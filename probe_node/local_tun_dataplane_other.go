@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package main
 
@@ -17,6 +17,10 @@ func stopProbeLocalTUNDataPlane() error {
 
 func probeLocalTUNDataPlaneStatsSnapshot() probeLocalTUNDataPlaneStats {
 	return probeLocalTUNDataPlaneStats{}
+}
+
+func probeLocalTUNDataPlaneRunning() bool {
+	return false
 }
 
 func writeProbeLocalTUNPacket(_ []byte) error {

@@ -128,6 +128,7 @@ func startProbeLocalTUNDataPlane() error {
 		clearProbeLocalWindowsDirectBypassRouteTarget()
 		return err
 	}
+	ensureProbeVirtualRouterLocalInterfaceIP()
 
 	stats := dataPlane.Stats()
 	logProbeInfof("probe local tun data plane started: running=%v rx_packets=%d rx_bytes=%d if_index=%d if_luid=%d gateway=%s", stats.Running, stats.RXPackets, stats.RXBytes, routeTarget.InterfaceIndex, routeTarget.InterfaceLUID, strings.TrimSpace(routeTarget.Gateway))
@@ -181,6 +182,7 @@ func stopProbeLocalTUNDataPlane() error {
 		allErr = errors.Join(allErr, closeErr)
 	}
 	allErr = errors.Join(allErr, errStack)
+	stopProbeLocalDNSTUNListener()
 	return allErr
 }
 
@@ -209,6 +211,11 @@ func probeLocalTUNDataPlaneStatsSnapshot() probeLocalTUNDataPlaneStats {
 		return probeLocalTUNDataPlaneStats{}
 	}
 	return probeLocalTUNDataPlaneState.dataPlane.Stats()
+}
+
+func probeLocalTUNDataPlaneRunning() bool {
+	stats := probeLocalTUNDataPlaneStatsSnapshot()
+	return stats.Running
 }
 
 func writeProbeLocalTUNPacket(packet []byte) error {

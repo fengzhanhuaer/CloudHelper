@@ -298,7 +298,9 @@ func ensureProbeVirtualRouterLocalInterfaceIP() {
 	}
 	if err := ensureProbeVirtualRouterPlatformInterfaceIP(localIP); err != nil {
 		log.Printf("warning: ensure probe virtual router local ip failed: ip=%s err=%v", localIP, err)
+		return
 	}
+	markProbeLocalTUNInterfaceReady()
 }
 
 func probeVirtualRouterIPForNode(config probeVirtualRouterConfig, nodeID string) string {

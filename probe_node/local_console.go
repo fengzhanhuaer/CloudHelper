@@ -676,6 +676,23 @@ func (m *probeLocalControlManager) tunStatus() probeLocalTunRuntimeState {
 	return status
 }
 
+func markProbeLocalTUNInterfaceReady() {
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	probeLocalControl.mu.Lock()
+	changed := !probeLocalControl.tun.Installed || !probeLocalControl.tun.Enabled || probeLocalControl.tun.LastError != ""
+	probeLocalControl.tun.Installed = true
+	probeLocalControl.tun.Enabled = true
+	probeLocalControl.tun.LastError = ""
+	probeLocalControl.tun.UpdatedAt = now
+	probeLocalControl.mu.Unlock()
+	if changed {
+		persistProbeLocalTUNStateBestEffort(true, true)
+	}
+}
+
 func persistProbeLocalTUNStateBestEffort(installed, enabled bool) {
 	if err := persistProbeLocalTUNPersistentState(installed, enabled); err != nil {
 		logProbeWarnf("probe local tun persist state failed: installed=%v enabled=%v err=%v", installed, enabled, err)
@@ -1021,9 +1038,6 @@ func stopProbeLocalTUNProxyRuntime() error {
 	if err := probeLocalRestoreProxyDirect(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
-	if err := stopProbeLocalTUNDataPlane(); err != nil {
-		allErr = errors.Join(allErr, err)
-	}
 	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
 	stopProbeLocalProxyMonitor()
 	return allErr
@@ -1120,6 +1134,23 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		logProbeWarnf("probe local tun post-install ready check failed elapsed=%s err=%v", time.Since(startedAt).String(), err)
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(wrappedErr)}
 	}
+	if runtime.GOOS == "windows" {
+		if err := startProbeLocalTUNDataPlane(); err != nil {
+			wrappedErr := newProbeLocalTUNInstallError(
+				probeLocalTUNInstallCodeRouteTargetFailed,
+				"post_install_dataplane_start",
+				"TUN 网卡已安装但数据面无法启动，请检查网卡状态后重试",
+				err,
+				nil,
+			)
+			m.tun.LastError = strings.TrimSpace(wrappedErr.Error())
+			m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			logProbeWarnf("probe local tun post-install data plane start failed elapsed=%s err=%v", time.Since(startedAt).String(), err)
+			return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(wrappedErr)}
+		}
+		reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
+	}
+	ensureProbeVirtualRouterLocalInterfaceIP()
 
 	m.tun.Installed = true
 	m.tun.Enabled = true
@@ -1206,9 +1237,10 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	m.tun.DataPlane = false
-	m.tun.DataPlaneRX = 0
-	m.tun.DataPlaneBytes = 0
+	stats := probeLocalTUNDataPlaneStatsSnapshot()
+	m.tun.DataPlane = stats.Running
+	m.tun.DataPlaneRX = stats.RXPackets
+	m.tun.DataPlaneBytes = stats.RXBytes
 	m.tun.UpdatedAt = now
 	m.proxy.Enabled = false
 	m.proxy.Mode = probeLocalProxyModeDirect
@@ -1234,6 +1266,9 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 
 	var allErr error
 	if err := stopProbeLocalTUNProxyRuntime(); err != nil {
+		allErr = errors.Join(allErr, err)
+	}
+	if err := stopProbeLocalTUNDataPlane(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
 	if uninstall {

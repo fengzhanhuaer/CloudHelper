@@ -9,6 +9,11 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 	if cleanIP == "" {
 		return nil
 	}
+	if !probeLocalTUNDataPlaneRunning() {
+		if err := startProbeLocalTUNDataPlane(); err != nil {
+			return err
+		}
+	}
 	probeLocalTUNDataPlaneState.mu.Lock()
 	interfaceLUID := probeLocalTUNDataPlaneState.interfaceLUID
 	ifIndex := probeLocalTUNDataPlaneState.ifIndex

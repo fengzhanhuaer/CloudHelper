@@ -741,8 +741,8 @@ func TestCurrentProbeLocalTUNDNSListenHost(t *testing.T) {
 	resetProbeLocalWindowsTakeoverStateForTest()
 	t.Cleanup(resetProbeLocalWindowsTakeoverStateForTest)
 
-	if got := currentProbeLocalTUNDNSListenHost(); got != "" {
-		t.Fatalf("expected empty host when disabled, got=%q", got)
+	if got := currentProbeLocalTUNDNSListenHost(); got != "198.18.0.2" {
+		t.Fatalf("expected default tun dns host when takeover disabled, got=%q", got)
 	}
 
 	probeLocalWindowsTakeoverState.mu.Lock()

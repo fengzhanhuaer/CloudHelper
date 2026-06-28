@@ -319,7 +319,7 @@ func reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(tunProxyEnabled bool) {
 		stopProbeLocalDNSTUNListener()
 		return
 	}
-	if !tunProxyEnabled {
+	if !tunProxyEnabled && !probeLocalTUNDataPlaneRunning() {
 		stopProbeLocalDNSTUNListener()
 		return
 	}

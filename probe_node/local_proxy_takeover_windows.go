@@ -664,12 +664,8 @@ func isProbeLocalWindowsRouteMissingErr(err error) bool {
 
 func currentProbeLocalTUNDNSListenHost() string {
 	probeLocalWindowsTakeoverState.mu.Lock()
-	enabled := probeLocalWindowsTakeoverState.enabled
 	gateway := strings.TrimSpace(probeLocalWindowsTakeoverState.tunGateway)
 	probeLocalWindowsTakeoverState.mu.Unlock()
-	if !enabled {
-		return ""
-	}
 	return resolveProbeLocalTUNDNSListenHostForGateway(gateway)
 }
 
