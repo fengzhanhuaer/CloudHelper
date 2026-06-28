@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -171,13 +172,18 @@ func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testi
 
 	probeLocalLinuxStat = func(name string) (os.FileInfo, error) { return fakeProbeLocalLinuxFileInfo{}, nil }
 	probeLocalLinuxLookPath = func(file string) (string, error) { return "/sbin/ip", nil }
+	var mu sync.Mutex
 	calls := make([]string, 0, 8)
 	probeLocalLinuxRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		return "", nil
 	}
 	starts := 0
 	probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
+		mu.Lock()
+		defer mu.Unlock()
 		starts++
 		return &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
 	}
@@ -189,6 +195,18 @@ func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testi
 		},
 	}, "19")
 
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		started := starts
+		mu.Unlock()
+		if started == 1 && probeLocalTUNDataPlaneRunning() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
 	if starts != 1 {
 		t.Fatalf("linux tun data plane starts=%d want 1", starts)
 	}

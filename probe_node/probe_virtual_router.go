@@ -42,14 +42,15 @@ const (
 )
 
 var probeVirtualRouterState = struct {
-	mu          sync.RWMutex
-	config      probeVirtualRouterConfig
-	localNodeID string
-	localIP     string
-	nodeToIP    map[string]string
-	ipToNode    map[string]string
-	neighbors   map[string]map[string]struct{}
-	rulesByID   map[string]probeVirtualRouterTopologyRule
+	mu                sync.RWMutex
+	config            probeVirtualRouterConfig
+	localNodeID       string
+	localIP           string
+	nodeToIP          map[string]string
+	ipToNode          map[string]string
+	neighbors         map[string]map[string]struct{}
+	rulesByID         map[string]probeVirtualRouterTopologyRule
+	topologySignature string
 }{}
 
 type probeVirtualRouterTopologyIndex struct {
@@ -97,6 +98,11 @@ var probeVirtualRouterLocalInterfaceRetryState = struct {
 	generation uint64
 	ensuredIP  string
 	ensuredAt  time.Time
+}{}
+
+var probeVirtualRouterLocalInterfaceEnsureState = struct {
+	mu      sync.Mutex
+	running bool
 }{}
 
 var probeVirtualRouterFrameLinkPrewarmState = struct {
@@ -451,22 +457,30 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	sanitized := sanitizeProbeVirtualRouterConfigForCache(config)
 	index := buildProbeVirtualRouterTopologyIndex(sanitized)
 	probeVirtualRouterState.mu.Lock()
-	probeVirtualRouterState.config = sanitized
 	effectiveNodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
 	if cleanNodeID := normalizeProbeChainNodeID(nodeID); cleanNodeID != "" {
-		probeVirtualRouterState.localNodeID = cleanNodeID
 		effectiveNodeID = cleanNodeID
 	}
+	signature := probeVirtualRouterTopologySignature(sanitized, index, effectiveNodeID)
+	topologyChanged := probeVirtualRouterState.topologySignature != signature
+	probeVirtualRouterState.config = sanitized
+	probeVirtualRouterState.localNodeID = effectiveNodeID
 	probeVirtualRouterState.nodeToIP = index.nodeToIP
 	probeVirtualRouterState.ipToNode = index.ipToNode
 	probeVirtualRouterState.neighbors = index.neighbors
 	probeVirtualRouterState.rulesByID = index.rulesByID
 	probeVirtualRouterState.localIP = index.nodeToIP[effectiveNodeID]
+	probeVirtualRouterState.topologySignature = signature
+	ensureLocalInterface := sanitized.Enabled && strings.TrimSpace(probeVirtualRouterState.localIP) != ""
 	probeVirtualRouterState.mu.Unlock()
-	clearProbeVirtualRouterRouteCache("config updated")
-	closeProbeVirtualRouterFrameLinks("config updated")
-	ensureProbeVirtualRouterLocalInterfaceIP()
-	scheduleProbeVirtualRouterFrameLinkPrewarm("config_updated")
+	if topologyChanged {
+		clearProbeVirtualRouterRouteCache("config updated")
+		closeProbeVirtualRouterFrameLinks("config updated")
+		scheduleProbeVirtualRouterFrameLinkPrewarm("config_updated")
+	}
+	if ensureLocalInterface {
+		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("config_updated")
+	}
 }
 
 func buildProbeVirtualRouterTopologyIndex(config probeVirtualRouterConfig) probeVirtualRouterTopologyIndex {
@@ -508,6 +522,52 @@ func buildProbeVirtualRouterTopologyIndex(config probeVirtualRouterConfig) probe
 		addNeighbor(rule.ToNodeID, rule.FromNodeID)
 	}
 	return index
+}
+
+func probeVirtualRouterTopologySignature(config probeVirtualRouterConfig, index probeVirtualRouterTopologyIndex, localNodeID string) string {
+	var b strings.Builder
+	localNodeID = normalizeProbeChainNodeID(localNodeID)
+	fmt.Fprintf(&b, "enabled=%t|cidr=%s|local=%s|local_ip=%s\n", config.Enabled, strings.TrimSpace(config.FakeIPCIDR), localNodeID, strings.TrimSpace(index.nodeToIP[localNodeID]))
+	nodeIDs := make([]string, 0, len(index.nodeToIP))
+	for nodeID := range index.nodeToIP {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	for _, nodeID := range nodeIDs {
+		fmt.Fprintf(&b, "ip|%s|%s\n", nodeID, strings.TrimSpace(index.nodeToIP[nodeID]))
+	}
+	neighborIDs := make([]string, 0, len(index.neighbors))
+	for nodeID := range index.neighbors {
+		neighborIDs = append(neighborIDs, nodeID)
+	}
+	sort.Strings(neighborIDs)
+	for _, nodeID := range neighborIDs {
+		peers := make([]string, 0, len(index.neighbors[nodeID]))
+		for peerID := range index.neighbors[nodeID] {
+			peers = append(peers, peerID)
+		}
+		sort.Strings(peers)
+		fmt.Fprintf(&b, "adj|%s|%s\n", nodeID, strings.Join(peers, ","))
+	}
+	ruleIDs := make([]string, 0, len(index.rulesByID))
+	for ruleID := range index.rulesByID {
+		ruleIDs = append(ruleIDs, ruleID)
+	}
+	sort.Strings(ruleIDs)
+	for _, ruleID := range ruleIDs {
+		rule := index.rulesByID[ruleID]
+		fmt.Fprintf(&b, "rule|%s|%s|%s|%s|%s|%d|%s|%d\n",
+			strings.TrimSpace(rule.ID),
+			normalizeProbeChainNodeID(rule.FromNodeID),
+			normalizeProbeChainNodeID(rule.ToNodeID),
+			normalizeProbeVirtualRouterDirection(rule.Direction),
+			strings.TrimSpace(rule.FromServiceDomain),
+			normalizeProbeVirtualRouterServicePort(rule.FromServicePort),
+			strings.TrimSpace(rule.ToServiceDomain),
+			normalizeProbeVirtualRouterServicePort(rule.ToServicePort),
+		)
+	}
+	return b.String()
 }
 
 func currentProbeVirtualRouterConfig() probeVirtualRouterConfig {
@@ -588,6 +648,27 @@ func ensureProbeVirtualRouterLocalInterfaceIP() {
 	markProbeLocalTUNInterfaceReady()
 }
 
+func scheduleProbeVirtualRouterLocalInterfaceIPEnsure(reason string) {
+	probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
+	if probeVirtualRouterLocalInterfaceEnsureState.running {
+		probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
+		return
+	}
+	probeVirtualRouterLocalInterfaceEnsureState.running = true
+	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
+	go func() {
+		defer func() {
+			probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
+			probeVirtualRouterLocalInterfaceEnsureState.running = false
+			probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
+		}()
+		if cleanReason := strings.TrimSpace(reason); cleanReason != "" {
+			log.Printf("probe virtual router local ip ensure scheduled: reason=%s", cleanReason)
+		}
+		ensureProbeVirtualRouterLocalInterfaceIP()
+	}()
+}
+
 func ensureProbeVirtualRouterLocalInterfaceIPOnce() (string, error) {
 	localIP := currentProbeVirtualRouterLocalIP()
 	if localIP == "" {
@@ -643,6 +724,10 @@ func scheduleProbeVirtualRouterLocalInterfaceIPRetry(localIP string, cause error
 			if err != nil {
 				log.Printf("warning: probe virtual router local ip retry failed: ip=%s attempt=%d err=%v", nextIP, attempt+1, err)
 				continue
+			}
+			if probeVirtualRouterLocalInterfaceRetryObsolete(cleanIP, retryGeneration) {
+				log.Printf("probe virtual router local ip retry stopped: ip=%s reason=already_ensured attempt=%d", cleanIP, attempt+1)
+				return
 			}
 			log.Printf("probe virtual router local ip retry succeeded: ip=%s attempt=%d", nextIP, attempt+1)
 			markProbeVirtualRouterLocalInterfaceEnsured(nextIP)
@@ -904,22 +989,28 @@ func recordProbeVirtualRouterPathRTTSuccess(path []string, latency time.Duration
 	if key == "" {
 		return
 	}
+	nextRTTMS := probeDurationMilliseconds(latency)
 	target := ""
 	if len(path) > 0 {
 		target = normalizeProbeChainNodeID(path[len(path)-1])
 	}
+	shouldClearRouteCache := false
 	probeVirtualRouterPathRTTState.mu.Lock()
 	if probeVirtualRouterPathRTTState.items == nil {
 		probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
 	}
+	previous := probeVirtualRouterPathRTTState.items[key]
+	shouldClearRouteCache = previous.RTTMS != nextRTTMS || strings.TrimSpace(previous.LastError) != ""
 	probeVirtualRouterPathRTTState.items[key] = probeVirtualRouterPathRTTRecord{
-		RTTMS:      probeDurationMilliseconds(latency),
+		RTTMS:      nextRTTMS,
 		LastAt:     time.Now().UTC(),
 		TargetNode: target,
 		Responder:  strings.TrimSpace(responder),
 	}
 	probeVirtualRouterPathRTTState.mu.Unlock()
-	clearProbeVirtualRouterRouteCache("path rtt query success")
+	if shouldClearRouteCache {
+		clearProbeVirtualRouterRouteCache("path rtt query success")
+	}
 }
 
 func recordProbeVirtualRouterPathRTTError(path []string, err error) {
@@ -934,17 +1025,22 @@ func recordProbeVirtualRouterPathRTTError(path []string, err error) {
 	if len(path) > 0 {
 		target = normalizeProbeChainNodeID(path[len(path)-1])
 	}
+	nextError := strings.TrimSpace(err.Error())
+	shouldClearRouteCache := false
 	probeVirtualRouterPathRTTState.mu.Lock()
 	if probeVirtualRouterPathRTTState.items == nil {
 		probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
 	}
 	item := probeVirtualRouterPathRTTState.items[key]
+	shouldClearRouteCache = strings.TrimSpace(item.LastError) != nextError
 	item.LastAt = time.Now().UTC()
-	item.LastError = strings.TrimSpace(err.Error())
+	item.LastError = nextError
 	item.TargetNode = target
 	probeVirtualRouterPathRTTState.items[key] = item
 	probeVirtualRouterPathRTTState.mu.Unlock()
-	clearProbeVirtualRouterRouteCache("path rtt query error")
+	if shouldClearRouteCache {
+		clearProbeVirtualRouterRouteCache("path rtt query error")
+	}
 }
 
 func probeVirtualRouterPathKey(path []string) string {
@@ -2448,6 +2544,7 @@ func prewarmProbeVirtualRouterFrameLinks(reason string) {
 	}
 	sort.Strings(nodeIDs)
 	opened := 0
+	ready := 0
 	failed := 0
 	for _, nodeID := range nodeIDs {
 		dstIP := strings.TrimSpace(nodeToIP[nodeID])
@@ -2467,6 +2564,13 @@ func prewarmProbeVirtualRouterFrameLinks(reason string) {
 			failed++
 			continue
 		}
+		key := probeVirtualRouterFrameLinkKey(rt, direction, dstIP, path)
+		if key != "" {
+			if link := reusableProbeVirtualRouterFrameLink(key, time.Now()); link != nil {
+				ready++
+				continue
+			}
+		}
 		if _, err := openProbeVirtualRouterFrameLink(rt, direction, dstIP, path); err != nil {
 			failed++
 			log.Printf("probe virtual router frame link prewarm failed: reason=%s dst_node=%s dst_ip=%s path=%s err=%v", strings.TrimSpace(reason), nodeID, dstIP, strings.Join(path, ">"), err)
@@ -2475,7 +2579,7 @@ func prewarmProbeVirtualRouterFrameLinks(reason string) {
 		opened++
 	}
 	if opened > 0 || failed > 0 {
-		log.Printf("probe virtual router frame link prewarm completed: reason=%s opened=%d failed=%d", strings.TrimSpace(reason), opened, failed)
+		log.Printf("probe virtual router frame link prewarm completed: reason=%s opened=%d ready=%d failed=%d", strings.TrimSpace(reason), opened, ready, failed)
 	}
 }
 
@@ -2807,9 +2911,11 @@ func recordProbeVirtualRouterRuntimeOpenError(chainID string, err error) {
 
 func recordProbeVirtualRouterRuntimePingSuccess(rt *probeChainRuntime, direction string, latency time.Duration) {
 	chainID, bridgeStatus, bridgeSession := snapshotProbeVirtualRouterPingContext(rt, direction)
+	shouldClearRouteCache := false
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
+		shouldClearRouteCache = strings.TrimSpace(item.LastPingError) != ""
 		item.PingCount++
 		item.LastPingLatencyMS = probeDurationMilliseconds(latency)
 		item.LastPingError = ""
@@ -2817,8 +2923,10 @@ func recordProbeVirtualRouterRuntimePingSuccess(rt *probeChainRuntime, direction
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
-	clearProbeVirtualRouterRouteCache("bridge ping success")
-	scheduleProbeVirtualRouterFrameLinkPrewarm("bridge_ping_success")
+	if shouldClearRouteCache {
+		clearProbeVirtualRouterRouteCache("bridge ping recovered")
+		scheduleProbeVirtualRouterFrameLinkPrewarm("bridge_ping_recovered")
+	}
 }
 
 func recordProbeVirtualRouterRuntimePingError(rt *probeChainRuntime, direction string, err error) {
@@ -2835,6 +2943,7 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeChainRuntime, direction s
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	clearProbeVirtualRouterRouteCache("bridge ping error")
+	dropProbeVirtualRouterPhysicalCarrier(rt, "bridge ping error: "+normalizeProbeVirtualRouterBridgeError(err.Error()))
 }
 
 func recordProbeVirtualRouterRuntimeRemoteRTTSuccess(chainID string, result probeChainFrameRTTQueryResult) {
@@ -2852,7 +2961,6 @@ func recordProbeVirtualRouterRuntimeRemoteRTTSuccess(chainID string, result prob
 		item.LastRemotePongsReceived = result.PongsReceived
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
-	clearProbeVirtualRouterRouteCache("remote rtt query success")
 }
 
 func recordProbeVirtualRouterRuntimeRemoteRTTControlSuccess(chainID string, latencyMS int64, responder string) {
@@ -2860,9 +2968,11 @@ func recordProbeVirtualRouterRuntimeRemoteRTTControlSuccess(chainID string, late
 	if chainID == "" {
 		return
 	}
+	shouldClearRouteCache := false
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
+		shouldClearRouteCache = strings.TrimSpace(item.LastRemoteRTTError) != ""
 		item.LastRemoteRTTMS = latencyMS
 		item.LastRemoteRTTAt = time.Now().UTC().Format(time.RFC3339)
 		item.LastRemoteRTTError = ""
@@ -2870,7 +2980,9 @@ func recordProbeVirtualRouterRuntimeRemoteRTTControlSuccess(chainID string, late
 		item.LastRemotePongsReceived++
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
-	clearProbeVirtualRouterRouteCache("remote rtt control query success")
+	if shouldClearRouteCache {
+		clearProbeVirtualRouterRouteCache("remote rtt control query recovered")
+	}
 }
 
 func recordProbeVirtualRouterRuntimeRemoteRTTError(chainID string, err error) {
@@ -2881,14 +2993,18 @@ func recordProbeVirtualRouterRuntimeRemoteRTTError(chainID string, err error) {
 	if chainID == "" {
 		return
 	}
+	shouldClearRouteCache := false
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
+		shouldClearRouteCache = strings.TrimSpace(item.LastRemoteRTTError) == ""
 		item.LastRemoteRTTError = strings.TrimSpace(err.Error())
 		item.LastRemoteRTTAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
-	clearProbeVirtualRouterRouteCache("remote rtt query error")
+	if shouldClearRouteCache {
+		clearProbeVirtualRouterRouteCache("remote rtt query error")
+	}
 }
 
 func normalizeProbeVirtualRouterBridgeError(value string) string {
@@ -3117,6 +3233,35 @@ func currentProbeVirtualRouterPhysicalCarrier(rt *probeChainRuntime) *probeVirtu
 	}
 	probeVirtualRouterFrameLinkState.mu.Unlock()
 	return item
+}
+
+func dropProbeVirtualRouterPhysicalCarrier(rt *probeChainRuntime, reason string) {
+	if rt == nil {
+		return
+	}
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	if key == "" {
+		return
+	}
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	item := probeVirtualRouterFrameLinkState.links[key]
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+	if item == nil || isProbeVirtualRouterFrameLinkClosed(item) {
+		return
+	}
+	var token *probeVirtualRouterPhysicalCarrier
+	item.mu.Lock()
+	token = item.carrier
+	if token != nil {
+		item.carrier = nil
+		item.signalCarrierChangedLocked()
+	}
+	item.mu.Unlock()
+	if token == nil {
+		return
+	}
+	log.Printf("probe virtual router physical carrier dropped: chain=%s role=%s session_id=%s remote=%s reason=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr), strings.TrimSpace(reason))
+	token.close()
 }
 
 func probeVirtualRouterNextHopInPath(path []string, localNodeID string) string {

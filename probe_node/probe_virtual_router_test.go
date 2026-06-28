@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"net"
 	"os"
 	"reflect"
@@ -150,7 +151,11 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterState.ipToNode = nil
 	probeVirtualRouterState.neighbors = nil
 	probeVirtualRouterState.rulesByID = nil
+	probeVirtualRouterState.topologySignature = ""
 	probeVirtualRouterState.mu.Unlock()
+	probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
+	probeVirtualRouterLocalInterfaceEnsureState.running = false
+	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
 	clearProbeVirtualRouterRouteCache("test reset")
 	probeVirtualRouterPathRTTState.mu.Lock()
 	probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
@@ -599,6 +604,94 @@ func TestProbeVirtualRouterPathFromRequest(t *testing.T) {
 	}
 	if got := probeVirtualRouterPathFromRequest(req); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
 		t.Fatalf("path=%v, want [1 2 3]", got)
+	}
+}
+
+func TestApplyProbeVirtualRouterConfigKeepsFrameLinksWhenTopologyUnchanged(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{
+				ID:                "1",
+				FromNodeID:        "16",
+				ToNodeID:          "19",
+				FromServiceDomain: "node-16.example.test",
+				FromServicePort:   12040,
+				ToServiceDomain:   "node-19.example.test",
+				ToServicePort:     12040,
+				Enabled:           true,
+				AuthTicket:        "ticket-a",
+				UpdatedAt:         "2026-06-28T20:10:07Z",
+			},
+		},
+		UpdatedAt: "2026-06-28T20:10:07Z",
+	}
+	applyProbeVirtualRouterConfigForNode(config, "16")
+
+	left, right := net.Pipe()
+	defer right.Close()
+	key := "packet|vrouter-test"
+	link := newProbeVirtualRouterFrameLink(key, nil, left, nil)
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	unchanged := config
+	unchanged.UpdatedAt = "2026-06-28T20:10:08Z"
+	unchanged.TopologyRules[0].AuthTicket = "ticket-b"
+	unchanged.TopologyRules[0].UpdatedAt = "2026-06-28T20:10:08Z"
+	applyProbeVirtualRouterConfigForNode(unchanged, "16")
+
+	if isProbeVirtualRouterFrameLinkClosed(link) {
+		t.Fatalf("frame link should stay open when topology is unchanged")
+	}
+	if got := reusableProbeVirtualRouterFrameLink(key, time.Now()); got != link {
+		t.Fatalf("frame link should remain cached, got=%v", got)
+	}
+}
+
+func TestApplyProbeVirtualRouterConfigClosesFrameLinksWhenTopologyChanges(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{ID: "1", FromNodeID: "16", ToNodeID: "19", ToServiceDomain: "node-19.example.test", ToServicePort: 12040, Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "16")
+
+	left, right := net.Pipe()
+	defer right.Close()
+	key := "packet|vrouter-test"
+	link := newProbeVirtualRouterFrameLink(key, nil, left, nil)
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	changed := config
+	changed.TopologyRules[0].ToServiceDomain = "node-19-new.example.test"
+	applyProbeVirtualRouterConfigForNode(changed, "16")
+
+	if !isProbeVirtualRouterFrameLinkClosed(link) {
+		t.Fatalf("frame link should close when topology changes")
+	}
+	if got := reusableProbeVirtualRouterFrameLink(key, time.Now()); got != nil {
+		t.Fatalf("closed frame link should be removed from cache, got=%v", got)
 	}
 }
 
@@ -1267,6 +1360,44 @@ func TestProbeVirtualRouterFrameLinkCachePersistsWhileIdle(t *testing.T) {
 
 	if got := reusableProbeVirtualRouterFrameLink(key, time.Now()); got != item {
 		t.Fatalf("expected idle link to persist, got=%v", got)
+	}
+}
+
+func TestProbeVirtualRouterPingErrorDropsCarrierButKeepsFrameLink(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:    "vrouter-carrier-health",
+			chainType:  "virtual_router",
+			role:       "relay",
+			nextNodeID: "19",
+		},
+	}
+	left, right := net.Pipe()
+	defer right.Close()
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	link := newProbeVirtualRouterFrameLink(key, rt, nil, nil)
+	link.AttachCarrier(left, "vrouter-carrier-test", "198.51.100.19:12040")
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	recordProbeVirtualRouterRuntimePingError(rt, probeChainBridgeRoleToNext, errors.New("virtual router control ping timeout"))
+
+	if isProbeVirtualRouterFrameLinkClosed(link) {
+		t.Fatalf("ping error should drop carrier, not close frame link")
+	}
+	link.mu.Lock()
+	carrier := link.carrier
+	link.mu.Unlock()
+	if carrier != nil {
+		t.Fatalf("carrier should be detached after ping error")
+	}
+	if got := reusableProbeVirtualRouterFrameLink(key, time.Now()); got != link {
+		t.Fatalf("frame link should remain cached for reconnection, got=%v", got)
 	}
 }
 

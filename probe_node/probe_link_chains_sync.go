@@ -199,11 +199,12 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 		log.Printf("warning: persist probe virtual router cache failed: %v", err)
 	}
 	applyProbeVirtualRouterConfigForNode(config.VirtualRouter, identity.NodeID)
+	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, config.VirtualRouter)
+
 	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
 	preconnectProbeLocalTUNGroupRuntimesFromState("chain_sync")
 
 	applyProbeLinkChainServerItems(identity, controllerBaseURL, config.SelfChains)
-	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, config.VirtualRouter)
 }
 
 func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controllerBaseURL string) {
@@ -214,6 +215,8 @@ func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controlle
 	} else {
 		log.Printf("warning: load probe virtual router cache failed: %v", err)
 	}
+	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, virtualRouterConfig)
+
 	items, err := loadProbeChainTopologyCacheItems()
 	if err != nil {
 		log.Printf("warning: load probe chain topology cache failed: %v", err)
@@ -223,11 +226,9 @@ func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controlle
 	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, items)
 	if len(items) == 0 {
 		applyProbeLinkChainServerItems(identity, controllerBaseURL, nil)
-		applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, virtualRouterConfig)
 		return
 	}
 	applyProbeLinkChainServerItems(identity, controllerBaseURL, items)
-	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, virtualRouterConfig)
 	log.Printf("restored probe chain runtimes from topology cache: count=%d", len(items))
 }
 

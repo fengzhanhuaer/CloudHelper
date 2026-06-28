@@ -2010,6 +2010,7 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 		if runtime.singleBridgeSessionPerRule() {
 			sessionID := runtime.nextBridgeSessionID("vrouter-carrier")
 			log.Printf("probe virtual router physical carrier accepted: chain=%s role=%s tag=%s session_id=%s target=%s:%d %s", runtime.cfg.chainID, runtime.cfg.role, runtime.bridgeDialTag(target.Tag), sessionID, target.Host, target.Port, runtime.bridgeDialLogFields(target))
+			backoff = probeChainBridgeRetryMin
 			runProbeVirtualRouterPhysicalCarrier(runtime, conn, sessionID, net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 			_ = conn.Close()
 			sleepProbeChainBridgeBackoff(runtime.stopCh, backoff)
