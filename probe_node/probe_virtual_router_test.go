@@ -469,6 +469,35 @@ func TestProbeVirtualRouterIPv4Destination(t *testing.T) {
 	}
 }
 
+func TestBuildProbeVirtualRouterICMPEchoReply(t *testing.T) {
+	request := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.18", "198.18.0.21")
+	reply, dstIP, ok := buildProbeVirtualRouterICMPEchoReply(request, "198.18.0.21")
+	if !ok {
+		t.Fatalf("echo request not handled")
+	}
+	if dstIP != "198.18.0.18" {
+		t.Fatalf("reply dst=%q", dstIP)
+	}
+	if got := probeVirtualRouterIPv4Source(reply); got != "198.18.0.21" {
+		t.Fatalf("reply source=%q", got)
+	}
+	if got := probeVirtualRouterIPv4Destination(reply); got != "198.18.0.18" {
+		t.Fatalf("reply destination=%q", got)
+	}
+	if reply[20] != 0 || reply[21] != 0 {
+		t.Fatalf("icmp type/code=%d/%d", reply[20], reply[21])
+	}
+	if probeVirtualRouterChecksum(reply[:20]) != 0 {
+		t.Fatalf("invalid ipv4 checksum")
+	}
+	if probeVirtualRouterChecksum(reply[20:]) != 0 {
+		t.Fatalf("invalid icmp checksum")
+	}
+	if _, _, ok := buildProbeVirtualRouterICMPEchoReply(request, "198.18.0.22"); ok {
+		t.Fatalf("request for another local ip should not be handled")
+	}
+}
+
 func TestProbeVirtualRouterRuntimeForAdjacentNode(t *testing.T) {
 	probeChainRuntimeState.mu.Lock()
 	oldRuntimes := probeChainRuntimeState.runtimes
@@ -592,5 +621,30 @@ func buildProbeVirtualRouterTestIPv4Packet(t *testing.T, src string, dst string)
 	packet[9] = 1
 	copy(packet[12:16], srcIP)
 	copy(packet[16:20], dstIP)
+	return packet
+}
+
+func buildProbeVirtualRouterTestICMPEchoRequest(t *testing.T, src string, dst string) []byte {
+	t.Helper()
+	srcIP := net.ParseIP(src).To4()
+	dstIP := net.ParseIP(dst).To4()
+	if srcIP == nil || dstIP == nil {
+		t.Fatalf("invalid test ip src=%q dst=%q", src, dst)
+	}
+	packet := make([]byte, 32)
+	packet[0] = 0x45
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	binary.BigEndian.PutUint16(packet[4:6], 0x1234)
+	packet[8] = 64
+	packet[9] = 1
+	copy(packet[12:16], srcIP)
+	copy(packet[16:20], dstIP)
+	binary.BigEndian.PutUint16(packet[10:12], probeVirtualRouterChecksum(packet[:20]))
+	packet[20] = 8
+	packet[21] = 0
+	binary.BigEndian.PutUint16(packet[24:26], 0x4567)
+	binary.BigEndian.PutUint16(packet[26:28], 1)
+	copy(packet[28:], []byte{1, 2, 3, 4})
+	binary.BigEndian.PutUint16(packet[22:24], probeVirtualRouterChecksum(packet[20:]))
 	return packet
 }

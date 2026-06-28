@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -608,6 +609,10 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 		}
 		localNodeID := currentProbeVirtualRouterLocalNodeID()
 		if len(path) > 0 && normalizeProbeChainNodeID(path[len(path)-1]) == localNodeID {
+			if handleProbeVirtualRouterLocalICMPEchoRequest(runtime, packet) {
+				recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
+				continue
+			}
 			if err := writeProbeLocalTUNPacket(packet); err != nil {
 				return err
 			}
@@ -648,6 +653,25 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	recordProbeVirtualRouterRuntimeFrameSent(rt, len(packet))
 	recordProbeVirtualRouterRuntimePacketForwarded(rt, len(packet))
 	return nil
+}
+
+func handleProbeVirtualRouterLocalICMPEchoRequest(runtime *probeChainRuntime, packet []byte) bool {
+	reply, dstIP, ok := buildProbeVirtualRouterICMPEchoReply(packet, currentProbeVirtualRouterLocalIP())
+	if !ok {
+		return false
+	}
+	path := currentProbeVirtualRouterPathToIP(dstIP)
+	if len(path) < 2 {
+		log.Printf("probe virtual router icmp echo reply path unavailable: dst=%s", dstIP)
+		return true
+	}
+	if err := forwardProbeVirtualRouterPacketAlongPath(reply, dstIP, path); err != nil {
+		if runtime != nil {
+			recordProbeVirtualRouterRuntimeOpenError(runtime.cfg.chainID, err)
+		}
+		log.Printf("probe virtual router icmp echo reply forward failed: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
+	}
+	return true
 }
 
 func openProbeVirtualRouterPacketStream(rt *probeChainRuntime, direction string, dstIP string, path []string) (net.Conn, error) {
@@ -1080,6 +1104,77 @@ func probeVirtualRouterIPv4Destination(packet []byte) string {
 		return ""
 	}
 	return ip.String()
+}
+
+func probeVirtualRouterIPv4Source(packet []byte) string {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return ""
+	}
+	ihl := int(packet[0]&0x0F) * 4
+	if ihl < 20 || len(packet) < ihl {
+		return ""
+	}
+	totalLen := int(packet[2])<<8 | int(packet[3])
+	if totalLen > 0 && totalLen > len(packet) {
+		return ""
+	}
+	ip := net.IPv4(packet[12], packet[13], packet[14], packet[15]).To4()
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+func buildProbeVirtualRouterICMPEchoReply(packet []byte, localIP string) ([]byte, string, bool) {
+	local := net.ParseIP(strings.TrimSpace(localIP)).To4()
+	if local == nil || len(packet) < 28 || packet[0]>>4 != 4 {
+		return nil, "", false
+	}
+	ihl := int(packet[0]&0x0F) * 4
+	if ihl < 20 || len(packet) < ihl+8 {
+		return nil, "", false
+	}
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen <= 0 || totalLen > len(packet) || totalLen < ihl+8 {
+		return nil, "", false
+	}
+	if packet[9] != 1 {
+		return nil, "", false
+	}
+	dst := net.IPv4(packet[16], packet[17], packet[18], packet[19]).To4()
+	if dst == nil || !dst.Equal(local) {
+		return nil, "", false
+	}
+	icmp := packet[ihl:totalLen]
+	if len(icmp) < 8 || icmp[0] != 8 || icmp[1] != 0 {
+		return nil, "", false
+	}
+	reply := append([]byte(nil), packet[:totalLen]...)
+	copy(reply[12:16], packet[16:20])
+	copy(reply[16:20], packet[12:16])
+	reply[8] = 64
+	reply[10], reply[11] = 0, 0
+	binary.BigEndian.PutUint16(reply[10:12], probeVirtualRouterChecksum(reply[:ihl]))
+	reply[ihl] = 0
+	reply[ihl+1] = 0
+	reply[ihl+2], reply[ihl+3] = 0, 0
+	binary.BigEndian.PutUint16(reply[ihl+2:ihl+4], probeVirtualRouterChecksum(reply[ihl:totalLen]))
+	return reply, net.IPv4(packet[12], packet[13], packet[14], packet[15]).String(), true
+}
+
+func probeVirtualRouterChecksum(payload []byte) uint16 {
+	var sum uint32
+	for len(payload) >= 2 {
+		sum += uint32(binary.BigEndian.Uint16(payload[:2]))
+		payload = payload[2:]
+	}
+	if len(payload) > 0 {
+		sum += uint32(payload[0]) << 8
+	}
+	for sum>>16 != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
 }
 
 func (s *probeVirtualRouterPacketStream) Read(p []byte) (int, error) {

@@ -212,6 +212,12 @@ type mngVirtualRouterRouteStatusView struct {
 	Status             string                          `json:"status"`
 	Packets            int64                           `json:"packets,omitempty"`
 	Bytes              int64                           `json:"bytes,omitempty"`
+	PacketsForwarded   int64                           `json:"packets_forwarded,omitempty"`
+	BytesForwarded     int64                           `json:"bytes_forwarded,omitempty"`
+	PacketsReceived    int64                           `json:"packets_received,omitempty"`
+	BytesReceived      int64                           `json:"bytes_received,omitempty"`
+	PacketsDelivered   int64                           `json:"packets_delivered,omitempty"`
+	BytesDelivered     int64                           `json:"bytes_delivered,omitempty"`
 	FramesSent         int64                           `json:"frames_sent,omitempty"`
 	FrameBytesSent     int64                           `json:"frame_bytes_sent,omitempty"`
 	FramesReceived     int64                           `json:"frames_received,omitempty"`
@@ -362,6 +368,7 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 		}
 		view.Status = summarizeMngVirtualRouterRouteStatus(rule.Enabled, from, to)
 		view.Packets, view.Bytes = sumMngVirtualRouterRouteTraffic(from.VirtualRouter, to.VirtualRouter)
+		view.PacketsForwarded, view.BytesForwarded, view.PacketsReceived, view.BytesReceived, view.PacketsDelivered, view.BytesDelivered = sumMngVirtualRouterRoutePacketLifecycle(from.VirtualRouter, to.VirtualRouter)
 		view.FramesSent, view.FrameBytesSent, view.FramesReceived, view.FrameBytesReceived = sumMngVirtualRouterRouteFrames(from.VirtualRouter, to.VirtualRouter)
 		view.LastLatencyMS = lastMngVirtualRouterRouteLatency(from.VirtualRouter, to.VirtualRouter)
 		view.LastError = firstNonEmptyString(mngVirtualRouterSideStatsError(from), mngVirtualRouterSideStatsError(to))
@@ -499,6 +506,27 @@ func sumMngVirtualRouterRouteTraffic(values ...*probeVirtualRouterRuntimeStats) 
 		bytesValue += item.BytesForwarded + item.BytesReceived + item.BytesDelivered
 	}
 	return packets, bytesValue
+}
+
+func sumMngVirtualRouterRoutePacketLifecycle(values ...*probeVirtualRouterRuntimeStats) (int64, int64, int64, int64, int64, int64) {
+	var packetsForwarded int64
+	var bytesForwarded int64
+	var packetsReceived int64
+	var bytesReceived int64
+	var packetsDelivered int64
+	var bytesDelivered int64
+	for _, item := range values {
+		if item == nil {
+			continue
+		}
+		packetsForwarded += item.PacketsForwarded
+		bytesForwarded += item.BytesForwarded
+		packetsReceived += item.PacketsReceived
+		bytesReceived += item.BytesReceived
+		packetsDelivered += item.PacketsDelivered
+		bytesDelivered += item.BytesDelivered
+	}
+	return packetsForwarded, bytesForwarded, packetsReceived, bytesReceived, packetsDelivered, bytesDelivered
 }
 
 func sumMngVirtualRouterRouteFrames(values ...*probeVirtualRouterRuntimeStats) (int64, int64, int64, int64) {

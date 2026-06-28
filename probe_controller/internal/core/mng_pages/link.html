@@ -1921,6 +1921,12 @@
       const stats = item.virtual_router || {};
       const packets = Number(stats.packets_forwarded || 0) + Number(stats.packets_received || 0) + Number(stats.packets_delivered || 0);
       const bytes = Number(stats.bytes_forwarded || 0) + Number(stats.bytes_received || 0) + Number(stats.bytes_delivered || 0);
+      const packetsForwarded = Number(stats.packets_forwarded || 0);
+      const bytesForwarded = Number(stats.bytes_forwarded || 0);
+      const packetsReceived = Number(stats.packets_received || 0);
+      const bytesReceived = Number(stats.bytes_received || 0);
+      const packetsDelivered = Number(stats.packets_delivered || 0);
+      const bytesDelivered = Number(stats.bytes_delivered || 0);
       const framesSent = Number(stats.frames_sent || 0);
       const framesReceived = Number(stats.frames_received || 0);
       const frameBytesSent = Number(stats.frame_bytes_sent || 0);
@@ -1937,7 +1943,8 @@
         ${renderVirtualProbeCapability(item)}
         ${renderLastVirtualPingContext(stats)}
         ${renderBridgeSessions(item, errors)}
-        <div class="small muted">IP包 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
+        <div class="small muted">IP合计 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
+        <div class="small muted">IP fwd ${escapeHTML(packetsForwarded)} / ${escapeHTML(formatBytes(bytesForwarded))} · rx ${escapeHTML(packetsReceived)} / ${escapeHTML(formatBytes(bytesReceived))} · local ${escapeHTML(packetsDelivered)} / ${escapeHTML(formatBytes(bytesDelivered))}</div>
         <div class="small muted">vRouter帧 tx ${escapeHTML(framesSent)} / ${escapeHTML(formatBytes(frameBytesSent))} · rx ${escapeHTML(framesReceived)} / ${escapeHTML(formatBytes(frameBytesReceived))}</div>
         <div class="small muted">${escapeHTML(item.last_seen || '-')}</div>
       `;
@@ -1964,7 +1971,7 @@
           <td><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span>${err}</td>
           <td><div>${escapeHTML(fromName)}</div>${renderRouteSide(item.from, item)}</td>
           <td><div>${escapeHTML(toName)}</div>${renderRouteSide(item.to, item)}</td>
-          <td><div>IP包 ${escapeHTML(item.packets || 0)}</div><div class="small muted">${escapeHTML(formatBytes(item.bytes || 0))}</div><div class="small muted">vRouter帧 tx ${escapeHTML(item.frames_sent || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_sent || 0))}</div><div class="small muted">vRouter帧 rx ${escapeHTML(item.frames_received || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_received || 0))}</div></td>
+          <td><div>IP合计 ${escapeHTML(item.packets || 0)} / ${escapeHTML(formatBytes(item.bytes || 0))}</div><div class="small muted">IP fwd ${escapeHTML(item.packets_forwarded || 0)} / ${escapeHTML(formatBytes(item.bytes_forwarded || 0))}</div><div class="small muted">IP rx ${escapeHTML(item.packets_received || 0)} / ${escapeHTML(formatBytes(item.bytes_received || 0))}</div><div class="small muted">IP local ${escapeHTML(item.packets_delivered || 0)} / ${escapeHTML(formatBytes(item.bytes_delivered || 0))}</div><div class="small muted">vRouter帧 tx ${escapeHTML(item.frames_sent || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_sent || 0))}</div><div class="small muted">vRouter帧 rx ${escapeHTML(item.frames_received || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_received || 0))}</div></td>
           <td>${escapeHTML(latencyText)}</td>
           <td><div>${escapeHTML(item.last_packet_at || '-')}</div><div class="small muted">frame ${escapeHTML(item.last_frame_at || '-')}</div><div class="small muted">${escapeHTML(item.updated_at || '-')}</div></td>
         </tr>`;

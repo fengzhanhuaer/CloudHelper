@@ -228,6 +228,9 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	if item.Packets != 5 || item.Bytes != 500 || item.LastLatencyMS != 12 || item.LastPacketAt != "2026-06-27T00:00:02Z" {
 		t.Fatalf("unexpected route stats: %+v", item)
 	}
+	if item.PacketsForwarded != 2 || item.BytesForwarded != 200 || item.PacketsReceived != 3 || item.BytesReceived != 300 || item.PacketsDelivered != 0 || item.BytesDelivered != 0 {
+		t.Fatalf("unexpected route packet lifecycle stats: %+v", item)
+	}
 	if item.FramesSent != 2 || item.FrameBytesSent != 200 || item.FramesReceived != 3 || item.FrameBytesReceived != 300 || item.LastFrameAt != "2026-06-27T00:00:02Z" {
 		t.Fatalf("unexpected route frame stats: %+v", item)
 	}
