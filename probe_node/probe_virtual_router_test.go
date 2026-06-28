@@ -140,6 +140,18 @@ func withProbeVirtualRouterRuleAuthForTest(t *testing.T, rule probeVirtualRouter
 	return rule
 }
 
+func resetProbeVirtualRouterStateForTest() {
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.config = probeVirtualRouterConfig{}
+	probeVirtualRouterState.localNodeID = ""
+	probeVirtualRouterState.localIP = ""
+	probeVirtualRouterState.nodeToIP = nil
+	probeVirtualRouterState.ipToNode = nil
+	probeVirtualRouterState.neighbors = nil
+	probeVirtualRouterState.rulesByID = nil
+	probeVirtualRouterState.mu.Unlock()
+}
+
 func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T) {
 	rule := probeVirtualRouterTopologyRule{
 		ID:              "rule-auth",
@@ -279,18 +291,28 @@ func TestProbeVirtualRouterCurrentLocalPathToIP(t *testing.T) {
 		},
 	}
 	applyProbeVirtualRouterConfigForNode(config, "node-1")
-	t.Cleanup(func() {
-		probeVirtualRouterState.mu.Lock()
-		probeVirtualRouterState.config = probeVirtualRouterConfig{}
-		probeVirtualRouterState.localNodeID = ""
-		probeVirtualRouterState.mu.Unlock()
-	})
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
 	if got := currentProbeVirtualRouterLocalNodeID(); got != "1" {
 		t.Fatalf("local node id=%q, want 1", got)
 	}
 	if got := currentProbeVirtualRouterLocalIP(); got != "198.18.0.1" {
 		t.Fatalf("local ip=%q, want 198.18.0.1", got)
+	}
+	probeVirtualRouterState.mu.RLock()
+	storedLocalIP := probeVirtualRouterState.localIP
+	probeVirtualRouterState.mu.RUnlock()
+	if storedLocalIP != "198.18.0.1" {
+		t.Fatalf("stored local ip=%q, want 198.18.0.1", storedLocalIP)
+	}
+	if got := currentProbeVirtualRouterIPForNode("2"); got != "198.18.0.2" {
+		t.Fatalf("node 2 ip=%q, want 198.18.0.2", got)
+	}
+	if got := currentProbeVirtualRouterNodeIDForIP("198.18.0.3"); got != "3" {
+		t.Fatalf("node for ip=%q, want 3", got)
+	}
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "3"); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
+		t.Fatalf("indexed path=%v, want [1 2 3]", got)
 	}
 	if got := currentProbeVirtualRouterPathToIP("198.18.0.3"); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
 		t.Fatalf("path to ip=%v, want [1 2 3]", got)
@@ -565,6 +587,55 @@ func TestProbeVirtualRouterPathFromRequest(t *testing.T) {
 	}
 	if got := probeVirtualRouterPathFromRequest(req); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
 		t.Fatalf("path=%v, want [1 2 3]", got)
+	}
+}
+
+func TestCurrentProbeVirtualRouterPathForPacketInfersLocalNodeFromSourceIP(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	packet := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.21", "198.18.0.18")
+	if got := currentProbeVirtualRouterPathForPacket(packet, "198.18.0.18"); !reflect.DeepEqual(got, []string{"19", "16"}) {
+		t.Fatalf("path=%v, want [19 16]", got)
+	}
+}
+
+func TestProbeVirtualRouterPacketTargetsLocalIPUsesStoredVirtualIP(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "19", IP: "198.18.0.21"},
+			{NodeID: "20", IP: "198.18.0.22"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "19", ToNodeID: "20", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{identity: nodeIdentity{NodeID: "19"}}}
+	if !probeVirtualRouterPacketTargetsLocalIP(rt, "198.18.0.21") {
+		t.Fatalf("packet to node 19 ip should target local node")
+	}
+	if probeVirtualRouterPacketTargetsLocalIP(rt, "198.18.0.22") {
+		t.Fatalf("packet to node 20 ip must not be treated as local node 19")
+	}
+}
+
+func TestProbeVirtualRouterReversePath(t *testing.T) {
+	if got := probeVirtualRouterReversePath([]string{"node-16", "node-19"}); !reflect.DeepEqual(got, []string{"19", "16"}) {
+		t.Fatalf("reverse path=%v, want [19 16]", got)
 	}
 }
 

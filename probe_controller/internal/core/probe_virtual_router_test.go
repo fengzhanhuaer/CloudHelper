@@ -2,7 +2,7 @@ package core
 
 import "testing"
 
-func TestBuildProbeVirtualRouterConfigForNodeFiltersDisabledRules(t *testing.T) {
+func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testing.T) {
 	oldStore := ProbeLinkChainStore
 	t.Cleanup(func() { ProbeLinkChainStore = oldStore })
 
@@ -12,23 +12,26 @@ func TestBuildProbeVirtualRouterConfigForNodeFiltersDisabledRules(t *testing.T) 
 				Enabled:    true,
 				FakeIPCIDR: "198.18.0.0/15",
 				ProbeIPs: []probeVirtualRouterProbeIP{
-					{NodeID: "1", IP: "198.18.0.1"},
-					{NodeID: "2", IP: "198.18.0.2"},
+					{NodeID: "1", IP: "198.18.0.11"},
+					{NodeID: "2", IP: "198.18.0.12"},
+					{NodeID: "3", IP: "198.18.0.13"},
+					{NodeID: "4", IP: "198.18.0.14"},
 				},
 				TopologyRules: []probeVirtualRouterTopologyRule{
 					{FromNodeID: "1", ToNodeID: "2", Direction: "bidirectional", Enabled: true},
-					{FromNodeID: "2", ToNodeID: "3", Direction: "bidirectional", Enabled: false},
+					{FromNodeID: "2", ToNodeID: "3", Direction: "bidirectional", Enabled: true},
+					{FromNodeID: "3", ToNodeID: "4", Direction: "bidirectional", Enabled: true},
 				},
 			},
 		},
 	}
 
 	config := buildProbeVirtualRouterConfigForNodeLocked("1")
-	if len(config.TopologyRules) != 1 {
-		t.Fatalf("topology rules=%+v, want enabled related rule only", config.TopologyRules)
+	if len(config.ProbeIPs) != 4 {
+		t.Fatalf("probe ips=%+v, want full virtual ip map", config.ProbeIPs)
 	}
-	if config.TopologyRules[0].FromNodeID != "1" || config.TopologyRules[0].ToNodeID != "2" {
-		t.Fatalf("unexpected topology rule=%+v", config.TopologyRules[0])
+	if len(config.TopologyRules) != 3 {
+		t.Fatalf("topology rules=%+v, want full virtual topology", config.TopologyRules)
 	}
 	if config.TopologyRules[0].FromServicePort != probeVirtualRouterDefaultServicePort || config.TopologyRules[0].ToServicePort != probeVirtualRouterDefaultServicePort {
 		t.Fatalf("default service ports=%d/%d, want %d", config.TopologyRules[0].FromServicePort, config.TopologyRules[0].ToServicePort, probeVirtualRouterDefaultServicePort)

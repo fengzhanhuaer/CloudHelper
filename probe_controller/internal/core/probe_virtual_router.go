@@ -111,17 +111,6 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 		config.TopologyRules = []probeVirtualRouterTopologyRule{}
 		return config
 	}
-	target := normalizeProbeNodeID(nodeID)
-	rules := make([]probeVirtualRouterTopologyRule, 0, len(config.TopologyRules))
-	for _, rule := range config.TopologyRules {
-		if !rule.Enabled {
-			continue
-		}
-		if target == "" || rule.FromNodeID == target || rule.ToNodeID == target || probeVirtualRouterRuleMayAffectNode(config.TopologyRules, target, rule) {
-			rules = append(rules, rule)
-		}
-	}
-	config.TopologyRules = rules
 	return config
 }
 
@@ -143,49 +132,6 @@ func ensureProbeVirtualRouterStoredAuthFields() {
 			logControllerWarnf("failed to persist virtual router auth fields: %v", err)
 		}
 	}
-}
-
-func probeVirtualRouterRuleMayAffectNode(rules []probeVirtualRouterTopologyRule, nodeID string, candidate probeVirtualRouterTopologyRule) bool {
-	target := normalizeProbeNodeID(nodeID)
-	if target == "" {
-		return false
-	}
-	graph := map[string]map[string]struct{}{}
-	addEdge := func(from string, to string) {
-		from = normalizeProbeNodeID(from)
-		to = normalizeProbeNodeID(to)
-		if from == "" || to == "" {
-			return
-		}
-		if graph[from] == nil {
-			graph[from] = map[string]struct{}{}
-		}
-		graph[from][to] = struct{}{}
-	}
-	for _, rule := range rules {
-		if !rule.Enabled {
-			continue
-		}
-		addEdge(rule.FromNodeID, rule.ToNodeID)
-		addEdge(rule.ToNodeID, rule.FromNodeID)
-	}
-	affected := map[string]struct{}{}
-	queue := []string{target}
-	affected[target] = struct{}{}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		for next := range graph[current] {
-			if _, seen := affected[next]; seen {
-				continue
-			}
-			affected[next] = struct{}{}
-			queue = append(queue, next)
-		}
-	}
-	_, fromAffected := affected[normalizeProbeNodeID(candidate.FromNodeID)]
-	_, toAffected := affected[normalizeProbeNodeID(candidate.ToNodeID)]
-	return fromAffected || toAffected
 }
 
 func normalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig) probeVirtualRouterConfig {

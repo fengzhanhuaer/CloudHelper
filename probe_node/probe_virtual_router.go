@@ -34,7 +34,19 @@ var probeVirtualRouterState = struct {
 	mu          sync.RWMutex
 	config      probeVirtualRouterConfig
 	localNodeID string
+	localIP     string
+	nodeToIP    map[string]string
+	ipToNode    map[string]string
+	neighbors   map[string]map[string]struct{}
+	rulesByID   map[string]probeVirtualRouterTopologyRule
 }{}
+
+type probeVirtualRouterTopologyIndex struct {
+	nodeToIP  map[string]string
+	ipToNode  map[string]string
+	neighbors map[string]map[string]struct{}
+	rulesByID map[string]probeVirtualRouterTopologyRule
+}
 
 var probeVirtualRouterStreamState = struct {
 	mu      sync.Mutex
@@ -288,14 +300,63 @@ func applyProbeVirtualRouterConfig(config probeVirtualRouterConfig) {
 
 func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeID string) {
 	sanitized := sanitizeProbeVirtualRouterConfigForCache(config)
+	index := buildProbeVirtualRouterTopologyIndex(sanitized)
 	probeVirtualRouterState.mu.Lock()
 	probeVirtualRouterState.config = sanitized
+	effectiveNodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
 	if cleanNodeID := normalizeProbeChainNodeID(nodeID); cleanNodeID != "" {
 		probeVirtualRouterState.localNodeID = cleanNodeID
+		effectiveNodeID = cleanNodeID
 	}
+	probeVirtualRouterState.nodeToIP = index.nodeToIP
+	probeVirtualRouterState.ipToNode = index.ipToNode
+	probeVirtualRouterState.neighbors = index.neighbors
+	probeVirtualRouterState.rulesByID = index.rulesByID
+	probeVirtualRouterState.localIP = index.nodeToIP[effectiveNodeID]
 	probeVirtualRouterState.mu.Unlock()
 	closeProbeVirtualRouterPacketStreams("config updated")
 	ensureProbeVirtualRouterLocalInterfaceIP()
+}
+
+func buildProbeVirtualRouterTopologyIndex(config probeVirtualRouterConfig) probeVirtualRouterTopologyIndex {
+	index := probeVirtualRouterTopologyIndex{
+		nodeToIP:  make(map[string]string),
+		ipToNode:  make(map[string]string),
+		neighbors: make(map[string]map[string]struct{}),
+		rulesByID: make(map[string]probeVirtualRouterTopologyRule),
+	}
+	for _, item := range config.ProbeIPs {
+		nodeID := normalizeProbeChainNodeID(item.NodeID)
+		ip := net.ParseIP(strings.TrimSpace(item.IP)).To4()
+		if nodeID == "" || ip == nil {
+			continue
+		}
+		ipText := ip.String()
+		index.nodeToIP[nodeID] = ipText
+		index.ipToNode[ipText] = nodeID
+	}
+	addNeighbor := func(a string, b string) {
+		a = normalizeProbeChainNodeID(a)
+		b = normalizeProbeChainNodeID(b)
+		if a == "" || b == "" {
+			return
+		}
+		if index.neighbors[a] == nil {
+			index.neighbors[a] = map[string]struct{}{}
+		}
+		index.neighbors[a][b] = struct{}{}
+	}
+	for _, rule := range config.TopologyRules {
+		if !rule.Enabled {
+			continue
+		}
+		if ruleID := strings.TrimSpace(rule.ID); ruleID != "" {
+			index.rulesByID[ruleID] = rule
+		}
+		addNeighbor(rule.FromNodeID, rule.ToNodeID)
+		addNeighbor(rule.ToNodeID, rule.FromNodeID)
+	}
+	return index
 }
 
 func currentProbeVirtualRouterConfig() probeVirtualRouterConfig {
@@ -304,18 +365,62 @@ func currentProbeVirtualRouterConfig() probeVirtualRouterConfig {
 	return sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterState.config)
 }
 
+func probeVirtualRouterCloneNodeToIPLocked() map[string]string {
+	out := make(map[string]string, len(probeVirtualRouterState.nodeToIP))
+	for key, value := range probeVirtualRouterState.nodeToIP {
+		out[key] = value
+	}
+	return out
+}
+
+func probeVirtualRouterCloneNeighborsLocked() map[string]map[string]struct{} {
+	out := make(map[string]map[string]struct{}, len(probeVirtualRouterState.neighbors))
+	for nodeID, peers := range probeVirtualRouterState.neighbors {
+		nextPeers := make(map[string]struct{}, len(peers))
+		for peerID := range peers {
+			nextPeers[peerID] = struct{}{}
+		}
+		out[nodeID] = nextPeers
+	}
+	return out
+}
+
 func currentProbeVirtualRouterLocalNodeID() string {
 	probeVirtualRouterState.mu.RLock()
 	defer probeVirtualRouterState.mu.RUnlock()
 	return strings.TrimSpace(probeVirtualRouterState.localNodeID)
 }
 
+func currentProbeVirtualRouterLocalNodeIDForRuntime(runtime *probeChainRuntime) string {
+	nodeID := currentProbeVirtualRouterLocalNodeID()
+	if nodeID == "" && runtime != nil {
+		nodeID = normalizeProbeChainNodeID(runtime.cfg.identity.NodeID)
+	}
+	return nodeID
+}
+
 func currentProbeVirtualRouterLocalIP() string {
 	probeVirtualRouterState.mu.RLock()
-	config := sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterState.config)
+	localIP := strings.TrimSpace(probeVirtualRouterState.localIP)
 	nodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
+	nodeToIP := probeVirtualRouterCloneNodeToIPLocked()
 	probeVirtualRouterState.mu.RUnlock()
-	return probeVirtualRouterIPForNode(config, nodeID)
+	if localIP != "" {
+		return localIP
+	}
+	return nodeToIP[nodeID]
+}
+
+func currentProbeVirtualRouterLocalIPForRuntime(runtime *probeChainRuntime) string {
+	localIP := currentProbeVirtualRouterLocalIP()
+	if localIP != "" {
+		return localIP
+	}
+	nodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+	if nodeID == "" {
+		return ""
+	}
+	return currentProbeVirtualRouterIPForNode(nodeID)
 }
 
 func ensureProbeVirtualRouterLocalInterfaceIP() {
@@ -397,6 +502,37 @@ func probeVirtualRouterPath(config probeVirtualRouterConfig, fromNodeID string, 
 	return nil
 }
 
+func probeVirtualRouterPathFromNeighbors(neighbors map[string]map[string]struct{}, fromNodeID string, toNodeID string) []string {
+	from := normalizeProbeChainNodeID(fromNodeID)
+	to := normalizeProbeChainNodeID(toNodeID)
+	if from == "" || to == "" {
+		return nil
+	}
+	if from == to {
+		return []string{from}
+	}
+	seen := map[string]struct{}{from: {}}
+	parent := map[string]string{}
+	queue := []string{from}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for next := range neighbors[current] {
+			if next == to {
+				parent[next] = current
+				return buildProbeVirtualRouterPath(parent, from, to)
+			}
+			if _, ok := seen[next]; ok {
+				continue
+			}
+			seen[next] = struct{}{}
+			parent[next] = current
+			queue = append(queue, next)
+		}
+	}
+	return nil
+}
+
 func buildProbeVirtualRouterPath(parent map[string]string, from string, to string) []string {
 	if from == "" || to == "" {
 		return nil
@@ -431,13 +567,69 @@ func probeVirtualRouterNodeIDForIP(config probeVirtualRouterConfig, ip string) s
 	return ""
 }
 
-func currentProbeVirtualRouterPathToIP(ip string) []string {
+func currentProbeVirtualRouterIPForNode(nodeID string) string {
+	target := normalizeProbeChainNodeID(nodeID)
+	if target == "" {
+		return ""
+	}
 	probeVirtualRouterState.mu.RLock()
-	config := sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterState.config)
-	nodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
+	defer probeVirtualRouterState.mu.RUnlock()
+	return probeVirtualRouterState.nodeToIP[target]
+}
+
+func currentProbeVirtualRouterNodeIDForIP(ip string) string {
+	target := net.ParseIP(strings.TrimSpace(ip)).To4()
+	if target == nil {
+		return ""
+	}
+	probeVirtualRouterState.mu.RLock()
+	defer probeVirtualRouterState.mu.RUnlock()
+	return probeVirtualRouterState.ipToNode[target.String()]
+}
+
+func currentProbeVirtualRouterPathBetweenNodes(fromNodeID string, toNodeID string) []string {
+	probeVirtualRouterState.mu.RLock()
+	neighbors := probeVirtualRouterCloneNeighborsLocked()
 	probeVirtualRouterState.mu.RUnlock()
-	targetNodeID := probeVirtualRouterNodeIDForIP(config, ip)
-	return probeVirtualRouterPath(config, nodeID, targetNodeID)
+	return probeVirtualRouterPathFromNeighbors(neighbors, fromNodeID, toNodeID)
+}
+
+func currentProbeVirtualRouterPathToIP(ip string) []string {
+	targetIP := net.ParseIP(strings.TrimSpace(ip)).To4()
+	if targetIP == nil {
+		return nil
+	}
+	probeVirtualRouterState.mu.RLock()
+	nodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
+	targetNodeID := probeVirtualRouterState.ipToNode[targetIP.String()]
+	probeVirtualRouterState.mu.RUnlock()
+	return currentProbeVirtualRouterPathBetweenNodes(nodeID, targetNodeID)
+}
+
+func currentProbeVirtualRouterPathForPacket(packet []byte, dstIP string) []string {
+	sourceIP := net.ParseIP(probeVirtualRouterIPv4Source(packet)).To4()
+	targetIP := net.ParseIP(strings.TrimSpace(dstIP)).To4()
+	if sourceIP == nil || targetIP == nil {
+		return nil
+	}
+	probeVirtualRouterState.mu.RLock()
+	nodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
+	sourceNodeID := probeVirtualRouterState.ipToNode[sourceIP.String()]
+	targetNodeID := probeVirtualRouterState.ipToNode[targetIP.String()]
+	probeVirtualRouterState.mu.RUnlock()
+	if nodeID == "" {
+		nodeID = sourceNodeID
+	}
+	return currentProbeVirtualRouterPathBetweenNodes(nodeID, targetNodeID)
+}
+
+func probeVirtualRouterPacketTargetsLocalIP(runtime *probeChainRuntime, dstIP string) bool {
+	localIP := net.ParseIP(currentProbeVirtualRouterLocalIPForRuntime(runtime)).To4()
+	targetIP := net.ParseIP(strings.TrimSpace(dstIP)).To4()
+	if localIP == nil || targetIP == nil {
+		return false
+	}
+	return targetIP.Equal(localIP)
 }
 
 func buildProbeVirtualRouterTunnelOpenRequest(dstIP string, path []string) probeChainTunnelOpenRequest {
@@ -475,7 +667,7 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if dstIP == "" {
 		return false
 	}
-	path := currentProbeVirtualRouterPathToIP(dstIP)
+	path := currentProbeVirtualRouterPathForPacket(packet, dstIP)
 	if len(path) < 2 {
 		return false
 	}
@@ -628,9 +820,8 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 		if len(path) == 0 {
 			path = currentProbeVirtualRouterPathToIP(dstIP)
 		}
-		localNodeID := currentProbeVirtualRouterLocalNodeID()
-		if len(path) > 0 && normalizeProbeChainNodeID(path[len(path)-1]) == localNodeID {
-			if handleProbeVirtualRouterLocalICMPEchoRequest(runtime, packet) {
+		if probeVirtualRouterPacketTargetsLocalIP(runtime, dstIP) {
+			if handleProbeVirtualRouterLocalICMPEchoRequest(runtime, packet, path) {
 				recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
 				continue
 			}
@@ -651,6 +842,9 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 
 func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path []string) error {
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if localNodeID == "" && len(path) > 0 {
+		localNodeID = normalizeProbeChainNodeID(path[0])
+	}
 	if localNodeID == "" {
 		return errors.New("local virtual router node id is empty")
 	}
@@ -676,23 +870,44 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	return nil
 }
 
-func handleProbeVirtualRouterLocalICMPEchoRequest(runtime *probeChainRuntime, packet []byte) bool {
-	reply, dstIP, ok := buildProbeVirtualRouterICMPEchoReply(packet, currentProbeVirtualRouterLocalIP())
+func handleProbeVirtualRouterLocalICMPEchoRequest(runtime *probeChainRuntime, packet []byte, ingressPath []string) bool {
+	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)
+	reply, dstIP, ok := buildProbeVirtualRouterICMPEchoReply(packet, localIP)
 	if !ok {
 		return false
 	}
-	path := currentProbeVirtualRouterPathToIP(dstIP)
+	path := probeVirtualRouterReversePath(ingressPath)
+	if len(path) < 2 {
+		path = currentProbeVirtualRouterPathForPacket(reply, dstIP)
+	}
 	if len(path) < 2 {
 		log.Printf("probe virtual router icmp echo reply path unavailable: dst=%s", dstIP)
-		return true
+		return false
 	}
 	if err := forwardProbeVirtualRouterPacketAlongPath(reply, dstIP, path); err != nil {
 		if runtime != nil {
 			recordProbeVirtualRouterRuntimeOpenError(runtime.cfg.chainID, err)
 		}
 		log.Printf("probe virtual router icmp echo reply forward failed: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
+		return false
 	}
 	return true
+}
+
+func probeVirtualRouterReversePath(path []string) []string {
+	if len(path) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(path))
+	for i := len(path) - 1; i >= 0; i-- {
+		if nodeID := normalizeProbeChainNodeID(path[i]); nodeID != "" {
+			out = append(out, nodeID)
+		}
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
 }
 
 func openProbeVirtualRouterPacketStream(rt *probeChainRuntime, direction string, dstIP string, path []string) (net.Conn, error) {
