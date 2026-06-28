@@ -33,6 +33,7 @@ var (
 
 var probeLocalTUNDataPlaneState = struct {
 	mu            sync.Mutex
+	startMu       sync.Mutex
 	libraryPath   string
 	adapterHandle uintptr
 	interfaceLUID uint64
@@ -42,24 +43,30 @@ var probeLocalTUNDataPlaneState = struct {
 }{}
 
 func startProbeLocalTUNDataPlane() error {
+	probeLocalTUNDataPlaneState.startMu.Lock()
+	defer probeLocalTUNDataPlaneState.startMu.Unlock()
+
 	probeLocalTUNDataPlaneState.mu.Lock()
-	if probeLocalTUNDataPlaneState.dataPlane != nil {
-		dataPlane := probeLocalTUNDataPlaneState.dataPlane
-		interfaceLUID := probeLocalTUNDataPlaneState.interfaceLUID
-		ifIndex := probeLocalTUNDataPlaneState.ifIndex
-		probeLocalTUNDataPlaneState.mu.Unlock()
+	dataPlane := probeLocalTUNDataPlaneState.dataPlane
+	interfaceLUID := probeLocalTUNDataPlaneState.interfaceLUID
+	ifIndex := probeLocalTUNDataPlaneState.ifIndex
+	probeLocalTUNDataPlaneState.mu.Unlock()
+	if dataPlane != nil {
 		stats := dataPlane.Stats()
-		healthy := stats.Running && probeLocalTUNDataPlaneRouteTargetHealthy(interfaceLUID, ifIndex)
-		if healthy {
+		if stats.Running && probeLocalTUNDataPlaneRouteTargetHealthy(interfaceLUID, ifIndex) {
 			return nil
 		}
 		logProbeWarnf("probe local tun data plane is stale; restarting session: running=%v if_luid=%d if_index=%d", stats.Running, interfaceLUID, ifIndex)
 		if err := stopProbeLocalTUNDataPlane(); err != nil {
 			logProbeWarnf("probe local tun stale data plane stop failed before restart: %v", err)
 		}
-		return startProbeLocalTUNDataPlane()
+		probeLocalTUNDataPlaneState.mu.Lock()
+		dataPlane = probeLocalTUNDataPlaneState.dataPlane
+		probeLocalTUNDataPlaneState.mu.Unlock()
+		if dataPlane != nil {
+			return nil
+		}
 	}
-	probeLocalTUNDataPlaneState.mu.Unlock()
 
 	if err := probeLocalEnsureWintunLibraryForDataPlane(); err != nil {
 		clearProbeLocalWindowsDirectBypassRouteTarget()
@@ -85,7 +92,7 @@ func startProbeLocalTUNDataPlane() error {
 		clearProbeLocalWindowsDirectBypassRouteTarget()
 		return fmt.Errorf("prepare direct bypass route target: %w", err)
 	}
-	dataPlane, err := probeLocalNewTUNDataPlaneRunner(libraryPath, handle, func(packet []byte) {
+	dataPlane, err = probeLocalNewTUNDataPlaneRunner(libraryPath, handle, func(packet []byte) {
 		handler := currentProbeLocalTUNInboundPacketHandler()
 		if handler != nil && len(packet) > 0 {
 			handler(packet)

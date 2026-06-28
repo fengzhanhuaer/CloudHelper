@@ -92,8 +92,11 @@ var probeVirtualRouterControlResponseState = struct {
 }{pending: make(map[string]chan probeVirtualRouterControlProbePayload)}
 
 var probeVirtualRouterLocalInterfaceRetryState = struct {
-	mu      sync.Mutex
-	running bool
+	mu         sync.Mutex
+	running    bool
+	generation uint64
+	ensuredIP  string
+	ensuredAt  time.Time
 }{}
 
 var probeVirtualRouterFrameLinkPrewarmState = struct {
@@ -581,6 +584,7 @@ func ensureProbeVirtualRouterLocalInterfaceIP() {
 		return
 	}
 	log.Printf("probe virtual router local ip ensured: ip=%s", localIP)
+	markProbeVirtualRouterLocalInterfaceEnsured(localIP)
 	markProbeLocalTUNInterfaceReady()
 }
 
@@ -599,12 +603,15 @@ func scheduleProbeVirtualRouterLocalInterfaceIPRetry(localIP string, cause error
 	if strings.TrimSpace(localIP) == "" || cause == nil {
 		return
 	}
+	cleanIP := strings.TrimSpace(localIP)
 	probeVirtualRouterLocalInterfaceRetryState.mu.Lock()
 	if probeVirtualRouterLocalInterfaceRetryState.running {
 		probeVirtualRouterLocalInterfaceRetryState.mu.Unlock()
 		return
 	}
 	probeVirtualRouterLocalInterfaceRetryState.running = true
+	probeVirtualRouterLocalInterfaceRetryState.generation++
+	retryGeneration := probeVirtualRouterLocalInterfaceRetryState.generation
 	probeVirtualRouterLocalInterfaceRetryState.mu.Unlock()
 
 	go func() {
@@ -621,9 +628,13 @@ func scheduleProbeVirtualRouterLocalInterfaceIPRetry(localIP string, cause error
 			20 * time.Second,
 			30 * time.Second,
 		}
-		log.Printf("probe virtual router local ip retry scheduled: ip=%s reason=%v", strings.TrimSpace(localIP), cause)
+		log.Printf("probe virtual router local ip retry scheduled: ip=%s reason=%v", cleanIP, cause)
 		for attempt, delay := range delays {
 			time.Sleep(delay)
+			if probeVirtualRouterLocalInterfaceRetryObsolete(cleanIP, retryGeneration) {
+				log.Printf("probe virtual router local ip retry stopped: ip=%s reason=already_ensured attempt=%d", cleanIP, attempt+1)
+				return
+			}
 			nextIP, err := ensureProbeVirtualRouterLocalInterfaceIPOnce()
 			if nextIP == "" {
 				log.Printf("probe virtual router local ip retry stopped: reason=local_ip_empty attempt=%d", attempt+1)
@@ -634,11 +645,37 @@ func scheduleProbeVirtualRouterLocalInterfaceIPRetry(localIP string, cause error
 				continue
 			}
 			log.Printf("probe virtual router local ip retry succeeded: ip=%s attempt=%d", nextIP, attempt+1)
+			markProbeVirtualRouterLocalInterfaceEnsured(nextIP)
 			markProbeLocalTUNInterfaceReady()
 			return
 		}
-		log.Printf("warning: probe virtual router local ip retry exhausted: ip=%s attempts=%d", strings.TrimSpace(localIP), len(delays))
+		log.Printf("warning: probe virtual router local ip retry exhausted: ip=%s attempts=%d", cleanIP, len(delays))
 	}()
+}
+
+func markProbeVirtualRouterLocalInterfaceEnsured(localIP string) {
+	cleanIP := strings.TrimSpace(localIP)
+	if cleanIP == "" {
+		return
+	}
+	probeVirtualRouterLocalInterfaceRetryState.mu.Lock()
+	probeVirtualRouterLocalInterfaceRetryState.ensuredIP = cleanIP
+	probeVirtualRouterLocalInterfaceRetryState.ensuredAt = time.Now()
+	probeVirtualRouterLocalInterfaceRetryState.generation++
+	probeVirtualRouterLocalInterfaceRetryState.mu.Unlock()
+}
+
+func probeVirtualRouterLocalInterfaceRetryObsolete(localIP string, generation uint64) bool {
+	cleanIP := strings.TrimSpace(localIP)
+	if cleanIP == "" {
+		return true
+	}
+	probeVirtualRouterLocalInterfaceRetryState.mu.Lock()
+	defer probeVirtualRouterLocalInterfaceRetryState.mu.Unlock()
+	if probeVirtualRouterLocalInterfaceRetryState.generation != generation {
+		return true
+	}
+	return probeVirtualRouterLocalInterfaceRetryState.ensuredIP == cleanIP && !probeVirtualRouterLocalInterfaceRetryState.ensuredAt.IsZero()
 }
 
 func probeVirtualRouterIPForNode(config probeVirtualRouterConfig, nodeID string) string {
