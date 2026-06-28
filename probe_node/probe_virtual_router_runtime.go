@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"log"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -194,12 +193,6 @@ func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) strin
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		"chain",
 		strings.TrimSpace(rule.ID),
-		normalizeProbeChainNodeID(rule.FromNodeID),
-		normalizeProbeChainNodeID(rule.ToNodeID),
-		strings.TrimSpace(rule.FromServiceDomain),
-		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.FromServicePort)),
-		strings.TrimSpace(rule.ToServiceDomain),
-		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.ToServicePort)),
 	}, "|")))
 	return probeVirtualRouterRuntimeChainIDPrefix + hex.EncodeToString(sum[:])[:24]
 }

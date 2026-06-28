@@ -46,3 +46,54 @@ func TestProbeVirtualRouterIPForNodeUsesFirst1024FakeIPs(t *testing.T) {
 		t.Fatalf("node 1023 ip=%q, want empty", got)
 	}
 }
+
+func TestProbeVirtualRouterRuntimeChainIDIsStableAcrossServiceEndpointChanges(t *testing.T) {
+	base := probeVirtualRouterTopologyRule{
+		ID:                "edge-a-b",
+		FromNodeID:        "1",
+		ToNodeID:          "2",
+		FromServiceDomain: "old-a.internal",
+		FromServicePort:   12040,
+		ToServiceDomain:   "old-b.internal",
+		ToServicePort:     12040,
+		Enabled:           true,
+	}
+	changedEndpoint := base
+	changedEndpoint.FromServiceDomain = "new-a.internal"
+	changedEndpoint.FromServicePort = 13040
+	changedEndpoint.ToServiceDomain = "new-b.internal"
+	changedEndpoint.ToServicePort = 13041
+	changedEndpoint.FromNodeID = "3"
+	changedEndpoint.ToNodeID = "4"
+
+	if left, right := probeVirtualRouterRuntimeChainID(base), probeVirtualRouterRuntimeChainID(changedEndpoint); left != right {
+		t.Fatalf("same rule should keep chain id across topology endpoint changes: %s != %s", left, right)
+	}
+
+	changedRule := base
+	changedRule.ID = "edge-a-b-other"
+	if left, right := probeVirtualRouterRuntimeChainID(base), probeVirtualRouterRuntimeChainID(changedRule); left == right {
+		t.Fatalf("different rule ids should produce different chain ids: %s", left)
+	}
+}
+
+func TestNormalizeProbeVirtualRouterTopologyRulesInitializesRuleIDsBySequence(t *testing.T) {
+	config := normalizeProbeVirtualRouterConfig(probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{ID: "vr-1", FromNodeID: "2", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	})
+	if len(config.TopologyRules) != 3 {
+		t.Fatalf("topology rules=%+v", config.TopologyRules)
+	}
+	idsByFrom := map[string]string{}
+	for _, rule := range config.TopologyRules {
+		idsByFrom[rule.FromNodeID] = rule.ID
+	}
+	if idsByFrom["1"] != "vr-2" || idsByFrom["2"] != "vr-1" || idsByFrom["3"] != "vr-3" {
+		t.Fatalf("rule ids should be initialized once by sequence: %+v", config.TopologyRules)
+	}
+}

@@ -1189,15 +1189,18 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 
 func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, probeLocalProxyRuntimeState, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if !m.tun.Installed {
 		m.proxy.LastError = "tun driver is not installed"
 		m.proxy.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		return m.tun, m.proxy, &probeLocalHTTPError{Status: http.StatusConflict, Message: m.proxy.LastError}
+		tun := m.tun
+		proxy := m.proxy
+		m.mu.Unlock()
+		return tun, proxy, &probeLocalHTTPError{Status: http.StatusConflict, Message: proxy.LastError}
 	}
+	m.mu.Unlock()
 
 	if err := startProbeLocalTUNProxyRuntime(); err != nil {
+		m.mu.Lock()
 		m.proxy.LastError = strings.TrimSpace(err.Error())
 		m.proxy.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		m.tun.DataPlane = false
@@ -1210,10 +1213,14 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		if errors.Is(err, errProbeLocalProxyUnsupported) {
 			status = http.StatusNotImplemented
 		}
-		return m.tun, m.proxy, &probeLocalHTTPError{Status: status, Message: m.proxy.LastError}
+		tun := m.tun
+		proxy := m.proxy
+		m.mu.Unlock()
+		return tun, proxy, &probeLocalHTTPError{Status: status, Message: proxy.LastError}
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
 	m.tun.LastError = ""
 	m.tun.Enabled = true
 	m.tun.UpdatedAt = now
@@ -1228,12 +1235,15 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 	m.tun.DataPlaneBytes = stats.RXBytes
 	m.tun.DataPlaneTX = stats.TXPackets
 	m.tun.DataPlaneTXBytes = stats.TXBytes
+	tun := m.tun
+	proxy := m.proxy
+	m.mu.Unlock()
 
 	if err := persistProbeLocalProxyPersistentState(true, probeLocalProxyModeTUN); err != nil {
 		logProbeWarnf("probe local proxy persist enabled state failed: %v", err)
 	}
-	persistProbeLocalTUNStateBestEffort(m.tun.Installed, true)
-	return m.tun, m.proxy, nil
+	persistProbeLocalTUNStateBestEffort(tun.Installed, true)
+	return tun, proxy, nil
 }
 
 func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, probeLocalProxyRuntimeState, error) {

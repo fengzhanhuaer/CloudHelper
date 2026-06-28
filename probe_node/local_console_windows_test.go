@@ -60,6 +60,57 @@ func TestProbeLocalProxyEnableStartsDataPlaneBeforeTakeover(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyEnableDoesNotHoldControlLockWhileStartingDataPlane(t *testing.T) {
+	_ = setupProbeLocalConsoleTest(t)
+	useProbeLocalWindowsCommandBackedRouteHooksForTest()
+	oldRun := probeLocalWindowsRunCommand
+	t.Cleanup(func() {
+		probeLocalWindowsRunCommand = oldRun
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+		resetProbeLocalProxyHooksForTest()
+		resetProbeLocalTUNDataPlaneHooksForTest()
+	})
+
+	probeLocalControl.mu.Lock()
+	probeLocalControl.tun.Installed = true
+	probeLocalControl.mu.Unlock()
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
+	t.Setenv("PROBE_LOCAL_TUN_DNS_HOST", "198.18.0.2")
+	stubProbeLocalConsoleTUNRouteTargetForTest(t)
+
+	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		if name == "powershell" {
+			return `{"interface_index":12,"next_hop":"192.168.1.1"}`, nil
+		}
+		return "", nil
+	}
+	probeLocalEnsureWintunLibraryForDataPlane = func() error { return nil }
+	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
+	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
+	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
+	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+		markProbeLocalTUNInterfaceReady()
+		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
+	probeLocalApplyProxyTakeover = func() error { return nil }
+	probeLocalRestoreProxyDirect = func() error { return nil }
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := probeLocalControl.enableProxy()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("enableProxy returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("enableProxy deadlocked while data plane marked TUN ready")
+	}
+}
+
 func stubProbeLocalConsoleTUNRouteTargetForTest(t *testing.T) {
 	t.Helper()
 	const (

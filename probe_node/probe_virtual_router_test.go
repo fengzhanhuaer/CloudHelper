@@ -333,6 +333,112 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	}
 }
 
+func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
+				ID:              "edge-a-b",
+				FromNodeID:      "1",
+				ToNodeID:        "2",
+				FromServicePort: 12040,
+				ToServiceDomain: "b.internal",
+				ToServicePort:   12040,
+				Enabled:         true,
+			}),
+			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
+				ID:              "edge-c-b",
+				FromNodeID:      "3",
+				ToNodeID:        "2",
+				FromServicePort: 12040,
+				ToServiceDomain: "b.internal",
+				ToServicePort:   12040,
+				Enabled:         true,
+			}),
+		},
+	}
+
+	left := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "1", Secret: "node-1"}, "")
+	middle := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "2", Secret: "node-2"}, "")
+	right := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "3", Secret: "node-3"}, "")
+	if len(left) != 1 || len(middle) != 2 || len(right) != 1 {
+		t.Fatalf("runtime configs left=%d middle=%d right=%d", len(left), len(middle), len(right))
+	}
+	if left[0].listenPort != 12040 || right[0].listenPort != 12040 {
+		t.Fatalf("dialer listen ports left=%d right=%d", left[0].listenPort, right[0].listenPort)
+	}
+	if left[0].nextHost != "b.internal" || left[0].nextPort != 12040 || right[0].nextHost != "b.internal" || right[0].nextPort != 12040 {
+		t.Fatalf("dialers should target same B service port: left=%+v right=%+v", left[0], right[0])
+	}
+	if middle[0].listenPort != 12040 || middle[1].listenPort != 12040 {
+		t.Fatalf("listener ports middle=%d/%d", middle[0].listenPort, middle[1].listenPort)
+	}
+	if middle[0].chainID == middle[1].chainID {
+		t.Fatalf("rules sharing one port must still have distinct chain ids: %+v", middle)
+	}
+	seenPrev := map[string]struct{}{
+		middle[0].prevNodeID: {},
+		middle[1].prevNodeID: {},
+	}
+	if _, ok := seenPrev["1"]; !ok {
+		t.Fatalf("B runtime should keep rule from node 1: %+v", middle)
+	}
+	if _, ok := seenPrev["3"]; !ok {
+		t.Fatalf("B runtime should keep rule from node 3: %+v", middle)
+	}
+}
+
+func TestProbeVirtualRouterRuntimeChainIDIsStableAcrossServiceEndpointChanges(t *testing.T) {
+	base := probeVirtualRouterTopologyRule{
+		ID:                "edge-a-b",
+		FromNodeID:        "1",
+		ToNodeID:          "2",
+		FromServiceDomain: "old-a.internal",
+		FromServicePort:   12040,
+		ToServiceDomain:   "old-b.internal",
+		ToServicePort:     12040,
+		Enabled:           true,
+	}
+	changedEndpoint := base
+	changedEndpoint.FromServiceDomain = "new-a.internal"
+	changedEndpoint.FromServicePort = 13040
+	changedEndpoint.ToServiceDomain = "new-b.internal"
+	changedEndpoint.ToServicePort = 13041
+	changedEndpoint.FromNodeID = "3"
+	changedEndpoint.ToNodeID = "4"
+
+	if left, right := probeVirtualRouterRuntimeChainID(base), probeVirtualRouterRuntimeChainID(changedEndpoint); left != right {
+		t.Fatalf("same rule should keep chain id across topology endpoint changes: %s != %s", left, right)
+	}
+
+	changedRule := base
+	changedRule.ID = "edge-a-b-other"
+	if left, right := probeVirtualRouterRuntimeChainID(base), probeVirtualRouterRuntimeChainID(changedRule); left == right {
+		t.Fatalf("different rule ids should produce different chain ids: %s", left)
+	}
+}
+
+func TestSanitizeProbeVirtualRouterTopologyRulesInitializesRuleIDsBySequence(t *testing.T) {
+	config := sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{ID: "vr-1", FromNodeID: "2", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	})
+	if len(config.TopologyRules) != 3 {
+		t.Fatalf("topology rules=%+v", config.TopologyRules)
+	}
+	idsByFrom := map[string]string{}
+	for _, rule := range config.TopologyRules {
+		idsByFrom[rule.FromNodeID] = rule.ID
+	}
+	if idsByFrom["1"] != "vr-2" || idsByFrom["2"] != "vr-1" || idsByFrom["3"] != "vr-3" {
+		t.Fatalf("rule ids should be initialized once by sequence: %+v", config.TopologyRules)
+	}
+}
+
 func TestBuildProbeVirtualRouterRuntimeConfigForwardPassiveSideDoesNotProbePrev(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

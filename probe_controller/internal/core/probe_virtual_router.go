@@ -321,7 +321,9 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 	now := time.Now().UTC().Format(time.RFC3339)
 	out := make([]probeVirtualRouterTopologyRule, 0, len(items))
 	seen := map[string]struct{}{}
-	for index, item := range items {
+	reserved := collectProbeVirtualRouterReservedRuleIDs(items)
+	nextRuleSeq := 1
+	for _, item := range items {
 		fromNodeID := normalizeProbeNodeID(item.FromNodeID)
 		toNodeID := normalizeProbeNodeID(item.ToNodeID)
 		direction := normalizeProbeVirtualRouterDirection(item.Direction)
@@ -334,7 +336,7 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		toServicePort := normalizeProbeVirtualRouterServicePort(item.ToServicePort)
 		ruleID := strings.TrimSpace(item.ID)
 		if ruleID == "" {
-			ruleID = fmt.Sprintf("vr-%s-%s-%d", fromNodeID, toNodeID, index+1)
+			ruleID, nextRuleSeq = allocateProbeVirtualRouterRuleID(seen, reserved, nextRuleSeq)
 		}
 		key := ruleID
 		if key == "" {
@@ -380,6 +382,32 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		return strings.TrimSpace(out[i].ID) < strings.TrimSpace(out[j].ID)
 	})
 	return out
+}
+
+func collectProbeVirtualRouterReservedRuleIDs(items []probeVirtualRouterTopologyRule) map[string]struct{} {
+	reserved := map[string]struct{}{}
+	for _, item := range items {
+		ruleID := strings.TrimSpace(item.ID)
+		if ruleID != "" {
+			reserved[ruleID] = struct{}{}
+		}
+	}
+	return reserved
+}
+
+func allocateProbeVirtualRouterRuleID(seen map[string]struct{}, reserved map[string]struct{}, nextSeq int) (string, int) {
+	if nextSeq <= 0 {
+		nextSeq = 1
+	}
+	for {
+		ruleID := fmt.Sprintf("vr-%d", nextSeq)
+		nextSeq++
+		if _, exists := seen[ruleID]; !exists {
+			if _, exists := reserved[ruleID]; !exists {
+				return ruleID, nextSeq
+			}
+		}
+	}
 }
 
 func ensureProbeVirtualRouterAuthFields(config probeVirtualRouterConfig) probeVirtualRouterConfig {
@@ -443,12 +471,6 @@ func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) strin
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		"chain",
 		strings.TrimSpace(rule.ID),
-		normalizeProbeNodeID(rule.FromNodeID),
-		normalizeProbeNodeID(rule.ToNodeID),
-		strings.TrimSpace(rule.FromServiceDomain),
-		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.FromServicePort)),
-		strings.TrimSpace(rule.ToServiceDomain),
-		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.ToServicePort)),
 	}, "|")))
 	return probeVirtualRouterRuntimeChainPrefix + hex.EncodeToString(sum[:])[:24]
 }
