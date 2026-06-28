@@ -52,7 +52,9 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 	for _, want := range []string{
 		"ip link set dev probe0 up",
 		"ip -4 addr replace 198.18.0.2/15 dev probe0",
+		"ip -4 route replace 198.18.0.0/15 dev probe0 src 198.18.0.2",
 		"ip -4 addr replace 198.18.0.11/15 dev probe0",
+		"ip -4 route replace 198.18.0.0/15 dev probe0 src 198.18.0.11",
 	} {
 		if !hasProbeVirtualRouterLinuxCommand(calls, want) {
 			t.Fatalf("missing command %q calls=%v", want, calls)
@@ -101,7 +103,9 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxCreatesDefaultDeviceWhe
 		"ip tuntap add dev cloudhelper0 mode tun",
 		"ip link set dev cloudhelper0 up",
 		"ip -4 addr replace 198.18.0.2/15 dev cloudhelper0",
+		"ip -4 route replace 198.18.0.0/15 dev cloudhelper0 src 198.18.0.2",
 		"ip -4 addr replace 198.18.0.11/15 dev cloudhelper0",
+		"ip -4 route replace 198.18.0.0/15 dev cloudhelper0 src 198.18.0.11",
 	} {
 		if !hasProbeVirtualRouterLinuxCommand(calls, want) {
 			t.Fatalf("missing command %q calls=%v", want, calls)
@@ -161,6 +165,9 @@ func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testi
 	}
 	if !hasProbeVirtualRouterLinuxCommand(calls, "ip -4 addr replace 198.18.0.21/15 dev cloudhelper0") {
 		t.Fatalf("missing local virtual ip command calls=%v", calls)
+	}
+	if !hasProbeVirtualRouterLinuxCommand(calls, "ip -4 route replace 198.18.0.0/15 dev cloudhelper0 src 198.18.0.21") {
+		t.Fatalf("missing local virtual route command calls=%v", calls)
 	}
 }
 

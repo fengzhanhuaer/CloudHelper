@@ -3,7 +3,8 @@ FROM alpine:3.20
 WORKDIR /opt/cloudhelper/probe_node
 
 COPY docker-entrypoint.sh /usr/local/bin/cloudhelper-probe-node-entrypoint
-RUN chmod +x /usr/local/bin/cloudhelper-probe-node-entrypoint \
+RUN apk add --no-cache iproute2 ca-certificates \
+    && chmod +x /usr/local/bin/cloudhelper-probe-node-entrypoint \
     && mkdir -p /opt/cloudhelper/probe_node/data /opt/cloudhelper/probe_node/logs /opt/cloudhelper/probe_node/temp
 
 ENV PROBE_NODE_DATA_DIR=/opt/cloudhelper/probe_node/data

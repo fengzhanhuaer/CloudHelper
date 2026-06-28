@@ -11,6 +11,7 @@ import (
 )
 
 const probeLocalLinuxDefaultTUNDeviceName = "cloudhelper0"
+const probeLocalLinuxVirtualRouteCIDR = "198.18.0.0/15"
 
 func init() {
 	probeLocalDetectTUNInstalled = detectProbeLocalTUNInstalledLinux
@@ -71,6 +72,9 @@ func ensureProbeLocalLinuxTUNDeviceReady() (string, error) {
 	if err := ensureProbeLocalLinuxInterfaceIPv4(dev, probeLocalTUNInterfaceIPv4); err != nil {
 		return "", err
 	}
+	if err := ensureProbeLocalLinuxVirtualRoute(dev, probeLocalTUNInterfaceIPv4); err != nil {
+		return "", err
+	}
 	return dev, nil
 }
 
@@ -114,6 +118,18 @@ func ensureProbeLocalLinuxInterfaceIPv4(dev string, ip string) error {
 	cidr := fmt.Sprintf("%s/%d", ip, probeLocalTUNRouteIPv4PrefixLen)
 	if _, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "addr", "replace", cidr, "dev", dev); err != nil {
 		return fmt.Errorf("replace linux tun ipv4 failed: dev=%s ip=%s: %w", dev, cidr, err)
+	}
+	return nil
+}
+
+func ensureProbeLocalLinuxVirtualRoute(dev string, srcIP string) error {
+	args := []string{"-4", "route", "replace", probeLocalLinuxVirtualRouteCIDR, "dev", dev}
+	if strings.TrimSpace(srcIP) != "" {
+		args = append(args, "src", strings.TrimSpace(srcIP))
+	}
+	_, err := probeLocalLinuxRunCommand(5*time.Second, "ip", args...)
+	if err != nil {
+		return fmt.Errorf("replace linux tun virtual route failed: dev=%s cidr=%s src=%s: %w", dev, probeLocalLinuxVirtualRouteCIDR, strings.TrimSpace(srcIP), err)
 	}
 	return nil
 }

@@ -25,6 +25,9 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 			return err
 		}
 	}
+	if err := ensureProbeLocalLinuxVirtualRoute(dev, cleanIP); err != nil {
+		return err
+	}
 	if err := startProbeLocalTUNDataPlane(); err != nil {
 		return err
 	}
