@@ -19,9 +19,7 @@ import (
 )
 
 const (
-	probeVirtualRouterDirectionTwoWay    = "bidirectional"
 	probeVirtualRouterDirectionForward   = "forward"
-	probeVirtualRouterDirectionBackward  = "backward"
 	probeVirtualRouterDefaultServicePort = 12040
 	probeVirtualRouterTunnelOpenType     = "virtual_router_lan_packet"
 	probeVirtualRouterTunnelScope        = "virtual_router"
@@ -68,8 +66,7 @@ type probeVirtualRouterRuntimeStats struct {
 	LastPingError             string `json:"last_ping_error,omitempty"`
 	LastPingAt                string `json:"last_ping_at,omitempty"`
 	LastPingDirection         string `json:"last_ping_direction,omitempty"`
-	LastPingBridgeDownstream  int    `json:"last_ping_bridge_downstream,omitempty"`
-	LastPingBridgeUpstream    int    `json:"last_ping_bridge_upstream,omitempty"`
+	LastPingBridgeConnections int    `json:"last_ping_bridge_connections,omitempty"`
 	LastPingBridgeSessionID   string `json:"last_ping_bridge_session_id,omitempty"`
 	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
 	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
@@ -145,7 +142,7 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 		fromNodeID := normalizeProbeChainNodeID(item.FromNodeID)
 		toNodeID := normalizeProbeChainNodeID(item.ToNodeID)
 		direction := normalizeProbeVirtualRouterDirection(item.Direction)
-		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID || direction == "" {
+		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 			continue
 		}
 		fromServiceDomain := strings.TrimSpace(item.FromServiceDomain)
@@ -154,11 +151,11 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 		toServicePort := normalizeProbeVirtualRouterServicePort(item.ToServicePort)
 		ruleID := strings.TrimSpace(item.ID)
 		if ruleID == "" {
-			ruleID = fmt.Sprintf("vr-%s-%s-%s-%d", fromNodeID, toNodeID, direction, index+1)
+			ruleID = fmt.Sprintf("vr-%s-%s-%d", fromNodeID, toNodeID, index+1)
 		}
 		key := ruleID
 		if key == "" {
-			key = fmt.Sprintf("%s|%s|%s|%s|%d|%s|%d", fromNodeID, toNodeID, direction, fromServiceDomain, fromServicePort, toServiceDomain, toServicePort)
+			key = fmt.Sprintf("%s|%s|%s|%d|%s|%d", fromNodeID, toNodeID, fromServiceDomain, fromServicePort, toServiceDomain, toServicePort)
 		}
 		if _, exists := seen[key]; exists {
 			continue
@@ -190,7 +187,7 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 		if out[i].ToNodeID != out[j].ToNodeID {
 			return out[i].ToNodeID < out[j].ToNodeID
 		}
-		return out[i].Direction < out[j].Direction
+		return strings.TrimSpace(out[i].ID) < strings.TrimSpace(out[j].ID)
 	})
 	return out
 }
@@ -203,16 +200,7 @@ func normalizeProbeVirtualRouterServicePort(port int) int {
 }
 
 func normalizeProbeVirtualRouterDirection(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "bidirectional", "both", "two_way", "two-way":
-		return probeVirtualRouterDirectionTwoWay
-	case "forward", "one_way", "one-way", "from_to", "a_to_b":
-		return probeVirtualRouterDirectionForward
-	case "backward", "reverse", "to_from", "b_to_a":
-		return probeVirtualRouterDirectionBackward
-	default:
-		return ""
-	}
+	return probeVirtualRouterDirectionForward
 }
 
 func persistProbeVirtualRouterCache(config probeVirtualRouterConfig) error {
@@ -537,7 +525,7 @@ func shouldProbeVirtualRouterPrevDirection(rt *probeChainRuntime) bool {
 	if normalizeProbeChainDialMode(rt.cfg.prevDialMode) == probeChainDialModeReverse {
 		return true
 	}
-	return rt.getUpstreamSession() != nil
+	return probeVirtualRouterRuntimeHasPhysicalBridgeSession(rt)
 }
 
 func probeVirtualRouterPingPongDirection(rt *probeChainRuntime, direction string) {
@@ -550,7 +538,7 @@ func probeVirtualRouterPingPongDirection(rt *probeChainRuntime, direction string
 		Priority:  "realtime",
 		RequestID: newProbeTCPDebugFlowID("vrouter_ping", rt.cfg.chainID),
 	}
-	conn, _, err := openProbeChainPortForwardDataStreamByDialMode(rt, direction, req)
+	conn, _, err := openProbeVirtualRouterPhysicalBridgeStream(rt, req)
 	if err != nil {
 		recordProbeVirtualRouterRuntimePingError(rt, direction, err)
 		return
@@ -693,7 +681,7 @@ func openProbeVirtualRouterPacketStream(rt *probeChainRuntime, direction string,
 	}
 	req := buildProbeVirtualRouterTunnelOpenRequest(dstIP, path)
 	startedAt := time.Now()
-	conn, _, err := openProbeChainPortForwardDataStreamByDialMode(rt, direction, req)
+	conn, _, err := openProbeVirtualRouterPhysicalBridgeStream(rt, req)
 	if err != nil {
 		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 		return nil, err
@@ -914,11 +902,18 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeChainRuntime, direction s
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
-		item.LastPingError = strings.TrimSpace(err.Error())
+		item.LastPingError = normalizeProbeVirtualRouterBridgeError(err.Error())
 		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func normalizeProbeVirtualRouterBridgeError(value string) string {
+	text := strings.TrimSpace(value)
+	text = strings.ReplaceAll(text, "upstream bridge", "bridge")
+	text = strings.ReplaceAll(text, "downstream bridge", "bridge")
+	return text
 }
 
 func snapshotProbeVirtualRouterPingContext(rt *probeChainRuntime, direction string) (string, probeChainBridgeRuntimeStatus, probeChainBridgeSessionSnapshot) {
@@ -926,13 +921,9 @@ func snapshotProbeVirtualRouterPingContext(rt *probeChainRuntime, direction stri
 		return "", probeChainBridgeRuntimeStatus{}, probeChainBridgeSessionSnapshot{}
 	}
 	bridgeStatus := rt.snapshotBridgeStatus()
-	bridgeDirection := "downstream"
-	if normalizeProbeChainBridgeRole(direction) == probeChainBridgeRoleToPrev {
-		bridgeDirection = "upstream"
-	}
 	var selected probeChainBridgeSessionSnapshot
 	for _, session := range bridgeStatus.Sessions {
-		if session.Closed || !strings.EqualFold(strings.TrimSpace(session.Direction), bridgeDirection) {
+		if session.Closed {
 			continue
 		}
 		if selected.ConnectedAt == "" || session.ConnectedAt > selected.ConnectedAt {
@@ -947,11 +938,20 @@ func applyProbeVirtualRouterPingContext(item *probeVirtualRouterRuntimeStats, di
 		return
 	}
 	item.LastPingDirection = normalizeProbeChainBridgeRole(direction)
-	item.LastPingBridgeDownstream = bridgeStatus.DownstreamActive
-	item.LastPingBridgeUpstream = bridgeStatus.UpstreamActive
+	item.LastPingBridgeConnections = probeVirtualRouterBridgeConnectionCount(bridgeStatus)
 	item.LastPingBridgeSessionID = strings.TrimSpace(bridgeSession.SessionID)
 	item.LastPingBridgeRemote = strings.TrimSpace(bridgeSession.RemoteAddr)
 	item.LastPingBridgeConnectedAt = strings.TrimSpace(bridgeSession.ConnectedAt)
+}
+
+func probeVirtualRouterBridgeConnectionCount(bridgeStatus probeChainBridgeRuntimeStatus) int {
+	count := 0
+	for _, session := range bridgeStatus.Sessions {
+		if !session.Closed {
+			count++
+		}
+	}
+	return count
 }
 
 func clearProbeVirtualRouterRuntimePingError(chainID string) {
@@ -1036,23 +1036,15 @@ func findProbeVirtualRouterRuntimeForAdjacentNodeLocked(target string, virtualOn
 }
 
 func selectProbeVirtualRouterBridgeDirection(rt *probeChainRuntime, preferred string) string {
-	preferred = normalizeProbeChainBridgeRole(preferred)
-	if probeVirtualRouterRuntimeHasBridgeSession(rt, preferred) {
-		return preferred
-	}
-	alternate := probeChainBridgeRoleToPrev
-	if preferred == probeChainBridgeRoleToPrev {
-		alternate = probeChainBridgeRoleToNext
-	}
-	if probeVirtualRouterRuntimeHasBridgeSession(rt, alternate) {
-		return alternate
-	}
-	return preferred
+	return normalizeProbeChainBridgeRole(preferred)
 }
 
 func probeVirtualRouterRuntimeHasBridgeSession(rt *probeChainRuntime, direction string) bool {
 	if rt == nil {
 		return false
+	}
+	if rt.singleBridgeSessionPerRule() {
+		return probeVirtualRouterRuntimeHasPhysicalBridgeSession(rt)
 	}
 	switch normalizeProbeChainBridgeRole(direction) {
 	case probeChainBridgeRoleToPrev:
@@ -1060,6 +1052,13 @@ func probeVirtualRouterRuntimeHasBridgeSession(rt *probeChainRuntime, direction 
 	default:
 		return rt.getDownstreamSession() != nil
 	}
+}
+
+func probeVirtualRouterRuntimeHasPhysicalBridgeSession(rt *probeChainRuntime) bool {
+	if rt == nil {
+		return false
+	}
+	return rt.getDownstreamSession() != nil || rt.getUpstreamSession() != nil
 }
 
 func probeVirtualRouterNextHopInPath(path []string, localNodeID string) string {

@@ -196,7 +196,6 @@ func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) strin
 		strings.TrimSpace(rule.ID),
 		normalizeProbeChainNodeID(rule.FromNodeID),
 		normalizeProbeChainNodeID(rule.ToNodeID),
-		normalizeProbeVirtualRouterDirection(rule.Direction),
 		strings.TrimSpace(rule.FromServiceDomain),
 		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.FromServicePort)),
 		strings.TrimSpace(rule.ToServiceDomain),
@@ -211,41 +210,5 @@ func probeVirtualRouterRuleDialerNodeID(rule probeVirtualRouterTopologyRule) str
 	if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 		return ""
 	}
-	fromDomain := strings.TrimSpace(rule.FromServiceDomain)
-	toDomain := strings.TrimSpace(rule.ToServiceDomain)
-	if toDomain != "" && fromDomain == "" {
-		return fromNodeID
-	}
-	if fromDomain != "" && toDomain == "" {
-		return toNodeID
-	}
-	switch normalizeProbeVirtualRouterDirection(rule.Direction) {
-	case probeVirtualRouterDirectionForward:
-		return fromNodeID
-	case probeVirtualRouterDirectionBackward:
-		return toNodeID
-	default:
-		if compareProbeVirtualRouterNodeID(fromNodeID, toNodeID) <= 0 {
-			return fromNodeID
-		}
-		return toNodeID
-	}
-}
-
-func compareProbeVirtualRouterNodeID(left string, right string) int {
-	left = normalizeProbeChainNodeID(left)
-	right = normalizeProbeChainNodeID(right)
-	leftNum, leftErr := strconv.Atoi(left)
-	rightNum, rightErr := strconv.Atoi(right)
-	if leftErr == nil && rightErr == nil {
-		switch {
-		case leftNum < rightNum:
-			return -1
-		case leftNum > rightNum:
-			return 1
-		default:
-			return 0
-		}
-	}
-	return strings.Compare(left, right)
+	return fromNodeID
 }

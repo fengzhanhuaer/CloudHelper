@@ -86,8 +86,8 @@ func TestMngVirtualRouterSideStatsErrorIgnoresStaleErrorAfterBridgeReconnect(t *
 	}
 
 	side.VirtualRouter.LastPingAt = "2026-06-28T00:14:00Z"
-	if got := mngVirtualRouterSideStatsError(side); got != "upstream bridge is unavailable" {
-		t.Fatalf("current error=%q, want upstream bridge is unavailable", got)
+	if got := mngVirtualRouterSideStatsError(side); got != "bridge is unavailable" {
+		t.Fatalf("current error=%q, want bridge is unavailable", got)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 		Name:            "A-B",
 		FromNodeID:      "1",
 		ToNodeID:        "2",
-		Direction:       probeVirtualRouterDirectionTwoWay,
+		Direction:       probeVirtualRouterDirectionForward,
 		FromServicePort: 12040,
 		ToServicePort:   12040,
 		Enabled:         true,
@@ -170,20 +170,21 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 				},
 			},
 			VirtualRouter: &probeVirtualRouterRuntimeStats{
-				PacketsForwarded:  2,
-				BytesForwarded:    200,
-				FramesSent:        2,
-				FrameBytesSent:    200,
-				PingCount:         1,
-				LastPingLatencyMS: 12,
-				LastPingAt:        "2026-06-27T00:00:01Z",
-				LastPacketAt:      "2026-06-27T00:00:01Z",
-				LastFrameAt:       "2026-06-27T00:00:01Z",
-				TUNDataPlane:      true,
-				TUNRXPackets:      11,
-				TUNRXBytes:        1100,
-				TUNTXPackets:      5,
-				TUNTXBytes:        500,
+				PacketsForwarded:          2,
+				BytesForwarded:            200,
+				FramesSent:                2,
+				FrameBytesSent:            200,
+				PingCount:                 1,
+				LastPingLatencyMS:         12,
+				LastPingAt:                "2026-06-27T00:00:01Z",
+				LastPingBridgeConnections: 1,
+				LastPacketAt:              "2026-06-27T00:00:01Z",
+				LastFrameAt:               "2026-06-27T00:00:01Z",
+				TUNDataPlane:              true,
+				TUNRXPackets:              11,
+				TUNRXBytes:                1100,
+				TUNTXPackets:              5,
+				TUNTXBytes:                500,
 			},
 		},
 	})
@@ -230,6 +231,9 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	if item.Status != "ready" || item.ChainID != chainID {
 		t.Fatalf("unexpected route status: %+v", item)
 	}
+	if item.Direction != "A->B" {
+		t.Fatalf("route physical direction=%q, want A->B", item.Direction)
+	}
 	if item.Packets != 5 || item.Bytes != 500 || item.LastLatencyMS != 12 || item.LastPacketAt != "2026-06-27T00:00:02Z" {
 		t.Fatalf("unexpected route stats: %+v", item)
 	}
@@ -244,6 +248,9 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	}
 	if item.From.VirtualRouter == nil || !item.From.VirtualRouter.TUNDataPlane || item.From.VirtualRouter.TUNRXPackets != 11 || item.From.VirtualRouter.TUNRXBytes != 1100 || item.From.VirtualRouter.TUNTXPackets != 5 || item.From.VirtualRouter.TUNTXBytes != 500 {
 		t.Fatalf("unexpected tun data plane stats: %+v", item.From.VirtualRouter)
+	}
+	if item.From.VirtualRouter.LastPingBridgeConnections != 1 {
+		t.Fatalf("unexpected bridge connection count: %+v", item.From.VirtualRouter)
 	}
 	if len(item.From.BridgeSessions) != 1 ||
 		item.From.BridgeSessions[0].FramesSent != 7 ||
@@ -336,7 +343,7 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	if len(payload.Item.ProbeIPs) != 2 {
 		t.Fatalf("probe ips=%+v, want 2", payload.Item.ProbeIPs)
 	}
-	if len(payload.Item.TopologyRules) != 2 || payload.Item.TopologyRules[0].Direction != probeVirtualRouterDirectionTwoWay {
+	if len(payload.Item.TopologyRules) != 2 || payload.Item.TopologyRules[0].Direction != probeVirtualRouterDirectionForward {
 		t.Fatalf("topology rules=%+v", payload.Item.TopologyRules)
 	}
 	first := payload.Item.TopologyRules[0]

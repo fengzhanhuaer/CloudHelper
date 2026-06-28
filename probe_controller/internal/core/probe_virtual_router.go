@@ -19,9 +19,7 @@ const (
 	probeVirtualRouterMaxProbeIPCount    = 1024
 	probeVirtualRouterMaxTopologyRules   = 2048
 	probeVirtualRouterDefaultServicePort = 12040
-	probeVirtualRouterDirectionTwoWay    = "bidirectional"
 	probeVirtualRouterDirectionForward   = "forward"
-	probeVirtualRouterDirectionBackward  = "backward"
 	probeVirtualRouterReservedGatewayIP  = "198.18.0.1"
 	probeVirtualRouterReservedTUNIP      = "198.18.0.2"
 	probeVirtualRouterRuntimeChainPrefix = "vrouter-"
@@ -80,8 +78,7 @@ type probeVirtualRouterRuntimeStats struct {
 	LastPingError             string `json:"last_ping_error,omitempty"`
 	LastPingAt                string `json:"last_ping_at,omitempty"`
 	LastPingDirection         string `json:"last_ping_direction,omitempty"`
-	LastPingBridgeDownstream  int    `json:"last_ping_bridge_downstream,omitempty"`
-	LastPingBridgeUpstream    int    `json:"last_ping_bridge_upstream,omitempty"`
+	LastPingBridgeConnections int    `json:"last_ping_bridge_connections,omitempty"`
 	LastPingBridgeSessionID   string `json:"last_ping_bridge_session_id,omitempty"`
 	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
 	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
@@ -169,15 +166,8 @@ func probeVirtualRouterRuleMayAffectNode(rules []probeVirtualRouterTopologyRule,
 		if !rule.Enabled {
 			continue
 		}
-		switch normalizeProbeVirtualRouterDirection(rule.Direction) {
-		case probeVirtualRouterDirectionTwoWay:
-			addEdge(rule.FromNodeID, rule.ToNodeID)
-			addEdge(rule.ToNodeID, rule.FromNodeID)
-		case probeVirtualRouterDirectionForward:
-			addEdge(rule.FromNodeID, rule.ToNodeID)
-		case probeVirtualRouterDirectionBackward:
-			addEdge(rule.ToNodeID, rule.FromNodeID)
-		}
+		addEdge(rule.FromNodeID, rule.ToNodeID)
+		addEdge(rule.ToNodeID, rule.FromNodeID)
 	}
 	affected := map[string]struct{}{}
 	queue := []string{target}
@@ -268,9 +258,6 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 		if fromNodeID == toNodeID {
 			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d] endpoints must be different", index)
 		}
-		if normalizeProbeVirtualRouterDirection(item.Direction) == "" {
-			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].direction is invalid", index)
-		}
 		if item.FromServicePort < 0 || item.FromServicePort > 65535 {
 			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].from_service_port must be empty(default %d) or between 1 and 65535", index, probeVirtualRouterDefaultServicePort)
 		}
@@ -338,7 +325,7 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		fromNodeID := normalizeProbeNodeID(item.FromNodeID)
 		toNodeID := normalizeProbeNodeID(item.ToNodeID)
 		direction := normalizeProbeVirtualRouterDirection(item.Direction)
-		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID || direction == "" {
+		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 			continue
 		}
 		fromServiceDomain := strings.TrimSpace(item.FromServiceDomain)
@@ -347,11 +334,11 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		toServicePort := normalizeProbeVirtualRouterServicePort(item.ToServicePort)
 		ruleID := strings.TrimSpace(item.ID)
 		if ruleID == "" {
-			ruleID = fmt.Sprintf("vr-%s-%s-%s-%d", fromNodeID, toNodeID, direction, index+1)
+			ruleID = fmt.Sprintf("vr-%s-%s-%d", fromNodeID, toNodeID, index+1)
 		}
 		key := ruleID
 		if key == "" {
-			key = fmt.Sprintf("%s|%s|%s|%s|%d|%s|%d", fromNodeID, toNodeID, direction, fromServiceDomain, fromServicePort, toServiceDomain, toServicePort)
+			key = fmt.Sprintf("%s|%s|%s|%d|%s|%d", fromNodeID, toNodeID, fromServiceDomain, fromServicePort, toServiceDomain, toServicePort)
 		}
 		if _, exists := seen[key]; exists {
 			continue
@@ -390,7 +377,7 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		if out[i].ToNodeID != out[j].ToNodeID {
 			return out[i].ToNodeID < out[j].ToNodeID
 		}
-		return out[i].Direction < out[j].Direction
+		return strings.TrimSpace(out[i].ID) < strings.TrimSpace(out[j].ID)
 	})
 	return out
 }
@@ -458,7 +445,6 @@ func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) strin
 		strings.TrimSpace(rule.ID),
 		normalizeProbeNodeID(rule.FromNodeID),
 		normalizeProbeNodeID(rule.ToNodeID),
-		normalizeProbeVirtualRouterDirection(rule.Direction),
 		strings.TrimSpace(rule.FromServiceDomain),
 		strconv.Itoa(normalizeProbeVirtualRouterServicePort(rule.FromServicePort)),
 		strings.TrimSpace(rule.ToServiceDomain),
@@ -468,16 +454,7 @@ func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) strin
 }
 
 func normalizeProbeVirtualRouterDirection(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "bidirectional", "both", "two_way", "two-way", "双向":
-		return probeVirtualRouterDirectionTwoWay
-	case "forward", "one_way", "one-way", "from_to", "a_to_b", "单向":
-		return probeVirtualRouterDirectionForward
-	case "backward", "reverse", "to_from", "b_to_a":
-		return probeVirtualRouterDirectionBackward
-	default:
-		return ""
-	}
+	return probeVirtualRouterDirectionForward
 }
 
 func normalizeProbeVirtualRouterIP(raw string) string {

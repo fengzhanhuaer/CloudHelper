@@ -1475,6 +1475,61 @@ func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, b
 	}
 }
 
+func openProbeVirtualRouterPhysicalBridgeStream(runtime *probeChainRuntime, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
+	if runtime == nil {
+		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
+	}
+	if !runtime.singleBridgeSessionPerRule() {
+		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is not a virtual router physical bridge")
+	}
+	timeout := probeChainDownstreamOpenTimeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	sawSession := false
+	var lastOpenErr error
+	for {
+		item := runtime.latestPhysicalBridgeSession()
+		if item != nil && item.Session != nil {
+			session := item.Session
+			if !session.IsClosed() {
+				sawSession = true
+				sessionID := strings.TrimSpace(item.ID)
+				sessionRole := firstNonEmpty(strings.TrimSpace(item.BridgeRole), "bridge")
+				streamsOpen := session.NumStreams()
+				startedAt := time.Now()
+				stream, openErr := session.OpenWithRequest(request, timeout)
+				openLatency := time.Since(startedAt)
+				if openErr == nil {
+					return stream, probeChainFrameStreamMonitor{
+						Session:             session,
+						SessionID:           sessionID,
+						SessionRole:         sessionRole,
+						SessionStreamsOpen:  streamsOpen,
+						SessionStreamsAfter: session.NumStreams(),
+						OpenLatency:         openLatency,
+						PingStats:           session.PingStats(),
+					}, nil
+				}
+				lastOpenErr = openErr
+				if session.IsClosed() {
+					runtime.clearDownstreamSession("", session)
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-runtime.stopCh:
+			return nil, probeChainFrameStreamMonitor{}, errors.New("runtime stopped")
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	return nil, probeChainFrameStreamMonitor{}, runtime.bridgeUnavailableError("physical", "", sawSession, lastOpenErr)
+}
+
 func resolveProbeChainPortForwardFlowID(network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) string {
 	if associationV2 != nil && strings.TrimSpace(associationV2.FlowID) != "" {
 		return strings.TrimSpace(associationV2.FlowID)
@@ -1972,7 +2027,7 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 
 		conn, err := openProbeChainBridgeRelayNetConn(runtime.cfg, target)
 		if err != nil {
-			log.Printf("probe chain bridge dial failed: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t err=%v", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams, err)
+			log.Printf("probe chain bridge dial failed: chain=%s role=%s tag=%s target=%s:%d %s err=%v", runtime.cfg.chainID, runtime.cfg.role, runtime.bridgeDialTag(target.Tag), target.Host, target.Port, runtime.bridgeDialLogFields(target), err)
 			sleepProbeChainBridgeBackoff(runtime.stopCh, backoff)
 			backoff = nextProbeChainBridgeBackoff(backoff)
 			continue
@@ -1981,13 +2036,13 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 		session, err := newProbeChainFrameClient(conn)
 		if err != nil {
 			_ = conn.Close()
-			log.Printf("probe chain bridge session setup failed: chain=%s role=%s tag=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t err=%v", runtime.cfg.chainID, runtime.cfg.role, target.Tag, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams, err)
+			log.Printf("probe chain bridge session setup failed: chain=%s role=%s tag=%s target=%s:%d %s err=%v", runtime.cfg.chainID, runtime.cfg.role, runtime.bridgeDialTag(target.Tag), target.Host, target.Port, runtime.bridgeDialLogFields(target), err)
 			sleepProbeChainBridgeBackoff(runtime.stopCh, backoff)
 			backoff = nextProbeChainBridgeBackoff(backoff)
 			continue
 		}
 		sessionID := runtime.nextBridgeSessionID(target.Tag)
-		log.Printf("probe chain bridge connected: chain=%s role=%s tag=%s session_id=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t", runtime.cfg.chainID, runtime.cfg.role, target.Tag, sessionID, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
+		log.Printf("probe chain bridge connected: chain=%s role=%s tag=%s session_id=%s target=%s:%d %s", runtime.cfg.chainID, runtime.cfg.role, runtime.bridgeDialTag(target.Tag), sessionID, target.Host, target.Port, runtime.bridgeDialLogFields(target))
 		backoff = probeChainBridgeRetryMin
 
 		if target.AssignDownstream {
@@ -2005,7 +2060,7 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 		}
 
 		waitProbeChainBridgeSession(runtime.stopCh, session)
-		log.Printf("probe chain bridge disconnected: chain=%s role=%s tag=%s session_id=%s target=%s:%d assign_downstream=%t assign_upstream=%t accept_streams=%t", runtime.cfg.chainID, runtime.cfg.role, target.Tag, sessionID, target.Host, target.Port, target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
+		log.Printf("probe chain bridge disconnected: chain=%s role=%s tag=%s session_id=%s target=%s:%d %s", runtime.cfg.chainID, runtime.cfg.role, runtime.bridgeDialTag(target.Tag), sessionID, target.Host, target.Port, runtime.bridgeDialLogFields(target))
 		if target.AssignDownstream {
 			runtime.clearDownstreamSession(sessionID, session)
 		}
@@ -2910,6 +2965,106 @@ func (rt *probeChainRuntime) nextBridgeSessionID(prefix string) string {
 	return fmt.Sprintf("%s-%06d", cleanPrefix, seq)
 }
 
+func (rt *probeChainRuntime) singleBridgeSessionPerRule() bool {
+	if rt == nil {
+		return false
+	}
+	chainType := strings.TrimSpace(rt.cfg.chainType)
+	chainID := strings.TrimSpace(rt.cfg.chainID)
+	return strings.EqualFold(chainType, "virtual_router") || strings.HasPrefix(chainID, probeVirtualRouterRuntimeChainIDPrefix)
+}
+
+func (rt *probeChainRuntime) replaceBridgeSessionsLocked(keep *probeChainFrameSession) []*probeChainFrameSession {
+	if rt == nil {
+		return nil
+	}
+	superseded := make([]*probeChainFrameSession, 0)
+	seen := make(map[*probeChainFrameSession]struct{})
+	collect := func(item *probeChainBridgeSession) {
+		if item == nil || item.Session == nil || item.Session == keep {
+			return
+		}
+		if _, ok := seen[item.Session]; ok {
+			return
+		}
+		seen[item.Session] = struct{}{}
+		superseded = append(superseded, item.Session)
+	}
+	for _, item := range rt.downstreamSessions {
+		collect(item)
+	}
+	for _, item := range rt.upstreamSessions {
+		collect(item)
+	}
+	rt.downstreamSessions = make(map[string]*probeChainBridgeSession)
+	rt.upstreamSessions = make(map[string]*probeChainBridgeSession)
+	return superseded
+}
+
+func closeSupersededProbeChainBridgeSessions(chainID string, role string, direction string, sessions []*probeChainFrameSession) {
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		if isProbeVirtualRouterRuntimeChainID(chainID) {
+			log.Printf("probe chain bridge session superseded: chain=%s role=%s session=%p", strings.TrimSpace(chainID), strings.TrimSpace(role), session)
+		} else {
+			log.Printf("probe chain bridge session superseded: chain=%s role=%s direction=%s session=%p", strings.TrimSpace(chainID), strings.TrimSpace(role), strings.TrimSpace(direction), session)
+		}
+		_ = session.Close()
+	}
+}
+
+func latestProbeChainBridgeSessionLocked(items map[string]*probeChainBridgeSession) *probeChainBridgeSession {
+	var latest *probeChainBridgeSession
+	for _, item := range items {
+		if item == nil || item.Session == nil || item.Session.IsClosed() {
+			continue
+		}
+		if latest == nil || item.ConnectedAt.After(latest.ConnectedAt) {
+			latest = item
+		}
+	}
+	return latest
+}
+
+func (rt *probeChainRuntime) latestAnyBridgeSessionLocked() *probeChainBridgeSession {
+	latest := latestProbeChainBridgeSessionLocked(rt.downstreamSessions)
+	upstreamLatest := latestProbeChainBridgeSessionLocked(rt.upstreamSessions)
+	if upstreamLatest != nil && (latest == nil || upstreamLatest.ConnectedAt.After(latest.ConnectedAt)) {
+		latest = upstreamLatest
+	}
+	return latest
+}
+
+func (rt *probeChainRuntime) latestPhysicalBridgeSession() *probeChainBridgeSession {
+	if rt == nil {
+		return nil
+	}
+	rt.bridgeMu.Lock()
+	defer rt.bridgeMu.Unlock()
+	return rt.latestAnyBridgeSessionLocked()
+}
+
+func probeChainBridgeSessionByIDLocked(items map[string]*probeChainBridgeSession, sessionID string) *probeChainBridgeSession {
+	cleanID := strings.TrimSpace(sessionID)
+	if cleanID == "" {
+		return nil
+	}
+	item, ok := items[cleanID]
+	if !ok || item == nil || item.Session == nil || item.Session.IsClosed() {
+		return nil
+	}
+	return item
+}
+
+func (rt *probeChainRuntime) bridgeSessionByIDLocked(sessionID string) *probeChainBridgeSession {
+	if item := probeChainBridgeSessionByIDLocked(rt.downstreamSessions, sessionID); item != nil {
+		return item
+	}
+	return probeChainBridgeSessionByIDLocked(rt.upstreamSessions, sessionID)
+}
+
 func (rt *probeChainRuntime) setDownstreamSession(sessionID string, session *probeChainFrameSession, bridgeRole string, remoteAddr string) {
 	if rt == nil || session == nil {
 		return
@@ -2925,14 +3080,19 @@ func (rt *probeChainRuntime) setDownstreamSession(sessionID string, session *pro
 		RemoteAddr:  strings.TrimSpace(remoteAddr),
 		ConnectedAt: time.Now().UTC(),
 	}
+	var superseded []*probeChainFrameSession
 	rt.bridgeMu.Lock()
+	if rt.singleBridgeSessionPerRule() {
+		superseded = rt.replaceBridgeSessionsLocked(session)
+	}
 	if rt.downstreamSessions == nil {
 		rt.downstreamSessions = make(map[string]*probeChainBridgeSession)
 	}
 	rt.downstreamSessions[cleanID] = item
-	active := len(rt.downstreamSessions)
+	active := len(rt.downstreamSessions) + len(rt.upstreamSessions)
 	rt.bridgeMu.Unlock()
-	log.Printf("probe chain downstream session assigned: chain=%s role=%s session_id=%s active=%d remote=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, active, item.RemoteAddr)
+	closeSupersededProbeChainBridgeSessions(rt.cfg.chainID, rt.cfg.role, "downstream", superseded)
+	log.Printf("probe chain %s assigned: chain=%s role=%s session_id=%s active=%d remote=%s single_per_rule=%t", rt.bridgeSessionLogLabel("downstream"), strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, active, item.RemoteAddr, rt.singleBridgeSessionPerRule())
 }
 
 func (rt *probeChainRuntime) clearDownstreamSession(sessionID string, target *probeChainFrameSession) {
@@ -2948,6 +3108,12 @@ func (rt *probeChainRuntime) clearDownstreamSession(sessionID string, target *pr
 			delete(rt.downstreamSessions, cleanID)
 			cleared = true
 		}
+		if rt.singleBridgeSessionPerRule() {
+			if item, ok := rt.upstreamSessions[cleanID]; ok && item != nil && item.Session == target {
+				delete(rt.upstreamSessions, cleanID)
+				cleared = true
+			}
+		}
 	} else {
 		for key, item := range rt.downstreamSessions {
 			if item != nil && item.Session == target {
@@ -2957,10 +3123,20 @@ func (rt *probeChainRuntime) clearDownstreamSession(sessionID string, target *pr
 				break
 			}
 		}
+		if rt.singleBridgeSessionPerRule() && !cleared {
+			for key, item := range rt.upstreamSessions {
+				if item != nil && item.Session == target {
+					delete(rt.upstreamSessions, key)
+					cleanID = key
+					cleared = true
+					break
+				}
+			}
+		}
 	}
-	remaining = len(rt.downstreamSessions)
+	remaining = len(rt.downstreamSessions) + len(rt.upstreamSessions)
 	rt.bridgeMu.Unlock()
-	log.Printf("probe chain downstream session cleared: chain=%s role=%s session_id=%s target=%p cleared=%t remaining=%d", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, target, cleared, remaining)
+	log.Printf("probe chain %s cleared: chain=%s role=%s session_id=%s target=%p cleared=%t remaining=%d", rt.bridgeSessionLogLabel("downstream"), strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, target, cleared, remaining)
 }
 
 func (rt *probeChainRuntime) getDownstreamSession() *probeChainFrameSession {
@@ -2969,14 +3145,9 @@ func (rt *probeChainRuntime) getDownstreamSession() *probeChainFrameSession {
 	}
 	rt.bridgeMu.Lock()
 	defer rt.bridgeMu.Unlock()
-	var latest *probeChainBridgeSession
-	for _, item := range rt.downstreamSessions {
-		if item == nil || item.Session == nil || item.Session.IsClosed() {
-			continue
-		}
-		if latest == nil || item.ConnectedAt.After(latest.ConnectedAt) {
-			latest = item
-		}
+	latest := latestProbeChainBridgeSessionLocked(rt.downstreamSessions)
+	if latest == nil && rt.singleBridgeSessionPerRule() {
+		latest = rt.latestAnyBridgeSessionLocked()
 	}
 	if latest == nil {
 		return nil
@@ -2999,14 +3170,19 @@ func (rt *probeChainRuntime) setUpstreamSession(sessionID string, session *probe
 		RemoteAddr:  strings.TrimSpace(remoteAddr),
 		ConnectedAt: time.Now().UTC(),
 	}
+	var superseded []*probeChainFrameSession
 	rt.bridgeMu.Lock()
+	if rt.singleBridgeSessionPerRule() {
+		superseded = rt.replaceBridgeSessionsLocked(session)
+	}
 	if rt.upstreamSessions == nil {
 		rt.upstreamSessions = make(map[string]*probeChainBridgeSession)
 	}
 	rt.upstreamSessions[cleanID] = item
-	active := len(rt.upstreamSessions)
+	active := len(rt.downstreamSessions) + len(rt.upstreamSessions)
 	rt.bridgeMu.Unlock()
-	log.Printf("probe chain upstream session assigned: chain=%s role=%s session_id=%s active=%d remote=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, active, item.RemoteAddr)
+	closeSupersededProbeChainBridgeSessions(rt.cfg.chainID, rt.cfg.role, "upstream", superseded)
+	log.Printf("probe chain %s assigned: chain=%s role=%s session_id=%s active=%d remote=%s single_per_rule=%t", rt.bridgeSessionLogLabel("upstream"), strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, active, item.RemoteAddr, rt.singleBridgeSessionPerRule())
 }
 
 func (rt *probeChainRuntime) clearUpstreamSession(sessionID string, target *probeChainFrameSession) {
@@ -3022,6 +3198,12 @@ func (rt *probeChainRuntime) clearUpstreamSession(sessionID string, target *prob
 			delete(rt.upstreamSessions, cleanID)
 			cleared = true
 		}
+		if rt.singleBridgeSessionPerRule() {
+			if item, ok := rt.downstreamSessions[cleanID]; ok && item != nil && item.Session == target {
+				delete(rt.downstreamSessions, cleanID)
+				cleared = true
+			}
+		}
 	} else {
 		for key, item := range rt.upstreamSessions {
 			if item != nil && item.Session == target {
@@ -3031,10 +3213,62 @@ func (rt *probeChainRuntime) clearUpstreamSession(sessionID string, target *prob
 				break
 			}
 		}
+		if rt.singleBridgeSessionPerRule() && !cleared {
+			for key, item := range rt.downstreamSessions {
+				if item != nil && item.Session == target {
+					delete(rt.downstreamSessions, key)
+					cleanID = key
+					cleared = true
+					break
+				}
+			}
+		}
 	}
-	remaining = len(rt.upstreamSessions)
+	remaining = len(rt.downstreamSessions) + len(rt.upstreamSessions)
 	rt.bridgeMu.Unlock()
-	log.Printf("probe chain upstream session cleared: chain=%s role=%s session_id=%s target=%p cleared=%t remaining=%d", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, target, cleared, remaining)
+	log.Printf("probe chain %s cleared: chain=%s role=%s session_id=%s target=%p cleared=%t remaining=%d", rt.bridgeSessionLogLabel("upstream"), strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), cleanID, target, cleared, remaining)
+}
+
+func (rt *probeChainRuntime) bridgeSessionLogLabel(legacy string) string {
+	if rt != nil && rt.singleBridgeSessionPerRule() {
+		return "bridge session"
+	}
+	return strings.TrimSpace(legacy) + " session"
+}
+
+func (rt *probeChainRuntime) bridgeStreamLogLabel(legacy string) string {
+	if rt != nil && rt.singleBridgeSessionPerRule() {
+		return "bridge stream"
+	}
+	return strings.TrimSpace(legacy) + " stream"
+}
+
+func (rt *probeChainRuntime) bridgeDialTag(tag string) string {
+	if rt != nil && rt.singleBridgeSessionPerRule() {
+		return "physical-bridge"
+	}
+	return strings.TrimSpace(tag)
+}
+
+func (rt *probeChainRuntime) bridgeDialLogFields(target probeChainBridgeDialTarget) string {
+	if rt != nil && rt.singleBridgeSessionPerRule() {
+		return fmt.Sprintf("physical_bridge=true accept_streams=%t", target.AcceptStreams)
+	}
+	return fmt.Sprintf("assign_downstream=%t assign_upstream=%t accept_streams=%t", target.AssignDownstream, target.AssignUpstream, target.AcceptStreams)
+}
+
+func (rt *probeChainRuntime) bridgeUnavailableError(legacy string, preferredSessionID string, sawSession bool, lastOpenErr error) error {
+	label := strings.TrimSpace(legacy) + " bridge"
+	if rt != nil && rt.singleBridgeSessionPerRule() {
+		label = "bridge"
+	}
+	if sawSession && lastOpenErr != nil {
+		return fmt.Errorf("%s stream open failed: %w", label, lastOpenErr)
+	}
+	if strings.TrimSpace(preferredSessionID) != "" {
+		return fmt.Errorf("%s is unavailable for session_id=%s", label, strings.TrimSpace(preferredSessionID))
+	}
+	return fmt.Errorf("%s is unavailable", label)
 }
 
 func (rt *probeChainRuntime) getUpstreamSession() *probeChainFrameSession {
@@ -3043,14 +3277,9 @@ func (rt *probeChainRuntime) getUpstreamSession() *probeChainFrameSession {
 	}
 	rt.bridgeMu.Lock()
 	defer rt.bridgeMu.Unlock()
-	var latest *probeChainBridgeSession
-	for _, item := range rt.upstreamSessions {
-		if item == nil || item.Session == nil || item.Session.IsClosed() {
-			continue
-		}
-		if latest == nil || item.ConnectedAt.After(latest.ConnectedAt) {
-			latest = item
-		}
+	latest := latestProbeChainBridgeSessionLocked(rt.upstreamSessions)
+	if latest == nil && rt.singleBridgeSessionPerRule() {
+		latest = rt.latestAnyBridgeSessionLocked()
 	}
 	if latest == nil {
 		return nil
@@ -3229,7 +3458,7 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 		openReq := probeChainOpenRequestFromConn(conn)
 		nextHop, err := openProbeChainNextHop(runtime, preferredSessionID, openReq)
 		if err != nil {
-			log.Printf("probe chain open downstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
+			log.Printf("probe chain open %s failed: chain=%s role=%s err=%v", runtime.bridgeStreamLogLabel("downstream"), runtime.cfg.chainID, runtime.cfg.role, err)
 			return
 		}
 		defer func() {
@@ -3246,12 +3475,12 @@ func handleProbeChainConn(runtime *probeChainRuntime, conn net.Conn, preferredSe
 			func() { closeProbeChainConnWrite(conn) },
 		)
 		if relayErr := firstProbeChainRelayError(result); relayErr != nil {
-			log.Printf("probe chain downstream frame relay failed: chain=%s role=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
+			log.Printf("probe chain %s frame relay failed: chain=%s role=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.bridgeStreamLogLabel("downstream"), runtime.cfg.chainID, runtime.cfg.role, result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
 		}
 		return
 	}
 
-	log.Printf("probe chain rejected non-frame downstream stream: chain=%s role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
+	log.Printf("probe chain rejected non-frame %s: chain=%s role=%s remote=%s", runtime.bridgeStreamLogLabel("downstream"), runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
 }
 
 func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, preferredSessionID string) {
@@ -3273,7 +3502,7 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 		openReq := probeChainOpenRequestFromConn(conn)
 		prevHop, err := openProbeChainPrevHop(runtime, preferredSessionID, openReq)
 		if err != nil {
-			log.Printf("probe chain open upstream stream failed: chain=%s role=%s err=%v", runtime.cfg.chainID, runtime.cfg.role, err)
+			log.Printf("probe chain open %s failed: chain=%s role=%s err=%v", runtime.bridgeStreamLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, err)
 			return
 		}
 		defer func() {
@@ -3290,12 +3519,12 @@ func handleProbeChainReverseConn(runtime *probeChainRuntime, conn net.Conn, pref
 			func() { closeProbeChainConnWrite(conn) },
 		)
 		if relayErr := firstProbeChainRelayError(result); relayErr != nil {
-			log.Printf("probe chain upstream frame relay failed: chain=%s role=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.cfg.chainID, runtime.cfg.role, result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
+			log.Printf("probe chain %s frame relay failed: chain=%s role=%s duration_ms=%d up_bytes=%d down_bytes=%d err=%v", runtime.bridgeStreamLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, result.Duration.Milliseconds(), result.LeftToRight.Bytes, result.RightToLeft.Bytes, relayErr)
 		}
 		return
 	}
 
-	log.Printf("probe chain rejected non-frame upstream stream: chain=%s role=%s remote=%s", runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
+	log.Printf("probe chain rejected non-frame %s: chain=%s role=%s remote=%s", runtime.bridgeStreamLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, conn.RemoteAddr().String())
 }
 
 func openProbeChainNextHop(runtime *probeChainRuntime, preferredSessionID string, request probeChainTunnelOpenRequest) (*probeChainNextHop, error) {
@@ -3381,8 +3610,11 @@ func (rt *probeChainRuntime) getDownstreamSessionByID(sessionID string) *probeCh
 	}
 	rt.bridgeMu.Lock()
 	defer rt.bridgeMu.Unlock()
-	item, ok := rt.downstreamSessions[cleanID]
-	if !ok || item == nil || item.Session == nil || item.Session.IsClosed() {
+	item := probeChainBridgeSessionByIDLocked(rt.downstreamSessions, cleanID)
+	if item == nil && rt.singleBridgeSessionPerRule() {
+		item = rt.bridgeSessionByIDLocked(cleanID)
+	}
+	if item == nil {
 		return nil
 	}
 	return item.Session
@@ -3398,8 +3630,11 @@ func (rt *probeChainRuntime) getUpstreamSessionByID(sessionID string) *probeChai
 	}
 	rt.bridgeMu.Lock()
 	defer rt.bridgeMu.Unlock()
-	item, ok := rt.upstreamSessions[cleanID]
-	if !ok || item == nil || item.Session == nil || item.Session.IsClosed() {
+	item := probeChainBridgeSessionByIDLocked(rt.upstreamSessions, cleanID)
+	if item == nil && rt.singleBridgeSessionPerRule() {
+		item = rt.bridgeSessionByIDLocked(cleanID)
+	}
+	if item == nil {
 		return nil
 	}
 	return item.Session
@@ -3449,13 +3684,7 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
-	if sawSession && lastOpenErr != nil {
-		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("downstream bridge stream open failed: %w", lastOpenErr)
-	}
-	if strings.TrimSpace(preferredSessionID) != "" {
-		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("downstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
-	}
-	return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("downstream bridge is unavailable")
+	return nil, probeChainFrameStreamMonitor{}, runtime.bridgeUnavailableError("downstream", preferredSessionID, sawSession, lastOpenErr)
 }
 
 func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
@@ -3475,7 +3704,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 		if session != nil {
 			sawSession = true
 			closed := session.IsClosed()
-			log.Printf("probe chain upstream stream attempt: chain=%s role=%s attempt=%d session=%p closed=%t", runtime.cfg.chainID, runtime.cfg.role, attempt, session, closed)
+			log.Printf("probe chain %s attempt: chain=%s role=%s attempt=%d session=%p closed=%t", runtime.bridgeStreamLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, attempt, session, closed)
 			if !closed {
 				sessionID, sessionRole := runtime.describeBridgeSession(session, "upstream")
 				streamsOpen := session.NumStreams()
@@ -3483,7 +3712,7 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 				stream, openErr := session.OpenWithRequest(request, timeout)
 				openLatency := time.Since(startedAt)
 				if openErr == nil {
-					log.Printf("probe chain upstream stream opened: chain=%s role=%s attempt=%d session=%p", runtime.cfg.chainID, runtime.cfg.role, attempt, session)
+					log.Printf("probe chain %s opened: chain=%s role=%s attempt=%d session=%p", runtime.bridgeStreamLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, attempt, session)
 					return stream, probeChainFrameStreamMonitor{
 						Session:             session,
 						SessionID:           sessionID,
@@ -3495,14 +3724,14 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 					}, nil
 				}
 				lastOpenErr = openErr
-				log.Printf("probe chain upstream stream open failed: chain=%s role=%s attempt=%d session=%p err=%v", runtime.cfg.chainID, runtime.cfg.role, attempt, session, openErr)
+				log.Printf("probe chain %s open failed: chain=%s role=%s attempt=%d session=%p err=%v", runtime.bridgeStreamLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, attempt, session, openErr)
 				if session.IsClosed() {
-					log.Printf("probe chain upstream session became closed while opening stream: chain=%s role=%s attempt=%d session=%p", runtime.cfg.chainID, runtime.cfg.role, attempt, session)
+					log.Printf("probe chain %s became closed while opening stream: chain=%s role=%s attempt=%d session=%p", runtime.bridgeSessionLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, attempt, session)
 					runtime.clearUpstreamSession("", session)
 				}
 			}
 		} else {
-			log.Printf("probe chain upstream stream attempt: chain=%s role=%s attempt=%d session=nil", runtime.cfg.chainID, runtime.cfg.role, attempt)
+			log.Printf("probe chain %s attempt: chain=%s role=%s attempt=%d session=nil", runtime.bridgeStreamLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, attempt)
 		}
 		if time.Now().After(deadline) {
 			break
@@ -3513,14 +3742,8 @@ func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
-	log.Printf("probe chain upstream stream unavailable: chain=%s role=%s attempts=%d timeout=%s session_id=%s", runtime.cfg.chainID, runtime.cfg.role, attempt, timeout, strings.TrimSpace(preferredSessionID))
-	if sawSession && lastOpenErr != nil {
-		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("upstream bridge stream open failed: %w", lastOpenErr)
-	}
-	if strings.TrimSpace(preferredSessionID) != "" {
-		return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("upstream bridge is unavailable for session_id=%s", strings.TrimSpace(preferredSessionID))
-	}
-	return nil, probeChainFrameStreamMonitor{}, fmt.Errorf("upstream bridge is unavailable")
+	log.Printf("probe chain %s unavailable: chain=%s role=%s attempts=%d timeout=%s session_id=%s", runtime.bridgeStreamLogLabel("upstream"), runtime.cfg.chainID, runtime.cfg.role, attempt, timeout, strings.TrimSpace(preferredSessionID))
+	return nil, probeChainFrameStreamMonitor{}, runtime.bridgeUnavailableError("upstream", preferredSessionID, sawSession, lastOpenErr)
 }
 
 func resolveProbeChainOutboundLinkLayer(cfg probeChainRuntimeConfig) string {

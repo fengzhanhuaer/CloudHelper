@@ -265,9 +265,8 @@
               <thead>
                 <tr>
                   <th>启用</th>
-                  <th>A 端</th>
-                  <th>B 端</th>
-                  <th>方向</th>
+                  <th>A 端（主动）</th>
+                  <th>B 端（监听）</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -1441,7 +1440,7 @@
       const rules = Array.isArray(cfg.topology_rules) ? cfg.topology_rules : [];
       const ruleBody = document.getElementById('vr-rule-body');
       if (!rules.length) {
-        ruleBody.innerHTML = '<tr><td colspan="5" class="muted">暂无拓扑规则。</td></tr>';
+        ruleBody.innerHTML = '<tr><td colspan="4" class="muted">暂无拓扑规则。</td></tr>';
       } else {
         ruleBody.innerHTML = rules.map((rule, idx) => `
           <tr>
@@ -1459,13 +1458,6 @@
                 <div class="endpoint-row"><span class="label">域名</span>${virtualRouterDomainSelect(rule, idx, 'to')}</div>
                 <div class="endpoint-row"><span class="label">端口</span><input data-vr-rule-to-port="${idx}" class="mono" type="number" min="1" max="65535" value="${escapeHTML(rule.to_service_port || DEFAULTS.virtualRouterServicePort)}" /></div>
               </div>
-            </td>
-            <td>
-              <select data-vr-rule-direction="${idx}">
-                <option value="bidirectional" ${rule.direction === 'bidirectional' ? 'selected' : ''}>双向</option>
-                <option value="forward" ${rule.direction === 'forward' ? 'selected' : ''}>A -> B</option>
-                <option value="backward" ${rule.direction === 'backward' ? 'selected' : ''}>B -> A</option>
-              </select>
             </td>
             <td><button class="btn" data-vr-rule-remove="${idx}" type="button">删除</button></td>
           </tr>
@@ -1527,15 +1519,6 @@
           rules[idx].to_service_port = Number.isFinite(port) && port > 0 ? port : DEFAULTS.virtualRouterServicePort;
         });
       });
-      document.querySelectorAll('[data-vr-rule-direction]').forEach((el) => {
-        el.addEventListener('change', () => {
-          const idx = Number.parseInt(el.getAttribute('data-vr-rule-direction') || '-1', 10);
-          const rules = state.virtualRouter.topology_rules || [];
-          if (idx < 0 || idx >= rules.length) return;
-          const value = String(el.value || '').trim();
-          rules[idx].direction = value === 'forward' || value === 'backward' ? value : 'bidirectional';
-        });
-      });
       document.querySelectorAll('[data-vr-rule-remove]').forEach((el) => {
         el.addEventListener('click', () => {
           const idx = Number.parseInt(el.getAttribute('data-vr-rule-remove') || '-1', 10);
@@ -1575,7 +1558,7 @@
         name: '',
         from_node_id: ids[0],
         to_node_id: ids[1],
-        direction: 'bidirectional',
+        direction: 'forward',
         from_service_domain: '',
         from_service_port: DEFAULTS.virtualRouterServicePort,
         to_service_domain: '',
@@ -1784,35 +1767,66 @@
       const stats = (item && item.virtual_router) || {};
       const pingError = String(stats.last_ping_error || '').trim();
       const openError = String(stats.last_open_error || '').trim();
-      if (pingError && !isRouteSideVirtualErrorStale(item, stats.last_ping_at)) errors.push(`虚拟 ping 失败：${pingError}`);
-      if (openError && !isRouteSideVirtualErrorStale(item, stats.last_open_at)) errors.push(`打开子流失败：${openError}`);
+      if (pingError && !isRouteSideVirtualErrorStale(item, stats.last_ping_at)) errors.push(`虚拟 ping 失败：${normalizeVirtualRouterBridgeText(pingError)}`);
+      if (openError && !isRouteSideVirtualErrorStale(item, stats.last_open_at)) errors.push(`打开子流失败：${normalizeVirtualRouterBridgeText(openError)}`);
       collectRouteSideStateErrors(item && item.listen_state, 'listen').forEach((err) => errors.push(err));
       collectRouteSideStateErrors(item && item.next_state, 'next').forEach((err) => errors.push(err));
       collectRouteSideStateErrors(item && item.prev_state, 'prev').forEach((err) => errors.push(err));
       return errors;
     }
 
+    function normalizeVirtualRouterBridgeText(value) {
+      return String(value || '')
+        .replace(/upstream bridge/g, 'bridge')
+        .replace(/downstream bridge/g, 'bridge');
+    }
+
     function summarizeBridgeSessions(item) {
-      const hasBridgeStatus = !!(item && item.bridge_status);
       const bridgeStatus = (item && item.bridge_status) || {};
       const sessions = Array.isArray(bridgeStatus.sessions)
         ? bridgeStatus.sessions
         : (Array.isArray(item && item.bridge_sessions) ? item.bridge_sessions : []);
       const active = sessions.filter((entry) => !(entry && entry.closed));
-      const counts = {
-        downstream: Number(bridgeStatus.downstream_active),
-        upstream: Number(bridgeStatus.upstream_active),
-      };
-      if (!Number.isFinite(counts.downstream) || counts.downstream < 0 || !hasBridgeStatus) counts.downstream = 0;
-      if (!Number.isFinite(counts.upstream) || counts.upstream < 0 || !hasBridgeStatus) counts.upstream = 0;
-      if (!hasBridgeStatus) {
-        active.forEach((entry) => {
-          const direction = String((entry && entry.direction) || '').trim().toLowerCase();
-          if (direction === 'upstream') counts.upstream += 1;
-          else if (direction === 'downstream') counts.downstream += 1;
-        });
-      }
-      return { sessions, active, counts, updatedAt: String(bridgeStatus.updated_at || '').trim() };
+      return { sessions, active, updatedAt: String(bridgeStatus.updated_at || '').trim() };
+    }
+
+    function summarizeBridgePhysicalConnections(item) {
+      const sessionSummary = summarizeBridgeSessions(item);
+      const byKey = new Map();
+      sessionSummary.active.forEach((entry) => {
+        const remote = String((entry && entry.remote_addr) || '').trim() || '-';
+        const key = remote;
+        const current = byKey.get(key) || {
+          remote,
+          sessions: 0,
+          streams: 0,
+          rtt_ms: 0,
+          frames_sent: 0,
+          frame_bytes_sent: 0,
+          frames_received: 0,
+          frame_bytes_received: 0,
+          connected_at: '',
+          last_frame_sent_at: '',
+          last_frame_received_at: '',
+        };
+        current.sessions += 1;
+        current.streams += Number(entry && entry.streams_current) || 0;
+        const rtt = Number(entry && entry.rtt_ms);
+        if (Number.isFinite(rtt) && rtt > 0 && (!current.rtt_ms || rtt < current.rtt_ms)) current.rtt_ms = rtt;
+        current.frames_sent += Number(entry && entry.frames_sent) || 0;
+        current.frame_bytes_sent += Number(entry && entry.frame_bytes_sent) || 0;
+        current.frames_received += Number(entry && entry.frames_received) || 0;
+        current.frame_bytes_received += Number(entry && entry.frame_bytes_received) || 0;
+        const connectedAt = String((entry && entry.connected_at) || '').trim();
+        if (connectedAt && (!current.connected_at || connectedAt < current.connected_at)) current.connected_at = connectedAt;
+        const sentAt = String((entry && entry.last_frame_sent_at) || '').trim();
+        if (sentAt && sentAt > current.last_frame_sent_at) current.last_frame_sent_at = sentAt;
+        const receivedAt = String((entry && entry.last_frame_received_at) || '').trim();
+        if (receivedAt && receivedAt > current.last_frame_received_at) current.last_frame_received_at = receivedAt;
+        byKey.set(key, current);
+      });
+      const connections = Array.from(byKey.values()).sort((a, b) => String(a.remote).localeCompare(String(b.remote)));
+      return { connections, sessionSummary };
     }
 
     function isRouteSideVirtualErrorStale(item, errorAt) {
@@ -1827,25 +1841,16 @@
 
     function renderBridgeSessions(item, errors) {
       const summary = summarizeBridgeSessions(item);
+      const physical = summarizeBridgePhysicalConnections(item);
       const updatedAt = summary.updatedAt ? ` · ${summary.updatedAt}` : '';
-      const lines = [`桥接 downstream ${summary.counts.downstream} / upstream ${summary.counts.upstream}${updatedAt}`];
+      const lines = [`桥接物理连接 ${physical.connections.length} 条${updatedAt}`];
       const errorText = (errors || []).join('\n').toLowerCase();
       const hints = [];
-      if (errorText.includes('upstream bridge') && summary.counts.upstream === 0) hints.push('upstream bridge 会话=0');
-      if (errorText.includes('downstream bridge') && summary.counts.downstream === 0) hints.push('downstream bridge 会话=0');
-      const detail = summary.active.slice(0, 2).map((entry) => {
-        const direction = String((entry && entry.direction) || '').trim() || '-';
-        const remote = String((entry && entry.remote_addr) || '').trim() || '-';
-        const streams = Number(entry && entry.streams_current);
-        const rtt = Number(entry && entry.rtt_ms);
-        const framesSent = Number(entry && entry.frames_sent);
-        const framesReceived = Number(entry && entry.frames_received);
-        const frameBytesSent = Number(entry && entry.frame_bytes_sent);
-        const frameBytesReceived = Number(entry && entry.frame_bytes_received);
-        const streamText = Number.isFinite(streams) ? streams : '-';
-        const rttText = Number.isFinite(rtt) && rtt > 0 ? `${Math.trunc(rtt)}ms` : '-';
-        const frameText = `bridge帧 tx=${Number.isFinite(framesSent) ? framesSent : 0}/${formatBytes(Number.isFinite(frameBytesSent) ? frameBytesSent : 0)} rx=${Number.isFinite(framesReceived) ? framesReceived : 0}/${formatBytes(Number.isFinite(frameBytesReceived) ? frameBytesReceived : 0)}`;
-        return `${direction} ${remote} streams=${streamText} rtt=${rttText} ${frameText}`;
+      if (errorText.includes('bridge') && physical.connections.length === 0) hints.push('bridge 物理连接=0');
+      const detail = physical.connections.slice(0, 3).map((entry) => {
+        const rttText = entry.rtt_ms > 0 ? `${Math.trunc(entry.rtt_ms)}ms` : '-';
+        const frameText = `bridge帧 tx=${entry.frames_sent}/${formatBytes(entry.frame_bytes_sent)} rx=${entry.frames_received}/${formatBytes(entry.frame_bytes_received)}`;
+        return `物理对端 ${entry.remote} sessions=${entry.sessions} streams=${entry.streams} rtt=${rttText} ${frameText}`;
       });
       const base = `<div class="small muted">${escapeHTML(lines.join(' / '))}</div>`;
       const hint = hints.map((item) => `<div class="small route-error">${escapeHTML(item)}</div>`).join('');
@@ -1867,14 +1872,16 @@
     }
 
     function canVirtualProbeNext(item) {
-      return !!(item && item.next_node_id && canActiveDial(item.next_dial_mode));
+      return !!(item && item.next_node_id && (canActiveDial(item.next_dial_mode) || hasBridgePhysicalConnection(item)));
     }
 
     function canVirtualProbePrev(item) {
       if (!(item && item.prev_node_id)) return false;
-      if (canActiveDial(item.prev_dial_mode)) return true;
-      const summary = summarizeBridgeSessions(item);
-      return summary.counts.upstream > 0;
+      return canActiveDial(item.prev_dial_mode) || hasBridgePhysicalConnection(item);
+    }
+
+    function hasBridgePhysicalConnection(item) {
+      return summarizeBridgePhysicalConnections(item).connections.length > 0;
     }
 
     function renderVirtualProbeCapability(item) {
@@ -1888,12 +1895,11 @@
       const direction = String(item.last_ping_direction || '').trim();
       const pingAt = String(item.last_ping_at || '').trim();
       if (!direction && !pingAt) return '';
-      const downstream = Number(item.last_ping_bridge_downstream || 0);
-      const upstream = Number(item.last_ping_bridge_upstream || 0);
+      const connections = Number(item.last_ping_bridge_connections || 0);
       const remote = String(item.last_ping_bridge_remote || '').trim();
       const connectedAt = String(item.last_ping_bridge_connected_at || '').trim();
       const session = remote ? `${remote}${connectedAt ? ` since ${connectedAt}` : ''}` : '-';
-      return `<div class="small muted">最近虚拟 ping ${escapeHTML(direction || '-')} @ ${escapeHTML(pingAt || '-')} / 当时桥接 downstream ${escapeHTML(downstream)} upstream ${escapeHTML(upstream)} / session ${escapeHTML(session)}</div>`;
+      return `<div class="small muted">最近虚拟 ping ${escapeHTML(direction || '-')} @ ${escapeHTML(pingAt || '-')} / 当时物理 bridge ${escapeHTML(connections)} 条 / session ${escapeHTML(session)}</div>`;
     }
 
     function routePeerLabel(nodeID, route) {
@@ -1988,15 +1994,15 @@
       const summary = summarizeBridgeSessions(item);
       if (!summary.sessions.length) return '';
       const lines = summary.sessions.slice(0, 4).map((entry, index) => {
-        const direction = String((entry && entry.direction) || '').trim() || '-';
         const sessionID = String((entry && entry.session_id) || '').trim() || `#${index + 1}`;
+        const remote = String((entry && entry.remote_addr) || '').trim() || '-';
         const framesSent = Number(entry && entry.frames_sent) || 0;
         const frameBytesSent = Number(entry && entry.frame_bytes_sent) || 0;
         const framesReceived = Number(entry && entry.frames_received) || 0;
         const frameBytesReceived = Number(entry && entry.frame_bytes_received) || 0;
         const streams = Number(entry && entry.streams_current);
         const rtt = Number(entry && entry.rtt_ms);
-        return `<div class="small muted mono">${escapeHTML(direction)} ${escapeHTML(sessionID)} streams=${escapeHTML(Number.isFinite(streams) ? streams : '-')} rtt=${escapeHTML(Number.isFinite(rtt) ? Math.trunc(rtt) + 'ms' : '-')} tx=${escapeHTML(framesSent)}/${escapeHTML(formatBytes(frameBytesSent))} rx=${escapeHTML(framesReceived)}/${escapeHTML(formatBytes(frameBytesReceived))}</div>`;
+        return `<div class="small muted mono">${escapeHTML(sessionID)} remote=${escapeHTML(remote)} streams=${escapeHTML(Number.isFinite(streams) ? streams : '-')} rtt=${escapeHTML(Number.isFinite(rtt) ? Math.trunc(rtt) + 'ms' : '-')} tx=${escapeHTML(framesSent)}/${escapeHTML(formatBytes(frameBytesSent))} rx=${escapeHTML(framesReceived)}/${escapeHTML(formatBytes(frameBytesReceived))}</div>`;
       }).join('');
       const more = summary.sessions.length > 4 ? `<div class="small muted">还有 ${escapeHTML(summary.sessions.length - 4)} 条 session</div>` : '';
       return `<details class="small"><summary class="muted">bridge session 原始统计</summary>${lines}${more}</details>`;

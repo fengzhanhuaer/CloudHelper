@@ -56,10 +56,9 @@ func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
 	ProbeLinkChainStore.mu.RUnlock()
 	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(config)))
 	return map[string]interface{}{
-		"item":       config,
-		"node_ids":   listProbeVirtualRouterKnownNodeIDs(),
-		"pool_size":  probeVirtualRouterProbeIPPoolSize,
-		"directions": []string{probeVirtualRouterDirectionTwoWay, probeVirtualRouterDirectionForward, probeVirtualRouterDirectionBackward},
+		"item":      config,
+		"node_ids":  listProbeVirtualRouterKnownNodeIDs(),
+		"pool_size": probeVirtualRouterProbeIPPoolSize,
 	}, nil
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -68,6 +69,172 @@ func newProbeChainFrameSessionPairForTest(t *testing.T) (*probeChainFrameSession
 		t.Fatalf("frame server failed: %v", err)
 	}
 	return clientSession, serverSession
+}
+
+func TestProbeVirtualRouterRuntimeKeepsSinglePhysicalBridgeSession(t *testing.T) {
+	oldClient, oldServer := newProbeChainFrameSessionPairForTest(t)
+	defer oldClient.Close()
+	defer oldServer.Close()
+	newClient, newServer := newProbeChainFrameSessionPairForTest(t)
+	defer newClient.Close()
+	defer newServer.Close()
+
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:   "vrouter-single",
+			chainType: "virtual_router",
+			role:      "relay",
+		},
+		downstreamSessions: make(map[string]*probeChainBridgeSession),
+		upstreamSessions:   make(map[string]*probeChainBridgeSession),
+	}
+
+	rt.setDownstreamSession("downstream-old", oldServer, probeChainBridgeRoleToNext, "198.51.100.1:12040")
+	if sessions := rt.snapshotBridgeSessions(); len(sessions) != 1 || sessions[0].Direction != "downstream" {
+		t.Fatalf("unexpected initial sessions: %+v", sessions)
+	}
+
+	rt.setUpstreamSession("upstream-new", newServer, probeChainBridgeRoleToPrev, "198.51.100.2:12040")
+	sessions := rt.snapshotBridgeSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("virtual router runtime should keep one physical bridge session, got %+v", sessions)
+	}
+	if sessions[0].Direction != "upstream" || sessions[0].SessionID != "upstream-new" {
+		t.Fatalf("unexpected surviving session: %+v", sessions[0])
+	}
+	if rt.getDownstreamSession() != newServer || rt.getUpstreamSession() != newServer {
+		t.Fatalf("virtual router upstream/downstream should reuse the same physical session")
+	}
+	if rt.getDownstreamSessionByID("upstream-new") != newServer || rt.getUpstreamSessionByID("upstream-new") != newServer {
+		t.Fatalf("virtual router session lookup by id should be direction-agnostic")
+	}
+	if !oldServer.IsClosed() {
+		t.Fatalf("superseded bridge session should be closed")
+	}
+	if newServer.IsClosed() {
+		t.Fatalf("new bridge session should remain open")
+	}
+	rt.clearDownstreamSession("", newServer)
+	if sessions := rt.snapshotBridgeSessions(); len(sessions) != 0 {
+		t.Fatalf("direction-agnostic clear should remove the single virtual router session, got %+v", sessions)
+	}
+}
+
+func TestOpenProbeVirtualRouterPhysicalBridgeStreamIgnoresLegacySessionDirection(t *testing.T) {
+	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
+	defer clientSession.Close()
+	defer serverSession.Close()
+
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:   "vrouter-physical-open",
+			chainType: "virtual_router",
+			role:      "relay",
+		},
+		downstreamSessions: make(map[string]*probeChainBridgeSession),
+		upstreamSessions:   make(map[string]*probeChainBridgeSession),
+		stopCh:             make(chan struct{}),
+	}
+	rt.setUpstreamSession("legacy-upstream-id", serverSession, probeChainBridgeRoleToPrev, "pipe")
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		stream, err := clientSession.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		frameStream, ok := stream.(*probeChainFrameStream)
+		if !ok {
+			acceptErr <- fmt.Errorf("accepted stream type=%T", stream)
+			return
+		}
+		req, found := frameStream.OpenRequest()
+		if !found || req.Type != probeVirtualRouterTunnelOpenType || req.Address != "198.18.0.21" {
+			acceptErr <- fmt.Errorf("unexpected open request: found=%t req=%+v", found, req)
+			return
+		}
+		if err := frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true}); err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- stream
+	}()
+
+	req := buildProbeVirtualRouterTunnelOpenRequest("198.18.0.21", []string{"1", "2"})
+	conn, monitor, err := openProbeVirtualRouterPhysicalBridgeStream(rt, req)
+	if err != nil {
+		t.Fatalf("open physical bridge stream failed: %v", err)
+	}
+	defer conn.Close()
+	if monitor.SessionID != "legacy-upstream-id" {
+		t.Fatalf("session id=%q, want legacy-upstream-id", monitor.SessionID)
+	}
+
+	var peer net.Conn
+	select {
+	case peer = <-accepted:
+	case err := <-acceptErr:
+		t.Fatalf("accept failed: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("accept timeout")
+	}
+	defer peer.Close()
+
+	payload := []byte{1, 2, 3, 4}
+	echoed := make(chan error, 1)
+	go func() {
+		buf := make([]byte, len(payload))
+		if _, err := io.ReadFull(peer, buf); err != nil {
+			echoed <- err
+			return
+		}
+		_, err := peer.Write(buf)
+		echoed <- err
+	}()
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write payload failed: %v", err)
+	}
+	echo := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, echo); err != nil {
+		t.Fatalf("read echo failed: %v", err)
+	}
+	if !bytes.Equal(echo, payload) {
+		t.Fatalf("echo=%v, want %v", echo, payload)
+	}
+	if err := <-echoed; err != nil {
+		t.Fatalf("peer echo failed: %v", err)
+	}
+}
+
+func TestProbeChainRuntimeAllowsMultipleBridgeSessionsForNonVirtualRouter(t *testing.T) {
+	downClient, downServer := newProbeChainFrameSessionPairForTest(t)
+	defer downClient.Close()
+	defer downServer.Close()
+	upClient, upServer := newProbeChainFrameSessionPairForTest(t)
+	defer upClient.Close()
+	defer upServer.Close()
+
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:   "proxy-chain",
+			chainType: "proxy_chain",
+			role:      "relay",
+		},
+		downstreamSessions: make(map[string]*probeChainBridgeSession),
+		upstreamSessions:   make(map[string]*probeChainBridgeSession),
+	}
+
+	rt.setDownstreamSession("downstream", downServer, probeChainBridgeRoleToNext, "198.51.100.1:12040")
+	rt.setUpstreamSession("upstream", upServer, probeChainBridgeRoleToPrev, "198.51.100.2:12040")
+	sessions := rt.snapshotBridgeSessions()
+	if len(sessions) != 2 {
+		t.Fatalf("non virtual router runtime should keep existing multi-session behavior, got %+v", sessions)
+	}
+	if downServer.IsClosed() || upServer.IsClosed() {
+		t.Fatalf("non virtual router sessions should remain open")
+	}
 }
 
 func TestProbeChainProxyStreamHandlesPeerStatusGet(t *testing.T) {

@@ -358,7 +358,7 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 			RuleName:   strings.TrimSpace(rule.Name),
 			ChainID:    chainID,
 			Enabled:    rule.Enabled,
-			Direction:  normalizeProbeVirtualRouterDirection(rule.Direction),
+			Direction:  "A->B",
 			FromNodeID: fromNodeID,
 			ToNodeID:   toNodeID,
 			FromIP:     ipByNode[fromNodeID],
@@ -560,7 +560,7 @@ func mngVirtualRouterStatsError(item *probeVirtualRouterRuntimeStats) string {
 	if item == nil {
 		return ""
 	}
-	return firstNonEmptyString(strings.TrimSpace(item.LastPingError), strings.TrimSpace(item.LastOpenError))
+	return normalizeMngVirtualRouterBridgeError(firstNonEmptyString(strings.TrimSpace(item.LastPingError), strings.TrimSpace(item.LastOpenError)))
 }
 
 func mngVirtualRouterSideStatsError(side mngVirtualRouterRouteSideStatus) string {
@@ -569,12 +569,19 @@ func mngVirtualRouterSideStatsError(side mngVirtualRouterRouteSideStatus) string
 		return ""
 	}
 	if errText := strings.TrimSpace(stats.LastPingError); errText != "" && !isMngVirtualRouterSideErrorStale(side, stats.LastPingAt) {
-		return errText
+		return normalizeMngVirtualRouterBridgeError(errText)
 	}
 	if errText := strings.TrimSpace(stats.LastOpenError); errText != "" && !isMngVirtualRouterSideErrorStale(side, stats.LastOpenAt) {
-		return errText
+		return normalizeMngVirtualRouterBridgeError(errText)
 	}
 	return ""
+}
+
+func normalizeMngVirtualRouterBridgeError(value string) string {
+	text := strings.TrimSpace(value)
+	text = strings.ReplaceAll(text, "upstream bridge", "bridge")
+	text = strings.ReplaceAll(text, "downstream bridge", "bridge")
+	return text
 }
 
 func isMngVirtualRouterSideErrorStale(side mngVirtualRouterRouteSideStatus, errorAt string) bool {

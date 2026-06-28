@@ -48,7 +48,7 @@ func TestProbeVirtualRouterReachableTreatsDirectionAsPhysicalDialOnly(t *testing
 		t.Fatalf("node 1 should reach node 2")
 	}
 	if !probeVirtualRouterReachable(config, "2", "1") {
-		t.Fatalf("node 2 should reach node 1 virtually; direction only controls physical dial direction")
+		t.Fatalf("node 2 should reach node 1 virtually; A->B only controls physical dial direction")
 	}
 	if got := probeVirtualRouterPath(config, "2", "1"); !reflect.DeepEqual(got, []string{"2", "1"}) {
 		t.Fatalf("reverse virtual path=%v, want [2 1]", got)
@@ -112,7 +112,7 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	if len(loaded.ProbeIPs) != 1 || loaded.ProbeIPs[0].NodeID != "1" {
 		t.Fatalf("loaded probe ips=%+v", loaded.ProbeIPs)
 	}
-	if len(loaded.TopologyRules) != 3 || loaded.TopologyRules[0].Direction != probeVirtualRouterDirectionTwoWay {
+	if len(loaded.TopologyRules) != 3 || loaded.TopologyRules[0].Direction != probeVirtualRouterDirectionForward {
 		t.Fatalf("loaded topology=%+v", loaded.TopologyRules)
 	}
 	if loaded.TopologyRules[0].FromServiceDomain != "edge-a.example.com" || loaded.TopologyRules[0].FromServicePort != 443 || loaded.TopologyRules[0].ToServiceDomain != "edge-b.internal.lan" || loaded.TopologyRules[0].ToServicePort != 443 {
@@ -207,7 +207,7 @@ func TestRememberProbeVirtualRouterAuthTickets(t *testing.T) {
 		ID:              "rule-ticket-cache",
 		FromNodeID:      "1",
 		ToNodeID:        "2",
-		Direction:       probeVirtualRouterDirectionTwoWay,
+		Direction:       probeVirtualRouterDirectionForward,
 		FromServicePort: 12040,
 		ToServicePort:   12041,
 		Enabled:         true,
@@ -236,7 +236,7 @@ func TestEnsureProbeChainRuntimeAuthTicketUsesVirtualRouterConfig(t *testing.T) 
 		ID:              "rule-ticket-refresh",
 		FromNodeID:      "1",
 		ToNodeID:        "2",
-		Direction:       probeVirtualRouterDirectionTwoWay,
+		Direction:       probeVirtualRouterDirectionForward,
 		FromServicePort: 12040,
 		ToServicePort:   12041,
 		Enabled:         true,
@@ -362,7 +362,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigForwardPassiveSideDoesNotProbePrev(
 	}
 }
 
-func TestBuildProbeVirtualRouterRuntimeConfigSingleDomainDialer(t *testing.T) {
+func TestBuildProbeVirtualRouterRuntimeConfigFixedADialsBRequiresBAddress(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
 		TopologyRules: []probeVirtualRouterTopologyRule{
@@ -383,11 +383,11 @@ func TestBuildProbeVirtualRouterRuntimeConfigSingleDomainDialer(t *testing.T) {
 	if len(left) != 1 || len(right) != 1 {
 		t.Fatalf("runtime configs left=%d right=%d", len(left), len(right))
 	}
-	if left[0].prevNodeID != "2" || left[0].nextAuthMode != "proxy" {
-		t.Fatalf("node 1 should wait for node 2: %+v", left[0])
+	if left[0].prevNodeID != "2" || left[0].nextAuthMode != "proxy" || left[0].nextNodeID != "" {
+		t.Fatalf("node 1 should keep topology but cannot dial without B address: %+v", left[0])
 	}
-	if right[0].nextNodeID != "1" || right[0].nextHost != "a.internal" || right[0].nextPort != 12040 {
-		t.Fatalf("node 2 should dial node 1: %+v", right[0])
+	if right[0].prevNodeID != "1" || right[0].nextNodeID != "" || right[0].nextAuthMode != "proxy" {
+		t.Fatalf("node 2 should remain passive; B never dials A for virtual router: %+v", right[0])
 	}
 }
 
@@ -549,11 +549,11 @@ func TestProbeVirtualRouterRuntimeForAdjacentNodePrefersAvailableBridgeSession(t
 	})
 
 	rt, direction := probeVirtualRouterRuntimeForAdjacentNode("2")
-	if rt == nil || rt.cfg.chainID != "vrouter-next" || direction != probeChainBridgeRoleToPrev {
+	if rt == nil || rt.cfg.chainID != "vrouter-next" || direction != probeChainBridgeRoleToNext {
 		t.Fatalf("next runtime=%v direction=%q", rt, direction)
 	}
 	rt, direction = probeVirtualRouterRuntimeForAdjacentNode("3")
-	if rt == nil || rt.cfg.chainID != "vrouter-prev" || direction != probeChainBridgeRoleToNext {
+	if rt == nil || rt.cfg.chainID != "vrouter-prev" || direction != probeChainBridgeRoleToPrev {
 		t.Fatalf("prev runtime=%v direction=%q", rt, direction)
 	}
 }
