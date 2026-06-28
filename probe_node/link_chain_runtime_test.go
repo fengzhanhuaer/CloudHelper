@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -120,91 +119,17 @@ func TestProbeVirtualRouterRuntimeKeepsSinglePhysicalBridgeSession(t *testing.T)
 	}
 }
 
-func TestOpenProbeVirtualRouterPhysicalBridgeStreamIgnoresLegacySessionDirection(t *testing.T) {
-	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
-	defer clientSession.Close()
-	defer serverSession.Close()
-
+func TestProbeChainVirtualRouterStreamHandlerIgnoresLegacyFrameStream(t *testing.T) {
 	rt := &probeChainRuntime{
 		cfg: probeChainRuntimeConfig{
-			chainID:   "vrouter-physical-open",
+			chainID:   "vrouter-physical-carrier",
 			chainType: "virtual_router",
 			role:      "relay",
 		},
-		downstreamSessions: make(map[string]*probeChainBridgeSession),
-		upstreamSessions:   make(map[string]*probeChainBridgeSession),
-		stopCh:             make(chan struct{}),
+		stopCh: make(chan struct{}),
 	}
-	rt.setUpstreamSession("legacy-upstream-id", serverSession, probeChainBridgeRoleToPrev, "pipe")
-
-	accepted := make(chan net.Conn, 1)
-	acceptErr := make(chan error, 1)
-	go func() {
-		stream, err := clientSession.Accept()
-		if err != nil {
-			acceptErr <- err
-			return
-		}
-		frameStream, ok := stream.(*probeChainFrameStream)
-		if !ok {
-			acceptErr <- fmt.Errorf("accepted stream type=%T", stream)
-			return
-		}
-		req, found := frameStream.OpenRequest()
-		if !found || req.Type != probeVirtualRouterTunnelOpenType || req.Address != "198.18.0.21" {
-			acceptErr <- fmt.Errorf("unexpected open request: found=%t req=%+v", found, req)
-			return
-		}
-		if err := frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true}); err != nil {
-			acceptErr <- err
-			return
-		}
-		accepted <- stream
-	}()
-
-	req := buildProbeVirtualRouterTunnelOpenRequest("198.18.0.21", []string{"1", "2"})
-	conn, monitor, err := openProbeVirtualRouterPhysicalBridgeStream(rt, req)
-	if err != nil {
-		t.Fatalf("open physical bridge stream failed: %v", err)
-	}
-	defer conn.Close()
-	if monitor.SessionID != "legacy-upstream-id" {
-		t.Fatalf("session id=%q, want legacy-upstream-id", monitor.SessionID)
-	}
-
-	var peer net.Conn
-	select {
-	case peer = <-accepted:
-	case err := <-acceptErr:
-		t.Fatalf("accept failed: %v", err)
-	case <-time.After(time.Second):
-		t.Fatal("accept timeout")
-	}
-	defer peer.Close()
-
-	payload := []byte{1, 2, 3, 4}
-	echoed := make(chan error, 1)
-	go func() {
-		buf := make([]byte, len(payload))
-		if _, err := io.ReadFull(peer, buf); err != nil {
-			echoed <- err
-			return
-		}
-		_, err := peer.Write(buf)
-		echoed <- err
-	}()
-	if _, err := conn.Write(payload); err != nil {
-		t.Fatalf("write payload failed: %v", err)
-	}
-	echo := make([]byte, len(payload))
-	if _, err := io.ReadFull(conn, echo); err != nil {
-		t.Fatalf("read echo failed: %v", err)
-	}
-	if !bytes.Equal(echo, payload) {
-		t.Fatalf("echo=%v, want %v", echo, payload)
-	}
-	if err := <-echoed; err != nil {
-		t.Fatalf("peer echo failed: %v", err)
+	if handleProbeChainVirtualRouterStreamIfNeeded(rt, &probeChainFrameStream{}) {
+		t.Fatalf("vRouter should not be handled through legacy probe chain frame streams")
 	}
 }
 

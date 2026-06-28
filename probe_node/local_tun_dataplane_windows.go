@@ -28,7 +28,7 @@ var (
 	probeLocalCreateWintunAdapterForDataPlane = createProbeLocalWintunAdapter
 	probeLocalCloseWintunAdapterForDataPlane  = closeProbeLocalWintunAdapter
 	probeLocalNewTUNDataPlaneRunner           = newProbeLocalTUNDataPlaneRunner
-	probeLocalTUNInboundPacketHandler         = handleProbeLocalTUNInboundPacket
+	probeLocalTUNInboundPacketHandler         func([]byte)
 )
 
 var probeLocalTUNDataPlaneState = struct {
@@ -86,7 +86,7 @@ func startProbeLocalTUNDataPlane() error {
 		return fmt.Errorf("prepare direct bypass route target: %w", err)
 	}
 	dataPlane, err := probeLocalNewTUNDataPlaneRunner(libraryPath, handle, func(packet []byte) {
-		handler := probeLocalTUNInboundPacketHandler
+		handler := currentProbeLocalTUNInboundPacketHandler()
 		if handler != nil && len(packet) > 0 {
 			handler(packet)
 		}
@@ -266,8 +266,15 @@ func resetProbeLocalTUNDataPlaneHooksForTest() {
 	probeLocalCreateWintunAdapterForDataPlane = createProbeLocalWintunAdapter
 	probeLocalCloseWintunAdapterForDataPlane = closeProbeLocalWintunAdapter
 	probeLocalNewTUNDataPlaneRunner = newProbeLocalTUNDataPlaneRunner
-	probeLocalTUNInboundPacketHandler = handleProbeLocalTUNInboundPacket
+	probeLocalTUNInboundPacketHandler = nil
 	_ = stopProbeLocalTUNDataPlane()
+}
+
+func currentProbeLocalTUNInboundPacketHandler() func([]byte) {
+	if probeLocalTUNInboundPacketHandler != nil {
+		return probeLocalTUNInboundPacketHandler
+	}
+	return handleProbeLocalTUNInboundPacket
 }
 
 type probeLocalTUNDataPlaneRunner struct {

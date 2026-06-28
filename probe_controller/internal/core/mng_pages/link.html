@@ -1799,7 +1799,7 @@
         const current = byKey.get(key) || {
           remote,
           sessions: 0,
-          streams: 0,
+          subchannels: 0,
           rtt_ms: 0,
           frames_sent: 0,
           frame_bytes_sent: 0,
@@ -1810,7 +1810,7 @@
           last_frame_received_at: '',
         };
         current.sessions += 1;
-        current.streams += Number(entry && entry.streams_current) || 0;
+        current.subchannels += Number(entry && entry.streams_current) || 0;
         const rtt = Number(entry && entry.rtt_ms);
         if (Number.isFinite(rtt) && rtt > 0 && (!current.rtt_ms || rtt < current.rtt_ms)) current.rtt_ms = rtt;
         current.frames_sent += Number(entry && entry.frames_sent) || 0;
@@ -1850,7 +1850,7 @@
       const detail = physical.connections.slice(0, 3).map((entry) => {
         const rttText = entry.rtt_ms > 0 ? `${Math.trunc(entry.rtt_ms)}ms` : '-';
         const frameText = `bridge帧 tx=${entry.frames_sent}/${formatBytes(entry.frame_bytes_sent)} rx=${entry.frames_received}/${formatBytes(entry.frame_bytes_received)}`;
-        return `物理对端 ${entry.remote} sessions=${entry.sessions} streams=${entry.streams} rtt=${rttText} ${frameText}`;
+        return `物理对端 ${entry.remote} sessions=${entry.sessions} 子通道=${entry.subchannels} rtt=${rttText} ${frameText}`;
       });
       const base = `<div class="small muted">${escapeHTML(lines.join(' / '))}</div>`;
       const hint = hints.map((item) => `<div class="small route-error">${escapeHTML(item)}</div>`).join('');
@@ -1892,14 +1892,27 @@
 
     function renderLastVirtualPingContext(stats) {
       const item = stats || {};
+      const parts = [];
       const direction = String(item.last_ping_direction || '').trim();
       const pingAt = String(item.last_ping_at || '').trim();
-      if (!direction && !pingAt) return '';
-      const connections = Number(item.last_ping_bridge_connections || 0);
-      const remote = String(item.last_ping_bridge_remote || '').trim();
-      const connectedAt = String(item.last_ping_bridge_connected_at || '').trim();
-      const session = remote ? `${remote}${connectedAt ? ` since ${connectedAt}` : ''}` : '-';
-      return `<div class="small muted">最近虚拟 ping ${escapeHTML(direction || '-')} @ ${escapeHTML(pingAt || '-')} / 当时物理 bridge ${escapeHTML(connections)} 条 / session ${escapeHTML(session)}</div>`;
+      if (direction || pingAt) {
+        const latency = Number(item.last_ping_latency_ms || 0);
+        const connections = Number(item.last_ping_bridge_connections || 0);
+        const remote = String(item.last_ping_bridge_remote || '').trim();
+        const connectedAt = String(item.last_ping_bridge_connected_at || '').trim();
+        const session = remote ? `${remote}${connectedAt ? ` since ${connectedAt}` : ''}` : '-';
+        parts.push(`<div class="small muted">最近虚拟 ping ${escapeHTML(direction || '-')} ${escapeHTML(latency ? `${latency}ms` : '-')} @ ${escapeHTML(pingAt || '-')} / 当时物理 bridge ${escapeHTML(connections)} 条 / session ${escapeHTML(session)}</div>`);
+      }
+      const virtualLatency = Number(item.last_virtual_ping_latency_ms || 0);
+      const virtualAt = String(item.last_virtual_ping_at || '').trim();
+      if (virtualLatency > 0 || virtualAt) {
+        const src = String(item.last_virtual_ping_source_ip || '').trim();
+        const dst = String(item.last_virtual_ping_dest_ip || '').trim();
+        const seq = item.last_virtual_ping_sequence ? ` seq=${item.last_virtual_ping_sequence}` : '';
+        const path = String(item.last_virtual_ping_path || '').trim();
+        parts.push(`<div class="small muted">最近虚拟 IP ping ${escapeHTML(src || '-')} → ${escapeHTML(dst || '-')} ${escapeHTML(virtualLatency ? `${virtualLatency}ms` : '-')} @ ${escapeHTML(virtualAt || '-')}${escapeHTML(seq)}${path ? ` / path ${escapeHTML(path)}` : ''}</div>`);
+      }
+      return parts.join('');
     }
 
     function routePeerLabel(nodeID, route) {
@@ -2000,9 +2013,9 @@
         const frameBytesSent = Number(entry && entry.frame_bytes_sent) || 0;
         const framesReceived = Number(entry && entry.frames_received) || 0;
         const frameBytesReceived = Number(entry && entry.frame_bytes_received) || 0;
-        const streams = Number(entry && entry.streams_current);
+        const subchannels = Number(entry && entry.streams_current);
         const rtt = Number(entry && entry.rtt_ms);
-        return `<div class="small muted mono">${escapeHTML(sessionID)} remote=${escapeHTML(remote)} streams=${escapeHTML(Number.isFinite(streams) ? streams : '-')} rtt=${escapeHTML(Number.isFinite(rtt) ? Math.trunc(rtt) + 'ms' : '-')} tx=${escapeHTML(framesSent)}/${escapeHTML(formatBytes(frameBytesSent))} rx=${escapeHTML(framesReceived)}/${escapeHTML(formatBytes(frameBytesReceived))}</div>`;
+        return `<div class="small muted mono">${escapeHTML(sessionID)} remote=${escapeHTML(remote)} 子通道=${escapeHTML(Number.isFinite(subchannels) ? subchannels : '-')} rtt=${escapeHTML(Number.isFinite(rtt) ? Math.trunc(rtt) + 'ms' : '-')} tx=${escapeHTML(framesSent)}/${escapeHTML(formatBytes(frameBytesSent))} rx=${escapeHTML(framesReceived)}/${escapeHTML(formatBytes(frameBytesReceived))}</div>`;
       }).join('');
       const more = summary.sessions.length > 4 ? `<div class="small muted">还有 ${escapeHTML(summary.sessions.length - 4)} 条 session</div>` : '';
       return `<details class="small"><summary class="muted">bridge session 原始统计</summary>${lines}${more}</details>`;

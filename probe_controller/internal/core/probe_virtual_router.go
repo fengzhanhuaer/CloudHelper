@@ -69,7 +69,7 @@ type probeVirtualRouterRuntimeStats struct {
 	FrameBytesSent            int64  `json:"frame_bytes_sent,omitempty"`
 	FramesReceived            int64  `json:"frames_received,omitempty"`
 	FrameBytesReceived        int64  `json:"frame_bytes_received,omitempty"`
-	StreamOpenCount           int64  `json:"stream_open_count,omitempty"`
+	LinkOpenCount             int64  `json:"link_open_count,omitempty"`
 	LastOpenLatencyMS         int64  `json:"last_open_latency_ms,omitempty"`
 	LastOpenError             string `json:"last_open_error,omitempty"`
 	LastOpenAt                string `json:"last_open_at,omitempty"`
@@ -82,6 +82,14 @@ type probeVirtualRouterRuntimeStats struct {
 	LastPingBridgeSessionID   string `json:"last_ping_bridge_session_id,omitempty"`
 	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
 	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
+	VirtualPingCount          int64  `json:"virtual_ping_count,omitempty"`
+	LastVirtualPingLatencyMS  int64  `json:"last_virtual_ping_latency_ms,omitempty"`
+	LastVirtualPingAt         string `json:"last_virtual_ping_at,omitempty"`
+	LastVirtualPingSourceIP   string `json:"last_virtual_ping_source_ip,omitempty"`
+	LastVirtualPingDestIP     string `json:"last_virtual_ping_dest_ip,omitempty"`
+	LastVirtualPingID         uint16 `json:"last_virtual_ping_id,omitempty"`
+	LastVirtualPingSequence   uint16 `json:"last_virtual_ping_sequence,omitempty"`
+	LastVirtualPingPath       string `json:"last_virtual_ping_path,omitempty"`
 	LastPacketAt              string `json:"last_packet_at,omitempty"`
 	LastFrameAt               string `json:"last_frame_at,omitempty"`
 	TUNDataPlane              bool   `json:"tun_data_plane,omitempty"`

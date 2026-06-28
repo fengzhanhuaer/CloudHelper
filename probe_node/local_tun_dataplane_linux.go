@@ -24,9 +24,7 @@ var probeLocalLinuxTUNDataPlaneState = struct {
 	dev    string
 }{}
 
-var probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
-	return newProbeLocalLinuxTUNDataPlaneRunner(dev)
-}
+var probeLocalLinuxNewTUNDataPlaneRunner func(dev string) (probeLocalTUNDataPlane, error)
 
 type probeLocalLinuxTUNDataPlaneRunner struct {
 	file *os.File
@@ -57,7 +55,7 @@ func startProbeLocalTUNDataPlane() error {
 	if err != nil {
 		return err
 	}
-	runner, err := probeLocalLinuxNewTUNDataPlaneRunner(dev)
+	runner, err := currentProbeLocalLinuxNewTUNDataPlaneRunner()(dev)
 	if err != nil {
 		return err
 	}
@@ -123,10 +121,17 @@ func handleProbeLocalTUNInboundPacket(packet []byte) {
 }
 
 func resetProbeLocalTUNDataPlaneHooksForTest() {
-	probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
+	probeLocalLinuxNewTUNDataPlaneRunner = nil
+	_ = stopProbeLocalTUNDataPlane()
+}
+
+func currentProbeLocalLinuxNewTUNDataPlaneRunner() func(dev string) (probeLocalTUNDataPlane, error) {
+	if probeLocalLinuxNewTUNDataPlaneRunner != nil {
+		return probeLocalLinuxNewTUNDataPlaneRunner
+	}
+	return func(dev string) (probeLocalTUNDataPlane, error) {
 		return newProbeLocalLinuxTUNDataPlaneRunner(dev)
 	}
-	_ = stopProbeLocalTUNDataPlane()
 }
 
 func newProbeLocalLinuxTUNDataPlaneRunner(dev string) (*probeLocalLinuxTUNDataPlaneRunner, error) {

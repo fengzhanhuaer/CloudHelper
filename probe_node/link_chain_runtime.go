@@ -1475,61 +1475,6 @@ func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, b
 	}
 }
 
-func openProbeVirtualRouterPhysicalBridgeStream(runtime *probeChainRuntime, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
-	if runtime == nil {
-		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
-	}
-	if !runtime.singleBridgeSessionPerRule() {
-		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is not a virtual router physical bridge")
-	}
-	timeout := probeChainDownstreamOpenTimeout
-	if timeout <= 0 {
-		timeout = 15 * time.Second
-	}
-	deadline := time.Now().Add(timeout)
-	sawSession := false
-	var lastOpenErr error
-	for {
-		item := runtime.latestPhysicalBridgeSession()
-		if item != nil && item.Session != nil {
-			session := item.Session
-			if !session.IsClosed() {
-				sawSession = true
-				sessionID := strings.TrimSpace(item.ID)
-				sessionRole := firstNonEmpty(strings.TrimSpace(item.BridgeRole), "bridge")
-				streamsOpen := session.NumStreams()
-				startedAt := time.Now()
-				stream, openErr := session.OpenWithRequest(request, timeout)
-				openLatency := time.Since(startedAt)
-				if openErr == nil {
-					return stream, probeChainFrameStreamMonitor{
-						Session:             session,
-						SessionID:           sessionID,
-						SessionRole:         sessionRole,
-						SessionStreamsOpen:  streamsOpen,
-						SessionStreamsAfter: session.NumStreams(),
-						OpenLatency:         openLatency,
-						PingStats:           session.PingStats(),
-					}, nil
-				}
-				lastOpenErr = openErr
-				if session.IsClosed() || isProbeVirtualRouterClosedStreamError(openErr) {
-					runtime.clearDownstreamSession("", session)
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			break
-		}
-		select {
-		case <-runtime.stopCh:
-			return nil, probeChainFrameStreamMonitor{}, errors.New("runtime stopped")
-		case <-time.After(300 * time.Millisecond):
-		}
-	}
-	return nil, probeChainFrameStreamMonitor{}, runtime.bridgeUnavailableError("physical", "", sawSession, lastOpenErr)
-}
-
 func resolveProbeChainPortForwardFlowID(network string, targetAddr string, associationV2 *probeChainAssociationV2Meta) string {
 	if associationV2 != nil && strings.TrimSpace(associationV2.FlowID) != "" {
 		return strings.TrimSpace(associationV2.FlowID)
@@ -2033,6 +1978,16 @@ func runProbeChainBridgeDialLoop(runtime *probeChainRuntime, target probeChainBr
 			continue
 		}
 
+		if runtime.singleBridgeSessionPerRule() {
+			sessionID := runtime.nextBridgeSessionID("vrouter-carrier")
+			log.Printf("probe virtual router physical carrier accepted: chain=%s role=%s tag=%s session_id=%s target=%s:%d %s", runtime.cfg.chainID, runtime.cfg.role, runtime.bridgeDialTag(target.Tag), sessionID, target.Host, target.Port, runtime.bridgeDialLogFields(target))
+			runProbeVirtualRouterPhysicalCarrier(runtime, conn, sessionID, net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
+			_ = conn.Close()
+			sleepProbeChainBridgeBackoff(runtime.stopCh, backoff)
+			backoff = nextProbeChainBridgeBackoff(backoff)
+			continue
+		}
+
 		session, err := newProbeChainFrameClient(conn)
 		if err != nil {
 			_ = conn.Close()
@@ -2397,6 +2352,11 @@ func handleProbeChainBridgeRelayWebSocket(runtime *probeChainRuntime, bridgeRole
 	defer ws.Close()
 
 	conn := newWebSocketNetConn(ws)
+	if runtime.singleBridgeSessionPerRule() {
+		sessionID := runtime.nextBridgeSessionID("vrouter-carrier")
+		runProbeVirtualRouterPhysicalCarrier(runtime, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+		return
+	}
 	role := normalizeProbeChainBridgeRole(bridgeRole)
 	assignTarget := "upstream"
 	routeDirection := "forward"
@@ -2450,6 +2410,12 @@ func handleProbeChainBridgeRelayHTTP3WebSocket(runtime *probeChainRuntime, bridg
 		},
 	}
 	defer conn.Close()
+
+	if runtime.singleBridgeSessionPerRule() {
+		sessionID := runtime.nextBridgeSessionID("vrouter-carrier")
+		runProbeVirtualRouterPhysicalCarrier(runtime, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+		return
+	}
 
 	role := normalizeProbeChainBridgeRole(bridgeRole)
 	assignTarget := "upstream"
@@ -3580,24 +3546,7 @@ func handleProbeChainPingPongStreamIfNeeded(runtime *probeChainRuntime, conn net
 }
 
 func handleProbeChainVirtualRouterStreamIfNeeded(runtime *probeChainRuntime, conn net.Conn) bool {
-	frameStream, ok := conn.(*probeChainFrameStream)
-	if !ok {
-		return false
-	}
-	req, found := frameStream.OpenRequest()
-	if !found || !isProbeVirtualRouterStreamOpenType(req.Type) {
-		return false
-	}
-	if err := handleProbeVirtualRouterOpenStream(runtime, conn, req, frameStream.RespondOpen); err != nil {
-		chainID := ""
-		role := ""
-		if runtime != nil {
-			chainID = strings.TrimSpace(runtime.cfg.chainID)
-			role = strings.TrimSpace(runtime.cfg.role)
-		}
-		log.Printf("probe virtual router frame stream failed: chain=%s role=%s err=%v", chainID, role, err)
-	}
-	return true
+	return false
 }
 
 func (rt *probeChainRuntime) getDownstreamSessionByID(sessionID string) *probeChainFrameSession {
@@ -3906,12 +3855,6 @@ func handleProbeChainProxyOpenRequest(runtime *probeChainRuntime, stream net.Con
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), probeChainRelayModePingPong) {
 		handleProbeChainPingPongStream(runtime, stream, req.PingBytes, responder)
-		return
-	}
-	if isProbeVirtualRouterStreamOpenType(req.Type) {
-		if err := handleProbeVirtualRouterOpenStream(runtime, stream, req, responder); err != nil {
-			log.Printf("probe virtual router proxy stream failed: err=%v", err)
-		}
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(req.Type), "tcp_debug_get") {
