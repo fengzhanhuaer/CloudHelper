@@ -345,15 +345,8 @@ func probeVirtualRouterPath(config probeVirtualRouterConfig, fromNodeID string, 
 		if !rule.Enabled {
 			continue
 		}
-		switch normalizeProbeVirtualRouterDirection(rule.Direction) {
-		case probeVirtualRouterDirectionTwoWay:
-			addEdge(rule.FromNodeID, rule.ToNodeID)
-			addEdge(rule.ToNodeID, rule.FromNodeID)
-		case probeVirtualRouterDirectionForward:
-			addEdge(rule.FromNodeID, rule.ToNodeID)
-		case probeVirtualRouterDirectionBackward:
-			addEdge(rule.ToNodeID, rule.FromNodeID)
-		}
+		addEdge(rule.FromNodeID, rule.ToNodeID)
+		addEdge(rule.ToNodeID, rule.FromNodeID)
 	}
 	seen := map[string]struct{}{from: {}}
 	parent := map[string]string{}

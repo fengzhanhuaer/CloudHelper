@@ -408,7 +408,7 @@
 | TC-DVRT-02 | RQ-DVRT-004,RQ-DVRT-011,RQ-DVRT-012,RQ-DVRT-016 | T-DVRT-02 | 管理接口保存与查询 | Go 单测 | 通过 | `TestMngLinkVirtualRouterHandlerSaveAndGet` | 无 | 覆盖 POST/GET |
 | TC-DVRT-03 | RQ-DVRT-008 | T-DVRT-02 | 静态 IP 池校验 | Go 单测 | 通过 | `TestMngLinkVirtualRouterHandlerRejectsProbeIPOutsideReservedPool` | 无 | 拒绝非前 1024 池 IP |
 | TC-DVRT-04 | RQ-DVRT-004,RQ-DVRT-011 | T-DVRT-04 | grouped 下发过滤禁用规则 | Go 单测 | 通过 | `TestBuildProbeVirtualRouterConfigForNodeFiltersDisabledRules` | 无 | 仅下发启用且相关规则 |
-| TC-DVRT-05 | RQ-DVRT-013,RQ-DVRT-017 | T-DVRT-05 | 共同节点可达与方向约束 | Go 单测 | 通过 | `TestProbeVirtualRouterReachableViaCommonNode`, `TestProbeVirtualRouterReachableHonorsDirection` | 无 | 覆盖双向、单向和中转路径 |
+| TC-DVRT-05 | RQ-DVRT-013,RQ-DVRT-017 | T-DVRT-05 | 共同节点可达与物理方向不限制虚拟反向路径 | Go 单测 | 通过 | `TestProbeVirtualRouterReachableViaCommonNode`, `TestProbeVirtualRouterReachableTreatsDirectionAsPhysicalDialOnly` | 无 | `direction` 只约束物理建联方向；虚拟连接按点对点双向拓扑寻路 |
 | TC-DVRT-06 | RQ-DVRT-004,RQ-DVRT-017 | T-DVRT-04 | 节点侧缓存读写 | Go 单测 | 通过 | `TestProbeVirtualRouterCacheRoundTrip` | 无 | 缓存文件可恢复 |
 | TC-DVRT-07 | RQ-DVRT-006,RQ-DVRT-017 | T-DVRT-05 | LAN frame open request 入口 | Go 单测 | 通过 | `TestBuildProbeVirtualRouterTunnelOpenRequest` | 无 | 构造 `virtual_router_lan_packet` open request |
 | TC-DVRT-10 | RQ-DVRT-006,RQ-DVRT-013,RQ-DVRT-017 | T-DVRT-05 | 虚拟路由器路径、目标 IP、相邻 runtime 选择 | Go 单测 | 通过 | `TestProbeVirtualRouterNextHopInPath`, `TestProbeVirtualRouterPathFromRequest`, `TestProbeVirtualRouterIPv4Destination`, `TestProbeVirtualRouterRuntimeForAdjacentNode` | 无 | 覆盖逐跳转发基础函数 |

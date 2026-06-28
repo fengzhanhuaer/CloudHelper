@@ -37,7 +37,7 @@ func TestProbeVirtualRouterReachableViaCommonNode(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterReachableHonorsDirection(t *testing.T) {
+func TestProbeVirtualRouterReachableTreatsDirectionAsPhysicalDialOnly(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
 		TopologyRules: []probeVirtualRouterTopologyRule{
@@ -47,8 +47,11 @@ func TestProbeVirtualRouterReachableHonorsDirection(t *testing.T) {
 	if !probeVirtualRouterReachable(config, "1", "2") {
 		t.Fatalf("node 1 should reach node 2")
 	}
-	if probeVirtualRouterReachable(config, "2", "1") {
-		t.Fatalf("node 2 should not reach node 1 through forward-only rule")
+	if !probeVirtualRouterReachable(config, "2", "1") {
+		t.Fatalf("node 2 should reach node 1 virtually; direction only controls physical dial direction")
+	}
+	if got := probeVirtualRouterPath(config, "2", "1"); !reflect.DeepEqual(got, []string{"2", "1"}) {
+		t.Fatalf("reverse virtual path=%v, want [2 1]", got)
 	}
 }
 
