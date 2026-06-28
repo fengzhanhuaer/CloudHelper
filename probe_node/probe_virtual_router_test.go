@@ -755,6 +755,76 @@ func TestRelayProbeVirtualRouterPathRTTSumAddsLocalPingPongLatency(t *testing.T)
 	}
 }
 
+func TestReusableProbeVirtualRouterPacketStreamDropsClosedFrameStream(t *testing.T) {
+	key := "closed-frame-stream"
+	session := &probeChainFrameSession{closeCh: make(chan struct{})}
+	session.closed.Store(true)
+	frameStream := &probeChainFrameStream{
+		session:    session,
+		localDone:  make(chan struct{}),
+		remoteDone: make(chan struct{}),
+	}
+	item := &probeVirtualRouterPacketStream{
+		key:      key,
+		stream:   frameStream,
+		openedAt: time.Now(),
+		lastUsed: time.Now(),
+	}
+	probeVirtualRouterStreamState.mu.Lock()
+	oldStreams := probeVirtualRouterStreamState.streams
+	probeVirtualRouterStreamState.streams = map[string]*probeVirtualRouterPacketStream{key: item}
+	probeVirtualRouterStreamState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterStreamState.mu.Lock()
+		probeVirtualRouterStreamState.streams = oldStreams
+		probeVirtualRouterStreamState.mu.Unlock()
+	})
+
+	if stream := reusableProbeVirtualRouterPacketStream(key, time.Now()); stream != nil {
+		t.Fatalf("closed frame stream should not be reused")
+	}
+	probeVirtualRouterStreamState.mu.Lock()
+	_, exists := probeVirtualRouterStreamState.streams[key]
+	probeVirtualRouterStreamState.mu.Unlock()
+	if exists {
+		t.Fatalf("closed frame stream should be removed from cache")
+	}
+}
+
+func TestProbeVirtualRouterPacketStreamKeyIsPerRule(t *testing.T) {
+	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-rule-1"}}
+	left := probeVirtualRouterPacketStreamKey(rt, "to_next", "198.18.0.21", []string{"1", "2"})
+	right := probeVirtualRouterPacketStreamKey(rt, "to_prev", "198.18.0.22", []string{"2", "1"})
+	if left == "" {
+		t.Fatalf("packet stream key should not be empty")
+	}
+	if left != right {
+		t.Fatalf("packet stream key should be per rule: left=%q right=%q", left, right)
+	}
+}
+
+func TestProbeVirtualRouterPacketEnvelopeCarriesPathPerFrame(t *testing.T) {
+	packet := []byte{0x45, 0x00, 0x00, 0x14}
+	payload, err := marshalProbeVirtualRouterPacketEnvelope(packet, []string{"1", "3", "4"})
+	if err != nil {
+		t.Fatalf("marshal packet envelope failed: %v", err)
+	}
+	gotPacket, gotPath, err := unmarshalProbeVirtualRouterPacketEnvelope(payload, []string{"fallback"})
+	if err != nil {
+		t.Fatalf("unmarshal packet envelope failed: %v", err)
+	}
+	if !reflect.DeepEqual(gotPacket, packet) || !reflect.DeepEqual(gotPath, []string{"1", "3", "4"}) {
+		t.Fatalf("packet/path=%v/%v", gotPacket, gotPath)
+	}
+	legacyPacket, legacyPath, err := unmarshalProbeVirtualRouterPacketEnvelope(packet, []string{"fallback"})
+	if err != nil {
+		t.Fatalf("legacy packet fallback failed: %v", err)
+	}
+	if !reflect.DeepEqual(legacyPacket, packet) || !reflect.DeepEqual(legacyPath, []string{"fallback"}) {
+		t.Fatalf("legacy packet/path=%v/%v", legacyPacket, legacyPath)
+	}
+}
+
 func TestCurrentProbeVirtualRouterPathKeepsShortestHopBeforeRTT(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
@@ -1011,8 +1081,12 @@ func TestProbeVirtualRouterRuntimeForAdjacentNodePrefersAvailableBridgeSession(t
 func TestProbeVirtualRouterPacketStreamKey(t *testing.T) {
 	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "chain-a"}}
 	got := probeVirtualRouterPacketStreamKey(rt, probeChainBridgeRoleToNext, "198.18.0.9", []string{"node-1", "node-2"})
-	if got != "chain-a|to_next|198.18.0.9|1>2" {
+	if got != "packet|chain-a" {
 		t.Fatalf("key=%q", got)
+	}
+	other := probeVirtualRouterPacketStreamKey(rt, probeChainBridgeRoleToPrev, "198.18.0.10", []string{"node-2", "node-1"})
+	if other != got {
+		t.Fatalf("packet stream key should be per rule: got=%q other=%q", got, other)
 	}
 }
 

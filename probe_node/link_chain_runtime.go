@@ -1513,7 +1513,7 @@ func openProbeVirtualRouterPhysicalBridgeStream(runtime *probeChainRuntime, requ
 					}, nil
 				}
 				lastOpenErr = openErr
-				if session.IsClosed() {
+				if session.IsClosed() || isProbeVirtualRouterClosedStreamError(openErr) {
 					runtime.clearDownstreamSession("", session)
 				}
 			}

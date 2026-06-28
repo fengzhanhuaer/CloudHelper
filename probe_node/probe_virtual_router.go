@@ -23,6 +23,8 @@ const (
 	probeVirtualRouterDefaultServicePort       = 12040
 	probeVirtualRouterTunnelOpenType           = "virtual_router_lan_packet"
 	probeVirtualRouterRTTQueryOpenType         = "virtual_router_rtt_query"
+	probeVirtualRouterPacketEnvelopeMagic      = 0x56525031
+	probeVirtualRouterPacketEnvelopeHeaderSize = 10
 	probeVirtualRouterTunnelScope              = "virtual_router"
 	probeVirtualRouterNetworkIPv4              = "ip4"
 	probeVirtualRouterStreamIdleTTL            = 45 * time.Second
@@ -1049,6 +1051,82 @@ func probeVirtualRouterIPMatches(target string, local string) bool {
 	return targetIP.Equal(localIP)
 }
 
+func marshalProbeVirtualRouterPacketEnvelope(packet []byte, path []string) ([]byte, error) {
+	if len(packet) == 0 {
+		return nil, errors.New("virtual router packet is empty")
+	}
+	cleanPath := make([]string, 0, len(path))
+	for _, item := range path {
+		if nodeID := normalizeProbeChainNodeID(item); nodeID != "" {
+			cleanPath = append(cleanPath, nodeID)
+		}
+	}
+	pathText := strings.Join(cleanPath, ">")
+	if len(pathText) > 0xffff {
+		return nil, errors.New("virtual router packet path is too large")
+	}
+	total := probeVirtualRouterPacketEnvelopeHeaderSize + len(pathText) + len(packet)
+	if total > probeChainFrameMaxDataBytes {
+		return nil, errors.New("virtual router packet envelope is too large")
+	}
+	out := make([]byte, total)
+	binary.BigEndian.PutUint32(out[0:4], probeVirtualRouterPacketEnvelopeMagic)
+	binary.BigEndian.PutUint16(out[4:6], uint16(len(pathText)))
+	binary.BigEndian.PutUint32(out[6:10], uint32(len(packet)))
+	copy(out[10:10+len(pathText)], pathText)
+	copy(out[10+len(pathText):], packet)
+	return out, nil
+}
+
+func unmarshalProbeVirtualRouterPacketEnvelope(payload []byte, fallbackPath []string) ([]byte, []string, error) {
+	if len(payload) < probeVirtualRouterPacketEnvelopeHeaderSize || binary.BigEndian.Uint32(payload[0:4]) != probeVirtualRouterPacketEnvelopeMagic {
+		return payload, append([]string(nil), fallbackPath...), nil
+	}
+	pathLen := int(binary.BigEndian.Uint16(payload[4:6]))
+	packetLen := int(binary.BigEndian.Uint32(payload[6:10]))
+	if pathLen < 0 || packetLen <= 0 || probeVirtualRouterPacketEnvelopeHeaderSize+pathLen+packetLen != len(payload) {
+		return nil, nil, errors.New("invalid virtual router packet envelope")
+	}
+	path := parseProbeVirtualRouterPathText(string(payload[10 : 10+pathLen]))
+	packet := append([]byte(nil), payload[10+pathLen:]...)
+	if len(path) == 0 {
+		path = append([]string(nil), fallbackPath...)
+	}
+	return packet, path, nil
+}
+
+func parseProbeVirtualRouterPathText(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ">")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		nodeID := normalizeProbeChainNodeID(part)
+		if nodeID != "" {
+			out = append(out, nodeID)
+		}
+	}
+	return out
+}
+
+func writeProbeVirtualRouterFramedPacket(writer io.Writer, packet []byte, path []string) error {
+	payload, err := marshalProbeVirtualRouterPacketEnvelope(packet, path)
+	if err != nil {
+		return err
+	}
+	return writeProbeChainFramedPacket(writer, payload)
+}
+
+func readProbeVirtualRouterFramedPacket(reader *bufio.Reader, fallbackPath []string) ([]byte, []string, error) {
+	payload, err := readProbeChainFramedPacket(reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	return unmarshalProbeVirtualRouterPacketEnvelope(payload, fallbackPath)
+}
+
 func buildProbeVirtualRouterTunnelOpenRequest(dstIP string, path []string) probeChainTunnelOpenRequest {
 	cleanPath := make([]string, 0, len(path))
 	for _, item := range path {
@@ -1413,8 +1491,9 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 		return err
 	}
 	reader := bufio.NewReader(stream)
+	requestPath := probeVirtualRouterPathFromRequest(req)
 	for {
-		packet, err := readProbeChainFramedPacket(reader)
+		packet, path, err := readProbeVirtualRouterFramedPacket(reader, requestPath)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 				return nil
@@ -1427,7 +1506,6 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 			return errors.New("virtual router packet destination is invalid")
 		}
 		recordProbeVirtualRouterRuntimePacketReceived(runtime, len(packet))
-		path := probeVirtualRouterPathFromRequest(req)
 		if len(path) == 0 {
 			path = currentProbeVirtualRouterPathToIP(dstIP)
 		}
@@ -1706,10 +1784,22 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	if err != nil {
 		return err
 	}
-	if err := writeProbeChainFramedPacket(stream, packet); err != nil {
+	if err := writeProbeVirtualRouterFramedPacket(stream, packet, path); err != nil {
 		dropProbeVirtualRouterPacketStream(stream)
 		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
-		return err
+		if !isProbeVirtualRouterClosedStreamError(err) {
+			return err
+		}
+		stream, err = openProbeVirtualRouterPacketStream(rt, direction, dstIP, path)
+		if err != nil {
+			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
+			return err
+		}
+		if err := writeProbeVirtualRouterFramedPacket(stream, packet, path); err != nil {
+			dropProbeVirtualRouterPacketStream(stream)
+			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
+			return err
+		}
 	}
 	recordProbeVirtualRouterRuntimeFrameSent(rt, len(packet))
 	recordProbeVirtualRouterRuntimePacketForwarded(rt, len(packet))
@@ -1877,7 +1967,7 @@ func reusableProbeVirtualRouterPacketStream(key string, now time.Time) net.Conn 
 		probeVirtualRouterStreamState.mu.Unlock()
 		return nil
 	}
-	if now.Sub(item.lastUsed) > probeVirtualRouterStreamIdleTTL {
+	if now.Sub(item.lastUsed) > probeVirtualRouterStreamIdleTTL || isProbeVirtualRouterPacketStreamClosed(item) {
 		delete(probeVirtualRouterStreamState.streams, key)
 		probeVirtualRouterStreamState.mu.Unlock()
 		_ = item.stream.Close()
@@ -1886,6 +1976,51 @@ func reusableProbeVirtualRouterPacketStream(key string, now time.Time) net.Conn 
 	item.lastUsed = now
 	probeVirtualRouterStreamState.mu.Unlock()
 	return item
+}
+
+func isProbeVirtualRouterPacketStreamClosed(item *probeVirtualRouterPacketStream) bool {
+	if item == nil || item.stream == nil {
+		return true
+	}
+	switch stream := item.stream.(type) {
+	case *probeChainFrameStream:
+		return isProbeChainFrameStreamClosed(stream)
+	case *probeVirtualRouterPacketStream:
+		return isProbeVirtualRouterPacketStreamClosed(stream)
+	default:
+		return false
+	}
+}
+
+func isProbeChainFrameStreamClosed(stream *probeChainFrameStream) bool {
+	if stream == nil || stream.session == nil || stream.session.IsClosed() {
+		return true
+	}
+	select {
+	case <-stream.localDone:
+		return true
+	default:
+	}
+	select {
+	case <-stream.remoteDone:
+		return true
+	default:
+	}
+	return false
+}
+
+func isProbeVirtualRouterClosedStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "use of closed network connection") ||
+		strings.Contains(text, "closed pipe") ||
+		strings.Contains(text, "connection reset by peer") ||
+		strings.Contains(text, "broken pipe")
 }
 
 func dropProbeVirtualRouterPacketStream(conn net.Conn) {
@@ -1926,17 +2061,9 @@ func probeVirtualRouterPacketStreamKey(rt *probeChainRuntime, direction string, 
 	if rt == nil {
 		return ""
 	}
-	cleanPath := make([]string, 0, len(path))
-	for _, item := range path {
-		if nodeID := normalizeProbeChainNodeID(item); nodeID != "" {
-			cleanPath = append(cleanPath, nodeID)
-		}
-	}
 	return strings.Join([]string{
+		"packet",
 		strings.TrimSpace(rt.cfg.chainID),
-		strings.TrimSpace(direction),
-		strings.TrimSpace(dstIP),
-		strings.Join(cleanPath, ">"),
 	}, "|")
 }
 
@@ -2352,19 +2479,7 @@ func probeVirtualRouterPathFromRequest(req probeChainTunnelOpenRequest) []string
 	if req.AssociationV2 == nil {
 		return nil
 	}
-	raw := strings.TrimSpace(req.AssociationV2.RouteTarget)
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ">")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		nodeID := normalizeProbeChainNodeID(part)
-		if nodeID != "" {
-			out = append(out, nodeID)
-		}
-	}
-	return out
+	return parseProbeVirtualRouterPathText(req.AssociationV2.RouteTarget)
 }
 
 func probeVirtualRouterIPv4Destination(packet []byte) string {
