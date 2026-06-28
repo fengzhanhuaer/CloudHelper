@@ -150,6 +150,10 @@ func openProbeLocalLinuxTUNDevice(dev string) (*os.File, error) {
 		_ = file.Close()
 		return nil, err
 	}
+	if err := unix.SetNonblock(int(file.Fd()), true); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("set linux tun fd nonblock failed: dev=%s: %w", dev, err)
+	}
 	return file, nil
 }
 
@@ -167,11 +171,42 @@ func attachProbeLocalLinuxTUNDevice(file *os.File, dev string) error {
 func (r *probeLocalLinuxTUNDataPlaneRunner) readLoop() {
 	defer close(r.doneCh)
 	buf := make([]byte, probeLocalLinuxTUNPacketBufferSize)
+	fd := int(r.file.Fd())
+	pollFDs := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	for {
-		n, err := r.file.Read(buf)
+		if r.closed.Load() {
+			return
+		}
+		pollFDs[0].Revents = 0
+		ready, err := unix.Poll(pollFDs, 250)
+		if err != nil {
+			if r.closed.Load() || errors.Is(err, unix.EINTR) {
+				continue
+			}
+			logProbeWarnf("probe local linux tun poll failed: dev=%s err=%v", r.dev, err)
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if ready == 0 {
+			continue
+		}
+		if pollFDs[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+			if r.closed.Load() {
+				return
+			}
+			logProbeWarnf("probe local linux tun poll closed: dev=%s revents=%d", r.dev, pollFDs[0].Revents)
+			return
+		}
+		if pollFDs[0].Revents&unix.POLLIN == 0 {
+			continue
+		}
+		n, err := unix.Read(fd, buf)
 		if err != nil {
 			if r.closed.Load() || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
 				return
+			}
+			if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EINTR) {
+				continue
 			}
 			logProbeWarnf("probe local linux tun read failed: dev=%s err=%v", r.dev, err)
 			time.Sleep(50 * time.Millisecond)
@@ -219,10 +254,20 @@ func (r *probeLocalLinuxTUNDataPlaneRunner) WritePacket(packet []byte) error {
 	}
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
+	fd := int(r.file.Fd())
+	pollFDs := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
 	for len(packet) > 0 {
-		n, err := r.file.Write(packet)
+		n, err := unix.Write(fd, packet)
 		if err != nil {
+			if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EINTR) {
+				pollFDs[0].Revents = 0
+				_, _ = unix.Poll(pollFDs, 250)
+				continue
+			}
 			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
 		}
 		packet = packet[n:]
 	}
