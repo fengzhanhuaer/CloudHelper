@@ -200,24 +200,29 @@ type mngVirtualRouterRouteSideStatus struct {
 }
 
 type mngVirtualRouterRouteStatusView struct {
-	RuleID        string                          `json:"rule_id,omitempty"`
-	RuleName      string                          `json:"rule_name,omitempty"`
-	ChainID       string                          `json:"chain_id"`
-	Enabled       bool                            `json:"enabled"`
-	Direction     string                          `json:"direction"`
-	FromNodeID    string                          `json:"from_node_id"`
-	ToNodeID      string                          `json:"to_node_id"`
-	FromIP        string                          `json:"from_ip,omitempty"`
-	ToIP          string                          `json:"to_ip,omitempty"`
-	Status        string                          `json:"status"`
-	Packets       int64                           `json:"packets,omitempty"`
-	Bytes         int64                           `json:"bytes,omitempty"`
-	LastLatencyMS int64                           `json:"last_latency_ms,omitempty"`
-	LastError     string                          `json:"last_error,omitempty"`
-	LastPacketAt  string                          `json:"last_packet_at,omitempty"`
-	From          mngVirtualRouterRouteSideStatus `json:"from"`
-	To            mngVirtualRouterRouteSideStatus `json:"to"`
-	UpdatedAt     string                          `json:"updated_at,omitempty"`
+	RuleID             string                          `json:"rule_id,omitempty"`
+	RuleName           string                          `json:"rule_name,omitempty"`
+	ChainID            string                          `json:"chain_id"`
+	Enabled            bool                            `json:"enabled"`
+	Direction          string                          `json:"direction"`
+	FromNodeID         string                          `json:"from_node_id"`
+	ToNodeID           string                          `json:"to_node_id"`
+	FromIP             string                          `json:"from_ip,omitempty"`
+	ToIP               string                          `json:"to_ip,omitempty"`
+	Status             string                          `json:"status"`
+	Packets            int64                           `json:"packets,omitempty"`
+	Bytes              int64                           `json:"bytes,omitempty"`
+	FramesSent         int64                           `json:"frames_sent,omitempty"`
+	FrameBytesSent     int64                           `json:"frame_bytes_sent,omitempty"`
+	FramesReceived     int64                           `json:"frames_received,omitempty"`
+	FrameBytesReceived int64                           `json:"frame_bytes_received,omitempty"`
+	LastLatencyMS      int64                           `json:"last_latency_ms,omitempty"`
+	LastError          string                          `json:"last_error,omitempty"`
+	LastPacketAt       string                          `json:"last_packet_at,omitempty"`
+	LastFrameAt        string                          `json:"last_frame_at,omitempty"`
+	From               mngVirtualRouterRouteSideStatus `json:"from"`
+	To                 mngVirtualRouterRouteSideStatus `json:"to"`
+	UpdatedAt          string                          `json:"updated_at,omitempty"`
 }
 
 func listMngLinkRelayStatus() []mngLinkRelayStatusView {
@@ -357,9 +362,11 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 		}
 		view.Status = summarizeMngVirtualRouterRouteStatus(rule.Enabled, from, to)
 		view.Packets, view.Bytes = sumMngVirtualRouterRouteTraffic(from.VirtualRouter, to.VirtualRouter)
+		view.FramesSent, view.FrameBytesSent, view.FramesReceived, view.FrameBytesReceived = sumMngVirtualRouterRouteFrames(from.VirtualRouter, to.VirtualRouter)
 		view.LastLatencyMS = lastMngVirtualRouterRouteLatency(from.VirtualRouter, to.VirtualRouter)
 		view.LastError = firstNonEmptyString(mngVirtualRouterSideStatsError(from), mngVirtualRouterSideStatsError(to))
 		view.LastPacketAt = maxRFC3339String(mngVirtualRouterStatsPacketAt(from.VirtualRouter), mngVirtualRouterStatsPacketAt(to.VirtualRouter))
+		view.LastFrameAt = maxRFC3339String(mngVirtualRouterStatsFrameAt(from.VirtualRouter), mngVirtualRouterStatsFrameAt(to.VirtualRouter))
 		view.UpdatedAt = maxRFC3339String(from.LastSeen, to.LastSeen)
 		items = append(items, view)
 	}
@@ -494,6 +501,23 @@ func sumMngVirtualRouterRouteTraffic(values ...*probeVirtualRouterRuntimeStats) 
 	return packets, bytesValue
 }
 
+func sumMngVirtualRouterRouteFrames(values ...*probeVirtualRouterRuntimeStats) (int64, int64, int64, int64) {
+	var framesSent int64
+	var frameBytesSent int64
+	var framesReceived int64
+	var frameBytesReceived int64
+	for _, item := range values {
+		if item == nil {
+			continue
+		}
+		framesSent += item.FramesSent
+		frameBytesSent += item.FrameBytesSent
+		framesReceived += item.FramesReceived
+		frameBytesReceived += item.FrameBytesReceived
+	}
+	return framesSent, frameBytesSent, framesReceived, frameBytesReceived
+}
+
 func lastMngVirtualRouterRouteLatency(values ...*probeVirtualRouterRuntimeStats) int64 {
 	var out int64
 	for _, item := range values {
@@ -562,6 +586,13 @@ func mngVirtualRouterStatsPacketAt(item *probeVirtualRouterRuntimeStats) string 
 		return ""
 	}
 	return strings.TrimSpace(item.LastPacketAt)
+}
+
+func mngVirtualRouterStatsFrameAt(item *probeVirtualRouterRuntimeStats) string {
+	if item == nil {
+		return ""
+	}
+	return strings.TrimSpace(item.LastFrameAt)
 }
 
 func maxRFC3339String(left string, right string) string {

@@ -1838,9 +1838,14 @@
         const remote = String((entry && entry.remote_addr) || '').trim() || '-';
         const streams = Number(entry && entry.streams_current);
         const rtt = Number(entry && entry.rtt_ms);
+        const framesSent = Number(entry && entry.frames_sent);
+        const framesReceived = Number(entry && entry.frames_received);
+        const frameBytesSent = Number(entry && entry.frame_bytes_sent);
+        const frameBytesReceived = Number(entry && entry.frame_bytes_received);
         const streamText = Number.isFinite(streams) ? streams : '-';
         const rttText = Number.isFinite(rtt) && rtt > 0 ? `${Math.trunc(rtt)}ms` : '-';
-        return `${direction} ${remote} streams=${streamText} rtt=${rttText}`;
+        const frameText = `bridge帧 tx=${Number.isFinite(framesSent) ? framesSent : 0}/${formatBytes(Number.isFinite(frameBytesSent) ? frameBytesSent : 0)} rx=${Number.isFinite(framesReceived) ? framesReceived : 0}/${formatBytes(Number.isFinite(frameBytesReceived) ? frameBytesReceived : 0)}`;
+        return `${direction} ${remote} streams=${streamText} rtt=${rttText} ${frameText}`;
       });
       const base = `<div class="small muted">${escapeHTML(lines.join(' / '))}</div>`;
       const hint = hints.map((item) => `<div class="small route-error">${escapeHTML(item)}</div>`).join('');
@@ -1916,6 +1921,10 @@
       const stats = item.virtual_router || {};
       const packets = Number(stats.packets_forwarded || 0) + Number(stats.packets_received || 0) + Number(stats.packets_delivered || 0);
       const bytes = Number(stats.bytes_forwarded || 0) + Number(stats.bytes_received || 0) + Number(stats.bytes_delivered || 0);
+      const framesSent = Number(stats.frames_sent || 0);
+      const framesReceived = Number(stats.frames_received || 0);
+      const frameBytesSent = Number(stats.frame_bytes_sent || 0);
+      const frameBytesReceived = Number(stats.frame_bytes_received || 0);
       const errors = collectRouteSideErrors(item);
       const errorLines = errors.slice(0, 4).map((err) => `<div class="small route-error">${escapeHTML(err)}</div>`).join('');
       const moreErrors = errors.length > 4 ? `<div class="small route-error">还有 ${escapeHTML(errors.length - 4)} 条错误</div>` : '';
@@ -1928,7 +1937,8 @@
         ${renderVirtualProbeCapability(item)}
         ${renderLastVirtualPingContext(stats)}
         ${renderBridgeSessions(item, errors)}
-        <div class="small muted">包 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
+        <div class="small muted">IP包 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
+        <div class="small muted">vRouter帧 tx ${escapeHTML(framesSent)} / ${escapeHTML(formatBytes(frameBytesSent))} · rx ${escapeHTML(framesReceived)} / ${escapeHTML(formatBytes(frameBytesReceived))}</div>
         <div class="small muted">${escapeHTML(item.last_seen || '-')}</div>
       `;
     }
@@ -1954,9 +1964,9 @@
           <td><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span>${err}</td>
           <td><div>${escapeHTML(fromName)}</div>${renderRouteSide(item.from, item)}</td>
           <td><div>${escapeHTML(toName)}</div>${renderRouteSide(item.to, item)}</td>
-          <td><div>包 ${escapeHTML(item.packets || 0)}</div><div class="small muted">${escapeHTML(formatBytes(item.bytes || 0))}</div></td>
+          <td><div>IP包 ${escapeHTML(item.packets || 0)}</div><div class="small muted">${escapeHTML(formatBytes(item.bytes || 0))}</div><div class="small muted">vRouter帧 tx ${escapeHTML(item.frames_sent || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_sent || 0))}</div><div class="small muted">vRouter帧 rx ${escapeHTML(item.frames_received || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_received || 0))}</div></td>
           <td>${escapeHTML(latencyText)}</td>
-          <td><div>${escapeHTML(item.last_packet_at || '-')}</div><div class="small muted">${escapeHTML(item.updated_at || '-')}</div></td>
+          <td><div>${escapeHTML(item.last_packet_at || '-')}</div><div class="small muted">frame ${escapeHTML(item.last_frame_at || '-')}</div><div class="small muted">${escapeHTML(item.updated_at || '-')}</div></td>
         </tr>`;
       }).join('');
     }

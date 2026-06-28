@@ -97,6 +97,54 @@ func TestProbeChainFrameSessionPingPongStats(t *testing.T) {
 	t.Fatalf("ping-pong stats not updated: client=%+v server=%+v", clientSession.PingStats(), serverSession.PingStats())
 }
 
+func TestProbeChainFrameSessionIOStatsAreDirectional(t *testing.T) {
+	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
+	defer clientSession.Close()
+	defer serverSession.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		stream, err := serverSession.Accept()
+		if err != nil {
+			return
+		}
+		if frameStream, ok := stream.(*probeChainFrameStream); ok {
+			_ = frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true})
+		}
+		accepted <- stream
+	}()
+
+	client, err := clientSession.OpenWithRequest(probeChainTunnelOpenRequest{Type: "test", Priority: "realtime"}, time.Second)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer client.Close()
+	var server net.Conn
+	select {
+	case server = <-accepted:
+	case <-time.After(time.Second):
+		t.Fatalf("server stream not accepted")
+	}
+	defer server.Close()
+
+	if _, err := client.Write([]byte("hello")); err != nil {
+		t.Fatalf("client write: %v", err)
+	}
+	buf := make([]byte, 5)
+	if _, err := server.Read(buf); err != nil {
+		t.Fatalf("server read: %v", err)
+	}
+
+	clientStats := clientSession.IOStats()
+	serverStats := serverSession.IOStats()
+	if clientStats.FramesSent == 0 || clientStats.FrameBytesSent == 0 || clientStats.LastFrameSentAt.IsZero() {
+		t.Fatalf("client send stats not updated: %+v", clientStats)
+	}
+	if serverStats.FramesReceived == 0 || serverStats.FrameBytesReceived == 0 || serverStats.LastFrameReceivedAt.IsZero() {
+		t.Fatalf("server receive stats not updated: %+v", serverStats)
+	}
+}
+
 func TestProbeChainFrameStreamAdaptiveChunkDoesNotWaitForFullFrame(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	clientSession, err := newProbeChainFrameClient(clientConn)

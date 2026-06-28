@@ -59,6 +59,13 @@ type probeChainFrameSession struct {
 	lastPingUnixNS atomic.Int64
 	lastPongUnixNS atomic.Int64
 
+	framesSent          atomic.Int64
+	frameBytesSent      atomic.Int64
+	framesReceived      atomic.Int64
+	frameBytesReceived  atomic.Int64
+	lastFrameSentUnixNS atomic.Int64
+	lastFrameRecvUnixNS atomic.Int64
+
 	configMu        sync.RWMutex
 	localConfig     probeChainFrameSessionConfig
 	remoteConfig    probeChainFrameSessionConfig
@@ -109,6 +116,17 @@ type probeChainFramePingStats struct {
 	Pending          int
 	LastPingUnixNano int64
 	LastPongUnixNano int64
+}
+
+type probeChainFrameIOStats struct {
+	FramesSent                int64
+	FrameBytesSent            int64
+	FramesReceived            int64
+	FrameBytesReceived        int64
+	LastFrameSentAt           time.Time
+	LastFrameReceivedAt       time.Time
+	LastFrameSentUnixNano     int64
+	LastFrameReceivedUnixNano int64
 }
 
 type probeChainFrameSessionAddr struct {
@@ -282,6 +300,29 @@ func (s *probeChainFrameSession) PingStats() probeChainFramePingStats {
 	return stats
 }
 
+func (s *probeChainFrameSession) IOStats() probeChainFrameIOStats {
+	if s == nil {
+		return probeChainFrameIOStats{}
+	}
+	lastSentUnixNS := s.lastFrameSentUnixNS.Load()
+	lastRecvUnixNS := s.lastFrameRecvUnixNS.Load()
+	stats := probeChainFrameIOStats{
+		FramesSent:                s.framesSent.Load(),
+		FrameBytesSent:            s.frameBytesSent.Load(),
+		FramesReceived:            s.framesReceived.Load(),
+		FrameBytesReceived:        s.frameBytesReceived.Load(),
+		LastFrameSentUnixNano:     lastSentUnixNS,
+		LastFrameReceivedUnixNano: lastRecvUnixNS,
+	}
+	if lastSentUnixNS > 0 {
+		stats.LastFrameSentAt = time.Unix(0, lastSentUnixNS).UTC()
+	}
+	if lastRecvUnixNS > 0 {
+		stats.LastFrameReceivedAt = time.Unix(0, lastRecvUnixNS).UTC()
+	}
+	return stats
+}
+
 func (s *probeChainFrameSession) NegotiatedConfig() probeChainFrameSessionConfig {
 	if s == nil {
 		return defaultProbeChainFrameSessionConfig()
@@ -327,6 +368,7 @@ func (s *probeChainFrameSession) readLoop() {
 			_ = s.Close()
 			return
 		}
+		s.recordFrameReceived(frame)
 		switch frame.Kind {
 		case probeChainFrameKindControl:
 			s.handleControlFrame(frame)
@@ -390,7 +432,32 @@ func (s *probeChainFrameSession) writeOne(req probeChainFrameWriteRequest) bool 
 		_ = s.Close()
 		return false
 	}
+	s.recordFrameSent(req.frame)
 	return true
+}
+
+func (s *probeChainFrameSession) recordFrameSent(frame probeChainFrame) {
+	if s == nil {
+		return
+	}
+	now := time.Now().UTC()
+	s.framesSent.Add(1)
+	s.frameBytesSent.Add(int64(probeChainFramePayloadBytes(frame)))
+	s.lastFrameSentUnixNS.Store(now.UnixNano())
+}
+
+func (s *probeChainFrameSession) recordFrameReceived(frame probeChainFrame) {
+	if s == nil {
+		return
+	}
+	now := time.Now().UTC()
+	s.framesReceived.Add(1)
+	s.frameBytesReceived.Add(int64(probeChainFramePayloadBytes(frame)))
+	s.lastFrameRecvUnixNS.Store(now.UnixNano())
+}
+
+func probeChainFramePayloadBytes(frame probeChainFrame) int {
+	return len(frame.Control) + len(frame.Data)
 }
 
 func (s *probeChainFrameSession) enqueueWriteFrame(frame probeChainFrame, errCh chan error) error {

@@ -168,6 +168,36 @@ func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T
 	}
 }
 
+func TestProbeVirtualRouterRuntimeFrameStatsAreDirectional(t *testing.T) {
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	oldItems := probeVirtualRouterRuntimeStatsState.items
+	probeVirtualRouterRuntimeStatsState.items = make(map[string]*probeVirtualRouterRuntimeStats)
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		probeVirtualRouterRuntimeStatsState.items = oldItems
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	})
+
+	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-frame-stats"}}
+	recordProbeVirtualRouterRuntimeFrameSent(rt, 123)
+	recordProbeVirtualRouterRuntimeFrameReceived(rt, 456)
+
+	stats := snapshotProbeVirtualRouterRuntimeStats("vrouter-frame-stats")
+	if stats == nil {
+		t.Fatalf("stats missing")
+	}
+	if stats.FramesSent != 1 || stats.FrameBytesSent != 123 {
+		t.Fatalf("sent frame stats=%+v", stats)
+	}
+	if stats.FramesReceived != 1 || stats.FrameBytesReceived != 456 {
+		t.Fatalf("received frame stats=%+v", stats)
+	}
+	if stats.LastFrameAt == "" {
+		t.Fatalf("last frame time should be recorded")
+	}
+}
+
 func TestRememberProbeVirtualRouterAuthTickets(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeChainAuthTicketStoreForTest()
@@ -459,6 +489,42 @@ func TestProbeVirtualRouterRuntimeForAdjacentNode(t *testing.T) {
 	}
 	rt, direction = probeVirtualRouterRuntimeForAdjacentNode("3")
 	if rt == nil || rt.cfg.chainID != "chain-b" || direction != probeChainBridgeRoleToPrev {
+		t.Fatalf("prev runtime=%v direction=%q", rt, direction)
+	}
+}
+
+func TestProbeVirtualRouterRuntimeForAdjacentNodePrefersAvailableBridgeSession(t *testing.T) {
+	nextClient, nextServer := newProbeChainFrameSessionPairForTest(t)
+	defer nextClient.Close()
+	defer nextServer.Close()
+	prevClient, prevServer := newProbeChainFrameSessionPairForTest(t)
+	defer prevClient.Close()
+	defer prevServer.Close()
+
+	nextRT := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-next", nextNodeID: "2", nextAuthMode: "secret"}}
+	nextRT.setUpstreamSession("upstream-test", nextServer, probeChainBridgeRoleToPrev, "pipe")
+	prevRT := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-prev", prevNodeID: "3"}}
+	prevRT.setDownstreamSession("downstream-test", prevServer, probeChainBridgeRoleToNext, "pipe")
+
+	probeChainRuntimeState.mu.Lock()
+	oldRuntimes := probeChainRuntimeState.runtimes
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+		"vrouter-next": nextRT,
+		"vrouter-prev": prevRT,
+	}
+	probeChainRuntimeState.mu.Unlock()
+	t.Cleanup(func() {
+		probeChainRuntimeState.mu.Lock()
+		probeChainRuntimeState.runtimes = oldRuntimes
+		probeChainRuntimeState.mu.Unlock()
+	})
+
+	rt, direction := probeVirtualRouterRuntimeForAdjacentNode("2")
+	if rt == nil || rt.cfg.chainID != "vrouter-next" || direction != probeChainBridgeRoleToPrev {
+		t.Fatalf("next runtime=%v direction=%q", rt, direction)
+	}
+	rt, direction = probeVirtualRouterRuntimeForAdjacentNode("3")
+	if rt == nil || rt.cfg.chainID != "vrouter-prev" || direction != probeChainBridgeRoleToNext {
 		t.Fatalf("prev runtime=%v direction=%q", rt, direction)
 	}
 }

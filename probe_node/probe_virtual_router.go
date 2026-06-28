@@ -54,6 +54,10 @@ type probeVirtualRouterRuntimeStats struct {
 	BytesReceived             int64  `json:"bytes_received,omitempty"`
 	PacketsDelivered          int64  `json:"packets_delivered,omitempty"`
 	BytesDelivered            int64  `json:"bytes_delivered,omitempty"`
+	FramesSent                int64  `json:"frames_sent,omitempty"`
+	FrameBytesSent            int64  `json:"frame_bytes_sent,omitempty"`
+	FramesReceived            int64  `json:"frames_received,omitempty"`
+	FrameBytesReceived        int64  `json:"frame_bytes_received,omitempty"`
 	StreamOpenCount           int64  `json:"stream_open_count,omitempty"`
 	LastOpenLatencyMS         int64  `json:"last_open_latency_ms,omitempty"`
 	LastOpenError             string `json:"last_open_error,omitempty"`
@@ -69,6 +73,7 @@ type probeVirtualRouterRuntimeStats struct {
 	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
 	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
 	LastPacketAt              string `json:"last_packet_at,omitempty"`
+	LastFrameAt               string `json:"last_frame_at,omitempty"`
 }
 
 type probeVirtualRouterPacketStream struct {
@@ -591,6 +596,7 @@ func handleProbeVirtualRouterFrameStream(runtime *probeChainRuntime, stream net.
 			}
 			return err
 		}
+		recordProbeVirtualRouterRuntimeFrameReceived(runtime, len(packet))
 		dstIP := probeVirtualRouterIPv4Destination(packet)
 		if dstIP == "" {
 			return errors.New("virtual router packet destination is invalid")
@@ -639,6 +645,7 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 		return err
 	}
+	recordProbeVirtualRouterRuntimeFrameSent(rt, len(packet))
 	recordProbeVirtualRouterRuntimePacketForwarded(rt, len(packet))
 	return nil
 }
@@ -803,6 +810,34 @@ func recordProbeVirtualRouterRuntimePacketDelivered(rt *probeChainRuntime, packe
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 }
 
+func recordProbeVirtualRouterRuntimeFrameSent(rt *probeChainRuntime, frameBytes int) {
+	if rt == nil {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(rt.cfg.chainID)
+	if item != nil {
+		item.FramesSent++
+		item.FrameBytesSent += int64(frameBytes)
+		item.LastFrameAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterRuntimeFrameReceived(rt *probeChainRuntime, frameBytes int) {
+	if rt == nil {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(rt.cfg.chainID)
+	if item != nil {
+		item.FramesReceived++
+		item.FrameBytesReceived += int64(frameBytes)
+		item.LastFrameAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
 func recordProbeVirtualRouterRuntimeOpenSuccess(chainID string, latency time.Duration) {
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
@@ -929,6 +964,8 @@ func probeVirtualRouterRuntimeForAdjacentNode(nodeID string) (*probeChainRuntime
 }
 
 func findProbeVirtualRouterRuntimeForAdjacentNodeLocked(target string, virtualOnly bool) (*probeChainRuntime, string) {
+	var fallbackRT *probeChainRuntime
+	var fallbackDirection string
 	for _, rt := range probeChainRuntimeState.runtimes {
 		if rt == nil {
 			continue
@@ -937,13 +974,57 @@ func findProbeVirtualRouterRuntimeForAdjacentNodeLocked(target string, virtualOn
 			continue
 		}
 		if normalizeProbeChainNodeID(rt.cfg.nextNodeID) == target && rt.cfg.nextAuthMode != "proxy" {
-			return rt, probeChainBridgeRoleToNext
+			direction := selectProbeVirtualRouterBridgeDirection(rt, probeChainBridgeRoleToNext)
+			if probeVirtualRouterRuntimeHasBridgeSession(rt, direction) {
+				return rt, direction
+			}
+			if fallbackRT == nil {
+				fallbackRT = rt
+				fallbackDirection = direction
+			}
 		}
 		if normalizeProbeChainNodeID(rt.cfg.prevNodeID) == target {
-			return rt, probeChainBridgeRoleToPrev
+			direction := selectProbeVirtualRouterBridgeDirection(rt, probeChainBridgeRoleToPrev)
+			if probeVirtualRouterRuntimeHasBridgeSession(rt, direction) {
+				return rt, direction
+			}
+			if fallbackRT == nil {
+				fallbackRT = rt
+				fallbackDirection = direction
+			}
 		}
 	}
+	if fallbackRT != nil {
+		return fallbackRT, fallbackDirection
+	}
 	return nil, ""
+}
+
+func selectProbeVirtualRouterBridgeDirection(rt *probeChainRuntime, preferred string) string {
+	preferred = normalizeProbeChainBridgeRole(preferred)
+	if probeVirtualRouterRuntimeHasBridgeSession(rt, preferred) {
+		return preferred
+	}
+	alternate := probeChainBridgeRoleToPrev
+	if preferred == probeChainBridgeRoleToPrev {
+		alternate = probeChainBridgeRoleToNext
+	}
+	if probeVirtualRouterRuntimeHasBridgeSession(rt, alternate) {
+		return alternate
+	}
+	return preferred
+}
+
+func probeVirtualRouterRuntimeHasBridgeSession(rt *probeChainRuntime, direction string) bool {
+	if rt == nil {
+		return false
+	}
+	switch normalizeProbeChainBridgeRole(direction) {
+	case probeChainBridgeRoleToPrev:
+		return rt.getUpstreamSession() != nil
+	default:
+		return rt.getDownstreamSession() != nil
+	}
 }
 
 func probeVirtualRouterNextHopInPath(path []string, localNodeID string) string {

@@ -102,23 +102,29 @@ type probeChainBridgeRuntimeStatus struct {
 }
 
 type probeChainBridgeSessionSnapshot struct {
-	ChainID        string `json:"chain_id,omitempty"`
-	RuntimeRole    string `json:"runtime_role,omitempty"`
-	Direction      string `json:"direction,omitempty"`
-	SessionID      string `json:"session_id,omitempty"`
-	BridgeRole     string `json:"bridge_role,omitempty"`
-	RemoteAddr     string `json:"remote_addr,omitempty"`
-	ConnectedAt    string `json:"connected_at,omitempty"`
-	ConnectedMS    int64  `json:"connected_ms,omitempty"`
-	StreamsCurrent int    `json:"streams_current,omitempty"`
-	RTTMS          int64  `json:"rtt_ms,omitempty"`
-	LastPingAt     string `json:"last_ping_at,omitempty"`
-	LastPongAt     string `json:"last_pong_at,omitempty"`
-	PingsSent      int64  `json:"pings_sent,omitempty"`
-	PongsReceived  int64  `json:"pongs_received,omitempty"`
-	PingTimeouts   int64  `json:"ping_timeouts,omitempty"`
-	PendingPings   int    `json:"pending_pings,omitempty"`
-	Closed         bool   `json:"closed,omitempty"`
+	ChainID             string `json:"chain_id,omitempty"`
+	RuntimeRole         string `json:"runtime_role,omitempty"`
+	Direction           string `json:"direction,omitempty"`
+	SessionID           string `json:"session_id,omitempty"`
+	BridgeRole          string `json:"bridge_role,omitempty"`
+	RemoteAddr          string `json:"remote_addr,omitempty"`
+	ConnectedAt         string `json:"connected_at,omitempty"`
+	ConnectedMS         int64  `json:"connected_ms,omitempty"`
+	StreamsCurrent      int    `json:"streams_current,omitempty"`
+	RTTMS               int64  `json:"rtt_ms,omitempty"`
+	LastPingAt          string `json:"last_ping_at,omitempty"`
+	LastPongAt          string `json:"last_pong_at,omitempty"`
+	PingsSent           int64  `json:"pings_sent,omitempty"`
+	PongsReceived       int64  `json:"pongs_received,omitempty"`
+	PingTimeouts        int64  `json:"ping_timeouts,omitempty"`
+	PendingPings        int    `json:"pending_pings,omitempty"`
+	FramesSent          int64  `json:"frames_sent,omitempty"`
+	FrameBytesSent      int64  `json:"frame_bytes_sent,omitempty"`
+	FramesReceived      int64  `json:"frames_received,omitempty"`
+	FrameBytesReceived  int64  `json:"frame_bytes_received,omitempty"`
+	LastFrameSentAt     string `json:"last_frame_sent_at,omitempty"`
+	LastFrameReceivedAt string `json:"last_frame_received_at,omitempty"`
+	Closed              bool   `json:"closed,omitempty"`
 }
 
 var probeRuntimeStore = struct {

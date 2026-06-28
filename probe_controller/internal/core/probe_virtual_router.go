@@ -67,6 +67,10 @@ type probeVirtualRouterRuntimeStats struct {
 	BytesReceived             int64  `json:"bytes_received,omitempty"`
 	PacketsDelivered          int64  `json:"packets_delivered,omitempty"`
 	BytesDelivered            int64  `json:"bytes_delivered,omitempty"`
+	FramesSent                int64  `json:"frames_sent,omitempty"`
+	FrameBytesSent            int64  `json:"frame_bytes_sent,omitempty"`
+	FramesReceived            int64  `json:"frames_received,omitempty"`
+	FrameBytesReceived        int64  `json:"frame_bytes_received,omitempty"`
 	StreamOpenCount           int64  `json:"stream_open_count,omitempty"`
 	LastOpenLatencyMS         int64  `json:"last_open_latency_ms,omitempty"`
 	LastOpenError             string `json:"last_open_error,omitempty"`
@@ -82,6 +86,7 @@ type probeVirtualRouterRuntimeStats struct {
 	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
 	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
 	LastPacketAt              string `json:"last_packet_at,omitempty"`
+	LastFrameAt               string `json:"last_frame_at,omitempty"`
 }
 
 func defaultProbeVirtualRouterConfig() probeVirtualRouterConfig {

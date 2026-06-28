@@ -156,13 +156,29 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 				},
 			},
 			NextState: &probeRelayProtocolStateSnapshot{Endpoint: "node-2.local:12040", SelectedProtocol: "websocket"},
+			BridgeSessions: []probeChainBridgeSessionSnapshot{
+				{
+					Direction:           "upstream",
+					RemoteAddr:          "node-2.local:12040",
+					StreamsCurrent:      1,
+					FramesSent:          7,
+					FrameBytesSent:      700,
+					FramesReceived:      8,
+					FrameBytesReceived:  800,
+					LastFrameSentAt:     "2026-06-27T00:00:03Z",
+					LastFrameReceivedAt: "2026-06-27T00:00:04Z",
+				},
+			},
 			VirtualRouter: &probeVirtualRouterRuntimeStats{
 				PacketsForwarded:  2,
 				BytesForwarded:    200,
+				FramesSent:        2,
+				FrameBytesSent:    200,
 				PingCount:         1,
 				LastPingLatencyMS: 12,
 				LastPingAt:        "2026-06-27T00:00:01Z",
 				LastPacketAt:      "2026-06-27T00:00:01Z",
+				LastFrameAt:       "2026-06-27T00:00:01Z",
 			},
 		},
 	})
@@ -180,9 +196,12 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 				},
 			},
 			VirtualRouter: &probeVirtualRouterRuntimeStats{
-				PacketsReceived: 3,
-				BytesReceived:   300,
-				LastPacketAt:    "2026-06-27T00:00:02Z",
+				PacketsReceived:    3,
+				BytesReceived:      300,
+				FramesReceived:     3,
+				FrameBytesReceived: 300,
+				LastPacketAt:       "2026-06-27T00:00:02Z",
+				LastFrameAt:        "2026-06-27T00:00:02Z",
 			},
 		},
 	})
@@ -209,8 +228,18 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	if item.Packets != 5 || item.Bytes != 500 || item.LastLatencyMS != 12 || item.LastPacketAt != "2026-06-27T00:00:02Z" {
 		t.Fatalf("unexpected route stats: %+v", item)
 	}
+	if item.FramesSent != 2 || item.FrameBytesSent != 200 || item.FramesReceived != 3 || item.FrameBytesReceived != 300 || item.LastFrameAt != "2026-06-27T00:00:02Z" {
+		t.Fatalf("unexpected route frame stats: %+v", item)
+	}
 	if item.From.Status != "connected" || item.To.Status != "listening" {
 		t.Fatalf("unexpected side status: from=%+v to=%+v", item.From, item.To)
+	}
+	if len(item.From.BridgeSessions) != 1 ||
+		item.From.BridgeSessions[0].FramesSent != 7 ||
+		item.From.BridgeSessions[0].FrameBytesSent != 700 ||
+		item.From.BridgeSessions[0].FramesReceived != 8 ||
+		item.From.BridgeSessions[0].FrameBytesReceived != 800 {
+		t.Fatalf("unexpected bridge session frame stats: %+v", item.From.BridgeSessions)
 	}
 }
 
