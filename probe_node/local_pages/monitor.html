@@ -482,7 +482,7 @@
       setText('mon-go', 'GOMAXPROCS=' + (data.gomaxprocs || '-') + ', CPU=' + (data.num_cpu || '-') + ', goroutines=' + (data.goroutines || 0));
       setText('mon-cpu-total', data.cpu_total_ms === undefined || data.cpu_total_ms === null ? '不可用' : data.cpu_total_ms + ' ms');
       setText('mon-memory', 'alloc=' + formatMB(memory.alloc_mb) + ', heap=' + formatMB(memory.heap_alloc_mb) + ', inuse=' + formatMB(memory.heap_inuse_mb) + ', objects=' + (memory.heap_objects || 0) + ', gc=' + (memory.num_gc || 0));
-      setText('mon-tun', 'running=' + formatBool(tun.running, 'true', 'false') + ', rx_packets=' + (tun.rx_packets || 0) + ', rx_bytes=' + (tun.rx_bytes || 0));
+      setText('mon-tun', 'running=' + formatBool(tun.running, 'true', 'false') + ', rx_packets=' + (tun.rx_packets || 0) + ', rx_bytes=' + (tun.rx_bytes || 0) + ', tx_packets=' + (tun.tx_packets || 0) + ', tx_bytes=' + (tun.tx_bytes || 0));
       setText('mon-tcp-detail', 'active=' + (tcp.active || data.tcp_active || 0) + ', tun=' + (tcp.tun || 0) + ', chain=' + (tcp.chain || 0) + ', other=' + (tcp.other || 0) + ', failures=' + (tcp.failures || data.tcp_failures || 0) + ', direct_fail_cache=' + (tcpDirectFailureCache.active || 0) + ', direct_fail_hits=' + (tcpDirectFailureCache.hits || 0) + ', scopes=' + formatCountMap(tcp.scopes));
       setText('mon-tcp-relays', formatTCPRelayItems(tcp.items));
       setText('mon-udp-detail', 'bridges_active=' + (udpBridges.active || 0) + ', direct=' + (udpBridges.direct || 0) + ', tunnel=' + (udpBridges.tunnel || 0) + ', opened=' + (udpBridges.opened || 0) + ', closed=' + (udpBridges.closed || 0) + ', associations=' + (udp.associations || data.udp_associations || 0));

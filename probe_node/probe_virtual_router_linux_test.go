@@ -62,6 +62,36 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 	}
 }
 
+func TestSnapshotProbeVirtualRouterRuntimeStatsIncludesLinuxTUNDataPlaneStats(t *testing.T) {
+	resetProbeLocalTUNDataPlaneHooksForTest()
+	t.Cleanup(resetProbeLocalTUNDataPlaneHooksForTest)
+	fake := &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true, RXPackets: 12, RXBytes: 1200, TXPackets: 4, TXBytes: 400}}
+	probeLocalLinuxTUNDataPlaneState.mu.Lock()
+	probeLocalLinuxTUNDataPlaneState.runner = fake
+	probeLocalLinuxTUNDataPlaneState.dev = "probe0"
+	probeLocalLinuxTUNDataPlaneState.mu.Unlock()
+
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	oldItems := probeVirtualRouterRuntimeStatsState.items
+	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
+		"vrouter-tun-stats": {},
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		probeVirtualRouterRuntimeStatsState.items = oldItems
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	})
+
+	stats := snapshotProbeVirtualRouterRuntimeStats("vrouter-tun-stats")
+	if stats == nil {
+		t.Fatalf("stats missing")
+	}
+	if !stats.TUNDataPlane || stats.TUNRXPackets != 12 || stats.TUNRXBytes != 1200 || stats.TUNTXPackets != 4 || stats.TUNTXBytes != 400 {
+		t.Fatalf("unexpected tun stats: %+v", stats)
+	}
+}
+
 func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxCreatesDefaultDeviceWhenUnset(t *testing.T) {
 	oldStat := probeLocalLinuxStat
 	oldLookPath := probeLocalLinuxLookPath

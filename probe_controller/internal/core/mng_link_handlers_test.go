@@ -179,6 +179,11 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 				LastPingAt:        "2026-06-27T00:00:01Z",
 				LastPacketAt:      "2026-06-27T00:00:01Z",
 				LastFrameAt:       "2026-06-27T00:00:01Z",
+				TUNDataPlane:      true,
+				TUNRXPackets:      11,
+				TUNRXBytes:        1100,
+				TUNTXPackets:      5,
+				TUNTXBytes:        500,
 			},
 		},
 	})
@@ -236,6 +241,9 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	}
 	if item.From.Status != "connected" || item.To.Status != "listening" {
 		t.Fatalf("unexpected side status: from=%+v to=%+v", item.From, item.To)
+	}
+	if item.From.VirtualRouter == nil || !item.From.VirtualRouter.TUNDataPlane || item.From.VirtualRouter.TUNRXPackets != 11 || item.From.VirtualRouter.TUNRXBytes != 1100 || item.From.VirtualRouter.TUNTXPackets != 5 || item.From.VirtualRouter.TUNTXBytes != 500 {
+		t.Fatalf("unexpected tun data plane stats: %+v", item.From.VirtualRouter)
 	}
 	if len(item.From.BridgeSessions) != 1 ||
 		item.From.BridgeSessions[0].FramesSent != 7 ||

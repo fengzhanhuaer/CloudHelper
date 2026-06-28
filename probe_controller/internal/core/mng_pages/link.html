@@ -1912,6 +1912,96 @@
       return `<div class="small muted">拓扑 next ${escapeHTML(routePeerLabel(nextNodeID, route))} / prev ${escapeHTML(routePeerLabel(prevNodeID, route))}</div>`;
     }
 
+    function renderStatsScope(scope) {
+      const text = String(scope || '').trim();
+      if (!text) return '';
+      return `<div class="small muted">统计口径 ${escapeHTML(text)}</div>`;
+    }
+
+    function virtualRouterNodeIP(nodeID, route) {
+      const id = String(nodeID || '').trim();
+      if (!id || !route) return '';
+      if (String(route.from_node_id || '') === id) return String(route.from_ip || '').trim();
+      if (String(route.to_node_id || '') === id) return String(route.to_ip || '').trim();
+      return '';
+    }
+
+    function collectVirtualRouterTUNStats(items) {
+      const byNode = new Map();
+      (Array.isArray(items) ? items : []).forEach((route) => {
+        [route && route.from, route && route.to].forEach((side) => {
+          const nodeID = String((side && side.node_id) || '').trim();
+          const stats = side && side.virtual_router;
+          if (!nodeID || !stats) return;
+          const current = byNode.get(nodeID) || {
+            node_id: nodeID,
+            ip: virtualRouterNodeIP(nodeID, route),
+            tun_data_plane: false,
+            tun_rx_packets: 0,
+            tun_rx_bytes: 0,
+            tun_tx_packets: 0,
+            tun_tx_bytes: 0,
+            last_seen: '',
+          };
+          const sideIP = virtualRouterNodeIP(nodeID, route);
+          if (!current.ip && sideIP) current.ip = sideIP;
+          current.tun_data_plane = current.tun_data_plane || !!stats.tun_data_plane;
+          current.tun_rx_packets = Math.max(Number(current.tun_rx_packets || 0), Number(stats.tun_rx_packets || 0));
+          current.tun_rx_bytes = Math.max(Number(current.tun_rx_bytes || 0), Number(stats.tun_rx_bytes || 0));
+          current.tun_tx_packets = Math.max(Number(current.tun_tx_packets || 0), Number(stats.tun_tx_packets || 0));
+          current.tun_tx_bytes = Math.max(Number(current.tun_tx_bytes || 0), Number(stats.tun_tx_bytes || 0));
+          const lastSeen = String((side && side.last_seen) || '').trim();
+          if (lastSeen && (!current.last_seen || lastSeen > current.last_seen)) current.last_seen = lastSeen;
+          byNode.set(nodeID, current);
+        });
+      });
+      return Array.from(byNode.values()).sort((a, b) => String(a.node_id).localeCompare(String(b.node_id), undefined, { numeric: true }));
+    }
+
+    function renderVirtualRouterTUNSummary(items) {
+      const nodes = collectVirtualRouterTUNStats(items);
+      if (!nodes.length) return '';
+      const lines = nodes.map((node) => {
+        const label = `${nodeLabel(node.node_id)}${node.ip ? ` / ${node.ip}` : ''}`;
+        const stateText = node.tun_data_plane ? 'running' : 'stopped';
+        return `${label} ${stateText} rx ${Number(node.tun_rx_packets || 0)} / ${formatBytes(Number(node.tun_rx_bytes || 0))} tx ${Number(node.tun_tx_packets || 0)} / ${formatBytes(Number(node.tun_tx_bytes || 0))}`;
+      });
+      return `<div class="small muted">节点级 TUN RX/TX（按节点去重，非规则/物理连接计数）：${escapeHTML(lines.join('；'))}</div>`;
+    }
+
+    function renderRawStatsDetails(title, value) {
+      if (!value || typeof value !== 'object') return '';
+      const entries = Object.entries(value)
+        .filter(([_, item]) => item !== undefined && item !== null && item !== '')
+        .filter(([_, item]) => !(typeof item === 'number' && item === 0))
+        .filter(([_, item]) => !(typeof item === 'boolean' && item === false));
+      if (!entries.length) return '';
+      const rows = entries.map(([key, item]) => {
+        let display = item;
+        if (typeof item === 'object') display = JSON.stringify(item);
+        return `<div class="small muted mono">${escapeHTML(key)}=${escapeHTML(String(display))}</div>`;
+      }).join('');
+      return `<details class="small"><summary class="muted">${escapeHTML(title)}</summary>${rows}</details>`;
+    }
+
+    function renderBridgeRawStatsDetails(item) {
+      const summary = summarizeBridgeSessions(item);
+      if (!summary.sessions.length) return '';
+      const lines = summary.sessions.slice(0, 4).map((entry, index) => {
+        const direction = String((entry && entry.direction) || '').trim() || '-';
+        const sessionID = String((entry && entry.session_id) || '').trim() || `#${index + 1}`;
+        const framesSent = Number(entry && entry.frames_sent) || 0;
+        const frameBytesSent = Number(entry && entry.frame_bytes_sent) || 0;
+        const framesReceived = Number(entry && entry.frames_received) || 0;
+        const frameBytesReceived = Number(entry && entry.frame_bytes_received) || 0;
+        const streams = Number(entry && entry.streams_current);
+        const rtt = Number(entry && entry.rtt_ms);
+        return `<div class="small muted mono">${escapeHTML(direction)} ${escapeHTML(sessionID)} streams=${escapeHTML(Number.isFinite(streams) ? streams : '-')} rtt=${escapeHTML(Number.isFinite(rtt) ? Math.trunc(rtt) + 'ms' : '-')} tx=${escapeHTML(framesSent)}/${escapeHTML(formatBytes(frameBytesSent))} rx=${escapeHTML(framesReceived)}/${escapeHTML(formatBytes(frameBytesReceived))}</div>`;
+      }).join('');
+      const more = summary.sessions.length > 4 ? `<div class="small muted">还有 ${escapeHTML(summary.sessions.length - 4)} 条 session</div>` : '';
+      return `<details class="small"><summary class="muted">bridge session 原始统计</summary>${lines}${more}</details>`;
+    }
+
     function renderRouteSide(side, route) {
       const item = side || {};
       const lines = [];
@@ -1938,6 +2028,7 @@
         <div><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span></div>
         <div class="small muted">${escapeHTML(lines.join(' / ') || '-')}</div>
         ${errorLines}${moreErrors}
+        ${renderStatsScope(`规则/边 vrouter runtime，chain=${route && route.chain_id ? route.chain_id : '-'}，非节点总计、非物理网卡总计`)}
         ${renderTopologyAdjacency(item, route)}
         ${renderActiveDialCapability(item)}
         ${renderVirtualProbeCapability(item)}
@@ -1946,6 +2037,8 @@
         <div class="small muted">IP合计 ${escapeHTML(packets)} / ${escapeHTML(formatBytes(bytes))}</div>
         <div class="small muted">IP fwd ${escapeHTML(packetsForwarded)} / ${escapeHTML(formatBytes(bytesForwarded))} · rx ${escapeHTML(packetsReceived)} / ${escapeHTML(formatBytes(bytesReceived))} · local ${escapeHTML(packetsDelivered)} / ${escapeHTML(formatBytes(bytesDelivered))}</div>
         <div class="small muted">vRouter帧 tx ${escapeHTML(framesSent)} / ${escapeHTML(formatBytes(frameBytesSent))} · rx ${escapeHTML(framesReceived)} / ${escapeHTML(formatBytes(frameBytesReceived))}</div>
+        ${renderRawStatsDetails('vRouter runtime 原始统计', stats)}
+        ${renderBridgeRawStatsDetails(item)}
         <div class="small muted">${escapeHTML(item.last_seen || '-')}</div>
       `;
     }
@@ -1955,7 +2048,7 @@
       const summary = document.getElementById('vr-status-summary');
       const items = Array.isArray(state.virtualRouterStatus) ? state.virtualRouterStatus : [];
       const ready = items.filter((item) => String(item.status || '') === 'ready').length;
-      summary.textContent = items.length ? `规则 ${items.length} 条，就绪 ${ready} 条` : '暂无状态';
+      summary.innerHTML = items.length ? `规则 ${escapeHTML(items.length)} 条，就绪 ${escapeHTML(ready)} 条${renderVirtualRouterTUNSummary(items)}` : '暂无状态';
       if (!items.length) {
         body.innerHTML = '<tr><td colspan="7" class="muted">暂无路由状态。需要先配置拓扑规则，并等待探针完成一次状态上报。</td></tr>';
         return;
@@ -1971,7 +2064,7 @@
           <td><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span>${err}</td>
           <td><div>${escapeHTML(fromName)}</div>${renderRouteSide(item.from, item)}</td>
           <td><div>${escapeHTML(toName)}</div>${renderRouteSide(item.to, item)}</td>
-          <td><div>IP合计 ${escapeHTML(item.packets || 0)} / ${escapeHTML(formatBytes(item.bytes || 0))}</div><div class="small muted">IP fwd ${escapeHTML(item.packets_forwarded || 0)} / ${escapeHTML(formatBytes(item.bytes_forwarded || 0))}</div><div class="small muted">IP rx ${escapeHTML(item.packets_received || 0)} / ${escapeHTML(formatBytes(item.bytes_received || 0))}</div><div class="small muted">IP local ${escapeHTML(item.packets_delivered || 0)} / ${escapeHTML(formatBytes(item.bytes_delivered || 0))}</div><div class="small muted">vRouter帧 tx ${escapeHTML(item.frames_sent || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_sent || 0))}</div><div class="small muted">vRouter帧 rx ${escapeHTML(item.frames_received || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_received || 0))}</div></td>
+          <td><div>IP合计 ${escapeHTML(item.packets || 0)} / ${escapeHTML(formatBytes(item.bytes || 0))}</div><div class="small muted">规则行汇总=本规则两端 runtime 相加；节点 TUN 见上方；非节点总计、非物理连接总计</div><div class="small muted">IP fwd ${escapeHTML(item.packets_forwarded || 0)} / ${escapeHTML(formatBytes(item.bytes_forwarded || 0))}</div><div class="small muted">IP rx ${escapeHTML(item.packets_received || 0)} / ${escapeHTML(formatBytes(item.bytes_received || 0))}</div><div class="small muted">IP local ${escapeHTML(item.packets_delivered || 0)} / ${escapeHTML(formatBytes(item.bytes_delivered || 0))}</div><div class="small muted">vRouter帧 tx ${escapeHTML(item.frames_sent || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_sent || 0))}</div><div class="small muted">vRouter帧 rx ${escapeHTML(item.frames_received || 0)} / ${escapeHTML(formatBytes(item.frame_bytes_received || 0))}</div>${renderRawStatsDetails('路由汇总原始统计', item)}</td>
           <td>${escapeHTML(latencyText)}</td>
           <td><div>${escapeHTML(item.last_packet_at || '-')}</div><div class="small muted">frame ${escapeHTML(item.last_frame_at || '-')}</div><div class="small muted">${escapeHTML(item.updated_at || '-')}</div></td>
         </tr>`;

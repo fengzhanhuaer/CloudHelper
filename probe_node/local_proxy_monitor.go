@@ -47,6 +47,8 @@ type probeLocalProxyMonitorTUNSnapshot struct {
 	Running   bool   `json:"running"`
 	RXPackets uint64 `json:"rx_packets"`
 	RXBytes   uint64 `json:"rx_bytes"`
+	TXPackets uint64 `json:"tx_packets"`
+	TXBytes   uint64 `json:"tx_bytes"`
 }
 
 type probeLocalProxyMonitorTCPSnapshot struct {
@@ -285,7 +287,7 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 		CPUPercentText:  formatProbeLocalProxyMonitorCPUPercent(cpuPercent),
 		CPUTotalMS:      cpuTotalMS,
 		Memory:          probeLocalProxyMonitorMemorySnapshot{AllocMB: bytesToMiB(mem.Alloc), HeapAllocMB: bytesToMiB(mem.HeapAlloc), HeapInuseMB: bytesToMiB(mem.HeapInuse), HeapObjects: mem.HeapObjects, NumGC: mem.NumGC},
-		TUN:             probeLocalProxyMonitorTUNSnapshot{Running: tunStats.Running, RXPackets: tunStats.RXPackets, RXBytes: tunStats.RXBytes},
+		TUN:             probeLocalProxyMonitorTUNSnapshot{Running: tunStats.Running, RXPackets: tunStats.RXPackets, RXBytes: tunStats.RXBytes, TXPackets: tunStats.TXPackets, TXBytes: tunStats.TXBytes},
 		GroupRuntimes:   groupStats,
 		TCPActive:       tcpStats.Active,
 		TCPFailures:     tcpStats.Failures,

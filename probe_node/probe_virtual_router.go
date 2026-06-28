@@ -75,6 +75,11 @@ type probeVirtualRouterRuntimeStats struct {
 	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
 	LastPacketAt              string `json:"last_packet_at,omitempty"`
 	LastFrameAt               string `json:"last_frame_at,omitempty"`
+	TUNDataPlane              bool   `json:"tun_data_plane,omitempty"`
+	TUNRXPackets              uint64 `json:"tun_rx_packets,omitempty"`
+	TUNRXBytes                uint64 `json:"tun_rx_bytes,omitempty"`
+	TUNTXPackets              uint64 `json:"tun_tx_packets,omitempty"`
+	TUNTXBytes                uint64 `json:"tun_tx_bytes,omitempty"`
 }
 
 type probeVirtualRouterPacketStream struct {
@@ -970,6 +975,12 @@ func snapshotProbeVirtualRouterRuntimeStats(chainID string) *probeVirtualRouterR
 		return nil
 	}
 	out := *item
+	tunStats := probeLocalTUNDataPlaneStatsSnapshot()
+	out.TUNDataPlane = tunStats.Running
+	out.TUNRXPackets = tunStats.RXPackets
+	out.TUNRXBytes = tunStats.RXBytes
+	out.TUNTXPackets = tunStats.TXPackets
+	out.TUNTXBytes = tunStats.TXBytes
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	return &out
 }

@@ -131,7 +131,7 @@ func startProbeLocalTUNDataPlane() error {
 	ensureProbeVirtualRouterLocalInterfaceIP()
 
 	stats := dataPlane.Stats()
-	logProbeInfof("probe local tun data plane started: running=%v rx_packets=%d rx_bytes=%d if_index=%d if_luid=%d gateway=%s", stats.Running, stats.RXPackets, stats.RXBytes, routeTarget.InterfaceIndex, routeTarget.InterfaceLUID, strings.TrimSpace(routeTarget.Gateway))
+	logProbeInfof("probe local tun data plane started: running=%v rx_packets=%d rx_bytes=%d tx_packets=%d tx_bytes=%d if_index=%d if_luid=%d gateway=%s", stats.Running, stats.RXPackets, stats.RXBytes, stats.TXPackets, stats.TXBytes, routeTarget.InterfaceIndex, routeTarget.InterfaceLUID, strings.TrimSpace(routeTarget.Gateway))
 	return nil
 }
 
@@ -176,7 +176,7 @@ func stopProbeLocalTUNDataPlane() error {
 		if err := dataPlane.Close(); err != nil {
 			allErr = errors.Join(allErr, err)
 		}
-		logProbeInfof("probe local tun data plane stopped: rx_packets=%d rx_bytes=%d", stats.RXPackets, stats.RXBytes)
+		logProbeInfof("probe local tun data plane stopped: rx_packets=%d rx_bytes=%d tx_packets=%d tx_bytes=%d", stats.RXPackets, stats.RXBytes, stats.TXPackets, stats.TXBytes)
 	}
 	if closeErr := probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle); closeErr != nil {
 		allErr = errors.Join(allErr, closeErr)
@@ -284,6 +284,8 @@ type probeLocalTUNDataPlaneRunner struct {
 	running   atomic.Bool
 	rxPackets atomic.Uint64
 	rxBytes   atomic.Uint64
+	txPackets atomic.Uint64
+	txBytes   atomic.Uint64
 }
 
 func newProbeLocalTUNDataPlaneRunner(libraryPath string, adapterHandle uintptr, onPacket func([]byte), logf func(string, ...any)) (probeLocalTUNDataPlane, error) {
@@ -428,6 +430,8 @@ func (r *probeLocalTUNDataPlaneRunner) Stats() probeLocalTUNDataPlaneStats {
 		Running:   r.running.Load(),
 		RXPackets: r.rxPackets.Load(),
 		RXBytes:   r.rxBytes.Load(),
+		TXPackets: r.txPackets.Load(),
+		TXBytes:   r.txBytes.Load(),
 	}
 }
 
@@ -450,6 +454,8 @@ func (r *probeLocalTUNDataPlaneRunner) WritePacket(packet []byte) error {
 	if sendErr != nil && !probeLocalTUNIsZeroErrno(sendErr) {
 		return fmt.Errorf("WintunSendPacket failed: %w", sendErr)
 	}
+	r.txPackets.Add(1)
+	r.txBytes.Add(uint64(len(packet)))
 	return nil
 }
 

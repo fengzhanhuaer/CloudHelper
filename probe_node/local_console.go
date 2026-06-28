@@ -102,6 +102,8 @@ type probeLocalTunRuntimeState struct {
 	DataPlane              bool                             `json:"data_plane"`
 	DataPlaneRX            uint64                           `json:"data_plane_rx_packets,omitempty"`
 	DataPlaneBytes         uint64                           `json:"data_plane_rx_bytes,omitempty"`
+	DataPlaneTX            uint64                           `json:"data_plane_tx_packets,omitempty"`
+	DataPlaneTXBytes       uint64                           `json:"data_plane_tx_bytes,omitempty"`
 	LastError              string                           `json:"last_error,omitempty"`
 	RecoveryStatus         string                           `json:"recovery_status,omitempty"`
 	RecoveryAttempts       int                              `json:"recovery_attempts,omitempty"`
@@ -673,6 +675,8 @@ func (m *probeLocalControlManager) tunStatus() probeLocalTunRuntimeState {
 	status.DataPlane = stats.Running
 	status.DataPlaneRX = stats.RXPackets
 	status.DataPlaneBytes = stats.RXBytes
+	status.DataPlaneTX = stats.TXPackets
+	status.DataPlaneTXBytes = stats.TXBytes
 	return status
 }
 
@@ -913,6 +917,8 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	m.tun.DataPlane = false
 	m.tun.DataPlaneRX = 0
 	m.tun.DataPlaneBytes = 0
+	m.tun.DataPlaneTX = 0
+	m.tun.DataPlaneTXBytes = 0
 	if installed {
 		m.tun.LastError = ""
 	} else if strings.TrimSpace(m.tun.LastError) == "" && detectErr != nil && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
@@ -961,6 +967,8 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	m.tun.DataPlane = false
 	m.tun.DataPlaneRX = 0
 	m.tun.DataPlaneBytes = 0
+	m.tun.DataPlaneTX = 0
+	m.tun.DataPlaneTXBytes = 0
 	m.tun.LastError = ""
 	m.tun.UpdatedAt = now
 	m.proxy.Enabled = false
@@ -1171,6 +1179,8 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 	m.tun.DataPlane = stats.Running
 	m.tun.DataPlaneRX = stats.RXPackets
 	m.tun.DataPlaneBytes = stats.RXBytes
+	m.tun.DataPlaneTX = stats.TXPackets
+	m.tun.DataPlaneTXBytes = stats.TXBytes
 	m.tun.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	persistProbeLocalTUNStateBestEffort(true, true)
 	logProbeInfof("probe local tun install/check completed: installed=true elapsed=%s", time.Since(startedAt).String())
@@ -1193,6 +1203,8 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		m.tun.DataPlane = false
 		m.tun.DataPlaneRX = 0
 		m.tun.DataPlaneBytes = 0
+		m.tun.DataPlaneTX = 0
+		m.tun.DataPlaneTXBytes = 0
 		m.tun.UpdatedAt = m.proxy.UpdatedAt
 		status := http.StatusInternalServerError
 		if errors.Is(err, errProbeLocalProxyUnsupported) {
@@ -1214,6 +1226,8 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 	m.tun.DataPlane = stats.Running
 	m.tun.DataPlaneRX = stats.RXPackets
 	m.tun.DataPlaneBytes = stats.RXBytes
+	m.tun.DataPlaneTX = stats.TXPackets
+	m.tun.DataPlaneTXBytes = stats.TXBytes
 
 	if err := persistProbeLocalProxyPersistentState(true, probeLocalProxyModeTUN); err != nil {
 		logProbeWarnf("probe local proxy persist enabled state failed: %v", err)
@@ -1241,6 +1255,8 @@ func (m *probeLocalControlManager) directProxy() (probeLocalTunRuntimeState, pro
 	m.tun.DataPlane = stats.Running
 	m.tun.DataPlaneRX = stats.RXPackets
 	m.tun.DataPlaneBytes = stats.RXBytes
+	m.tun.DataPlaneTX = stats.TXPackets
+	m.tun.DataPlaneTXBytes = stats.TXBytes
 	m.tun.UpdatedAt = now
 	m.proxy.Enabled = false
 	m.proxy.Mode = probeLocalProxyModeDirect
@@ -1293,6 +1309,8 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 	m.tun.DataPlane = false
 	m.tun.DataPlaneRX = 0
 	m.tun.DataPlaneBytes = 0
+	m.tun.DataPlaneTX = 0
+	m.tun.DataPlaneTXBytes = 0
 	m.tun.UpdatedAt = now
 	m.proxy.Enabled = false
 	m.proxy.Mode = probeLocalProxyModeDirect

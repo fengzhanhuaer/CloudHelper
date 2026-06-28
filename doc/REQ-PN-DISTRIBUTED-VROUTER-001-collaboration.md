@@ -61,7 +61,7 @@
 - RQ-DVRT-018: 每条拓扑规则可以独立配置 A/B 两端服务域名与服务端口，端口默认 `12040` 且允许复用；域名从 Cloudflare DDNS 模块选择或手动填写内网域名，配置独立保存在虚拟路由器拓扑规则内，不混用旧探针侧配置。
 - RQ-DVRT-019: 主控探针链路页面提供路由状态 tab，按拓扑规则展示连接状态、累计统计、定时虚拟 ping/pong 延迟与最近活动时间。
 - RQ-DVRT-020: 拓扑规则方向仅表示物理建联方向；虚拟连接必须保持点对点双向可达语义，双方均应保存完整拓扑邻居与探针静态 IP，物理单向建联成功后，非拨号端也应能沿已建立的物理会话反向进行虚拟 ping/pong 与数据转发；虚拟路由选择相邻 runtime 后，应优先复用该 runtime 当前实际存在的 bridge session 方向，不能把虚拟转发强绑定到拓扑字段推导出的 upstream/downstream 池。
-- RQ-DVRT-021: 虚拟路由运行态必须分层统计、上传并展示 IP 包生命周期、虚拟路由数据面 frame 收发和底层物理会话所有自定义 frame 收发；frame 均应按发送、接收方向分别累计帧数、字节数和最近活动时间，便于定位已发未收、已收未送达等链路问题。
+- RQ-DVRT-021: 虚拟路由运行态必须分层统计、上传并展示 TUN 数据面 RX/TX、IP 包生命周期、虚拟路由数据面 frame 收发和底层物理会话所有自定义 frame 收发；frame 均应按发送、接收方向分别累计帧数、字节数和最近活动时间；TUN 数据面 RX/TX 属于节点级统计，路由状态页必须按节点去重展示，不能混作单条规则、单个对端或物理连接统计，便于定位系统包未进 TUN、已发未收、已收未写回 TUN 等链路问题。
 - RQ-DVRT-022: 探针收到目标为本机虚拟 IP 的 ICMP Echo Request 时，虚拟路由器必须能够生成 Echo Reply 并沿虚拟拓扑回送，作为跨平台虚拟 IP ping 的保底能力，不能完全依赖操作系统 TUN 栈自动回包。
 
 #### 1.1.3 非范围
@@ -315,7 +315,7 @@
 | RQ-DVRT-017 | 第一阶段实现基于探针静态局域网 IP 与主控拓扑规则的局域网互联功能 | 1.1,1.2 | 1.3 | T-DVRT-04,T-DVRT-05 | 进行中 | 第一阶段覆盖 |
 | RQ-DVRT-018 | 每条拓扑规则独立配置 A/B 两端服务域名与服务端口，不混用旧探针侧配置 | 1.1,1.2 | 1.3 | T-DVRT-02,T-DVRT-03,T-DVRT-04 | 进行中 | 第一阶段覆盖 |
 | RQ-DVRT-020 | 拓扑规则方向仅表示物理建联方向，虚拟连接保持点对点双向可达语义 | 1.1,1.2 | 1.3 | T-DVRT-04,T-DVRT-05 | 已完成 | 虚拟转发按相邻 runtime 的实际 bridge session 方向打开子流，物理建联方向、虚拟拓扑邻接和虚拟探测分开建模 |
-| RQ-DVRT-021 | 虚拟路由数据面与底层物理会话自定义 frame 必须按发送、接收方向独立计数、上传并展示 | 1.1,1.2 | 1.3 | T-DVRT-03,T-DVRT-05 | 已完成 | 虚拟路由数据面新增 `frames_sent`/`frame_bytes_sent`/`frames_received`/`frame_bytes_received`/`last_frame_at`；bridge session 新增底层 frame tx/rx 帧数与字节数 |
+| RQ-DVRT-021 | 虚拟路由 TUN 数据面、数据面 frame 与底层物理会话自定义 frame 必须按层统计、上传并展示 | 1.1,1.2 | 1.3 | T-DVRT-03,T-DVRT-05 | 已完成 | 新增 TUN RX/TX、虚拟路由数据面 frame tx/rx、bridge session 底层 frame tx/rx 帧数与字节数；TUN RX/TX 按节点去重展示，规则行仅展示本规则两端 runtime 统计 |
 | RQ-DVRT-022 | 本机虚拟 IP 必须具备 ICMP Echo Reply 保底能力 | 1.1,1.2 | 1.3 | T-DVRT-05 | 已完成 | vRouter 收到目标为本机虚拟 IP 的 Echo Request 时直接生成 Echo Reply 并按虚拟拓扑发回 |
 
 ### 1.6 Architect关键接口跟踪矩阵
@@ -388,7 +388,7 @@
 | RQ-DVRT-016 | T-DVRT-03 | `probe_controller/internal/core/mng_pages/link.html` | 已完成 | 通过 | 页面静态检查与接口测试 | 链路页面新增“拓扑规则”视图 |
 | RQ-DVRT-004,RQ-DVRT-011,RQ-DVRT-013,RQ-DVRT-017,RQ-DVRT-020 | T-DVRT-04 | `probe_controller/internal/core/probe_link_chains.go`, `probe_node/probe_link_chains_sync.go`, `probe_node/probe_virtual_router.go`, `probe_node/probe_virtual_router_test.go` | 已完成 | 通过 | `go test -count=1 -run 'TestProbeVirtualRouterRuntimeForAdjacentNode|TestProbeVirtualRouterRuntimeForAdjacentNodePrefersAvailableBridgeSession|TestProbeVirtualRouterReachableTreatsDirectionAsPhysicalDialOnly' .`, `go test -count=1 ./internal/core` | grouped 响应扩展下发虚拟路由器配置，节点侧缓存；虚拟转发优先复用实际可用 bridge session 方向 |
 | RQ-DVRT-006,RQ-DVRT-013,RQ-DVRT-017 | T-DVRT-05 | `probe_node/probe_virtual_router.go`, `probe_node/probe_virtual_router_runtime.go`, `probe_node/probe_virtual_router_windows.go`, `probe_node/probe_virtual_router_other.go`, `probe_node/link_chain_runtime.go`, `probe_node/local_tun_dataplane_windows.go`, `probe_node/probe_virtual_router_test.go` | 已完成基础数据面与隐藏链路运行态 | 通过 | `TestBuildProbeVirtualRouterRuntimeConfigsForNode`, `TestProbeVirtualRouterReachableViaCommonNode`, `TestBuildProbeVirtualRouterTunnelOpenRequest`, `GOOS=windows GOARCH=amd64 go test -c -o /tmp/probe_node_windows.test.exe .` | 已接入 TUN 入站、隐藏 `vrouter-*` 监听/拨号、frame 子流、逐跳转发与目标写入 TUN；真实多机互 ping 待环境验证 |
-| RQ-DVRT-019,RQ-DVRT-021 | T-DVRT-03,T-DVRT-05 | `probe_controller/internal/core/mng_pages/link.html`, `probe_controller/internal/core/mng_link_handlers.go`, `probe_node/probe_virtual_router.go`, `probe_node/chain_frame_session.go`, `probe_node/link_chain_runtime.go`, `probe_node/link_relay_client_transport.go` | 已完成 | 通过 | `go test -count=1 -run 'TestProbeVirtualRouterRuntimeFrameStatsAreDirectional|TestProbeVirtualRouterReachableTreatsDirectionAsPhysicalDialOnly|TestProbeChainFrameSessionIOStatsAreDirectional' .`, `go test -count=1 -run TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus ./internal/core` | 新增路由状态 tab，展示规则状态、IP 包 fwd/rx/local 生命周期统计、虚拟路由数据面 frame 发送/接收统计、底层 bridge session frame 发送/接收统计、定时虚拟 ping/pong 延迟和最近活动 |
+| RQ-DVRT-019,RQ-DVRT-021 | T-DVRT-03,T-DVRT-05 | `probe_controller/internal/core/mng_pages/link.html`, `probe_controller/internal/core/mng_link_handlers.go`, `probe_node/probe_virtual_router.go`, `probe_node/chain_frame_session.go`, `probe_node/link_chain_runtime.go`, `probe_node/link_relay_client_transport.go` | 已完成 | 通过 | `go test -count=1 -run 'TestProbeVirtualRouterRuntimeFrameStatsAreDirectional|TestProbeVirtualRouterReachableTreatsDirectionAsPhysicalDialOnly|TestProbeChainFrameSessionIOStatsAreDirectional' .`, `go test -count=1 -run TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus ./internal/core` | 新增路由状态 tab，展示节点级 TUN RX/TX、规则状态、IP 包 fwd/rx/local 生命周期统计、虚拟路由数据面 frame 发送/接收统计、底层 bridge session frame 发送/接收统计、定时虚拟 ping/pong 延迟和最近活动 |
 | 全部第一阶段需求 | T-DVRT-06 | 本文档与测试命令 | 已完成 | 通过 | 第2.5节 | 已补执行证据 |
 
 ### 2.2 Code关键接口跟踪矩阵
@@ -455,7 +455,7 @@
 - 完成节点侧虚拟路由器可达路径计算、按 IP 查节点、当前本机 IP/节点识别与 LAN frame open request 构造。
 - 完成拓扑规则到隐藏 `vrouter-*` 链路运行态的生成、恢复和清理；支持默认 `12040` 端口、多规则复用同端口、单域名拨号和双域名稳定拨号端选择。
 - 完成隐藏 `vrouter-*` 运行态统计上报，包含转发/接收/送达 IP 包字节、虚拟路由数据面 frame 发送/接收帧数与字节、定时虚拟 ping/pong 延迟、最近错误和最近活动。
-- 完成主控路由状态 tab 与状态汇总 API，按拓扑规则展示两端状态、IP 包 fwd/rx/local 生命周期统计、虚拟路由数据面 frame 收发统计、底层 bridge session frame 收发统计、虚拟 ping/pong 延迟和最近活动。
+- 完成主控路由状态 tab 与状态汇总 API，按节点去重展示 TUN RX/TX，并按拓扑规则展示两端 runtime 状态、IP 包 fwd/rx/local 生命周期统计、虚拟路由数据面 frame 收发统计、底层 bridge session frame 收发统计、虚拟 ping/pong 延迟和最近活动。
 - 完成 `virtual_router_lan_packet` frame 子流接收、路径逐跳转发、目标探针写入本地 TUN。
 - 完成按链路、方向、目标 IP、拓扑路径复用虚拟路由器 packet stream，支持写失败剔除与空闲 TTL 过期。
 - 完成 Windows TUN 入站 hook，发往探针静态 IP 的 IPv4 包进入虚拟路由器转发。

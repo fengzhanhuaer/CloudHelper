@@ -37,6 +37,8 @@ type probeLocalLinuxTUNDataPlaneRunner struct {
 
 	rxPackets atomic.Uint64
 	rxBytes   atomic.Uint64
+	txPackets atomic.Uint64
+	txBytes   atomic.Uint64
 	doneCh    chan struct{}
 }
 
@@ -86,7 +88,7 @@ func stopProbeLocalTUNDataPlane() error {
 	}
 	stats := runner.Stats()
 	err := runner.Close()
-	logProbeInfof("probe local linux tun data plane stopped: dev=%s rx_packets=%d rx_bytes=%d", dev, stats.RXPackets, stats.RXBytes)
+	logProbeInfof("probe local linux tun data plane stopped: dev=%s rx_packets=%d rx_bytes=%d tx_packets=%d tx_bytes=%d", dev, stats.RXPackets, stats.RXBytes, stats.TXPackets, stats.TXBytes)
 	return err
 }
 
@@ -242,6 +244,8 @@ func (r *probeLocalLinuxTUNDataPlaneRunner) Stats() probeLocalTUNDataPlaneStats 
 		Running:   !r.closed.Load(),
 		RXPackets: r.rxPackets.Load(),
 		RXBytes:   r.rxBytes.Load(),
+		TXPackets: r.txPackets.Load(),
+		TXBytes:   r.txBytes.Load(),
 	}
 }
 
@@ -254,6 +258,7 @@ func (r *probeLocalLinuxTUNDataPlaneRunner) WritePacket(packet []byte) error {
 	}
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
+	originalLen := len(packet)
 	fd := int(r.file.Fd())
 	pollFDs := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
 	for len(packet) > 0 {
@@ -271,5 +276,7 @@ func (r *probeLocalLinuxTUNDataPlaneRunner) WritePacket(packet []byte) error {
 		}
 		packet = packet[n:]
 	}
+	r.txPackets.Add(1)
+	r.txBytes.Add(uint64(originalLen))
 	return nil
 }

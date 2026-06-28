@@ -35,7 +35,7 @@ func TestStartProbeLocalTUNDataPlaneLinuxStartsRunner(t *testing.T) {
 	resetProbeLocalTUNDataPlaneHooksForTest()
 	t.Cleanup(resetProbeLocalTUNDataPlaneHooksForTest)
 
-	fake := &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true, RXPackets: 7, RXBytes: 99}}
+	fake := &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true, RXPackets: 7, RXBytes: 99, TXPackets: 3, TXBytes: 33}}
 	starts := 0
 	probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
 		starts++
@@ -55,7 +55,7 @@ func TestStartProbeLocalTUNDataPlaneLinuxStartsRunner(t *testing.T) {
 		t.Fatalf("runner starts=%d want 1", starts)
 	}
 	stats := probeLocalTUNDataPlaneStatsSnapshot()
-	if !stats.Running || stats.RXPackets != 7 || stats.RXBytes != 99 {
+	if !stats.Running || stats.RXPackets != 7 || stats.RXBytes != 99 || stats.TXPackets != 3 || stats.TXBytes != 33 {
 		t.Fatalf("stats=%+v", stats)
 	}
 	if err := writeProbeLocalTUNPacket([]byte{1, 2, 3}); err != nil {
