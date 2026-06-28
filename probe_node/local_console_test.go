@@ -27,6 +27,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	resetProbeLocalDNSServiceForTest()
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
 	setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+	probeLocalVNetFeatureEnabled = func() bool { return true }
 	probeLocalFlushSystemDNSCache = func() error { return nil }
 	t.Cleanup(func() {
 		resetProbeLocalAuthManagerForTest()
@@ -37,6 +38,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 		resetProbeLocalTUNHooksForTest()
 		resetProbeLocalUpgradeHooksForTest()
 		setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+		probeLocalVNetFeatureEnabled = func() bool { return false }
 	})
 	return buildProbeLocalConsoleMux()
 }
@@ -818,12 +820,38 @@ func TestProbeLocalProxyEnableReturnsNotImplementedOnUnsupported(t *testing.T) {
 	}
 }
 
+func TestProbeLocalProxyEnableReturnsServiceUnavailableWhenVNetPaused(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeLocalControl.mu.Lock()
+	probeLocalControl.tun.Installed = true
+	probeLocalControl.mu.Unlock()
+
+	probeLocalVNetFeatureEnabled = func() bool { return false }
+	probeLocalApplyProxyTakeover = func() error {
+		t.Fatalf("proxy takeover should not run when VNet/gVisor is paused")
+		return nil
+	}
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/proxy/enable", map[string]any{}, sessionCookie)
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("proxy/enable paused status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	errText, _ := payload["error"].(string)
+	if !strings.Contains(errText, "VNet/gVisor") || !strings.Contains(errText, "paused") {
+		t.Fatalf("proxy/enable paused error=%q", errText)
+	}
+}
+
 func TestStartProbeLocalTUNProxyRuntimeFlushesSystemDNSCache(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("windows TUN startup needs data plane hooks")
 	}
 	resetProbeLocalControlStateForTest()
 	resetProbeLocalDNSServiceForTest()
+	probeLocalVNetFeatureEnabled = func() bool { return true }
 	t.Cleanup(func() {
 		stopProbeLocalProxyMonitor()
 		resetProbeLocalControlStateForTest()

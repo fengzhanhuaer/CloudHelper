@@ -610,6 +610,87 @@ func TestCurrentProbeVirtualRouterPathForPacketInfersLocalNodeFromSourceIP(t *te
 	}
 }
 
+func TestCurrentProbeVirtualRouterPathPrefersLowestRTTAmongEqualHopPaths(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{FromNodeID: "2", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "1")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	probeChainRuntimeState.mu.Lock()
+	oldRuntimes := probeChainRuntimeState.runtimes
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+		"vrouter-1-2": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-2", nextNodeID: "2", nextAuthMode: "secret"}},
+		"vrouter-1-3": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-3", nextNodeID: "3", nextAuthMode: "secret"}},
+	}
+	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	oldStats := probeVirtualRouterRuntimeStatsState.items
+	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
+		"vrouter-1-2": {LastPingLatencyMS: 50},
+		"vrouter-1-3": {LastPingLatencyMS: 10},
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeChainRuntimeState.mu.Lock()
+		probeChainRuntimeState.runtimes = oldRuntimes
+		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		probeVirtualRouterRuntimeStatsState.items = oldStats
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	})
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
+		t.Fatalf("path=%v, want [1 3 4]", got)
+	}
+}
+
+func TestCurrentProbeVirtualRouterPathKeepsShortestHopBeforeRTT(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "1")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	probeChainRuntimeState.mu.Lock()
+	oldRuntimes := probeChainRuntimeState.runtimes
+	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+		"vrouter-1-4": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-4", nextNodeID: "4", nextAuthMode: "secret"}},
+		"vrouter-1-3": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-3", nextNodeID: "3", nextAuthMode: "secret"}},
+	}
+	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	oldStats := probeVirtualRouterRuntimeStatsState.items
+	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
+		"vrouter-1-4": {LastPingLatencyMS: 100},
+		"vrouter-1-3": {LastPingLatencyMS: 1},
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeChainRuntimeState.mu.Lock()
+		probeChainRuntimeState.runtimes = oldRuntimes
+		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		probeVirtualRouterRuntimeStatsState.items = oldStats
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	})
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "4"}) {
+		t.Fatalf("path=%v, want [1 4]", got)
+	}
+}
+
 func TestProbeVirtualRouterPacketTargetsLocalIPUsesStoredVirtualIP(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

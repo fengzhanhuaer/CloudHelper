@@ -19,15 +19,16 @@ import (
 )
 
 const (
-	probeVirtualRouterDirectionForward   = "forward"
-	probeVirtualRouterDefaultServicePort = 12040
-	probeVirtualRouterTunnelOpenType     = "virtual_router_lan_packet"
-	probeVirtualRouterTunnelScope        = "virtual_router"
-	probeVirtualRouterNetworkIPv4        = "ip4"
-	probeVirtualRouterStreamIdleTTL      = 45 * time.Second
-	probeVirtualRouterPingPongInterval   = 30 * time.Second
-	probeVirtualRouterPingPongTimeout    = 5 * time.Second
-	probeVirtualRouterPingPongBytes      = 64
+	probeVirtualRouterDirectionForward         = "forward"
+	probeVirtualRouterDefaultServicePort       = 12040
+	probeVirtualRouterTunnelOpenType           = "virtual_router_lan_packet"
+	probeVirtualRouterTunnelScope              = "virtual_router"
+	probeVirtualRouterNetworkIPv4              = "ip4"
+	probeVirtualRouterStreamIdleTTL            = 45 * time.Second
+	probeVirtualRouterPingPongInterval         = 30 * time.Second
+	probeVirtualRouterPingPongTimeout          = 5 * time.Second
+	probeVirtualRouterPingPongBytes            = 64
+	probeVirtualRouterPacketPrewarmMinInterval = 10 * time.Second
 )
 
 var probeVirtualRouterState = struct {
@@ -61,6 +62,12 @@ var probeVirtualRouterRuntimeStatsState = struct {
 var probeVirtualRouterLocalInterfaceRetryState = struct {
 	mu      sync.Mutex
 	running bool
+}{}
+
+var probeVirtualRouterPacketPrewarmState = struct {
+	mu            sync.Mutex
+	running       bool
+	lastStartedAt time.Time
 }{}
 
 type probeVirtualRouterRuntimeStats struct {
@@ -344,6 +351,7 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	probeVirtualRouterState.mu.Unlock()
 	closeProbeVirtualRouterPacketStreams("config updated")
 	ensureProbeVirtualRouterLocalInterfaceIP()
+	scheduleProbeVirtualRouterPacketStreamPrewarm("config_updated")
 }
 
 func buildProbeVirtualRouterTopologyIndex(config probeVirtualRouterConfig) probeVirtualRouterTopologyIndex {
@@ -566,26 +574,7 @@ func probeVirtualRouterPath(config probeVirtualRouterConfig, fromNodeID string, 
 		addEdge(rule.FromNodeID, rule.ToNodeID)
 		addEdge(rule.ToNodeID, rule.FromNodeID)
 	}
-	seen := map[string]struct{}{from: {}}
-	parent := map[string]string{}
-	queue := []string{from}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		for next := range graph[current] {
-			if next == to {
-				parent[next] = current
-				return buildProbeVirtualRouterPath(parent, from, to)
-			}
-			if _, ok := seen[next]; ok {
-				continue
-			}
-			seen[next] = struct{}{}
-			parent[next] = current
-			queue = append(queue, next)
-		}
-	}
-	return nil
+	return selectProbeVirtualRouterBestPath(probeVirtualRouterShortestPathsFromNeighbors(graph, from, to), false)
 }
 
 func probeVirtualRouterPathFromNeighbors(neighbors map[string]map[string]struct{}, fromNodeID string, toNodeID string) []string {
@@ -597,26 +586,63 @@ func probeVirtualRouterPathFromNeighbors(neighbors map[string]map[string]struct{
 	if from == to {
 		return []string{from}
 	}
-	seen := map[string]struct{}{from: {}}
-	parent := map[string]string{}
+	return selectProbeVirtualRouterBestPath(probeVirtualRouterShortestPathsFromNeighbors(neighbors, from, to), true)
+}
+
+func probeVirtualRouterShortestPathsFromNeighbors(neighbors map[string]map[string]struct{}, from string, to string) [][]string {
+	if from == "" || to == "" {
+		return nil
+	}
+	if from == to {
+		return [][]string{{from}}
+	}
+	distance := map[string]int{from: 0}
+	parents := map[string][]string{}
 	queue := []string{from}
+	foundDistance := -1
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
-		for next := range neighbors[current] {
-			if next == to {
-				parent[next] = current
-				return buildProbeVirtualRouterPath(parent, from, to)
-			}
-			if _, ok := seen[next]; ok {
+		currentDistance := distance[current]
+		if foundDistance >= 0 && currentDistance >= foundDistance {
+			continue
+		}
+		for _, next := range sortedProbeVirtualRouterNeighborIDs(neighbors, current) {
+			nextDistance := currentDistance + 1
+			if foundDistance >= 0 && nextDistance > foundDistance {
 				continue
 			}
-			seen[next] = struct{}{}
-			parent[next] = current
-			queue = append(queue, next)
+			oldDistance, seen := distance[next]
+			if !seen {
+				distance[next] = nextDistance
+				parents[next] = []string{current}
+				if next == to {
+					foundDistance = nextDistance
+				} else {
+					queue = append(queue, next)
+				}
+				continue
+			}
+			if oldDistance == nextDistance {
+				parents[next] = append(parents[next], current)
+			}
 		}
 	}
-	return nil
+	if foundDistance < 0 {
+		return nil
+	}
+	return buildProbeVirtualRouterShortestPaths(parents, from, to)
+}
+
+func sortedProbeVirtualRouterNeighborIDs(neighbors map[string]map[string]struct{}, nodeID string) []string {
+	items := make([]string, 0, len(neighbors[nodeID]))
+	for item := range neighbors[nodeID] {
+		if clean := normalizeProbeChainNodeID(item); clean != "" {
+			items = append(items, clean)
+		}
+	}
+	sort.Strings(items)
+	return items
 }
 
 func buildProbeVirtualRouterPath(parent map[string]string, from string, to string) []string {
@@ -636,6 +662,126 @@ func buildProbeVirtualRouterPath(parent map[string]string, from string, to strin
 		path[i], path[j] = path[j], path[i]
 	}
 	return path
+}
+
+func buildProbeVirtualRouterShortestPaths(parents map[string][]string, from string, to string) [][]string {
+	var out [][]string
+	var walk func(current string, suffix []string)
+	walk = func(current string, suffix []string) {
+		if current == "" {
+			return
+		}
+		nextSuffix := append([]string{current}, suffix...)
+		if current == from {
+			out = append(out, nextSuffix)
+			return
+		}
+		parentItems := append([]string(nil), parents[current]...)
+		sort.Strings(parentItems)
+		for _, parent := range parentItems {
+			walk(parent, nextSuffix)
+		}
+	}
+	walk(to, nil)
+	sort.SliceStable(out, func(i, j int) bool {
+		return compareProbeVirtualRouterPathLexicographic(out[i], out[j]) < 0
+	})
+	return out
+}
+
+func selectProbeVirtualRouterBestPath(paths [][]string, useRTT bool) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	best := append([]string(nil), paths[0]...)
+	for _, path := range paths[1:] {
+		if probeVirtualRouterPathLess(path, best, useRTT) {
+			best = append([]string(nil), path...)
+		}
+	}
+	return best
+}
+
+func probeVirtualRouterPathLess(left []string, right []string, useRTT bool) bool {
+	if len(left) != len(right) {
+		return len(left) < len(right)
+	}
+	if useRTT {
+		leftRTT, leftMissing := probeVirtualRouterPathRTTScore(left)
+		rightRTT, rightMissing := probeVirtualRouterPathRTTScore(right)
+		if leftMissing != rightMissing {
+			return leftMissing < rightMissing
+		}
+		if leftRTT != rightRTT {
+			return leftRTT < rightRTT
+		}
+	}
+	return compareProbeVirtualRouterPathLexicographic(left, right) < 0
+}
+
+func probeVirtualRouterPathRTTScore(path []string) (int64, int) {
+	var total int64
+	missing := 0
+	for i := 0; i+1 < len(path); i++ {
+		latencyMS, ok := currentProbeVirtualRouterAdjacentLatencyMS(path[i], path[i+1])
+		if !ok {
+			missing++
+			continue
+		}
+		total += latencyMS
+	}
+	return total, missing
+}
+
+func currentProbeVirtualRouterAdjacentLatencyMS(fromNodeID string, toNodeID string) (int64, bool) {
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	from := normalizeProbeChainNodeID(fromNodeID)
+	to := normalizeProbeChainNodeID(toNodeID)
+	if localNodeID == "" || from == "" || to == "" {
+		return 0, false
+	}
+	target := ""
+	switch localNodeID {
+	case from:
+		target = to
+	case to:
+		target = from
+	default:
+		return 0, false
+	}
+	rt, _ := probeVirtualRouterRuntimeForAdjacentNode(target)
+	if rt == nil {
+		return 0, false
+	}
+	stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.chainID)
+	if stats == nil || stats.LastPingLatencyMS <= 0 || strings.TrimSpace(stats.LastPingError) != "" {
+		return 0, false
+	}
+	return stats.LastPingLatencyMS, true
+}
+
+func compareProbeVirtualRouterPathLexicographic(left []string, right []string) int {
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
+	}
+	for i := 0; i < limit; i++ {
+		l := normalizeProbeChainNodeID(left[i])
+		r := normalizeProbeChainNodeID(right[i])
+		if l < r {
+			return -1
+		}
+		if l > r {
+			return 1
+		}
+	}
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	return 0
 }
 
 func probeVirtualRouterNodeIDForIP(config probeVirtualRouterConfig, ip string) string {
@@ -1114,6 +1260,74 @@ func openProbeVirtualRouterPacketStream(rt *probeChainRuntime, direction string,
 	return item, nil
 }
 
+func scheduleProbeVirtualRouterPacketStreamPrewarm(reason string) {
+	now := time.Now()
+	probeVirtualRouterPacketPrewarmState.mu.Lock()
+	if probeVirtualRouterPacketPrewarmState.running || now.Sub(probeVirtualRouterPacketPrewarmState.lastStartedAt) < probeVirtualRouterPacketPrewarmMinInterval {
+		probeVirtualRouterPacketPrewarmState.mu.Unlock()
+		return
+	}
+	probeVirtualRouterPacketPrewarmState.running = true
+	probeVirtualRouterPacketPrewarmState.lastStartedAt = now
+	probeVirtualRouterPacketPrewarmState.mu.Unlock()
+
+	go func() {
+		defer func() {
+			probeVirtualRouterPacketPrewarmState.mu.Lock()
+			probeVirtualRouterPacketPrewarmState.running = false
+			probeVirtualRouterPacketPrewarmState.mu.Unlock()
+		}()
+		prewarmProbeVirtualRouterPacketStreams(reason)
+	}()
+}
+
+func prewarmProbeVirtualRouterPacketStreams(reason string) {
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if localNodeID == "" {
+		return
+	}
+	probeVirtualRouterState.mu.RLock()
+	nodeToIP := probeVirtualRouterCloneNodeToIPLocked()
+	probeVirtualRouterState.mu.RUnlock()
+	nodeIDs := make([]string, 0, len(nodeToIP))
+	for nodeID := range nodeToIP {
+		if normalizeProbeChainNodeID(nodeID) != localNodeID {
+			nodeIDs = append(nodeIDs, normalizeProbeChainNodeID(nodeID))
+		}
+	}
+	sort.Strings(nodeIDs)
+	opened := 0
+	failed := 0
+	for _, nodeID := range nodeIDs {
+		dstIP := strings.TrimSpace(nodeToIP[nodeID])
+		if dstIP == "" {
+			continue
+		}
+		path := currentProbeVirtualRouterPathBetweenNodes(localNodeID, nodeID)
+		if len(path) < 2 {
+			continue
+		}
+		nextNodeID := probeVirtualRouterNextHopInPath(path, localNodeID)
+		if nextNodeID == "" {
+			continue
+		}
+		rt, direction := probeVirtualRouterRuntimeForAdjacentNode(nextNodeID)
+		if rt == nil {
+			failed++
+			continue
+		}
+		if _, err := openProbeVirtualRouterPacketStream(rt, direction, dstIP, path); err != nil {
+			failed++
+			log.Printf("probe virtual router packet stream prewarm failed: reason=%s dst_node=%s dst_ip=%s path=%s err=%v", strings.TrimSpace(reason), nodeID, dstIP, strings.Join(path, ">"), err)
+			continue
+		}
+		opened++
+	}
+	if opened > 0 || failed > 0 {
+		log.Printf("probe virtual router packet stream prewarm completed: reason=%s opened=%d failed=%d", strings.TrimSpace(reason), opened, failed)
+	}
+}
+
 func reusableProbeVirtualRouterPacketStream(key string, now time.Time) net.Conn {
 	probeVirtualRouterStreamState.mu.Lock()
 	item := probeVirtualRouterStreamState.streams[key]
@@ -1339,6 +1553,7 @@ func recordProbeVirtualRouterRuntimePingSuccess(rt *probeChainRuntime, direction
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	scheduleProbeVirtualRouterPacketStreamPrewarm("bridge_ping_success")
 }
 
 func recordProbeVirtualRouterRuntimePingError(rt *probeChainRuntime, direction string, err error) {

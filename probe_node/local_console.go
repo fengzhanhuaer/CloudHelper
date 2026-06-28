@@ -277,7 +277,9 @@ func defaultProbeLocalDetectTUNInstalled() (bool, error) {
 
 var (
 	errProbeLocalProxyUnsupported            = errors.New("probe local proxy takeover is not supported on this platform")
+	errProbeLocalVNetFeaturePaused           = errors.New("probe local VNet/gVisor feature is paused")
 	errProbeLocalTUNUnsupported              = errors.New("probe local tun install is not supported on this platform")
+	probeLocalVNetFeatureEnabled             = func() bool { return false }
 	probeLocalInstallTUNDriver               = installProbeLocalTUNDriver
 	probeLocalCheckTUNReadyAfterInstall      = probeLocalNoopPostInstallTUNReadyCheck
 	probeLocalDetectTUNInstalled             = defaultProbeLocalDetectTUNInstalled
@@ -306,6 +308,10 @@ var (
 	probeLocalRefreshProxyChainCache         = refreshProbeProxyChainCacheFromController
 	probeLocalLookupIPv4ForBypass            = lookupProbeLocalIPv4ForBypass
 )
+
+func probeLocalVNetFeatureActive() bool {
+	return probeLocalVNetFeatureEnabled != nil && probeLocalVNetFeatureEnabled()
+}
 
 var probeLocalProxyStatusRefreshState = struct {
 	mu             sync.Mutex
@@ -1047,11 +1053,17 @@ func (m *probeLocalControlManager) proxyStatus() probeLocalProxyRuntimeState {
 }
 
 func probeLocalTUNProxyEnabled() bool {
+	if !probeLocalVNetFeatureActive() {
+		return false
+	}
 	status := probeLocalControl.proxyStatus()
 	return status.Enabled && strings.EqualFold(strings.TrimSpace(status.Mode), probeLocalProxyModeTUN)
 }
 
 func startProbeLocalTUNProxyRuntime() error {
+	if !probeLocalVNetFeatureActive() {
+		return errProbeLocalVNetFeaturePaused
+	}
 	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
 	needsDataPlane := runtime.GOOS == "windows" || strings.TrimSpace(currentProbeLocalTUNDNSListenHost()) != ""
 	if needsDataPlane {
@@ -1244,6 +1256,11 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		status := http.StatusInternalServerError
 		if errors.Is(err, errProbeLocalProxyUnsupported) {
 			status = http.StatusNotImplemented
+		}
+		if errors.Is(err, errProbeLocalVNetFeaturePaused) {
+			status = http.StatusServiceUnavailable
+			m.proxy.Enabled = false
+			m.proxy.Mode = probeLocalProxyModeDirect
 		}
 		tun := m.tun
 		proxy := m.proxy
@@ -2249,7 +2266,7 @@ func normalizeProbeLocalExplicitProxyPersistentState(payload *probeLocalProxySta
 }
 
 func shouldRestoreProbeLocalProxyFromState(state probeLocalProxyStateFile) bool {
-	return state.Proxy.Enabled && strings.EqualFold(strings.TrimSpace(state.Proxy.Mode), probeLocalProxyModeTUN)
+	return probeLocalVNetFeatureActive() && state.Proxy.Enabled && strings.EqualFold(strings.TrimSpace(state.Proxy.Mode), probeLocalProxyModeTUN)
 }
 
 func shouldRestoreProbeLocalTUNFromState(state probeLocalProxyStateFile) bool {
@@ -2269,6 +2286,21 @@ func cleanupProbeLocalExplicitProxySystemSettingsOnStartup(state probeLocalProxy
 		return
 	}
 	logProbeInfof("probe local explicit proxy startup cleanup completed: enabled=false")
+}
+
+func cleanupProbeLocalVNetSystemSettingsWhenPaused(state probeLocalProxyStateFile) {
+	if probeLocalVNetFeatureActive() || !state.Proxy.Enabled {
+		return
+	}
+	if err := probeLocalRestoreProxyDirect(); err != nil {
+		logProbeWarnf("probe local VNet/gVisor paused cleanup failed: %v", err)
+	}
+	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
+	stopProbeLocalProxyMonitor()
+	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
+		logProbeWarnf("probe local VNet/gVisor paused persist direct state failed: %v", err)
+	}
+	logProbeInfof("probe local VNet/gVisor paused cleanup completed: enabled=false")
 }
 
 func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
@@ -2698,8 +2730,10 @@ func ensureProbeLocalProxyDefaultsInitialized() error {
 			logProbeErrorf("probe local proxy state update failed, service will continue: %v", err)
 		}
 		cleanupProbeLocalExplicitProxySystemSettingsOnStartup(state)
+		cleanupProbeLocalVNetSystemSettingsWhenPaused(state)
 	} else {
 		cleanupProbeLocalExplicitProxySystemSettingsOnStartup(state)
+		cleanupProbeLocalVNetSystemSettingsWhenPaused(state)
 	}
 	if _, _, err := loadProbeLocalHostMappingsWithContent(); err != nil {
 		logProbeErrorf("probe local proxy host config invalid, service will continue without static host mappings until fixed: %v", err)
@@ -6551,6 +6585,7 @@ func resetProbeLocalControlStateForTest() {
 }
 
 func resetProbeLocalProxyHooksForTest() {
+	probeLocalVNetFeatureEnabled = func() bool { return false }
 	probeLocalApplyProxyTakeover = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect = restoreProbeLocalProxyDirect
 	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass

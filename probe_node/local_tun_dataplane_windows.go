@@ -113,20 +113,22 @@ func startProbeLocalTUNDataPlane() error {
 	probeLocalTUNDataPlaneState.dataPlane = dataPlane
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
-	if err := startProbeLocalTUNPacketStack(); err != nil {
-		probeLocalTUNDataPlaneState.mu.Lock()
-		if probeLocalTUNDataPlaneState.dataPlane == dataPlane {
-			probeLocalTUNDataPlaneState.dataPlane = nil
-			probeLocalTUNDataPlaneState.adapterHandle = 0
-			probeLocalTUNDataPlaneState.libraryPath = ""
-			probeLocalTUNDataPlaneState.interfaceLUID = 0
-			probeLocalTUNDataPlaneState.ifIndex = 0
+	if probeLocalVNetFeatureActive() {
+		if err := startProbeLocalTUNPacketStack(); err != nil {
+			probeLocalTUNDataPlaneState.mu.Lock()
+			if probeLocalTUNDataPlaneState.dataPlane == dataPlane {
+				probeLocalTUNDataPlaneState.dataPlane = nil
+				probeLocalTUNDataPlaneState.adapterHandle = 0
+				probeLocalTUNDataPlaneState.libraryPath = ""
+				probeLocalTUNDataPlaneState.interfaceLUID = 0
+				probeLocalTUNDataPlaneState.ifIndex = 0
+			}
+			probeLocalTUNDataPlaneState.mu.Unlock()
+			_ = dataPlane.Close()
+			_ = probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle)
+			clearProbeLocalWindowsDirectBypassRouteTarget()
+			return err
 		}
-		probeLocalTUNDataPlaneState.mu.Unlock()
-		_ = dataPlane.Close()
-		_ = probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle)
-		clearProbeLocalWindowsDirectBypassRouteTarget()
-		return err
 	}
 	ensureProbeVirtualRouterLocalInterfaceIP()
 
@@ -246,6 +248,9 @@ func handleProbeLocalTUNInboundPacket(packet []byte) {
 	if handleProbeVirtualRouterTUNPacket(packet) {
 		return
 	}
+	if !probeLocalVNetFeatureActive() {
+		return
+	}
 	if handleProbeLocalTUNICMPDirectBypass(packet) {
 		return
 	}
@@ -255,6 +260,7 @@ func handleProbeLocalTUNInboundPacket(packet []byte) {
 }
 
 func resetProbeLocalTUNDataPlaneHooksForTest() {
+	probeLocalVNetFeatureEnabled = func() bool { return true }
 	probeLocalEnsureWintunLibraryForDataPlane = ensureProbeEmbeddedWintunLibrary
 	probeLocalResolveWintunPathForDataPlane = resolveProbeWintunPath
 	probeLocalCreateWintunAdapterForDataPlane = createProbeLocalWintunAdapter
