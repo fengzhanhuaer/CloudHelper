@@ -1394,7 +1394,7 @@ func TestProbeVirtualRouterFrameLinkCachePersistsWhileIdle(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterPingErrorDropsCarrierButKeepsFrameLink(t *testing.T) {
+func TestProbeVirtualRouterPingErrorRetainsCarrierAndFrameLink(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
@@ -1417,19 +1417,165 @@ func TestProbeVirtualRouterPingErrorDropsCarrierButKeepsFrameLink(t *testing.T) 
 	probeVirtualRouterFrameLinkState.mu.Unlock()
 
 	recordProbeVirtualRouterRuntimePingError(rt, probeChainBridgeRoleToNext, errors.New("virtual router control ping timeout"))
+	recordProbeVirtualRouterRuntimePingError(rt, probeChainBridgeRoleToNext, errors.New("virtual router control ping timeout"))
 
 	if isProbeVirtualRouterFrameLinkClosed(link) {
-		t.Fatalf("ping error should drop carrier, not close frame link")
+		t.Fatalf("ping error should not close frame link")
+	}
+	link.mu.Lock()
+	carrier := link.carrier
+	link.mu.Unlock()
+	if carrier == nil {
+		t.Fatalf("ping error should not detach physical carrier")
+	}
+	if got := reusableProbeVirtualRouterFrameLink(key, time.Now()); got != link {
+		t.Fatalf("frame link should remain cached for reconnection, got=%v", got)
+	}
+}
+
+func TestProbeVirtualRouterPingErrorKeepsRecentlyActiveCarrier(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:    "vrouter-carrier-active",
+			chainType:  "virtual_router",
+			role:       "relay",
+			nextNodeID: "19",
+		},
+	}
+	left, right := net.Pipe()
+	defer right.Close()
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	link := newProbeVirtualRouterFrameLink(key, rt, nil, nil)
+	link.AttachCarrier(left, "vrouter-carrier-active", "198.51.100.19:12040")
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	recordProbeVirtualRouterRuntimeFrameReceived(rt, 91)
+	recordProbeVirtualRouterRuntimePingError(rt, probeChainBridgeRoleToNext, errors.New("virtual router control response timeout"))
+	recordProbeVirtualRouterRuntimePingError(rt, probeChainBridgeRoleToNext, errors.New("virtual router control response timeout"))
+
+	if isProbeVirtualRouterFrameLinkClosed(link) {
+		t.Fatalf("recent ping errors should not close active frame link")
+	}
+	link.mu.Lock()
+	carrier := link.carrier
+	link.mu.Unlock()
+	if carrier == nil {
+		t.Fatalf("recently active carrier should be retained")
+	}
+}
+
+func TestProbeVirtualRouterRepeatedPingErrorDetachesStaleCarrier(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:    "vrouter-carrier-stale",
+			chainType:  "virtual_router",
+			role:       "relay",
+			nextNodeID: "19",
+		},
+	}
+	left, right := net.Pipe()
+	defer right.Close()
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	link := newProbeVirtualRouterFrameLink(key, rt, nil, nil)
+	token := link.AttachCarrier(left, "vrouter-carrier-stale", "198.51.100.19:12040")
+	if token == nil {
+		t.Fatalf("carrier should attach")
+	}
+	oldReadAt := time.Now().Add(-probeVirtualRouterCarrierStaleRXGrace - time.Second)
+	token.mu.Lock()
+	token.lastReadAt = oldReadAt
+	token.mu.Unlock()
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	for i := 0; i < probeVirtualRouterCarrierStalePingFailures; i++ {
+		recordProbeVirtualRouterRuntimePingError(rt, probeChainBridgeRoleToNext, errors.New("virtual router control response timeout"))
+	}
+
+	if isProbeVirtualRouterFrameLinkClosed(link) {
+		t.Fatalf("stale carrier detach should not close frame link")
 	}
 	link.mu.Lock()
 	carrier := link.carrier
 	link.mu.Unlock()
 	if carrier != nil {
-		t.Fatalf("carrier should be detached after ping error")
+		t.Fatalf("stale carrier should be detached for reconnect")
 	}
-	if got := reusableProbeVirtualRouterFrameLink(key, time.Now()); got != link {
-		t.Fatalf("frame link should remain cached for reconnection, got=%v", got)
+}
+
+func TestProbeVirtualRouterDispatchErrorKeepsFrameLinkAlive(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	link := newProbeVirtualRouterFrameLink("dispatch-error", &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-dispatch-error"}}, nil, nil)
+	link.Start()
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+
+	link.rx <- probeVirtualRouterFrameMessage{
+		FrameType:   "unsupported",
+		ControlType: "unsupported",
+		Payload:     []byte("bad-frame"),
+		Path:        []string{"1", "2"},
 	}
+
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if isProbeVirtualRouterFrameLinkClosed(link) {
+			t.Fatalf("dispatch error should not close frame link")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestProbeVirtualRouterCarrierFailureDetachesCarrierButKeepsFrameLink(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	left, right := net.Pipe()
+	key := "carrier-failure"
+	link := newProbeVirtualRouterFrameLink(key, &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-carrier-failure"}}, nil, nil)
+	link.Start()
+	token := link.AttachCarrier(left, "vrouter-carrier-test", "pipe")
+	if token == nil {
+		t.Fatalf("carrier should attach")
+	}
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	_ = right.Close()
+
+	if err := link.EnqueueProbeVirtualRouterFrame(probeVirtualRouterFrameMessage{
+		FrameType:   probeVirtualRouterFrameTypeData,
+		ControlType: probeVirtualRouterControlTypeIPv4,
+		Payload:     buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"),
+		Path:        []string{"1", "2"},
+	}); err != nil {
+		t.Fatalf("enqueue should not fail before carrier worker observes close: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if isProbeVirtualRouterFrameLinkClosed(link) {
+			t.Fatalf("carrier failure should not close frame link")
+		}
+		link.mu.Lock()
+		carrier := link.carrier
+		link.mu.Unlock()
+		if carrier == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("carrier should detach after physical failure")
 }
 
 func buildProbeVirtualRouterTestIPv4Packet(t *testing.T, src string, dst string) []byte {

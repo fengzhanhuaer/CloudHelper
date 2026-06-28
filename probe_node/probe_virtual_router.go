@@ -37,6 +37,8 @@ const (
 	probeVirtualRouterPingPongInterval           = 30 * time.Second
 	probeVirtualRouterPingPongTimeout            = 5 * time.Second
 	probeVirtualRouterPingPongBytes              = 64
+	probeVirtualRouterCarrierStalePingFailures   = 4
+	probeVirtualRouterCarrierStaleRXGrace        = 2 * probeVirtualRouterPingPongInterval
 	probeVirtualRouterFrameLinkTXBufferFrames    = 1024
 	probeVirtualRouterFrameLinkRXBufferFrames    = 1024
 )
@@ -124,6 +126,7 @@ type probeVirtualRouterRuntimeStats struct {
 	LastPingLatencyMS         int64  `json:"last_ping_latency_ms,omitempty"`
 	LastPingError             string `json:"last_ping_error,omitempty"`
 	LastPingAt                string `json:"last_ping_at,omitempty"`
+	LastPingFailureCount      int    `json:"last_ping_failure_count,omitempty"`
 	LastPingDirection         string `json:"last_ping_direction,omitempty"`
 	LastPingBridgeConnections int    `json:"last_ping_bridge_connections,omitempty"`
 	LastPingBridgeSessionID   string `json:"last_ping_bridge_session_id,omitempty"`
@@ -223,8 +226,11 @@ type probeVirtualRouterPhysicalCarrier struct {
 	sessionID   string
 	remoteAddr  string
 	connectedAt time.Time
+	lastReadAt  time.Time
+	lastWriteAt time.Time
 	done        chan struct{}
 	closeOnce   sync.Once
+	mu          sync.Mutex
 }
 
 type probeVirtualRouterPathRTTRecord struct {
@@ -1858,11 +1864,14 @@ func newProbeVirtualRouterFrameLink(key string, runtime *probeChainRuntime, carr
 }
 
 func newProbeVirtualRouterPhysicalCarrier(conn net.Conn, sessionID string, remoteAddr string) *probeVirtualRouterPhysicalCarrier {
+	now := time.Now()
 	return &probeVirtualRouterPhysicalCarrier{
 		conn:        conn,
 		sessionID:   strings.TrimSpace(sessionID),
 		remoteAddr:  strings.TrimSpace(remoteAddr),
-		connectedAt: time.Now(),
+		connectedAt: now,
+		lastReadAt:  now,
+		lastWriteAt: now,
 		done:        make(chan struct{}),
 	}
 }
@@ -1973,6 +1982,7 @@ func (s *probeVirtualRouterFrameLink) EnqueueProbeVirtualRouterFrame(input probe
 			s.detachCarrier(token)
 			return err
 		}
+		token.markWrite()
 		s.touch()
 		return nil
 	}
@@ -2004,6 +2014,7 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 				}
 				err = writeProbeVirtualRouterFrameRaw(token.conn, frame)
 				if err == nil {
+					token.markWrite()
 					s.touch()
 					break
 				}
@@ -2032,6 +2043,7 @@ func (s *probeVirtualRouterFrameLink) runRXWorker() {
 				s.detachCarrier(token)
 				break
 			}
+			token.markRead()
 			select {
 			case s.rx <- frame:
 				s.touch()
@@ -2051,8 +2063,7 @@ func (s *probeVirtualRouterFrameLink) runRXDispatchWorker() {
 			}
 			if err := handleProbeVirtualRouterFrameMessage(s.runtime, s, frame); err != nil {
 				log.Printf("probe virtual router frame rx dispatch failed: chain=%s key=%s path=%s err=%v", probeVirtualRouterRuntimeLogChainID(s.runtime), s.key, strings.Join(frame.Path, ">"), err)
-				stopProbeVirtualRouterFrameLink(s)
-				return
+				continue
 			}
 		case <-s.done:
 			return
@@ -2111,6 +2122,33 @@ func (s *probeVirtualRouterFrameLink) detachCarrier(token *probeVirtualRouterPhy
 	}
 	s.mu.Unlock()
 	token.close()
+}
+
+func (c *probeVirtualRouterPhysicalCarrier) markRead() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.lastReadAt = time.Now()
+	c.mu.Unlock()
+}
+
+func (c *probeVirtualRouterPhysicalCarrier) markWrite() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.lastWriteAt = time.Now()
+	c.mu.Unlock()
+}
+
+func (c *probeVirtualRouterPhysicalCarrier) lastRead() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastReadAt
 }
 
 func (c *probeVirtualRouterPhysicalCarrier) close() {
@@ -2593,7 +2631,6 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 		return err
 	}
 	if err := writeProbeVirtualRouterIPFrame(link, packet, path, trace); err != nil {
-		dropProbeVirtualRouterFrameLink(link)
 		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 		if !isProbeVirtualRouterClosedLinkError(err) {
 			return err
@@ -2604,7 +2641,6 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 			return err
 		}
 		if err := writeProbeVirtualRouterIPFrame(link, packet, path, trace); err != nil {
-			dropProbeVirtualRouterFrameLink(link)
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 			return err
 		}
@@ -3046,6 +3082,7 @@ func recordProbeVirtualRouterRuntimePingSuccess(rt *probeChainRuntime, direction
 		item.PingCount++
 		item.LastPingLatencyMS = probeDurationMilliseconds(latency)
 		item.LastPingError = ""
+		item.LastPingFailureCount = 0
 		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
@@ -3060,16 +3097,21 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeChainRuntime, direction s
 		return
 	}
 	chainID, bridgeStatus, bridgeSession := snapshotProbeVirtualRouterPingContext(rt, direction)
+	normalizedErr := normalizeProbeVirtualRouterBridgeError(err.Error())
+	failureCount := 0
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
-		item.LastPingError = normalizeProbeVirtualRouterBridgeError(err.Error())
+		item.LastPingError = normalizedErr
+		item.LastPingFailureCount++
+		failureCount = item.LastPingFailureCount
 		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	clearProbeVirtualRouterRouteCache("bridge ping error")
-	dropProbeVirtualRouterPhysicalCarrier(rt, "bridge ping error: "+normalizeProbeVirtualRouterBridgeError(err.Error()))
+	log.Printf("probe virtual router bridge ping error retained carrier: chain=%s direction=%s failures=%d err=%s", chainID, normalizeProbeChainBridgeRole(direction), failureCount, normalizedErr)
+	detachProbeVirtualRouterStalePhysicalCarrier(rt, failureCount, normalizedErr)
 }
 
 func recordProbeVirtualRouterRuntimeRemoteRTTSuccess(chainID string, result probeChainFrameRTTQueryResult) {
@@ -3361,8 +3403,8 @@ func currentProbeVirtualRouterPhysicalCarrier(rt *probeChainRuntime) *probeVirtu
 	return item
 }
 
-func dropProbeVirtualRouterPhysicalCarrier(rt *probeChainRuntime, reason string) {
-	if rt == nil {
+func detachProbeVirtualRouterStalePhysicalCarrier(rt *probeChainRuntime, failureCount int, reason string) {
+	if rt == nil || failureCount < probeVirtualRouterCarrierStalePingFailures {
 		return
 	}
 	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
@@ -3375,19 +3417,22 @@ func dropProbeVirtualRouterPhysicalCarrier(rt *probeChainRuntime, reason string)
 	if item == nil || isProbeVirtualRouterFrameLinkClosed(item) {
 		return
 	}
-	var token *probeVirtualRouterPhysicalCarrier
 	item.mu.Lock()
-	token = item.carrier
-	if token != nil {
-		item.carrier = nil
-		item.signalCarrierChangedLocked()
-	}
+	token := item.carrier
 	item.mu.Unlock()
 	if token == nil {
 		return
 	}
-	log.Printf("probe virtual router physical carrier dropped: chain=%s role=%s session_id=%s remote=%s reason=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr), strings.TrimSpace(reason))
-	token.close()
+	lastReadAt := token.lastRead()
+	if lastReadAt.IsZero() {
+		lastReadAt = token.connectedAt
+	}
+	idleFor := time.Since(lastReadAt)
+	if idleFor < probeVirtualRouterCarrierStaleRXGrace {
+		return
+	}
+	log.Printf("probe virtual router physical carrier stale, detach for reconnect: chain=%s role=%s session_id=%s remote=%s failures=%d rx_idle_ms=%d reason=%s", strings.TrimSpace(rt.cfg.chainID), strings.TrimSpace(rt.cfg.role), strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr), failureCount, probeDurationMilliseconds(idleFor), strings.TrimSpace(reason))
+	item.detachCarrier(token)
 }
 
 func probeVirtualRouterNextHopInPath(path []string, localNodeID string) string {
