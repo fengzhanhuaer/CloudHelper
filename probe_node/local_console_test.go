@@ -3466,6 +3466,30 @@ func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
 	}
 }
 
+func TestProbeLocalTUNStatusDoesNotBlockWhenControlBusy(t *testing.T) {
+	_ = setupProbeLocalConsoleTest(t)
+
+	probeLocalControl.mu.Lock()
+	defer probeLocalControl.mu.Unlock()
+
+	done := make(chan probeLocalTunRuntimeState, 1)
+	go func() {
+		done <- probeLocalControl.tunStatus()
+	}()
+
+	select {
+	case status := <-done:
+		if status.RecoveryStatus != "running" {
+			t.Fatalf("recovery_status=%q, want running", status.RecoveryStatus)
+		}
+		if !strings.Contains(status.LastError, "busy") {
+			t.Fatalf("last_error=%q, want busy", status.LastError)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("tunStatus blocked while control lock was held")
+	}
+}
+
 func TestProbeLocalTUNInstallDoesNotStartDataPlaneWhenProxyDirect(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

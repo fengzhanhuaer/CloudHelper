@@ -668,9 +668,20 @@ func expandProbeLocalBootstrapBypassTargets(targets []string) ([]string, error) 
 }
 
 func (m *probeLocalControlManager) tunStatus() probeLocalTunRuntimeState {
-	m.mu.RLock()
-	status := m.tun
-	m.mu.RUnlock()
+	var status probeLocalTunRuntimeState
+	if m.mu.TryRLock() {
+		status = m.tun
+		m.mu.RUnlock()
+	} else {
+		now := time.Now().UTC().Format(time.RFC3339)
+		status = probeLocalTunRuntimeState{
+			Platform:          runtime.GOOS,
+			LastError:         "tun control is busy",
+			RecoveryStatus:    "running",
+			RecoveryUpdatedAt: now,
+			UpdatedAt:         now,
+		}
+	}
 	stats := probeLocalTUNDataPlaneStatsSnapshot()
 	status.DataPlane = stats.Running
 	status.DataPlaneRX = stats.RXPackets
