@@ -3468,6 +3468,9 @@ func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
 
 func TestProbeLocalTUNStatusDoesNotBlockWhenControlBusy(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
+	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
+		t.Fatalf("persist tun state failed: %v", err)
+	}
 
 	probeLocalControl.mu.Lock()
 	defer probeLocalControl.mu.Unlock()
@@ -3482,8 +3485,14 @@ func TestProbeLocalTUNStatusDoesNotBlockWhenControlBusy(t *testing.T) {
 		if status.RecoveryStatus != "running" {
 			t.Fatalf("recovery_status=%q, want running", status.RecoveryStatus)
 		}
-		if !strings.Contains(status.LastError, "busy") {
-			t.Fatalf("last_error=%q, want busy", status.LastError)
+		if status.RecoveryLastError != "tun control is busy" {
+			t.Fatalf("recovery_last_error=%q, want busy", status.RecoveryLastError)
+		}
+		if status.LastError != "" {
+			t.Fatalf("last_error=%q, want empty", status.LastError)
+		}
+		if !status.Installed || !status.Enabled {
+			t.Fatalf("status installed/enabled=%v/%v, want true/true", status.Installed, status.Enabled)
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("tunStatus blocked while control lock was held")

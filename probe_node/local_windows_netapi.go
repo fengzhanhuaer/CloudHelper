@@ -39,6 +39,7 @@ var (
 	probeLocalProcCreateUnicastIPAddressEntryNet     = probeLocalModIphlpapiNet.NewProc("CreateUnicastIpAddressEntry")
 	probeLocalProcDeleteUnicastIPAddressEntryNet     = probeLocalModIphlpapiNet.NewProc("DeleteUnicastIpAddressEntry")
 	probeLocalProcInitializeUnicastIPAddressEntryNet = probeLocalModIphlpapiNet.NewProc("InitializeUnicastIpAddressEntry")
+	probeLocalProcSetUnicastIPAddressEntryNet        = probeLocalModIphlpapiNet.NewProc("SetUnicastIpAddressEntry")
 	probeLocalProcConvertInterfaceLuidToIndexNet     = probeLocalModIphlpapiNet.NewProc("ConvertInterfaceLuidToIndex")
 	probeLocalProcCreateIpForwardEntry2Net           = probeLocalModIphlpapiNet.NewProc("CreateIpForwardEntry2")
 	probeLocalProcDeleteIpForwardEntry2Net           = probeLocalModIphlpapiNet.NewProc("DeleteIpForwardEntry2")
@@ -60,6 +61,7 @@ var (
 	probeLocalUpsertWindowsInterfaceIPv4ByLUID = upsertProbeLocalWindowsInterfaceIPv4AddressByLUID
 	probeLocalDeleteWindowsInterfaceIPv4       = deleteProbeLocalWindowsInterfaceIPv4Address
 	probeLocalCallCreateUnicastIPAddressEntry  = probeLocalCallCreateUnicastIPAddressEntryDefault
+	probeLocalCallSetUnicastIPAddressEntry     = probeLocalCallSetUnicastIPAddressEntryDefault
 	probeLocalCallSetInterfaceDNSSettingsByPtr = probeLocalCallSetInterfaceDNSSettingsByPtrDefault
 	probeLocalCallSetInterfaceDNSSettingsByQW  = probeLocalCallSetInterfaceDNSSettingsByQWordsDefault
 	probeLocalCallSetInterfaceDNSSettingsByDW  = probeLocalCallSetInterfaceDNSSettingsByDWordsDefault
@@ -70,6 +72,11 @@ var (
 
 func probeLocalCallCreateUnicastIPAddressEntryDefault(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
 	ret, _, callErr := probeLocalProcCreateUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(row)))
+	return ret, callErr
+}
+
+func probeLocalCallSetUnicastIPAddressEntryDefault(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
+	ret, _, callErr := probeLocalProcSetUnicastIPAddressEntryNet.Call(uintptr(unsafe.Pointer(row)))
 	return ret, callErr
 }
 
@@ -293,6 +300,7 @@ func upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	row.OnLinkPrefixLength = uint8(prefixLength)
 	row.ValidLifetime = 0xFFFFFFFF
 	row.PreferredLifetime = 0xFFFFFFFF
+	row.SkipAsSource = probeLocalWindowsSkipAsSourceForIPv4(ip4.String())
 	row.DadState = 4 // DadStatePreferred
 
 	if adapter, err := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex); err == nil && adapter.InterfaceLUID > 0 {
@@ -300,6 +308,13 @@ func upsertProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText stri
 	}
 
 	ret, callErr := probeLocalCallCreateUnicastIPAddressEntry(&row)
+	if ret == uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
+		setRet, setErr := probeLocalCallSetUnicastIPAddressEntry(&row)
+		if setRet != 0 {
+			return probeLocalWindowsNetapiCallErr("SetUnicastIpAddressEntry", setRet, setErr)
+		}
+		return nil
+	}
 	if ret != 0 && ret != uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
 		return probeLocalWindowsNetapiCallErr("CreateUnicastIpAddressEntry", ret, callErr)
 	}
@@ -329,13 +344,30 @@ func upsertProbeLocalWindowsInterfaceIPv4AddressByLUID(interfaceLUID uint64, int
 	row.OnLinkPrefixLength = uint8(prefixLength)
 	row.ValidLifetime = 0xFFFFFFFF
 	row.PreferredLifetime = 0xFFFFFFFF
+	row.SkipAsSource = probeLocalWindowsSkipAsSourceForIPv4(ip4.String())
 	row.DadState = 4 // DadStatePreferred
 
 	ret, callErr := probeLocalCallCreateUnicastIPAddressEntry(&row)
+	if ret == uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
+		setRet, setErr := probeLocalCallSetUnicastIPAddressEntry(&row)
+		if setRet != 0 {
+			return probeLocalWindowsNetapiCallErr("SetUnicastIpAddressEntry", setRet, setErr)
+		}
+		return nil
+	}
 	if ret != 0 && ret != uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS) {
 		return probeLocalWindowsNetapiCallErr("CreateUnicastIpAddressEntry", ret, callErr)
 	}
 	return nil
+}
+
+func probeLocalWindowsSkipAsSourceForIPv4(ipText string) uint8 {
+	ip := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	tunIP := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)).To4()
+	if ip != nil && tunIP != nil && ip.Equal(tunIP) {
+		return 1
+	}
+	return 0
 }
 
 func deleteProbeLocalWindowsInterfaceIPv4Address(interfaceIndex int, ipText string) error {

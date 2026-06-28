@@ -81,10 +81,14 @@ func TestUpsertProbeLocalWindowsInterfaceIPv4AddressCreateOnly(t *testing.T) {
 		if row == nil {
 			t.Fatal("row is nil")
 		}
+		if row.SkipAsSource != 1 {
+			t.Fatalf("SkipAsSource=%d, want 1 for base tun ip", row.SkipAsSource)
+		}
 		return 0, nil
 	}
 	t.Cleanup(func() {
 		probeLocalCallCreateUnicastIPAddressEntry = probeLocalCallCreateUnicastIPAddressEntryDefault
+		probeLocalCallSetUnicastIPAddressEntry = probeLocalCallSetUnicastIPAddressEntryDefault
 	})
 
 	if err := upsertProbeLocalWindowsInterfaceIPv4Address(19, "198.18.0.2", 15); err != nil {
@@ -92,6 +96,67 @@ func TestUpsertProbeLocalWindowsInterfaceIPv4AddressCreateOnly(t *testing.T) {
 	}
 	if createCalls != 1 {
 		t.Fatalf("createCalls=%d, want 1", createCalls)
+	}
+}
+
+func TestUpsertProbeLocalWindowsInterfaceIPv4AddressUsesVRouterIPAsSource(t *testing.T) {
+	createCalls := 0
+	probeLocalCallCreateUnicastIPAddressEntry = func(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
+		createCalls++
+		if row == nil {
+			t.Fatal("row is nil")
+		}
+		if row.SkipAsSource != 0 {
+			t.Fatalf("SkipAsSource=%d, want 0 for vrouter ip", row.SkipAsSource)
+		}
+		return 0, nil
+	}
+	t.Cleanup(func() {
+		probeLocalCallCreateUnicastIPAddressEntry = probeLocalCallCreateUnicastIPAddressEntryDefault
+		probeLocalCallSetUnicastIPAddressEntry = probeLocalCallSetUnicastIPAddressEntryDefault
+	})
+
+	if err := upsertProbeLocalWindowsInterfaceIPv4Address(19, "198.18.0.18", 15); err != nil {
+		t.Fatalf("upsertProbeLocalWindowsInterfaceIPv4Address returned error: %v", err)
+	}
+	if createCalls != 1 {
+		t.Fatalf("createCalls=%d, want 1", createCalls)
+	}
+}
+
+func TestUpsertProbeLocalWindowsInterfaceIPv4AddressUpdatesExistingSkipAsSource(t *testing.T) {
+	createCalls := 0
+	setCalls := 0
+	probeLocalCallCreateUnicastIPAddressEntry = func(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
+		createCalls++
+		if row == nil {
+			t.Fatal("row is nil")
+		}
+		if row.SkipAsSource != 1 {
+			t.Fatalf("create SkipAsSource=%d, want 1", row.SkipAsSource)
+		}
+		return uintptr(windows.ERROR_OBJECT_ALREADY_EXISTS), nil
+	}
+	probeLocalCallSetUnicastIPAddressEntry = func(row *probeLocalMIBUnicastIPAddressRow) (uintptr, error) {
+		setCalls++
+		if row == nil {
+			t.Fatal("row is nil")
+		}
+		if row.SkipAsSource != 1 {
+			t.Fatalf("set SkipAsSource=%d, want 1", row.SkipAsSource)
+		}
+		return 0, nil
+	}
+	t.Cleanup(func() {
+		probeLocalCallCreateUnicastIPAddressEntry = probeLocalCallCreateUnicastIPAddressEntryDefault
+		probeLocalCallSetUnicastIPAddressEntry = probeLocalCallSetUnicastIPAddressEntryDefault
+	})
+
+	if err := upsertProbeLocalWindowsInterfaceIPv4Address(19, "198.18.0.2", 15); err != nil {
+		t.Fatalf("upsertProbeLocalWindowsInterfaceIPv4Address returned error: %v", err)
+	}
+	if createCalls != 1 || setCalls != 1 {
+		t.Fatalf("create/set calls=%d/%d, want 1/1", createCalls, setCalls)
 	}
 }
 

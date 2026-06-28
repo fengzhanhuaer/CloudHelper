@@ -674,15 +674,36 @@ func (m *probeLocalControlManager) tunStatus() probeLocalTunRuntimeState {
 		m.mu.RUnlock()
 	} else {
 		now := time.Now().UTC().Format(time.RFC3339)
-		status = probeLocalTunRuntimeState{
-			Platform:          runtime.GOOS,
-			LastError:         "tun control is busy",
-			RecoveryStatus:    "running",
-			RecoveryUpdatedAt: now,
-			UpdatedAt:         now,
+		status.Platform = runtime.GOOS
+		status.RecoveryStatus = "running"
+		status.RecoveryLastError = "tun control is busy"
+		status.RecoveryUpdatedAt = now
+		status.UpdatedAt = now
+		if state, err := loadProbeLocalProxyStateFile(); err == nil {
+			status.Installed = state.TUN.Installed
+			status.Enabled = state.TUN.Enabled
+			status.UpdatedAt = firstNonEmpty(strings.TrimSpace(state.TUN.UpdatedAt), strings.TrimSpace(state.UpdatedAt), now)
+		}
+		if observation, ok := currentProbeLocalTUNInstallObservation(); ok {
+			status.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&observation)
+			if observation.Final.Success {
+				status.Installed = true
+			}
+		}
+		if status.UpdatedAt == "" {
+			status.UpdatedAt = now
+		}
+		if status.Platform == "" {
+			status.Platform = runtime.GOOS
 		}
 	}
 	stats := probeLocalTUNDataPlaneStatsSnapshot()
+	if !status.Installed && stats.Running {
+		status.Installed = true
+	}
+	if !status.Enabled && stats.Running {
+		status.Enabled = true
+	}
 	status.DataPlane = stats.Running
 	status.DataPlaneRX = stats.RXPackets
 	status.DataPlaneBytes = stats.RXBytes
