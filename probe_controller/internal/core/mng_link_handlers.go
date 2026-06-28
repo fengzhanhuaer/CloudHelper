@@ -98,6 +98,23 @@ func mngLinkVirtualRouterLatencyProbeHandler(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, result)
 }
 
+func mngLinkVirtualRouterSpeedTestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SourceNodeID string `json:"source_node_id"`
+		TargetNodeID string `json:"target_node_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	result := dispatchProbeVirtualRouterSpeedTestToNode(req.SourceNodeID, req.TargetNodeID)
+	writeJSON(w, http.StatusOK, result)
+}
+
 func mngLinkNodeDomainsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -549,13 +566,29 @@ func sumMngVirtualRouterRouteFrames(values ...*probeVirtualRouterRuntimeStats) (
 }
 
 func lastMngVirtualRouterRouteLatency(values ...*probeVirtualRouterRuntimeStats) int64 {
-	var out int64
+	var latestAt time.Time
+	var latestLatency int64
+	var fallback int64
 	for _, item := range values {
-		if item != nil && item.LastPingLatencyMS > out {
-			out = item.LastPingLatencyMS
+		if item == nil || item.LastPingLatencyMS <= 0 {
+			continue
+		}
+		if item.LastPingLatencyMS > fallback {
+			fallback = item.LastPingLatencyMS
+		}
+		at, err := time.Parse(time.RFC3339, strings.TrimSpace(item.LastPingAt))
+		if err != nil || at.IsZero() {
+			continue
+		}
+		if latestAt.IsZero() || at.After(latestAt) {
+			latestAt = at
+			latestLatency = item.LastPingLatencyMS
 		}
 	}
-	return out
+	if latestLatency > 0 {
+		return latestLatency
+	}
+	return fallback
 }
 
 func mngVirtualRouterStatsError(item *probeVirtualRouterRuntimeStats) string {

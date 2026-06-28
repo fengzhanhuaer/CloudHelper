@@ -70,6 +70,15 @@ type probeVirtualRouterLatencyProbeCommand struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type probeVirtualRouterSpeedTestCommand struct {
+	Type         string `json:"type"`
+	SourceNodeID string `json:"source_node_id"`
+	TargetNodeID string `json:"target_node_id"`
+	MaxBytes     int64  `json:"max_bytes"`
+	MaxSeconds   int    `json:"max_seconds"`
+	Timestamp    string `json:"timestamp"`
+}
+
 type probeLinkConfigSyncDispatchResult struct {
 	Total      int      `json:"total"`
 	Dispatched int      `json:"dispatched"`
@@ -387,6 +396,43 @@ func dispatchProbeLinkConfigSyncToKnownNodes(controllerBaseURL string) probeLink
 
 func dispatchProbeVirtualRouterLatencyProbeToKnownNodes() probeLinkConfigSyncDispatchResult {
 	return dispatchProbeVirtualRouterLatencyProbeToNodes(listProbeVirtualRouterKnownNodeIDs())
+}
+
+func dispatchProbeVirtualRouterSpeedTestToNode(sourceNodeID string, targetNodeID string) probeLinkConfigSyncDispatchResult {
+	sourceNodeID = normalizeProbeNodeID(sourceNodeID)
+	targetNodeID = normalizeProbeNodeID(targetNodeID)
+	result := probeLinkConfigSyncDispatchResult{Total: 1}
+	if sourceNodeID == "" || targetNodeID == "" {
+		result.Failed = 1
+		result.Failures = append(result.Failures, "source_node_id and target_node_id are required")
+		return result
+	}
+	if sourceNodeID == targetNodeID {
+		result.Failed = 1
+		result.Failures = append(result.Failures, "source_node_id and target_node_id must be different")
+		return result
+	}
+	session, ok := getProbeSession(sourceNodeID)
+	if !ok {
+		result.Offline = 1
+		return result
+	}
+	command := probeVirtualRouterSpeedTestCommand{
+		Type:         "virtual_router_speed_test",
+		SourceNodeID: sourceNodeID,
+		TargetNodeID: targetNodeID,
+		MaxBytes:     128 * 1024 * 1024,
+		MaxSeconds:   10,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := session.writeJSON(command); err != nil {
+		unregisterProbeSession(sourceNodeID, session)
+		result.Failed = 1
+		result.Failures = append(result.Failures, fmt.Sprintf("%s: %v", sourceNodeID, err))
+		return result
+	}
+	result.Dispatched = 1
+	return result
 }
 
 func dispatchProbeVirtualRouterLatencyProbeToNodes(nodeIDs []string) probeLinkConfigSyncDispatchResult {

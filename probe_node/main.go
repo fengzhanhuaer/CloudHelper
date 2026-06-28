@@ -141,6 +141,10 @@ type probeControlMessage struct {
 	Targets             []string                         `json:"targets,omitempty"`
 	Count               int                              `json:"count,omitempty"`
 	TimeoutMS           int                              `json:"timeout_ms,omitempty"`
+	SourceNodeID        string                           `json:"source_node_id,omitempty"`
+	TargetNodeID        string                           `json:"target_node_id,omitempty"`
+	MaxBytes            int64                            `json:"max_bytes,omitempty"`
+	MaxSeconds          int                              `json:"max_seconds,omitempty"`
 	NetworkMonitorTasks []probeNetworkMonitorTaskPayload `json:"tasks,omitempty"`
 	ConsoleMethod       string                           `json:"console_method,omitempty"`
 	ConsolePath         string                           `json:"console_path,omitempty"`
@@ -748,6 +752,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeVirtualRouterLatencyProbeControl(identity, stream, encoder, writeMu)
 		return
 	}
+	if typeName == "virtual_router_speed_test" {
+		go runProbeVirtualRouterSpeedTestControl(msg, identity, stream, encoder, writeMu)
+		return
+	}
 	if typeName == "local_console_proxy" {
 		go runProbeLocalConsoleProxy(msg, identity, stream, encoder, writeMu)
 		return
@@ -851,6 +859,34 @@ func runProbeVirtualRouterLatencyProbeControl(identity nodeIdentity, stream net.
 	}
 	if err := sendProbeReport(stream, encoder, identity, &cpuSampler{}, writeMu); err != nil {
 		logProbeWarnf("probe virtual router latency report failed: err=%v", err)
+	}
+}
+
+func runProbeVirtualRouterSpeedTestControl(msg probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
+	sourceNodeID := strings.TrimSpace(msg.SourceNodeID)
+	if sourceNodeID == "" {
+		sourceNodeID = strings.TrimSpace(identity.NodeID)
+	}
+	targetNodeID := strings.TrimSpace(msg.TargetNodeID)
+	maxBytes := msg.MaxBytes
+	if maxBytes <= 0 || maxBytes > probeVirtualRouterSpeedTestMaxBytes {
+		maxBytes = probeVirtualRouterSpeedTestMaxBytes
+	}
+	maxDuration := time.Duration(msg.MaxSeconds) * time.Second
+	if maxDuration <= 0 || maxDuration > probeVirtualRouterSpeedTestMaxDuration {
+		maxDuration = probeVirtualRouterSpeedTestMaxDuration
+	}
+	up, down, pathText, err := runProbeVirtualRouterSpeedTest(sourceNodeID, targetNodeID, maxBytes, maxDuration)
+	if err != nil {
+		logProbeWarnf("probe virtual router speed test completed with error: source=%s target=%s path=%s up=%.2fMbps down=%.2fMbps err=%v", sourceNodeID, targetNodeID, pathText, up.Mbps, down.Mbps, err)
+	} else {
+		logProbeInfof("probe virtual router speed test completed: source=%s target=%s path=%s up=%.2fMbps/%dB down=%.2fMbps/%dB", sourceNodeID, targetNodeID, pathText, up.Mbps, up.Bytes, down.Mbps, down.Bytes)
+	}
+	if stream == nil || encoder == nil {
+		return
+	}
+	if reportErr := sendProbeReport(stream, encoder, identity, &cpuSampler{}, writeMu); reportErr != nil {
+		logProbeWarnf("probe virtual router speed test report failed: err=%v", reportErr)
 	}
 }
 

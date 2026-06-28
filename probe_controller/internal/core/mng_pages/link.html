@@ -280,6 +280,11 @@
         <div class="row">
           <button id="btn-vr-status-refresh" class="btn" type="button">刷新路由状态</button>
           <button id="btn-vr-latency-probe" class="btn primary" type="button">立即延迟探测</button>
+          <label for="vr-speed-source">源节点</label>
+          <select id="vr-speed-source"></select>
+          <label for="vr-speed-target">目的节点</label>
+          <select id="vr-speed-target"></select>
+          <button id="btn-vr-speed-test" class="btn primary" type="button">测速</button>
           <span id="vr-status-summary" class="small muted">暂无状态</span>
         </div>
         <table>
@@ -375,6 +380,8 @@
       chains: [],
       relayStatus: [],
       virtualRouterStatus: [],
+      virtualRouterSpeedSourceID: '',
+      virtualRouterSpeedTargetID: '',
       selectedChainID: '',
       selectedEntryChainID: '',
       entryProfile: null,
@@ -769,6 +776,37 @@
       window.setTimeout(() => {
         loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
       }, 1000);
+    }
+
+    async function triggerVirtualRouterSpeedTest() {
+      const source = normalizeNodeID(document.getElementById('vr-speed-source') && document.getElementById('vr-speed-source').value);
+      const target = normalizeNodeID(document.getElementById('vr-speed-target') && document.getElementById('vr-speed-target').value);
+      if (!source || !target) {
+        throw new Error('请选择源节点和目的节点');
+      }
+      if (source === target) {
+        throw new Error('源节点和目的节点不能相同');
+      }
+      state.virtualRouterSpeedSourceID = source;
+      state.virtualRouterSpeedTargetID = target;
+      const result = await requestJSON('/mng/api/link/virtual_router/speed_test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_node_id: source, target_node_id: target }),
+      });
+      const total = Number(result.total || 0);
+      const dispatched = Number(result.dispatched || 0);
+      const offline = Number(result.offline || 0);
+      const failed = Number(result.failed || 0);
+      const detail = Array.isArray(result.failures) && result.failures.length ? `：${result.failures.join('；')}` : '';
+      const level = failed > 0 || offline > 0 ? 'warn' : 'ok';
+      setStatus(`测速已下发：${nodeLabel(source)} -> ${nodeLabel(target)}，${dispatched}/${total}，离线 ${offline}，失败 ${failed}${detail}`, level);
+      window.setTimeout(() => {
+        loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
+      }, 1200);
+      window.setTimeout(() => {
+        loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
+      }, 11000);
     }
 
     function bindTabs() {
@@ -1417,6 +1455,50 @@
       return ids.map((id) => `<option value="${escapeHTML(id)}" ${String(selected || '') === String(id) ? 'selected' : ''}>${escapeHTML(nodeLabel(id))}</option>`).join('');
     }
 
+    function virtualRouterSpeedNodeIDs() {
+      const ids = new Set();
+      (state.virtualRouterNodeIDs || []).forEach((id) => {
+        const clean = normalizeNodeID(id);
+        if (clean) ids.add(clean);
+      });
+      const cfg = state.virtualRouter || {};
+      (cfg.probe_ips || []).forEach((item) => {
+        const clean = normalizeNodeID(item && item.node_id);
+        if (clean) ids.add(clean);
+      });
+      (cfg.topology_rules || []).forEach((rule) => {
+        const from = normalizeNodeID(rule && rule.from_node_id);
+        const to = normalizeNodeID(rule && rule.to_node_id);
+        if (from) ids.add(from);
+        if (to) ids.add(to);
+      });
+      (state.virtualRouterStatus || []).forEach((item) => {
+        const from = normalizeNodeID(item && item.from_node_id);
+        const to = normalizeNodeID(item && item.to_node_id);
+        if (from) ids.add(from);
+        if (to) ids.add(to);
+      });
+      if (!ids.size) {
+        state.nodes.forEach((item) => {
+          const clean = normalizeNodeID(item && item.node_no);
+          if (clean) ids.add(clean);
+        });
+      }
+      return Array.from(ids).sort((a, b) => Number(a) - Number(b));
+    }
+
+    function refreshVirtualRouterSpeedControls() {
+      const source = document.getElementById('vr-speed-source');
+      const target = document.getElementById('vr-speed-target');
+      if (!source || !target) return;
+      const ids = virtualRouterSpeedNodeIDs();
+      if (!state.virtualRouterSpeedSourceID && ids.length) state.virtualRouterSpeedSourceID = ids[0];
+      if (!state.virtualRouterSpeedTargetID && ids.length > 1) state.virtualRouterSpeedTargetID = ids.find((id) => id !== state.virtualRouterSpeedSourceID) || ids[0];
+      const options = (selected) => ids.map((id) => `<option value="${escapeHTML(id)}" ${String(selected || '') === String(id) ? 'selected' : ''}>${escapeHTML(nodeLabel(id))}</option>`).join('');
+      source.innerHTML = options(state.virtualRouterSpeedSourceID);
+      target.innerHTML = options(state.virtualRouterSpeedTargetID);
+    }
+
     function renderVirtualRouter() {
       const cfg = state.virtualRouter || {};
       const enabledSelect = document.getElementById('vr-enabled');
@@ -1466,6 +1548,7 @@
       bindVirtualRouterEvents();
       const summary = document.getElementById('vr-summary');
       summary.textContent = `探针 IP ${ips.length} 个，拓扑规则 ${rules.length} 条`;
+      refreshVirtualRouterSpeedControls();
     }
 
     function bindVirtualRouterEvents() {
@@ -1915,6 +1998,23 @@
       return parts.join('');
     }
 
+    function renderLastSpeedTestContext(stats) {
+      const item = stats || {};
+      const at = String(item.last_speed_test_at || '').trim();
+      if (!at) return '';
+      const source = String(item.last_speed_test_source_node_id || '').trim();
+      const target = String(item.last_speed_test_target_node_id || '').trim();
+      const path = String(item.last_speed_test_path || '').trim();
+      const err = String(item.last_speed_test_error || '').trim();
+      const upMbps = Number(item.last_speed_test_up_mbps || 0);
+      const downMbps = Number(item.last_speed_test_down_mbps || 0);
+      const upDuration = Number(item.last_speed_test_up_duration_ms || 0);
+      const downDuration = Number(item.last_speed_test_down_duration_ms || 0);
+      const up = `上行 ${Number.isFinite(upMbps) && upMbps > 0 ? upMbps.toFixed(2) + ' Mbps' : '-'} / ${formatBytes(item.last_speed_test_up_bytes || 0)} / ${upDuration > 0 ? Math.trunc(upDuration) + 'ms' : '-'}`;
+      const down = `下行 ${Number.isFinite(downMbps) && downMbps > 0 ? downMbps.toFixed(2) + ' Mbps' : '-'} / ${formatBytes(item.last_speed_test_down_bytes || 0)} / ${downDuration > 0 ? Math.trunc(downDuration) + 'ms' : '-'}`;
+      return `<div class="small muted">最近发帧测速 ${escapeHTML(nodeLabel(source))} → ${escapeHTML(nodeLabel(target))} @ ${escapeHTML(at)}${path ? ` / path ${escapeHTML(path)}` : ''}</div><div class="small muted">${escapeHTML(up)} · ${escapeHTML(down)}</div>${err ? `<div class="small route-error">测速错误：${escapeHTML(err)}</div>` : ''}`;
+    }
+
     function routePeerLabel(nodeID, route) {
       const id = String(nodeID || '').trim();
       if (!id) return '-';
@@ -2050,6 +2150,7 @@
         ${renderActiveDialCapability(item)}
         ${renderVirtualProbeCapability(item)}
         ${renderLastVirtualPingContext(stats)}
+        ${renderLastSpeedTestContext(stats)}
         ${renderBridgeSessions(item, errors)}
         <div class="small muted">IP处理 rx入口 ${escapeHTML(packetsReceived)} / ${escapeHTML(formatBytes(bytesReceived))} · fwd转发 ${escapeHTML(packetsForwarded)} / ${escapeHTML(formatBytes(bytesForwarded))} · local投递 ${escapeHTML(packetsDelivered)} / ${escapeHTML(formatBytes(bytesDelivered))}</div>
         <div class="small muted">vRouter帧 tx ${escapeHTML(framesSent)} / ${escapeHTML(formatBytes(frameBytesSent))} · rx ${escapeHTML(framesReceived)} / ${escapeHTML(formatBytes(frameBytesReceived))}</div>
@@ -2065,6 +2166,7 @@
       const items = Array.isArray(state.virtualRouterStatus) ? state.virtualRouterStatus : [];
       const ready = items.filter((item) => String(item.status || '') === 'ready').length;
       summary.innerHTML = items.length ? `规则 ${escapeHTML(items.length)} 条，就绪 ${escapeHTML(ready)} 条${renderVirtualRouterTUNSummary(items)}` : '暂无状态';
+      refreshVirtualRouterSpeedControls();
       if (!items.length) {
         body.innerHTML = '<tr><td colspan="7" class="muted">暂无路由状态。需要先配置拓扑规则，并等待探针完成一次状态上报。</td></tr>';
         return;
@@ -2266,6 +2368,15 @@
       });
       document.getElementById('btn-vr-latency-probe').addEventListener('click', () => {
         triggerVirtualRouterLatencyProbe().catch((err) => setStatus(`延迟探测下发失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('vr-speed-source').addEventListener('change', (event) => {
+        state.virtualRouterSpeedSourceID = normalizeNodeID(event.target.value);
+      });
+      document.getElementById('vr-speed-target').addEventListener('change', (event) => {
+        state.virtualRouterSpeedTargetID = normalizeNodeID(event.target.value);
+      });
+      document.getElementById('btn-vr-speed-test').addEventListener('click', () => {
+        triggerVirtualRouterSpeedTest().catch((err) => setStatus(`测速下发失败：${err.message || err}`, 'err'));
       });
 
       document.getElementById('pf-chain-select').addEventListener('change', (e) => {

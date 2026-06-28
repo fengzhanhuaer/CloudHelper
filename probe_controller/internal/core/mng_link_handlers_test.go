@@ -261,6 +261,20 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	}
 }
 
+func TestLastMngVirtualRouterRouteLatencyUsesNewestPingReport(t *testing.T) {
+	oldHigh := &probeVirtualRouterRuntimeStats{
+		LastPingLatencyMS: 232,
+		LastPingAt:        "2026-06-28T14:30:00Z",
+	}
+	newLow := &probeVirtualRouterRuntimeStats{
+		LastPingLatencyMS: 1,
+		LastPingAt:        "2026-06-28T14:31:00Z",
+	}
+	if got := lastMngVirtualRouterRouteLatency(oldHigh, newLow); got != 1 {
+		t.Fatalf("latency=%d, want newest report latency 1", got)
+	}
+}
+
 func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	oldStore := ProbeLinkChainStore
 	oldProbeStore := ProbeStore

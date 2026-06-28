@@ -31,12 +31,20 @@ const (
 	probeVirtualRouterControlTypePong            = "pong"
 	probeVirtualRouterControlTypePathRTTQuery    = "path_rtt_query"
 	probeVirtualRouterControlTypePathRTTResponse = "path_rtt_response"
+	probeVirtualRouterControlTypeSpeedStart      = "speed_start"
+	probeVirtualRouterControlTypeSpeedChunk      = "speed_chunk"
+	probeVirtualRouterControlTypeSpeedFinish     = "speed_finish"
+	probeVirtualRouterControlTypeSpeedResult     = "speed_result"
+	probeVirtualRouterControlTypeSpeedSend       = "speed_send"
 	probeVirtualRouterTunnelScope                = "virtual_router"
 	probeVirtualRouterNetworkIPv4                = "ip4"
 	probeVirtualRouterFrameLinkIdleTTL           = 45 * time.Second
 	probeVirtualRouterPingPongInterval           = 30 * time.Second
 	probeVirtualRouterPingPongTimeout            = 5 * time.Second
 	probeVirtualRouterPingPongBytes              = 64
+	probeVirtualRouterSpeedTestMaxBytes          = 128 * 1024 * 1024
+	probeVirtualRouterSpeedTestMaxDuration       = 10 * time.Second
+	probeVirtualRouterSpeedTestChunkBytes        = 48 * 1024
 	probeVirtualRouterCarrierStalePingFailures   = 4
 	probeVirtualRouterCarrierStaleRXGrace        = 2 * probeVirtualRouterPingPongInterval
 	probeVirtualRouterFrameLinkTXBufferFrames    = 1024
@@ -94,6 +102,16 @@ var probeVirtualRouterControlResponseState = struct {
 	pending map[string]chan probeVirtualRouterControlProbePayload
 }{pending: make(map[string]chan probeVirtualRouterControlProbePayload)}
 
+var probeVirtualRouterSpeedReceiveState = struct {
+	mu       sync.Mutex
+	sessions map[string]*probeVirtualRouterSpeedReceiveSession
+}{sessions: make(map[string]*probeVirtualRouterSpeedReceiveSession)}
+
+var probeVirtualRouterSpeedResponseState = struct {
+	mu      sync.Mutex
+	pending map[string]chan probeVirtualRouterSpeedTestResultPayload
+}{pending: make(map[string]chan probeVirtualRouterSpeedTestResultPayload)}
+
 var probeVirtualRouterLocalInterfaceRetryState = struct {
 	mu         sync.Mutex
 	running    bool
@@ -108,57 +126,70 @@ var probeVirtualRouterLocalInterfaceEnsureState = struct {
 }{}
 
 type probeVirtualRouterRuntimeStats struct {
-	PacketsForwarded          int64  `json:"packets_forwarded,omitempty"`
-	BytesForwarded            int64  `json:"bytes_forwarded,omitempty"`
-	PacketsReceived           int64  `json:"packets_received,omitempty"`
-	BytesReceived             int64  `json:"bytes_received,omitempty"`
-	PacketsDelivered          int64  `json:"packets_delivered,omitempty"`
-	BytesDelivered            int64  `json:"bytes_delivered,omitempty"`
-	FramesSent                int64  `json:"frames_sent,omitempty"`
-	FrameBytesSent            int64  `json:"frame_bytes_sent,omitempty"`
-	FramesReceived            int64  `json:"frames_received,omitempty"`
-	FrameBytesReceived        int64  `json:"frame_bytes_received,omitempty"`
-	LinkOpenCount             int64  `json:"link_open_count,omitempty"`
-	LastOpenLatencyMS         int64  `json:"last_open_latency_ms,omitempty"`
-	LastOpenError             string `json:"last_open_error,omitempty"`
-	LastOpenAt                string `json:"last_open_at,omitempty"`
-	PingCount                 int64  `json:"ping_count,omitempty"`
-	LastPingLatencyMS         int64  `json:"last_ping_latency_ms,omitempty"`
-	LastPingError             string `json:"last_ping_error,omitempty"`
-	LastPingAt                string `json:"last_ping_at,omitempty"`
-	LastPingFailureCount      int    `json:"last_ping_failure_count,omitempty"`
-	LastPingDirection         string `json:"last_ping_direction,omitempty"`
-	LastPingBridgeConnections int    `json:"last_ping_bridge_connections,omitempty"`
-	LastPingBridgeSessionID   string `json:"last_ping_bridge_session_id,omitempty"`
-	LastPingBridgeRemote      string `json:"last_ping_bridge_remote,omitempty"`
-	LastPingBridgeConnectedAt string `json:"last_ping_bridge_connected_at,omitempty"`
-	VirtualPingCount          int64  `json:"virtual_ping_count,omitempty"`
-	LastVirtualPingLatencyMS  int64  `json:"last_virtual_ping_latency_ms,omitempty"`
-	LastVirtualPingAt         string `json:"last_virtual_ping_at,omitempty"`
-	LastVirtualPingSourceIP   string `json:"last_virtual_ping_source_ip,omitempty"`
-	LastVirtualPingDestIP     string `json:"last_virtual_ping_dest_ip,omitempty"`
-	LastVirtualPingID         uint16 `json:"last_virtual_ping_id,omitempty"`
-	LastVirtualPingSequence   uint16 `json:"last_virtual_ping_sequence,omitempty"`
-	LastVirtualPingPath       string `json:"last_virtual_ping_path,omitempty"`
-	LastRemoteRTTMS           int64  `json:"last_remote_rtt_ms,omitempty"`
-	LastRemoteRTTAt           string `json:"last_remote_rtt_at,omitempty"`
-	LastRemoteRTTError        string `json:"last_remote_rtt_error,omitempty"`
-	LastRemoteRTTResponder    string `json:"last_remote_rtt_responder,omitempty"`
-	LastRemotePongsReceived   int64  `json:"last_remote_pongs_received,omitempty"`
-	LastPacketAt              string `json:"last_packet_at,omitempty"`
-	LastFrameAt               string `json:"last_frame_at,omitempty"`
-	LastFrameSourceIP         string `json:"last_frame_source_ip,omitempty"`
-	LastFrameDestinationIP    string `json:"last_frame_destination_ip,omitempty"`
-	LastFrameLocalIP          string `json:"last_frame_local_ip,omitempty"`
-	LastFrameLocalMatch       string `json:"last_frame_local_match,omitempty"`
-	LastFramePath             string `json:"last_frame_path,omitempty"`
-	LastFrameRuntimeNodeID    string `json:"last_frame_runtime_node_id,omitempty"`
-	LastDeliveryError         string `json:"last_delivery_error,omitempty"`
-	TUNDataPlane              bool   `json:"tun_data_plane,omitempty"`
-	TUNRXPackets              uint64 `json:"tun_rx_packets,omitempty"`
-	TUNRXBytes                uint64 `json:"tun_rx_bytes,omitempty"`
-	TUNTXPackets              uint64 `json:"tun_tx_packets,omitempty"`
-	TUNTXBytes                uint64 `json:"tun_tx_bytes,omitempty"`
+	PacketsForwarded            int64   `json:"packets_forwarded,omitempty"`
+	BytesForwarded              int64   `json:"bytes_forwarded,omitempty"`
+	PacketsReceived             int64   `json:"packets_received,omitempty"`
+	BytesReceived               int64   `json:"bytes_received,omitempty"`
+	PacketsDelivered            int64   `json:"packets_delivered,omitempty"`
+	BytesDelivered              int64   `json:"bytes_delivered,omitempty"`
+	FramesSent                  int64   `json:"frames_sent,omitempty"`
+	FrameBytesSent              int64   `json:"frame_bytes_sent,omitempty"`
+	FramesReceived              int64   `json:"frames_received,omitempty"`
+	FrameBytesReceived          int64   `json:"frame_bytes_received,omitempty"`
+	LinkOpenCount               int64   `json:"link_open_count,omitempty"`
+	LastOpenLatencyMS           int64   `json:"last_open_latency_ms,omitempty"`
+	LastOpenError               string  `json:"last_open_error,omitempty"`
+	LastOpenAt                  string  `json:"last_open_at,omitempty"`
+	PingCount                   int64   `json:"ping_count,omitempty"`
+	LastPingLatencyMS           int64   `json:"last_ping_latency_ms,omitempty"`
+	LastPingError               string  `json:"last_ping_error,omitempty"`
+	LastPingAt                  string  `json:"last_ping_at,omitempty"`
+	LastPingFailureCount        int     `json:"last_ping_failure_count,omitempty"`
+	LastPingDirection           string  `json:"last_ping_direction,omitempty"`
+	LastPingBridgeConnections   int     `json:"last_ping_bridge_connections,omitempty"`
+	LastPingBridgeSessionID     string  `json:"last_ping_bridge_session_id,omitempty"`
+	LastPingBridgeRemote        string  `json:"last_ping_bridge_remote,omitempty"`
+	LastPingBridgeConnectedAt   string  `json:"last_ping_bridge_connected_at,omitempty"`
+	VirtualPingCount            int64   `json:"virtual_ping_count,omitempty"`
+	LastVirtualPingLatencyMS    int64   `json:"last_virtual_ping_latency_ms,omitempty"`
+	LastVirtualPingAt           string  `json:"last_virtual_ping_at,omitempty"`
+	LastVirtualPingSourceIP     string  `json:"last_virtual_ping_source_ip,omitempty"`
+	LastVirtualPingDestIP       string  `json:"last_virtual_ping_dest_ip,omitempty"`
+	LastVirtualPingID           uint16  `json:"last_virtual_ping_id,omitempty"`
+	LastVirtualPingSequence     uint16  `json:"last_virtual_ping_sequence,omitempty"`
+	LastVirtualPingPath         string  `json:"last_virtual_ping_path,omitempty"`
+	LastRemoteRTTMS             int64   `json:"last_remote_rtt_ms,omitempty"`
+	LastRemoteRTTAt             string  `json:"last_remote_rtt_at,omitempty"`
+	LastRemoteRTTError          string  `json:"last_remote_rtt_error,omitempty"`
+	LastRemoteRTTResponder      string  `json:"last_remote_rtt_responder,omitempty"`
+	LastRemotePongsReceived     int64   `json:"last_remote_pongs_received,omitempty"`
+	LastSpeedTestAt             string  `json:"last_speed_test_at,omitempty"`
+	LastSpeedTestSourceNodeID   string  `json:"last_speed_test_source_node_id,omitempty"`
+	LastSpeedTestTargetNodeID   string  `json:"last_speed_test_target_node_id,omitempty"`
+	LastSpeedTestPath           string  `json:"last_speed_test_path,omitempty"`
+	LastSpeedTestError          string  `json:"last_speed_test_error,omitempty"`
+	LastSpeedTestUpBytes        int64   `json:"last_speed_test_up_bytes,omitempty"`
+	LastSpeedTestUpFrames       int64   `json:"last_speed_test_up_frames,omitempty"`
+	LastSpeedTestUpDurationMS   int64   `json:"last_speed_test_up_duration_ms,omitempty"`
+	LastSpeedTestUpMbps         float64 `json:"last_speed_test_up_mbps,omitempty"`
+	LastSpeedTestDownBytes      int64   `json:"last_speed_test_down_bytes,omitempty"`
+	LastSpeedTestDownFrames     int64   `json:"last_speed_test_down_frames,omitempty"`
+	LastSpeedTestDownDurationMS int64   `json:"last_speed_test_down_duration_ms,omitempty"`
+	LastSpeedTestDownMbps       float64 `json:"last_speed_test_down_mbps,omitempty"`
+	LastPacketAt                string  `json:"last_packet_at,omitempty"`
+	LastFrameAt                 string  `json:"last_frame_at,omitempty"`
+	LastFrameSourceIP           string  `json:"last_frame_source_ip,omitempty"`
+	LastFrameDestinationIP      string  `json:"last_frame_destination_ip,omitempty"`
+	LastFrameLocalIP            string  `json:"last_frame_local_ip,omitempty"`
+	LastFrameLocalMatch         string  `json:"last_frame_local_match,omitempty"`
+	LastFramePath               string  `json:"last_frame_path,omitempty"`
+	LastFrameRuntimeNodeID      string  `json:"last_frame_runtime_node_id,omitempty"`
+	LastDeliveryError           string  `json:"last_delivery_error,omitempty"`
+	TUNDataPlane                bool    `json:"tun_data_plane,omitempty"`
+	TUNRXPackets                uint64  `json:"tun_rx_packets,omitempty"`
+	TUNRXBytes                  uint64  `json:"tun_rx_bytes,omitempty"`
+	TUNTXPackets                uint64  `json:"tun_tx_packets,omitempty"`
+	TUNTXBytes                  uint64  `json:"tun_tx_bytes,omitempty"`
 }
 
 type probeVirtualRouterICMPEchoLogInfo struct {
@@ -177,6 +208,28 @@ type probeVirtualRouterICMPPingPending struct {
 	ID            uint16
 	Sequence      uint16
 	Path          string
+}
+
+type probeVirtualRouterICMPPingCompleteSummary struct {
+	SourceIP      string
+	DestinationIP string
+	ID            uint16
+	Sequence      uint16
+	Path          string
+	LatencyMS     int64
+}
+
+type probeVirtualRouterSpeedReceiveSession struct {
+	RequestID    string
+	Direction    string
+	SourceNodeID string
+	TargetNodeID string
+	ResultNodeID string
+	Path         []string
+	StartedAt    time.Time
+	LastAt       time.Time
+	Bytes        int64
+	Frames       int64
 }
 
 type probeVirtualRouterTransportLogInfo struct {
@@ -263,6 +316,34 @@ type probeVirtualRouterControlProbePayload struct {
 	OK                bool     `json:"ok,omitempty"`
 	Error             string   `json:"error,omitempty"`
 	Responder         string   `json:"responder,omitempty"`
+}
+
+type probeVirtualRouterSpeedTestResultPayload struct {
+	RequestID         string   `json:"request_id"`
+	Direction         string   `json:"direction,omitempty"`
+	SourceNodeID      string   `json:"source_node_id,omitempty"`
+	TargetNodeID      string   `json:"target_node_id,omitempty"`
+	ResultNodeID      string   `json:"result_node_id,omitempty"`
+	Path              []string `json:"path,omitempty"`
+	MaxBytes          int64    `json:"max_bytes,omitempty"`
+	MaxDurationMS     int64    `json:"max_duration_ms,omitempty"`
+	CreatedAtUnixNano int64    `json:"created_at_unix_nano,omitempty"`
+	Bytes             int64    `json:"bytes,omitempty"`
+	Frames            int64    `json:"frames,omitempty"`
+	DurationMS        int64    `json:"duration_ms,omitempty"`
+	Mbps              float64  `json:"mbps,omitempty"`
+	OK                bool     `json:"ok,omitempty"`
+	Error             string   `json:"error,omitempty"`
+	Responder         string   `json:"responder,omitempty"`
+}
+
+type probeVirtualRouterSpeedTestResult struct {
+	OK         bool
+	Error      string
+	Bytes      int64
+	Frames     int64
+	DurationMS int64
+	Mbps       float64
 }
 
 func sanitizeProbeVirtualRouterConfigForCache(input probeVirtualRouterConfig) probeVirtualRouterConfig {
@@ -2219,6 +2300,9 @@ func handleProbeVirtualRouterFrameMessage(runtime *probeChainRuntime, link *prob
 }
 
 func handleProbeVirtualRouterControlFrame(runtime *probeChainRuntime, link *probeVirtualRouterFrameLink, controlType string, payload []byte, framePath []string) error {
+	if strings.TrimSpace(controlType) == probeVirtualRouterControlTypeSpeedChunk {
+		return handleProbeVirtualRouterControlSpeedChunk(runtime, controlType, payload, framePath)
+	}
 	msg := probeVirtualRouterControlProbePayload{}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return err
@@ -2236,6 +2320,15 @@ func handleProbeVirtualRouterControlFrame(runtime *probeChainRuntime, link *prob
 		return handleProbeVirtualRouterControlPathRTTQuery(runtime, msg)
 	case probeVirtualRouterControlTypePathRTTResponse:
 		return handleProbeVirtualRouterControlPathRTTResponse(runtime, msg)
+	case probeVirtualRouterControlTypeSpeedStart, probeVirtualRouterControlTypeSpeedFinish, probeVirtualRouterControlTypeSpeedResult, probeVirtualRouterControlTypeSpeedSend:
+		speedMsg := probeVirtualRouterSpeedTestResultPayload{}
+		if err := json.Unmarshal(payload, &speedMsg); err != nil {
+			return err
+		}
+		if len(speedMsg.Path) == 0 {
+			speedMsg.Path = append([]string(nil), framePath...)
+		}
+		return handleProbeVirtualRouterControlSpeedFrame(runtime, strings.TrimSpace(controlType), speedMsg)
 	default:
 		return fmt.Errorf("unsupported virtual router control type=%s", controlType)
 	}
@@ -2316,6 +2409,172 @@ func sendProbeVirtualRouterPathRTTResponse(msg probeVirtualRouterControlProbePay
 		return err
 	}
 	return forwardProbeVirtualRouterControlAlongPath(probeVirtualRouterControlTypePathRTTResponse, payload, probeVirtualRouterReversePath(msg.Path))
+}
+
+func handleProbeVirtualRouterControlSpeedFrame(runtime *probeChainRuntime, controlType string, msg probeVirtualRouterSpeedTestResultPayload) error {
+	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+	msg.Path = cleanProbeVirtualRouterPath(msg.Path)
+	if localNodeID == "" || msg.RequestID == "" || len(msg.Path) < 2 {
+		return errors.New("virtual router speed control frame is incomplete")
+	}
+	switch controlType {
+	case probeVirtualRouterControlTypeSpeedStart:
+		if localNodeID != msg.Path[len(msg.Path)-1] {
+			return forwardProbeVirtualRouterSpeedControlAlongPath(controlType, msg, msg.Path)
+		}
+		startProbeVirtualRouterSpeedReceive(msg, localNodeID)
+		return nil
+	case probeVirtualRouterControlTypeSpeedFinish:
+		if localNodeID != msg.Path[len(msg.Path)-1] {
+			return forwardProbeVirtualRouterSpeedControlAlongPath(controlType, msg, msg.Path)
+		}
+		result := finishProbeVirtualRouterSpeedReceive(msg, localNodeID)
+		if runtime != nil {
+			recordProbeVirtualRouterRuntimeSpeedTestReceive(strings.TrimSpace(runtime.cfg.chainID), result)
+		}
+		if normalizeProbeChainNodeID(result.ResultNodeID) == localNodeID {
+			completeProbeVirtualRouterSpeedResponse(result)
+			return nil
+		}
+		result.Path = probeVirtualRouterReversePath(msg.Path)
+		return forwardProbeVirtualRouterSpeedControlAlongPath(probeVirtualRouterControlTypeSpeedResult, result, result.Path)
+	case probeVirtualRouterControlTypeSpeedResult:
+		if normalizeProbeChainNodeID(msg.ResultNodeID) == localNodeID {
+			completeProbeVirtualRouterSpeedResponse(msg)
+			return nil
+		}
+		return forwardProbeVirtualRouterSpeedControlAlongPath(controlType, msg, msg.Path)
+	case probeVirtualRouterControlTypeSpeedSend:
+		if localNodeID != msg.Path[len(msg.Path)-1] {
+			return forwardProbeVirtualRouterSpeedControlAlongPath(controlType, msg, msg.Path)
+		}
+		go func() {
+			if err := runProbeVirtualRouterOneWaySpeedSender(probeVirtualRouterReversePath(msg.Path), msg, probeVirtualRouterSpeedTestMaxDuration); err != nil {
+				response := msg
+				response.OK = false
+				response.Error = strings.TrimSpace(err.Error())
+				response.Responder = localNodeID
+				response.Path = probeVirtualRouterReversePath(msg.Path)
+				_ = forwardProbeVirtualRouterSpeedControlAlongPath(probeVirtualRouterControlTypeSpeedResult, response, response.Path)
+			}
+		}()
+		return nil
+	default:
+		return fmt.Errorf("unsupported virtual router speed control type=%s", controlType)
+	}
+}
+
+func handleProbeVirtualRouterControlSpeedChunk(runtime *probeChainRuntime, controlType string, payload []byte, framePath []string) error {
+	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+	path := cleanProbeVirtualRouterPath(framePath)
+	if localNodeID == "" || len(path) < 2 {
+		return errors.New("virtual router speed chunk path is incomplete")
+	}
+	if localNodeID != path[len(path)-1] {
+		return forwardProbeVirtualRouterRawControlAlongPath(controlType, payload, path)
+	}
+	requestID, ok := parseProbeVirtualRouterSpeedChunkRequestID(payload)
+	if !ok {
+		return errors.New("invalid virtual router speed chunk payload")
+	}
+	recordProbeVirtualRouterSpeedChunk(requestID, int64(len(payload)))
+	return nil
+}
+
+func startProbeVirtualRouterSpeedReceive(msg probeVirtualRouterSpeedTestResultPayload, localNodeID string) {
+	now := time.Now()
+	session := &probeVirtualRouterSpeedReceiveSession{
+		RequestID:    strings.TrimSpace(msg.RequestID),
+		Direction:    strings.TrimSpace(msg.Direction),
+		SourceNodeID: normalizeProbeChainNodeID(msg.SourceNodeID),
+		TargetNodeID: normalizeProbeChainNodeID(msg.TargetNodeID),
+		ResultNodeID: normalizeProbeChainNodeID(firstNonEmpty(msg.ResultNodeID, msg.SourceNodeID)),
+		Path:         append([]string(nil), msg.Path...),
+		LastAt:       now,
+	}
+	if session.ResultNodeID == "" {
+		session.ResultNodeID = normalizeProbeChainNodeID(localNodeID)
+	}
+	probeVirtualRouterSpeedReceiveState.mu.Lock()
+	if probeVirtualRouterSpeedReceiveState.sessions == nil {
+		probeVirtualRouterSpeedReceiveState.sessions = make(map[string]*probeVirtualRouterSpeedReceiveSession)
+	}
+	for key, item := range probeVirtualRouterSpeedReceiveState.sessions {
+		if item == nil || (!item.LastAt.IsZero() && now.Sub(item.LastAt) > time.Minute) {
+			delete(probeVirtualRouterSpeedReceiveState.sessions, key)
+		}
+	}
+	probeVirtualRouterSpeedReceiveState.sessions[session.RequestID] = session
+	probeVirtualRouterSpeedReceiveState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterSpeedChunk(requestID string, bytes int64) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" || bytes <= 0 {
+		return
+	}
+	now := time.Now()
+	probeVirtualRouterSpeedReceiveState.mu.Lock()
+	session := probeVirtualRouterSpeedReceiveState.sessions[requestID]
+	if session == nil {
+		session = &probeVirtualRouterSpeedReceiveSession{RequestID: requestID, LastAt: now}
+		if probeVirtualRouterSpeedReceiveState.sessions == nil {
+			probeVirtualRouterSpeedReceiveState.sessions = make(map[string]*probeVirtualRouterSpeedReceiveSession)
+		}
+		probeVirtualRouterSpeedReceiveState.sessions[requestID] = session
+	}
+	if session.Frames == 0 || session.StartedAt.IsZero() {
+		session.StartedAt = now
+	}
+	session.LastAt = now
+	session.Bytes += bytes
+	session.Frames++
+	probeVirtualRouterSpeedReceiveState.mu.Unlock()
+}
+
+func finishProbeVirtualRouterSpeedReceive(msg probeVirtualRouterSpeedTestResultPayload, localNodeID string) probeVirtualRouterSpeedTestResultPayload {
+	now := time.Now()
+	requestID := strings.TrimSpace(msg.RequestID)
+	probeVirtualRouterSpeedReceiveState.mu.Lock()
+	session := probeVirtualRouterSpeedReceiveState.sessions[requestID]
+	if session != nil {
+		delete(probeVirtualRouterSpeedReceiveState.sessions, requestID)
+	}
+	probeVirtualRouterSpeedReceiveState.mu.Unlock()
+	result := msg
+	result.OK = true
+	result.Error = ""
+	result.Responder = normalizeProbeChainNodeID(localNodeID)
+	if session != nil {
+		result.Bytes = session.Bytes
+		result.Frames = session.Frames
+		if !session.StartedAt.IsZero() && session.Frames > 0 {
+			result.DurationMS = probeDurationMilliseconds(now.Sub(session.StartedAt))
+			if result.DurationMS <= 0 {
+				result.DurationMS = 1
+			}
+		}
+		result.Mbps = probeVirtualRouterSpeedMbps(result.Bytes, result.DurationMS)
+		if result.ResultNodeID == "" {
+			result.ResultNodeID = session.ResultNodeID
+		}
+	}
+	if result.ResultNodeID == "" {
+		result.ResultNodeID = normalizeProbeChainNodeID(firstNonEmpty(msg.ResultNodeID, msg.SourceNodeID))
+	}
+	return result
+}
+
+func forwardProbeVirtualRouterSpeedControlAlongPath(controlType string, msg probeVirtualRouterSpeedTestResultPayload, path []string) error {
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return forwardProbeVirtualRouterRawControlAlongPath(controlType, payload, path)
+}
+
+func forwardProbeVirtualRouterRawControlAlongPath(controlType string, payload []byte, path []string) error {
+	return forwardProbeVirtualRouterControlAlongPath(controlType, payload, path)
 }
 
 func queryProbeVirtualRouterAdjacentPing(rt *probeChainRuntime, direction string, targetNodeID string) (probeVirtualRouterControlProbePayload, error) {
@@ -2409,6 +2668,224 @@ func queryProbeVirtualRouterPathRTTControl(path []string) (probeVirtualRouterPat
 	}, nil
 }
 
+func runProbeVirtualRouterSpeedTest(sourceNodeID string, targetNodeID string, maxBytes int64, maxDuration time.Duration) (probeVirtualRouterSpeedTestResult, probeVirtualRouterSpeedTestResult, string, error) {
+	sourceNodeID = normalizeProbeChainNodeID(sourceNodeID)
+	targetNodeID = normalizeProbeChainNodeID(targetNodeID)
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if sourceNodeID == "" {
+		sourceNodeID = localNodeID
+	}
+	if sourceNodeID == "" || targetNodeID == "" {
+		return probeVirtualRouterSpeedTestResult{}, probeVirtualRouterSpeedTestResult{}, "", errors.New("source and target virtual router nodes are required")
+	}
+	if sourceNodeID != localNodeID {
+		return probeVirtualRouterSpeedTestResult{}, probeVirtualRouterSpeedTestResult{}, "", errors.New("virtual router speed test must run on the selected source node")
+	}
+	if sourceNodeID == targetNodeID {
+		return probeVirtualRouterSpeedTestResult{}, probeVirtualRouterSpeedTestResult{}, "", errors.New("source and target virtual router nodes must be different")
+	}
+	if maxBytes <= 0 || maxBytes > probeVirtualRouterSpeedTestMaxBytes {
+		maxBytes = probeVirtualRouterSpeedTestMaxBytes
+	}
+	if maxDuration <= 0 || maxDuration > probeVirtualRouterSpeedTestMaxDuration {
+		maxDuration = probeVirtualRouterSpeedTestMaxDuration
+	}
+	path := currentProbeVirtualRouterPathBetweenNodes(sourceNodeID, targetNodeID)
+	if len(path) < 2 {
+		return probeVirtualRouterSpeedTestResult{}, probeVirtualRouterSpeedTestResult{}, "", errors.New("virtual router speed test path is unavailable")
+	}
+	up, upErr := runProbeVirtualRouterOneWaySpeedTest(path, "up", sourceNodeID, targetNodeID, maxBytes, maxDuration)
+	down, downErr := runProbeVirtualRouterReverseSpeedTest(path, sourceNodeID, targetNodeID, maxBytes, maxDuration)
+	pathText := strings.Join(path, ">")
+	var err error
+	if upErr != nil && downErr != nil {
+		err = fmt.Errorf("up: %v; down: %v", upErr, downErr)
+	} else if upErr != nil {
+		err = fmt.Errorf("up: %v", upErr)
+	} else if downErr != nil {
+		err = fmt.Errorf("down: %v", downErr)
+	}
+	chainID := ""
+	if nextNodeID := probeVirtualRouterNextHopInPath(path, localNodeID); nextNodeID != "" {
+		if rt, _ := probeVirtualRouterRuntimeForAdjacentNode(nextNodeID); rt != nil {
+			chainID = strings.TrimSpace(rt.cfg.chainID)
+		}
+	}
+	recordProbeVirtualRouterRuntimeSpeedTest(chainID, sourceNodeID, targetNodeID, pathText, up, down, err)
+	return up, down, pathText, err
+}
+
+func runProbeVirtualRouterOneWaySpeedTest(path []string, directionName string, sourceNodeID string, targetNodeID string, maxBytes int64, maxDuration time.Duration) (probeVirtualRouterSpeedTestResult, error) {
+	requestID := newProbeTCPDebugFlowID("vrouter_speed_"+directionName, strings.Join(path, ">"))
+	waiter := registerProbeVirtualRouterSpeedResponse(requestID)
+	defer unregisterProbeVirtualRouterSpeedResponse(requestID)
+	msg := probeVirtualRouterSpeedTestResultPayload{
+		RequestID:         requestID,
+		Direction:         directionName,
+		SourceNodeID:      sourceNodeID,
+		TargetNodeID:      targetNodeID,
+		ResultNodeID:      sourceNodeID,
+		Path:              append([]string(nil), path...),
+		MaxBytes:          maxBytes,
+		MaxDurationMS:     probeDurationMilliseconds(maxDuration),
+		CreatedAtUnixNano: time.Now().UnixNano(),
+	}
+	if err := runProbeVirtualRouterOneWaySpeedSender(path, msg, maxDuration); err != nil {
+		return probeVirtualRouterSpeedTestResult{OK: false, Error: err.Error()}, err
+	}
+	response, err := waitProbeVirtualRouterSpeedResponse(waiter, maxDuration+10*time.Second)
+	if err != nil {
+		return probeVirtualRouterSpeedTestResult{OK: false, Error: err.Error()}, err
+	}
+	result := probeVirtualRouterSpeedTestResult{
+		OK:         response.OK,
+		Error:      strings.TrimSpace(response.Error),
+		Bytes:      response.Bytes,
+		Frames:     response.Frames,
+		DurationMS: response.DurationMS,
+		Mbps:       response.Mbps,
+	}
+	if !response.OK && result.Error == "" {
+		result.Error = "virtual router speed test failed"
+	}
+	return result, nil
+}
+
+func runProbeVirtualRouterReverseSpeedTest(path []string, sourceNodeID string, targetNodeID string, maxBytes int64, maxDuration time.Duration) (probeVirtualRouterSpeedTestResult, error) {
+	requestID := newProbeTCPDebugFlowID("vrouter_speed_down", strings.Join(path, ">"))
+	waiter := registerProbeVirtualRouterSpeedResponse(requestID)
+	defer unregisterProbeVirtualRouterSpeedResponse(requestID)
+	msg := probeVirtualRouterSpeedTestResultPayload{
+		RequestID:         requestID,
+		Direction:         "down",
+		SourceNodeID:      sourceNodeID,
+		TargetNodeID:      targetNodeID,
+		ResultNodeID:      sourceNodeID,
+		Path:              append([]string(nil), path...),
+		MaxBytes:          maxBytes,
+		MaxDurationMS:     probeDurationMilliseconds(maxDuration),
+		CreatedAtUnixNano: time.Now().UnixNano(),
+	}
+	if err := forwardProbeVirtualRouterSpeedControlAlongPath(probeVirtualRouterControlTypeSpeedSend, msg, path); err != nil {
+		return probeVirtualRouterSpeedTestResult{OK: false, Error: err.Error()}, err
+	}
+	response, err := waitProbeVirtualRouterSpeedResponse(waiter, maxDuration+10*time.Second)
+	if err != nil {
+		return probeVirtualRouterSpeedTestResult{OK: false, Error: err.Error()}, err
+	}
+	result := probeVirtualRouterSpeedTestResult{
+		OK:         response.OK,
+		Error:      strings.TrimSpace(response.Error),
+		Bytes:      response.Bytes,
+		Frames:     response.Frames,
+		DurationMS: response.DurationMS,
+		Mbps:       response.Mbps,
+	}
+	if !response.OK && result.Error == "" {
+		result.Error = "virtual router speed test failed"
+	}
+	return result, nil
+}
+
+func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRouterSpeedTestResultPayload, maxDuration time.Duration) error {
+	cleanPath := cleanProbeVirtualRouterPath(path)
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if localNodeID == "" || len(cleanPath) < 2 || cleanPath[0] != localNodeID {
+		return errors.New("virtual router speed sender path must start at local node")
+	}
+	nextNodeID := probeVirtualRouterNextHopInPath(cleanPath, localNodeID)
+	if nextNodeID == "" {
+		return errors.New("next virtual router speed hop is unavailable")
+	}
+	rt, direction := probeVirtualRouterRuntimeForAdjacentNode(nextNodeID)
+	if rt == nil {
+		return errors.New("adjacent virtual router speed runtime is unavailable")
+	}
+	link, err := ensureProbeVirtualRouterFrameLink(rt, direction, "", cleanPath)
+	if err != nil {
+		return err
+	}
+	msg.Path = cleanPath
+	msg.MaxBytes = normalizeProbeVirtualRouterSpeedMaxBytes(msg.MaxBytes)
+	if maxDuration <= 0 || maxDuration > probeVirtualRouterSpeedTestMaxDuration {
+		maxDuration = probeVirtualRouterSpeedTestMaxDuration
+	}
+	if msg.MaxDurationMS <= 0 {
+		msg.MaxDurationMS = probeDurationMilliseconds(maxDuration)
+	}
+	startPayload, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	if err := enqueueProbeVirtualRouterControlFrameUntil(link, probeVirtualRouterControlTypeSpeedStart, startPayload, cleanPath, time.Now().Add(2*time.Second)); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(maxDuration)
+	var sentBytes int64
+	var frames int64
+	for sentBytes < msg.MaxBytes && time.Now().Before(deadline) {
+		size := int64(probeVirtualRouterSpeedTestChunkBytes)
+		if remain := msg.MaxBytes - sentBytes; remain < size {
+			size = remain
+		}
+		payload := buildProbeVirtualRouterSpeedChunkPayload(msg.RequestID, int(size))
+		if err := enqueueProbeVirtualRouterControlFrameUntil(link, probeVirtualRouterControlTypeSpeedChunk, payload, cleanPath, deadline); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				break
+			}
+			return err
+		}
+		sentBytes += int64(len(payload))
+		frames++
+	}
+	msg.Bytes = sentBytes
+	msg.Frames = frames
+	finishPayload, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return enqueueProbeVirtualRouterControlFrameUntil(link, probeVirtualRouterControlTypeSpeedFinish, finishPayload, cleanPath, time.Now().Add(2*time.Second))
+}
+
+func normalizeProbeVirtualRouterSpeedMaxBytes(value int64) int64 {
+	if value <= 0 || value > probeVirtualRouterSpeedTestMaxBytes {
+		return probeVirtualRouterSpeedTestMaxBytes
+	}
+	return value
+}
+
+func buildProbeVirtualRouterSpeedChunkPayload(requestID string, size int) []byte {
+	requestID = strings.TrimSpace(requestID)
+	headerSize := 6 + len(requestID)
+	if size < headerSize {
+		size = headerSize
+	}
+	payload := make([]byte, size)
+	copy(payload[0:4], []byte("VRS1"))
+	binary.BigEndian.PutUint16(payload[4:6], uint16(len(requestID)))
+	copy(payload[6:6+len(requestID)], []byte(requestID))
+	return payload
+}
+
+func parseProbeVirtualRouterSpeedChunkRequestID(payload []byte) (string, bool) {
+	if len(payload) < 6 || string(payload[0:4]) != "VRS1" {
+		return "", false
+	}
+	size := int(binary.BigEndian.Uint16(payload[4:6]))
+	if size <= 0 || 6+size > len(payload) {
+		return "", false
+	}
+	requestID := strings.TrimSpace(string(payload[6 : 6+size]))
+	return requestID, requestID != ""
+}
+
+func probeVirtualRouterSpeedMbps(bytes int64, durationMS int64) float64 {
+	if bytes <= 0 || durationMS <= 0 {
+		return 0
+	}
+	return float64(bytes*8) / (float64(durationMS) / 1000) / 1000 / 1000
+}
+
 func forwardProbeVirtualRouterControlAlongPath(controlType string, payload []byte, path []string) error {
 	cleanPath := cleanProbeVirtualRouterPath(path)
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
@@ -2440,6 +2917,36 @@ func enqueueProbeVirtualRouterControlFrame(link *probeVirtualRouterFrameLink, co
 		Payload:     append([]byte(nil), payload...),
 		Path:        cleanProbeVirtualRouterPath(path),
 	})
+}
+
+func enqueueProbeVirtualRouterControlFrameUntil(link *probeVirtualRouterFrameLink, controlType string, payload []byte, path []string, deadline time.Time) error {
+	if link == nil {
+		return errors.New("virtual router physical carrier is unavailable")
+	}
+	if link.tx == nil || link.done == nil {
+		return enqueueProbeVirtualRouterControlFrame(link, controlType, payload, path)
+	}
+	frame := probeVirtualRouterFrameMessage{
+		FrameType:   probeVirtualRouterFrameTypeControl,
+		ControlType: strings.TrimSpace(controlType),
+		Payload:     append([]byte(nil), payload...),
+		Path:        cleanProbeVirtualRouterPath(path),
+	}
+	wait := time.Until(deadline)
+	if wait <= 0 {
+		return os.ErrDeadlineExceeded
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case link.tx <- frame:
+		link.touch()
+		return nil
+	case <-link.done:
+		return io.ErrClosedPipe
+	case <-timer.C:
+		return os.ErrDeadlineExceeded
+	}
 }
 
 func registerProbeVirtualRouterControlResponse(requestID string) chan probeVirtualRouterControlProbePayload {
@@ -2489,6 +2996,62 @@ func completeProbeVirtualRouterControlResponse(msg probeVirtualRouterControlProb
 	probeVirtualRouterControlResponseState.mu.Lock()
 	ch := probeVirtualRouterControlResponseState.pending[requestID]
 	probeVirtualRouterControlResponseState.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- msg:
+	default:
+	}
+}
+
+func registerProbeVirtualRouterSpeedResponse(requestID string) chan probeVirtualRouterSpeedTestResultPayload {
+	requestID = strings.TrimSpace(requestID)
+	ch := make(chan probeVirtualRouterSpeedTestResultPayload, 1)
+	if requestID == "" {
+		return ch
+	}
+	probeVirtualRouterSpeedResponseState.mu.Lock()
+	if probeVirtualRouterSpeedResponseState.pending == nil {
+		probeVirtualRouterSpeedResponseState.pending = make(map[string]chan probeVirtualRouterSpeedTestResultPayload)
+	}
+	probeVirtualRouterSpeedResponseState.pending[requestID] = ch
+	probeVirtualRouterSpeedResponseState.mu.Unlock()
+	return ch
+}
+
+func unregisterProbeVirtualRouterSpeedResponse(requestID string) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	probeVirtualRouterSpeedResponseState.mu.Lock()
+	delete(probeVirtualRouterSpeedResponseState.pending, requestID)
+	probeVirtualRouterSpeedResponseState.mu.Unlock()
+}
+
+func waitProbeVirtualRouterSpeedResponse(ch chan probeVirtualRouterSpeedTestResultPayload, timeout time.Duration) (probeVirtualRouterSpeedTestResultPayload, error) {
+	if ch == nil {
+		return probeVirtualRouterSpeedTestResultPayload{}, errors.New("virtual router speed response waiter is nil")
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case response := <-ch:
+		return response, nil
+	case <-timer.C:
+		return probeVirtualRouterSpeedTestResultPayload{}, errors.New("virtual router speed response timeout")
+	}
+}
+
+func completeProbeVirtualRouterSpeedResponse(msg probeVirtualRouterSpeedTestResultPayload) {
+	requestID := strings.TrimSpace(msg.RequestID)
+	if requestID == "" {
+		return
+	}
+	probeVirtualRouterSpeedResponseState.mu.Lock()
+	ch := probeVirtualRouterSpeedResponseState.pending[requestID]
+	probeVirtualRouterSpeedResponseState.mu.Unlock()
 	if ch == nil {
 		return
 	}
@@ -2562,9 +3125,13 @@ func handleProbeVirtualRouterIPFrame(runtime *probeChainRuntime, link *probeVirt
 		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 			if info.Kind == "echo_reply" {
 				trace = appendProbeVirtualRouterICMPTrace(trace, runtime, "local_deliver", "", "")
-				log.Printf("probe virtual router icmp local deliver ok: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s write_ms=%d bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, probeDurationMilliseconds(time.Since(deliverStartedAt)), len(packet))
-				logProbeVirtualRouterICMPTraceComplete(runtime, info, trace)
-				recordProbeVirtualRouterICMPPingReply(runtime, info)
+				log.Printf("probe virtual router icmp local deliver ok: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s write_ms=%d bytes=%d trace_hops=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, probeDurationMilliseconds(time.Since(deliverStartedAt)), len(packet), len(trace))
+				summary, completed := recordProbeVirtualRouterICMPPingReply(runtime, info)
+				if completed {
+					logProbeVirtualRouterICMPPingSummary(runtime, info, trace, summary)
+				} else {
+					logProbeVirtualRouterICMPTraceComplete(runtime, info, trace)
+				}
 			} else {
 				log.Printf("probe virtual router icmp local deliver ok: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s write_ms=%d bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, probeDurationMilliseconds(time.Since(deliverStartedAt)), len(packet))
 			}
@@ -2983,10 +3550,10 @@ func recordProbeVirtualRouterICMPPingStart(info probeVirtualRouterICMPEchoLogInf
 	log.Printf("probe virtual router icmp virtual ping start: src=%s dst=%s id=%d seq=%d path=%s", info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(path, ">"))
 }
 
-func recordProbeVirtualRouterICMPPingReply(rt *probeChainRuntime, info probeVirtualRouterICMPEchoLogInfo) {
+func recordProbeVirtualRouterICMPPingReply(rt *probeChainRuntime, info probeVirtualRouterICMPEchoLogInfo) (probeVirtualRouterICMPPingCompleteSummary, bool) {
 	key := probeVirtualRouterICMPPingKey(info.DestinationIP, info.SourceIP, info.ID, info.Sequence)
 	if key == "" {
-		return
+		return probeVirtualRouterICMPPingCompleteSummary{}, false
 	}
 	probeVirtualRouterICMPPingState.mu.Lock()
 	pending, ok := probeVirtualRouterICMPPingState.pending[key]
@@ -2995,9 +3562,10 @@ func recordProbeVirtualRouterICMPPingReply(rt *probeChainRuntime, info probeVirt
 	}
 	probeVirtualRouterICMPPingState.mu.Unlock()
 	if !ok || pending.StartedAt.IsZero() {
-		return
+		return probeVirtualRouterICMPPingCompleteSummary{}, false
 	}
 	latency := time.Since(pending.StartedAt)
+	latencyMS := probeDurationMilliseconds(latency)
 	chainID := ""
 	if rt != nil {
 		chainID = strings.TrimSpace(rt.cfg.chainID)
@@ -3006,7 +3574,7 @@ func recordProbeVirtualRouterICMPPingReply(rt *probeChainRuntime, info probeVirt
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
 		item.VirtualPingCount++
-		item.LastVirtualPingLatencyMS = probeDurationMilliseconds(latency)
+		item.LastVirtualPingLatencyMS = latencyMS
 		item.LastVirtualPingAt = time.Now().UTC().Format(time.RFC3339)
 		item.LastVirtualPingSourceIP = pending.SourceIP
 		item.LastVirtualPingDestIP = pending.DestinationIP
@@ -3015,7 +3583,15 @@ func recordProbeVirtualRouterICMPPingReply(rt *probeChainRuntime, info probeVirt
 		item.LastVirtualPingPath = pending.Path
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
-	log.Printf("probe virtual router icmp virtual ping complete: chain=%s src=%s dst=%s id=%d seq=%d latency_ms=%d path=%s", chainID, pending.SourceIP, pending.DestinationIP, pending.ID, pending.Sequence, probeDurationMilliseconds(latency), pending.Path)
+	log.Printf("probe virtual router icmp virtual ping complete: chain=%s src=%s dst=%s id=%d seq=%d latency_ms=%d path=%s", chainID, pending.SourceIP, pending.DestinationIP, pending.ID, pending.Sequence, latencyMS, pending.Path)
+	return probeVirtualRouterICMPPingCompleteSummary{
+		SourceIP:      pending.SourceIP,
+		DestinationIP: pending.DestinationIP,
+		ID:            pending.ID,
+		Sequence:      pending.Sequence,
+		Path:          pending.Path,
+		LatencyMS:     latencyMS,
+	}, true
 }
 
 func logProbeVirtualRouterICMPTraceComplete(rt *probeChainRuntime, info probeVirtualRouterICMPEchoLogInfo, trace []probeVirtualRouterFrameTraceHop) {
@@ -3027,6 +3603,24 @@ func logProbeVirtualRouterICMPTraceComplete(rt *probeChainRuntime, info probeVir
 		chainID = strings.TrimSpace(rt.cfg.chainID)
 	}
 	log.Printf("probe virtual router icmp trace complete: chain=%s kind=%s src=%s dst=%s id=%d seq=%d hops=%d trace_clock=node_local_absolute trace=%s", chainID, info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, len(trace), probeVirtualRouterICMPTraceString(trace))
+}
+
+func logProbeVirtualRouterICMPPingSummary(rt *probeChainRuntime, info probeVirtualRouterICMPEchoLogInfo, trace []probeVirtualRouterFrameTraceHop, summary probeVirtualRouterICMPPingCompleteSummary) {
+	chainID := ""
+	if rt != nil {
+		chainID = strings.TrimSpace(rt.cfg.chainID)
+	}
+	traceText := probeVirtualRouterICMPTraceString(trace)
+	if strings.TrimSpace(traceText) == "" {
+		traceText = "-"
+	}
+	sourceIP := firstNonEmpty(summary.SourceIP, info.DestinationIP)
+	destinationIP := firstNonEmpty(summary.DestinationIP, info.SourceIP)
+	path := strings.TrimSpace(summary.Path)
+	if path == "" {
+		path = "-"
+	}
+	log.Printf("probe virtual router icmp virtual ping summary: chain=%s kind=%s src=%s dst=%s id=%d seq=%d latency_ms=%d path=%s trace_hops=%d trace_clock=node_local_absolute trace=%s", chainID, info.Kind, sourceIP, destinationIP, summary.ID, summary.Sequence, summary.LatencyMS, path, len(trace), traceText)
 }
 
 func recordProbeVirtualRouterRuntimeDeliveryError(rt *probeChainRuntime, err error) {
@@ -3168,6 +3762,70 @@ func recordProbeVirtualRouterRuntimeRemoteRTTError(chainID string, err error) {
 	if shouldClearRouteCache {
 		clearProbeVirtualRouterRouteCache("remote rtt query error")
 	}
+}
+
+func recordProbeVirtualRouterRuntimeSpeedTest(chainID string, sourceNodeID string, targetNodeID string, pathText string, up probeVirtualRouterSpeedTestResult, down probeVirtualRouterSpeedTestResult, resultErr error) {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return
+	}
+	errText := ""
+	if resultErr != nil {
+		errText = strings.TrimSpace(resultErr.Error())
+	}
+	if up.Error != "" {
+		errText = firstNonEmpty(errText, "up: "+strings.TrimSpace(up.Error))
+	}
+	if down.Error != "" {
+		errText = firstNonEmpty(errText, "down: "+strings.TrimSpace(down.Error))
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.LastSpeedTestAt = time.Now().UTC().Format(time.RFC3339)
+		item.LastSpeedTestSourceNodeID = normalizeProbeChainNodeID(sourceNodeID)
+		item.LastSpeedTestTargetNodeID = normalizeProbeChainNodeID(targetNodeID)
+		item.LastSpeedTestPath = strings.TrimSpace(pathText)
+		item.LastSpeedTestError = errText
+		item.LastSpeedTestUpBytes = up.Bytes
+		item.LastSpeedTestUpFrames = up.Frames
+		item.LastSpeedTestUpDurationMS = up.DurationMS
+		item.LastSpeedTestUpMbps = up.Mbps
+		item.LastSpeedTestDownBytes = down.Bytes
+		item.LastSpeedTestDownFrames = down.Frames
+		item.LastSpeedTestDownDurationMS = down.DurationMS
+		item.LastSpeedTestDownMbps = down.Mbps
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func recordProbeVirtualRouterRuntimeSpeedTestReceive(chainID string, result probeVirtualRouterSpeedTestResultPayload) {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
+	if item != nil {
+		item.LastSpeedTestAt = time.Now().UTC().Format(time.RFC3339)
+		item.LastSpeedTestSourceNodeID = normalizeProbeChainNodeID(result.SourceNodeID)
+		item.LastSpeedTestTargetNodeID = normalizeProbeChainNodeID(result.TargetNodeID)
+		item.LastSpeedTestPath = strings.Join(cleanProbeVirtualRouterPath(result.Path), ">")
+		item.LastSpeedTestError = strings.TrimSpace(result.Error)
+		switch strings.TrimSpace(result.Direction) {
+		case "down":
+			item.LastSpeedTestDownBytes = result.Bytes
+			item.LastSpeedTestDownFrames = result.Frames
+			item.LastSpeedTestDownDurationMS = result.DurationMS
+			item.LastSpeedTestDownMbps = result.Mbps
+		default:
+			item.LastSpeedTestUpBytes = result.Bytes
+			item.LastSpeedTestUpFrames = result.Frames
+			item.LastSpeedTestUpDurationMS = result.DurationMS
+			item.LastSpeedTestUpMbps = result.Mbps
+		}
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 }
 
 func normalizeProbeVirtualRouterBridgeError(value string) string {

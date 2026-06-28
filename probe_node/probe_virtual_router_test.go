@@ -190,6 +190,51 @@ func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T
 	}
 }
 
+func TestProbeVirtualRouterICMPTraceUsesLocalNodeWhenRuntimeNil(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.localNodeID = "16"
+	probeVirtualRouterState.mu.Unlock()
+
+	trace := appendProbeVirtualRouterICMPTrace(nil, nil, "tun_rx", "", "")
+	if len(trace) != 1 {
+		t.Fatalf("trace hops=%d, want 1", len(trace))
+	}
+	if trace[0].NodeID != "16" || trace[0].Event != "tun_rx" || trace[0].UnixNano <= 0 {
+		t.Fatalf("unexpected trace hop: %+v", trace[0])
+	}
+}
+
+func TestProbeVirtualRouterICMPTraceEnvelopeRoundTrip(t *testing.T) {
+	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{
+		chainID:  "vrouter-test",
+		identity: nodeIdentity{NodeID: "16"},
+	}}
+	trace := appendProbeVirtualRouterICMPTrace(nil, rt, "frame_rx", "", "")
+	trace = appendProbeVirtualRouterICMPTrace(trace, rt, "local_deliver", "", "")
+	frame := probeVirtualRouterFrameMessage{
+		FrameType:   probeVirtualRouterFrameTypeData,
+		ControlType: probeVirtualRouterControlTypeIPv4,
+		Payload:     buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.21", "198.18.0.18"),
+		Path:        []string{"19", "16"},
+		Trace:       trace,
+	}
+	raw, err := marshalProbeVirtualRouterFrameEnvelope(frame)
+	if err != nil {
+		t.Fatalf("marshal frame: %v", err)
+	}
+	got, err := unmarshalProbeVirtualRouterFrameEnvelope(raw, nil)
+	if err != nil {
+		t.Fatalf("unmarshal frame: %v", err)
+	}
+	if len(got.Trace) != 2 {
+		t.Fatalf("trace hops=%d, want 2: %+v", len(got.Trace), got.Trace)
+	}
+	if got.Trace[0].Event != "frame_rx" || got.Trace[1].Event != "local_deliver" {
+		t.Fatalf("unexpected trace events: %+v", got.Trace)
+	}
+}
+
 func TestProbeVirtualRouterRuntimeFrameStatsAreDirectional(t *testing.T) {
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	oldItems := probeVirtualRouterRuntimeStatsState.items
