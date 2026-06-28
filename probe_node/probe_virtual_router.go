@@ -1499,6 +1499,62 @@ func probeVirtualRouterICMPTraceString(trace []probeVirtualRouterFrameTraceHop) 
 	return strings.Join(parts, " | ")
 }
 
+func probeVirtualRouterFrameTraceElapsedMS(trace []probeVirtualRouterFrameTraceHop) (int64, int64) {
+	var first int64
+	var prev int64
+	var last int64
+	for _, hop := range trace {
+		clean := probeVirtualRouterCleanFrameTraceHop(hop)
+		if clean.ID == "" || clean.NodeID == "" || clean.Event == "" || clean.UnixNano <= 0 {
+			continue
+		}
+		if first == 0 {
+			first = clean.UnixNano
+		}
+		prev = last
+		last = clean.UnixNano
+	}
+	total := int64(0)
+	if first > 0 && last >= first {
+		total = (last - first) / int64(time.Millisecond)
+	}
+	delta := int64(0)
+	if prev > 0 && last >= prev {
+		delta = (last - prev) / int64(time.Millisecond)
+	}
+	return total, delta
+}
+
+func logProbeVirtualRouterICMPCarrierTX(runtime *probeChainRuntime, token *probeVirtualRouterPhysicalCarrier, frame probeVirtualRouterFrameMessage, writeDuration time.Duration) {
+	info, ok := probeVirtualRouterParseICMPEchoLogInfo(frame.Payload)
+	if !ok {
+		return
+	}
+	totalMS, deltaMS := probeVirtualRouterFrameTraceElapsedMS(frame.Trace)
+	sessionID := ""
+	remote := ""
+	if token != nil {
+		sessionID = strings.TrimSpace(token.sessionID)
+		remote = strings.TrimSpace(token.remoteAddr)
+	}
+	log.Printf("probe virtual router icmp carrier tx: chain=%s session_id=%s remote=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s trace_total_ms=%d trace_delta_ms=%d write_ms=%d bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), sessionID, remote, info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(frame.Path, ">"), totalMS, deltaMS, probeDurationMilliseconds(writeDuration), len(frame.Payload))
+}
+
+func logProbeVirtualRouterICMPCarrierRX(runtime *probeChainRuntime, token *probeVirtualRouterPhysicalCarrier, frame probeVirtualRouterFrameMessage) {
+	info, ok := probeVirtualRouterParseICMPEchoLogInfo(frame.Payload)
+	if !ok {
+		return
+	}
+	totalMS, deltaMS := probeVirtualRouterFrameTraceElapsedMS(frame.Trace)
+	sessionID := ""
+	remote := ""
+	if token != nil {
+		sessionID = strings.TrimSpace(token.sessionID)
+		remote = strings.TrimSpace(token.remoteAddr)
+	}
+	log.Printf("probe virtual router icmp carrier rx: chain=%s session_id=%s remote=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s trace_total_ms=%d trace_delta_ms=%d bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), sessionID, remote, info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(frame.Path, ">"), totalMS, deltaMS, len(frame.Payload))
+}
+
 func parseProbeVirtualRouterPathText(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1978,12 +2034,17 @@ func (s *probeVirtualRouterFrameLink) EnqueueProbeVirtualRouterFrame(input probe
 		if err != nil {
 			return err
 		}
+		if _, ok := probeVirtualRouterParseICMPEchoLogInfo(frame.Payload); ok {
+			frame.Trace = appendProbeVirtualRouterICMPTrace(frame.Trace, s.runtime, "carrier_tx", "", "")
+		}
+		writeStartedAt := time.Now()
 		if err := writeProbeVirtualRouterFrameRaw(token.conn, frame); err != nil {
 			s.detachCarrier(token)
 			return err
 		}
 		token.markWrite()
 		s.touch()
+		logProbeVirtualRouterICMPCarrierTX(s.runtime, token, frame, time.Since(writeStartedAt))
 		return nil
 	}
 	select {
@@ -2012,10 +2073,15 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 				if err != nil {
 					return
 				}
+				if _, ok := probeVirtualRouterParseICMPEchoLogInfo(frame.Payload); ok {
+					frame.Trace = appendProbeVirtualRouterICMPTrace(frame.Trace, s.runtime, "carrier_tx", "", "")
+				}
+				writeStartedAt := time.Now()
 				err = writeProbeVirtualRouterFrameRaw(token.conn, frame)
 				if err == nil {
 					token.markWrite()
 					s.touch()
+					logProbeVirtualRouterICMPCarrierTX(s.runtime, token, frame, time.Since(writeStartedAt))
 					break
 				}
 				log.Printf("probe virtual router frame tx carrier failed: chain=%s key=%s path=%s err=%v", probeVirtualRouterRuntimeLogChainID(s.runtime), s.key, strings.Join(frame.Path, ">"), err)
@@ -2043,7 +2109,11 @@ func (s *probeVirtualRouterFrameLink) runRXWorker() {
 				s.detachCarrier(token)
 				break
 			}
+			if _, ok := probeVirtualRouterParseICMPEchoLogInfo(frame.Payload); ok {
+				frame.Trace = appendProbeVirtualRouterICMPTrace(frame.Trace, s.runtime, "carrier_rx", "", "")
+			}
 			token.markRead()
+			logProbeVirtualRouterICMPCarrierRX(s.runtime, token, frame)
 			select {
 			case s.rx <- frame:
 				s.touch()
@@ -2541,6 +2611,7 @@ func handleProbeVirtualRouterIPFrame(runtime *probeChainRuntime, link *probeVirt
 			recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
 			return nil
 		}
+		deliverStartedAt := time.Now()
 		if err := writeProbeVirtualRouterLocalTUNPacket(packet); err != nil {
 			recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)
 			if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
@@ -2552,11 +2623,14 @@ func handleProbeVirtualRouterIPFrame(runtime *probeChainRuntime, link *probeVirt
 			return err
 		}
 		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
-			log.Printf("probe virtual router icmp local deliver ok: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, len(packet))
 			if info.Kind == "echo_reply" {
 				trace = appendProbeVirtualRouterICMPTrace(trace, runtime, "local_deliver", "", "")
+				totalMS, deltaMS := probeVirtualRouterFrameTraceElapsedMS(trace)
+				log.Printf("probe virtual router icmp local deliver ok: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s trace_total_ms=%d trace_delta_ms=%d write_ms=%d bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, totalMS, deltaMS, probeDurationMilliseconds(time.Since(deliverStartedAt)), len(packet))
 				logProbeVirtualRouterICMPTraceComplete(runtime, info, trace)
 				recordProbeVirtualRouterICMPPingReply(runtime, info)
+			} else {
+				log.Printf("probe virtual router icmp local deliver ok: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s write_ms=%d bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, probeDurationMilliseconds(time.Since(deliverStartedAt)), len(packet))
 			}
 		}
 		if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
@@ -2648,10 +2722,10 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	recordProbeVirtualRouterRuntimeFrameSent(rt, len(packet))
 	recordProbeVirtualRouterRuntimePacketForwarded(rt, len(packet))
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
-		log.Printf("probe virtual router icmp forward sent: chain=%s local_node=%s next_node=%s direction=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(rt), localNodeID, nextNodeID, direction, info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(path, ">"), len(packet))
+		log.Printf("probe virtual router icmp forward queued: chain=%s local_node=%s next_node=%s direction=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(rt), localNodeID, nextNodeID, direction, info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(path, ">"), len(packet))
 	}
 	if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
-		log.Printf("probe virtual router transport forward sent: chain=%s local_node=%s next_node=%s direction=%s proto=%s src=%s:%d dst=%s:%d path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(rt), localNodeID, nextNodeID, direction, info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, strings.Join(path, ">"), len(packet))
+		log.Printf("probe virtual router transport forward queued: chain=%s local_node=%s next_node=%s direction=%s proto=%s src=%s:%d dst=%s:%d path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(rt), localNodeID, nextNodeID, direction, info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, strings.Join(path, ">"), len(packet))
 	}
 	return nil
 }
