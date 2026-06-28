@@ -28,6 +28,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
 	setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
 	probeLocalVNetFeatureEnabled = func() bool { return true }
+	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
 	probeLocalFlushSystemDNSCache = func() error { return nil }
 	t.Cleanup(func() {
 		resetProbeLocalAuthManagerForTest()
@@ -39,6 +40,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 		resetProbeLocalUpgradeHooksForTest()
 		setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
 		probeLocalVNetFeatureEnabled = func() bool { return false }
+		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
 	})
 	return buildProbeLocalConsoleMux()
 }
@@ -852,6 +854,7 @@ func TestStartProbeLocalTUNProxyRuntimeFlushesSystemDNSCache(t *testing.T) {
 	resetProbeLocalControlStateForTest()
 	resetProbeLocalDNSServiceForTest()
 	probeLocalVNetFeatureEnabled = func() bool { return true }
+	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
 	t.Cleanup(func() {
 		stopProbeLocalProxyMonitor()
 		resetProbeLocalControlStateForTest()

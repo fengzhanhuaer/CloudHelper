@@ -278,8 +278,10 @@ func defaultProbeLocalDetectTUNInstalled() (bool, error) {
 var (
 	errProbeLocalProxyUnsupported            = errors.New("probe local proxy takeover is not supported on this platform")
 	errProbeLocalVNetFeaturePaused           = errors.New("probe local VNet/gVisor feature is paused")
+	errProbeLocalTUNLinkFeaturePaused        = errors.New("probe local TUN link feature is paused")
 	errProbeLocalTUNUnsupported              = errors.New("probe local tun install is not supported on this platform")
 	probeLocalVNetFeatureEnabled             = func() bool { return false }
+	probeLocalTUNLinkFeatureEnabled          = func() bool { return false }
 	probeLocalInstallTUNDriver               = installProbeLocalTUNDriver
 	probeLocalCheckTUNReadyAfterInstall      = probeLocalNoopPostInstallTUNReadyCheck
 	probeLocalDetectTUNInstalled             = defaultProbeLocalDetectTUNInstalled
@@ -311,6 +313,10 @@ var (
 
 func probeLocalVNetFeatureActive() bool {
 	return probeLocalVNetFeatureEnabled != nil && probeLocalVNetFeatureEnabled()
+}
+
+func probeLocalTUNLinkFeatureActive() bool {
+	return probeLocalTUNLinkFeatureEnabled != nil && probeLocalTUNLinkFeatureEnabled()
 }
 
 var probeLocalProxyStatusRefreshState = struct {
@@ -491,6 +497,10 @@ func resolveProbeLocalExplicitBypassTargetsForProxyEnable(extraSelectedChainIDs 
 }
 
 func preconnectProbeLocalTUNGroupRuntimesFromState(reason string) {
+	if !probeLocalTUNLinkFeatureActive() {
+		logProbeInfof("probe local tun group runtime preconnect skipped: reason=%s feature=paused", strings.TrimSpace(reason))
+		return
+	}
 	state, err := loadProbeLocalProxyStateFile()
 	if err != nil {
 		logProbeWarnf("probe local proxy group runtime preconnect state load failed: reason=%s err=%v", strings.TrimSpace(reason), err)
@@ -524,6 +534,16 @@ type probeLocalProxyPreconnectResult struct {
 }
 
 func preconnectProbeLocalTUNGroupRuntimesWithResult(state probeLocalProxyStateFile, reason string, resolveLatency bool) probeLocalProxyPreconnectResult {
+	if !probeLocalTUNLinkFeatureActive() {
+		return probeLocalProxyPreconnectResult{
+			Skipped: 1,
+			Ready:   false,
+			Groups: []map[string]string{{
+				"status": "skipped",
+				"error":  errProbeLocalTUNLinkFeaturePaused.Error(),
+			}},
+		}
+	}
 	seen := map[string]struct{}{}
 	result := probeLocalProxyPreconnectResult{Groups: []map[string]string{}}
 	for _, entry := range state.Groups {
@@ -1061,6 +1081,9 @@ func probeLocalTUNProxyEnabled() bool {
 }
 
 func startProbeLocalTUNProxyRuntime() error {
+	if !probeLocalTUNLinkFeatureActive() {
+		return errProbeLocalTUNLinkFeaturePaused
+	}
 	if !probeLocalVNetFeatureActive() {
 		return errProbeLocalVNetFeaturePaused
 	}
@@ -1257,7 +1280,7 @@ func (m *probeLocalControlManager) enableProxy() (probeLocalTunRuntimeState, pro
 		if errors.Is(err, errProbeLocalProxyUnsupported) {
 			status = http.StatusNotImplemented
 		}
-		if errors.Is(err, errProbeLocalVNetFeaturePaused) {
+		if errors.Is(err, errProbeLocalVNetFeaturePaused) || errors.Is(err, errProbeLocalTUNLinkFeaturePaused) {
 			status = http.StatusServiceUnavailable
 			m.proxy.Enabled = false
 			m.proxy.Mode = probeLocalProxyModeDirect
@@ -2266,11 +2289,11 @@ func normalizeProbeLocalExplicitProxyPersistentState(payload *probeLocalProxySta
 }
 
 func shouldRestoreProbeLocalProxyFromState(state probeLocalProxyStateFile) bool {
-	return probeLocalVNetFeatureActive() && state.Proxy.Enabled && strings.EqualFold(strings.TrimSpace(state.Proxy.Mode), probeLocalProxyModeTUN)
+	return probeLocalTUNLinkFeatureActive() && probeLocalVNetFeatureActive() && state.Proxy.Enabled && strings.EqualFold(strings.TrimSpace(state.Proxy.Mode), probeLocalProxyModeTUN)
 }
 
 func shouldRestoreProbeLocalTUNFromState(state probeLocalProxyStateFile) bool {
-	return state.TUN.Enabled
+	return probeLocalTUNLinkFeatureActive() && state.TUN.Enabled
 }
 
 func shouldRestoreProbeLocalExplicitProxyFromState(state probeLocalProxyStateFile) bool {
@@ -6586,6 +6609,7 @@ func resetProbeLocalControlStateForTest() {
 
 func resetProbeLocalProxyHooksForTest() {
 	probeLocalVNetFeatureEnabled = func() bool { return false }
+	probeLocalTUNLinkFeatureEnabled = func() bool { return false }
 	probeLocalApplyProxyTakeover = applyProbeLocalProxyTakeover
 	probeLocalRestoreProxyDirect = restoreProbeLocalProxyDirect
 	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass

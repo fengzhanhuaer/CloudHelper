@@ -1043,8 +1043,20 @@ func (rt *probeChainRuntime) registerUDPForward(pc net.PacketConn) {
 	rt.forwardMu.Unlock()
 }
 
+func probeChainPortForwardFeatureActive() bool {
+	return false
+}
+
 func startProbeChainPortForwardWorkers(runtime *probeChainRuntime) {
 	if runtime == nil {
+		return
+	}
+	if !probeChainPortForwardFeatureActive() {
+		log.Printf("probe chain port forward workers skipped: chain=%s reason=feature_paused", runtime.cfg.chainID)
+		return
+	}
+	if runtime.singleBridgeSessionPerRule() {
+		log.Printf("probe virtual router port forward workers skipped: chain=%s reason=virtual_router_frame_carrier", runtime.cfg.chainID)
 		return
 	}
 	total := len(runtime.cfg.portForwards)
@@ -1465,6 +1477,9 @@ func probeChainTargetPort(targetAddr string) int {
 func openProbeChainPortForwardDataStreamByDialMode(runtime *probeChainRuntime, bridgeRole string, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
 		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
+	}
+	if runtime.singleBridgeSessionPerRule() {
+		return nil, probeChainFrameStreamMonitor{}, errors.New("virtual router does not use probe chain port forward streams")
 	}
 	role := normalizeProbeChainBridgeRole(bridgeRole)
 	switch role {
@@ -3593,6 +3608,9 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 	if runtime == nil {
 		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
 	}
+	if runtime.singleBridgeSessionPerRule() {
+		return nil, probeChainFrameStreamMonitor{}, errors.New("virtual router does not use probe chain downstream streams")
+	}
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
@@ -3639,6 +3657,9 @@ func openProbeChainDownstreamStream(runtime *probeChainRuntime, preferredSession
 func openProbeChainUpstreamStream(runtime *probeChainRuntime, preferredSessionID string, timeout time.Duration, request probeChainTunnelOpenRequest) (net.Conn, probeChainFrameStreamMonitor, error) {
 	if runtime == nil {
 		return nil, probeChainFrameStreamMonitor{}, errors.New("runtime is nil")
+	}
+	if runtime.singleBridgeSessionPerRule() {
+		return nil, probeChainFrameStreamMonitor{}, errors.New("virtual router does not use probe chain upstream streams")
 	}
 	if timeout <= 0 {
 		timeout = 15 * time.Second

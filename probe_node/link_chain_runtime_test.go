@@ -133,6 +133,34 @@ func TestProbeChainVirtualRouterStreamHandlerIgnoresLegacyFrameStream(t *testing
 	}
 }
 
+func TestProbeChainVirtualRouterRejectsLegacyStreams(t *testing.T) {
+	rt := &probeChainRuntime{
+		cfg: probeChainRuntimeConfig{
+			chainID:   "vrouter-no-legacy-streams",
+			chainType: "virtual_router",
+			role:      "relay",
+		},
+		downstreamSessions: make(map[string]*probeChainBridgeSession),
+		upstreamSessions:   make(map[string]*probeChainBridgeSession),
+		stopCh:             make(chan struct{}),
+	}
+
+	timeout := 2 * time.Second
+	startedAt := time.Now()
+	if _, _, err := openProbeChainDownstreamStream(rt, "", timeout, probeChainTunnelOpenRequest{}); err == nil || !strings.Contains(err.Error(), "virtual router does not use probe chain downstream streams") {
+		t.Fatalf("downstream stream should be rejected for vRouter, err=%v", err)
+	}
+	if _, _, err := openProbeChainUpstreamStream(rt, "", timeout, probeChainTunnelOpenRequest{}); err == nil || !strings.Contains(err.Error(), "virtual router does not use probe chain upstream streams") {
+		t.Fatalf("upstream stream should be rejected for vRouter, err=%v", err)
+	}
+	if _, _, err := openProbeChainPortForwardDataStreamByDialMode(rt, probeChainBridgeRoleToNext, probeChainTunnelOpenRequest{}); err == nil || !strings.Contains(err.Error(), "virtual router does not use probe chain port forward streams") {
+		t.Fatalf("port forward stream should be rejected for vRouter, err=%v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 200*time.Millisecond {
+		t.Fatalf("vRouter legacy stream rejection should be immediate, elapsed=%s", elapsed)
+	}
+}
+
 func TestProbeChainRuntimeAllowsMultipleBridgeSessionsForNonVirtualRouter(t *testing.T) {
 	downClient, downServer := newProbeChainFrameSessionPairForTest(t)
 	defer downClient.Close()

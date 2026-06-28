@@ -310,8 +310,12 @@ func TestProbeLocalTUNGroupRuntimeFetchRemoteSpeedDebugDecodesDirectPayload(t *t
 
 func TestProbeLocalTUNGroupRuntimeOpenStreamReconnectsAfterBridgeResponseFailure(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
-	t.Cleanup(resetProbeLocalTUNGroupRuntimeRegistryForTest)
+	t.Cleanup(func() {
+		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
+		resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	})
 
 	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{{
 		ChainID:     "chain-retry",

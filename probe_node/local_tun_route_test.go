@@ -296,8 +296,12 @@ func TestShouldUseProbeLocalDNSFakeIPSkipsDirectDecision(t *testing.T) {
 
 func TestPreconnectProbeLocalTUNGroupRuntimesFromStateConnectsTunnelGroups(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
-	t.Cleanup(resetProbeLocalTUNGroupRuntimeRegistryForTest)
+	t.Cleanup(func() {
+		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
+		resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	})
 
 	if err := persistProbeProxyChainCache([]probeLinkChainServerItem{{
 		ChainID:     "chain-preconnect-1",
@@ -445,8 +449,12 @@ func TestProbeLocalTUNGroupRuntimeLatencyUsesPingPongOnly(t *testing.T) {
 }
 
 func TestProbeLocalTUNGroupRuntimeReconnectsWhenOpenFailureAndRelayProbeUnavailable(t *testing.T) {
+	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
-	t.Cleanup(resetProbeLocalTUNGroupRuntimeRegistryForTest)
+	t.Cleanup(func() {
+		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
+		resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	})
 
 	rt := &probeLocalTUNGroupRuntime{
 		Group:           "google",
@@ -514,8 +522,12 @@ func TestProbeLocalTUNGroupRuntimeReconnectsWhenOpenFailureAndRelayProbeUnavaila
 }
 
 func TestProbeLocalTUNGroupRuntimeKeepsSessionWhenOpenFailureButRelayProbeSucceeds(t *testing.T) {
+	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
-	t.Cleanup(resetProbeLocalTUNGroupRuntimeRegistryForTest)
+	t.Cleanup(func() {
+		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
+		resetProbeLocalTUNGroupRuntimeRegistryForTest()
+	})
 
 	rt := &probeLocalTUNGroupRuntime{
 		Group:           "google",

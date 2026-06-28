@@ -151,11 +151,13 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxRejectsInvalidIP(t *tes
 
 func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
 	oldStat := probeLocalLinuxStat
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand
 	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
 	t.Cleanup(func() {
+		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
 		probeLocalLinuxStat = oldStat
 		probeLocalLinuxLookPath = oldLookPath
 		probeLocalLinuxRunCommand = oldRun

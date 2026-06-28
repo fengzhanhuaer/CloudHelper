@@ -8,6 +8,9 @@ import (
 )
 
 func openProbeLocalTUNChainRelayNetConn(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string) (net.Conn, error) {
+	if !probeLocalTUNLinkFeatureActive() {
+		return nil, errProbeLocalTUNLinkFeaturePaused
+	}
 	conn, err := openProbeChainRelayNetConn(chainID, secret, relayHost, relayPort, layer, bridgeRole)
 	if err == nil || !isProbeLocalTUNUnsupportedDefaultRelayErr(layer, err) {
 		return conn, err
@@ -31,6 +34,9 @@ func openProbeLocalTUNChainRelayNetConn(chainID string, secret string, relayHost
 }
 
 func openProbeLocalTUNChainRelayNetConnForEndpoint(endpoint probeLocalTUNChainEndpoint, bridgeRole string) (net.Conn, error) {
+	if !probeLocalTUNLinkFeatureActive() {
+		return nil, errProbeLocalTUNLinkFeaturePaused
+	}
 	if !endpoint.PreserveRelayDomain {
 		return probeLocalTUNOpenChainRelayNetConn(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, bridgeRole)
 	}
@@ -61,6 +67,9 @@ func openProbeLocalTUNChainRelayNetConnForEndpoint(endpoint probeLocalTUNChainEn
 }
 
 func openProbeLocalTUNChainRelayNetConnWithResolvedHost(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	if !probeLocalTUNLinkFeatureActive() {
+		return nil, errProbeLocalTUNLinkFeaturePaused
+	}
 	return openProbeChainRelayNetConnWithResolvedHost(chainID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
 }
 
@@ -69,6 +78,12 @@ func snapshotProbeLocalTUNChainRelayProtocolState(relayHost string, relayPort in
 }
 
 func probeLocalTUNChainRelaySpeedTest(endpoint probeLocalTUNChainEndpoint, protocol string) []probeChainRelaySpeedTestResult {
+	if !probeLocalTUNLinkFeatureActive() {
+		return []probeChainRelaySpeedTestResult{{
+			Protocol: strings.TrimSpace(protocol),
+			Error:    errProbeLocalTUNLinkFeaturePaused.Error(),
+		}}
+	}
 	return probeChainRelaySpeedTestDefault(endpoint.ChainID, endpoint.ChainSecret, endpoint.EntryHost, endpoint.EntryPort, endpoint.LinkLayer, protocol, probeChainRelaySpeedTestBytes)
 }
 
