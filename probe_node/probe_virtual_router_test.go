@@ -908,6 +908,37 @@ func TestProbeVirtualRouterFrameEnvelopeCarriesTypeControlAndPath(t *testing.T) 
 	}
 }
 
+func TestProbeVirtualRouterFrameEnvelopeCarriesICMPTrace(t *testing.T) {
+	packet := []byte{0x45, 0x00, 0x00, 0x14}
+	trace := []probeVirtualRouterFrameTraceHop{
+		{ID: "trace-1", NodeID: "16", ChainID: "vrouter-a", Event: "tun_rx", UnixNano: time.Unix(0, 1000).UnixNano()},
+		{ID: "trace-2", NodeID: "19", ChainID: "vrouter-b", Event: "frame_rx", Direction: "to_prev", RemoteNode: "16", UnixNano: time.Unix(0, 2000).UnixNano()},
+	}
+	payload, err := marshalProbeVirtualRouterFrameEnvelope(probeVirtualRouterFrameMessage{
+		FrameType:   probeVirtualRouterFrameTypeData,
+		ControlType: probeVirtualRouterControlTypeIPv4,
+		Payload:     packet,
+		Path:        []string{"16", "19"},
+		Trace:       trace,
+	})
+	if err != nil {
+		t.Fatalf("marshal traced frame envelope failed: %v", err)
+	}
+	got, err := unmarshalProbeVirtualRouterFrameEnvelope(payload, nil)
+	if err != nil {
+		t.Fatalf("unmarshal traced frame envelope failed: %v", err)
+	}
+	if !reflect.DeepEqual(got.Payload, packet) || !reflect.DeepEqual(got.Path, []string{"16", "19"}) {
+		t.Fatalf("frame payload/path=%+v", got)
+	}
+	if len(got.Trace) != len(trace) {
+		t.Fatalf("trace len=%d want %d trace=%+v", len(got.Trace), len(trace), got.Trace)
+	}
+	if got.Trace[0].NodeID != "16" || got.Trace[1].RemoteNode != "16" || got.Trace[1].Direction != "to_prev" {
+		t.Fatalf("trace=%+v", got.Trace)
+	}
+}
+
 func TestProbeVirtualRouterFrameLinkTXWorkerWritesBufferedFrame(t *testing.T) {
 	left, right := net.Pipe()
 	defer right.Close()
@@ -928,7 +959,7 @@ func TestProbeVirtualRouterFrameLinkTXWorkerWritesBufferedFrame(t *testing.T) {
 
 	wantPacket := []byte{0x45, 0x00, 0x00, 0x14}
 	wantPath := []string{"16", "19"}
-	if err := writeProbeVirtualRouterIPFrame(link, wantPacket, wantPath); err != nil {
+	if err := writeProbeVirtualRouterIPFrame(link, wantPacket, wantPath, nil); err != nil {
 		t.Fatalf("enqueue frame failed: %v", err)
 	}
 	select {
@@ -954,7 +985,7 @@ func TestProbeVirtualRouterFrameLinkTXWorkerSurvivesCarrierMigration(t *testing.
 
 	wantPacket := []byte{0x45, 0x00, 0x00, 0x14}
 	wantPath := []string{"16", "19"}
-	if err := writeProbeVirtualRouterIPFrame(link, wantPacket, wantPath); err != nil {
+	if err := writeProbeVirtualRouterIPFrame(link, wantPacket, wantPath, nil); err != nil {
 		t.Fatalf("enqueue frame failed: %v", err)
 	}
 
@@ -1222,7 +1253,7 @@ func TestProbeVirtualRouterICMPEchoReplyWritesBackOnIngressLink(t *testing.T) {
 
 	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}}}
 	request := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.18", "198.18.0.21")
-	if !handleProbeVirtualRouterLocalICMPEchoRequest(rt, link, request, []string{"16", "19"}) {
+	if !handleProbeVirtualRouterLocalICMPEchoRequest(rt, link, request, []string{"16", "19"}, nil) {
 		t.Fatalf("echo request should be handled")
 	}
 	select {

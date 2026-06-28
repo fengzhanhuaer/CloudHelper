@@ -18,27 +18,27 @@ import (
 )
 
 const (
-	probeVirtualRouterDirectionForward            = "forward"
-	probeVirtualRouterDefaultServicePort          = 12040
-	probeVirtualRouterFrameEnvelopeMagic          = 0x56524632
-	probeVirtualRouterFrameEnvelopeHeaderSize     = 12
-	probeVirtualRouterFrameMaxBytes               = 65536
-	probeVirtualRouterFrameTypeData               = "data"
-	probeVirtualRouterFrameTypeControl            = "control"
-	probeVirtualRouterControlTypeIPv4             = "ip4"
-	probeVirtualRouterControlTypePing             = "ping"
-	probeVirtualRouterControlTypePong             = "pong"
-	probeVirtualRouterControlTypePathRTTQuery     = "path_rtt_query"
-	probeVirtualRouterControlTypePathRTTResponse  = "path_rtt_response"
-	probeVirtualRouterTunnelScope                 = "virtual_router"
-	probeVirtualRouterNetworkIPv4                 = "ip4"
-	probeVirtualRouterFrameLinkIdleTTL            = 45 * time.Second
-	probeVirtualRouterPingPongInterval            = 30 * time.Second
-	probeVirtualRouterPingPongTimeout             = 5 * time.Second
-	probeVirtualRouterPingPongBytes               = 64
-	probeVirtualRouterFrameLinkPrewarmMinInterval = 10 * time.Second
-	probeVirtualRouterFrameLinkTXBufferFrames     = 1024
-	probeVirtualRouterFrameLinkRXBufferFrames     = 1024
+	probeVirtualRouterDirectionForward           = "forward"
+	probeVirtualRouterDefaultServicePort         = 12040
+	probeVirtualRouterFrameEnvelopeMagic         = 0x56524632
+	probeVirtualRouterFrameEnvelopeHeaderSize    = 12
+	probeVirtualRouterFrameEnvelopeFlagTrace     = 1
+	probeVirtualRouterFrameMaxBytes              = 65536
+	probeVirtualRouterFrameTypeData              = "data"
+	probeVirtualRouterFrameTypeControl           = "control"
+	probeVirtualRouterControlTypeIPv4            = "ip4"
+	probeVirtualRouterControlTypePing            = "ping"
+	probeVirtualRouterControlTypePong            = "pong"
+	probeVirtualRouterControlTypePathRTTQuery    = "path_rtt_query"
+	probeVirtualRouterControlTypePathRTTResponse = "path_rtt_response"
+	probeVirtualRouterTunnelScope                = "virtual_router"
+	probeVirtualRouterNetworkIPv4                = "ip4"
+	probeVirtualRouterFrameLinkIdleTTL           = 45 * time.Second
+	probeVirtualRouterPingPongInterval           = 30 * time.Second
+	probeVirtualRouterPingPongTimeout            = 5 * time.Second
+	probeVirtualRouterPingPongBytes              = 64
+	probeVirtualRouterFrameLinkTXBufferFrames    = 1024
+	probeVirtualRouterFrameLinkRXBufferFrames    = 1024
 )
 
 var probeVirtualRouterState = struct {
@@ -103,12 +103,6 @@ var probeVirtualRouterLocalInterfaceRetryState = struct {
 var probeVirtualRouterLocalInterfaceEnsureState = struct {
 	mu      sync.Mutex
 	running bool
-}{}
-
-var probeVirtualRouterFrameLinkPrewarmState = struct {
-	mu            sync.Mutex
-	running       bool
-	lastStartedAt time.Time
 }{}
 
 type probeVirtualRouterRuntimeStats struct {
@@ -211,6 +205,17 @@ type probeVirtualRouterFrameMessage struct {
 	ControlType string
 	Payload     []byte
 	Path        []string
+	Trace       []probeVirtualRouterFrameTraceHop
+}
+
+type probeVirtualRouterFrameTraceHop struct {
+	ID         string `json:"id"`
+	NodeID     string `json:"node_id"`
+	ChainID    string `json:"chain_id,omitempty"`
+	Event      string `json:"event"`
+	Direction  string `json:"direction,omitempty"`
+	RemoteNode string `json:"remote_node,omitempty"`
+	UnixNano   int64  `json:"unix_nano"`
 }
 
 type probeVirtualRouterPhysicalCarrier struct {
@@ -476,7 +481,6 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	if topologyChanged {
 		clearProbeVirtualRouterRouteCache("config updated")
 		closeProbeVirtualRouterFrameLinks("config updated")
-		scheduleProbeVirtualRouterFrameLinkPrewarm("config_updated")
 	}
 	if ensureLocalInterface {
 		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("config_updated")
@@ -1283,7 +1287,18 @@ func marshalProbeVirtualRouterFrameEnvelope(frame probeVirtualRouterFrameMessage
 	if len(pathText) > 0xffff {
 		return nil, errors.New("virtual router frame path is too large")
 	}
-	total := probeVirtualRouterFrameEnvelopeHeaderSize + len(frameType) + len(controlType) + len(pathText) + len(frame.Payload)
+	tracePayload, err := marshalProbeVirtualRouterFrameTrace(frame.Trace)
+	if err != nil {
+		return nil, err
+	}
+	traceLenSize := 0
+	if len(tracePayload) > 0 {
+		traceLenSize = 2
+		if len(frameType) > 0x0f {
+			return nil, errors.New("virtual router traced frame type is too large")
+		}
+	}
+	total := probeVirtualRouterFrameEnvelopeHeaderSize + len(frameType) + len(controlType) + len(pathText) + traceLenSize + len(tracePayload) + len(frame.Payload)
 	if total > probeVirtualRouterFrameMaxBytes {
 		return nil, errors.New("virtual router frame envelope is too large")
 	}
@@ -1293,6 +1308,9 @@ func marshalProbeVirtualRouterFrameEnvelope(frame probeVirtualRouterFrameMessage
 	out[5] = byte(len(controlType))
 	binary.BigEndian.PutUint16(out[6:8], uint16(len(pathText)))
 	binary.BigEndian.PutUint32(out[8:12], uint32(len(frame.Payload)))
+	if len(tracePayload) > 0 {
+		out[4] = byte(len(frameType)<<4) | probeVirtualRouterFrameEnvelopeFlagTrace
+	}
 	offset := probeVirtualRouterFrameEnvelopeHeaderSize
 	copy(out[offset:offset+len(frameType)], frameType)
 	offset += len(frameType)
@@ -1300,6 +1318,12 @@ func marshalProbeVirtualRouterFrameEnvelope(frame probeVirtualRouterFrameMessage
 	offset += len(controlType)
 	copy(out[offset:offset+len(pathText)], pathText)
 	offset += len(pathText)
+	if len(tracePayload) > 0 {
+		binary.BigEndian.PutUint16(out[offset:offset+2], uint16(len(tracePayload)))
+		offset += 2
+		copy(out[offset:offset+len(tracePayload)], tracePayload)
+		offset += len(tracePayload)
+	}
 	copy(out[offset:], frame.Payload)
 	return out, nil
 }
@@ -1315,21 +1339,48 @@ func unmarshalProbeVirtualRouterFrameEnvelope(payload []byte, fallbackPath []str
 	if len(payload) < probeVirtualRouterFrameEnvelopeHeaderSize {
 		return probeVirtualRouterFrameMessage{}, errors.New("invalid virtual router frame envelope")
 	}
-	frameTypeLen := int(payload[4])
+	flags := payload[4] & 0x0f
+	frameTypeLen := int((payload[4] & 0xf0) >> 4)
+	if frameTypeLen == 0 {
+		frameTypeLen = int(payload[4])
+		flags = 0
+	}
 	controlTypeLen := int(payload[5])
 	pathLen := int(binary.BigEndian.Uint16(payload[6:8]))
 	payloadLen := int(binary.BigEndian.Uint32(payload[8:12]))
-	total := probeVirtualRouterFrameEnvelopeHeaderSize + frameTypeLen + controlTypeLen + pathLen + payloadLen
-	if payloadLen <= 0 || total != len(payload) {
+	offset := probeVirtualRouterFrameEnvelopeHeaderSize
+	baseTotal := probeVirtualRouterFrameEnvelopeHeaderSize + frameTypeLen + controlTypeLen + pathLen + payloadLen
+	if flags&probeVirtualRouterFrameEnvelopeFlagTrace != 0 {
+		baseTotal += 2
+	}
+	if payloadLen <= 0 || baseTotal > len(payload) {
 		return probeVirtualRouterFrameMessage{}, errors.New("invalid virtual router frame envelope")
 	}
-	offset := probeVirtualRouterFrameEnvelopeHeaderSize
 	frameType := strings.TrimSpace(string(payload[offset : offset+frameTypeLen]))
 	offset += frameTypeLen
 	controlType := strings.TrimSpace(string(payload[offset : offset+controlTypeLen]))
 	offset += controlTypeLen
 	path := parseProbeVirtualRouterPathText(string(payload[offset : offset+pathLen]))
 	offset += pathLen
+	var trace []probeVirtualRouterFrameTraceHop
+	if flags&probeVirtualRouterFrameEnvelopeFlagTrace != 0 {
+		if offset+2 > len(payload) {
+			return probeVirtualRouterFrameMessage{}, errors.New("invalid virtual router frame trace")
+		}
+		traceLen := int(binary.BigEndian.Uint16(payload[offset : offset+2]))
+		offset += 2
+		if traceLen <= 0 || offset+traceLen+payloadLen != len(payload) {
+			return probeVirtualRouterFrameMessage{}, errors.New("invalid virtual router frame trace size")
+		}
+		var err error
+		trace, err = unmarshalProbeVirtualRouterFrameTrace(payload[offset : offset+traceLen])
+		if err != nil {
+			return probeVirtualRouterFrameMessage{}, err
+		}
+		offset += traceLen
+	} else if offset+payloadLen != len(payload) {
+		return probeVirtualRouterFrameMessage{}, errors.New("invalid virtual router frame envelope")
+	}
 	if len(path) == 0 {
 		path = append([]string(nil), fallbackPath...)
 	}
@@ -1338,7 +1389,108 @@ func unmarshalProbeVirtualRouterFrameEnvelope(payload []byte, fallbackPath []str
 		ControlType: controlType,
 		Payload:     append([]byte(nil), payload[offset:]...),
 		Path:        path,
+		Trace:       trace,
 	}, nil
+}
+
+func marshalProbeVirtualRouterFrameTrace(trace []probeVirtualRouterFrameTraceHop) ([]byte, error) {
+	if len(trace) == 0 {
+		return nil, nil
+	}
+	out := make([]probeVirtualRouterFrameTraceHop, 0, len(trace))
+	for _, hop := range trace {
+		clean := probeVirtualRouterCleanFrameTraceHop(hop)
+		if clean.ID == "" || clean.NodeID == "" || clean.Event == "" || clean.UnixNano <= 0 {
+			continue
+		}
+		out = append(out, clean)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > 0xffff {
+		return nil, errors.New("virtual router frame trace is too large")
+	}
+	return raw, nil
+}
+
+func unmarshalProbeVirtualRouterFrameTrace(raw []byte) ([]probeVirtualRouterFrameTraceHop, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var items []probeVirtualRouterFrameTraceHop
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("invalid virtual router frame trace: %w", err)
+	}
+	out := make([]probeVirtualRouterFrameTraceHop, 0, len(items))
+	for _, item := range items {
+		clean := probeVirtualRouterCleanFrameTraceHop(item)
+		if clean.ID == "" || clean.NodeID == "" || clean.Event == "" || clean.UnixNano <= 0 {
+			continue
+		}
+		out = append(out, clean)
+	}
+	return out, nil
+}
+
+func probeVirtualRouterCleanFrameTraceHop(input probeVirtualRouterFrameTraceHop) probeVirtualRouterFrameTraceHop {
+	return probeVirtualRouterFrameTraceHop{
+		ID:         strings.TrimSpace(input.ID),
+		NodeID:     normalizeProbeChainNodeID(input.NodeID),
+		ChainID:    strings.TrimSpace(input.ChainID),
+		Event:      strings.TrimSpace(input.Event),
+		Direction:  strings.TrimSpace(input.Direction),
+		RemoteNode: normalizeProbeChainNodeID(input.RemoteNode),
+		UnixNano:   input.UnixNano,
+	}
+}
+
+func appendProbeVirtualRouterICMPTrace(trace []probeVirtualRouterFrameTraceHop, runtime *probeChainRuntime, event string, direction string, remoteNodeID string) []probeVirtualRouterFrameTraceHop {
+	cleanEvent := strings.TrimSpace(event)
+	nodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+	if cleanEvent == "" || nodeID == "" {
+		return trace
+	}
+	chainID := ""
+	if runtime != nil {
+		chainID = strings.TrimSpace(runtime.cfg.chainID)
+	}
+	item := probeVirtualRouterFrameTraceHop{
+		ID:         newProbeTCPDebugFlowID("vrouter_icmp_trace", nodeID),
+		NodeID:     nodeID,
+		ChainID:    chainID,
+		Event:      cleanEvent,
+		Direction:  strings.TrimSpace(direction),
+		RemoteNode: normalizeProbeChainNodeID(remoteNodeID),
+		UnixNano:   time.Now().UnixNano(),
+	}
+	return append(append([]probeVirtualRouterFrameTraceHop(nil), trace...), item)
+}
+
+func probeVirtualRouterICMPTraceString(trace []probeVirtualRouterFrameTraceHop) string {
+	if len(trace) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(trace))
+	var prev int64
+	for i, hop := range trace {
+		clean := probeVirtualRouterCleanFrameTraceHop(hop)
+		if clean.ID == "" || clean.NodeID == "" || clean.Event == "" || clean.UnixNano <= 0 {
+			continue
+		}
+		delta := int64(0)
+		if prev > 0 {
+			delta = (clean.UnixNano - prev) / int64(time.Millisecond)
+		}
+		prev = clean.UnixNano
+		at := time.Unix(0, clean.UnixNano).UTC().Format(time.RFC3339Nano)
+		parts = append(parts, fmt.Sprintf("%02d node=%s event=%s direction=%s remote=%s chain=%s at=%s delta_ms=%d id=%s", i, clean.NodeID, clean.Event, clean.Direction, clean.RemoteNode, clean.ChainID, at, delta, clean.ID))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func parseProbeVirtualRouterPathText(raw string) []string {
@@ -1357,7 +1509,7 @@ func parseProbeVirtualRouterPathText(raw string) []string {
 	return out
 }
 
-func writeProbeVirtualRouterIPFrame(link *probeVirtualRouterFrameLink, packet []byte, path []string) error {
+func writeProbeVirtualRouterIPFrame(link *probeVirtualRouterFrameLink, packet []byte, path []string, trace []probeVirtualRouterFrameTraceHop) error {
 	if link == nil {
 		return errors.New("virtual router frame link is nil")
 	}
@@ -1366,6 +1518,7 @@ func writeProbeVirtualRouterIPFrame(link *probeVirtualRouterFrameLink, packet []
 		ControlType: probeVirtualRouterControlTypeIPv4,
 		Payload:     packet,
 		Path:        path,
+		Trace:       trace,
 	})
 }
 
@@ -1386,19 +1539,40 @@ func readProbeVirtualRouterFrame(reader *bufio.Reader, fallbackPath []string) (p
 	if magic != probeVirtualRouterFrameEnvelopeMagic {
 		return probeVirtualRouterFrameMessage{}, errors.New("invalid virtual router physical frame magic")
 	}
+	flags := byte(0)
 	frameTypeLen := int(header[4])
+	if header[4]&probeVirtualRouterFrameEnvelopeFlagTrace != 0 && header[4]&0xf0 != 0 {
+		flags = header[4] & 0x0f
+		frameTypeLen = int((header[4] & 0xf0) >> 4)
+	}
 	controlTypeLen := int(header[5])
 	pathLen := int(binary.BigEndian.Uint16(header[6:8]))
 	payloadLen := int(binary.BigEndian.Uint32(header[8:12]))
-	total := probeVirtualRouterFrameEnvelopeHeaderSize + frameTypeLen + controlTypeLen + pathLen + payloadLen
-	if payloadLen <= 0 || total < len(header) || total > probeVirtualRouterFrameMaxBytes {
+	prefixLen := probeVirtualRouterFrameEnvelopeHeaderSize + frameTypeLen + controlTypeLen + pathLen
+	if flags&probeVirtualRouterFrameEnvelopeFlagTrace != 0 {
+		prefixLen += 2
+	}
+	if payloadLen <= 0 || prefixLen < len(header) || prefixLen > probeVirtualRouterFrameMaxBytes {
 		return probeVirtualRouterFrameMessage{}, errors.New("invalid virtual router physical frame size")
 	}
-	payload := make([]byte, total)
+	payload := make([]byte, prefixLen)
 	copy(payload, header)
 	if _, err := io.ReadFull(reader, payload[len(header):]); err != nil {
 		return probeVirtualRouterFrameMessage{}, err
 	}
+	traceLen := 0
+	if flags&probeVirtualRouterFrameEnvelopeFlagTrace != 0 {
+		traceLen = int(binary.BigEndian.Uint16(payload[prefixLen-2 : prefixLen]))
+	}
+	total := prefixLen + traceLen + payloadLen
+	if total > probeVirtualRouterFrameMaxBytes {
+		return probeVirtualRouterFrameMessage{}, errors.New("invalid virtual router physical frame size")
+	}
+	tail := make([]byte, traceLen+payloadLen)
+	if _, err := io.ReadFull(reader, tail); err != nil {
+		return probeVirtualRouterFrameMessage{}, err
+	}
+	payload = append(payload, tail...)
 	return unmarshalProbeVirtualRouterFrameEnvelope(payload, fallbackPath)
 }
 
@@ -1446,7 +1620,11 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok && info.Kind == "echo_request" && probeVirtualRouterIPMatches(info.SourceIP, currentProbeVirtualRouterLocalIP()) {
 		recordProbeVirtualRouterICMPPingStart(info, path)
 	}
-	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path); err != nil {
+	trace := []probeVirtualRouterFrameTraceHop(nil)
+	if _, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
+		trace = appendProbeVirtualRouterICMPTrace(trace, nil, "tun_rx", "", "")
+	}
+	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path, trace); err != nil {
 		log.Printf("probe virtual router frame forward failed: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
 		return true
 	}
@@ -1778,6 +1956,7 @@ func (s *probeVirtualRouterFrameLink) EnqueueProbeVirtualRouterFrame(input probe
 		ControlType: strings.TrimSpace(input.ControlType),
 		Payload:     append([]byte(nil), input.Payload...),
 		Path:        append([]string(nil), input.Path...),
+		Trace:       append([]probeVirtualRouterFrameTraceHop(nil), input.Trace...),
 	}
 	if frame.FrameType == "" {
 		frame.FrameType = probeVirtualRouterFrameTypeData
@@ -1983,7 +2162,7 @@ func handleProbeVirtualRouterFrameMessage(runtime *probeChainRuntime, link *prob
 	}
 	switch {
 	case frameType == probeVirtualRouterFrameTypeData && controlType == probeVirtualRouterControlTypeIPv4:
-		return handleProbeVirtualRouterIPFrame(runtime, link, frame.Payload, frame.Path)
+		return handleProbeVirtualRouterIPFrame(runtime, link, frame.Payload, frame.Path, frame.Trace)
 	case frameType == probeVirtualRouterFrameTypeControl:
 		return handleProbeVirtualRouterControlFrame(runtime, link, controlType, frame.Payload, frame.Path)
 	default:
@@ -2101,7 +2280,7 @@ func queryProbeVirtualRouterAdjacentPing(rt *probeChainRuntime, direction string
 	}
 	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(rt)
 	path := []string{localNodeID, targetNodeID}
-	link, err := openProbeVirtualRouterFrameLink(rt, direction, "", path)
+	link, err := ensureProbeVirtualRouterFrameLink(rt, direction, "", path)
 	if err != nil {
 		return probeVirtualRouterControlProbePayload{}, err
 	}
@@ -2149,7 +2328,7 @@ func queryProbeVirtualRouterPathRTTControl(path []string) (probeVirtualRouterPat
 	if rt == nil {
 		return probeVirtualRouterPathRTTQueryResponse{}, errors.New("adjacent virtual router rtt runtime is unavailable")
 	}
-	link, err := openProbeVirtualRouterFrameLink(rt, direction, "", cleanPath)
+	link, err := ensureProbeVirtualRouterFrameLink(rt, direction, "", cleanPath)
 	if err != nil {
 		return probeVirtualRouterPathRTTQueryResponse{}, err
 	}
@@ -2196,7 +2375,7 @@ func forwardProbeVirtualRouterControlAlongPath(controlType string, payload []byt
 	if rt == nil {
 		return errors.New("adjacent virtual router control runtime is unavailable")
 	}
-	link, err := openProbeVirtualRouterFrameLink(rt, direction, "", cleanPath)
+	link, err := ensureProbeVirtualRouterFrameLink(rt, direction, "", cleanPath)
 	if err != nil {
 		return err
 	}
@@ -2298,7 +2477,7 @@ func probeVirtualRouterPreviousHopInPath(path []string, localNodeID string) stri
 	return ""
 }
 
-func handleProbeVirtualRouterIPFrame(runtime *probeChainRuntime, link *probeVirtualRouterFrameLink, packet []byte, path []string) error {
+func handleProbeVirtualRouterIPFrame(runtime *probeChainRuntime, link *probeVirtualRouterFrameLink, packet []byte, path []string, trace []probeVirtualRouterFrameTraceHop) error {
 	recordProbeVirtualRouterRuntimeFrameReceived(runtime, len(packet))
 	dstIP := probeVirtualRouterIPv4Destination(packet)
 	if dstIP == "" {
@@ -2313,13 +2492,14 @@ func handleProbeVirtualRouterIPFrame(runtime *probeChainRuntime, link *probeVirt
 	localMatch := probeVirtualRouterIPMatches(dstIP, localIP)
 	recordProbeVirtualRouterRuntimeFrameDecision(runtime, srcIP, dstIP, localIP, path, localMatch)
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
+		trace = appendProbeVirtualRouterICMPTrace(trace, runtime, "frame_rx", "", "")
 		log.Printf("probe virtual router icmp frame rx: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s local_match=%v path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, localMatch, strings.Join(path, ">"), len(packet))
 	}
 	if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
 		log.Printf("probe virtual router transport frame rx: chain=%s runtime_node=%s proto=%s src=%s:%d dst=%s:%d local_ip=%s local_match=%v path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, localIP, localMatch, strings.Join(path, ">"), len(packet))
 	}
 	if localMatch {
-		if handleProbeVirtualRouterLocalICMPEchoRequest(runtime, link, packet, path) {
+		if handleProbeVirtualRouterLocalICMPEchoRequest(runtime, link, packet, path, trace) {
 			recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
 			return nil
 		}
@@ -2336,6 +2516,8 @@ func handleProbeVirtualRouterIPFrame(runtime *probeChainRuntime, link *probeVirt
 		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 			log.Printf("probe virtual router icmp local deliver ok: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, len(packet))
 			if info.Kind == "echo_reply" {
+				trace = appendProbeVirtualRouterICMPTrace(trace, runtime, "local_deliver", "", "")
+				logProbeVirtualRouterICMPTraceComplete(runtime, info, trace)
 				recordProbeVirtualRouterICMPPingReply(runtime, info)
 			}
 		}
@@ -2354,7 +2536,7 @@ func handleProbeVirtualRouterIPFrame(runtime *probeChainRuntime, link *probeVirt
 		}
 		return errors.New("virtual router path is incomplete")
 	}
-	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path); err != nil {
+	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path, trace); err != nil {
 		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 			log.Printf("probe virtual router icmp frame forward failed: chain=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s err=%v", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(path, ">"), err)
 		}
@@ -2381,7 +2563,7 @@ func writeProbeVirtualRouterLocalTUNPacket(packet []byte) error {
 	}
 }
 
-func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path []string) error {
+func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path []string, trace []probeVirtualRouterFrameTraceHop) error {
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
 	if localNodeID == "" && len(path) > 0 {
 		localNodeID = normalizeProbeChainNodeID(path[0])
@@ -2397,29 +2579,32 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	if rt == nil {
 		return errors.New("adjacent probe chain runtime is unavailable")
 	}
+	if _, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
+		trace = appendProbeVirtualRouterICMPTrace(trace, rt, "forward_tx", direction, nextNodeID)
+	}
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
-		log.Printf("probe virtual router icmp forward open: chain=%s local_node=%s next_node=%s direction=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(rt), localNodeID, nextNodeID, direction, info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(path, ">"), len(packet))
+		log.Printf("probe virtual router icmp forward enqueue: chain=%s local_node=%s next_node=%s direction=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(rt), localNodeID, nextNodeID, direction, info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(path, ">"), len(packet))
 	}
 	if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
-		log.Printf("probe virtual router transport forward open: chain=%s local_node=%s next_node=%s direction=%s proto=%s src=%s:%d dst=%s:%d path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(rt), localNodeID, nextNodeID, direction, info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, strings.Join(path, ">"), len(packet))
+		log.Printf("probe virtual router transport forward enqueue: chain=%s local_node=%s next_node=%s direction=%s proto=%s src=%s:%d dst=%s:%d path=%s bytes=%d", probeVirtualRouterRuntimeLogChainID(rt), localNodeID, nextNodeID, direction, info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, strings.Join(path, ">"), len(packet))
 	}
-	stream, err := openProbeVirtualRouterFrameLink(rt, direction, dstIP, path)
+	link, err := ensureProbeVirtualRouterFrameLink(rt, direction, dstIP, path)
 	if err != nil {
 		return err
 	}
-	if err := writeProbeVirtualRouterIPFrame(stream, packet, path); err != nil {
-		dropProbeVirtualRouterFrameLink(stream)
+	if err := writeProbeVirtualRouterIPFrame(link, packet, path, trace); err != nil {
+		dropProbeVirtualRouterFrameLink(link)
 		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 		if !isProbeVirtualRouterClosedLinkError(err) {
 			return err
 		}
-		stream, err = openProbeVirtualRouterFrameLink(rt, direction, dstIP, path)
+		link, err = ensureProbeVirtualRouterFrameLink(rt, direction, dstIP, path)
 		if err != nil {
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 			return err
 		}
-		if err := writeProbeVirtualRouterIPFrame(stream, packet, path); err != nil {
-			dropProbeVirtualRouterFrameLink(stream)
+		if err := writeProbeVirtualRouterIPFrame(link, packet, path, trace); err != nil {
+			dropProbeVirtualRouterFrameLink(link)
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.chainID, err)
 			return err
 		}
@@ -2435,12 +2620,13 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	return nil
 }
 
-func handleProbeVirtualRouterLocalICMPEchoRequest(runtime *probeChainRuntime, stream *probeVirtualRouterFrameLink, packet []byte, ingressPath []string) bool {
+func handleProbeVirtualRouterLocalICMPEchoRequest(runtime *probeChainRuntime, stream *probeVirtualRouterFrameLink, packet []byte, ingressPath []string, trace []probeVirtualRouterFrameTraceHop) bool {
 	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)
 	reply, dstIP, ok := buildProbeVirtualRouterICMPEchoReply(packet, localIP)
 	if !ok {
 		return false
 	}
+	trace = appendProbeVirtualRouterICMPTrace(trace, runtime, "echo_reply_build", "", "")
 	path := probeVirtualRouterReversePath(ingressPath)
 	if len(path) < 2 {
 		path = currentProbeVirtualRouterPathForPacket(reply, dstIP)
@@ -2454,7 +2640,7 @@ func handleProbeVirtualRouterLocalICMPEchoRequest(runtime *probeChainRuntime, st
 			log.Printf("probe virtual router icmp echo reply build: chain=%s runtime_node=%s request_src=%s request_dst=%s reply_src=%s reply_dst=%s id=%d seq=%d local_ip=%s path=%s", probeVirtualRouterRuntimeLogChainID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), reqInfo.SourceIP, reqInfo.DestinationIP, replyInfo.SourceIP, replyInfo.DestinationIP, reqInfo.ID, reqInfo.Sequence, localIP, strings.Join(path, ">"))
 		}
 	}
-	if err := writeProbeVirtualRouterIPFrame(stream, reply, path); err != nil {
+	if err := writeProbeVirtualRouterIPFrame(stream, reply, path, trace); err != nil {
 		if runtime != nil {
 			recordProbeVirtualRouterRuntimeOpenError(runtime.cfg.chainID, err)
 		}
@@ -2482,7 +2668,7 @@ func probeVirtualRouterReversePath(path []string) []string {
 	return out
 }
 
-func openProbeVirtualRouterFrameLink(rt *probeChainRuntime, direction string, dstIP string, path []string) (*probeVirtualRouterFrameLink, error) {
+func ensureProbeVirtualRouterFrameLink(rt *probeChainRuntime, direction string, dstIP string, path []string) (*probeVirtualRouterFrameLink, error) {
 	if rt == nil {
 		return nil, errors.New("runtime is nil")
 	}
@@ -2505,82 +2691,6 @@ func openProbeVirtualRouterFrameLink(rt *probeChainRuntime, direction string, ds
 	probeVirtualRouterFrameLinkState.links[key] = link
 	probeVirtualRouterFrameLinkState.mu.Unlock()
 	return link, nil
-}
-
-func scheduleProbeVirtualRouterFrameLinkPrewarm(reason string) {
-	now := time.Now()
-	probeVirtualRouterFrameLinkPrewarmState.mu.Lock()
-	if probeVirtualRouterFrameLinkPrewarmState.running || now.Sub(probeVirtualRouterFrameLinkPrewarmState.lastStartedAt) < probeVirtualRouterFrameLinkPrewarmMinInterval {
-		probeVirtualRouterFrameLinkPrewarmState.mu.Unlock()
-		return
-	}
-	probeVirtualRouterFrameLinkPrewarmState.running = true
-	probeVirtualRouterFrameLinkPrewarmState.lastStartedAt = now
-	probeVirtualRouterFrameLinkPrewarmState.mu.Unlock()
-
-	go func() {
-		defer func() {
-			probeVirtualRouterFrameLinkPrewarmState.mu.Lock()
-			probeVirtualRouterFrameLinkPrewarmState.running = false
-			probeVirtualRouterFrameLinkPrewarmState.mu.Unlock()
-		}()
-		prewarmProbeVirtualRouterFrameLinks(reason)
-	}()
-}
-
-func prewarmProbeVirtualRouterFrameLinks(reason string) {
-	localNodeID := currentProbeVirtualRouterLocalNodeID()
-	if localNodeID == "" {
-		return
-	}
-	probeVirtualRouterState.mu.RLock()
-	nodeToIP := probeVirtualRouterCloneNodeToIPLocked()
-	probeVirtualRouterState.mu.RUnlock()
-	nodeIDs := make([]string, 0, len(nodeToIP))
-	for nodeID := range nodeToIP {
-		if normalizeProbeChainNodeID(nodeID) != localNodeID {
-			nodeIDs = append(nodeIDs, normalizeProbeChainNodeID(nodeID))
-		}
-	}
-	sort.Strings(nodeIDs)
-	opened := 0
-	ready := 0
-	failed := 0
-	for _, nodeID := range nodeIDs {
-		dstIP := strings.TrimSpace(nodeToIP[nodeID])
-		if dstIP == "" {
-			continue
-		}
-		path := currentProbeVirtualRouterPathBetweenNodes(localNodeID, nodeID)
-		if len(path) < 2 {
-			continue
-		}
-		nextNodeID := probeVirtualRouterNextHopInPath(path, localNodeID)
-		if nextNodeID == "" {
-			continue
-		}
-		rt, direction := probeVirtualRouterRuntimeForAdjacentNode(nextNodeID)
-		if rt == nil {
-			failed++
-			continue
-		}
-		key := probeVirtualRouterFrameLinkKey(rt, direction, dstIP, path)
-		if key != "" {
-			if link := reusableProbeVirtualRouterFrameLink(key, time.Now()); link != nil {
-				ready++
-				continue
-			}
-		}
-		if _, err := openProbeVirtualRouterFrameLink(rt, direction, dstIP, path); err != nil {
-			failed++
-			log.Printf("probe virtual router frame link prewarm failed: reason=%s dst_node=%s dst_ip=%s path=%s err=%v", strings.TrimSpace(reason), nodeID, dstIP, strings.Join(path, ">"), err)
-			continue
-		}
-		opened++
-	}
-	if opened > 0 || failed > 0 {
-		log.Printf("probe virtual router frame link prewarm completed: reason=%s opened=%d ready=%d failed=%d", strings.TrimSpace(reason), opened, ready, failed)
-	}
 }
 
 func reusableProbeVirtualRouterFrameLink(key string, now time.Time) *probeVirtualRouterFrameLink {
@@ -2871,6 +2981,23 @@ func recordProbeVirtualRouterICMPPingReply(rt *probeChainRuntime, info probeVirt
 	log.Printf("probe virtual router icmp virtual ping complete: chain=%s src=%s dst=%s id=%d seq=%d latency_ms=%d path=%s", chainID, pending.SourceIP, pending.DestinationIP, pending.ID, pending.Sequence, probeDurationMilliseconds(latency), pending.Path)
 }
 
+func logProbeVirtualRouterICMPTraceComplete(rt *probeChainRuntime, info probeVirtualRouterICMPEchoLogInfo, trace []probeVirtualRouterFrameTraceHop) {
+	if len(trace) == 0 {
+		return
+	}
+	chainID := ""
+	if rt != nil {
+		chainID = strings.TrimSpace(rt.cfg.chainID)
+	}
+	totalMS := int64(0)
+	first := probeVirtualRouterCleanFrameTraceHop(trace[0])
+	last := probeVirtualRouterCleanFrameTraceHop(trace[len(trace)-1])
+	if first.UnixNano > 0 && last.UnixNano >= first.UnixNano {
+		totalMS = (last.UnixNano - first.UnixNano) / int64(time.Millisecond)
+	}
+	log.Printf("probe virtual router icmp trace complete: chain=%s kind=%s src=%s dst=%s id=%d seq=%d hops=%d total_ms=%d trace=%s", chainID, info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, len(trace), totalMS, probeVirtualRouterICMPTraceString(trace))
+}
+
 func recordProbeVirtualRouterRuntimeDeliveryError(rt *probeChainRuntime, err error) {
 	if rt == nil || err == nil {
 		return
@@ -2925,7 +3052,6 @@ func recordProbeVirtualRouterRuntimePingSuccess(rt *probeChainRuntime, direction
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	if shouldClearRouteCache {
 		clearProbeVirtualRouterRouteCache("bridge ping recovered")
-		scheduleProbeVirtualRouterFrameLinkPrewarm("bridge_ping_recovered")
 	}
 }
 
