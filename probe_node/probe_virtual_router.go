@@ -47,8 +47,6 @@ const (
 	probeVirtualRouterSpeedTestChunkBytes        = 48 * 1024
 	probeVirtualRouterCarrierStalePingFailures   = 4
 	probeVirtualRouterCarrierStaleRXGrace        = 2 * probeVirtualRouterPingPongInterval
-	probeVirtualRouterFrameLinkTXBufferFrames    = 1024
-	probeVirtualRouterFrameLinkRXBufferFrames    = 1024
 )
 
 var probeVirtualRouterState = struct {
@@ -69,11 +67,6 @@ type probeVirtualRouterTopologyIndex struct {
 	neighbors map[string]map[string]struct{}
 	rulesByID map[string]probeVirtualRouterTopologyRule
 }
-
-var probeVirtualRouterFrameLinkState = struct {
-	mu    sync.Mutex
-	links map[string]*probeVirtualRouterFrameLink
-}{links: make(map[string]*probeVirtualRouterFrameLink)}
 
 var probeVirtualRouterRouteCacheState = struct {
 	mu     sync.RWMutex
@@ -244,22 +237,6 @@ type probeVirtualRouterTransportLogInfo struct {
 	DestinationPort uint16
 }
 
-type probeVirtualRouterFrameLink struct {
-	key           string
-	runtime       *probeVirtualRouterRuntime
-	carrier       *probeVirtualRouterPhysicalCarrier
-	requestPath   []string
-	openedAt      time.Time
-	lastUsed      time.Time
-	tx            chan probeVirtualRouterFrameMessage
-	rx            chan probeVirtualRouterFrameMessage
-	done          chan struct{}
-	carrierNotify chan struct{}
-	startOnce     sync.Once
-	closeOnce     sync.Once
-	mu            sync.Mutex
-}
-
 type probeVirtualRouterFrameMessage struct {
 	FrameType   string
 	ControlType string
@@ -276,18 +253,6 @@ type probeVirtualRouterFrameTraceHop struct {
 	Direction  string `json:"direction,omitempty"`
 	RemoteNode string `json:"remote_node,omitempty"`
 	UnixNano   int64  `json:"unix_nano"`
-}
-
-type probeVirtualRouterPhysicalCarrier struct {
-	conn        net.Conn
-	sessionID   string
-	remoteAddr  string
-	connectedAt time.Time
-	lastReadAt  time.Time
-	lastWriteAt time.Time
-	done        chan struct{}
-	closeOnce   sync.Once
-	mu          sync.Mutex
 }
 
 type probeVirtualRouterPathRTTRecord struct {

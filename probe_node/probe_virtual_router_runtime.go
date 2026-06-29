@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -21,13 +20,14 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/quic-go/quic-go/http3"
 )
 
 const (
-	probeVirtualRouterRuntimeChainIDPrefix = "vrouter-"
-	probeVirtualRouterRuntimeLinkLayer     = "websocket"
-	probeVirtualRouterRuntimeRole          = "virtual_router"
+	probeVirtualRouterRuntimeChainIDPrefix    = "vrouter-"
+	probeVirtualRouterRuntimeLinkLayer        = "websocket"
+	probeVirtualRouterRuntimeRole             = "virtual_router"
+	probeVirtualRouterFrameLinkTXBufferFrames = 1024
+	probeVirtualRouterFrameLinkRXBufferFrames = 1024
 )
 
 type probeVirtualRouterRuntimeConfig struct {
@@ -58,17 +58,44 @@ type probeVirtualRouterRuntime struct {
 	cfg             probeVirtualRouterRuntimeConfig
 	relayListenAddr string
 	relay           *probeVirtualRouterRelayServer
+	frameLink       *probeVirtualRouterFrameLink
 	stopCh          chan struct{}
 	seqMu           sync.Mutex
 	seq             uint64
 }
 
 type probeVirtualRouterRelayServer struct {
-	listenAddr    string
-	httpsServer   *http.Server
-	http3Server   *http3.Server
-	udpPacketConn net.PacketConn
+	listenAddr  string
+	httpsServer *http.Server
+	closeOnce   sync.Once
+}
+
+type probeVirtualRouterFrameLink struct {
+	key           string
+	runtime       *probeVirtualRouterRuntime
+	carrier       *probeVirtualRouterPhysicalCarrier
+	requestPath   []string
+	openedAt      time.Time
+	lastUsed      time.Time
+	tx            chan probeVirtualRouterFrameMessage
+	rx            chan probeVirtualRouterFrameMessage
+	done          chan struct{}
+	carrierNotify chan struct{}
+	startOnce     sync.Once
 	closeOnce     sync.Once
+	mu            sync.Mutex
+}
+
+type probeVirtualRouterPhysicalCarrier struct {
+	conn        net.Conn
+	sessionID   string
+	remoteAddr  string
+	connectedAt time.Time
+	lastReadAt  time.Time
+	lastWriteAt time.Time
+	done        chan struct{}
+	closeOnce   sync.Once
+	mu          sync.Mutex
 }
 
 type probeVirtualRouterRuleRuntime struct {
@@ -97,6 +124,11 @@ var probeVirtualRouterRuntimeState = struct {
 	mu       sync.RWMutex
 	runtimes map[string]*probeVirtualRouterRuntime
 }{runtimes: make(map[string]*probeVirtualRouterRuntime)}
+
+var probeVirtualRouterFrameLinkState = struct {
+	mu    sync.Mutex
+	links map[string]*probeVirtualRouterFrameLink
+}{links: make(map[string]*probeVirtualRouterFrameLink)}
 
 var probeVirtualRouterRuleRuntimeState = struct {
 	mu    sync.RWMutex
@@ -167,6 +199,11 @@ func startProbeVirtualRouterRuntime(cfg probeVirtualRouterRuntimeConfig) (*probe
 			rt.closeRuntimeResources()
 			return nil, err
 		}
+	}
+	if _, err := ensureProbeVirtualRouterRuntimeFrameLink(rt); err != nil {
+		close(rt.stopCh)
+		rt.closeRuntimeResources()
+		return nil, err
 	}
 	probeVirtualRouterRuntimeState.mu.Lock()
 	probeVirtualRouterRuntimeState.runtimes[cfg.chainID] = rt
@@ -308,20 +345,8 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 	if err != nil {
 		return fmt.Errorf("listen virtual router relay tcp failed: %w", err)
 	}
-	udpPacketConn, err := net.ListenPacket("udp", listenAddr)
-	if err != nil {
-		_ = tcpListener.Close()
-		return fmt.Errorf("listen virtual router relay udp failed: %w", err)
-	}
-	h3Cert, err := tls.LoadX509KeyPair(cert.CertPath, cert.KeyPath)
-	if err != nil {
-		_ = tcpListener.Close()
-		_ = udpPacketConn.Close()
-		return fmt.Errorf("load virtual router relay certificate failed: %w", err)
-	}
 	relay := &probeVirtualRouterRelayServer{
-		listenAddr:    listenAddr,
-		udpPacketConn: udpPacketConn,
+		listenAddr: listenAddr,
 	}
 	relay.httpsServer = &http.Server{
 		Addr:              listenAddr,
@@ -331,20 +356,6 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 	go func() {
 		if serveErr := relay.httpsServer.ServeTLS(tcpListener, cert.CertPath, cert.KeyPath); serveErr != nil && serveErr != http.ErrServerClosed {
 			log.Printf("probe virtual router relay exited: layer=websocket listen=%s err=%v", listenAddr, serveErr)
-		}
-	}()
-	relay.http3Server = &http3.Server{
-		Addr:    listenAddr,
-		Handler: handler,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{h3Cert},
-			MinVersion:   tls.VersionTLS13,
-			NextProtos:   []string{"h3"},
-		},
-	}
-	go func() {
-		if serveErr := relay.http3Server.Serve(udpPacketConn); serveErr != nil && serveErr != http.ErrServerClosed {
-			log.Printf("probe virtual router relay exited: layer=websocket-h3 listen=%s err=%v", listenAddr, serveErr)
 		}
 	}()
 	rt.relayListenAddr = listenAddr
@@ -363,13 +374,40 @@ func closeProbeVirtualRouterRelayServer(relay *probeVirtualRouterRelayServer) {
 		if relay.httpsServer != nil {
 			_ = relay.httpsServer.Shutdown(ctx)
 		}
-		if relay.http3Server != nil {
-			_ = relay.http3Server.Close()
-		}
-		if relay.udpPacketConn != nil {
-			_ = relay.udpPacketConn.Close()
-		}
 	})
+}
+
+func ensureProbeVirtualRouterRuntimeFrameLink(rt *probeVirtualRouterRuntime) (*probeVirtualRouterFrameLink, error) {
+	if rt == nil {
+		return nil, errors.New("virtual router runtime is nil")
+	}
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	if key == "" {
+		return nil, errors.New("virtual router frame link key is empty")
+	}
+	var stale *probeVirtualRouterFrameLink
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	if existing := probeVirtualRouterFrameLinkState.links[key]; existing != nil {
+		if isProbeVirtualRouterFrameLinkClosed(existing) {
+			delete(probeVirtualRouterFrameLinkState.links, key)
+			stale = existing
+		} else {
+			existing.runtime = rt
+			rt.frameLink = existing
+			probeVirtualRouterFrameLinkState.mu.Unlock()
+			existing.Start()
+			return existing, nil
+		}
+	}
+	link := newProbeVirtualRouterFrameLink(key, rt, nil, nil)
+	probeVirtualRouterFrameLinkState.links[key] = link
+	rt.frameLink = link
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+	if stale != nil {
+		stopProbeVirtualRouterFrameLink(stale)
+	}
+	link.Start()
+	return link, nil
 }
 
 func buildProbeVirtualRouterRelayHandler() http.Handler {
@@ -400,10 +438,6 @@ func handleProbeVirtualRouterRelayDispatch(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	bridgeRole := normalizeProbeChainBridgeRole(r.Header.Get(probeChainCodexRelayRoleHeader))
-	if isProbeChainHTTP3WebSocketRequest(r) {
-		handleProbeVirtualRouterBridgeRelayHTTP3WebSocket(rt, bridgeRole, w, r)
-		return
-	}
 	if websocket.IsWebSocketUpgrade(r) {
 		handleProbeVirtualRouterBridgeRelayWebSocket(rt, bridgeRole, w, r)
 		return
@@ -429,32 +463,6 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 	}
 	defer ws.Close()
 	conn := newWebSocketNetConn(ws)
-	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
-	runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
-}
-
-func handleProbeVirtualRouterBridgeRelayHTTP3WebSocket(rt *probeVirtualRouterRuntime, bridgeRole string, w http.ResponseWriter, r *http.Request) {
-	if rt == nil {
-		http.Error(w, "virtual router runtime not found", http.StatusNotFound)
-		return
-	}
-	streamer, ok := w.(http3.HTTPStreamer)
-	if !ok {
-		log.Printf("probe virtual router h3 relay rejected: chain=%s remote=%s reason=http3_stream_unavailable", rt.cfg.chainID, r.RemoteAddr)
-		http.Error(w, "http3 stream unavailable", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	stream := streamer.HTTPStream()
-	conn := &probeChainHTTP3StreamNetConn{
-		stream: stream,
-		local:  probeChainRelayNetAddr{label: "probe-vrouter-h3-local"},
-		remote: probeChainRelayNetAddr{label: strings.TrimSpace(r.RemoteAddr)},
-		closeFn: func() error {
-			return stream.Close()
-		},
-	}
-	defer conn.Close()
 	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
 	runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
 }

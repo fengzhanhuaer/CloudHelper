@@ -912,6 +912,44 @@ func TestProbeVirtualRouterFrameLinkKeyIsPerRule(t *testing.T) {
 	}
 }
 
+func TestStartProbeVirtualRouterRuntimeCreatesFrameLinkWorkers(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	chainID := "vrouter-fixed-workers"
+	rt, err := startProbeVirtualRouterRuntime(probeVirtualRouterRuntimeConfig{
+		chainID:    chainID,
+		secret:     "secret",
+		authTicket: "ticket",
+		peerNodeID: "19",
+		dialer:     true,
+	})
+	if err != nil {
+		t.Fatalf("start runtime failed: %v", err)
+	}
+	t.Cleanup(func() { stopProbeVirtualRouterRuntime(chainID, "test cleanup") })
+
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	link := probeVirtualRouterFrameLinkState.links[key]
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+	if link == nil {
+		t.Fatalf("frame link should be created with runtime")
+	}
+	if rt.frameLink != link {
+		t.Fatalf("runtime frame link mismatch")
+	}
+	if link.tx == nil || link.rx == nil || link.done == nil || link.carrierNotify == nil {
+		t.Fatalf("frame link worker channels should be initialized")
+	}
+	select {
+	case <-link.done:
+		t.Fatalf("frame link should stay open while runtime is running")
+	default:
+	}
+}
+
 func TestProbeVirtualRouterFrameEnvelopeCarriesTypeControlAndPath(t *testing.T) {
 	packet := []byte{0x45, 0x00, 0x00, 0x14}
 	payload, err := marshalProbeVirtualRouterFrameEnvelope(probeVirtualRouterFrameMessage{
