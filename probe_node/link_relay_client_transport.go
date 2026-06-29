@@ -1084,20 +1084,20 @@ func snapshotProbeChainRelayReports() []probeChainRelayReportItem {
 	}
 	probeChainRuntimeState.mu.Unlock()
 
-	if len(sources) == 0 {
-		return nil
-	}
 	configs := make([]probeChainRuntimeConfig, 0, len(sources))
 	for _, source := range sources {
 		configs = append(configs, source.cfg)
 	}
-	scheduleProbeChainRelayProtocolRefreshForReports(configs)
+	if len(configs) > 0 {
+		scheduleProbeChainRelayProtocolRefreshForReports(configs)
+	}
 	sort.Slice(sources, func(i, j int) bool {
 		return strings.TrimSpace(sources[i].cfg.chainID) < strings.TrimSpace(sources[j].cfg.chainID)
 	})
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	out := make([]probeChainRelayReportItem, 0, len(sources))
+	vrouterReports := snapshotProbeVirtualRouterRelayReports(now)
+	out := make([]probeChainRelayReportItem, 0, len(sources)+len(vrouterReports))
 	for _, source := range sources {
 		cfg := source.cfg
 		item := probeChainRelayReportItem{
@@ -1143,6 +1143,73 @@ func snapshotProbeChainRelayReports() []probeChainRelayReportItem {
 			item.BridgeStatus = &bridgeStatus
 			item.BridgeSessions = bridgeStatus.Sessions
 		}
+		out = append(out, item)
+	}
+	out = append(out, vrouterReports...)
+	return out
+}
+
+func snapshotProbeVirtualRouterRelayReports(now string) []probeChainRelayReportItem {
+	probeVirtualRouterRuntimeState.mu.RLock()
+	runtimes := make([]*probeVirtualRouterRuntime, 0, len(probeVirtualRouterRuntimeState.runtimes))
+	for _, rt := range probeVirtualRouterRuntimeState.runtimes {
+		if rt != nil {
+			runtimes = append(runtimes, rt)
+		}
+	}
+	probeVirtualRouterRuntimeState.mu.RUnlock()
+	sort.Slice(runtimes, func(i, j int) bool {
+		return strings.TrimSpace(runtimes[i].cfg.chainID) < strings.TrimSpace(runtimes[j].cfg.chainID)
+	})
+	out := make([]probeChainRelayReportItem, 0, len(runtimes))
+	for _, rt := range runtimes {
+		cfg := rt.cfg
+		nextHost := ""
+		nextPort := 0
+		nextNodeID := ""
+		nextDialMode := probeChainDialModeNone
+		prevNodeID := ""
+		prevDialMode := probeChainDialModeNone
+		if cfg.dialer {
+			nextHost = strings.TrimSpace(cfg.peerHost)
+			nextPort = cfg.peerPort
+			nextNodeID = normalizeProbeChainNodeID(cfg.peerNodeID)
+			if nextHost != "" && nextPort > 0 {
+				nextDialMode = probeChainDialModeForward
+			}
+		} else {
+			prevNodeID = normalizeProbeChainNodeID(cfg.peerNodeID)
+		}
+		item := probeChainRelayReportItem{
+			ChainID:      strings.TrimSpace(cfg.chainID),
+			ChainName:    strings.TrimSpace(cfg.name),
+			ChainType:    probeVirtualRouterRuntimeRole,
+			Role:         probeVirtualRouterRuntimeRole,
+			ListenHost:   strings.TrimSpace(cfg.listenHost),
+			ListenPort:   cfg.listenPort,
+			LinkLayer:    normalizeProbeChainLinkLayer(cfg.linkLayer),
+			NextHost:     nextHost,
+			NextPort:     nextPort,
+			NextNodeID:   nextNodeID,
+			NextDialMode: nextDialMode,
+			PrevNodeID:   prevNodeID,
+			PrevDialMode: prevDialMode,
+			UpdatedAt:    now,
+		}
+		if snapshot := snapshotProbeChainProtocolState(cfg.listenHost, cfg.listenPort); probeChainRelaySnapshotHasData(snapshot) {
+			item.ListenState = &snapshot
+		}
+		if nextPort > 0 && nextHost != "" {
+			if snapshot := snapshotProbeChainProtocolState(nextHost, nextPort); probeChainRelaySnapshotHasData(snapshot) {
+				item.NextState = &snapshot
+			}
+		}
+		if stats := snapshotProbeVirtualRouterRuntimeStats(cfg.chainID); stats != nil {
+			item.VirtualRouter = stats
+		}
+		_, bridgeStatus, _ := snapshotProbeVirtualRouterPingContext(rt, "")
+		item.BridgeStatus = &bridgeStatus
+		item.BridgeSessions = bridgeStatus.Sessions
 		out = append(out, item)
 	}
 	return out

@@ -361,13 +361,13 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 		t.Fatalf("topology rules=%+v", payload.Item.TopologyRules)
 	}
 	first := payload.Item.TopologyRules[0]
-	if first.FromServiceDomain != "edge-a.example.com" || first.FromServicePort != 443 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 443 {
+	if first.FromServiceDomain != "" || first.FromServicePort != 0 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 443 {
 		t.Fatalf("service config not persisted: %+v", first)
 	}
 	if strings.TrimSpace(first.Secret) == "" {
 		t.Fatalf("virtual router rule secret should be generated")
 	}
-	if payload.Item.TopologyRules[1].FromServicePort != 443 || payload.Item.TopologyRules[1].ToServicePort != 443 {
+	if payload.Item.TopologyRules[1].FromServicePort != 0 || payload.Item.TopologyRules[1].ToServicePort != 443 {
 		t.Fatalf("service port reuse should be allowed: %+v", payload.Item.TopologyRules)
 	}
 }
@@ -397,7 +397,7 @@ func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
     {"node_id":"2","ip":"198.18.0.4"}
   ],
   "topology_rules":[
-    {"from_node_id":"1","to_node_id":"2","direction":"bidirectional","from_service_port":65536,"enabled":true}
+    {"from_node_id":"1","to_node_id":"2","direction":"bidirectional","to_service_port":65536,"enabled":true}
   ]
 }`)
 	req := httptest.NewRequest(http.MethodPost, "/mng/api/link/virtual_router", bytes.NewReader(body))

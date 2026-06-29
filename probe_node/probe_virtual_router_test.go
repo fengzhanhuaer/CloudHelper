@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -117,14 +116,14 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	if len(loaded.TopologyRules) != 3 || loaded.TopologyRules[0].Direction != probeVirtualRouterDirectionForward {
 		t.Fatalf("loaded topology=%+v", loaded.TopologyRules)
 	}
-	if loaded.TopologyRules[0].FromServiceDomain != "edge-a.example.com" || loaded.TopologyRules[0].FromServicePort != 443 || loaded.TopologyRules[0].ToServiceDomain != "edge-b.internal.lan" || loaded.TopologyRules[0].ToServicePort != 443 {
+	if loaded.TopologyRules[0].FromServiceDomain != "" || loaded.TopologyRules[0].FromServicePort != 0 || loaded.TopologyRules[0].ToServiceDomain != "edge-b.internal.lan" || loaded.TopologyRules[0].ToServicePort != 443 {
 		t.Fatalf("loaded service config=%+v", loaded.TopologyRules[0])
 	}
-	if loaded.TopologyRules[1].FromServicePort != 443 || loaded.TopologyRules[1].ToServicePort != 443 {
+	if loaded.TopologyRules[1].FromServicePort != 0 || loaded.TopologyRules[1].ToServicePort != 443 {
 		t.Fatalf("service port reuse should be preserved: %+v", loaded.TopologyRules)
 	}
-	if loaded.TopologyRules[2].FromServicePort != probeVirtualRouterDefaultServicePort || loaded.TopologyRules[2].ToServicePort != probeVirtualRouterDefaultServicePort {
-		t.Fatalf("default service ports=%d/%d, want %d", loaded.TopologyRules[2].FromServicePort, loaded.TopologyRules[2].ToServicePort, probeVirtualRouterDefaultServicePort)
+	if loaded.TopologyRules[2].FromServicePort != 0 || loaded.TopologyRules[2].ToServicePort != probeVirtualRouterDefaultServicePort {
+		t.Fatalf("default service ports=%d/%d, want from=0 to=%d", loaded.TopologyRules[2].FromServicePort, loaded.TopologyRules[2].ToServicePort, probeVirtualRouterDefaultServicePort)
 	}
 }
 
@@ -182,9 +181,6 @@ func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T
 	if !ok {
 		t.Fatalf("runtime config should be built with link auth fields")
 	}
-	if !cfg.requireUserAuth {
-		t.Fatalf("virtual router should require user auth")
-	}
 	if cfg.secret != "shared-link-secret" || cfg.authTicket == "" || len(cfg.userPublicKey) != ed25519.PublicKeySize {
 		t.Fatalf("runtime auth fields not applied: secret=%q ticket=%t pub=%d", cfg.secret, cfg.authTicket != "", len(cfg.userPublicKey))
 	}
@@ -206,7 +202,7 @@ func TestProbeVirtualRouterICMPTraceUsesLocalNodeWhenRuntimeNil(t *testing.T) {
 }
 
 func TestProbeVirtualRouterICMPTraceEnvelopeRoundTrip(t *testing.T) {
-	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{
 		chainID:  "vrouter-test",
 		identity: nodeIdentity{NodeID: "16"},
 	}}
@@ -246,7 +242,7 @@ func TestProbeVirtualRouterRuntimeFrameStatsAreDirectional(t *testing.T) {
 		probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	})
 
-	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-frame-stats"}}
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-frame-stats"}}
 	recordProbeVirtualRouterRuntimeFrameSent(rt, 123)
 	recordProbeVirtualRouterRuntimeFrameReceived(rt, 456)
 
@@ -292,12 +288,10 @@ func TestRememberProbeVirtualRouterAuthTickets(t *testing.T) {
 	}
 }
 
-func TestEnsureProbeChainRuntimeAuthTicketUsesVirtualRouterConfig(t *testing.T) {
+func TestVerifyProbeVirtualRouterUserAuthTicket(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeChainAuthTicketStoreForTest()
 	defer resetProbeChainAuthTicketStoreForTest()
-	origRequestConfig := probeRequestLinkChainConfig
-	defer func() { probeRequestLinkChainConfig = origRequestConfig }()
 
 	rule := withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
 		ID:              "rule-ticket-refresh",
@@ -309,26 +303,18 @@ func TestEnsureProbeChainRuntimeAuthTicketUsesVirtualRouterConfig(t *testing.T) 
 		Enabled:         true,
 	})
 	chainID := probeVirtualRouterRuntimeChainID(rule)
-	probeRequestLinkChainConfig = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
-		return probeLinkChainConfigFetchResult{
-			VirtualRouter: probeVirtualRouterConfig{
-				Enabled:       true,
-				TopologyRules: []probeVirtualRouterTopologyRule{rule},
-			},
-		}, nil
+	pub, err := parseProbeChainUserPublicKey(rule.UserPublicKey)
+	if err != nil {
+		t.Fatalf("parse public key: %v", err)
 	}
 
-	cfg := probeChainRuntimeConfig{
-		chainID:         chainID,
-		requireUserAuth: true,
-		controllerURL:   "http://controller.example.invalid",
-		identity:        nodeIdentity{NodeID: "1", Secret: "node-secret"},
+	cfg := probeVirtualRouterRuntimeConfig{
+		chainID:       chainID,
+		rawPublicKey:  rule.UserPublicKey,
+		userPublicKey: pub,
 	}
-	if err := ensureProbeChainRuntimeAuthTicket(&cfg); err != nil {
-		t.Fatalf("ensure auth ticket failed: %v", err)
-	}
-	if cfg.authTicket != rule.AuthTicket {
-		t.Fatalf("refreshed virtual router ticket=%q want %q", cfg.authTicket, rule.AuthTicket)
+	if err := verifyProbeVirtualRouterUserAuthTicket(cfg, rule.AuthTicket); err != nil {
+		t.Fatalf("verify virtual router auth ticket failed: %v", err)
 	}
 }
 
@@ -399,13 +385,13 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	if left[0].chainID != right[0].chainID || !isProbeVirtualRouterRuntimeChainID(left[0].chainID) {
 		t.Fatalf("unexpected chain ids left=%q right=%q", left[0].chainID, right[0].chainID)
 	}
-	if left[0].nextNodeID != "2" || left[0].nextHost != "b.internal" || left[0].nextPort != 12040 || left[0].nextAuthMode != "secret" {
+	if left[0].peerNodeID != "2" || left[0].peerHost != "b.internal" || left[0].peerPort != 12040 || !left[0].dialer {
 		t.Fatalf("left runtime should dial node 2: %+v", left[0])
 	}
-	if right[0].prevNodeID != "1" || right[0].nextAuthMode != "proxy" {
+	if right[0].peerNodeID != "1" || right[0].dialer || right[0].peerHost != "" || right[0].peerPort != 0 {
 		t.Fatalf("right runtime should wait for node 1: %+v", right[0])
 	}
-	if left[0].listenPort != 12040 || right[0].listenPort != 12040 {
+	if left[0].listenPort != 0 || right[0].listenPort != 12040 {
 		t.Fatalf("listen ports left=%d right=%d", left[0].listenPort, right[0].listenPort)
 	}
 }
@@ -441,10 +427,10 @@ func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *test
 	if len(left) != 1 || len(middle) != 2 || len(right) != 1 {
 		t.Fatalf("runtime configs left=%d middle=%d right=%d", len(left), len(middle), len(right))
 	}
-	if left[0].listenPort != 12040 || right[0].listenPort != 12040 {
+	if left[0].listenPort != 0 || right[0].listenPort != 0 {
 		t.Fatalf("dialer listen ports left=%d right=%d", left[0].listenPort, right[0].listenPort)
 	}
-	if left[0].nextHost != "b.internal" || left[0].nextPort != 12040 || right[0].nextHost != "b.internal" || right[0].nextPort != 12040 {
+	if left[0].peerHost != "b.internal" || left[0].peerPort != 12040 || right[0].peerHost != "b.internal" || right[0].peerPort != 12040 {
 		t.Fatalf("dialers should target same B service port: left=%+v right=%+v", left[0], right[0])
 	}
 	if middle[0].listenPort != 12040 || middle[1].listenPort != 12040 {
@@ -454,8 +440,8 @@ func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *test
 		t.Fatalf("rules sharing one port must still have distinct chain ids: %+v", middle)
 	}
 	seenPrev := map[string]struct{}{
-		middle[0].prevNodeID: {},
-		middle[1].prevNodeID: {},
+		middle[0].peerNodeID: {},
+		middle[1].peerNodeID: {},
 	}
 	if _, ok := seenPrev["1"]; !ok {
 		t.Fatalf("B runtime should keep rule from node 1: %+v", middle)
@@ -537,10 +523,10 @@ func TestBuildProbeVirtualRouterRuntimeConfigForwardPassiveSideDoesNotProbePrev(
 	if len(left) != 1 || len(right) != 1 {
 		t.Fatalf("runtime configs left=%d right=%d", len(left), len(right))
 	}
-	if left[0].nextNodeID != "2" || left[0].nextHost != "b.internal" || left[0].nextAuthMode != "secret" {
+	if left[0].peerNodeID != "2" || left[0].peerHost != "b.internal" || !left[0].dialer {
 		t.Fatalf("forward source should dial destination: %+v", left[0])
 	}
-	if right[0].prevNodeID != "1" || right[0].nextNodeID != "" || right[0].nextAuthMode != "proxy" || right[0].prevDialMode != probeChainDialModeNone {
+	if right[0].peerNodeID != "1" || right[0].dialer || right[0].peerHost != "" {
 		t.Fatalf("forward destination should know source topology but remain passive: %+v", right[0])
 	}
 }
@@ -566,10 +552,10 @@ func TestBuildProbeVirtualRouterRuntimeConfigFixedADialsBRequiresBAddress(t *tes
 	if len(left) != 1 || len(right) != 1 {
 		t.Fatalf("runtime configs left=%d right=%d", len(left), len(right))
 	}
-	if left[0].prevNodeID != "2" || left[0].nextAuthMode != "proxy" || left[0].nextNodeID != "" {
+	if left[0].peerNodeID != "2" || !left[0].dialer || left[0].peerHost != "" {
 		t.Fatalf("node 1 should keep topology but cannot dial without B address: %+v", left[0])
 	}
-	if right[0].prevNodeID != "1" || right[0].nextNodeID != "" || right[0].nextAuthMode != "proxy" {
+	if right[0].peerNodeID != "1" || right[0].dialer || right[0].peerHost != "" {
 		t.Fatalf("node 2 should remain passive; B never dials A for virtual router: %+v", right[0])
 	}
 }
@@ -773,13 +759,13 @@ func TestCurrentProbeVirtualRouterPathPrefersLowestRTTAmongEqualHopPaths(t *test
 	applyProbeVirtualRouterConfigForNode(config, "1")
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
-	probeChainRuntimeState.mu.Lock()
-	oldRuntimes := probeChainRuntimeState.runtimes
-	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
-		"vrouter-1-2": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-2", nextNodeID: "2", nextAuthMode: "secret"}},
-		"vrouter-1-3": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-3", nextNodeID: "3", nextAuthMode: "secret"}},
+	probeVirtualRouterRuntimeState.mu.Lock()
+	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{
+		"vrouter-1-2": {cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-1-2", peerNodeID: "2", dialer: true}},
+		"vrouter-1-3": {cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-1-3", peerNodeID: "3", dialer: true}},
 	}
-	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeState.mu.Unlock()
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	oldStats := probeVirtualRouterRuntimeStatsState.items
 	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
@@ -788,9 +774,9 @@ func TestCurrentProbeVirtualRouterPathPrefersLowestRTTAmongEqualHopPaths(t *test
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	t.Cleanup(func() {
-		probeChainRuntimeState.mu.Lock()
-		probeChainRuntimeState.runtimes = oldRuntimes
-		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeState.mu.Lock()
+		probeVirtualRouterRuntimeState.runtimes = oldRuntimes
+		probeVirtualRouterRuntimeState.mu.Unlock()
 		probeVirtualRouterRuntimeStatsState.mu.Lock()
 		probeVirtualRouterRuntimeStatsState.items = oldStats
 		probeVirtualRouterRuntimeStatsState.mu.Unlock()
@@ -814,13 +800,13 @@ func TestCurrentProbeVirtualRouterPathUsesRemoteRTTFallback(t *testing.T) {
 	applyProbeVirtualRouterConfigForNode(config, "1")
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
-	probeChainRuntimeState.mu.Lock()
-	oldRuntimes := probeChainRuntimeState.runtimes
-	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
-		"vrouter-1-2": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-2", nextNodeID: "2", nextAuthMode: "secret"}},
-		"vrouter-1-3": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-3", nextNodeID: "3", nextAuthMode: "secret"}},
+	probeVirtualRouterRuntimeState.mu.Lock()
+	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{
+		"vrouter-1-2": {cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-1-2", peerNodeID: "2", dialer: true}},
+		"vrouter-1-3": {cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-1-3", peerNodeID: "3", dialer: true}},
 	}
-	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeState.mu.Unlock()
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	oldStats := probeVirtualRouterRuntimeStatsState.items
 	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
@@ -829,9 +815,9 @@ func TestCurrentProbeVirtualRouterPathUsesRemoteRTTFallback(t *testing.T) {
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	t.Cleanup(func() {
-		probeChainRuntimeState.mu.Lock()
-		probeChainRuntimeState.runtimes = oldRuntimes
-		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeState.mu.Lock()
+		probeVirtualRouterRuntimeState.runtimes = oldRuntimes
+		probeVirtualRouterRuntimeState.mu.Unlock()
 		probeVirtualRouterRuntimeStatsState.mu.Lock()
 		probeVirtualRouterRuntimeStatsState.items = oldStats
 		probeVirtualRouterRuntimeStatsState.mu.Unlock()
@@ -915,7 +901,7 @@ func TestReusableProbeVirtualRouterFrameLinkDropsClosedLink(t *testing.T) {
 }
 
 func TestProbeVirtualRouterFrameLinkKeyIsPerRule(t *testing.T) {
-	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-rule-1"}}
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-rule-1"}}
 	left := probeVirtualRouterFrameLinkKey(rt, "to_next", "198.18.0.21", []string{"1", "2"})
 	right := probeVirtualRouterFrameLinkKey(rt, "to_prev", "198.18.0.22", []string{"2", "1"})
 	if left == "" {
@@ -1060,13 +1046,13 @@ func TestCurrentProbeVirtualRouterPathKeepsShortestHopBeforeRTT(t *testing.T) {
 	applyProbeVirtualRouterConfigForNode(config, "1")
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
-	probeChainRuntimeState.mu.Lock()
-	oldRuntimes := probeChainRuntimeState.runtimes
-	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
-		"vrouter-1-4": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-4", nextNodeID: "4", nextAuthMode: "secret"}},
-		"vrouter-1-3": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-3", nextNodeID: "3", nextAuthMode: "secret"}},
+	probeVirtualRouterRuntimeState.mu.Lock()
+	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{
+		"vrouter-1-4": {cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-1-4", peerNodeID: "4", dialer: true}},
+		"vrouter-1-3": {cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-1-3", peerNodeID: "3", dialer: true}},
 	}
-	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeState.mu.Unlock()
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	oldStats := probeVirtualRouterRuntimeStatsState.items
 	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
@@ -1075,9 +1061,9 @@ func TestCurrentProbeVirtualRouterPathKeepsShortestHopBeforeRTT(t *testing.T) {
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	t.Cleanup(func() {
-		probeChainRuntimeState.mu.Lock()
-		probeChainRuntimeState.runtimes = oldRuntimes
-		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeState.mu.Lock()
+		probeVirtualRouterRuntimeState.runtimes = oldRuntimes
+		probeVirtualRouterRuntimeState.mu.Unlock()
 		probeVirtualRouterRuntimeStatsState.mu.Lock()
 		probeVirtualRouterRuntimeStatsState.items = oldStats
 		probeVirtualRouterRuntimeStatsState.mu.Unlock()
@@ -1101,13 +1087,13 @@ func TestCurrentProbeVirtualRouterPathUsesRouteCacheUntilInvalidated(t *testing.
 	applyProbeVirtualRouterConfigForNode(config, "1")
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
-	probeChainRuntimeState.mu.Lock()
-	oldRuntimes := probeChainRuntimeState.runtimes
-	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
-		"vrouter-1-2": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-2", nextNodeID: "2", nextAuthMode: "secret"}},
-		"vrouter-1-3": {cfg: probeChainRuntimeConfig{chainID: "vrouter-1-3", nextNodeID: "3", nextAuthMode: "secret"}},
+	probeVirtualRouterRuntimeState.mu.Lock()
+	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{
+		"vrouter-1-2": {cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-1-2", peerNodeID: "2", dialer: true}},
+		"vrouter-1-3": {cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-1-3", peerNodeID: "3", dialer: true}},
 	}
-	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeState.mu.Unlock()
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	oldStats := probeVirtualRouterRuntimeStatsState.items
 	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
@@ -1116,9 +1102,9 @@ func TestCurrentProbeVirtualRouterPathUsesRouteCacheUntilInvalidated(t *testing.
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	t.Cleanup(func() {
-		probeChainRuntimeState.mu.Lock()
-		probeChainRuntimeState.runtimes = oldRuntimes
-		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeState.mu.Lock()
+		probeVirtualRouterRuntimeState.runtimes = oldRuntimes
+		probeVirtualRouterRuntimeState.mu.Unlock()
 		probeVirtualRouterRuntimeStatsState.mu.Lock()
 		probeVirtualRouterRuntimeStatsState.items = oldStats
 		probeVirtualRouterRuntimeStatsState.mu.Unlock()
@@ -1156,7 +1142,7 @@ func TestProbeVirtualRouterPacketTargetsLocalIPUsesStoredVirtualIP(t *testing.T)
 	applyProbeVirtualRouterConfigForNode(config, "")
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
-	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{identity: nodeIdentity{NodeID: "19"}}}
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{identity: nodeIdentity{NodeID: "19"}}}
 	if !probeVirtualRouterPacketTargetsLocalIP(rt, "198.18.0.21") {
 		t.Fatalf("packet to node 19 ip should target local node")
 	}
@@ -1179,7 +1165,7 @@ func TestProbeVirtualRouterPacketTargetsLocalIPPrefersRuntimeIdentity(t *testing
 	applyProbeVirtualRouterConfigForNode(config, "19")
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
-	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{identity: nodeIdentity{NodeID: "16"}}}
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{identity: nodeIdentity{NodeID: "16"}}}
 	if !probeVirtualRouterPacketTargetsLocalIP(rt, "198.18.0.18") {
 		t.Fatalf("packet to runtime node 16 ip should target local runtime")
 	}
@@ -1296,7 +1282,7 @@ func TestProbeVirtualRouterICMPEchoReplyWritesBackOnIngressLink(t *testing.T) {
 		}{frame: frame, err: err}
 	}()
 
-	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}}}
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}}}
 	request := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.18", "198.18.0.21")
 	if !handleProbeVirtualRouterLocalICMPEchoRequest(rt, link, request, []string{"16", "19"}, nil) {
 		t.Fatalf("echo request should be handled")
@@ -1330,17 +1316,17 @@ func TestProbeVirtualRouterParseTCPUDPLogInfo(t *testing.T) {
 }
 
 func TestProbeVirtualRouterRuntimeForAdjacentNode(t *testing.T) {
-	probeChainRuntimeState.mu.Lock()
-	oldRuntimes := probeChainRuntimeState.runtimes
-	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
-		"chain-a": {cfg: probeChainRuntimeConfig{chainID: "chain-a", nextNodeID: "2", nextAuthMode: "secret"}},
-		"chain-b": {cfg: probeChainRuntimeConfig{chainID: "chain-b", prevNodeID: "3"}},
+	probeVirtualRouterRuntimeState.mu.Lock()
+	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{
+		"chain-a": {cfg: probeVirtualRouterRuntimeConfig{chainID: "chain-a", peerNodeID: "2", dialer: true}},
+		"chain-b": {cfg: probeVirtualRouterRuntimeConfig{chainID: "chain-b", peerNodeID: "3"}},
 	}
-	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeState.mu.Unlock()
 	t.Cleanup(func() {
-		probeChainRuntimeState.mu.Lock()
-		probeChainRuntimeState.runtimes = oldRuntimes
-		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeState.mu.Lock()
+		probeVirtualRouterRuntimeState.runtimes = oldRuntimes
+		probeVirtualRouterRuntimeState.mu.Unlock()
 	})
 
 	rt, direction := probeVirtualRouterRuntimeForAdjacentNode("2")
@@ -1353,30 +1339,36 @@ func TestProbeVirtualRouterRuntimeForAdjacentNode(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterRuntimeForAdjacentNodePrefersAvailableBridgeSession(t *testing.T) {
-	nextClient, nextServer := newProbeChainFrameSessionPairForTest(t)
-	defer nextClient.Close()
-	defer nextServer.Close()
-	prevClient, prevServer := newProbeChainFrameSessionPairForTest(t)
-	defer prevClient.Close()
-	defer prevServer.Close()
+func TestProbeVirtualRouterRuntimeForAdjacentNodePrefersAvailableCarrier(t *testing.T) {
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+	nextRT := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-next", peerNodeID: "2", dialer: true}}
+	prevRT := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-prev", peerNodeID: "3"}}
+	nextLeft, nextRight := net.Pipe()
+	defer nextRight.Close()
+	prevLeft, prevRight := net.Pipe()
+	defer prevRight.Close()
+	nextLink := newProbeVirtualRouterFrameLink(probeVirtualRouterFrameLinkKey(nextRT, "", "", nil), nextRT, nil, nil)
+	prevLink := newProbeVirtualRouterFrameLink(probeVirtualRouterFrameLinkKey(prevRT, "", "", nil), prevRT, nil, nil)
+	nextLink.AttachCarrier(nextLeft, "next-carrier", "pipe")
+	prevLink.AttachCarrier(prevLeft, "prev-carrier", "pipe")
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{
+		probeVirtualRouterFrameLinkKey(nextRT, "", "", nil): nextLink,
+		probeVirtualRouterFrameLinkKey(prevRT, "", "", nil): prevLink,
+	}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
 
-	nextRT := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-next", nextNodeID: "2", nextAuthMode: "secret"}}
-	nextRT.setUpstreamSession("upstream-test", nextServer, probeChainBridgeRoleToPrev, "pipe")
-	prevRT := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-prev", prevNodeID: "3"}}
-	prevRT.setDownstreamSession("downstream-test", prevServer, probeChainBridgeRoleToNext, "pipe")
-
-	probeChainRuntimeState.mu.Lock()
-	oldRuntimes := probeChainRuntimeState.runtimes
-	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
+	probeVirtualRouterRuntimeState.mu.Lock()
+	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{
 		"vrouter-next": nextRT,
 		"vrouter-prev": prevRT,
 	}
-	probeChainRuntimeState.mu.Unlock()
+	probeVirtualRouterRuntimeState.mu.Unlock()
 	t.Cleanup(func() {
-		probeChainRuntimeState.mu.Lock()
-		probeChainRuntimeState.runtimes = oldRuntimes
-		probeChainRuntimeState.mu.Unlock()
+		probeVirtualRouterRuntimeState.mu.Lock()
+		probeVirtualRouterRuntimeState.runtimes = oldRuntimes
+		probeVirtualRouterRuntimeState.mu.Unlock()
 	})
 
 	rt, direction := probeVirtualRouterRuntimeForAdjacentNode("2")
@@ -1390,7 +1382,7 @@ func TestProbeVirtualRouterRuntimeForAdjacentNodePrefersAvailableBridgeSession(t
 }
 
 func TestProbeVirtualRouterFrameLinkKey(t *testing.T) {
-	rt := &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "chain-a"}}
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "chain-a"}}
 	got := probeVirtualRouterFrameLinkKey(rt, probeChainBridgeRoleToNext, "198.18.0.9", []string{"node-1", "node-2"})
 	if got != "packet|chain-a" {
 		t.Fatalf("key=%q", got)
@@ -1444,12 +1436,11 @@ func TestProbeVirtualRouterPingErrorRetainsCarrierAndFrameLink(t *testing.T) {
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
 
-	rt := &probeChainRuntime{
-		cfg: probeChainRuntimeConfig{
+	rt := &probeVirtualRouterRuntime{
+		cfg: probeVirtualRouterRuntimeConfig{
 			chainID:    "vrouter-carrier-health",
-			chainType:  "virtual_router",
-			role:       "relay",
-			nextNodeID: "19",
+			peerNodeID: "19",
+			dialer:     true,
 		},
 	}
 	left, right := net.Pipe()
@@ -1483,12 +1474,11 @@ func TestProbeVirtualRouterPingErrorKeepsRecentlyActiveCarrier(t *testing.T) {
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
 
-	rt := &probeChainRuntime{
-		cfg: probeChainRuntimeConfig{
+	rt := &probeVirtualRouterRuntime{
+		cfg: probeVirtualRouterRuntimeConfig{
 			chainID:    "vrouter-carrier-active",
-			chainType:  "virtual_router",
-			role:       "relay",
-			nextNodeID: "19",
+			peerNodeID: "19",
+			dialer:     true,
 		},
 	}
 	left, right := net.Pipe()
@@ -1520,12 +1510,11 @@ func TestProbeVirtualRouterRepeatedPingErrorDetachesStaleCarrier(t *testing.T) {
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
 
-	rt := &probeChainRuntime{
-		cfg: probeChainRuntimeConfig{
+	rt := &probeVirtualRouterRuntime{
+		cfg: probeVirtualRouterRuntimeConfig{
 			chainID:    "vrouter-carrier-stale",
-			chainType:  "virtual_router",
-			role:       "relay",
-			nextNodeID: "19",
+			peerNodeID: "19",
+			dialer:     true,
 		},
 	}
 	left, right := net.Pipe()
@@ -1563,7 +1552,7 @@ func TestProbeVirtualRouterDispatchErrorKeepsFrameLinkAlive(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
-	link := newProbeVirtualRouterFrameLink("dispatch-error", &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-dispatch-error"}}, nil, nil)
+	link := newProbeVirtualRouterFrameLink("dispatch-error", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-dispatch-error"}}, nil, nil)
 	link.Start()
 	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
 
@@ -1589,7 +1578,7 @@ func TestProbeVirtualRouterCarrierFailureDetachesCarrierButKeepsFrameLink(t *tes
 
 	left, right := net.Pipe()
 	key := "carrier-failure"
-	link := newProbeVirtualRouterFrameLink(key, &probeChainRuntime{cfg: probeChainRuntimeConfig{chainID: "vrouter-carrier-failure"}}, nil, nil)
+	link := newProbeVirtualRouterFrameLink(key, &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-carrier-failure"}}, nil, nil)
 	link.Start()
 	token := link.AttachCarrier(left, "vrouter-carrier-test", "pipe")
 	if token == nil {

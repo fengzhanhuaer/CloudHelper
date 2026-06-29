@@ -230,9 +230,6 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 		if fromNodeID == toNodeID {
 			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d] endpoints must be different", index)
 		}
-		if item.FromServicePort < 0 || item.FromServicePort > 65535 {
-			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].from_service_port must be empty(default %d) or between 1 and 65535", index, probeVirtualRouterDefaultServicePort)
-		}
 		if item.ToServicePort < 0 || item.ToServicePort > 65535 {
 			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].to_service_port must be empty(default %d) or between 1 and 65535", index, probeVirtualRouterDefaultServicePort)
 		}
@@ -302,8 +299,8 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 			continue
 		}
-		fromServiceDomain := strings.TrimSpace(item.FromServiceDomain)
-		fromServicePort := normalizeProbeVirtualRouterServicePort(item.FromServicePort)
+		fromServiceDomain := ""
+		fromServicePort := 0
 		toServiceDomain := strings.TrimSpace(item.ToServiceDomain)
 		toServicePort := normalizeProbeVirtualRouterServicePort(item.ToServicePort)
 		ruleID := strings.TrimSpace(item.ID)
@@ -344,15 +341,6 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 			break
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].FromNodeID != out[j].FromNodeID {
-			return out[i].FromNodeID < out[j].FromNodeID
-		}
-		if out[i].ToNodeID != out[j].ToNodeID {
-			return out[i].ToNodeID < out[j].ToNodeID
-		}
-		return strings.TrimSpace(out[i].ID) < strings.TrimSpace(out[j].ID)
-	})
 	return out
 }
 
