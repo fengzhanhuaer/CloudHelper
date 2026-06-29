@@ -130,14 +130,16 @@ func consumeProbeLocalConsoleProxyResult(result probeLocalConsoleProxyResultMess
 
 // ---------------------------------------------------------------------------
 // Browser-facing reverse proxy: /mng/probe-console (entry, mng-authed) mints a
-// capability token cookie scoped to "/", and /local/* proxies to the selected
-// node authenticated by that token (the mng cookie is path-scoped to /mng and is
-// not sent for /local/*).
+// capability token and redirects into /mng/probe-console/session/{token}/local/*.
+// Keeping the token in the URL path lets multiple probe consoles stay open in
+// the same browser. Legacy /local/* cookie-based proxying is still accepted for
+// old tabs and links.
 // ---------------------------------------------------------------------------
 
 const (
 	mngProbeConsoleCookieName     = "mng_probe_console"
 	mngProbeConsoleNodeCookieName = "mng_probe_console_node"
+	mngProbeConsoleSessionPrefix  = "/mng/probe-console/session/"
 	mngProbeConsoleTokenTTL       = 2 * time.Hour
 )
 
@@ -151,6 +153,12 @@ var mngProbeConsoleTokens = struct {
 	mu   sync.Mutex
 	data map[string]mngProbeConsoleToken
 }{data: map[string]mngProbeConsoleToken{}}
+
+type mngProbeConsoleProxyRoute struct {
+	TokenRecord mngProbeConsoleToken
+	ConsolePath string
+	URLPrefix   string
+}
 
 func mintMngProbeConsoleToken(nodeID string, displayName ...string) string {
 	buf := make([]byte, 24)
@@ -248,26 +256,23 @@ func mngProbeConsoleEntryHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		Secure:   secure,
 	})
-	http.Redirect(w, r, "/local/panel", http.StatusFound)
+	http.Redirect(w, r, mngProbeConsoleSessionPrefix+token+"/local/panel", http.StatusFound)
 }
 
 // mngProbeConsoleProxyHandler serves /local/* by forwarding to the token-selected
-// probe node. It is authenticated by the console token cookie (not mng auth, whose
-// cookie is path-scoped to /mng).
+// probe node. New console tabs carry the token in a session-scoped URL prefix so
+// multiple probe consoles can coexist in the same browser. The legacy /local/*
+// cookie mode is kept for already-open tabs and old links.
 func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(mngProbeConsoleCookieName)
-	if err != nil {
-		mngProbeConsoleProxyDenied(w, r)
-		return
-	}
-	tokenRecord, ok := resolveMngProbeConsoleTokenRecord(cookie.Value)
+	route, ok := resolveMngProbeConsoleProxyRoute(r)
 	if !ok {
 		mngProbeConsoleProxyDenied(w, r)
 		return
 	}
+	tokenRecord := route.TokenRecord
 	nodeID := tokenRecord.NodeID
 
-	path := r.URL.Path
+	path := route.ConsolePath
 	if r.URL.RawQuery != "" {
 		path += "?" + r.URL.RawQuery
 	}
@@ -299,12 +304,16 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	decoded = applyMngProbeConsoleTitle(decoded, tokenRecord.DisplayName, result.Headers)
+	decoded = rewriteMngProbeConsoleHTMLLinks(decoded, route.URLPrefix, result.Headers)
 	for key, values := range result.Headers {
 		canonical := http.CanonicalHeaderKey(key)
 		if mngProbeConsoleSkipResponseHeader(canonical) {
 			continue
 		}
 		for _, value := range values {
+			if canonical == "Location" {
+				value = rewriteMngProbeConsoleLocation(value, route.URLPrefix)
+			}
 			w.Header().Add(canonical, value)
 		}
 	}
@@ -315,6 +324,44 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(decoded)
+}
+
+func resolveMngProbeConsoleProxyRoute(r *http.Request) (mngProbeConsoleProxyRoute, bool) {
+	path := strings.TrimSpace(r.URL.Path)
+	if strings.HasPrefix(path, mngProbeConsoleSessionPrefix) {
+		rest := strings.TrimPrefix(path, mngProbeConsoleSessionPrefix)
+		token := rest
+		consolePath := "/local/panel"
+		if idx := strings.Index(rest, "/"); idx >= 0 {
+			token = rest[:idx]
+			consolePath = rest[idx:]
+		}
+		tokenRecord, ok := resolveMngProbeConsoleTokenRecord(token)
+		if !ok {
+			return mngProbeConsoleProxyRoute{}, false
+		}
+		if !strings.HasPrefix(consolePath, "/local/") {
+			consolePath = "/local/panel"
+		}
+		return mngProbeConsoleProxyRoute{
+			TokenRecord: tokenRecord,
+			ConsolePath: consolePath,
+			URLPrefix:   mngProbeConsoleSessionPrefix + strings.TrimSpace(token),
+		}, true
+	}
+
+	cookie, err := r.Cookie(mngProbeConsoleCookieName)
+	if err != nil {
+		return mngProbeConsoleProxyRoute{}, false
+	}
+	tokenRecord, ok := resolveMngProbeConsoleTokenRecord(cookie.Value)
+	if !ok {
+		return mngProbeConsoleProxyRoute{}, false
+	}
+	return mngProbeConsoleProxyRoute{
+		TokenRecord: tokenRecord,
+		ConsolePath: path,
+	}, true
 }
 
 func probeNodeConsoleDisplayName(nodeID string, node probeNodeRecord) string {
@@ -366,6 +413,36 @@ func applyMngProbeConsoleTitle(body []byte, displayName string, headers map[stri
 	}
 	title := "<title>" + html.EscapeString(name) + " - Probe Node 控制台</title>\n  "
 	return []byte(page[:headEnd] + title + page[headEnd:])
+}
+
+func rewriteMngProbeConsoleHTMLLinks(body []byte, urlPrefix string, headers map[string][]string) []byte {
+	prefix := strings.TrimRight(strings.TrimSpace(urlPrefix), "/")
+	if prefix == "" || len(body) == 0 || !mngProbeConsoleLooksLikeHTML(headers) {
+		return body
+	}
+	page := string(body)
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{`"/local/`, `"` + prefix + `/local/`},
+		{`'/local/`, `'` + prefix + `/local/`},
+		{"`/local/", "`" + prefix + "/local/"},
+		{`=/local/`, `=` + prefix + `/local/`},
+	}
+	for _, item := range replacements {
+		page = strings.ReplaceAll(page, item.old, item.new)
+	}
+	return []byte(page)
+}
+
+func rewriteMngProbeConsoleLocation(value string, urlPrefix string) string {
+	prefix := strings.TrimRight(strings.TrimSpace(urlPrefix), "/")
+	clean := strings.TrimSpace(value)
+	if prefix == "" || !strings.HasPrefix(clean, "/local/") {
+		return value
+	}
+	return prefix + clean
 }
 
 func mngProbeConsoleLooksLikeHTML(headers map[string][]string) bool {

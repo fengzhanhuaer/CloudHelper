@@ -73,6 +73,53 @@ func TestMngProbeConsoleTokenSlidingRenewal(t *testing.T) {
 	}
 }
 
+func TestMngProbeConsoleSessionRouteSupportsMultipleProbeTabs(t *testing.T) {
+	tokenA := mintMngProbeConsoleToken("7", "node-a")
+	tokenB := mintMngProbeConsoleToken("8", "node-b")
+	if tokenA == "" || tokenB == "" {
+		t.Fatal("expected non-empty tokens")
+	}
+
+	reqA := httptest.NewRequest(http.MethodGet, mngProbeConsoleSessionPrefix+tokenA+"/local/panel", nil)
+	routeA, ok := resolveMngProbeConsoleProxyRoute(reqA)
+	if !ok {
+		t.Fatal("expected route A to resolve")
+	}
+	reqB := httptest.NewRequest(http.MethodGet, mngProbeConsoleSessionPrefix+tokenB+"/local/proxy", nil)
+	routeB, ok := resolveMngProbeConsoleProxyRoute(reqB)
+	if !ok {
+		t.Fatal("expected route B to resolve")
+	}
+
+	if routeA.TokenRecord.NodeID != "7" || routeA.ConsolePath != "/local/panel" {
+		t.Fatalf("unexpected route A: %+v", routeA)
+	}
+	if routeB.TokenRecord.NodeID != "8" || routeB.ConsolePath != "/local/proxy" {
+		t.Fatalf("unexpected route B: %+v", routeB)
+	}
+	if routeA.URLPrefix == routeB.URLPrefix {
+		t.Fatalf("session URL prefixes must be independent: %q", routeA.URLPrefix)
+	}
+}
+
+func TestRewriteMngProbeConsoleHTMLLinksUsesSessionPrefix(t *testing.T) {
+	headers := map[string][]string{"Content-Type": {"text/html; charset=utf-8"}}
+	prefix := mngProbeConsoleSessionPrefix + "abc123"
+	body := []byte("<a href=\"/local/panel\">home</a><script>fetch('/local/api/auth/session'); location.href = `/local/login`;</script>")
+
+	got := string(rewriteMngProbeConsoleHTMLLinks(body, prefix, headers))
+
+	for _, want := range []string{
+		`href="` + prefix + `/local/panel"`,
+		`fetch('` + prefix + `/local/api/auth/session')`,
+		"`" + prefix + "/local/login`",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rewritten html missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestMngProbeConsoleProxyDeniedRemintsWithNodeCookie(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/local/panel", nil)
 	req.Header.Set("Accept", "text/html")
