@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -208,26 +209,27 @@ func TestProbeVirtualRouterICMPTraceEnvelopeRoundTrip(t *testing.T) {
 	}}
 	trace := appendProbeVirtualRouterICMPTrace(nil, rt, "frame_rx", "", "")
 	trace = appendProbeVirtualRouterICMPTrace(trace, rt, "local_deliver", "", "")
-	frame := probeVirtualRouterFrameMessage{
-		FrameType:   probeVirtualRouterFrameTypeData,
-		ControlType: probeVirtualRouterControlTypeIPv4,
-		Payload:     buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.21", "198.18.0.18"),
-		Path:        []string{"19", "16"},
-		Trace:       trace,
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.21", "198.18.0.18"), []string{"19", "16"}, trace)
+	if err != nil {
+		t.Fatalf("build frame: %v", err)
 	}
 	raw, err := marshalProbeVirtualRouterFrameEnvelope(frame)
 	if err != nil {
 		t.Fatalf("marshal frame: %v", err)
 	}
-	got, err := unmarshalProbeVirtualRouterFrameEnvelope(raw, nil)
+	got, err := unmarshalProbeVirtualRouterFrameEnvelope(raw)
 	if err != nil {
 		t.Fatalf("unmarshal frame: %v", err)
 	}
-	if len(got.Trace) != 2 {
-		t.Fatalf("trace hops=%d, want 2: %+v", len(got.Trace), got.Trace)
+	control, err := probeVirtualRouterFrameControl(got, nil)
+	if err != nil {
+		t.Fatalf("unmarshal control: %v", err)
 	}
-	if got.Trace[0].Event != "frame_rx" || got.Trace[1].Event != "local_deliver" {
-		t.Fatalf("unexpected trace events: %+v", got.Trace)
+	if len(control.Trace) != 2 {
+		t.Fatalf("trace hops=%d, want 2: %+v", len(control.Trace), control.Trace)
+	}
+	if control.Trace[0].Event != "frame_rx" || control.Trace[1].Event != "local_deliver" {
+		t.Fatalf("unexpected trace events: %+v", control.Trace)
 	}
 }
 
@@ -593,23 +595,26 @@ func TestCollectProbeLinkChainRuntimeIDsToStopKeepsVirtualRouterRuntime(t *testi
 
 func TestProbeVirtualRouterControlFrameEnvelope(t *testing.T) {
 	payload := []byte(`{"request_id":"r1"}`)
-	raw, err := marshalProbeVirtualRouterFrameEnvelope(probeVirtualRouterFrameMessage{
-		FrameType:   probeVirtualRouterFrameTypeControl,
-		ControlType: probeVirtualRouterControlTypePing,
-		Payload:     payload,
-		Path:        []string{"1", "2"},
-	})
+	frame, err := buildProbeVirtualRouterBusinessFrame(probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterPingPongSubTypePing, payload, []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build control frame failed: %v", err)
+	}
+	raw, err := marshalProbeVirtualRouterFrameEnvelope(frame)
 	if err != nil {
 		t.Fatalf("marshal control frame failed: %v", err)
 	}
-	frame, err := unmarshalProbeVirtualRouterFrameEnvelope(raw, nil)
+	frame, err = unmarshalProbeVirtualRouterFrameEnvelope(raw)
 	if err != nil {
 		t.Fatalf("unmarshal control frame failed: %v", err)
 	}
-	if frame.FrameType != probeVirtualRouterFrameTypeControl || frame.ControlType != probeVirtualRouterControlTypePing {
+	if frame.MainType != probeVirtualRouterFrameMainTypePingPong || frame.SubType != probeVirtualRouterPingPongSubTypePing {
 		t.Fatalf("unexpected control frame type: %+v", frame)
 	}
-	if string(frame.Payload) != string(payload) || !reflect.DeepEqual(frame.Path, []string{"1", "2"}) {
+	control, err := probeVirtualRouterFrameControl(frame, nil)
+	if err != nil {
+		t.Fatalf("unmarshal control envelope failed: %v", err)
+	}
+	if string(frame.Data) != string(payload) || !reflect.DeepEqual(control.Path, []string{"1", "2"}) {
 		t.Fatalf("unexpected control frame payload/path: %+v", frame)
 	}
 }
@@ -950,30 +955,127 @@ func TestStartProbeVirtualRouterRuntimeCreatesFrameLinkWorkers(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterKeepAliveDialerWakesConnectWithoutCarrier(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	rt := &probeVirtualRouterRuntime{
+		cfg: probeVirtualRouterRuntimeConfig{
+			chainID:    "vrouter-keepalive-dialer",
+			peerNodeID: "19",
+			dialer:     true,
+		},
+		stopCh:       make(chan struct{}),
+		bridgeWakeCh: make(chan struct{}, 1),
+	}
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	link := newProbeVirtualRouterFrameLink(key, rt, nil, nil)
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	probeVirtualRouterKeepAliveRuntime(rt)
+
+	if got := len(rt.bridgeWakeCh); got != 1 {
+		t.Fatalf("bridge wake queue=%d, want 1", got)
+	}
+	if got := len(link.tx); got != 0 {
+		t.Fatalf("keepalive should not enqueue ping without carrier, tx=%d", got)
+	}
+}
+
+func TestProbeVirtualRouterKeepAliveServerSkipsPingWithoutCarrier(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	rt := &probeVirtualRouterRuntime{
+		cfg: probeVirtualRouterRuntimeConfig{
+			chainID:    "vrouter-keepalive-server",
+			peerNodeID: "16",
+		},
+		stopCh:       make(chan struct{}),
+		bridgeWakeCh: make(chan struct{}, 1),
+	}
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	link := newProbeVirtualRouterFrameLink(key, rt, nil, nil)
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	probeVirtualRouterKeepAliveRuntime(rt)
+
+	if got := len(rt.bridgeWakeCh); got != 0 {
+		t.Fatalf("server should not wake dialer, wake queue=%d", got)
+	}
+	if got := len(link.tx); got != 0 {
+		t.Fatalf("server keepalive should not enqueue ping without carrier, tx=%d", got)
+	}
+}
+
 func TestProbeVirtualRouterFrameEnvelopeCarriesTypeControlAndPath(t *testing.T) {
 	packet := []byte{0x45, 0x00, 0x00, 0x14}
-	payload, err := marshalProbeVirtualRouterFrameEnvelope(probeVirtualRouterFrameMessage{
-		FrameType:   probeVirtualRouterFrameTypeData,
-		ControlType: probeVirtualRouterControlTypeIPv4,
-		Payload:     packet,
-		Path:        []string{"1", "3", "4"},
-	})
+	frame, err := buildProbeVirtualRouterIPFrame(packet, []string{"1", "3", "4"}, nil)
+	if err != nil {
+		t.Fatalf("build frame envelope failed: %v", err)
+	}
+	frame.StreamID = 9
+	frame.Seq = 10
+	payload, err := marshalProbeVirtualRouterFrameEnvelope(frame)
 	if err != nil {
 		t.Fatalf("marshal frame envelope failed: %v", err)
 	}
-	got, err := unmarshalProbeVirtualRouterFrameEnvelope(payload, []string{"fallback"})
+	if len(payload) <= probeVirtualRouterFrameEnvelopeHeaderSize {
+		t.Fatalf("payload len=%d, want frame header plus body", len(payload))
+	}
+	if got := binary.BigEndian.Uint16(payload[0:2]); got != probeVirtualRouterFrameEnvelopeMagic {
+		t.Fatalf("magic=0x%x, want 0x%x", got, probeVirtualRouterFrameEnvelopeMagic)
+	}
+	if got := binary.BigEndian.Uint16(payload[2:4]); got != probeVirtualRouterFrameEnvelopeVersion {
+		t.Fatalf("version=%d, want %d", got, probeVirtualRouterFrameEnvelopeVersion)
+	}
+	if got := binary.BigEndian.Uint16(payload[4:6]); got != probeVirtualRouterFrameMainTypeIP {
+		t.Fatalf("maintype=%d, want ip business type", got)
+	}
+	if got := binary.BigEndian.Uint16(payload[6:8]); got != probeVirtualRouterIPSubTypeIPv4 {
+		t.Fatalf("subtype=%d, want ip4", got)
+	}
+	if got := binary.BigEndian.Uint16(payload[10:12]); got != probeVirtualRouterFrameEnvelopeHeaderSize {
+		t.Fatalf("header_len=%d, want %d", got, probeVirtualRouterFrameEnvelopeHeaderSize)
+	}
+	if got := binary.BigEndian.Uint32(payload[12:16]); got != uint32(len(payload)) {
+		t.Fatalf("frame_len=%d, want %d", got, len(payload))
+	}
+	controlLen := binary.BigEndian.Uint32(payload[16:20])
+	dataLen := binary.BigEndian.Uint32(payload[20:24])
+	if controlLen == 0 {
+		t.Fatalf("control_len=0, want control envelope")
+	}
+	if dataLen != uint32(len(packet)) {
+		t.Fatalf("data_len=%d, want %d", dataLen, len(packet))
+	}
+	if got := binary.BigEndian.Uint32(payload[24:28]); got != 9 {
+		t.Fatalf("stream_id=%d, want 9", got)
+	}
+	if got := binary.BigEndian.Uint32(payload[28:32]); got != 10 {
+		t.Fatalf("seq=%d, want 10", got)
+	}
+	got, err := unmarshalProbeVirtualRouterFrameEnvelope(payload)
 	if err != nil {
 		t.Fatalf("unmarshal frame envelope failed: %v", err)
 	}
-	if got.FrameType != probeVirtualRouterFrameTypeData || got.ControlType != probeVirtualRouterControlTypeIPv4 || !reflect.DeepEqual(got.Payload, packet) || !reflect.DeepEqual(got.Path, []string{"1", "3", "4"}) {
+	control, err := probeVirtualRouterFrameControl(got, []string{"fallback"})
+	if err != nil {
+		t.Fatalf("unmarshal frame control failed: %v", err)
+	}
+	if got.MainType != probeVirtualRouterFrameMainTypeIP || got.SubType != probeVirtualRouterIPSubTypeIPv4 || !reflect.DeepEqual(got.Data, packet) || !reflect.DeepEqual(control.Path, []string{"1", "3", "4"}) || got.StreamID != 9 || got.Seq != 10 {
 		t.Fatalf("frame=%+v", got)
 	}
-	legacy, err := unmarshalProbeVirtualRouterFrameEnvelope(packet, []string{"fallback"})
-	if err != nil {
-		t.Fatalf("legacy frame fallback failed: %v", err)
-	}
-	if legacy.FrameType != probeVirtualRouterFrameTypeData || legacy.ControlType != probeVirtualRouterControlTypeIPv4 || !reflect.DeepEqual(legacy.Payload, packet) || !reflect.DeepEqual(legacy.Path, []string{"fallback"}) {
-		t.Fatalf("legacy frame=%+v", legacy)
+	broken := append([]byte(nil), payload...)
+	broken[len(broken)-1] ^= 0xff
+	if _, err := unmarshalProbeVirtualRouterFrameEnvelope(broken); err == nil {
+		t.Fatalf("checksum mismatch should fail")
 	}
 }
 
@@ -983,28 +1085,30 @@ func TestProbeVirtualRouterFrameEnvelopeCarriesICMPTrace(t *testing.T) {
 		{ID: "trace-1", NodeID: "16", ChainID: "vrouter-a", Event: "tun_rx", UnixNano: time.Unix(0, 1000).UnixNano()},
 		{ID: "trace-2", NodeID: "19", ChainID: "vrouter-b", Event: "frame_rx", Direction: "to_prev", RemoteNode: "16", UnixNano: time.Unix(0, 2000).UnixNano()},
 	}
-	payload, err := marshalProbeVirtualRouterFrameEnvelope(probeVirtualRouterFrameMessage{
-		FrameType:   probeVirtualRouterFrameTypeData,
-		ControlType: probeVirtualRouterControlTypeIPv4,
-		Payload:     packet,
-		Path:        []string{"16", "19"},
-		Trace:       trace,
-	})
+	frame, err := buildProbeVirtualRouterIPFrame(packet, []string{"16", "19"}, trace)
+	if err != nil {
+		t.Fatalf("build traced frame envelope failed: %v", err)
+	}
+	payload, err := marshalProbeVirtualRouterFrameEnvelope(frame)
 	if err != nil {
 		t.Fatalf("marshal traced frame envelope failed: %v", err)
 	}
-	got, err := unmarshalProbeVirtualRouterFrameEnvelope(payload, nil)
+	got, err := unmarshalProbeVirtualRouterFrameEnvelope(payload)
 	if err != nil {
 		t.Fatalf("unmarshal traced frame envelope failed: %v", err)
 	}
-	if !reflect.DeepEqual(got.Payload, packet) || !reflect.DeepEqual(got.Path, []string{"16", "19"}) {
+	control, err := probeVirtualRouterFrameControl(got, nil)
+	if err != nil {
+		t.Fatalf("unmarshal traced frame control failed: %v", err)
+	}
+	if !reflect.DeepEqual(got.Data, packet) || !reflect.DeepEqual(control.Path, []string{"16", "19"}) {
 		t.Fatalf("frame payload/path=%+v", got)
 	}
-	if len(got.Trace) != len(trace) {
-		t.Fatalf("trace len=%d want %d trace=%+v", len(got.Trace), len(trace), got.Trace)
+	if len(control.Trace) != len(trace) {
+		t.Fatalf("trace len=%d want %d trace=%+v", len(control.Trace), len(trace), control.Trace)
 	}
-	if got.Trace[0].NodeID != "16" || got.Trace[1].RemoteNode != "16" || got.Trace[1].Direction != "to_prev" {
-		t.Fatalf("trace=%+v", got.Trace)
+	if control.Trace[0].NodeID != "16" || control.Trace[1].RemoteNode != "16" || control.Trace[1].Direction != "to_prev" {
+		t.Fatalf("trace=%+v", control.Trace)
 	}
 }
 
@@ -1017,12 +1121,12 @@ func TestProbeVirtualRouterFrameLinkTXWorkerWritesBufferedFrame(t *testing.T) {
 	defer stopProbeVirtualRouterFrameLink(link)
 
 	type result struct {
-		frame probeVirtualRouterFrameMessage
+		frame probeVirtualRouterFrame
 		err   error
 	}
 	done := make(chan result, 1)
 	go func() {
-		frame, err := readProbeVirtualRouterFrame(bufio.NewReader(right), nil)
+		frame, err := readProbeVirtualRouterWireFrame(bufio.NewReader(right))
 		done <- result{frame: frame, err: err}
 	}()
 
@@ -1036,7 +1140,11 @@ func TestProbeVirtualRouterFrameLinkTXWorkerWritesBufferedFrame(t *testing.T) {
 		if got.err != nil {
 			t.Fatalf("read frame failed: %v", got.err)
 		}
-		if got.frame.FrameType != probeVirtualRouterFrameTypeData || got.frame.ControlType != probeVirtualRouterControlTypeIPv4 || !reflect.DeepEqual(got.frame.Payload, wantPacket) || !reflect.DeepEqual(got.frame.Path, wantPath) {
+		control, err := probeVirtualRouterFrameControl(got.frame, nil)
+		if err != nil {
+			t.Fatalf("read frame control failed: %v", err)
+		}
+		if got.frame.MainType != probeVirtualRouterFrameMainTypeIP || got.frame.SubType != probeVirtualRouterIPSubTypeIPv4 || !reflect.DeepEqual(got.frame.Data, wantPacket) || !reflect.DeepEqual(control.Path, wantPath) {
 			t.Fatalf("frame=%+v, want payload/path %v/%v", got.frame, wantPacket, wantPath)
 		}
 	case <-time.After(time.Second):
@@ -1063,11 +1171,15 @@ func TestProbeVirtualRouterFrameLinkTXWorkerSurvivesCarrierMigration(t *testing.
 	if token := link.AttachCarrier(secondLeft, "reconnected", "pipe"); token == nil {
 		t.Fatalf("attach carrier returned nil")
 	}
-	frame, err := readProbeVirtualRouterFrame(bufio.NewReader(secondRight), nil)
+	frame, err := readProbeVirtualRouterWireFrame(bufio.NewReader(secondRight))
 	if err != nil {
 		t.Fatalf("read migrated frame failed: %v", err)
 	}
-	if frame.FrameType != probeVirtualRouterFrameTypeData || frame.ControlType != probeVirtualRouterControlTypeIPv4 || !reflect.DeepEqual(frame.Payload, wantPacket) || !reflect.DeepEqual(frame.Path, wantPath) {
+	control, err := probeVirtualRouterFrameControl(frame, nil)
+	if err != nil {
+		t.Fatalf("read migrated frame control failed: %v", err)
+	}
+	if frame.MainType != probeVirtualRouterFrameMainTypeIP || frame.SubType != probeVirtualRouterIPSubTypeIPv4 || !reflect.DeepEqual(frame.Data, wantPacket) || !reflect.DeepEqual(control.Path, wantPath) {
 		t.Fatalf("frame=%+v, want payload/path %v/%v", frame, wantPacket, wantPath)
 	}
 }
@@ -1309,13 +1421,13 @@ func TestProbeVirtualRouterICMPEchoReplyWritesBackOnIngressLink(t *testing.T) {
 	link.Start()
 	defer stopProbeVirtualRouterFrameLink(link)
 	replyCh := make(chan struct {
-		frame probeVirtualRouterFrameMessage
+		frame probeVirtualRouterFrame
 		err   error
 	}, 1)
 	go func() {
-		frame, err := readProbeVirtualRouterFrame(bufio.NewReader(right), nil)
+		frame, err := readProbeVirtualRouterWireFrame(bufio.NewReader(right))
 		replyCh <- struct {
-			frame probeVirtualRouterFrameMessage
+			frame probeVirtualRouterFrame
 			err   error
 		}{frame: frame, err: err}
 	}()
@@ -1330,15 +1442,105 @@ func TestProbeVirtualRouterICMPEchoReplyWritesBackOnIngressLink(t *testing.T) {
 		if got.err != nil {
 			t.Fatalf("read reply failed: %v", got.err)
 		}
-		info, ok := probeVirtualRouterParseICMPEchoLogInfo(got.frame.Payload)
+		control, err := probeVirtualRouterFrameControl(got.frame, nil)
+		if err != nil {
+			t.Fatalf("read reply control failed: %v", err)
+		}
+		info, ok := probeVirtualRouterParseICMPEchoLogInfo(got.frame.Data)
 		if !ok || info.Kind != "echo_reply" || info.SourceIP != "198.18.0.21" || info.DestinationIP != "198.18.0.18" {
 			t.Fatalf("reply info=%+v ok=%v", info, ok)
 		}
-		if got.frame.FrameType != probeVirtualRouterFrameTypeData || got.frame.ControlType != probeVirtualRouterControlTypeIPv4 || !reflect.DeepEqual(got.frame.Path, []string{"19", "16"}) {
+		if got.frame.MainType != probeVirtualRouterFrameMainTypeIP || got.frame.SubType != probeVirtualRouterIPSubTypeIPv4 || !reflect.DeepEqual(control.Path, []string{"19", "16"}) {
 			t.Fatalf("reply frame=%+v, want data/ip4 path [19 16]", got.frame)
+		}
+		if len(control.Trace) < 2 {
+			t.Fatalf("reply trace hops=%d, want at least final/build events: %+v", len(control.Trace), control.Trace)
+		}
+		events := map[string]bool{}
+		for _, hop := range control.Trace {
+			events[hop.Event] = true
+			if hop.UnixNano <= 0 {
+				t.Fatalf("trace hop missing timestamp: %+v", hop)
+			}
+		}
+		for _, want := range []string{"echo_request_final", "echo_reply_build"} {
+			if !events[want] {
+				t.Fatalf("reply trace missing event %q: %+v", want, control.Trace)
+			}
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for echo reply")
+	}
+}
+
+func TestProbeVirtualRouterICMPFinalHopReturnsFrameWithTrace(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "19")
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	left, right := net.Pipe()
+	defer right.Close()
+	link := newProbeVirtualRouterFrameLink("test-final-hop-icmp", nil, left, nil)
+	link.Start()
+	defer stopProbeVirtualRouterFrameLink(link)
+	replyCh := make(chan probeVirtualRouterFrame, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		frame, err := readProbeVirtualRouterWireFrame(bufio.NewReader(right))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		replyCh <- frame
+	}()
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}}}
+	request := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.18", "198.18.0.21")
+	initialTrace := []probeVirtualRouterFrameTraceHop{
+		{ID: "trace-start", NodeID: "16", Event: "tun_rx", UnixNano: time.Now().UnixNano()},
+	}
+	if err := handleProbeVirtualRouterIPFrame(rt, link, request, []string{"16", "19"}, initialTrace); err != nil {
+		t.Fatalf("final hop frame handling failed: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("read reply failed: %v", err)
+	case frame := <-replyCh:
+		control, err := probeVirtualRouterFrameControl(frame, nil)
+		if err != nil {
+			t.Fatalf("read reply control failed: %v", err)
+		}
+		info, ok := probeVirtualRouterParseICMPEchoLogInfo(frame.Data)
+		if !ok || info.Kind != "echo_reply" || info.SourceIP != "198.18.0.21" || info.DestinationIP != "198.18.0.18" {
+			t.Fatalf("reply info=%+v ok=%v", info, ok)
+		}
+		if !reflect.DeepEqual(control.Path, []string{"19", "16"}) {
+			t.Fatalf("reply path=%v, want [19 16]", control.Path)
+		}
+		events := make([]string, 0, len(control.Trace))
+		for _, hop := range control.Trace {
+			events = append(events, hop.Event)
+			if hop.UnixNano <= 0 {
+				t.Fatalf("trace hop missing timestamp: %+v", hop)
+			}
+		}
+		for _, want := range []string{"tun_rx", "frame_rx", "echo_request_final", "echo_reply_build"} {
+			if !containsProbeVirtualRouterTestString(events, want) {
+				t.Fatalf("reply trace events=%v missing %q", events, want)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for final-hop echo reply")
 	}
 }
 
@@ -1469,6 +1671,54 @@ func TestProbeVirtualRouterFrameLinkCachePersistsWhileIdle(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterFrameLinkDebugStateIncludesCarrierDetails(t *testing.T) {
+	left, right := net.Pipe()
+	defer right.Close()
+	defer left.Close()
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{chainID: "vrouter-debug"}}
+	link := newProbeVirtualRouterFrameLink("packet|vrouter-debug", rt, nil, nil)
+	link.AttachCarrier(left, "session-debug", "198.51.100.19:12040")
+
+	text := probeVirtualRouterFrameLinkDebugState(link)
+	for _, want := range []string{"link_key=packet|vrouter-debug", "carrier_session=session-debug", "remote=198.51.100.19:12040", "rx_idle_ms=", "tx_idle_ms=", "tx_queue=", "rx_queue="} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("debug state %q missing %q", text, want)
+		}
+	}
+}
+
+func TestProbeVirtualRouterClosedLinkErrorIncludesWebSocketAbnormalEOF(t *testing.T) {
+	err := errors.New("websocket: close 1006 (abnormal closure): unexpected EOF")
+	if !isProbeVirtualRouterClosedLinkError(err) {
+		t.Fatalf("websocket abnormal EOF should be treated as a closed link")
+	}
+}
+
+func TestProbeVirtualRouterOpenSuccessResetsPingFailureCount(t *testing.T) {
+	chainID := "vrouter-open-reset"
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	oldStats := probeVirtualRouterRuntimeStatsState.items
+	probeVirtualRouterRuntimeStatsState.items = map[string]*probeVirtualRouterRuntimeStats{
+		chainID: {LastPingError: "virtual router control response timeout", LastPingFailureCount: 7},
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		probeVirtualRouterRuntimeStatsState.items = oldStats
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	})
+
+	recordProbeVirtualRouterRuntimeOpenSuccess(chainID, 10*time.Millisecond)
+
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	got := probeVirtualRouterRuntimeStatsState.items[chainID].LastPingFailureCount
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("ping failure count=%d, want 0", got)
+	}
+}
+
 func TestProbeVirtualRouterPingErrorRetainsCarrierAndFrameLink(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
@@ -1594,12 +1844,11 @@ func TestProbeVirtualRouterDispatchErrorKeepsFrameLinkAlive(t *testing.T) {
 	link.Start()
 	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
 
-	link.rx <- probeVirtualRouterFrameMessage{
-		FrameType:   "unsupported",
-		ControlType: "unsupported",
-		Payload:     []byte("bad-frame"),
-		Path:        []string{"1", "2"},
+	frame, err := buildProbeVirtualRouterBusinessFrame(999, 1, []byte("bad-frame"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build unsupported wire frame failed: %v", err)
 	}
+	link.rx <- frame
 
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
@@ -1625,12 +1874,11 @@ func TestProbeVirtualRouterCarrierFailureDetachesCarrierButKeepsFrameLink(t *tes
 	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
 	_ = right.Close()
 
-	if err := link.EnqueueProbeVirtualRouterFrame(probeVirtualRouterFrameMessage{
-		FrameType:   probeVirtualRouterFrameTypeData,
-		ControlType: probeVirtualRouterControlTypeIPv4,
-		Payload:     buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"),
-		Path:        []string{"1", "2"},
-	}); err != nil {
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	if err := link.EnqueueProbeVirtualRouterFrame(frame); err != nil {
 		t.Fatalf("enqueue should not fail before carrier worker observes close: %v", err)
 	}
 
@@ -1648,6 +1896,15 @@ func TestProbeVirtualRouterCarrierFailureDetachesCarrierButKeepsFrameLink(t *tes
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("carrier should detach after physical failure")
+}
+
+func containsProbeVirtualRouterTestString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func buildProbeVirtualRouterTestIPv4Packet(t *testing.T, src string, dst string) []byte {

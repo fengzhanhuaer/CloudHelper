@@ -60,8 +60,9 @@ type probeVirtualRouterRuntime struct {
 	relay           *probeVirtualRouterRelayServer
 	frameLink       *probeVirtualRouterFrameLink
 	stopCh          chan struct{}
+	bridgeWakeCh    chan struct{}
 	seqMu           sync.Mutex
-	seq             uint64
+	seq             uint32
 }
 
 type probeVirtualRouterRelayServer struct {
@@ -77,8 +78,8 @@ type probeVirtualRouterFrameLink struct {
 	requestPath   []string
 	openedAt      time.Time
 	lastUsed      time.Time
-	tx            chan probeVirtualRouterFrameMessage
-	rx            chan probeVirtualRouterFrameMessage
+	tx            chan probeVirtualRouterFrame
+	rx            chan probeVirtualRouterFrame
 	done          chan struct{}
 	carrierNotify chan struct{}
 	startOnce     sync.Once
@@ -190,8 +191,9 @@ func startProbeVirtualRouterRuntime(cfg probeVirtualRouterRuntimeConfig) (*probe
 	}
 	rememberProbeChainAuthTicket(cfg.chainID, cfg.authTicket)
 	rt := &probeVirtualRouterRuntime{
-		cfg:    cfg,
-		stopCh: make(chan struct{}),
+		cfg:          cfg,
+		stopCh:       make(chan struct{}),
+		bridgeWakeCh: make(chan struct{}, 1),
 	}
 	if !cfg.dialer {
 		if err := startProbeVirtualRouterRelayServer(rt); err != nil {
@@ -209,7 +211,7 @@ func startProbeVirtualRouterRuntime(cfg probeVirtualRouterRuntimeConfig) (*probe
 	probeVirtualRouterRuntimeState.runtimes[cfg.chainID] = rt
 	probeVirtualRouterRuntimeState.mu.Unlock()
 	startProbeVirtualRouterBridgeWorker(rt)
-	startProbeVirtualRouterPingPongWorker(rt)
+	startProbeVirtualRouterKeepAliveWorker(rt)
 	listenText := "-"
 	if !cfg.dialer {
 		listenText = net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort))
@@ -327,6 +329,17 @@ func (rt *probeVirtualRouterRuntime) nextBridgeSessionID(tag string) string {
 		cleanTag = "carrier"
 	}
 	return fmt.Sprintf("%s-%d", cleanTag, seq)
+}
+
+func (rt *probeVirtualRouterRuntime) nextFrameSeq() uint32 {
+	if rt == nil {
+		return 0
+	}
+	rt.seqMu.Lock()
+	rt.seq++
+	seq := rt.seq
+	rt.seqMu.Unlock()
+	return seq
 }
 
 func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
@@ -583,15 +596,41 @@ func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
 		)
 		if err != nil {
 			log.Printf("probe virtual router bridge dial failed: chain=%s peer=%s:%d err=%v", rt.cfg.chainID, rt.cfg.peerHost, rt.cfg.peerPort, err)
-			sleepProbeChainBridgeBackoff(rt.stopCh, backoff)
+			sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
 			backoff = nextProbeChainBridgeBackoff(backoff)
 			continue
 		}
 		backoff = probeChainBridgeRetryMin
 		sessionID := rt.nextBridgeSessionID("vrouter-carrier")
 		runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, net.JoinHostPort(rt.cfg.peerHost, strconv.Itoa(rt.cfg.peerPort)))
-		sleepProbeChainBridgeBackoff(rt.stopCh, backoff)
+		sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
 		backoff = nextProbeChainBridgeBackoff(backoff)
+	}
+}
+
+func signalProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
+	if rt == nil || rt.bridgeWakeCh == nil {
+		return
+	}
+	select {
+	case rt.bridgeWakeCh <- struct{}{}:
+	default:
+	}
+}
+
+func sleepProbeVirtualRouterBridgeBackoff(rt *probeVirtualRouterRuntime, delay time.Duration) {
+	if rt == nil {
+		return
+	}
+	if delay <= 0 {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-rt.stopCh:
+	case <-rt.bridgeWakeCh:
+	case <-timer.C:
 	}
 }
 
