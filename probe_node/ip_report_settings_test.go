@@ -19,6 +19,9 @@ func TestProbeIPReportLANFilterOnlyAppliesToLANIPs(t *testing.T) {
 	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("192.168.1.21"), "name:wlan0", settings) {
 		t.Fatal("unselected lan interface ip should be filtered")
 	}
+	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("198.18.0.2"), "name:cloudhelper0", settings) {
+		t.Fatal("unselected tun fake ip should be filtered as local lan-like ip")
+	}
 	if !shouldIncludeProbeReportInterfaceIP(net.ParseIP("8.8.8.8"), "name:wlan0", settings) {
 		t.Fatal("public ip should not be filtered by selected lan interface setting")
 	}

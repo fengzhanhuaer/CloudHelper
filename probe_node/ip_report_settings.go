@@ -155,6 +155,9 @@ func probeReportIPIsLAN(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+		return true
+	}
 	return ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
