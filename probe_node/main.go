@@ -34,6 +34,27 @@ const defaultReportIntervalSec = 60
 
 var reportIntervalSec atomic.Int64
 
+var probeImmediateReportState = struct {
+	mu   sync.Mutex
+	send func() error
+}{}
+
+func setProbeImmediateReporter(send func() error) {
+	probeImmediateReportState.mu.Lock()
+	probeImmediateReportState.send = send
+	probeImmediateReportState.mu.Unlock()
+}
+
+func triggerProbeImmediateReport() (bool, error) {
+	probeImmediateReportState.mu.Lock()
+	send := probeImmediateReportState.send
+	probeImmediateReportState.mu.Unlock()
+	if send == nil {
+		return false, nil
+	}
+	return true, send()
+}
+
 type nodeStatus struct {
 	Status    string `json:"status"`
 	NodeID    string `json:"node_id,omitempty"`
@@ -619,6 +640,10 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 	writeMu := &sync.Mutex{}
 	attachProbeReporterRPCChannel(stream, encoder, writeMu)
 	defer detachProbeReporterRPCChannel()
+	setProbeImmediateReporter(func() error {
+		return sendProbeReport(stream, encoder, identity, sampler, writeMu)
+	})
+	defer setProbeImmediateReporter(nil)
 
 	log.Printf("probe reporter connected: %s", wsURL)
 

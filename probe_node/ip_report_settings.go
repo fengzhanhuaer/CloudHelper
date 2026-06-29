@@ -208,6 +208,8 @@ func listProbeIPReportInterfaces(settings probeIPReportSettings) []probeIPReport
 				}
 			}
 		}
+		sortProbeIPReportStringsIPv4First(view.IPs)
+		sortProbeIPReportStringsIPv4First(view.LANIPs)
 		items = append(items, view)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -217,6 +219,19 @@ func listProbeIPReportInterfaces(settings probeIPReportSettings) []probeIPReport
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
 	return items
+}
+
+func sortProbeIPReportStringsIPv4First(items []string) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left := net.ParseIP(strings.TrimSpace(items[i]))
+		right := net.ParseIP(strings.TrimSpace(items[j]))
+		leftIs4 := left != nil && left.To4() != nil
+		rightIs4 := right != nil && right.To4() != nil
+		if leftIs4 != rightIs4 {
+			return leftIs4
+		}
+		return strings.TrimSpace(items[i]) < strings.TrimSpace(items[j])
+	})
 }
 
 func probeReportIPFromAddr(addr net.Addr) net.IP {
@@ -272,6 +287,11 @@ func probeLocalSystemIPReportSettingsHandler(w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			writeProbeLocalError(w, err)
 			return
+		}
+		if triggered, err := triggerProbeImmediateReport(); err != nil {
+			logProbeWarnf("probe ip report immediate upload failed: %v", err)
+		} else if triggered {
+			logProbeInfof("probe ip report immediate upload triggered after settings save")
 		}
 		writeJSON(w, http.StatusOK, probeIPReportSettingsPayload(settings))
 	default:

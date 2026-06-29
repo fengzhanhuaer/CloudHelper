@@ -202,10 +202,6 @@
         <button id="tunRefreshBtn" class="secondary">刷新 TUN 状态</button>
       </div>
       <h2>IP 上送</h2>
-      <label class="check-row">
-        <input id="ipReportOnlySelected" type="checkbox" />
-        <span>仅被选中的网卡局域网 IP 上送主控</span>
-      </label>
       <div class="kv" style="grid-template-columns: 170px minmax(0, 1fr);">
         <div>已选网卡</div><div id="ipReportSelectedCount">0</div>
         <div>更新时间</div><div id="ipReportUpdatedAt">-</div>
@@ -215,7 +211,7 @@
         <button id="ipReportSaveBtn">保存 IP 上送设置</button>
         <button id="ipReportRefreshBtn" class="secondary">刷新网卡</button>
       </div>
-      <p class="hint">仅过滤局域网 IP；公网 IP 上送不受影响。</p>
+      <p class="hint">勾选网卡后仅上送选中网卡的局域网 IP；未勾选则不上送局域网 IP，公网 IP 上送不受影响。</p>
       <h2>主网卡出口</h2>
       <div class="kv">
         <div>选择模式</div><div id="tunEgressMode">-</div>
@@ -294,7 +290,6 @@
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
     const chainAuthBlacklistContentEl = document.getElementById('chainAuthBlacklistContent');
-    const ipReportOnlySelectedEl = document.getElementById('ipReportOnlySelected');
     const ipReportInterfacesEl = document.getElementById('ipReportInterfaces');
 
     function setMessage(text, type) {
@@ -460,11 +455,30 @@
       }
     }
 
+    function isIPv4Text(value) {
+      const text = String(value || '').trim();
+      return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(text);
+    }
+
+    function ipReportDisplayIPs(values) {
+      if (!Array.isArray(values)) return [];
+      return values
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .sort((left, right) => {
+          const leftIs4 = isIPv4Text(left);
+          const rightIs4 = isIPv4Text(right);
+          if (leftIs4 !== rightIs4) return leftIs4 ? -1 : 1;
+          return left.localeCompare(right);
+        });
+    }
+
     function formatIPReportInterface(item) {
       const data = item || {};
       const name = String(data.name || '').trim();
-      const ips = Array.isArray(data.lan_ips) && data.lan_ips.length > 0
-        ? data.lan_ips.join(', ')
+      const lanIPs = ipReportDisplayIPs(data.lan_ips);
+      const ips = lanIPs.length > 0
+        ? lanIPs.join(', ')
         : '无局域网 IP';
       const label = name || String(data.id || '').trim() || '未命名网卡';
       return `${label}（${ips}）`;
@@ -473,9 +487,6 @@
     function renderIPReportSettings(data) {
       const settings = data && typeof data.settings === 'object' ? data.settings : {};
       const interfaces = Array.isArray(data && data.interfaces) ? data.interfaces : [];
-      if (ipReportOnlySelectedEl) {
-        ipReportOnlySelectedEl.checked = !!settings.only_selected_lan_interfaces;
-      }
       setText('ipReportUpdatedAt', settings.updated_at || '-');
       const selectedCount = interfaces.filter((item) => item && item.selected).length;
       setText('ipReportSelectedCount', String(selectedCount));
@@ -523,7 +534,7 @@
       const data = await requestJSON('/local/api/system/ip_report_settings', {
         method: 'POST',
         body: JSON.stringify({
-          only_selected_lan_interfaces: !!(ipReportOnlySelectedEl && ipReportOnlySelectedEl.checked),
+          only_selected_lan_interfaces: true,
           selected_interface_ids: selected,
         }),
       });

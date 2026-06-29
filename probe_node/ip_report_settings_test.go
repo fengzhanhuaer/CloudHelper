@@ -3,6 +3,7 @@ package main
 import (
 	"net"
 	"net/http"
+	"reflect"
 	"testing"
 )
 
@@ -23,9 +24,27 @@ func TestProbeIPReportLANFilterOnlyAppliesToLANIPs(t *testing.T) {
 	}
 }
 
+func TestSortProbeIPReportStringsIPv4First(t *testing.T) {
+	values := []string{"2001:db8::2", "192.168.1.20", "10.0.0.5", "fe80::1"}
+
+	sortProbeIPReportStringsIPv4First(values)
+
+	want := []string{"10.0.0.5", "192.168.1.20", "2001:db8::2", "fe80::1"}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("sorted ips=%v, want %v", values, want)
+	}
+}
+
 func TestProbeLocalSystemIPReportSettingsAPI(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	immediateReports := 0
+	setProbeImmediateReporter(func() error {
+		immediateReports++
+		return nil
+	})
+	t.Cleanup(func() { setProbeImmediateReporter(nil) })
 
 	saveResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/ip_report_settings", map[string]any{
 		"only_selected_lan_interfaces": true,
@@ -45,6 +64,9 @@ func TestProbeLocalSystemIPReportSettingsAPI(t *testing.T) {
 	ids, ok := settings["selected_interface_ids"].([]any)
 	if !ok || len(ids) != 2 {
 		t.Fatalf("selected ids=%+v, want two normalized unique ids", settings["selected_interface_ids"])
+	}
+	if immediateReports != 1 {
+		t.Fatalf("immediate reports=%d, want 1", immediateReports)
 	}
 
 	getResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/system/ip_report_settings", nil, sessionCookie)
