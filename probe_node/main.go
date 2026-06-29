@@ -1175,6 +1175,7 @@ func collectIPs() ([]string, []string) {
 	if err != nil {
 		return nil, nil
 	}
+	settings := loadProbeIPReportSettingsBestEffort()
 
 	seen4 := map[string]struct{}{}
 	seen6 := map[string]struct{}{}
@@ -1193,18 +1194,10 @@ func collectIPs() ([]string, []string) {
 		if err != nil {
 			continue
 		}
+		interfaceID := probeIPReportInterfaceID(iface)
 		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			default:
-				continue
-			}
-
-			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			ip := probeReportIPFromAddr(addr)
+			if !shouldIncludeProbeReportInterfaceIP(ip, interfaceID, settings) {
 				continue
 			}
 

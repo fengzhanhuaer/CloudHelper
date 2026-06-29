@@ -3137,6 +3137,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
+	mux.HandleFunc("/local/api/system/ip_report_settings", probeLocalSystemIPReportSettingsHandler)
 	mux.HandleFunc("/local/api/system/chain_auth_blacklist", probeLocalSystemChainAuthBlacklistHandler)
 	mux.HandleFunc("/local/api/shell/exec", probeLocalShellExecHandler)
 	mux.HandleFunc("/local/api/shell/stream", probeLocalShellStreamHandler)
