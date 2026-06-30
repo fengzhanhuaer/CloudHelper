@@ -331,17 +331,6 @@ func (rt *probeVirtualRouterRuntime) nextBridgeSessionID(tag string) string {
 	return fmt.Sprintf("%s-%d", cleanTag, seq)
 }
 
-func (rt *probeVirtualRouterRuntime) nextFrameSeq() uint32 {
-	if rt == nil {
-		return 0
-	}
-	rt.seqMu.Lock()
-	rt.seq++
-	seq := rt.seq
-	rt.seqMu.Unlock()
-	return seq
-}
-
 func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 	if rt == nil {
 		return errors.New("virtual router runtime is nil")

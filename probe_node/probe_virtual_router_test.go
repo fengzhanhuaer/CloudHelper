@@ -1020,8 +1020,6 @@ func TestProbeVirtualRouterFrameEnvelopeCarriesTypeControlAndPath(t *testing.T) 
 	if err != nil {
 		t.Fatalf("build frame envelope failed: %v", err)
 	}
-	frame.StreamID = 9
-	frame.Seq = 10
 	payload, err := marshalProbeVirtualRouterFrameEnvelope(frame)
 	if err != nil {
 		t.Fatalf("marshal frame envelope failed: %v", err)
@@ -1032,34 +1030,22 @@ func TestProbeVirtualRouterFrameEnvelopeCarriesTypeControlAndPath(t *testing.T) 
 	if got := binary.BigEndian.Uint16(payload[0:2]); got != probeVirtualRouterFrameEnvelopeMagic {
 		t.Fatalf("magic=0x%x, want 0x%x", got, probeVirtualRouterFrameEnvelopeMagic)
 	}
-	if got := binary.BigEndian.Uint16(payload[2:4]); got != probeVirtualRouterFrameEnvelopeVersion {
-		t.Fatalf("version=%d, want %d", got, probeVirtualRouterFrameEnvelopeVersion)
-	}
-	if got := binary.BigEndian.Uint16(payload[4:6]); got != probeVirtualRouterFrameMainTypeIP {
+	if got := binary.BigEndian.Uint16(payload[2:4]); got != probeVirtualRouterFrameMainTypeIP {
 		t.Fatalf("maintype=%d, want ip business type", got)
 	}
-	if got := binary.BigEndian.Uint16(payload[6:8]); got != probeVirtualRouterIPSubTypeIPv4 {
+	if got := binary.BigEndian.Uint16(payload[4:6]); got != probeVirtualRouterIPSubTypeIPv4 {
 		t.Fatalf("subtype=%d, want ip4", got)
 	}
-	if got := binary.BigEndian.Uint16(payload[10:12]); got != probeVirtualRouterFrameEnvelopeHeaderSize {
-		t.Fatalf("header_len=%d, want %d", got, probeVirtualRouterFrameEnvelopeHeaderSize)
-	}
-	if got := binary.BigEndian.Uint32(payload[12:16]); got != uint32(len(payload)) {
-		t.Fatalf("frame_len=%d, want %d", got, len(payload))
-	}
-	controlLen := binary.BigEndian.Uint32(payload[16:20])
-	dataLen := binary.BigEndian.Uint32(payload[20:24])
+	controlLen := binary.BigEndian.Uint16(payload[6:8])
+	dataLen := binary.BigEndian.Uint16(payload[8:10])
 	if controlLen == 0 {
 		t.Fatalf("control_len=0, want control envelope")
 	}
-	if dataLen != uint32(len(packet)) {
+	if dataLen != uint16(len(packet)) {
 		t.Fatalf("data_len=%d, want %d", dataLen, len(packet))
 	}
-	if got := binary.BigEndian.Uint32(payload[24:28]); got != 9 {
-		t.Fatalf("stream_id=%d, want 9", got)
-	}
-	if got := binary.BigEndian.Uint32(payload[28:32]); got != 10 {
-		t.Fatalf("seq=%d, want 10", got)
+	if got := binary.BigEndian.Uint16(payload[10:12]); got == 0 {
+		t.Fatalf("checksum=0, want non-zero")
 	}
 	got, err := unmarshalProbeVirtualRouterFrameEnvelope(payload)
 	if err != nil {
@@ -1069,13 +1055,49 @@ func TestProbeVirtualRouterFrameEnvelopeCarriesTypeControlAndPath(t *testing.T) 
 	if err != nil {
 		t.Fatalf("unmarshal frame control failed: %v", err)
 	}
-	if got.MainType != probeVirtualRouterFrameMainTypeIP || got.SubType != probeVirtualRouterIPSubTypeIPv4 || !reflect.DeepEqual(got.Data, packet) || !reflect.DeepEqual(control.Path, []string{"1", "3", "4"}) || got.StreamID != 9 || got.Seq != 10 {
+	if got.MainType != probeVirtualRouterFrameMainTypeIP || got.SubType != probeVirtualRouterIPSubTypeIPv4 || !reflect.DeepEqual(got.Data, packet) || !reflect.DeepEqual(control.Path, []string{"1", "3", "4"}) {
 		t.Fatalf("frame=%+v", got)
 	}
 	broken := append([]byte(nil), payload...)
 	broken[len(broken)-1] ^= 0xff
 	if _, err := unmarshalProbeVirtualRouterFrameEnvelope(broken); err == nil {
 		t.Fatalf("checksum mismatch should fail")
+	}
+}
+
+func TestProbeVirtualRouterFrameEnvelopeUsesTwoByteLengths(t *testing.T) {
+	frame := probeVirtualRouterFrame{
+		MainType: probeVirtualRouterFrameMainTypeSpeed,
+		SubType:  probeVirtualRouterSpeedSubTypeChunk,
+		Control:  []byte("{}"),
+		Data:     make([]byte, probeVirtualRouterFrameMaxDataBytes),
+	}
+	payload, err := marshalProbeVirtualRouterFrameEnvelope(frame)
+	if err != nil {
+		t.Fatalf("marshal max data frame failed: %v", err)
+	}
+	if got := binary.BigEndian.Uint16(payload[6:8]); got != uint16(len(frame.Control)) {
+		t.Fatalf("control_len=%d, want %d", got, len(frame.Control))
+	}
+	if got := binary.BigEndian.Uint16(payload[8:10]); got != uint16(probeVirtualRouterFrameMaxDataBytes) {
+		t.Fatalf("data_len=%d, want %d", got, probeVirtualRouterFrameMaxDataBytes)
+	}
+	decoded, err := unmarshalProbeVirtualRouterFrameEnvelope(payload)
+	if err != nil {
+		t.Fatalf("unmarshal max data frame failed: %v", err)
+	}
+	if len(decoded.Data) != probeVirtualRouterFrameMaxDataBytes {
+		t.Fatalf("decoded data len=%d, want %d", len(decoded.Data), probeVirtualRouterFrameMaxDataBytes)
+	}
+
+	frame.Data = make([]byte, probeVirtualRouterFrameMaxDataBytes+1)
+	if _, err := marshalProbeVirtualRouterFrameEnvelope(frame); err == nil {
+		t.Fatalf("data larger than two-byte data_len should fail")
+	}
+	frame.Data = nil
+	frame.Control = make([]byte, probeVirtualRouterFrameMaxControlBytes+1)
+	if _, err := marshalProbeVirtualRouterFrameEnvelope(frame); err == nil {
+		t.Fatalf("control larger than application limit should fail")
 	}
 }
 

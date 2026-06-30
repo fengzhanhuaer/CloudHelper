@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"log"
 	"net"
@@ -22,17 +21,14 @@ const (
 	probeVirtualRouterDirectionForward   = "forward"
 	probeVirtualRouterDefaultServicePort = 12040
 
-	// vRouter frame header is a stable 36-byte wire protocol boundary:
-	// magic 2 bytes, version 2 bytes, maintype 2 bytes, subtype 2 bytes,
-	// flags 2 bytes, header_len 2 bytes, frame_len 4 bytes,
-	// control_len 4 bytes, data_len 4 bytes, stream_id 4 bytes,
-	// seq 4 bytes, checksum 4 bytes.
+	// vRouter frame header is a stable 12-byte wire protocol boundary:
+	// magic 2 bytes, maintype 2 bytes, subtype 2 bytes,
+	// control_len 2 bytes, data_len 2 bytes, checksum 2 bytes.
 	// 未经用户明确许可，不得修改此帧定义、字段顺序、字段宽度或 checksum 范围。
 	probeVirtualRouterFrameEnvelopeMagic       uint16 = 0x5652
-	probeVirtualRouterFrameEnvelopeVersion     uint16 = 1
-	probeVirtualRouterFrameEnvelopeHeaderSize         = 36
+	probeVirtualRouterFrameEnvelopeHeaderSize         = 12
 	probeVirtualRouterFrameMaxControlBytes            = 8096
-	probeVirtualRouterFrameMaxDataBytes               = 65536
+	probeVirtualRouterFrameMaxDataBytes               = 65535
 	probeVirtualRouterFrameMaxBytes                   = probeVirtualRouterFrameEnvelopeHeaderSize + probeVirtualRouterFrameMaxControlBytes + probeVirtualRouterFrameMaxDataBytes
 	probeVirtualRouterFrameMainTypeIP          uint16 = 1
 	probeVirtualRouterFrameMainTypePingPong    uint16 = 2
@@ -59,8 +55,6 @@ const (
 	probeVirtualRouterCarrierStalePingFailures        = 4
 	probeVirtualRouterCarrierStaleRXGrace             = 2 * probeVirtualRouterPingPongInterval
 )
-
-var probeVirtualRouterFrameCRC32Table = crc32.MakeTable(crc32.Castagnoli)
 
 var probeVirtualRouterState = struct {
 	mu                sync.RWMutex
@@ -251,13 +245,11 @@ type probeVirtualRouterTransportLogInfo struct {
 }
 
 // probeVirtualRouterFrame is the vRouter wire frame. Its binary header layout
-// is fixed by the constants above; control_len is 4 bytes. 未经用户明确许可不得修改。
+// is fixed by the constants above; control_len and data_len are 2 bytes.
+// 未经用户明确许可不得修改。
 type probeVirtualRouterFrame struct {
 	MainType uint16
 	SubType  uint16
-	Flags    uint16
-	StreamID uint32
-	Seq      uint32
 	Control  []byte
 	Data     []byte
 }
@@ -1389,33 +1381,18 @@ func encodeProbeVirtualRouterFrame(frame probeVirtualRouterFrame) ([]byte, error
 		return nil, fmt.Errorf("virtual router frame data is too large: %d", dataLen)
 	}
 	frameLen := probeVirtualRouterFrameEnvelopeHeaderSize + controlLen + dataLen
-	if frameLen > probeVirtualRouterFrameMaxBytes {
-		return nil, errors.New("virtual router frame envelope is too large")
-	}
 
 	out := make([]byte, frameLen)
 	binary.BigEndian.PutUint16(out[0:2], probeVirtualRouterFrameEnvelopeMagic)
-	binary.BigEndian.PutUint16(out[2:4], probeVirtualRouterFrameEnvelopeVersion)
-	binary.BigEndian.PutUint16(out[4:6], frame.MainType)
-	binary.BigEndian.PutUint16(out[6:8], frame.SubType)
-	binary.BigEndian.PutUint16(out[8:10], frame.Flags)
-	binary.BigEndian.PutUint16(out[10:12], probeVirtualRouterFrameEnvelopeHeaderSize)
-	binary.BigEndian.PutUint32(out[12:16], uint32(frameLen))
-	binary.BigEndian.PutUint32(out[16:20], uint32(controlLen))
-	binary.BigEndian.PutUint32(out[20:24], uint32(dataLen))
-	binary.BigEndian.PutUint32(out[24:28], frame.StreamID)
-	binary.BigEndian.PutUint32(out[28:32], frame.Seq)
+	binary.BigEndian.PutUint16(out[2:4], frame.MainType)
+	binary.BigEndian.PutUint16(out[4:6], frame.SubType)
+	binary.BigEndian.PutUint16(out[6:8], uint16(controlLen))
+	binary.BigEndian.PutUint16(out[8:10], uint16(dataLen))
 	offset := probeVirtualRouterFrameEnvelopeHeaderSize
 	copy(out[offset:offset+controlLen], frame.Control)
 	copy(out[offset+controlLen:], frame.Data)
-	checksum := crc32.Update(0, probeVirtualRouterFrameCRC32Table, out[:32])
-	if controlLen > 0 {
-		checksum = crc32.Update(checksum, probeVirtualRouterFrameCRC32Table, frame.Control)
-	}
-	if dataLen > 0 {
-		checksum = crc32.Update(checksum, probeVirtualRouterFrameCRC32Table, frame.Data)
-	}
-	binary.BigEndian.PutUint32(out[32:36], checksum)
+	checksum := probeVirtualRouterFrameChecksum(out[:10], frame.Control, frame.Data)
+	binary.BigEndian.PutUint16(out[10:12], checksum)
 	return out, nil
 }
 
@@ -1454,32 +1431,20 @@ func decodeProbeVirtualRouterFrameHeader(header []byte) (probeVirtualRouterFrame
 	if binary.BigEndian.Uint16(header[0:2]) != probeVirtualRouterFrameEnvelopeMagic {
 		return probeVirtualRouterFrame{}, 0, 0, 0, errors.New("invalid virtual router frame magic")
 	}
-	version := binary.BigEndian.Uint16(header[2:4])
-	if version != probeVirtualRouterFrameEnvelopeVersion {
-		return probeVirtualRouterFrame{}, 0, 0, 0, fmt.Errorf("unsupported virtual router frame version: %d", version)
-	}
-	headerLen := int(binary.BigEndian.Uint16(header[10:12]))
-	if headerLen != probeVirtualRouterFrameEnvelopeHeaderSize {
-		return probeVirtualRouterFrame{}, 0, 0, 0, fmt.Errorf("invalid virtual router frame header length: %d", headerLen)
-	}
-	frameLen := int(binary.BigEndian.Uint32(header[12:16]))
-	controlLen := int(binary.BigEndian.Uint32(header[16:20]))
-	dataLen := int(binary.BigEndian.Uint32(header[20:24]))
+	controlLen := int(binary.BigEndian.Uint16(header[6:8]))
+	dataLen := int(binary.BigEndian.Uint16(header[8:10]))
 	if controlLen > probeVirtualRouterFrameMaxControlBytes {
 		return probeVirtualRouterFrame{}, 0, 0, 0, fmt.Errorf("virtual router frame control is too large: %d", controlLen)
 	}
 	if dataLen > probeVirtualRouterFrameMaxDataBytes {
 		return probeVirtualRouterFrame{}, 0, 0, 0, fmt.Errorf("virtual router frame data is too large: %d", dataLen)
 	}
-	if frameLen != probeVirtualRouterFrameEnvelopeHeaderSize+controlLen+dataLen || frameLen > probeVirtualRouterFrameMaxBytes {
+	if probeVirtualRouterFrameEnvelopeHeaderSize+controlLen+dataLen > probeVirtualRouterFrameMaxBytes {
 		return probeVirtualRouterFrame{}, 0, 0, 0, errors.New("invalid virtual router frame envelope")
 	}
 	return probeVirtualRouterFrame{
-		MainType: binary.BigEndian.Uint16(header[4:6]),
-		SubType:  binary.BigEndian.Uint16(header[6:8]),
-		Flags:    binary.BigEndian.Uint16(header[8:10]),
-		StreamID: binary.BigEndian.Uint32(header[24:28]),
-		Seq:      binary.BigEndian.Uint32(header[28:32]),
+		MainType: binary.BigEndian.Uint16(header[2:4]),
+		SubType:  binary.BigEndian.Uint16(header[4:6]),
 	}, controlLen, dataLen, controlLen + dataLen, nil
 }
 
@@ -1487,18 +1452,40 @@ func verifyProbeVirtualRouterFrameChecksum(header []byte, controlPayload []byte,
 	if len(header) != probeVirtualRouterFrameEnvelopeHeaderSize {
 		return errors.New("invalid virtual router frame header")
 	}
-	checksum := binary.BigEndian.Uint32(header[32:36])
-	expected := crc32.Update(0, probeVirtualRouterFrameCRC32Table, header[:32])
-	if len(controlPayload) > 0 {
-		expected = crc32.Update(expected, probeVirtualRouterFrameCRC32Table, controlPayload)
-	}
-	if len(dataPayload) > 0 {
-		expected = crc32.Update(expected, probeVirtualRouterFrameCRC32Table, dataPayload)
-	}
+	checksum := binary.BigEndian.Uint16(header[10:12])
+	expected := probeVirtualRouterFrameChecksum(header[:10], controlPayload, dataPayload)
 	if checksum != expected {
 		return errors.New("virtual router frame checksum mismatch")
 	}
 	return nil
+}
+
+func probeVirtualRouterFrameChecksum(headerPrefix []byte, controlPayload []byte, dataPayload []byte) uint16 {
+	var sum uint32
+	var pending byte
+	hasPending := false
+	add := func(payload []byte) {
+		for _, item := range payload {
+			if hasPending {
+				sum += uint32(pending)<<8 | uint32(item)
+				sum = (sum & 0xffff) + (sum >> 16)
+				hasPending = false
+				continue
+			}
+			pending = item
+			hasPending = true
+		}
+	}
+	add(headerPrefix)
+	add(controlPayload)
+	add(dataPayload)
+	if hasPending {
+		sum += uint32(pending) << 8
+	}
+	for sum > 0xffff {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
 }
 
 func probeVirtualRouterFrameControl(frame probeVirtualRouterFrame, fallbackPath []string) (probeVirtualRouterFrameControlEnvelope, error) {
@@ -2094,17 +2081,8 @@ func (s *probeVirtualRouterFrameLink) EnqueueProbeVirtualRouterFrame(input probe
 	frame := probeVirtualRouterFrame{
 		MainType: input.MainType,
 		SubType:  input.SubType,
-		Flags:    input.Flags,
-		StreamID: input.StreamID,
-		Seq:      input.Seq,
 		Control:  append([]byte(nil), input.Control...),
 		Data:     append([]byte(nil), input.Data...),
-	}
-	if frame.StreamID == 0 {
-		frame.StreamID = 1
-	}
-	if frame.Seq == 0 && s.runtime != nil {
-		frame.Seq = s.runtime.nextFrameSeq()
 	}
 	if s.tx == nil || s.done == nil {
 		token, err := s.waitCarrier()
@@ -3190,12 +3168,6 @@ func enqueueProbeVirtualRouterBusinessFrameUntil(link *probeVirtualRouterFrameLi
 	frame, err := buildProbeVirtualRouterBusinessFrame(mainType, subType, payload, path, nil)
 	if err != nil {
 		return err
-	}
-	if frame.StreamID == 0 {
-		frame.StreamID = 1
-	}
-	if frame.Seq == 0 && link.runtime != nil {
-		frame.Seq = link.runtime.nextFrameSeq()
 	}
 	wait := time.Until(deadline)
 	if wait <= 0 {
