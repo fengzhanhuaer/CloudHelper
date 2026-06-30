@@ -30,6 +30,7 @@ const (
 	probeVirtualRouterFrameMaxControlBytes            = 8096
 	probeVirtualRouterFrameMaxDataBytes               = 65535
 	probeVirtualRouterFrameMaxBytes                   = probeVirtualRouterFrameEnvelopeHeaderSize + probeVirtualRouterFrameMaxControlBytes + probeVirtualRouterFrameMaxDataBytes
+	probeVirtualRouterFrameReadBufferBytes            = 256 * 1024
 	probeVirtualRouterFrameMainTypeIP          uint16 = 1
 	probeVirtualRouterFrameMainTypePingPong    uint16 = 2
 	probeVirtualRouterFrameMainTypePathRTT     uint16 = 3
@@ -1413,12 +1414,12 @@ func decodeProbeVirtualRouterFrame(payload []byte) (probeVirtualRouterFrame, err
 	}
 	controlPayload := payload[probeVirtualRouterFrameEnvelopeHeaderSize : probeVirtualRouterFrameEnvelopeHeaderSize+controlLen]
 	dataPayload := payload[probeVirtualRouterFrameEnvelopeHeaderSize+controlLen:]
-	frame.Control = append([]byte(nil), controlPayload...)
-	frame.Data = append([]byte(nil), dataPayload...)
-	if err := verifyProbeVirtualRouterFrameChecksum(payload[:probeVirtualRouterFrameEnvelopeHeaderSize], frame.Control, frame.Data); err != nil {
+	if err := verifyProbeVirtualRouterFrameChecksum(payload[:probeVirtualRouterFrameEnvelopeHeaderSize], controlPayload, dataPayload); err != nil {
 		return probeVirtualRouterFrame{}, err
 	}
-	if len(frame.Data) != dataLen {
+	frame.Control = controlPayload
+	frame.Data = dataPayload
+	if len(dataPayload) != dataLen {
 		return probeVirtualRouterFrame{}, errors.New("invalid virtual router frame envelope")
 	}
 	return frame, nil
@@ -1691,15 +1692,13 @@ func readProbeVirtualRouterWireFrame(reader *bufio.Reader) (probeVirtualRouterFr
 	if _, err := io.ReadFull(reader, payload); err != nil {
 		return probeVirtualRouterFrame{}, err
 	}
-	if controlLen > 0 {
-		frame.Control = append([]byte(nil), payload[:controlLen]...)
-	}
-	if dataLen > 0 {
-		frame.Data = append([]byte(nil), payload[controlLen:controlLen+dataLen]...)
-	}
-	if err := verifyProbeVirtualRouterFrameChecksum(header, frame.Control, frame.Data); err != nil {
+	controlPayload := payload[:controlLen]
+	dataPayload := payload[controlLen : controlLen+dataLen]
+	if err := verifyProbeVirtualRouterFrameChecksum(header, controlPayload, dataPayload); err != nil {
 		return probeVirtualRouterFrame{}, err
 	}
+	frame.Control = controlPayload
+	frame.Data = dataPayload
 	return frame, nil
 }
 
@@ -2146,7 +2145,7 @@ func (s *probeVirtualRouterFrameLink) runRXWorker() {
 		if err != nil {
 			return
 		}
-		reader := bufio.NewReader(token.conn)
+		reader := bufio.NewReaderSize(token.conn, probeVirtualRouterFrameReadBufferBytes)
 		for {
 			frame, err := readProbeVirtualRouterWireFrame(reader)
 			if err != nil {
