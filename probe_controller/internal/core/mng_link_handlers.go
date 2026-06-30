@@ -24,6 +24,19 @@ func mngLinkPageHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(mngLinkPageHTML))
 }
 
+func mngRoutePageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/mng/route" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(mngRoutePageHTML))
+}
+
 func mngLinkUsersHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
