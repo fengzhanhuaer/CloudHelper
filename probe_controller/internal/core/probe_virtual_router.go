@@ -468,30 +468,33 @@ func isProbeVirtualRouterProbeIPInPool(cidr string, ipText string) bool {
 	return offset >= 1 && offset <= uint32(probeVirtualRouterProbeIPPoolSize)
 }
 
-func probeVirtualRouterIPForNode(cidr string, nodeID string) string {
-	normalized := normalizeProbeNodeID(nodeID)
-	if normalized == "" {
-		return ""
-	}
-	n, err := strconv.Atoi(normalized)
-	if err != nil || n <= 0 || n > probeVirtualRouterProbeIPPoolSize {
-		return ""
-	}
+func probeVirtualRouterProbeIPPool(cidr string) []string {
 	_, network, err := net.ParseCIDR(strings.TrimSpace(firstNonEmptyProbeVirtualRouter(cidr, probeVirtualRouterDefaultCIDR)))
 	if err != nil || network == nil || network.IP.To4() == nil {
-		return ""
+		return []string{}
 	}
 	base := binary.BigEndian.Uint32(network.IP.To4())
+	out := make([]string, 0, probeVirtualRouterProbeIPPoolSize)
 	for offset := uint32(1); offset <= uint32(probeVirtualRouterProbeIPPoolSize); offset++ {
 		candidate := base + offset
 		raw := make([]byte, 4)
 		binary.BigEndian.PutUint32(raw, candidate)
-		ip := net.IP(raw).String()
+		ipValue := net.IP(raw)
+		if !network.Contains(ipValue) {
+			break
+		}
+		ip := ipValue.String()
 		if ip == probeVirtualRouterReservedGatewayIP || ip == probeVirtualRouterReservedTUNIP {
 			continue
 		}
-		n--
-		if n == 0 {
+		out = append(out, ip)
+	}
+	return out
+}
+
+func allocateProbeVirtualRouterFreeProbeIP(cidr string, used map[string]struct{}) string {
+	for _, ip := range probeVirtualRouterProbeIPPool(cidr) {
+		if _, exists := used[ip]; !exists {
 			return ip
 		}
 	}
@@ -509,25 +512,73 @@ func firstNonEmptyProbeVirtualRouter(values ...string) string {
 
 func ensureProbeVirtualRouterProbeIPsForKnownNodes(config probeVirtualRouterConfig) probeVirtualRouterConfig {
 	known := listProbeVirtualRouterKnownNodeIDs()
-	existing := map[string]probeVirtualRouterProbeIP{}
+	existingNode := map[string]struct{}{}
+	usedIP := map[string]struct{}{}
+	probeIPs := make([]probeVirtualRouterProbeIP, 0, len(config.ProbeIPs)+len(known))
 	for _, item := range config.ProbeIPs {
-		existing[normalizeProbeNodeID(item.NodeID)] = item
+		nodeID := normalizeProbeNodeID(item.NodeID)
+		ip := normalizeProbeVirtualRouterIP(item.IP)
+		if nodeID == "" || ip == "" {
+			continue
+		}
+		if isDeletedProbeNodeID(nodeID) {
+			continue
+		}
+		if !isProbeVirtualRouterProbeIPInPool(config.FakeIPCIDR, ip) {
+			continue
+		}
+		if _, ok := existingNode[nodeID]; ok {
+			continue
+		}
+		if _, ok := usedIP[ip]; ok {
+			continue
+		}
+		existingNode[nodeID] = struct{}{}
+		usedIP[ip] = struct{}{}
+		probeIPs = append(probeIPs, probeVirtualRouterProbeIP{
+			NodeID: nodeID,
+			IP:     ip,
+			Note:   strings.TrimSpace(item.Note),
+		})
 	}
 	for _, nodeID := range known {
 		if nodeID == "" {
 			continue
 		}
-		if _, ok := existing[nodeID]; ok {
+		if _, ok := existingNode[nodeID]; ok {
 			continue
 		}
-		ip := probeVirtualRouterIPForNode(config.FakeIPCIDR, nodeID)
+		ip := allocateProbeVirtualRouterFreeProbeIP(config.FakeIPCIDR, usedIP)
 		if ip == "" {
 			continue
 		}
-		config.ProbeIPs = append(config.ProbeIPs, probeVirtualRouterProbeIP{NodeID: nodeID, IP: ip})
+		existingNode[nodeID] = struct{}{}
+		usedIP[ip] = struct{}{}
+		probeIPs = append(probeIPs, probeVirtualRouterProbeIP{NodeID: nodeID, IP: ip})
 	}
-	config.ProbeIPs = normalizeProbeVirtualRouterProbeIPs(config.FakeIPCIDR, config.ProbeIPs)
+	config.ProbeIPs = normalizeProbeVirtualRouterProbeIPs(config.FakeIPCIDR, probeIPs)
 	return config
+}
+
+func reconcileProbeVirtualRouterStoredProbeIPsBestEffort() {
+	if ProbeLinkChainStore == nil {
+		return
+	}
+	changed := false
+	ProbeLinkChainStore.mu.Lock()
+	current := ProbeLinkChainStore.data.VirtualRouter
+	next := ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(current))
+	if !reflect.DeepEqual(current, next) {
+		ProbeLinkChainStore.data.VirtualRouter = next
+		changed = true
+	}
+	ProbeLinkChainStore.mu.Unlock()
+	if !changed || strings.TrimSpace(ProbeLinkChainStore.path) == "" {
+		return
+	}
+	if err := ProbeLinkChainStore.Save(); err != nil {
+		logControllerWarnf("failed to persist virtual router probe ip reconciliation: %v", err)
+	}
 }
 
 func listProbeVirtualRouterKnownNodeIDs() []string {
@@ -554,6 +605,9 @@ func listProbeVirtualRouterKnownNodeIDs() []string {
 		ProbeStore.mu.RUnlock()
 	}
 	for _, rt := range listProbeRuntimes() {
+		if isDeletedProbeNodeID(rt.NodeID) {
+			continue
+		}
 		add(rt.NodeID)
 	}
 	sort.SliceStable(ids, func(i, j int) bool {

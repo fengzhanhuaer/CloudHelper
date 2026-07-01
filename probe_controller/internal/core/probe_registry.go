@@ -189,6 +189,7 @@ func AdminDeleteProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist deleted probe node"})
 		return
 	}
+	reconcileProbeVirtualRouterStoredProbeIPsBestEffort()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":            true,
@@ -221,6 +222,7 @@ func AdminRestoreProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist restored probe node"})
 		return
 	}
+	reconcileProbeVirtualRouterStoredProbeIPsBestEffort()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":            true,
@@ -254,6 +256,7 @@ func AdminSyncProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist probe nodes"})
 		return
 	}
+	reconcileProbeVirtualRouterStoredProbeIPsBestEffort()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":    true,

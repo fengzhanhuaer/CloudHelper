@@ -38,16 +38,101 @@ func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testi
 	}
 }
 
-func TestProbeVirtualRouterIPForNodeUsesFirst1024FakeIPs(t *testing.T) {
-	if got := probeVirtualRouterIPForNode("198.18.0.0/15", "1"); got != "198.18.0.3" {
-		t.Fatalf("node 1 ip=%q", got)
+func TestProbeVirtualRouterProbeIPPoolUsesFirst1024FakeIPs(t *testing.T) {
+	pool := probeVirtualRouterProbeIPPool("198.18.0.0/15")
+	if len(pool) != 1022 {
+		t.Fatalf("pool size=%d, want 1022", len(pool))
 	}
-	if got := probeVirtualRouterIPForNode("198.18.0.0/15", "1022"); got != "198.18.4.0" {
-		t.Fatalf("node 1022 ip=%q", got)
+	if pool[0] != "198.18.0.3" {
+		t.Fatalf("first pool ip=%q", pool[0])
 	}
-	if got := probeVirtualRouterIPForNode("198.18.0.0/15", "1023"); got != "" {
-		t.Fatalf("node 1023 ip=%q, want empty", got)
+	if pool[len(pool)-1] != "198.18.4.0" {
+		t.Fatalf("last pool ip=%q", pool[len(pool)-1])
 	}
+	for _, ip := range pool {
+		if ip == probeVirtualRouterReservedGatewayIP || ip == probeVirtualRouterReservedTUNIP {
+			t.Fatalf("pool contains reserved ip %s", ip)
+		}
+	}
+}
+
+func TestEnsureProbeVirtualRouterProbeIPsAllocatesFreedAddress(t *testing.T) {
+	setProbeVirtualRouterTestProbeStore(t, probeConfigData{
+		ProbeNodes: []probeNodeRecord{
+			{NodeNo: 1, NodeName: "node-1"},
+			{NodeNo: 3, NodeName: "node-3"},
+			{NodeNo: 4, NodeName: "node-4"},
+		},
+		DeletedProbeNodes:   []probeNodeRecord{{NodeNo: 2, NodeName: "node-2"}},
+		DeletedProbeNodeNos: []int{2},
+		ProbeSecrets:        map[string]string{},
+	})
+	clearProbeVirtualRouterTestRuntimes(t)
+
+	config := ensureProbeVirtualRouterProbeIPsForKnownNodes(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.3"},
+			{NodeID: "2", IP: "198.18.0.4"},
+			{NodeID: "3", IP: "198.18.0.5"},
+		},
+	})
+	ipByNode := probeVirtualRouterTestIPByNode(config.ProbeIPs)
+	if _, ok := ipByNode["2"]; ok {
+		t.Fatalf("deleted node should be released: %+v", config.ProbeIPs)
+	}
+	if ipByNode["1"] != "198.18.0.3" || ipByNode["3"] != "198.18.0.5" {
+		t.Fatalf("existing active ips should be preserved: %+v", config.ProbeIPs)
+	}
+	if ipByNode["4"] != "198.18.0.4" {
+		t.Fatalf("node 4 ip=%q, want freed 198.18.0.4; ips=%+v", ipByNode["4"], config.ProbeIPs)
+	}
+}
+
+func TestEnsureProbeVirtualRouterProbeIPsAllocatesHighNodeIDFromFreePool(t *testing.T) {
+	setProbeVirtualRouterTestProbeStore(t, probeConfigData{
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 2000, NodeName: "node-2000"}},
+		ProbeSecrets: map[string]string{},
+	})
+	clearProbeVirtualRouterTestRuntimes(t)
+
+	config := ensureProbeVirtualRouterProbeIPsForKnownNodes(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+	})
+	ipByNode := probeVirtualRouterTestIPByNode(config.ProbeIPs)
+	if ipByNode["2000"] != "198.18.0.3" {
+		t.Fatalf("node 2000 ip=%q, ips=%+v", ipByNode["2000"], config.ProbeIPs)
+	}
+}
+
+func setProbeVirtualRouterTestProbeStore(t *testing.T, data probeConfigData) {
+	t.Helper()
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{data: data}
+	t.Cleanup(func() { ProbeStore = oldStore })
+}
+
+func clearProbeVirtualRouterTestRuntimes(t *testing.T) {
+	t.Helper()
+	probeRuntimeStore.mu.Lock()
+	oldRuntimeData := probeRuntimeStore.data
+	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
+	probeRuntimeStore.mu.Unlock()
+	t.Cleanup(func() {
+		probeRuntimeStore.mu.Lock()
+		probeRuntimeStore.data = oldRuntimeData
+		probeRuntimeStore.mu.Unlock()
+	})
+}
+
+func probeVirtualRouterTestIPByNode(items []probeVirtualRouterProbeIP) map[string]string {
+	out := make(map[string]string, len(items))
+	for _, item := range items {
+		out[item.NodeID] = item.IP
+	}
+	return out
 }
 
 func TestProbeVirtualRouterRuntimeChainIDIsStableAcrossServiceEndpointChanges(t *testing.T) {

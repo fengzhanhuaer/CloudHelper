@@ -114,6 +114,7 @@ func mngProbeNodeCreateHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist probe node"})
 		return
 	}
+	reconcileProbeVirtualRouterStoredProbeIPsBestEffort()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"node": node})
 }
@@ -174,6 +175,7 @@ func mngProbeNodeDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist deleted probe node"})
 		return
 	}
+	reconcileProbeVirtualRouterStoredProbeIPsBestEffort()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":            true,
@@ -206,6 +208,7 @@ func mngProbeNodeRestoreHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist restored probe node"})
 		return
 	}
+	reconcileProbeVirtualRouterStoredProbeIPsBestEffort()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":            true,
