@@ -22,11 +22,12 @@ import (
 const (
 	probeLinkChainsSyncAPIPath         = "/api/probe/link/chains"
 	probeLinkChainGroupedConfigAPIPath = "/api/probe/link/config/grouped"
+	probeRouteConfigAPIPath            = "/api/probe/route/config"
 	probeLinkChainsSyncPollInterval    = 60 * time.Minute
 	probeLinkChainsSyncFetchTimeout    = 15 * time.Second
 	probeChainTopologyCacheFileName    = "probe_link_chain_config.json"
 	probeProxyChainsCacheFileName      = "proxy_chain.json"
-	probeVirtualRouterCacheFileName    = "virtual_router.json"
+	probeRouteConfigCacheFileName      = "probe_route_config.json"
 )
 
 // probeLinkChainsResponse mirrors the JSON returned by ProbeLinkChainsHandler.
@@ -41,7 +42,11 @@ type probeLinkChainConfigResponse struct {
 	PortForwardChains        []probeLinkChainServerItem `json:"port_forward_chains"`
 	ProxyChains              []probeLinkChainServerItem `json:"proxy_chains"`
 	GlobalProxyForwardChains []probeLinkChainServerItem `json:"global_proxy_forward_chains"`
-	VirtualRouter            probeVirtualRouterConfig   `json:"virtual_router,omitempty"`
+}
+
+type probeRouteConfigResponse struct {
+	NodeID        string                   `json:"node_id"`
+	VirtualRouter probeVirtualRouterConfig `json:"virtual_router,omitempty"`
 }
 
 type probeLinkChainConfigFetchResult struct {
@@ -49,7 +54,6 @@ type probeLinkChainConfigFetchResult struct {
 	PortForwardChains        []probeLinkChainServerItem
 	ProxyChains              []probeLinkChainServerItem
 	GlobalProxyForwardChains []probeLinkChainServerItem
-	VirtualRouter            probeVirtualRouterConfig
 }
 
 // probeChainTopologyCacheFile stores full chain topology fetched from controller.
@@ -100,13 +104,14 @@ type probeVirtualRouterRouteRule struct {
 	UpdatedAt string   `json:"updated_at,omitempty"`
 }
 
-type probeVirtualRouterCacheFile struct {
+type probeRouteConfigCacheFile struct {
 	UpdatedAt string                   `json:"updated_at"`
 	Item      probeVirtualRouterConfig `json:"item"`
 }
 
 var (
 	probeRequestLinkChainConfig = requestProbeLinkChainConfig
+	probeRequestRouteConfig     = requestProbeRouteConfig
 )
 
 // probeLinkChainServerItem is a single chain record returned by the controller.
@@ -193,10 +198,16 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	cancel()
 	if err != nil {
 		log.Printf("warning: probe chain sync fetch failed: %v (using local topology cache when available)", err)
+		if routeErr := syncProbeRouteConfig(identity, controllerBaseURL); routeErr != nil {
+			log.Printf("warning: probe route config sync during chain fallback failed: %v", routeErr)
+		}
 		restoreProbeChainRuntimesFromTopologyCache(identity, controllerBaseURL)
 		return
 	}
 
+	if routeErr := syncProbeRouteConfig(identity, controllerBaseURL); routeErr != nil {
+		log.Printf("warning: probe route config sync failed: %v", routeErr)
+	}
 	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, append(append([]probeLinkChainServerItem{}, config.SelfChains...), config.GlobalProxyForwardChains...))
 	if err := persistProbeChainTopologyCache(config.SelfChains); err != nil {
 		log.Printf("warning: persist probe chain topology cache failed: %v", err)
@@ -204,11 +215,6 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 	if err := persistProbeProxyChainCache(config.GlobalProxyForwardChains); err != nil {
 		log.Printf("warning: persist probe proxy chain cache failed: %v", err)
 	}
-	if err := persistProbeVirtualRouterCache(config.VirtualRouter); err != nil {
-		log.Printf("warning: persist probe virtual router cache failed: %v", err)
-	}
-	applyProbeVirtualRouterConfigForNode(config.VirtualRouter, identity.NodeID)
-	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, config.VirtualRouter)
 
 	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
 	preconnectProbeLocalTUNGroupRuntimesFromState("chain_sync")
@@ -217,15 +223,6 @@ func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
 }
 
 func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controllerBaseURL string) {
-	var virtualRouterConfig probeVirtualRouterConfig
-	if config, err := loadProbeVirtualRouterCache(); err == nil {
-		virtualRouterConfig = config
-		applyProbeVirtualRouterConfigForNode(config, identity.NodeID)
-	} else {
-		log.Printf("warning: load probe virtual router cache failed: %v", err)
-	}
-	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, virtualRouterConfig)
-
 	items, err := loadProbeChainTopologyCacheItems()
 	if err != nil {
 		log.Printf("warning: load probe chain topology cache failed: %v", err)
@@ -281,8 +278,42 @@ func fetchProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, id
 	result.GlobalProxyForwardChains = sanitizeProbeChainServerItemsForCache(result.GlobalProxyForwardChains)
 	rememberProbeChainAuthTicketsForItems(result.SelfChains)
 	rememberProbeChainAuthTicketsForItems(result.GlobalProxyForwardChains)
-	rememberProbeVirtualRouterAuthTickets(result.VirtualRouter)
 	return result, nil
+}
+
+func syncProbeRouteConfig(identity nodeIdentity, controllerBaseURL string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
+	config, err := fetchProbeRouteConfig(ctx, controllerBaseURL, identity)
+	cancel()
+	if err != nil {
+		if cached, cacheErr := loadProbeRouteConfigCache(); cacheErr == nil {
+			applyProbeVirtualRouterConfigForNode(cached, identity.NodeID)
+			applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, cached)
+		} else {
+			log.Printf("warning: load probe route config cache failed: %v", cacheErr)
+		}
+		return err
+	}
+	if err := persistProbeRouteConfigCache(config); err != nil {
+		log.Printf("warning: persist probe route config cache failed: %v", err)
+	}
+	applyProbeVirtualRouterConfigForNode(config, identity.NodeID)
+	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, config)
+	return nil
+}
+
+func fetchProbeRouteConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeVirtualRouterConfig, error) {
+	base := strings.TrimSpace(controllerBaseURL)
+	if base == "" {
+		return probeVirtualRouterConfig{}, errors.New("controller base url is empty")
+	}
+	config, err := probeRequestRouteConfig(ctx, base, identity)
+	if err != nil {
+		return probeVirtualRouterConfig{}, err
+	}
+	config = sanitizeProbeVirtualRouterConfigForCache(config)
+	rememberProbeVirtualRouterAuthTickets(config)
+	return config, nil
 }
 
 // fetchProbeLinkChains returns self chains for compatibility with older callers.
@@ -363,8 +394,51 @@ func requestProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, 
 		PortForwardChains:        payload.PortForwardChains,
 		ProxyChains:              payload.ProxyChains,
 		GlobalProxyForwardChains: payload.GlobalProxyForwardChains,
-		VirtualRouter:            sanitizeProbeVirtualRouterConfigForCache(payload.VirtualRouter),
 	}, nil
+}
+
+func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeVirtualRouterConfig, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
+	if baseURL == "" {
+		return probeVirtualRouterConfig{}, errors.New("controller base url is required")
+	}
+	nodeID := strings.TrimSpace(identity.NodeID)
+	secret := strings.TrimSpace(identity.Secret)
+	if nodeID == "" || secret == "" {
+		return probeVirtualRouterConfig{}, errors.New("node identity is missing node id or secret")
+	}
+
+	query := url.Values{}
+	query.Set("node_id", nodeID)
+	query.Set("secret", secret)
+	configURL := baseURL + probeRouteConfigAPIPath + "?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
+	if err != nil {
+		return probeVirtualRouterConfig{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	client, closeClient, err := newProbeResolvedHTTPClientForURL(configURL, probeLinkChainsSyncFetchTimeout)
+	if err != nil {
+		return probeVirtualRouterConfig{}, err
+	}
+	defer closeClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		return probeVirtualRouterConfig{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return probeVirtualRouterConfig{}, fmt.Errorf("request route config failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload probeRouteConfigResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return probeVirtualRouterConfig{}, err
+	}
+	return sanitizeProbeVirtualRouterConfigForCache(payload.VirtualRouter), nil
 }
 
 // applyProbeLinkChainServerItems diffs server items against running runtimes.

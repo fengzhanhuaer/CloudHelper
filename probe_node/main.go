@@ -773,6 +773,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeLinkConfigSyncControl(msg, identity)
 		return
 	}
+	if typeName == "route_config_sync" {
+		go runProbeRouteConfigSyncControl(msg, identity)
+		return
+	}
 	if typeName == "virtual_router_latency_probe" {
 		go runProbeVirtualRouterLatencyProbeControl(identity, stream, encoder, writeMu)
 		return
@@ -874,6 +878,22 @@ func runProbeLinkConfigSyncControl(msg probeControlMessage, identity nodeIdentit
 	}
 	logProbeInfof("probe link config sync requested by controller")
 	syncProbeChainRuntimes(identity, controllerBaseURL)
+}
+
+func runProbeRouteConfigSyncControl(msg probeControlMessage, identity nodeIdentity) {
+	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(msg.ControllerBaseURL), "")
+	if strings.TrimSpace(controllerBaseURL) == "" {
+		runtimeContext := currentProbeLocalProxyRuntimeContext()
+		controllerBaseURL = strings.TrimSpace(runtimeContext.ControllerBaseURL)
+	}
+	if strings.TrimSpace(controllerBaseURL) == "" {
+		logProbeWarnf("probe route config sync skipped: controller base url is empty")
+		return
+	}
+	logProbeInfof("probe route config sync requested by controller")
+	if err := syncProbeRouteConfig(identity, controllerBaseURL); err != nil {
+		logProbeWarnf("probe route config sync failed: err=%v", err)
+	}
 }
 
 func runProbeVirtualRouterLatencyProbeControl(identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {

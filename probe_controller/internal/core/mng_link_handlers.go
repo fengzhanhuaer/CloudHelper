@@ -332,12 +332,12 @@ func listMngLinkRelayStatus() []mngLinkRelayStatusView {
 }
 
 func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
-	if ProbeLinkChainStore == nil {
+	if ProbeRouteConfigStore == nil {
 		return []mngVirtualRouterRouteStatusView{}
 	}
-	ProbeLinkChainStore.mu.RLock()
-	config := ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeLinkChainStore.data.VirtualRouter))
-	ProbeLinkChainStore.mu.RUnlock()
+	ProbeRouteConfigStore.mu.RLock()
+	config := ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter))
+	ProbeRouteConfigStore.mu.RUnlock()
 
 	runtimes := listProbeRuntimes()
 	runtimeByNode := make(map[string]probeRuntimeStatus, len(runtimes))

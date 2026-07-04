@@ -65,6 +65,12 @@ type probeLinkConfigSyncCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeRouteConfigSyncCommand struct {
+	Type              string `json:"type"`
+	ControllerBaseURL string `json:"controller_base_url"`
+	Timestamp         string `json:"timestamp"`
+}
+
 type probeVirtualRouterLatencyProbeCommand struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
@@ -394,6 +400,10 @@ func dispatchProbeLinkConfigSyncToKnownNodes(controllerBaseURL string) probeLink
 	return dispatchProbeLinkConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
 }
 
+func dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL string) probeLinkConfigSyncDispatchResult {
+	return dispatchProbeRouteConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
+}
+
 func dispatchProbeVirtualRouterLatencyProbeToKnownNodes() probeLinkConfigSyncDispatchResult {
 	return dispatchProbeVirtualRouterLatencyProbeToNodes(listProbeVirtualRouterKnownNodeIDs())
 }
@@ -509,6 +519,32 @@ func dispatchProbeLinkConfigSyncToNodes(nodeIDs []string, controllerBaseURL stri
 		result.Dispatched++
 	}
 	result.Total = len(seen)
+	return result
+}
+
+func dispatchProbeRouteConfigSyncToNodes(nodeIDs []string, controllerBaseURL string) probeLinkConfigSyncDispatchResult {
+	result := probeLinkConfigSyncDispatchResult{
+		Total: len(nodeIDs),
+	}
+	for _, nodeID := range nodeIDs {
+		session, ok := getProbeSession(nodeID)
+		if !ok {
+			result.Offline++
+			continue
+		}
+		command := probeRouteConfigSyncCommand{
+			Type:              "route_config_sync",
+			ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
+			Timestamp:         time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := session.writeJSON(command); err != nil {
+			unregisterProbeSession(nodeID, session)
+			result.Failed++
+			result.Failures = append(result.Failures, fmt.Sprintf("%s: %v", nodeID, err))
+			continue
+		}
+		result.Dispatched++
+	}
 	return result
 }
 

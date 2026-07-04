@@ -125,13 +125,17 @@ type probeLinkChainAuthTicketPayload struct {
 var probeLinkChainAuthTicketNow = time.Now
 
 type probeLinkChainConfigResponse struct {
-	NodeID                   string                   `json:"node_id"`
-	Chains                   []probeLinkChainRecord   `json:"chains"`
-	SelfChains               []probeLinkChainRecord   `json:"self_chains"`
-	PortForwardChains        []probeLinkChainRecord   `json:"port_forward_chains"`
-	ProxyChains              []probeLinkChainRecord   `json:"proxy_chains"`
-	GlobalProxyForwardChains []probeLinkChainRecord   `json:"global_proxy_forward_chains"`
-	VirtualRouter            probeVirtualRouterConfig `json:"virtual_router,omitempty"`
+	NodeID                   string                 `json:"node_id"`
+	Chains                   []probeLinkChainRecord `json:"chains"`
+	SelfChains               []probeLinkChainRecord `json:"self_chains"`
+	PortForwardChains        []probeLinkChainRecord `json:"port_forward_chains"`
+	ProxyChains              []probeLinkChainRecord `json:"proxy_chains"`
+	GlobalProxyForwardChains []probeLinkChainRecord `json:"global_proxy_forward_chains"`
+}
+
+type probeRouteConfigResponse struct {
+	NodeID        string                   `json:"node_id"`
+	VirtualRouter probeVirtualRouterConfig `json:"virtual_router,omitempty"`
 }
 
 func loadProbeLinkChainsLocked() []probeLinkChainRecord {
@@ -1883,7 +1887,6 @@ func ProbeLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "chain store not initialized"})
 		return
 	}
-	ensureProbeVirtualRouterStoredAuthFields()
 
 	ProbeLinkChainStore.mu.RLock()
 	all := loadProbeLinkChainsLocked()
@@ -1924,7 +1927,6 @@ func ProbeLinkChainConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 	ProbeLinkChainStore.mu.RLock()
 	all := loadProbeLinkChainsLocked()
-	virtualRouter := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
 	ProbeLinkChainStore.mu.RUnlock()
 
 	available := fillChainRelayHosts(filterAvailableProbeLinkChains(all))
@@ -1945,7 +1947,35 @@ func ProbeLinkChainConfigHandler(w http.ResponseWriter, r *http.Request) {
 		PortForwardChains:        filterProbeLinkChainsByType(selfChains, "port_forward"),
 		ProxyChains:              filterProbeLinkChainsByType(selfChains, "proxy_chain"),
 		GlobalProxyForwardChains: clientEntryChains,
-		VirtualRouter:            virtualRouter,
+	})
+}
+
+func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isHTTPSRequest(r) {
+		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
+		return
+	}
+
+	nodeID, err := authenticateProbeRequestOrQuerySecret(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+	if ProbeRouteConfigStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "route config store not initialized"})
+		return
+	}
+	ensureProbeVirtualRouterStoredAuthFields()
+	ProbeRouteConfigStore.mu.RLock()
+	virtualRouter := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
+	ProbeRouteConfigStore.mu.RUnlock()
+	writeJSON(w, http.StatusOK, probeRouteConfigResponse{
+		NodeID:        nodeID,
+		VirtualRouter: virtualRouter,
 	})
 }
 

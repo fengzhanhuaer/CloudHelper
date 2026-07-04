@@ -20,7 +20,6 @@ type probeLinkChainStoreData struct {
 	DeletedChains []probeLinkChainRecord        `json:"deleted_chains,omitempty"`
 	NextChainID   int64                         `json:"next_chain_id,omitempty"`
 	EntryProfiles []probeLinkEntryProfileRecord `json:"entry_profiles,omitempty"`
-	VirtualRouter probeVirtualRouterConfig      `json:"virtual_router,omitempty"`
 }
 
 var ProbeLinkChainStore *probeLinkChainStore
@@ -53,7 +52,6 @@ func initProbeLinkChainStore() {
 			ProbeLinkChainStore.data.DeletedChains = normalizedDeletedChains
 			ProbeLinkChainStore.data.NextChainID = normalizeProbeLinkChainNextID(raw.NextChainID, append(normalizedChains, normalizedDeletedChains...))
 			ProbeLinkChainStore.data.EntryProfiles = normalizeProbeLinkEntryProfiles(raw.EntryProfiles, normalizedChains)
-			ProbeLinkChainStore.data.VirtualRouter = normalizeProbeVirtualRouterConfig(raw.VirtualRouter)
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := ProbeLinkChainStore.Save(); saveErr != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -92,14 +93,14 @@ func TestMngVirtualRouterSideStatsErrorIgnoresStaleErrorAfterBridgeReconnect(t *
 }
 
 func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T) {
-	oldStore := ProbeLinkChainStore
+	oldRouteStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
 	probeRuntimeStore.mu.Lock()
 	oldRuntimeData := probeRuntimeStore.data
 	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
 	probeRuntimeStore.mu.Unlock()
 	t.Cleanup(func() {
-		ProbeLinkChainStore = oldStore
+		ProbeRouteConfigStore = oldRouteStore
 		ProbeStore = oldProbeStore
 		probeRuntimeStore.mu.Lock()
 		probeRuntimeStore.data = oldRuntimeData
@@ -117,9 +118,9 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 		ToServicePort:   12040,
 		Enabled:         true,
 	}
-	ProbeLinkChainStore = &probeLinkChainStore{
-		path: filepath.Join(tmpDir, "probe_link_chains.json"),
-		data: probeLinkChainStoreData{
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
 			VirtualRouter: probeVirtualRouterConfig{
 				Enabled:    true,
 				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
@@ -212,7 +213,7 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/mng/api/link/virtual_router/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/mng/api/route/virtual_router/status", nil)
 	rr := httptest.NewRecorder()
 	mngLinkVirtualRouterStatusHandler(rr, req)
 	if rr.Code != http.StatusOK {
@@ -276,21 +277,18 @@ func TestLastMngVirtualRouterRouteLatencyUsesNewestPingReport(t *testing.T) {
 }
 
 func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
-	oldStore := ProbeLinkChainStore
+	oldStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
 	t.Cleanup(func() {
-		ProbeLinkChainStore = oldStore
+		ProbeRouteConfigStore = oldStore
 		ProbeStore = oldProbeStore
 	})
 
 	tmpDir := t.TempDir()
-	ProbeLinkChainStore = &probeLinkChainStore{
-		path: filepath.Join(tmpDir, "probe_link_chains.json"),
-		data: probeLinkChainStoreData{
-			Chains:        []probeLinkChainRecord{},
-			DeletedChains: []probeLinkChainRecord{},
-			NextChainID:   1,
-			EntryProfiles: []probeLinkEntryProfileRecord{},
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: defaultProbeVirtualRouterConfig(),
 		},
 	}
 	ProbeStore = &probeConfigStore{
@@ -335,14 +333,14 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
     }
   ]
 }`)
-	saveReq := httptest.NewRequest(http.MethodPost, "/mng/api/link/virtual_router", bytes.NewReader(body))
+	saveReq := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
 	saveRR := httptest.NewRecorder()
 	mngLinkVirtualRouterHandler(saveRR, saveReq)
 	if saveRR.Code != http.StatusOK {
 		t.Fatalf("save status=%d body=%s", saveRR.Code, saveRR.Body.String())
 	}
 
-	getReq := httptest.NewRequest(http.MethodGet, "/mng/api/link/virtual_router", nil)
+	getReq := httptest.NewRequest(http.MethodGet, "/mng/api/route/virtual_router", nil)
 	getRR := httptest.NewRecorder()
 	mngLinkVirtualRouterHandler(getRR, getReq)
 	if getRR.Code != http.StatusOK {
@@ -370,15 +368,27 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	if payload.Item.TopologyRules[1].FromServicePort != 0 || payload.Item.TopologyRules[1].ToServicePort != 443 {
 		t.Fatalf("service port reuse should be allowed: %+v", payload.Item.TopologyRules)
 	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "probe_route_config.json"))
+	if err != nil {
+		t.Fatalf("read route config store failed: %v", err)
+	}
+	var stored probeRouteConfigStoreData
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("decode route config store failed: %v", err)
+	}
+	if len(stored.VirtualRouter.TopologyRules) != 2 {
+		t.Fatalf("route config store topology rules=%+v, want 2", stored.VirtualRouter.TopologyRules)
+	}
 }
 
 func TestMngLinkVirtualRouterHandlerRejectsProbeIPOutsideReservedPool(t *testing.T) {
-	oldStore := ProbeLinkChainStore
-	t.Cleanup(func() { ProbeLinkChainStore = oldStore })
-	ProbeLinkChainStore = &probeLinkChainStore{path: filepath.Join(t.TempDir(), "probe_link_chains.json")}
+	oldStore := ProbeRouteConfigStore
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "probe_route_config.json")}
 
 	body := []byte(`{"probe_ips":[{"node_id":"1","ip":"198.18.4.1"}]}`)
-	req := httptest.NewRequest(http.MethodPost, "/mng/api/link/virtual_router", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 	mngLinkVirtualRouterHandler(rr, req)
 	if rr.Code != http.StatusBadRequest {
@@ -387,9 +397,9 @@ func TestMngLinkVirtualRouterHandlerRejectsProbeIPOutsideReservedPool(t *testing
 }
 
 func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
-	oldStore := ProbeLinkChainStore
-	t.Cleanup(func() { ProbeLinkChainStore = oldStore })
-	ProbeLinkChainStore = &probeLinkChainStore{path: filepath.Join(t.TempDir(), "probe_link_chains.json")}
+	oldStore := ProbeRouteConfigStore
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "probe_route_config.json")}
 
 	body := []byte(`{
   "probe_ips":[
@@ -400,7 +410,7 @@ func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
     {"from_node_id":"1","to_node_id":"2","direction":"bidirectional","to_service_port":65536,"enabled":true}
   ]
 }`)
-	req := httptest.NewRequest(http.MethodPost, "/mng/api/link/virtual_router", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 	mngLinkVirtualRouterHandler(rr, req)
 	if rr.Code != http.StatusBadRequest {
@@ -409,21 +419,17 @@ func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
 }
 
 func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(t *testing.T) {
-	oldStore := ProbeLinkChainStore
+	oldStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
 	t.Cleanup(func() {
-		ProbeLinkChainStore = oldStore
+		ProbeRouteConfigStore = oldStore
 		ProbeStore = oldProbeStore
 	})
 
 	tmpDir := t.TempDir()
-	ProbeLinkChainStore = &probeLinkChainStore{
-		path: filepath.Join(tmpDir, "probe_link_chains.json"),
-		data: probeLinkChainStoreData{
-			Chains:        []probeLinkChainRecord{},
-			DeletedChains: []probeLinkChainRecord{},
-			NextChainID:   1,
-			EntryProfiles: []probeLinkEntryProfileRecord{},
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
 			VirtualRouter: probeVirtualRouterConfig{
 				Enabled:    true,
 				FakeIPCIDR: probeVirtualRouterDefaultCIDR,

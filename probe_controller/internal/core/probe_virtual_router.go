@@ -141,10 +141,10 @@ func defaultProbeVirtualRouterConfig() probeVirtualRouterConfig {
 }
 
 func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRouterConfig {
-	if ProbeLinkChainStore == nil {
+	if ProbeRouteConfigStore == nil {
 		return defaultProbeVirtualRouterConfig()
 	}
-	config := enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeLinkChainStore.data.VirtualRouter))))
+	config := enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter))))
 	if !config.Enabled {
 		config.ProbeIPs = []probeVirtualRouterProbeIP{}
 		config.TopologyRules = []probeVirtualRouterTopologyRule{}
@@ -154,20 +154,20 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 }
 
 func ensureProbeVirtualRouterStoredAuthFields() {
-	if ProbeLinkChainStore == nil {
+	if ProbeRouteConfigStore == nil {
 		return
 	}
 	changed := false
-	ProbeLinkChainStore.mu.Lock()
-	current := ProbeLinkChainStore.data.VirtualRouter
+	ProbeRouteConfigStore.mu.Lock()
+	current := ProbeRouteConfigStore.data.VirtualRouter
 	next := ensureProbeVirtualRouterAuthFields(normalizeProbeVirtualRouterConfig(current))
 	if !reflect.DeepEqual(current, next) {
-		ProbeLinkChainStore.data.VirtualRouter = next
+		ProbeRouteConfigStore.data.VirtualRouter = next
 		changed = true
 	}
-	ProbeLinkChainStore.mu.Unlock()
+	ProbeRouteConfigStore.mu.Unlock()
 	if changed {
-		if err := ProbeLinkChainStore.Save(); err != nil {
+		if err := ProbeRouteConfigStore.Save(); err != nil {
 			logControllerWarnf("failed to persist virtual router auth fields: %v", err)
 		}
 	}
@@ -737,22 +737,22 @@ func ensureProbeVirtualRouterProbeIPsForKnownNodes(config probeVirtualRouterConf
 }
 
 func reconcileProbeVirtualRouterStoredProbeIPsBestEffort() {
-	if ProbeLinkChainStore == nil {
+	if ProbeRouteConfigStore == nil {
 		return
 	}
 	changed := false
-	ProbeLinkChainStore.mu.Lock()
-	current := ProbeLinkChainStore.data.VirtualRouter
+	ProbeRouteConfigStore.mu.Lock()
+	current := ProbeRouteConfigStore.data.VirtualRouter
 	next := ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(current))
 	if !reflect.DeepEqual(current, next) {
-		ProbeLinkChainStore.data.VirtualRouter = next
+		ProbeRouteConfigStore.data.VirtualRouter = next
 		changed = true
 	}
-	ProbeLinkChainStore.mu.Unlock()
-	if !changed || strings.TrimSpace(ProbeLinkChainStore.path) == "" {
+	ProbeRouteConfigStore.mu.Unlock()
+	if !changed || strings.TrimSpace(ProbeRouteConfigStore.path) == "" {
 		return
 	}
-	if err := ProbeLinkChainStore.Save(); err != nil {
+	if err := ProbeRouteConfigStore.Save(); err != nil {
 		logControllerWarnf("failed to persist virtual router probe ip reconciliation: %v", err)
 	}
 }

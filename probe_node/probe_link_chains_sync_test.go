@@ -209,6 +209,56 @@ func TestFetchProbeLinkChainConfigUsesProbeGroupedEndpoint(t *testing.T) {
 	}
 }
 
+func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
+
+	var requestedPath string
+	var requestedNodeID string
+	var requestedSecret string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		requestedNodeID = r.URL.Query().Get("node_id")
+		requestedSecret = r.URL.Query().Get("secret")
+		if r.URL.Path != probeRouteConfigAPIPath {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(probeRouteConfigResponse{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: "198.18.0.0/15",
+				TopologyRules: []probeVirtualRouterTopologyRule{{
+					ID:         "vr-a",
+					FromNodeID: "1",
+					ToNodeID:   "2",
+					Enabled:    true,
+				}},
+				RouteRules: []probeVirtualRouterRouteRule{{
+					Name:    "media",
+					Entries: []string{"domain_suffix:reddit.com"},
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	config, err := fetchProbeRouteConfig(context.Background(), server.URL, nodeIdentity{NodeID: "7", Secret: "secret-7"})
+	if err != nil {
+		t.Fatalf("fetchProbeRouteConfig failed: %v", err)
+	}
+	if requestedPath != probeRouteConfigAPIPath {
+		t.Fatalf("requested path=%q, want %q", requestedPath, probeRouteConfigAPIPath)
+	}
+	if requestedNodeID != "7" || requestedSecret != "secret-7" {
+		t.Fatalf("unexpected auth query node_id=%q secret=%q", requestedNodeID, requestedSecret)
+	}
+	if len(config.TopologyRules) != 1 || len(config.RouteRules) != 1 {
+		t.Fatalf("unexpected route config: %+v", config)
+	}
+}
+
 func TestFetchProbeLinkChainsReturnsSelfChainsFromGroupedEndpoint(t *testing.T) {
 	origRequestConfig := probeRequestLinkChainConfig
 	defer func() { probeRequestLinkChainConfig = origRequestConfig }()

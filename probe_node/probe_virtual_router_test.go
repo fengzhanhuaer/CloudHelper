@@ -97,17 +97,20 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 			},
 		},
 	}
-	if err := persistProbeVirtualRouterCache(config); err != nil {
+	if err := persistProbeRouteConfigCache(config); err != nil {
 		t.Fatalf("persist cache failed: %v", err)
 	}
-	path, err := resolveProbeVirtualRouterCachePath()
+	path, err := resolveProbeRouteConfigCachePath()
 	if err != nil {
 		t.Fatalf("resolve cache path failed: %v", err)
+	}
+	if !strings.HasSuffix(path, probeRouteConfigCacheFileName) {
+		t.Fatalf("cache path=%q, want suffix %q", path, probeRouteConfigCacheFileName)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("cache file missing: %v", err)
 	}
-	loaded, err := loadProbeVirtualRouterCache()
+	loaded, err := loadProbeRouteConfigCache()
 	if err != nil {
 		t.Fatalf("load cache failed: %v", err)
 	}

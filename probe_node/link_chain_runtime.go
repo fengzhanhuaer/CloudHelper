@@ -932,12 +932,29 @@ func ensureProbeChainRuntimeAuthTicket(cfg *probeChainRuntimeConfig) error {
 		return fmt.Errorf("auth_ticket is required when require_user_auth=true")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
+	if isProbeVirtualRouterRuntimeChainID(cfg.chainID) || strings.EqualFold(strings.TrimSpace(cfg.chainType), "virtual_router") {
+		config, err := fetchProbeRouteConfig(ctx, baseURL, cfg.identity)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("active auth_ticket refresh failed: %w", err)
+		}
+		if item, ok := findProbeChainAuthTicketItem(cfg.chainID, probeVirtualRouterAuthTicketItems(config)); ok {
+			cfg.authTicket = strings.TrimSpace(item.AuthTicket)
+			if strings.TrimSpace(cfg.authTicket) != "" {
+				rememberProbeChainAuthTicket(cfg.chainID, cfg.authTicket)
+				log.Printf("probe chain auth ticket refreshed: chain=%s", strings.TrimSpace(cfg.chainID))
+				return nil
+			}
+		}
+		return fmt.Errorf("auth_ticket is required when require_user_auth=true")
+	}
+
 	config, err := fetchProbeLinkChainConfig(ctx, baseURL, cfg.identity)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("active auth_ticket refresh failed: %w", err)
 	}
-	if item, ok := findProbeChainAuthTicketItem(cfg.chainID, config.SelfChains, config.GlobalProxyForwardChains, probeVirtualRouterAuthTicketItems(config.VirtualRouter)); ok {
+	if item, ok := findProbeChainAuthTicketItem(cfg.chainID, config.SelfChains, config.GlobalProxyForwardChains); ok {
 		cfg.authTicket = strings.TrimSpace(item.AuthTicket)
 		if strings.TrimSpace(cfg.authTicket) != "" {
 			rememberProbeChainAuthTicket(cfg.chainID, cfg.authTicket)

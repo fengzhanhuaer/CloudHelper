@@ -3,8 +3,8 @@ package core
 import "testing"
 
 func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testing.T) {
-	oldStore := ProbeLinkChainStore
-	t.Cleanup(func() { ProbeLinkChainStore = oldStore })
+	oldStore := ProbeRouteConfigStore
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
 	setProbeVirtualRouterTestProbeStore(t, probeConfigData{
 		ProbeNodes: []probeNodeRecord{
 			{NodeNo: 1, NodeName: "node-1"},
@@ -15,8 +15,8 @@ func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testi
 		ProbeSecrets: map[string]string{},
 	})
 
-	ProbeLinkChainStore = &probeLinkChainStore{
-		data: probeLinkChainStoreData{
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		data: probeRouteConfigStoreData{
 			VirtualRouter: probeVirtualRouterConfig{
 				Enabled:    true,
 				FakeIPCIDR: "198.18.0.0/15",

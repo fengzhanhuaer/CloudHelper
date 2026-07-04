@@ -517,12 +517,12 @@ func normalizeProbeVirtualRouterDirection(raw string) string {
 	return probeVirtualRouterDirectionForward
 }
 
-func persistProbeVirtualRouterCache(config probeVirtualRouterConfig) error {
-	cachePath, err := resolveProbeVirtualRouterCachePath()
+func persistProbeRouteConfigCache(config probeVirtualRouterConfig) error {
+	cachePath, err := resolveProbeRouteConfigCachePath()
 	if err != nil {
 		return err
 	}
-	payload := probeVirtualRouterCacheFile{
+	payload := probeRouteConfigCacheFile{
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Item:      sanitizeProbeVirtualRouterConfigForCache(config),
 	}
@@ -536,8 +536,8 @@ func persistProbeVirtualRouterCache(config probeVirtualRouterConfig) error {
 	return os.WriteFile(cachePath, append(encoded, '\n'), 0o644)
 }
 
-func loadProbeVirtualRouterCache() (probeVirtualRouterConfig, error) {
-	cachePath, err := resolveProbeVirtualRouterCachePath()
+func loadProbeRouteConfigCache() (probeVirtualRouterConfig, error) {
+	cachePath, err := resolveProbeRouteConfigCachePath()
 	if err != nil {
 		return probeVirtualRouterConfig{}, err
 	}
@@ -551,7 +551,7 @@ func loadProbeVirtualRouterCache() (probeVirtualRouterConfig, error) {
 	if strings.TrimSpace(string(raw)) == "" {
 		return probeVirtualRouterConfig{}, nil
 	}
-	var payload probeVirtualRouterCacheFile
+	var payload probeRouteConfigCacheFile
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return probeVirtualRouterConfig{}, err
 	}
@@ -560,12 +560,12 @@ func loadProbeVirtualRouterCache() (probeVirtualRouterConfig, error) {
 	return config, nil
 }
 
-func resolveProbeVirtualRouterCachePath() (string, error) {
+func resolveProbeRouteConfigCachePath() (string, error) {
 	dataPath, err := resolveDataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataPath, probeVirtualRouterCacheFileName), nil
+	return filepath.Join(dataPath, probeRouteConfigCacheFileName), nil
 }
 
 func applyProbeVirtualRouterConfig(config probeVirtualRouterConfig) {
