@@ -15,17 +15,20 @@ import (
 )
 
 const (
-	probeVirtualRouterDefaultCIDR         = "198.18.0.0/15"
-	probeVirtualRouterProbeIPPoolSize     = 1024
-	probeVirtualRouterMaxProbeIPCount     = 1024
-	probeVirtualRouterMaxTopologyRules    = 2048
-	probeVirtualRouterMaxRouteRules       = 2048
-	probeVirtualRouterMaxRouteRuleEntries = 8192
-	probeVirtualRouterDefaultServicePort  = 12040
-	probeVirtualRouterDirectionForward    = "forward"
-	probeVirtualRouterReservedGatewayIP   = "198.18.0.1"
-	probeVirtualRouterReservedTUNIP       = "198.18.0.2"
-	probeVirtualRouterRuntimeChainPrefix  = "vrouter-"
+	probeVirtualRouterDefaultCIDR           = "198.18.0.0/15"
+	probeVirtualRouterProbeIPPoolSize       = 1024
+	probeVirtualRouterMaxProbeIPCount       = 1024
+	probeVirtualRouterMaxTopologyRules      = 2048
+	probeVirtualRouterMaxRouteRules         = 2048
+	probeVirtualRouterMaxRouteRuleEntries   = 8192
+	probeVirtualRouterDefaultServicePort    = 12040
+	probeVirtualRouterDirectionForward      = "forward"
+	probeVirtualRouterRouteRuleActionExit   = "probe_exit"
+	probeVirtualRouterRouteRuleActionDirect = "direct"
+	probeVirtualRouterRouteRuleActionReject = "reject"
+	probeVirtualRouterReservedGatewayIP     = "198.18.0.1"
+	probeVirtualRouterReservedTUNIP         = "198.18.0.2"
+	probeVirtualRouterRuntimeChainPrefix    = "vrouter-"
 )
 
 type probeVirtualRouterConfig struct {
@@ -63,11 +66,13 @@ type probeVirtualRouterTopologyRule struct {
 }
 
 type probeVirtualRouterRouteRule struct {
-	ID        string   `json:"id,omitempty"`
-	Name      string   `json:"name"`
-	Entries   []string `json:"entries,omitempty"`
-	Note      string   `json:"note,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	ID         string   `json:"id,omitempty"`
+	Name       string   `json:"name"`
+	Action     string   `json:"action,omitempty"`
+	ExitNodeID string   `json:"exit_node_id,omitempty"`
+	Entries    []string `json:"entries,omitempty"`
+	Note       string   `json:"note,omitempty"`
+	UpdatedAt  string   `json:"updated_at,omitempty"`
 }
 
 type probeVirtualRouterRuntimeStats struct {
@@ -255,6 +260,19 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 		if strings.TrimSpace(item.Name) == "" {
 			return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].name is required", index)
 		}
+		action := normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
+		if action == "" {
+			return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].action is invalid", index)
+		}
+		if action == probeVirtualRouterRouteRuleActionExit {
+			exitNodeID := normalizeProbeNodeID(item.ExitNodeID)
+			if exitNodeID == "" {
+				return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].exit_node_id is required", index)
+			}
+			if !isProbeVirtualRouterKnownNodeID(exitNodeID) {
+				return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].exit_node_id is unknown", index)
+			}
+		}
 		if len(item.Entries) > probeVirtualRouterMaxRouteRuleEntries {
 			return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].entries exceeded limit (%d)", index, probeVirtualRouterMaxRouteRuleEntries)
 		}
@@ -401,16 +419,23 @@ func normalizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) 
 		}
 		seen[key] = struct{}{}
 		entries := normalizeProbeVirtualRouterRouteRuleEntries(item.Entries)
+		action := normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
+		exitNodeID := ""
+		if action == probeVirtualRouterRouteRuleActionExit {
+			exitNodeID = normalizeProbeNodeID(item.ExitNodeID)
+		}
 		updatedAt := strings.TrimSpace(item.UpdatedAt)
 		if updatedAt == "" {
 			updatedAt = now
 		}
 		out = append(out, probeVirtualRouterRouteRule{
-			ID:        ruleID,
-			Name:      name,
-			Entries:   entries,
-			Note:      strings.TrimSpace(item.Note),
-			UpdatedAt: updatedAt,
+			ID:         ruleID,
+			Name:       name,
+			Action:     action,
+			ExitNodeID: exitNodeID,
+			Entries:    entries,
+			Note:       strings.TrimSpace(item.Note),
+			UpdatedAt:  updatedAt,
 		})
 		if len(out) >= probeVirtualRouterMaxRouteRules {
 			break
@@ -425,6 +450,23 @@ func normalizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) 
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func normalizeProbeVirtualRouterRouteRuleAction(raw string, exitNodeID string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "", probeVirtualRouterRouteRuleActionDirect:
+		if normalizeProbeNodeID(exitNodeID) != "" && value == "" {
+			return probeVirtualRouterRouteRuleActionExit
+		}
+		return probeVirtualRouterRouteRuleActionDirect
+	case probeVirtualRouterRouteRuleActionExit, "exit", "probe":
+		return probeVirtualRouterRouteRuleActionExit
+	case probeVirtualRouterRouteRuleActionReject, "block", "deny":
+		return probeVirtualRouterRouteRuleActionReject
+	default:
+		return ""
+	}
 }
 
 func normalizeProbeVirtualRouterRouteRuleEntries(items []string) []string {
@@ -755,6 +797,19 @@ func reconcileProbeVirtualRouterStoredProbeIPsBestEffort() {
 	if err := ProbeRouteConfigStore.Save(); err != nil {
 		logControllerWarnf("failed to persist virtual router probe ip reconciliation: %v", err)
 	}
+}
+
+func isProbeVirtualRouterKnownNodeID(nodeID string) bool {
+	target := normalizeProbeNodeID(nodeID)
+	if target == "" {
+		return false
+	}
+	for _, item := range listProbeVirtualRouterKnownNodeIDs() {
+		if normalizeProbeNodeID(item) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func listProbeVirtualRouterKnownNodeIDs() []string {

@@ -450,6 +450,8 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
   "items": [
     {
       "name": "media",
+      "action": "probe_exit",
+      "exit_node_id": "2",
       "entries": [
         "domain_suffix:.Reddit.COM",
         "cidr:91.108.4.9/22",
@@ -459,6 +461,7 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
     },
     {
       "name": "alpha",
+      "action": "reject",
       "entries": ["domain_prefix:API.AAAA"]
     }
   ]
@@ -478,7 +481,13 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 	if len(savePayload.Items) != 2 || savePayload.Items[0].Name != "alpha" || savePayload.Items[1].Name != "media" {
 		t.Fatalf("groups not sorted by name: %+v", savePayload.Items)
 	}
+	if savePayload.Items[0].Action != probeVirtualRouterRouteRuleActionReject || savePayload.Items[0].ExitNodeID != "" {
+		t.Fatalf("alpha action=%q exit=%q, want reject without exit", savePayload.Items[0].Action, savePayload.Items[0].ExitNodeID)
+	}
 	media := savePayload.Items[1]
+	if media.Action != probeVirtualRouterRouteRuleActionExit || media.ExitNodeID != "2" {
+		t.Fatalf("media action=%q exit=%q, want probe_exit node 2", media.Action, media.ExitNodeID)
+	}
 	wantEntries := []string{
 		"cidr:91.108.4.0/22",
 		"domain_keyword:api.aaaa",
@@ -520,5 +529,8 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 	}
 	if len(getPayload.Items) != 2 || getPayload.Items[1].Name != "media" {
 		t.Fatalf("route rules should survive topology save: %+v", getPayload.Items)
+	}
+	if getPayload.Items[0].Action != probeVirtualRouterRouteRuleActionReject || getPayload.Items[1].Action != probeVirtualRouterRouteRuleActionExit || getPayload.Items[1].ExitNodeID != "2" {
+		t.Fatalf("route rule actions should survive topology save: %+v", getPayload.Items)
 	}
 }

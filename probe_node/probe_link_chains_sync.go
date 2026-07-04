@@ -97,11 +97,13 @@ type probeVirtualRouterTopologyRule struct {
 }
 
 type probeVirtualRouterRouteRule struct {
-	ID        string   `json:"id,omitempty"`
-	Name      string   `json:"name"`
-	Entries   []string `json:"entries,omitempty"`
-	Note      string   `json:"note,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	ID         string   `json:"id,omitempty"`
+	Name       string   `json:"name"`
+	Action     string   `json:"action,omitempty"`
+	ExitNodeID string   `json:"exit_node_id,omitempty"`
+	Entries    []string `json:"entries,omitempty"`
+	Note       string   `json:"note,omitempty"`
+	UpdatedAt  string   `json:"updated_at,omitempty"`
 }
 
 type probeRouteConfigCacheFile struct {

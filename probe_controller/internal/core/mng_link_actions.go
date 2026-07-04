@@ -121,6 +121,19 @@ func upsertMngProbeVirtualRouterRouteRules(payload json.RawMessage, controllerBa
 		if strings.TrimSpace(item.Name) == "" {
 			return nil, fmt.Errorf("route_rules[%d].name is required", index)
 		}
+		action := normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
+		if action == "" {
+			return nil, fmt.Errorf("route_rules[%d].action is invalid", index)
+		}
+		if action == probeVirtualRouterRouteRuleActionExit {
+			exitNodeID := normalizeProbeNodeID(item.ExitNodeID)
+			if exitNodeID == "" {
+				return nil, fmt.Errorf("route_rules[%d].exit_node_id is required", index)
+			}
+			if !isProbeVirtualRouterKnownNodeID(exitNodeID) {
+				return nil, fmt.Errorf("route_rules[%d].exit_node_id is unknown", index)
+			}
+		}
 		if len(item.Entries) > probeVirtualRouterMaxRouteRuleEntries {
 			return nil, fmt.Errorf("route_rules[%d].entries exceeded limit (%d)", index, probeVirtualRouterMaxRouteRuleEntries)
 		}

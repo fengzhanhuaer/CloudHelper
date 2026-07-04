@@ -236,8 +236,10 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 					Enabled:    true,
 				}},
 				RouteRules: []probeVirtualRouterRouteRule{{
-					Name:    "media",
-					Entries: []string{"domain_suffix:reddit.com"},
+					Name:       "media",
+					Action:     "probe_exit",
+					ExitNodeID: "2",
+					Entries:    []string{"domain_suffix:reddit.com"},
 				}},
 			},
 		})
@@ -256,6 +258,9 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 	}
 	if len(config.TopologyRules) != 1 || len(config.RouteRules) != 1 {
 		t.Fatalf("unexpected route config: %+v", config)
+	}
+	if config.RouteRules[0].Action != "probe_exit" || config.RouteRules[0].ExitNodeID != "2" {
+		t.Fatalf("unexpected route rule action: %+v", config.RouteRules[0])
 	}
 }
 

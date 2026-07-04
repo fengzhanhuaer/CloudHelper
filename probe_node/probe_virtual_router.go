@@ -461,12 +461,19 @@ func sanitizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) [
 			entries = append(entries, entry)
 		}
 		sort.Strings(entries)
+		action := sanitizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
+		exitNodeID := ""
+		if action == "probe_exit" {
+			exitNodeID = normalizeProbeChainNodeID(item.ExitNodeID)
+		}
 		out = append(out, probeVirtualRouterRouteRule{
-			ID:        ruleID,
-			Name:      name,
-			Entries:   entries,
-			Note:      strings.TrimSpace(item.Note),
-			UpdatedAt: strings.TrimSpace(item.UpdatedAt),
+			ID:         ruleID,
+			Name:       name,
+			Action:     action,
+			ExitNodeID: exitNodeID,
+			Entries:    entries,
+			Note:       strings.TrimSpace(item.Note),
+			UpdatedAt:  strings.TrimSpace(item.UpdatedAt),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -478,6 +485,23 @@ func sanitizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) [
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func sanitizeProbeVirtualRouterRouteRuleAction(raw string, exitNodeID string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "", "direct":
+		if normalizeProbeChainNodeID(exitNodeID) != "" && value == "" {
+			return "probe_exit"
+		}
+		return "direct"
+	case "probe_exit", "exit", "probe":
+		return "probe_exit"
+	case "reject", "block", "deny":
+		return "reject"
+	default:
+		return "direct"
+	}
 }
 
 func collectProbeVirtualRouterReservedRuleIDs(items []probeVirtualRouterTopologyRule) map[string]struct{} {
@@ -686,7 +710,12 @@ func probeVirtualRouterTopologySignature(config probeVirtualRouterConfig, index 
 		)
 	}
 	for _, rule := range config.RouteRules {
-		fmt.Fprintf(&b, "route_rule|%s|%s\n", strings.TrimSpace(rule.ID), strings.TrimSpace(rule.Name))
+		fmt.Fprintf(&b, "route_rule|%s|%s|%s|%s\n",
+			strings.TrimSpace(rule.ID),
+			strings.TrimSpace(rule.Name),
+			strings.TrimSpace(rule.Action),
+			normalizeProbeChainNodeID(rule.ExitNodeID),
+		)
 		for _, entry := range rule.Entries {
 			fmt.Fprintf(&b, "route_rule_entry|%s|%s\n", strings.TrimSpace(rule.ID), strings.TrimSpace(entry))
 		}

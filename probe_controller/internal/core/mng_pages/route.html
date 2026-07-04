@@ -133,6 +133,7 @@
           <thead>
             <tr>
               <th style="width:260px;">路由规则</th>
+              <th style="width:220px;">处理方式</th>
               <th>条目</th>
               <th style="width:96px;">操作</th>
             </tr>
@@ -708,6 +709,29 @@
       return (Array.isArray(rule && rule.entries) ? rule.entries : []).map((item) => String(item || '').trim()).filter(Boolean).join('\n');
     }
 
+    function routeRuleAction(rule) {
+      const value = String(rule && rule.action || '').trim().toLowerCase();
+      if (value === 'probe_exit' || value === 'exit' || value === 'probe') return 'probe_exit';
+      if (value === 'reject' || value === 'block' || value === 'deny') return 'reject';
+      if (value === 'direct') return 'direct';
+      return normalizeNodeID(rule && rule.exit_node_id) ? 'probe_exit' : 'direct';
+    }
+
+    function routeRuleExitNodeOptions(selected) {
+      const ids = state.virtualRouterNodeIDs.length
+        ? state.virtualRouterNodeIDs
+        : state.nodes.map((item) => String(item.node_no || '')).filter(Boolean);
+      const cleanSelected = normalizeNodeID(selected);
+      const options = ids.map((id) => {
+        const clean = normalizeNodeID(id);
+        return `<option value="${escapeHTML(clean)}" ${cleanSelected === clean ? 'selected' : ''}>${escapeHTML(nodeLabel(clean))}</option>`;
+      });
+      if (cleanSelected && !ids.some((id) => normalizeNodeID(id) === cleanSelected)) {
+        options.unshift(`<option value="${escapeHTML(cleanSelected)}" selected>${escapeHTML(nodeLabel(cleanSelected))} (当前)</option>`);
+      }
+      return options.join('');
+    }
+
     function renderRouteRules() {
       const body = document.getElementById('route-rules-body');
       const summary = document.getElementById('route-rules-summary');
@@ -715,7 +739,7 @@
       const entryCount = rules.reduce((sum, item) => sum + (Array.isArray(item.entries) ? item.entries.length : 0), 0);
       summary.textContent = rules.length ? `路由规则 ${rules.length} 个，条目 ${entryCount} 条` : '暂无路由规则';
       if (!rules.length) {
-        body.innerHTML = '<tr><td colspan="3" class="muted">暂无路由规则。</td></tr>';
+        body.innerHTML = '<tr><td colspan="4" class="muted">暂无路由规则。</td></tr>';
         return;
       }
       body.innerHTML = rules.map((rule, idx) => `
@@ -723,6 +747,16 @@
           <td>
             <input data-route-rule-name="${idx}" class="name-input" value="${escapeHTML(rule.name || '')}" />
             <div class="small muted mono">${escapeHTML(rule.id || '')}</div>
+          </td>
+          <td>
+            <select data-route-rule-action="${idx}">
+              <option value="probe_exit" ${routeRuleAction(rule) === 'probe_exit' ? 'selected' : ''}>探针出口</option>
+              <option value="direct" ${routeRuleAction(rule) === 'direct' ? 'selected' : ''}>直连</option>
+              <option value="reject" ${routeRuleAction(rule) === 'reject' ? 'selected' : ''}>拒绝</option>
+            </select>
+            <div class="route-rule-exit" style="${routeRuleAction(rule) === 'probe_exit' ? '' : 'display:none;'}">
+              <select data-route-rule-exit="${idx}">${routeRuleExitNodeOptions(rule.exit_node_id)}</select>
+            </div>
           </td>
           <td class="rule-editor">
             <textarea data-route-rule-entries="${idx}" class="mono" spellcheck="false">${escapeHTML(routeRuleEntriesText(rule))}</textarea>
@@ -738,6 +772,30 @@
         el.addEventListener('input', () => {
           const idx = Number.parseInt(el.getAttribute('data-route-rule-name') || '-1', 10);
           if (idx >= 0 && idx < state.routeRules.length) state.routeRules[idx].name = String(el.value || '').trim();
+        });
+      });
+      document.querySelectorAll('[data-route-rule-action]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-route-rule-action') || '-1', 10);
+          if (idx < 0 || idx >= state.routeRules.length) return;
+          const action = routeRuleAction({ action: el.value });
+          state.routeRules[idx].action = action;
+          if (action !== 'probe_exit') {
+            state.routeRules[idx].exit_node_id = '';
+          } else if (!normalizeNodeID(state.routeRules[idx].exit_node_id)) {
+            const first = state.virtualRouterNodeIDs[0] || (state.nodes[0] ? String(state.nodes[0].node_no || '') : '');
+            state.routeRules[idx].exit_node_id = normalizeNodeID(first);
+          }
+          renderRouteRules();
+        });
+      });
+      document.querySelectorAll('[data-route-rule-exit]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-route-rule-exit') || '-1', 10);
+          if (idx >= 0 && idx < state.routeRules.length) {
+            state.routeRules[idx].action = 'probe_exit';
+            state.routeRules[idx].exit_node_id = normalizeNodeID(el.value);
+          }
         });
       });
       document.querySelectorAll('[data-route-rule-entries]').forEach((el) => {
@@ -763,6 +821,8 @@
       state.routeRules.push({
         id: '',
         name: `route-rule-${state.routeRules.length + 1}`,
+        action: 'direct',
+        exit_node_id: '',
         entries: [
           'domain_suffix:reddit.com',
           'domain_prefix:api.aaaa',
@@ -777,6 +837,8 @@
       const items = (Array.isArray(state.routeRules) ? state.routeRules : []).map((rule) => ({
         id: String(rule.id || '').trim(),
         name: String(rule.name || '').trim(),
+        action: routeRuleAction(rule),
+        exit_node_id: routeRuleAction(rule) === 'probe_exit' ? normalizeNodeID(rule.exit_node_id) : '',
         entries: Array.isArray(rule.entries) ? rule.entries.map((item) => String(item || '').trim()).filter(Boolean) : [],
         note: String(rule.note || '').trim(),
       })).filter((rule) => rule.name);
